@@ -41,6 +41,8 @@ Navic as installed from the S22, Symfonium 15.1.0 from repo.symfonium.app. "Defa
   tops up every ~0.4 s; with the screen off the watchdog calls the track stuck after ~2.8 s of a still
   timestamp, gives offload up and plays on from where the clock (not the chip) says, skipping the rest of
   the song; and the `nori:engine` wakelock is held throughout. Left out of the matrix until fixed.
+- **Navic's equaliser and offload exclude each other**: with Audio offload on, its Equaliser page cannot
+  be opened, so there is no "EQ + offload" variant.
 - **Navic offload** needs gapless off (the S21 FE offloads without gapless support), then plays offloaded,
   but after "next" stays in BUFFERING for good. Its matrix run starts at the first song, no skips.
 - **Musly and Navic** decode in Android's mediacodec service (UID 1046), charged to that service, not to

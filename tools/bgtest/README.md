@@ -14,6 +14,10 @@ tools/bgtest/bgtest.py --list            # the apps and their variants
 tools/bgtest/server.py                   # the local test server (below)
 ```
 
+One run per phone at a time: a second one on the same serial refuses to start (a lock in `build/bgtest/`).
+The media volume is set to the same step for every run (`--volume`, default 1) and put back afterwards,
+like the brightness of the player scenario (`--brightness`, default 1).
+
 With no terminal (an agent), `run.py` never asks: every choice is a flag, `ACTION:` lines are for the
 person at the phone (unplug the cable…), and the last line is `RESULTS: <folder>`.
 

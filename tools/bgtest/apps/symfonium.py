@@ -45,6 +45,9 @@ class Symfonium(App):
             self.step("fade in curve smooth", lambda: (ui.tap("Fade in curve"), ui.tap("Smooth")), "Fade in duration")
             if v.get("smart"):
                 self.step("smart fades on", lambda: ui.switch("Smart fades", True))
+            if v.get("eq"):
+                # Transitions and Output settings are both entries of the Playback page.
+                self.step("back to playback settings", ui.back, "Output settings")
         if v.get("eq"):
             self.step("output settings", lambda: (top(), ui.tap("Output settings")), "Telefon")
             self.step("this phone", lambda: ui.tap("Telefon"), "Equalizer")

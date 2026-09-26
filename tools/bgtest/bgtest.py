@@ -389,6 +389,7 @@ def table(recs):
 WEIGHTS = {"battery": 0.70, "memory": 0.15, "playback": 0.15}
 FLOOR_MAH_H = 25.0  # the "phone awake" wakelock every CPU player pays on the S21 FE: scores 100
 REF_PSS_MB = 100.0  # at or under this much memory scores 100
+PLAYER_FLOOR_MA = 230.0  # the S21 FE, dimmest screen, music playing, a player drawing next to nothing: scores 100
 
 
 def score(r, weights=None):
@@ -401,7 +402,13 @@ def score(r, weights=None):
     w = weights or WEIGHTS
     parts = {}
     total = per_hour(r, "with_system_mah")
-    parts["battery"] = min(100.0, 100 * FLOOR_MAH_H / total) if total else 0.0
+    if r.get("scenario") == "player":
+        # Screen on there is no wakelock and batterystats' app figure is only its CPU: the phone's real
+        # current is compared instead, against what the dimmest screen alone costs with music playing.
+        ma = r.get("current_ma")
+        parts["battery"] = min(100.0, 100 * PLAYER_FLOOR_MA / ma) if ma else 0.0
+    else:
+        parts["battery"] = min(100.0, 100 * FLOOR_MAH_H / total) if total else 0.0
     parts["memory"] = min(100.0, 100 * REF_PSS_MB / r["pss_mb"]) if r.get("pss_mb") else 100.0
     muted, checks = (int(x) for x in (r.get("muted_checks") or "0/0").split("/"))
     silent = r.get("starved_s", 0) / r["seconds"] + (muted / checks if checks else 0)
@@ -503,6 +510,8 @@ def main():
     p.add_argument("--scenario", default="screen-off",
                    help="screen-off (music in the background), player (the full-screen player on screen, fixed "
                         "brightness), or both, comma separated: every run once per scenario")
+    p.add_argument("--volume", default="1",
+                   help="media volume step for every run (default 1, nearly silent), or 'keep' to leave it as it is")
     p.add_argument("--brightness", type=int, default=1, help="screen brightness 1–255 in the player scenario (default 1, the dimmest)")
     p.add_argument("--nori-pkg", default="dev.nori.music.perf",
                    help="which Nori build to drive: dev.nori.music.perf (the perf build) or dev.nori.music (a normal build)")
@@ -532,6 +541,17 @@ def main():
         logf.write(line + "\n")
         logf.flush()
 
+    # One run per phone at a time: a second one would stop the first one's player mid-measurement and
+    # take its "phone as it was" to be the first one's changes.
+    lock_path = os.path.join(ROOT, "build", "bgtest", f".lock-{(a.serial or 'default').replace(':', '_')}")
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    if os.path.exists(lock_path):
+        pid = open(lock_path).read().strip()
+        if pid.isdigit() and os.path.exists(f"/proc/{pid}"):
+            sys.exit(f"another bgtest run (pid {pid}) is using {a.serial or 'the phone'}: wait for it or stop it first")
+    open(lock_path, "w").write(str(os.getpid()))
+    import atexit
+    atexit.register(lambda: os.path.exists(lock_path) and open(lock_path).read().strip() == str(os.getpid()) and os.remove(lock_path))
     phone = Phone(sorted({c.pkg for c in apps.values()} | {"dev.nori.music", "dev.nori.music.perf"}))
     phone.save()
     log(f"phone: {phone.info()}")
@@ -545,6 +565,9 @@ def main():
             log(f"installing {c.pkg} from {apk}")
             ui.adb("install", "-r", "-g", apk, timeout=300)
     phone.prepare(a.power_save == "on")
+    if a.volume != "keep":
+        phone.set_volume(int(a.volume))
+        log(f"media volume set to {a.volume} for every run")
     for c in apps.values():
         ui.sh(f"am force-stop {c.pkg}")
 
@@ -589,8 +612,15 @@ def main():
                 ui.sh(f"am force-stop {other}")
             rec = run_one(phone, app, variant, a.minutes, a.skips, outdir, log, cached, scenario, a.brightness)
             rec["playlist"] = playlist
-            log(f"    {app.name}: {per_hour(rec, 'with_system_mah')} mAh/h with decoder and audioserver, app {per_hour(rec, 'app_mah')}, cpu {per_hour(rec, 'cpu_mah')}, "
-                f"wakelock {per_hour(rec, 'wakelock_mah')}, wifi {per_hour(rec, 'wifi_mah')}")
+            if rec.get("scenario") == "player":
+                # Screen on: no wakelock, and the display dwarfs the app; the phone's real current leads.
+                log(f"    {app.name}: whole phone {rec.get('current_ma') or '?'} mA (measured), app's own work "
+                    f"{per_hour(rec, 'with_system_mah')} mAh/h (cpu {per_hour(rec, 'cpu_mah')}), "
+                    f"{rec.get('fps')} fps at {rec.get('refresh_hz') or '?'} Hz, {net_mb_h(rec)} MB/h downloaded")
+            else:
+                log(f"    {app.name}: {per_hour(rec, 'with_system_mah')} mAh/h with decoder and audioserver, app {per_hour(rec, 'app_mah')}, "
+                    f"cpu {per_hour(rec, 'cpu_mah')}, wakelock {per_hour(rec, 'wakelock_mah')}, {net_mb_h(rec)} MB/h downloaded"
+                    + (f", whole phone {rec['current_ma']} mA (measured)" if rec.get("current_ma") else ""))
         except (StepFailed, TimeoutError, RuntimeError) as e:
             log(f"    FAILED: {e}")
             rec = {"app": app.name, "variant": variant, "cached": cached, "playlist": playlist, "scenario": scenario, "error": ui.redact(str(e))}

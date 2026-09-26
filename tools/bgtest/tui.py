@@ -61,6 +61,7 @@ def pick(devices, playlists, apps_variants, matrix, quick, batteries=None, drain
     rows.append(Row("number", "repeat each", "repeat", 1, lo=1, hi=10, step=1))
     rows.append(Row("number", "skips before measuring", "skips", 3, lo=0, hi=10, step=1))
     rows.append(Row("number", "brightness with the player on screen (1–255)", "brightness", 1, lo=1, hi=255, step=10))
+    rows.append(Row("number", "media volume for every run (steps, 1 = nearly silent)", "volume", 1, lo=0, hi=15, step=1))
     rows.append(Row("check", "power saving on (as on the S22 runs)", "power_save", True))
     rows.append(Row("start", "▶ Start"))
 

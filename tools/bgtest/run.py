@@ -204,6 +204,7 @@ def main():
     p.add_argument("--power-save", choices=["on", "off"])
     p.add_argument("--scenario", help="screen-off, player, or both comma separated")
     p.add_argument("--brightness", type=int, help="brightness 1–255 in the player scenario (default 1)")
+    p.add_argument("--volume", help="media volume step for every run (default 1), or 'keep'")
     a = p.parse_args()
 
     devs = devices()
@@ -239,6 +240,7 @@ def main():
         a.scenario = ",".join(got["scenarios"])
         a.brightness = got["brightness"]
         a.nori_pkg = got["nori_pkg"]
+        a.volume = str(got["volume"])
         devs = devices()
     if a.list_devices:
         for s, m, how in devs:
@@ -297,9 +299,6 @@ def main():
     # ---- what to run ----
     if a.runs:
         args = ["--runs", a.runs, "--minutes", str(a.minutes or 5)]
-        for flag, v in (("--repeat", a.repeat), ("--skips", a.skips), ("--power-save", a.power_save), ("--scenario", a.scenario), ("--brightness", a.brightness)):
-            if v is not None:
-                args += [flag, str(v)]
     else:
         plan = a.plan or ["quick", "matrix", "custom"][choose("What to run?", [t for t, _ in PLANS])]
         if plan == "custom":
@@ -309,6 +308,11 @@ def main():
             args = list(dict(zip(["quick", "matrix"], [PLANS[0][1], PLANS[1][1]]))[plan])
             if a.minutes:
                 args[args.index("--minutes") + 1] = str(a.minutes)
+    # Everything asked for goes on to bgtest.py, whichever way the runs were chosen.
+    for flag, v in (("--repeat", a.repeat), ("--skips", a.skips), ("--power-save", a.power_save), ("--scenario", a.scenario),
+                    ("--brightness", a.brightness), ("--volume", a.volume)):
+        if v is not None and flag not in args:
+            args += [flag, str(v)]
     playlist = a.playlist or ask("playlists (comma separated: every run once per playlist)", "bg-mp3" if server == "local" else "RockMix")
 
     cmd = [sys.executable, "-u", os.path.join(HERE, "bgtest.py"), "--serial", serial, "--server", server, "--playlist", playlist] + args

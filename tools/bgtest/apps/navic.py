@@ -20,9 +20,10 @@ class Navic(App):
         "offload": {"offload": True, "gapless": False, "no_skips": True},
         # The built-in equaliser is Android's own (android.media.audiofx), run in audioserver.
         "eq": {"eq": True},
-        # The equaliser with offload: an effect stays on an offloaded track only where the audio chip
-        # runs it; otherwise Android plays the track on the CPU again (the "offl" column tells).
-        "eq-offload": {"offload": True, "gapless": False, "no_skips": True, "eq": True},
+        # Settings > Now Playing: Background style Static instead of Dynamic (a blurred, moving cover: a
+        # second layer redrawn at ~110 fps, RenderThread a whole core) and Slider style Flat instead of
+        # Squiggly (a wave redrawn every frame). Only the player screen changes: for the player scenario.
+        "static-ui": {"static_ui": True},
     }
 
     def login(self):
@@ -39,6 +40,16 @@ class Navic(App):
     def configure(self, variant):
         v = self.variants[variant]
         if not v:
+            return
+        if v.get("static_ui"):
+            self.step("settings", lambda: ui.tap("Settings"), "Now Playing")
+            self.step("now playing settings", lambda: ui.tap("Now Playing"), "Background style")
+            # The row then reads "Static // Choose static if you have performance issues".
+            self.step("background static", lambda: (ui.tap("Background style"), ui.tap("Static"), ui.tap("OK")), "Static //", exact=False)
+            self.step("slider flat", lambda: (ui.tap("Slider style"), ui.tap("Flat"), ui.tap("OK")), "Flat")
+            ui.back()
+            ui.back()
+            self.step("home", lambda: None, "Playlists")
             return
         self.step("settings", lambda: ui.tap("Settings"), "Playback")
         self.step("playback settings", lambda: ui.tap("Playback"), "Audio effects")

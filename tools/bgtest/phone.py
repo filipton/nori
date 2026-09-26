@@ -22,6 +22,13 @@ import ui
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".phone-state.json")
 
 
+def media_volume():
+    """The media stream's volume step now, or None."""
+    import re
+    m = re.search(r"volume is (\d+) in range", ui.sh("cmd media_session volume --stream 3 --get"))
+    return int(m.group(1)) if m else None
+
+
 class Phone:
     def __init__(self, packages):
         self.packages = packages
@@ -49,6 +56,7 @@ class Phone:
             "timeout": ui.sh("settings get system screen_off_timeout").strip(),
             "low_power": ui.sh("settings get global low_power").strip(),
             "brightness": ui.sh("settings get system screen_brightness").strip(),
+            "volume": media_volume(),
             "brightness_mode": ui.sh("settings get system screen_brightness_mode").strip(),
             "locales": {p: ui.sh(f"cmd locale get-app-locales {p}").strip() for p in self.packages},
         }
@@ -81,6 +89,7 @@ class Phone:
             f"settings put global low_power {s['low_power'] if s['low_power'] != 'null' else 0}",
             f"settings put system screen_brightness_mode {s['brightness_mode']}" if s.get("brightness_mode", "null") != "null" else "",
             f"settings put system screen_brightness {s['brightness']}" if s.get("brightness", "null") != "null" else "",
+            f"cmd media_session volume --stream 3 --set {s['volume']}" if s.get("volume") is not None else "",
         ]
         for p, loc in s["locales"].items():
             # "Locales for <pkg> for user 0 are [en-US]" or "[]"
@@ -94,9 +103,17 @@ class Phone:
                     print(f"  could not restore ({c}): {e}")
         if os.path.exists(STATE_FILE):
             os.remove(STATE_FILE)
-        print("  phone restored: keyboards, screen timeout, stay-awake, brightness, power saving, battery state, app languages")
+        print("  phone restored: keyboards, screen timeout, stay-awake, brightness, volume, power saving, battery state, app languages")
 
     # ---- set up for a session -----------------------------------------------------------------------
+    def set_volume(self, step):
+        """The media volume for every run, so the speaker's amplifier costs the same in each (the lowest
+        step, 1, is nearly silent without the special handling some phones give a volume of 0)."""
+        ui.sh(f"cmd media_session volume --stream 3 --set {step}")
+        now = media_volume()
+        if now != step:
+            raise RuntimeError(f"the media volume stayed at {now}, not {step}")
+
     def prepare(self, power_save):
         ui.sh("settings put global stay_on_while_plugged_in 7")  # AC, USB, wireless
         ui.sh("settings put system screen_off_timeout 600000")
