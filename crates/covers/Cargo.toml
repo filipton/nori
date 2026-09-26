@@ -3,7 +3,7 @@ name = "nori-covers"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Nori's cover art for clients without an image loader: fetched through the core, kept on disk and in memory, decoded straight to the size drawn"
+description = "nori's cover art for clients without an image loader: fetched through the core, kept on disk and in memory, decoded straight to the size drawn"
 
 [lib]
 name = "nori_covers"

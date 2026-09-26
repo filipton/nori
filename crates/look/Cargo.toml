@@ -3,7 +3,7 @@ name = "nori-look"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "How Nori looks: the colours a page takes from its cover, shared by every platform"
+description = "How nori looks: the colours a page takes from its cover, shared by every platform"
 
 [lib]
 name = "nori_look"

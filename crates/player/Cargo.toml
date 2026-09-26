@@ -3,7 +3,7 @@ name = "nori-player"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "How Nori plays music: the sound chain, AutoMix analysis, planning and mixing, shared by every platform"
+description = "How nori plays music: the sound chain, AutoMix analysis, planning and mixing, shared by every platform"
 
 [lib]
 name = "nori_player"

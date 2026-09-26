@@ -3,7 +3,7 @@
 and the recipe the app follows to fill it from the authors' own checkpoint.
 
 Beat This! (Foscarin, Schlüter and Widmer, ISMIR 2024; https://github.com/CPJKU/beat_this) publishes its code and
-weights under the MIT licence. Nori ships no copy of the weights and hosts none: with the switch on, the core fetches
+weights under the MIT licence. nori ships no copy of the weights and hosts none: with the switch on, the core fetches
 the `small0` checkpoint (2.1 M parameters, 8.1 MB) from the authors' server, checks its SHA-256, reads it with a
 restricted unpickler and writes the weights in the layout this graph expects, once (crates/player/src/automix/
 checkpoint.rs, weights.rs; crates/core/src/beat_download.rs). This script makes the graph that conversion fills.

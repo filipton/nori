@@ -3,7 +3,7 @@
 Labels used: **[verified]** = stated by a cited source; **[inferred]** = my reasoning or estimate, not confirmed by a source.
 
 The song analysis underneath (beats, bars, tempo, key, sections, vocals: methods, licences, what runs on a phone,
-and how Nori's analysis measures against a synthetic test set) has its own document, `analysis.md`. Where the
+and how nori's analysis measures against a synthetic test set) has its own document, `analysis.md`. Where the
 two disagree on the analysis, `analysis.md` is the later one.
 
 ## 1. What Apple's AutoMix does

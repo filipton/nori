@@ -5,7 +5,7 @@ battery, CPU, wakeups, allocations, memory and frames, with no adb and no comput
 results are on a Performance page in settings, and a plain-text report can be shared from there.
 
 It is minified and not debuggable, like a release, so what it measures is what a release costs. It
-installs beside the normal app (id `dev.nori.music.perf`, named "Nori perf"), with its own sign-in,
+installs beside the normal app (id `dev.nori.music.perf`, named "nori perf"), with its own sign-in,
 settings and downloads.
 
 ## Building and installing
@@ -22,7 +22,7 @@ phone either way:
 - send the file to the phone (a chat to yourself, a cloud drive, a USB cable) and open it there; Android
   asks once to allow installing from that app.
 
-Open Nori perf, sign in, and the recorder is already running: it starts with the app's process.
+Open nori perf, sign in, and the recorder is already running: it starts with the app's process.
 Settings > Performance is the page.
 
 ## What it records
@@ -153,7 +153,7 @@ The benchmark buttons are real work: their cost lands in the stretch under way.
 ## Where the memory goes
 
 The phone reports (a Galaxy S22, motion artwork on) show 210-240 MB PSS with the screen off and
-280-440 MB with the player open. On the emulator, with the screen off, Nori reads 197 MB against 114-138 MB
+280-440 MB with the player open. On the emulator, with the screen off, nori reads 197 MB against 114-138 MB
 for the other clients. What holds it, read from the code, and what was done:
 
 | What | Size | Engine | Done |
@@ -283,7 +283,7 @@ the level in whole percents. For one setting or one build against another:
 3. Screen off, 1 to 2 hours per stretch. Don't touch the phone: waking the screen ends the stretch.
 4. Three runs of each, and compare the mAh/h of "Screen off, playing". One run can be off by a lot:
    the phone's own background work comes and goes.
-5. The normal Nori app should not be playing at the same time.
+5. The normal nori app should not be playing at the same time.
 
 Press "Start fresh" before a series so the table holds only that series, and share the report after
 each (the report lists every stretch, with its settings).

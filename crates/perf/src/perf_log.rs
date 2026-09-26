@@ -890,7 +890,7 @@ pub fn perf_report(live: Option<PerfStretch>, device: PerfDevice, calls: String,
 }
 
 fn report(all: Vec<PerfStretch>, d: &PerfDevice, calls: &str, covers: &str, selftest: Option<&str>) -> String {
-    let mut out = String::from("Nori perf report\n");
+    let mut out = String::from("nori perf report\n");
     out.push_str(&format!("Device: {} {} ({}), Android {} (API {})\n", d.manufacturer, d.model, d.device, d.release, d.sdk));
     out.push_str(&format!("Build: {} ({}, {})\n", d.version, d.sha, d.build_type));
     if let (Some(first), Some(last)) = (all.first(), all.last()) {
@@ -2034,7 +2034,7 @@ mod tests {
         charging.tx = Some(20 * 1024);
         let r = report(vec![playing, charging], &d, "", "12 ns", None);
         let lines: Vec<&str> = r.lines().collect();
-        assert_eq!(lines[0], "Nori perf report");
+        assert_eq!(lines[0], "nori perf report");
         assert_eq!(lines[1], "Device: Google Pixel 8 (shiba), Android 16 (API 36)");
         assert_eq!(lines[2], "Build: 0.3.4 (abc1234, perf)");
         assert!(lines[3].starts_with("Recorded: ") && lines[3].ends_with(", 2 stretches"));

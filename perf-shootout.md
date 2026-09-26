@@ -1,19 +1,19 @@
-# Battery/CPU shootout: Nori vs Symfonium vs musly vs Navic
+# Battery/CPU shootout: nori vs Symfonium vs musly vs Navic
 
 Date: 2026-09-21 (UTC). Device: sdk_gphone64_x86_64 (Google), Android 14 (SDK 34), ABI x86_64
 (abilist x86_64,arm64-v8a). Server: local Navidrome at http://10.0.2.2:4533, user admin.
 Workload everywhere: track "Noise 1", album "Bench" (~10-min MP3 320 kbps) — no window crosses
 a track boundary. No substitutions: all four apps played the exact track. Media volume 0,
-screen OFF, no touches during every window. App versions: Nori 0.2.0 (**debug** build —
+screen OFF, no touches during every window. App versions: nori 0.2.0 (**debug** build —
 see caveat), Symfonium 15.0.1, musly 2.0.2, Navic v1.0.0-alpha55.
 
 ## Headline table (screen-off playback 90 s, paused-in-background 30 s)
 
 | App × scenario | CPU (% of one core) | Wakeups/s | Quiet s | PSS MB | Session |
 |---|---|---|---|---|---|
-| Nori · MP3 screen-off 90 s | 2.48 | 340.5 | 74 / 90 | 193 | PLAYING |
-| Nori · FLAC screen-off 90 s | 2.07 | 202.8 | 73 / 90 | 210 | PLAYING |
-| Nori · paused in background 30 s | 0.06 | 1.7 | 29 / 30 | 173 | PAUSED |
+| nori · MP3 screen-off 90 s | 2.48 | 340.5 | 74 / 90 | 193 | PLAYING |
+| nori · FLAC screen-off 90 s | 2.07 | 202.8 | 73 / 90 | 210 | PLAYING |
+| nori · paused in background 30 s | 0.06 | 1.7 | 29 / 30 | 173 | PAUSED |
 | Symfonium · MP3 screen-off 90 s | 6.66 | 1746.7 | 1 / 90 | 117 | PLAYING |
 | Symfonium · paused in background 30 s | 0.00 | 0.0 | 29 / 30 | 105 | PAUSED |
 | musly · MP3 screen-off 90 s | 2.78 | 533.4 | 0 / 90 | 152 | PLAYING |
@@ -25,12 +25,12 @@ see caveat), Symfonium 15.0.1, musly 2.0.2, Navic v1.0.0-alpha55.
 
 | App (launcher component) | Run 1 | Run 2 | Run 3 |
 |---|---|---|---|
-| Nori (`dev.nori.music/.app.MainActivity`) | 1148 | 1137 | 1165 |
+| nori (`dev.nori.music/.app.MainActivity`) | 1148 | 1137 | 1165 |
 | Symfonium (`app.symfonik.music.player/app.symfonik.ui.MainActivity`) | 424 | 392 | 350 |
 | musly (`com.devid.musly/.MainActivity`) | 804 | 730 | 760 |
 | Navic (`paige.navic/.MainActivityDefault`) | 555 | 579 | 571 |
 
-## simpleperf — Nori playing Noise 1, screen off, 45 s, 10820 samples (top 40 by comm,dso,symbol)
+## simpleperf — nori playing Noise 1, screen off, 45 s, 10820 samples (top 40 by comm,dso,symbol)
 
 ```
 Overhead  Command          Shared Object          Symbol
@@ -82,14 +82,14 @@ expected for a debug build with no AOT compilation (see caveat).
 
 ## VERDICT
 
-**Where Nori wins.** Screen-off playback sleep quality, by a mile: 74/90 quiet seconds (FLAC:
+**Where nori wins.** Screen-off playback sleep quality, by a mile: 74/90 quiet seconds (FLAC:
 73/90) vs 1/90 (Symfonium, Navic) and 0/90 (musly), and the lowest wakeup rate (340/s MP3,
 203/s FLAC vs 434–1747/s). That is the BurstSink + 10 s AudioTrack buffer design doing its
 job: decode in bursts, then let the CPU sit in deep idle. Total CPU is jointly lowest
 (2.48% MP3 / 2.07% FLAC, same band as musly/Navic 2.78%, far below Symfonium 6.66%). Paused
 in background is fully clean (0.06%, no wakelocks — same as Symfonium/Navic at 0.00%).
 
-**Where Nori loses.** Cold start is the slowest: ~1.15 s vs 350–580 ms (Symfonium/Navic) and
+**Where nori loses.** Cold start is the slowest: ~1.15 s vs 350–580 ms (Symfonium/Navic) and
 ~760 ms (musly) — roughly 2–3× the fastest. Memory (PSS) is the highest in every scenario:
 193–210 MB playing, 173 MB paused, vs 105–152 MB elsewhere. Both are at least partly the
 debug-build handicap (below), but startup time is worth profiling on a release build.
@@ -110,24 +110,24 @@ debug-build handicap (below), but startup time is worth profiling on a release b
   (`paige.navic`, 980 ms) ahead of `ExoPlayer:Playb` (840 ms) and `MediaCodec_loop`
   (640 ms) — UI/main-thread work (progress/state updates?) runs continuously during
   playback. Paused behavior is clean (0.00%).
-- Nori 2.48%: cost is `ExoPlayer:Playb` (1080–1200 ms) + `MediaCodec_loop` (640–700 ms) with
+- nori 2.48%: cost is `ExoPlayer:Playb` (1080–1200 ms) + `MediaCodec_loop` (640–700 ms) with
   everything else negligible; simpleperf shows that playback-thread time is overwhelmingly
   ART interpreter/JIT transitions rather than native decode or app code.
 
-**Caveat — uneven builds.** Nori was measured as a debug build (`dev.nori.music`, TestBridge
+**Caveat — uneven builds.** nori was measured as a debug build (`dev.nori.music`, TestBridge
 present): no AOT, JIT/interpreter overhead (visible in simpleperf), slower startup, larger
-PSS. The other three are release builds. Nori still leads on sleep quality despite the
+PSS. The other three are release builds. nori still leads on sleep quality despite the
 handicap; the cold-start and PSS gaps should be re-run against a release build with baseline
 profiles before drawing conclusions.
 
 ## Deviations from the procedure (all recorded)
 
-1. Nori was logged out (fresh reinstall). Logged in via UI taps (Server URL → admin/admin →
+1. nori was logged out (fresh reinstall). Logged in via UI taps (Server URL → admin/admin →
    Connect), the same flow as tools/perf-suite.sh — the TestBridge `login` hook only exists
    once the main UI is composed, so `app.sh login` cannot work while logged out.
 2. Paused runs: added a settle wait after MEDIA_PAUSE before bench (20 s everywhere; 60 s
    re-run for Symfonium) because ExoPlayer/codec threads exiting mid-window produce negative
-   CPU/wakeup deltas. Discarded artifacts: Nori −1.83% (first run), Symfonium −6.33%;
+   CPU/wakeup deltas. Discarded artifacts: nori −1.83% (first run), Symfonium −6.33%;
    reported numbers are steady-state re-runs. musly's 0/30-quiet paused result reproduced
    after a 60 s settle — genuine, not transient.
 3. `adb root` was required for simpleperf (perf_event permission); reverted with `adb unroot`
@@ -142,7 +142,7 @@ profiles before drawing conclusions.
 
 ## Appendix — full bench outputs
 
-<details><summary>Nori · MP3 320 screen-off 90 s</summary>
+<details><summary>nori · MP3 320 screen-off 90 s</summary>
 
 ```
 package: dev.nori.music   session: state=PLAYING   window: 90s   screen: off
@@ -165,7 +165,7 @@ session after: state=PLAYING
 
 </details>
 
-<details><summary>Nori · FLAC screen-off 90 s</summary>
+<details><summary>nori · FLAC screen-off 90 s</summary>
 
 ```
 package: dev.nori.music   session: state=PLAYING   window: 90s   screen: off
@@ -186,7 +186,7 @@ session after: state=PLAYING
 
 </details>
 
-<details><summary>Nori · paused in background 30 s (steady-state re-run)</summary>
+<details><summary>nori · paused in background 30 s (steady-state re-run)</summary>
 
 ```
 package: dev.nori.music   session: state=PAUSED   window: 30s   screen: off
@@ -327,7 +327,7 @@ session after: state=PAUSED
 
 Same device (sdk_gphone64_x86_64, Android 14), same server, same workload
 ("Noise 1", album "Bench", 10-min MP3 320 kbps; "Noise flac"; media volume 0,
-screen OFF, no touches). Nori 0.2.0 as a **release** build
+screen OFF, no touches). nori 0.2.0 as a **release** build
 (`./gradlew :app:assembleRelease -PrustTargets="x86_64"`, the apk.sh pattern for
 an emulator), installed with `adb install -r` over the debug build — same
 debug-key signature, so data and login survived and no fresh login was needed.
@@ -340,12 +340,12 @@ taps (+ `input text` with `kb off`, restored to `kb on` at the end).
 
 | App × scenario | CPU (% of one core) | Wakeups/s | Quiet s | PSS MB | Session |
 |---|---|---|---|---|---|
-| Nori **release** · MP3 screen-off 90 s | 1.18 | 374.9 | 76 / 90 | 108 | PLAYING |
-| Nori **release** · FLAC screen-off 90 s | 1.24 | 408.3 | 75 / 90 | 125 | PLAYING |
-| Nori **release** · paused in background 30 s | 0.03 | 0.6 | 29 / 30 | 118 | PAUSED |
-| Nori debug · MP3 screen-off 90 s | 2.48 | 340.5 | 74 / 90 | 193 | PLAYING |
-| Nori debug · FLAC screen-off 90 s | 2.07 | 202.8 | 73 / 90 | 210 | PLAYING |
-| Nori debug · paused in background 30 s | 0.06 | 1.7 | 29 / 30 | 173 | PAUSED |
+| nori **release** · MP3 screen-off 90 s | 1.18 | 374.9 | 76 / 90 | 108 | PLAYING |
+| nori **release** · FLAC screen-off 90 s | 1.24 | 408.3 | 75 / 90 | 125 | PLAYING |
+| nori **release** · paused in background 30 s | 0.03 | 0.6 | 29 / 30 | 118 | PAUSED |
+| nori debug · MP3 screen-off 90 s | 2.48 | 340.5 | 74 / 90 | 193 | PLAYING |
+| nori debug · FLAC screen-off 90 s | 2.07 | 202.8 | 73 / 90 | 210 | PLAYING |
+| nori debug · paused in background 30 s | 0.06 | 1.7 | 29 / 30 | 173 | PAUSED |
 | Symfonium · MP3 screen-off 90 s | 6.66 | 1746.7 | 1 / 90 | 117 | PLAYING |
 | musly · MP3 screen-off 90 s | 2.78 | 533.4 | 0 / 90 | 152 | PLAYING |
 | Navic · MP3 screen-off 90 s | 2.78 | 433.9 | 1 / 90 | 140 | PLAYING |
@@ -354,13 +354,13 @@ taps (+ `input text` with `kb off`, restored to `kb on` at the end).
 
 | App (launcher component) | Run 1 | Run 2 | Run 3 |
 |---|---|---|---|
-| Nori **release** (`dev.nori.music/.app.MainActivity`) | 289 | 268 | 285 |
-| Nori debug | 1148 | 1137 | 1165 |
+| nori **release** (`dev.nori.music/.app.MainActivity`) | 289 | 268 | 285 |
+| nori debug | 1148 | 1137 | 1165 |
 | Symfonium | 424 | 392 | 350 |
 | musly | 804 | 730 | 760 |
 | Navic | 555 | 579 | 571 |
 
-### simpleperf — Nori release playing Noise 1, screen off, 45 s, 8560 samples (top 30 by comm,dso,symbol)
+### simpleperf — nori release playing Noise 1, screen off, 45 s, 8560 samples (top 30 by comm,dso,symbol)
 
 ```
 Overhead  Command          Shared Object          Symbol
@@ -417,7 +417,7 @@ CPU still fell; MP3 wakeups are flat-ish (340.5 → 374.9). Still the lowest
 wakeup rate in the field, but worth a look if FLAC becomes the reference
 workload.
 
-**Vs competitors: Nori release now leads every playback column.** Lowest CPU
+**Vs competitors: nori release now leads every playback column.** Lowest CPU
 (1.18% vs 2.78/2.78/6.66%), best sleep (76/90 quiet vs 1/0/1), lowest playing
 PSS (108 MB vs 117/152/140 — the debug-build memory deficit is gone), and now
 the fastest cold start (268–289 ms vs 350–804 ms). Paused is a three-way tie at
@@ -427,7 +427,7 @@ either — EQ/limiter off, decoder MediaCodec, same as debug.
 
 ## Appendix — full bench outputs (release)
 
-<details><summary>Nori release · MP3 320 screen-off 90 s</summary>
+<details><summary>nori release · MP3 320 screen-off 90 s</summary>
 
 ```
 package: dev.nori.music   session: state=PLAYING   window: 90s   screen: off
@@ -449,7 +449,7 @@ session after: state=PLAYING
 
 </details>
 
-<details><summary>Nori release · FLAC screen-off 90 s</summary>
+<details><summary>nori release · FLAC screen-off 90 s</summary>
 
 ```
 package: dev.nori.music   session: state=PLAYING   window: 90s   screen: off
@@ -470,7 +470,7 @@ session after: state=PLAYING
 
 </details>
 
-<details><summary>Nori release · paused in background 30 s</summary>
+<details><summary>nori release · paused in background 30 s</summary>
 
 ```
 package: dev.nori.music   session: state=PAUSED   window: 30s   screen: off
@@ -546,7 +546,7 @@ checked twice); no AlarmManager/JobScheduler entries for the app.
 Worth fixing? The absolute cost is tiny — 0.19% of one core, ~97k
 wakeups/hour, each a few µs of CPU plus a binder hop; single-digit mW, a
 couple percent of overnight idle drain at most. But it is pure waste (a paused
-app has nothing to update 10×/s) and it costs the one thing Nori otherwise
+app has nothing to update 10×/s) and it costs the one thing nori otherwise
 wins: deep-idle residency is 0/300 quiet seconds vs 29/30 for
 Symfonium/Navic at the paused floor. If the ~100 ms polling flow (position /
 seek-bar updater still armed while paused and backgrounded) is gated on
@@ -562,17 +562,17 @@ boundary except possibly Symfonium, see deviation 5), media volume 0
 (STREAM_MUSIC muted, verified before each window), screen OFF, no touches,
 `tools/bench.sh <pkg> 90 off` per app — with each app's equalizer/DSP turned
 ON to a mild, comparable setting: EQ enabled + one treble band raised ~4–5 dB.
-Nori ran as the installed **debug** build (DEBUGGABLE flag set; the release
+nori ran as the installed **debug** build (DEBUGGABLE flag set; the release
 build was not on the device, so the task's TestBridge fallback applied —
 `tools/app.sh` hooks for enable/play/verify, UI taps only for the EQ slider).
-EQ-off reference rows are repeated from above; the apples-to-apples Nori
+EQ-off reference rows are repeated from above; the apples-to-apples nori
 comparison is debug-vs-debug.
 
 ### Per-app EQ setting used
 
 | App | Setting (all others in the DSP page left off) |
 |---|---|
-| Nori | Settings → Equalizer: enabled, 10-band graphic default, 8 kHz peaking Q1.41 **+5.1 dB**, pre-amp automatic. Verified in chain by logcat tag `nori` `equalizer in chain: 44100 Hz x2` on track start. |
+| nori | Settings → Equalizer: enabled, 10-band graphic default, 8 kHz peaking Q1.41 **+5.1 dB**, pre-amp automatic. Verified in chain by logcat tag `nori` `equalizer in chain: 44100 Hz x2` on track start. |
 | Symfonium | Output settings → Phone → Equalizer (Hi-Res DSP): **Graphic equalizer ON** (10-band), 8 kHz **+3.8 dB**, 4 kHz −0.4 dB, rest flat, pre-gain 0. Parametric/volume-boost/bass-boost/compressor/limiter/virtualizer/crossfeed all OFF, ReplayGain Off. (A stray tap briefly enabled Parametric with all 9 filters OFF = no processing; switched back OFF, verified.) |
 | musly | **No equalizer exists**: full scroll of Settings → Playback (Auto DJ, crossfade, gapless, fade, lyrics, ReplayGain Off, transcoding) plus the player ••• sheet (Sleep Timer, Playback Speed, Preserve pitch) shows no EQ/bass-boost anywhere — expected for the just_audio stack. Measured stock, nothing changed. |
 | Navic | Settings → Playback → Audio effects → Equaliser: source **Built-in** (Android effect, 5 bands ±15 dB), bands flat except band 5 (treble) ≈ **+4 dB**. Found state was Built-in with a non-flat curve (see deviation 4); restored afterwards. ReplayGain Off. |
@@ -581,9 +581,9 @@ comparison is debug-vs-debug.
 
 | App × EQ | CPU (% of one core) | Wakeups/s | Quiet s | PSS MB | Session |
 |---|---|---|---|---|---|
-| Nori debug · **EQ on** (8k +5.1) | 2.94 | 432.9 | **0 / 90** | 179 | PLAYING |
-| Nori debug · EQ off | 2.48 | 340.5 | 74 / 90 | 193 | PLAYING |
-| Nori release · EQ off | 1.18 | 374.9 | 76 / 90 | 108 | PLAYING |
+| nori debug · **EQ on** (8k +5.1) | 2.94 | 432.9 | **0 / 90** | 179 | PLAYING |
+| nori debug · EQ off | 2.48 | 340.5 | 74 / 90 | 193 | PLAYING |
+| nori release · EQ off | 1.18 | 374.9 | 76 / 90 | 108 | PLAYING |
 | Symfonium · **EQ on** (graph 8k +3.8) | 6.73 | 1805.3 | 1 / 90 | 128 | PLAYING |
 | Symfonium · EQ off | 6.66 | 1746.7 | 1 / 90 | 117 | PLAYING |
 | musly · **no EQ** (stock re-run) | 2.61 | 541.1 | 0 / 90 | 146 | PLAYING |
@@ -593,7 +593,7 @@ comparison is debug-vs-debug.
 
 ### Verdict — whose DSP costs what
 
-**Nori pays the most for EQ, relatively — and loses its signature advantage.**
+**nori pays the most for EQ, relatively — and loses its signature advantage.**
 Debug-vs-debug: CPU +0.46 pp (+19%), wakeups +27%, and deep sleep collapses
 completely: quiet 74/90 → **0/90**. The busiest threads grow in place —
 `ExoPlayer:Playb` 1200 → 1500 ms, `MediaCodec_loop` 660 → 800 ms — and a 45 s
@@ -605,7 +605,7 @@ playback threads, sitting under `artQuickGenericJniTrampoline`/CheckJNI on
 interpreter/JIT churn (debug build). Reading: the EQ forces the sample-domain
 path — an audio processor in the sink chain stands offload down (the state line
 still says `offload:true`, i.e. wanted, but volume-0 PCM rendering runs
-continuously) so the BurstSink burst-then-sleep pattern stops working and Nori
+continuously) so the BurstSink burst-then-sleep pattern stops working and nori
 sleeps exactly like the field (0 quiet seconds, same as musly/Navic). The Rust
 DSP itself is cheap (~3% of samples); the sleep loss is the bigger bill. The
 release-build EQ-on number was not measured (no TestBridge there); expect the
@@ -628,13 +628,13 @@ punchline: Navic was found with source **Built-in and a non-flat curve**
 **musly has no EQ to turn on** (checked both settings tabs and player sheet);
 the stock re-run (2.61%, 541.1/s) reproduces its baseline (2.78%, 533.4/s).
 
-Net ranking with DSP on: Navic ≈ musly ≈ 2.6–2.8% < Nori-debug-EQ 2.94% <<
-Symfonium 6.73%. Nori's EQ-on still sleeps no worse than anyone else — it just
+Net ranking with DSP on: Navic ≈ musly ≈ 2.6–2.8% < nori-debug-EQ 2.94% <<
+Symfonium 6.73%. nori's EQ-on still sleeps no worse than anyone else — it just
 no longer sleeps better.
 
 ### Deviations / notes (all recorded)
 
-1. Installed Nori was the debug build, not release as assumed — used the
+1. Installed nori was the debug build, not release as assumed — used the
    task's TestBridge fallback (`set eq true`, `play "search:noise 1"`, `state`;
    UI tap only for the 8 kHz slider, verified +5.1 dB via screen texts).
 2. Symfonium's media-session position is unreliable (the known trap): its own
@@ -646,7 +646,7 @@ no longer sleeps better.
    px ≈ bands boosted/1–2, cut/4–5) was pixel-recorded, Reset to flat for the
    run, then drag-restored to within ~20 px (≈ one 100 mB slider step) of found
    and verified by screenshot analysis. Navic's baseline row is therefore EQ-on.
-4. Nori's `offload:true` in `app.sh state` with EQ on means offload *wanted*;
+4. nori's `offload:true` in `app.sh state` with EQ on means offload *wanted*;
    the quiet-0/90 shape says the render path fell back to PCM (processor in
    chain), as designed.
 5. Navic's bench wakelock line lists musly's
@@ -656,16 +656,16 @@ no longer sleeps better.
 
 ### Cleanup (all apps left as found, stock)
 
-Nori `set eq false`, 8 kHz band back to +0.1 dB (slider snaps; EQ off so the
+nori `set eq false`, 8 kHz band back to +0.1 dB (slider snaps; EQ off so the
 chain is empty — functionally stock); Symfonium Graphic equalizer OFF, 8k/4k
 bands back to ≈0 dB (EQ off, profile Custom/Not saved as found), Parametric
 still OFF, ReplayGain still Off; Navic Built-in curve restored (3); musly
 untouched then force-stopped (no session, as found); Symfonium force-stopped
-after pausing (no session, as found); Navic/Nori left paused/not-playing.
+after pausing (no session, as found); Navic/nori left paused/not-playing.
 
 ## Appendix — full bench outputs (EQ-on)
 
-<details><summary>Nori debug · EQ on (8 kHz +5.1 dB) screen-off 90 s</summary>
+<details><summary>nori debug · EQ on (8 kHz +5.1 dB) screen-off 90 s</summary>
 
 ```
 package: dev.nori.music   session: state=PLAYING   window: 90s   screen: off
@@ -812,7 +812,7 @@ Same device (sdk_gphone64_x86_64, Android 14), same server
 by **Alpha Waves** — Track 1 (00:43), Track 2 (00:46), Track 3 (00:49),
 Track 4 (00:52), total 190 s (03:10) — tracks 1–4 back-to-back, so one
 `tools/bench.sh <pkg> 200 off` window (15 s settle + 200 s) covers all 3
-transitions. Media volume 0, screen OFF, no touches. Nori ran as the
+transitions. Media volume 0, screen OFF, no touches. nori ran as the
 installed **debug** build (TestBridge `app.sh` hooks); the other three are
 release builds. Each app's transition feature ON, exact setting recorded
 below; features turned OFF (or restored) afterwards.
@@ -821,12 +821,12 @@ below; features turned OFF (or restored) afterwards.
 
 | App | Setting (everything else as found) |
 |---|---|
-| Nori | **AutoMix ON** (all sub-options at defaults: longest mix 12 s, match-the-beat on, keep-pitch on, bass swap on, muffle-ending on, echo-out on; plain crossfade 0 s) + **"Keep albums gapless" OFF** (default ON would suppress all mixing inside one album, which is exactly this workload). Verified via `app.sh state` (`autoMix:true`). |
+| nori | **AutoMix ON** (all sub-options at defaults: longest mix 12 s, match-the-beat on, keep-pitch on, bass swap on, muffle-ending on, echo-out on; plain crossfade 0 s) + **"Keep albums gapless" OFF** (default ON would suppress all mixing inside one album, which is exactly this workload). Verified via `app.sh state` (`autoMix:true`). |
 | Symfonium | Playback → Transitions → **Crossfade enabled** (expanded state; Fade in/out Disabled, Smart fades OFF, Mix only shown, Fade curves Disabled — no duration value is displayed anywhere, so the default duration applies). CAUTION, read deviation 1. |
 | musly | Settings → Playback → **Track Crossfade slider at ~10 s** (found already ON at 10 s, kept; Gapless ON as found, Fade In/Out OFF as found). Turned to Off afterwards. |
 | Navic | **No transition feature exists**: Playback settings offer only Streaming quality, Explicit, Audio effects (= equalizer), Auto-fill queue (as found) and scrobbling. Measured stock, nothing changed. |
 
-Queueing: Nori `play album:308NdbnGJmq0qLrgA6LHUJ`; musly album screen → Track 1
+Queueing: nori `play album:308NdbnGJmq0qLrgA6LHUJ`; musly album screen → Track 1
 tap; Navic search → Albums → First Light/Alpha Waves → Play. Symfonium is the
 exception (deviation 1): it states "Crossfade is disabled when playing albums
 in sequential order", so the 4 tracks were multi-selected and played as a
@@ -836,13 +836,13 @@ manual queue ("1 of 4", 03:10) instead of an album play.
 
 | App × transition | CPU (% of one core) | Wakeups/s | Quiet s | PSS MB | Session after |
 |---|---|---|---|---|---|
-| Nori debug · **AutoMix on** | 1.04 | 177.6 | **151 / 200** | 178 | PLAYING (auto-fill carried on past the album) |
+| nori debug · **AutoMix on** | 1.04 | 177.6 | **151 / 200** | 178 | PLAYING (auto-fill carried on past the album) |
 | Symfonium · **Crossfade on** (manual queue) | 1.83 | 382.2 | 117 / 200 | 124 | NONE (queue of 4 exhausted) |
 | musly · **Crossfade 10 s** | 1.22 | 208.9 | 3 / 200 | 135 | PLAYING (Track 4, pos 52 s) |
 | Navic · **stock** (no such feature) | 0.60 | 62.7 | 108 / 200 | 133 | STOPPED (queue of 4 exhausted) |
 
 Plain-playback baselines for reference (Noise 1 MP3, 90 s, no boundary):
-Nori-debug 2.48% / 340.5/s / 74/90 · Symfonium 6.66% / 1746.7/s / 1/90 ·
+nori-debug 2.48% / 340.5/s / 74/90 · Symfonium 6.66% / 1746.7/s / 1/90 ·
 musly 2.78% / 533.4/s / 0/90 · Navic 2.78% / 433.9/s / 1/90.
 
 ### Verdict — transitions vs plain playback
@@ -852,10 +852,10 @@ halved or better across the board), so the First Light material itself decodes
 cheaper than the 320 kbps Noise track — the within-shootout ranking below is
 apples-to-apples, but do not compare these rows against the baseline rows as
 feature-cost deltas. With that caveat, ranked by CPU with transitions on:
-**Navic-stock 0.60% < Nori-AutoMix 1.04% < musly-xfade 1.22% < Symfonium-xfade
+**Navic-stock 0.60% < nori-AutoMix 1.04% < musly-xfade 1.22% < Symfonium-xfade
 1.83%.**
 
-- **Nori keeps its sleep crown even while DJ-mixing: 151/200 quiet seconds.**
+- **nori keeps its sleep crown even while DJ-mixing: 151/200 quiet seconds.**
   AutoMix stands offload down (`offloadWanted:false` with the feature on — it
   is a sample-domain mix, like EQ), yet unlike EQ-on (0/90 quiet) the deep
   sleep survives: a 12 s-max mix inside ~45 s tracks leaves ~30 s of straight
@@ -883,11 +883,11 @@ feature-cost deltas. With that caveat, ranked by CPU with transitions on:
   gapless-ish album play**, and its main thread is still its busiest (840 ms
   vs `Playb` 640 ms — the main-thread-during-playback signature from the
   baseline, now at a fraction of the absolute cost). Sleep is good but not
-  Nori-good (108/200 vs 151/200); wakeups lowest in the field (62.7/s).
+  nori-good (108/200 vs 151/200); wakeups lowest in the field (62.7/s).
 
 Net: nobody pays a dramatic battery price for transitions on this material —
 the feature-cost ordering is lost in the material-effect noise. The durable
-findings are Nori-AutoMix sleeping through a mix-heavy workload (151/200),
+findings are nori-AutoMix sleeping through a mix-heavy workload (151/200),
 musly never sleeping with or without crossfade, and Symfonium's baseline
 busyness not reproducing here (open question, not a conclusion).
 
@@ -901,11 +901,11 @@ busyness not reproducing here (open question, not a conclusion).
 2. musly's Track Crossfade was found already at ~10 s (set up by the previous
    interrupted attempt, or a default) and kept for the run; slider set to Off
    afterwards (screenshot-verified "Off (Instant transition)").
-3. The 190 s album is shorter than the 215 s bench span: Nori's auto-fill
+3. The 190 s album is shorter than the 215 s bench span: nori's auto-fill
    extended the queue (4 → 19 tracks, ended on a Beta Band track, PLAYING);
    Symfonium/Navic exhausted their queues (NONE/STOPPED); musly was still on
    Track 4. Every window covers all 3 transitions; tails differ, as recorded.
-4. Nori transition evidence: queue advanced Track 1 idx0/4 → idx5/19 plus one
+4. nori transition evidence: queue advanced Track 1 idx0/4 → idx5/19 plus one
    logcat line `nori: mixing: the next track arrived 5 ms into the hold with
    8375 ms of sound left` (later TestBridge calls clear logcat, so only one
    line was captured). The media-session metadata went stale mid-run (kept
@@ -914,14 +914,14 @@ busyness not reproducing here (open question, not a conclusion).
 
 ### Cleanup (all apps left stock / at rest)
 
-Nori `autoMix false`, `crossfadeKeepAlbums true` (both defaults), paused;
+nori `autoMix false`, `crossfadeKeepAlbums true` (both defaults), paused;
 Symfonium Crossfade OFF (collapsed state, verified) then force-stopped (no
 session); musly Track Crossfade Off (verified) then force-stopped (no
 session); Navic queue stopped by itself, settings untouched.
 
 ## Appendix — full bench outputs (crossfade / AutoMix)
 
-<details><summary>Nori debug · AutoMix on (defaults, gapless-albums OFF) screen-off 200 s</summary>
+<details><summary>nori debug · AutoMix on (defaults, gapless-albums OFF) screen-off 200 s</summary>
 
 ```
 package: dev.nori.music   session: state=PLAYING   window: 200s   screen: off
@@ -1017,7 +1017,7 @@ Same device (sdk_gphone64_x86_64, Android 14), same server
 verified via dumpsys audio), screen OFF, no touches,
 `tools/bench.sh <pkg> 90 off` per app. Track everywhere: "Noise flac",
 album "Long Play" by Bench (4 tracks, 40 min; FLAC 44.1 kHz, 882 kbps per
-Navic's now-playing readout) — no window crosses a track boundary. Nori
+Navic's now-playing readout) — no window crosses a track boundary. nori
 rows are the installed release build, repeated from above; competitors are
 release builds (Symfonium 15.0.1, musly 2.0.2, Navic v1.0.0-alpha55).
 
@@ -1031,21 +1031,21 @@ release builds (Symfonium 15.0.1, musly 2.0.2, Navic v1.0.0-alpha55).
 | musly · MP3 | 2.78 | 533.4 | 0 / 90 | 152 | PLAYING |
 | Navic · **FLAC** (flat EQ, see deviation 1) | 4.44 | 625.2 | 0 / 90 | 142 | PLAYING |
 | Navic · MP3 (found non-flat curve) | 2.78 | 433.9 | 1 / 90 | 140 | PLAYING |
-| Nori release · FLAC | 1.24 | 408.3 | 75 / 90 | 125 | PLAYING |
-| Nori release · MP3 | 1.18 | 374.9 | 76 / 90 | 108 | PLAYING |
+| nori release · FLAC | 1.24 | 408.3 | 75 / 90 | 125 | PLAYING |
+| nori release · MP3 | 1.18 | 374.9 | 76 / 90 | 108 | PLAYING |
 
 ### Verdict — heavier decode, same ranking, wider gap
 
-**Nobody keeps up under FLAC, and the gap widens.** Nori release plays the
+**Nobody keeps up under FLAC, and the gap widens.** nori release plays the
 FLAC at 1.24% / 408 wakeups/s / 75/90 quiet — essentially its MP3 numbers
 (+0.06 pp CPU, +33/s wakeups, sleep unchanged). The cheapest competitor on
-FLAC is musly at 3.76% (3× Nori), then Navic 4.44%, then Symfonium 7.41%
-(6×). Sleep is the same story as MP3, untouched by codec: Nori 75/90 quiet
+FLAC is musly at 3.76% (3× nori), then Navic 4.44%, then Symfonium 7.41%
+(6×). Sleep is the same story as MP3, untouched by codec: nori 75/90 quiet
 seconds vs 0/90 everywhere else.
 
 **Vs each app's MP3 baseline, the heavier decode shows up in CPU but not in
-sleep — because nobody slept to begin with.** There is no Nori-style sleep
-collapse anywhere (Nori's EQ-on collapse was 74/90 → 0/90; here the field
+sleep — because nobody slept to begin with.** There is no nori-style sleep
+collapse anywhere (nori's EQ-on collapse was 74/90 → 0/90; here the field
 sits at 0–1/90 on both codecs). Per app:
 - musly +35% CPU (2.78% → 3.76%), wakeups +9%: the decode cost is directly
   visible — `MediaCodec_loop` 870 → 1250 ms, now clearly its #2 thread
@@ -1065,8 +1065,8 @@ sits at 0–1/90 on both codecs). Per app:
   signature, scaled up), so decode is a rounding error on top of whatever
   those workers do.
 
-**The asymmetry that matters:** Nori's BurstSink burst-then-sleep pattern
-survives heavier decode (73–76 quiet seconds on every Nori row in this
+**The asymmetry that matters:** nori's BurstSink burst-then-sleep pattern
+survives heavier decode (73–76 quiet seconds on every nori row in this
 file, MP3 or FLAC, debug or release) and only broke under sample-domain
 DSP (EQ-on: 0/90). The field never sleeps in any configuration measured
 so far — codec, EQ, crossfade/AutoMix all read 0–3 quiet seconds outside
@@ -1168,12 +1168,12 @@ session after: state=PLAYING
 
 </details>
 
-## Nori release EQ-on (2026-09-21)
+## nori release EQ-on (2026-09-21)
 
 Same device (sdk_gphone64_x86_64, Android 14), same server
 (http://10.0.2.2:4533, admin), same workload ("Noise 1", album "Bench",
 10-min MP3 320 kbps; no window crosses a track boundary), media volume 0,
-screen OFF, no touches. Nori 0.2.0 as a **release** build
+screen OFF, no touches. nori 0.2.0 as a **release** build
 (`./gradlew :app:assembleRelease -PrustTargets="x86_64"`, installed with
 `adb install -r` over the debug build — same debug-key signature, so login
 survived). No TestBridge in release: login state, EQ setup, EQ teardown and
@@ -1188,11 +1188,11 @@ x2` on track start; playback verified PLAYING via dumpsys media_session
 
 ### Headline table — release EQ-on vs release EQ-off vs debug EQ-on (screen-off playback 90 s, Noise 1 MP3)
 
-| Nori × EQ | CPU (% of one core) | Wakeups/s | Quiet s | PSS MB | Session |
+| nori × EQ | CPU (% of one core) | Wakeups/s | Quiet s | PSS MB | Session |
 |---|---|---|---|---|---|
-| Nori **release · EQ on** (8k +5.1) | 1.33 | 389.5 | 73 / 90 | 107 | PLAYING |
-| Nori release · EQ off | 1.18 | 374.9 | 76 / 90 | 108 | PLAYING |
-| Nori debug · EQ on (8k +5.1) | 2.94 | 432.9 | 0 / 90 | 179 | PLAYING |
+| nori **release · EQ on** (8k +5.1) | 1.33 | 389.5 | 73 / 90 | 107 | PLAYING |
+| nori release · EQ off | 1.18 | 374.9 | 76 / 90 | 108 | PLAYING |
+| nori debug · EQ on (8k +5.1) | 2.94 | 432.9 | 0 / 90 | 179 | PLAYING |
 
 ### Verdict — on release, EQ is cheap and sleep survives
 
@@ -1215,8 +1215,8 @@ kernel `smp_call_function_many_cond` at 4.10%). The Rust DSP is audibly
 working (in chain per logcat, 60 hot entries) yet costs ~0.15 pp — the
 sleep loss was the debug bill, not the DSP bill.
 
-Net ranking with DSP on, release terms: Nori-EQ 1.33% vs musly-stock
-2.61% / Navic-EQ 2.81% / Symfonium-EQ 6.73% — Nori keeps the lead even
+Net ranking with DSP on, release terms: nori-EQ 1.33% vs musly-stock
+2.61% / Navic-EQ 2.81% / Symfonium-EQ 6.73% — nori keeps the lead even
 with the equalizer engaged, and keeps 73/90 quiet seconds against 0–1/90
 for the field.
 
@@ -1228,9 +1228,9 @@ re-enabled EQ, so the switch was toggled off *after* the reset and the
 Off state re-verified). Pre-amp back to +0.0 dB automatic, crossfeed still
 Off, keyboard restored, screen off. Release build left installed.
 
-## Appendix — full bench output (Nori release EQ-on)
+## Appendix — full bench output (nori release EQ-on)
 
-<details><summary>Nori release · EQ on (8 kHz +5.1 dB) screen-off 90 s</summary>
+<details><summary>nori release · EQ on (8 kHz +5.1 dB) screen-off 90 s</summary>
 
 ```
 package: dev.nori.music   session: state=PLAYING   window: 90s   screen: off
@@ -1284,7 +1284,7 @@ all on `ExoPlayer:Playb` (next entries: +1a9c73 0.38%, +1a9c22 0.29%,
 
 </details>
 
-## Nori release final gaps (2026-09-21)
+## nori release final gaps (2026-09-21)
 
 Two remaining release-build measurements (debug numbers existed; owner
 asked for release-only data). Same device (sdk_gphone64_x86_64,
@@ -1312,7 +1312,7 @@ off, `bench 90`.
 
 ### Headline table — release vs debug (transitions 200 s over 3 boundaries; paused 90 s)
 
-| Nori × scenario | CPU (% of one core) | Wakeups/s | Quiet s | PSS MB | Session |
+| nori × scenario | CPU (% of one core) | Wakeups/s | Quiet s | PSS MB | Session |
 |---|---|---|---|---|---|
 | **release · AutoMix on** (gapless-albums OFF) 200 s | 0.37 | 189.2 | 159 / 200 | 103 | PLAYING |
 | debug · AutoMix on (gapless-albums OFF) 200 s | 1.04 | 177.6 | 151 / 200 | 178 | PLAYING |
@@ -1353,13 +1353,13 @@ question from the waker hunt is unchanged by it.
 
 AutoMix settings verified identical to as-found after RUN 1 (ON,
 defaults, gapless OFF — nothing needed restoring); crossfade left Off
-(as set for the run); Nori left PAUSED in background, no session
+(as set for the run); nori left PAUSED in background, no session
 playing; keyboard restored (`kb on`, Gboard enabled + selected);
 screen off.
 
 ## Appendix — full bench outputs (release final gaps)
 
-<details><summary>Nori release · AutoMix on (defaults, gapless-albums OFF) screen-off 200 s</summary>
+<details><summary>nori release · AutoMix on (defaults, gapless-albums OFF) screen-off 200 s</summary>
 
 ```
 package: dev.nori.music   session: state=PLAYING   window: 200s   screen: off
@@ -1380,7 +1380,7 @@ session after: state=PLAYING
 
 </details>
 
-<details><summary>Nori release · paused in background 90 s</summary>
+<details><summary>nori release · paused in background 90 s</summary>
 
 ```
 package: dev.nori.music   session: state=PAUSED   window: 90s   screen: off
@@ -1400,7 +1400,7 @@ session after: state=PAUSED
 ## MP3 re-verify (2026-09-22)
 
 Same device, same server, same track ("Noise 1", Bench, 10-min MP3 320),
-media volume 0, screen OFF, `tools/bench.sh <pkg> 90 off`. Nori is the
+media volume 0, screen OFF, `tools/bench.sh <pkg> 90 off`. nori is the
 installed **release** APK (EQ off, AutoMix irrelevant for a single long
 track). Rivals force-stopped while each window ran. No FLAC / EQ / mix /
 paused windows in this pass — those stay as the 2026-09-21 numbers above.
@@ -1409,26 +1409,26 @@ paused windows in this pass — those stay as the 2026-09-21 numbers above.
 
 | App | CPU (% of one core) | Wakeups/s | Quiet s | PSS MB | Session |
 |---|---|---|---|---|---|
-| Nori release · MP3 | **1.26** | 372.1 | **75 / 90** | 119 | PLAYING |
+| nori release · MP3 | **1.26** | 372.1 | **75 / 90** | 119 | PLAYING |
 | Symfonium · MP3 (run 1) | 10.20 | 1968.1 | 2 / 90 | 122 | PLAYING |
 | Symfonium · MP3 (run 2, back-to-back) | 11.25 | 2132.5 | 0 / 90 | 125 | PLAYING |
 | musly · MP3 | 4.01 | 568.5 | 0 / 90 | 142 | PLAYING |
 | Navic · MP3 | 3.10 | 464.6 | 1 / 90 | 124 | PLAYING |
 
-**Verdict.** Ranking unchanged: Nori still the only app that sleeps (~83 %
+**Verdict.** Ranking unchanged: nori still the only app that sleeps (~83 %
 quiet seconds) and the cheapest CPU by ~2.5× vs the next (Navic 3.10%).
-Absolute numbers moved a little vs 2026-09-21 (Nori 1.18→1.26, musly
+Absolute numbers moved a little vs 2026-09-21 (nori 1.18→1.26, musly
 2.78→4.01, Navic 2.78→3.10). Symfonium is the outlier: two consecutive
 windows at 10.20% and 11.25% against yesterday's 6.66%, with the same
 thread cast (ExoPlayer:Playb, AudioEngine, four BG workers) — hotter
-steady state on this install, not a measurement glitch. PSS for Nori is
+steady state on this install, not a measurement glitch. PSS for nori is
 up (108→119 MB); still competitive with Symfonium/Navic and below musly.
 
 No hot-path fix shipped from this pass: screen-off decode threads are the
 expected MediaCodec + ExoPlayer pair, quiet seconds hold, and there is no
 new allocator or timer visible in the busy list.
 
-<details><summary>Nori release · MP3 320 screen-off 90 s (2026-09-22)</summary>
+<details><summary>nori release · MP3 320 screen-off 90 s (2026-09-22)</summary>
 
 ```
 package: dev.nori.music   session: state=PLAYING   window: 90s   screen: off
@@ -1546,7 +1546,7 @@ session after: state=PLAYING
 ## MP3 re-verify (2026-09-22)
 
 Same device, same server, same track ("Noise 1", Bench, 10-min MP3 320),
-media volume 0, screen OFF, `tools/bench.sh <pkg> 90 off`. Nori is the
+media volume 0, screen OFF, `tools/bench.sh <pkg> 90 off`. nori is the
 installed **release** APK (EQ off, AutoMix irrelevant for a single long
 track). Rivals force-stopped while each window ran. No FLAC / EQ / mix /
 paused windows in this pass — those stay as the 2026-09-21 numbers above.
@@ -1555,26 +1555,26 @@ paused windows in this pass — those stay as the 2026-09-21 numbers above.
 
 | App | CPU (% of one core) | Wakeups/s | Quiet s | PSS MB | Session |
 |---|---|---|---|---|---|
-| Nori release · MP3 | **1.26** | 372.1 | **75 / 90** | 119 | PLAYING |
+| nori release · MP3 | **1.26** | 372.1 | **75 / 90** | 119 | PLAYING |
 | Symfonium · MP3 (run 1) | 10.20 | 1968.1 | 2 / 90 | 122 | PLAYING |
 | Symfonium · MP3 (run 2, back-to-back) | 11.25 | 2132.5 | 0 / 90 | 125 | PLAYING |
 | musly · MP3 | 4.01 | 568.5 | 0 / 90 | 142 | PLAYING |
 | Navic · MP3 | 3.10 | 464.6 | 1 / 90 | 124 | PLAYING |
 
-**Verdict.** Ranking unchanged: Nori still the only app that sleeps (~83 %
+**Verdict.** Ranking unchanged: nori still the only app that sleeps (~83 %
 quiet seconds) and the cheapest CPU by ~2.5× vs the next (Navic 3.10%).
-Absolute numbers moved a little vs 2026-09-21 (Nori 1.18→1.26, musly
+Absolute numbers moved a little vs 2026-09-21 (nori 1.18→1.26, musly
 2.78→4.01, Navic 2.78→3.10). Symfonium is the outlier: two consecutive
 windows at 10.20% and 11.25% against yesterday's 6.66%, with the same
 thread cast (ExoPlayer:Playb, AudioEngine, four BG workers) — hotter
-steady state on this install, not a measurement glitch. PSS for Nori is
+steady state on this install, not a measurement glitch. PSS for nori is
 up (108→119 MB); still competitive with Symfonium/Navic and below musly.
 
 No hot-path fix shipped from this pass: screen-off decode threads are the
 expected MediaCodec + ExoPlayer pair, quiet seconds hold, and there is no
 new allocator or timer visible in the busy list.
 
-<details><summary>Nori release · MP3 320 screen-off 90 s (2026-09-22)</summary>
+<details><summary>nori release · MP3 320 screen-off 90 s (2026-09-22)</summary>
 
 ```
 package: dev.nori.music   session: state=PLAYING   window: 90s   screen: off
@@ -1689,11 +1689,11 @@ session after: state=PLAYING
 </details>
 
 
-## FLAC + EQ + cold re-verify (2026-09-22, Nori 0.3.0 release)
+## FLAC + EQ + cold re-verify (2026-09-22, nori 0.3.0 release)
 
 Same device/server/volume-0/screen-off protocol as the morning MP3 pass.
-Nori release rebuilt after the 0.3.0 bump; EQ off + offload on for stock
-FLAC; Nori EQ row uses 8 kHz **+8.4 dB** (equalizer confirmed in chain).
+nori release rebuilt after the 0.3.0 bump; EQ off + offload on for stock
+FLAC; nori EQ row uses 8 kHz **+8.4 dB** (equalizer confirmed in chain).
 Symfonium EQ row is Noise 1 as-found (Graphic EQ left on). musly has no EQ.
 Navic EQ row is Noise 1 as-found (Built-in effects). Mix/paused not re-run.
 
@@ -1701,7 +1701,7 @@ Navic EQ row is Noise 1 as-found (Built-in effects). Mix/paused not re-run.
 
 | App | CPU | Wakeups/s | Quiet | PSS MB |
 |---|---|---|---|---|
-| Nori release | **1.30%** | 469.1 | **69/90** | 126 |
+| nori release | **1.30%** | 469.1 | **69/90** | 126 |
 | Symfonium | 8.74% | 1937.7 | 0/90 | 118 |
 | musly | 4.70% | 610.8 | 0/90 | 148 |
 | Navic | 3.72% | 589.1 | 1/90 | 118 |
@@ -1710,7 +1710,7 @@ Navic EQ row is Noise 1 as-found (Built-in effects). Mix/paused not re-run.
 
 | App | CPU | Wakeups/s | Quiet | PSS MB |
 |---|---|---|---|---|
-| Nori release (8k +8.4) | **1.35%** | 395.0 | **73/90** | 104 |
+| nori release (8k +8.4) | **1.35%** | 395.0 | **73/90** | 104 |
 | Symfonium (as-found) | 13.37% | 2136.0 | 1/90 | 119 |
 | Navic (as-found) | 2.92% | 458.1 | 1/90 | 119 |
 
@@ -1718,7 +1718,7 @@ Navic EQ row is Noise 1 as-found (Built-in effects). Mix/paused not re-run.
 
 | App | Run 1 | Run 2 | Run 3 | ~median |
 |---|---|---|---|---|
-| Nori release | 576 | 632 | 567 | **~590** |
+| nori release | 576 | 632 | 567 | **~590** |
 | Symfonium | 946 | 849 | 909 | ~900 |
 | musly | 1226 | 1083 | 832 | ~1050 |
 | Navic | 799 | 659 | 635 | ~700 |

@@ -1,6 +1,6 @@
-Nori — Copyright (c) 2026 filipton, MIT License (see LICENSE)
+nori — Copyright (c) 2026 filipton, MIT License (see LICENSE)
 
-Third-party content bundled with Nori
+Third-party content bundled with nori
 
 Font (app/src/main/res/font/inter.ttf)
   Inter — Copyright (c) 2016 The Inter Project Authors, SIL Open Font License 1.1
@@ -10,7 +10,7 @@ Beat model network (built into the Rust core with `neural-beats`, crates/player/
   Beat This! (Foscarin, Schlüter and Widmer, ISMIR 2024; https://github.com/CPJKU/beat_this) — Copyright (c)
     2024 Institute of Computational Perception, JKU Linz, Austria, MIT (code and weights; full text:
     app/src/main/assets/licences/MIT.txt). The small0 model's graph, exported by tools/beat-this/export.py
-    from the authors' code, with no weights in it. The weights are not bundled or hosted by Nori: with
+    from the authors' code, with no weights in it. The weights are not bundled or hosted by nori: with
     "Better beat detection" on, the core fetches the authors' small0 checkpoint from their server
     (cloud.cp.jku.at), checks it and converts it on the device.
 

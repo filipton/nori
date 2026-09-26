@@ -3,7 +3,7 @@ name = "nori-http"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Nori's HTTP for the desktop: the core's Transport and the engine's ByteSource over one ureq agent"
+description = "nori's HTTP for the desktop: the core's Transport and the engine's ByteSource over one ureq agent"
 
 [lib]
 name = "nori_http"

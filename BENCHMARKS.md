@@ -1,11 +1,11 @@
-# Battery shootout: Nori vs Symfonium vs musly vs Navic
+# Battery shootout: nori vs Symfonium vs musly vs Navic
 
 Same emulator (`sdk_gphone64_x86_64`, Android 14), same local Navidrome server,
-same tracks, media volume 0, screen off, no touches. Nori is the **release**
+same tracks, media volume 0, screen off, no touches. nori is the **release**
 build throughout; the other three are Play releases. Full per-thread outputs
 and profiles: [perf-shootout.md](perf-shootout.md).
 
-| Metric | **Nori 0.3.1** | Symfonium 15.0.1 | musly 2.0.2 | Navic alpha55 |
+| Metric | **nori 0.3.1** | Symfonium 15.0.1 | musly 2.0.2 | Navic alpha55 |
 |---|---|---|---|---|
 | Cold start | **~590 ms** | ~900 ms | ~1050 ms | ~700 ms |
 | MP3 CPU | **1.26%** | 10.7% | 4.01% | 3.10% |
@@ -35,7 +35,7 @@ paused rows are settled background windows.
 Notes:
 
 - MP3, FLAC, EQ and cold-start rows re-measured 2026-09-22 on release **0.3.0** (unchanged for 0.3.1 UX)
-  (EQ off + offload on for the stock rows; Nori EQ at 8 kHz **+8.4 dB**).
+  (EQ off + offload on for the stock rows; nori EQ at 8 kHz **+8.4 dB**).
   Mix and paused rows are still from 2026-09-21.
 - Symfonium is hotter on this install than on 2026-09-21 (MP3 was 6.66% then,
   ~10–13% now) with the same thread cast — not a measurement glitch. Its EQ
@@ -46,14 +46,14 @@ Notes:
 - Navic has no transition feature; its 0.60% mix row is stock gapless play.
 - Symfonium skips crossfade on sequential albums, so its mix row uses a manual
   queue.
-- Paused windows: Nori 90 s, the rest 30 s — quiet counts are not directly
+- Paused windows: nori 90 s, the rest 30 s — quiet counts are not directly
   comparable, CPU and memory are.
 - musly holds an `AudioService` wakelock while paused and never lets the
   device sleep, in any state.
-- FLAC-vs-MP3 scaling (this run): Nori +3%, Symfonium −18% vs its hot MP3
+- FLAC-vs-MP3 scaling (this run): nori +3%, Symfonium −18% vs its hot MP3
   mean (noise), musly +17%, Navic +20%.
 - Cold starts are medians of three `am start -W` TotalTime readings after
   force-stop; the emulator was warmer than on 2026-09-21 (everyone slower,
-  ranking unchanged: Nori still first).
+  ranking unchanged: nori still first).
 - An emulator has no real battery and software-decodes; absolute numbers do
   not transfer to a phone, relative rankings do.

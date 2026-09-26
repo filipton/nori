@@ -214,7 +214,7 @@ signer() {
 ( cd "$out" && sha256sum ./*.apk | sed 's# \./# #' > SHA256SUMS )
 
 {
-  echo "Nori $version"
+  echo "nori $version"
   echo "commit $commit$dirty"
   echo "built $(date -u '+%Y-%m-%d %H:%M UTC')"
   echo "minSdk 26 (Android 8.0)"
@@ -246,7 +246,7 @@ if git rev-parse "v$version" >/dev/null 2>&1; then
   echo "==> tag v$version already exists, reusing it"
 else
   echo "==> tagging v$version"
-  git tag -a "v$version" -m "Nori $version"
+  git tag -a "v$version" -m "nori $version"
 fi
 # The branch goes first: a tag whose commit is on no branch is one nobody can reach from the repo page.
 git push origin "$(git branch --show-current)"
@@ -255,7 +255,7 @@ git push origin "v$version"
 echo "==> creating the release${DRAFT:+ (draft)}"
 # shellcheck disable=SC2086
 gh release create "v$version" "$out/$name" "$out/SHA256SUMS" \
-  --title "Nori $version" --notes-file "$notes" $DRAFT
+  --title "nori $version" --notes-file "$notes" $DRAFT
 
 echo
 echo "done: $(gh release view "v$version" --json url --jq .url 2>/dev/null || echo "v$version")"

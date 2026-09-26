@@ -19,7 +19,7 @@ given; **[inferred]** = my reasoning or estimate, not confirmed.
 - **Shipped as an opt-in: Beat This! (small) for beats and downbeats, "Better beat detection".** It is the one
   state-of-the-art beat tracker whose code *and* weights are MIT; madmom's models are CC BY-NC-SA and Demucs's
   weights are for scientific use only. On GTZAN it scores 88.8 % beat F1 and 79.4 % downbeat F1 (the full model
-  89.1 % and 78.3 %), where classical trackers of the kind Nori uses score 55-66 %. **[verified]** The switch is
+  89.1 % and 78.3 %), where classical trackers of the kind nori uses score 55-66 %. **[verified]** The switch is
   off by default; on, it runs the small model (4.2 MB of fp16 weights) through tract (pure Rust, no second native
   runtime) over the first and last 30 s of the song playing and the next one, in nori-engine's measurer. The
   Android builds, release included, carry the feature and the model's graph (`-PrustFeatures=` leaves it out; section 5). The weights are made on the device from the authors' own checkpoint, fetched from their
@@ -121,9 +121,9 @@ Synthetic songs: before this branch, after it, and with Beat This! (full model) 
 | Vocal gate right | 29 of 32 | 29 | - |
 
 **[measured]** Beat This!'s "tracked beats" and "tempo" rows are its raw beats; its mix-window rows are its beats
-fitted to AutoMix's constant grid inside the harness. The two wrong bars left are the one-drop, which both Nori and
+fitted to AutoMix's constant grid inside the harness. The two wrong bars left are the one-drop, which both nori and
 Beat This! read at 150 BPM, so every bar of theirs is half a real one: the conventional tempo of a one-drop is itself
-a matter of taste. The refusals are the drifting band, the accelerando and (for Nori) the band slowing down: one
+a matter of taste. The refusals are the drifting band, the accelerando and (for nori) the band slowing down: one
 constant grid cannot follow them, and saying so is correct (section 4.2).
 
 Real recordings, against Beat This!'s beats:
@@ -165,7 +165,7 @@ core of the Xeon (2.1 GHz, AVX-512) this was measured on (`cargo test --release 
   and not shippable. **[verified]**
 
 **Classical.** In a comparison on GTZAN, Klapuri's tracker scored 65.5 % F, Degara's 65.3 %, Davies's 62.8 % and
-Ellis's dynamic programme, which Nori uses, 55.1 % ([Holzapfel et al.][selective]). **[verified]** That gap is real
+Ellis's dynamic programme, which nori uses, 55.1 % ([Holzapfel et al.][selective]). **[verified]** That gap is real
 music's, and a synthetic set cannot show it: on our songs the classical tracker already reaches 0.96.
 
 **DBN or HMM decoding over a classical activation.** madmom's DBNs follow tempo changes and, in the bar-pointer

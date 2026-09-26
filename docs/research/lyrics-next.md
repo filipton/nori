@@ -20,7 +20,7 @@ current trust score is in `crates/lyrics/src/trust.rs`, and the race is in `race
    the song.
 
 ## What exists and what others do
-- **Nori's trust score already covers:**
+- **nori's trust score already covers:**
   - the metadata match (title, artist, album, length);
   - timing level (word over line over none) and plausibility (in order, within the song, no long silences, the
     last line near the end);

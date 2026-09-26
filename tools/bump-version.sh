@@ -4,7 +4,7 @@
 #
 #   app/build.gradle.kts   versionName, and versionCode as major*10000 + minor*100 + patch (0.3.2 -> 302)
 #   Cargo.toml             the workspace version, and Cargo.lock's entries for the workspace crates
-#   docs/features.md       "Living inventory for Nori x.y.z"
+#   docs/features.md       "Living inventory for nori x.y.z"
 #
 # Left alone on purpose: the README's version badge reads the latest GitHub release by itself, and the
 # benchmark tables (README, BENCHMARKS.md) name the version the numbers were measured on, which only a
@@ -45,5 +45,5 @@ edit("Cargo.toml", [(r'(\[workspace\.package\][^\[]*?\nversion = )"[^"]+"', rf'\
 # Every workspace crate takes the workspace version, so each has an entry to move.
 members = [re.search(r'^name = "([^"]+)"', (p / "Cargo.toml").read_text(), re.M).group(1) for p in sorted((root / "crates").iterdir()) if (p / "Cargo.toml").exists()]
 edit("Cargo.lock", [(rf'(\[\[package\]\]\nname = "{re.escape(m)}"\nversion = )"[^"]+"', rf'\g<1>"{new}"') for m in members])
-edit("docs/features.md", [(rf'Nori {esc}\*\*', f'Nori {new}**')])
+edit("docs/features.md", [(rf'nori {esc}\*\*', f'nori {new}**')])
 EOF

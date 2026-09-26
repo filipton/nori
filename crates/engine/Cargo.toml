@@ -3,7 +3,7 @@ name = "nori-engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Nori's player for platforms without one: loading, demuxing, the sound chain, transitions and output through a small adapter"
+description = "nori's player for platforms without one: loading, demuxing, the sound chain, transitions and output through a small adapter"
 
 autotests = false
 

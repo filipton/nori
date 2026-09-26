@@ -1,6 +1,6 @@
 # Feature checklist
 
-Living inventory for **Nori 0.4.0**. Every distinct feature found in Symfonium (S), Musly (M) and
+Living inventory for **nori 0.4.0**. Every distinct feature found in Symfonium (S), Musly (M) and
 Navic (N), merged. The raw, sourced inventories are in `docs/research/` (Symfonium: all 67 release
 posts, the docs site, the Play listing and the APK's strings; Musly: changelog, 892 l10n keys,
 source at v2.0.2; Navic: releases alpha19-55, 836 commits, source). Provider-specific items that
@@ -495,7 +495,7 @@ The owner asked for these explicitly.
 | Spotify Canvas (a looping clip per song) | | | | | skip: needs the listener's Spotify login; see below |
 
 **Moving covers.** Apple Music has a short looping video of the cover for some albums, mostly recent
-ones from the larger labels, and plays it in the full-bleed sleeve. Nori plays the same video in the
+ones from the larger labels, and plays it in the full-bleed sleeve. nori plays the same video in the
 same place, over the still cover and cropped the same way, only while the player is open and at rest
 and the screen is on, and never with reduced motion. It is found in three requests to Apple, all made by
 the core (`crates/core/src/motion.rs`, through the client's transport): the public iTunes Search API

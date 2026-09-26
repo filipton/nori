@@ -3,7 +3,7 @@ name = "nori-output-cpal"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Nori's desktop sound card output: nori-engine pulled by cpal (PipeWire/ALSA, CoreAudio, WASAPI)"
+description = "nori's desktop sound card output: nori-engine pulled by cpal (PipeWire/ALSA, CoreAudio, WASAPI)"
 
 [lib]
 name = "nori_output_cpal"

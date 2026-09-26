@@ -200,7 +200,7 @@
     <string name="automix">AutoMix</string>
     <string name="interface_title">Interface</string>
     <string name="open_source">Open source</string>
-    <string name="free_software">Nori is free software</string>
+    <string name="free_software">nori is free software</string>
     <string name="licence_line">MIT licence \u0020· \u0020Copyright (c) 2026 filipton</string>
     <string name="licences">Licences</string>
     <string name="licences_detail">The libraries, fonts and data this app is made of, and their terms</string>
@@ -271,7 +271,7 @@
     <string name="up_next">Playing next</string>
     <string name="sleep_end_of_track">Sleep · end of track</string>
     <string name="sleep_minutes">Sleep · %1$d min</string>
-    <string name="widget_idle">Nori</string>
+    <string name="widget_idle">nori</string>
 
     <!-- Lyrics. -->
     <string name="lyrics_your_server">your server</string>
@@ -372,7 +372,7 @@
     <string name="stat_day_streak">day streak</string>
 
     <!-- About: what this build is made of. -->
-    <string name="about_title">Nori %1$s</string>
+    <string name="about_title">nori %1$s</string>
     <string name="about_build">%1$s %2$s \u0020· \u0020%3$s \u0020· \u0020Android %4$s (API %5$d)</string>
     <string name="about_debug">debug</string>
     <string name="about_release">release</string>

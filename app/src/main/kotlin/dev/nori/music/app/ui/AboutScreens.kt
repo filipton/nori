@@ -53,7 +53,7 @@ internal fun AboutContent(section: @Composable (String, @Composable ColumnScope.
             Build.SUPPORTED_ABIS.firstOrNull(), Build.VERSION.RELEASE, Build.VERSION.SDK_INT,
         )
     }
-    section("Nori") {
+    section("nori") {
         InfoRow(facts.title, facts.build, end = say.copyIt) { clipboard.setText(AnnotatedString(facts.report)) }
     }
     section(say.underTheHood) {

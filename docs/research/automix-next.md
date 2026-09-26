@@ -1,8 +1,8 @@
 # AutoMix, the next step: iOS 27 smoothness and the plan to get there
 
-This follows `automix.md`, which covers the earlier research and the design as built, and `analysis.md`, which covers the beat, key and structure analysis. Read those first. This file records what changed in Apple's AutoMix with iOS 27 (2026), what our own logs show about why Nori's mixes rarely sound like it, and the build plan in order.
+This follows `automix.md`, which covers the earlier research and the design as built, and `analysis.md`, which covers the beat, key and structure analysis. Read those first. This file records what changed in Apple's AutoMix with iOS 27 (2026), what our own logs show about why nori's mixes rarely sound like it, and the build plan in order.
 
-Labels: **[verified]** is stated by a cited source; **[inferred]** is our reasoning; **[measured]** comes from Nori's logs or tests.
+Labels: **[verified]** is stated by a cited source; **[inferred]** is our reasoning; **[measured]** comes from nori's logs or tests.
 
 ## 1. What iOS 27 AutoMix changed
 
@@ -14,7 +14,7 @@ Labels: **[verified]** is stated by a cited source; **[inferred]** is our reason
 - **It now also runs on HomePod and Apple TV** **[verified]** (MacRumors).
 - **Not published:** transition lengths, how loops are chosen, vocal handling, EQ details. Treat everything beyond the list above as ours to design.
 
-## 2. Where Nori stands (as of 2026-09-26)
+## 2. Where nori stands (as of 2026-09-26)
 
 What the planner (`crates/player/src/automix/plan.rs`) can already do:
 - **Transition kinds** (`TransitionKind`, crates/model and crates/player types):
@@ -95,7 +95,7 @@ Each step needs Rust tests on the virtual clock and the synthetic set (`automix/
 - Open papers on automatic DJ mixing and transition generation. Look for "automatic DJ mix generation", "DJ transition", and the Beat This! authors' related work.
 - Phone-cheap vocal activity detection (spectral-flux or small-model options) and its cost on the S22.
 - Loudness and energy curves: what makes a transition feel smooth, as opposed to merely aligned.
-- Whether a server-side pass (the server has the files) could precompute grids for the whole library. This fits the "Rust backend" architecture if the server ever runs Nori code; today it's Navidrome.
+- Whether a server-side pass (the server has the files) could precompute grids for the whole library. This fits the "Rust backend" architecture if the server ever runs nori code; today it's Navidrome.
 
 ## 5. Sources
 - [MacRumors: Apple Music Gains AutoMix Upgrades and More in iOS 27](https://www.macrumors.com/2026/06/09/apple-music-gains-automix-upgrades-and-more-in-ios-27/)

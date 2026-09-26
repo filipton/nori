@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/brand/nori.png" alt="Nori" width="160">
+  <img src="docs/brand/nori.png" alt="nori" width="160">
 </p>
 
-<h1 align="center">Nori</h1>
+<h1 align="center">nori</h1>
 
 <p align="center">
   A native Android client for Navidrome and octo-fiesta.<br>
@@ -50,11 +50,11 @@
 
 ## Measured
 
-Same emulator, same server, same track, screen off — release Nori against
+Same emulator, same server, same track, screen off — release nori against
 Play builds of the alternatives. Quiet seconds are how often the process
 almost never woke: the number that decides overnight battery.
 
-| | **Nori 0.3.1** | Symfonium | musly | Navic |
+| | **nori 0.3.1** | Symfonium | musly | Navic |
 |---|---|---|---|---|
 | CPU while playing (MP3 / FLAC / EQ) | **1.26 / 1.30 / 1.35 %** | 10.7 / 8.74 / 13.4 % | 4.01 / 4.70 / no EQ | 3.10 / 3.72 / 2.92 % |
 | Seconds asleep of 90 (MP3 / FLAC / EQ) | **75 / 69 / 73** | 1 / 0 / 1 | 0 / 0 / 0 | 1 / 1 / 1 |

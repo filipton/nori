@@ -3,7 +3,7 @@ name = "nori-mpris"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Nori on the Linux desktop's media controls: MPRIS over D-Bus"
+description = "nori on the Linux desktop's media controls: MPRIS over D-Bus"
 
 [lib]
 name = "nori_mpris"
