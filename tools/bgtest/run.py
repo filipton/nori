@@ -153,6 +153,11 @@ def to_wifi(serial):
     if not ping:
         print("  they are probably on different networks (another Wi-Fi, a VPN, a guest network that keeps")
         print("  devices apart): put both on the same one")
+    elif sys.platform == "darwin" and any("No route to host" in x for x in replies):
+        # macOS 15+: an app needs the "Local Network" permission to reach devices on the LAN. ping gets
+        # through without it, and the adb server inherits the permission of the app that started it.
+        print("  macOS keeps the adb server off the local network: System Settings > Privacy & Security >")
+        print("  Local Network > allow your terminal app, then `adb kill-server` and run this again")
     else:
         print("  the network is fine, so the phone's adb did not open port 5555: try again, or restart the phone")
     sys.exit("or measure on the cable instead: tools/bgtest/run.py --stay-plugged (no real current then)")
