@@ -45,6 +45,9 @@ DATA = os.path.join(BASE, "data")
 NAME = "nori-bgtest-navidrome"
 # Pinned: 0.64.2 crashes (a nil pointer in its playlist covers) right after the playlists are made.
 IMAGE = "docker.io/deluan/navidrome:0.64.0"
+# Navidrome's database in a Docker volume, not a folder shared from the host: SQLite on Docker Desktop's
+# file sharing (a Mac) fails with "disk I/O error", and Navidrome then crashes making playlist covers.
+VOLUME = "nori-bgtest-data"
 PORT = 4540
 LOCAL = ("admin", "admin")
 
@@ -206,7 +209,7 @@ def start():
         docker("rm", "-f", NAME, check=False)
         docker("run", "-d", "--name", NAME, "--user", f"{os.getuid()}:{os.getgid()}", "-p", f"{PORT}:4533",
                "-e", "ND_SCANNER_SCHEDULE=0", "-e", "ND_LOGLEVEL=warn", "-e", "ND_ENABLETRANSCODINGCONFIG=false",
-               "-v", f"{MUSIC}:/music:ro", "-v", f"{DATA}:/data", IMAGE)
+               "-v", f"{MUSIC}:/music:ro", "-v", f"{VOLUME}:/data", IMAGE)
     base = f"http://localhost:{PORT}"
     for _ in range(60):
         try:
@@ -271,7 +274,7 @@ def main():
     a = p.parse_args()
     if a.stop:
         docker("rm", "-f", NAME, check=False)
-        print("test server stopped")
+        print("test server stopped (its database stays in the volume nori-bgtest-data)")
         return
     if os.path.exists(os.path.expanduser("~/.music.pass")):
         print("songs:")
