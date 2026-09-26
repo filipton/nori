@@ -178,7 +178,10 @@ def build_quick(clip_s=60, rounds=2, fillers=3):
 
 
 def docker(*a, check=True):
-    r = subprocess.run([docker_exe(), *a], capture_output=True, text=True)
+    exe = docker_exe()
+    # Docker Desktop's helpers (docker-credential-desktop…) sit beside it, and are looked up on the PATH.
+    env = dict(os.environ, PATH=os.path.dirname(exe) + os.pathsep + os.environ.get("PATH", ""))
+    r = subprocess.run([exe, *a], capture_output=True, text=True, env=env)
     if check and r.returncode != 0:
         raise RuntimeError(f"docker {a[0]}: {r.stderr.strip()}")
     return r.stdout
