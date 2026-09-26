@@ -7,7 +7,7 @@
 use std::fmt;
 
 /// Sent with every request, as public APIs like LRCLIB ask.
-pub const USER_AGENT: &str = "nori-music/0.1 (+https://github.com/filipton/nori-music)";
+pub const USER_AGENT: &str = "nori-music/0.1 (+https://github.com/filipton/nori)";
 
 /// What the platform says was wrong when a request did not come back. The platform only sorts its own
 /// exceptions into these; each client words them.
