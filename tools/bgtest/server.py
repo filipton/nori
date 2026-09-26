@@ -207,7 +207,7 @@ def start():
         print(f"  {NAME} already running")
     else:
         docker("rm", "-f", NAME, check=False)
-        docker("run", "-d", "--name", NAME, "--user", f"{os.getuid()}:{os.getgid()}", "-p", f"{PORT}:4533",
+        docker("run", "-d", "--name", NAME, "-p", f"{PORT}:4533",
                "-e", "ND_SCANNER_SCHEDULE=0", "-e", "ND_LOGLEVEL=warn", "-e", "ND_ENABLETRANSCODINGCONFIG=false",
                "-v", f"{MUSIC}:/music:ro", "-v", f"{VOLUME}:/data", IMAGE)
     base = f"http://localhost:{PORT}"
