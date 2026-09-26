@@ -6,6 +6,10 @@ hand. Versions follow [semantic versioning](https://semver.org).
 
 ## [Unreleased]
 
+### Breaking
+
+- To update from 0.3.x, install 0.4.0 first; later versions no longer bring over its servers, settings and downloads
+
 ## [0.4.0] - 2026-09-26
 
 The player is rewritten: playback, the queue, the library, lyrics and downloads now run in a Rust core
