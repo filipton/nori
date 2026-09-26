@@ -202,7 +202,8 @@ app/            the UI only: vm/ (ViewModels: the screens' state, asked of the c
                 and ui/ (Compose, draws state)
 tools/          dev-server.sh: a local Navidrome with generated music for testing (lying-proxy.py in front
                 of it for the e2e checks); smoke.sh, audio-e2e.sh, feature-e2e.sh: the device checks
-                (docs/testing.md)
+                (docs/testing.md); bgtest/: battery tests of Nori against other players on a real phone
+                (bgtest/README.md)
 ```
 
 Anything that decides how music plays or sounds - what is mixed, converted, skipped, how loud,
