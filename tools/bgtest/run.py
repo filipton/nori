@@ -120,21 +120,42 @@ def pair():
 
 
 def to_wifi(serial):
-    """Cable → adb over Wi-Fi (port 5555, until the phone restarts)."""
+    """Cable → adb over Wi-Fi (port 5555, until the phone restarts). Says why when it cannot."""
     ip = phone_ip(serial)
     if not ip:
-        sys.exit("the phone has no Wi-Fi address: connect it to Wi-Fi first")
+        sys.exit("the phone has no Wi-Fi address: connect it to Wi-Fi first (or run with --stay-plugged)")
+    print(f"  the phone's Wi-Fi address: {ip}", flush=True)
     adb("tcpip", "5555", serial=serial)
-    time.sleep(3)
     target = f"{ip}:5555"
-    for _ in range(10):
-        if "connected" in adb("connect", target):
-            break
-        time.sleep(1)
-    if target not in [d[0] for d in devices()]:
-        sys.exit(f"could not reach {target} over Wi-Fi")
-    print(f"  the phone answers over Wi-Fi at {target}")
-    return target
+    replies = []
+    for _ in range(20):
+        time.sleep(1.5)
+        out = adb("connect", target, timeout=10).strip()
+        replies.append(out)
+        if target in [d[0] for d in devices()]:
+            print(f"  the phone answers over Wi-Fi at {target}")
+            return target
+        if "unauthorized" in adb("devices"):
+            print("ACTION: allow USB debugging from this computer on the phone's screen", flush=True)
+    # Why: can this computer reach the phone at all?
+    ping = subprocess.run(["ping", "-c", "2", "-W", "2", ip], capture_output=True, text=True).returncode == 0
+    mine = ""
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect((ip, 9))
+        mine = s.getsockname()[0]
+        s.close()
+    except OSError:
+        pass
+    print(f"could not reach {target} over Wi-Fi. adb said: {replies[-1] if replies else '(nothing)'}")
+    print(f"  this computer {mine or '?'} → the phone {ip}: {'answers to ping' if ping else 'does NOT answer to ping'}")
+    if not ping:
+        print("  they are probably on different networks (another Wi-Fi, a VPN, a guest network that keeps")
+        print("  devices apart): put both on the same one")
+    else:
+        print("  the network is fine, so the phone's adb did not open port 5555: try again, or restart the phone")
+    sys.exit("or measure on the cable instead: tools/bgtest/run.py --stay-plugged (no real current then)")
 
 
 def wait_unplugged(serial, timeout=300):
