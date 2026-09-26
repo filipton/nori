@@ -219,6 +219,8 @@ def main():
     p.add_argument("--stay-plugged", action="store_true", help="measure on the cable / charger")
     p.add_argument("--unplug-timeout", type=int, default=300)
     p.add_argument("--server", choices=["local", "real"])
+    p.add_argument("--server-url", help="the local test server when it runs on another computer, e.g. "
+                   "http://192.168.1.38:4540 (remembered in build/bgtest/server/url)")
     p.add_argument("--plan", choices=["quick", "matrix"])
     p.add_argument("--runs", help="explicit runs, e.g. nori:eq,navic:offload,musly:default:cached")
     p.add_argument("--minutes", type=float)
@@ -318,7 +320,14 @@ def main():
 
     # ---- the server ----
     server = a.server or ["local", "real"][choose("Which music server?", ["local test server (tools/bgtest/server.py)", "the real one in ~/.music.pass"])]
+    if a.server_url:
+        # A test server on another computer (server.py runs where the music and Docker are).
+        os.makedirs(os.path.join(ROOT, "build", "bgtest", "server"), exist_ok=True)
+        open(os.path.join(ROOT, "build", "bgtest", "server", "url"), "w").write(a.server_url.rstrip("/") + "\n")
     if server == "local" and not server_up():
+        if not os.path.exists(os.path.expanduser("~/.music.pass")):
+            sys.exit("no local test server answers, and this computer cannot build one (no ~/.music.pass): point at the "
+                     "computer that runs it with --server-url http://<its address>:4540")
         print("starting the local test server…", flush=True)
         subprocess.run([sys.executable, os.path.join(HERE, "server.py")], check=True)
 
