@@ -182,9 +182,39 @@ def docker(*a, check=True):
     return r.stdout
 
 
+def have_docker():
+    import shutil
+    return shutil.which("docker") is not None
+
+
+PIDFILE = os.path.join(BASE, "navidrome.pid")
+
+
+def start_native():
+    """Navidrome run as it is installed (e.g. `brew install navidrome` on a Mac without Docker), in the
+    background, its pid kept for --stop."""
+    import shutil
+    exe = shutil.which("navidrome")
+    if not exe:
+        sys.exit("neither docker nor navidrome is installed (on a Mac: brew install navidrome)")
+    if os.path.exists(PIDFILE):
+        pid = open(PIDFILE).read().strip()
+        if pid.isdigit() and subprocess.run(["kill", "-0", pid], capture_output=True).returncode == 0:
+            print(f"  navidrome already running (pid {pid})")
+            return
+    env = dict(os.environ, ND_SCANNER_SCHEDULE="0", ND_LOGLEVEL="warn", ND_ENABLETRANSCODINGCONFIG="false")
+    log = open(os.path.join(BASE, "navidrome.log"), "a")
+    proc = subprocess.Popen([exe, "--musicfolder", MUSIC, "--datafolder", DATA, "--port", str(PORT), "--address", "0.0.0.0"],
+                            env=env, stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
+    open(PIDFILE, "w").write(str(proc.pid))
+    print(f"  navidrome started (pid {proc.pid}, log {BASE}/navidrome.log)")
+
+
 def start():
     os.makedirs(DATA, exist_ok=True)
-    if docker("ps", "-q", "-f", f"name=^{NAME}$").strip():
+    if not have_docker():
+        start_native()
+    elif docker("ps", "-q", "-f", f"name=^{NAME}$").strip():
         print(f"  {NAME} already running")
     else:
         docker("rm", "-f", NAME, check=False)
@@ -254,14 +284,28 @@ def main():
     p.add_argument("--stop", action="store_true")
     a = p.parse_args()
     if a.stop:
-        docker("rm", "-f", NAME, check=False)
-        print(f"{NAME} stopped")
+        if have_docker():
+            docker("rm", "-f", NAME, check=False)
+        if os.path.exists(PIDFILE):
+            subprocess.run(["kill", open(PIDFILE).read().strip()], capture_output=True)
+            os.remove(PIDFILE)
+        print("test server stopped")
         return
-    print("songs:")
-    originals = fetch(a.songs, a.source_playlist, a.extra_artist)
-    print("formats:")
-    groups = build(originals)
-    quick = build_quick()
+    if os.path.exists(os.path.expanduser("~/.music.pass")):
+        print("songs:")
+        originals = fetch(a.songs, a.source_playlist, a.extra_artist)
+        print("formats:")
+        groups = build(originals)
+        quick = build_quick()
+    elif all(os.path.isdir(os.path.join(MUSIC, g)) for g in list(SUFFIX) + [QUICK]):
+        # No real server here (no ~/.music.pass): the songs copied from a computer that built them
+        # (rsync its build/bgtest/server/music/ here) are served as they are.
+        print("songs: the ones already here (no ~/.music.pass to fetch more)")
+        groups = {g: sorted(os.listdir(os.path.join(MUSIC, g))) for g in SUFFIX}
+        quick = sorted(os.listdir(os.path.join(MUSIC, QUICK)))
+    else:
+        sys.exit(f"no songs in {MUSIC} and no ~/.music.pass to fetch them: copy build/bgtest/server/music/ from a "
+                 "computer that has them")
     print(f"  {sum(len(v) for v in groups.values()) + len(quick)} files in {len(groups) + 1} folders ({QUICK}: {len(quick)} clips)")
     print("server:")
     base = start()
