@@ -43,6 +43,8 @@ ORIG = os.path.join(BASE, "originals")
 MUSIC = os.path.join(BASE, "music")
 DATA = os.path.join(BASE, "data")
 NAME = "nori-bgtest-navidrome"
+# Pinned: 0.64.2 crashes (a nil pointer in its playlist covers) right after the playlists are made.
+IMAGE = "docker.io/deluan/navidrome:0.64.0"
 PORT = 4540
 LOCAL = ("admin", "admin")
 
@@ -201,7 +203,7 @@ def start():
         docker("rm", "-f", NAME, check=False)
         docker("run", "-d", "--name", NAME, "--user", f"{os.getuid()}:{os.getgid()}", "-p", f"{PORT}:4533",
                "-e", "ND_SCANNER_SCHEDULE=0", "-e", "ND_LOGLEVEL=warn", "-e", "ND_ENABLETRANSCODINGCONFIG=false",
-               "-v", f"{MUSIC}:/music:ro", "-v", f"{DATA}:/data", "docker.io/deluan/navidrome:latest")
+               "-v", f"{MUSIC}:/music:ro", "-v", f"{DATA}:/data", IMAGE)
     base = f"http://localhost:{PORT}"
     for _ in range(60):
         try:

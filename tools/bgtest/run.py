@@ -195,14 +195,20 @@ def whole_phone_drain(default=200.0):
 
 
 def server_up():
+    """Whether the test server answers: at its address, or on this computer's localhost when it runs
+    here (a Mac's terminal without the "Local Network" permission cannot reach even its own LAN address)."""
     f = os.path.join(ROOT, "build", "bgtest", "server", "url")
     if not os.path.exists(f):
         return False
-    try:
-        urllib.request.urlopen(open(f).read().strip() + "/ping", timeout=3)
-        return True
-    except Exception:
-        return False
+    url = open(f).read().strip()
+    port = url.rsplit(":", 1)[-1].split("/")[0]
+    for base in (url, f"http://localhost:{port}"):
+        try:
+            urllib.request.urlopen(base + "/ping", timeout=3)
+            return True
+        except Exception:
+            pass
+    return False
 
 
 PLANS = [
@@ -343,11 +349,18 @@ def main():
         os.makedirs(os.path.join(ROOT, "build", "bgtest", "server"), exist_ok=True)
         open(os.path.join(ROOT, "build", "bgtest", "server", "url"), "w").write(a.server_url.rstrip("/") + "\n")
     if server == "local" and not server_up():
-        if not os.path.exists(os.path.expanduser("~/.music.pass")):
-            sys.exit("no local test server answers, and this computer cannot build one (no ~/.music.pass): point at the "
-                     "computer that runs it with --server-url http://<its address>:4540")
-        print("starting the local test server…", flush=True)
-        subprocess.run([sys.executable, os.path.join(HERE, "server.py")], check=True)
+        # The test server's songs are here (built, or copied from another computer): start it again.
+        if os.path.isdir(os.path.join(ROOT, "build", "bgtest", "server", "music", "bg-quick")):
+            print("the test server does not answer: starting it…", flush=True)
+            subprocess.run([sys.executable, os.path.join(HERE, "server.py")], check=True)
+        elif not os.path.exists(os.path.expanduser("~/.music.pass")):
+            url_file = os.path.join(ROOT, "build", "bgtest", "server", "url")
+            where = open(url_file).read().strip() if os.path.exists(url_file) else "(none set)"
+            sys.exit(f"the test server {where} does not answer and could not be started here: start it with "
+                     "tools/bgtest/server.py on the computer that has its songs, or point at it with --server-url")
+        else:
+            print("starting the local test server…", flush=True)
+            subprocess.run([sys.executable, os.path.join(HERE, "server.py")], check=True)
 
     # ---- what to run ----
     if a.runs:
