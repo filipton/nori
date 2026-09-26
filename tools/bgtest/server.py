@@ -176,45 +176,26 @@ def build_quick(clip_s=60, rounds=2, fillers=3):
 
 
 def docker(*a, check=True):
-    r = subprocess.run(["docker", *a], capture_output=True, text=True)
+    r = subprocess.run([docker_exe(), *a], capture_output=True, text=True)
     if check and r.returncode != 0:
         raise RuntimeError(f"docker {a[0]}: {r.stderr.strip()}")
     return r.stdout
 
 
-def have_docker():
+def docker_exe():
+    """Docker, also where a shell without the user's PATH (ssh, cron) would not look: Docker Desktop puts
+    it in /usr/local/bin on a Mac."""
     import shutil
-    return shutil.which("docker") is not None
-
-
-PIDFILE = os.path.join(BASE, "navidrome.pid")
-
-
-def start_native():
-    """Navidrome run as it is installed (e.g. `brew install navidrome` on a Mac without Docker), in the
-    background, its pid kept for --stop."""
-    import shutil
-    exe = shutil.which("navidrome")
-    if not exe:
-        sys.exit("neither docker nor navidrome is installed (on a Mac: brew install navidrome)")
-    if os.path.exists(PIDFILE):
-        pid = open(PIDFILE).read().strip()
-        if pid.isdigit() and subprocess.run(["kill", "-0", pid], capture_output=True).returncode == 0:
-            print(f"  navidrome already running (pid {pid})")
-            return
-    env = dict(os.environ, ND_SCANNER_SCHEDULE="0", ND_LOGLEVEL="warn", ND_ENABLETRANSCODINGCONFIG="false")
-    log = open(os.path.join(BASE, "navidrome.log"), "a")
-    proc = subprocess.Popen([exe, "--musicfolder", MUSIC, "--datafolder", DATA, "--port", str(PORT), "--address", "0.0.0.0"],
-                            env=env, stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
-    open(PIDFILE, "w").write(str(proc.pid))
-    print(f"  navidrome started (pid {proc.pid}, log {BASE}/navidrome.log)")
+    for exe in (shutil.which("docker"), "/usr/local/bin/docker", "/opt/homebrew/bin/docker",
+                "/Applications/Docker.app/Contents/Resources/bin/docker"):
+        if exe and os.path.exists(exe):
+            return exe
+    sys.exit("docker is needed for the test server (Docker Desktop on a Mac): not found")
 
 
 def start():
     os.makedirs(DATA, exist_ok=True)
-    if not have_docker():
-        start_native()
-    elif docker("ps", "-q", "-f", f"name=^{NAME}$").strip():
+    if docker("ps", "-q", "-f", f"name=^{NAME}$").strip():
         print(f"  {NAME} already running")
     else:
         docker("rm", "-f", NAME, check=False)
@@ -284,11 +265,7 @@ def main():
     p.add_argument("--stop", action="store_true")
     a = p.parse_args()
     if a.stop:
-        if have_docker():
-            docker("rm", "-f", NAME, check=False)
-        if os.path.exists(PIDFILE):
-            subprocess.run(["kill", open(PIDFILE).read().strip()], capture_output=True)
-            os.remove(PIDFILE)
+        docker("rm", "-f", NAME, check=False)
         print("test server stopped")
         return
     if os.path.exists(os.path.expanduser("~/.music.pass")):
