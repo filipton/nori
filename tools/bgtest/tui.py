@@ -19,7 +19,7 @@ class Row:
         return self.kind != "head"
 
 
-def pick(devices, playlists, apps_variants, matrix, quick, batteries=None, drain_mah_h=200.0):
+def pick(devices, playlists, apps_variants, matrix, quick, batteries=None, drain_mah_h=200.0, last=None):
     """devices: [(serial, model, how)]; playlists: {server: [names]}; apps_variants: {app: [variants]};
     matrix / quick: [(app, variant, cached)]. Returns a dict of choices, or None when left."""
     rows = [Row("head", "Phone")]
@@ -80,7 +80,28 @@ def pick(devices, playlists, apps_variants, matrix, quick, batteries=None, drain
                 r.value = which(r.group)
 
     set_runs(lambda g: g in quick)
+    if last:
+        apply_last(rows, last)
     return curses.wrapper(_loop, rows, set_runs, matrix, quick, batteries or {}, drain_mah_h)
+
+
+def apply_last(rows, last):
+    """The choices of the last run (run.py keeps them in build/bgtest/last.json) put back where they
+    still exist: a phone, playlist or variant no longer offered is left at its default."""
+    for key in ("serial", "server", "nori_pkg"):
+        options = [r for r in rows if r.kind == "radio" and r.key == key]
+        if last.get(key) in [r.value[0] for r in options]:
+            for r in options:
+                r.value = (r.value[0], r.value[0] == last[key])
+    for r in rows:
+        if r.kind in ("check", "number") and r.key in last and r.key not in ("run", "playlist", "scenario"):
+            r.value = last[r.key]
+        elif r.key == "playlist" and "playlists" in last:
+            r.value = r.group in last["playlists"]
+        elif r.key == "scenario" and "scenarios" in last:
+            r.value = r.group in last["scenarios"]
+        elif r.key == "run" and "runs" in last:
+            r.value = list(r.group) in [list(x) for x in last["runs"]]
 
 
 def battery_line(serial, batteries, minutes_total, drain_mah_h, on_battery):

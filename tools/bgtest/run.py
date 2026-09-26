@@ -26,6 +26,7 @@ never waits for typing, taking the flag or the default and saying so:
 
 The last line is "RESULTS: <folder>" (results.md, runs.jsonl, each run's dumps).
 """
+import json
 import os
 import re
 import subprocess
@@ -226,6 +227,7 @@ def main():
     p.add_argument("--minutes", type=float)
     p.add_argument("--playlist", help="one or more, comma separated: every run once per playlist, e.g. bg-mp3,bg-quick")
     p.add_argument("--nori-pkg", help="dev.nori.music.perf (perf build, default) or dev.nori.music (a normal build)")
+    p.add_argument("--again", action="store_true", help="run exactly what the picker ran last time, without it")
     p.add_argument("--list-devices", action="store_true")
     p.add_argument("--repeat", type=int)
     p.add_argument("--skips", type=int)
@@ -236,7 +238,15 @@ def main():
     a = p.parse_args()
 
     devs = devices()
-    if INTERACTIVE and len(sys.argv) == 1:
+    last_file = os.path.join(ROOT, "build", "bgtest", "last.json")
+    last = None
+    try:
+        last = json.load(open(last_file))
+    except (OSError, ValueError):
+        pass
+    if a.again and not last:
+        sys.exit("nothing to run again: no run was picked yet (build/bgtest/last.json)")
+    if a.again or (INTERACTIVE and len(sys.argv) == 1):
         # No options in a terminal: everything is picked on one screen (tui.py).
         sys.path.insert(0, HERE)
         import tui
@@ -255,10 +265,18 @@ def main():
                 level = int(lv.group(1))
                 cap = int(cc.group(1)) / 1000 * 100 / level if cc and level else None
                 batteries[s] = (level, cap, plugged)
-        got = tui.pick(devs, playlists, {n: list(c.variants) for n, c in apps.items()}, MATRIX, quick,
-                       batteries, whole_phone_drain())
+        if a.again:
+            got = last
+            print("again: " + ", ".join(f"{k} {v}" for k, v in last.items() if k != "runs")
+                  + f", {len(last['runs'])} runs", flush=True)
+        else:
+            got = tui.pick(devs, playlists, {n: list(c.variants) for n, c in apps.items()}, MATRIX, quick,
+                           batteries, whole_phone_drain(), last)
         if not got:
             return 130
+        if got["serial"] != "pair":
+            os.makedirs(os.path.dirname(last_file), exist_ok=True)
+            json.dump({k: (list(v) if isinstance(v, tuple) else v) for k, v in got.items()}, open(last_file, "w"), indent=1)
         a.serial = pair() if got["serial"] == "pair" else got["serial"]
         a.wifi, a.stay_plugged = got["wifi"], not got["wifi"]
         a.server, a.playlist = got["server"], ",".join(got["playlists"])
