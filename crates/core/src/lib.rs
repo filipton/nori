@@ -28,8 +28,6 @@ pub mod library;
 pub mod stage;
 #[cfg(feature = "neural-beats")]
 pub mod beat_download;
-// Remove with migrate_034 once 0.3.4 users have updated (see its "How to delete this").
-pub mod migrate_034;
 
 use std::sync::Arc;
 

@@ -31,7 +31,6 @@ import dev.nori.music.settings.server
  */
 @OptIn(UnstableApi::class)
 class Nori private constructor(private val context: Context) {
-    init { dev.nori.music.ffi.migrate034(context.filesDir.path) } // Remove with migrate_034 once 0.3.4 users have updated
     val settings = Settings(context)
 
     // Everything below is built on first use. The application warms it up from a background thread, so by the

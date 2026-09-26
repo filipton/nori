@@ -1,8 +1,0 @@
-<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
-<map>
-    <set name="quiet">
-        <string>Bluetooth: Car kit</string>
-        <string>USB: Old &amp; loud DAC</string>
-    </set>
-    <string name="looseSound">{&quot;eqEnabled&quot;:false}</string>
-</map>
