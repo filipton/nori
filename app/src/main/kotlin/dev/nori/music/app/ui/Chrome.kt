@@ -9,6 +9,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.Column
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
@@ -137,17 +141,72 @@ fun TabBar(route: String?, tabs: List<Tab>, onTab: (String) -> Unit, look: Look,
                     Arrangement.SpaceEvenly, Alignment.CenterVertically,
                 ) { rest.forEach { t -> TabButton(t, selected = route == t.route, content = content, accent = accent) { onTab(t.route) } } }
             }
-            if (search != null) Surface(
-                onClick = { onTab(search.route) }, shape = CircleShape, color = slab, shadowElevation = 12.dp,
-                border = androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp.Hairline, edge),
-                modifier = Modifier.size(58.dp).semantics { contentDescription = search.label },
-            ) {
-                Box(Modifier.fillMaxSize(), Alignment.Center) {
-                    Icon(search.icon, null, Modifier.size(25.dp), tint = if (route == search.route) accent else content)
-                }
-            }
+            if (search != null) SearchCircle(search, route == search.route, slab, content, edge, accent) { onTab(search.route) }
         }
         Spacer(Modifier.navigationBarsPadding())
+    }
+}
+
+/**
+ * A window wider than it is tall and short with it - a phone on its side - where the app lays itself out
+ * across rather than down: the tabs on a rail, the player and the cover pages in two halves. Decided by
+ * the window's size, not by which way the phone is held, so a tablet or an unfolded phone gets what fits.
+ */
+val LocalWide = androidx.compose.runtime.compositionLocalOf { false }
+
+/** Whether a window of this size is laid out across ([LocalWide]). */
+fun isWide(widthDp: Int, heightDp: Int): Boolean = widthDp > heightDp && heightDp < 600
+
+/** Search, on its own round slab beside the tabs (or under them, on the rail): the same in both. */
+@Composable
+private fun SearchCircle(search: Tab, selected: Boolean, slab: Color, content: Color, edge: Color, accent: Color, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick, shape = CircleShape, color = slab, shadowElevation = 12.dp,
+        border = androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp.Hairline, edge),
+        modifier = Modifier.size(58.dp).semantics { contentDescription = search.label },
+    ) {
+        Box(Modifier.fillMaxSize(), Alignment.Center) {
+            Icon(search.icon, null, Modifier.size(25.dp), tint = if (selected) accent else content)
+        }
+    }
+}
+
+/**
+ * The tabs on a wide, short window (a phone on its side): [TabBar] stood on end at the left edge - the same
+ * floating pill of tabs, and Search on its own circle under it - so the page keeps its height, which a bar
+ * across the bottom took almost half of. It slides out to the left as the player opens, as the bar slides
+ * down. [onWidth]: how much of the left edge it takes, which the page leaves to it.
+ */
+@Composable
+fun TabRail(route: String?, tabs: List<Tab>, onTab: (String) -> Unit, look: Look, player: PlayerViewModel, onWidth: (androidx.compose.ui.unit.Dp) -> Unit) {
+    val slab = look.color(CoverLook.CHROME_SLAB)
+    val content = look.color(CoverLook.CHROME_CONTENT)
+    val edge = look.color(CoverLook.CHROME_EDGE)
+    val accent = rememberTabAccent(player, slab, content)
+    val search = tabs.firstOrNull { it.route == "search" }
+    val rest = tabs.filter { it.route != "search" }
+    val sheet = LocalPlayerSheet.current
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    Column(
+        Modifier
+            .windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.safeDrawing.only(androidx.compose.foundation.layout.WindowInsetsSides.Start + androidx.compose.foundation.layout.WindowInsetsSides.Vertical))
+            .onGloballyPositioned { onWidth(with(density) { (it.boundsInRoot().right).toDp() }) }
+            .graphicsLayer {
+                val t = (sheet.progress.value / 0.7f).coerceIn(0f, 1f)
+                translationX = -t * (size.width + 12.dp.toPx())
+            }
+            .padding(start = 10.dp, end = 4.dp),
+        Arrangement.spacedBy(10.dp, Alignment.CenterVertically), Alignment.CenterHorizontally,
+    ) {
+        Surface(
+            shape = PillShape, color = slab, contentColor = content, shadowElevation = 12.dp,
+            border = androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp.Hairline, edge),
+        ) {
+            Column(Modifier.padding(horizontal = 5.dp, vertical = 6.dp), Arrangement.spacedBy(2.dp), Alignment.CenterHorizontally) {
+                rest.forEach { t -> TabButton(t, selected = route == t.route, content = content, accent = accent, narrow = true) { onTab(t.route) } }
+            }
+        }
+        if (search != null) SearchCircle(search, route == search.route, slab, content, edge, accent) { onTab(search.route) }
     }
 }
 
@@ -224,7 +283,7 @@ private fun rememberTabAccent(player: PlayerViewModel, slab: Color, content: Col
 data class Tab(val route: String, val label: String, val icon: ImageVector)
 
 @Composable
-private fun TabButton(tab: Tab, selected: Boolean, content: Color, accent: Color, onClick: () -> Unit) {
+private fun TabButton(tab: Tab, selected: Boolean, content: Color, accent: Color, narrow: Boolean = false, onClick: () -> Unit) {
     // Apple marks the current tab twice over: the accent colour on the glyph, and a plain lighter patch
     // behind it - light grey on their white bar, so the equivalent here is a little of the bar's own
     // text colour. Tinting that patch with the accent is what made it read as a Material pill.
@@ -236,7 +295,7 @@ private fun TabButton(tab: Tab, selected: Boolean, content: Color, accent: Color
     Column(
         Modifier.clip(RoundedCornerShape(14.dp))
             .clickable(interactionSource = press, indication = null, onClick = onClick)
-            .padding(horizontal = 18.dp, vertical = 7.dp)
+            .padding(horizontal = if (narrow) 8.dp else 18.dp, vertical = 7.dp)
             .semantics { contentDescription = tab.label },
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {

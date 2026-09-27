@@ -38,6 +38,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -273,6 +274,11 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             // Screens keep the last row reachable by adding LocalChromeInset to their content padding.
             var chromeHeight by remember { mutableStateOf(0.dp) }
             var tabsHeight by remember { mutableStateOf(0.dp) }
+            // On its side the tabs stand on a rail at the left edge (TabRail), and the page gives it that edge.
+            val config = androidx.compose.ui.platform.LocalConfiguration.current
+            val wide = isWide(config.screenWidthDp, config.screenHeightDp)
+            var railWidth by remember { mutableStateOf(0.dp) }
+            val railInset = if (wide) railWidth else 0.dp
             val density = androidx.compose.ui.platform.LocalDensity.current
             // One look for both halves of the chrome, cross-fading once when the page under it changes.
             val chromeLook = rememberChromeLook()
@@ -284,8 +290,10 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             Box(Modifier.fillMaxSize().onGloballyPositioned { sheet.rootHeight = it.size.height.toFloat() }) {
               // Everything under the player. Once the player covers it completely it is not drawn at all:
               // a layer at zero alpha is skipped, so a page left animating underneath costs nothing.
+              CompositionLocalProvider(LocalWide provides wide) {
               Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (sheet.progress.value >= 1f) 0f else 1f }) {
               CompositionLocalProvider(LocalStarMarks provides marks, LocalChromeInset provides chromeHeight) {
+              Box(Modifier.fillMaxSize().padding(start = railInset)) {
                 // One transition for the whole app, and the same one in both directions. See PageMotion.
                 val plain = reduceMotion()
                 NavHost(
@@ -326,20 +334,23 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
                 // player covers it. See UpdateBanner.
                 UpdateBanner(settings, Modifier.align(Alignment.TopCenter))
               }
+              }
               Box(
-                  Modifier.align(Alignment.BottomCenter)
+                  Modifier.align(Alignment.BottomCenter).padding(start = railInset)
                       .onGloballyPositioned { chromeHeight = with(density) { it.size.height.toDp() } },
               ) {
                   // The now playing bar has a heart now, and it reads the stars the user has just
                   // changed from here like every other one. Outside this, it saw only the server's
                   // answer, so a tap on it changed nothing until the song came round again.
-                  CompositionLocalProvider(LocalStarMarks provides marks) { BottomChrome(player, actions, nav::player, tabsHeight, chromeLook) }
+                  CompositionLocalProvider(LocalStarMarks provides marks) { BottomChrome(player, actions, nav::player, if (wide) 0.dp else tabsHeight, chromeLook) }
               }
               }
               PlayerLayer(sheet) { CompositionLocalProvider(LocalStarMarks provides marks) { PlayerScreen(player, actions) } }
               // The tab bar is over the player, not under it: as the player rises it slides down off the
               // screen instead of vanishing under the sheet in one frame. See BottomChrome.
-              Box(Modifier.align(Alignment.BottomCenter)) { TabBar(tabRoute, tabs, nav::tab, chromeLook, player) { tabsHeight = it } }
+              if (wide) Box(Modifier.align(Alignment.CenterStart).fillMaxHeight()) { TabRail(tabRoute, tabs, nav::tab, chromeLook, player) { railWidth = it } }
+              else Box(Modifier.align(Alignment.BottomCenter)) { TabBar(tabRoute, tabs, nav::tab, chromeLook, player) { tabsHeight = it } }
+              }
               // Top: less in the way of the now-playing bar; swipe or the X dismisses.
               SnackbarHost(
                   snackbar,
