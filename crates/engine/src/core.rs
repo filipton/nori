@@ -1192,7 +1192,9 @@ pub fn settings(s: &StoredPrefs) -> Settings {
         skip_silence: s.skip_silence,
         fade_ms: s.fade_ms,
         hi_res: s.hi_res,
-        max_rate: s.max_rate.hz(),
+        // Asked for bit-perfect, a DAC gets each song at its own rate: a maximum would choose a rate the DAC
+        // has no bit-perfect mode at (and the device's own profile holds both, so the speaker keeps its own).
+        max_rate: if s.bit_perfect { 0 } else { s.max_rate.hz() },
         offload: s.offload,
         crossfade_s: s.crossfade_sec,
         auto_mix: s.auto_mix,
@@ -1225,6 +1227,13 @@ mod tests {
         assert!(off.graphic.is_empty() && off.bands.is_empty() && !off.on());
         let fx = settings(&StoredPrefs { volume_boost_db: 4.0, compressor: true, ..StoredPrefs::default() }).sound;
         assert!(fx.on() && fx.effects.boost_db == 4.0 && fx.effects.compressor.is_some() && fx.effects.guard());
+    }
+
+    #[test]
+    fn bit_perfect_is_not_held_to_the_highest_rate() {
+        use nori_core::settings::MaxRate;
+        assert_eq!(settings(&StoredPrefs { max_rate: MaxRate::Khz48, ..StoredPrefs::default() }).max_rate, 48_000);
+        assert_eq!(settings(&StoredPrefs { max_rate: MaxRate::Khz48, bit_perfect: true, ..StoredPrefs::default() }).max_rate, 0);
     }
 
     #[test]
