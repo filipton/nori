@@ -6,6 +6,21 @@ hand. Versions follow [semantic versioning](https://semver.org).
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-09-27
+
+### Added
+
+- **cli:** TUI rewritten as a desktop music player: sidebar, pages, panel, player bar, equalizer console, card covers; late terminal replies over ssh no longer taken as keys
+- Playlist descriptions can be turned off, and the server's auto-import notes are hidden
+- Album and playlist pages share one keep-the-cover's-colours choice with a black background
+- Home's menu shuffles songs or whole albums instead of one shuffle everything
+- The app icon's shortcuts open Search or shuffle songs or albums
+
+### Fixed
+
+- The app and the terminal client use American spelling (color, favorite, license, analyze)
+- A shuffle keeps going the way it started, random songs or whole albums, whatever autoplay adds
+
 ## [0.4.2] - 2026-09-27
 
 ### Added
