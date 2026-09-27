@@ -165,15 +165,15 @@ crates/cli/     Rust, desktop: nori-cli, the reference terminal client and the p
                 due), settings_view.rs the schema's rows, tests.rs the screens in a TestBackend.
                 `--script` (or `--search`, `--play`, `--wav`) is the old non-interactive player
                 (script.rs): `--download`, `--offline`, `--replay-gain`, `--hi-res`, `--mpris`.
-crates/desktop/ Rust, desktop: nori-desktop, a native window (Slint over winit, drawn by Skia on the GPU: Metal
-                on macOS, Vulkan or OpenGL on Linux) laid out as Apple Music is on macOS 26/27: the sidebar
-                full height from the window's edge over the system's sidebar material (NSVisualEffectView,
-                glass.rs; the sidebar's rows are drawn, only the material is AppKit's), the page on a near-black ground, the player as a capsule floating over the page's
-                bottom (on macOS a borderless child window of its own, PlayerBar, over the system's Liquid Glass,
-                NSGlassEffectView, so the page scrolls under real glass), Playing Next as an inspector, Now Playing over the whole window on the song's wash
-                (nori-look), and album and artist pages that dissolve their picture into the page. SF Pro on macOS,
-                the native menu bar and its shortcuts. ui/app.slint draws; app.rs is the state on Slint's event
-                loop (the engine's events and the workers' answers arrive there through
+crates/desktop/ Rust, desktop: nori-desktop, laid out as Apple Music is on the Mac. It draws its own window
+                (compositor.rs): a Slint platform of its own over winit, each part of the interface (the page, the
+                sidebar's rows, the player's controls: AppWindow, SidebarWindow, PlayerBar) rendered offscreen by
+                Skia into a wgpu texture on one GPU device (Metal on macOS, Vulkan or GL on Linux), and put
+                together by our shaders (glass.wgsl): where the sidebar and the player are, the page is seen
+                through Liquid Glass of our own (blurred, tinted, bent at the rim, the colours beside it washing
+                in). The pointer goes to the layer under it, the keys to the page; nothing is drawn unless a layer
+                asked to be. The menu bar is macOS's own through muda (menu.rs). ui/app.slint draws; app.rs is the
+                state on the event loop (the engine's events and the workers' answers arrive through
                 `slint::invoke_from_event_loop`); session.rs is the terminal's backend.rs cut to what the window
                 uses; words.rs its English. Shares its data directory with nori-cli.
                 `cargo run --release -p nori-desktop`.

@@ -18,22 +18,21 @@ nori-mpris = { path = "../mpris" }
 nori-covers = { path = "../covers" }
 nori-look = { path = "../look" }
 parking_lot = "0.12"
-# The window: Slint over winit, drawn by Skia on the GPU through wgpu - Metal on macOS, Vulkan (or OpenGL)
-# on Linux, X11 and Wayland. No femtovg. `unstable-winit-030` is for the window's attributes (a transparent,
-# full-size content view on macOS) and the system blur behind it. GPL-3.0, royalty-free or commercial
-# licences, as Slint offers them.
-slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-skia", "accessibility", "unstable-winit-030"] }
+# The interface: Slint, each part drawn offscreen by Skia on the GPU (wgpu: Metal on macOS, Vulkan or GL on
+# Linux) and put together by our own compositor. GPL-3.0, royalty-free or commercial licences, as Slint
+# offers them.
+slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "renderer-skia", "unstable-wgpu-30"] }
+# Our own window (compositor.rs): winit for the window and its events, wgpu (Slint's, through the feature above)
+# to put the layers together, pollster to wait on the GPU's setup, arboard for copy and paste.
+winit = "0.30"
+# The same wgpu Slint draws with; only so our shaders can be written in WGSL.
+wgpu = { version = "30", default-features = false, features = ["wgsl"] }
+pollster = "0.4"
+arboard = { version = "3", default-features = false }
 
-# The glass behind the window on macOS: the system's own blur (NSVisualEffectView), as Apple's apps have it,
-# put beside the view Skia draws into rather than over it (glass.rs). The versions winit already brings.
+# The menu bar, macOS's own.
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSView", "NSVisualEffectView", "NSGraphics", "NSWindow", "NSGlassEffectView", "NSColor", "NSButton", "NSControl"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry"] }
-objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "CALayer", "CAShapeLayer"] }
-objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGPath"] }
-objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
-raw-window-handle = "0.6"
+muda = { version = "0.19", default-features = false }
 
 [build-dependencies]
 slint-build = "1.18"

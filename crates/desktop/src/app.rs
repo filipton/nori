@@ -175,9 +175,6 @@ pub struct App {
 /// The player window, on macOS: its buttons do what the main window's do, and it is put over the page once
 /// both windows exist.
 fn player(ui: &AppWindow) -> Option<PlayerBar> {
-    if !cfg!(target_os = "macos") {
-        return None;
-    }
     let bar = PlayerBar::new().map_err(|e| eprintln!("nori: no player window: {e}")).ok()?;
     ui.set_native_player(true);
     bar.set_font(ui.get_font());
@@ -221,22 +218,12 @@ fn player(ui: &AppWindow) -> Option<PlayerBar> {
             m.invoke_player_changed();
         }
     });
-    if let Err(e) = bar.show() {
-        eprintln!("nori: no player window: {e}");
-        ui.set_native_player(false);
-        return None;
-    }
-    crate::glass::attach_player(ui.as_weak(), bar.as_weak());
     Some(bar)
 }
 
 /// The sidebar window, on macOS: its rows do what the main window's do; its view is moved into the system's
 /// glass over the page once both windows exist.
-#[allow(dead_code)]
 fn sidebar(ui: &AppWindow) -> Option<SidebarWindow> {
-    if !cfg!(target_os = "macos") {
-        return None;
-    }
     let side = SidebarWindow::new().map_err(|e| eprintln!("nori: no glass sidebar: {e}")).ok()?;
     side.set_font(ui.get_font());
     side.set_inset_top(ui.get_inset_top());
@@ -265,11 +252,7 @@ fn sidebar(ui: &AppWindow) -> Option<SidebarWindow> {
             m.invoke_zoom_window();
         }
     });
-    if let Err(e) = side.show() {
-        eprintln!("nori: no glass sidebar: {e}");
-        return None;
-    }
-    crate::glass::attach_sidebar(ui.as_weak(), side.as_weak());
+    ui.set_native_sidebar(true);
     Some(side)
 }
 
@@ -298,10 +281,8 @@ pub fn start(ui: &AppWindow, data: PathBuf) {
         want: None,
         shelves,
         backdrop: None,
+        sidebar: sidebar(ui),
         player: player(ui),
-        // The sidebar on the system's glass stays off: a child window over the sidebar is shortened and
-        // moved by AppKit, and its rows jump. The page draws the sidebar until the glass is our own.
-        sidebar: None,
         tickets: VecDeque::new(),
         tick: Timer::default(),
         tick_ms: 0,
@@ -312,11 +293,44 @@ pub fn start(ui: &AppWindow, data: PathBuf) {
         search: Timer::default(),
     };
     APP.with(|a| *a.borrow_mut() = Some(app));
+    // The compositor draws the page with the sidebar and the player on glass over it.
+    with(|a| crate::compositor::roles(ui.window(), a.sidebar.as_ref().map(|s| s.window()), a.player.as_ref().map(|p| p.window())));
+    menu_actions(ui);
     let prefs = settings_store::settings_current().unwrap_or_default();
     match prefs.servers.iter().find(|s| s.id == prefs.active_server_id).cloned() {
         Some(p) => with(|app| app.open(p)),
         None => ui.set_view(LOGIN),
     }
+}
+
+/// What the menu bar's items do: the same as the window's own buttons and keys.
+fn menu_actions(ui: &AppWindow) {
+    let on = |id: &str, f: fn(&AppWindow)| {
+        let main = ui.as_weak();
+        crate::menu::action(id, move || {
+            if let Some(m) = main.upgrade() {
+                f(&m);
+            }
+        });
+    };
+    on("toggle", |m| m.invoke_toggle());
+    on("next", |m| m.invoke_next());
+    on("previous", |m| m.invoke_previous());
+    on("shuffle", |m| m.invoke_toggle_shuffle());
+    on("repeat", |m| m.invoke_cycle_repeat());
+    on("home", |m| m.invoke_go(HOME));
+    on("albums", |m| m.invoke_go(ALBUMS));
+    on("artists", |m| m.invoke_go(ARTISTS));
+    on("songs", |m| m.invoke_go(SONGS));
+    on("search", |m| m.invoke_go(SEARCH));
+    on("settings", |m| m.invoke_go(SETTINGS));
+    on("queue", |m| m.set_inspector(if m.get_inspector() == 1 { 0 } else { 1 }));
+    on("lyrics", |m| m.set_inspector(if m.get_inspector() == 2 { 0 } else { 2 }));
+    on("full", |m| {
+        if m.get_has_song() {
+            m.set_full_player(!m.get_full_player());
+        }
+    });
 }
 
 /// The window closed: the queue kept, the engine stopped.
@@ -406,10 +420,8 @@ fn wire(ui: &AppWindow) {
         });
         lyrics_after_seek();
     });
-    let weak = ui.as_weak();
-    ui.on_drag_window(move || crate::glass::drag(&weak));
-    let weak = ui.as_weak();
-    ui.on_zoom_window(move || crate::glass::zoom(&weak));
+    ui.on_drag_window(crate::compositor::drag_window);
+    ui.on_zoom_window(crate::compositor::zoom_window);
     ui.on_page_moved(|| with(|a| a.place_player()));
     ui.on_player_changed(|| {
         with(|a| {
@@ -970,12 +982,7 @@ impl App {
     fn place_player(&self) {
         let ui = self.ui();
         let shown = !ui.get_full_player() && ui.get_view() != LOGIN;
-        if let Some(p) = &self.player {
-            crate::glass::place_player(&ui, p, shown);
-        }
-        if let Some(sd) = &self.sidebar {
-            crate::glass::place_sidebar(&ui, sd, shown);
-        }
+        crate::compositor::show_glass(shown && self.sidebar.is_some(), shown && self.player.is_some());
     }
 
     /// The lyrics' clock asked where the music is: the line lit, and when to look again.

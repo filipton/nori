@@ -5,8 +5,10 @@
 //! Everything a player decides is the core's and nori-engine's; this crate only draws and forwards clicks.
 
 mod app;
+mod compositor;
 mod glass;
 mod lyrics;
+mod menu;
 mod session;
 mod settings;
 mod words;
@@ -58,10 +60,9 @@ fn main() -> Result<(), String> {
         prefs.active_server_id = id;
         nori_core::settings_store::settings_put(prefs);
     }
-    glass::backend()?;
+    compositor::install()?;
     let ui = AppWindow::new().map_err(|e| e.to_string())?;
     glass::dress(&ui);
-    glass::blur(&ui);
     app::start(&ui, data);
     let r = ui.run().map_err(|e| e.to_string());
     app::stop();

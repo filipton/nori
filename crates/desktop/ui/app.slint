@@ -1162,83 +1162,6 @@ export component AppWindow inherits Window {
         return floor(s / 60) + ":" + (mod(s, 60) < 10 ? "0" : "") + mod(s, 60);
     }
 
-    // The menu bar, native on macOS; its shortcuts are the player's keys.
-    MenuBar {
-        Menu {
-            title: "Controls";
-            MenuItem {
-                title: "Play/Pause";
-                shortcut: @keys(Control + "p");
-                activated => { root.toggle(); }
-            }
-            MenuItem {
-                title: "Next";
-                shortcut: @keys(Control + RightArrow);
-                activated => { root.next(); }
-            }
-            MenuItem {
-                title: "Previous";
-                shortcut: @keys(Control + LeftArrow);
-                activated => { root.previous(); }
-            }
-            MenuItem {
-                title: "Shuffle";
-                activated => { root.toggle-shuffle(); }
-            }
-            MenuItem {
-                title: "Repeat";
-                activated => { root.cycle-repeat(); }
-            }
-        }
-        Menu {
-            title: "View";
-            MenuItem {
-                title: "Home";
-                shortcut: @keys(Control + "1");
-                activated => { root.go(0); }
-            }
-            MenuItem {
-                title: "Albums";
-                shortcut: @keys(Control + "2");
-                activated => { root.go(2); }
-            }
-            MenuItem {
-                title: "Artists";
-                shortcut: @keys(Control + "3");
-                activated => { root.go(3); }
-            }
-            MenuItem {
-                title: "Songs";
-                shortcut: @keys(Control + "4");
-                activated => { root.go(5); }
-            }
-            MenuItem {
-                title: "Search";
-                shortcut: @keys(Control + "f");
-                activated => { root.go(1); }
-            }
-            MenuItem {
-                title: "Settings…";
-                shortcut: @keys(Control + ",");
-                activated => { root.go(8); }
-            }
-            MenuItem {
-                title: "Playing Next";
-                shortcut: @keys(Control + "u");
-                activated => { root.inspector = root.inspector == 1 ? 0 : 1; }
-            }
-            MenuItem {
-                title: "Lyrics";
-                shortcut: @keys(Control + "l");
-                activated => { root.inspector = root.inspector == 2 ? 0 : 2; }
-            }
-            MenuItem {
-                title: "Now Playing";
-                shortcut: @keys(Control + Shift + "f");
-                activated => { root.full-player = !root.full-player; }
-            }
-        }
-    }
 
     // The keys Music answers to without a menu: space plays and pauses, the arrows seek, escape leaves
     // Now Playing. A text field that has the keys keeps them.
@@ -2347,10 +2270,6 @@ export component PlayerBar inherits Window {
 export component SidebarWindow inherits Window {
     title: "nori sidebar";
     no-frame: true;
-    // Whatever height the main window has: the layout would otherwise cap the window at its own.
-    min-height: 100px;
-    max-height: 100000px;
-    max-width: 100000px;
     // A pane of its own over any page, as Music's sidebar is: a slight shade over the glass, and a hairline
     // where the page starts.
     Rectangle {
