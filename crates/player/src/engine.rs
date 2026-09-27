@@ -1503,16 +1503,19 @@ impl<C: Clone> TransitionEngine<C> {
         // That clock runs in the incoming song's time, which a stretched mix moves on faster (or slower)
         // than the ending is heard: the time since the mix began is the incoming song's over its tempo.
         let pace = self.heard.next_rate.max(0.01) as f64;
-        let taking_over = self.shift_us == 0
-            && self.mix_from_us != TIME_UNSET
-            && self.held_from_us != TIME_UNSET
-            && at >= self.mix_from_us
-            && at < self.mix_from_us + (self.takeover_us as f64 * pace) as i64;
+        let incoming_below = self.shift_us == 0 && self.mix_from_us != TIME_UNSET && self.held_from_us != TIME_UNSET && at >= self.mix_from_us;
+        let taking_over = incoming_below && at < self.mix_from_us + (self.takeover_us as f64 * pace) as i64;
         match &self.held_id {
             Some(id) if self.reported > ear + 20_000 || taking_over => {
                 let start = (self.held_from_us != TIME_UNSET).then(|| self.held_from_us - self.held_offset_us);
+                // Once the clock below is the incoming song's, the ending's place is only ever the mix's start
+                // plus the time since, never that clock read as the ending's own: an output's clock read a few
+                // tens of milliseconds back (a phone's corrects itself now and then) left what was reported
+                // ahead of the ear, and the incoming song's place taken for the ending's put the ear past the
+                // takeover at once - the page on the next song seconds before it was the louder, standing
+                // still where the ear was to land in it until the takeover really came.
                 self.heard.us = match start {
-                    Some(start) if taking_over && self.reported <= ear + 20_000 => start + ((at - self.mix_from_us) as f64 / pace) as i64,
+                    Some(start) if incoming_below => start + ((at - self.mix_from_us) as f64 / pace) as i64,
                     _ => ear - self.held_offset_us,
                 };
                 self.heard.until_us = start.map_or(i64::MAX, |start| start + self.takeover_us);

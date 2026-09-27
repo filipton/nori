@@ -44,6 +44,8 @@ nori-core = { path = "../core", default-features = false, optional = true }
 [dev-dependencies]
 nori-testdir = { path = "../testdir" }
 nori-player = { path = "../player", features = ["synth"] }
+# tests/stretch.rs: the lyrics page's clock, read through a stretched mix as a screen reads it.
+nori-look = { path = "../look" }
 # tests/core.rs: a transport for the core that is never asked.
 async-trait = "0.1"
 

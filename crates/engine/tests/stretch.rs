@@ -342,3 +342,85 @@ fn a_seek_into_a_stretched_mix_says_the_place_heard_through_it_and_after() {
 fn at_a_speed_of_its_own_the_place_said_through_a_stretched_mix_is_the_place_heard() {
     walk(MIX_AT_MS - 5_000, 1.25, None);
 }
+
+/// The lyrics page through the mix, read as a phone's screen reads it: every display frame, the engine's
+/// last reading run on at its pace (`nori_player::heard::screen_place`), a fresh one asked for once that is
+/// a second old, and the bar's place (`Playhead`) handed to the lyrics' clock. Two seconds into the mix,
+/// while the ending is still the louder, the output's clock is read 60 ms back for a moment, as a phone's
+/// is now and then when its output corrects itself. That was the report's 22 s mix: the page went over to
+/// the incoming song at the wobble, long before it was the louder, its place stood still where the ear was
+/// to land in it, and the screen's place ran on from there and was pulled back to it every few seconds -
+/// the first line filling in word by word, going back and filling again, until the song got there.
+#[test]
+fn a_clock_read_back_a_little_in_a_stretched_mix_puts_neither_the_song_nor_its_lyrics_back() {
+    use nori_look::lyrics::{Line, LyricClock, LyricTiming, Word};
+    use nori_player::heard::{screen_place, HeardTracker, Playhead, Seen};
+
+    let rig = Rig::start(MIX_AT_MS - 5_000, 1.0);
+    let now = || rig.time.clock.now_ns() / 1_000_000;
+    // The ear takes `b` over near 10.7 s into it; its first line comes a little over a second later, four
+    // words over two seconds, and the next four seconds after that.
+    let line = |start_ms: i64| Line {
+        start_ms,
+        end_ms: start_ms + 2_000,
+        len: 19,
+        words: (0..4u32).map(|k| Word { start_ms: start_ms + k as i64 * 500, end_ms: start_ms + (k as i64 + 1) * 500, start: k * 5, end: k * 5 + 4 }).collect(),
+        ..Line::default()
+    };
+    let lyrics = LyricClock::new(LyricTiming::new(true, true, [line(12_000), line(16_000)]), 0);
+    let (tracker, mut head) = (HeardTracker::new(), Playhead::new());
+    // The engine's last reading: when it was taken on the test's clock, the song, the place and its pace.
+    let mut last_at = None;
+    let (mut read_at, mut index, mut reading, mut pace) = (0i64, None, 0i64, 1.0f32);
+    let mut placed: Option<i64> = None;
+    let mut shown: Option<(i32, f32)> = None;
+    let (mut fills, mut fails, mut log) = (0, Vec::new(), Vec::new());
+    let mix_at = now() + 5_000;
+    while now() < mix_at + 25_000 {
+        // Before the takeover, and again after it with the mix still heard.
+        let wobble = [2_000, 9_000].iter().any(|&at| (mix_at + at..mix_at + at + 200).contains(&now()));
+        rig.card.pull.lock().latency_us = if wobble { 60_000 } else { 0 };
+        rig.run(16);
+        let t = now();
+        if t - read_at >= 1_000 || wobble {
+            rig.engine.look();
+            rig.time.clock.settle();
+        }
+        let s = rig.engine.status();
+        if Some(s.at) != last_at {
+            last_at = Some(s.at);
+            (read_at, index, reading, pace) = (t, s.index, s.position_ms, s.pace);
+            if index == Some(1) {
+                if let Some(truth) = rig.truth() {
+                    if (reading as f64 - truth).abs() > 100.0 {
+                        fails.push(format!("{t} ms: {reading} ms said in b, {truth:.0} ms heard"));
+                    }
+                }
+            }
+        }
+        let (place, _) = screen_place(reading, t - read_at, pace, true);
+        let place = head.show_for(&tracker, Seen { index: None, ms: place, changed: false }, index, t, index, place, true);
+        if index != Some(1) {
+            continue;
+        }
+        if let Some(before) = placed.filter(|&before| place < before) {
+            fails.push(format!("{t} ms: the place in b went back from {before} to {place} ms"));
+        }
+        placed = Some(place);
+        let f = lyrics.advance(place, true, true, false).frame;
+        log.push(format!("{t} ms: b at {place} ms (said {reading}), line {} sung {:.2}", f.active, f.sung));
+        if let Some((line, sung)) = shown {
+            if f.active < line || (f.active == line && f.sung < sung - 1e-3) {
+                fails.push(format!("{t} ms: the lyrics went back from line {line} sung {sung:.2} to line {} sung {:.2}", f.active, f.sung));
+            }
+        }
+        if f.active == 0 && f.sung > 0.0 && shown.is_none_or(|(line, sung)| line != 0 || sung == 0.0) {
+            fills += 1;
+        }
+        shown = Some((f.active, f.sung));
+    }
+    let log = log.join("\n");
+    assert!(shown.is_some_and(|(line, _)| line >= 1), "b's lyrics were followed to their second line\n{log}");
+    assert!(fails.is_empty(), "{}\n{log}", fails.join("\n"));
+    assert_eq!(fills, 1, "the first line filled in once\n{log}");
+}

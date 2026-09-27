@@ -19,6 +19,10 @@ pub struct Pull {
     pub dry: u64,
     /// The device took no more music, as a dead one does, until it is opened again.
     dead: bool,
+    /// How long a sample pulled now takes to be heard, as the device says it, µs. A phone's output
+    /// corrects what it says as it goes, now and then by some tens of milliseconds either way: a test
+    /// moves this to read the clock below the engine a little back.
+    pub latency_us: u64,
 }
 
 impl Pull {
@@ -116,7 +120,7 @@ impl AudioOutput for Card {
     }
 
     fn latency_us(&self) -> u64 {
-        0
+        self.pull.lock().latency_us
     }
 
     fn takes_float(&mut self) -> bool {

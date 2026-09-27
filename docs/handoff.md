@@ -12,6 +12,17 @@ Apple's own App Store screenshots and the differences closed. What is left is li
 
 ## Recently closed
 
+- **A long beat-matched AutoMix no longer puts the next song up early and its lyrics back.** Once the
+  clock below the transition engine is the incoming song's, the ending's place was sometimes read off that
+  clock as though it were the ending's own: whenever the output's clock was read a few tens of ms back (a
+  phone's corrects itself), what was reported ran ahead of the ear, and the incoming song's time minus the
+  ending's offset put the ear past the takeover at once. The page went over to the next song seconds before
+  it was the louder (19 s early in a 22 s mix on the emulator), its place stood still where the ear was to
+  land, the screen's place ran on 2 s from there and was pulled back, and the lit line's word fill ran again
+  every 4 s until the takeover came. Now the ending's place is only ever the mix's start plus the time since
+  (`TransitionEngine::position_us`, nori-player engine.rs); crates/engine tests/stretch.rs reads the clock
+  back in the mix and follows a lyrics clock through it as a screen does.
+
 - **ReplayGain turns quiet songs up, to a loudness target.** `nori_player::gain` works out every song's gain:
   its tag (track, album or auto), else the server's `fallbackGain`, else AutoMix's measured loudness ("Measure
   songs without tags"), else the untagged level; moved by `target − (−18)` (ReplayGain 2.0 tags are relative to

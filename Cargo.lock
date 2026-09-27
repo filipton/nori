@@ -1929,6 +1929,7 @@ dependencies = [
  "async-trait",
  "libc",
  "nori-core",
+ "nori-look",
  "nori-player",
  "nori-testdir",
  "parking_lot",
