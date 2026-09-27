@@ -3,6 +3,8 @@
 //! handed the settings as they change.
 
 pub use nori_player::dsp::*;
+/// The graphic equalizer's layouts and design, for a client that draws its bands.
+pub use nori_player::graphic;
 
 /// The pre-amp in effect: the one set, or the automatic one for the equalizer in use; none with the
 /// equalizer off.

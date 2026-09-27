@@ -81,6 +81,8 @@ pub enum Cmd {
     Setting(String, String),
     Level(EqLevel, f32),
     Band(u32, SoundBand),
+    /// One graphic equalizer slider, dB.
+    Graphic(u32, f32),
     Sound(SoundToolCmd),
     Action(String),
     Mouse(bool),
