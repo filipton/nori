@@ -106,6 +106,12 @@ object TestActions {
         val nori = Nori.get(context)
         val verb = what.substringBefore(' ')
         val ref = what.substringAfter(' ', "")
+        when (verb) {
+            // "beats yes|no[,remember]": the answer to the question Download asks while the beat model is on.
+            "beats" -> { actions.answerBeats(ref.startsWith("yes"), ref.endsWith(",remember")); return@attempt }
+            // Settings' "Analyse downloaded songs" (asks first, as Download does).
+            "analysedownloads" -> { actions.analyseDownloads(); return@attempt }
+        }
         val r = testRef(ref)
         val songs = songsOf(nori, r)
         // An album queued whole ("enqueue album:<id>", "playnext album:<id>") comes from its page, as the

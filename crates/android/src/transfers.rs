@@ -91,10 +91,9 @@ extern "system" fn notice_facts(env: JNIEnv, _: JClass, out: JLongArray) -> jstr
     })
 }
 
-/// How the batch went, once its bytes are in: `out` gets `[title, text, done, failed, lyrics, analysing]`
-/// (title as `SummaryTitle`'s place: 0 failed, 1 an album, 2 downloaded; text as `SummaryText`'s: 0 none,
-/// 1 some failed, 2 try again; then the saved songs still finding lyrics, and those only being analysed)
-/// and the album comes back; null when there is nothing to say.
+/// How the batch went, once its bytes are in: `out` gets `[title, text, done, failed]` (title as
+/// `SummaryTitle`'s place: 0 failed, 1 an album, 2 downloaded; text as `SummaryText`'s: 0 none, 1 some failed,
+/// 2 try again) and the album comes back; null when there is nothing to say.
 extern "system" fn summary(env: JNIEnv, _: JClass, out: JIntArray) -> jstring {
     let Some(s) = transfers::summary() else { return std::ptr::null_mut() };
     let title = match s.title {
@@ -107,7 +106,7 @@ extern "system" fn summary(env: JNIEnv, _: JClass, out: JIntArray) -> jstring {
         SummaryText::SomeFailed => 1,
         SummaryText::TryAgain => 2,
     };
-    if env.set_int_array_region(&out, 0, &[title, text, s.done, s.failed, s.lyrics, s.analysing]).is_err() {
+    if env.set_int_array_region(&out, 0, &[title, text, s.done, s.failed]).is_err() {
         return std::ptr::null_mut();
     }
     java_string(&env, &s.label)

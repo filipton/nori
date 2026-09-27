@@ -157,6 +157,13 @@ class Say(private val r: Resources) {
     val stopDownload: String = r.getString(R.string.stop_download)
     val findingLyrics: String = r.getString(R.string.finding_lyrics)
     val analysing: String = r.getString(R.string.analysing)
+    val detectingBeats: String = r.getString(R.string.detecting_beats)
+    val beatsAskTitle: String = r.getString(R.string.beats_ask_title)
+    val beatsAskText: String = r.getString(R.string.beats_ask_text)
+    val beatsAskRemember: String = r.getString(R.string.beats_ask_remember)
+    val beatsAskYes: String = r.getString(R.string.beats_ask_yes)
+    val beatsAskNo: String = r.getString(R.string.beats_ask_no)
+    val nothingToAnalyse: String = r.getString(R.string.said_nothing_to_analyse)
     val equalizer: String = r.getString(R.string.equalizer)
     val eqHint: String = r.getString(R.string.eq_hint)
     val addBand: String = r.getString(R.string.add_band)
@@ -707,6 +714,7 @@ class Say(private val r: Resources) {
     fun favourite(on: Boolean): String = r.getString(if (on) R.string.said_favourite_added else R.string.said_favourite_removed)
     fun downloadingSongs(n: Int): String = r.getQuantityString(R.plurals.said_downloading, n, n)
     fun downloadsRemoved(n: Int): String = r.getQuantityString(R.plurals.said_downloads_removed, n, n)
+    fun analysingDownloads(n: Int): String = r.getQuantityString(R.plurals.said_analysing_downloads, n, n)
     /** After an M3U import: how many of its entries were found and went into [playlist]. */
     fun m3uImported(found: Int, entries: Int, playlist: String): String =
         if (found == 0) r.getString(R.string.m3u_none_found, entries) else r.getString(R.string.m3u_imported, found, entries, playlist)

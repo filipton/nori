@@ -4,13 +4,13 @@ import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Where one song's download stands. QUEUED is never stored: it is any pending song without a mark. The
- * last two are a song saved and still being processed (the core's `Phase::Processing`); ordinals are the
+ * last three are a song saved and still being processed (the core's `Phase::Processing`); ordinals are the
  * core's numbering (`download_phase`).
  */
 enum class DownloadPhase {
-    QUEUED, DOWNLOADING, FAILED, DONE, FINDING_LYRICS, ANALYSING;
+    QUEUED, DOWNLOADING, FAILED, DONE, FINDING_LYRICS, ANALYSING, DETECTING_BEATS;
 
-    val processing get() = this == FINDING_LYRICS || this == ANALYSING
+    val processing get() = this == FINDING_LYRICS || this == ANALYSING || this == DETECTING_BEATS
 }
 
 /**

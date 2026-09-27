@@ -315,7 +315,7 @@ fun SettingsScreen(vm: SettingsViewModel) {
 
 /** One group's page: its rows on their plates, scrolled to whichever row the search sent us to. */
 @Composable
-fun SettingsGroupScreen(vm: SettingsViewModel, id: String, highlight: String = "") {
+fun SettingsGroupScreen(vm: SettingsViewModel, id: String, highlight: String = "", actions: dev.nori.music.app.vm.ActionsViewModel? = null) {
     val nav = LocalNav.current
     val p by vm.prefs.collectAsStateWithLifecycle()
     val facts by vm.settingsFacts.collectAsStateWithLifecycle()
@@ -340,10 +340,10 @@ fun SettingsGroupScreen(vm: SettingsViewModel, id: String, highlight: String = "
             when (id) {
                 // The build's facts, then the rows the page builder made for About (the update check).
                 "about" -> AboutContent({ title, content -> Section(title, content) }, { nav.settingsGroup("licences") }) {
-                    page.sections.forEach { s -> SettingsSectionRows(vm, s) }
+                    page.sections.forEach { s -> SettingsSectionRows(vm, s, actions) }
                 }
                 "licences" -> LicencesContent { title, content -> Section(title, content) }
-                else -> page.sections.forEach { s -> SettingsSectionRows(vm, s) }
+                else -> page.sections.forEach { s -> SettingsSectionRows(vm, s, actions) }
             }
             Spacer(Modifier.height(Space.section + LocalChromeInset.current))
         }
@@ -372,7 +372,7 @@ private fun TextSettingDialog(row: SettingRow.Text, onDismiss: () -> Unit, onSav
 
 /** One section of a page as SettingsPages.kt laid it out; this only draws the rows and hands back what was picked. */
 @Composable
-private fun SettingsSectionRows(vm: SettingsViewModel, section: SettingsSection) {
+private fun SettingsSectionRows(vm: SettingsViewModel, section: SettingsSection, actions: dev.nori.music.app.vm.ActionsViewModel?) {
     val nav = LocalNav.current
     val context = LocalContext.current
     val p by vm.prefs.collectAsStateWithLifecycle()
@@ -389,6 +389,8 @@ private fun SettingsSectionRows(vm: SettingsViewModel, section: SettingsSection)
                 )
             }
             "downloads" -> nav.downloads()
+            // Asks first whether the beat model reads them too, as Download does.
+            "analyse-downloads" -> actions?.analyseDownloads()
             "add-server" -> editing = vm.newProfile()
             // A page of its own inside this one (the lyrics sources), as the row names it.
             else -> when {

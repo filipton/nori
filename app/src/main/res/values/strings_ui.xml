@@ -127,6 +127,19 @@
     <!-- A downloaded song still being processed, on the downloads screen. -->
     <string name="finding_lyrics">Finding lyrics…</string>
     <string name="analysing">Analysing…</string>
+    <string name="detecting_beats">Detecting beats…</string>
+    <!-- Asked when Download is pressed with Better beat detection on and ML beats for downloads set to Ask. -->
+    <string name="beats_ask_title">Detect beats for these downloads?</string>
+    <string name="beats_ask_text">Also detect beats with the ML model for these downloads? It uses a lot of battery and CPU for a while.</string>
+    <string name="beats_ask_remember">Remember my choice</string>
+    <string name="beats_ask_yes">Yes</string>
+    <string name="beats_ask_no">No</string>
+    <!-- After Analyse downloaded songs in Settings. -->
+    <plurals name="said_analysing_downloads">
+        <item quantity="one">Analysing %d downloaded song</item>
+        <item quantity="other">Analysing %d downloaded songs</item>
+    </plurals>
+    <string name="said_nothing_to_analyse">Every downloaded song is analysed</string>
     <string name="equalizer">Equalizer</string>
     <string name="eq_hint">Tap a band\'s label to change its frequency, width or type.</string>
     <string name="add_band">Add band</string>

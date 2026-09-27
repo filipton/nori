@@ -406,6 +406,8 @@ const DOWNLOAD_CHUNK: usize = 64 * 1024;
 
 impl Downloader {
     pub fn new(core: Arc<Core>, client: Arc<Client>, bytes: Arc<dyn ByteSource>, store: Arc<Store>) -> Arc<Downloader> {
+        // What is saved is read back from the store (`processing`).
+        crate::processing::install(Box::new(StoreShelf { client: client.clone(), store: store.clone() }));
         Arc::new(Downloader { core, client, bytes, store, work: Mutex::new(Work::default()) })
     }
 
@@ -429,12 +431,13 @@ impl Downloader {
         }
     }
 
-    /// Waits until nothing is left to fetch.
+    /// Waits until nothing is left to fetch, nor to read back once saved.
     pub fn wait(&self) {
         loop {
-            let Some(t) = self.work.lock().threads.pop() else { return };
+            let Some(t) = self.work.lock().threads.pop() else { break };
             let _ = t.join();
         }
+        crate::processing::wait();
     }
 
     /// The unfinished downloads in the order the queue runs them: oldest first.
@@ -471,6 +474,8 @@ impl Downloader {
                 let _ = self.core.download_settle(vec![id.clone()], vec![true]);
                 // The streamed copy is the same bytes twice now.
                 self.store.drop_cached(&nori_core::stream_cache::copies(&id));
+                // Its analysis from the disk if it was not measured as it came, and the beat model if wanted.
+                crate::processing::saved(vec![id.clone()]);
             } else {
                 w.failed.insert(id.clone());
                 drop(w);
@@ -488,10 +493,10 @@ impl Downloader {
         let part = self.store.download_part(id);
         let mut chunk = vec![0u8; DOWNLOAD_CHUNK];
         let mut tries = 0;
-        // With AutoMix on, measured as it downloads, from its first byte: later mixes need no pass of their
-        // own. One taken up half way by an earlier run is measured when it is queued.
-        let hint = nori_core::queue::queue_song(id.to_string()).map(|s| s.suffix).filter(|s| !s.is_empty());
-        let mut taker = if std::fs::metadata(&part).map_or(0, |m| m.len()) == 0 { measure_as_it_comes(id, hint.as_deref(), true) } else { None };
+        // Measured as it downloads, from its first byte: later mixes and the lyrics' sync need no pass of their
+        // own. One taken up half way by an earlier run is measured from the disk once saved (`processing`).
+        let hint = nori_core::queue::queue_song(id.to_string()).or_else(|| self.core.download_song(id)).map(|s| s.suffix).filter(|s| !s.is_empty());
+        let mut taker = if std::fs::metadata(&part).map_or(0, |m| m.len()) == 0 { measure_download_as_it_comes(id, hint.as_deref()) } else { None };
         loop {
             let have = std::fs::metadata(&part).map_or(0, |m| m.len());
             let body = match self.bytes.open(&url, have) {
@@ -718,7 +723,7 @@ impl Measurer {
     }
 
     /// A song was measured as it came, elsewhere: what was planned without it is planned again.
-    fn stored_elsewhere(&self) {
+    pub(crate) fn stored_elsewhere(&self) {
         self.measured.store(true, Ordering::Release);
         if let Some(t) = &self.plan.lock().engine {
             t.unpark();
@@ -836,39 +841,16 @@ impl Measurer {
     fn measure(&self, core: &Core, id: &str, pieces: crate::pieces::Pieces, hint: Option<&str>, job: Job) -> Option<bool> {
         let expected_ms = nori_core::queue::queue_song(id.to_string()).map_or(0, |s| s.duration as i64 * 1000);
         let mut asked = self.asked.load(Ordering::Acquire);
-        let mut left = false;
-        let mut stream = None;
-        let mut ends = None;
-        let mut heard = false;
-        let whole = crate::demux::decode_whole(Box::new(pieces), hint, |rate, channels, samples| {
+        let Decoded { stream, ends } = decode(id, "measuring ahead", pieces, hint, expected_ms, job.classical, job.model.is_some(), || {
             let now = self.asked.load(Ordering::Acquire);
             if now != asked {
                 if !self.plan.lock().asks(id) {
-                    left = true;
                     return false;
                 }
                 asked = now;
             }
-            heard = true;
-            if job.classical {
-                stream.get_or_insert_with(|| nori_core::automix::store::AnalysisStream::new(rate, channels, expected_ms.max(0) as u64)).feed_f32(samples);
-            }
-            if job.model.is_some() {
-                ends.get_or_insert_with(|| Ends::new(rate)).feed(samples, channels);
-            }
             true
-        });
-        if left {
-            return None;
-        }
-        if !heard {
-            nori_core::alog::info(&format!("measuring {id} ahead: nothing decoded ({})", whole.err().unwrap_or_default()));
-            return Some(false);
-        }
-        if !matches!(whole, Ok(true)) {
-            nori_core::alog::info(&format!("measuring {id} ahead stopped before its end: not stored"));
-            return Some(false);
-        }
+        })?;
         let measured = stream.is_some_and(|stream| self.finish(core, id, stream, expected_ms));
         let listened = match (job.model, ends) {
             (Some(model), Some(mut ends)) => {
@@ -895,12 +877,54 @@ impl Measurer {
     }
 }
 
+/// What one decode of a whole song from the disk heard, for what it was for: the analyser fed from its first sample
+/// to its last, and the model's copy of its ends. Neither when the song could not be decoded to its end.
+pub(crate) struct Decoded {
+    pub stream: Option<nori_core::automix::store::AnalysisStream>,
+    pub ends: Option<Ends>,
+}
+
+/// Decodes `id` whole from `pieces` for the analyser (`classical`) and the beat model's ends (`ends`), as long as
+/// `go_on` says (asked per buffer); None when it was left half way. `what` names the work in the log.
+pub(crate) fn decode(id: &str, what: &str, pieces: crate::pieces::Pieces, hint: Option<&str>, expected_ms: i64, classical: bool, ends: bool, mut go_on: impl FnMut() -> bool) -> Option<Decoded> {
+    let mut left = false;
+    let mut stream = None;
+    let mut kept = None;
+    let mut heard = false;
+    let whole = crate::demux::decode_whole(Box::new(pieces), hint, |rate, channels, samples| {
+        if !go_on() {
+            left = true;
+            return false;
+        }
+        heard = true;
+        if classical {
+            stream.get_or_insert_with(|| nori_core::automix::store::AnalysisStream::new(rate, channels, expected_ms.max(0) as u64)).feed_f32(samples);
+        }
+        if ends {
+            kept.get_or_insert_with(|| Ends::new(rate)).feed(samples, channels);
+        }
+        true
+    });
+    if left {
+        return None;
+    }
+    if !heard {
+        nori_core::alog::info(&format!("{what} {id}: nothing decoded ({})", whole.err().unwrap_or_default()));
+        return Some(Decoded { stream: None, ends: None });
+    }
+    if !matches!(whole, Ok(true)) {
+        nori_core::alog::info(&format!("{what} {id}: stopped before its end, not stored"));
+        return Some(Decoded { stream: None, ends: None });
+    }
+    Some(Decoded { stream, ends: kept })
+}
+
 // ---- measured as it comes ----
 
 /// The songs being measured as they come now: the measurer leaves them to that decode.
-static ARRIVING: Mutex<Vec<String>> = Mutex::new(Vec::new());
+pub(crate) static ARRIVING: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// Every measurer, told when a song measured as it came was stored (or was not, and may be looked at).
-static MEASURERS: Mutex<Vec<std::sync::Weak<Measurer>>> = Mutex::new(Vec::new());
+pub(crate) static MEASURERS: Mutex<Vec<std::sync::Weak<Measurer>>> = Mutex::new(Vec::new());
 /// Songs measured as they came and stored, in this process.
 static CAME: AtomicU64 = AtomicU64::new(0);
 
@@ -920,7 +944,20 @@ pub fn measuring_as_they_come() -> bool {
 /// its end), and it is not being measured as it comes already. `wait`: the fetch may wait for the decoder
 /// (fetching ahead, a download); a loader the player may be reading from must not.
 pub fn measure_as_it_comes(id: &str, hint: Option<&str>, wait: bool) -> Option<Listening> {
-    if !nori_core::rules::prefs(|p| p.auto_mix) || !nori_core::queue::analysable(id) || !crate::demux::decodes_as_it_comes(hint) {
+    if !nori_core::rules::prefs(|p| p.auto_mix) {
+        return None;
+    }
+    listen_as_it_comes(id, hint, wait)
+}
+
+/// [`measure_as_it_comes`] for a download from its first byte, whatever AutoMix says: every download is analysed
+/// once (`nori_core::transfers::needs`), and hearing it as it comes spares reading it back from the disk after.
+pub fn measure_download_as_it_comes(id: &str, hint: Option<&str>) -> Option<Listening> {
+    listen_as_it_comes(id, hint, true)
+}
+
+fn listen_as_it_comes(id: &str, hint: Option<&str>, wait: bool) -> Option<Listening> {
+    if !nori_core::queue::analysable(id) || !crate::demux::decodes_as_it_comes(hint) {
         return None;
     }
     let core = nori_core::active()?;
@@ -939,7 +976,7 @@ pub fn measure_as_it_comes(id: &str, hint: Option<&str>, wait: bool) -> Option<L
     match Listening::start(hint.map(str::to_string), wait, Box::new(heard)) {
         Some(l) => {
             // A download saved before this is over shows it is still being analysed.
-            nori_core::transfers::analysing(id, true);
+            nori_core::transfers::analysing(id, true, false);
             Some(l)
         }
         None => {
@@ -994,7 +1031,9 @@ impl Heard for Measuring {
             CAME.fetch_add(1, Ordering::Relaxed);
         }
         ARRIVING.lock().retain(|i| *i != id);
-        nori_core::transfers::analysing(&id, false);
+        nori_core::transfers::analysing(&id, false, stored);
+        // A saved song waiting for this is looked at by the work after the bytes: from the disk, if not stored.
+        crate::processing::kick();
         let measurers: Vec<Arc<Measurer>> = MEASURERS.lock().iter().filter_map(|w| w.upgrade()).collect();
         for m in measurers {
             if stored {
@@ -1035,7 +1074,7 @@ struct Job<'m> {
 
 /// Beat This! over each end of `id` it has not looked at yet, from the ends kept as the song was decoded: whether a
 /// grid was stored.
-fn listen(core: &Core, id: &str, model: &BeatModel, ends: &mut Ends) -> bool {
+pub(crate) fn listen(core: &Core, id: &str, model: &BeatModel, ends: &mut Ends) -> bool {
     let Ok(Some(row)) = core.analysis_get(id.to_string()) else { return false };
     // One song's windows at a time in the whole process, whichever measurer asks: each run holds tens of megabytes
     // while it lasts (the model reads 30 s at once; neural.rs), and two at once would hold twice that.
@@ -1089,14 +1128,14 @@ static LISTENING: Mutex<()> = Mutex::new(());
 /// The beat model while the measuring thread lives: fetched and loaded the first time a song needs it, and tried
 /// once per thread, so a model that cannot come costs one attempt per look, not one per song.
 #[derive(Default)]
-struct Model {
+pub(crate) struct Model {
     tried: bool,
     loaded: Option<BeatModel>,
 }
 
 impl Model {
     /// Whether the model is here to be run, fetching and loading it first when it is not.
-    fn ready(&mut self) -> bool {
+    pub(crate) fn ready(&mut self) -> bool {
         if !self.tried {
             self.tried = true;
             self.loaded = BeatModel::load();
@@ -1104,7 +1143,7 @@ impl Model {
         self.loaded.is_some()
     }
 
-    fn get(&self) -> Option<&BeatModel> {
+    pub(crate) fn get(&self) -> Option<&BeatModel> {
         self.loaded.as_ref()
     }
 }
@@ -1129,7 +1168,7 @@ pub fn beat_model_bytes() -> u64 {
 
 /// Beat This! through tract, in a build with the `neural-beats` feature.
 #[cfg(feature = "neural-beats")]
-struct BeatModel(nori_player::automix::neural::BeatThis);
+pub(crate) struct BeatModel(nori_player::automix::neural::BeatThis);
 
 #[cfg(feature = "neural-beats")]
 impl Drop for BeatModel {
@@ -1166,7 +1205,7 @@ impl BeatModel {
 
 /// A build without the model's runtime: never loaded, never run.
 #[cfg(not(feature = "neural-beats"))]
-struct BeatModel;
+pub(crate) struct BeatModel;
 
 #[cfg(not(feature = "neural-beats"))]
 impl BeatModel {
@@ -1180,7 +1219,7 @@ impl BeatModel {
 }
 
 /// The measuring thread yields to everything else: the lowest priority the system has.
-fn lower_priority() {
+pub(crate) fn lower_priority() {
     crate::arriving::lower_priority();
 }
 

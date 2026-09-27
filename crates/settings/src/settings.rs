@@ -87,6 +87,15 @@ pub enum EqMode {
     Graphic,
 }
 
+/// Beat This! over the songs being downloaded (`download_beats`): ask each time Download is pressed, or not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, nori_settings_derive::Choice)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
+pub enum DownloadBeats {
+    Ask,
+    Always,
+    Never,
+}
+
 /// The plain crossfade's curve (`nori_player::transitions::shape_crossfade`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, nori_settings_derive::Choice)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
@@ -528,6 +537,11 @@ pub struct StoredPrefs {
     /// Songs downloaded at the same time; the rest wait their turn in the order they were asked for.
     #[setting("parallelDownloads", clamped(1, 10), default = 5, show = K::Choice(&["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]))]
     pub parallel_downloads: i32,
+    /// Whether Beat This! also reads each downloaded song's intro and outro once its audio is saved, so AutoMix
+    /// never runs the model for it during playback: asked when Download is pressed, always, or never. Only
+    /// offered while "Better beat detection" is on (`nori_transfers::transfers::beats_offer`).
+    #[setting("downloadBeats", PICK, default = DownloadBeats::Ask, show = K::Named(DownloadBeats::NAMES))]
+    pub download_beats: DownloadBeats,
     #[setting("precacheWifi", INT, default = 2, show = K::Choice(&["1", "2", "3", "5", "10"]))]
     pub precache_wifi: i32,
     #[setting("precacheMobile", INT, default = 1, show = K::Choice(&["1", "2", "3", "5"]))]

@@ -31,6 +31,9 @@ pub(crate) static CLASS: Class = Class {
         native!(c"downloadOpen", c"(Ljava/lang/String;)J", download_open),
         native!(c"downloadTake", c"(J[BI)V", download_take),
         native!(c"downloadEnd", c"(JZ)V", download_end),
+        native!(c"processStart", c"()V", process_start),
+        native!(c"processSaved", c"([Ljava/lang/String;)V", process_saved),
+        native!(c"processAnalyse", c"([Ljava/lang/String;)I", process_analyse),
     ],
 };
 
@@ -118,19 +121,28 @@ fn measurer() -> Option<Arc<Measurer>> {
     MEASURER.lock().clone()
 }
 
+/// `MeasureBridge`, looked up the first time a door needs it; false when it is missing.
+fn java(env: &mut JNIEnv) -> bool {
+    if JAVA.get().is_some() {
+        return true;
+    }
+    match look_up(env) {
+        Ok(j) => {
+            let _ = JAVA.set(j);
+            true
+        }
+        Err(e) => {
+            cleared(env);
+            nori_core::alog::info(&format!("measuring: the Java side is missing: {e}"));
+            false
+        }
+    }
+}
+
 /// The playback service started: the measurer exists from now on, idle until it is asked for songs.
 extern "system" fn start(mut env: JNIEnv, _: JClass) {
-    if JAVA.get().is_none() {
-        match look_up(&mut env) {
-            Ok(j) => {
-                let _ = JAVA.set(j);
-            }
-            Err(e) => {
-                cleared(&mut env);
-                nori_core::alog::info(&format!("measuring ahead: the Java side is missing: {e}"));
-                return;
-            }
-        }
+    if !java(&mut env) {
+        return;
     }
     let mut m = MEASURER.lock();
     if m.is_none() {
@@ -162,15 +174,15 @@ extern "system" fn stop() {
 
 // ---- a download measured as it comes ----
 
-/// What hears a download's bytes as media3 writes them (Kotlin's `MeasuringSink`), from the first: with
-/// AutoMix on, a song downloaded for offline listening is measured as it downloads (nori-engine's
-/// `measure_as_it_comes`, the same as a song fetched ahead), so no later mix needs a pass of its own.
-/// A handle, 0 when nothing is measured (AutoMix off, the song measured already, not a download's key).
+/// What hears a download's bytes as media3 writes them (Kotlin's `MeasuringSink`), from the first: a song
+/// downloaded for offline listening is measured as it downloads, whatever AutoMix says (nori-engine's
+/// `measure_download_as_it_comes`), so neither a later mix nor the lyrics' sync needs a pass of its own.
+/// A handle, 0 when nothing is measured (the song measured already, an MP4, not a download's key).
 extern "system" fn download_open(env: JNIEnv, _: JClass, key: JString) -> jlong {
     let Some(key) = crate::string(&env, &key) else { return 0 };
     let Some(id) = key.strip_prefix("dl:") else { return 0 };
     let hint = nori_core::queue::queue_song(id.to_string()).map(|s| s.suffix).filter(|s| !s.is_empty());
-    match nori_engine::core::measure_as_it_comes(id, hint.as_deref(), true) {
+    match nori_engine::core::measure_download_as_it_comes(id, hint.as_deref()) {
         Some(t) => Box::into_raw(Box::new(t)) as jlong,
         None => 0,
     }
@@ -207,3 +219,41 @@ extern "system" fn download_end(_: JNIEnv, _: JClass, h: jlong, whole: jboolean)
 
 /// The copy of a download's bytes handed over, kept between calls: nothing is allocated per piece.
 static BUF: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+// ---- the work after a download's bytes (nori-engine's `processing`) ----
+
+/// The downloads can be read back from media3's download cache (`MeasureBridge.whole`, which answers for a
+/// download whether or not the playback service runs).
+extern "system" fn process_start(mut env: JNIEnv, _: JClass) {
+    if java(&mut env) {
+        nori_engine::processing::install(Box::new(Media3));
+    }
+}
+
+fn ids(env: &mut JNIEnv, array: &JObjectArray) -> Vec<String> {
+    let n = env.get_array_length(array).unwrap_or(0);
+    let mut out = Vec::with_capacity(n.max(0) as usize);
+    for i in 0..n {
+        let Ok(o) = env.get_object_array_element(array, i) else { break };
+        let s = JString::from(o);
+        if let Some(id) = crate::string(env, &s) {
+            out.push(id);
+        }
+        let _ = env.delete_local_ref(s);
+    }
+    cleared(env);
+    out
+}
+
+/// Downloads just saved and settled: what each needs besides its lyrics is decided and marked, and those to read
+/// back from the disk join the line. Off the main thread.
+extern "system" fn process_saved(mut env: JNIEnv, _: JClass, array: JObjectArray) {
+    let ids = ids(&mut env, &array);
+    nori_engine::processing::saved(ids);
+}
+
+/// Downloads asked for again ("Analyse downloaded songs", `Core::download_unanalysed`): how many joined the line.
+extern "system" fn process_analyse(mut env: JNIEnv, _: JClass, array: JObjectArray) -> jint {
+    let ids = ids(&mut env, &array);
+    nori_engine::processing::analyse(ids) as jint
+}

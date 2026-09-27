@@ -391,6 +391,16 @@
     <string name="settings_download_library">Download the whole library</string>
     <string name="settings_download_library_detail">Every song, at the download quality.</string>
     <string name="settings_download">Download</string>
+    <!-- Better beat detection's model over downloaded songs, after their audio is saved. -->
+    <string name="settings_download_beats">ML beats for downloads</string>
+    <string name="settings_download_beats_ask">Ask</string>
+    <string name="settings_download_beats_always">Always</string>
+    <string name="settings_download_beats_never">Never</string>
+    <string name="settings_hint_download_beats">beat model neural better beat detection automix downloaded songs battery</string>
+    <string name="settings_analyse_downloads">Analyse downloaded songs</string>
+    <string name="settings_analyse_downloads_detail">Analyses the downloads that have no analysis yet, for AutoMix and synced lyrics, one song at a time, and detects their beats with the ML model if you choose.</string>
+    <string name="settings_hint_analyse_downloads">analysis automix measure beats lyrics sync downloads</string>
+    <string name="settings_analyse">Analyse</string>
     <string name="settings_ahead_wifi">Load ahead on Wi-Fi</string>
     <string name="settings_ahead_mobile">Load ahead on mobile data</string>
     <string name="settings_ahead_next">Next song</string>

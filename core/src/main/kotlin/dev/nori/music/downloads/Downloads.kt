@@ -128,9 +128,10 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
         // them to a pool instead caps the downloads that actually move at the pool's size, whatever
         // maxParallelDownloads says - a pool of two was why "5 at once" moved two songs and left three
         // rings standing at nought.
-        // What comes from the network is measured for AutoMix as it downloads, when AutoMix is on (MeasuringSink).
+        // What comes from the network is analysed as it downloads (MeasuringSink): AutoMix, the lyrics' sync and
+        // the loudness of an untagged song read it later, and a song so measured is not read back from the disk.
         val measured = androidx.media3.datasource.DataSource.Factory {
-            androidx.media3.datasource.TeeDataSource(sources.network.createDataSource(), dev.nori.music.playback.MeasuringSink { settings.value.autoMix })
+            androidx.media3.datasource.TeeDataSource(sources.network.createDataSource(), dev.nori.music.playback.MeasuringSink())
         }
         val upstream = CacheDataSource.Factory().setCache(sources.downloadCache).setUpstreamDataSourceFactory(measured)
         DownloadManager(context, DefaultDownloadIndex(sources.database), TrackedDownloaders(DefaultDownloaderFactory(upstream, Runnable::run))).apply {
@@ -156,6 +157,12 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
                     settle(d.request.id, false)
                     if (flags and DownloadsJni.DRAINED != 0) summarise()
                 }
+
+                // Nothing left to download: the service stops itself next (this listener is told first). Saved songs
+                // still being processed keep it, and its notification says what they wait for.
+                override fun onIdle(m: DownloadManager) {
+                    if (processingNow() != null) hold()
+                }
             })
         }
     }
@@ -167,7 +174,13 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
     @Volatile private var resumed = false
 
     init {
-        io.execute { publish(); reconcile() }
+        io.execute {
+            // Saved songs are read back from the download cache (their analysis, the beat model), whether or not
+            // the playback service runs.
+            dev.nori.music.playback.MeasureBridge.sources = sources
+            runCatching { dev.nori.music.playback.MeasureJni.processStart() }.onFailure { Log.w(TAG, "downloads will not be read back", it) }
+            publish(); reconcile()
+        }
     }
 
     /** The table's counts, from the core's memory of it: nothing is read or copied, however many songs it holds. */
@@ -210,7 +223,11 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
         publish()
         val got = ids.filterIndexed { i, _ -> done[i] }
         if (got.isEmpty()) return
-        // Each shows as processing until its lyrics and analysis are over, or its time is up.
+        // What each needs besides its lyrics - its analysis read back from the disk, the beat model - is the
+        // core's, decided and started here, one song at a time on a thread of its own.
+        runCatching { dev.nori.music.playback.MeasureJni.processSaved(got.toTypedArray()) }.onFailure { Log.w(TAG, "could not read ${got.size} downloads back", it) }
+        watchMarks()
+        // Each shows as processing until its lyrics, analysis and beats are over, or a step runs past its time.
         main.post { main.removeCallbacks(expire); expire.run() }
         lyrics.launch {
             // One song at a time, each marked as its lookup ends: the rows and the notification count down.
@@ -220,9 +237,72 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
                     main.post(::refreshMarks)
                 }
             }
-            runCatching { clientOf().downloadsProcessed(got) }
-            main.post(::refreshMarks)
         }
+    }
+
+    /**
+     * "Analyse downloaded songs": the downloads with no analysis of the current version, and with [beats] those
+     * the beat model has not read, are read back as a download's are once saved, under the download service and
+     * its notification. [done] hears how many, on the main thread.
+     */
+    fun analyse(beats: Boolean, done: (Int) -> Unit) = io.execute {
+        val ids = runCatching { core.downloadUnanalysed(beats) }.getOrElse { Log.w(TAG, "could not list the downloads to analyse", it); emptyList() }
+        val n = if (ids.isEmpty()) 0 else runCatching { dev.nori.music.playback.MeasureJni.processAnalyse(ids.toTypedArray()) }.getOrDefault(0)
+        if (n > 0) {
+            watchMarks()
+            main.post {
+                // Asked from the app's own screen: the service may start in the foreground, and is held for the work.
+                runCatching { DownloadService.startForeground(context, DownloadWorker::class.java) }.onFailure { Log.w(TAG, "could not start the download service", it) }
+                hold()
+                refreshMarks()
+                main.removeCallbacks(expire); expire.run()
+            }
+        }
+        main.post { done(n) }
+    }
+
+    /** The coroutine following the core's marks while saved songs are processing; see [watchMarks]. */
+    private var watching: kotlinx.coroutines.Job? = null
+
+    /**
+     * While saved songs are processing, the rows and the notification follow the work the core does on its own
+     * threads: woken each time a mark moves (`download_marks_moved`), never by asking every so often, and done
+     * once nothing is processing.
+     */
+    private fun watchMarks() = synchronized(this) {
+        if (watching?.isActive == true) return@synchronized
+        watching = lyrics.launch {
+            while (true) {
+                runCatching { dev.nori.music.ffi.transfers.downloadMarksMoved() }
+                // Applied before waiting again: the marks read are what the next wait starts from.
+                kotlinx.coroutines.suspendCancellableCoroutine { c -> main.post { refreshMarks(); c.resumeWith(Result.success(Unit)) } }
+                if (processingNow() == null) break
+            }
+        }
+    }
+
+    /** What the saved songs are still waiting for, or null when nothing is processing. */
+    internal fun processingNow() = runCatching { dev.nori.music.ffi.downloadProcessing(SystemClock.elapsedRealtime()) }.getOrNull()
+
+    /** The download service while it runs; it holds on for songs still processing ([hold]). */
+    @Volatile internal var worker: DownloadWorker? = null
+
+    /**
+     * Keeps the download service up for the songs still processing once nothing is left to download: a start
+     * of its own is the newest, so the stop media3 asks for when it goes idle does not take (see
+     * [DownloadWorker.onStartCommand]). The service is in the foreground as this is asked, so it may be started.
+     */
+    /** The service is held: its notification says what the saved songs wait for from now on. Main thread. */
+    internal fun held() {
+        // media3's last word may be on its notification: built and shown again.
+        lastWorking = null
+        lastWorkingWords = ""
+        summarise()
+    }
+
+    internal fun hold() {
+        runCatching { context.startService(Intent(context, DownloadWorker::class.java).setAction(ACTION_HOLD)) }
+            .onFailure { Log.w(TAG, "could not keep the download service for the songs still processing", it) }
     }
 
     /** Ends the processing that has run its time (`download_processing_expire`), and comes back for the next. */
@@ -309,7 +389,7 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
             else if (next.remove(id) != null && DownloadsJni.held(id) != DownloadsJni.PENDING) progress.remove(id)
         }
         _marks.value = next
-        if (summaryWaits) summarise()
+        if (summaryWaits || next.values.any { it.phase.processing }) summarise()
     }
 
     private fun unmark(ids: Collection<String>) {
@@ -322,13 +402,19 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
      * Queues what is not downloaded yet. Which songs are new and which are asked for again is the core's
      * (`download_queue`); one asked again that media3 is still working on is left to it.
      */
-    fun download(songs: List<Song>) = io.execute { queued(runCatching { core.downloadQueue(songs) }) }
+    fun download(songs: List<Song>, beats: Boolean = false) = io.execute { queued(runCatching { core.downloadQueue(songs) }, beats) }
 
     /** Every song of the offline index, in one call to the core; sync the library first so the index is complete. */
-    fun downloadLibrary() = io.execute { queued(runCatching { core.downloadQueueLibrary() }) }
+    fun downloadLibrary() = io.execute {
+        // No question for a whole library: the beat model reads it only when "ML beats for downloads" says always.
+        val beats = runCatching { dev.nori.music.ffi.downloadBeatsOffer() }.getOrNull() == dev.nori.music.ffi.transfers.BeatsOffer.YES
+        queued(runCatching { core.downloadQueueLibrary() }, beats)
+    }
 
-    private fun queued(result: Result<DownloadQueued>) {
+    /** [beats]: the beat model reads these songs once they are saved, written down before any of them can finish. */
+    private fun queued(result: Result<DownloadQueued>, beats: Boolean) {
         val q = result.getOrElse { Log.w(TAG, "could not queue downloads", it); return }
+        if (beats) runCatching { core.downloadWantBeats(q.fresh + q.again) }.onFailure { Log.w(TAG, "could not ask for the beat model", it) }
         if (q.fresh.isNotEmpty()) publish()
         val requests = q.fresh.map(::request)
         val retries = q.again.map(::request)
@@ -405,7 +491,8 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
         // than built again.
         when (DownloadsJni.notice(downloads.size, notMetRequirements, SystemClock.elapsedRealtime())) {
             0 -> lastProgress?.let { return it }
-            2 -> return complete ?: NotificationCompat.Builder(context, CHANNEL)
+            // The bytes are in and saved songs are still processing: the service stays for them, and says so.
+            2 -> processingNow()?.let { return workingNotification(it) } ?: return complete ?: NotificationCompat.Builder(context, CHANNEL)
                 // Nothing left: the service is on its way out, and the batch's own summary (its own id,
                 // so stopping the service does not take it) says how it went. No bar here.
                 .setSmallIcon(android.R.drawable.stat_sys_download_done)
@@ -474,23 +561,45 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
     }
 
     /**
-     * How the batch went, once its bytes are in. Its own notification id: the service takes the progress
-     * one with it when it stops, and would take this too if it shared the id. While saved songs are still
-     * finding their lyrics or being analysed it says so, with how it went underneath, and is asked again
-     * as the marks change ([summaryWaits]). All done: a quiet line that goes by itself. Something failed:
-     * it stays, and a tap shows which.
+     * What the downloads say once their bytes are in, asked again as the marks change. While saved songs are
+     * still finding their lyrics, being analysed or having their beats read, the notification says which and
+     * how many, counting down song by song: the held service's own ([DownloadWorker]), or one of its own if the
+     * service could not be kept. Then the service goes, and how the batch went is said under its own id (the
+     * service takes the progress one with it when it stops): all done, a quiet line that goes by itself;
+     * something failed, it stays, and a tap shows which.
      */
     private fun summarise() {
-        val facts = IntArray(6)
-        val album = DownloadsJni.summary(facts)
-        if (album == null) { summaryWaits = false; return }
         val nm = context.getSystemService(NotificationManager::class.java) ?: return
+        val p = processingNow()
+        if (p != null) {
+            summaryWaits = true
+            val w = worker
+            // Still downloading: the progress notification is media3's, asked every second.
+            if (w != null && !manager.isIdle) return
+            val on = if (w?.holding == true) DOWNLOAD_NOTIFICATION else DOWNLOAD_RESULT_NOTIFICATION
+            val shown = lastWorking
+            val n = workingNotification(p)
+            if (n === shown && on == workingOn) return
+            if (workingOn != 0 && workingOn != on && workingOn == DOWNLOAD_RESULT_NOTIFICATION) nm.cancel(DOWNLOAD_RESULT_NOTIFICATION)
+            workingOn = on
+            runCatching { nm.notify(on, n) }
+            return
+        }
+        val wasWorking = summaryWaits
+        summaryWaits = false
+        workingOn = 0
+        // Nothing is processing: the service goes, and its notification with it.
+        worker?.release()
+        val facts = IntArray(4)
+        val album = DownloadsJni.summary(facts)
+        if (album == null) {
+            if (wasWorking) nm.cancel(DOWNLOAD_RESULT_NOTIFICATION)
+            return
+        }
         val res = context.resources
         val (done, failedCount) = facts[2] to facts[3]
-        val (lyricsLeft, analysingLeft) = facts[4] to facts[5]
-        val working = lyricsLeft > 0 || analysingLeft > 0
         val failed = failedCount > 0
-        val result = when (facts[0]) {
+        val title = when (facts[0]) {
             0 -> res.getQuantityString(R.plurals.summary_failed, failedCount, failedCount)
             1 -> res.getString(R.string.summary_album, album)
             else -> res.getQuantityString(R.plurals.summary_downloaded, done, done)
@@ -500,36 +609,64 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
             2 -> res.getString(R.string.summary_try_again)
             else -> null
         }
-        val title = when {
-            lyricsLeft > 0 -> res.getQuantityString(R.plurals.summary_finding_lyrics, lyricsLeft, lyricsLeft)
-            analysingLeft > 0 -> res.getQuantityString(R.plurals.summary_analysing, analysingLeft, analysingLeft)
-            else -> result
-        }
-        if (working == summaryWaits && title == lastSummaryTitle && working) return
-        summaryWaits = working
-        lastSummaryTitle = title
         val b = NotificationCompat.Builder(context, CHANNEL)
             .setContentTitle(title)
             .setContentIntent(openDownloads(context))
             .setAutoCancel(true)
             .setSilent(true)
             .setOnlyAlertOnce(true)
-        if (working) {
-            b.setSmallIcon(android.R.drawable.stat_sys_download)
-                .setContentText(result)
-                .setProgress(0, 0, true)
-                .setCategory(NotificationCompat.CATEGORY_PROGRESS)
-        } else {
-            b.setSmallIcon(if (failed) android.R.drawable.stat_notify_error else android.R.drawable.stat_sys_download_done)
-                .setContentText(text)
-            if (!failed) b.setTimeoutAfter(RESULT_TIMEOUT_MS)
-        }
+            .setSmallIcon(if (failed) android.R.drawable.stat_notify_error else android.R.drawable.stat_sys_download_done)
+            .setContentText(text)
+        if (!failed) b.setTimeoutAfter(RESULT_TIMEOUT_MS)
         runCatching { nm.notify(DOWNLOAD_RESULT_NOTIFICATION, b.build()) }
     }
 
-    /** The batch's bytes are in but its songs are still processing: [summarise] again as the marks change. Main thread. */
+    /**
+     * The notification while saved songs are processing: what most of them wait for as the title ("Finding lyrics
+     * for 3 songs…", "Analysing 2 songs…", "Detecting beats for 5 songs…"), the rest and the time left below. The
+     * same one is handed back while its words are.
+     */
+    private fun workingNotification(p: dev.nori.music.ffi.transfers.Processing): Notification {
+        val res = context.resources
+        val title = when {
+            p.lyrics > 0 -> res.getQuantityString(R.plurals.summary_finding_lyrics, p.lyrics, p.lyrics)
+            p.analysing > 0 -> res.getQuantityString(R.plurals.summary_analysing, p.analysing, p.analysing)
+            else -> res.getQuantityString(R.plurals.summary_detecting_beats, p.beats, p.beats)
+        }
+        val text = StringBuilder()
+        fun part(f: (StringBuilder) -> Unit) {
+            val start = text.length
+            if (start > 0) text.append(" · ")
+            val mark = text.length
+            f(text)
+            if (text.length == mark) text.setLength(start)
+        }
+        if (p.lyrics > 0 && p.analysing > 0) part { it.append(res.getQuantityString(R.plurals.processing_analysing, p.analysing, p.analysing)) }
+        if ((p.lyrics > 0 || p.analysing > 0) && p.beats > 0) part { it.append(res.getQuantityString(R.plurals.processing_beats, p.beats, p.beats)) }
+        part { appendEta(res, it, p.etaS) }
+        val words = title + "\n" + text
+        lastWorking?.let { if (words == lastWorkingWords) return it }
+        lastWorkingWords = words
+        return NotificationCompat.Builder(context, CHANNEL)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentTitle(title)
+            .setContentText(text.ifEmpty { null })
+            .setProgress(0, 0, true)
+            .setContentIntent(openDownloads(context))
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setShowWhen(false)
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .build().also { lastWorking = it }
+    }
+
+    /** Saved songs are processing and the notification says so: [summarise] again as the marks change. Main thread. */
     private var summaryWaits = false
-    private var lastSummaryTitle = ""
+    /** The processing notification last built, its words, and the id it was last shown under (0 none). */
+    private var lastWorking: Notification? = null
+    private var lastWorkingWords = ""
+    private var workingOn = 0
 
     /** A new batch starting takes the last one's result away: the progress notification replaces it. */
     private fun cancelResult() {
@@ -596,9 +733,8 @@ internal object DownloadsJni {
      */
     @JvmStatic @FastNative external fun noticeFacts(out: LongArray): String?
     /**
-     * How the batch went, `[title, text, done, failed, lyrics, analysing]` into [out] (title 0 failed, 1 an
-     * album, 2 downloaded; text 0 none, 1 some failed, 2 try again; then the saved songs still finding
-     * lyrics, and those only being analysed), and the album; null when there is nothing to say.
+     * How the batch went, `[title, text, done, failed]` into [out] (title 0 failed, 1 an album, 2 downloaded;
+     * text 0 none, 1 some failed, 2 try again), and the album; null when there is nothing to say.
      */
     @JvmStatic @FastNative external fun summary(out: IntArray): String?
 }
@@ -683,6 +819,9 @@ const val ACTION_OPEN_DOWNLOADS = "dev.nori.music.OPEN_DOWNLOADS"
 /** The notification's Cancel: everything not yet downloaded leaves the queue, finished songs stay. */
 private const val ACTION_CANCEL_DOWNLOADS = "dev.nori.music.CANCEL_DOWNLOADS"
 
+/** Keeps the download service for the saved songs still processing ([Downloads.hold]). */
+private const val ACTION_HOLD = "dev.nori.music.HOLD_DOWNLOADS"
+
 private const val CHANNEL = "downloads"
 
 @Volatile private var openDownloadsIntent: PendingIntent? = null
@@ -721,12 +860,49 @@ class DownloadWorker : DownloadService(DOWNLOAD_NOTIFICATION, 1000L, CHANNEL, an
     override fun getDownloadManager(): DownloadManager = Nori.get(this).downloads.manager
     override fun getScheduler(): Scheduler? = null
 
+    /**
+     * The start that holds the service for the saved songs still processing, 0 when none does. media3 stops the
+     * service once nothing is left to download with the id of the last start it was handed; a start it is never
+     * handed is newer, and that stop does not take. [release] stops it with this one when the work is over.
+     */
+    private var holdId = 0
+
+    internal val holding get() = holdId != 0
+
+    override fun onCreate() {
+        super.onCreate()
+        Nori.get(this).downloads.worker = this
+    }
+
+    override fun onDestroy() {
+        Nori.get(this).downloads.let { if (it.worker === this) it.worker = null }
+        super.onDestroy()
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val downloads = Nori.get(this).downloads
+        if (intent?.action == ACTION_HOLD) {
+            holdId = startId
+            // Over already (a quick one): let go at once; otherwise its notification says what is left.
+            if (downloads.processingNow() == null) release() else downloads.held()
+            return START_NOT_STICKY
+        }
+        // Held: a start that finds nothing to download would stop the service under the songs still processing,
+        // so a newer hold goes first.
+        if (holdId != 0 && downloads.processingNow() != null) downloads.hold()
         if (intent?.action == ACTION_CANCEL_DOWNLOADS) {
-            Nori.get(this).downloads.cancelAll()
+            downloads.cancelAll()
             return super.onStartCommand(Intent(intent).setAction(DownloadService.ACTION_INIT), flags, startId)
         }
         return super.onStartCommand(intent, flags, startId)
+    }
+
+    /** The saved songs are processed: the hold goes, and the service with it unless downloads came meanwhile. */
+    internal fun release() {
+        val id = holdId
+        if (id == 0) return
+        holdId = 0
+        stopSelfResult(id)
     }
 
     /**

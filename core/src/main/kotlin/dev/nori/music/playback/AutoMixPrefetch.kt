@@ -18,21 +18,28 @@ internal object MeasureJni {
     /** A song has become whole in one of the caches. */
     @JvmStatic @CriticalNative external fun arrived()
     @JvmStatic @CriticalNative external fun stop()
-    /** A download measured as it comes: a handle, 0 when nothing measures it (AutoMix off, measured already). */
+    /** A download measured as it comes: a handle, 0 when nothing measures it (measured already, an MP4). */
     @JvmStatic external fun downloadOpen(key: String): Long
     @JvmStatic external fun downloadTake(h: Long, bytes: ByteArray, len: Int)
     @JvmStatic external fun downloadEnd(h: Long, whole: Boolean)
+    /** Downloads can be read back from the disk from now on (nori-engine's `processing`). */
+    @JvmStatic external fun processStart()
+    /** Downloads just saved and settled: what each needs besides its lyrics is decided, marked and started. Off the main thread. */
+    @JvmStatic external fun processSaved(ids: Array<String>)
+    /** Downloads asked for again ("Analyse downloaded songs"): how many are to be read back. Off the main thread. */
+    @JvmStatic external fun processAnalyse(ids: Array<String>): Int
 }
 
 /**
  * A download's bytes, as media3 fetches them from the network, handed to the core's measuring
- * (crates/android/src/measure.rs `download_*`, over nori-engine's `measure_as_it_comes`): with AutoMix on, a
- * song downloaded for offline listening is measured as it downloads, on the same bytes, and no later mix
- * needs a pass of its own. A quarter megabyte crosses at a time. Only a download fetched from its first byte
- * to its known end counts as measured; one taken up half way is measured from the disk once it is queued.
+ * (crates/android/src/measure.rs `download_*`, over nori-engine's `measure_download_as_it_comes`): a song
+ * downloaded for offline listening is measured as it downloads, whatever AutoMix says, on the same bytes, and
+ * neither a later mix nor the lyrics' sync needs a pass of its own. A quarter megabyte crosses at a time. Only
+ * a download fetched from its first byte to its known end counts as measured; one taken up half way is
+ * measured from the disk once it is saved (the core's `processing`).
  */
 @UnstableApi
-internal class MeasuringSink(private val autoMix: () -> Boolean) : DataSink {
+internal class MeasuringSink : DataSink {
     private var h = 0L
     private var length = C.LENGTH_UNSET.toLong()
     private var written = 0L
@@ -44,7 +51,7 @@ internal class MeasuringSink(private val autoMix: () -> Boolean) : DataSink {
         length = dataSpec.length
         written = 0
         filled = 0
-        h = if (dataSpec.position == 0L && autoMix()) MeasureJni.downloadOpen(dataSpec.key ?: "") else 0L
+        h = if (dataSpec.position == 0L) MeasureJni.downloadOpen(dataSpec.key ?: "") else 0L
         if (h != 0L && buffer == null) buffer = ByteArray(PIECE)
     }
 
@@ -86,8 +93,11 @@ internal class MeasuringSink(private val autoMix: () -> Boolean) : DataSink {
 @UnstableApi
 internal object MeasureBridge {
     @Volatile var prefetch: AutoMixPrefetch? = null
+    /** The caches, for a download read back while the playback service is not running. */
+    @Volatile var sources: MediaSources? = null
 
-    @JvmStatic fun whole(id: String): Array<String>? = prefetch?.whole(id)
+    @JvmStatic fun whole(id: String): Array<String>? =
+        prefetch?.whole(id) ?: sources?.let { AutoMixPrefetch.files(it.downloadCache, it.downloadKey(id)) }
     @JvmStatic fun measured() { prefetch?.onMeasured?.invoke() }
 }
 
@@ -132,22 +142,24 @@ class AutoMixPrefetch(
     internal fun whole(id: String): Array<String>? =
         files(sources.downloadCache, sources.downloadKey(id)) ?: runCatching { sources.streamKey(id) }.getOrNull()?.let { files(sources.streamCache, it) }
 
-    /**
-     * The files of [key] in [cache] from its first byte on, when they hold all of it but perhaps a short
-     * tail (see [MediaSources.isWhole]); the key first.
-     */
-    private fun files(cache: Cache, key: String): Array<String>? {
-        if (!MediaSources.isWhole(cache, key)) return null
-        val spans = cache.getCachedSpans(key)
-        val out = ArrayList<String>(spans.size + 1)
-        out += key
-        var at = 0L
-        for (span in spans) {
-            val file = span.file ?: break
-            if (span.position != at) break
-            out += file.path
-            at += span.length
+    internal companion object {
+        /**
+         * The files of [key] in [cache] from its first byte on, when they hold all of it but perhaps a short
+         * tail (see [MediaSources.isWhole]); the key first.
+         */
+        fun files(cache: Cache, key: String): Array<String>? {
+            if (!MediaSources.isWhole(cache, key)) return null
+            val spans = cache.getCachedSpans(key)
+            val out = ArrayList<String>(spans.size + 1)
+            out += key
+            var at = 0L
+            for (span in spans) {
+                val file = span.file ?: break
+                if (span.position != at) break
+                out += file.path
+                at += span.length
+            }
+            return if (at >= ContentMetadata.getContentLength(cache.getContentMetadata(key)) - MediaSources.TAIL) out.toTypedArray() else null
         }
-        return if (at >= ContentMetadata.getContentLength(cache.getContentMetadata(key)) - MediaSources.TAIL) out.toTypedArray() else null
     }
 }

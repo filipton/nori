@@ -32,7 +32,7 @@ impl Client {
 impl Core {
     /// The song downloaded under `id`, as it was kept with its download; None when it is not downloaded
     /// (or not finished).
-    pub(crate) fn download_song(&self, id: &str) -> Option<Song> {
+    pub fn download_song(&self, id: &str) -> Option<Song> {
         use rusqlite::OptionalExtension;
         let c = self.db.lock();
         let json: String = c.query_row("SELECT json FROM downloads WHERE server=sid() AND id=?1 AND done=1", [id], |r| r.get(0)).optional().ok()??;

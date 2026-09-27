@@ -299,7 +299,8 @@ impl Core {
         let db = db::open(&db_path, &server)?;
         nori_automix::beat_model::set_home(&db_path);
         let held = transfers::Held::load(&db)?;
-        let core = Arc::new(Core { db: Arc::new(Mutex::new(db)), server: RwLock::new(api::Server::default()), held: Arc::new(Mutex::new(held)) });
+        transfers::set_beats_wanted(transfers::beats_wanted_rows(&db)?);
+        let core =Arc::new(Core { db: Arc::new(Mutex::new(db)), server: RwLock::new(api::Server::default()), held: Arc::new(Mutex::new(held)) });
         // The newest core is the one the app is using: the parts of the core that run without Kotlin (the
         // transition planner on the audio thread, analyses finished in the background, a song asked
         // about by a list row) find its database and its downloads through these.

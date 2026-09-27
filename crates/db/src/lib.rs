@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS cache(server TEXT NOT NULL, key TEXT NOT NULL, body B
 CREATE TABLE IF NOT EXISTS kv(server TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(server, key)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS pending(rowid INTEGER PRIMARY KEY, server TEXT NOT NULL, endpoint TEXT NOT NULL, params TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS downloads(server TEXT NOT NULL, id TEXT NOT NULL, json TEXT NOT NULL, ts INTEGER NOT NULL, done INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(server, id)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS download_beats(server TEXT NOT NULL, id TEXT NOT NULL, PRIMARY KEY(server, id)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS autoeq(rowid INTEGER PRIMARY KEY, name TEXT NOT NULL, source TEXT NOT NULL, form TEXT NOT NULL, target TEXT NOT NULL, path TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS autoeq_missing(path TEXT PRIMARY KEY) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS profiles(name TEXT PRIMARY KEY, json TEXT NOT NULL, outputs TEXT NOT NULL DEFAULT '') WITHOUT ROWID;
@@ -57,8 +58,8 @@ CREATE TABLE IF NOT EXISTS vocal_curve(server TEXT NOT NULL, song_id TEXT NOT NU
 ";
 
 /// The tables that belong to one server: what goes when its profile is removed.
-const SERVER_TABLES: [&str; 13] = [
-    "items", "cache", "kv", "pending", "downloads", "searches", "plays", "song_stats", "mix_excluded", "autofill_picks", "smart_playlists", "track_analysis",
+const SERVER_TABLES: [&str; 14] = [
+    "items", "cache", "kv", "pending", "downloads", "download_beats", "searches", "plays", "song_stats", "mix_excluded", "autofill_picks", "smart_playlists", "track_analysis",
     "vocal_curve",
 ];
 

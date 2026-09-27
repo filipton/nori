@@ -156,11 +156,49 @@ class ActionsViewModel(app: Application) : NoriViewModel(app) {
     val shares = _shares.receiveAsFlow()
     fun share(id: String) = attempt(null) { _shares.send(nori.library.share(id)) }
 
-    fun download(songs: List<Song>) {
-        nori.downloads.download(songs)
+    fun download(songs: List<Song>) = askingBeats { beats ->
+        nori.downloads.download(songs, beats)
         warmCovers(songs)
         _messages.trySend(say.downloadingSongs(songs.size))
     }
+
+    /**
+     * Settings' "Analyse downloaded songs": the downloads with no current analysis, and those the beat model has
+     * not read if it is on and wanted, are read back one at a time under the download service.
+     */
+    fun analyseDownloads() = askingBeats { beats ->
+        nori.downloads.analyse(beats) { n -> _messages.trySend(if (n > 0) say.analysingDownloads(n) else say.nothingToAnalyse) }
+    }
+
+    /**
+     * A question waiting for its answer: whether the beat model also reads the songs being downloaded. [go] does
+     * what was asked for, with the answer.
+     */
+    class BeatsAsk(internal val go: (Boolean) -> Unit)
+
+    private val _beatsAsk = MutableStateFlow<BeatsAsk?>(null)
+    /** Download pressed with "Better beat detection" on and "ML beats for downloads" at Ask: the question on screen. */
+    val beatsAsk: StateFlow<BeatsAsk?> = _beatsAsk
+
+    /** Runs [go] with whether the beat model reads the songs: asked first when the settings say to (the core's `download_beats_offer`). */
+    private fun askingBeats(go: (Boolean) -> Unit) {
+        val offer = runCatching { dev.nori.music.ffi.downloadBeatsOffer() }.getOrDefault(dev.nori.music.ffi.transfers.BeatsOffer.OFF)
+        if (offer == dev.nori.music.ffi.transfers.BeatsOffer.ASK) _beatsAsk.value = BeatsAsk(go)
+        else go(offer == dev.nori.music.ffi.transfers.BeatsOffer.YES)
+    }
+
+    /** The question answered: [yes] or no, and with [remember] the setting takes the answer and it is not asked again. */
+    fun answerBeats(yes: Boolean, remember: Boolean) {
+        val ask = _beatsAsk.value ?: return
+        _beatsAsk.value = null
+        if (remember) {
+            dev.nori.music.ffi.settings.settingSet("downloadBeats", dev.nori.music.ffi.downloadBeatsRemembered(yes).name)?.let(nori.settings::took)
+        }
+        ask.go(yes)
+    }
+
+    /** The question put away unanswered: nothing is downloaded. */
+    fun dismissBeats() { _beatsAsk.value = null }
 
     /**
      * Fetches the artwork of songs being downloaded onto the disk; which covers, at which addresses, is

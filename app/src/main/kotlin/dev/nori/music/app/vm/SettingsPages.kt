@@ -161,7 +161,7 @@ private val SERVICES: Map<String, Pair<Int, Int>> = mapOf(
 // ---- search ----
 
 /** Rows only a build with the beat model's runtime has. */
-private val BEAT_MODEL_ROWS = setOf(R.string.settings_better_beats, R.string.settings_beats_mobile_data)
+private val BEAT_MODEL_ROWS = setOf(R.string.settings_better_beats, R.string.settings_beats_mobile_data, R.string.settings_download_beats)
 
 /**
  * What the search can find: which page a row lives on, its title, and the words under it. A row is
@@ -266,6 +266,8 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("data", R.string.settings_quality_download, 0),
     Triple("data", R.string.settings_parallel_downloads, R.string.settings_hint_parallel_downloads),
     Triple("data", R.string.settings_download_library, 0),
+    Triple("data", R.string.settings_download_beats, R.string.settings_hint_download_beats),
+    Triple("data", R.string.settings_analyse_downloads, R.string.settings_hint_analyse_downloads),
     Triple("data", R.string.settings_ahead_wifi, R.string.settings_hint_ahead_wifi),
     Triple("data", R.string.settings_ahead_mobile, 0),
     Triple("data", R.string.settings_covers_ahead, 0),
@@ -791,10 +793,18 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
 
     fun data(): List<SettingsSection> {
         val streaming = listOf(quality("wifi", R.string.settings_quality_wifi), quality("mobile", R.string.settings_quality_mobile))
-        val downloads = listOf(
+        val downloads = mutableListOf<SettingRow>(
             quality("download", R.string.settings_quality_download),
             choice("parallelDownloads", R.string.settings_parallel_downloads) { it },
             action(R.string.settings_download_library, str(R.string.settings_download_library_detail), str(R.string.settings_download), f.sync.indexed.songs > 0u, "download-library"),
+        )
+        // The beat model over what is downloaded: only while it is on (a build with it, AutoMix and Better beat detection on).
+        if (s.beatModel !is BeatModel.Unavailable && p.autoMix && p.autoMixBetterBeats) {
+            downloads += named("downloadBeats", R.string.settings_download_beats, R.string.settings_download_beats_ask, R.string.settings_download_beats_always, R.string.settings_download_beats_never)
+        }
+        downloads += action(
+            R.string.settings_analyse_downloads, str(R.string.settings_analyse_downloads_detail), str(R.string.settings_analyse),
+            f.storage.downloadSongs > 0, "analyse-downloads",
         )
         val ahead = listOf(
             choice("precacheWifi", R.string.settings_ahead_wifi, label = ::songsAhead),

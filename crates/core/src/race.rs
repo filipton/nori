@@ -207,6 +207,8 @@ impl Client {
     /// offline, each song stops waiting for its lyrics as its lookup ends (`transfers::work_done`).
     pub async fn lyrics_for_downloads(&self, ids: Vec<String>) {
         for id in ids.into_iter().filter(|id| !id.starts_with("ext-")) {
+            // Timed from here, and given up if it hangs (`download_processing_expire`).
+            crate::transfers::working(&id, crate::transfers::Work::Lyrics);
             let _ = self.lyrics_for(id.clone(), Arc::new(Unseen)).await;
             crate::transfers::work_done(&id, crate::transfers::Work::Lyrics);
         }

@@ -401,6 +401,7 @@ private fun DownloadRow(
                             DownloadPhase.FAILED -> couldNot
                             DownloadPhase.FINDING_LYRICS -> say.findingLyrics
                             DownloadPhase.ANALYSING -> say.analysing
+                            DownloadPhase.DETECTING_BEATS -> say.detectingBeats
                             else -> sub ?: song.artist
                         },
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -444,3 +445,33 @@ private fun Modifier.clip8() = clip(RoundedCornerShape(8.dp))
 private fun LazyItemScope.moving(plain: Boolean): Modifier = if (plain) Modifier.animateItem(null, null, null) else Modifier.animateItem(
     fadeInSpec = tween(220), placementSpec = tween(260, easing = FastOutSlowInEasing), fadeOutSpec = tween(160),
 )
+
+/**
+ * Download pressed with "Better beat detection" on and "ML beats for downloads" at Ask: whether the beat model
+ * also reads these songs once saved, and whether to remember the answer (the setting becomes Always or Never).
+ * Put away without an answer, nothing is downloaded.
+ */
+@Composable
+fun BeatsQuestion(actions: ActionsViewModel) {
+    val ask by actions.beatsAsk.collectAsStateWithLifecycle()
+    var keep by remember { mutableStateOf(false) }
+    NoriDialog(ask, { actions.dismissBeats(); keep = false }) {
+        AlertCard(
+            title = { Text(say.beatsAskTitle) },
+            text = {
+                Column {
+                    Text(say.beatsAskText)
+                    Row(
+                        Modifier.padding(top = 12.dp).clip8().clickable { keep = !keep }.padding(end = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        androidx.compose.material3.Checkbox(keep, { keep = it })
+                        Text(say.beatsAskRemember)
+                    }
+                }
+            },
+            confirmButton = { TextButton({ actions.answerBeats(true, keep); keep = false }) { Text(say.beatsAskYes) } },
+            dismissButton = { TextButton({ actions.answerBeats(false, keep); keep = false }) { Text(say.beatsAskNo) } },
+        )
+    }
+}

@@ -218,6 +218,9 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
         // other build has an empty one (src/noTest), so a release carries none of it.
         dev.nori.music.app.TestDriver(controller, nav, sheet, settings, actions, player)
 
+        // Whether the beat model also reads what is being downloaded, when the settings say to ask.
+        BeatsQuestion(actions)
+
         // The perf build's recorder starts a new stretch when the player goes up or away. See PerfHooks.
         dev.nori.music.app.PerfHooks.recorder?.let { r ->
             LaunchedEffect(sheet, r) { androidx.compose.runtime.snapshotFlow { sheet.isOpen }.collect(r::playerOpen) }
@@ -287,7 +290,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
                     page("library") { LibraryScreen(actions) }
                     page("settings") { SettingsScreen(settings) }
                     page("settings/{id}?key={key}") { e ->
-                        SettingsGroupScreen(settings, e.arguments!!.getString("id")!!, e.arguments?.getString("key").orEmpty())
+                        SettingsGroupScreen(settings, e.arguments!!.getString("id")!!, e.arguments?.getString("key").orEmpty(), actions)
                     }
                     page("equalizer") { EqualizerScreen(settings) }
                     page("autoeq") { AutoEqScreen(settings) }

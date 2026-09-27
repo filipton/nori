@@ -25,6 +25,8 @@ pub mod watch;
 
 #[cfg(feature = "core")]
 pub mod core;
+#[cfg(feature = "core")]
+pub mod processing;
 
 #[cfg(test)]
 mod no_alloc;

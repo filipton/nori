@@ -153,6 +153,7 @@ fn downloads_the_disk_and_measuring_ahead_over_the_core() {
         _ => panic!("a song that is not downloaded streams"),
     }
     metered_and_ahead(&client, &store, &dir);
+    downloads_read_back(&core, &store);
 
     // AutoMix on: the songs coming up are measured, those on the disk only.
     let mut prefs = nori_core::settings_store::settings_open(dir.join("app.db").to_string_lossy().into_owned()).unwrap();
@@ -261,6 +262,42 @@ fn downloads_the_disk_and_measuring_ahead_over_the_core() {
     }
     #[cfg(feature = "neural-beats")]
     listens_with_a_real_model(&core, &dir, &measurer, &settle);
+}
+
+/// A download that was not measured as it came (an MP4, one taken up half way, an analysis of an older version)
+/// is read back from the disk once saved, whatever AutoMix says, one song at a time, and nothing is left running
+/// after; the settings' "Analyse downloaded songs" does the same for the downloads already there.
+fn downloads_read_back(core: &Arc<Core>, store: &Arc<Store>) {
+    use nori_core::transfers::{download_phase, followed, work_done, Work, COMPLETED};
+    assert!(!nori_core::settings_store::with_prefs(|p| p.auto_mix).unwrap_or(false), "AutoMix is off");
+    let songs: Vec<Song> = ["rb-1", "rb-2"].iter().map(|id| Song { id: id.to_string(), title: id.to_string(), duration: 40, suffix: "wav".into(), ..Default::default() }).collect();
+    core.download_queue(songs).unwrap();
+    for id in ["rb-1", "rb-2"] {
+        std::fs::write(store.download_path(id), beat_wav()).unwrap();
+    }
+    core.download_settle(vec!["rb-1".into(), "rb-2".into()], vec![true, true]).unwrap();
+    for id in ["rb-1", "rb-2"] {
+        followed(id, COMPLETED, 0);
+        work_done(id, Work::Lyrics);
+    }
+    nori_engine::processing::saved(vec!["rb-1".into(), "rb-2".into()]);
+    nori_engine::processing::wait();
+    for id in ["rb-1", "rb-2"] {
+        let a = core.analysis_get(id.into()).unwrap().expect("analysed from the disk");
+        assert!((a.bpm - 120.0).abs() < 2.0 || (a.bpm - 60.0).abs() < 1.0 || (a.bpm - 240.0).abs() < 4.0, "the beat heard: {}", a.bpm);
+        assert_eq!(download_phase(id.into()), 3, "done with it");
+    }
+    // Analysed already: nothing to read back.
+    assert!(!core.download_unanalysed(false).unwrap().iter().any(|id| id.starts_with("rb-")));
+    // Its analysis gone (an older version): "Analyse downloaded songs" reads it back again.
+    core.analysis_clear().unwrap();
+    let again: Vec<String> = core.download_unanalysed(false).unwrap().into_iter().filter(|id| id.starts_with("rb-")).collect();
+    assert_eq!(again.len(), 2);
+    assert_eq!(nori_engine::processing::analyse(again), 2);
+    nori_engine::processing::wait();
+    assert!(core.analysis_get("rb-1".into()).unwrap().is_some() && core.analysis_get("rb-2".into()).unwrap().is_some());
+    assert_eq!((download_phase("rb-1".into()), download_phase("rb-2".into())), (3, 3));
+    assert!(nori_core::transfers::processing(0).is_none_or(|p| p.analysing == 0 && p.beats == 0), "nothing left waiting");
 }
 
 /// Whole songs, every request counted: the precacher's network.

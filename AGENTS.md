@@ -130,7 +130,8 @@ crates/engine/  Rust, platform-free: the whole player for a platform without one
                 ICY announcements). library.rs says where songs are, store.rs keeps songs on disk (the
                 stream cache and downloads), wav.rs renders to a file, and the `core` feature (core.rs)
                 plays the core's queue with its planner, settings, stream addresses and error run, and
-                runs downloads and AutoMix's measuring ahead from the core's bookkeeping; with the
+                runs downloads and AutoMix's measuring ahead from the core's bookkeeping, and processing.rs
+                reads saved downloads back one at a time (their analysis, and the beat model when wanted); with the
                 `neural-beats` feature the measurer also runs Beat This! (tract) over the ends of the songs
                 coming up, a feature the debug and perf builds carry and a release build leaves out unless
                 asked (`-PrustFeatures=neural-beats`). The core carries only the model's graph

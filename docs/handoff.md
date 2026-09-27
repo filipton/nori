@@ -12,6 +12,25 @@ Apple's own App Store screenshots and the differences closed. What is left is li
 
 ## Recently closed
 
+- **Every download is analysed, and the beat model can read downloads after they are saved.** Once a song's audio
+  is saved, what it needs besides its lyrics is the core's (`nori_transfers::transfers::needs`): its analysis
+  whatever AutoMix says (the analysis is also the vocal curve lyrics sync checks against and an untagged song's
+  loudness), from the bytes as they came (`measure_download_as_it_comes`, no longer gated on AutoMix) or read back
+  from the disk when that did not run or failed (an MP4, a download taken up half way, an older analysis version);
+  and Beat This! over its ends when "Better beat detection" is on and "ML beats for downloads" (`downloadBeats`:
+  Ask, Always, Never) wants it. Ask puts a question on Download (`BeatsQuestion`, with "Remember my choice"); the
+  answer is kept per song in `download_beats`. nori-engine `processing.rs` reads saved songs back one at a time on
+  one thread of the lowest priority (nice 19), the model loaded for the thread's life, the thread gone when the
+  line is empty. The phases are "Finding lyrics…", "Analysing…", "Detecting beats…" (phase 6), counted per work
+  (`transfers::processing`), each step timed from `working` to `work_done` and learned per work for the time left
+  (two lanes side by side: lookups, and the measuring). `PROCESSING_MS` (30 s from the save, which a queue of model
+  runs would always pass) is gone: each step has its own limit from when it starts (lyrics 30 s, analysis 3 min,
+  model 10 min) and a lane with nothing moving for a minute lets its songs go. On Android the download service is
+  held for the processing (`ACTION_HOLD`: a start media3 is never handed, so its stop on idle does not take) and
+  its notification counts the phases down; it stops when the work is over. Settings, Downloads and data: "Analyse
+  downloaded songs" queues the same for downloads missing an analysis (and the model's grid when wanted).
+  **Not timed on a phone**: the model's run per song (expected 25 to 35 s of a big core, more with music playing).
+
 - **A long beat-matched AutoMix no longer puts the next song up early and its lyrics back.** Once the
   clock below the transition engine is the incoming song's, the ending's place was sometimes read off that
   clock as though it were the ending's own: whenever the output's clock was read a few tens of ms back (a

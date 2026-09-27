@@ -32,6 +32,20 @@
         <item quantity="one">Analysing %d song…</item>
         <item quantity="other">Analysing %d songs…</item>
     </plurals>
+    <!-- The beat model (Better beat detection) reading downloaded songs' intros and outros, after their audio is saved. -->
+    <plurals name="summary_detecting_beats">
+        <item quantity="one">Detecting beats for %d song…</item>
+        <item quantity="other">Detecting beats for %d songs…</item>
+    </plurals>
+    <!-- Under the title while saved songs are processing: what else is left, each part joined by " · ". -->
+    <plurals name="processing_analysing">
+        <item quantity="one">%d to analyse</item>
+        <item quantity="other">%d to analyse</item>
+    </plurals>
+    <plurals name="processing_beats">
+        <item quantity="one">%d for beat detection</item>
+        <item quantity="other">%d for beat detection</item>
+    </plurals>
 
     <!-- The downloads screen's lines. -->
     <string name="downloads_active">%1$d downloading</string>
