@@ -52,10 +52,15 @@ Apple's own App Store screenshots and the differences closed. What is left is li
   (`dither::NOISE_SHAPING`): 6.7 dB less hiss at 1-5 kHz, 5.2 dB more at the top, not worth it at a phone's
   16-bit floor. Float is not the default with effects on: on the phone's speaker and Bluetooth the system
   mixer rounds a float track to its 16-bit device undithered, which is worse than the dithered 16-bit track;
-  the chain itself costs the same either way (2.0 ms per second of 48 kHz stereo with a graphic EQ, a
-  compressor and the limiter, on the Mac; dither adds 3 % of that). **Not measured on a device**: the bench
-  with and without high quality output and the equalizer on (battery, "quiet", how much of a float track's
-  11.5 s the platform grants).
+  the chain itself costs the same either way (`no_alloc::chain_cost`, bytes to bytes as the sink runs it, ten
+  seconds of 48 kHz stereo through a graphic EQ, a compressor and the limiter, on the Mac: 20.3 ms 16-bit
+  dithered, 19.5 ms float, float/16-bit 0.96; dither is 3 % of the 16-bit figure). Float changes no timing
+  of the bursts: the engine's burst, the ring (float either way) and the track are sized in time, so the
+  engine and the writer wake as often; only the bytes double (a float track of 11.5 s at 48 kHz is 4.4 MB
+  against 2.2 MB), and should the platform grant a float track less than asked, the writer tops up by what
+  it holds, more often. **Open**: screen-off battery with and without high quality output, measured on a
+  real phone with `tools/bench.sh` (the emulator's numbers mean nothing for it), and the size the platform
+  grants a float track there (the log says it when the track opens).
 
 
 - **The lyrics sync check hears the middle of the stereo image.** The vocal curve (nori-player automix/vocal.rs)
