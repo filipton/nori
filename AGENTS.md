@@ -10,7 +10,8 @@ and move like Apple Music (the cover melting into the page, no blocky Material d
 ```
 crates/player/  Rust, platform-free: how music is played and heard. Decoding compressed audio packet by
                 packet (decode.rs: MP3, FLAC, AAC-LC, Vorbis, ALAC over symphonia, Opus over opus-rs,
-                nothing allocated per packet), the sound chain (dsp.rs), speed and pitch (speed.rs over
+                nothing allocated per packet), the sound chain (dsp.rs, with the graphic equalizer's design in
+                graphic.rs, the compressor in compressor.rs and the virtualizer in spatial.rs), speed and pitch (speed.rs over
                 sonic.rs), silence skipping (silence.rs), AutoMix analysis, planning and mixing
                 (automix/), the transition engine (engine.rs), feeding the output in bursts (burst.rs),
                 which song the ear is on and the playhead (heard.rs), seeks that land (seek.rs), the queue

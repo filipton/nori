@@ -530,6 +530,13 @@ impl Runner {
                 }
                 self.prefs_changed(app);
             }
+            Cmd::Graphic(i, gain) => {
+                if let Some((effect, _)) = settings_store::edit_graphic(i, gain) {
+                    s.applied(effect);
+                    Self::tune(s, app);
+                }
+                self.prefs_changed(app);
+            }
             Cmd::Band(i, band) => {
                 if let Some((effect, _)) = settings_store::edit_band(i, band) {
                     s.applied(effect);

@@ -192,6 +192,10 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("sound", R.string.settings_autoeq_list, R.string.settings_hint_autoeq_list),
     Triple("sound", R.string.settings_per_device, R.string.settings_hint_per_device),
     Triple("sound", R.string.settings_system_effects, 0),
+    Triple("sound", R.string.settings_bass_boost_title, 0),
+    Triple("sound", R.string.settings_virtualizer_title, R.string.settings_virtualizer_hint),
+    Triple("sound", R.string.settings_volume_boost_title, 0),
+    Triple("sound", R.string.settings_compressor, R.string.settings_compressor_detail),
     Triple("sound", R.string.settings_replay_gain, R.string.settings_hint_replay_gain),
     Triple("sound", R.string.settings_untagged_gain, 0),
     Triple("sound", R.string.settings_hi_res, R.string.settings_hint_hi_res),
@@ -546,9 +550,40 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
         val offload = str(if (d.device != null) R.string.settings_offload_usb else if (s.offloadPaused) R.string.settings_offload_paused else R.string.settings_offload_detail)
         output += toggle("offload", R.string.settings_offload, offload)
         return listOf(
-            section(R.string.settings_section_equalizer, eq), section(R.string.settings_section_volume, volume),
-            section(R.string.settings_section_output, output),
+            section(R.string.settings_section_equalizer, eq), section(R.string.settings_section_effects, effects()),
+            section(R.string.settings_section_volume, volume), section(R.string.settings_section_output, output),
         )
+    }
+
+    /** Bass boost, virtualizer, volume boost and the compressor: sliders edited in place in the core. */
+    fun effects(): List<SettingRow> {
+        fun boost(db: Float) = if (db <= 0f) str(R.string.settings_off) else str(R.string.settings_db, signedDb(db))
+        fun one(v: Float) = "%.1f".format(v)
+        val rows = mutableListOf<SettingRow>(
+            SettingRow.Slider("bassBoostDb", str(R.string.settings_bass_boost, boost(p.bassBoostDb)), p.bassBoostDb, 0f, 12f, false, EqLevel.BASS_BOOST),
+            SettingRow.Slider(
+                "virtualizer",
+                str(R.string.settings_virtualizer, if (p.virtualizer <= 0f) str(R.string.settings_off) else percent((p.virtualizer * 100f).roundToInt().toString())),
+                p.virtualizer, 0f, 1f, false, EqLevel.VIRTUALIZER,
+            ),
+            SettingRow.Slider("volumeBoostDb", str(R.string.settings_volume_boost, boost(p.volumeBoostDb)), p.volumeBoostDb, 0f, 12f, false, EqLevel.VOLUME_BOOST),
+            SettingRow.Note(str(R.string.settings_boost_note)),
+            toggle("compressor", R.string.settings_compressor, R.string.settings_compressor_detail),
+        )
+        if (p.compressor) {
+            rows += choice("compressorPreset", R.string.settings_compressor_preset, fallback = { str(R.string.settings_compressor_custom) }) {
+                str(when (it) { "GENTLE" -> R.string.settings_compressor_gentle; "STRONG" -> R.string.settings_compressor_strong; else -> R.string.settings_compressor_balanced })
+            }
+            // The sliders span the useful part of each control (a ratio of 3 was a sliver at the start of
+            // 1 to 20); the core takes the wider values a profile or the terminal may hold.
+            rows += SettingRow.Slider("compThresholdDb", str(R.string.settings_comp_threshold, minus(one(p.compThresholdDb))), p.compThresholdDb, -60f, 0f, false, EqLevel.COMP_THRESHOLD)
+            rows += SettingRow.Slider("compRatio", str(R.string.settings_comp_ratio, one(p.compRatio)), p.compRatio.coerceIn(1f, 10f), 1f, 10f, false, EqLevel.COMP_RATIO)
+            rows += SettingRow.Slider("compAttackMs", str(R.string.settings_comp_attack, one(p.compAttackMs)), p.compAttackMs.coerceIn(0.1f, 100f), 0.1f, 100f, false, EqLevel.COMP_ATTACK)
+            rows += SettingRow.Slider("compReleaseMs", str(R.string.settings_comp_release, p.compReleaseMs.roundToInt().toString()), p.compReleaseMs.coerceIn(10f, 1000f), 10f, 1000f, false, EqLevel.COMP_RELEASE)
+            rows += SettingRow.Slider("compMakeupDb", str(R.string.settings_comp_makeup, signedDb(p.compMakeupDb)), p.compMakeupDb.coerceIn(0f, 12f), 0f, 12f, false, EqLevel.COMP_MAKEUP)
+            rows += SettingRow.Slider("compKneeDb", str(R.string.settings_comp_knee, one(p.compKneeDb)), p.compKneeDb.coerceIn(0f, 12f), 0f, 12f, false, EqLevel.COMP_KNEE)
+        }
+        return rows
     }
 
     /** The bit-perfect switch's second line: what the DAC is doing, why it cannot, or what the switch is for. */

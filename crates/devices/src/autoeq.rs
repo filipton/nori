@@ -162,8 +162,10 @@ pub enum Curve {
 /// An entry's curve through the platform's transport: its "ParametricEQ.txt", or where that is missing
 /// or has no filter, its "GraphicEQ.txt". A network failure or a server error is an error, never
 /// "missing": only an answer that the file is not there (404, 410) or has nothing usable in it is.
-pub async fn fetch_curve(transport: &dyn nori_net::transport::Transport, e: &AutoEqEntry) -> Result<Curve, nori_net::transport::NetError> {
-    for url in [preset_url(e), graphic_url(e)] {
+pub async fn fetch_curve(transport: &dyn nori_net::transport::Transport, e: &AutoEqEntry, graphic_first: bool) -> Result<Curve, nori_net::transport::NetError> {
+    // The graphic equalizer is fitted to AutoEQ's own dense curve; the parametric one takes its filters.
+    let urls = if graphic_first { [graphic_url(e), preset_url(e)] } else { [preset_url(e), graphic_url(e)] };
+    for url in urls {
         let r = transport.get(url, 0).await?;
         if r.status == 404 || r.status == 410 {
             continue;
@@ -480,9 +482,18 @@ mod tests {
         fn curve(pages: Vec<(&'static str, u16, &'static str)>) -> (Result<Curve, nori_net::transport::NetError>, usize) {
             let web = Web { pages, asked: Mutex::new(Vec::new()) };
             let e = entry(REAL.lines().nth(2).unwrap()).unwrap();
-            let got = block(fetch_curve(&web, &e));
+            let got = block(fetch_curve(&web, &e, false));
             let asked = web.asked.lock().unwrap().len();
             (got, asked)
+        }
+
+        #[test]
+        fn the_graphic_equalizer_takes_the_graphic_curve_first() {
+            let web = Web { pages: vec![("ParametricEQ.txt", 200, PARAMETRIC), ("GraphicEQ.txt", 200, GRAPHIC)], asked: Mutex::new(Vec::new()) };
+            let e = entry(REAL.lines().nth(2).unwrap()).unwrap();
+            assert_eq!(block(fetch_curve(&web, &e, true)).unwrap(), Curve::Found(GRAPHIC.into()));
+            let web = Web { pages: vec![("ParametricEQ.txt", 200, PARAMETRIC), ("GraphicEQ.txt", 404, "")], asked: Mutex::new(Vec::new()) };
+            assert_eq!(block(fetch_curve(&web, &e, true)).unwrap(), Curve::Found(PARAMETRIC.into()), "and the filters where there is none");
         }
 
         #[test]

@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use nori_settings::settings::{band_from, load, save, AutoFillBasis, AutoFillKind, GainMode, HomeRow, PrefValue, SavedQuality, SavedServer, StoredPrefs, SwipeAction, TapAction, ThemeMode};
+use nori_settings::settings::{band_from, load, save, AutoFillBasis, AutoFillKind, EqMode, GainMode, HomeRow, PrefValue, SavedQuality, SavedServer, StoredPrefs, SwipeAction, TapAction, ThemeMode};
 use nori_settings::settings_model::{specs, value_of};
 
 const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/stored_format.txt");
@@ -62,6 +62,19 @@ fn sample() -> StoredPrefs {
         eq_enabled: true,
         eq_bands: vec![band_from(1, 105.0, -3.5, 0.7, 1), band_from(9, 12_345_678.0, 2.0, 0.00001, 2)],
         eq_preamp_db: Some(-4.25),
+        eq_mode: EqMode::Parametric,
+        eq_graphic: vec![1.5, -2.0, 0.0, 3.0, 4.5, 6.0, -12.0, 12.0, 0.5, -0.5],
+        eq_graphic_target: (0..96).map(|i| i as f32 * 0.25 - 12.0).collect(),
+        bass_boost_db: 6.0,
+        virtualizer: 0.4,
+        volume_boost_db: 3.5,
+        compressor: true,
+        comp_threshold_db: -30.0,
+        comp_ratio: 6.0,
+        comp_attack_ms: 2.5,
+        comp_release_ms: 400.0,
+        comp_makeup_db: 7.0,
+        comp_knee_db: 10.0,
         crossfeed_db: 3.0,
         balance: -0.25,
         mono: true,

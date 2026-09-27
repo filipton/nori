@@ -3,7 +3,8 @@
 
 use nori_player::automix::synth::Rng;
 use nori_player::burst::BUFFER_US;
-use nori_player::dsp::{Band, Equalizer, HIGH_SHELF, LOW_SHELF, PEAKING};
+use nori_player::compressor::CompressorPreset;
+use nori_player::dsp::{Band, Effects, Equalizer, HIGH_SHELF, LOW_SHELF, PEAKING};
 use nori_player::sim::{Player, Sound, SHALLOW_US};
 
 use crate::common::*;
@@ -104,6 +105,65 @@ fn the_equalizer_answers_with_the_gains_it_was_given() {
     }
 }
 
+#[test]
+fn the_graphic_equalizer_answers_with_its_sliders() {
+    // Tones at four band centres of the ten-band layout, far enough apart to be read one by one.
+    let sliders = vec![0.0, 0.0, 6.0, 6.0, 0.0, -6.0, 0.0, 0.0, 3.0, 0.0];
+    let centres = nori_player::graphic::centres(10);
+    let tones: Vec<(f64, f64)> = [2, 5, 8].iter().map(|&i| (centres[i], sliders[i])).collect();
+    let x: Vec<i16> = (0..frames(6.0))
+        .flat_map(|i| {
+            let t = i as f64 / RATE as f64;
+            let v = tones.iter().map(|(hz, _)| 0.08 * (std::f64::consts::TAU * hz * t).sin()).sum::<f64>();
+            [(v * 32767.0).round() as i16; 2]
+        })
+        .collect();
+    let mut p = Player::new(vec![track("a", &x)]);
+    p.set_sound(Sound { graphic: sliders, ..Sound::default() });
+    p.play_from(0);
+    assert!(p.run_to_end(20_000));
+    let (heard, input) = (left(&p.sink.heard_samples()), left(&x));
+    let (from, to) = (frames(1.0), frames(5.0));
+    for (hz, want) in tones {
+        let got = db(level_at(&heard[from..to], hz, RATE as f64) / level_at(&input[from..to], hz, RATE as f64));
+        assert!((got - want).abs() < 0.4, "{hz} Hz: {got:.2} dB, the slider says {want}");
+    }
+}
+
+#[test]
+fn a_volume_boost_is_louder_and_never_past_the_ceiling() {
+    // Music boosted 6 dB with the limiter switch left off: the boost
+    // brings it anyway.
+    let song = music(12.0, 5);
+    let mut p = Player::new(vec![track("a", &song)]);
+    p.set_sound(Sound { effects: Effects { boost_db: 6.0, ..Effects::default() }, ..Sound::default() });
+    p.play_from(0);
+    assert!(p.run_to_end(40_000));
+    let heard: Vec<f64> = p.sink.heard_samples().iter().map(|&v| v as f64 / 32768.0).collect();
+    let input: Vec<f64> = song.iter().map(|&v| v as f64 / 32768.0).collect();
+    let peak = heard.iter().fold(0f64, |m, v| m.max(v.abs()));
+    assert!(peak <= 10f64.powf(-1.0 / 20.0) + 1.0 / 32768.0, "nothing past the -1 dB ceiling: {peak}");
+    let louder = db(rms(&heard) / rms(&input));
+    assert!(louder > 3.0 && louder < 6.2, "{louder} dB louder");
+}
+
+#[test]
+fn the_compressor_brings_quiet_and_loud_closer() {
+    // A quiet half and a loud half, 24 dB apart.
+    let quiet = sine(220.0, 0.03, 4.0);
+    let loud = sine(220.0, 0.5, 4.0);
+    let song: Vec<i16> = quiet.iter().chain(&loud).copied().collect();
+    let mut p = Player::new(vec![track("a", &song)]);
+    p.set_sound(Sound { effects: Effects { compressor: Some(CompressorPreset::Balanced.settings()), ..Effects::default() }, ..Sound::default() });
+    p.play_from(0);
+    assert!(p.run_to_end(30_000));
+    let heard = left(&p.sink.heard_samples());
+    let half = heard.len() / 2;
+    let (a, b) = (rms(&heard[frames(1.0)..half - frames(0.5)]), rms(&heard[half + frames(1.0)..heard.len() - frames(0.5)]));
+    let apart = db(b / a);
+    assert!(apart < 24.0 - 6.0, "24 dB apart went in, {apart:.1} came out");
+}
+
 /// Plays a steady tone, changes the sound to `change` for a while and back to `base`, and returns the
 /// largest step heard against the largest step of the tone itself.
 fn step_through(base: Sound, change: Sound, tone: &[i16]) -> (f64, f64) {
@@ -139,6 +199,11 @@ fn settings_changed_while_playing_never_click() {
         ("crossfeed", limiter(), Sound { crossfeed_db: 4.5, ..limiter() }),
         ("balance", eq.clone(), Sound { balance: 0.4, ..eq.clone() }),
         ("the limiter", eq.clone(), Sound { limiter: true, ..eq.clone() }),
+        ("the graphic equalizer", limiter(), Sound { graphic: vec![3.0, 6.0, 4.0, 0.0, -3.0, -3.0, 0.0, 2.0, 4.0, 4.0], ..limiter() }),
+        ("the bass boost", limiter(), Sound { effects: Effects { bass_boost_db: 8.0, ..Effects::default() }, ..limiter() }),
+        ("the compressor", limiter(), Sound { effects: Effects { compressor: Some(CompressorPreset::Strong.settings()), ..Effects::default() }, ..limiter() }),
+        ("the virtualizer", limiter(), Sound { effects: Effects { virtualizer: 1.0, ..Effects::default() }, ..limiter() }),
+        ("the volume boost", limiter(), Sound { effects: Effects { boost_db: 6.0, ..Effects::default() }, ..limiter() }),
     ] {
         let (worst, steady) = step_through(base, change, &tone);
         assert!(worst <= 2.0 * steady, "{what} on and off: a step of {worst:.4} against the tone's own {steady:.4}");

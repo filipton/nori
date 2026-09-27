@@ -5,12 +5,14 @@
 
 pub mod automix;
 pub mod burst;
+pub mod compressor;
 pub mod dac;
 pub mod device;
 pub mod decode;
 pub mod dsp;
 pub mod engine;
 pub mod eqfit;
+pub mod graphic;
 pub mod outputs;
 pub mod headphones;
 pub mod heard;
@@ -25,6 +27,7 @@ pub mod silence;
 pub mod sim;
 pub mod sound;
 pub mod sonic;
+pub mod spatial;
 pub mod speed;
 pub mod transitions;
 pub mod transport;

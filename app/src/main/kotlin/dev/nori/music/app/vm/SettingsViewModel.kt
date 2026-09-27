@@ -326,6 +326,15 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
     /** Pre-amp, balance, limiter ceiling or crossfeed moved; the core holds it in range and snaps it, in place like a band. */
     fun setLevel(level: EqLevel, value: Float) = nori.settings.setLevel(level, value)
 
+    /** One graphic equalizer slider moved; in place in the core, like a band. */
+    fun setGraphic(index: Int, value: Float) = nori.settings.setGraphic(index, value)
+
+    /** The graphic or the parametric equalizer plays; each keeps its own settings. */
+    fun setEqMode(mode: dev.nori.music.ffi.settings.EqMode) { set("eqMode", mode.name) }
+
+    /** How many graphic bands (10, 15 or 31): the core draws the same curve on the new layout. */
+    fun setEqLayout(count: Int) { set("eqLayout", count.toString()) }
+
     /** The automatic pre-amp on or off; off starts from the level it was at. */
     fun setAutoPreamp(automatic: Boolean) { nori.settings.soundTool(SoundTool.AutoPreamp(automatic)) }
     fun addBand() { nori.settings.soundTool(SoundTool.AddBand) }

@@ -65,7 +65,7 @@ fun AutoEqScreen(vm: SettingsViewModel) {
                 }
             }
             if (!ui.tooShort && ui.hits.isEmpty()) item { Text(say.nothingMatches, Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            item { Text(say.autoeqCredit, Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            item { Text(if (prefs.eqMode == dev.nori.music.ffi.settings.EqMode.GRAPHIC) say.autoeqCreditGraphic else say.autoeqCredit, Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         }
     }
 }

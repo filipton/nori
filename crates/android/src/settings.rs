@@ -16,7 +16,7 @@ pub(crate) static EQ_BANDS: Class = Class {
 
 pub(crate) static SOUND_EDIT: Class = Class {
     name: c"dev/nori/music/settings/SoundEdit",
-    methods: &[native!(c"setBand", c"(I[F)I", set_band), native!(c"setLevel", c"(IF)J", set_level)],
+    methods: &[native!(c"setBand", c"(I[F)I", set_band), native!(c"setLevel", c"(IF)J", set_level), native!(c"setGraphic", c"(IF)J", set_graphic)],
 };
 
 /// What a band's label marks after its frequency (`settings::band_mark`), as its place in `BandMark`: 0
@@ -52,15 +52,20 @@ extern "system" fn set_band(env: JNIEnv, _: JClass, index: jint, band: JFloatArr
 /// `settings_store::edit_level` (`level` an [`EqLevel`] ordinal): the value as it was kept as float bits
 /// in the high 32, what the player has to apply again in the low; -1 when nothing changed.
 extern "system" fn set_level(level: jint, value: jfloat) -> jlong {
-    let level = match level {
-        0 => EqLevel::Preamp,
-        1 => EqLevel::Balance,
-        2 => EqLevel::Limiter,
-        3 => EqLevel::Crossfeed,
-        4 => EqLevel::ReplayGainPreamp,
-        _ => return -1,
-    };
-    match nori_core::settings_store::edit_level(level, value) {
+    let Some(level) = usize::try_from(level).ok().and_then(|l| EqLevel::ALL.get(l)) else { return -1 };
+    match nori_core::settings_store::edit_level(*level, value) {
+        Some((effect, kept)) => ((kept.to_bits() as jlong) << 32) | effect as jlong,
+        None => -1,
+    }
+}
+
+/// `settings_store::edit_graphic` on every step of a graphic equalizer slider: the value as it was kept
+/// as float bits in the high 32, what the player has to apply again in the low; -1 when nothing changed.
+extern "system" fn set_graphic(index: jint, value: jfloat) -> jlong {
+    if index < 0 {
+        return -1;
+    }
+    match nori_core::settings_store::edit_graphic(index as u32, value) {
         Some((effect, kept)) => ((kept.to_bits() as jlong) << 32) | effect as jlong,
         None => -1,
     }

@@ -130,6 +130,13 @@
     <string name="equalizer">Equalizer</string>
     <string name="eq_hint">Tap a band\'s label to change its frequency, width or type.</string>
     <string name="add_band">Add band</string>
+    <string name="eq_graphic">Graphic</string>
+    <string name="eq_parametric">Parametric</string>
+    <string name="eq_graphic_hint">Each slider is the level at its frequency. Neighbouring bands are corrected for each other, so the sound follows the sliders.</string>
+    <string name="eq_band_count">%1$d bands</string>
+    <string name="eq_follows">Follows the headphone\'s correction within %1$s dB.</string>
+    <string name="eq_follows_loose">Follows the headphone\'s correction within %1$s dB. Parametric or 31 bands follow it more closely.</string>
+    <string name="eq_follows_loose_31">Follows the headphone\'s correction within %1$s dB. Parametric follows it more closely.</string>
     <string name="paste_preset">Paste a preset</string>
     <string name="presets">Presets</string>
     <string name="auto_preamp_hint">Automatic pulls the level down by the largest boost so the curve cannot clip</string>
@@ -155,6 +162,7 @@
     <string name="refresh_list">Refresh list</string>
     <string name="autoeq_no_curve">AutoEQ has no curve for that one, so it\'s left out of the list from now on.</string>
     <string name="autoeq_credit">Curves by the AutoEQ project (jaakkopasanen/AutoEq). Tapping one replaces the equalizer\'s bands.</string>
+    <string name="autoeq_credit_graphic">Curves by the AutoEQ project (jaakkopasanen/AutoEq). Tapping one sets the graphic equalizer\'s sliders to follow it.</string>
     <string name="devices">Devices</string>
     <string name="autoeq_auto">Apply AutoEQ automatically</string>
     <string name="autoeq_auto_detail">Headphones with a known AutoEQ curve get it as soon as they connect, instead of being asked.</string>

@@ -34,4 +34,6 @@ internal object SoundEdit {
     @JvmStatic @FastNative external fun setBand(index: Int, band: FloatArray): Int
     /** [level] an `EqLevel` ordinal; the value as it was kept as float bits in the high 32, the effects in the low. */
     @JvmStatic @CriticalNative external fun setLevel(level: Int, value: Float): Long
+    /** One graphic slider: the value as it was kept as float bits in the high 32, the effects in the low; -1 for no change. */
+    @JvmStatic @CriticalNative external fun setGraphic(index: Int, value: Float): Long
 }

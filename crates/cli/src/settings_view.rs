@@ -6,7 +6,7 @@
 //! rows of the same kinds.
 
 use crate::text;
-use nori_core::settings::{EqLevel, SoundBand, StoredPrefs, EQ_RANGES};
+use nori_core::settings::{EqLevel, EqMode, SoundBand, StoredPrefs, EQ_RANGES};
 use nori_core::settings_model::{self, BeatModel, LyricsSource, SettingsState};
 use nori_core::MusicFolder;
 
@@ -506,7 +506,44 @@ fn sound(b: &Build) -> Vec<Section> {
         b.toggle_if("skipSilence", "Skip silence", "Shorten quiet gaps", live),
     ];
     let output = vec![b.toggle("hiRes", "Bit-exact output", "Float samples straight to the device; bypasses mixing and effects")];
-    vec![section("Equalizer", eq), section("Levelling", levelling), section("Transitions", mixing), section("Tempo", tempo), section("Output", output)]
+    vec![section("Equalizer", eq), section("Effects", effects(b)), section("Levelling", levelling), section("Transitions", mixing), section("Tempo", tempo), section("Output", output)]
+}
+
+/// Bass boost, virtualizer, volume boost and the compressor: each a slider through the core's level edits.
+fn effects(b: &Build) -> Vec<Row> {
+    let p = b.p;
+    let slider = |name: &str, label: String, value: f32, (min, max): (f32, f32), level: EqLevel| Row::Slider { name: name.into(), label, value, min, max, centred: false, level: Some(level) };
+    let db_or_off = |v: f32| if v > 0.0 { format!("+{v:.1} dB") } else { "off".into() };
+    let mut rows = vec![
+        slider("bassBoostDb", format!("Bass boost {}", db_or_off(p.bass_boost_db)), p.bass_boost_db, (0.0, 12.0), EqLevel::BassBoost),
+        slider(
+            "virtualizer",
+            format!("Virtualizer {}", if p.virtualizer > 0.0 { format!("{:.0} %", p.virtualizer * 100.0) } else { "off".into() }),
+            p.virtualizer,
+            (0.0, 1.0),
+            EqLevel::Virtualizer,
+        ),
+        slider("volumeBoostDb", format!("Volume boost {}", db_or_off(p.volume_boost_db)), p.volume_boost_db, (0.0, 12.0), EqLevel::VolumeBoost),
+        Row::Note { text: "Boosts bring the limiter with them, so nothing clips.".into() },
+        b.toggle("compressor", "Compressor", "Evens out loud and quiet passages"),
+    ];
+    if p.compressor {
+        rows.push(b.choice("compressorPreset", "  Preset", true, |v| match v {
+            "GENTLE" => "gentle".into(),
+            "BALANCED" => "balanced".into(),
+            "STRONG" => "strong".into(),
+            _ => "custom".into(),
+        }));
+        rows.extend([
+            slider("compThresholdDb", format!("  Threshold {:.1} dB", p.comp_threshold_db), p.comp_threshold_db, (-60.0, 0.0), EqLevel::CompThreshold),
+            slider("compRatio", format!("  Ratio {:.1}:1", p.comp_ratio), p.comp_ratio, (1.0, 20.0), EqLevel::CompRatio),
+            slider("compAttackMs", format!("  Attack {:.1} ms", p.comp_attack_ms), p.comp_attack_ms, (0.1, 200.0), EqLevel::CompAttack),
+            slider("compReleaseMs", format!("  Release {:.0} ms", p.comp_release_ms), p.comp_release_ms, (10.0, 2000.0), EqLevel::CompRelease),
+            slider("compMakeupDb", format!("  Make-up +{:.1} dB", p.comp_makeup_db), p.comp_makeup_db, (0.0, 24.0), EqLevel::CompMakeup),
+            slider("compKneeDb", format!("  Knee {:.1} dB", p.comp_knee_db), p.comp_knee_db, (0.0, 24.0), EqLevel::CompKnee),
+        ]);
+    }
+    rows
 }
 
 fn playback(b: &Build, f: &Facts) -> Vec<Section> {
@@ -735,10 +772,16 @@ pub fn slider_share(row: &Row) -> Option<(f32, bool)> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EqRow {
     Enabled,
+    /// Graphic or parametric.
+    Mode,
+    /// How many graphic bands.
+    Layout,
     Presets,
     AutoPreamp,
     Preamp,
     Band(usize),
+    /// A graphic slider.
+    Slider(usize),
     AddBand,
     Reset,
     Balance,
@@ -749,12 +792,22 @@ pub enum EqRow {
 }
 
 pub fn eq_rows(p: &StoredPrefs) -> Vec<EqRow> {
-    let mut rows = vec![EqRow::Enabled, EqRow::Presets, EqRow::AutoPreamp];
+    let graphic = p.eq_mode == EqMode::Graphic;
+    let mut rows = vec![EqRow::Enabled, EqRow::Mode];
+    if graphic {
+        rows.push(EqRow::Layout);
+    }
+    rows.extend([EqRow::Presets, EqRow::AutoPreamp]);
     if p.eq_preamp_db.is_some() {
         rows.push(EqRow::Preamp);
     }
-    rows.extend((0..p.eq_bands.len()).map(EqRow::Band));
-    rows.extend([EqRow::AddBand, EqRow::Reset, EqRow::Balance, EqRow::Crossfeed, EqRow::Mono, EqRow::Limiter]);
+    if graphic {
+        rows.extend((0..p.eq_graphic.len()).map(EqRow::Slider));
+    } else {
+        rows.extend((0..p.eq_bands.len()).map(EqRow::Band));
+        rows.push(EqRow::AddBand);
+    }
+    rows.extend([EqRow::Reset, EqRow::Balance, EqRow::Crossfeed, EqRow::Mono, EqRow::Limiter]);
     if p.limiter {
         rows.push(EqRow::Ceiling);
     }
@@ -767,6 +820,12 @@ impl EqRow {
         let on = |b: bool| (if b { "● on" } else { "○ off" }).to_string();
         match *self {
             EqRow::Enabled => ("Equalizer".into(), on(p.eq_enabled)),
+            EqRow::Mode => ("Kind".into(), if p.eq_mode == EqMode::Graphic { "‹ graphic ›" } else { "‹ parametric ›" }.into()),
+            EqRow::Layout => ("Bands".into(), format!("‹ {} ›", p.eq_graphic.len())),
+            EqRow::Slider(i) => {
+                let label = nori_core::dsp::graphic_bands(p.eq_graphic.len() as u32).get(i).map_or(0.0, |b| b.label_hz);
+                (if label.fract() != 0.0 { format!("{label:.1}") } else { text::hz(label) }, format!("{} dB", text::signed_db(p.eq_graphic.get(i).copied().unwrap_or(0.0))))
+            }
             EqRow::Presets => ("Presets".into(), "choose ›".into()),
             EqRow::AutoPreamp => ("Automatic pre-amp".into(), on(p.eq_preamp_db.is_none())),
             EqRow::Preamp => ("Pre-amp".into(), text::preamp(p.eq_preamp_db.unwrap_or(0.0), false)),
@@ -792,6 +851,20 @@ impl EqRow {
         let level = |level: EqLevel, was: f32, to: f32| (to != was).then_some(Cmd::Level(level, to));
         match *self {
             EqRow::Enabled => (p.eq_enabled != up).then_some(Cmd::Setting("eq".into(), up.to_string())),
+            EqRow::Mode => {
+                let want = if up { EqMode::Graphic } else { EqMode::Parametric };
+                (p.eq_mode != want).then(|| Cmd::Setting("eqMode".into(), if up { "GRAPHIC" } else { "PARAMETRIC" }.into()))
+            }
+            EqRow::Layout => {
+                let at = nori_core::dsp::graphic::LAYOUTS.iter().position(|n| *n == p.eq_graphic.len()).unwrap_or(0);
+                let to = if up { (at + 1).min(2) } else { at.saturating_sub(1) };
+                (to != at).then(|| Cmd::Setting("eqLayout".into(), nori_core::dsp::graphic::LAYOUTS[to].to_string()))
+            }
+            EqRow::Slider(i) => {
+                let was = *p.eq_graphic.get(i)?;
+                let to = (was + d).clamp(r.gain.min, r.gain.max);
+                (to != was).then_some(Cmd::Graphic(i as u32, to))
+            }
             EqRow::Mono => (p.mono != up).then_some(Cmd::Setting("mono".into(), up.to_string())),
             EqRow::Limiter => (p.limiter != up).then_some(Cmd::Setting("limiter".into(), up.to_string())),
             EqRow::AutoPreamp => (p.eq_preamp_db.is_none() != up).then_some(Cmd::Sound(SoundToolCmd::AutoPreamp(up))),
@@ -815,6 +888,7 @@ impl EqRow {
     pub fn open(&self, p: &StoredPrefs) -> Option<Cmd> {
         match *self {
             EqRow::Enabled => Some(Cmd::Setting("eq".into(), (!p.eq_enabled).to_string())),
+            EqRow::Mode => self.step(p, p.eq_mode != EqMode::Graphic),
             EqRow::Mono => Some(Cmd::Setting("mono".into(), (!p.mono).to_string())),
             EqRow::Limiter => Some(Cmd::Setting("limiter".into(), (!p.limiter).to_string())),
             EqRow::AutoPreamp => Some(Cmd::Sound(SoundToolCmd::AutoPreamp(p.eq_preamp_db.is_some()))),
@@ -956,8 +1030,27 @@ mod tests {
     }
 
     #[test]
+    fn the_graphic_equalizer_has_its_own_sliders_and_layouts() {
+        let p = StoredPrefs { eq_mode: EqMode::Graphic, ..StoredPrefs::default() };
+        let rows = eq_rows(&p);
+        assert_eq!(rows.iter().filter(|r| matches!(r, EqRow::Slider(_))).count(), 10);
+        assert!(!rows.iter().any(|r| matches!(r, EqRow::Band(_) | EqRow::AddBand)), "no parametric bands on the graphic one");
+        assert_eq!(EqRow::Slider(0).words(&p), ("31.5".to_string(), "+0.0 dB".to_string()));
+        assert!(matches!(EqRow::Slider(3).step(&p, true), Some(Cmd::Graphic(3, v)) if v == 0.5));
+        assert!(matches!(EqRow::Layout.step(&p, true), Some(Cmd::Setting(n, v)) if n == "eqLayout" && v == "15"));
+        assert!(EqRow::Layout.step(&p, false).is_none(), "ten is the fewest");
+        assert!(matches!(EqRow::Mode.open(&p), Some(Cmd::Setting(n, v)) if n == "eqMode" && v == "PARAMETRIC"));
+        assert!(eq_rows(&StoredPrefs::default()).contains(&EqRow::Layout), "a new install opens on the graphic equalizer");
+        let parametric = eq_rows(&StoredPrefs { eq_mode: EqMode::Parametric, ..StoredPrefs::default() });
+        assert!(parametric.contains(&EqRow::Mode) && !parametric.contains(&EqRow::Layout));
+        // The effects on the sound page, the compressor's controls once it is on.
+        let fx = effects(&Build { p: &StoredPrefs { compressor: true, ..StoredPrefs::default() }, s: &settings_model::state(&StoredPrefs::default(), settings_model::Output::default()) });
+        assert!(fx.iter().any(|r| matches!(r, Row::Slider { level: Some(EqLevel::CompRatio), .. })));
+    }
+
+    #[test]
     fn the_equalizer_lists_every_band_and_steps_them_in_range() {
-        let prefs = StoredPrefs { eq_bands: nori_core::settings::graphic(), ..StoredPrefs::default() };
+        let prefs = StoredPrefs { eq_mode: EqMode::Parametric, eq_bands: nori_core::settings::graphic(), ..StoredPrefs::default() };
         let rows = eq_rows(&prefs);
         assert_eq!(rows.iter().filter(|r| matches!(r, EqRow::Band(_))).count(), prefs.eq_bands.len());
         let Some(Cmd::Band(0, b)) = EqRow::Band(0).step(&prefs, true) else { panic!() };

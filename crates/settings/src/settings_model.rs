@@ -159,7 +159,7 @@ fn beat_model_now() -> BeatModel {
 
 /// [`SettingsState`] for these settings and this output.
 pub fn state(p: &StoredPrefs, out: Output) -> SettingsState {
-    let dsp = nori_player::sound::sound_on(p.eq_enabled, p.crossfeed_db, p.balance, p.mono, p.limiter);
+    let dsp = p.sound_chain_on();
     let prefs = nori_model::AudioPrefs {
         dsp,
         skip_silence: p.skip_silence,
