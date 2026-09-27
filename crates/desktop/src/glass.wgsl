@@ -13,7 +13,7 @@ struct U {
     shape: vec4<f32>,     // corner radius, bevel band, refraction, dispersion (pixels, pixels, pixels, ratio)
     tint: vec4<f32>,      // the glass's own colour and how much of it
     light: vec4<f32>,     // rim light, lift over dark ground; blur: direction (x, y); glass: spill, its reach (pixels)
-    gather: vec4<f32>,    // how far past the edge the glass gathers light (pixels), how much colour it keeps
+    gather: vec4<f32>,    // how far past the edge the glass gathers light (pixels), how much colour it keeps, how much of the sharp page shows through
 };
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -65,7 +65,13 @@ fn field(p: vec2<f32>) -> f32 {
 }
 
 fn look(p: vec2<f32>) -> vec3<f32> {
-    return textureSampleLevel(blurred, smp, clamp(p / u.view.xy, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb;
+    let at = clamp(p / u.view.xy, vec2<f32>(0.0), vec2<f32>(1.0));
+    let soft = textureSampleLevel(blurred, smp, at, 0.0).rgb;
+    if (u.gather.z <= 0.0) {
+        return soft;
+    }
+    // A lighter blur: the page itself, a little of it, through the blurred one.
+    return mix(soft, textureSampleLevel(src, smp, at, 0.0).rgb, u.gather.z);
 }
 
 // The page blurred so far that only its light is left: what the glass takes from beside it.
