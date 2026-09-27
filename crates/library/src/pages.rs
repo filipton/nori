@@ -446,7 +446,11 @@ pub struct ArtistDetail {
 }
 
 impl ArtistDetail {
-    pub fn new(artist: Artist, albums: Vec<Album>) -> Self {
+    pub fn new(artist: Artist, mut albums: Vec<Album>) -> Self {
+        // Every release here is the artist's, whoever else is credited: the cards say only the year.
+        for a in &mut albums {
+            a.subtitle = nori_model::lines::album_subtitle("", a.year);
+        }
         let groups = release_groups(&albums);
         let queue = PageQueue::of(OriginKind::Artist, &artist.id);
         ArtistDetail { artist, albums, groups, queue }
@@ -517,6 +521,14 @@ mod tests {
         let d = AlbumDetail::new(album, vec![by("BJÖRK", ""), by("Björk", "explicit"), by("Thom Yorke", "")], vec![]);
         assert_eq!(d.discs[0].lines, ["", "🅴 ", "Thom Yorke"]);
         assert_eq!(d.seconds, 0);
+    }
+
+    #[test]
+    fn an_artist_page_shows_only_its_albums_years() {
+        let artist = Artist { name: "Björk".into(), ..Default::default() };
+        let album = |artist: &str, year: u32| Album { artist: artist.into(), year, ..Default::default() };
+        let d = ArtistDetail::new(artist, vec![album("björk", 1997), album("Björk & Thom Yorke", 2001), album("Björk", 0)]);
+        assert_eq!(d.albums.iter().map(|a| a.subtitle.as_str()).collect::<Vec<_>>(), ["1997", "2001", ""]);
     }
 
     #[test]

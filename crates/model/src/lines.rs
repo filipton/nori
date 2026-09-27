@@ -4,7 +4,7 @@
 //! client's own, and so is how a provider's item is marked: which service it comes from is not shown.
 
 /// An album card's second line: "Artist · 2019", each part only if there is one. The album carries it
-/// as its `subtitle`.
+/// as its `subtitle`; an artist's page gives its albums the year alone.
 pub fn album_subtitle(artist: &str, year: u32) -> String {
     let mut out = String::new();
     let mut add = |s: &str| {
