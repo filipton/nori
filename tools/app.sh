@@ -30,7 +30,10 @@ send() {
 }
 case "${1:-}" in
   # Up as soon as the screen answers (a route other than the service's "background"), 20 s at most.
-  launch) adb shell monkey -p $pkg -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+  # The launcher's own activity, started as a tap on its icon would: monkey refuses to run on images that
+  # declare no hardware keys ("SYS_KEYS has no physical keys"), which newer emulators do.
+  launch) main=$(adb shell cmd package resolve-activity --brief -c android.intent.category.LAUNCHER $pkg | tr -d '\r' | tail -1)
+    adb shell am start -n "$main" >/dev/null 2>&1
     for _ in $(seq 40); do
       s=$(send state 2>/dev/null) && [[ "$s" == *'"route"'* && "$s" != *'"route":"background"'* ]] && { echo "$s"; exit 0; }
       sleep 0.5
