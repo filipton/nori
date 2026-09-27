@@ -866,7 +866,7 @@ fn downloads(f: &mut Frame, area: Rect, app: &mut App) {
 fn equalizer(f: &mut Frame, area: Rect, app: &mut App) {
     let t = app.theme;
     let p = &app.prefs;
-    let bypass = nori_core::settings::eq_bypass(p.hi_res, p.bit_perfect, p.sound_bypass);
+    let bypass = nori_core::settings::eq_bypass(p.bit_perfect, p.sound_bypass);
     let graph_h = (area.height / 2).clamp(6, 14);
     let [note, graph, rows_area] = Layout::vertical([Constraint::Length(1), Constraint::Length(graph_h), Constraint::Min(3)]).areas(area);
     let head: &str = match bypass {

@@ -374,12 +374,14 @@ pub(crate) struct RingTrack {
     float: Option<bool>,
     /// Why the device would not open, until the engine has said so.
     pub failed: Option<String>,
-    /// Each song reaches the device as it is (bit-perfect, high quality output): the device is opened
-    /// in the song's own rate, channels and bits, never converted, and opened again when the next song's
-    /// differ, once what it holds of the song before has played (`Track::must_reopen`).
+    /// Each song reaches the device as it is (bit-perfect): the device is opened in the song's own bits
+    /// too, never converted, and opened again when the next song's differ, once what it holds of the song
+    /// before has played (`Track::must_reopen`).
     pub(crate) exact: bool,
     /// The bits per sample of the song whose stream is configured next.
     bits: u32,
+    /// The highest rate the device is opened at, Hz (0: the song's own); not for a song played as it is.
+    pub(crate) max_rate: u32,
     /// High quality output is on, and whether it was when the device was opened.
     float_on: bool,
     opened_float: bool,
@@ -417,6 +419,7 @@ impl RingTrack {
             failed: None,
             exact: false,
             bits: 0,
+            max_rate: 0,
             float_on: false,
             opened_float: false,
             shallow: false,
@@ -426,9 +429,13 @@ impl RingTrack {
         }
     }
 
-    /// The device's format for a stream in `format`: its own, with its bits when it goes out exactly.
+    /// The device's format for a stream in `format`: its own, with its bits when it goes out exactly, and
+    /// otherwise its rate held under the maximum (halved within its family, the ring's resampler converting).
     fn wanted(&self, format: Format) -> OutputFormat {
-        OutputFormat { rate: format.rate, channels: format.channels, bits: if self.exact { self.bits } else { 0 } }
+        if self.exact {
+            return OutputFormat { rate: format.rate, channels: format.channels, bits: self.bits };
+        }
+        OutputFormat { rate: nori_player::policy::capped_rate(format.rate, self.max_rate), channels: format.channels, bits: 0 }
     }
 
     /// Whether the device is open.
@@ -475,10 +482,13 @@ impl RingTrack {
         self.output.float(on);
     }
 
-    /// Whether the device must be opened again for a stream in `format` before it plays: played as it
-    /// is, in another format than the device's; or opened in 16 bits with high quality output on since.
+    /// Whether the device must be opened again for a stream in `format` before it plays: a stream the
+    /// engine hands over at another rate or channel count than the device was asked for (the transition
+    /// engine converts only what it mixes, and lets the output follow a song that begins with nothing
+    /// overlapping it), or at other bits played as it is; or opened in 16 bits with high quality output on
+    /// since. A device that would not take what it was asked is converted to by the ring's resampler.
     fn reopens(&self, format: Format) -> bool {
-        self.device.is_some() && ((self.exact && self.asked != Some(self.wanted(format))) || (self.float_on && !self.opened_float))
+        self.device.is_some() && (self.asked != Some(self.wanted(format)) || (self.float_on && !self.opened_float))
     }
 
     /// Whether the device plays float samples as they are; asked of it once.
@@ -586,15 +596,14 @@ impl Track for RingTrack {
         self.format = Some(format);
         let want = self.wanted(format);
         if self.reopens(format) {
-            // Played as it is: a stream in another format gets a device of its own (the one before has
-            // played out, `Track::must_reopen`), its playhead from nought.
+            // A stream in another format gets a device of its own (the one before has played out,
+            // `Track::must_reopen`), its playhead from nought.
             self.release();
             self.format = Some(format);
         }
         if self.device.is_none() {
-            // The first stream picks the device's format for as long as it stays open: later streams
-            // are converted to it, as the transition engine converts them to the first one, so the
-            // device is never opened again between songs.
+            // The stream picks the device's format. Songs mixed into it arrive converted to it by the
+            // transition engine; one that begins alone at another rate opens the device again above.
             let opened = self.output.open(want).and_then(|d| {
                 let ring = Arc::new(Ring::new(d, self.engine.clone()));
                 self.output.start(Feed::new(ring.clone()))?;

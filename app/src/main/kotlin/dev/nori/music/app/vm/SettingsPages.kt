@@ -208,6 +208,7 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("sound", R.string.settings_untagged_gain, 0),
     Triple("sound", R.string.settings_gain_measured, R.string.settings_hint_gain_measured),
     Triple("sound", R.string.settings_hi_res, R.string.settings_hint_hi_res),
+    Triple("sound", R.string.settings_max_rate, R.string.settings_hint_max_rate),
     Triple("sound", R.string.settings_bit_perfect, R.string.settings_hint_bit_perfect),
     Triple("sound", R.string.settings_offload, R.string.settings_hint_offload),
     Triple("look", R.string.settings_theme, R.string.settings_hint_theme),
@@ -448,7 +449,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
     fun playing(): List<SettingsSection> {
         val live = !s.untouched
         val between = mutableListOf<SettingRow>()
-        if (s.untouched) between += SettingRow.Note(str(if (s.untouchedByDac) R.string.settings_held_by_dac else R.string.settings_held_by_hi_res))
+        if (s.untouched) between += SettingRow.Note(str(R.string.settings_held_by_dac))
         // AutoMix plans its own transitions, so the plain crossfade gives way to it.
         if (!p.autoMix) between += choice("crossfadeSec", R.string.settings_crossfade, live) { offOr(it, ::seconds) }
         // How a plain crossfade sounds: its curve, and how long each side takes within it.
@@ -572,6 +573,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
         val d = f.dac
         val output = mutableListOf<SettingRow>(
             toggle("hiRes", R.string.settings_hi_res, R.string.settings_hi_res_detail),
+            named("maxRate", R.string.settings_max_rate, R.string.settings_max_rate_auto, R.string.settings_max_rate_48, R.string.settings_max_rate_96, R.string.settings_max_rate_192),
             toggle("bitPerfect", R.string.settings_bit_perfect, bitPerfectWords(d)),
         )
         // What is actually going out, rather than what was asked for.

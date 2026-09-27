@@ -147,6 +147,30 @@ pub enum AutoFillKind {
     Albums,
 }
 
+/// The highest rate the output is opened at: the device's own choice (any rate a song has), or 48, 96 or
+/// 192 kHz, above which a song is converted down within its family (`nori_player::policy::capped_rate`).
+/// Part of a sound profile, so each output device keeps its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, nori_settings_derive::Choice)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
+pub enum MaxRate {
+    Auto,
+    Khz48,
+    Khz96,
+    Khz192,
+}
+
+impl MaxRate {
+    /// The maximum in Hz, 0 for none.
+    pub fn hz(self) -> u32 {
+        match self {
+            MaxRate::Auto => 0,
+            MaxRate::Khz48 => 48_000,
+            MaxRate::Khz96 => 96_000,
+            MaxRate::Khz192 => 192_000,
+        }
+    }
+}
+
 /// What the songs the queue is extended with are chosen by: what the server thinks is similar, or the
 /// artist, genre or decade.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, nori_settings_derive::Choice)]
@@ -394,6 +418,8 @@ pub struct StoredPrefs {
     pub untagged_gain_db: f32,
     #[setting("hiRes", FLAG, default = false, show = K::Switch, effect = PLAYER)]
     pub hi_res: bool,
+    #[setting("maxRate", PICK, default = MaxRate::Auto, show = K::Named(MaxRate::NAMES), effect = PLAYER)]
+    pub max_rate: MaxRate,
     #[setting("bitPerfect", FLAG, default = false, show = K::Switch, effect = APPLY_AUDIO)]
     pub bit_perfect: bool,
     #[setting("offload", FLAG, default = true, show = K::Switch, effect = APPLY_AUDIO)]
@@ -616,6 +642,7 @@ pub struct SoundSettings {
     pub preamp_db: f32,
     pub crossfade_sec: i32,
     pub hi_res: bool,
+    pub max_rate: MaxRate,
     pub bit_perfect: bool,
 }
 
@@ -746,6 +773,7 @@ impl StoredPrefs {
             preamp_db: self.preamp_db,
             crossfade_sec: self.crossfade_sec,
             hi_res: self.hi_res,
+            max_rate: self.max_rate,
             bit_perfect: self.bit_perfect,
         }
     }
@@ -787,6 +815,7 @@ impl StoredPrefs {
             preamp_db: s.preamp_db,
             crossfade_sec: s.crossfade_sec,
             hi_res: s.hi_res,
+            max_rate: s.max_rate,
             bit_perfect: s.bit_perfect,
             ..self
         }
@@ -1027,6 +1056,7 @@ pub fn sound_from(json: &str) -> Option<SoundSettings> {
         preamp_db: opt_f64(o, "preampDb", 0.0) as f32,
         crossfade_sec: opt_i32(o, "crossfadeSec"),
         hi_res: opt_bool(o, "hiRes"),
+        max_rate: MaxRate::nth(opt_i32(o, "maxRate")).unwrap_or(MaxRate::Auto),
         bit_perfect: opt_bool(o, "bitPerfect"),
     })
 }
@@ -1078,6 +1108,7 @@ pub fn sound_json(s: &SoundSettings) -> String {
     o.insert("preampDb".into(), (s.preamp_db as f64).into());
     o.insert("crossfadeSec".into(), s.crossfade_sec.into());
     o.insert("hiRes".into(), s.hi_res.into());
+    o.insert("maxRate".into(), s.max_rate.ordinal().into());
     o.insert("bitPerfect".into(), s.bit_perfect.into());
     Value::Object(o).to_string()
 }
@@ -1707,20 +1738,17 @@ pub fn set_level(s: SoundSettings, level: EqLevel, value: f32) -> SoundSettings 
 pub enum EqBypass {
     /// Bit-perfect USB output is active.
     BitPerfect,
-    /// High quality output is on (and can be turned off in the settings).
-    HiRes,
     /// This output's sound says "No processing" (`soundBypass`).
     Output,
 }
 
 /// Why nothing on the equalizer screen reaches the sound, or `None` when it does. Bit-perfect output
-/// and high quality output both hand the file's samples to the DAC untouched, so the whole chain is
-/// out of the path; without this the screen looks broken.
-pub fn eq_bypass(hi_res: bool, bit_perfect: bool, output: bool) -> Option<EqBypass> {
+/// hands the file's samples to the DAC untouched, and an output set to no processing gets no chain, so
+/// the whole chain is out of the path; without this the screen looks broken. High quality output runs
+/// the chain as ever, in float.
+pub fn eq_bypass(bit_perfect: bool, output: bool) -> Option<EqBypass> {
     if bit_perfect {
         Some(EqBypass::BitPerfect)
-    } else if hi_res {
-        Some(EqBypass::HiRes)
     } else if output {
         Some(EqBypass::Output)
     } else {
@@ -1876,8 +1904,8 @@ pub fn crossfeed_preset_of(prefs: StoredPrefs) -> String {
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn eq_bypass_reason(hi_res: bool, bit_perfect: bool, output: bool) -> Option<EqBypass> {
-    eq_bypass(hi_res, bit_perfect, output)
+pub fn eq_bypass_reason(bit_perfect: bool, output: bool) -> Option<EqBypass> {
+    eq_bypass(bit_perfect, output)
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
@@ -2170,6 +2198,7 @@ mod tests {
             preamp_db: 1.5,
             crossfade_sec: 4,
             hi_res: true,
+            max_rate: MaxRate::Khz96,
             bit_perfect: false,
         };
         assert_eq!(sound_from(&sound_json(&s)).unwrap(), s);
@@ -2184,6 +2213,8 @@ mod tests {
         assert_eq!(s.eq_preamp_db, None);
         assert_eq!(sound_from(r#"{"replayGain":7}"#).unwrap().replay_gain, GainMode::Auto);
         assert_eq!(sound_from(r#"{"replayGain":-1}"#).unwrap().replay_gain, GainMode::Off);
+        assert_eq!(s.max_rate, MaxRate::Auto, "a profile saved before the maximum rate: the device's own");
+        assert_eq!(sound_from(r#"{"maxRate":9}"#).unwrap().max_rate, MaxRate::Auto);
         assert_eq!(sound_from(r#"{"eqPreampDb":"x"}"#), None, "a pre-amp that is not a number");
         assert_eq!(sound_from(r#"{"eqPreampDb":null}"#), None);
         assert_eq!(sound_from("not json"), None);
@@ -2362,10 +2393,9 @@ mod tests {
 
     #[test]
     fn why_the_equalizer_does_nothing() {
-        assert_eq!(eq_bypass(false, false, false), None);
-        assert_eq!(eq_bypass(true, true, true), Some(EqBypass::BitPerfect));
-        assert_eq!(eq_bypass(true, false, true), Some(EqBypass::HiRes));
-        assert_eq!(eq_bypass(false, false, true), Some(EqBypass::Output));
+        assert_eq!(eq_bypass(false, false), None);
+        assert_eq!(eq_bypass(true, true), Some(EqBypass::BitPerfect));
+        assert_eq!(eq_bypass(false, true), Some(EqBypass::Output));
     }
 
     #[test]

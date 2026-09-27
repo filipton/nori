@@ -527,6 +527,11 @@ impl pipeline::Track for AudioTrack {
         self.format = Some(format);
     }
 
+    /// An AudioTrack plays one format: another is a new track, once this one has played out.
+    fn must_reopen(&mut self, format: Format) -> bool {
+        self.format.is_some_and(|f| f != format)
+    }
+
     fn queued_bytes(&self) -> usize {
         self.queued_bytes
     }

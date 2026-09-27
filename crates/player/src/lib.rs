@@ -10,6 +10,7 @@ pub mod contour;
 pub mod dac;
 pub mod device;
 pub mod decode;
+pub mod dither;
 pub mod dsp;
 pub mod engine;
 pub mod eqfit;

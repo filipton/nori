@@ -3,6 +3,7 @@
 //! how 16-bit audio is staged through float.
 
 use crate::automix::mixer::Mixer;
+use crate::dither::Dither;
 use crate::automix::stretch::{Stretcher, BLOCK};
 
 /// Sample encodings, numbered as media3 numbers them (`C.ENCODING_PCM_16BIT`, `C.ENCODING_PCM_FLOAT`).
@@ -103,6 +104,21 @@ pub fn scale(bytes: &mut [u8], enc: Encoding, gain: f32) {
                 d.copy_from_slice(&v.to_le_bytes());
             }
         }
+    }
+}
+
+/// [`scale`], with 16-bit samples rounded back through TPDF dither ([`crate::dither`]) rather than to the
+/// nearest step: ReplayGain on the 16-bit path. `channels` keeps each channel's noise its own.
+pub fn scale_dithered(bytes: &mut [u8], enc: Encoding, gain: f32, channels: usize, dither: &mut Dither) {
+    match enc {
+        Encoding::Pcm16 => {
+            let ch = channels.max(1);
+            for (i, d) in bytes.chunks_exact_mut(2).enumerate() {
+                let v = i16::from_le_bytes([d[0], d[1]]) as f64 * gain as f64 / 32768.0;
+                d.copy_from_slice(&dither.to_i16(i % ch, v).to_le_bytes());
+            }
+        }
+        Encoding::Float => scale(bytes, enc, gain),
     }
 }
 

@@ -111,10 +111,10 @@ pub enum BeatModel {
 pub struct SettingsState {
     /// Every setting's value now ([`value_of`]), by name.
     pub values: HashMap<String, String>,
-    /// The samples go out untouched (high quality output, or a USB DAC in bit-perfect mode): every
-    /// transition, skipping silence and the sound chain are out of the path.
+    /// The samples go out untouched (a USB DAC in bit-perfect mode): every transition, skipping silence
+    /// and the sound chain are out of the path.
     pub untouched: bool,
-    /// Whether the dac is what makes it untouched (rather than high quality output).
+    /// Whether the dac is what makes it untouched: always, since high quality output runs the chain too.
     pub untouched_by_dac: bool,
     /// Any of the equalizer, crossfeed, balance, mono or the limiter is on.
     pub sound_chain_on: bool,
@@ -136,10 +136,10 @@ pub struct Output {
     pub usb: bool,
 }
 
-/// Whether the samples go out untouched: bit-perfect output and high quality output both hand exactly
-/// the file's samples to the DAC, so nothing may be mixed into them.
-pub fn untouched(hi_res: bool, dac_bit_perfect: bool) -> bool {
-    hi_res || dac_bit_perfect
+/// Whether the samples go out untouched: bit-perfect output hands exactly the file's samples to the DAC,
+/// so nothing may be mixed into them. High quality output only raises the chain's precision.
+pub fn untouched(dac_bit_perfect: bool) -> bool {
+    dac_bit_perfect
 }
 
 fn beat_model_now() -> BeatModel {
@@ -180,7 +180,7 @@ pub fn state(p: &StoredPrefs, out: Output) -> SettingsState {
         .collect();
     SettingsState {
         values: specs().into_iter().filter_map(|s| Some((s.name.clone(), value_of(p, &s.name)?))).collect(),
-        untouched: untouched(p.hi_res, out.dac_bit_perfect),
+        untouched: untouched(out.dac_bit_perfect),
         untouched_by_dac: out.dac_bit_perfect,
         sound_chain_on: dsp,
         offload_paused: !out.usb && p.offload && !policy.offload,
@@ -285,7 +285,7 @@ mod tests {
         assert!(!s.untouched && !s.sound_chain_on && !s.offload_paused);
         assert_eq!(s.values["crossfadeSec"], d.crossfade_sec.to_string());
         let hi = state(&StoredPrefs { hi_res: true, ..d.clone() }, Output::default());
-        assert!(hi.untouched && !hi.untouched_by_dac);
+        assert!(!hi.untouched && !hi.untouched_by_dac, "high quality output keeps the chain");
         let dac = state(&d, Output { dac_bit_perfect: true, usb: true });
         assert!(dac.untouched && dac.untouched_by_dac);
         assert!(state(&StoredPrefs { mono: true, ..d.clone() }, Output::default()).sound_chain_on);

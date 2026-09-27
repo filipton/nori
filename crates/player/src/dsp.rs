@@ -13,6 +13,7 @@
 
 
 use crate::compressor::{Compressor, CompressorSettings, Expander, ExpanderSettings};
+use crate::dither::Dither;
 use crate::spatial::Virtualizer;
 use crate::types::{EqBand, EqKind, NamedPreset, PresetKind};
 
@@ -574,6 +575,8 @@ pub struct Equalizer {
     fade_len: i64,
     /// Samples have gone through since the last reset, so a change from here on would be heard.
     live: bool,
+    /// What 16-bit samples the chain changed are rounded back through ([`Equalizer::process_i16`]).
+    dither: Dither,
 }
 
 /// Left and right gain for a balance in -1 (hard left) to 1 (hard right).
@@ -615,6 +618,7 @@ impl Equalizer {
             fade: None,
             fade_len: ((rate as f64 * CHANGE_FADE_MS / 1000.0).round() as i64).max(1),
             live: false,
+            dither: Dither::new(),
         }
     }
 
@@ -787,9 +791,10 @@ impl Equalizer {
         self.now.compressor.as_ref().map_or(0.0, |c| c.meter_db as f32)
     }
 
-    /// One generic loop; `load` and `store` are the only things that differ between sample formats.
+    /// One generic loop; `load` and `store` (told the channel) are the only things that differ between
+    /// sample formats.
     #[inline]
-    fn run<T: Copy>(&mut self, input: &[T], output: &mut [T], load: impl Fn(T) -> f64, store: impl Fn(f64) -> T) {
+    fn run<T: Copy>(&mut self, input: &[T], output: &mut [T], load: impl Fn(T) -> f64, mut store: impl FnMut(f64, usize) -> T) {
         let len = input.len().min(output.len());
         let (input, output) = (&input[..len], &mut output[..len]);
         self.live |= len > 0;
@@ -825,7 +830,7 @@ impl Equalizer {
                 }
             }
             for (c, v) in y.iter_mut().enumerate() {
-                *v = store(frame[c]);
+                *v = store(frame[c], c);
             }
         }
         // media3 hands over whole frames; a ragged tail would still have to come out somewhere.
@@ -838,12 +843,25 @@ impl Equalizer {
     /// in full-scale units, and fed raw integers it took every sample for thirty thousand times too loud and turned
     /// the music down by some 91 dB: silence, on the default 16-bit path, whenever the limiter was on. Dividing and
     /// multiplying by a power of two is exact in f64, so a chain that changes nothing still changes nothing.
+    ///
+    /// What the chain changed goes back to 16 bits through TPDF dither ([`crate::dither`]), not plain
+    /// rounding: the error is noise 96 dB down rather than distortion that follows the music. A chain that
+    /// changes nothing hands its input back as it was, never dithered.
     pub fn process_i16(&mut self, input: &[i16], output: &mut [i16]) {
-        self.run(input, output, |x| x as f64 / I16_SCALE, |y| (y * I16_SCALE).round().clamp(-32768.0, 32767.0) as i16);
+        let mut d = self.dither;
+        // Mono's two channels are one sound: they take one noise, and stay one.
+        if self.now.mono {
+            self.run(input, output, |x| x as f64 / I16_SCALE, |y, c| d.to_i16_linked(c, y));
+        } else {
+            self.run(input, output, |x| x as f64 / I16_SCALE, |y, c| d.to_i16(c, y));
+        }
+        self.dither = d;
     }
 
+    /// Float samples in and out; the chain runs in f64 between, and a float keeps its 24 bits of mantissa,
+    /// so a 24-bit song comes through to 24-bit accuracy.
     pub fn process_f32(&mut self, input: &[f32], output: &mut [f32]) {
-        self.run(input, output, |x| x as f64, |y| y as f32);
+        self.run(input, output, |x| x as f64, |y, _| y as f32);
     }
 
     /// A new stream (a seek, a flush): the memories go, and so does any fade, since nothing is playing
@@ -852,6 +870,7 @@ impl Equalizer {
         self.now.reset();
         self.fade = None;
         self.live = false;
+        self.dither.reset();
     }
 }
 
@@ -1315,6 +1334,88 @@ mod tests {
         assert!(gr > 0.3 && gr < 2.0, "meter says {gr} dB on a full-scale tone into a -1 dB ceiling");
         let peak = y[9600..].iter().map(|v| (*v as f64).abs()).fold(0.0, f64::max) / 32768.0;
         assert!(peak > 0.8 && peak <= 10f64.powf(-1.0 / 20.0) * 1.04, "16-bit peak {peak}, should sit just under the ceiling");
+    }
+
+    /// Power of `x` in DFT bin `k` (Hann window), relative to full scale.
+    fn bin_power(x: &[f64], k: usize) -> f64 {
+        let n = x.len() as f64;
+        let (mut re, mut im) = (0.0, 0.0);
+        for (i, v) in x.iter().enumerate() {
+            let w = 0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / n).cos();
+            let ph = std::f64::consts::TAU * k as f64 * i as f64 / n;
+            re += v * w * ph.cos();
+            im += v * w * ph.sin();
+        }
+        (re * re + im * im) / (n * n)
+    }
+
+    /// A tone taken down to -100 dBFS by the chain (a third of a 16-bit step) comes out of the 16-bit path as a
+    /// tone at its level in a flat hiss: dithered, nothing of it is lost and no harmonic of the steps appears.
+    /// Rounded plainly, the same chain gave silence or a square wave's harmonics.
+    #[test]
+    fn a_tone_under_one_step_survives_the_16_bit_chain_as_a_tone_in_noise() {
+        const N: usize = 1 << 16;
+        const K: usize = 1000; // 732 Hz at 48 kHz, whole cycles in the window
+        // -46 dBFS in, and the chain takes 54 dB off: the preamp's 30 and a wide 24 dB cut at the tone.
+        let x: Vec<i16> = (0..N).map(|i| ((std::f64::consts::TAU * K as f64 * i as f64 / N as f64).sin() * 10f64.powf(-46.0 / 20.0) * 32768.0).round() as i16).collect();
+        let chain = || {
+            let mut eq = Equalizer::new(48000, 1);
+            eq.configure(&[b(PEAKING, 48000.0 * K as f64 / N as f64, -24.0, 0.3)], -30.0, 0.0);
+            eq
+        };
+        // What the chain makes of it with nothing rounded, and through the 16-bit path, dithered and not.
+        let xf: Vec<f32> = x.iter().map(|v| *v as f32 / 32768.0).collect();
+        let mut want = vec![0f32; N];
+        chain().process_f32(&xf, &mut want);
+        let mut dithered = vec![0i16; N];
+        chain().process_i16(&x, &mut dithered);
+        let mut rounded = vec![0i16; N];
+        chain().run(&x, &mut rounded, |v| v as f64 / I16_SCALE, |y, _| (y * I16_SCALE).round() as i16);
+        // The last three quarters, past the filter's start.
+        let tail = |s: &[f64]| s[N / 4..].to_vec();
+        let want = tail(&want.iter().map(|v| *v as f64).collect::<Vec<_>>());
+        let level = 10.0 * bin_power(&want, 3 * K / 4).log10();
+        // A sine of peak A has A²/16 in its bin under a Hann window: -100 dBFS is -112 dB there.
+        assert!((level + 112.0).abs() < 1.5, "the tone the chain makes is -100 dBFS peak: {level:.1} dB in its bin");
+        let got = |y: &[i16]| tail(&y.iter().map(|v| *v as f64 / 32768.0).collect::<Vec<_>>());
+        let (d, r) = (got(&dithered), got(&rounded));
+        let db = |x: &[f64], k: usize| 10.0 * bin_power(x, k).log10();
+        // The noise floor: the median bin between the harmonics.
+        let mut floor: Vec<f64> = (3 * K / 4 + 40..4 * 3 * K / 4).step_by(7).map(|k| db(&d, k)).collect();
+        floor.sort_by(f64::total_cmp);
+        let floor = floor[floor.len() / 2];
+        let tone = db(&d, 3 * K / 4);
+        eprintln!("dithered: tone {tone:.1} dB (wanted {level:.1}), floor {floor:.1} dB/bin, 3rd {:.1}, 5th {:.1}", db(&d, 9 * K / 4), db(&d, 15 * K / 4));
+        eprintln!("rounded:  tone {:.1} dB, 3rd {:.1}, 5th {:.1}", db(&r, 3 * K / 4), db(&r, 9 * K / 4), db(&r, 15 * K / 4));
+        assert!((tone - level).abs() < 1.5, "dithered, the tone keeps its level: {tone:.1} against {level:.1}");
+        assert!(tone > floor + 25.0, "and stands clear of the noise: {tone:.1} over {floor:.1}");
+        for h in [3, 5, 7] {
+            assert!(db(&d, h * 3 * K / 4) < floor + 10.0, "no harmonic {h} of the steps: {:.1} over a floor of {floor:.1}", db(&d, h * 3 * K / 4));
+        }
+        // Rounded plainly, the tone is gone (a third of a step rounds to nothing): what dither is for.
+        assert!(r.iter().all(|v| *v == 0.0) || db(&r, 3 * K / 4) < level - 6.0, "plain rounding lost it");
+        // At -90 dBFS (a step's worth) plain rounding makes a stepped wave, its odd harmonics well out of the noise.
+        let loud: Vec<i16> = x.iter().map(|v| v.saturating_mul(3)).collect();
+        let mut stepped = vec![0i16; N];
+        chain().run(&loud, &mut stepped, |v| v as f64 / I16_SCALE, |y, _| (y * I16_SCALE).round() as i16);
+        let mut clean = vec![0i16; N];
+        chain().process_i16(&loud, &mut clean);
+        let (s, c) = (got(&stepped), got(&clean));
+        let worst = |x: &[f64]| [3, 5, 7].iter().map(|h| db(x, h * 3 * K / 4)).fold(f64::MIN, f64::max);
+        eprintln!("-90 dBFS: rounded, the loudest odd harmonic {:.1} dB; dithered {:.1} dB", worst(&s), worst(&c));
+        assert!(worst(&s) > floor + 20.0, "rounded: a harmonic of the steps");
+        assert!(worst(&c) < floor + 10.0, "dithered: none");
+    }
+
+    /// A flat chain hands 16-bit samples back as they came, never dithered.
+    #[test]
+    fn a_flat_16_bit_chain_is_bit_exact() {
+        let mut eq = Equalizer::new(48000, 2);
+        eq.configure(&[], 0.0, 0.0);
+        let x: Vec<i16> = (0..9600).map(|i| ((i * 7919) % 65536) as i32 as i16).collect();
+        let mut y = vec![0i16; x.len()];
+        eq.process_i16(&x, &mut y);
+        assert_eq!(x, y);
     }
 
     #[test]

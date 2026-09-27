@@ -868,6 +868,7 @@ pub struct OutputState {
 #[uniffi::remote(Record)]
 pub struct AudioPolicy {
     pub untouched: bool,
+    pub float: bool,
     pub processing: bool,
     pub transitions_off: bool,
     pub lock_rate: bool,

@@ -518,7 +518,10 @@ fn sound(b: &Build) -> Vec<Section> {
         b.choice("pitch", "Pitch", true, |v| format!("{v}×")),
         b.toggle_if("skipSilence", "Skip silence", "Shorten quiet gaps", live),
     ];
-    let output = vec![b.toggle("hiRes", "Bit-exact output", "Float samples straight to the device; bypasses mixing and effects")];
+    let output = vec![
+        b.toggle("hiRes", "High quality output", "Float samples to the device; 24-bit files kept whole, effects in float"),
+        b.named("maxRate", "Highest sample rate", &["each song's own", "48 kHz", "96 kHz", "192 kHz"]),
+    ];
     vec![section("Equalizer", eq), section("Effects", effects(b)), section("Levelling", levelling), section("Transitions", mixing), section("Tempo", tempo), section("Output", output)]
 }
 

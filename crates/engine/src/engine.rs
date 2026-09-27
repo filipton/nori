@@ -66,10 +66,13 @@ pub struct Settings {
     pub skip_silence: bool,
     /// The fade on play, pause and switches, ms (0 off).
     pub fade_ms: i32,
-    /// High quality output: songs decoded to float and taken to a device that plays float as they are,
-    /// with nothing touching the samples on the way (no equalizer, transitions or silence skipping,
-    /// as `nori_player::policy` says). A device that takes 16-bit only gets the 16-bit chain.
+    /// High quality output: songs decoded to float, 24 bits kept, the sound chain run on the floats and
+    /// what it makes taken to a device that plays float (`nori_player::policy`). A device that takes
+    /// 16-bit only gets the 16-bit chain, dithered.
     pub hi_res: bool,
+    /// The highest rate the device is opened at, Hz (0: a song's own): a song above it is converted down
+    /// within its family (`nori_player::policy::capped_rate`). Bit-perfect output is not held to it.
+    pub max_rate: u32,
     /// Let an output that decodes songs itself have them, when nothing needs the samples.
     pub offload: bool,
     /// The crossfade (s, 0 off) and AutoMix: transitions touch the samples, so offload stands down.
@@ -83,7 +86,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { sound: Sound::default(), speed: 1.0, pitch: 1.0, skip_silence: false, fade_ms: 0, hi_res: false, offload: false, crossfade_s: 0, auto_mix: false, gain_boost_db: 0.0 }
+        Settings { sound: Sound::default(), speed: 1.0, pitch: 1.0, skip_silence: false, fade_ms: 0, hi_res: false, max_rate: 0, offload: false, crossfade_s: 0, auto_mix: false, gain_boost_db: 0.0 }
     }
 }
 
@@ -107,6 +110,7 @@ struct Applied {
     float: bool,
     /// The most a song is turned up, linear (1: not at all).
     gain_max: f32,
+    max_rate: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1413,11 +1417,11 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         }
     }
 
-    /// The settings, through the audio policy Android applies: high quality output on a device that
-    /// plays float, or a DAC playing bit-perfect, keeps the samples untouched, which stands the sound
-    /// chain, silence skipping, the pinned output format, every transition and (bit-perfect) ReplayGain
-    /// down; nothing that needs the samples lets them go to the output's decoder. Songs opened from now
-    /// on are decoded for it.
+    /// The settings, through the audio policy Android applies: a DAC playing bit-perfect keeps the samples
+    /// untouched, which stands the sound chain, silence skipping, the pinned output format, every
+    /// transition and ReplayGain down; high quality output on a device that plays float runs all of them
+    /// on float samples, into a float device; nothing that needs the samples lets them go to the output's
+    /// decoder. Songs opened from now on are decoded for it.
     fn apply(&mut self, s: Settings) {
         let hi_res = s.hi_res && self.p.sink.track.takes_float();
         let bit_perfect = self.facts.bit_perfect;
@@ -1439,21 +1443,33 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         let gain_max = if policy.untouched || !(s.gain_boost_db > 0.0) { 1.0 } else { 10f32.powf(s.gain_boost_db.min(nori_player::gain::BOOST_MAX_DB) / 20.0) };
         let mut sound = if policy.untouched { Sound::default() } else { s.sound.clone() };
         sound.limiter |= gain_max > 1.0;
-        let now = Applied { sound, speed: (s.speed, s.pitch), skip_silence: policy.skip_silence, untouched: policy.untouched, bit_perfect, float: hi_res, gain_max };
+        let now = Applied {
+            sound,
+            speed: (s.speed, s.pitch),
+            skip_silence: policy.skip_silence,
+            untouched: policy.untouched,
+            bit_perfect,
+            float: hi_res,
+            gain_max,
+            max_rate: s.max_rate,
+        };
         self.p.sink.track.set_float(hi_res);
+        // A new maximum is heard as the output is made again (below): the device opens again at it.
+        self.p.sink.track.max_rate = s.max_rate;
         // The player starts out with the defaults' sound; the output's say is given once at least.
         let first = self.applied.is_none();
-        let was = self.applied.take().unwrap_or(Applied { sound: Sound::default(), speed: (1.0, 1.0), skip_silence: false, untouched: false, bit_perfect: false, float: false, gain_max: 1.0 });
+        let was = self.applied.take().unwrap_or(Applied { sound: Sound::default(), speed: (1.0, 1.0), skip_silence: false, untouched: false, bit_perfect: false, float: false, gain_max: 1.0, max_rate: 0 });
+        // Songs are read as floats with high quality output or a bit-perfect DAC (the chain run on them,
+        // the device fed float), and when ReplayGain turns songs up (they go over full scale until the
+        // limiter holds them).
+        let encoding = if policy.float || gain_max > 1.0 { Encoding::Float } else { Encoding::Pcm16 };
         if first || was.gain_max != now.gain_max {
-            // Songs turned up are read as floats, which go over full scale until the limiter holds them.
-            self.p.tracks.encoding = if hi_res || bit_perfect || gain_max > 1.0 { Encoding::Float } else { Encoding::Pcm16 };
+            self.p.tracks.encoding = encoding;
             self.p.gain_max = gain_max;
             self.gain_changed |= !first;
         }
-        if first || was.untouched != now.untouched || was.bit_perfect != now.bit_perfect {
-            // Bit-perfect: every song decoded to float, which carries 16 and 24 bits exactly, and handed
-            // to the device at its own depth.
-            self.p.tracks.encoding = if hi_res || bit_perfect || gain_max > 1.0 { Encoding::Float } else { Encoding::Pcm16 };
+        if first || was.untouched != now.untouched || was.bit_perfect != now.bit_perfect || was.float != now.float {
+            self.p.tracks.encoding = encoding;
             self.p.sink.track.exact = policy.untouched;
             self.p.gain_off = bit_perfect;
             // Wherever the samples may be touched the equalizer stays in, flat and skipped while nothing

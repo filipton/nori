@@ -632,7 +632,6 @@ class Say(private val r: Resources) {
     fun eqBypass(b: EqBypass): String = r.getString(
         when (b) {
             EqBypass.BIT_PERFECT -> R.string.eq_bypass_bit_perfect
-            EqBypass.HI_RES -> R.string.eq_bypass_hi_res
             EqBypass.OUTPUT -> R.string.eq_bypass_output
         },
     )

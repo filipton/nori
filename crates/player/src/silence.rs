@@ -3,7 +3,8 @@
 //! stretch longer than [`MIN_SILENCE_US`] is shortened to a fifth of its length (and never more than
 //! [`MAX_SILENCE_TO_KEEP_US`]), faded down to a tenth of its volume and back up rather than cut, so it
 //! reads as a studio's hush and not as playback stopping. What was dropped is counted, so a player
-//! keeps its position honest. 16-bit PCM only, as media3's is.
+//! keeps its position honest. media3's took 16-bit PCM only; this one takes float too (the high quality
+//! chain), judged against the same level on the 16-bit scale, so a song is skipped through alike either way.
 //!
 //! media3's processor stops after each piece of output and takes the rest of its input on the next
 //! call; this one takes all of it and appends every piece in the same order, which is the same bytes.
@@ -36,6 +37,8 @@ enum Volume {
 
 pub struct SilenceSkipper {
     rate: u32,
+    /// Bytes per sample: 2 for 16-bit, 4 for float.
+    width: usize,
     bytes_per_frame: usize,
     state: State,
     skipped: u64,
@@ -47,10 +50,18 @@ pub struct SilenceSkipper {
 }
 
 impl SilenceSkipper {
+    /// For 16-bit samples.
     pub fn new(rate: u32, channels: usize) -> SilenceSkipper {
-        let bytes_per_frame = channels.clamp(1, 8) * 2;
+        SilenceSkipper::of(rate, channels, false)
+    }
+
+    /// For 16-bit samples, or float ones.
+    pub fn of(rate: u32, channels: usize, float: bool) -> SilenceSkipper {
+        let width = if float { 4 } else { 2 };
+        let bytes_per_frame = channels.clamp(1, 8) * width;
         let mut s = SilenceSkipper {
             rate,
+            width,
             bytes_per_frame,
             state: State::Noisy,
             skipped: 0,
@@ -89,39 +100,44 @@ impl SilenceSkipper {
         (v / self.bytes_per_frame as i32) * self.bytes_per_frame as i32
     }
 
-    fn sample(b: &[u8], i: usize) -> i32 {
-        i16::from_le_bytes([b[i], b[i + 1]]) as i32
+    /// The sample at byte `i`, on the 16-bit scale for both widths.
+    fn sample(&self, b: &[u8], i: usize) -> i32 {
+        if self.width == 4 {
+            (f32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]) * 32768.0) as i32
+        } else {
+            i16::from_le_bytes([b[i], b[i + 1]]) as i32
+        }
     }
 
-    fn is_noise(b: &[u8], i: usize) -> bool {
-        Self::sample(b, i).abs() > THRESHOLD
+    fn is_noise(&self, b: &[u8], i: usize) -> bool {
+        self.sample(b, i).saturating_abs() > THRESHOLD
     }
 
     /// The first frame boundary at or after `from` holding a noisy sample, or `to`.
     fn find_noise_position(&self, b: &[u8], from: usize, to: usize) -> usize {
-        let mut i = from + 1;
-        while i < to {
-            if Self::is_noise(b, i - 1) {
+        let mut i = from;
+        while i + self.width <= to {
+            if self.is_noise(b, i) {
                 return self.bytes_per_frame * (i / self.bytes_per_frame);
             }
-            i += 2;
+            i += self.width;
         }
         to
     }
 
     /// The earliest position in [from, to) from which every frame to `to` is silent.
     fn find_noise_limit(&self, b: &[u8], from: usize, to: usize) -> usize {
-        let mut i = to as isize - 1;
+        let mut i = to as isize - self.width as isize;
         while i >= from as isize {
-            if Self::is_noise(b, i as usize - 1) {
+            if self.is_noise(b, i as usize) {
                 return self.bytes_per_frame * (i as usize / self.bytes_per_frame) + self.bytes_per_frame;
             }
-            i -= 2;
+            i -= self.width as isize;
         }
         from
     }
 
-    /// 16-bit little-endian input in; what survives is appended to `out`.
+    /// Little-endian input in, 16-bit or float as made; what survives is appended to `out`.
     pub fn process(&mut self, input: &[u8], out: &mut Vec<u8>) {
         let mut pos = 0;
         while pos < input.len() {
@@ -247,16 +263,22 @@ impl SilenceSkipper {
         let last = (size / self.bytes_per_frame) as i32 - 1;
         let mut idx = 0;
         while idx < size {
-            let s = Self::sample(&self.contiguous, idx);
             let frame = (idx / self.bytes_per_frame) as i32;
             let pct = match volume {
                 Volume::FadeOut => Self::fade_out(frame, last),
                 Volume::FadeIn => Self::fade_in(frame, last),
                 _ => MIN_VOLUME_PERCENT,
             };
-            let v = (s * pct / 100).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-            self.contiguous[idx..idx + 2].copy_from_slice(&v.to_le_bytes());
-            idx += 2;
+            if self.width == 4 {
+                let b = &self.contiguous[idx..idx + 4];
+                let v = f32::from_le_bytes([b[0], b[1], b[2], b[3]]) * pct as f32 / 100.0;
+                self.contiguous[idx..idx + 4].copy_from_slice(&v.to_le_bytes());
+            } else {
+                let s = self.sample(&self.contiguous, idx);
+                let v = (s * pct / 100).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+                self.contiguous[idx..idx + 2].copy_from_slice(&v.to_le_bytes());
+            }
+            idx += self.width;
         }
     }
 
@@ -325,5 +347,20 @@ mod tests {
         let mut s = SilenceSkipper::new(RATE, 2);
         let x = frames(1500, 2.0);
         assert_eq!(run(&mut s, &x), x);
+    }
+
+    /// The same music in float is skipped through exactly as in 16 bits: the same frames kept, faded alike.
+    #[test]
+    fn float_is_skipped_as_16_bit_is() {
+        let x = [frames(8000, 1.0), frames(300, 3.0), frames(-8000, 0.5), frames(0, 0.05), frames(8000, 1.0)].concat();
+        let f: Vec<u8> = x.chunks_exact(2).flat_map(|c| (i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0).to_le_bytes()).collect();
+        let (mut a, mut b) = (SilenceSkipper::new(RATE, 2), SilenceSkipper::of(RATE, 2, true));
+        let (y16, yf) = (run(&mut a, &x), run(&mut b, &f));
+        assert_eq!(a.skipped_frames(), b.skipped_frames());
+        assert!(a.skipped_frames() > RATE as u64, "the pause was shortened");
+        let back: Vec<i16> = yf.chunks_exact(4).map(|c| (f32::from_le_bytes([c[0], c[1], c[2], c[3]]) * 32768.0) as i16).collect();
+        let want: Vec<i16> = y16.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
+        assert_eq!(back.len(), want.len());
+        assert!(back.iter().zip(&want).all(|(p, q)| (p - q).abs() <= 1), "the same fades, to the 16-bit step");
     }
 }

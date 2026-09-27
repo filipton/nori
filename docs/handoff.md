@@ -59,6 +59,60 @@ Apple's own App Store screenshots and the differences closed. What is left is li
     quarter dB. The terminal client follows its own volume. **Not checked on a phone**: whether
     `getStreamVolumeDb` answers sensibly over Bluetooth absolute volume (0 dB below the top step is read
     by the core's own curve instead), and how the lower middle feels at low volume.
+- **A real resampler, used only where it must be.** `automix/resample.rs` was Catmull-Rom with no filter
+  (a 48 kHz song at 44.1 kHz folded everything above 22 kHz back; the worst spur of a bright chord 18 dB under
+  it). It is a polyphase windowed-sinc now: Kaiser (β for 110 dB), 144 taps at the lower rate (more for a
+  downsample), a row per step for a rational ratio of up to 512 steps (44.1 to 48 kHz: 160) and 256 rows
+  interpolated otherwise, tables made once per pair of rates and shared, nothing allocated per buffer.
+  Measured in its tests: passband flat to 0.45 fs within 0.0001 dB, stopband -110 to -120 dB (the
+  interpolated 44.1-to-47.999 kHz case -107 dB), a sweep to 0.42 fs off by -128 dB; rubato's FFT resampler
+  scores its worst spur at -149 dB on the same chord, ours at -127 dB. Cost on the Mac: 1.2 ms per second of
+  stereo for 44.1 <-> 48 kHz, 2.6 ms for 96 to 48, 5.2 ms for 192 to 44.1. It holds back half its taps
+  (under 2 ms), which are not heard when a converted stream ends (a mix, a reopening, the end of the queue).
+  A 16-bit output of it is dithered. And it runs less: the transition engine converts only a mix across
+  rates; a song that begins with nothing overlapping at another rate has the output opened again at its own
+  rate (`TransitionEngine::follow_rate`, `RingTrack::reopens`; a gap between the two songs, as bit-perfect
+  had), except one going on gaplessly from a song converted at the same rate (an album mixed into), where
+  the converter carries on across the join. On Android the AudioTrack then carries the song's own rate to
+  the system mixer, which resamples to the device's rate itself where that differs. AutoMix's tempo stretch
+  never used the resampler (it has its own, automix/stretch.rs). Checked on the emulator with a 44.1/48/88.2/
+  96 kHz album (16- and 24-bit FLAC): gapless, each song reopens the track at its own rate ("sink follows");
+  with a crossfade, "converting 48000 Hz x2 -> 44100 Hz x2" and the mix. Opening a float track at 96 kHz
+  there failed with "not enough memory" (-12, the sound server's per-app track memory): a track is now asked
+  for again at half its size, down to a second (`track.rs` `open_fitting`), and plays topped up more often.
+  **To check on a phone**: the gap when the rate changes between songs, by ear.
+
+- **Highest sample rate, per output.** A setting (`maxRate`: each song's own, 48, 96 or 192 kHz), part of the
+  sound profile so each output device keeps its own. A song above it is played at its rate halved within its
+  family (`policy::capped_rate`: 88.2 and 176.4 kHz to 44.1's multiples, 96 and 192 to 48's, never halved
+  below 44.1 kHz), the device opened at that and the ring's resampler converting. Bit-perfect output is not
+  held to it, and offload (the chip decodes) is not either. Past 192 kHz the Android track halves within the
+  family too (352.8 to 176.4) instead of clamping to 192.
+
+- **High quality output keeps the effects; the 16-bit chain dithers.** "High quality output" was treated
+  as bit-perfect (nori-player `policy.rs`): it stood the equalizer, AutoEQ, the effects, silence skipping and
+  every transition down. Now only a bit-perfect DAC is "untouched"; high quality output (`AudioPolicy.float`)
+  decodes every song to float (a 24-bit file's samples kept whole; the 16-bit path rounded them to 16 bits in
+  the demuxer), runs the whole chain in f64 on them and opens the AudioTrack for float. Silence skipping takes
+  float too (`SilenceSkipper::of`). Without the setting the chain stays 16-bit, and whatever changes the
+  samples - the chain (`Equalizer::process_i16`) and ReplayGain (`pcm::scale_dithered`) - goes back to 16 bits
+  through TPDF dither of ±1 LSB (`dither.rs`: xorshift32 per channel, mono's channels share one noise),
+  never plain rounding; a flat chain, and any sample the chain hands back on the grid, stays bit-exact.
+  A tone at -100 dBFS now comes out a tone in noise (it came out as silence), one at -90 dBFS with no
+  harmonics (plain rounding put the 5th 34 dB over the floor). Noise shaping is written and off
+  (`dither::NOISE_SHAPING`): 6.7 dB less hiss at 1-5 kHz, 5.2 dB more at the top, not worth it at a phone's
+  16-bit floor. Float is not the default with effects on: on the phone's speaker and Bluetooth the system
+  mixer rounds a float track to its 16-bit device undithered, which is worse than the dithered 16-bit track;
+  the chain itself costs the same either way (`no_alloc::chain_cost`, bytes to bytes as the sink runs it, ten
+  seconds of 48 kHz stereo through a graphic EQ, a compressor and the limiter, on the Mac: 20.3 ms 16-bit
+  dithered, 19.5 ms float, float/16-bit 0.96; dither is 3 % of the 16-bit figure). Float changes no timing
+  of the bursts: the engine's burst, the ring (float either way) and the track are sized in time, so the
+  engine and the writer wake as often; only the bytes double (a float track of 11.5 s at 48 kHz is 4.4 MB
+  against 2.2 MB), and should the platform grant a float track less than asked, the writer tops up by what
+  it holds, more often. **Open**: screen-off battery with and without high quality output, measured on a
+  real phone with `tools/bench.sh` (the emulator's numbers mean nothing for it), and the size the platform
+  grants a float track there (the log says it when the track opens).
+
 
 - **The lyrics sync check hears the middle of the stereo image.** The vocal curve (nori-player automix/vocal.rs)
   of a stereo song is measured on its centre: the side rides in the analysis FFT's imaginary part, and each

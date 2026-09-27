@@ -166,7 +166,8 @@ and pitch and silence skipping, holds and mixes endings through the transition e
 pause and switches, plays each song at its ReplayGain volume (on its own samples, before any mix), walks
 the queue (next, previous, repeat, explicit songs skipped, the error run, a failed connection reported)
 and keeps the ear's playhead. High quality output carries float from the decoder to a device that plays
-float, with nothing touching the samples, as Android's does. A song still on its way is opened off the
+float, 24-bit songs whole, with the sound chain run on the floats; without it the chain runs on 16-bit
+samples and dithers what it changes back to 16 bits. A song still on its way is opened off the
 engine's thread, and a long pause lets the output and the song's bytes go (the core's idle release) and
 opens them again where it was. A change to the sound while music plays (the equalizer, the limiter, speed,
 silence skipping, ReplayGain on a device that holds seconds, high quality output) is heard at once: what the
