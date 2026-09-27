@@ -236,6 +236,28 @@ pub(crate) trait Opener: Send {
     fn open(&mut self, format: OutputFormat, float: bool, frames: u64) -> Result<Opened, String>;
 }
 
+/// The shortest track [`open_fitting`] goes down to before it gives up.
+const FITTING_MIN_US: i64 = 1_000_000;
+
+/// A track asked for `frames`, or, where the sound server has no memory for so big a one, half of it and so
+/// on down to [`FITTING_MIN_US`]. The server's memory for tracks is a few megabytes per app: eleven and a
+/// half seconds of float at 96 kHz is 8.8 MB, and it answered "not enough memory" (-12) and played nothing.
+/// A smaller track plays the same, topped up more often (the writer is timed by what it holds).
+pub(crate) fn open_fitting(opener: &mut dyn Opener, format: OutputFormat, float: bool, frames: u64) -> Result<Opened, String> {
+    let least = (format.rate as i64 * FITTING_MIN_US / 1_000_000) as u64;
+    let mut ask = frames;
+    loop {
+        match opener.open(format, float, ask) {
+            Ok(o) => return Ok(o),
+            Err(e) if ask / 2 >= least => {
+                log(&format!("the AudioTrack would not open at {} ms ({e}): asking for half", ask * 1000 / format.rate.max(1) as u64));
+                ask /= 2;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// The engine's end of the ring as the writer uses it: `nori_engine::Feed`, or a simulated one.
 pub(crate) trait Ring: Send {
     fn available(&self) -> usize;
@@ -950,7 +972,7 @@ impl<R: Ring> Writer<R> {
     fn reopen(&mut self, now_ns: i64, frames: u64) {
         self.sink.release();
         self.asked = frames;
-        let opened = self.opener.lock().open(self.format, self.float, frames);
+        let opened = open_fitting(&mut **self.opener.lock(), self.format, self.float, frames);
         match opened {
             Ok(o) => {
                 self.sink = o.sink;
@@ -1064,7 +1086,7 @@ impl AudioOutput for TrackOutput {
         // Opened deep, always: while tuned it is made shallow in place, before anything is written.
         let shallow = self.shared.control.lock().shallow;
         let frames = track_frames(format.rate, false);
-        let opened = self.opener.lock().open(format, self.float, frames).inspect_err(|e| log(&format!("the AudioTrack would not open: {e}")))?;
+        let opened = open_fitting(&mut **self.opener.lock(), format, self.float, frames).inspect_err(|e| log(&format!("the AudioTrack would not open: {e}")))?;
         *self.shared.control.lock() = Control { shallow, ..Control::default() };
         *self.shared.failure.lock() = None;
         let reopen = Reopen { opener: self.opener.clone(), frames, failure: self.shared.failure.clone() };
@@ -1706,6 +1728,36 @@ mod tests {
             let sink = FakeSink { track: self.track.clone(), staging: vec![0.0; CHUNK_BYTES / 4], float, now: self.now.clone() };
             Ok(Opened { sink: Box::new(sink), frames, starts_full })
         }
+    }
+
+    /// A sound server with memory for tracks of at most `most` frames: anything bigger is refused.
+    struct Cramped(FakeOpener, u64, Vec<u64>);
+
+    impl Opener for Cramped {
+        fn open(&mut self, format: OutputFormat, float: bool, frames: u64) -> Result<Opened, String> {
+            self.2.push(frames);
+            if frames > self.1 {
+                return Err("not enough memory".into());
+            }
+            self.0.open(format, float, frames)
+        }
+    }
+
+    #[test]
+    fn a_track_too_big_for_the_sound_server_is_asked_for_again_smaller() {
+        let track = Arc::new(Mutex::new(Track::default()));
+        let fake = FakeOpener { track: track.clone(), float: true, now: Arc::new(AtomicU64::new(0)) };
+        let format = OutputFormat { rate: 96_000, channels: 2, bits: 0 };
+        let asked = track_frames(96_000, false);
+        let mut o = Cramped(fake, asked / 3, Vec::new());
+        let opened = open_fitting(&mut o, format, true, asked).expect("opened smaller");
+        assert_eq!(o.2, vec![asked, asked / 2, asked / 4]);
+        assert_eq!(opened.frames, asked / 4);
+        // Down to a second, and no further.
+        let fake = FakeOpener { track, float: true, now: Arc::new(AtomicU64::new(0)) };
+        let mut o = Cramped(fake, 1_000, Vec::new());
+        assert!(open_fitting(&mut o, format, true, asked).is_err());
+        assert!(o.2.iter().all(|f| *f >= 96_000), "{:?}", o.2);
     }
 
     impl Sim {
