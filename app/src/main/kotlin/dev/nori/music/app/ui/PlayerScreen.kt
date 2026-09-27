@@ -871,8 +871,13 @@ private fun Artwork(
             )
             // Just enough shade under the status bar for its icons to read on a pale cover; the same
             // amount the album page uses, and invisible against anything darker.
+            // On its side the sleeve's right edge goes soft (SoftSleeve), and the shade goes with it: stopping
+            // where the sleeve does, it was a darker block with a hard edge across the top of the soft band.
+            val across = LocalWide.current
             Box(
                 Modifier.fillMaxWidth().fillMaxHeight(stage.statusShadeTo)
+                    .then(if (across) Modifier.graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
+                        .rubOutBottom(across = true) { (size.width - size.width * MELT) to size.width } else Modifier)
                     .background(remember { Brush.verticalGradient(0f to Color.Black.copy(alpha = stage.statusShade), 1f to Color.Transparent) }),
             )
             // Nothing is drawn here to soften the sleeve's bottom. There is one blurred copy of the
