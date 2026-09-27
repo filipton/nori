@@ -28,6 +28,9 @@ winit = "0.30"
 # The same wgpu Slint draws with; only so our shaders can be written in WGSL.
 wgpu = { version = "30", default-features = false, features = ["wgsl"] }
 pollster = "0.4"
+# Slint's own Skia (the same version and features, so nothing more is built): the line being sung is measured
+# with it, in the font it is drawn in (sung.rs).
+skia-safe = "0.153.3"
 arboard = { version = "3", default-features = false }
 
 # The menu bar, macOS's own.

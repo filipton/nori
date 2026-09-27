@@ -6,10 +6,16 @@ use nori_core::lyrics_sources::LyricsOrigin;
 use nori_core::race::{lyrics_replaces, LyricsPick};
 use nori_look::lyrics::{Line, LyricClock, LyricTiming, Word};
 use slint::{ModelRc, SharedString, VecModel};
+use std::cell::RefCell;
+
+use crate::sung::{self, Laid};
+use crate::LyricPiece;
 
 pub struct SongLyrics {
     pick: LyricsPick,
     clock: LyricClock,
+    /// The line being sung as last laid out, in the panel and in Now Playing (sung.rs).
+    laid: RefCell<[Option<Laid>; 2]>,
 }
 
 fn word(w: &nori_core::LyricWord) -> Word {
@@ -29,7 +35,7 @@ impl SongLyrics {
         });
         // The sync check's offset (lyrics that run late or early against the song) is the clock's to apply.
         let clock = LyricClock::with_offset(LyricTiming::new(lyrics.synced, lyrics.word_timed, lines), position_ms, lyrics.offset_ms);
-        SongLyrics { pick, clock }
+        SongLyrics { pick, clock, laid: RefCell::new([None, None]) }
     }
 
     pub fn lines(&self) -> ModelRc<SharedString> {
@@ -63,13 +69,13 @@ impl SongLyrics {
     /// Where the music is now: the line lit, how far its words are sung, and in how many ms to ask again, if
     /// at all. Lyrics with real word times fill in word by word; others a line at a time.
     pub fn advance(&self, position_ms: i64, force: bool) -> Now {
-        let step = self.clock.advance(position_ms, true, false, force);
+        let step = self.clock.advance(position_ms, true, true, force);
         let sweeping = self.clock.timing().sweeps();
         let wait = match step.wait {
             0 => None,
             // While a word fills, the clock counts display frames; a frame is a sixtieth of a second, and a
             // thirtieth is smooth enough for a fill.
-            n if sweeping && !step.still => Some((n as u64 * 16).max(33)),
+            n if sweeping && !step.still => Some((n as u64 * 16).max(16)),
             n => Some(n as u64),
         };
         let line = usize::try_from(step.frame.active).ok().and_then(|i| self.pick.lyrics.lines.get(i));
@@ -77,7 +83,19 @@ impl SongLyrics {
             Some(l) if sweeping => split(&l.text, step.frame.sung),
             _ => Default::default(),
         };
-        Now { active: step.frame.active, sweeping, sung, now, mix, rest, wait }
+        Now { active: step.frame.active, sweeping, sung, now, mix, rest, wait, at: step.frame.sung, ms: self.clock.shown_ms() }
+    }
+
+    /// The lit line as pieces to draw (sung.rs), in the panel (`view` 0) or Now Playing (1), at `size`
+    /// across `width`; laid out again only when any of those change.
+    pub fn pieces(&self, view: usize, now: &Now, size: f32, width: f32, lit: f32, dim: f32) -> Vec<LyricPiece> {
+        let Some((i, line)) = usize::try_from(now.active).ok().and_then(|i| self.pick.lyrics.lines.get(i).map(|l| (i, l))) else { return Vec::new() };
+        let mut laid = self.laid.borrow_mut();
+        let slot = &mut laid[view];
+        if !slot.as_ref().is_some_and(|l| l.is(i, size, width)) {
+            *slot = Some(sung::lay(i, line, size, width));
+        }
+        slot.as_ref().map_or_else(Vec::new, |l| sung::frame(l, line, now.at, now.ms, lit, dim, size * 0.6))
     }
 
     /// A click on `line`: where the song should go to sing it.
@@ -97,6 +115,9 @@ pub struct Now {
     pub mix: f32,
     pub rest: String,
     pub wait: Option<u64>,
+    /// How far into the lit line the singing is (UTF-16 units), and the moment shown (the words' own time).
+    pub at: f32,
+    pub ms: i64,
 }
 
 /// `text` cut where the singing is, `at` UTF-16 units in (7.5 is half of the character at 7): the part sung,

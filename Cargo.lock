@@ -3778,6 +3778,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "parking_lot",
  "pollster",
+ "skia-safe",
  "slint",
  "slint-build",
  "wgpu",

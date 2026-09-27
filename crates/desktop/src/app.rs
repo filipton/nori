@@ -23,7 +23,7 @@ use slint::{Color, ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPix
 
 use crate::session::{self, Data, Fetch, Msg, Req, Session};
 use crate::words;
-use crate::{AppWindow, Card, PlayerBar, Shelf, SidebarWindow, SongRow};
+use crate::{AppWindow, Card, LyricPiece, PlayerBar, Shelf, SidebarWindow, SongRow};
 
 /// Pixels a side: a card's cover, and the large one (now playing, a page's), whose colours are worked out too.
 const SMALL_PX: u32 = 256;
@@ -194,6 +194,8 @@ pub struct App {
     /// The lyrics of the song heard, and their clock; when the next line is due.
     lyrics: Option<crate::lyrics::SongLyrics>,
     lyrics_timer: Timer,
+    /// The lit line's pieces in the panel and in Now Playing, changed in place frame to frame.
+    pieces: [Rc<VecModel<LyricPiece>>; 2],
     /// The queue's rows, changed in place so the rows that stay stay put; the rows going out go first, and
     /// the list settles to `queue_next` once they have.
     queue_rows: Rc<VecModel<SongRow>>,
@@ -330,6 +332,7 @@ pub fn start(ui: &AppWindow, data: PathBuf) {
         again: Timer::default(),
         lyrics: None,
         lyrics_timer: Timer::default(),
+        pieces: [Rc::new(VecModel::default()), Rc::new(VecModel::default())],
         queue_rows: Rc::new(VecModel::default()),
         queue_next: None,
         queue_timer: Timer::default(),
@@ -337,6 +340,8 @@ pub fn start(ui: &AppWindow, data: PathBuf) {
         search: Timer::default(),
     };
     ui.set_queue(ModelRc::from(app.queue_rows.clone()));
+    ui.set_lyric_pieces_side(ModelRc::from(app.pieces[0].clone()));
+    ui.set_lyric_pieces_full(ModelRc::from(app.pieces[1].clone()));
     APP.with(|a| *a.borrow_mut() = Some(app));
     // The compositor draws the page with the sidebar and the player on glass over it.
     with(|a| crate::compositor::roles(ui.window(), a.sidebar.as_ref().map(|s| s.window()), a.player.as_ref().map(|p| p.window())));
@@ -1211,6 +1216,13 @@ impl App {
         let ui = self.ui();
         ui.set_lyrics_active(now.active);
         ui.set_lyric_sweeping(now.sweeping);
+        // The lit line in pieces, each word or syllable rising as it is sung (sung.rs), where it is shown.
+        let full = ui.get_full_player() && ui.get_full_panel() == 2;
+        let side = ui.get_inspector() == 2;
+        let width = ui.window().size().to_logical(ui.window().scale_factor()).width;
+        let pieces = |view, on: bool, size, w, lit, dim| if on && now.sweeping { l.pieces(view, &now, size, w, lit, dim) } else { Vec::new() };
+        renew(&self.pieces[0], pieces(0, side, 22.0, 280.0 - 44.0, 0.92, 0.26));
+        renew(&self.pieces[1], pieces(1, full, 44.0, width / 2.0 - 140.0, 1.0, 0.36));
         ui.set_lyric_sung(now.sung.into());
         ui.set_lyric_now(now.now.into());
         ui.set_lyric_mix(now.mix);
@@ -1504,6 +1516,20 @@ fn row(s: &Song, index: usize, playing: bool) -> SongRow {
 fn queue_rows(v: &PlaylistView) -> Vec<SongRow> {
     let from = v.order.iter().position(|&i| i as i32 == v.index).map_or(0, |p| p + 1);
     v.order[from.min(v.order.len())..].iter().filter_map(|&i| v.songs.get(i as usize).map(|s| row(s, i as usize, false))).collect()
+}
+
+/// `m` made `rows`, row by row where it has as many (the pieces of a line move frame to frame; their texts
+/// stay).
+fn renew<T: Clone + PartialEq + 'static>(m: &VecModel<T>, rows: Vec<T>) {
+    if m.row_count() != rows.len() {
+        m.set_vec(rows);
+        return;
+    }
+    for (i, r) in rows.into_iter().enumerate() {
+        if m.row_data(i).as_ref() != Some(&r) {
+            m.set_row_data(i, r);
+        }
+    }
 }
 
 /// How long a row leaving the queue takes to fold away (app.slint's QueueView).

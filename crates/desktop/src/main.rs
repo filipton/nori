@@ -12,6 +12,7 @@ mod lyrics;
 mod menu;
 mod session;
 mod settings;
+mod sung;
 mod words;
 
 use std::path::PathBuf;
