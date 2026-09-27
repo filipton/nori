@@ -491,6 +491,7 @@ impl Runner {
             Cmd::Seek(ms) => s.engine.seek(ms),
             Cmd::Volume(v) => {
                 s.volume.set(v);
+                s.volume_changed(v);
                 own::keep(own::VOLUME, v.to_string());
                 app.volume = v;
                 app.settings.invalidate();

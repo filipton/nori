@@ -21,4 +21,7 @@ object Equalizer {
 
     /** The limiter's meter: what it takes off right now, dB. */
     val meterDb: Float get() = PlaybackService.rustPlayer?.gainReductionDb ?: 0f
+
+    /** The compressor's meter: what it takes off right now, dB. */
+    val compressionDb: Float get() = PlaybackService.rustPlayer?.compressionDb ?: 0f
 }

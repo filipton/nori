@@ -53,6 +53,9 @@ pub fn on_arrival(a: Arrival) -> ArrivalPlan {
 
 /// The profile "Flat": the equalizer off on a device, everything else as it was when it was made.
 pub const FLAT: &str = "Flat";
+/// The profile "No processing": nothing in the sample chain on a device (its sound's `bypass`), so what
+/// reaches it is the music as it comes and audio offload can play it.
+pub const BYPASS: &str = "No processing";
 
 /// Loading a device's own sound. The first time one replaces a sound nobody bound to a device, that
 /// sound is kept, so it comes back when the music goes to such a device again (the DAC unplugged, back
@@ -72,6 +75,8 @@ pub enum ChoiceKind {
     Flat,
     /// A saved profile.
     Profile,
+    /// No processing on this device: no equalizer and no effects at all.
+    Bypass,
 }
 
 /// One output device in the equalizer's device list: `output` is its key, `port` and `name` where it is
@@ -103,6 +108,7 @@ pub fn rows(known: &[String], current: &str, profiles: &[(&str, &[String])], qui
             let bound = profiles.iter().find(|(_, outs)| outs.iter().any(|x| x == o)).map(|(n, _)| *n);
             let choice = match bound {
                 Some(FLAT) => ChoiceKind::Flat,
+                Some(BYPASS) => ChoiceKind::Bypass,
                 Some(_) => ChoiceKind::Profile,
                 None if quiet.iter().any(|q| q == o) => ChoiceKind::Quiet,
                 None => ChoiceKind::Automatic,
@@ -152,6 +158,15 @@ mod tests {
                 ("Wired headphones", OutputPort::Wired, None, false, ChoiceKind::Flat, None),
             ]
         );
+    }
+
+    #[test]
+    fn a_device_left_unprocessed_says_so() {
+        let dac = vec!["USB: DAC".to_string()];
+        let profiles: [(&str, &[String]); 1] = [(BYPASS, &dac)];
+        let rows = rows(&dac, SPEAKER, &profiles, &[]);
+        let r = rows.iter().find(|r| r.output == "USB: DAC").unwrap();
+        assert_eq!((r.choice, r.profile.as_deref()), (ChoiceKind::Bypass, None));
     }
 
     #[test]

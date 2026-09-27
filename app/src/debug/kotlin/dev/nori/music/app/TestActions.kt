@@ -60,6 +60,7 @@ object TestActions {
                 val spec = deviceSpec(value)
                 val choice = when (spec.kind) {
                     SpecKind.FLAT -> DeviceSound.Choice.Flat
+                    SpecKind.BYPASS -> DeviceSound.Choice.Bypass
                     SpecKind.QUIET -> DeviceSound.Choice.Quiet
                     SpecKind.PROFILE -> DeviceSound.Choice.Profile(spec.arg)
                     SpecKind.CURVE -> withContext(Dispatchers.IO) { nori.core.autoeqSearch(spec.arg, 1u) }.firstOrNull()?.let { DeviceSound.Choice.Curve(it) } ?: return@launch

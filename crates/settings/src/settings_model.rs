@@ -293,6 +293,9 @@ mod tests {
         let eq = StoredPrefs { eq_enabled: true, offload: true, ..d.clone() };
         assert!(state(&eq, Output::default()).offload_paused);
         assert!(!state(&eq, Output { dac_bit_perfect: false, usb: true }).offload_paused);
+        // No processing on this output: the effects are kept but out of the path, so offload comes back.
+        let none = state(&StoredPrefs { sound_bypass: true, ..eq.clone() }, Output::default());
+        assert!(!none.sound_chain_on && !none.offload_paused);
         // Every lyrics service, in the order they are asked, each on or off where it stands.
         assert_eq!(s.lyrics_sources.iter().map(|l| l.id.clone()).collect::<Vec<_>>(), d.lyrics_order);
         let on: Vec<&str> = s.lyrics_sources.iter().filter(|l| l.on).map(|l| l.id.as_str()).collect();

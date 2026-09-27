@@ -951,6 +951,9 @@ pub struct TransitionPrefs {
     pub keep_pitch: bool,
     pub keep_albums: bool,
     pub replay_gain: bool,
+    pub fade_curve: FadeCurve,
+    pub fade_in_ms: i32,
+    pub fade_out_ms: i32,
 }
 
 pub use nori_player::transport::{ChainChange, Dip, Rebuild, Switch};

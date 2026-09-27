@@ -56,6 +56,8 @@ sealed interface SettingRow {
     data class Button(val title: String, val action: String) : SettingRow
     /** One of a ranked list (the lyrics services), switched where it stands and picked up to move. */
     data class Ranked(val key: String, val name: String, val id: String, val title: String, val detail: String, val on: Boolean) : SettingRow
+    /** The compressor's gain reduction, read from the player only while the page is on screen. */
+    data class CompressionMeter(val key: String) : SettingRow
     /** Text typed in (a service's key), hidden when [secret]. */
     data class Text(val key: String, val name: String, val title: String, val detail: String, val value: String, val secret: Boolean) : SettingRow
 }
@@ -163,6 +165,7 @@ private val BEAT_MODEL_ROWS = setOf(R.string.settings_better_beats, R.string.set
  */
 private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("playing", R.string.settings_crossfade, R.string.settings_hint_crossfade),
+    Triple("playing", R.string.settings_crossfade_curve, 0),
     Triple("playing", R.string.settings_automix, R.string.settings_hint_automix),
     Triple("playing", R.string.settings_longest_mix, 0),
     Triple("playing", R.string.settings_match_beat, R.string.settings_hint_match_beat),
@@ -191,11 +194,14 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("sound", R.string.settings_autoeq_auto, R.string.settings_hint_autoeq_auto),
     Triple("sound", R.string.settings_autoeq_list, R.string.settings_hint_autoeq_list),
     Triple("sound", R.string.settings_per_device, R.string.settings_hint_per_device),
+    Triple("sound", R.string.settings_sound_bypass, R.string.settings_sound_bypass_detail),
     Triple("sound", R.string.settings_system_effects, 0),
     Triple("sound", R.string.settings_bass_boost_title, 0),
     Triple("sound", R.string.settings_virtualizer_title, R.string.settings_virtualizer_hint),
     Triple("sound", R.string.settings_volume_boost_title, 0),
     Triple("sound", R.string.settings_compressor, R.string.settings_compressor_detail),
+    Triple("sound", R.string.settings_expander, R.string.settings_expander_detail),
+    Triple("sound", R.string.settings_loudness, R.string.settings_loudness_detail),
     Triple("sound", R.string.settings_replay_gain, R.string.settings_hint_replay_gain),
     Triple("sound", R.string.settings_loudness_target, R.string.settings_hint_loudness_target),
     Triple("sound", R.string.settings_gain_boost, R.string.settings_hint_gain_boost),
@@ -445,6 +451,13 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
         if (s.untouched) between += SettingRow.Note(str(if (s.untouchedByDac) R.string.settings_held_by_dac else R.string.settings_held_by_hi_res))
         // AutoMix plans its own transitions, so the plain crossfade gives way to it.
         if (!p.autoMix) between += choice("crossfadeSec", R.string.settings_crossfade, live) { offOr(it, ::seconds) }
+        // How a plain crossfade sounds: its curve, and how long each side takes within it.
+        if (!p.autoMix && p.crossfadeSec > 0) {
+            between += named("crossfadeCurve", R.string.settings_crossfade_curve, R.string.settings_crossfade_equal_power, R.string.settings_crossfade_linear, R.string.settings_crossfade_s_curve)
+            fun part(v: String) = if (v == "0") str(R.string.settings_crossfade_whole) else seconds(v)
+            between += choice("crossfadeInSec", R.string.settings_crossfade_in, live, label = ::part)
+            between += choice("crossfadeOutSec", R.string.settings_crossfade_out, live, label = ::part)
+        }
         between += toggle("autoMix", R.string.settings_automix, R.string.settings_automix_detail, live)
         if (p.autoMix) {
             between += choice("autoMixMaxS", R.string.settings_longest_mix, live, label = ::seconds)
@@ -533,6 +546,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
             // Under the switch for looking things up at all (Library), and turns it on with it.
             toggle("autoEqDownload", R.string.settings_autoeq_list, R.string.settings_autoeq_list_detail),
             toggle("profilePerOutput", R.string.settings_per_device, R.string.settings_per_device_detail),
+            toggle("soundBypass", R.string.settings_sound_bypass, R.string.settings_sound_bypass_detail),
             link(R.string.settings_system_effects, "", false, "system-effects", divider = false),
         )
         val volume = mutableListOf<SettingRow>(
@@ -586,6 +600,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
             toggle("compressor", R.string.settings_compressor, R.string.settings_compressor_detail),
         )
         if (p.compressor) {
+            rows += SettingRow.CompressionMeter("compression-meter")
             rows += choice("compressorPreset", R.string.settings_compressor_preset, fallback = { str(R.string.settings_compressor_custom) }) {
                 str(when (it) { "GENTLE" -> R.string.settings_compressor_gentle; "STRONG" -> R.string.settings_compressor_strong; else -> R.string.settings_compressor_balanced })
             }
@@ -597,6 +612,17 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
             rows += SettingRow.Slider("compReleaseMs", str(R.string.settings_comp_release, p.compReleaseMs.roundToInt().toString()), p.compReleaseMs.coerceIn(10f, 1000f), 10f, 1000f, false, EqLevel.COMP_RELEASE)
             rows += SettingRow.Slider("compMakeupDb", str(R.string.settings_comp_makeup, signedDb(p.compMakeupDb)), p.compMakeupDb.coerceIn(0f, 12f), 0f, 12f, false, EqLevel.COMP_MAKEUP)
             rows += SettingRow.Slider("compKneeDb", str(R.string.settings_comp_knee, one(p.compKneeDb)), p.compKneeDb.coerceIn(0f, 12f), 0f, 12f, false, EqLevel.COMP_KNEE)
+        }
+        // Loudness compensation that follows the volume (ISO 226): off unless asked for.
+        rows += toggle("loudness", R.string.settings_loudness, R.string.settings_loudness_detail)
+        if (p.loudness) rows += choice("loudnessRefPhon", R.string.settings_loudness_reference) { str(R.string.settings_phon, it) }
+        // The downward expander, a noise gate at a high ratio: off unless asked for.
+        rows += toggle("expander", R.string.settings_expander, R.string.settings_expander_detail)
+        if (p.expander) {
+            rows += SettingRow.Slider("expThresholdDb", str(R.string.settings_exp_threshold, minus(one(p.expThresholdDb))), p.expThresholdDb, -90f, -10f, false, EqLevel.EXP_THRESHOLD)
+            rows += SettingRow.Slider("expRatio", str(R.string.settings_exp_ratio, one(p.expRatio)), p.expRatio, 1f, 20f, false, EqLevel.EXP_RATIO)
+            rows += SettingRow.Slider("expAttackMs", str(R.string.settings_exp_attack, one(p.expAttackMs)), p.expAttackMs.coerceIn(0.1f, 50f), 0.1f, 50f, false, EqLevel.EXP_ATTACK)
+            rows += SettingRow.Slider("expReleaseMs", str(R.string.settings_exp_release, p.expReleaseMs.roundToInt().toString()), p.expReleaseMs.coerceIn(10f, 1000f), 10f, 1000f, false, EqLevel.EXP_RELEASE)
         }
         return rows
     }

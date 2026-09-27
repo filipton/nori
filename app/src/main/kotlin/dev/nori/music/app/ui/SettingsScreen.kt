@@ -176,6 +176,45 @@ private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) 
 }
 
 /** A row with a line of text and a button at its end: a count, an action. */
+/**
+ * What the compressor is taking off right now: a line and a bar. Read from the player only while this
+ * page is resumed, the way the equalizer screen reads the limiter's meter, and dropped the moment it is
+ * not: nothing ticks with the screen off. Its own scope, so a reading redraws only this row.
+ */
+@Composable
+private fun CompressionMeter() {
+    var db by remember { mutableFloatStateOf(0f) }
+    var resumed by remember { mutableStateOf(false) }
+    androidx.lifecycle.compose.LifecycleResumeEffect(Unit) { resumed = true; onPauseOrDispose { resumed = false } }
+    LaunchedEffect(resumed) {
+        while (resumed) {
+            db = dev.nori.music.playback.Equalizer.compressionDb
+            kotlinx.coroutines.delay(stage.meterMs)
+        }
+    }
+    val active = db > 0.05f
+    val scheme = MaterialTheme.colorScheme
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        // The words change only with the tenth of a dB they show; the bar moves far more finely.
+        Text(
+            remember(kotlin.math.round(db * 10f)) { say.compression(db) },
+            style = MaterialTheme.typography.labelMedium,
+            color = if (active) scheme.primary else scheme.onSurfaceVariant,
+        )
+        val track = scheme.surfaceVariant
+        val fill = scheme.primary
+        // Full width is 20 dB of reduction, more than any preset takes off music.
+        Spacer(
+            Modifier.padding(top = 6.dp).fillMaxWidth().height(4.dp).drawBehind {
+                val r = androidx.compose.ui.geometry.CornerRadius(size.height / 2f)
+                drawRoundRect(track, cornerRadius = r)
+                val w = size.width * (db / 20f).coerceIn(0f, 1f)
+                if (w > 0f) drawRoundRect(fill, size = size.copy(width = w), cornerRadius = r)
+            },
+        )
+    }
+}
+
 @Composable
 private fun ActionRowSetting(row: SettingRow.Action, onClick: () -> Unit) {
     Row(Modifier.fillMaxWidth().spotlight(row.key).padding(start = 16.dp, end = 8.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -395,6 +434,7 @@ private fun SettingsSectionRows(vm: SettingsViewModel, section: SettingsSection)
                     // A slider with a level is edited in place on every step, like the equalizer's.
                     NoriSlider(row.value, row.min..row.max, { v -> row.level?.let { vm.setLevel(it, v) } ?: vm.set(row.name, v.toString()) }, Modifier.padding(horizontal = 16.dp), centred = row.centred)
                 }
+                is SettingRow.CompressionMeter -> CompressionMeter()
                 is SettingRow.Palette -> Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                     row.colours.forEach { c ->
                         androidx.compose.foundation.layout.Box(

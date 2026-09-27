@@ -132,7 +132,7 @@ fun EqualizerScreen(vm: SettingsViewModel) {
         // Two settings switch the whole sample chain off. Without this the screen looks broken: bands
         // move, the limiter says it is on, and nothing whatsoever happens to the sound.
         val dac by vm.dac.collectAsStateWithLifecycle()
-        val bypass = remember(p.hiRes, dac.bitPerfect) { dev.nori.music.ffi.settings.eqBypassReason(p.hiRes, dac.bitPerfect)?.let(say::eqBypass) }
+        val bypass = remember(p.hiRes, dac.bitPerfect, p.soundBypass) { dev.nori.music.ffi.settings.eqBypassReason(p.hiRes, dac.bitPerfect, p.soundBypass)?.let(say::eqBypass) }
         if (bypass != null) Surface(
             shape = CardShape, color = MaterialTheme.colorScheme.errorContainer,
             modifier = Modifier.fillMaxWidth().padding(horizontal = Space.gutter, vertical = 8.dp),
@@ -221,8 +221,19 @@ fun EqualizerScreen(vm: SettingsViewModel) {
         ActionRow(say.saveAsProfile, Icons.Filled.Add, { newName = ""; naming = true }, divider = false)
 
         SectionTitle(say.crossfeed)
-        Text(remember(p.crossfeedDb) { say.crossfeed(p.crossfeedDb) }, Modifier.padding(horizontal = Space.gutter), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        // bs2b's presets, or the listener's own (none of the chips lit): which is the core's.
+        val preset = remember(p.crossfeedDb, p.crossfeedHz) { dev.nori.music.ffi.settings.crossfeedPresetOf(p) }
+        Row(Modifier.padding(horizontal = Space.gutter, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("OFF" to say.crossfeedOff, "DEFAULT" to say.crossfeedDefault, "CHU_MOY" to say.crossfeedChuMoy, "JAN_MEIER" to say.crossfeedJanMeier).forEach { (v, label) ->
+                Chip(label, v == preset) { if (v != preset) vm.set("crossfeedPreset", v) }
+            }
+        }
+        Text(remember(p.crossfeedDb, preset) { say.crossfeed(p.crossfeedDb, preset.isEmpty()) }, Modifier.padding(horizontal = Space.gutter), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         NoriSlider(p.crossfeedDb, ranges.crossfeed.min..ranges.crossfeed.max, { v -> vm.setLevel(EqLevel.CROSSFEED, v) }, Modifier.padding(horizontal = Space.gutter))
+        if (p.crossfeedDb > 0f) {
+            Text(remember(p.crossfeedHz) { say.crossfeedCut(p.crossfeedHz) }, Modifier.padding(horizontal = Space.gutter), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            NoriSlider(p.crossfeedHz, ranges.crossfeedCut.min..ranges.crossfeedCut.max, { v -> vm.setLevel(EqLevel.CROSSFEED_CUT, v) }, Modifier.padding(horizontal = Space.gutter))
+        }
     }
 }
 
@@ -231,7 +242,7 @@ fun EqualizerScreen(vm: SettingsViewModel) {
 private fun GraphicBands(vm: SettingsViewModel, sliders: List<Float>, target: List<Float>, enabled: Boolean) {
     val count = sliders.size
     Row(Modifier.padding(horizontal = Space.gutter, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        listOf(10, 15, 31).forEach { n -> Chip(say.eqBandCount(n), n == count) { if (n != count) vm.setEqLayout(n) } }
+        listOf(5, 10, 15, 31).forEach { n -> Chip(say.eqBandCount(n), n == count) { if (n != count) vm.setEqLayout(n) } }
     }
     ResponseCurve(sliders, target, enabled)
     // After a headphone correction: how closely the sliders follow it, asked of the core once per change.

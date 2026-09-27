@@ -5,7 +5,7 @@
 
 use crate::automix::mixer;
 use crate::engine::Plan;
-use crate::types::{AutoMixSettings, TransitionKind, TransitionPlan};
+use crate::types::{AutoMixSettings, FadeCurve, TransitionKind, TransitionPlan};
 
 /// A song in the window, as far as transitions care.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -41,6 +41,13 @@ pub struct TransitionPrefs {
     pub keep_albums: bool,
     /// ReplayGain levels songs already, so AutoMix does not trim them to each other.
     pub replay_gain: bool,
+    /// The plain crossfade's curve (AutoMix picks its own).
+    pub fade_curve: FadeCurve,
+    /// How long the incoming song takes to come up, and the outgoing one to go, in a plain crossfade,
+    /// ms; 0 is the whole crossfade. The incoming song's rise starts with the crossfade, the outgoing
+    /// one's fall ends with it.
+    pub fade_in_ms: i32,
+    pub fade_out_ms: i32,
 }
 
 /// Two songs follow on the same album, in order: `b` is played right after `a` (the caller's window is in
@@ -145,6 +152,28 @@ pub fn pick(prefs: &TransitionPrefs, transitions_off: bool, window: &[WindowSong
     Ok(Pick { out, next, settings })
 }
 
+/// A plain crossfade (AutoMix off) shaped as the settings say: its curve, and how long each side takes
+/// within it. AutoMix's transitions and gapless ones are left as the planner made them.
+///
+/// The curves, per side, `x` running 0 to 1 over its fade: linear `x` (the two add to full level in
+/// amplitude, a 3 dB dip in the middle for two different songs), equal power `sin(x π/2)` (the two add to
+/// full power: no dip, the smooth default, and what a plain crossfade has always used) and an S-curve
+/// `sin²(x π/2)` (slow at both ends, quick through the middle, 6 dB down each at the centre).
+pub fn shape_crossfade(prefs: &TransitionPrefs, t: &mut TransitionPlan) {
+    if prefs.auto_mix || t.kind != TransitionKind::EqualPowerFade || t.duration_ms <= 0 {
+        return;
+    }
+    let dur = t.duration_ms;
+    let part = |ms: i32| if ms > 0 { (ms as i64).min(dur) } else { dur };
+    t.fade_curve = prefs.fade_curve;
+    (t.in_fade_start_ms, t.in_fade_end_ms) = (0, part(prefs.fade_in_ms));
+    (t.out_fade_start_ms, t.out_fade_end_ms) = (dur - part(prefs.fade_out_ms), dur);
+    // Said in the log's reason line when it is not the plain equal-power fade over all of it.
+    if t.fade_curve != FadeCurve::EqualPower || t.in_fade_end_ms != dur || t.out_fade_start_ms != 0 {
+        t.reason = format!("{}; {:?} curve, in over {} ms, out over {} ms", t.reason, t.fade_curve, t.in_fade_end_ms, dur - t.out_fade_start_ms);
+    }
+}
+
 /// What the engine runs for the planner's answer; `None` for a gapless one (nothing to run).
 pub fn engine_plan(p: &TransitionPlan, incoming_id: &str) -> Option<Plan> {
     if p.kind == TransitionKind::Gapless {
@@ -192,6 +221,9 @@ mod tests {
             keep_pitch: true,
             keep_albums: true,
             replay_gain: false,
+            fade_curve: FadeCurve::EqualPower,
+            fade_in_ms: 0,
+            fade_out_ms: 0,
         }
     }
 
@@ -284,6 +316,60 @@ mod tests {
         assert!(!s.beat_match && !s.bass_swap && !s.filter_effects && !s.echo_out && !s.match_loudness);
         let s = pick(&TransitionPrefs { replay_gain: true, ..prefs() }, false, &w, "a", false).unwrap().settings;
         assert!(!s.match_loudness, "replaygain already levels them");
+    }
+
+    #[test]
+    fn a_plain_crossfade_takes_the_curve_and_the_lengths_asked_for() {
+        let plain = TransitionPrefs { auto_mix: false, crossfade_s: 6, ..prefs() };
+        let blind = |s: &AutoMixSettings| crate::automix::plan::plan(None, None, 200_000, 200_000, s);
+        let w = [song("a", None, 1), song("b", None, 2)];
+        let s = pick(&plain, false, &w, "a", false).unwrap().settings;
+        let mut t = blind(&s);
+        let before = t.clone();
+        shape_crossfade(&plain, &mut t);
+        assert_eq!(t, before, "equal power over the whole crossfade: what a crossfade always was");
+        let shaped = TransitionPrefs { fade_curve: FadeCurve::SineSquared, fade_in_ms: 2_000, fade_out_ms: 9_000, ..plain };
+        shape_crossfade(&shaped, &mut t);
+        assert_eq!(t.fade_curve, FadeCurve::SineSquared);
+        assert_eq!((t.in_fade_start_ms, t.in_fade_end_ms), (0, 2_000), "in over its first two seconds");
+        assert_eq!((t.out_fade_start_ms, t.out_fade_end_ms), (0, 6_000), "out over all of it: no longer than the crossfade");
+        // AutoMix's own transitions, and gapless ones, are the planner's.
+        let mut g = crate::automix::plan::plan(None, None, 200_000, 200_000, &AutoMixSettings { same_album_in_order: true, ..s });
+        let gapless = g.clone();
+        shape_crossfade(&shaped, &mut g);
+        assert_eq!(g, gapless);
+        let mut m = blind(&s);
+        let automix = m.clone();
+        shape_crossfade(&TransitionPrefs { auto_mix: true, ..shaped }, &mut m);
+        assert_eq!(m, automix);
+    }
+
+    /// What the ear gets through the mixer for each curve: the level of two different songs (uncorrelated
+    /// noise) at the middle of a crossfade, against either song alone.
+    #[test]
+    fn the_curves_sound_as_they_say() {
+        use crate::automix::mixer::{params, Mixer};
+        let n = 48_000usize;
+        let mut rng = crate::automix::synth::Rng(0x9E37_79B9_7F4A_7C15);
+        let a: Vec<f32> = (0..n).map(|_| rng.next() as f32 * 0.25).collect();
+        let b: Vec<f32> = (0..n).map(|_| rng.next() as f32 * 0.25).collect();
+        let rms = |x: &[f32]| (x.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / x.len() as f64).sqrt();
+        let middle = |curve: FadeCurve| {
+            let plain = TransitionPrefs { auto_mix: false, crossfade_s: 1, fade_curve: curve, ..prefs() };
+            let s = pick(&plain, false, &[song("a", None, 1), song("b", None, 2)], "a", false).unwrap().settings;
+            let mut t = crate::automix::plan::plan(None, None, 200_000, 200_000, &s);
+            shape_crossfade(&plain, &mut t);
+            let mut m = Mixer::new(48_000, 1);
+            m.configure(&params(&t));
+            let mut out = vec![0f32; n];
+            unsafe { m.run(a.as_ptr(), b.as_ptr(), out.as_mut_ptr(), n, |v: f32| v as f64, |v| v as f32) };
+            let mid = n / 2 - 2_400..n / 2 + 2_400;
+            20.0 * (rms(&out[mid.clone()]) / rms(&a[mid])).log10()
+        };
+        let (equal, linear, s) = (middle(FadeCurve::EqualPower), middle(FadeCurve::Linear), middle(FadeCurve::SineSquared));
+        assert!(equal.abs() < 0.5, "equal power keeps the level: {equal} dB");
+        assert!((linear + 3.0).abs() < 0.6, "linear dips 3 dB: {linear}");
+        assert!((s + 3.0).abs() < 0.6, "the S-curve too, at its centre: {s}");
     }
 
     #[test]

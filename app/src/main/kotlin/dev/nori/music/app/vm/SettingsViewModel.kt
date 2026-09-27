@@ -332,7 +332,7 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
     /** The graphic or the parametric equalizer plays; each keeps its own settings. */
     fun setEqMode(mode: dev.nori.music.ffi.settings.EqMode) { set("eqMode", mode.name) }
 
-    /** How many graphic bands (10, 15 or 31): the core draws the same curve on the new layout. */
+    /** How many graphic bands (5, 10, 15 or 31): the core draws the same curve on the new layout. */
     fun setEqLayout(count: Int) { set("eqLayout", count.toString()) }
 
     /** The automatic pre-amp on or off; off starts from the level it was at. */
@@ -368,6 +368,7 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
                 ChoiceKind.AUTOMATIC -> DeviceSound.Choice.Automatic
                 ChoiceKind.QUIET -> DeviceSound.Choice.Quiet
                 ChoiceKind.FLAT -> DeviceSound.Choice.Flat
+                ChoiceKind.BYPASS -> DeviceSound.Choice.Bypass
                 ChoiceKind.PROFILE -> DeviceSound.Choice.Profile(r.profile.orEmpty())
             }
             val say = dev.nori.music.app.ui.say
@@ -375,6 +376,7 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
                 ChoiceKind.AUTOMATIC -> say.automatic
                 ChoiceKind.QUIET -> say.leaveAsIs
                 ChoiceKind.FLAT -> say.flat
+                ChoiceKind.BYPASS -> say.noProcessing
                 ChoiceKind.PROFILE -> r.profile.orEmpty()
             }
             DeviceRow(r.output, say.outputName(r.port, r.name), say.outputKind(r.port), r.current, sound, choice)

@@ -27,7 +27,7 @@ pub fn graphic_sliders(s: &crate::settings::StoredPrefs) -> Vec<f64> {
     }
 }
 
-/// The graphic equalizer's band centres for `count` sliders (10, 15 or 31), low to high, Hz: the exact
+/// The graphic equalizer's band centres for `count` sliders (5, 10, 15 or 31), low to high, Hz: the exact
 /// ones the filters sit on and the ISO labels they are named by. Empty for a count that is not a layout.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn graphic_bands(count: u32) -> Vec<GraphicBand> {

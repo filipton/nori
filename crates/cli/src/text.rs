@@ -204,6 +204,7 @@ pub fn eq_bypass(why: EqBypass) -> &'static str {
     match why {
         EqBypass::BitPerfect => "Bit-perfect USB output is active, so nothing here touches the audio.",
         EqBypass::HiRes => "High quality output is on, so nothing here changes the sound. Turn it off in Settings, under Sound.",
+        EqBypass::Output => "No processing on this output: nothing here changes the sound. Turn it off in Settings, under Sound.",
     }
 }
 

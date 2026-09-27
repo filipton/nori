@@ -617,6 +617,9 @@ pub fn prefs_off() -> TransitionPrefs {
         keep_pitch: true,
         keep_albums: true,
         replay_gain: false,
+        fade_curve: crate::types::FadeCurve::EqualPower,
+        fade_in_ms: 0,
+        fade_out_ms: 0,
     }
 }
 
@@ -678,7 +681,8 @@ impl Host for App {
         };
         let (o, n) = (&self.window[chosen.out], &self.window[chosen.next]);
         let (a, b) = if self.prefs.auto_mix { (self.analyses.get(&o.id), self.analyses.get(&n.id)) } else { (None, None) };
-        let t = plan::plan(a, b, o.duration_ms, n.duration_ms, &chosen.settings);
+        let mut t = plan::plan(a, b, o.duration_ms, n.duration_ms, &chosen.settings);
+        crate::transitions::shape_crossfade(&self.prefs, &mut t);
         let p = engine_plan(&t, &n.id);
         let line = match &p {
             None => format!("planFor: gapless ({})", t.reason),

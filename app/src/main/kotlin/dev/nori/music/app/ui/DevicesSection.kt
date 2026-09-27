@@ -181,6 +181,7 @@ private fun DeviceSheet(vm: SettingsViewModel, d: DeviceRow, onDone: () -> Unit)
             ) { pick(DeviceSound.Choice.Automatic) }
         }
         item("flat") { Option(say.flat, say.flatDetail, d.choice == DeviceSound.Choice.Flat) { pick(DeviceSound.Choice.Flat) } }
+        item("bypass") { Option(say.noProcessing, say.noProcessingDetail, d.choice == DeviceSound.Choice.Bypass) { pick(DeviceSound.Choice.Bypass) } }
         item("quiet") { Option(say.leaveAsIs, say.leaveAsIsDetail, d.choice == DeviceSound.Choice.Quiet) { pick(DeviceSound.Choice.Quiet) } }
         items(sheet.profiles, key = { "p:$it" }) { name ->
             Option(name, say.savedProfile, d.choice == DeviceSound.Choice.Profile(name), Modifier.animateItem()) { pick(DeviceSound.Choice.Profile(name)) }

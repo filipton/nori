@@ -189,6 +189,10 @@ class Say(private val r: Resources) {
     val saveTheseSettings: String = r.getString(R.string.save_these_settings)
     val saveAsProfile: String = r.getString(R.string.save_as_profile)
     val crossfeed: String = r.getString(R.string.crossfeed)
+    val crossfeedOff: String = r.getString(R.string.crossfeed_off)
+    val crossfeedDefault: String = r.getString(R.string.crossfeed_default)
+    val crossfeedChuMoy: String = r.getString(R.string.crossfeed_chu_moy)
+    val crossfeedJanMeier: String = r.getString(R.string.crossfeed_jan_meier)
     val importPreset: String = r.getString(R.string.import_preset)
     val importPresetHint: String = r.getString(R.string.import_preset_hint)
     val importPresetExample: String = r.getString(R.string.import_preset_example)
@@ -208,6 +212,8 @@ class Say(private val r: Resources) {
     val devicesNote: String = r.getString(R.string.devices_note)
     val flat: String = r.getString(R.string.flat)
     val flatDetail: String = r.getString(R.string.flat_detail)
+    val noProcessing: String = r.getString(R.string.no_processing)
+    val noProcessingDetail: String = r.getString(R.string.no_processing_detail)
     val leaveAsIs: String = r.getString(R.string.leave_as_is)
     val leaveAsIsDetail: String = r.getString(R.string.leave_as_is_detail)
     val savedProfile: String = r.getString(R.string.saved_profile)
@@ -623,7 +629,13 @@ class Say(private val r: Resources) {
     }
 
     /** Why nothing on the equalizer screen reaches the sound. */
-    fun eqBypass(b: EqBypass): String = r.getString(if (b == EqBypass.BIT_PERFECT) R.string.eq_bypass_bit_perfect else R.string.eq_bypass_hi_res)
+    fun eqBypass(b: EqBypass): String = r.getString(
+        when (b) {
+            EqBypass.BIT_PERFECT -> R.string.eq_bypass_bit_perfect
+            EqBypass.HI_RES -> R.string.eq_bypass_hi_res
+            EqBypass.OUTPUT -> R.string.eq_bypass_output
+        },
+    )
 
     /** Under a saved profile: which devices use it, or that choosing it loads it. */
     fun profileUse(devices: List<String>): String =
@@ -721,10 +733,18 @@ class Say(private val r: Resources) {
     /** "Ceiling -1.0 dB". */
     fun ceiling(db: Float): String = r.getString(R.string.eq_ceiling, Fmt.fixed(db.toDouble(), 1))
     /** What the limiter is pulling back right now, or that it is not: "−2.3 dB", "not clipping". */
+    /** What the compressor is taking off right now, or that it is resting: "Compressing 3.2 dB". */
+    fun compression(db: Float): String =
+        if (db > 0.05f) r.getString(R.string.eq_compressing, Fmt.fixed(db.toDouble(), 1)) else r.getString(R.string.eq_not_compressing)
     fun reduction(db: Float): String =
         if (db > 0.05f) r.getString(R.string.eq_reduction, Fmt.fixed(db.toDouble(), 1)) else r.getString(R.string.eq_not_clipping)
-    fun crossfeed(db: Float): String =
-        if (db > 0f) r.getString(R.string.eq_crossfeed_on, Fmt.fixed(db.toDouble(), 1)) else r.getString(R.string.eq_off)
+    fun crossfeed(db: Float, custom: Boolean = false): String = when {
+        db <= 0f -> r.getString(R.string.eq_off)
+        custom -> r.getString(R.string.eq_crossfeed_custom, Fmt.fixed(db.toDouble(), 1))
+        else -> r.getString(R.string.eq_crossfeed_on, Fmt.fixed(db.toDouble(), 1))
+    }
+    /** "Cutoff 1265 Hz: how high up the other ear hears", in whole hertz as the core keeps it. */
+    fun crossfeedCut(hz: Float): String = r.getString(R.string.eq_crossfeed_cut, Fmt.fixed(hz.toDouble(), 0))
     /** A graphic band's ISO label: "31.5", "63", "1k", "12.5k". */
     fun isoBand(hz: Float): String = if (hz < 100f && hz != kotlin.math.floor(hz)) Fmt.fixed(hz.toDouble(), 1) else Fmt.hz(hz)
     /** The band dialog's title: "63 Hz", "1k Hz". */

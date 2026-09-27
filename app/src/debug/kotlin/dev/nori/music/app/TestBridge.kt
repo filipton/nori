@@ -27,7 +27,7 @@ class TestBridge : BroadcastReceiver() {
             """"artist":"${st.current?.artist.orEmpty().replace("\"", "'")}","positionMs":${nori.player.positionMs},""" +
             """"durationMs":${st.durationMs},"queue":${st.queue.size},"index":${st.index},"error":"${st.error.orEmpty()}",""" +
             """"dspActive":${dev.nori.music.playback.Equalizer.inChain},""" +
-            """"gainReductionDb":${dev.nori.music.playback.Equalizer.meterDb},""" +
+            """"gainReductionDb":${dev.nori.music.playback.Equalizer.meterDb},"compressionDb":${dev.nori.music.playback.Equalizer.compressionDb},""" +
             """"offloadWanted":${dev.nori.music.playback.PlaybackService.offloadWanted},""" +
             """"offloaded":${dev.nori.music.playback.PlaybackService.rustPlayer?.offloaded ?: false},""" +
             """"sinkBytes":${dev.nori.music.playback.PlaybackService.rustPlayer?.bytesWritten ?: 0}}"""

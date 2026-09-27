@@ -120,7 +120,8 @@ pub fn plan_for(outgoing_id: &str) -> Option<Plan> {
     } else {
         (None, None)
     };
-    let t = nori_player::automix::plan::plan(a.as_ref(), b.as_ref(), o.duration_ms, n.duration_ms, &chosen.settings);
+    let mut t = nori_player::automix::plan::plan(a.as_ref(), b.as_ref(), o.duration_ms, n.duration_ms, &chosen.settings);
+    nori_player::transitions::shape_crossfade(&prefs, &mut t);
     let plan = engine_plan(&t, &n.id);
     PLANNER.lock().none = plan.is_none().then(|| (outgoing_id.to_string(), generation, None));
     note(TransitionNote {

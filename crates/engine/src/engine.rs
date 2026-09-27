@@ -197,6 +197,8 @@ pub struct Status {
     /// says anything. Not while offloaded, let go, paused, or waiting for a song's bytes.
     pub on_cpu: bool,
     pub gain_reduction_db: f32,
+    /// What the compressor took off the last buffer, dB (`Sink::compression_db`).
+    pub compression_db: f32,
     /// The songs go to the output's own decoder (audio offload).
     pub offloaded: bool,
     /// The settings let offload be used, as last applied: what the output is asked for.
@@ -349,6 +351,7 @@ impl Engine {
             chain: false,
             on_cpu: false,
             gain_reduction_db: 0.0,
+            compression_db: 0.0,
             offloaded: false,
             offload_wanted: false,
             pcm_why: None,
@@ -2498,6 +2501,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             s.chain = self.p.sink.chain_in();
             s.on_cpu = self.state == State::Playing && !self.stalled && !s.switching;
             s.gain_reduction_db = self.p.sink.meter_db;
+            s.compression_db = self.p.sink.compression_db();
             s.offloaded = false;
             was
         };
@@ -2560,6 +2564,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             s.chain = false;
             s.on_cpu = false;
             s.gain_reduction_db = 0.0;
+            s.compression_db = 0.0;
             s.offloaded = true;
             was
         };

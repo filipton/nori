@@ -87,6 +87,27 @@ pub enum EqMode {
     Graphic,
 }
 
+/// The plain crossfade's curve (`nori_player::transitions::shape_crossfade`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, nori_settings_derive::Choice)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
+pub enum CrossfadeCurve {
+    /// Constant power: no dip in the middle. What a crossfade has always been.
+    EqualPower,
+    Linear,
+    /// Slow at both ends, quick through the middle.
+    SCurve,
+}
+
+impl CrossfadeCurve {
+    pub fn player(self) -> nori_player::types::FadeCurve {
+        match self {
+            CrossfadeCurve::EqualPower => nori_player::types::FadeCurve::EqualPower,
+            CrossfadeCurve::Linear => nori_player::types::FadeCurve::Linear,
+            CrossfadeCurve::SCurve => nori_player::types::FadeCurve::SineSquared,
+        }
+    }
+}
+
 /// The light or dark look: the system's, or always one of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, nori_settings_derive::Choice)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
@@ -225,6 +246,15 @@ pub struct StoredPrefs {
     pub auto_mix_beats_mobile_data: bool,
     #[setting("crossfadeKeepAlbums", FLAG, default = true, show = K::Switch, effect = REPLAN)]
     pub crossfade_keep_albums: bool,
+    /// The plain crossfade's curve.
+    #[setting("crossfadeCurve", PICK, default = CrossfadeCurve::EqualPower, show = K::Named(CrossfadeCurve::NAMES), effect = REPLAN)]
+    pub crossfade_curve: CrossfadeCurve,
+    /// How long the incoming song takes to come up in a plain crossfade, and the outgoing one to go,
+    /// seconds; 0 is the whole crossfade.
+    #[setting("crossfadeInSec", clamped(0, 12), default = 0, show = K::Choice(&["0", "1", "2", "4", "6", "8"]), effect = REPLAN)]
+    pub crossfade_in_sec: i32,
+    #[setting("crossfadeOutSec", clamped(0, 12), default = 0, show = K::Choice(&["0", "1", "2", "4", "6", "8"]), effect = REPLAN)]
+    pub crossfade_out_sec: i32,
     #[setting("fadeMs", within(0, 5000), default = 0, show = K::Choice(&["0", "150", "300", "500", "1000"]), effect = PLAYER)]
     pub fade_ms: i32,
     // Controls.
@@ -262,7 +292,7 @@ pub struct StoredPrefs {
     /// install from before there was a choice keeps the parametric equalizer it has set up ([`load`]).
     #[setting("eqMode", PICK, default = EqMode::Graphic, show = K::Named(EqMode::NAMES), effect = SOUND)]
     pub eq_mode: EqMode,
-    /// The graphic equalizer's sliders, dB, low to high: 10, 15 or 31 of them (`nori_player::graphic`).
+    /// The graphic equalizer's sliders, dB, low to high: 5, 10, 15 or 31 of them (`nori_player::graphic`).
     #[setting("eqGraphic", GRAPHIC, default = vec![0.0; 10], hidden, effect = SOUND)]
     pub eq_graphic: Vec<f32>,
     /// The headphone correction the graphic sliders were fitted to (`nori_player::graphic::target_grid`,
@@ -293,6 +323,25 @@ pub struct StoredPrefs {
     pub comp_makeup_db: f32,
     #[setting("compKneeDb", clamped(0.0, 24.0), default = 6.0, show = K::Level(0.0, 24.0), effect = SOUND)]
     pub comp_knee_db: f32,
+    /// The downward expander (a noise gate at a high ratio), before the compressor. Off by default.
+    #[setting("expander", FLAG, default = false, show = K::Switch, effect = SOUND)]
+    pub expander: bool,
+    #[setting("expThresholdDb", clamped(-90.0, -10.0), default = -50.0, show = K::Level(-90.0, -10.0), effect = SOUND)]
+    pub exp_threshold_db: f32,
+    #[setting("expRatio", clamped(1.0, 20.0), default = 2.0, show = K::Level(1.0, 20.0), effect = SOUND)]
+    pub exp_ratio: f32,
+    #[setting("expAttackMs", clamped(0.1, 100.0), default = 5.0, show = K::Level(0.1, 100.0), effect = SOUND)]
+    pub exp_attack_ms: f32,
+    #[setting("expReleaseMs", clamped(10.0, 2000.0), default = 150.0, show = K::Level(10.0, 2000.0), effect = SOUND)]
+    pub exp_release_ms: f32,
+    /// Loudness compensation that follows the volume (ISO 226, `nori_player::contour`): turned down, the
+    /// bass and the top come up against the middle as the ear needs. Off by default; only while it is on
+    /// does the platform tell the core its volume.
+    #[setting("loudness", FLAG, default = false, show = K::Switch, effect = SOUND)]
+    pub loudness: bool,
+    /// The level the music is taken to be balanced at with the volume all the way up, phon.
+    #[setting("loudnessRefPhon", clamped(60, 90), default = 80, show = K::Choice(&["70", "75", "80", "85", "90"]), effect = SOUND)]
+    pub loudness_ref_phon: i32,
     #[setting("mono", FLAG, default = false, show = K::Switch, effect = APPLY_AUDIO | SOUND)]
     pub mono: bool,
     #[setting("limiter", FLAG, default = false, show = K::Switch, effect = APPLY_AUDIO | SOUND)]
@@ -301,6 +350,10 @@ pub struct StoredPrefs {
     pub eq_preamp_db: Option<f32>,
     #[setting("crossfeedDb", FLOAT, default = 0.0, show = K::Level(EQ_RANGES.crossfeed.min, EQ_RANGES.crossfeed.max), effect = SOUND)]
     pub crossfeed_db: f32,
+    /// The crossfeed's cutoff (bs2b's `fcut`), Hz: 700 is bs2b's default; `crossfeedPreset` sets it and the
+    /// level together.
+    #[setting("crossfeedHz", clamped(300.0, 2000.0), default = 700.0, show = K::Level(EQ_RANGES.crossfeed_cut.min, EQ_RANGES.crossfeed_cut.max), effect = SOUND)]
+    pub crossfeed_hz: f32,
     /// Read by the sound chain as it runs: a change only rebuilds the chain when it starts or stops it.
     #[setting("balance", FLOAT, default = 0.0, hidden, effect = SOUND)]
     pub balance: f32,
@@ -312,6 +365,12 @@ pub struct StoredPrefs {
     /// or a month old (`nori_devices::autoeq::index_due`). Needs `third_party_lookups`. On by default.
     #[setting("autoEqDownload", FLAG, default = true, show = K::Switch, lookups)]
     pub auto_eq_download: bool,
+    /// "No processing on this output": no equalizer, crossfeed, balance, mono, limiter or effects, so the
+    /// output plays the music as it comes (and audio offload may come back). Part of a sound profile, so a
+    /// device bound to one with it on is never processed. ReplayGain and transitions are not the chain's
+    /// and stay as they are.
+    #[setting("soundBypass", FLAG, default = false, show = K::Switch, effect = APPLY_AUDIO | SOUND)]
+    pub sound_bypass: bool,
     #[setting("profilePerOutput", FLAG, default = true, show = K::Switch)]
     pub profile_per_output: bool,
     /// Off or on decides whether songs may be turned up (`gain_boost_db`), which the sound chain follows.
@@ -460,7 +519,8 @@ pub(crate) const SPECIAL_SPECS: &[(&str, K)] = &[
     ("musicFolder", K::Choice(&[])),
     ("altMaxBitRate", K::Choice(&["0", "320", "192", "128", "96"])),
     ("compressorPreset", K::Choice(&["GENTLE", "BALANCED", "STRONG"])),
-    ("eqLayout", K::Choice(&["10", "15", "31"])),
+    ("crossfeedPreset", K::Choice(&["OFF", "DEFAULT", "CHU_MOY", "JAN_MEIER"])),
+    ("eqLayout", K::Choice(&["5", "10", "15", "31"])),
 ];
 
 const SERVERS: Custom<Vec<SavedServer>> = Custom {
@@ -544,8 +604,11 @@ pub struct SoundSettings {
     pub eq_graphic_target: Vec<f32>,
     pub eq_preamp_db: Option<f32>,
     pub crossfeed_db: f32,
+    pub crossfeed_hz: f32,
     pub balance: f32,
     pub mono: bool,
+    /// No processing on this output: the chain is left out whatever the rest says.
+    pub bypass: bool,
     pub limiter: bool,
     pub limiter_threshold_db: f32,
     pub effects: SoundEffects,
@@ -570,6 +633,13 @@ pub struct SoundEffects {
     pub comp_release_ms: f32,
     pub comp_makeup_db: f32,
     pub comp_knee_db: f32,
+    pub expander: bool,
+    pub exp_threshold_db: f32,
+    pub exp_ratio: f32,
+    pub exp_attack_ms: f32,
+    pub exp_release_ms: f32,
+    pub loudness: bool,
+    pub loudness_ref_phon: i32,
 }
 
 impl Default for SoundEffects {
@@ -596,11 +666,32 @@ impl SoundEffects {
         }
     }
 
-    /// As the sound chain takes them.
+    /// The expander's controls, on or not.
+    pub fn expander_settings(&self) -> nori_player::compressor::ExpanderSettings {
+        nori_player::compressor::ExpanderSettings {
+            threshold_db: self.exp_threshold_db as f64,
+            ratio: self.exp_ratio as f64,
+            attack_ms: self.exp_attack_ms as f64,
+            release_ms: self.exp_release_ms as f64,
+        }
+    }
+
+    /// As the sound chain takes them, with loudness compensation for the volume `volume_db` (0 all the
+    /// way up) when it is on.
+    pub fn player_at(&self, volume_db: f64) -> nori_player::dsp::Effects {
+        nori_player::dsp::Effects {
+            loudness: self.loudness.then(|| nori_player::contour::Loudness { reference_phon: self.loudness_ref_phon as f64, volume_db }),
+            ..self.player()
+        }
+    }
+
+    /// As the sound chain takes them, loudness compensation at full volume (nothing to make up).
     pub fn player(&self) -> nori_player::dsp::Effects {
         nori_player::dsp::Effects {
             bass_boost_db: self.bass_boost_db as f64,
             compressor: self.compressor.then(|| self.compressor_settings()),
+            expander: self.expander.then(|| self.expander_settings()),
+            loudness: self.loudness.then(|| nori_player::contour::Loudness { reference_phon: self.loudness_ref_phon as f64, volume_db: 0.0 }),
             virtualizer: self.virtualizer as f64,
             boost_db: self.volume_boost_db as f64,
         }
@@ -644,7 +735,9 @@ impl StoredPrefs {
             eq_graphic_target: self.eq_graphic_target.clone(),
             eq_preamp_db: self.eq_preamp_db,
             crossfeed_db: self.crossfeed_db,
+            crossfeed_hz: self.crossfeed_hz,
             balance: self.balance,
+            bypass: self.sound_bypass,
             mono: self.mono,
             limiter: self.limiter,
             limiter_threshold_db: self.limiter_threshold_db,
@@ -667,7 +760,9 @@ impl StoredPrefs {
             eq_graphic_target: s.eq_graphic_target,
             eq_preamp_db: s.eq_preamp_db,
             crossfeed_db: s.crossfeed_db,
+            crossfeed_hz: s.crossfeed_hz,
             balance: s.balance,
+            sound_bypass: s.bypass,
             mono: s.mono,
             limiter: s.limiter,
             limiter_threshold_db: s.limiter_threshold_db,
@@ -681,6 +776,13 @@ impl StoredPrefs {
             comp_release_ms: s.effects.comp_release_ms,
             comp_makeup_db: s.effects.comp_makeup_db,
             comp_knee_db: s.effects.comp_knee_db,
+            expander: s.effects.expander,
+            exp_threshold_db: s.effects.exp_threshold_db,
+            exp_ratio: s.effects.exp_ratio,
+            exp_attack_ms: s.effects.exp_attack_ms,
+            exp_release_ms: s.effects.exp_release_ms,
+            loudness: s.effects.loudness,
+            loudness_ref_phon: s.effects.loudness_ref_phon,
             replay_gain: s.replay_gain,
             preamp_db: s.preamp_db,
             crossfade_sec: s.crossfade_sec,
@@ -703,13 +805,21 @@ impl StoredPrefs {
             comp_release_ms: self.comp_release_ms,
             comp_makeup_db: self.comp_makeup_db,
             comp_knee_db: self.comp_knee_db,
+            expander: self.expander,
+            exp_threshold_db: self.exp_threshold_db,
+            exp_ratio: self.exp_ratio,
+            exp_attack_ms: self.exp_attack_ms,
+            exp_release_ms: self.exp_release_ms,
+            loudness: self.loudness,
+            loudness_ref_phon: self.loudness_ref_phon,
         }
     }
 
     /// Whether anything in the sample domain is on: the equalizer, crossfeed, balance, mono, the limiter
-    /// or an effect. It then sits in the chain and audio offload stands down.
+    /// or an effect, and the output is not left unprocessed. It then sits in the chain and audio offload
+    /// stands down.
     pub fn sound_chain_on(&self) -> bool {
-        nori_player::sound::sound_on(self.eq_enabled, self.crossfeed_db, self.balance, self.mono, self.limiter, self.effects().on())
+        !self.sound_bypass && nori_player::sound::sound_on(self.eq_enabled, self.crossfeed_db, self.balance, self.mono, self.limiter, self.effects().on())
     }
 
     /// How songs are levelled (`nori_player::gain`).
@@ -737,6 +847,9 @@ impl StoredPrefs {
             echo_out: self.auto_mix_echo_out,
             keep_pitch: self.auto_mix_keep_pitch,
             keep_albums: self.crossfade_keep_albums,
+            fade_curve: self.crossfade_curve.player(),
+            fade_in_ms: self.crossfade_in_sec * 1000,
+            fade_out_ms: self.crossfade_out_sec * 1000,
             // AutoMix's loudness matching stands down under ReplayGain.
             replay_gain: self.replay_gain != GainMode::Off,
         }
@@ -885,7 +998,9 @@ pub fn sound_from(json: &str) -> Option<SoundSettings> {
         eq_graphic_target: decode_target(&opt_string(o, "eqGraphicTarget")),
         eq_preamp_db,
         crossfeed_db: opt_f64(o, "crossfeedDb", 0.0) as f32,
+        crossfeed_hz: EQ_RANGES.crossfeed_cut.hold(opt_f64(o, "crossfeedHz", 700.0) as f32),
         balance: opt_f64(o, "balance", 0.0) as f32,
+        bypass: opt_bool(o, "bypass"),
         mono: opt_bool(o, "mono"),
         limiter: opt_bool(o, "limiter"),
         limiter_threshold_db: opt_f64(o, "limiterThresholdDb", -1.0) as f32,
@@ -900,6 +1015,13 @@ pub fn sound_from(json: &str) -> Option<SoundSettings> {
             comp_release_ms: f("compReleaseMs", d.comp_release_ms, 10.0, 2000.0),
             comp_makeup_db: f("compMakeupDb", d.comp_makeup_db, 0.0, 24.0),
             comp_knee_db: f("compKneeDb", d.comp_knee_db, 0.0, 24.0),
+            expander: opt_bool(o, "expander"),
+            exp_threshold_db: f("expThresholdDb", d.exp_threshold_db, -90.0, -10.0),
+            exp_ratio: f("expRatio", d.exp_ratio, 1.0, 20.0),
+            exp_attack_ms: f("expAttackMs", d.exp_attack_ms, 0.1, 100.0),
+            exp_release_ms: f("expReleaseMs", d.exp_release_ms, 10.0, 2000.0),
+            loudness: opt_bool(o, "loudness"),
+            loudness_ref_phon: o.get("loudnessRefPhon").and_then(Value::as_i64).map_or(d.loudness_ref_phon, |v| v.clamp(60, 90) as i32),
         },
         replay_gain: GainMode::ALL[opt_i32(o, "replayGain").clamp(0, GainMode::ALL.len() as i32 - 1) as usize],
         preamp_db: opt_f64(o, "preampDb", 0.0) as f32,
@@ -917,7 +1039,11 @@ pub fn sound_json(s: &SoundSettings) -> String {
         o.insert("eqPreampDb".into(), (p as f64).into());
     }
     o.insert("crossfeedDb".into(), (s.crossfeed_db as f64).into());
+    o.insert("crossfeedHz".into(), (s.crossfeed_hz as f64).into());
     o.insert("balance".into(), (s.balance as f64).into());
+    if s.bypass {
+        o.insert("bypass".into(), true.into());
+    }
     o.insert("mono".into(), s.mono.into());
     o.insert("limiter".into(), s.limiter.into());
     o.insert("limiterThresholdDb".into(), (s.limiter_threshold_db as f64).into());
@@ -937,10 +1063,17 @@ pub fn sound_json(s: &SoundSettings) -> String {
         ("compReleaseMs", e.comp_release_ms),
         ("compMakeupDb", e.comp_makeup_db),
         ("compKneeDb", e.comp_knee_db),
+        ("expThresholdDb", e.exp_threshold_db),
+        ("expRatio", e.exp_ratio),
+        ("expAttackMs", e.exp_attack_ms),
+        ("expReleaseMs", e.exp_release_ms),
     ] {
         o.insert(k.into(), (v as f64).into());
     }
     o.insert("compressor".into(), e.compressor.into());
+    o.insert("expander".into(), e.expander.into());
+    o.insert("loudness".into(), e.loudness.into());
+    o.insert("loudnessRefPhon".into(), e.loudness_ref_phon.into());
     o.insert("replayGain".into(), s.replay_gain.ordinal().into());
     o.insert("preampDb".into(), (s.preamp_db as f64).into());
     o.insert("crossfadeSec".into(), s.crossfade_sec.into());
@@ -1110,6 +1243,13 @@ fn set_special(p: &StoredPrefs, n: &mut StoredPrefs, server: &mut bool, name: &s
             (n.compressor, n.comp_threshold_db, n.comp_ratio, n.comp_attack_ms, n.comp_release_ms, n.comp_makeup_db, n.comp_knee_db) =
                 (e.compressor, e.comp_threshold_db, e.comp_ratio, e.comp_attack_ms, e.comp_release_ms, e.comp_makeup_db, e.comp_knee_db);
         }),
+        // One of bs2b's settings, its cutoff and level taken whole, and the crossfeed on; or off, the
+        // cutoff kept.
+        "crossfeedPreset" if value.trim().eq_ignore_ascii_case("OFF") => Some(n.crossfeed_db = 0.0),
+        "crossfeedPreset" => crossfeed_preset_named(value).map(|c| {
+            let (cut, level) = c.settings();
+            (n.crossfeed_hz, n.crossfeed_db) = (cut as f32, level as f32);
+        }),
         // How many graphic bands: the curve drawn again on the new layout.
         // With a headphone correction on it, the new layout is fitted to the correction again.
         "eqLayout" => value.trim().parse::<usize>().ok().filter(|c| nori_player::graphic::LAYOUTS.contains(c)).map(|c| match fit_target(&p.eq_graphic_target, c) {
@@ -1139,6 +1279,9 @@ pub(crate) fn value_of_special(p: &StoredPrefs, name: &str) -> Option<String> {
         "motionArtworkMobile" => (!p.motion_artwork_wifi_only).to_string(),
         "compressorPreset" => p.effects().compressor_preset().map_or("", compressor_preset_name).to_string(),
         "eqLayout" => p.eq_graphic.len().to_string(),
+        // "" is a crossfeed of the listener's own (the client's "Custom").
+        "crossfeedPreset" if p.crossfeed_db <= 0.0 => "OFF".to_string(),
+        "crossfeedPreset" => crossfeed_preset(p.crossfeed_hz, p.crossfeed_db).map_or("", crossfeed_preset_name).to_string(),
         "musicFolder" => server().map(|s| s.music_folder_id.clone()).unwrap_or_default(),
         "altMaxBitRate" => server().map_or(0, |s| s.alt_max_bit_rate).to_string(),
         _ => return None,
@@ -1173,11 +1316,32 @@ fn compressor_preset_name(p: nori_player::compressor::CompressorPreset) -> &'sta
     }
 }
 
+fn crossfeed_preset_name(p: nori_player::dsp::CrossfeedPreset) -> &'static str {
+    use nori_player::dsp::CrossfeedPreset as C;
+    match p {
+        C::Default => "DEFAULT",
+        C::ChuMoy => "CHU_MOY",
+        C::JanMeier => "JAN_MEIER",
+    }
+}
+
+fn crossfeed_preset_named(name: &str) -> Option<nori_player::dsp::CrossfeedPreset> {
+    nori_player::dsp::CrossfeedPreset::ALL.into_iter().find(|p| crossfeed_preset_name(*p).eq_ignore_ascii_case(name.trim()))
+}
+
+/// Which of bs2b's settings the crossfeed is on, if any: none with it off (0 dB) or moved by hand.
+pub fn crossfeed_preset(cut_hz: f32, level_db: f32) -> Option<nori_player::dsp::CrossfeedPreset> {
+    if level_db <= 0.0 {
+        return None;
+    }
+    nori_player::dsp::CrossfeedPreset::of(cut_hz as f64, level_db as f64)
+}
+
 fn compressor_preset_named(name: &str) -> Option<nori_player::compressor::CompressorPreset> {
     nori_player::compressor::CompressorPreset::ALL.into_iter().find(|p| compressor_preset_name(*p).eq_ignore_ascii_case(name.trim()))
 }
 
-/// Graphic sliders for another layout (10, 15 or 31 bands) that draw the same curve; the sliders as
+/// Graphic sliders for another layout (5, 10, 15 or 31 bands) that draw the same curve; the sliders as
 /// they are for a count that is not a layout.
 pub fn relayout_graphic(sliders: &[f32], count: usize) -> Vec<f32> {
     if !nori_player::graphic::LAYOUTS.contains(&count) {
@@ -1303,6 +1467,8 @@ pub struct EqRanges {
     pub limiter: Span,
     /// Crossfeed, dB; 0 is off.
     pub crossfeed: Span,
+    /// The crossfeed's cutoff, Hz.
+    pub crossfeed_cut: Span,
     /// A band's width (or a shelf's slope).
     pub q: Span,
     /// A band's frequency, Hz: the frequency slider's 20 Hz to 20 kHz.
@@ -1316,7 +1482,9 @@ pub const EQ_RANGES: EqRanges = EqRanges {
     preamp: Span { min: -20.0, max: 6.0 },
     balance: Span { min: -1.0, max: 1.0 },
     limiter: Span { min: -12.0, max: 0.0 },
-    crossfeed: Span { min: 0.0, max: 9.0 },
+    // Up to 12 dB, so Jan Meier's 9.5 fits (bs2b itself goes to 15, which is barely stereo any more).
+    crossfeed: Span { min: 0.0, max: 12.0 },
+    crossfeed_cut: Span { min: nori_player::dsp::CROSSFEED_CUT_HZ.0 as f32, max: nori_player::dsp::CROSSFEED_CUT_HZ.1 as f32 },
     q: Span { min: 0.2, max: 8.0 },
     freq: Span { min: 20.0, max: 20_000.0 },
     replay_gain_preamp: Span { min: REPLAY_GAIN_PREAMP.0, max: REPLAY_GAIN_PREAMP.1 },
@@ -1422,11 +1590,17 @@ pub enum EqLevel {
     CompRelease,
     CompMakeup,
     CompKnee,
+    /// The crossfeed's cutoff, Hz.
+    CrossfeedCut,
+    ExpThreshold,
+    ExpRatio,
+    ExpAttack,
+    ExpRelease,
 }
 
 impl EqLevel {
     /// Every level, in order: the ordinal a platform's door carries.
-    pub const ALL: [EqLevel; 14] = [
+    pub const ALL: [EqLevel; 19] = [
         EqLevel::Preamp,
         EqLevel::Balance,
         EqLevel::Limiter,
@@ -1441,6 +1615,11 @@ impl EqLevel {
         EqLevel::CompRelease,
         EqLevel::CompMakeup,
         EqLevel::CompKnee,
+        EqLevel::CrossfeedCut,
+        EqLevel::ExpThreshold,
+        EqLevel::ExpRatio,
+        EqLevel::ExpAttack,
+        EqLevel::ExpRelease,
     ];
 
     /// The level's value in these settings.
@@ -1461,6 +1640,11 @@ impl EqLevel {
             EqLevel::CompRelease => e.comp_release_ms,
             EqLevel::CompMakeup => e.comp_makeup_db,
             EqLevel::CompKnee => e.comp_knee_db,
+            EqLevel::CrossfeedCut => s.crossfeed_hz,
+            EqLevel::ExpThreshold => e.exp_threshold_db,
+            EqLevel::ExpRatio => e.exp_ratio,
+            EqLevel::ExpAttack => e.exp_attack_ms,
+            EqLevel::ExpRelease => e.exp_release_ms,
         }
     }
 }
@@ -1490,6 +1674,8 @@ pub fn set_level(s: SoundSettings, level: EqLevel, value: f32) -> SoundSettings 
         EqLevel::Limiter => SoundSettings { limiter_threshold_db: r.limiter.hold(value), ..s },
         EqLevel::Crossfeed => SoundSettings { crossfeed_db: crossfeed_snap(r.crossfeed.hold(value)), ..s },
         EqLevel::ReplayGainPreamp => SoundSettings { preamp_db: r.replay_gain_preamp.hold(value), ..s },
+        // Whole hertz: a slider's step is a few of them, and a preset is recognised to the hertz.
+        EqLevel::CrossfeedCut => SoundSettings { crossfeed_hz: r.crossfeed_cut.hold(value).round(), ..s },
         _ => {
             let v = if value.is_nan() { 0.0 } else { value };
             let mut e = s.effects.clone();
@@ -1503,6 +1689,10 @@ pub fn set_level(s: SoundSettings, level: EqLevel, value: f32) -> SoundSettings 
                 EqLevel::CompRelease => e.comp_release_ms = v.clamp(10.0, 2000.0),
                 EqLevel::CompMakeup => e.comp_makeup_db = v.clamp(0.0, 24.0),
                 EqLevel::CompKnee => e.comp_knee_db = v.clamp(0.0, 24.0),
+                EqLevel::ExpThreshold => e.exp_threshold_db = v.clamp(-90.0, -10.0),
+                EqLevel::ExpRatio => e.exp_ratio = v.clamp(1.0, 20.0),
+                EqLevel::ExpAttack => e.exp_attack_ms = v.clamp(0.1, 100.0),
+                EqLevel::ExpRelease => e.exp_release_ms = v.clamp(10.0, 2000.0),
                 _ => {}
             }
             SoundSettings { effects: e, ..s }
@@ -1519,16 +1709,20 @@ pub enum EqBypass {
     BitPerfect,
     /// High quality output is on (and can be turned off in the settings).
     HiRes,
+    /// This output's sound says "No processing" (`soundBypass`).
+    Output,
 }
 
 /// Why nothing on the equalizer screen reaches the sound, or `None` when it does. Bit-perfect output
 /// and high quality output both hand the file's samples to the DAC untouched, so the whole chain is
 /// out of the path; without this the screen looks broken.
-pub fn eq_bypass(hi_res: bool, bit_perfect: bool) -> Option<EqBypass> {
+pub fn eq_bypass(hi_res: bool, bit_perfect: bool, output: bool) -> Option<EqBypass> {
     if bit_perfect {
         Some(EqBypass::BitPerfect)
     } else if hi_res {
         Some(EqBypass::HiRes)
+    } else if output {
+        Some(EqBypass::Output)
     } else {
         None
     }
@@ -1674,9 +1868,16 @@ pub fn eq_model_get() -> EqModel {
     eq_model()
 }
 
+/// Which crossfeed preset these are, by the name `crossfeedPreset` takes ("OFF", "DEFAULT", "CHU_MOY",
+/// "JAN_MEIER"), or "" for the listener's own; asked once per change, for the equalizer screen's chips.
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn eq_bypass_reason(hi_res: bool, bit_perfect: bool) -> Option<EqBypass> {
-    eq_bypass(hi_res, bit_perfect)
+pub fn crossfeed_preset_of(prefs: StoredPrefs) -> String {
+    value_of_special(&prefs, "crossfeedPreset").unwrap_or_default()
+}
+
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn eq_bypass_reason(hi_res: bool, bit_perfect: bool, output: bool) -> Option<EqBypass> {
+    eq_bypass(hi_res, bit_perfect, output)
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
@@ -1940,6 +2141,8 @@ mod tests {
             eq_graphic_target: (0..96).map(|i| (i as f32 * 0.37).sin() * 4.0).collect(),
             eq_preamp_db: Some(-6.2),
             crossfeed_db: 3.0,
+            crossfeed_hz: 820.0,
+            bypass: true,
             balance: -0.25,
             mono: true,
             limiter: true,
@@ -1955,6 +2158,13 @@ mod tests {
                 comp_release_ms: 300.0,
                 comp_makeup_db: 6.0,
                 comp_knee_db: 3.0,
+                expander: true,
+                exp_threshold_db: -60.0,
+                exp_ratio: 8.0,
+                exp_attack_ms: 1.5,
+                exp_release_ms: 250.0,
+                loudness: true,
+                loudness_ref_phon: 75,
             },
             replay_gain: GainMode::Album,
             preamp_db: 1.5,
@@ -2143,16 +2353,19 @@ mod tests {
         assert_eq!(set_level(s.clone(), EqLevel::Balance, 0.03).balance, 0.0);
         assert_eq!(set_level(s.clone(), EqLevel::Balance, -3.0).balance, -1.0);
         assert_eq!(set_level(s.clone(), EqLevel::Crossfeed, 0.5).crossfeed_db, 0.0);
-        assert_eq!(set_level(s.clone(), EqLevel::Crossfeed, 12.0).crossfeed_db, 9.0);
+        assert_eq!(set_level(s.clone(), EqLevel::Crossfeed, 20.0).crossfeed_db, 12.0);
+        assert_eq!(set_level(s.clone(), EqLevel::CrossfeedCut, 100.0).crossfeed_hz, 300.0);
+        assert_eq!(set_level(s.clone(), EqLevel::CrossfeedCut, 912.4).crossfeed_hz, 912.0);
         assert_eq!(set_level(s.clone(), EqLevel::Limiter, 2.0).limiter_threshold_db, 0.0);
         assert_eq!(set_level(s, EqLevel::Preamp, -30.0).eq_preamp_db, Some(-20.0));
     }
 
     #[test]
     fn why_the_equalizer_does_nothing() {
-        assert_eq!(eq_bypass(false, false), None);
-        assert_eq!(eq_bypass(true, true), Some(EqBypass::BitPerfect));
-        assert_eq!(eq_bypass(true, false), Some(EqBypass::HiRes));
+        assert_eq!(eq_bypass(false, false, false), None);
+        assert_eq!(eq_bypass(true, true, true), Some(EqBypass::BitPerfect));
+        assert_eq!(eq_bypass(true, false, true), Some(EqBypass::HiRes));
+        assert_eq!(eq_bypass(false, false, true), Some(EqBypass::Output));
     }
 
     #[test]
@@ -2376,11 +2589,70 @@ mod tests {
         assert_eq!(value_of_special(&custom, "compressorPreset").as_deref(), Some(""), "moved: none of them");
         assert!(set_by_name(&p, "compressorPreset", "loud").is_none());
         assert_eq!(set_by_name(&p, "volumeBoostDb", "40").unwrap().prefs.volume_boost_db, 12.0);
+        // The expander: off out of the box, on by its switch, its controls held and kept in a profile.
+        assert!(p.effects().player().expander.is_none());
+        let x = set_by_name(&p, "expander", "true").unwrap().prefs;
+        assert!(x.sound_chain_on() && x.effects().player().expander == Some(nori_player::compressor::ExpanderSettings::default()));
+        assert_eq!(set_level(x.sound(), EqLevel::ExpThreshold, -200.0).effects.exp_threshold_db, -90.0);
+        let r = set_level(x.sound(), EqLevel::ExpRatio, 10.0);
+        assert_eq!(sound_from(&sound_json(&r)).unwrap().effects, r.effects);
+        // Loudness compensation: off out of the box; on, at the volume the platform says.
+        assert!(p.effects().player().loudness.is_none());
+        let l = set_by_name(&p, "loudness", "true").unwrap().prefs;
+        assert!(l.sound_chain_on());
+        let fx = l.effects().player_at(-30.0);
+        assert_eq!(fx.loudness, Some(nori_player::contour::Loudness { reference_phon: 80.0, volume_db: -30.0 }));
+        assert_eq!(set_by_name(&l, "loudnessRefPhon", "85").unwrap().prefs.effects().player().loudness.unwrap().reference_phon, 85.0);
+        let s = set_by_name(&l, "loudnessRefPhon", "70").unwrap().prefs.sound();
+        assert_eq!(sound_from(&sound_json(&s)).unwrap().effects, s.effects, "a profile keeps it");
         assert!(set_by_name(&p, "virtualizer", "0.5").unwrap().prefs.sound_chain_on());
         let l = set_by_name(&p, "eqLayout", "31").unwrap().prefs;
         assert_eq!(l.eq_graphic.len(), 31);
         assert_eq!(value_of_special(&l, "eqLayout").as_deref(), Some("31"));
         assert!(set_by_name(&p, "eqLayout", "12").is_none());
+        // Five bands are every other one of the ten: moved there, those sliders stay as they were.
+        let ten = StoredPrefs { eq_graphic: (1..=10).map(|v| v as f32).collect(), ..p.clone() };
+        let five = set_by_name(&ten, "eqLayout", "5").unwrap().prefs;
+        assert_eq!(five.eq_graphic, [2.0, 4.0, 6.0, 8.0, 10.0]);
+        assert_eq!(decode_graphic("1,2,3,4,5"), Some(vec![1.0, 2.0, 3.0, 4.0, 5.0]), "five sliders is a layout");
+    }
+
+    #[test]
+    fn no_processing_takes_the_whole_chain_out_and_travels_with_the_sound() {
+        let busy = StoredPrefs { eq_enabled: true, crossfeed_db: 4.5, limiter: true, compressor: true, ..StoredPrefs::default() };
+        assert!(busy.sound_chain_on());
+        let bypassed = set_by_name(&busy, "soundBypass", "true").unwrap().prefs;
+        assert!(!bypassed.sound_chain_on(), "nothing in the chain, so offload may play it");
+        assert!(bypassed.eq_enabled && bypassed.compressor, "the settings are kept for when it is off again");
+        let s = bypassed.sound();
+        assert!(s.bypass);
+        assert!(sound_from(&sound_json(&s)).unwrap().bypass, "a profile keeps it");
+        assert!(!sound_from("{}").unwrap().bypass, "an old profile has it off");
+        assert!(StoredPrefs::default().with_sound(s).sound_bypass);
+        assert!(!sound_json(&busy.sound()).contains("bypass"), "left out when off, as before");
+    }
+
+    #[test]
+    fn the_crossfeed_presets_by_name() {
+        let p = StoredPrefs::default();
+        assert_eq!((p.crossfeed_db, p.crossfeed_hz), (0.0, 700.0), "off, at bs2b's cutoff");
+        assert_eq!(value_of_special(&p, "crossfeedPreset").as_deref(), Some("OFF"));
+        let m = set_by_name(&p, "crossfeedPreset", "jan_meier").unwrap().prefs;
+        assert_eq!((m.crossfeed_hz, m.crossfeed_db), (650.0, 9.5));
+        assert!(m.sound_chain_on(), "a preset turns the crossfeed on");
+        assert_eq!(value_of_special(&m, "crossfeedPreset").as_deref(), Some("JAN_MEIER"));
+        let c = set_by_name(&m, "crossfeedPreset", "CHU_MOY").unwrap().prefs;
+        assert_eq!((c.crossfeed_hz, c.crossfeed_db), (700.0, 6.0));
+        let custom = set_by_name(&c, "crossfeedHz", "900").unwrap().prefs;
+        assert_eq!(value_of_special(&custom, "crossfeedPreset").as_deref(), Some(""), "moved: custom");
+        assert_eq!(set_by_name(&p, "crossfeedHz", "5000").unwrap().prefs.crossfeed_hz, 2000.0);
+        assert!(set_by_name(&p, "crossfeedPreset", "loud").is_none());
+        let off = set_by_name(&custom, "crossfeedPreset", "OFF").unwrap().prefs;
+        assert_eq!((off.crossfeed_db, off.crossfeed_hz), (0.0, 900.0), "off keeps the cutoff for next time");
+        // A sound profile keeps the cutoff, and an old one without it reads as bs2b's default.
+        let s = sound_from(&sound_json(&custom.sound())).unwrap();
+        assert_eq!(s.crossfeed_hz, 900.0);
+        assert_eq!(sound_from("{\"crossfeedDb\": 4.5}").unwrap().crossfeed_hz, 700.0);
     }
 
     #[test]

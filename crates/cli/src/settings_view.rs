@@ -451,7 +451,11 @@ fn sound(b: &Build) -> Vec<Section> {
     let s = b.s;
     let live = !s.untouched;
     let eq_status = if s.untouched { "bypassed" } else if s.sound_chain_on { "on" } else { "off" };
-    let eq = vec![Row::Link { title: "Equalizer, crossfeed, balance, limiter".into(), status: eq_status.into(), action: "equalizer".into() }];
+    let eq_status = if p.sound_bypass { "no processing" } else { eq_status };
+    let eq = vec![
+        Row::Link { title: "Equalizer, crossfeed, balance, limiter".into(), status: eq_status.into(), action: "equalizer".into() },
+        b.toggle("soundBypass", "No processing on this output", "No equalizer or effects reach it; offload can play it"),
+    ];
 
     let mut levelling = vec![b.named("replayGain", "ReplayGain", &["off", "track", "album", "auto"])];
     if p.replay_gain != nori_core::settings::GainMode::Off {
@@ -477,6 +481,12 @@ fn sound(b: &Build) -> Vec<Section> {
     }
     if !p.auto_mix {
         mixing.push(b.choice("crossfadeSec", "Crossfade", live, |v| off_or(v, |v| format!("{v} s"))));
+        if p.crossfade_sec > 0 {
+            mixing.push(b.named("crossfadeCurve", "  Curve", &["equal power", "linear", "S-curve"]));
+            let part = |v: &str| if v == "0" { "whole crossfade".to_string() } else { format!("{v} s") };
+            mixing.push(b.choice("crossfadeInSec", "  Fade in over", live, part));
+            mixing.push(b.choice("crossfadeOutSec", "  Fade out over", live, part));
+        }
     }
     mixing.push(b.toggle_if("autoMix", "AutoMix", "Beat-matched transitions planned per song pair", live));
     if p.auto_mix {
@@ -544,6 +554,19 @@ fn effects(b: &Build) -> Vec<Row> {
             slider("compReleaseMs", format!("  Release {:.0} ms", p.comp_release_ms), p.comp_release_ms, (10.0, 2000.0), EqLevel::CompRelease),
             slider("compMakeupDb", format!("  Make-up +{:.1} dB", p.comp_makeup_db), p.comp_makeup_db, (0.0, 24.0), EqLevel::CompMakeup),
             slider("compKneeDb", format!("  Knee {:.1} dB", p.comp_knee_db), p.comp_knee_db, (0.0, 24.0), EqLevel::CompKnee),
+        ]);
+    }
+    rows.push(b.toggle("loudness", "Loudness compensation", "Turned down, the bass comes up as the ear needs (ISO 226); follows this client's volume"));
+    if p.loudness {
+        rows.push(b.choice("loudnessRefPhon", "  Balanced at", true, |v| format!("{v} phon")));
+    }
+    rows.push(b.toggle("expander", "Noise gate", "A downward expander: hiss and hum go further down in quiet parts"));
+    if p.expander {
+        rows.extend([
+            slider("expThresholdDb", format!("  Threshold {:.1} dB", p.exp_threshold_db), p.exp_threshold_db, (-90.0, -10.0), EqLevel::ExpThreshold),
+            slider("expRatio", format!("  Ratio 1:{:.1}", p.exp_ratio), p.exp_ratio, (1.0, 20.0), EqLevel::ExpRatio),
+            slider("expAttackMs", format!("  Attack {:.1} ms", p.exp_attack_ms), p.exp_attack_ms, (0.1, 100.0), EqLevel::ExpAttack),
+            slider("expReleaseMs", format!("  Release {:.0} ms", p.exp_release_ms), p.exp_release_ms, (10.0, 2000.0), EqLevel::ExpRelease),
         ]);
     }
     rows
@@ -788,11 +811,18 @@ pub enum EqRow {
     AddBand,
     Reset,
     Balance,
+    /// bs2b's settings (Off, Default, Chu Moy, Jan Meier) or the listener's own.
+    CrossfeedPreset,
     Crossfeed,
+    /// The crossfeed's cutoff.
+    CrossfeedCut,
     Mono,
     Limiter,
     Ceiling,
 }
+
+/// The crossfeed's presets in the order ← and → walk them.
+const CROSSFEED_PRESETS: [&str; 4] = ["OFF", "DEFAULT", "CHU_MOY", "JAN_MEIER"];
 
 pub fn eq_rows(p: &StoredPrefs) -> Vec<EqRow> {
     let graphic = p.eq_mode == EqMode::Graphic;
@@ -810,7 +840,11 @@ pub fn eq_rows(p: &StoredPrefs) -> Vec<EqRow> {
         rows.extend((0..p.eq_bands.len()).map(EqRow::Band));
         rows.push(EqRow::AddBand);
     }
-    rows.extend([EqRow::Reset, EqRow::Balance, EqRow::Crossfeed, EqRow::Mono, EqRow::Limiter]);
+    rows.extend([EqRow::Reset, EqRow::Balance, EqRow::CrossfeedPreset, EqRow::Crossfeed]);
+    if p.crossfeed_db > 0.0 {
+        rows.push(EqRow::CrossfeedCut);
+    }
+    rows.extend([EqRow::Mono, EqRow::Limiter]);
     if p.limiter {
         rows.push(EqRow::Ceiling);
     }
@@ -839,7 +873,18 @@ impl EqRow {
             EqRow::AddBand => ("Add a band".into(), "[ Add ]".into()),
             EqRow::Reset => ("Back to flat".into(), "[ Reset ]".into()),
             EqRow::Balance => ("Balance".into(), text::balance(p.balance)),
-            EqRow::Crossfeed => ("Crossfeed".into(), if p.crossfeed_db > 0.0 { format!("{} dB", text::signed_db(p.crossfeed_db)) } else { "Off".into() }),
+            EqRow::CrossfeedPreset => {
+                let name = match nori_core::settings::crossfeed_preset(p.crossfeed_hz, p.crossfeed_db) {
+                    _ if p.crossfeed_db <= 0.0 => "Off",
+                    Some(nori_core::dsp::CrossfeedPreset::Default) => "Default (bs2b)",
+                    Some(nori_core::dsp::CrossfeedPreset::ChuMoy) => "Chu Moy",
+                    Some(nori_core::dsp::CrossfeedPreset::JanMeier) => "Jan Meier",
+                    None => "Custom",
+                };
+                ("Crossfeed".into(), format!("‹ {name} ›"))
+            }
+            EqRow::Crossfeed => ("  Level".into(), if p.crossfeed_db > 0.0 { format!("{} dB", text::signed_db(p.crossfeed_db)) } else { "Off".into() }),
+            EqRow::CrossfeedCut => ("  Cutoff".into(), format!("{} Hz", text::hz(p.crossfeed_hz))),
             EqRow::Mono => ("Mono".into(), on(p.mono)),
             EqRow::Limiter => ("Limiter".into(), on(p.limiter)),
             EqRow::Ceiling => ("Limiter ceiling".into(), text::ceiling(p.limiter_threshold_db)),
@@ -860,7 +905,7 @@ impl EqRow {
             }
             EqRow::Layout => {
                 let at = nori_core::dsp::graphic::LAYOUTS.iter().position(|n| *n == p.eq_graphic.len()).unwrap_or(0);
-                let to = if up { (at + 1).min(2) } else { at.saturating_sub(1) };
+                let to = if up { (at + 1).min(nori_core::dsp::graphic::LAYOUTS.len() - 1) } else { at.saturating_sub(1) };
                 (to != at).then(|| Cmd::Setting("eqLayout".into(), nori_core::dsp::graphic::LAYOUTS[to].to_string()))
             }
             EqRow::Slider(i) => {
@@ -882,6 +927,19 @@ impl EqRow {
             }
             EqRow::Balance => level(EqLevel::Balance, p.balance, (p.balance + d / 10.0).clamp(r.balance.min, r.balance.max)),
             EqRow::Crossfeed => level(EqLevel::Crossfeed, p.crossfeed_db, (p.crossfeed_db.max(if up { 0.5 } else { 0.0 }) + d).clamp(r.crossfeed.min, r.crossfeed.max)),
+            EqRow::CrossfeedCut => level(EqLevel::CrossfeedCut, p.crossfeed_hz, (p.crossfeed_hz + d * 100.0).clamp(r.crossfeed_cut.min, r.crossfeed_cut.max)),
+            EqRow::CrossfeedPreset => {
+                // From "Custom", a step goes to the nearest preset that way from the start of the list.
+                let now = nori_core::settings::crossfeed_preset(p.crossfeed_hz, p.crossfeed_db);
+                let at = if p.crossfeed_db <= 0.0 { Some(0) } else { now.and_then(|c| nori_core::dsp::CrossfeedPreset::ALL.iter().position(|x| *x == c)).map(|i| i + 1) };
+                let to = match (at, up) {
+                    (Some(i), true) => (i + 1).min(CROSSFEED_PRESETS.len() - 1),
+                    (Some(i), false) => i.saturating_sub(1),
+                    (None, true) => CROSSFEED_PRESETS.len() - 1,
+                    (None, false) => 1,
+                };
+                (Some(to) != at).then(|| Cmd::Setting("crossfeedPreset".into(), CROSSFEED_PRESETS[to].into()))
+            }
             EqRow::Ceiling => level(EqLevel::Limiter, p.limiter_threshold_db, (p.limiter_threshold_db + d).clamp(r.limiter.min, r.limiter.max)),
             EqRow::Presets | EqRow::AddBand | EqRow::Reset => None,
         }
@@ -1041,7 +1099,11 @@ mod tests {
         assert_eq!(EqRow::Slider(0).words(&p), ("31.5".to_string(), "+0.0 dB".to_string()));
         assert!(matches!(EqRow::Slider(3).step(&p, true), Some(Cmd::Graphic(3, v)) if v == 0.5));
         assert!(matches!(EqRow::Layout.step(&p, true), Some(Cmd::Setting(n, v)) if n == "eqLayout" && v == "15"));
-        assert!(EqRow::Layout.step(&p, false).is_none(), "ten is the fewest");
+        assert!(matches!(EqRow::Layout.step(&p, false), Some(Cmd::Setting(n, v)) if n == "eqLayout" && v == "5"), "five below ten");
+        let five = StoredPrefs { eq_graphic: vec![0.0; 5], ..p.clone() };
+        assert!(EqRow::Layout.step(&five, false).is_none(), "five is the fewest");
+        assert_eq!(eq_rows(&five).iter().filter(|r| matches!(r, EqRow::Slider(_))).count(), 5);
+        assert_eq!(EqRow::Slider(0).words(&five).0, "63");
         assert!(matches!(EqRow::Mode.open(&p), Some(Cmd::Setting(n, v)) if n == "eqMode" && v == "PARAMETRIC"));
         assert!(eq_rows(&StoredPrefs::default()).contains(&EqRow::Layout), "a new install opens on the graphic equalizer");
         let parametric = eq_rows(&StoredPrefs { eq_mode: EqMode::Parametric, ..StoredPrefs::default() });
@@ -1064,6 +1126,24 @@ mod tests {
         assert_eq!(b.gain_db, 11.5);
         let flat = StoredPrefs { crossfeed_db: 0.0, ..prefs.clone() };
         assert_eq!(EqRow::Crossfeed.step(&flat, false), None, "crossfeed off stays off");
+    }
+
+    #[test]
+    fn the_crossfeed_presets_and_cutoff() {
+        let off = StoredPrefs::default();
+        assert!(!eq_rows(&off).contains(&EqRow::CrossfeedCut), "no cutoff to set with crossfeed off");
+        assert_eq!(EqRow::CrossfeedPreset.words(&off).1, "‹ Off ›");
+        assert!(matches!(EqRow::CrossfeedPreset.step(&off, true), Some(Cmd::Setting(n, v)) if n == "crossfeedPreset" && v == "DEFAULT"));
+        assert_eq!(EqRow::CrossfeedPreset.step(&off, false), None);
+        let meier = StoredPrefs { crossfeed_db: 9.5, crossfeed_hz: 650.0, ..off.clone() };
+        assert!(eq_rows(&meier).contains(&EqRow::CrossfeedCut));
+        assert_eq!(EqRow::CrossfeedPreset.words(&meier).1, "‹ Jan Meier ›");
+        assert_eq!(EqRow::CrossfeedPreset.step(&meier, true), None, "the last one");
+        assert_eq!(EqRow::CrossfeedCut.words(&meier).1, "650 Hz");
+        assert!(matches!(EqRow::CrossfeedCut.step(&meier, true), Some(Cmd::Level(EqLevel::CrossfeedCut, v)) if v == 700.0));
+        let custom = StoredPrefs { crossfeed_db: 5.0, ..off };
+        assert_eq!(EqRow::CrossfeedPreset.words(&custom).1, "‹ Custom ›");
+        assert!(matches!(EqRow::CrossfeedPreset.step(&custom, false), Some(Cmd::Setting(_, v)) if v == "DEFAULT"));
     }
 
 }

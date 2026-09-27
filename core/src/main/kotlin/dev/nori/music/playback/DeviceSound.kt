@@ -133,6 +133,8 @@ class DeviceSound(private val settings: Settings, private val core: () -> Core, 
         data object Quiet : Choice
         /** The equalizer off on this device, everything else as it is now. */
         data object Flat : Choice
+        /** No processing on this device: no equalizer and no effects, so offload can play it. */
+        data object Bypass : Choice
         data class Profile(val name: String) : Choice
         data class Curve(val entry: AutoEqEntry) : Choice
     }
@@ -144,6 +146,7 @@ class DeviceSound(private val settings: Settings, private val core: () -> Core, 
             Choice.Automatic -> ChoiceKind.AUTOMATIC to ""
             Choice.Quiet -> ChoiceKind.QUIET to ""
             Choice.Flat -> ChoiceKind.FLAT to ""
+            Choice.Bypass -> ChoiceKind.BYPASS to ""
             is Choice.Profile -> ChoiceKind.PROFILE to choice.name
             is Choice.Curve -> {
                 adopt(output, choice.entry, live)
