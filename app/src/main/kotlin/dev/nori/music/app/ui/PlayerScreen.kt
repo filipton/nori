@@ -2685,7 +2685,7 @@ private fun UndoPill(undo: QueueUndo<Song>, plain: Boolean, modifier: Modifier, 
     if (now == null && !present) return
     val look = LocalLook.current
     val rise = with(androidx.compose.ui.platform.LocalDensity.current) { 12.dp.toPx() }
-    Row(
+    Box(
         modifier
             .graphicsLayer {
                 val v = fadeEase(shown.value)
@@ -2693,13 +2693,15 @@ private fun UndoPill(undo: QueueUndo<Song>, plain: Boolean, modifier: Modifier, 
                 if (!plain) translationY = (1f - v) * rise
             }
             .clip(RoundedCornerShape(50))
-            // The pill takes every touch on it, as it fades out too: a tap meant for Undo a moment late
-            // must not fall through to the × of the row under it and take another song out.
-            .pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Final).changes.forEach { it.consume() } } }
-            .drawBehind { drawRect(look.color(CoverLook.SURFACE_CONTAINER_HIGH)) }
-            .padding(start = 16.dp, end = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .drawBehind { drawRect(look.color(CoverLook.SURFACE_CONTAINER_HIGH)) },
     ) {
+    // The pill takes every touch on it, as it fades out too: a tap meant for Undo a moment late must not
+    // fall through to the × of the row under it and take another song out. It is taken by a layer
+    // beside the button, under it, never by a parent of it: a parent consuming the touch cancels the
+    // button's tap on the first move of the finger (Compose's tap checks for exactly that), and a
+    // finger on a phone always moves a little, so Undo never did anything there.
+    Spacer(Modifier.matchParentSize().pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent().changes.forEach { it.consume() } } })
+    Row(Modifier.padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         LookText(
             say.queueRemoved(t.item.title), { look.color(CoverLook.ON) }, Modifier.widthIn(max = 220.dp),
             style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -2708,5 +2710,6 @@ private fun UndoPill(undo: QueueUndo<Song>, plain: Boolean, modifier: Modifier, 
         androidx.compose.material3.TextButton({ if (undo.shown === t) undo.undo()?.let(restore) }, enabled = now != null) {
             LookText(say.undo, { look.color(CoverLook.ACCENT) }, style = MaterialTheme.typography.labelLarge.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold), maxLines = 1)
         }
+    }
     }
 }
