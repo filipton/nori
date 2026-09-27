@@ -27,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -106,11 +107,11 @@ fun BottomChrome(player: PlayerViewModel, actions: ActionsViewModel, onOpenPlaye
  * progress so nothing recomposes while it moves. Slid away, they are out of reach as well as sight.
  */
 @Composable
-fun TabBar(route: String?, tabs: List<Tab>, onTab: (String) -> Unit, look: Look, onHeight: (androidx.compose.ui.unit.Dp) -> Unit) {
-    val scheme = MaterialTheme.colorScheme
+fun TabBar(route: String?, tabs: List<Tab>, onTab: (String) -> Unit, look: Look, player: PlayerViewModel, onHeight: (androidx.compose.ui.unit.Dp) -> Unit) {
     val slab = look.color(CoverLook.CHROME_SLAB)
     val content = look.color(CoverLook.CHROME_CONTENT)
     val edge = look.color(CoverLook.CHROME_EDGE)
+    val accent = rememberTabAccent(player, slab, content)
     val search = tabs.firstOrNull { it.route == "search" }
     val rest = tabs.filter { it.route != "search" }
     val sheet = LocalPlayerSheet.current
@@ -134,7 +135,7 @@ fun TabBar(route: String?, tabs: List<Tab>, onTab: (String) -> Unit, look: Look,
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 5.dp),
                     Arrangement.SpaceEvenly, Alignment.CenterVertically,
-                ) { rest.forEach { t -> TabButton(t, selected = route == t.route, content = content) { onTab(t.route) } } }
+                ) { rest.forEach { t -> TabButton(t, selected = route == t.route, content = content, accent = accent) { onTab(t.route) } } }
             }
             if (search != null) Surface(
                 onClick = { onTab(search.route) }, shape = CircleShape, color = slab, shadowElevation = 12.dp,
@@ -142,7 +143,7 @@ fun TabBar(route: String?, tabs: List<Tab>, onTab: (String) -> Unit, look: Look,
                 modifier = Modifier.size(58.dp).semantics { contentDescription = search.label },
             ) {
                 Box(Modifier.fillMaxSize(), Alignment.Center) {
-                    Icon(search.icon, null, Modifier.size(25.dp), tint = if (route == search.route) scheme.primary else content)
+                    Icon(search.icon, null, Modifier.size(25.dp), tint = if (route == search.route) accent else content)
                 }
             }
         }
@@ -169,7 +170,7 @@ fun rememberChromeLook(): Look {
     // every time this composes, and keying the fade on that restarted it every frame - the fade's own
     // state recomposing this, which made another array, sixty times a second on every screen.
     val kept = remember { arrayOf(made) }
-    if (!kept[0].contentEquals(made)) kept[0] = made
+    if (!kept[0].contentEquals(made) && pagesWaiting.intValue == 0) kept[0] = made
     val target = kept[0]
     val t = remember { androidx.compose.animation.core.Animatable(1f) }
     val live = remember { LiveLook { t.value }.also { it.set(null, target, 0) } }
@@ -185,15 +186,49 @@ fun rememberChromeLook(): Look {
     return live
 }
 
+/**
+ * The current tab's colour. With the cover's colours on, it is the accent of the page open when that page
+ * wears a cover (an album, an artist, a playlist: [PageTint]), else of what is playing - the one the
+ * player's own buttons wear - moved until it reads on the bar ([CoverLook.readable]). The bar itself
+ * stays neutral away from those pages (see [rememberChromeLook]), so only the one lit tab follows the
+ * music. The theme's own accent with neither and with the setting off. It changes in the span the chrome's own colours take.
+ */
+@Composable
+private fun rememberTabAccent(player: PlayerViewModel, slab: Color, content: Color): Color {
+    val theme = MaterialTheme.colorScheme.primary
+    val settings: dev.nori.music.app.vm.SettingsViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+    val prefs by settings.prefs.collectAsStateWithLifecycle()
+    val state by player.state.collectAsStateWithLifecycle()
+    val dark = when (prefs.theme) {
+        dev.nori.music.ffi.settings.ThemeMode.SYSTEM -> androidx.compose.foundation.isSystemInDarkTheme()
+        dev.nori.music.ffi.settings.ThemeMode.DARK -> true
+        dev.nori.music.ffi.settings.ThemeMode.LIGHT -> false
+    }
+    // The same cover and key the mini player warms, so the colours are already worked out by the time a
+    // song starts.
+    val url = if (prefs.coverColors) player.cover(state.current?.coverArt, CoverSize.ROW) else null
+    val playing = rememberCoverPalette(url, dark, prefs.amoled)?.look?.get(CoverLook.ACCENT)
+    val seed = (if (prefs.coverColors) pagePalette.value?.look?.get(CoverLook.ACCENT) else null) ?: playing
+    // A cover's accent that no shade of reads on the bar (a pink on an artist page's lifted brown) gives
+    // way to the bar's own ink, which always does; the tab is still marked by its weight and size.
+    val worked = remember(seed, slab, theme, content) {
+        if (seed == null) theme else Color(CoverLook.readable(seed, slab.toArgb(), content.toArgb()))
+    }
+    // Held while a page's colours are on their way (see pagesWaiting), so it changes once, with the page.
+    val held = remember { arrayOf(worked) }
+    if (pagesWaiting.intValue == 0) held[0] = worked
+    val target = held[0]
+    return androidx.compose.animation.animateColorAsState(target, androidx.compose.animation.core.tween(420), label = "tab accent").value
+}
+
 data class Tab(val route: String, val label: String, val icon: ImageVector)
 
 @Composable
-private fun TabButton(tab: Tab, selected: Boolean, content: Color, onClick: () -> Unit) {
-    val scheme = MaterialTheme.colorScheme
+private fun TabButton(tab: Tab, selected: Boolean, content: Color, accent: Color, onClick: () -> Unit) {
     // Apple marks the current tab twice over: the accent colour on the glyph, and a plain lighter patch
     // behind it - light grey on their white bar, so the equivalent here is a little of the bar's own
     // text colour. Tinting that patch with the accent is what made it read as a Material pill.
-    val colour = if (selected) scheme.primary else content
+    val colour = if (selected) accent else content
     val press = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     // No patch behind anything. Where you are is the accent colour, a bold label and a slightly larger
     // glyph - every shape drawn behind the current tab, circle or rectangle, ended up reading as
@@ -338,12 +373,26 @@ private val pagePalette = androidx.compose.runtime.mutableStateOf<PagePalette?>(
  */
 val LocalChromeInset = androidx.compose.runtime.compositionLocalOf { 0.dp }
 
-/** A tinted page (an album, an artist, the player) lends its colours to the chrome while it is open. */
+/**
+ * Pages whose cover's colours are still being worked out. While there are any, the chrome and the lit
+ * tab keep the colours they have: from one album to the next they went to the playing song's (or the
+ * theme's) for the moment the new cover took, and then to the new page's, flashing twice where the page
+ * changed once.
+ */
+private val pagesWaiting = androidx.compose.runtime.mutableIntStateOf(0)
+
+/**
+ * A tinted page (an album, an artist, the player) lends its colours to the chrome while it is open.
+ * [waiting]: it will have colours, but they are not worked out yet.
+ */
 @Composable
-fun PageTint(palette: PagePalette?) {
-    androidx.compose.runtime.DisposableEffect(palette) {
-        pagePalette.value = palette
-        onDispose { if (pagePalette.value === palette) pagePalette.value = null }
+fun PageTint(palette: PagePalette?, waiting: Boolean = false) {
+    androidx.compose.runtime.DisposableEffect(palette, waiting) {
+        if (waiting) pagesWaiting.intValue++ else pagePalette.value = palette
+        onDispose {
+            if (waiting) pagesWaiting.intValue--
+            else if (pagePalette.value === palette) pagePalette.value = null
+        }
     }
 }
 

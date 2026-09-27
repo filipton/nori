@@ -1,8 +1,10 @@
 ## stored, every setting changed
 accent = long 4280191205
 activeServerId = text "a1"
+albumColours = flag true
 amoled = flag true
 animateAnyway = flag false
+artistColours = flag true
 autoEqAuto = flag true
 autoEqDownload = flag false
 autoFill = flag false
@@ -120,8 +122,10 @@ wifiFormat = text "mp3"
 ## stored, the defaults
 accent = long 4284960932
 activeServerId = text ""
+albumColours = flag false
 amoled = flag false
 animateAnyway = flag true
+artistColours = flag false
 autoEqAuto = flag false
 autoEqDownload = flag true
 autoFill = flag true
@@ -237,8 +241,10 @@ wifiFormat = text ""
 
 ## values by name, every setting changed
 accent = "4280191205"
+albumColours = "true"
 altMaxBitRate = "192"
 amoled = "true"
+artistColours = "true"
 autoEqAuto = "true"
 autoEqDownload = "false"
 autoFill = "false"
@@ -348,8 +354,10 @@ wifi = "320:mp3"
 
 ## specs
 accent = Colour ["4284960932", "4280191205", "4278225275", "4282622023", "4294201630", "4293212469", "4292352864", "4287505578"] 0.0..0.0 default "4284960932"
+albumColours = Switch ["false", "true"] 0.0..0.0 default "false"
 altMaxBitRate = Choice ["0", "320", "192", "128", "96"] 0.0..0.0 default "0"
 amoled = Switch ["false", "true"] 0.0..0.0 default "false"
+artistColours = Switch ["false", "true"] 0.0..0.0 default "false"
 autoEqAuto = Switch ["false", "true"] 0.0..0.0 default "false"
 autoEqDownload = Switch ["false", "true"] 0.0..0.0 default "true"
 autoFill = Switch ["false", "true"] 0.0..0.0 default "true"

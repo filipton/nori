@@ -137,6 +137,8 @@ fn sample() -> StoredPrefs {
         theme: ThemeMode::Dark,
         amoled: true,
         player_colours: false,
+        album_colours: true,
+        artist_colours: true,
         dynamic_color: false,
         accent: 0xFF1E88E5,
         cover_colors: false,

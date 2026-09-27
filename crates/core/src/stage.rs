@@ -132,10 +132,10 @@ pub fn motion_reduced(reduce: bool, ignore_system: bool, system_off: bool) -> bo
     reduce || (system_off && !ignore_system)
 }
 
-/// Whether the player's page goes black (see `nori_look::sleeve::player_black`).
+/// Whether a page that can wear its cover goes black (see `nori_look::sleeve::page_black`).
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn player_black(amoled: bool, player_colours: bool) -> bool {
-    sleeve::player_black(amoled, player_colours)
+pub fn page_black(amoled: bool, cover_colours: bool) -> bool {
+    sleeve::page_black(amoled, cover_colours)
 }
 
 /// The sleeve band's colour matrix for the look's band tint (see `nori_look::sleeve::band_matrix`).

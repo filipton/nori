@@ -51,11 +51,12 @@ pub const FLOOR_STOPS: [f32; 4] = [0.0, 0.45, 0.80, 1.0];
 /// painted over them), gone by the source label at the bottom so the two never sit on each other.
 pub const LYRICS_MASK: [Stop; 4] = [s(0.0, 0.0), s(0.05, 1.0), s(0.66, 1.0), s(0.92, 0.0)];
 
-/// Whether the player page goes black: AMOLED black everywhere else, but the player keeps the cover's
-/// colours unless asked not to - in black, the page under the sleeve was pure black and the picture
-/// looked cut off, where Apple's carries the record's colour down the whole screen.
-pub fn player_black(amoled: bool, player_colours: bool) -> bool {
-    amoled && !player_colours
+/// Whether a page that can wear its cover (the player, an album's, an artist's) goes black: with AMOLED
+/// black, unless that page is set to keep the cover's colours. The player keeps them out of the box - in
+/// black, the page under the sleeve was pure black and the picture looked cut off, where Apple's carries
+/// the record's colour down the whole screen; album and artist pages go black with the rest.
+pub fn page_black(amoled: bool, cover_colours: bool) -> bool {
+    amoled && !cover_colours
 }
 
 /// The colour matrix (4 x 5, row-major, as Android's `ColorMatrix` takes it) that gives the sleeve's
@@ -119,6 +120,6 @@ mod tests {
         assert!((SOFT_FROM - (1.0 - 0.19 * 2.2)).abs() < 1e-6);
         assert!((SOFT_TO - (1.0 - 0.19 * 0.55)).abs() < 1e-6);
         assert_eq!((HERO_STOPS[0], FLOOR_STOPS[1]), (0.60, 0.45));
-        assert!(player_black(true, false) && !player_black(true, true) && !player_black(false, false));
+        assert!(page_black(true, false) && !page_black(true, true) && !page_black(false, false));
     }
 }
