@@ -43,6 +43,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -404,13 +407,16 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
             // anchored to the top of the screen only laid a flat slab over the wash above the sleeve.
             // Built once per page and sleeve place (drawWithCache), then drawn as it is.
             val page = scheme.background
+            // On its side (LocalWide): the sleeve is the left half, and its wash and soft edge run across.
+            val across = LocalWide.current
             fun Modifier.wash(p: PagePalette?): Modifier = drawWithCache {
                 if (p == null) onDrawBehind { drawRect(page) } else {
                     // Lyrics and queue have no sleeve on screen, and a player opened straight into
                     // one of them has never measured it: use where it would be, so those panels get
                     // the same picture behind them rather than one stretched row from the very top.
-                    val resting = if (sleeveHeight > 0f) sleeveHeight else size.width / SLEEVE
+                    val resting = if (sleeveHeight > 0f) sleeveHeight else if (across) minOf(size.height, size.width / 2f) else size.width / SLEEVE
                     val bottom = if (sleeveBottom > 0f) sleeveBottom else resting
+                    if (across) return@drawWithCache sleeveWashAcross(p, bottom, resting)
                     // At the sleeve's size and place whatever the record is doing. A record picked up is
                     // whole above the sleeve's soft band; only in that band does it give way to this,
                     // and the band does not move (see rubOutBottom). The copy used to shrink with the
@@ -431,12 +437,14 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
             else if (arriving != null && arriving != palette) Box(
                 Modifier.matchParentSize().graphicsLayer { alpha = shift.amount }.wash(arriving),
             )
-            if (panel == Panel.ART) FlyingCover(sheet, vm.cover(state.current?.coverArt, CoverSize.ROW), sleeveArt, sleeveHeight > 0f)
+            // On its side the sleeve is the left half and not the screen's width that these flights grow to
+            // and from; there the sheet brings the sleeve up with it instead.
+            if (panel == Panel.ART && !across) FlyingCover(sheet, vm.cover(state.current?.coverArt, CoverSize.ROW), sleeveArt, sleeveHeight > 0f)
             // Put away from the lyrics, the cover still travels - from the header's thumbnail to the one
             // in the now playing bar. Without it the lyrics simply went down behind the bar and a cover
             // appeared there out of nothing.
-            else if (panel == Panel.LYRICS) FlyingThumb(sheet, vm.cover(state.current?.coverArt, CoverSize.ROW))
-            if (flying) PanelFlight(sleeveArt, thumb, sleeveBottom, sleeveHeight, toThumb = panel == Panel.LYRICS) { arrival.value }
+            else if (panel == Panel.LYRICS && !across) FlyingThumb(sheet, vm.cover(state.current?.coverArt, CoverSize.ROW))
+            if (flying && !across) PanelFlight(sleeveArt, thumb, sleeveBottom, sleeveHeight, toThumb = panel == Panel.LYRICS) { arrival.value }
             // Artwork, lyrics and queue dissolve into each other rather than cutting. The fade is on the
             // panel itself and not on the whole screen: the transport is the same in all three and is
             // shared across the change, and fading the content it sits in dimmed it half-way. Fading only
@@ -511,12 +519,20 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                                 else -> 1f
                             }
                         }
-                        .layout { measurable, constraints ->
+                        .then(if (across) Modifier.fillMaxHeight() else Modifier.layout { measurable, constraints ->
                             val placeable = measurable.measure(constraints)
                             val takes = (placeable.height * (1f - SLEEVE_UNDER_TEXT)).toInt()
                             layout(placeable.width, takes) { placeable.place(0, 0) }
-                        }
+                        })
                         .onGloballyPositioned {
+                            // On its side the sleeve's soft edge is its right one, and the wash carries on
+                            // from there under the controls: its right edge and width stand in for the
+                            // bottom and height.
+                            if (across) {
+                                sleeveBottom = (player[0]?.takeIf { p -> p.isAttached }?.localPositionOf(it, Offset.Zero)?.x ?: 0f) + it.size.width
+                                sleeveHeight = it.size.width.toFloat()
+                                return@onGloballyPositioned
+                            }
                             // What is drawn, not what the column was told: the wash lines up with the
                             // picture, and the picture runs on under the title.
                             val drawn = it.size.width / SLEEVE
@@ -528,7 +544,7 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                 ) {
                     // While the sheet moves, the cover on screen is FlyingCover's; this one takes over
                     // the moment the sheet arrives, in exactly the same place.
-                    Box(Modifier.graphicsLayer { alpha = if (!sheet.panelFlight && (sheet.progress.value >= 1f || sheet.miniCover == Rect.Zero)) 1f else 0f }) {
+                    Box(Modifier.graphicsLayer { alpha = if (across || !sheet.panelFlight && (sheet.progress.value >= 1f || sheet.miniCover == Rect.Zero)) 1f else 0f }) {
                         val previousSong = state.queue.getOrNull(state.previousIndex)
                         val nextSong = state.queue.getOrNull(state.nextIndex)
                         Artwork(
@@ -548,6 +564,9 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                     Spacer(Modifier.fillMaxWidth().statusBarsPadding().height(22.dp).dragsSheet(sheet))
                     Box(
                         Modifier.weight(1f).graphicsLayer { alpha = panelFade.read() }
+                            // On its side the lyrics and the queue start clear of the camera's punch hole,
+                            // as the pages do; only the cover runs under it.
+                            .then(if (across) Modifier.windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.displayCutout.only(androidx.compose.foundation.layout.WindowInsetsSides.Start)) else Modifier)
                             .then(if (page == Panel.QUEUE) Modifier.padding(horizontal = 26.dp) else Modifier),
                     ) {
                         if (page == Panel.QUEUE) Queue(vm) else LyricsView(vm, actions, state.playing)
@@ -819,6 +838,9 @@ private const val SLEEVE = 0.74f
  */
 private const val SLEEVE_UNDER_TEXT = 0.095f
 
+/** A soft sleeve's own box as the sleeve: its bottom (its right edge, on its side) and its whole height (width). */
+private val SLEEVE_ALL: androidx.compose.ui.draw.CacheDrawScope.() -> Pair<Float, Float> = { size.height to size.height }
+
 /**
  * The artwork full-bleed: edge to edge, square corners, no shadow - the sleeve it is. Its bottom
  * third melts into the page wash (transparent to the wash colour at that height), so there is no
@@ -841,7 +863,7 @@ private fun Artwork(
             // to about half of it - 977 wide by roughly 1050 tall - so it is the cover scaled to fill and
             // cropped a little at the sides. That is how it manages to have no top edge *and* reach down
             // behind the title; a full-width square can only do one or the other. Cover crops already.
-            Modifier.fillMaxWidth().aspectRatio(SLEEVE),
+            if (LocalWide.current) Modifier.fillMaxSize() else Modifier.fillMaxWidth().aspectRatio(SLEEVE),
         ) {
             SleeveCarousel(
                 art, currentUrl, previousUrl, nextUrl, previousTint, nextTint, songs,
@@ -873,16 +895,19 @@ private fun Artwork(
  * travel and change size with the record - a blur moving about the screen - and, with two records
  * side by side, a seam between two blurs.
  */
-private fun rubOutBrush(top: Float, bottom: Float): Brush =
+private fun rubOutBrush(top: Float, bottom: Float, across: Boolean = false): Brush =
     // The melt's own easing, in stops, and why its tail finishes by 70 %: nori_look::sleeve::RUB_OUT.
-    alphaGradient(stage.rubOut, Color.Black, top, bottom)
+    alphaGradient(stage.rubOut, Color.Black, top, bottom, across)
 
-/** Rubs the band from [top] to [bottom] out of what [content] drew; the brush is made once per place. */
-private fun Modifier.rubOutBottom(band: androidx.compose.ui.draw.CacheDrawScope.() -> Pair<Float, Float>): Modifier = drawWithCache {
+/**
+ * Rubs the band from [top] to [bottom] out of what [content] drew; the brush is made once per place.
+ * [across]: the band runs down the right edge instead, from x [top] to [bottom].
+ */
+private fun Modifier.rubOutBottom(across: Boolean = false, band: androidx.compose.ui.draw.CacheDrawScope.() -> Pair<Float, Float>): Modifier = drawWithCache {
     val (top, bottom) = band()
-    val brush = if (bottom > top) rubOutBrush(top, bottom) else null
-    val at = Offset(0f, top)
-    val area = Size(size.width, bottom - top)
+    val brush = if (bottom > top) rubOutBrush(top, bottom, across) else null
+    val at = if (across) Offset(top, 0f) else Offset(0f, top)
+    val area = if (across) Size(bottom - top, size.height) else Size(size.width, bottom - top)
     onDrawWithContent {
         drawContent()
         if (brush != null) drawRect(brush, topLeft = at, size = area, blendMode = androidx.compose.ui.graphics.BlendMode.DstOut)
@@ -1005,7 +1030,7 @@ private fun PanelFlight(
 @Composable
 private fun SoftSleeve(
     modifier: Modifier,
-    sleeve: androidx.compose.ui.draw.CacheDrawScope.() -> Pair<Float, Float> = { size.height to size.height },
+    sleeve: androidx.compose.ui.draw.CacheDrawScope.() -> Pair<Float, Float> = SLEEVE_ALL,
     blur: FloatReader = FloatReader { 1f },
     content: @Composable androidx.compose.foundation.layout.BoxScope.(blurred: Boolean) -> Unit,
 ) {
@@ -1020,10 +1045,14 @@ private fun SoftSleeve(
     // (nori_look::dress); read in the draw phase.
     val band = if (android.os.Build.VERSION.SDK_INT >= 31) remember(blurPx) { BandEffect(blurPx) } else null
     val look = LocalLook.current
+    // On its side the sleeve's soft edge is its right one, towards the controls: the same band and blur,
+    // turned. [sleeve] is then its right edge and width.
+    val across = LocalWide.current
+    val edge: androidx.compose.ui.draw.CacheDrawScope.() -> Pair<Float, Float> = if (across && sleeve === SLEEVE_ALL) { { size.width to size.width } } else sleeve
     Box(
         modifier
             .graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
-            .rubOutBottom { val (bottom, height) = sleeve(); (bottom - height * MELT) to bottom },
+            .rubOutBottom(across) { val (bottom, height) = edge(); (bottom - height * MELT) to bottom },
     ) {
         content(false)
         if (soft && band != null) Box(
@@ -1037,9 +1066,9 @@ private fun SoftSleeve(
                     // Where the blurred copy shows: nowhere above the band's upper reach, all of it by the
                     // time the rub-out is under way. Eased, so its own start is no line. One brush per
                     // size and place, not one per frame.
-                    val (bottom, height) = sleeve()
+                    val (bottom, height) = edge()
                     val top = bottom - height
-                    val mask = alphaGradient(stage.soft, Color.Black, top + height * stage.softFrom, top + height * stage.softTo)
+                    val mask = alphaGradient(stage.soft, Color.Black, top + height * stage.softFrom, top + height * stage.softTo, across)
                     onDrawWithContent {
                         drawContent()
                         drawRect(mask, blendMode = androidx.compose.ui.graphics.BlendMode.DstIn)
