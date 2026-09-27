@@ -191,6 +191,10 @@ pub struct QueueRows {
     /// and as the queue has it (the two differ while a mix hands over). A swipe is quick and easy to make
     /// by accident, and taking the song playing out cuts the music; the row's × still does it on purpose.
     pub kept: Vec<u32>,
+    /// The row (a place in `order`) of the song the page shows playing, -1 for none. The panel opens with
+    /// it at the top; the rows before it have played (earlier in the play order, which under shuffle is
+    /// not the list's), are drawn dimmed above it, and a drag neither lifts them nor drops a song among them.
+    pub now: i32,
 }
 
 /// The panel's rows for a queue of `len` songs as the page holds it, in the core's play order, with the
@@ -209,7 +213,8 @@ fn rows(order: Option<Vec<u32>>, len: u32, shuffle: bool, shown: i32, current: O
     let order = order.filter(|o| o.len() == len as usize).unwrap_or_else(|| (0..len).collect());
     let mut kept: Vec<u32> = u32::try_from(shown).ok().into_iter().chain(current.map(|c| c as u32)).filter(|&i| i < len).collect();
     kept.dedup();
-    QueueRows { order, reorderable: !shuffle, kept }
+    let now = u32::try_from(shown).ok().and_then(|s| order.iter().position(|&i| i == s)).map_or(-1, |p| p as i32);
+    QueueRows { order, reorderable: !shuffle, kept, now }
 }
 
 #[cfg(test)]
@@ -238,8 +243,19 @@ mod tests {
 
     #[test]
     fn the_queue_lists_in_play_order_and_reorders_only_unshuffled() {
-        assert_eq!(rows(Some(vec![2, 0, 1]), 3, true, 2, Some(2)), QueueRows { order: vec![2, 0, 1], reorderable: false, kept: vec![2] });
-        assert_eq!(rows(None, 3, false, -1, None), QueueRows { order: vec![0, 1, 2], reorderable: true, kept: vec![] });
+        assert_eq!(rows(Some(vec![2, 0, 1]), 3, true, 2, Some(2)), QueueRows { order: vec![2, 0, 1], reorderable: false, kept: vec![2], now: 0 });
+        assert_eq!(rows(None, 3, false, -1, None), QueueRows { order: vec![0, 1, 2], reorderable: true, kept: vec![], now: -1 });
+    }
+
+    #[test]
+    fn what_has_played_is_what_comes_before_the_song_playing_in_play_order() {
+        // Unshuffled the list's own order: the two before the third have played.
+        assert_eq!(rows(None, 5, false, 2, Some(2)).now, 2);
+        // Shuffled, list index 1 plays fourth: the three rows before it have played, list index 4 among them.
+        assert_eq!(rows(Some(vec![3, 4, 0, 1, 2]), 5, true, 1, Some(1)).now, 3);
+        // Nothing shown playing, or a place past the end: nothing has played.
+        assert_eq!(rows(None, 3, false, -1, None).now, -1);
+        assert_eq!(rows(None, 3, false, 7, None).now, -1);
     }
 
     #[test]

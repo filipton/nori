@@ -18,9 +18,22 @@ internal fun queueKeys(ids: List<String>): List<String> {
     return ids.map { id -> "$id#${seen.merge(id, 1, Int::plus)}" }
 }
 
-/** Where the row held at [from] would land [offset] pixels away, rows [rowHeight] tall, in a list of [size]. */
-internal fun reorderTarget(from: Int, offset: Float, rowHeight: Float, size: Int): Int =
-    if (from < 0 || rowHeight <= 0f) from else (from + (offset / rowHeight).roundToInt()).coerceIn(0, (size - 1).coerceAtLeast(0))
+/**
+ * Where the row held at [from] would land [offset] pixels away, rows [rowHeight] tall, in a list of [size],
+ * no higher than row [first] (the songs already played and the one playing stay where they are).
+ */
+internal fun reorderTarget(from: Int, offset: Float, rowHeight: Float, size: Int, first: Int = 0): Int {
+    if (from < 0 || rowHeight <= 0f) return from
+    val last = (size - 1).coerceAtLeast(0)
+    return (from + (offset / rowHeight).roundToInt()).coerceIn(first.coerceIn(0, last).coerceAtMost(from), last)
+}
+
+/**
+ * Whether a queue come to rest is resting on the song playing, and so follows it to its next row: the row
+ * at its top ([top], a row key) is that song's ([playing]), or the list is at its end ([atEnd]), where the
+ * song could not be brought any higher. A list the user left anywhere else stays where they put it.
+ */
+internal fun queueFollows(top: Any?, playing: Any?, atEnd: Boolean): Boolean = playing != null && (top == playing || atEnd)
 
 /**
  * How far row [at] is drawn from its place while the row at [from] is held [offset] pixels away: the held
@@ -51,10 +64,12 @@ internal class QueueDrag {
     val lift = mutableFloatStateOf(0f)
     var rowHeight by mutableFloatStateOf(0f)
     var size = 0
+    /** The highest row a drop may land on: the one after the song playing. */
+    var first = 0
     /** The queue a drop was sent against: set, the rows hold their places until the queue is another. */
     var landing by mutableStateOf<Any?>(null)
 
-    fun target(): Int = reorderTarget(from, offset.floatValue, rowHeight, size)
+    fun target(): Int = reorderTarget(from, offset.floatValue, rowHeight, size, first)
 
     fun shift(at: Int): Float = reorderShift(at, from, target(), offset.floatValue, rowHeight)
 

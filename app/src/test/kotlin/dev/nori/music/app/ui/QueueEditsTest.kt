@@ -34,6 +34,23 @@ class QueueEditsTest {
         assertEquals(listOf(0f, 0f, 0f), (0..2).map { reorderShift(it, -1, -1, 0f, h) })
     }
 
+    @Test fun `a song is not dropped among the ones played or above the one playing`() {
+        val h = 100f
+        // Row 2 plays: a song held at row 4 goes no higher than row 3.
+        assertEquals(3, reorderTarget(4, -10_000f, h, 6, first = 3))
+        assertEquals(5, reorderTarget(4, 10_000f, h, 6, first = 3))
+        // A row above the floor (never lifted) is not pushed down by it.
+        assertEquals(1, reorderTarget(1, 0f, h, 6, first = 3))
+        assertEquals(4, reorderTarget(4, -10_000f, h, 5, first = 9))
+    }
+
+    @Test fun `the queue follows the song playing unless scrolled away`() {
+        assertTrue(queueFollows("a#1", "a#1", atEnd = false))
+        assertTrue("at the end, where the song could go no higher", queueFollows("x#1", "a#1", atEnd = true))
+        assertFalse("scrolled elsewhere", queueFollows("x#1", "a#1", atEnd = false))
+        assertFalse("nothing playing", queueFollows("a#1", null, atEnd = true))
+    }
+
     @Test fun `a drop holds the rows until the queue has changed`() {
         val d = QueueDrag()
         d.rowHeight = 100f

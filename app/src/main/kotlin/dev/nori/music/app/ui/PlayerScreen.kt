@@ -44,7 +44,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -2432,7 +2431,23 @@ private const val MIXING_FADE_MS = 360f
 @Composable
 private fun Queue(vm: PlayerViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
-    val list = rememberLazyListState(initialFirstVisibleItemIndex = state.order.indexOf(state.index).coerceAtLeast(0))
+    // In the order the songs will play, which under shuffle is not the order of the list itself. A drag
+    // moves a song within the list, so reordering is offered only when the two are the same.
+    // Which order, whether a drag may reorder it, which rows a swipe leaves and which have played are the
+    // core's (`queue_rows`).
+    val rows = remember(state.order, state.queue.size, state.shuffle, state.index) {
+        dev.nori.music.ffi.queueRows(state.queue.size.toUInt(), state.shuffle, state.index)
+    }
+    val order = remember(rows) { rows.order.map { it.toInt() } }
+    val kept = remember(rows) { rows.kept.map { it.toInt() }.toSet() }
+    val keys = remember(state.queue) { queueKeys(state.queue.map { it.id }) }
+    // The song playing is the list's first row as it opens, the way Apple's queue is. The songs already
+    // played sit above it, dimmed under "History", and are only seen by scrolling up; "Playing next"
+    // heads what comes after it. An entry is a place in [order], or one of the two captions.
+    val now = rows.now
+    val entries = remember(order, now) { queueEntries(order.size, now) }
+    val nowEntry = if (now >= 0) entries.indexOf(now) else 0
+    val list = rememberLazyListState(initialFirstVisibleItemIndex = nowEntry.coerceAtLeast(0))
     // Nothing is reordered until the finger lifts. The held row follows it, the rows it passes step out
     // of the way, and the gap travels with it - reordering live would change the keys under the gesture
     // and cancel it, which is why a row could only ever be moved one place at a time. All of it is read
@@ -2457,7 +2472,7 @@ private fun Queue(vm: PlayerViewModel) {
     // away (the list opens at the playing row, which used to hide them).
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-            Caption(remember { say.upNext }, Modifier.padding(top = 4.dp, bottom = 8.dp))
+            Caption(remember { say.queue }, Modifier.padding(top = 4.dp, bottom = 8.dp))
             Row(Modifier, Arrangement.spacedBy(4.dp), Alignment.CenterVertically) {
                 val shuffleOn = state.shuffle
                 val repeatOn = state.repeat != Repeat.OFF
@@ -2472,18 +2487,51 @@ private fun Queue(vm: PlayerViewModel) {
                 }
             }
         }
-    // In the order the songs will play, which under shuffle is not the order of the list itself. A drag
-    // moves a song within the list, so reordering is offered only when the two are the same.
-    // Which order, whether a drag may reorder it and which rows a swipe leaves are the core's (`queue_rows`).
-    val rows = remember(state.order, state.queue.size, state.shuffle, state.index) {
-        dev.nori.music.ffi.queueRows(state.queue.size.toUInt(), state.shuffle, state.index)
-    }
-    val order = remember(rows) { rows.order.map { it.toInt() } }
-    val kept = remember(rows) { rows.kept.map { it.toInt() }.toSet() }
-    val keys = remember(state.queue) { queueKeys(state.queue.map { it.id }) }
     val reorderable = rows.reorderable
     val queueNow by rememberUpdatedState(state.queue)
     drag.size = state.queue.size
+    // A song is dropped only among those still to come: not above the song playing, nor into what has played.
+    drag.first = now + 1
+    // When the song playing changes, the list goes with it, the new song to the top, as long as the list
+    // was resting on the song that had been playing (or at its end, where it could go no further); a
+    // list scrolled somewhere else stays where it was put. Where it rests is decided when a scroll ends,
+    // not when the song changes: by then a reordered list (shuffle switched) is laid out again and its
+    // top says nothing about where the user had left it. Both are asked once per event, not per frame.
+    val nowKey = order.getOrNull(now)?.let { keys[it] }
+    var followed by remember { mutableStateOf(nowKey) }
+    // Opened at the song playing, so resting on it until a scroll says otherwise.
+    val pinned = remember { booleanArrayOf(true) }
+    // Whether the user has dragged the list since its last rest. Only their scrolls say where they left
+    // it: one of the list's own, cut short by the next song (skips in quick succession), stops half way.
+    val dragged = remember { booleanArrayOf(false) }
+    // A song tapped in the list is followed to the top wherever the list was: the tap asked for it. So is
+    // the first song of a new queue (a page's Play while the panel is open; `origin` moves with each): the
+    // place the old one was scrolled to means nothing in it.
+    var tapped by remember { mutableStateOf<String?>(null) }
+    val origin = remember { intArrayOf(state.origin) }
+    LaunchedEffect(list) {
+        list.interactionSource.interactions.collect { if (it is androidx.compose.foundation.interaction.DragInteraction.Start) dragged[0] = true }
+    }
+    LaunchedEffect(list) {
+        androidx.compose.runtime.snapshotFlow { list.isScrollInProgress }.collect { moving ->
+            if (moving || !dragged[0]) return@collect
+            dragged[0] = false
+            val info = list.layoutInfo
+            val top = info.visibleItemsInfo.firstOrNull { it.offset + it.size / 2 > info.viewportStartOffset }?.key
+            pinned[0] = queueFollows(top, followed, !list.canScrollForward)
+        }
+    }
+    LaunchedEffect(nowKey, nowEntry, state.origin) {
+        followed = nowKey
+        if (nowKey == null || drag.from >= 0 || dragged[0]) return@LaunchedEffect
+        val asked = tapped == nowKey || origin[0] != state.origin
+        tapped = null
+        origin[0] = state.origin
+        if (!asked && !pinned[0]) return@LaunchedEffect
+        if (list.firstVisibleItemIndex == nowEntry && list.firstVisibleItemScrollOffset == 0) return@LaunchedEffect
+        pinned[0] = true
+        if (plain) list.scrollToItem(nowEntry) else list.animateScrollToItem(nowEntry)
+    }
     // A drop has landed when the queue is no longer the one it was sent against. On that frame the rows
     // are laid out where they were already drawn: their shifts go (before this frame is laid out) and
     // they do not also slide there.
@@ -2516,8 +2564,24 @@ private fun Queue(vm: PlayerViewModel) {
             },
         state = list,
     ) {
-        itemsIndexed(order, key = { _, i -> keys[i] }, contentType = { _, _ -> "song" }) { at, i ->
+        items(
+            entries.size,
+            key = { e -> when (val at = entries[e]) { QUEUE_HISTORY -> "history"; QUEUE_NEXT -> "next"; else -> keys[order[at]] } },
+            contentType = { e -> if (entries[e] < 0) "caption" else "song" },
+        ) { e ->
+            val at = entries[e]
+            if (at < 0) {
+                Caption(
+                    if (at == QUEUE_HISTORY) say.history else say.upNext,
+                    Modifier.animateItem(fadeInSpec = null, placementSpec = if (plain) null else tween(QUEUE_MOVE_MS, easing = androidx.compose.animation.core.FastOutSlowInEasing), fadeOutSpec = null)
+                        .padding(top = if (at == QUEUE_HISTORY) 4.dp else 14.dp, bottom = 6.dp),
+                )
+                return@items
+            }
+            val i = order[at]
             val s = state.queue[i]
+            // Already played: drawn quieter, above the song playing.
+            val played = at < now
             val key = keys[i]
             // Only the row picked up and put down recomposes; the drag itself is read in the layer below.
             val held by remember(key) { derivedStateOf { drag.liftKey == key } }
@@ -2563,12 +2627,20 @@ private fun Queue(vm: PlayerViewModel) {
                 SwipeBackdrop(swipe, null, if (i in kept) null else take, Modifier.matchParentSize(), swipeColours, reveal = true, inset = 12.dp)
                 Row(
                     Modifier.fillMaxWidth()
+                        .then(if (played) Modifier.graphicsLayer { alpha = QUEUE_PLAYED_ALPHA } else Modifier)
                         .swipeable(swipe, null, if (i in kept) null else take, null, gone = true, resist = i in kept)
-                        .clickable { vm.skipTo(i) }
+                        .clickable { tapped = key; vm.skipTo(i) }
                         .padding(vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Cover(vm.cover(s.coverArt, CoverSize.ROW), 44.dp, radius = 6.dp)
+                    Box(contentAlignment = Alignment.Center) {
+                        Cover(vm.cover(s.coverArt, CoverSize.ROW), 44.dp, radius = 6.dp)
+                        // The song playing: its cover darkened under the playing bars, as in Apple's queue.
+                        if (i == state.index) {
+                            Box(Modifier.matchParentSize().drawBehind { drawRoundRect(QUEUE_NOW_VEIL, cornerRadius = androidx.compose.ui.geometry.CornerRadius(6.dp.toPx())) })
+                            PlayingBars(Color.White, Modifier.size(16.dp))
+                        }
+                    }
                     Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                         LookText(
                             s.title, if (i == state.index) accent else ink,
@@ -2583,10 +2655,16 @@ private fun Queue(vm: PlayerViewModel) {
                     IconButton({ undo.took(s, i, key, 0f); vm.remove(i) }, Modifier.size(38.dp)) {
                         LookIcon(Icons.Filled.Close, say.remove, Modifier.size(19.dp), quiet)
                     }
+                    // The handle's room is kept on every row while the list can be reordered, so every ×
+                    // stands in one column; only the rows still to come show a handle in it.
                     androidx.compose.animation.AnimatedVisibility(
                         reorderable,
                         enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.expandHorizontally(),
                         exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.shrinkHorizontally(),
+                    ) { Box(Modifier.size(44.dp)) { androidx.compose.animation.AnimatedVisibility(
+                        at > now,
+                        enter = androidx.compose.animation.fadeIn(),
+                        exit = androidx.compose.animation.fadeOut(),
                     ) { LookIcon(
                         Icons.Filled.DragHandle, say.reorder,
                         tint = { if (drag.liftKey == key) androidx.compose.ui.graphics.lerp(quiet(), accent(), drag.lift.floatValue) else quiet() },
@@ -2632,7 +2710,7 @@ private fun Queue(vm: PlayerViewModel) {
                                 onDragCancel = { drop(send = false) },
                             ) { change, d -> change.consume(); drag.offset.floatValue += d.y }
                         },
-                    ) }
+                    ) } } }
                 }
             }
         }
@@ -2643,6 +2721,27 @@ private fun Queue(vm: PlayerViewModel) {
     }
   }
 }
+
+/** The queue's two captions among its [queueEntries]: above the songs played, and above those to come. */
+private const val QUEUE_HISTORY = -1
+private const val QUEUE_NEXT = -2
+
+/**
+ * The queue panel's entries for [size] rows with the song playing at row [now] (-1 none): the rows played
+ * under "History", the song playing, then "Playing next" and the rest. Each is a row, or a caption.
+ */
+private fun queueEntries(size: Int, now: Int): List<Int> = buildList(size + 2) {
+    if (now > 0) add(QUEUE_HISTORY)
+    for (at in 0 until size) {
+        add(at)
+        if (at == now && at < size - 1) add(QUEUE_NEXT)
+    }
+}
+
+/** How much a song already played shows through. */
+private const val QUEUE_PLAYED_ALPHA = 0.45f
+/** The shade over the playing song's cover, under its bars. */
+private val QUEUE_NOW_VEIL = Color.Black.copy(alpha = 0.4f)
 
 /** How the queue's rows come, go and move: a row appearing, a row leaving (after a swipe it is already off the side), the rest closing up. */
 private const val QUEUE_IN_MS = 220
