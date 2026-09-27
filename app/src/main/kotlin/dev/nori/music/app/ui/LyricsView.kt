@@ -121,7 +121,9 @@ fun LyricsView(vm: PlayerViewModel, actions: ActionsViewModel, playing: Boolean)
         DisposableEffect(playing) { view.keepScreenOn = dev.nori.music.ffi.lyricsKeepScreenOn(true, true, playing); onDispose { view.keepScreenOn = false } }
     }
     Column(Modifier.fillMaxSize()) {
-        LyricsHeader(vm, actions, playerState.current)
+        // On its side the title, the heart and the menu stay in the controls' half, where they are in every
+        // panel; a second copy here pushed the words down and moved the controls up when the lyrics opened.
+        if (!LocalWide.current) LyricsHeader(vm, actions, playerState.current)
         // Loading, nothing found, or the words - each fades into the next rather than replacing it, the
         // words included: they rise out of the loader instead of appearing in one frame. A new song goes
         // back through the loader, so the last song's lyrics never sit on screen under the new title.

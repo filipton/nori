@@ -257,6 +257,50 @@ fun androidx.compose.ui.draw.CacheDrawScope.sleeveWash(
 }
 
 /**
+ * [sleeveWash] on its side: the sleeve is the left part of the screen, up to x [sleeveRight], [sleeveWidth]
+ * wide and the screen's height. The blurred cover is drawn there at the sleeve's own size, and its last
+ * column carries on to the right edge under the controls, calming into the page as it goes - the bottom
+ * rows' job, turned, so the sleeve's soft right edge runs out into its own colours there too.
+ */
+fun androidx.compose.ui.draw.CacheDrawScope.sleeveWashAcross(
+    palette: PagePalette, sleeveRight: Float, sleeveWidth: Float,
+): androidx.compose.ui.draw.DrawResult {
+    val endX = size.width
+    val wash = palette.wash
+    val page = palette.background
+    if (wash == null) return onDrawBehind { drawRect(page) }
+    val h = size.height.toInt().coerceAtLeast(1)
+    val right = sleeveRight.coerceIn(1f, endX)
+    val left = (right - sleeveWidth).coerceAtLeast(0f).toInt()
+    val look = palette.look
+    val floor = if (endX - right > 1f) Brush.horizontalGradient(
+        stage.floorStops[0] to Color(look[CoverLook.FLOOR_0]),
+        stage.floorStops[1] to Color(look[CoverLook.FLOOR_22]),
+        stage.floorStops[2] to Color(look[CoverLook.FLOOR_75]),
+        stage.floorStops[3] to page,
+        startX = right, endX = endX,
+    ) else null
+    val floorLeft = Offset(right, 0f)
+    val floorSize = Size(endX - right, size.height)
+    return onDrawBehind {
+        fun band(srcX: Int, srcW: Int, x0: Int, x1: Int) {
+            if (x1 <= x0) return
+            drawImage(
+                wash,
+                srcOffset = IntOffset(srcX, 0), srcSize = IntSize(srcW, WASH_ROWS),
+                dstOffset = IntOffset(x0, 0), dstSize = IntSize(x1 - x0, h),
+                filterQuality = FilterQuality.Low,
+            )
+        }
+        val rightCol = right.toInt()
+        band(0, 1, 0, if (left > 0) left + 1 else 0)
+        band(WASH_ROWS - 1, 1, if (rightCol > left) rightCol - 1 else rightCol, endX.toInt())
+        band(0, WASH_ROWS, left, rightCol)
+        if (floor != null) drawRect(floor, topLeft = floorLeft, size = floorSize)
+    }
+}
+
+/**
  * How the app draws and times its pages - every gradient's stops, the waits, the fades and the meter's
  * pace - as nori-core says (`stage.rs`, `nori_look::sleeve`). Read once, the first time a page draws.
  */
@@ -274,9 +318,14 @@ val say: Say get() = Say.current
  */
 val MELT: Float get() = stage.melt
 
-/** A gradient of [color] at the core's [stops], from [startY] to [endY]. Made once per size, never per frame. */
-fun alphaGradient(stops: List<dev.nori.music.ffi.GradientStop>, color: Color, startY: Float, endY: Float): Brush =
-    Brush.verticalGradient(*Array(stops.size) { stops[it].at to color.copy(alpha = stops[it].alpha) }, startY = startY, endY = endY)
+/**
+ * A gradient of [color] at the core's [stops], from [startY] to [endY] - or, [across], from x [startY] to
+ * [endY]. Made once per size, never per frame.
+ */
+fun alphaGradient(stops: List<dev.nori.music.ffi.GradientStop>, color: Color, startY: Float, endY: Float, across: Boolean = false): Brush {
+    val at = Array(stops.size) { stops[it].at to color.copy(alpha = stops[it].alpha) }
+    return if (across) Brush.horizontalGradient(*at, startX = startY, endX = endY) else Brush.verticalGradient(*at, startY = startY, endY = endY)
+}
 
 /** The wash texture is this many pixels a side (nori_look's `WASH_OUT`). */
 private const val WASH_ROWS = CoverLook.WASH
@@ -419,15 +468,6 @@ fun SystemBarIcons(look: Look) {
         androidx.compose.runtime.snapshotFlow { look.argb(CoverLook.STATUS_LIGHT) != 0 }
             .collect { controller.isAppearanceLightStatusBars = it }
     }
-}
-
-/** A round, dimmed button that stays legible on top of artwork: back, close, more. */
-@Composable
-fun ScrimIconButton(icon: ImageVector, description: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    androidx.compose.material3.IconButton(
-        onClick,
-        modifier.size(40.dp).background(Color.Black.copy(alpha = 0.35f), androidx.compose.foundation.shape.CircleShape),
-    ) { Icon(icon, description, Modifier.size(22.dp), tint = Color.White) }
 }
 
 /**

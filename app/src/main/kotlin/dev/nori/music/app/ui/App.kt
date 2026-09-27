@@ -38,6 +38,13 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Box
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -177,6 +184,13 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
         val sheetScope = androidx.compose.runtime.rememberCoroutineScope()
         val sheet = remember { PlayerSheet(sheetScope) }
         sheet.plain = reduceMotion()
+        // Whether the player was open, kept with the rest of the saved state, so an app Android put back
+        // together (after it was stopped in the background) opens on the player it was left on.
+        var playerWasOpen by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+        LaunchedEffect(sheet) {
+            if (playerWasOpen) sheet.openAtOnce()
+            androidx.compose.runtime.snapshotFlow { sheet.isOpen }.collect { playerWasOpen = it }
+        }
         val nav = remember(controller) { Nav(controller, sheet) }
         val actions: ActionsViewModel = viewModel()
         val player: PlayerViewModel = viewModel()
@@ -266,6 +280,40 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             // Screens keep the last row reachable by adding LocalChromeInset to their content padding.
             var chromeHeight by remember { mutableStateOf(0.dp) }
             var tabsHeight by remember { mutableStateOf(0.dp) }
+            // On its side the tabs stand on a rail at the right edge (TabRail), and the page gives it that edge;
+            // the left edge is kept clear of the camera's punch hole.
+            val config = androidx.compose.ui.platform.LocalConfiguration.current
+            val wide = isWide(config.screenWidthDp, config.screenHeightDp)
+            var railWidth by remember { mutableStateOf(0.dp) }
+            // Which way round: the edge the bar stood on is on the right turned one way, on the left the other
+            // (TabRail), and the camera on the opposite side.
+            val view = androidx.compose.ui.platform.LocalView.current
+            val rotation = remember(config) { view.display?.rotation ?: android.view.Surface.ROTATION_0 }
+            val railLeft = wide && rotation == android.view.Surface.ROTATION_270
+            val railInset = if (wide) railWidth else 0.dp
+            val cutout = androidx.compose.foundation.layout.WindowInsets.displayCutout.asPaddingValues()
+            val cutoutStart = if (wide && !railLeft) cutout.calculateStartPadding(androidx.compose.ui.unit.LayoutDirection.Ltr) else 0.dp
+            val cutoutEnd = if (wide && railLeft) cutout.calculateEndPadding(androidx.compose.ui.unit.LayoutDirection.Ltr) else 0.dp
+            val pageStart = if (railLeft) railInset else cutoutStart
+            val pageEnd = if (railLeft) cutoutEnd else railInset
+            // A turn of the phone is not animated by the system (MainActivity asks for a seamless one): the
+            // bar is laid out again where it already lay, and only its glyphs turn upright, while the page fades
+            // into its new layout - in the span the page's own fades take.
+            val turn = remember { androidx.compose.animation.core.Animatable(0f) }
+            val settle = remember { androidx.compose.animation.core.Animatable(1f) }
+            val lastRotation = remember { intArrayOf(rotation) }
+            LaunchedEffect(rotation) {
+                val steps = ((rotation - lastRotation[0]) % 4 + 4) % 4
+                lastRotation[0] = rotation
+                if (steps == 0) return@LaunchedEffect
+                val plain = AppMotion.reduce
+                launch {
+                    turn.snapTo(when (steps) { 1 -> -90f; 3 -> 90f; else -> 180f })
+                    if (plain) turn.snapTo(0f) else turn.animateTo(0f, androidx.compose.animation.core.tween(360, easing = androidx.compose.animation.core.FastOutSlowInEasing))
+                }
+                settle.snapTo(0f)
+                settle.animateTo(1f, androidx.compose.animation.core.tween(if (plain) 0 else 260))
+            }
             val density = androidx.compose.ui.platform.LocalDensity.current
             // One look for both halves of the chrome, cross-fading once when the page under it changes.
             val chromeLook = rememberChromeLook()
@@ -277,8 +325,20 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             Box(Modifier.fillMaxSize().onGloballyPositioned { sheet.rootHeight = it.size.height.toFloat() }) {
               // Everything under the player. Once the player covers it completely it is not drawn at all:
               // a layer at zero alpha is skipped, so a page left animating underneath costs nothing.
-              Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (sheet.progress.value >= 1f) 0f else 1f }) {
+              CompositionLocalProvider(LocalWide provides wide, LocalTabTurn provides { turn.value }, LocalPageStart provides pageStart, LocalPageEnd provides pageEnd) {
+              Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (sheet.progress.value >= 1f) 0f else settle.value }) {
+              // The strips the rail and the camera stand on are the app's own page; a tinted page paints them over
+              // itself (HeroPage), so its colour comes and goes with the page. Painted here in the chrome's
+              // colour, which follows a page on a slower fade of its own, they held the album's colour at the
+              // screen's edges while the page slid away.
+              if (wide) {
+                  val bg = MaterialTheme.colorScheme.background
+                  val strip = Modifier.fillMaxHeight().drawBehind { drawRect(bg) }
+                  Box(strip.width(pageStart).align(Alignment.CenterStart))
+                  Box(strip.width(pageEnd).align(Alignment.CenterEnd))
+              }
               CompositionLocalProvider(LocalStarMarks provides marks, LocalChromeInset provides chromeHeight) {
+              Box(Modifier.fillMaxSize().padding(start = pageStart, end = pageEnd)) {
                 // One transition for the whole app, and the same one in both directions. See PageMotion.
                 val plain = reduceMotion()
                 NavHost(
@@ -319,20 +379,27 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
                 // player covers it. See UpdateBanner.
                 UpdateBanner(settings, Modifier.align(Alignment.TopCenter))
               }
+              }
               Box(
-                  Modifier.align(Alignment.BottomCenter)
+                  Modifier.align(Alignment.BottomCenter).padding(start = pageStart, end = pageEnd)
                       .onGloballyPositioned { chromeHeight = with(density) { it.size.height.toDp() } },
               ) {
                   // The now playing bar has a heart now, and it reads the stars the user has just
                   // changed from here like every other one. Outside this, it saw only the server's
                   // answer, so a tap on it changed nothing until the song came round again.
-                  CompositionLocalProvider(LocalStarMarks provides marks) { BottomChrome(player, actions, nav::player, tabsHeight, chromeLook) }
+                  CompositionLocalProvider(LocalStarMarks provides marks) { BottomChrome(player, actions, nav::player, if (wide) 0.dp else tabsHeight, chromeLook) }
               }
               }
-              PlayerLayer(sheet) { CompositionLocalProvider(LocalStarMarks provides marks) { PlayerScreen(player, actions) } }
+              Box(Modifier.graphicsLayer { alpha = settle.value }) {
+                  PlayerLayer(sheet) { CompositionLocalProvider(LocalStarMarks provides marks) { PlayerScreen(player, actions) } }
+              }
               // The tab bar is over the player, not under it: as the player rises it slides down off the
               // screen instead of vanishing under the sheet in one frame. See BottomChrome.
-              Box(Modifier.align(Alignment.BottomCenter)) { TabBar(tabRoute, tabs, nav::tab, chromeLook, player) { tabsHeight = it } }
+              if (wide) Box(Modifier.align(if (railLeft) Alignment.CenterStart else Alignment.CenterEnd).fillMaxHeight()) {
+                  TabRail(tabRoute, tabs, nav::tab, chromeLook, player, railLeft) { railWidth = it }
+              }
+              else Box(Modifier.align(Alignment.BottomCenter)) { TabBar(tabRoute, tabs, nav::tab, chromeLook, player) { tabsHeight = it } }
+              }
               // Top: less in the way of the now-playing bar; swipe or the X dismisses.
               SnackbarHost(
                   snackbar,

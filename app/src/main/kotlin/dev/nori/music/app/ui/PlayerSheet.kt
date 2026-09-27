@@ -78,6 +78,12 @@ class PlayerSheet(private val scope: CoroutineScope) {
 
     fun open() = settle(1f, 0f)
 
+    /** Open at once, no travel: the sheet as it was before the app was put back together. */
+    suspend fun openAtOnce() {
+        isOpen = true
+        progress.snapTo(1f)
+    }
+
     /**
      * The back gesture at [progress] (0..1): the sheet sinks with it, a fifth of the way at most - a hint
      * of where it is going, not the whole trip, which is the release's to make.
