@@ -6,9 +6,39 @@ hand. Versions follow [semantic versioning](https://semver.org).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-27
+
 ### Breaking
 
 - To update from 0.3.x, install 0.4.0 first; later versions no longer bring over its servers, settings and downloads
+
+### Added
+
+- Remote items show only the cloud, not the provider's name
+- Nori tells you when a newer release is out, and updates itself from inside the app
+- The queue opens on the song playing, with the songs already played dimmed above it
+- Lyrics sync listens to the centre of the stereo image, so panned guitars no longer read as singing
+- Headphones taken off pause at once, and can resume fading in when put back on
+- A graphic equalizer beside the parametric one, and a compressor, virtualizer, bass boost and volume boost
+- ReplayGain turns quiet songs up, levels to a loudness target and measures untagged songs
+- Crossfeed presets, no processing per output, crossfade curves, a noise gate, a 5-band EQ and loudness compensation
+- High quality output keeps the effects in float, 16-bit output is dithered, and a real resampler with a highest rate per output
+- The tab bar takes the cover's colours, and black background can keep them per page
+
+### Fixed
+
+- Undo after taking a song out of the queue puts it back again
+- Downloads say when they are still finding lyrics or analysing, and the time left counts down steadily
+- **build:** The Rust tests build and pass on macOS
+- The last lyric line dims once it is sung, and better-timed lyrics arriving mid-song no longer step back a line
+- A new album started on its first song shows that song as playing
+- **build:** The dev server keeps its database in a docker volume, as SQLite on a mac's shared folder corrupts it
+- Songs of one album played one after another never mix with AutoMix, whatever their tags say, each next song from its start
+- **build:** Tools/app.sh launches the app on emulators without hardware keys, where monkey refuses to run
+- Headphone play and pause keys follow the fade setting, no resume switch
+- A long beat-matched AutoMix no longer shows the next song early and replays its first lyric line
+- Keep albums gapless only for an album played or added whole, other songs of one album mix
+- A page started from a song row reads Pause at once, its origin is republished when the service sets the queue
 
 ## [0.4.0] - 2026-09-26
 
