@@ -16,6 +16,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.calculateStartPadding
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.ui.layout.layout
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.layout.wrapContentSize
@@ -35,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
@@ -140,8 +145,10 @@ fun HeroPage(
         // [coverSide]: on its side, the cover (or the page's own artwork) at this size, centred in the half,
         // so the half keeps the width its buttons need however short the screen is. Upright it is null and
         // the cover takes the full width, as ever.
-        val hero: @Composable (coverSide: androidx.compose.ui.unit.Dp?) -> Unit = { coverSide ->
+        // [showArt] false: the name, caption and buttons alone, for laying over a cover drawn apart (below).
+        val hero: @Composable (coverSide: androidx.compose.ui.unit.Dp?, showArt: Boolean) -> Unit = { coverSide, showArt ->
         Column(Modifier.fillMaxWidth()) {
+            if (showArt) {
             // On its side the cover is a card standing in its half, as on a shelf, not a sleeve bleeding to the
             // screen's edges: nothing for it to dissolve into above or beside it.
             if (coverUrl != null && coverSide != null) Box(
@@ -198,6 +205,7 @@ fun HeroPage(
                     scaleX = k; scaleY = k
                 }) { art() }
             } else Spacer(Modifier.statusBarsPadding().height(72.dp))
+            }
 
             // Nothing is painted here: the artwork above has already dissolved onto the page
             // colour, and the page colour is what the root is painted with.
@@ -272,13 +280,44 @@ fun HeroPage(
                 }
                 val side = minOf(half - Space.gutter * 2, maxHeight - top - WIDE_TOP - LocalChromeInset.current - 190.dp).coerceAtLeast(88.dp)
                 Row(Modifier.fillMaxSize()) {
-                    Column(Modifier.width(half).fillMaxHeight().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
-                        hero(side)
+                    // A cover fills its half as the player's sleeve fills its own: from the screen's very left
+                    // edge - under the camera's punch hole, which the app otherwise keeps pages clear of - and top,
+                    // going soft at its right edge, blurred as the sleeve does, into the page. The name, caption and
+                    // buttons stand on the right above the songs, as the player's controls stand beside its sleeve,
+                    // so nothing is written over the picture. A page with no cover of its own (a mix) keeps its
+                    // artwork as a tile beside its buttons.
+                    if (coverUrl != null) {
+                        val cutout = androidx.compose.foundation.layout.WindowInsets.displayCutout.asPaddingValues()
+                            .calculateStartPadding(androidx.compose.ui.unit.LayoutDirection.Ltr)
+                        Box(
+                            Modifier.width(half).fillMaxHeight().layout { measurable, constraints ->
+                                // Out over the strip the page is kept off, to the screen's edge.
+                                val extra = cutout.roundToPx()
+                                val placeable = measurable.measure(constraints.copy(minWidth = constraints.maxWidth + extra, maxWidth = constraints.maxWidth + extra))
+                                layout(constraints.maxWidth, placeable.height) { placeable.place(-extra, 0) }
+                            },
+                        ) {
+                            SoftSleeve(Modifier.fillMaxSize()) { Cover(coverUrl, 0.dp, Modifier.fillMaxSize(), radius = 0.dp) }
+                            // The shade under the status bar, faded out with the soft right edge so it does not end on a line.
+                            Box(
+                                Modifier.fillMaxSize().graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }.drawWithCache {
+                                    val shade = Brush.verticalGradient(0f to Color.Black.copy(alpha = stage.statusShade), stage.statusShadeTo to Color.Transparent)
+                                    val right = alphaGradient(stage.rubOut, Color.Black, size.width * (1f - MELT), size.width, across = true)
+                                    onDrawBehind {
+                                        drawRect(shade)
+                                        drawRect(right, blendMode = androidx.compose.ui.graphics.BlendMode.DstOut)
+                                    }
+                                },
+                            )
+                        }
+                                        } else Column(Modifier.width(half).fillMaxHeight().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                        hero(side, true)
                         Spacer(Modifier.height(LocalChromeInset.current))
                     }
                     LazyColumn(Modifier.weight(1f).fillMaxHeight(), state = list) {
                         // The first song level with the top of the cover beside it.
                         item(key = "hero-wide-top") { Spacer(Modifier.statusBarsPadding().height(WIDE_TOP)) }
+                        if (coverUrl != null) item(key = "hero-wide-head", contentType = "hero") { Column(Modifier.padding(bottom = 8.dp)) { hero(null, false) } }
                         content()
                         item(key = "tail") { Spacer(Modifier.height(Space.section + LocalChromeInset.current)) }
                     }
@@ -287,7 +326,7 @@ fun HeroPage(
                 item(key = "hero", contentType = "hero") {
                     // One block: artwork, then the wash it melts into, carrying the title and the buttons.
                     //
-                    hero(null)
+                    hero(null, true)
                 }
                 content()
                 item(key = "tail") { Spacer(Modifier.height(Space.section + LocalChromeInset.current)) }

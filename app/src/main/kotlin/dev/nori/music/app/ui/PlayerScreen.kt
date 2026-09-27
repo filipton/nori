@@ -1037,7 +1037,7 @@ private fun PanelFlight(
  * opened, when the lyrics closed. Now it leaves and comes back with the move itself.
  */
 @Composable
-private fun SoftSleeve(
+internal fun SoftSleeve(
     modifier: Modifier,
     sleeve: androidx.compose.ui.draw.CacheDrawScope.() -> Pair<Float, Float> = SLEEVE_ALL,
     blur: FloatReader = FloatReader { 1f },
