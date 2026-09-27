@@ -213,8 +213,13 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
         // Each shows as processing until its lyrics and analysis are over, or its time is up.
         main.post { main.removeCallbacks(expire); expire.run() }
         lyrics.launch {
-            lyricsInTurn.withLock { runCatching { clientOf().lyricsForDownloads(got) } }
-            main.post(::refreshMarks)
+            // One song at a time, each marked as its lookup ends: the rows and the notification count down.
+            lyricsInTurn.withLock {
+                for (id in got) {
+                    runCatching { clientOf().lyricsForDownloads(listOf(id)) }
+                    main.post(::refreshMarks)
+                }
+            }
             runCatching { clientOf().downloadsProcessed(got) }
             main.post(::refreshMarks)
         }
@@ -304,6 +309,7 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
             else if (next.remove(id) != null && DownloadsJni.held(id) != DownloadsJni.PENDING) progress.remove(id)
         }
         _marks.value = next
+        if (summaryWaits) summarise()
     }
 
     private fun unmark(ids: Collection<String>) {
@@ -468,18 +474,23 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
     }
 
     /**
-     * How the batch went, once it has. Its own notification id: the service takes the progress one with
-     * it when it stops, and would take this too if it shared the id. All done: a quiet line that goes
-     * by itself. Something failed: it stays, and a tap shows which.
+     * How the batch went, once its bytes are in. Its own notification id: the service takes the progress
+     * one with it when it stops, and would take this too if it shared the id. While saved songs are still
+     * finding their lyrics or being analysed it says so, with how it went underneath, and is asked again
+     * as the marks change ([summaryWaits]). All done: a quiet line that goes by itself. Something failed:
+     * it stays, and a tap shows which.
      */
     private fun summarise() {
-        val facts = IntArray(4)
-        val album = DownloadsJni.summary(facts) ?: return
+        val facts = IntArray(6)
+        val album = DownloadsJni.summary(facts)
+        if (album == null) { summaryWaits = false; return }
         val nm = context.getSystemService(NotificationManager::class.java) ?: return
         val res = context.resources
         val (done, failedCount) = facts[2] to facts[3]
+        val (lyricsLeft, analysingLeft) = facts[4] to facts[5]
+        val working = lyricsLeft > 0 || analysingLeft > 0
         val failed = failedCount > 0
-        val title = when (facts[0]) {
+        val result = when (facts[0]) {
             0 -> res.getQuantityString(R.plurals.summary_failed, failedCount, failedCount)
             1 -> res.getString(R.string.summary_album, album)
             else -> res.getQuantityString(R.plurals.summary_downloaded, done, done)
@@ -489,20 +500,40 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
             2 -> res.getString(R.string.summary_try_again)
             else -> null
         }
+        val title = when {
+            lyricsLeft > 0 -> res.getQuantityString(R.plurals.summary_finding_lyrics, lyricsLeft, lyricsLeft)
+            analysingLeft > 0 -> res.getQuantityString(R.plurals.summary_analysing, analysingLeft, analysingLeft)
+            else -> result
+        }
+        if (working == summaryWaits && title == lastSummaryTitle && working) return
+        summaryWaits = working
+        lastSummaryTitle = title
         val b = NotificationCompat.Builder(context, CHANNEL)
-            .setSmallIcon(if (failed) android.R.drawable.stat_notify_error else android.R.drawable.stat_sys_download_done)
             .setContentTitle(title)
-            .setContentText(text)
             .setContentIntent(openDownloads(context))
             .setAutoCancel(true)
             .setSilent(true)
             .setOnlyAlertOnce(true)
-        if (!failed) b.setTimeoutAfter(RESULT_TIMEOUT_MS)
+        if (working) {
+            b.setSmallIcon(android.R.drawable.stat_sys_download)
+                .setContentText(result)
+                .setProgress(0, 0, true)
+                .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+        } else {
+            b.setSmallIcon(if (failed) android.R.drawable.stat_notify_error else android.R.drawable.stat_sys_download_done)
+                .setContentText(text)
+            if (!failed) b.setTimeoutAfter(RESULT_TIMEOUT_MS)
+        }
         runCatching { nm.notify(DOWNLOAD_RESULT_NOTIFICATION, b.build()) }
     }
 
+    /** The batch's bytes are in but its songs are still processing: [summarise] again as the marks change. Main thread. */
+    private var summaryWaits = false
+    private var lastSummaryTitle = ""
+
     /** A new batch starting takes the last one's result away: the progress notification replaces it. */
     private fun cancelResult() {
+        summaryWaits = false
         context.getSystemService(NotificationManager::class.java)?.cancel(DOWNLOAD_RESULT_NOTIFICATION)
     }
 
@@ -565,8 +596,9 @@ internal object DownloadsJni {
      */
     @JvmStatic @FastNative external fun noticeFacts(out: LongArray): String?
     /**
-     * How the batch went, `[title, text, done, failed]` into [out] (title 0 failed, 1 an album, 2
-     * downloaded; text 0 none, 1 some failed, 2 try again), and the album; null when there is nothing to say.
+     * How the batch went, `[title, text, done, failed, lyrics, analysing]` into [out] (title 0 failed, 1 an
+     * album, 2 downloaded; text 0 none, 1 some failed, 2 try again; then the saved songs still finding
+     * lyrics, and those only being analysed), and the album; null when there is nothing to say.
      */
     @JvmStatic @FastNative external fun summary(out: IntArray): String?
 }

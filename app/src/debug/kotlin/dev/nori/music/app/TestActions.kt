@@ -134,6 +134,8 @@ object TestActions {
                 nori.outputs.testUsb(if (off) null else ref.substringBefore('@').ifEmpty { "Mock DAC" })
             }
             "download" -> actions.download(songs)
+            // "undownload <ref>": the song menu's "Remove download(s)", so a check can download the same album again.
+            "undownload" -> actions.removeDownloads(songs.map { it.id })
             // Everything not yet downloaded is dropped; finished downloads stay.
             "canceldownloads" -> actions.cancelAllDownloads()
             "star" -> songs.firstOrNull()?.let { actions.star(it, !it.starred) }

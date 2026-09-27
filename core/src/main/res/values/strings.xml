@@ -23,6 +23,15 @@
     </plurals>
     <string name="summary_some_failed">%1$d downloaded · tap to see what failed</string>
     <string name="summary_try_again">Tap to try again</string>
+    <!-- The batch's songs are saved and some are still being worked on; how it went is the line below. -->
+    <plurals name="summary_finding_lyrics">
+        <item quantity="one">Finding lyrics for %d song…</item>
+        <item quantity="other">Finding lyrics for %d songs…</item>
+    </plurals>
+    <plurals name="summary_analysing">
+        <item quantity="one">Analysing %d song…</item>
+        <item quantity="other">Analysing %d songs…</item>
+    </plurals>
 
     <!-- The downloads screen's lines. -->
     <string name="downloads_active">%1$d downloading</string>
