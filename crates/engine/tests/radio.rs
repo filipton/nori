@@ -28,6 +28,13 @@ fn ffmpeg() -> bool {
     Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
 }
 
+/// Whether this ffmpeg has `encoder` built in: Homebrew's has no libvorbis, and its own Vorbis encoder
+/// makes no mono.
+fn encodes(encoder: &str) -> bool {
+    Command::new("ffmpeg").args(["-hide_banner", "-encoders"]).output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().any(|w| w == encoder))
+}
+
 /// A directory of the call's own, gone with the guard.
 fn dir() -> nori_testdir::TempDir {
     nori_testdir::TempDir::new("radio")
@@ -262,7 +269,7 @@ fn a_station_plays_at_its_own_pitch_whatever_its_rate_and_channels() {
     let aac = ["-c:a", "aac", "-b:a", "64k"];
     let vorbis = ["-c:a", "libvorbis", "-q:a", "3"];
     let opus = ["-c:a", "libopus", "-b:a", "48k"];
-    let stations: Vec<(&str, Vec<u8>, u32, usize)> = vec![
+    let mut stations: Vec<(&str, Vec<u8>, u32, usize)> = vec![
         ("MP3 44.1 kHz stereo", mp3(1000, 4.0, 44_100, 2), 44_100, 2),
         ("MP3 48 kHz stereo", mp3(1000, 4.0, 48_000, 2), 48_000, 2),
         ("MP3 32 kHz stereo", mp3(1000, 4.0, 32_000, 2), 32_000, 2),
@@ -270,9 +277,17 @@ fn a_station_plays_at_its_own_pitch_whatever_its_rate_and_channels() {
         ("MP3 24 kHz mono", mp3(1000, 4.0, 24_000, 1), 24_000, 1),
         ("AAC 48 kHz stereo", tone(1000, 4.0, 48_000, 2, &aac, "adts"), 48_000, 2),
         ("AAC 22.05 kHz mono", tone(1000, 4.0, 22_050, 1, &aac, "adts"), 22_050, 1),
-        ("Vorbis 22.05 kHz mono", tone(1000, 4.0, 22_050, 1, &vorbis, "ogg"), 22_050, 1),
-        ("Opus mono", tone(1000, 4.0, 48_000, 1, &opus, "ogg"), 48_000, 1),
     ];
+    if encodes("libvorbis") {
+        stations.push(("Vorbis 22.05 kHz mono", tone(1000, 4.0, 22_050, 1, &vorbis, "ogg"), 22_050, 1));
+    } else {
+        eprintln!("no libvorbis: the Vorbis station skipped");
+    }
+    if encodes("libopus") {
+        stations.push(("Opus mono", tone(1000, 4.0, 48_000, 1, &opus, "ogg"), 48_000, 1));
+    } else {
+        eprintln!("no libopus: the Opus station skipped");
+    }
     for (what, bytes, rate, channels) in stations {
         let (f, heard) = play(bytes, 3.0);
         assert_eq!((f.rate, f.channels), (rate, channels), "{what}: the card is opened at the station's own format");
@@ -295,8 +310,8 @@ fn a_station_joined_in_the_middle_of_a_frame_plays_at_its_own_pitch() {
 
 #[test]
 fn a_chained_ogg_station_plays_on_into_its_next_song_at_its_own_pitch() {
-    if !ffmpeg() {
-        eprintln!("no ffmpeg: skipped");
+    if !ffmpeg() || !encodes("libvorbis") {
+        eprintln!("no ffmpeg with libvorbis: skipped");
         return;
     }
     // An Ogg station starts a new logical stream, headers and all, with every song, and the next may be

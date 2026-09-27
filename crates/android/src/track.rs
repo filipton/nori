@@ -1206,6 +1206,11 @@ fn said_small(frames: u64, asked: u64, rate: u32) {
 
 /// The calling thread at Android's `THREAD_PRIORITY_AUDIO`, as `Process.setThreadPriority` sets it (a
 /// nice value, which an app may lower this far).
+/// Elsewhere (the tests on a Mac) there is no thread id to give a nice value to, and nothing to do.
+#[cfg(not(any(target_os = "android", target_os = "linux")))]
+fn audio_priority(_who: &str) {}
+
+#[cfg(any(target_os = "android", target_os = "linux"))]
 fn audio_priority(who: &str) {
     const THREAD_PRIORITY_AUDIO: libc::c_int = -16;
     // SAFETY: plain system calls on the calling thread.

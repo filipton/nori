@@ -40,5 +40,8 @@ fn the_decoders_give_the_samples_they_gave() {
     let mp3 = Audio::mp3(&testdata("tone440.mp3")).decode_all();
     let opus = Audio::opus(&testdata("tone440.opus")).decode_all();
     assert_eq!((mp3.len(), opus.len()), (91_102, 97_296));
-    assert_eq!((fingerprint(&mp3), fingerprint(&opus)), (11_834_309_614_667_511_277, 5_998_433_017_906_850_831));
+    // Opus is decoded in floating point, and macOS's maths library rounds a few of its samples
+    // differently from glibc's: each has its own fingerprint, held as exactly as the other.
+    let opus_print = if cfg!(target_os = "macos") { 9_238_662_167_881_183_963 } else { 5_998_433_017_906_850_831 };
+    assert_eq!((fingerprint(&mp3), fingerprint(&opus)), (11_834_309_614_667_511_277, opus_print));
 }
