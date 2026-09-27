@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
     <!-- The perf build installs beside the normal app (applicationIdSuffix .perf) and says which it is. -->
-    <application android:label="nori perf" tools:replace="android:label">
+    <application android:label="nori dev" tools:replace="android:label">
         <!-- Starts the recorder with the process; see PerfStart. -->
         <provider android:name="dev.nori.music.app.perf.PerfStart" android:authorities="${applicationId}.perfstart" android:exported="false" />
     </application>

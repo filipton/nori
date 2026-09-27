@@ -335,7 +335,7 @@ key when `keystore.properties` is there (see below), otherwise with the Android 
 
 `./gradlew :app:assemblePerf -PrustTargets=arm64-v8a` builds the **perf** build: a release build with
 a recorder of battery, CPU, wakeups, allocations, memory and frames and a Performance page in
-settings, installed beside the normal app as "nori perf". See `docs/perf-build.md`. Its code lives in
+settings, installed beside the normal app as "nori dev". See `docs/perf-build.md`. Its code lives in
 `app/src/perf` (the recorder) and `app/src/bench` (the benchmarks, shared with the debug build), and
 reaches the app only through `PerfHooks`, which is empty in every other build.
 

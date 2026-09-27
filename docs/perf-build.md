@@ -5,7 +5,7 @@ battery, CPU, wakeups, allocations, memory and frames, with no adb and no comput
 results are on a Performance page in settings, and a plain-text report can be shared from there.
 
 It is minified and not debuggable, like a release, so what it measures is what a release costs. It
-installs beside the normal app (id `dev.nori.music.perf`, named "nori perf"), with its own sign-in,
+installs beside the normal app (id `dev.nori.music.perf`, named "nori dev"), with its own sign-in,
 settings and downloads.
 
 ## Building and installing
@@ -22,7 +22,7 @@ phone either way:
 - send the file to the phone (a chat to yourself, a cloud drive, a USB cable) and open it there; Android
   asks once to allow installing from that app.
 
-Open nori perf, sign in, and the recorder is already running: it starts with the app's process.
+Open nori dev, sign in, and the recorder is already running: it starts with the app's process.
 Settings > Performance is the page.
 
 ## What it records
