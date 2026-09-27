@@ -238,7 +238,7 @@
     <string name="settings_wallpaper">Wallpaper colours</string>
     <string name="settings_wallpaper_detail">Accent colour from your wallpaper.</string>
     <string name="settings_cover_colours">Colours from the cover</string>
-    <string name="settings_cover_colours_detail">Pages take their colours from the artwork.</string>
+    <string name="settings_cover_colours_detail">Pages take their colours from the artwork, and the tab bar from what is playing.</string>
     <string name="settings_blur">Blur the bottom of the cover</string>
     <string name="settings_blur_detail">The player\'s artwork softens into the page.</string>
     <string name="settings_moving_covers">Moving covers</string>

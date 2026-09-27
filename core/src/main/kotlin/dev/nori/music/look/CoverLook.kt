@@ -122,6 +122,12 @@ object CoverLook {
     @JvmStatic @CriticalNative external fun seekPaceFrom(h: Long): Long
     @JvmStatic @CriticalNative external fun seekPaceFade(h: Long): Float
 
+    /**
+     * [color] moved lighter or darker in its own hue until it reads on [background] (`nori_look::cover::readable`),
+     * else [fallback]. ARGB ints.
+     */
+    @JvmStatic @CriticalNative external fun readable(color: Int, background: Int, fallback: Int): Int
+
     /** Which glyph the play button shows (`nori-core stage::transport_glyph`): 0 play, 1 pause, 2 spinner. */
     @JvmStatic @CriticalNative external fun transportGlyph(playing: Boolean, buffering: Boolean, waited: Boolean): Int
 

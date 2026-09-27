@@ -27,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -106,11 +107,11 @@ fun BottomChrome(player: PlayerViewModel, actions: ActionsViewModel, onOpenPlaye
  * progress so nothing recomposes while it moves. Slid away, they are out of reach as well as sight.
  */
 @Composable
-fun TabBar(route: String?, tabs: List<Tab>, onTab: (String) -> Unit, look: Look, onHeight: (androidx.compose.ui.unit.Dp) -> Unit) {
-    val scheme = MaterialTheme.colorScheme
+fun TabBar(route: String?, tabs: List<Tab>, onTab: (String) -> Unit, look: Look, player: PlayerViewModel, onHeight: (androidx.compose.ui.unit.Dp) -> Unit) {
     val slab = look.color(CoverLook.CHROME_SLAB)
     val content = look.color(CoverLook.CHROME_CONTENT)
     val edge = look.color(CoverLook.CHROME_EDGE)
+    val accent = rememberPlayingAccent(player, slab)
     val search = tabs.firstOrNull { it.route == "search" }
     val rest = tabs.filter { it.route != "search" }
     val sheet = LocalPlayerSheet.current
@@ -134,7 +135,7 @@ fun TabBar(route: String?, tabs: List<Tab>, onTab: (String) -> Unit, look: Look,
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 5.dp),
                     Arrangement.SpaceEvenly, Alignment.CenterVertically,
-                ) { rest.forEach { t -> TabButton(t, selected = route == t.route, content = content) { onTab(t.route) } } }
+                ) { rest.forEach { t -> TabButton(t, selected = route == t.route, content = content, accent = accent) { onTab(t.route) } } }
             }
             if (search != null) Surface(
                 onClick = { onTab(search.route) }, shape = CircleShape, color = slab, shadowElevation = 12.dp,
@@ -142,7 +143,7 @@ fun TabBar(route: String?, tabs: List<Tab>, onTab: (String) -> Unit, look: Look,
                 modifier = Modifier.size(58.dp).semantics { contentDescription = search.label },
             ) {
                 Box(Modifier.fillMaxSize(), Alignment.Center) {
-                    Icon(search.icon, null, Modifier.size(25.dp), tint = if (route == search.route) scheme.primary else content)
+                    Icon(search.icon, null, Modifier.size(25.dp), tint = if (route == search.route) accent else content)
                 }
             }
         }
@@ -185,15 +186,42 @@ fun rememberChromeLook(): Look {
     return live
 }
 
+/**
+ * The current tab's colour. With the cover's colours on, it is the accent of what is playing - the one the
+ * player's own buttons wear - moved until it reads on the bar ([CoverLook.readable]); the bar itself stays
+ * neutral (see [rememberChromeLook]), so only the one lit tab follows the music. The theme's own accent
+ * when nothing is playing, for a provider's song (whose cover is never measured) and with the setting off.
+ * It changes with the song in the span the chrome's own colours take.
+ */
+@Composable
+private fun rememberPlayingAccent(player: PlayerViewModel, slab: Color): Color {
+    val theme = MaterialTheme.colorScheme.primary
+    val settings: dev.nori.music.app.vm.SettingsViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+    val prefs by settings.prefs.collectAsStateWithLifecycle()
+    val state by player.state.collectAsStateWithLifecycle()
+    val dark = when (prefs.theme) {
+        dev.nori.music.ffi.settings.ThemeMode.SYSTEM -> androidx.compose.foundation.isSystemInDarkTheme()
+        dev.nori.music.ffi.settings.ThemeMode.DARK -> true
+        dev.nori.music.ffi.settings.ThemeMode.LIGHT -> false
+    }
+    // The same cover and key the mini player warms, so the colours are already worked out by the time a
+    // song starts.
+    val url = if (prefs.coverColors) player.cover(state.current?.coverArt, CoverSize.ROW)?.takeUnless(::isProviderCover) else null
+    val seed = rememberCoverPalette(url, dark, prefs.amoled)?.look?.get(CoverLook.ACCENT)
+    val target = remember(seed, slab, theme) {
+        if (seed == null) theme else Color(CoverLook.readable(seed, slab.toArgb(), theme.toArgb()))
+    }
+    return androidx.compose.animation.animateColorAsState(target, androidx.compose.animation.core.tween(420), label = "tab accent").value
+}
+
 data class Tab(val route: String, val label: String, val icon: ImageVector)
 
 @Composable
-private fun TabButton(tab: Tab, selected: Boolean, content: Color, onClick: () -> Unit) {
-    val scheme = MaterialTheme.colorScheme
+private fun TabButton(tab: Tab, selected: Boolean, content: Color, accent: Color, onClick: () -> Unit) {
     // Apple marks the current tab twice over: the accent colour on the glyph, and a plain lighter patch
     // behind it - light grey on their white bar, so the equivalent here is a little of the bar's own
     // text colour. Tinting that patch with the accent is what made it read as a Material pill.
-    val colour = if (selected) scheme.primary else content
+    val colour = if (selected) accent else content
     val press = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     // No patch behind anything. Where you are is the accent colour, a bold label and a slightly larger
     // glyph - every shape drawn behind the current tab, circle or rectangle, ended up reading as

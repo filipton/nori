@@ -656,8 +656,10 @@ fn bottom_average(pixels: &[u32], w: usize, h: usize) -> Foot {
     Foot { colour, solid: close as f32 >= n as f32 * 0.85, strip: (h - top) as f32 / h as f32, above }
 }
 
-/// Pushes a colour lighter or darker in its own hue until it has contrast against the page.
-fn readable(color: u32, background: u32, fallback: u32) -> u32 {
+/// Pushes a colour lighter or darker in its own hue until it has contrast against the page, or gives
+/// `fallback` when no step of it does. Also how the tab bar makes the playing cover's accent readable on
+/// its own slab, which is not the cover's page.
+pub fn readable(color: u32, background: u32, fallback: u32) -> u32 {
     if calculate_contrast(color, background) >= 3.2 {
         return color;
     }
@@ -677,6 +679,16 @@ fn readable(color: u32, background: u32, fallback: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_accent_is_moved_until_it_reads_on_another_background() {
+        let (white, black, fallback) = (0xFFFF_FFFF, 0xFF12_1212, 0xFF67_50A4);
+        assert_eq!(readable(0xFF1E_5AA0, white, fallback), 0xFF1E_5AA0, "already readable, kept");
+        let on_white = readable(0xFFFF_E08A, white, fallback);
+        let on_black = readable(0xFF20_1060, black, fallback);
+        assert!(calculate_contrast(on_white, white) >= 3.2 && calculate_contrast(on_black, black) >= 3.2);
+        assert_ne!((on_white, on_black), (fallback, fallback), "moved in its own hue, not given up");
+    }
 
     const S: usize = 160;
 

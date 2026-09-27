@@ -32,6 +32,7 @@ pub(crate) static COVER: Class = Class {
         native!(c"seekPaceFrom", c"(J)J", seek_pace_from),
         native!(c"seekPaceFade", c"(J)F", seek_pace_fade),
         native!(c"transportGlyph", c"(ZZZ)I", transport_glyph),
+        native!(c"readable", c"(III)I", readable),
         native!(c"heroButtons", c"(ZZZZZZ)I", hero_buttons),
         native!(c"plain", c"([I[I)V", plain),
         native!(c"tones", c"(IZ[I)V", tones),
@@ -250,6 +251,12 @@ extern "system" fn amoled(env: JNIEnv, _: JClass, out: JIntArray) {
 extern "system" fn seek_times(dragging: jboolean, drag: jfloat, held_ms: jlong, position_ms: jlong, duration_ms: jlong) -> jlong {
     let t = nori_core::stage::seek_times(dragging != 0, drag, held_ms, position_ms, duration_ms);
     ((t.at_s.clamp(0, u32::MAX as i64)) << 32) | t.left_s.clamp(0, u32::MAX as i64)
+}
+
+/// [`nori_look::cover::readable`]: `color` moved in its own hue until it reads on `background`, else
+/// `fallback`. ARGB ints in and out.
+extern "system" fn readable(color: jint, background: jint, fallback: jint) -> jint {
+    nori_look::cover::readable(color as u32, background as u32, fallback as u32) as jint
 }
 
 /// Which glyph the play button shows (`stage::transport_glyph`), as its place in `TransportGlyph`: 0 play,
