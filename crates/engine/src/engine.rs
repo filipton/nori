@@ -75,11 +75,15 @@ pub struct Settings {
     /// The crossfade (s, 0 off) and AutoMix: transitions touch the samples, so offload stands down.
     pub crossfade_s: i32,
     pub auto_mix: bool,
+    /// The most ReplayGain turns a song up, dB (`nori_player::gain`); 0 while it only turns songs down
+    /// or is off. Over 0, wherever the samples may be touched, songs are read as floats and the limiter
+    /// runs behind them, so a song turned up cannot clip; such a song keeps off the output's decoder.
+    pub gain_boost_db: f32,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { sound: Sound::default(), speed: 1.0, pitch: 1.0, skip_silence: false, fade_ms: 0, hi_res: false, offload: false, crossfade_s: 0, auto_mix: false }
+        Settings { sound: Sound::default(), speed: 1.0, pitch: 1.0, skip_silence: false, fade_ms: 0, hi_res: false, offload: false, crossfade_s: 0, auto_mix: false, gain_boost_db: 0.0 }
     }
 }
 
@@ -101,6 +105,8 @@ struct Applied {
     untouched: bool,
     bit_perfect: bool,
     float: bool,
+    /// The most a song is turned up, linear (1: not at all).
+    gain_max: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1022,7 +1028,8 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         let Worker { p, off, .. } = self;
         let Some(off) = off.as_mut() else { return };
         let app = &mut p.app;
-        let step = off.turn(now, &mut p.tracks, &p.queue, &mut |i, id| app.gain(i, id));
+        let max = p.gain_max;
+        let step = off.turn(now, &mut p.tracks, &p.queue, &mut |i, id| app.gain(i, id).min(max));
         let Step::ToPcm { index, ms, refused } = step else { return };
         if refused {
             self.tear_downs += 1;
@@ -1056,16 +1063,18 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             let id = self.p.id_at(next);
             self.probe = Some((next, self.p.tracks.open_packets(&id, 0, true), None));
         }
+        if self.probe.as_mut().is_some_and(|(_, o, k)| k.is_none() && o.as_mut().is_ok_and(|r| !r.ready())) {
+            return;
+        }
+        // Asked once, when the song is open and is to be looked at.
+        let level = if self.probe.as_ref().is_some_and(|p| p.2.is_none()) { self.gain_of(next) } else { 1.0 };
         let (_, opened, known) = self.probe.as_mut().expect("set above");
         if known.is_none() {
             let off = self.off.as_mut().expect("checked");
             let why = match opened {
                 Ok(r) => {
-                    if !r.ready() {
-                        return;
-                    }
                     let album = off.in_album(next, &self.p.tracks, &self.p.queue);
-                    off.refuses(r, album)
+                    off.refuses(r, album, level)
                 }
                 Err(_) => Some(OnCpu::Unread),
             };
@@ -1421,22 +1430,27 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         let state = OutputState { hi_res, bit_perfect, usb: self.facts.usb, offload_refused: self.offload_refused };
         let policy = audio_policy(&prefs, &state);
         self.blocked = if self.off.is_some() { offload_blocked(&prefs, &state) } else { Some("the output does not decode songs itself") };
-        let now = Applied {
-            sound: if policy.untouched { Sound::default() } else { s.sound.clone() },
-            speed: (s.speed, s.pitch),
-            skip_silence: policy.skip_silence,
-            untouched: policy.untouched,
-            bit_perfect,
-            float: hi_res,
-        };
+        // A song ReplayGain turns up is put on its samples as floats, the limiter behind it: only where
+        // the samples may be touched. The limiter does not count as the sound chain being on, which
+        // would keep every song off the output's decoder: only a song turned up keeps off it.
+        let gain_max = if policy.untouched || !(s.gain_boost_db > 0.0) { 1.0 } else { 10f32.powf(s.gain_boost_db.min(nori_player::gain::BOOST_MAX_DB) / 20.0) };
+        let mut sound = if policy.untouched { Sound::default() } else { s.sound.clone() };
+        sound.limiter |= gain_max > 1.0;
+        let now = Applied { sound, speed: (s.speed, s.pitch), skip_silence: policy.skip_silence, untouched: policy.untouched, bit_perfect, float: hi_res, gain_max };
         self.p.sink.track.set_float(hi_res);
         // The player starts out with the defaults' sound; the output's say is given once at least.
         let first = self.applied.is_none();
-        let was = self.applied.take().unwrap_or(Applied { sound: Sound::default(), speed: (1.0, 1.0), skip_silence: false, untouched: false, bit_perfect: false, float: false });
+        let was = self.applied.take().unwrap_or(Applied { sound: Sound::default(), speed: (1.0, 1.0), skip_silence: false, untouched: false, bit_perfect: false, float: false, gain_max: 1.0 });
+        if first || was.gain_max != now.gain_max {
+            // Songs turned up are read as floats, which go over full scale until the limiter holds them.
+            self.p.tracks.encoding = if hi_res || bit_perfect || gain_max > 1.0 { Encoding::Float } else { Encoding::Pcm16 };
+            self.p.gain_max = gain_max;
+            self.gain_changed |= !first;
+        }
         if first || was.untouched != now.untouched || was.bit_perfect != now.bit_perfect {
             // Bit-perfect: every song decoded to float, which carries 16 and 24 bits exactly, and handed
             // to the device at its own depth.
-            self.p.tracks.encoding = if hi_res || bit_perfect { Encoding::Float } else { Encoding::Pcm16 };
+            self.p.tracks.encoding = if hi_res || bit_perfect || gain_max > 1.0 { Encoding::Float } else { Encoding::Pcm16 };
             self.p.sink.track.exact = policy.untouched;
             self.p.gain_off = bit_perfect;
             // Wherever the samples may be touched the equalizer stays in, flat and skipped while nothing
@@ -1593,12 +1607,13 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             return;
         }
         let (i, opened, resound) = self.entering.take().expect("checked");
+        let level = self.gain_of(i);
         let Worker { p, off, .. } = self;
         let Some(off) = off.as_mut() else { return };
         let why = match &opened {
             Ok(r) => {
                 let joins = off.in_album(i, &p.tracks, &p.queue);
-                off.refuses(r, joins)
+                off.refuses(r, joins, level)
             }
             Err(_) => Some(OnCpu::Unread),
         };
@@ -2137,23 +2152,36 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         match self.off.as_ref() {
             Some(o) if o.active() => {
                 let level = self.current().map_or(1.0, |i| self.gain_of(i));
+                if !nori_player::gain::offload_allows(level) {
+                    // Turned up now: the song needs its samples, and the CPU takes it over where the ear is.
+                    if let Some(o) = self.off.as_mut() {
+                        o.on_cpu = Some(OnCpu::TurnedUp);
+                    }
+                    let playing = self.state == State::Playing && self.pause_at.is_none();
+                    if !(playing && !self.facts.usb && !self.offload_refused && self.leave_ahead()) {
+                        self.leave_now();
+                    }
+                    return;
+                }
                 if let Some(o) = self.off.as_mut() {
                     o.set_level(level);
                 }
             }
             _ => {
                 self.p.gain_changed();
-                // The ring's music was turned where it lies; what the device took of it cannot be.
-                if self.p.sink.track.latency_us() > HELD_US {
+                // The ring's music was turned where it lies; what the device took of it cannot be. Nor
+                // may music already through the limiter be turned up where it lies: made again.
+                if self.p.sink.track.latency_us() > HELD_US || self.p.gain_max > 1.0 {
                     self.resound_soon();
                 }
             }
         }
     }
 
+    /// Song `i`'s gain, as far as songs may be turned up now.
     fn gain_of(&mut self, i: usize) -> f32 {
         let id = self.p.id_at(i);
-        self.p.app.gain(i, &id)
+        self.p.app.gain(i, &id).min(self.p.gain_max)
     }
 
     fn check(&mut self) {

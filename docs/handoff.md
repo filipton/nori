@@ -12,6 +12,21 @@ Apple's own App Store screenshots and the differences closed. What is left is li
 
 ## Recently closed
 
+- **ReplayGain turns quiet songs up, to a loudness target.** `nori_player::gain` works out every song's gain:
+  its tag (track, album or auto), else the server's `fallbackGain`, else AutoMix's measured loudness ("Measure
+  songs without tags"), else the untagged level; moved by `target − (−18)` (ReplayGain 2.0 tags are relative to
+  −18 LUFS, R128 ones to −23: `r128_as_replay_gain_db`). At or under 0 dB it is a volume, as before (peak guard
+  included, offload kept). Over 0 dB, up to the cap (`gainBoostDb`, 0 by default), nori-engine reads songs as
+  floats (`tracks.encoding`), puts the limiter in the chain (not counted as "sound on", so offload stays for
+  other songs), and the transition engine turns the song up before the mix; 16-bit buffers are never turned up.
+  A song turned up keeps off the audio chip (`OnCpu::TurnedUp`, also when a settings change turns up the song
+  the chip plays: the CPU takes it where the ear is). Where it comes from: Navidrome sends R128_* tags already
+  converted (+5 dB); nori reads no tags from files itself. **Not yet heard on a phone.** AutoMix's `lufs` is
+  BS.1770 of the mid `(L+R)/2` only; `stereo_loudness_of_mid` adds 3.01 dB, which reads a wide song up to 3 dB
+  quiet (0.4 dB for a side 10 dB down). Exact BS.1770 needs the side K-weighted too (one more filter per sample,
+  summed per 100 ms block before the gating) and a new column or analysis version. Songs are measured only
+  with AutoMix on.
+
 - **The lyrics sync check hears the middle of the stereo image.** The vocal curve (nori-player automix/vocal.rs)
   of a stereo song is measured on its centre: the side rides in the analysis FFT's imaginary part, and each
   voice-band bin counts by how alike the channels are there (nothing under 0.6), so panned guitars drop out. On

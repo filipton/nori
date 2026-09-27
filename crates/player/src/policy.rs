@@ -121,33 +121,14 @@ pub struct GainTags {
     pub album_peak: Option<f32>,
 }
 
-/// The volume a track plays at under ReplayGain, 0..1: attenuation only, so it can be applied as the
-/// player's volume (free, and it survives offload). `tags` is `None` for a track with no tags at all,
-/// which plays at `untagged_db`; `in_album_run` is whether it sits inside an album played in order.
-/// Radio and a bit-perfect output play at full volume: the one has no track, the other must not be
-/// touched.
+/// The volume a track plays at under ReplayGain, 0..1: attenuation only at ReplayGain's own -18 LUFS, so
+/// it can be applied as the player's volume (free, and it survives offload). `tags` is `None` for a track
+/// with no tags at all, which plays at `untagged_db`; `in_album_run` is whether it sits inside an album
+/// played in order. Radio and a bit-perfect output play at full volume: the one has no track, the other
+/// must not be touched. Targets and positive gain: [`crate::gain::song_gain`].
 pub fn replay_gain(mode: GainMode, tags: Option<&GainTags>, in_album_run: bool, preamp_db: f32, untagged_db: f32, radio: bool, bit_perfect: bool) -> f32 {
-    if mode == GainMode::Off || radio || bit_perfect {
-        return 1.0;
-    }
-    let album = match mode {
-        GainMode::Album => true,
-        GainMode::Auto => in_album_run,
-        _ => false,
-    };
-    let (db, peak) = match tags {
-        None => (untagged_db, 0.0),
-        Some(g) => {
-            let gain = if album { g.album_gain.or(g.track_gain) } else { g.track_gain.or(g.album_gain) };
-            let peak = if album { g.album_peak.or(g.track_peak) } else { g.track_peak.or(g.album_peak) };
-            (gain.unwrap_or(untagged_db) + preamp_db, peak.unwrap_or(0.0))
-        }
-    };
-    let mut v = 10f32.powf(db / 20.0);
-    if peak > 0.0 {
-        v = v.min(1.0 / peak);
-    }
-    v.clamp(0.0, 1.0)
+    let song = crate::gain::SongLoudness { tags: tags.copied(), ..Default::default() };
+    crate::gain::song_gain(&crate::gain::GainPrefs::attenuating(mode, preamp_db, untagged_db), &song, in_album_run, radio, bit_perfect)
 }
 
 /// Where a volume fade from `from` to `to` stands at `t` (0..1) of its length.

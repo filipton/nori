@@ -134,6 +134,8 @@ pub enum OnCpu {
     /// The platform's count of what the track played made no sense (it could not be read, or ran ahead of
     /// the clock), or it would not take a song's end of stream: in words.
     Head(String),
+    /// ReplayGain turns it up: a volume cannot, so its samples are turned up, the limiter behind them.
+    TurnedUp,
 }
 
 impl OnCpu {
@@ -152,6 +154,7 @@ impl OnCpu {
             OnCpu::WouldNotOpen(c) => format!("the offloaded track for {} would not open", c.coding.name()),
             OnCpu::Failed => "the offloaded track failed".into(),
             OnCpu::Head(why) => format!("the offloaded track could not be followed: {why}"),
+            OnCpu::TurnedUp => "ReplayGain turns it up, which needs its samples and the limiter".into(),
         }
     }
 }
@@ -533,9 +536,13 @@ impl Offload {
     /// requires gapless support for every song with a delay or padding; here only an album's songs in
     /// order need it, and between unrelated songs the encoder's few milliseconds (576 samples of delay
     /// and about a thousand of padding in an MP3) are near silence where a gap is expected anyway.
-    pub(crate) fn refuses(&mut self, r: &Demuxed, album: bool) -> Option<OnCpu> {
+    /// A song ReplayGain turns up (`level` over 1) needs its samples: it is not the output's either.
+    pub(crate) fn refuses(&mut self, r: &Demuxed, album: bool, level: f32) -> Option<OnCpu> {
         if r.error().is_some() {
             return Some(OnCpu::Unread);
+        }
+        if !nori_player::gain::offload_allows(level) {
+            return Some(OnCpu::TurnedUp);
         }
         let Some(s) = r.coded() else { return Some(OnCpu::Compression(r.compression().unwrap_or("an unknown compression"))) };
         let (coded, delay, padding) = (s.coded, s.delay, s.padding);
@@ -1173,7 +1180,9 @@ impl Offload {
             return to_pcm;
         };
         let album = self.in_album(i, tracks, queue);
-        if let Some(why) = self.refuses(&r, album) {
+        let id = queue.read(|q| q.ids()[i].clone());
+        let level = gain(i, &id);
+        if let Some(why) = self.refuses(&r, album, level) {
             self.on_cpu = Some(why);
             return to_pcm;
         }
@@ -1203,12 +1212,10 @@ impl Offload {
             let said = self.out.said(coded).map(|s| format!(" ({s})")).unwrap_or_default();
             format!("its encoder delay of {} and padding of {} heard as a moment of near silence at its ends: no song of its album joins it, and the output does not do gapless offload{said}", song.delay, song.padding)
         });
-        let id = queue.read(|q| q.ids()[i].clone());
         // A song started part way in has no delay left to cut.
         let delay = if song.from_frame > 0 { 0 } else { song.delay };
         self.out.delay_padding(delay, song.padding);
         let from_ms = song.from_frame * 1000 / coded.rate.max(1) as i64;
-        let level = gain(i, &id);
         self.level = level;
         self.seq += 1;
         self.placed.push_back(Placed { index: i, id, start: 0, frames: None, from_ms, level, seq: self.seq });
@@ -1327,7 +1334,10 @@ impl Offload {
                 }
                 Err(_) => None,
             };
-            let joins = self.open.is_some_and(|(c, gapless, _)| gapless && song.as_ref().is_some_and(|s| s.coded == c));
+            let id = queue.read(|q| q.ids()[n].clone());
+            let level = gain(n, &id);
+            // A song turned up is not for this output either (`refuses` says so once the track is out).
+            let joins = nori_player::gain::offload_allows(level) && self.open.is_some_and(|(c, gapless, _)| gapless && song.as_ref().is_some_and(|s| s.coded == c));
             let Some(song) = song.filter(|_| joins) else {
                 // Another format, or not for this output: the track plays out, and then it is decided.
                 self.next = None;
@@ -1344,8 +1354,6 @@ impl Offload {
             let (_, opened) = self.next.take().expect("checked");
             let r = opened.expect("checked");
             self.out.delay_padding(song.delay, song.padding);
-            let id = queue.read(|q| q.ids()[n].clone());
-            let level = gain(n, &id);
             let start = self.written_frames;
             self.seq += 1;
             let from_ms = song.from_frame * 1000 / song.coded.rate.max(1) as i64;

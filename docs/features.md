@@ -132,8 +132,8 @@ owner's DAC), 11 backup, automation API, shortcuts, widgets, Auto nodes, logs, W
 | Skip silence; only for audiobooks | x | | | yes | |
 | ReplayGain track / album | x | x | x | yes | |
 | ReplayGain automatic (album when queue is one album), fallback gain for untagged, clipping guard | x | x | x | yes | done |
-| ReplayGain with positive gain (needs DSP path) | x | | x | | add: through the Rust chain with a limiter when DSP is already on |
-| Loudness normalisation to LUFS target | x | | | | skip: needs R128 tags the server does not expose |
+| ReplayGain with positive gain (needs DSP path) | x | | x | yes | done: "Turn quiet songs up" (0 to +12 dB, off by default: attenuation only as before); a song turned up is read as floats and turned up before the mix, the limiter behind it, and keeps off the audio chip (`nori_player::gain::offload_allows`); songs turned down stay a volume and keep offload |
+| Loudness normalisation to LUFS target | x | | | yes | done: −14, −16, −18 (ReplayGain's own, default), −23 LUFS; R128 tags reach nori as ReplayGain through the server (Navidrome converts R128_* with +5 dB); untagged songs use AutoMix's measured loudness when there is one |
 | Repeat, shuffle, shuffle order restored, previous follows history | x | x | x | part | add history-aware previous |
 | Weighted shuffle (spread artists/albums) | x | | | always | done: every shuffle of more than two songs spreads artists and albums apart; no longer a switch |
 | Queue + position survive process death | x | x | x | yes | |

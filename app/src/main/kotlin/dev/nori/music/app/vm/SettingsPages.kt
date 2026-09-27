@@ -197,7 +197,10 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("sound", R.string.settings_volume_boost_title, 0),
     Triple("sound", R.string.settings_compressor, R.string.settings_compressor_detail),
     Triple("sound", R.string.settings_replay_gain, R.string.settings_hint_replay_gain),
+    Triple("sound", R.string.settings_loudness_target, R.string.settings_hint_loudness_target),
+    Triple("sound", R.string.settings_gain_boost, R.string.settings_hint_gain_boost),
     Triple("sound", R.string.settings_untagged_gain, 0),
+    Triple("sound", R.string.settings_gain_measured, R.string.settings_hint_gain_measured),
     Triple("sound", R.string.settings_hi_res, R.string.settings_hint_hi_res),
     Triple("sound", R.string.settings_bit_perfect, R.string.settings_hint_bit_perfect),
     Triple("sound", R.string.settings_offload, R.string.settings_hint_offload),
@@ -538,7 +541,19 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
         if (p.replayGain != dev.nori.music.ffi.model.GainMode.OFF) {
             val r = dev.nori.music.settings.EQ.eqRanges.replayGainPreamp
             volume += SettingRow.Slider("preampDb", str(R.string.settings_overall_level, signedDb(p.preampDb)), p.preampDb, r.min, r.max, true, EqLevel.REPLAY_GAIN_PREAMP)
+            volume += choice("loudnessTarget", R.string.settings_loudness_target, fallback = { str(R.string.settings_lufs, minus(float(it))) }) {
+                val words = when (it) {
+                    "-18" -> R.string.settings_lufs_replay_gain
+                    "-14", "-16" -> R.string.settings_lufs_streaming
+                    "-23" -> R.string.settings_lufs_broadcast
+                    else -> R.string.settings_lufs
+                }
+                str(words, minus(it))
+            }
+            // Past 0 dB a song needs its samples turned up, with the limiter behind them: it keeps off the audio chip.
+            volume += choice("gainBoostDb", R.string.settings_gain_boost, fallback = ::float) { offOr(it) { v -> str(R.string.settings_gain_boost_upto, "+$v") } }
             volume += choice("untaggedGainDb", R.string.settings_untagged_gain, fallback = ::float) { str(R.string.settings_db, minus(it)) }
+            volume += toggle("gainMeasured", R.string.settings_gain_measured, R.string.settings_gain_measured_detail)
         }
         val d = f.dac
         val output = mutableListOf<SettingRow>(

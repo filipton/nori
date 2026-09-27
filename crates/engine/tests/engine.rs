@@ -833,6 +833,44 @@ fn each_song_plays_at_its_replay_gain_volume() {
     assert!(heard[a.len()..] == b[..], "b untouched at full volume");
 }
 
+fn rms(s: &[i16]) -> f64 {
+    (s.iter().map(|&v| (v as f64).powi(2)).sum::<f64>() / s.len().max(1) as f64).sqrt()
+}
+
+#[test]
+fn a_song_turned_up_is_read_as_floats_and_held_under_the_ceiling_and_one_turned_down_plays_as_before() {
+    // Music peaking near 0.4 of full scale, the first song turned up 9 dB (peaks at 1.1), the second
+    // down 6 dB.
+    let (a, b) = (music(12.0, 51), music(12.0, 52));
+    let up = 10f32.powf(9.0 / 20.0);
+    let mut app = sim::App::new();
+    app.gains.insert("a".into(), up);
+    app.gains.insert("b".into(), 0.5);
+    let rig = Rig::with_app(&[("a", &a), ("b", &b)], app, Settings { gain_boost_db: 9.0, ..Settings::default() });
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
+    assert!(rig.engine.status().chain, "the limiter is in the path");
+    let heard = rig.heard.lock().clone();
+    // The limiter's look-ahead delays the music by 5 ms and brings its end out.
+    let delay = 220 * 2;
+    assert_eq!(heard.len(), a.len() + b.len() + delay);
+    let ceiling = 10f64.powf(-1.0 / 20.0) * 32768.0;
+    let peak = heard.iter().map(|v| (*v as f64).abs()).fold(0.0, f64::max);
+    assert!(peak <= ceiling + 1.0, "nothing past the -1 dB ceiling: {peak} of {ceiling}");
+    let (ha, hb) = (&heard[delay..delay + a.len()], &heard[delay + a.len()..]);
+    let louder = 20.0 * (rms(ha) / rms(&a)).log10();
+    assert!(louder > 7.0 && louder < 9.1, "a {louder:.2} dB louder: the 9 asked, less what the limiter took off its peaks");
+    let quieter = 20.0 * (rms(hb) / rms(&b)).log10();
+    assert!((quieter + 6.02).abs() < 0.05, "b 6 dB quieter: {quieter:.2}");
+    // Songs may not be turned up (no cap): the same queue plays a at its own level.
+    let mut app = sim::App::new();
+    app.gains.insert("a".into(), up);
+    let rig = Rig::with_app(&[("a", &a)], app, Settings::default());
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
+    assert!(*rig.heard.lock() == a, "every sample as it is");
+}
+
 /// A 24-bit song: 16-bit music with a low byte of its own under every sample.
 fn music24(secs: f64, seed: u64) -> Vec<i32> {
     music(secs, seed).iter().enumerate().map(|(i, v)| ((*v as i32) << 8) | (i as i32 * 37 & 0xFF)).collect()

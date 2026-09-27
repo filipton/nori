@@ -765,7 +765,8 @@ pub trait App: Host {
     /// Music is coming out of the output: a run of songs that would not play is broken. Not merely a
     /// new song, since the skip a failure makes is one too.
     fn playing(&mut self) {}
-    /// The volume song `id` (queue index `index`) plays at under ReplayGain, 0..1: the player scales
+    /// The volume song `id` (queue index `index`) plays at under ReplayGain (over 1 turned up, as far as
+    /// [`Player::gain_max`] lets it): the player scales
     /// the song's samples by it before the transition engine holds or mixes them
     /// ([`TransitionEngine::set_gain`]).
     fn gain(&mut self, _index: usize, _id: &str) -> f32 {
@@ -866,6 +867,9 @@ pub struct Player<S: Songs, T: Track, A: App, Q: Queue> {
     /// ReplayGain stands down: the output takes the samples as they are (bit-perfect). Changed through
     /// [`Player::gain_changed`]'s caller, which then calls it.
     pub gain_off: bool,
+    /// The most a song is turned up: 1 (attenuation only) unless the songs are read as floats with the
+    /// limiter behind them (`nori_player::gain`). Changed as `gain_off` is.
+    pub gain_max: f32,
     /// The equalizer processor stays in the chain whatever the sound ([`Player::keep_chain`]).
     chain_kept: bool,
     /// How much the sink holds while the equalizer is tuned: [`SHALLOW_US`], or less for an output
@@ -943,6 +947,7 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
             tracker: HeardTracker::new(),
             measure_on_move: true,
             gain_off: false,
+            gain_max: 1.0,
             chain_kept: false,
             shallow_us: SHALLOW_US,
             resound: false,
@@ -1097,7 +1102,7 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
             return 1.0;
         }
         let id = self.id_at(i);
-        self.app.gain(i, &id)
+        self.app.gain(i, &id).min(self.gain_max)
     }
 
     /// The ReplayGain settings changed (or whether they may apply): every song handed to the output is
