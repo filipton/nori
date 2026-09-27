@@ -292,7 +292,7 @@ pub struct StoredPrefs {
     /// install from before there was a choice keeps the parametric equalizer it has set up ([`load`]).
     #[setting("eqMode", PICK, default = EqMode::Graphic, show = K::Named(EqMode::NAMES), effect = SOUND)]
     pub eq_mode: EqMode,
-    /// The graphic equalizer's sliders, dB, low to high: 10, 15 or 31 of them (`nori_player::graphic`).
+    /// The graphic equalizer's sliders, dB, low to high: 5, 10, 15 or 31 of them (`nori_player::graphic`).
     #[setting("eqGraphic", GRAPHIC, default = vec![0.0; 10], hidden, effect = SOUND)]
     pub eq_graphic: Vec<f32>,
     /// The headphone correction the graphic sliders were fitted to (`nori_player::graphic::target_grid`,
@@ -499,7 +499,7 @@ pub(crate) const SPECIAL_SPECS: &[(&str, K)] = &[
     ("altMaxBitRate", K::Choice(&["0", "320", "192", "128", "96"])),
     ("compressorPreset", K::Choice(&["GENTLE", "BALANCED", "STRONG"])),
     ("crossfeedPreset", K::Choice(&["OFF", "DEFAULT", "CHU_MOY", "JAN_MEIER"])),
-    ("eqLayout", K::Choice(&["10", "15", "31"])),
+    ("eqLayout", K::Choice(&["5", "10", "15", "31"])),
 ];
 
 const SERVERS: Custom<Vec<SavedServer>> = Custom {
@@ -1288,7 +1288,7 @@ fn compressor_preset_named(name: &str) -> Option<nori_player::compressor::Compre
     nori_player::compressor::CompressorPreset::ALL.into_iter().find(|p| compressor_preset_name(*p).eq_ignore_ascii_case(name.trim()))
 }
 
-/// Graphic sliders for another layout (10, 15 or 31 bands) that draw the same curve; the sliders as
+/// Graphic sliders for another layout (5, 10, 15 or 31 bands) that draw the same curve; the sliders as
 /// they are for a count that is not a layout.
 pub fn relayout_graphic(sliders: &[f32], count: usize) -> Vec<f32> {
     if !nori_player::graphic::LAYOUTS.contains(&count) {
@@ -2546,6 +2546,11 @@ mod tests {
         assert_eq!(l.eq_graphic.len(), 31);
         assert_eq!(value_of_special(&l, "eqLayout").as_deref(), Some("31"));
         assert!(set_by_name(&p, "eqLayout", "12").is_none());
+        // Five bands are every other one of the ten: moved there, those sliders stay as they were.
+        let ten = StoredPrefs { eq_graphic: (1..=10).map(|v| v as f32).collect(), ..p.clone() };
+        let five = set_by_name(&ten, "eqLayout", "5").unwrap().prefs;
+        assert_eq!(five.eq_graphic, [2.0, 4.0, 6.0, 8.0, 10.0]);
+        assert_eq!(decode_graphic("1,2,3,4,5"), Some(vec![1.0, 2.0, 3.0, 4.0, 5.0]), "five sliders is a layout");
     }
 
     #[test]

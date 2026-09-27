@@ -332,7 +332,7 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
     /** The graphic or the parametric equalizer plays; each keeps its own settings. */
     fun setEqMode(mode: dev.nori.music.ffi.settings.EqMode) { set("eqMode", mode.name) }
 
-    /** How many graphic bands (10, 15 or 31): the core draws the same curve on the new layout. */
+    /** How many graphic bands (5, 10, 15 or 31): the core draws the same curve on the new layout. */
     fun setEqLayout(count: Int) { set("eqLayout", count.toString()) }
 
     /** The automatic pre-amp on or off; off starts from the level it was at. */

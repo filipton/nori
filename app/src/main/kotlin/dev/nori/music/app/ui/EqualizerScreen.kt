@@ -242,7 +242,7 @@ fun EqualizerScreen(vm: SettingsViewModel) {
 private fun GraphicBands(vm: SettingsViewModel, sliders: List<Float>, target: List<Float>, enabled: Boolean) {
     val count = sliders.size
     Row(Modifier.padding(horizontal = Space.gutter, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        listOf(10, 15, 31).forEach { n -> Chip(say.eqBandCount(n), n == count) { if (n != count) vm.setEqLayout(n) } }
+        listOf(5, 10, 15, 31).forEach { n -> Chip(say.eqBandCount(n), n == count) { if (n != count) vm.setEqLayout(n) } }
     }
     ResponseCurve(sliders, target, enabled)
     // After a headphone correction: how closely the sliders follow it, asked of the core once per change.

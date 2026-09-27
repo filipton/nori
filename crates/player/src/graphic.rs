@@ -2,8 +2,13 @@
 //! as opposed to the parametric equalizer, where each band is a filter and its gain is that filter's own.
 //!
 //! **The filters.** One peaking biquad per band (the RBJ design the parametric chain runs,
-//! `dsp::band_coefficients`), centred on the ISO 266 frequencies: octaves from 31.5 Hz (10 bands),
-//! two-thirds of an octave from 25 Hz (15) or thirds from 20 Hz (31). They are *constant-Q*: every
+//! `dsp::band_coefficients`), centred on the ISO 266 frequencies: two octaves apart from 63 Hz (5
+//! bands: every other band of the ten, 63, 250, 1k, 4k and 16k), octaves from 31.5 Hz (10 bands),
+//! two-thirds of an octave from 25 Hz (15) or thirds from 20 Hz (31). The five are the ISO ones rather
+//! than Android's own 60, 230, 910, 3.6k and 14k (the platform equalizer's default, a chip vendor's
+//! choice and no standard): the spacing is the same two octaves, but on the ISO series a band's label
+//! is its true centre, a curve moved between five and ten bands keeps its sliders where the bands are
+//! shared, and a headphone correction is fitted on the same grid as every other layout. They are *constant-Q*: every
 //! bell has the same width in octaves whatever its gain (RBJ's Q holds the bandwidth between the
 //! half-gain points), the same for every band of a layout. The alternative, proportional-Q (the width
 //! shrinks as the gain grows, as many analogue boxes do), makes small moves broad and sweet, but how two
@@ -35,7 +40,9 @@
 //! 48 kHz) is a high shelf instead.
 //!
 //! Measured at 44.1 and 48 kHz over 40 random curves in ±12 dB per layout: at most 0.3 dB off at the
-//! centres and 0.7 dB between them (up to 16 kHz); a flat +12 is within 0.4 dB everywhere.
+//! centres and 0.7 dB between them (up to 16 kHz); a flat +12 is within 0.4 dB everywhere. The five
+//! bands (bells 1.25 spacings wide, see [`WIDTH_FIVE`]): 0.2 dB at the centres, 0.7 between, a full
+//! ±12 zigzag 0.34 off; they follow a real AutoEQ correction to about 2 dB rms (the ten: 1 to 1.3).
 //!
 //! All of this runs when a slider moves, never per buffer: a 31-band solve is some thirty thousand
 //! multiply-adds, done a dozen times.
@@ -43,11 +50,12 @@
 use crate::dsp::{band_coefficients, Band, CH_BOTH, HIGH_SHELF, PEAKING};
 
 /// The layouts offered, by band count.
-pub const LAYOUTS: [usize; 3] = [10, 15, 31];
+pub const LAYOUTS: [usize; 4] = [5, 10, 15, 31];
 
 /// Bands per octave for a layout's band count; `None` for a count that is not a layout.
 fn per_octave(count: usize) -> Option<f64> {
     match count {
+        5 => Some(0.5),
         10 => Some(1.0),
         15 => Some(1.5),
         31 => Some(3.0),
@@ -60,6 +68,7 @@ fn per_octave(count: usize) -> Option<f64> {
 /// nominal ISO labels (31.5, 63, 125 ... 16k) are [`nominal`]'s.
 pub fn centres(count: usize) -> Vec<f64> {
     let (first, step): (i32, f64) = match count {
+        5 => (-2, 2.0),
         10 => (-5, 1.0),
         15 => (-8, 2.0 / 3.0),
         31 => (-17, 1.0 / 3.0),
@@ -87,6 +96,13 @@ fn q_for(octaves: f64) -> f64 {
 
 /// How wide each bell is, in band spacings (see the module's notes).
 const WIDTH_IN_SPACINGS: f64 = 1.5;
+/// The five-band layout's bells are narrower, 1.25 spacings (two and a half octaves): at 1.5 its zigzag
+/// was 3.2 dB off at the centres (the `sweep`), at 1.25 it is 0.3, and the rest hardly moves.
+const WIDTH_FIVE: f64 = 1.25;
+
+fn width_for(count: usize) -> f64 {
+    if count == 5 { WIDTH_FIVE } else { WIDTH_IN_SPACINGS }
+}
 
 /// The dB gain of one biquad at `freq`.
 fn biquad_db(c: &[f64; 5], rate: f64, freq: f64) -> f64 {
@@ -127,7 +143,7 @@ const REFINE: usize = 3;
 /// the response follows the sliders. Sliders all at 0 give no filters at all; a count that is not a
 /// layout gives none either.
 pub fn design(rate: f64, sliders: &[f64]) -> Vec<Band> {
-    design_with(rate, sliders, WIDTH_IN_SPACINGS, MIDPOINT_WEIGHT)
+    design_with(rate, sliders, width_for(sliders.len()), MIDPOINT_WEIGHT)
 }
 
 fn design_with(rate: f64, sliders: &[f64], width: f64, midpoint_weight: f64) -> Vec<Band> {
@@ -460,7 +476,7 @@ mod tests {
 
     /// The sliders given straight to the same bells, uncorrected: how badly they lie.
     fn uncorrected(rate: f64, sliders: &[f64]) -> f64 {
-        let q = q_for(WIDTH_IN_SPACINGS / per_octave(sliders.len()).unwrap());
+        let q = q_for(width_for(sliders.len()) / per_octave(sliders.len()).unwrap());
         let bands: Vec<Band> = centres(sliders.len()).into_iter().zip(sliders).map(|(f, g)| bell(f, *g, q)).collect();
         errors_of(rate, &bands, sliders, 16_500.0).0
     }
@@ -544,7 +560,7 @@ mod tests {
         ];
         // rms and max bounds per layout, dB, over 20 Hz to 20 kHz. The octave layouts end at 16 kHz and
         // cannot follow a curve that falls or rises steeply above it (the U12t's): their max is there.
-        let bounds = [(10usize, 2.0, 10.0), (15, 1.7, 10.5), (31, 0.8, 5.0)];
+        let bounds = [(5usize, 3.0, 13.5), (10, 2.0, 10.0), (15, 1.7, 10.5), (31, 0.8, 5.0)];
         for (name, graphic, fixed, parametric) in cases {
             let target = target_from_points(&crate::eqfit::parse_graphic(graphic).unwrap());
             for (count, rms_bound, max_bound) in bounds {
@@ -591,6 +607,11 @@ mod tests {
 
     #[test]
     fn the_layouts_are_the_iso_bands() {
+        // Two octaves apart, every other band of the ten: 63, 250, 1k, 4k, 16k.
+        let n: Vec<f64> = centres(5).into_iter().map(nominal).collect();
+        assert_eq!(n, [63.0, 250.0, 1000.0, 4000.0, 16000.0]);
+        let ten = centres(10);
+        assert!(centres(5).iter().all(|f| ten.contains(f)), "each of them one of the ten's");
         let n: Vec<f64> = centres(10).into_iter().map(nominal).collect();
         assert_eq!(n, [31.5, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0]);
         let n: Vec<f64> = centres(15).into_iter().map(nominal).collect();

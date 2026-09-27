@@ -1308,6 +1308,13 @@ mod tests {
             let got = gain_at(&mut eq, f);
             assert!((got - want).abs() < 0.35, "{f} Hz: {got} dB, the slider says {want}");
         }
+        // The five-band layout the same way, as the chain plays it.
+        let five = [4.0, -3.0, 2.0, 5.0, -2.0];
+        eq.configure_graphic(&five, 0.0, 0.0);
+        for (f, want) in crate::graphic::centres(5).into_iter().zip(five) {
+            let got = gain_at(&mut eq, f);
+            assert!((got - want).abs() < 0.35, "five bands, {f} Hz: {got} dB, the slider says {want}");
+        }
         eq.configure_graphic(&[0.0; 10], 0.0, 0.0);
         let (x, mut y) = (vec![0f32; 960], vec![0f32; 960]);
         eq.process_f32(&x, &mut y);

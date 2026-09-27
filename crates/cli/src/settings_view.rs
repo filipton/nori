@@ -898,7 +898,7 @@ impl EqRow {
             }
             EqRow::Layout => {
                 let at = nori_core::dsp::graphic::LAYOUTS.iter().position(|n| *n == p.eq_graphic.len()).unwrap_or(0);
-                let to = if up { (at + 1).min(2) } else { at.saturating_sub(1) };
+                let to = if up { (at + 1).min(nori_core::dsp::graphic::LAYOUTS.len() - 1) } else { at.saturating_sub(1) };
                 (to != at).then(|| Cmd::Setting("eqLayout".into(), nori_core::dsp::graphic::LAYOUTS[to].to_string()))
             }
             EqRow::Slider(i) => {
@@ -1092,7 +1092,11 @@ mod tests {
         assert_eq!(EqRow::Slider(0).words(&p), ("31.5".to_string(), "+0.0 dB".to_string()));
         assert!(matches!(EqRow::Slider(3).step(&p, true), Some(Cmd::Graphic(3, v)) if v == 0.5));
         assert!(matches!(EqRow::Layout.step(&p, true), Some(Cmd::Setting(n, v)) if n == "eqLayout" && v == "15"));
-        assert!(EqRow::Layout.step(&p, false).is_none(), "ten is the fewest");
+        assert!(matches!(EqRow::Layout.step(&p, false), Some(Cmd::Setting(n, v)) if n == "eqLayout" && v == "5"), "five below ten");
+        let five = StoredPrefs { eq_graphic: vec![0.0; 5], ..p.clone() };
+        assert!(EqRow::Layout.step(&five, false).is_none(), "five is the fewest");
+        assert_eq!(eq_rows(&five).iter().filter(|r| matches!(r, EqRow::Slider(_))).count(), 5);
+        assert_eq!(EqRow::Slider(0).words(&five).0, "63");
         assert!(matches!(EqRow::Mode.open(&p), Some(Cmd::Setting(n, v)) if n == "eqMode" && v == "PARAMETRIC"));
         assert!(eq_rows(&StoredPrefs::default()).contains(&EqRow::Layout), "a new install opens on the graphic equalizer");
         let parametric = eq_rows(&StoredPrefs { eq_mode: EqMode::Parametric, ..StoredPrefs::default() });
