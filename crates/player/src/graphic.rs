@@ -274,6 +274,163 @@ pub fn sliders_for(bands: &[Band], count: usize, limit: f64) -> Vec<f64> {
     centres(count).into_iter().map(|f| (response_db(48_000.0, bands, f) * 10.0).round() / 10.0).map(|g| g.clamp(-limit, limit)).collect()
 }
 
+// ---- a headphone correction on the graphic equalizer ----
+//
+// AutoEQ's curve for a headphone (its GraphicEQ.txt, a hundred-odd points; or the response of its
+// parametric preset where there is none) is kept as a *target*: its level on a fixed log grid. The
+// sliders are fitted so that what the graphic equalizer actually plays - the corrected cascade
+// `design` makes of them, not the sliders read as points - follows the target over 20 Hz to 20 kHz,
+// by least squares in dB with the curve's overall level taken out. The fit is linear in the sliders
+// to within a fraction of a dB (`design` is a least-squares projection of them), so its Jacobian is
+// measured once per layout, one slider at a time, and a few Gauss-Newton steps against the exact
+// response take out the rest. The pre-amp is set so the result boosts nowhere.
+
+/// The target's grid: this many points, log-spaced from 20 Hz to 20 kHz (about a tenth of an octave apart).
+pub const TARGET_POINTS: usize = 96;
+/// The rate a target is fitted at: the common output rate, and the one AutoEQ designs for.
+const FIT_RATE: f64 = 48_000.0;
+
+/// The frequencies of the target's grid.
+pub fn target_grid() -> Vec<f64> {
+    (0..TARGET_POINTS).map(|i| 20.0 * 1000f64.powf(i as f64 / (TARGET_POINTS - 1) as f64)).collect()
+}
+
+/// A target from a curve's points (Hz, dB), read between them in log frequency and flat past its ends.
+pub fn target_from_points(points: &[(f64, f64)]) -> Vec<f64> {
+    if points.is_empty() {
+        return Vec::new();
+    }
+    target_grid().into_iter().map(|f| crate::eqfit::curve_at(points, f)).collect()
+}
+
+/// A target from filters (a parametric preset): their response on the grid.
+pub fn target_from_bands(bands: &[Band]) -> Vec<f64> {
+    target_grid().into_iter().map(|f| response_db(FIT_RATE, bands, f)).collect()
+}
+
+/// Sliders fitted to a target, and how closely the graphic equalizer then follows it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CurveFit {
+    pub sliders: Vec<f64>,
+    /// The pre-amp that leaves no boost anywhere, 0 or below.
+    pub preamp_db: f64,
+    /// Root mean square and largest difference, dB, over the grid, the overall level taken out.
+    pub rms_db: f64,
+    pub max_db: f64,
+}
+
+/// How far what `sliders` play is from `target`, rms and largest, with the best overall level.
+pub fn follow(sliders: &[f64], target: &[f64]) -> (f64, f64) {
+    let played = played(sliders);
+    level_error(&played, target)
+}
+
+/// What the graphic equalizer plays for `sliders`, on the target's grid.
+fn played(sliders: &[f64]) -> Vec<f64> {
+    let bands = design(FIT_RATE, sliders);
+    target_grid().into_iter().map(|f| response_db(FIT_RATE, &bands, f)).collect()
+}
+
+fn level_error(played: &[f64], target: &[f64]) -> (f64, f64) {
+    if played.len() != target.len() || target.is_empty() {
+        return (0.0, 0.0);
+    }
+    let diff: Vec<f64> = played.iter().zip(target).map(|(p, t)| p - t).collect();
+    let level = diff.iter().sum::<f64>() / diff.len() as f64;
+    let rms = (diff.iter().map(|d| (d - level).powi(2)).sum::<f64>() / diff.len() as f64).sqrt();
+    (rms, diff.iter().fold(0.0f64, |m, d| m.max((d - level).abs())))
+}
+
+/// Ridge on the sliders, per dB², in the fit: enough to keep a slider the curve does not need near 0.
+const FIT_RIDGE: f64 = 1e-3;
+/// What the sliders' mean costs, per dB² of it, against the error summed over the grid.
+const COMMON_COST: f64 = 1.0;
+
+/// The sliders of a `count`-band layout, each within `limit` dB, whose played response follows `target`
+/// most closely; `None` for a count that is not a layout or a target not on [`target_grid`].
+pub fn fit_target(target: &[f64], count: usize, limit: f64) -> Option<CurveFit> {
+    let n = centres(count).len();
+    if n == 0 || target.len() != TARGET_POINTS || target.iter().any(|t| !t.is_finite()) {
+        return None;
+    }
+    // The Jacobian: what each slider alone, at 6 dB, does to the played response, per dB.
+    let columns: Vec<Vec<f64>> = (0..n)
+        .map(|k| {
+            let mut s = vec![0.0; n];
+            s[k] = 6.0;
+            played(&s).into_iter().map(|v| v / 6.0).collect()
+        })
+        .collect();
+    let mut s = vec![0.0; n];
+    let mut now = vec![0.0; TARGET_POINTS];
+    for _ in 0..6 {
+        // A step from `s` towards the target, the overall level free (the last unknown).
+        let residual: Vec<f64> = target.iter().zip(&now).map(|(t, p)| t - p).collect();
+        let step = level_free_step(&columns, &residual, &s);
+        for (v, d) in s.iter_mut().zip(&step) {
+            *v = (*v + d).clamp(-limit, limit);
+        }
+        now = played(&s);
+    }
+    // Written as the screen shows them, a tenth of a decibel each.
+    let sliders: Vec<f64> = s.iter().map(|v| ((v * 10.0).round() / 10.0).clamp(-limit, limit)).collect();
+    let now = played(&sliders);
+    let (rms_db, max_db) = level_error(&now, target);
+    // The pre-amp from a finer look than the grid: the largest boost anywhere, rounded up.
+    let bands = design(FIT_RATE, &sliders);
+    let peak = (0..400).map(|i| response_db(FIT_RATE, &bands, 20.0 * 1000f64.powf(i as f64 / 399.0))).fold(0.0f64, f64::max);
+    let preamp_db = -(peak * 10.0).ceil() / 10.0;
+    Some(CurveFit { sliders, preamp_db: if preamp_db == 0.0 { 0.0 } else { preamp_db }, rms_db, max_db })
+}
+
+/// The least-squares step `d` (with an overall level alongside it) that minimises
+/// `|J d + c - r|² + FIT_RIDGE |s + d|²`, by its normal equations.
+fn level_free_step(columns: &[Vec<f64>], r: &[f64], s: &[f64]) -> Vec<f64> {
+    let n = columns.len();
+    let m = n + 1; // the level is the last unknown, with no ridge on it
+    let col = |j: usize, i: usize| if j < n { columns[j][i] } else { 1.0 };
+    let mut a = vec![vec![0.0; m + 1]; m];
+    for i in 0..r.len() {
+        for p in 0..m {
+            let cp = col(p, i);
+            for q in 0..m {
+                a[p][q] += cp * col(q, i);
+            }
+            a[p][m] += cp * r[i];
+        }
+    }
+    // All the sliders up together is nearly the same curve as the overall level up: that common part
+    // goes to the level, which is free, and the sliders keep their range for the shape.
+    let sum: f64 = s.iter().sum();
+    for j in 0..n {
+        a[j][j] += FIT_RIDGE;
+        a[j][m] -= FIT_RIDGE * s[j];
+        for k in 0..n {
+            a[j][k] += COMMON_COST / n as f64;
+        }
+        a[j][m] -= COMMON_COST / n as f64 * sum;
+    }
+    for c in 0..m {
+        let p = (c..m).max_by(|&x, &y| a[x][c].abs().total_cmp(&a[y][c].abs())).unwrap_or(c);
+        a.swap(c, p);
+        let d = a[c][c];
+        if d.abs() < 1e-12 {
+            continue;
+        }
+        for row in 0..m {
+            if row != c {
+                let f = a[row][c] / d;
+                if f != 0.0 {
+                    for k in c..=m {
+                        a[row][k] -= f * a[c][k];
+                    }
+                }
+            }
+        }
+    }
+    (0..n).map(|i| if a[i][i].abs() < 1e-12 { 0.0 } else { a[i][m] / a[i][i] }).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,6 +513,80 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// AutoEQ's filter lines ("Filter 1: ON PK Fc 31 Hz Gain 6.9 dB Q 1.41"), as bands.
+    fn autoeq_filters(text: &str) -> Vec<Band> {
+        text.lines()
+            .filter_map(|l| {
+                let t: Vec<&str> = l.split_whitespace().collect();
+                let at = |k: &str| t.iter().position(|w| *w == k).and_then(|i| t.get(i + 1)?.parse::<f64>().ok());
+                let kind = match *t.get(3)? {
+                    "LSC" => crate::dsp::LOW_SHELF,
+                    "HSC" => HIGH_SHELF,
+                    "PK" => PEAKING,
+                    _ => return None,
+                };
+                Some(Band { kind, freq: at("Fc")?, gain_db: at("Gain")?, q: at("Q")?, channel: CH_BOTH })
+            })
+            .collect()
+    }
+
+    /// Real AutoEQ curves (GraphicEQ.txt) on every layout: how closely the graphic equalizer follows
+    /// each, that the pre-amp stops every boost, and how AutoEQ's own ten-band FixedBandEQ.txt does
+    /// against the same curve, played either as the plain bells it is written for or as our sliders.
+    #[test]
+    fn real_autoeq_curves_on_the_graphic_equalizer() {
+        let cases = [
+            ("Sennheiser HD 600", include_str!("../testdata/graphiceq/sennheiser-hd-600.txt"), include_str!("../testdata/graphiceq/sennheiser-hd-600.fixedband.txt"), include_str!("../testdata/graphiceq/sennheiser-hd-600.parametric.txt")),
+            ("Sony WH-1000XM6 (analog cable)", include_str!("../testdata/graphiceq/sony-wh-1000xm6-analog-cable.txt"), include_str!("../testdata/graphiceq/sony-wh-1000xm6-analog-cable.fixedband.txt"), include_str!("../testdata/graphiceq/sony-wh-1000xm6-analog-cable.parametric.txt")),
+            ("64 Audio U12t", include_str!("../testdata/graphiceq/64-audio-u12t.txt"), include_str!("../testdata/graphiceq/64-audio-u12t.fixedband.txt"), include_str!("../testdata/graphiceq/64-audio-u12t.parametric.txt")),
+        ];
+        // rms and max bounds per layout, dB, over 20 Hz to 20 kHz. The octave layouts end at 16 kHz and
+        // cannot follow a curve that falls or rises steeply above it (the U12t's): their max is there.
+        let bounds = [(10usize, 2.0, 10.0), (15, 1.7, 10.5), (31, 0.8, 5.0)];
+        for (name, graphic, fixed, parametric) in cases {
+            let target = target_from_points(&crate::eqfit::parse_graphic(graphic).unwrap());
+            for (count, rms_bound, max_bound) in bounds {
+                let fit = fit_target(&target, count, 12.0).unwrap();
+                eprintln!("{name}, {count} bands: rms {:.2} dB, max {:.2} dB, pre-amp {:.1} dB", fit.rms_db, fit.max_db, fit.preamp_db);
+                assert!(fit.rms_db < rms_bound && fit.max_db < max_bound, "{name}, {count} bands: rms {} max {}", fit.rms_db, fit.max_db);
+                // Where the octave layouts have bands: their error above 16 kHz, where they have none, is most of their max.
+                let g = target_grid();
+                let below: Vec<usize> = (0..g.len()).filter(|&i| g[i] <= 16_000.0).collect();
+                let p = played(&fit.sliders);
+                let (rms16, max16) = level_error(&below.iter().map(|&i| p[i]).collect::<Vec<_>>(), &below.iter().map(|&i| target[i]).collect::<Vec<_>>());
+                eprintln!("    up to 16 kHz: rms {rms16:.2} dB, max {max16:.2} dB");
+                assert!(fit.sliders.iter().all(|v| v.abs() <= 12.0));
+                // With its pre-amp the correction boosts nowhere.
+                let bands = design(FIT_RATE, &fit.sliders);
+                let worst = (0..2000).map(|i| response_db(FIT_RATE, &bands, 20.0 * 1000f64.powf(i as f64 / 1999.0))).fold(f64::MIN, f64::max);
+                assert!(worst + fit.preamp_db <= 1e-9, "{name}, {count} bands: {worst} dB of boost against a {} dB pre-amp", fit.preamp_db);
+                assert_eq!(follow(&fit.sliders, &target), (fit.rms_db, fit.max_db));
+            }
+            // AutoEQ's FixedBandEQ.txt: ten bells at the octave centres, Q 1.41, gains fitted for plain bells.
+            let theirs = autoeq_filters(fixed);
+            let as_bells = level_error(&target_grid().into_iter().map(|f| response_db(FIT_RATE, &theirs, f)).collect::<Vec<_>>(), &target);
+            let as_sliders = follow(&theirs.iter().map(|b| b.gain_db).collect::<Vec<_>>(), &target);
+            let ours = fit_target(&target, 10, 12.0).unwrap();
+            eprintln!(
+                "{name}: FixedBandEQ as plain bells rms {:.2} max {:.2}; as our sliders rms {:.2} max {:.2}; our 10-band fit rms {:.2} max {:.2}",
+                as_bells.0, as_bells.1, as_sliders.0, as_sliders.1, ours.rms_db, ours.max_db
+            );
+            assert!(ours.rms_db <= as_bells.0 && ours.rms_db <= as_sliders.0, "{name}: our fit is the closest");
+            // A parametric preset's response is a target too, where a GraphicEQ.txt is missing.
+            let from_preset = target_from_bands(&autoeq_filters(parametric));
+            let fit = fit_target(&from_preset, 31, 12.0).unwrap();
+            assert!(fit.rms_db < 0.6, "{name}: 31 bands on the parametric preset's response: rms {}", fit.rms_db);
+        }
+    }
+
+    #[test]
+    fn a_target_off_the_grid_or_a_count_off_the_layouts_is_no_fit() {
+        assert!(fit_target(&[1.0; 10], 10, 12.0).is_none());
+        assert!(fit_target(&vec![0.0; TARGET_POINTS], 12, 12.0).is_none());
+        let flat = fit_target(&vec![-3.0; TARGET_POINTS], 10, 12.0).unwrap();
+        assert!(flat.sliders.iter().all(|v| *v == 0.0) && flat.preamp_db == 0.0, "a flat curve at any level is no correction: {flat:?}");
     }
 
     #[test]

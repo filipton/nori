@@ -67,7 +67,7 @@ pub fn parse_graphic(text: &str) -> Option<Vec<(f64, f64)>> {
 
 /// The curve through `points` at `f`: straight lines between them on a log-frequency axis, flat beyond
 /// the first and last.
-fn curve_at(points: &[(f64, f64)], f: f64) -> f64 {
+pub(crate) fn curve_at(points: &[(f64, f64)], f: f64) -> f64 {
     let i = points.partition_point(|p| p.0 < f);
     if i == 0 {
         return points[0].1;
