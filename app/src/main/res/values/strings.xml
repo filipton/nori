@@ -164,6 +164,11 @@
     <string name="settings_untagged_gain">Volume for songs without tags</string>
     <string name="settings_hi_res">High quality output</string>
     <string name="settings_hi_res_detail">Plays 24-bit files in full, and runs the equalizer and effects in floating point. Best on a USB DAC or hi-res output. Starts with the next song.</string>
+    <string name="settings_max_rate">Highest sample rate</string>
+    <string name="settings_max_rate_auto">Each song\'s own</string>
+    <string name="settings_max_rate_48">48 kHz</string>
+    <string name="settings_max_rate_96">96 kHz</string>
+    <string name="settings_max_rate_192">192 kHz</string>
     <string name="settings_bit_perfect">Bit perfect USB DAC</string>
     <string name="settings_bit_perfect_on">On: %1$s, %2$s kHz, %3$d-bit.</string>
     <string name="settings_bit_perfect_blocked">%1$s: %2$s</string>
@@ -427,6 +432,7 @@
     <string name="settings_hint_per_device">Each device keeps its own equalizer settings</string>
     <string name="settings_hint_replay_gain">ReplayGain. Quiet and loud songs play at the same level</string>
     <string name="settings_hint_hi_res">Plays 24-bit files in full, effects in floating point</string>
+    <string name="settings_hint_max_rate">Songs above it are converted down, 88.2 kHz to 44.1, 96 kHz to 48. Kept per output device</string>
     <string name="settings_hint_bit_perfect">Sends the file to a USB DAC unchanged. Android 14 and later</string>
     <string name="settings_hint_offload">Offload. The audio chip decodes instead of the processor</string>
     <string name="settings_hint_theme">Light, dark or the same as the system</string>

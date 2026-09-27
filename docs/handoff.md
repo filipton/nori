@@ -30,6 +30,14 @@ Apple's own App Store screenshots and the differences closed. What is left is li
   the system mixer, which resamples to the device's rate itself where that differs. AutoMix's tempo stretch
   never used the resampler (it has its own, automix/stretch.rs). **To check on a device**: the gap when the
   rate changes between songs, and that a crossfade across rates still mixes.
+
+- **Highest sample rate, per output.** A setting (`maxRate`: each song's own, 48, 96 or 192 kHz), part of the
+  sound profile so each output device keeps its own. A song above it is played at its rate halved within its
+  family (`policy::capped_rate`: 88.2 and 176.4 kHz to 44.1's multiples, 96 and 192 to 48's, never halved
+  below 44.1 kHz), the device opened at that and the ring's resampler converting. Bit-perfect output is not
+  held to it, and offload (the chip decodes) is not either. Past 192 kHz the Android track halves within the
+  family too (352.8 to 176.4) instead of clamping to 192.
+
 - **High quality output keeps the effects; the 16-bit chain dithers.** "High quality output" was treated
   as bit-perfect (nori-player `policy.rs`): it stood the equalizer, AutoEQ, the effects, silence skipping and
   every transition down. Now only a bit-perfect DAC is "untouched"; high quality output (`AudioPolicy.float`)

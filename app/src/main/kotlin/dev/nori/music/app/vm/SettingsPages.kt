@@ -199,6 +199,7 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("sound", R.string.settings_replay_gain, R.string.settings_hint_replay_gain),
     Triple("sound", R.string.settings_untagged_gain, 0),
     Triple("sound", R.string.settings_hi_res, R.string.settings_hint_hi_res),
+    Triple("sound", R.string.settings_max_rate, R.string.settings_hint_max_rate),
     Triple("sound", R.string.settings_bit_perfect, R.string.settings_hint_bit_perfect),
     Triple("sound", R.string.settings_offload, R.string.settings_hint_offload),
     Triple("look", R.string.settings_theme, R.string.settings_hint_theme),
@@ -543,6 +544,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
         val d = f.dac
         val output = mutableListOf<SettingRow>(
             toggle("hiRes", R.string.settings_hi_res, R.string.settings_hi_res_detail),
+            named("maxRate", R.string.settings_max_rate, R.string.settings_max_rate_auto, R.string.settings_max_rate_48, R.string.settings_max_rate_96, R.string.settings_max_rate_192),
             toggle("bitPerfect", R.string.settings_bit_perfect, bitPerfectWords(d)),
         )
         // What is actually going out, rather than what was asked for.

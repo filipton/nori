@@ -122,6 +122,25 @@ pub fn offload_blocked(p: &AudioPrefs, o: &OutputState) -> Option<&'static str> 
     })
 }
 
+/// The rate a song at `rate` Hz is played at under a maximum of `max` Hz (0: none, the song's own): halved
+/// within its family while it is over the maximum (176.4 and 88.2 kHz to 44.1 kHz's multiples, 192 and 96 kHz
+/// to 48 kHz's), so the conversion is by two and loses nothing under the new rate's own limit; never below
+/// 44.1 kHz by halving (a 64 kHz song under a 48 kHz maximum is not cut to 32 kHz, it goes to the maximum).
+pub fn capped_rate(rate: u32, max: u32) -> u32 {
+    if max == 0 || rate <= max {
+        return rate;
+    }
+    let mut r = rate;
+    while r > max && r % 2 == 0 && r / 2 >= 44_100 {
+        r /= 2;
+    }
+    if r > max {
+        max
+    } else {
+        r
+    }
+}
+
 /// How ReplayGain picks between a track's and its album's gain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GainMode {
@@ -265,6 +284,22 @@ mod tests {
         let bit_perfect = OutputState { bit_perfect: true, ..o };
         assert_eq!(offload_blocked(&AudioPrefs { dsp: true, ..prefs() }, &bit_perfect), None);
         assert!(audio_policy(&AudioPrefs { dsp: true, ..prefs() }, &bit_perfect).offload);
+    }
+
+    #[test]
+    fn a_maximum_rate_halves_within_the_family() {
+        assert_eq!(capped_rate(192_000, 0), 192_000, "no maximum: the song's own");
+        assert_eq!(capped_rate(44_100, 48_000), 44_100);
+        assert_eq!(capped_rate(48_000, 48_000), 48_000);
+        assert_eq!(capped_rate(96_000, 48_000), 48_000);
+        assert_eq!(capped_rate(192_000, 48_000), 48_000);
+        assert_eq!(capped_rate(88_200, 48_000), 44_100, "88.2 kHz to 44.1, not to 48");
+        assert_eq!(capped_rate(176_400, 48_000), 44_100);
+        assert_eq!(capped_rate(176_400, 96_000), 88_200);
+        assert_eq!(capped_rate(192_000, 96_000), 96_000);
+        assert_eq!(capped_rate(352_800, 192_000), 176_400);
+        assert_eq!(capped_rate(384_000, 192_000), 192_000);
+        assert_eq!(capped_rate(64_000, 48_000), 48_000, "not halved below 44.1 kHz");
     }
 
     #[test]

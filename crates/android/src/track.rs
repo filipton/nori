@@ -1049,7 +1049,8 @@ impl AudioOutput for TrackOutput {
 
     /// The song's own rate as it is (a DAC asked for bit-perfect gets exactly that), in mono or stereo.
     fn open(&mut self, want: OutputFormat) -> Result<OutputFormat, String> {
-        let f = OutputFormat { rate: want.rate.clamp(8_000, 192_000), channels: want.channels.clamp(1, 2), bits: want.bits };
+        // Past 192 kHz, halved within its family (352.8 kHz to 176.4, not 192), the ring converting.
+        let f = OutputFormat { rate: nori_player::policy::capped_rate(want.rate, 192_000).clamp(8_000, 192_000), channels: want.channels.clamp(1, 2), bits: want.bits };
         self.format = Some(f);
         Ok(f)
     }

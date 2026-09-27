@@ -168,7 +168,7 @@ owner's DAC), 11 backup, automation API, shortcuts, widgets, Auto nodes, logs, W
 | 24/32-bit integer output to the DAC | x | | | | add (custom AudioOutputProvider) - needs your DAC to verify |
 | Settings per output device (speaker / wired / each BT device / each DAC): EQ, RG, offload | x | | | yes | done as sound profiles bound to outputs |
 | Bypass all processing per output | x | | | bit-perfect only | add (falls out of per-output settings) |
-| Max output sample rate / fixed output format / high-quality resampler | x | | | | ask (resampling on CPU) |
+| Max output sample rate / fixed output format / high-quality resampler | x | | | yes | done: "Highest sample rate" per output (each song's own by default, or 48/96/192 kHz, halved within the family); a polyphase Kaiser-sinc resampler (>100 dB) that runs only for a mix across rates or a device that will not take the rate |
 | USB exclusive mode (own USB stack), DAC volume, warm-up delay | x | | | | ask (large; needs your DAC) |
 | DSD native / DoP / PCM-to-DSD | x | | | | ask (tied to FFmpeg + USB stack) |
 | Vendor DAP routes (HiBy, FiiO, iBasso, Shanling) | x | | | | skip unless you own one |

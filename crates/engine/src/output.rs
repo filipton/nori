@@ -380,6 +380,8 @@ pub(crate) struct RingTrack {
     pub(crate) exact: bool,
     /// The bits per sample of the song whose stream is configured next.
     bits: u32,
+    /// The highest rate the device is opened at, Hz (0: the song's own); not for a song played as it is.
+    pub(crate) max_rate: u32,
     /// High quality output is on, and whether it was when the device was opened.
     float_on: bool,
     opened_float: bool,
@@ -417,6 +419,7 @@ impl RingTrack {
             failed: None,
             exact: false,
             bits: 0,
+            max_rate: 0,
             float_on: false,
             opened_float: false,
             shallow: false,
@@ -426,9 +429,13 @@ impl RingTrack {
         }
     }
 
-    /// The device's format for a stream in `format`: its own, with its bits when it goes out exactly.
+    /// The device's format for a stream in `format`: its own, with its bits when it goes out exactly, and
+    /// otherwise its rate held under the maximum (halved within its family, the ring's resampler converting).
     fn wanted(&self, format: Format) -> OutputFormat {
-        OutputFormat { rate: format.rate, channels: format.channels, bits: if self.exact { self.bits } else { 0 } }
+        if self.exact {
+            return OutputFormat { rate: format.rate, channels: format.channels, bits: self.bits };
+        }
+        OutputFormat { rate: nori_player::policy::capped_rate(format.rate, self.max_rate), channels: format.channels, bits: 0 }
     }
 
     /// Whether the device is open.

@@ -1192,6 +1192,7 @@ pub fn settings(s: &StoredPrefs) -> Settings {
         skip_silence: s.skip_silence,
         fade_ms: s.fade_ms,
         hi_res: s.hi_res,
+        max_rate: s.max_rate.hz(),
         offload: s.offload,
         crossfade_s: s.crossfade_sec,
         auto_mix: s.auto_mix,

@@ -66,10 +66,13 @@ pub struct Settings {
     pub skip_silence: bool,
     /// The fade on play, pause and switches, ms (0 off).
     pub fade_ms: i32,
-    /// High quality output: songs decoded to float and taken to a device that plays float as they are,
-    /// with nothing touching the samples on the way (no equalizer, transitions or silence skipping,
-    /// as `nori_player::policy` says). A device that takes 16-bit only gets the 16-bit chain.
+    /// High quality output: songs decoded to float, 24 bits kept, the sound chain run on the floats and
+    /// what it makes taken to a device that plays float (`nori_player::policy`). A device that takes
+    /// 16-bit only gets the 16-bit chain, dithered.
     pub hi_res: bool,
+    /// The highest rate the device is opened at, Hz (0: a song's own): a song above it is converted down
+    /// within its family (`nori_player::policy::capped_rate`). Bit-perfect output is not held to it.
+    pub max_rate: u32,
     /// Let an output that decodes songs itself have them, when nothing needs the samples.
     pub offload: bool,
     /// The crossfade (s, 0 off) and AutoMix: transitions touch the samples, so offload stands down.
@@ -79,7 +82,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { sound: Sound::default(), speed: 1.0, pitch: 1.0, skip_silence: false, fade_ms: 0, hi_res: false, offload: false, crossfade_s: 0, auto_mix: false }
+        Settings { sound: Sound::default(), speed: 1.0, pitch: 1.0, skip_silence: false, fade_ms: 0, hi_res: false, max_rate: 0, offload: false, crossfade_s: 0, auto_mix: false }
     }
 }
 
@@ -101,6 +104,7 @@ struct Applied {
     untouched: bool,
     bit_perfect: bool,
     float: bool,
+    max_rate: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1428,11 +1432,14 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             untouched: policy.untouched,
             bit_perfect,
             float: hi_res,
+            max_rate: s.max_rate,
         };
         self.p.sink.track.set_float(hi_res);
+        // A new maximum is heard as the output is made again (below): the device opens again at it.
+        self.p.sink.track.max_rate = s.max_rate;
         // The player starts out with the defaults' sound; the output's say is given once at least.
         let first = self.applied.is_none();
-        let was = self.applied.take().unwrap_or(Applied { sound: Sound::default(), speed: (1.0, 1.0), skip_silence: false, untouched: false, bit_perfect: false, float: false });
+        let was = self.applied.take().unwrap_or(Applied { sound: Sound::default(), speed: (1.0, 1.0), skip_silence: false, untouched: false, bit_perfect: false, float: false, max_rate: 0 });
         if first || was.untouched != now.untouched || was.bit_perfect != now.bit_perfect || was.float != now.float {
             // High quality output: every song decoded to float, which carries 16 and 24 bits exactly, the
             // chain run on it and the device fed float. Bit-perfect: the same floats handed to the device

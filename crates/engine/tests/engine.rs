@@ -910,6 +910,40 @@ fn a_song_at_another_rate_with_nothing_overlapping_opens_the_device_again_at_its
     assert!(heard[a.len()..] == b[..], "b sample for sample, at 48 kHz");
 }
 
+/// A maximum rate of 48 kHz: a 96 kHz song is heard at 48 kHz, converted by two, at its own pitch and
+/// level; a 44.1 kHz one under the maximum as it is.
+#[test]
+fn a_song_above_the_maximum_rate_is_converted_down_within_its_family() {
+    let secs = 3.0;
+    let tone: Vec<i16> = (0..(96_000.0 * secs) as usize).flat_map(|i| [((i as f64 * 1000.0 * std::f64::consts::TAU / 96_000.0).sin() * 16000.0).round() as i16; 2]).collect();
+    let files = vec![("hi".to_string(), wav_at(&tone, 96_000), 3_000)];
+    let rig = Rig::build(files, sim::App::new(), Settings { max_rate: 48_000, ..Settings::default() }, Extra::default());
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
+    assert_eq!(rig.card.lock().feed.as_ref().map(|f| f.format().rate), Some(48_000), "opened at 48 kHz");
+    let heard: Vec<f64> = rig.heard.lock().chunks_exact(2).map(|c| c[0] as f64).collect();
+    assert!((heard.len() as f64 - 48_000.0 * secs).abs() < 200.0, "three seconds at 48 kHz: {} frames", heard.len());
+    // The 1 kHz tone at 48 kHz, fitted over 1500 of its cycles: its level kept, and nothing else but the rounding to 16 bits.
+    let mid = &heard[12_000..12_000 + 48 * 1_500];
+    let w = 1000.0 * std::f64::consts::TAU / 48_000.0;
+    let (mut s, mut c) = (0.0, 0.0);
+    for (i, v) in mid.iter().enumerate() {
+        s += v * (w * i as f64).sin();
+        c += v * (w * i as f64).cos();
+    }
+    let amp = 2.0 * (s * s + c * c).sqrt() / mid.len() as f64;
+    assert!((amp - 16000.0).abs() < 16.0, "at its level: {amp:.1}");
+    let (a, b) = ((s * 2.0 / mid.len() as f64), (c * 2.0 / mid.len() as f64));
+    let resid = (mid.iter().enumerate().map(|(i, v)| (v - a * (w * i as f64).sin() - b * (w * i as f64).cos()).powi(2)).sum::<f64>() / mid.len() as f64).sqrt();
+    assert!(resid < 1.0, "the tone and the rounding: {resid:.2} left");
+
+    let a = music(4.0, 53);
+    let rig = Rig::build(vec![("a".to_string(), wav(&a), 4_000)], sim::App::new(), Settings { max_rate: 48_000, ..Settings::default() }, Extra::default());
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
+    assert!(*rig.heard.lock() == a, "44.1 kHz, under the maximum: as it is");
+}
+
 #[test]
 fn a_device_that_takes_16_bit_only_gets_the_16_bit_chain() {
     let a = music24(8.0, 10);
