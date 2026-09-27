@@ -124,7 +124,7 @@ fun HeroPage(
     TintedTheme(palette) {
         val scheme = MaterialTheme.colorScheme
         SystemBarIcons(LocalLook.current)
-        PageTint(palette)
+        PageTint(palette, waiting = palette == null && prefs.coverColors && coverUrl != null)
         Box(Modifier.fillMaxSize().drawBehind { drawRect(scheme.background) }) {
             val list = rememberLazyListState()
             LazyColumn(state = list) {

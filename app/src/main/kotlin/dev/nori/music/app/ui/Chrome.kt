@@ -170,7 +170,7 @@ fun rememberChromeLook(): Look {
     // every time this composes, and keying the fade on that restarted it every frame - the fade's own
     // state recomposing this, which made another array, sixty times a second on every screen.
     val kept = remember { arrayOf(made) }
-    if (!kept[0].contentEquals(made)) kept[0] = made
+    if (!kept[0].contentEquals(made) && pagesWaiting.intValue == 0) kept[0] = made
     val target = kept[0]
     val t = remember { androidx.compose.animation.core.Animatable(1f) }
     val live = remember { LiveLook { t.value }.also { it.set(null, target, 0) } }
@@ -211,9 +211,13 @@ private fun rememberTabAccent(player: PlayerViewModel, slab: Color, content: Col
     val seed = (if (prefs.coverColors) pagePalette.value?.look?.get(CoverLook.ACCENT) else null) ?: playing
     // A cover's accent that no shade of reads on the bar (a pink on an artist page's lifted brown) gives
     // way to the bar's own ink, which always does; the tab is still marked by its weight and size.
-    val target = remember(seed, slab, theme, content) {
+    val worked = remember(seed, slab, theme, content) {
         if (seed == null) theme else Color(CoverLook.readable(seed, slab.toArgb(), content.toArgb()))
     }
+    // Held while a page's colours are on their way (see pagesWaiting), so it changes once, with the page.
+    val held = remember { arrayOf(worked) }
+    if (pagesWaiting.intValue == 0) held[0] = worked
+    val target = held[0]
     return androidx.compose.animation.animateColorAsState(target, androidx.compose.animation.core.tween(420), label = "tab accent").value
 }
 
@@ -369,12 +373,26 @@ private val pagePalette = androidx.compose.runtime.mutableStateOf<PagePalette?>(
  */
 val LocalChromeInset = androidx.compose.runtime.compositionLocalOf { 0.dp }
 
-/** A tinted page (an album, an artist, the player) lends its colours to the chrome while it is open. */
+/**
+ * Pages whose cover's colours are still being worked out. While there are any, the chrome and the lit
+ * tab keep the colours they have: from one album to the next they went to the playing song's (or the
+ * theme's) for the moment the new cover took, and then to the new page's, flashing twice where the page
+ * changed once.
+ */
+private val pagesWaiting = androidx.compose.runtime.mutableIntStateOf(0)
+
+/**
+ * A tinted page (an album, an artist, the player) lends its colours to the chrome while it is open.
+ * [waiting]: it will have colours, but they are not worked out yet.
+ */
 @Composable
-fun PageTint(palette: PagePalette?) {
-    androidx.compose.runtime.DisposableEffect(palette) {
-        pagePalette.value = palette
-        onDispose { if (pagePalette.value === palette) pagePalette.value = null }
+fun PageTint(palette: PagePalette?, waiting: Boolean = false) {
+    androidx.compose.runtime.DisposableEffect(palette, waiting) {
+        if (waiting) pagesWaiting.intValue++ else pagePalette.value = palette
+        onDispose {
+            if (waiting) pagesWaiting.intValue--
+            else if (pagePalette.value === palette) pagePalette.value = null
+        }
     }
 }
 
