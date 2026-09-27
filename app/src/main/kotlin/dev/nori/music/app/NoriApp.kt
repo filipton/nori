@@ -10,8 +10,12 @@ class NoriApp : Application() {
         dev.nori.music.net.Failures.use(resources)
         // Loading the native core and opening SQLite overlaps with the activity being created instead of preceding it.
         val nori = Nori.get(this)
-        // Then the AutoEQ list, if the core says it is due (one request on Wi-Fi, once a month at most).
-        Thread { nori.warmUp(); forgetCoil(); kotlinx.coroutines.runBlocking { nori.keepAutoEqList() } }.start()
+        // Only a release build installs a release over itself: a debug build is the same app signed and
+        // built differently, and the perf build another app, so both only say a newer version is out.
+        nori.updates.configure(BuildConfig.VERSION_NAME, installs = BuildConfig.BUILD_TYPE == "release")
+        // Then the AutoEQ list, if the core says it is due (one request on Wi-Fi, once a month at most), and
+        // whether there is a newer release (once a day at most, unless switched off).
+        Thread { nori.warmUp(); forgetCoil(); nori.updates.checkIfDue(); kotlinx.coroutines.runBlocking { nori.keepAutoEqList() } }.start()
     }
 
     /** A new locale changes the words, read again from the resources (fractions follow it by themselves: "12,4 MB"). */

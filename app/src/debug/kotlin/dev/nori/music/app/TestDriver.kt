@@ -85,6 +85,10 @@ fun TestDriver(controller: NavHostController, nav: Nav, sheet: PlayerSheet, sett
                 // which is what a favourite toggled this session no longer agrees with.
                 """"starred":${st.current?.let { actions.starMarks.value.effectiveStar(dev.nori.music.data.StarKind.SONG, it.id, it.starred) } ?: false},""" +
                 """"notification":"${dev.nori.music.Nori.get(context).player.sessionButtons}",""" +
+                // The app's own update: the state's kind ("Available", "UpToDate", ...) and its line in About.
+                settings.update.value.let { u ->
+                    """"update":"${u::class.simpleName}","updateLine":"${dev.nori.music.app.vm.updateWords(context.resources, u, BuildConfig.VERSION_NAME, settings.installsUpdates).replace("\"", "'")}","""
+                } +
                 """"loggedIn":${p.loggedIn},"server":"${p.server?.url.orEmpty()}","loginError":"${settings.login.value.error.orEmpty().replace("\"", "'")}"}"""
         }
         onDispose {

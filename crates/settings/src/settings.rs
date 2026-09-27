@@ -359,6 +359,10 @@ pub struct StoredPrefs {
     /// new install (lyrics and the AutoEQ list are wanted out of the box; moving covers stay off).
     #[setting("thirdPartyLookups", FLAG, default = true, show = K::Switch)]
     pub third_party_lookups: bool,
+    /// "Check for updates": when the app starts, at most once a day, it asks GitHub for its latest release
+    /// (nori-core update.rs). Its own switch, not under the lookups one: it is the app's, not a service's.
+    #[setting("updateCheck", FLAG, default = true, show = K::Switch)]
+    pub update_check: bool,
     /// The home page's shelves, in order; a row that is not listed is hidden.
     #[setting("homeRows", Picks, default = HomeRow::ALL.to_vec(), hidden)]
     pub home_rows: Vec<HomeRow>,

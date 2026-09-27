@@ -84,6 +84,7 @@ theme = int 2
 thirdPartyLookups = flag false
 uiScale = float 1.1
 untaggedGainDb = float -9.0
+updateCheck = flag false
 wifiBitRate = int 320
 wifiFormat = text "mp3"
 
@@ -172,6 +173,7 @@ theme = int 0
 thirdPartyLookups = flag true
 uiScale = float 0.0
 untaggedGainDb = float -6.0
+updateCheck = flag true
 wifiBitRate = int 0
 wifiFormat = text ""
 
@@ -253,6 +255,7 @@ theme = "DARK"
 thirdPartyLookups = "false"
 uiScale = "1.1"
 untaggedGainDb = "-9"
+updateCheck = "false"
 wifi = "320:mp3"
 
 ## specs
@@ -333,4 +336,5 @@ theme = Choice ["SYSTEM", "LIGHT", "DARK"] 0.0..0.0 default "SYSTEM"
 thirdPartyLookups = Switch ["false", "true"] 0.0..0.0 default "true"
 uiScale = Choice ["0", "0.9", "1", "1.1"] 0.0..0.0 default "0"
 untaggedGainDb = Choice ["0", "-3", "-6", "-9", "-12"] 0.0..0.0 default "-6"
+updateCheck = Switch ["false", "true"] 0.0..0.0 default "true"
 wifi = Choice ["0:", "320:mp3", "192:opus", "128:opus", "96:opus", "64:opus"] 0.0..0.0 default "0:"

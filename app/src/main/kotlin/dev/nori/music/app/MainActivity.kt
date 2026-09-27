@@ -49,6 +49,8 @@ class MainActivity : ComponentActivity() {
         // first frame is to show the song playing now. Until that frame is out, Android shows the last one
         // drawn before the app went; from it, the page cross-fades to the new song as it would on screen.
         Nori.get(this).player.catchUp()
+        // Back from Android's "install unknown apps" page: an update waiting for it goes on.
+        Nori.get(this).updates.resumed()
         super.onStart()
         // Binding starts the playback service, which builds a player on this thread. Let the first frame out first.
         window.decorView.post { Looper.myQueue().addIdleHandler { if (started && Nori.get(this).settings.value.loggedIn) { Nori.get(this).player.connect(); pickAddress() }; false } }

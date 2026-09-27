@@ -154,6 +154,12 @@ is Android glue and stays on the device. 50 moved, 60 stay.
 - The screens: taps on the album page and the For you pages go through Compose and the ViewModels.
 - A force stop: the service restoring the queue, downloads picking up.
 - The network going and coming (the bridge) and a notification's intent opening a screen.
+- The app updating itself: which release, which APK and whether to say so are nori-core's (update.rs, tested
+  there); the download, PackageInstaller's session, its confirmation and "install unknown apps" are Android's.
+  A debug build checks by hand with `app.sh do "update 0.3.0"` (it pretends to be 0.3.0, finds the latest
+  release newer and shows the banner; a debug build never installs, its button opens the release's page). An
+  install in place needs a release build that is older: `./gradlew :app:assembleRelease -PpretendVersion=0.3.9
+  -PrustTargets=x86_64`, signed with the release key, installed, then About, Check for updates, Update.
 
 
 ## cargo test

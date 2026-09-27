@@ -91,6 +91,8 @@ class Nori private constructor(private val context: Context) {
     /** Each output device's own sound; built when the playback service first sees a device. */
     val deviceSound by lazy { dev.nori.music.playback.DeviceSound(settings, { core }, { client }, { http.metered }) }
     val player = PlayerConnection(context, this)
+    /** The app's own updates from its GitHub releases; nothing is asked until the app starts it. */
+    val updates = dev.nori.music.update.Updates(context, { http }, { client })
 
     /** True while requests go to the profile's second address; stream quality is capped then. */
     val onSecondAddress: Boolean get() = opened?.client?.onSecondAddress() ?: false

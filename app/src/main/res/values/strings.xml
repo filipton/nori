@@ -27,7 +27,7 @@
     <string name="settings_group_data">Downloads and storage</string>
     <string name="settings_group_data_summary">Quality, downloads, space</string>
     <string name="settings_group_about">About</string>
-    <string name="settings_group_about_summary">Version, build, licences</string>
+    <string name="settings_group_about_summary">Version, updates, licences</string>
     <!-- Pages opened from inside another page. -->
     <string name="settings_page_licences">Licences</string>
     <string name="settings_page_lyrics_sources">Lyrics sources</string>
@@ -303,6 +303,11 @@
         <item quantity="other">%1$d artists</item>
     </plurals>
     <string name="settings_update">Update</string>
+    <string name="settings_updates">Updates</string>
+    <string name="settings_update_check_now">Check for updates</string>
+    <string name="settings_hint_updates">A newer version of nori from its GitHub releases</string>
+    <string name="settings_update_auto">Check automatically</string>
+    <string name="settings_update_auto_detail">When nori starts, at most once a day, it asks GitHub whether there is a newer release</string>
     <string name="settings_updating">Updating…</string>
     <string name="settings_search_delay">Search delay</string>
     <string name="settings_taste_model">Keep listening history</string>

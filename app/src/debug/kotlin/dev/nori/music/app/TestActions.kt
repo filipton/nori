@@ -137,6 +137,14 @@ object TestActions {
                 nori.dac.testSource(if (off) null else dev.nori.music.playback.DacSource.mock(ref))
                 nori.outputs.testUsb(if (off) null else ref.substringBefore('@').ifEmpty { "Mock DAC" })
             }
+            // "update 0.3.0": this build pretends to be that version and checks now, as About's button does, so
+            // the real latest release is found newer (the banner shows; a debug build never installs, its
+            // button opens the release's page). "update later" presses Later; "update off" is this build again.
+            "update" -> when (ref) {
+                "later" -> nori.updates.later()
+                "off" -> { nori.updates.configure(BuildConfig.VERSION_NAME, installs = false); nori.updates.checkNow() }
+                else -> { nori.updates.configure(ref, installs = false); nori.updates.checkNow() }
+            }
             "download" -> actions.download(songs)
             // "undownload <ref>": the song menu's "Remove download(s)", so a check can download the same album again.
             "undownload" -> actions.removeDownloads(songs.map { it.id })

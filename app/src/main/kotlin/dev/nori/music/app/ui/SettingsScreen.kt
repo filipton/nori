@@ -278,7 +278,10 @@ fun SettingsGroupScreen(vm: SettingsViewModel, id: String, highlight: String = "
                 Text(page.title, Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall)
             }
             when (id) {
-                "about" -> AboutContent({ title, content -> Section(title, content) }) { nav.settingsGroup("licences") }
+                // The build's facts, then the rows the page builder made for About (the update check).
+                "about" -> AboutContent({ title, content -> Section(title, content) }, { nav.settingsGroup("licences") }) {
+                    page.sections.forEach { s -> SettingsSectionRows(vm, s) }
+                }
                 "licences" -> LicencesContent { title, content -> Section(title, content) }
                 else -> page.sections.forEach { s -> SettingsSectionRows(vm, s) }
             }

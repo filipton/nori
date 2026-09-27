@@ -83,6 +83,7 @@ fn sample() -> StoredPrefs {
         live_search_delay_ms: 500,
         taste_model: false,
         third_party_lookups: false,
+        update_check: false,
         profile_per_output: false,
         auto_eq_auto: true,
         auto_eq_download: false,

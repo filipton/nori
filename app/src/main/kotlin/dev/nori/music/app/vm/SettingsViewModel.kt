@@ -40,6 +40,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.launch
 import dev.nori.music.settings.server
+import dev.nori.music.update.Updates
 
 data class LoginUi(val busy: Boolean = false, val error: String? = null, val done: Boolean = false)
 /**
@@ -126,8 +127,11 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
 
     /** What a settings page depends on besides the settings, from this platform. */
     val settingsFacts: StateFlow<SettingsFacts> by lazy {
-        combine(dac, _sync, _storage, _analysed, _folders, ::factsOf)
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), factsOf(dac.value, _sync.value, _storage.value, _analysed.value, _folders.value))
+        combine(combine(dac, _sync, _storage, _analysed, _folders, ::factsOf), update) { f, u -> f.copy(update = u, installsUpdates = nori.updates.installs) }
+            .stateIn(
+                viewModelScope, SharingStarted.WhileSubscribed(5_000),
+                factsOf(dac.value, _sync.value, _storage.value, _analysed.value, _folders.value).copy(update = update.value, installsUpdates = nori.updates.installs),
+            )
     }
 
     private fun factsOf(d: DacState, s: SyncUi, st: StorageUi, analysed: Int, folders: List<MusicFolder>) = SettingsFacts(
@@ -176,8 +180,42 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
             "clear-stream" -> clearStreamCache()
             "clear-covers" -> clearCovers()
             "clear-lyrics" -> clearLyrics()
+            "update-check" -> checkForUpdates()
+            "update-go" -> updateNow()
+            "update-cancel" -> cancelUpdate()
         }
     }
+
+    // ---- the app's own updates (core update/Updates.kt over nori-core update.rs) ----
+
+    /** Where an update stands: About's row and the banner both draw it. */
+    val update: StateFlow<Updates.State> = nori.updates.state
+
+    /** Whether this build installs updates; a debug or perf build only points at the release. */
+    val installsUpdates: Boolean get() = nori.updates.installs
+
+    fun checkForUpdates() = nori.updates.checkNow()
+
+    /**
+     * The row's or the banner's main button, whatever it says now: download and install (a release build), the
+     * release's page (any other build, or a release with no APK for this phone), Android's "install unknown
+     * apps" page while that is what is missing, or another try after a failure.
+     */
+    fun updateNow() {
+        val u = nori.updates
+        when (val s = update.value) {
+            is Updates.State.Available -> if (u.installs) u.update(s.update) else u.openPage(s.update.page)
+            is Updates.State.Failed -> if ((s.why as? Updates.Failure.Install)?.conflict == true) u.openPage(s.update.page) else u.update(s.update)
+            is Updates.State.NeedsPermission -> u.allowInstalls()
+            is Updates.State.NoApk -> u.openPage(s.page)
+            else -> u.checkNow()
+        }
+    }
+
+    /** "Later": this version is not brought up again by itself. */
+    fun updateLater() = nori.updates.later()
+
+    fun cancelUpdate() = nori.updates.cancel()
 
     /** Applies "Space for streamed music" at once instead of at the next track. */
     fun applyCacheLimit() = viewModelScope.launch(Dispatchers.IO) { nori.applyCacheLimit() }

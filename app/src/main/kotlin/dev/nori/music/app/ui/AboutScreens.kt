@@ -45,7 +45,7 @@ internal fun InfoRow(title: String, detail: String, end: String? = null, onClick
  * The lines and the report are worded by [Say.about] from what only Android knows.
  */
 @Composable
-internal fun AboutContent(section: @Composable (String, @Composable ColumnScope.() -> Unit) -> Unit, openLicences: () -> Unit) {
+internal fun AboutContent(section: @Composable (String, @Composable ColumnScope.() -> Unit) -> Unit, openLicences: () -> Unit, updates: @Composable () -> Unit = {}) {
     val clipboard = LocalClipboardManager.current
     val facts = remember {
         say.about(
@@ -56,6 +56,7 @@ internal fun AboutContent(section: @Composable (String, @Composable ColumnScope.
     section("nori") {
         InfoRow(facts.title, facts.build, end = say.copyIt) { clipboard.setText(AnnotatedString(facts.report)) }
     }
+    updates()
     section(say.underTheHood) {
         InfoRow(say.playback, facts.playback)
         InfoRow(say.libraryAndSearch, facts.library)

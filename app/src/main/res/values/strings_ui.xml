@@ -500,4 +500,32 @@
     <string name="device_notice_undo">Undo</string>
     <string name="autoeq_count">%1$d headphones</string>
     <string name="autoeq_search_count">Search %1$d headphones</string>
+    <!-- The app's own updates: About's row and the banner. -->
+    <string name="update_version">Version %1$s</string>
+    <string name="update_checking">Checking…</string>
+    <string name="update_latest">You have the latest version (%1$s)</string>
+    <string name="update_available">nori %1$s is available (%2$s)</string>
+    <string name="update_available_elsewhere">nori %1$s is available. This build does not update itself: install the release from its page.</string>
+    <string name="update_no_apk">nori %1$s is out, but has no download for this phone</string>
+    <string name="update_check_failed">Could not check: %1$s</string>
+    <string name="update_downloading">Downloading %1$s of %2$s</string>
+    <string name="update_installing">Installing…</string>
+    <string name="update_needs_permission">Allow nori to install apps, then come back to finish</string>
+    <string name="update_failed_download">The download stopped: %1$s</string>
+    <string name="update_failed_size">The download came to %1$s, not %2$s</string>
+    <string name="update_failed_not_nori">The downloaded file is not a newer nori</string>
+    <string name="update_failed_install">Android did not install the update</string>
+    <string name="update_failed_signature">This copy of nori is signed differently from the release, so Android cannot update it in place. Install the release from its page after uninstalling this one.</string>
+    <string name="update_failed_storage">There is not enough space on the phone for the update</string>
+    <string name="update_failed_incompatible">The update does not run on this phone</string>
+    <string name="update_failed_blocked">Android blocked the update</string>
+    <string name="update_check">Check</string>
+    <string name="update_now">Update</string>
+    <string name="update_view">View</string>
+    <string name="update_try_again">Try again</string>
+    <string name="update_allow">Allow</string>
+    <string name="update_cancel">Cancel</string>
+    <string name="update_later">Later</string>
+    <string name="update_banner_title">nori %1$s is available</string>
+    <string name="update_whats_new">What\'s new</string>
 </resources>

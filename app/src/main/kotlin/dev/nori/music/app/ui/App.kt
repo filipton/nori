@@ -304,6 +304,9 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
                     page("folder/{id}") { FolderScreen(it.arguments!!.getString("id")!!, actions) }
                     page("decade/{year}") { SongsScreen(actions, it.arguments!!.getString("year")!!.toInt()) }
                 }
+                // A newer release, and its download and install once asked for; under the player, so the
+                // player covers it. See UpdateBanner.
+                UpdateBanner(settings, Modifier.align(Alignment.TopCenter))
               }
               Box(
                   Modifier.align(Alignment.BottomCenter)

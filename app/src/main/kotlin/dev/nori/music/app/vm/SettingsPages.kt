@@ -14,6 +14,8 @@ import dev.nori.music.ffi.settings.StoredPrefs
 import kotlin.math.roundToInt
 import dev.nori.music.settings.label
 import dev.nori.music.settings.server
+import dev.nori.music.update.Updates
+import dev.nori.music.net.said
 
 /*
  * The settings screen: its groups, pages, sections and rows, what each says and which are shown. The
@@ -78,6 +80,9 @@ data class SettingsFacts(
     val storage: StorageUi = StorageUi(),
     /** The active server's music folders. */
     val folders: List<MusicFolder> = emptyList(),
+    /** Where the app's own update stands, and whether this build installs one. */
+    val update: Updates.State = Updates.State.Idle,
+    val installsUpdates: Boolean = false,
 )
 
 /** A row's key: its title, lowercased, with every run of anything but a-z and 0-9 made one '-'. Search lands on a row by it. */
@@ -251,6 +256,8 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("data", R.string.settings_covers, R.string.settings_hint_covers),
     Triple("data", R.string.settings_lyrics_cache, R.string.settings_hint_lyrics_cache),
     Triple("about", R.string.settings_page_licences, R.string.settings_hint_licences),
+    Triple("about", R.string.settings_update_check_now, R.string.settings_hint_updates),
+    Triple("about", R.string.settings_update_auto, R.string.settings_update_auto_detail),
     Triple("servers", R.string.settings_music_folder, 0),
     Triple("servers", R.string.settings_alt_bitrate, 0),
 )
@@ -287,6 +294,7 @@ fun settingsPage(res: Resources, id: String, p: StoredPrefs, f: SettingsFacts, s
         "library" -> b.library()
         "data" -> b.data()
         "servers" -> b.servers()
+        "about" -> b.about()
         else -> emptyList()
     }
     return SettingsPage(res.getString(title), sections)
@@ -323,6 +331,51 @@ fun settingsActionAsks(res: Resources, action: String, f: SettingsFacts): Action
         res.getString(R.string.settings_clear),
     )
     else -> null
+}
+
+/**
+ * What an update's state says, for About's row and the banner: the version found, the download's progress,
+ * what is missing or what went wrong. [current] is this build's version.
+ */
+fun updateWords(res: Resources, s: Updates.State, current: String, installs: Boolean): String = when (s) {
+    Updates.State.Idle -> res.getString(R.string.update_version, current)
+    Updates.State.Checking -> res.getString(R.string.update_checking)
+    is Updates.State.UpToDate -> res.getString(R.string.update_latest, current)
+    is Updates.State.Available ->
+        if (installs) res.getString(R.string.update_available, s.update.version, formatBytes(res, s.update.apkBytes.toLong()))
+        else res.getString(R.string.update_available_elsewhere, s.update.version)
+    is Updates.State.NoApk -> res.getString(R.string.update_no_apk, s.version)
+    is Updates.State.CheckFailed -> res.getString(R.string.update_check_failed, s.error.said.orEmpty())
+    is Updates.State.Downloading -> res.getString(R.string.update_downloading, formatBytes(res, s.done), formatBytes(res, s.total))
+    is Updates.State.Installing -> res.getString(R.string.update_installing)
+    is Updates.State.NeedsPermission -> res.getString(R.string.update_needs_permission)
+    is Updates.State.Failed -> when (val why = s.why) {
+        is Updates.Failure.Download -> res.getString(R.string.update_failed_download, why.error.said.orEmpty())
+        is Updates.Failure.Size -> res.getString(R.string.update_failed_size, formatBytes(res, why.got), formatBytes(res, why.expected))
+        Updates.Failure.NotThisApp -> res.getString(R.string.update_failed_not_nori)
+        // Android's own message is for the log (it says INSTALL_FAILED_... in capitals): each kind is worded here.
+        is Updates.Failure.Install -> res.getString(
+            when (why.status) {
+                android.content.pm.PackageInstaller.STATUS_FAILURE_CONFLICT -> R.string.update_failed_signature
+                android.content.pm.PackageInstaller.STATUS_FAILURE_STORAGE -> R.string.update_failed_storage
+                android.content.pm.PackageInstaller.STATUS_FAILURE_INCOMPATIBLE -> R.string.update_failed_incompatible
+                android.content.pm.PackageInstaller.STATUS_FAILURE_BLOCKED -> R.string.update_failed_blocked
+                else -> R.string.update_failed_install
+            },
+        )
+    }
+}
+
+/** The word on the update's main button in state [s] (see SettingsViewModel.updateNow); null for none. */
+fun updateButton(res: Resources, s: Updates.State, installs: Boolean): String? = when (s) {
+    is Updates.State.Available -> res.getString(if (installs) R.string.update_now else R.string.update_view)
+    is Updates.State.NoApk -> res.getString(R.string.update_view)
+    // Another try cannot get past a copy signed with another key: the release's page can.
+    is Updates.State.Failed -> res.getString(if ((s.why as? Updates.Failure.Install)?.conflict == true) R.string.update_view else R.string.update_try_again)
+    is Updates.State.NeedsPermission -> res.getString(R.string.update_allow)
+    is Updates.State.Downloading -> res.getString(R.string.update_cancel)
+    Updates.State.Checking, is Updates.State.Installing -> null
+    else -> res.getString(R.string.update_check)
 }
 
 private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: SettingsFacts, val s: SettingsState) {
@@ -691,6 +744,27 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
         if (wifiOnly) parts += str(R.string.settings_server_wifi_only)
         if (second) parts += str(R.string.settings_server_second_address)
         return parts.joinToString(str(R.string.settings_server_separator))
+    }
+
+    /**
+     * About's own rows under the build's facts (AboutContent draws those): the update check with where it
+     * stands and its one button, and the daily check's switch.
+     */
+    fun about(): List<SettingsSection> {
+        val u = f.update
+        val button = updateButton(res, u, f.installsUpdates)
+        val act = when (u) {
+            is Updates.State.Downloading -> "update-cancel"
+            is Updates.State.Available, is Updates.State.Failed, is Updates.State.NeedsPermission, is Updates.State.NoApk -> "update-go"
+            else -> "update-check"
+        }
+        val t = str(R.string.settings_update_check_now)
+        val failed = u is Updates.State.Failed || u is Updates.State.CheckFailed
+        val check = SettingRow.Action(
+            settingKey(t), t, updateWords(res, u, dev.nori.music.app.BuildConfig.VERSION_NAME, f.installsUpdates),
+            button ?: str(R.string.update_check), button != null, failed, act,
+        )
+        return listOf(SettingsSection(str(R.string.settings_updates), listOf(check, toggle("updateCheck", R.string.settings_update_auto, R.string.settings_update_auto_detail))))
     }
 
     fun servers(): List<SettingsSection> {
