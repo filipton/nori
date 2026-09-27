@@ -169,7 +169,8 @@ crates/desktop/ Rust, desktop: nori-desktop, a native window (Slint over winit, 
                 on macOS, Vulkan or OpenGL on Linux) laid out as Apple Music is on macOS 26/27: the sidebar
                 full height from the window's edge over the system's sidebar material (NSVisualEffectView,
                 glass.rs; the sidebar's rows are drawn, only the material is AppKit's), the page on a near-black ground, the player as a capsule floating over the page's
-                bottom, Playing Next as an inspector, Now Playing over the whole window on the song's wash
+                bottom (on macOS a borderless child window of its own, PlayerBar, over the system's Liquid Glass,
+                NSGlassEffectView, so the page scrolls under real glass), Playing Next as an inspector, Now Playing over the whole window on the song's wash
                 (nori-look), and album and artist pages that dissolve their picture into the page. SF Pro on macOS,
                 the native menu bar and its shortcuts. ui/app.slint draws; app.rs is the state on Slint's event
                 loop (the engine's events and the workers' answers arrive there through

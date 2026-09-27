@@ -23,11 +23,13 @@ use slint::{Color, ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPix
 
 use crate::session::{self, Data, Fetch, Msg, Req, Session};
 use crate::words;
-use crate::{AppWindow, Card, Shelf, SongRow};
+use crate::{AppWindow, Card, PlayerBar, Shelf, SongRow};
 
 /// Pixels a side: a card's cover, and the large one (now playing, a page's), whose colours are worked out too.
 const SMALL_PX: u32 = 256;
 const LARGE_PX: u32 = 800;
+/// An artist's picture across the page's whole width.
+const HERO_PX: u32 = 1600;
 /// Decoded covers kept: the cards on a few screens, and the few large ones.
 const SMALL_KEPT: usize = 240;
 const LARGE_KEPT: usize = 12;
@@ -75,20 +77,22 @@ struct Art {
     /// The page colours of the large covers, by cover id.
     colours: HashMap<String, Rc<CoverColours>>,
     asked: HashSet<String>,
-    wanted: Vec<(String, bool)>,
+    wanted: Vec<(String, i32)>,
 }
 
-fn key(id: &str, large: bool) -> String {
-    format!("{}:{id}", if large { 'l' } else { 's' })
+/// A cover's name among the pictures: its size's letter (s a card's, l large, x an artist's hero) and its id.
+fn key(id: &str, size: i32) -> String {
+    format!("{}:{id}", ['s', 'l', 'x'][size.clamp(0, 2) as usize])
 }
 
-/// The `art` callback: the cover `id` at size 0 (a card's) or 1 (large), or nothing yet.
+/// The `art` callback: the cover `id` at size 0 (a card's), 1 (large) or 2 (a page's whole width), or
+/// nothing yet.
 fn art(id: SharedString, size: i32) -> Image {
     if id.is_empty() {
         return Image::default();
     }
-    let large = size == 1;
-    let k = key(&id, large);
+    let size = size.clamp(0, 2);
+    let k = key(&id, size);
     ART.with(|a| {
         let mut a = a.borrow_mut();
         if let Some(i) = a.images.get(&k) {
@@ -99,7 +103,7 @@ fn art(id: SharedString, size: i32) -> Image {
                 // Asked for after this frame's drawing, not from inside it.
                 Timer::single_shot(Duration::ZERO, || with(App::ask_covers));
             }
-            a.wanted.push((id.to_string(), large));
+            a.wanted.push((id.to_string(), size));
         }
         Image::default()
     })
@@ -151,6 +155,8 @@ pub struct App {
     /// The read the page shown waits for.
     want: Option<Req>,
     shelves: Rc<VecModel<Shelf>>,
+    /// The player as a window of its own over the system's glass (macOS); None where the page draws it.
+    player: Option<PlayerBar>,
     /// The cover whose wash is the window's backdrop.
     backdrop: Option<String>,
     tickets: VecDeque<(String, Ticket)>,
@@ -162,6 +168,64 @@ pub struct App {
     lyrics_due: Option<std::time::Instant>,
     note: Timer,
     search: Timer,
+}
+
+/// The player window, on macOS: its buttons do what the main window's do, and it is put over the page once
+/// both windows exist.
+fn player(ui: &AppWindow) -> Option<PlayerBar> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let bar = PlayerBar::new().map_err(|e| eprintln!("nori: no player window: {e}")).ok()?;
+    ui.set_native_player(true);
+    bar.set_font(ui.get_font());
+    bar.on_art(|id, size, _rev| art(id, size));
+    let main = ui.as_weak();
+    let call = move |f: fn(&AppWindow)| {
+        let main = main.clone();
+        move || {
+            if let Some(m) = main.upgrade() {
+                f(&m);
+            }
+        }
+    };
+    bar.on_toggle(call(|m| m.invoke_toggle()));
+    bar.on_next(call(|m| m.invoke_next()));
+    bar.on_previous(call(|m| m.invoke_previous()));
+    bar.on_toggle_shuffle(call(|m| m.invoke_toggle_shuffle()));
+    bar.on_cycle_repeat(call(|m| m.invoke_cycle_repeat()));
+    bar.on_open_full(call(|m| {
+        if m.get_has_song() {
+            m.set_full_player(true);
+            m.invoke_player_changed();
+        }
+    }));
+    let main = ui.as_weak();
+    bar.on_seek(move |v| {
+        if let Some(m) = main.upgrade() {
+            m.invoke_seek(v);
+        }
+    });
+    let main = ui.as_weak();
+    bar.on_set_volume(move |v| {
+        if let Some(m) = main.upgrade() {
+            m.invoke_set_volume(v);
+        }
+    });
+    let main = ui.as_weak();
+    bar.on_set_inspector(move |i| {
+        if let Some(m) = main.upgrade() {
+            m.set_inspector(i);
+            m.invoke_player_changed();
+        }
+    });
+    if let Err(e) = bar.show() {
+        eprintln!("nori: no player window: {e}");
+        ui.set_native_player(false);
+        return None;
+    }
+    crate::glass::attach_player(ui.as_weak(), bar.as_weak());
+    Some(bar)
 }
 
 pub fn start(ui: &AppWindow, data: PathBuf) {
@@ -189,6 +253,7 @@ pub fn start(ui: &AppWindow, data: PathBuf) {
         want: None,
         shelves,
         backdrop: None,
+        player: player(ui),
         tickets: VecDeque::new(),
         tick: Timer::default(),
         tick_ms: 0,
@@ -245,6 +310,7 @@ fn wire(ui: &AppWindow) {
         with(|a| {
             a.on_session(|s| s.set_volume(v));
             a.ui().set_volume(v);
+            a.mirror();
         })
     });
     ui.on_toggle_shuffle(|| {
@@ -288,6 +354,13 @@ fn wire(ui: &AppWindow) {
     ui.on_drag_window(move || crate::glass::drag(&weak));
     let weak = ui.as_weak();
     ui.on_zoom_window(move || crate::glass::zoom(&weak));
+    ui.on_page_moved(|| with(|a| a.place_player()));
+    ui.on_player_changed(|| {
+        with(|a| {
+            a.mirror();
+            a.place_player();
+        })
+    });
     ui.on_login(|| with(App::login));
     ui.on_cancel_login(|| with(|a| a.go(HOME)));
     ui.on_setting_toggled(|name, on| with(|a| a.setting(&name, if on { "true" } else { "false" })));
@@ -745,9 +818,10 @@ impl App {
             ART.with(|a| a.borrow_mut().asked.clear());
             return;
         };
-        for (id, large) in wanted {
-            let k = key(&id, large);
-            let t = s.cover(&id, k.clone(), if large { LARGE_PX } else { SMALL_PX }, large);
+        for (id, size) in wanted {
+            let k = key(&id, size);
+            // The large ones are the pages' own pictures: their colours are worked out with them.
+            let t = s.cover(&id, k.clone(), [SMALL_PX, LARGE_PX, HERO_PX][size as usize], size > 0);
             self.tickets.push_back((k, t));
         }
         // A ticket dropped cancels its cover: one that never came may be asked for again.
@@ -764,7 +838,7 @@ impl App {
 
     fn cover(&mut self, key: String, image: &Picture, colours: Option<Box<CoverColours>>) {
         let id = key[2..].to_string();
-        let large = key.starts_with('l');
+        let large = !key.starts_with('s');
         ART.with(|a| {
             let mut a = a.borrow_mut();
             let kept = if large { &mut a.large } else { &mut a.small };
@@ -785,6 +859,9 @@ impl App {
         });
         let ui = self.ui();
         ui.set_covers_rev(ui.get_covers_rev().wrapping_add(1));
+        if let Some(p) = &self.player {
+            p.set_covers_rev(ui.get_covers_rev());
+        }
         if large {
             let c = ART.with(|a| a.borrow().colours.get(&id).cloned());
             if ui.get_now_art() == id.as_str() {
@@ -794,6 +871,32 @@ impl App {
                 self.page_colours(c.as_deref());
             }
         }
+    }
+
+    /// What the player window shows, copied from the main window, where it is kept.
+    fn mirror(&self) {
+        let Some(p) = &self.player else { return };
+        let ui = self.ui();
+        p.set_has_song(ui.get_has_song());
+        p.set_now_title(ui.get_now_title());
+        p.set_now_artist(ui.get_now_artist());
+        p.set_now_album(ui.get_now_album());
+        p.set_now_art(ui.get_now_art());
+        p.set_playing(ui.get_playing());
+        p.set_position_ms(ui.get_position_ms());
+        p.set_duration_ms(ui.get_duration_ms());
+        p.set_shuffle(ui.get_shuffle());
+        p.set_repeat(ui.get_repeat());
+        p.set_volume(ui.get_volume());
+        p.set_inspector(ui.get_inspector());
+        p.set_covers_rev(ui.get_covers_rev());
+    }
+
+    /// The player window over the page's bottom; out of sight over Now Playing and the sign-in page.
+    fn place_player(&self) {
+        let Some(p) = &self.player else { return };
+        let ui = self.ui();
+        crate::glass::place_player(&ui, p, !ui.get_full_player() && ui.get_view() != LOGIN);
     }
 
     /// The lyrics' clock asked where the music is: the line lit, and when to look again.
@@ -906,6 +1009,9 @@ impl App {
                 let Some(ui) = weak.upgrade() else { return };
                 with(|a| {
                     a.on_session(|s| ui.set_position_ms(s.engine.status().position_now() as i32));
+                    if let Some(p) = &a.player {
+                        p.set_position_ms(ui.get_position_ms());
+                    }
                     a.lyrics_due();
                 });
             });
@@ -913,6 +1019,7 @@ impl App {
             self.tick.stop();
         }
         self.lyrics_step(true);
+        self.mirror();
     }
 }
 

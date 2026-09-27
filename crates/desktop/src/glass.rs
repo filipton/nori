@@ -6,7 +6,7 @@
 use slint::winit_030::winit::window::WindowAttributes;
 use slint::ComponentHandle;
 
-use crate::AppWindow;
+use crate::{AppWindow, PlayerBar};
 
 /// Picks the backend before any window exists: winit, Skia, and Metal on macOS.
 pub fn backend() -> Result<(), String> {
@@ -107,3 +107,89 @@ pub fn zoom(ui: &slint::Weak<AppWindow>) {
         w.set_maximized(!w.is_maximized());
     }
 }
+
+
+/// The player's size and place: centred over the page (right of the sidebar), a little above the
+/// window's bottom, as wide as the page allows up to 820 points.
+const SIDEBAR: f64 = 240.0;
+const PLAYER_H: f64 = 60.0;
+const PLAYER_MAX_W: f64 = 820.0;
+const PLAYER_BOTTOM: f64 = 12.0;
+
+/// The player window put over the main window's page, as a child window (it moves with the main window
+/// and stays over it), with Liquid Glass behind its controls. Tried on the loop's first turns until both
+/// windows exist.
+#[cfg(target_os = "macos")]
+pub fn attach_player(main: slint::Weak<AppWindow>, bar: slint::Weak<PlayerBar>) {
+    use slint::winit_030::WinitWindowAccessor;
+    let (Some(m), Some(b)) = (main.upgrade(), bar.upgrade()) else { return };
+    let ready = m.window().has_winit_window() && b.window().has_winit_window();
+    if !ready {
+        slint::Timer::single_shot(std::time::Duration::from_millis(16), move || attach_player(main, bar));
+        return;
+    }
+    let done = (|| -> Result<(), String> {
+        let (mw, bw) = (ns_window(&m)?, ns_window(&b)?);
+        dress_player(&bw)?;
+        // SAFETY: both windows are live AppKit windows, used on the main thread.
+        unsafe { mw.addChildWindow_ordered(&bw, objc2_app_kit::NSWindowOrderingMode::Above) };
+        Ok(())
+    })();
+    if let Err(e) = done {
+        eprintln!("nori: the player has no glass window: {e}");
+    }
+    place_player(&m, &b, true);
+}
+
+#[cfg(target_os = "macos")]
+fn ns_window(w: &impl slint::ComponentHandle) -> Result<objc2::rc::Retained<objc2_app_kit::NSWindow>, String> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use slint::winit_030::WinitWindowAccessor;
+    w.window()
+        .with_winit_window(|w| {
+            let handle = w.window_handle().map_err(|e| e.to_string())?;
+            let RawWindowHandle::AppKit(h) = handle.as_raw() else { return Err("not an AppKit window".to_string()) };
+            // SAFETY: winit hands out the window's live content view; this runs on the main thread.
+            let view: &objc2_app_kit::NSView = unsafe { h.ns_view.cast::<objc2_app_kit::NSView>().as_ref() };
+            view.window().ok_or_else(|| "the view has no window".to_string())
+        })
+        .ok_or_else(|| "no window yet".to_string())?
+}
+
+/// The player window clear, without a shadow of its own, and the system's glass behind its content view.
+#[cfg(target_os = "macos")]
+fn dress_player(bw: &objc2_app_kit::NSWindow) -> Result<(), String> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSAutoresizingMaskOptions, NSColor, NSGlassEffectView, NSWindowOrderingMode};
+    let mtm = MainThreadMarker::new().ok_or("not on the main thread")?;
+    bw.setOpaque(false);
+    bw.setBackgroundColor(Some(&NSColor::clearColor()));
+    bw.setHasShadow(false);
+    let view = bw.contentView().ok_or("no content view")?;
+    let frame_view = unsafe { view.superview() }.ok_or("the content view has no superview")?;
+    let glass = NSGlassEffectView::initWithFrame(mtm.alloc(), view.frame());
+    glass.setCornerRadius(PLAYER_H / 2.0);
+    glass.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
+    frame_view.addSubview_positioned_relativeTo(&glass, NSWindowOrderingMode::Below, Some(&view));
+    Ok(())
+}
+
+/// Moves the player window over the page's bottom, or out of sight (Now Playing, the sign-in page).
+#[cfg(target_os = "macos")]
+pub fn place_player(main: &AppWindow, bar: &PlayerBar, shown: bool) {
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+    let (Ok(mw), Ok(bw)) = (ns_window(main), ns_window(bar)) else { return };
+    let f = mw.frame();
+    let page = f.size.width - SIDEBAR;
+    let w = (page - 32.0).clamp(200.0, PLAYER_MAX_W);
+    let rect = NSRect::new(NSPoint::new(f.origin.x + SIDEBAR + (page - w) / 2.0, f.origin.y + PLAYER_BOTTOM), NSSize::new(w, PLAYER_H));
+    bw.setFrame_display(rect, true);
+    bw.setAlphaValue(if shown { 1.0 } else { 0.0 });
+    bw.setIgnoresMouseEvents(!shown);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn attach_player(_: slint::Weak<AppWindow>, _: slint::Weak<PlayerBar>) {}
+
+#[cfg(not(target_os = "macos"))]
+pub fn place_player(_: &AppWindow, _: &PlayerBar, _: bool) {}
