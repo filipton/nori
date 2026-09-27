@@ -114,6 +114,8 @@ class PlaybackService : MediaLibraryService() {
     /** How long each chore waits (crates/queue/src/rules.rs playback_timings), read once. */
     private val timings by lazy { dev.nori.music.ffi.queue.playbackTimings() }
     private var offlineBridge: OfflineBridge? = null
+    /** The music volume for loudness compensation; listening only while that is on. */
+    private var volume: VolumeWatch? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val main = Handler(Looper.getMainLooper())
     private val served = LruCache<String, MediaItem>(500)
@@ -183,7 +185,15 @@ class PlaybackService : MediaLibraryService() {
         }
         scope.launch {
             // The device's own sound (a bound profile or AutoEQ curve), or the sound from before it came back.
-            nori.outputs.current.collect { output -> nori.deviceSound.onOutput(output) }
+            nori.outputs.current.collect { output ->
+                nori.deviceSound.onOutput(output)
+                volume?.outputChanged()
+            }
+        }
+        // Loudness compensation follows the volume: while it is on, the volume is watched and told.
+        volume = VolumeWatch(this, { nori.outputs.current.value }) { index, max, db -> player.setVolume(index, max, db) }
+        scope.launch {
+            nori.settings.prefs.collect { p -> volume?.set(p.loudness) }
         }
         applyAudio(nori.settings.value)
         scope.launch {
@@ -243,6 +253,8 @@ class PlaybackService : MediaLibraryService() {
         main.removeCallbacks(idleRelease)
         main.removeCallbacks(askHeadphones)
         runCatching { connectivity.unregisterNetworkCallback(network) }
+        volume?.set(false)
+        volume = null
         analyser.release()
         offlineBridge?.abandon()
         offlineBridge = null

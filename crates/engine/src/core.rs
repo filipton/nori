@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -1170,6 +1170,18 @@ fn lower_priority() {
     crate::arriving::lower_priority();
 }
 
+/// The output's volume as the platform last told it, dB (0 all the way up), as f32 bits: loudness
+/// compensation follows it. Told only while that is on.
+static VOLUME_DB: AtomicU32 = AtomicU32::new(0);
+
+/// The platform's volume changed to `db` (`nori_player::contour::volume_db`): true when that is a change
+/// the sound would hear (a quarter of a dB or more), so the settings are to be applied again.
+pub fn set_output_volume_db(db: f64) -> bool {
+    let db = if db.is_finite() { db.clamp(-96.0, 0.0) as f32 } else { 0.0 };
+    let was = f32::from_bits(VOLUME_DB.swap(db.to_bits(), Ordering::Relaxed));
+    (was - db).abs() >= 0.25
+}
+
 /// The sound and the controls as the core's settings ask for them.
 pub fn settings(s: &StoredPrefs) -> Settings {
     let bands = if s.eq_enabled { s.eq_bands.iter().map(|b| Band { kind: b.kind as i32, freq: b.freq as f64, gain_db: b.gain_db as f64, q: b.q as f64, channel: b.channel as i32 }).collect() } else { Vec::new() };
@@ -1178,7 +1190,7 @@ pub fn settings(s: &StoredPrefs) -> Settings {
         // The graphic equalizer plays in place of the parametric one, whose bands then stay out.
         graphic: nori_core::dsp::graphic_sliders(s),
         bands: if s.eq_mode == nori_core::settings::EqMode::Graphic { Vec::new() } else { bands },
-        effects: s.effects().player(),
+        effects: s.effects().player_at(f32::from_bits(VOLUME_DB.load(Ordering::Relaxed)) as f64),
         preamp_db: nori_core::dsp::effective_preamp_db(s) as f64,
         crossfeed_db: s.crossfeed_db as f64,
         crossfeed_hz: s.crossfeed_hz as f64,
@@ -1226,6 +1238,13 @@ mod tests {
         assert!(off.graphic.is_empty() && off.bands.is_empty() && !off.on());
         let fx = settings(&StoredPrefs { volume_boost_db: 4.0, compressor: true, ..StoredPrefs::default() }).sound;
         assert!(fx.on() && fx.effects.boost_db == 4.0 && fx.effects.compressor.is_some() && fx.effects.guard());
+        // Loudness compensation at the volume last told.
+        let loud = StoredPrefs { loudness: true, ..StoredPrefs::default() };
+        assert!(set_output_volume_db(-30.0));
+        assert!(!set_output_volume_db(-30.1), "a tenth of a dB is no change");
+        assert_eq!(settings(&loud).sound.effects.loudness.map(|l| l.volume_db as f32), Some(-30.1));
+        assert!(set_output_volume_db(0.0));
+        assert_eq!(settings(&loud).sound.effects.loudness.map(|l| l.volume_db), Some(0.0));
         // No processing on this output: the identity chain, whatever else is on.
         let none = settings(&StoredPrefs { sound_bypass: true, limiter: true, crossfeed_db: 6.0, mono: true, ..StoredPrefs { eq_mode: EqMode::Graphic, ..p } });
         assert_eq!(none.sound, nori_player::pipeline::Sound::default());

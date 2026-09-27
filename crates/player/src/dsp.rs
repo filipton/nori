@@ -368,6 +368,22 @@ impl Limiter {
     }
 }
 
+/// Loudness compensation as the chain runs it (`contour::design`): up to two shelves and the pre-gain
+/// that pays their boost back.
+#[derive(Clone, Copy)]
+struct Loud {
+    filters: [Biquad; 2],
+    count: usize,
+    pre: f64,
+    state: [[[f64; 2]; MAX_CHANNELS]; 2],
+}
+
+impl Loud {
+    fn same(&self, o: &Loud) -> bool {
+        self.filters[..self.count] == o.filters[..o.count] && self.pre == o.pre
+    }
+}
+
 /// How long the output takes to fade from the chain as it was to the chain as it is, after a change.
 const CHANGE_FADE_MS: f64 = 10.0;
 
@@ -383,6 +399,8 @@ struct Stages {
     preamp: f64,
     /// The bass boost's shelf and its memories, per channel.
     bass: Option<(Biquad, [[f64; 2]; MAX_CHANNELS])>,
+    /// Loudness compensation for the volume the music is heard at.
+    loud: Option<Loud>,
     expander: Option<Expander>,
     compressor: Option<Compressor>,
     virtualizer: Option<Virtualizer>,
@@ -400,6 +418,7 @@ impl Stages {
     fn is_identity(&self) -> bool {
         self.filters.is_empty()
             && self.bass.is_none()
+            && self.loud.is_none()
             && self.expander.is_none()
             && self.compressor.is_none()
             && self.virtualizer.is_none()
@@ -417,6 +436,10 @@ impl Stages {
         self.filters == o.filters
             && self.preamp == o.preamp
             && self.bass.map(|b| b.0) == o.bass.map(|b| b.0)
+            && match (&self.loud, &o.loud) {
+                (Some(a), Some(b)) => a.same(b),
+                (a, b) => a.is_none() && b.is_none(),
+            }
             && self.compressor.as_ref().map(Compressor::settings) == o.compressor.as_ref().map(Compressor::settings)
             && self.expander.as_ref().map(Expander::settings) == o.expander.as_ref().map(Expander::settings)
             && self.virtualizer.as_ref().map(Virtualizer::strength) == o.virtualizer.as_ref().map(Virtualizer::strength)
@@ -450,6 +473,16 @@ impl Stages {
             s[0] = f.b1 * x - f.a1 * y + s[1];
             s[1] = f.b2 * x - f.a2 * y;
             x = y;
+        }
+        if let Some(l) = self.loud.as_mut() {
+            x *= l.pre;
+            for (f, st) in l.filters[..l.count].iter().zip(l.state.iter_mut()) {
+                let s = &mut st[ch];
+                let y = f.b0 * x + s[0];
+                s[0] = f.b1 * x - f.a1 * y + s[1];
+                s[1] = f.b2 * x - f.a2 * y;
+                x = y;
+            }
         }
         x
     }
@@ -499,6 +532,9 @@ impl Stages {
         self.state.iter_mut().for_each(|s| *s = [[0.0; 2]; MAX_CHANNELS]);
         if let Some((_, st)) = self.bass.as_mut() {
             *st = [[0.0; 2]; MAX_CHANNELS];
+        }
+        if let Some(l) = self.loud.as_mut() {
+            l.state = [[[0.0; 2]; MAX_CHANNELS]; 2];
         }
         if let Some(c) = self.compressor.as_mut() {
             c.reset();
@@ -560,6 +596,7 @@ impl Equalizer {
             state: Vec::new(),
             preamp: 1.0,
             bass: None,
+            loud: None,
             expander: None,
             compressor: None,
             virtualizer: None,
@@ -672,6 +709,24 @@ impl Equalizer {
                 }
                 (Some(c), None) => Some(Compressor::new(rate, c)),
                 (None, _) => None,
+            };
+            // Designed again only when the volume or the reference moved; the filters' memories carry over.
+            let loud = e.loudness.map(|l| crate::contour::design(l.reference_phon, l.volume_db)).and_then(|sh| {
+                let bands: Vec<Band> = sh.low.into_iter().chain(sh.high).collect();
+                (!bands.is_empty()).then(|| {
+                    let mut filters = [Biquad::default(); 2];
+                    for (f, b) in filters.iter_mut().zip(&bands) {
+                        *f = Biquad::new(rate, b);
+                    }
+                    Loud { filters, count: bands.len(), pre: 10f64.powf(sh.pre_db / 20.0), state: [[[0.0; 2]; MAX_CHANNELS]; 2] }
+                })
+            });
+            s.loud = match (loud, s.loud.take()) {
+                (Some(mut new), Some(old)) if new.count == old.count => {
+                    new.state = old.state;
+                    Some(new)
+                }
+                (new, _) => new,
             };
             s.expander = match (e.expander, s.expander.take()) {
                 (Some(x), Some(mut old)) => {
@@ -808,6 +863,8 @@ pub struct Effects {
     pub compressor: Option<CompressorSettings>,
     /// The downward expander (a noise gate at a high ratio), before the compressor.
     pub expander: Option<ExpanderSettings>,
+    /// Loudness compensation for the volume the music is heard at (`contour`), after the equalizer.
+    pub loudness: Option<crate::contour::Loudness>,
     /// Strength, 0 to 1.
     pub virtualizer: f64,
     /// 0 to [`VOLUME_BOOST_MAX_DB`].
@@ -817,7 +874,12 @@ pub struct Effects {
 impl Effects {
     /// Whether any of them touches the samples.
     pub fn on(&self) -> bool {
-        self.bass_boost_db > 0.0 || self.compressor.is_some() || self.expander.is_some() || self.virtualizer > 0.0 || self.boost_db > 0.0
+        self.bass_boost_db > 0.0
+            || self.compressor.is_some()
+            || self.expander.is_some()
+            || self.loudness.is_some()
+            || self.virtualizer > 0.0
+            || self.boost_db > 0.0
     }
 
     /// Whether they add level the music did not have: the limiter then runs behind them, whether or not
@@ -1405,6 +1467,30 @@ mod tests {
         eq.process_f32(&hum, &mut y);
         let db = 20.0 * (rms(&y[48000..]) / rms(&hum[48000..])).log10();
         assert!((db + 60.0).abs() < 3.0, "20 dB under at 4:1 is 80 under: {db} dB");
+        eq.configure_effects(&Effects::default());
+        let (z, mut w) = (vec![0f32; 960], vec![0f32; 960]);
+        eq.process_f32(&z, &mut w);
+        assert!(eq.is_identity(), "off again is gone");
+    }
+
+    #[test]
+    fn loudness_compensation_follows_the_volume() {
+        use crate::contour::Loudness;
+        let mut eq = Equalizer::new(48000, 1);
+        let at = |v: f64| Effects { loudness: Some(Loudness { reference_phon: 80.0, volume_db: v }), ..Effects::default() };
+        eq.configure_effects(&at(0.0));
+        assert!(eq.is_identity(), "all the way up: nothing to make up, nothing in the samples' path");
+        assert!(at(0.0).on() && !at(-30.0).guard(), "on, and its own pre-gain keeps it from clipping");
+        eq.configure_effects(&at(-30.0));
+        // 50 phon against 80: the bass comes up against the middle as the contours say.
+        let tilt = |eq: &mut Equalizer| gain_at(eq, 60.0) - gain_at(eq, 1000.0);
+        let quiet = tilt(&mut eq);
+        let want = crate::contour::compensation_db(50.0, 80.0, 60.0);
+        assert!((quiet - want).abs() < 1.5, "60 Hz against 1 kHz: {quiet} dB, the contours say {want}");
+        assert!(gain_at(&mut eq, 60.0) <= 0.05, "and nothing goes over full scale");
+        eq.configure_effects(&at(-10.0));
+        let louder = tilt(&mut eq);
+        assert!(louder > 0.5 && louder < quiet, "turned up, less of it: {louder} dB");
         eq.configure_effects(&Effects::default());
         let (z, mut w) = (vec![0f32; 960], vec![0f32; 960]);
         eq.process_f32(&z, &mut w);

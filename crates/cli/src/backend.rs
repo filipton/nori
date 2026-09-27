@@ -387,6 +387,8 @@ impl Session {
         };
         let volume = output.volume();
         volume.set(own::number(own::VOLUME, 1.0));
+        // Before the engine starts, so its first chain has the loudness compensation for this volume.
+        nori_engine::core::set_output_volume_db(if volume.get() > 0.0 { 20.0 * (volume.get() as f64).log10() } else { -96.0 });
         let output: Box<dyn AudioOutput> = Box::new(output);
         let store = Store::open(o.data.join("music"), prefs.cache_mb.max(0) as u64 * 1024 * 1024, Box::new(CoreOrder)).map_err(|e| format!("the music directory: {e}"))?;
         let audio = Arc::new(Audio { http: o.http.clone(), offline: o.offline });
@@ -692,6 +694,17 @@ impl Session {
             }
         }
         Some(change)
+    }
+
+    /// This client's volume (0 to 1, a gain on the samples) moved: loudness compensation follows it, as
+    /// dB below full, and the chain is set up again when that moves the sound.
+    pub fn volume_changed(&self, v: f32) {
+        let db = if v > 0.0 { 20.0 * (v as f64).log10() } else { -96.0 };
+        if nori_engine::core::set_output_volume_db(db) {
+            if let Some(p) = settings_store::settings_current().filter(|p| p.loudness) {
+                self.engine.set_settings(settings(&p));
+            }
+        }
     }
 
     /// What a change of the kept settings asks of the engine.

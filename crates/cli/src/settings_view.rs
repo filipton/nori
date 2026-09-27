@@ -553,6 +553,10 @@ fn effects(b: &Build) -> Vec<Row> {
             slider("compKneeDb", format!("  Knee {:.1} dB", p.comp_knee_db), p.comp_knee_db, (0.0, 24.0), EqLevel::CompKnee),
         ]);
     }
+    rows.push(b.toggle("loudness", "Loudness compensation", "Turned down, the bass comes up as the ear needs (ISO 226); follows this client's volume"));
+    if p.loudness {
+        rows.push(b.choice("loudnessRefPhon", "  Balanced at", true, |v| format!("{v} phon")));
+    }
     rows.push(b.toggle("expander", "Noise gate", "A downward expander: hiss and hum go further down in quiet parts"));
     if p.expander {
         rows.extend([

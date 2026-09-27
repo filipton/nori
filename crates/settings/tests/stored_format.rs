@@ -83,6 +83,8 @@ fn sample() -> StoredPrefs {
         exp_ratio: 6.0,
         exp_attack_ms: 3.0,
         exp_release_ms: 300.0,
+        loudness: true,
+        loudness_ref_phon: 85,
         crossfeed_db: 3.0,
         crossfeed_hz: 650.0,
         sound_bypass: true,

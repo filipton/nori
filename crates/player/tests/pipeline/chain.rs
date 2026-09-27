@@ -221,6 +221,8 @@ fn settings_changed_while_playing_never_click() {
         ("the graphic equalizer", limiter(), Sound { graphic: vec![3.0, 6.0, 4.0, 0.0, -3.0, -3.0, 0.0, 2.0, 4.0, 4.0], ..limiter() }),
         ("the bass boost", limiter(), Sound { effects: Effects { bass_boost_db: 8.0, ..Effects::default() }, ..limiter() }),
         ("the expander", limiter(), Sound { effects: Effects { expander: Some(nori_player::compressor::ExpanderSettings { threshold_db: -20.0, ratio: 4.0, ..Default::default() }), ..Effects::default() }, ..limiter() }),
+        ("loudness compensation", limiter(), Sound { effects: Effects { loudness: Some(nori_player::contour::Loudness { reference_phon: 80.0, volume_db: -30.0 }), ..Effects::default() }, ..limiter() }),
+        ("the volume under loudness compensation", Sound { effects: Effects { loudness: Some(nori_player::contour::Loudness { reference_phon: 80.0, volume_db: -20.0 }), ..Effects::default() }, ..limiter() }, Sound { effects: Effects { loudness: Some(nori_player::contour::Loudness { reference_phon: 80.0, volume_db: -35.0 }), ..Effects::default() }, ..limiter() }),
         ("the compressor", limiter(), Sound { effects: Effects { compressor: Some(CompressorPreset::Strong.settings()), ..Effects::default() }, ..limiter() }),
         ("the virtualizer", limiter(), Sound { effects: Effects { virtualizer: 1.0, ..Effects::default() }, ..limiter() }),
         ("the volume boost", limiter(), Sound { effects: Effects { boost_db: 6.0, ..Effects::default() }, ..limiter() }),

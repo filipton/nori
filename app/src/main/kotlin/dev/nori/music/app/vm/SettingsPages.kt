@@ -201,6 +201,7 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("sound", R.string.settings_volume_boost_title, 0),
     Triple("sound", R.string.settings_compressor, R.string.settings_compressor_detail),
     Triple("sound", R.string.settings_expander, R.string.settings_expander_detail),
+    Triple("sound", R.string.settings_loudness, R.string.settings_loudness_detail),
     Triple("sound", R.string.settings_replay_gain, R.string.settings_hint_replay_gain),
     Triple("sound", R.string.settings_untagged_gain, 0),
     Triple("sound", R.string.settings_hi_res, R.string.settings_hint_hi_res),
@@ -597,6 +598,9 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
             rows += SettingRow.Slider("compMakeupDb", str(R.string.settings_comp_makeup, signedDb(p.compMakeupDb)), p.compMakeupDb.coerceIn(0f, 12f), 0f, 12f, false, EqLevel.COMP_MAKEUP)
             rows += SettingRow.Slider("compKneeDb", str(R.string.settings_comp_knee, one(p.compKneeDb)), p.compKneeDb.coerceIn(0f, 12f), 0f, 12f, false, EqLevel.COMP_KNEE)
         }
+        // Loudness compensation that follows the volume (ISO 226): off unless asked for.
+        rows += toggle("loudness", R.string.settings_loudness, R.string.settings_loudness_detail)
+        if (p.loudness) rows += choice("loudnessRefPhon", R.string.settings_loudness_reference) { str(R.string.settings_phon, it) }
         // The downward expander, a noise gate at a high ratio: off unless asked for.
         rows += toggle("expander", R.string.settings_expander, R.string.settings_expander_detail)
         if (p.expander) {

@@ -71,6 +71,7 @@ pub(crate) static CLASS: Class = Class {
         native!(c"onCpu", c"(J)Z", on_cpu),
         native!(c"gainReductionDb", c"(J)F", gain_reduction_db),
         native!(c"compressionDb", c"(J)F", compression_db),
+        native!(c"setVolume", c"(JIIF)V", set_volume),
         native!(c"bytesWritten", c"(J)J", bytes_written),
         native!(c"event", c"(J)J", event),
         native!(c"eventText", c"(J)Ljava/lang/String;", event_text),
@@ -1555,6 +1556,21 @@ extern "system" fn on_cpu(h: jlong) -> jboolean {
 /// The limiter's meter: what it took off the last buffer through the chain, dB.
 extern "system" fn gain_reduction_db(h: jlong) -> jfloat {
     player(h).map_or(0.0, |p| p.engine.status_with(|s| s.gain_reduction_db))
+}
+
+/// The music volume is now step `index` of `max` (`db` the platform's own figure for it, NaN without
+/// one), told only while loudness compensation is on: the chain is set up again when that moves the
+/// sound (`nori_engine::core::set_output_volume_db`), and not otherwise.
+extern "system" fn set_volume(h: jlong, index: jint, max: jint, db: jfloat) {
+    let db = nori_player::contour::volume_db(index, max, db);
+    if !nori_engine::core::set_output_volume_db(db) {
+        return;
+    }
+    if let (Some(p), Some(prefs)) = (player(h), nori_core::settings_store::settings_current()) {
+        if prefs.loudness {
+            p.engine.set_settings(settings(&prefs));
+        }
+    }
 }
 
 /// The compressor's meter: what it took off the last buffer through the chain, dB.

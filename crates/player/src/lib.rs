@@ -6,6 +6,7 @@
 pub mod automix;
 pub mod burst;
 pub mod compressor;
+pub mod contour;
 pub mod dac;
 pub mod device;
 pub mod decode;

@@ -171,6 +171,10 @@
     <string name="settings_comp_release">Lets go over %1$s ms</string>
     <string name="settings_comp_makeup">Makes up %1$s dB</string>
     <string name="settings_comp_knee">Softness %1$s dB</string>
+    <string name="settings_loudness">Loudness compensation</string>
+    <string name="settings_loudness_detail">As you turn the volume down, brings the bass and the highest notes up the way the ear needs (ISO 226), so quiet listening does not sound thin.</string>
+    <string name="settings_loudness_reference">Balanced at, all the way up</string>
+    <string name="settings_phon">%1$s phon</string>
     <string name="settings_expander">Noise gate</string>
     <string name="settings_expander_detail">Turns hiss and hum down further when the music goes quiet. A high ratio closes it like a gate.</string>
     <string name="settings_exp_threshold">Works under %1$s dB</string>

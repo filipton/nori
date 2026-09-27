@@ -334,6 +334,14 @@ pub struct StoredPrefs {
     pub exp_attack_ms: f32,
     #[setting("expReleaseMs", clamped(10.0, 2000.0), default = 150.0, show = K::Level(10.0, 2000.0), effect = SOUND)]
     pub exp_release_ms: f32,
+    /// Loudness compensation that follows the volume (ISO 226, `nori_player::contour`): turned down, the
+    /// bass and the top come up against the middle as the ear needs. Off by default; only while it is on
+    /// does the platform tell the core its volume.
+    #[setting("loudness", FLAG, default = false, show = K::Switch, effect = SOUND)]
+    pub loudness: bool,
+    /// The level the music is taken to be balanced at with the volume all the way up, phon.
+    #[setting("loudnessRefPhon", clamped(60, 90), default = 80, show = K::Choice(&["70", "75", "80", "85", "90"]), effect = SOUND)]
+    pub loudness_ref_phon: i32,
     #[setting("mono", FLAG, default = false, show = K::Switch, effect = APPLY_AUDIO | SOUND)]
     pub mono: bool,
     #[setting("limiter", FLAG, default = false, show = K::Switch, effect = APPLY_AUDIO | SOUND)]
@@ -617,6 +625,8 @@ pub struct SoundEffects {
     pub exp_ratio: f32,
     pub exp_attack_ms: f32,
     pub exp_release_ms: f32,
+    pub loudness: bool,
+    pub loudness_ref_phon: i32,
 }
 
 impl Default for SoundEffects {
@@ -653,12 +663,22 @@ impl SoundEffects {
         }
     }
 
-    /// As the sound chain takes them.
+    /// As the sound chain takes them, with loudness compensation for the volume `volume_db` (0 all the
+    /// way up) when it is on.
+    pub fn player_at(&self, volume_db: f64) -> nori_player::dsp::Effects {
+        nori_player::dsp::Effects {
+            loudness: self.loudness.then(|| nori_player::contour::Loudness { reference_phon: self.loudness_ref_phon as f64, volume_db }),
+            ..self.player()
+        }
+    }
+
+    /// As the sound chain takes them, loudness compensation at full volume (nothing to make up).
     pub fn player(&self) -> nori_player::dsp::Effects {
         nori_player::dsp::Effects {
             bass_boost_db: self.bass_boost_db as f64,
             compressor: self.compressor.then(|| self.compressor_settings()),
             expander: self.expander.then(|| self.expander_settings()),
+            loudness: self.loudness.then(|| nori_player::contour::Loudness { reference_phon: self.loudness_ref_phon as f64, volume_db: 0.0 }),
             virtualizer: self.virtualizer as f64,
             boost_db: self.volume_boost_db as f64,
         }
@@ -748,6 +768,8 @@ impl StoredPrefs {
             exp_ratio: s.effects.exp_ratio,
             exp_attack_ms: s.effects.exp_attack_ms,
             exp_release_ms: s.effects.exp_release_ms,
+            loudness: s.effects.loudness,
+            loudness_ref_phon: s.effects.loudness_ref_phon,
             replay_gain: s.replay_gain,
             preamp_db: s.preamp_db,
             crossfade_sec: s.crossfade_sec,
@@ -775,6 +797,8 @@ impl StoredPrefs {
             exp_ratio: self.exp_ratio,
             exp_attack_ms: self.exp_attack_ms,
             exp_release_ms: self.exp_release_ms,
+            loudness: self.loudness,
+            loudness_ref_phon: self.loudness_ref_phon,
         }
     }
 
@@ -971,6 +995,8 @@ pub fn sound_from(json: &str) -> Option<SoundSettings> {
             exp_ratio: f("expRatio", d.exp_ratio, 1.0, 20.0),
             exp_attack_ms: f("expAttackMs", d.exp_attack_ms, 0.1, 100.0),
             exp_release_ms: f("expReleaseMs", d.exp_release_ms, 10.0, 2000.0),
+            loudness: opt_bool(o, "loudness"),
+            loudness_ref_phon: o.get("loudnessRefPhon").and_then(Value::as_i64).map_or(d.loudness_ref_phon, |v| v.clamp(60, 90) as i32),
         },
         replay_gain: GainMode::ALL[opt_i32(o, "replayGain").clamp(0, GainMode::ALL.len() as i32 - 1) as usize],
         preamp_db: opt_f64(o, "preampDb", 0.0) as f32,
@@ -1021,6 +1047,8 @@ pub fn sound_json(s: &SoundSettings) -> String {
     }
     o.insert("compressor".into(), e.compressor.into());
     o.insert("expander".into(), e.expander.into());
+    o.insert("loudness".into(), e.loudness.into());
+    o.insert("loudnessRefPhon".into(), e.loudness_ref_phon.into());
     o.insert("replayGain".into(), s.replay_gain.ordinal().into());
     o.insert("preampDb".into(), (s.preamp_db as f64).into());
     o.insert("crossfadeSec".into(), s.crossfade_sec.into());
@@ -2110,6 +2138,8 @@ mod tests {
                 exp_ratio: 8.0,
                 exp_attack_ms: 1.5,
                 exp_release_ms: 250.0,
+                loudness: true,
+                loudness_ref_phon: 75,
             },
             replay_gain: GainMode::Album,
             preamp_db: 1.5,
@@ -2541,6 +2571,15 @@ mod tests {
         assert_eq!(set_level(x.sound(), EqLevel::ExpThreshold, -200.0).effects.exp_threshold_db, -90.0);
         let r = set_level(x.sound(), EqLevel::ExpRatio, 10.0);
         assert_eq!(sound_from(&sound_json(&r)).unwrap().effects, r.effects);
+        // Loudness compensation: off out of the box; on, at the volume the platform says.
+        assert!(p.effects().player().loudness.is_none());
+        let l = set_by_name(&p, "loudness", "true").unwrap().prefs;
+        assert!(l.sound_chain_on());
+        let fx = l.effects().player_at(-30.0);
+        assert_eq!(fx.loudness, Some(nori_player::contour::Loudness { reference_phon: 80.0, volume_db: -30.0 }));
+        assert_eq!(set_by_name(&l, "loudnessRefPhon", "85").unwrap().prefs.effects().player().loudness.unwrap().reference_phon, 85.0);
+        let s = set_by_name(&l, "loudnessRefPhon", "70").unwrap().prefs.sound();
+        assert_eq!(sound_from(&sound_json(&s)).unwrap().effects, s.effects, "a profile keeps it");
         assert!(set_by_name(&p, "virtualizer", "0.5").unwrap().prefs.sound_chain_on());
         let l = set_by_name(&p, "eqLayout", "31").unwrap().prefs;
         assert_eq!(l.eq_graphic.len(), 31);

@@ -12,6 +12,40 @@ Apple's own App Store screenshots and the differences closed. What is left is li
 
 ## Recently closed
 
+- **Sound extras, on top of the graphic equalizer and effects (branch `feat/sound-extras`).** All in
+  nori-player, tested there; settings are `StoredPrefs` fields kept in sound profiles.
+  - **Crossfeed presets and cutoff**: bs2b's Default (700 Hz, 4.5 dB), Chu Moy (700, 6) and Jan Meier (650,
+    9.5) as chips on the equalizer screen, a cutoff slider (300 to 2000 Hz, `crossfeedHz`) under the level
+    (now up to 12 dB). `crossfeedPreset` is a special name (OFF, DEFAULT, CHU_MOY, JAN_MEIER; "" is custom).
+    bs2b's own design leaves centred sound up to 1.8 dB darker above the cutoff; that is bs2b, not a bug.
+  - **No processing on an output** (`soundBypass`, the profile's `bypass`): a switch on the sound page and a
+    "No processing" choice in each device's sheet (a reserved profile, like "Flat"). The chain is the
+    identity (`nori-engine core::settings`), `sound_chain_on` is false, so offload comes back. ReplayGain and
+    transitions are not the chain's and stay.
+  - **Crossfade curves** (`crossfadeCurve`: equal power, the default and what plain crossfades always
+    used; linear; S-curve = sin²) and separate fade-in and fade-out lengths within the crossfade
+    (`crossfadeInSec`, `crossfadeOutSec`, 0 = all of it), in `transitions::shape_crossfade`, applied to
+    plain (blind) crossfades only; AutoMix keeps its own curves. "Mix only" was not added: crossfading
+    across albums and never inside an album played in order is exactly "Keep albums gapless"
+    (`crossfadeKeepAlbums`), and a skip already has its own dip (`fadeMs`).
+  - **Compressor meter** on the Effects section (the core's `compression_db` through the engine's status
+    and a `compressionDb` door), read every `stage.meterMs` only while the settings page is resumed. Like
+    the limiter's meter it is what the last buffer through the chain took off, so with bursts it moves
+    once per burst. **Noise gate**: a downward expander (`expander`, threshold, ratio 1:1 to 1:20, attack,
+    release) sharing the compressor's gain computer, before it in the chain; off by default.
+  - **Five-band graphic layout** on the ISO centres 63, 250, 1k, 4k, 16k (every other band of the ten),
+    bells 1.25 spacings wide: 0.2 dB at the centres, 0.7 between, a ±12 zigzag 0.34 off; about 2 dB rms
+    against real AutoEQ corrections (the ten: 1 to 1.3).
+  - **Loudness compensation** (`loudness`, `loudnessRefPhon`, off by default): ISO 226:2003 contours
+    (`contour.rs`), the difference between the reference level (80 phon at full volume) and the level
+    the volume leaves, drawn by a low and a high shelf fitted by least squares (within 0.3 to 2 dB down to
+    40 phon), with a pre-gain that pays the boost back so it never clips. Kotlin's `VolumeWatch` listens
+    (a ContentObserver on the system settings, only while it is on) and hands the step, the maximum and
+    `getStreamVolumeDb` to the `setVolume` door; the core applies it only when it moves the sound by a
+    quarter dB. The terminal client follows its own volume. **Not checked on a phone**: whether
+    `getStreamVolumeDb` answers sensibly over Bluetooth absolute volume (0 dB below the top step is read
+    by the core's own curve instead), and how the lower middle feels at low volume.
+
 - **The lyrics sync check hears the middle of the stereo image.** The vocal curve (nori-player automix/vocal.rs)
   of a stereo song is measured on its centre: the side rides in the analysis FFT's imaginary part, and each
   voice-band bin counts by how alike the channels are there (nothing under 0.6), so panned guitars drop out. On

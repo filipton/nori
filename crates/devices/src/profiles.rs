@@ -143,6 +143,13 @@ pub fn device_rows(known: Vec<String>, current: String, profiles: Vec<SoundProfi
     device::rows(&known, &current, &bound, &quiet)
 }
 
+/// Where an output is plugged in, from its key (`nori_player::outputs::parts`): for a platform that asks
+/// its own audio system something per kind of device (the volume curve it uses).
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn output_port(output: String) -> OutputPort {
+    nori_player::outputs::parts(&output).0
+}
+
 /// What the test bridge asks a device to get.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
