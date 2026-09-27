@@ -218,6 +218,29 @@ fn the_sound_chain_allocates_nothing() {
 }
 
 #[test]
+fn the_graphic_equalizer_and_the_effects_allocate_nothing() {
+    let mut eq = Equalizer::new(RATE, 2);
+    eq.configure_graphic(&[3.0, 5.0, 2.0, 0.0, -2.0, -4.0, 0.0, 2.0, 4.0, 6.0, 3.0, 1.0, 0.0, -1.0, 2.0], -6.0, 3.0);
+    let fx = crate::dsp::Effects {
+        bass_boost_db: 6.0,
+        compressor: Some(crate::compressor::CompressorPreset::Strong.settings()),
+        virtualizer: 0.7,
+        boost_db: 4.0,
+    };
+    eq.configure_effects(&fx);
+    eq.configure_output(0.0, true, -1.0, 120.0, 5.0);
+    let x: Vec<i16> = tone(2.0, 440.0).chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
+    let mut y = vec![0i16; CHUNK / 2];
+    eq.process_i16(&x[..CHUNK / 2], &mut y);
+    let n = allocations(|| {
+        for c in x.chunks_exact(CHUNK / 2) {
+            eq.process_i16(c, &mut y);
+        }
+    });
+    assert_eq!(n, 0);
+}
+
+#[test]
 fn speed_and_silence_allocate_nothing_once_warm() {
     let x = tone(20.0, 440.0);
     let mut sp = SpeedPitch::new(RATE, 2, Encoding::Pcm16);

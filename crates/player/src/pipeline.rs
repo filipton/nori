@@ -12,7 +12,7 @@
 use std::collections::VecDeque;
 
 use crate::burst::{Burst, Fed, BUFFER_US};
-use crate::dsp::{Band, Equalizer};
+use crate::dsp::{Band, Effects, Equalizer};
 use crate::engine::{Downstream, Heard, Host, StreamFormat, TransitionEngine, POSITION_NOT_SET};
 use crate::heard::{HeardTracker, Seen};
 use crate::pcm::{Encoding, Format};
@@ -44,8 +44,13 @@ const PACES: usize = 512;
 /// The sound settings, as the settings store hands them to the chain.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sound {
-    /// The equalizer's bands; empty is the equalizer off.
+    /// The equalizer's bands; empty is the parametric equalizer off.
     pub bands: Vec<Band>,
+    /// The graphic equalizer's sliders (dB, one per band of a `graphic::LAYOUTS` layout), played in place
+    /// of `bands`; empty is the graphic equalizer off.
+    pub graphic: Vec<f64>,
+    /// Bass boost, compressor, virtualizer and volume boost.
+    pub effects: Effects,
     pub preamp_db: f64,
     pub crossfeed_db: f64,
     pub balance: f64,
@@ -56,20 +61,37 @@ pub struct Sound {
 
 impl Default for Sound {
     fn default() -> Self {
-        Sound { bands: Vec::new(), preamp_db: 0.0, crossfeed_db: 0.0, balance: 0.0, mono: false, limiter: false, threshold_db: -1.0 }
+        Sound {
+            bands: Vec::new(),
+            graphic: Vec::new(),
+            effects: Effects::default(),
+            preamp_db: 0.0,
+            crossfeed_db: 0.0,
+            balance: 0.0,
+            mono: false,
+            limiter: false,
+            threshold_db: -1.0,
+        }
     }
 }
 
 impl Sound {
     /// Whether anything here touches the samples: the equalizer processor then sits in the chain.
     pub fn on(&self) -> bool {
-        sound_on(!self.bands.is_empty() || self.preamp_db != 0.0, self.crossfeed_db as f32, self.balance as f32, self.mono, self.limiter)
+        let eq = !self.bands.is_empty() || !self.graphic.is_empty() || self.preamp_db != 0.0;
+        sound_on(eq, self.crossfeed_db as f32, self.balance as f32, self.mono, self.limiter, self.effects.on())
     }
 
-    /// The chain set up the way `follow_chain` in the core sets it up.
+    /// The chain set up the way `follow_chain` in the core sets it up. Anything that boosts the level
+    /// (the volume boost, bass boost, a compressor's make-up) brings the limiter with it.
     pub fn apply(&self, eq: &mut Equalizer) {
-        eq.configure(&self.bands, self.preamp_db, self.crossfeed_db);
-        let lookahead = if self.limiter { LIMITER_LOOKAHEAD_MS } else { 0.0 };
+        if self.graphic.is_empty() {
+            eq.configure(&self.bands, self.preamp_db, self.crossfeed_db);
+        } else {
+            eq.configure_graphic(&self.graphic, self.preamp_db, self.crossfeed_db);
+        }
+        eq.configure_effects(&self.effects);
+        let lookahead = if self.limiter || self.effects.guard() { LIMITER_LOOKAHEAD_MS } else { 0.0 };
         eq.configure_output(self.balance, self.mono, self.threshold_db, LIMITER_RELEASE_MS, lookahead);
     }
 }
