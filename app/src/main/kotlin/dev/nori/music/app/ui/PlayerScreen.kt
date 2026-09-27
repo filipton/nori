@@ -165,7 +165,9 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
     val nav = LocalNav.current
     var panel by rememberSaveable { mutableStateOf(Panel.ART) }
     // A panel's button opens it, and pressed again goes back to the artwork.
-    val choose: (Panel) -> Unit = { panel = if (panel == it) Panel.ART else it }
+    // Each change's arriving panel goes under every panel before it (see the panels' AnimatedContent).
+    var changes by remember { mutableIntStateOf(0) }
+    val choose: (Panel) -> Unit = { panel = if (panel == it) Panel.ART else it; changes++ }
     // Where the sleeve ends, so the page behind it can be drawn at the same scale. Written on layout,
     // read in the draw phase; it only moves when the window does.
     var sleeveBottom by remember { mutableFloatStateOf(0f) }
@@ -445,9 +447,14 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                 // The one that is leaving fades out where it stands, which is also what keeps it on
                 // screen while it does; the one arriving is brought up by [arrival] instead, so the
                 // controls they share are not faded twice over.
+                // The one leaving is drawn over the one arriving. AnimatedContent draws the arriving one on
+                // top unless told: with the artwork arriving on top, its sleeve covered the queue at once,
+                // and closing the queue was a cut instead of a dissolve. Each arrival lower than the last,
+                // since a panel keeps the depth it arrived at and the one leaving came in a change before.
                 transitionSpec = {
-                    androidx.compose.animation.EnterTransition.None togetherWith
-                        androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(PANEL_MS))
+                    (androidx.compose.animation.EnterTransition.None togetherWith
+                        androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(PANEL_MS)))
+                        .apply { targetContentZIndex = -changes.toFloat() }
                 },
                 label = "panel",
             ) { page ->
@@ -494,7 +501,15 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                         // held back from the frame the panel changed, it went out on that frame while
                         // the flight, which is started by an effect, had not begun - one frame with no
                         // cover on screen at all.
-                        .graphicsLayer { alpha = if ((page == panel && panel != showing) || flying) 0f else 1f }
+                        // Back from the queue, which covers nothing (rows over the page), the sleeve comes up
+                        // under it as the rows fade: at full strength at once it was a cut under a fade.
+                        .graphicsLayer {
+                            alpha = when {
+                                (page == panel && panel != showing) || flying -> 0f
+                                page == panel && leaving == Panel.QUEUE -> arrived.read()
+                                else -> 1f
+                            }
+                        }
                         .layout { measurable, constraints ->
                             val placeable = measurable.measure(constraints)
                             val takes = (placeable.height * (1f - SLEEVE_UNDER_TEXT)).toInt()
@@ -547,8 +562,14 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                 if (page == Panel.ART) Spacer(Modifier.weight(0.02f))
                 // The lyrics view carries its own header - a thumbnail with the title, the favourite and
                 // the menu beside it, the way Apple's does - so this block would be the second copy of it.
+                // Shared between the artwork and the queue, where it stands at another height: one copy moves
+                // from one place to the other, as the transport does, instead of one blinking out where it
+                // was and another fading in where it goes. The lyrics have none (their header is their own),
+                // so between those it fades with the panel.
+                val titleRow = rememberSharedContentState("title")
                 if (page != Panel.LYRICS) Row(
-                    Modifier.fillMaxWidth().graphicsLayer { alpha = panelFade.read() }
+                    Modifier.fillMaxWidth().sharedElement(titleRow, this@AnimatedContent)
+                        .graphicsLayer { alpha = if (titleRow.isMatchFound) 1f else panelFade.read() }
                         .padding(start = PLAYER_GUTTER, end = PLAYER_GUTTER, top = 2.dp),
                     Arrangement.spacedBy(10.dp), Alignment.CenterVertically,
                 ) {
