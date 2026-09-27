@@ -1040,7 +1040,8 @@ mod tests {
         assert!(matches!(EqRow::Layout.step(&p, true), Some(Cmd::Setting(n, v)) if n == "eqLayout" && v == "15"));
         assert!(EqRow::Layout.step(&p, false).is_none(), "ten is the fewest");
         assert!(matches!(EqRow::Mode.open(&p), Some(Cmd::Setting(n, v)) if n == "eqMode" && v == "PARAMETRIC"));
-        let parametric = eq_rows(&StoredPrefs::default());
+        assert!(eq_rows(&StoredPrefs::default()).contains(&EqRow::Layout), "a new install opens on the graphic equalizer");
+        let parametric = eq_rows(&StoredPrefs { eq_mode: EqMode::Parametric, ..StoredPrefs::default() });
         assert!(parametric.contains(&EqRow::Mode) && !parametric.contains(&EqRow::Layout));
         // The effects on the sound page, the compressor's controls once it is on.
         let fx = effects(&Build { p: &StoredPrefs { compressor: true, ..StoredPrefs::default() }, s: &settings_model::state(&StoredPrefs::default(), settings_model::Output::default()) });
@@ -1049,7 +1050,7 @@ mod tests {
 
     #[test]
     fn the_equalizer_lists_every_band_and_steps_them_in_range() {
-        let prefs = StoredPrefs { eq_bands: nori_core::settings::graphic(), ..StoredPrefs::default() };
+        let prefs = StoredPrefs { eq_mode: EqMode::Parametric, eq_bands: nori_core::settings::graphic(), ..StoredPrefs::default() };
         let rows = eq_rows(&prefs);
         assert_eq!(rows.iter().filter(|r| matches!(r, EqRow::Band(_))).count(), prefs.eq_bands.len());
         let Some(Cmd::Band(0, b)) = EqRow::Band(0).step(&prefs, true) else { panic!() };

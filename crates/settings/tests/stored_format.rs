@@ -62,7 +62,7 @@ fn sample() -> StoredPrefs {
         eq_enabled: true,
         eq_bands: vec![band_from(1, 105.0, -3.5, 0.7, 1), band_from(9, 12_345_678.0, 2.0, 0.00001, 2)],
         eq_preamp_db: Some(-4.25),
-        eq_mode: EqMode::Graphic,
+        eq_mode: EqMode::Parametric,
         eq_graphic: vec![1.5, -2.0, 0.0, 3.0, 4.5, 6.0, -12.0, 12.0, 0.5, -0.5],
         eq_graphic_target: (0..96).map(|i| i as f32 * 0.25 - 12.0).collect(),
         bass_boost_db: 6.0,

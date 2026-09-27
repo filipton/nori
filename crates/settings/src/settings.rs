@@ -258,8 +258,9 @@ pub struct StoredPrefs {
     pub eq_enabled: bool,
     #[setting("eqBands", BANDS, default = graphic(), hidden, effect = SOUND)]
     pub eq_bands: Vec<SoundBand>,
-    /// Which equalizer plays while it is on; the other keeps its settings.
-    #[setting("eqMode", PICK, default = EqMode::Parametric, show = K::Named(EqMode::NAMES), effect = SOUND)]
+    /// Which equalizer plays while it is on; the other keeps its settings. Graphic on a new install; an
+    /// install from before there was a choice keeps the parametric equalizer it has set up ([`load`]).
+    #[setting("eqMode", PICK, default = EqMode::Graphic, show = K::Named(EqMode::NAMES), effect = SOUND)]
     pub eq_mode: EqMode,
     /// The graphic equalizer's sliders, dB, low to high: 10, 15 or 31 of them (`nori_player::graphic`).
     #[setting("eqGraphic", GRAPHIC, default = vec![0.0; 10], hidden, effect = SOUND)]
@@ -966,7 +967,27 @@ pub fn load(raw: &HashMap<String, PrefValue>) -> StoredPrefs {
     for row in ROWS {
         (row.load)(&mut p, &r);
     }
+    if !raw.contains_key(EQ_MODE_KEY) && parametric_set_up(&p) {
+        p.eq_mode = EqMode::Parametric;
+    }
     p
+}
+
+/// Where the equalizer's choice is stored. Settings stored before there was one have no such key.
+pub const EQ_MODE_KEY: &str = "eqMode";
+
+/// Whether these settings (stored before the equalizer had a graphic mode) have a parametric equalizer
+/// set up: switched on, a pre-amp of its own, or bands that are not the ten flat ones it starts with (a
+/// preset, an AutoEQ curve, a band moved or added). Such an install keeps the parametric equalizer; any
+/// other gets the graphic one, as a new install does.
+pub fn parametric_set_up(p: &StoredPrefs) -> bool {
+    p.eq_enabled || p.eq_preamp_db.is_some() || p.eq_bands != graphic()
+}
+
+/// The same for a saved sound profile's JSON (`profiles.json`): one with a parametric equalizer in it
+/// keeps an install on the parametric equalizer too.
+pub fn profile_parametric(json: &str) -> bool {
+    sound_from(json).is_some_and(|s| s.eq_enabled && (s.eq_bands != graphic() || s.eq_preamp_db.is_some()))
 }
 
 /// Everything to write for these settings.
@@ -2230,6 +2251,44 @@ mod tests {
         assert_eq!(relayout_graphic(&[0.0, 2.0, 4.0, 6.0, 4.0, 2.0, 0.0, -2.0, -4.0, -6.0], 31).len(), 31);
         assert_eq!(decode_graphic("1,2,3"), None, "not a layout");
         assert_eq!(decode_graphic(&vec!["99"; 10].join(",")), Some(vec![12.0; 10]));
+    }
+
+    /// Settings as an install from before the graphic equalizer stored them: everything but the choice.
+    fn stored_before(p: StoredPrefs) -> HashMap<String, PrefValue> {
+        let mut raw = save(&p);
+        raw.remove(EQ_MODE_KEY);
+        raw
+    }
+
+    #[test]
+    fn a_new_install_gets_the_graphic_equalizer_and_an_old_one_keeps_what_it_set_up() {
+        assert_eq!(load(&HashMap::new()).eq_mode, EqMode::Graphic, "a new install");
+        assert_eq!(StoredPrefs::default().eq_mode, EqMode::Graphic);
+        // From before this version, with only the defaults: nothing was set up, so graphic.
+        assert_eq!(load(&stored_before(StoredPrefs::default())).eq_mode, EqMode::Graphic);
+        // From before, with a parametric equalizer in any form: it stays.
+        let d = StoredPrefs::default();
+        let mut moved = graphic();
+        moved[3].gain_db = 2.5;
+        let bass = vec![band_from(1, 100.0, 6.0, 0.7, 0)];
+        for (what, p) in [
+            ("a band moved", StoredPrefs { eq_bands: moved, ..d.clone() }),
+            ("a preset or an AutoEQ curve", StoredPrefs { eq_bands: bass, eq_preamp_db: Some(-6.0), ..d.clone() }),
+            ("a band added", StoredPrefs { eq_bands: add_band(d.sound()).eq_bands, ..d.clone() }),
+            ("the equalizer on, flat", StoredPrefs { eq_enabled: true, ..d.clone() }),
+            ("a pre-amp of its own", StoredPrefs { eq_preamp_db: Some(-3.0), ..d.clone() }),
+        ] {
+            assert_eq!(load(&stored_before(p)).eq_mode, EqMode::Parametric, "{what}");
+        }
+        // Once chosen, the choice is what is read, whatever else is stored.
+        let chosen = StoredPrefs { eq_mode: EqMode::Graphic, eq_enabled: true, eq_bands: vec![band_from(1, 100.0, 6.0, 0.7, 0)], ..d.clone() };
+        assert_eq!(load(&save(&chosen)).eq_mode, EqMode::Graphic);
+        assert_eq!(load(&save(&StoredPrefs { eq_mode: EqMode::Parametric, ..d.clone() })).eq_mode, EqMode::Parametric);
+        // A sound profile with a curve in it counts; a flat or switched-off one does not.
+        assert!(profile_parametric(&sound_json(&SoundSettings { eq_enabled: true, eq_bands: vec![band_from(1, 100.0, 6.0, 0.7, 0)], ..sound() })));
+        assert!(!profile_parametric(&sound_json(&SoundSettings { eq_enabled: false, eq_bands: vec![band_from(1, 100.0, 6.0, 0.7, 0)], ..sound() })));
+        assert!(!profile_parametric(&sound_json(&SoundSettings { eq_enabled: true, ..sound() })));
+        assert!(!profile_parametric("not json"));
     }
 
     #[test]

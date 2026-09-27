@@ -56,6 +56,17 @@ fn read(c: &Connection) -> rusqlite::Result<HashMap<String, PrefValue>> {
     Ok(rows.filter_map(|r| r.ok()).filter_map(|(k, v)| Some((k, from_json(&v)?))).collect())
 }
 
+/// Whether any saved sound profile in this database has a parametric equalizer in it; none when there is
+/// no profiles table (a database the core has not opened yet).
+fn profiles_parametric(c: &Connection) -> bool {
+    let Ok(mut st) = c.prepare("SELECT json FROM profiles") else { return false };
+    let jsons: Vec<String> = match st.query_map([], |r| r.get::<_, String>(0)) {
+        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+        Err(_) => return false,
+    };
+    jsons.iter().any(|json| crate::settings::profile_parametric(json))
+}
+
 /// Every value these settings store, in one transaction; keys no longer written go.
 fn write(c: &mut Connection, prefs: &StoredPrefs) -> rusqlite::Result<()> {
     let put = save(prefs);
@@ -76,8 +87,14 @@ fn write(c: &mut Connection, prefs: &StoredPrefs) -> rusqlite::Result<()> {
 pub fn settings_open(db_path: String) -> nori_model::Result<StoredPrefs> {
     let mut c = db::open_app(&db_path)?;
     let raw = read(&c)?;
-    let prefs = load(&raw);
-    if raw.is_empty() {
+    let mut prefs = load(&raw);
+    // Settings from before the equalizer had a graphic mode: the choice is made once, here, and kept. A
+    // saved sound profile with a parametric curve in it counts as set up too.
+    let chosen = raw.contains_key(crate::settings::EQ_MODE_KEY);
+    if !raw.is_empty() && !chosen && profiles_parametric(&c) {
+        prefs.eq_mode = crate::settings::EqMode::Parametric;
+    }
+    if raw.is_empty() || !chosen {
         write(&mut c, &prefs)?;
     }
     let mut k = KEPT.write();
@@ -392,6 +409,47 @@ mod tests {
         assert_eq!(edit_level(EqLevel::Balance, -0.6), Some((SOUND, -0.6)), "a drag step");
         assert_eq!(edit_level(EqLevel::ReplayGainPreamp, 20.0), Some((APPLY_GAIN, 6.0)), "the overall level, held in range");
         assert_eq!(current().unwrap().preamp_db, 6.0);
+    }
+
+    /// An install from before the graphic equalizer, opened: the choice is made from its settings and
+    /// its sound profiles, written at once, and kept from then on.
+    #[test]
+    fn an_old_install_keeps_its_parametric_equalizer_and_the_choice_is_written() {
+        use crate::settings::{load, save, sound_json, EqMode, EQ_MODE_KEY};
+        let _turn = OPEN.lock();
+        let open_with = |name: &str, prefs: &StoredPrefs, profile: Option<String>| {
+            let dir = nori_testdir::TempDir::new(name);
+            let path = dir.join("nori.db").display().to_string();
+            {
+                let mut c = db::open_app(&path).unwrap();
+                let mut p = prefs.clone();
+                p.eq_mode = EqMode::Graphic; // what a missing key would read as; the key goes next
+                write(&mut c, &p).unwrap();
+                c.execute("DELETE FROM settings WHERE key = ?1", [EQ_MODE_KEY]).unwrap();
+                if let Some(json) = profile {
+                    c.execute_batch("CREATE TABLE profiles(name TEXT PRIMARY KEY, json TEXT NOT NULL, outputs TEXT NOT NULL DEFAULT '') WITHOUT ROWID").unwrap();
+                    c.execute("INSERT INTO profiles(name, json) VALUES('Mine', ?1)", [json]).unwrap();
+                }
+            }
+            let opened = settings_open(path.clone()).unwrap();
+            let raw = read(&db::open_app(&path).unwrap()).unwrap();
+            (opened.eq_mode, raw.contains_key(EQ_MODE_KEY), load(&raw).eq_mode, dir)
+        };
+        let d = StoredPrefs::default();
+        let (mode, written, reread, _dir) = open_with("settings-old-flat", &d, None);
+        assert_eq!((mode, written, reread), (EqMode::Graphic, true, EqMode::Graphic), "nothing set up: graphic, and kept");
+        let with_bands = StoredPrefs { eq_enabled: true, eq_bands: vec![crate::settings::band_from(1, 100.0, 6.0, 0.7, 0)], ..d.clone() };
+        let (mode, written, reread, _dir) = open_with("settings-old-bands", &with_bands, None);
+        assert_eq!((mode, written, reread), (EqMode::Parametric, true, EqMode::Parametric), "bands set up: parametric, and kept");
+        let profile = sound_json(&with_bands.sound());
+        let (mode, _, reread, _dir) = open_with("settings-old-profile", &d, Some(profile));
+        assert_eq!((mode, reread), (EqMode::Parametric, EqMode::Parametric), "a profile with a curve in it");
+        // A new install: graphic, written with everything else.
+        let dir = nori_testdir::TempDir::new("settings-new-install");
+        let path = dir.join("nori.db").display().to_string();
+        assert_eq!(settings_open(path.clone()).unwrap().eq_mode, EqMode::Graphic);
+        assert!(read(&db::open_app(&path).unwrap()).unwrap().contains_key(EQ_MODE_KEY));
+        let _ = save; // the stored format is `save`'s, as write uses it
     }
 
     #[test]

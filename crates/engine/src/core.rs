@@ -1214,7 +1214,7 @@ mod tests {
     #[test]
     fn the_equalizer_in_use_and_the_effects_reach_the_chain() {
         use nori_core::settings::EqMode;
-        let p = StoredPrefs { eq_enabled: true, eq_graphic: vec![3.0; 10], ..StoredPrefs::default() };
+        let p = StoredPrefs { eq_enabled: true, eq_mode: EqMode::Parametric, eq_graphic: vec![3.0; 10], ..StoredPrefs::default() };
         let s = settings(&p).sound;
         assert!(s.graphic.is_empty() && !s.bands.is_empty(), "parametric: the bands play");
         let g = settings(&StoredPrefs { eq_mode: EqMode::Graphic, ..p.clone() }).sound;
