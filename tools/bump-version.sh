@@ -42,8 +42,11 @@ edit("app/build.gradle.kts", [
 ])
 # The workspace version can lag behind the app's (it did at 0.3.1), so it is set outright.
 edit("Cargo.toml", [(r'(\[workspace\.package\][^\[]*?\nversion = )"[^"]+"', rf'\g<1>"{new}"')])
-# Every workspace crate takes the workspace version, so each has an entry to move.
-members = [re.search(r'^name = "([^"]+)"', (p / "Cargo.toml").read_text(), re.M).group(1) for p in sorted((root / "crates").iterdir()) if (p / "Cargo.toml").exists()]
+# Every crate that takes the workspace version has an entry to move. Not all do: uniffi-jni-runtime is
+# upstream's crate and keeps upstream's own version, which a lock file saying otherwise only makes cargo
+# write back at the next build.
+manifests = [(p / "Cargo.toml").read_text() for p in sorted((root / "crates").iterdir()) if (p / "Cargo.toml").exists()]
+members = [re.search(r'^name = "([^"]+)"', m, re.M).group(1) for m in manifests if re.search(r'^version\.workspace\s*=\s*true', m, re.M)]
 edit("Cargo.lock", [(rf'(\[\[package\]\]\nname = "{re.escape(m)}"\nversion = )"[^"]+"', rf'\g<1>"{new}"') for m in members])
 edit("docs/features.md", [(rf'nori {esc}\*\*', f'nori {new}**')])
 EOF
