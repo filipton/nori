@@ -38,6 +38,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -292,6 +293,8 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
               // a layer at zero alpha is skipped, so a page left animating underneath costs nothing.
               CompositionLocalProvider(LocalWide provides wide) {
               Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (sheet.progress.value >= 1f) 0f else 1f }) {
+              // The strip the rail stands on wears the page's colour, so a tinted page runs to the edge.
+              if (wide) Box(Modifier.fillMaxHeight().width(railInset).drawBehind { drawRect(chromeLook.color(dev.nori.music.look.CoverLook.CHROME_PAGE)) })
               CompositionLocalProvider(LocalStarMarks provides marks, LocalChromeInset provides chromeHeight) {
               Box(Modifier.fillMaxSize().padding(start = railInset)) {
                 // One transition for the whole app, and the same one in both directions. See PageMotion.

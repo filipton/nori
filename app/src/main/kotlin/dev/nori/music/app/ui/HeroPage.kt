@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -125,111 +128,138 @@ fun HeroPage(
         val scheme = MaterialTheme.colorScheme
         SystemBarIcons(LocalLook.current)
         PageTint(palette, waiting = palette == null && prefs.coverColors && coverUrl != null)
+        val list = rememberLazyListState()
+        // How far the hero has scrolled off, for its parallax: the list's own scroll upright; on its side the
+        // hero stands still in its half and does not move with the songs (see below).
+        val wide = LocalWide.current
+        val heroScroll: (Float) -> Float = if (wide) { _ -> 0f } else { h -> if (list.firstVisibleItemIndex == 0) list.firstVisibleItemScrollOffset.toFloat() else h }
+        // One block: artwork, then the wash it melts into, carrying the title and the buttons.
+        val hero: @Composable () -> Unit = {
+        Column(Modifier.fillMaxWidth()) {
+            if (coverUrl != null) Box(
+                Modifier.fillMaxWidth().aspectRatio(1f)
+                    // Parallax and fade, read in the draw phase: scrolling never recomposes the hero.
+                    .graphicsLayer {
+                        val scrolled = heroScroll(size.height)
+                        translationY = scrolled * 0.4f
+                        alpha = 1f - (scrolled / size.height).coerceIn(0f, 1f) * 0.5f
+                    },
+            ) {
+                Cover(coverUrl, 0.dp, Modifier.fillMaxSize())
+                val look = LocalLook.current
+                Box(
+                    Modifier.fillMaxSize().drawWithCache {
+                        // The whole dissolve happens inside the artwork, and finishes on the
+                        // page colour rather than on the cover's edge colour. It used to stop
+                        // on the edge colour and leave a second gradient below to carry on -
+                        // but the parallax slides the picture down over that gradient as the
+                        // page scrolls, squeezing it into a few dozen pixels, and a colour
+                        // ramp that steep across the full width is a line. The picture has
+                        // its own height to do this in, and ending on the page colour means
+                        // there is nothing left to hand over to. The stops are the look's
+                        // (nori_look::dress), made into brushes once per size.
+                        val at = stage.heroStops
+                        val dissolve = Brush.verticalGradient(
+                            at[0] to Color.Transparent,
+                            at[1] to look.color(CoverLook.HERO_EDGE),
+                            at[2] to look.color(CoverLook.HERO_MID),
+                            at[3] to look.color(CoverLook.BACKGROUND),
+                        )
+                        // Just enough shade under the status bar for white icons on a pale cover.
+                        val shade = Brush.verticalGradient(0f to Color.Black.copy(alpha = stage.statusShade), stage.statusShadeTo to Color.Transparent)
+                        onDrawWithContent {
+                            drawContent()
+                            drawRect(dissolve)
+                            drawRect(shade)
+                        }
+                    },
+                )
+            } else if (art != null) Box(
+                Modifier.fillMaxWidth().statusBarsPadding().padding(top = 64.dp, bottom = 18.dp),
+                Alignment.Center,
+            ) { art() } else Spacer(Modifier.statusBarsPadding().height(72.dp))
+
+            // Nothing is painted here: the artwork above has already dissolved onto the page
+            // colour, and the page colour is what the root is painted with.
+            Column(Modifier.fillMaxWidth()) {
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = Space.gutter, vertical = 4.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    title, style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis,
+                )
+                if (!subtitle.isNullOrEmpty()) Text(
+                    subtitle,
+                    Modifier.padding(top = 2.dp).then(if (onSubtitle != null) Modifier.clickable(onClick = onSubtitle) else Modifier),
+                    style = MaterialTheme.typography.titleMedium, color = scheme.primary,
+                    textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+                // Sentence case, as Apple writes it ("25 songs, 1 hour 42 minutes"). Small
+                // capitals here made the line shout louder than the artist above it.
+                Caption(caption, Modifier.padding(top = 6.dp), align = TextAlign.Center, caps = false)
+            }
+
+            // Apple's arrangement: shuffle in a circle on the left, one wide Play pill in the
+            // middle, and the page's other action in a circle on the right. Two equal pills
+            // side by side give the page two things to look at instead of one. The row is
+            // reserved while [awaitingPlay] so the layout does not jump when the taps land.
+            if (awaitingPlay || onPlay != null || onShuffle != null) Row(
+                Modifier.fillMaxWidth().padding(start = Space.gutter, end = Space.gutter, top = 16.dp),
+                Arrangement.spacedBy(12.dp), Alignment.CenterVertically,
+            ) {
+                val press: (dev.nori.music.ffi.library.HeroPress, (() -> Unit)?) -> Unit = { p, start ->
+                    when (p) {
+                        dev.nori.music.ffi.library.HeroPress.START -> start?.invoke()
+                        dev.nori.music.ffi.library.HeroPress.TOGGLE -> player.toggle()
+                        dev.nori.music.ffi.library.HeroPress.SHUFFLE_OFF -> player.toggleShuffle()
+                    }
+                }
+                CircleButton(
+                    Icons.Filled.Shuffle, say.shuffle,
+                    enabled = buttons.shuffleEnabled, lit = buttons.shuffleLit,
+                    onClick = { press(buttons.shufflePress, onShuffle) },
+                )
+                PillButton(
+                    if (buttons.pausing) say.pause else say.play, if (buttons.pausing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    { press(buttons.playPress, onPlay) }, Modifier.weight(1f),
+                    prominent = true, enabled = buttons.playEnabled,
+                )
+                actions()
+            } else Row(
+                Modifier.fillMaxWidth().padding(start = Space.tight, end = Space.tight, top = 2.dp),
+                Arrangement.Center, Alignment.CenterVertically,
+            ) { actions() }
+            Spacer(Modifier.height(10.dp))
+            }
+        }
+        }
         Box(Modifier.fillMaxSize().drawBehind { drawRect(scheme.background) }) {
-            val list = rememberLazyListState()
-            LazyColumn(state = list) {
+            if (wide) androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
+                // On its side the page stands in two halves, as Apple's does on a wide screen: the cover,
+                // the name and the buttons on the left, still, and the songs scrolling down the right.
+                // Upright, the cover alone was the whole screen and the songs began a screen further down.
+                // Narrow enough that the name and the buttons fit under the cover without scrolling.
+                // The height left once the now playing bar and the name, caption and buttons (about 150 dp) are
+                // counted out.
+                val side = minOf(maxWidth * 0.4f, maxHeight - LocalChromeInset.current - 150.dp).coerceAtLeast(120.dp)
+                Row(Modifier.fillMaxSize()) {
+                    Column(Modifier.width(side).fillMaxHeight().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                        hero()
+                        Spacer(Modifier.height(LocalChromeInset.current))
+                    }
+                    LazyColumn(Modifier.weight(1f).fillMaxHeight(), state = list) {
+                        item(key = "top") { Spacer(Modifier.statusBarsPadding().height(12.dp)) }
+                        content()
+                        item(key = "tail") { Spacer(Modifier.height(Space.section + LocalChromeInset.current)) }
+                    }
+                }
+            } else LazyColumn(state = list) {
                 item(key = "hero", contentType = "hero") {
                     // One block: artwork, then the wash it melts into, carrying the title and the buttons.
                     //
-                    Column(Modifier.fillMaxWidth()) {
-                        if (coverUrl != null) Box(
-                            Modifier.fillMaxWidth().aspectRatio(1f)
-                                // Parallax and fade, read in the draw phase: scrolling never recomposes the hero.
-                                .graphicsLayer {
-                                    val scrolled = if (list.firstVisibleItemIndex == 0) list.firstVisibleItemScrollOffset.toFloat() else size.height
-                                    translationY = scrolled * 0.4f
-                                    alpha = 1f - (scrolled / size.height).coerceIn(0f, 1f) * 0.5f
-                                },
-                        ) {
-                            Cover(coverUrl, 0.dp, Modifier.fillMaxSize())
-                            val look = LocalLook.current
-                            Box(
-                                Modifier.fillMaxSize().drawWithCache {
-                                    // The whole dissolve happens inside the artwork, and finishes on the
-                                    // page colour rather than on the cover's edge colour. It used to stop
-                                    // on the edge colour and leave a second gradient below to carry on -
-                                    // but the parallax slides the picture down over that gradient as the
-                                    // page scrolls, squeezing it into a few dozen pixels, and a colour
-                                    // ramp that steep across the full width is a line. The picture has
-                                    // its own height to do this in, and ending on the page colour means
-                                    // there is nothing left to hand over to. The stops are the look's
-                                    // (nori_look::dress), made into brushes once per size.
-                                    val at = stage.heroStops
-                                    val dissolve = Brush.verticalGradient(
-                                        at[0] to Color.Transparent,
-                                        at[1] to look.color(CoverLook.HERO_EDGE),
-                                        at[2] to look.color(CoverLook.HERO_MID),
-                                        at[3] to look.color(CoverLook.BACKGROUND),
-                                    )
-                                    // Just enough shade under the status bar for white icons on a pale cover.
-                                    val shade = Brush.verticalGradient(0f to Color.Black.copy(alpha = stage.statusShade), stage.statusShadeTo to Color.Transparent)
-                                    onDrawWithContent {
-                                        drawContent()
-                                        drawRect(dissolve)
-                                        drawRect(shade)
-                                    }
-                                },
-                            )
-                        } else if (art != null) Box(
-                            Modifier.fillMaxWidth().statusBarsPadding().padding(top = 64.dp, bottom = 18.dp),
-                            Alignment.Center,
-                        ) { art() } else Spacer(Modifier.statusBarsPadding().height(72.dp))
-
-                        // Nothing is painted here: the artwork above has already dissolved onto the page
-                        // colour, and the page colour is what the root is painted with.
-                        Column(Modifier.fillMaxWidth()) {
-                        Column(
-                            Modifier.fillMaxWidth().padding(horizontal = Space.gutter, vertical = 4.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                        ) {
-                            Text(
-                                title, style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center,
-                                maxLines = 2, overflow = TextOverflow.Ellipsis,
-                            )
-                            if (!subtitle.isNullOrEmpty()) Text(
-                                subtitle,
-                                Modifier.padding(top = 2.dp).then(if (onSubtitle != null) Modifier.clickable(onClick = onSubtitle) else Modifier),
-                                style = MaterialTheme.typography.titleMedium, color = scheme.primary,
-                                textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            )
-                            // Sentence case, as Apple writes it ("25 songs, 1 hour 42 minutes"). Small
-                            // capitals here made the line shout louder than the artist above it.
-                            Caption(caption, Modifier.padding(top = 6.dp), align = TextAlign.Center, caps = false)
-                        }
-
-                        // Apple's arrangement: shuffle in a circle on the left, one wide Play pill in the
-                        // middle, and the page's other action in a circle on the right. Two equal pills
-                        // side by side give the page two things to look at instead of one. The row is
-                        // reserved while [awaitingPlay] so the layout does not jump when the taps land.
-                        if (awaitingPlay || onPlay != null || onShuffle != null) Row(
-                            Modifier.fillMaxWidth().padding(start = Space.gutter, end = Space.gutter, top = 16.dp),
-                            Arrangement.spacedBy(12.dp), Alignment.CenterVertically,
-                        ) {
-                            val press: (dev.nori.music.ffi.library.HeroPress, (() -> Unit)?) -> Unit = { p, start ->
-                                when (p) {
-                                    dev.nori.music.ffi.library.HeroPress.START -> start?.invoke()
-                                    dev.nori.music.ffi.library.HeroPress.TOGGLE -> player.toggle()
-                                    dev.nori.music.ffi.library.HeroPress.SHUFFLE_OFF -> player.toggleShuffle()
-                                }
-                            }
-                            CircleButton(
-                                Icons.Filled.Shuffle, say.shuffle,
-                                enabled = buttons.shuffleEnabled, lit = buttons.shuffleLit,
-                                onClick = { press(buttons.shufflePress, onShuffle) },
-                            )
-                            PillButton(
-                                if (buttons.pausing) say.pause else say.play, if (buttons.pausing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                                { press(buttons.playPress, onPlay) }, Modifier.weight(1f),
-                                prominent = true, enabled = buttons.playEnabled,
-                            )
-                            actions()
-                        } else Row(
-                            Modifier.fillMaxWidth().padding(start = Space.tight, end = Space.tight, top = 2.dp),
-                            Arrangement.Center, Alignment.CenterVertically,
-                        ) { actions() }
-                        Spacer(Modifier.height(10.dp))
-                        }
-                    }
+                    hero()
                 }
                 content()
                 item(key = "tail") { Spacer(Modifier.height(Space.section + LocalChromeInset.current)) }
