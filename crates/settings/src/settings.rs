@@ -299,6 +299,10 @@ pub struct StoredPrefs {
     pub auto_fill_kind: AutoFillKind,
     #[setting("autoFillBasis", PICK, default = AutoFillBasis::Similar, show = K::Named(AutoFillBasis::NAMES))]
     pub auto_fill_basis: AutoFillBasis,
+    /// Autoplay may queue a provider's songs (octo-fiesta): off, as each one played is downloaded into the
+    /// server's library.
+    #[setting("autoFillRemote", FLAG, default = false, show = K::Switch)]
+    pub auto_fill_remote: bool,
     #[setting("skipOnError", FLAG, default = true, show = K::Switch)]
     pub skip_on_error: bool,
     #[setting("bridgeOffline", FLAG, default = false, show = K::Switch)]

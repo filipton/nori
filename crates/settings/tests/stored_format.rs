@@ -65,6 +65,7 @@ fn sample() -> StoredPrefs {
         bridge_offline: true,
         auto_fill_kind: AutoFillKind::Albums,
         auto_fill_basis: AutoFillBasis::Genre,
+        auto_fill_remote: true,
         eq_enabled: true,
         eq_bands: vec![band_from(1, 105.0, -3.5, 0.7, 1), band_from(9, 12_345_678.0, 2.0, 0.00001, 2)],
         eq_preamp_db: Some(-4.25),

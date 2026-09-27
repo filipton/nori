@@ -585,6 +585,7 @@ fn playback(b: &Build, f: &Facts) -> Vec<Section> {
     if p.auto_fill {
         queue.push(b.named("autoFillKind", "  Add", &["songs", "albums"]));
         queue.push(b.named("autoFillBasis", "  Picked by", &["similarity", "artist", "genre", "era"]));
+        queue.push(b.toggle("autoFillRemote", "  Include remote songs", "Not in the library yet; each one played is downloaded to it"));
     }
     let errors = vec![
         b.toggle("skipOnError", "Skip unplayable songs", "Up to three in a row"),
