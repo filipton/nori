@@ -179,7 +179,7 @@ impl Client {
     /// Random albums of the library, whole, none already in the queue: a "shuffle albums" queue's refill.
     async fn random_albums(&self, ids: &[String]) -> Vec<Song> {
         let queued: HashSet<String> = queue::queue_albums(ids.to_vec()).into_iter().collect();
-        let albums = match self.read_now(Read::AlbumList { kind: "random".into(), size: RANDOM_ALBUMS, offset: 0, genre: None }).await {
+        let albums = match self.read_now(Read::AlbumList { kind: "random".into(), size: crate::actions::SHUFFLE_ALBUMS, offset: 0, genre: None }).await {
             Ok(Page::Albums { v }) => v.into_iter().filter(|a| !queued.contains(&a.id)).collect(),
             _ => Vec::new(),
         };
