@@ -20,6 +20,7 @@ struct U {
 @group(0) @binding(1) var src: texture_2d<f32>;
 @group(0) @binding(2) var smp: sampler;
 @group(0) @binding(3) var blurred: texture_2d<f32>;
+@group(0) @binding(4) var glowing: texture_2d<f32>;
 
 struct V {
     @builtin(position) pos: vec4<f32>,
@@ -67,6 +68,11 @@ fn look(p: vec2<f32>) -> vec3<f32> {
     return textureSampleLevel(blurred, smp, clamp(p / u.view.xy, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb;
 }
 
+// The page blurred so far that only its light is left: what the glass takes from beside it.
+fn glow(p: vec2<f32>) -> vec3<f32> {
+    return textureSampleLevel(glowing, smp, clamp(p / u.view.xy, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb;
+}
+
 @fragment
 fn fs_glass(v: V) -> @location(0) vec4<f32> {
     let p = u.rect.xy + v.uv * u.rect.zw;
@@ -93,15 +99,11 @@ fn fs_glass(v: V) -> @location(0) vec4<f32> {
     // `gather.x`, spread a little along the edge), the colourful parts counting for more than a plain dark
     // ground, strongest at the edge and fading inwards over `light.w`.
     let depth = max(-d, 0.0);
-    let along = vec2<f32>(-n.y, n.x);
     var acc = vec3<f32>(0.0);
     var wsum = 0.0001;
-    for (var i = 0; i < 6; i = i + 1) {
-        let t = (f32(i) + 0.5) / 6.0;
-        // Each tap spread along the edge too, so what is gathered is a soft wash, not the shapes beside.
-        let o = p + n * (depth + 6.0 + t * u.gather.x);
-        let spread = along * u.gather.x * 0.6;
-        let c = (look(o - spread) + look(o) + look(o + spread)) / 3.0;
+    for (var i = 0; i < 5; i = i + 1) {
+        let t = (f32(i) + 0.5) / 5.0;
+        let c = glow(p + n * (depth + 8.0 + t * u.gather.x));
         let hi = max(c.r, max(c.g, c.b));
         let lo = min(c.r, min(c.g, c.b));
         let w = (1.0 - 0.6 * t) * (0.25 + 3.0 * (hi - lo) + hi);

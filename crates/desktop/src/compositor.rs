@@ -517,6 +517,8 @@ struct Draw {
     sampler: wgpu::Sampler,
     /// The page a quarter size, blurred: two textures the blur passes go back and forth between.
     blurred: Option<[(wgpu::Texture, wgpu::TextureView); 2]>,
+    /// The page a sixteenth size, blurred much further: the soft light the glass takes from beside it.
+    glow: Option<[(wgpu::Texture, wgpu::TextureView); 2]>,
     /// The window changed size: the surface is set up again before the next frame.
     stale: bool,
 }
@@ -550,6 +552,7 @@ impl Draw {
                 tex(1),
                 wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
                 tex(3),
+                tex(4),
             ],
         });
         let layout = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("glass"), bind_group_layouts: &[Some(&bind)], immediate_size: 0 });
@@ -593,6 +596,7 @@ impl Draw {
             bind,
             sampler,
             blurred: None,
+            glow: None,
             stale: false,
         })
     }
@@ -601,6 +605,7 @@ impl Draw {
         self.config.width = w.max(1);
         self.config.height = h.max(1);
         self.blurred = None;
+        self.glow = None;
         self.stale = true;
     }
 
@@ -658,6 +663,15 @@ impl Draw {
             };
             self.blurred = Some([mk(), mk()]);
         }
+        let (gw, gh) = ((self.config.width / 16).max(1), (self.config.height / 16).max(1));
+        if self.glow.as_ref().is_none_or(|b| b[0].0.width() != gw || b[0].0.height() != gh) {
+            let mk = || {
+                let t = texture(d, gw, gh, "glow");
+                let v = t.create_view(&Default::default());
+                (t, v)
+            };
+            self.glow = Some([mk(), mk()]);
+        }
         let mut enc = d.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
         let glass_needed = s.sidebar_shown.get() || s.player_shown.get();
         if glass_needed {
@@ -667,24 +681,35 @@ impl Draw {
                 [(&page, 0, [1.5, 0.0], (w, h)), (&b[0].1, 1, [0.0, 1.5], (bwf, bhf)), (&b[1].1, 0, [2.5, 0.0], (bwf, bhf)), (&b[0].1, 1, [0.0, 2.5], (bwf, bhf))];
             for (src, dst, dir, src_size) in passes {
                 let u = uniforms([0.0, 0.0, bwf, bhf], [bwf, bhf, src_size.0, src_size.1], [0.0; 4], [0.0; 4], [0.0, 0.0, dir[0], dir[1]]);
-                let group = self.group(d, &gpu.queue, &u, src, src);
+                let group = self.group(d, &gpu.queue, &u, src, src, src);
                 pass(&mut enc, &b[dst].1, &self.blur, &group, false);
+            }
+            // And from it, the glow: a sixteenth of the page, blurred until no edge is left in it.
+            let gl = self.glow.as_ref().expect("made above");
+            let (gwf, ghf) = (gw as f32, gh as f32);
+            let passes: [BlurPass; 4] =
+                [(&b[1].1, 0, [2.0, 0.0], (bwf, bhf)), (&gl[0].1, 1, [0.0, 2.0], (gwf, ghf)), (&gl[1].1, 0, [3.0, 0.0], (gwf, ghf)), (&gl[0].1, 1, [0.0, 3.0], (gwf, ghf))];
+            for (src, dst, dir, src_size) in passes {
+                let u = uniforms([0.0, 0.0, gwf, ghf], [gwf, ghf, src_size.0, src_size.1], [0.0; 4], [0.0; 4], [0.0, 0.0, dir[0], dir[1]]);
+                let group = self.group(d, &gpu.queue, &u, src, src, src);
+                pass(&mut enc, &gl[dst].1, &self.blur, &group, false);
             }
         }
         let blurred = self.blurred.as_ref().map(|b| b[1].1.clone()).unwrap_or_else(|| page.clone());
+        let glow = self.glow.as_ref().map(|b| b[1].1.clone()).unwrap_or_else(|| page.clone());
         // The window: the page, then glass and what sits on it.
         let full = uniforms([0.0, 0.0, w, h], [w, h, w, h], [0.0; 4], [0.0; 4], [0.0; 4]);
-        let g = self.group(d, &gpu.queue, &full, &page, &page);
+        let g = self.group(d, &gpu.queue, &full, &page, &page, &page);
         pass(&mut enc, &target, &self.copy, &g, true);
         let mut glass = |role: Role, shape: [f32; 4], tint: [f32; 4], light: [f32; 4], gather: [f32; 4], rect: [f32; 4]| {
             let Some(view) = find(role) else { return };
             let u = uniforms_gather(rect, [w, h, w, h], shape, tint, light, gather);
-            let g = self.group(d, &gpu.queue, &u, &page, &blurred);
+            let g = self.group(d, &gpu.queue, &u, &page, &blurred, &glow);
             pass(&mut enc, &target, &self.glass, &g, false);
             let (o, sz) = place(s, role, win);
             let r = [o.x * scale, o.y * scale, sz.width * scale, sz.height * scale];
             let u = uniforms(r, [w, h, w, h], [0.0; 4], [0.0; 4], [0.0; 4]);
-            let g = self.group(d, &gpu.queue, &u, &view, &view);
+            let g = self.group(d, &gpu.queue, &u, &view, &view, &view);
             pass(&mut enc, &target, &self.over, &g, false);
         };
         if s.sidebar_shown.get() {
@@ -704,7 +729,7 @@ impl Draw {
         gpu.queue.present(frame);
     }
 
-    fn group(&self, d: &wgpu::Device, q: &wgpu::Queue, u: &[u8], a: &wgpu::TextureView, b: &wgpu::TextureView) -> wgpu::BindGroup {
+    fn group(&self, d: &wgpu::Device, q: &wgpu::Queue, u: &[u8], a: &wgpu::TextureView, b: &wgpu::TextureView, c: &wgpu::TextureView) -> wgpu::BindGroup {
         let buf = d.create_buffer(&wgpu::BufferDescriptor { label: Some("glass"), size: u.len() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         q.write_buffer(&buf, 0, u);
         d.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -715,6 +740,7 @@ impl Draw {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(a) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(b) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(c) },
             ],
         })
     }
