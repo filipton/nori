@@ -743,8 +743,8 @@ class Say(private val r: Resources) {
         custom -> r.getString(R.string.eq_crossfeed_custom, Fmt.fixed(db.toDouble(), 1))
         else -> r.getString(R.string.eq_crossfeed_on, Fmt.fixed(db.toDouble(), 1))
     }
-    /** "Cutoff 700 Hz: how high up the other ear hears". */
-    fun crossfeedCut(hz: Float): String = r.getString(R.string.eq_crossfeed_cut, Fmt.hz(hz))
+    /** "Cutoff 1265 Hz: how high up the other ear hears", in whole hertz as the core keeps it. */
+    fun crossfeedCut(hz: Float): String = r.getString(R.string.eq_crossfeed_cut, Fmt.fixed(hz.toDouble(), 0))
     /** A graphic band's ISO label: "31.5", "63", "1k", "12.5k". */
     fun isoBand(hz: Float): String = if (hz < 100f && hz != kotlin.math.floor(hz)) Fmt.fixed(hz.toDouble(), 1) else Fmt.hz(hz)
     /** The band dialog's title: "63 Hz", "1k Hz". */

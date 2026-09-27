@@ -158,14 +158,17 @@ fn fit(kind: i32, corners: &[f64], slope: f64, span: (f64, f64), extra: &[f64], 
         let unit = Band { kind, freq: corner, gain_db: 6.0, q: slope, channel: CH_BOTH };
         let shape: Vec<f64> = points.iter().map(|f| db_at(FIT_RATE, &unit, *f) / 6.0).collect();
         let den: f64 = shape.iter().map(|s| s * s).sum();
-        let gain = (shape.iter().zip(&want).map(|(s, w)| s * w).sum::<f64>() / den.max(1e-12)).clamp(0.0, MAX_DB);
+        let gain = (shape.iter().zip(&want).map(|(s, w)| s * w).sum::<f64>() / den.max(1e-12)).max(0.0);
         let band = Band { gain_db: gain, ..unit };
         let err: f64 = points.iter().zip(&want).map(|(f, w)| (db_at(FIT_RATE, &band, *f) - w).powi(2)).sum();
         if best.as_ref().is_none_or(|(e, _)| err < *e) {
             best = Some((err, band));
         }
     }
-    best.map(|b| b.1).filter(|b| b.gain_db >= 0.05)
+    // The corner is the one that fits the whole contour; only then is the gain held to its range. Held
+    // first, a capped shelf would move its corner up to make up the area, and lift the low middle
+    // (250 Hz at +18 dB) where no contour asks for it.
+    best.map(|b| Band { gain_db: b.1.gain_db.min(MAX_DB), ..b.1 }).filter(|b| b.gain_db >= 0.05)
 }
 
 /// The shelves for music balanced at `reference` phon heard with the volume `volume_db` down.
@@ -250,7 +253,8 @@ mod tests {
     fn the_shelves_draw_the_compensation() {
         let none = design(80.0, 0.0);
         assert_eq!(none, Shelves { low: None, high: None, pre_db: 0.0 }, "all the way up: nothing");
-        for volume in [-10.0, -20.0, -30.0, -40.0] {
+        // Down to 50 phon the shelves fit; below it the bass would want more than [`MAX_DB`] (see below).
+        for volume in [-10.0, -20.0, -30.0] {
             let (w, s) = worst(80.0, volume);
             let low = s.low.as_ref().unwrap();
             eprintln!("{volume} dB: low {:.1} dB at {} Hz, high {:?}, pre {:.1}, worst {w:.2} dB", low.gain_db, low.freq, s.high.as_ref().map(|h| (h.gain_db, h.freq)), s.pre_db);
@@ -268,5 +272,10 @@ mod tests {
         assert_eq!(design(90.0, -200.0).low.unwrap().gain_db, MAX_DB);
         assert!(design(90.0, -200.0).pre_db >= -MAX_DB - 0.1);
         assert_eq!(design(f64::NAN, -20.0), design(80.0, -20.0));
+        // Capped, the shelf keeps a bass corner rather than climbing into the low middle to make up the area.
+        for v in [-40.0, -50.0, -58.0] {
+            let low = design(80.0, v).low.unwrap();
+            assert!(low.freq <= 160.0, "{v} dB down: corner at {} Hz", low.freq);
+        }
     }
 }

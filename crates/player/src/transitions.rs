@@ -147,6 +147,10 @@ pub fn shape_crossfade(prefs: &TransitionPrefs, t: &mut TransitionPlan) {
     t.fade_curve = prefs.fade_curve;
     (t.in_fade_start_ms, t.in_fade_end_ms) = (0, part(prefs.fade_in_ms));
     (t.out_fade_start_ms, t.out_fade_end_ms) = (dur - part(prefs.fade_out_ms), dur);
+    // Said in the log's reason line when it is not the plain equal-power fade over all of it.
+    if t.fade_curve != FadeCurve::EqualPower || t.in_fade_end_ms != dur || t.out_fade_start_ms != 0 {
+        t.reason = format!("{}; {:?} curve, in over {} ms, out over {} ms", t.reason, t.fade_curve, t.in_fade_end_ms, dur - t.out_fade_start_ms);
+    }
 }
 
 /// What the engine runs for the planner's answer; `None` for a gapless one (nothing to run).

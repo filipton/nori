@@ -1568,6 +1568,15 @@ extern "system" fn set_volume(h: jlong, index: jint, max: jint, db: jfloat) {
     }
     if let (Some(p), Some(prefs)) = (player(h), nori_core::settings_store::settings_current()) {
         if prefs.loudness {
+            // Once per step of the volume keys at most: the line says what the chain was set up for.
+            let s = nori_player::contour::design(prefs.loudness_ref_phon as f64, db);
+            nori_core::alog::info(&format!(
+                "loudness: volume {index}/{max} at {db:.1} dB, bass {:+.1} dB at {} Hz, treble {:+.1} dB, pre-gain {:.1} dB",
+                s.low.map_or(0.0, |b| b.gain_db),
+                s.low.map_or(0.0, |b| b.freq),
+                s.high.map_or(0.0, |b| b.gain_db),
+                s.pre_db
+            ));
             p.engine.set_settings(settings(&prefs));
         }
     }

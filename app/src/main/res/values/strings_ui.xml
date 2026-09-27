@@ -174,7 +174,7 @@
     <string name="flat">Flat</string>
     <string name="flat_detail">The equalizer off on this device</string>
     <string name="no_processing">No processing</string>
-    <string name="no_processing_detail">No equalizer or effects at all on this device, so it plays the music as it comes</string>
+    <string name="no_processing_detail">No equalizer or effects on this device</string>
     <string name="leave_as_is">Leave as is</string>
     <string name="leave_as_is_detail">Nothing switches and nothing is offered</string>
     <string name="saved_profile">Saved profile</string>
@@ -492,7 +492,7 @@
     <string name="preset_loudness">Loudness</string>
     <string name="preset_small_speakers">Small speakers</string>
     <string name="eq_bypass_bit_perfect">Bit-perfect USB output is active, so nothing here touches the audio.</string>
-    <string name="eq_bypass_output">No processing on this output, so nothing here changes the sound. Turn it off in Settings, under Sound.</string>
+    <string name="eq_bypass_output">No processing on this output, so nothing here changes the sound. Give the device another sound under Devices below, or turn it off in Settings, under Sound.</string>
     <string name="eq_bypass_hi_res">High quality output is on, so nothing here changes the sound. Turn it off in Settings, under Sound.</string>
     <string name="profile_choose_to_load">Choose to load</string>
     <string name="profile_used_for">Used for %1$s</string>

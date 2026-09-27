@@ -38,8 +38,8 @@ Apple's own App Store screenshots and the differences closed. What is left is li
     against real AutoEQ corrections (the ten: 1 to 1.3).
   - **Loudness compensation** (`loudness`, `loudnessRefPhon`, off by default): ISO 226:2003 contours
     (`contour.rs`), the difference between the reference level (80 phon at full volume) and the level
-    the volume leaves, drawn by a low and a high shelf fitted by least squares (within 0.3 to 2 dB down to
-    40 phon), with a pre-gain that pays the boost back so it never clips. Kotlin's `VolumeWatch` listens
+    the volume leaves, drawn by a low and a high shelf fitted by least squares (within 0.3 to 0.9 dB down to
+    50 phon; quieter, the bass shelf is held at +18 dB on its bass corner), with a pre-gain that pays the boost back so it never clips. Kotlin's `VolumeWatch` listens
     (a ContentObserver on the system settings, only while it is on) and hands the step, the maximum and
     `getStreamVolumeDb` to the `setVolume` door; the core applies it only when it moves the sound by a
     quarter dB. The terminal client follows its own volume. **Not checked on a phone**: whether
