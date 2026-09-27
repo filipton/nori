@@ -1,4 +1,5 @@
-//! Streaming front end of the track analysis. Mono samples go in at any rate, in any buffer size; what comes out is a
+//! Streaming front end of the track analysis. Mono samples go in at any rate, in any buffer size (stereo ones are
+//! measured on their downmix, and their side only tells the vocal curve where the middle is); what comes out is a
 //! handful of per-frame feature curves (onset strength, low-band onset, power, chroma) and 100 ms loudness blocks.
 //! All the expensive work (two FFTs, K-weighting) happens here, once per sample, so the same code serves a whole
 //! decoded file (`analyse`) and the songs decoded ahead or as they come (nori-engine's measurer). `finish` then runs the

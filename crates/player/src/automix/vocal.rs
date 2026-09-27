@@ -23,12 +23,22 @@
 //!
 //! **Cost.** Per analysis frame (86 a second) the band's power (about 125 bins) from the spectrum the analysis
 //! has already taken, the peak test, and two square roots and a logarithm per bin around a peak; nothing
-//! allocated. 15 ms for a four-minute song on the host, a twelfth of the analysis front end (`vocal_cost`). What
+//! allocated. 10 to 15 ms for a four-minute song on the host, a twelfth of the analysis front end (`vocal_cost`). What
 //! is kept is one number per [`CURVE_EVERY`] frames (about 17 a second), stored as one byte each: about a
 //! kilobyte a minute. (A byte of 16 levels, or 11 frames a second, measured worse on `sync_eval`.)
 //!
-//! Mono only: the analyser is fed the downmix, so the voice's usual place in the middle of the stereo image is
-//! not used.
+//! **The middle of the stereo image.** A voice is mixed dead centre; rhythm guitars, often two takes of the
+//! riff, are panned left and right. So a stereo song's curve is measured on its middle alone: the analyser's
+//! one FFT carries the side, (L - R) / 2, as the imaginary part beside the mid (analysis.rs `frame`), and each
+//! band bin's mid is weighted by how alike the channels have sounded in it over the last 100 ms ([`centre`]),
+//! nothing below a similarity of 0.6. The mid itself, which the rest of the analysis reads, is the downmix as
+//! before. On a synthetic metal band (`metal_band`: two distorted, bending takes hard left and right, drums
+//! and a voice in a room in the middle) sung is told from unsung with an AUC of 0.56 from the downmix and
+//! 0.95 from the middle. Not measured on real songs yet: sync_tune.rs reads the new curve by itself, and needs
+//! the library it was tuned on. A voice panned off centre, or doubled wide, is heard less; a lead guitar in the
+//! middle still reads as singing. A mono song, or a stereo one whose channels are the same, is measured as
+//! before, to the bit. It costs 10 ms for a four-minute song on the host (the parting of the two spectra and
+//! the weights), 6 % of the front end, and nothing allocated.
 
 use rustfft::num_complex::Complex32;
 
@@ -549,6 +559,19 @@ mod tests {
             with - without,
             (with - without) / secs * 60.0
         );
+        // The middle of the stereo image: the same song with both channels alike (the mono path) and panned
+        // (the side through the one FFT, parted, and the band weighted), each fed as a stereo file is.
+        let feed = |x: &[f32]| {
+            let t = std::time::Instant::now();
+            let mut a = Analyzer::new(song.rate, 0);
+            a.feed_interleaved(x, 2, |v| v);
+            std::hint::black_box(a.take_features());
+            t.elapsed().as_secs_f64() * 1000.0
+        };
+        let alike: Vec<f32> = x.iter().flat_map(|v| [*v, *v]).collect();
+        let panned: Vec<f32> = x.iter().flat_map(|v| [*v * 1.3, *v * 0.7]).collect();
+        let (m, s) = (best(&mut || feed(&alike)), best(&mut || feed(&panned)));
+        println!("front end fed stereo: channels alike {m:.1} ms, panned {s:.1} ms: the middle costs {:.1} ms ({:.0} %)", s - m, (s - m) / m * 100.0);
     }
 
     /// `cargo test --release -p nori-player vocal_curve_eval -- --ignored --nocapture`: the table the module's

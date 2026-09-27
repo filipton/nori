@@ -256,15 +256,19 @@ fn speed_and_silence_allocate_nothing_once_warm() {
 #[test]
 fn analysing_allocates_nothing_per_buffer() {
     let x: Vec<f32> = tone(30.0, 440.0).chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0).collect();
-    let mut a = Analyzer::new(RATE, 30_000);
-    let mut n = 0;
-    for (i, c) in x.chunks(CHUNK / 2).enumerate() {
-        let k = allocations(|| a.feed_interleaved(c, 2, |v| v));
-        if i >= 16 {
-            n += k;
+    // Both channels alike (the mono path), and panned (the side read for the vocal curve).
+    let panned: Vec<f32> = x.iter().enumerate().map(|(i, v)| if i % 2 == 0 { *v } else { *v * 0.5 }).collect();
+    for x in [&x, &panned] {
+        let mut a = Analyzer::new(RATE, 30_000);
+        let mut n = 0;
+        for (i, c) in x.chunks(CHUNK / 2).enumerate() {
+            let k = allocations(|| a.feed_interleaved(c, 2, |v| v));
+            if i >= 16 {
+                n += k;
+            }
         }
+        assert_eq!(n, 0);
     }
-    assert_eq!(n, 0);
 }
 
 #[test]

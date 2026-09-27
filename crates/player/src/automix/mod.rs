@@ -46,8 +46,11 @@ use analysis::Features;
 
 /// Bump when the analysis changes enough that stored rows should be redone. 10: the vocal activity curve
 /// (`vocal`) is measured with it, so songs measured before get one. 11: the curve is measured in a narrower
-/// band with a looser peak test (vocal.rs, tuned on a real library), so curves of 10 are measured again.
-pub const ANALYSIS_VERSION: i32 = 11;
+/// band with a looser peak test (vocal.rs, tuned on a real library), so curves of 10 are measured again. 12: a
+/// stereo song's curve is measured on the middle of its stereo image (vocal.rs); the rest of the analysis is as
+/// it was. The curve's stored form did not change (`vocal::CURVE_VERSION`), so a song's old curve is still read
+/// until the song is measured again.
+pub const ANALYSIS_VERSION: i32 = 12;
 /// How much music at each end the intro and outro grids are measured over: long enough for a steady
 /// tempo estimate (dozens of beats at any tempo), short enough that a live band's drift inside it is
 /// a fraction of a beat.
