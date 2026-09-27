@@ -2,9 +2,9 @@
 # Local Navidrome with generated, tagged test music. Emulator reaches it at http://10.0.2.2:4533
 # First login (admin/admin) is created automatically through the API.
 #
-# One server for the checkout and every worktree beside it: the music and the database live in the main
-# checkout's .dev/, and a Navidrome already answering on 4533 (whatever its container is called) is used
-# as it is. Docker or Podman, whichever is installed.
+# One server for the checkout and every worktree beside it: the music lives in the main checkout's .dev/,
+# the database in the volume nori-dev-data, and a Navidrome already answering on 4533 (whatever its
+# container is called) is used as it is. Docker or Podman, whichever is installed.
 #
 # Besides the first generated albums it seeds what the e2e checks need (tools/e2e-lib.sh, local mode):
 #   Nori E2E / Long Album       twelve songs of 75-130 s, every third one FLAC (the bridge, album pages)
@@ -16,7 +16,7 @@ common=$(git -C "$(dirname "$0")" rev-parse --path-format=absolute --git-common-
 if [ -n "$common" ] && [ "$(basename "$common")" = .git ]; then top=$(dirname "$common"); else top="$(cd "$(dirname "$0")/.." && pwd)"; fi
 root="${NORI_DEV_ROOT:-$top/.dev}"
 music="$root/music"
-mkdir -p "$music" "$root/data"
+mkdir -p "$music"
 engine=$(command -v docker || command -v podman || true)
 if [ -z "$(ls -A "$music")" ]; then
   n=0
@@ -72,9 +72,12 @@ if curl -sf -m 2 localhost:4533/ping >/dev/null; then
 else
   [ -n "$engine" ] || { echo "neither docker nor podman is installed" >&2; exit 1; }
   "$engine" rm -f nori-navidrome >/dev/null 2>&1 || true
-  "$engine" run -d --name nori-navidrome --user "$(id -u):$(id -g)" -p 4533:4533 \
+  # The database in a volume of its own, not a folder shared from the host: SQLite on Docker Desktop's file
+  # sharing (a Mac) dies of a bus error mid-scan and leaves the database corrupt (tools/bgtest does the same).
+  # The volume is written as the image's own user.
+  "$engine" run -d --name nori-navidrome -p 4533:4533 \
     -e ND_SCANNER_SCHEDULE=@every\ 1m -e ND_LOGLEVEL=info \
-    -v "$music:/music:ro" -v "$root/data:/data" docker.io/deluan/navidrome:latest >/dev/null
+    -v "$music:/music:ro" -v nori-dev-data:/data docker.io/deluan/navidrome:latest >/dev/null
   for _ in $(seq 30); do curl -sf localhost:4533/ping >/dev/null && break; sleep 1; done
   seeded=1
 fi
