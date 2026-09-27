@@ -30,6 +30,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // A turn of the phone is the app's to show (App: the tab glyphs turn, the page fades into its new
+        // layout); the system's own turn spun a picture of the whole screen round, bar and all.
+        window.attributes = window.attributes.apply { rotationAnimation = android.view.WindowManager.LayoutParams.ROTATION_ANIMATION_SEAMLESS }
         if (Build.VERSION.SDK_INT >= 33 && savedInstanceState == null) askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         // The composition runs under the app's own animation speed, not Android's: see AppMotion.
         @OptIn(androidx.compose.ui.InternalComposeUiApi::class)

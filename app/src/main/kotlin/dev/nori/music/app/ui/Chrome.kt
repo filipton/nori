@@ -9,6 +9,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.only
@@ -132,18 +135,17 @@ fun TabBar(route: String?, tabs: List<Tab>, onTab: (String) -> Unit, look: Look,
     ) {
         Row(
             Modifier.onGloballyPositioned { onHeight(with(density) { it.size.height.toDp() }) }
-                .padding(start = 10.dp, end = 10.dp, top = 8.dp, bottom = 4.dp),
-            Arrangement.spacedBy(8.dp), Alignment.CenterVertically,
+                .padding(start = BAR_END, end = BAR_END, top = 8.dp, bottom = BAR_OFF),
+            Arrangement.spacedBy(BAR_GAP), Alignment.CenterVertically,
         ) {
             Surface(
                 shape = PillShape, color = slab, contentColor = content, shadowElevation = 12.dp,
                 border = androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp.Hairline, edge),
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).height(BAR_THICK),
             ) {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 5.dp),
-                    Arrangement.SpaceEvenly, Alignment.CenterVertically,
-                ) { rest.forEach { t -> TabButton(t, selected = route == t.route, content = content, accent = accent) { onTab(t.route) } } }
+                Row(Modifier.fillMaxSize().padding(horizontal = BAR_INSET), verticalAlignment = Alignment.CenterVertically) {
+                    rest.forEach { t -> TabButton(t, route == t.route, content, accent, Modifier.weight(1f).fillMaxHeight()) { onTab(t.route) } }
+                }
             }
             if (search != null) SearchCircle(search, route == search.route, slab, content, edge, accent) { onTab(search.route) }
         }
@@ -167,59 +169,101 @@ private fun SearchCircle(search: Tab, selected: Boolean, slab: Color, content: C
     Surface(
         onClick = onClick, shape = CircleShape, color = slab, shadowElevation = 12.dp,
         border = androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp.Hairline, edge),
-        modifier = Modifier.size(58.dp).semantics { contentDescription = search.label },
+        modifier = Modifier.size(SEARCH_SIZE).semantics { contentDescription = search.label },
     ) {
+        val turn = LocalTabTurn.current
         Box(Modifier.fillMaxSize(), Alignment.Center) {
-            Icon(search.icon, null, Modifier.size(25.dp), tint = if (selected) accent else content)
+            Icon(search.icon, null, Modifier.size(25.dp).graphicsLayer { rotationZ = turn() }, tint = if (selected) accent else content)
         }
     }
 }
 
 /**
- * The tabs on a wide, short window (a phone on its side): [TabBar] stood on end at the right edge - where the
- * bar was, on a phone turned the usual way - the same floating pill of tabs, and Search on its own circle
- * under it, so the page keeps its height, which a bar across the bottom took almost half of. It slides out
- * to the right as the player opens, as the bar slides down. [onWidth]: how much of the right edge it takes,
- * which the page leaves to it.
+ * The tabs on a wide, short window (a phone on its side): [TabBar] as it lies on the glass, not laid out
+ * again. Turned, the phone takes the bar with it - the edge it stood on is a side edge now - so the rail is
+ * the same pill, as long and as thick, the same Search circle, the same margins, and its tabs in the same
+ * places under the finger: only the glyphs turn upright ([LocalTabTurn]). [atLeft]: the phone turned the
+ * other way round, which leaves that edge on the left and the tabs in the other order. The pill is shortened
+ * only by what the status bar takes from the end it reaches. It slides off its edge as the player opens,
+ * as the bar slides down. [onWidth]: how much of that edge it takes, which the page leaves to it.
  */
 @Composable
-fun TabRail(route: String?, tabs: List<Tab>, onTab: (String) -> Unit, look: Look, player: PlayerViewModel, onWidth: (androidx.compose.ui.unit.Dp) -> Unit) {
+fun TabRail(
+    route: String?, tabs: List<Tab>, onTab: (String) -> Unit, look: Look, player: PlayerViewModel,
+    atLeft: Boolean, onWidth: (androidx.compose.ui.unit.Dp) -> Unit,
+) {
     val slab = look.color(CoverLook.CHROME_SLAB)
     val content = look.color(CoverLook.CHROME_CONTENT)
     val edge = look.color(CoverLook.CHROME_EDGE)
     val accent = rememberTabAccent(player, slab, content)
     val search = tabs.firstOrNull { it.route == "search" }
-    val rest = tabs.filter { it.route != "search" }
+    // Upright the bar reads Home, Library, Settings, Search from the left. Turned left, that end is at the
+    // bottom; turned right, at the top.
+    val rest = tabs.filter { it.route != "search" }.let { if (atLeft) it else it.reversed() }
     val sheet = LocalPlayerSheet.current
     val density = androidx.compose.ui.platform.LocalDensity.current
-    // How far in from the screen's right edge the rail reaches, in pixels: what it slides by.
     var reach by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
-    Column(
-        Modifier
-            .windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.safeDrawing.only(androidx.compose.foundation.layout.WindowInsetsSides.End + androidx.compose.foundation.layout.WindowInsetsSides.Vertical))
-            .onGloballyPositioned {
-                reach = it.findRootCoordinates().size.width - it.boundsInRoot().left
-                onWidth(with(density) { reach.toDp() })
-            }
-            .graphicsLayer {
-                // All the way off the edge: past the inset at that edge too, which is not part of this layer.
-                val t = (sheet.progress.value / 0.7f).coerceIn(0f, 1f)
-                translationX = t * (reach + 12.dp.toPx())
-            }
-            .padding(start = 4.dp, end = 10.dp),
-        Arrangement.spacedBy(10.dp, Alignment.CenterVertically), Alignment.CenterHorizontally,
-    ) {
-        Surface(
-            shape = PillShape, color = slab, contentColor = content, shadowElevation = 12.dp,
-            border = androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp.Hairline, edge),
+    // Off the edge by what the bar is off the bottom upright: its own gap and the gesture bar's height,
+    // which is the same strip of the screen on its side as it was upright.
+    val off = with(density) { androidx.compose.foundation.layout.WindowInsets.navigationBars.getBottom(this).toDp() } + BAR_OFF
+    val status = with(density) { androidx.compose.foundation.layout.WindowInsets.statusBars.getTop(this).toDp() }
+    androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxHeight()) {
+        // Upright the pill is the screen's short side less the margins, the gap and Search - the screen's
+        // height here - and no longer than what is left under the status bar.
+        val long = maxHeight - BAR_END * 2 - BAR_GAP - SEARCH_SIZE
+        val room = maxHeight - status - 4.dp - BAR_END - BAR_GAP - SEARCH_SIZE
+        val length = minOf(long, room)
+        Column(
+            Modifier.fillMaxHeight()
+                .onGloballyPositioned {
+                    reach = if (atLeft) it.boundsInRoot().right else it.findRootCoordinates().size.width - it.boundsInRoot().left
+                    onWidth(with(density) { reach.toDp() })
+                }
+                .graphicsLayer {
+                    val t = (sheet.progress.value / 0.7f).coerceIn(0f, 1f)
+                    translationX = (if (atLeft) -1f else 1f) * t * (reach + 12.dp.toPx())
+                }
+                .padding(start = if (atLeft) off else 4.dp, end = if (atLeft) 4.dp else off, bottom = BAR_END),
+            Arrangement.spacedBy(BAR_GAP, Alignment.Bottom), Alignment.CenterHorizontally,
         ) {
-            Column(Modifier.padding(horizontal = 5.dp, vertical = 6.dp), Arrangement.spacedBy(2.dp), Alignment.CenterHorizontally) {
-                rest.forEach { t -> TabButton(t, selected = route == t.route, content = content, accent = accent, narrow = true) { onTab(t.route) } }
+            if (!atLeft && search != null) SearchCircle(search, route == search.route, slab, content, edge, accent) { onTab(search.route) }
+            Surface(
+                shape = PillShape, color = slab, contentColor = content, shadowElevation = 12.dp,
+                border = androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp.Hairline, edge),
+                modifier = Modifier.width(BAR_THICK).height(length),
+            ) {
+                Column(Modifier.fillMaxSize().padding(vertical = BAR_INSET), horizontalAlignment = Alignment.CenterHorizontally) {
+                    rest.forEach { t -> TabButton(t, route == t.route, content, accent, Modifier.weight(1f).fillMaxWidth()) { onTab(t.route) } }
+                }
             }
+            if (atLeft && search != null) SearchCircle(search, route == search.route, slab, content, edge, accent) { onTab(search.route) }
         }
-        if (search != null) SearchCircle(search, route == search.route, slab, content, edge, accent) { onTab(search.route) }
     }
 }
+
+/** The tab bar's measures, shared by the bar and the rail so a turn changes neither. */
+private val BAR_THICK = 66.dp
+private val BAR_INSET = 4.dp
+private val BAR_END = 10.dp
+private val BAR_GAP = 8.dp
+private val BAR_OFF = 4.dp
+private val SEARCH_SIZE = 58.dp
+
+/**
+ * How far the tab glyphs are turned, in degrees, read while drawing: a turn of the phone lays the bar out
+ * again where it already was, and its glyphs turn from where they were to upright, while the page fades
+ * into its new layout (App). 0 at rest.
+ */
+val LocalTabTurn = androidx.compose.runtime.staticCompositionLocalOf<() -> Float> { { 0f } }
+
+/**
+ * What the page is kept off at its left edge on its side (the camera's strip, or the rail when it is on
+ * that side), for a page that draws under it anyway: a cover runs to the screen's edge.
+ */
+val LocalPageStart = androidx.compose.runtime.compositionLocalOf { 0.dp }
+
+/** What the page is kept off at its right edge on its side (the rail, or the camera's strip). */
+val LocalPageEnd = androidx.compose.runtime.compositionLocalOf { 0.dp }
 
 /**
  * The chrome's look: the slab, what is written on it, and the page it fades into. Neutral, like Apple's.
@@ -294,29 +338,32 @@ private fun rememberTabAccent(player: PlayerViewModel, slab: Color, content: Col
 data class Tab(val route: String, val label: String, val icon: ImageVector)
 
 @Composable
-private fun TabButton(tab: Tab, selected: Boolean, content: Color, accent: Color, narrow: Boolean = false, onClick: () -> Unit) {
+private fun TabButton(tab: Tab, selected: Boolean, content: Color, accent: Color, modifier: Modifier, onClick: () -> Unit) {
     // Apple marks the current tab twice over: the accent colour on the glyph, and a plain lighter patch
     // behind it - light grey on their white bar, so the equivalent here is a little of the bar's own
     // text colour. Tinting that patch with the accent is what made it read as a Material pill.
     val colour = if (selected) accent else content
     val press = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val turn = LocalTabTurn.current
     // No patch behind anything. Where you are is the accent colour, a bold label and a slightly larger
     // glyph - every shape drawn behind the current tab, circle or rectangle, ended up reading as
-    // Material's active indicator no matter how faint it was made.
-    Column(
-        Modifier.clip(RoundedCornerShape(14.dp))
+    // Material's active indicator no matter how faint it was made. Each tab has an equal share of the pill,
+    // across it upright and down it on its side, so they stand in the same places either way.
+    Box(
+        modifier.clip(RoundedCornerShape(14.dp))
             .clickable(interactionSource = press, indication = null, onClick = onClick)
-            .padding(horizontal = if (narrow) 8.dp else 18.dp, vertical = 7.dp)
             .semantics { contentDescription = tab.label },
-        horizontalAlignment = Alignment.CenterHorizontally,
+        Alignment.Center,
     ) {
-        Icon(tab.icon, null, Modifier.size(if (selected) 26.dp else 23.dp), tint = colour)
-        Text(
-            tab.label, Modifier.padding(top = 2.dp),
-            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5f.sp, letterSpacing = 0.sp),
-            color = if (selected) colour else colour.copy(alpha = 0.7f),
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-        )
+        Column(Modifier.graphicsLayer { rotationZ = turn() }, horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(tab.icon, null, Modifier.size(if (selected) 26.dp else 23.dp), tint = colour)
+            Text(
+                tab.label, Modifier.padding(top = 2.dp),
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5f.sp, letterSpacing = 0.sp),
+                color = if (selected) colour else colour.copy(alpha = 0.7f),
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium, maxLines = 1,
+            )
+        }
     }
 }
 
