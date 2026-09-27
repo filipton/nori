@@ -6,6 +6,16 @@ hand. Versions follow [semantic versioning](https://semver.org).
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-09-27
+
+### Fixed
+
+- The app stays upright until it has a landscape layout
+- Songs that left the queue no longer stay drawn over it
+- Shuffle albums plays at once and never a provider's songs
+- Tapping the song playing in its album keeps it going and opens the player
+- Closing the queue dissolves and the title row moves with the controls
+
 ## [0.4.3] - 2026-09-27
 
 ### Added
