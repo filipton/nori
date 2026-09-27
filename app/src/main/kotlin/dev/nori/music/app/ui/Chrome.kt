@@ -191,8 +191,7 @@ fun rememberChromeLook(): Look {
  * wears a cover (an album, an artist, a playlist: [PageTint]), else of what is playing - the one the
  * player's own buttons wear - moved until it reads on the bar ([CoverLook.readable]). The bar itself
  * stays neutral away from those pages (see [rememberChromeLook]), so only the one lit tab follows the
- * music. The theme's own accent with neither, for a provider's song (whose cover is never measured) and
- * with the setting off. It changes in the span the chrome's own colours take.
+ * music. The theme's own accent with neither and with the setting off. It changes in the span the chrome's own colours take.
  */
 @Composable
 private fun rememberTabAccent(player: PlayerViewModel, slab: Color, content: Color): Color {
@@ -207,7 +206,7 @@ private fun rememberTabAccent(player: PlayerViewModel, slab: Color, content: Col
     }
     // The same cover and key the mini player warms, so the colours are already worked out by the time a
     // song starts.
-    val url = if (prefs.coverColors) player.cover(state.current?.coverArt, CoverSize.ROW)?.takeUnless(::isProviderCover) else null
+    val url = if (prefs.coverColors) player.cover(state.current?.coverArt, CoverSize.ROW) else null
     val playing = rememberCoverPalette(url, dark, prefs.amoled)?.look?.get(CoverLook.ACCENT)
     val seed = (if (prefs.coverColors) pagePalette.value?.look?.get(CoverLook.ACCENT) else null) ?: playing
     // A cover's accent that no shade of reads on the bar (a pink on an artist page's lifted brown) gives

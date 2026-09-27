@@ -238,7 +238,8 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
     // black, the page under the sleeve was pure black and the picture looked cut off, where Apple's
     // carries the record's colour down the whole screen.
     val black = remember(prefs.amoled, prefs.playerColours) { dev.nori.music.ffi.pageBlack(prefs.amoled, prefs.playerColours) }
-    val rowUrl = vm.cover(state.current?.coverArt, CoverSize.ROW)?.takeUnless(::isProviderCover)
+    // A provider's song wears its cover too (it is on screen); only its neighbours' are never measured ahead.
+    val rowUrl = vm.cover(state.current?.coverArt, CoverSize.ROW)
     val tint = if (prefs.coverColors) rememberCoverTint(rowUrl, dark, black) else CoverTint(rowUrl, null)
     val found = tint.palette
     // The colours of the record on its way in, already worked out by the time it is asked for (the now

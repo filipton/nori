@@ -100,7 +100,9 @@ fun HeroPage(
     val dark = when (prefs.theme) { ThemeMode.SYSTEM -> isSystemInDarkTheme(); ThemeMode.DARK -> true; ThemeMode.LIGHT -> false }
     val keeps = keepsColours(prefs)
     val black = remember(prefs.amoled, keeps) { dev.nori.music.ffi.pageBlack(prefs.amoled, keeps) }
-    val palette = if (prefs.coverColors) rememberCoverPalette(coverUrl?.takeUnless(::isProviderCover), dark, black) else null
+    // A provider's page too: its cover is on screen already, so measuring it asks the provider for
+    // nothing more, and the cover loader never keeps it (only the colours stay, in memory).
+    val palette = if (prefs.coverColors) rememberCoverPalette(coverUrl, dark, black) else null
     // Shuffle stays labelled Shuffle (never Pause); it lights while this page's queue is shuffling.
     val player: PlayerViewModel = viewModel()
     val playerState by player.state.collectAsStateWithLifecycle()
