@@ -2993,3 +2993,61 @@ fn on_the_cpu_the_engine_keeps_the_cpu_awake() {
     assert!(!rig.events.lock().iter().any(|e| matches!(e, Event::Awake(false))), "{:?}", rig.events.lock());
     rig.engine.stop();
 }
+
+// ---- a new queue made around the song playing ----
+
+/// A tap on the song playing in its album's list makes the album the queue around it (Android's
+/// `keepPlaying`): the song goes on, and nothing says the music stopped or ended - the song after it in
+/// the old queue, read ahead already, is no longer there.
+#[test]
+fn a_new_queue_made_around_the_song_playing_plays_on_without_a_stop() {
+    let tone = ramp(3 * 44_100, 16, 5);
+    let server = Arc::new(Server::default());
+    let file = wav(44_100, 16, &tone);
+    serve(&server, &[("p1", &file), ("a", &file), ("p2", &file), ("c", &file), ("d", &file)]);
+    let songs = ["p1", "a", "p2", "c", "d"].iter().map(|id| (id.to_string(), "wav".to_string(), 3_000)).collect();
+    // The equalizer on, as on the phone it was seen on: the samples go through the sound chain.
+    let eq = Sound { bands: vec![Band { kind: 0, freq: 1000.0, gain_db: 3.0, q: 1.0, channel: 0 }], ..Sound::default() };
+    let rig = Rig::new(server, songs, app(), None, Settings { sound: eq, ..Settings::default() });
+    rig.queue.0.lock().set(vec!["p1".into(), "a".into(), "p2".into()], Some(1), false, 0);
+    rig.engine.queue_changed();
+    rig.engine.play_at(1, 0);
+    assert!(rig.wait(10, |r| r.heard_song("a")), "{:?}", rig.events.lock());
+    // A second in: the rest of a and the start of p2 are already read, deep in the buffer.
+    rig.run(1_000);
+    let before = rig.events.lock().len();
+    // The album around it: c, a, d.
+    rig.queue.0.lock().set(vec!["c".into(), "a".into(), "d".into()], Some(1), false, 0);
+    rig.engine.queue_changed();
+    assert!(rig.wait(10, |r| r.heard_song("d")), "d follows a: {:?}", rig.events.lock());
+    let after: Vec<Event> = rig.events.lock()[before..].to_vec();
+    assert!(!after.iter().any(|e| matches!(e, Event::Stopped { .. } | Event::State(State::Paused | State::Ended | State::Idle))), "{after:?}");
+    assert!(!after.iter().any(|e| matches!(e, Event::Song { id, .. } if id == "p2")), "the old queue's next song is not heard: {after:?}");
+    rig.engine.stop();
+}
+
+/// [`a_new_queue_made_around_the_song_playing_plays_on_without_a_stop`], the old queue's next song
+/// failing as it is read ahead: its failure is not the new queue's, and stops nothing.
+#[test]
+fn a_new_queue_made_around_the_song_playing_is_not_stopped_by_the_old_next_song_failing() {
+    let tone = ramp(3 * 44_100, 16, 5);
+    let server = Arc::new(Server::default());
+    let file = wav(44_100, 16, &tone);
+    serve(&server, &[("p1", &file), ("a", &file), ("c", &file), ("d", &file)]);
+    server.down.lock().push("p2".into());
+    let songs = ["p1", "a", "p2", "c", "d"].iter().map(|id| (id.to_string(), "wav".to_string(), 3_000)).collect();
+    let eq = Sound { bands: vec![Band { kind: 0, freq: 1000.0, gain_db: 3.0, q: 1.0, channel: 0 }], ..Sound::default() };
+    let rig = Rig::new(server, songs, app(), None, Settings { sound: eq, ..Settings::default() });
+    rig.queue.0.lock().set(vec!["p1".into(), "a".into(), "p2".into()], Some(1), false, 0);
+    rig.engine.queue_changed();
+    rig.engine.play_at(1, 0);
+    assert!(rig.wait(10, |r| r.heard_song("a")), "{:?}", rig.events.lock());
+    rig.run(1_000);
+    let before = rig.events.lock().len();
+    rig.queue.0.lock().set(vec!["c".into(), "a".into(), "d".into()], Some(1), false, 0);
+    rig.engine.queue_changed();
+    assert!(rig.wait(10, |r| r.heard_song("d")), "d follows a: {:?}", rig.events.lock());
+    let after: Vec<Event> = rig.events.lock()[before..].to_vec();
+    assert!(!after.iter().any(|e| matches!(e, Event::Stopped { .. } | Event::State(State::Paused | State::Ended | State::Idle))), "{after:?}");
+    rig.engine.stop();
+}
