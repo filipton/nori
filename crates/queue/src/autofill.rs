@@ -34,6 +34,9 @@ pub const SONGS: usize = 15;
 pub const ALBUM_TRIES: usize = 6;
 /// An album shorter than this is a single: taken only if nothing longer is on offer.
 pub const ALBUM_MIN: usize = 3;
+/// Random albums one refill of a "shuffle albums" queue adds, each whole: the first of the library's own
+/// among the [`crate::actions::SHUFFLE_ALBUMS`] asked for.
+pub const RANDOM_ALBUMS: i32 = 3;
 
 /// What a fetch from the server gives.
 pub type Got<T> = Result<T, NetError>;
@@ -60,9 +63,19 @@ pub fn autofill_seed() -> Option<String> {
     crate::playlist::with(end_of)
 }
 
+/// Whether refilling is on: the autoplay setting, or a queue started by a shuffle, which goes on with
+/// random songs or albums whatever the setting says (the core's `autofill_from`).
+fn refill_on() -> bool {
+    refills(crate::playlist::playlist_origin().map(|o| o.kind), crate::rules::prefs(|p| p.auto_fill))
+}
+
+fn refills(origin: Option<nori_model::OriginKind>, auto_fill: bool) -> bool {
+    auto_fill || matches!(origin, Some(nori_model::OriginKind::ShuffleSongs | nori_model::OriginKind::ShuffleAlbums))
+}
+
 /// Whether the queue may be refilled now, how many songs follow the current one, and its last song.
 fn refill_facts() -> (bool, usize, Option<String>) {
-    let setting = crate::rules::prefs(|p| p.auto_fill);
+    let setting = refill_on();
     crate::playlist::with(|p| {
         let cur = p.current_id();
         (refillable(cur.is_some(), cur.is_some_and(|c| c.starts_with(queue::RADIO_PREFIX)), p.repeat(), setting), p.songs_after(), end_of(p))
@@ -97,7 +110,7 @@ pub fn autofill_next() -> FillNext {
 }
 
 fn autofill_next_at(now_ms: i64) -> FillNext {
-    let setting = crate::rules::prefs(|p| p.auto_fill);
+    let setting = refill_on();
     let (has_next, repeat_off, current) =
         crate::playlist::with(|p| (p.next().is_some(), p.repeat() == nori_player::playlist::REPEAT_OFF, p.current_id().map(str::to_string)));
     if REFILL.lock().next(has_next, setting && repeat_off, current.as_deref(), now_ms) {
@@ -328,6 +341,14 @@ mod tests {
         let left: Vec<String> = c.prepare("SELECT id FROM autofill_picks WHERE server='t'").unwrap().query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect();
         assert_eq!(left, ids(&["new"]));
         assert!(!album_use(&c, NOW).unwrap().contains_key("theirs"), "another server's picks are not this one's");
+    }
+
+    #[test]
+    fn a_shuffle_goes_on_with_autoplay_off() {
+        use nori_model::OriginKind as K;
+        assert!(refills(Some(K::ShuffleAlbums), false) && refills(Some(K::ShuffleSongs), false));
+        assert!(!refills(Some(K::Album), false) && !refills(None, false), "any other queue ends when autoplay is off");
+        assert!(refills(None, true));
     }
 
     #[test]

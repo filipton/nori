@@ -136,10 +136,10 @@ pub fn preamp(db: f32, automatic: bool) -> String {
     format!("{} dB{}", signed_db(db), if automatic { " (automatic)" } else { "" })
 }
 
-/// "centre", "L 30%", "R 5%".
+/// "center", "L 30%", "R 5%".
 pub fn balance(balance: f32) -> String {
     if balance == 0.0 {
-        return "centre".into();
+        return "center".into();
     }
     format!("{} {}%", if balance < 0.0 { "L" } else { "R" }, fixed((balance.abs() * 100.0) as f64, 0, false))
 }
@@ -257,7 +257,7 @@ mod tests {
         assert_eq!((fixed(0.15, 1, false), fixed(62.5, 0, false), fixed(9.96, 1, false)), ("0.2".into(), "63".into(), "10.0".into()));
         assert_eq!((hz(62.5), hz(1000.0), hz(2500.0), hz(12_500.0)), ("63".into(), "1k".into(), "2.5k".into(), "12.5k".into()));
         assert_eq!(band(1000.0, BandMark::LowShelf), "1k ↙");
-        assert_eq!((balance(0.0), balance(-0.3), balance(0.05)), ("centre".into(), "L 30%".into(), "R 5%".into()));
+        assert_eq!((balance(0.0), balance(-0.3), balance(0.05)), ("center".into(), "L 30%".into(), "R 5%".into()));
         assert_eq!(nudge(-250), "-0.3 s");
         assert_eq!((bytes(850), bytes(38 * 1_048_576), bytes(2_254_857_830)), ("850 B".into(), "38 MB".into(), "2.1 GB".into()));
         assert_eq!((songs_caption(1, 200), albums(2)), ("1 song · 3:20".into(), "2 albums".into()));

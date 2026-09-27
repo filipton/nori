@@ -130,7 +130,7 @@ pub struct Downloads {
 
 /// The home page's shelves, in order: title and album list kind.
 pub const HOME_ROWS: [(&str, &str); 5] =
-    [("Recently added", "newest"), ("Recently played", "recent"), ("Most played", "frequent"), ("Favourites", "starred"), ("Something random", "random")];
+    [("Recently added", "newest"), ("Recently played", "recent"), ("Most played", "frequent"), ("Favorites", "starred"), ("Something random", "random")];
 
 /// Page sizes: albums are asked for in pages this long, songs come from the index in its own pages.
 pub const ALBUM_PAGE: u32 = 500;
@@ -801,8 +801,8 @@ impl Session {
         spawn("nori-star", move || {
             let r = block_on(client.star(kind, id, on, Arc::new(Marks)));
             let text = match r {
-                Ok(()) => (if on { "Added to favourites" } else { "Removed from favourites" }).to_string(),
-                Err(e) => format!("Could not change the favourite: {e}"),
+                Ok(()) => (if on { "Added to favorites" } else { "Removed from favorites" }).to_string(),
+                Err(e) => format!("Could not change the favorite: {e}"),
             };
             let _ = tx.send(Msg::Note { text, error: false });
         });

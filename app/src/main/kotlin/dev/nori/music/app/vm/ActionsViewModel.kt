@@ -64,16 +64,20 @@ class ActionsViewModel(app: Application) : NoriViewModel(app) {
     /**
      * What a plain tap on row [index] of [songs] does: the core's answer from the settings (`tap_plan`).
      * [from] is the page whose list [songs] is: playing the list from the row is that page's queue, and
-     * its Play reads Pause; one song on its own is no page's.
+     * its Play reads Pause; one song on its own is no page's. A tap on the song [playing] now does not
+     * start it again: the list becomes the queue around it and it goes on. True when the player should
+     * open on it.
      */
-    fun tap(songs: List<Song>, index: Int, from: PageOrigin? = null) {
-        when (tapPlan(picked.items.value.isNotEmpty())) {
+    fun tap(songs: List<Song>, index: Int, from: PageOrigin? = null, playing: Boolean = false): Boolean {
+        val plan = tapPlan(picked.items.value.isNotEmpty())
+        when (plan) {
             TapPlan.SELECT -> toggleSelected(songs[index])
-            TapPlan.PLAY_LIST -> nori.player.play(songs, index, from = from)
-            TapPlan.PLAY_ONE -> nori.player.play(listOf(songs[index]))
+            TapPlan.PLAY_LIST -> if (playing) nori.player.keepPlaying(songs, index, from) else nori.player.play(songs, index, from = from)
+            TapPlan.PLAY_ONE -> if (!playing) nori.player.play(listOf(songs[index]))
             TapPlan.QUEUE -> enqueue(listOf(songs[index]))
             TapPlan.PLAY_NEXT -> playNext(listOf(songs[index]))
         }
+        return playing && (plan == TapPlan.PLAY_LIST || plan == TapPlan.PLAY_ONE)
     }
 
     /** What swiping a song row right and left does, as set in Settings. */
@@ -114,7 +118,10 @@ class ActionsViewModel(app: Application) : NoriViewModel(app) {
     fun playNext(songs: List<Song>, from: PageOrigin? = null) { nori.player.playNext(songs, from); _messages.trySend(say.playingNext) }
     fun enqueue(songs: List<Song>, from: PageOrigin? = null) { nori.player.enqueue(songs, from); _messages.trySend(say.addedToQueue) }
 
-    fun shuffleAll() = attempt(null) { nori.player.play(nori.library.shuffleAll()) }
+    // Each shuffle marks its queue, so its refills go on the same way whatever the autoplay setting says.
+    fun shuffleAll() = attempt(null) { nori.player.play(nori.library.shuffleAll(), from = PageOrigin(OriginKind.SHUFFLE_SONGS, "")) }
+    /** Random albums, each whole and in its own order. */
+    fun shuffleAlbums() = attempt(null) { nori.player.play(nori.library.shuffleAlbums(), from = PageOrigin(OriginKind.SHUFFLE_ALBUMS, "")) }
 
     /** An endless-ish mix seeded from one song. */
     fun startRadio(song: Song) = attempt(null) { nori.player.play(nori.library.radio(song)) }

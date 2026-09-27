@@ -150,8 +150,9 @@ private val tabs = listOf(
 )
 
 /**
- * [launchRoute] is a screen the activity was asked to open from outside - a tap on the download
- * notification - set on launch or on a new intent, and cleared here once it has been opened.
+ * [launchRoute] is what the activity was asked for from outside - a tap on the download notification, or
+ * a launcher shortcut: a screen, or a shuffle to start - set on launch or on a new intent, and cleared
+ * here once it has been done.
  */
 @Composable
 fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
@@ -230,7 +231,14 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
         if (launchRoute != null) LaunchedEffect(launchRoute, nav) {
             androidx.compose.runtime.snapshotFlow { launchRoute.value }.collect { route ->
                 if (route == null) return@collect
-                if (route == "downloads") nav.downloads() else nav.go(route)
+                when (route) {
+                    "downloads" -> nav.downloads()
+                    // A tab, as a tap on it: the keyboard comes up with it.
+                    "search" -> nav.tab(route)
+                    dev.nori.music.app.SHUFFLE_SONGS -> actions.shuffleAll()
+                    dev.nori.music.app.SHUFFLE_ALBUMS -> actions.shuffleAlbums()
+                    else -> nav.go(route)
+                }
                 launchRoute.value = null
             }
         }

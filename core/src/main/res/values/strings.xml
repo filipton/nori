@@ -29,8 +29,8 @@
         <item quantity="other">Finding lyrics for %d songs…</item>
     </plurals>
     <plurals name="summary_analysing">
-        <item quantity="one">Analysing %d song…</item>
-        <item quantity="other">Analysing %d songs…</item>
+        <item quantity="one">Analyzing %d song…</item>
+        <item quantity="other">Analyzing %d songs…</item>
     </plurals>
     <!-- The beat model (Better beat detection) reading downloaded songs' intros and outros, after their audio is saved. -->
     <plurals name="summary_detecting_beats">
@@ -39,8 +39,8 @@
     </plurals>
     <!-- Under the title while saved songs are processing: what else is left, each part joined by " · ". -->
     <plurals name="processing_analysing">
-        <item quantity="one">%d to analyse</item>
-        <item quantity="other">%d to analyse</item>
+        <item quantity="one">%d to analyze</item>
+        <item quantity="other">%d to analyze</item>
     </plurals>
     <plurals name="processing_beats">
         <item quantity="one">%d for beat detection</item>
@@ -62,8 +62,8 @@
     <string name="radio_artist">Radio</string>
     <!-- A USB DAC that gives no name of its own. -->
     <string name="dac_unnamed">USB DAC</string>
-    <string name="session_add_favourite">Add to favourites</string>
-    <string name="session_remove_favourite">Remove from favourites</string>
+    <string name="session_add_favourite">Add to favorites</string>
+    <string name="session_remove_favourite">Remove from favorites</string>
     <string name="session_shuffle_on">Shuffle on</string>
     <string name="session_shuffle_off">Shuffle off</string>
 
@@ -89,7 +89,7 @@
     <string name="car_recently_added">Recently added</string>
     <string name="car_most_played">Most played</string>
     <string name="car_playlists">Playlists</string>
-    <string name="car_favourites">Favourites</string>
+    <string name="car_favourites">Favorites</string>
     <string name="car_random">Random</string>
     <string name="car_downloads">Downloads</string>
     <string name="car_playlist_songs">%1$d songs</string>

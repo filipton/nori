@@ -611,12 +611,12 @@ fn pages_and_the_player_have_favourite_and_download_buttons() {
     a.handle(Msg::Data(Req::Album("al-3".into()), Ok(Data::Album(Box::new(nori_core::AlbumDetail::new(album("al-3", "Three"), songs, vec![]))))));
     a.heard(Some(song("1", "One", 200)));
     let s = draw(&mut a, 170, 40);
-    assert!(s.contains("♡ Favourite") && s.contains("↓ Download"), "{s}");
+    assert!(s.contains("♡ Favorite") && s.contains("↓ Download"), "{s}");
     a.cmds.clear();
     let star = hit_rect(&a, Hit::Button(crate::app::Button::Star));
     click(&mut a, star.x + 1, star.y);
     assert_eq!(a.cmds.last(), Some(&Cmd::Star(nori_core::client::Starrable::Album, "al-3".into(), true)));
-    assert!(draw(&mut a, 170, 40).contains("♥ Favourite"), "shown at once");
+    assert!(draw(&mut a, 170, 40).contains("♥ Favorite"), "shown at once");
     let down = hit_rect(&a, Hit::Button(crate::app::Button::Download));
     click(&mut a, down.x + 1, down.y);
     assert!(matches!(a.cmds.last(), Some(Cmd::DownloadFetch(crate::backend::Fetch::Album(id))) if id == "al-3"));

@@ -365,6 +365,20 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
     }
 
     /**
+     * [songs] as the new queue around the song playing, which is [songs][at]: it goes on where it is,
+     * playing or paused, rather than starting again (a tap on it in its own album's list). Any other
+     * song plays as [play] would.
+     */
+    fun keepPlaying(songs: List<Song>, at: Int, from: PageOrigin? = null) = with { c ->
+        if (c.currentMediaItem?.mediaId != songs.getOrNull(at)?.id) return@with play(songs, at, from = from)
+        dev.nori.music.ffi.queue.playlistShowShuffle(false)
+        c.shuffleModeEnabled = false
+        val made = items(songs).toMutableList()
+        made[at] = made[at].kept()
+        c.setMediaItems(startedFrom(made, from), at, c.currentPosition)
+    }
+
+    /**
      * Play [songs] in [order] (positions in it, the core's weighted shuffle) while keeping the Shuffle
      * control lit. Used for weighted artist-spread shuffles: media3's own shuffle would undo the spread.
      */

@@ -1568,11 +1568,16 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
             for p in self.periods.iter_mut() {
                 p.index = at(p.index);
             }
-            if let Some(f) = self.failed.as_mut() {
-                f.0 = at(f.0);
-            }
             self.stop_after = self.stop_after.map(at);
             let after = self.reading.as_ref().and_then(|r| self.next_of(r.index));
+            // A song that would not play fails only while it is still the one read or the one after it.
+            // Gone from the queue (a new queue made around the song playing), or no longer next, it fails
+            // nothing: found again by its place instead, its failure was the song now there's, and ended
+            // the queue under music still playing.
+            let reading = self.reading.as_ref().map(|r| r.index);
+            self.failed = self.failed.take().and_then(|(i, kind, why)| {
+                moved(&old, new, i).filter(|k| Some(*k) == reading || Some(*k) == after).map(|k| (k, kind, why))
+            });
             match self.next.as_mut() {
                 Some(n) if moved(&old, &self.ids, n.0).is_some_and(|i| Some(i) == after) => n.0 = after.expect("checked"),
                 _ => self.next = None,

@@ -546,6 +546,7 @@ fun LazyListScope.songRows(
         val at = rows?.get(k)?.toInt() ?: k
         val s = songs[at]
         val moving = animated || appear
+        val sheet = LocalPlayerSheet.current
         val modifier = when {
             !moving -> Modifier
             AppMotion.reduce -> Modifier.animateItem(null, null, null)
@@ -553,7 +554,7 @@ fun LazyListScope.songRows(
         }
         SongRow(
             s, if (numbered) null else remember(s) { cover(s) },
-            onClick = { actions.tap(songs, at, from) }, onMenu = { menu(s) },
+            onClick = { if (actions.tap(songs, at, from, playing = s.id == playingId)) sheet.open() }, onMenu = { menu(s) },
             modifier = if (arrival != null) modifier.arriving(arrival) else modifier,
             number = if (numbered) s.track.toInt() else null, playing = s.id == playingId, downloaded = s.id in downloaded,
             selected = s.id in selected, onLongClick = { actions.toggleSelected(s) },

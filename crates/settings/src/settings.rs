@@ -439,7 +439,8 @@ pub struct StoredPrefs {
     #[setting("amoled", FLAG, default = false, show = K::Switch)]
     pub amoled: bool,
     /// With a black background, which pages keep their cover's colours rather than going black
-    /// ([`nori_look::sleeve::page_black`]): the player, album pages and artist pages, each on its own.
+    /// ([`nori_look::sleeve::page_black`]): the player, album and playlist pages (one choice, under the
+    /// album key it began with) and artist pages, each on its own.
     #[setting("playerColours", FLAG, default = true, show = K::Switch)]
     pub player_colours: bool,
     #[setting("albumColours", FLAG, default = false, show = K::Switch)]
@@ -509,6 +510,13 @@ pub struct StoredPrefs {
     pub swipe_left: SwipeAction,
     #[setting("liveSearchDelayMs", INT, default = 350, show = K::Choice(&["150", "250", "350", "500", "800"]))]
     pub live_search_delay_ms: i32,
+    /// A playlist page shows the playlist's description under its name
+    /// ([`nori_library::pages::playlist_description`] words nothing, it only decides).
+    #[setting("playlistDescriptions", FLAG, default = true, show = K::Switch)]
+    pub playlist_descriptions: bool,
+    /// ...except the note the server leaves on a playlist it imported from a file by itself.
+    #[setting("hideImportNotes", FLAG, default = true, show = K::Switch)]
+    pub hide_import_notes: bool,
     #[setting("tasteModel", FLAG, default = true, show = K::Switch)]
     pub taste_model: bool,
     #[setting("scrobble", FLAG, default = true, show = K::Switch)]

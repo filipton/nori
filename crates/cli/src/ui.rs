@@ -896,7 +896,7 @@ fn page(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool, pics
         pill(f, hits, &mut x, y, end, "▶ Play", true, Button::PlayAll, t);
         pill(f, hits, &mut x, y, end, "⤮ Shuffle", false, Button::ShuffleAll, t);
         if let Some(on) = star {
-            pill(f, hits, &mut x, y, end, if on { "♥ Favourite" } else { "♡ Favourite" }, false, Button::Star, t);
+            pill(f, hits, &mut x, y, end, if on { "♥ Favorite" } else { "♡ Favorite" }, false, Button::Star, t);
         }
         pill(f, hits, &mut x, y, end, "↓ Download", false, Button::Download, t);
         let back = "‹ Back";
@@ -1162,7 +1162,7 @@ fn setting_line(line: &SLine<'_>, w: usize, t: &Theme) -> Line<'static> {
     let live = settings_view::row_enabled(row);
     let text_style = if live { Style::default().fg(t.text) } else { dim(t) };
     if let settings_view::Row::Palette { colours, chosen, .. } = row {
-        let mut spans = vec![Span::styled("    Accent colour  ", text_style)];
+        let mut spans = vec![Span::styled("    Accent color  ", text_style)];
         for c in colours {
             let colour = crate::art::argb(*c as u32);
             spans.push(Span::styled(if c == chosen { "[●]" } else { " ● " }, Style::default().fg(colour)));

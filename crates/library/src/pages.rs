@@ -386,6 +386,25 @@ pub fn similar_artists(similar: Vec<nori_model::Artist>) -> Vec<nori_model::Arti
     similar.into_iter().filter(|a| !a.id.is_empty()).collect()
 }
 
+/// A playlist's description as its page shows it, or none: none when descriptions are off, and none for
+/// the note Navidrome leaves on a playlist it imported from a file of the library by itself
+/// ("Auto-imported from 'Glitch.m3u8'") when [hide_import_notes] is on - that says where the playlist
+/// came from, not what is in it.
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn playlist_description(comment: Option<String>, show: bool, hide_import_notes: bool) -> Option<String> {
+    let text = comment.filter(|c| !c.trim().is_empty())?;
+    if !show || (hide_import_notes && is_import_note(&text)) {
+        return None;
+    }
+    Some(text)
+}
+
+/// Navidrome's own note on a playlist file it imported (`Auto-imported from '<file>'`), and nothing else.
+fn is_import_note(text: &str) -> bool {
+    let t = text.trim();
+    t.strip_prefix("Auto-imported from '").is_some_and(|rest| rest.ends_with('\'') && !rest.contains('\n'))
+}
+
 /// An artist's biography as the page shows it: the text before the link the server appends to it.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn biography(text: String) -> String {
@@ -591,6 +610,17 @@ mod tests {
         // Lit, enabled, pausing, Play enabled, Shuffle turns shuffle off (2), Play toggles (1).
         assert_eq!(here.pack(), 0b1 | 0b10 | 0b100 | 0b1000 | 2 << 4 | 1 << 6);
         assert_eq!(waiting.pack(), 0);
+    }
+
+    #[test]
+    fn a_playlist_shows_its_own_description_but_not_the_servers_import_note() {
+        let d = |c: &str, show, hide| playlist_description(Some(c.into()), show, hide);
+        assert_eq!(d("Late night driving", true, true).as_deref(), Some("Late night driving"));
+        assert_eq!(d("Auto-imported from 'Glitch.m3u8'", true, true), None);
+        assert_eq!(d("Auto-imported from 'The New New York.m3u8'", true, false).as_deref(), Some("Auto-imported from 'The New New York.m3u8'"));
+        assert_eq!(d("Auto-imported from 'x.m3u' plus my own notes", true, true).as_deref(), Some("Auto-imported from 'x.m3u' plus my own notes"));
+        assert_eq!(d("Late night driving", false, true), None);
+        assert_eq!((d("  ", true, true), playlist_description(None, true, true)), (None, None));
     }
 
     #[test]
