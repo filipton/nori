@@ -49,7 +49,8 @@
     <string name="not_in_library_yet">Not in library yet</string>
     <string name="nothing_matches">Nothing matches</string>
     <string name="listen_now">Listen now</string>
-    <string name="shuffle_everything">Shuffle everything</string>
+    <string name="shuffle_songs">Shuffle songs</string>
+    <string name="shuffle_albums">Shuffle albums</string>
     <string name="resume_from_server">Resume from server</string>
     <string name="rearrange_rows">Rearrange rows</string>
     <string name="for_you">For you</string>

@@ -16,6 +16,8 @@ pub const RADIO: i32 = 50;
 pub const INSTANT_MIX: u32 = 50;
 /// Songs "shuffle all" plays.
 pub const SHUFFLE_ALL: i32 = 200;
+/// Albums "shuffle albums" plays, each whole.
+pub const SHUFFLE_ALBUMS: i32 = 10;
 
 /// What a plain tap on a song in a list does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

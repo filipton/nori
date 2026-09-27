@@ -78,6 +78,16 @@ impl Client {
     pub async fn shuffle_all(&self) -> NetResult<Vec<Song>> {
         self.songs(Read::RandomSongs { size: SHUFFLE_ALL, genre: None }).await
     }
+
+    /// "Shuffle albums": the server's random albums, each played whole and in its own order, one after
+    /// another. A provider's are left out, as for an artist ([`Self::artist_songs`]).
+    pub async fn shuffle_albums(&self) -> NetResult<Vec<Song>> {
+        let albums = match self.read_now(Read::AlbumList { kind: "random".into(), size: SHUFFLE_ALBUMS, offset: 0, genre: None }).await? {
+            Page::Albums { v } => v,
+            _ => Vec::new(),
+        };
+        Ok(self.artist_songs(albums).await)
+    }
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
@@ -137,6 +147,23 @@ pub(crate) mod tests {
         let got = block(c.artist_songs(vec![album("a1", false), album("ext-2", true)]));
         assert_eq!(got.len(), 1);
         assert_eq!(fake.asked().len(), 1, "a provider's album is never asked for");
+    }
+
+    #[test]
+    fn shuffled_albums_play_whole_in_their_own_order_and_never_a_providers() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        fake.answer(r#"{"subsonic-response":{"status":"ok","albumList2":{"album":[{"id":"b","name":"B"},{"id":"ext-applemusic-album-1","name":"X","isExternal":true},{"id":"a","name":"A"}]}}}"#);
+        let album = |id: &str, songs: &[&str]| {
+            let s: Vec<String> = songs.iter().map(|i| format!(r#"{{"id":"{i}","title":"{i}","isDir":false}}"#)).collect();
+            format!(r#"{{"subsonic-response":{{"status":"ok","album":{{"id":"{id}","name":"{id}","song":[{}]}}}}}}"#, s.join(","))
+        };
+        fake.answer(&album("b", &["b1", "b2", "b3"]));
+        fake.answer(&album("a", &["a1", "a2"]));
+        let got = block(c.shuffle_albums()).unwrap();
+        assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["b1", "b2", "b3", "a1", "a2"]);
+        let asked = fake.asked();
+        assert!(asked[0].contains("getAlbumList2") && asked[0].contains("type=random"), "{asked:?}");
+        assert_eq!(asked.len(), 3, "the provider's album is never asked for: {asked:?}");
     }
 
     #[test]

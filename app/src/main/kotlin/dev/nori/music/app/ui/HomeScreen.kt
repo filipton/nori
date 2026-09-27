@@ -82,7 +82,8 @@ fun HomeScreen(actions: ActionsViewModel, vm: HomeViewModel = viewModel()) {
                     Box {
                         IconButton({ menu = true }) { Icon(Icons.Filled.MoreHoriz, say.more, Modifier.size(22.dp)) }
                         DropdownMenu(menu, { menu = false }) {
-                            DropdownMenuItem({ Text(say.shuffleEverything) }, { actions.shuffleAll(); menu = false })
+                            DropdownMenuItem({ Text(say.shuffleSongs) }, { actions.shuffleAll(); menu = false })
+                            DropdownMenuItem({ Text(say.shuffleAlbums) }, { actions.shuffleAlbums(); menu = false })
                             DropdownMenuItem({ Text(say.resumeFromServer) }, { actions.resumeFromServer(); menu = false })
                             DropdownMenuItem({ Text(say.rearrangeRows) }, { rearranging = true; menu = false })
                         }

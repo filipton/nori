@@ -211,6 +211,7 @@ class Library(
     suspend fun artistSongs(artistId: String): List<Song> = withContext(Dispatchers.IO) { lifted { client.artistSongsOf(artistId) } }
 
     suspend fun shuffleAll(): List<Song> = withContext(Dispatchers.IO) { lifted { client.shuffleAll() } }
+    suspend fun shuffleAlbums(): List<Song> = withContext(Dispatchers.IO) { lifted { client.shuffleAlbums() } }
 
     suspend fun smartPlaylists() = withContext(Dispatchers.IO) { core.smartList() }
     fun smartDefaults() = dev.nori.music.ffi.library.smartDefaults()

@@ -115,6 +115,8 @@ class ActionsViewModel(app: Application) : NoriViewModel(app) {
     fun enqueue(songs: List<Song>, from: PageOrigin? = null) { nori.player.enqueue(songs, from); _messages.trySend(say.addedToQueue) }
 
     fun shuffleAll() = attempt(null) { nori.player.play(nori.library.shuffleAll()) }
+    /** Random albums, each whole and in its own order. */
+    fun shuffleAlbums() = attempt(null) { nori.player.play(nori.library.shuffleAlbums()) }
 
     /** An endless-ish mix seeded from one song. */
     fun startRadio(song: Song) = attempt(null) { nori.player.play(nori.library.radio(song)) }
