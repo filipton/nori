@@ -64,16 +64,20 @@ class ActionsViewModel(app: Application) : NoriViewModel(app) {
     /**
      * What a plain tap on row [index] of [songs] does: the core's answer from the settings (`tap_plan`).
      * [from] is the page whose list [songs] is: playing the list from the row is that page's queue, and
-     * its Play reads Pause; one song on its own is no page's.
+     * its Play reads Pause; one song on its own is no page's. A tap on the song [playing] now does not
+     * start it again: the list becomes the queue around it and it goes on. True when the player should
+     * open on it.
      */
-    fun tap(songs: List<Song>, index: Int, from: PageOrigin? = null) {
-        when (tapPlan(picked.items.value.isNotEmpty())) {
+    fun tap(songs: List<Song>, index: Int, from: PageOrigin? = null, playing: Boolean = false): Boolean {
+        val plan = tapPlan(picked.items.value.isNotEmpty())
+        when (plan) {
             TapPlan.SELECT -> toggleSelected(songs[index])
-            TapPlan.PLAY_LIST -> nori.player.play(songs, index, from = from)
-            TapPlan.PLAY_ONE -> nori.player.play(listOf(songs[index]))
+            TapPlan.PLAY_LIST -> if (playing) nori.player.keepPlaying(songs, index, from) else nori.player.play(songs, index, from = from)
+            TapPlan.PLAY_ONE -> if (!playing) nori.player.play(listOf(songs[index]))
             TapPlan.QUEUE -> enqueue(listOf(songs[index]))
             TapPlan.PLAY_NEXT -> playNext(listOf(songs[index]))
         }
+        return playing && (plan == TapPlan.PLAY_LIST || plan == TapPlan.PLAY_ONE)
     }
 
     /** What swiping a song row right and left does, as set in Settings. */

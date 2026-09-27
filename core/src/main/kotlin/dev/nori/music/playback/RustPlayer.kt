@@ -485,6 +485,7 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
     }
 
     override fun handleSetMediaItems(mediaItems: MutableList<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<*> {
+        val was = items.getOrNull(current)?.mediaId
         items.clear()
         uids.clear()
         for (item in mediaItems) { items += item; uids += nextUid++ }
@@ -492,6 +493,9 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
         edited()
         val at = if (startIndex == C.INDEX_UNSET || items.isEmpty()) timeline().getFirstWindowIndex(shuffle).coerceAtLeast(0) else startIndex.coerceIn(0, items.size - 1)
         if (items.isEmpty()) { current = 0; RustPlayerJni.pause(h); return done() }
+        // The song playing, kept in a queue made around it: the engine follows it into the new list by
+        // its id (the edit above) and carries on, playing or paused, with no jump.
+        if (items[at].isKept() && items[at].mediaId == was) { current = at; return done() }
         // Playing, the new list plays at once, as ExoPlayer's does; paused, the engine holds its start.
         expecting = at
         current = at

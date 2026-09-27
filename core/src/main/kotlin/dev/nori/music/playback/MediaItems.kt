@@ -92,6 +92,14 @@ fun MediaItem.restored(): MediaItem = withExtra { putBoolean(RESTORED, true) }
  * A list already put in the order it plays (a weighted shuffle, which the player's own shuffle would
  * undo), marked on its first item so the core keeps shuffle shown while the player's is off.
  */
+private const val KEPT = "kept"
+/**
+ * The song playing, in a new queue made around it (a tap on it in its album's list): the player takes
+ * the new list and carries on with the song where it is instead of starting it again.
+ */
+fun MediaItem.isKept(): Boolean = mediaMetadata.extras?.getBoolean(KEPT) == true
+fun MediaItem.kept(): MediaItem = withExtra { putBoolean(KEPT, true) }
+
 private const val ORDERED = "ordered"
 fun MediaItem.inOrder(): Boolean = mediaMetadata.extras?.getBoolean(ORDERED) == true
 fun MediaItem.ordered(): MediaItem = withExtra { putBoolean(ORDERED, true) }
