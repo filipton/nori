@@ -574,12 +574,14 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
             rows += choice("compressorPreset", R.string.settings_compressor_preset, fallback = { str(R.string.settings_compressor_custom) }) {
                 str(when (it) { "GENTLE" -> R.string.settings_compressor_gentle; "STRONG" -> R.string.settings_compressor_strong; else -> R.string.settings_compressor_balanced })
             }
+            // The sliders span the useful part of each control (a ratio of 3 was a sliver at the start of
+            // 1 to 20); the core takes the wider values a profile or the terminal may hold.
             rows += SettingRow.Slider("compThresholdDb", str(R.string.settings_comp_threshold, minus(one(p.compThresholdDb))), p.compThresholdDb, -60f, 0f, false, EqLevel.COMP_THRESHOLD)
-            rows += SettingRow.Slider("compRatio", str(R.string.settings_comp_ratio, one(p.compRatio)), p.compRatio, 1f, 20f, false, EqLevel.COMP_RATIO)
-            rows += SettingRow.Slider("compAttackMs", str(R.string.settings_comp_attack, one(p.compAttackMs)), p.compAttackMs, 0.1f, 200f, false, EqLevel.COMP_ATTACK)
-            rows += SettingRow.Slider("compReleaseMs", str(R.string.settings_comp_release, p.compReleaseMs.roundToInt().toString()), p.compReleaseMs, 10f, 2000f, false, EqLevel.COMP_RELEASE)
-            rows += SettingRow.Slider("compMakeupDb", str(R.string.settings_comp_makeup, signedDb(p.compMakeupDb)), p.compMakeupDb, 0f, 24f, false, EqLevel.COMP_MAKEUP)
-            rows += SettingRow.Slider("compKneeDb", str(R.string.settings_comp_knee, one(p.compKneeDb)), p.compKneeDb, 0f, 24f, false, EqLevel.COMP_KNEE)
+            rows += SettingRow.Slider("compRatio", str(R.string.settings_comp_ratio, one(p.compRatio)), p.compRatio.coerceIn(1f, 10f), 1f, 10f, false, EqLevel.COMP_RATIO)
+            rows += SettingRow.Slider("compAttackMs", str(R.string.settings_comp_attack, one(p.compAttackMs)), p.compAttackMs.coerceIn(0.1f, 100f), 0.1f, 100f, false, EqLevel.COMP_ATTACK)
+            rows += SettingRow.Slider("compReleaseMs", str(R.string.settings_comp_release, p.compReleaseMs.roundToInt().toString()), p.compReleaseMs.coerceIn(10f, 1000f), 10f, 1000f, false, EqLevel.COMP_RELEASE)
+            rows += SettingRow.Slider("compMakeupDb", str(R.string.settings_comp_makeup, signedDb(p.compMakeupDb)), p.compMakeupDb.coerceIn(0f, 12f), 0f, 12f, false, EqLevel.COMP_MAKEUP)
+            rows += SettingRow.Slider("compKneeDb", str(R.string.settings_comp_knee, one(p.compKneeDb)), p.compKneeDb.coerceIn(0f, 12f), 0f, 12f, false, EqLevel.COMP_KNEE)
         }
         return rows
     }
