@@ -28,8 +28,12 @@ Apple's own App Store screenshots and the differences closed. What is left is li
   had), except one going on gaplessly from a song converted at the same rate (an album mixed into), where
   the converter carries on across the join. On Android the AudioTrack then carries the song's own rate to
   the system mixer, which resamples to the device's rate itself where that differs. AutoMix's tempo stretch
-  never used the resampler (it has its own, automix/stretch.rs). **To check on a device**: the gap when the
-  rate changes between songs, and that a crossfade across rates still mixes.
+  never used the resampler (it has its own, automix/stretch.rs). Checked on the emulator with a 44.1/48/88.2/
+  96 kHz album (16- and 24-bit FLAC): gapless, each song reopens the track at its own rate ("sink follows");
+  with a crossfade, "converting 48000 Hz x2 -> 44100 Hz x2" and the mix. Opening a float track at 96 kHz
+  there failed with "not enough memory" (-12, the sound server's per-app track memory): a track is now asked
+  for again at half its size, down to a second (`track.rs` `open_fitting`), and plays topped up more often.
+  **To check on a phone**: the gap when the rate changes between songs, by ear.
 
 - **Highest sample rate, per output.** A setting (`maxRate`: each song's own, 48, 96 or 192 kHz), part of the
   sound profile so each output device keeps its own. A song above it is played at its rate halved within its
