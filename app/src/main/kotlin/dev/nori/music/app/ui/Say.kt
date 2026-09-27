@@ -164,6 +164,18 @@ class Say(private val r: Resources) {
     val eqParametric: String = r.getString(R.string.eq_parametric)
     val eqGraphicHint: String = r.getString(R.string.eq_graphic_hint)
     fun eqBandCount(n: Int): String = r.getString(R.string.eq_band_count, n)
+    /**
+     * How closely the graphic equalizer follows a headphone correction, by its largest difference; past
+     * 1.5 dB it says what follows it more closely (more bands, or the parametric equalizer).
+     */
+    fun eqFollows(maxDb: Float, bands: Int): String {
+        val db = Fmt.fixed(maxDb.toDouble(), 1)
+        return when {
+            maxDb <= 1.5f -> r.getString(R.string.eq_follows, db)
+            bands < 31 -> r.getString(R.string.eq_follows_loose, db)
+            else -> r.getString(R.string.eq_follows_loose_31, db)
+        }
+    }
     val pastePreset: String = r.getString(R.string.paste_preset)
     val presets: String = r.getString(R.string.presets)
     val autoPreampHint: String = r.getString(R.string.auto_preamp_hint)
@@ -189,6 +201,7 @@ class Say(private val r: Resources) {
     val refreshList: String = r.getString(R.string.refresh_list)
     val autoeqNoCurve: String = r.getString(R.string.autoeq_no_curve)
     val autoeqCredit: String = r.getString(R.string.autoeq_credit)
+    val autoeqCreditGraphic: String = r.getString(R.string.autoeq_credit_graphic)
     val devices: String = r.getString(R.string.devices)
     val autoeqAuto: String = r.getString(R.string.autoeq_auto)
     val autoeqAutoDetail: String = r.getString(R.string.autoeq_auto_detail)

@@ -160,7 +160,8 @@ class Settings(private val context: Context) {
         val r = SoundEdit.setGraphic(index, value)
         if (r == -1L) return
         val kept = java.lang.Float.intBitsToFloat((r ushr 32).toInt())
-        state.update { p -> if (index in p.eqGraphic.indices) p.copy(eqGraphic = p.eqGraphic.toMutableList().also { it[index] = kept }) else p }
+        // Moved by hand, the sliders are no longer a headphone correction (the core forgets it too).
+        state.update { p -> if (index in p.eqGraphic.indices) p.copy(eqGraphic = p.eqGraphic.toMutableList().also { it[index] = kept }, eqGraphicTarget = emptyList()) else p }
         val effect = r.toInt()
         if (effect != 0) _effects.tryEmit(effect)
     }

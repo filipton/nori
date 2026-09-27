@@ -140,7 +140,7 @@ fun EqualizerScreen(vm: SettingsViewModel) {
             Text(bypass, Modifier.padding(12.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onErrorContainer)
         }
 
-        if (graphic) GraphicBands(vm, p.eqGraphic, p.eqEnabled)
+        if (graphic) GraphicBands(vm, p.eqGraphic, p.eqGraphicTarget, p.eqEnabled)
         else p.eqBands.forEachIndexed { i, b ->
             Row(Modifier.padding(horizontal = Space.gutter), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 // Once per band shape, not on every frame of a gain drag.
@@ -159,10 +159,10 @@ fun EqualizerScreen(vm: SettingsViewModel) {
             }
         }
         LazyRow(contentPadding = PaddingValues(horizontal = Space.gutter, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            // A headphone correction is filters: it goes to (and switches to) the parametric equalizer.
             if (!graphic) item { Chip(say.addBand, false, onClick = vm::addBand) }
-            if (!graphic) item { Chip(say.pastePreset, false) { importing = true } }
-            if (!graphic) item { Chip(say.headphonePresets, false, onClick = nav::autoEq) }
+            // On the graphic equalizer a headphone correction is fitted to its sliders.
+            item { Chip(say.pastePreset, false) { importing = true } }
+            item { Chip(say.headphonePresets, false, onClick = nav::autoEq) }
             item { Chip(say.reset, false, onClick = vm::resetBands) }
         }
         SectionTitle(say.presets)
@@ -228,12 +228,23 @@ fun EqualizerScreen(vm: SettingsViewModel) {
 
 /** The graphic equalizer: the layout, the curve it plays, and a slider per band. */
 @Composable
-private fun GraphicBands(vm: SettingsViewModel, sliders: List<Float>, enabled: Boolean) {
+private fun GraphicBands(vm: SettingsViewModel, sliders: List<Float>, target: List<Float>, enabled: Boolean) {
     val count = sliders.size
     Row(Modifier.padding(horizontal = Space.gutter, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         listOf(10, 15, 31).forEach { n -> Chip(say.eqBandCount(n), n == count) { if (n != count) vm.setEqLayout(n) } }
     }
-    ResponseCurve(sliders, enabled)
+    ResponseCurve(sliders, target, enabled)
+    // After a headphone correction: how closely the sliders follow it, asked of the core once per change.
+    if (target.isNotEmpty()) {
+        val follow = remember(sliders, target) { dev.nori.music.ffi.settings.graphicFollow(sliders, target) }
+        follow?.let {
+            Text(
+                remember(it.maxDb, count) { say.eqFollows(it.maxDb, count) },
+                Modifier.padding(horizontal = Space.gutter, vertical = 2.dp),
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
     // The bands' labels and exact centres are the core's, asked once per layout.
     val bands = remember(count) { dev.nori.music.ffi.settings.graphicBands(count.toUInt()) }
     val gain = ranges.gain
@@ -259,21 +270,31 @@ private val CURVE_FREQS: List<Float> = List(97) { 20f * Math.pow(1000.0, it / 96
  * designed (`graphic_response`), asked once per change and drawn as a line over ±15 dB.
  */
 @Composable
-private fun ResponseCurve(sliders: List<Float>, enabled: Boolean) {
+private fun ResponseCurve(sliders: List<Float>, target: List<Float>, enabled: Boolean) {
     val response = remember(sliders) { dev.nori.music.ffi.settings.graphicResponse(sliders, CURVE_FREQS) }
+    // A headphone correction's curve, drawn faintly at the level the sliders play it: both run 20 Hz to
+    // 20 kHz on a log scale, so their means line them up.
+    val aim = remember(target, response) {
+        if (target.isEmpty()) emptyList() else { val shift = response.average().toFloat() - target.average().toFloat(); target.map { it + shift } }
+    }
     val line = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+    val faint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
     val grid = MaterialTheme.colorScheme.outlineVariant
     androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().padding(horizontal = Space.gutter, vertical = 8.dp).height(96.dp)) {
         val mid = size.height / 2f
         val perDb = size.height / 30f
         drawLine(grid, androidx.compose.ui.geometry.Offset(0f, mid), androidx.compose.ui.geometry.Offset(size.width, mid), strokeWidth = 1f)
-        val path = androidx.compose.ui.graphics.Path()
-        response.forEachIndexed { i, db ->
-            val x = size.width * i / (response.size - 1).coerceAtLeast(1)
-            val y = (mid - db.coerceIn(-15f, 15f) * perDb)
-            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        fun trace(values: List<Float>): androidx.compose.ui.graphics.Path {
+            val path = androidx.compose.ui.graphics.Path()
+            values.forEachIndexed { i, db ->
+                val x = size.width * i / (values.size - 1).coerceAtLeast(1)
+                val y = (mid - db.coerceIn(-15f, 15f) * perDb)
+                if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            }
+            return path
         }
-        drawPath(path, line, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round))
+        if (aim.isNotEmpty()) drawPath(trace(aim), faint, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round))
+        drawPath(trace(response), line, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round))
     }
 }
 
