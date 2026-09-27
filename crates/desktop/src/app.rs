@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nori_core::playlist::PlaylistView;
 use nori_core::search::SearchView;
@@ -30,9 +30,15 @@ const SMALL_PX: u32 = 256;
 const LARGE_PX: u32 = 800;
 /// An artist's picture across the page's whole width.
 const HERO_PX: u32 = 1600;
-/// Decoded covers kept: the cards on a few screens, and the few large ones.
+/// Decoded covers kept: the cards on a few screens, and the few large ones. A cover drawn in the last
+/// `IN_USE` is kept beyond these, so a screen with more than fits never drops what it shows.
 const SMALL_KEPT: usize = 240;
 const LARGE_KEPT: usize = 12;
+const IN_USE: Duration = Duration::from_secs(3);
+/// Covers asked for and not come yet; the oldest past this are let go (the pictures scrolled away).
+const PENDING_KEPT: usize = 1000;
+/// A cover on its way that no picture has looked for in this long is off the screen, and let go.
+const GONE: Duration = Duration::from_millis(1500);
 
 // The views, as app.slint numbers them.
 const HOME: i32 = 0;
@@ -77,16 +83,18 @@ struct Lists {
 }
 
 /// The decoded covers, looked up by the pictures as they draw (`art` in app.slint). A picture not here yet
-/// is asked for once; its arrival bumps `covers-rev`, and every picture looks again.
+/// is asked for once; its arrival bumps `covers-rev`, and every picture looks again. The least lately drawn
+/// go first when there are too many.
 #[derive(Default)]
 struct Art {
-    images: HashMap<String, Image>,
-    small: VecDeque<String>,
-    large: VecDeque<String>,
+    images: HashMap<String, (Image, Instant)>,
     /// The page colours of the large covers, by cover id.
     colours: HashMap<String, Rc<CoverColours>>,
     asked: HashSet<String>,
     wanted: Vec<(String, i32)>,
+    /// When a picture last looked for a cover still on its way: one not looked for lately has left the
+    /// screen, and its request makes way for the ones on it.
+    missing: HashMap<String, Instant>,
 }
 
 /// A cover's name among the pictures: its size's letter (s a card's, l large, x an artist's hero) and its id.
@@ -104,9 +112,11 @@ fn art(id: SharedString, size: i32) -> Image {
     let k = key(&id, size);
     ART.with(|a| {
         let mut a = a.borrow_mut();
-        if let Some(i) = a.images.get(&k) {
+        if let Some((i, drawn)) = a.images.get_mut(&k) {
+            *drawn = Instant::now();
             return i.clone();
         }
+        a.missing.insert(k.clone(), Instant::now());
         if a.asked.insert(k) {
             if a.wanted.is_empty() {
                 // Asked for after this frame's drawing, not from inside it.
@@ -183,7 +193,7 @@ pub struct App {
     again: Timer,
     /// The lyrics of the song heard, and their clock; when the next line is due.
     lyrics: Option<crate::lyrics::SongLyrics>,
-    lyrics_due: Option<std::time::Instant>,
+    lyrics_due: Option<Instant>,
     note: Timer,
     search: Timer,
 }
@@ -1058,20 +1068,35 @@ impl App {
             ART.with(|a| a.borrow_mut().asked.clear());
             return;
         };
-        for (id, size) in wanted {
+        // The requests for pictures gone from the screen are dropped, so the loader gets to those on it.
+        let now = Instant::now();
+        ART.with(|a| {
+            let mut a = a.borrow_mut();
+            let a = &mut *a;
+            self.tickets.retain(|(k, _)| {
+                let shown = a.missing.get(k).is_some_and(|t| now.duration_since(*t) < GONE);
+                if !shown {
+                    a.asked.remove(k);
+                    a.missing.remove(k);
+                }
+                shown
+            });
+        });
+        // The loader serves the newest first: a frame's pictures are asked for last to first, so the top
+        // left comes first.
+        for (id, size) in wanted.into_iter().rev() {
             let k = key(&id, size);
             // The large ones are the pages' own pictures: their colours are worked out with them.
             let t = s.cover(&id, k.clone(), [SMALL_PX, LARGE_PX, HERO_PX][size as usize], size > 0);
             self.tickets.push_back((k, t));
         }
         // A ticket dropped cancels its cover: one that never came may be asked for again.
-        while self.tickets.len() > SMALL_KEPT + LARGE_KEPT {
+        while self.tickets.len() > PENDING_KEPT {
             let (k, _) = self.tickets.pop_front().expect("longer than the limit");
             ART.with(|a| {
                 let mut a = a.borrow_mut();
-                if !a.images.contains_key(&k) {
-                    a.asked.remove(&k);
-                }
+                a.asked.remove(&k);
+                a.missing.remove(&k);
             });
         }
     }
@@ -1079,22 +1104,32 @@ impl App {
     fn cover(&mut self, key: String, image: &Picture, colours: Option<Box<CoverColours>>) {
         let id = key[2..].to_string();
         let large = !key.starts_with('s');
+        self.tickets.retain(|(k, _)| *k != key);
         ART.with(|a| {
             let mut a = a.borrow_mut();
-            let kept = if large { &mut a.large } else { &mut a.small };
-            kept.push_back(key.clone());
+            let now = Instant::now();
+            a.missing.remove(&key);
+            a.images.insert(key.clone(), (picture(image), now));
+            if let Some(c) = colours {
+                a.colours.insert(id.clone(), Rc::from(c));
+            }
             let limit = if large { LARGE_KEPT } else { SMALL_KEPT };
-            let old = if kept.len() > limit { kept.pop_front() } else { None };
-            if let Some(old) = old {
+            let class = |k: &str| k.starts_with('s') != large;
+            let mut count = a.images.keys().filter(|k| class(k)).count();
+            while count > limit {
+                let oldest = a
+                    .images
+                    .iter()
+                    .filter(|(k, (_, drawn))| class(k) && now.duration_since(*drawn) > IN_USE)
+                    .min_by_key(|(_, (_, drawn))| *drawn)
+                    .map(|(k, _)| k.clone());
+                let Some(old) = oldest else { break };
                 a.images.remove(&old);
                 a.asked.remove(&old);
                 if large {
                     a.colours.remove(&old[2..]);
                 }
-            }
-            a.images.insert(key, picture(image));
-            if let Some(c) = colours {
-                a.colours.insert(id.clone(), Rc::from(c));
+                count -= 1;
             }
         });
         let ui = self.ui();
