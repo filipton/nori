@@ -2123,7 +2123,7 @@ dependencies = [
 
 [[package]]
 name = "nori-uniffi-jni-runtime"
-version = "0.4.1"
+version = "0.31.1"
 dependencies = [
  "jni-sys 0.4.1",
  "uniffi-bindgen-kotlin-jni-runtime",
