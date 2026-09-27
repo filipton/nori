@@ -329,20 +329,22 @@ mod tests {
     const LEN: usize = 600_000;
 
     /// Every song is `LEN` bytes; each request is counted with where it started; a song named in `held`
-    /// stops after its first chunk until the test lets it go on.
+    /// stops after its first chunk until the test lets it go on; `stopped` counts the songs stopped there.
     #[derive(Default)]
     struct Net {
         asked: Mutex<Vec<String>>,
         from: Mutex<Vec<u64>>,
         held: Mutex<Option<(String, Receiver<()>)>>,
+        stopped: Arc<AtomicU64>,
     }
 
-    struct Held(Cursor<Vec<u8>>, Option<Receiver<()>>);
+    struct Held(Cursor<Vec<u8>>, Option<Receiver<()>>, Arc<AtomicU64>);
 
     impl Read for Held {
         fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
             if self.0.position() > 0 {
                 if let Some(go) = self.1.take() {
+                    self.2.fetch_add(1, Ordering::Release);
                     let _ = go.recv();
                 }
             }
@@ -358,7 +360,7 @@ mod tests {
             let gate = self.held.lock().take_if(|(u, _)| u == url).map(|(_, r)| r);
             let mut c = Cursor::new(vec![3u8; LEN]);
             c.set_position(from);
-            Ok(Body { start: from, len: Some(LEN as u64), reader: Box::new(Held(c, gate)) })
+            Ok(Body { start: from, len: Some(LEN as u64), reader: Box::new(Held(c, gate, self.stopped.clone())) })
         }
     }
 
@@ -381,10 +383,12 @@ mod tests {
         ids.iter().map(|id| AheadSong { id: id.to_string(), url: format!("http://m/{id}"), key: format!("{id}:0") }).collect()
     }
 
-    fn wait_writing(s: &Store, key: &str) {
+    /// Until the held song has its first chunk written and stops for the next: its entry being open is
+    /// not enough, as the fetch checks it is still wanted before its first byte.
+    fn wait_held(net: &Net) {
         let until = Instant::now() + Duration::from_secs(30);
-        while !s.writing(key) {
-            assert!(Instant::now() < until);
+        while net.stopped.swap(0, Ordering::AcqRel) == 0 {
+            assert!(Instant::now() < until, "the held song stops after its first chunk");
             std::thread::sleep(Duration::from_millis(5));
         }
     }
@@ -419,7 +423,7 @@ mod tests {
         let (go, wait): (Sender<()>, Receiver<()>) = channel();
         *net.held.lock() = Some(("http://m/a".into(), wait));
         s.fetch_ahead(net.clone(), songs(&["a", "b"]), None);
-        wait_writing(&s, "a:0");
+        wait_held(&net);
         // The queue moved on: a is not wanted now.
         s.fetch_ahead(net.clone(), songs(&["b", "x"]), None);
         go.send(()).unwrap();
@@ -437,7 +441,7 @@ mod tests {
         let (go, wait) = channel();
         *net.held.lock() = Some(("http://m/y".into(), wait));
         s.fetch_ahead(net.clone(), songs(&["y", "z"]), None);
-        wait_writing(&s, "y:0");
+        wait_held(&net);
         s.fetch_ahead(net.clone(), songs(&["y"]), None);
         go.send(()).unwrap();
         settle(&s);
@@ -455,7 +459,7 @@ mod tests {
         let (go, wait) = channel();
         *net.held.lock() = Some(("http://m/a".into(), wait));
         s.fetch_ahead(net.clone(), songs(&["a", "b"]), None);
-        wait_writing(&s, "a:0");
+        wait_held(&net);
         // The player comes for a (a skip onto it) while its first chunk is in: it waits for the fetch
         // to let go, which it does after that chunk.
         let (s2, taking) = (s.clone(), std::thread::spawn({
