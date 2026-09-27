@@ -1147,7 +1147,7 @@ fn the_sleep_timer_s_end_of_song_on_the_chip_takes_back_the_song_written_after_i
     // From the packet the place lands in, a few frames back for the decoder's reservoir.
     assert!((frames - 7 * 44_100).abs() <= 4 * 1152, "the rest of a only: {frames}");
     fake.advance(frames as u64);
-    assert!(rig.wait(5, |r| r.events.lock().contains(&Event::Stopped)), "{:?}", rig.events.lock());
+    assert!(rig.wait(5, |r| r.events.lock().iter().any(|e| matches!(e, Event::Stopped { .. }))), "{:?}", rig.events.lock());
     assert!(rig.wait(5, |r| { let s = r.engine.status(); s.state == State::Paused && s.index == Some(1) && s.position_ms == 0 }), "{:?}", rig.engine.status());
     rig.engine.stop();
 }
@@ -1404,9 +1404,9 @@ fn a_song_the_network_will_not_bring_is_handed_to_the_offline_bridge() {
     let songs = vec![("a".into(), "wav".into(), 1_000), ("b".into(), "wav".into(), 1_000)];
     let rig = Rig::new(server, songs, Bridging(app()), None, Settings::default());
     rig.engine.play_at(0, 0);
-    assert!(rig.wait(30, |r| r.events.lock().contains(&Event::Bridge)), "{:?}", rig.events.lock());
+    assert!(rig.wait(30, |r| r.events.lock().iter().any(|e| matches!(e, Event::Bridge { .. }))), "{:?}", rig.events.lock());
     let events = rig.events.lock().clone();
-    assert!(!events.contains(&Event::Stopped), "the bridge takes over: not a stop: {events:?}");
+    assert!(!events.iter().any(|e| matches!(e, Event::Stopped { .. })), "the bridge takes over: not a stop: {events:?}");
     assert!(rig.wait(5, |r| r.engine.status().state == State::Paused));
     // The bridge's jump (a downloaded song, in the app) plays at once.
     rig.queue.0.lock().set(vec!["a".into(), "b".into(), "a".into()], Some(1), false, 0);
@@ -1429,7 +1429,7 @@ fn a_song_the_server_refuses_is_not_the_network_s_failure() {
     rig.engine.play_at(0, 0);
     assert!(rig.wait(30, |r| r.heard_song("c")), "c after b is skipped: {:?}", rig.events.lock());
     let events = rig.events.lock().clone();
-    assert!(!events.contains(&Event::Bridge), "not the bridge's: {events:?}");
+    assert!(!events.iter().any(|e| matches!(e, Event::Bridge { .. })), "not the bridge's: {events:?}");
     assert!(events.iter().any(|e| matches!(e, Event::Error { id, message } if id == "b" && message.contains("404"))), "b failed with the server's answer: {events:?}");
     rig.engine.stop();
 }
@@ -2551,7 +2551,7 @@ fn the_equalizer_switched_on_and_off_quickly_on_a_phone_plays_on_without_a_glitc
     let events: Vec<Event> = rig.events.lock()[events_before..].to_vec();
     let notes = fake.notes();
     // Nor a loop: the song placed on the chip again is not repeat one starting it again.
-    assert!(!events.iter().any(|e| matches!(e, Event::Error { .. } | Event::Stopped | Event::Buffering(true) | Event::Looped { .. }) || matches!(e, Event::Song { index, .. } if *index != 0)), "{events:?}");
+    assert!(!events.iter().any(|e| matches!(e, Event::Error { .. } | Event::Stopped { .. } | Event::Buffering(true) | Event::Looped { .. }) || matches!(e, Event::Song { index, .. } if *index != 0)), "{events:?}");
     assert!(s.index == Some(0) && s.state == State::Playing, "{s:?}");
     assert_eq!(s.underruns, 0, "the CPU's output never ran dry: {s:?}");
     assert_eq!(fake.starved_ms(), 0, "the chip never ran dry: {notes:?}");

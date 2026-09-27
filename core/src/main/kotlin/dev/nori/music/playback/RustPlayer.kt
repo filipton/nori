@@ -425,7 +425,10 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
         // Asked again on every play, not only when it was never held: play pressed during a call must
         // not sound over it, and the system refuses the focus until the call is over.
-        if (playWhenReady && !focus(again = true)) return done()
+        if (playWhenReady && !focus(again = true)) return done().also { dev.nori.music.NoriLog.w("rust player: play refused, the audio focus was not granted") }
+        // Every change of "wants to play" is in the log with its cause: a page that reads paused over music
+        // playing is told apart from the engine's word, a call, or headphones.
+        if (playWhenReady != this.playWhenReady) dev.nori.music.NoriLog.i("rust player: ${if (playWhenReady) "play" else "pause"} asked for")
         this.playWhenReady = playWhenReady
         whyPlayWhenReady = Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST
         suppressed = Player.PLAYBACK_SUPPRESSION_REASON_NONE
@@ -680,6 +683,7 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
             if (kind == dev.nori.music.ffi.model.PlaybackError.NETWORK) watchNetwork()
         }
         if (!playWhenReady) return
+        dev.nori.music.NoriLog.i("rust player: the engine stopped by itself: no longer wants to play")
         playWhenReady = false
         whyPlayWhenReady = Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM
     }
@@ -728,6 +732,7 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
 
     /** A call or another player: paused for good, or until it is over. Ducking the system does itself. */
     private fun onFocus(change: Int) {
+        dev.nori.music.NoriLog.i("rust player: audio focus $change, wants to play $playWhenReady")
         when (change) {
             AudioManager.AUDIOFOCUS_LOSS -> {
                 focused = false
@@ -757,6 +762,7 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
     private val noisy = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (!playWhenReady) return
+            dev.nori.music.NoriLog.i("rust player: the audio became noisy: paused")
             RustPlayerJni.pauseNow(h)
             playWhenReady = false
             whyPlayWhenReady = Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY

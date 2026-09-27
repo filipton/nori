@@ -530,7 +530,7 @@ fn paused_at_the_end_of_a_song_it_waits_on_the_next_one() {
     rig.engine.play_at(0, 0);
     assert!(rig.wait_for(10, |r| !r.heard.lock().is_empty()));
     rig.engine.pause_at_end(true);
-    assert!(rig.wait_for(10, |r| r.events.lock().contains(&Event::Stopped)), "{:?}", rig.events.lock());
+    assert!(rig.wait_for(10, |r| r.events.lock().iter().any(|e| matches!(e, Event::Stopped { .. }))), "{:?}", rig.events.lock());
     assert!(rig.wait_for(5, |r| { let s = r.engine.status(); s.state == State::Paused && s.index == Some(1) && s.position_ms == 0 }), "{:?}", rig.engine.status());
     let heard = rig.heard.lock().clone();
     // The recorder may miss the last frame or so as the output pauses under it.
@@ -641,7 +641,7 @@ fn pausing_stops_the_music_and_playing_takes_it_up_where_it_was() {
     assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2 * 5));
     rig.engine.pause();
     assert!(rig.wait_for(5, |r| r.engine.status().state == State::Paused));
-    assert!(!rig.events.lock().contains(&Event::Stopped), "a pause asked for is not one the engine made by itself");
+    assert!(!rig.events.lock().iter().any(|e| matches!(e, Event::Stopped { .. })), "a pause asked for is not one the engine made by itself");
     rig.run(2_000);
     let at = rig.heard.lock().len();
     rig.run(6_000);
@@ -1126,6 +1126,47 @@ fn a_song_is_read_from_after_its_id3_tag_whatever_the_tag_holds() {
     assert!(out == a, "the song after the tag, sample for sample: {} of {} samples", out.len(), a.len());
 }
 
+/// A song tapped on a page while another plays: the app sends the new queue's jump and a play, and then
+/// the plays of the page's own controller (its prepare and play come a moment later, over the session).
+/// The song would not open at the first try, and the engine stopped by itself before the later play
+/// reached it; that play tries the song again, and it plays. The stop, read after that play was sent,
+/// is superseded: a client that let its "wants to play" go on it said paused over the music, the
+/// session's position standing at 0:00, until pause and play were pressed.
+#[test]
+fn a_stop_from_before_a_play_asked_for_since_is_superseded_and_the_music_plays() {
+    let (a, b) = (music(20.0, 23), music(6.0, 24));
+    let songs: [(&str, &[i16]); 2] = [("a", &a), ("b", &b)];
+    let extra = Extra::default();
+    // b's first request finds no connection.
+    extra.server.cut.lock().push(("b".into(), 0));
+    let rig = Rig::build(files(&songs), sim::App::new(), Settings::default(), extra);
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2 * 2));
+    // The tap: the jump, and the play that goes with the new queue.
+    rig.engine.go_to(1, 0);
+    let first = rig.engine.play();
+    assert!(rig.wait_for(30, |r| r.events.lock().iter().any(|e| matches!(e, Event::Stopped { .. }))), "{:?}", rig.events.lock());
+    let stop = rig.events.lock().iter().find(|e| matches!(e, Event::Stopped { .. })).cloned().expect("said");
+    assert_eq!(stop, Event::Stopped { plays: first }, "said after the tap's play was taken");
+    assert!(!rig.engine.superseded(&stop), "no play asked for since: the stop stands");
+    // The controller's play, sent before the client read the stop; the network is back by then.
+    rig.server.cut.lock().clear();
+    let second = rig.engine.play();
+    assert!(second > first);
+    assert!(rig.engine.superseded(&stop), "a play was asked for after it: the stop is over");
+    // That play tries b again, and b plays: the client that passed over the stop still wants to play,
+    // as the engine does.
+    assert!(rig.wait_for(20, Rig::ended), "{:?}", rig.events.lock());
+    let heard = rig.heard.lock().clone();
+    assert!(heard.len() >= b.len() && heard[heard.len() - b.len()..] == b[..], "b, whole, after the stop");
+    let events = rig.events.lock().clone();
+    let at = events.iter().position(|e| *e == stop).expect("said");
+    assert!(events[at..].contains(&Event::State(State::Playing)), "playing again after the stop: {events:?}");
+    // A stop said after the last play asked for is not superseded.
+    assert!(!rig.engine.superseded(&Event::Stopped { plays: second }));
+    assert!(!rig.engine.superseded(&Event::Bridge { plays: second }));
+}
+
 #[test]
 fn play_after_a_song_would_not_play_tries_it_again() {
     let a = music(3.0, 21);
@@ -1137,7 +1178,7 @@ fn play_after_a_song_would_not_play_tries_it_again() {
     rig.engine.play_at(0, 0);
     assert!(rig.wait_for(30, |r| r.events.lock().iter().any(|e| matches!(e, Event::Error { id, .. } if id == "a"))), "{:?}", rig.events.lock());
     assert!(rig.wait_for(10, |r| r.engine.status().state == State::Paused), "stopped there: {:?}", rig.events.lock());
-    assert!(rig.events.lock().contains(&Event::Stopped), "and says it stopped by itself: {:?}", rig.events.lock());
+    assert!(rig.events.lock().iter().any(|e| matches!(e, Event::Stopped { .. })), "and says it stopped by itself: {:?}", rig.events.lock());
     // The network is back.
     rig.server.cut.lock().clear();
     rig.engine.play();

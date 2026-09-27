@@ -289,7 +289,7 @@ fn rig_making(extra: u64, says: bool, ends: Ends, cut: Option<(&str, usize)>, ma
 
 impl Rig {
     fn errors(&self) -> Vec<Event> {
-        self.events.lock().iter().filter(|e| matches!(e, Event::Error { .. } | Event::Bridge | Event::Stopped)).cloned().collect()
+        self.events.lock().iter().filter(|e| matches!(e, Event::Error { .. } | Event::Bridge { .. } | Event::Stopped { .. })).cloned().collect()
     }
 
     /// Whether `id` was heard since the `from`th event.

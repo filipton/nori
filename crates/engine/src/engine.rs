@@ -148,8 +148,11 @@ pub enum Event {
     Buffering(bool),
     /// Playback stopped by itself rather than because it was asked to (the queue's rules after a run
     /// of songs that would not play): the `Paused` state that follows is the engine's, and a client that
-    /// keeps its own "wants to play" lets it go. A pause that was asked for comes without this.
-    Stopped,
+    /// keeps its own "wants to play" lets it go. A pause that was asked for comes without this. `plays`
+    /// is how many plays asked for ([`Engine::play`]) the engine had taken when it stopped: a client
+    /// that has asked for one since reads the stop as over ([`Engine::superseded`]), since that play
+    /// starts the music again (the song that stopped it tried once more).
+    Stopped { plays: u64 },
     /// A live stream's station announced what it plays now (ICY), as the ear reaches it.
     Title(String),
     /// A mix (AutoMix, a crossfade) began to be heard (`true`), or is over (`false`): said as the engine
@@ -157,8 +160,9 @@ pub enum Event {
     /// without asking.
     Mixing(bool),
     /// A song would not play for want of the network, and the app's offline bridge is to take over (the
-    /// queue's rules said so): playback waits there, paused, for the bridge's jump.
-    Bridge,
+    /// queue's rules said so): playback waits there, paused, for the bridge's jump. `plays` as for
+    /// [`Event::Stopped`]: a play asked for since has tried the song again, and the bridge is not wanted.
+    Bridge { plays: u64 },
     /// The song heard went from the output's decoder to the CPU or back (the settings changed, or the
     /// chip's track failed), nobody having asked for a jump: the place is `ms` in queue index `index` now,
     /// said once the status has it. A client that runs its own clock on from the engine's last word
@@ -296,6 +300,8 @@ pub struct Engine {
     status: Arc<Mutex<Status>>,
     /// The jumps asked for so far (see [`Event::Song`]).
     jumps: AtomicU64,
+    /// The plays asked for so far (see [`Event::Stopped`]).
+    plays: AtomicU64,
     /// How a command wakes the thread, when the clock has a say in it (a test's, [`Engine::start_on`]).
     wake: Option<Box<dyn Fn() + Send + Sync>>,
 }
@@ -387,7 +393,7 @@ impl Engine {
             let t = thread.clone();
             Box::new(move || hook.wake(&t)) as Box<dyn Fn() + Send + Sync>
         });
-        Engine { tx, thread, join: Mutex::new(Some(join)), status, jumps: AtomicU64::new(0), wake }
+        Engine { tx, thread, join: Mutex::new(Some(join)), status, jumps: AtomicU64::new(0), plays: AtomicU64::new(0), wake }
     }
 
     fn send(&self, c: Command) {
@@ -424,8 +430,23 @@ impl Engine {
         self.send(Command::PauseAtEnd(on));
     }
 
-    pub fn play(&self) {
+    /// Plays from where the music is, or from where a jump or a stop left it. Answers the play's number
+    /// (see [`Event::Stopped`]).
+    pub fn play(&self) -> u64 {
+        let n = self.plays.fetch_add(1, Ordering::AcqRel) + 1;
         self.send(Command::Play);
+        n
+    }
+
+    /// Whether `event`, read now, is a stop ([`Event::Stopped`], [`Event::Bridge`]) from before a play
+    /// asked for since. That play reaches the engine after the stop and starts the music again, so a
+    /// client that let its "wants to play" go on such a stop would say paused over music playing: it
+    /// passes over it instead, as over a song event from before its last jump ([`Event::Song`]).
+    pub fn superseded(&self, event: &Event) -> bool {
+        match event {
+            Event::Stopped { plays } | Event::Bridge { plays } => *plays < self.plays.load(Ordering::Acquire),
+            _ => false,
+        }
     }
 
     pub fn pause(&self) {
@@ -557,6 +578,8 @@ struct Worker<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> {
     heard_id: Option<String>,
     /// The jumps asked for (play_at, go_to, next, previous) taken off the channel.
     jumps: u64,
+    /// The plays asked for ([`Engine::play`]) taken off the channel.
+    plays: u64,
     /// The ReplayGain settings changed: the song playing's volume is asked for again.
     gain_changed: bool,
     positions: Option<i64>,
@@ -734,6 +757,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             heard: None,
             heard_id: None,
             jumps: 0,
+            plays: 0,
             gain_changed: false,
             positions: None,
             next_position: 0,
@@ -810,7 +834,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
                         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             self.p.app.log("the engine's thread panicked again and again: it waits for a command");
                             if self.state == State::Playing {
-                                (self.events)(Event::Stopped);
+                                (self.events)(Event::Stopped { plays: self.plays });
                                 self.set_state(State::Paused);
                             }
                         }));
@@ -1144,7 +1168,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             self.let_go_of_everything();
             self.p.tracks.let_go();
             (self.events)(Event::Error { id: on.unwrap_or_default(), message: format!("the player failed: {why}") });
-            (self.events)(Event::Stopped);
+            (self.events)(Event::Stopped { plays: self.plays });
             self.set_state(State::Paused);
             return false;
         }
@@ -1325,7 +1349,10 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
                     _ => self.p.pause_at_end(on),
                 }
             }
-            Command::Play => self.play(),
+            Command::Play => {
+                self.plays += 1;
+                self.play()
+            }
             Command::Pause(fade) => self.pause(now, fade.unwrap_or(self.settings.fade_ms)),
             Command::Toggle => {
                 if self.state == State::Playing {
@@ -2239,7 +2266,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             if let Some(n) = next {
                 self.held = Some((n, 0, self.p.id_at(n)));
             }
-            (self.events)(Event::Stopped);
+            (self.events)(Event::Stopped { plays: self.plays });
             self.set_state(if next.is_some() { State::Paused } else { State::Ended });
         } else if self.p.playing() && self.p.ended() {
             self.p.pause();
@@ -2247,12 +2274,12 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         } else if !self.p.playing() && self.state == State::Playing && self.pause_at.is_none() && self.switch_at.is_none() {
             if std::mem::take(&mut self.p.bridge) {
                 // A song the network would not bring: the app's offline bridge takes over from here.
-                (self.events)(Event::Bridge);
+                (self.events)(Event::Bridge { plays: self.plays });
                 self.set_state(State::Paused);
                 return;
             }
             // The queue's rules stopped playback (a run of songs that would not play).
-            (self.events)(Event::Stopped);
+            (self.events)(Event::Stopped { plays: self.plays });
             self.set_state(State::Paused);
         }
     }
@@ -2280,7 +2307,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
                         if let Some(n) = next {
                             self.held = Some((n, 0, self.p.id_at(n)));
                         }
-                        (self.events)(Event::Stopped);
+                        (self.events)(Event::Stopped { plays: self.plays });
                         self.set_state(if next.is_some() { State::Paused } else { State::Ended });
                     }
                     None => self.set_state(State::Ended),

@@ -1226,7 +1226,8 @@ impl Library for AndroidLibrary {
 /// The engine's events, kept until Kotlin takes them: one call into Kotlin per batch.
 #[derive(Default)]
 struct Events {
-    /// Each event as (kind, index, words, the jumps made when it was said: `Event::Song`'s `jumps`).
+    /// Each event as (kind, index, words, the jumps made when it was said: `Event::Song`'s `jumps`; for a
+    /// stop, `Event::Stopped`'s and `Event::Bridge`'s `plays`).
     queue: Mutex<VecDeque<(i32, i32, String, u64)>>,
     signalled: AtomicBool,
     text: Mutex<String>,
@@ -1255,15 +1256,16 @@ impl Events {
             Event::State(s) => log(&format!("{s:?}")),
             Event::Song { index, id, jumps } => log(&format!("song {index} ({id}) is heard, after jump {jumps}")),
             Event::Output { name } => log(&format!("playing to {name}")),
-            Event::Stopped => log("stopped by itself"),
+            Event::Stopped { plays } => log(&format!("stopped by itself, after play {plays}")),
             Event::Buffering(on) => log(if *on { "waits for the song's bytes" } else { "the song's bytes came" }),
             Event::Looped { index, .. } => log(&format!("song {index} again (repeat one)")),
-            Event::Bridge => log("the network would not bring the song: the offline bridge takes over"),
+            Event::Bridge { plays } => log(&format!("the network would not bring the song: the offline bridge takes over, after play {plays}")),
             Event::Placed { index, ms } => log(&format!("song {index} goes on at {ms} ms on another path")),
             _ => {}
         }
         let jumps = match &e {
             Event::Song { jumps, .. } | Event::Looped { jumps, .. } => *jumps,
+            Event::Stopped { plays } | Event::Bridge { plays } => *plays,
             _ => 0,
         };
         let (kind, index, text) = match e {
@@ -1271,13 +1273,13 @@ impl Events {
             Event::Song { index, id, .. } => (EVENT_SONG, index as i32, id),
             Event::Looped { index, id, .. } => (EVENT_LOOPED, index as i32, id),
             Event::Title(t) => (EVENT_TITLE, -1, t),
-            Event::Bridge => (EVENT_BRIDGE, -1, String::new()),
+            Event::Bridge { .. } => (EVENT_BRIDGE, -1, String::new()),
             Event::Mixing(on) => (EVENT_MIXING, on as i32, String::new()),
             // The place is read from the status when the player builds its state again: only the index here.
             Event::Placed { index, .. } => (EVENT_PLACED, index as i32, String::new()),
             Event::Error { id, message } => (EVENT_ERROR, -1, if id.is_empty() { message } else { format!("{id}: {message}") }),
             Event::Output { name } => (EVENT_OUTPUT, -1, name),
-            Event::Stopped => (EVENT_STOPPED, -1, String::new()),
+            Event::Stopped { .. } => (EVENT_STOPPED, -1, String::new()),
             Event::Buffering(on) => (EVENT_BUFFERING, on as i32, String::new()),
             Event::Position { .. } | Event::Awake(_) => return,
         };
@@ -1587,6 +1589,21 @@ extern "system" fn bytes_written(h: jlong) -> jlong {
 extern "system" fn event(h: jlong) -> jlong {
     let Some(p) = player(h) else { return -1 };
     let mut q = p.events.queue.lock();
+    // A stop said before a play Kotlin has asked for since is over: that play starts the music again, and
+    // Kotlin, letting its "wants to play" go on it, would show paused over music playing
+    // (`Engine::superseded`). It is not handed over.
+    while let Some(&(kind, _, _, plays)) = q.front() {
+        let stop = match kind {
+            EVENT_STOPPED => Event::Stopped { plays },
+            EVENT_BRIDGE => Event::Bridge { plays },
+            _ => break,
+        };
+        if !p.engine.superseded(&stop) {
+            break;
+        }
+        log(&format!("{stop:?} is from before the last play asked for: passed over"));
+        q.pop_front();
+    }
     match q.pop_front() {
         Some((kind, index, text, jumps)) => {
             *p.events.text.lock() = text;

@@ -758,10 +758,10 @@ impl App {
                 self.say(format!("{what} would not play: {message}"), true);
             }
             Event::Buffering(on) => self.now.buffering = on,
-            Event::Stopped => self.say("Playback stopped: too many songs in a row would not play", true),
+            Event::Stopped { .. } => self.say("Playback stopped: too many songs in a row would not play", true),
             Event::Output { name } => self.say(format!("Playing on {name}"), false),
             Event::Title(t) => self.say(format!("On air: {t}"), false),
-            Event::Bridge => self.say("The network is gone", true),
+            Event::Bridge { .. } => self.say("The network is gone", true),
             Event::Mixing(on) => self.now.mixing = on,
             // A desktop keeps no wake lock: the system does not sleep under playing music.
             Event::Position { .. } | Event::Placed { .. } | Event::Awake(_) => {}

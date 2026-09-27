@@ -948,6 +948,17 @@ Two traps this measurement fell into, both worth knowing:
 
 ## Not done
 
+- **"Paused" over music after tapping another song of the playing song's album (S22, not reproduced).**
+  Playing a playlist, opening the song's album and tapping another of its songs: the music plays, the app
+  and the notification say paused at 0:00 until pause and play. Never reproduced on the emulator (every
+  path by real taps, playing or paused, quick or slow, crossfade, AutoMix, a slow network) nor on the
+  virtual clock (the same queue change on the CPU, a plain and a gapless chip, an S22's chip). One way to
+  get exactly that was found and closed: a stop the engine made by itself (`Event::Stopped`/`Bridge`)
+  read by Kotlin after a play it had already sent, which then started the music again
+  (`Engine::superseded`). Whether that is what the phone hit is not known: capture `adb logcat -s nori`
+  over the tap. The engine's events are there ("stopped by itself, after play n", "... passed over"), and
+  every change of `EnginePlayer`'s wants-to-play with its cause ("pause asked for", "stopped by itself",
+  "audio focus", "noisy").
 - **The vocal gate cannot tell a voice from a pad.** It reads the voice band's share of the power; a beatless pad
   intro reads as sung. The candidates (a separation mask, a singing classifier) and their licences are in
   `docs/research/analysis.md`. The new vocal separation only acts on what this gate calls sung, so on real songs

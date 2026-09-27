@@ -280,7 +280,7 @@ impl Runner {
     fn take(&mut self, app: &mut App, m: Msg) {
         crate::term::debug!("took {}", m.brief());
         match &m {
-            Msg::Engine(e @ (Event::Song { .. } | Event::State(_) | Event::Looped { .. } | Event::Bridge)) => {
+            Msg::Engine(e @ (Event::Song { .. } | Event::State(_) | Event::Looped { .. } | Event::Bridge { .. })) => {
                 match e {
                     Event::State(st) => self.said.state = Some(*st),
                     Event::Song { id, .. } | Event::Looped { id, .. } => self.said.song = Some(id.clone()),

@@ -862,7 +862,7 @@ impl Session {
         match e {
             Event::Song { .. } => self.arrived(),
             Event::State(State::Paused) => self.keep(QueueMoment::Paused),
-            Event::Bridge => self.bridge(),
+            Event::Bridge { .. } => self.bridge(),
             _ => {}
         }
     }

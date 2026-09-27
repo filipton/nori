@@ -333,12 +333,12 @@ pub fn main(argv: Vec<String>) {
                 Event::Position { index, ms } => println!("  {} at {}", shown.title(index), clock(ms)),
                 Event::Error { id, message } => println!("error: {id} {message}"),
                 Event::Output { name } => println!("output: {name}"),
-                Event::Stopped => println!("stopped"),
+                Event::Stopped { .. } => println!("stopped"),
                 Event::Buffering(on) => println!("{}", if on { "buffering" } else { "playing again" }),
                 Event::Looped { index, .. } => println!("again: {}", shown.title(index)),
                 Event::Title(t) => println!("on air: {t}"),
                 // The terminal client has no downloads to bridge with: the error run's rules stop it.
-                Event::Bridge => println!("stopped: the network is gone"),
+                Event::Bridge { .. } => println!("stopped: the network is gone"),
                 Event::Mixing(on) => println!("{}", if on { "mixing" } else { "mixed" }),
                 Event::Placed { index, ms } => println!("  {} at {} (another path)", shown.title(index), clock(ms)),
                 Event::Awake(_) => {}
@@ -350,7 +350,9 @@ pub fn main(argv: Vec<String>) {
         let Ok(line) = line else { break };
         let (cmd, rest) = line.trim().split_once(' ').unwrap_or((line.trim(), ""));
         match cmd {
-            "play" => cli.engine.play(),
+            "play" => {
+                cli.engine.play();
+            }
             "pause" => cli.engine.pause(),
             "p" | "toggle" => cli.engine.toggle(),
             "next" | "n" => {
