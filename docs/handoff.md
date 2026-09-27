@@ -16,7 +16,7 @@ Apple's own App Store screenshots and the differences closed. What is left is li
   its tag (track, album or auto), else the server's `fallbackGain`, else AutoMix's measured loudness ("Measure
   songs without tags"), else the untagged level; moved by `target − (−18)` (ReplayGain 2.0 tags are relative to
   −18 LUFS, R128 ones to −23: `r128_as_replay_gain_db`). At or under 0 dB it is a volume, as before (peak guard
-  included, offload kept). Over 0 dB, up to the cap (`gainBoostDb`, +6 by default), nori-engine reads songs as
+  included, offload kept). Over 0 dB, up to the cap (`gainBoostDb`, 0 by default), nori-engine reads songs as
   floats (`tracks.encoding`), puts the limiter in the chain (not counted as "sound on", so offload stays for
   other songs), and the transition engine turns the song up before the mix; 16-bit buffers are never turned up.
   A song turned up keeps off the audio chip (`OnCpu::TurnedUp`, also when a settings change turns up the song

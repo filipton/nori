@@ -323,7 +323,7 @@ pub struct StoredPrefs {
     /// The most a quiet song is turned up, dB; 0 turns none up (a volume only, as before, which leaves
     /// every song to the audio chip). Over 0, a song turned up plays on the CPU with the limiter behind
     /// it, and the sound chain reads songs as floats.
-    #[setting("gainBoostDb", FLOAT, default = 6.0, show = K::Choice(&["0", "3", "6", "9", "12"]), effect = APPLY_GAIN | SOUND)]
+    #[setting("gainBoostDb", FLOAT, default = 0.0, show = K::Choice(&["0", "3", "6", "9", "12"]), effect = APPLY_GAIN | SOUND)]
     pub gain_boost_db: f32,
     /// A song without tags plays at the loudness AutoMix's analysis measured, once it has one.
     #[setting("gainMeasured", FLAG, default = true, show = K::Switch, effect = APPLY_GAIN)]

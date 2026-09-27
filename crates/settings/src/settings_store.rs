@@ -349,7 +349,7 @@ mod tests {
         assert_eq!(effects(&a, &StoredPrefs { eq_enabled: true, ..a.clone() }), APPLY_AUDIO | SOUND);
         assert_eq!(effects(&a, &StoredPrefs { replay_gain: crate::settings::GainMode::Track, ..a.clone() }), APPLY_GAIN | REPLAN | SOUND, "and whether songs may be turned up");
         assert_eq!(effects(&a, &StoredPrefs { loudness_target: -14.0, ..a.clone() }), APPLY_GAIN);
-        assert_eq!(effects(&a, &StoredPrefs { gain_boost_db: 0.0, ..a.clone() }), APPLY_GAIN | SOUND, "the chain reads floats and limits only while songs may be turned up");
+        assert_eq!(effects(&a, &StoredPrefs { gain_boost_db: 6.0, ..a.clone() }), APPLY_GAIN | SOUND, "the chain reads floats and limits only while songs may be turned up");
         assert_eq!(effects(&a, &StoredPrefs { crossfade_sec: 6, ..a.clone() }), APPLY_AUDIO | REPLAN);
         assert_eq!(effects(&a, &StoredPrefs { auto_mix_bass_swap: !a.auto_mix_bass_swap, ..a.clone() }), REPLAN);
         // Read once when the player started, these went unheard until the app was started again.
