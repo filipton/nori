@@ -193,7 +193,12 @@ pub struct App {
     again: Timer,
     /// The lyrics of the song heard, and their clock; when the next line is due.
     lyrics: Option<crate::lyrics::SongLyrics>,
-    lyrics_due: Option<Instant>,
+    lyrics_timer: Timer,
+    /// The queue's rows, changed in place so the rows that stay stay put; the rows going out go first, and
+    /// the list settles to `queue_next` once they have.
+    queue_rows: Rc<VecModel<SongRow>>,
+    queue_next: Option<Vec<SongRow>>,
+    queue_timer: Timer,
     note: Timer,
     search: Timer,
 }
@@ -324,10 +329,14 @@ pub fn start(ui: &AppWindow, data: PathBuf) {
         tuning: false,
         again: Timer::default(),
         lyrics: None,
-        lyrics_due: None,
+        lyrics_timer: Timer::default(),
+        queue_rows: Rc::new(VecModel::default()),
+        queue_next: None,
+        queue_timer: Timer::default(),
         note: Timer::default(),
         search: Timer::default(),
     };
+    ui.set_queue(ModelRc::from(app.queue_rows.clone()));
     APP.with(|a| *a.borrow_mut() = Some(app));
     // The compositor draws the page with the sidebar and the player on glass over it.
     with(|a| crate::compositor::roles(ui.window(), a.sidebar.as_ref().map(|s| s.window()), a.player.as_ref().map(|p| p.window())));
@@ -453,6 +462,7 @@ fn wire(ui: &AppWindow) {
             a.follow();
         })
     });
+    ui.on_lyric_tapped(|line| with(|a| a.lyric_tapped(line)));
     ui.on_jump(|i| {
         with(|a| {
             a.on_session(|s| {
@@ -1191,21 +1201,63 @@ impl App {
         crate::compositor::show_glass(shown && self.sidebar.is_some(), shown && self.player.is_some());
     }
 
-    /// The lyrics' clock asked where the music is: the line lit, and when to look again.
+    /// The lyrics' clock asked where the music is: the line lit, how far its words are sung, and when to
+    /// look again.
     fn lyrics_step(&mut self, force: bool) {
         let Some(l) = &self.lyrics else { return };
         let Some(s) = &self.session else { return };
         let (at, playing) = s.engine.status_with(|st| (st.position_now(), st.state == State::Playing));
-        let (active, wait) = l.advance(at, force);
-        self.ui().set_lyrics_active(active);
-        self.lyrics_due = wait.filter(|_| playing).map(|ms| std::time::Instant::now() + Duration::from_millis(ms));
+        let now = l.advance(at, force);
+        let ui = self.ui();
+        ui.set_lyrics_active(now.active);
+        ui.set_lyric_sweeping(now.sweeping);
+        ui.set_lyric_sung(now.sung.into());
+        ui.set_lyric_now(now.now.into());
+        ui.set_lyric_mix(now.mix);
+        ui.set_lyric_rest(now.rest.into());
+        match now.wait.filter(|_| playing) {
+            Some(ms) => self.lyrics_timer.start(TimerMode::SingleShot, Duration::from_millis(ms), || with(|a| a.lyrics_step(false))),
+            None => self.lyrics_timer.stop(),
+        }
     }
 
-    /// On the seek bar's clock: the next line, when it is due.
-    fn lyrics_due(&mut self) {
-        if self.lyrics_due.is_some_and(|t| t <= std::time::Instant::now()) {
-            self.lyrics_step(false);
+    /// A lyrics line clicked: the song goes to where it is sung.
+    fn lyric_tapped(&mut self, line: i32) {
+        let (Some(l), Ok(line)) = (&self.lyrics, usize::try_from(line)) else { return };
+        let ms = l.tap(line);
+        self.on_session(|s| s.engine.seek(ms));
+        self.lyrics_step(true);
+        lyrics_after_seek();
+    }
+
+    /// The queue's rows become `rows`: the ones leaving fold away first, then the list settles, the new
+    /// ones opening in their places.
+    fn queue_shown(&mut self, rows: Vec<SongRow>) {
+        if let Some(next) = self.queue_next.take() {
+            settle(&self.queue_rows, next);
         }
+        self.queue_timer.stop();
+        let m = &self.queue_rows;
+        let keep: HashSet<i32> = rows.iter().map(|r| r.index).collect();
+        let gone: Vec<usize> = (0..m.row_count()).filter(|&i| m.row_data(i).is_some_and(|r| !keep.contains(&r.index))).collect();
+        if gone.is_empty() || gone.len() == m.row_count() {
+            settle(m, rows);
+            return;
+        }
+        for i in gone {
+            if let Some(mut r) = m.row_data(i) {
+                r.leaving = true;
+                m.set_row_data(i, r);
+            }
+        }
+        self.queue_next = Some(rows);
+        self.queue_timer.start(TimerMode::SingleShot, Duration::from_millis(QUEUE_FOLD_MS), || {
+            with(|a| {
+                if let Some(next) = a.queue_next.take() {
+                    settle(&a.queue_rows, next);
+                }
+            })
+        });
     }
 
     /// The settings page drawn again from the settings as they are now.
@@ -1388,7 +1440,7 @@ impl App {
             }
             ui.set_shuffle(v.shuffle);
             ui.set_repeat(v.repeat as i32);
-            ui.set_queue(queue_rows(&v));
+            self.queue_shown(queue_rows(&v));
             ui.set_queue_from(queue_from(&v).into());
             self.queue = Some(v);
         }
@@ -1405,7 +1457,6 @@ impl App {
                     if let Some(p) = &a.player {
                         p.set_position_ms(ui.get_position_ms());
                     }
-                    a.lyrics_due();
                 });
             });
         } else if !playing {
@@ -1443,15 +1494,55 @@ fn row(s: &Song, index: usize, playing: bool) -> SongRow {
         art: s.cover_art.clone().unwrap_or_default().into(),
         index: index as i32,
         playing,
+        leaving: false,
+        fresh: false,
     }
 }
 
 /// The queue in the order it plays, from the song playing on; each row jumps to its list index.
 /// What plays after the song playing, in the order it plays; each row jumps to its list index.
-fn queue_rows(v: &PlaylistView) -> ModelRc<SongRow> {
+fn queue_rows(v: &PlaylistView) -> Vec<SongRow> {
     let from = v.order.iter().position(|&i| i as i32 == v.index).map_or(0, |p| p + 1);
-    let rows: Vec<SongRow> = v.order[from.min(v.order.len())..].iter().filter_map(|&i| v.songs.get(i as usize).map(|s| row(s, i as usize, false))).collect();
-    ModelRc::new(VecModel::from(rows))
+    v.order[from.min(v.order.len())..].iter().filter_map(|&i| v.songs.get(i as usize).map(|s| row(s, i as usize, false))).collect()
+}
+
+/// How long a row leaving the queue takes to fold away (app.slint's QueueView).
+const QUEUE_FOLD_MS: u64 = 300;
+
+/// The queue's rows made `rows` in place: those not in it taken out, the new ones put in where they go
+/// (marked fresh, so they open), the rest kept as they are. Rows that changed order are drawn again.
+fn settle(m: &VecModel<SongRow>, rows: Vec<SongRow>) {
+    let keep: HashSet<i32> = rows.iter().map(|r| r.index).collect();
+    for i in (0..m.row_count()).rev() {
+        if m.row_data(i).is_some_and(|r| !keep.contains(&r.index)) {
+            m.remove(i);
+        }
+    }
+    let had: HashSet<i32> = m.iter().map(|r| r.index).collect();
+    if had.is_empty() {
+        m.set_vec(rows);
+        return;
+    }
+    let order: Vec<i32> = rows.iter().map(|r| r.index).filter(|i| had.contains(i)).collect();
+    if order != m.iter().map(|r| r.index).collect::<Vec<_>>() {
+        m.set_vec(rows);
+        return;
+    }
+    let opening = !had.is_empty();
+    for (j, mut r) in rows.into_iter().enumerate() {
+        match m.row_data(j) {
+            Some(old) if old.index == r.index => {
+                r.fresh = old.fresh;
+                if old != r {
+                    m.set_row_data(j, r);
+                }
+            }
+            _ => {
+                r.fresh = opening;
+                m.insert(j, r);
+            }
+        }
+    }
 }
 
 /// Where the songs coming up are from, when they are all of one album.

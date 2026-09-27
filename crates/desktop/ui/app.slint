@@ -26,6 +26,9 @@ export struct SongRow {
     // The list index a click plays or jumps to.
     index: int,
     playing: bool,
+    // In the queue: folding away (it is leaving), or new (it opens when it is put in).
+    leaving: bool,
+    fresh: bool,
 }
 
 // A row of the settings page: 0 a group's heading, 1 a switch, 2 a choice, 3 a button, 4 a fact. `first`
@@ -963,6 +966,7 @@ component QueueView inherits Rectangle {
         HorizontalLayout {
             spacing: 8px;
             height: 34px;
+            vertical-stretch: 0;
             for pill[i] in [{ on: root.autoplay, label: "AutoPlay" }, { on: root.automix, label: "AutoMix" }]: Rectangle {
                 border-radius: self.height / 2;
                 background: pill.on ? Theme.accent : #ffffff1a;
@@ -996,7 +1000,9 @@ component QueueView inherits Rectangle {
                 }
             }
         }
+        // The heading keeps its height; the list below takes the rest, however long it is.
         HorizontalLayout {
+            vertical-stretch: 0;
             padding-left: 4px;
             padding-top: 14px;
             padding-bottom: 8px;
@@ -1032,10 +1038,22 @@ component QueueView inherits Rectangle {
         Flickable {
             vertical-stretch: 1;
             content-height: rows.preferred-height;
+            // At the top however few the rows: a short queue left its space above them.
             rows := VerticalLayout {
             width: parent.width;
+            alignment: start;
             for s in root.queue: Rectangle {
-                height: 50px;
+                // A row put in opens from nothing; one leaving folds away (app.rs takes it out after).
+                property <bool> opened: !s.fresh;
+                height: s.leaving || !self.opened ? 0 : 50px;
+                opacity: s.leaving || !self.opened ? 0 : 1;
+                animate height, opacity { duration: 300ms; easing: cubic-bezier(0.2, 0.9, 0.3, 1); }
+                clip: true;
+                Timer {
+                    interval: 16ms;
+                    running: !parent.opened;
+                    triggered => { parent.opened = true; }
+                }
                 border-radius: 6px;
                 background: qt.has-hover ? Theme.hover : transparent;
                 HorizontalLayout {
@@ -2138,6 +2156,14 @@ export component AppWindow inherits Window {
     // The lyrics of the song playing: the lines, the one sung (-1 for none), and a line about them.
     in property <[string]> lyrics-lines;
     in property <int> lyrics-active: -1;
+    // The lit line filling word by word (lyrics with word times): what is sung, the character being sung and
+    // how far, and the rest.
+    in property <bool> lyric-sweeping;
+    in property <string> lyric-sung;
+    in property <string> lyric-now;
+    in property <float> lyric-mix;
+    in property <string> lyric-rest;
+    callback lyric-tapped(int);
     in property <bool> lyrics-synced;
     in property <string> lyrics-note;
     in property <[SettingRow]> settings;
@@ -3008,7 +3034,7 @@ export component AppWindow inherits Window {
                 // narrows what the page lists.
                 if root.view >= 2 && root.view <= 5: Text {
                     x: 24px;
-                    y: 24px;
+                    y: 18px;
                     text: root.list-name;
                     color: Theme.dim;
                     font-size: 13px;
@@ -3016,7 +3042,7 @@ export component AppWindow inherits Window {
                 }
                 if root.list-name != "": Field {
                     x: parent.width - self.width - 16px;
-                    y: 12px;
+                    y: 9px;
                     width: 226px;
                     height: 34px;
                     border-radius: 17px;
@@ -3125,17 +3151,37 @@ export component AppWindow inherits Window {
                         spacing: 22px;
                         for line[i] in root.lyrics-lines: Text {
                             property <bool> lit: i == root.lyrics-active;
+                            // Scrolled to when lit, and when the lyrics come in with this line already sung.
                             changed lit => {
                                 if self.lit {
                                     lyric-flick.content-y = -max(0, min(self.y - lyric-flick.height * 0.1, lyric-flick.content-height - lyric-flick.height));
                                 }
                             }
+                            init => {
+                                if self.lit {
+                                    lyric-flick.content-y = -max(0, min(self.y - lyric-flick.height * 0.1, lyric-flick.content-height - lyric-flick.height));
+                                }
+                            }
+                            // Lyrics with word times are drawn by the StyledText (the Text only lays the line out):
+                            // the lit line fills, and a line sung fades from white as the others do.
                             text: line;
                             wrap: word-wrap;
                             font-size: 22px;
                             font-weight: 700;
-                            color: !root.lyrics-synced || self.lit ? #ffffffeb : #ffffff42;
+                            color: root.lyric-sweeping ? transparent : !root.lyrics-synced || self.lit ? #ffffffeb : #ffffff42;
                             animate color { duration: 420ms; easing: ease-out; }
+                            if root.lyric-sweeping: StyledText {
+                                width: 100%;
+                                height: 100%;
+                                default-font-size: 22px;
+                                default-color: parent.lit ? #ffffffeb : #ffffff42;
+                                animate default-color { duration: 420ms; easing: ease-out; }
+                                text: parent.lit ? @markdown("**\{root.lyric-sung}<font color=\"\{Colors.white.with-alpha(0.26 + 0.66 * root.lyric-mix)}\">\{root.lyric-now}</font><font color=\"#ffffff42\">\{root.lyric-rest}</font>**") : @markdown("**\{line}**");
+                            }
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.lyric-tapped(i); }
+                            }
                         }
                         if root.lyrics-note != "": Text {
                             text: root.lyrics-note;
@@ -3234,24 +3280,25 @@ export component AppWindow inherits Window {
                 drag => { root.drag-window(); }
                 zoom => { root.zoom-window(); }
             }
-            // Back to the window, next to the traffic lights.
+            // Back to the window: a dark glass capsule level with the traffic lights, as Music's.
             Rectangle {
-                x: 90px;
-                y: 10px;
-                width: 40px;
-                height: 32px;
-                border-radius: 16px;
-                background: #ffffff1f;
+                x: 84px;
+                y: 11px;
+                width: 46px;
+                height: 30px;
+                border-radius: 15px;
+                background: xa.pressed ? #00000052 : xa.has-hover ? #0000003d : #0000002e;
                 border-width: 1px;
-                border-color: #ffffff26;
+                border-color: #ffffff2b;
+                animate background { duration: 120ms; }
                 Icon {
                     path: Icons.close;
-                    colour: white;
-                    weight: 2px;
-                    width: 14px;
-                    height: 14px;
+                    colour: #ffffffeb;
+                    weight: 1.5px;
+                    width: 13px;
+                    height: 13px;
                 }
-                TouchArea {
+                xa := TouchArea {
                     clicked => { root.full-player = false; }
                 }
             }
@@ -3451,12 +3498,30 @@ export component AppWindow inherits Window {
                                 root.full-lyric-h = self.height;
                             }
                         }
+                        init => {
+                            if self.lit {
+                                full-lyrics.content-y = -(self.y - (root.height * 0.36 - 48px));
+                                root.full-lyric-h = self.height;
+                            }
+                        }
                         text: line;
                         wrap: word-wrap;
                         font-size: 44px;
                         font-weight: 700;
-                        color: !root.lyrics-synced || self.lit ? white : #ffffff5c;
+                        color: root.lyric-sweeping ? transparent : !root.lyrics-synced || self.lit ? white : #ffffff5c;
                         animate color { duration: 500ms; easing: ease-out; }
+                        if root.lyric-sweeping: StyledText {
+                            width: 100%;
+                            height: 100%;
+                            default-font-size: 44px;
+                            default-color: parent.lit ? white : #ffffff5c;
+                            animate default-color { duration: 500ms; easing: ease-out; }
+                            text: parent.lit ? @markdown("**\{root.lyric-sung}<font color=\"\{Colors.white.with-alpha(0.36 + 0.64 * root.lyric-mix)}\">\{root.lyric-now}</font><font color=\"#ffffff5c\">\{root.lyric-rest}</font>**") : @markdown("**\{line}**");
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.lyric-tapped(i); }
+                        }
                     }
                 }
             }

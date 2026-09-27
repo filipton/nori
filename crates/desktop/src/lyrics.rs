@@ -60,17 +60,64 @@ impl SongLyrics {
         lyrics_replaces(Some(&self.pick), next)
     }
 
-    /// Where the music is now: the line lit (-1 for none), and in how many ms to ask again, if at all.
-    pub fn advance(&self, position_ms: i64, force: bool) -> (i32, Option<u64>) {
-        let step = self.clock.advance(position_ms, false, false, force);
-        (step.frame.active, (step.wait > 0).then_some(step.wait as u64))
+    /// Where the music is now: the line lit, how far its words are sung, and in how many ms to ask again, if
+    /// at all. Lyrics with real word times fill in word by word; others a line at a time.
+    pub fn advance(&self, position_ms: i64, force: bool) -> Now {
+        let step = self.clock.advance(position_ms, true, false, force);
+        let sweeping = self.clock.timing().sweeps();
+        let wait = match step.wait {
+            0 => None,
+            // While a word fills, the clock counts display frames; a frame is a sixtieth of a second, and a
+            // thirtieth is smooth enough for a fill.
+            n if sweeping && !step.still => Some((n as u64 * 16).max(33)),
+            n => Some(n as u64),
+        };
+        let line = usize::try_from(step.frame.active).ok().and_then(|i| self.pick.lyrics.lines.get(i));
+        let (sung, now, mix, rest) = match line {
+            Some(l) if sweeping => split(&l.text, step.frame.sung),
+            _ => Default::default(),
+        };
+        Now { active: step.frame.active, sweeping, sung, now, mix, rest, wait }
     }
+
+    /// A click on `line`: where the song should go to sing it.
+    pub fn tap(&self, line: usize) -> i64 {
+        self.clock.tap(line)
+    }
+}
+
+/// The lyrics at one moment, as [`SongLyrics::advance`] has them.
+pub struct Now {
+    pub active: i32,
+    /// The lyrics fill word by word; the lit line is `sung`, then `now` (the character being sung, `mix` of
+    /// the way), then `rest`.
+    pub sweeping: bool,
+    pub sung: String,
+    pub now: String,
+    pub mix: f32,
+    pub rest: String,
+    pub wait: Option<u64>,
+}
+
+/// `text` cut where the singing is, `at` UTF-16 units in (7.5 is half of the character at 7): the part sung,
+/// the character being sung and how far, and the rest.
+fn split(text: &str, at: f32) -> (String, String, f32, String) {
+    let mut units = 0.0f32;
+    for (i, c) in text.char_indices() {
+        let w = c.len_utf16() as f32;
+        if at < units + w {
+            let end = i + c.len_utf8();
+            return (text[..i].to_string(), text[i..end].to_string(), ((at - units) / w).clamp(0.0, 1.0), text[end..].to_string());
+        }
+        units += w;
+    }
+    (text.to_string(), String::new(), 0.0, String::new())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nori_core::{LyricLine, Lyrics};
+    use nori_core::{LyricLine, LyricWord, Lyrics};
 
     fn pick() -> LyricsPick {
         let line = |start_ms, end_ms, text: &str| LyricLine { start_ms, end_ms, text: text.into(), ..Default::default() };
@@ -81,9 +128,27 @@ mod tests {
     #[test]
     fn the_line_sung_is_lit_and_the_next_is_waited_for() {
         let l = SongLyrics::new(pick(), 0);
-        assert_eq!(l.advance(1500, true).0, 0);
-        assert_eq!(l.advance(3500, true).0, 1);
-        let (_, wait) = l.advance(2500, true);
+        assert_eq!(l.advance(1500, true).active, 0);
+        assert_eq!(l.advance(3500, true).active, 1);
+        let wait = l.advance(2500, true).wait;
         assert!(wait.is_some_and(|ms| ms <= 500), "the next line is due at 3000");
+    }
+
+    #[test]
+    fn a_line_is_cut_where_the_singing_is() {
+        assert_eq!(split("héllo", 1.5), ("h".into(), "é".into(), 0.5, "llo".into()));
+        assert_eq!(split("ab", 0.0), ("".into(), "a".into(), 0.0, "b".into()));
+        assert_eq!(split("ab", 2.0), ("ab".into(), "".into(), 0.0, "".into()));
+    }
+
+    #[test]
+    fn timed_words_fill_the_line() {
+        let word = |start_ms, end_ms, start, end| LyricWord { start_ms, end_ms, start, end };
+        let line = LyricLine { start_ms: 1000, end_ms: 3000, text: "one two".into(), words: vec![word(1000, 2000, 0, 3), word(2000, 3000, 4, 7)], ..Default::default() };
+        let lyrics = Lyrics { synced: true, word_timed: true, lines: vec![line], key: 0, offset_ms: 0 };
+        let l = SongLyrics::new(LyricsPick { lyrics, origin: LyricsOrigin::Server }, 0);
+        let now = l.advance(2500, true);
+        assert!(now.sweeping);
+        assert_eq!((now.sung.as_str(), now.now.as_str(), now.rest.as_str()), ("one t", "w", "o"));
     }
 }

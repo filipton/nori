@@ -440,6 +440,8 @@ impl ApplicationHandler<Wake> for Runner {
                 return;
             }
         }
+        #[cfg(target_os = "macos")]
+        unified_toolbar(&window);
         *self.shared.window.borrow_mut() = Some(window);
         relayout(&self.shared);
         crate::menu::install();
@@ -828,4 +830,22 @@ fn uniforms(rect: [f32; 4], view: [f32; 4], shape: [f32; 4], tint: [f32; 4], lig
 
 fn uniforms_gather(rect: [f32; 4], view: [f32; 4], shape: [f32; 4], tint: [f32; 4], light: [f32; 4], gather: [f32; 4]) -> Vec<u8> {
     [rect, view, shape, tint, light, gather].iter().flatten().flat_map(|f| f.to_ne_bytes()).collect()
+}
+
+/// An empty toolbar in the unified style: the window's titlebar grows to a toolbar's height, and the traffic
+/// lights come down to its middle, level with the page's own toolbar (Music's window has them there).
+#[cfg(target_os = "macos")]
+fn unified_toolbar(window: &WinitWindow) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSToolbar, NSView, NSWindowToolbarStyle};
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    let Ok(handle) = window.window_handle() else { return };
+    let RawWindowHandle::AppKit(h) = handle.as_raw() else { return };
+    // SAFETY: winit's AppKit handle is the window's content view, alive while the window is.
+    let view: &NSView = unsafe { h.ns_view.cast().as_ref() };
+    let Some(ns) = view.window() else { return };
+    let toolbar = NSToolbar::new(mtm);
+    ns.setToolbar(Some(&toolbar));
+    ns.setToolbarStyle(NSWindowToolbarStyle::Unified);
 }

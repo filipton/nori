@@ -33,6 +33,9 @@ arboard = { version = "3", default-features = false }
 # The menu bar, macOS's own.
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.19", default-features = false }
+# An empty toolbar in the unified style, so the traffic lights sit where Music's do, level with the toolbar.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSView", "NSWindow", "NSToolbar"] }
 
 [build-dependencies]
 slint-build = "1.18"
