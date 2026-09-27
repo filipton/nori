@@ -17,10 +17,14 @@ import kotlinx.coroutines.launch
 import dev.nori.music.app.ui.App
 import dev.nori.music.settings.loggedIn
 
+/** Launch requests that play rather than open a page (a launcher shortcut's); App carries them out. */
+const val SHUFFLE_SONGS = "shuffle:songs"
+const val SHUFFLE_ALBUMS = "shuffle:albums"
+
 class MainActivity : ComponentActivity() {
     private var started = false
     private val askNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
-    /** A screen asked for from outside (the download notification); App opens it and clears this. */
+    /** What was asked for from outside (the download notification, a launcher shortcut); App does it and clears this. */
     private val launchRoute = androidx.compose.runtime.mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -42,7 +46,14 @@ class MainActivity : ComponentActivity() {
         routeOf(intent)?.let { launchRoute.value = it }
     }
 
-    private fun routeOf(intent: Intent?): String? = if (intent?.action == ACTION_OPEN_DOWNLOADS) "downloads" else null
+    /** What an intent from outside asks for: the download notification's screen, or a launcher shortcut's (res/xml/shortcuts.xml). */
+    private fun routeOf(intent: Intent?): String? = when (intent?.action) {
+        ACTION_OPEN_DOWNLOADS -> "downloads"
+        "dev.nori.music.SHORTCUT_SEARCH" -> "search"
+        "dev.nori.music.SHORTCUT_SHUFFLE_SONGS" -> SHUFFLE_SONGS
+        "dev.nori.music.SHORTCUT_SHUFFLE_ALBUMS" -> SHUFFLE_ALBUMS
+        else -> null
+    }
 
     override fun onStart() {
         // Before the screen draws again: the song may have changed while it was away (see catchUp), and the
