@@ -91,12 +91,15 @@ fun BottomChrome(player: PlayerViewModel, actions: ActionsViewModel, onOpenPlaye
     // A soft wash under the chrome so the list fades out as it passes behind it. Apple gets this from
     // blurring what is behind the bars; one vertical gradient costs nothing and reads much the same.
     // Made once per size and page colour, not on every draw.
+    // Not on its side: there the bar floats over a page cut into halves, and a wash across the bottom of it
+    // ran over the cover and stopped at the camera's strip.
+    val wide = LocalWide.current
     Column(
         Modifier.drawWithCache {
             val fade = androidx.compose.ui.graphics.Brush.verticalGradient(
                 0f to Color.Transparent, 0.45f to look.color(CoverLook.CHROME_FADE), 1f to look.color(CoverLook.CHROME_PAGE),
             )
-            onDrawBehind { drawRect(fade) }
+            onDrawBehind { if (!wide) drawRect(fade) }
         },
     ) {
         SelectionBar(actions)
