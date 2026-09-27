@@ -733,6 +733,9 @@ class Say(private val r: Resources) {
     /** "Ceiling -1.0 dB". */
     fun ceiling(db: Float): String = r.getString(R.string.eq_ceiling, Fmt.fixed(db.toDouble(), 1))
     /** What the limiter is pulling back right now, or that it is not: "−2.3 dB", "not clipping". */
+    /** What the compressor is taking off right now, or that it is resting: "Compressing 3.2 dB". */
+    fun compression(db: Float): String =
+        if (db > 0.05f) r.getString(R.string.eq_compressing, Fmt.fixed(db.toDouble(), 1)) else r.getString(R.string.eq_not_compressing)
     fun reduction(db: Float): String =
         if (db > 0.05f) r.getString(R.string.eq_reduction, Fmt.fixed(db.toDouble(), 1)) else r.getString(R.string.eq_not_clipping)
     fun crossfeed(db: Float, custom: Boolean = false): String = when {

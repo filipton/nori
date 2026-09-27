@@ -12,7 +12,7 @@
 //! material gains from the mono sum) and is the only stage that can decide what leaves the chain.
 
 
-use crate::compressor::{Compressor, CompressorSettings};
+use crate::compressor::{Compressor, CompressorSettings, Expander, ExpanderSettings};
 use crate::spatial::Virtualizer;
 use crate::types::{EqBand, EqKind, NamedPreset, PresetKind};
 
@@ -383,6 +383,7 @@ struct Stages {
     preamp: f64,
     /// The bass boost's shelf and its memories, per channel.
     bass: Option<(Biquad, [[f64; 2]; MAX_CHANNELS])>,
+    expander: Option<Expander>,
     compressor: Option<Compressor>,
     virtualizer: Option<Virtualizer>,
     crossfeed: Option<Crossfeed>,
@@ -399,6 +400,7 @@ impl Stages {
     fn is_identity(&self) -> bool {
         self.filters.is_empty()
             && self.bass.is_none()
+            && self.expander.is_none()
             && self.compressor.is_none()
             && self.virtualizer.is_none()
             && self.boost == 1.0
@@ -416,6 +418,7 @@ impl Stages {
             && self.preamp == o.preamp
             && self.bass.map(|b| b.0) == o.bass.map(|b| b.0)
             && self.compressor.as_ref().map(Compressor::settings) == o.compressor.as_ref().map(Compressor::settings)
+            && self.expander.as_ref().map(Expander::settings) == o.expander.as_ref().map(Expander::settings)
             && self.virtualizer.as_ref().map(Virtualizer::strength) == o.virtualizer.as_ref().map(Virtualizer::strength)
             && self.boost == o.boost
             && self.mono == o.mono
@@ -451,10 +454,14 @@ impl Stages {
         x
     }
 
-    /// Everything after the equalizer, on one frame: compressor, mono, virtualizer, crossfeed, balance,
-    /// volume boost, limiter.
+    /// Everything after the equalizer, on one frame: expander, compressor, mono, virtualizer, crossfeed,
+    /// balance, volume boost, limiter.
     #[inline]
     fn output_stage(&mut self, f: &mut [f64]) {
+        // The expander first: what it takes down (hiss, hum) the compressor must not bring back up.
+        if let Some(e) = self.expander.as_mut() {
+            e.frame(f);
+        }
         if let Some(c) = self.compressor.as_mut() {
             c.frame(f);
         }
@@ -495,6 +502,9 @@ impl Stages {
         }
         if let Some(c) = self.compressor.as_mut() {
             c.reset();
+        }
+        if let Some(e) = self.expander.as_mut() {
+            e.reset();
         }
         if let Some(v) = self.virtualizer.as_mut() {
             v.reset();
@@ -550,6 +560,7 @@ impl Equalizer {
             state: Vec::new(),
             preamp: 1.0,
             bass: None,
+            expander: None,
             compressor: None,
             virtualizer: None,
             crossfeed: None,
@@ -640,8 +651,8 @@ impl Equalizer {
         });
     }
 
-    /// The effects: bass boost, compressor, virtualizer (stereo only) and volume boost, each off at 0 or
-    /// `None`. A compressor or virtualizer already running is retuned and keeps its state. The volume
+    /// The effects: bass boost, expander, compressor, virtualizer (stereo only) and volume boost, each off
+    /// at 0 or `None`. An expander, compressor or virtualizer already running is retuned and keeps its state. The volume
     /// boost and the other boosts want the limiter on behind them (`Effects::guard`); that is the
     /// caller's, through [`Equalizer::configure_output`].
     pub fn configure_effects(&mut self, e: &Effects) {
@@ -660,6 +671,14 @@ impl Equalizer {
                     Some(old)
                 }
                 (Some(c), None) => Some(Compressor::new(rate, c)),
+                (None, _) => None,
+            };
+            s.expander = match (e.expander, s.expander.take()) {
+                (Some(x), Some(mut old)) => {
+                    old.tune(rate, x);
+                    Some(old)
+                }
+                (Some(x), None) => Some(Expander::new(rate, x)),
                 (None, _) => None,
             };
             let width = finite(e.virtualizer, 0.0).clamp(0.0, 1.0);
@@ -787,6 +806,8 @@ pub struct Effects {
     /// The low shelf's gain, 0 to [`BASS_BOOST_MAX_DB`].
     pub bass_boost_db: f64,
     pub compressor: Option<CompressorSettings>,
+    /// The downward expander (a noise gate at a high ratio), before the compressor.
+    pub expander: Option<ExpanderSettings>,
     /// Strength, 0 to 1.
     pub virtualizer: f64,
     /// 0 to [`VOLUME_BOOST_MAX_DB`].
@@ -796,7 +817,7 @@ pub struct Effects {
 impl Effects {
     /// Whether any of them touches the samples.
     pub fn on(&self) -> bool {
-        self.bass_boost_db > 0.0 || self.compressor.is_some() || self.virtualizer > 0.0 || self.boost_db > 0.0
+        self.bass_boost_db > 0.0 || self.compressor.is_some() || self.expander.is_some() || self.virtualizer > 0.0 || self.boost_db > 0.0
     }
 
     /// Whether they add level the music did not have: the limiter then runs behind them, whether or not
@@ -1356,6 +1377,31 @@ mod tests {
         let (x, mut y) = (vec![0f32; 960], vec![0f32; 960]);
         eq.process_f32(&x, &mut y);
         assert!(eq.is_identity() && eq.compression_db() == 0.0, "off again is gone");
+    }
+
+    #[test]
+    fn the_expander_in_the_chain_takes_the_quiet_down_and_leaves_the_music() {
+        let x = crate::compressor::ExpanderSettings { threshold_db: -40.0, ratio: 4.0, attack_ms: 2.0, release_ms: 50.0 };
+        let mut eq = Equalizer::new(48000, 2);
+        eq.configure_effects(&Effects { expander: Some(x), ..Effects::default() });
+        assert!(!eq.is_identity() && Effects { expander: Some(x), ..Effects::default() }.on());
+        assert!(!Effects { expander: Some(x), ..Effects::default() }.guard(), "it never adds level");
+        // Music at -12 dBFS passes as it came; a hum at -60 dBFS goes 60 dB further down.
+        let m = tone(440.0);
+        let loud: Vec<f32> = m.iter().flat_map(|s| [*s, *s]).collect();
+        let mut y = vec![0f32; loud.len()];
+        eq.process_f32(&loud, &mut y);
+        // Out of silence the gate opens over its attack time, and from then on it is the music as it came.
+        assert_eq!(loud[9600..], y[9600..], "above the threshold, bit for bit");
+        let hum: Vec<f32> = tone_at(60.0, 0.001).iter().flat_map(|s| [*s, *s]).collect();
+        eq.reset();
+        eq.process_f32(&hum, &mut y);
+        let db = 20.0 * (rms(&y[48000..]) / rms(&hum[48000..])).log10();
+        assert!((db + 60.0).abs() < 3.0, "20 dB under at 4:1 is 80 under: {db} dB");
+        eq.configure_effects(&Effects::default());
+        let (z, mut w) = (vec![0f32; 960], vec![0f32; 960]);
+        eq.process_f32(&z, &mut w);
+        assert!(eq.is_identity(), "off again is gone");
     }
 
     #[test]

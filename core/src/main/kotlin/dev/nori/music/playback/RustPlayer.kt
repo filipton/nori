@@ -68,6 +68,7 @@ internal object RustPlayerJni {
     @JvmStatic @CriticalNative external fun chainIn(h: Long): Boolean
     @JvmStatic @CriticalNative external fun onCpu(h: Long): Boolean
     @JvmStatic @CriticalNative external fun gainReductionDb(h: Long): Float
+    @JvmStatic @CriticalNative external fun compressionDb(h: Long): Float
     @JvmStatic @CriticalNative external fun bytesWritten(h: Long): Long
     /** The next event, `kind shl 32 or index` (kind: state 0, song 1, error 2, output 3); -1 when there are no more. */
     @JvmStatic @CriticalNative external fun event(h: Long): Long
@@ -299,6 +300,8 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
     /** The ear is on music the CPU made, through the engine's own output: where [chainIn] says anything. */
     val onCpu: Boolean get() = RustPlayerJni.onCpu(h)
     val gainReductionDb: Float get() = RustPlayerJni.gainReductionDb(h)
+    /** The compressor's meter: what it takes off, dB. */
+    val compressionDb: Float get() = RustPlayerJni.compressionDb(h)
     val bytesWritten: Long get() = RustPlayerJni.bytesWritten(h)
     /** The songs go to the audio chip now, and whether the settings and the output let them. */
     val offloaded: Boolean get() = RustPlayerJni.offloaded(h)

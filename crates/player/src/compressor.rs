@@ -16,6 +16,21 @@
 //! the way. Below the knee with the detector at rest a frame costs a compare and a multiply; the
 //! logarithm and the power are only taken while the compressor is working.
 
+/// The static curve both dynamics processors share: the gain reduction, dB (0 or more), that a steady
+/// peak level of `x_db` gets from a threshold `t`, a slope and a soft knee `w` wide. The compressor's
+/// slope is `1 - 1/ratio` over the threshold; the expander's is `ratio - 1` under it, which is the same
+/// curve turned round (`over` negated). Below `t - w/2` nothing, above `t + w/2` a straight line, a
+/// quadratic joining them.
+fn curve_db(over: f64, slope: f64, w: f64) -> f64 {
+    if 2.0 * over <= -w {
+        0.0
+    } else if 2.0 * over.abs() <= w && w > 0.0 {
+        slope * (over + w / 2.0).powi(2) / (2.0 * w)
+    } else {
+        slope * over
+    }
+}
+
 /// The compressor's controls.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CompressorSettings {
@@ -91,16 +106,7 @@ impl CompressorSettings {
 
     /// The static curve: the gain reduction (dB, 0 or more) for a steady peak level of `x_db`.
     pub fn reduction_db(&self, x_db: f64) -> f64 {
-        let (t, w) = (self.threshold_db, self.knee_db);
-        let slope = 1.0 - 1.0 / self.ratio;
-        let over = x_db - t;
-        if 2.0 * over <= -w {
-            0.0
-        } else if 2.0 * over.abs() <= w && w > 0.0 {
-            slope * (over + w / 2.0).powi(2) / (2.0 * w)
-        } else {
-            slope * over
-        }
+        curve_db(x_db - self.threshold_db, 1.0 - 1.0 / self.ratio, self.knee_db)
     }
 }
 
@@ -165,6 +171,119 @@ impl Compressor {
 
     pub fn reset(&mut self) {
         (self.y1, self.y, self.meter_db) = (0.0, 0.0, 0.0);
+    }
+}
+
+/// The downward expander's controls: under the threshold every dB the music falls, it falls `ratio` dB
+/// (a noise gate at a high ratio). Hiss and hum between songs and in quiet passages go further down;
+/// the music above the threshold is left as it is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExpanderSettings {
+    /// Peak level under which the expander works, dBFS.
+    pub threshold_db: f64,
+    /// dB out per dB in under the threshold, at least 1; 10 and up is a gate.
+    pub ratio: f64,
+    /// How fast it opens when the music comes back, ms.
+    pub attack_ms: f64,
+    /// How fast it closes when the music falls under the threshold, ms.
+    pub release_ms: f64,
+}
+
+impl Default for ExpanderSettings {
+    /// Gentle: 2:1 under -50 dBFS, which takes tape hiss and a noisy fade-out down without touching music.
+    fn default() -> Self {
+        ExpanderSettings { threshold_db: -50.0, ratio: 2.0, attack_ms: 5.0, release_ms: 150.0 }
+    }
+}
+
+pub const EXP_THRESHOLD_DB: (f64, f64) = (-90.0, -10.0);
+pub const EXP_RATIO: (f64, f64) = (1.0, 20.0);
+pub const EXP_ATTACK_MS: (f64, f64) = (0.1, 100.0);
+pub const EXP_RELEASE_MS: (f64, f64) = (10.0, 2000.0);
+/// The expander's knee, dB: soft enough that a level hovering at the threshold does not chatter.
+const EXP_KNEE_DB: f64 = 6.0;
+/// The most it takes off, dB: past this a gate is closed, and a closed gate is quiet enough.
+pub const EXP_RANGE_DB: f64 = 80.0;
+
+impl ExpanderSettings {
+    /// Every control inside its range; anything that is not a number is the default's.
+    pub fn held(self) -> ExpanderSettings {
+        let d = ExpanderSettings::default();
+        ExpanderSettings {
+            threshold_db: held(self.threshold_db, EXP_THRESHOLD_DB, d.threshold_db),
+            ratio: held(self.ratio, EXP_RATIO, d.ratio),
+            attack_ms: held(self.attack_ms, EXP_ATTACK_MS, d.attack_ms),
+            release_ms: held(self.release_ms, EXP_RELEASE_MS, d.release_ms),
+        }
+    }
+
+    /// The static curve: the gain reduction (dB, 0 to [`EXP_RANGE_DB`]) for a steady peak level of `x_db`.
+    pub fn reduction_db(&self, x_db: f64) -> f64 {
+        curve_db(self.threshold_db - x_db, self.ratio - 1.0, EXP_KNEE_DB).min(EXP_RANGE_DB)
+    }
+}
+
+/// The downward expander's running state. The level is a peak follower (instant up, down over the
+/// release time), so a waveform's zero crossings do not read as silence; the gain reduction from the
+/// curve then closes as fast as that level falls and opens over the attack time. Above the knee with
+/// the gain at rest, a frame costs a compare.
+#[derive(Clone, Debug)]
+pub struct Expander {
+    s: ExpanderSettings,
+    /// Level above which the curve is certainly 0 (the top of the knee), linear.
+    open: f64,
+    attack: f64,
+    release: f64,
+    env: f64,
+    /// The reduction now, dB.
+    y: f64,
+    /// Largest reduction in the buffer just processed, dB.
+    pub meter_db: f64,
+}
+
+impl Expander {
+    pub fn new(rate: f64, s: ExpanderSettings) -> Self {
+        let mut e = Expander { s, open: 0.0, attack: 0.0, release: 0.0, env: 0.0, y: 0.0, meter_db: 0.0 };
+        e.tune(rate, s);
+        e
+    }
+
+    /// New settings, the detector's state kept.
+    pub fn tune(&mut self, rate: f64, s: ExpanderSettings) {
+        let s = s.held();
+        let coeff = |ms: f64| (-1.0 / (ms / 1000.0 * rate.max(1.0))).exp();
+        self.s = s;
+        self.open = 10f64.powf((s.threshold_db + EXP_KNEE_DB / 2.0) / 20.0);
+        self.attack = coeff(s.attack_ms);
+        self.release = coeff(s.release_ms);
+    }
+
+    pub fn settings(&self) -> ExpanderSettings {
+        self.s
+    }
+
+    /// One frame, all channels, turned down together.
+    #[inline]
+    pub fn frame(&mut self, f: &mut [f64]) {
+        let peak = f.iter().fold(0f64, |m, v| m.max(v.abs()));
+        self.env = peak.max(self.release * self.env);
+        if self.env >= self.open && self.y == 0.0 {
+            return; // open and at rest: the music as it came, bit for bit
+        }
+        let c = if self.env >= self.open { 0.0 } else { self.s.reduction_db(20.0 * self.env.max(1e-10).log10()) };
+        // Closing follows the level down (its fall is the release); opening takes the attack.
+        self.y = if c >= self.y { c } else { self.attack * self.y + (1.0 - self.attack) * c };
+        if self.y < 1e-6 {
+            self.y = 0.0;
+            return;
+        }
+        self.meter_db = self.meter_db.max(self.y);
+        let g = 10f64.powf(-self.y / 20.0);
+        f.iter_mut().for_each(|v| *v *= g);
+    }
+
+    pub fn reset(&mut self) {
+        (self.env, self.y, self.meter_db) = (0.0, 0.0, 0.0);
     }
 }
 
@@ -294,6 +413,73 @@ mod tests {
             let spread = (-3.0 + loud) - (-30.0 + quiet);
             assert!(spread < 27.0 - 4.0, "{p:?}: 27 dB apart went in, {spread} came out");
         }
+    }
+
+    fn expander(threshold_db: f64, ratio: f64) -> ExpanderSettings {
+        ExpanderSettings { threshold_db, ratio, attack_ms: 5.0, release_ms: 100.0 }
+    }
+
+    /// A stereo sine through the expander: its gain in dB over the last tenth.
+    fn expand(e: &mut Expander, db: f64, secs: f64, freq: f64) -> f64 {
+        let a = 10f64.powf(db / 20.0);
+        let n = (secs * RATE) as usize;
+        let mut out_peak = 0f64;
+        for i in 0..n {
+            let x = a * (std::f64::consts::TAU * freq * i as f64 / RATE).sin();
+            let mut f = [x, x];
+            e.frame(&mut f);
+            if i >= n - n / 10 {
+                out_peak = out_peak.max(f[0].abs());
+            }
+        }
+        20.0 * (out_peak / a).log10()
+    }
+
+    #[test]
+    fn the_expanders_curve_is_the_compressors_turned_round() {
+        let s = expander(-50.0, 3.0);
+        assert_eq!(s.reduction_db(-40.0), 0.0, "above the threshold, nothing");
+        assert_eq!(s.reduction_db(-47.0), 0.0, "the knee starts 3 dB over the threshold");
+        assert!(s.reduction_db(-50.0) > 0.0 && (s.reduction_db(-53.0) - 6.0).abs() < 1e-9, "bends through it and joins the line 3 dB under");
+        assert!((s.reduction_db(-60.0) - 20.0).abs() < 1e-12, "10 dB under at 1:3 is 30 dB under: 20 dB off");
+        assert_eq!(s.reduction_db(-400.0), EXP_RANGE_DB, "a gate closes only so far");
+        for x in -90..-20 {
+            let (a, b) = (s.reduction_db(x as f64), s.reduction_db(x as f64 + 0.01));
+            assert!(b <= a && a - b < 0.03, "continuous, less as the level rises, at {x} dB");
+        }
+        assert_eq!(expander(-50.0, 1.0).reduction_db(-80.0), 0.0, "1:1 does nothing");
+    }
+
+    #[test]
+    fn steady_tones_come_out_on_the_expanders_curve() {
+        let s = expander(-50.0, 2.0);
+        for db in [-20.0, -45.0, -60.0, -70.0] {
+            let mut e = Expander::new(RATE, s);
+            let gain = expand(&mut e, db, 2.0, 220.0);
+            let want = -s.reduction_db(db);
+            assert!((gain - want).abs() < 0.5, "{db} dBFS: {gain} dB, the curve says {want}");
+        }
+        // Above the knee it is the music as it came, sample for sample.
+        let mut e = Expander::new(RATE, s);
+        let mut f = [0.25, -0.1];
+        for _ in 0..2000 {
+            f = [0.25, -0.1];
+            e.frame(&mut f);
+        }
+        assert_eq!(f, [0.25, -0.1]);
+        assert_eq!(e.meter_db, 0.0);
+    }
+
+    #[test]
+    fn the_gate_closes_on_hiss_and_opens_for_the_music() {
+        // A gate: 10:1 under -50 dBFS. Hiss at -65 goes down by over 100 dB... held to the range.
+        let s = ExpanderSettings { threshold_db: -50.0, ratio: 10.0, attack_ms: 2.0, release_ms: 80.0 };
+        let mut e = Expander::new(RATE, s);
+        let hiss = expand(&mut e, -65.0, 1.0, 3000.0);
+        assert!(hiss < -60.0, "the hiss is gone: {hiss} dB");
+        // The music comes back: open again within a few attack times, whole.
+        let back = expand(&mut e, -12.0, 0.05, 440.0);
+        assert!(back.abs() < 0.1, "open again: {back} dB");
     }
 
     #[test]

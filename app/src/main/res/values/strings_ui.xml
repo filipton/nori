@@ -326,6 +326,8 @@
     <string name="eq_ceiling">Ceiling %1$s dB</string>
     <string name="eq_reduction">−%1$s dB</string>
     <string name="eq_not_clipping">not clipping</string>
+    <string name="eq_compressing">Compressing: −%1$s dB</string>
+    <string name="eq_not_compressing">Not compressing now</string>
     <string name="eq_crossfeed_custom">Custom, %1$s dB: each ear also hears a little of the other channel, like loudspeakers. For headphones.</string>
     <string name="eq_crossfeed_cut">Cutoff %1$s Hz: how high up the other ear hears</string>
     <string name="eq_crossfeed_on">%1$s dB: each ear also hears a little of the other channel, like loudspeakers. For headphones.</string>

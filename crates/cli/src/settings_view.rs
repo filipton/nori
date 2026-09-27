@@ -553,6 +553,15 @@ fn effects(b: &Build) -> Vec<Row> {
             slider("compKneeDb", format!("  Knee {:.1} dB", p.comp_knee_db), p.comp_knee_db, (0.0, 24.0), EqLevel::CompKnee),
         ]);
     }
+    rows.push(b.toggle("expander", "Noise gate", "A downward expander: hiss and hum go further down in quiet parts"));
+    if p.expander {
+        rows.extend([
+            slider("expThresholdDb", format!("  Threshold {:.1} dB", p.exp_threshold_db), p.exp_threshold_db, (-90.0, -10.0), EqLevel::ExpThreshold),
+            slider("expRatio", format!("  Ratio 1:{:.1}", p.exp_ratio), p.exp_ratio, (1.0, 20.0), EqLevel::ExpRatio),
+            slider("expAttackMs", format!("  Attack {:.1} ms", p.exp_attack_ms), p.exp_attack_ms, (0.1, 100.0), EqLevel::ExpAttack),
+            slider("expReleaseMs", format!("  Release {:.0} ms", p.exp_release_ms), p.exp_release_ms, (10.0, 2000.0), EqLevel::ExpRelease),
+        ]);
+    }
     rows
 }
 

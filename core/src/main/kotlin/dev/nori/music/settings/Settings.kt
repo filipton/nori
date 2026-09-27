@@ -150,6 +150,10 @@ class Settings(private val context: Context) {
                 EqLevel.COMP_MAKEUP -> p.copy(compMakeupDb = kept)
                 EqLevel.COMP_KNEE -> p.copy(compKneeDb = kept)
                 EqLevel.CROSSFEED_CUT -> p.copy(crossfeedHz = kept)
+                EqLevel.EXP_THRESHOLD -> p.copy(expThresholdDb = kept)
+                EqLevel.EXP_RATIO -> p.copy(expRatio = kept)
+                EqLevel.EXP_ATTACK -> p.copy(expAttackMs = kept)
+                EqLevel.EXP_RELEASE -> p.copy(expReleaseMs = kept)
             }
         }
         val effect = r.toInt()

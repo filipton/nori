@@ -347,6 +347,12 @@ impl<T: Track> Sink<T> {
         self.eq.is_some()
     }
 
+    /// The compressor's meter: its largest gain reduction in the last buffer through the chain, dB; 0
+    /// with no compressor. Read, not kept: nothing is metered for it that the chain does not do anyway.
+    pub fn compression_db(&self) -> f32 {
+        self.eq.as_ref().map_or(0.0, |e| e.compression_db())
+    }
+
     /// The format the silence skipper runs at, while it is in the path of the samples.
     pub fn skipping_silence(&self) -> Option<Format> {
         self.format.filter(|_| self.silence.is_some())

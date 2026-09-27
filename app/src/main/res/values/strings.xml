@@ -171,6 +171,12 @@
     <string name="settings_comp_release">Lets go over %1$s ms</string>
     <string name="settings_comp_makeup">Makes up %1$s dB</string>
     <string name="settings_comp_knee">Softness %1$s dB</string>
+    <string name="settings_expander">Noise gate</string>
+    <string name="settings_expander_detail">Turns hiss and hum down further when the music goes quiet. A high ratio closes it like a gate.</string>
+    <string name="settings_exp_threshold">Works under %1$s dB</string>
+    <string name="settings_exp_ratio">Ratio 1:%1$s</string>
+    <string name="settings_exp_attack">Opens in %1$s ms</string>
+    <string name="settings_exp_release">Closes over %1$s ms</string>
     <string name="settings_untagged_gain">Volume for songs without tags</string>
     <string name="settings_hi_res">High quality output</string>
     <string name="settings_hi_res_detail">Plays 24-bit files in full. Turns the equalizer off. Starts with the next song.</string>

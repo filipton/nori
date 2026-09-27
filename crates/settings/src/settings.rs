@@ -323,6 +323,17 @@ pub struct StoredPrefs {
     pub comp_makeup_db: f32,
     #[setting("compKneeDb", clamped(0.0, 24.0), default = 6.0, show = K::Level(0.0, 24.0), effect = SOUND)]
     pub comp_knee_db: f32,
+    /// The downward expander (a noise gate at a high ratio), before the compressor. Off by default.
+    #[setting("expander", FLAG, default = false, show = K::Switch, effect = SOUND)]
+    pub expander: bool,
+    #[setting("expThresholdDb", clamped(-90.0, -10.0), default = -50.0, show = K::Level(-90.0, -10.0), effect = SOUND)]
+    pub exp_threshold_db: f32,
+    #[setting("expRatio", clamped(1.0, 20.0), default = 2.0, show = K::Level(1.0, 20.0), effect = SOUND)]
+    pub exp_ratio: f32,
+    #[setting("expAttackMs", clamped(0.1, 100.0), default = 5.0, show = K::Level(0.1, 100.0), effect = SOUND)]
+    pub exp_attack_ms: f32,
+    #[setting("expReleaseMs", clamped(10.0, 2000.0), default = 150.0, show = K::Level(10.0, 2000.0), effect = SOUND)]
+    pub exp_release_ms: f32,
     #[setting("mono", FLAG, default = false, show = K::Switch, effect = APPLY_AUDIO | SOUND)]
     pub mono: bool,
     #[setting("limiter", FLAG, default = false, show = K::Switch, effect = APPLY_AUDIO | SOUND)]
@@ -601,6 +612,11 @@ pub struct SoundEffects {
     pub comp_release_ms: f32,
     pub comp_makeup_db: f32,
     pub comp_knee_db: f32,
+    pub expander: bool,
+    pub exp_threshold_db: f32,
+    pub exp_ratio: f32,
+    pub exp_attack_ms: f32,
+    pub exp_release_ms: f32,
 }
 
 impl Default for SoundEffects {
@@ -627,11 +643,22 @@ impl SoundEffects {
         }
     }
 
+    /// The expander's controls, on or not.
+    pub fn expander_settings(&self) -> nori_player::compressor::ExpanderSettings {
+        nori_player::compressor::ExpanderSettings {
+            threshold_db: self.exp_threshold_db as f64,
+            ratio: self.exp_ratio as f64,
+            attack_ms: self.exp_attack_ms as f64,
+            release_ms: self.exp_release_ms as f64,
+        }
+    }
+
     /// As the sound chain takes them.
     pub fn player(&self) -> nori_player::dsp::Effects {
         nori_player::dsp::Effects {
             bass_boost_db: self.bass_boost_db as f64,
             compressor: self.compressor.then(|| self.compressor_settings()),
+            expander: self.expander.then(|| self.expander_settings()),
             virtualizer: self.virtualizer as f64,
             boost_db: self.volume_boost_db as f64,
         }
@@ -716,6 +743,11 @@ impl StoredPrefs {
             comp_release_ms: s.effects.comp_release_ms,
             comp_makeup_db: s.effects.comp_makeup_db,
             comp_knee_db: s.effects.comp_knee_db,
+            expander: s.effects.expander,
+            exp_threshold_db: s.effects.exp_threshold_db,
+            exp_ratio: s.effects.exp_ratio,
+            exp_attack_ms: s.effects.exp_attack_ms,
+            exp_release_ms: s.effects.exp_release_ms,
             replay_gain: s.replay_gain,
             preamp_db: s.preamp_db,
             crossfade_sec: s.crossfade_sec,
@@ -738,6 +770,11 @@ impl StoredPrefs {
             comp_release_ms: self.comp_release_ms,
             comp_makeup_db: self.comp_makeup_db,
             comp_knee_db: self.comp_knee_db,
+            expander: self.expander,
+            exp_threshold_db: self.exp_threshold_db,
+            exp_ratio: self.exp_ratio,
+            exp_attack_ms: self.exp_attack_ms,
+            exp_release_ms: self.exp_release_ms,
         }
     }
 
@@ -929,6 +966,11 @@ pub fn sound_from(json: &str) -> Option<SoundSettings> {
             comp_release_ms: f("compReleaseMs", d.comp_release_ms, 10.0, 2000.0),
             comp_makeup_db: f("compMakeupDb", d.comp_makeup_db, 0.0, 24.0),
             comp_knee_db: f("compKneeDb", d.comp_knee_db, 0.0, 24.0),
+            expander: opt_bool(o, "expander"),
+            exp_threshold_db: f("expThresholdDb", d.exp_threshold_db, -90.0, -10.0),
+            exp_ratio: f("expRatio", d.exp_ratio, 1.0, 20.0),
+            exp_attack_ms: f("expAttackMs", d.exp_attack_ms, 0.1, 100.0),
+            exp_release_ms: f("expReleaseMs", d.exp_release_ms, 10.0, 2000.0),
         },
         replay_gain: GainMode::ALL[opt_i32(o, "replayGain").clamp(0, GainMode::ALL.len() as i32 - 1) as usize],
         preamp_db: opt_f64(o, "preampDb", 0.0) as f32,
@@ -970,10 +1012,15 @@ pub fn sound_json(s: &SoundSettings) -> String {
         ("compReleaseMs", e.comp_release_ms),
         ("compMakeupDb", e.comp_makeup_db),
         ("compKneeDb", e.comp_knee_db),
+        ("expThresholdDb", e.exp_threshold_db),
+        ("expRatio", e.exp_ratio),
+        ("expAttackMs", e.exp_attack_ms),
+        ("expReleaseMs", e.exp_release_ms),
     ] {
         o.insert(k.into(), (v as f64).into());
     }
     o.insert("compressor".into(), e.compressor.into());
+    o.insert("expander".into(), e.expander.into());
     o.insert("replayGain".into(), s.replay_gain.ordinal().into());
     o.insert("preampDb".into(), (s.preamp_db as f64).into());
     o.insert("crossfadeSec".into(), s.crossfade_sec.into());
@@ -1492,11 +1539,15 @@ pub enum EqLevel {
     CompKnee,
     /// The crossfeed's cutoff, Hz.
     CrossfeedCut,
+    ExpThreshold,
+    ExpRatio,
+    ExpAttack,
+    ExpRelease,
 }
 
 impl EqLevel {
     /// Every level, in order: the ordinal a platform's door carries.
-    pub const ALL: [EqLevel; 15] = [
+    pub const ALL: [EqLevel; 19] = [
         EqLevel::Preamp,
         EqLevel::Balance,
         EqLevel::Limiter,
@@ -1512,6 +1563,10 @@ impl EqLevel {
         EqLevel::CompMakeup,
         EqLevel::CompKnee,
         EqLevel::CrossfeedCut,
+        EqLevel::ExpThreshold,
+        EqLevel::ExpRatio,
+        EqLevel::ExpAttack,
+        EqLevel::ExpRelease,
     ];
 
     /// The level's value in these settings.
@@ -1533,6 +1588,10 @@ impl EqLevel {
             EqLevel::CompMakeup => e.comp_makeup_db,
             EqLevel::CompKnee => e.comp_knee_db,
             EqLevel::CrossfeedCut => s.crossfeed_hz,
+            EqLevel::ExpThreshold => e.exp_threshold_db,
+            EqLevel::ExpRatio => e.exp_ratio,
+            EqLevel::ExpAttack => e.exp_attack_ms,
+            EqLevel::ExpRelease => e.exp_release_ms,
         }
     }
 }
@@ -1577,6 +1636,10 @@ pub fn set_level(s: SoundSettings, level: EqLevel, value: f32) -> SoundSettings 
                 EqLevel::CompRelease => e.comp_release_ms = v.clamp(10.0, 2000.0),
                 EqLevel::CompMakeup => e.comp_makeup_db = v.clamp(0.0, 24.0),
                 EqLevel::CompKnee => e.comp_knee_db = v.clamp(0.0, 24.0),
+                EqLevel::ExpThreshold => e.exp_threshold_db = v.clamp(-90.0, -10.0),
+                EqLevel::ExpRatio => e.exp_ratio = v.clamp(1.0, 20.0),
+                EqLevel::ExpAttack => e.exp_attack_ms = v.clamp(0.1, 100.0),
+                EqLevel::ExpRelease => e.exp_release_ms = v.clamp(10.0, 2000.0),
                 _ => {}
             }
             SoundSettings { effects: e, ..s }
@@ -2042,6 +2105,11 @@ mod tests {
                 comp_release_ms: 300.0,
                 comp_makeup_db: 6.0,
                 comp_knee_db: 3.0,
+                expander: true,
+                exp_threshold_db: -60.0,
+                exp_ratio: 8.0,
+                exp_attack_ms: 1.5,
+                exp_release_ms: 250.0,
             },
             replay_gain: GainMode::Album,
             preamp_db: 1.5,
@@ -2466,6 +2534,13 @@ mod tests {
         assert_eq!(value_of_special(&custom, "compressorPreset").as_deref(), Some(""), "moved: none of them");
         assert!(set_by_name(&p, "compressorPreset", "loud").is_none());
         assert_eq!(set_by_name(&p, "volumeBoostDb", "40").unwrap().prefs.volume_boost_db, 12.0);
+        // The expander: off out of the box, on by its switch, its controls held and kept in a profile.
+        assert!(p.effects().player().expander.is_none());
+        let x = set_by_name(&p, "expander", "true").unwrap().prefs;
+        assert!(x.sound_chain_on() && x.effects().player().expander == Some(nori_player::compressor::ExpanderSettings::default()));
+        assert_eq!(set_level(x.sound(), EqLevel::ExpThreshold, -200.0).effects.exp_threshold_db, -90.0);
+        let r = set_level(x.sound(), EqLevel::ExpRatio, 10.0);
+        assert_eq!(sound_from(&sound_json(&r)).unwrap().effects, r.effects);
         assert!(set_by_name(&p, "virtualizer", "0.5").unwrap().prefs.sound_chain_on());
         let l = set_by_name(&p, "eqLayout", "31").unwrap().prefs;
         assert_eq!(l.eq_graphic.len(), 31);

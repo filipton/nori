@@ -224,6 +224,7 @@ fn the_graphic_equalizer_and_the_effects_allocate_nothing() {
     let fx = crate::dsp::Effects {
         bass_boost_db: 6.0,
         compressor: Some(crate::compressor::CompressorPreset::Strong.settings()),
+        expander: Some(crate::compressor::ExpanderSettings { threshold_db: -30.0, ratio: 4.0, ..Default::default() }),
         virtualizer: 0.7,
         boost_db: 4.0,
     };

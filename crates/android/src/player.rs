@@ -70,6 +70,7 @@ pub(crate) static CLASS: Class = Class {
         native!(c"chainIn", c"(J)Z", chain_in),
         native!(c"onCpu", c"(J)Z", on_cpu),
         native!(c"gainReductionDb", c"(J)F", gain_reduction_db),
+        native!(c"compressionDb", c"(J)F", compression_db),
         native!(c"bytesWritten", c"(J)J", bytes_written),
         native!(c"event", c"(J)J", event),
         native!(c"eventText", c"(J)Ljava/lang/String;", event_text),
@@ -1554,6 +1555,11 @@ extern "system" fn on_cpu(h: jlong) -> jboolean {
 /// The limiter's meter: what it took off the last buffer through the chain, dB.
 extern "system" fn gain_reduction_db(h: jlong) -> jfloat {
     player(h).map_or(0.0, |p| p.engine.status_with(|s| s.gain_reduction_db))
+}
+
+/// The compressor's meter: what it took off the last buffer through the chain, dB.
+extern "system" fn compression_db(h: jlong) -> jfloat {
+    player(h).map_or(0.0, |p| p.engine.status_with(|s| s.compression_db))
 }
 
 extern "system" fn bytes_written(h: jlong) -> jlong {

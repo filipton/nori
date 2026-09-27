@@ -43,6 +43,24 @@ fn the_limiter_only_catches_peaks() {
 }
 
 #[test]
+fn the_compressor_meter_reads_what_it_takes_off() {
+    let song = music(20.0, 5);
+    let mut p = Player::new(vec![track("a", &song)]);
+    p.set_sound(Sound { effects: Effects { compressor: Some(CompressorPreset::Strong.settings()), ..Effects::default() }, ..limiter() });
+    p.play_from(0);
+    p.run_for(5_000);
+    let db = p.sink.compression_db();
+    assert!(db > 1.0 && db < 30.0, "a screen reads {db} dB off music through the strong preset");
+    // Without one: nothing to read, and the limiter's meter is its own.
+    let mut q = Player::new(vec![track("a", &song)]);
+    q.set_sound(limiter());
+    q.play_from(0);
+    q.run_for(5_000);
+    assert!(q.sink.chain_in());
+    assert_eq!(q.sink.compression_db(), 0.0);
+}
+
+#[test]
 fn below_its_threshold_the_limiter_changes_no_sample() {
     let song = music(10.0, 6);
     let mut p = Player::new(vec![track("a", &song)]);
@@ -202,6 +220,7 @@ fn settings_changed_while_playing_never_click() {
         ("the limiter", eq.clone(), Sound { limiter: true, ..eq.clone() }),
         ("the graphic equalizer", limiter(), Sound { graphic: vec![3.0, 6.0, 4.0, 0.0, -3.0, -3.0, 0.0, 2.0, 4.0, 4.0], ..limiter() }),
         ("the bass boost", limiter(), Sound { effects: Effects { bass_boost_db: 8.0, ..Effects::default() }, ..limiter() }),
+        ("the expander", limiter(), Sound { effects: Effects { expander: Some(nori_player::compressor::ExpanderSettings { threshold_db: -20.0, ratio: 4.0, ..Default::default() }), ..Effects::default() }, ..limiter() }),
         ("the compressor", limiter(), Sound { effects: Effects { compressor: Some(CompressorPreset::Strong.settings()), ..Effects::default() }, ..limiter() }),
         ("the virtualizer", limiter(), Sound { effects: Effects { virtualizer: 1.0, ..Effects::default() }, ..limiter() }),
         ("the volume boost", limiter(), Sound { effects: Effects { boost_db: 6.0, ..Effects::default() }, ..limiter() }),

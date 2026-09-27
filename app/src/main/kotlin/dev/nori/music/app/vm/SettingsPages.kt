@@ -56,6 +56,8 @@ sealed interface SettingRow {
     data class Button(val title: String, val action: String) : SettingRow
     /** One of a ranked list (the lyrics services), switched where it stands and picked up to move. */
     data class Ranked(val key: String, val name: String, val id: String, val title: String, val detail: String, val on: Boolean) : SettingRow
+    /** The compressor's gain reduction, read from the player only while the page is on screen. */
+    data class CompressionMeter(val key: String) : SettingRow
     /** Text typed in (a service's key), hidden when [secret]. */
     data class Text(val key: String, val name: String, val title: String, val detail: String, val value: String, val secret: Boolean) : SettingRow
 }
@@ -198,6 +200,7 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("sound", R.string.settings_virtualizer_title, R.string.settings_virtualizer_hint),
     Triple("sound", R.string.settings_volume_boost_title, 0),
     Triple("sound", R.string.settings_compressor, R.string.settings_compressor_detail),
+    Triple("sound", R.string.settings_expander, R.string.settings_expander_detail),
     Triple("sound", R.string.settings_replay_gain, R.string.settings_hint_replay_gain),
     Triple("sound", R.string.settings_untagged_gain, 0),
     Triple("sound", R.string.settings_hi_res, R.string.settings_hint_hi_res),
@@ -581,6 +584,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
             toggle("compressor", R.string.settings_compressor, R.string.settings_compressor_detail),
         )
         if (p.compressor) {
+            rows += SettingRow.CompressionMeter("compression-meter")
             rows += choice("compressorPreset", R.string.settings_compressor_preset, fallback = { str(R.string.settings_compressor_custom) }) {
                 str(when (it) { "GENTLE" -> R.string.settings_compressor_gentle; "STRONG" -> R.string.settings_compressor_strong; else -> R.string.settings_compressor_balanced })
             }
@@ -592,6 +596,14 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
             rows += SettingRow.Slider("compReleaseMs", str(R.string.settings_comp_release, p.compReleaseMs.roundToInt().toString()), p.compReleaseMs.coerceIn(10f, 1000f), 10f, 1000f, false, EqLevel.COMP_RELEASE)
             rows += SettingRow.Slider("compMakeupDb", str(R.string.settings_comp_makeup, signedDb(p.compMakeupDb)), p.compMakeupDb.coerceIn(0f, 12f), 0f, 12f, false, EqLevel.COMP_MAKEUP)
             rows += SettingRow.Slider("compKneeDb", str(R.string.settings_comp_knee, one(p.compKneeDb)), p.compKneeDb.coerceIn(0f, 12f), 0f, 12f, false, EqLevel.COMP_KNEE)
+        }
+        // The downward expander, a noise gate at a high ratio: off unless asked for.
+        rows += toggle("expander", R.string.settings_expander, R.string.settings_expander_detail)
+        if (p.expander) {
+            rows += SettingRow.Slider("expThresholdDb", str(R.string.settings_exp_threshold, minus(one(p.expThresholdDb))), p.expThresholdDb, -90f, -10f, false, EqLevel.EXP_THRESHOLD)
+            rows += SettingRow.Slider("expRatio", str(R.string.settings_exp_ratio, one(p.expRatio)), p.expRatio, 1f, 20f, false, EqLevel.EXP_RATIO)
+            rows += SettingRow.Slider("expAttackMs", str(R.string.settings_exp_attack, one(p.expAttackMs)), p.expAttackMs.coerceIn(0.1f, 50f), 0.1f, 50f, false, EqLevel.EXP_ATTACK)
+            rows += SettingRow.Slider("expReleaseMs", str(R.string.settings_exp_release, p.expReleaseMs.roundToInt().toString()), p.expReleaseMs.coerceIn(10f, 1000f), 10f, 1000f, false, EqLevel.EXP_RELEASE)
         }
         return rows
     }
