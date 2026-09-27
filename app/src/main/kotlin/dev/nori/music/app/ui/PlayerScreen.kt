@@ -237,7 +237,7 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
     // AMOLED black everywhere else, but the player keeps the cover's colours unless asked not to: in
     // black, the page under the sleeve was pure black and the picture looked cut off, where Apple's
     // carries the record's colour down the whole screen.
-    val black = remember(prefs.amoled, prefs.playerColours) { dev.nori.music.ffi.playerBlack(prefs.amoled, prefs.playerColours) }
+    val black = remember(prefs.amoled, prefs.playerColours) { dev.nori.music.ffi.pageBlack(prefs.amoled, prefs.playerColours) }
     val rowUrl = vm.cover(state.current?.coverArt, CoverSize.ROW)?.takeUnless(::isProviderCover)
     val tint = if (prefs.coverColors) rememberCoverTint(rowUrl, dark, black) else CoverTint(rowUrl, null)
     val found = tint.palette

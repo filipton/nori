@@ -30,6 +30,9 @@ data class SettingsGroup(val id: String, val title: String, val summary: String)
 /** One search result: the page it opens, the row it points at, and the line under its title. */
 data class SettingsHit(val group: String, val key: String, val title: String, val detail: String)
 
+/** One switch of a [SettingRow.Picks]: the setting it turns on and off, and what it says. */
+data class Pick(val name: String, val label: String, val on: Boolean)
+
 /** One choice in a list of options: what it says, and the value the core takes for it. */
 data class SettingOption(val label: String, val value: String)
 
@@ -58,6 +61,8 @@ sealed interface SettingRow {
     data class Ranked(val key: String, val name: String, val id: String, val title: String, val detail: String, val on: Boolean) : SettingRow
     /** The compressor's gain reduction, read from the player only while the page is on screen. */
     data class CompressionMeter(val key: String) : SettingRow
+    /** One setting made of several switches, each a place it applies to ([Pick]), shown side by side. */
+    data class Picks(val key: String, val title: String, val detail: String, val picks: List<Pick>) : SettingRow
     /** Text typed in (a service's key), hidden when [secret]. */
     data class Text(val key: String, val name: String, val title: String, val detail: String, val value: String, val secret: Boolean) : SettingRow
 }
@@ -212,7 +217,7 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("sound", R.string.settings_offload, R.string.settings_hint_offload),
     Triple("look", R.string.settings_theme, R.string.settings_hint_theme),
     Triple("look", R.string.settings_amoled, R.string.settings_hint_amoled),
-    Triple("look", R.string.settings_player_colours, R.string.settings_hint_player_colours),
+    Triple("look", R.string.settings_keep_colours, R.string.settings_hint_keep_colours),
     Triple("look", R.string.settings_wallpaper, R.string.settings_hint_wallpaper),
     Triple("look", R.string.settings_cover_colours, R.string.settings_hint_cover_colours),
     Triple("look", R.string.settings_blur, R.string.settings_hint_blur),
@@ -404,6 +409,11 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
     }
 
     fun toggle(name: String, title: Int, detail: Int, enabled: Boolean = true) = toggle(name, title, str(detail), enabled)
+
+    fun picks(title: Int, detail: Int, vararg picks: Pair<String, Int>): SettingRow.Picks {
+        val t = str(title)
+        return SettingRow.Picks(settingKey(t), t, str(detail), picks.map { (name, label) -> Pick(name, str(label), on(name)) })
+    }
 
     /** A list of the core's options for [name], each worded by [label]; [fallback] words a value no option is. */
     fun choice(name: String, title: Int, enabled: Boolean = true, fallback: (String) -> String = { it }, label: (String) -> String): SettingRow.Choice {
@@ -651,7 +661,11 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
             named("theme", R.string.settings_theme, R.string.settings_theme_system, R.string.settings_theme_light, R.string.settings_theme_dark),
             toggle("amoled", R.string.settings_amoled, R.string.settings_amoled_detail),
         )
-        if (p.amoled) theme += toggle("playerColours", R.string.settings_player_colours, R.string.settings_player_colours_detail)
+        if (p.amoled) theme += picks(
+            R.string.settings_keep_colours, R.string.settings_keep_colours_detail,
+            "artistColours" to R.string.settings_keep_colours_artist, "albumColours" to R.string.settings_keep_colours_album,
+            "playerColours" to R.string.settings_keep_colours_player,
+        )
         if (f.wallpaperColours) theme += toggle("dynamicColor", R.string.settings_wallpaper, R.string.settings_wallpaper_detail)
         if (!p.dynamicColor || !f.wallpaperColours) theme += SettingRow.Palette("accent", ACCENTS, p.accent)
         val cover = mutableListOf<SettingRow>(toggle("coverColors", R.string.settings_cover_colours, R.string.settings_cover_colours_detail))

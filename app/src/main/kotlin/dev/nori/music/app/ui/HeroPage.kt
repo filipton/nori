@@ -88,12 +88,19 @@ fun HeroPage(
      * middle, below the status bar, the way Apple shows a made-for-you mix. Used only when [coverUrl] is null.
      */
     art: (@Composable () -> Unit)? = null,
+    /**
+     * Whether this kind of page keeps its cover's colours with a black background (album and artist
+     * pages each have a setting); the others go black.
+     */
+    keepsColours: (dev.nori.music.ffi.settings.StoredPrefs) -> Boolean = { false },
     content: LazyListScope.() -> Unit,
 ) {
     val settings: SettingsViewModel = viewModel()
     val prefs by settings.prefs.collectAsStateWithLifecycle()
     val dark = when (prefs.theme) { ThemeMode.SYSTEM -> isSystemInDarkTheme(); ThemeMode.DARK -> true; ThemeMode.LIGHT -> false }
-    val palette = if (prefs.coverColors) rememberCoverPalette(coverUrl?.takeUnless(::isProviderCover), dark, prefs.amoled) else null
+    val keeps = keepsColours(prefs)
+    val black = remember(prefs.amoled, keeps) { dev.nori.music.ffi.pageBlack(prefs.amoled, keeps) }
+    val palette = if (prefs.coverColors) rememberCoverPalette(coverUrl?.takeUnless(::isProviderCover), dark, black) else null
     // Shuffle stays labelled Shuffle (never Pause); it lights while this page's queue is shuffling.
     val player: PlayerViewModel = viewModel()
     val playerState by player.state.collectAsStateWithLifecycle()
