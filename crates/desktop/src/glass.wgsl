@@ -13,6 +13,7 @@ struct U {
     shape: vec4<f32>,     // corner radius, bevel band, refraction, dispersion (pixels, pixels, pixels, ratio)
     tint: vec4<f32>,      // the glass's own colour and how much of it
     light: vec4<f32>,     // rim light, lift over dark ground; blur: direction (x, y); glass: spill, its reach (pixels)
+    gather: vec4<f32>,    // how far past the edge the glass gathers light (pixels), how much colour it keeps
 };
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -88,12 +89,30 @@ fn fs_glass(v: V) -> @location(0) vec4<f32> {
     // Glass over a dark page lifts it a little; its own colour on top.
     var col = col0 * (1.0 - u.light.y) + vec3<f32>(u.light.y);
     col = mix(col, u.tint.rgb, u.tint.a);
-    // What lies just past the nearest edge washes in, strongest at the edge and fading inwards: the pane
-    // takes the colour of what is beside it, not only at its rim.
+    // The light of what lies beside the pane washes in: gathered along a band past the nearest edge (out to
+    // `gather.x`, spread a little along the edge), the colourful parts counting for more than a plain dark
+    // ground, strongest at the edge and fading inwards over `light.w`.
     let depth = max(-d, 0.0);
-    let beyond = look(p + n * (depth + 8.0 * u.shape.y / max(u.shape.y, 1.0) + 6.0));
-    let spill = u.light.z * exp(-depth / max(u.light.w, 1.0));
-    col = mix(col, beyond * 1.08 + vec3<f32>(0.015), clamp(spill, 0.0, 1.0));
+    let along = vec2<f32>(-n.y, n.x);
+    var acc = vec3<f32>(0.0);
+    var wsum = 0.0001;
+    for (var i = 0; i < 6; i = i + 1) {
+        let t = (f32(i) + 0.5) / 6.0;
+        // Each tap spread along the edge too, so what is gathered is a soft wash, not the shapes beside.
+        let o = p + n * (depth + 6.0 + t * u.gather.x);
+        let spread = along * u.gather.x * 0.35;
+        let c = (look(o - spread) + look(o) + look(o + spread)) / 3.0;
+        let hi = max(c.r, max(c.g, c.b));
+        let lo = min(c.r, min(c.g, c.b));
+        let w = (1.0 - 0.6 * t) * (0.25 + 3.0 * (hi - lo) + hi);
+        acc += c * w;
+        wsum += w;
+    }
+    var beyond = acc / wsum;
+    let grey = dot(beyond, vec3<f32>(0.2126, 0.7152, 0.0722));
+    beyond = max(mix(vec3<f32>(grey), beyond, u.gather.y), vec3<f32>(0.0));
+    let spill = clamp(u.light.z * exp(-depth / max(u.light.w, 1.0)), 0.0, 1.0);
+    col = mix(col, beyond * 1.1 + vec3<f32>(0.02), spill);
     // The rim lit from above, brighter where what it carries is bright.
     let rim = pow(1.0 - inside, 3.0);
     let lit = 0.5 + 0.5 * dot(n, normalize(vec2<f32>(-0.35, -1.0)));

@@ -676,9 +676,9 @@ impl Draw {
         let full = uniforms([0.0, 0.0, w, h], [w, h, w, h], [0.0; 4], [0.0; 4], [0.0; 4]);
         let g = self.group(d, &gpu.queue, &full, &page, &page);
         pass(&mut enc, &target, &self.copy, &g, true);
-        let mut glass = |role: Role, shape: [f32; 4], tint: [f32; 4], light: [f32; 4], rect: [f32; 4]| {
+        let mut glass = |role: Role, shape: [f32; 4], tint: [f32; 4], light: [f32; 4], gather: [f32; 4], rect: [f32; 4]| {
             let Some(view) = find(role) else { return };
-            let u = uniforms(rect, [w, h, w, h], shape, tint, light);
+            let u = uniforms_gather(rect, [w, h, w, h], shape, tint, light, gather);
             let g = self.group(d, &gpu.queue, &u, &page, &blurred);
             pass(&mut enc, &target, &self.glass, &g, false);
             let (o, sz) = place(s, role, win);
@@ -689,13 +689,15 @@ impl Draw {
         };
         if s.sidebar_shown.get() {
             // The pane runs past the window's other edges, so only its right edge (by the page) is a rim.
-            let r = [-80.0 * scale, -80.0 * scale, (SIDEBAR_W + 80.0) * scale, h + 160.0 * scale];
-            glass(Role::Sidebar, [0.0, 28.0 * scale, 22.0 * scale, 0.12], [0.1, 0.095, 0.09, 0.22], [0.22, 0.04, 0.6, 90.0 * scale], r);
+            // Far past them: the right edge is the nearest everywhere in the pane, so all of it looks to the page.
+            let r = [-8000.0 * scale, -8000.0 * scale, (SIDEBAR_W + 8000.0) * scale, h + 16000.0 * scale];
+            // Light from as far as 220 points beside it, reaching well into the pane.
+            glass(Role::Sidebar, [0.0, 28.0 * scale, 22.0 * scale, 0.12], [0.1, 0.095, 0.09, 0.18], [0.22, 0.04, 0.55, 150.0 * scale], [220.0 * scale, 1.1, 0.0, 0.0], r);
         }
         if s.player_shown.get() {
             let (o, sz) = place(s, Role::Player, win);
             let r = [o.x * scale, o.y * scale, sz.width * scale, sz.height * scale];
-            glass(Role::Player, [PLAYER_H * 0.5 * scale, 16.0 * scale, 12.0 * scale, 0.2], [1.0, 1.0, 1.0, 0.06], [0.55, 0.05, 0.35, 16.0 * scale], r);
+            glass(Role::Player, [PLAYER_H * 0.5 * scale, 16.0 * scale, 12.0 * scale, 0.2], [1.0, 1.0, 1.0, 0.06], [0.55, 0.05, 0.4, 20.0 * scale], [40.0 * scale, 1.2, 0.0, 0.0], r);
         }
         drop(layers);
         gpu.queue.submit([enc.finish()]);
@@ -750,7 +752,11 @@ fn pass(enc: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, pipeline: &w
     p.draw(0..4, 0..1);
 }
 
-/// The shaders' uniforms, as glass.wgsl lays them out (five vec4s).
+/// The shaders' uniforms, as glass.wgsl lays them out (six vec4s); `gather` only for the glass.
 fn uniforms(rect: [f32; 4], view: [f32; 4], shape: [f32; 4], tint: [f32; 4], light: [f32; 4]) -> Vec<u8> {
-    [rect, view, shape, tint, light].iter().flatten().flat_map(|f| f.to_ne_bytes()).collect()
+    uniforms_gather(rect, view, shape, tint, light, [0.0; 4])
+}
+
+fn uniforms_gather(rect: [f32; 4], view: [f32; 4], shape: [f32; 4], tint: [f32; 4], light: [f32; 4], gather: [f32; 4]) -> Vec<u8> {
+    [rect, view, shape, tint, light, gather].iter().flatten().flat_map(|f| f.to_ne_bytes()).collect()
 }
