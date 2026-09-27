@@ -100,7 +100,7 @@ fn fs_glass(v: V) -> @location(0) vec4<f32> {
         let t = (f32(i) + 0.5) / 6.0;
         // Each tap spread along the edge too, so what is gathered is a soft wash, not the shapes beside.
         let o = p + n * (depth + 6.0 + t * u.gather.x);
-        let spread = along * u.gather.x * 0.35;
+        let spread = along * u.gather.x * 0.6;
         let c = (look(o - spread) + look(o) + look(o + spread)) / 3.0;
         let hi = max(c.r, max(c.g, c.b));
         let lo = min(c.r, min(c.g, c.b));
