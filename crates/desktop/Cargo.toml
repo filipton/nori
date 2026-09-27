@@ -1,0 +1,27 @@
+[package]
+name = "nori-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The desktop client: a native window (Slint) over the core, nori-engine and the cpal output, laid out as the terminal client is"
+
+[[bin]]
+name = "nori-desktop"
+path = "src/main.rs"
+
+[dependencies]
+nori-core = { path = "../core", default-features = false }
+nori-engine = { path = "../engine", features = ["core"] }
+nori-output-cpal = { path = "../output-cpal" }
+nori-http = { path = "../http" }
+nori-mpris = { path = "../mpris" }
+nori-covers = { path = "../covers" }
+nori-look = { path = "../look" }
+parking_lot = "0.12"
+libc = "0.2"
+# The window: Slint's own widgets drawn by femtovg over winit, native on macOS and Linux (X11 and Wayland).
+# GPL-3.0, royalty-free or commercial licences, as Slint offers them.
+slint = "1.18"
+
+[build-dependencies]
+slint-build = "1.18"

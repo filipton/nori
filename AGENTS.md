@@ -165,6 +165,13 @@ crates/cli/     Rust, desktop: nori-cli, the reference terminal client and the p
                 due), settings_view.rs the schema's rows, tests.rs the screens in a TestBackend.
                 `--script` (or `--search`, `--play`, `--wav`) is the old non-interactive player
                 (script.rs): `--download`, `--offline`, `--replay-gain`, `--hi-res`, `--mpris`.
+crates/desktop/ Rust, desktop: nori-desktop, a native window (Slint, over winit and femtovg) laid out as nori-cli
+                is: the sidebar, home's shelves, albums, artists, playlists, songs, search, album/artist/playlist
+                pages wearing their cover's colours, the now playing and queue panel over the cover's wash
+                (nori-look), and the player bar. ui/app.slint draws; app.rs is the state on Slint's event loop
+                (the engine's events and the workers' answers arrive there through `slint::invoke_from_event_loop`);
+                session.rs is the terminal's backend.rs cut to what the window uses; words.rs its English.
+                Shares its data directory with nori-cli. `cargo run --release -p nori-desktop`.
 crates/android/ Rust, Android only: the library the app loads (package nori-android, cdylib `norimusic`, so
                 libnorimusic.so): the core with its uniffi scaffolding, and the JNI doors with primitives
                 and direct buffers on every hot path. The scaffolding is JNI too: build.rs generates it
