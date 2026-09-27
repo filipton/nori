@@ -183,9 +183,9 @@ impl Build<'_> {
         let p = self.p;
         let accents: Vec<u32> = options("accent").iter().filter_map(|c| c.parse::<i64>().ok()).map(|c| c as u32).collect();
         let look = vec![
-            Row { kind: PALETTE, name: "accent".into(), title: "Accent colour".into(), swatches: accents, value: p.accent as u32 as f32, enabled: true, ..Default::default() },
-            self.toggle("coverColors", "Colours from the cover", "Pages take their colours from the artwork."),
-            self.toggle("favouriteNotice", "Confirm favourites", "A short message when you favourite or unfavourite something."),
+            Row { kind: PALETTE, name: "accent".into(), title: "Accent color".into(), swatches: accents, value: p.accent as u32 as f32, enabled: true, ..Default::default() },
+            self.toggle("coverColors", "Colors from the cover", "Pages take their colors from the artwork."),
+            self.toggle("favouriteNotice", "Confirm favorites", "A short message when you favorite or unfavorite something."),
         ];
         let mut devices = vec![("The system's own".to_string(), String::new())];
         devices.extend(self.f.devices.iter().map(|d| (d.clone(), d.clone())));

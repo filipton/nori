@@ -120,7 +120,7 @@ pub fn fill(ui: &AppWindow, p: &StoredPrefs) {
     ui.set_eq_balance(p.balance);
     ui.set_eq_balance_label(
         match (p.balance * 100.0).round() as i32 {
-            0 => "centre".to_string(),
+            0 => "center".to_string(),
             n if n < 0 => format!("L {}%", -n),
             n => format!("R {n}%"),
         }

@@ -94,7 +94,7 @@ pub enum Data {
 
 /// The home page's shelves, in order: title and album list kind (the terminal's).
 pub const HOME_ROWS: [(&str, &str); 5] =
-    [("Recently added", "newest"), ("Recently played", "recent"), ("Most played", "frequent"), ("Favourites", "starred"), ("Something random", "random")];
+    [("Recently added", "newest"), ("Recently played", "recent"), ("Most played", "frequent"), ("Favorites", "starred"), ("Something random", "random")];
 
 const ALBUM_PAGE: i32 = 500;
 
