@@ -121,6 +121,8 @@
     <string name="settings_auto_fill_basis_artist">The same artist</string>
     <string name="settings_auto_fill_basis_genre">The same genre</string>
     <string name="settings_auto_fill_basis_era">The same era</string>
+    <string name="settings_auto_fill_remote">Include remote songs</string>
+    <string name="settings_auto_fill_remote_detail">Songs not in your library yet, from the server\'s streaming providers. Each one played is downloaded into the library.</string>
     <string name="settings_skip_errors">Skip songs that won\'t play</string>
     <string name="settings_skip_errors_detail">Up to three in a row.</string>
     <string name="settings_bridge_offline">Play downloads when offline</string>
@@ -463,6 +465,7 @@
     <string name="settings_hint_auto_fill">Adds more music automatically</string>
     <string name="settings_hint_auto_fill_kind">Songs, or a whole album at a time</string>
     <string name="settings_hint_auto_fill_basis">Similar music, the same artist, genre or era</string>
+    <string name="settings_hint_auto_fill_remote">Let autoplay pick songs not in your library yet</string>
     <string name="settings_hint_skip_errors">Up to three in a row</string>
     <string name="settings_hint_bridge_offline">If the server drops, keep playing from downloads</string>
     <string name="settings_hint_autoeq_auto">Applies a known correction curve when headphones connect</string>

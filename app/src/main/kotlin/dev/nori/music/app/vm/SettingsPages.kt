@@ -192,6 +192,7 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("playing", R.string.settings_auto_fill, R.string.settings_hint_auto_fill),
     Triple("playing", R.string.settings_auto_fill_kind, R.string.settings_hint_auto_fill_kind),
     Triple("playing", R.string.settings_auto_fill_basis, R.string.settings_hint_auto_fill_basis),
+    Triple("playing", R.string.settings_auto_fill_remote, R.string.settings_hint_auto_fill_remote),
     Triple("playing", R.string.settings_skip_errors, R.string.settings_hint_skip_errors),
     Triple("playing", R.string.settings_bridge_offline, R.string.settings_hint_bridge_offline),
     Triple("sound", R.string.settings_equalizer, 0),
@@ -535,6 +536,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
                 "autoFillBasis", R.string.settings_auto_fill_basis, R.string.settings_auto_fill_basis_similar, R.string.settings_auto_fill_basis_artist,
                 R.string.settings_auto_fill_basis_genre, R.string.settings_auto_fill_basis_era,
             )
+            queue += toggle("autoFillRemote", R.string.settings_auto_fill_remote, R.string.settings_auto_fill_remote_detail)
         }
         val wrong = listOf(
             toggle("skipOnError", R.string.settings_skip_errors, R.string.settings_skip_errors_detail),

@@ -239,6 +239,22 @@ fn digest(bytes: &[u8]) -> u64 {
     h.finish()
 }
 
+/// Whether `page` lists a provider's item (octo-fiesta's `isExternal`, `ext-` and `pl-` ids). The server's
+/// answer for it moves as the provider's songs are downloaded (a song played is the library's afterwards,
+/// its cloud gone), so a stored one is shown but never young enough to skip asking again.
+fn lists_provider_items(page: &Page) -> bool {
+    let song = |s: &Song| s.is_external || crate::db::external(&s.id);
+    let album = |a: &Album| a.is_external || crate::db::external(&a.id);
+    match page {
+        Page::AlbumPage { v } => album(&v.album) || v.songs.iter().any(song),
+        Page::ArtistPage { v } => v.albums.iter().any(album),
+        Page::PlaylistPage { v } => v.songs.iter().any(song),
+        Page::Songs { v } => v.iter().any(song),
+        Page::Albums { v } => v.iter().any(album),
+        _ => false,
+    }
+}
+
 impl Client {
     fn parse(&self, parser: Parser, body: Vec<u8>) -> NetResult<Page> {
         let c = &self.core;
@@ -315,7 +331,7 @@ impl Client {
         let Some((body, ts)) = row else { return Ok(Stored { page: None, digest: None, fresh: false }) };
         let digest = Some(digest(&body));
         let page = self.parse(sp.parser, body).ok();
-        let fresh = page.is_some() && crate::db::now_ms() - ts < fresh_ms;
+        let fresh = page.as_ref().is_some_and(|p| !lists_provider_items(p)) && crate::db::now_ms() - ts < fresh_ms;
         Ok(Stored { page, digest, fresh })
     }
 
@@ -386,6 +402,26 @@ mod tests {
         c.core.db.lock().execute("UPDATE cache SET ts = 0", []).unwrap();
         fake.answer(GENRES2);
         assert_eq!(genres(&block(c.read_fetch(Read::GenreList, s.digest)).unwrap()), "Jazz");
+    }
+
+    #[test]
+    fn a_page_with_a_providers_songs_is_shown_stored_and_always_asked_again() {
+        let (c, fake) = setup();
+        let album = |ext: bool| {
+            format!(
+                r#"{{"subsonic-response":{{"status":"ok","album":{{"id":"ext-deezer-album-1","name":"A","song":[{{"id":"ext-deezer-song-1","title":"t","isExternal":{ext}}},{{"id":"s2","title":"u"}}]}}}}}}"#
+            )
+        };
+        let read = || Read::AlbumById { id: "ext-deezer-album-1".into() };
+        fake.answer(&album(true));
+        block(c.read_fetch(read(), None)).unwrap();
+        let s = c.read_stored(read()).unwrap();
+        assert!(s.page.is_some() && !s.fresh, "the provider's song may be the library's by now");
+
+        let library = r#"{"subsonic-response":{"status":"ok","album":{"id":"al-1","name":"A","song":[{"id":"s1","title":"t"}]}}}"#;
+        fake.answer(library);
+        block(c.read_fetch(Read::AlbumById { id: "al-1".into() }, None)).unwrap();
+        assert!(c.read_stored(Read::AlbumById { id: "al-1".into() }).unwrap().fresh, "the library's own keeps its window");
     }
 
     #[test]
