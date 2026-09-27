@@ -68,6 +68,14 @@ pub fn take(m: Msg) {
     with(|app| app.take(m));
 }
 
+/// The library's lists as the server gave them, before the find field narrows them.
+#[derive(Default)]
+struct Lists {
+    albums: Vec<Card>,
+    artists: Vec<Card>,
+    playlists: Vec<Card>,
+}
+
 /// The decoded covers, looked up by the pictures as they draw (`art` in app.slint). A picture not here yet
 /// is asked for once; its arrival bumps `covers-rev`, and every picture looks again.
 #[derive(Default)]
@@ -165,6 +173,9 @@ pub struct App {
     tickets: VecDeque<(String, Ticket)>,
     tick: Timer,
     tick_ms: u64,
+    /// The library's lists as the server gave them, and the text they are narrowed by.
+    lists: Lists,
+    find: String,
     /// What the settings pages show besides the settings, as last worked out.
     facts: crate::settings::Facts,
     /// The engine has its shallow buffer for the equalizer.
@@ -246,6 +257,12 @@ fn sidebar(ui: &AppWindow) -> Option<SidebarWindow> {
         }
     });
     let main = ui.as_weak();
+    side.on_open_accounts(move || {
+        if let Some(m) = main.upgrade() {
+            m.invoke_open_accounts();
+        }
+    });
+    let main = ui.as_weak();
     side.on_drag_window(move || {
         if let Some(m) = main.upgrade() {
             m.invoke_drag_window();
@@ -292,6 +309,8 @@ pub fn start(ui: &AppWindow, data: PathBuf) {
         tick: Timer::default(),
         tick_ms: 0,
         facts: crate::settings::Facts::default(),
+        lists: Lists::default(),
+        find: String::new(),
         tuning: false,
         again: Timer::default(),
         lyrics: None,
@@ -451,6 +470,19 @@ fn wire(ui: &AppWindow) {
     });
     ui.on_login(|| with(App::login));
     ui.on_cancel_login(|| with(|a| a.go(HOME)));
+    ui.on_find_edited(|t| {
+        with(|a| {
+            a.find = t.to_string();
+            a.narrowed();
+        })
+    });
+    ui.on_choose_artist(|id| with(|a| a.choose_artist(id.to_string())));
+    ui.on_open_accounts(|| {
+        with(|a| {
+            a.ui().set_settings_tab(6);
+            a.go(SETTINGS);
+        })
+    });
     ui.on_clear_queue(|| {
         with(|a| {
             a.on_session(|s| s.clear_upcoming());
@@ -545,6 +577,8 @@ impl App {
         }
         let ui = self.ui();
         ui.set_server(nori_core::settings::label(&profile.name, &profile.url).into());
+        ui.set_account(profile.user.as_str().into());
+        ui.set_account_initial(profile.user.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default().into());
         match Session::open(&self.data, self.http.clone(), profile) {
             Ok(s) => {
                 s.check();
@@ -590,6 +624,12 @@ impl App {
     // ---- pages ----
 
     fn go(&mut self, view: i32) {
+        // A new page, listed whole.
+        if !self.find.is_empty() {
+            self.find.clear();
+            self.ui().set_find_text("".into());
+            self.narrowed();
+        }
         if self.tuning && view != EQUALIZER {
             self.tuning = false;
             self.on_session(|s| s.tuning(false));
@@ -637,6 +677,11 @@ impl App {
     }
 
     fn open_page(&mut self, req: Req) {
+        if !self.find.is_empty() {
+            self.find.clear();
+            self.ui().set_find_text("".into());
+            self.narrowed();
+        }
         let ui = self.ui();
         self.page_songs.clear();
         self.page_fetch = Some(match &req {
@@ -728,14 +773,33 @@ impl App {
                     self.shelves.set_row_data(i, shelf);
                 }
             }
-            Data::Albums(v) => ui.set_albums(cards(v.iter().map(album_card))),
-            Data::Artists(v) => ui.set_artists(cards(v.iter().map(artist_card))),
-            Data::Playlists(v) => ui.set_playlists(cards(v.iter().map(|p| Card {
-                id: p.id.as_str().into(),
-                title: p.name.as_str().into(),
-                sub: words::songs(p.song_count as usize).into(),
-                art: p.cover_art.clone().unwrap_or_default().into(),
-            }))),
+            Data::Albums(v) => {
+                self.lists.albums = v.iter().map(album_card).collect();
+                self.narrowed();
+            }
+            Data::Artists(v) => {
+                self.lists.artists = v.iter().map(artist_card).collect();
+                self.narrowed();
+                // The Artists page opens on its first artist, as Music's does.
+                if ui.get_artist_chosen().is_empty() {
+                    if let Some(first) = v.first() {
+                        self.choose_artist(first.id.clone());
+                    }
+                }
+            }
+            Data::Playlists(v) => {
+                self.lists.playlists = v
+                    .iter()
+                    .map(|p| Card {
+                        id: p.id.as_str().into(),
+                        title: p.name.as_str().into(),
+                        sub: words::songs(p.song_count as usize).into(),
+                        art: p.cover_art.clone().unwrap_or_default().into(),
+                    })
+                    .collect();
+                ui.set_side_playlists(cards(self.lists.playlists.iter().cloned()));
+                self.narrowed();
+            }
             Data::Songs(v, exhausted) => {
                 self.songs.extend(v);
                 ui.set_more_songs(!exhausted);
@@ -787,9 +851,40 @@ impl App {
         self.page_colours(c.as_deref());
     }
 
+    /// Songs as rows, each keeping its place in `songs` (what a click plays), narrowed by the find field.
     fn rows(&self, songs: &[Song]) -> ModelRc<SongRow> {
         let heard = self.heard.as_deref();
-        ModelRc::new(VecModel::from(songs.iter().enumerate().map(|(i, s)| row(s, i, heard == Some(s.id.as_str()))).collect::<Vec<_>>()))
+        let find = self.find.to_lowercase();
+        let hit = |s: &Song| find.is_empty() || [&s.title, &s.artist, &s.album].iter().any(|t| t.to_lowercase().contains(&find));
+        ModelRc::new(VecModel::from(songs.iter().enumerate().filter(|(_, s)| hit(s)).map(|(i, s)| row(s, i, heard == Some(s.id.as_str()))).collect::<Vec<_>>()))
+    }
+
+    /// The lists the page shows, narrowed by the find field.
+    fn narrowed(&self) {
+        let ui = self.ui();
+        let find = self.find.to_lowercase();
+        let pick = |v: &[Card]| cards(v.iter().filter(|c| find.is_empty() || c.title.to_lowercase().contains(&find) || c.sub.to_lowercase().contains(&find)).cloned());
+        ui.set_albums(pick(&self.lists.albums));
+        ui.set_artists(pick(&self.lists.artists));
+        ui.set_playlists(pick(&self.lists.playlists));
+        ui.set_songs(self.rows(&self.songs));
+        ui.set_page_songs(self.rows(&self.page_songs));
+    }
+
+    /// An artist chosen on the Artists page: shown beside the list, without leaving it.
+    fn choose_artist(&mut self, id: String) {
+        let ui = self.ui();
+        ui.set_artist_chosen(id.as_str().into());
+        ui.set_page_kind(1);
+        ui.set_page_id(id.as_str().into());
+        ui.set_page_title("".into());
+        ui.set_page_caption("".into());
+        ui.set_page_albums(ModelRc::default());
+        self.page_songs.clear();
+        self.page_fetch = Some(Fetch::Artist(id.clone()));
+        self.load(Req::Artist(id));
+        // The list stays where it is while the artist loads.
+        ui.set_loading(false);
     }
 
     /// The lists' playing marks moved with the song heard.
@@ -1044,7 +1139,10 @@ impl App {
             sd.set_page_kind(ui.get_page_kind());
             sd.set_page_id(ui.get_page_id());
             sd.set_playlists(ui.get_playlists());
+            sd.set_side_playlists(ui.get_side_playlists());
             sd.set_server(ui.get_server());
+            sd.set_account(ui.get_account());
+            sd.set_account_initial(ui.get_account_initial());
             sd.set_covers_rev(ui.get_covers_rev());
             sd.set_inset_top(ui.get_inset_top());
         }

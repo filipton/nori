@@ -512,6 +512,11 @@ component SongLine inherits Rectangle {
     in property <int> number;
     in property <bool> show-album: true;
     in property <bool> thumb;
+    // A playlist's row: the artist in a column of its own, under its head.
+    in property <bool> table;
+    // A table's columns: what is left beside the artwork and the time, split a half, a quarter, a quarter
+    // (the playlist's heads use the same sums).
+    property <length> cols: root.width - 8px - 12px - 44px - 44px - 4 * 12px;
     in property <image> picture;
     in property <color> ink: Theme.accent;
     callback play;
@@ -574,26 +579,34 @@ component SongLine inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 horizontal-stretch: 2;
+                preferred-width: 0;
                 Text {
                     text: root.song.title;
                     color: root.song.playing ? white : Theme.text;
                     font-size: 13px;
                     overflow: elide;
                 }
-                if root.thumb || root.show-album: Text {
+                if (root.thumb || root.show-album) && !root.table: Text {
                     text: root.song.artist;
                     color: root.song.playing ? #ffffffcc : Theme.dim;
                     font-size: 13px;
                     overflow: elide;
                 }
             }
-            if root.show-album: Text {
+            if root.show-album && !root.table: Text {
                 horizontal-stretch: 1;
+                preferred-width: 0;
                 text: root.song.album;
                 color: root.song.playing ? #ffffffcc : Theme.dim;
                 font-size: 13px;
                 vertical-alignment: center;
                 overflow: elide;
+            }
+            // A table's two columns stand at fixed places (the heads use the same sums), not where the layout
+            // would share the width out.
+            if root.table: Rectangle {
+                preferred-width: 0;
+                horizontal-stretch: 2;
             }
             Text {
                 text: root.song.time;
@@ -603,6 +616,24 @@ component SongLine inherits Rectangle {
                 horizontal-alignment: right;
                 width: 44px;
             }
+        }
+        if root.table: Text {
+            x: 8px + 44px + 12px + root.cols * 0.5 + 12px;
+            width: root.cols * 0.25;
+            text: root.song.artist;
+            color: root.song.playing ? #ffffffcc : Theme.dim;
+            font-size: 13px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        if root.table: Text {
+            x: 8px + 44px + 12px + root.cols * 0.75 + 24px;
+            width: root.cols * 0.25;
+            text: root.song.album;
+            color: root.song.playing ? #ffffffcc : Theme.dim;
+            font-size: 13px;
+            vertical-alignment: center;
+            overflow: elide;
         }
         touch := TouchArea {
             double-clicked => { root.play(); }
@@ -1853,7 +1884,11 @@ component SidebarContent inherits Rectangle {
     in property <int> page-kind;
     in property <string> page-id;
     in property <[Card]> playlists;
+    in property <[Card]> side-playlists;
     in property <string> server;
+    in property <string> account;
+    in property <string> account-initial;
+    callback open-accounts();
     in property <int> covers-rev;
     in property <length> inset-top;
     pure callback art(string, int, int) -> image;
@@ -1919,7 +1954,7 @@ component SidebarContent inherits Rectangle {
                 chosen: root.view == 4;
                 clicked => { root.go(4); }
             }
-            for p in root.playlists: SideItem {
+            for p in root.side-playlists: SideItem {
                 text: p.title;
                 has-picture: true;
                 picture: root.art(p.art, 0, root.covers-rev);
@@ -1949,11 +1984,47 @@ component SidebarContent inherits Rectangle {
             chosen: root.view == 8 || root.view == 9;
             clicked => { root.go(8); }
         }
-        SideItem {
-            text: root.server;
-            icon: Icons.server;
-            chosen: root.view == 7;
-            clicked => { root.go(7); }
+        // The account: who is signed in, and where; its settings on a click.
+        Rectangle {
+            height: 40px;
+            border-radius: 9px;
+            background: aa.has-hover ? #ffffff0a : transparent;
+            HorizontalLayout {
+                padding-left: 6px;
+                spacing: 9px;
+                Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    width: 28px;
+                    height: 28px;
+                    border-radius: 14px;
+                    background: @linear-gradient(160deg, #8e8e93 0%, #5a5a5e 100%);
+                    Text {
+                        text: root.account != "" ? root.account-initial : "?";
+                        color: white;
+                        font-size: 13px;
+                        font-weight: 600;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: root.account != "" ? root.account : root.server;
+                        color: Theme.text;
+                        font-size: 13px;
+                        font-weight: 500;
+                        overflow: elide;
+                    }
+                    if root.account != "": Text {
+                        text: root.server;
+                        color: Theme.dim;
+                        font-size: 11px;
+                        overflow: elide;
+                    }
+                }
+            }
+            aa := TouchArea {
+                clicked => { root.open-accounts(); }
+            }
         }
     }
 }
@@ -2070,6 +2141,18 @@ export component AppWindow inherits Window {
     in property <bool> lyrics-synced;
     in property <string> lyrics-note;
     in property <[SettingRow]> settings;
+    // Who is signed in (the account row), and the text the page's list is narrowed by.
+    in property <string> account;
+    in property <string> account-initial;
+    callback open-accounts();
+    in-out property <string> find-text;
+    // Every playlist, for the sidebar (the Playlists page's list may be narrowed).
+    in property <[Card]> side-playlists;
+    property <string> list-name: root.view == 2 ? "Albums" : root.view == 3 ? "Artists" : root.view == 4 ? "Playlists" : root.view == 5 ? "Songs" : root.view == 6 && root.page-kind == 0 ? "Album" : root.view == 6 && root.page-kind == 2 ? "Playlist" : "";
+    callback find-edited(string);
+    // The artist chosen on the Artists page.
+    in property <string> artist-chosen;
+    callback choose-artist(string);
     // The equalizer page (view 9), from the settings.
     in property <bool> eq-on;
     in property <bool> eq-graphic;
@@ -2399,32 +2482,140 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                if root.view == 2 || root.view == 3 || root.view == 4: Fade {
-                    VerticalLayout {
-                        Heading {
-                            title: root.view == 2 ? "Albums" : root.view == 3 ? "Artists" : "Playlists";
+                if root.view == 2 || root.view == 4: Fade {
+                    Grid {
+                        y: 64px;
+                        height: parent.height - 64px;
+                        cards: root.view == 2 ? root.albums : root.playlists;
+                        rev: root.covers-rev;
+                        art(a, s, r) => { return root.art(a, s, r); }
+                        open(c) => {
+                            if root.view == 2 {
+                                root.open-album(c.id);
+                            } else {
+                                root.open-playlist(c.id);
+                            }
                         }
-                        Grid {
-                            vertical-stretch: 1;
-                            cards: root.view == 2 ? root.albums : root.view == 3 ? root.artists : root.playlists;
-                            round: root.view == 3;
-                            rev: root.covers-rev;
-                            art(a, s, r) => { return root.art(a, s, r); }
-                            open(c) => {
-                                if root.view == 2 {
-                                    root.open-album(c.id);
-                                } else if root.view == 3 {
-                                    root.open-artist(c.id);
-                                } else {
-                                    root.open-playlist(c.id);
+                        play(c) => {
+                            if root.view == 2 {
+                                root.play-album(c.id);
+                            } else {
+                                root.play-playlist(c.id);
+                            }
+                        }
+                    }
+                }
+
+                // Artists as Music lists them: every artist down the left, the one chosen on the right.
+                if root.view == 3: Fade {
+                    ListView {
+                        x: 0;
+                        y: 64px;
+                        width: 300px;
+                        height: parent.height - 64px;
+                        for a in root.artists: Rectangle {
+                            height: 52px;
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                Rectangle {
+                                    border-radius: 9px;
+                                    background: root.artist-chosen == a.id ? Theme.accent : (ar.has-hover ? Theme.hover : transparent);
+                                    HorizontalLayout {
+                                        padding-left: 10px;
+                                        padding-right: 10px;
+                                        spacing: 12px;
+                                        Art {
+                                            y: (parent.height - self.height) / 2;
+                                            width: 38px;
+                                            height: 38px;
+                                            border-radius: 19px;
+                                            source: root.art(a.art, 0, root.covers-rev);
+                                        }
+                                        Text {
+                                            text: a.title;
+                                            color: root.artist-chosen == a.id ? white : Theme.text;
+                                            font-size: 13px;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+                                    }
+                                    ar := TouchArea {
+                                        clicked => { root.choose-artist(a.id); }
+                                        double-clicked => { root.open-artist(a.id); }
+                                    }
                                 }
                             }
-                            play(c) => {
-                                if root.view == 2 {
-                                    root.play-album(c.id);
-                                } else if root.view == 4 {
-                                    root.play-playlist(c.id);
+                        }
+                    }
+                    Rectangle {
+                        x: 300px;
+                        width: 1px;
+                        background: Theme.hairline;
+                    }
+                    Flickable {
+                        x: 301px;
+                        y: 64px;
+                        width: parent.width - 301px;
+                        height: parent.height - 64px;
+                        content-height: chosen.preferred-height;
+                        chosen := VerticalLayout {
+                            width: parent.width;
+                            padding-left: 30px;
+                            padding-right: 30px;
+                            padding-top: 16px;
+                            padding-bottom: 100px;
+                            spacing: 8px;
+                            if root.artist-chosen != "": HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: root.page-title;
+                                    color: Theme.text;
+                                    font-size: 28px;
+                                    font-weight: 700;
+                                    horizontal-stretch: 1;
+                                    overflow: elide;
                                 }
+                                IconButton {
+                                    y: (parent.height - self.height) / 2;
+                                    path: Icons.play;
+                                    solid: true;
+                                    ink: Theme.accent;
+                                    base: Theme.fill;
+                                    size: 32px;
+                                    icon: 15px;
+                                    clicked => { root.play-page(false); }
+                                }
+                                IconButton {
+                                    y: (parent.height - self.height) / 2;
+                                    path: Icons.shuffle;
+                                    ink: Theme.accent;
+                                    base: Theme.fill;
+                                    size: 32px;
+                                    icon: 15px;
+                                    clicked => { root.play-page(true); }
+                                }
+                            }
+                            if root.artist-chosen != "": Text {
+                                text: root.page-caption;
+                                color: Theme.dim;
+                                font-size: 12px;
+                                font-weight: 600;
+                            }
+                            if root.artist-chosen != "": Rectangle {
+                                height: 1px;
+                                background: Theme.hairline;
+                            }
+                            if root.artist-chosen != "": Grid {
+                                height: self.content-height;
+                                pad: 0;
+                                bottom: 0;
+                                interactive: false;
+                                cards: root.page-albums;
+                                rev: root.covers-rev;
+                                art(a, s, r) => { return root.art(a, s, r); }
+                                open(c) => { root.open-album(c.id); }
+                                play(c) => { root.play-album(c.id); }
                             }
                         }
                     }
@@ -2432,8 +2623,8 @@ export component AppWindow inherits Window {
 
                 if root.view == 5: Fade {
                     VerticalLayout {
-                        Heading {
-                            title: "Songs";
+                        Rectangle {
+                            height: 56px;
                         }
                         HorizontalLayout {
                             vertical-stretch: 1;
@@ -2636,6 +2827,29 @@ export component AppWindow inherits Window {
                                 }
                                 // Only the rows on screen (and a few either side) are made: a playlist of thousands
                                 // opens as fast as one of ten.
+                                if root.page-kind == 2 && root.page-songs.length > 0: Rectangle {
+                                height: 28px;
+                                property <length> cols: self.width - 8px - 12px - 44px - 44px - 4 * 12px;
+                                for h in [{ t: "Song", x: 0, w: 0.5, g: 0 }, { t: "Artist", x: 0.5, w: 0.25, g: 1 }, { t: "Album", x: 0.75, w: 0.25, g: 2 }]: Text {
+                                    x: 8px + 44px + 12px + parent.cols * h.x + h.g * 12px;
+                                    width: parent.cols * h.w;
+                                    text: h.t;
+                                    color: Theme.dim;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    x: parent.width - 12px - 44px;
+                                    width: 44px;
+                                    text: "Time";
+                                    color: Theme.dim;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    horizontal-alignment: right;
+                                    vertical-alignment: center;
+                                }
+                            }
                                 song-rows := Rectangle {
                                     property <length> row-h: root.page-kind == 2 ? 56px : 44px;
                                     property <length> seen-from: -page-flick.content-y - self.y - 400px;
@@ -2647,14 +2861,15 @@ export component AppWindow inherits Window {
                                         if (i + 1) * song-rows.row-h > song-rows.seen-from && i * song-rows.row-h < song-rows.seen-to: SongLine {
                                             width: parent.width;
                                             song: s;
-                                            number: i + 1;
+                                            number: s.index + 1;
+                                            table: root.page-kind == 2;
                                             ink: root.page-accent;
                                             show-album: root.page-kind == 2;
                                             thumb: root.page-kind == 2;
                                             picture: root.page-kind == 2 ? root.art(s.art, 0, root.covers-rev) : root.art("", 0, 0);
-                                            play => { root.song(0, i, 0); }
-                                            next => { root.song(0, i, 1); }
-                                            later => { root.song(0, i, 2); }
+                                            play => { root.song(0, s.index, 0); }
+                                            next => { root.song(0, s.index, 1); }
+                                            later => { root.song(0, s.index, 2); }
                                         }
                                     }
                                 }
@@ -2787,6 +3002,28 @@ export component AppWindow inherits Window {
                     width: parent.width;
                     drag => { root.drag-window(); }
                     zoom => { root.zoom-window(); }
+                }
+
+                // The toolbar, as Music's: the page's name on the left where it has no big title, and a field that
+                // narrows what the page lists.
+                if root.view >= 2 && root.view <= 5: Text {
+                    x: 24px;
+                    y: 24px;
+                    text: root.list-name;
+                    color: Theme.dim;
+                    font-size: 13px;
+                    font-weight: 600;
+                }
+                if root.list-name != "": Field {
+                    x: parent.width - self.width - 16px;
+                    y: 12px;
+                    width: 226px;
+                    height: 34px;
+                    border-radius: 17px;
+                    icon: Icons.search;
+                    placeholder: "Find in " + root.list-name;
+                    text <=> root.find-text;
+                    edited(t) => { root.find-edited(t); }
                 }
 
                 // A note for a few seconds, over the page's top.
@@ -2946,7 +3183,11 @@ export component AppWindow inherits Window {
                     page-kind: root.page-kind;
                     page-id: root.page-id;
                     playlists: root.playlists;
+                    side-playlists: root.side-playlists;
                     server: root.server;
+                    account: root.account;
+                    account-initial: root.account-initial;
+                    open-accounts => { root.open-accounts(); }
                     covers-rev: root.covers-rev;
                     inset-top: root.inset-top;
                     art(a, s, r) => { return root.art(a, s, r); }
@@ -3362,7 +3603,11 @@ export component SidebarWindow inherits Window {
     in property <int> page-kind;
     in property <string> page-id;
     in property <[Card]> playlists;
+    in property <[Card]> side-playlists;
     in property <string> server;
+    in property <string> account;
+    in property <string> account-initial;
+    callback open-accounts();
     in property <int> covers-rev;
     in property <length> inset-top;
     pure callback art(string, int, int) -> image;
@@ -3375,7 +3620,11 @@ export component SidebarWindow inherits Window {
         page-kind: root.page-kind;
         page-id: root.page-id;
         playlists: root.playlists;
+        side-playlists: root.side-playlists;
         server: root.server;
+        account: root.account;
+        account-initial: root.account-initial;
+        open-accounts => { root.open-accounts(); }
         covers-rev: root.covers-rev;
         inset-top: root.inset-top;
         art(a, s, r) => { return root.art(a, s, r); }
