@@ -1,23 +1,11 @@
-//! What a record carries about itself beyond the server's fields, made when it is read (model.rs): which
-//! service a provider's item comes from, a song row's second line and an album card's subtitle. None of
-//! it is worded: they put the record's own names together with a mark (🅴, ☁) and a " · ". Anything
-//! that says something in words ("12 songs") is each client's own.
+//! What a record carries about itself beyond the server's fields, made when it is read (model.rs): a song
+//! row's second line and an album card's subtitle. None of it is worded: they put the record's own names
+//! together with a mark (🅴) and a " · ". Anything that says something in words ("12 songs") is each
+//! client's own, and so is how a provider's item is marked: which service it comes from is not shown.
 
-/// "ext-deezer-song-123" -> "Deezer": which service an octo-fiesta item comes from.
-pub fn provider_of(id: &str) -> Option<String> {
-    if !id.starts_with("ext-") && !id.starts_with("pl-") {
-        return None;
-    }
-    let name = id.split('-').nth(1)?;
-    let mut c = name.chars();
-    let first = c.next()?;
-    let cap: String = first.to_uppercase().chain(c).collect();
-    Some(if cap == "Squidwtf" { "SquidWTF".into() } else { cap })
-}
-
-/// An album card's second line: "Artist · 2019 · ☁ Deezer", each part only if there is one. The album
-/// carries it as its `subtitle`.
-pub fn album_subtitle(artist: &str, year: u32, id: &str) -> String {
+/// An album card's second line: "Artist · 2019", each part only if there is one. The album carries it
+/// as its `subtitle`.
+pub fn album_subtitle(artist: &str, year: u32) -> String {
     let mut out = String::new();
     let mut add = |s: &str| {
         if !out.is_empty() {
@@ -30,9 +18,6 @@ pub fn album_subtitle(artist: &str, year: u32, id: &str) -> String {
     }
     if year > 0 {
         add(&year.to_string());
-    }
-    if let Some(p) = provider_of(id) {
-        add(&format!("☁ {p}"));
     }
     out
 }
@@ -49,4 +34,15 @@ pub fn song_line(explicit_status: &str, artist: &str, page_artist: Option<&str>)
         out.push_str(artist);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_album_subtitle_never_names_the_provider() {
+        assert_eq!(album_subtitle("A Long Artist Name", 2019), "A Long Artist Name · 2019");
+        assert_eq!((album_subtitle("", 2019), album_subtitle("A", 0), album_subtitle("", 0)), ("2019".into(), "A".into(), String::new()));
+    }
 }

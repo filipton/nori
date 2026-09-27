@@ -135,16 +135,11 @@ pub struct Song {
     #[serde(skip)]
     #[cfg_attr(feature = "ffi", uniffi(default))]
     pub line: String,
-    /// Which service a provider's song comes from, "Deezer" ([`crate::lines::provider_of`]).
-    #[serde(skip)]
-    #[cfg_attr(feature = "ffi", uniffi(default))]
-    pub provider: Option<String>,
 }
 
 impl Song {
     fn dress(&mut self) {
         self.line = crate::lines::song_line(&self.explicit_status, &self.artist, None);
-        self.provider = crate::lines::provider_of(&self.id);
     }
 
     /// A song known only by its id, with the words a read would have given it.
@@ -192,7 +187,7 @@ pub struct Album {
     pub created: Option<String>,
     pub explicit_status: String,
     pub music_brainz_id: Option<String>,
-    /// A card's second line, "Artist · 2019 · ☁ Deezer" ([`crate::lines::album_subtitle`]), made when read.
+    /// A card's second line, "Artist · 2019" ([`crate::lines::album_subtitle`]), made when read.
     #[serde(skip)]
     #[cfg_attr(feature = "ffi", uniffi(default))]
     pub subtitle: String,
@@ -200,7 +195,7 @@ pub struct Album {
 
 impl Album {
     fn dress(&mut self) {
-        self.subtitle = crate::lines::album_subtitle(&self.artist, self.year, &self.id);
+        self.subtitle = crate::lines::album_subtitle(&self.artist, self.year);
     }
 }
 

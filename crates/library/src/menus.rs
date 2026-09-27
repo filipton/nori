@@ -22,9 +22,8 @@ pub enum SongAction {
     /// several artists, where each gets a line of its own and the line names it ("Go to A" rather than
     /// "Go to artist").
     GoToArtist { id: String, name: String, named: bool },
-    /// A provider's song: octo-fiesta fetches it into the library when it is starred. `provider` is the
-    /// service it comes from ("Deezer"), when its id says.
-    AddToLibrary { provider: Option<String> },
+    /// A provider's song: octo-fiesta fetches it into the library when it is starred.
+    AddToLibrary,
     SleepTimer,
     StartRadio,
     InstantMix,
@@ -83,7 +82,7 @@ pub fn song_menu(song: Song, starred: bool, download: SongDownload, player: bool
         add(SongAction::GoToArtist { id: id.clone(), name: song.artist.clone(), named: false }, false);
     }
     if song.is_external {
-        add(SongAction::AddToLibrary { provider: nori_model::lines::provider_of(&song.id) }, false);
+        add(SongAction::AddToLibrary, false);
     }
     if player {
         add(SongAction::SleepTimer, false);
@@ -246,7 +245,7 @@ mod tests {
             [
                 (Favourite { on: false }, false), (PlayNext, false), (AddToQueue, false), (AddToPlaylist, false), (StopDownload, false),
                 (GoToArtist { id: "a".into(), name: "A".into(), named: true }, false), (GoToArtist { id: "b".into(), name: "B".into(), named: true }, false),
-                (AddToLibrary { provider: Some("Deezer".into()) }, false), (SleepTimer, false),
+                (AddToLibrary, false), (SleepTimer, false),
                 (StartRadio, true), (Details, true),
             ]
         );

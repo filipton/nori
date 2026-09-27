@@ -353,14 +353,12 @@ impl HeroButtons {
 }
 
 /// The offer on a provider's album or playlist page, which octo-fiesta fetches whole into the library
-/// when it is starred (the client words it, "Add the whole album to the library (Deezer)").
+/// when it is starred (the client words it, "Add the whole album to the library").
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct LibraryOffer {
     /// A playlist, else an album.
     pub playlist: bool,
-    /// The service it comes from, "Deezer"; none when the id does not say.
-    pub provider: Option<String>,
 }
 
 /// The offer for the page `id`; none for the library's own.
@@ -370,7 +368,7 @@ pub fn library_offer(id: String, is_external: bool) -> Option<LibraryOffer> {
     if !is_external && !playlist {
         return None;
     }
-    Some(LibraryOffer { playlist, provider: nori_model::lines::provider_of(&id) })
+    Some(LibraryOffer { playlist })
 }
 
 /// A long list wants a way to narrow itself; one short enough to see whole does not. Kept while a
@@ -585,7 +583,7 @@ mod tests {
 
     #[test]
     fn provider_pages_offer_the_library_and_long_lists_a_filter() {
-        let offer = |playlist: bool| Some(LibraryOffer { playlist, provider: Some("Deezer".into()) });
+        let offer = |playlist: bool| Some(LibraryOffer { playlist });
         assert_eq!(library_offer("ext-deezer-album-1".into(), true), offer(false));
         assert_eq!(library_offer("pl-deezer-1".into(), false), offer(true));
         assert_eq!(library_offer("al-1".into(), false), None);

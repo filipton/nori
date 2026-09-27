@@ -469,7 +469,7 @@ their facts (`NetError::{Transport, Http, Api, Parse, Db}`, `SearchFallback`, `M
 - the credits' lines (`nori-settings::credits`): licence data, shown on the licences page as given;
 - a smart playlist definition's validation errors (`smart.rs`: "match.rules[1].op: ..."): a developer's
   JSON reader, shown in the editor as the core wrote them;
-- the album card's subtitle (`nori-model::lines::album_subtitle`, "Artist · 2019 · ☁ Deezer"): data joined
+- the album card's subtitle (`nori-model::lines::album_subtitle`, "Artist · 2019"): data joined
   with a separator, no words;
 - `Display` of the error enums, the logs, the perf report, the self test and the engine's notes on offload
   and the output (`nori-engine`): tooling, in English.
