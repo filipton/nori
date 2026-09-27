@@ -72,9 +72,12 @@ fn heard(songs: &[(&str, &[i16], f64)], prefs: &TransitionPrefs, gains: &[(&str,
     (p.sink.heard_samples(), p.app.log.clone())
 }
 
-/// The first sample where `heard` differs from `ideal`, and by how much the level is off there.
-fn first_off(heard: &[i16], ideal: &[i16]) -> Option<(usize, i32)> {
-    heard.iter().zip(ideal).position(|(h, i)| h != i).map(|k| (k / 2, (heard[k] as i32 - ideal[k] as i32).abs()))
+/// The largest difference between `heard` and `ideal` (in 16-bit steps) and the mean one: ReplayGain on the
+/// 16-bit path is dithered back to 16 bits, so a sample may land a step either side of the plain rounding the
+/// ideal was made with, never more, and never on one side more than the other.
+fn off(heard: &[i16], ideal: &[i16]) -> (i32, f64) {
+    let d: Vec<i32> = heard.iter().zip(ideal).map(|(h, i)| *h as i32 - *i as i32).collect();
+    (d.iter().map(|v| v.abs()).max().unwrap_or(0), d.iter().sum::<i32>() as f64 / d.len().max(1) as f64)
 }
 
 fn check_gain_then_mix(prefs: TransitionPrefs, what: &str) {
@@ -86,9 +89,10 @@ fn check_gain_then_mix(prefs: TransitionPrefs, what: &str) {
     let (got, _) = heard(&[("a", &a, 120.0), ("b", &b, 123.0)], &prefs, &[("a", g), ("b", 1.0)]);
     assert!(log.iter().any(|l| l.contains("mixing: the next track arrived")), "{what}: a mix was heard: {log:?}");
     assert_eq!(got.len(), ideal.len(), "{what}: the volumes leave the timing alone");
-    assert_eq!(first_off(&got, &ideal), None, "{what}: every sample as the gain-then-mix one, the end of the mix included");
-    // And so the level never steps: the largest sample-to-sample move is the ideal's own.
-    assert_eq!(max_step(&left(&got)), max_step(&left(&ideal)), "{what}");
+    let (most, mean) = off(&got, &ideal);
+    assert!(most <= 2 && mean.abs() < 0.01, "{what}: every sample as the gain-then-mix one, the end of the mix included, to the dither: {most} {mean}");
+    // And so the level never steps: the largest sample-to-sample move is the ideal's own, to the dither.
+    assert!((max_step(&left(&got)) - max_step(&left(&ideal))).abs() <= 4.0 / 32768.0, "{what}");
 }
 
 #[test]

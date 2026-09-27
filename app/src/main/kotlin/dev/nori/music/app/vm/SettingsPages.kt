@@ -439,7 +439,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
     fun playing(): List<SettingsSection> {
         val live = !s.untouched
         val between = mutableListOf<SettingRow>()
-        if (s.untouched) between += SettingRow.Note(str(if (s.untouchedByDac) R.string.settings_held_by_dac else R.string.settings_held_by_hi_res))
+        if (s.untouched) between += SettingRow.Note(str(R.string.settings_held_by_dac))
         // AutoMix plans its own transitions, so the plain crossfade gives way to it.
         if (!p.autoMix) between += choice("crossfadeSec", R.string.settings_crossfade, live) { offOr(it, ::seconds) }
         between += toggle("autoMix", R.string.settings_automix, R.string.settings_automix_detail, live)

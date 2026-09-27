@@ -827,8 +827,9 @@ fn each_song_plays_at_its_replay_gain_volume() {
     assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
     let heard = rig.heard.lock().clone();
     assert_eq!(heard.len(), a.len() + b.len(), "the volume leaves the timing alone");
-    // The volume changes on the very sample b starts at.
-    let off = heard[..a.len()].iter().zip(&a).position(|(h, s)| (*h as i32 - (*s as f64 / 2.0).round() as i32).abs() > 0);
+    // The volume changes on the very sample b starts at. Turned down, a's samples go back to 16 bits
+    // dithered: a step either side of plain rounding at most.
+    let off = heard[..a.len()].iter().zip(&a).position(|(h, s)| (*h as i32 - (*s as f64 / 2.0).round() as i32).abs() > 1);
     assert_eq!(off, None, "a at half its level, -6 dB");
     assert!(heard[a.len()..] == b[..], "b untouched at full volume");
 }
@@ -847,14 +848,42 @@ fn loud_eq() -> Settings {
 fn high_quality_output_carries_a_24_bit_song_to_a_float_device_untouched() {
     let a = music24(8.0, 9);
     let files = vec![("a".to_string(), wav24(&a), 8_000)];
-    // The equalizer is on, and stands aside: nothing may touch the samples.
-    let rig = Rig::build(files, sim::App::new(), Settings { hi_res: true, ..loud_eq() }, Extra { float: true, ..Extra::default() });
+    // Nothing in the chain is on: it hands the samples on as they are.
+    let rig = Rig::build(files, sim::App::new(), Settings { hi_res: true, ..Settings::default() }, Extra { float: true, ..Extra::default() });
     rig.engine.play_at(0, 0);
     assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
     let heard = rig.heard_f.lock().clone();
     assert_eq!(heard.len(), a.len());
     let off = heard.iter().zip(&a).position(|(h, s)| *h != *s as f32 / 8_388_608.0);
     assert_eq!(off, None, "every one of the 24 bits, in float");
+}
+
+/// High quality output with the equalizer on: the chain runs, on the song's own 24 bits in float, and what
+/// the device gets is what the chain makes of them to the 24-bit step. Through the 16-bit chain the same song
+/// lost its low byte before the equalizer saw it.
+#[test]
+fn high_quality_output_runs_the_equalizer_on_all_24_bits() {
+    let a = music24(8.0, 9);
+    let files = vec![("a".to_string(), wav24(&a), 8_000)];
+    let rig = Rig::build(files, sim::App::new(), Settings { hi_res: true, ..loud_eq() }, Extra { float: true, ..Extra::default() });
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
+    let heard = rig.heard_f.lock().clone();
+    assert!(rig.engine.status().chain, "{:?}", rig.engine.status());
+    // The same chain over the song's 24 bits here, and over the song cut to 16 bits first.
+    let chain = |x: &[f32]| {
+        let mut eq = nori_player::dsp::Equalizer::new(RATE, 2);
+        loud_eq().sound.apply(&mut eq);
+        let mut y = vec![0f32; x.len()];
+        eq.process_f32(x, &mut y);
+        y
+    };
+    let want = chain(&a.iter().map(|s| *s as f32 / 8_388_608.0).collect::<Vec<_>>());
+    let cut = chain(&a.iter().map(|s| (*s as f32 / 256.0).round_ties_even() / 32768.0).collect::<Vec<_>>());
+    assert_eq!(heard.len(), want.len());
+    let worst = |x: &[f32]| x.iter().zip(&heard).map(|(w, h)| (w - h).abs()).fold(0.0f32, f32::max) * 8_388_608.0;
+    assert!(worst(&want) <= 1.0, "to the 24-bit step: {} steps off", worst(&want));
+    assert!(worst(&cut) > 64.0, "the low byte is heard: {} 24-bit steps from the 16-bit song's", worst(&cut));
 }
 
 #[test]
@@ -1034,6 +1063,12 @@ fn at(s: &[i16], gain: f32) -> Vec<i16> {
     s.iter().map(|&v| (v as f32 * gain).round() as i16).collect()
 }
 
+/// Where `heard` is further than the dither from `ideal` (made with plain rounding): ReplayGain on the 16-bit
+/// path goes back to 16 bits through TPDF dither, a step either side, and a mix rounds once more.
+fn beyond_dither(heard: &[i16], ideal: &[i16]) -> Option<usize> {
+    heard.iter().zip(ideal).position(|(h, i)| (*h as i32 - *i as i32).abs() > 2)
+}
+
 #[test]
 fn each_song_s_replay_gain_is_on_its_own_samples_through_a_crossfade() {
     let (a, b) = (music(40.0, 2), music(40.0, 3));
@@ -1048,8 +1083,7 @@ fn each_song_s_replay_gain_is_on_its_own_samples_through_a_crossfade() {
     assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
     let heard = rig.heard.lock().clone();
     assert_eq!(heard.len(), ideal.len());
-    let off = heard.iter().zip(&ideal).position(|(h, i)| h != i);
-    assert_eq!(off, None, "every sample as a at half its level mixed into b");
+    assert_eq!(beyond_dither(&heard, &ideal), None, "every sample as a at half its level mixed into b");
 }
 
 // ---- settings changed while music plays ----
@@ -1153,7 +1187,7 @@ fn replay_gain_changed_while_playing_reaches_the_music_already_on_its_way() {
     // output like media3's insists, but scaled where it lies (`TransitionEngine::rescale`): none of it plays
     // at the old level. At most a ramp from one level to the other is allowed, a few milliseconds long.
     // The engine takes the change before the card pulls again: no sample pulled meanwhile holds either.
-    let off: Vec<usize> = (k..heard.len()).filter(|&i| heard[i] != quiet[i]).collect();
+    let off: Vec<usize> = (k..heard.len()).filter(|&i| (heard[i] as i32 - quiet[i] as i32).abs() > 1).collect();
     if let (Some(&first), Some(&last)) = (off.first(), off.last()) {
         let secs = |i: usize| i as f64 / 2.0 / RATE as f64;
         assert!(last - first < 2 * RATE as usize * 5 / 1000, "at the new level from there to the end: {:.4} s to {:.4} s is not", secs(first), secs(last));
@@ -1274,8 +1308,14 @@ fn each_song_s_replay_gain_is_on_its_own_samples_through_an_automix() {
     let ideal = run(&[("a", &qa), ("b", &qb)], &[]);
     let heard = run(&[("a", &a), ("b", &b)], &[("a", 0.5), ("b", 0.8)]);
     assert_eq!(heard.len(), ideal.len());
-    let off = heard.iter().zip(&ideal).position(|(h, i)| h != i);
-    assert_eq!(off, None, "every sample as a at half its level and b at 0.8 of it, mixed");
+    // To the dither, every sample up to the stretch: it picks where it splices by the samples themselves, so a
+    // step of dither may move a splice. From there the level says it, every tenth of a second.
+    let stretch = beyond_dither(&heard, &ideal).unwrap_or(heard.len());
+    assert!(stretch > RATE as usize * 2 * 25, "every sample as a at half its level up to the mix: {} s", stretch as f64 / 2.0 / RATE as f64);
+    let db = |x: &[i16]| 10.0 * (x.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / x.len() as f64).log10();
+    let w = RATE as usize / 5;
+    let worst = heard.chunks(w).zip(ideal.chunks(w)).map(|(h, i)| (db(h) - db(i)).abs()).fold(0.0, f64::max);
+    assert!(worst < 0.1, "every tenth of a second at the gain-then-mix level: {worst:.3} dB off");
 }
 
 #[test]
@@ -2359,15 +2399,12 @@ fn with_the_equalizer_on_the_chain_stays_in_the_path_whatever_else_the_settings_
         Settings { auto_mix: false, ..loud_eq() },
     ];
     for (k, s) in steps.into_iter().enumerate() {
-        let untouched = s.hi_res;
         rig.engine.set_settings(s);
         rig.run(1_000);
         let st = rig.engine.status();
         assert!(st.state == State::Playing && st.index == Some(0) && st.on_cpu, "{k}: {st:?}");
-        // High quality output stands the chain aside (nothing may touch the samples); otherwise it is in.
-        if !untouched {
-            assert!(st.chain, "{k}: a second after the change the chain is in the path: {st:?}");
-        }
+        // High quality output keeps the chain too, in float.
+        assert!(st.chain, "{k}: a second after the change the chain is in the path: {st:?}");
     }
     rig.engine.stop();
 }

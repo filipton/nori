@@ -623,7 +623,7 @@ class Say(private val r: Resources) {
     }
 
     /** Why nothing on the equalizer screen reaches the sound. */
-    fun eqBypass(b: EqBypass): String = r.getString(if (b == EqBypass.BIT_PERFECT) R.string.eq_bypass_bit_perfect else R.string.eq_bypass_hi_res)
+    fun eqBypass(@Suppress("UNUSED_PARAMETER") b: EqBypass): String = r.getString(R.string.eq_bypass_bit_perfect)
 
     /** Under a saved profile: which devices use it, or that choosing it loads it. */
     fun profileUse(devices: List<String>): String =

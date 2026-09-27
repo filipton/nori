@@ -292,6 +292,8 @@ pub struct TransitionEngine<C: Clone> {
     /// down as a copy of the engine's own, never as the platform's memory: what the output took only part
     /// of can still be brought to the new level ([`TransitionEngine::rescale`]).
     gain: f32,
+    /// ReplayGain's 16-bit samples go back to 16 bits through it.
+    dither: crate::dither::Dither,
 
     queue: VecDeque<Chunk>,
     pool: Vec<Vec<u8>>,
@@ -367,6 +369,7 @@ impl<C: Clone> TransitionEngine<C> {
             mix_source_id: None,
             lock_rate: true,
             gain: 1.0,
+            dither: crate::dither::Dither::new(),
             queue: VecDeque::new(),
             pool: Vec::new(),
             heard: Heard { until_us: i64::MAX, audible_us: i64::MAX, next_rate: 1.0, ..Default::default() },
@@ -669,7 +672,7 @@ impl<C: Clone> TransitionEngine<C> {
         let native = self.conv_in.unwrap_or(out);
         let scaled = (self.gain != 1.0).then(|| {
             let mut b = self.copy_of(buffer);
-            crate::pcm::scale(&mut b, native.encoding, self.gain);
+            crate::pcm::scale_dithered(&mut b, native.encoding, self.gain, native.channels, &mut self.dither);
             b
         });
         let taken = self.route(down, host, buffer, scaled.as_deref().unwrap_or(buffer), pts_us, out, native);

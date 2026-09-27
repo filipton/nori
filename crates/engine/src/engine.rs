@@ -1401,11 +1401,11 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         }
     }
 
-    /// The settings, through the audio policy Android applies: high quality output on a device that
-    /// plays float, or a DAC playing bit-perfect, keeps the samples untouched, which stands the sound
-    /// chain, silence skipping, the pinned output format, every transition and (bit-perfect) ReplayGain
-    /// down; nothing that needs the samples lets them go to the output's decoder. Songs opened from now
-    /// on are decoded for it.
+    /// The settings, through the audio policy Android applies: a DAC playing bit-perfect keeps the samples
+    /// untouched, which stands the sound chain, silence skipping, the pinned output format, every
+    /// transition and ReplayGain down; high quality output on a device that plays float runs all of them
+    /// on float samples, into a float device; nothing that needs the samples lets them go to the output's
+    /// decoder. Songs opened from now on are decoded for it.
     fn apply(&mut self, s: Settings) {
         let hi_res = s.hi_res && self.p.sink.track.takes_float();
         let bit_perfect = self.facts.bit_perfect;
@@ -1433,10 +1433,11 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         // The player starts out with the defaults' sound; the output's say is given once at least.
         let first = self.applied.is_none();
         let was = self.applied.take().unwrap_or(Applied { sound: Sound::default(), speed: (1.0, 1.0), skip_silence: false, untouched: false, bit_perfect: false, float: false });
-        if first || was.untouched != now.untouched || was.bit_perfect != now.bit_perfect {
-            // Bit-perfect: every song decoded to float, which carries 16 and 24 bits exactly, and handed
-            // to the device at its own depth.
-            self.p.tracks.encoding = if hi_res || bit_perfect { Encoding::Float } else { Encoding::Pcm16 };
+        if first || was.untouched != now.untouched || was.bit_perfect != now.bit_perfect || was.float != now.float {
+            // High quality output: every song decoded to float, which carries 16 and 24 bits exactly, the
+            // chain run on it and the device fed float. Bit-perfect: the same floats handed to the device
+            // at the song's own depth.
+            self.p.tracks.encoding = if policy.float { Encoding::Float } else { Encoding::Pcm16 };
             self.p.sink.track.exact = policy.untouched;
             self.p.gain_off = bit_perfect;
             // Wherever the samples may be touched the equalizer stays in, flat and skipped while nothing

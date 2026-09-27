@@ -12,6 +12,26 @@ Apple's own App Store screenshots and the differences closed. What is left is li
 
 ## Recently closed
 
+- **High quality output keeps the effects; the 16-bit chain dithers.** "High quality output" was treated
+  as bit-perfect (nori-player `policy.rs`): it stood the equalizer, AutoEQ, the effects, silence skipping and
+  every transition down. Now only a bit-perfect DAC is "untouched"; high quality output (`AudioPolicy.float`)
+  decodes every song to float (a 24-bit file's samples kept whole; the 16-bit path rounded them to 16 bits in
+  the demuxer), runs the whole chain in f64 on them and opens the AudioTrack for float. Silence skipping takes
+  float too (`SilenceSkipper::of`). Without the setting the chain stays 16-bit, and whatever changes the
+  samples - the chain (`Equalizer::process_i16`) and ReplayGain (`pcm::scale_dithered`) - goes back to 16 bits
+  through TPDF dither of ±1 LSB (`dither.rs`: xorshift32 per channel, mono's channels share one noise),
+  never plain rounding; a flat chain, and any sample the chain hands back on the grid, stays bit-exact.
+  A tone at -100 dBFS now comes out a tone in noise (it came out as silence), one at -90 dBFS with no
+  harmonics (plain rounding put the 5th 34 dB over the floor). Noise shaping is written and off
+  (`dither::NOISE_SHAPING`): 6.7 dB less hiss at 1-5 kHz, 5.2 dB more at the top, not worth it at a phone's
+  16-bit floor. Float is not the default with effects on: on the phone's speaker and Bluetooth the system
+  mixer rounds a float track to its 16-bit device undithered, which is worse than the dithered 16-bit track;
+  the chain itself costs the same either way (2.0 ms per second of 48 kHz stereo with a graphic EQ, a
+  compressor and the limiter, on the Mac; dither adds 3 % of that). **Not measured on a device**: the bench
+  with and without high quality output and the equalizer on (battery, "quiet", how much of a float track's
+  11.5 s the platform grants).
+
+
 - **The lyrics sync check hears the middle of the stereo image.** The vocal curve (nori-player automix/vocal.rs)
   of a stereo song is measured on its centre: the side rides in the analysis FFT's imaginary part, and each
   voice-band bin counts by how alike the channels are there (nothing under 0.6), so panned guitars drop out. On

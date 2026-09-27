@@ -237,6 +237,36 @@ fn the_graphic_equalizer_and_the_effects_allocate_nothing() {
             eq.process_i16(c, &mut y);
         }
     });
+    assert_eq!(n, 0, "16-bit, dithered");
+    // The high quality chain: the same, on floats.
+    let xf: Vec<f32> = x.iter().map(|v| *v as f32 / 32768.0).collect();
+    let mut yf = vec![0f32; CHUNK / 2];
+    let n = allocations(|| {
+        for c in xf.chunks_exact(CHUNK / 2) {
+            eq.process_f32(c, &mut yf);
+        }
+    });
+    assert_eq!(n, 0, "float");
+}
+
+#[test]
+fn float_silence_skipping_allocates_nothing_once_warm() {
+    let x: Vec<u8> = tone(20.0, 440.0).chunks_exact(2).enumerate().flat_map(|(i, c)| {
+        let v = if (i / 20_000) % 3 == 0 { 0 } else { i16::from_le_bytes([c[0], c[1]]) };
+        (v as f32 / 32768.0).to_le_bytes()
+    }).collect();
+    let mut si = SilenceSkipper::of(RATE, 2, true);
+    let mut out = Vec::with_capacity(1 << 17);
+    let mut n = 0;
+    for (i, c) in x.chunks(CHUNK * 2).enumerate() {
+        let a = allocations(|| {
+            si.process(c, &mut out);
+            out.clear();
+        });
+        if i >= 16 {
+            n += a;
+        }
+    }
     assert_eq!(n, 0);
 }
 

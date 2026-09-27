@@ -1492,21 +1492,13 @@ pub fn set_level(s: SoundSettings, level: EqLevel, value: f32) -> SoundSettings 
 pub enum EqBypass {
     /// Bit-perfect USB output is active.
     BitPerfect,
-    /// High quality output is on (and can be turned off in the settings).
-    HiRes,
 }
 
 /// Why nothing on the equalizer screen reaches the sound, or `None` when it does. Bit-perfect output
-/// and high quality output both hand the file's samples to the DAC untouched, so the whole chain is
-/// out of the path; without this the screen looks broken.
-pub fn eq_bypass(hi_res: bool, bit_perfect: bool) -> Option<EqBypass> {
-    if bit_perfect {
-        Some(EqBypass::BitPerfect)
-    } else if hi_res {
-        Some(EqBypass::HiRes)
-    } else {
-        None
-    }
+/// hands the file's samples to the DAC untouched, so the whole chain is out of the path; without this
+/// the screen looks broken. High quality output runs the chain as ever, in float.
+pub fn eq_bypass(bit_perfect: bool) -> Option<EqBypass> {
+    bit_perfect.then_some(EqBypass::BitPerfect)
 }
 
 /// What a band's label marks after its frequency (the client draws it: "1k L", "63 ↙").
@@ -1650,8 +1642,8 @@ pub fn eq_model_get() -> EqModel {
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn eq_bypass_reason(hi_res: bool, bit_perfect: bool) -> Option<EqBypass> {
-    eq_bypass(hi_res, bit_perfect)
+pub fn eq_bypass_reason(bit_perfect: bool) -> Option<EqBypass> {
+    eq_bypass(bit_perfect)
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
@@ -2125,9 +2117,8 @@ mod tests {
 
     #[test]
     fn why_the_equalizer_does_nothing() {
-        assert_eq!(eq_bypass(false, false), None);
-        assert_eq!(eq_bypass(true, true), Some(EqBypass::BitPerfect));
-        assert_eq!(eq_bypass(true, false), Some(EqBypass::HiRes));
+        assert_eq!(eq_bypass(false), None);
+        assert_eq!(eq_bypass(true), Some(EqBypass::BitPerfect));
     }
 
     #[test]

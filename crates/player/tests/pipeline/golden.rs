@@ -32,7 +32,9 @@ fn an_evening_through_the_whole_chain_sounds_exactly_as_it_did() {
     assert_eq!(heard.len(), (frames(60.0 - 12.0) + 220) * 2, "three songs less two overlaps, and the look-ahead");
     let (level, peak) = shape(&heard);
     assert!((level + 9.63).abs() < 0.01 && (peak + 1.0).abs() < 0.01, "level {level:.2} dB, peak {peak:.2} dB");
-    assert_eq!(fingerprint(&heard), 7_527_512_225_347_426_139, "level {level:.2} dB, peak {peak:.2} dB");
+    // 2026-09: the chain now dithers what it changes back to 16 bits (TPDF) instead of rounding it: every
+    // sample within a step of before, the level and the peak as they were.
+    assert_eq!(fingerprint(&heard), 13_659_055_013_481_716_151, "level {level:.2} dB, peak {peak:.2} dB");
 }
 
 #[test]

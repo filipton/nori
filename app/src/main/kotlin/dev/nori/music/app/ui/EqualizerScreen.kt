@@ -132,7 +132,7 @@ fun EqualizerScreen(vm: SettingsViewModel) {
         // Two settings switch the whole sample chain off. Without this the screen looks broken: bands
         // move, the limiter says it is on, and nothing whatsoever happens to the sound.
         val dac by vm.dac.collectAsStateWithLifecycle()
-        val bypass = remember(p.hiRes, dac.bitPerfect) { dev.nori.music.ffi.settings.eqBypassReason(p.hiRes, dac.bitPerfect)?.let(say::eqBypass) }
+        val bypass = remember(dac.bitPerfect) { dev.nori.music.ffi.settings.eqBypassReason(dac.bitPerfect)?.let(say::eqBypass) }
         if (bypass != null) Surface(
             shape = CardShape, color = MaterialTheme.colorScheme.errorContainer,
             modifier = Modifier.fillMaxWidth().padding(horizontal = Space.gutter, vertical = 8.dp),

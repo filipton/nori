@@ -328,8 +328,8 @@ impl<T: Track> Sink<T> {
 
     fn build_stages(&mut self) {
         let Some(f) = self.format else { return };
-        // media3's silence skipping takes 16-bit audio only, and stands aside for float.
-        self.silence = (self.skip_silence && f.encoding == Encoding::Pcm16).then(|| SilenceSkipper::new(f.rate, f.channels));
+        // media3's silence skipping took 16-bit audio only and stood aside for float; this one takes both.
+        self.silence = self.skip_silence.then(|| SilenceSkipper::of(f.rate, f.channels, f.encoding == Encoding::Float));
         self.speed = speed_active(self.speed_pitch.0, self.speed_pitch.1).then(|| {
             let mut s = SpeedPitch::new(f.rate, f.channels, f.encoding);
             s.set(self.speed_pitch.0, self.speed_pitch.1);
