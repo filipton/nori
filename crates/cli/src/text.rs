@@ -59,11 +59,6 @@ pub fn playlist_caption(d: &PlaylistDetail) -> String {
     songs_caption(d.songs.len() as u32, d.seconds)
 }
 
-/// A playlist's line in a list: "12 songs · 48:10".
-pub fn playlist_line(p: &nori_core::Playlist) -> String {
-    songs_caption(p.song_count, p.duration as u64)
-}
-
 /// Under an artist's name: "12 albums".
 pub fn albums(n: u32) -> String {
     count(n as u64, "album", "albums")

@@ -3,6 +3,8 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::app::Panel;
+
 /// What a key does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
@@ -18,15 +20,19 @@ pub enum Action {
     VolumeUp,
     VolumeDown,
     Search,
+    /// Focus to the next part of the window: the sidebar, the page, the panel.
     NextPane,
     PreviousPane,
     Mouse,
     Images,
     Shuffle,
     Repeat,
-    Screen(u8),
-    NextScreen,
-    PreviousScreen,
+    /// A place in the sidebar by its number: Home, Albums, Artists, Songs, Downloads, Equalizer, Settings.
+    Go(u8),
+    /// The panel on the right: what plays, the queue, the lyrics (the same again hides it).
+    Panel(Panel),
+    /// The player over the whole window, cover and lyrics.
+    Full,
     Back,
     Refresh,
     // Lists
@@ -43,9 +49,10 @@ pub enum Action {
     Star,
     PlayAll,
     ShuffleAll,
-    TabLeft,
-    TabRight,
-    // The queue
+    // Grids of albums
+    Left,
+    Right,
+    // Editing a list: the queue, the downloads, the equalizer's bands
     Remove,
     Undo,
     MoveUp,
@@ -57,15 +64,20 @@ pub enum Action {
     // Values (settings, the equalizer)
     Decrease,
     Increase,
+    // Settings: a group back or on
+    GroupBack,
+    GroupOn,
 }
 
-/// Where a binding applies. Screens are looked through first, then lists, then everything.
+/// Where a binding applies. The part in focus is looked through first, then lists, then everything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     Global,
     List,
-    Queue,
+    Grid,
+    Edit,
     Lyrics,
+    Eq,
     Values,
 }
 
@@ -74,9 +86,11 @@ impl Scope {
         match self {
             Scope::Global => "Everywhere",
             Scope::List => "Lists and pages",
-            Scope::Queue => "Queue",
+            Scope::Grid => "Albums, as cards",
+            Scope::Edit => "The queue (and downloads)",
             Scope::Lyrics => "Lyrics",
-            Scope::Values => "Settings and equalizer",
+            Scope::Eq => "Equalizer",
+            Scope::Values => "Settings",
         }
     }
 }
@@ -103,31 +117,31 @@ use KeyCode::*;
 
 pub const BINDINGS: &[Binding] = &[
     b!(Global, "space", Action::TogglePlay, "Play or pause", [(Char(' '), N)]),
-    b!(Global, "n", Action::Next, "Next song", [(Char('n'), N)]),
-    b!(Global, "p", Action::Previous, "Previous song (or the start of this one)", [(Char('p'), N)]),
-    b!(Global, "← / ,", Action::SeekBack, "Back 5 seconds", [(Left, N), (Char(','), N)]),
-    b!(Global, "→ / .", Action::SeekForward, "Forward 5 seconds", [(Right, N), (Char('.'), N)]),
-    b!(Global, "shift ← / <", Action::SeekBackLong, "Back 30 seconds", [(Left, S), (Char('<'), N), (Char('<'), S)]),
-    b!(Global, "shift → / >", Action::SeekForwardLong, "Forward 30 seconds", [(Right, S), (Char('>'), N), (Char('>'), S)]),
-    b!(Global, "+ / =", Action::VolumeUp, "Volume up", [(Char('+'), N), (Char('+'), S), (Char('='), N)]),
-    b!(Global, "-", Action::VolumeDown, "Volume down", [(Char('-'), N)]),
+    b!(Global, "n / p", Action::Next, "Next song, previous (or the start of this one)", [(Char('n'), N)]),
+    b!(Global, "", Action::Previous, "", [(Char('p'), N)]),
+    b!(Global, "← → / , .", Action::SeekBack, "Back or forward 5 seconds (in a grid ← → move: , . seek)", [(Left, N), (Char(','), N)]),
+    b!(Global, "", Action::SeekForward, "", [(Right, N), (Char('.'), N)]),
+    b!(Global, "shift ← → / < >", Action::SeekBackLong, "Back or forward 30 seconds", [(Left, S), (Char('<'), N), (Char('<'), S)]),
+    b!(Global, "", Action::SeekForwardLong, "", [(Right, S), (Char('>'), N), (Char('>'), S)]),
+    b!(Global, "+ / -", Action::VolumeUp, "Volume up or down", [(Char('+'), N), (Char('+'), S), (Char('='), N)]),
+    b!(Global, "", Action::VolumeDown, "", [(Char('-'), N)]),
     b!(Global, "s", Action::Shuffle, "Shuffle the queue on or off", [(Char('s'), N)]),
     b!(Global, "r", Action::Repeat, "Repeat: off, all, one", [(Char('r'), N)]),
     b!(Global, "/", Action::Search, "Search", [(Char('/'), N)]),
-    b!(Global, "tab", Action::NextPane, "Next pane", [(Tab, N)]),
-    b!(Global, "shift tab", Action::PreviousPane, "Previous pane", [(BackTab, S), (BackTab, N)]),
-    b!(Global, "1 … 9", Action::Screen(0), "Home, Library, Search, Queue, Playing, Lyrics, Downloads, Equalizer, Settings", [(Char('1'), N)]),
-    b!(Global, "", Action::Screen(1), "", [(Char('2'), N)]),
-    b!(Global, "", Action::Screen(2), "", [(Char('3'), N)]),
-    b!(Global, "", Action::Screen(3), "", [(Char('4'), N)]),
-    b!(Global, "", Action::Screen(4), "", [(Char('5'), N)]),
-    b!(Global, "", Action::Screen(5), "", [(Char('6'), N)]),
-    b!(Global, "", Action::Screen(6), "", [(Char('7'), N)]),
-    b!(Global, "", Action::Screen(7), "", [(Char('8'), N)]),
-    b!(Global, "", Action::Screen(8), "", [(Char('9'), N)]),
-    b!(Global, "H / L", Action::PreviousScreen, "Previous or next screen", [(Char('H'), S), (Char('H'), N)]),
-    b!(Global, "", Action::NextScreen, "", [(Char('L'), S), (Char('L'), N)]),
-    b!(Global, "esc / h / ⌫", Action::Back, "Back out of a page", [(Esc, N), (Char('h'), N), (Backspace, N)]),
+    b!(Global, "1 … 7", Action::Go(0), "Home, Albums, Artists, Songs, Downloads, Equalizer, Settings", [(Char('1'), N)]),
+    b!(Global, "", Action::Go(1), "", [(Char('2'), N)]),
+    b!(Global, "", Action::Go(2), "", [(Char('3'), N)]),
+    b!(Global, "", Action::Go(3), "", [(Char('4'), N)]),
+    b!(Global, "", Action::Go(4), "", [(Char('5'), N)]),
+    b!(Global, "", Action::Go(5), "", [(Char('6'), N)]),
+    b!(Global, "", Action::Go(6), "", [(Char('7'), N)]),
+    b!(Global, "tab / shift tab", Action::NextPane, "Sidebar, page, panel", [(Tab, N)]),
+    b!(Global, "", Action::PreviousPane, "", [(BackTab, S), (BackTab, N)]),
+    b!(Global, "N / Q / L", Action::Panel(Panel::Playing), "The panel on the right: now playing, queue, lyrics (again: hide it)", [(Char('N'), S), (Char('N'), N)]),
+    b!(Global, "", Action::Panel(Panel::Queue), "", [(Char('Q'), S), (Char('Q'), N)]),
+    b!(Global, "", Action::Panel(Panel::Lyrics), "", [(Char('L'), S), (Char('L'), N)]),
+    b!(Global, "F", Action::Full, "The player over the whole window", [(Char('F'), S), (Char('F'), N)]),
+    b!(Global, "esc / h / ⌫", Action::Back, "Back: out of a page, to the sidebar", [(Esc, N), (Char('h'), N), (Backspace, N)]),
     b!(Global, "R", Action::Refresh, "Ask the server again", [(Char('R'), S), (Char('R'), N)]),
     b!(Global, "m", Action::Mouse, "Mouse on or off (off: the terminal selects text)", [(Char('m'), N)]),
     b!(Global, "I", Action::Images, "Covers on or off", [(Char('I'), S), (Char('I'), N)]),
@@ -140,23 +154,30 @@ pub const BINDINGS: &[Binding] = &[
     b!(List, "pgup pgdn / ctrl u d", Action::PageUp, "A page up or down", [(PageUp, N), (Char('u'), C)]),
     b!(List, "", Action::PageDown, "", [(PageDown, N), (Char('d'), C)]),
     b!(List, "enter / l", Action::Open, "Open, or play from here", [(Enter, N), (Char('l'), N)]),
-    b!(List, "a", Action::Enqueue, "Add to the queue", [(Char('a'), N)]),
-    b!(List, "A", Action::PlayNext, "Play next", [(Char('A'), S), (Char('A'), N)]),
+    b!(List, "a / A", Action::Enqueue, "Add to the queue, or play next", [(Char('a'), N)]),
+    b!(List, "", Action::PlayNext, "", [(Char('A'), S), (Char('A'), N)]),
     b!(List, "x / X", Action::PlayAll, "Play the whole page, or shuffle it", [(Char('x'), N)]),
     b!(List, "", Action::ShuffleAll, "", [(Char('X'), S), (Char('X'), N)]),
     b!(List, "D", Action::Download, "Download", [(Char('D'), S), (Char('D'), N)]),
     b!(List, "f", Action::Star, "Favourite or not", [(Char('f'), N)]),
-    b!(List, "[ ]", Action::TabLeft, "Albums, artists, playlists, songs", [(Char('['), N)]),
-    b!(List, "", Action::TabRight, "", [(Char(']'), N)]),
-    b!(Queue, "enter", Action::Open, "Play this song", [(Enter, N)]),
-    b!(Queue, "d / delete", Action::Remove, "Take it out of the queue (a download: off this computer; the equalizer: the band)", [(Char('d'), N), (Delete, N)]),
-    b!(Queue, "u", Action::Undo, "Put back the song just taken out of the queue", [(Char('u'), N)]),
-    b!(Queue, "K / J", Action::MoveUp, "Move it up or down", [(Char('K'), S), (Char('K'), N)]),
-    b!(Queue, "", Action::MoveDown, "", [(Char('J'), S), (Char('J'), N)]),
+    b!(Grid, "← →", Action::Left, "Move along the row", [(Left, N)]),
+    b!(Grid, "", Action::Right, "", [(Right, N)]),
+    b!(Edit, "d / delete", Action::Remove, "Take it out (of the queue, or off this computer)", [(Char('d'), N), (Delete, N)]),
+    b!(Edit, "u", Action::Undo, "Put back the song just taken out of the queue", [(Char('u'), N)]),
+    b!(Edit, "K / J", Action::MoveUp, "Move it up or down", [(Char('K'), S), (Char('K'), N)]),
+    b!(Edit, "", Action::MoveDown, "", [(Char('J'), S), (Char('J'), N)]),
     b!(Lyrics, "[ ]", Action::Later, "Words later or sooner, for lyrics timed wrong", [(Char('['), N)]),
     b!(Lyrics, "", Action::Sooner, "", [(Char(']'), N)]),
     b!(Lyrics, "0", Action::Unnudge, "Back to their own timing", [(Char('0'), N)]),
     b!(Lyrics, "enter", Action::Open, "Play from that line", [(Enter, N)]),
+    b!(Eq, "← → / h l", Action::Left, "Choose a control or a band (seek with , and . here)", [(Left, N), (Char('h'), N)]),
+    b!(Eq, "", Action::Right, "", [(Right, N), (Char('l'), N)]),
+    b!(Eq, "↑ ↓ / k j", Action::Increase, "Change it: a band by ½ dB, a switch on or off, the next choice", [(Up, N), (Char('k'), N)]),
+    b!(Eq, "", Action::Decrease, "", [(Down, N), (Char('j'), N)]),
+    b!(Eq, "enter", Action::Open, "Switch, choose presets, add a band, back to flat", [(Enter, N)]),
+    b!(Eq, "d / delete", Action::Remove, "Remove the band (parametric)", [(Char('d'), N), (Delete, N)]),
+    b!(Values, "[ ]", Action::GroupBack, "The group before or after", [(Char('['), N)]),
+    b!(Values, "", Action::GroupOn, "", [(Char(']'), N)]),
     b!(Values, "← → / h l", Action::Decrease, "Change the value (seek with , and . here)", [(Left, N), (Char('h'), N)]),
     b!(Values, "", Action::Increase, "", [(Right, N), (Char('l'), N)]),
     b!(Values, "enter", Action::Open, "Switch, choose or open", [(Enter, N)]),
@@ -190,7 +211,8 @@ mod tests {
         assert_eq!(action(&right, &[Scope::Global]), Some(Action::SeekForward));
         assert_eq!(action(&right, &[Scope::Values, Scope::List, Scope::Global]), Some(Action::Increase));
         assert_eq!(action(&key(Char('h'), N), &[Scope::List, Scope::Global]), Some(Action::Back));
-        assert_eq!(action(&key(Char('d'), N), &[Scope::Queue, Scope::List, Scope::Global]), Some(Action::Remove));
+        assert_eq!(action(&key(Char('d'), N), &[Scope::Edit, Scope::List, Scope::Global]), Some(Action::Remove));
+        assert_eq!(action(&key(Left, N), &[Scope::Grid, Scope::List, Scope::Global]), Some(Action::Left));
         assert_eq!(action(&key(Char('G'), S), &[Scope::List, Scope::Global]), Some(Action::Bottom));
     }
 

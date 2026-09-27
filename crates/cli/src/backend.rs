@@ -332,9 +332,14 @@ fn login_error(e: &str) -> String {
 }
 
 /// The client's own settings, kept beside the app's in the database (`app_kv`).
+/// How a card's small cover is named among the pictures: `thumb:<cover id>`.
+pub const THUMB: &str = "thumb:";
+
 pub mod own {
     pub const MOUSE: &str = "tui.mouse";
     pub const IMAGES: &str = "tui.images";
+    /// Small covers on the album cards, besides the large one playing.
+    pub const CARD_COVERS: &str = "tui.cardCovers";
     pub const VOLUME: &str = "tui.volume";
     /// The output device opened at start, by name; none or empty for the system's own.
     pub const DEVICE: &str = "tui.device";
@@ -741,9 +746,18 @@ impl Session {
     /// The cover at `url`, decoded at `size` pixels a side, with the page's colours worked out from it
     /// (on the loader's worker, not the screen's thread) when `colours`.
     pub fn cover(&self, art: String, size: u32, colours: bool) -> Option<nori_covers::loader::Ticket> {
+        self.cover_as(art.clone(), art, size, colours)
+    }
+
+    /// A small cover for an album card, handed over as `thumb:<id>` so it is kept apart from the large one.
+    pub fn thumb(&self, art: String, size: u32) -> Option<nori_covers::loader::Ticket> {
+        self.cover_as(art.clone(), format!("{THUMB}{art}"), size, false)
+    }
+
+    fn cover_as(&self, id: String, art: String, size: u32, colours: bool) -> Option<nori_covers::loader::Ticket> {
         let loader = self.covers.as_ref()?;
         let tx = self.tx.clone();
-        let url = self.core.cover_address(art.clone(), size);
+        let url = self.core.cover_address(id, size);
         Some(loader.request(&url, size, size, move |r| {
             let Ok(image) = r else { return };
             let colours = colours.then(|| Box::new(derive(&image)));

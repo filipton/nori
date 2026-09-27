@@ -14,15 +14,18 @@ use nori_http::Http;
 use ratatui::crossterm::event::{self, Event as TermEvent};
 use ratatui_image::picker::Picker;
 
-use crate::app::{App, Cmd, Screen};
+use crate::app::{App, Cmd, View};
 use crate::art::{protocol_name, Art, COVER_PX};
 use crate::backend::{own, Msg, Open, Session};
 use crate::Options;
 
 /// Reads the terminal on a thread of its own, blocked until a key, a click, a paste or a resize.
 fn read_input(tx: Sender<Msg>) {
-    let _ = std::thread::Builder::new().name("nori-input".into()).spawn(move || loop {
+    let _ = std::thread::Builder::new().name("nori-input".into()).spawn(move || {
+        let mut replies = Replies::default();
+        loop {
         let msg = match event::read() {
+            Ok(TermEvent::Key(k)) if replies.swallows(&k) => continue,
             Ok(TermEvent::Key(k)) => Msg::Key(k),
             Ok(TermEvent::Mouse(m)) => Msg::Mouse(m),
             Ok(TermEvent::Paste(p)) => Msg::Paste(p),
@@ -34,11 +37,50 @@ fn read_input(tx: Sender<Msg>) {
         if tx.send(msg).is_err() {
             return;
         }
+        }
     });
 }
 
-/// How long the terminal is given to say which pictures it draws.
-const QUERY_MS: u64 = 1000;
+/// A terminal's answer to a question asked of it (the pictures it draws: kitty's `ESC _ G … ESC \`, a
+/// DCS `ESC P … ESC \`, an OSC `ESC ] … BEL`) that comes in after the asking gave up waiting - over
+/// ssh it easily does - is read by crossterm as keys: alt+_, then G, i, =, 3, 1… each of them a binding
+/// (the volume up, another page). Such an answer is dropped whole: from its opening alt+_ / alt+P /
+/// alt+] to its end, or a moment later, or after as many characters as an answer has.
+#[derive(Default)]
+pub(crate) struct Replies {
+    since: Option<(Instant, usize)>,
+}
+
+impl Replies {
+    pub(crate) fn swallows(&mut self, k: &ratatui::crossterm::event::KeyEvent) -> bool {
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+        let alt = k.modifiers.contains(KeyModifiers::ALT);
+        if let Some((at, n)) = &mut self.since {
+            *n += 1;
+            let over = at.elapsed() > std::time::Duration::from_millis(300) || *n > 512;
+            let end = (alt && k.code == KeyCode::Char('\\')) || k.code == KeyCode::Char('\x07') || (k.code == KeyCode::Char('g') && k.modifiers.contains(KeyModifiers::CONTROL));
+            if end || over {
+                self.since = None;
+            }
+            return !over || end;
+        }
+        if alt && matches!(k.code, KeyCode::Char('_' | 'P' | ']')) {
+            self.since = Some((Instant::now(), 0));
+            return true;
+        }
+        false
+    }
+}
+
+/// How long the terminal is given to say which pictures it draws: longer over ssh, where the answer has
+/// the network to cross twice.
+fn query_ms() -> u64 {
+    if std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_TTY").is_some() {
+        2500
+    } else {
+        1000
+    }
+}
 
 /// Asks the terminal which graphics protocol it speaks and how large its cells are (ratatui-image).
 /// A terminal that does not answer leaves the query's reader waiting on stdin, where it would take
@@ -54,7 +96,7 @@ fn query_picker() -> (Picker, bool) {
     let t0 = Instant::now();
     let query = || {
         let mut o = ratatui_image::picker::cap_parser::QueryStdioOptions::default();
-        o.timeout = std::time::Duration::from_millis(QUERY_MS);
+        o.timeout = std::time::Duration::from_millis(query_ms());
         Picker::from_query_stdio_with_options(o).unwrap_or_else(|_| Picker::halfblocks())
     };
     let tmux_sixel = (crate::term::in_tmux() && crate::term::tmux_draws_sixel())
@@ -62,7 +104,7 @@ fn query_picker() -> (Picker, bool) {
         .filter(|p| p.protocol_type() == ratatui_image::picker::ProtocolType::Sixel);
     let kept_by_tmux = tmux_sixel.is_some();
     let picker = tmux_sixel.unwrap_or_else(query);
-    if t0.elapsed() >= std::time::Duration::from_millis(QUERY_MS) {
+    if t0.elapsed() >= std::time::Duration::from_millis(query_ms()) {
         let mut out = std::io::stdout();
         let _ = out.write_all(b"\x1b[c");
         let _ = out.flush();
@@ -85,6 +127,8 @@ struct Runner {
     picker: Option<Picker>,
     /// The tickets of covers on their way: dropped, a cover no longer wanted is not fetched.
     tickets: Vec<nori_covers::loader::Ticket>,
+    /// The same for the album cards' small covers, a few screens of them.
+    thumb_tickets: Vec<nori_covers::loader::Ticket>,
     /// The song the screen last showed as heard, so the engine is only asked about it when it moved.
     heard: Option<String>,
     /// The whole screen, pictures included, is to be written again at the next draw.
@@ -165,19 +209,20 @@ pub fn run(o: Options) -> Result<(), String> {
     let mut app = App::new(prefs.clone());
     app.mouse = mouse;
     app.images = images;
+    app.card_covers = own::flag(own::CARD_COVERS, true);
     app.offline = o.offline;
     app.volume = own::number(own::VOLUME, 1.0);
     app.protocol = picker.as_ref().map_or("off", |p| protocol_name(p.protocol_type()));
     app.settings.own.data = o.data.display().to_string();
     app.settings.own.device = own::text(own::DEVICE).unwrap_or_default();
     let art = picker.clone().map(Art::new);
-    let mut r = Runner { http: Http::new(), tx, session: None, art, picker, tickets: Vec::new(), heard: None, repaint: false, focused: true, unseen_cover: false, said: Said::default(), o };
+    let mut r = Runner { http: Http::new(), tx, session: None, art, picker, tickets: Vec::new(), thumb_tickets: Vec::new(), heard: None, repaint: false, focused: true, unseen_cover: false, said: Said::default(), o };
     match prefs.servers.iter().find(|s| s.id == prefs.active_server_id).cloned() {
         Some(p) => r.open(&mut app, p),
-        None => app.screen = Screen::Login,
+        None => app.view = View::Login,
     }
-    if app.screen != Screen::Login {
-        app.go(Screen::Home);
+    if app.view != View::Login {
+        app.go(View::Home);
     }
     let result = r.run(&mut app, &mut terminal, rx);
     if let Some(s) = r.session.take() {
@@ -215,13 +260,13 @@ impl Runner {
                 self.said = Said::default();
                 // Every screen starts again for the new server.
                 let prefs = app.prefs.clone();
-                let keep = (app.mouse, app.images, app.volume, app.protocol, app.offline, app.server.clone(), app.settings.own.data.clone());
+                let keep = (app.mouse, app.images, app.card_covers, app.volume, app.protocol, app.offline, app.server.clone(), app.settings.own.data.clone());
                 *app = App::new(prefs);
-                (app.mouse, app.images, app.volume, app.protocol, app.offline, app.server, app.settings.own.data) = keep;
+                (app.mouse, app.images, app.card_covers, app.volume, app.protocol, app.offline, app.server, app.settings.own.data) = keep;
                 self.follow(app);
             }
             Err(e) => {
-                app.screen = Screen::Login;
+                app.view = View::Login;
                 app.login.error = Some(e);
             }
         }
@@ -249,7 +294,9 @@ impl Runner {
                 }
                 let art = self.art.as_mut();
                 terminal.draw(|f| crate::ui::draw(f, app, art)).map_err(|e| e.to_string())?;
-                crate::term::debug!("drew {:?}: {:?} {:?} at {} ms, song {:?}", app.screen, app.now.state, self.heard, app.now.position_ms, app.song.as_ref().map(|s| &s.title));
+                // What drawing found missing (the cards' covers on screen) is asked for now.
+                self.carry_out(app);
+                crate::term::debug!("drew {:?}: {:?} {:?} at {} ms, song {:?}", app.view, app.now.state, self.heard, app.now.position_ms, app.song.as_ref().map(|s| &s.title));
                 app.dirty = false;
             }
             let now = Instant::now();
@@ -314,7 +361,7 @@ impl Runner {
                 settings_store::settings_put(prefs.clone());
                 app.prefs_changed(prefs);
                 self.open(app, p.clone());
-                app.go(Screen::Home);
+                app.go(View::Home);
                 return;
             }
             _ => {}
@@ -353,7 +400,7 @@ impl Runner {
             self.said = Said::default();
         }
         match now {
-            Some(now) => app.now = now,
+            Some(now) => app.follow_now(now),
             None if id_changed.is_some() => {
                 app.now.position_ms = 0;
                 app.now.at = at;
@@ -378,7 +425,7 @@ impl Runner {
             }
             app.queue = Some(v);
         }
-        if app.screen == Screen::Playing {
+        if app.transition_shown() {
             if let Some(id) = &self.heard {
                 let note = nori_core::automix::planner::transition_note(id);
                 if note != app.transition {
@@ -387,7 +434,7 @@ impl Runner {
                 app.mixed_in = if app.now.mixing { nori_core::automix::planner::transition_into(id) } else { None };
             }
         }
-        if app.screen == Screen::Lyrics {
+        if app.lyrics_shown() {
             self.lyrics_step(app);
         }
     }
@@ -433,7 +480,15 @@ impl Runner {
                 app.say(&format!("Output device: {said}, from the next start"), false);
                 return;
             }
+            Cmd::CardCovers(on) => {
+                own::keep(own::CARD_COVERS, on.to_string());
+                app.card_covers = on;
+                app.settings.invalidate();
+                app.say(if on { "Covers on album cards" } else { "No covers on album cards" }, false);
+                return;
+            }
             Cmd::Images(on) => {
+                app.thumbs_asked.clear();
                 own::keep(own::IMAGES, on.to_string());
                 app.images = on;
                 app.settings.invalidate();
@@ -445,6 +500,7 @@ impl Runner {
                 if !on {
                     self.art = None;
                     self.tickets.clear();
+                    self.thumb_tickets.clear();
                 }
                 app.say(if on { "Covers on (from the next song or page; restart to fetch covers again)" } else { "Covers off" }, false);
                 return;
@@ -463,7 +519,7 @@ impl Runner {
                 settings_store::settings_put(prefs.clone());
                 app.prefs_changed(prefs);
                 self.open(app, p);
-                app.go(Screen::Home);
+                app.go(View::Home);
                 return;
             }
             _ => {}
@@ -580,7 +636,15 @@ impl Runner {
                     }
                 }
             }
-            Cmd::Quit | Cmd::Mouse(_) | Cmd::Images(_) | Cmd::Device(_) | Cmd::Login(_) | Cmd::SwitchServer(_) => {}
+            Cmd::Thumb(art) => {
+                if let Some(t) = s.thumb(art, crate::art::THUMB_PX) {
+                    self.thumb_tickets.push(t);
+                    if self.thumb_tickets.len() > 150 {
+                        drop(self.thumb_tickets.remove(0));
+                    }
+                }
+            }
+            Cmd::Quit | Cmd::Mouse(_) | Cmd::Images(_) | Cmd::CardCovers(_) | Cmd::Device(_) | Cmd::Login(_) | Cmd::SwitchServer(_) => {}
         }
     }
 

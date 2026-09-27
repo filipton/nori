@@ -1,7 +1,12 @@
-//! The screen's state and what input does to it. Nothing here waits or talks to the network: input
+//! The window's state and what input does to it. Nothing here waits or talks to the network: input
 //! and answers come in as [`Msg`]s, and what has to happen outside - playing, reading, changing a
 //! setting - goes out as [`Cmd`]s the runner carries out. So the whole of it runs in a test with no
 //! server, no sound card and no terminal.
+//!
+//! The window is laid out as a desktop music player's: a sidebar of places on the left (search, home,
+//! the library, the playlists), the page in the middle, a panel on the right (what plays, the queue or
+//! the lyrics) and the player along the bottom. One of the three has the keys ([`Focus`]); tab moves
+//! them on.
 
 use std::time::{Duration, Instant};
 
@@ -23,35 +28,91 @@ use crate::keys::{action, Action, Scope};
 use crate::lyrics::SongLyrics;
 use crate::settings_view::SettingsView;
 
-/// The screens, in the order of the tabs and the number keys.
+/// What the page in the middle shows, under whatever album, artist or playlist was opened over it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Screen {
+pub enum View {
     Home,
-    Library,
     Search,
-    Queue,
-    Playing,
-    Lyrics,
+    Albums,
+    Artists,
+    Songs,
     Downloads,
     Equalizer,
     Settings,
-    /// The login form: not a tab, shown until a server is set up and whenever one is added.
+    /// The login form: over the whole window, until a server is set up and whenever one is added.
     Login,
 }
 
-pub const SCREENS: [(Screen, &str); 9] = [
-    (Screen::Home, "Home"),
-    (Screen::Library, "Library"),
-    (Screen::Search, "Search"),
-    (Screen::Queue, "Queue"),
-    (Screen::Playing, "Playing"),
-    (Screen::Lyrics, "Lyrics"),
-    (Screen::Downloads, "Downloads"),
-    (Screen::Equalizer, "Equalizer"),
-    (Screen::Settings, "Settings"),
-];
+/// The places the number keys go to, in order.
+pub const GO: [View; 7] = [View::Home, View::Albums, View::Artists, View::Songs, View::Downloads, View::Equalizer, View::Settings];
 
-pub const LIB_TABS: [&str; 4] = ["Albums", "Artists", "Playlists", "Songs"];
+/// The part of the window that has the keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    Side,
+    Main,
+    Panel,
+}
+
+/// What the panel on the right shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Panel {
+    Playing,
+    Queue,
+    Lyrics,
+}
+
+pub const PANELS: [(Panel, &str); 3] = [(Panel::Playing, "Playing"), (Panel::Queue, "Queue"), (Panel::Lyrics, "Lyrics")];
+
+/// A place in the sidebar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Nav {
+    Search,
+    Home,
+    Albums,
+    Artists,
+    Songs,
+    Downloads,
+    /// A playlist, by its place in the library's list.
+    Playlist(usize),
+    Equalizer,
+    Settings,
+}
+
+impl Nav {
+    pub fn icon(self) -> &'static str {
+        match self {
+            Nav::Search => "⌕",
+            Nav::Home => "⌂",
+            Nav::Albums => "◫",
+            Nav::Artists => "◉",
+            Nav::Songs => "♪",
+            Nav::Downloads => "↓",
+            Nav::Playlist(_) => "≡",
+            Nav::Equalizer => "≋",
+            Nav::Settings => "✱",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Nav::Search => "Search",
+            Nav::Home => "Home",
+            Nav::Albums => "Albums",
+            Nav::Artists => "Artists",
+            Nav::Songs => "Songs",
+            Nav::Downloads => "Downloads",
+            Nav::Playlist(_) => "",
+            Nav::Equalizer => "Equalizer",
+            Nav::Settings => "Settings",
+        }
+    }
+}
+
+/// The sidebar's places above the playlists, and below them.
+pub const NAV_TOP: [Nav; 2] = [Nav::Search, Nav::Home];
+pub const NAV_LIBRARY: [Nav; 4] = [Nav::Albums, Nav::Artists, Nav::Songs, Nav::Downloads];
+pub const NAV_BOTTOM: [Nav; 2] = [Nav::Equalizer, Nav::Settings];
 
 /// What the runner carries out.
 #[derive(Debug, Clone, PartialEq)]
@@ -95,6 +156,10 @@ pub enum Cmd {
     Lyrics(String),
     /// A cover by its id (`cover_art`); `colours` works out the page's colours from it too.
     Cover { art: String, colours: bool },
+    /// An album card's small cover, by its id.
+    Thumb(String),
+    /// The album cards' covers on or off.
+    CardCovers(bool),
     Login(SavedServer),
     SwitchServer(String),
     Quit,
@@ -207,9 +272,10 @@ impl<T> Load<T> {
     }
 }
 
-/// A page opened from a list: an album, an artist, a playlist.
+/// A page opened over the view: an album, an artist, a playlist.
 pub enum Page {
     Album { id: String, detail: Load<Box<AlbumDetail>>, sel: Sel },
+    /// Its albums as cards.
     Artist { id: String, detail: Load<Box<ArtistDetail>>, sel: Sel },
     Playlist { id: String, detail: Load<Box<PlaylistDetail>>, sel: Sel },
 }
@@ -247,7 +313,7 @@ impl Page {
     }
 }
 
-/// What a list row is, for the keys that act on "the thing selected".
+/// What a row or a card is, for the keys that act on "the thing selected".
 #[derive(Debug, Clone)]
 pub enum Item {
     Song(Vec<Song>, usize),
@@ -256,56 +322,68 @@ pub enum Item {
     Playlist(Playlist),
 }
 
-/// The home page: its shelves, each filled as it comes.
+/// The home page: its shelves of albums, each filled as it comes, each moved along on its own.
 #[derive(Default)]
 pub struct Home {
+    /// By HOME_ROWS' order; None until it came.
     pub rows: Vec<Option<(&'static str, Vec<Album>)>>,
     pub error: Option<String>,
-    pub sel: Sel,
     pub asked: bool,
-}
-
-/// A row of the home page, flattened: a shelf's title or one of its albums.
-pub enum HomeRow<'a> {
-    Title(&'a str),
-    Album(&'a Album),
+    /// The shelf selected, by HOME_ROWS' order.
+    pub shelf: usize,
+    /// On each shelf, the album selected and the first one shown.
+    pub pos: Vec<usize>,
+    pub left: Vec<usize>,
+    /// The first shelf shown.
+    pub top: usize,
 }
 
 impl Home {
-    pub fn flat(&self) -> Vec<HomeRow<'_>> {
-        let mut out = Vec::new();
-        for (title, albums) in self.rows.iter().flatten() {
-            if albums.is_empty() {
-                continue;
-            }
-            out.push(HomeRow::Title(title));
-            out.extend(albums.iter().map(HomeRow::Album));
+    /// The shelves with something on them: their place, title and albums.
+    pub fn shelves(&self) -> Vec<(usize, &'static str, &[Album])> {
+        self.rows.iter().enumerate().filter_map(|(i, r)| r.as_ref().filter(|(_, v)| !v.is_empty()).map(|(t, v)| (i, *t, v.as_slice()))).collect()
+    }
+
+    /// The album selected, if any.
+    pub fn album(&self) -> Option<&Album> {
+        let (_, v) = self.rows.get(self.shelf)?.as_ref()?;
+        v.get(*self.pos.get(self.shelf)?)
+    }
+
+    /// The selection onto a shelf with something on it, the nearest the way it went.
+    fn settle(&mut self, down: bool) {
+        let full: Vec<usize> = self.shelves().iter().map(|s| s.0).collect();
+        if full.is_empty() || full.contains(&self.shelf) {
+            return;
         }
-        out
+        self.shelf = if down { full.iter().find(|&&s| s > self.shelf).or(full.last()) } else { full.iter().rev().find(|&&s| s < self.shelf).or(full.first()) }.copied().unwrap_or(0);
+    }
+
+    fn step_shelf(&mut self, d: isize) {
+        let full: Vec<usize> = self.shelves().iter().map(|s| s.0).collect();
+        let Some(at) = full.iter().position(|&s| s == self.shelf) else { return self.settle(d > 0) };
+        self.shelf = full[(at as isize + d).clamp(0, full.len() as isize - 1) as usize];
+    }
+
+    fn step_along(&mut self, d: isize) {
+        let len = self.rows.get(self.shelf).and_then(|r| r.as_ref()).map_or(0, |r| r.1.len());
+        if let Some(p) = self.pos.get_mut(self.shelf) {
+            *p = (*p as isize + d).clamp(0, len.saturating_sub(1) as isize) as usize;
+        }
     }
 }
 
 #[derive(Default)]
 pub struct Library {
-    pub tab: usize,
     pub albums: Load<Vec<Album>>,
     pub albums_more: bool,
+    pub albums_sel: Sel,
     pub artists: Load<Vec<Artist>>,
+    pub artists_sel: Sel,
     pub playlists: Load<Vec<Playlist>>,
     pub songs: Load<Vec<Song>>,
     pub songs_more: bool,
-    pub sels: [Sel; 4],
-}
-
-impl Library {
-    pub fn len(&self, tab: usize) -> usize {
-        match tab {
-            0 => self.albums.ready().map_or(0, Vec::len),
-            1 => self.artists.ready().map_or(0, Vec::len),
-            2 => self.playlists.ready().map_or(0, Vec::len),
-            _ => self.songs.ready().map_or(0, Vec::len),
-        }
-    }
+    pub songs_sel: Sel,
 }
 
 #[derive(Default)]
@@ -313,21 +391,49 @@ pub struct Search {
     pub text: String,
     pub editing: bool,
     pub view: Option<SearchView>,
-    /// 0 artists, 1 albums, 2 songs.
-    pub pane: usize,
-    pub sels: [Sel; 3],
+    /// Over the rows of the results, their titles among them.
+    pub sel: Sel,
     /// When the server is asked, once typing has paused.
     pub ask_at: Option<Instant>,
 }
 
+/// A row of the search's results: a section's title, or one of its songs, albums or artists.
+pub enum SearchRow<'a> {
+    Title(&'static str, usize),
+    Song(&'a Song),
+    Album(&'a Album),
+    Artist(&'a Artist),
+}
+
 impl Search {
-    pub fn len(&self, pane: usize) -> usize {
-        let Some(r) = self.view.as_ref().and_then(|v| v.shown.as_ref()) else { return 0 };
-        match pane {
-            0 => r.artists.len(),
-            1 => r.albums.len(),
-            _ => r.songs.len(),
+    /// The results as one list: songs, then albums, then artists, each under its title.
+    pub fn rows(&self) -> Vec<SearchRow<'_>> {
+        let mut out = Vec::new();
+        let Some(r) = self.view.as_ref().and_then(|v| v.shown.as_ref()) else { return out };
+        if !r.songs.is_empty() {
+            out.push(SearchRow::Title("Songs", r.songs.len()));
+            out.extend(r.songs.iter().map(SearchRow::Song));
         }
+        if !r.albums.is_empty() {
+            out.push(SearchRow::Title("Albums", r.albums.len()));
+            out.extend(r.albums.iter().map(SearchRow::Album));
+        }
+        if !r.artists.is_empty() {
+            out.push(SearchRow::Title("Artists", r.artists.len()));
+            out.extend(r.artists.iter().map(SearchRow::Artist));
+        }
+        out
+    }
+
+    /// The selection off a title, onto the row the way it went.
+    fn settle(&mut self, down: bool) {
+        let rows = self.rows();
+        let title = |i: usize| matches!(rows.get(i), Some(SearchRow::Title(..)));
+        let mut at = self.sel.at;
+        if title(at) {
+            at = if (down || at == 0) && at + 1 < rows.len() { at + 1 } else { at.saturating_sub(1) };
+        }
+        self.sel.at = at;
     }
 }
 
@@ -384,34 +490,56 @@ pub enum Overlay {
 /// Where a click lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hit {
-    Tab(usize),
-    LibTab(usize),
-    /// A row of a list, by its index in that list.
+    /// A place in the sidebar, by its index in [`App::nav`].
+    Nav(usize),
+    /// A row or a card of a list, by its index in that list.
     Row(ListRef, usize),
     /// A list's area, for the wheel.
     List(ListRef),
     Seek,
+    Volume,
     Button(Button),
     SearchField,
     LoginField(usize),
+    /// A group in the settings' index, by GROUPS' order.
+    Group(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListRef {
-    Home,
-    Library,
+    Side,
+    /// A shelf of the home page, by HOME_ROWS' order.
+    Shelf(usize),
+    Albums,
+    Artists,
+    Songs,
+    Search,
     Page,
-    Search(usize),
-    Queue,
-    Lyrics,
     Downloads,
-    Groups,
-    Rows,
+    Settings,
     Eq,
+    Queue,
+    UpNext,
+    Lyrics,
     Profiles,
     Picker,
     Help,
-    UpNext,
+}
+
+impl ListRef {
+    /// The part of the window the list is in.
+    fn focus(self) -> Focus {
+        match self {
+            ListRef::Side => Focus::Side,
+            ListRef::Queue | ListRef::UpNext | ListRef::Lyrics => Focus::Panel,
+            _ => Focus::Main,
+        }
+    }
+
+    /// Whether a single click opens what it lands on (a card, a place), as a desktop player's does.
+    fn opens_on_click(self) -> bool {
+        matches!(self, ListRef::Shelf(_) | ListRef::Albums | ListRef::Artists)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -421,22 +549,61 @@ pub enum Button {
     Next,
     Shuffle,
     Repeat,
-    VolumeDown,
-    VolumeUp,
+    Panel(Panel),
+    Full,
     PlayAll,
     ShuffleAll,
+    /// The page's album or artist a favourite, or not.
+    Star,
+    /// The page's album, artist or playlist downloaded.
+    Download,
+    /// The song heard a favourite, or not.
+    StarSong,
     Back,
     Help,
     Connect,
 }
 
+/// What the last frame had room for beside the page, and how many cards its grid had in a row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Shown {
+    pub side: bool,
+    pub panel: bool,
+    pub cols: usize,
+}
+
+impl Default for Shown {
+    fn default() -> Self {
+        Shown { side: true, panel: true, cols: 4 }
+    }
+}
+
+/// A drag in the player bar.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Drag {
+    /// The seek bar, where it is as a share of the song.
+    Seek(f32),
+    Volume,
+    /// An equalizer band's slider, by its place among the equalizer's controls.
+    Band(usize),
+}
+
 pub struct App {
-    pub screen: Screen,
-    /// Pages opened, each over the screen it was opened from.
-    pub pages: Vec<(Screen, Page)>,
+    pub view: View,
+    /// Pages opened over the view, the last on top.
+    pub pages: Vec<Page>,
+    pub focus: Focus,
+    /// The place in the sidebar that is open.
+    pub root: Nav,
+    pub side: Sel,
     pub home: Home,
     pub library: Library,
     pub search: Search,
+    /// The panel on the right, or None when it is put away.
+    pub panel: Option<Panel>,
+    /// The player over the whole window.
+    pub full: bool,
+    pub shown: Shown,
     pub queue: Option<PlaylistView>,
     pub queue_sel: Sel,
     /// The id of the song last taken out of the queue here, for `u` to put back.
@@ -462,11 +629,17 @@ pub struct App {
     /// The heard song's cover, by id.
     pub cover_art: Option<String>,
     pub colours: Option<Box<CoverColours>>,
+    /// The colours the cover dresses the player in (the panel, the full player); the rest of the window
+    /// keeps the terminal's own with the accent chosen.
     pub theme: Theme,
     pub prefs: StoredPrefs,
     pub volume: f32,
     pub mouse: bool,
     pub images: bool,
+    /// Small covers on the album cards (with covers on at all).
+    pub card_covers: bool,
+    /// The cards' covers asked for already, so each is asked once.
+    pub thumbs_asked: std::collections::HashSet<String>,
     /// The image protocol in use, in words, for the settings page.
     pub protocol: &'static str,
     pub server: String,
@@ -478,13 +651,18 @@ pub struct App {
     pub dirty: bool,
     pub quit: bool,
     /// The engine was asked for the equalizer's shallow buffer ([`App::sound_edited`]): asked back when
-    /// the equalizer screen closes or the equalizer is switched off.
+    /// the equalizer closes or is switched off.
     pub tuning: bool,
-    /// The sound was changed on the equalizer screen since it was opened.
+    /// The sound was changed on the equalizer since it was opened.
     pub touched: bool,
-    /// A drag on the seek bar: where it is, as a share of the song.
-    pub scrub: Option<f32>,
+    pub drag: Option<Drag>,
+    /// A seek asked for and when: the engine's status says the place before it for a few frames, and is
+    /// not believed over it until it gets there.
+    pub seek_hold: Option<(i64, Instant)>,
+    /// Where the equalizer's sliders run, top row and height, for a click or a drag on one.
+    pub eq_track: (u16, u16),
     pub seek_rect: Rect,
+    pub volume_rect: Rect,
     /// The last left click, for a second click on the same row.
     last_click: Option<(Hit, Instant)>,
 }
@@ -492,11 +670,17 @@ pub struct App {
 impl App {
     pub fn new(prefs: StoredPrefs) -> App {
         App {
-            screen: Screen::Home,
+            view: View::Home,
             pages: Vec::new(),
+            focus: Focus::Main,
+            root: Nav::Home,
+            side: Sel { at: 1, top: 0 },
             home: Home::default(),
             library: Library::default(),
             search: Search::default(),
+            panel: Some(Panel::Playing),
+            full: false,
+            shown: Shown::default(),
             queue: None,
             queue_sel: Sel::default(),
             taken: None,
@@ -523,6 +707,8 @@ impl App {
             volume: 1.0,
             mouse: true,
             images: true,
+            card_covers: true,
+            thumbs_asked: std::collections::HashSet::new(),
             protocol: "none",
             server: String::new(),
             offline: false,
@@ -534,8 +720,11 @@ impl App {
             quit: false,
             tuning: false,
             touched: false,
-            scrub: None,
+            drag: None,
+            seek_hold: None,
+            eq_track: (0, 0),
             seek_rect: Rect::default(),
+            volume_rect: Rect::default(),
             last_click: None,
         }
     }
@@ -562,72 +751,125 @@ impl App {
         };
     }
 
+    /// Whether the lyrics are on screen (or about to be): the panel's, or the full player's.
+    pub fn lyrics_shown(&self) -> bool {
+        self.full || self.panel == Some(Panel::Lyrics)
+    }
+
+    /// Whether how the next song comes in is on screen: the panel's now playing, or the full player's.
+    pub fn transition_shown(&self) -> bool {
+        self.full || self.panel == Some(Panel::Playing)
+    }
+
     // ---- going places ----
 
-    pub fn go(&mut self, screen: Screen) {
-        if screen != Screen::Equalizer {
+    /// The sidebar's places: search and home, the library, each playlist, the equalizer and settings.
+    pub fn nav(&self) -> Vec<Nav> {
+        let playlists = self.library.playlists.ready().map_or(0, Vec::len);
+        let mut v = Vec::with_capacity(8 + playlists);
+        v.extend(NAV_TOP);
+        v.extend(NAV_LIBRARY);
+        v.extend((0..playlists).map(Nav::Playlist));
+        v.extend(NAV_BOTTOM);
+        v
+    }
+
+    /// A view, opened from the sidebar or a number key: whatever was opened over the one before is closed.
+    pub fn go(&mut self, view: View) {
+        if view != View::Equalizer {
             self.touched = false;
         }
-        self.screen = screen;
+        self.view = view;
+        self.pages.clear();
+        self.full = false;
         self.tune();
         self.dirty = true;
-        match screen {
-            Screen::Home if !self.home.asked => {
+        self.root = match view {
+            View::Home | View::Login => Nav::Home,
+            View::Search => Nav::Search,
+            View::Albums => Nav::Albums,
+            View::Artists => Nav::Artists,
+            View::Songs => Nav::Songs,
+            View::Downloads => Nav::Downloads,
+            View::Equalizer => Nav::Equalizer,
+            View::Settings => Nav::Settings,
+        };
+        if let Some(i) = self.nav().iter().position(|n| *n == self.root) {
+            self.side.at = i;
+        }
+        self.want_playlists();
+        let l = &mut self.library;
+        match view {
+            View::Home if !self.home.asked => {
                 self.home.asked = true;
                 self.home.rows = (0..HOME_ROWS.len()).map(|_| None).collect();
+                self.home.pos = vec![0; HOME_ROWS.len()];
+                self.home.left = vec![0; HOME_ROWS.len()];
                 self.cmds.push(Cmd::Load(Req::Home));
             }
-            Screen::Library => self.library_tab(self.library.tab),
-            Screen::Downloads => self.cmds.push(Cmd::Load(Req::Downloads)),
-            Screen::Settings => {
-                if !self.settings.facts_asked {
-                    self.settings.facts_asked = true;
-                    self.cmds.push(Cmd::Load(Req::Facts));
-                }
+            View::Albums if matches!(l.albums, Load::Idle) => {
+                l.albums = Load::Loading;
+                self.cmds.push(Cmd::Load(Req::Albums { offset: 0 }));
             }
-            // The queue opens on the song playing.
-            Screen::Queue => {
-                let current = self.queue.as_ref().map_or(-1, |q| q.index);
-                if let Some(row) = self.queue_order().iter().position(|&i| i as i32 == current) {
-                    self.queue_sel.at = row;
-                }
+            View::Artists if matches!(l.artists, Load::Idle) => {
+                l.artists = Load::Loading;
+                self.cmds.push(Cmd::Load(Req::Artists));
             }
-            Screen::Lyrics => self.want_lyrics(),
-            Screen::Search if self.search.view.is_none() => self.search.editing = true,
+            View::Songs if matches!(l.songs, Load::Idle) => {
+                l.songs = Load::Loading;
+                self.cmds.push(Cmd::Load(Req::Songs { offset: 0 }));
+            }
+            View::Downloads => self.cmds.push(Cmd::Load(Req::Downloads)),
+            View::Settings if !self.settings.facts_asked => {
+                self.settings.facts_asked = true;
+                self.cmds.push(Cmd::Load(Req::Facts));
+            }
+            View::Search if self.search.view.is_none() => self.search.editing = true,
             _ => {}
         }
     }
 
-    fn library_tab(&mut self, tab: usize) {
-        self.library.tab = tab;
-        self.dirty = true;
-        let l = &mut self.library;
-        let asked = match tab {
-            0 => matches!(l.albums, Load::Idle).then(|| {
-                l.albums = Load::Loading;
-                Req::Albums { offset: 0 }
-            }),
-            1 => matches!(l.artists, Load::Idle).then(|| {
-                l.artists = Load::Loading;
-                Req::Artists
-            }),
-            2 => matches!(l.playlists, Load::Idle).then(|| {
-                l.playlists = Load::Loading;
-                Req::Playlists
-            }),
-            _ => matches!(l.songs, Load::Idle).then(|| {
-                l.songs = Load::Loading;
-                Req::Songs { offset: 0 }
-            }),
-        };
-        if let Some(r) = asked {
-            self.cmds.push(Cmd::Load(r));
+    /// The playlists, for the sidebar: asked for once.
+    fn want_playlists(&mut self) {
+        if matches!(self.library.playlists, Load::Idle) && self.view != View::Login {
+            self.library.playlists = Load::Loading;
+            self.cmds.push(Cmd::Load(Req::Playlists));
+        }
+    }
+
+    /// A place in the sidebar opened; the keys go to the page.
+    fn open_nav(&mut self, n: Nav) {
+        self.focus = Focus::Main;
+        match n {
+            Nav::Search => {
+                self.go(View::Search);
+                self.search.editing = true;
+            }
+            Nav::Home => self.go(View::Home),
+            Nav::Albums => self.go(View::Albums),
+            Nav::Artists => self.go(View::Artists),
+            Nav::Songs => self.go(View::Songs),
+            Nav::Downloads => self.go(View::Downloads),
+            Nav::Equalizer => self.go(View::Equalizer),
+            Nav::Settings => self.go(View::Settings),
+            Nav::Playlist(i) => {
+                let Some(id) = self.library.playlists.ready().and_then(|v| v.get(i)).map(|p| p.id.clone()) else { return };
+                self.pages.clear();
+                self.full = false;
+                self.open_playlist(id);
+                self.root = n;
+            }
+        }
+        if let Some(i) = self.nav().iter().position(|x| *x == n) {
+            self.side.at = i;
         }
     }
 
     fn open_page(&mut self, page: Page) {
         self.cmds.push(Cmd::Load(page.req()));
-        self.pages.push((self.screen, page));
+        self.pages.push(page);
+        self.focus = Focus::Main;
+        self.full = false;
         self.dirty = true;
     }
 
@@ -643,36 +885,63 @@ impl App {
         self.open_page(Page::Playlist { id, detail: Load::Loading, sel: Sel::default() });
     }
 
-    /// Pages open over the screens that list things.
-    pub fn page_shown(&self) -> bool {
-        self.page().is_some()
-    }
-
-    /// The page open over this screen, if one is.
+    /// The page open over the view, if one is.
     pub fn page(&self) -> Option<&Page> {
-        let screen = self.screen;
-        self.pages.iter().rev().find(|(s, _)| *s == screen).map(|(_, p)| p)
+        self.pages.last()
     }
 
     fn page_mut(&mut self) -> Option<&mut Page> {
-        let screen = self.screen;
-        self.pages.iter_mut().rev().find(|(s, _)| *s == screen).map(|(_, p)| p)
+        self.pages.last_mut()
     }
 
-    fn pop_page(&mut self) -> bool {
-        let screen = self.screen;
-        match self.pages.iter().rposition(|(s, _)| *s == screen) {
-            Some(i) => {
-                self.pages.remove(i);
-                true
+    /// The panel shown (or put away when it already shows that); the queue and the lyrics take the keys.
+    pub fn set_panel(&mut self, p: Panel) {
+        let there = self.panel == Some(p) && (self.shown.panel || self.focus == Focus::Panel);
+        self.full = false;
+        if there {
+            if self.shown.panel {
+                self.panel = None;
             }
-            None => false,
+            if self.focus == Focus::Panel {
+                self.focus = Focus::Main;
+            }
+            return;
+        }
+        self.panel = Some(p);
+        match p {
+            // The queue opens on the song playing.
+            Panel::Queue => {
+                let current = self.queue.as_ref().map_or(-1, |q| q.index);
+                if let Some(row) = self.queue_order().iter().position(|&i| i as i32 == current) {
+                    self.queue_sel.at = row;
+                }
+                self.focus = Focus::Panel;
+            }
+            Panel::Lyrics => {
+                self.want_lyrics();
+                self.focus = Focus::Panel;
+            }
+            Panel::Playing if !self.shown.panel => self.focus = Focus::Panel,
+            Panel::Playing => {}
         }
     }
 
-    fn clear_pages(&mut self) {
-        let screen = self.screen;
-        self.pages.retain(|(s, _)| *s != screen);
+    fn toggle_full(&mut self) {
+        self.full = !self.full;
+        if self.full {
+            self.want_lyrics();
+        }
+    }
+
+    /// The keys on to the next part of the window (or the one before).
+    fn cycle(&mut self, forward: bool) {
+        let mut parts = vec![Focus::Side, Focus::Main];
+        if self.panel.is_some() {
+            parts.push(Focus::Panel);
+        }
+        let at = parts.iter().position(|f| *f == self.focus).unwrap_or(1);
+        let n = parts.len();
+        self.focus = parts[if forward { (at + 1) % n } else { (at + n - 1) % n }];
     }
 
     fn want_lyrics(&mut self) {
@@ -726,6 +995,7 @@ impl App {
             Msg::Search(v) => {
                 if v.query == self.search.text.trim() {
                     self.search.view = Some(v);
+                    self.search.settle(true);
                 }
             }
             Msg::Note { text, error } => self.say(text, error),
@@ -777,6 +1047,7 @@ impl App {
             return;
         }
         self.transition = None;
+        self.seek_hold = None;
         let art = self.song.as_ref().and_then(|s| s.cover_art.clone());
         if art != self.cover_art {
             self.colours = None;
@@ -786,7 +1057,7 @@ impl App {
         if let Some(art) = art {
             self.cmds.push(Cmd::Cover { art, colours: true });
         }
-        if self.screen == Screen::Lyrics {
+        if self.lyrics_shown() {
             self.want_lyrics();
         } else {
             self.lyrics = None;
@@ -801,6 +1072,7 @@ impl App {
                     *slot = Some((title, albums));
                 }
                 self.home.error = None;
+                self.home.settle(true);
             }
             (Req::Home, Err(e)) => self.home.error = Some(e),
             (Req::Albums { offset }, Ok(Data::Albums(v))) => {
@@ -816,7 +1088,14 @@ impl App {
             (Req::Albums { .. }, Err(e)) => self.library.albums = Load::Failed(e),
             (Req::Artists, Ok(Data::Artists(v))) => self.library.artists = Load::Ready(v),
             (Req::Artists, Err(e)) => self.library.artists = Load::Failed(e),
-            (Req::Playlists, Ok(Data::Playlists(v))) => self.library.playlists = Load::Ready(v),
+            (Req::Playlists, Ok(Data::Playlists(v))) => {
+                // The sidebar keeps the place selected where it was among the places around the playlists.
+                let was = self.nav().get(self.side.at).copied();
+                self.library.playlists = Load::Ready(v);
+                if let Some(i) = was.and_then(|n| self.nav().iter().position(|x| *x == n)) {
+                    self.side.at = i;
+                }
+            }
             (Req::Playlists, Err(e)) => self.library.playlists = Load::Failed(e),
             (Req::Songs { offset }, Ok(Data::Songs(v, exhausted))) => {
                 self.library.songs_more = !exhausted;
@@ -839,7 +1118,7 @@ impl App {
             (Req::Facts, Ok(Data::Facts(f))) => self.settings.set_facts(*f),
             (Req::Facts, Err(_)) => {}
             (req, r) => {
-                for (_, page) in self.pages.iter_mut().rev() {
+                for page in self.pages.iter_mut().rev() {
                     if page.req() != req {
                         continue;
                     }
@@ -876,7 +1155,7 @@ impl App {
             let pos = self.now.position(now).max(0);
             let left = 1000 - pos % 1000;
             sooner(now + Duration::from_millis((left as f32 / self.now.speed.max(0.1)) as u64 + 5));
-            if self.screen == Screen::Lyrics {
+            if self.lyrics_shown() {
                 if let Some(t) = self.lyrics_wake {
                     sooner(t);
                 }
@@ -906,7 +1185,7 @@ impl App {
         }
         if self.downloads_at.is_some_and(|t| t <= now) {
             self.downloads_at = None;
-            if self.screen == Screen::Downloads {
+            if self.view == View::Downloads {
                 self.cmds.push(Cmd::Load(Req::Downloads));
             }
         }
@@ -914,14 +1193,37 @@ impl App {
 
     // ---- keys ----
 
+    /// Whether the lyrics take the list keys: the full player, or the lyrics panel in focus.
+    fn lyrics_focused(&self) -> bool {
+        self.full || (self.focus == Focus::Panel && self.panel == Some(Panel::Lyrics))
+    }
+
+    /// Whether the page in focus is laid out as cards.
+    fn grid_focused(&self) -> bool {
+        self.focus == Focus::Main
+            && match self.page() {
+                Some(p) => matches!(p, Page::Artist { .. }),
+                None => matches!(self.view, View::Home | View::Albums),
+            }
+    }
+
     fn scopes(&self) -> &'static [Scope] {
-        match self.screen {
-            Screen::Queue if !self.page_shown() => &[Scope::Queue, Scope::List, Scope::Global],
-            Screen::Downloads => &[Scope::Queue, Scope::List, Scope::Global],
-            Screen::Lyrics => &[Scope::Lyrics, Scope::List, Scope::Global],
-            Screen::Equalizer => &[Scope::Values, Scope::Queue, Scope::List, Scope::Global],
-            Screen::Settings if self.settings.pane == 1 && self.settings.adjustable() => &[Scope::Values, Scope::List, Scope::Global],
-            _ => &[Scope::List, Scope::Global],
+        if self.lyrics_focused() {
+            return &[Scope::Lyrics, Scope::List, Scope::Global];
+        }
+        match self.focus {
+            Focus::Side => &[Scope::List, Scope::Global],
+            Focus::Panel if self.panel == Some(Panel::Queue) => &[Scope::Edit, Scope::List, Scope::Global],
+            Focus::Panel => &[Scope::List, Scope::Global],
+            Focus::Main if self.grid_focused() => &[Scope::Grid, Scope::List, Scope::Global],
+            Focus::Main if self.page().is_some() => &[Scope::List, Scope::Global],
+            Focus::Main => match self.view {
+                View::Downloads => &[Scope::Edit, Scope::List, Scope::Global],
+                View::Equalizer => &[Scope::Eq, Scope::List, Scope::Global],
+                View::Settings if self.settings.adjustable() => &[Scope::Values, Scope::List, Scope::Global],
+                View::Settings => &[Scope::Values, Scope::List, Scope::Global],
+                _ => &[Scope::List, Scope::Global],
+            },
         }
     }
 
@@ -938,11 +1240,11 @@ impl App {
             self.overlay_key(k);
             return;
         }
-        if self.screen == Screen::Login {
+        if self.view == View::Login {
             self.login_key(k);
             return;
         }
-        if self.screen == Screen::Search && self.search.editing {
+        if self.view == View::Search && self.search.editing && !self.full {
             self.search_key(k);
             return;
         }
@@ -957,9 +1259,13 @@ impl App {
         let text: String = text.chars().filter(|c| !c.is_control()).collect();
         if let Some(Overlay::Input { text: t, .. }) = &mut self.overlay {
             t.push_str(&text);
-        } else if self.screen == Screen::Login {
+        } else if self.view == View::Login {
             self.login.fields[self.login.focus].push_str(&text);
-        } else if self.screen == Screen::Search {
+        } else {
+            if self.view != View::Search {
+                self.go(View::Search);
+            }
+            self.focus = Focus::Main;
             self.search.editing = true;
             self.search.text.push_str(&text);
             self.typed();
@@ -970,7 +1276,8 @@ impl App {
         self.cmds.push(Cmd::SearchTyped(self.search.text.clone()));
         let delay = self.prefs.live_search_delay_ms.clamp(100, 2000) as u64;
         self.search.ask_at = (!self.search.text.trim().is_empty()).then(|| Instant::now() + Duration::from_millis(delay));
-        self.search.sels = Default::default();
+        self.search.sel = Sel::default();
+        self.search.settle(true);
     }
 
     fn search_key(&mut self, k: KeyEvent) {
@@ -978,15 +1285,14 @@ impl App {
             KeyCode::Esc => self.search.editing = false,
             KeyCode::Enter | KeyCode::Down | KeyCode::Tab => {
                 self.search.editing = false;
+                self.focus = Focus::Main;
                 // The query acted on is remembered, and the server asked now rather than after the pause.
                 if k.code == KeyCode::Enter && !self.search.text.trim().is_empty() {
                     self.search.ask_at = None;
                     self.cmds.push(Cmd::SearchServer(self.search.text.trim().to_string()));
                 }
-                // The first pane with something in it.
-                if let Some(p) = (0..3).rev().find(|p| self.search.len(*p) > 0) {
-                    self.search.pane = if self.search.len(2) > 0 { 2 } else { p };
-                }
+                self.search.sel = Sel::default();
+                self.search.settle(true);
             }
             KeyCode::Backspace => {
                 self.search.text.pop();
@@ -1035,7 +1341,7 @@ impl App {
             KeyCode::Enter => self.connect(),
             KeyCode::Esc => {
                 if !self.prefs.servers.is_empty() {
-                    self.screen = Screen::Settings;
+                    self.view = View::Settings;
                 } else {
                     self.quit = true;
                 }
@@ -1132,10 +1438,7 @@ impl App {
             Action::SeekForwardLong => self.seek_by(30_000, now),
             Action::VolumeUp => self.set_volume(self.volume + 0.05),
             Action::VolumeDown => self.set_volume(self.volume - 0.05),
-            Action::Search => {
-                self.go(Screen::Search);
-                self.search.editing = true;
-            }
+            Action::Search => self.open_nav(Nav::Search),
             Action::Mouse => {
                 self.mouse = !self.mouse;
                 self.cmds.push(Cmd::Mouse(self.mouse));
@@ -1161,27 +1464,17 @@ impl App {
                 self.cmds.push(Cmd::Repeat(next));
                 self.say(["Repeat off", "Repeat one", "Repeat all"][next as usize], false);
             }
-            Action::Screen(n) => {
-                if let Some((s, _)) = SCREENS.get(n as usize) {
-                    if self.screen == *s {
-                        self.clear_pages();
-                    }
-                    self.go(*s);
+            Action::Go(n) => {
+                if let Some(v) = GO.get(n as usize) {
+                    self.go(*v);
+                    self.focus = Focus::Main;
                 }
             }
-            Action::NextScreen | Action::PreviousScreen => {
-                let at = SCREENS.iter().position(|(s, _)| *s == self.screen).unwrap_or(0);
-                let n = SCREENS.len();
-                let to = if a == Action::NextScreen { (at + 1) % n } else { (at + n - 1) % n };
-                self.go(SCREENS[to].0);
-            }
+            Action::Panel(p) => self.set_panel(p),
+            Action::Full => self.toggle_full(),
+            Action::NextPane | Action::PreviousPane => self.cycle(a == Action::NextPane),
             Action::Back => self.back(),
             Action::Refresh => self.refresh(),
-            Action::NextPane | Action::PreviousPane => self.pane(a == Action::NextPane),
-            Action::TabLeft | Action::TabRight if self.screen == Screen::Library && !self.page_shown() => {
-                let t = if a == Action::TabRight { (self.library.tab + 1) % 4 } else { (self.library.tab + 3) % 4 };
-                self.library_tab(t);
-            }
             Action::Sooner | Action::Later | Action::Unnudge => {
                 if let Some(l) = &self.lyrics {
                     let dir = match a {
@@ -1194,23 +1487,29 @@ impl App {
                     self.say(if ms == 0 { "Lyrics on their own timing".to_string() } else { format!("Lyrics {}", crate::text::nudge(ms)) }, false);
                 }
             }
+            Action::GroupBack | Action::GroupOn if self.view == View::Settings => {
+                let g = self.settings.group_at() as isize + if a == Action::GroupOn { 1 } else { -1 };
+                let last = crate::settings_view::GROUPS.len() as isize - 1;
+                self.settings.jump(g.clamp(0, last) as usize);
+            }
+            Action::GroupBack | Action::GroupOn => self.dirty = false,
             Action::Decrease | Action::Increase => {
                 let up = a == Action::Increase;
-                match self.screen {
-                    Screen::Equalizer => self.eq_step(up),
-                    Screen::Settings => {
+                match self.view {
+                    View::Equalizer => self.eq_step(up),
+                    View::Settings => {
                         let cmds = self.settings.step(&self.prefs, up);
                         self.cmds.extend(cmds);
                     }
                     _ => {}
                 }
             }
-            Action::Remove if self.screen == Screen::Equalizer => {
+            Action::Remove if self.focus == Focus::Main && self.view == View::Equalizer => {
                 if let Some(crate::settings_view::EqRow::Band(i)) = crate::settings_view::eq_rows(&self.prefs).get(self.eq_sel.at) {
                     self.cmds.push(Cmd::Sound(SoundToolCmd::RemoveBand(*i as u32)));
                 }
             }
-            Action::Remove if self.screen == Screen::Downloads => {
+            Action::Remove if self.focus == Focus::Main && self.view == View::Downloads => {
                 if let Some(Item::Song(songs, i)) = self.selected() {
                     self.cmds.push(Cmd::DownloadRemove(songs[i].id.clone()));
                 }
@@ -1221,12 +1520,12 @@ impl App {
                     self.cmds.push(Cmd::Remove(i));
                 }
             }
-            Action::Undo if self.screen == Screen::Queue => match self.taken.take() {
+            Action::Undo if self.queue_in_focus() => match self.taken.take() {
                 Some(id) => self.cmds.push(Cmd::Restore(id)),
                 None => self.say("Nothing to put back", false),
             },
             Action::Undo => self.dirty = false,
-            Action::MoveUp | Action::MoveDown if matches!(self.screen, Screen::Downloads | Screen::Equalizer) => self.dirty = false,
+            Action::MoveUp | Action::MoveDown if !self.queue_in_focus() => self.dirty = false,
             Action::MoveUp | Action::MoveDown => self.queue_move(a == Action::MoveDown),
             _ => self.list_action(a),
         }
@@ -1236,9 +1535,33 @@ impl App {
         let Some(song) = &self.song else { return };
         let len = song.duration as i64 * 1000;
         let to = (self.now.position(now) + delta).clamp(0, (len - 1000).max(0));
+        self.sought(to);
+    }
+
+    /// A seek to `to`: shown there at once, and held there until the engine says it got there.
+    fn sought(&mut self, to: i64) {
+        let now = Instant::now();
         self.now.position_ms = to;
         self.now.at = now;
+        self.seek_hold = Some((to, now));
         self.cmds.push(Cmd::Seek(to));
+    }
+
+    /// The engine's state as its status says it (the runner reads it). Just after a seek the status
+    /// still has the place from before it: the place sought is kept until the status is near it, or
+    /// for a few seconds at most (a seek that landed elsewhere).
+    pub fn follow_now(&mut self, n: Now) {
+        if let Some((to, at)) = self.seek_hold {
+            let t = Instant::now();
+            let there = (n.position(t) - to).abs() < 1_500;
+            if !there && at.elapsed() < SEEK_HOLD {
+                let held = self.now.position(t).max(to);
+                self.now = Now { position_ms: held, at: t, ..n };
+                return;
+            }
+            self.seek_hold = None;
+        }
+        self.now = n;
     }
 
     pub fn set_volume(&mut self, v: f32) {
@@ -1254,200 +1577,217 @@ impl App {
         self.queue.as_ref().map_or(0, |q| q.repeat)
     }
 
+    /// Back, as a desktop player's: out of the full player, out of a page, and from the page to the sidebar.
     fn back(&mut self) {
-        if self.pop_page() {
+        if self.full {
+            self.full = false;
             return;
         }
-        match self.screen {
-            Screen::Settings if self.settings.pane == 1 => self.settings.pane = 0,
-            Screen::Search => self.search.editing = true,
-            _ => self.dirty = false,
+        match self.focus {
+            Focus::Panel if self.lyrics_sel.is_some() && self.panel == Some(Panel::Lyrics) => self.lyrics_sel = None,
+            Focus::Panel => self.focus = Focus::Main,
+            Focus::Main => {
+                if self.pages.pop().is_none() {
+                    self.focus = Focus::Side;
+                }
+            }
+            Focus::Side => self.dirty = false,
         }
     }
 
     fn refresh(&mut self) {
+        if self.focus == Focus::Side {
+            self.library.playlists = Load::Idle;
+            return self.want_playlists();
+        }
+        if self.lyrics_focused() {
+            self.lyrics_for = None;
+            return self.want_lyrics();
+        }
         if let Some(p) = self.page() {
             self.cmds.push(Cmd::Load(p.req()));
             return;
         }
-        match self.screen {
-            Screen::Home => {
+        let l = &mut self.library;
+        match self.view {
+            View::Home => {
                 self.home.asked = false;
-                self.go(Screen::Home);
+                self.library.playlists = Load::Idle;
             }
-            Screen::Library => {
-                let l = &mut self.library;
-                match l.tab {
-                    0 => l.albums = Load::Idle,
-                    1 => l.artists = Load::Idle,
-                    2 => l.playlists = Load::Idle,
-                    _ => l.songs = Load::Idle,
-                }
-                self.library_tab(self.library.tab);
-            }
-            Screen::Downloads => self.cmds.push(Cmd::Load(Req::Downloads)),
-            Screen::Settings => self.cmds.push(Cmd::Load(Req::Facts)),
-            Screen::Lyrics => {
-                self.lyrics_for = None;
-                self.want_lyrics();
-            }
+            View::Albums => l.albums = Load::Idle,
+            View::Artists => l.artists = Load::Idle,
+            View::Songs => l.songs = Load::Idle,
+            View::Settings => self.settings.facts_asked = false,
             _ => {}
         }
-    }
-
-    fn pane(&mut self, forward: bool) {
-        match self.screen {
-            Screen::Search if !self.page_shown() => {
-                self.search.pane = if forward { (self.search.pane + 1) % 3 } else { (self.search.pane + 2) % 3 };
-            }
-            Screen::Settings => self.settings.pane = 1 - self.settings.pane,
-            Screen::Library if !self.page_shown() => {
-                let t = if forward { (self.library.tab + 1) % 4 } else { (self.library.tab + 3) % 4 };
-                self.library_tab(t);
-            }
-            Screen::Home if !self.page_shown() => {
-                // To the next shelf's first album.
-                let flat = self.home.flat();
-                let at = self.home.sel.at;
-                let titles: Vec<usize> = flat.iter().enumerate().filter(|(_, r)| matches!(r, HomeRow::Title(_))).map(|(i, _)| i + 1).collect();
-                let next = if forward { titles.iter().find(|&&t| t > at).or(titles.first()) } else { titles.iter().rev().find(|&&t| t < at).or(titles.last()) };
-                if let Some(&t) = next {
-                    self.home.sel.at = t;
-                }
-            }
-            _ => self.dirty = false,
-        }
+        self.go(self.view);
     }
 
     // ---- lists ----
 
-    /// The list the keys move in now: its selection and its length.
+    /// The list the keys move in now: its selection and its length. None for the home page's shelves
+    /// and the lyrics, which move their own way.
     fn list(&mut self) -> Option<(&mut Sel, usize)> {
-        if self.page_shown() {
+        match self.focus {
+            Focus::Side => {
+                let len = self.nav().len();
+                return Some((&mut self.side, len));
+            }
+            Focus::Panel => {
+                return match self.panel? {
+                    Panel::Queue => {
+                        let len = self.queue.as_ref().map_or(0, |q| q.len as usize);
+                        Some((&mut self.queue_sel, len))
+                    }
+                    Panel::Playing => {
+                        let len = self.up_next().len();
+                        Some((&mut self.up_next_sel, len))
+                    }
+                    Panel::Lyrics => None,
+                };
+            }
+            Focus::Main => {}
+        }
+        if self.page().is_some() {
             let p = self.page_mut()?;
             let len = p.len();
             return Some((p.sel(), len));
         }
-        Some(match self.screen {
-            Screen::Home => {
-                let len = self.home.flat().len();
-                (&mut self.home.sel, len)
+        let l = &self.library;
+        let lens = (l.albums.ready().map_or(0, Vec::len), l.artists.ready().map_or(0, Vec::len), l.songs.ready().map_or(0, Vec::len));
+        Some(match self.view {
+            View::Albums => (&mut self.library.albums_sel, lens.0),
+            View::Artists => (&mut self.library.artists_sel, lens.1),
+            View::Songs => (&mut self.library.songs_sel, lens.2),
+            View::Search => {
+                let len = self.search.rows().len();
+                (&mut self.search.sel, len)
             }
-            Screen::Library => {
-                let t = self.library.tab;
-                let len = self.library.len(t);
-                (&mut self.library.sels[t], len)
-            }
-            Screen::Search => {
-                let p = self.search.pane;
-                let len = self.search.len(p);
-                (&mut self.search.sels[p], len)
-            }
-            Screen::Queue => {
-                let len = self.queue.as_ref().map_or(0, |q| q.len as usize);
-                (&mut self.queue_sel, len)
-            }
-            Screen::Playing => {
-                let len = self.up_next().len();
-                (&mut self.up_next_sel, len)
-            }
-            Screen::Downloads => {
+            View::Downloads => {
                 let len = self.download_rows().len();
                 (&mut self.downloads_sel, len)
             }
-            Screen::Equalizer => (&mut self.eq_sel, crate::settings_view::eq_rows(&self.prefs).len()),
-            Screen::Settings => return Some(self.settings.list()),
-            Screen::Lyrics => return None,
-            Screen::Login => return None,
+            View::Equalizer => (&mut self.eq_sel, crate::settings_view::eq_rows(&self.prefs).len()),
+            View::Settings => {
+                self.settings.pages(&self.prefs);
+                return Some(self.settings.list());
+            }
+            View::Home | View::Login => return None,
         })
     }
 
     fn list_action(&mut self, a: Action) {
-        if self.screen == Screen::Lyrics {
+        if self.lyrics_focused() {
             return self.lyrics_action(a);
         }
+        if self.focus == Focus::Main && self.page().is_none() && self.view == View::Home {
+            return self.home_action(a);
+        }
+        let grid = self.grid_focused();
+        let cols = if grid { self.shown.cols.max(1) as isize } else { 1 };
         let Some((sel, len)) = self.list() else { return };
         let page = 10;
         match a {
-            Action::Up => sel.by(-1, len),
-            Action::Down => sel.by(1, len),
+            Action::Up => sel.by(-cols, len),
+            Action::Down => sel.by(cols, len),
+            Action::Left => sel.by(-1, len),
+            Action::Right => sel.by(1, len),
             Action::Top => sel.to(0, len),
             Action::Bottom => sel.to(len.saturating_sub(1), len),
-            Action::PageUp => sel.by(-page, len),
-            Action::PageDown => sel.by(page, len),
+            Action::PageUp => sel.by(-page * cols, len),
+            Action::PageDown => sel.by(page * cols, len),
             _ => return self.act_on_selected(a),
         }
-        // A settings page never rests on a section's title.
-        if self.screen == Screen::Settings && self.settings.pane == 1 {
-            self.settings.skip_titles(!matches!(a, Action::Up | Action::PageUp | Action::Top));
-        }
-        // The home page never rests on a shelf's title.
-        if self.screen == Screen::Home && !self.page_shown() {
-            let flat_len = self.home.flat().len();
-            let down = !matches!(a, Action::Up | Action::PageUp | Action::Bottom);
-            let at = self.home.sel.at;
-            let is_title = |i: usize| matches!(self.home.flat().get(i), Some(HomeRow::Title(_)));
-            if is_title(at) {
-                let next = if down || at == 0 { at + 1 } else { at - 1 };
-                self.home.sel.to(next, flat_len);
+        let down = !matches!(a, Action::Up | Action::PageUp | Action::Top | Action::Left);
+        if self.focus == Focus::Main && self.page().is_none() {
+            match self.view {
+                // Settings and search never rest on a title.
+                View::Settings => self.settings.skip_titles(down),
+                View::Search => self.search.settle(down),
+                _ => {}
             }
         }
         self.more();
     }
 
-    /// Near the end of a list read in pages: the next page.
-    fn more(&mut self) {
-        if self.screen != Screen::Library || self.page_shown() {
-            return;
-        }
-        let t = self.library.tab;
-        let len = self.library.len(t);
-        let near = self.library.sels[t].at + 50 >= len;
-        if t == 0 && near && self.library.albums_more {
-            self.library.albums_more = false;
-            self.cmds.push(Cmd::Load(Req::Albums { offset: len as u32 }));
-        }
-        if t == 3 && near && self.library.songs_more {
-            self.library.songs_more = false;
-            self.cmds.push(Cmd::Load(Req::Songs { offset: len as u32 }));
+    fn home_action(&mut self, a: Action) {
+        let h = &mut self.home;
+        match a {
+            Action::Up => h.step_shelf(-1),
+            Action::Down => h.step_shelf(1),
+            Action::PageUp | Action::Top => h.step_shelf(-99),
+            Action::PageDown | Action::Bottom => h.step_shelf(99),
+            Action::Left => h.step_along(-1),
+            Action::Right => h.step_along(1),
+            _ => self.act_on_selected(a),
         }
     }
 
-    /// What is selected on the screen now.
+    /// Near the end of a list read in pages: the next page.
+    fn more(&mut self) {
+        if self.focus != Focus::Main || self.page().is_some() {
+            return;
+        }
+        let l = &mut self.library;
+        match self.view {
+            View::Albums => {
+                let len = l.albums.ready().map_or(0, Vec::len);
+                if l.albums_sel.at + 50 >= len && l.albums_more {
+                    l.albums_more = false;
+                    self.cmds.push(Cmd::Load(Req::Albums { offset: len as u32 }));
+                }
+            }
+            View::Songs => {
+                let len = l.songs.ready().map_or(0, Vec::len);
+                if l.songs_sel.at + 50 >= len && l.songs_more {
+                    l.songs_more = false;
+                    self.cmds.push(Cmd::Load(Req::Songs { offset: len as u32 }));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// What is selected in the part in focus.
     pub fn selected(&self) -> Option<Item> {
-        if self.page_shown() {
-            return match self.page()? {
-                Page::Album { detail, sel, .. } => detail.ready().map(|d| Item::Song(d.songs.clone(), sel.at)),
-                Page::Playlist { detail, sel, .. } => detail.ready().map(|d| Item::Song(d.songs.clone(), sel.at)),
+        match self.focus {
+            Focus::Side => {
+                return match self.nav().get(self.side.at)? {
+                    Nav::Playlist(i) => self.library.playlists.ready()?.get(*i).cloned().map(Item::Playlist),
+                    _ => None,
+                };
+            }
+            Focus::Panel => {
+                let q = self.queue.as_ref()?;
+                let i = match self.panel? {
+                    Panel::Queue => *self.queue_order().get(self.queue_sel.at)?,
+                    Panel::Playing => *self.up_next().get(self.up_next_sel.at)?,
+                    Panel::Lyrics => return None,
+                };
+                return q.songs.get(i).cloned().map(|s| Item::Song(vec![s], 0));
+            }
+            Focus::Main => {}
+        }
+        if let Some(p) = self.page() {
+            return match p {
+                Page::Album { sel, .. } | Page::Playlist { sel, .. } => p.songs().filter(|s| sel.at < s.len()).map(|s| Item::Song(s.to_vec(), sel.at)),
                 Page::Artist { detail, sel, .. } => detail.ready().and_then(|d| d.albums.get(sel.at).cloned()).map(Item::Album),
             };
         }
-        match self.screen {
-            Screen::Home => match self.home.flat().get(self.home.sel.at) {
-                Some(HomeRow::Album(a)) => Some(Item::Album((*a).clone())),
-                _ => None,
+        let l = &self.library;
+        match self.view {
+            View::Home => self.home.album().cloned().map(Item::Album),
+            View::Albums => l.albums.ready()?.get(l.albums_sel.at).cloned().map(Item::Album),
+            View::Artists => l.artists.ready()?.get(l.artists_sel.at).cloned().map(Item::Artist),
+            View::Songs => l.songs.ready().filter(|s| l.songs_sel.at < s.len()).map(|s| Item::Song(s.clone(), l.songs_sel.at)),
+            View::Search => match self.search.rows().get(self.search.sel.at)? {
+                // A search's songs are one song each: the list is not an album, and may hold a provider's.
+                SearchRow::Song(s) => Some(Item::Song(vec![(*s).clone()], 0)),
+                SearchRow::Album(a) => Some(Item::Album((*a).clone())),
+                SearchRow::Artist(a) => Some(Item::Artist((*a).clone())),
+                SearchRow::Title(..) => None,
             },
-            Screen::Library => {
-                let l = &self.library;
-                let at = l.sels[l.tab].at;
-                match l.tab {
-                    0 => l.albums.ready()?.get(at).cloned().map(Item::Album),
-                    1 => l.artists.ready()?.get(at).cloned().map(Item::Artist),
-                    2 => l.playlists.ready()?.get(at).cloned().map(Item::Playlist),
-                    _ => l.songs.ready().filter(|s| at < s.len()).map(|s| Item::Song(s.clone(), at)),
-                }
-            }
-            Screen::Search => {
-                let r = self.search.view.as_ref()?.shown.as_ref()?;
-                let at = self.search.sels[self.search.pane].at;
-                match self.search.pane {
-                    0 => r.artists.get(at).cloned().map(Item::Artist),
-                    1 => r.albums.get(at).cloned().map(Item::Album),
-                    // A search's songs are one song each: the list is not an album, and may hold a provider's.
-                    _ => r.songs.get(at).cloned().map(|s| Item::Song(vec![s], 0)),
-                }
-            }
-            Screen::Downloads => {
+            View::Downloads => {
                 let rows = self.download_rows();
                 let (songs, i) = rows.get(self.downloads_sel.at).and_then(|r| r.1)?;
                 Some(Item::Song(songs.to_vec(), i))
@@ -1457,29 +1797,37 @@ impl App {
     }
 
     fn act_on_selected(&mut self, a: Action) {
-        if self.screen == Screen::Queue && a == Action::Open {
-            if let Some(i) = self.queue_selected_index() {
-                self.cmds.push(Cmd::Jump(i));
+        match self.focus {
+            Focus::Side if a == Action::Open => {
+                if let Some(n) = self.nav().get(self.side.at).copied() {
+                    self.open_nav(n);
+                }
+                return;
             }
-            return;
-        }
-        if self.screen == Screen::Playing && a == Action::Open && !self.page_shown() {
-            if let Some(&i) = self.up_next().get(self.up_next_sel.at) {
-                self.cmds.push(Cmd::Jump(i));
+            Focus::Panel if a == Action::Open => {
+                let i = match self.panel {
+                    Some(Panel::Queue) => self.queue_selected_index(),
+                    Some(Panel::Playing) => self.up_next().get(self.up_next_sel.at).copied(),
+                    _ => None,
+                };
+                if let Some(i) = i {
+                    self.cmds.push(Cmd::Jump(i));
+                }
+                return;
             }
-            return;
-        }
-        if self.screen == Screen::Settings {
-            if a == Action::Open {
-                self.settings_open();
+            Focus::Main if self.page().is_none() && self.view == View::Settings => {
+                if a == Action::Open {
+                    self.settings_open();
+                }
+                return;
             }
-            return;
-        }
-        if self.screen == Screen::Equalizer {
-            if a == Action::Open {
-                self.eq_open();
+            Focus::Main if self.page().is_none() && self.view == View::Equalizer => {
+                if a == Action::Open {
+                    self.eq_open();
+                }
+                return;
             }
-            return;
+            _ => {}
         }
         // Playing a whole page works with nothing selected.
         if matches!(a, Action::PlayAll | Action::ShuffleAll) {
@@ -1506,8 +1854,8 @@ impl App {
                 Item::Artist(ar) => self.cmds.push(Cmd::DownloadFetch(Fetch::Artist(ar.id))),
                 Item::Playlist(p) => self.cmds.push(Cmd::DownloadFetch(Fetch::Playlist(p.id))),
             },
-            (Action::Remove, Item::Song(songs, i)) if self.screen == Screen::Downloads => self.cmds.push(Cmd::DownloadRemove(songs[i].id.clone())),
             (Action::Star, item) => {
+                self.flip_star(&item);
                 let (kind, id, on) = match item {
                     Item::Song(songs, i) => (Starrable::Song, songs[i].id.clone(), !songs[i].starred),
                     Item::Album(al) => (Starrable::Album, al.id, !al.starred),
@@ -1520,7 +1868,8 @@ impl App {
         }
     }
 
-    /// A song picked from a list, as the "Choosing a song" setting says.
+    /// A song picked from a list, as the "Choosing a song" setting says (a terminal does not offer it:
+    /// the core's default, the list played from that song).
     fn tap(&mut self, songs: Vec<Song>, i: usize) {
         match self.prefs.tap_action {
             // One song on its own is no page's queue.
@@ -1535,8 +1884,11 @@ impl App {
     }
 
     /// The page whose own list of songs is the one picked from here, for the queue it starts: the page
-    /// open, or the screen's song list. None where the list is not one place's.
+    /// open, or the view's song list. None where the list is not one place's.
     fn origin_here(&self) -> Option<PageOrigin> {
+        if self.focus != Focus::Main {
+            return None;
+        }
         if let Some(page) = self.page() {
             return Some(match page {
                 Page::Album { id, .. } => PageOrigin::new(OriginKind::Album, id.as_str()),
@@ -1544,16 +1896,16 @@ impl App {
                 Page::Playlist { id, .. } => PageOrigin::new(OriginKind::Playlist, id.as_str()),
             });
         }
-        match self.screen {
-            Screen::Library => Some(PageOrigin::new(OriginKind::Songs, "")),
-            Screen::Search => Some(PageOrigin::new(OriginKind::Search, self.search.text.as_str())),
-            Screen::Downloads => Some(PageOrigin::new(OriginKind::Downloads, "")),
+        match self.view {
+            View::Songs => Some(PageOrigin::new(OriginKind::Songs, "")),
+            View::Search => Some(PageOrigin::new(OriginKind::Search, self.search.text.as_str())),
+            View::Downloads => Some(PageOrigin::new(OriginKind::Downloads, "")),
             _ => None,
         }
     }
 
     fn play_all(&mut self, shuffle: bool) {
-        if self.page_shown() {
+        if self.focus == Focus::Main && self.page().is_some() {
             match self.page() {
                 Some(Page::Artist { id, .. }) => self.cmds.push(Cmd::PlayFetch(Fetch::Artist(id.clone()), shuffle)),
                 Some(p) => {
@@ -1578,6 +1930,51 @@ impl App {
         }
     }
 
+    /// A song, album or artist starred where it is shown here, before the server's answer.
+    fn flip_star(&mut self, item: &Item) {
+        let id = match item {
+            Item::Song(songs, i) => songs[*i].id.clone(),
+            Item::Album(a) => a.id.clone(),
+            Item::Artist(a) => a.id.clone(),
+            Item::Playlist(_) => return,
+        };
+        if let Some(s) = self.song.as_mut().filter(|s| s.id == id) {
+            s.starred = !s.starred;
+        }
+        let flip_songs = |v: &mut Vec<Song>| v.iter_mut().filter(|s| s.id == id).for_each(|s| s.starred = !s.starred);
+        match self.pages.last_mut() {
+            Some(Page::Album { detail: Load::Ready(d), .. }) => flip_songs(&mut d.songs),
+            Some(Page::Playlist { detail: Load::Ready(d), .. }) => flip_songs(&mut d.songs),
+            Some(Page::Artist { detail: Load::Ready(d), .. }) => d.albums.iter_mut().filter(|a| a.id == id).for_each(|a| a.starred = !a.starred),
+            _ => {}
+        }
+        if let Load::Ready(v) = &mut self.library.songs {
+            flip_songs(v);
+        }
+        if let Load::Ready(v) = &mut self.library.albums {
+            v.iter_mut().filter(|a| a.id == id).for_each(|a| a.starred = !a.starred);
+        }
+        if let Load::Ready(v) = &mut self.library.artists {
+            v.iter_mut().filter(|a| a.id == id).for_each(|a| a.starred = !a.starred);
+        }
+    }
+
+    /// The page's album or artist starred or not, shown so at once.
+    fn star_page(&mut self) {
+        let c = match self.page_mut() {
+            Some(Page::Album { detail: Load::Ready(d), .. }) => {
+                d.album.starred = !d.album.starred;
+                Cmd::Star(Starrable::Album, d.album.id.clone(), d.album.starred)
+            }
+            Some(Page::Artist { detail: Load::Ready(d), .. }) => {
+                d.artist.starred = !d.artist.starred;
+                Cmd::Star(Starrable::Artist, d.artist.id.clone(), d.artist.starred)
+            }
+            _ => return,
+        };
+        self.cmds.push(c);
+    }
+
     // ---- the queue ----
 
     /// The queue's rows in the order they play: list indexes.
@@ -1585,8 +1982,12 @@ impl App {
         self.queue.as_ref().map_or_else(Vec::new, |q| q.order.iter().map(|&i| i as usize).collect())
     }
 
+    fn queue_in_focus(&self) -> bool {
+        self.focus == Focus::Panel && self.panel == Some(Panel::Queue) && !self.full
+    }
+
     fn queue_selected_index(&self) -> Option<usize> {
-        if self.screen != Screen::Queue {
+        if !self.queue_in_focus() {
             return None;
         }
         self.queue_order().get(self.queue_sel.at).copied()
@@ -1652,13 +2053,10 @@ impl App {
                 if l.pick.lyrics.synced {
                     let to = l.clock.tap(at);
                     self.lyrics_sel = None;
-                    self.now.position_ms = to;
-                    self.now.at = Instant::now();
-                    self.cmds.push(Cmd::Seek(to));
+                    self.sought(to);
                     self.lyrics_wake = Some(Instant::now());
                 }
             }
-            Action::Back => self.lyrics_sel = None,
             _ => {}
         }
     }
@@ -1667,14 +2065,14 @@ impl App {
 
     fn settings_open(&mut self) {
         let prefs = self.prefs.clone();
-        match self.settings.open(&prefs, self.mouse, self.images) {
+        match self.settings.open(&prefs) {
             Some(crate::settings_view::Opened::Cmds(c)) => self.cmds.extend(c),
             Some(crate::settings_view::Opened::Overlay(o)) => self.overlay = Some(o),
-            Some(crate::settings_view::Opened::Screen(s)) => self.go(s),
+            Some(crate::settings_view::Opened::View(v)) => self.go(v),
             Some(crate::settings_view::Opened::Own(key)) => self.own_toggle(key),
             Some(crate::settings_view::Opened::Login) => {
                 self.login = Login::default();
-                self.screen = Screen::Login;
+                self.view = View::Login;
             }
             None => self.dirty = false,
         }
@@ -1684,24 +2082,28 @@ impl App {
         match key {
             "mouse" => self.do_action(Action::Mouse),
             "images" => self.do_action(Action::Images),
+            "card_covers" => {
+                self.card_covers = !self.card_covers;
+                self.cmds.push(Cmd::CardCovers(self.card_covers));
+            }
             _ => {}
         }
         self.settings.invalidate();
     }
 
-    /// A change of the sound was kept (a band, a level, a preset). On the equalizer screen with the
-    /// equalizer on, the first one asks the engine for its shallow buffer (true), so the ones after it
-    /// are heard at once and without a dip. Opening the screen alone asks nothing: the output stays as it
-    /// was until something is really changed. When is the core's (`rules::equalizer_tuning`).
+    /// A change of the sound was kept (a band, a level, a preset). On the equalizer with the equalizer
+    /// on, the first one asks the engine for its shallow buffer (true), so the ones after it are heard at
+    /// once and without a dip. Opening the equalizer alone asks nothing: the output stays as it was until
+    /// something is really changed. When is the core's (`rules::equalizer_tuning`).
     pub fn sound_edited(&mut self) -> bool {
-        self.touched |= equalizer_tuning(self.screen == Screen::Equalizer, true, self.prefs.eq_enabled);
+        self.touched |= equalizer_tuning(self.view == View::Equalizer, true, self.prefs.eq_enabled);
         self.tune()
     }
 
     /// Asks the engine for the shallow buffer, or gives it back, when what the core wants changed: the
-    /// equalizer screen left, or the equalizer switched off. True when it was asked for now.
+    /// equalizer left, or switched off. True when it was asked for now.
     fn tune(&mut self) -> bool {
-        let want = equalizer_tuning(self.screen == Screen::Equalizer, self.touched, self.prefs.eq_enabled);
+        let want = equalizer_tuning(self.view == View::Equalizer, self.touched, self.prefs.eq_enabled);
         if want == self.tuning {
             return false;
         }
@@ -1757,26 +2159,31 @@ impl App {
                 };
                 let again = self.last_click.is_some_and(|(last, t)| last == h && t.elapsed() < Duration::from_millis(500));
                 self.last_click = Some((h, Instant::now()));
-                self.click(h, m.column, again);
+                self.click(h, m.column, m.row, again);
             }
-            MouseEventKind::Drag(MouseButton::Left) => {
-                if self.scrub.is_some() || self.hit(m.column, m.row) == Some(Hit::Seek) {
-                    self.scrub = Some(self.share(m.column));
-                } else {
-                    self.dirty = false;
-                }
-            }
-            MouseEventKind::Up(MouseButton::Left) => {
-                if let Some(share) = self.scrub.take() {
-                    self.seek_share(share);
-                } else {
-                    self.dirty = false;
-                }
-            }
+            MouseEventKind::Drag(MouseButton::Left) => match self.drag {
+                Some(Drag::Seek(_)) => self.drag = Some(Drag::Seek(share(self.seek_rect, m.column))),
+                Some(Drag::Volume) => self.set_volume(share(self.volume_rect, m.column)),
+                Some(Drag::Band(i)) => self.band_to(i, m.row),
+                None => self.dirty = false,
+            },
+            MouseEventKind::Up(MouseButton::Left) => match self.drag.take() {
+                Some(Drag::Seek(s)) => self.seek_share(s),
+                Some(Drag::Volume | Drag::Band(_)) => {}
+                None => self.dirty = false,
+            },
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
-                let d = if m.kind == MouseEventKind::ScrollDown { 3 } else { -3 };
+                let d = if m.kind == MouseEventKind::ScrollDown { 1 } else { -1 };
                 match self.hit(m.column, m.row) {
+                    // The wheel over an equalizer control changes it, up for more.
+                    Some(Hit::Row(ListRef::Eq, i)) => {
+                        self.focus = Focus::Main;
+                        self.eq_sel.at = i;
+                        self.eq_step(d < 0);
+                    }
                     Some(Hit::Row(l, _) | Hit::List(l)) => self.scroll(l, d),
+                    Some(Hit::Nav(_)) => self.scroll(ListRef::Side, d),
+                    Some(Hit::Volume) => self.set_volume(self.volume - d as f32 * 0.05),
                     _ => self.dirty = false,
                 }
             }
@@ -1784,83 +2191,118 @@ impl App {
         }
     }
 
-    fn share(&self, col: u16) -> f32 {
-        let r = self.seek_rect;
-        if r.width == 0 {
-            return 0.0;
-        }
-        ((col.saturating_sub(r.x)) as f32 / r.width.max(1) as f32).clamp(0.0, 1.0)
-    }
-
     fn seek_share(&mut self, share: f32) {
         let Some(song) = &self.song else { return };
         let to = (song.duration as f32 * 1000.0 * share) as i64;
-        self.now.position_ms = to;
-        self.now.at = Instant::now();
-        self.cmds.push(Cmd::Seek(to));
+        self.sought(to);
     }
 
     fn scroll(&mut self, l: ListRef, d: isize) {
         match l {
             ListRef::Help => {
                 if let Some(Overlay::Help { scroll }) = &mut self.overlay {
-                    *scroll = (*scroll as isize + d).max(0) as usize;
+                    *scroll = (*scroll as isize + d * 3).max(0) as usize;
                 }
             }
             ListRef::Lyrics => {
                 let len = self.lyrics.as_ref().map_or(0, |l| l.pick.lyrics.lines.len());
                 let at = self.lyrics_sel.unwrap_or_else(|| self.lyrics.as_ref().map_or(0, |l| l.clock.shown().active.max(0) as usize));
-                self.lyrics_sel = Some((at as isize + d).clamp(0, len.saturating_sub(1) as isize) as usize);
+                self.lyrics_sel = Some((at as isize + d * 3).clamp(0, len.saturating_sub(1) as isize) as usize);
             }
             ListRef::Picker => {
                 if let Some(Overlay::Picker { sel, options, .. }) = &mut self.overlay {
-                    sel.by(d, options.len());
+                    sel.by(d * 3, options.len());
                 }
             }
+            ListRef::Profiles => {}
+            // The wheel over a shelf moves along it.
+            ListRef::Shelf(s) => {
+                self.focus = Focus::Main;
+                self.home.shelf = s;
+                self.home.step_along(d);
+            }
             _ => {
-                self.focus_list(l);
+                self.focus = l.focus();
+                let grid = self.grid_focused();
+                let step = if grid { self.shown.cols.max(1) as isize } else { 3 };
                 if let Some((sel, len)) = self.list() {
-                    sel.by(d, len);
+                    sel.by(d * step, len);
+                }
+                if self.view == View::Settings && l == ListRef::Settings {
+                    self.settings.skip_titles(d > 0);
+                }
+                if self.view == View::Search && l == ListRef::Search {
+                    self.search.settle(d > 0);
                 }
                 self.more();
             }
         }
     }
 
-    /// Makes `l` the list the keys move in.
-    fn focus_list(&mut self, l: ListRef) {
-        match l {
-            ListRef::Search(p) => self.search.pane = p,
-            ListRef::Groups => self.settings.pane = 0,
-            ListRef::Rows => self.settings.pane = 1,
-            _ => {}
-        }
-    }
-
-    fn click(&mut self, h: Hit, col: u16, again: bool) {
+    fn click(&mut self, h: Hit, col: u16, row: u16, again: bool) {
         match h {
-            Hit::Tab(i) => {
-                if let Some((s, _)) = SCREENS.get(i) {
-                    if self.screen == *s {
-                        self.clear_pages();
-                    }
-                    self.go(*s);
+            Hit::Nav(i) => {
+                if let Some(n) = self.nav().get(i).copied() {
+                    self.open_nav(n);
                 }
             }
-            Hit::LibTab(i) => self.library_tab(i),
-            Hit::Seek => {
-                self.scrub = Some(self.share(col));
+            Hit::Seek => self.drag = Some(Drag::Seek(share(self.seek_rect, col))),
+            Hit::Volume => {
+                self.drag = Some(Drag::Volume);
+                self.set_volume(share(self.volume_rect, col));
             }
             Hit::SearchField => {
+                if self.view != View::Search {
+                    self.go(View::Search);
+                }
+                self.focus = Focus::Main;
                 self.search.editing = true;
             }
             Hit::LoginField(i) => {
                 self.login.on_list = false;
                 self.login.focus = i;
             }
+            Hit::Group(g) => {
+                self.focus = Focus::Main;
+                self.settings.jump(g);
+            }
             Hit::Button(b) => self.button(b),
-            Hit::List(_) => self.dirty = false,
+            Hit::List(l) => {
+                if !matches!(l, ListRef::Help | ListRef::Picker | ListRef::Profiles) && !self.full {
+                    self.focus = l.focus();
+                } else {
+                    self.dirty = false;
+                }
+            }
+            Hit::Row(ListRef::Eq, i) => {
+                self.focus = Focus::Main;
+                self.eq_sel.at = i;
+                let rows = crate::settings_view::eq_rows(&self.prefs);
+                match rows.get(i) {
+                    Some(r) if r.band(&self.prefs).is_some() => {
+                        self.drag = Some(Drag::Band(i));
+                        self.band_to(i, row);
+                    }
+                    Some(r) if r.clicks() || again => self.eq_open(),
+                    _ => {}
+                }
+            }
             Hit::Row(l, i) => self.click_row(l, i, again),
+        }
+    }
+
+    /// An equalizer band's slider put where the pointer is on its track.
+    fn band_to(&mut self, i: usize, y: u16) {
+        let (top, h) = self.eq_track;
+        if h < 2 {
+            return;
+        }
+        let r = nori_core::settings::EQ_RANGES.gain;
+        let share = (y.saturating_sub(top).min(h - 1)) as f32 / (h - 1) as f32;
+        let db = r.max - share * (r.max - r.min);
+        let rows = crate::settings_view::eq_rows(&self.prefs);
+        if let Some(c) = rows.get(i).and_then(|row| row.set_gain(&self.prefs, db)) {
+            self.cmds.push(c);
         }
     }
 
@@ -1871,11 +2313,31 @@ impl App {
             Button::Next => self.do_action(Action::Next),
             Button::Shuffle => self.do_action(Action::Shuffle),
             Button::Repeat => self.do_action(Action::Repeat),
-            Button::VolumeDown => self.do_action(Action::VolumeDown),
-            Button::VolumeUp => self.do_action(Action::VolumeUp),
+            Button::Panel(p) => self.set_panel(p),
+            Button::Full => self.toggle_full(),
             Button::PlayAll => self.play_all(false),
             Button::ShuffleAll => self.play_all(true),
-            Button::Back => self.back(),
+            Button::Star => self.star_page(),
+            Button::Download => {
+                let what = match self.page() {
+                    Some(Page::Album { id, .. }) => Fetch::Album(id.clone()),
+                    Some(Page::Artist { id, .. }) => Fetch::Artist(id.clone()),
+                    Some(Page::Playlist { id, .. }) => Fetch::Playlist(id.clone()),
+                    None => return,
+                };
+                self.cmds.push(Cmd::DownloadFetch(what));
+                self.say("Downloading…", false);
+            }
+            Button::StarSong => {
+                if let Some(s) = &mut self.song {
+                    s.starred = !s.starred;
+                    self.cmds.push(Cmd::Star(Starrable::Song, s.id.clone(), s.starred));
+                }
+            }
+            Button::Back => {
+                self.focus = Focus::Main;
+                self.back();
+            }
             Button::Help => self.do_action(Action::Help),
             Button::Connect => self.connect(),
         }
@@ -1906,21 +2368,35 @@ impl App {
                 return;
             }
             ListRef::Help => return,
+            ListRef::Shelf(s) => {
+                self.focus = Focus::Main;
+                self.home.shelf = s;
+                if let Some(p) = self.home.pos.get_mut(s) {
+                    *p = i;
+                }
+                return self.act_on_selected(Action::Open);
+            }
             _ => {}
         }
-        self.focus_list(l);
-        let settings_row = l == ListRef::Rows;
+        self.focus = l.focus();
         if let Some((sel, len)) = self.list() {
             sel.to(i, len);
         }
-        // A click on a toggle switches it at once; anything else opens on a second click.
-        if again || (settings_row && self.settings.clicks_open()) || l == ListRef::Groups {
+        // A card or a switch does what it does at once; a song plays on a second click.
+        let artist_cards = l == ListRef::Page && matches!(self.page(), Some(Page::Artist { .. }));
+        let settings_now = l == ListRef::Settings && self.settings.clicks_open();
+        if again || l.opens_on_click() || artist_cards || settings_now {
             self.act_on_selected(Action::Open);
-            if l == ListRef::Groups {
-                self.settings.pane = 0;
-            }
         }
     }
+}
+
+/// Where `col` is along `r`, 0 to 1.
+fn share(r: Rect, col: u16) -> f32 {
+    if r.width == 0 {
+        return 0.0;
+    }
+    (col.saturating_sub(r.x) as f32 / r.width.saturating_sub(1).max(1) as f32).clamp(0.0, 1.0)
 }
 
 /// A row of the downloads page: a heading, or a song with the list it is in and its place there.
@@ -1928,6 +2404,9 @@ pub type DownloadRow<'a> = (String, Option<(&'a [Song], usize)>);
 
 /// How long a note stays in the status bar.
 pub const NOTE_FOR: Duration = Duration::from_secs(4);
+
+/// How long a seek's place is held on screen over an engine status that has not got there.
+const SEEK_HOLD: Duration = Duration::from_secs(3);
 
 /// The queue's repeat modes (nori_player::playlist's numbering).
 mod nori_player_repeat {

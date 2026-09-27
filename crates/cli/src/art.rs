@@ -33,21 +33,30 @@ pub struct Art {
     /// A few covers by address, newest last: the one playing and the album page's, with the decoded
     /// picture each was made from (to be sent again, [`Art::resend`]).
     kept: Vec<(String, StatefulProtocol, Arc<Image>)>,
+    /// The album cards' small covers (`thumb:<id>`), a screenful and more, least recently put first.
+    thumbs: Vec<(String, StatefulProtocol, Arc<Image>)>,
 }
+
+/// How many small covers are kept: a few screens of cards.
+const THUMBS: usize = 120;
+
+/// How many pixels a side a card's cover is decoded at.
+pub const THUMB_PX: u32 = 160;
 
 impl Art {
     pub fn new(picker: Picker) -> Art {
-        Art { picker, kept: Vec::new() }
+        Art { picker, kept: Vec::new(), thumbs: Vec::new() }
     }
 
     /// A decoded cover, made ready for the terminal.
     pub fn put(&mut self, url: String, image: &Arc<Image>) {
         let Some(protocol) = self.protocol(image) else { return };
-        self.kept.retain(|(u, _, _)| *u != url);
-        if self.kept.len() >= 3 {
-            self.kept.remove(0);
+        let (list, cap) = if url.starts_with(crate::backend::THUMB) { (&mut self.thumbs, THUMBS) } else { (&mut self.kept, 3) };
+        list.retain(|(u, _, _)| *u != url);
+        if list.len() >= cap {
+            list.remove(0);
         }
-        self.kept.push((url, protocol, image.clone()));
+        list.push((url, protocol, image.clone()));
     }
 
     fn protocol(&self, image: &Image) -> Option<StatefulProtocol> {
@@ -67,14 +76,19 @@ impl Art {
                 self.kept[i].1 = p;
             }
         }
+        for i in 0..self.thumbs.len() {
+            if let Some(p) = self.protocol(&self.thumbs[i].2) {
+                self.thumbs[i].1 = p;
+            }
+        }
     }
 
     pub fn get(&mut self, url: &str) -> Option<&mut StatefulProtocol> {
-        self.kept.iter_mut().find(|(u, _, _)| u == url).map(|(_, p, _)| p)
+        self.kept.iter_mut().chain(self.thumbs.iter_mut()).find(|(u, _, _)| u == url).map(|(_, p, _)| p)
     }
 
     pub fn has(&self, url: &str) -> bool {
-        self.kept.iter().any(|(u, _, _)| u == url)
+        self.kept.iter().chain(self.thumbs.iter()).any(|(u, _, _)| u == url)
     }
 }
 

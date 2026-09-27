@@ -1,8 +1,11 @@
-//! Settings, the terminal's own: its groups, pages, rows and every word on them are this client's,
-//! chosen for a terminal - only what makes sense at a desk, worded for one. What each setting is, the
+//! Settings, the terminal's own: one scrolling page of groups, sections and rows, every word on them this
+//! client's, chosen for a terminal - only what makes sense at a desk, worded for one. What a phone needs
+//! (gestures, offload, battery, the screen) and what a desk has no use for (covers fetched ahead for a
+//! grid of pictures, a second address's bitrate cap, the search's typing delay) is not offered: the
+//! core's defaults stand for those. What each setting is, the
 //! values it offers and its value now are the core's settings model (`nori_settings::settings_model`); a
 //! row sends back the setting's name with the value picked (`setting_set`), or moves a level in place
-//! (`edit_level`). The client's own few settings (the mouse, covers, the volume, the output device) are
+//! (`edit_level`). The client's own few settings (the mouse, covers, the output device) are
 //! rows of the same kinds.
 
 use crate::text;
@@ -10,7 +13,7 @@ use nori_core::settings::{EqLevel, EqMode, SoundBand, StoredPrefs, EQ_RANGES};
 use nori_core::settings_model::{self, BeatModel, LyricsSource, SettingsState};
 use nori_core::MusicFolder;
 
-use crate::app::{Cmd, Overlay, Screen, Sel, SoundToolCmd};
+use crate::app::{Cmd, Overlay, Sel, SoundToolCmd, View};
 
 /// The client's own group, first in the list.
 pub const OWN: &str = "terminal";
@@ -19,13 +22,13 @@ pub const OWN: &str = "terminal";
 pub enum Opened {
     Cmds(Vec<Cmd>),
     Overlay(Overlay),
-    Screen(Screen),
+    View(View),
     /// One of the client's own switches, by name.
     Own(&'static str),
     Login,
 }
 
-/// A group of settings: its page, listed on the left.
+/// A group of settings: a part of the one page, under its own heading.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Group {
     pub id: &'static str,
@@ -34,7 +37,7 @@ pub struct Group {
 
 /// The groups, in the order they are listed.
 pub const GROUPS: [Group; 8] = [
-    Group { id: OWN, title: "Terminal" },
+    Group { id: OWN, title: "Interface" },
     Group { id: "sound", title: "Sound" },
     Group { id: "playback", title: "Playback" },
     Group { id: "library", title: "Library" },
@@ -105,23 +108,21 @@ pub struct Facts {
     pub devices: Vec<String>,
 }
 
-/// A line of a page: a section's title, or one of its rows.
+/// A line of the page: a group's heading, a section's title, or one of its rows.
 pub enum Line<'a> {
+    Group(&'a str),
     Title(&'a str),
     Row(&'a Row),
 }
 
 #[derive(Default)]
 pub struct SettingsView {
-    /// 0 the groups, 1 the page's rows.
-    pub pane: usize,
-    pub group: Sel,
     pub row: Sel,
-    page: Option<Page>,
-    page_of: Option<String>,
+    /// Every group's part of the page, worked out again only when something they show changed.
+    pages: Option<Vec<Page>>,
     pub facts: Facts,
     pub facts_asked: bool,
-    /// What the client's own page says: the image protocol, whether the mouse and covers are on, the volume.
+    /// What the client's own rows say: the image protocol, whether the mouse and covers are on.
     pub own: Own,
 }
 
@@ -129,7 +130,7 @@ pub struct SettingsView {
 pub struct Own {
     pub mouse: bool,
     pub images: bool,
-    pub volume: f32,
+    pub card_covers: bool,
     pub protocol: String,
     pub data: String,
     /// The output device chosen for the next start; empty for the system's own.
@@ -137,12 +138,8 @@ pub struct Own {
 }
 
 impl SettingsView {
-    pub fn groups(&self) -> &'static [Group] {
-        &GROUPS
-    }
-
     pub fn invalidate(&mut self) {
-        self.page = None;
+        self.pages = None;
     }
 
     pub fn set_facts(&mut self, f: Facts) {
@@ -150,48 +147,59 @@ impl SettingsView {
         self.invalidate();
     }
 
-    pub fn group_id(&self) -> &'static str {
-        GROUPS.get(self.group.at).map_or("", |g| g.id)
-    }
-
-    /// The page of the group selected, worked out again only when something it shows changed.
-    pub fn page(&mut self, prefs: &StoredPrefs) -> &Page {
-        let id = self.group_id();
-        if self.page.is_none() || self.page_of.as_deref() != Some(id) {
+    /// Every group's part of the page.
+    pub fn pages(&mut self, prefs: &StoredPrefs) -> &[Page] {
+        if self.pages.is_none() {
             let state = settings_model::state(prefs, settings_model::Output::default());
-            self.page = Some(page(id, prefs, &state, &self.facts, &self.own));
-            self.page_of = Some(id.to_string());
+            self.pages = Some(GROUPS.iter().map(|g| page(g.id, prefs, &state, &self.facts, &self.own)).collect());
         }
-        self.page.as_ref().expect("made above")
+        self.pages.as_deref().expect("made above")
     }
 
-    /// The page's lines, titles and rows, as drawn.
-    pub fn lines(page: &Page) -> Vec<Line<'_>> {
+    /// The page's lines, headings and rows, as drawn.
+    pub fn lines(pages: &[Page]) -> Vec<Line<'_>> {
         let mut out = Vec::new();
-        for s in &page.sections {
-            if !s.title.is_empty() {
-                out.push(Line::Title(&s.title));
+        for p in pages {
+            out.push(Line::Group(&p.title));
+            for s in &p.sections {
+                if !s.title.is_empty() {
+                    out.push(Line::Title(&s.title));
+                }
+                out.extend(s.rows.iter().map(Line::Row));
             }
-            out.extend(s.rows.iter().map(Line::Row));
         }
         out
     }
 
-    /// The list the keys move in: the groups, or the page's lines.
+    /// The list the keys move in: the page's lines.
     pub fn list(&mut self) -> (&mut Sel, usize) {
-        if self.pane == 0 {
-            return (&mut self.group, GROUPS.len());
-        }
-        let n = self.page.as_ref().map_or(0, |p| Self::lines(p).len());
+        let n = self.pages.as_deref().map_or(0, |p| Self::lines(p).len());
         (&mut self.row, n)
+    }
+
+    /// The group the selection is in, by GROUPS' order.
+    pub fn group_at(&self) -> usize {
+        let Some(pages) = self.pages.as_deref() else { return 0 };
+        Self::lines(pages).iter().take(self.row.at + 1).filter(|l| matches!(l, Line::Group(_))).count().saturating_sub(1)
+    }
+
+    /// The selection onto a group's first row.
+    pub fn jump(&mut self, group: usize) {
+        let Some(pages) = self.pages.as_deref() else { return };
+        let lines = Self::lines(pages);
+        if let Some(at) = lines.iter().enumerate().filter(|(_, l)| matches!(l, Line::Group(_))).nth(group).map(|(i, _)| i) {
+            self.row.at = at;
+            // The group's heading shows above it.
+            self.row.top = at;
+            self.skip_titles(true);
+        }
     }
 
     /// The row selected on the page, if the page is showing one.
     fn selected(&self) -> Option<&Row> {
-        let page = self.page.as_ref()?;
-        match Self::lines(page).into_iter().nth(self.row.at)? {
+        match Self::lines(self.pages.as_deref()?).into_iter().nth(self.row.at)? {
             Line::Row(r) => Some(r),
-            Line::Title(_) => None,
+            _ => None,
         }
     }
 
@@ -206,14 +214,7 @@ impl SettingsView {
     }
 
     /// Enter on the selection.
-    pub fn open(&mut self, prefs: &StoredPrefs, _mouse: bool, _images: bool) -> Option<Opened> {
-        if self.pane == 0 {
-            self.pane = 1;
-            self.row = Sel::default();
-            self.page(prefs);
-            self.skip_titles(true);
-            return Some(Opened::Cmds(Vec::new()));
-        }
+    pub fn open(&mut self, _prefs: &StoredPrefs) -> Option<Opened> {
         let row = self.selected()?.clone();
         Some(match row {
             Row::Toggle { name, on, enabled, .. } => match own_name(&name) {
@@ -226,8 +227,8 @@ impl SettingsView {
                 Opened::Overlay(Overlay::Picker { title, options, sel: Sel { at, top: 0 }, name })
             }
             Row::Link { action, .. } | Row::Action { action, enabled: true, .. } => match action.as_str() {
-                "equalizer" => Opened::Screen(Screen::Equalizer),
-                "downloads" => Opened::Screen(Screen::Downloads),
+                "equalizer" => Opened::View(View::Equalizer),
+                "downloads" => Opened::View(View::Downloads),
                 _ => Opened::Cmds(vec![Cmd::Action(action)]),
             },
             Row::Server { id, active, .. } => {
@@ -275,6 +276,7 @@ impl SettingsView {
                 match own_name(&name) {
                     Some("mouse") => vec![Cmd::Mouse(up)],
                     Some("images") => vec![Cmd::Images(up)],
+                    Some("card_covers") => vec![Cmd::CardCovers(up)],
                     Some(_) => Vec::new(),
                     None if enabled => vec![Cmd::Setting(name, up.to_string())],
                     None => Vec::new(),
@@ -283,10 +285,9 @@ impl SettingsView {
             Row::Slider { name, value, min, max, level, .. } => {
                 let step = slider_step(min, max);
                 let v = (value + if up { step } else { -step }).clamp(min, max);
-                match (name.as_str(), level) {
-                    ("!volume", _) => vec![Cmd::Volume(v)],
-                    (_, Some(l)) => vec![Cmd::Level(l, v)],
-                    (_, None) => vec![Cmd::Setting(name, v.to_string())],
+                match level {
+                    Some(l) => vec![Cmd::Level(l, v)],
+                    None => vec![Cmd::Setting(name, v.to_string())],
                 }
             }
             Row::Palette { name, colours, chosen } => {
@@ -302,9 +303,9 @@ impl SettingsView {
 
     /// The selection moved off a section's title, onto a row.
     pub fn skip_titles(&mut self, down: bool) {
-        let Some(page) = &self.page else { return };
-        let lines = Self::lines(page);
-        let title = |i: usize| matches!(lines.get(i), Some(Line::Title(_)));
+        let Some(pages) = &self.pages else { return };
+        let lines = Self::lines(pages);
+        let title = |i: usize| matches!(lines.get(i), Some(Line::Title(_) | Line::Group(_)));
         let mut at = self.row.at;
         while title(at) && at + 1 < lines.len() && down {
             at += 1;
@@ -334,6 +335,7 @@ fn own_name(name: &str) -> Option<&'static str> {
     match name {
         "!mouse" => Some("mouse"),
         "!images" => Some("images"),
+        "!cardCovers" => Some("card_covers"),
         _ => None,
     }
 }
@@ -414,7 +416,7 @@ pub fn page(id: &str, p: &StoredPrefs, s: &SettingsState, f: &Facts, own: &Own) 
         "lyrics" => lyrics(&b),
         "server" => server(&b, f),
         "storage" => storage(&b, f),
-        "about" => about(),
+        "about" => about(own),
         _ => Vec::new(),
     };
     Page { title, sections }
@@ -430,20 +432,18 @@ fn own_page(b: &Build, o: &Own, f: &Facts) -> Vec<Section> {
     }
     let shown = devices.iter().find(|d| d.1 == o.device).map_or_else(|| o.device.clone(), |d| d.0.clone());
     let rows = vec![
-        toggle("!mouse", "Mouse", "Clicks, the wheel and dragging the seek bar. Off, the terminal selects text (m).", o.mouse),
-        toggle("!images", "Covers", "Album art in the player and on album pages (I).", o.images),
-        info("Pictures drawn with", o.protocol.clone()),
-        Row::Slider { name: "!volume".into(), label: format!("Volume {} %", (o.volume * 100.0).round()), value: o.volume, min: 0.0, max: 1.0, centred: false, level: None },
+        toggle("!mouse", "Mouse", "Clicks, the wheel and dragging the bars. Off, the terminal selects text (m)", o.mouse),
+        toggle("!images", "Covers", "Album art in the player and on album pages (I)", o.images),
+        Row::Toggle { name: "!cardCovers".into(), title: "Covers on album cards".into(), detail: "Small pictures on Home and Albums; off keeps a slow link or terminal light".into(), on: o.card_covers, enabled: o.images },
         Row::Choice { name: "!device".into(), title: "Output device".into(), options: devices, shown, enabled: true },
         Row::Note { text: "The device is opened at start; --device overrides it for one run.".into() },
-        info("Data kept in", o.data.clone()),
     ];
     let accents: Vec<i64> = options("accent").iter().filter_map(|c| c.parse().ok()).collect();
     let look = vec![
         b.toggle("coverColors", "Colours from the cover", "The page takes the playing cover's colours (with covers on)"),
         Row::Palette { name: "accent".into(), colours: accents, chosen: b.p.accent },
     ];
-    vec![section("This client", rows), section("Look", look)]
+    vec![section("", rows), section("Look", look)]
 }
 
 fn sound(b: &Build) -> Vec<Section> {
@@ -452,10 +452,7 @@ fn sound(b: &Build) -> Vec<Section> {
     let live = !s.untouched;
     let eq_status = if s.untouched { "bypassed" } else if s.sound_chain_on { "on" } else { "off" };
     let eq_status = if p.sound_bypass { "no processing" } else { eq_status };
-    let eq = vec![
-        Row::Link { title: "Equalizer, crossfeed, balance, limiter".into(), status: eq_status.into(), action: "equalizer".into() },
-        b.toggle("soundBypass", "No processing on this output", "No equalizer or effects reach it; offload can play it"),
-    ];
+    let eq = vec![Row::Link { title: "Equalizer, crossfeed, balance, limiter".into(), status: eq_status.into(), action: "equalizer".into() }];
 
     let mut levelling = vec![b.named("replayGain", "ReplayGain", &["off", "track", "album", "auto"])];
     if p.replay_gain != nori_core::settings::GainMode::Off {
@@ -597,10 +594,7 @@ fn playback(b: &Build, f: &Facts) -> Vec<Section> {
 
 fn library(b: &Build, f: &Facts) -> Vec<Section> {
     let (songs, albums, artists) = f.indexed;
-    let index = vec![
-        action("Offline index", format!("{songs} songs, {albums} albums, {artists} artists"), "Update", true, "sync-library"),
-        b.choice("liveSearchDelayMs", "Search delay", true, |v| format!("{v} ms")),
-    ];
+    let index = vec![action("Offline index", format!("{songs} songs, {albums} albums, {artists} artists"), "Update", true, "sync-library")];
     let mut history = vec![
         b.toggle("tasteModel", "Listening history", "Kept locally; feeds mixes and stats"),
         b.toggle("scrobble", "Scrobble", "Report plays to the server"),
@@ -680,15 +674,11 @@ fn server(b: &Build, f: &Facts) -> Vec<Section> {
         .collect();
     accounts.push(Row::Button { title: "Add a server".into(), action: "add-server".into() });
     let mut out = vec![section("Accounts", accounts)];
-    let current = p.servers.iter().find(|s| s.id == p.active_server_id);
     let mut this = Vec::new();
     if f.folders.len() > 1 {
         let mut o = vec![("all".to_string(), String::new())];
         o.extend(f.folders.iter().map(|m| (m.name.clone(), m.id.clone())));
         this.push(b.choice_of("musicFolder", "Music folder", o, true));
-    }
-    if current.is_some_and(|s| !s.alt_url.trim().is_empty()) {
-        this.push(b.choice("altMaxBitRate", "Second address bitrate cap", true, |v| if v == "0" { "none".into() } else { format!("{v} kbps") }));
     }
     if !this.is_empty() {
         out.push(section("This server", this));
@@ -719,7 +709,6 @@ fn storage(b: &Build, f: &Facts) -> Vec<Section> {
             Ok(mb) if mb % 1024 == 0 => format!("{} GB", mb / 1024),
             _ => format!("{v} MB"),
         }),
-        b.choice("coversAhead", "Covers fetched ahead", true, |v| v.to_string()),
         action("Stream cache", bytes(s.stream), "Clear", s.stream > 0, "clear-stream"),
         action("Cover cache", bytes(s.covers), "Clear", s.covers > 0, "clear-covers"),
         action("Lyrics cache", format!("{} of lyrics found online", bytes(s.lyrics)), "Clear", s.lyrics > 0, "clear-lyrics"),
@@ -729,10 +718,15 @@ fn storage(b: &Build, f: &Facts) -> Vec<Section> {
 }
 
 /// About: the version, and what the core is built from, from the core's own credits.
-fn about() -> Vec<Section> {
+fn about(own: &Own) -> Vec<Section> {
     let version = Section {
         title: "nori".into(),
-        rows: vec![info("Version", env!("CARGO_PKG_VERSION").into()), info("Terminal client", "ratatui over crossterm; covers through ratatui-image".into())],
+        rows: vec![
+            info("Version", env!("CARGO_PKG_VERSION").into()),
+            info("Terminal client", "ratatui over crossterm; covers through ratatui-image".into()),
+            info("Pictures drawn with", own.protocol.clone()),
+            info("Data kept in", own.data.clone()),
+        ],
     };
     let credits = nori_core::credits::core_credits().into_iter().map(|c| info(&c.name, format!("{} · {} · {}", c.what, c.copyright, c.licence))).collect();
     let tui = vec![
@@ -829,6 +823,7 @@ pub enum EqRow {
 const CROSSFEED_PRESETS: [&str; 4] = ["OFF", "DEFAULT", "CHU_MOY", "JAN_MEIER"];
 
 pub fn eq_rows(p: &StoredPrefs) -> Vec<EqRow> {
+    // The toolbar, then the bands, then the rest of the chain: the order ← and → walk them.
     let graphic = p.eq_mode == EqMode::Graphic;
     let mut rows = vec![EqRow::Enabled, EqRow::Mode];
     if graphic {
@@ -838,13 +833,16 @@ pub fn eq_rows(p: &StoredPrefs) -> Vec<EqRow> {
     if p.eq_preamp_db.is_some() {
         rows.push(EqRow::Preamp);
     }
+    if !graphic {
+        rows.push(EqRow::AddBand);
+    }
+    rows.push(EqRow::Reset);
     if graphic {
         rows.extend((0..p.eq_graphic.len()).map(EqRow::Slider));
     } else {
         rows.extend((0..p.eq_bands.len()).map(EqRow::Band));
-        rows.push(EqRow::AddBand);
     }
-    rows.extend([EqRow::Reset, EqRow::Balance, EqRow::CrossfeedPreset, EqRow::Crossfeed]);
+    rows.extend([EqRow::Balance, EqRow::CrossfeedPreset, EqRow::Crossfeed]);
     if p.crossfeed_db > 0.0 {
         rows.push(EqRow::CrossfeedCut);
     }
@@ -895,7 +893,56 @@ impl EqRow {
         }
     }
 
-    /// ← or →; nothing when the value would stay as it is (held at the end of its range), so a key
+    /// A band's slider (graphic or parametric): its index and its gain now.
+    pub fn band(&self, p: &StoredPrefs) -> Option<(usize, f32)> {
+        match *self {
+            EqRow::Slider(i) => Some((i, *p.eq_graphic.get(i)?)),
+            EqRow::Band(i) => Some((i, p.eq_bands.get(i)?.gain_db)),
+            _ => None,
+        }
+    }
+
+    /// Before the bands (the toolbar), or after them.
+    pub fn above_bands(&self) -> bool {
+        matches!(self, EqRow::Enabled | EqRow::Mode | EqRow::Layout | EqRow::Presets | EqRow::AutoPreamp | EqRow::Preamp | EqRow::AddBand | EqRow::Reset)
+    }
+
+    /// A band's slider put at `db` (a click or a drag on it), on the half decibel.
+    pub fn set_gain(&self, p: &StoredPrefs, db: f32) -> Option<Cmd> {
+        let r = EQ_RANGES.gain;
+        let db = ((db * 2.0).round() / 2.0).clamp(r.min, r.max);
+        match *self {
+            EqRow::Slider(i) => (p.eq_graphic.get(i).copied()? != db).then_some(Cmd::Graphic(i as u32, db)),
+            EqRow::Band(i) => {
+                let b = *p.eq_bands.get(i)?;
+                (b.gain_db != db).then_some(Cmd::Band(i as u32, SoundBand { gain_db: db, ..b }))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether a click does what it does at once (a switch, a button), rather than only choosing it.
+    pub fn clicks(&self) -> bool {
+        matches!(self, EqRow::Enabled | EqRow::Mode | EqRow::Presets | EqRow::AutoPreamp | EqRow::AddBand | EqRow::Reset | EqRow::Mono | EqRow::Limiter)
+    }
+
+    /// Its words on a chip of the toolbar or under the bands.
+    pub fn chip(&self, p: &StoredPrefs) -> String {
+        let (title, value) = self.words(p);
+        match self {
+            EqRow::Enabled => (if p.eq_enabled { "● Equalizer on" } else { "○ Equalizer off" }).into(),
+            EqRow::Presets => "Presets ▾".into(),
+            EqRow::AddBand => "+ Add a band".into(),
+            EqRow::Reset => "↺ Flat".into(),
+            EqRow::Mode => (if p.eq_mode == EqMode::Graphic { "Graphic ‹›" } else { "Parametric ‹›" }).into(),
+            EqRow::Layout => format!("{} bands ‹›", p.eq_graphic.len()),
+            EqRow::Crossfeed => format!("Crossfeed level {value}"),
+            EqRow::CrossfeedCut => format!("Crossfeed cutoff {value}"),
+            _ => format!("{} {}", title.trim(), value),
+        }
+    }
+
+    /// ↑ or ↓ (the console's), ← or → (a list's); nothing when the value would stay as it is (held at the end of its range), so a key
     /// held there asks nothing of the settings or the engine.
     pub fn step(&self, p: &StoredPrefs, up: bool) -> Option<Cmd> {
         let d = if up { 0.5 } else { -0.5 };
@@ -996,8 +1043,7 @@ mod tests {
 
     #[test]
     fn the_clients_own_group_comes_first() {
-        let v = SettingsView::default();
-        assert_eq!(v.groups().iter().map(|g| g.id).collect::<Vec<_>>(), ["terminal", "sound", "playback", "library", "lyrics", "server", "storage", "about"]);
+        assert_eq!(GROUPS.iter().map(|g| g.id).collect::<Vec<_>>(), ["terminal", "sound", "playback", "library", "lyrics", "server", "storage", "about"]);
     }
 
     #[test]
@@ -1006,16 +1052,16 @@ mod tests {
         let rows = every_row(&prefs);
         assert!(rows.len() > 40, "rows: {}", rows.len());
         for (group, row) in &rows {
-            let mut v = SettingsView { pane: 1, ..Default::default() };
-            v.page = Some(Page { title: group.to_string(), sections: vec![Section { title: String::new(), rows: vec![row.clone()] }] });
-            v.page_of = None;
+            let mut v = SettingsView::default();
+            v.pages = Some(vec![Page { title: group.to_string(), sections: vec![Section { title: String::new(), rows: vec![row.clone()] }] }]);
+            v.row.at = 1;
             match row {
                 Row::Toggle { name, enabled: true, .. } if !name.starts_with('!') => {
-                    let Some(Opened::Cmds(c)) = v.open(&prefs, true, true) else { panic!("{name} does not switch") };
+                    let Some(Opened::Cmds(c)) = v.open(&prefs) else { panic!("{name} does not switch") };
                     assert!(matches!(&c[0], Cmd::Setting(n, _) if n == name), "{name}");
                 }
                 Row::Choice { name, enabled: true, options, .. } if !name.starts_with('!') => {
-                    let Some(Opened::Overlay(Overlay::Picker { name: picked, options: shown, .. })) = v.open(&prefs, true, true) else { panic!("{name} offers no choice") };
+                    let Some(Opened::Overlay(Overlay::Picker { name: picked, options: shown, .. })) = v.open(&prefs) else { panic!("{name} offers no choice") };
                     assert_eq!(&picked, name);
                     assert_eq!(shown.len(), options.len());
                     let steps = [v.step(&prefs, true), v.step(&prefs, false)].concat();
@@ -1054,6 +1100,7 @@ mod tests {
 
     #[test]
     fn phone_only_settings_are_not_offered() {
+        // Nor what a desk has no use for: the core's defaults stand for them.
         let names: Vec<String> = every_row(&everything_on())
             .into_iter()
             .filter_map(|(_, r)| match r {
@@ -1061,7 +1108,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        for phone in ["swipeLeft", "swipeRight", "tapAction", "offload", "bitPerfect", "motionArtwork", "amoled", "dynamicColor", "softSleeve", "lyricsKeepScreenOn", "uiScale"] {
+        for phone in ["swipeLeft", "swipeRight", "tapAction", "offload", "bitPerfect", "motionArtwork", "amoled", "dynamicColor", "softSleeve", "lyricsKeepScreenOn", "uiScale", "soundBypass", "coversAhead", "altMaxBitRate", "liveSearchDelayMs"] {
             assert!(!names.iter().any(|n| n == phone), "{phone} offered in a terminal");
         }
     }
@@ -1072,10 +1119,8 @@ mod tests {
         let d = StoredPrefs::default();
         let prefs = StoredPrefs { lyrics_online: true, third_party_lookups: true, lyrics_on: d.lyrics_on.iter().filter(|n| *n != "GENIUS").cloned().collect(), ..d };
         let mut v = SettingsView::default();
-        v.group.at = GROUPS.iter().position(|g| g.id == "lyrics").unwrap();
-        v.pane = 1;
-        let page = v.page(&prefs).clone();
-        let lines = SettingsView::lines(&page);
+        let pages = v.pages(&prefs).to_vec();
+        let lines = SettingsView::lines(&pages);
         let ranked: Vec<usize> = lines.iter().enumerate().filter(|(_, l)| matches!(l, Line::Row(Row::Ranked { .. }))).map(|(i, _)| i).collect();
         assert_eq!(ranked.len(), 16);
         assert!(lines.iter().all(|l| !matches!(l, Line::Row(Row::Ranked { title, .. }) if title == "?")), "every service has a name");
@@ -1085,13 +1130,13 @@ mod tests {
         v.row.at = off;
         assert!(v.adjustable());
         assert!(matches!(&v.step(&prefs, false)[..], [Cmd::Setting(n, value)] if n == "lyricsMove" && *value == format!("{id}:-1")));
-        let Some(Opened::Cmds(c)) = v.open(&prefs, true, true) else { panic!() };
+        let Some(Opened::Cmds(c)) = v.open(&prefs) else { panic!() };
         assert!(matches!(&c[..], [Cmd::Setting(n, value)] if *n == name && value == "true"));
         // Off, there is nothing to rank.
         let quiet = StoredPrefs { third_party_lookups: false, ..prefs };
         v.invalidate();
-        let page = v.page(&quiet).clone();
-        assert!(!SettingsView::lines(&page).iter().any(|l| matches!(l, Line::Row(Row::Ranked { .. }))));
+        let pages = v.pages(&quiet).to_vec();
+        assert!(!SettingsView::lines(&pages).iter().any(|l| matches!(l, Line::Row(Row::Ranked { .. }))));
     }
 
     #[test]
