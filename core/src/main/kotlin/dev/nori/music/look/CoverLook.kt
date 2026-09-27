@@ -123,8 +123,8 @@ object CoverLook {
     @JvmStatic @CriticalNative external fun seekPaceFade(h: Long): Float
 
     /**
-     * [color] moved lighter or darker in its own hue until it reads on [background] (`nori_look::cover::readable`),
-     * else [fallback]. ARGB ints.
+     * [color] moved lighter or darker in its own hue until it reads on [background], trying the other way
+     * when the first runs out (`nori_look::cover::readable_either_way`), else [fallback]. ARGB ints.
      */
     @JvmStatic @CriticalNative external fun readable(color: Int, background: Int, fallback: Int): Int
 

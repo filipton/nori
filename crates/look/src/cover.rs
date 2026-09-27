@@ -657,23 +657,33 @@ fn bottom_average(pixels: &[u32], w: usize, h: usize) -> Foot {
 }
 
 /// Pushes a colour lighter or darker in its own hue until it has contrast against the page, or gives
-/// `fallback` when no step of it does. Also how the tab bar makes the playing cover's accent readable on
-/// its own slab, which is not the cover's page.
+/// `fallback` when no step of it does.
 pub fn readable(color: u32, background: u32, fallback: u32) -> u32 {
+    stepped(color, background, luminance(background) < 0.4).unwrap_or(fallback)
+}
+
+/// [`readable`] for a mark on a mid-tone surface (the tab bar's lifted slab), where the one way
+/// [`readable`] goes runs out before it reads: tried the other way too before `fallback`. A pale accent
+/// on a greyish bar can never be light enough, and comes out as a deeper shade of itself instead.
+pub fn readable_either_way(color: u32, background: u32, fallback: u32) -> u32 {
+    let light = luminance(background) < 0.4;
+    stepped(color, background, light).or_else(|| stepped(color, background, !light)).unwrap_or(fallback)
+}
+
+fn stepped(color: u32, background: u32, towards_light: bool) -> Option<u32> {
     if calculate_contrast(color, background) >= 3.2 {
-        return color;
+        return Some(color);
     }
     let mut hsl = color_to_hsl(color);
-    let towards_light = luminance(background) < 0.4;
     for _ in 1..=8 {
         hsl[2] = if towards_light { (hsl[2] + 0.07).min(0.92) } else { (hsl[2] - 0.07).max(0.15) };
         hsl[1] = (hsl[1] * 1.05).min(1.0);
         let candidate = hsl_to_color(hsl);
         if calculate_contrast(candidate, background) >= 3.2 {
-            return candidate;
+            return Some(candidate);
         }
     }
-    fallback
+    None
 }
 
 #[cfg(test)]
@@ -688,6 +698,18 @@ mod tests {
         let on_black = readable(0xFF20_1060, black, fallback);
         assert!(calculate_contrast(on_white, white) >= 3.2 && calculate_contrast(on_black, black) >= 3.2);
         assert_ne!((on_white, on_black), (fallback, fallback), "moved in its own hue, not given up");
+    }
+
+    #[test]
+    fn a_pale_accent_on_a_greyish_bar_goes_deeper_instead_of_giving_up() {
+        // Maroon 5's page: its jeans-blue accent on the bar lifted from its olive page.
+        let (accent, bar, ink) = (0xFFA0_B0C8, 0xFF8A_8878, 0xFFFF_FFFF);
+        assert_eq!(readable(accent, bar, ink), ink, "one way, it runs out");
+        let got = readable_either_way(accent, bar, ink);
+        assert!(got != ink && calculate_contrast(got, bar) >= 3.2 && luminance(got) < luminance(accent));
+        let h = |c: u32| color_to_hsl(c)[0];
+        assert!((h(got) - h(accent)).abs() < 12.0, "still its own blue");
+        assert_eq!(readable_either_way(0xFF1E_5AA0, 0xFFFF_FFFF, ink), 0xFF1E_5AA0);
     }
 
     const S: usize = 160;
