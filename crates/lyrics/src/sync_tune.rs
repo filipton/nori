@@ -14,7 +14,10 @@
 //!   and half-shifted by hand, or laid on another song's curve. It prints per-genre tables and sweeps the
 //!   thresholds (`NORI_TUNE_T` sets them, `NORI_TUNE_GRID` searches a grid, `NORI_TUNE_CURVE` reads a
 //!   variant's curves in place of the kept ones, `NORI_TUNE_DETAIL` prints every answer's numbers).
-//! - `sync_variants` measures variants of the curve (vocal.rs's band and peak test) from the kept audio.
+//! - `sync_variants` measures variants of the curve (vocal.rs's band and peak test) from the kept audio, on
+//!   its downmix: the middle of the stereo image that vocal.rs measures a stereo song on is not in its copy.
+//!   `sync_gather` measures with the analyser itself, so the curves it keeps are the middle's; `sync_real`
+//!   reads what was kept, so a directory gathered before the middle was measured compares the old curve.
 //!
 //! The audio is kept in the directory for the run only: delete the directory when done.
 //!

@@ -12,6 +12,16 @@ Apple's own App Store screenshots and the differences closed. What is left is li
 
 ## Recently closed
 
+- **The lyrics sync check hears the middle of the stereo image.** The vocal curve (nori-player automix/vocal.rs)
+  of a stereo song is measured on its centre: the side rides in the analysis FFT's imaginary part, and each
+  voice-band bin counts by how alike the channels are there (nothing under 0.6), so panned guitars drop out. On
+  a synthetic metal band sung/unsung AUC went from 0.56 (downmix) to 0.95; about 6 % more analysis CPU. Mono
+  songs, and stereo ones with the same channels, give the same curve to the bit; the rest of the analysis reads
+  the downmix as before. `ANALYSIS_VERSION` is 12, so songs are measured again as they come; their old curves
+  are read until then. **Not measured on real songs**: `sync_tune.rs` needs the library it was tuned on
+  (`~/.music.pass`); run `sync_gather` then `sync_real` in a fresh `NORI_TUNE_DIR` and compare with the numbers
+  in vocal.rs's header (metal about 0.5, pop/rock/rap about 0.7).
+
 - **Ported onto the Rust core: the lyrics, moving-cover and player work of `claude/lyrics-motion-artwork`.**
   That branch was written on master before the rewrite, with the lyrics services and Apple's catalogue
   asked from Kotlin. Here everything that computes is Rust, and Kotlin only draws and carries bytes:

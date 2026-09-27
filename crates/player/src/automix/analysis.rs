@@ -1,4 +1,5 @@
-//! Streaming front end of the track analysis. Mono samples go in at any rate, in any buffer size; what comes out is a
+//! Streaming front end of the track analysis. Mono samples go in at any rate, in any buffer size (stereo ones are
+//! measured on their downmix, and their side only tells the vocal curve where the middle is); what comes out is a
 //! handful of per-frame feature curves (onset strength, low-band onset, power, chroma) and 100 ms loudness blocks.
 //! All the expensive work (two FFTs, K-weighting) happens here, once per sample, so the same code serves a whole
 //! decoded file (`analyse`) and the songs decoded ahead or as they come (nori-engine's measurer). `finish` then runs the
@@ -97,6 +98,14 @@ pub struct Analyzer {
     acc_n: usize,
     /// The last `cn` decimated samples; `cn` is a power of two.
     ring: Vec<f32>,
+    /// A stereo source's side, (L - R) / 2, decimated alike: the last `n` samples, 0 for a mono source.
+    side_ring: Vec<f32>,
+    side_acc: f32,
+    /// The frames computed while `written` is at most this have a side in their window, and take the
+    /// stereo path (`frame`).
+    side_until: usize,
+    /// The side's spectrum, `n / 2 + 1` bins.
+    side_buf: Vec<Complex32>,
     written: usize,
     hop: usize,
     since_hop: usize,
@@ -201,6 +210,10 @@ impl Analyzer {
             acc: 0.0,
             acc_n: 0,
             ring: vec![0.0; cn],
+            side_ring: vec![0.0; n],
+            side_acc: 0.0,
+            side_until: 0,
+            side_buf: vec![Complex32::default(); n / 2 + 1],
             written: 0,
             hop,
             since_hop: 0,
@@ -228,7 +241,7 @@ impl Analyzer {
             mags: vec![0.0; cn / 2],
             meter: Meter::new(rate, blocks),
             samples: 0,
-            voice: vocal::Tracker::new(n, sr, 2.0 / wsum, frames),
+            voice: vocal::Tracker::new(n, hop, sr, 2.0 / wsum, frames),
             f: Features {
                 fps: sr / hop as f64,
                 // Frame k is computed once (k + 1) hops have arrived.
@@ -270,17 +283,52 @@ impl Analyzer {
             if self.acc_n == self.dec {
                 let s = self.acc / self.dec as f32;
                 (self.acc, self.acc_n) = (0.0, 0);
-                self.push(s);
+                self.push(s, 0.0);
             }
         }
         self.samples += x.len() as u64;
     }
 
-    /// Interleaved frames of `channels` samples, averaged to mono. `load` converts one sample to [-1, 1].
+    /// A stereo source's mid, (L + R) / 2, which everything is measured on, and its side, (L - R) / 2, with
+    /// which the vocal curve measures only the middle of the stereo image (vocal.rs `frame_stereo`).
+    fn feed_stereo(&mut self, mid: &[f32], side: &[f32]) {
+        self.meter.feed(mid);
+        for (v, s) in mid.iter().zip(side) {
+            let v = if v.is_finite() { *v } else { 0.0 };
+            let s = if s.is_finite() { *s } else { 0.0 };
+            self.acc += v;
+            self.side_acc += s;
+            self.acc_n += 1;
+            if self.acc_n == self.dec {
+                let (v, s) = (self.acc / self.dec as f32, self.side_acc / self.dec as f32);
+                (self.acc, self.side_acc, self.acc_n) = (0.0, 0.0, 0);
+                self.push(v, s);
+            }
+        }
+        self.samples += mid.len() as u64;
+    }
+
+    /// Interleaved frames of `channels` samples, averaged to mono. `load` converts one sample to [-1, 1]. Two
+    /// channels also give the vocal curve their side (`feed_stereo`); a stereo source whose channels are the
+    /// same is measured exactly as the mono one.
     pub fn feed_interleaved<T: Copy>(&mut self, x: &[T], channels: usize, load: impl Fn(T) -> f32) {
         let channels = channels.max(1);
         let scale = 1.0 / channels as f32;
         let mut mono = [0f32; 256];
+        if channels == 2 {
+            let mut side = [0f32; 256];
+            for chunk in x.chunks(512) {
+                let frames = chunk.len() / 2;
+                for (i, p) in chunk.as_chunks::<2>().0.iter().enumerate() {
+                    let (l, r) = (load(p[0]), load(p[1]));
+                    // As the sum below makes it, to the bit.
+                    mono[i] = (l + r) * scale;
+                    side[i] = (l - r) * scale;
+                }
+                self.feed_stereo(&mono[..frames], &side[..frames]);
+            }
+            return;
+        }
         for chunk in x.chunks(256 * channels) {
             let frames = chunk.len() / channels;
             for (i, frame) in chunk.chunks_exact(channels).enumerate() {
@@ -291,8 +339,12 @@ impl Analyzer {
     }
 
     #[inline]
-    fn push(&mut self, s: f32) {
+    fn push(&mut self, s: f32, side: f32) {
         let mask = self.cn - 1;
+        self.side_ring[self.written & (self.n - 1)] = side;
+        if side != 0.0 {
+            self.side_until = self.written + self.n;
+        }
         self.ring[self.written & mask] = s;
         self.written += 1;
         self.since_hop += 1;
@@ -311,10 +363,37 @@ impl Analyzer {
         }
     }
 
+    /// The mid's last `n` samples windowed into the real part of `buf`, the side's into the imaginary part: one
+    /// FFT then gives both spectra (`frame`).
+    fn window_pair_into(ring: &[f32], side: &[f32], written: usize, win: &[f32], out: &mut [Complex32]) {
+        let (cn, n) = (ring.len(), side.len());
+        let start = written.wrapping_sub(n);
+        for (i, (o, w)) in out.iter_mut().zip(win).enumerate() {
+            let at = start.wrapping_add(i);
+            *o = Complex32::new(ring[at & (cn - 1)] * w, side[at & (n - 1)] * w);
+        }
+    }
+
     fn frame(&mut self) {
-        Self::window_into(&self.ring, self.written, &self.win, &mut self.buf);
-        self.fft.process_with_scratch(&mut self.buf, &mut self.scratch);
-        self.voice.frame(&self.buf);
+        if self.written <= self.side_until {
+            // Stereo: the mid and the side through one FFT as the real and imaginary parts of one signal, and
+            // parted by the symmetry of a real signal's spectrum: X_mid[k] = (Z[k] + Z*[n-k]) / 2, X_side[k] =
+            // (Z[k] - Z*[n-k]) / 2i. Only bins 0..=n/2 of `buf` are read, and bin k's partner n-k is above
+            // them, so the mid is written over them in place.
+            let n = self.n;
+            Self::window_pair_into(&self.ring, &self.side_ring, self.written, &self.win, &mut self.buf);
+            self.fft.process_with_scratch(&mut self.buf, &mut self.scratch);
+            for k in 0..=n / 2 {
+                let (a, b) = (self.buf[k], self.buf[(n - k) & (n - 1)].conj());
+                self.buf[k] = (a + b) * 0.5;
+                self.side_buf[k] = (a - b) * Complex32::new(0.0, -0.5);
+            }
+            self.voice.frame_stereo(&self.buf, &self.side_buf);
+        } else {
+            Self::window_into(&self.ring, self.written, &self.win, &mut self.buf);
+            self.fft.process_with_scratch(&mut self.buf, &mut self.scratch);
+            self.voice.frame(&self.buf);
+        }
 
         let mut total = 0f32;
         let mut low = 0f32;
@@ -443,6 +522,8 @@ impl Analyzer {
 
     pub fn reset(&mut self) {
         self.ring.fill(0.0);
+        self.side_ring.fill(0.0);
+        (self.side_acc, self.side_until) = (0.0, 0);
         (self.written, self.since_hop, self.hops, self.samples, self.acc, self.acc_n) = (0, 0, 0, 0, 0.0, 0);
         (self.prev, self.prev_low) = ([0.0; BANDS], [0.0; 8]);
         self.meter.reset();
