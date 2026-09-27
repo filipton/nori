@@ -353,14 +353,12 @@ impl HeroButtons {
 }
 
 /// The offer on a provider's album or playlist page, which octo-fiesta fetches whole into the library
-/// when it is starred (the client words it, "Add the whole album to the library (Deezer)").
+/// when it is starred (the client words it, "Add the whole album to the library").
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct LibraryOffer {
     /// A playlist, else an album.
     pub playlist: bool,
-    /// The service it comes from, "Deezer"; none when the id does not say.
-    pub provider: Option<String>,
 }
 
 /// The offer for the page `id`; none for the library's own.
@@ -370,7 +368,7 @@ pub fn library_offer(id: String, is_external: bool) -> Option<LibraryOffer> {
     if !is_external && !playlist {
         return None;
     }
-    Some(LibraryOffer { playlist, provider: nori_model::lines::provider_of(&id) })
+    Some(LibraryOffer { playlist })
 }
 
 /// A long list wants a way to narrow itself; one short enough to see whole does not. Kept while a
@@ -448,7 +446,11 @@ pub struct ArtistDetail {
 }
 
 impl ArtistDetail {
-    pub fn new(artist: Artist, albums: Vec<Album>) -> Self {
+    pub fn new(artist: Artist, mut albums: Vec<Album>) -> Self {
+        // Every release here is the artist's, whoever else is credited: the cards say only the year.
+        for a in &mut albums {
+            a.subtitle = nori_model::lines::album_subtitle("", a.year);
+        }
         let groups = release_groups(&albums);
         let queue = PageQueue::of(OriginKind::Artist, &artist.id);
         ArtistDetail { artist, albums, groups, queue }
@@ -522,6 +524,14 @@ mod tests {
     }
 
     #[test]
+    fn an_artist_page_shows_only_its_albums_years() {
+        let artist = Artist { name: "Björk".into(), ..Default::default() };
+        let album = |artist: &str, year: u32| Album { artist: artist.into(), year, ..Default::default() };
+        let d = ArtistDetail::new(artist, vec![album("björk", 1997), album("Björk & Thom Yorke", 2001), album("Björk", 0)]);
+        assert_eq!(d.albums.iter().map(|a| a.subtitle.as_str()).collect::<Vec<_>>(), ["1997", "2001", ""]);
+    }
+
+    #[test]
     fn releases_by_kind_newest_first() {
         let a = |year: u32, types: &[&str], comp: bool| Album { year, release_types: types.iter().map(|t| t.to_string()).collect(), is_compilation: comp, ..Default::default() };
         let albums = vec![a(2001, &[], false), a(2010, &["album", "live"], false), a(2005, &["single"], false), a(2003, &["ep"], false), a(2020, &[], false), a(1999, &[], true)];
@@ -585,7 +595,7 @@ mod tests {
 
     #[test]
     fn provider_pages_offer_the_library_and_long_lists_a_filter() {
-        let offer = |playlist: bool| Some(LibraryOffer { playlist, provider: Some("Deezer".into()) });
+        let offer = |playlist: bool| Some(LibraryOffer { playlist });
         assert_eq!(library_offer("ext-deezer-album-1".into(), true), offer(false));
         assert_eq!(library_offer("pl-deezer-1".into(), false), offer(true));
         assert_eq!(library_offer("al-1".into(), false), None);

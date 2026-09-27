@@ -365,11 +365,8 @@ class Say(private val r: Resources) {
         else -> r.getString(R.string.disc_heading_titled, d.disc.toInt(), d.title)
     }
 
-    /** The offer on a provider's page: "Add the whole album to the library (Deezer)". */
-    fun libraryOffer(o: LibraryOffer): String = r.getString(
-        if (o.playlist) R.string.library_offer_playlist else R.string.library_offer_album,
-        o.provider ?: r.getString(R.string.library_offer_provider),
-    )
+    /** The offer on a provider's page: "Add the whole album to the library". */
+    fun libraryOffer(o: LibraryOffer): String = r.getString(if (o.playlist) R.string.library_offer_playlist else R.string.library_offer_album)
 
     // ---- the player ----
 
@@ -446,7 +443,7 @@ class Say(private val r: Resources) {
         SongAction.Download -> menuDownload
         is SongAction.GoToAlbum -> menuGoToAlbum
         is SongAction.GoToArtist -> if (a.named) r.getString(R.string.menu_go_to_named, a.name) else menuGoToArtist
-        is SongAction.AddToLibrary -> r.getString(R.string.menu_add_to_library, a.provider ?: r.getString(R.string.menu_provider))
+        SongAction.AddToLibrary -> r.getString(R.string.menu_add_to_library)
         SongAction.SleepTimer -> menuSleepTimer
         SongAction.StartRadio -> menuStartRadio
         SongAction.InstantMix -> menuInstantMix

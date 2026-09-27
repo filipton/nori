@@ -54,7 +54,7 @@ crates/core/    Rust, platform-free: the top of the app's state, an rlib a deskt
 crates/model/   Rust, platform-free: the shapes every part of the core shares (package nori-model): the
                 library's records as the server sends them, the index stores them and Kotlin gets them
                 (model.rs, with the player's own records described again for uniffi), what a record carries
-                about itself beyond the server's fields, unworded (lines.rs: a provider's name, the explicit
+                about itself beyond the server's fields, unworded (lines.rs: a song row's line, the explicit
                 mark), the core's error (`CoreError`) and its log (alog.rs). Depends on nori-player.
 crates/db/      Rust, platform-free: the app's one SQLite/FTS5 database (package nori-db): its schema, opened
                 for one server's rows (`sid()`), the library index and its search, the database of the core

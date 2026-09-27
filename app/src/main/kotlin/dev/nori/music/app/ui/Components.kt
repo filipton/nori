@@ -415,21 +415,15 @@ fun SongRow(
                 )
             } else Cover(coverUrl, 46.dp, radius = 6.dp)
             Column(Modifier.weight(1f).padding(start = if (number != null) 14.dp else 12.dp, end = 8.dp)) {
-                Text(
-                    song.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge,
+                // With no second line (an album's own tracks) the cloud leads the title rather than standing alone under it.
+                RemoteLine(
+                    song.title, song.isExternal && line.isEmpty(), MaterialTheme.typography.bodyLarge,
                     color = if (playing) scheme.primary else scheme.onSurface,
                 )
                 // Worked out by the core when the song was read (`fmt::song_line`), not per row.
-                if (line.isNotEmpty()) Text(
-                    line, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant,
-                )
+                if (line.isNotEmpty()) RemoteLine(line, song.isExternal, MaterialTheme.typography.bodySmall)
             }
             val tint = scheme.onSurfaceVariant
-            if (song.isExternal) {
-                Icon(Icons.Filled.CloudDownload, say.notInLibraryYet, Modifier.size(15.dp), tint)
-                song.provider?.let { Text(it, Modifier.padding(start = 3.dp), style = MaterialTheme.typography.labelSmall, color = tint) }
-            }
             // Every row's marks sit in columns of their own, the same width on every row: the heart, then
             // the download ring or tick, then the time, then the menu. A list of favourites then puts all
             // its hearts one above another - placed after the title, the heart moved with the width of
@@ -607,7 +601,7 @@ private object SwipeActs {
  * fixed width inside a wider cell the card hugs the left edge of it and the grid looks ragged.
  */
 @Composable
-fun CoverCard(title: String, subtitle: String, coverUrl: String?, size: Dp, onClick: () -> Unit, modifier: Modifier = Modifier, fill: Boolean = false) {
+fun CoverCard(title: String, subtitle: String, coverUrl: String?, size: Dp, onClick: () -> Unit, modifier: Modifier = Modifier, fill: Boolean = false, remote: Boolean = false) {
     Column((if (fill) modifier else modifier.width(size)).clickable(onClick = onClick)) {
         if (fill) Cover(coverUrl, 0.dp, Modifier.fillMaxWidth().aspectRatio(1f), radius = Radius.card)
         else Cover(coverUrl, size, radius = Radius.card)
@@ -616,10 +610,27 @@ fun CoverCard(title: String, subtitle: String, coverUrl: String?, size: Dp, onCl
             style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp, fontWeight = FontWeight.Medium),
             modifier = Modifier.padding(top = 8.dp),
         )
-        if (subtitle.isNotEmpty()) Text(
-            subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis,
-            style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5f.sp), color = MaterialTheme.colorScheme.onSurfaceVariant,
+        if (subtitle.isNotEmpty() || remote) RemoteLine(subtitle, remote, MaterialTheme.typography.bodySmall.copy(fontSize = 12.5f.sp))
+    }
+}
+
+/**
+ * A line of a row or card, led by the cloud when the item is a provider's (not in the library yet). Which provider
+ * is not said: to the listener remote is remote, and a name there only pushed the line out of its width.
+ * The cloud comes first so the text, not the mark, is what gets cut short.
+ */
+@Composable
+fun RemoteLine(
+    text: String, remote: Boolean, style: androidx.compose.ui.text.TextStyle, modifier: Modifier = Modifier,
+    color: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+) {
+    val tint = MaterialTheme.colorScheme.onSurfaceVariant
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        if (remote) Icon(
+            Icons.Filled.CloudDownload, say.notInLibraryYet,
+            Modifier.padding(end = if (text.isEmpty()) 0.dp else 4.dp).size(with(LocalDensity.current) { style.fontSize.toDp() } + 1.dp), tint,
         )
+        if (text.isNotEmpty()) Text(text, maxLines = 1, overflow = TextOverflow.Ellipsis, style = style, color = color)
     }
 }
 
@@ -644,7 +655,7 @@ fun AlbumCard(album: Album, coverUrl: String?, size: Dp, onClick: () -> Unit, mo
     CoverCard(
         album.name,
         album.subtitle,
-        coverUrl, size, onClick, modifier, fill,
+        coverUrl, size, onClick, modifier, fill, remote = album.isExternal,
     )
 
 @Composable

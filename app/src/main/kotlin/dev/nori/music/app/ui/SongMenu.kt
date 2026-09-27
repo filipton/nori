@@ -153,7 +153,7 @@ fun SongMenu(
                 is dev.nori.music.ffi.library.SongAction.GoToArtist -> Item(label, Icons.Filled.Person) {
                     nav.artist(a.id, Artist(a.id, a.name, song.coverArt.takeIf { song.artists.size <= 1 }, null, 0u, false, false)); onDismiss()
                 }
-                is dev.nori.music.ffi.library.SongAction.AddToLibrary -> Item(label, Icons.Filled.LibraryAdd) { actions.addToLibrary(song.id, isAlbum = false); onDismiss() }
+                dev.nori.music.ffi.library.SongAction.AddToLibrary -> Item(label, Icons.Filled.LibraryAdd) { actions.addToLibrary(song.id, isAlbum = false); onDismiss() }
                 dev.nori.music.ffi.library.SongAction.SleepTimer -> Item(label, Icons.Filled.Bedtime) { sleeping = true }
                 dev.nori.music.ffi.library.SongAction.StartRadio -> Item(label, Icons.Filled.Radio) { actions.startRadio(song); onDismiss() }
                 dev.nori.music.ffi.library.SongAction.InstantMix -> Item(label, Icons.Filled.AutoAwesome) { actions.instantMix(song); onDismiss() }

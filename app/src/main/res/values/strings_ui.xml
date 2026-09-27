@@ -261,9 +261,8 @@
     <string name="caption_explicit">explicit</string>
     <string name="disc_heading">Disc %1$d</string>
     <string name="disc_heading_titled">Disc %1$d · %2$s</string>
-    <string name="library_offer_album">Add the whole album to the library (%1$s)</string>
-    <string name="library_offer_playlist">Add the whole playlist to the library (%1$s)</string>
-    <string name="library_offer_provider">provider</string>
+    <string name="library_offer_album">Add the whole album to the library</string>
+    <string name="library_offer_playlist">Add the whole playlist to the library</string>
 
     <!-- The player. -->
     <string name="nothing_playing">Nothing playing</string>
@@ -392,8 +391,7 @@
     <string name="menu_go_to_album">Go to album</string>
     <string name="menu_go_to_artist">Go to artist</string>
     <string name="menu_go_to_named">Go to %1$s</string>
-    <string name="menu_add_to_library">Add to library (%1$s)</string>
-    <string name="menu_provider">provider</string>
+    <string name="menu_add_to_library">Add to library</string>
     <string name="menu_sleep_timer">Sleep timer…</string>
     <string name="menu_start_radio">Start radio from this song</string>
     <string name="menu_instant_mix">Instant mix</string>
