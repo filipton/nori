@@ -2611,7 +2611,10 @@ private fun Queue(vm: PlayerViewModel) {
                     .animateItem(
                         fadeInSpec = if (plain || back != null) null else tween(QUEUE_IN_MS),
                         placementSpec = if (plain || landed) null else tween(QUEUE_MOVE_MS, easing = androidx.compose.animation.core.FastOutSlowInEasing),
-                        fadeOutSpec = if (plain) null else tween(QUEUE_OUT_MS),
+                        // A song that left the queue goes at once. Faded out, it stayed behind where it
+                        // was when the fade never finished (a queue replaced or refilled under the panel):
+                        // a whole old list drawn still over the real one, which scrolled under it.
+                        fadeOutSpec = null,
                     )
                     .zIndex(if (held) 1f else 0f)
                     .graphicsLayer {
@@ -2744,9 +2747,8 @@ private const val QUEUE_PLAYED_ALPHA = 0.45f
 /** The shade over the playing song's cover, under its bars. */
 private val QUEUE_NOW_VEIL = Color.Black.copy(alpha = 0.4f)
 
-/** How the queue's rows come, go and move: a row appearing, a row leaving (after a swipe it is already off the side), the rest closing up. */
+/** How the queue's rows come and move: a row appearing, the rest closing up. */
 private const val QUEUE_IN_MS = 220
-private const val QUEUE_OUT_MS = 160
 private const val QUEUE_MOVE_MS = 260
 /** A held row lifting and settling, and a dropped row going into its slot. */
 private const val QUEUE_LIFT_MS = 150
