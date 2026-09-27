@@ -3171,13 +3171,19 @@ export component AppWindow inherits Window {
                         spacing: 22px;
                         for line[i] in root.lyrics-lines: Text {
                             property <bool> lit: i == root.lyrics-active;
+                            // How lit the line is, fading as it changes: set when it changes (a change handler
+                            // runs whether or not the line is drawn just then), so a line sung fades from white.
+                            property <float> level;
+                            animate level { duration: 420ms; easing: ease-out; }
                             // Scrolled to when lit, and when the lyrics come in with this line already sung.
                             changed lit => {
+                                self.level = self.lit ? 1 : 0;
                                 if self.lit {
                                     lyric-flick.content-y = -max(0, min(self.y - lyric-flick.height * 0.1, lyric-flick.content-height - lyric-flick.height));
                                 }
                             }
                             init => {
+                                self.level = self.lit ? 1 : 0;
                                 if self.lit {
                                     lyric-flick.content-y = -max(0, min(self.y - lyric-flick.height * 0.1, lyric-flick.content-height - lyric-flick.height));
                                 }
@@ -3190,12 +3196,14 @@ export component AppWindow inherits Window {
                             font-weight: 700;
                             color: root.lyric-sweeping ? transparent : !root.lyrics-synced || self.lit ? #ffffffeb : #ffffff42;
                             animate color { duration: 420ms; easing: ease-out; }
-                            if root.lyric-sweeping && !(self.lit && root.lyric-pieces-side.length > 0): StyledText {
+                            if root.lyric-sweeping: StyledText {
+                                // Kept while the pieces draw the line lit, only hidden: its colour comes up to white with them, so
+                                // the line fades back from white when the next one takes over.
+                                visible: !(parent.lit && root.lyric-pieces-side.length > 0);
                                 width: 100%;
                                 height: 100%;
                                 default-font-size: 22px;
-                                default-color: parent.lit ? #ffffffeb : #ffffff42;
-                                animate default-color { duration: 420ms; easing: ease-out; }
+                                default-color: Colors.white.with-alpha(0.26 + (0.92 - 0.26) * parent.level);
                                 text: parent.lit ? @markdown("**\{root.lyric-sung}<font color=\"\{Colors.white.with-alpha(0.26 + 0.66 * root.lyric-mix)}\">\{root.lyric-now}</font><font color=\"#ffffff42\">\{root.lyric-rest}</font>**") : @markdown("**\{line}**");
                             }
                             if self.lit && root.lyric-sweeping && root.lyric-pieces-side.length > 0: Rectangle {
@@ -3528,13 +3536,18 @@ export component AppWindow inherits Window {
                     spacing: 36px;
                     for line[i] in root.lyrics-lines: Text {
                         property <bool> lit: i == root.lyrics-active;
+                        // As the panel's: how lit, fading as it changes, whether or not the line is drawn just then.
+                        property <float> level;
+                        animate level { duration: 500ms; easing: ease-out; }
                         changed lit => {
+                            self.level = self.lit ? 1 : 0;
                             if self.lit {
                                 full-lyrics.content-y = -(self.y - (root.height * 0.36 - 48px));
                                 root.full-lyric-h = self.height;
                             }
                         }
                         init => {
+                            self.level = self.lit ? 1 : 0;
                             if self.lit {
                                 full-lyrics.content-y = -(self.y - (root.height * 0.36 - 48px));
                                 root.full-lyric-h = self.height;
@@ -3546,12 +3559,14 @@ export component AppWindow inherits Window {
                         font-weight: 700;
                         color: root.lyric-sweeping ? transparent : !root.lyrics-synced || self.lit ? white : #ffffff5c;
                         animate color { duration: 500ms; easing: ease-out; }
-                        if root.lyric-sweeping && !(self.lit && root.lyric-pieces-full.length > 0): StyledText {
+                        if root.lyric-sweeping: StyledText {
+                            // Kept while the pieces draw the line lit, only hidden: its colour comes up to white with them, so
+                            // the line fades back from white when the next one takes over.
+                            visible: !(parent.lit && root.lyric-pieces-full.length > 0);
                             width: 100%;
                             height: 100%;
                             default-font-size: 44px;
-                            default-color: parent.lit ? white : #ffffff5c;
-                            animate default-color { duration: 500ms; easing: ease-out; }
+                            default-color: Colors.white.with-alpha(0.36 + (1 - 0.36) * parent.level);
                             text: parent.lit ? @markdown("**\{root.lyric-sung}<font color=\"\{Colors.white.with-alpha(0.36 + 0.64 * root.lyric-mix)}\">\{root.lyric-now}</font><font color=\"#ffffff5c\">\{root.lyric-rest}</font>**") : @markdown("**\{line}**");
                         }
                         if self.lit && root.lyric-sweeping && root.lyric-pieces-full.length > 0: Rectangle {
