@@ -465,7 +465,10 @@ fn sound(b: &Build) -> Vec<Section> {
             centred: true,
             level: Some(EqLevel::ReplayGainPreamp),
         });
+        levelling.push(b.choice("loudnessTarget", "Loudness target", true, |v| format!("{v} LUFS")));
+        levelling.push(b.choice("gainBoostDb", "Turn quiet songs up", true, |v| off_or(v, |v| format!("up to +{v} dB"))));
         levelling.push(b.choice("untaggedGainDb", "Untagged files", true, |v| format!("{v} dB")));
+        levelling.push(b.toggle("gainMeasured", "Measure untagged files", "Play songs without tags at the loudness AutoMix measured"));
     }
 
     let mut mixing = Vec::new();
