@@ -284,10 +284,6 @@ pub struct StoredPrefs {
     // Controls.
     #[setting("previousAlwaysSkips", FLAG, default = false, show = K::Switch)]
     pub previous_always_skips: bool,
-    /// Headphones taken off paused the music (they went away, or said pause themselves): the same ones
-    /// put back on within a while bring it back, fading in (nori_player::headphones). Off by default.
-    #[setting("headphonesResume", FLAG, default = false, show = K::Switch)]
-    pub headphones_resume: bool,
     #[setting("speed", within(RATE.0, RATE.1), default = 1.0, show = K::Choice(&["0.75", "1", "1.25", "1.5", "2"]), effect = APPLY_AUDIO)]
     pub speed: f32,
     #[setting("pitch", within(RATE.0, RATE.1), default = 1.0, show = K::Choice(&["0.9", "0.95", "1", "1.05", "1.1"]), effect = APPLY_AUDIO)]

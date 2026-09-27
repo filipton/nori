@@ -255,8 +255,7 @@ enum Command {
     PlayAt(usize, i64),
     GoTo(usize, i64),
     PauseAtEnd(bool),
-    /// Play, fading in over this long (`None`: the user's fade on play).
-    Play(Option<i32>),
+    Play,
     /// Pause, fading out over this long (`None`: the user's fade on pause).
     Pause(Option<i32>),
     Toggle,
@@ -426,21 +425,15 @@ impl Engine {
     }
 
     pub fn play(&self) {
-        self.send(Command::Play(None));
+        self.send(Command::Play);
     }
 
     pub fn pause(&self) {
         self.send(Command::Pause(None));
     }
 
-    /// Play, coming up from silence over `fade_ms` whatever the user's fade on play is (headphones put
-    /// back on: `nori_player::headphones`).
-    pub fn play_fading(&self, fade_ms: i32) {
-        self.send(Command::Play(Some(fade_ms.max(0))));
-    }
-
-    /// Pause at once, whatever the user's fade on pause is (headphones taken off), cutting short a fade
-    /// out already under way.
+    /// Pause at once, whatever the user's fade on pause is (headphones pulled out: the audio became
+    /// noisy), cutting short a fade out already under way.
     pub fn pause_now(&self) {
         self.send(Command::Pause(Some(0)));
     }
@@ -1332,13 +1325,13 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
                     _ => self.p.pause_at_end(on),
                 }
             }
-            Command::Play(fade) => self.play(fade.unwrap_or(self.settings.fade_ms)),
+            Command::Play => self.play(),
             Command::Pause(fade) => self.pause(now, fade.unwrap_or(self.settings.fade_ms)),
             Command::Toggle => {
                 if self.state == State::Playing {
                     self.pause(now, self.settings.fade_ms)
                 } else {
-                    self.play(self.settings.fade_ms)
+                    self.play()
                 }
             }
             // The skip buttons: paused, a skip is a request for music (nori_player::transport::skip_plays).
@@ -1863,21 +1856,20 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         self.switches.push_back(Switched::Resound);
     }
 
-    /// Music from where the player is: fading in from silence over `fade_ms` (the user's fade on play,
-    /// unless a control asked for its own).
-    fn resume(&mut self, fade_ms: i32) {
+    /// Music from where the player is: fading in from silence when the settings say so.
+    fn resume(&mut self) {
         self.go_on();
-        match play_fade(fade_ms, false) {
+        match play_fade(self.settings.fade_ms, false) {
             Some(ms) => self.ramp(Some(0.0), 1.0, ms as i64),
             None => self.ramp(None, 1.0, 0),
         }
         self.set_state(State::Playing);
     }
 
-    fn play(&mut self, fade_ms: i32) {
+    fn play(&mut self) {
         if self.pause_at.take().is_some() && self.held.is_none() {
             // Pressed again inside the fade out: the music comes back from where the fade got to.
-            self.ramp(None, 1.0, fade_ms.max(0) as i64);
+            self.ramp(None, 1.0, self.settings.fade_ms.max(0) as i64);
             self.set_state(State::Playing);
             return;
         }
@@ -1890,7 +1882,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             // The place a skip or a seek left while paused: fetched now that the music is wanted.
             self.released = None;
             self.jump(i, ms);
-            self.resume(fade_ms);
+            self.resume();
             return;
         }
         self.reopen();
@@ -1910,7 +1902,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             }
             self.jump(at, 0);
         }
-        self.resume(fade_ms);
+        self.resume();
     }
 
     fn pause(&mut self, now: i64, fade_ms: i32) {
@@ -1940,7 +1932,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         if !(self.playing() && self.pause_at.is_none()) {
             self.hold(s);
             if skip_plays(false) {
-                self.play(self.settings.fade_ms);
+                self.play();
             }
             return;
         }
@@ -2057,7 +2049,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             }
             // A skip while paused is a request for music.
             if wants_music && !self.playing() && self.current().is_some() {
-                self.resume(self.settings.fade_ms);
+                self.resume();
             }
         }
         if dipped {

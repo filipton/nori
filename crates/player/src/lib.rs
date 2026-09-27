@@ -17,7 +17,6 @@ pub mod eqfit;
 pub mod gain;
 pub mod graphic;
 pub mod outputs;
-pub mod headphones;
 pub mod heard;
 pub mod pcm;
 pub mod seek;

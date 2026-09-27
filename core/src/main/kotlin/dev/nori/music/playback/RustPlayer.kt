@@ -13,7 +13,6 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
-import android.os.SystemClock
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -46,9 +45,7 @@ internal object RustPlayerJni {
     @JvmStatic @CriticalNative external fun pauseAtEnd(h: Long, on: Boolean)
     @JvmStatic @CriticalNative external fun play(h: Long)
     @JvmStatic @CriticalNative external fun pause(h: Long)
-    /** Play, up from silence over [ms] whatever the fade setting (headphones put back on). */
-    @JvmStatic @CriticalNative external fun playFading(h: Long, ms: Int)
-    /** Pause at once, no fade (headphones taken off). */
+    /** Pause at once, no fade (headphones pulled out). */
     @JvmStatic @CriticalNative external fun pauseNow(h: Long)
     /** The core's queue was edited (or reordered): the engine follows it. */
     @JvmStatic @CriticalNative external fun queueChanged(h: Long)
@@ -408,36 +405,9 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
     private fun audible(): Boolean = prepared && playWhenReady && suppressed == Player.PLAYBACK_SUPPRESSION_REASON_NONE
 
     /** The engine plays on from where it is, or from where the list or a seek left it (which it held). */
-    private fun start(fadeMs: Int = 0) {
+    private fun start() {
         if (items.isEmpty() || h == 0L) return
-        if (fadeMs > 0) RustPlayerJni.playFading(h, fadeMs) else RustPlayerJni.play(h)
-    }
-
-    /** The next play comes up over this long ([playFading]); taken by that play, whether it sounds or not. */
-    private var fadeIn = 0
-
-    /**
-     * Headphones put back on (nori_player::headphones said so): play as [play] does, coming up over
-     * [ms]. The session's [PlaybackService] prepares a released player first, as for any play.
-     */
-    fun playFading(ms: Int) {
-        fadeIn = ms
-        play()
-        fadeIn = 0
-    }
-
-    /**
-     * Headphones taken off: paused at once, never fading out, as media3 pauses for noisy. The audio focus
-     * is kept, as it is then, so another player taking the sound says so ([onFocus]) and the headphones'
-     * return does not start the music over it.
-     */
-    fun pauseNow(reason: Int) {
-        if (!playWhenReady) return
-        RustPlayerJni.pauseNow(h)
-        playWhenReady = false
-        whyPlayWhenReady = reason
-        follow()
-        invalidateState()
+        RustPlayerJni.play(h)
     }
 
     /** The engine goes to [index] at [ms], playing or paused as it is: paused, it holds the place until play. */
@@ -460,7 +430,7 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
         whyPlayWhenReady = Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST
         suppressed = Player.PLAYBACK_SUPPRESSION_REASON_NONE
         if (playWhenReady) {
-            if (prepared) start(fadeIn)
+            if (prepared) start()
         } else {
             RustPlayerJni.pause(h)
             unfocus()
@@ -761,8 +731,6 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
         when (change) {
             AudioManager.AUDIOFOCUS_LOSS -> {
                 focused = false
-                // Another player has the sound now: headphones put back on must not start over it.
-                dev.nori.music.ffi.queue.headphonesForget()
                 if (playWhenReady) {
                     RustPlayerJni.pause(h)
                     playWhenReady = false
@@ -783,14 +751,17 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
     }
 
     /**
-     * Headphones pulled out (or taken off, for those that go away when they are): paused at once, as
-     * ExoPlayer's `setHandleAudioBecomingNoisy` does, and remembered by the core for their return.
+     * Headphones pulled out: paused, as ExoPlayer's `setHandleAudioBecomingNoisy` does, and at once
+     * whatever the fade on pause is, as a fade would play on out of the speaker.
      */
     private val noisy = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            if (dev.nori.music.ffi.queue.headphonesOff(playWhenReady, SystemClock.elapsedRealtime())) {
-                pauseNow(Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY)
-            }
+            if (!playWhenReady) return
+            RustPlayerJni.pauseNow(h)
+            playWhenReady = false
+            whyPlayWhenReady = Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY
+            follow()
+            invalidateState()
         }
     }
     private var listening = false
