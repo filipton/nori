@@ -78,6 +78,15 @@ impl Choice for EqKind {
         &["PEAKING", "LOW_SHELF", "HIGH_SHELF", "LOW_PASS", "HIGH_PASS", "BAND_PASS", "NOTCH", "ALL_PASS", "LOW_SHELF_SLOPE", "HIGH_SHELF_SLOPE"];
 }
 
+/// Which equalizer plays: the parametric one (filters of any kind, each with its own gain) or the graphic
+/// one (fixed ISO bands whose sliders are the response). Each keeps its own settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, nori_settings_derive::Choice)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
+pub enum EqMode {
+    Parametric,
+    Graphic,
+}
+
 /// The light or dark look: the system's, or always one of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, nori_settings_derive::Choice)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
@@ -249,6 +258,35 @@ pub struct StoredPrefs {
     pub eq_enabled: bool,
     #[setting("eqBands", BANDS, default = graphic(), hidden, effect = SOUND)]
     pub eq_bands: Vec<SoundBand>,
+    /// Which equalizer plays while it is on; the other keeps its settings.
+    #[setting("eqMode", PICK, default = EqMode::Parametric, show = K::Named(EqMode::NAMES), effect = SOUND)]
+    pub eq_mode: EqMode,
+    /// The graphic equalizer's sliders, dB, low to high: 10, 15 or 31 of them (`nori_player::graphic`).
+    #[setting("eqGraphic", GRAPHIC, default = vec![0.0; 10], hidden, effect = SOUND)]
+    pub eq_graphic: Vec<f32>,
+    /// A low shelf of this many dB; 0 is off.
+    #[setting("bassBoostDb", clamped(0.0, BASS_BOOST_MAX), default = 0.0, show = K::Level(0.0, BASS_BOOST_MAX), effect = SOUND)]
+    pub bass_boost_db: f32,
+    /// The virtualizer's strength, 0 (off) to 1.
+    #[setting("virtualizer", clamped(0.0, 1.0), default = 0.0, show = K::Level(0.0, 1.0), effect = SOUND)]
+    pub virtualizer: f32,
+    /// Louder than the music is, dB, with the limiter behind it; 0 is off.
+    #[setting("volumeBoostDb", clamped(0.0, VOLUME_BOOST_MAX), default = 0.0, show = K::Level(0.0, VOLUME_BOOST_MAX), effect = SOUND)]
+    pub volume_boost_db: f32,
+    #[setting("compressor", FLAG, default = false, show = K::Switch, effect = SOUND)]
+    pub compressor: bool,
+    #[setting("compThresholdDb", clamped(-60.0, 0.0), default = -20.0, show = K::Level(-60.0, 0.0), effect = SOUND)]
+    pub comp_threshold_db: f32,
+    #[setting("compRatio", clamped(1.0, 20.0), default = 3.0, show = K::Level(1.0, 20.0), effect = SOUND)]
+    pub comp_ratio: f32,
+    #[setting("compAttackMs", clamped(0.1, 200.0), default = 10.0, show = K::Level(0.1, 200.0), effect = SOUND)]
+    pub comp_attack_ms: f32,
+    #[setting("compReleaseMs", clamped(10.0, 2000.0), default = 180.0, show = K::Level(10.0, 2000.0), effect = SOUND)]
+    pub comp_release_ms: f32,
+    #[setting("compMakeupDb", clamped(0.0, 24.0), default = 4.5, show = K::Level(0.0, 24.0), effect = SOUND)]
+    pub comp_makeup_db: f32,
+    #[setting("compKneeDb", clamped(0.0, 24.0), default = 6.0, show = K::Level(0.0, 24.0), effect = SOUND)]
+    pub comp_knee_db: f32,
     #[setting("mono", FLAG, default = false, show = K::Switch, effect = APPLY_AUDIO | SOUND)]
     pub mono: bool,
     #[setting("limiter", FLAG, default = false, show = K::Switch, effect = APPLY_AUDIO | SOUND)]
@@ -402,6 +440,8 @@ pub(crate) const SPECIAL_SPECS: &[(&str, K)] = &[
     ("motionArtworkMobile", K::Switch),
     ("musicFolder", K::Choice(&[])),
     ("altMaxBitRate", K::Choice(&["0", "320", "192", "128", "96"])),
+    ("compressorPreset", K::Choice(&["GENTLE", "BALANCED", "STRONG"])),
+    ("eqLayout", K::Choice(&["10", "15", "31"])),
 ];
 
 const SERVERS: Custom<Vec<SavedServer>> = Custom {
@@ -419,6 +459,25 @@ const SERVERS: Custom<Vec<SavedServer>> = Custom {
 
 /// "kind:freq:gain:q:channel" per band, bands joined by ';'.
 const BANDS: Custom<Vec<SoundBand>> = Custom { load: |t, d| t.and_then(decode_bands).unwrap_or(d), save: |b| encode_bands(b), set: None, show: None };
+
+/// The graphic sliders, comma-separated; a list that is not a layout's length, or does not read, is the
+/// default's.
+const GRAPHIC: Custom<Vec<f32>> = Custom {
+    load: |t, d| t.and_then(decode_graphic).unwrap_or(d),
+    save: |g| g.iter().map(|v| kotlin_float(*v)).collect::<Vec<_>>().join(","),
+    set: Some(decode_graphic),
+    show: Some(|g| g.iter().map(|v| kotlin_float(*v)).collect::<Vec<_>>().join(",")),
+};
+
+/// Graphic sliders from their text: one number per band of a layout, each held to the gain range.
+pub fn decode_graphic(s: &str) -> Option<Vec<f32>> {
+    let g: Vec<f32> = s.split(',').map(|v| float(v).map(|v| EQ_RANGES.gain.hold(v))).collect::<Option<_>>()?;
+    nori_player::graphic::LAYOUTS.contains(&g.len()).then_some(g)
+}
+
+/// How far the bass boost and the volume boost go, dB (the player's own limits).
+const BASS_BOOST_MAX: f32 = nori_player::dsp::BASS_BOOST_MAX_DB as f32;
+const VOLUME_BOOST_MAX: f32 = nori_player::dsp::VOLUME_BOOST_MAX_DB as f32;
 
 /// Every service, by name: the stored ranking completed with any service it does not name.
 const LYRICS_ORDER: Custom<Vec<String>> = Custom {
@@ -448,17 +507,97 @@ const LIST_PREFS: Custom<HashMap<String, String>> = Custom {
 pub struct SoundSettings {
     pub eq_enabled: bool,
     pub eq_bands: Vec<SoundBand>,
+    pub eq_mode: EqMode,
+    pub eq_graphic: Vec<f32>,
     pub eq_preamp_db: Option<f32>,
     pub crossfeed_db: f32,
     pub balance: f32,
     pub mono: bool,
     pub limiter: bool,
     pub limiter_threshold_db: f32,
+    pub effects: SoundEffects,
     pub replay_gain: GainMode,
     pub preamp_db: f32,
     pub crossfade_sec: i32,
     pub hi_res: bool,
     pub bit_perfect: bool,
+}
+
+/// The effects besides the equalizer: bass boost, virtualizer, volume boost and the compressor.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct SoundEffects {
+    pub bass_boost_db: f32,
+    pub virtualizer: f32,
+    pub volume_boost_db: f32,
+    pub compressor: bool,
+    pub comp_threshold_db: f32,
+    pub comp_ratio: f32,
+    pub comp_attack_ms: f32,
+    pub comp_release_ms: f32,
+    pub comp_makeup_db: f32,
+    pub comp_knee_db: f32,
+}
+
+impl Default for SoundEffects {
+    fn default() -> Self {
+        StoredPrefs::default().effects()
+    }
+}
+
+impl SoundEffects {
+    /// Whether any of them touches the samples.
+    pub fn on(&self) -> bool {
+        self.player().on()
+    }
+
+    /// The compressor's controls, on or not.
+    pub fn compressor_settings(&self) -> nori_player::compressor::CompressorSettings {
+        nori_player::compressor::CompressorSettings {
+            threshold_db: self.comp_threshold_db as f64,
+            ratio: self.comp_ratio as f64,
+            attack_ms: self.comp_attack_ms as f64,
+            release_ms: self.comp_release_ms as f64,
+            makeup_db: self.comp_makeup_db as f64,
+            knee_db: self.comp_knee_db as f64,
+        }
+    }
+
+    /// As the sound chain takes them.
+    pub fn player(&self) -> nori_player::dsp::Effects {
+        nori_player::dsp::Effects {
+            bass_boost_db: self.bass_boost_db as f64,
+            compressor: self.compressor.then(|| self.compressor_settings()),
+            virtualizer: self.virtualizer as f64,
+            boost_db: self.volume_boost_db as f64,
+        }
+    }
+
+    /// Which built-in compressor setting these are, if any.
+    pub fn compressor_preset(&self) -> Option<nori_player::compressor::CompressorPreset> {
+        let now = self.compressor_settings();
+        nori_player::compressor::CompressorPreset::ALL.into_iter().find(|p| {
+            let s = p.settings();
+            [s.threshold_db - now.threshold_db, s.ratio - now.ratio, s.attack_ms - now.attack_ms, s.release_ms - now.release_ms, s.makeup_db - now.makeup_db, s.knee_db - now.knee_db]
+                .iter()
+                .all(|d| d.abs() < 1e-3)
+        })
+    }
+
+    /// A built-in compressor setting taken, and the compressor switched on.
+    pub fn with_compressor_preset(self, p: nori_player::compressor::CompressorPreset) -> SoundEffects {
+        let s = p.settings();
+        SoundEffects {
+            compressor: true,
+            comp_threshold_db: s.threshold_db as f32,
+            comp_ratio: s.ratio as f32,
+            comp_attack_ms: s.attack_ms as f32,
+            comp_release_ms: s.release_ms as f32,
+            comp_makeup_db: s.makeup_db as f32,
+            comp_knee_db: s.knee_db as f32,
+            ..self
+        }
+    }
 }
 
 impl StoredPrefs {
@@ -467,12 +606,15 @@ impl StoredPrefs {
         SoundSettings {
             eq_enabled: self.eq_enabled,
             eq_bands: self.eq_bands.clone(),
+            eq_mode: self.eq_mode,
+            eq_graphic: self.eq_graphic.clone(),
             eq_preamp_db: self.eq_preamp_db,
             crossfeed_db: self.crossfeed_db,
             balance: self.balance,
             mono: self.mono,
             limiter: self.limiter,
             limiter_threshold_db: self.limiter_threshold_db,
+            effects: self.effects(),
             replay_gain: self.replay_gain,
             preamp_db: self.preamp_db,
             crossfade_sec: self.crossfade_sec,
@@ -486,12 +628,24 @@ impl StoredPrefs {
         StoredPrefs {
             eq_enabled: s.eq_enabled,
             eq_bands: s.eq_bands,
+            eq_mode: s.eq_mode,
+            eq_graphic: s.eq_graphic,
             eq_preamp_db: s.eq_preamp_db,
             crossfeed_db: s.crossfeed_db,
             balance: s.balance,
             mono: s.mono,
             limiter: s.limiter,
             limiter_threshold_db: s.limiter_threshold_db,
+            bass_boost_db: s.effects.bass_boost_db,
+            virtualizer: s.effects.virtualizer,
+            volume_boost_db: s.effects.volume_boost_db,
+            compressor: s.effects.compressor,
+            comp_threshold_db: s.effects.comp_threshold_db,
+            comp_ratio: s.effects.comp_ratio,
+            comp_attack_ms: s.effects.comp_attack_ms,
+            comp_release_ms: s.effects.comp_release_ms,
+            comp_makeup_db: s.effects.comp_makeup_db,
+            comp_knee_db: s.effects.comp_knee_db,
             replay_gain: s.replay_gain,
             preamp_db: s.preamp_db,
             crossfade_sec: s.crossfade_sec,
@@ -499,6 +653,28 @@ impl StoredPrefs {
             bit_perfect: s.bit_perfect,
             ..self
         }
+    }
+
+    /// The effects besides the equalizer, as a sound profile keeps them.
+    pub fn effects(&self) -> SoundEffects {
+        SoundEffects {
+            bass_boost_db: self.bass_boost_db,
+            virtualizer: self.virtualizer,
+            volume_boost_db: self.volume_boost_db,
+            compressor: self.compressor,
+            comp_threshold_db: self.comp_threshold_db,
+            comp_ratio: self.comp_ratio,
+            comp_attack_ms: self.comp_attack_ms,
+            comp_release_ms: self.comp_release_ms,
+            comp_makeup_db: self.comp_makeup_db,
+            comp_knee_db: self.comp_knee_db,
+        }
+    }
+
+    /// Whether anything in the sample domain is on: the equalizer, crossfeed, balance, mono, the limiter
+    /// or an effect. It then sits in the chain and audio offload stands down.
+    pub fn sound_chain_on(&self) -> bool {
+        nori_player::sound::sound_on(self.eq_enabled, self.crossfeed_db, self.balance, self.mono, self.limiter, self.effects().on())
     }
 
     /// What the transition planner takes from the settings (`nori_automix::planner::settings_changed`).
@@ -652,15 +828,31 @@ pub fn sound_from(json: &str) -> Option<SoundSettings> {
         Some(v) => Some(v.as_f64()? as f32),
         None => None,
     };
+    let d = SoundEffects::default();
+    let f = |k: &str, d: f32, lo: f32, hi: f32| (opt_f64(o, k, d as f64) as f32).clamp(lo, hi);
     Some(SoundSettings {
         eq_enabled: opt_bool(o, "eqEnabled"),
         eq_bands: decode_bands(&opt_string(o, "eqBands")).unwrap_or_else(graphic),
+        eq_mode: EqMode::nth(opt_i32(o, "eqMode")).unwrap_or(EqMode::Parametric),
+        eq_graphic: decode_graphic(&opt_string(o, "eqGraphic")).unwrap_or_else(|| vec![0.0; 10]),
         eq_preamp_db,
         crossfeed_db: opt_f64(o, "crossfeedDb", 0.0) as f32,
         balance: opt_f64(o, "balance", 0.0) as f32,
         mono: opt_bool(o, "mono"),
         limiter: opt_bool(o, "limiter"),
         limiter_threshold_db: opt_f64(o, "limiterThresholdDb", -1.0) as f32,
+        effects: SoundEffects {
+            bass_boost_db: f("bassBoostDb", 0.0, 0.0, BASS_BOOST_MAX),
+            virtualizer: f("virtualizer", 0.0, 0.0, 1.0),
+            volume_boost_db: f("volumeBoostDb", 0.0, 0.0, VOLUME_BOOST_MAX),
+            compressor: opt_bool(o, "compressor"),
+            comp_threshold_db: f("compThresholdDb", d.comp_threshold_db, -60.0, 0.0),
+            comp_ratio: f("compRatio", d.comp_ratio, 1.0, 20.0),
+            comp_attack_ms: f("compAttackMs", d.comp_attack_ms, 0.1, 200.0),
+            comp_release_ms: f("compReleaseMs", d.comp_release_ms, 10.0, 2000.0),
+            comp_makeup_db: f("compMakeupDb", d.comp_makeup_db, 0.0, 24.0),
+            comp_knee_db: f("compKneeDb", d.comp_knee_db, 0.0, 24.0),
+        },
         replay_gain: GainMode::ALL[opt_i32(o, "replayGain").clamp(0, GainMode::ALL.len() as i32 - 1) as usize],
         preamp_db: opt_f64(o, "preampDb", 0.0) as f32,
         crossfade_sec: opt_i32(o, "crossfadeSec"),
@@ -681,6 +873,23 @@ pub fn sound_json(s: &SoundSettings) -> String {
     o.insert("mono".into(), s.mono.into());
     o.insert("limiter".into(), s.limiter.into());
     o.insert("limiterThresholdDb".into(), (s.limiter_threshold_db as f64).into());
+    o.insert("eqMode".into(), s.eq_mode.ordinal().into());
+    o.insert("eqGraphic".into(), s.eq_graphic.iter().map(|v| kotlin_float(*v)).collect::<Vec<_>>().join(",").into());
+    let e = &s.effects;
+    for (k, v) in [
+        ("bassBoostDb", e.bass_boost_db),
+        ("virtualizer", e.virtualizer),
+        ("volumeBoostDb", e.volume_boost_db),
+        ("compThresholdDb", e.comp_threshold_db),
+        ("compRatio", e.comp_ratio),
+        ("compAttackMs", e.comp_attack_ms),
+        ("compReleaseMs", e.comp_release_ms),
+        ("compMakeupDb", e.comp_makeup_db),
+        ("compKneeDb", e.comp_knee_db),
+    ] {
+        o.insert(k.into(), (v as f64).into());
+    }
+    o.insert("compressor".into(), e.compressor.into());
     o.insert("replayGain".into(), s.replay_gain.ordinal().into());
     o.insert("preampDb".into(), (s.preamp_db as f64).into());
     o.insert("crossfadeSec".into(), s.crossfade_sec.into());
@@ -824,6 +1033,14 @@ fn set_special(p: &StoredPrefs, n: &mut StoredPrefs, server: &mut bool, name: &s
                 n.lyrics_on.push(s.name().to_string());
             }
         }),
+        // A built-in compressor setting, taken whole, and the compressor on.
+        "compressorPreset" => compressor_preset_named(value).map(|c| {
+            let e = p.effects().with_compressor_preset(c);
+            (n.compressor, n.comp_threshold_db, n.comp_ratio, n.comp_attack_ms, n.comp_release_ms, n.comp_makeup_db, n.comp_knee_db) =
+                (e.compressor, e.comp_threshold_db, e.comp_ratio, e.comp_attack_ms, e.comp_release_ms, e.comp_makeup_db, e.comp_knee_db);
+        }),
+        // How many graphic bands: the curve drawn again on the new layout.
+        "eqLayout" => value.trim().parse::<usize>().ok().filter(|c| nori_player::graphic::LAYOUTS.contains(c)).map(|c| n.eq_graphic = relayout_graphic(&p.eq_graphic, c)),
         // The row says "on mobile data", the setting "Wi-Fi only": the one is the other turned round.
         "motionArtworkMobile" => Some(n.motion_artwork_wifi_only = !on(value)),
         // The active server's own settings: which music folder it browses, and the bitrate cap on its
@@ -845,6 +1062,8 @@ pub(crate) fn value_of_special(p: &StoredPrefs, name: &str) -> Option<String> {
     let server = || p.servers.iter().find(|s| s.id == p.active_server_id);
     Some(match name {
         "motionArtworkMobile" => (!p.motion_artwork_wifi_only).to_string(),
+        "compressorPreset" => p.effects().compressor_preset().map_or("", compressor_preset_name).to_string(),
+        "eqLayout" => p.eq_graphic.len().to_string(),
         "musicFolder" => server().map(|s| s.music_folder_id.clone()).unwrap_or_default(),
         "altMaxBitRate" => server().map_or(0, |s| s.alt_max_bit_rate).to_string(),
         _ => return None,
@@ -870,9 +1089,50 @@ fn band_of(b: &nori_model::EqBand) -> SoundBand {
     SoundBand { kind: b.kind, freq: b.freq, gain_db: b.gain_db, q: b.q, channel: BandChannel::Both }
 }
 
-/// A built-in curve, switched on. Its pre-amp of 0 means automatic; "Flat" has no bands and gets the
-/// ten graphic ones back.
+fn compressor_preset_name(p: nori_player::compressor::CompressorPreset) -> &'static str {
+    use nori_player::compressor::CompressorPreset as C;
+    match p {
+        C::Gentle => "GENTLE",
+        C::Balanced => "BALANCED",
+        C::Strong => "STRONG",
+    }
+}
+
+fn compressor_preset_named(name: &str) -> Option<nori_player::compressor::CompressorPreset> {
+    nori_player::compressor::CompressorPreset::ALL.into_iter().find(|p| compressor_preset_name(*p).eq_ignore_ascii_case(name.trim()))
+}
+
+/// Graphic sliders for another layout (10, 15 or 31 bands) that draw the same curve; the sliders as
+/// they are for a count that is not a layout.
+pub fn relayout_graphic(sliders: &[f32], count: usize) -> Vec<f32> {
+    if !nori_player::graphic::LAYOUTS.contains(&count) {
+        return sliders.to_vec();
+    }
+    let g: Vec<f64> = sliders.iter().map(|v| *v as f64).collect();
+    nori_player::graphic::relayout(&g, count).into_iter().map(|v| EQ_RANGES.gain.hold(((v * 10.0).round() / 10.0) as f32)).collect()
+}
+
+/// One graphic slider moved, held to the gain range. An index past the end changes nothing.
+pub fn set_graphic(s: SoundSettings, index: u32, gain_db: f32) -> SoundSettings {
+    let mut g = s.eq_graphic.clone();
+    match g.get_mut(index as usize) {
+        Some(v) => *v = EQ_RANGES.gain.hold(gain_db),
+        None => return s,
+    }
+    SoundSettings { eq_graphic: g, ..s }
+}
+
+/// A built-in curve, switched on, for the equalizer in use. Its pre-amp of 0 means automatic; "Flat"
+/// has no bands and gets the ten graphic ones back. On the graphic equalizer the sliders take the
+/// curve's response at their centres, and the pre-amp is automatic.
 pub fn apply_preset(s: SoundSettings, p: &NamedPreset) -> SoundSettings {
+    if s.eq_mode == EqMode::Graphic {
+        let bands: Vec<nori_player::dsp::Band> = p.bands.iter().map(nori_player::dsp::Band::from).collect();
+        let count = if nori_player::graphic::LAYOUTS.contains(&s.eq_graphic.len()) { s.eq_graphic.len() } else { 10 };
+        let r = EQ_RANGES.gain;
+        let eq_graphic = nori_player::graphic::sliders_for(&bands, count, r.max as f64).into_iter().map(|v| r.hold(v as f32)).collect();
+        return SoundSettings { eq_enabled: true, eq_preamp_db: None, eq_graphic, ..s };
+    }
     let bands: Vec<SoundBand> = p.bands.iter().map(band_of).collect();
     SoundSettings {
         eq_enabled: true,
@@ -889,7 +1149,8 @@ pub fn import(s: SoundSettings, text: &str) -> Result<SoundSettings, SoundError>
     if preset.bands.is_empty() {
         return Err(SoundError::NoFilters);
     }
-    Ok(SoundSettings { eq_enabled: true, eq_preamp_db: Some(preset.preamp_db), eq_bands: preset.bands.iter().map(band_of).collect(), ..s })
+    // A headphone correction is filters: it goes to the parametric equalizer, which then plays.
+    Ok(SoundSettings { eq_enabled: true, eq_mode: EqMode::Parametric, eq_preamp_db: Some(preset.preamp_db), eq_bands: preset.bands.iter().map(band_of).collect(), ..s })
 }
 
 /// A new band: a neutral peak in the middle of the range.
@@ -1005,9 +1266,12 @@ pub fn set_band(s: SoundSettings, index: u32, band: SoundBand) -> SoundSettings 
 }
 
 impl SoundSettings {
-    /// The pre-amp in effect: the one set, or the automatic one for these bands; none with the
+    /// The pre-amp in effect: the one set, or the automatic one for the equalizer in use; none with the
     /// equalizer off.
     pub fn effective_preamp_db(&self) -> f32 {
+        if self.eq_mode == EqMode::Graphic {
+            return effective_preamp_db(self.eq_enabled, self.eq_preamp_db, self.eq_graphic.iter().map(|g| (nori_player::dsp::PEAKING, *g)));
+        }
         effective_preamp_db(self.eq_enabled, self.eq_preamp_db, self.eq_bands.iter().map(|b| (b.kind as i32, b.gain_db)))
     }
 }
@@ -1039,6 +1303,62 @@ pub enum EqLevel {
     Crossfeed,
     /// The level ReplayGain plays at (`preamp_db`), not the equalizer's pre-amp.
     ReplayGainPreamp,
+    // The effects (the sound settings page's sliders).
+    BassBoost,
+    Virtualizer,
+    VolumeBoost,
+    CompThreshold,
+    CompRatio,
+    CompAttack,
+    CompRelease,
+    CompMakeup,
+    CompKnee,
+}
+
+impl EqLevel {
+    /// Every level, in order: the ordinal a platform's door carries.
+    pub const ALL: [EqLevel; 14] = [
+        EqLevel::Preamp,
+        EqLevel::Balance,
+        EqLevel::Limiter,
+        EqLevel::Crossfeed,
+        EqLevel::ReplayGainPreamp,
+        EqLevel::BassBoost,
+        EqLevel::Virtualizer,
+        EqLevel::VolumeBoost,
+        EqLevel::CompThreshold,
+        EqLevel::CompRatio,
+        EqLevel::CompAttack,
+        EqLevel::CompRelease,
+        EqLevel::CompMakeup,
+        EqLevel::CompKnee,
+    ];
+
+    /// The level's value in these settings.
+    pub fn of(self, s: &SoundSettings) -> f32 {
+        let e = &s.effects;
+        match self {
+            EqLevel::Preamp => s.effective_preamp_db(),
+            EqLevel::Balance => s.balance,
+            EqLevel::Limiter => s.limiter_threshold_db,
+            EqLevel::Crossfeed => s.crossfeed_db,
+            EqLevel::ReplayGainPreamp => s.preamp_db,
+            EqLevel::BassBoost => e.bass_boost_db,
+            EqLevel::Virtualizer => e.virtualizer,
+            EqLevel::VolumeBoost => e.volume_boost_db,
+            EqLevel::CompThreshold => e.comp_threshold_db,
+            EqLevel::CompRatio => e.comp_ratio,
+            EqLevel::CompAttack => e.comp_attack_ms,
+            EqLevel::CompRelease => e.comp_release_ms,
+            EqLevel::CompMakeup => e.comp_makeup_db,
+            EqLevel::CompKnee => e.comp_knee_db,
+        }
+    }
+}
+
+/// An effect's slider near its bottom is off: a boost under a quarter of a dB, a virtualizer under 2 %.
+fn off_below(v: f32, least: f32) -> f32 {
+    if v < least { 0.0 } else { v }
 }
 
 /// A balance near the middle is the middle: within 4 % of it the slider snaps to 0.
@@ -1061,6 +1381,23 @@ pub fn set_level(s: SoundSettings, level: EqLevel, value: f32) -> SoundSettings 
         EqLevel::Limiter => SoundSettings { limiter_threshold_db: r.limiter.hold(value), ..s },
         EqLevel::Crossfeed => SoundSettings { crossfeed_db: crossfeed_snap(r.crossfeed.hold(value)), ..s },
         EqLevel::ReplayGainPreamp => SoundSettings { preamp_db: r.replay_gain_preamp.hold(value), ..s },
+        _ => {
+            let v = if value.is_nan() { 0.0 } else { value };
+            let mut e = s.effects.clone();
+            match level {
+                EqLevel::BassBoost => e.bass_boost_db = off_below(v.clamp(0.0, BASS_BOOST_MAX), 0.25),
+                EqLevel::Virtualizer => e.virtualizer = off_below(v.clamp(0.0, 1.0), 0.02),
+                EqLevel::VolumeBoost => e.volume_boost_db = off_below(v.clamp(0.0, VOLUME_BOOST_MAX), 0.25),
+                EqLevel::CompThreshold => e.comp_threshold_db = v.clamp(-60.0, 0.0),
+                EqLevel::CompRatio => e.comp_ratio = v.clamp(1.0, 20.0),
+                EqLevel::CompAttack => e.comp_attack_ms = v.clamp(0.1, 200.0),
+                EqLevel::CompRelease => e.comp_release_ms = v.clamp(10.0, 2000.0),
+                EqLevel::CompMakeup => e.comp_makeup_db = v.clamp(0.0, 24.0),
+                EqLevel::CompKnee => e.comp_knee_db = v.clamp(0.0, 24.0),
+                _ => {}
+            }
+            SoundSettings { effects: e, ..s }
+        }
     }
 }
 
@@ -1306,9 +1643,13 @@ pub fn sound_from_json(json: String) -> Option<SoundSettings> {
     sound_from(&json)
 }
 
-/// The ten graphic bands back, with the automatic pre-amp.
+/// The equalizer in use back to flat, with the automatic pre-amp: the ten graphic bands for the
+/// parametric one, every slider at 0 (in the same layout) for the graphic one.
 pub fn eq_reset_bands(sound: SoundSettings) -> SoundSettings {
-    SoundSettings { eq_bands: graphic(), eq_preamp_db: None, ..sound }
+    match sound.eq_mode {
+        EqMode::Graphic => SoundSettings { eq_graphic: vec![0.0; sound.eq_graphic.len().max(1)], eq_preamp_db: None, ..sound },
+        EqMode::Parametric => SoundSettings { eq_bands: graphic(), eq_preamp_db: None, ..sound },
+    }
 }
 
 /// Which of the app's own files are the app's database: `nori.db` with its write-ahead log and shared
@@ -1485,12 +1826,26 @@ mod tests {
         let s = SoundSettings {
             eq_enabled: true,
             eq_bands: vec![band_from(1, 105.0, -3.5, 0.7, 0)],
+            eq_mode: EqMode::Graphic,
+            eq_graphic: (0..15).map(|i| i as f32 - 7.5).collect(),
             eq_preamp_db: Some(-6.2),
             crossfeed_db: 3.0,
             balance: -0.25,
             mono: true,
             limiter: true,
             limiter_threshold_db: -2.0,
+            effects: SoundEffects {
+                bass_boost_db: 4.5,
+                virtualizer: 0.6,
+                volume_boost_db: 3.0,
+                compressor: true,
+                comp_threshold_db: -24.0,
+                comp_ratio: 4.0,
+                comp_attack_ms: 5.0,
+                comp_release_ms: 300.0,
+                comp_makeup_db: 6.0,
+                comp_knee_db: 3.0,
+            },
             replay_gain: GainMode::Album,
             preamp_db: 1.5,
             crossfade_sec: 4,
@@ -1783,6 +2138,68 @@ mod tests {
         assert_eq!(remove_band(added, 99).eq_bands.len(), 11);
         let one = SoundSettings { eq_bands: vec![band_from(2, 5.0, 1.0, 1.0, 0)], ..sound() };
         assert_eq!(remove_band(one, 0).eq_bands, graphic(), "never an empty equalizer");
+    }
+
+    #[test]
+    fn the_graphic_equalizer_keeps_its_own_sliders() {
+        let g = SoundSettings { eq_mode: EqMode::Graphic, ..sound() };
+        assert_eq!(g.eq_graphic, vec![0.0; 10], "ten flat sliders out of the box");
+        let moved = set_graphic(g.clone(), 3, 20.0);
+        assert_eq!(moved.eq_graphic[3], 12.0, "held to the range");
+        assert_eq!(moved.eq_bands, g.eq_bands, "the parametric bands are left alone");
+        assert_eq!(set_graphic(g.clone(), 10, 3.0), g, "past the end: nothing");
+        // Automatic pre-amp: the largest slider paid back.
+        let loud = set_graphic(set_graphic(g.clone(), 0, 6.0), 5, -9.0);
+        assert_eq!(SoundSettings { eq_enabled: true, ..loud.clone() }.effective_preamp_db(), -6.0);
+        // A preset lands on the sliders; the bands are kept for when parametric comes back.
+        let bass = NamedPreset { kind: nori_model::PresetKind::BassBoost, preamp_db: -6.0, bands: vec![nori_model::EqBand { kind: EqKind::LowShelf, freq: 100.0, gain_db: 6.0, q: 0.7 }] };
+        let p = apply_preset(loud.clone(), &bass);
+        assert!(p.eq_enabled && p.eq_preamp_db.is_none());
+        assert!(p.eq_graphic[0] > 5.0 && p.eq_graphic[9].abs() < 0.1, "{:?}", p.eq_graphic);
+        assert_eq!(p.eq_bands, loud.eq_bands);
+        assert_eq!(eq_reset_bands(p.clone()).eq_graphic, vec![0.0; 10]);
+        assert_eq!(eq_reset_bands(p.clone()).eq_bands, p.eq_bands, "reset is the one in use");
+        // A headphone correction is filters: it goes to the parametric equalizer.
+        let imported = import(p, "Filter 1: ON PK Fc 105 Hz Gain -3.5 dB Q 0.70\n").unwrap();
+        assert_eq!(imported.eq_mode, EqMode::Parametric);
+        // Another layout draws the same curve.
+        assert_eq!(relayout_graphic(&[0.0, 2.0, 4.0, 6.0, 4.0, 2.0, 0.0, -2.0, -4.0, -6.0], 31).len(), 31);
+        assert_eq!(decode_graphic("1,2,3"), None, "not a layout");
+        assert_eq!(decode_graphic(&vec!["99"; 10].join(",")), Some(vec![12.0; 10]));
+    }
+
+    #[test]
+    fn effect_levels_are_held_and_snap_off() {
+        for (i, l) in EqLevel::ALL.iter().enumerate() {
+            assert_eq!(*l as usize, i, "the door's ordinal is the declaration's");
+        }
+        let s = sound();
+        assert_eq!(set_level(s.clone(), EqLevel::VolumeBoost, 30.0).effects.volume_boost_db, 12.0);
+        assert_eq!(set_level(s.clone(), EqLevel::VolumeBoost, 0.1).effects.volume_boost_db, 0.0, "the bottom is off");
+        assert_eq!(set_level(s.clone(), EqLevel::Virtualizer, 0.01).effects.virtualizer, 0.0);
+        assert_eq!(set_level(s.clone(), EqLevel::BassBoost, f32::NAN).effects.bass_boost_db, 0.0);
+        let r = set_level(s.clone(), EqLevel::CompRatio, 0.5);
+        assert_eq!((r.effects.comp_ratio, EqLevel::CompRatio.of(&r)), (1.0, 1.0));
+        assert_eq!(set_level(s, EqLevel::CompRelease, 5000.0).effects.comp_release_ms, 2000.0);
+    }
+
+    #[test]
+    fn effects_by_name_and_the_compressor_presets() {
+        let p = StoredPrefs::default();
+        assert!(!p.sound_chain_on() && !p.effects().on(), "every effect off out of the box");
+        assert_eq!(p.effects().compressor_preset(), Some(nori_player::compressor::CompressorPreset::Balanced), "the defaults are the balanced preset");
+        let c = set_by_name(&p, "compressorPreset", "strong").unwrap().prefs;
+        assert!(c.compressor && c.comp_ratio == 5.0 && c.sound_chain_on());
+        assert_eq!(value_of_special(&c, "compressorPreset").as_deref(), Some("STRONG"));
+        let custom = set_by_name(&c, "compRatio", "7").unwrap().prefs;
+        assert_eq!(value_of_special(&custom, "compressorPreset").as_deref(), Some(""), "moved: none of them");
+        assert!(set_by_name(&p, "compressorPreset", "loud").is_none());
+        assert_eq!(set_by_name(&p, "volumeBoostDb", "40").unwrap().prefs.volume_boost_db, 12.0);
+        assert!(set_by_name(&p, "virtualizer", "0.5").unwrap().prefs.sound_chain_on());
+        let l = set_by_name(&p, "eqLayout", "31").unwrap().prefs;
+        assert_eq!(l.eq_graphic.len(), 31);
+        assert_eq!(value_of_special(&l, "eqLayout").as_deref(), Some("31"));
+        assert!(set_by_name(&p, "eqLayout", "12").is_none());
     }
 
     #[test]

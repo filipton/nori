@@ -1374,7 +1374,7 @@ pub fn perf_events_since(since_ms: i64) -> Vec<String> {
 fn offload_reason() -> Option<&'static str> {
     let s = settings_store::current()?;
     let prefs = nori_model::AudioPrefs {
-        dsp: nori_player::sound::sound_on(s.eq_enabled, s.crossfeed_db, s.balance, s.mono, s.limiter),
+        dsp: s.sound_chain_on(),
         skip_silence: s.skip_silence,
         offload: s.offload,
         crossfade_s: s.crossfade_sec,

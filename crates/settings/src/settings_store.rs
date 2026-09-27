@@ -134,8 +134,7 @@ pub const PLAYER: u32 = 16;
 /// Balance and crossfeed are read by the chain as it runs, so dragging them matters only then: a drag's
 /// every step used to rebuild the audio policy, the transitions and the track selection.
 fn effects(a: &StoredPrefs, b: &StoredPrefs) -> u32 {
-    let on = |p: &StoredPrefs| nori_player::sound::sound_on(p.eq_enabled, p.crossfeed_db, p.balance, p.mono, p.limiter);
-    let chain = if on(a) != on(b) { APPLY_AUDIO } else { 0 };
+    let chain = if a.sound_chain_on() != b.sound_chain_on() { APPLY_AUDIO } else { 0 };
     crate::settings::ROWS.iter().filter(|r| r.effect != 0 && (r.changed)(a, b)).fold(chain, |e, r| e | r.effect)
 }
 
@@ -193,6 +192,20 @@ pub fn edit_band(index: u32, asked: SoundBand) -> Option<(u32, SoundBand)> {
     Some((effect, kept))
 }
 
+/// One graphic equalizer slider moved (`settings::set_graphic`), edited where the settings are kept:
+/// what the player has to apply again and the value as it was kept; none when nothing changed.
+pub fn edit_graphic(index: u32, gain_db: f32) -> Option<(u32, f32)> {
+    let mut kept = gain_db;
+    let effect = edit(|p| {
+        let s = crate::settings::set_graphic(p.sound(), index, gain_db);
+        if let Some(k) = s.eq_graphic.get(index as usize) {
+            kept = *k;
+        }
+        p.clone().with_sound(s)
+    })?;
+    Some((effect, kept))
+}
+
 /// Pre-amp, balance, limiter ceiling or crossfeed moved (`settings::set_level`), edited where the
 /// settings are kept: what the player has to apply again and the value as it was kept, held in range
 /// and snapped; none when nothing changed.
@@ -202,10 +215,7 @@ pub fn edit_level(level: EqLevel, value: f32) -> Option<(u32, f32)> {
         let s = set_level(p.sound(), level, value);
         kept = match level {
             EqLevel::Preamp => s.eq_preamp_db.unwrap_or(value),
-            EqLevel::Balance => s.balance,
-            EqLevel::Limiter => s.limiter_threshold_db,
-            EqLevel::Crossfeed => s.crossfeed_db,
-            EqLevel::ReplayGainPreamp => s.preamp_db,
+            other => other.of(&s),
         };
         p.clone().with_sound(s)
     })?;
@@ -348,7 +358,7 @@ mod tests {
     #[test]
     fn dragging_balance_or_crossfeed_only_rebuilds_when_the_chain_starts_or_stops() {
         let a = StoredPrefs::default();
-        assert!(!nori_player::sound::sound_on(a.eq_enabled, a.crossfeed_db, a.balance, a.mono, a.limiter), "the defaults run no chain");
+        assert!(!a.sound_chain_on(), "the defaults run no chain");
         let off_centre = StoredPrefs { balance: -0.4, ..a.clone() };
         assert_eq!(effects(&a, &off_centre), APPLY_AUDIO | SOUND, "the chain starts");
         assert_eq!(effects(&off_centre, &StoredPrefs { balance: -0.5, ..a.clone() }), SOUND, "a drag step: the chain reads it as it runs");
