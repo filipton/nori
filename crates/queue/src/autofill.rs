@@ -34,6 +34,8 @@ pub const SONGS: usize = 15;
 pub const ALBUM_TRIES: usize = 6;
 /// An album shorter than this is a single: taken only if nothing longer is on offer.
 pub const ALBUM_MIN: usize = 3;
+/// Random albums one refill of a "shuffle albums" queue adds, each whole.
+pub const RANDOM_ALBUMS: i32 = 3;
 
 /// What a fetch from the server gives.
 pub type Got<T> = Result<T, NetError>;

@@ -397,6 +397,10 @@ pub enum OriginKind {
     Shelf,
     /// The downloaded songs.
     Downloads,
+    /// "Shuffle songs" (Home's menu, the app icon's shortcut): its refills are random songs too.
+    ShuffleSongs,
+    /// "Shuffle albums": its refills are random whole albums too.
+    ShuffleAlbums,
 }
 
 /// The page a queue was started from: its kind and the id of what it shows. A page is "the one
