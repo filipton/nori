@@ -16,6 +16,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -134,10 +137,13 @@ fun HeroPage(
         val wide = LocalWide.current
         val heroScroll: (Float) -> Float = if (wide) { _ -> 0f } else { h -> if (list.firstVisibleItemIndex == 0) list.firstVisibleItemScrollOffset.toFloat() else h }
         // One block: artwork, then the wash it melts into, carrying the title and the buttons.
-        val hero: @Composable () -> Unit = {
+        // [coverSide]: on its side, the cover (or the page's own artwork) at this size, centred in the half,
+        // so the half keeps the width its buttons need however short the screen is. Upright it is null and
+        // the cover takes the full width, as ever.
+        val hero: @Composable (coverSide: androidx.compose.ui.unit.Dp?) -> Unit = { coverSide ->
         Column(Modifier.fillMaxWidth()) {
             if (coverUrl != null) Box(
-                Modifier.fillMaxWidth().aspectRatio(1f)
+                (if (coverSide != null) Modifier.fillMaxWidth().wrapContentWidth().size(coverSide) else Modifier.fillMaxWidth().aspectRatio(1f))
                     // Parallax and fade, read in the draw phase: scrolling never recomposes the hero.
                     .graphicsLayer {
                         val scrolled = heroScroll(size.height)
@@ -175,9 +181,17 @@ fun HeroPage(
                     },
                 )
             } else if (art != null) Box(
-                Modifier.fillMaxWidth().statusBarsPadding().padding(top = 64.dp, bottom = 18.dp),
+                Modifier.fillMaxWidth().statusBarsPadding().padding(top = if (coverSide != null) 12.dp else 64.dp, bottom = 18.dp)
+                    // The page's own artwork is drawn at one size; on its side it is scaled to fit its place.
+                    .then(if (coverSide != null) Modifier.height(coverSide) else Modifier),
                 Alignment.Center,
-            ) { art() } else Spacer(Modifier.statusBarsPadding().height(72.dp))
+            ) {
+                if (coverSide == null) art()
+                else Box(Modifier.size(coverSide).wrapContentSize(unbounded = true).graphicsLayer {
+                    val k = coverSide.toPx() / MIX_ART.toPx()
+                    scaleX = k; scaleY = k
+                }) { art() }
+            } else Spacer(Modifier.statusBarsPadding().height(72.dp))
 
             // Nothing is painted here: the artwork above has already dissolved onto the page
             // colour, and the page colour is what the root is painted with.
@@ -240,13 +254,15 @@ fun HeroPage(
                 // On its side the page stands in two halves, as Apple's does on a wide screen: the cover,
                 // the name and the buttons on the left, still, and the songs scrolling down the right.
                 // Upright, the cover alone was the whole screen and the songs began a screen further down.
-                // Narrow enough that the name and the buttons fit under the cover without scrolling.
-                // The height left once the now playing bar and the name, caption and buttons (about 150 dp) are
-                // counted out.
-                val side = minOf(maxWidth * 0.4f, maxHeight - LocalChromeInset.current - 150.dp).coerceAtLeast(120.dp)
+                // The half is wide enough for the buttons; the cover in it is as large as the height left once
+                // the status bar, the now playing bar and the name, caption and buttons (about 170 dp) are
+                // counted out, so all of it fits without scrolling.
+                // At least room for the three round buttons and a Play pill that still fits "Pause".
+                val half = minOf(maxOf(maxWidth * 0.45f, 360.dp), maxWidth * 0.5f)
+                val side = minOf(half, maxHeight - LocalChromeInset.current - 170.dp).coerceAtLeast(96.dp)
                 Row(Modifier.fillMaxSize()) {
-                    Column(Modifier.width(side).fillMaxHeight().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
-                        hero()
+                    Column(Modifier.width(half).fillMaxHeight().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                        hero(side)
                         Spacer(Modifier.height(LocalChromeInset.current))
                     }
                     LazyColumn(Modifier.weight(1f).fillMaxHeight(), state = list) {
@@ -259,7 +275,7 @@ fun HeroPage(
                 item(key = "hero", contentType = "hero") {
                     // One block: artwork, then the wash it melts into, carrying the title and the buttons.
                     //
-                    hero()
+                    hero(null)
                 }
                 content()
                 item(key = "tail") { Spacer(Modifier.height(Space.section + LocalChromeInset.current)) }
@@ -271,6 +287,9 @@ fun HeroPage(
         }
     }
 }
+
+/** The size a page's own artwork (a mix's) is drawn at: MixScreen hands [HeroPage] its art at this size. */
+private val MIX_ART = 236.dp
 
 /** Two bits of `HeroButtons::pack`: what a button presses. */
 private fun heroPress(bits: Int) = when (bits and 3) {
