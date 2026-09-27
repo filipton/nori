@@ -150,6 +150,8 @@ pub struct App {
     /// The read the page shown waits for.
     want: Option<Req>,
     shelves: Rc<VecModel<Shelf>>,
+    /// The cover whose wash is the window's backdrop.
+    backdrop: Option<String>,
     tickets: VecDeque<(String, Ticket)>,
     tick: Timer,
     again: Timer,
@@ -163,7 +165,7 @@ pub fn start(ui: &AppWindow, data: PathBuf) {
         session::HOME_ROWS.iter().map(|(t, _)| Shelf { title: (*t).into(), cards: ModelRc::default() }).collect::<Vec<_>>(),
     ));
     ui.set_shelves(ModelRc::from(shelves.clone()));
-    ui.set_greeting(words::greeting().into());
+    ui.set_greeting("Home".into());
     ui.on_art(|id, size, _rev| art(id, size));
     wire(ui);
     let app = App {
@@ -181,6 +183,7 @@ pub fn start(ui: &AppWindow, data: PathBuf) {
         search_songs: Vec::new(),
         want: None,
         shelves,
+        backdrop: None,
         tickets: VecDeque::new(),
         tick: Timer::default(),
         again: Timer::default(),
@@ -261,6 +264,18 @@ fn wire(ui: &AppWindow) {
             })
         })
     });
+    ui.on_seek_by(|ms| {
+        with(|a| {
+            a.on_session(|s| {
+                let at = (s.engine.status().position_now() + ms as i64).max(0);
+                s.engine.seek(at);
+            })
+        })
+    });
+    let weak = ui.as_weak();
+    ui.on_drag_window(move || crate::glass::drag(&weak));
+    let weak = ui.as_weak();
+    ui.on_zoom_window(move || crate::glass::zoom(&weak));
     ui.on_login(|| with(App::login));
     ui.on_cancel_login(|| with(|a| a.go(HOME)));
 }
@@ -313,6 +328,8 @@ impl App {
                 }
                 self.follow();
                 self.go(HOME);
+                // The sidebar lists the playlists, whatever page is open.
+                self.on_session(|s| s.load(Req::Playlists));
             }
             Err(e) => {
                 ui.set_login_error(e.into());
@@ -381,6 +398,10 @@ impl App {
             Req::Playlist(id) => Fetch::Playlist(id.clone()),
             _ => return,
         });
+        ui.set_page_id(match &req {
+            Req::Album(id) | Req::Artist(id) | Req::Playlist(id) => id.as_str().into(),
+            _ => "".into(),
+        });
         ui.set_page_kind(match &req {
             Req::Album(_) => 0,
             Req::Artist(_) => 1,
@@ -404,37 +425,37 @@ impl App {
         match c {
             Some(c) => {
                 ui.set_page_bg(colour(c.background));
-                ui.set_page_text(colour(c.on));
                 ui.set_page_accent(colour(c.accent));
                 ui.set_page_wash(wash(c));
             }
             None => {
                 ui.set_page_bg(Color::from_rgb_u8(0x1c, 0x1c, 0x1e));
-                ui.set_page_text(Color::from_rgb_u8(0xf2, 0xf2, 0xf7));
                 ui.set_page_accent(Color::from_rgb_u8(0xfa, 0x2d, 0x48));
                 ui.set_page_wash(Image::default());
             }
         }
     }
 
-    /// The now playing panel's colours from the song's cover, or the plain panel's.
-    fn now_colours(&self, c: Option<&CoverColours>) {
-        let ui = self.ui();
-        match c {
-            Some(c) => {
-                ui.set_wash(colour(c.background));
-                ui.set_wash_edge(colour(c.wash_edge));
-                ui.set_wash_text(colour(c.on));
-                ui.set_wash_image(wash(c));
-            }
-            None => {
-                let plain = Color::from_rgb_u8(0x2c, 0x2c, 0x2e);
-                ui.set_wash(plain);
-                ui.set_wash_edge(plain);
-                ui.set_wash_text(Color::from_rgb_u8(0xf2, 0xf2, 0xf7));
-                ui.set_wash_image(Image::default());
-            }
+    /// The window's backdrop from the song's cover: its wash put in the layer not shown, and the two
+    /// cross-faded (app.slint animates it). The same cover again changes nothing.
+    fn now_colours(&mut self, art: &str, c: Option<&CoverColours>) {
+        if self.backdrop.as_deref() == Some(art) && c.is_some() {
+            return;
         }
+        let ui = self.ui();
+        let Some(c) = c else {
+            self.backdrop = None;
+            return;
+        };
+        self.backdrop = Some(art.to_string());
+        let on_b = !ui.get_wash_on_b();
+        if on_b {
+            ui.set_wash_b(wash(c));
+        } else {
+            ui.set_wash_a(wash(c));
+        }
+        ui.set_wash_on_b(on_b);
+        ui.set_wash_tint(colour(c.background));
     }
 
     fn data(&mut self, req: Req, r: Result<Data, String>) {
@@ -714,7 +735,7 @@ impl App {
         if large {
             let c = ART.with(|a| a.borrow().colours.get(&id).cloned());
             if ui.get_now_art() == id.as_str() {
-                self.now_colours(c.as_deref());
+                self.now_colours(&id, c.as_deref());
             }
             if ui.get_view() == PAGE && ui.get_page_art() == id.as_str() {
                 self.page_colours(c.as_deref());
@@ -760,7 +781,11 @@ impl App {
             let art = song.cover_art.clone().unwrap_or_default();
             ui.set_now_art(art.as_str().into());
             let c = ART.with(|a| a.borrow().colours.get(&art).cloned());
-            self.now_colours(c.as_deref());
+            self.now_colours(&art, c.as_deref());
+            // The large cover (and with it the backdrop's colours) is asked for even with the panel shut.
+            if c.is_none() {
+                let _ = self::art(art.as_str().into(), 1);
+            }
             self.mark_playing();
         }
         // The queue, copied again only when it changed.
@@ -809,6 +834,7 @@ fn row(s: &Song, index: usize, playing: bool) -> SongRow {
         artist: s.artist.as_str().into(),
         album: s.album.as_str().into(),
         time: words::duration(s.duration as i64).into(),
+        art: s.cover_art.clone().unwrap_or_default().into(),
         index: index as i32,
         playing,
     }

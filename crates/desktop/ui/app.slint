@@ -1,9 +1,13 @@
-// nori's desktop window, laid out as the terminal client is: the sidebar, the page, the panel on the right
-// (now playing or the queue) and the player bar under them. Everything here only draws and forwards what
-// was clicked; the Rust side asks the core and the engine and hands back the rows.
+// nori's desktop window, built the way Apple Music is on macOS 26 and 27: a sidebar floating in its own
+// rounded pane with the traffic lights inside it, the page on a near-black ground, and the player as a
+// glass capsule floating at the bottom of the page. The queue is an inspector that floats in from the right,
+// and Now Playing takes the whole window over the song's own colours. Album and artist pages dissolve their
+// picture into the page as the iOS 27 artist pages (and nori's HeroPage on Android) do, from nori-look's wash.
+//
+// Everything here only draws and forwards what was clicked; the Rust side asks the core and the engine.
 
-import { LineEdit, ScrollView, ListView } from "std-widgets.slint";
-// The Android app's typeface, from its resources: one copy in the repository.
+import { ListView } from "std-widgets.slint";
+// Linux has no SF Pro: the Android app's typeface is the fallback, from its resources.
 import "../../../app/src/main/res/font/inter.ttf";
 
 export struct Card {
@@ -18,6 +22,7 @@ export struct SongRow {
     artist: string,
     album: string,
     time: string,
+    art: string,
     // The list index a click plays or jumps to.
     index: int,
     playing: bool,
@@ -30,81 +35,135 @@ export struct Shelf {
 
 export global Theme {
     in-out property <color> accent: #fa2d48;
-    out property <color> page: #1c1c1e;
-    out property <color> side: #202023;
-    out property <color> bar: #28282b;
-    out property <color> text: #f2f2f7;
-    out property <color> dim: #8e8e93;
-    out property <color> hover: #ffffff12;
-    out property <color> line: #ffffff1c;
-    out property <length> radius: 8px;
+    out property <color> ground: #1e1e1e;
+    out property <color> text: #ffffffeb;
+    out property <color> dim: #ffffff8c;
+    out property <color> faint: #ffffff4d;
+    out property <color> hairline: #ffffff17;
+    out property <color> hover: #ffffff0f;
+    out property <color> chosen: #ffffff17;
+    out property <color> fill: #ffffff14;
 }
 
-// SVG paths on a 24 unit square.
+// Line icons on a 24 unit square, in the manner of SF Symbols; `solid` fills them instead.
 export global Icons {
-    out property <string> play: "M8 5 L19 12 L8 19 Z";
-    out property <string> pause: "M7 5 L10 5 L10 19 L7 19 Z M14 5 L17 5 L17 19 L14 19 Z";
-    out property <string> next: "M5 6 L13 12 L5 18 Z M13 6 L21 12 L13 18 Z";
-    out property <string> previous: "M19 6 L11 12 L19 18 Z M11 6 L3 12 L11 18 Z";
-    out property <string> shuffle: "M3 7 L7 7 L15 17 L20 17 M3 17 L7 17 L9.5 14 M13.5 10 L15 7 L20 7 M17 4 L20 7 L17 10 M17 14 L20 17 L17 20";
-    out property <string> repeat: "M4 12 L4 9 Q4 6 7 6 L19 6 M16 3 L19 6 L16 9 M20 12 L20 15 Q20 18 17 18 L5 18 M8 21 L5 18 L8 15";
-    out property <string> queue: "M4 6 L20 6 M4 12 L20 12 M4 18 L14 18";
-    out property <string> note: "M9 18 L9 5 L20 3 L20 16 M9 18 Q9 21 6 21 Q3 21 3 18 Q3 15 6 15 Q9 15 9 18 M20 16 Q20 19 17 19 Q14 19 14 16 Q14 13 17 13 Q20 13 20 16";
-    out property <string> speaker: "M4 9 L8 9 L13 5 L13 19 L8 15 L4 15 Z M16 9 Q18 12 16 15";
+    out property <string> play: "M7.5 5.2 Q7.5 4 8.6 4.6 L19.2 10.9 Q20.3 11.6 19.2 12.3 L8.6 18.6 Q7.5 19.2 7.5 18 Z";
+    out property <string> pause: "M6.5 5 Q6.5 4.5 7 4.5 L9.5 4.5 Q10 4.5 10 5 L10 19 Q10 19.5 9.5 19.5 L7 19.5 Q6.5 19.5 6.5 19 Z M14 5 Q14 4.5 14.5 4.5 L17 4.5 Q17.5 4.5 17.5 5 L17.5 19 Q17.5 19.5 17 19.5 L14.5 19.5 Q14 19.5 14 19 Z";
+    out property <string> next: "M2.5 6.8 Q2.5 5.8 3.4 6.4 L11.2 11.4 Q12 12 11.2 12.6 L3.4 17.6 Q2.5 18.2 2.5 17.2 Z M12 6.8 Q12 5.8 12.9 6.4 L20.7 11.4 Q21.5 12 20.7 12.6 L12.9 17.6 Q12 18.2 12 17.2 Z";
+    out property <string> previous: "M21.5 6.8 Q21.5 5.8 20.6 6.4 L12.8 11.4 Q12 12 12.8 12.6 L20.6 17.6 Q21.5 18.2 21.5 17.2 Z M12 6.8 Q12 5.8 11.1 6.4 L3.3 11.4 Q2.5 12 3.3 12.6 L11.1 17.6 Q12 18.2 12 17.2 Z";
+    out property <string> shuffle: "M3 7.5 L6.5 7.5 Q8.5 7.5 9.7 9.2 L14.3 15.8 Q15.5 17.5 17.5 17.5 L20.5 17.5 M3 17.5 L6.5 17.5 Q8.2 17.5 9.2 16.3 M14.8 8.7 Q15.8 7.5 17.5 7.5 L20.5 7.5 M18 5 L20.5 7.5 L18 10 M18 15 L20.5 17.5 L18 20";
+    out property <string> repeat: "M4 11.5 L4 10 Q4 7 7 7 L19.5 7 M17 4.5 L19.5 7 L17 9.5 M20 12.5 L20 14 Q20 17 17 17 L4.5 17 M7 14.5 L4.5 17 L7 19.5";
+    out property <string> queue: "M8.5 6 L20 6 M8.5 12 L20 12 M8.5 18 L20 18 M4 6 L4.6 6 M4 12 L4.6 12 M4 18 L4.6 18";
+    out property <string> note: "M9 17.5 L9 5.5 L19.5 3.5 L19.5 15.5 M9 17.5 A2.75 2.75 0 1 1 3.5 17.5 A2.75 2.75 0 1 1 9 17.5 M19.5 15.5 A2.75 2.75 0 1 1 14 15.5 A2.75 2.75 0 1 1 19.5 15.5";
+    out property <string> speaker: "M3.5 9.5 L7 9.5 L11.5 5.5 L11.5 18.5 L7 14.5 L3.5 14.5 Z M15 9.2 Q16.8 12 15 14.8 M17.8 6.6 Q21.6 12 17.8 17.4";
+    out property <string> speaker-off: "M3.5 9.5 L7 9.5 L11.5 5.5 L11.5 18.5 L7 14.5 L3.5 14.5 Z";
+    out property <string> home: "M4 10.5 L12 4 L20 10.5 M6 9 L6 19.5 Q6 20 6.5 20 L10 20 L10 14.5 L14 14.5 L14 20 L17.5 20 Q18 20 18 19.5 L18 9";
+    out property <string> search: "M16.5 10.5 A6 6 0 1 1 4.5 10.5 A6 6 0 1 1 16.5 10.5 M15 15 L20 20";
+    out property <string> albums: "M5 7.5 Q5 6.5 6 6.5 L18 6.5 Q19 6.5 19 7.5 L19 19 Q19 20 18 20 L6 20 Q5 20 5 19 Z M7 4 L17 4";
+    out property <string> artists: "M14.5 4.5 A3.25 3.25 0 1 1 14.5 11 A3.25 3.25 0 1 1 14.5 4.5 M12 9.5 L4.5 19 L5.5 20 L15 12.5 M7 15 L9 17";
+    out property <string> songs: "M10 18 L10 4 Q14 5 16 8 M10 18 A3 3 0 1 1 4 18 A3 3 0 1 1 10 18";
+    out property <string> playlists: "M4.5 5 L8 5 L8 8.5 L4.5 8.5 Z M10.5 5 L14 5 L14 8.5 L10.5 8.5 Z M16.5 5 L20 5 L20 8.5 L16.5 8.5 Z M4.5 11 L8 11 L8 14.5 L4.5 14.5 Z M10.5 11 L14 11 L14 14.5 L10.5 14.5 Z M16.5 11 L20 11 L20 14.5 L16.5 14.5 Z";
+    out property <string> chevron: "M9 5.5 L15.5 12 L9 18.5";
+    out property <string> down: "M5.5 9 L12 15.5 L18.5 9";
+    out property <string> close: "M6 6 L18 18 M18 6 L6 18";
+    out property <string> server: "M4 5.5 Q4 4.5 5 4.5 L19 4.5 Q20 4.5 20 5.5 L20 10 L4 10 Z M4 14 L20 14 L20 18.5 Q20 19.5 19 19.5 L5 19.5 Q4 19.5 4 18.5 Z M7.5 7.25 L8 7.25 M7.5 16.75 L8 16.75";
+    out property <string> key: "M13 10 A4 4 0 1 1 5 10 A4 4 0 1 1 13 10 M12 12.5 L19.5 20 M16.5 17 L18.5 15";
+    out property <string> person: "M15.5 8 A3.5 3.5 0 1 1 8.5 8 A3.5 3.5 0 1 1 15.5 8 M5 20 Q5 14 12 14 Q19 14 19 20";
 }
 
 component Icon inherits Path {
     in property <string> path;
-    in property <color> colour: Theme.text;
+    in property <brush> colour: Theme.text;
     in property <bool> solid;
-    width: 20px;
-    height: 20px;
+    in property <length> weight: 1.7px;
+    width: 18px;
+    height: 18px;
     viewbox-width: 24;
     viewbox-height: 24;
     commands: root.path;
     fill: root.solid ? root.colour : transparent;
     stroke: root.solid ? transparent : root.colour;
-    stroke-width: 2px;
+    stroke-width: root.weight;
+    stroke-line-cap: round;
+    stroke-line-join: round;
 }
 
-// A round button with an icon.
+// Glass, as Tahoe draws it where it cannot see through: a dark tinted pane, a thin rim that catches the
+// light along its top, and a soft shadow under it.
+component Glass inherits Rectangle {
+    in property <length> radius: 18px;
+    in property <color> tint: #2a2a2d;
+    in property <float> density: 0.88;
+    in property <bool> lifted: true;
+    border-radius: root.radius;
+    background: root.tint.with-alpha(root.density);
+    border-width: 1px;
+    border-color: @linear-gradient(180deg, #ffffff2e 0%, #ffffff0f 35%, #ffffff0a 100%);
+    drop-shadow-blur: root.lifted ? 24px : 0;
+    drop-shadow-offset-y: root.lifted ? 8px : 0;
+    drop-shadow-color: #0000006b;
+}
+
+// A borderless button: an icon that dims when not lit, and a round hover under it.
 component IconButton inherits Rectangle {
     in property <string> path;
     in property <bool> solid;
     in property <bool> lit;
-    in property <bool> big;
+    in property <bool> quiet;
+    in property <length> size: 30px;
+    in property <length> icon: 17px;
+    in property <color> ink: Theme.text;
+    in property <color> base: transparent;
     callback clicked;
-    width: root.big ? 40px : 32px;
-    height: self.width;
-    border-radius: self.width / 2;
-    background: root.big ? Theme.text : (touch.has-hover ? Theme.hover : transparent);
+    width: root.size;
+    height: root.size;
+    border-radius: root.size / 2;
+    background: touch.has-hover ? Theme.hover : root.base;
     Icon {
         path: root.path;
         solid: root.solid;
-        colour: root.big ? Theme.page : (root.lit ? Theme.accent : Theme.text);
-        width: root.big ? 22px : 18px;
-        height: self.width;
+        colour: root.lit ? Theme.accent : (root.quiet ? Theme.dim : root.ink);
+        width: root.icon;
+        height: root.icon;
+        opacity: touch.pressed ? 0.5 : 1;
     }
     touch := TouchArea {
         clicked => { root.clicked(); }
     }
 }
 
-component Pill inherits Rectangle {
+// Apple's filled capsule buttons ("Play", "Shuffle").
+component Capsule inherits Rectangle {
     in property <string> text;
-    in property <bool> filled;
-    // The colour it is filled with, or its text is in when not filled: a page's own accent over its cover.
+    in property <string> icon;
+    in property <bool> solid-icon;
     in property <color> ink: Theme.accent;
+    in property <color> label: white;
     callback clicked;
     height: 32px;
-    width: label.preferred-width + 32px;
-    border-radius: 16px;
-    background: root.filled ? root.ink : (touch.has-hover ? #ffffff30 : #ffffff1c);
-    label := Text {
-        text: root.text;
-        color: root.filled ? white : root.ink;
-        font-weight: 600;
-        font-size: 13px;
+    width: max(108px, row.preferred-width + 34px);
+    border-radius: 8px;
+    background: root.ink;
+    opacity: touch.pressed ? 0.75 : 1;
+    row := HorizontalLayout {
+        alignment: center;
+        spacing: 7px;
+        if root.icon != "": Icon {
+            y: (parent.height - self.height) / 2;
+            path: root.icon;
+            solid: root.solid-icon;
+            colour: root.label;
+            weight: 2.2px;
+            width: 13px;
+            height: 13px;
+        }
+        Text {
+            text: root.text;
+            color: root.label;
+            font-weight: 600;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
     }
     touch := TouchArea {
         clicked => { root.clicked(); }
@@ -115,25 +174,30 @@ component Pill inherits Rectangle {
 // let go, `moved` where it is while held.
 component Bar inherits Rectangle {
     in property <float> value;
+    in property <length> thin: 3px;
+    in property <length> thick: 5px;
+    in property <color> fill: #ffffffcc;
+    in property <color> track: #ffffff24;
+    out property <bool> hot: touch.has-hover || root.held >= 0;
     callback moved(float);
     callback done(float);
     property <float> held: -1;
     property <float> shown: root.held >= 0 ? root.held : max(0, min(1, root.value));
-    height: 16px;
+    height: 12px;
     Rectangle {
         y: (parent.height - self.height) / 2;
-        height: touch.has-hover || root.held >= 0 ? 6px : 4px;
+        height: root.hot ? root.thick : root.thin;
+        animate height { duration: 120ms; easing: ease-out; }
         border-radius: self.height / 2;
-        background: Theme.line;
+        background: root.track;
+        clip: true;
         Rectangle {
             x: 0;
             width: parent.width * root.shown;
-            border-radius: parent.border-radius;
-            background: touch.has-hover || root.held >= 0 ? Theme.accent : #d1d1d6;
+            background: root.fill;
         }
     }
     touch := TouchArea {
-        mouse-cursor: pointer;
         pointer-event(e) => {
             if e.button == PointerEventButton.left && e.kind == PointerEventKind.down {
                 root.held = max(0, min(1, self.mouse-x / root.width));
@@ -153,79 +217,100 @@ component Bar inherits Rectangle {
     }
 }
 
-// A cover, rounded, grey until the picture comes.
-component Cover inherits Rectangle {
+// Artwork: rounded, with a hairline edge so dark covers keep their shape on the dark ground.
+component Art inherits Rectangle {
     in property <image> source;
+    in property <bool> shadow;
     border-radius: 6px;
-    clip: true;
-    background: #3a3a3c;
+    background: #2e2e30;
+    drop-shadow-blur: root.shadow ? 20px : 0;
+    drop-shadow-offset-y: root.shadow ? 8px : 0;
+    drop-shadow-color: #00000070;
     Icon {
         path: Icons.note;
-        colour: #636366;
-        width: parent.width * 0.35;
+        colour: #ffffff38;
+        width: parent.width * 0.34;
         height: self.width;
+        weight: 1.4px;
         visible: root.source.width == 0;
     }
-    Image {
-        width: 100%;
-        height: 100%;
-        source: root.source;
-        image-fit: cover;
+    Rectangle {
+        border-radius: root.border-radius;
+        clip: true;
+        Image {
+            width: 100%;
+            height: 100%;
+            source: root.source;
+            image-fit: cover;
+        }
+    }
+    Rectangle {
+        border-radius: root.border-radius;
+        border-width: 1px;
+        border-color: #ffffff12;
     }
 }
 
-// An album, artist or playlist: its cover and two lines; a play button over the cover on hover.
+// An album, artist or playlist in a grid or on a shelf: the artwork, and the title and the artist under
+// it. The pointer over it brings a play button onto the artwork, as Music does.
 component CardView inherits Rectangle {
     in property <Card> card;
     in property <image> picture;
     in property <bool> round;
+    in property <bool> playable: !root.round;
+    in property <length> side: 176px;
     callback open;
     callback play;
-    width: 168px;
-    height: 224px;
-    VerticalLayout {
-        alignment: start;
-        spacing: 2px;
-        pic := Cover {
-            width: 168px;
-            height: 168px;
-            source: root.picture;
-            border-radius: root.round ? self.width / 2 : 8px;
-            Rectangle {
-                background: touch.has-hover ? #00000030 : transparent;
-            }
+    width: root.side;
+    height: root.side + 46px;
+    Art {
+        y: 0;
+        width: root.side;
+        height: root.side;
+        source: root.picture;
+        border-radius: root.round ? self.width / 2 : 8px;
+        Rectangle {
+            border-radius: parent.border-radius;
+            background: touch.has-hover ? #00000030 : transparent;
         }
-        Text {
-            text: root.card.title;
-            color: Theme.text;
-            font-size: 13px;
-            font-weight: 500;
-            overflow: elide;
-        }
-        Text {
-            text: root.card.sub;
-            color: Theme.dim;
-            font-size: 12px;
-            overflow: elide;
-        }
+    }
+    Text {
+        y: root.side + 8px;
+        width: root.side;
+        text: root.card.title;
+        color: Theme.text;
+        font-size: 13px;
+        overflow: elide;
+        horizontal-alignment: root.round ? center : left;
+    }
+    Text {
+        y: root.side + 25px;
+        width: root.side;
+        text: root.card.sub;
+        color: Theme.dim;
+        font-size: 13px;
+        overflow: elide;
+        horizontal-alignment: root.round ? center : left;
     }
     touch := TouchArea {
         clicked => { root.open(); }
-        mouse-cursor: pointer;
     }
-    if touch.has-hover && !root.round: Rectangle {
-        x: 124px;
-        y: 124px;
-        width: 36px;
-        height: 36px;
-        border-radius: 18px;
-        background: play-touch.has-hover ? Theme.accent : #000000a0;
+    if root.playable && touch.has-hover: Rectangle {
+        x: 10px;
+        y: root.side - self.height - 10px;
+        width: 34px;
+        height: 34px;
+        border-radius: 17px;
+        background: play-touch.has-hover ? Theme.accent : #1e1e1ec0;
+        drop-shadow-blur: 8px;
+        drop-shadow-color: #00000060;
         Icon {
+            x: (parent.width - self.width) / 2 + 1px;
             path: Icons.play;
             solid: true;
             colour: white;
-            width: 16px;
-            height: 16px;
+            width: 14px;
+            height: 14px;
         }
         play-touch := TouchArea {
             clicked => { root.play(); }
@@ -233,21 +318,26 @@ component CardView inherits Rectangle {
     }
 }
 
-// Cards in rows as wide as the page allows. Only the ones on screen are drawn, and only those ask for their covers.
+// Cards in rows filling the page's width. Only the ones on screen are drawn, and only those ask for their
+// covers.
 component Grid inherits Flickable {
     in property <[Card]> cards;
     in property <int> rev;
     in property <bool> round;
+    in property <length> pad: 32px;
+    in property <length> bottom: 100px;
     pure callback art(string, int, int) -> image;
     callback open(Card);
     callback play(Card);
-    property <length> cell-w: 168px + 20px;
-    property <length> cell-h: 224px + 16px;
-    property <int> columns: max(1, floor((self.width - 32px) / self.cell-w));
-    content-height: ceil(root.cards.length / root.columns) * root.cell-h + 32px;
+    property <length> gap: 22px;
+    property <int> columns: max(2, floor((self.width - root.pad * 2 + root.gap) / (176px + root.gap)));
+    // The cards grow a little so the rows reach both edges.
+    property <length> side: (self.width - root.pad * 2 - (root.columns - 1) * root.gap) / root.columns;
+    content-height: ceil(root.cards.length / root.columns) * (root.side + 46px + 24px) + root.bottom;
     for c[i] in root.cards: CardView {
-        x: 16px + mod(i, root.columns) * root.cell-w;
-        y: 8px + floor(i / root.columns) * root.cell-h;
+        x: root.pad + mod(i, root.columns) * (root.side + root.gap);
+        y: floor(i / root.columns) * (root.side + 46px + 24px);
+        side: root.side;
         card: c;
         round: root.round;
         picture: root.art(c.art, 0, root.rev);
@@ -256,17 +346,83 @@ component Grid inherits Flickable {
     }
 }
 
-// A song in a list: its number, title and artist, album, and length. Double click plays it.
+component SectionTitle inherits HorizontalLayout {
+    in property <string> text;
+    in property <bool> more;
+    callback clicked;
+    alignment: start;
+    spacing: 4px;
+    height: 30px;
+    Text {
+        text: root.text;
+        color: Theme.text;
+        font-size: 19px;
+        font-weight: 700;
+        vertical-alignment: center;
+    }
+    if root.more: Icon {
+        y: (parent.height - self.height) / 2 + 1px;
+        path: Icons.chevron;
+        colour: Theme.dim;
+        weight: 2.4px;
+        width: 15px;
+        height: 15px;
+    }
+}
+
+// A shelf of cards that scrolls sideways, under its title.
+component ShelfView inherits VerticalLayout {
+    in property <string> title;
+    in property <[Card]> cards;
+    in property <int> rev;
+    in property <bool> round;
+    pure callback art(string, int, int) -> image;
+    callback open(Card);
+    callback play(Card);
+    spacing: 10px;
+    padding-bottom: 26px;
+    HorizontalLayout {
+        padding-left: 32px;
+        SectionTitle {
+            text: root.title;
+        }
+    }
+    Flickable {
+        height: 176px + 46px;
+        content-width: root.cards.length * (176px + 22px) + 64px - 22px;
+        for c[i] in root.cards: CardView {
+            x: 32px + i * (176px + 22px);
+            card: c;
+            round: root.round;
+            picture: root.art(c.art, 0, root.rev);
+            open => { root.open(c); }
+            play => { root.play(c); }
+        }
+    }
+}
+
+// A song in a list, as Music lists them: the number (or the small artwork), the title, the artist and
+// album, and the length, over a hairline. Double click plays; a right click offers the rest.
 component SongLine inherits Rectangle {
     in property <SongRow> song;
     in property <int> number;
     in property <bool> show-album: true;
+    in property <bool> thumb;
+    in property <image> picture;
+    in property <color> ink: Theme.accent;
     callback play;
     callback next;
     callback later;
-    height: 44px;
+    height: root.thumb ? 56px : 44px;
     border-radius: 6px;
     background: touch.has-hover ? Theme.hover : transparent;
+    Rectangle {
+        x: root.thumb ? 64px : 44px;
+        y: parent.height - 1px;
+        width: parent.width - self.x - 8px;
+        height: 1px;
+        background: Theme.hairline;
+    }
     ContextMenuArea {
         Menu {
             MenuItem {
@@ -274,39 +430,54 @@ component SongLine inherits Rectangle {
                 activated => { root.play(); }
             }
             MenuItem {
-                title: "Play next";
+                title: "Play Next";
                 activated => { root.next(); }
             }
             MenuItem {
-                title: "Add to queue";
+                title: "Play Last";
                 activated => { root.later(); }
             }
         }
         HorizontalLayout {
-            padding-left: 12px;
+            padding-left: 8px;
             padding-right: 12px;
             spacing: 12px;
-            Text {
-                width: 28px;
-                text: root.song.playing ? "♪" : root.number;
-                color: root.song.playing ? Theme.accent : Theme.dim;
-                vertical-alignment: center;
-                horizontal-alignment: right;
-                font-size: 13px;
+            if root.thumb: Art {
+                y: (parent.height - self.height) / 2;
+                width: 44px;
+                height: 44px;
+                border-radius: 5px;
+                source: root.picture;
+            }
+            if !root.thumb: Rectangle {
+                width: 24px;
+                if root.song.playing: Icon {
+                    path: Icons.speaker;
+                    colour: root.ink;
+                    width: 15px;
+                    height: 15px;
+                }
+                if !root.song.playing: Text {
+                    width: 100%;
+                    text: root.number;
+                    color: Theme.dim;
+                    font-size: 13px;
+                    horizontal-alignment: right;
+                }
             }
             VerticalLayout {
                 alignment: center;
                 horizontal-stretch: 2;
                 Text {
                     text: root.song.title;
-                    color: root.song.playing ? Theme.accent : Theme.text;
+                    color: root.song.playing ? root.ink : Theme.text;
                     font-size: 13px;
                     overflow: elide;
                 }
-                Text {
+                if root.thumb || root.show-album: Text {
                     text: root.song.artist;
                     color: Theme.dim;
-                    font-size: 12px;
+                    font-size: 13px;
                     overflow: elide;
                 }
             }
@@ -314,15 +485,17 @@ component SongLine inherits Rectangle {
                 horizontal-stretch: 1;
                 text: root.song.album;
                 color: Theme.dim;
-                font-size: 12px;
+                font-size: 13px;
                 vertical-alignment: center;
                 overflow: elide;
             }
             Text {
                 text: root.song.time;
                 color: Theme.dim;
-                font-size: 12px;
+                font-size: 13px;
                 vertical-alignment: center;
+                horizontal-alignment: right;
+                width: 44px;
             }
         }
         touch := TouchArea {
@@ -333,35 +506,68 @@ component SongLine inherits Rectangle {
 
 component SideItem inherits Rectangle {
     in property <string> text;
+    in property <string> icon;
+    in property <image> picture;
+    in property <bool> has-picture;
     in property <bool> chosen;
     callback clicked;
-    height: 32px;
-    border-radius: 6px;
-    background: root.chosen ? #ffffff1c : (touch.has-hover ? Theme.hover : transparent);
-    Text {
-        x: 12px;
-        text: root.text;
-        color: root.chosen ? Theme.accent : Theme.text;
-        font-size: 13px;
-        font-weight: root.chosen ? 600 : 400;
+    height: 34px;
+    border-radius: 9px;
+    background: root.chosen ? Theme.chosen : (touch.has-hover ? #ffffff0a : transparent);
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 8px;
+        spacing: 10px;
+        if !root.has-picture: Icon {
+            y: (parent.height - self.height) / 2;
+            path: root.icon;
+            colour: root.chosen ? Theme.accent : Theme.text;
+            width: 20px;
+            height: 20px;
+        }
+        if root.has-picture: Art {
+            y: (parent.height - self.height) / 2;
+            width: 24px;
+            height: 24px;
+            border-radius: 4px;
+            source: root.picture;
+        }
+        Text {
+            text: root.text;
+            color: root.chosen ? Theme.accent : Theme.text;
+            font-size: 14px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
     }
     touch := TouchArea {
         clicked => { root.clicked(); }
     }
 }
 
+component SideHeading inherits Text {
+    color: Theme.dim;
+    font-size: 12px;
+    font-weight: 600;
+    height: 30px;
+    vertical-alignment: bottom;
+    x: 10px;
+}
+
+// A page's large title, clear of the titlebar the page runs up under.
 component Heading inherits VerticalLayout {
     in property <string> title;
     in property <string> caption;
-    padding: 24px;
-    padding-bottom: 12px;
+    padding-left: 32px;
+    padding-right: 32px;
+    padding-top: 52px;
+    padding-bottom: 16px;
     spacing: 2px;
     Text {
         text: root.title;
         color: Theme.text;
-        font-size: 30px;
+        font-size: 34px;
         font-weight: 700;
-        letter-spacing: -0.8px;
     }
     if root.caption != "": Text {
         text: root.caption;
@@ -370,36 +576,93 @@ component Heading inherits VerticalLayout {
     }
 }
 
-component Field inherits VerticalLayout {
-    in property <string> label;
+// A text field: a rounded well, a magnifier or another icon, the placeholder until something is typed.
+component Field inherits Rectangle {
+    in property <string> placeholder;
+    in property <string> icon;
+    in property <bool> secret;
     in-out property <string> text;
-    in property <InputType> input-type: InputType.text;
-    spacing: 4px;
-    Text {
-        text: root.label;
-        color: Theme.dim;
-        font-size: 12px;
+    callback edited(string);
+    callback accepted;
+    height: 34px;
+    border-radius: 9px;
+    background: #ffffff0f;
+    border-width: input.has-focus ? 3px : 1px;
+    border-color: input.has-focus ? Theme.accent.with-alpha(0.55) : #ffffff14;
+    public function take-focus() {
+        input.focus();
     }
-    LineEdit {
-        text <=> root.text;
-        input-type: root.input-type;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 7px;
+        if root.icon != "": Icon {
+            y: (parent.height - self.height) / 2;
+            path: root.icon;
+            colour: Theme.dim;
+            width: 15px;
+            height: 15px;
+        }
+        Rectangle {
+            input := TextInput {
+                width: 100%;
+                text <=> root.text;
+                color: Theme.text;
+                font-size: 13px;
+                vertical-alignment: center;
+                single-line: true;
+                input-type: root.secret ? InputType.password : InputType.text;
+                selection-background-color: Theme.accent.with-alpha(0.4);
+                edited => { root.edited(self.text); }
+                accepted => { root.accepted(); }
+            }
+            if root.text == "": Text {
+                x: 0;
+                text: root.placeholder;
+                color: Theme.faint;
+                font-size: 13px;
+                vertical-alignment: center;
+            }
+        }
     }
+}
+
+// Where the window is dragged from, and double-clicked to zoom: the content runs up under the titlebar.
+component TitleStrip inherits TouchArea {
+    callback drag;
+    callback zoom;
+    height: 44px;
+    pointer-event(e) => {
+        if e.button == PointerEventButton.left && e.kind == PointerEventKind.down {
+            root.drag();
+        }
+    }
+    double-clicked => { root.zoom(); }
 }
 
 export component AppWindow inherits Window {
     title: "nori";
+    icon: @image-url("assets/logo.png");
     preferred-width: 1280px;
     preferred-height: 820px;
-    min-width: 820px;
-    min-height: 520px;
-    background: Theme.page;
+    min-width: 860px;
+    min-height: 560px;
+    // Clear, so the system's sidebar material shows through the sidebar's pane (macOS).
+    background: root.vibrancy ? transparent : Theme.ground;
     default-font-size: 13px;
-    default-font-family: "Inter";
+    default-font-family: root.font;
+
+    // The system's own font on macOS (SF Pro), Inter elsewhere.
+    in property <string> font: "Inter";
+    // The system blurs what is behind the window where the interface is clear (macOS).
+    in property <bool> vibrancy;
+    // Room for the traffic lights at the top of the sidebar.
+    in property <length> inset-top: 16px;
 
     // 0 home, 1 search, 2 albums, 3 artists, 4 playlists, 5 songs, 6 a page (album, artist, playlist), 7 login.
     in-out property <int> view: 0;
     in property <string> server;
-    in property <string> greeting: "Good evening";
+    in property <string> greeting: "Home";
     in property <bool> loading;
     in property <string> failed;
     in property <string> note;
@@ -421,19 +684,19 @@ export component AppWindow inherits Window {
     in property <[SongRow]> search-songs;
     in property <string> search-note;
 
-    // The page open: 0 album, 1 artist, 2 playlist.
+    // The page open: 0 album, 1 artist, 2 playlist, and its id (the sidebar marks a playlist's).
     in property <int> page-kind;
+    in property <string> page-id;
     in property <string> page-title;
     in property <string> page-sub;
     in property <string> page-caption;
     in property <string> page-art;
     in property <[SongRow]> page-songs;
     in property <[Card]> page-albums;
-    // The page wears its cover's colours, as the app's HeroPage does: the blurred cover (nori-look's wash)
-    // runs out into the page colour, so there is no line where the picture stops.
+    // The page wears its cover's colours: the blurred cover (nori-look's wash) runs out into the page's own
+    // colour, so there is no line where the picture stops.
     in property <image> page-wash;
-    in property <color> page-bg: Theme.page;
-    in property <color> page-text: Theme.text;
+    in property <color> page-bg: Theme.ground;
     in property <color> page-accent: Theme.accent;
 
     // What plays.
@@ -449,17 +712,16 @@ export component AppWindow inherits Window {
     in property <bool> shuffle;
     in property <int> repeat;
     in property <float> volume: 1;
-    in property <string> mix-note;
     in property <[SongRow]> queue;
-    // The now playing panel's colours, from the cover (nori-look).
-    in property <color> wash: #2c2c2e;
-    in property <color> wash-edge: #2c2c2e;
-    in property <color> wash-text: Theme.text;
-    in property <image> wash-image;
-    // 0 none, 1 now playing, 2 the queue.
-    in-out property <int> panel: 1;
+    // Now Playing's ground: the cover playing, blurred (nori-look's wash), in two layers that cross-fade.
+    in property <image> wash-a;
+    in property <image> wash-b;
+    in property <bool> wash-on-b;
+    in property <color> wash-tint: #202024;
+    in-out property <bool> queue-open;
+    in-out property <bool> full-player;
 
-    in-out property <string> login-url: "http://";
+    in-out property <string> login-url: "https://";
     in-out property <string> login-user;
     in-out property <string> login-password;
     in property <string> login-error;
@@ -481,211 +743,266 @@ export component AppWindow inherits Window {
     callback next();
     callback previous();
     callback seek(float);
+    callback seek-by(int);
     callback set-volume(float);
     callback toggle-shuffle();
     callback cycle-repeat();
     callback jump(int);
     callback login();
     callback cancel-login();
+    callback drag-window();
+    callback zoom-window();
 
     function clock(ms: int) -> string {
         let s = floor(max(0, ms) / 1000);
         return floor(s / 60) + ":" + (mod(s, 60) < 10 ? "0" : "") + mod(s, 60);
     }
 
-    if root.view == 7: Rectangle {
-        background: Theme.page;
-        VerticalLayout {
-            alignment: center;
-            HorizontalLayout {
+    // The menu bar, native on macOS; its shortcuts are the player's keys.
+    MenuBar {
+        Menu {
+            title: "Controls";
+            MenuItem {
+                title: "Play/Pause";
+                shortcut: @keys(Control + "p");
+                activated => { root.toggle(); }
+            }
+            MenuItem {
+                title: "Next";
+                shortcut: @keys(Control + RightArrow);
+                activated => { root.next(); }
+            }
+            MenuItem {
+                title: "Previous";
+                shortcut: @keys(Control + LeftArrow);
+                activated => { root.previous(); }
+            }
+            MenuItem {
+                title: "Shuffle";
+                activated => { root.toggle-shuffle(); }
+            }
+            MenuItem {
+                title: "Repeat";
+                activated => { root.cycle-repeat(); }
+            }
+        }
+        Menu {
+            title: "View";
+            MenuItem {
+                title: "Home";
+                shortcut: @keys(Control + "1");
+                activated => { root.go(0); }
+            }
+            MenuItem {
+                title: "Albums";
+                shortcut: @keys(Control + "2");
+                activated => { root.go(2); }
+            }
+            MenuItem {
+                title: "Artists";
+                shortcut: @keys(Control + "3");
+                activated => { root.go(3); }
+            }
+            MenuItem {
+                title: "Songs";
+                shortcut: @keys(Control + "4");
+                activated => { root.go(5); }
+            }
+            MenuItem {
+                title: "Search";
+                shortcut: @keys(Control + "f");
+                activated => { root.go(1); }
+            }
+            MenuItem {
+                title: "Playing Next";
+                shortcut: @keys(Control + "u");
+                activated => { root.queue-open = !root.queue-open; }
+            }
+            MenuItem {
+                title: "Now Playing";
+                shortcut: @keys(Control + Shift + "f");
+                activated => { root.full-player = !root.full-player; }
+            }
+        }
+    }
+
+    // The keys Music answers to without a menu: space plays and pauses, the arrows seek, escape leaves
+    // Now Playing. A text field that has the keys keeps them.
+    FocusScope {
+        init => { self.focus(); }
+        key-pressed(e) => {
+            if e.text == " " {
+                root.toggle();
+                return accept;
+            }
+            if e.text == Key.Escape && root.full-player {
+                root.full-player = false;
+                return accept;
+            }
+            if e.text == Key.RightArrow && !e.modifiers.control {
+                root.seek-by(10000);
+                return accept;
+            }
+            if e.text == Key.LeftArrow && !e.modifiers.control {
+                root.seek-by(-10000);
+                return accept;
+            }
+            reject
+        }
+
+        // The ground: near black, a little clear over the system's blur so the sidebar's pane has it.
+        Rectangle {
+            background: root.vibrancy ? Theme.ground.with-alpha(0.97) : Theme.ground;
+        }
+
+        if root.view == 7: Rectangle {
+            TitleStrip {
+                y: 0;
+                drag => { root.drag-window(); }
+                zoom => { root.zoom-window(); }
+            }
+            VerticalLayout {
                 alignment: center;
-                VerticalLayout {
-                    width: 380px;
-                    spacing: 14px;
-                    Text {
-                        text: "nori";
-                        color: Theme.accent;
-                        font-size: 34px;
-                        font-weight: 800;
-                    }
-                    Text {
-                        text: "Sign in to your Navidrome or Subsonic server.";
-                        color: Theme.dim;
-                        wrap: word-wrap;
-                    }
-                    Field {
-                        label: "Server address";
-                        text <=> root.login-url;
-                    }
-                    Field {
-                        label: "User";
-                        text <=> root.login-user;
-                    }
-                    Field {
-                        label: "Password";
-                        text <=> root.login-password;
-                        input-type: password;
-                    }
-                    if root.login-error != "": Text {
-                        text: root.login-error;
-                        color: #ff453a;
-                        wrap: word-wrap;
-                    }
-                    HorizontalLayout {
-                        spacing: 8px;
-                        alignment: start;
-                        Pill {
-                            text: root.login-busy ? "Signing in…" : "Sign in";
-                            filled: true;
-                            clicked => {
+                HorizontalLayout {
+                    alignment: center;
+                    VerticalLayout {
+                        width: 360px;
+                        spacing: 12px;
+                        HorizontalLayout {
+                            alignment: center;
+                            padding-bottom: 8px;
+                            Image {
+                                source: @image-url("assets/logo.png");
+                                height: 54px;
+                                image-fit: contain;
+                            }
+                        }
+                        Text {
+                            text: "Sign in to your Navidrome or Subsonic server.";
+                            color: Theme.dim;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+                        Rectangle {
+                            height: 10px;
+                        }
+                        Field {
+                            icon: Icons.server;
+                            placeholder: "Server address";
+                            text <=> root.login-url;
+                        }
+                        Field {
+                            icon: Icons.person;
+                            placeholder: "User name";
+                            text <=> root.login-user;
+                        }
+                        Field {
+                            icon: Icons.key;
+                            placeholder: "Password";
+                            secret: true;
+                            text <=> root.login-password;
+                            accepted => {
                                 if !root.login-busy {
                                     root.login();
                                 }
                             }
                         }
-                        if root.can-cancel-login: Pill {
-                            text: "Cancel";
-                            clicked => { root.cancel-login(); }
+                        if root.login-error != "": Text {
+                            text: root.login-error;
+                            color: #ff453a;
+                            wrap: word-wrap;
+                            horizontal-alignment: center;
                         }
-                    }
-                }
-            }
-        }
-    }
-
-    if root.view != 7: VerticalLayout {
-        HorizontalLayout {
-            vertical-stretch: 1;
-            // The sidebar.
-            Rectangle {
-                width: 210px;
-                background: Theme.side;
-                VerticalLayout {
-                    padding: 12px;
-                    padding-top: 20px;
-                    spacing: 2px;
-                    Text {
-                        text: "♫ nori";
-                        color: Theme.accent;
-                        font-size: 20px;
-                        font-weight: 800;
-                    }
-                    Rectangle {
-                        height: 14px;
-                    }
-                    SideItem {
-                        text: "Home";
-                        chosen: root.view == 0;
-                        clicked => { root.go(0); }
-                    }
-                    SideItem {
-                        text: "Search";
-                        chosen: root.view == 1;
-                        clicked => { root.go(1); }
-                    }
-                    Text {
-                        text: "LIBRARY";
-                        color: Theme.dim;
-                        font-size: 11px;
-                        font-weight: 600;
-                        height: 36px;
-                        vertical-alignment: bottom;
-                    }
-                    SideItem {
-                        text: "Albums";
-                        chosen: root.view == 2;
-                        clicked => { root.go(2); }
-                    }
-                    SideItem {
-                        text: "Artists";
-                        chosen: root.view == 3;
-                        clicked => { root.go(3); }
-                    }
-                    SideItem {
-                        text: "Playlists";
-                        chosen: root.view == 4;
-                        clicked => { root.go(4); }
-                    }
-                    SideItem {
-                        text: "Songs";
-                        chosen: root.view == 5;
-                        clicked => { root.go(5); }
-                    }
-                    Rectangle {
-                        vertical-stretch: 1;
-                    }
-                    Text {
-                        text: root.server;
-                        color: Theme.dim;
-                        font-size: 11px;
-                        overflow: elide;
-                    }
-                    SideItem {
-                        text: "Servers…";
-                        clicked => { root.go(7); }
-                    }
-                }
-            }
-
-            // The page.
-            Rectangle {
-                horizontal-stretch: 1;
-                background: Theme.page;
-                clip: true;
-
-                if root.view == 0: Flickable {
-                    content-height: home.preferred-height;
-                    home := VerticalLayout {
-                        width: parent.width;
-                        Heading {
-                            title: root.greeting;
+                        Rectangle {
+                            height: 8px;
                         }
-                        for shelf in root.shelves: VerticalLayout {
-                            if shelf.cards.length > 0: VerticalLayout {
-                                padding-left: 24px;
-                                padding-bottom: 20px;
-                                spacing: 10px;
-                                Text {
-                                    text: shelf.title;
-                                    color: Theme.text;
-                                    font-size: 18px;
-                                    font-weight: 700;
-                                }
-                                Flickable {
-                                    height: 224px;
-                                    content-width: shelf.cards.length * 184px + 24px;
-                                    for c[i] in shelf.cards: CardView {
-                                        x: i * 184px;
-                                        card: c;
-                                        picture: root.art(c.art, 0, root.covers-rev);
-                                        open => { root.open-album(c.id); }
-                                        play => { root.play-album(c.id); }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            alignment: center;
+                            if root.can-cancel-login: Capsule {
+                                text: "Cancel";
+                                ink: Theme.fill;
+                                label: Theme.text;
+                                clicked => { root.cancel-login(); }
+                            }
+                            Capsule {
+                                text: root.login-busy ? "Signing In…" : "Sign In";
+                                clicked => {
+                                    if !root.login-busy {
+                                        root.login();
                                     }
                                 }
                             }
                         }
                     }
                 }
+            }
+        }
+
+        if root.view != 7: Rectangle {
+            // A page that wears its cover's colour wears it under the sidebar's pane too, as Tahoe runs the
+            // page under its floating sidebar.
+            if root.view == 6: Rectangle {
+                background: root.page-bg;
+                Image {
+                    y: 0;
+                    width: 100%;
+                    height: 440px;
+                    source: root.page-wash;
+                    image-fit: fill;
+                }
+                Rectangle {
+                    y: 0;
+                    height: 440px;
+                    background: @linear-gradient(180deg, root.page-bg.with-alpha(0.15) 0%, root.page-bg.with-alpha(0.55) 55%, root.page-bg 100%);
+                }
+            }
+            // The page, right of the sidebar's pane; it runs up under the titlebar and under the player.
+            Rectangle {
+                x: 240px;
+                width: parent.width - self.x;
+                clip: true;
+
+                if root.view == 0: Flickable {
+                    content-height: home.preferred-height;
+                    home := VerticalLayout {
+                        width: parent.width;
+                        padding-bottom: 100px;
+                        Heading {
+                            title: root.greeting;
+                        }
+                        for shelf in root.shelves: VerticalLayout {
+                            if shelf.cards.length > 0: ShelfView {
+                                title: shelf.title;
+                                cards: shelf.cards;
+                                rev: root.covers-rev;
+                                art(a, s, r) => { return root.art(a, s, r); }
+                                open(c) => { root.open-album(c.id); }
+                                play(c) => { root.play-album(c.id); }
+                            }
+                        }
+                    }
+                }
 
                 if root.view == 1: VerticalLayout {
-                    Heading {
-                        title: "Search";
-                    }
                     HorizontalLayout {
-                        padding-left: 24px;
-                        padding-right: 24px;
-                        search := LineEdit {
-                            placeholder-text: "Artists, albums, songs";
+                        padding-left: 32px;
+                        padding-right: 32px;
+                        padding-top: 52px;
+                        padding-bottom: 8px;
+                        Field {
+                            icon: Icons.search;
+                            placeholder: "Artists, albums and songs";
                             text <=> root.search-text;
                             edited(t) => { root.search-edited(t); }
-                            init => { self.focus(); }
+                            init => { self.take-focus(); }
                         }
                     }
                     if root.search-note != "": Text {
-                        x: 24px;
+                        x: 34px;
                         text: root.search-note;
                         color: Theme.dim;
-                        height: 28px;
+                        height: 24px;
                         vertical-alignment: center;
                     }
                     Flickable {
@@ -693,57 +1010,44 @@ export component AppWindow inherits Window {
                         content-height: found.preferred-height;
                         found := VerticalLayout {
                             width: parent.width;
-                            padding: 12px;
-                            spacing: 8px;
-                            if root.search-artists.length > 0: Text {
-                                x: 12px;
-                                text: "Artists";
-                                color: Theme.text;
-                                font-size: 17px;
-                                font-weight: 700;
+                            padding-top: 16px;
+                            padding-bottom: 100px;
+                            if root.search-artists.length > 0: ShelfView {
+                                title: "Artists";
+                                cards: root.search-artists;
+                                round: true;
+                                rev: root.covers-rev;
+                                art(a, s, r) => { return root.art(a, s, r); }
+                                open(c) => { root.open-artist(c.id); }
                             }
-                            if root.search-artists.length > 0: Flickable {
-                                height: 224px;
-                                content-width: root.search-artists.length * 184px + 24px;
-                                for c[i] in root.search-artists: CardView {
-                                    x: 12px + i * 184px;
-                                    card: c;
-                                    round: true;
-                                    picture: root.art(c.art, 0, root.covers-rev);
-                                    open => { root.open-artist(c.id); }
+                            if root.search-albums.length > 0: ShelfView {
+                                title: "Albums";
+                                cards: root.search-albums;
+                                rev: root.covers-rev;
+                                art(a, s, r) => { return root.art(a, s, r); }
+                                open(c) => { root.open-album(c.id); }
+                                play(c) => { root.play-album(c.id); }
+                            }
+                            if root.search-songs.length > 0: HorizontalLayout {
+                                padding-left: 32px;
+                                padding-bottom: 6px;
+                                SectionTitle {
+                                    text: "Songs";
                                 }
                             }
-                            if root.search-albums.length > 0: Text {
-                                x: 12px;
-                                text: "Albums";
-                                color: Theme.text;
-                                font-size: 17px;
-                                font-weight: 700;
-                            }
-                            if root.search-albums.length > 0: Flickable {
-                                height: 224px;
-                                content-width: root.search-albums.length * 184px + 24px;
-                                for c[i] in root.search-albums: CardView {
-                                    x: 12px + i * 184px;
-                                    card: c;
-                                    picture: root.art(c.art, 0, root.covers-rev);
-                                    open => { root.open-album(c.id); }
-                                    play => { root.play-album(c.id); }
+                            VerticalLayout {
+                                padding-left: 24px;
+                                padding-right: 24px;
+                                for s[i] in root.search-songs: SongLine {
+                                    song: s;
+                                    number: i + 1;
+                                    thumb: true;
+                                    show-album: false;
+                                    picture: root.art(s.art, 0, root.covers-rev);
+                                    play => { root.song(2, i, 0); }
+                                    next => { root.song(2, i, 1); }
+                                    later => { root.song(2, i, 2); }
                                 }
-                            }
-                            if root.search-songs.length > 0: Text {
-                                x: 12px;
-                                text: "Songs";
-                                color: Theme.text;
-                                font-size: 17px;
-                                font-weight: 700;
-                            }
-                            for s[i] in root.search-songs: SongLine {
-                                song: s;
-                                number: i + 1;
-                                play => { root.song(2, i, 0); }
-                                next => { root.song(2, i, 1); }
-                                later => { root.song(2, i, 2); }
                             }
                         }
                     }
@@ -781,130 +1085,187 @@ export component AppWindow inherits Window {
                 if root.view == 5: VerticalLayout {
                     Heading {
                         title: "Songs";
-                        caption: "From the offline index. Double click plays, right click for more.";
                     }
-                    ListView {
+                    HorizontalLayout {
                         vertical-stretch: 1;
-                        for s[i] in root.songs: SongLine {
-                            song: s;
-                            number: i + 1;
-                            play => { root.song(1, i, 0); }
-                            next => { root.song(1, i, 1); }
-                            later => { root.song(1, i, 2); }
+                        padding-left: 24px;
+                        padding-right: 16px;
+                        ListView {
+                            for s[i] in root.songs: SongLine {
+                                song: s;
+                                number: i + 1;
+                                play => { root.song(1, i, 0); }
+                                next => { root.song(1, i, 1); }
+                                later => { root.song(1, i, 2); }
+                            }
                         }
                     }
                     if root.more-songs: HorizontalLayout {
-                        padding: 8px;
+                        padding: 12px;
+                        padding-bottom: 92px;
                         alignment: center;
-                        Pill {
-                            text: "More songs";
+                        Capsule {
+                            text: "More Songs";
+                            ink: Theme.fill;
+                            label: Theme.text;
                             clicked => { root.more(); }
                         }
                     }
                 }
 
+                // An album, an artist or a playlist, as iOS 27 draws its artist pages: the picture dissolves
+                // into the page, and the page takes its colour.
                 if root.view == 6: Rectangle {
-                  background: root.page-bg;
-                  Image {
-                    y: 0;
-                    width: 100%;
-                    height: 420px;
-                    source: root.page-wash;
-                    image-fit: fill;
-                  }
-                  Rectangle {
-                    y: 0;
-                    height: 420px;
-                    background: @linear-gradient(180deg, root.page-bg.with-alpha(0.1) 0%, root.page-bg.with-alpha(0.55) 55%, root.page-bg 100%);
-                  }
-                  Flickable {
-                    content-height: detail.preferred-height;
-                    detail := VerticalLayout {
-                        width: parent.width;
-                        padding: 24px;
-                        spacing: 16px;
-                        HorizontalLayout {
-                            spacing: 24px;
-                            alignment: start;
-                            Cover {
-                                width: 240px;
-                                height: 240px;
-                                drop-shadow-blur: 24px;
-                                drop-shadow-color: #00000060;
-                                drop-shadow-offset-y: 8px;
-                                border-radius: root.page-kind == 1 ? 120px : 8px;
-                                source: root.art(root.page-art, 1, root.covers-rev);
-                            }
-                            VerticalLayout {
-                                alignment: end;
-                                spacing: 6px;
+                    Flickable {
+                        content-height: detail.preferred-height;
+                        detail := VerticalLayout {
+                            width: parent.width;
+                            padding-left: 32px;
+                            padding-right: 32px;
+                            padding-top: 60px;
+                            padding-bottom: 100px;
+                            spacing: 26px;
+                            // An artist: the picture round and centred, the name under it, the play button.
+                            if root.page-kind == 1: VerticalLayout {
+                                spacing: 14px;
+                                alignment: center;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Art {
+                                        width: 200px;
+                                        height: 200px;
+                                        border-radius: 100px;
+                                        shadow: true;
+                                        source: root.art(root.page-art, 1, root.covers-rev);
+                                    }
+                                }
                                 Text {
                                     text: root.page-title;
-                                    color: root.page-text;
-                                    font-size: 32px;
+                                    color: white;
+                                    font-size: 34px;
                                     font-weight: 700;
-                                    letter-spacing: -1px;
-                                    wrap: word-wrap;
-                                }
-                                Text {
-                                    text: root.page-sub;
-                                    color: root.page-accent;
-                                    font-size: 18px;
-                                    font-weight: 500;
-                                }
-                                Text {
-                                    text: root.page-caption;
-                                    color: root.page-text;
-                                    opacity: 0.6;
-                                    font-size: 12px;
-                                }
-                                Rectangle {
-                                    height: 8px;
+                                    horizontal-alignment: center;
                                 }
                                 HorizontalLayout {
-                                    spacing: 10px;
-                                    alignment: start;
-                                    Pill {
-                                        text: "Play";
-                                        filled: true;
-                                        ink: root.page-accent;
-                                        clicked => { root.play-page(false); }
-                                    }
-                                    Pill {
-                                        text: "Shuffle";
-                                        ink: root.page-text;
+                                    alignment: center;
+                                    spacing: 14px;
+                                    IconButton {
+                                        y: (parent.height - self.height) / 2;
+                                        path: Icons.shuffle;
+                                        size: 38px;
+                                        icon: 17px;
+                                        base: #ffffff1f;
                                         clicked => { root.play-page(true); }
+                                    }
+                                    Rectangle {
+                                        width: 52px;
+                                        height: 52px;
+                                        border-radius: 26px;
+                                        background: white;
+                                        drop-shadow-blur: 14px;
+                                        drop-shadow-color: #00000050;
+                                        opacity: pt.pressed ? 0.8 : 1;
+                                        Icon {
+                                            x: (parent.width - self.width) / 2 + 2px;
+                                            path: Icons.play;
+                                            solid: true;
+                                            colour: #111111;
+                                            width: 22px;
+                                            height: 22px;
+                                        }
+                                        pt := TouchArea {
+                                            clicked => { root.play-page(false); }
+                                        }
+                                    }
+                                    Rectangle {
+                                        width: 38px;
                                     }
                                 }
                             }
-                        }
-                        if root.page-kind == 1 && root.page-albums.length > 0: Text {
-                            text: "Albums";
-                            color: Theme.text;
-                            font-size: 18px;
-                            font-weight: 700;
-                        }
-                        if root.page-kind == 1 && root.page-albums.length > 0: Grid {
-                            height: ceil(root.page-albums.length / max(1, floor((self.width - 32px) / 188px))) * 240px + 32px;
-                            interactive: false;
-                            cards: root.page-albums;
-                            rev: root.covers-rev;
-                            art(a, s, r) => { return root.art(a, s, r); }
-                            open(c) => { root.open-album(c.id); }
-                            play(c) => { root.play-album(c.id); }
-                        }
-                        VerticalLayout {
-                            for s[i] in root.page-songs: SongLine {
-                                song: s;
-                                number: i + 1;
-                                show-album: root.page-kind != 0;
-                                play => { root.song(0, i, 0); }
-                                next => { root.song(0, i, 1); }
-                                later => { root.song(0, i, 2); }
+                            // An album or a playlist: the artwork beside its title, as the Mac lays them out.
+                            if root.page-kind != 1: HorizontalLayout {
+                                spacing: 28px;
+                                alignment: start;
+                                Art {
+                                    width: 260px;
+                                    height: 260px;
+                                    border-radius: 10px;
+                                    shadow: true;
+                                    source: root.art(root.page-art, 1, root.covers-rev);
+                                }
+                                VerticalLayout {
+                                    alignment: end;
+                                    spacing: 3px;
+                                    Text {
+                                        text: root.page-title;
+                                        color: white;
+                                        font-size: 28px;
+                                        font-weight: 700;
+                                        wrap: word-wrap;
+                                    }
+                                    if root.page-sub != "": Text {
+                                        text: root.page-sub;
+                                        color: root.page-accent;
+                                        font-size: 28px;
+                                        wrap: word-wrap;
+                                    }
+                                    Text {
+                                        text: root.page-caption;
+                                        color: #ffffffa6;
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                    }
+                                    Rectangle {
+                                        height: 16px;
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        alignment: start;
+                                        Capsule {
+                                            text: "Play";
+                                            icon: Icons.play;
+                                            solid-icon: true;
+                                            ink: root.page-accent;
+                                            clicked => { root.play-page(false); }
+                                        }
+                                        Capsule {
+                                            text: "Shuffle";
+                                            icon: Icons.shuffle;
+                                            ink: root.page-accent;
+                                            clicked => { root.play-page(true); }
+                                        }
+                                    }
+                                }
+                            }
+                            if root.page-kind == 1 && root.page-albums.length > 0: SectionTitle {
+                                text: "Albums";
+                            }
+                            if root.page-kind == 1 && root.page-albums.length > 0: Grid {
+                                height: self.content-height;
+                                pad: 0;
+                                bottom: 0;
+                                interactive: false;
+                                cards: root.page-albums;
+                                rev: root.covers-rev;
+                                art(a, s, r) => { return root.art(a, s, r); }
+                                open(c) => { root.open-album(c.id); }
+                                play(c) => { root.play-album(c.id); }
+                            }
+                            VerticalLayout {
+                                for s[i] in root.page-songs: SongLine {
+                                    song: s;
+                                    number: i + 1;
+                                    ink: root.page-accent;
+                                    show-album: root.page-kind == 2;
+                                    thumb: root.page-kind == 2;
+                                    picture: root.page-kind == 2 ? root.art(s.art, 0, root.covers-rev) : root.art("", 0, 0);
+                                    play => { root.song(0, i, 0); }
+                                    next => { root.song(0, i, 1); }
+                                    later => { root.song(0, i, 2); }
+                                }
                             }
                         }
                     }
-                  }
                 }
 
                 if root.loading: Text {
@@ -912,291 +1273,539 @@ export component AppWindow inherits Window {
                     color: Theme.dim;
                 }
                 if root.failed != "" && !root.loading: Text {
-                    width: 70%;
+                    width: 60%;
                     text: root.failed;
-                    color: #ff453a;
+                    color: Theme.dim;
                     wrap: word-wrap;
                     horizontal-alignment: center;
                 }
 
-                // A note for a few seconds, at the bottom right.
-                if root.note != "": Rectangle {
-                    x: parent.width - self.width - 16px;
-                    y: parent.height - self.height - 16px;
-                    width: min(parent.width - 32px, toast.preferred-width + 28px);
-                    height: 38px;
-                    border-radius: 19px;
-                    background: #3a3a3ce8;
-                    border-width: 1px;
-                    border-color: root.note-error ? #ff453a : Theme.line;
+                TitleStrip {
+                    y: 0;
+                    width: parent.width;
+                    drag => { root.drag-window(); }
+                    zoom => { root.zoom-window(); }
+                }
+
+                // A note for a few seconds, over the page's top.
+                Glass {
+                    x: (parent.width - self.width) / 2;
+                    y: root.note != "" ? 14px : -50px;
+                    animate y { duration: 260ms; easing: ease-out; }
+                    width: min(parent.width - 40px, toast.preferred-width + 32px);
+                    height: 32px;
+                    radius: 16px;
                     toast := Text {
                         text: root.note;
                         color: root.note-error ? #ff453a : Theme.text;
                         overflow: elide;
                     }
                 }
+
+                // Playing Next: an inspector floating in from the right.
+                Glass {
+                    x: root.queue-open ? parent.width - self.width - 8px : parent.width + 20px;
+                    animate x { duration: 280ms; easing: cubic-bezier(0.2, 0.9, 0.3, 1); }
+                    y: 8px;
+                    width: 320px;
+                    height: parent.height - 16px - 72px;
+                    radius: 16px;
+                    density: 0.94;
+                    clip: true;
+                    VerticalLayout {
+                        padding-top: 16px;
+                        padding-bottom: 8px;
+                        HorizontalLayout {
+                            padding-left: 18px;
+                            padding-right: 10px;
+                            height: 34px;
+                            Text {
+                                text: "Playing Next";
+                                color: Theme.text;
+                                font-size: 15px;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                            IconButton {
+                                y: (parent.height - self.height) / 2;
+                                path: Icons.close;
+                                quiet: true;
+                                size: 26px;
+                                icon: 13px;
+                                clicked => { root.queue-open = false; }
+                            }
+                        }
+                        ListView {
+                            vertical-stretch: 1;
+                            for s in root.queue: Rectangle {
+                                height: 52px;
+                                HorizontalLayout {
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    Rectangle {
+                                        border-radius: 8px;
+                                        background: s.playing ? Theme.chosen : (qt.has-hover ? Theme.hover : transparent);
+                                        HorizontalLayout {
+                                            padding-left: 8px;
+                                            padding-right: 10px;
+                                            spacing: 10px;
+                                            Art {
+                                                y: (parent.height - self.height) / 2;
+                                                width: 38px;
+                                                height: 38px;
+                                                border-radius: 5px;
+                                                source: root.art(s.art, 0, root.covers-rev);
+                                            }
+                                            VerticalLayout {
+                                                alignment: center;
+                                                Text {
+                                                    text: s.title;
+                                                    color: s.playing ? Theme.accent : Theme.text;
+                                                    overflow: elide;
+                                                }
+                                                Text {
+                                                    text: s.artist;
+                                                    color: Theme.dim;
+                                                    overflow: elide;
+                                                }
+                                            }
+                                            Text {
+                                                text: s.time;
+                                                color: Theme.dim;
+                                                vertical-alignment: center;
+                                                horizontal-stretch: 0;
+                                            }
+                                        }
+                                        qt := TouchArea {
+                                            double-clicked => { root.jump(s.index); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // The player: a glass capsule floating over the page's bottom, as Tahoe's Music has it.
+                Glass {
+                    x: (parent.width - self.width) / 2;
+                    y: parent.height - self.height - 12px;
+                    width: min(parent.width - 32px, 820px);
+                    height: 60px;
+                    radius: 30px;
+                    density: 0.9;
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        spacing: 4px;
+                        IconButton {
+                            y: (parent.height - self.height) / 2;
+                            path: Icons.shuffle;
+                            lit: root.shuffle;
+                            quiet: true;
+                            icon: 15px;
+                            clicked => { root.toggle-shuffle(); }
+                        }
+                        IconButton {
+                            y: (parent.height - self.height) / 2;
+                            path: Icons.previous;
+                            solid: true;
+                            size: 36px;
+                            icon: 24px;
+                            clicked => { root.previous(); }
+                        }
+                        IconButton {
+                            y: (parent.height - self.height) / 2;
+                            path: root.playing ? Icons.pause : Icons.play;
+                            solid: true;
+                            size: 40px;
+                            icon: 28px;
+                            clicked => { root.toggle(); }
+                        }
+                        IconButton {
+                            y: (parent.height - self.height) / 2;
+                            path: Icons.next;
+                            solid: true;
+                            size: 36px;
+                            icon: 24px;
+                            clicked => { root.next(); }
+                        }
+                        IconButton {
+                            y: (parent.height - self.height) / 2;
+                            path: Icons.repeat;
+                            lit: root.repeat != 0;
+                            quiet: true;
+                            icon: 15px;
+                            clicked => { root.cycle-repeat(); }
+                            if root.repeat == 1: Text {
+                                x: parent.width - 11px;
+                                y: 3px;
+                                text: "1";
+                                color: Theme.accent;
+                                font-size: 8px;
+                                font-weight: 800;
+                            }
+                        }
+                        Rectangle {
+                            width: 10px;
+                        }
+                        // The song: its artwork (Now Playing on a click), the title, the artist and album,
+                        // and the progress under them, which thickens and shows the times under the pointer.
+                        HorizontalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 10px;
+                            Art {
+                                y: (parent.height - self.height) / 2;
+                                width: 42px;
+                                height: 42px;
+                                border-radius: 6px;
+                                source: root.art(root.now-art, 0, root.covers-rev);
+                                TouchArea {
+                                    clicked => {
+                                        if root.has-song {
+                                            root.full-player = true;
+                                        }
+                                    }
+                                }
+                            }
+                            song-box := Rectangle {
+                                horizontal-stretch: 1;
+                                property <int> dragged: -1;
+                                VerticalLayout {
+                                    y: 10px;
+                                    height: 34px;
+                                    Text {
+                                        text: root.has-song ? root.now-title : "Not Playing";
+                                        color: Theme.text;
+                                        font-weight: 600;
+                                        overflow: elide;
+                                    }
+                                    Text {
+                                        text: seek.hot ? root.clock(song-box.dragged >= 0 ? song-box.dragged : root.position-ms) + "  /  " + root.clock(root.duration-ms) : root.now-artist + (root.now-album != "" ? " — " + root.now-album : "");
+                                        color: Theme.dim;
+                                        overflow: elide;
+                                    }
+                                }
+                                seek := Bar {
+                                    y: parent.height - self.height - 1px;
+                                    width: parent.width;
+                                    thin: 2px;
+                                    thick: 4px;
+                                    value: root.duration-ms > 0 ? (parent.dragged >= 0 ? parent.dragged : root.position-ms) / root.duration-ms : 0;
+                                    moved(v) => { parent.dragged = v * root.duration-ms; }
+                                    done(v) => {
+                                        parent.dragged = -1;
+                                        root.seek(v);
+                                    }
+                                }
+                            }
+                        }
+                        Rectangle {
+                            width: 10px;
+                        }
+                        IconButton {
+                            y: (parent.height - self.height) / 2;
+                            path: Icons.queue;
+                            lit: root.queue-open;
+                            icon: 17px;
+                            clicked => { root.queue-open = !root.queue-open; }
+                        }
+                        IconButton {
+                            y: (parent.height - self.height) / 2;
+                            path: root.volume > 0 ? Icons.speaker : Icons.speaker-off;
+                            icon: 17px;
+                            clicked => { root.set-volume(root.volume > 0 ? 0 : 1); }
+                        }
+                        Bar {
+                            y: (parent.height - self.height) / 2;
+                            width: 84px;
+                            value: root.volume;
+                            moved(v) => { root.set-volume(v); }
+                            done(v) => { root.set-volume(v); }
+                        }
+                    }
+                }
             }
 
-            // The panel on the right: the song playing over its own colours, or the queue.
-            // Beside the page as room allows, as the terminal's panel is.
-            if root.panel != 0 && root.width >= 1000px: Rectangle {
-                width: 320px;
-                background: root.wash;
-                clip: true;
-                Image {
-                    width: 100%;
-                    height: 100%;
-                    source: root.wash-image;
-                    image-fit: fill;
+            // The sidebar, in its own pane: clear glass over the system's blur, the traffic lights at its top.
+            Rectangle {
+                x: 8px;
+                y: 8px;
+                width: 224px;
+                height: parent.height - 16px;
+                border-radius: 18px;
+                background: root.vibrancy ? #3a3a3c6b : #28282a;
+                border-width: 1px;
+                border-color: @linear-gradient(180deg, #ffffff24 0%, #ffffff0d 30%, #ffffff0a 100%);
+                drop-shadow-blur: 18px;
+                drop-shadow-offset-y: 4px;
+                drop-shadow-color: #00000059;
+                TitleStrip {
+                    y: 0;
+                    drag => { root.drag-window(); }
+                    zoom => { root.zoom-window(); }
                 }
-                Rectangle {
-                    background: @linear-gradient(180deg, root.wash-edge.with-alpha(0) 0%, root.wash.with-alpha(0.35) 45%, root.wash 100%);
-                }
-                if root.panel == 1: VerticalLayout {
-                    padding: 24px;
-                    spacing: 14px;
-                    Cover {
-                        width: 272px;
-                        height: 272px;
-                        border-radius: 8px;
-                        drop-shadow-blur: 30px;
-                        drop-shadow-color: #00000070;
-                        drop-shadow-offset-y: 10px;
-                        source: root.art(root.now-art, 1, root.covers-rev);
-                    }
-                    Text {
-                        text: root.has-song ? root.now-title : "Nothing playing";
-                        color: root.wash-text;
-                        font-size: 22px;
-                        font-weight: 700;
-                        letter-spacing: -0.5px;
-                        wrap: word-wrap;
-                    }
-                    Text {
-                        text: root.now-artist;
-                        color: root.wash-text;
-                        opacity: 0.75;
-                        font-size: 15px;
-                        wrap: word-wrap;
-                    }
-                    Text {
-                        text: root.now-album;
-                        color: root.wash-text;
-                        opacity: 0.55;
-                        font-size: 13px;
-                        wrap: word-wrap;
-                    }
-                    if root.mix-note != "": Text {
-                        text: root.mix-note;
-                        color: root.wash-text;
-                        opacity: 0.55;
-                        font-size: 12px;
-                        wrap: word-wrap;
-                    }
-                    Rectangle {
-                        vertical-stretch: 1;
-                    }
-                }
-                if root.panel == 2: VerticalLayout {
-                    padding-top: 20px;
-                    Text {
-                        x: 16px;
-                        text: "Playing next";
-                        color: root.wash-text;
-                        font-size: 18px;
-                        font-weight: 700;
-                        height: 36px;
-                    }
-                    ListView {
-                        vertical-stretch: 1;
-                        for s in root.queue: Rectangle {
-                            height: 44px;
-                            background: qt.has-hover ? #ffffff14 : transparent;
-                            HorizontalLayout {
-                                padding-left: 16px;
-                                padding-right: 16px;
-                                spacing: 8px;
-                                VerticalLayout {
-                                    alignment: center;
-                                    Text {
-                                        text: s.title;
-                                        color: s.playing ? Theme.accent : root.wash-text;
-                                        font-weight: s.playing ? 600 : 400;
-                                        overflow: elide;
-                                    }
-                                    Text {
-                                        text: s.artist;
-                                        color: root.wash-text;
-                                        opacity: 0.6;
-                                        font-size: 12px;
-                                        overflow: elide;
-                                    }
-                                }
-                                Text {
-                                    text: s.time;
-                                    color: root.wash-text;
-                                    opacity: 0.6;
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                    horizontal-stretch: 0;
-                                }
-                            }
-                            qt := TouchArea {
-                                double-clicked => { root.jump(s.index); }
-                            }
+                Flickable {
+                    y: root.inset-top;
+                    height: parent.height - self.y;
+                    content-height: side.preferred-height;
+                    side := VerticalLayout {
+                        width: parent.width;
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        padding-bottom: 12px;
+                        spacing: 1px;
+                        SideItem {
+                            text: "Search";
+                            icon: Icons.search;
+                            chosen: root.view == 1;
+                            clicked => { root.go(1); }
+                        }
+                        SideItem {
+                            text: "Home";
+                            icon: Icons.home;
+                            chosen: root.view == 0;
+                            clicked => { root.go(0); }
+                        }
+                        SideHeading {
+                            text: "Library";
+                        }
+                        SideItem {
+                            text: "Artists";
+                            icon: Icons.artists;
+                            chosen: root.view == 3 || (root.view == 6 && root.page-kind == 1);
+                            clicked => { root.go(3); }
+                        }
+                        SideItem {
+                            text: "Albums";
+                            icon: Icons.albums;
+                            chosen: root.view == 2 || (root.view == 6 && root.page-kind == 0);
+                            clicked => { root.go(2); }
+                        }
+                        SideItem {
+                            text: "Songs";
+                            icon: Icons.songs;
+                            chosen: root.view == 5;
+                            clicked => { root.go(5); }
+                        }
+                        SideHeading {
+                            text: "Playlists";
+                        }
+                        SideItem {
+                            text: "All Playlists";
+                            icon: Icons.playlists;
+                            chosen: root.view == 4;
+                            clicked => { root.go(4); }
+                        }
+                        for p in root.playlists: SideItem {
+                            text: p.title;
+                            has-picture: true;
+                            picture: root.art(p.art, 0, root.covers-rev);
+                            chosen: root.view == 6 && root.page-kind == 2 && root.page-id == p.id;
+                            clicked => { root.open-playlist(p.id); }
+                        }
+                        Rectangle {
+                            height: 10px;
+                        }
+                        SideItem {
+                            text: root.server;
+                            icon: Icons.server;
+                            clicked => { root.go(7); }
                         }
                     }
                 }
             }
         }
 
-        // The player bar.
-        Rectangle {
-            height: 76px;
-            background: Theme.bar;
+        // ---- Now Playing, over the whole window ----
+
+        if root.full-player: Rectangle {
+            background: root.wash-tint;
+            Image {
+                width: 100%;
+                height: 100%;
+                source: root.wash-a;
+                image-fit: cover;
+                opacity: root.wash-on-b ? 0 : 1;
+                animate opacity { duration: 800ms; easing: ease-in-out; }
+            }
+            Image {
+                width: 100%;
+                height: 100%;
+                source: root.wash-b;
+                image-fit: cover;
+                opacity: root.wash-on-b ? 1 : 0;
+                animate opacity { duration: 800ms; easing: ease-in-out; }
+            }
             Rectangle {
+                background: @linear-gradient(180deg, #00000014 0%, #00000040 100%);
+            }
+            // Swallows the clicks meant for the page underneath.
+            TouchArea { }
+            TitleStrip {
                 y: 0;
-                height: 1px;
-                background: Theme.line;
+                drag => { root.drag-window(); }
+                zoom => { root.zoom-window(); }
+            }
+            IconButton {
+                x: parent.width - self.width - 20px;
+                y: 16px;
+                path: Icons.down;
+                size: 34px;
+                icon: 18px;
+                base: #ffffff1f;
+                clicked => { root.full-player = false; }
             }
             HorizontalLayout {
-                padding-left: 14px;
-                padding-right: 18px;
-                spacing: 16px;
-                // The song.
-                HorizontalLayout {
-                    width: 280px;
-                    spacing: 12px;
-                    alignment: start;
-                    Cover {
-                        y: (parent.height - self.height) / 2;
-                        width: 50px;
-                        height: 50px;
-                        border-radius: 5px;
-                        source: root.art(root.now-art, 0, root.covers-rev);
-                    }
-                    VerticalLayout {
-                        alignment: center;
-                        Text {
-                            text: root.has-song ? root.now-title : "Nothing playing";
-                            color: Theme.text;
-                            font-weight: 600;
-                            overflow: elide;
-                        }
-                        Text {
-                            text: root.now-artist;
-                            color: Theme.dim;
-                            font-size: 12px;
-                            overflow: elide;
-                        }
+                padding: 64px;
+                padding-top: 80px;
+                spacing: 56px;
+                alignment: center;
+                VerticalLayout {
+                    alignment: center;
+                    Art {
+                        width: min(460px, root.height - 200px);
+                        height: self.width;
+                        border-radius: 12px;
+                        shadow: true;
+                        drop-shadow-blur: 50px;
+                        drop-shadow-offset-y: 24px;
+                        source: root.art(root.now-art, 1, root.covers-rev);
+                        transform-scale: root.playing ? 1 : 0.88;
+                        animate transform-scale { duration: 500ms; easing: cubic-bezier(0.3, 1.35, 0.6, 1); }
                     }
                 }
-                // The controls and the seek bar.
                 VerticalLayout {
-                    horizontal-stretch: 1;
                     alignment: center;
-                    spacing: 2px;
-                    HorizontalLayout {
-                        alignment: center;
-                        spacing: 14px;
-                        IconButton {
-                            y: 4px;
-                            path: Icons.shuffle;
-                            lit: root.shuffle;
-                            clicked => { root.toggle-shuffle(); }
-                        }
-                        IconButton {
-                            y: 4px;
-                            path: Icons.previous;
-                            solid: true;
-                            clicked => { root.previous(); }
-                        }
-                        IconButton {
-                            path: root.playing ? Icons.pause : Icons.play;
-                            solid: true;
-                            big: true;
-                            clicked => { root.toggle(); }
-                        }
-                        IconButton {
-                            y: 4px;
-                            path: Icons.next;
-                            solid: true;
-                            clicked => { root.next(); }
-                        }
-                        IconButton {
-                            y: 4px;
-                            path: Icons.repeat;
-                            lit: root.repeat != 0;
-                            clicked => { root.cycle-repeat(); }
-                            if root.repeat == 1: Text {
-                                x: parent.width - 10px;
-                                y: 2px;
-                                text: "1";
-                                color: Theme.accent;
-                                font-size: 9px;
-                                font-weight: 800;
-                            }
-                        }
+                    width: 380px;
+                    spacing: 4px;
+                    Text {
+                        text: root.now-title;
+                        color: white;
+                        font-size: 26px;
+                        font-weight: 700;
+                        wrap: word-wrap;
                     }
-                    HorizontalLayout {
-                        spacing: 10px;
+                    Text {
+                        text: root.now-artist;
+                        color: #ffffffb3;
+                        font-size: 22px;
+                        wrap: word-wrap;
+                    }
+                    Rectangle {
+                        height: 28px;
+                    }
+                    Rectangle {
+                        height: 20px;
                         property <int> dragged: -1;
-                        Text {
-                            width: 44px;
-                            text: root.buffering ? "…" : root.clock(parent.dragged >= 0 ? parent.dragged : root.position-ms);
-                            color: Theme.dim;
-                            font-size: 11px;
-                            horizontal-alignment: right;
-                            vertical-alignment: center;
-                        }
                         Bar {
-                            horizontal-stretch: 1;
-                            value: root.duration-ms > 0 ? root.position-ms / root.duration-ms : 0;
+                            width: 100%;
+                            thin: 5px;
+                            thick: 8px;
+                            fill: #ffffffd9;
+                            track: #ffffff33;
+                            value: root.duration-ms > 0 ? (parent.dragged >= 0 ? parent.dragged : root.position-ms) / root.duration-ms : 0;
                             moved(v) => { parent.dragged = v * root.duration-ms; }
                             done(v) => {
                                 parent.dragged = -1;
                                 root.seek(v);
                             }
                         }
+                    }
+                    HorizontalLayout {
                         Text {
-                            width: 44px;
-                            text: root.clock(root.duration-ms);
-                            color: Theme.dim;
+                            text: root.clock(root.position-ms);
+                            color: #ffffff99;
                             font-size: 11px;
-                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "-" + root.clock(root.duration-ms - root.position-ms);
+                            color: #ffffff99;
+                            font-size: 11px;
+                            horizontal-alignment: right;
                         }
                     }
-                }
-                // Volume and the panels.
-                HorizontalLayout {
-                    width: 240px;
-                    spacing: 8px;
-                    alignment: end;
-                    Icon {
-                        y: (parent.height - self.height) / 2;
-                        path: Icons.speaker;
-                        colour: Theme.dim;
-                        width: 16px;
-                        height: 16px;
+                    Rectangle {
+                        height: 20px;
                     }
-                    Bar {
-                        y: (parent.height - self.height) / 2;
-                        width: 110px;
-                        value: root.volume;
-                        moved(v) => { root.set-volume(v); }
-                        done(v) => { root.set-volume(v); }
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 22px;
+                        IconButton {
+                            y: (parent.height - self.height) / 2;
+                            path: Icons.shuffle;
+                            lit: root.shuffle;
+                            ink: #ffffffb3;
+                            icon: 19px;
+                            size: 36px;
+                            clicked => { root.toggle-shuffle(); }
+                        }
+                        IconButton {
+                            y: (parent.height - self.height) / 2;
+                            path: Icons.previous;
+                            solid: true;
+                            ink: white;
+                            size: 52px;
+                            icon: 34px;
+                            clicked => { root.previous(); }
+                        }
+                        IconButton {
+                            y: (parent.height - self.height) / 2;
+                            path: root.playing ? Icons.pause : Icons.play;
+                            solid: true;
+                            ink: white;
+                            size: 64px;
+                            icon: 42px;
+                            clicked => { root.toggle(); }
+                        }
+                        IconButton {
+                            y: (parent.height - self.height) / 2;
+                            path: Icons.next;
+                            solid: true;
+                            ink: white;
+                            size: 52px;
+                            icon: 34px;
+                            clicked => { root.next(); }
+                        }
+                        IconButton {
+                            y: (parent.height - self.height) / 2;
+                            path: Icons.repeat;
+                            lit: root.repeat != 0;
+                            ink: #ffffffb3;
+                            icon: 19px;
+                            size: 36px;
+                            clicked => { root.cycle-repeat(); }
+                        }
                     }
-                    IconButton {
-                        y: (parent.height - self.height) / 2;
-                        path: Icons.note;
-                        lit: root.panel == 1;
-                        clicked => { root.panel = root.panel == 1 ? 0 : 1; }
+                    Rectangle {
+                        height: 24px;
                     }
-                    IconButton {
-                        y: (parent.height - self.height) / 2;
-                        path: Icons.queue;
-                        lit: root.panel == 2;
-                        clicked => { root.panel = root.panel == 2 ? 0 : 2; }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Icon {
+                            y: (parent.height - self.height) / 2;
+                            path: Icons.speaker-off;
+                            colour: #ffffff99;
+                            width: 15px;
+                            height: 15px;
+                        }
+                        Bar {
+                            horizontal-stretch: 1;
+                            thin: 5px;
+                            thick: 8px;
+                            fill: #ffffffd9;
+                            track: #ffffff33;
+                            value: root.volume;
+                            moved(v) => { root.set-volume(v); }
+                            done(v) => { root.set-volume(v); }
+                        }
+                        Icon {
+                            y: (parent.height - self.height) / 2;
+                            path: Icons.speaker;
+                            colour: #ffffff99;
+                            width: 17px;
+                            height: 17px;
+                        }
                     }
                 }
             }

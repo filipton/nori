@@ -40,26 +40,6 @@ pub fn quality(s: &Song) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(" "))
 }
 
-pub fn greeting() -> &'static str {
-    #[cfg(unix)]
-    let hour = {
-        // SAFETY: localtime_r writes only into the tm handed to it.
-        unsafe {
-            let now = libc::time(std::ptr::null_mut());
-            let mut tm: libc::tm = std::mem::zeroed();
-            libc::localtime_r(&now, &mut tm);
-            tm.tm_hour
-        }
-    };
-    #[cfg(not(unix))]
-    let hour = 12;
-    match hour {
-        5..=11 => "Good morning",
-        12..=17 => "Good afternoon",
-        _ => "Good evening",
-    }
-}
-
 /// A failure of the server or the network, in words a person can act on.
 pub fn net_error(e: &NetError) -> String {
     let said = match e {
