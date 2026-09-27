@@ -33,7 +33,8 @@ sys.path.insert(0, HERE)
 
 import ui  # noqa: E402
 from apps import StepFailed, all_apps  # noqa: E402
-from phone import Phone  # noqa: E402
+from phone import STATE_FILE, Phone  # noqa: E402
+from ui import PhoneLost  # noqa: E402
 
 APKS = os.path.join(ROOT, "build", "bgtest", "apks")
 
@@ -317,7 +318,14 @@ def run_one(phone, app, variant, minutes, skips, outdir, log, cached=False, scen
             log(f"    {app.name}: NOT PLAYING at minute {stopped_at} (session state {state})")
 
     stats = ui.sh(f"dumpsys batterystats --charged {app.pkg}", timeout=180)
+    if "Time on battery" not in stats:
+        # A dump cut short (the phone busy, the connection hiccuping): once more before giving up.
+        time.sleep(10)
+        stats = ui.sh(f"dumpsys batterystats --charged {app.pkg}", timeout=180)
     open(os.path.join(rundir, "batterystats.txt"), "w").write(stats)
+    if "Time on battery" not in stats:
+        ui.sh("dumpsys battery reset")
+        raise RuntimeError(f"batterystats gave no measurement ({len(stats)} characters, see {rundir}/batterystats.txt)")
     rec.update(parse(stats, uid))
     if scenario == "player":
         rec.update(frames_end(app.pkg, rec.get("seconds") or minutes * 60))
@@ -355,12 +363,19 @@ def per_hour(rec, key):
     return round(v * 3600 / s, 1) if v is not None and s else None
 
 
+def failure(r):
+    """Why a run has no figures, or None when it has them."""
+    if "error" in r:
+        return r["error"]
+    return None if r.get("seconds") else "no measurement read"
+
+
 def table(recs):
     rows = ["| playlist | app | variant | measured (min) | **score** | battery / memory / playback | % battery/h (app) | hours on a full battery (whole phone) | phone mA (measured) | net MB/h | screen model | fps (refresh) | **app + decoder + audioserver** | app | cpu | wakelock | wifi | radio | mediacodec | audioserver | Wi-Fi MB | process CPU s | PSS MB | songs measured | offloaded | asleep s | gauge mAh/h | note |",
             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in recs:
-        if "error" in r:
-            rows.append(f"| {r.get('playlist', '')} | {r['app']} | {r['variant']}{' cached' if r.get('cached') else ''}{' [player]' if r.get('scenario') == 'player' else ''} | | | | | | | | | | | | | | | | | | | | | | | | | FAILED: {r['error'][:80]} |")
+        if failure(r):
+            rows.append(f"| {r.get('playlist', '')} | {r['app']} | {r['variant']}{' cached' if r.get('cached') else ''}{' [player]' if r.get('scenario') == 'player' else ''} | | | | | | | | | | | | | | | | | | | | | | | | | FAILED: {failure(r)[:80]} |")
             continue
         f = lambda k: "" if per_hour(r, k) is None else f"{per_hour(r, k)}"
         notes = []
@@ -397,7 +412,7 @@ def score(r, weights=None):
     battery  = 100 × FLOOR / (app + mediacodec + audioserver, mAh/h), at most 100
     memory   = 100 × REF_PSS / PSS, at most 100
     playback = 100 × (1 − starved seconds / measured seconds − muted checks / checks), at least 0"""
-    if "error" in r or not r.get("seconds"):
+    if failure(r):
         return None
     w = weights or WEIGHTS
     parts = {}
@@ -459,15 +474,15 @@ def terminal_table(recs):
              " net MB/h: the app's downloads (Wi-Fi + mobile) per hour", "",
              head, "-" * len(head)]
     ph = lambda r, k: "" if per_hour(r, k) is None else f"{per_hour(r, k):.1f}"
-    order = sorted(recs, key=lambda r: (r.get("playlist", ""), "error" in r, -(score(r) or (0,))[0]))
+    order = sorted(recs, key=lambda r: (r.get("playlist", ""), bool(failure(r)), -(score(r) or (0,))[0]))
     last = None
     for r in order:
         if last is not None and r.get("playlist") != last:
             lines.append("")
         last = r.get("playlist")
         name = r["variant"] + (" cached" if r.get("cached") else "") + (" [player]" if r.get("scenario") == "player" else "")
-        if "error" in r:
-            vals = [r.get("playlist", ""), r["app"], name] + [""] * 14 + ["FAILED: " + r["error"][:60]]
+        if failure(r):
+            vals = [r.get("playlist", ""), r["app"], name] + [""] * 14 + ["FAILED: " + failure(r)[:60]]
         else:
             notes = []
             if r.get("stopped_at_min") is not None:
@@ -487,8 +502,139 @@ def terminal_table(recs):
     return "\n".join(lines) + "\n"
 
 
-def main():
-    apps = all_apps()
+RESULTS = os.path.join(ROOT, "build", "bgtest", "results")
+
+
+# ---- sessions: what a session planned and ran, so a stopped one can be continued ------------------------
+def run_key(name, variant, cached, playlist, scenario):
+    return f"{name}:{variant}{':cached' if cached else ''}@{playlist}/{scenario}"
+
+
+def parse_key(k):
+    """'navic:offload:cached@bg-mp3/screen-off' → ('navic', 'offload', True, 'bg-mp3', 'screen-off')."""
+    run, where = k.split("@", 1)
+    playlist, scenario = where.rsplit("/", 1)
+    bits = run.split(":")
+    return bits[0], bits[1], bits[2:] == ["cached"], playlist, scenario
+
+
+def legacy_session(d):
+    """A session from before session.json, rebuilt from its log.txt (its plan and settings lines)."""
+    try:
+        log = open(os.path.join(d, "log.txt")).read()
+        started = datetime.datetime.strptime(os.path.basename(d), "%Y%m%d-%H%M%S")
+    except (OSError, ValueError):
+        return None
+    plan = re.search(r"^\S+ plan: \d+ runs, .*? done around \d\d:\d\d: (.+)$", log, re.M)
+    srv = re.search(r"^\S+ server (\w+) \(.*?\), playlists (.*?), (play|shuffle), ([\d.]+) min, (\d+) skips, "
+                    r"power save (on|off)$", log, re.M)
+    if not plan or not srv:
+        return None
+    nori = re.search(r"^\S+ nori: (\S+) ", log, re.M)
+    vol = re.search(r"media volume set to (\d+)", log)
+    argv = ["--server", srv[1], "--playlist", srv[2].replace(", ", ","), "--order", srv[3], "--minutes", srv[4],
+            "--skips", srv[5], "--power-save", srv[6],
+            "--volume", vol[1] if vol else "keep"] + (["--nori-pkg", nori[1]] if nori else [])
+    return {"argv": argv, "plan": plan[1].split(", "), "serial": None, "started": started.isoformat(timespec="seconds"),
+            "finished": re.search(r"^\S+ finished \d+ runs", log, re.M) is not None}
+
+
+def load_session(d):
+    """The session in results folder `d`: {dir, argv, plan (run keys), serial, started, finished, recs}, or
+    None. `recs` are the runs that count as done, each with its place in the plan (`index`); a run whose
+    measurement was never read (an older harness recorded those) is left out, so it runs again."""
+    try:
+        with open(os.path.join(d, "session.json")) as f:
+            sess = json.load(f)
+    except (OSError, ValueError):
+        sess = legacy_session(d)
+    if not sess:
+        return None
+    sess["dir"], sess["recs"] = d, []
+    try:
+        lines = open(os.path.join(d, "runs.jsonl")).read().split("\n")
+    except OSError:
+        lines = []
+    for pos, line in enumerate(l for l in lines if l.strip()):
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        r.setdefault("index", pos)  # older sessions: runs.jsonl is in plan order
+        if "error" in r or r.get("seconds"):
+            sess["recs"].append(r)
+    return sess
+
+
+def find_session(d=None):
+    """The session to continue: folder `d` (a path, or a name under build/bgtest/results), else the newest one."""
+    if d:
+        return load_session(d if os.path.isdir(d) else os.path.join(RESULTS, d))
+    dirs = sorted((x for x in os.listdir(RESULTS) if os.path.isdir(os.path.join(RESULTS, x))), reverse=True) if os.path.isdir(RESULTS) else []
+    for x in dirs:
+        sess = load_session(os.path.join(RESULTS, x))
+        if sess:
+            return sess
+    return None
+
+
+def left_of(sess):
+    done = {r["index"] for r in sess["recs"]}
+    return [i for i in range(len(sess["plan"])) if i not in done]
+
+
+def session_minutes(sess):
+    a = sess["argv"]
+    return float(a[a.index("--minutes") + 1]) if "--minutes" in a else 15.0
+
+
+def fmt(m):
+    return f"{int(m // 60)} h {int(m % 60):02d} min" if m >= 60 else f"{m:.0f} min"
+
+
+def at(m):
+    return (datetime.datetime.now() + datetime.timedelta(minutes=m)).strftime("%H:%M")
+
+
+def guess(minutes, cached):
+    """A run's minutes: its measuring plus the set-up around it (wipe, log in, settings, skips), about 2 min,
+    3 when the playlist is downloaded first."""
+    return minutes + (3 if cached else 2)
+
+
+def describe(sess):
+    """What a session did and what continuing it means, for a person to decide."""
+    plan, left = sess["plan"], left_of(sess)
+    minutes = session_minutes(sess)
+    started = datetime.datetime.fromisoformat(sess["started"])
+    try:
+        stopped = datetime.datetime.fromtimestamp(os.path.getmtime(os.path.join(sess["dir"], "log.txt")))
+        stopped = f", last activity {stopped:%a %d.%m %H:%M}"
+    except OSError:
+        stopped = ""
+    settings = " ".join(sess["argv"])
+    out = [f"session {os.path.basename(sess['dir'])}: started {started:%a %d.%m %H:%M}{stopped}",
+           f"  settings: {settings}" + (f" --serial {sess['serial']}" if sess.get("serial") else ""),
+           f"  done {len(plan) - len(left)} of {len(plan)}:"]
+    for r in sorted(sess["recs"], key=lambda r: r["index"]):
+        what = f"FAILED: {failure(r)[:70]}" if failure(r) else (
+            f"{r.get('current_ma') or '?'} mA whole phone" if r.get("scenario") == "player"
+            else f"{per_hour(r, 'with_system_mah')} mAh/h")
+        out.append(f"    {r['index'] + 1:>3}. {plan[r['index']]:<45} {what}")
+    total = sum(guess(minutes, parse_key(plan[i])[2]) for i in left)
+    out.append(f"  left {len(left)}:")
+    out += [f"    {i + 1:>3}. {plan[i]}" for i in left]
+    out.append(f"  about {fmt(total)} ({minutes:g} min each + set-up): done around {at(total)} if started now")
+    return "\n".join(out)
+
+
+def save_session(outdir, sess):
+    with open(os.path.join(outdir, "session.json"), "w") as f:
+        json.dump({k: v for k, v in sess.items() if k not in ("dir", "recs")}, f, indent=1)
+
+
+def make_parser():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--serial", default=os.environ.get("ANDROID_SERIAL"), help="the phone's adb serial (default $ANDROID_SERIAL)")
     p.add_argument("--apps", default="nori,musly,navic,symfonium")
@@ -516,11 +662,60 @@ def main():
     p.add_argument("--nori-pkg", default="dev.nori.music.perf",
                    help="which Nori build to drive: dev.nori.music.perf (the perf build) or dev.nori.music (a normal build)")
     p.add_argument("--list", action="store_true")
+    p.add_argument("--resume", nargs="?", const="", metavar="FOLDER",
+                   help="continue a stopped session (the newest one, or FOLDER under build/bgtest/results) with the "
+                        "settings it started with: shows what was done and what is left, and asks first")
+    p.add_argument("--yes", action="store_true", help="with --resume: do not ask (for a script, or run.py having asked)")
+    p.add_argument("--restore", action="store_true", help="only put the phone back as a stopped session left it")
+    return p
+
+
+def ask_resume(sess, yes):
+    """Shows the session and asks whether to continue it; the reason not to, or None to go on."""
+    if not sess:
+        return "no session to continue in build/bgtest/results"
+    left = left_of(sess)
+    if not left:
+        return f"session {os.path.basename(sess['dir'])} has nothing left to run"
+    print(describe(sess), flush=True)
+    if sess.get("finished"):
+        print("  (it ended normally; continuing runs only what it has no result for)")
+    if yes:
+        return None
+    if not sys.stdin.isatty():
+        return "no terminal to ask: add --yes to continue it"
+    return None if input("\ncontinue this session? [y/N] ").strip().lower() in ("y", "yes") else "not continued"
+
+
+def main():
+    apps = all_apps()
+    p = make_parser()
     a = p.parse_args()
     if a.list:
         for k, c in apps.items():
             print(f"{k:10} {c.pkg:28} variants: {', '.join(c.variants)}")
         return 0
+    if a.restore:
+        ui.SERIAL = a.serial
+        if not os.path.exists(STATE_FILE):
+            print("nothing to put back: no session left the phone changed")
+            return 0
+        phone = Phone([])
+        phone.saved = json.load(open(STATE_FILE))
+        phone.restore()
+        return 0 if not os.path.exists(STATE_FILE) else 1
+
+    sess = None
+    if a.resume is not None:
+        sess = find_session(a.resume)
+        why = ask_resume(sess, a.yes)
+        if why:
+            print(why)
+            return 1
+        # The settings it started with; only the phone's serial may differ now (a new Wi-Fi address).
+        serial = a.serial
+        a = p.parse_args(sess["argv"])
+        a.serial = serial or sess.get("serial") or a.serial
 
     if a.weights:
         WEIGHTS.update({k: float(v) for k, v in (x.split("=") for x in a.weights.split(","))})
@@ -530,8 +725,16 @@ def main():
     url, user, password = creds(a.server)
     playlists = (a.playlist or ("bg-mp3" if a.server == "local" else "RockMix")).split(",")
     ui.SECRETS = [password]
-    chosen = [apps[x.strip()] for x in a.apps.split(",")]
-    outdir = os.path.join(ROOT, "build", "bgtest", "results", f"{datetime.datetime.now():%Y%m%d-%H%M%S}")
+    if sess:
+        outdir = sess["dir"]
+        for k in sess["plan"]:
+            n, v = parse_key(k)[:2]
+            if n not in apps or v not in apps[n].variants:
+                sys.exit(f"the session's run {k} is no longer known to the harness")
+        chosen = [apps[n] for n in dict.fromkeys(parse_key(k)[0] for k in sess["plan"])]
+    else:
+        chosen = [apps[x.strip()] for x in a.apps.split(",")]
+        outdir = os.path.join(RESULTS, f"{datetime.datetime.now():%Y%m%d-%H%M%S}")
     os.makedirs(outdir, exist_ok=True)
     logf = open(os.path.join(outdir, "log.txt"), "a")
 
@@ -540,6 +743,7 @@ def main():
         print(line, flush=True)
         logf.write(line + "\n")
         logf.flush()
+    ui.LOG = log
 
     # One run per phone at a time: a second one would stop the first one's player mid-measurement and
     # take its "phone as it was" to be the first one's changes.
@@ -552,6 +756,8 @@ def main():
     open(lock_path, "w").write(str(os.getpid()))
     import atexit
     atexit.register(lambda: os.path.exists(lock_path) and open(lock_path).read().strip() == str(os.getpid()) and os.remove(lock_path))
+    if sess:
+        log(f"resuming session {os.path.basename(outdir)}: {len(sess['plan']) - len(left_of(sess))} of {len(sess['plan'])} runs done")
     phone = Phone(sorted({c.pkg for c in apps.values()} | {"dev.nori.music", "dev.nori.music.perf"}))
     phone.save()
     log(f"phone: {phone.info()}")
@@ -571,43 +777,54 @@ def main():
     for c in apps.values():
         ui.sh(f"am force-stop {c.pkg}")
 
-    recs = []
-    if a.runs:
-        runs = [(x.split(":")[0], x.split(":")[1], x.endswith(":cached")) for x in a.runs.split(",")]
-    elif a.matrix:
-        names = [c.name for c in chosen]
-        runs = [r for r in MATRIX if r[0] in names]
+    if sess:
+        plan = [(apps[n], v, cached, pl, sc) for n, v, cached, pl, sc in map(parse_key, sess["plan"])]
+        recs = sess["recs"]
+        # runs.jsonl again with only the runs that count (a run whose measurement was never read goes).
+        with open(os.path.join(outdir, "runs.jsonl"), "w") as f:
+            f.writelines(json.dumps(r) + "\n" for r in recs)
+        todo = left_of(sess)
+        save_session(outdir, sess)
     else:
-        runs = [(c.name, v, False) for c in chosen for v in (a.variants.split(",") if c.name == "nori" else ["default"])]
-        if a.cached:
-            runs += [(n, v, True) for n, v, _ in runs]
-    for n, v, _ in runs:
-        if v not in apps[n].variants:
-            sys.exit(f"{n} has no variant {v!r}: {', '.join(apps[n].variants)}")
-    scenarios = a.scenario.split(",")
-    plan = [(apps[n], v, cached, pl, sc) for sc in scenarios for pl in playlists for _ in range(a.repeat) for n, v, cached in runs]
-    # A run is its minutes of measuring plus the set-up around it (wipe, log in, settings, skips), about
-    # 2 min, 3 when the playlist is downloaded first; once runs have finished, their real time is used.
-    guess = lambda k: a.minutes + (3 if k else 2)
-    total = sum(guess(k) for _, _, k, _, _ in plan)
-    t_start = time.time()
-    fmt = lambda m: f"{int(m // 60)} h {int(m % 60):02d} min" if m >= 60 else f"{m:.0f} min"
-    at = lambda m: (datetime.datetime.now() + datetime.timedelta(minutes=m)).strftime("%H:%M")
-    log(f"plan: {len(plan)} runs, about {fmt(total)}, done around {at(total)}: "
-        + ", ".join(f"{c.name}:{v}{':cached' if k else ''}@{pl}/{sc}" for c, v, k, pl, sc in plan))
-    for i, (c, variant, cached, playlist, scenario) in enumerate(plan, 1):
-        done_min = (time.time() - t_start) / 60
-        if i > 1:
-            # Scale the guess for what is left by how the finished runs compared to theirs.
-            ratio = done_min / sum(guess(k) for _, _, k, _, _ in plan[:i - 1])
-            left = ratio * sum(guess(k) for _, _, k, _, _ in plan[i - 1:])
+        if a.runs:
+            runs = [(x.split(":")[0], x.split(":")[1], x.endswith(":cached")) for x in a.runs.split(",")]
+        elif a.matrix:
+            names = [c.name for c in chosen]
+            runs = [r for r in MATRIX if r[0] in names]
         else:
-            left = total
+            runs = [(c.name, v, False) for c in chosen for v in (a.variants.split(",") if c.name == "nori" else ["default"])]
+            if a.cached:
+                runs += [(n, v, True) for n, v, _ in runs]
+        for n, v, _ in runs:
+            if v not in apps[n].variants:
+                sys.exit(f"{n} has no variant {v!r}: {', '.join(apps[n].variants)}")
+        scenarios = a.scenario.split(",")
+        plan = [(apps[n], v, cached, pl, sc) for sc in scenarios for pl in playlists for _ in range(a.repeat) for n, v, cached in runs]
+        recs, todo = [], list(range(len(plan)))
+        # What --resume needs to go on where this session stops: its settings and its plan.
+        sess = {"argv": [x for x in sys.argv[1:] if x != "--yes"], "plan": [run_key(c.name, *r) for c, *r in plan],
+                "serial": a.serial, "started": datetime.datetime.now().isoformat(timespec="seconds"), "finished": False}
+        save_session(outdir, sess)
+    total = sum(guess(a.minutes, plan[i][2]) for i in todo)
+    t_start = time.time()
+    log(f"plan: {len(plan)} runs, about {fmt(total)}, done around {at(total)}: " + ", ".join(sess["plan"]))
+    if len(todo) < len(plan):
+        log(f"left: {len(todo)} runs, about {fmt(total)}, done around {at(total)}: " + ", ".join(sess["plan"][i] for i in todo))
+    stopped = None
+    for n_here, idx in enumerate(todo):
+        c, variant, cached, playlist, scenario = plan[idx]
+        i = idx + 1
+        done_min = (time.time() - t_start) / 60
+        left = sum(guess(a.minutes, plan[j][2]) for j in todo[n_here:])
+        if n_here:
+            # Scale the guess for what is left by how the runs finished so far compared to theirs.
+            left *= done_min / sum(guess(a.minutes, plan[j][2]) for j in todo[:n_here])
         log(f"— {i}/{len(plan)} · {fmt(done_min)} done · about {fmt(left)} left · done around {at(left)} —")
         app = c((url, user, password), playlist, log, outdir)
         app.start_button = "Play" if a.order == "play" else "Shuffle"
         log(f"run {i}/{len(plan)}: {app.name} ({variant}{', cached' if cached else ''}) on {playlist}, {scenario}")
         try:
+            ui.refresh()
             for other in phone.packages:
                 ui.sh(f"am force-stop {other}")
             rec = run_one(phone, app, variant, a.minutes, a.skips, outdir, log, cached, scenario, a.brightness)
@@ -621,21 +838,44 @@ def main():
                 log(f"    {app.name}: {per_hour(rec, 'with_system_mah')} mAh/h with decoder and audioserver, app {per_hour(rec, 'app_mah')}, "
                     f"cpu {per_hour(rec, 'cpu_mah')}, wakelock {per_hour(rec, 'wakelock_mah')}, {net_mb_h(rec)} MB/h downloaded"
                     + (f", whole phone {rec['current_ma']} mA (measured)" if rec.get("current_ma") else ""))
-        except (StepFailed, TimeoutError, RuntimeError) as e:
-            log(f"    FAILED: {e}")
-            rec = {"app": app.name, "variant": variant, "cached": cached, "playlist": playlist, "scenario": scenario, "error": ui.redact(str(e))}
-            ui.sh("dumpsys battery reset")
+        except PhoneLost as e:
+            # Nothing more can be run or measured: this run is not kept, so --resume runs it again.
+            log(f"    STOPPED: {e}")
+            stopped = str(e)
+            break
+        except Exception as e:
+            # One run going wrong, even the harness's own bug, costs that run, not the rest of the night.
+            log(f"    FAILED: {e}" if isinstance(e, (StepFailed, TimeoutError, RuntimeError))
+                else f"    FAILED (harness error): {type(e).__name__}: {e}\n{traceback.format_exc()}")
+            rec = {"app": app.name, "variant": variant, "cached": cached, "playlist": playlist, "scenario": scenario, "error": ui.redact(str(e) or type(e).__name__)}
             try:
+                ui.sh("dumpsys battery reset")
                 app.stop()
+            except PhoneLost as e2:
+                log(f"    STOPPED: {e2}")
+                stopped = str(e2)
             except Exception:
                 pass
+        rec["index"] = idx
         recs.append(rec)
         with open(os.path.join(outdir, "runs.jsonl"), "a") as f:
             f.write(json.dumps(rec) + "\n")
-        with open(os.path.join(outdir, "results.md"), "w") as f:
-            f.write(table(recs))
+        try:
+            with open(os.path.join(outdir, "results.md"), "w") as f:
+                f.write(table(sorted(recs, key=lambda r: r["index"])))
+        except Exception:
+            log(f"    could not write results.md: {traceback.format_exc()}")
+        if stopped:
+            break
     print("\n" + terminal_table(recs))
-    log(f"finished {len(plan)} runs in {fmt((time.time() - t_start) / 60)}")
+    if stopped:
+        log(f"stopped after {len(recs)} of {len(plan)} runs: the phone is gone from adb. Reconnect it, then continue "
+            "with: tools/bgtest/run.py --resume")
+        log(f"results in {outdir}")
+        return 3
+    sess["finished"] = datetime.datetime.now().isoformat(timespec="seconds")
+    save_session(outdir, sess)
+    log(f"finished {len(todo)} runs in {fmt((time.time() - t_start) / 60)}")
     log(f"results in {outdir}")
     return 0
 
@@ -645,6 +885,9 @@ if __name__ == "__main__":
         sys.exit(main())
     except SystemExit:
         raise
+    except PhoneLost as e:
+        print(f"stopped: {e}. Reconnect the phone, then continue with: tools/bgtest/run.py --resume")
+        sys.exit(3)
     except Exception:
         traceback.print_exc()
         sys.exit(1)

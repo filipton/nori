@@ -23,6 +23,9 @@ never waits for typing, taking the flag or the default and saying so:
                       person at the phone
     --stay-plugged    measure on the cable (batterystats still counts it as on battery)
     --list-devices    print the phones adb sees and exit
+    --resume [FOLDER] continue a session that stopped (the newest, or FOLDER in build/bgtest/results)
+                      with its own settings: shows what was done and what is left, asks first (--yes
+                      does not ask); the phone and cable steps are as usual
 
 The last line is "RESULTS: <folder>" (results.md, runs.jsonl, each run's dumps).
 """
@@ -235,6 +238,9 @@ def main():
     p.add_argument("--nori-pkg", help="dev.nori.music.perf (perf build, default) or dev.nori.music (a normal build)")
     p.add_argument("--again", action="store_true", help="run exactly what the picker ran last time, without it")
     p.add_argument("--list-devices", action="store_true")
+    p.add_argument("--resume", nargs="?", const="", metavar="FOLDER",
+                   help="continue a stopped session (the newest, or FOLDER under build/bgtest/results) with its settings")
+    p.add_argument("--yes", action="store_true", help="with --resume: continue without asking")
     p.add_argument("--repeat", type=int)
     p.add_argument("--skips", type=int)
     p.add_argument("--power-save", choices=["on", "off"])
@@ -244,6 +250,24 @@ def main():
     a = p.parse_args()
 
     devs = devices()
+    sys.path.insert(0, HERE)
+    import bgtest
+    session = None
+    if a.resume is not None:
+        # Asked first, before the phone is touched or the cable pulled.
+        session = bgtest.find_session(a.resume)
+        why = bgtest.ask_resume(session, a.yes)
+        if why:
+            print(why)
+            return 1
+        a.server = next((session["argv"][i + 1] for i, x in enumerate(session["argv"][:-1]) if x == "--server"), "local")
+        if not a.serial and session.get("serial") in [d[0] for d in devs]:
+            a.serial = session["serial"]
+    elif INTERACTIVE and len(sys.argv) == 1:
+        sess = bgtest.find_session()
+        if sess and not sess.get("finished") and bgtest.left_of(sess):
+            print(f"the last session ({os.path.basename(sess['dir'])}) stopped with {len(bgtest.left_of(sess))} of "
+                  f"{len(sess['plan'])} runs left: tools/bgtest/run.py --resume continues it")
     last_file = os.path.join(ROOT, "build", "bgtest", "last.json")
     last = None
     try:
@@ -252,7 +276,7 @@ def main():
         pass
     if a.again and not last:
         sys.exit("nothing to run again: no run was picked yet (build/bgtest/last.json)")
-    if a.again or (INTERACTIVE and len(sys.argv) == 1):
+    if not session and (a.again or (INTERACTIVE and len(sys.argv) == 1)):
         # No options in a terminal: everything is picked on one screen (tui.py).
         sys.path.insert(0, HERE)
         import tui
@@ -363,6 +387,9 @@ def main():
             subprocess.run([sys.executable, os.path.join(HERE, "server.py")], check=True)
 
     # ---- what to run ----
+    if session:
+        cmd = [sys.executable, "-u", os.path.join(HERE, "bgtest.py"), "--serial", serial, "--resume", session["dir"], "--yes"]
+        return hand_over(cmd, unplugged_here)
     if a.runs:
         args = ["--runs", a.runs, "--minutes", str(a.minutes or 5)]
     else:
@@ -384,6 +411,11 @@ def main():
     cmd = [sys.executable, "-u", os.path.join(HERE, "bgtest.py"), "--serial", serial, "--server", server, "--playlist", playlist] + args
     if a.nori_pkg:
         cmd += ["--nori-pkg", a.nori_pkg]
+    return hand_over(cmd, unplugged_here)
+
+
+def hand_over(cmd, unplugged_here):
+    """Runs bgtest.py, passing its output on; the last line says where the results are."""
     print("\nrunning: " + " ".join(cmd[2:]) + "\n", flush=True)
     results = None
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -393,6 +425,8 @@ def main():
         if m:
             results = m.group(1)
     rc = proc.wait()
+    if rc != 0:
+        print("\nthe session did not finish: tools/bgtest/run.py --resume continues it")
     if unplugged_here:
         print("\nACTION: the phone can be plugged back in")
     print(f"RESULTS: {results or '(none)'}")

@@ -77,6 +77,14 @@ class Phone:
             return
         self.restored = True
         s = self.saved
+        try:
+            if not ui.answers():
+                ui.reconnect(60)
+        except ui.PhoneLost:
+            # Its record stays: the next session (or --resume) puts the phone back first.
+            print(f"  the phone does not answer over adb: NOT restored. Its record is kept ({STATE_FILE});\n"
+                  "  the next bgtest run puts it back, or reconnect it and run tools/bgtest/bgtest.py --restore")
+            return
         steps = [
             "dumpsys battery reset",
             *[f"am force-stop {p}" for p in self.packages],
@@ -99,6 +107,9 @@ class Phone:
             if c:
                 try:
                     ui.sh(c, timeout=30)
+                except ui.PhoneLost:
+                    print("  the phone dropped off adb while being put back: its record is kept for the next run")
+                    return
                 except Exception as e:  # keep putting the rest back
                     print(f"  could not restore ({c}): {e}")
         if os.path.exists(STATE_FILE):

@@ -37,6 +37,8 @@ class App:
             if isinstance(expect, (list, tuple)):
                 return ui.wait_any(list(expect), timeout, exact)
             return ui.wait_for(expect, timeout, exact)
+        except ui.PhoneLost:
+            raise
         except Exception as e:
             path = f"{self.shots}/{self.name}-{re.sub(r'[^a-z0-9]+', '-', what.lower())[:40]}.png"
             try:

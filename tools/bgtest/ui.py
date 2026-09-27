@@ -21,12 +21,85 @@ def redact(s):
     return s
 
 
+# Where the notes about the connection go (bgtest.py points it at its log).
+LOG = print
+# How long a phone that stopped answering is waited for (and reconnected to) before giving up.
+RECONNECT_S = 180
+
+
+class PhoneLost(RuntimeError):
+    """adb lost the phone and did not get it back: nothing more can be measured or put back now."""
+
+
+# adb's own complaints (not the shell command's): the connection is gone, not the command failing.
+_LOST = re.compile(r"(?m)^(adb: )?(error: )?(device .*not found|device offline|device still authorizing|"
+                   r"no devices|closed|protocol fault|connection reset)")
+
+
+def _run(cmd, timeout):
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+
+
+def answers(timeout=10):
+    try:
+        return _run(["adb"] + (["-s", SERIAL] if SERIAL else []) + ["get-state"], timeout).stdout.strip() == "device"
+    except subprocess.TimeoutExpired:
+        return False
+
+
+def reconnect(wait_s=None):
+    """Waits for the phone to answer again, reconnecting adb over Wi-Fi (a serial "ip:port") meanwhile.
+    Raises PhoneLost when it does not within `wait_s` (RECONNECT_S)."""
+    wait_s = RECONNECT_S if wait_s is None else wait_s
+    LOG(f"    adb lost the phone ({SERIAL or 'the only one'}): reconnecting for up to {wait_s:.0f} s")
+    end = time.time() + wait_s
+    while True:
+        if SERIAL and ":" in SERIAL:
+            try:
+                _run(["adb", "disconnect", SERIAL], 10)
+                _run(["adb", "connect", SERIAL], 15)
+            except subprocess.TimeoutExpired:
+                pass
+        if answers():
+            LOG("    adb: the phone answers again")
+            return
+        if time.time() > end:
+            raise PhoneLost(f"adb lost the phone ({SERIAL or 'the only one'}) and it did not answer for {wait_s:.0f} s")
+        time.sleep(5)
+
+
+def refresh():
+    """A fresh adb connection over Wi-Fi (between runs, so a stale one does not die during the next
+    measurement). Nothing to do on a cable. Raises PhoneLost when the phone does not come back."""
+    if not (SERIAL and ":" in SERIAL):
+        return
+    try:
+        _run(["adb", "disconnect", SERIAL], 10)
+        _run(["adb", "connect", SERIAL], 15)
+    except subprocess.TimeoutExpired:
+        pass
+    if not answers():
+        reconnect()
+
+
 def adb(*args, check=True, timeout=120):
     cmd = ["adb"] + (["-s", SERIAL] if SERIAL else []) + list(args)
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
-    if check and r.returncode != 0:
-        raise RuntimeError(f"{' '.join(cmd)}: {r.stderr.strip() or r.stdout.strip()}")
-    return r.stdout.replace("\r", "")
+    for attempt in range(3):
+        try:
+            r = _run(cmd, timeout)
+        except subprocess.TimeoutExpired:
+            # A command that hangs: a slow phone, or a Wi-Fi connection that died without a word.
+            if answers():
+                raise TimeoutError(f"{' '.join(cmd)}: no answer after {timeout} s")
+            reconnect()
+            continue
+        if _LOST.search(r.stderr):
+            reconnect()
+            continue
+        if check and r.returncode != 0:
+            raise RuntimeError(f"{' '.join(cmd)}: {r.stderr.strip() or r.stdout.strip()}")
+        return r.stdout.replace("\r", "")
+    raise PhoneLost(f"{' '.join(cmd)}: the phone keeps dropping off adb")
 
 
 def sh(command, check=False, timeout=120):

@@ -18,6 +18,18 @@ One run per phone at a time: a second one on the same serial refuses to start (a
 The media volume is set to the same step for every run (`--volume`, default 1) and put back afterwards,
 like the brightness of the player scenario (`--brightness`, default 1).
 
+A session that stopped (Ctrl+C, the computer asleep, the phone gone from adb) is continued with
+`run.py --resume` (or `bgtest.py --resume [FOLDER]`): it shows what the newest session ran, what is left
+and about when it would end, asks, then runs the rest with the session's own settings into the same
+folder. Every session keeps its settings and plan in `session.json`; older ones are read from their log.
+
+adb over Wi-Fi can drop (the phone's Wi-Fi dozing with the screen off, the router). Before every
+run the Wi-Fi connection is made anew (`adb disconnect`/`connect`), and every adb call that
+finds the phone gone reconnects (`adb disconnect`/`connect`) and waits up to 3 minutes for it; a run whose
+batterystats still cannot be read is recorded as failed, and a phone that never comes back stops the
+session cleanly (exit 3) for `--resume`, keeping the phone's record for the next run to put back (or
+`bgtest.py --restore`).
+
 With no terminal (an agent), `run.py` never asks: every choice is a flag, `ACTION:` lines are for the
 person at the phone (unplug the cable…), and the last line is `RESULTS: <folder>`.
 
