@@ -195,6 +195,37 @@ fn a_song_turned_up_is_louder_and_the_limiter_holds_the_ceiling() {
 }
 
 #[test]
+fn a_crossfade_mixes_a_song_turned_up_and_one_turned_down_each_at_its_own_level() {
+    // a turned up 3.5 dB (its peaks stay under the limiter's knee, so the limiter changes nothing), b
+    // turned down 6 dB, crossfaded: as the two turned first and mixed after, sample for sample.
+    let (a, b) = (music(SONG_S, 43), music(SONG_S, 44));
+    let (up, down) = (1.5f32, 0.5f32);
+    let scaled = |s: &[i16], g: f32| -> Vec<f32> { floats(s).iter().map(|v| v * g).collect() };
+    let play = |songs: Vec<Track>, gains: &[(&str, f32)]| {
+        let mut p = Player::with_prefs(songs, crossfade(6));
+        for (id, g) in gains {
+            p.app.gains.insert(id.to_string(), *g);
+        }
+        p.gain_max = 4.0;
+        p.set_sound(Sound { limiter: true, ..Default::default() });
+        p.play_from(0);
+        assert!(p.run_to_end(200_000), "{:?}", p.app.log);
+        assert!(p.sink.gaps.is_empty(), "{:?}", p.sink.gaps);
+        (p.sink.heard_floats(), p.app.log.clone())
+    };
+    let pre = |id: &str, s: Vec<f32>| Track::new(id, Audio::pcm_float(RATE, 2, &s));
+    let (ideal, log) = play(vec![pre("a", scaled(&a, up)), pre("b", scaled(&b, down))], &[]);
+    assert!(log.iter().any(|l| l.contains("mixing: the next track arrived")), "a mix was heard: {log:?}");
+    let (got, _) = play(vec![float_track("a", &a), float_track("b", &b)], &[("a", up), ("b", down)]);
+    assert_eq!(got.len(), ideal.len());
+    let off = got.iter().zip(&ideal).position(|(g, i)| (g - i).abs() > 1e-6);
+    assert_eq!(off, None, "every sample as the two turned first and mixed after");
+    let peak = |s: &[f32]| s.iter().fold(0f32, |m, v| m.max(v.abs()));
+    let own = peak(&floats(&a));
+    assert!(peak(&got) > own * 1.45, "a was turned up: {} against its own {own}", peak(&got));
+}
+
+#[test]
 fn a_song_in_16_bits_is_never_turned_up_where_it_would_clip() {
     // 16-bit samples cannot go over full scale on their way to the limiter: the player leaves such a song
     // at its own level (nori-engine reads songs as floats whenever they may be turned up).
