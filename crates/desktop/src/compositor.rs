@@ -722,7 +722,9 @@ impl Draw {
         if s.player_shown.get() {
             let (o, sz) = place(s, Role::Player, win);
             let r = [o.x * scale, o.y * scale, sz.width * scale, sz.height * scale];
-            glass(Role::Player, [PLAYER_H * 0.5 * scale, 16.0 * scale, 12.0 * scale, 0.2], [1.0, 1.0, 1.0, 0.06], [0.55, 0.05, 0.4, 20.0 * scale], [40.0 * scale, 1.2, 0.0, 0.0], r);
+            // Nearly invisible, as Music's is: the page blurred behind a neutral grey veil, no colour of its own
+            // and none washed in from beside it, a gentle bend and a faint rim.
+            glass(Role::Player, [PLAYER_H * 0.5 * scale, 14.0 * scale, 6.0 * scale, 0.05], [0.14, 0.14, 0.145, 0.38], [0.2, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 0.0], r);
         }
         drop(layers);
         gpu.queue.submit([enc.finish()]);
