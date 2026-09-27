@@ -237,8 +237,8 @@
     <string name="settings_amoled_detail">True black in dark mode. Saves power on OLED screens.</string>
     <string name="settings_keep_colours">Keep the cover\'s colours</string>
     <string name="settings_keep_colours_detail">What you pick here stays in the artwork\'s colours instead of turning black.</string>
-    <string name="settings_keep_colours_artist">Artist pages</string>
-    <string name="settings_keep_colours_album">Album pages</string>
+    <string name="settings_keep_colours_artist">Artists</string>
+    <string name="settings_keep_colours_album">Albums &amp; playlists</string>
     <string name="settings_keep_colours_player">Player</string>
     <string name="settings_wallpaper">Wallpaper colours</string>
     <string name="settings_wallpaper_detail">Accent colour from your wallpaper.</string>
@@ -486,7 +486,7 @@
     <string name="settings_hint_offload">Offload. The audio chip decodes instead of the processor</string>
     <string name="settings_hint_theme">Light, dark or the same as the system</string>
     <string name="settings_hint_amoled">AMOLED. True black in dark mode, saves power on OLED</string>
-    <string name="settings_hint_keep_colours">Artist pages, album pages or the player in the artwork\'s colours instead of black</string>
+    <string name="settings_hint_keep_colours">Artist, album and playlist pages or the player in the artwork\'s colours instead of black</string>
     <string name="settings_hint_wallpaper">Material You. Accent colour from your wallpaper</string>
     <string name="settings_hint_cover_colours">Pages take their colours from the artwork</string>
     <string name="settings_hint_blur">The player\'s artwork softens into the page</string>

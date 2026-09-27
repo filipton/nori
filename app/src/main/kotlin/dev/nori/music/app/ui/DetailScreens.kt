@@ -480,6 +480,8 @@ private fun PlaylistPage(
     val from = rememberOrigin(OriginKind.PLAYLIST, id)
     HeroPage(
         coverUrl = vm.cover(playlist.coverArt, CoverSize.FULL),
+        // One choice with albums: the two pages are drawn the same, so they go black or keep colour together.
+        keepsColours = { it.albumColours },
         title = playlist.name,
         subtitle = remember(playlist.comment, prefs.playlistDescriptions, prefs.hideImportNotes) {
             dev.nori.music.ffi.library.playlistDescription(playlist.comment, prefs.playlistDescriptions, prefs.hideImportNotes)
