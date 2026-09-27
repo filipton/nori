@@ -705,6 +705,74 @@ fn a_pause_fades_out_and_play_fades_back_in() {
     assert_eq!(*heard.last().unwrap(), 8000);
 }
 
+/// A new queue started at the index the ear was already on (an album's first song after another's): the
+/// ear is on another song, and it is said, as a screen that went there needs to hear it. Playing, and
+/// paused on a place held.
+#[test]
+fn a_new_queue_started_at_the_same_index_says_the_song_it_went_to() {
+    for paused in [false, true] {
+        let (a, b, c) = (music(30.0, 61), music(20.0, 62), music(20.0, 63));
+        let rig = Rig::new(&[("a", &a), ("b", &b), ("c", &c)], prefs_off(), Settings::default());
+        rig.queue.lock().set(vec!["a".into()], Some(0), false, 0);
+        rig.engine.queue_changed();
+        rig.engine.play_at(0, 0);
+        assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2 * 3));
+        if paused {
+            rig.engine.pause();
+            assert!(rig.wait_for(5, |r| r.engine.status().state == State::Paused));
+        }
+        let from = rig.events.lock().len();
+        rig.queue.lock().set(vec!["b".into(), "c".into()], Some(0), false, 0);
+        rig.engine.queue_changed();
+        let jump = rig.engine.go_to(0, 0);
+        let said = |r: &Rig| r.events.lock()[from..].iter().any(|e| matches!(e, Event::Song { index: 0, id, jumps } if id == "b" && *jumps >= jump));
+        assert!(rig.wait_for(5, said), "paused {paused}: {:?}", &rig.events.lock()[from..]);
+        assert_eq!(rig.engine.status().id.as_deref(), Some("b"), "paused {paused}");
+        rig.engine.play();
+        rig.run(2_000);
+        let songs = rig.events.lock()[from..].iter().filter(|e| matches!(e, Event::Song { .. })).count();
+        assert_eq!(songs, 1, "said once, paused {paused}: {:?}", &rig.events.lock()[from..]);
+        rig.engine.stop();
+    }
+}
+
+/// A new queue started while a pause fades out (paused and a song tapped at once): play goes to the new
+/// song, not back to the one the fade was taking away.
+#[test]
+fn a_song_asked_for_inside_a_pause_fade_is_the_one_play_brings() {
+    let a = vec![8000i16; RATE as usize * 2 * 20];
+    let b = vec![-8000i16; RATE as usize * 2 * 20];
+    let rig = Rig::new(&[("a", &a), ("b", &b)], prefs_off(), Settings { fade_ms: 400, ..Settings::default() });
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2 * 3));
+    rig.engine.pause();
+    rig.engine.go_to(1, 0);
+    rig.engine.play();
+    let at = rig.heard.lock().len();
+    rig.run(3_000);
+    let heard = rig.heard.lock().clone();
+    assert_eq!(rig.engine.status().index, Some(1), "{:?}", rig.events.lock());
+    assert_eq!(*heard.last().unwrap(), -8000, "b is heard, not a again");
+    assert!(heard.len() > at + RATE as usize * 2, "and it plays");
+}
+
+/// A wait for a song's bytes said on the CPU path is said to be over when the music stops waiting some
+/// other way: the song held paused elsewhere, the output let go.
+#[test]
+fn a_wait_said_is_said_over_when_the_music_goes_elsewhere() {
+    let (a, b) = (music(20.0, 71), music(20.0, 72));
+    let songs: [(&str, &[i16]); 2] = [("a", &a), ("b", &b)];
+    let extra = Extra::default();
+    extra.server.slow.lock().push(("a".into(), Duration::from_secs(60)));
+    let rig = Rig::build(files(&songs), sim::App::new(), Settings::default(), extra);
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(5, |r| r.events.lock().contains(&Event::Buffering(true))), "{:?}", rig.events.lock());
+    rig.engine.pause();
+    rig.engine.go_to(1, 0);
+    assert!(rig.wait_for(5, |r| r.events.lock().contains(&Event::Buffering(false))), "{:?}", rig.events.lock());
+    rig.engine.stop();
+}
+
 #[test]
 fn each_song_plays_at_its_replay_gain_volume() {
     let (a, b) = (music(12.0, 7), music(12.0, 8));

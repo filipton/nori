@@ -532,8 +532,9 @@ struct Worker<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> {
     switches: VecDeque<Switched>,
     switch_at: Option<i64>,
     up_ms: i64,
-    /// The song last reported.
+    /// The song last reported, and its id: a new queue can put another song at the same index.
     heard: Option<usize>,
+    heard_id: Option<String>,
     /// The jumps asked for (play_at, go_to, next, previous) taken off the channel.
     jumps: u64,
     /// The ReplayGain settings changed: the song playing's volume is asked for again.
@@ -711,6 +712,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             switch_at: None,
             up_ms: 0,
             heard: None,
+            heard_id: None,
             jumps: 0,
             gain_changed: false,
             positions: None,
@@ -1146,7 +1148,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         self.pause_at = None;
         self.held = None;
         self.quiet = None;
-        self.stalled = false;
+        self.unstall();
         let _ = self.leave_offload();
         self.p.release();
         self.p.sink.track.release();
@@ -1824,12 +1826,14 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     }
 
     fn play(&mut self) {
-        if self.pause_at.take().is_some() {
+        if self.pause_at.take().is_some() && self.held.is_none() {
             // Pressed again inside the fade out: the music comes back from where the fade got to.
             self.ramp(None, 1.0, self.settings.fade_ms.max(0) as i64);
             self.set_state(State::Playing);
             return;
         }
+        // A place asked for inside the fade out (a new queue, a skip) was held, as paused: it is where
+        // the music is wanted now, not the song the fade was taking away.
         if self.playing() && self.state == State::Playing {
             return;
         }
@@ -2333,19 +2337,38 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         }
     }
 
+    /// Another song than the one last said is at queue index `i` now (a new queue put it there), and the
+    /// ear is on it: no jump is still waiting out its dip, so what is heard is the queue's song. Compared
+    /// in place, as this runs on every wake.
+    fn other_song_at(&self, i: usize) -> bool {
+        let waiting = self.switches.iter().any(|s| matches!(s, Switched::To(..) | Switched::Next | Switched::Previous));
+        !waiting && self.p.queue.read(|q| q.ids().get(i).map(String::as_str) != self.heard_id.as_deref())
+    }
+
+    /// The music is no longer waiting for a song's bytes on the CPU path (it was let go, paused on a
+    /// place held, or went to the output's decoder): a wait said is said to be over.
+    fn unstall(&mut self) {
+        if std::mem::take(&mut self.stalled) {
+            (self.events)(Event::Buffering(false));
+        }
+    }
+
     fn report(&mut self, now: i64) {
         if let Some((i, ms)) = self.held.as_ref().map(|h| (h.0, h.1)) {
             // A place held while paused is where the player is, to the screen. Its id is copied only
             // when it changes.
+            self.unstall();
             let id = || self.held.as_ref().map(|h| h.2.clone()).unwrap_or_default();
-            if self.heard != Some(i) {
+            let other = self.heard != Some(i) || self.held.as_ref().map(|h| h.2.as_str()) != self.heard_id.as_deref();
+            if other {
                 self.heard = Some(i);
+                self.heard_id = Some(id());
                 let jumps = self.made();
                 (self.events)(Event::Song { index: i, id: id(), jumps });
             }
             let mut s = self.status.lock();
             s.state = self.state;
-            if s.index != Some(i) {
+            if s.index != Some(i) || other {
                 s.index = Some(i);
                 s.id = Some(id());
             }
@@ -2356,6 +2379,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             return;
         }
         if self.released.is_some() {
+            self.unstall();
             // Let go: the place last reported stands.
             let mut s = self.status.lock();
             s.releases = self.releases;
@@ -2364,9 +2388,12 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             return;
         }
         if self.offloading() {
+            // The output's decoder says its own waits: a wait said on the CPU path is over.
+            self.unstall();
             return self.report_offload(now);
         }
         if self.p.current().is_none() {
+            self.unstall();
             self.status.lock().on_cpu = false;
             return;
         }
@@ -2381,8 +2408,10 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         let ms = if seen.index.is_some() { seen.ms } else { self.p.position_ms() };
         // The song's id is copied only when the song changes: this runs on every wake.
         let jumps = self.made();
-        if index != self.heard {
+        let other = index != self.heard || index.is_some_and(|i| self.other_song_at(i));
+        if other {
             self.heard = index;
+            self.heard_id = index.map(|i| self.p.id_at(i));
             if let Some(i) = index {
                 (self.events)(Event::Song { index: i, id: self.p.id_at(i), jumps });
             }
@@ -2405,7 +2434,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             let mut s = self.status.lock();
             let was = s.mixing;
             s.state = self.state;
-            if s.index != index {
+            if s.index != index || other {
                 s.index = index;
                 s.id = index.map(|i| self.p.id_at(i));
             }
@@ -2442,9 +2471,10 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     /// after it is fetched, and a song placed again (repeat one) is a loop.
     fn report_offload(&mut self, now: i64) {
         let Some((i, ms, seq)) = self.off.as_mut().and_then(Offload::heard) else { return };
-        if self.heard != Some(i) {
+        if self.heard != Some(i) || self.other_song_at(i) {
             self.heard = Some(i);
             let id = self.p.id_at(i);
+            self.heard_id = Some(id.clone());
             self.p.queue.moved_to(i);
             if let Some(n) = self.p.queue.read(|q| q.next_of(i, q.repeat())) {
                 let next = self.p.id_at(n);
@@ -2467,7 +2497,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             let mut s = self.status.lock();
             let was = s.mixing;
             s.state = self.state;
-            if s.index != Some(i) {
+            if s.index != Some(i) || s.id != self.heard_id {
                 s.index = Some(i);
                 s.id = Some(self.p.id_at(i));
             }
