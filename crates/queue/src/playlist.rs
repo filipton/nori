@@ -147,12 +147,15 @@ pub struct BridgeState {
 ///
 /// A queue started from an album ([`OriginKind::Album`]: its page, its Play or a row of it) is the album
 /// played as an album: its songs are one album run (`Playlist::album_run`), kept gapless with "keep
-/// albums gapless" on. Any other origin is not, a playlist's included: a playlist is a list somebody
-/// made, and songs of one album in it mix like any others (the album's own page plays it whole). A queue
-/// put back as it was saved takes the runs it was saved with ([`playlist_put_back_runs`]).
+/// albums gapless" on. So is each album of a "shuffle albums" queue ([`OriginKind::ShuffleAlbums`]):
+/// whole albums one after another, each its own run. Any other origin is not, a playlist's included: a
+/// playlist is a list somebody made, and songs of one album in it mix like any others (the album's own
+/// page plays it whole). A queue put back as it was saved takes the runs it was saved with
+/// ([`playlist_put_back_runs`]).
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn playlist_set(ids: Vec<String>, start: i32, shuffle: bool, origin: Option<PageOrigin>) -> QueueChange {
     let album = is_album(origin.as_ref());
+    let whole = is_shuffle_albums(origin.as_ref()).then(|| album_spans(&ids));
     let saved = PUT_BACK.lock().take().filter(|(put, _)| *put == ids).map(|(_, runs)| runs);
     set_origin(origin);
     edit(|p| {
@@ -160,7 +163,7 @@ pub fn playlist_set(ids: Vec<String>, start: i32, shuffle: bool, origin: Option<
         match saved {
             Some(runs) => p.set_album_runs(&runs),
             None if album => p.as_album(0, p.len()),
-            None => {}
+            None => whole.into_iter().flatten().for_each(|(from, to)| p.as_album(from, to)),
         }
         at
     })
@@ -169,6 +172,27 @@ pub fn playlist_set(ids: Vec<String>, start: i32, shuffle: bool, origin: Option<
 /// Songs from `origin` are an album played (or added) as an album.
 fn is_album(origin: Option<&PageOrigin>) -> bool {
     origin.is_some_and(|o| o.kind == OriginKind::Album)
+}
+
+fn is_shuffle_albums(origin: Option<&PageOrigin>) -> bool {
+    origin.is_some_and(|o| o.kind == OriginKind::ShuffleAlbums)
+}
+
+/// Where each album of `ids` starts and ends: the stretches of songs of one album next to each other,
+/// from the songs the queue knows (a song with no album is in none).
+fn album_spans(ids: &[String]) -> Vec<(usize, usize)> {
+    let albums: Vec<Option<String>> = queue::with(|s| ids.iter().map(|id| s.songs.get(id).and_then(|(song, _)| song.album_id.clone())).collect());
+    let mut spans = Vec::new();
+    let mut from = 0;
+    for i in 1..=albums.len() {
+        if i == albums.len() || albums[i] != albums[from] {
+            if albums[from].is_some() {
+                spans.push((from, i));
+            }
+            from = i;
+        }
+    }
+    spans
 }
 
 /// The album runs `runs` of the saved queue `ids` (one per song, as `Playlist::album_runs` gave them), for
@@ -198,16 +222,20 @@ pub enum Hand {
 /// to queue, or neither). Where they go is `nori_player::playlist::Playlist::take`'s call. `from` is the
 /// page they are all the songs of, when they are: an album's ([`OriginKind::Album`], its Play next or Add
 /// to queue) is the album added whole, one album run of its own; songs added any other way (one at a
-/// time, a selection, autofill's) have none.
+/// time, a selection, autofill's) have none, but a "shuffle albums" queue's refill is whole albums, each
+/// a run of its own as the queue's first albums are.
 #[cfg_attr(feature = "ffi", uniffi::export(default(from = None)))]
 pub fn playlist_take(at: u32, ids: Vec<String>, hands: Vec<Hand>, from: Option<PageOrigin>) -> QueueChange {
     let count = ids.len();
     let album = is_album(from.as_ref()) && count > 0;
+    let refill = hands.iter().all(|h| *h == Hand::No) && is_shuffle_albums(playlist_origin().as_ref());
+    let whole = (refill && !album).then(|| album_spans(&ids));
     edit(|p| {
         let at = p.take(at as usize, ids, &hands);
         if album {
             p.as_album(at, at + count);
         }
+        whole.into_iter().flatten().for_each(|(from, to)| p.as_album(at + from, at + to));
         Some(at)
     })
 }
@@ -559,6 +587,29 @@ pub(crate) mod tests {
         }
         // The album page's Shuffle, spread by the core: a shuffle, no run.
         playlist_set_ordered(songs.clone(), album("AR"));
+        assert_eq!(runs(), [0, 0, 0]);
+    }
+
+    /// "Shuffle albums": whole albums one after another, the first ones and each refill's, every album a
+    /// run of its own, so "keep albums gapless" keeps each gapless and the change of album mixes.
+    #[test]
+    fn each_album_of_a_shuffle_albums_queue_is_a_run_of_its_own() {
+        let _g = hold(&[], 0);
+        let song = |id: &str, album: Option<&str>| Song { album_id: album.map(str::to_string), ..Song::only_id(id.to_string()) };
+        queue::queue_register(vec![song("a1", Some("A")), song("a2", Some("A")), song("b1", Some("B")), song("b2", Some("B")), song("x", None), song("c1", Some("C")), song("c2", Some("C"))]);
+        playlist_set(ids(&["a1", "a2", "b1", "b2"]), 0, false, Some(PageOrigin::new(OriginKind::ShuffleAlbums, "")));
+        let r = runs();
+        assert!(r[0] > 0 && r[0] == r[1] && r[2] > 0 && r[2] == r[3] && r[0] != r[2], "{r:?}");
+        // The refill: its album a run of its own, a song of no album in none.
+        playlist_take(4, ids(&["x", "c1", "c2"]), vec![Hand::No; 3], None);
+        let r = runs();
+        assert!(r[4] == 0 && r[5] > 0 && r[5] == r[6] && r[5] != r[2], "{r:?}");
+        // A song added by hand to it: none.
+        let at = playlist_take(9, ids(&["c1"]), vec![Hand::Last], None).at;
+        assert_eq!(runs()[at as usize], 0);
+        // Any other queue's refill: none.
+        playlist_set(ids(&["a1"]), 0, false, None);
+        playlist_take(1, ids(&["c1", "c2"]), vec![Hand::No; 2], None);
         assert_eq!(runs(), [0, 0, 0]);
     }
 
