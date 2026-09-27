@@ -6,7 +6,9 @@
 
 mod app;
 mod glass;
+mod lyrics;
 mod session;
+mod settings;
 mod words;
 
 use std::path::PathBuf;

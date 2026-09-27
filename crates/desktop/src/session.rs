@@ -17,9 +17,10 @@ use nori_core::client::{Client, NetProfile};
 use nori_core::covers::set_cover_transport;
 use nori_core::playlist::{self, Hand, QueueEdit};
 use nori_core::rules::{queue_keep, song_arrived, BridgeStep, QueueMoment};
+use nori_core::race::{LyricsPick, LyricsShown};
 use nori_core::search::{SearchSession, SearchView};
-use nori_core::settings::SavedServer;
-use nori_core::settings_store;
+use nori_core::settings::{SavedServer, SettingChange, StoredPrefs};
+use nori_core::settings_store::{self, APPLY_AUDIO, APPLY_GAIN, PLAYER, REPLAN, SOUND};
 use nori_core::{AlbumDetail, ArtistDetail, Core, OriginKind, PageOrigin, PlaylistDetail, ServerConfig, Song};
 use nori_covers::loader::{Config as CoverConfig, Loader, Ticket};
 use nori_covers::memory::Image;
@@ -48,6 +49,8 @@ pub enum Msg {
     /// A cover by the key it was asked under, decoded, and the page's colours when they were asked for.
     Cover { key: String, image: Arc<Image>, colours: Option<Box<CoverColours>> },
     Search(SearchView),
+    /// Lyrics for a song, and where they are from, as the core hands them over (`Client::lyrics_for`).
+    Lyrics { song: String, pick: LyricsPick },
     Note { text: String, error: bool },
     LoggedIn(Result<SavedServer, String>),
     Reachable(Result<(), String>),
@@ -123,6 +126,17 @@ impl ByteSource for Audio {
 
     fn open_live(&self, url: &str) -> Result<(Body, Option<usize>), String> {
         self.http.open_live(url)
+    }
+}
+
+/// Hands the lyrics to the window as they come.
+struct Shown {
+    song: String,
+}
+
+impl LyricsShown for Shown {
+    fn show(&self, pick: LyricsPick) {
+        Tx.send(Msg::Lyrics { song: self.song.clone(), pick });
     }
 }
 
@@ -250,6 +264,7 @@ pub struct Session {
     pub client: Arc<Client>,
     pub engine: Arc<Engine>,
     covers: Arc<Loader>,
+    store: Arc<Store>,
     pub volume: Volume,
     search: Arc<SearchSession>,
     mpris: Option<nori_mpris::Mpris>,
@@ -279,7 +294,7 @@ impl Session {
         let covers = Arc::new(Loader::new(CoverConfig::new(data.join("covers")), http));
         let mpris = nori_mpris::Mpris::start(&format!("nori.desktop{}", std::process::id()), Arc::new(Desktop { engine: engine.clone() })).ok();
         let keeper = Keeper::start(core.clone(), engine.clone());
-        let s = Session { core, client, engine, covers, volume, search: SearchSession::new(), mpris, keeper };
+        let s = Session { core, client, engine, covers, store: store.clone(), volume, search: SearchSession::new(), mpris, keeper };
         s.restore();
         if s.core.download_counts().pending > 0 {
             Downloader::new(s.core.clone(), s.client.clone(), audio, store).start(prefs.parallel_downloads.max(1) as usize);
@@ -452,6 +467,63 @@ impl Session {
                 }
             }
         });
+    }
+
+    /// Lyrics for `song`, each better answer as it comes: the server's first, then the lyrics services the
+    /// settings switch on, in the core's order (`Client::lyrics_for`).
+    pub fn lyrics(&self, song: String) {
+        let client = self.client.clone();
+        spawn("nori-lyrics", move || {
+            let _ = block_on(client.lyrics_for(song.clone(), Arc::new(Shown { song })));
+        });
+    }
+
+    /// A setting changed by name, kept by the core, and whatever it changes applied to the engine, as the
+    /// other clients take a change in.
+    pub fn setting(&self, name: &str, value: &str) -> Option<SettingChange> {
+        let change = nori_core::settings_model::setting_set(name.to_string(), value.to_string())?;
+        self.apply(change.effect, &change.prefs);
+        if change.apply_cache_limit {
+            self.store.set_limit(change.prefs.cache_mb.max(0) as u64 * 1024 * 1024);
+        }
+        Some(change)
+    }
+
+    fn apply(&self, effect: u32, prefs: &StoredPrefs) {
+        if effect & (APPLY_AUDIO | SOUND | PLAYER) != 0 {
+            self.engine.set_settings(settings(prefs));
+        }
+        if effect & APPLY_GAIN != 0 {
+            self.engine.gain_changed();
+        }
+        if effect & REPLAN != 0 {
+            self.engine.replan();
+        }
+    }
+
+    /// One of the settings page's buttons.
+    pub fn action(&self, action: &str) {
+        match action {
+            "sync-library" => {
+                let client = self.client.clone();
+                spawn("nori-sync", move || sync(&client));
+            }
+            "clear-stream" => {
+                self.store.clear_cache();
+                Tx.send(Msg::Note { text: "Cleared the streamed music".into(), error: false });
+            }
+            "clear-lyrics" => {
+                self.core.lyrics_cache_clear();
+                Tx.send(Msg::Note { text: "Cleared the lyrics found online".into(), error: false });
+            }
+            "clear-covers" => {
+                if let Some(d) = self.covers.disk() {
+                    d.clear();
+                }
+                Tx.send(Msg::Note { text: "Cleared the covers".into(), error: false });
+            }
+            _ => {}
+        }
     }
 
     /// What the engine said, followed where the core keeps track: plays counted and sent, the queue

@@ -41,6 +41,7 @@ const PLAYLISTS: i32 = 4;
 const SONGS: i32 = 5;
 const PAGE: i32 = 6;
 const LOGIN: i32 = 7;
+const SETTINGS: i32 = 8;
 
 thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
@@ -154,7 +155,11 @@ pub struct App {
     backdrop: Option<String>,
     tickets: VecDeque<(String, Ticket)>,
     tick: Timer,
+    tick_ms: u64,
     again: Timer,
+    /// The lyrics of the song heard, and their clock; when the next line is due.
+    lyrics: Option<crate::lyrics::SongLyrics>,
+    lyrics_due: Option<std::time::Instant>,
     note: Timer,
     search: Timer,
 }
@@ -186,7 +191,10 @@ pub fn start(ui: &AppWindow, data: PathBuf) {
         backdrop: None,
         tickets: VecDeque::new(),
         tick: Timer::default(),
+        tick_ms: 0,
         again: Timer::default(),
+        lyrics: None,
+        lyrics_due: None,
         note: Timer::default(),
         search: Timer::default(),
     };
@@ -229,7 +237,10 @@ fn wire(ui: &AppWindow) {
             })
         })
     });
-    ui.on_seek(|f| with(|a| a.seek(f)));
+    ui.on_seek(|f| {
+        with(|a| a.seek(f));
+        lyrics_after_seek();
+    });
     ui.on_set_volume(|v| {
         with(|a| {
             a.on_session(|s| s.set_volume(v));
@@ -270,7 +281,8 @@ fn wire(ui: &AppWindow) {
                 let at = (s.engine.status().position_now() + ms as i64).max(0);
                 s.engine.seek(at);
             })
-        })
+        });
+        lyrics_after_seek();
     });
     let weak = ui.as_weak();
     ui.on_drag_window(move || crate::glass::drag(&weak));
@@ -278,6 +290,28 @@ fn wire(ui: &AppWindow) {
     ui.on_zoom_window(move || crate::glass::zoom(&weak));
     ui.on_login(|| with(App::login));
     ui.on_cancel_login(|| with(|a| a.go(HOME)));
+    ui.on_setting_toggled(|name, on| with(|a| a.setting(&name, if on { "true" } else { "false" })));
+    ui.on_setting_chosen(|name, i| {
+        with(|a| {
+            if let Some(v) = crate::settings::option_value(&name, i.max(0) as usize) {
+                a.setting(&name, &v);
+            }
+        })
+    });
+    ui.on_setting_action(|name| {
+        with(|a| {
+            if name == "servers" {
+                a.go(LOGIN);
+            } else {
+                a.on_session(|s| s.action(&name));
+            }
+        })
+    });
+}
+
+/// A seek lands a moment later: the lyrics' clock is asked again once the engine is there.
+fn lyrics_after_seek() {
+    Timer::single_shot(Duration::from_millis(120), || with(|a| a.lyrics_step(true)));
 }
 
 impl App {
@@ -374,6 +408,10 @@ impl App {
             SONGS => {
                 self.songs.clear();
                 Some(Req::Songs { offset: 0 })
+            }
+            SETTINGS => {
+                self.settings_shown();
+                None
             }
             _ => None,
         };
@@ -529,10 +567,13 @@ impl App {
         }
     }
 
+    /// The page's picture. Only an artist's page wears its colours (as iOS 27's do); an album or a playlist
+    /// stays on the plain ground, as the Mac's Music keeps them.
     fn set_page_art(&self, art: Option<String>) {
         let art = art.unwrap_or_default();
-        self.ui().set_page_art(art.as_str().into());
-        let c = ART.with(|a| a.borrow().colours.get(&art).cloned());
+        let ui = self.ui();
+        ui.set_page_art(art.as_str().into());
+        let c = ART.with(|a| a.borrow().colours.get(&art).cloned()).filter(|_| ui.get_page_kind() == 1);
         self.page_colours(c.as_deref());
     }
 
@@ -662,6 +703,18 @@ impl App {
                     self.show_search(v);
                 }
             }
+            Msg::Lyrics { song, pick } => {
+                if self.heard.as_deref() == Some(song.as_str()) && self.lyrics.as_ref().is_none_or(|l| l.replaced_by(&pick)) {
+                    let at = self.session.as_ref().map_or(0, |s| s.engine.status().position_now());
+                    let l = crate::lyrics::SongLyrics::new(pick, at);
+                    let ui = self.ui();
+                    ui.set_lyrics_lines(l.lines());
+                    ui.set_lyrics_synced(l.synced());
+                    ui.set_lyrics_note(if l.is_empty() { "No lyrics for this song".into() } else { l.credit().into() });
+                    self.lyrics = Some(l);
+                    self.lyrics_step(true);
+                }
+            }
             Msg::Note { text, error } => self.say(&text, error),
             Msg::Reachable(Err(e)) => self.say(&e, true),
             Msg::Reachable(Ok(())) => {}
@@ -737,10 +790,42 @@ impl App {
             if ui.get_now_art() == id.as_str() {
                 self.now_colours(&id, c.as_deref());
             }
-            if ui.get_view() == PAGE && ui.get_page_art() == id.as_str() {
+            if ui.get_view() == PAGE && ui.get_page_kind() == 1 && ui.get_page_art() == id.as_str() {
                 self.page_colours(c.as_deref());
             }
         }
+    }
+
+    /// The lyrics' clock asked where the music is: the line lit, and when to look again.
+    fn lyrics_step(&mut self, force: bool) {
+        let Some(l) = &self.lyrics else { return };
+        let Some(s) = &self.session else { return };
+        let (at, playing) = s.engine.status_with(|st| (st.position_now(), st.state == State::Playing));
+        let (active, wait) = l.advance(at, force);
+        self.ui().set_lyrics_active(active);
+        self.lyrics_due = wait.filter(|_| playing).map(|ms| std::time::Instant::now() + Duration::from_millis(ms));
+    }
+
+    /// On the seek bar's clock: the next line, when it is due.
+    fn lyrics_due(&mut self) {
+        if self.lyrics_due.is_some_and(|t| t <= std::time::Instant::now()) {
+            self.lyrics_step(false);
+        }
+    }
+
+    /// The settings page drawn again from the settings as they are now.
+    fn settings_shown(&self) {
+        let ui = self.ui();
+        let prefs = settings_store::settings_current().unwrap_or_default();
+        ui.set_settings(crate::settings::rows(&prefs, &ui.get_server()));
+    }
+
+    fn setting(&mut self, name: &str, value: &str) {
+        let Some(s) = &self.session else { return };
+        if s.setting(name, value).is_none() {
+            self.say(&format!("{name}: not a setting"), true);
+        }
+        self.settings_shown();
     }
 
     /// What the window shows of the engine and the queue.
@@ -787,6 +872,14 @@ impl App {
                 let _ = self::art(art.as_str().into(), 1);
             }
             self.mark_playing();
+            self.lyrics = None;
+            let ui = self.ui();
+            ui.set_lyrics_lines(ModelRc::default());
+            ui.set_lyrics_active(-1);
+            ui.set_lyrics_note(if self.song.is_some() { "Looking for lyrics…".into() } else { "".into() });
+            if let (Some(s), Some(id)) = (&self.session, &self.heard) {
+                s.lyrics(id.clone());
+            }
         }
         // The queue, copied again only when it changed.
         let (rev, repeat, index) = nori_core::playlist::with(|p| (p.rev(), p.repeat(), p.current().map_or(-1, |c| c as i32)));
@@ -803,17 +896,30 @@ impl App {
             ui.set_queue(queue_rows(&v));
             self.queue = Some(v);
         }
-        // The seek bar's clock: running only while music plays.
-        if playing && !self.tick.running() {
+        // The seek bar's clock: running only while music plays, stepping as often as the widest bar moves a
+        // pixel (a long song seldom, a short one often), so the bar glides without redrawing every frame.
+        let step = pixel_ms(ui.get_duration_ms() as i64);
+        if playing && (!self.tick.running() || self.tick_ms != step) {
+            self.tick_ms = step;
             let weak = self.ui.clone();
-            self.tick.start(TimerMode::Repeated, Duration::from_millis(250), move || {
+            self.tick.start(TimerMode::Repeated, Duration::from_millis(step), move || {
                 let Some(ui) = weak.upgrade() else { return };
-                with(|a| a.on_session(|s| ui.set_position_ms(s.engine.status().position_now() as i32)));
+                with(|a| {
+                    a.on_session(|s| ui.set_position_ms(s.engine.status().position_now() as i32));
+                    a.lyrics_due();
+                });
             });
         } else if !playing {
             self.tick.stop();
         }
+        self.lyrics_step(true);
     }
+}
+
+/// How often the seek bar steps: once a pixel of the widest bar (Now Playing's, about 380 points on a
+/// 2x screen), at most once a frame and at least every quarter second.
+fn pixel_ms(duration_ms: i64) -> u64 {
+    (duration_ms.max(1) as u64 / 760).clamp(16, 250)
 }
 
 fn cards(it: impl Iterator<Item = Card>) -> ModelRc<Card> {
