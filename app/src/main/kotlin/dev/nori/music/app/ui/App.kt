@@ -177,6 +177,13 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
         val sheetScope = androidx.compose.runtime.rememberCoroutineScope()
         val sheet = remember { PlayerSheet(sheetScope) }
         sheet.plain = reduceMotion()
+        // Whether the player was open, kept with the rest of the saved state, so an app Android put back
+        // together (after it was stopped in the background) opens on the player it was left on.
+        var playerWasOpen by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+        LaunchedEffect(sheet) {
+            if (playerWasOpen) sheet.openAtOnce()
+            androidx.compose.runtime.snapshotFlow { sheet.isOpen }.collect { playerWasOpen = it }
+        }
         val nav = remember(controller) { Nav(controller, sheet) }
         val actions: ActionsViewModel = viewModel()
         val player: PlayerViewModel = viewModel()

@@ -36,7 +36,8 @@ fun NoriTheme(prefs: StoredPrefs, content: @Composable () -> Unit) {
         if (dark && prefs.amoled) base.black() else base
     }
     val systemDensity = androidx.compose.ui.platform.LocalDensity.current
-    val widthDp = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp
+    // The shorter side, not the width: the same in both orientations, so text keeps its size on a turn.
+    val widthDp = androidx.compose.ui.platform.LocalConfiguration.current.smallestScreenWidthDp
     val scale = remember(prefs.uiScale, widthDp) { uiScale(prefs.uiScale, widthDp) }
     // The whole app's density, scaled once here: dp and sp both follow it, so every size keeps its
     // proportion to the screen. The system's font scale is left as it is - that one is the reader's.
