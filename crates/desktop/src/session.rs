@@ -51,6 +51,8 @@ pub enum Msg {
     Search(SearchView),
     /// Lyrics for a song, and where they are from, as the core hands them over (`Client::lyrics_for`).
     Lyrics { song: String, pick: LyricsPick },
+    /// What the settings pages show besides the settings.
+    Facts(Box<crate::settings::Facts>),
     Note { text: String, error: bool },
     LoggedIn(Result<SavedServer, String>),
     Reachable(Result<(), String>),
@@ -228,6 +230,12 @@ fn save(core: &Core, engine: &Engine) {
 /// The client's own settings, kept beside the app's in the database.
 pub mod own {
     pub const VOLUME: &str = "desktop.volume";
+    /// The output device opened at start, by name; none or empty for the system's own.
+    pub const DEVICE: &str = "desktop.device";
+
+    pub fn text(key: &str) -> Option<String> {
+        nori_core::settings_store::app_value(key).filter(|v| !v.is_empty())
+    }
 
     pub fn number(key: &str, default: f32) -> f32 {
         nori_core::settings_store::app_value(key).and_then(|v| v.parse().ok()).unwrap_or(default)
@@ -265,6 +273,7 @@ pub struct Session {
     pub engine: Arc<Engine>,
     covers: Arc<Loader>,
     store: Arc<Store>,
+    audio: Arc<Audio>,
     pub volume: Volume,
     search: Arc<SearchSession>,
     mpris: Option<nori_mpris::Mpris>,
@@ -280,7 +289,10 @@ impl Session {
         client.set_profile(net(&profile));
         set_cover_transport(http.clone());
         let prefs = settings_store::settings_current().unwrap_or_default();
-        let output = CpalOutput::new();
+        let output = match own::text(own::DEVICE) {
+            Some(name) => CpalOutput::with_device(&name),
+            None => CpalOutput::new(),
+        };
         let volume = output.volume();
         volume.set(own::number(own::VOLUME, 1.0));
         nori_engine::core::set_output_volume_db(volume_db(volume.get()));
@@ -294,7 +306,7 @@ impl Session {
         let covers = Arc::new(Loader::new(CoverConfig::new(data.join("covers")), http));
         let mpris = nori_mpris::Mpris::start(&format!("nori.desktop{}", std::process::id()), Arc::new(Desktop { engine: engine.clone() })).ok();
         let keeper = Keeper::start(core.clone(), engine.clone());
-        let s = Session { core, client, engine, covers, store: store.clone(), volume, search: SearchSession::new(), mpris, keeper };
+        let s = Session { core, client, engine, covers, store: store.clone(), audio: audio.clone(), volume, search: SearchSession::new(), mpris, keeper };
         s.restore();
         if s.core.download_counts().pending > 0 {
             Downloader::new(s.core.clone(), s.client.clone(), audio, store).start(prefs.parallel_downloads.max(1) as usize);
@@ -499,6 +511,48 @@ impl Session {
         Some(change)
     }
 
+    /// The effect of an edit made in place (an equalizer band, a level), applied.
+    pub fn applied(&self, effect: u32) {
+        if let Some(p) = settings_store::settings_current() {
+            self.apply(effect, &p);
+        }
+    }
+
+    /// The engine trades its deep buffer for an instant response while the equalizer is being moved.
+    pub fn tuning(&self, on: bool) {
+        self.engine.set_tuning(on);
+    }
+
+    /// What the settings pages show besides the settings, worked out off the window's thread (the server's
+    /// music folders are asked for), and handed back.
+    pub fn facts(&self) {
+        let (core, client, store, covers) = (self.core.clone(), self.client.clone(), self.store.clone(), self.covers.clone());
+        spawn("nori-facts", move || {
+            let index = core.index_size().unwrap_or_default();
+            let downloads = core.downloads(true).unwrap_or_default();
+            let folders = match block_on(client.read_now(Read::MusicFolders)) {
+                Ok(Page::Folders { v }) => v.into_iter().map(|f| (f.name, f.id)).collect(),
+                _ => Vec::new(),
+            };
+            let database = std::fs::metadata(core_db()).map(|m| m.len()).unwrap_or(0);
+            let f = crate::settings::Facts {
+                analysed: core.analysis_count().unwrap_or(0),
+                indexed: (index.songs, index.albums, index.artists),
+                stream_bytes: store.cache_bytes(),
+                cover_bytes: covers.disk().map_or(0, |d| d.bytes()),
+                lyrics_bytes: core.lyrics_cache_bytes().max(0) as u64,
+                download_bytes: downloads.iter().map(|s| s.size).sum(),
+                download_songs: downloads.len() as u32,
+                database_bytes: database,
+                folders,
+                devices: CpalOutput::devices(),
+                device: own::text(own::DEVICE).unwrap_or_default(),
+                syncing: false,
+            };
+            Tx.send(Msg::Facts(Box::new(f)));
+        });
+    }
+
     fn apply(&self, effect: u32, prefs: &StoredPrefs) {
         if effect & (APPLY_AUDIO | SOUND | PLAYER) != 0 {
             self.engine.set_settings(settings(prefs));
@@ -517,6 +571,20 @@ impl Session {
             "sync-library" => {
                 let client = self.client.clone();
                 spawn("nori-sync", move || sync(&client));
+            }
+            "download-library" => {
+                match self.core.download_queue_library() {
+                    Ok(q) => Tx.send(Msg::Note { text: format!("Downloading {} songs", q.fresh.len() + q.again.len()), error: false }),
+                    Err(e) => Tx.send(Msg::Note { text: format!("Could not download the library: {e}"), error: true }),
+                }
+                let n = settings_store::with_prefs(|p| p.parallel_downloads).unwrap_or(2);
+                Downloader::new(self.core.clone(), self.client.clone(), self.audio.clone(), self.store.clone()).start(n.max(1) as usize);
+            }
+            "measure-again" => {
+                let n = self.core.analysis_clear().unwrap_or(0);
+                nori_core::automix::planner::analyses_changed();
+                self.engine.replan();
+                Tx.send(Msg::Note { text: format!("Forgot {n} measured songs"), error: false });
             }
             "clear-stream" => {
                 self.store.clear_cache();
@@ -791,4 +859,16 @@ fn monotonic_ms() -> i64 {
 fn derive(image: &Image) -> CoverColours {
     let px: Vec<u32> = image.pixels.chunks_exact(4).map(|p| u32::from_be_bytes([p[3], p[0], p[1], p[2]])).collect();
     nori_look::cover::derive(&px, image.width as usize, image.height as usize, true, false)
+}
+
+/// The database's file, for its size.
+fn core_db() -> std::path::PathBuf {
+    DB.lock().clone()
+}
+
+static DB: parking_lot::Mutex<std::path::PathBuf> = parking_lot::Mutex::new(std::path::PathBuf::new());
+
+/// Where the database is, as main opened it.
+pub fn set_db_path(p: &Path) {
+    *DB.lock() = p.to_path_buf();
 }

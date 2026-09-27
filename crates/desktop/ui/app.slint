@@ -30,17 +30,34 @@ export struct SongRow {
 
 // A row of the settings page: 0 a group's heading, 1 a switch, 2 a choice, 3 a button, 4 a fact. `first`
 // and `last` round the group's corners.
+// A row of the settings page: 0 a group's heading, 1 a switch, 2 a choice, 3 a button, 4 a fact, 5 a slider,
+// 6 a lyrics source in its ranked list, 7 a key typed in, 8 a server, 9 a note, 10 the accent's swatches,
+// 11 a page it opens, 12 a lone button. `first` and `last` round the group's corners.
 export struct SettingRow {
     kind: int,
     name: string,
     title: string,
     detail: string,
     on: bool,
+    enabled: bool,
     options: [string],
     chosen: int,
     button: string,
+    value: float,
+    min: float,
+    max: float,
+    centred: bool,
+    swatches: [color],
     first: bool,
     last: bool,
+}
+
+// A band of the equalizer page: its label, its gain, and what its value reads.
+export struct EqBandRow {
+    label: string,
+    gain: float,
+    value: string,
+    uses-gain: bool,
 }
 
 export struct Shelf {
@@ -1068,6 +1085,753 @@ component QueueView inherits Rectangle {
     }
 }
 
+// A switch in the Mac's own manner.
+component Toggle inherits Rectangle {
+    in property <bool> on;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+    width: 38px;
+    height: 22px;
+    border-radius: 11px;
+    background: root.on ? Theme.accent : #ffffff29;
+    opacity: root.enabled ? 1 : 0.4;
+    animate background { duration: 160ms; easing: ease-out; }
+    Rectangle {
+        x: root.on ? parent.width - self.width - 2px : 2px;
+        animate x { duration: 180ms; easing: cubic-bezier(0.3, 1.2, 0.6, 1); }
+        y: 2px;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        background: white;
+        drop-shadow-blur: 3px;
+        drop-shadow-color: #00000050;
+    }
+    TouchArea {
+        enabled: root.enabled;
+        clicked => { root.toggled(!root.on); }
+    }
+}
+
+// A menu of choices: the one chosen and a chevron; a click opens the list under it.
+component Chooser inherits Rectangle {
+    in property <[string]> options;
+    in property <int> chosen;
+    in property <bool> enabled: true;
+    callback picked(int);
+    width: max(140px, shown.preferred-width + 40px);
+    height: 26px;
+    border-radius: 7px;
+    background: ca.has-hover ? #ffffff24 : #ffffff17;
+    opacity: root.enabled ? 1 : 0.4;
+    shown := Text {
+        x: 10px;
+        text: root.chosen >= 0 && root.chosen < root.options.length ? root.options[root.chosen] : "—";
+        color: Theme.text;
+        font-size: 13px;
+    }
+    Icon {
+        x: parent.width - self.width - 8px;
+        path: Icons.down;
+        colour: Theme.dim;
+        weight: 2.2px;
+        width: 11px;
+        height: 11px;
+    }
+    ca := TouchArea {
+        enabled: root.enabled;
+        clicked => { menu.show(); }
+    }
+    menu := PopupWindow {
+        x: 0;
+        y: root.height + 4px;
+        width: max(root.width, 200px);
+        Rectangle {
+            border-radius: 8px;
+            background: #2c2a2cf5;
+            border-width: 1px;
+            border-color: #ffffff1a;
+            drop-shadow-blur: 16px;
+            drop-shadow-color: #00000080;
+            VerticalLayout {
+                padding: 4px;
+                for o[i] in root.options: Rectangle {
+                    height: 26px;
+                    border-radius: 5px;
+                    background: oa.has-hover ? Theme.accent : transparent;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        spacing: 6px;
+                        Text {
+                            width: 12px;
+                            text: i == root.chosen ? "✓" : "";
+                            color: Theme.text;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: o;
+                            color: Theme.text;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                        }
+                    }
+                    oa := TouchArea {
+                        clicked => { root.picked(i); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A small rounded button of the Mac's.
+component SmallButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    callback clicked;
+    height: 24px;
+    width: bl.preferred-width + 22px;
+    border-radius: 6px;
+    background: ba.pressed ? #ffffff36 : (ba.has-hover ? #ffffff2b : #ffffff1f);
+    opacity: root.enabled ? 1 : 0.4;
+    bl := Text {
+        text: root.text;
+        color: Theme.text;
+        font-size: 13px;
+    }
+    ba := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
+
+// One row of the settings page, of whichever kind.
+component SettingLine inherits VerticalLayout {
+    in property <SettingRow> item;
+    callback toggled(string, bool);
+    callback chosen(string, int);
+    callback action(string);
+    callback slid(string, float, bool);
+    callback typed(string, string);
+    callback moved(string, bool);
+    callback source(string, bool);
+    callback swatch(int);
+    if root.item.kind == 0: Text {
+        text: root.item.title;
+        color: Theme.text;
+        font-size: 13px;
+        font-weight: 700;
+        height: 44px;
+        vertical-alignment: bottom;
+    }
+    if root.item.kind == 0: Rectangle {
+        height: 8px;
+    }
+    if root.item.kind == 9: HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        padding-top: 6px;
+        padding-bottom: 6px;
+        Text {
+            text: root.item.title;
+            color: Theme.dim;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+    }
+    if root.item.kind != 0 && root.item.kind != 9: Rectangle {
+        background: #ffffff0c;
+        border-top-left-radius: root.item.first ? 10px : 0;
+        border-top-right-radius: root.item.first ? 10px : 0;
+        border-bottom-left-radius: root.item.last ? 10px : 0;
+        border-bottom-right-radius: root.item.last ? 10px : 0;
+        min-height: 44px;
+        if root.item.kind == 11 || root.item.kind == 12 || (root.item.kind == 8 && !root.item.on): TouchArea {
+            clicked => { root.action(root.item.kind == 8 ? "server:" + root.item.name : root.item.name); }
+        }
+        VerticalLayout {
+            padding-left: 14px;
+            padding-right: 12px;
+            padding-top: 8px;
+            padding-bottom: 8px;
+            spacing: 6px;
+            HorizontalLayout {
+                spacing: 12px;
+                if root.item.kind == 8: Icon {
+                    y: (parent.height - self.height) / 2;
+                    path: Icons.server;
+                    colour: root.item.on ? Theme.accent : Theme.dim;
+                    width: 18px;
+                    height: 18px;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: root.item.title;
+                        color: root.item.kind == 12 ? Theme.accent : Theme.text;
+                        opacity: root.item.enabled || root.item.kind == 4 ? 1 : 0.45;
+                        font-size: 13px;
+                        wrap: word-wrap;
+                    }
+                    if root.item.detail != "" && root.item.kind != 11: Text {
+                        text: root.item.detail;
+                        color: Theme.dim;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
+                }
+                if root.item.kind == 1: Toggle {
+                    y: (parent.height - self.height) / 2;
+                    on: root.item.on;
+                    enabled: root.item.enabled;
+                    toggled(v) => { root.toggled(root.item.name, v); }
+                }
+                if root.item.kind == 2: Chooser {
+                    y: (parent.height - self.height) / 2;
+                    options: root.item.options;
+                    chosen: root.item.chosen;
+                    enabled: root.item.enabled;
+                    picked(i) => { root.chosen(root.item.name, i); }
+                }
+                if root.item.kind == 3: SmallButton {
+                    y: (parent.height - self.height) / 2;
+                    text: root.item.button;
+                    enabled: root.item.enabled;
+                    clicked => { root.action(root.item.name); }
+                }
+                if root.item.kind == 6: HorizontalLayout {
+                    spacing: 4px;
+                    IconButton {
+                        y: (parent.height - self.height) / 2;
+                        path: "M6 14.5 L12 8.5 L18 14.5";
+                        quiet: true;
+                        size: 24px;
+                        icon: 14px;
+                        clicked => { root.moved(root.item.name, true); }
+                    }
+                    IconButton {
+                        y: (parent.height - self.height) / 2;
+                        path: Icons.down;
+                        quiet: true;
+                        size: 24px;
+                        icon: 14px;
+                        clicked => { root.moved(root.item.name, false); }
+                    }
+                    Toggle {
+                        y: (parent.height - self.height) / 2;
+                        on: root.item.on;
+                        toggled(v) => { root.source(root.item.name, v); }
+                    }
+                }
+                if root.item.kind == 8 && root.item.on: Text {
+                    text: "✓";
+                    color: Theme.accent;
+                    vertical-alignment: center;
+                }
+                if root.item.kind == 11: Text {
+                    text: root.item.detail;
+                    color: Theme.dim;
+                    vertical-alignment: center;
+                }
+                if root.item.kind == 11: Icon {
+                    y: (parent.height - self.height) / 2;
+                    path: Icons.chevron;
+                    colour: Theme.dim;
+                    weight: 2.2px;
+                    width: 12px;
+                    height: 12px;
+                }
+                if root.item.kind == 10: HorizontalLayout {
+                    spacing: 8px;
+                    for c[i] in root.item.swatches: Rectangle {
+                        y: (parent.height - self.height) / 2;
+                        width: 20px;
+                        height: 20px;
+                        border-radius: 10px;
+                        background: c;
+                        border-width: i == root.item.chosen ? 2px : 0;
+                        border-color: white;
+                        TouchArea {
+                            clicked => { root.swatch(i); }
+                        }
+                    }
+                }
+            }
+            if root.item.kind == 5: Bar {
+                thin: 4px;
+                thick: 6px;
+                fill: Theme.accent;
+                value: (root.item.value - root.item.min) / max(0.0001, root.item.max - root.item.min);
+                moved(v) => { root.slid(root.item.name, root.item.min + v * (root.item.max - root.item.min), false); }
+                done(v) => { root.slid(root.item.name, root.item.min + v * (root.item.max - root.item.min), true); }
+            }
+            if root.item.kind == 7: Field {
+                height: 28px;
+                secret: true;
+                placeholder: "Not set";
+                text: root.item.button;
+                accepted => { root.typed(root.item.name, self.text); }
+            }
+        }
+        if !root.item.last: Rectangle {
+            x: 14px;
+            y: parent.height - 1px;
+            width: parent.width - 14px;
+            height: 1px;
+            background: Theme.hairline;
+        }
+    }
+}
+
+// A vertical slider, as a graphic equalizer's band: dragged up and down, filled from 0 dB to its level.
+component BandSlider inherits Rectangle {
+    in property <float> value;
+    in property <float> lo: -12;
+    in property <float> hi: 12;
+    in property <bool> enabled: true;
+    callback moved(float, bool);
+    property <float> held: -100;
+    property <float> shown: root.held > -99 ? root.held : root.value;
+    property <length> track: root.height - 14px;
+    property <length> knob: (1 - (root.shown - root.lo) / (root.hi - root.lo)) * root.track;
+    property <length> zero: (1 - (0 - root.lo) / (root.hi - root.lo)) * root.track;
+    width: 22px;
+    opacity: root.enabled ? 1 : 0.45;
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: 7px;
+        height: root.track;
+        width: 4px;
+        border-radius: 2px;
+        background: #ffffff22;
+    }
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: min(root.knob, root.zero) + 7px;
+        width: 4px;
+        height: abs(root.knob - root.zero);
+        background: Theme.accent;
+    }
+    Rectangle {
+        y: root.knob;
+        width: parent.width;
+        height: 14px;
+        border-radius: 7px;
+        background: white;
+        drop-shadow-blur: 4px;
+        drop-shadow-color: #00000070;
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        pointer-event(e) => {
+            if e.button == PointerEventButton.left && e.kind == PointerEventKind.down {
+                root.held = round(max(root.lo, min(root.hi, root.hi - (self.mouse-y - 7px) / root.track * (root.hi - root.lo))) * 2) / 2;
+                root.moved(root.held, false);
+            }
+            if e.button == PointerEventButton.left && e.kind == PointerEventKind.up && root.held > -99 {
+                root.moved(root.held, true);
+                root.held = -100;
+            }
+        }
+        moved => {
+            if self.pressed {
+                root.held = round(max(root.lo, min(root.hi, root.hi - (self.mouse-y - 7px) / root.track * (root.hi - root.lo))) * 2) / 2;
+                root.moved(root.held, false);
+            }
+        }
+    }
+}
+
+// A row with a label, a horizontal slider and its value.
+component LevelRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> shown;
+    in property <float> value;
+    in property <float> lo;
+    in property <float> hi;
+    in property <bool> enabled: true;
+    callback moved(float, bool);
+    spacing: 12px;
+    height: 32px;
+    if root.label != "": Text {
+        width: 80px;
+        text: root.label;
+        color: Theme.text;
+        vertical-alignment: center;
+    }
+    Bar {
+        y: (parent.height - self.height) / 2;
+        horizontal-stretch: 1;
+        thin: 4px;
+        thick: 6px;
+        fill: Theme.accent;
+        opacity: root.enabled ? 1 : 0.45;
+        value: (root.value - root.lo) / max(0.0001, root.hi - root.lo);
+        moved(v) => { root.moved(root.lo + v * (root.hi - root.lo), false); }
+        done(v) => { root.moved(root.lo + v * (root.hi - root.lo), true); }
+    }
+    if root.shown != "": Text {
+        width: 72px;
+        text: root.shown;
+        color: Theme.dim;
+        font-size: 12px;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+}
+
+component Chip inherits Rectangle {
+    in property <string> text;
+    in property <bool> lit;
+    callback clicked;
+    height: 28px;
+    width: cl.preferred-width + 24px;
+    border-radius: 14px;
+    background: root.lit ? Theme.accent : (ch.has-hover ? #ffffff26 : #ffffff17);
+    animate background { duration: 150ms; easing: ease-out; }
+    cl := Text {
+        text: root.text;
+        color: root.lit ? white : Theme.text;
+        font-size: 13px;
+    }
+    ch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component EqSection inherits Text {
+    color: Theme.text;
+    font-size: 15px;
+    font-weight: 700;
+    height: 40px;
+    vertical-alignment: bottom;
+}
+
+// A switch with its title and a line under it.
+component ToggleLine inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> detail;
+    in property <bool> on;
+    callback toggled(bool);
+    spacing: 12px;
+    VerticalLayout {
+        horizontal-stretch: 1;
+        alignment: center;
+        Text {
+            text: root.title;
+            color: Theme.text;
+        }
+        if root.detail != "": Text {
+            text: root.detail;
+            color: Theme.dim;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+    }
+    Toggle {
+        y: (parent.height - self.height) / 2;
+        on: root.on;
+        toggled(v) => { root.toggled(v); }
+    }
+}
+
+component EqualizerPage inherits Flickable {
+    in property <bool> on;
+    in property <bool> graphic;
+    in property <int> count;
+    in property <[EqBandRow]> bands;
+    in property <string> curve;
+    in property <[string]> presets;
+    in property <bool> auto-preamp;
+    in property <float> preamp;
+    in property <string> preamp-label;
+    in property <float> balance;
+    in property <string> balance-label;
+    in property <bool> mono;
+    in property <bool> limiter;
+    in property <float> ceiling;
+    in property <string> ceiling-label;
+    in property <string> crossfeed-preset;
+    in property <float> crossfeed;
+    in property <string> crossfeed-label;
+    in property <float> cut;
+    in property <string> cut-label;
+    in property <string> bypass;
+    in property <[float]> ranges;
+    callback back;
+    callback set(string, string);
+    callback level(string, float, bool);
+    callback gain(int, float, bool);
+    callback tool(string, int);
+    callback sized(length, length);
+    content-height: page.preferred-height;
+    page := VerticalLayout {
+        width: parent.width;
+        padding-left: 32px;
+        padding-right: 32px;
+        padding-top: 52px;
+        padding-bottom: 110px;
+        spacing: 10px;
+        HorizontalLayout {
+            spacing: 10px;
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                path: "M15 5.5 L8.5 12 L15 18.5";
+                size: 30px;
+                icon: 16px;
+                clicked => { root.back(); }
+            }
+            Text {
+                text: "Equalizer";
+                color: Theme.text;
+                font-size: 30px;
+                font-weight: 700;
+                horizontal-stretch: 1;
+            }
+            Toggle {
+                y: (parent.height - self.height) / 2;
+                on: root.on;
+                toggled(v) => { root.set("eq", v ? "true" : "false"); }
+            }
+        }
+        if root.bypass != "": Rectangle {
+            border-radius: 10px;
+            background: #ff453a33;
+            height: bt.preferred-height + 20px;
+            bt := Text {
+                x: 12px;
+                width: parent.width - 24px;
+                text: root.bypass;
+                color: Theme.text;
+                wrap: word-wrap;
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            Chip {
+                text: "Graphic";
+                lit: root.graphic;
+                clicked => { root.set("eqMode", "GRAPHIC"); }
+            }
+            Chip {
+                text: "Parametric";
+                lit: !root.graphic;
+                clicked => { root.set("eqMode", "PARAMETRIC"); }
+            }
+            Rectangle {
+                width: 16px;
+            }
+            if root.graphic: HorizontalLayout {
+                spacing: 8px;
+                for n in [5, 10, 15, 31]: Chip {
+                    text: n + " bands";
+                    lit: root.count == n;
+                    clicked => { root.set("eqLayout", n); }
+                }
+            }
+        }
+        Text {
+            text: root.graphic ? "Each slider is the level at its frequency. Neighbouring bands are corrected for each other, so the sound follows the sliders." : "Each band is a filter of its own: drag its level, or add another.";
+            color: Theme.dim;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+        // The curve the graphic equalizer plays, and a vertical slider per band under it.
+        if root.graphic: Rectangle {
+            height: 96px;
+            border-radius: 10px;
+            background: #ffffff08;
+            Rectangle {
+                y: parent.height / 2;
+                height: 1px;
+                background: Theme.hairline;
+            }
+            // Drawn by the core at this box's own size, so the curve fills it (a path keeps its box's shape).
+            changed width => { root.sized(self.width - 24px, self.height); }
+            init => { root.sized(self.width - 24px, self.height); }
+            Path {
+                x: 12px;
+                width: parent.width - 24px;
+                height: parent.height;
+                viewbox-width: self.width / 1px;
+                viewbox-height: self.height / 1px;
+                commands: root.curve;
+                stroke: root.on ? Theme.accent : Theme.dim;
+                stroke-width: 2px;
+                stroke-line-cap: round;
+                stroke-line-join: round;
+                fill: transparent;
+            }
+        }
+        if root.graphic: HorizontalLayout {
+            height: 220px;
+            alignment: space-between;
+            for b[i] in root.bands: VerticalLayout {
+                spacing: 6px;
+                Text {
+                    text: b.value;
+                    color: Theme.dim;
+                    font-size: 10px;
+                    horizontal-alignment: center;
+                }
+                HorizontalLayout {
+                    vertical-stretch: 1;
+                    alignment: center;
+                    BandSlider {
+                        value: b.gain;
+                        lo: root.ranges.length > 1 ? root.ranges[0] : -12;
+                        hi: root.ranges.length > 1 ? root.ranges[1] : 12;
+                        enabled: root.on;
+                        moved(v, last) => { root.gain(i, v, last); }
+                    }
+                }
+                Text {
+                    text: b.label;
+                    color: Theme.dim;
+                    font-size: 10px;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+        if !root.graphic: VerticalLayout {
+            spacing: 2px;
+            for b[i] in root.bands: HorizontalLayout {
+                spacing: 8px;
+                if b.uses-gain: LevelRow {
+                    horizontal-stretch: 1;
+                    label: b.label;
+                    shown: b.value + " dB";
+                    value: b.gain;
+                    lo: root.ranges.length > 1 ? root.ranges[0] : -12;
+                    hi: root.ranges.length > 1 ? root.ranges[1] : 12;
+                    enabled: root.on;
+                    moved(v, last) => { root.gain(i, v, last); }
+                }
+                if !b.uses-gain: Text {
+                    horizontal-stretch: 1;
+                    text: b.label + "   " + b.value;
+                    color: Theme.text;
+                    height: 32px;
+                    vertical-alignment: center;
+                }
+                IconButton {
+                    y: (parent.height - self.height) / 2;
+                    path: Icons.close;
+                    quiet: true;
+                    size: 26px;
+                    icon: 12px;
+                    clicked => { root.tool("remove-band", i); }
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            if !root.graphic: Chip {
+                text: "Add band";
+                clicked => { root.tool("add-band", 0); }
+            }
+            Chip {
+                text: "Reset";
+                clicked => { root.tool("reset", 0); }
+            }
+        }
+        EqSection {
+            text: "Presets";
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            for pr[i] in root.presets: Chip {
+                text: pr;
+                clicked => { root.tool("preset", i); }
+            }
+        }
+        ToggleLine {
+            padding-top: 12px;
+            title: root.preamp-label;
+            detail: "Automatic pulls the level down by the largest boost so the curve cannot clip";
+            on: root.auto-preamp;
+            toggled(v) => { root.tool(v ? "auto-preamp" : "manual-preamp", 0); }
+        }
+        if !root.auto-preamp: LevelRow {
+            value: root.preamp;
+            lo: root.ranges.length > 3 ? root.ranges[2] : -20;
+            hi: root.ranges.length > 3 ? root.ranges[3] : 6;
+            enabled: root.on;
+            moved(v, last) => { root.level("eqPreamp", v, last); }
+        }
+        EqSection {
+            text: "Output";
+        }
+        LevelRow {
+            label: "Balance";
+            shown: root.balance-label;
+            value: root.balance;
+            lo: -1;
+            hi: 1;
+            moved(v, last) => { root.level("balance", v, last); }
+        }
+        ToggleLine {
+            title: "Mono";
+            detail: "Both channels summed, for one-earbud listening";
+            on: root.mono;
+            toggled(v) => { root.set("mono", v ? "true" : "false"); }
+        }
+        ToggleLine {
+            title: "Limiter";
+            detail: "Catches what a boost or a positive ReplayGain would clip. Adds 5 ms of delay; below the ceiling the audio passes through untouched.";
+            on: root.limiter;
+            toggled(v) => { root.set("limiter", v ? "true" : "false"); }
+        }
+        if root.limiter: LevelRow {
+            label: "Ceiling";
+            shown: root.ceiling-label;
+            value: root.ceiling;
+            lo: root.ranges.length > 7 ? root.ranges[6] : -12;
+            hi: root.ranges.length > 7 ? root.ranges[7] : 0;
+            moved(v, last) => { root.level("limiter", v, last); }
+        }
+        EqSection {
+            text: "Crossfeed";
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            for c in [{ v: "OFF", t: "Off" }, { v: "DEFAULT", t: "Default" }, { v: "CHU_MOY", t: "Chu Moy" }, { v: "JAN_MEIER", t: "Jan Meier" }]: Chip {
+                text: c.t;
+                lit: root.crossfeed-preset == c.v;
+                clicked => { root.set("crossfeedPreset", c.v); }
+            }
+        }
+        Text {
+            text: root.crossfeed-label;
+            color: Theme.dim;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+        LevelRow {
+            value: root.crossfeed;
+            lo: root.ranges.length > 9 ? root.ranges[8] : 0;
+            hi: root.ranges.length > 9 ? root.ranges[9] : 12;
+            moved(v, last) => { root.level("crossfeed", v, last); }
+        }
+        if root.crossfeed > 0: Text {
+            text: root.cut-label;
+            color: Theme.dim;
+            font-size: 12px;
+        }
+        if root.crossfeed > 0: LevelRow {
+            value: root.cut;
+            lo: root.ranges.length > 11 ? root.ranges[10] : 300;
+            hi: root.ranges.length > 11 ? root.ranges[11] : 2000;
+            moved(v, last) => { root.level("crossfeedCut", v, last); }
+        }
+    }
+}
+
 // Where the window is dragged from, and double-clicked to zoom: the content runs up under the titlebar.
 component TitleStrip inherits TouchArea {
     callback drag;
@@ -1182,7 +1946,7 @@ component SidebarContent inherits Rectangle {
         SideItem {
             text: "Settings";
             icon: Icons.gear;
-            chosen: root.view == 8;
+            chosen: root.view == 8 || root.view == 9;
             clicked => { root.go(8); }
         }
         SideItem {
@@ -1306,6 +2070,40 @@ export component AppWindow inherits Window {
     in property <bool> lyrics-synced;
     in property <string> lyrics-note;
     in property <[SettingRow]> settings;
+    // The equalizer page (view 9), from the settings.
+    in property <bool> eq-on;
+    in property <bool> eq-graphic;
+    in property <int> eq-count;
+    in property <[EqBandRow]> eq-bands;
+    in property <string> eq-curve;
+    in property <[string]> eq-presets;
+    in property <bool> eq-auto-preamp;
+    in property <float> eq-preamp;
+    in property <string> eq-preamp-label;
+    in property <float> eq-balance;
+    in property <string> eq-balance-label;
+    in property <bool> eq-mono;
+    in property <bool> eq-limiter;
+    in property <float> eq-ceiling;
+    in property <string> eq-ceiling-label;
+    in property <string> eq-crossfeed-preset;
+    in property <float> eq-crossfeed;
+    in property <string> eq-crossfeed-label;
+    in property <float> eq-cut;
+    in property <string> eq-cut-label;
+    in property <string> eq-bypass;
+    in property <[float]> eq-ranges;
+    callback setting-slid(string, float, bool);
+    callback setting-typed(string, string);
+    callback source-moved(string, bool);
+    callback accent-chosen(int);
+    callback eq-set(string, string);
+    callback eq-gain(int, float, bool);
+    callback eq-tool(string, int);
+    callback eq-sized(length, length);
+    // The curve's box, points.
+    in-out property <length> eq-curve-w: 800px;
+    in-out property <length> eq-curve-h: 96px;
     // What the queue panel says: where the songs come from, and whether AutoPlay and AutoMix are on.
     in property <string> queue-from;
     in property <bool> autoplay;
@@ -1896,8 +2694,8 @@ export component AppWindow inherits Window {
                                         padding-top: 3px;
                                         padding-bottom: 3px;
                                         spacing: 2px;
-                                        for t[i] in ["General", "Playback", "Sound", "Storage"]: Rectangle {
-                                            width: label.preferred-width + 32px;
+                                        for t[i] in ["General", "Playback", "Sound", "Lyrics", "Library", "Storage", "Accounts"]: Rectangle {
+                                            width: label.preferred-width + 26px;
                                             border-radius: 12px;
                                             background: root.settings-tab == i ? #ffffff26 : (ta.has-hover ? Theme.hover : transparent);
                                             animate background { duration: 160ms; easing: ease-out; }
@@ -1919,82 +2717,56 @@ export component AppWindow inherits Window {
                                 padding-right: 32px;
                                 alignment: center;
                                 VerticalLayout {
-                                    width: min(560px, parent.width - 64px);
-                                    for r in root.settings: VerticalLayout {
-                                        if r.kind == 0: Text {
-                                            text: r.title;
-                                            color: Theme.text;
-                                            font-size: 13px;
-                                            font-weight: 700;
-                                            height: 44px;
-                                            vertical-alignment: bottom;
-                                        }
-                                        if r.kind == 0: Rectangle {
-                                            height: 8px;
-                                        }
-                                        if r.kind != 0: Rectangle {
-                                            background: #ffffff0c;
-                                            border-top-left-radius: r.first ? 10px : 0;
-                                            border-top-right-radius: r.first ? 10px : 0;
-                                            border-bottom-left-radius: r.last ? 10px : 0;
-                                            border-bottom-right-radius: r.last ? 10px : 0;
-                                            min-height: 44px;
-                                            HorizontalLayout {
-                                                padding-left: 14px;
-                                                padding-right: 12px;
-                                                padding-top: 8px;
-                                                padding-bottom: 8px;
-                                                spacing: 12px;
-                                                VerticalLayout {
-                                                    alignment: center;
-                                                    horizontal-stretch: 1;
-                                                    Text {
-                                                        text: r.title;
-                                                        color: Theme.text;
-                                                        font-size: 13px;
-                                                    }
-                                                    if r.detail != "" && r.kind != 4: Text {
-                                                        text: r.detail;
-                                                        color: Theme.dim;
-                                                        font-size: 11px;
-                                                        wrap: word-wrap;
-                                                    }
-                                                }
-                                                if r.kind == 1: Switch {
-                                                    y: (parent.height - self.height) / 2;
-                                                    checked: r.on;
-                                                    toggled => { root.setting-toggled(r.name, self.checked); }
-                                                }
-                                                if r.kind == 2: ComboBox {
-                                                    y: (parent.height - self.height) / 2;
-                                                    width: 190px;
-                                                    model: r.options;
-                                                    current-index: r.chosen;
-                                                    selected => { root.setting-chosen(r.name, self.current-index); }
-                                                }
-                                                if r.kind == 3: Button {
-                                                    y: (parent.height - self.height) / 2;
-                                                    text: r.button;
-                                                    clicked => { root.setting-action(r.name); }
-                                                }
-                                                if r.kind == 4: Text {
-                                                    text: r.detail;
-                                                    color: Theme.dim;
-                                                    vertical-alignment: center;
-                                                }
-                                            }
-                                            if !r.last: Rectangle {
-                                                x: 14px;
-                                                y: parent.height - 1px;
-                                                width: parent.width - 14px;
-                                                height: 1px;
-                                                background: Theme.hairline;
-                                            }
-                                        }
+                                    width: min(600px, parent.width - 64px);
+                                    for r in root.settings: SettingLine {
+                                        item: r;
+                                        toggled(name, on) => { root.setting-toggled(name, on); }
+                                        chosen(name, i) => { root.setting-chosen(name, i); }
+                                        action(name) => { root.setting-action(name); }
+                                        slid(name, v, last) => { root.setting-slid(name, v, last); }
+                                        typed(name, text) => { root.setting-typed(name, text); }
+                                        moved(id, up) => { root.source-moved(id, up); }
+                                        source(id, on) => { root.setting-toggled("lyricsService:" + id, on); }
+                                        swatch(i) => { root.accent-chosen(i); }
                                     }
                                 }
                             }
                         }
+                    }
+                }
+
+                // The equalizer, as the Android app's: the switch, graphic or parametric, the bands, the presets,
+                // the pre-amp, then the output and the crossfeed.
+                if root.view == 9: Fade {
+                    EqualizerPage {
+                        on: root.eq-on;
+                        graphic: root.eq-graphic;
+                        count: root.eq-count;
+                        bands: root.eq-bands;
+                        curve: root.eq-curve;
+                        presets: root.eq-presets;
+                        auto-preamp: root.eq-auto-preamp;
+                        preamp: root.eq-preamp;
+                        preamp-label: root.eq-preamp-label;
+                        balance: root.eq-balance;
+                        balance-label: root.eq-balance-label;
+                        mono: root.eq-mono;
+                        limiter: root.eq-limiter;
+                        ceiling: root.eq-ceiling;
+                        ceiling-label: root.eq-ceiling-label;
+                        crossfeed-preset: root.eq-crossfeed-preset;
+                        crossfeed: root.eq-crossfeed;
+                        crossfeed-label: root.eq-crossfeed-label;
+                        cut: root.eq-cut;
+                        cut-label: root.eq-cut-label;
+                        bypass: root.eq-bypass;
+                        ranges: root.eq-ranges;
+                        back => { root.go(8); }
+                        set(name, value) => { root.eq-set(name, value); }
+                        level(name, v, last) => { root.setting-slid(name, v, last); }
+                        gain(i, v, last) => { root.eq-gain(i, v, last); }
+                        tool(name, i) => { root.eq-tool(name, i); }
+                        sized(w, h) => { root.eq-sized(w, h); }
                     }
                 }
 

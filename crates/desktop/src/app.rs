@@ -44,6 +44,7 @@ const SONGS: i32 = 5;
 const PAGE: i32 = 6;
 const LOGIN: i32 = 7;
 const SETTINGS: i32 = 8;
+const EQUALIZER: i32 = 9;
 
 thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
@@ -164,6 +165,10 @@ pub struct App {
     tickets: VecDeque<(String, Ticket)>,
     tick: Timer,
     tick_ms: u64,
+    /// What the settings pages show besides the settings, as last worked out.
+    facts: crate::settings::Facts,
+    /// The engine has its shallow buffer for the equalizer.
+    tuning: bool,
     again: Timer,
     /// The lyrics of the song heard, and their clock; when the next line is due.
     lyrics: Option<crate::lyrics::SongLyrics>,
@@ -286,6 +291,8 @@ pub fn start(ui: &AppWindow, data: PathBuf) {
         tickets: VecDeque::new(),
         tick: Timer::default(),
         tick_ms: 0,
+        facts: crate::settings::Facts::default(),
+        tuning: false,
         again: Timer::default(),
         lyrics: None,
         lyrics_due: None,
@@ -459,17 +466,44 @@ fn wire(ui: &AppWindow) {
     ui.on_setting_toggled(|name, on| with(|a| a.setting(&name, if on { "true" } else { "false" })));
     ui.on_setting_chosen(|name, i| {
         with(|a| {
-            if let Some(v) = crate::settings::option_value(&name, i.max(0) as usize) {
+            let Some(v) = crate::settings::option_value(&name, i.max(0) as usize, &a.facts) else { return };
+            if name == "!device" {
+                // Opened at the next start, as the output is opened with the engine.
+                session::own::keep(session::own::DEVICE, v.clone());
+                a.facts.device = v;
+                a.say("The new output is used from the next start", false);
+                a.settings_shown();
+            } else {
                 a.setting(&name, &v);
             }
         })
     });
-    ui.on_setting_action(|name| {
+    ui.on_setting_action(|name| with(|a| a.setting_action(&name)));
+    ui.on_setting_slid(|name, v, last| with(|a| a.slid(&name, v, last)));
+    ui.on_setting_typed(|name, text| with(|a| a.setting(&name, &text)));
+    ui.on_source_moved(|id, up| with(|a| a.source_moved(&id, up)));
+    ui.on_accent_chosen(|i| {
         with(|a| {
-            if name == "servers" {
-                a.go(LOGIN);
-            } else {
-                a.on_session(|s| s.action(&name));
+            if let Some(v) = crate::settings::option_value("accent", i.max(0) as usize, &a.facts) {
+                a.setting("accent", &v);
+            }
+        })
+    });
+    ui.on_eq_set(|name, value| {
+        with(|a| {
+            a.setting(&name, &value);
+            a.tune();
+        })
+    });
+    ui.on_eq_gain(|i, v, last| with(|a| a.eq_gain(i.max(0) as usize, v, last)));
+    ui.on_eq_tool(|name, i| with(|a| a.eq_tool(&name, i.max(0) as usize)));
+    ui.on_eq_sized(|w, h| {
+        with(|a| {
+            let ui = a.ui();
+            ui.set_eq_curve_w(w);
+            ui.set_eq_curve_h(h);
+            if let Some(p) = settings_store::settings_current() {
+                crate::eq::curve_only(&ui, &p);
             }
         })
     });
@@ -556,6 +590,10 @@ impl App {
     // ---- pages ----
 
     fn go(&mut self, view: i32) {
+        if self.tuning && view != EQUALIZER {
+            self.tuning = false;
+            self.on_session(|s| s.tuning(false));
+        }
         let ui = self.ui();
         ui.set_failed("".into());
         ui.set_loading(false);
@@ -576,6 +614,11 @@ impl App {
                 Some(Req::Songs { offset: 0 })
             }
             SETTINGS => {
+                self.settings_shown();
+                self.on_session(|s| s.facts());
+                None
+            }
+            EQUALIZER => {
                 self.settings_shown();
                 None
             }
@@ -886,6 +929,10 @@ impl App {
                     self.lyrics_step(true);
                 }
             }
+            Msg::Facts(f) => {
+                self.facts = *f;
+                self.settings_shown();
+            }
             Msg::Note { text, error } => self.say(&text, error),
             Msg::Reachable(Err(e)) => self.say(&e, true),
             Msg::Reachable(Ok(())) => {}
@@ -1034,7 +1081,14 @@ impl App {
         let prefs = settings_store::settings_current().unwrap_or_default();
         ui.set_autoplay(prefs.auto_fill);
         ui.set_automix(prefs.auto_mix);
-        ui.set_settings(crate::settings::rows(&prefs, &ui.get_server(), ui.get_settings_tab()));
+        ui.global::<crate::Theme>().set_accent(slint::Color::from_argb_encoded(crate::settings::accent_shown(prefs.accent as u32)));
+        let view = ui.get_view();
+        if view == SETTINGS {
+            ui.set_settings(crate::settings::rows(&prefs, &self.facts, ui.get_settings_tab()));
+        }
+        if view == EQUALIZER {
+            crate::eq::fill(&ui, &prefs);
+        }
     }
 
     fn setting(&mut self, name: &str, value: &str) {
@@ -1043,6 +1097,97 @@ impl App {
             self.say(&format!("{name}: not a setting"), true);
         }
         self.settings_shown();
+    }
+
+    /// An equalizer edit made: while the page is open, the engine answers at once (its shallow buffer).
+    fn tune(&mut self) {
+        if !self.tuning && self.ui().get_view() == EQUALIZER {
+            self.tuning = true;
+            self.on_session(|s| s.tuning(true));
+        }
+    }
+
+    /// A slider moved: a level edited in place; the page drawn again once it is let go.
+    fn slid(&mut self, name: &str, v: f32, last: bool) {
+        let Some(level) = crate::settings::level_of(name) else { return };
+        if let Some((effect, _)) = settings_store::edit_level(level, v) {
+            self.on_session(|s| s.applied(effect));
+            self.tune();
+        }
+        if last {
+            self.settings_shown();
+        }
+    }
+
+    /// A band of the equalizer moved: its curve follows at once, the page once it is let go.
+    fn eq_gain(&mut self, i: usize, v: f32, last: bool) {
+        let Some(p) = settings_store::settings_current() else { return };
+        let effect = if p.eq_mode == nori_core::settings::EqMode::Graphic {
+            settings_store::edit_graphic(i as u32, v).map(|e| e.0)
+        } else {
+            p.eq_bands.get(i).and_then(|b| settings_store::edit_band(i as u32, nori_core::settings::SoundBand { gain_db: v, ..*b }).map(|e| e.0))
+        };
+        if let Some(effect) = effect {
+            self.on_session(|s| s.applied(effect));
+            self.tune();
+        }
+        if last {
+            self.settings_shown();
+        } else if let Some(p) = settings_store::settings_current() {
+            crate::eq::curve_only(&self.ui(), &p);
+        }
+    }
+
+    fn eq_tool(&mut self, name: &str, i: usize) {
+        use nori_core::settings_store::SoundTool;
+        let tool = match name {
+            "preset" => nori_core::dsp::eq_presets().get(i).cloned().map(|preset| SoundTool::Preset { preset }),
+            "auto-preamp" => Some(SoundTool::AutoPreamp { automatic: true }),
+            "manual-preamp" => Some(SoundTool::AutoPreamp { automatic: false }),
+            "add-band" => Some(SoundTool::AddBand),
+            "remove-band" => Some(SoundTool::RemoveBand { index: i as u32 }),
+            "reset" => Some(SoundTool::ResetBands),
+            _ => None,
+        };
+        let Some(tool) = tool else { return };
+        match settings_store::settings_sound_tool(tool) {
+            Ok(Some(change)) => {
+                self.on_session(|s| s.applied(change.effect));
+                self.tune();
+            }
+            Ok(None) => {}
+            Err(e) => self.say(&format!("{e:?}"), true),
+        }
+        self.settings_shown();
+    }
+
+    /// A lyrics source moved a place up or down its list.
+    fn source_moved(&mut self, id: &str, up: bool) {
+        let Some(p) = settings_store::settings_current() else { return };
+        let s = nori_core::settings_model::state(&p, nori_core::settings_model::Output::default());
+        let Some(at) = s.lyrics_sources.iter().position(|x| x.id == id) else { return };
+        let to = if up { at.saturating_sub(1) } else { (at + 1).min(s.lyrics_sources.len() - 1) };
+        if to != at {
+            self.setting("lyricsPlace", &format!("{id}:{to}"));
+        }
+    }
+
+    fn setting_action(&mut self, name: &str) {
+        if name == "equalizer" {
+            self.go(EQUALIZER);
+        } else if name == "add-server" {
+            self.go(LOGIN);
+        } else if let Some(id) = name.strip_prefix("server:") {
+            let mut prefs = settings_store::settings_current().unwrap_or_default();
+            let Some(p) = prefs.servers.iter().find(|s| s.id == id).cloned() else { return };
+            prefs.active_server_id = id.to_string();
+            settings_store::settings_put(prefs);
+            self.open(p);
+        } else {
+            self.on_session(|s| s.action(name));
+            // What was cleared or measured shows as it is now.
+            self.on_session(|s| s.facts());
+        }
     }
 
     /// What the window shows of the engine and the queue.
