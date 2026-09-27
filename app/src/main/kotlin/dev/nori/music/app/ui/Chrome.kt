@@ -187,13 +187,16 @@ fun TabRail(route: String?, tabs: List<Tab>, onTab: (String) -> Unit, look: Look
     val rest = tabs.filter { it.route != "search" }
     val sheet = LocalPlayerSheet.current
     val density = androidx.compose.ui.platform.LocalDensity.current
+    // How far from the screen's left edge the rail reaches, in pixels: what it slides by.
+    var reach by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
     Column(
         Modifier
             .windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.safeDrawing.only(androidx.compose.foundation.layout.WindowInsetsSides.Start + androidx.compose.foundation.layout.WindowInsetsSides.Vertical))
-            .onGloballyPositioned { onWidth(with(density) { (it.boundsInRoot().right).toDp() }) }
+            .onGloballyPositioned { reach = it.boundsInRoot().right; onWidth(with(density) { reach.toDp() }) }
             .graphicsLayer {
+                // All the way off the edge: past the cutout's inset too, which is not part of this layer.
                 val t = (sheet.progress.value / 0.7f).coerceIn(0f, 1f)
-                translationX = -t * (size.width + 12.dp.toPx())
+                translationX = -t * (reach + 12.dp.toPx())
             }
             .padding(start = 10.dp, end = 4.dp),
         Arrangement.spacedBy(10.dp, Alignment.CenterVertically), Alignment.CenterHorizontally,

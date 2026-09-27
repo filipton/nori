@@ -43,6 +43,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -467,7 +468,7 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
             @Composable fun kept(key: String) = Modifier.sharedElement(rememberSharedContentState(key), this@AnimatedContent)
             // The page's text colour, read while the transport draws.
             val ink = androidx.compose.ui.graphics.ColorProducer { live.color(CoverLook.ON) }
-            Column(Modifier.fillMaxSize().navigationBarsPadding()) {
+            PlayerHalves(LocalWide.current, panel = {
                 // The artwork bleeds to all three edges like the sleeve it is - up under the status bar
                 // as well, which is the whole point: Apple's has no top edge, and giving it one drew a
                 // line across the screen. The handle and the close button float over it instead.
@@ -553,6 +554,7 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                     }
                 }
 
+            }, controls = {
                 // The column's spare height. Measured off `w4` by row profile, Apple put the transport
                 // 10.6 % of the screen above the volume slider and the bottom icons 7.7 % clear of the
                 // home indicator. The three controls at the bottom are deliberately closer together than
@@ -684,11 +686,33 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                     PanelButton(Icons.AutoMirrored.Filled.QueueMusic, say.queue, page == Panel.QUEUE, size = 30.dp, nudge = 0.5.dp) { choose(Panel.QUEUE) }
                 }
                 if (page == Panel.ART) Spacer(Modifier.weight(0.19f))
-            }
+            })
             }
             }
         }
       }
+    }
+}
+
+/**
+ * The player's two parts: [panel] - the sleeve, the lyrics or the queue - and [controls] - the title, the seek
+ * bar, the transport, the volume and the icons. One above the other on a phone held upright, as they always
+ * were. On its side ([LocalWide]) the screen has no height for that - the sleeve alone filled it and pushed
+ * everything else off - so they stand side by side: the panel on the left, as wide as the screen is tall
+ * (the sleeve its whole square), the controls down the rest.
+ */
+@Composable
+private fun PlayerHalves(wide: Boolean, panel: @Composable ColumnScope.() -> Unit, controls: @Composable ColumnScope.() -> Unit) {
+    if (!wide) Column(Modifier.fillMaxSize().navigationBarsPadding()) { panel(); controls() }
+    else androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
+        val side = minOf(maxHeight, maxWidth * 0.5f)
+        Row(Modifier.fillMaxSize()) {
+            Column(Modifier.width(side).fillMaxHeight()) { panel() }
+            Column(
+                Modifier.weight(1f).fillMaxHeight().statusBarsPadding().navigationBarsPadding().padding(start = 8.dp),
+                verticalArrangement = Arrangement.Center,
+            ) { controls() }
+        }
     }
 }
 
