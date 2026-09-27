@@ -481,7 +481,9 @@ private fun PlaylistPage(
     HeroPage(
         coverUrl = vm.cover(playlist.coverArt, CoverSize.FULL),
         title = playlist.name,
-        subtitle = playlist.comment?.ifEmpty { null },
+        subtitle = remember(playlist.comment, prefs.playlistDescriptions, prefs.hideImportNotes) {
+            dev.nori.music.ffi.library.playlistDescription(playlist.comment, prefs.playlistDescriptions, prefs.hideImportNotes)
+        },
         caption = remember(detail, playlist) { detail?.let { say.listCaption(it.songs.size, it.seconds.toLong(), true) } ?: say.albumHintCaption(0, playlist.songCount.toInt(), playlist.duration.toLong()) },
         onPlay = detail?.let { d -> { actions.play(d.songs, from = from) } },
         onShuffle = detail?.let { d -> { actions.shuffle(d.songs, from) } },

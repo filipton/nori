@@ -332,6 +332,11 @@
     <!-- Library. -->
     <string name="settings_section_lists">Songs in lists</string>
     <string name="settings_section_search">Search</string>
+    <string name="settings_section_playlists">Playlists</string>
+    <string name="settings_playlist_descriptions">Playlist descriptions</string>
+    <string name="settings_playlist_descriptions_detail">Show a playlist\'s description under its name.</string>
+    <string name="settings_hide_import_notes">Hide import notes</string>
+    <string name="settings_hide_import_notes_detail">Leave out the note the server adds to playlists it imported from a file.</string>
     <string name="settings_section_history">Listening history</string>
     <string name="settings_section_online">Online</string>
     <string name="settings_tap_action">Choosing a song</string>
@@ -514,6 +519,8 @@
     <string name="settings_hint_offline_search">Song names kept on this device so search works without a connection</string>
     <string name="settings_hint_search_delay">How long to wait after you stop typing</string>
     <string name="settings_hint_taste_model">Stored on this device. Powers mixes and stats</string>
+    <string name="settings_hint_playlist_descriptions">Playlist notes. The text under a playlist\'s name</string>
+    <string name="settings_hint_hide_import_notes">Auto-imported playlists. Hides \"Auto-imported from\" under their name</string>
     <string name="settings_hint_scrobble">Scrobbling. Sends your plays to your server</string>
     <string name="settings_hint_lookups">Missing lyrics, the AutoEQ headphone list and moving covers. Third-party lookups</string>
     <string name="settings_hint_parallel_downloads">How many songs download at the same time</string>

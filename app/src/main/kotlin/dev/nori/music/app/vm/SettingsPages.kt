@@ -256,6 +256,8 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("library", R.string.settings_tap_action, R.string.settings_hint_tap_action),
     Triple("library", R.string.settings_swipe_right, 0),
     Triple("library", R.string.settings_swipe_left, 0),
+    Triple("library", R.string.settings_playlist_descriptions, R.string.settings_hint_playlist_descriptions),
+    Triple("library", R.string.settings_hide_import_notes, R.string.settings_hint_hide_import_notes),
     Triple("library", R.string.settings_offline_search, R.string.settings_hint_offline_search),
     Triple("library", R.string.settings_search_delay, R.string.settings_hint_search_delay),
     Triple("library", R.string.settings_taste_model, R.string.settings_hint_taste_model),
@@ -768,6 +770,8 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
             SettingRow.Action(settingKey(t), t, sync.error ?: counts, str(if (sync.running) R.string.settings_updating else R.string.settings_update), !sync.running, sync.error != null, "sync-library"),
             choice("liveSearchDelayMs", R.string.settings_search_delay, label = ::millis),
         )
+        val playlists = mutableListOf<SettingRow>(toggle("playlistDescriptions", R.string.settings_playlist_descriptions, R.string.settings_playlist_descriptions_detail))
+        if (p.playlistDescriptions) playlists += toggle("hideImportNotes", R.string.settings_hide_import_notes, R.string.settings_hide_import_notes_detail)
         val history = mutableListOf<SettingRow>(
             toggle("tasteModel", R.string.settings_taste_model, R.string.settings_taste_model_detail),
             toggle("scrobble", R.string.settings_scrobble, R.string.settings_scrobble_detail),
@@ -775,8 +779,8 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
         if (p.scrobble) history += choice("scrobblePercent", R.string.settings_scrobble_after) { if (it == "100") str(R.string.settings_scrobble_whole) else percent(it) }
         val online = listOf(toggle("thirdPartyLookups", R.string.settings_lookups, R.string.settings_lookups_detail))
         return listOf(
-            section(R.string.settings_section_lists, gestures), section(R.string.settings_section_search, search),
-            section(R.string.settings_section_history, history), section(R.string.settings_section_online, online),
+            section(R.string.settings_section_lists, gestures), section(R.string.settings_section_playlists, playlists),
+            section(R.string.settings_section_search, search), section(R.string.settings_section_history, history), section(R.string.settings_section_online, online),
         )
     }
 

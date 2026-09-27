@@ -509,6 +509,13 @@ pub struct StoredPrefs {
     pub swipe_left: SwipeAction,
     #[setting("liveSearchDelayMs", INT, default = 350, show = K::Choice(&["150", "250", "350", "500", "800"]))]
     pub live_search_delay_ms: i32,
+    /// A playlist page shows the playlist's description under its name
+    /// ([`nori_library::pages::playlist_description`] words nothing, it only decides).
+    #[setting("playlistDescriptions", FLAG, default = true, show = K::Switch)]
+    pub playlist_descriptions: bool,
+    /// ...except the note the server leaves on a playlist it imported from a file by itself.
+    #[setting("hideImportNotes", FLAG, default = true, show = K::Switch)]
+    pub hide_import_notes: bool,
     #[setting("tasteModel", FLAG, default = true, show = K::Switch)]
     pub taste_model: bool,
     #[setting("scrobble", FLAG, default = true, show = K::Switch)]
