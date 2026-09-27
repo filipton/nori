@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.height
+import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -39,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.nori.music.app.vm.SettingsViewModel
 import dev.nori.music.ffi.settings.EqLevel
+import dev.nori.music.ffi.settings.EqMode
 import dev.nori.music.ffi.queue.equalizerTuning
 import dev.nori.music.ffi.settings.SoundBand
 import dev.nori.music.ffi.settings.BandChannel
@@ -96,7 +99,7 @@ fun EqualizerScreen(vm: SettingsViewModel) {
     val settled = remember { mutableStateOf(false) }
     // Whether a change counts, and whether the shallow buffer is wanted, are the core's
     // (rules.rs equalizer_tuning); whether the screen is in sight is this screen's own.
-    LaunchedEffect(p.eqBands, p.eqPreampDb, p.crossfeedDb, p.balance) {
+    LaunchedEffect(p.eqBands, p.eqGraphic, p.eqMode, p.eqPreampDb, p.crossfeedDb, p.balance) {
         if (!settled.value) { settled.value = true; return@LaunchedEffect }
         if (equalizerTuning(inSight, true, p.eqEnabled)) touched.value = true
     }
@@ -115,8 +118,14 @@ fun EqualizerScreen(vm: SettingsViewModel) {
             Text(say.equalizer, Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall)
             NoriSwitch(p.eqEnabled, { on -> vm.update { it.copy(eqEnabled = on) } })
         }
+        val graphic = p.eqMode == EqMode.GRAPHIC
+        // Two equalizers, each with its own settings: the one picked here is the one that plays.
+        Row(Modifier.padding(horizontal = Space.gutter, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Chip(say.eqGraphic, graphic) { if (!graphic) vm.setEqMode(EqMode.GRAPHIC) }
+            Chip(say.eqParametric, !graphic) { if (graphic) vm.setEqMode(EqMode.PARAMETRIC) }
+        }
         Text(
-            say.eqHint,
+            if (graphic) say.eqGraphicHint else say.eqHint,
             Modifier.padding(horizontal = Space.gutter, vertical = 2.dp),
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -131,7 +140,8 @@ fun EqualizerScreen(vm: SettingsViewModel) {
             Text(bypass, Modifier.padding(12.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onErrorContainer)
         }
 
-        p.eqBands.forEachIndexed { i, b ->
+        if (graphic) GraphicBands(vm, p.eqGraphic, p.eqEnabled)
+        else p.eqBands.forEachIndexed { i, b ->
             Row(Modifier.padding(horizontal = Space.gutter), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 // Once per band shape, not on every frame of a gain drag.
                 val label = remember(b.freq, b.channel, b.kind) { bandLabel(b) }
@@ -149,9 +159,10 @@ fun EqualizerScreen(vm: SettingsViewModel) {
             }
         }
         LazyRow(contentPadding = PaddingValues(horizontal = Space.gutter, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            item { Chip(say.addBand, false, onClick = vm::addBand) }
-            item { Chip(say.pastePreset, false) { importing = true } }
-            item { Chip(say.headphonePresets, false, onClick = nav::autoEq) }
+            // A headphone correction is filters: it goes to (and switches to) the parametric equalizer.
+            if (!graphic) item { Chip(say.addBand, false, onClick = vm::addBand) }
+            if (!graphic) item { Chip(say.pastePreset, false) { importing = true } }
+            if (!graphic) item { Chip(say.headphonePresets, false, onClick = nav::autoEq) }
             item { Chip(say.reset, false, onClick = vm::resetBands) }
         }
         SectionTitle(say.presets)
@@ -212,6 +223,57 @@ fun EqualizerScreen(vm: SettingsViewModel) {
         SectionTitle(say.crossfeed)
         Text(remember(p.crossfeedDb) { say.crossfeed(p.crossfeedDb) }, Modifier.padding(horizontal = Space.gutter), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         NoriSlider(p.crossfeedDb, ranges.crossfeed.min..ranges.crossfeed.max, { v -> vm.setLevel(EqLevel.CROSSFEED, v) }, Modifier.padding(horizontal = Space.gutter))
+    }
+}
+
+/** The graphic equalizer: the layout, the curve it plays, and a slider per band. */
+@Composable
+private fun GraphicBands(vm: SettingsViewModel, sliders: List<Float>, enabled: Boolean) {
+    val count = sliders.size
+    Row(Modifier.padding(horizontal = Space.gutter, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        listOf(10, 15, 31).forEach { n -> Chip(say.eqBandCount(n), n == count) { if (n != count) vm.setEqLayout(n) } }
+    }
+    ResponseCurve(sliders, enabled)
+    // The bands' labels and exact centres are the core's, asked once per layout.
+    val bands = remember(count) { dev.nori.music.ffi.settings.graphicBands(count.toUInt()) }
+    val gain = ranges.gain
+    sliders.forEachIndexed { i, v ->
+        Row(Modifier.padding(horizontal = Space.gutter), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            val label = remember(count, i) { bands.getOrNull(i)?.let { say.isoBand(it.labelHz) }.orEmpty() }
+            Text(label, Modifier.width(56.dp), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            NoriSlider(v, gain.min..gain.max, { x -> vm.setGraphic(i, (x * 2f).roundToInt() / 2f) }, Modifier.weight(1f), enabled = enabled, centred = true)
+            Text(
+                remember(v) { dev.nori.music.text.Fmt.signedDb(v) }, Modifier.width(42.dp),
+                style = MaterialTheme.typography.labelMedium, textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** Where the curve is read, 20 Hz to 20 kHz on a log scale. */
+private val CURVE_FREQS: List<Float> = List(97) { 20f * Math.pow(1000.0, it / 96.0).toFloat() }
+
+/**
+ * What the graphic equalizer plays for these sliders, drawn: the core's response of the filters it
+ * designed (`graphic_response`), asked once per change and drawn as a line over ±15 dB.
+ */
+@Composable
+private fun ResponseCurve(sliders: List<Float>, enabled: Boolean) {
+    val response = remember(sliders) { dev.nori.music.ffi.settings.graphicResponse(sliders, CURVE_FREQS) }
+    val line = if (enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+    val grid = MaterialTheme.colorScheme.outlineVariant
+    androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().padding(horizontal = Space.gutter, vertical = 8.dp).height(96.dp)) {
+        val mid = size.height / 2f
+        val perDb = size.height / 30f
+        drawLine(grid, androidx.compose.ui.geometry.Offset(0f, mid), androidx.compose.ui.geometry.Offset(size.width, mid), strokeWidth = 1f)
+        val path = androidx.compose.ui.graphics.Path()
+        response.forEachIndexed { i, db ->
+            val x = size.width * i / (response.size - 1).coerceAtLeast(1)
+            val y = (mid - db.coerceIn(-15f, 15f) * perDb)
+            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        }
+        drawPath(path, line, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round))
     }
 }
 

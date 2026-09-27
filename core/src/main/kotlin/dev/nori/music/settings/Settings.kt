@@ -64,9 +64,12 @@ private object Preamp {
 val StoredPrefs.effectivePreampDb: Float
     get() = synchronized(Preamp) {
         if (Preamp.of !== this) {
+            // The graphic equalizer's sliders are peaks (kind 0) for the automatic pre-amp.
+            val graphic = eqMode == dev.nori.music.ffi.settings.EqMode.GRAPHIC
             Preamp.db = dev.nori.music.playback.Dsp.effectivePreampDb(
                 eqEnabled, eqPreampDb ?: 0f, eqPreampDb == null,
-                IntArray(eqBands.size) { eqBands[it].kind.ordinal }, FloatArray(eqBands.size) { eqBands[it].gainDb },
+                if (graphic) IntArray(eqGraphic.size) else IntArray(eqBands.size) { eqBands[it].kind.ordinal },
+                if (graphic) eqGraphic.toFloatArray() else FloatArray(eqBands.size) { eqBands[it].gainDb },
             )
             Preamp.of = this
         }
@@ -137,8 +140,27 @@ class Settings(private val context: Context) {
                 EqLevel.LIMITER -> p.copy(limiterThresholdDb = kept)
                 EqLevel.CROSSFEED -> p.copy(crossfeedDb = kept)
                 EqLevel.REPLAY_GAIN_PREAMP -> p.copy(preampDb = kept)
+                EqLevel.BASS_BOOST -> p.copy(bassBoostDb = kept)
+                EqLevel.VIRTUALIZER -> p.copy(virtualizer = kept)
+                EqLevel.VOLUME_BOOST -> p.copy(volumeBoostDb = kept)
+                EqLevel.COMP_THRESHOLD -> p.copy(compThresholdDb = kept)
+                EqLevel.COMP_RATIO -> p.copy(compRatio = kept)
+                EqLevel.COMP_ATTACK -> p.copy(compAttackMs = kept)
+                EqLevel.COMP_RELEASE -> p.copy(compReleaseMs = kept)
+                EqLevel.COMP_MAKEUP -> p.copy(compMakeupDb = kept)
+                EqLevel.COMP_KNEE -> p.copy(compKneeDb = kept)
             }
         }
+        val effect = r.toInt()
+        if (effect != 0) _effects.tryEmit(effect)
+    }
+
+    /** One graphic equalizer slider moved; edited in the core like a band, which holds it in range. */
+    fun setGraphic(index: Int, value: Float) {
+        val r = SoundEdit.setGraphic(index, value)
+        if (r == -1L) return
+        val kept = java.lang.Float.intBitsToFloat((r ushr 32).toInt())
+        state.update { p -> if (index in p.eqGraphic.indices) p.copy(eqGraphic = p.eqGraphic.toMutableList().also { it[index] = kept }) else p }
         val effect = r.toInt()
         if (effect != 0) _effects.tryEmit(effect)
     }

@@ -130,6 +130,10 @@
     <string name="equalizer">Equalizer</string>
     <string name="eq_hint">Tap a band\'s label to change its frequency, width or type.</string>
     <string name="add_band">Add band</string>
+    <string name="eq_graphic">Graphic</string>
+    <string name="eq_parametric">Parametric</string>
+    <string name="eq_graphic_hint">Each slider is the level at its frequency. Neighbouring bands are corrected for each other, so the sound follows the sliders.</string>
+    <string name="eq_band_count">%1$d bands</string>
     <string name="paste_preset">Paste a preset</string>
     <string name="presets">Presets</string>
     <string name="auto_preamp_hint">Automatic pulls the level down by the largest boost so the curve cannot clip</string>
