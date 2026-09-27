@@ -470,15 +470,6 @@ fun SystemBarIcons(look: Look) {
     }
 }
 
-/** A round, dimmed button that stays legible on top of artwork: back, close, more. */
-@Composable
-fun ScrimIconButton(icon: ImageVector, description: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    androidx.compose.material3.IconButton(
-        onClick,
-        modifier.size(40.dp).background(Color.Black.copy(alpha = 0.35f), androidx.compose.foundation.shape.CircleShape),
-    ) { Icon(icon, description, Modifier.size(22.dp), tint = Color.White) }
-}
-
 /**
  * A search or filter field as a soft rounded capsule rather than an outlined box: one tinted surface,
  * an icon, and a clear button that only exists when there is something to clear.

@@ -27,7 +27,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Shuffle
@@ -266,13 +265,12 @@ fun HeroPage(
                 // counted out, so all of it fits without scrolling.
                 // At least room for the three round buttons and a Play pill that still fits "Pause".
                 val half = minOf(maxOf(maxWidth * 0.45f, 360.dp), maxWidth * 0.5f)
-                // Clear of the back button on both sides (it stands in the half's top left corner), and short
-                // enough to leave the top margin, the name, caption and buttons (about 190 dp) and the now
-                // playing bar their room.
+                // Inside the half's gutters, and short enough to leave the top margin, the name, caption and
+                // buttons (about 190 dp) and the now playing bar their room.
                 val top = with(androidx.compose.ui.platform.LocalDensity.current) {
                     androidx.compose.foundation.layout.WindowInsets.statusBars.getTop(this).toDp()
                 }
-                val side = minOf(half - BACK_CLEAR * 2, maxHeight - top - WIDE_TOP - LocalChromeInset.current - 190.dp).coerceAtLeast(88.dp)
+                val side = minOf(half - Space.gutter * 2, maxHeight - top - WIDE_TOP - LocalChromeInset.current - 190.dp).coerceAtLeast(88.dp)
                 Row(Modifier.fillMaxSize()) {
                     Column(Modifier.width(half).fillMaxHeight().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
                         hero(side)
@@ -294,19 +292,14 @@ fun HeroPage(
                 content()
                 item(key = "tail") { Spacer(Modifier.height(Space.section + LocalChromeInset.current)) }
             }
-            // Back floats over the artwork on a soft disc, so it reads on any cover.
-            Box(Modifier.statusBarsPadding().padding(start = 12.dp, top = 10.dp)) {
-                ScrimIconButton(Icons.AutoMirrored.Filled.ArrowBack, say.back, LocalNav.current::back)
-            }
+            // No back button over the artwork: the back gesture is how these pages are left, and a dimmed disc
+            // on the cover only covered part of it.
         }
     }
 }
 
 /** On its side: the space above the cover and above the first song, under the status bar. */
 private val WIDE_TOP = 12.dp
-
-/** On its side: how far the cover keeps from the half's edges, for the back button in the corner (12 + 48 + 8). */
-private val BACK_CLEAR = 68.dp
 
 /** The size a page's own artwork (a mix's) is drawn at: MixScreen hands [HeroPage] its art at this size. */
 private val MIX_ART = 236.dp
