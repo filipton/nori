@@ -37,8 +37,8 @@ fn attributes(a: WindowAttributes) -> WindowAttributes {
 /// the traffic lights reach.
 pub fn dress(ui: &AppWindow) {
     ui.set_vibrancy(cfg!(target_os = "macos"));
-    // Room for the traffic lights, which a unified toolbar sets lower and further in.
-    ui.set_inset_top(if cfg!(target_os = "macos") { 48.0 } else { 16.0 });
+    // Room for the traffic lights at the sidebar's top.
+    ui.set_inset_top(if cfg!(target_os = "macos") { 52.0 } else { 24.0 });
     // SF Pro, as CoreText names the system's font; Inter (bundled) elsewhere.
     if cfg!(target_os = "macos") {
         ui.set_font("System Font".into());
@@ -71,8 +71,7 @@ fn try_blur(weak: slint::Weak<AppWindow>) {
 fn behind(w: &slint::winit_030::winit::window::Window) -> Result<(), String> {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{
-        NSAutoresizingMaskOptions, NSToolbar, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindowOrderingMode,
-        NSWindowToolbarStyle,
+        NSAutoresizingMaskOptions, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindowOrderingMode,
     };
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     let handle = w.window_handle().map_err(|e| e.to_string())?;
@@ -88,13 +87,6 @@ fn behind(w: &slint::winit_030::winit::window::Window) -> Result<(), String> {
     blur.setState(NSVisualEffectState::Active);
     blur.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
     frame_view.addSubview_positioned_relativeTo(&blur, NSWindowOrderingMode::Below, Some(view));
-    // An empty toolbar in a unified titlebar sets the traffic lights further in and down, inside the
-    // sidebar's glass, as Apple's own apps have them.
-    if let Some(window) = view.window() {
-        let toolbar = NSToolbar::new(mtm);
-        window.setToolbar(Some(&toolbar));
-        window.setToolbarStyle(NSWindowToolbarStyle::Unified);
-    }
     Ok(())
 }
 

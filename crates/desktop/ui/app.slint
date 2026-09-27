@@ -850,9 +850,12 @@ export component AppWindow inherits Window {
             reject
         }
 
-        // The ground: near black, a little clear over the system's blur so the sidebar's pane has it.
+        // The ground: near black under the page; under the sidebar, clear to the system's sidebar material
+        // (macOS), the sidebar's own grey elsewhere.
         Rectangle {
-            background: root.vibrancy ? Theme.ground.with-alpha(0.97) : Theme.ground;
+            x: root.view == 7 || !root.vibrancy ? 0 : 240px;
+            width: parent.width - self.x;
+            background: Theme.ground;
         }
 
         if root.view == 7: Rectangle {
@@ -940,9 +943,10 @@ export component AppWindow inherits Window {
         }
 
         if root.view != 7: Rectangle {
-            // A page that wears its cover's colour wears it under the sidebar's pane too, as Tahoe runs the
-            // page under its floating sidebar.
+            // A page that wears its cover's colour: the colour and the wash behind it.
             if root.view == 6: Rectangle {
+                x: 240px;
+                width: parent.width - self.x;
                 background: root.page-bg;
                 Image {
                     y: 0;
@@ -957,7 +961,7 @@ export component AppWindow inherits Window {
                     background: @linear-gradient(180deg, root.page-bg.with-alpha(0.15) 0%, root.page-bg.with-alpha(0.55) 55%, root.page-bg 100%);
                 }
             }
-            // The page, right of the sidebar's pane; it runs up under the titlebar and under the player.
+            // The page, right of the sidebar; it runs up under the titlebar and under the player.
             Rectangle {
                 x: 240px;
                 width: parent.width - self.x;
@@ -1527,19 +1531,19 @@ export component AppWindow inherits Window {
                 }
             }
 
-            // The sidebar, in its own pane: clear glass over the system's blur, the traffic lights at its top.
+            // The sidebar: full height from the window's edge, the system's sidebar material through it
+            // (macOS), a hairline between it and the page, the traffic lights at its top.
             Rectangle {
-                x: 8px;
-                y: 8px;
-                width: 224px;
-                height: parent.height - 16px;
-                border-radius: 18px;
-                background: root.vibrancy ? #3a3a3c6b : #28282a;
-                border-width: 1px;
-                border-color: @linear-gradient(180deg, #ffffff24 0%, #ffffff0d 30%, #ffffff0a 100%);
-                drop-shadow-blur: 18px;
-                drop-shadow-offset-y: 4px;
-                drop-shadow-color: #00000059;
+                x: 0;
+                y: 0;
+                width: 240px;
+                height: parent.height;
+                background: root.vibrancy ? #1e1e1e59 : #262628;
+                Rectangle {
+                    x: parent.width - 1px;
+                    width: 1px;
+                    background: #000000a0;
+                }
                 TitleStrip {
                     y: 0;
                     drag => { root.drag-window(); }
@@ -1551,8 +1555,8 @@ export component AppWindow inherits Window {
                     content-height: side.preferred-height;
                     side := VerticalLayout {
                         width: parent.width;
-                        padding-left: 8px;
-                        padding-right: 8px;
+                        padding-left: 16px;
+                        padding-right: 16px;
                         padding-bottom: 12px;
                         spacing: 1px;
                         SideItem {
