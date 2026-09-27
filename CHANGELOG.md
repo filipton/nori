@@ -6,6 +6,19 @@ hand. Versions follow [semantic versioning](https://semver.org).
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-09-27
+
+### Added
+
+- Every download is analysed after it is saved, and the beat model can read downloads with consent
+
+### Fixed
+
+- An artist's biography opens in full on a tap instead of stopping at four lines
+- A stop the engine made before a play already sent no longer leaves the app paused over music
+- **build:** Tools/bump-version.sh leaves nori-uniffi-jni-runtime at upstream's version in Cargo.lock
+- Remote (octo-fiesta) songs: autoplay after them, library only, album cloud clears
+
 ## [0.4.1] - 2026-09-27
 
 ### Breaking

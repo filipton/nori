@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/android", "crates/automix", "crates/cli", "crates/core", "crates/covers", "crates/db", "crates/devices", "crates/engine", "crates/http", "crates/library", "crates/look", "crates/lyrics", "crates/model", "crates/mpris", "crates/net", "crates/output-cpal", "crates/perf", "crates/player", "crates/queue", "crates/settings", "crates/settings-derive", "crates/testdir", "crates/transfers", "crates/uniffi-bindgen", "crates/uniffi-jni-runtime"]
 
 [workspace.package]
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 license = "MIT"
 
