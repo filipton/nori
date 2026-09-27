@@ -183,7 +183,7 @@ impl Client {
             Ok(Page::Albums { v }) => v.into_iter().filter(|a| !queued.contains(&a.id)).collect(),
             _ => Vec::new(),
         };
-        let fresh = self.artist_songs(albums).await;
+        let fresh = self.library_albums(albums, RANDOM_ALBUMS as usize).await;
         queue::queue_register(fresh.clone());
         fresh
     }

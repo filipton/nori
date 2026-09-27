@@ -26,6 +26,27 @@ impl Client {
             _ => Song::only_id(id),
         })
     }
+
+    /// The songs of the first `wanted` of `albums` that have any of the library's, each whole, in order.
+    /// A provider's album is never read, and a provider's song in the library's album (octo-fiesta fills
+    /// one in from the provider) is left out: playing either makes the server download it.
+    pub(crate) async fn library_albums(&self, albums: Vec<Album>, wanted: usize) -> Vec<Song> {
+        let mut out = Vec::new();
+        let mut found = 0;
+        for a in albums.into_iter().filter(|a| !a.is_external && !crate::db::external(&a.id)) {
+            let songs: Vec<Song> = self.songs(Read::AlbumSongs { id: a.id }).await.unwrap_or_default();
+            let songs: Vec<Song> = songs.into_iter().filter(|s| !s.is_external && !crate::db::external(&s.id)).collect();
+            if songs.is_empty() {
+                continue;
+            }
+            out.extend(songs);
+            found += 1;
+            if found == wanted {
+                break;
+            }
+        }
+        out
+    }
 }
 
 /// Asked only in Rust, so not exported to Kotlin.
@@ -79,14 +100,15 @@ impl Client {
         self.songs(Read::RandomSongs { size: SHUFFLE_ALL, genre: None }).await
     }
 
-    /// "Shuffle albums": the server's random albums, each played whole and in its own order, one after
-    /// another. A provider's are left out, as for an artist ([`Self::artist_songs`]).
+    /// "Shuffle albums": one of the server's random albums, whole and in its own order, played at once;
+    /// the queue's refills go on with more ([`crate::OriginKind::ShuffleAlbums`]). Only the library's:
+    /// a provider's album, or a provider's song inside one, is never asked for or played.
     pub async fn shuffle_albums(&self) -> NetResult<Vec<Song>> {
         let albums = match self.read_now(Read::AlbumList { kind: "random".into(), size: SHUFFLE_ALBUMS, offset: 0, genre: None }).await? {
             Page::Albums { v } => v,
             _ => Vec::new(),
         };
-        Ok(self.artist_songs(albums).await)
+        Ok(self.library_albums(albums, 1).await)
     }
 }
 
@@ -150,20 +172,20 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn shuffled_albums_play_whole_in_their_own_order_and_never_a_providers() {
+    fn shuffled_albums_start_with_one_whole_album_of_the_librarys_own() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         fake.answer(r#"{"subsonic-response":{"status":"ok","albumList2":{"album":[{"id":"b","name":"B"},{"id":"ext-applemusic-album-1","name":"X","isExternal":true},{"id":"a","name":"A"}]}}}"#);
         let album = |id: &str, songs: &[&str]| {
             let s: Vec<String> = songs.iter().map(|i| format!(r#"{{"id":"{i}","title":"{i}","isDir":false}}"#)).collect();
             format!(r#"{{"subsonic-response":{{"status":"ok","album":{{"id":"{id}","name":"{id}","song":[{}]}}}}}}"#, s.join(","))
         };
-        fake.answer(&album("b", &["b1", "b2", "b3"]));
+        fake.answer(&album("b", &["b1", "ext-deezer-song-9", "b2", "b3"]));
         fake.answer(&album("a", &["a1", "a2"]));
         let got = block(c.shuffle_albums()).unwrap();
-        assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["b1", "b2", "b3", "a1", "a2"]);
+        assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["b1", "b2", "b3"], "one album, at once, without the provider's song");
         let asked = fake.asked();
         assert!(asked[0].contains("getAlbumList2") && asked[0].contains("type=random"), "{asked:?}");
-        assert_eq!(asked.len(), 3, "the provider's album is never asked for: {asked:?}");
+        assert_eq!(asked.len(), 2, "nothing more is read before it plays: {asked:?}");
     }
 
     #[test]
