@@ -75,7 +75,7 @@ impl Client {
 
     /// The albums one whole record is picked from, by the same four bases.
     async fn album_candidates(&self, seed: &Song, basis: AutoFillBasis) -> Got<Vec<String>> {
-        let ids = |v: Vec<crate::Album>| v.into_iter().filter(|a| !a.is_external).map(|a| a.id).collect::<Vec<_>>();
+        let ids = |v: Vec<crate::Album>| v.into_iter().filter(|a| !a.is_external && !crate::db::external(&a.id)).map(|a| a.id).collect::<Vec<_>>();
         let albums = |p: Page| match p {
             Page::Albums { v } => v,
             _ => Vec::new(),
@@ -98,7 +98,7 @@ impl Client {
                 self.songs(Read::SimilarSongs { id: seed.id.clone(), count: 50 })
                     .await?
                     .into_iter()
-                    .filter(|s| !s.is_external)
+                    .filter(in_library)
                     .filter_map(|s| s.album_id)
                     .filter(|a| seen.insert(a.clone()))
                     .collect()
@@ -123,7 +123,7 @@ impl Client {
         let picks: Vec<String> = ranked.into_iter().take(ALBUM_TRIES).collect();
         let reads = join_all(picks.iter().map(|pick| self.songs(Read::AlbumSongs { id: pick.clone() }))).await;
         for (pick, read) in picks.into_iter().zip(reads) {
-            let songs: Vec<Song> = read.unwrap_or_default().into_iter().filter(|s| !queued.contains(s.id.as_str()) && !s.is_external).collect();
+            let songs: Vec<Song> = read.unwrap_or_default().into_iter().filter(|s| !queued.contains(s.id.as_str()) && in_library(s)).collect();
             if songs.len() >= ALBUM_MIN {
                 self.picked(Picked::Album, &[pick]);
                 return songs;
@@ -158,13 +158,44 @@ impl Client {
     fn picked(&self, kind: Picked, ids: &[String]) {
         let _ = note(&self.core.db.lock(), kind, ids, crate::db::now_ms());
     }
+
+    /// What the queue carries on from when its last song is `last`. A provider's song (octo-fiesta) is
+    /// no seed: the server's similar songs, top songs and albums for it are the provider's too, and each
+    /// one played would be downloaded into the library. The library's side of it is: a song of the
+    /// same artist in the library, else the queue's last song from the library. None when there is
+    /// neither.
+    fn library_seed(&self, last: Song, ids: &[String]) -> Option<Song> {
+        if in_library(&last) {
+            return Some(last);
+        }
+        let artist = last.artist.trim();
+        let same_artist = (!artist.is_empty())
+            .then(|| self.core.local_search(artist.to_string(), 50).ok())
+            .flatten()
+            .and_then(|found| found.songs.into_iter().find(|s| in_library(s) && s.artist.trim().eq_ignore_ascii_case(artist)));
+        same_artist.or_else(|| ids.iter().rev().filter_map(|id| queue::queue_song(id.clone())).find(in_library))
+    }
+
+    /// Songs of the library at random, for a queue of nothing but a provider's songs.
+    async fn random_library_songs(&self, queued: &HashSet<&str>) -> Vec<Song> {
+        let offered = self.songs(Read::RandomSongs { size: 50, genre: None }).await.unwrap_or_default();
+        let fresh: Vec<Song> = offered.into_iter().filter(|s| !queued.contains(s.id.as_str()) && in_library(s)).take(SONGS).collect();
+        queue::queue_register(fresh.clone());
+        fresh
+    }
+}
+
+/// Whether `s` is the library's own: never a provider's song (octo-fiesta's `isExternal`, `ext-` and `pl-`
+/// ids), which autoplay must not queue - playing one makes the server download it into the library.
+fn in_library(s: &Song) -> bool {
+    !s.is_external && !crate::db::external(&s.id)
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Client {
     /// What to append to the queue after the song playing, as the settings say (songs or an album, and
-    /// chosen by what). Nothing for a provider's song or one the queue does not know; a failed read is
-    /// nothing too.
+    /// chosen by what), never a provider's song. After a provider's song it carries on from the library
+    /// ([`Client::library_seed`]). Nothing for a song the queue does not know; a failed read is nothing too.
     pub async fn autofill(&self) -> Vec<Song> {
         let (kind, basis) = crate::settings_store::current().map_or((AutoFillKind::Songs, AutoFillBasis::Similar), |p| (p.auto_fill_kind, p.auto_fill_basis));
         self.autofill_as(kind, basis).await
@@ -185,18 +216,16 @@ impl Client {
         let (_, ids) = crate::playlist::snapshot();
         // Carried on from the queue's last song, not the one playing: the fetch starts a song or two
         // ahead of the end, and what comes follows the end.
-        let Some(seed) = autofill_seed().and_then(queue::queue_song) else { return Vec::new() };
-        if seed.is_external {
-            return Vec::new();
-        }
+        let Some(last) = autofill_seed().and_then(queue::queue_song) else { return Vec::new() };
         let queued: HashSet<&str> = ids.iter().map(String::as_str).collect();
+        let Some(seed) = self.library_seed(last, &ids) else { return self.random_library_songs(&queued).await };
         let fresh = if kind == AutoFillKind::Albums {
             let played: HashSet<String> = queue::queue_albums(ids.clone()).into_iter().collect();
             self.next_album(&seed, basis, &queued, &played).await
         } else {
             // The songs picked or played lately go to the back, as the albums do; the similar and
             // same-artist lists come back in the same order every time.
-            let offered: Vec<Song> = self.next_songs(&seed, basis).await.unwrap_or_default().into_iter().filter(|s| !queued.contains(s.id.as_str()) && !s.is_external).collect();
+            let offered: Vec<Song> = self.next_songs(&seed, basis).await.unwrap_or_default().into_iter().filter(|s| !queued.contains(s.id.as_str()) && in_library(s)).collect();
             let order = self.turns(Picked::Songs, offered.iter().map(|s| s.id.clone()).collect());
             let mut by_id: HashMap<String, Song> = offered.into_iter().map(|s| (s.id.clone(), s)).collect();
             let fresh: Vec<Song> = order.into_iter().filter_map(|id| by_id.remove(&id)).take(SONGS).collect();
@@ -272,6 +301,49 @@ pub(crate) mod tests {
         let got = block(c.autofill_as(AutoFillKind::Albums, AutoFillBasis::Similar));
         assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["r1", "r2", "r3"]);
         assert_eq!(fake.asked.lock().len(), 3, "the seed's own album is never fetched");
+    }
+
+    fn provider(id: &str, artist: &str) -> Song {
+        Song { id: id.into(), artist: artist.into(), album_id: Some("ext-deezer-album-1".into()), is_external: true, ..Default::default() }
+    }
+
+    #[test]
+    fn after_a_providers_song_the_library_carries_on_and_no_provider_song_is_queued() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        let mine = Song { id: "afp-lib".into(), title: "Dogs".into(), artist: "The Band".into(), album_id: Some("afp-al".into()), ..Default::default() };
+        crate::db::index(&mut c.core.db.lock(), &[], &[], &[mine]).unwrap();
+        queue::queue_register(vec![provider("ext-deezer-afp-1", "The Band")]);
+        fake.answer(
+            r#"{"subsonic-response":{"status":"ok","similarSongs2":{"song":[
+                {"id":"ext-deezer-afp-2","title":"x","isExternal":true},{"id":"afp-s1","title":"s1"},{"id":"afp-s2","title":"s2","isExternal":true}]}}}"#,
+        );
+        let _g = crate::playlist::tests::hold(&["ext-deezer-afp-1"], 0);
+        let got = block(c.autofill_as(AutoFillKind::Songs, AutoFillBasis::Similar));
+        assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["afp-s1"]);
+        let asked = fake.asked.lock();
+        assert!(asked[0].0.contains("getSimilarSongs2") && asked[0].0.contains("id=afp-lib"), "seeded by the artist's song in the library: {}", asked[0].0);
+    }
+
+    #[test]
+    fn after_a_providers_song_of_an_artist_not_in_the_library_the_queues_own_song_seeds() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        queue::queue_register(vec![song("afq-lib", "al0"), provider("ext-deezer-afq-1", "Nobody Here")]);
+        fake.answer(&songs_json(&[("afq-s1", "x")]));
+        let _g = crate::playlist::tests::hold(&["afq-lib", "ext-deezer-afq-1"], 1);
+        let got = block(c.autofill_as(AutoFillKind::Songs, AutoFillBasis::Similar));
+        assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["afq-s1"]);
+        assert!(fake.asked.lock()[0].0.contains("id=afq-lib"));
+    }
+
+    #[test]
+    fn a_queue_of_only_providers_songs_goes_on_with_the_librarys_at_random() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        queue::queue_register(vec![provider("ext-deezer-afr-1", "Nobody Here")]);
+        fake.answer(r#"{"subsonic-response":{"status":"ok","randomSongs":{"song":[{"id":"afr-s1","title":"a"},{"id":"ext-deezer-afr-2","title":"b"}]}}}"#);
+        let _g = crate::playlist::tests::hold(&["ext-deezer-afr-1"], 0);
+        let got = block(c.autofill_as(AutoFillKind::Albums, AutoFillBasis::Similar));
+        assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["afr-s1"]);
+        assert!(fake.asked.lock()[0].0.contains("getRandomSongs"));
     }
 
     #[test]

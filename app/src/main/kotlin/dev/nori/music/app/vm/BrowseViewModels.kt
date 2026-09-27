@@ -220,7 +220,16 @@ abstract class DetailViewModel<T>(app: Application) : NoriViewModel(app) {
 }
 
 class AlbumViewModel(app: Application) : DetailViewModel<AlbumDetail>(app) {
-    override fun load(id: String) = nori.library.album(id)
+    /**
+     * Read again when a provider's song (octo-fiesta) starts sounding and when it stops: playing it made
+     * the server download it into the library, and its row's cloud goes only once the server is asked
+     * again (the core never takes a stored page with a provider's song for fresh). Only while the page
+     * is watched, and only on those moves, not on every player event.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    override fun load(id: String) = remoteSounding().flatMapLatest { nori.library.album(id) }
+
+    private fun remoteSounding() = nori.player.state.map { s -> s.current?.takeIf { s.playing && it.isExternal }?.id }.distinctUntilChanged()
 }
 
 data class ArtistUi(val detail: ArtistDetail, val info: ArtistInfo?, val top: List<Song>)
