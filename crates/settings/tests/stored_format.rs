@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use nori_settings::settings::{band_from, load, save, AutoFillBasis, AutoFillKind, EqMode, GainMode, HomeRow, PrefValue, SavedQuality, SavedServer, StoredPrefs, SwipeAction, TapAction, ThemeMode};
+use nori_settings::settings::{band_from, load, save, AutoFillBasis, AutoFillKind, CrossfadeCurve, EqMode, GainMode, HomeRow, PrefValue, SavedQuality, SavedServer, StoredPrefs, SwipeAction, TapAction, ThemeMode};
 use nori_settings::settings_model::{specs, value_of};
 
 const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/stored_format.txt");
@@ -51,6 +51,9 @@ fn sample() -> StoredPrefs {
         precache_mobile: 3,
         skip_on_error: false,
         crossfade_keep_albums: false,
+        crossfade_curve: CrossfadeCurve::SCurve,
+        crossfade_in_sec: 2,
+        crossfade_out_sec: 6,
         offload: false,
         bit_perfect: true,
         hi_res: true,

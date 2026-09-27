@@ -289,3 +289,25 @@ fn an_equal_power_fade_keeps_the_level_of_uncorrelated_songs() {
     let (lo, hi) = levels.iter().fold((f64::MAX, f64::MIN), |(l, h), &v| (l.min(v), h.max(v)));
     assert!(lo > -0.5 && hi < 0.5, "no dip or bump through the overlap: {lo:.2} .. {hi:.2} dB");
 }
+
+#[test]
+fn a_crossfade_plays_the_curve_and_the_fade_in_asked_for() {
+    use nori_player::transitions::TransitionPrefs;
+    use nori_player::types::FadeCurve;
+    // The outgoing song at 440 Hz, the incoming one at 1 kHz: each side's gain read by its own tone.
+    let (a, b) = (sine(440.0, 0.3, 40.0), sine(1000.0, 0.3, 40.0));
+    let heard = |prefs: TransitionPrefs| {
+        let mut p = Player::with_prefs(vec![track("a", &a), track("b", &b)], prefs);
+        p.play_from(0);
+        assert!(p.run_to_end(120_000));
+        left(&p.sink.heard_samples())
+    };
+    // A ten-second crossfade from 30 s: where each side is at a moment, as a share of its own level.
+    let at = |x: &[f64], hz: f64, secs: f64| level_at(&x[frames(30.0 + secs - 0.25)..frames(30.0 + secs + 0.25)], hz, RATE as f64) / 0.3;
+    let plain = heard(crossfade(10));
+    let rise = (0.3 * std::f64::consts::FRAC_PI_2).sin();
+    assert!((at(&plain, 1000.0, 3.0) - rise).abs() < 0.05, "equal power, by default: {}", at(&plain, 1000.0, 3.0));
+    let shaped = heard(TransitionPrefs { fade_curve: FadeCurve::Linear, fade_in_ms: 2_000, ..crossfade(10) });
+    assert!(at(&shaped, 1000.0, 3.0) > 0.97, "the incoming song is up after two seconds: {}", at(&shaped, 1000.0, 3.0));
+    assert!((at(&shaped, 440.0, 5.0) - 0.5).abs() < 0.05, "the outgoing one falls in a straight line, half way at the middle: {}", at(&shaped, 440.0, 5.0));
+}

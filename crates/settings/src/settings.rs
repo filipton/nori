@@ -87,6 +87,27 @@ pub enum EqMode {
     Graphic,
 }
 
+/// The plain crossfade's curve (`nori_player::transitions::shape_crossfade`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, nori_settings_derive::Choice)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
+pub enum CrossfadeCurve {
+    /// Constant power: no dip in the middle. What a crossfade has always been.
+    EqualPower,
+    Linear,
+    /// Slow at both ends, quick through the middle.
+    SCurve,
+}
+
+impl CrossfadeCurve {
+    pub fn player(self) -> nori_player::types::FadeCurve {
+        match self {
+            CrossfadeCurve::EqualPower => nori_player::types::FadeCurve::EqualPower,
+            CrossfadeCurve::Linear => nori_player::types::FadeCurve::Linear,
+            CrossfadeCurve::SCurve => nori_player::types::FadeCurve::SineSquared,
+        }
+    }
+}
+
 /// The light or dark look: the system's, or always one of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, nori_settings_derive::Choice)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
@@ -225,6 +246,15 @@ pub struct StoredPrefs {
     pub auto_mix_beats_mobile_data: bool,
     #[setting("crossfadeKeepAlbums", FLAG, default = true, show = K::Switch, effect = REPLAN)]
     pub crossfade_keep_albums: bool,
+    /// The plain crossfade's curve.
+    #[setting("crossfadeCurve", PICK, default = CrossfadeCurve::EqualPower, show = K::Named(CrossfadeCurve::NAMES), effect = REPLAN)]
+    pub crossfade_curve: CrossfadeCurve,
+    /// How long the incoming song takes to come up in a plain crossfade, and the outgoing one to go,
+    /// seconds; 0 is the whole crossfade.
+    #[setting("crossfadeInSec", clamped(0, 12), default = 0, show = K::Choice(&["0", "1", "2", "4", "6", "8"]), effect = REPLAN)]
+    pub crossfade_in_sec: i32,
+    #[setting("crossfadeOutSec", clamped(0, 12), default = 0, show = K::Choice(&["0", "1", "2", "4", "6", "8"]), effect = REPLAN)]
+    pub crossfade_out_sec: i32,
     #[setting("fadeMs", within(0, 5000), default = 0, show = K::Choice(&["0", "150", "300", "500", "1000"]), effect = PLAYER)]
     pub fade_ms: i32,
     // Controls.
@@ -731,6 +761,9 @@ impl StoredPrefs {
             echo_out: self.auto_mix_echo_out,
             keep_pitch: self.auto_mix_keep_pitch,
             keep_albums: self.crossfade_keep_albums,
+            fade_curve: self.crossfade_curve.player(),
+            fade_in_ms: self.crossfade_in_sec * 1000,
+            fade_out_ms: self.crossfade_out_sec * 1000,
             // AutoMix's loudness matching stands down under ReplayGain.
             replay_gain: self.replay_gain != GainMode::Off,
         }

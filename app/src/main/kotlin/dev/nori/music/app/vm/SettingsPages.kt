@@ -163,6 +163,7 @@ private val BEAT_MODEL_ROWS = setOf(R.string.settings_better_beats, R.string.set
  */
 private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("playing", R.string.settings_crossfade, R.string.settings_hint_crossfade),
+    Triple("playing", R.string.settings_crossfade_curve, 0),
     Triple("playing", R.string.settings_automix, R.string.settings_hint_automix),
     Triple("playing", R.string.settings_longest_mix, 0),
     Triple("playing", R.string.settings_match_beat, R.string.settings_hint_match_beat),
@@ -443,6 +444,13 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
         if (s.untouched) between += SettingRow.Note(str(if (s.untouchedByDac) R.string.settings_held_by_dac else R.string.settings_held_by_hi_res))
         // AutoMix plans its own transitions, so the plain crossfade gives way to it.
         if (!p.autoMix) between += choice("crossfadeSec", R.string.settings_crossfade, live) { offOr(it, ::seconds) }
+        // How a plain crossfade sounds: its curve, and how long each side takes within it.
+        if (!p.autoMix && p.crossfadeSec > 0) {
+            between += named("crossfadeCurve", R.string.settings_crossfade_curve, R.string.settings_crossfade_equal_power, R.string.settings_crossfade_linear, R.string.settings_crossfade_s_curve)
+            fun part(v: String) = if (v == "0") str(R.string.settings_crossfade_whole) else seconds(v)
+            between += choice("crossfadeInSec", R.string.settings_crossfade_in, live, label = ::part)
+            between += choice("crossfadeOutSec", R.string.settings_crossfade_out, live, label = ::part)
+        }
         between += toggle("autoMix", R.string.settings_automix, R.string.settings_automix_detail, live)
         if (p.autoMix) {
             between += choice("autoMixMaxS", R.string.settings_longest_mix, live, label = ::seconds)

@@ -478,6 +478,12 @@ fn sound(b: &Build) -> Vec<Section> {
     }
     if !p.auto_mix {
         mixing.push(b.choice("crossfadeSec", "Crossfade", live, |v| off_or(v, |v| format!("{v} s"))));
+        if p.crossfade_sec > 0 {
+            mixing.push(b.named("crossfadeCurve", "  Curve", &["equal power", "linear", "S-curve"]));
+            let part = |v: &str| if v == "0" { "whole crossfade".to_string() } else { format!("{v} s") };
+            mixing.push(b.choice("crossfadeInSec", "  Fade in over", live, part));
+            mixing.push(b.choice("crossfadeOutSec", "  Fade out over", live, part));
+        }
     }
     mixing.push(b.toggle_if("autoMix", "AutoMix", "Beat-matched transitions planned per song pair", live));
     if p.auto_mix {

@@ -61,6 +61,13 @@
     <string name="settings_held_by_dac">Off while the USB DAC is in bit perfect mode.</string>
     <string name="settings_held_by_hi_res">Off while high quality output is on.</string>
     <string name="settings_crossfade">Crossfade</string>
+    <string name="settings_crossfade_curve">Crossfade curve</string>
+    <string name="settings_crossfade_equal_power">Equal power</string>
+    <string name="settings_crossfade_linear">Linear</string>
+    <string name="settings_crossfade_s_curve">S-curve</string>
+    <string name="settings_crossfade_in">Fade in over</string>
+    <string name="settings_crossfade_out">Fade out over</string>
+    <string name="settings_crossfade_whole">The whole crossfade</string>
     <string name="settings_automix">AutoMix</string>
     <string name="settings_automix_detail">Blends songs like a DJ, matching the beat.</string>
     <string name="settings_longest_mix">Longest mix</string>
