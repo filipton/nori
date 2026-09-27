@@ -180,6 +180,7 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("playing", R.string.settings_pitch, 0),
     Triple("playing", R.string.settings_skip_silence, R.string.settings_hint_skip_silence),
     Triple("playing", R.string.settings_previous, R.string.settings_hint_previous),
+    Triple("playing", R.string.settings_headphones_resume, R.string.settings_hint_headphones_resume),
     Triple("playing", R.string.settings_skip_explicit, R.string.settings_hint_skip_explicit),
     Triple("playing", R.string.settings_auto_fill, R.string.settings_hint_auto_fill),
     Triple("playing", R.string.settings_auto_fill_kind, R.string.settings_hint_auto_fill_kind),
@@ -479,6 +480,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
 
         val controls = listOf(
             toggle("previousAlwaysSkips", R.string.settings_previous, R.string.settings_previous_detail),
+            toggle("headphonesResume", R.string.settings_headphones_resume, R.string.settings_headphones_resume_detail),
             choice("speed", R.string.settings_speed, fallback = ::float) { if (it == "1") str(R.string.settings_normal) else str(R.string.settings_times, it) },
             choice("pitch", R.string.settings_pitch, fallback = ::float) { v ->
                 val pct = ((v.toFloat() - 1f) * 100f).roundToInt()

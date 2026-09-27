@@ -55,6 +55,8 @@ pub(crate) static CLASS: Class = Class {
         native!(c"pauseAtEnd", c"(JZ)V", pause_at_end),
         native!(c"play", c"(J)V", play),
         native!(c"pause", c"(J)V", pause),
+        native!(c"playFading", c"(JI)V", play_fading),
+        native!(c"pauseNow", c"(J)V", pause_now),
         native!(c"queueChanged", c"(J)V", queue_changed),
         native!(c"setRepeat", c"(JI)V", set_repeat),
         native!(c"replan", c"(J)V", replan),
@@ -1430,6 +1432,22 @@ extern "system" fn play(h: jlong) {
 extern "system" fn pause(h: jlong) {
     if let Some(p) = player(h) {
         p.engine.pause();
+    }
+}
+
+/// Headphones put back on: play, up from silence over `ms` (nori_player::headphones).
+extern "system" fn play_fading(h: jlong, ms: jint) {
+    if let Some(p) = player(h) {
+        log(&format!("headphones back: play, fading in over {ms} ms"));
+        p.engine.play_fading(ms);
+    }
+}
+
+/// Headphones taken off: pause at once, no fade.
+extern "system" fn pause_now(h: jlong) {
+    if let Some(p) = player(h) {
+        log("headphones off: pause at once");
+        p.engine.pause_now();
     }
 }
 

@@ -46,6 +46,7 @@ fn sample() -> StoredPrefs {
         fade_ms: 300,
         pitch: 1.05,
         previous_always_skips: true,
+        headphones_resume: true,
         precache_wifi: 5,
         precache_mobile: 3,
         skip_on_error: false,

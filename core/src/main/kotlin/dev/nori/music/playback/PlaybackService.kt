@@ -6,11 +6,13 @@ import dev.nori.music.ffi.queue.Hand
 import android.app.AlarmManager
 import android.app.PendingIntent
 import android.media.AudioTrack
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.LruCache
+import android.view.KeyEvent
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -219,6 +221,8 @@ class PlaybackService : MediaLibraryService() {
         // A StateFlow: it emits only on a change, so this is idle while music plays untouched.
         scope.launch { nori.library.starMarks.collect { refreshButtons() } }
         restoreQueue()
+        // Headphones coming back after they paused the music; collected once the session's player is there.
+        scope.launch { nori.outputs.current.collect { output -> headphonesBack(output) } }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo) = session
@@ -237,6 +241,7 @@ class PlaybackService : MediaLibraryService() {
         getSystemService(AlarmManager::class.java).cancel(sleepAlarm)
         main.removeCallbacks(measure)
         main.removeCallbacks(idleRelease)
+        main.removeCallbacks(askHeadphones)
         runCatching { connectivity.unregisterNetworkCallback(network) }
         analyser.release()
         offlineBridge?.abandon()
@@ -407,9 +412,32 @@ class PlaybackService : MediaLibraryService() {
      */
     private inner class Controls(p: Player) : androidx.media3.common.ForwardingPlayer(p) {
         override fun play() {
-            // Let go after a long pause (see idleRelease): opened again here.
-            if (wrappedPlayer.playbackState == Player.STATE_IDLE && wrappedPlayer.mediaItemCount > 0) wrappedPlayer.prepare()
+            // Anyone's play but the headphones' own: a pause they made is no longer theirs to take back.
+            dev.nori.music.ffi.queue.headphonesForget()
+            reopen()
             super.play()
+        }
+
+        override fun pause() {
+            dev.nori.music.ffi.queue.headphonesForget()
+            super.pause()
+        }
+
+        override fun setPlayWhenReady(playWhenReady: Boolean) {
+            dev.nori.music.ffi.queue.headphonesForget()
+            if (playWhenReady) reopen()
+            super.setPlayWhenReady(playWhenReady)
+        }
+
+        /** Headphones put back on (nori_player::headphones): play, coming up over [ms]. */
+        fun playFading(ms: Int) {
+            reopen()
+            player.playFading(ms)
+        }
+
+        /** Let go after a long pause (see idleRelease): opened again for a play. */
+        private fun reopen() {
+            if (wrappedPlayer.playbackState == Player.STATE_IDLE && wrappedPlayer.mediaItemCount > 0) wrappedPlayer.prepare()
         }
 
         /**
@@ -498,6 +526,26 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private fun ids(items: List<MediaItem>): List<String> = items.map { it.mediaId }
+
+    @Suppress("DEPRECATION")
+    private fun mediaKey(intent: android.content.Intent): KeyEvent? =
+        if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(android.content.Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
+        else intent.getParcelableExtra(android.content.Intent.EXTRA_KEY_EVENT)
+
+    /**
+     * The output changed (or the core asked to be asked again): the core says whether the headphones
+     * whose coming off paused the music are back, and the music comes back fading in
+     * (nori_player::headphones; only with "resume when headphones are put back on").
+     */
+    private fun headphonesBack(output: String) {
+        main.removeCallbacks(askHeadphones)
+        when (val back = dev.nori.music.ffi.queue.headphonesOutput(output, !player.playWhenReady, SystemClock.elapsedRealtime())) {
+            is dev.nori.music.ffi.queue.HeadphonesBack.AskAgain -> main.postDelayed(askHeadphones, back.ms)
+            is dev.nori.music.ffi.queue.HeadphonesBack.Resume -> controls.playFading(back.fadeMs)
+            dev.nori.music.ffi.queue.HeadphonesBack.Nothing -> {}
+        }
+    }
+    private val askHeadphones = Runnable { headphonesBack(nori.outputs.current.value) }
 
     /**
      * A change the core made to its queue on its own (the offline bridge), made to the player the same
@@ -639,6 +687,28 @@ class PlaybackService : MediaLibraryService() {
             if (command.customAction == CMD_FILL_NEXT) fillThenNext()
             if (command.customAction == CMD_TUNING) tune(args.getBoolean(ARG_ON), controller)
             return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+        }
+
+        /**
+         * A play or pause key that is not the notification's: the headphones (Bluetooth AVRCP, which is
+         * how wear detection such as Sony's says they came off or went back on), or a wired headset's or
+         * a keyboard's key. A pause is made at once, never fading out, and remembered by the core; a play
+         * after it comes up with a short fade when the core says so (nori_player::headphones). Every
+         * other key is media3's, and so is the notification.
+         */
+        override fun onMediaButtonEvent(session: MediaSession, controller: MediaSession.ControllerInfo, intent: android.content.Intent): Boolean {
+            if (session.isMediaNotificationController(controller)) return false
+            val key = mediaKey(intent) ?: return false
+            if (key.keyCode != KeyEvent.KEYCODE_MEDIA_PLAY && key.keyCode != KeyEvent.KEYCODE_MEDIA_PAUSE) return false
+            if (key.action != KeyEvent.ACTION_DOWN || key.repeatCount > 0) return true
+            val now = SystemClock.elapsedRealtime()
+            if (key.keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE) {
+                if (dev.nori.music.ffi.queue.headphonesOff(player.playWhenReady, now)) player.pauseNow(Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
+            } else {
+                val fade = dev.nori.music.ffi.queue.headphonesPlay(now)
+                if (fade != null) controls.playFading(fade) else controls.play()
+            }
+            return true
         }
 
         // The screen that asked for the shallow buffer has gone with its controller (the app's process

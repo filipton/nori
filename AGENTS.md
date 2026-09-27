@@ -16,7 +16,8 @@ crates/player/  Rust, platform-free: how music is played and heard. Decoding com
                 which song the ear is on and the playhead (heard.rs), seeks that land (seek.rs), the queue
                 itself (playlist.rs: list, play order, shuffle, repeat, songs added by hand, the offline
                 bridge's marks) and how it moves (queue.rs: placement, refilling, the error run), how the
-                controls sound and when the chain is rebuilt (transport.rs: fades, switches, timings),
+                controls sound and when the chain is rebuilt (transport.rs: fades, switches, timings), headphones
+                taken off and put back on (headphones.rs: the pause at once, the resume fading in),
                 what mixes where (transitions.rs), the audio policy, ReplayGain and fades (policy.rs), USB
                 DACs (dac.rs), outputs (outputs.rs) and which sound an output device gets (device.rs,
                 sound.rs), and where a voice sings in a song (automix/vocal.rs: the vocal activity curve

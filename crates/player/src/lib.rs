@@ -12,6 +12,7 @@ pub mod dsp;
 pub mod engine;
 pub mod eqfit;
 pub mod outputs;
+pub mod headphones;
 pub mod heard;
 pub mod pcm;
 pub mod seek;

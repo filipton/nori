@@ -12,6 +12,8 @@ use parking_lot::Mutex;
 pub use nori_model::model::PlaybackError;
 pub use nori_player::queue::OnError;
 pub use nori_player::transport::NextAction;
+pub use nori_player::headphones::Back as HeadphonesBack;
+use nori_player::headphones::Headphones;
 
 use nori_settings::settings::StoredPrefs;
 
@@ -36,6 +38,14 @@ pub enum OnError {
 pub enum NextAction {
     Skip,
     FillThenSkip,
+}
+
+#[cfg(feature = "ffi")]
+#[uniffi::remote(Enum)]
+pub enum HeadphonesBack {
+    Nothing,
+    AskAgain { ms: i64 },
+    Resume { fade_ms: i32 },
 }
 
 // ---- fetched and measured ahead ----
@@ -180,6 +190,40 @@ pub struct SleepShown {
 pub fn sleep_shown(minutes: u32, end_of_track: bool, songs: u32, now_ms: i64) -> SleepShown {
     let (at_ms, at_end_of_track) = t::sleep_shown(minutes, end_of_track, songs, now_ms);
     SleepShown { at_ms, at_end_of_track }
+}
+
+// ---- headphones taken off and put back on ----
+
+/// Whose pause the headphones may take back (`nori_player::headphones`), and the output now.
+static HEADPHONES: Mutex<Headphones> = Mutex::new(Headphones::new());
+
+/// The output media goes to is `output` (every change, and again when asked to): whether to play,
+/// fading in, because the headphones whose coming off paused the music are back (the user's
+/// "resume when headphones are put back on"). `paused`: the music is not wanted now. `now_ms` on the
+/// clock that runs in deep sleep.
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn headphones_output(output: String, paused: bool, now_ms: i64) -> HeadphonesBack {
+    HEADPHONES.lock().output(&output, paused, prefs(|p| p.headphones_resume), now_ms)
+}
+
+/// The headphones came off: the audio became noisy, or a pause key came from them. Whether to pause,
+/// at once and without a fade.
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn headphones_off(playing: bool, now_ms: i64) -> bool {
+    HEADPHONES.lock().off(playing, now_ms)
+}
+
+/// A play key came from the headphones: the fade to play with, or none for an ordinary play.
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn headphones_play(now_ms: i64) -> Option<i32> {
+    HEADPHONES.lock().play_key(prefs(|p| p.headphones_resume), now_ms)
+}
+
+/// Any other control, or another player taking the sound: the headphones' pause is not theirs to take
+/// back any more.
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn headphones_forget() {
+    HEADPHONES.lock().forget();
 }
 
 // ---- when the service does its chores ----

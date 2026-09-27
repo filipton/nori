@@ -98,6 +98,8 @@
     <string name="settings_fade">Fade on play and pause</string>
     <string name="settings_previous">Previous goes back a song</string>
     <string name="settings_previous_detail">Instead of restarting the current one.</string>
+    <string name="settings_headphones_resume">Resume when headphones are put back on</string>
+    <string name="settings_headphones_resume_detail">Taking your headphones off pauses the music. Put the same ones back on within 30 minutes and it fades back in.</string>
     <string name="settings_speed">Speed</string>
     <string name="settings_pitch">Pitch</string>
     <string name="settings_skip_silence">Skip silence</string>
@@ -392,6 +394,7 @@
     <string name="settings_hint_fade">A short fade when you play, pause, seek or skip</string>
     <string name="settings_hint_skip_silence">Cuts quiet gaps in and between songs</string>
     <string name="settings_hint_previous">Instead of restarting the current one</string>
+    <string name="settings_hint_headphones_resume">Wear detection, taking headphones off and on, Bluetooth reconnect, auto resume, fade in</string>
     <string name="settings_hint_skip_explicit">Songs your server marks explicit</string>
     <string name="settings_hint_auto_fill">Adds more music automatically</string>
     <string name="settings_hint_auto_fill_kind">Songs, or a whole album at a time</string>

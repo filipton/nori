@@ -773,6 +773,49 @@ fn a_wait_said_is_said_over_when_the_music_goes_elsewhere() {
     rig.engine.stop();
 }
 
+/// Headphones taken off stop the music at once whatever the fade on pause is (a fade only makes the
+/// pause slower), and put back on bring it in over their own fade, with fades off (nori_player::headphones).
+#[test]
+fn headphones_off_cut_at_once_and_back_on_fade_in() {
+    let a = vec![8000i16; RATE as usize * 2 * 20];
+    let songs: [(&str, &[i16]); 1] = [("a", &a)];
+    let rig = Rig::new(&songs, prefs_off(), Settings { fade_ms: 1_000, ..Settings::default() });
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2 * 4));
+    rig.engine.pause_now();
+    assert!(rig.wait_for(5, |r| r.engine.status().state == State::Paused));
+    rig.run(4_000);
+    let at = rig.heard.lock().len();
+    let heard = rig.heard.lock().clone();
+    assert!(heard.iter().all(|&v| v == 8000), "cut, not faded: no sample on the way down");
+
+    rig.engine.set_settings(Settings::default());
+    rig.engine.play_fading(500);
+    assert!(rig.wait_for(30, Rig::ended));
+    let heard = rig.heard.lock().clone();
+    assert!(heard[at] < 1000, "back in from silence: {}", heard[at]);
+    let ramp = &heard[at..at + RATE as usize * 2 / 2];
+    assert!(ramp.iter().any(|&v| v > 2000 && v < 6000), "a ramp up over the half second");
+    assert_eq!(heard[at + RATE as usize * 2], 8000, "and full a second in");
+}
+
+/// A pause from the headphones inside the user's own fade out stops the music there.
+#[test]
+fn a_pause_now_cuts_a_fade_out_short() {
+    let a = vec![8000i16; RATE as usize * 2 * 20];
+    let songs: [(&str, &[i16]); 1] = [("a", &a)];
+    let rig = Rig::new(&songs, prefs_off(), Settings { fade_ms: 3_000, ..Settings::default() });
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2 * 4));
+    rig.engine.pause();
+    let from = rig.heard.lock().len();
+    rig.run(300);
+    rig.engine.pause_now();
+    rig.run(4_000);
+    let heard = rig.heard.lock().len() - from;
+    assert!(heard < RATE as usize * 2 * 2, "stopped well before the 3 s fade was over: {} ms", heard / 2 * 1000 / RATE as usize);
+}
+
 #[test]
 fn each_song_plays_at_its_replay_gain_volume() {
     let (a, b) = (music(12.0, 7), music(12.0, 8));
