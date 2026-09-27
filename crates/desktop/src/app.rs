@@ -431,6 +431,12 @@ fn wire(ui: &AppWindow) {
     });
     ui.on_login(|| with(App::login));
     ui.on_cancel_login(|| with(|a| a.go(HOME)));
+    ui.on_settings_tab_chosen(|t| {
+        with(|a| {
+            a.ui().set_settings_tab(t);
+            a.settings_shown();
+        })
+    });
     ui.on_setting_toggled(|name, on| with(|a| a.setting(&name, if on { "true" } else { "false" })));
     ui.on_setting_chosen(|name, i| {
         with(|a| {
@@ -1006,7 +1012,7 @@ impl App {
     fn settings_shown(&self) {
         let ui = self.ui();
         let prefs = settings_store::settings_current().unwrap_or_default();
-        ui.set_settings(crate::settings::rows(&prefs, &ui.get_server()));
+        ui.set_settings(crate::settings::rows(&prefs, &ui.get_server(), ui.get_settings_tab()));
     }
 
     fn setting(&mut self, name: &str, value: &str) {

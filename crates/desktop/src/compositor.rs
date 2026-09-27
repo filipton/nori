@@ -717,7 +717,7 @@ impl Draw {
             // Far past them: the right edge is the nearest everywhere in the pane, so all of it looks to the page.
             let r = [-8000.0 * scale, -8000.0 * scale, (SIDEBAR_W + 8000.0) * scale, h + 16000.0 * scale];
             // Light from as far as 180 points beside it, faint, and gone within a few dozen points of the edge.
-            glass(Role::Sidebar, [0.0, 28.0 * scale, 22.0 * scale, 0.12], [0.1, 0.095, 0.09, 0.18], [0.22, 0.04, 0.34, 45.0 * scale], [180.0 * scale, 1.0, 0.0, 0.0], r);
+            glass(Role::Sidebar, [0.0, 28.0 * scale, 8.0 * scale, 0.04], [0.1, 0.095, 0.09, 0.18], [0.06, 0.04, 0.34, 45.0 * scale], [180.0 * scale, 1.0, 0.0, 0.0], r);
         }
         if s.player_shown.get() {
             let (o, sz) = place(s, Role::Player, win);

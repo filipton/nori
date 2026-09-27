@@ -141,11 +141,21 @@ fn groups(p: &StoredPrefs, server: &str) -> Vec<(&'static str, Vec<Row>)> {
     ]
 }
 
-/// The rows as the page draws them: each group's heading, then its rows with the first and last marked
-/// (they round the group's corners).
-pub fn rows(p: &StoredPrefs, server: &str) -> ModelRc<SettingRow> {
+/// Which tab each group sits in: 0 General, 1 Playback, 2 Sound, 3 Storage.
+fn tab_of(group: &str) -> i32 {
+    match group {
+        "Playback" | "Transitions" => 1,
+        "Sound" => 2,
+        "Streaming and downloads" | "Storage" => 3,
+        _ => 0,
+    }
+}
+
+/// The rows of tab `tab` as the page draws them: each group's heading, then its rows with the first and
+/// last marked (they round the group's corners).
+pub fn rows(p: &StoredPrefs, server: &str, tab: i32) -> ModelRc<SettingRow> {
     let mut out = Vec::new();
-    for (title, rows) in groups(p, server) {
+    for (title, rows) in groups(p, server).into_iter().filter(|(t, _)| tab_of(t) == tab) {
         out.push(SettingRow { kind: HEADING, title: title.into(), ..Default::default() });
         let n = rows.len();
         for (i, r) in rows.into_iter().enumerate() {

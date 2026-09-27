@@ -1119,6 +1119,9 @@ export component AppWindow inherits Window {
     in property <bool> lyrics-synced;
     in property <string> lyrics-note;
     in property <[SettingRow]> settings;
+    // The settings page's tab: 0 General, 1 Playback, 2 Sound, 3 Storage.
+    in-out property <int> settings-tab;
+    callback settings-tab-chosen(int);
 
     in-out property <string> login-url: "https://";
     in-out property <string> login-user;
@@ -1675,15 +1678,55 @@ export component AppWindow inherits Window {
                         prefs := VerticalLayout {
                             width: parent.width;
                             padding-bottom: 100px;
-                            Heading {
-                                title: "Settings";
+                            // The title and the tabs centred over one narrow column, as the Mac's own
+                            // settings windows have them.
+                            Text {
+                                text: "Settings";
+                                color: Theme.text;
+                                font-size: 22px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                height: 96px;
+                                vertical-alignment: bottom;
+                            }
+                            HorizontalLayout {
+                                alignment: center;
+                                padding-top: 16px;
+                                padding-bottom: 8px;
+                                Rectangle {
+                                    height: 30px;
+                                    width: tabs.preferred-width + 6px;
+                                    border-radius: 15px;
+                                    background: Theme.fill;
+                                    tabs := HorizontalLayout {
+                                        x: 3px;
+                                        padding-top: 3px;
+                                        padding-bottom: 3px;
+                                        spacing: 2px;
+                                        for t[i] in ["General", "Playback", "Sound", "Storage"]: Rectangle {
+                                            width: label.preferred-width + 32px;
+                                            border-radius: 12px;
+                                            background: root.settings-tab == i ? #ffffff26 : (ta.has-hover ? Theme.hover : transparent);
+                                            animate background { duration: 160ms; easing: ease-out; }
+                                            label := Text {
+                                                text: t;
+                                                color: Theme.text;
+                                                font-size: 13px;
+                                                font-weight: root.settings-tab == i ? 600 : 400;
+                                            }
+                                            ta := TouchArea {
+                                                clicked => { root.settings-tab-chosen(i); }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             HorizontalLayout {
                                 padding-left: 32px;
                                 padding-right: 32px;
-                                alignment: start;
+                                alignment: center;
                                 VerticalLayout {
-                                    width: min(680px, parent.width - 64px);
+                                    width: min(560px, parent.width - 64px);
                                     for r in root.settings: VerticalLayout {
                                         if r.kind == 0: Text {
                                             text: r.title;
@@ -2278,7 +2321,7 @@ export component SidebarWindow inherits Window {
     Rectangle {
         x: parent.width - 1px;
         width: 1px;
-        background: #ffffff1f;
+        background: #ffffff09;
     }
     background: transparent;
     default-font-size: 13px;
