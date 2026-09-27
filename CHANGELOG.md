@@ -6,6 +6,13 @@ hand. Versions follow [semantic versioning](https://semver.org).
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-09-27
+
+### Fixed
+
+- A song tapped again in its album no longer leaves the app paused over the music
+- Shuffle albums and shuffle songs keep going after the queue ends, autoplay on or off
+
 ## [0.4.4] - 2026-09-27
 
 ### Fixed
