@@ -1,7 +1,7 @@
 //! The sound profiles as the core's calls, over the profiles kept in its database: a device arriving, a
 //! curve adopted, an undo, a choice from the device list. The steps themselves are nori-devices'.
 
-use nori_player::device::{self, FLAT};
+use nori_player::device::{self, BYPASS, FLAT};
 use nori_player::outputs::SPEAKER;
 use rusqlite::OptionalExtension;
 
@@ -211,6 +211,14 @@ impl Core {
                 }
                 FLAT.to_string()
             }
+            ChoiceKind::Bypass => {
+                // "No processing" likewise: nothing in the chain, everything else as it is now.
+                if !self.profiles()?.iter().any(|p| p.name == BYPASS) {
+                    let none = SoundSettings { bypass: true, ..now.sound.clone() };
+                    self.profile_save(SoundProfile { name: BYPASS.to_string(), json: sound_json(&none), outputs: Vec::new() })?;
+                }
+                BYPASS.to_string()
+            }
             ChoiceKind::Profile => profile,
         };
         self.profile_bind(output.to_string(), Some(name.clone()))?;
@@ -413,6 +421,15 @@ pub(crate) mod tests {
         assert_eq!(c.profile_for_output("USB: K3".into()).unwrap().unwrap().json, sound_json(&sound()));
         c.device_forget("USB: K3".into());
         assert!(c.profile_for_output("USB: K3".into()).unwrap().is_none());
+
+        // "No processing": bound like "Flat", its sound keeps everything but the chain.
+        let b = c.assign_as("USB: DAC", ChoiceKind::Bypass, String::new(), true, &now(playing.clone())).unwrap();
+        let none = b.effect.apply.unwrap();
+        assert!(none.bypass && none.eq_enabled && none.crossfeed_db == 2.0);
+        assert!(!crate::settings::StoredPrefs::default().with_sound(none).sound_chain_on(), "nothing in the chain on that device");
+        assert_eq!(c.profile_for_output("USB: DAC".into()).unwrap().unwrap().name, BYPASS);
+        let rows = device_rows(vec!["USB: DAC".into()], SPEAKER.into(), c.profiles().unwrap(), Vec::new());
+        assert_eq!(rows.iter().find(|r| r.output == "USB: DAC").unwrap().choice, ChoiceKind::Bypass);
     }
 
     #[test]

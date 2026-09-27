@@ -1173,7 +1173,8 @@ fn lower_priority() {
 /// The sound and the controls as the core's settings ask for them.
 pub fn settings(s: &StoredPrefs) -> Settings {
     let bands = if s.eq_enabled { s.eq_bands.iter().map(|b| Band { kind: b.kind as i32, freq: b.freq as f64, gain_db: b.gain_db as f64, q: b.q as f64, channel: b.channel as i32 }).collect() } else { Vec::new() };
-    let sound = Sound {
+    // No processing on this output: the chain as if everything were off.
+    let sound = if s.sound_bypass { Sound::default() } else { Sound {
         // The graphic equalizer plays in place of the parametric one, whose bands then stay out.
         graphic: nori_core::dsp::graphic_sliders(s),
         bands: if s.eq_mode == nori_core::settings::EqMode::Graphic { Vec::new() } else { bands },
@@ -1185,7 +1186,7 @@ pub fn settings(s: &StoredPrefs) -> Settings {
         mono: s.mono,
         limiter: s.limiter,
         threshold_db: s.limiter_threshold_db as f64,
-    };
+    } };
     Settings {
         sound,
         speed: s.speed,
@@ -1225,6 +1226,10 @@ mod tests {
         assert!(off.graphic.is_empty() && off.bands.is_empty() && !off.on());
         let fx = settings(&StoredPrefs { volume_boost_db: 4.0, compressor: true, ..StoredPrefs::default() }).sound;
         assert!(fx.on() && fx.effects.boost_db == 4.0 && fx.effects.compressor.is_some() && fx.effects.guard());
+        // No processing on this output: the identity chain, whatever else is on.
+        let none = settings(&StoredPrefs { sound_bypass: true, limiter: true, crossfeed_db: 6.0, mono: true, ..StoredPrefs { eq_mode: EqMode::Graphic, ..p } });
+        assert_eq!(none.sound, nori_player::pipeline::Sound::default());
+        assert!(!none.sound.on());
     }
 
     #[test]

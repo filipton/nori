@@ -212,6 +212,8 @@ class Say(private val r: Resources) {
     val devicesNote: String = r.getString(R.string.devices_note)
     val flat: String = r.getString(R.string.flat)
     val flatDetail: String = r.getString(R.string.flat_detail)
+    val noProcessing: String = r.getString(R.string.no_processing)
+    val noProcessingDetail: String = r.getString(R.string.no_processing_detail)
     val leaveAsIs: String = r.getString(R.string.leave_as_is)
     val leaveAsIsDetail: String = r.getString(R.string.leave_as_is_detail)
     val savedProfile: String = r.getString(R.string.saved_profile)
@@ -627,7 +629,13 @@ class Say(private val r: Resources) {
     }
 
     /** Why nothing on the equalizer screen reaches the sound. */
-    fun eqBypass(b: EqBypass): String = r.getString(if (b == EqBypass.BIT_PERFECT) R.string.eq_bypass_bit_perfect else R.string.eq_bypass_hi_res)
+    fun eqBypass(b: EqBypass): String = r.getString(
+        when (b) {
+            EqBypass.BIT_PERFECT -> R.string.eq_bypass_bit_perfect
+            EqBypass.HI_RES -> R.string.eq_bypass_hi_res
+            EqBypass.OUTPUT -> R.string.eq_bypass_output
+        },
+    )
 
     /** Under a saved profile: which devices use it, or that choosing it loads it. */
     fun profileUse(devices: List<String>): String =

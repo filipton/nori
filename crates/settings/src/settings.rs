@@ -316,6 +316,12 @@ pub struct StoredPrefs {
     /// or a month old (`nori_devices::autoeq::index_due`). Needs `third_party_lookups`. On by default.
     #[setting("autoEqDownload", FLAG, default = true, show = K::Switch, lookups)]
     pub auto_eq_download: bool,
+    /// "No processing on this output": no equalizer, crossfeed, balance, mono, limiter or effects, so the
+    /// output plays the music as it comes (and audio offload may come back). Part of a sound profile, so a
+    /// device bound to one with it on is never processed. ReplayGain and transitions are not the chain's
+    /// and stay as they are.
+    #[setting("soundBypass", FLAG, default = false, show = K::Switch, effect = APPLY_AUDIO | SOUND)]
+    pub sound_bypass: bool,
     #[setting("profilePerOutput", FLAG, default = true, show = K::Switch)]
     pub profile_per_output: bool,
     #[setting("replayGain", PICK_NEAREST, default = GainMode::Off, show = K::Named(GainMode::NAMES), effect = APPLY_GAIN | REPLAN)]
@@ -539,6 +545,8 @@ pub struct SoundSettings {
     pub crossfeed_hz: f32,
     pub balance: f32,
     pub mono: bool,
+    /// No processing on this output: the chain is left out whatever the rest says.
+    pub bypass: bool,
     pub limiter: bool,
     pub limiter_threshold_db: f32,
     pub effects: SoundEffects,
@@ -639,6 +647,7 @@ impl StoredPrefs {
             crossfeed_db: self.crossfeed_db,
             crossfeed_hz: self.crossfeed_hz,
             balance: self.balance,
+            bypass: self.sound_bypass,
             mono: self.mono,
             limiter: self.limiter,
             limiter_threshold_db: self.limiter_threshold_db,
@@ -663,6 +672,7 @@ impl StoredPrefs {
             crossfeed_db: s.crossfeed_db,
             crossfeed_hz: s.crossfeed_hz,
             balance: s.balance,
+            sound_bypass: s.bypass,
             mono: s.mono,
             limiter: s.limiter,
             limiter_threshold_db: s.limiter_threshold_db,
@@ -702,9 +712,10 @@ impl StoredPrefs {
     }
 
     /// Whether anything in the sample domain is on: the equalizer, crossfeed, balance, mono, the limiter
-    /// or an effect. It then sits in the chain and audio offload stands down.
+    /// or an effect, and the output is not left unprocessed. It then sits in the chain and audio offload
+    /// stands down.
     pub fn sound_chain_on(&self) -> bool {
-        nori_player::sound::sound_on(self.eq_enabled, self.crossfeed_db, self.balance, self.mono, self.limiter, self.effects().on())
+        !self.sound_bypass && nori_player::sound::sound_on(self.eq_enabled, self.crossfeed_db, self.balance, self.mono, self.limiter, self.effects().on())
     }
 
     /// What the transition planner takes from the settings (`nori_automix::planner::settings_changed`).
@@ -870,6 +881,7 @@ pub fn sound_from(json: &str) -> Option<SoundSettings> {
         crossfeed_db: opt_f64(o, "crossfeedDb", 0.0) as f32,
         crossfeed_hz: EQ_RANGES.crossfeed_cut.hold(opt_f64(o, "crossfeedHz", 700.0) as f32),
         balance: opt_f64(o, "balance", 0.0) as f32,
+        bypass: opt_bool(o, "bypass"),
         mono: opt_bool(o, "mono"),
         limiter: opt_bool(o, "limiter"),
         limiter_threshold_db: opt_f64(o, "limiterThresholdDb", -1.0) as f32,
@@ -903,6 +915,9 @@ pub fn sound_json(s: &SoundSettings) -> String {
     o.insert("crossfeedDb".into(), (s.crossfeed_db as f64).into());
     o.insert("crossfeedHz".into(), (s.crossfeed_hz as f64).into());
     o.insert("balance".into(), (s.balance as f64).into());
+    if s.bypass {
+        o.insert("bypass".into(), true.into());
+    }
     o.insert("mono".into(), s.mono.into());
     o.insert("limiter".into(), s.limiter.into());
     o.insert("limiterThresholdDb".into(), (s.limiter_threshold_db as f64).into());
@@ -1545,16 +1560,20 @@ pub enum EqBypass {
     BitPerfect,
     /// High quality output is on (and can be turned off in the settings).
     HiRes,
+    /// This output's sound says "No processing" (`soundBypass`).
+    Output,
 }
 
 /// Why nothing on the equalizer screen reaches the sound, or `None` when it does. Bit-perfect output
 /// and high quality output both hand the file's samples to the DAC untouched, so the whole chain is
 /// out of the path; without this the screen looks broken.
-pub fn eq_bypass(hi_res: bool, bit_perfect: bool) -> Option<EqBypass> {
+pub fn eq_bypass(hi_res: bool, bit_perfect: bool, output: bool) -> Option<EqBypass> {
     if bit_perfect {
         Some(EqBypass::BitPerfect)
     } else if hi_res {
         Some(EqBypass::HiRes)
+    } else if output {
+        Some(EqBypass::Output)
     } else {
         None
     }
@@ -1708,8 +1727,8 @@ pub fn crossfeed_preset_of(prefs: StoredPrefs) -> String {
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn eq_bypass_reason(hi_res: bool, bit_perfect: bool) -> Option<EqBypass> {
-    eq_bypass(hi_res, bit_perfect)
+pub fn eq_bypass_reason(hi_res: bool, bit_perfect: bool, output: bool) -> Option<EqBypass> {
+    eq_bypass(hi_res, bit_perfect, output)
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
@@ -1974,6 +1993,7 @@ mod tests {
             eq_preamp_db: Some(-6.2),
             crossfeed_db: 3.0,
             crossfeed_hz: 820.0,
+            bypass: true,
             balance: -0.25,
             mono: true,
             limiter: true,
@@ -2186,9 +2206,10 @@ mod tests {
 
     #[test]
     fn why_the_equalizer_does_nothing() {
-        assert_eq!(eq_bypass(false, false), None);
-        assert_eq!(eq_bypass(true, true), Some(EqBypass::BitPerfect));
-        assert_eq!(eq_bypass(true, false), Some(EqBypass::HiRes));
+        assert_eq!(eq_bypass(false, false, false), None);
+        assert_eq!(eq_bypass(true, true, true), Some(EqBypass::BitPerfect));
+        assert_eq!(eq_bypass(true, false, true), Some(EqBypass::HiRes));
+        assert_eq!(eq_bypass(false, false, true), Some(EqBypass::Output));
     }
 
     #[test]
@@ -2417,6 +2438,21 @@ mod tests {
         assert_eq!(l.eq_graphic.len(), 31);
         assert_eq!(value_of_special(&l, "eqLayout").as_deref(), Some("31"));
         assert!(set_by_name(&p, "eqLayout", "12").is_none());
+    }
+
+    #[test]
+    fn no_processing_takes_the_whole_chain_out_and_travels_with_the_sound() {
+        let busy = StoredPrefs { eq_enabled: true, crossfeed_db: 4.5, limiter: true, compressor: true, ..StoredPrefs::default() };
+        assert!(busy.sound_chain_on());
+        let bypassed = set_by_name(&busy, "soundBypass", "true").unwrap().prefs;
+        assert!(!bypassed.sound_chain_on(), "nothing in the chain, so offload may play it");
+        assert!(bypassed.eq_enabled && bypassed.compressor, "the settings are kept for when it is off again");
+        let s = bypassed.sound();
+        assert!(s.bypass);
+        assert!(sound_from(&sound_json(&s)).unwrap().bypass, "a profile keeps it");
+        assert!(!sound_from("{}").unwrap().bypass, "an old profile has it off");
+        assert!(StoredPrefs::default().with_sound(s).sound_bypass);
+        assert!(!sound_json(&busy.sound()).contains("bypass"), "left out when off, as before");
     }
 
     #[test]

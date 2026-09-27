@@ -6,7 +6,7 @@
 //! load, whether to read the profiles again, whether to run the device's arrival again. The platform
 //! fetches an AutoEQ preset when asked (that is transport) and applies the effect.
 
-use nori_player::device::{self, keep_loose, FLAT};
+use nori_player::device::{self, keep_loose, BYPASS, FLAT};
 use nori_player::outputs::SPEAKER;
 
 // Public, like model.rs's, since the uniffi scaffolding in crates/android names them by a public path.
@@ -30,6 +30,7 @@ pub enum ChoiceKind {
     Quiet,
     Flat,
     Profile,
+    Bypass,
 }
 
 #[cfg(feature = "ffi")]
@@ -152,6 +153,8 @@ pub enum SpecKind {
     Profile,
     /// The first AutoEQ curve found for `arg`.
     Curve,
+    /// No processing on the device.
+    Bypass,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,7 +165,7 @@ pub struct DeviceSpec {
     pub arg: String,
 }
 
-/// The test bridge's `set deviceSound "<output>=flat|auto|quiet|profile:<name>|curve:<search>"`; anything
+/// The test bridge's `set deviceSound "<output>=flat|bypass|auto|quiet|profile:<name>|curve:<search>"`; anything
 /// else after the last '=' is automatic.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn device_spec(value: String) -> DeviceSpec {
@@ -171,6 +174,8 @@ pub fn device_spec(value: String) -> DeviceSpec {
         (SpecKind::Flat, "")
     } else if spec == "quiet" {
         (SpecKind::Quiet, "")
+    } else if spec == "bypass" {
+        (SpecKind::Bypass, "")
     } else if let Some(name) = spec.strip_prefix("profile:") {
         (SpecKind::Profile, name)
     } else if let Some(search) = spec.strip_prefix("curve:") {
@@ -200,14 +205,15 @@ pub struct AutoEqFound {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct DeviceSheet {
-    /// The saved profiles it can be given; "Flat" is its own row, so it is not among them.
+    /// The saved profiles it can be given; "Flat" and "No processing" are rows of their own, so they are
+    /// not among them.
     pub profiles: Vec<String>,
     /// Neither the one playing now nor the phone's speaker, which are always there.
     pub can_forget: bool,
 }
 
 pub fn sheet(output: &str, current: bool, profiles: &[String]) -> DeviceSheet {
-    DeviceSheet { profiles: profiles.iter().filter(|p| *p != FLAT).cloned().collect(), can_forget: !current && output != SPEAKER }
+    DeviceSheet { profiles: profiles.iter().filter(|p| *p != FLAT && *p != BYPASS).cloned().collect(), can_forget: !current && output != SPEAKER }
 }
 
 /// The sheet of the device `output` (the one playing now or not), given the saved profiles' names.
@@ -231,6 +237,8 @@ mod tests {
         assert_eq!(s("USB: K3=profile:Warm"), ("USB: K3".into(), SpecKind::Profile, "Warm".into()));
         assert_eq!(s("x=curve:HD 600"), ("x".into(), SpecKind::Curve, "HD 600".into()));
         assert_eq!(s("x=auto"), ("x".into(), SpecKind::Automatic, String::new()));
+        assert_eq!(s("USB: K3=bypass"), ("USB: K3".into(), SpecKind::Bypass, String::new()));
+        assert_eq!(sheet("USB: K3", false, &["Warm".into(), FLAT.into(), BYPASS.into()]).profiles, ["Warm"]);
         assert_eq!(s("flat"), ("flat".into(), SpecKind::Flat, String::new()));
     }
 }

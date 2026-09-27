@@ -451,7 +451,11 @@ fn sound(b: &Build) -> Vec<Section> {
     let s = b.s;
     let live = !s.untouched;
     let eq_status = if s.untouched { "bypassed" } else if s.sound_chain_on { "on" } else { "off" };
-    let eq = vec![Row::Link { title: "Equalizer, crossfeed, balance, limiter".into(), status: eq_status.into(), action: "equalizer".into() }];
+    let eq_status = if p.sound_bypass { "no processing" } else { eq_status };
+    let eq = vec![
+        Row::Link { title: "Equalizer, crossfeed, balance, limiter".into(), status: eq_status.into(), action: "equalizer".into() },
+        b.toggle("soundBypass", "No processing on this output", "No equalizer or effects reach it; offload can play it"),
+    ];
 
     let mut levelling = vec![b.named("replayGain", "ReplayGain", &["off", "track", "album", "auto"])];
     if p.replay_gain != nori_core::settings::GainMode::Off {

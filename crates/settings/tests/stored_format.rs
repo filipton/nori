@@ -77,6 +77,7 @@ fn sample() -> StoredPrefs {
         comp_knee_db: 10.0,
         crossfeed_db: 3.0,
         crossfeed_hz: 650.0,
+        sound_bypass: true,
         balance: -0.25,
         mono: true,
         limiter: true,

@@ -134,6 +134,8 @@
     <string name="settings_autoeq_list_detail">Downloads the headphone list (850 kB, from github.com) on Wi-Fi, and again once a month, so headphones find their curve.</string>
     <string name="settings_per_device">Remember sound per device</string>
     <string name="settings_per_device_detail">Each device keeps its own equalizer settings.</string>
+    <string name="settings_sound_bypass">No processing on this output</string>
+    <string name="settings_sound_bypass_detail">No equalizer, crossfeed or effects reach this output, and it can use audio offload. Saved with the device\'s sound.</string>
     <string name="settings_system_effects">System audio effects</string>
     <string name="settings_replay_gain">Even out volume</string>
     <string name="settings_replay_gain_track">Per song</string>

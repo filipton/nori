@@ -191,6 +191,7 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("sound", R.string.settings_autoeq_auto, R.string.settings_hint_autoeq_auto),
     Triple("sound", R.string.settings_autoeq_list, R.string.settings_hint_autoeq_list),
     Triple("sound", R.string.settings_per_device, R.string.settings_hint_per_device),
+    Triple("sound", R.string.settings_sound_bypass, R.string.settings_sound_bypass_detail),
     Triple("sound", R.string.settings_system_effects, 0),
     Triple("sound", R.string.settings_bass_boost_title, 0),
     Triple("sound", R.string.settings_virtualizer_title, R.string.settings_virtualizer_hint),
@@ -530,6 +531,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
             // Under the switch for looking things up at all (Library), and turns it on with it.
             toggle("autoEqDownload", R.string.settings_autoeq_list, R.string.settings_autoeq_list_detail),
             toggle("profilePerOutput", R.string.settings_per_device, R.string.settings_per_device_detail),
+            toggle("soundBypass", R.string.settings_sound_bypass, R.string.settings_sound_bypass_detail),
             link(R.string.settings_system_effects, "", false, "system-effects", divider = false),
         )
         val volume = mutableListOf<SettingRow>(
