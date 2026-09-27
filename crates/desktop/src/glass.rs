@@ -6,7 +6,7 @@
 use slint::winit_030::winit::window::WindowAttributes;
 use slint::ComponentHandle;
 
-use crate::{AppWindow, PlayerBar};
+use crate::{AppWindow, PlayerBar, SidebarWindow};
 
 /// Picks the backend before any window exists: winit, Skia, and Metal on macOS.
 pub fn backend() -> Result<(), String> {
@@ -112,8 +112,8 @@ pub fn zoom(ui: &slint::Weak<AppWindow>) {
 /// The player's size and place: centred over the page (right of the sidebar), a little above the
 /// window's bottom, as wide as the page allows up to 820 points.
 const SIDEBAR: f64 = 240.0;
-const PLAYER_H: f64 = 60.0;
-const PLAYER_MAX_W: f64 = 820.0;
+const PLAYER_H: f64 = 54.0;
+const PLAYER_MAX_W: f64 = 720.0;
 const PLAYER_BOTTOM: f64 = 12.0;
 
 /// The player window put over the main window's page, as a child window (it moves with the main window
@@ -195,3 +195,116 @@ pub fn attach_player(_: slint::Weak<AppWindow>, _: slint::Weak<PlayerBar>) {}
 
 #[cfg(not(target_os = "macos"))]
 pub fn place_player(_: &AppWindow, _: &PlayerBar, _: bool) {}
+
+/// The sidebar's width, as app.slint lays the page out beside it.
+const SIDEBAR_W: f64 = 240.0;
+
+/// The sidebar on the system's Liquid Glass: a child window over the main window's sidebar, clear but for
+/// the glass, which takes the page's colour and light from under it; the rows sit sharp on top. The glass
+/// has three round holes exactly where the main window's traffic lights are, so the real lights show (and
+/// take their clicks, hover and all) through the clear window. Tried on the loop's first turns until both
+/// windows exist.
+#[cfg(target_os = "macos")]
+pub fn attach_sidebar(main: slint::Weak<AppWindow>, side: slint::Weak<SidebarWindow>) {
+    use slint::winit_030::WinitWindowAccessor;
+    let (Some(m), Some(sd)) = (main.upgrade(), side.upgrade()) else { return };
+    if !(m.window().has_winit_window() && sd.window().has_winit_window()) {
+        slint::Timer::single_shot(std::time::Duration::from_millis(16), move || attach_sidebar(main, side));
+        return;
+    }
+    match glass_sidebar(&m, &sd) {
+        Ok(()) => {
+            m.set_native_sidebar(true);
+            place_sidebar(&m, &sd, true);
+        }
+        Err(e) => eprintln!("nori: the sidebar stays drawn: {e}"),
+    }
+}
+
+#[cfg(target_os = "macos")]
+thread_local! {
+    /// The sidebar's glass, whose mask follows the traffic lights.
+    static SIDE_GLASS: std::cell::RefCell<Option<objc2::rc::Retained<objc2_app_kit::NSGlassEffectView>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(target_os = "macos")]
+fn glass_sidebar(m: &AppWindow, sd: &SidebarWindow) -> Result<(), String> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSAutoresizingMaskOptions, NSColor, NSGlassEffectView, NSWindowOrderingMode};
+    let mtm = MainThreadMarker::new().ok_or("not on the main thread")?;
+    let (mw, sw) = (ns_window(m)?, ns_window(sd)?);
+    // Borderless outright: a window with a title bar is kept below the menu bar and shortened by AppKit,
+    // which moved the rows every time the sidebar was put in place.
+    sw.setStyleMask(objc2_app_kit::NSWindowStyleMask::Borderless);
+    sw.setOpaque(false);
+    sw.setBackgroundColor(Some(&NSColor::clearColor()));
+    sw.setHasShadow(false);
+    let view = sw.contentView().ok_or("no content view")?;
+    let frame_view = unsafe { view.superview() }.ok_or("the content view has no superview")?;
+    let glass = NSGlassEffectView::initWithFrame(mtm.alloc(), view.frame());
+    glass.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
+    frame_view.addSubview_positioned_relativeTo(&glass, NSWindowOrderingMode::Below, Some(&view));
+    // SAFETY: both windows are live AppKit windows, used on the main thread.
+    unsafe { mw.addChildWindow_ordered(&sw, NSWindowOrderingMode::Above) };
+    SIDE_GLASS.with(|g| *g.borrow_mut() = Some(glass));
+    Ok(())
+}
+
+/// The sidebar window over the main window's sidebar, its whole height; out of sight over Now Playing and
+/// the sign-in page. The holes in its glass follow the traffic lights.
+#[cfg(target_os = "macos")]
+pub fn place_sidebar(main: &AppWindow, side: &SidebarWindow, shown: bool) {
+    use objc2_app_kit::NSWindowButton;
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+    let (Ok(mw), Ok(sw)) = (ns_window(main), ns_window(side)) else { return };
+    let f = mw.frame();
+    sw.setFrame_display(NSRect::new(f.origin, NSSize::new(SIDEBAR_W, f.size.height)), true);
+    sw.setAlphaValue(if shown { 1.0 } else { 0.0 });
+    sw.setIgnoresMouseEvents(!shown);
+    // The lights, in the main window's coordinates, which are the sidebar window's too (same origin).
+    let lights: Vec<NSRect> = [NSWindowButton::CloseButton, NSWindowButton::MiniaturizeButton, NSWindowButton::ZoomButton]
+        .into_iter()
+        .filter_map(|b| mw.standardWindowButton(b))
+        .map(|b| b.convertRect_toView(b.bounds(), None))
+        .collect();
+    SIDE_GLASS.with(|g| {
+        let Some(glass) = g.borrow().clone() else { return };
+        let bounds = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(SIDEBAR_W, f.size.height));
+        glass.setFrame(bounds);
+        punch(&glass, bounds, &lights);
+    });
+}
+
+/// Masks `glass` to its bounds less a round hole over each of `holes`.
+#[cfg(target_os = "macos")]
+fn punch(glass: &objc2_app_kit::NSGlassEffectView, bounds: objc2_foundation::NSRect, holes: &[objc2_foundation::NSRect]) {
+    use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+    use objc2_core_graphics::CGMutablePath;
+    use objc2_quartz_core::{kCAFillRuleEvenOdd, CAShapeLayer};
+    glass.setWantsLayer(true);
+    let Some(layer) = glass.layer() else { return };
+    let path = CGMutablePath::new();
+    let cg = |r: &objc2_foundation::NSRect| CGRect::new(CGPoint::new(r.origin.x, r.origin.y), CGSize::new(r.size.width, r.size.height));
+    // SAFETY: a fresh path, and null transforms.
+    unsafe {
+        CGMutablePath::add_rect(Some(&path), std::ptr::null(), cg(&bounds));
+        for h in holes {
+            // The light's own circle, a hair larger so no glass rims it.
+            let r = CGRect::new(CGPoint::new(h.origin.x - 0.5, h.origin.y - 0.5), CGSize::new(h.size.width + 1.0, h.size.height + 1.0));
+            CGMutablePath::add_ellipse_in_rect(Some(&path), std::ptr::null(), r);
+        }
+    }
+    let mask = CAShapeLayer::new();
+    mask.setFrame(cg(&bounds));
+    mask.setPath(Some(&path));
+    // SAFETY: a static the framework provides.
+    mask.setFillRule(unsafe { kCAFillRuleEvenOdd });
+    // SAFETY: the mask is a fresh layer, owned by the glass's layer from here.
+    unsafe { layer.setMask(Some(&mask)) };
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn attach_sidebar(_: slint::Weak<AppWindow>, _: slint::Weak<SidebarWindow>) {}
+
+#[cfg(not(target_os = "macos"))]
+pub fn place_sidebar(_: &AppWindow, _: &SidebarWindow, _: bool) {}

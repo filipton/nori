@@ -23,7 +23,7 @@ use slint::{Color, ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPix
 
 use crate::session::{self, Data, Fetch, Msg, Req, Session};
 use crate::words;
-use crate::{AppWindow, Card, PlayerBar, Shelf, SongRow};
+use crate::{AppWindow, Card, PlayerBar, Shelf, SidebarWindow, SongRow};
 
 /// Pixels a side: a card's cover, and the large one (now playing, a page's), whose colours are worked out too.
 const SMALL_PX: u32 = 256;
@@ -157,6 +157,8 @@ pub struct App {
     shelves: Rc<VecModel<Shelf>>,
     /// The player as a window of its own over the system's glass (macOS); None where the page draws it.
     player: Option<PlayerBar>,
+    /// The sidebar as the system's glass over the page (macOS); None where the page draws it.
+    sidebar: Option<SidebarWindow>,
     /// The cover whose wash is the window's backdrop.
     backdrop: Option<String>,
     tickets: VecDeque<(String, Ticket)>,
@@ -228,6 +230,49 @@ fn player(ui: &AppWindow) -> Option<PlayerBar> {
     Some(bar)
 }
 
+/// The sidebar window, on macOS: its rows do what the main window's do; its view is moved into the system's
+/// glass over the page once both windows exist.
+#[allow(dead_code)]
+fn sidebar(ui: &AppWindow) -> Option<SidebarWindow> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let side = SidebarWindow::new().map_err(|e| eprintln!("nori: no glass sidebar: {e}")).ok()?;
+    side.set_font(ui.get_font());
+    side.set_inset_top(ui.get_inset_top());
+    side.on_art(|id, size, _rev| art(id, size));
+    let main = ui.as_weak();
+    side.on_go(move |v| {
+        if let Some(m) = main.upgrade() {
+            m.invoke_go(v);
+        }
+    });
+    let main = ui.as_weak();
+    side.on_open_playlist(move |id| {
+        if let Some(m) = main.upgrade() {
+            m.invoke_open_playlist(id);
+        }
+    });
+    let main = ui.as_weak();
+    side.on_drag_window(move || {
+        if let Some(m) = main.upgrade() {
+            m.invoke_drag_window();
+        }
+    });
+    let main = ui.as_weak();
+    side.on_zoom_window(move || {
+        if let Some(m) = main.upgrade() {
+            m.invoke_zoom_window();
+        }
+    });
+    if let Err(e) = side.show() {
+        eprintln!("nori: no glass sidebar: {e}");
+        return None;
+    }
+    crate::glass::attach_sidebar(ui.as_weak(), side.as_weak());
+    Some(side)
+}
+
 pub fn start(ui: &AppWindow, data: PathBuf) {
     let http = Http::new();
     let shelves = Rc::new(VecModel::from(
@@ -254,6 +299,9 @@ pub fn start(ui: &AppWindow, data: PathBuf) {
         shelves,
         backdrop: None,
         player: player(ui),
+        // The sidebar on the system's glass stays off: a child window over the sidebar is shortened and
+        // moved by AppKit, and its rows jump. The page draws the sidebar until the glass is our own.
+        sidebar: None,
         tickets: VecDeque::new(),
         tick: Timer::default(),
         tick_ms: 0,
@@ -291,6 +339,14 @@ fn wire(ui: &AppWindow) {
     ui.on_play_playlist(|id| with(|a| a.play_fetch(Fetch::Playlist(id.into()))));
     ui.on_song(|list, i, how| with(|a| a.song(list, i as usize, how)));
     ui.on_play_page(|shuffle| with(|a| a.play_page(shuffle)));
+    ui.on_page_later(|| {
+        with(|a| {
+            let songs = a.page_songs.clone();
+            if !songs.is_empty() {
+                a.on_session(|s| s.enqueue(songs, false));
+            }
+        })
+    });
     ui.on_more(|| with(|a| a.more_songs()));
     ui.on_search_edited(|t| with(|a| a.search_edited(&t)));
     ui.on_toggle(|| with(App::toggle));
@@ -527,6 +583,7 @@ impl App {
         self.page_colours(None);
         ui.set_view(PAGE);
         ui.set_failed("".into());
+        self.mirror();
         self.load(req);
     }
 
@@ -769,7 +826,11 @@ impl App {
                 }
                 self.follow();
             }
-            Msg::Data(req, r) => self.data(req, r),
+            Msg::Data(req, r) => {
+                self.data(req, r);
+                // The sidebar lists the playlists and marks the page open.
+                self.mirror();
+            }
             Msg::Cover { key, image, colours } => self.cover(key, &image, colours),
             Msg::Search(v) => {
                 if self.ui().get_view() == SEARCH {
@@ -862,6 +923,9 @@ impl App {
         if let Some(p) = &self.player {
             p.set_covers_rev(ui.get_covers_rev());
         }
+        if let Some(sd) = &self.sidebar {
+            sd.set_covers_rev(ui.get_covers_rev());
+        }
         if large {
             let c = ART.with(|a| a.borrow().colours.get(&id).cloned());
             if ui.get_now_art() == id.as_str() {
@@ -875,8 +939,8 @@ impl App {
 
     /// What the player window shows, copied from the main window, where it is kept.
     fn mirror(&self) {
-        let Some(p) = &self.player else { return };
         let ui = self.ui();
+        if let Some(p) = &self.player {
         p.set_has_song(ui.get_has_song());
         p.set_now_title(ui.get_now_title());
         p.set_now_artist(ui.get_now_artist());
@@ -890,13 +954,28 @@ impl App {
         p.set_volume(ui.get_volume());
         p.set_inspector(ui.get_inspector());
         p.set_covers_rev(ui.get_covers_rev());
+        }
+        if let Some(sd) = &self.sidebar {
+            sd.set_view(ui.get_view());
+            sd.set_page_kind(ui.get_page_kind());
+            sd.set_page_id(ui.get_page_id());
+            sd.set_playlists(ui.get_playlists());
+            sd.set_server(ui.get_server());
+            sd.set_covers_rev(ui.get_covers_rev());
+            sd.set_inset_top(ui.get_inset_top());
+        }
     }
 
     /// The player window over the page's bottom; out of sight over Now Playing and the sign-in page.
     fn place_player(&self) {
-        let Some(p) = &self.player else { return };
         let ui = self.ui();
-        crate::glass::place_player(&ui, p, !ui.get_full_player() && ui.get_view() != LOGIN);
+        let shown = !ui.get_full_player() && ui.get_view() != LOGIN;
+        if let Some(p) = &self.player {
+            crate::glass::place_player(&ui, p, shown);
+        }
+        if let Some(sd) = &self.sidebar {
+            crate::glass::place_sidebar(&ui, sd, shown);
+        }
     }
 
     /// The lyrics' clock asked where the music is: the line lit, and when to look again.

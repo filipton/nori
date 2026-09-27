@@ -28,8 +28,11 @@ slint = { version = "1.18", default-features = false, features = ["std", "compat
 # put beside the view Skia draws into rather than over it (glass.rs). The versions winit already brings.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSView", "NSVisualEffectView", "NSGraphics", "NSWindow", "NSGlassEffectView", "NSColor"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSView", "NSVisualEffectView", "NSGraphics", "NSWindow", "NSGlassEffectView", "NSColor", "NSButton", "NSControl"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry"] }
+objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "CALayer", "CAShapeLayer"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGPath"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes"] }
 raw-window-handle = "0.6"
 
 [build-dependencies]

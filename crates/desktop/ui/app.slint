@@ -50,14 +50,16 @@ export struct Shelf {
 
 export global Theme {
     in-out property <color> accent: #fa2d48;
-    out property <color> ground: #1e1e1e;
-    out property <color> text: #ffffffeb;
-    out property <color> dim: #ffffff8c;
-    out property <color> faint: #ffffff4d;
-    out property <color> hairline: #ffffff17;
-    out property <color> hover: #ffffff0f;
-    out property <color> chosen: #ffffff17;
-    out property <color> fill: #ffffff14;
+    // Measured from Music on the Mac (a screen recording of the current beta): a warm near-black ground,
+    // text in three greys, hairlines barely there, and quiet grey fills for the buttons.
+    out property <color> ground: #22201f;
+    out property <color> text: #ffffffe5;
+    out property <color> dim: #ffffff93;
+    out property <color> faint: #ffffff5c;
+    out property <color> hairline: #ffffff0a;
+    out property <color> hover: #ffffff0d;
+    out property <color> chosen: #ffffff1a;
+    out property <color> fill: #ffffff12;
 }
 
 // Line icons on a 24 unit square, in the manner of SF Symbols; `solid` fills them instead.
@@ -81,6 +83,7 @@ export global Icons {
     out property <string> chevron: "M9 5.5 L15.5 12 L9 18.5";
     out property <string> down: "M5.5 9 L12 15.5 L18.5 9";
     out property <string> close: "M6 6 L18 18 M18 6 L6 18";
+    out property <string> plus: "M12 5 L12 19 M5 12 L19 12";
     out property <string> server: "M4 5.5 Q4 4.5 5 4.5 L19 4.5 Q20 4.5 20 5.5 L20 10 L4 10 Z M4 14 L20 14 L20 18.5 Q20 19.5 19 19.5 L5 19.5 Q4 19.5 4 18.5 Z M7.5 7.25 L8 7.25 M7.5 16.75 L8 16.75";
     out property <string> key: "M13 10 A4 4 0 1 1 5 10 A4 4 0 1 1 13 10 M12 12.5 L19.5 20 M16.5 17 L18.5 15";
     out property <string> lyrics: "M5.5 4.5 L18.5 4.5 Q20.5 4.5 20.5 6.5 L20.5 14.5 Q20.5 16.5 18.5 16.5 L12.5 16.5 L8 20.5 L8 16.5 L5.5 16.5 Q3.5 16.5 3.5 14.5 L3.5 6.5 Q3.5 4.5 5.5 4.5 Z M8.2 9 L8.2 11.8 M8.2 9 L10.2 9 M13.8 9 L13.8 11.8 M13.8 9 L15.8 9";
@@ -211,9 +214,9 @@ component Capsule inherits Rectangle {
     in property <color> ink: Theme.accent;
     in property <color> label: white;
     callback clicked;
-    height: 32px;
-    width: max(108px, row.preferred-width + 34px);
-    border-radius: 8px;
+    height: 34px;
+    width: max(124px, row.preferred-width + 40px);
+    border-radius: self.height / 2;
     background: root.ink;
     opacity: touch.pressed ? 0.75 : 1;
     row := HorizontalLayout {
@@ -802,9 +805,9 @@ component PlayerControls inherits Rectangle {
             spacing: 10px;
             Art {
                 y: (parent.height - self.height) / 2;
-                width: 42px;
-                height: 42px;
-                border-radius: 6px;
+                width: 38px;
+                height: 38px;
+                border-radius: 5px;
                 source: root.art(root.now-art, 0, root.covers-rev);
                 TouchArea {
                     clicked => {
@@ -818,8 +821,8 @@ component PlayerControls inherits Rectangle {
                 horizontal-stretch: 1;
                 property <int> dragged: -1;
                 VerticalLayout {
-                    y: 10px;
-                    height: 34px;
+                    y: 8px;
+                    height: 32px;
                     Text {
                         text: root.has-song ? root.now-title : "Not Playing";
                         color: Theme.text;
@@ -836,7 +839,7 @@ component PlayerControls inherits Rectangle {
                     y: parent.height - self.height - 1px;
                     width: parent.width;
                     thin: 2px;
-                    thick: 4px;
+                    thick: 6px;
                     value: root.duration-ms > 0 ? (parent.dragged >= 0 ? parent.dragged : root.position-ms) / root.duration-ms : 0;
                     moved(v) => { parent.dragged = v * root.duration-ms; }
                     done(v) => {
@@ -894,6 +897,120 @@ component TitleStrip inherits TouchArea {
     }
     double-clicked => { root.zoom(); }
 }
+
+// The sidebar's rows: search and home, the library, the playlists, and settings and the server at its
+// foot. The main window draws them over its own pane where the system has no glass (Linux); on macOS
+// they are the whole of `SidebarWindow`, whose view sits inside the system's Liquid Glass over the page.
+component SidebarContent inherits Rectangle {
+    in property <int> view;
+    in property <int> page-kind;
+    in property <string> page-id;
+    in property <[Card]> playlists;
+    in property <string> server;
+    in property <int> covers-rev;
+    in property <length> inset-top;
+    pure callback art(string, int, int) -> image;
+    callback go(int);
+    callback open-playlist(string);
+    callback drag-window();
+    callback zoom-window();
+
+    TitleStrip {
+        y: 0;
+        drag => { root.drag-window(); }
+        zoom => { root.zoom-window(); }
+    }
+    Flickable {
+        y: root.inset-top;
+        height: parent.height - self.y - foot.height;
+        content-height: side.preferred-height;
+        side := VerticalLayout {
+            width: parent.width;
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-bottom: 12px;
+            spacing: 1px;
+            SideItem {
+                text: "Search";
+                icon: Icons.search;
+                chosen: root.view == 1;
+                clicked => { root.go(1); }
+            }
+            SideItem {
+                text: "Home";
+                icon: Icons.home;
+                chosen: root.view == 0;
+                clicked => { root.go(0); }
+            }
+            SideHeading {
+                text: "Library";
+            }
+            SideItem {
+                text: "Artists";
+                icon: Icons.artists;
+                chosen: root.view == 3 || (root.view == 6 && root.page-kind == 1);
+                clicked => { root.go(3); }
+            }
+            SideItem {
+                text: "Albums";
+                icon: Icons.albums;
+                chosen: root.view == 2 || (root.view == 6 && root.page-kind == 0);
+                clicked => { root.go(2); }
+            }
+            SideItem {
+                text: "Songs";
+                icon: Icons.songs;
+                chosen: root.view == 5;
+                clicked => { root.go(5); }
+            }
+            SideHeading {
+                text: "Playlists";
+            }
+            SideItem {
+                text: "All Playlists";
+                icon: Icons.playlists;
+                chosen: root.view == 4;
+                clicked => { root.go(4); }
+            }
+            for p in root.playlists: SideItem {
+                text: p.title;
+                has-picture: true;
+                picture: root.art(p.art, 0, root.covers-rev);
+                chosen: root.view == 6 && root.page-kind == 2 && root.page-id == p.id;
+                clicked => { root.open-playlist(p.id); }
+            }
+        }
+    }
+    foot := VerticalLayout {
+        height: self.preferred-height;
+        y: parent.height - self.height;
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 8px;
+        padding-bottom: 12px;
+        spacing: 1px;
+        Rectangle {
+            height: 1px;
+            background: Theme.hairline;
+        }
+        Rectangle {
+            height: 6px;
+        }
+        SideItem {
+            text: "Settings";
+            icon: Icons.gear;
+            chosen: root.view == 8;
+            clicked => { root.go(8); }
+        }
+        SideItem {
+            text: root.server;
+            icon: Icons.server;
+            chosen: root.view == 7;
+            clicked => { root.go(7); }
+        }
+    }
+}
+
 
 export component AppWindow inherits Window {
     title: "nori";
@@ -986,6 +1103,9 @@ export component AppWindow inherits Window {
     in-out property <bool> full-player;
     // The player is a window of its own over the system's Liquid Glass (macOS): the page draws none.
     in property <bool> native-player;
+    // The sidebar is the system's Liquid Glass over the page (macOS): the page's ground, its colour and an
+    // artist's picture run under it, and the page draws no sidebar of its own.
+    in property <bool> native-sidebar;
     // The page's area moved (the window was resized), or what the player window mirrors changed.
     callback page-moved();
     callback player-changed();
@@ -1016,6 +1136,8 @@ export component AppWindow inherits Window {
     // A song of a list: 0 the page, 1 the songs, 2 search. `how`: 0 play, 1 next, 2 at the end.
     callback song(int, int, int);
     callback play-page(bool);
+    // The page's songs added at the end of the queue.
+    callback page-later();
     callback more();
     callback search-edited(string);
     callback toggle();
@@ -1149,6 +1271,12 @@ export component AppWindow inherits Window {
             width: parent.width - self.x;
             background: Theme.ground;
         }
+        // Under the system's glass sidebar: the ground half clear, so the glass takes the desktop's colour
+        // through the window as well as the page's.
+        if root.native-sidebar && root.view != 7: Rectangle {
+            width: 240px;
+            background: Theme.ground.with-alpha(0.55);
+        }
 
         if root.view == 7: Rectangle {
             TitleStrip {
@@ -1237,7 +1365,7 @@ export component AppWindow inherits Window {
         if root.view != 7: Rectangle {
             // A page that wears its cover's colour: the colour and the wash behind it.
             if root.view == 6: Rectangle {
-                x: 240px;
+                x: root.native-sidebar ? 0 : 240px;
                 width: parent.width - self.x;
                 background: root.page-bg;
                 Image {
@@ -1257,7 +1385,8 @@ export component AppWindow inherits Window {
             Rectangle {
                 x: 240px;
                 width: parent.width - self.x;
-                clip: true;
+                // Under the system's glass, an artist's picture runs on under the sidebar.
+                clip: !root.native-sidebar;
 
                 if root.view == 0: Fade {
                     Flickable {
@@ -1425,6 +1554,8 @@ export component AppWindow inherits Window {
                         // as it scrolls, and dissolving into the page's colour.
                         if root.page-kind == 1: Rectangle {
                             y: max(-self.height, page-flick.content-y * 0.45);
+                            x: root.native-sidebar ? -240px : 0;
+                            width: parent.width - self.x;
                             height: max(420px, root.height * 0.64);
                             opacity: 1 + max(-0.8, page-flick.content-y / self.height);
                             clip: true;
@@ -1506,52 +1637,68 @@ export component AppWindow inherits Window {
                                     spacing: 28px;
                                     alignment: start;
                                     Art {
-                                        width: 260px;
-                                        height: 260px;
+                                        width: 270px;
+                                        height: 270px;
                                         border-radius: 10px;
                                         shadow: true;
                                         source: root.art(root.page-art, 1, root.covers-rev);
                                     }
                                     VerticalLayout {
-                                        alignment: end;
-                                        spacing: 3px;
+                                        spacing: 2px;
+                                        Rectangle {
+                                            height: 64px;
+                                        }
                                         Text {
                                             text: root.page-title;
-                                            color: white;
-                                            font-size: 28px;
+                                            color: Theme.text;
+                                            font-size: 26px;
                                             font-weight: 700;
                                             wrap: word-wrap;
                                         }
                                         if root.page-sub != "": Text {
                                             text: root.page-sub;
                                             color: root.page-accent;
-                                            font-size: 28px;
+                                            font-size: 26px;
                                             wrap: word-wrap;
                                         }
                                         Text {
                                             text: root.page-caption;
-                                            color: #ffffffa6;
-                                            font-size: 11px;
+                                            color: Theme.dim;
+                                            font-size: 12px;
                                             font-weight: 600;
                                         }
                                         Rectangle {
-                                            height: 16px;
+                                            vertical-stretch: 1;
                                         }
+                                        // Shuffle in a circle, a wide Play, and add to the queue: quiet grey, in the accent, as Music has them.
                                         HorizontalLayout {
-                                            spacing: 12px;
+                                            spacing: 10px;
                                             alignment: start;
+                                            IconButton {
+                                                y: (parent.height - self.height) / 2;
+                                                path: Icons.shuffle;
+                                                size: 34px;
+                                                icon: 16px;
+                                                ink: root.page-accent;
+                                                base: Theme.fill;
+                                                clicked => { root.play-page(true); }
+                                            }
                                             Capsule {
                                                 text: "Play";
                                                 icon: Icons.play;
                                                 solid-icon: true;
-                                                ink: root.page-accent;
+                                                ink: Theme.fill;
+                                                label: root.page-accent;
                                                 clicked => { root.play-page(false); }
                                             }
-                                            Capsule {
-                                                text: "Shuffle";
-                                                icon: Icons.shuffle;
+                                            IconButton {
+                                                y: (parent.height - self.height) / 2;
+                                                path: Icons.plus;
+                                                size: 34px;
+                                                icon: 16px;
                                                 ink: root.page-accent;
-                                                clicked => { root.play-page(true); }
+                                                base: Theme.fill;
+                                                clicked => { root.page-later(); }
                                             }
                                         }
                                     }
@@ -1855,9 +2002,9 @@ export component AppWindow inherits Window {
                 if !root.native-player: Glass {
                     x: (parent.width - self.width) / 2;
                     y: parent.height - self.height - 12px;
-                    width: min(parent.width - 32px, 820px);
-                    height: 60px;
-                    radius: 30px;
+                    width: min(parent.width - 32px, 720px);
+                    height: 54px;
+                    radius: 27px;
                     density: 0.9;
                     PlayerControls {
                         has-song: root.has-song;
@@ -1893,7 +2040,7 @@ export component AppWindow inherits Window {
 
             // The sidebar: full height from the window's edge, the system's sidebar material through it
             // (macOS), a hairline between it and the page, the traffic lights at its top.
-            Rectangle {
+            if !root.native-sidebar: Rectangle {
                 x: 0;
                 y: 0;
                 width: 240px;
@@ -1909,99 +2056,19 @@ export component AppWindow inherits Window {
                     width: 1px;
                     background: #000000a0;
                 }
-                TitleStrip {
-                    y: 0;
-                    drag => { root.drag-window(); }
-                    zoom => { root.zoom-window(); }
-                }
-                Flickable {
-                    y: root.inset-top;
-                    height: parent.height - self.y - foot.height;
-                    content-height: side.preferred-height;
-                    side := VerticalLayout {
-                        width: parent.width;
-                        padding-left: 16px;
-                        padding-right: 16px;
-                        padding-bottom: 12px;
-                        spacing: 1px;
-                        SideItem {
-                            text: "Search";
-                            icon: Icons.search;
-                            chosen: root.view == 1;
-                            clicked => { root.go(1); }
-                        }
-                        SideItem {
-                            text: "Home";
-                            icon: Icons.home;
-                            chosen: root.view == 0;
-                            clicked => { root.go(0); }
-                        }
-                        SideHeading {
-                            text: "Library";
-                        }
-                        SideItem {
-                            text: "Artists";
-                            icon: Icons.artists;
-                            chosen: root.view == 3 || (root.view == 6 && root.page-kind == 1);
-                            clicked => { root.go(3); }
-                        }
-                        SideItem {
-                            text: "Albums";
-                            icon: Icons.albums;
-                            chosen: root.view == 2 || (root.view == 6 && root.page-kind == 0);
-                            clicked => { root.go(2); }
-                        }
-                        SideItem {
-                            text: "Songs";
-                            icon: Icons.songs;
-                            chosen: root.view == 5;
-                            clicked => { root.go(5); }
-                        }
-                        SideHeading {
-                            text: "Playlists";
-                        }
-                        SideItem {
-                            text: "All Playlists";
-                            icon: Icons.playlists;
-                            chosen: root.view == 4;
-                            clicked => { root.go(4); }
-                        }
-                        for p in root.playlists: SideItem {
-                            text: p.title;
-                            has-picture: true;
-                            picture: root.art(p.art, 0, root.covers-rev);
-                            chosen: root.view == 6 && root.page-kind == 2 && root.page-id == p.id;
-                            clicked => { root.open-playlist(p.id); }
-                        }
-                    }
-                }
-                foot := VerticalLayout {
-                    height: self.preferred-height;
-                    y: parent.height - self.height;
-                    padding-left: 16px;
-                    padding-right: 16px;
-                    padding-top: 8px;
-                    padding-bottom: 12px;
-                    spacing: 1px;
-                    Rectangle {
-                        height: 1px;
-                        background: Theme.hairline;
-                    }
-                    Rectangle {
-                        height: 6px;
-                    }
-                    SideItem {
-                        text: "Settings";
-                        icon: Icons.gear;
-                        chosen: root.view == 8;
-                        clicked => { root.go(8); }
-                    }
-                    SideItem {
-                        text: root.server;
-                        icon: Icons.server;
-                        chosen: root.view == 7;
-                        clicked => { root.go(7); }
-                    }
+                SidebarContent {
+                    view: root.view;
+                    page-kind: root.page-kind;
+                    page-id: root.page-id;
+                    playlists: root.playlists;
+                    server: root.server;
+                    covers-rev: root.covers-rev;
+                    inset-top: root.inset-top;
+                    art(a, s, r) => { return root.art(a, s, r); }
+                    go(v) => { root.go(v); }
+                    open-playlist(id) => { root.open-playlist(id); }
+                    drag-window => { root.drag-window(); }
+                    zoom-window => { root.zoom-window(); }
                 }
             }
         }
@@ -2271,5 +2338,57 @@ export component PlayerBar inherits Window {
         cycle-repeat => { root.cycle-repeat(); }
         set-inspector(i) => { root.set-inspector(i); }
         open-full => { root.open-full(); }
+    }
+}
+
+// The sidebar on macOS: rendered by a window of its own whose view is moved into the system's Liquid
+// Glass over the main window's page (glass.rs), so the glass takes its colour and its light from the page
+// under it, and the rows stay sharp on top.
+export component SidebarWindow inherits Window {
+    title: "nori sidebar";
+    no-frame: true;
+    // Whatever height the main window has: the layout would otherwise cap the window at its own.
+    min-height: 100px;
+    max-height: 100000px;
+    max-width: 100000px;
+    // A pane of its own over any page, as Music's sidebar is: a slight shade over the glass, and a hairline
+    // where the page starts.
+    Rectangle {
+        background: #0000002e;
+    }
+    Rectangle {
+        x: parent.width - 1px;
+        width: 1px;
+        background: #ffffff1f;
+    }
+    background: transparent;
+    default-font-size: 13px;
+    default-font-family: root.font;
+    in property <string> font: "Inter";
+    in property <int> view;
+    in property <int> page-kind;
+    in property <string> page-id;
+    in property <[Card]> playlists;
+    in property <string> server;
+    in property <int> covers-rev;
+    in property <length> inset-top;
+    pure callback art(string, int, int) -> image;
+    callback go(int);
+    callback open-playlist(string);
+    callback drag-window();
+    callback zoom-window();
+    SidebarContent {
+        view: root.view;
+        page-kind: root.page-kind;
+        page-id: root.page-id;
+        playlists: root.playlists;
+        server: root.server;
+        covers-rev: root.covers-rev;
+        inset-top: root.inset-top;
+        art(a, s, r) => { return root.art(a, s, r); }
+        go(v) => { root.go(v); }
+        open-playlist(id) => { root.open-playlist(id); }
+        drag-window => { root.drag-window(); }
+        zoom-window => { root.zoom-window(); }
     }
 }
