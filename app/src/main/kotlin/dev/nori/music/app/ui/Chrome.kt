@@ -111,7 +111,7 @@ fun TabBar(route: String?, tabs: List<Tab>, onTab: (String) -> Unit, look: Look,
     val slab = look.color(CoverLook.CHROME_SLAB)
     val content = look.color(CoverLook.CHROME_CONTENT)
     val edge = look.color(CoverLook.CHROME_EDGE)
-    val accent = rememberPlayingAccent(player, slab)
+    val accent = rememberTabAccent(player, slab, content)
     val search = tabs.firstOrNull { it.route == "search" }
     val rest = tabs.filter { it.route != "search" }
     val sheet = LocalPlayerSheet.current
@@ -187,14 +187,15 @@ fun rememberChromeLook(): Look {
 }
 
 /**
- * The current tab's colour. With the cover's colours on, it is the accent of what is playing - the one the
- * player's own buttons wear - moved until it reads on the bar ([CoverLook.readable]); the bar itself stays
- * neutral (see [rememberChromeLook]), so only the one lit tab follows the music. The theme's own accent
- * when nothing is playing, for a provider's song (whose cover is never measured) and with the setting off.
- * It changes with the song in the span the chrome's own colours take.
+ * The current tab's colour. With the cover's colours on, it is the accent of the page open when that page
+ * wears a cover (an album, an artist, a playlist: [PageTint]), else of what is playing - the one the
+ * player's own buttons wear - moved until it reads on the bar ([CoverLook.readable]). The bar itself
+ * stays neutral away from those pages (see [rememberChromeLook]), so only the one lit tab follows the
+ * music. The theme's own accent with neither, for a provider's song (whose cover is never measured) and
+ * with the setting off. It changes in the span the chrome's own colours take.
  */
 @Composable
-private fun rememberPlayingAccent(player: PlayerViewModel, slab: Color): Color {
+private fun rememberTabAccent(player: PlayerViewModel, slab: Color, content: Color): Color {
     val theme = MaterialTheme.colorScheme.primary
     val settings: dev.nori.music.app.vm.SettingsViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
     val prefs by settings.prefs.collectAsStateWithLifecycle()
@@ -207,9 +208,12 @@ private fun rememberPlayingAccent(player: PlayerViewModel, slab: Color): Color {
     // The same cover and key the mini player warms, so the colours are already worked out by the time a
     // song starts.
     val url = if (prefs.coverColors) player.cover(state.current?.coverArt, CoverSize.ROW)?.takeUnless(::isProviderCover) else null
-    val seed = rememberCoverPalette(url, dark, prefs.amoled)?.look?.get(CoverLook.ACCENT)
-    val target = remember(seed, slab, theme) {
-        if (seed == null) theme else Color(CoverLook.readable(seed, slab.toArgb(), theme.toArgb()))
+    val playing = rememberCoverPalette(url, dark, prefs.amoled)?.look?.get(CoverLook.ACCENT)
+    val seed = (if (prefs.coverColors) pagePalette.value?.look?.get(CoverLook.ACCENT) else null) ?: playing
+    // A cover's accent that no shade of reads on the bar (a pink on an artist page's lifted brown) gives
+    // way to the bar's own ink, which always does; the tab is still marked by its weight and size.
+    val target = remember(seed, slab, theme, content) {
+        if (seed == null) theme else Color(CoverLook.readable(seed, slab.toArgb(), content.toArgb()))
     }
     return androidx.compose.animation.animateColorAsState(target, androidx.compose.animation.core.tween(420), label = "tab accent").value
 }
