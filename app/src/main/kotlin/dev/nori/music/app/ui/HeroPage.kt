@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.layout.size
@@ -142,8 +143,14 @@ fun HeroPage(
         // the cover takes the full width, as ever.
         val hero: @Composable (coverSide: androidx.compose.ui.unit.Dp?) -> Unit = { coverSide ->
         Column(Modifier.fillMaxWidth()) {
-            if (coverUrl != null) Box(
-                (if (coverSide != null) Modifier.fillMaxWidth().wrapContentWidth().size(coverSide) else Modifier.fillMaxWidth().aspectRatio(1f))
+            // On its side the cover is a card standing in its half, as on a shelf, not a sleeve bleeding to the
+            // screen's edges: nothing for it to dissolve into above or beside it.
+            if (coverUrl != null && coverSide != null) Box(
+                Modifier.fillMaxWidth().statusBarsPadding().padding(top = WIDE_TOP, bottom = 14.dp),
+                Alignment.Center,
+            ) { Cover(coverUrl, coverSide, radius = Radius.card) }
+            else if (coverUrl != null) Box(
+                Modifier.fillMaxWidth().aspectRatio(1f)
                     // Parallax and fade, read in the draw phase: scrolling never recomposes the hero.
                     .graphicsLayer {
                         val scrolled = heroScroll(size.height)
@@ -181,7 +188,7 @@ fun HeroPage(
                     },
                 )
             } else if (art != null) Box(
-                Modifier.fillMaxWidth().statusBarsPadding().padding(top = if (coverSide != null) 12.dp else 64.dp, bottom = 18.dp)
+                Modifier.fillMaxWidth().statusBarsPadding().padding(top = if (coverSide != null) WIDE_TOP else 64.dp, bottom = if (coverSide != null) 14.dp else 18.dp)
                     // The page's own artwork is drawn at one size; on its side it is scaled to fit its place.
                     .then(if (coverSide != null) Modifier.height(coverSide) else Modifier),
                 Alignment.Center,
@@ -259,14 +266,21 @@ fun HeroPage(
                 // counted out, so all of it fits without scrolling.
                 // At least room for the three round buttons and a Play pill that still fits "Pause".
                 val half = minOf(maxOf(maxWidth * 0.45f, 360.dp), maxWidth * 0.5f)
-                val side = minOf(half, maxHeight - LocalChromeInset.current - 170.dp).coerceAtLeast(96.dp)
+                // Clear of the back button on both sides (it stands in the half's top left corner), and short
+                // enough to leave the top margin, the name, caption and buttons (about 190 dp) and the now
+                // playing bar their room.
+                val top = with(androidx.compose.ui.platform.LocalDensity.current) {
+                    androidx.compose.foundation.layout.WindowInsets.statusBars.getTop(this).toDp()
+                }
+                val side = minOf(half - BACK_CLEAR * 2, maxHeight - top - WIDE_TOP - LocalChromeInset.current - 190.dp).coerceAtLeast(88.dp)
                 Row(Modifier.fillMaxSize()) {
                     Column(Modifier.width(half).fillMaxHeight().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
                         hero(side)
                         Spacer(Modifier.height(LocalChromeInset.current))
                     }
                     LazyColumn(Modifier.weight(1f).fillMaxHeight(), state = list) {
-                        item(key = "top") { Spacer(Modifier.statusBarsPadding().height(12.dp)) }
+                        // The first song level with the top of the cover beside it.
+                        item(key = "hero-wide-top") { Spacer(Modifier.statusBarsPadding().height(WIDE_TOP)) }
                         content()
                         item(key = "tail") { Spacer(Modifier.height(Space.section + LocalChromeInset.current)) }
                     }
@@ -287,6 +301,12 @@ fun HeroPage(
         }
     }
 }
+
+/** On its side: the space above the cover and above the first song, under the status bar. */
+private val WIDE_TOP = 12.dp
+
+/** On its side: how far the cover keeps from the half's edges, for the back button in the corner (12 + 48 + 8). */
+private val BACK_CLEAR = 68.dp
 
 /** The size a page's own artwork (a mix's) is drawn at: MixScreen hands [HeroPage] its art at this size. */
 private val MIX_ART = 236.dp
