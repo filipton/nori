@@ -189,6 +189,10 @@ class Say(private val r: Resources) {
     val saveTheseSettings: String = r.getString(R.string.save_these_settings)
     val saveAsProfile: String = r.getString(R.string.save_as_profile)
     val crossfeed: String = r.getString(R.string.crossfeed)
+    val crossfeedOff: String = r.getString(R.string.crossfeed_off)
+    val crossfeedDefault: String = r.getString(R.string.crossfeed_default)
+    val crossfeedChuMoy: String = r.getString(R.string.crossfeed_chu_moy)
+    val crossfeedJanMeier: String = r.getString(R.string.crossfeed_jan_meier)
     val importPreset: String = r.getString(R.string.import_preset)
     val importPresetHint: String = r.getString(R.string.import_preset_hint)
     val importPresetExample: String = r.getString(R.string.import_preset_example)
@@ -723,8 +727,13 @@ class Say(private val r: Resources) {
     /** What the limiter is pulling back right now, or that it is not: "−2.3 dB", "not clipping". */
     fun reduction(db: Float): String =
         if (db > 0.05f) r.getString(R.string.eq_reduction, Fmt.fixed(db.toDouble(), 1)) else r.getString(R.string.eq_not_clipping)
-    fun crossfeed(db: Float): String =
-        if (db > 0f) r.getString(R.string.eq_crossfeed_on, Fmt.fixed(db.toDouble(), 1)) else r.getString(R.string.eq_off)
+    fun crossfeed(db: Float, custom: Boolean = false): String = when {
+        db <= 0f -> r.getString(R.string.eq_off)
+        custom -> r.getString(R.string.eq_crossfeed_custom, Fmt.fixed(db.toDouble(), 1))
+        else -> r.getString(R.string.eq_crossfeed_on, Fmt.fixed(db.toDouble(), 1))
+    }
+    /** "Cutoff 700 Hz: how high up the other ear hears". */
+    fun crossfeedCut(hz: Float): String = r.getString(R.string.eq_crossfeed_cut, Fmt.hz(hz))
     /** A graphic band's ISO label: "31.5", "63", "1k", "12.5k". */
     fun isoBand(hz: Float): String = if (hz < 100f && hz != kotlin.math.floor(hz)) Fmt.fixed(hz.toDouble(), 1) else Fmt.hz(hz)
     /** The band dialog's title: "63 Hz", "1k Hz". */

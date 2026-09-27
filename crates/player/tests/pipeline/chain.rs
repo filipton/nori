@@ -197,6 +197,7 @@ fn settings_changed_while_playing_never_click() {
         ("the equalizer", limiter(), Sound { bands: curve(), ..limiter() }),
         ("mono", limiter(), Sound { mono: true, ..limiter() }),
         ("crossfeed", limiter(), Sound { crossfeed_db: 4.5, ..limiter() }),
+        ("the crossfeed's cutoff", Sound { crossfeed_db: 9.5, crossfeed_hz: 650.0, ..limiter() }, Sound { crossfeed_db: 9.5, crossfeed_hz: 1500.0, ..limiter() }),
         ("balance", eq.clone(), Sound { balance: 0.4, ..eq.clone() }),
         ("the limiter", eq.clone(), Sound { limiter: true, ..eq.clone() }),
         ("the graphic equalizer", limiter(), Sound { graphic: vec![3.0, 6.0, 4.0, 0.0, -3.0, -3.0, 0.0, 2.0, 4.0, 4.0], ..limiter() }),

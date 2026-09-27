@@ -53,6 +53,8 @@ pub struct Sound {
     pub effects: Effects,
     pub preamp_db: f64,
     pub crossfeed_db: f64,
+    /// The crossfeed's cutoff, Hz.
+    pub crossfeed_hz: f64,
     pub balance: f64,
     pub mono: bool,
     pub limiter: bool,
@@ -67,6 +69,7 @@ impl Default for Sound {
             effects: Effects::default(),
             preamp_db: 0.0,
             crossfeed_db: 0.0,
+            crossfeed_hz: crate::dsp::CROSSFEED_DEFAULT_HZ,
             balance: 0.0,
             mono: false,
             limiter: false,
@@ -85,6 +88,7 @@ impl Sound {
     /// The chain set up the way `follow_chain` in the core sets it up. Anything that boosts the level
     /// (the volume boost, bass boost, a compressor's make-up) brings the limiter with it.
     pub fn apply(&self, eq: &mut Equalizer) {
+        eq.set_crossfeed_cut(self.crossfeed_hz);
         if self.graphic.is_empty() {
             eq.configure(&self.bands, self.preamp_db, self.crossfeed_db);
         } else {

@@ -150,6 +150,10 @@
     <string name="save_these_settings">Save these settings</string>
     <string name="save_as_profile">Save current settings as a profile</string>
     <string name="crossfeed">Crossfeed</string>
+    <string name="crossfeed_off">Off</string>
+    <string name="crossfeed_default">Default</string>
+    <string name="crossfeed_chu_moy">Chu Moy</string>
+    <string name="crossfeed_jan_meier">Jan Meier</string>
     <string name="import_preset">Import preset</string>
     <string name="import_preset_hint">Paste an AutoEQ ParametricEQ.txt or GraphicEQ.txt, or an Equalizer APO config.</string>
     <string name="import_preset_example">Preamp: -6.2 dB\nFilter 1: ON PK Fc 105 Hz Gain -3.5 dB Q 0.70</string>
@@ -320,6 +324,8 @@
     <string name="eq_ceiling">Ceiling %1$s dB</string>
     <string name="eq_reduction">−%1$s dB</string>
     <string name="eq_not_clipping">not clipping</string>
+    <string name="eq_crossfeed_custom">Custom, %1$s dB: each ear also hears a little of the other channel, like loudspeakers. For headphones.</string>
+    <string name="eq_crossfeed_cut">Cutoff %1$s Hz: how high up the other ear hears</string>
     <string name="eq_crossfeed_on">%1$s dB: each ear also hears a little of the other channel, like loudspeakers. For headphones.</string>
     <string name="eq_off">Off</string>
     <string name="eq_hz_title">%1$s Hz</string>

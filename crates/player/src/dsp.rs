@@ -147,8 +147,52 @@ pub fn uses_gain(kind: i32) -> bool {
     matches!(kind, PEAKING | LOW_SHELF | HIGH_SHELF | LOW_SHELF_SLOPE | HIGH_SHELF_SLOPE)
 }
 
+/// bs2b's cutoff and level limits (its `BS2B_MINFCUT`..`BS2B_MAXFCUT`, `BS2B_MINFEED`..`BS2B_MAXFEED`).
+pub const CROSSFEED_CUT_HZ: (f64, f64) = (300.0, 2000.0);
+pub const CROSSFEED_DB: (f64, f64) = (1.0, 15.0);
+/// The cutoff a crossfeed gets unless told otherwise: bs2b's default.
+pub const CROSSFEED_DEFAULT_HZ: f64 = 700.0;
+
+/// bs2b's three standard settings, as its library ships them (`BS2B_DEFAULT_CLEVEL`, `BS2B_CMOY_CLEVEL`,
+/// `BS2B_JMEIER_CLEVEL`); the client names each.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CrossfeedPreset {
+    /// 700 Hz, 4.5 dB: close to a virtual speaker placement at 30 degrees, the one most people like.
+    Default,
+    /// Chu Moy's circuit: 700 Hz, 6 dB.
+    ChuMoy,
+    /// Jan Meier's circuit: 650 Hz, 9.5 dB, the strongest.
+    JanMeier,
+}
+
+impl CrossfeedPreset {
+    pub const ALL: [CrossfeedPreset; 3] = [CrossfeedPreset::Default, CrossfeedPreset::ChuMoy, CrossfeedPreset::JanMeier];
+
+    /// Its cutoff, Hz, and level, dB.
+    pub fn settings(self) -> (f64, f64) {
+        match self {
+            CrossfeedPreset::Default => (700.0, 4.5),
+            CrossfeedPreset::ChuMoy => (700.0, 6.0),
+            CrossfeedPreset::JanMeier => (650.0, 9.5),
+        }
+    }
+
+    /// The preset these are, if any (to a tenth of a dB and a hertz).
+    pub fn of(cut_hz: f64, level_db: f64) -> Option<CrossfeedPreset> {
+        CrossfeedPreset::ALL.into_iter().find(|p| {
+            let (c, l) = p.settings();
+            (c - cut_hz).abs() < 1.0 && (l - level_db).abs() < 0.05
+        })
+    }
+}
+
 /// Headphone crossfeed after Boris Mikhaylov's bs2b: each ear also gets the other channel, low-passed and
 /// attenuated, the way a loudspeaker would reach it. Stereo only.
+///
+/// `cut_hz` is the low-pass's corner and `level_db` how far the other ear's bass sits below its own; bs2b's
+/// design then puts a high shelf on the direct path that makes up for what the cross path adds below the
+/// cutoff, so a centred (mono) signal keeps its level in the bass and is at most 1.8 dB softer in the
+/// treble (the Default preset; less for the stronger ones), as bs2b itself plays it.
 #[derive(Clone, Copy, Default)]
 struct Crossfeed {
     a0_lo: f64,
@@ -157,6 +201,8 @@ struct Crossfeed {
     a1_hi: f64,
     b1_hi: f64,
     gain: f64,
+    /// What it was designed for, so a new cutoff can keep the level.
+    level_db: f64,
     lo: [f64; 2],
     hi: [f64; 2],
     last: [f64; 2],
@@ -164,6 +210,8 @@ struct Crossfeed {
 
 impl Crossfeed {
     fn new(rate: f64, level_db: f64, cut_hz: f64) -> Self {
+        let level_db = finite(level_db, 4.5).clamp(CROSSFEED_DB.0, CROSSFEED_DB.1);
+        let cut_hz = finite(cut_hz, CROSSFEED_DEFAULT_HZ).clamp(CROSSFEED_CUT_HZ.0, CROSSFEED_CUT_HZ.1).min(rate * 0.45);
         let gb_lo = level_db * -5.0 / 6.0 - 3.0;
         let gb_hi = level_db / 6.0 - 3.0;
         let g_lo = 10f64.powf(gb_lo / 20.0);
@@ -178,6 +226,7 @@ impl Crossfeed {
             a1_hi: -x_hi,
             b1_hi: x_hi,
             gain: 1.0 / (1.0 - g_hi + g_lo),
+            level_db,
             ..Default::default()
         }
     }
@@ -337,6 +386,8 @@ struct Stages {
     compressor: Option<Compressor>,
     virtualizer: Option<Virtualizer>,
     crossfeed: Option<Crossfeed>,
+    /// The crossfeed's cutoff, kept for the next time it is built.
+    crossfeed_hz: f64,
     mono: bool,
     balance: (f64, f64),
     /// The volume boost, linear; 1 is none.
@@ -502,6 +553,7 @@ impl Equalizer {
             compressor: None,
             virtualizer: None,
             crossfeed: None,
+            crossfeed_hz: CROSSFEED_DEFAULT_HZ,
             mono: false,
             balance: (1.0, 1.0),
             boost: 1.0,
@@ -570,7 +622,22 @@ impl Equalizer {
     fn rest(s: &mut Stages, rate: f64, preamp_db: f64, crossfeed_db: f64) {
         s.state.resize(s.filters.len(), [[0.0; 2]; MAX_CHANNELS]);
         s.preamp = 10f64.powf(finite(preamp_db, 0.0).clamp(-30.0, 12.0) / 20.0);
-        s.crossfeed = (crossfeed_db > 0.0 && s.channels == 2).then(|| Crossfeed::new(rate, crossfeed_db.clamp(1.0, 15.0), 700.0));
+        s.crossfeed = (crossfeed_db > 0.0 && s.channels == 2).then(|| Crossfeed::new(rate, crossfeed_db, s.crossfeed_hz));
+    }
+
+    /// The crossfeed's cutoff (bs2b's `fcut`, held to [`CROSSFEED_CUT_HZ`]); its level is `configure`'s.
+    /// A crossfeed already on is designed again at the new cutoff.
+    pub fn set_crossfeed_cut(&mut self, cut_hz: f64) {
+        let cut_hz = finite(cut_hz, CROSSFEED_DEFAULT_HZ).clamp(CROSSFEED_CUT_HZ.0, CROSSFEED_CUT_HZ.1);
+        if cut_hz == self.now.crossfeed_hz {
+            return;
+        }
+        self.change(|s, rate| {
+            s.crossfeed_hz = cut_hz;
+            if let Some(level) = s.crossfeed.as_ref().map(|c| c.level_db) {
+                s.crossfeed = Some(Crossfeed::new(rate, level, cut_hz));
+            }
+        });
     }
 
     /// The effects: bass boost, compressor, virtualizer (stereo only) and volume boost, each off at 0 or
@@ -1009,6 +1076,62 @@ mod tests {
         eq.process_f32(&mono, &mut y);
         let db = 20.0 * (rms(&y[19200..]) / rms(&mono[19200..])).log10();
         assert!(db.abs() < 1.0, "mono level moved by {db} dB");
+    }
+
+    /// The other ear's level against this ear's for a tone in the left channel alone, dB.
+    fn leak_at(eq: &mut Equalizer, freq: f64) -> f64 {
+        let left_only: Vec<f32> = tone(freq).iter().flat_map(|s| [*s, 0.0]).collect();
+        let mut y = vec![0f32; left_only.len()];
+        eq.reset();
+        eq.process_f32(&left_only, &mut y);
+        let l: Vec<f32> = y.iter().step_by(2).skip(9600).copied().collect();
+        let r: Vec<f32> = y.iter().skip(1).step_by(2).skip(9600).copied().collect();
+        20.0 * (rms(&r) / rms(&l)).log10()
+    }
+
+    #[test]
+    fn the_crossfeed_presets_are_bs2bs() {
+        assert_eq!(CrossfeedPreset::Default.settings(), (700.0, 4.5));
+        assert_eq!(CrossfeedPreset::ChuMoy.settings(), (700.0, 6.0));
+        assert_eq!(CrossfeedPreset::JanMeier.settings(), (650.0, 9.5));
+        for p in CrossfeedPreset::ALL {
+            let (cut, level) = p.settings();
+            assert_eq!(CrossfeedPreset::of(cut, level), Some(p));
+            // bs2b's design: in the deep bass the other ear is exactly `level` below, a centred sound keeps
+            // its level there, and above the cutoff it is under 2 dB darker (bs2b's own normalisation).
+            let mut eq = Equalizer::new(48000, 2);
+            eq.set_crossfeed_cut(cut);
+            eq.configure(&[], 0.0, level);
+            let leak = leak_at(&mut eq, 40.0);
+            assert!((leak + level).abs() < 0.3, "{p:?}: {leak} dB at 40 Hz, the preset says -{level}");
+            for f in [50.0, 300.0, 700.0, 2000.0, 8000.0] {
+                let (l, r) = stereo_gain_at(&mut eq, f);
+                assert!(l <= 0.05 && l > -2.0 && (l - r).abs() < 1e-9, "{p:?}: a centred tone at {f} Hz moved {l} dB");
+            }
+        }
+        assert_eq!(CrossfeedPreset::of(700.0, 5.0), None, "custom");
+    }
+
+    #[test]
+    fn the_crossfeed_cutoff_sets_how_much_treble_crosses() {
+        let mut eq = Equalizer::new(48000, 2);
+        eq.configure(&[], 0.0, 6.0);
+        let low = leak_at(&mut eq, 2500.0);
+        eq.set_crossfeed_cut(1500.0);
+        let high = leak_at(&mut eq, 2500.0);
+        assert!(high > low + 3.0, "a higher cutoff lets more of 2.5 kHz across: {low} dB at 700 Hz, {high} dB at 1500 Hz");
+        // Moved before the crossfeed is on, the cutoff is kept for when it comes on.
+        let mut later = Equalizer::new(48000, 2);
+        later.set_crossfeed_cut(1500.0);
+        assert!(later.is_identity(), "a cutoff alone is no crossfeed");
+        later.configure(&[], 0.0, 6.0);
+        assert!((leak_at(&mut later, 2500.0) - high).abs() < 1e-6);
+        // Nonsense is the default cutoff, and anything past bs2b's range is held to it.
+        later.set_crossfeed_cut(f64::NAN);
+        let d = leak_at(&mut later, 2500.0);
+        assert!((d - low).abs() < 1e-6, "NaN is the default cutoff: {d} / {low}");
+        later.set_crossfeed_cut(1e9);
+        assert!(leak_at(&mut later, 2500.0).is_finite());
     }
 
     #[test]

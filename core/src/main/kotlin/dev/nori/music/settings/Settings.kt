@@ -149,6 +149,7 @@ class Settings(private val context: Context) {
                 EqLevel.COMP_RELEASE -> p.copy(compReleaseMs = kept)
                 EqLevel.COMP_MAKEUP -> p.copy(compMakeupDb = kept)
                 EqLevel.COMP_KNEE -> p.copy(compKneeDb = kept)
+                EqLevel.CROSSFEED_CUT -> p.copy(crossfeedHz = kept)
             }
         }
         val effect = r.toInt()

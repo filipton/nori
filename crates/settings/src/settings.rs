@@ -301,6 +301,10 @@ pub struct StoredPrefs {
     pub eq_preamp_db: Option<f32>,
     #[setting("crossfeedDb", FLOAT, default = 0.0, show = K::Level(EQ_RANGES.crossfeed.min, EQ_RANGES.crossfeed.max), effect = SOUND)]
     pub crossfeed_db: f32,
+    /// The crossfeed's cutoff (bs2b's `fcut`), Hz: 700 is bs2b's default; `crossfeedPreset` sets it and the
+    /// level together.
+    #[setting("crossfeedHz", clamped(300.0, 2000.0), default = 700.0, show = K::Level(EQ_RANGES.crossfeed_cut.min, EQ_RANGES.crossfeed_cut.max), effect = SOUND)]
+    pub crossfeed_hz: f32,
     /// Read by the sound chain as it runs: a change only rebuilds the chain when it starts or stops it.
     #[setting("balance", FLOAT, default = 0.0, hidden, effect = SOUND)]
     pub balance: f32,
@@ -447,6 +451,7 @@ pub(crate) const SPECIAL_SPECS: &[(&str, K)] = &[
     ("musicFolder", K::Choice(&[])),
     ("altMaxBitRate", K::Choice(&["0", "320", "192", "128", "96"])),
     ("compressorPreset", K::Choice(&["GENTLE", "BALANCED", "STRONG"])),
+    ("crossfeedPreset", K::Choice(&["OFF", "DEFAULT", "CHU_MOY", "JAN_MEIER"])),
     ("eqLayout", K::Choice(&["10", "15", "31"])),
 ];
 
@@ -531,6 +536,7 @@ pub struct SoundSettings {
     pub eq_graphic_target: Vec<f32>,
     pub eq_preamp_db: Option<f32>,
     pub crossfeed_db: f32,
+    pub crossfeed_hz: f32,
     pub balance: f32,
     pub mono: bool,
     pub limiter: bool,
@@ -631,6 +637,7 @@ impl StoredPrefs {
             eq_graphic_target: self.eq_graphic_target.clone(),
             eq_preamp_db: self.eq_preamp_db,
             crossfeed_db: self.crossfeed_db,
+            crossfeed_hz: self.crossfeed_hz,
             balance: self.balance,
             mono: self.mono,
             limiter: self.limiter,
@@ -654,6 +661,7 @@ impl StoredPrefs {
             eq_graphic_target: s.eq_graphic_target,
             eq_preamp_db: s.eq_preamp_db,
             crossfeed_db: s.crossfeed_db,
+            crossfeed_hz: s.crossfeed_hz,
             balance: s.balance,
             mono: s.mono,
             limiter: s.limiter,
@@ -860,6 +868,7 @@ pub fn sound_from(json: &str) -> Option<SoundSettings> {
         eq_graphic_target: decode_target(&opt_string(o, "eqGraphicTarget")),
         eq_preamp_db,
         crossfeed_db: opt_f64(o, "crossfeedDb", 0.0) as f32,
+        crossfeed_hz: EQ_RANGES.crossfeed_cut.hold(opt_f64(o, "crossfeedHz", 700.0) as f32),
         balance: opt_f64(o, "balance", 0.0) as f32,
         mono: opt_bool(o, "mono"),
         limiter: opt_bool(o, "limiter"),
@@ -892,6 +901,7 @@ pub fn sound_json(s: &SoundSettings) -> String {
         o.insert("eqPreampDb".into(), (p as f64).into());
     }
     o.insert("crossfeedDb".into(), (s.crossfeed_db as f64).into());
+    o.insert("crossfeedHz".into(), (s.crossfeed_hz as f64).into());
     o.insert("balance".into(), (s.balance as f64).into());
     o.insert("mono".into(), s.mono.into());
     o.insert("limiter".into(), s.limiter.into());
@@ -1085,6 +1095,13 @@ fn set_special(p: &StoredPrefs, n: &mut StoredPrefs, server: &mut bool, name: &s
             (n.compressor, n.comp_threshold_db, n.comp_ratio, n.comp_attack_ms, n.comp_release_ms, n.comp_makeup_db, n.comp_knee_db) =
                 (e.compressor, e.comp_threshold_db, e.comp_ratio, e.comp_attack_ms, e.comp_release_ms, e.comp_makeup_db, e.comp_knee_db);
         }),
+        // One of bs2b's settings, its cutoff and level taken whole, and the crossfeed on; or off, the
+        // cutoff kept.
+        "crossfeedPreset" if value.trim().eq_ignore_ascii_case("OFF") => Some(n.crossfeed_db = 0.0),
+        "crossfeedPreset" => crossfeed_preset_named(value).map(|c| {
+            let (cut, level) = c.settings();
+            (n.crossfeed_hz, n.crossfeed_db) = (cut as f32, level as f32);
+        }),
         // How many graphic bands: the curve drawn again on the new layout.
         // With a headphone correction on it, the new layout is fitted to the correction again.
         "eqLayout" => value.trim().parse::<usize>().ok().filter(|c| nori_player::graphic::LAYOUTS.contains(c)).map(|c| match fit_target(&p.eq_graphic_target, c) {
@@ -1114,6 +1131,9 @@ pub(crate) fn value_of_special(p: &StoredPrefs, name: &str) -> Option<String> {
         "motionArtworkMobile" => (!p.motion_artwork_wifi_only).to_string(),
         "compressorPreset" => p.effects().compressor_preset().map_or("", compressor_preset_name).to_string(),
         "eqLayout" => p.eq_graphic.len().to_string(),
+        // "" is a crossfeed of the listener's own (the client's "Custom").
+        "crossfeedPreset" if p.crossfeed_db <= 0.0 => "OFF".to_string(),
+        "crossfeedPreset" => crossfeed_preset(p.crossfeed_hz, p.crossfeed_db).map_or("", crossfeed_preset_name).to_string(),
         "musicFolder" => server().map(|s| s.music_folder_id.clone()).unwrap_or_default(),
         "altMaxBitRate" => server().map_or(0, |s| s.alt_max_bit_rate).to_string(),
         _ => return None,
@@ -1146,6 +1166,27 @@ fn compressor_preset_name(p: nori_player::compressor::CompressorPreset) -> &'sta
         C::Balanced => "BALANCED",
         C::Strong => "STRONG",
     }
+}
+
+fn crossfeed_preset_name(p: nori_player::dsp::CrossfeedPreset) -> &'static str {
+    use nori_player::dsp::CrossfeedPreset as C;
+    match p {
+        C::Default => "DEFAULT",
+        C::ChuMoy => "CHU_MOY",
+        C::JanMeier => "JAN_MEIER",
+    }
+}
+
+fn crossfeed_preset_named(name: &str) -> Option<nori_player::dsp::CrossfeedPreset> {
+    nori_player::dsp::CrossfeedPreset::ALL.into_iter().find(|p| crossfeed_preset_name(*p).eq_ignore_ascii_case(name.trim()))
+}
+
+/// Which of bs2b's settings the crossfeed is on, if any: none with it off (0 dB) or moved by hand.
+pub fn crossfeed_preset(cut_hz: f32, level_db: f32) -> Option<nori_player::dsp::CrossfeedPreset> {
+    if level_db <= 0.0 {
+        return None;
+    }
+    nori_player::dsp::CrossfeedPreset::of(cut_hz as f64, level_db as f64)
 }
 
 fn compressor_preset_named(name: &str) -> Option<nori_player::compressor::CompressorPreset> {
@@ -1278,6 +1319,8 @@ pub struct EqRanges {
     pub limiter: Span,
     /// Crossfeed, dB; 0 is off.
     pub crossfeed: Span,
+    /// The crossfeed's cutoff, Hz.
+    pub crossfeed_cut: Span,
     /// A band's width (or a shelf's slope).
     pub q: Span,
     /// A band's frequency, Hz: the frequency slider's 20 Hz to 20 kHz.
@@ -1291,7 +1334,9 @@ pub const EQ_RANGES: EqRanges = EqRanges {
     preamp: Span { min: -20.0, max: 6.0 },
     balance: Span { min: -1.0, max: 1.0 },
     limiter: Span { min: -12.0, max: 0.0 },
-    crossfeed: Span { min: 0.0, max: 9.0 },
+    // Up to 12 dB, so Jan Meier's 9.5 fits (bs2b itself goes to 15, which is barely stereo any more).
+    crossfeed: Span { min: 0.0, max: 12.0 },
+    crossfeed_cut: Span { min: nori_player::dsp::CROSSFEED_CUT_HZ.0 as f32, max: nori_player::dsp::CROSSFEED_CUT_HZ.1 as f32 },
     q: Span { min: 0.2, max: 8.0 },
     freq: Span { min: 20.0, max: 20_000.0 },
     replay_gain_preamp: Span { min: REPLAY_GAIN_PREAMP.0, max: REPLAY_GAIN_PREAMP.1 },
@@ -1397,11 +1442,13 @@ pub enum EqLevel {
     CompRelease,
     CompMakeup,
     CompKnee,
+    /// The crossfeed's cutoff, Hz.
+    CrossfeedCut,
 }
 
 impl EqLevel {
     /// Every level, in order: the ordinal a platform's door carries.
-    pub const ALL: [EqLevel; 14] = [
+    pub const ALL: [EqLevel; 15] = [
         EqLevel::Preamp,
         EqLevel::Balance,
         EqLevel::Limiter,
@@ -1416,6 +1463,7 @@ impl EqLevel {
         EqLevel::CompRelease,
         EqLevel::CompMakeup,
         EqLevel::CompKnee,
+        EqLevel::CrossfeedCut,
     ];
 
     /// The level's value in these settings.
@@ -1436,6 +1484,7 @@ impl EqLevel {
             EqLevel::CompRelease => e.comp_release_ms,
             EqLevel::CompMakeup => e.comp_makeup_db,
             EqLevel::CompKnee => e.comp_knee_db,
+            EqLevel::CrossfeedCut => s.crossfeed_hz,
         }
     }
 }
@@ -1465,6 +1514,8 @@ pub fn set_level(s: SoundSettings, level: EqLevel, value: f32) -> SoundSettings 
         EqLevel::Limiter => SoundSettings { limiter_threshold_db: r.limiter.hold(value), ..s },
         EqLevel::Crossfeed => SoundSettings { crossfeed_db: crossfeed_snap(r.crossfeed.hold(value)), ..s },
         EqLevel::ReplayGainPreamp => SoundSettings { preamp_db: r.replay_gain_preamp.hold(value), ..s },
+        // Whole hertz: a slider's step is a few of them, and a preset is recognised to the hertz.
+        EqLevel::CrossfeedCut => SoundSettings { crossfeed_hz: r.crossfeed_cut.hold(value).round(), ..s },
         _ => {
             let v = if value.is_nan() { 0.0 } else { value };
             let mut e = s.effects.clone();
@@ -1647,6 +1698,13 @@ pub fn profile_from_form(p: SavedServer, headers: &str) -> SavedServer {
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn eq_model_get() -> EqModel {
     eq_model()
+}
+
+/// Which crossfeed preset these are, by the name `crossfeedPreset` takes ("OFF", "DEFAULT", "CHU_MOY",
+/// "JAN_MEIER"), or "" for the listener's own; asked once per change, for the equalizer screen's chips.
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn crossfeed_preset_of(prefs: StoredPrefs) -> String {
+    value_of_special(&prefs, "crossfeedPreset").unwrap_or_default()
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
@@ -1915,6 +1973,7 @@ mod tests {
             eq_graphic_target: (0..96).map(|i| (i as f32 * 0.37).sin() * 4.0).collect(),
             eq_preamp_db: Some(-6.2),
             crossfeed_db: 3.0,
+            crossfeed_hz: 820.0,
             balance: -0.25,
             mono: true,
             limiter: true,
@@ -2118,7 +2177,9 @@ mod tests {
         assert_eq!(set_level(s.clone(), EqLevel::Balance, 0.03).balance, 0.0);
         assert_eq!(set_level(s.clone(), EqLevel::Balance, -3.0).balance, -1.0);
         assert_eq!(set_level(s.clone(), EqLevel::Crossfeed, 0.5).crossfeed_db, 0.0);
-        assert_eq!(set_level(s.clone(), EqLevel::Crossfeed, 12.0).crossfeed_db, 9.0);
+        assert_eq!(set_level(s.clone(), EqLevel::Crossfeed, 20.0).crossfeed_db, 12.0);
+        assert_eq!(set_level(s.clone(), EqLevel::CrossfeedCut, 100.0).crossfeed_hz, 300.0);
+        assert_eq!(set_level(s.clone(), EqLevel::CrossfeedCut, 912.4).crossfeed_hz, 912.0);
         assert_eq!(set_level(s.clone(), EqLevel::Limiter, 2.0).limiter_threshold_db, 0.0);
         assert_eq!(set_level(s, EqLevel::Preamp, -30.0).eq_preamp_db, Some(-20.0));
     }
@@ -2356,6 +2417,29 @@ mod tests {
         assert_eq!(l.eq_graphic.len(), 31);
         assert_eq!(value_of_special(&l, "eqLayout").as_deref(), Some("31"));
         assert!(set_by_name(&p, "eqLayout", "12").is_none());
+    }
+
+    #[test]
+    fn the_crossfeed_presets_by_name() {
+        let p = StoredPrefs::default();
+        assert_eq!((p.crossfeed_db, p.crossfeed_hz), (0.0, 700.0), "off, at bs2b's cutoff");
+        assert_eq!(value_of_special(&p, "crossfeedPreset").as_deref(), Some("OFF"));
+        let m = set_by_name(&p, "crossfeedPreset", "jan_meier").unwrap().prefs;
+        assert_eq!((m.crossfeed_hz, m.crossfeed_db), (650.0, 9.5));
+        assert!(m.sound_chain_on(), "a preset turns the crossfeed on");
+        assert_eq!(value_of_special(&m, "crossfeedPreset").as_deref(), Some("JAN_MEIER"));
+        let c = set_by_name(&m, "crossfeedPreset", "CHU_MOY").unwrap().prefs;
+        assert_eq!((c.crossfeed_hz, c.crossfeed_db), (700.0, 6.0));
+        let custom = set_by_name(&c, "crossfeedHz", "900").unwrap().prefs;
+        assert_eq!(value_of_special(&custom, "crossfeedPreset").as_deref(), Some(""), "moved: custom");
+        assert_eq!(set_by_name(&p, "crossfeedHz", "5000").unwrap().prefs.crossfeed_hz, 2000.0);
+        assert!(set_by_name(&p, "crossfeedPreset", "loud").is_none());
+        let off = set_by_name(&custom, "crossfeedPreset", "OFF").unwrap().prefs;
+        assert_eq!((off.crossfeed_db, off.crossfeed_hz), (0.0, 900.0), "off keeps the cutoff for next time");
+        // A sound profile keeps the cutoff, and an old one without it reads as bs2b's default.
+        let s = sound_from(&sound_json(&custom.sound())).unwrap();
+        assert_eq!(s.crossfeed_hz, 900.0);
+        assert_eq!(sound_from("{\"crossfeedDb\": 4.5}").unwrap().crossfeed_hz, 700.0);
     }
 
     #[test]

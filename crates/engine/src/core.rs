@@ -1180,6 +1180,7 @@ pub fn settings(s: &StoredPrefs) -> Settings {
         effects: s.effects().player(),
         preamp_db: nori_core::dsp::effective_preamp_db(s) as f64,
         crossfeed_db: s.crossfeed_db as f64,
+        crossfeed_hz: s.crossfeed_hz as f64,
         balance: s.balance as f64,
         mono: s.mono,
         limiter: s.limiter,
