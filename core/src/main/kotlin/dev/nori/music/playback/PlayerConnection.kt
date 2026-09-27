@@ -207,6 +207,8 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
             c.addListener(listener)
             // A mix starting or ending is a change to the UI, and the player itself fires no event for it.
             PlaybackService.onMixingChanged = { main.post { controller?.let { publish(it, queueChanged = false) } } }
+            // A new queue made in the core: its origin read again once the service has set it.
+            PlaybackService.onQueueSet = { main.post { controller?.let { publish(it, queueChanged = true) } } }
             publish(c, queueChanged = true)
             pending.forEach { it(c) }
             pending.clear()

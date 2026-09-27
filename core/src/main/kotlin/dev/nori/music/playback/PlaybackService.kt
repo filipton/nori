@@ -97,6 +97,15 @@ class PlaybackService : MediaLibraryService() {
          * as for a change of song, since the player itself fires no event for it. Set by PlayerConnection.
          */
         @Volatile var onMixingChanged: (() -> Unit)? = null
+        /**
+         * A new queue was set in the core, and with it perhaps the page it came from (nori-queue
+         * `playlist_origin_gen`). The app's controller shows a new queue before the service has made it
+         * (media3 masks the change), so the state it published then still carried the last queue's origin;
+         * when the player then reports nothing the controller has not already shown (the song sounding on
+         * without a buffering state between), no further event came to correct it, and the page the queue
+         * now came from kept Play instead of Pause until the next pause or skip. Set by PlayerConnection.
+         */
+        @Volatile var onQueueSet: (() -> Unit)? = null
     }
 
     private lateinit var nori: Nori
@@ -470,11 +479,13 @@ class PlaybackService : MediaLibraryService() {
             else dev.nori.music.ffi.queue.playlistSet(ids(mediaItems), startIndex.coerceAtMost(mediaItems.size - 1), wrappedPlayer.shuffleModeEnabled, origin)
             if (ordered && wrappedPlayer.shuffleModeEnabled) super.setShuffleModeEnabled(false)
             super.setMediaItems(mediaItems, c.at.coerceAtLeast(0), if (startIndex == C.INDEX_UNSET) C.TIME_UNSET else startPositionMs)
+            onQueueSet?.invoke()
         }
         override fun clearMediaItems() {
             offlineBridge?.abandon()
             dev.nori.music.ffi.queue.playlistSet(emptyList(), -1, false, null)
             super.clearMediaItems()
+            onQueueSet?.invoke()
         }
         override fun removeMediaItem(index: Int) = removeMediaItems(index, index + 1)
         override fun removeMediaItems(fromIndex: Int, toIndex: Int) {

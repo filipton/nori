@@ -562,6 +562,45 @@ pub(crate) mod tests {
         assert_eq!(runs(), [0, 0, 0]);
     }
 
+    /// A playlist playing, its song's album opened, a song of the album tapped: the queue is the album's,
+    /// from the song tapped, and its page is the one playing (its Play reads Pause), the playlist's no
+    /// longer. A tap on another song there, or on the one playing, plays the album from that song: a tap on
+    /// a row is never the page's pause.
+    #[test]
+    fn a_song_tapped_on_an_album_page_makes_the_album_the_one_playing() {
+        use nori_library::pages::{hero_buttons, HeroPress, PageQueue};
+        let _g = hold(&[], 0);
+        let (playlist, album) = (PageOrigin::new(OriginKind::Playlist, "pl-t"), PageOrigin::new(OriginKind::Album, "al-t"));
+        let lights = |o: &PageOrigin| playlist_from(PageQueue::new(o.clone()));
+        playlist_set(ids(&["p1", "t2", "p3"]), 1, false, Some(playlist.clone()));
+        assert!(lights(&playlist) && !lights(&album));
+        let gen = playlist_origin_gen();
+        // What a tap does is the settings' (a whole list from the row by default), never a toggle.
+        assert_eq!(crate::actions::tap_plan(false), crate::actions::TapPlan::PlayList);
+        playlist_set(ids(&["t1", "t2", "t3"]), 1, false, Some(album.clone()));
+        assert_ne!(playlist_origin_gen(), gen, "a page asks again whether it is the one playing");
+        assert!(lights(&album) && !lights(&playlist));
+        let b = hero_buttons(lights(&album), false, true, false, true, true);
+        assert!(b.pausing && b.play_press == HeroPress::Toggle, "the album's Play reads Pause and pauses its queue");
+        assert!(!hero_buttons(lights(&playlist), false, true, false, true, true).pausing, "the playlist's reads Play and starts it");
+        // Another song of the page tapped, then the one playing: the album from there, still the album's.
+        playlist_set(ids(&["t1", "t2", "t3"]), 2, false, Some(album.clone()));
+        assert_eq!(with(|p| p.current_id().map(str::to_string)), Some("t3".into()));
+        playlist_set(ids(&["t1", "t2", "t3"]), 2, false, Some(album.clone()));
+        assert!(lights(&album));
+        // Autofill appending, a song added, removed and moved, shuffle: still the album's queue, and its
+        // songs still its album run.
+        let run = with(|p| p.album_run(0));
+        playlist_take(3, ids(&["auto1", "auto2"]), vec![Hand::No; 2], None);
+        playlist_take(9, ids(&["mine"]), vec![Hand::Next], None);
+        playlist_remove(0, 1);
+        playlist_move(0, 1, 2);
+        playlist_shuffle(true);
+        playlist_shuffle(false);
+        assert!(lights(&album) && !lights(&playlist));
+        assert_eq!(with(|p| (0..p.len()).filter(|&i| p.album_run(i) == run).count()), 2, "t2 and t3: {:?}", runs());
+    }
+
     #[test]
     fn a_queue_put_back_keeps_its_album_runs() {
         let _g = hold(&[], 0);
