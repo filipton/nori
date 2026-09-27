@@ -108,7 +108,9 @@ fun BottomChrome(player: PlayerViewModel, actions: ActionsViewModel, onOpenPlaye
         SelectionBar(actions)
         Box(Modifier.padding(horizontal = 10.dp)) { MiniPlayer(player, actions, onOpenPlayer, look) }
         Spacer(Modifier.height(tabsHeight))
-        Spacer(Modifier.navigationBarsPadding())
+        // On its side there is no bar under it: its foot stands where the rail's ends (BAR_END off the
+        // bottom), clear of the gesture bar only when there is one there.
+        if (wide) Spacer(Modifier.height(BAR_END)) else Spacer(Modifier.navigationBarsPadding())
     }
 }
 
