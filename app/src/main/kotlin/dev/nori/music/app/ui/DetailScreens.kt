@@ -1,5 +1,7 @@
 package dev.nori.music.app.ui
 
+import androidx.compose.animation.animateContentSize
+import androidx.compose.ui.text.withStyle
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -117,6 +119,51 @@ private fun PlayButtons(songs: List<Song>, actions: ActionsViewModel, from: Page
 private fun rememberMatching(songs: List<Song>, q: String): List<UInt>? {
     val index = remember(songs) { lazy { dev.nori.music.ffi.library.TextIndex(songs.map { listOf(it.title, it.artist) }) } }
     return remember(index, q) { if (q.isBlank()) null else index.value.view(q).rows }
+}
+
+/**
+ * An artist's biography: four lines, and all of it on a tap when there is more, the way Apple's opens.
+ * Cut, the fourth line ends "… More", the word in the accent: the text is shortened until that fits, found
+ * by measuring (a dozen measures, once per text and width). Tapped again, it folds back.
+ */
+@Composable
+private fun Biography(text: String, modifier: Modifier) {
+    var open by androidx.compose.runtime.saveable.rememberSaveable(text) { mutableStateOf(false) }
+    val style = MaterialTheme.typography.bodyMedium
+    val accent = MaterialTheme.colorScheme.primary
+    val measurer = androidx.compose.ui.text.rememberTextMeasurer()
+    androidx.compose.foundation.layout.BoxWithConstraints(modifier.fillMaxWidth().padding(horizontal = Space.gutter)) {
+        val width = constraints.maxWidth
+        val folded = remember(text, width, style, accent) { foldedBiography(text, width, style, accent, say.more, measurer) }
+        Text(
+            if (open || folded == null) androidx.compose.ui.text.AnnotatedString(text) else folded,
+            Modifier.fillMaxWidth().clickable(enabled = folded != null) { open = !open }.animateContentSize(),
+            style = style, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** [text] cut to four lines ending "… [more]" at [width], or null when all of it fits. */
+private fun foldedBiography(
+    text: String, width: Int, style: androidx.compose.ui.text.TextStyle, accent: androidx.compose.ui.graphics.Color, more: String,
+    measurer: androidx.compose.ui.text.TextMeasurer,
+): androidx.compose.ui.text.AnnotatedString? {
+    val limit = androidx.compose.ui.unit.Constraints(maxWidth = width)
+    val whole = measurer.measure(text, style, maxLines = 4, constraints = limit)
+    if (!whole.hasVisualOverflow) return null
+    fun cutAt(n: Int) = androidx.compose.ui.text.buildAnnotatedString {
+        append(text.take(n).trimEnd())
+        append("… ")
+        withStyle(androidx.compose.ui.text.SpanStyle(color = accent)) { append(more) }
+    }
+    // The longest start of the text that still leaves room for "… More" on the fourth line.
+    var lo = 0
+    var hi = whole.getLineEnd(3, visibleEnd = true)
+    while (lo < hi) {
+        val mid = (lo + hi + 1) / 2
+        if (measurer.measure(cutAt(mid), style, maxLines = 4, constraints = limit).hasVisualOverflow) hi = mid - 1 else lo = mid
+    }
+    return cutAt(lo)
 }
 
 /**
@@ -347,12 +394,7 @@ private fun ArtistPage(artist: Artist, ui: ArtistUi?, failed: String?, actions: 
         when {
             ui != null -> {
                 ui.info?.biography?.let { bio ->
-                    item(key = "bio", contentType = "bio") {
-                        Text(
-                            remember(bio) { dev.nori.music.ffi.library.biography(bio) }, late(arrival).padding(horizontal = Space.gutter),
-                            maxLines = 4, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                    item(key = "bio", contentType = "bio") { Biography(remember(bio) { dev.nori.music.ffi.library.biography(bio) }, late(arrival)) }
                 }
                 if (ui.info?.lastFmUrl != null || ui.info?.musicBrainzId != null) item(key = "links", contentType = "links") {
                     Row(late(arrival).padding(horizontal = 12.dp)) {
