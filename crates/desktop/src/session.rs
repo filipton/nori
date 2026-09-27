@@ -414,6 +414,16 @@ impl Session {
         self.handle().edited();
     }
 
+    /// Everything after the song playing taken out of the queue, as Clear does it.
+    pub fn clear_upcoming(&self) {
+        let mut upcoming: Vec<u32> = playlist::with(|p| p.upcoming().map(|i| i as u32).collect());
+        upcoming.sort_unstable_by(|a, b| b.cmp(a));
+        for i in upcoming {
+            playlist::playlist_remove(i, i + 1);
+        }
+        self.handle().edited();
+    }
+
     pub fn repeat(&self, mode: u8) {
         playlist::playlist_repeat(mode);
         self.engine.set_repeat(mode);

@@ -60,6 +60,11 @@ export global Theme {
     out property <color> hover: #ffffff0d;
     out property <color> chosen: #ffffff1a;
     out property <color> fill: #ffffff12;
+    // The sidebar's width, and the panel's on the right (lyrics, the queue), as Music has them.
+    out property <length> side-w: 216px;
+    out property <length> panel-w: 280px;
+    // The panel's pane: a hair lighter than the page.
+    out property <color> panel: #272423;
 }
 
 // Line icons on a 24 unit square, in the manner of SF Symbols; `solid` fills them instead.
@@ -84,6 +89,9 @@ export global Icons {
     out property <string> down: "M5.5 9 L12 15.5 L18.5 9";
     out property <string> close: "M6 6 L18 18 M18 6 L6 18";
     out property <string> plus: "M12 5 L12 19 M5 12 L19 12";
+    out property <string> bars: "M4 9 L6.5 9 L6.5 19 L4 19 Z M8.5 5 L11 5 L11 19 L8.5 19 Z M13 11 L15.5 11 L15.5 19 L13 19 Z M17.5 7 L20 7 L20 19 L17.5 19 Z";
+    out property <string> infinity: "M12 12 C9.5 8.5 4 8.5 4 12 C4 15.5 9.5 15.5 12 12 C14.5 8.5 20 8.5 20 12 C20 15.5 14.5 15.5 12 12 Z";
+    out property <string> rings: "M13.5 12 A4.5 4.5 0 1 1 4.5 12 A4.5 4.5 0 1 1 13.5 12 Z M19.5 12 A4.5 4.5 0 1 1 10.5 12 A4.5 4.5 0 1 1 19.5 12 Z";
     out property <string> server: "M4 5.5 Q4 4.5 5 4.5 L19 4.5 Q20 4.5 20 5.5 L20 10 L4 10 Z M4 14 L20 14 L20 18.5 Q20 19.5 19 19.5 L5 19.5 Q4 19.5 4 18.5 Z M7.5 7.25 L8 7.25 M7.5 16.75 L8 16.75";
     out property <string> key: "M13 10 A4 4 0 1 1 5 10 A4 4 0 1 1 13 10 M12 12.5 L19.5 20 M16.5 17 L18.5 15";
     out property <string> lyrics: "M5.5 4.5 L18.5 4.5 Q20.5 4.5 20.5 6.5 L20.5 14.5 Q20.5 16.5 18.5 16.5 L12.5 16.5 L8 20.5 L8 16.5 L5.5 16.5 Q3.5 16.5 3.5 14.5 L3.5 6.5 Q3.5 4.5 5.5 4.5 Z M8.2 9 L8.2 11.8 M8.2 9 L10.2 9 M13.8 9 L13.8 11.8 M13.8 9 L15.8 9";
@@ -130,8 +138,8 @@ component IconButton inherits Rectangle {
     in property <bool> solid;
     in property <bool> lit;
     in property <bool> quiet;
-    in property <length> size: 30px;
-    in property <length> icon: 17px;
+    in property <length> size: 32px;
+    in property <length> icon: 19px;
     in property <color> ink: Theme.text;
     in property <color> base: transparent;
     callback clicked;
@@ -493,8 +501,8 @@ component SongLine inherits Rectangle {
     callback next;
     callback later;
     height: root.thumb ? 56px : 44px;
-    border-radius: 6px;
-    background: touch.has-hover ? Theme.hover : transparent;
+    border-radius: 7px;
+    background: root.song.playing ? root.ink : (touch.has-hover ? Theme.hover : transparent);
     animate background { duration: 140ms; easing: ease-out; }
     Rectangle {
         x: root.thumb ? 64px : 44px;
@@ -532,15 +540,16 @@ component SongLine inherits Rectangle {
             if !root.thumb: Rectangle {
                 width: 24px;
                 if root.song.playing: Icon {
-                    path: Icons.speaker;
-                    colour: root.ink;
+                    path: Icons.bars;
+                    solid: true;
+                    colour: white;
                     width: 15px;
                     height: 15px;
                 }
                 if !root.song.playing: Text {
                     width: 100%;
                     text: root.number;
-                    color: Theme.dim;
+                    color: root.song.playing ? #ffffffcc : Theme.dim;
                     font-size: 13px;
                     horizontal-alignment: right;
                 }
@@ -550,13 +559,13 @@ component SongLine inherits Rectangle {
                 horizontal-stretch: 2;
                 Text {
                     text: root.song.title;
-                    color: root.song.playing ? root.ink : Theme.text;
+                    color: root.song.playing ? white : Theme.text;
                     font-size: 13px;
                     overflow: elide;
                 }
                 if root.thumb || root.show-album: Text {
                     text: root.song.artist;
-                    color: Theme.dim;
+                    color: root.song.playing ? #ffffffcc : Theme.dim;
                     font-size: 13px;
                     overflow: elide;
                 }
@@ -564,14 +573,14 @@ component SongLine inherits Rectangle {
             if root.show-album: Text {
                 horizontal-stretch: 1;
                 text: root.song.album;
-                color: Theme.dim;
+                color: root.song.playing ? #ffffffcc : Theme.dim;
                 font-size: 13px;
                 vertical-alignment: center;
                 overflow: elide;
             }
             Text {
                 text: root.song.time;
-                color: Theme.dim;
+                color: root.song.playing ? #ffffffcc : Theme.dim;
                 font-size: 13px;
                 vertical-alignment: center;
                 horizontal-alignment: right;
@@ -751,8 +760,8 @@ component PlayerControls inherits Rectangle {
             path: Icons.shuffle;
             lit: root.shuffle;
             quiet: true;
-            size: 32px;
-            icon: 17px;
+            size: 34px;
+            icon: 20px;
             clicked => { root.toggle-shuffle(); }
         }
         IconButton {
@@ -783,8 +792,8 @@ component PlayerControls inherits Rectangle {
             path: Icons.repeat;
             lit: root.repeat != 0;
             quiet: true;
-            size: 32px;
-            icon: 17px;
+            size: 34px;
+            icon: 20px;
             clicked => { root.cycle-repeat(); }
             if root.repeat == 1: Text {
                 x: parent.width - 11px;
@@ -856,23 +865,23 @@ component PlayerControls inherits Rectangle {
             y: (parent.height - self.height) / 2;
             path: Icons.lyrics;
             lit: root.inspector == 2;
-            size: 32px;
-            icon: 17px;
+            size: 34px;
+            icon: 20px;
             clicked => { root.set-inspector(root.inspector == 2 ? 0 : 2); }
         }
         IconButton {
             y: (parent.height - self.height) / 2;
             path: Icons.queue;
             lit: root.inspector == 1;
-            size: 32px;
-            icon: 17px;
+            size: 34px;
+            icon: 20px;
             clicked => { root.set-inspector(root.inspector == 1 ? 0 : 1); }
         }
         IconButton {
             y: (parent.height - self.height) / 2;
             path: root.volume > 0 ? Icons.speaker : Icons.speaker-off;
-            size: 32px;
-            icon: 17px;
+            size: 34px;
+            icon: 20px;
             clicked => { root.set-volume(root.volume > 0 ? 0 : 1); }
         }
         Bar {
@@ -882,6 +891,180 @@ component PlayerControls inherits Rectangle {
             moved(v) => { root.set-volume(v); }
             done(v) => { root.set-volume(v); }
         }
+    }
+}
+
+// What plays next, as Music's panel lists it: AutoPlay and AutoMix as two wide pills, "Continue Playing"
+// with where the songs come from and Clear, the songs with their artwork, and AutoPlay's promise at the end.
+component QueueView inherits Rectangle {
+    in property <[SongRow]> queue;
+    in property <string> from;
+    in property <bool> autoplay;
+    in property <bool> automix;
+    in property <int> covers-rev;
+    in property <bool> wide;
+    pure callback art(string, int, int) -> image;
+    callback jump(int);
+    callback clear;
+    callback set-autoplay(bool);
+    callback set-automix(bool);
+    VerticalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 0;
+        HorizontalLayout {
+            spacing: 8px;
+            height: 34px;
+            for pill[i] in [{ on: root.autoplay, label: "AutoPlay" }, { on: root.automix, label: "AutoMix" }]: Rectangle {
+                border-radius: self.height / 2;
+                background: pill.on ? Theme.accent : #ffffff1a;
+                animate background { duration: 180ms; easing: ease-out; }
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 6px;
+                    Icon {
+                        y: (parent.height - self.height) / 2;
+                        path: i == 0 ? Icons.infinity : Icons.rings;
+                        colour: pill.on ? white : Theme.text;
+                        weight: 2px;
+                        width: 20px;
+                        height: 20px;
+                    }
+                    if root.wide: Text {
+                        text: pill.label;
+                        color: pill.on ? white : Theme.text;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                    }
+                }
+                TouchArea {
+                    clicked => {
+                        if i == 0 {
+                            root.set-autoplay(!root.autoplay);
+                        } else {
+                            root.set-automix(!root.automix);
+                        }
+                    }
+                }
+            }
+        }
+        HorizontalLayout {
+            padding-left: 4px;
+            padding-top: 14px;
+            padding-bottom: 8px;
+            VerticalLayout {
+                horizontal-stretch: 1;
+                Text {
+                    text: "Continue Playing";
+                    color: Theme.text;
+                    font-size: 15px;
+                    font-weight: 700;
+                }
+                if root.from != "": Text {
+                    text: "From " + root.from;
+                    color: Theme.dim;
+                    font-size: 13px;
+                    overflow: elide;
+                }
+            }
+            if root.queue.length > 0: Text {
+                text: "Clear";
+                color: Theme.accent;
+                font-size: 13px;
+                vertical-alignment: top;
+                TouchArea {
+                    clicked => { root.clear(); }
+                }
+            }
+        }
+        Rectangle {
+            height: 1px;
+            background: Theme.hairline;
+        }
+        Flickable {
+            vertical-stretch: 1;
+            content-height: rows.preferred-height;
+            rows := VerticalLayout {
+            width: parent.width;
+            for s in root.queue: Rectangle {
+                height: 50px;
+                border-radius: 6px;
+                background: qt.has-hover ? Theme.hover : transparent;
+                HorizontalLayout {
+                    padding-left: 4px;
+                    padding-right: 4px;
+                    spacing: 10px;
+                    Art {
+                        y: (parent.height - self.height) / 2;
+                        width: 34px;
+                        height: 34px;
+                        border-radius: 4px;
+                        source: root.art(s.art, 0, root.covers-rev);
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: s.title;
+                            color: Theme.text;
+                            font-size: 13px;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: s.artist + (s.album != "" ? " — " + s.album : "");
+                            color: Theme.dim;
+                            font-size: 11px;
+                            overflow: elide;
+                        }
+                    }
+                    Text {
+                        text: "···";
+                        color: Theme.dim;
+                        font-size: 14px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                }
+                Rectangle {
+                    x: 48px;
+                    y: parent.height - 1px;
+                    width: parent.width - 52px;
+                    height: 1px;
+                    background: Theme.hairline;
+                }
+                qt := TouchArea {
+                    double-clicked => { root.jump(s.index); }
+                }
+            }
+                if root.autoplay: HorizontalLayout {
+                padding-left: 4px;
+                padding-top: 16px;
+                padding-bottom: 8px;
+                spacing: 6px;
+                Icon {
+                    path: Icons.infinity;
+                    colour: Theme.text;
+                    weight: 2px;
+                    width: 20px;
+                    height: 20px;
+                }
+                VerticalLayout {
+                    Text {
+                        text: "AutoPlay";
+                        color: Theme.text;
+                        font-size: 15px;
+                        font-weight: 700;
+                    }
+                    Text {
+                        text: "Similar songs will play";
+                        color: Theme.dim;
+                        font-size: 13px;
+                    }
+                }
+            }
+            }
+        }
+
     }
 }
 
@@ -1101,6 +1284,10 @@ export component AppWindow inherits Window {
         self.player-changed();
     }
     in-out property <bool> full-player;
+    // What Now Playing shows beside the artwork: 0 nothing, 1 the queue, 2 the lyrics; and how tall the line
+    // sung is (the compositor keeps it sharp).
+    in-out property <int> full-panel: 2;
+    out property <length> full-lyric-h: 60px;
     // The player is a window of its own over the system's Liquid Glass (macOS): the page draws none.
     in property <bool> native-player;
     // The sidebar is the system's Liquid Glass over the page (macOS): the page's ground, its colour and an
@@ -1119,6 +1306,11 @@ export component AppWindow inherits Window {
     in property <bool> lyrics-synced;
     in property <string> lyrics-note;
     in property <[SettingRow]> settings;
+    // What the queue panel says: where the songs come from, and whether AutoPlay and AutoMix are on.
+    in property <string> queue-from;
+    in property <bool> autoplay;
+    in property <bool> automix;
+    callback clear-queue();
     // The settings page's tab: 0 General, 1 Playback, 2 Sound, 3 Storage.
     in-out property <int> settings-tab;
     callback settings-tab-chosen(int);
@@ -1193,14 +1385,14 @@ export component AppWindow inherits Window {
         // The ground: near black under the page; under the sidebar, clear to the system's sidebar material
         // (macOS), the sidebar's own grey elsewhere.
         Rectangle {
-            x: root.view == 7 || !root.vibrancy ? 0 : 240px;
+            x: root.view == 7 || !root.vibrancy ? 0 : Theme.side-w;
             width: parent.width - self.x;
             background: Theme.ground;
         }
         // Under the system's glass sidebar: the ground half clear, so the glass takes the desktop's colour
         // through the window as well as the page's.
         if root.native-sidebar && root.view != 7: Rectangle {
-            width: 240px;
+            width: Theme.side-w;
             background: Theme.ground.with-alpha(0.55);
         }
 
@@ -1291,7 +1483,7 @@ export component AppWindow inherits Window {
         if root.view != 7: Rectangle {
             // A page that wears its cover's colour: the colour and the wash behind it.
             if root.view == 6: Rectangle {
-                x: root.native-sidebar ? 0 : 240px;
+                x: root.native-sidebar ? 0 : Theme.side-w;
                 width: parent.width - self.x;
                 background: root.page-bg;
                 Image {
@@ -1309,8 +1501,9 @@ export component AppWindow inherits Window {
             }
             // The page, right of the sidebar; it runs up under the titlebar and under the player.
             Rectangle {
-                x: 240px;
-                width: parent.width - self.x;
+                x: Theme.side-w;
+                width: parent.width - self.x - (root.inspector != 0 ? Theme.panel-w : 0);
+                animate width { duration: 300ms; easing: cubic-bezier(0.2, 0.9, 0.3, 1); }
                 // Under the system's glass, an artist's picture runs on under the sidebar.
                 clip: !root.native-sidebar;
 
@@ -1480,7 +1673,7 @@ export component AppWindow inherits Window {
                         // as it scrolls, and dissolving into the page's colour.
                         if root.page-kind == 1: Rectangle {
                             y: max(-self.height, page-flick.content-y * 0.45);
-                            x: root.native-sidebar ? -240px : 0;
+                            x: root.native-sidebar ? -Theme.side-w : 0;
                             width: parent.width - self.x;
                             height: max(420px, root.height * 0.64);
                             opacity: 1 + max(-0.8, page-flick.content-y / self.height);
@@ -1604,7 +1797,7 @@ export component AppWindow inherits Window {
                                                 y: (parent.height - self.height) / 2;
                                                 path: Icons.shuffle;
                                                 size: 34px;
-                                                icon: 16px;
+                                                icon: 18px;
                                                 ink: root.page-accent;
                                                 base: Theme.fill;
                                                 clicked => { root.play-page(true); }
@@ -1621,7 +1814,7 @@ export component AppWindow inherits Window {
                                                 y: (parent.height - self.height) / 2;
                                                 path: Icons.plus;
                                                 size: 34px;
-                                                icon: 16px;
+                                                icon: 18px;
                                                 ink: root.page-accent;
                                                 base: Theme.fill;
                                                 clicked => { root.page-later(); }
@@ -1839,130 +2032,7 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                // Playing Next or the lyrics: an inspector floating in from the right.
-                Glass {
-                    x: root.inspector != 0 ? parent.width - self.width - 8px : parent.width + 20px;
-                    animate x { duration: 280ms; easing: cubic-bezier(0.2, 0.9, 0.3, 1); }
-                    y: 8px;
-                    width: 320px;
-                    height: parent.height - 16px - 72px;
-                    radius: 16px;
-                    density: 0.94;
-                    clip: true;
-                    VerticalLayout {
-                        padding-top: 16px;
-                        padding-bottom: 8px;
-                        HorizontalLayout {
-                            padding-left: 18px;
-                            padding-right: 10px;
-                            height: 34px;
-                            Text {
-                                text: root.shown-panel == 2 ? "Lyrics" : "Playing Next";
-                                color: Theme.text;
-                                font-size: 15px;
-                                font-weight: 700;
-                                vertical-alignment: center;
-                            }
-                            IconButton {
-                                y: (parent.height - self.height) / 2;
-                                path: Icons.close;
-                                quiet: true;
-                                size: 26px;
-                                icon: 13px;
-                                clicked => { root.inspector = 0; }
-                            }
-                        }
-                        // The lyrics: the line sung bright, the rest dim, the page gliding to keep it in view.
-                        if root.shown-panel == 2 && root.lyrics-lines.length == 0: Text {
-                            vertical-stretch: 1;
-                            text: root.lyrics-note;
-                            color: Theme.dim;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                            wrap: word-wrap;
-                        }
-                        if root.shown-panel == 2 && root.lyrics-lines.length > 0: lyric-flick := Flickable {
-                            vertical-stretch: 1;
-                            content-height: sung.preferred-height;
-                            animate content-y { duration: 520ms; easing: cubic-bezier(0.25, 0.8, 0.3, 1); }
-                            sung := VerticalLayout {
-                                width: parent.width;
-                                padding-left: 20px;
-                                padding-right: 20px;
-                                padding-top: 24px;
-                                padding-bottom: 240px;
-                                spacing: 16px;
-                                for line[i] in root.lyrics-lines: Text {
-                                    property <bool> lit: i == root.lyrics-active;
-                                    changed lit => {
-                                        if self.lit {
-                                            lyric-flick.content-y = -max(0, min(self.y - lyric-flick.height * 0.28, lyric-flick.content-height - lyric-flick.height));
-                                        }
-                                    }
-                                    text: line;
-                                    wrap: word-wrap;
-                                    font-size: 21px;
-                                    font-weight: 700;
-                                    color: !root.lyrics-synced || self.lit ? #ffffffeb : #ffffff45;
-                                    animate color { duration: 420ms; easing: ease-out; }
-                                }
-                                if root.lyrics-note != "": Text {
-                                    text: root.lyrics-note;
-                                    color: Theme.faint;
-                                    font-size: 11px;
-                                }
-                            }
-                        }
-                        if root.shown-panel == 1: ListView {
-                            vertical-stretch: 1;
-                            for s in root.queue: Rectangle {
-                                height: 52px;
-                                HorizontalLayout {
-                                    padding-left: 8px;
-                                    padding-right: 8px;
-                                    Rectangle {
-                                        border-radius: 8px;
-                                        background: s.playing ? Theme.chosen : (qt.has-hover ? Theme.hover : transparent);
-                                        HorizontalLayout {
-                                            padding-left: 8px;
-                                            padding-right: 10px;
-                                            spacing: 10px;
-                                            Art {
-                                                y: (parent.height - self.height) / 2;
-                                                width: 38px;
-                                                height: 38px;
-                                                border-radius: 5px;
-                                                source: root.art(s.art, 0, root.covers-rev);
-                                            }
-                                            VerticalLayout {
-                                                alignment: center;
-                                                Text {
-                                                    text: s.title;
-                                                    color: s.playing ? Theme.accent : Theme.text;
-                                                    overflow: elide;
-                                                }
-                                                Text {
-                                                    text: s.artist;
-                                                    color: Theme.dim;
-                                                    overflow: elide;
-                                                }
-                                            }
-                                            Text {
-                                                text: s.time;
-                                                color: Theme.dim;
-                                                vertical-alignment: center;
-                                                horizontal-stretch: 0;
-                                            }
-                                        }
-                                        qt := TouchArea {
-                                            double-clicked => { root.jump(s.index); }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+
 
                 // The player: a glass capsule floating over the page's bottom, as Tahoe's Music has it.
                 if !root.native-player: Glass {
@@ -2004,12 +2074,89 @@ export component AppWindow inherits Window {
                 }
             }
 
+            // The panel on the right, docked to the window's edge as Music's is: the lyrics, sung line by line,
+            // or what plays next.
+            Rectangle {
+                x: root.inspector != 0 ? parent.width - Theme.panel-w : parent.width;
+                animate x { duration: 300ms; easing: cubic-bezier(0.2, 0.9, 0.3, 1); }
+                width: Theme.panel-w;
+                height: parent.height;
+                background: Theme.panel;
+                clip: true;
+                Rectangle {
+                    x: 0;
+                    width: 1px;
+                    background: #0000004d;
+                }
+                TitleStrip {
+                    y: 0;
+                    drag => { root.drag-window(); }
+                    zoom => { root.zoom-window(); }
+                }
+                if root.shown-panel == 2 && root.lyrics-lines.length == 0: Text {
+                    x: 24px;
+                    width: parent.width - 48px;
+                    text: root.lyrics-note != "" ? root.lyrics-note : "No lyrics";
+                    color: Theme.dim;
+                    font-size: 15px;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+                if root.shown-panel == 2 && root.lyrics-lines.length > 0: lyric-flick := Flickable {
+                    y: 16px;
+                    height: parent.height - 16px;
+                    content-height: sung.preferred-height;
+                    animate content-y { duration: 560ms; easing: cubic-bezier(0.25, 0.8, 0.3, 1); }
+                    sung := VerticalLayout {
+                        width: parent.width;
+                        padding-left: 22px;
+                        padding-right: 22px;
+                        padding-top: 40px;
+                        padding-bottom: 400px;
+                        spacing: 22px;
+                        for line[i] in root.lyrics-lines: Text {
+                            property <bool> lit: i == root.lyrics-active;
+                            changed lit => {
+                                if self.lit {
+                                    lyric-flick.content-y = -max(0, min(self.y - lyric-flick.height * 0.1, lyric-flick.content-height - lyric-flick.height));
+                                }
+                            }
+                            text: line;
+                            wrap: word-wrap;
+                            font-size: 22px;
+                            font-weight: 700;
+                            color: !root.lyrics-synced || self.lit ? #ffffffeb : #ffffff42;
+                            animate color { duration: 420ms; easing: ease-out; }
+                        }
+                        if root.lyrics-note != "": Text {
+                            text: root.lyrics-note;
+                            color: Theme.faint;
+                            font-size: 11px;
+                        }
+                    }
+                }
+                if root.shown-panel == 1: QueueView {
+                    y: 30px;
+                    height: parent.height - 30px - 76px;
+                    queue: root.queue;
+                    from: root.queue-from;
+                    autoplay: root.autoplay;
+                    automix: root.automix;
+                    covers-rev: root.covers-rev;
+                    art(a, s, r) => { return root.art(a, s, r); }
+                    jump(i) => { root.jump(i); }
+                    clear => { root.clear-queue(); }
+                    set-autoplay(on) => { root.setting-toggled("autoFill", on); }
+                    set-automix(on) => { root.setting-toggled("autoMix", on); }
+                }
+            }
+
             // The sidebar: full height from the window's edge, the system's sidebar material through it
             // (macOS), a hairline between it and the page, the traffic lights at its top.
             if !root.native-sidebar: Rectangle {
                 x: 0;
                 y: 0;
-                width: 240px;
+                width: Theme.side-w;
                 height: parent.height;
                 background: root.vibrancy ? #1e1e1e59 : #262628;
                 // A page in its picture's colours runs under the sidebar, which takes a little of it.
@@ -2039,7 +2186,9 @@ export component AppWindow inherits Window {
             }
         }
 
-        // ---- Now Playing, over the whole window ----
+        // ---- Now Playing, over the whole window, as Music has it ----
+        // The song's own colours behind everything; the artwork and the controls on the left; on the right the
+        // lyrics (the line sung sharp, the rest soft: the compositor blurs them, glass.wgsl) or what plays next.
 
         Rectangle {
             opacity: root.full-player ? 1 : 0;
@@ -2063,7 +2212,7 @@ export component AppWindow inherits Window {
                 animate opacity { duration: 800ms; easing: ease-in-out; }
             }
             Rectangle {
-                background: @linear-gradient(180deg, #00000014 0%, #00000040 100%);
+                background: @linear-gradient(180deg, #0000002e 0%, #00000014 50%, #0000003d 100%);
             }
             // Swallows the clicks meant for the page underneath.
             TouchArea { }
@@ -2072,166 +2221,276 @@ export component AppWindow inherits Window {
                 drag => { root.drag-window(); }
                 zoom => { root.zoom-window(); }
             }
-            IconButton {
-                x: parent.width - self.width - 20px;
-                y: 16px;
-                path: Icons.down;
-                size: 34px;
-                icon: 18px;
-                base: #ffffff1f;
-                clicked => { root.full-player = false; }
+            // Back to the window, next to the traffic lights.
+            Rectangle {
+                x: 90px;
+                y: 10px;
+                width: 40px;
+                height: 32px;
+                border-radius: 16px;
+                background: #ffffff1f;
+                border-width: 1px;
+                border-color: #ffffff26;
+                Icon {
+                    path: Icons.close;
+                    colour: white;
+                    weight: 2px;
+                    width: 14px;
+                    height: 14px;
+                }
+                TouchArea {
+                    clicked => { root.full-player = false; }
+                }
             }
-            HorizontalLayout {
-                padding: 64px;
-                padding-top: 80px;
-                spacing: 56px;
-                alignment: center;
-                y: root.full-player ? 0 : 30px;
-                animate y { duration: 420ms; easing: cubic-bezier(0.2, 0.9, 0.3, 1); }
-                VerticalLayout {
-                    alignment: center;
-                    Art {
-                        width: min(460px, root.height - 200px);
-                        height: self.width;
-                        border-radius: 12px;
-                        shadow: true;
-                        drop-shadow-blur: 50px;
-                        drop-shadow-offset-y: 24px;
-                        source: root.art(root.now-art, 1, root.covers-rev);
-                        transform-scale: root.playing ? 1 : 0.88;
-                        animate transform-scale { duration: 500ms; easing: cubic-bezier(0.3, 1.35, 0.6, 1); }
+            // The volume, in a glass pill at the top right.
+            Rectangle {
+                x: parent.width - self.width - 12px;
+                y: 10px;
+                width: 176px;
+                height: 32px;
+                border-radius: 16px;
+                background: #ffffff1f;
+                border-width: 1px;
+                border-color: #ffffff26;
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 10px;
+                    spacing: 10px;
+                    Bar {
+                        y: (parent.height - self.height) / 2;
+                        horizontal-stretch: 1;
+                        thin: 5px;
+                        thick: 7px;
+                        fill: white;
+                        track: #ffffff40;
+                        value: root.volume;
+                        moved(v) => { root.set-volume(v); }
+                        done(v) => { root.set-volume(v); }
+                    }
+                    Icon {
+                        y: (parent.height - self.height) / 2;
+                        path: Icons.speaker;
+                        colour: white;
+                        width: 16px;
+                        height: 16px;
                     }
                 }
-                VerticalLayout {
-                    alignment: center;
-                    width: 380px;
-                    spacing: 4px;
+            }
+
+            // The artwork and the controls: centred in the window with nothing beside them, in the left half
+            // with the lyrics or the queue.
+            property <length> side: min(460px, root.height - 330px, (root.full-panel != 0 ? root.width / 2 : root.width) - 120px);
+            full-art := VerticalLayout {
+                x: (root.full-panel != 0 ? root.width / 2 : root.width) / 2 - parent.side / 2;
+                animate x { duration: 380ms; easing: cubic-bezier(0.2, 0.9, 0.3, 1); }
+                y: (root.height - self.preferred-height) / 2 + (root.full-player ? 0 : 30px);
+                animate y { duration: 420ms; easing: cubic-bezier(0.2, 0.9, 0.3, 1); }
+                width: parent.side;
+                height: self.preferred-height;
+                spacing: 0;
+                Art {
+                    width: parent.width;
+                    height: self.width;
+                    border-radius: 8px;
+                    shadow: true;
+                    drop-shadow-blur: 40px;
+                    drop-shadow-offset-y: 18px;
+                    source: root.art(root.now-art, 1, root.covers-rev);
+                    transform-scale: root.playing ? 1 : 0.9;
+                    animate transform-scale { duration: 500ms; easing: cubic-bezier(0.3, 1.35, 0.6, 1); }
+                }
+                Rectangle {
+                    height: 26px;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        Text {
+                            text: root.now-title;
+                            color: white;
+                            font-size: 16px;
+                            font-weight: 600;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: root.now-artist + (root.now-album != "" ? " — " + root.now-album : "");
+                            color: #ffffffa6;
+                            font-size: 14px;
+                            overflow: elide;
+                        }
+                    }
+                }
+                Rectangle {
+                    height: 20px;
+                }
+                Rectangle {
+                    height: 14px;
+                    property <int> dragged: -1;
+                    Bar {
+                        width: 100%;
+                        thin: 5px;
+                        thick: 8px;
+                        fill: #ffffffd9;
+                        track: #ffffff33;
+                        value: root.duration-ms > 0 ? (parent.dragged >= 0 ? parent.dragged : root.position-ms) / root.duration-ms : 0;
+                        moved(v) => { parent.dragged = v * root.duration-ms; }
+                        done(v) => {
+                            parent.dragged = -1;
+                            root.seek(v);
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    padding-top: 4px;
                     Text {
-                        text: root.now-title;
-                        color: white;
-                        font-size: 26px;
-                        font-weight: 700;
-                        wrap: word-wrap;
+                        text: root.clock(root.position-ms);
+                        color: #ffffff8c;
+                        font-size: 10px;
                     }
                     Text {
-                        text: root.now-artist;
-                        color: #ffffffb3;
-                        font-size: 22px;
-                        wrap: word-wrap;
+                        text: "-" + root.clock(root.duration-ms - root.position-ms);
+                        color: #ffffff8c;
+                        font-size: 10px;
+                        horizontal-alignment: right;
                     }
-                    Rectangle {
-                        height: 28px;
+                }
+                Rectangle {
+                    height: 16px;
+                }
+                HorizontalLayout {
+                    alignment: space-between;
+                    IconButton {
+                        y: (parent.height - self.height) / 2;
+                        path: Icons.shuffle;
+                        lit: root.shuffle;
+                        ink: #ffffffcc;
+                        icon: 19px;
+                        size: 36px;
+                        clicked => { root.toggle-shuffle(); }
                     }
-                    Rectangle {
-                        height: 20px;
-                        property <int> dragged: -1;
-                        Bar {
-                            width: 100%;
-                            thin: 5px;
-                            thick: 8px;
-                            fill: #ffffffd9;
-                            track: #ffffff33;
-                            value: root.duration-ms > 0 ? (parent.dragged >= 0 ? parent.dragged : root.position-ms) / root.duration-ms : 0;
-                            moved(v) => { parent.dragged = v * root.duration-ms; }
-                            done(v) => {
-                                parent.dragged = -1;
-                                root.seek(v);
+                    IconButton {
+                        y: (parent.height - self.height) / 2;
+                        path: Icons.previous;
+                        solid: true;
+                        ink: white;
+                        size: 50px;
+                        icon: 34px;
+                        clicked => { root.previous(); }
+                    }
+                    PlayPause {
+                        y: (parent.height - self.height) / 2;
+                        playing: root.playing;
+                        ink: white;
+                        size: 56px;
+                        icon: 40px;
+                        clicked => { root.toggle(); }
+                    }
+                    IconButton {
+                        y: (parent.height - self.height) / 2;
+                        path: Icons.next;
+                        solid: true;
+                        ink: white;
+                        size: 50px;
+                        icon: 34px;
+                        clicked => { root.next(); }
+                    }
+                    IconButton {
+                        y: (parent.height - self.height) / 2;
+                        path: Icons.repeat;
+                        lit: root.repeat != 0;
+                        ink: #ffffffcc;
+                        icon: 19px;
+                        size: 36px;
+                        clicked => { root.cycle-repeat(); }
+                    }
+                }
+            }
+
+            // The lyrics: big, the line sung at a fixed height and sharp, the rest soft and dim.
+            if root.full-panel == 2 && root.lyrics-lines.length == 0: Text {
+                x: root.width / 2 + 20px;
+                width: root.width / 2 - 100px;
+                text: root.lyrics-note != "" ? root.lyrics-note : "No lyrics for this song";
+                color: #ffffff8c;
+                font-size: 26px;
+                font-weight: 700;
+                wrap: word-wrap;
+            }
+            // Kept inside the part the compositor blurs (clear of the pills above and below).
+            if root.full-panel == 2 && root.lyrics-lines.length > 0: full-lyrics := Flickable {
+                x: root.width / 2 + 20px;
+                width: root.width / 2 - 140px;
+                y: 48px;
+                height: root.height - 48px - 56px;
+                content-height: full-sung.preferred-height;
+                animate content-y { duration: 640ms; easing: cubic-bezier(0.25, 0.8, 0.3, 1); }
+                full-sung := VerticalLayout {
+                    width: parent.width;
+                    padding-top: root.height * 0.36 - 48px;
+                    padding-bottom: root.height;
+                    spacing: 36px;
+                    for line[i] in root.lyrics-lines: Text {
+                        property <bool> lit: i == root.lyrics-active;
+                        changed lit => {
+                            if self.lit {
+                                full-lyrics.content-y = -(self.y - (root.height * 0.36 - 48px));
+                                root.full-lyric-h = self.height;
                             }
                         }
+                        text: line;
+                        wrap: word-wrap;
+                        font-size: 44px;
+                        font-weight: 700;
+                        color: !root.lyrics-synced || self.lit ? white : #ffffff5c;
+                        animate color { duration: 500ms; easing: ease-out; }
                     }
-                    HorizontalLayout {
-                        Text {
-                            text: root.clock(root.position-ms);
-                            color: #ffffff99;
-                            font-size: 11px;
-                        }
-                        Text {
-                            text: "-" + root.clock(root.duration-ms - root.position-ms);
-                            color: #ffffff99;
-                            font-size: 11px;
-                            horizontal-alignment: right;
-                        }
-                    }
-                    Rectangle {
-                        height: 20px;
-                    }
-                    HorizontalLayout {
-                        alignment: center;
-                        spacing: 22px;
-                        IconButton {
-                            y: (parent.height - self.height) / 2;
-                            path: Icons.shuffle;
-                            lit: root.shuffle;
-                            ink: #ffffffb3;
-                            icon: 19px;
-                            size: 36px;
-                            clicked => { root.toggle-shuffle(); }
-                        }
-                        IconButton {
-                            y: (parent.height - self.height) / 2;
-                            path: Icons.previous;
-                            solid: true;
-                            ink: white;
-                            size: 52px;
-                            icon: 34px;
-                            clicked => { root.previous(); }
-                        }
-                        IconButton {
-                            y: (parent.height - self.height) / 2;
-                            path: root.playing ? Icons.pause : Icons.play;
-                            solid: true;
-                            ink: white;
-                            size: 64px;
-                            icon: 42px;
-                            clicked => { root.toggle(); }
-                        }
-                        IconButton {
-                            y: (parent.height - self.height) / 2;
-                            path: Icons.next;
-                            solid: true;
-                            ink: white;
-                            size: 52px;
-                            icon: 34px;
-                            clicked => { root.next(); }
-                        }
-                        IconButton {
-                            y: (parent.height - self.height) / 2;
-                            path: Icons.repeat;
-                            lit: root.repeat != 0;
-                            ink: #ffffffb3;
-                            icon: 19px;
-                            size: 36px;
-                            clicked => { root.cycle-repeat(); }
-                        }
-                    }
-                    Rectangle {
-                        height: 24px;
-                    }
-                    HorizontalLayout {
-                        spacing: 12px;
+                }
+            }
+            if root.full-panel == 1: QueueView {
+                x: root.width / 2 + 10px;
+                width: root.width / 2 - 70px;
+                y: 84px;
+                height: root.height - 84px - 70px;
+                wide: true;
+                queue: root.queue;
+                from: root.queue-from;
+                autoplay: root.autoplay;
+                automix: root.automix;
+                covers-rev: root.covers-rev;
+                art(a, s, r) => { return root.art(a, s, r); }
+                jump(i) => { root.jump(i); }
+                clear => { root.clear-queue(); }
+                set-autoplay(on) => { root.setting-toggled("autoFill", on); }
+                set-automix(on) => { root.setting-toggled("autoMix", on); }
+            }
+
+            // Lyrics and the queue, in a glass pill at the bottom right.
+            Rectangle {
+                x: parent.width - self.width - 14px;
+                y: parent.height - self.height - 14px;
+                width: 80px;
+                height: 36px;
+                border-radius: 18px;
+                background: #ffffff1f;
+                border-width: 1px;
+                border-color: #ffffff26;
+                HorizontalLayout {
+                    padding: 3px;
+                    spacing: 4px;
+                    for b[i] in [2, 1]: Rectangle {
+                        width: 34px;
+                        border-radius: 15px;
+                        background: root.full-panel == b ? white : transparent;
+                        animate background { duration: 160ms; easing: ease-out; }
                         Icon {
-                            y: (parent.height - self.height) / 2;
-                            path: Icons.speaker-off;
-                            colour: #ffffff99;
-                            width: 15px;
-                            height: 15px;
+                            path: b == 2 ? Icons.lyrics : Icons.queue;
+                            colour: root.full-panel == b ? #1c1c1e : white;
+                            width: 19px;
+                            height: 19px;
                         }
-                        Bar {
-                            horizontal-stretch: 1;
-                            thin: 5px;
-                            thick: 8px;
-                            fill: #ffffffd9;
-                            track: #ffffff33;
-                            value: root.volume;
-                            moved(v) => { root.set-volume(v); }
-                            done(v) => { root.set-volume(v); }
-                        }
-                        Icon {
-                            y: (parent.height - self.height) / 2;
-                            path: Icons.speaker;
-                            colour: #ffffff99;
-                            width: 17px;
-                            height: 17px;
+                        TouchArea {
+                            clicked => { root.full-panel = root.full-panel == b ? 0 : b; }
                         }
                     }
                 }

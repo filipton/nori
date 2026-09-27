@@ -23,7 +23,7 @@ use winit::keyboard::{Key as WKey, NamedKey};
 use winit::window::{Window as WinitWindow, WindowAttributes, WindowId};
 
 /// The sidebar's width, and the player's size and place (logical pixels), as app.slint lays the page out.
-pub const SIDEBAR_W: f32 = 240.0;
+pub const SIDEBAR_W: f32 = 216.0;
 const PLAYER_H: f32 = 54.0;
 const PLAYER_MAX_W: f32 = 720.0;
 const PLAYER_BOTTOM: f32 = 12.0;
@@ -98,6 +98,21 @@ struct Shared {
     /// Whether the sidebar and the player are shown over the page (not over Now Playing, nor the sign-in page).
     sidebar_shown: Cell<bool>,
     player_shown: Cell<bool>,
+    /// The panel docked on the right (logical pixels, 0 when shut): the player centres over what is left.
+    right: Cell<f32>,
+    /// Where the page wants a focus (Now Playing's lyrics), asked each frame.
+    focus: RefCell<Option<FocusSource>>,
+}
+
+/// What says, each frame, where the page wants its focus.
+type FocusSource = Box<dyn Fn() -> Option<Focus>>;
+
+/// A part of the page drawn soft but for a sharp band (logical pixels): Now Playing's lyrics.
+#[derive(Clone, Copy)]
+pub struct Focus {
+    pub region: [f32; 4],
+    pub band_top: f32,
+    pub band_h: f32,
 }
 
 thread_local! {
@@ -180,6 +195,8 @@ pub fn install() -> Result<(), String> {
         proxy: event_loop.create_proxy(),
         sidebar_shown: Cell::new(false),
         player_shown: Cell::new(false),
+        right: Cell::new(0.0),
+        focus: RefCell::new(None),
     });
     SHARED.with(|s| *s.borrow_mut() = Some(shared.clone()));
     EVENT_LOOP.with(|e| *e.borrow_mut() = Some(event_loop));
@@ -202,6 +219,22 @@ pub fn roles(page: &slint::Window, sidebar: Option<&slint::Window>, player: Opti
     s.sidebar_shown.set(sidebar.is_some());
     s.player_shown.set(player.is_some());
     relayout(&s);
+}
+
+/// What asks, each frame, where the page wants its focus blur.
+pub fn set_focus_source(f: impl Fn() -> Option<Focus> + 'static) {
+    if let Some(s) = shared() {
+        *s.focus.borrow_mut() = Some(Box::new(f));
+    }
+}
+
+/// The panel docked on the right: the player centres over the page beside it.
+pub fn set_right(w: f32) {
+    let Some(s) = shared() else { return };
+    if s.right.get() != w {
+        s.right.set(w);
+        relayout(&s);
+    }
 }
 
 /// Whether the sidebar and the player show over the page.
@@ -242,9 +275,8 @@ fn place(s: &Shared, role: Role, window: LogicalSize) -> (LogicalPosition, Logic
         Role::Page => (LogicalPosition::new(0.0, 0.0), window),
         Role::Sidebar => (LogicalPosition::new(0.0, 0.0), LogicalSize::new(SIDEBAR_W, window.height)),
         Role::Player => {
-            let page = (window.width - SIDEBAR_W).max(0.0);
+            let page = (window.width - SIDEBAR_W - s.right.get()).max(0.0);
             let w = (page - 32.0).clamp(200.0, PLAYER_MAX_W);
-            let _ = s;
             (LogicalPosition::new(SIDEBAR_W + (page - w) / 2.0, window.height - PLAYER_H - PLAYER_BOTTOM), LogicalSize::new(w, PLAYER_H))
         }
     }
@@ -513,6 +545,7 @@ struct Draw {
     over: wgpu::RenderPipeline,
     blur: wgpu::RenderPipeline,
     glass: wgpu::RenderPipeline,
+    focus: wgpu::RenderPipeline,
     bind: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     /// The page a quarter size, blurred: two textures the blur passes go back and forth between.
@@ -593,6 +626,7 @@ impl Draw {
             over: pipeline("fs_copy", Some(premultiplied)),
             blur: pipeline("fs_blur", None),
             glass: pipeline("fs_glass", Some(premultiplied)),
+            focus: pipeline("fs_focus", None),
             bind,
             sampler,
             blurred: None,
@@ -673,7 +707,8 @@ impl Draw {
             self.glow = Some([mk(), mk()]);
         }
         let mut enc = d.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
-        let glass_needed = s.sidebar_shown.get() || s.player_shown.get();
+        let focus = s.focus.borrow().as_ref().and_then(|f| f());
+        let glass_needed = s.sidebar_shown.get() || s.player_shown.get() || focus.is_some();
         if glass_needed {
             let b = self.blurred.as_ref().expect("made above");
             let (bwf, bhf) = (bw as f32, bh as f32);
@@ -701,6 +736,12 @@ impl Draw {
         let full = uniforms([0.0, 0.0, w, h], [w, h, w, h], [0.0; 4], [0.0; 4], [0.0; 4]);
         let g = self.group(d, &gpu.queue, &full, &page, &page, &page);
         pass(&mut enc, &target, &self.copy, &g, true);
+        if let Some(f) = focus {
+            let r = [f.region[0] * scale, f.region[1] * scale, f.region[2] * scale, f.region[3] * scale];
+            let u = uniforms(r, [w, h, w, h], [0.0; 4], [0.0; 4], [f.band_top * scale, f.band_h * scale, 280.0 * scale, 0.85]);
+            let g = self.group(d, &gpu.queue, &u, &page, &blurred, &glow);
+            pass(&mut enc, &target, &self.focus, &g, false);
+        }
         let mut glass = |role: Role, shape: [f32; 4], tint: [f32; 4], light: [f32; 4], gather: [f32; 4], rect: [f32; 4]| {
             let Some(view) = find(role) else { return };
             let u = uniforms_gather(rect, [w, h, w, h], shape, tint, light, gather);

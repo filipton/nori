@@ -128,3 +128,19 @@ fn fs_glass(v: V) -> @location(0) vec4<f32> {
     col += vec3<f32>(rim * lit * u.light.x * (0.4 + 0.6 * seen));
     return vec4<f32>(col * cover, cover);
 }
+
+// Focus: the lyrics beside the artwork in Now Playing. Within `rect`, the page sharp in a band around the line
+// sung (`light.x` its top, `light.y` its height, pixels) and softening into the blurred page above and below
+// it, fully blurred `light.z` pixels away, as Music draws the lines not sung.
+@fragment
+fn fs_focus(v: V) -> @location(0) vec4<f32> {
+    let p = u.rect.xy + v.uv * u.rect.zw;
+    let at = p / u.view.xy;
+    let sharp = textureSampleLevel(src, smp, at, 0.0);
+    let soft = textureSampleLevel(blurred, smp, at, 0.0);
+    let out_of_band = max(u.light.x - p.y, p.y - (u.light.x + u.light.y));
+    // Growing steadily with the distance: the lines beside the one sung only a little soft, those further
+    // away more.
+    let w = clamp(out_of_band / u.light.z, 0.0, 1.0) * u.light.w;
+    return mix(sharp, soft, w);
+}

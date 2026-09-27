@@ -296,6 +296,19 @@ pub fn start(ui: &AppWindow, data: PathBuf) {
     // The compositor draws the page with the sidebar and the player on glass over it.
     with(|a| crate::compositor::roles(ui.window(), a.sidebar.as_ref().map(|s| s.window()), a.player.as_ref().map(|p| p.window())));
     menu_actions(ui);
+    // Now Playing's lyrics: the line sung sharp, the rest blurred by the compositor.
+    let weak = ui.as_weak();
+    crate::compositor::set_focus_source(move || {
+        let ui = weak.upgrade()?;
+        if !ui.get_full_player() || ui.get_full_panel() != 2 || ui.get_lyrics_lines().row_count() == 0 || !ui.get_lyrics_synced() {
+            return None;
+        }
+        let size = ui.window().size().to_logical(ui.window().scale_factor());
+        let x = size.width / 2.0;
+        // Clear of the volume's pill above and the lyrics and queue pill below.
+        Some(crate::compositor::Focus { region: [x, 48.0, size.width - x - 100.0, size.height - 48.0 - 56.0], band_top: size.height * 0.36 - 8.0, band_h: ui.get_full_lyric_h() + 16.0 })
+    });
+    with(|a| a.settings_shown());
     let prefs = settings_store::settings_current().unwrap_or_default();
     match prefs.servers.iter().find(|s| s.id == prefs.active_server_id).cloned() {
         Some(p) => with(|app| app.open(p)),
@@ -431,6 +444,12 @@ fn wire(ui: &AppWindow) {
     });
     ui.on_login(|| with(App::login));
     ui.on_cancel_login(|| with(|a| a.go(HOME)));
+    ui.on_clear_queue(|| {
+        with(|a| {
+            a.on_session(|s| s.clear_upcoming());
+            a.follow();
+        })
+    });
     ui.on_settings_tab_chosen(|t| {
         with(|a| {
             a.ui().set_settings_tab(t);
@@ -988,6 +1007,7 @@ impl App {
     fn place_player(&self) {
         let ui = self.ui();
         let shown = !ui.get_full_player() && ui.get_view() != LOGIN;
+        crate::compositor::set_right(if ui.get_inspector() != 0 { 280.0 } else { 0.0 });
         crate::compositor::show_glass(shown && self.sidebar.is_some(), shown && self.player.is_some());
     }
 
@@ -1012,6 +1032,8 @@ impl App {
     fn settings_shown(&self) {
         let ui = self.ui();
         let prefs = settings_store::settings_current().unwrap_or_default();
+        ui.set_autoplay(prefs.auto_fill);
+        ui.set_automix(prefs.auto_mix);
         ui.set_settings(crate::settings::rows(&prefs, &ui.get_server(), ui.get_settings_tab()));
     }
 
@@ -1089,6 +1111,7 @@ impl App {
             ui.set_shuffle(v.shuffle);
             ui.set_repeat(v.repeat as i32);
             ui.set_queue(queue_rows(&v));
+            ui.set_queue_from(queue_from(&v).into());
             self.queue = Some(v);
         }
         // The seek bar's clock: running only while music plays, stepping as often as the widest bar moves a
@@ -1146,8 +1169,19 @@ fn row(s: &Song, index: usize, playing: bool) -> SongRow {
 }
 
 /// The queue in the order it plays, from the song playing on; each row jumps to its list index.
+/// What plays after the song playing, in the order it plays; each row jumps to its list index.
 fn queue_rows(v: &PlaylistView) -> ModelRc<SongRow> {
-    let from = v.order.iter().position(|&i| i as i32 == v.index).unwrap_or(0);
-    let rows: Vec<SongRow> = v.order[from..].iter().filter_map(|&i| v.songs.get(i as usize).map(|s| row(s, i as usize, i as i32 == v.index))).collect();
+    let from = v.order.iter().position(|&i| i as i32 == v.index).map_or(0, |p| p + 1);
+    let rows: Vec<SongRow> = v.order[from.min(v.order.len())..].iter().filter_map(|&i| v.songs.get(i as usize).map(|s| row(s, i as usize, false))).collect();
     ModelRc::new(VecModel::from(rows))
+}
+
+/// Where the songs coming up are from, when they are all of one album.
+fn queue_from(v: &PlaylistView) -> String {
+    let from = v.order.iter().position(|&i| i as i32 == v.index).map_or(0, |p| p + 1);
+    let mut albums = v.order[from.min(v.order.len())..].iter().filter_map(|&i| v.songs.get(i as usize)).map(|s| s.album.as_str());
+    match albums.next() {
+        Some(first) if !first.is_empty() && albums.all(|a| a == first) => first.to_string(),
+        _ => String::new(),
+    }
 }
