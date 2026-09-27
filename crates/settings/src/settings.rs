@@ -264,6 +264,11 @@ pub struct StoredPrefs {
     /// The graphic equalizer's sliders, dB, low to high: 10, 15 or 31 of them (`nori_player::graphic`).
     #[setting("eqGraphic", GRAPHIC, default = vec![0.0; 10], hidden, effect = SOUND)]
     pub eq_graphic: Vec<f32>,
+    /// The headphone correction the graphic sliders were fitted to (`nori_player::graphic::target_grid`,
+    /// dB), so another layout is fitted to it again and the screen says how closely it is followed; empty
+    /// once the sliders are the listener's own.
+    #[setting("eqGraphicTarget", TARGET, default = Vec::new(), hidden, effect = SOUND)]
+    pub eq_graphic_target: Vec<f32>,
     /// A low shelf of this many dB; 0 is off.
     #[setting("bassBoostDb", clamped(0.0, BASS_BOOST_MAX), default = 0.0, show = K::Level(0.0, BASS_BOOST_MAX), effect = SOUND)]
     pub bass_boost_db: f32,
@@ -469,6 +474,19 @@ const GRAPHIC: Custom<Vec<f32>> = Custom {
     show: Some(|g| g.iter().map(|v| kotlin_float(*v)).collect::<Vec<_>>().join(",")),
 };
 
+/// A headphone correction's target, comma-separated: as many numbers as the target's grid has, or none.
+const TARGET: Custom<Vec<f32>> = Custom { load: |t, d| t.map_or(d, decode_target), save: |g| encode_floats(g), set: None, show: None };
+
+fn encode_floats(g: &[f32]) -> String {
+    g.iter().map(|v| kotlin_float(*v)).collect::<Vec<_>>().join(",")
+}
+
+/// A target from its text; anything that is not one is none.
+pub fn decode_target(s: &str) -> Vec<f32> {
+    let g: Option<Vec<f32>> = s.split(',').map(float).collect();
+    g.filter(|g| g.len() == nori_player::graphic::TARGET_POINTS && g.iter().all(|v| v.is_finite())).unwrap_or_default()
+}
+
 /// Graphic sliders from their text: one number per band of a layout, each held to the gain range.
 pub fn decode_graphic(s: &str) -> Option<Vec<f32>> {
     let g: Vec<f32> = s.split(',').map(|v| float(v).map(|v| EQ_RANGES.gain.hold(v))).collect::<Option<_>>()?;
@@ -509,6 +527,7 @@ pub struct SoundSettings {
     pub eq_bands: Vec<SoundBand>,
     pub eq_mode: EqMode,
     pub eq_graphic: Vec<f32>,
+    pub eq_graphic_target: Vec<f32>,
     pub eq_preamp_db: Option<f32>,
     pub crossfeed_db: f32,
     pub balance: f32,
@@ -608,6 +627,7 @@ impl StoredPrefs {
             eq_bands: self.eq_bands.clone(),
             eq_mode: self.eq_mode,
             eq_graphic: self.eq_graphic.clone(),
+            eq_graphic_target: self.eq_graphic_target.clone(),
             eq_preamp_db: self.eq_preamp_db,
             crossfeed_db: self.crossfeed_db,
             balance: self.balance,
@@ -630,6 +650,7 @@ impl StoredPrefs {
             eq_bands: s.eq_bands,
             eq_mode: s.eq_mode,
             eq_graphic: s.eq_graphic,
+            eq_graphic_target: s.eq_graphic_target,
             eq_preamp_db: s.eq_preamp_db,
             crossfeed_db: s.crossfeed_db,
             balance: s.balance,
@@ -835,6 +856,7 @@ pub fn sound_from(json: &str) -> Option<SoundSettings> {
         eq_bands: decode_bands(&opt_string(o, "eqBands")).unwrap_or_else(graphic),
         eq_mode: EqMode::nth(opt_i32(o, "eqMode")).unwrap_or(EqMode::Parametric),
         eq_graphic: decode_graphic(&opt_string(o, "eqGraphic")).unwrap_or_else(|| vec![0.0; 10]),
+        eq_graphic_target: decode_target(&opt_string(o, "eqGraphicTarget")),
         eq_preamp_db,
         crossfeed_db: opt_f64(o, "crossfeedDb", 0.0) as f32,
         balance: opt_f64(o, "balance", 0.0) as f32,
@@ -875,6 +897,9 @@ pub fn sound_json(s: &SoundSettings) -> String {
     o.insert("limiterThresholdDb".into(), (s.limiter_threshold_db as f64).into());
     o.insert("eqMode".into(), s.eq_mode.ordinal().into());
     o.insert("eqGraphic".into(), s.eq_graphic.iter().map(|v| kotlin_float(*v)).collect::<Vec<_>>().join(",").into());
+    if !s.eq_graphic_target.is_empty() {
+        o.insert("eqGraphicTarget".into(), encode_floats(&s.eq_graphic_target).into());
+    }
     let e = &s.effects;
     for (k, v) in [
         ("bassBoostDb", e.bass_boost_db),
@@ -1040,7 +1065,11 @@ fn set_special(p: &StoredPrefs, n: &mut StoredPrefs, server: &mut bool, name: &s
                 (e.compressor, e.comp_threshold_db, e.comp_ratio, e.comp_attack_ms, e.comp_release_ms, e.comp_makeup_db, e.comp_knee_db);
         }),
         // How many graphic bands: the curve drawn again on the new layout.
-        "eqLayout" => value.trim().parse::<usize>().ok().filter(|c| nori_player::graphic::LAYOUTS.contains(c)).map(|c| n.eq_graphic = relayout_graphic(&p.eq_graphic, c)),
+        // With a headphone correction on it, the new layout is fitted to the correction again.
+        "eqLayout" => value.trim().parse::<usize>().ok().filter(|c| nori_player::graphic::LAYOUTS.contains(c)).map(|c| match fit_target(&p.eq_graphic_target, c) {
+            Some((sliders, preamp)) => (n.eq_graphic, n.eq_preamp_db) = (sliders, Some(preamp)),
+            None => n.eq_graphic = relayout_graphic(&p.eq_graphic, c),
+        }),
         // The row says "on mobile data", the setting "Wi-Fi only": the one is the other turned round.
         "motionArtworkMobile" => Some(n.motion_artwork_wifi_only = !on(value)),
         // The active server's own settings: which music folder it browses, and the bitrate cap on its
@@ -1119,7 +1148,33 @@ pub fn set_graphic(s: SoundSettings, index: u32, gain_db: f32) -> SoundSettings 
         Some(v) => *v = EQ_RANGES.gain.hold(gain_db),
         None => return s,
     }
-    SoundSettings { eq_graphic: g, ..s }
+    // Moved by hand, the sliders are no longer the headphone correction.
+    SoundSettings { eq_graphic: g, eq_graphic_target: Vec::new(), ..s }
+}
+
+/// Sliders of a `count`-band layout fitted to a headphone correction's `target`, and the pre-amp that
+/// keeps them from boosting; none without a target.
+fn fit_target(target: &[f32], count: usize) -> Option<(Vec<f32>, f32)> {
+    let t: Vec<f64> = target.iter().map(|v| *v as f64).collect();
+    let fit = nori_player::graphic::fit_target(&t, count, EQ_RANGES.gain.max as f64)?;
+    Some((fit.sliders.iter().map(|v| *v as f32).collect(), EQ_RANGES.preamp.hold(fit.preamp_db as f32)))
+}
+
+/// A headphone correction (AutoEQ's text: a `GraphicEQ:` curve, or filters) as the target the graphic
+/// equalizer is fitted to; none when the text has neither.
+pub fn correction_target(text: &str) -> Option<Vec<f32>> {
+    let target = match nori_player::eqfit::parse_graphic(text) {
+        Some(points) => nori_player::graphic::target_from_points(&points),
+        None => {
+            let preset = parse_eq_preset(text.to_string());
+            if preset.bands.is_empty() {
+                return None;
+            }
+            let bands: Vec<nori_player::dsp::Band> = preset.bands.iter().map(nori_player::dsp::Band::from).collect();
+            nori_player::graphic::target_from_bands(&bands)
+        }
+    };
+    Some(target.iter().map(|v| *v as f32).collect())
 }
 
 /// A built-in curve, switched on, for the equalizer in use. Its pre-amp of 0 means automatic; "Flat"
@@ -1131,7 +1186,7 @@ pub fn apply_preset(s: SoundSettings, p: &NamedPreset) -> SoundSettings {
         let count = if nori_player::graphic::LAYOUTS.contains(&s.eq_graphic.len()) { s.eq_graphic.len() } else { 10 };
         let r = EQ_RANGES.gain;
         let eq_graphic = nori_player::graphic::sliders_for(&bands, count, r.max as f64).into_iter().map(|v| r.hold(v as f32)).collect();
-        return SoundSettings { eq_enabled: true, eq_preamp_db: None, eq_graphic, ..s };
+        return SoundSettings { eq_enabled: true, eq_preamp_db: None, eq_graphic, eq_graphic_target: Vec::new(), ..s };
     }
     let bands: Vec<SoundBand> = p.bands.iter().map(band_of).collect();
     SoundSettings {
@@ -1145,6 +1200,14 @@ pub fn apply_preset(s: SoundSettings, p: &NamedPreset) -> SoundSettings {
 /// An AutoEQ "ParametricEQ.txt" / Equalizer APO preset, switched on with its own pre-amp. A file with no
 /// filters in it is refused ([`SoundError::NoFilters`]).
 pub fn import(s: SoundSettings, text: &str) -> Result<SoundSettings, SoundError> {
+    // On the graphic equalizer a headphone correction sets its sliders: fitted, in the layout in use, so
+    // what it plays follows the correction's curve.
+    if s.eq_mode == EqMode::Graphic {
+        let target = correction_target(text).ok_or(SoundError::NoFilters)?;
+        let count = if nori_player::graphic::LAYOUTS.contains(&s.eq_graphic.len()) { s.eq_graphic.len() } else { 10 };
+        let (eq_graphic, preamp) = fit_target(&target, count).ok_or(SoundError::NoFilters)?;
+        return Ok(SoundSettings { eq_enabled: true, eq_graphic, eq_graphic_target: target, eq_preamp_db: Some(preamp), ..s });
+    }
     let preset = parse_eq_preset(text.to_string());
     if preset.bands.is_empty() {
         return Err(SoundError::NoFilters);
@@ -1647,7 +1710,7 @@ pub fn sound_from_json(json: String) -> Option<SoundSettings> {
 /// parametric one, every slider at 0 (in the same layout) for the graphic one.
 pub fn eq_reset_bands(sound: SoundSettings) -> SoundSettings {
     match sound.eq_mode {
-        EqMode::Graphic => SoundSettings { eq_graphic: vec![0.0; sound.eq_graphic.len().max(1)], eq_preamp_db: None, ..sound },
+        EqMode::Graphic => SoundSettings { eq_graphic: vec![0.0; sound.eq_graphic.len().max(1)], eq_graphic_target: Vec::new(), eq_preamp_db: None, ..sound },
         EqMode::Parametric => SoundSettings { eq_bands: graphic(), eq_preamp_db: None, ..sound },
     }
 }
@@ -1828,6 +1891,7 @@ mod tests {
             eq_bands: vec![band_from(1, 105.0, -3.5, 0.7, 0)],
             eq_mode: EqMode::Graphic,
             eq_graphic: (0..15).map(|i| i as f32 - 7.5).collect(),
+            eq_graphic_target: (0..96).map(|i| (i as f32 * 0.37).sin() * 4.0).collect(),
             eq_preamp_db: Some(-6.2),
             crossfeed_db: 3.0,
             balance: -0.25,
@@ -2159,13 +2223,46 @@ mod tests {
         assert_eq!(p.eq_bands, loud.eq_bands);
         assert_eq!(eq_reset_bands(p.clone()).eq_graphic, vec![0.0; 10]);
         assert_eq!(eq_reset_bands(p.clone()).eq_bands, p.eq_bands, "reset is the one in use");
-        // A headphone correction is filters: it goes to the parametric equalizer.
-        let imported = import(p, "Filter 1: ON PK Fc 105 Hz Gain -3.5 dB Q 0.70\n").unwrap();
+        // Filters imported on the parametric equalizer stay filters there; the graphic one fits them (below).
+        let imported = import(SoundSettings { eq_mode: EqMode::Parametric, ..p }, "Filter 1: ON PK Fc 105 Hz Gain -3.5 dB Q 0.70\n").unwrap();
         assert_eq!(imported.eq_mode, EqMode::Parametric);
         // Another layout draws the same curve.
         assert_eq!(relayout_graphic(&[0.0, 2.0, 4.0, 6.0, 4.0, 2.0, 0.0, -2.0, -4.0, -6.0], 31).len(), 31);
         assert_eq!(decode_graphic("1,2,3"), None, "not a layout");
         assert_eq!(decode_graphic(&vec!["99"; 10].join(",")), Some(vec![12.0; 10]));
+    }
+
+    #[test]
+    fn a_headphone_correction_sets_the_graphic_sliders() {
+        let graphic = include_str!("../../player/testdata/graphiceq/sennheiser-hd-600.txt");
+        let parametric = include_str!("../../player/testdata/graphiceq/sennheiser-hd-600.parametric.txt");
+        let g = SoundSettings { eq_mode: EqMode::Graphic, eq_enabled: false, ..sound() };
+        let s = import(g.clone(), graphic).unwrap();
+        assert!(s.eq_enabled && s.eq_mode == EqMode::Graphic, "it stays on the graphic equalizer");
+        assert_eq!(s.eq_graphic.len(), 10);
+        assert_eq!(s.eq_bands, g.eq_bands, "the parametric bands are left as they were");
+        assert_eq!(s.eq_graphic_target.len(), nori_player::graphic::TARGET_POINTS);
+        let preamp = s.eq_preamp_db.unwrap();
+        assert!(preamp < -3.0, "the pre-amp pays back the boost: {preamp}");
+        // The filters, where there is no curve, are a target too.
+        assert!(import(g.clone(), parametric).unwrap().eq_graphic.iter().any(|v| *v != 0.0));
+        assert!(matches!(import(g, "Preamp: 0 dB\n"), Err(SoundError::NoFilters)));
+        // Another layout is fitted to the correction again, not stretched from the ten sliders.
+        let p = StoredPrefs::default().with_sound(s.clone());
+        let l = set_by_name(&p, "eqLayout", "31").unwrap().prefs;
+        let t: Vec<f64> = s.eq_graphic_target.iter().map(|v| *v as f64).collect();
+        let fitted = nori_player::graphic::fit_target(&t, 31, 12.0).unwrap();
+        assert_eq!(l.eq_graphic, fitted.sliders.iter().map(|v| *v as f32).collect::<Vec<_>>());
+        assert_eq!(l.eq_graphic_target, s.eq_graphic_target);
+        // Moved by hand, a preset or a reset: the correction is gone.
+        assert!(set_graphic(s.clone(), 0, 1.0).eq_graphic_target.is_empty());
+        assert!(eq_reset_bands(s.clone()).eq_graphic_target.is_empty());
+        // And it travels in a sound profile.
+        assert_eq!(sound_from(&sound_json(&s)).unwrap(), s);
+        // How closely it is followed, for the screen.
+        let f = crate::dsp::graphic_follow(s.eq_graphic.clone(), s.eq_graphic_target.clone()).unwrap();
+        assert!(f.rms_db > 0.0 && f.rms_db < 2.0 && f.max_db >= f.rms_db);
+        assert!(crate::dsp::graphic_follow(s.eq_graphic, Vec::new()).is_none());
     }
 
     #[test]

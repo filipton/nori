@@ -34,6 +34,34 @@ pub fn graphic_bands(count: u32) -> Vec<GraphicBand> {
     nori_player::graphic::centres(count as usize).into_iter().map(|f| GraphicBand { freq: f as f32, label_hz: nori_player::graphic::nominal(f) as f32 }).collect()
 }
 
+/// How closely the graphic equalizer follows a headphone correction, dB: the root mean square and the
+/// largest difference over 20 Hz to 20 kHz, the overall level taken out.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct GraphicFollow {
+    pub rms_db: f32,
+    pub max_db: f32,
+}
+
+/// How closely `sliders` follow a correction's `target` (`StoredPrefs::eq_graphic_target`); none without
+/// a target. Asked once per change, for the equalizer screen's line.
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn graphic_follow(sliders: Vec<f32>, target: Vec<f32>) -> Option<GraphicFollow> {
+    if target.len() != nori_player::graphic::TARGET_POINTS {
+        return None;
+    }
+    let s: Vec<f64> = sliders.iter().map(|v| *v as f64).collect();
+    let t: Vec<f64> = target.iter().map(|v| *v as f64).collect();
+    let (rms, max) = nori_player::graphic::follow(&s, &t);
+    Some(GraphicFollow { rms_db: rms as f32, max_db: max as f32 })
+}
+
+/// A target's grid, Hz (`nori_player::graphic::target_grid`), for a screen that draws it.
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn graphic_target_grid() -> Vec<f32> {
+    nori_player::graphic::target_grid().into_iter().map(|f| f as f32).collect()
+}
+
 /// One band of the graphic equalizer.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]

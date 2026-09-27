@@ -64,6 +64,7 @@ fn sample() -> StoredPrefs {
         eq_preamp_db: Some(-4.25),
         eq_mode: EqMode::Graphic,
         eq_graphic: vec![1.5, -2.0, 0.0, 3.0, 4.5, 6.0, -12.0, 12.0, 0.5, -0.5],
+        eq_graphic_target: (0..96).map(|i| i as f32 * 0.25 - 12.0).collect(),
         bass_boost_db: 6.0,
         virtualizer: 0.4,
         volume_boost_db: 3.5,
