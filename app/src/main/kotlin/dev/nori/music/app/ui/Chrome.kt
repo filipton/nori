@@ -51,6 +51,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.findRootCoordinates
 import androidx.compose.ui.graphics.vector.ImageVector
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
@@ -172,10 +173,11 @@ private fun SearchCircle(search: Tab, selected: Boolean, slab: Color, content: C
 }
 
 /**
- * The tabs on a wide, short window (a phone on its side): [TabBar] stood on end at the left edge - the same
- * floating pill of tabs, and Search on its own circle under it - so the page keeps its height, which a bar
- * across the bottom took almost half of. It slides out to the left as the player opens, as the bar slides
- * down. [onWidth]: how much of the left edge it takes, which the page leaves to it.
+ * The tabs on a wide, short window (a phone on its side): [TabBar] stood on end at the right edge - where the
+ * bar was, on a phone turned the usual way - the same floating pill of tabs, and Search on its own circle
+ * under it, so the page keeps its height, which a bar across the bottom took almost half of. It slides out
+ * to the right as the player opens, as the bar slides down. [onWidth]: how much of the right edge it takes,
+ * which the page leaves to it.
  */
 @Composable
 fun TabRail(route: String?, tabs: List<Tab>, onTab: (String) -> Unit, look: Look, player: PlayerViewModel, onWidth: (androidx.compose.ui.unit.Dp) -> Unit) {
@@ -187,18 +189,21 @@ fun TabRail(route: String?, tabs: List<Tab>, onTab: (String) -> Unit, look: Look
     val rest = tabs.filter { it.route != "search" }
     val sheet = LocalPlayerSheet.current
     val density = androidx.compose.ui.platform.LocalDensity.current
-    // How far from the screen's left edge the rail reaches, in pixels: what it slides by.
+    // How far in from the screen's right edge the rail reaches, in pixels: what it slides by.
     var reach by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
     Column(
         Modifier
-            .windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.safeDrawing.only(androidx.compose.foundation.layout.WindowInsetsSides.Start + androidx.compose.foundation.layout.WindowInsetsSides.Vertical))
-            .onGloballyPositioned { reach = it.boundsInRoot().right; onWidth(with(density) { reach.toDp() }) }
-            .graphicsLayer {
-                // All the way off the edge: past the cutout's inset too, which is not part of this layer.
-                val t = (sheet.progress.value / 0.7f).coerceIn(0f, 1f)
-                translationX = -t * (reach + 12.dp.toPx())
+            .windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.safeDrawing.only(androidx.compose.foundation.layout.WindowInsetsSides.End + androidx.compose.foundation.layout.WindowInsetsSides.Vertical))
+            .onGloballyPositioned {
+                reach = it.findRootCoordinates().size.width - it.boundsInRoot().left
+                onWidth(with(density) { reach.toDp() })
             }
-            .padding(start = 10.dp, end = 4.dp),
+            .graphicsLayer {
+                // All the way off the edge: past the inset at that edge too, which is not part of this layer.
+                val t = (sheet.progress.value / 0.7f).coerceIn(0f, 1f)
+                translationX = t * (reach + 12.dp.toPx())
+            }
+            .padding(start = 4.dp, end = 10.dp),
         Arrangement.spacedBy(10.dp, Alignment.CenterVertically), Alignment.CenterHorizontally,
     ) {
         Surface(

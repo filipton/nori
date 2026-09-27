@@ -38,6 +38,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.calculateStartPadding
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.ui.unit.dp
@@ -275,11 +278,13 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             // Screens keep the last row reachable by adding LocalChromeInset to their content padding.
             var chromeHeight by remember { mutableStateOf(0.dp) }
             var tabsHeight by remember { mutableStateOf(0.dp) }
-            // On its side the tabs stand on a rail at the left edge (TabRail), and the page gives it that edge.
+            // On its side the tabs stand on a rail at the right edge (TabRail), and the page gives it that edge;
+            // the left edge is kept clear of the camera's punch hole.
             val config = androidx.compose.ui.platform.LocalConfiguration.current
             val wide = isWide(config.screenWidthDp, config.screenHeightDp)
             var railWidth by remember { mutableStateOf(0.dp) }
             val railInset = if (wide) railWidth else 0.dp
+            val cutoutInset = if (wide) androidx.compose.foundation.layout.WindowInsets.displayCutout.asPaddingValues().calculateStartPadding(androidx.compose.ui.unit.LayoutDirection.Ltr) else 0.dp
             val density = androidx.compose.ui.platform.LocalDensity.current
             // One look for both halves of the chrome, cross-fading once when the page under it changes.
             val chromeLook = rememberChromeLook()
@@ -293,10 +298,14 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
               // a layer at zero alpha is skipped, so a page left animating underneath costs nothing.
               CompositionLocalProvider(LocalWide provides wide) {
               Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (sheet.progress.value >= 1f) 0f else 1f }) {
-              // The strip the rail stands on wears the page's colour, so a tinted page runs to the edge.
-              if (wide) Box(Modifier.fillMaxHeight().width(railInset).drawBehind { drawRect(chromeLook.color(dev.nori.music.look.CoverLook.CHROME_PAGE)) })
+              // The strips the rail and the camera stand on wear the page's colour, so a tinted page runs to the edges.
+              if (wide) {
+                  val strip = Modifier.fillMaxHeight().drawBehind { drawRect(chromeLook.color(dev.nori.music.look.CoverLook.CHROME_PAGE)) }
+                  Box(strip.width(cutoutInset).align(Alignment.CenterStart))
+                  Box(strip.width(railInset).align(Alignment.CenterEnd))
+              }
               CompositionLocalProvider(LocalStarMarks provides marks, LocalChromeInset provides chromeHeight) {
-              Box(Modifier.fillMaxSize().padding(start = railInset)) {
+              Box(Modifier.fillMaxSize().padding(start = cutoutInset, end = railInset)) {
                 // One transition for the whole app, and the same one in both directions. See PageMotion.
                 val plain = reduceMotion()
                 NavHost(
@@ -339,7 +348,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
               }
               }
               Box(
-                  Modifier.align(Alignment.BottomCenter).padding(start = railInset)
+                  Modifier.align(Alignment.BottomCenter).padding(start = cutoutInset, end = railInset)
                       .onGloballyPositioned { chromeHeight = with(density) { it.size.height.toDp() } },
               ) {
                   // The now playing bar has a heart now, and it reads the stars the user has just
@@ -351,7 +360,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
               PlayerLayer(sheet) { CompositionLocalProvider(LocalStarMarks provides marks) { PlayerScreen(player, actions) } }
               // The tab bar is over the player, not under it: as the player rises it slides down off the
               // screen instead of vanishing under the sheet in one frame. See BottomChrome.
-              if (wide) Box(Modifier.align(Alignment.CenterStart).fillMaxHeight()) { TabRail(tabRoute, tabs, nav::tab, chromeLook, player) { railWidth = it } }
+              if (wide) Box(Modifier.align(Alignment.CenterEnd).fillMaxHeight()) { TabRail(tabRoute, tabs, nav::tab, chromeLook, player) { railWidth = it } }
               else Box(Modifier.align(Alignment.BottomCenter)) { TabBar(tabRoute, tabs, nav::tab, chromeLook, player) { tabsHeight = it } }
               }
               // Top: less in the way of the now-playing bar; swipe or the X dismisses.
