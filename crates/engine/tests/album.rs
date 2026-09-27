@@ -122,6 +122,12 @@ impl Rig {
     /// `songs` queued in this order (shuffled if `shuffle`), each whole in the stream cache, AutoMix on (or
     /// a crossfade of `crossfade` s instead) and albums kept gapless as `keep` says.
     fn new(name: &str, songs: &[S], auto_mix: bool, crossfade: i32, keep: bool, measured: Measured, shuffle: bool) -> Rig {
+        Rig::tagged(name, songs, auto_mix, crossfade, keep, measured, shuffle, &Tags::default())
+    }
+
+    /// [`Rig::new`], with the songs' tags as `tags` makes them.
+    #[allow(clippy::too_many_arguments)]
+    fn tagged(name: &str, songs: &[S], auto_mix: bool, crossfade: i32, keep: bool, measured: Measured, shuffle: bool, tags: &Tags) -> Rig {
         let dir = nori_testdir::TempDir::new(name);
         let core = Core::new(dir.join("nori.db").to_string_lossy().into_owned(), "test".into()).unwrap();
         core.configure(ServerConfig { url: "http://music.test".into(), user: "u".into(), password: "p".into(), api_key: None, legacy_auth: false }).unwrap();
@@ -132,7 +138,17 @@ impl Rig {
         nori_core::settings_store::settings_put(prefs.clone());
         let store = Store::open(dir.join("music"), 512 << 20, Box::new(CoreOrder)).unwrap();
         let mut tracks: HashMap<(&str, u32), u32> = HashMap::new();
-        let made: Vec<(S, Vec<i16>)> = songs.iter().enumerate().map(|(k, s)| (*s, samples(k as u32))).collect();
+        let made: Vec<(S, Vec<i16>)> = songs
+            .iter()
+            .enumerate()
+            .map(|(k, s)| {
+                let mut pcm = samples(k as u32);
+                if tags.quiet_ends {
+                    quiet_end(&mut pcm);
+                }
+                (*s, pcm)
+            })
+            .collect();
         let listed: Vec<Song> = made
             .iter()
             .map(|(s, _)| {
@@ -141,6 +157,8 @@ impl Rig {
                 Song { id: s.0.into(), title: s.0.into(), album_id: Some(s.1.into()), track: *track, disc_number: s.2, duration: SECS as u32, suffix: "wav".into(), ..Default::default() }
             })
             .collect();
+        let mut listed = listed;
+        (tags.tag)(&mut listed);
         let mut files = HashMap::new();
         for (s, pcm) in &made {
             let bytes = wav(pcm);
@@ -154,7 +172,13 @@ impl Rig {
                 assert!(core.analysis_finish(s.0, a).unwrap().is_some(), "{} is measured", s.0);
             }
         }
-        nori_core::queue::queue_register(listed);
+        nori_core::queue::queue_register(listed.clone());
+        if let Some(again) = tags.again {
+            // Registered a second time, from another reading of the library that tags them otherwise.
+            let mut twice = listed;
+            again(&mut twice);
+            nori_core::queue::queue_register(twice);
+        }
         nori_core::playlist::playlist_set(made.iter().map(|(s, _)| s.0.to_string()).collect(), 0, shuffle, None);
         let measurer = (measured == Measured::WhilePlaying).then(|| Measurer::new(core.clone(), client.clone(), store.clone()));
         let library = CoreLibrary { client, bytes: Arc::new(Net(files)), metered: false, store: Some(store.clone()) };
@@ -314,6 +338,34 @@ impl Drop for Rig {
     }
 }
 
+/// How a story's songs are tagged beyond the defaults (each song's track the next on its disc, the album's
+/// id and disc as given): as an imperfect library tags them.
+struct Tags {
+    tag: fn(&mut Vec<Song>),
+    /// The songs registered a second time, tagged by this, after the first.
+    again: Option<fn(&mut Vec<Song>)>,
+    /// Every song's last four seconds fade to near silence.
+    quiet_ends: bool,
+}
+
+impl Default for Tags {
+    fn default() -> Self {
+        Tags { tag: |_| {}, again: None, quiet_ends: false }
+    }
+}
+
+/// The last four seconds of `pcm` faded out to near silence, as many album tracks end.
+fn quiet_end(pcm: &mut [i16]) {
+    let fade = RATE * 4;
+    let frames = pcm.len() / 2;
+    for f in frames - fade..frames {
+        let g = (frames - f) as f64 / fade as f64 * 0.01;
+        for c in 0..2 {
+            pcm[f * 2 + c] = (pcm[f * 2 + c] as f64 * g) as i16;
+        }
+    }
+}
+
 const ALBUM: [S; 3] = [S("a1", "al", 1), S("a2", "al", 1), S("a3", "al", 1)];
 
 #[test]
@@ -330,6 +382,7 @@ fn an_album_kept_gapless_is_heard_whole_with_automix_or_a_crossfade_on() {
         keeping_albums_switched_on_while_a_song_plays_joins_it_whole(at_ms);
     }
     a_double_album_is_heard_whole_across_its_discs();
+    an_album_tagged_without_some_numbers_plays_every_sample();
     an_album_then_another_is_mixed_only_between_them();
     a_shuffled_album_is_mixed();
 }
@@ -423,4 +476,59 @@ fn a_shuffled_album_is_mixed() {
         let note = nori_core::automix::planner::transition_note(id);
         assert!(note.as_ref().is_some_and(|n| n.kind != "Gapless"), "{id} mixes into the next: {note:?}");
     }
+}
+
+
+/// An album whose numbers leave songs out or count otherwise than by one, as real libraries do, played in
+/// the order the queue has it: with AutoMix on and albums kept gapless it is heard whole, each next song
+/// from its first sample. Read as out of order, each song was mixed into the next, the next coming in
+/// part-way where the mix entered it.
+fn an_album_tagged_without_some_numbers_plays_every_sample() {
+    fn no_tracks(v: &mut Vec<Song>) {
+        for s in v.iter_mut() {
+            s.track = 0;
+        }
+    }
+    fn one_track_missing(v: &mut Vec<Song>) {
+        v[1].track = 0;
+    }
+    fn one_disc_missing(v: &mut Vec<Song>) {
+        v[1].disc_number = 0;
+    }
+    fn numbered_on(v: &mut Vec<Song>) {
+        v[2].disc_number = 2;
+    }
+    fn gap(v: &mut Vec<Song>) {
+        v[2].track = 4;
+    }
+    // In the order Navidrome lists an album whose track 2 has no disc number: that song first.
+    fn listed_first(v: &mut Vec<Song>) {
+        (v[0].track, v[0].disc_number, v[1].track, v[2].track) = (2, 0, 1, 3);
+    }
+    let stories: [(&str, Tags); 7] = [
+        ("listed-first", Tags { tag: listed_first, ..Tags::default() }),
+        // 1, 2, 4: a file the library does not have, or a track taken out of the queue.
+        ("gap", Tags { tag: gap, ..Tags::default() }),
+        ("no-tracks", Tags { tag: no_tracks, ..Tags::default() }),
+        ("one-track", Tags { tag: one_track_missing, ..Tags::default() }),
+        ("one-disc", Tags { tag: one_disc_missing, ..Tags::default() }),
+        ("numbered-on", Tags { tag: numbered_on, ..Tags::default() }),
+        // Songs ending in near silence: a mix into the next one is not heard as a mix at all, only as the
+        // next song starting part-way, which is how it was reported.
+        ("quiet-ends", Tags { tag: no_tracks, quiet_ends: true, ..Tags::default() }),
+    ];
+    for (name, tags) in stories {
+        let rig = Rig::tagged(&format!("album-tags-{name}"), &ALBUM, true, 0, true, Measured::Before, false, &tags);
+        rig.engine.play_at(0, 0);
+        let (mixed, order) = rig.to_the_end();
+        rig.heard_as(&order, 0, 0, &[true, true], 0);
+        assert!(!mixed, "{name}: nothing mixed");
+    }
+    // Registered again by another reading of the library that has no track numbers: the store keeps the
+    // last word, and the album is still in order.
+    let rig = Rig::tagged("album-tags-again", &ALBUM, true, 0, true, Measured::Before, false, &Tags { again: Some(no_tracks), ..Tags::default() });
+    rig.engine.play_at(0, 0);
+    let (mixed, order) = rig.to_the_end();
+    rig.heard_as(&order, 0, 0, &[true, true], 0);
+    assert!(!mixed, "registered again: nothing mixed");
 }

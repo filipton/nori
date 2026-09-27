@@ -43,12 +43,33 @@ pub struct TransitionPrefs {
     pub replay_gain: bool,
 }
 
-/// Two songs follow on the same album, in order: `b` is the track after `a` on the same disc, or the first
-/// track of the next disc (a double album goes on from one disc to the next as it does within one). Not
-/// while shuffling, which plays them next to each other by chance.
+/// Two songs follow on the same album, in order: `b` is played right after `a` (the caller's window is in
+/// play order), both are of the same album, and the queue is not shuffled, which puts songs next to each
+/// other by chance. Such songs are never mixed into each other.
+///
+/// The track and disc numbers do not have to count on by one. Real libraries leave numbers out (a song with
+/// no track number, one tagged by another tool without a disc number), number a double album on across its
+/// discs, or miss a file (1, 2, 4); read as "not in order", each such album was mixed song into song with
+/// AutoMix, every next song coming in part-way where the mix entered it, with "keep albums gapless" on. The
+/// one thing the numbers still say is going back: where both are known, a lower disc, or a lower track on
+/// the same disc, is a song picked out of the album on its own (track 5 queued, then track 2), not the album
+/// played on, and it mixes. A song with a disc number and one without have no place on the album to
+/// compare: Navidrome lists a song with no disc number before its album's others, so the album's own page
+/// plays track 2 (no disc) and then track 1 (disc 1), and that is the album played on.
 pub fn follows_on_album(a: &WindowSong, b: &WindowSong, shuffling: bool) -> bool {
-    let next = (a.disc == b.disc && b.track == a.track + 1) || (b.disc == a.disc + 1 && b.track == 1);
-    !shuffling && a.album_id.is_some() && a.album_id == b.album_id && next
+    if shuffling || a.album_id.is_none() || a.album_id != b.album_id {
+        return false;
+    }
+    !goes_back(a, b)
+}
+
+/// `b` comes before `a` on their album, as far as the numbers both have say.
+fn goes_back(a: &WindowSong, b: &WindowSong) -> bool {
+    match (a.disc > 0, b.disc > 0) {
+        (true, true) if b.disc != a.disc => b.disc < a.disc,
+        (true, false) | (false, true) => false,
+        _ => a.track > 0 && b.track > 0 && b.track < a.track,
+    }
 }
 
 /// `current` sits inside an album played in order: it follows the song before or leads into the one after.
@@ -214,17 +235,45 @@ mod tests {
         assert!(pick(&prefs(), false, &w, "a", false).unwrap().settings.same_album_in_order);
         assert!(!pick(&prefs(), false, &w, "a", true).unwrap().settings.same_album_in_order, "shuffled next to each other");
         assert!(!pick(&TransitionPrefs { keep_albums: false, ..prefs() }, false, &w, "a", false).unwrap().settings.same_album_in_order);
-        let skip = [song("a", Some("x"), 3), song("b", Some("x"), 5)];
-        assert!(!pick(&prefs(), false, &skip, "a", false).unwrap().settings.same_album_in_order, "a track skipped");
+        // A track missing from the queue (or the library) between them: still the album played on.
+        let gap = [song("a", Some("x"), 2), song("b", Some("x"), 4)];
+        assert!(pick(&prefs(), false, &gap, "a", false).unwrap().settings.same_album_in_order, "a track left out");
+        // Going back is a song picked out of the album on its own.
+        let back_track = [song("a", Some("x"), 5), song("b", Some("x"), 2)];
+        assert!(!pick(&prefs(), false, &back_track, "a", false).unwrap().settings.same_album_in_order, "back to an earlier track");
         let disc = |id: &str, disc: i32, track: i32| WindowSong { disc, ..song(id, Some("x"), track) };
         let turn = [disc("a", 1, 12), disc("b", 2, 1)];
         assert!(pick(&prefs(), false, &turn, "a", false).unwrap().settings.same_album_in_order, "on to the next disc");
         let back = [disc("a", 2, 1), disc("b", 1, 2)];
         assert!(!pick(&prefs(), false, &back, "a", false).unwrap().settings.same_album_in_order, "back to the disc before");
         let past = [disc("a", 1, 12), disc("b", 2, 2)];
-        assert!(!pick(&prefs(), false, &past, "a", false).unwrap().settings.same_album_in_order, "the next disc's first track skipped");
+        assert!(pick(&prefs(), false, &past, "a", false).unwrap().settings.same_album_in_order, "the next disc's first track left out");
+        let on = [disc("a", 1, 10), disc("b", 2, 11)];
+        assert!(pick(&prefs(), false, &on, "a", false).unwrap().settings.same_album_in_order, "numbered on across the discs");
         assert!(in_album_run(None, &w[0], Some(&w[1]), false) && in_album_run(Some(&w[0]), &w[1], None, false));
         assert!(!in_album_run(None, &song("c", None, 1), None, false));
+    }
+
+    #[test]
+    fn an_album_is_in_order_as_the_queue_plays_it_whatever_its_numbers_leave_out() {
+        let in_order = |a: WindowSong, b: WindowSong| pick(&prefs(), false, &[a, b], "a", false).unwrap().settings.same_album_in_order;
+        let tagged = |id: &str, disc: i32, track: i32| WindowSong { disc, ..song(id, Some("x"), track) };
+        assert!(in_order(tagged("a", 1, 0), tagged("b", 1, 0)), "no track numbers at all");
+        assert!(in_order(tagged("a", 1, 3), tagged("b", 1, 0)), "the next one's track number left out");
+        assert!(in_order(tagged("a", 1, 0), tagged("b", 1, 7)), "this one's track number left out");
+        assert!(in_order(tagged("a", 1, 3), tagged("b", 0, 4)), "the next one's disc left out");
+        assert!(in_order(tagged("a", 0, 3), tagged("b", 0, 4)), "no disc numbers at all");
+        assert!(in_order(tagged("a", 1, 0), tagged("b", 2, 0)), "on to the next disc, no track numbers");
+        assert!(in_order(tagged("a", 1, 0), tagged("b", 3, 0)), "a disc left out");
+        assert!(in_order(tagged("a", 1, 9), tagged("b", 0, 2)), "a lower track, one disc not known: nothing to compare");
+        assert!(in_order(tagged("a", 0, 2), tagged("b", 1, 1)), "the song with no disc listed first, as Navidrome lists it");
+        // Going back, where both numbers say so, still counts.
+        assert!(!in_order(tagged("a", 2, 0), tagged("b", 1, 0)), "back to the disc before");
+        assert!(!in_order(tagged("a", 1, 7), tagged("b", 1, 3)), "back to an earlier track");
+        assert!(!in_order(tagged("a", 0, 7), tagged("b", 0, 3)), "back to an earlier track, no discs");
+        assert!(in_order(tagged("a", 1, 7), tagged("b", 1, 7)), "the same number twice is not going back");
+        assert!(!in_order(tagged("a", 1, 0), WindowSong { album_id: Some("y".into()), ..tagged("b", 1, 0) }), "another album");
+        assert!(!pick(&prefs(), false, &[tagged("a", 1, 0), tagged("b", 1, 0)], "a", true).unwrap().settings.same_album_in_order, "shuffled");
     }
 
     #[test]
