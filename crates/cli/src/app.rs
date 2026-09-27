@@ -1638,7 +1638,8 @@ impl App {
     fn lyrics_action(&mut self, a: Action) {
         let Some(l) = &self.lyrics else { return };
         let len = l.pick.lyrics.lines.len();
-        let active = l.clock.shown().active.max(0) as usize;
+        // Past the last line once it is over: the last line is where a selection starts.
+        let active = (l.clock.shown().active.max(0) as usize).min(len.saturating_sub(1));
         let at = self.lyrics_sel.unwrap_or(active);
         match a {
             Action::Up => self.lyrics_sel = Some(at.saturating_sub(1)),

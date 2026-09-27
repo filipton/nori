@@ -183,7 +183,13 @@ private class LyricsAnchor {
     var song: String? = null
     var lyrics: dev.nori.music.ffi.model.Lyrics? = null
     var list: androidx.compose.foundation.lazy.LazyListState? = null
-    var active = -1
+    /**
+     * The lit line's state itself, read when finer words come. A copy written by the body's SideEffect went
+     * stale: the body does not recompose as the line changes (only its list and effects read it), so the
+     * anchor kept the line lit when the words first went up, -1 for a song's first words.
+     */
+    var lit: androidx.compose.runtime.IntState? = null
+    private val active: Int get() = lit?.intValue ?: -1
 
     /**
      * Where [lyrics] for [song] should start so that the line shown is where it was: the new line matching
@@ -196,10 +202,24 @@ private class LyricsAnchor {
         if (song == null || song != this.song || old === lyrics || lyrics.lines.isEmpty()) return null
         val seen = list.layoutInfo.visibleItemsInfo
         val ref = seen.firstOrNull { it.index == active } ?: seen.firstOrNull() ?: return null
+        return matching(old, ref.index, lyrics) to ref.offset
+    }
+
+    /**
+     * The line of [lyrics] for [song] standing for the one lit in the words followed, for their clock to
+     * start on (`LyricsClock.land`); null when there is nothing to carry over (another song, nothing lit).
+     */
+    fun litLine(song: String?, lyrics: dev.nori.music.ffi.model.Lyrics): Int? {
+        val old = this.lyrics ?: return null
+        if (song == null || song != this.song || old === lyrics || lyrics.lines.isEmpty() || active !in old.lines.indices) return null
+        return matching(old, active, lyrics)
+    }
+
+    /** Which new line stands for line [at] of [old] is the core's (nori_look::lyrics::matching_line). */
+    private fun matching(old: dev.nori.music.ffi.model.Lyrics, at: Int, lyrics: dev.nori.music.ffi.model.Lyrics): Int {
         val starts = LongArray(old.lines.size) { old.lines[it].startMs }
         val next = LongArray(lyrics.lines.size) { lyrics.lines[it].startMs }
-        // Which new line stands for the old one is the core's (nori_look::lyrics::matching_line).
-        return dev.nori.music.look.LyricsClock.matchingLine(starts, ref.index, next, old.synced && lyrics.synced) to ref.offset
+        return dev.nori.music.look.LyricsClock.matchingLine(starts, at, next, old.synced && lyrics.synced)
     }
 }
 
@@ -230,7 +250,9 @@ private fun LyricsBody(vm: PlayerViewModel, found: dev.nori.music.data.FoundLyri
     val shown = LocalPlayerShown.current
     // Which line is lit, how long its change takes, how far the singing is and when to look again are all
     // the core's (crates/look/src/lyrics.rs); this only asks with the playhead and draws the answer.
-    val clock = remember(lyrics) { LyricsClock(lyrics, vm.positionMs) }
+    // Finer words for the same song (or the same ones timed again) start on the line that was lit, not a
+    // line back while the song catches up with their timing (see LyricsAnchor.litLine).
+    val clock = remember(lyrics) { LyricsClock(lyrics, vm.positionMs).also { c -> anchor.litLine(song, lyrics)?.let(c::land) } }
     DisposableEffect(clock) { onDispose { clock.close() } }
     var nudgeMs by remember(clock) { mutableLongStateOf(0L) }
     var resumed by remember { mutableStateOf(false) }
@@ -273,6 +295,7 @@ private fun LyricsBody(vm: PlayerViewModel, found: dev.nori.music.data.FoundLyri
         // song's first second read here put these words back before their first line - scrolled to
         // the top in one frame as they began to fade out.
         var step = clock.at(vm.positionIn(song) ?: return@LaunchedEffect, sweep, lively, force = true)
+        if (dev.nori.music.app.traceLyrics) android.util.Log.d("norilyrics", "${android.os.SystemClock.uptimeMillis()} start shown=${clock.shownMs()} lit=${LyricsClock.active(step)} words=${lyrics.wordTimed}")
         show(LyricsClock.frame(step))
         shownMs = clock.shownMs()
         lastMs[0] = shownMs
@@ -293,7 +316,7 @@ private fun LyricsBody(vm: PlayerViewModel, found: dev.nori.music.data.FoundLyri
             } else { delay(wait.toLong()); drawnAt = 0L }
             val read = vm.positionIn(song) ?: break
             step = clock.at(read, sweep, lively, force = false)
-            if (dev.nori.music.app.traceLyrics) android.util.Log.d("norilyrics", "${android.os.SystemClock.uptimeMillis()} read=$read shown=${clock.shownMs()} mixing=${vm.mixing.value} player=${vm.playerPositionMs}")
+            if (dev.nori.music.app.traceLyrics) android.util.Log.d("norilyrics", "${android.os.SystemClock.uptimeMillis()} read=$read shown=${clock.shownMs()} mixing=${vm.mixing.value} player=${vm.playerPositionMs} lit=${LyricsClock.active(step)} words=${lyrics.wordTimed}")
             if (LyricsClock.redraw(step)) {
                 show(LyricsClock.frame(step))
                 shownMs = clock.shownMs()
@@ -322,7 +345,7 @@ private fun LyricsBody(vm: PlayerViewModel, found: dev.nori.music.data.FoundLyri
         androidx.compose.foundation.lazy.LazyListState().also { l -> anchor.carry(song, lyrics)?.let { (i, y) -> l.requestScrollToItem(i, -y) } }
     }
     // The words being followed are the anchor for any finer ones that come for the song.
-    if (following) androidx.compose.runtime.SideEffect { anchor.song = song; anchor.lyrics = lyrics; anchor.list = list; anchor.active = active }
+    if (following) androidx.compose.runtime.SideEffect { anchor.song = song; anchor.lyrics = lyrics; anchor.list = list; anchor.lit = lit }
     // Whether the song is a duet at all: only then does either side keep a lane clear.
     val duet = remember(lyrics) { lyrics.lines.any { it.voice.toInt() == 1 } }
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -355,16 +378,19 @@ private fun LyricsBody(vm: PlayerViewModel, found: dev.nori.music.data.FoundLyri
             // Before the first line (a new song, an intro), or lyrics that are not timed: back to the top.
             // The list outlives a song, so without this the next song opened where the last one ended.
             if (active < 0) { if (list.firstVisibleItemIndex != 0 || list.firstVisibleItemScrollOffset != 0) list.scrollToItem(0); return@LaunchedEffect }
+            // Once the last line is over the clock lights none (`active` is one past it): the page stays on
+            // that line while it dims with the rest.
+            val line = minOf(active, lyrics.lines.size - 1)
             // Not measured yet (the words have only just come): look after the first measure, which is
             // where finer words for the same song were put, rather than jumping from nowhere.
             if (list.layoutInfo.visibleItemsInfo.isEmpty()) withFrameNanos { }
-            val here = list.layoutInfo.visibleItemsInfo.firstOrNull { it.index == active }
+            val here = list.layoutInfo.visibleItemsInfo.firstOrNull { it.index == line }
             if (returning) {
                 returning = false
-                if (plain) list.scrollToItem(active, -third) else list.animateScrollToItem(active, -third)
+                if (plain) list.scrollToItem(line, -third) else list.animateScrollToItem(line, -third)
                 return@LaunchedEffect
             }
-            if (plain || here == null) { list.scrollToItem(active, -third); return@LaunchedEffect }
+            if (plain || here == null) { list.scrollToItem(line, -third); return@LaunchedEffect }
             // scrollToItem(active, -third) would leave the line at offset `third`; glide by the difference.
             val distance = (here.offset - third).toFloat()
             if (kotlin.math.abs(distance) < 1f) return@LaunchedEffect

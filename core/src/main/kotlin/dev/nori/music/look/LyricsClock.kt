@@ -41,6 +41,13 @@ class LyricsClock(lyrics: Lyrics, positionMs: Long) : AutoCloseable {
     /** Shows [line] at once and returns where to seek the player to. */
     fun tap(line: Int): Long = LyricsJni.tap(h, line)
 
+    /**
+     * Lyrics taking the place of the ones on screen for the same song start on [line], the one standing
+     * for the line that was lit, rather than going back a line while the song catches up with a new timing
+     * (`LyricClock::land`). No seek.
+     */
+    fun land(line: Int) = LyricsJni.land(h, line)
+
     /** Sooner (> 0), later (< 0) or back to none (0); returns the nudge in ms. */
     fun nudge(dir: Int): Long = LyricsJni.nudge(h, dir)
 
@@ -58,7 +65,7 @@ class LyricsClock(lyrics: Lyrics, positionMs: Long) : AutoCloseable {
 
         /** The part of an answer that is what to draw: store this, so equal frames are equal values. */
         fun frame(step: Long): Long = step and ((1L shl WAIT_AT) - 1)
-        /** The line lit and scrolled to, or -1. */
+        /** The line lit and scrolled to, or -1; the number of lines once the last one is over (every line sung). */
         fun active(frame: Long): Int = ((frame ushr ACTIVE_AT) and 0x1FFF).toInt() - 1
         /** How long the change into the active line takes, scroll and fades together. */
         fun glideMs(frame: Long): Int = ((frame ushr GLIDE_AT) and 0x3FF).toInt()
@@ -94,6 +101,7 @@ internal object LyricsJni {
     @JvmStatic @CriticalNative external fun shownMs(h: Long): Long
     @JvmStatic @CriticalNative external fun backingSung(h: Long): Float
     @JvmStatic @CriticalNative external fun tap(h: Long, line: Int): Long
+    @JvmStatic @CriticalNative external fun land(h: Long, line: Int)
     @JvmStatic @CriticalNative external fun nudge(h: Long, dir: Int): Long
     /** A clock on the lyrics the core read under [key]; 0 when it no longer keeps them. */
     @JvmStatic @CriticalNative external fun kept(key: Long, positionMs: Long): Long

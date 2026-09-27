@@ -19,6 +19,7 @@ fn timed(l: &nori_model::LyricLine) -> Line {
     let word = |w: &nori_model::LyricWord| Word { start_ms: w.start_ms, end_ms: w.end_ms, start: w.start, end: w.end };
     Line {
         start_ms: l.start_ms,
+        end_ms: l.end_ms,
         len: l.text.encode_utf16().count() as u32,
         words: l.words.iter().map(word).collect(),
         backing_len: l.backing.encode_utf16().count() as u32,
@@ -115,6 +116,9 @@ use nori_model::Lyrics;
         let h = kept_clock(l.key, 0);
         let s = Step::unpack(unsafe { clock(h) }.unwrap().advance(1500, true, false, true).pack());
         assert_eq!((s.frame.active, s.frame.sung), (0, 7.0));
+        // The last line ends where the lyrics say (4 s + 2 s), and then it is drawn as sung with the rest.
+        let s = Step::unpack(unsafe { clock(h) }.unwrap().advance(6000, true, false, false).pack());
+        assert_eq!(s.frame.active, 2);
         unsafe { free_clock(h) };
         let first = l.key;
         for _ in 0..KEEP {

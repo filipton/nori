@@ -764,7 +764,8 @@ fn lyrics(f: &mut Frame, area: Rect, app: &mut App) {
     let sweep = app.prefs.lyrics_sweep && l.clock.timing().sweeps();
     let translate = app.prefs.lyrics_translation;
     let active = frame.active;
-    let focus = app.lyrics_sel.unwrap_or(active.max(0) as usize);
+    // Once the last line is over (`active` past it) the page stays on it, drawn as sung.
+    let focus = app.lyrics_sel.unwrap_or((active.max(0) as usize).min(l.pick.lyrics.lines.len().saturating_sub(1)));
     let credit = l.credit();
     let body = if credit.is_some() { Rect { height: area.height.saturating_sub(1), ..area } } else { area };
     // Each lyric line and what it draws under it: the backing vocals, a translation.

@@ -29,6 +29,7 @@ impl SongLyrics {
         let lyrics = &pick.lyrics;
         let lines = lyrics.lines.iter().map(|l| Line {
             start_ms: l.start_ms,
+            end_ms: l.end_ms,
             len: l.text.encode_utf16().count() as u32,
             words: l.words.iter().map(word).collect(),
             backing_len: l.backing.encode_utf16().count() as u32,

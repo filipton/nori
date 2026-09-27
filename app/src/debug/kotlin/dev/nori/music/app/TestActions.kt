@@ -121,10 +121,14 @@ object TestActions {
             // "fakelyrics <ms>": every song's lyrics come timed by the line at once and then, <ms> later,
             // the same words timed word by word, as a slower and finer service replaces a fast one in the
             // lyrics race. "fakelyrics off" goes back to the real lookup.
-            // "fakelyrics <ms>,<shift>" starts every line <shift> ms later, to put a word mid-fill at a given moment.
-            "fakelyrics" -> TestHooks.lyrics = if (ref == "off") null else ref.substringBefore(',').toLongOrNull()?.let { slow ->
-                val shift = ref.substringAfter(',', "0").toLongOrNull() ?: 0L
-                { song -> fakeLyrics(song, slow, shift) }
+            // "fakelyrics <ms>,<shift>" starts every line <shift> ms later, to put a word mid-fill at a given moment;
+            // "fakelyrics <ms>,<shift>,<later>" times the finer words <later> ms later still, as a service whose
+            // timing fits the song better replaces one that ran early.
+            "fakelyrics" -> TestHooks.lyrics = if (ref == "off") null else ref.split(',').let { a ->
+                val slow = a[0].toLongOrNull() ?: return@let null
+                val shift = a.getOrNull(1)?.toLongOrNull() ?: 0L
+                val later = a.getOrNull(2)?.toLongOrNull() ?: 0L
+                { song -> fakeLyrics(song, slow, shift, later) }
             }
             // "dac <name>@44100/16,96000/24" pretends a USB DAC with those bit-perfect modes is attached;
             // "dac off" hands the app back to the real audio system. See DacSource.mock.
@@ -178,11 +182,11 @@ object TestActions {
     }
 
     /** Made-up lyrics for [song] (see "fakelyrics"): a line every four seconds, by the line, then by the word after [slowMs]. */
-    private fun fakeLyrics(song: Song, slowMs: Long, shiftMs: Long = 0): kotlinx.coroutines.flow.Flow<FoundLyrics> = kotlinx.coroutines.flow.flow {
+    private fun fakeLyrics(song: Song, slowMs: Long, shiftMs: Long = 0, laterMs: Long = 0): kotlinx.coroutines.flow.Flow<FoundLyrics> = kotlinx.coroutines.flow.flow {
         val words = listOf("Somewhere", "the", "night", "is", "turning", "slowly", "over", "the", "water", "tonight", "and", "we")
         val total = (song.duration.toLong() * 1000).coerceAtLeast(60_000)
         fun lines(timed: Boolean) = (0 until (total / 4000).toInt()).map { i ->
-            val start = 2000L + shiftMs + i * 4000L
+            val start = 2000L + shiftMs + (if (timed) laterMs else 0L) + i * 4000L
             val n = 3 + i % 4
             val picked = List(n) { words[(i * 5 + it) % words.size] }
             val text = picked.joinToString(" ")

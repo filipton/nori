@@ -49,6 +49,7 @@ pub(crate) static LYRICS: Class = Class {
         native!(c"shownMs", c"(J)J", lyrics_shown_ms),
         native!(c"backingSung", c"(J)F", lyrics_backing_sung),
         native!(c"tap", c"(JI)J", lyrics_tap),
+        native!(c"land", c"(JI)V", lyrics_land),
         native!(c"nudge", c"(JI)J", lyrics_nudge),
         native!(c"kept", c"(JJ)J", lyrics_kept),
         native!(c"strength", c"(ZII)F", lyrics_strength),
@@ -401,6 +402,14 @@ extern "system" fn lyrics_shown(h: jlong) -> jlong {
 /// A tap on `line`: shows it and returns where to seek the player to.
 extern "system" fn lyrics_tap(h: jlong, line: jint) -> jlong {
     clock(h).map_or(0, |c| c.tap(line.max(0) as usize))
+}
+
+/// Lyrics replacing the ones on screen for the same song start on `line`, the one standing for the line
+/// that was lit (`LyricClock::land`).
+extern "system" fn lyrics_land(h: jlong, line: jint) {
+    if let (Some(c), Ok(line)) = (clock(h), usize::try_from(line)) {
+        c.land(line);
+    }
 }
 
 /// Sooner (> 0), later (< 0) or back to none (0); returns the nudge in ms.

@@ -59,6 +59,10 @@ const WORD_MS_BASE: i64 = 250;
 const WORD_MS_MIN: i64 = 400;
 const WORD_MS_MAX: i64 = 2_000;
 
+/// How long the last line is sung when nothing says when it ends: as long as a line-timed file's last
+/// line is taken to last (nori-lyrics `build`).
+pub const LAST_LINE_MS: i64 = 5_000;
+
 /// One press of "Sooner" or "Later", for the few songs whose timings are wrong.
 pub const NUDGE_STEP_MS: i64 = 250;
 
@@ -125,8 +129,8 @@ pub fn keeps_screen_on(asked: bool, shown: bool, playing: bool) -> bool {
     asked && shown && playing
 }
 
-/// Lines past this are never lit: the index has to fit its field in [`Step::pack`]. A song has a few
-/// hundred at most.
+/// Lines past this are never lit: the index has to fit its field in [`Step::pack`], and so does one past
+/// the last line ([`Frame::active`] once the lyrics are over). A song has a few hundred at most.
 pub const MAX_LINES: usize = (1 << ACTIVE_BITS) - 2;
 
 /// One word (or syllable) of a line and when it is sung; `start`/`end` index the line's text.
@@ -138,11 +142,13 @@ pub struct Word {
     pub end: u32,
 }
 
-/// A line as the timing needs it: when it is sung, its length in UTF-16 units and its words, and the
-/// same of the backing vocals sung over it (drawn under it, filled on their own).
+/// A line as the timing needs it: when it is sung and when it ends (`end_ms`, 0 or less when its source
+/// does not say), its length in UTF-16 units and its words, and the same of the backing vocals sung over
+/// it (drawn under it, filled on their own).
 #[derive(Debug, Clone, Default)]
 pub struct Line {
     pub start_ms: i64,
+    pub end_ms: i64,
     pub len: u32,
     pub words: Vec<Word>,
     pub backing_len: u32,
@@ -152,7 +158,8 @@ pub struct Line {
 /// What the lyrics look like at one moment.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Frame {
-    /// The line lit and scrolled to, or -1: before the first line, or lyrics that are not timed.
+    /// The line lit and scrolled to, or -1: before the first line, or lyrics that are not timed. Once the
+    /// last line is over it is the number of lines: every line has been sung, and none is lit.
     pub active: i32,
     /// How long the change into [`Frame::active`] takes; the scroll and every line's fade use it.
     pub glide_ms: i32,
@@ -192,6 +199,8 @@ pub struct LyricTiming {
     backing_lens: Vec<u32>,
     backing_spans: Vec<(u32, u32)>,
     words: Vec<Word>,
+    /// When the last line is over and goes dim with the rest; none without lines.
+    over_at: Option<i64>,
 }
 
 impl LyricTiming {
@@ -206,7 +215,9 @@ impl LyricTiming {
         let mut backing_lens = Vec::new();
         let mut backing_spans = Vec::new();
         let mut words = Vec::new();
+        let mut last_end = 0;
         for l in lines.into_iter().take(MAX_LINES) {
+            last_end = l.end_ms;
             starts.push(l.start_ms);
             lens.push(l.len);
             let from = words.len() as u32;
@@ -244,8 +255,17 @@ impl LyricTiming {
             let at = starts[i] - (glide[i] / 2) as i64;
             switch_at.push(if i == 0 { at } else { at.max(switch_at[i - 1] + 1) });
         }
+        // Every other line goes dim as the next one takes over; the last has none after it, and stayed lit
+        // for as long as the page was open. It is over at its end (its source's, else a line-timed file's
+        // guess), once its words and backing vocals have been sung and have stopped moving, and never
+        // before it has been lit.
+        let over_at = n.checked_sub(1).map(|last| {
+            let sung = [spans[last], backing_spans[last]].iter().flat_map(|&(from, to)| &words[from as usize..to as usize]).map(|w| w.end_ms + MOTION_TAIL_MS).max();
+            let end = if last_end > starts[last] { last_end } else { starts[last] + LAST_LINE_MS };
+            end.max(sung.unwrap_or(end)).max(switch_at[last] + 1)
+        });
         let sorted = starts.windows(2).all(|w| w[0] <= w[1]);
-        LyricTiming { synced, word_timed, starts, sorted, switch_at, glide, lens, spans, backing_lens, backing_spans, words }
+        LyricTiming { synced, word_timed, starts, sorted, switch_at, glide, lens, spans, backing_lens, backing_spans, words, over_at }
     }
 
     pub fn synced(&self) -> bool {
@@ -265,9 +285,25 @@ impl LyricTiming {
         self.switch_at.partition_point(|&s| s <= t) as i32 - 1
     }
 
-    /// When the line after the one at `t` takes over.
+    /// Whether the last line is over at `t`: every line has been sung.
+    pub fn over(&self, t: i64) -> bool {
+        self.over_at.is_some_and(|at| t >= at)
+    }
+
+    /// The line lit at `t`: the one whose change has begun, -1 before the first, and the number of lines
+    /// once the last is over, when every line is drawn as one sung.
+    pub fn line_lit(&self, t: i64) -> i32 {
+        if self.over(t) {
+            self.starts.len() as i32
+        } else {
+            self.line_at(t)
+        }
+    }
+
+    /// When the line after the one at `t` takes over, or the last line is over.
     pub fn next_switch_after(&self, t: i64) -> Option<i64> {
-        self.switch_at.get((self.line_at(t) + 1) as usize).copied()
+        let next = (self.line_at(t) + 1) as usize;
+        self.switch_at.get(next).copied().or_else(|| self.over_at.filter(|&at| next == self.starts.len() && t < at))
     }
 
     /// How long the change into `line` takes; [`GLIDE_MS`] for no line.
@@ -338,7 +374,7 @@ impl LyricTiming {
 
     /// The lyrics as they look at `t`.
     pub fn frame(&self, t: i64) -> Frame {
-        let active = if self.synced { self.line_at(t) } else { -1 };
+        let active = if self.synced { self.line_lit(t) } else { -1 };
         let sung = if active >= 0 { self.sung_offset(active as usize, t) } else { 0.0 };
         Frame { active, glide_ms: self.glide_ms(active), sung }
     }
@@ -351,9 +387,10 @@ impl LyricTiming {
     /// next change starts on it rather than half a change ahead as it does without the sweep. That is how
     /// the lyrics have always moved, and it is kept.
     ///
-    /// With `lively` (words rise and glow as they are sung), anything moving is a change too.
+    /// With `lively` (words rise and glow as they are sung), anything moving is a change too. The last line
+    /// being over, or no longer over (a seek back), always is.
     pub fn moved(&self, shown: i64, t: i64, sweep: bool, lively: bool) -> bool {
-        if !sweep {
+        if !sweep || self.over(shown) != self.over(t) {
             return true;
         }
         let Some(line) = self.sung_line(t) else { return true };
@@ -366,7 +403,7 @@ impl LyricTiming {
     /// While sweeping, how long after `t` nothing in the line being sung changes, in milliseconds (within
     /// 8 to 500): between its words, or once it is sung until the next line. None while a word or a
     /// backing word is being sung, or, `lively`, while one still rises, settles or glows. Before the first
-    /// line it is until the first change.
+    /// line it is until the first change; on the last line, until it is over.
     pub fn quiet_ms(&self, t: i64, lively: bool) -> Option<u32> {
         let next = match self.sung_line(t) {
             None => self.switch_at.iter().chain(&self.starts).copied().filter(|&s| s > t).min(),
@@ -374,7 +411,8 @@ impl LyricTiming {
                 if lively && self.moving(t) {
                     return None;
                 }
-                let mut next = self.starts.get(line + 1).copied().filter(|&s| s > t);
+                let over = self.over_at.filter(|&at| at > t && line + 1 == self.starts.len());
+                let mut next = self.starts.get(line + 1).copied().filter(|&s| s > t).or(over);
                 for &(from, to) in [self.spans.get(line), self.backing_spans.get(line)].into_iter().flatten() {
                     for w in &self.words[from as usize..to as usize] {
                         if t >= w.start_ms && t < w.end_ms {
@@ -483,6 +521,23 @@ impl LyricClock {
         self.shown.store(start, Relaxed);
         self.landing.store(start, Relaxed);
         (start - self.offset - self.nudge.load(Relaxed)).max(0)
+    }
+
+    /// Lyrics taking the place of the ones on screen for the same song (finer words, or the same words
+    /// timed again against the song's voice) start on `line`, the one standing for the line that was lit
+    /// ([`matching_line`]). Started from the playhead alone, a new timing a moment behind the old one lit
+    /// the line before it: the page went back a line, and on again as the song got there. Instead the line
+    /// is shown at once and landed on as a tap is, with no seek: a reading up to [`LAND_EARLY_MS`] before
+    /// it holds it while the song gets there, and one further back is the new timing's word, shown as it
+    /// is. Nothing is held when the new timing is already on the line or past it.
+    pub fn land(&self, line: usize) {
+        let Some(&start) = self.timing.starts.get(line) else { return };
+        let shown = self.shown.load(Relaxed);
+        if !self.timing.synced || self.timing.line_at(shown) >= line as i32 || shown < start - LAND_EARLY_MS {
+            return;
+        }
+        self.shown.store(start, Relaxed);
+        self.landing.store(start, Relaxed);
     }
 
     /// The moment to show for a reading `t`, while a tap is being landed: see [`LyricClock::tap`].
@@ -630,7 +685,9 @@ mod tests {
         // Glides 160, 160, 620 (3890 gap -> 3306 -> 620), 620: leads 80, 80, 310, 310.
         assert_eq!(t.switch_at, [920, 1020, 1021, 4690]);
         assert_eq!((t.line_at(919), t.line_at(920), t.line_at(1020), t.line_at(1021), t.line_at(4689), t.line_at(4690)), (-1, 0, 1, 2, 2, 3));
-        assert_eq!((t.next_switch_after(0), t.next_switch_after(1021), t.next_switch_after(4690)), (Some(920), Some(4690), None));
+        // After the last line takes over, the next change is its end (no end given: `LAST_LINE_MS` on).
+        assert_eq!((t.next_switch_after(0), t.next_switch_after(1021), t.next_switch_after(4690)), (Some(920), Some(4690), Some(5000 + LAST_LINE_MS)));
+        assert_eq!(t.next_switch_after(5000 + LAST_LINE_MS), None);
     }
 
     #[test]
@@ -791,7 +848,7 @@ mod tests {
 
     #[test]
     fn backing_vocals_fill_on_their_own_time_and_moving_words_draw_every_frame() {
-        let line = Line { start_ms: 1000, len: 5, words: vec![w(1000, 1500, 0, 5)], backing_len: 4, backing: vec![w(1600, 2000, 0, 4)] };
+        let line = Line { start_ms: 1000, len: 5, words: vec![w(1000, 1500, 0, 5)], backing_len: 4, backing: vec![w(1600, 2000, 0, 4)], ..Default::default() };
         let t = LyricTiming::new(true, true, vec![line, Line { start_ms: 9000, len: 3, ..Default::default() }]);
         assert_eq!((t.backing_sung(0, 1500), t.backing_sung(0, 1800), t.backing_sung(0, 2000)), (0.0, 2.0, 4.0));
         assert_eq!(t.sung_offset(1, 9000), 3.0, "the backing words are not the next line's");
@@ -806,7 +863,7 @@ mod tests {
 
     #[test]
     fn a_sweep_sleeps_while_nothing_on_its_line_changes() {
-        let line = Line { start_ms: 1000, len: 11, words: vec![w(1000, 1400, 0, 5), w(1600, 2000, 6, 11)], backing_len: 3, backing: vec![w(2200, 2300, 0, 3)] };
+        let line = Line { start_ms: 1000, len: 11, words: vec![w(1000, 1400, 0, 5), w(1600, 2000, 6, 11)], backing_len: 3, backing: vec![w(2200, 2300, 0, 3)], ..Default::default() };
         let t = LyricTiming::new(true, true, vec![line, Line { start_ms: 2600, len: 3, ..Default::default() }]);
         // Before the first line: until it takes over (310 ms ahead of its timestamp).
         assert_eq!(t.quiet_ms(0, false), Some(500));
@@ -823,6 +880,69 @@ mod tests {
         let s = c.advance(1450, false, false, false);
         assert!(!s.still, "without the sweep the wait is milliseconds anyway");
         assert_eq!((c.advance(1200, true, false, false).wait, c.advance(1200, true, false, false).still), (SWEEP_FRAMES, false));
+    }
+
+    #[test]
+    fn the_last_line_is_drawn_as_sung_once_it_is_over() {
+        // Two lines timed by the line; the last one ends at 8 s, and nothing follows it.
+        let two = vec![Line { start_ms: 1000, len: 5, ..Default::default() }, Line { start_ms: 5000, end_ms: 8000, len: 5, ..Default::default() }];
+        let t = LyricTiming::new(true, false, two.clone());
+        assert_eq!((t.frame(7999).active, t.frame(8000).active, t.frame(600_000).active), (1, 2, 2), "lit while sung, then past, for good");
+        assert_eq!(line_strength(true, 1, t.frame(8000).active), PAST_LINE, "dimmed as a sung line is");
+        assert_eq!(t.frame(8000).sung, 0.0);
+        assert_eq!(t.frame(6000).active, 1, "a seek back into it lights it again");
+        // The page wakes as it ends, not up to half a second later, and not before.
+        assert_eq!((t.wait(7700, false, false), t.next_switch_after(7700), t.next_switch_after(8000)), (300, Some(8000), None));
+        let c = LyricClock::new(t, 7000);
+        assert_eq!(c.advance(7000, false, false, true).frame.active, 1);
+        assert_eq!(c.advance(8000, false, false, false).frame.active, 2);
+        // A source that does not say when it ends: as long as a line-timed file's last line is taken to last.
+        let t = LyricTiming::new(true, false, lines(&[1000, 5000]));
+        assert_eq!((t.frame(5000 + LAST_LINE_MS - 1).active, t.frame(5000 + LAST_LINE_MS).active), (1, 2));
+        // Word by word: over once its words are sung and have stopped moving, and the sweep, which holds
+        // the page while nothing in the line moves, still draws it going dim.
+        let words = vec![w(5000, 5500, 0, 2), w(5500, 6000, 3, 5)];
+        let t = LyricTiming::new(true, true, vec![Line { start_ms: 1000, len: 5, words: vec![w(1000, 2000, 0, 5)], ..Default::default() }, Line { start_ms: 5000, end_ms: 6000, len: 5, words, ..Default::default() }]);
+        assert_eq!((t.frame(6000 + MOTION_TAIL_MS - 1).active, t.frame(6000 + MOTION_TAIL_MS).active), (1, 2));
+        assert_eq!(t.quiet_ms(6100, false), Some((MOTION_TAIL_MS - 100) as u32), "asleep until it is over");
+        let c = LyricClock::new(t, 0);
+        assert_eq!(c.advance(5800, true, false, true).frame.active, 1);
+        let s = c.advance(6000 + MOTION_TAIL_MS, true, false, false);
+        assert!(s.redraw && s.frame.active == 2, "{s:?}");
+        let s = c.advance(9000, true, false, false);
+        assert!(!s.redraw && s.frame.active == 2, "and nothing more to draw: {s:?}");
+        // Lyrics that are not timed have no last line to be over.
+        assert_eq!(LyricTiming::new(false, false, lines(&[-1, -1])).frame(600_000).active, -1);
+    }
+
+    #[test]
+    fn lyrics_timed_again_for_the_same_song_start_on_the_line_that_was_lit() {
+        // The words on screen: the second line lit 200 ms into it.
+        let old = [1000, 5000, 9000];
+        let c = LyricClock::new(LyricTiming::new(true, false, lines(&old)), 0);
+        assert_eq!(c.advance(5200, false, false, true).frame.active, 1);
+        // The same song's words again, timed 800 ms later (a better fit to the song's voice). Started from
+        // the playhead alone they lit the first line again, and the second only as the song got there:
+        // the page went back a line and on again.
+        let next = [1800, 5800, 9800];
+        let line = matching_line(&old, 1, &next, true);
+        assert_eq!(line, 1);
+        let c = LyricClock::new(LyricTiming::new(true, false, lines(&next)), 5200);
+        c.land(line as usize);
+        assert_eq!(c.shown().active, 1, "on the line that was lit, at once");
+        for ms in (5200..6500).step_by(16) {
+            assert_eq!(c.advance(ms, false, false, ms == 5200).frame.active, 1, "never back a line, at {ms} ms");
+        }
+        assert_eq!(c.advance(10_000, false, false, false).frame.active, 2, "and on with the song");
+        assert_eq!(c.advance(2_500, false, false, false).frame.active, 0, "a seek back is shown as it is");
+        // A new timing that puts the song well before the line is the new timing's word: nothing is held.
+        let c = LyricClock::new(LyricTiming::new(true, false, lines(&[3000, 7000, 11_000])), 5200);
+        c.land(1);
+        assert_eq!(c.advance(5200, false, false, true).frame.active, 0);
+        // Nor when the new timing is already on the line: it goes on from where it is.
+        let c = LyricClock::new(LyricTiming::new(true, false, lines(&[500, 4000, 9000])), 5200);
+        c.land(1);
+        assert_eq!(c.shown_ms(), 5200);
     }
 
     #[test]
