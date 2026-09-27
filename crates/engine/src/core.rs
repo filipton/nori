@@ -69,12 +69,14 @@ pub struct CoreApp {
     output: Option<String>,
     /// The client has an offline bridge to hand a song the network would not bring to.
     bridge: bool,
+    /// The songs' ReplayGain levels last logged.
+    gains_said: Vec<(String, f32)>,
 }
 
 impl CoreApp {
     pub fn new() -> CoreApp {
         fn nothing() {}
-        CoreApp { host: CoreHost { now_ms: 0, heard_changed: nothing }, measurer: None, devices: None, known: Vec::new(), output: None, bridge: false }
+        CoreApp { host: CoreHost { now_ms: 0, heard_changed: nothing }, measurer: None, devices: None, known: Vec::new(), output: None, bridge: false, gains_said: Vec::new() }
     }
 
     /// The client runs the offline bridge (`Core::bridge_start` over the queue): a song the network would
@@ -201,8 +203,18 @@ impl App for CoreApp {
 
     /// The core's ReplayGain over its own queue and the settings: track, album or automatic, the
     /// pre-amp, and the level for untagged songs.
-    fn gain(&mut self, index: usize, _id: &str) -> f32 {
-        nori_core::playlist::playlist_gain_of(index, false)
+    fn gain(&mut self, index: usize, id: &str) -> f32 {
+        let g = nori_core::playlist::playlist_gain_of(index, false);
+        // Said once per song and level, for the log: what a device check reads the levelling from.
+        if !self.gains_said.iter().any(|(i, v)| i == id && *v == g) {
+            self.gains_said.retain(|(i, _)| i != id);
+            if self.gains_said.len() >= 16 {
+                self.gains_said.remove(0);
+            }
+            self.gains_said.push((id.to_string(), g));
+            self.host.log(&format!("ReplayGain: {id} at {:+.2} dB", 20.0 * g.max(1e-6).log10()));
+        }
+        g
     }
 }
 
