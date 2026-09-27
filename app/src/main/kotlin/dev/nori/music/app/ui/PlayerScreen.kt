@@ -586,9 +586,10 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                 // Shared between the artwork and the queue, where it stands at another height: one copy moves
                 // from one place to the other, as the transport does, instead of one blinking out where it
                 // was and another fading in where it goes. The lyrics have none (their header is their own),
-                // so between those it fades with the panel.
+                // so between those it fades with the panel. On its side the title stays beside the cover for
+                // lyrics too, since the lyrics view's own header is portrait-only.
                 val titleRow = rememberSharedContentState("title")
-                if (page != Panel.LYRICS) Row(
+                if (page != Panel.LYRICS || across) Row(
                     Modifier.fillMaxWidth().sharedElement(titleRow, this@AnimatedContent)
                         .graphicsLayer { alpha = if (titleRow.isMatchFound) 1f else panelFade.read() }
                         .padding(start = PLAYER_GUTTER, end = PLAYER_GUTTER, top = 2.dp),
@@ -728,7 +729,10 @@ private fun PlayerHalves(wide: Boolean, panel: @Composable ColumnScope.() -> Uni
         Row(Modifier.fillMaxSize()) {
             Column(Modifier.width(side).fillMaxHeight()) { panel() }
             Column(
-                Modifier.weight(1f).fillMaxHeight().statusBarsPadding().navigationBarsPadding().padding(start = 8.dp),
+                // Clear of the camera's punch hole too, which is on this side when the phone is turned the other way.
+                Modifier.weight(1f).fillMaxHeight().statusBarsPadding().navigationBarsPadding()
+                    .windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.displayCutout.only(androidx.compose.foundation.layout.WindowInsetsSides.End))
+                    .padding(start = 8.dp),
                 verticalArrangement = Arrangement.Center,
             ) { controls() }
         }
