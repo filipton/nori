@@ -135,7 +135,7 @@ fn opus_frames(packet: &[u8]) -> i64 {
 #[derive(Clone)]
 pub enum Audio {
     /// 16-bit PCM, `frames` long, repeating `cycle` from the start: a ten-minute song costs one cycle.
-    Pcm { rate: u32, channels: usize, cycle: Arc<Vec<u8>>, frames: u64 },
+    Pcm { rate: u32, channels: usize, cycle: Arc<Vec<u8>>, frames: u64, float: bool },
     /// Compressed packets as the extractor splits them, the setup data that goes with them, where each
     /// packet's first sample lands in the decoded song (before any the decoder drops), and the song's
     /// length once decoded.
@@ -145,12 +145,19 @@ pub enum Audio {
 impl Audio {
     pub fn pcm(rate: u32, channels: usize, samples: &[i16]) -> Audio {
         let frames = (samples.len() / channels) as u64;
-        Audio::Pcm { rate, channels, cycle: Arc::new(bytes(samples)), frames }
+        Audio::Pcm { rate, channels, cycle: Arc::new(bytes(samples)), frames, float: false }
     }
 
     /// `cycle` over and over for `frames` frames.
     pub fn looped(rate: u32, channels: usize, cycle: &[i16], frames: u64) -> Audio {
-        Audio::Pcm { rate, channels, cycle: Arc::new(bytes(cycle)), frames }
+        Audio::Pcm { rate, channels, cycle: Arc::new(bytes(cycle)), frames, float: false }
+    }
+
+    /// Float PCM, as a decoder hands it out when the player asks for floats (high quality output, or
+    /// ReplayGain turning songs up).
+    pub fn pcm_float(rate: u32, channels: usize, samples: &[f32]) -> Audio {
+        let frames = (samples.len() / channels) as u64;
+        Audio::Pcm { rate, channels, cycle: Arc::new(samples.iter().flat_map(|v| v.to_le_bytes()).collect()), frames, float: true }
     }
 
     /// An MP3 file, decoded the way the core's decoder decodes one without a LAME header: the decoder drops
@@ -187,7 +194,8 @@ impl Audio {
         let (rate, channels) = match self {
             Audio::Pcm { rate, channels, .. } | Audio::Coded { rate, channels, .. } => (*rate, *channels),
         };
-        Format { rate, channels, encoding: Encoding::Pcm16 }
+        let encoding = if matches!(self, Audio::Pcm { float: true, .. }) { Encoding::Float } else { Encoding::Pcm16 };
+        Format { rate, channels, encoding }
     }
 
     pub fn frames(&self) -> u64 {
@@ -467,6 +475,11 @@ impl AudioTrack {
     /// The heard audio as samples.
     pub fn heard_samples(&self) -> Vec<i16> {
         samples(&self.heard)
+    }
+
+    /// The heard audio as float samples, for a track opened for floats.
+    pub fn heard_floats(&self) -> Vec<f32> {
+        self.heard.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()
     }
 
     /// The AudioTrack plays `us` of the clock: its playhead moves over what it holds, and where it

@@ -1195,6 +1195,7 @@ pub fn settings(s: &StoredPrefs) -> Settings {
         offload: s.offload,
         crossfade_s: s.crossfade_sec,
         auto_mix: s.auto_mix,
+        gain_boost_db: if s.gain_prefs().boosts() { s.gain_boost_db } else { 0.0 },
     }
 }
 

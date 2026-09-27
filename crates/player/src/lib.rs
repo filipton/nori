@@ -12,6 +12,7 @@ pub mod decode;
 pub mod dsp;
 pub mod engine;
 pub mod eqfit;
+pub mod gain;
 pub mod graphic;
 pub mod outputs;
 pub mod headphones;

@@ -44,6 +44,8 @@ const DRY_US: i64 = 1_500_000;
 /// decode still has to sprint. Normal holds are born with runway to spare, so this changes nothing
 /// for them; a truly starved one is let go when this expires.
 const HOLD_GRACE_MS: i64 = 10_000;
+/// The most a song's buffers are turned up ([`TransitionEngine::set_gain`]): +24 dB.
+const MAX_GAIN: f32 = 16.0;
 /// How long a null plan is trusted before it is asked for again.
 const NULL_PLAN_RETRY_MS: i64 = 2_000;
 
@@ -607,17 +609,19 @@ impl<C: Clone> TransitionEngine<C> {
         self.offset_us = offset_us;
     }
 
-    /// The volume the song whose buffers come next is heard at, 0..1: its ReplayGain, told before its
+    /// The volume the song whose buffers come next is heard at: its ReplayGain, told before its
     /// first buffer. Each song's samples are scaled as they arrive, before anything is held or mixed,
     /// so a mix is made of two songs each at its own level. One volume for the whole output cannot be
     /// right while two songs sound at once: wherever it changed, the whole mix jumped by the difference.
-    /// The analyser still hears the song as it is. At 1 nothing is scaled.
+    /// The analyser still hears the song as it is. At 1 nothing is scaled. Over 1 (a song turned up,
+    /// `nori_player::gain`) only float samples are, for the chain's limiter to catch: 16-bit ones would
+    /// clip here, and stay at 1.
     ///
     /// The next buffer is at this volume from its first sample. Every buffer goes down as a copy of the
     /// engine's own, so no rest of one the output took only part of is ever owed from the platform's
     /// memory at the old volume; what was taken in already is [`TransitionEngine::rescale`]'s.
     pub fn set_gain(&mut self, gain: f32) {
-        self.gain = if gain.is_finite() { gain.clamp(0.0, 1.0) } else { 1.0 };
+        self.gain = if gain.is_finite() { gain.clamp(0.0, MAX_GAIN) } else { 1.0 };
     }
 
     /// The song on the stream at `stream_offset_us` is to be heard `ratio` times as loud (the ReplayGain
@@ -667,9 +671,10 @@ impl<C: Clone> TransitionEngine<C> {
             return (false, 0);
         }
         let native = self.conv_in.unwrap_or(out);
-        let scaled = (self.gain != 1.0).then(|| {
+        let gain = if native.encoding == crate::pcm::Encoding::Float { self.gain } else { self.gain.min(1.0) };
+        let scaled = (gain != 1.0).then(|| {
             let mut b = self.copy_of(buffer);
-            crate::pcm::scale(&mut b, native.encoding, self.gain);
+            crate::pcm::scale(&mut b, native.encoding, gain);
             b
         });
         let taken = self.route(down, host, buffer, scaled.as_deref().unwrap_or(buffer), pts_us, out, native);

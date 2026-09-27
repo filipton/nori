@@ -990,6 +990,70 @@ fn a_song_the_chip_does_not_decode_plays_on_the_cpu_between_songs_it_does() {
 }
 
 #[test]
+fn a_song_replay_gain_turns_up_plays_on_the_cpu_between_songs_the_chip_plays_at_their_volume() {
+    if !ffmpeg() {
+        eprintln!("ffmpeg is not installed: nothing to offload");
+        return;
+    }
+    let d = dir();
+    let (a, b, c) = (mp3(&d, "a", 10, 440), mp3(&d, "b", 20, 550), mp3(&d, "c", 10, 660));
+    let server = Arc::new(Server::default());
+    serve(&server, &[("a", &a), ("b", &b), ("c", &c)]);
+    let fake = Fake::new(MP3_ONLY);
+    let app = Logged::new();
+    // b is quiet and turned up 6 dB: the output's volume cannot do that. c is turned down, which it can.
+    app.0.lock().gains.insert("b".into(), 2.0);
+    app.0.lock().gains.insert("c".into(), 0.5);
+    let songs = vec![("a".into(), "mp3".into(), 10_000), ("b".into(), "mp3".into(), 20_000), ("c".into(), "mp3".into(), 10_000)];
+    let rig = Rig::new(server, songs, app.clone(), Some(fake.clone()), Settings { gain_boost_db: 6.0, ..offload() });
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait(10, |_| fake.calls().contains(&Call::EndOfStream)), "{:?}", fake.calls());
+    assert_eq!(fake.calls().iter().filter(|c| matches!(c, Call::DelayPadding(..))).count(), 1, "b is not written to the chip after a: {:?}", fake.calls());
+    fake.advance(10 * 44_100);
+    assert!(rig.wait(10, |r| r.heard_song("b") && !r.card.heard.lock().is_empty()), "{:?}", rig.events.lock());
+    let log = app.log();
+    let why = log.iter().filter_map(|l| l.strip_prefix("playing on the CPU: ")).next().unwrap_or_default();
+    assert!(why.contains("ReplayGain turns it up"), "{why}: {log:?}");
+    // Back to the chip for c, at its volume, once the CPU has played b to its end.
+    assert!(rig.wait(30, |r| r.heard_song("c")), "{:?}", rig.events.lock());
+    assert!(rig.wait(5, |r| r.engine.status().offloaded), "c is the chip's");
+    assert!(rig.wait(5, |_| fake.0.lock().calls.contains(&Call::Volume(0.5))), "c at its ReplayGain volume");
+    // The CPU played b turned up: louder than the file, never over the limiter's ceiling.
+    let heard = rig.card.heard.lock().clone();
+    let peak = heard.iter().map(|v| (*v as f64).abs()).fold(0.0, f64::max);
+    assert!(peak <= 10f64.powf(-1.0 / 20.0) * 32768.0 + 1.0, "{peak}");
+    assert!(heard.len() / 2 + 44_100 / 2 >= 20 * 44_100, "b whole on the CPU: {}", heard.len() / 2);
+    rig.engine.stop();
+}
+
+#[test]
+fn a_song_on_the_chip_turned_up_by_a_settings_change_goes_to_the_cpu_where_the_ear_is() {
+    if !ffmpeg() {
+        eprintln!("ffmpeg is not installed: nothing to offload");
+        return;
+    }
+    let d = dir();
+    let a = mp3(&d, "a", 20, 440);
+    let server = Arc::new(Server::default());
+    serve(&server, &[("a", &a)]);
+    let fake = Fake::new(MP3_ONLY);
+    let app = Logged::new();
+    let rig = Rig::new(server, vec![("a".into(), "mp3".into(), 20_000)], app.clone(), Some(fake.clone()), Settings { gain_boost_db: 6.0, ..offload() });
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait(10, |r| r.engine.status().offloaded), "a is the chip's: {:?}", rig.engine.status());
+    fake.advance(5 * 44_100);
+    // A louder target, say: a now wants +6 dB.
+    app.0.lock().gains.insert("a".into(), 2.0);
+    rig.engine.gain_changed();
+    assert!(rig.wait(10, |r| !r.engine.status().offloaded && r.card.heard.lock().len() > 44_100), "the CPU took over: {:?}", rig.engine.status());
+    let s = rig.engine.status();
+    assert!(s.position_ms >= 4_000 && s.position_ms < 20_000, "from where the ear was: {s:?}");
+    let log = app.log();
+    assert!(log.iter().any(|l| l.contains("ReplayGain turns it up")), "{log:?}");
+    rig.engine.stop();
+}
+
+#[test]
 fn a_seek_on_the_chip_empties_its_track_and_starts_again_at_a_packet() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");

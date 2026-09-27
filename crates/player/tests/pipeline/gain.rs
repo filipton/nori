@@ -4,7 +4,7 @@
 //! the song that plays on without a click.
 
 use nori_player::automix::ANALYSIS_VERSION;
-use nori_player::sim::{prefs_off, Player};
+use nori_player::sim::{prefs_off, Audio, Player, Sound, Track};
 use nori_player::transitions::TransitionPrefs;
 use nori_player::types::TrackAnalysis;
 
@@ -132,4 +132,78 @@ fn an_automix_ends_and_its_stretch_hands_back_without_a_click() {
     let step = max_step(&x);
     let worst = x.windows(2).position(|w| (w[1] - w[0]).abs() == step).unwrap_or(0);
     assert!(step <= 2.0 * own, "a step of {step:.4} at {:.3} s against the songs' own {own:.4}: {plan}", worst as f64 / RATE as f64);
+}
+
+// ---- a song turned up ----
+
+/// The limiter's look-ahead at [`RATE`], frames: everything through it comes out this much later.
+const LOOKAHEAD: usize = 220;
+
+/// `song` as floats, the way a decoder asked for floats hands it out.
+fn floats(song: &[i16]) -> Vec<f32> {
+    song.iter().map(|&v| v as f32 / 32768.0).collect()
+}
+
+fn float_track(id: &str, song: &[i16]) -> Track {
+    Track::new(id, Audio::pcm_float(RATE, 2, &floats(song)))
+}
+
+/// What the ear hears of `song` (floats or 16 bits) played at `gain`, songs allowed up to `max`, the
+/// limiter on as nori-engine puts it behind songs that may be turned up.
+fn turned_up(song: Track, gain: f32, max: f32) -> Player {
+    let mut p = Player::new(vec![song]);
+    p.app.gains.insert("a".into(), gain);
+    p.gain_max = max;
+    p.set_sound(Sound { limiter: true, ..Default::default() });
+    p.play_from(0);
+    assert!(p.run_to_end(60_000), "{:?}", p.app.log);
+    assert!(p.sink.gaps.is_empty(), "{:?}", p.sink.gaps);
+    p
+}
+
+#[test]
+fn a_song_turned_up_is_louder_and_the_limiter_holds_the_ceiling() {
+    // Music peaking at 0.45 of full scale, turned up 9 dB: peaks at 1.27, over full scale.
+    let song = music(20.0, 41);
+    let x = floats(&song);
+    let gain = 10f32.powf(9.0 / 20.0);
+    let p = turned_up(float_track("a", &song), gain, gain);
+    let heard = p.sink.heard_floats();
+    assert_eq!(heard.len(), x.len() + LOOKAHEAD * 2, "the look-ahead delays the song, and brings out its end");
+    let peak = heard.iter().fold(0f32, |m, v| m.max(v.abs()));
+    let ceiling = 10f32.powf(-1.0 / 20.0);
+    assert!(peak <= ceiling * (1.0 + 1e-5), "nothing past the -1 dB ceiling: {peak}");
+    assert!(p.sink.gain_reduction_db > 0.0, "the limiter worked");
+    // Where the song is quiet enough, every sample is it turned up 9 dB: the limiter's knee (from -3 dB)
+    // and its release after a peak left out.
+    let knee = 10f32.powf(-3.0 / 20.0);
+    let second = RATE as usize * 2;
+    let (mut same, mut quiet) = (0, 0);
+    for (k, (&y, &v)) in heard[LOOKAHEAD * 2..].iter().zip(&x).enumerate() {
+        let near = x[k.saturating_sub(second)..(k + second / 10).min(x.len())].iter().fold(0f32, |m, s| m.max(s.abs())) * gain;
+        if near < knee {
+            quiet += 1;
+            same += ((y - v * gain).abs() < 1e-6) as usize;
+        }
+    }
+    assert!(quiet > x.len() / 10, "enough of the song is quiet to look at: {quiet}");
+    assert_eq!(same, quiet, "the quiet parts at exactly +9 dB");
+    // And the song as a whole is up by close to the 9 dB asked for.
+    let rms = |s: &[f32]| (s.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / s.len() as f64).sqrt();
+    let up = 20.0 * (rms(&heard) / rms(&x)).log10();
+    assert!(up > 8.0 && up < 9.1, "{up:.2} dB louder");
+}
+
+#[test]
+fn a_song_in_16_bits_is_never_turned_up_where_it_would_clip() {
+    // 16-bit samples cannot go over full scale on their way to the limiter: the player leaves such a song
+    // at its own level (nori-engine reads songs as floats whenever they may be turned up).
+    let song = music(10.0, 42);
+    let p = turned_up(track("a", &song), 2.0, 2.0);
+    let heard = p.sink.heard_samples();
+    assert!(heard[LOOKAHEAD * 2..] == song[..heard.len() - LOOKAHEAD * 2], "every sample as it is");
+    // Songs may not be turned up at all: a float song asked at 2 plays at 1.
+    let p = turned_up(float_track("a", &song), 2.0, 1.0);
+    let heard = p.sink.heard_floats();
+    assert!(heard[LOOKAHEAD * 2..].iter().zip(floats(&song)).all(|(h, s)| *h == s), "held to the most allowed");
 }

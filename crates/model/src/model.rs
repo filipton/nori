@@ -73,6 +73,12 @@ pub struct ReplayGain {
     pub album_gain: Option<f32>,
     pub track_peak: Option<f32>,
     pub album_peak: Option<f32>,
+    /// OpenSubsonic: the gain already in the file's own header (an Opus file's output gain), dB. Every
+    /// decoder applies that one itself (nori's own and the audio chip's), so it is only told.
+    pub base_gain: Option<f32>,
+    /// OpenSubsonic: the gain to play a song at whose tags lack the one asked for, dB, as the server
+    /// works it out (from its other songs, or its own setting).
+    pub fallback_gain: Option<f32>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

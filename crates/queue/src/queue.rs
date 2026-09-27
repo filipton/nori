@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use nori_db as db;
 use nori_model::Song;
-use nori_player::policy::{replay_gain, GainMode as PlayerGainMode, GainTags as PlayerGainTags};
+use nori_player::gain::{song_gain, stereo_loudness_of_mid, GainMode as PlayerGainMode, GainPrefs, GainTags as PlayerGainTags, SongLoudness};
 use nori_player::transitions::{in_album_run, WindowSong};
 use parking_lot::Mutex;
 
@@ -101,28 +101,41 @@ pub fn queue_window(ids: Vec<String>, shuffling: bool) {
     nori_automix::planner::transition_window(window, shuffling);
 }
 
-/// The volume `current` plays at under ReplayGain, between the songs before and after it in play
-/// order (album mode keeps an album played in order at its own levels). See `nori_player::policy`.
-/// Nothing playing, or a radio stream, plays at full volume.
-pub fn queue_gain(
-    before: Option<String>, current: Option<String>, after: Option<String>, mode: nori_model::GainMode, preamp_db: f32, untagged_db: f32,
-    bit_perfect: bool, shuffling: bool,
-) -> f32 {
+/// The gain `current` plays at, between the songs before and after it in play order (album mode keeps
+/// an album played in order at its own levels): over 1 it is turned up. See `nori_player::gain`.
+/// Nothing playing, or a radio stream, plays at full volume. A song without a gain of its own, the
+/// server's fallback included, plays at its measured loudness when AutoMix's analysis has one.
+pub fn queue_gain(before: Option<String>, current: Option<String>, after: Option<String>, prefs: &GainPrefs, bit_perfect: bool, shuffling: bool) -> f32 {
     let current = current.unwrap_or_else(|| RADIO_PREFIX.to_string());
     let radio = current.starts_with(RADIO_PREFIX);
-    with(|s| {
+    let (run, mut song, channels) = with(|s| {
         let w = |id: &Option<String>| id.as_deref().map(|i| window_song(s, i));
         let (b, c, a) = (w(&before), window_song(s, &current), w(&after));
         let run = !radio && in_album_run(b.as_ref(), &c, a.as_ref(), shuffling);
-        let tags = s.songs.get(&current).and_then(|(song, _)| song.replay_gain.as_ref()).map(|g| PlayerGainTags {
+        let known = s.songs.get(&current).map(|(song, _)| song);
+        let rg = known.and_then(|song| song.replay_gain.as_ref());
+        let tags = rg.map(|g| PlayerGainTags {
             track_gain: g.track_gain,
             album_gain: g.album_gain,
             track_peak: g.track_peak,
             album_peak: g.album_peak,
         });
-        let mode: PlayerGainMode = mode;
-        replay_gain(mode, tags.as_ref(), run, preamp_db, untagged_db, radio, bit_perfect)
-    })
+        let song = SongLoudness { tags, fallback_db: rg.and_then(|g| g.fallback_gain), measured_lufs: None };
+        (run, song, known.map_or(0, |s| s.channel_count))
+    });
+    let untagged = song.tags.is_none_or(|g| g.track_gain.is_none() && g.album_gain.is_none()) && song.fallback_db.is_none();
+    if untagged && prefs.measured && prefs.mode != PlayerGainMode::Off && !radio && !bit_perfect {
+        // Read with the queue's lock let go: the database's is never taken inside it.
+        song.measured_lufs = measured_lufs(&current).map(|mid| stereo_loudness_of_mid(mid, channels));
+    }
+    song_gain(prefs, &song, run, radio, bit_perfect)
+}
+
+/// The loudness AutoMix's analysis measured of `id` (of its mid signal, `TrackAnalysis::lufs`), if it did.
+fn measured_lufs(id: &str) -> Option<f32> {
+    let db = db::active()?;
+    let a = nori_automix::store::get(&db.lock(), id).ok().flatten()?;
+    Some(a.lufs)
 }
 
 /// [`queue_flags`]: the song is marked explicit.

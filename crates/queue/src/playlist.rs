@@ -333,8 +333,7 @@ pub fn playlist_gain_of(index: usize, bit_perfect: bool) -> f32 {
 
 fn gain_at(index: Option<usize>, bit_perfect: bool) -> f32 {
     let Some(s) = nori_settings::settings_store::current() else { return 1.0 };
-    let mode = s.replay_gain;
-    let (preamp_db, untagged_db) = (s.preamp_db, s.untagged_gain_db);
+    let prefs = s.gain_prefs();
     let (before, current, after, shuffling) = with(|p| {
         let id = |i: Option<usize>| i.map(|i| p.ids()[i].clone());
         // As `Playlist::previous` and `next` walk from the current song: repeat one counts as all.
@@ -344,7 +343,7 @@ fn gain_at(index: Option<usize>, bit_perfect: bool) -> f32 {
             None => (id(p.previous()), p.current_id().map(str::to_string), id(p.next()), p.shuffling()),
         }
     });
-    queue::queue_gain(before, current, after, mode, preamp_db, untagged_db, bit_perfect, shuffling)
+    queue::queue_gain(before, current, after, &prefs, bit_perfect, shuffling)
 }
 
 /// The queue as the app lists it.

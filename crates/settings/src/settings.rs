@@ -313,8 +313,21 @@ pub struct StoredPrefs {
     pub auto_eq_download: bool,
     #[setting("profilePerOutput", FLAG, default = true, show = K::Switch)]
     pub profile_per_output: bool,
-    #[setting("replayGain", PICK_NEAREST, default = GainMode::Off, show = K::Named(GainMode::NAMES), effect = APPLY_GAIN | REPLAN)]
+    /// Off or on decides whether songs may be turned up (`gain_boost_db`), which the sound chain follows.
+    #[setting("replayGain", PICK_NEAREST, default = GainMode::Off, show = K::Named(GainMode::NAMES), effect = APPLY_GAIN | REPLAN | SOUND)]
     pub replay_gain: GainMode,
+    /// The loudness songs are levelled to, LUFS: ReplayGain's own -18 (the default), -14 and -16 as the
+    /// streaming services play, -23 as EBU R128 broadcast does (`nori_player::gain`).
+    #[setting("loudnessTarget", FLOAT, default = -18.0, show = K::Choice(&["-14", "-16", "-18", "-23"]), effect = APPLY_GAIN)]
+    pub loudness_target: f32,
+    /// The most a quiet song is turned up, dB; 0 turns none up (a volume only, as before, which leaves
+    /// every song to the audio chip). Over 0, a song turned up plays on the CPU with the limiter behind
+    /// it, and the sound chain reads songs as floats.
+    #[setting("gainBoostDb", FLOAT, default = 6.0, show = K::Choice(&["0", "3", "6", "9", "12"]), effect = APPLY_GAIN | SOUND)]
+    pub gain_boost_db: f32,
+    /// A song without tags plays at the loudness AutoMix's analysis measured, once it has one.
+    #[setting("gainMeasured", FLAG, default = true, show = K::Switch, effect = APPLY_GAIN)]
+    pub gain_measured: bool,
     #[setting("preampDb", within(REPLAY_GAIN_PREAMP.0, REPLAY_GAIN_PREAMP.1), default = 0.0, show = K::Level(EQ_RANGES.replay_gain_preamp.min, EQ_RANGES.replay_gain_preamp.max), effect = APPLY_GAIN)]
     pub preamp_db: f32,
     #[setting("untaggedGainDb", FLOAT, default = -6.0, show = K::Choice(&["0", "-3", "-6", "-9", "-12"]), effect = APPLY_GAIN)]
@@ -696,6 +709,18 @@ impl StoredPrefs {
     /// or an effect. It then sits in the chain and audio offload stands down.
     pub fn sound_chain_on(&self) -> bool {
         nori_player::sound::sound_on(self.eq_enabled, self.crossfeed_db, self.balance, self.mono, self.limiter, self.effects().on())
+    }
+
+    /// How songs are levelled (`nori_player::gain`).
+    pub fn gain_prefs(&self) -> nori_player::gain::GainPrefs {
+        nori_player::gain::GainPrefs {
+            mode: self.replay_gain,
+            preamp_db: self.preamp_db,
+            untagged_db: self.untagged_gain_db,
+            target_lufs: self.loudness_target,
+            boost_max_db: self.gain_boost_db,
+            measured: self.gain_measured,
+        }
     }
 
     /// What the transition planner takes from the settings (`nori_automix::planner::settings_changed`).
