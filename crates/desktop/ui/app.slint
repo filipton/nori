@@ -2239,6 +2239,14 @@ export component PlayerBar inherits Window {
     callback cycle-repeat();
     callback set-inspector(int);
     callback open-full();
+    // The pane the glass is seen as, over a plain page as over covers: a faint light and a thin rim, lit
+    // along the top as the system's glass is. The glass itself (behind) does the blurring.
+    Rectangle {
+        border-radius: self.height / 2;
+        background: @linear-gradient(180deg, #ffffff1c 0%, #ffffff0e 100%);
+        border-width: 1px;
+        border-color: @linear-gradient(180deg, #ffffff38 0%, #ffffff12 50%, #ffffff1f 100%);
+    }
     PlayerControls {
         has-song: root.has-song;
         now-title: root.now-title;

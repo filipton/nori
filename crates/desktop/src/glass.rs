@@ -164,11 +164,13 @@ fn dress_player(bw: &objc2_app_kit::NSWindow) -> Result<(), String> {
     let mtm = MainThreadMarker::new().ok_or("not on the main thread")?;
     bw.setOpaque(false);
     bw.setBackgroundColor(Some(&NSColor::clearColor()));
-    bw.setHasShadow(false);
+    bw.setHasShadow(true);
     let view = bw.contentView().ok_or("no content view")?;
     let frame_view = unsafe { view.superview() }.ok_or("the content view has no superview")?;
     let glass = NSGlassEffectView::initWithFrame(mtm.alloc(), view.frame());
     glass.setCornerRadius(PLAYER_H / 2.0);
+    // A faint light of its own, so the pane reads over a plain dark page as Music's does, not only over covers.
+    glass.setTintColor(Some(&NSColor::colorWithWhite_alpha(1.0, 0.16)));
     glass.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
     frame_view.addSubview_positioned_relativeTo(&glass, NSWindowOrderingMode::Below, Some(&view));
     Ok(())
