@@ -18,9 +18,9 @@
     <string name="repeat">Repeat</string>
     <string name="queue">Queue</string>
     <string name="lyrics">Lyrics</string>
-    <string name="favourite">Favourite</string>
-    <string name="add_to_favourites">Add to favourites</string>
-    <string name="remove_from_favourites">Remove from favourites</string>
+    <string name="favourite">Favorite</string>
+    <string name="add_to_favourites">Add to favorites</string>
+    <string name="remove_from_favourites">Remove from favorites</string>
     <string name="remove">Remove</string>
     <string name="undo">Undo</string>
     <!-- The queue: a song just taken out, offered back for a few seconds. -->
@@ -64,7 +64,7 @@
     <string name="playlists">Playlists</string>
     <string name="smart">Smart</string>
     <string name="history">History</string>
-    <string name="favourites">Favourites</string>
+    <string name="favourites">Favorites</string>
     <string name="genres">Genres</string>
     <string name="decades">Decades</string>
     <string name="folders">Folders</string>
@@ -74,8 +74,8 @@
     <string name="new_playlist">New playlist</string>
     <string name="import_playlist_file">Import M3U…</string>
     <string name="export_playlist_file">Export M3U</string>
-    <string name="favourite_songs">Favourite songs</string>
-    <string name="starred_favourites">★ Favourites</string>
+    <string name="favourite_songs">Favorite songs</string>
+    <string name="starred_favourites">★ Favorites</string>
     <string name="new_station">New station</string>
     <string name="stream_url">Stream URL</string>
     <string name="download_queue">Download queue</string>
@@ -126,7 +126,7 @@
     <string name="stop_download">Stop download</string>
     <!-- A downloaded song still being processed, on the downloads screen. -->
     <string name="finding_lyrics">Finding lyrics…</string>
-    <string name="analysing">Analysing…</string>
+    <string name="analysing">Analyzing…</string>
     <string name="detecting_beats">Detecting beats…</string>
     <!-- Asked when Download is pressed with Better beat detection on and ML beats for downloads set to Ask. -->
     <string name="beats_ask_title">Detect beats for these downloads?</string>
@@ -136,16 +136,16 @@
     <string name="beats_ask_no">No</string>
     <!-- After Analyse downloaded songs in Settings. -->
     <plurals name="said_analysing_downloads">
-        <item quantity="one">Analysing %d downloaded song</item>
-        <item quantity="other">Analysing %d downloaded songs</item>
+        <item quantity="one">Analyzing %d downloaded song</item>
+        <item quantity="other">Analyzing %d downloaded songs</item>
     </plurals>
-    <string name="said_nothing_to_analyse">Every downloaded song is analysed</string>
+    <string name="said_nothing_to_analyse">Every downloaded song is analyzed</string>
     <string name="equalizer">Equalizer</string>
     <string name="eq_hint">Tap a band\'s label to change its frequency, width or type.</string>
     <string name="add_band">Add band</string>
     <string name="eq_graphic">Graphic</string>
     <string name="eq_parametric">Parametric</string>
-    <string name="eq_graphic_hint">Each slider is the level at its frequency. Neighbouring bands are corrected for each other, so the sound follows the sliders.</string>
+    <string name="eq_graphic_hint">Each slider is the level at its frequency. Neighboring bands are corrected for each other, so the sound follows the sliders.</string>
     <string name="eq_band_count">%1$d bands</string>
     <string name="eq_follows">Follows the headphone\'s correction within %1$s dB.</string>
     <string name="eq_follows_loose">Follows the headphone\'s correction within %1$s dB. Parametric or 31 bands follow it more closely.</string>
@@ -228,13 +228,13 @@
     <string name="interface_title">Interface</string>
     <string name="open_source">Open source</string>
     <string name="free_software">nori is free software</string>
-    <string name="licence_line">MIT licence \u0020· \u0020Copyright (c) 2026 filipton</string>
-    <string name="licences">Licences</string>
+    <string name="licence_line">MIT license \u0020· \u0020Copyright (c) 2026 filipton</string>
+    <string name="licences">Licenses</string>
     <string name="licences_detail">The libraries, fonts and data this app is made of, and their terms</string>
     <string name="rust_core">Rust core</string>
     <string name="fonts_and_data">Fonts and data</string>
-    <string name="no_licence_text">No licence text to reproduce.</string>
-    <string name="licence_unreadable">The licence text could not be read.</string>
+    <string name="no_licence_text">No license text to reproduce.</string>
+    <string name="licence_unreadable">The license text could not be read.</string>
 
     <!-- Confirmations after an action. -->
     <string name="said_playing_next">Playing next</string>
@@ -245,8 +245,8 @@
     <string name="said_no_server_queue">No queue saved on the server</string>
     <string name="said_server_downloading">The server is downloading it into your library</string>
     <string name="said_failed">Failed</string>
-    <string name="said_favourite_added">Added to favourites</string>
-    <string name="said_favourite_removed">Removed from favourites</string>
+    <string name="said_favourite_added">Added to favorites</string>
+    <string name="said_favourite_removed">Removed from favorites</string>
     <plurals name="said_downloading">
         <item quantity="one">Downloading %d song</item>
         <item quantity="other">Downloading %d songs</item>
@@ -320,7 +320,7 @@
     <string name="note_no_downloads">No downloads</string>
     <string name="note_no_downloads_help">Songs you download show here while they arrive, and for a while after.</string>
     <string name="note_download_failed">Couldn\'t download</string>
-    <string name="note_no_favourite_songs">No favourite songs yet. Tap the heart on a song and it will be here.</string>
+    <string name="note_no_favourite_songs">No favorite songs yet. Tap the heart on a song and it will be here.</string>
     <string name="note_nothing_to_mix">Nothing to mix yet. Play some music, or sync the library in Settings.</string>
     <string name="note_smart_help">Matched against the synced library: sync it in Settings so every song can be found.</string>
     <string name="note_no_history">Nothing played yet, or listening history is off in Settings, under Library and lists.</string>
@@ -333,7 +333,7 @@
     <!-- The equalizer's figures. -->
     <string name="eq_preamp">Pre-amp %1$s dB</string>
     <string name="eq_preamp_automatic">Pre-amp %1$s dB (automatic)</string>
-    <string name="eq_balance_centre">centre</string>
+    <string name="eq_balance_centre">center</string>
     <string name="eq_balance_left">L %1$s%%</string>
     <string name="eq_balance_right">R %1$s%%</string>
     <string name="eq_ceiling">Ceiling %1$s dB</string>
@@ -449,7 +449,7 @@
     <string name="smart_recently_added">Recently added</string>
     <string name="smart_never_played">Never played</string>
     <string name="smart_top_rated">Top rated</string>
-    <string name="smart_forgotten_favourites">Forgotten favourites</string>
+    <string name="smart_forgotten_favourites">Forgotten favorites</string>
     <string name="smart_long_tracks">Long tracks</string>
     <!-- An artist's shelves by kind of release (pages::release_groups); a type the app does not know is named by its tag. -->
     <string name="shelf_eps">EPs</string>
@@ -476,13 +476,13 @@
     <string name="scope_in_library">In library</string>
     <string name="search_fallback">Server search failed: %1$s — showing offline results</string>
     <!-- The home page's shelves. -->
-    <string name="home_row_pinned">Favourite playlists</string>
+    <string name="home_row_pinned">Favorite playlists</string>
     <string name="home_row_recent">Recently played</string>
     <string name="home_row_newest">Recently added</string>
     <string name="home_row_frequent">Most played albums</string>
     <string name="home_row_top_songs">Most played songs</string>
     <string name="home_row_random">Random</string>
-    <string name="home_row_starred">Favourite albums</string>
+    <string name="home_row_starred">Favorite albums</string>
     <!-- The equalizer: band kinds and channels, the built-in curves, why it does nothing, a profile's use. -->
     <string name="band_peak">Peak</string>
     <string name="band_low_shelf">Low shelf</string>

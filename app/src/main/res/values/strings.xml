@@ -19,7 +19,7 @@
     <string name="settings_group_sound">Sound</string>
     <string name="settings_group_sound_summary">Equalizer, volume, output</string>
     <string name="settings_group_look">Appearance</string>
-    <string name="settings_group_look_summary">Theme, colours, size</string>
+    <string name="settings_group_look_summary">Theme, colors, size</string>
     <string name="settings_group_lyrics">Lyrics</string>
     <string name="settings_group_lyrics_summary">Display and sources</string>
     <string name="settings_group_library">Library</string>
@@ -27,9 +27,9 @@
     <string name="settings_group_data">Downloads and storage</string>
     <string name="settings_group_data_summary">Quality, downloads, space</string>
     <string name="settings_group_about">About</string>
-    <string name="settings_group_about_summary">Version, updates, licences</string>
+    <string name="settings_group_about_summary">Version, updates, licenses</string>
     <!-- Pages opened from inside another page. -->
-    <string name="settings_page_licences">Licences</string>
+    <string name="settings_page_licences">Licenses</string>
     <string name="settings_page_lyrics_sources">Lyrics sources</string>
 
     <!-- How options read. -->
@@ -235,15 +235,15 @@
     <string name="settings_theme_dark">Dark</string>
     <string name="settings_amoled">Black background</string>
     <string name="settings_amoled_detail">True black in dark mode. Saves power on OLED screens.</string>
-    <string name="settings_keep_colours">Keep the cover\'s colours</string>
-    <string name="settings_keep_colours_detail">What you pick here stays in the artwork\'s colours instead of turning black.</string>
+    <string name="settings_keep_colours">Keep the cover\'s colors</string>
+    <string name="settings_keep_colours_detail">What you pick here stays in the artwork\'s colors instead of turning black.</string>
     <string name="settings_keep_colours_artist">Artists</string>
     <string name="settings_keep_colours_album">Albums &amp; playlists</string>
     <string name="settings_keep_colours_player">Player</string>
-    <string name="settings_wallpaper">Wallpaper colours</string>
-    <string name="settings_wallpaper_detail">Accent colour from your wallpaper.</string>
-    <string name="settings_cover_colours">Colours from the cover</string>
-    <string name="settings_cover_colours_detail">Pages take their colours from the artwork, and the tab bar from the page you are on or what is playing.</string>
+    <string name="settings_wallpaper">Wallpaper colors</string>
+    <string name="settings_wallpaper_detail">Accent color from your wallpaper.</string>
+    <string name="settings_cover_colours">Colors from the cover</string>
+    <string name="settings_cover_colours_detail">Pages take their colors from the artwork, and the tab bar from the page you are on or what is playing.</string>
     <string name="settings_blur">Blur the bottom of the cover</string>
     <string name="settings_blur_detail">The player\'s artwork softens into the page.</string>
     <string name="settings_moving_covers">Moving covers</string>
@@ -251,8 +251,8 @@
     <string name="settings_moving_covers_still">Still while Less movement is on.</string>
     <string name="settings_moving_covers_mobile">Moving covers on mobile data</string>
     <string name="settings_moving_covers_mobile_detail">Each one is a few megabytes.</string>
-    <string name="settings_confirm_favourites">Confirm favourites</string>
-    <string name="settings_confirm_favourites_detail">A short message when you favourite or unfavourite something.</string>
+    <string name="settings_confirm_favourites">Confirm favorites</string>
+    <string name="settings_confirm_favourites_detail">A short message when you favorite or unfavorite something.</string>
     <string name="settings_ui_scale">Text and button size</string>
     <string name="settings_ui_scale_auto">Automatic</string>
     <string name="settings_ui_scale_smaller">Smaller</string>
@@ -327,7 +327,7 @@
     <string name="lyrics_service_youtube_music" translatable="false">YouTube Music</string>
     <string name="lyrics_service_youtube_music_about">The words YouTube Music shows for the song. Not timed. Unofficial.</string>
     <string name="lyrics_service_genius" translatable="false">Genius</string>
-    <string name="lyrics_service_genius_about">The biggest catalogue of words, not timed. Asked only when nobody has timed lyrics.</string>
+    <string name="lyrics_service_genius_about">The biggest catalog of words, not timed. Asked only when nobody has timed lyrics.</string>
 
     <!-- Library. -->
     <string name="settings_section_lists">Songs in lists</string>
@@ -349,7 +349,7 @@
     <string name="settings_swipe_none">Nothing</string>
     <string name="settings_swipe_queue">Add to queue</string>
     <string name="settings_swipe_play_next">Play next</string>
-    <string name="settings_swipe_favourite">Favourite</string>
+    <string name="settings_swipe_favourite">Favorite</string>
     <string name="settings_swipe_download">Download</string>
     <string name="settings_offline_search">Offline search</string>
     <!-- "12 songs · 3 albums · 2 artists on this device" -->
@@ -404,10 +404,10 @@
     <string name="settings_download_beats_always">Always</string>
     <string name="settings_download_beats_never">Never</string>
     <string name="settings_hint_download_beats">beat model neural better beat detection automix downloaded songs battery</string>
-    <string name="settings_analyse_downloads">Analyse downloaded songs</string>
-    <string name="settings_analyse_downloads_detail">Analyses the downloads that have no analysis yet, for AutoMix and synced lyrics, one song at a time, and detects their beats with the ML model if you choose.</string>
+    <string name="settings_analyse_downloads">Analyze downloaded songs</string>
+    <string name="settings_analyse_downloads_detail">Analyzes the downloads that have no analysis yet, for AutoMix and synced lyrics, one song at a time, and detects their beats with the ML model if you choose.</string>
     <string name="settings_hint_analyse_downloads">analysis automix measure beats lyrics sync downloads</string>
-    <string name="settings_analyse">Analyse</string>
+    <string name="settings_analyse">Analyze</string>
     <string name="settings_ahead_wifi">Load ahead on Wi-Fi</string>
     <string name="settings_ahead_mobile">Load ahead on mobile data</string>
     <string name="settings_ahead_next">Next song</string>
@@ -486,13 +486,13 @@
     <string name="settings_hint_offload">Offload. The audio chip decodes instead of the processor</string>
     <string name="settings_hint_theme">Light, dark or the same as the system</string>
     <string name="settings_hint_amoled">AMOLED. True black in dark mode, saves power on OLED</string>
-    <string name="settings_hint_keep_colours">Artist, album and playlist pages or the player in the artwork\'s colours instead of black</string>
-    <string name="settings_hint_wallpaper">Material You. Accent colour from your wallpaper</string>
-    <string name="settings_hint_cover_colours">Pages take their colours from the artwork</string>
+    <string name="settings_hint_keep_colours">Artist, album and playlist pages or the player in the artwork\'s colors instead of black</string>
+    <string name="settings_hint_wallpaper">Material You. Accent color from your wallpaper</string>
+    <string name="settings_hint_cover_colours">Pages take their colors from the artwork</string>
     <string name="settings_hint_blur">The player\'s artwork softens into the page</string>
     <string name="settings_hint_moving_covers">Animated album art in the player, when Apple Music has it. Sends the artist and album name</string>
     <string name="settings_hint_moving_covers_mobile">Each one is a few megabytes</string>
-    <string name="settings_hint_confirm_favourites">A short message when you favourite or unfavourite something</string>
+    <string name="settings_hint_confirm_favourites">A short message when you favorite or unfavorite something</string>
     <string name="settings_hint_less_movement">Shorter, simpler animations</string>
     <string name="settings_hint_animate_anyway">Keeps animations on even when the system\'s are off</string>
     <string name="settings_hint_lyrics_sweep">For lyrics timed word by word</string>

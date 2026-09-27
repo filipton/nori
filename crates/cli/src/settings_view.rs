@@ -440,7 +440,7 @@ fn own_page(b: &Build, o: &Own, f: &Facts) -> Vec<Section> {
     ];
     let accents: Vec<i64> = options("accent").iter().filter_map(|c| c.parse().ok()).collect();
     let look = vec![
-        b.toggle("coverColors", "Colours from the cover", "The page takes the playing cover's colours (with covers on)"),
+        b.toggle("coverColors", "Colors from the cover", "The page takes the playing cover's colors (with covers on)"),
         Row::Palette { name: "accent".into(), colours: accents, chosen: b.p.accent },
     ];
     vec![section("", rows), section("Look", look)]
@@ -631,7 +631,7 @@ fn service(id: &str) -> (&'static str, &'static str) {
 
 fn lyrics(b: &Build) -> Vec<Section> {
     let display = vec![
-        b.toggle("lyricsSweep", "Word fill", "Colour words in as they are sung (word-timed lyrics)"),
+        b.toggle("lyricsSweep", "Word fill", "Color words in as they are sung (word-timed lyrics)"),
         b.toggle("lyricsTranslation", "Translations", "When the server has them"),
     ];
     let online = b.on("lyricsOnline");
@@ -767,7 +767,7 @@ pub fn row_words(row: &Row) -> (String, String) {
         Row::Note { text } => (String::new(), text.clone()),
         Row::Action { title, detail, .. } => (title.clone(), detail.clone()),
         Row::Slider { label, .. } => (label.clone(), String::new()),
-        Row::Palette { .. } => ("Accent colour".into(), String::new()),
+        Row::Palette { .. } => ("Accent color".into(), String::new()),
         Row::Server { label, detail, .. } => (label.clone(), detail.clone()),
         Row::Button { .. } => (String::new(), String::new()),
     }

@@ -159,7 +159,7 @@ pub const BINDINGS: &[Binding] = &[
     b!(List, "x / X", Action::PlayAll, "Play the whole page, or shuffle it", [(Char('x'), N)]),
     b!(List, "", Action::ShuffleAll, "", [(Char('X'), S), (Char('X'), N)]),
     b!(List, "D", Action::Download, "Download", [(Char('D'), S), (Char('D'), N)]),
-    b!(List, "f", Action::Star, "Favourite or not", [(Char('f'), N)]),
+    b!(List, "f", Action::Star, "Favorite or not", [(Char('f'), N)]),
     b!(Grid, "← →", Action::Left, "Move along the row", [(Left, N)]),
     b!(Grid, "", Action::Right, "", [(Right, N)]),
     b!(Edit, "d / delete", Action::Remove, "Take it out (of the queue, or off this computer)", [(Char('d'), N), (Delete, N)]),
