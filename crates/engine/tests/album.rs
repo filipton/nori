@@ -179,7 +179,7 @@ impl Rig {
             again(&mut twice);
             nori_core::queue::queue_register(twice);
         }
-        nori_core::playlist::playlist_set(made.iter().map(|(s, _)| s.0.to_string()).collect(), 0, shuffle, None);
+        queue(&made.iter().map(|(s, _)| *s).collect::<Vec<_>>(), shuffle, tags.queued);
         let measurer = (measured == Measured::WhilePlaying).then(|| Measurer::new(core.clone(), client.clone(), store.clone()));
         let library = CoreLibrary { client, bytes: Arc::new(Net(files)), metered: false, store: Some(store.clone()) };
         let app = match &measurer {
@@ -339,9 +339,10 @@ impl Drop for Rig {
 }
 
 /// How a story's songs are tagged beyond the defaults (each song's track the next on its disc, the album's
-/// id and disc as given): as an imperfect library tags them.
+/// id and disc as given): as an imperfect library tags them. And how they were queued.
 struct Tags {
     tag: fn(&mut Vec<Song>),
+    queued: Queued,
     /// The songs registered a second time, tagged by this, after the first.
     again: Option<fn(&mut Vec<Song>)>,
     /// Every song's last four seconds fade to near silence.
@@ -350,8 +351,54 @@ struct Tags {
 
 impl Default for Tags {
     fn default() -> Self {
-        Tags { tag: |_| {}, again: None, quiet_ends: false }
+        Tags { tag: |_| {}, again: None, quiet_ends: false, queued: Queued::AsAlbums }
     }
+}
+
+/// How the songs came into the queue.
+#[derive(Clone, Copy, PartialEq)]
+enum Queued {
+    /// Each album played as an album: the first from its page, each after it added to the queue whole.
+    AsAlbums,
+    /// The first song played on its own, then each of the others added to the queue by hand, one at a time.
+    OneByOne,
+    /// The first song played on its own, then the others brought by autofill.
+    Autofill,
+}
+
+/// The queue of `songs` (shuffled if `shuffle`), as they were queued.
+fn queue(songs: &[S], shuffle: bool, how: Queued) {
+    use nori_core::playlist::{playlist_set, playlist_take, with, Hand};
+    let ids = |s: &[S]| s.iter().map(|s| s.0.to_string()).collect::<Vec<_>>();
+    let album = |s: &S| Some(nori_core::PageOrigin::new(nori_core::OriginKind::Album, s.1));
+    let len = || with(|p| p.len()) as u32;
+    match how {
+        Queued::AsAlbums => {
+            let mut runs: Vec<&[S]> = Vec::new();
+            let mut from = 0;
+            for k in 1..=songs.len() {
+                if k == songs.len() || songs[k].1 != songs[from].1 {
+                    runs.push(&songs[from..k]);
+                    from = k;
+                }
+            }
+            playlist_set(ids(runs[0]), 0, shuffle, album(&runs[0][0]));
+            for r in &runs[1..] {
+                playlist_take(len(), ids(r), vec![Hand::No; r.len()], album(&r[0]));
+            }
+        }
+        Queued::OneByOne => {
+            playlist_set(ids(&songs[..1]), 0, shuffle, None);
+            for s in &songs[1..] {
+                playlist_take(len(), ids(std::slice::from_ref(s)), vec![Hand::Last], None);
+            }
+        }
+        Queued::Autofill => {
+            playlist_set(ids(&songs[..1]), 0, shuffle, None);
+            playlist_take(len(), ids(&songs[1..]), vec![Hand::No; songs.len() - 1], None);
+        }
+    }
+    assert_eq!(with(|p| p.ids().to_vec()), ids(songs), "queued in order");
 }
 
 /// The last four seconds of `pcm` faded out to near silence, as many album tracks end.
@@ -385,6 +432,8 @@ fn an_album_kept_gapless_is_heard_whole_with_automix_or_a_crossfade_on() {
     an_album_tagged_without_some_numbers_plays_every_sample();
     an_album_then_another_is_mixed_only_between_them();
     a_shuffled_album_is_mixed();
+    songs_of_an_album_not_played_as_one_are_mixed(Queued::OneByOne);
+    songs_of_an_album_not_played_as_one_are_mixed(Queued::Autofill);
 }
 
 fn an_album_measured_before_plays_every_sample(auto_mix: bool, crossfade: i32) {
@@ -465,6 +514,20 @@ fn an_album_then_another_is_mixed_only_between_them() {
     assert!(mixed, "the albums are mixed into each other");
     assert_ne!(nori_core::automix::planner::transition_note("m2").map(|n| n.kind), Some("Gapless".into()));
     rig.heard_as(&order, 0, 0, &[true, false, true], 0);
+}
+
+/// Two songs of one album, in order, that were not queued as the album (queued by hand one at a time, or
+/// brought by autofill) mix like any others: Scar Tissue, then Californication, each queued on its own.
+fn songs_of_an_album_not_played_as_one_are_mixed(how: Queued) {
+    let rig = Rig::tagged("album-queued", &ALBUM, true, 0, true, Measured::Before, false, &Tags { queued: how, ..Tags::default() });
+    rig.engine.play_at(0, 0);
+    let (mixed, order) = rig.to_the_end();
+    assert!(mixed, "mixed song into song");
+    for id in &order[..order.len() - 1] {
+        let note = nori_core::automix::planner::transition_note(id);
+        assert!(note.as_ref().is_some_and(|n| n.kind != "Gapless"), "{id} mixes into the next: {note:?}");
+    }
+    rig.heard_as(&order, 0, 0, &[false, false], 0);
 }
 
 fn a_shuffled_album_is_mixed() {

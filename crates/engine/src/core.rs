@@ -359,6 +359,8 @@ pub fn about(id: &str) -> WindowSong {
             track: s.track as i32,
             tag_bpm: s.bpm as f32,
             radio: false,
+            // Where the queue has it is the queue's: the window stamps it (`playlist_window`).
+            album_run: 0,
         },
         None => WindowSong { id: id.to_string(), title: id.to_string(), radio: id.starts_with(RADIO), ..Default::default() },
     }

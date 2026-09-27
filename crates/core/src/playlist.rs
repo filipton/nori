@@ -11,8 +11,8 @@ impl Core {
     /// Saves the queue for next time (radio streams are left out: they do not come back), and the page
     /// it was started from, so the queue put back still lights that page.
     pub fn playlist_save(&self, position_ms: u64) -> crate::Result<()> {
-        let (ids, index) = with(|p| (p.ids().to_vec(), p.current().unwrap_or(0) as u32));
-        self.queue_save(ids, index, position_ms, playlist_origin())
+        let (ids, runs, index) = with(|p| (p.ids().to_vec(), p.album_runs().to_vec(), p.current().unwrap_or(0) as u32));
+        self.queue_save(ids, runs, index, position_ms, playlist_origin())
     }
 }
 
@@ -55,7 +55,7 @@ pub(crate) mod tests {
         let from = PageOrigin::new(OriginKind::Playlist, "pl-7");
         playlist_set(vec!["sv1".into(), "sv2".into()], 1, false, Some(from.clone()));
         // An edit, and the offline bridge coming and going, keep it.
-        playlist_take(9, vec!["sv3".into()], vec![Hand::Last]);
+        playlist_take(9, vec!["sv3".into()], vec![Hand::Last], None);
         edit_splice(|p| p.bridge(vec!["sv3".into()]), vec![]);
         playlist_unbridge();
         assert_eq!(playlist_origin(), Some(from.clone()));
@@ -66,6 +66,19 @@ pub(crate) mod tests {
         // Put back the way a client does, the page lights again.
         playlist_set(q.songs.iter().map(|s| s.id.clone()).collect(), q.index as i32, false, q.origin);
         assert!(playlist_from(nori_library::pages::PageQueue::new(from)));
+
+        // Which songs are an album played as one is saved with them: the album's, not the song added on
+        // its own after it, whatever the page.
+        crate::queue::queue_register(vec![song("sv4"), song("sv5")]);
+        playlist_set(vec!["sv4".into(), "sv5".into()], 0, false, Some(PageOrigin::new(OriginKind::Album, "al-1")));
+        playlist_take(9, vec!["sv1".into()], vec![Hand::Last], None);
+        let runs = with(|p| p.album_runs().to_vec());
+        assert_eq!(runs[1], 0);
+        core.playlist_save(0).unwrap();
+        playlist_set(vec!["sv0".into()], 0, false, None);
+        let q = core.load_queue().unwrap();
+        playlist_set(q.songs.iter().map(|s| s.id.clone()).collect(), q.index as i32, false, q.origin);
+        assert_eq!(with(|p| p.album_runs().to_vec()), runs);
 
         // A queue from no page is saved as none; a save from before origins, or with a kind this version
         // does not know, still puts the songs back.

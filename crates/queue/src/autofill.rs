@@ -344,7 +344,7 @@ mod tests {
         assert_eq!(autofill_next_at(1_000), FillNext::Wait, "the last song: the press waits for the fetch out");
         assert!(autofill_skip_waiting(), "a skip on its way");
         assert!(autofill_arrived(2), "the end is still rf4");
-        crate::playlist::playlist_take(4, vec!["rf5".into(), "rf6".into()], vec![nori_player::playlist::Hand::No; 2]);
+        crate::playlist::playlist_take(4, vec!["rf5".into(), "rf6".into()], vec![nori_player::playlist::Hand::No; 2], None);
         assert!(autofill_landed_at(1_500), "still on the song the press was made on, half a second later");
         crate::playlist::playlist_repeat(2);
         crate::playlist::playlist_moved_to(5);
@@ -374,7 +374,7 @@ mod tests {
             crate::playlist::playlist_moved_to(i as i32);
         }
         assert!(autofill_arrived(15), "the songs go in either way");
-        crate::playlist::playlist_take(3, vec![format!("{tag}-a"), format!("{tag}-b")], vec![nori_player::playlist::Hand::No; 2]);
+        crate::playlist::playlist_take(3, vec![format!("{tag}-a"), format!("{tag}-b")], vec![nori_player::playlist::Hand::No; 2], None);
         autofill_landed_at(arrive)
     }
 
@@ -396,15 +396,15 @@ mod tests {
         assert!(autofill_start());
         // Add to queue goes after the song playing (and the songs added before it), not after the end:
         // the fill still carries on from em2.
-        crate::playlist::playlist_take(3, vec!["mine".into()], vec![nori_player::playlist::Hand::Last]);
+        crate::playlist::playlist_take(3, vec!["mine".into()], vec![nori_player::playlist::Hand::Last], None);
         assert_eq!(autofill_seed().as_deref(), Some("em2"));
         assert!(autofill_arrived(15));
-        crate::playlist::playlist_take(4, vec!["em3".into()], vec![nori_player::playlist::Hand::No]);
+        crate::playlist::playlist_take(4, vec!["em3".into()], vec![nori_player::playlist::Hand::No], None);
         assert!(!autofill_landed_at(0), "no next was waiting");
         // Songs put at the end from elsewhere (a controller's insert): the fill is no longer wanted there.
         crate::playlist::playlist_moved_to(3);
         assert!(autofill_start());
-        crate::playlist::playlist_take(5, vec!["em4".into()], vec![nori_player::playlist::Hand::No]);
+        crate::playlist::playlist_take(5, vec!["em4".into()], vec![nori_player::playlist::Hand::No], None);
         assert!(!autofill_arrived(15), "the queue's end moved meanwhile");
         assert!(autofill_start(), "and the next move may fetch again");
         // A new queue altogether.

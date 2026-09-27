@@ -12,12 +12,16 @@ pub use nori_player::playlist::Hand;
 pub use nori_player::queue::Onto;
 
 use crate::queue;
-use nori_model::{PageOrigin, Song};
+use nori_model::{OriginKind, PageOrigin, Song};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 static LIST: Mutex<Playlist> = Mutex::new(Playlist::new());
-/// The planner's window as it was last handed over, so it is handed over only when it changes.
-static WINDOW: Mutex<(Vec<String>, bool)> = Mutex::new((Vec::new(), false));
+/// The planner's window as it was last handed over (each song with its album run), so it is handed over
+/// only when it changes.
+static WINDOW: Mutex<(Vec<(String, u32)>, bool)> = Mutex::new((Vec::new(), false));
+/// The album runs of a saved queue about to be put back, with its songs ([`playlist_put_back_runs`]):
+/// taken by the next new queue if it is those songs.
+static PUT_BACK: Mutex<Option<(Vec<String>, Vec<u32>)>> = Mutex::new(None);
 /// The page the queue was started from ([`PageOrigin`]); none for a queue started anywhere else.
 /// Set with each new queue and kept through every edit of it (added, put next, removed, moved,
 /// refilled, bridged): the queue still came from that page.
@@ -140,13 +144,41 @@ pub struct BridgeState {
 
 /// A new queue (`start` -1: wherever shuffle starts), started from the page `origin` (none: from
 /// anywhere that is not a page's songs, such as one song, a selection, a radio or a mix drawn from a song).
+///
+/// A queue started from an album ([`OriginKind::Album`]: its page, its Play or a row of it) is the album
+/// played as an album: its songs are one album run (`Playlist::album_run`), kept gapless with "keep
+/// albums gapless" on. Any other origin is not, a playlist's included: a playlist is a list somebody
+/// made, and songs of one album in it mix like any others (the album's own page plays it whole). A queue
+/// put back as it was saved takes the runs it was saved with ([`playlist_put_back_runs`]).
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn playlist_set(ids: Vec<String>, start: i32, shuffle: bool, origin: Option<PageOrigin>) -> QueueChange {
+    let album = is_album(origin.as_ref());
+    let saved = PUT_BACK.lock().take().filter(|(put, _)| *put == ids).map(|(_, runs)| runs);
     set_origin(origin);
-    edit(|p| p.set(ids, usize::try_from(start).ok(), shuffle, seed()))
+    edit(|p| {
+        let at = p.set(ids, usize::try_from(start).ok(), shuffle, seed());
+        match saved {
+            Some(runs) => p.set_album_runs(&runs),
+            None if album => p.as_album(0, p.len()),
+            None => {}
+        }
+        at
+    })
 }
 
-/// A new queue already in the order it plays, shown as shuffled (a weighted shuffle), from `origin`.
+/// Songs from `origin` are an album played (or added) as an album.
+fn is_album(origin: Option<&PageOrigin>) -> bool {
+    origin.is_some_and(|o| o.kind == OriginKind::Album)
+}
+
+/// The album runs `runs` of the saved queue `ids` (one per song, as `Playlist::album_runs` gave them), for
+/// the queue about to be put back from it: the next [`playlist_set`] of exactly those songs takes them.
+pub fn playlist_put_back_runs(ids: Vec<String>, runs: Vec<u32>) {
+    *PUT_BACK.lock() = (ids.len() == runs.len()).then_some((ids, runs));
+}
+
+/// A new queue already in the order it plays, shown as shuffled (a weighted shuffle), from `origin`. A
+/// shuffle: no album runs, whatever the origin.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn playlist_set_ordered(ids: Vec<String>, origin: Option<PageOrigin>) -> QueueChange {
     set_origin(origin);
@@ -163,10 +195,21 @@ pub enum Hand {
 }
 
 /// Songs a controller adds at `at`, each marked with how it came (`hands`, one per song: Play next, Add
-/// to queue, or neither). Where they go is `nori_player::playlist::Playlist::take`'s call.
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn playlist_take(at: u32, ids: Vec<String>, hands: Vec<Hand>) -> QueueChange {
-    edit(|p| Some(p.take(at as usize, ids, &hands)))
+/// to queue, or neither). Where they go is `nori_player::playlist::Playlist::take`'s call. `from` is the
+/// page they are all the songs of, when they are: an album's ([`OriginKind::Album`], its Play next or Add
+/// to queue) is the album added whole, one album run of its own; songs added any other way (one at a
+/// time, a selection, autofill's) have none.
+#[cfg_attr(feature = "ffi", uniffi::export(default(from = None)))]
+pub fn playlist_take(at: u32, ids: Vec<String>, hands: Vec<Hand>, from: Option<PageOrigin>) -> QueueChange {
+    let count = ids.len();
+    let album = is_album(from.as_ref()) && count > 0;
+    edit(|p| {
+        let at = p.take(at as usize, ids, &hands);
+        if album {
+            p.as_album(at, at + count);
+        }
+        Some(at)
+    })
 }
 
 /// Songs `from..to` taken out. One song on its own is remembered as it was, so an undo can put it back
@@ -294,14 +337,15 @@ const WINDOW_LEN: usize = 8;
 pub fn playlist_window() -> bool {
     let (ids, shuffling) = with(|p| {
         let mut ids = Vec::with_capacity(WINDOW_LEN + 1);
+        let at = |i: usize| (p.ids()[i].clone(), p.album_run(i));
         if let Some(c) = p.current() {
             if let Some(b) = p.previous_of(c, p.repeat()) {
-                ids.push(p.ids()[b].clone());
+                ids.push(at(b));
             }
             let mut i = Some(c);
             let mut n = 0;
             while let (Some(x), true) = (i, n < WINDOW_LEN) {
-                ids.push(p.ids()[x].clone());
+                ids.push(at(x));
                 i = p.next_of(x, p.repeat());
                 n += 1;
             }
@@ -312,7 +356,7 @@ pub fn playlist_window() -> bool {
     if w.0 == ids && w.1 == shuffling {
         return false;
     }
-    queue::queue_window(ids.clone(), shuffling);
+    queue::queue_window(&ids, shuffling);
     *w = (ids, shuffling);
     true
 }
@@ -335,12 +379,12 @@ fn gain_at(index: Option<usize>, bit_perfect: bool) -> f32 {
     let Some(s) = nori_settings::settings_store::current() else { return 1.0 };
     let prefs = s.gain_prefs();
     let (before, current, after, shuffling) = with(|p| {
-        let id = |i: Option<usize>| i.map(|i| p.ids()[i].clone());
+        let id = |i: Option<usize>| i.map(|i| (p.ids()[i].clone(), p.album_run(i)));
         // As `Playlist::previous` and `next` walk from the current song: repeat one counts as all.
         let repeat = if p.repeat() == nori_player::playlist::REPEAT_ONE { nori_player::playlist::REPEAT_ALL } else { p.repeat() };
         match index.filter(|&i| i < p.len()) {
-            Some(i) => (id(p.previous_of(i, repeat)), Some(p.ids()[i].clone()), id(p.next_of(i, repeat)), p.shuffling()),
-            None => (id(p.previous()), p.current_id().map(str::to_string), id(p.next()), p.shuffling()),
+            Some(i) => (id(p.previous_of(i, repeat)), id(Some(i)), id(p.next_of(i, repeat)), p.shuffling()),
+            None => (id(p.previous()), id(p.current()), id(p.next()), p.shuffling()),
         }
     });
     queue::queue_gain(before, current, after, &prefs, bit_perfect, shuffling)
@@ -470,17 +514,93 @@ pub(crate) mod tests {
         assert!(!playlist_window(), "nothing changed");
         playlist_moved_to(2);
         assert!(playlist_window());
-        assert_eq!(WINDOW.lock().0, ids(&["w2", "w3"]));
+        assert_eq!(WINDOW.lock().0.iter().map(|w| w.0.clone()).collect::<Vec<_>>(), ids(&["w2", "w3"]));
         playlist_repeat(2);
         assert!(playlist_window());
-        assert_eq!(WINDOW.lock().0, ids(&["w2", "w3", "w1", "w2", "w3", "w1", "w2", "w3", "w1"]));
+        assert_eq!(WINDOW.lock().0.iter().map(|w| w.0.clone()).collect::<Vec<_>>(), ids(&["w2", "w3", "w1", "w2", "w3", "w1", "w2", "w3", "w1"]));
+    }
+
+    /// Each queued song's album run, in list order.
+    fn runs() -> Vec<u32> {
+        with(|p| p.album_runs().to_vec())
+    }
+
+    fn album(id: &str) -> Option<PageOrigin> {
+        Some(PageOrigin::new(OriginKind::Album, id))
+    }
+
+    #[test]
+    fn only_an_album_played_or_added_whole_is_an_album_run() {
+        let _g = hold(&[], 0);
+        let songs = ids(&["ar1", "ar2", "ar3"]);
+        // From the album's page (its Play, a row of it): one run.
+        playlist_set(songs.clone(), 1, false, album("AR"));
+        let r = runs();
+        assert!(r[0] > 0 && r.iter().all(|&x| x == r[0]), "{r:?}");
+        // Autofill's songs, a song added on its own, the album's songs picked one at a time: none. The
+        // album added whole: a run of its own.
+        playlist_take(9, ids(&["fill"]), vec![Hand::No], None);
+        playlist_take(9, ids(&["ar2"]), vec![Hand::Last], None);
+        playlist_take(9, songs.clone(), vec![Hand::Last; 3], album("AR"));
+        // Each goes after the song playing, after those added by hand before it; the album parts the first
+        // run where it lands, and the songs either side of it no longer meet.
+        assert_eq!(with(|p| p.ids().to_vec()), ids(&["ar1", "ar2", "ar2", "ar1", "ar2", "ar3", "ar3", "fill"]));
+        let added = runs()[3];
+        assert!(added > 0 && added != r[0]);
+        assert_eq!(runs(), [r[0], r[0], 0, added, added, added, r[0], 0]);
+        // The window carries each place's run, so the planner tells the same song queued twice apart.
+        playlist_window();
+        assert!(WINDOW.lock().0.iter().any(|(id, run)| id == "ar2" && *run == r[0]));
+
+        // A playlist's, a search's, a mix's, no page's: none, even if it holds an album in order.
+        for from in [Some(PageOrigin::new(OriginKind::Playlist, "pl")), Some(PageOrigin::new(OriginKind::Search, "ar")), Some(PageOrigin::new(OriginKind::Mix, "m")), None] {
+            playlist_set(songs.clone(), 0, false, from.clone());
+            assert_eq!(runs(), [0, 0, 0], "{from:?}");
+        }
+        // The album page's Shuffle, spread by the core: a shuffle, no run.
+        playlist_set_ordered(songs.clone(), album("AR"));
+        assert_eq!(runs(), [0, 0, 0]);
+    }
+
+    #[test]
+    fn a_queue_put_back_keeps_its_album_runs() {
+        let _g = hold(&[], 0);
+        playlist_set(ids(&["pb1", "pb2"]), 0, false, album("PB"));
+        playlist_take(9, ids(&["pb3"]), vec![Hand::Last], None);
+        let saved = (with(|p| p.ids().to_vec()), runs());
+        assert_eq!((saved.1[1], saved.1[0] == saved.1[2]), (0, true), "{saved:?}");
+        playlist_set(ids(&["other"]), 0, false, None);
+        // Put back as the platform does, with the page it came from: the saved runs, not one for all.
+        playlist_put_back_runs(saved.0.clone(), saved.1.clone());
+        playlist_set(saved.0.clone(), 0, false, album("PB"));
+        assert_eq!(runs(), saved.1);
+        // Taken by that one queue only.
+        playlist_put_back_runs(saved.0.clone(), saved.1.clone());
+        playlist_set(ids(&["another"]), 0, false, None);
+        playlist_set(saved.0.clone(), 0, false, None);
+        assert_eq!(runs(), [0, 0, 0]);
+    }
+
+    #[test]
+    fn album_gain_in_auto_mode_is_for_an_album_played_as_one() {
+        use nori_player::gain::GainPrefs;
+        use nori_player::policy::GainMode;
+        let _g = hold(&[], 0);
+        let rg = nori_model::ReplayGain { track_gain: Some(-6.0), album_gain: Some(-2.0), track_peak: Some(0.5), album_peak: Some(0.5), ..Default::default() };
+        let song = |id: &str, track: u32| Song { duration: 200, album_id: Some("GA".into()), track, disc_number: 1, replay_gain: Some(rg.clone()), ..Song::only_id(id.to_string()) };
+        queue::queue_register(vec![song("ga1", 1), song("ga2", 2)]);
+        let prefs = GainPrefs::attenuating(GainMode::Auto, 0.0, 0.0);
+        let at = |id: &str, run: u32| Some((id.to_string(), run));
+        let db = |g: f32| (20.0 * g.log10() * 10.0).round() / 10.0;
+        assert_eq!(db(queue::queue_gain(at("ga1", 3), at("ga2", 3), None, &prefs, false, false)), -2.0, "the album played as one: album gain");
+        assert_eq!(db(queue::queue_gain(at("ga1", 0), at("ga2", 0), None, &prefs, false, false)), -6.0, "two of its songs queued one at a time: track gain");
     }
 
     #[test]
     fn edits_say_where_the_songs_went() {
         let _g = hold(&["e1", "e2", "e3"], 0);
-        assert_eq!(playlist_take(9, ids(&["n"]), vec![Hand::Next]), QueueChange { at: 1, shuffled: false });
-        assert_eq!(playlist_take(9, ids(&["i"]), vec![Hand::No]).at, 4, "a controller's own insert, clamped to the end");
+        assert_eq!(playlist_take(9, ids(&["n"]), vec![Hand::Next], None), QueueChange { at: 1, shuffled: false });
+        assert_eq!(playlist_take(9, ids(&["i"]), vec![Hand::No], None).at, 4, "a controller's own insert, clamped to the end");
         assert!(playlist_shuffle(true).shuffled);
         assert_eq!(with(|p| p.shuffle_order().unwrap()[..2].to_vec()), [0, 1], "the current song, then the one added by hand");
         let v = playlist_view(0);
@@ -498,7 +618,7 @@ pub(crate) mod tests {
         assert!(shuffled.songs.is_empty(), "only the order changed: the reader holds the songs");
         assert_eq!((shuffled.len, shuffled.list_rev), (3, first.list_rev));
         assert_ne!(shuffled.rev, first.rev);
-        playlist_take(9, ids(&["v4"]), vec![Hand::Next]);
+        playlist_take(9, ids(&["v4"]), vec![Hand::Next], None);
         let added = playlist_view(first.list_rev);
         assert_eq!((added.songs.len(), added.len), (4, 4));
         assert_ne!(added.list_rev, first.list_rev);
@@ -534,7 +654,7 @@ pub(crate) mod tests {
         assert!(playlist_shuffle_shown(), "at once, before the queue changes");
         playlist_set_ordered(ids(&["s2", "s1"]), None);
         assert!(playlist_shuffle_shown(), "a weighted shuffle stays lit");
-        playlist_take(0, ids(&["s3"]), vec![Hand::Last]);
+        playlist_take(0, ids(&["s3"]), vec![Hand::Last], None);
         assert!(playlist_shuffle_shown());
         playlist_show_shuffle(false);
         playlist_shuffle(false);
@@ -566,9 +686,9 @@ pub(crate) mod tests {
 
         // Every edit keeps the origin: the queue still came from the album.
         let gen = playlist_origin_gen();
-        playlist_take(9, ids(&["x"]), vec![Hand::Next]);
-        playlist_take(9, ids(&["y"]), vec![Hand::Last]);
-        playlist_take(9, ids(&["fill1", "fill2"]), vec![Hand::No; 2]);
+        playlist_take(9, ids(&["x"]), vec![Hand::Next], None);
+        playlist_take(9, ids(&["y"]), vec![Hand::Last], None);
+        playlist_take(9, ids(&["fill1", "fill2"]), vec![Hand::No; 2], None);
         playlist_move(0, 1, 2);
         playlist_remove(1, 2);
         playlist_shuffle(true);
@@ -590,7 +710,7 @@ pub(crate) mod tests {
     #[test]
     fn a_song_taken_out_is_put_back_once() {
         let _g = hold(&["u1", "u2", "u3", "u4"], 1);
-        playlist_take(9, ids(&["mine"]), vec![Hand::Next]);
+        playlist_take(9, ids(&["mine"]), vec![Hand::Next], None);
         assert_eq!(with(|p| p.ids().to_vec()), ids(&["u1", "u2", "mine", "u3", "u4"]));
         playlist_remove(2, 3);
         assert_eq!(playlist_restore("other".into()).at, -1, "not the song taken out");

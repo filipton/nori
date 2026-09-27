@@ -379,14 +379,16 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
     }
 
     // Where these land is the core's (nori_player::playlist::Playlist::take): after the playing song, and
-    // for "last" after the songs added by hand before them, whatever the shuffle order says.
-    fun playNext(songs: List<Song>) = with { c ->
-        c.addMediaItems(items(songs).map { it.queued(Hand.NEXT) })
+    // for "last" after the songs added by hand before them, whatever the shuffle order says. [from] is the
+    // page they are all the songs of, marked on the first as a new queue's is: an album's is the album
+    // added whole, which the core keeps gapless as one (nori-queue playlist_take).
+    fun playNext(songs: List<Song>, from: PageOrigin? = null) = with { c ->
+        c.addMediaItems(startedFrom(items(songs).map { it.queued(Hand.NEXT) }, from))
         if (c.playbackState == Player.STATE_IDLE) c.prepare()
     }
 
-    fun enqueue(songs: List<Song>) = with { c ->
-        c.addMediaItems(items(songs).map { it.queued(Hand.LAST) })
+    fun enqueue(songs: List<Song>, from: PageOrigin? = null) = with { c ->
+        c.addMediaItems(startedFrom(items(songs).map { it.queued(Hand.LAST) }, from))
         if (c.playbackState == Player.STATE_IDLE) c.prepare()
     }
 

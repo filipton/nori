@@ -106,7 +106,11 @@ object TestActions {
         val nori = Nori.get(context)
         val verb = what.substringBefore(' ')
         val ref = what.substringAfter(' ', "")
-        val songs = songsOf(nori, testRef(ref))
+        val r = testRef(ref)
+        val songs = songsOf(nori, r)
+        // An album queued whole ("enqueue album:<id>", "playnext album:<id>") comes from its page, as the
+        // page's own Add to queue does: an album run of its own. A song ("song:<id>") comes from no page.
+        val from = (r as? TestRef.Album)?.let { dev.nori.music.ffi.model.PageOrigin(dev.nori.music.ffi.model.OriginKind.ALBUM, it.id) }
         when (verb) {
             // Lyrics load only while the lyrics panel is watching them, which a headless check is not:
             // this asks for them the same way the panel does and parks the answer for the state dump.
@@ -161,8 +165,8 @@ object TestActions {
             // What the equalizer screen sends while it is open: the shallow buffer for live
             // tweaking, then back. For the checks that the deep buffer returns afterwards.
             "tuning" -> nori.player.setTuning(ref == "on")
-            "enqueue" -> actions.enqueue(songs)
-            "playnext" -> actions.playNext(songs)
+            "enqueue" -> actions.enqueue(songs, from)
+            "playnext" -> actions.playNext(songs, from)
             "shuffle" -> player.toggleShuffle()
             // "newplaylist <name>|<ref>": the checks create one, look for it on the server, then delete it.
             "newplaylist" -> {

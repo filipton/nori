@@ -73,7 +73,9 @@ fn songs_at(ids: Vec<String>, now: i64) -> Vec<Song> {
     })
 }
 
-fn window_song(s: &Store, id: &str) -> WindowSong {
+/// What the store knows of `id`, at a place in the queue whose album run is `run`
+/// (`Playlist::album_run`).
+fn window_song(s: &Store, id: &str, run: u32) -> WindowSong {
     match s.songs.get(id) {
         Some((song, _)) => WindowSong {
             id: song.id.clone(),
@@ -84,6 +86,7 @@ fn window_song(s: &Store, id: &str) -> WindowSong {
             track: song.track as i32,
             tag_bpm: song.bpm as f32,
             radio: false,
+            album_run: run,
         },
         None => WindowSong { id: id.to_string(), radio: id.starts_with(RADIO_PREFIX), ..Default::default() },
     }
@@ -94,10 +97,10 @@ pub(crate) fn durations(ids: &[String]) -> Vec<(String, i64)> {
     with(|s| ids.iter().map(|id| (id.clone(), s.songs.get(id).map_or(0, |(song, _)| song.duration as i64 * 1000))).collect())
 }
 
-/// The transition planner's window by id: the song before the current one, then the current one and
-/// those after it, in play order.
-pub fn queue_window(ids: Vec<String>, shuffling: bool) {
-    let window = with(|s| ids.iter().map(|id| window_song(s, id)).collect());
+/// The transition planner's window by id, each with its place's album run: the song before the current
+/// one, then the current one and those after it, in play order.
+pub fn queue_window(songs: &[(String, u32)], shuffling: bool) {
+    let window = with(|s| songs.iter().map(|(id, run)| window_song(s, id, *run)).collect());
     nori_automix::planner::transition_window(window, shuffling);
 }
 
@@ -105,12 +108,15 @@ pub fn queue_window(ids: Vec<String>, shuffling: bool) {
 /// an album played in order at its own levels): over 1 it is turned up. See `nori_player::gain`.
 /// Nothing playing, or a radio stream, plays at full volume. A song without a gain of its own, the
 /// server's fallback included, plays at its measured loudness when AutoMix's analysis has one.
-pub fn queue_gain(before: Option<String>, current: Option<String>, after: Option<String>, prefs: &GainPrefs, bit_perfect: bool, shuffling: bool) -> f32 {
-    let current = current.unwrap_or_else(|| RADIO_PREFIX.to_string());
+///
+/// Each song comes with its place's album run (`Playlist::album_run`): album gain in auto mode is for an
+/// album played as an album, as "keep albums gapless" is.
+pub fn queue_gain(before: Option<(String, u32)>, current: Option<(String, u32)>, after: Option<(String, u32)>, prefs: &GainPrefs, bit_perfect: bool, shuffling: bool) -> f32 {
+    let (current, current_run) = current.unwrap_or_else(|| (RADIO_PREFIX.to_string(), 0));
     let radio = current.starts_with(RADIO_PREFIX);
     let (run, mut song, channels) = with(|s| {
-        let w = |id: &Option<String>| id.as_deref().map(|i| window_song(s, i));
-        let (b, c, a) = (w(&before), window_song(s, &current), w(&after));
+        let w = |p: &Option<(String, u32)>| p.as_ref().map(|(i, r)| window_song(s, i, *r));
+        let (b, c, a) = (w(&before), window_song(s, &current, current_run), w(&after));
         let run = !radio && in_album_run(b.as_ref(), &c, a.as_ref(), shuffling);
         let known = s.songs.get(&current).map(|(song, _)| song);
         let rg = known.and_then(|song| song.replay_gain.as_ref());

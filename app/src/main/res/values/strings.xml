@@ -100,7 +100,7 @@
     </plurals>
     <string name="settings_measure_again">Measure again</string>
     <string name="settings_keep_albums">Keep albums gapless</string>
-    <string name="settings_keep_albums_detail">No mixing between songs of the same album.</string>
+    <string name="settings_keep_albums_detail">An album played or added to the queue whole plays without mixing between its songs.</string>
     <string name="settings_fade">Fade on play and pause</string>
     <string name="settings_previous">Previous goes back a song</string>
     <string name="settings_previous_detail">Instead of restarting the current one.</string>

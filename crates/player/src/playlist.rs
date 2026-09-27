@@ -45,6 +45,8 @@ pub struct Taken {
     pub hand: Hand,
     /// Its place in the play order while shuffling; none otherwise.
     pub turn: Option<usize>,
+    /// The album run it was queued in ([`Playlist::album_run`]).
+    pub run: u32,
 }
 
 /// media3's repeat modes, same numbers.
@@ -56,6 +58,10 @@ pub const REPEAT_ALL: u8 = 2;
 pub struct Playlist {
     ids: Vec<String>,
     hand: Vec<Hand>,
+    /// Each song's album run ([`Playlist::album_run`]): 0 for none.
+    runs: Vec<u32>,
+    /// The last album run handed out.
+    last_run: u32,
     /// The play order while shuffling (list indexes); empty otherwise.
     order: Vec<usize>,
     shuffling: bool,
@@ -75,7 +81,7 @@ pub struct Playlist {
 
 impl Playlist {
     pub const fn new() -> Self {
-        Playlist { ids: Vec::new(), hand: Vec::new(), order: Vec::new(), shuffling: false, lit: false, cur: None, parked: None, repeat: REPEAT_OFF, rev: 0, list_rev: 0 }
+        Playlist { ids: Vec::new(), hand: Vec::new(), runs: Vec::new(), last_run: 0, order: Vec::new(), shuffling: false, lit: false, cur: None, parked: None, repeat: REPEAT_OFF, rev: 0, list_rev: 0 }
     }
 
     pub fn ids(&self) -> &[String] {
@@ -111,6 +117,42 @@ impl Playlist {
     pub fn hand(&self, i: usize) -> Hand {
         self.hand.get(i).copied().unwrap_or_default()
     }
+    /// The album run the song at list index `i` was queued in: songs queued together as an album played as
+    /// an album (from its page, or added to the queue whole; [`Playlist::as_album`]) share one number, and
+    /// no other songs have it. 0 for a song queued any other way: on its own, by autofill, a radio, a mix,
+    /// a playlist. It keeps an album gapless (`transitions::follows_on_album`) only where the album is
+    /// played as one: two songs of an album that meet any other way mix like any two songs.
+    pub fn album_run(&self, i: usize) -> u32 {
+        self.runs.get(i).copied().unwrap_or(0)
+    }
+    /// Every song's album run, in list order: saved with the queue.
+    pub fn album_runs(&self) -> &[u32] {
+        &self.runs
+    }
+
+    /// Songs `from..to` (list indexes) are an album played as an album: they get an album run of their
+    /// own, which no other song has.
+    pub fn as_album(&mut self, from: usize, to: usize) {
+        let to = to.min(self.ids.len());
+        if from >= to {
+            return;
+        }
+        self.last_run += 1;
+        self.runs[from..to].fill(self.last_run);
+        self.rev += 1;
+    }
+
+    /// The album runs of a queue put back as it was saved ([`Playlist::album_runs`]), one per song; a list
+    /// of another length is left alone.
+    pub fn set_album_runs(&mut self, runs: &[u32]) {
+        if runs.len() != self.ids.len() {
+            return;
+        }
+        self.runs.copy_from_slice(runs);
+        self.last_run = self.last_run.max(runs.iter().copied().max().unwrap_or(0));
+        self.rev += 1;
+    }
+
     /// While the offline bridge plays: the song the queue picks up at once the server is back.
     pub fn parked_id(&self) -> Option<&str> {
         self.parked.and_then(|i| self.ids.get(i)).map(String::as_str)
@@ -200,6 +242,7 @@ impl Playlist {
         self.ids = ids;
         self.list_rev += 1;
         self.hand = vec![Hand::No; n];
+        self.runs = vec![0; n];
         self.parked = None;
         self.shuffling = shuffling && n > 0;
         self.lit = shuffling;
@@ -290,6 +333,7 @@ impl Playlist {
         self.ids.splice(at..at, ids);
         self.list_rev += 1;
         self.hand.splice(at..at, std::iter::repeat_n(hand, count));
+        self.runs.splice(at..at, std::iter::repeat_n(0, count));
         for i in [self.cur.as_mut(), self.parked.as_mut()].into_iter().flatten() {
             if *i >= at {
                 *i += count;
@@ -320,6 +364,7 @@ impl Playlist {
         self.ids.drain(from..to);
         self.list_rev += 1;
         self.hand.drain(from..to);
+        self.runs.drain(from..to);
         self.order.retain(|&o| !gone(o));
         for o in self.order.iter_mut() {
             *o = shift(*o);
@@ -335,7 +380,7 @@ impl Playlist {
     /// The song at `at` as it is now, to be put back with [`Playlist::restore`] after it is removed.
     pub fn taken(&self, at: usize) -> Option<Taken> {
         let id = self.ids.get(at)?.clone();
-        Some(Taken { id, at, hand: self.hand(at), turn: if self.shuffling { self.position(at) } else { None } })
+        Some(Taken { id, at, hand: self.hand(at), turn: if self.shuffling { self.position(at) } else { None }, run: self.album_run(at) })
     }
 
     /// A song taken out put back where it was: at its list index and, while shuffling, at its place in the
@@ -346,6 +391,7 @@ impl Playlist {
         let at = t.at.min(self.ids.len());
         let was_empty = self.ids.is_empty();
         self.splice(at, vec![t.id.clone()], t.hand);
+        self.runs[at] = t.run;
         if self.shuffling {
             for o in self.order.iter_mut() {
                 if *o >= at {
@@ -382,11 +428,13 @@ impl Playlist {
         }
         let ids = std::mem::take(&mut self.ids);
         let hand = std::mem::take(&mut self.hand);
-        let mut slots: Vec<Option<(String, Hand)>> = ids.into_iter().zip(hand).map(Some).collect();
+        let runs = std::mem::take(&mut self.runs);
+        let mut slots: Vec<Option<((String, Hand), u32)>> = ids.into_iter().zip(hand).zip(runs).map(Some).collect();
         for &old in &list {
-            let (id, h) = slots[old].take().expect("each index moves once");
+            let ((id, h), r) = slots[old].take().expect("each index moves once");
             self.ids.push(id);
             self.hand.push(h);
+            self.runs.push(r);
         }
         self.list_rev += 1;
         self.cur = self.cur.map(|c| map[c]);
@@ -526,7 +574,7 @@ mod tests {
         p.add(ids(&["x"]), Hand::Next);
         assert_eq!(list(&p), ["a", "x", "b", "c", "d"]);
         let t = p.taken(1).unwrap();
-        assert_eq!(t, Taken { id: "x".into(), at: 1, hand: Hand::Next, turn: None });
+        assert_eq!(t, Taken { id: "x".into(), at: 1, hand: Hand::Next, turn: None, run: 0 });
         p.remove(1, 2);
         assert_eq!(list(&p), ["a", "b", "c", "d"]);
         assert_eq!(p.restore(&t), 1);
@@ -543,6 +591,58 @@ mod tests {
         p.restore(&t);
         assert_eq!((p.current(), p.current_id()), (Some(3), Some("c")));
         assert!(p.taken(9).is_none());
+    }
+
+    fn runs(p: &Playlist) -> Vec<u32> {
+        p.album_runs().to_vec()
+    }
+
+    #[test]
+    fn an_album_run_is_its_songs_own_through_every_edit() {
+        let mut p = Playlist::default();
+        p.set(ids(&["a1", "a2", "a3"]), Some(0), false, 0);
+        assert_eq!(runs(&p), [0, 0, 0], "a queue is no album until it is said to be");
+        p.as_album(0, 3);
+        let a = p.album_run(0);
+        assert!(a > 0);
+        assert_eq!(runs(&p), [a, a, a]);
+        // A song on its own, autofill's, a bridge's: none. They land inside or after the run and part it
+        // where they land.
+        p.add(ids(&["x"]), Hand::Next);
+        p.insert(4, ids(&["fill"]), Hand::No);
+        assert_eq!(list(&p), ["a1", "x", "a2", "a3", "fill"]);
+        assert_eq!(runs(&p), [a, 0, a, a, 0]);
+        // The same album added whole again (after the song added by hand): a run of its own, not the
+        // first one's, which it parts where it lands.
+        let at = p.add(ids(&["a1", "a2"]), Hand::Last);
+        p.as_album(at, at + 2);
+        let b = p.album_run(at);
+        assert!(b != a && b > 0);
+        assert_eq!(list(&p), ["a1", "x", "a1", "a2", "a2", "a3", "fill"]);
+        assert_eq!(runs(&p), [a, 0, b, b, a, a, 0]);
+        // Taken out and put back (an undo), moved: each song keeps its run.
+        let t = p.taken(1).unwrap();
+        p.remove(1, 2);
+        assert_eq!(runs(&p), [a, b, b, a, a, 0]);
+        let t2 = p.taken(1).unwrap();
+        p.remove(1, 2);
+        assert_eq!(runs(&p), [a, b, a, a, 0]);
+        p.restore(&t2);
+        p.restore(&t);
+        assert_eq!(runs(&p), [a, 0, b, b, a, a, 0]);
+        p.move_range(3, 4, 6);
+        assert_eq!(list(&p), ["a1", "x", "a1", "a2", "a3", "fill", "a2"]);
+        assert_eq!(runs(&p), [a, 0, b, a, a, 0, b]);
+        // A new queue starts with none; saved runs are put back on the queue they were saved with.
+        let saved = runs(&p);
+        p.set(ids(&["a1", "x", "a1", "a2", "a3", "fill", "a2"]), Some(0), false, 0);
+        assert_eq!(runs(&p), [0; 7]);
+        p.set_album_runs(&saved);
+        assert_eq!(runs(&p), saved);
+        p.as_album(5, 7);
+        assert!(p.album_run(5) > b, "a run handed out after a queue put back is still a new one");
+        p.set_album_runs(&[1, 1]);
+        assert_eq!(p.album_run(0), a, "runs for another list are not put on this one");
     }
 
     #[test]

@@ -39,7 +39,7 @@
 use std::collections::VecDeque;
 
 use nori_player::pipeline::{Queue, Reading, Songs};
-use nori_player::transitions::in_album_run;
+use nori_player::transitions::{in_album_run, WindowSong};
 
 pub use crate::demux::{Coded, CodedSong, Coding};
 use crate::demux::Demuxed;
@@ -557,12 +557,12 @@ impl Offload {
     /// or the one after it follows it on the same album, the rule that keeps albums gapless
     /// (`nori_player::transitions::in_album_run`; never while shuffling).
     pub(crate) fn in_album<L: Library, Q: Queue>(&self, i: usize, tracks: &Sources<L>, queue: &Q) -> bool {
-        let (ids, before, after, shuffling) = queue.read(|q| {
+        let (ids, runs, before, after, shuffling) = queue.read(|q| {
             let repeat = q.repeat();
-            (q.ids().to_vec(), q.previous_of(i, repeat), q.next_of(i, repeat), q.shuffling())
+            (q.ids().to_vec(), q.album_runs().to_vec(), q.previous_of(i, repeat), q.next_of(i, repeat), q.shuffling())
         });
         let after = after.filter(|_| self.stop_after != Some(i));
-        let about = |k: usize| ids.get(k).map(|id| tracks.about(id));
+        let about = |k: usize| ids.get(k).map(|id| WindowSong { album_run: runs.get(k).copied().unwrap_or(0), ..tracks.about(id) });
         let Some(song) = about(i) else { return false };
         in_album_run(before.and_then(about).as_ref(), &song, after.and_then(about).as_ref(), shuffling)
     }

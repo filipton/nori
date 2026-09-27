@@ -447,7 +447,8 @@ class PlaybackService : MediaLibraryService() {
             val at = index.coerceIn(0, wrappedPlayer.mediaItemCount).toUInt()
             // An undo puts the song back where it was, if the core still has it as the one taken out.
             val back = mediaItems.singleOrNull()?.takeIf { it.isRestored() }?.let { dev.nori.music.ffi.queue.playlistRestore(it.mediaId) }?.takeIf { it.at >= 0 }
-            val c = back ?: dev.nori.music.ffi.queue.playlistTake(at, ids(mediaItems), mediaItems.map { it.queuedAs() ?: Hand.NO })
+            // The page they are all the songs of, if any (an album added whole: MediaItems.origin).
+            val c = back ?: dev.nori.music.ffi.queue.playlistTake(at, ids(mediaItems), mediaItems.map { it.queuedAs() ?: Hand.NO }, mediaItems.first().origin())
             super.addMediaItems(c.at, mediaItems)
         }
 

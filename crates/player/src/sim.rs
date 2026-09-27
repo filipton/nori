@@ -263,6 +263,7 @@ impl Track {
             track: self.number,
             tag_bpm: 0.0,
             radio: false,
+            album_run: 0,
         }
     }
 }
@@ -785,6 +786,16 @@ impl Player {
         let mut p = Player::new(tracks);
         p.app.prefs = prefs;
         p
+    }
+
+    /// The same, the queue played as an album is (from its page): one album run, so its songs of one album
+    /// in order stay gapless with "keep albums gapless" on. A queue from [`Player::new`] is songs queued
+    /// any other way, and they mix.
+    pub fn as_album(mut self) -> Player {
+        let n = self.queue.len();
+        self.queue.as_album(0, n);
+        self.queue_changed();
+        self
     }
 
     /// The same played shuffled: the order is the playlist's for `seed`, and it starts wherever that

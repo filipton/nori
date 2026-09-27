@@ -110,8 +110,9 @@ class ActionsViewModel(app: Application) : NoriViewModel(app) {
         if (imported.songIds.isNotEmpty()) nori.library.createPlaylist(name, imported.songIds)
         _messages.send(say.m3uImported(imported.songIds.size, imported.entries.toInt(), name))
     }
-    fun playNext(songs: List<Song>) { nori.player.playNext(songs); _messages.trySend(say.playingNext) }
-    fun enqueue(songs: List<Song>) { nori.player.enqueue(songs); _messages.trySend(say.addedToQueue) }
+    /** [songs] added by hand; [from] the page they are all the songs of (an album's: added whole, kept gapless). */
+    fun playNext(songs: List<Song>, from: PageOrigin? = null) { nori.player.playNext(songs, from); _messages.trySend(say.playingNext) }
+    fun enqueue(songs: List<Song>, from: PageOrigin? = null) { nori.player.enqueue(songs, from); _messages.trySend(say.addedToQueue) }
 
     fun shuffleAll() = attempt(null) { nori.player.play(nori.library.shuffleAll()) }
 

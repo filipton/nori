@@ -384,8 +384,7 @@ impl Core {
     // ---- play queue, survives process death ----
 
     pub fn save_queue(&self, queue: PlayQueue) -> Result<()> {
-        let json = serde_json::json!({ "songs": queue.songs, "index": queue.index, "position": queue.position_ms, "origin": queue.origin });
-        Ok(db::kv_put(&self.db.lock(), "queue", &json.to_string())?)
+        self.save_queue_with_runs(queue, Vec::new())
     }
 
     pub fn load_queue(&self) -> Result<PlayQueue> {
@@ -397,6 +396,8 @@ impl Core {
             position: u64,
             /// Read on its own, so an origin this version does not know loses only itself, not the queue.
             origin: serde_json::Value,
+            /// Each song's album run (nori-player `Playlist::album_runs`); none in a queue saved before them.
+            runs: serde_json::Value,
         }
         let q: Q = db::kv_get(&self.db.lock(), "queue")?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
         // A saved queue that points past its end plays its last song.
@@ -404,6 +405,9 @@ impl Core {
         // Kept for the queue it is about to become, so the platform does not hand the songs straight back.
         crate::queue::queue_register(q.songs.clone());
         let origin = serde_json::from_value::<Option<crate::PageOrigin>>(q.origin).ok().flatten();
+        // Its album runs, for the queue it is about to become (nori-queue `playlist_set` takes them).
+        let runs = serde_json::from_value::<Vec<u32>>(q.runs).unwrap_or_default();
+        crate::playlist::playlist_put_back_runs(q.songs.iter().map(|s| s.id.clone()).collect(), runs);
         Ok(PlayQueue { songs: q.songs, index, position_ms: q.position, origin })
     }
 
@@ -500,6 +504,14 @@ impl Core {
 
 /// Asked only in Rust, so not exported to Kotlin.
 impl Core {
+    /// [`Core::save_queue`], with each song's album run (nori-player `Playlist::album_runs`, one per song),
+    /// so a queue put back keeps which of its songs are an album played as one.
+    pub(crate) fn save_queue_with_runs(&self, queue: PlayQueue, runs: Vec<u32>) -> Result<()> {
+        let runs = (runs.len() == queue.songs.len()).then_some(runs).unwrap_or_default();
+        let json = serde_json::json!({ "songs": queue.songs, "index": queue.index, "position": queue.position_ms, "origin": queue.origin, "runs": runs });
+        Ok(db::kv_put(&self.db.lock(), "queue", &json.to_string())?)
+    }
+
     /// Points requests at another address of the same server (LAN vs WAN) without touching the index.
     pub fn use_address(&self, url: String) {
         let next = self.server.read().rebased(&url);

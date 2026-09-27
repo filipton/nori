@@ -1634,10 +1634,11 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
                     at = q.next_of(i, repeat);
                 }
             }
-            let ids: Vec<String> = window.into_iter().map(|i| q.ids()[i].clone()).collect();
+            let ids: Vec<(String, u32)> = window.into_iter().map(|i| (q.ids()[i].clone(), q.album_run(i))).collect();
             (ids, q.shuffling(), q.ids().to_vec())
         });
-        let window = window.iter().map(|id| self.tracks.about(id)).collect();
+        // What the library knows of the song, and where the queue has it: in an album played as one or not.
+        let window = window.iter().map(|(id, run)| WindowSong { album_run: *run, ..self.tracks.about(id) }).collect();
         self.app.window(window, shuffling);
         let songs: Vec<(String, i64)> = all.into_iter().map(|id| (id.clone(), self.tracks.about(&id).duration_ms)).collect();
         self.tracker.set_queue(songs);

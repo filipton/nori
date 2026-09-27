@@ -110,7 +110,8 @@ impl Rig {
             .collect();
         let net = Arc::new(Net(ids.iter().enumerate().map(|(k, id)| (id.to_string(), Arc::new(tone_wav(SECS, k as u32)))).collect()));
         nori_core::queue::queue_register(songs);
-        nori_core::playlist::playlist_set(ids.iter().map(|s| s.to_string()).collect(), 0, false, None);
+        // Played from the album's page: an album played as one.
+        nori_core::playlist::playlist_set(ids.iter().map(|s| s.to_string()).collect(), 0, false, Some(nori_core::PageOrigin::new(nori_core::OriginKind::Album, "al")));
         let library = CoreLibrary { client, bytes: net, metered: false, store: Some(store) };
         let card = Card::new();
         let clock = Virtual::default();

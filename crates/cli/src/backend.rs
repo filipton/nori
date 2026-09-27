@@ -564,16 +564,17 @@ impl Session {
 
     /// Songs added after the current one (`next`) or at the end of the queue.
     pub fn enqueue(&self, songs: Vec<Song>, next: bool) {
-        self.handle().enqueue(songs, next);
+        self.handle().enqueue(songs, next, None);
     }
 
-    /// The same, for songs still to be loaded.
+    /// The same, for songs still to be loaded: a whole album added so stays gapless as its page's Play does.
     pub fn enqueue_later(&self, what: Fetch, next: bool) {
         let client = self.client.clone();
         let me = self.handle();
         let tx = self.tx.clone();
+        let from = what.origin();
         spawn("nori-enqueue", move || match fetch_songs(&client, what) {
-            Ok(songs) => me.enqueue(songs, next),
+            Ok(songs) => me.enqueue(songs, next, Some(from)),
             Err(e) => {
                 let _ = tx.send(Msg::Note { text: format!("Could not load the songs: {e}"), error: true });
             }
@@ -919,7 +920,7 @@ impl Session {
             if nori_core::autofill::autofill_arrived(fresh.len() as u32) && !fresh.is_empty() {
                 let len = playlist::with(|p| p.len());
                 let n = fresh.len();
-                playlist::playlist_take(len as u32, fresh.iter().map(|s| s.id.clone()).collect(), vec![Hand::No; n]);
+                playlist::playlist_take(len as u32, fresh.iter().map(|s| s.id.clone()).collect(), vec![Hand::No; n], None);
                 me.edited();
             }
             if nori_core::autofill::autofill_landed() {
@@ -987,7 +988,8 @@ impl Handle {
         self.engine.play_at(change.at.max(0) as usize, 0);
     }
 
-    fn enqueue(&self, songs: Vec<Song>, next: bool) {
+    /// `from`: the page they are all the songs of (an album added whole is one album run).
+    fn enqueue(&self, songs: Vec<Song>, next: bool, from: Option<PageOrigin>) {
         // Only the one song picked may be a provider's; a list of them never goes in whole.
         let songs: Vec<Song> = if songs.len() == 1 { songs } else { songs.into_iter().filter(|s| !is_provider(s)).collect() };
         if songs.is_empty() {
@@ -998,7 +1000,7 @@ impl Handle {
         let (len, current) = playlist::with(|p| (p.len(), p.current()));
         let at = if next { current.map_or(len, |c| c + 1) } else { len };
         let hand = if next { Hand::Next } else { Hand::Last };
-        playlist::playlist_take(at as u32, songs.iter().map(|s| s.id.clone()).collect(), vec![hand; n]);
+        playlist::playlist_take(at as u32, songs.iter().map(|s| s.id.clone()).collect(), vec![hand; n], from);
         self.edited();
         if len == 0 {
             self.engine.go_to(0, 0);

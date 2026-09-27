@@ -70,10 +70,76 @@ fn an_album_in_order_stays_gapless_with_a_crossfade_on() {
     let cut = frames(21.0) * 2;
     let a = track("a", &whole[..cut]).on_album("x", 1);
     let b = track("b", &whole[cut..]).on_album("x", 2);
-    let mut p = Player::with_prefs(vec![a, b], crossfade(6));
+    let mut p = Player::with_prefs(vec![a, b], crossfade(6)).as_album();
     play_all(&mut p, 90_000);
     assert!(p.app.logged("planFor: gapless (same album in order"), "{:?}", p.app.log);
     assert!(p.sink.heard_samples() == whole, "the album plays straight on, sample for sample");
+}
+
+/// The transitions the log says were planned, "a -> b" each.
+fn mixed(p: &Player) -> Vec<String> {
+    p.app.log.iter().filter_map(|l| l.strip_prefix("transition ")).filter(|l| l.contains(" -> ")).map(|l| l.split(':').next().unwrap_or("").to_string()).collect()
+}
+
+#[test]
+fn two_songs_of_an_album_queued_one_at_a_time_mix() {
+    let whole = music(40.0, 11);
+    let cut = frames(21.0) * 2;
+    // Scar Tissue, then Californication, each queued on its own: one album, in order, never played as it.
+    let a = track("a", &whole[..cut]).on_album("x", 1);
+    let b = track("b", &whole[cut..]).on_album("x", 2);
+    let mut p = Player::with_prefs(vec![a, b], crossfade(6));
+    play_all(&mut p, 90_000);
+    assert_eq!(mixed(&p), ["a -> b"], "{:?}", p.app.log);
+    assert!(!p.app.logged("same album in order"), "{:?}", p.app.log);
+    assert!(p.sink.heard_samples().len() < whole.len(), "six seconds overlapped");
+}
+
+#[test]
+fn the_same_song_queued_three_times_mixes_into_itself() {
+    let song = music(20.0, 5);
+    let mut p = Player::with_prefs((0..3).map(|_| track("a", &song).on_album("x", 3)).collect(), crossfade(4));
+    play_all(&mut p, 90_000);
+    assert_eq!(p.app.log.iter().filter(|l| l.starts_with("mixing:")).count(), 2, "{:?}", p.app.log);
+    assert!(!p.app.logged("same album in order"), "{:?}", p.app.log);
+}
+
+#[test]
+fn an_album_added_whole_is_gapless_inside_and_mixes_at_its_edges() {
+    // A song of the album queued on its own, the album added whole after it, then autofill's song of the
+    // same album: only the album's own run is kept whole.
+    let whole = music(60.0, 13);
+    let (c1, c2) = (frames(20.0) * 2, frames(40.0) * 2);
+    let before = track("s", &music(20.0, 3)).on_album("x", 1);
+    let a1 = track("a1", &whole[..c1]).on_album("x", 1);
+    let a2 = track("a2", &whole[c1..c2]).on_album("x", 2);
+    let a3 = track("a3", &whole[c2..]).on_album("x", 3);
+    let after = track("t", &music(20.0, 4)).on_album("x", 4);
+    let mut p = Player::with_prefs(vec![before, a1, a2, a3, after], crossfade(4));
+    p.queue.as_album(1, 4);
+    p.queue_changed();
+    play_all(&mut p, 200_000);
+    assert_eq!(mixed(&p), ["s -> a1", "a3 -> t"], "{:?}", p.app.log);
+    // Between the mix into its first song and the mix out of its last, the album sample for sample.
+    let heard = p.sink.heard_samples();
+    let inner = &whole[frames(5.0) * 2..whole.len() - frames(5.0) * 2];
+    let from = heard.windows(64).position(|w| w == &inner[..64]).expect("the album is heard");
+    assert!(heard.len() >= from + inner.len() && heard[from..from + inner.len()] == *inner, "the album's songs one straight into the next");
+}
+
+#[test]
+fn an_album_played_as_one_but_shuffled_mixes() {
+    let whole = music(40.0, 11);
+    let cut = frames(21.0) * 2;
+    let a = track("a", &whole[..cut]).on_album("x", 1);
+    let b = track("b", &whole[cut..]).on_album("x", 2);
+    let mut p = Player::shuffled(vec![a, b], 1).as_album();
+    p.app.prefs = crossfade(6);
+    let first = p.queue.current().unwrap();
+    p.play_from(first);
+    assert!(p.run_to_end(90_000));
+    assert_eq!(mixed(&p).len(), 1, "{:?}", p.app.log);
+    assert!(!p.app.logged("same album in order"), "{:?}", p.app.log);
 }
 
 #[test]
