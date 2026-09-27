@@ -886,6 +886,30 @@ fn high_quality_output_runs_the_equalizer_on_all_24_bits() {
     assert!(worst(&cut) > 64.0, "the low byte is heard: {} 24-bit steps from the 16-bit song's", worst(&cut));
 }
 
+/// A 16-bit stereo WAV at `rate`.
+fn wav_at(samples: &[i16], rate: u32) -> Vec<u8> {
+    let mut w = wav(samples);
+    w[24..28].copy_from_slice(&rate.to_le_bytes());
+    w[28..32].copy_from_slice(&(rate * 4).to_le_bytes());
+    w
+}
+
+/// Gapless into a song at another rate: the device plays out the first song, opens again at the second's
+/// rate, and plays it sample for sample - not resampled to the rate the first song opened it at.
+#[test]
+fn a_song_at_another_rate_with_nothing_overlapping_opens_the_device_again_at_its_rate() {
+    let (a, b) = (music(6.0, 51), music(6.0, 52));
+    let files = vec![("a".to_string(), wav(&a), 6_000), ("b".to_string(), wav_at(&b, 48_000), (b.len() / 2) as i64 * 1000 / 48_000)];
+    let rig = Rig::build(files, sim::App::new(), Settings::default(), Extra::default());
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
+    let heard = rig.heard.lock().clone();
+    assert_eq!(rig.opened.load(Ordering::Relaxed), 2, "opened again for b");
+    assert_eq!(rig.card.lock().feed.as_ref().map(|f| f.format().rate), Some(48_000));
+    assert!(heard[..a.len()] == a[..], "a whole");
+    assert!(heard[a.len()..] == b[..], "b sample for sample, at 48 kHz");
+}
+
 #[test]
 fn a_device_that_takes_16_bit_only_gets_the_16_bit_chain() {
     let a = music24(8.0, 10);

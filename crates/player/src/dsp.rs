@@ -1201,55 +1201,6 @@ mod tests {
         assert!(worst(&c) < floor + 10.0, "dithered: none");
     }
 
-    /// What the chain costs per second of stereo music, 16-bit dithered against float, with the equalizer, a
-    /// compressor and the limiter on. `cargo test --release -p nori-player --lib chain_cost -- --ignored --nocapture`.
-    #[test]
-    #[ignore]
-    fn chain_cost() {
-        let secs = 60usize;
-        let x16: Vec<i16> = (0..48000 * secs * 2).map(|i| ((i as f64 * 0.0123).sin() * 12000.0 + (i as f64 * 0.77).sin() * 3000.0) as i16).collect();
-        let xf: Vec<f32> = x16.iter().map(|v| *v as f32 / 32768.0).collect();
-        let make = || {
-            let mut eq = Equalizer::new(48000, 2);
-            eq.configure_graphic(&[3.0, 5.0, 2.0, 0.0, -2.0, -4.0, 0.0, 2.0, 4.0, 6.0], -6.0, 0.0);
-            eq.configure_effects(&Effects { compressor: Some(crate::compressor::CompressorPreset::Strong.settings()), ..Default::default() });
-            eq.configure_output(0.0, false, -1.0, 120.0, 5.0);
-            eq
-        };
-        let chunk = 4096;
-        let t = std::time::Instant::now();
-        let mut eq = make();
-        let (mut y, mut b) = (vec![0i16; chunk], vec![0u8; chunk * 2]);
-        for c in x16.chunks_exact(chunk) {
-            eq.process_i16(c, &mut y);
-            for (d, v) in b.chunks_exact_mut(2).zip(&y) {
-                d.copy_from_slice(&v.to_le_bytes());
-            }
-        }
-        let i16_ms = t.elapsed().as_secs_f64() * 1000.0 / secs as f64;
-        let t = std::time::Instant::now();
-        let mut eq = make();
-        for c in x16.chunks_exact(chunk) {
-            eq.run(c, &mut y, |x| x as f64 / I16_SCALE, |v, _| (v * I16_SCALE).round().clamp(-32768.0, 32767.0) as i16);
-            for (d, v) in b.chunks_exact_mut(2).zip(&y) {
-                d.copy_from_slice(&v.to_le_bytes());
-            }
-        }
-        let rounded_ms = t.elapsed().as_secs_f64() * 1000.0 / secs as f64;
-        let t = std::time::Instant::now();
-        let mut eq = make();
-        let (mut y, mut b) = (vec![0f32; chunk], vec![0u8; chunk * 4]);
-        for c in xf.chunks_exact(chunk) {
-            eq.process_f32(c, &mut y);
-            for (d, v) in b.chunks_exact_mut(4).zip(&y) {
-                d.copy_from_slice(&v.to_le_bytes());
-            }
-        }
-        let f_ms = t.elapsed().as_secs_f64() * 1000.0 / secs as f64;
-        eprintln!("per second of 48 kHz stereo: 16-bit rounded {rounded_ms:.3} ms, dithered {i16_ms:.3} ms, float {f_ms:.3} ms");
-        std::hint::black_box(b);
-    }
-
     /// A flat chain hands 16-bit samples back as they came, never dithered.
     #[test]
     fn a_flat_16_bit_chain_is_bit_exact() {

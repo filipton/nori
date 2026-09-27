@@ -973,6 +973,8 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
             bridge: false,
             ids: Vec::new(),
         };
+        // The output follows a song that begins alone at another rate, rather than resampling it.
+        p.engine.follow_rate = true;
         p.ids = p.queue.read(|q| q.ids().to_vec());
         p.sync_queue();
         p

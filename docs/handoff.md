@@ -12,6 +12,24 @@ Apple's own App Store screenshots and the differences closed. What is left is li
 
 ## Recently closed
 
+- **A real resampler, used only where it must be.** `automix/resample.rs` was Catmull-Rom with no filter
+  (a 48 kHz song at 44.1 kHz folded everything above 22 kHz back; the worst spur of a bright chord 18 dB under
+  it). It is a polyphase windowed-sinc now: Kaiser (β for 110 dB), 144 taps at the lower rate (more for a
+  downsample), a row per step for a rational ratio of up to 512 steps (44.1 to 48 kHz: 160) and 256 rows
+  interpolated otherwise, tables made once per pair of rates and shared, nothing allocated per buffer.
+  Measured in its tests: passband flat to 0.45 fs within 0.0001 dB, stopband -110 to -120 dB (the
+  interpolated 44.1-to-47.999 kHz case -107 dB), a sweep to 0.42 fs off by -128 dB; rubato's FFT resampler
+  scores its worst spur at -149 dB on the same chord, ours at -127 dB. Cost on the Mac: 1.2 ms per second of
+  stereo for 44.1 <-> 48 kHz, 2.6 ms for 96 to 48, 5.2 ms for 192 to 44.1. It holds back half its taps
+  (under 2 ms), which are not heard when a converted stream ends (a mix, a reopening, the end of the queue).
+  A 16-bit output of it is dithered. And it runs less: the transition engine converts only a mix across
+  rates; a song that begins with nothing overlapping at another rate has the output opened again at its own
+  rate (`TransitionEngine::follow_rate`, `RingTrack::reopens`; a gap between the two songs, as bit-perfect
+  had), except one going on gaplessly from a song converted at the same rate (an album mixed into), where
+  the converter carries on across the join. On Android the AudioTrack then carries the song's own rate to
+  the system mixer, which resamples to the device's rate itself where that differs. AutoMix's tempo stretch
+  never used the resampler (it has its own, automix/stretch.rs). **To check on a device**: the gap when the
+  rate changes between songs, and that a crossfade across rates still mixes.
 - **High quality output keeps the effects; the 16-bit chain dithers.** "High quality output" was treated
   as bit-perfect (nori-player `policy.rs`): it stood the equalizer, AutoEQ, the effects, silence skipping and
   every transition down. Now only a bit-perfect DAC is "untouched"; high quality output (`AudioPolicy.float`)

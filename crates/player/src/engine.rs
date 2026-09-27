@@ -11,12 +11,15 @@
 //! on. Nothing here runs between transitions except one position check per buffer.
 //!
 //! When the two sides disagree on rate or channels, the incoming side is converted to the outgoing one
-//! and the mix runs at the outgoing rate. Beyond a transition the same rule holds for the whole queue:
-//! the downstream format is latched on the first PCM stream and every later stream is converted to
-//! it, so the output below is never rebuilt when the next song has another rate - rebuilding is a
-//! stop and a start, about half a second of silence right where the new song plays alone. The latch
-//! clears on reset and never engages for non-PCM streams or while the output is held bit-perfect,
-//! where the native format must reach the wire untouched; see [`TransitionEngine::lock_rate`].
+//! and the mix runs at the outgoing rate. The downstream format is latched on the first PCM stream, and a
+//! song mixed in at another rate is converted to it for as long as it plays. Where nothing overlaps - a
+//! gapless boundary into a song at another rate - the output below is opened again at the song's own
+//! rate instead ([`TransitionEngine::follow_rate`]): what it holds plays out first, and the new song is
+//! heard at its own rate, not resampled. The one exception is a song that goes on gaplessly from one
+//! converted at the same rate (the next track of an album mixed in): the converter carries on across the
+//! join, which stays seamless. The latch clears on reset and never engages for non-PCM streams or while
+//! the output is held bit-perfect, where the native format must reach the wire untouched; see
+//! [`TransitionEngine::lock_rate`].
 //!
 //! It also hands every decoded buffer of a not-yet-analysed track to the streaming analyser, so the
 //! tempo, beat grid and cue points come from audio the platform is decoding anyway.
@@ -283,9 +286,14 @@ pub struct TransitionEngine<C: Clone> {
     /// The id whose buffers the mix is consuming, so a further decode-ahead configure never re-arms it.
     mix_source_id: Option<String>,
     /// The downstream format stays on whatever the first PCM stream brought. False only while the
-    /// platform holds the output bit-perfect (or hi-res): then every stream passes through native
-    /// and the output below follows it.
+    /// platform holds the output bit-perfect: then every stream passes through native and the output
+    /// below follows it.
     pub lock_rate: bool,
+    /// A stream at another rate that begins with nothing overlapping it (a gapless boundary, a jump) moves
+    /// the latch: the output below opens again at its format rather than converting it, and only a mix is
+    /// converted. Off in a bare engine, which converts every stream to the latch (and is tested so); the
+    /// player sets it (`pipeline::Player::build`).
+    pub follow_rate: bool,
 
     /// The volume the buffers arriving now are heard at (their song's ReplayGain); see
     /// [`TransitionEngine::set_gain`]. The host may change it while its song plays, so every buffer goes
@@ -368,6 +376,7 @@ impl<C: Clone> TransitionEngine<C> {
             staged: VecDeque::new(),
             mix_source_id: None,
             lock_rate: true,
+            follow_rate: false,
             gain: 1.0,
             dither: crate::dither::Dither::new(),
             queue: VecDeque::new(),
@@ -516,7 +525,17 @@ impl<C: Clone> TransitionEngine<C> {
             return;
         }
         if self.phase == Phase::Pass && for_current {
-            // The stream whose buffers are flowing changed format: convert it from here on.
+            // The stream whose buffers are flowing changed format. Going on gaplessly from a stream converted
+            // at the same format, the converter carries on; with nothing overlapping, the output below
+            // follows it; otherwise it is converted from here on.
+            if self.carries_on(f) {
+                self.conv_id = id;
+                return;
+            }
+            if self.follow_rate {
+                self.follow(host, f, config);
+                return;
+            }
             if !self.arm_conversion(host, id, f) {
                 self.abandon_transition(host);
                 self.pending_config = Some((Some(f), config));
@@ -566,9 +585,25 @@ impl<C: Clone> TransitionEngine<C> {
         self.resampler.is_some()
     }
 
+    /// Whether a stream in `src` going on gaplessly from the one flowing is converted by the converter that
+    /// converts that one: the same format in, so its history is the new stream's past, and the join
+    /// seamless.
+    fn carries_on(&self, src: Format) -> bool {
+        self.resampler.is_some() && self.conv_in == Some(src)
+    }
+
+    /// Nothing overlaps the stream now beginning, at another format than the pinned one: the output below
+    /// opens again at its format once what it holds has played out, and the latch moves there.
+    fn follow<H: Host>(&mut self, host: &mut H, f: Format, config: C) {
+        self.drop_converter();
+        self.pending_config = Some((Some(f), config));
+        host.log(&format!("sink follows {} Hz x{}: nothing overlaps, so the output opens again rather than convert", f.rate, f.channels));
+    }
+
     /// The staged format of `id` (its buffers flow now): arm it, or drop the converter when it is
-    /// already at the pinned format. Anything staged for another id waits its turn.
-    fn arm_staged_for<H: Host>(&mut self, host: &mut H, id: Option<String>) {
+    /// already at the pinned format. Anything staged for another id waits its turn. `gapless`: nothing
+    /// is mixed into it, so the output below may follow its rate ([`TransitionEngine::follow_rate`]).
+    fn arm_staged_for<H: Host>(&mut self, host: &mut H, id: Option<String>, gapless: bool) {
         let mut found: Option<Staged<C>> = None;
         let mut keep = VecDeque::new();
         while let Some(s) = self.staged.pop_front() {
@@ -590,9 +625,14 @@ impl<C: Clone> TransitionEngine<C> {
             }
             return;
         }
-        // Already converting this stream: re-arming would drop the frames of history the
-        // interpolator carries and click.
-        if self.conv_id == id && self.conv_in == Some(f) {
+        // Already converting this stream, or going on gaplessly from one converted at the same format:
+        // re-arming would drop the history the filter carries and click.
+        if self.carries_on(f) && (self.conv_id == id || gapless) {
+            self.conv_id = id;
+            return;
+        }
+        if gapless && self.follow_rate {
+            self.follow(host, f, s.config);
             return;
         }
         if !self.arm_conversion(host, id, f) {
@@ -911,7 +951,7 @@ impl<C: Clone> TransitionEngine<C> {
                 // Its format was staged while it decoded ahead; arm it now, so the stretcher and the
                 // skip below measure the incoming track in its own domain and the mix runs at the pinned one.
                 if announced {
-                    self.arm_staged_for(host, self.current_id.clone());
+                    self.arm_staged_for(host, self.current_id.clone(), false);
                     self.mix_source_id = self.current_id.clone();
                 }
                 self.playing_id = Some(p.incoming_id.clone());
@@ -968,7 +1008,7 @@ impl<C: Clone> TransitionEngine<C> {
                 self.abandon_transition(host);
                 // No mix: the new track's buffers flow from here, so its staged format arms now.
                 self.playing_id = self.current_id.clone();
-                self.arm_staged_for(host, self.current_id.clone());
+                self.arm_staged_for(host, self.current_id.clone(), true);
                 self.mix_source_id = None;
                 self.awaiting_stream = true;
                 down.handle_discontinuity();
@@ -1151,7 +1191,7 @@ impl<C: Clone> TransitionEngine<C> {
     /// waits, and the mix stops counting as a mix.
     fn finish_conversion<H: Host>(&mut self, host: &mut H) {
         self.mix_source_id = None;
-        self.arm_staged_for(host, self.current_id.clone());
+        self.arm_staged_for(host, self.current_id.clone(), false);
     }
 
     /// Timestamps while mixing and stretching are the engine's own running clock, so a stretch never
@@ -1974,7 +2014,7 @@ mod tests {
         feed(&mut e, &mut d, &mut h, &tone(-4000, 6.0), 0, 3_000_000);
         assert!(d.discontinuities >= 2, "a resync into the mix and one back onto real timestamps: {}", d.discontinuities);
         let s = d.samples();
-        assert!(s[s.len() - 10..].iter().all(|&v| v == -4000), "after the stretch the track plays as it is");
+        assert!(s[s.len() - 10..].iter().all(|&v| (v + 4000).abs() <= 1), "after the stretch the track plays as it is");
         // Nothing runs on a garbage clock afterwards: timestamps stay non-negative and ordered from the resync on.
         let last = d.taken.iter().rev().take(20).map(|(_, p)| *p).collect::<Vec<_>>();
         assert!(last.windows(2).all(|w| w[0] >= w[1]), "{last:?}");
@@ -2070,11 +2110,13 @@ mod tests {
         e.configure(&mut d, &mut h, stream("b", Format { rate: 48_000, ..FMT }), 2);
         feed(&mut e, &mut d, &mut h, &tone_at(-8000, 48_000, 3.0), 0, 3_000_000);
         let frames = d.samples().len() / 2;
-        // 1 s alone, then b's 3 s, 2 of them mixed into the held ending: 4 s at 44.1 kHz.
+        // 1 s alone, then b's 3 s, 2 of them mixed into the held ending: 4 s at 44.1 kHz, less what the
+        // converter holds back to see ahead (under 2 ms).
         let want = RATE as usize * 4;
-        assert!(frames.abs_diff(want) < 64, "{frames} frames, not {want}");
+        assert!(frames.abs_diff(want) < 160, "{frames} frames, not {want}");
         let s = d.samples();
-        assert!(s[s.len() - 1000..].iter().all(|&v| v == -8000), "b plays alone after the fade");
+        // Converted, the song goes back to 16 bits dithered: a step either side.
+        assert!(s[s.len() - 1000..].iter().all(|&v| (v + 8000).abs() <= 1), "b plays alone after the fade");
         assert_eq!(d.configured, vec![1]);
     }
 
@@ -2096,7 +2138,69 @@ mod tests {
         let secs = frames as f64 / RATE as f64;
         assert!((6.8..7.05).contains(&secs), "{secs} s");
         let s = d.samples();
-        assert!(s[s.len() - 10..].iter().all(|&v| v == -4000), "after the stretch the track plays as it is");
+        assert!(s[s.len() - 10..].iter().all(|&v| (v + 4000).abs() <= 1), "after the stretch the track plays as it is");
+    }
+
+    #[test]
+    fn with_nothing_overlapping_the_output_follows_the_next_songs_rate() {
+        // Gapless into a 48 kHz song, the player's way: the output opens again at 48 kHz, and the song goes
+        // down as it is, not resampled to the 44.1 kHz the first song pinned.
+        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
+        e.follow_rate = true;
+        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        feed(&mut e, &mut d, &mut h, &tone(1000, 1.0), 0, 0);
+        e.configure(&mut d, &mut h, stream("b", F48), 2);
+        e.handle_discontinuity(&mut d, &mut h);
+        let before = taken(&d);
+        let b = sine(HZ, 48_000, 1.0, 0);
+        feed_in(&mut e, &mut d, &mut h, &b, F48, 1_000_000);
+        assert_eq!(d.configured, vec![1, 2], "opened again for b");
+        let got: Vec<u8> = d.taken.iter().flat_map(|t| t.0.iter().copied()).skip(before).collect();
+        assert!(got == b, "b sample for sample");
+        assert!(!h.log.iter().any(|l| l.contains("converting")), "{:?}", h.log);
+        // And mixed into, a song at another rate is still converted: the mix runs at one rate.
+        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
+        e.follow_rate = true;
+        h.plans.insert("a".into(), fade("b", 1_000_000));
+        d.position = POSITION_NOT_SET;
+        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        feed(&mut e, &mut d, &mut h, &tone(8000, 3.0), 0, 0);
+        e.handle_discontinuity(&mut d, &mut h);
+        e.configure(&mut d, &mut h, stream("b", F48), 2);
+        feed_in(&mut e, &mut d, &mut h, &tone_at(-8000, 48_000, 3.0), F48, 3_000_000);
+        assert_eq!(d.configured, vec![1], "the mix at a's rate");
+        assert!(h.log.iter().any(|l| l.contains("converting 48000 Hz x2 -> 44100 Hz x2")), "{:?}", h.log);
+    }
+
+    #[test]
+    fn a_song_that_goes_on_gaplessly_from_one_converted_at_its_rate_is_converted_without_a_seam() {
+        // a at 44.1 kHz mixes into b at 48 kHz (converted), and c, b's album-mate at 48 kHz, follows b with no
+        // mix: the converter carries on across the join rather than open the output again (a gap) or start
+        // over (its history lost, a click). A tone running through b into c comes out as one tone.
+        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
+        e.follow_rate = true;
+        h.plans.insert("a".into(), fade("b", 1_000_000));
+        d.position = POSITION_NOT_SET;
+        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        feed(&mut e, &mut d, &mut h, &tone(0, 3.0), 0, 0);
+        e.handle_discontinuity(&mut d, &mut h);
+        e.configure(&mut d, &mut h, stream("b", F48), 2);
+        let b = sine(HZ, 48_000, 4.0, 0);
+        feed_in(&mut e, &mut d, &mut h, &b, F48, 3_000_000);
+        e.configure(&mut d, &mut h, stream("c", F48), 3);
+        e.handle_discontinuity(&mut d, &mut h);
+        let from = d.samples().len() / 2;
+        feed_in(&mut e, &mut d, &mut h, &sine(HZ, 48_000, 1.0, 48_000 * 4), F48, 7_000_000);
+        assert_eq!(d.configured, vec![1], "no opening again between b and c");
+        assert_eq!(h.log.iter().filter(|l| l.contains("converting 48000")).count(), 1, "one converter, b's: {:?}", h.log);
+        // Around the join, no step bigger than the tone's own.
+        let left: Vec<f64> = d.samples().chunks_exact(2).map(|c| c[0] as f64).collect();
+        let own = 8000.0 * std::f64::consts::TAU * HZ / RATE as f64;
+        let near = &left[from - 2_000..from + 2_000];
+        let step = near.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f64::max);
+        assert!(step <= own * 1.01 + 2.0, "a step of {step:.0} at the join, the tone's own {own:.0}");
+        let hz = last_second_hz(&d, FMT);
+        assert!((hz - HZ).abs() < 1.0, "c at its own pitch, converted: {hz}");
     }
 
     // ---- a beat-matched mix's tempo, and what is left of it after a seek, a skip or a pause ----

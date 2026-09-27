@@ -249,6 +249,67 @@ fn the_graphic_equalizer_and_the_effects_allocate_nothing() {
     assert_eq!(n, 0, "float");
 }
 
+/// The chain's cost per buffer, 16-bit (dithered) against float, as the sink runs it: bytes in, samples,
+/// the chain, bytes out, over reused buffers (and required to allocate nothing). Ten seconds of 48 kHz stereo
+/// through a ten-band graphic equalizer, a compressor and the limiter, the best of five runs. Timing, so off
+/// by default: `cargo test --release -p nori-player --lib chain_cost -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn chain_cost() {
+    const SECS: usize = 10;
+    let x16: Vec<u8> = (0..48_000 * SECS * 2).flat_map(|i| ((((i as f64 * 0.0123).sin() * 12000.0) + (i as f64 * 0.77).sin() * 3000.0) as i16).to_le_bytes()).collect();
+    let xf: Vec<u8> = x16.chunks_exact(2).flat_map(|c| (i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0).to_le_bytes()).collect();
+    let make = || {
+        let mut eq = Equalizer::new(48_000, 2);
+        eq.configure_graphic(&[3.0, 5.0, 2.0, 0.0, -2.0, -4.0, 0.0, 2.0, 4.0, 6.0], -6.0, 0.0);
+        eq.configure_effects(&crate::dsp::Effects { compressor: Some(crate::compressor::CompressorPreset::Strong.settings()), ..Default::default() });
+        eq.configure_output(0.0, false, -1.0, 120.0, 5.0);
+        eq
+    };
+    // A buffer of 4096 frames, as the engine's are.
+    const FRAMES: usize = 4096;
+    let (mut si, mut so, mut fi, mut fo) = (vec![0i16; FRAMES * 2], vec![0i16; FRAMES * 2], vec![0f32; FRAMES * 2], vec![0f32; FRAMES * 2]);
+    let (mut out16, mut outf) = (vec![0u8; FRAMES * 4], vec![0u8; FRAMES * 8]);
+    let mut best = (f64::MAX, f64::MAX);
+    for _ in 0..5 {
+        let mut eq = make();
+        let mut ms = 0.0;
+        let n = allocations(|| {
+            let t = std::time::Instant::now();
+            for c in x16.chunks_exact(FRAMES * 4) {
+                for (d, b) in si.iter_mut().zip(c.chunks_exact(2)) {
+                    *d = i16::from_le_bytes([b[0], b[1]]);
+                }
+                eq.process_i16(&si, &mut so);
+                for (d, v) in out16.chunks_exact_mut(2).zip(&so) {
+                    d.copy_from_slice(&v.to_le_bytes());
+                }
+            }
+            ms = t.elapsed().as_secs_f64() * 1000.0;
+        });
+        assert_eq!(n, 0, "16-bit");
+        best.0 = best.0.min(ms);
+        let mut eq = make();
+        let n = allocations(|| {
+            let t = std::time::Instant::now();
+            for c in xf.chunks_exact(FRAMES * 8) {
+                for (d, b) in fi.iter_mut().zip(c.chunks_exact(4)) {
+                    *d = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+                }
+                eq.process_f32(&fi, &mut fo);
+                for (d, v) in outf.chunks_exact_mut(4).zip(&fo) {
+                    d.copy_from_slice(&v.to_le_bytes());
+                }
+            }
+            ms = t.elapsed().as_secs_f64() * 1000.0;
+        });
+        assert_eq!(n, 0, "float");
+        best.1 = best.1.min(ms);
+    }
+    std::hint::black_box((&out16, &outf));
+    eprintln!("10 s of 48 kHz stereo: 16-bit dithered {:.1} ms, float {:.1} ms, float/16-bit {:.3}", best.0, best.1, best.1 / best.0);
+}
+
 #[test]
 fn float_silence_skipping_allocates_nothing_once_warm() {
     let x: Vec<u8> = tone(20.0, 440.0).chunks_exact(2).enumerate().flat_map(|(i, c)| {
