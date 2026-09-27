@@ -157,6 +157,8 @@ if want crashes; then section "crashes and ANRs"
   check "no ANR of $pkg since $since ($anrs)" test "${anrs:-0}" = 0
   errs=$(run_errors)
   check "no playback errors in the whole run's log ($errs)" test "$errs" -eq 0
+  # Which ones: the run's log is gone once the script ends.
+  [ "$errs" -eq 0 ] || grep -E "rust player error: " "$runlog" | head -5 | sed 's/^/        /'
 fi
 restore_settings
 finish
