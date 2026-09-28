@@ -183,6 +183,17 @@ as its slowest test or its total over the cores, whichever is more. The binaries
 | crates/engine `--test one_fetch`, `--test core` | 1 each | 1-2 s | one core and one queue per process, so a binary each |
 | everything else | about 600 | under 1.3 s a binary | |
 
+### The host perf report
+
+`tools/perf-host.sh [rev] [runs]` plays minutes of music through the engine on the test's clock, for this
+checkout and for another revision (the latest release tag unless named), and prints per minute of music:
+the engine's wakes (what keeps a phone's CPU from deep idle), the process's CPU time and its allocations,
+for plain playback, the equalizer on, and crossfades. The bench is `crates/engine/tests/perf_bench.rs`, an
+ignored test; the script gives an older revision its files. No device: it answers "did a change make the
+player wake, work or allocate more", on the machine it runs on, and only a comparison made there means
+anything (the allocated bytes include the test card's own record of every sample, alike on both sides). The
+battery and deep idle of a real phone stay the owner's `tools/bench.sh`.
+
 ### What each crate's tests cover
 
 | Crate | What is checked |

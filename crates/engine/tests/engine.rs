@@ -2552,3 +2552,5 @@ fn with_the_equalizer_on_the_chain_stays_in_the_path_whatever_else_the_settings_
     }
     rig.engine.stop();
 }
+
+include!("perf_bench.rs");

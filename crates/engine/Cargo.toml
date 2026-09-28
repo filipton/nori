@@ -48,6 +48,8 @@ nori-player = { path = "../player", features = ["synth"] }
 nori-look = { path = "../look" }
 # tests/core.rs: a transport for the core that is never asked.
 async-trait = "0.1"
+# tests/perf_bench.rs: the process's CPU time.
+libc = "0.2"
 
 # The measuring thread's priority, lowered below everything else.
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
