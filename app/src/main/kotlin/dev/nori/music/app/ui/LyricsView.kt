@@ -525,9 +525,14 @@ private fun LyricsBody(vm: PlayerViewModel, found: dev.nori.music.data.FoundLyri
         // Whose words these are and whether they are timed, in the core's words; None: no corner at all.
         val credit = remember(found.source, lyrics.synced) { say.lyricsCredit(found.source, lyrics.synced) }
         val open = tuning || nudgeMs != 0L
-        if (credit != null) androidx.compose.material3.Surface(
-            onClick = { if (lyrics.synced) tuning = !tuning },
-            enabled = lyrics.synced,
+        // With the timing button turned off (Settings, Lyrics) the corner does not open, and the server's own
+        // timed words - whose corner only ever said "Timing" - have none; a service's name stays, as words.
+        // A nudge already made keeps it, so it can still be put back.
+        val nudges = prefs.lyricsTimingButton || nudgeMs != 0L
+        val shown = if (nudges || found.source != dev.nori.music.ffi.settings.LyricsOrigin.SERVER) credit else null
+        if (shown != null) androidx.compose.material3.Surface(
+            onClick = { if (lyrics.synced && nudges) tuning = !tuning },
+            enabled = lyrics.synced && nudges,
             shape = PillShape,
             // The open pill's plate is drawn rather than composed, so the page changing colour under it
             // only redraws it.
@@ -543,7 +548,7 @@ private fun LyricsBody(vm: PlayerViewModel, found: dev.nori.music.data.FoundLyri
                 // came without timings, that they did. Unsung words are all one brightness and a tap on
                 // one goes nowhere, which looks broken unless the corner says why.
                 LookText(
-                    credit,
+                    shown,
                     dim, Modifier.padding(horizontal = 8.dp), style = MaterialTheme.typography.labelSmall,
                 )
                 if (open) {

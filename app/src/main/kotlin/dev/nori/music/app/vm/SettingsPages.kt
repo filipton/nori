@@ -235,6 +235,7 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("lyrics", R.string.settings_lyrics_sweep, R.string.settings_hint_lyrics_sweep),
     Triple("lyrics", R.string.settings_lyrics_size, 0),
     Triple("lyrics", R.string.settings_lyrics_translation, R.string.settings_hint_lyrics_translation),
+    Triple("lyrics", R.string.settings_lyrics_timing_button, R.string.settings_hint_lyrics_timing_button),
     Triple("lyrics", R.string.settings_lyrics_screen_on, R.string.settings_hint_lyrics_screen_on),
     Triple("lyrics", R.string.settings_lyrics_online, R.string.settings_hint_lyrics_online),
     Triple("lyrics", R.string.settings_lyrics_words, R.string.settings_hint_lyrics_words),
@@ -736,6 +737,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
                 }
             },
             toggle("lyricsTranslation", R.string.settings_lyrics_translation, R.string.settings_lyrics_translation_detail),
+            toggle("lyricsTimingButton", R.string.settings_lyrics_timing_button, R.string.settings_lyrics_timing_button_detail),
             toggle("lyricsKeepScreenOn", R.string.settings_lyrics_screen_on, R.string.settings_lyrics_screen_on_detail),
         )
         // The switch for looking things up at all lives in Library, but somebody looking for lyrics looks

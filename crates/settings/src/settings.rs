@@ -507,6 +507,10 @@ pub struct StoredPrefs {
     pub lyrics_size: i32,
     #[setting("lyricsTranslation", FLAG, default = true, show = K::Switch)]
     pub lyrics_translation: bool,
+    /// The corner under the lyrics that opens the buttons nudging their timing; off, it is left out (a service's
+    /// name stays, as plain words).
+    #[setting("lyricsTimingButton", FLAG, default = true, show = K::Switch)]
+    pub lyrics_timing_button: bool,
     #[setting("lyricsKeepScreenOn", FLAG, default = true, show = K::Switch)]
     pub lyrics_keep_screen_on: bool,
     /// Look lyrics up online when the server has no timed ones; needs `third_party_lookups`. Stored as

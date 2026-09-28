@@ -140,6 +140,7 @@ fn sample() -> StoredPrefs {
         better_lyrics_key: "better".into(),
         theme: ThemeMode::Dark,
         hide_status_bar: HideStatusBar::Always,
+        lyrics_timing_button: false,
         keep_awake: KeepAwake::SidewaysCharging,
         amoled: true,
         player_colours: false,
