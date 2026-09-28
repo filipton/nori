@@ -12,7 +12,6 @@
 use std::collections::{HashMap, HashSet};
 
 use nori_model::Song;
-use parking_lot::Mutex;
 use rusqlite::Connection;
 
 use super::{discover, listen_again, quick_picks, top};
@@ -201,10 +200,6 @@ pub struct Board {
     /// None until the app has handed the starred songs over once.
     pub favourites: Option<Vec<Song>>,
 }
-
-/// One board per core, told apart by the core's address and its database file. A core that is gone
-/// leaves its address free: the next one to get it replaces its board rather than inheriting it.
-pub static BOARDS: Mutex<Vec<(usize, String, Board)>> = Mutex::new(Vec::new());
 
 /// A draw that fails reads as an empty one, which then falls back to the server's random songs.
 pub fn draw(c: &Connection, kind: Kind, seed: u64, now_ms: i64) -> Vec<Song> {
