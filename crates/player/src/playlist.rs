@@ -77,11 +77,28 @@ pub struct Playlist {
     /// Bumped only when the songs listed change (not their play order or the current one), so a reader
     /// that holds the songs already need not copy them again.
     list_rev: u64,
+    /// The last song the user took out on its own, as it was, for an undo ([`Playlist::remove_undoably`],
+    /// [`Playlist::restore_taken`]). Gone with a new list: an undo never reaches into another queue.
+    taken: Option<Taken>,
 }
 
 impl Playlist {
     pub const fn new() -> Self {
-        Playlist { ids: Vec::new(), hand: Vec::new(), runs: Vec::new(), last_run: 0, order: Vec::new(), shuffling: false, lit: false, cur: None, parked: None, repeat: REPEAT_OFF, rev: 0, list_rev: 0 }
+        Playlist {
+            ids: Vec::new(),
+            hand: Vec::new(),
+            runs: Vec::new(),
+            last_run: 0,
+            order: Vec::new(),
+            shuffling: false,
+            lit: false,
+            cur: None,
+            parked: None,
+            repeat: REPEAT_OFF,
+            rev: 0,
+            list_rev: 0,
+            taken: None,
+        }
     }
 
     pub fn ids(&self) -> &[String] {
@@ -241,6 +258,7 @@ impl Playlist {
         let n = ids.len();
         self.ids = ids;
         self.list_rev += 1;
+        self.taken = None;
         self.hand = vec![Hand::No; n];
         self.runs = vec![0; n];
         self.parked = None;
@@ -375,6 +393,21 @@ impl Playlist {
             self.order.clear();
         }
         self.rev += 1;
+    }
+
+    /// Songs `from..to` taken out by the user: one song on its own is remembered as it was, for
+    /// [`Playlist::restore_taken`]; more at once leave nothing to undo.
+    pub fn remove_undoably(&mut self, from: usize, to: usize) {
+        self.taken = if to == from + 1 { self.taken(from) } else { None };
+        self.remove(from, to);
+    }
+
+    /// Undo: the song `id`, when it is the one last taken out on its own ([`Playlist::remove_undoably`]),
+    /// put back as [`Playlist::restore`] does. Where it went in the list; none when it is not that song
+    /// (nothing taken out, another song since, a new list), which stays remembered.
+    pub fn restore_taken(&mut self, id: &str) -> Option<usize> {
+        let t = self.taken.take_if(|t| t.id == id)?;
+        Some(self.restore(&t))
     }
 
     /// The song at `at` as it is now, to be put back with [`Playlist::restore`] after it is removed.

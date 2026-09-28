@@ -4,7 +4,7 @@
 //! planner's window, ReplayGain, the queue as the app lists it, the queue saved for next time - reads
 //! it here, without the player's list crossing over.
 
-use nori_player::playlist::{Playlist, Splice, Taken};
+use nori_player::playlist::{Playlist, Splice};
 use parking_lot::Mutex;
 
 // Public, like model.rs's, since the uniffi scaffolding in crates/android names them by a public path.
@@ -28,13 +28,8 @@ static PUT_BACK: Mutex<Option<(Vec<String>, Vec<u32>)>> = Mutex::new(None);
 static ORIGIN: Mutex<Option<PageOrigin>> = Mutex::new(None);
 /// Moves each time a new queue is set, so a page asks again whether it is the one playing only then.
 static ORIGIN_GEN: AtomicU32 = AtomicU32::new(0);
-/// The last song taken out on its own, as it was, for an undo to put back ([`playlist_restore`]). Gone
-/// with a new queue: an undo never reaches into another one.
-static TAKEN: Mutex<Option<Taken>> = Mutex::new(None);
-
 fn set_origin(origin: Option<PageOrigin>) {
     *ORIGIN.lock() = origin;
-    *TAKEN.lock() = None;
     ORIGIN_GEN.fetch_add(1, Ordering::Release);
 }
 
@@ -245,8 +240,7 @@ pub fn playlist_take(at: u32, ids: Vec<String>, hands: Vec<Hand>, from: Option<P
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn playlist_remove(from: u32, to: u32) -> QueueChange {
     edit(|p| {
-        *TAKEN.lock() = if to == from + 1 { p.taken(from as usize) } else { None };
-        p.remove(from as usize, to as usize);
+        p.remove_undoably(from as usize, to as usize);
         p.current()
     })
 }
@@ -258,8 +252,7 @@ pub fn playlist_remove(from: u32, to: u32) -> QueueChange {
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn playlist_restore(id: String) -> QueueChange {
     let mut p = LIST.lock();
-    let t = TAKEN.lock().take_if(|t| t.id == id);
-    let at = t.map(|t| p.restore(&t));
+    let at = p.restore_taken(&id);
     change(&p, at)
 }
 
