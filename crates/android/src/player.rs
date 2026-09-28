@@ -1384,7 +1384,8 @@ extern "system" fn create(mut env: JNIEnv, _: JClass, sdk: jint, float: jboolean
     // Kotlin tells the volume once loudness compensation is watched (VolumeWatch): all the way up until then.
     let volume = Arc::new(OutputVolume::default());
     let sound = nori_core::settings_store::settings_current().map(|p| settings(&p, volume.db())).unwrap_or_default();
-    let config = Config { memory_mb: memory_mb.max(16) as u32, settings: sound, ..Config::default() };
+    let watch = Some(nori_engine::watch::Watcher(Arc::new(crate::PerfWatch)));
+    let config = Config { memory_mb: memory_mb.max(16) as u32, settings: sound, watch, ..Config::default() };
     let events = Arc::new(Events::default());
     let tell = events.clone();
     // Offload is Android 10's: before it the engine has no such output, and plays everything on the CPU.

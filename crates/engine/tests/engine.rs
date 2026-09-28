@@ -215,6 +215,8 @@ struct Extra {
     depth: Option<ShallowDepth>,
     /// The app's memory class, which sizes how much of a song is held in memory: 256 MB unless set.
     memory_mb: Option<u32>,
+    /// A client keeping watch over the engine.
+    watch: Option<Arc<dyn nori_engine::watch::Watch>>,
 }
 
 struct Songs {
@@ -417,7 +419,7 @@ impl Rig {
 
     /// Songs as (id, file, length ms), played through a device that takes float or 16-bit samples.
     fn build(files: Vec<(String, Vec<u8>, i64)>, app: impl App + Send + 'static, settings: Settings, extra: Extra) -> Rig {
-        let Extra { float, skip, server, store, idle_release_ms, pace, resizes, depth, memory_mb } = extra;
+        let Extra { float, skip, server, store, idle_release_ms, pace, resizes, depth, memory_mb, watch: watching } = extra;
         for (id, f, _) in &files {
             server.files.lock().push((id.clone(), Arc::new(f.clone())));
         }
@@ -450,7 +452,7 @@ impl Rig {
         let events = Arc::new(Mutex::new(Vec::new()));
         let seen = events.clone();
         let library = Songs { server: server.clone(), lengths, store };
-        let mut config = Config { memory_mb: memory_mb.unwrap_or(256), settings, ..Config::default() };
+        let mut config = Config { memory_mb: memory_mb.unwrap_or(256), settings, watch: watching.map(nori_engine::watch::Watcher), ..Config::default() };
         config.idle_release_ms = idle_release_ms.unwrap_or(config.idle_release_ms);
         let engine = Engine::start_on(library, app, queue, Box::new(out), None, config, clock.clone(), move |e| seen.lock().push(e));
         let time = Stepper::new(clock, card.clone());
@@ -2477,25 +2479,39 @@ fn a_crossfade_switched_on_while_paused_near_the_end_mixes_when_the_music_comes_
     assert!((overlap - 6.0).abs() < 0.2, "six seconds of overlap, not {overlap:.2}: {:?}", live.0.lock().log);
 }
 
-/// What the watch hook was told, by every engine this test binary runs while it is on.
-static SEEN: Mutex<Vec<(std::thread::ThreadId, nori_engine::watch::Seen)>> = Mutex::new(Vec::new());
-static WATCHING: AtomicBool = AtomicBool::new(false);
+/// A client keeping watch over one engine: whether it wants to be told, and what it was.
+#[derive(Default)]
+struct Watching {
+    on: AtomicBool,
+    seen: Mutex<Vec<nori_engine::watch::Seen>>,
+}
+
+impl nori_engine::watch::Watch for Watching {
+    fn wanted(&self) -> bool {
+        self.on.load(Ordering::Relaxed)
+    }
+
+    fn seen(&self, seen: &nori_engine::watch::Seen) {
+        self.seen.lock().push(seen.clone());
+    }
+}
 
 #[test]
 fn a_client_keeping_watch_is_told_what_each_wake_saw_and_nothing_while_it_does_not_want_it() {
-    nori_engine::watch::install(nori_engine::watch::Hook { wanted: || WATCHING.load(Ordering::Relaxed), seen: |s| SEEN.lock().push((std::thread::current().id(), s.clone())) });
     let a = music(90.0, 71);
-    let songs: [(&str, &[i16]); 1] = [("a", &a)];
-    let rig = Rig::new(&songs, prefs_off(), Settings::default());
+    let files = vec![("a".to_string(), wav(&a), 90_000)];
+    let watching = Arc::new(Watching::default());
+    let mut app = sim::App::new();
+    app.prefs = prefs_off();
+    let rig = Rig::build(files, app, Settings::default(), Extra { watch: Some(watching.clone()), ..Extra::default() });
     rig.engine.play_at(0, 0);
     assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2 * 2));
-    WATCHING.store(true, Ordering::Relaxed);
+    watching.on.store(true, Ordering::Relaxed);
     // The engine wakes as the device's buffer runs down, a burst at a time: a minute of music is several.
     assert!(rig.wait_for(30, |r| r.heard.lock().len() > RATE as usize * 2 * 60));
-    WATCHING.store(false, Ordering::Relaxed);
-    // Other tests' engines may be told too while it is on, each on its own thread: only this one's looks count.
-    let me = rig.time.clock.engine_thread().expect("the engine slept on the test's clock");
-    let mine = || SEEN.lock().iter().filter(|s| s.0 == me).map(|s| s.1.clone()).collect::<Vec<_>>();
+    watching.on.store(false, Ordering::Relaxed);
+    // This engine's looks only: the watch is its own.
+    let mine = || watching.seen.lock().clone();
     let played: Vec<_> = mine().into_iter().filter(|s| s.playing && s.index == Some(0) && !s.offloaded).collect();
     assert!(played.windows(2).all(|w| w[1].now_ms >= w[0].now_ms), "in the engine's own time: {played:?}");
     let moved = played.len() >= 2 && played.last().unwrap().position_ms > played[0].position_ms && played.iter().any(|s| s.in_output_ms > 0);

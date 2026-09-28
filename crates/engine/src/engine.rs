@@ -247,11 +247,13 @@ pub struct Config {
     /// Paused this long, the output and the song's bytes are let go, ms
     /// (`nori_player::transport::IDLE_RELEASE_MS`).
     pub idle_release_ms: i64,
+    /// Told what each wake of the engine's thread saw, for a client keeping watch ([`crate::watch`]).
+    pub watch: Option<crate::watch::Watcher>,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { memory_mb: 256, settings: Settings::default(), idle_release_ms: IDLE_RELEASE_MS }
+        Config { memory_mb: 256, settings: Settings::default(), idle_release_ms: IDLE_RELEASE_MS, watch: None }
     }
 }
 
@@ -385,7 +387,7 @@ impl Engine {
                 let songs = Sources::new(library, load_control(config.memory_mb), me);
                 let mut player = Player::build(songs, queue, app, RingTrack::new(output));
                 player.shallow_us = SHALLOW_US;
-                Worker::new(player, offload.map(Offload::new), rx, events, shared, config.settings, config.idle_release_ms, clock).run();
+                Worker::new(player, offload.map(Offload::new), rx, events, shared, config.settings, config.idle_release_ms, config.watch, clock).run();
             })
             .expect("a thread for the engine");
         let thread = join.thread().clone();
@@ -586,6 +588,8 @@ struct Worker<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> {
     next_position: i64,
     /// Paused: when the output is let go, and after that, where the player was.
     idle_release_ms: i64,
+    /// The client keeping watch, if one does ([`crate::watch`]).
+    watch: Option<crate::watch::Watcher>,
     idle_at: Option<i64>,
     released: Option<(usize, i64)>,
     releases: u64,
@@ -738,7 +742,7 @@ const REMAKE_HOLD_US: i64 = 1_000_000;
 
 impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E, C> {
     #[allow(clippy::too_many_arguments)]
-    fn new(p: Player<Sources<L>, RingTrack, A, Q>, off: Option<Offload>, rx: Receiver<Command>, events: E, status: Arc<Mutex<Status>>, settings: Settings, idle_release_ms: i64, clock: C) -> Self {
+    fn new(p: Player<Sources<L>, RingTrack, A, Q>, off: Option<Offload>, rx: Receiver<Command>, events: E, status: Arc<Mutex<Status>>, settings: Settings, idle_release_ms: i64, watch: Option<crate::watch::Watcher>, clock: C) -> Self {
         let ids = p.queue.read(|q| q.ids().to_vec());
         let mut w = Worker {
             p,
@@ -762,6 +766,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             positions: None,
             next_position: 0,
             idle_release_ms,
+            watch,
             idle_at: None,
             released: None,
             releases: 0,
@@ -2338,7 +2343,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
 
     /// What this wake saw, for a client keeping watch ([`crate::watch`]); nothing unless one wants it.
     fn watch(&mut self, now: i64) {
-        crate::watch::look(|| {
+        crate::watch::look(self.watch.as_ref(), || {
             let offloaded = self.offloading();
             let in_output_ms = match self.off.as_ref() {
                 Some(o) if offloaded => o.in_track_us() / 1000,

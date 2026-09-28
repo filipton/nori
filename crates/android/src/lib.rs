@@ -122,28 +122,35 @@ fn engine_memory() -> nori_perf::memory::EngineMemory {
     }
 }
 
-/// The engine tells the perf build's invariant watch what each wake of its thread saw
-/// (nori_engine::watch, nori_perf::invariants): asked of an atomic per wake, and only while it is on.
+/// The perf build's invariant watch hears what a silent break needs: what media3's stream cache keeps of the
+/// song. What each engine's wakes saw it hears through [`PerfWatch`], which every player is made with.
 fn watch() {
-    nori_engine::watch::install(nori_engine::watch::Hook {
-        wanted: nori_perf::invariants::on,
-        seen: |s| {
-            nori_perf::invariants::engine_seen(&nori_perf::invariants::EngineLook {
-                now_ms: s.now_ms,
-                playing: s.playing,
-                offloaded: s.offloaded,
-                index: s.index,
-                id: s.id.as_deref(),
-                position_ms: s.position_ms,
-                in_output_ms: s.in_output_ms,
-                quiet_ms: s.quiet_ms,
-                output_open: s.output_open,
-                state: &s.state,
-            })
-        },
-    });
-    // A silent break says what media3's stream cache keeps of the song.
     nori_perf::invariants::describe_disk(player::disk_words);
+}
+
+/// Each engine tells the perf build's invariant watch what every wake of its thread saw (nori_engine::watch,
+/// nori_perf::invariants): asked of an atomic per wake, and only while it is on.
+pub(crate) struct PerfWatch;
+
+impl nori_engine::watch::Watch for PerfWatch {
+    fn wanted(&self) -> bool {
+        nori_perf::invariants::on()
+    }
+
+    fn seen(&self, s: &nori_engine::watch::Seen) {
+        nori_perf::invariants::engine_seen(&nori_perf::invariants::EngineLook {
+            now_ms: s.now_ms,
+            playing: s.playing,
+            offloaded: s.offloaded,
+            index: s.index,
+            id: s.id.as_deref(),
+            position_ms: s.position_ms,
+            in_output_ms: s.in_output_ms,
+            quiet_ms: s.quiet_ms,
+            output_open: s.output_open,
+            state: &s.state,
+        })
+    }
 }
 
 /// Every panic, on any thread of the library, caught or not, is said in the app's log with where it
