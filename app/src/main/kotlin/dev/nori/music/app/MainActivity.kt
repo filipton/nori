@@ -30,9 +30,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        // A turn of the phone is the app's to show (App: the tab glyphs turn, the page fades into its new
-        // layout); the system's own turn spun a picture of the whole screen round, bar and all.
-        window.attributes = window.attributes.apply { rotationAnimation = android.view.WindowManager.LayoutParams.ROTATION_ANIMATION_SEAMLESS }
+        // A turn of the phone dissolves the old layout into the new one rather than spinning a picture of the
+        // whole screen round, bar and all; the tab glyphs then turn upright in place (App). Seamless, as this
+        // was, is not honoured with the status bar shown, and the system cut to black instead.
+        window.attributes = window.attributes.apply { rotationAnimation = android.view.WindowManager.LayoutParams.ROTATION_ANIMATION_CROSSFADE }
         if (Build.VERSION.SDK_INT >= 33 && savedInstanceState == null) askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         // The composition runs under the app's own animation speed, not Android's: see AppMotion.
         @OptIn(androidx.compose.ui.InternalComposeUiApi::class)
