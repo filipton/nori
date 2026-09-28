@@ -6,6 +6,52 @@ hand. Versions follow [semantic versioning](https://semver.org).
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-09-28
+
+### Added
+
+- **desktop:** A native Slint desktop player over the core and nori-engine, laid out as the terminal client
+- **desktop:** The window looks and behaves like Apple Music on macOS: Skia on Metal, the system's sidebar blur, SF Pro, a floating player, Now Playing, the native menu bar
+- **desktop:** The sidebar runs the window's full height over the system's sidebar material, its rows and the page where they were
+- **desktop:** Settings, synced lyrics, long lists that open at once, a smooth seek bar and Apple's animations
+- **desktop:** The player floats on the system's Liquid Glass, artist pages open on their picture, the sidebar takes the page's colour
+- **desktop:** Music's own colours measured from the Mac, album headers and buttons as Music has them, the player at its size
+- **desktop:** Our own Liquid Glass: the window is drawn by our compositor, the page seen through glass shaders under the sidebar and the player
+- **desktop:** The sidebar's glass is lit by what lies beside it on the page, softly and well into the pane
+- **desktop:** Settings centred in four tabs as the Mac's own, the sidebar's edge soft
+- **desktop:** Lyrics and the queue docked on the right as Music's; Now Playing rebuilt, its lyrics sharp only on the line sung; bigger icons
+- **desktop:** Every setting the Android app has that a Mac can use, in its words: an equalizer page, lyrics sources in order, accounts
+- **desktop:** A Find field in the toolbar, Artists in two columns, the playlist as a table, an account row
+- **desktop:** Lyrics fill word by word and a click on a line seeks to it, the queue's rows fold and open, the traffic lights level with the toolbar as Music's
+- **desktop:** The line sung as the Android app draws it: a soft-edged fill, each word and syllable rising as it is sung, a held note swelling
+- On its side the app puts the tabs on a floating rail at the left, Search on its own below them
+- On its side the player puts the cover, lyrics or queue on the left and the controls on the right
+- On its side an album, artist or playlist page shows the cover and buttons on the left and the songs on the right
+- On its side the tab rail stands at the right edge and pages keep clear of the camera's punch hole
+- On its side the player's cover goes soft at its right edge into a wash under the controls, and lyrics and queue keep clear of the punch hole
+- Album, artist, playlist and mix pages drop the back button over the cover, the back gesture leaves them
+- On its side an album, artist or playlist page shows its cover as the player does, soft to the page from the screen's edge, with the name and buttons beside it
+- On its side the tab bar keeps its size and order and only its glyphs turn, and a tinted page leaves the screen's edges with it
+
+### Fixed
+
+- **desktop:** The player's glass shows over a plain page, as a faint lit pane with a rim
+- **desktop:** The sidebar's light from the page is faint and fades within a few dozen points of its edge
+- **desktop:** The sidebar's light is a soft glow, gathered from the page blurred until no edge is left
+- **desktop:** The player's glass is nearly invisible, as Music's: a neutral veil, no colour of its own, a faint rim
+- **desktop:** The player's glass is clear as Music's: a light blur, the page's own colours, a thin quiet rim
+- **desktop:** Covers on screen are never let go, so they stop flashing, and the ones on screen load first
+- **desktop:** A word-timed line fades from white as the next one is sung, rather than dimming at once
+- **desktop:** American spelling, as the app and the terminal client have it
+- Shuffle albums keeps each album gapless instead of mixing between its songs
+- Turning the phone keeps the player, its lyrics and the text size as they were
+- On its side a page's cover fits beside the buttons, Play fits Pause, and the library grid keeps its upright card size
+- On its side the player's status bar shade fades with the cover's soft edge instead of ending on a line
+- On its side a page's cover is a card level with the first song, clear of the back button, and the artist page no longer crashes
+- On its side the player keeps its title and controls in place for the lyrics, and clear of a punch hole on the right
+- On its side the now playing bar has no wash under it, which ran over the cover and stopped at the camera
+- On its side the now playing bar sits level with the foot of the tab rail
+
 ## [0.4.5] - 2026-09-27
 
 ### Fixed
