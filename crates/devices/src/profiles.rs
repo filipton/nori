@@ -131,9 +131,14 @@ pub fn loaded(sound: SoundSettings, current: &SoundSettings, per_output: bool, l
 }
 
 /// What an output's own name says about the headphones behind it: "Bluetooth: LE_WH-1000XM5" is
-/// "LE_WH-1000XM5". Empty for the speaker and anything else without a name of its own.
-pub fn device_name(output: &str) -> &str {
-    output.split_once(": ").map_or("", |(_, n)| n)
+/// "LE_WH-1000XM5". None for the speaker, wired headphones, a dock or HDMI (no headphones of a name of their
+/// own), and a USB or Bluetooth device that gave no name (its key's placeholder is no model to look for).
+pub fn headphones_name(output: &str) -> Option<&str> {
+    use nori_player::outputs::{parts, OutputPort};
+    match parts(output) {
+        (OutputPort::Usb | OutputPort::Bluetooth, name) => name.filter(|n| !n.trim().is_empty()),
+        _ => None,
+    }
 }
 
 /// Every output seen, the one playing now included, each with the sound it gets.
