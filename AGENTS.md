@@ -380,8 +380,12 @@ feature works.
 - Nothing polls or ticks while music plays with the screen off. The seek bar is the only timer,
   and it runs only while the player screen is resumed.
 - One OkHttp pool for API, covers and audio. URLs are stable (derived salt) so caches hit.
-- CPU-decoded playback runs in bursts (`nori_player::burst` + a 10 s AudioTrack buffer). Check changes to the
-  audio path with `tools/bench.sh dev.nori.music 90 off`: "quiet" should stay around 80 %.
+- CPU-decoded playback runs in bursts (`nori_player::burst` + a 10 s AudioTrack buffer): nothing on the
+  audio path wakes between them.
+- `tools/bench.sh` is the owner's real-world comparison of builds on a real phone, run now and then. Agents
+  never run it or offer to, unless the owner asks: a change is checked with `cargo test` and the device
+  checks (see Build and test), and its cost is reasoned about (wakeups, threads, syscalls) or measured in
+  Rust on the host.
 - Audio offload only reaches the phone's own outputs: the audio chip has no path to a USB device, and
   an offloaded track routed there plays nothing while reporting itself fine. `Outputs.usb` stands
   offload down whenever anything USB is attached, and a sink that refuses the stream gives it up for
@@ -434,8 +438,7 @@ animation maths) stays in Kotlin. Keep the list current when a job moves across 
 `docs/features.md` is the checklist of what is planned, with the owner's decisions at the top. Every
 optional subsystem (casting, FFmpeg decoder, resampler, smart fades, third-party lookups, taste model,
 ...) sits behind a switch in `StoredPrefs`, and a switched-off feature must cost nothing: not initialised,
-no listener, no socket, no audio processor. Check with `tools/bench.sh` that the default screen-off
-numbers do not move when a feature is added.
+no listener, no socket, no audio processor.
 
 ## Commit messages
 
