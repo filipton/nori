@@ -934,8 +934,8 @@ impl Session {
             if nori_core::autofill::autofill_arrived(fresh.songs.len() as u32) && !fresh.songs.is_empty() {
                 let len = playlist::with(|p| p.len());
                 let n = fresh.songs.len();
-                // An album comes from its page: played as an album, as the one before it.
-                playlist::playlist_take(len as u32, fresh.songs.iter().map(|s| s.id.clone()).collect(), vec![Hand::No; n], fresh.from());
+                // An album comes from its page (played as an album), a shuffle's albums from the shuffle.
+                playlist::playlist_take(len as u32, fresh.songs.iter().map(|s| s.id.clone()).collect(), vec![Hand::No; n], fresh.from);
                 me.edited();
             }
             if nori_core::autofill::autofill_landed() {

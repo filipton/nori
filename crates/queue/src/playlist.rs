@@ -221,15 +221,15 @@ pub enum Hand {
 /// Songs a controller adds at `at`, each marked with how it came (`hands`, one per song: Play next, Add
 /// to queue, or neither). Where they go is `nori_player::playlist::Playlist::take`'s call. `from` is the
 /// page they are all the songs of, when they are: an album's ([`OriginKind::Album`], its Play next or Add
-/// to queue) is the album added whole, one album run of its own; songs added any other way (one at a
-/// time, a selection, autofill's) have none, but a "shuffle albums" queue's refill is whole albums, each
-/// a run of its own as the queue's first albums are.
+/// to queue) is the album added whole, one album run of its own; a "shuffle albums" one
+/// ([`OriginKind::ShuffleAlbums`], that queue's refill) is whole albums, each a run of its own as the
+/// queue's first albums are. Songs added any other way (one at a time, a selection, autofill's songs) have
+/// none.
 #[cfg_attr(feature = "ffi", uniffi::export(default(from = None)))]
 pub fn playlist_take(at: u32, ids: Vec<String>, hands: Vec<Hand>, from: Option<PageOrigin>) -> QueueChange {
     let count = ids.len();
     let album = is_album(from.as_ref()) && count > 0;
-    let refill = hands.iter().all(|h| *h == Hand::No) && is_shuffle_albums(playlist_origin().as_ref());
-    let whole = (refill && !album).then(|| album_spans(&ids));
+    let whole = is_shuffle_albums(from.as_ref()).then(|| album_spans(&ids));
     edit(|p| {
         let at = p.take(at as usize, ids, &hands);
         if album {
@@ -600,13 +600,17 @@ pub(crate) mod tests {
         playlist_set(ids(&["a1", "a2", "b1", "b2"]), 0, false, Some(PageOrigin::new(OriginKind::ShuffleAlbums, "")));
         let r = runs();
         assert!(r[0] > 0 && r[0] == r[1] && r[2] > 0 && r[2] == r[3] && r[0] != r[2], "{r:?}");
-        // The refill: its album a run of its own, a song of no album in none.
-        playlist_take(4, ids(&["x", "c1", "c2"]), vec![Hand::No; 3], None);
+        // The refill, from the shuffle: its album a run of its own, a song of no album in none.
+        let shuffle = Some(PageOrigin::new(OriginKind::ShuffleAlbums, ""));
+        playlist_take(4, ids(&["x", "c1", "c2"]), vec![Hand::No; 3], shuffle.clone());
         let r = runs();
         assert!(r[4] == 0 && r[5] > 0 && r[5] == r[6] && r[5] != r[2], "{r:?}");
-        // A song added by hand to it: none.
+        // A song added by hand to it: none. Nor songs added by no hand from nowhere (a controller's): only
+        // what says it comes from the shuffle is split into its albums.
         let at = playlist_take(9, ids(&["c1"]), vec![Hand::Last], None).at;
         assert_eq!(runs()[at as usize], 0);
+        let at = playlist_take(99, ids(&["c1", "c2"]), vec![Hand::No; 2], None).at as usize;
+        assert_eq!(runs()[at..at + 2], [0, 0]);
         // Any other queue's refill: none.
         playlist_set(ids(&["a1"]), 0, false, None);
         playlist_take(1, ids(&["c1", "c2"]), vec![Hand::No; 2], None);
