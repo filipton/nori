@@ -191,6 +191,15 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             if (playerWasOpen) sheet.openAtOnce()
             androidx.compose.runtime.snapshotFlow { sheet.isOpen }.collect { playerWasOpen = it }
         }
+        // The player covers the page, so a field on it (search) lets go of its focus: held under the player,
+        // the keyboard came back over it whenever the window got its focus back (from the background, a menu).
+        val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+        val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+        LaunchedEffect(sheet) {
+            androidx.compose.runtime.snapshotFlow { sheet.isOpen }.collect { open ->
+                if (open) { focusManager.clearFocus(force = true); keyboard?.hide() }
+            }
+        }
         val nav = remember(controller) { Nav(controller, sheet) }
         val actions: ActionsViewModel = viewModel()
         val player: PlayerViewModel = viewModel()
