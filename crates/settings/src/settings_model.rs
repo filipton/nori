@@ -354,7 +354,7 @@ mod tests {
     fn values_read_as_the_options_do() {
         let d = StoredPrefs::default();
         assert_eq!(value_of(&d, "speed").as_deref(), Some("1"));
-        assert_eq!(value_of(&d, "mobile").as_deref(), Some("192:opus"));
+        assert_eq!(value_of(&d, "mobile").as_deref(), Some("0:"), "the original file on mobile data out of the box");
         assert_eq!(value_of(&d, "wifi").as_deref(), Some("0:"));
         assert_eq!(value_of(&d, "theme").as_deref(), Some("SYSTEM"));
         assert_eq!(value_of(&d, "swipeLeft").as_deref(), Some("FAVOURITE"));

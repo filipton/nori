@@ -573,7 +573,8 @@ pub struct StoredPrefs {
     // Downloads and storage.
     #[setting("wifi", Quality, default = SavedQuality::default(), show = K::Choice(QUALITIES))]
     pub wifi: SavedQuality,
-    #[setting("mobile", Quality, default = SavedQuality { bit_rate: 192, format: "opus".to_string() }, show = K::Choice(QUALITIES))]
+    /// The original file on mobile data too out of the box, as on Wi-Fi; a lower quality is a choice to make.
+    #[setting("mobile", Quality, default = SavedQuality::default(), show = K::Choice(QUALITIES))]
     pub mobile: SavedQuality,
     #[setting("download", Quality, default = SavedQuality::default(), show = K::Choice(QUALITIES))]
     pub download: SavedQuality,

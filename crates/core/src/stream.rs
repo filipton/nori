@@ -156,7 +156,8 @@ mod tests {
     fn only_a_transcode_is_answered_with_an_estimated_length() {
         let (c, _) = client(NetProfile { url: "h".into(), ..Default::default() });
         assert!(!length_estimated(&c.resolve("s1".into(), false, false).url), "the original file on Wi-Fi");
-        assert!(length_estimated(&c.resolve("s1".into(), false, true).url), "192k opus on a metered network");
+        assert!(!length_estimated(&c.resolve("s1".into(), false, true).url), "the original file on a metered network too, by default");
+        assert!(length_estimated(&c.stream_target("s1".into(), false, q(192, "opus"), q(0, "")).url), "192k opus is a transcode");
         assert!(length_estimated(&c.stream_target("s1".into(), false, q(128, ""), q(0, "")).url), "a bit rate alone transcodes too");
     }
 
@@ -164,11 +165,11 @@ mod tests {
     fn a_download_opens_as_itself_and_anything_else_streams() {
         let (c, _) = client(NetProfile { url: "h".into(), ..Default::default() });
         assert_eq!(c.resolve("s1".into(), true, true).key, "dl:s1", "the permanent copy, whatever the network");
-        // The settings' defaults: the original on Wi-Fi, 192k opus on a metered network.
+        // The settings' defaults: the original file on Wi-Fi and on a metered network alike.
         assert_eq!(c.resolve("s1".into(), false, false).key, "s1:0");
-        assert_eq!(c.resolve("s1".into(), false, true).key, "s1:192opus");
+        assert_eq!(c.resolve("s1".into(), false, true).key, "s1:0");
         let (wifi, metered) = (c.streaming_quality(false), c.streaming_quality(true));
-        assert_eq!((wifi.bit_rate, wifi.format.as_str(), metered.bit_rate, metered.format.as_str()), (0, "", 192, "opus"), "what those keys name");
+        assert_eq!((wifi.bit_rate, wifi.format.as_str(), metered.bit_rate, metered.format.as_str()), (0, "", 0, ""), "what those keys name");
     }
 
     #[test]

@@ -3722,6 +3722,7 @@ dependencies = [
  "nori-player",
  "nori-queue",
  "nori-settings",
+ "nori-testdir",
  "nori-transfers",
  "parking_lot",
  "rusqlite",
