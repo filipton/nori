@@ -252,6 +252,26 @@ pub fn status_bar_hidden(hide: crate::settings::HideStatusBar, wide: bool) -> bo
     }
 }
 
+/// Whether the screen is kept on, for the setting, the phone on its side (`wide`) or not and charging or not.
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn keep_awake(keep: crate::settings::KeepAwake, wide: bool, charging: bool) -> bool {
+    use crate::settings::KeepAwake::*;
+    match keep {
+        Never => false,
+        Sideways => wide,
+        Charging => charging,
+        SidewaysCharging => wide && charging,
+        Always => true,
+    }
+}
+
+/// Whether the setting needs to know if the phone is charging: only then is the charger watched.
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn keep_awake_watches_charging(keep: crate::settings::KeepAwake) -> bool {
+    use crate::settings::KeepAwake::*;
+    matches!(keep, Charging | SidewaysCharging)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,6 +289,24 @@ mod tests {
         let said = changed(&p);
         assert!(said.lines().any(|l| l == format!("{} = {other}", switch.name)), "{said}");
         assert!(!said.contains("secret-key"), "{said}");
+    }
+
+    #[test]
+    fn the_screen_stays_on_only_when_the_setting_says() {
+        use crate::settings::KeepAwake::*;
+        // (upright, on battery), (upright, charging), (sideways, on battery), (sideways, charging)
+        let all = |k| [keep_awake(k, false, false), keep_awake(k, false, true), keep_awake(k, true, false), keep_awake(k, true, true)];
+        assert_eq!(all(Never), [false, false, false, false]);
+        assert_eq!(all(Sideways), [false, false, true, true]);
+        assert_eq!(all(Charging), [false, true, false, true]);
+        assert_eq!(all(SidewaysCharging), [false, false, false, true]);
+        assert_eq!(all(Always), [true, true, true, true]);
+        assert_eq!(
+            [Never, Sideways, Charging, SidewaysCharging, Always].map(keep_awake_watches_charging),
+            [false, false, true, true, false],
+            "the charger is only watched for a setting that asks about it",
+        );
+        assert_eq!(StoredPrefs::default().keep_awake, Never, "the system's own screen timeout out of the box");
     }
 
     #[test]

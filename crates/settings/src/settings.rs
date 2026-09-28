@@ -137,6 +137,18 @@ pub enum HideStatusBar {
     Always,
 }
 
+/// When the screen is kept on while the app is on it: never, with the phone on its side (propped up on a
+/// desk or in a car), while it charges (on a stand), when both are true at once, or always.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, nori_settings_derive::Choice)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
+pub enum KeepAwake {
+    Never,
+    Sideways,
+    Charging,
+    SidewaysCharging,
+    Always,
+}
+
 /// What a tap on a song in a list does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, nori_settings_derive::Choice)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
@@ -449,6 +461,8 @@ pub struct StoredPrefs {
     pub theme: ThemeMode,
     #[setting("hideStatusBar", PICK, default = HideStatusBar::Sideways, show = K::Named(HideStatusBar::NAMES))]
     pub hide_status_bar: HideStatusBar,
+    #[setting("keepAwake", PICK, default = KeepAwake::Never, show = K::Named(KeepAwake::NAMES))]
+    pub keep_awake: KeepAwake,
     #[setting("amoled", FLAG, default = false, show = K::Switch)]
     pub amoled: bool,
     /// With a black background, which pages keep their cover's colours rather than going black

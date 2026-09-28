@@ -236,6 +236,13 @@
     <string name="settings_hide_status_bar_sideways">Sideways</string>
     <string name="settings_hide_status_bar_upright">Upright</string>
     <string name="settings_hide_status_bar_always">Always</string>
+    <string name="settings_keep_awake">Keep the screen on</string>
+    <string name="settings_keep_awake_detail">While nori is open. On a stand or a car mount the player and lyrics stay in view.</string>
+    <string name="settings_keep_awake_never">Never</string>
+    <string name="settings_keep_awake_sideways">Sideways</string>
+    <string name="settings_keep_awake_charging">Charging</string>
+    <string name="settings_keep_awake_sideways_charging">Sideways and charging</string>
+    <string name="settings_keep_awake_always">Always</string>
     <string name="settings_theme">Theme</string>
     <string name="settings_theme_system">Same as the system</string>
     <string name="settings_theme_light">Light</string>
@@ -501,6 +508,7 @@
     <string name="settings_hint_moving_covers_mobile">Each one is a few megabytes</string>
     <string name="settings_hint_confirm_favourites">A short message when you favorite or unfavorite something</string>
     <string name="settings_hint_less_movement">Shorter, simpler animations</string>
+    <string name="settings_hint_keep_awake">Screen timeout. Stay awake while sideways or charging</string>
     <string name="settings_hint_hide_status_bar">Full screen. Hides the clock and battery bar at the top</string>
     <string name="settings_hint_animate_anyway">Keeps animations on even when the system\'s are off</string>
     <string name="settings_hint_lyrics_sweep">For lyrics timed word by word</string>

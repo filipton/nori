@@ -230,6 +230,7 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("look", R.string.settings_ui_scale, 0),
     Triple("look", R.string.settings_less_movement, R.string.settings_hint_less_movement),
     Triple("look", R.string.settings_hide_status_bar, R.string.settings_hint_hide_status_bar),
+    Triple("look", R.string.settings_keep_awake, R.string.settings_hint_keep_awake),
     Triple("look", R.string.settings_animate_anyway, R.string.settings_hint_animate_anyway),
     Triple("lyrics", R.string.settings_lyrics_sweep, R.string.settings_hint_lyrics_sweep),
     Triple("lyrics", R.string.settings_lyrics_size, 0),
@@ -709,6 +710,11 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
                 "hideStatusBar", R.string.settings_hide_status_bar, R.string.settings_hide_status_bar_detail,
                 R.string.settings_hide_status_bar_never, R.string.settings_hide_status_bar_sideways,
                 R.string.settings_hide_status_bar_upright, R.string.settings_hide_status_bar_always,
+            ),
+            chips(
+                "keepAwake", R.string.settings_keep_awake, R.string.settings_keep_awake_detail,
+                R.string.settings_keep_awake_never, R.string.settings_keep_awake_sideways, R.string.settings_keep_awake_charging,
+                R.string.settings_keep_awake_sideways_charging, R.string.settings_keep_awake_always,
             ),
         )
         return listOf(

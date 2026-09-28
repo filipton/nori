@@ -298,6 +298,16 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             // the box, where the screen is short and the page runs to the top edge. A swipe from the edge brings it
             // back for a moment, as in any full screen app.
             val barsView = androidx.compose.ui.platform.LocalView.current
+            // The screen kept on where the setting says (the core's `keep_awake`), by the window's own flag, which
+            // the lyrics' switch (on the view) neither sets nor clears. The charger is only watched for a setting
+            // that asks about it, and only while the app is open: otherwise nothing is registered.
+            val charging = rememberCharging(dev.nori.music.ffi.settings.keepAwakeWatchesCharging(prefs.keepAwake))
+            val awake = remember(prefs.keepAwake, wide, charging) { dev.nori.music.ffi.settings.keepAwake(prefs.keepAwake, wide, charging) }
+            androidx.compose.runtime.DisposableEffect(awake) {
+                val window = (barsView.context as? android.app.Activity)?.window
+                if (awake) window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                onDispose { window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+            }
             val hideBar = remember(prefs.hideStatusBar, wide) { dev.nori.music.ffi.settings.statusBarHidden(prefs.hideStatusBar, wide) }
             LaunchedEffect(hideBar) {
                 val window = (barsView.context as? android.app.Activity)?.window ?: return@LaunchedEffect
@@ -663,4 +673,32 @@ private fun PlayerLayer(sheet: PlayerSheet, content: @Composable () -> Unit) {
     ) {
         CompositionLocalProvider(LocalChromeInset provides 0.dp, LocalPlayerShown provides shown) { content() }
     }
+}
+
+/**
+ * Whether the phone is charging, kept up to date from the system's power broadcasts while [watch] is true;
+ * false, and nothing registered, while it is not.
+ */
+@Composable
+private fun rememberCharging(watch: Boolean): Boolean {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var charging by remember { mutableStateOf(false) }
+    androidx.compose.runtime.DisposableEffect(watch) {
+        if (!watch) { charging = false; return@DisposableEffect onDispose {} }
+        // The battery's last state is sticky, so it is read on registering; the plug's two broadcasts then move it.
+        val now = context.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
+        charging = (now?.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: android.content.Context, intent: android.content.Intent) {
+                charging = intent.action == android.content.Intent.ACTION_POWER_CONNECTED
+            }
+        }
+        val filter = android.content.IntentFilter().apply {
+            addAction(android.content.Intent.ACTION_POWER_CONNECTED)
+            addAction(android.content.Intent.ACTION_POWER_DISCONNECTED)
+        }
+        androidx.core.content.ContextCompat.registerReceiver(context, receiver, filter, androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
+        onDispose { context.unregisterReceiver(receiver) }
+    }
+    return charging
 }
