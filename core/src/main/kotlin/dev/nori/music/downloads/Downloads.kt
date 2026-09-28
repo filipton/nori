@@ -10,6 +10,7 @@ import android.content.res.Resources
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -869,12 +870,39 @@ class DownloadWorker : DownloadService(DOWNLOAD_NOTIFICATION, 1000L, CHANNEL, an
 
     internal val holding get() = holdId != 0
 
+    /**
+     * The CPU lock, held exactly while there is work: songs downloading (the manager is not idle, which it also is
+     * while it waits for the network) or saved songs processing under the hold. A foreground service alone does
+     * not keep the CPU up, and with the screen off the analysis stood still until the phone woke.
+     */
+    @Suppress("DEPRECATION")
+    private val wakeLock by lazy { getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "nori:downloads").apply { setReferenceCounted(false) } }
+
+    private val working = object : DownloadManager.Listener {
+        override fun onInitialized(m: DownloadManager) = awake()
+        override fun onDownloadChanged(m: DownloadManager, d: Download, e: Exception?) = awake()
+        override fun onIdle(m: DownloadManager) = awake()
+        override fun onDownloadsPausedChanged(m: DownloadManager, paused: Boolean) = awake()
+        override fun onWaitingForRequirementsChanged(m: DownloadManager, waiting: Boolean) = awake()
+    }
+
+    /** Takes or lets go of the CPU lock for what is going on now. Main thread. */
+    private fun awake(done: Boolean = false) {
+        val hold = !done && (holding || !getDownloadManager().isIdle)
+        if (hold == wakeLock.isHeld) return
+        if (hold) wakeLock.acquire() else wakeLock.release()
+    }
+
     override fun onCreate() {
         super.onCreate()
         Nori.get(this).downloads.worker = this
+        getDownloadManager().addListener(working)
+        awake()
     }
 
     override fun onDestroy() {
+        getDownloadManager().removeListener(working)
+        awake(done = true)
         Nori.get(this).downloads.let { if (it.worker === this) it.worker = null }
         super.onDestroy()
     }
@@ -884,7 +912,7 @@ class DownloadWorker : DownloadService(DOWNLOAD_NOTIFICATION, 1000L, CHANNEL, an
         if (intent?.action == ACTION_HOLD) {
             holdId = startId
             // Over already (a quick one): let go at once; otherwise its notification says what is left.
-            if (downloads.processingNow() == null) release() else downloads.held()
+            if (downloads.processingNow() == null) release() else { awake(); downloads.held() }
             return START_NOT_STICKY
         }
         // Held: a start that finds nothing to download would stop the service under the songs still processing,
@@ -902,6 +930,7 @@ class DownloadWorker : DownloadService(DOWNLOAD_NOTIFICATION, 1000L, CHANNEL, an
         val id = holdId
         if (id == 0) return
         holdId = 0
+        awake()
         stopSelfResult(id)
     }
 
