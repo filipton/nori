@@ -6,6 +6,29 @@ hand. Versions follow [semantic versioning](https://semver.org).
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-09-29
+
+### Added
+
+- The app keeps a day of its log and a report of a problem shares it, with drop-outs logged (#17)
+- Sideways polish, status bar and keep awake settings, original quality on mobile data (#18)
+
+### Changed
+
+- State handed through globals, magic numbers and strings made explicit across the core, the player and the clients
+
+### Fixed
+
+- Downloads and their analysis keep the CPU awake with the screen off (closes #12)
+- The keyboard no longer comes up over the player opened from search (closes #16)
+- The album autoplay carries on with stays gapless with keep albums gapless on
+- A song waiting only for its beats no longer crashes the downloads screen, the phase is one enum
+- The desktop app keeps one downloader and an album added to the queue whole stays gapless
+- A heart pressed on one server no longer shows on another, the marks are the core's
+- A nameless DAC or Bluetooth device is no longer searched in AutoEQ by its placeholder name
+- An Android player going no longer stops the fetching ahead of the one that replaced it
+- The music is no longer left silent while it plays, the chip follows every fade and a fade left down is brought back
+
 ## [0.4.6] - 2026-09-28
 
 ### Added
