@@ -126,6 +126,17 @@ pub enum ThemeMode {
     Dark,
 }
 
+/// When the status bar (the clock, the battery, the notifications' icons) is put away: never, with the
+/// phone on its side, held upright, or always. A swipe from the top edge brings it back for a moment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, nori_settings_derive::Choice)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
+pub enum HideStatusBar {
+    Never,
+    Sideways,
+    Upright,
+    Always,
+}
+
 /// What a tap on a song in a list does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, nori_settings_derive::Choice)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
@@ -436,6 +447,8 @@ pub struct StoredPrefs {
     // Appearance.
     #[setting("theme", PICK, default = ThemeMode::System, show = K::Named(ThemeMode::NAMES))]
     pub theme: ThemeMode,
+    #[setting("hideStatusBar", PICK, default = HideStatusBar::Sideways, show = K::Named(HideStatusBar::NAMES))]
+    pub hide_status_bar: HideStatusBar,
     #[setting("amoled", FLAG, default = false, show = K::Switch)]
     pub amoled: bool,
     /// With a black background, which pages keep their cover's colours rather than going black

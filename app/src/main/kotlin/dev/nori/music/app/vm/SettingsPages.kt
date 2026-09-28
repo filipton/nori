@@ -63,6 +63,8 @@ sealed interface SettingRow {
     data class CompressionMeter(val key: String) : SettingRow
     /** One setting made of several switches, each a place it applies to ([Pick]), shown side by side. */
     data class Picks(val key: String, val title: String, val detail: String, val picks: List<Pick>) : SettingRow
+    /** One setting with a few values, all on view as chips, the one it has lit: [Picks] with one choice. */
+    data class ChipChoice(val key: String, val name: String, val title: String, val detail: String, val options: List<SettingOption>, val chosen: String) : SettingRow
     /** Text typed in (a service's key), hidden when [secret]. */
     data class Text(val key: String, val name: String, val title: String, val detail: String, val value: String, val secret: Boolean) : SettingRow
 }
@@ -227,6 +229,7 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("look", R.string.settings_confirm_favourites, R.string.settings_hint_confirm_favourites),
     Triple("look", R.string.settings_ui_scale, 0),
     Triple("look", R.string.settings_less_movement, R.string.settings_hint_less_movement),
+    Triple("look", R.string.settings_hide_status_bar, R.string.settings_hint_hide_status_bar),
     Triple("look", R.string.settings_animate_anyway, R.string.settings_hint_animate_anyway),
     Triple("lyrics", R.string.settings_lyrics_sweep, R.string.settings_hint_lyrics_sweep),
     Triple("lyrics", R.string.settings_lyrics_size, 0),
@@ -414,6 +417,13 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
     }
 
     fun toggle(name: String, title: Int, detail: Int, enabled: Boolean = true) = toggle(name, title, str(detail), enabled)
+
+    /** The core's options for [name] as chips, each worded by [labels] in the options' order. */
+    fun chips(name: String, title: Int, detail: Int, vararg labels: Int): SettingRow.ChipChoice {
+        val t = str(title)
+        val options = OPTIONS[name].orEmpty().mapIndexed { i, v -> SettingOption(labels.getOrNull(i)?.let(::str) ?: v, v) }
+        return SettingRow.ChipChoice(settingKey(t), name, t, str(detail), options, value(name))
+    }
 
     fun picks(title: Int, detail: Int, vararg picks: Pair<String, Int>): SettingRow.Picks {
         val t = str(title)
@@ -694,8 +704,16 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
             toggle("reduceMotion", R.string.settings_less_movement, R.string.settings_less_movement_detail),
         )
         if (!p.reduceMotion) size += toggle("ignoreSystemMotion", R.string.settings_animate_anyway, R.string.settings_animate_anyway_detail)
+        val screen = listOf(
+            chips(
+                "hideStatusBar", R.string.settings_hide_status_bar, R.string.settings_hide_status_bar_detail,
+                R.string.settings_hide_status_bar_never, R.string.settings_hide_status_bar_sideways,
+                R.string.settings_hide_status_bar_upright, R.string.settings_hide_status_bar_always,
+            ),
+        )
         return listOf(
             section(R.string.settings_section_theme, theme), section(R.string.settings_section_cover, cover),
+            section(R.string.settings_section_screen, screen),
             section(R.string.settings_section_messages, messages), section(R.string.settings_section_size, size),
         )
     }

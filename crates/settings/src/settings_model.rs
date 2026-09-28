@@ -240,6 +240,18 @@ pub fn theme_is_dark(theme: crate::settings::ThemeMode, system_dark: bool) -> bo
     nori_look::theme::is_dark(theme as i32, system_dark)
 }
 
+/// Whether the status bar is put away, for the setting and the phone held on its side (`wide`) or not.
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn status_bar_hidden(hide: crate::settings::HideStatusBar, wide: bool) -> bool {
+    use crate::settings::HideStatusBar::*;
+    match hide {
+        Never => false,
+        Sideways => wide,
+        Upright => !wide,
+        Always => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,6 +269,14 @@ mod tests {
         let said = changed(&p);
         assert!(said.lines().any(|l| l == format!("{} = {other}", switch.name)), "{said}");
         assert!(!said.contains("secret-key"), "{said}");
+    }
+
+    #[test]
+    fn the_status_bar_goes_where_the_setting_says() {
+        use crate::settings::HideStatusBar::*;
+        let both = |h| (status_bar_hidden(h, false), status_bar_hidden(h, true));
+        assert_eq!([both(Never), both(Sideways), both(Upright), both(Always)], [(false, false), (false, true), (true, false), (true, true)]);
+        assert_eq!(StoredPrefs::default().hide_status_bar, Sideways, "on its side out of the box");
     }
 
     #[test]

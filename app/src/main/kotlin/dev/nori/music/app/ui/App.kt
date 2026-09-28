@@ -294,6 +294,18 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             val config = androidx.compose.ui.platform.LocalConfiguration.current
             val wide = isWide(config.screenWidthDp, config.screenHeightDp)
             var railWidth by remember { mutableStateOf(0.dp) }
+            // The status bar put away where the setting says (the core's `status_bar_hidden`) - on its side out of
+            // the box, where the screen is short and the page runs to the top edge. A swipe from the edge brings it
+            // back for a moment, as in any full screen app.
+            val barsView = androidx.compose.ui.platform.LocalView.current
+            val hideBar = remember(prefs.hideStatusBar, wide) { dev.nori.music.ffi.settings.statusBarHidden(prefs.hideStatusBar, wide) }
+            LaunchedEffect(hideBar) {
+                val window = (barsView.context as? android.app.Activity)?.window ?: return@LaunchedEffect
+                val bars = androidx.core.view.WindowCompat.getInsetsController(window, barsView)
+                bars.systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                if (hideBar) bars.hide(androidx.core.view.WindowInsetsCompat.Type.statusBars())
+                else bars.show(androidx.core.view.WindowInsetsCompat.Type.statusBars())
+            }
             // Which way round: the edge the bar stood on is on the right turned one way, on the left the other
             // (TabRail), and the camera on the opposite side.
             val view = androidx.compose.ui.platform.LocalView.current
