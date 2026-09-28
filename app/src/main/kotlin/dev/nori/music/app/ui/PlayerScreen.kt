@@ -728,7 +728,10 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
 private fun PlayerHalves(wide: Boolean, panel: @Composable ColumnScope.() -> Unit, controls: @Composable ColumnScope.() -> Unit) {
     if (!wide) Column(Modifier.fillMaxSize().navigationBarsPadding()) { panel(); controls() }
     else androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
-        val side = minOf(maxHeight, maxWidth * 0.5f)
+        // Wider than it is tall: the sleeve is a band across the cover, cropped above and below rather than at
+        // the sides, and its soft edge reaches in to where the controls begin rather than stopping short of the
+        // middle as a square did.
+        val side = maxWidth * 0.55f
         Row(Modifier.fillMaxSize()) {
             Column(Modifier.width(side).fillMaxHeight()) { panel() }
             Column(
@@ -1448,7 +1451,9 @@ private fun SleeveCarousel(
     val shapes = remember { CornerShapes() }
     androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
     val widthPx = constraints.maxWidth.toFloat()
-    val heightPx = constraints.maxHeight.toFloat()
+    // Each record is the cover's square, as tall as the sleeve - or, on a sleeve wider than it is tall (a phone
+    // on its side), as wide, so the picture fills it and is cropped above and below instead of at the sides.
+    val heightPx = maxOf(constraints.maxHeight, constraints.maxWidth).toFloat()
     val sideDp = with(density) { heightPx.toDp() }
     val down = spring<Float>(dampingRatio = 1f, stiffness = 300f, visibilityThreshold = 0.001f)
     // The page's colours follow the record across (see PageShift). Once a record has arrived the song

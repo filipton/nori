@@ -279,7 +279,9 @@ fun HeroPage(
                 // the status bar, the now playing bar and the name, caption and buttons (about 170 dp) are
                 // counted out, so all of it fits without scrolling.
                 // At least room for the three round buttons and a Play pill that still fits "Pause".
-                val half = minOf(maxOf(maxWidth * 0.45f, 360.dp), maxWidth * 0.5f)
+                // The player's own share (PlayerHalves), so a cover here is the same band, cropped above and below,
+                // its soft edge where the page's words begin.
+                val half = maxOf(maxWidth * 0.55f, 360.dp)
                 // Inside the half's gutters, and short enough to leave the top margin, the name, caption and
                 // buttons (about 190 dp) and the now playing bar their room.
                 val top = with(androidx.compose.ui.platform.LocalDensity.current) {
