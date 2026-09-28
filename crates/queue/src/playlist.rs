@@ -318,21 +318,9 @@ pub enum Onto {
     Song,
 }
 
-/// The player moved onto `index` (-1: onto nothing), `looped` by its own repeat. What that means is
-/// `nori_player::queue::arrival`'s call over this queue and the user's "skip explicit songs"; a new song
-/// also breaks a run of songs that would not play.
-#[cfg(test)]
-pub fn playlist_transition(index: i32, looped: bool) -> Onto {
-    playlist_moved_to(index);
-    let skip_explicit = crate::rules::prefs(|p| p.skip_explicit);
-    let (current, has_next) = with(|p| (p.current_id().map(str::to_string), p.next().is_some()));
-    let explicit = current.clone().is_some_and(|id| queue::queue_flags(id) & queue::EXPLICIT != 0);
-    let a = nori_player::queue::arrival(current.is_some(), skip_explicit, explicit, has_next, looped);
-    a
-}
-
-/// Whether arriving on list index `index` now would skip it, as [`playlist_transition`] would decide
-/// there: a player that walks the queue itself asks before it reads the song, so none of it is heard.
+/// Whether arriving on list index `index` now would skip it (`nori_player::queue::arrival` over this queue
+/// and the user's "skip explicit songs"): a player that walks the queue itself asks before it reads the
+/// song, so none of it is heard.
 pub fn playlist_skips(index: usize) -> bool {
     let skip_explicit = crate::rules::prefs(|p| p.skip_explicit);
     if !skip_explicit {
@@ -855,9 +843,9 @@ pub(crate) mod tests {
     #[test]
     fn arriving_on_a_song() {
         let _g = hold(&["t1", "t2", "radio:9"], 0);
-        assert_eq!(playlist_transition(1, false), Onto::Song);
+        assert!(!playlist_skips(1));
+        playlist_moved_to(1);
         assert_eq!(playlist_bridge_state().current.as_deref(), Some("t2"));
-        assert_eq!(playlist_transition(1, true), Onto::Loop);
         assert_eq!(playlist_to_push(), ids(&["t1", "t2"]), "radio streams are not handed to the server");
         match push_write(Some("t2".into()), 7) {
             Some(nori_net::requests::Write::SaveQueue { ids: pushed, current, position_ms }) => {

@@ -388,7 +388,7 @@ mod tests {
         for i in 1..=3 {
             assert_eq!(queue_error(PlaybackError::Other, false, true), OnError::Skip);
             // The skip lands on the next song, which fails too: no music in between.
-            crate::playlist::playlist_transition(i, false);
+            crate::playlist::playlist_moved_to(i);
         }
         assert_eq!(queue_error(PlaybackError::Other, false, true), OnError::Stop, "three in a row, then it stops");
     }
