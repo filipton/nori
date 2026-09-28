@@ -77,10 +77,27 @@ fn enc(v: &str) -> String {
 }
 
 /// What the services of one lookup share: the song's YouTube video, found once for the three keyed on
-/// it.
+/// it, and what the lookups before remember ([`LyricsMemory`]).
 #[derive(Default)]
 pub struct Shared {
     youtube: AsyncMutex<Option<Option<String>>>,
+    pub(crate) memory: LyricsMemory,
+}
+
+impl Shared {
+    /// One lookup's, over what its client remembers.
+    pub fn over(memory: &LyricsMemory) -> Shared {
+        Shared { youtube: AsyncMutex::new(None), memory: memory.clone() }
+    }
+}
+
+/// What a client's lyrics lookups remember of each other, in memory only (a failure is never an answer
+/// to keep): which services failed lately and for which song ([`crate::race`]'s rest), and the songs
+/// already matched on YouTube Music. Each client keeps its own; a clone is the same memory.
+#[derive(Clone, Default)]
+pub struct LyricsMemory {
+    pub(crate) failures: std::sync::Arc<Mutex<crate::race::Failures>>,
+    youtube: std::sync::Arc<Mutex<Vec<(String, Option<String>)>>>,
 }
 
 /// One service asking about one song: the platform's transport, the keys, and the time it has left.
@@ -720,9 +737,8 @@ async fn youtube(a: &Ask<'_>, endpoint: &str, mut body: Value) -> Asked<String> 
     a.strict(&format!("{YOUTUBE_MUSIC}/{endpoint}?prettyPrint=false"), &headers, Some(body.to_string()), REQUEST_MS).await
 }
 
-/// Songs already matched on YouTube Music (the video id, or none), the last few only, so the next song's
-/// lookup and a song played again do not search again.
-static YOUTUBE_IDS: Mutex<Vec<(String, Option<String>)>> = Mutex::new(Vec::new());
+/// How many songs already matched on YouTube Music (the video id, or none) are remembered
+/// ([`LyricsMemory`]), so the next song's lookup and a song played again do not search again.
 const YOUTUBE_KEPT: usize = 32;
 
 /// This song's video on YouTube Music, for the three services keyed on one (SimpMusic, the captions, the
@@ -735,7 +751,7 @@ async fn youtube_id(a: &Ask<'_>, song: &Song) -> Asked<Option<String>> {
         return Ok(known.clone());
     }
     let key = format!("{}\n{}\n{}", song.artist, song.title, song.duration);
-    if let Some((_, id)) = YOUTUBE_IDS.lock().iter().find(|(k, _)| *k == key) {
+    if let Some((_, id)) = a.shared.memory.youtube.lock().iter().find(|(k, _)| *k == key) {
         *mine = Some(id.clone());
         return Ok(id.clone());
     }
@@ -746,7 +762,7 @@ async fn youtube_id(a: &Ask<'_>, song: &Song) -> Asked<Option<String>> {
         .filter(|t| alike(&t.title, &title) && (t.artist.trim().is_empty() || alike(&t.artist, &song.artist)) && same_length(t.duration_ms as f64, song))
         .min_by(|x, y| off(x.duration_ms as f64, song).total_cmp(&off(y.duration_ms as f64, song)))
         .map(|t| t.id);
-    let mut kept = YOUTUBE_IDS.lock();
+    let mut kept = a.shared.memory.youtube.lock();
     if kept.len() >= YOUTUBE_KEPT {
         kept.remove(0);
     }

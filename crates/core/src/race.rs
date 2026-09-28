@@ -156,7 +156,7 @@ impl Client {
 
 impl Client {
     async fn lookup_with(&self, song: &Song, server_has_lines: bool, server_synced: bool, asked: &LyricsLookup, shown: &dyn LyricsShown) {
-        if let Some(line) = lookup(&*self.transport, &*self.core, song, server_has_lines, server_synced, asked, shown).await {
+        if let Some(line) = lookup(&*self.transport, &*self.core, song, server_has_lines, server_synced, asked, shown, &self.lyrics).await {
             nori_perf::perf_log::note_core("lyrics", line.trim_start_matches("lyrics: "));
         }
     }
