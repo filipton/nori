@@ -420,7 +420,9 @@ fn wire(ui: &AppWindow) {
         with(|a| {
             let songs = a.page_songs.clone();
             if !songs.is_empty() {
-                a.on_session(|s| s.enqueue(songs, false));
+                // The page's songs whole: an album so added plays as an album.
+                let from = a.page_fetch.as_ref().map(Fetch::origin);
+                a.on_session(|s| s.enqueue(songs, false, from));
             }
         })
     });
@@ -974,7 +976,7 @@ impl App {
         let Some(one) = songs.get(i).cloned() else { return };
         self.on_session(|s| match how {
             0 => s.play(songs.clone(), i, false, origin),
-            _ => s.enqueue(vec![one], how == 1),
+            _ => s.enqueue(vec![one], how == 1, None),
         });
     }
 
