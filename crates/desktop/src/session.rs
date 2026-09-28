@@ -273,7 +273,8 @@ pub struct Session {
     pub engine: Arc<Engine>,
     covers: Arc<Loader>,
     store: Arc<Store>,
-    audio: Arc<Audio>,
+    /// The one downloader: a second would fetch the same songs beside it, past "downloads at once".
+    downloader: Arc<Downloader>,
     pub volume: Volume,
     search: Arc<SearchSession>,
     mpris: Option<nori_mpris::Mpris>,
@@ -306,10 +307,11 @@ impl Session {
         let covers = Arc::new(Loader::new(CoverConfig::new(data.join("covers")), http));
         let mpris = nori_mpris::Mpris::start(&format!("nori.desktop{}", std::process::id()), Arc::new(Desktop { engine: engine.clone() })).ok();
         let keeper = Keeper::start(core.clone(), engine.clone());
-        let s = Session { core, client, engine, covers, store: store.clone(), audio: audio.clone(), volume, search: SearchSession::new(), mpris, keeper };
+        let downloader = Downloader::new(core.clone(), client.clone(), audio.clone(), store.clone());
+        let s = Session { core, client, engine, covers, store, downloader, volume, search: SearchSession::new(), mpris, keeper };
         s.restore();
         if s.core.download_counts().pending > 0 {
-            Downloader::new(s.core.clone(), s.client.clone(), audio, store).start(prefs.parallel_downloads.max(1) as usize);
+            s.downloader.start(prefs.parallel_downloads.max(1) as usize);
         }
         Ok(s)
     }
@@ -411,9 +413,10 @@ impl Session {
         });
     }
 
-    /// Songs added after the current one (`next`) or at the end of the queue.
-    pub fn enqueue(&self, songs: Vec<Song>, next: bool) {
-        self.handle().enqueue(songs, next);
+    /// Songs added after the current one (`next`) or at the end of the queue, all of them the songs of the
+    /// page `from` when they are (an album added whole stays gapless, as its page's Play does).
+    pub fn enqueue(&self, songs: Vec<Song>, next: bool, from: Option<PageOrigin>) {
+        self.handle().enqueue(songs, next, from);
     }
 
     fn handle(&self) -> Handle {
@@ -578,7 +581,7 @@ impl Session {
                     Err(e) => Tx.send(Msg::Note { text: format!("Could not download the library: {e}"), error: true }),
                 }
                 let n = settings_store::with_prefs(|p| p.parallel_downloads).unwrap_or(2);
-                Downloader::new(self.core.clone(), self.client.clone(), self.audio.clone(), self.store.clone()).start(n.max(1) as usize);
+                self.downloader.start(n.max(1) as usize);
             }
             "measure-again" => {
                 let n = self.core.analysis_clear().unwrap_or(0);
@@ -748,7 +751,7 @@ impl Handle {
         self.engine.play_at(change.at.max(0) as usize, 0);
     }
 
-    fn enqueue(&self, songs: Vec<Song>, next: bool) {
+    fn enqueue(&self, songs: Vec<Song>, next: bool, from: Option<PageOrigin>) {
         // Only the one song picked may be a provider's; a list of them never goes in whole.
         let songs: Vec<Song> = if songs.len() == 1 { songs } else { songs.into_iter().filter(|s| !is_provider(s)).collect() };
         if songs.is_empty() {
@@ -759,7 +762,7 @@ impl Handle {
         let (len, current) = playlist::with(|p| (p.len(), p.current()));
         let at = if next { current.map_or(len, |c| c + 1) } else { len };
         let hand = if next { Hand::Next } else { Hand::Last };
-        playlist::playlist_take(at as u32, songs.iter().map(|s| s.id.clone()).collect(), vec![hand; n], None);
+        playlist::playlist_take(at as u32, songs.iter().map(|s| s.id.clone()).collect(), vec![hand; n], from);
         self.edited();
         if len == 0 {
             self.engine.go_to(0, 0);
