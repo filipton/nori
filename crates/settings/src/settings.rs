@@ -126,6 +126,29 @@ pub enum ThemeMode {
     Dark,
 }
 
+/// When the status bar (the clock, the battery, the notifications' icons) is put away: never, with the
+/// phone on its side, held upright, or always. A swipe from the top edge brings it back for a moment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, nori_settings_derive::Choice)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
+pub enum HideStatusBar {
+    Never,
+    Sideways,
+    Upright,
+    Always,
+}
+
+/// When the screen is kept on while the app is on it: never, with the phone on its side (propped up on a
+/// desk or in a car), while it charges (on a stand), when both are true at once, or always.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, nori_settings_derive::Choice)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
+pub enum KeepAwake {
+    Never,
+    Sideways,
+    Charging,
+    SidewaysCharging,
+    Always,
+}
+
 /// What a tap on a song in a list does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, nori_settings_derive::Choice)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
@@ -436,6 +459,10 @@ pub struct StoredPrefs {
     // Appearance.
     #[setting("theme", PICK, default = ThemeMode::System, show = K::Named(ThemeMode::NAMES))]
     pub theme: ThemeMode,
+    #[setting("hideStatusBar", PICK, default = HideStatusBar::Sideways, show = K::Named(HideStatusBar::NAMES))]
+    pub hide_status_bar: HideStatusBar,
+    #[setting("keepAwake", PICK, default = KeepAwake::Never, show = K::Named(KeepAwake::NAMES))]
+    pub keep_awake: KeepAwake,
     #[setting("amoled", FLAG, default = false, show = K::Switch)]
     pub amoled: bool,
     /// With a black background, which pages keep their cover's colours rather than going black
@@ -480,6 +507,10 @@ pub struct StoredPrefs {
     pub lyrics_size: i32,
     #[setting("lyricsTranslation", FLAG, default = true, show = K::Switch)]
     pub lyrics_translation: bool,
+    /// The corner under the lyrics that opens the buttons nudging their timing; off, it is left out (a service's
+    /// name stays, as plain words).
+    #[setting("lyricsTimingButton", FLAG, default = true, show = K::Switch)]
+    pub lyrics_timing_button: bool,
     #[setting("lyricsKeepScreenOn", FLAG, default = true, show = K::Switch)]
     pub lyrics_keep_screen_on: bool,
     /// Look lyrics up online when the server has no timed ones; needs `third_party_lookups`. Stored as
@@ -542,7 +573,8 @@ pub struct StoredPrefs {
     // Downloads and storage.
     #[setting("wifi", Quality, default = SavedQuality::default(), show = K::Choice(QUALITIES))]
     pub wifi: SavedQuality,
-    #[setting("mobile", Quality, default = SavedQuality { bit_rate: 192, format: "opus".to_string() }, show = K::Choice(QUALITIES))]
+    /// The original file on mobile data too out of the box, as on Wi-Fi; a lower quality is a choice to make.
+    #[setting("mobile", Quality, default = SavedQuality::default(), show = K::Choice(QUALITIES))]
     pub mobile: SavedQuality,
     #[setting("download", Quality, default = SavedQuality::default(), show = K::Choice(QUALITIES))]
     pub download: SavedQuality,

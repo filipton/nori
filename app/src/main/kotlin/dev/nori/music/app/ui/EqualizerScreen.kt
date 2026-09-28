@@ -158,7 +158,7 @@ fun EqualizerScreen(vm: SettingsViewModel) {
                 }
             }
         }
-        LazyRow(contentPadding = PaddingValues(horizontal = Space.gutter, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        LazyRow(Modifier.bleedsToEdges(), contentPadding = edgePadding(horizontal = Space.gutter, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (!graphic) item { Chip(say.addBand, false, onClick = vm::addBand) }
             // On the graphic equalizer a headphone correction is fitted to its sliders.
             item { Chip(say.pastePreset, false) { importing = true } }
@@ -166,7 +166,7 @@ fun EqualizerScreen(vm: SettingsViewModel) {
             item { Chip(say.reset, false, onClick = vm::resetBands) }
         }
         SectionTitle(say.presets)
-        LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        LazyRow(Modifier.bleedsToEdges(), contentPadding = edgePadding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(vm.presets) { preset -> Chip(say.preset(preset.kind), false) { vm.applyPreset(preset) } }
         }
 

@@ -294,6 +294,28 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             val config = androidx.compose.ui.platform.LocalConfiguration.current
             val wide = isWide(config.screenWidthDp, config.screenHeightDp)
             var railWidth by remember { mutableStateOf(0.dp) }
+            // The status bar put away where the setting says (the core's `status_bar_hidden`) - on its side out of
+            // the box, where the screen is short and the page runs to the top edge. A swipe from the edge brings it
+            // back for a moment, as in any full screen app.
+            val barsView = androidx.compose.ui.platform.LocalView.current
+            // The screen kept on where the setting says (the core's `keep_awake`), by the window's own flag, which
+            // the lyrics' switch (on the view) neither sets nor clears. The charger is only watched for a setting
+            // that asks about it, and only while the app is open: otherwise nothing is registered.
+            val charging = rememberCharging(dev.nori.music.ffi.settings.keepAwakeWatchesCharging(prefs.keepAwake))
+            val awake = remember(prefs.keepAwake, wide, charging) { dev.nori.music.ffi.settings.keepAwake(prefs.keepAwake, wide, charging) }
+            androidx.compose.runtime.DisposableEffect(awake) {
+                val window = (barsView.context as? android.app.Activity)?.window
+                if (awake) window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                onDispose { window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+            }
+            val hideBar = remember(prefs.hideStatusBar, wide) { dev.nori.music.ffi.settings.statusBarHidden(prefs.hideStatusBar, wide) }
+            LaunchedEffect(hideBar) {
+                val window = (barsView.context as? android.app.Activity)?.window ?: return@LaunchedEffect
+                val bars = androidx.core.view.WindowCompat.getInsetsController(window, barsView)
+                bars.systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                if (hideBar) bars.hide(androidx.core.view.WindowInsetsCompat.Type.statusBars())
+                else bars.show(androidx.core.view.WindowInsetsCompat.Type.statusBars())
+            }
             // Which way round: the edge the bar stood on is on the right turned one way, on the left the other
             // (TabRail), and the camera on the opposite side.
             val view = androidx.compose.ui.platform.LocalView.current
@@ -305,23 +327,17 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             val cutoutEnd = if (wide && railLeft) cutout.calculateEndPadding(androidx.compose.ui.unit.LayoutDirection.Ltr) else 0.dp
             val pageStart = if (railLeft) railInset else cutoutStart
             val pageEnd = if (railLeft) cutoutEnd else railInset
-            // A turn of the phone is not animated by the system (MainActivity asks for a seamless one): the
-            // bar is laid out again where it already lay, and only its glyphs turn upright, while the page fades
-            // into its new layout - in the span the page's own fades take.
+            // A turn of the phone: the system dissolves the old layout into the new (MainActivity), the bar is laid
+            // out again where it already lay, and its glyphs turn upright from where they were. Nothing here fades
+            // the page itself: a page brought up from nothing under the dissolve was a flash of black.
             val turn = remember { androidx.compose.animation.core.Animatable(0f) }
-            val settle = remember { androidx.compose.animation.core.Animatable(1f) }
             val lastRotation = remember { intArrayOf(rotation) }
             LaunchedEffect(rotation) {
                 val steps = ((rotation - lastRotation[0]) % 4 + 4) % 4
                 lastRotation[0] = rotation
                 if (steps == 0) return@LaunchedEffect
-                val plain = AppMotion.reduce
-                launch {
-                    turn.snapTo(when (steps) { 1 -> -90f; 3 -> 90f; else -> 180f })
-                    if (plain) turn.snapTo(0f) else turn.animateTo(0f, androidx.compose.animation.core.tween(360, easing = androidx.compose.animation.core.FastOutSlowInEasing))
-                }
-                settle.snapTo(0f)
-                settle.animateTo(1f, androidx.compose.animation.core.tween(if (plain) 0 else 260))
+                turn.snapTo(when (steps) { 1 -> -90f; 3 -> 90f; else -> 180f })
+                if (AppMotion.reduce) turn.snapTo(0f) else turn.animateTo(0f, androidx.compose.animation.core.tween(360, easing = androidx.compose.animation.core.FastOutSlowInEasing))
             }
             val density = androidx.compose.ui.platform.LocalDensity.current
             // One look for both halves of the chrome, cross-fading once when the page under it changes.
@@ -335,7 +351,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
               // Everything under the player. Once the player covers it completely it is not drawn at all:
               // a layer at zero alpha is skipped, so a page left animating underneath costs nothing.
               CompositionLocalProvider(LocalWide provides wide, LocalTabTurn provides { turn.value }, LocalPageStart provides pageStart, LocalPageEnd provides pageEnd) {
-              Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (sheet.progress.value >= 1f) 0f else settle.value }) {
+              Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (sheet.progress.value >= 1f) 0f else 1f }) {
               // The strips the rail and the camera stand on are the app's own page; a tinted page paints them over
               // itself (HeroPage), so its colour comes and goes with the page. Painted here in the chrome's
               // colour, which follows a page on a slower fade of its own, they held the album's colour at the
@@ -399,9 +415,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
                   CompositionLocalProvider(LocalStarMarks provides marks) { BottomChrome(player, actions, nav::player, if (wide) 0.dp else tabsHeight, chromeLook) }
               }
               }
-              Box(Modifier.graphicsLayer { alpha = settle.value }) {
-                  PlayerLayer(sheet) { CompositionLocalProvider(LocalStarMarks provides marks) { PlayerScreen(player, actions) } }
-              }
+              PlayerLayer(sheet) { CompositionLocalProvider(LocalStarMarks provides marks) { PlayerScreen(player, actions) } }
               // The tab bar is over the player, not under it: as the player rises it slides down off the
               // screen instead of vanishing under the sheet in one frame. See BottomChrome.
               if (wide) Box(Modifier.align(if (railLeft) Alignment.CenterStart else Alignment.CenterEnd).fillMaxHeight()) {
@@ -659,4 +673,32 @@ private fun PlayerLayer(sheet: PlayerSheet, content: @Composable () -> Unit) {
     ) {
         CompositionLocalProvider(LocalChromeInset provides 0.dp, LocalPlayerShown provides shown) { content() }
     }
+}
+
+/**
+ * Whether the phone is charging, kept up to date from the system's power broadcasts while [watch] is true;
+ * false, and nothing registered, while it is not.
+ */
+@Composable
+private fun rememberCharging(watch: Boolean): Boolean {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var charging by remember { mutableStateOf(false) }
+    androidx.compose.runtime.DisposableEffect(watch) {
+        if (!watch) { charging = false; return@DisposableEffect onDispose {} }
+        // The battery's last state is sticky, so it is read on registering; the plug's two broadcasts then move it.
+        val now = context.registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
+        charging = (now?.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(c: android.content.Context, intent: android.content.Intent) {
+                charging = intent.action == android.content.Intent.ACTION_POWER_CONNECTED
+            }
+        }
+        val filter = android.content.IntentFilter().apply {
+            addAction(android.content.Intent.ACTION_POWER_CONNECTED)
+            addAction(android.content.Intent.ACTION_POWER_DISCONNECTED)
+        }
+        androidx.core.content.ContextCompat.registerReceiver(context, receiver, filter, androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
+        onDispose { context.unregisterReceiver(receiver) }
+    }
+    return charging
 }

@@ -345,6 +345,8 @@ fn metered_and_ahead(client: &Arc<Client>, store: &Arc<Store>, dir: &std::path::
     assert!(store.peek("p-4:0").is_none(), "two ahead on Wi-Fi by default: the next (the engine's own) and this one");
     assert_eq!(net.0.lock().iter().filter(|u| u.ends_with("&id=p-3")).count(), 1, "in one request");
 
+    // Mobile data plays the original file too out of the box; a lower quality there shows the switch.
+    nori_core::settings_store::edit_by_name("mobile", "192:opus");
     let q = nori_engine::core::network_metered(client, true);
     assert_eq!((q.bit_rate, q.format.as_str()), (192, "opus"), "the settings' quality for mobile data");
     let asked = net.0.lock().len();

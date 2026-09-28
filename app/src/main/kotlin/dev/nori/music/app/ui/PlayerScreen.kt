@@ -476,7 +476,10 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
             @Composable fun kept(key: String) = Modifier.sharedElement(rememberSharedContentState(key), this@AnimatedContent)
             // The page's text colour, read while the transport draws.
             val ink = androidx.compose.ui.graphics.ColorProducer { live.color(CoverLook.ON) }
-            PlayerHalves(LocalWide.current, panel = {
+            // On its side the controls' half has nothing of its own to scroll, so a pull down anywhere on it puts
+            // the player away whatever the panel - as the artwork does - while the lyrics and the queue beside it
+            // keep their vertical drag for scrolling.
+            PlayerHalves(LocalWide.current, Modifier.dragsSheet(sheet, enabled = panel != Panel.ART), panel = {
                 // The artwork bleeds to all three edges like the sleeve it is - up under the status bar
                 // as well, which is the whole point: Apple's has no top edge, and giving it one drew a
                 // line across the screen. The handle and the close button float over it instead.
@@ -566,7 +569,7 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                         Modifier.weight(1f).graphicsLayer { alpha = panelFade.read() }
                             // On its side the lyrics and the queue start clear of the camera's punch hole,
                             // as the pages do; only the cover runs under it.
-                            .then(if (across) Modifier.windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.displayCutout.only(androidx.compose.foundation.layout.WindowInsetsSides.Start)) else Modifier)
+                            .then(if (across) Modifier.windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.displayCutout.only(androidx.compose.foundation.layout.WindowInsetsSides.Start)).padding(end = LocalUnderControls.current) else Modifier)
                             .then(if (page == Panel.QUEUE) Modifier.padding(horizontal = 26.dp) else Modifier),
                     ) {
                         if (page == Panel.QUEUE) Queue(vm) else LyricsView(vm, actions, state.playing)
@@ -580,7 +583,7 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                 // that here - the owner found Apple's own spacing too loose on a 20:9 screen, which is
                 // taller than the 19.5:9 those percentages were taken from - and the space that frees
                 // up goes underneath them rather than between them.
-                if (page == Panel.ART) Spacer(Modifier.weight(0.02f))
+                if (page == Panel.ART && !across) Spacer(Modifier.weight(0.02f))
                 // The lyrics view carries its own header - a thumbnail with the title, the favourite and
                 // the menu beside it, the way Apple's does - so this block would be the second copy of it.
                 // Shared between the artwork and the queue, where it stands at another height: one copy moves
@@ -589,6 +592,9 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                 // so between those it fades with the panel. On its side the title stays beside the cover for
                 // lyrics too, since the lyrics view's own header is portrait-only.
                 val titleRow = rememberSharedContentState("title")
+                // On its side the controls are one column beside every panel, laid out the same whichever it is:
+                // the art's spacing is left out (the compact one lyrics and the queue have reads better there), so
+                // nothing in the column moves as the panel changes.
                 if (page != Panel.LYRICS || across) Row(
                     Modifier.fillMaxWidth().sharedElement(titleRow, this@AnimatedContent)
                         .graphicsLayer { alpha = if (titleRow.isMatchFound) 1f else panelFade.read() }
@@ -616,7 +622,7 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                             Column {
                                 LookText(
                                     m.title, { live.color(CoverLook.ON) },
-                                    Modifier.readable(), style = MaterialTheme.typography.titleLarge,
+                                    Modifier.readable(key = m.key), style = MaterialTheme.typography.titleLarge,
                                     maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis,
                                 )
                                 // Artist and album, each on its own line and each a way there. On one line they
@@ -694,7 +700,7 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                     IconButton({ if (!slide.ask(-1)) vm.next() }, Modifier.size(72.dp)) { LookIcon(Icons.Filled.FastForward, say.next, Modifier.size(55.dp), ink) }
                 }
 
-                if (page == Panel.ART) Spacer(Modifier.weight(0.17f))
+                if (page == Panel.ART && !across) Spacer(Modifier.weight(0.17f))
                 Box(kept("volume")) { VolumeRow(vm) }
 
                 Row(kept("icons").fillMaxWidth().padding(top = 2.dp, bottom = 4.dp), Arrangement.SpaceEvenly, Alignment.CenterVertically) {
@@ -705,7 +711,7 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                     OutputButton()
                     PanelButton(Icons.AutoMirrored.Filled.QueueMusic, say.queue, page == Panel.QUEUE, size = 30.dp, nudge = 0.5.dp) { choose(Panel.QUEUE) }
                 }
-                if (page == Panel.ART) Spacer(Modifier.weight(0.19f))
+                if (page == Panel.ART && !across) Spacer(Modifier.weight(0.19f))
             })
             }
             }
@@ -713,6 +719,9 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
       }
     }
 }
+
+/** How much of the sleeve's panel lies under the controls on its side ([PlayerHalves]): the lyrics and queue keep off it. */
+private val LocalUnderControls = androidx.compose.runtime.compositionLocalOf { 0.dp }
 
 /**
  * The player's two parts: [panel] - the sleeve, the lyrics or the queue - and [controls] - the title, the seek
@@ -722,15 +731,22 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
  * (the sleeve its whole square), the controls down the rest.
  */
 @Composable
-private fun PlayerHalves(wide: Boolean, panel: @Composable ColumnScope.() -> Unit, controls: @Composable ColumnScope.() -> Unit) {
+private fun PlayerHalves(wide: Boolean, controlsDrag: Modifier, panel: @Composable ColumnScope.() -> Unit, controls: @Composable ColumnScope.() -> Unit) {
     if (!wide) Column(Modifier.fillMaxSize().navigationBarsPadding()) { panel(); controls() }
     else androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
-        val side = minOf(maxHeight, maxWidth * 0.5f)
-        Row(Modifier.fillMaxSize()) {
-            Column(Modifier.width(side).fillMaxHeight()) { panel() }
+        // Wider than it is tall: the sleeve is a band across the cover, cropped above and below rather than at
+        // the sides. The controls keep their place (the square's edge) and stand over the sleeve's soft edge,
+        // which runs on under them towards the middle; the lyrics and the queue stop where the controls start.
+        val side = maxWidth * 0.55f
+        val controlsAt = minOf(maxHeight, maxWidth * 0.5f)
+        Box(Modifier.fillMaxSize()) {
+            androidx.compose.runtime.CompositionLocalProvider(LocalUnderControls provides (side - controlsAt).coerceAtLeast(0.dp)) {
+                Column(Modifier.width(side).fillMaxHeight()) { panel() }
+            }
             Column(
                 // Clear of the camera's punch hole too, which is on this side when the phone is turned the other way.
-                Modifier.weight(1f).fillMaxHeight().statusBarsPadding().navigationBarsPadding()
+                // The whole half, edge to edge, takes the pull down ([controlsDrag]) before the insets are kept off.
+                Modifier.padding(start = controlsAt).fillMaxSize().then(controlsDrag).statusBarsPadding().navigationBarsPadding()
                     .windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.displayCutout.only(androidx.compose.foundation.layout.WindowInsetsSides.End))
                     .padding(start = 8.dp),
                 verticalArrangement = Arrangement.Center,
@@ -1445,7 +1461,9 @@ private fun SleeveCarousel(
     val shapes = remember { CornerShapes() }
     androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
     val widthPx = constraints.maxWidth.toFloat()
-    val heightPx = constraints.maxHeight.toFloat()
+    // Each record is the cover's square, as tall as the sleeve - or, on a sleeve wider than it is tall (a phone
+    // on its side), as wide, so the picture fills it and is cropped above and below instead of at the sides.
+    val heightPx = maxOf(constraints.maxHeight, constraints.maxWidth).toFloat()
     val sideDp = with(density) { heightPx.toDp() }
     val down = spring<Float>(dampingRatio = 1f, stiffness = 300f, visibilityThreshold = 0.001f)
     // The page's colours follow the record across (see PageShift). Once a record has arrived the song
@@ -2207,16 +2225,26 @@ private fun VolumeRow(vm: PlayerViewModel) {
  * holds the line still, soft edge and all, so a row can stop walking without changing how it looks.
  */
 @Composable
-internal fun Modifier.readable(iterations: Int = READ_OUT): Modifier {
-    if (!LocalPlayerShown.current) return this
+internal fun Modifier.readable(iterations: Int = READ_OUT, key: String? = null): Modifier {
+    // Put away, the player forgets: it reads the title out again the next time it comes into view.
+    if (!LocalPlayerShown.current) { if (key != null) ReadOut.forget(); return this }
+    // [key]: the line is the same one wherever it is drawn (the player's title, in each panel). It remembers
+    // what it measured and that it has begun reading itself out, so a panel change - which draws the title
+    // anew - does not lay it out once without its soft edge and then again with it, and does not walk it from
+    // the start again: that was the title flashing and jumping back each time the lyrics or queue opened.
+    val seen = key?.let(ReadOut::of)
     // What the line needs and what it has. The first size is this element's own - the width the row
     // gives the title - and the second is the text's, measured inside the marquee, which lays it out
     // with no width limit at all. A line that fits is left alone entirely: no walk, and no soft edge
     // either, which would otherwise dim the last letters of a title that merely came close.
-    var room by remember { mutableIntStateOf(0) }
-    var needs by remember { mutableIntStateOf(0) }
+    var room by remember { mutableIntStateOf(seen?.room ?: 0) }
+    var needs by remember { mutableIntStateOf(seen?.needs ?: 0) }
     val over = needs > room + 1
-    return onSizeChanged { room = it.width }
+    // Only the first copy of the line reads it out; one drawn after it (another panel) holds still at the start,
+    // as the line settles, rather than walking it from the beginning again.
+    val walks = remember(seen) { if (seen?.started == true) 0 else iterations }
+    if (seen != null && over && walks > 0) LaunchedEffect(seen) { seen.started = true }
+    return onSizeChanged { room = it.width; seen?.room = it.width }
         .then(
             // A marquee lays its text out unbounded, so there is no ellipsis to fall back on and the
             // line would otherwise end on a half-drawn letter at the edge. It goes soft over the last
@@ -2237,13 +2265,27 @@ internal fun Modifier.readable(iterations: Int = READ_OUT): Modifier {
                 },
         )
         .basicMarquee(
-            iterations = iterations,
+            iterations = walks,
             repeatDelayMillis = 2600,
             initialDelayMillis = 2600,
             spacing = MarqueeSpacing(46.dp),
             velocity = 26.dp,
         )
-        .onSizeChanged { needs = it.width }
+        .onSizeChanged { needs = it.width; seen?.needs = it.width }
+}
+
+/** What a [readable] line with a key has measured and whether it has begun reading itself out, for its next copy. */
+private class ReadOut(val key: String) {
+    var room = 0
+    var needs = 0
+    var started = false
+
+    companion object {
+        // One line at a time: the song's title. A new song is a new key and starts over.
+        private var last: ReadOut? = null
+        fun of(key: String): ReadOut = last?.takeIf { it.key == key } ?: ReadOut(key).also { last = it }
+        fun forget() { last = null }
+    }
 }
 
 /** How many times a line too long for its width reads itself out before it settles; see [readable]. */

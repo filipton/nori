@@ -141,7 +141,7 @@ private fun MixArt(card: MixCard, size: androidx.compose.ui.unit.Dp, onClick: ((
 fun MixTiles(vm: MixesViewModel = viewModel()) {
     val cards by vm.cards.collectAsStateWithLifecycle()
     val nav = LocalNav.current
-    LazyRow(contentPadding = PaddingValues(horizontal = Space.gutter), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    LazyRow(Modifier.bleedsToEdges(), contentPadding = edgePadding(horizontal = Space.gutter), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         items(cards, key = { it.id }) { c -> MixArt(c, 150.dp, onClick = { nav.mix(c.id) }) }
     }
 }
@@ -338,7 +338,7 @@ fun StatsScreen(vm: HistoryViewModel = viewModel()) {
             IconButton(nav::back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, say.back) }
             Text(say.listening, Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall)
         }
-        LazyRow(contentPadding = PaddingValues(horizontal = Space.gutter, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        LazyRow(Modifier.bleedsToEdges(), contentPadding = edgePadding(horizontal = Space.gutter, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(periods) { (d, label) -> Chip(label, days == d) { days = d } }
         }
         val page = s ?: return@Column

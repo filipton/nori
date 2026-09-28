@@ -1,5 +1,7 @@
 package dev.nori.music.app.ui
 
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.ui.layout.layout
 import androidx.compose.runtime.setValue
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Pause
@@ -299,6 +301,46 @@ fun androidx.compose.ui.draw.CacheDrawScope.sleeveWashAcross(
         if (floor != null) drawRect(floor, topLeft = floorLeft, size = floorSize)
     }
 }
+
+/**
+ * A row that scrolls sideways (a shelf of covers, a row of chips), run out past the page's sides on a phone on
+ * its side, under the strips the page is kept off there - the camera's punch hole at one end, the tab rail
+ * at the other - where its items fade out towards the screen's edge instead of stopping on a line, as a
+ * list upright fades out under the floating bar. Its first and last items still start and end where the
+ * page does: the row's padding takes the strips back ([edgePadding]). Upright there are no strips and this
+ * is nothing.
+ */
+@Composable
+fun Modifier.bleedsToEdges(): Modifier {
+    val start = LocalPageStart.current
+    val end = LocalPageEnd.current
+    if (start == 0.dp && end == 0.dp) return this
+    return layout { measurable, constraints ->
+        val w = constraints.maxWidth + start.roundToPx() + end.roundToPx()
+        val placeable = measurable.measure(constraints.copy(minWidth = w, maxWidth = w))
+        layout(constraints.maxWidth, placeable.height) { placeable.place(-start.roundToPx(), 0) }
+    }.graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
+        .drawWithCache {
+            val l = start.toPx()
+            val r = end.toPx()
+            val inFade = Brush.horizontalGradient(0f to Color.Transparent, 1f to Color.Black, startX = 0f, endX = l)
+            val outFade = Brush.horizontalGradient(0f to Color.Black, 1f to Color.Transparent, startX = size.width - r, endX = size.width)
+            onDrawWithContent {
+                drawContent()
+                if (l > 0f) drawRect(inFade, size = Size(l, size.height), blendMode = androidx.compose.ui.graphics.BlendMode.DstIn)
+                if (r > 0f) drawRect(outFade, topLeft = Offset(size.width - r, 0f), size = Size(r, size.height), blendMode = androidx.compose.ui.graphics.BlendMode.DstIn)
+            }
+        }
+}
+
+/** A sideways row's padding: [horizontal] and [vertical], and at each end the strip it runs out under ([bleedsToEdges]). */
+@Composable
+fun edgePadding(horizontal: Dp = 0.dp, vertical: Dp = 0.dp): PaddingValues =
+    PaddingValues(start = horizontal + LocalPageStart.current, end = horizontal + LocalPageEnd.current, top = vertical, bottom = vertical)
+
+/** [edgePadding] with the same padding on every side. */
+@Composable
+fun edgePadding(all: Dp): PaddingValues = edgePadding(horizontal = all, vertical = all)
 
 /**
  * How the app draws and times its pages - every gradient's stops, the waits, the fades and the meter's

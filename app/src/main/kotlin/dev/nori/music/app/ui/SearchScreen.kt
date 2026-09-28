@@ -51,7 +51,7 @@ fun SearchScreen(actions: ActionsViewModel, vm: SearchViewModel = viewModel()) {
         if (ui.searching) LinearProgressIndicator(Modifier.fillMaxWidth())
         ui.error?.let { Text(it, Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
 
-        if (ui.scopesOffered) LazyRow(contentPadding = PaddingValues(horizontal = Space.gutter), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (ui.scopesOffered) LazyRow(Modifier.bleedsToEdges(), contentPadding = edgePadding(horizontal = Space.gutter), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(scopes) { (scope, label) -> Chip(label, ui.scope == scope) { vm.setScope(scope) } }
         }
         val r = ui.shown
@@ -70,7 +70,7 @@ fun SearchScreen(actions: ActionsViewModel, vm: SearchViewModel = viewModel()) {
         LazyColumn(contentPadding = PaddingValues(bottom = LocalChromeInset.current)) {
             if (r.artists.isNotEmpty()) item(key = "artists") {
                 SectionTitle(say.artists)
-                LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                LazyRow(Modifier.bleedsToEdges(), contentPadding = edgePadding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(r.artists, key = { it.id }) { a ->
                         ArtistCard(a.name, "", vm.cover(a.coverArt, CoverSize.ROW), 96.dp, onClick = { vm.remember(); nav.artist(a.id, a) })
                     }
@@ -78,7 +78,7 @@ fun SearchScreen(actions: ActionsViewModel, vm: SearchViewModel = viewModel()) {
             }
             if (r.albums.isNotEmpty()) item(key = "albums") {
                 SectionTitle(say.albums)
-                LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                LazyRow(Modifier.bleedsToEdges(), contentPadding = edgePadding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(r.albums, key = { it.id }) { a -> AlbumCard(a, vm.cover(a.coverArt, CoverSize.CARD), 120.dp, { vm.remember(); nav.album(a.id, a) }) }
                 }
             }

@@ -156,7 +156,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.shelf(
         val nav = LocalNav.current
         Column(Modifier.arriving(arrival, place, rise)) {
             SectionTitle(title)
-            LazyRow(contentPadding = PaddingValues(horizontal = Space.gutter), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            LazyRow(Modifier.bleedsToEdges(), contentPadding = edgePadding(horizontal = Space.gutter), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 items(albums, key = { it.id }, contentType = { "album" }) { a -> AlbumCard(a, vm.cover(a.coverArt, CoverSize.CARD), 150.dp, { nav.album(a.id, a) }) }
             }
         }
@@ -176,7 +176,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.playlistShelf(
         val nav = LocalNav.current
         Column(Modifier.arriving(arrival, place, rise)) {
             SectionTitle(title)
-            LazyRow(contentPadding = PaddingValues(horizontal = Space.gutter), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            LazyRow(Modifier.bleedsToEdges(), contentPadding = edgePadding(horizontal = Space.gutter), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 items(playlists, key = { it.id }, contentType = { "playlist" }) { p ->
                     CoverCard(p.name, remember(p.songCount) { say.songs(p.songCount.toInt()) }, vm.cover(p.coverArt, CoverSize.CARD), 150.dp, { nav.playlist(p.id, p) })
                 }
@@ -200,7 +200,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.songShelf(
     item(key = title, contentType = "shelf") {
         Column(Modifier.arriving(arrival, place, rise)) {
             SectionTitle(title)
-            LazyRow(contentPadding = PaddingValues(horizontal = Space.gutter), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            LazyRow(Modifier.bleedsToEdges(), contentPadding = edgePadding(horizontal = Space.gutter), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 itemsIndexed(songs, key = { _, s -> s.id }, contentType = { _, _ -> "song" }) { i, s ->
                     CoverCard(s.title, s.artist, vm.cover(s.coverArt, CoverSize.CARD), 150.dp, { actions.play(songs, i, from) })
                 }

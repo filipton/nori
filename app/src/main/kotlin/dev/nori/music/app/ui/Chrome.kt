@@ -358,7 +358,13 @@ private fun TabButton(tab: Tab, selected: Boolean, content: Color, accent: Color
         Alignment.Center,
     ) {
         Column(Modifier.graphicsLayer { rotationZ = turn() }, horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(tab.icon, null, Modifier.size(if (selected) 26.dp else 23.dp), tint = colour)
+            // One box for the glyph whichever tab is lit; the lit one is only drawn larger in it, so a tap changes
+            // nothing about where anything on the bar is - growing the box moved the label and the bar with it.
+            Icon(
+                tab.icon, null,
+                Modifier.size(26.dp).graphicsLayer { val k = if (selected) 1f else 23f / 26f; scaleX = k; scaleY = k },
+                tint = colour,
+            )
             Text(
                 tab.label, Modifier.padding(top = 2.dp),
                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5f.sp, letterSpacing = 0.sp),

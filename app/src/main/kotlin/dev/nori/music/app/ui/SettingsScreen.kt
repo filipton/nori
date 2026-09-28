@@ -136,6 +136,23 @@ private fun Picks(row: SettingRow.Picks, onChange: (String, Boolean) -> Unit) {
     }
 }
 
+/** One setting with a few values as chips, the one it has lit; a tap chooses another. See [Picks]. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun ChipChoice(row: SettingRow.ChipChoice, onChange: (String) -> Unit) {
+    Column {
+        Column(Modifier.fillMaxWidth().spotlight(row.key).padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Text(row.title, style = MaterialTheme.typography.bodyLarge)
+            Text(row.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            androidx.compose.foundation.layout.FlowRow(
+                Modifier.padding(top = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) { row.options.forEach { o -> Chip(o.label, o.value == row.chosen) { if (o.value != row.chosen) onChange(o.value) } } }
+        }
+        Hairline(startIndent = 16.dp)
+    }
+}
+
 /** What a setting the app is going to ignore looks like: still there, still readable, plainly not live. */
 private const val DIMMED = 0.38f
 
@@ -436,6 +453,7 @@ private fun SettingsSectionRows(vm: SettingsViewModel, section: SettingsSection,
                 is SettingRow.Toggle -> Toggle(row.title, row.detail, row.on, enabled = row.enabled, key = row.key) { on -> vm.set(row.name, on.toString()) }
                 is SettingRow.Choice -> Choice(row) { v -> vm.set(row.name, v) }
                 is SettingRow.Picks -> Picks(row) { name, on -> vm.set(name, on.toString()) }
+                is SettingRow.ChipChoice -> ChipChoice(row) { v -> vm.set(row.name, v) }
                 is SettingRow.Note -> Text(row.text, Modifier.padding(horizontal = Space.gutter, vertical = 8.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 is SettingRow.Link -> {
                     val dim = if (row.dimmed) DIMMED else 1f

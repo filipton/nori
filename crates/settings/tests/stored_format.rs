@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use nori_settings::settings::{band_from, load, save, AutoFillBasis, AutoFillKind, CrossfadeCurve, DownloadBeats, EqMode, GainMode, HomeRow, MaxRate, PrefValue, SavedQuality, SavedServer, StoredPrefs, SwipeAction, TapAction, ThemeMode};
+use nori_settings::settings::{band_from, load, save, AutoFillBasis, AutoFillKind, CrossfadeCurve, DownloadBeats, EqMode, GainMode, HideStatusBar, HomeRow, KeepAwake, MaxRate, PrefValue, SavedQuality, SavedServer, StoredPrefs, SwipeAction, TapAction, ThemeMode};
 use nori_settings::settings_model::{specs, value_of};
 
 const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/stored_format.txt");
@@ -139,6 +139,9 @@ fn sample() -> StoredPrefs {
         paxsenix_key: "pax".into(),
         better_lyrics_key: "better".into(),
         theme: ThemeMode::Dark,
+        hide_status_bar: HideStatusBar::Always,
+        lyrics_timing_button: false,
+        keep_awake: KeepAwake::SidewaysCharging,
         amoled: true,
         player_colours: false,
         album_colours: true,
