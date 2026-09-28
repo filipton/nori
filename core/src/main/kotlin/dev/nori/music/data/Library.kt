@@ -337,4 +337,9 @@ class Library(
 
     /** The signed prefix changes with the server, the credentials or the address in use. */
     fun onServerChanged() { coverPrefix = null }
+
+    /** Another profile is active: its core keeps its own star marks, and this one's are not its hearts. */
+    fun onProfileChanged() {
+        _starMarks.value = StarMarks(emptyMap(), emptyMap(), emptyMap())
+    }
 }

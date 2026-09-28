@@ -1,7 +1,6 @@
 //! The "For you" row as the core's calls: its draws are held per core. What it offers and how each is
 //! drawn is nori-library's.
 
-use std::collections::HashMap;
 
 use crate::{db, stars, Core, Song};
 use nori_library::pages::total_seconds;
@@ -34,7 +33,8 @@ impl Core {
     /// song leaves the list under the finger instead of after the server's answer). Provider tracks are
     /// left out like everywhere a list is played unasked. True when the favourites changed.
     pub fn mix_favourites(&self, starred_songs: Vec<Song>) -> bool {
-        stars::with_marks(|marks| self.favourites_with(starred_songs, marks))
+        let marks = self.stars.lock().clone();
+        self.favourites_with(starred_songs, &marks)
     }
 
     /// The "For you" row with the covers of what is drawn: favourites first, then the mixes when `taste`.
@@ -103,9 +103,8 @@ impl Core {
 }
 
 impl Core {
-    fn favourites_with(&self, starred_songs: Vec<Song>, marks: &HashMap<String, bool>) -> bool {
-        let mut m = stars::Marks::new(marks);
-        let kept = distinct(starred_songs.into_iter().filter(|s| playable(s) && m.kept("id", &s.id)));
+    fn favourites_with(&self, starred_songs: Vec<Song>, marks: &stars::StarMarks) -> bool {
+        let kept = distinct(starred_songs.into_iter().filter(|s| playable(s) && marks.kept(crate::client::Starrable::Song, &s.id)));
         self.board(|b| {
             let changed = b.favourites.as_ref() != Some(&kept);
             b.favourites = Some(kept);
@@ -190,14 +189,18 @@ pub(crate) mod tests {
         let other = Core::new(String::new(), "t".into()).unwrap();
         assert_eq!(core.mix_page(FAVOURITES_MIX.into()), MixLookup::NotDrawn);
         let starred = vec![song("1", "t", "a", "b", "", 0), song("2", "t", "a", "b", "", 0), song("ext-3", "t", "a", "b", "", 0), song("1", "t", "a", "b", "", 0)];
-        assert!(core.favourites_with(starred.clone(), &HashMap::new()));
-        assert!(!core.favourites_with(starred.clone(), &HashMap::new()));
+        assert!(core.mix_favourites(starred.clone()));
+        assert!(!core.mix_favourites(starred.clone()));
         assert_eq!(ids(&sheet(&core, FAVOURITES_MIX).songs), ["1", "2"]);
-        assert!(core.favourites_with(starred, &HashMap::from([("id:1".to_string(), false)])));
+        core.stars.lock().mark(crate::client::Starrable::Song, "1".into(), false);
+        assert!(core.mix_favourites(starred.clone()));
         let fav = sheet(&core, FAVOURITES_MIX);
         assert_eq!(ids(&fav.songs), ["2"]);
         assert!(fav.favourites && !fav.refreshable);
         assert_eq!(core.mix_cards(false)[0].covers, ["cv-2"]);
         assert_eq!(other.mix_page(FAVOURITES_MIX.into()), MixLookup::NotDrawn);
+        // Its marks are its own too: a heart taken back on one server leaves another's favourites as they are.
+        other.mix_favourites(starred);
+        assert_eq!(ids(&sheet(&other, FAVOURITES_MIX).songs), ["1", "2"]);
     }
 }

@@ -167,6 +167,7 @@ class Nori private constructor(private val context: Context) {
         settings.update { p -> p.withServers(dev.nori.music.ffi.settings.serversActivated(p.serverList(), profile)) }
         http.configure(profile)
         library.onServerChanged()
+        library.onProfileChanged()
     }
 
     /** Settings that do not need the server asked again: headers, Wi-Fi only, music folder, name. */

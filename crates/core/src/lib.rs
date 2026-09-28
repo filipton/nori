@@ -291,6 +291,8 @@ pub struct Core {
     held: Arc<Mutex<transfers::Held>>,
     /// This core's "For you" row (mixes/board.rs).
     board: Mutex<mixes::board::Board>,
+    /// This session's star changes on this server (library.rs `star`), laid over its favourites.
+    stars: Mutex<stars::StarMarks>,
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
@@ -307,6 +309,7 @@ impl Core {
             server: RwLock::new(api::Server::default()),
             held: Arc::new(Mutex::new(held)),
             board: Mutex::new(mixes::board::Board::default()),
+            stars: Mutex::new(stars::StarMarks::default()),
         });
         // The newest core is the one the app is using: the parts of the core that run without Kotlin (the
         // transition planner on the audio thread, analyses finished in the background, a song asked

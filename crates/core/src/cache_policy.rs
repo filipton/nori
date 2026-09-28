@@ -260,7 +260,7 @@ impl Client {
         let c = &self.core;
         Ok(match parser {
             Parser::AlbumList => Page::Albums { v: c.parse_album_list(body)? },
-            Parser::FavouriteAlbums => Page::Albums { v: crate::stars::star_overlay_albums(c.parse_album_list(body)?) },
+            Parser::FavouriteAlbums => Page::Albums { v: c.stars.lock().overlay_albums(c.parse_album_list(body)?) },
             Parser::Artists => Page::Artists { v: c.parse_artists(body)? },
             Parser::Album => Page::AlbumPage { v: c.parse_album(body)? },
             Parser::AlbumSongs => Page::Songs { v: c.parse_album(body)?.songs },
@@ -273,7 +273,7 @@ impl Client {
             Parser::PlaylistSongs => Page::Songs { v: c.parse_playlist(body)?.songs },
             // This session's marks are laid over the favourites wherever they are read, stored or fresh,
             // so an unstarred item leaves them at once rather than when the server's new answer comes.
-            Parser::Starred => Page::StarredPage { v: crate::stars::star_overlay(c.parse_starred(body)?) },
+            Parser::Starred => Page::StarredPage { v: c.stars.lock().overlay(c.parse_starred(body)?) },
             Parser::Genres => Page::Genres { v: c.parse_genres(body)? },
             Parser::Radio => Page::Stations { v: c.parse_radio(body)? },
             Parser::Lyrics => {
@@ -449,7 +449,7 @@ mod tests {
         let (c, fake) = setup();
         fake.answer(r#"{"subsonic-response":{"status":"ok","albumList2":{"album":[{"id":"fa-1","name":"A"},{"id":"fa-2","name":"B"}]}}}"#);
         block(c.read_fetch(Read::AlbumList { kind: "starred".into(), size: 20, offset: 0, genre: None }, None)).unwrap();
-        crate::stars::star_mark(crate::client::Starrable::Album, "fa-2".into(), false);
+        c.core.stars.lock().mark(crate::client::Starrable::Album, "fa-2".into(), false);
         match c.read_stored(Read::FavouriteAlbums { size: 20 }).unwrap().page {
             Some(Page::Albums { v }) => assert_eq!(v.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["fa-1"]),
             other => panic!("{other:?}"),
