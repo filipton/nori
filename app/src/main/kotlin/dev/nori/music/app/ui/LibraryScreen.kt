@@ -107,7 +107,7 @@ fun LibraryScreen(actions: ActionsViewModel) {
         LargeTitle(say.library)
         // A scrolling row of pills, not a tab strip with an underline: twelve sections in a Material tab
         // row reads as a toolbar, and the library is a place to browse.
-        LazyRow(contentPadding = PaddingValues(horizontal = Space.gutter, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        LazyRow(Modifier.bleedsToEdges(), contentPadding = edgePadding(horizontal = Space.gutter, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             itemsIndexed(sections, key = { _, s -> s.ordinal }) { i, s -> Chip(say.librarySection(s), tab == i) { tab = i } }
         }
         // Only the visible section is composed, so only its view model loads anything.
@@ -216,7 +216,7 @@ fun SongsScreen(actions: ActionsViewModel, decade: Int?, vm: SongsViewModel = vi
     LaunchedEffect(list, songs.size) { snapshotFlow { (list.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0) >= songs.size - 40 }.collect { if (it) vm.loadMore() } }
     Column {
         if (decade != null) SectionTitle(remember(decade) { say.decade(decade) })
-        LazyRow(contentPadding = PaddingValues(horizontal = Space.gutter), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        LazyRow(Modifier.bleedsToEdges(), contentPadding = edgePadding(horizontal = Space.gutter), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             item { Chip(say.starredFavourites, starred) { vm.setStarredOnly(!starred) } }
             items(SongSort.entries) { s -> Chip(say.songSort(s.name), sort == s) { vm.setSort(s) } }
         }
@@ -307,7 +307,7 @@ private fun Favourites(actions: ActionsViewModel, vm: StarredViewModel = viewMod
                 )
             }
             if (s.albums.isNotEmpty()) item(key = "albums") {
-                LazyRow(contentPadding = PaddingValues(Space.gutter), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                LazyRow(Modifier.bleedsToEdges(), contentPadding = edgePadding(Space.gutter), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(s.albums, key = { it.id }) { a -> AlbumCard(a, vm.cover(a.coverArt, CoverSize.CARD), 120.dp, { nav.album(a.id, a) }) }
                 }
             }

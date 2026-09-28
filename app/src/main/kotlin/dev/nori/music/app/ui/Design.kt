@@ -1,5 +1,7 @@
 package dev.nori.music.app.ui
 
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.ui.layout.layout
 import androidx.compose.runtime.setValue
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Pause
@@ -299,6 +301,41 @@ fun androidx.compose.ui.draw.CacheDrawScope.sleeveWashAcross(
         if (floor != null) drawRect(floor, topLeft = floorLeft, size = floorSize)
     }
 }
+
+/**
+ * A row that scrolls sideways (a shelf of covers, a row of chips), run out past the page's side on a phone on
+ * its side, under the strip the page is kept off there - the camera's punch hole - where its items fade out
+ * towards the screen's edge instead of stopping on a line. Its first item still starts where the page
+ * does: the row's padding takes the strip back ([edgePadding]). Upright there is no strip and this is nothing.
+ */
+@Composable
+fun Modifier.bleedsToEdges(): Modifier {
+    val start = LocalPageStart.current
+    if (start == 0.dp) return this
+    return layout { measurable, constraints ->
+        val extra = start.roundToPx()
+        val w = constraints.maxWidth + extra
+        val placeable = measurable.measure(constraints.copy(minWidth = w, maxWidth = w))
+        layout(constraints.maxWidth, placeable.height) { placeable.place(-extra, 0) }
+    }.graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
+        .drawWithCache {
+            val edge = start.toPx()
+            val fade = Brush.horizontalGradient(0f to Color.Transparent, 1f to Color.Black, startX = 0f, endX = edge)
+            onDrawWithContent {
+                drawContent()
+                drawRect(fade, size = Size(edge, size.height), blendMode = androidx.compose.ui.graphics.BlendMode.DstIn)
+            }
+        }
+}
+
+/** A sideways row's padding: [horizontal] and [vertical], and at the start the strip it runs out under ([bleedsToEdges]). */
+@Composable
+fun edgePadding(horizontal: Dp = 0.dp, vertical: Dp = 0.dp): PaddingValues =
+    PaddingValues(start = horizontal + LocalPageStart.current, end = horizontal, top = vertical, bottom = vertical)
+
+/** [edgePadding] with the same padding on every side. */
+@Composable
+fun edgePadding(all: Dp): PaddingValues = edgePadding(horizontal = all, vertical = all)
 
 /**
  * How the app draws and times its pages - every gradient's stops, the waits, the fades and the meter's
