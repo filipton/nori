@@ -26,7 +26,7 @@ use nori_core::settings_store::{self, APPLY_AUDIO, APPLY_GAIN, PLAYER, REPLAN, S
 use nori_core::{AlbumDetail, ArtistDetail, Core, OriginKind, PageOrigin, PlaylistDetail, ServerConfig, Song};
 use nori_covers::loader::{Config as CoverConfig, Loader};
 use nori_covers::memory::Image;
-use nori_engine::core::{settings, CoreApp, CoreLibrary, CoreOrder, CoreQueue, Downloader, Measurer};
+use nori_engine::core::{settings, CoreApp, CoreLibrary, CoreOrder, CoreQueue, Downloader, Measurer, OutputVolume};
 use nori_engine::{AudioOutput, Body, ByteSource, Config, Engine, Event, OpenError, State, Status, Store};
 use nori_http::Http;
 use nori_look::cover::CoverColours;
@@ -293,6 +293,8 @@ pub struct Session {
     pub downloader: Arc<Downloader>,
     pub covers: Option<Arc<Loader>>,
     pub volume: Volume,
+    /// [`Session::volume`] as dB below full, for loudness compensation.
+    loudness: Arc<OutputVolume>,
     pub search: Arc<SearchSession>,
     pub offline: bool,
     mpris: Option<nori_mpris::Mpris>,
@@ -393,16 +395,17 @@ impl Session {
         let volume = output.volume();
         volume.set(own::number(own::VOLUME, 1.0));
         // Before the engine starts, so its first chain has the loudness compensation for this volume.
-        nori_engine::core::set_output_volume_db(if volume.get() > 0.0 { 20.0 * (volume.get() as f64).log10() } else { -96.0 });
+        let loudness = Arc::new(OutputVolume::default());
+        loudness.set(if volume.get() > 0.0 { 20.0 * (volume.get() as f64).log10() } else { -96.0 });
         let output: Box<dyn AudioOutput> = Box::new(output);
         let store = Store::open(o.data.join("music"), prefs.cache_mb.max(0) as u64 * 1024 * 1024, Box::new(CoreOrder)).map_err(|e| format!("the music directory: {e}"))?;
         let audio = Arc::new(Audio { http: o.http.clone(), offline: o.offline });
         let downloader = Downloader::new(core.clone(), client.clone(), audio.clone(), store.clone());
         // A song the network would not bring goes to the offline bridge (`Event::Bridge`, `bridge`).
-        let app = CoreApp::new().measuring(Measurer::new(core.clone(), client.clone(), store.clone())).per_device(core.clone()).bridging();
+        let app = CoreApp::new().measuring(Measurer::new(core.clone(), client.clone(), store.clone())).per_device(core.clone()).bridging().volume(loudness.clone());
         let library = CoreLibrary { client: client.clone(), bytes: audio, metered: false, store: Some(store.clone()) };
         let tx = o.tx.clone();
-        let engine = Engine::start(library, app, CoreQueue, output, None, Config { memory_mb: 256, settings: settings(&prefs), ..Config::default() }, move |e| {
+        let engine = Engine::start(library, app, CoreQueue, output, None, Config { memory_mb: 256, settings: settings(&prefs, loudness.db()), ..Config::default() }, move |e| {
             let _ = tx.send(Msg::Engine(e));
         });
         let engine = Arc::new(engine);
@@ -415,7 +418,7 @@ impl Session {
         };
         // The songs the last run left in the queue, picked up where they were.
         let keeper = Keeper::start(core.clone(), engine.clone());
-        let s = Session { core, client, engine, store, downloader, covers, volume, search: SearchSession::new(), offline: o.offline, mpris, keeper, tx: o.tx };
+        let s = Session { core, client, engine, store, downloader, covers, volume, loudness, search: SearchSession::new(), offline: o.offline, mpris, keeper, tx: o.tx };
         s.restore();
         // Downloads a previous run left unfinished carry on.
         if !s.offline && s.core.download_counts().pending > 0 {
@@ -706,9 +709,9 @@ impl Session {
     /// dB below full, and the chain is set up again when that moves the sound.
     pub fn volume_changed(&self, v: f32) {
         let db = if v > 0.0 { 20.0 * (v as f64).log10() } else { -96.0 };
-        if nori_engine::core::set_output_volume_db(db) {
+        if self.loudness.set(db) {
             if let Some(p) = settings_store::settings_current().filter(|p| p.loudness) {
-                self.engine.set_settings(settings(&p));
+                self.engine.set_settings(settings(&p, self.loudness.db()));
             }
         }
     }
@@ -716,7 +719,7 @@ impl Session {
     /// What a change of the kept settings asks of the engine.
     pub fn apply(&self, effect: u32, prefs: &StoredPrefs) {
         if effect & (APPLY_AUDIO | SOUND | PLAYER) != 0 {
-            self.engine.set_settings(settings(prefs));
+            self.engine.set_settings(settings(prefs, self.loudness.db()));
         }
         if effect & APPLY_GAIN != 0 {
             self.engine.gain_changed();

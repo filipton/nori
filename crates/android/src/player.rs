@@ -38,7 +38,7 @@ use jni::sys::{jboolean, jfloat, jint, jlong, jstring};
 use jni::{JNIEnv, JavaVM};
 use nori_engine::ahead::{Ahead, Entry, Keeping};
 use nori_engine::arriving::Listening;
-use nori_engine::core::{ahead_songs, is_radio, key_format, measure_as_it_comes, measuring_ahead, settings, CoreApp, CoreQueue};
+use nori_engine::core::{ahead_songs, is_radio, key_format, measure_as_it_comes, measuring_ahead, settings, CoreApp, CoreQueue, OutputVolume};
 use nori_engine::{Body, ByteSource, Cancel, Coded, Coding, Config, Device, Engine, Event, Library, Located, OffloadOutput, OpenError, OutputFacts, OutputFormat, Source, State, Support};
 use nori_player::transitions::WindowSong;
 use parking_lot::Mutex;
@@ -1340,6 +1340,8 @@ struct Player {
     jumped: Mutex<Option<(i64, Instant)>>,
     /// When the engine was last asked to look ([`look_now`]), monotonic ms.
     looked_ms: AtomicI64,
+    /// The music volume as Kotlin last told it ([`set_volume`]), for loudness compensation.
+    volume: Arc<OutputVolume>,
 }
 
 /// The players alive, by the handle Kotlin holds. A handle is a number, never a pointer: a door called
@@ -1375,7 +1377,9 @@ extern "system" fn create(mut env: JNIEnv, _: JClass, sdk: jint, float: jboolean
     let output = TrackOutput::new(Box::new(JavaOpener { sdk }), float != 0, shared.clone());
     let stations = Arc::new(Mutex::new(Vec::new()));
     let library = AndroidLibrary { stations: stations.clone() };
-    let sound = nori_core::settings_store::settings_current().map(|p| settings(&p)).unwrap_or_default();
+    // Kotlin tells the volume once loudness compensation is watched (VolumeWatch): all the way up until then.
+    let volume = Arc::new(OutputVolume::default());
+    let sound = nori_core::settings_store::settings_current().map(|p| settings(&p, volume.db())).unwrap_or_default();
     let config = Config { memory_mb: memory_mb.max(16) as u32, settings: sound, ..Config::default() };
     let events = Arc::new(Events::default());
     let tell = events.clone();
@@ -1384,10 +1388,10 @@ extern "system" fn create(mut env: JNIEnv, _: JClass, sdk: jint, float: jboolean
     let chip = JAVA.get().is_some_and(|j| j.offload.is_some()) && sdk >= 29;
     let offloaded: Option<Box<dyn OffloadOutput>> = chip.then(|| Box::new(JavaOffload::new(offload.clone())) as Box<dyn OffloadOutput>);
     log(&format!("the engine starts: API {sdk}, {} output, {} MB of memory, offload {}", if float != 0 { "float" } else { "16-bit" }, config.memory_mb, if chip { "possible" } else { "not on this Android" }));
-    let app = CoreApp::new().bridging();
+    let app = CoreApp::new().bridging().volume(volume.clone());
     let engine = Engine::start(library, app, CoreQueue, Box::new(output), offloaded, config, move |e| tell.push(e));
     let h = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
-    PLAYERS.lock().push((h, Arc::new(Player { engine, shared, events, offload, stations, jumped: Mutex::new(None), looked_ms: AtomicI64::new(i64::MIN / 2) })));
+    PLAYERS.lock().push((h, Arc::new(Player { engine, shared, events, offload, stations, jumped: Mutex::new(None), looked_ms: AtomicI64::new(i64::MIN / 2), volume })));
     h
 }
 
@@ -1480,7 +1484,7 @@ extern "system" fn set_tuning(h: jlong, on: jboolean) {
 /// The sound and the controls' fades as the core's settings are now.
 extern "system" fn apply_settings(h: jlong) {
     if let (Some(p), Some(prefs)) = (player(h), nori_core::settings_store::settings_current()) {
-        p.engine.set_settings(settings(&prefs));
+        p.engine.set_settings(settings(&prefs, p.volume.db()));
     }
 }
 
@@ -1553,13 +1557,14 @@ extern "system" fn gain_reduction_db(h: jlong) -> jfloat {
 
 /// The music volume is now step `index` of `max` (`db` the platform's own figure for it, NaN without
 /// one), told only while loudness compensation is on: the chain is set up again when that moves the
-/// sound (`nori_engine::core::set_output_volume_db`), and not otherwise.
+/// sound (`OutputVolume::set`), and not otherwise.
 extern "system" fn set_volume(h: jlong, index: jint, max: jint, db: jfloat) {
     let db = nori_player::contour::volume_db(index, max, db);
-    if !nori_engine::core::set_output_volume_db(db) {
+    let Some(p) = player(h) else { return };
+    if !p.volume.set(db) {
         return;
     }
-    if let (Some(p), Some(prefs)) = (player(h), nori_core::settings_store::settings_current()) {
+    if let Some(prefs) = nori_core::settings_store::settings_current() {
         if prefs.loudness {
             // Once per step of the volume keys at most: the line says what the chain was set up for.
             let s = nori_player::contour::design(prefs.loudness_ref_phon as f64, db);
@@ -1570,7 +1575,7 @@ extern "system" fn set_volume(h: jlong, index: jint, max: jint, db: jfloat) {
                 s.high.map_or(0.0, |b| b.gain_db),
                 s.pre_db
             ));
-            p.engine.set_settings(settings(&prefs));
+            p.engine.set_settings(settings(&prefs, p.volume.db()));
         }
     }
 }

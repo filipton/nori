@@ -115,7 +115,7 @@ impl Rig {
         let library = CoreLibrary { client, bytes: net, metered: false, store: Some(store) };
         let card = Card::new();
         let clock = Virtual::default();
-        let engine = Engine::start_on(library, CoreApp::new(), CoreQueue, Box::new(card.clone()), None, Config { memory_mb: 128, settings: settings(&prefs), ..Config::default() }, clock.clone(), |_| {});
+        let engine = Engine::start_on(library, CoreApp::new(), CoreQueue, Box::new(card.clone()), None, Config { memory_mb: 128, settings: settings(&prefs, 0.0), ..Config::default() }, clock.clone(), |_| {});
         engine.queue_changed();
         Rig { engine, time: Stepper::new(clock, card.pull.clone()), _dir: dir }
     }
@@ -142,7 +142,7 @@ impl Rig {
     /// What PlaybackService does with a change's effects.
     fn relay(&self, effect: u32) {
         if effect & APPLY_AUDIO != 0 {
-            self.engine.set_settings(settings(&nori_core::settings_store::settings_current().unwrap()));
+            self.engine.set_settings(settings(&nori_core::settings_store::settings_current().unwrap(), 0.0));
         }
         if effect & REPLAN != 0 {
             self.engine.replan();
@@ -247,7 +247,7 @@ fn automix_and_mixing_albums_switched_on_right_before_an_album_is_played_mix_it(
     let mut prefs = nori_core::settings_store::settings_current().unwrap();
     prefs.auto_mix = false;
     nori_core::settings_store::settings_put(prefs.clone());
-    rig.engine.set_settings(settings(&prefs));
+    rig.engine.set_settings(settings(&prefs, 0.0));
     rig.engine.play_at(2, 0);
     assert!(rig.until(20, |r| r.engine.status().index == Some(2) && r.engine.status().position_ms > 2_000));
     let a = rig.set_only("crossfadeKeepAlbums", "false");

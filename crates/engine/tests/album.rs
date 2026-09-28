@@ -188,7 +188,7 @@ impl Rig {
         };
         let card = Card::new();
         let clock = Virtual::default();
-        let engine = Engine::start_on(library, app, CoreQueue, Box::new(card.clone()), None, Config { memory_mb: 256, settings: settings(&prefs), ..Config::default() }, clock.clone(), |_| {});
+        let engine = Engine::start_on(library, app, CoreQueue, Box::new(card.clone()), None, Config { memory_mb: 256, settings: settings(&prefs, 0.0), ..Config::default() }, clock.clone(), |_| {});
         engine.queue_changed();
         Rig { engine, time: Stepper::new(clock, card.pull.clone()), card, core, store, measurer, songs: made, _dir: dir }
     }
@@ -215,7 +215,7 @@ impl Rig {
     fn set(&self, name: &str, value: &str) {
         let effect = edit_by_name(name, value).unwrap_or_else(|| panic!("{name} is a setting")).effect;
         if effect & APPLY_AUDIO != 0 {
-            self.engine.set_settings(settings(&nori_core::settings_store::settings_current().unwrap()));
+            self.engine.set_settings(settings(&nori_core::settings_store::settings_current().unwrap(), 0.0));
         }
         if effect & REPLAN != 0 {
             self.engine.replan();

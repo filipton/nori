@@ -202,7 +202,7 @@ impl Cli {
         let effects = settings_put(prefs.clone());
         self.prefs = prefs;
         if effects & (APPLY_AUDIO | SOUND) != 0 {
-            self.engine.set_settings(settings(&self.prefs));
+            self.engine.set_settings(settings(&self.prefs, 0.0));
         }
         if effects & APPLY_GAIN != 0 {
             self.engine.gain_changed();
@@ -260,7 +260,7 @@ pub fn main(argv: Vec<String>) {
     // With AutoMix on, the songs coming up that are on the disk are measured ahead.
     let app = CoreApp::new().measuring(Measurer::new(core.clone(), client.clone(), store.clone())).per_device(core.clone());
     let library = CoreLibrary { client: client.clone(), bytes: audio.clone(), metered: false, store: Some(store) };
-    let engine = Engine::start(library, app, CoreQueue, output, None, Config { memory_mb: 256, settings: settings(&prefs), ..Config::default() }, move |e| {
+    let engine = Engine::start(library, app, CoreQueue, output, None, Config { memory_mb: 256, settings: settings(&prefs, 0.0), ..Config::default() }, move |e| {
         let _ = tx.send(e);
     });
     let mut cli = Cli { core, http, prefs, engine: Arc::new(engine), songs: Vec::new(), downloader };
@@ -396,7 +396,7 @@ pub fn main(argv: Vec<String>) {
                     Some(c) => {
                         cli.prefs = c.prefs;
                         if c.effect & (APPLY_AUDIO | SOUND) != 0 {
-                            cli.engine.set_settings(settings(&cli.prefs));
+                            cli.engine.set_settings(settings(&cli.prefs, 0.0));
                         }
                         println!("{name} = {value}");
                     }
@@ -421,7 +421,7 @@ pub fn main(argv: Vec<String>) {
                     let p = cli.kept();
                     cli.prefs = p;
                     if effect & (APPLY_AUDIO | SOUND) != 0 {
-                        cli.engine.set_settings(settings(&cli.prefs));
+                        cli.engine.set_settings(settings(&cli.prefs, 0.0));
                     }
                 }
             }
