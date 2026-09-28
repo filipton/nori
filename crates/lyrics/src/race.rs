@@ -459,14 +459,10 @@ impl Failures {
     }
 }
 
-/// Entries from before every word timing was kept (LRC, under the old key) go, once per run.
-static OLD_DROPPED: std::sync::Once = std::sync::Once::new();
-
 /// Looks `song` up with the services `lookup` names, after the server's own lyrics, which the platform
 /// already shows (`server_has_lines`, `server_synced` describe them). Each set of lyrics to show goes to
 /// `shown` as it is chosen, and when the server had nothing and nobody found anything, an empty set from
-/// the server goes out at the end so the page can say so. `evict` drops cache entries by the start of
-/// their key (the old LRC entries). Returns what was chosen, in the log's words
+/// the server goes out at the end so the page can say so. Returns what was chosen, in the log's words
 /// ("chose BiniLyrics (0.91, word-timed), runner-up LRCLIB (0.84)"), when anything was.
 #[allow(clippy::too_many_arguments)]
 pub async fn lookup(
@@ -477,7 +473,6 @@ pub async fn lookup(
     server_synced: bool,
     lookup: &LyricsLookup,
     shown: &dyn LyricsShown,
-    evict: &(dyn Fn(&str) + Sync),
 ) -> Option<String> {
     let none = || LyricsPick { lyrics: Lyrics::default(), origin: LyricsOrigin::Server };
     let provider = song.is_external || song.id.starts_with("ext-");
@@ -493,7 +488,6 @@ pub async fn lookup(
         }
         return None;
     }
-    OLD_DROPPED.call_once(|| evict("lrclib2|"));
     let server_timing = u8::from(server_has_lines);
     let mut race = Race::new(song, services.iter().map(|s| Entry::of(*s)).collect(), lookup.prefer_words, server_timing);
     let voice = cache.voice(song);
@@ -871,7 +865,7 @@ mod tests {
 
     fn run_saying(web: &Web, cache: &Kept, s: &Song, server: (bool, bool), l: &LyricsLookup) -> (Vec<LyricsPick>, Option<String>) {
         let screen = Screen::default();
-        let said = block(lookup(web, cache, s, server.0, server.1, l, &screen, &|_| {}));
+        let said = block(lookup(web, cache, s, server.0, server.1, l, &screen));
         (screen.0.into_inner(), said)
     }
 
