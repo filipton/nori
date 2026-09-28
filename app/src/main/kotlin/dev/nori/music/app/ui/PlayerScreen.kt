@@ -476,7 +476,10 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
             @Composable fun kept(key: String) = Modifier.sharedElement(rememberSharedContentState(key), this@AnimatedContent)
             // The page's text colour, read while the transport draws.
             val ink = androidx.compose.ui.graphics.ColorProducer { live.color(CoverLook.ON) }
-            PlayerHalves(LocalWide.current, panel = {
+            // On its side the controls' half has nothing of its own to scroll, so a pull down anywhere on it puts
+            // the player away whatever the panel - as the artwork does - while the lyrics and the queue beside it
+            // keep their vertical drag for scrolling.
+            PlayerHalves(LocalWide.current, Modifier.dragsSheet(sheet, enabled = panel != Panel.ART), panel = {
                 // The artwork bleeds to all three edges like the sleeve it is - up under the status bar
                 // as well, which is the whole point: Apple's has no top edge, and giving it one drew a
                 // line across the screen. The handle and the close button float over it instead.
@@ -728,7 +731,7 @@ private val LocalUnderControls = androidx.compose.runtime.compositionLocalOf { 0
  * (the sleeve its whole square), the controls down the rest.
  */
 @Composable
-private fun PlayerHalves(wide: Boolean, panel: @Composable ColumnScope.() -> Unit, controls: @Composable ColumnScope.() -> Unit) {
+private fun PlayerHalves(wide: Boolean, controlsDrag: Modifier, panel: @Composable ColumnScope.() -> Unit, controls: @Composable ColumnScope.() -> Unit) {
     if (!wide) Column(Modifier.fillMaxSize().navigationBarsPadding()) { panel(); controls() }
     else androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
         // Wider than it is tall: the sleeve is a band across the cover, cropped above and below rather than at
@@ -742,7 +745,8 @@ private fun PlayerHalves(wide: Boolean, panel: @Composable ColumnScope.() -> Uni
             }
             Column(
                 // Clear of the camera's punch hole too, which is on this side when the phone is turned the other way.
-                Modifier.padding(start = controlsAt).fillMaxHeight().statusBarsPadding().navigationBarsPadding()
+                // The whole half, edge to edge, takes the pull down ([controlsDrag]) before the insets are kept off.
+                Modifier.padding(start = controlsAt).fillMaxSize().then(controlsDrag).statusBarsPadding().navigationBarsPadding()
                     .windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.displayCutout.only(androidx.compose.foundation.layout.WindowInsetsSides.End))
                     .padding(start = 8.dp),
                 verticalArrangement = Arrangement.Center,
