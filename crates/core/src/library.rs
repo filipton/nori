@@ -36,11 +36,11 @@ impl Client {
     /// stops showing a favourite the server never took (`marked` is handed the marks again), and the
     /// error comes back to say so.
     pub async fn star(&self, kind: Starrable, id: String, on: bool, marked: Arc<dyn StarsShown>) -> NetResult<()> {
-        let m = crate::stars::star_mark(kind, id.clone(), on);
+        let m = self.core.stars.lock().mark(kind, id.clone(), on);
         marked.marks(m.marks);
         let sent = self.write(Write::Star { kind, id: id.clone(), on }).await;
         if sent.is_err() {
-            marked.marks(crate::stars::star_restore(kind, id, m.previous));
+            marked.marks(self.core.stars.lock().restore(kind, id, m.previous));
         }
         sent
     }
@@ -188,7 +188,7 @@ pub(crate) mod tests {
         fake.answer(r#"{"subsonic-response":{"status":"failed","error":{"code":50,"message":"no"}}}"#);
         assert!(block(c.star(Starrable::Song, "lib-refused".into(), false, seen.clone())).is_err());
         assert_eq!(*seen.0.lock(), [Some(true), Some(false), Some(true)], "up at once, then the mark from before back");
-        assert_eq!(crate::stars::star_marks().songs.get("lib-refused"), Some(&true));
+        assert_eq!(c.core.stars.lock().songs.get("lib-refused"), Some(&true));
     }
 
     const GENRES: &str = r#"{"subsonic-response":{"status":"ok","genres":{"genre":[{"value":"Rock","songCount":1,"albumCount":1}]}}}"#;
