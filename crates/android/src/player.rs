@@ -11,7 +11,7 @@
 //!   certificates and headers of the profile apply, and a song downloaded, cached or fetched ahead plays
 //!   from the disk;
 //! - the songs after the next, fetched ahead into media3's stream cache by nori-engine's one fetcher of the
-//!   songs coming up (`nori_engine::ahead`, [`AHEAD`]) through the same doors: whether a song is whole in
+//!   songs coming up (`nori_engine::ahead`, each player's [`Ahead`]) through the same doors: whether a song is whole in
 //!   the cache already (`kept`) and whether the player is writing it (`busy`) are asked of Kotlin;
 //! - a wake for the events (`signal`): one call per batch of engine events, however many there are,
 //!   and Kotlin takes them from here on its own thread;
@@ -916,6 +916,8 @@ impl Opener for JavaOpener {
 /// that its bytes cross the network once.
 struct JavaBytes {
     key: String,
+    /// Its player's fetching ahead, which hands over a song it is on.
+    ahead: Arc<Ahead>,
 }
 
 impl ByteSource for JavaBytes {
@@ -925,7 +927,7 @@ impl ByteSource for JavaBytes {
 
     fn open_cancellable(&self, url: &str, _key: Option<&str>, from: u64, cancel: &Cancel) -> Result<Body, OpenError> {
         if !self.key.is_empty() {
-            AHEAD.take_over(&self.key);
+            self.ahead.take_over(&self.key);
         }
         open_java(url, &self.key, from, cancel)
     }
@@ -1007,9 +1009,6 @@ fn open_java(url: &str, key: &str, from: u64, cancel: &Cancel) -> Result<Body, O
 }
 
 // ---- the songs after the next, fetched ahead ----
-
-/// The one fetcher of the songs after the next (nori-engine's), into media3's stream cache.
-static AHEAD: std::sync::LazyLock<Arc<Ahead>> = std::sync::LazyLock::new(Ahead::new);
 
 /// The fetching ahead's own door: through `RustBridge.open` as the player's, under the key it is told.
 struct AheadBytes;
@@ -1162,6 +1161,8 @@ impl Drop for JavaBody {
 /// live stream at the address its queue item carries, which Kotlin hands over as it queues it ([`radio`]).
 struct AndroidLibrary {
     stations: Arc<Mutex<Vec<(String, String)>>>,
+    /// The player's one fetcher of the songs after the next (nori-engine's), into media3's stream cache.
+    ahead: Arc<Ahead>,
 }
 
 impl Library for AndroidLibrary {
@@ -1169,7 +1170,7 @@ impl Library for AndroidLibrary {
         if is_radio(id) {
             let url = self.stations.lock().iter().find(|(s, _)| s == id).map(|(_, u)| u.clone()).ok_or("a station with no address")?;
             log(&format!("{id} is a station's stream"));
-            return Ok(Located { source: Source::Live { url, bytes: Arc::new(JavaBytes { key: String::new() }) }, hint: None, duration_ms: None, estimated: false });
+            return Ok(Located { source: Source::Live { url, bytes: Arc::new(JavaBytes { key: String::new(), ahead: self.ahead.clone() }) }, hint: None, duration_ms: None, estimated: false });
         }
         let song = nori_core::queue::queue_song(id.to_string());
         let duration_ms = song.as_ref().map(|s| s.duration as i64 * 1000).filter(|&d| d > 0);
@@ -1184,7 +1185,7 @@ impl Library for AndroidLibrary {
         };
         log(&format!("{id} opens from {} as {}", target.key, hint.as_deref().unwrap_or("whatever it is")));
         let estimated = nori_core::stream::length_estimated(&target.url);
-        Ok(Located { source: Source::Url { url: target.url, bytes: Arc::new(JavaBytes { key: target.key }) }, hint, duration_ms, estimated })
+        Ok(Located { source: Source::Url { url: target.url, bytes: Arc::new(JavaBytes { key: target.key, ahead: self.ahead.clone() }) }, hint, duration_ms, estimated })
     }
 
     fn about(&self, id: &str) -> WindowSong {
@@ -1198,7 +1199,7 @@ impl Library for AndroidLibrary {
     /// The songs the core names to fetch ahead (`precache_targets` for the network last told), but `next`,
     /// which the engine's loader fetches: into media3's stream cache, measured as they come with AutoMix on.
     fn ahead(&mut self, next: &str) {
-        AHEAD.ask(Arc::new(Media3Cache), Arc::new(AheadBytes), ahead_songs(nori_core::stream::precache_now(), next), Some(measuring_ahead()));
+        self.ahead.ask(Arc::new(Media3Cache), Arc::new(AheadBytes), ahead_songs(nori_core::stream::precache_now(), next), Some(measuring_ahead()));
     }
 
     fn taker(&self, id: &str, hint: Option<&str>) -> Option<Listening> {
@@ -1342,6 +1343,8 @@ struct Player {
     looked_ms: AtomicI64,
     /// The music volume as Kotlin last told it ([`set_volume`]), for loudness compensation.
     volume: Arc<OutputVolume>,
+    /// Its fetching ahead ([`AndroidLibrary::ahead`]), stopped when it goes.
+    ahead: Arc<Ahead>,
 }
 
 /// The players alive, by the handle Kotlin holds. A handle is a number, never a pointer: a door called
@@ -1376,7 +1379,8 @@ extern "system" fn create(mut env: JNIEnv, _: JClass, sdk: jint, float: jboolean
     let shared = Arc::new(Shared::default());
     let output = TrackOutput::new(Box::new(JavaOpener { sdk }), float != 0, shared.clone());
     let stations = Arc::new(Mutex::new(Vec::new()));
-    let library = AndroidLibrary { stations: stations.clone() };
+    let ahead = Ahead::new();
+    let library = AndroidLibrary { stations: stations.clone(), ahead: ahead.clone() };
     // Kotlin tells the volume once loudness compensation is watched (VolumeWatch): all the way up until then.
     let volume = Arc::new(OutputVolume::default());
     let sound = nori_core::settings_store::settings_current().map(|p| settings(&p, volume.db())).unwrap_or_default();
@@ -1392,7 +1396,7 @@ extern "system" fn create(mut env: JNIEnv, _: JClass, sdk: jint, float: jboolean
     let app = CoreApp::new().bridging().volume(volume.clone());
     let engine = Engine::start(library, app, CoreQueue, Box::new(output), offloaded, config, move |e| tell.push(e));
     let h = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
-    PLAYERS.lock().push((h, Arc::new(Player { engine, shared, events, offload, stations, jumped: Mutex::new(None), looked_ms: AtomicI64::new(i64::MIN / 2), volume })));
+    PLAYERS.lock().push((h, Arc::new(Player { engine, shared, events, offload, stations, jumped: Mutex::new(None), looked_ms: AtomicI64::new(i64::MIN / 2), volume, ahead })));
     h
 }
 
@@ -1406,8 +1410,9 @@ extern "system" fn destroy(_: JNIEnv, _: JClass, h: jlong) {
         players.iter().position(|(k, _)| *k == h).map(|i| players.remove(i).1)
     };
     if let Some(p) = gone {
-        // Nothing is fetched ahead for a player that is gone: a song on its way is left where it got to.
-        AHEAD.ask(Arc::new(Media3Cache), Arc::new(AheadBytes), Vec::new(), None);
+        // Nothing is fetched ahead for a player that is gone: a song on its way is left where it got to. Its
+        // own fetching only: a player made since, whose songs are coming, keeps its.
+        p.ahead.ask(Arc::new(Media3Cache), Arc::new(AheadBytes), Vec::new(), None);
         // A thread that will not start hands the player back, and it is let go here after all.
         let _ = std::thread::Builder::new().name("nori-release".into()).spawn(move || drop(p));
     }
