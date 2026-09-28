@@ -136,10 +136,7 @@ impl Core {
     /// The AutoEQ curves this output's own name points at, best first. Empty for the speaker, a nameless
     /// DAC, or no index.
     pub fn autoeq_for_output(&self, output: String, limit: u32) -> Vec<AutoEqEntry> {
-        let name = device_name(&output);
-        if name.is_empty() {
-            return Vec::new();
-        }
+        let Some(name) = headphones_name(&output) else { return Vec::new() };
         self.autoeq_for_device(name.to_string(), limit).unwrap_or_default()
     }
 
@@ -442,7 +439,11 @@ pub(crate) mod tests {
         assert_eq!(c.autoeq_for_output("Bluetooth: WH-1000XM6".into(), 5).len(), 1, "a headphone's own name finds its curve");
         assert!(c.autoeq_for_output(SPEAKER.into(), 5).is_empty(), "the phone's speaker is no headphone");
         assert!(c.autoeq_for_output("USB: ".into(), 5).is_empty(), "no name, nothing looked for");
-        assert_eq!(device_name("Bluetooth: LE_WH-1000XM5"), "LE_WH-1000XM5");
+        assert_eq!(headphones_name("Bluetooth: LE_WH-1000XM5"), Some("LE_WH-1000XM5"));
+        // A device that gave no name is keyed by a placeholder, which is no model to look for; nor is a dock.
+        for nameless in ["USB: DAC", "Bluetooth: device", "Wired headphones", "Other output", "HDMI TV"] {
+            assert_eq!(headphones_name(nameless), None, "{nameless}");
+        }
         assert!(c.autoeq_find("a".into()).is_empty(), "a letter is too short to look for");
     }
 
