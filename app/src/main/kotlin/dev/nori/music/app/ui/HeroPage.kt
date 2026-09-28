@@ -282,6 +282,8 @@ fun HeroPage(
                 // The player's own share (PlayerHalves), so a cover here is the same band, cropped above and below,
                 // its soft edge where the page's words begin.
                 val half = maxOf(maxWidth * 0.55f, 360.dp)
+                // Where the words begin: the player's controls' place, so the cover's soft edge runs on under them.
+                val textAt = minOf(maxOf(maxWidth * 0.45f, 360.dp), maxWidth * 0.5f)
                 // Inside the half's gutters, and short enough to leave the top margin, the name, caption and
                 // buttons (about 190 dp) and the now playing bar their room.
                 val top = with(androidx.compose.ui.platform.LocalDensity.current) {
@@ -297,11 +299,14 @@ fun HeroPage(
                     // artwork as a tile beside its buttons.
                     if (coverUrl != null) {
                         val cutout = LocalPageStart.current
+                        val under = (half - textAt).coerceAtLeast(0.dp)
                         Box(
-                            Modifier.width(half).fillMaxHeight().layout { measurable, constraints ->
-                                // Out over the strip the page is kept off (the camera's, or the rail's), to the screen's edge.
+                            // Takes up the room up to the words and draws on past it, under them, to [half]; and out
+                            // over the strip the page is kept off (the camera's, or the rail's), to the screen's edge.
+                            Modifier.width(textAt).fillMaxHeight().layout { measurable, constraints ->
                                 val extra = cutout.roundToPx()
-                                val placeable = measurable.measure(constraints.copy(minWidth = constraints.maxWidth + extra, maxWidth = constraints.maxWidth + extra))
+                                val w = constraints.maxWidth + extra + under.roundToPx()
+                                val placeable = measurable.measure(constraints.copy(minWidth = w, maxWidth = w))
                                 layout(constraints.maxWidth, placeable.height) { placeable.place(-extra, 0) }
                             },
                         ) {

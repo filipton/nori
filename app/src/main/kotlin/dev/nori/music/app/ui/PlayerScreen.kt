@@ -566,7 +566,7 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                         Modifier.weight(1f).graphicsLayer { alpha = panelFade.read() }
                             // On its side the lyrics and the queue start clear of the camera's punch hole,
                             // as the pages do; only the cover runs under it.
-                            .then(if (across) Modifier.windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.displayCutout.only(androidx.compose.foundation.layout.WindowInsetsSides.Start)) else Modifier)
+                            .then(if (across) Modifier.windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.displayCutout.only(androidx.compose.foundation.layout.WindowInsetsSides.Start)).padding(end = LocalUnderControls.current) else Modifier)
                             .then(if (page == Panel.QUEUE) Modifier.padding(horizontal = 26.dp) else Modifier),
                     ) {
                         if (page == Panel.QUEUE) Queue(vm) else LyricsView(vm, actions, state.playing)
@@ -717,6 +717,9 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
     }
 }
 
+/** How much of the sleeve's panel lies under the controls on its side ([PlayerHalves]): the lyrics and queue keep off it. */
+private val LocalUnderControls = androidx.compose.runtime.compositionLocalOf { 0.dp }
+
 /**
  * The player's two parts: [panel] - the sleeve, the lyrics or the queue - and [controls] - the title, the seek
  * bar, the transport, the volume and the icons. One above the other on a phone held upright, as they always
@@ -729,14 +732,17 @@ private fun PlayerHalves(wide: Boolean, panel: @Composable ColumnScope.() -> Uni
     if (!wide) Column(Modifier.fillMaxSize().navigationBarsPadding()) { panel(); controls() }
     else androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
         // Wider than it is tall: the sleeve is a band across the cover, cropped above and below rather than at
-        // the sides, and its soft edge reaches in to where the controls begin rather than stopping short of the
-        // middle as a square did.
+        // the sides. The controls keep their place (the square's edge) and stand over the sleeve's soft edge,
+        // which runs on under them towards the middle; the lyrics and the queue stop where the controls start.
         val side = maxWidth * 0.55f
-        Row(Modifier.fillMaxSize()) {
-            Column(Modifier.width(side).fillMaxHeight()) { panel() }
+        val controlsAt = minOf(maxHeight, maxWidth * 0.5f)
+        Box(Modifier.fillMaxSize()) {
+            androidx.compose.runtime.CompositionLocalProvider(LocalUnderControls provides (side - controlsAt).coerceAtLeast(0.dp)) {
+                Column(Modifier.width(side).fillMaxHeight()) { panel() }
+            }
             Column(
                 // Clear of the camera's punch hole too, which is on this side when the phone is turned the other way.
-                Modifier.weight(1f).fillMaxHeight().statusBarsPadding().navigationBarsPadding()
+                Modifier.padding(start = controlsAt).fillMaxHeight().statusBarsPadding().navigationBarsPadding()
                     .windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.displayCutout.only(androidx.compose.foundation.layout.WindowInsetsSides.End))
                     .padding(start = 8.dp),
                 verticalArrangement = Arrangement.Center,
