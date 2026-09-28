@@ -32,8 +32,7 @@ static PLANNER: Mutex<Planner> =
     Mutex::new(Planner { prefs: None, transitions_off: false, window: Vec::new(), shuffling: false, generation: 0, none: None });
 
 /// Whether the output forbids touching samples at all (`AudioPolicy::transitions_off`). Called whenever
-/// the audio policy changes; the user's transition settings reach the planner by themselves
-/// ([`settings_changed`]).
+/// the audio policy changes; the user's transition settings the planner reads itself ([`settings_from`]).
 pub fn transition_setup(transitions_off: bool) {
     let mut p = PLANNER.lock();
     p.transitions_off = transitions_off;
@@ -46,8 +45,9 @@ pub fn transitions_off() -> bool {
 }
 
 /// Where the settings are kept (nori-settings' store): the planner reads the transition settings from it
-/// each time it plans, so a plan is always made with the settings as they are, whatever order the
-/// [`settings_changed`] calls of two changes made at once on two threads arrived in.
+/// each time it plans, so a plan is always made with the settings as they are, and a change is noticed
+/// there (the plans worked out before it are not taken again). A plan already made is asked for again by
+/// the platform when it hears of the change.
 static SETTINGS: OnceLock<fn() -> Option<TransitionPrefs>> = OnceLock::new();
 
 /// The settings store says where the planner reads the transition settings from (see [`SETTINGS`]).
@@ -55,12 +55,7 @@ pub fn settings_from(read: fn() -> Option<TransitionPrefs>) {
     let _ = SETTINGS.set(read);
 }
 
-/// The settings changed: the planner takes the transition settings from them (`StoredPrefs::transition_prefs`
-/// in nori-settings). A plan already made is asked for again by the platform when it hears of the change.
-pub fn settings_changed(prefs: TransitionPrefs) {
-    take(&mut PLANNER.lock(), prefs);
-}
-
+/// The transition settings as they are kept now, taken in when they changed since the last look.
 fn take(p: &mut Planner, prefs: TransitionPrefs) {
     if p.prefs != Some(prefs) {
         p.prefs = Some(prefs);

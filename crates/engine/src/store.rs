@@ -218,7 +218,7 @@ impl Store {
             self.held.lock().writing.remove(key);
             return None;
         };
-        Some(Writer { store: self.clone(), key: key.to_string(), part, file: Some(file), at })
+        Some(Writer { store: self.clone(), key: key.to_string(), part: Some(part), file: Some(file), at })
     }
 
     /// The player's entry for `key`, as it loads the song: one the fetching ahead is writing is handed
@@ -353,7 +353,9 @@ impl Store {
 pub struct Writer {
     store: Arc<Store>,
     key: String,
-    part: PathBuf,
+    /// The half-written file, removed when the writer goes; none once it is handed on (kept, or left for the
+    /// next writer).
+    part: Option<PathBuf>,
     file: Option<File>,
     at: u64,
 }
@@ -377,7 +379,7 @@ impl Writer {
             return false;
         }
         drop(f);
-        let part = std::mem::take(&mut self.part);
+        let Some(part) = self.part.take() else { return false };
         self.store.finished(&self.key, &part, len)
     }
 
@@ -402,7 +404,7 @@ impl Writer {
         if let Some(f) = self.file.as_mut() {
             f.flush()?;
         }
-        let bytes = fs::read(&self.part)?;
+        let bytes = fs::read(self.part.as_ref().ok_or_else(|| io::Error::other("the entry was handed on"))?)?;
         if bytes.len() as u64 != self.at {
             return Err(io::Error::other("the entry is not what it was"));
         }
@@ -416,7 +418,7 @@ impl Writer {
             return;
         }
         self.store.held.lock().left.insert(self.key.clone());
-        self.part = PathBuf::new();
+        self.part = None;
     }
 }
 
@@ -456,8 +458,8 @@ impl crate::ahead::Entry for Writer {
 
 impl Drop for Writer {
     fn drop(&mut self) {
-        if !self.part.as_os_str().is_empty() {
-            let _ = fs::remove_file(&self.part);
+        if let Some(part) = &self.part {
+            let _ = fs::remove_file(part);
         }
         self.store.held.lock().writing.remove(&self.key);
     }

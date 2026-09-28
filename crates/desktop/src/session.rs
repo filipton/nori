@@ -6,7 +6,7 @@
 //! This is the terminal's backend with only what this window uses; the words are this client's own.
 
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
@@ -24,11 +24,13 @@ use nori_core::settings_store::{self, APPLY_AUDIO, APPLY_GAIN, PLAYER, REPLAN, S
 use nori_core::{AlbumDetail, ArtistDetail, Core, OriginKind, PageOrigin, PlaylistDetail, ServerConfig, Song};
 use nori_covers::loader::{Config as CoverConfig, Loader, Ticket};
 use nori_covers::memory::Image;
-use nori_engine::core::{settings, CoreApp, CoreLibrary, CoreOrder, CoreQueue, Downloader, Measurer};
+use nori_engine::core::{settings, CoreApp, CoreLibrary, CoreOrder, CoreQueue, Downloader, Measurer, OutputVolume};
 use nori_engine::{AudioOutput, Body, ByteSource, Config, Engine, Event, OpenError, State, Status, Store};
 use nori_http::Http;
 use nori_look::cover::CoverColours;
 use nori_output_cpal::{CpalOutput, Volume};
+
+use crate::settings::Chore;
 
 /// The core's calls are async over a transport that answers at once: polling them finishes them.
 pub fn block_on<F: Future>(f: F) -> F::Output {
@@ -42,12 +44,28 @@ pub fn block_on<F: Future>(f: F) -> F::Output {
     }
 }
 
+/// How large a cover is drawn: a card's, a large one (now playing, a page's), or an artist's picture
+/// across the page's whole width. The large ones are the pages' own, and their colours are worked out too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CoverSize {
+    Card,
+    Large,
+    Hero,
+}
+
+/// A cover among the pictures: its id and the size it is drawn at.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CoverKey {
+    pub id: String,
+    pub size: CoverSize,
+}
+
 /// Everything that wakes the window from another thread.
 pub enum Msg {
     Engine(Event),
     Data(Req, Result<Data, String>),
     /// A cover by the key it was asked under, decoded, and the page's colours when they were asked for.
-    Cover { key: String, image: Arc<Image>, colours: Option<Box<CoverColours>> },
+    Cover { key: CoverKey, image: Arc<Image>, colours: Option<Box<CoverColours>> },
     Search(SearchView),
     /// Lyrics for a song, and where they are from, as the core hands them over (`Client::lyrics_for`).
     Lyrics { song: String, pick: LyricsPick },
@@ -276,15 +294,20 @@ pub struct Session {
     /// The one downloader: a second would fetch the same songs beside it, past "downloads at once".
     downloader: Arc<Downloader>,
     pub volume: Volume,
+    /// [`Session::volume`] as dB below full, for loudness compensation.
+    loudness: Arc<OutputVolume>,
     search: Arc<SearchSession>,
     mpris: Option<nori_mpris::Mpris>,
     keeper: Arc<Keeper>,
+    /// The database file, for its size on the settings pages.
+    db: PathBuf,
 }
 
 impl Session {
     /// Opens the profile: nothing here asks the network, so a server that is down still opens.
     pub fn open(data: &Path, http: Arc<Http>, profile: SavedServer) -> Result<Session, String> {
-        let core = Core::new(db_path(data), nori_core::settings::server_db_id(&profile.id)).map_err(|e| format!("The database: {e}"))?;
+        let db = db_path(data);
+        let core = Core::new(db.clone(), nori_core::settings::server_db_id(&profile.id)).map_err(|e| format!("The database: {e}"))?;
         core.configure(config(&profile)).map_err(|e| format!("The server: {e}"))?;
         let client = Client::new(core.clone(), http.clone());
         client.set_profile(net(&profile));
@@ -296,19 +319,20 @@ impl Session {
         };
         let volume = output.volume();
         volume.set(own::number(own::VOLUME, 1.0));
-        nori_engine::core::set_output_volume_db(volume_db(volume.get()));
+        let loudness = Arc::new(OutputVolume::default());
+        loudness.set(volume_db(volume.get()));
         let output: Box<dyn AudioOutput> = Box::new(output);
         let store = Store::open(data.join("music"), prefs.cache_mb.max(0) as u64 * 1024 * 1024, Box::new(CoreOrder)).map_err(|e| format!("The music directory: {e}"))?;
         let audio = Arc::new(Audio { http: http.clone() });
-        let app = CoreApp::new().measuring(Measurer::new(core.clone(), client.clone(), store.clone())).per_device(core.clone()).bridging();
+        let app = CoreApp::new().measuring(Measurer::new(core.clone(), client.clone(), store.clone())).per_device(core.clone()).bridging().volume(loudness.clone());
         let library = CoreLibrary { client: client.clone(), bytes: audio.clone(), metered: false, store: Some(store.clone()) };
         // The engine's events are handed to the window as they come; nothing polls.
-        let engine = Arc::new(Engine::start(library, app, CoreQueue, output, None, Config { memory_mb: 256, settings: settings(&prefs), ..Config::default() }, |e| Tx.send(Msg::Engine(e))));
+        let engine = Arc::new(Engine::start(library, app, CoreQueue, output, None, Config { memory_mb: 256, settings: settings(&prefs, loudness.db()), ..Config::default() }, |e| Tx.send(Msg::Engine(e))));
         let covers = Arc::new(Loader::new(CoverConfig::new(data.join("covers")), http));
         let mpris = nori_mpris::Mpris::start(&format!("nori.desktop{}", std::process::id()), Arc::new(Desktop { engine: engine.clone() })).ok();
         let keeper = Keeper::start(core.clone(), engine.clone());
         let downloader = Downloader::new(core.clone(), client.clone(), audio.clone(), store.clone());
-        let s = Session { core, client, engine, covers, store, downloader, volume, search: SearchSession::new(), mpris, keeper };
+        let s = Session { core, client, engine, covers, store, downloader, volume, loudness, search: SearchSession::new(), mpris, keeper, db: PathBuf::from(db) };
         s.restore();
         if s.core.download_counts().pending > 0 {
             s.downloader.start(prefs.parallel_downloads.max(1) as usize);
@@ -448,18 +472,19 @@ impl Session {
     /// again when that moves the sound.
     pub fn set_volume(&self, v: f32) {
         self.volume.set(v);
-        if nori_engine::core::set_output_volume_db(volume_db(v)) {
+        if self.loudness.set(volume_db(v)) {
             if let Some(p) = settings_store::settings_current().filter(|p| p.loudness) {
-                self.engine.set_settings(settings(&p));
+                self.engine.set_settings(settings(&p, self.loudness.db()));
             }
         }
     }
 
-    /// The cover `art` at `size` pixels a side, handed back under `key`; with the page's colours (worked
-    /// out on the loader's worker) when `colours`.
-    pub fn cover(&self, art: &str, key: String, size: u32, colours: bool) -> Ticket {
-        let url = self.core.cover_address(art.to_string(), size);
-        self.covers.request(&url, size, size, move |r| {
+    /// The cover `key` names at `px` pixels a side, handed back under `key`; with the page's colours (worked
+    /// out on the loader's worker) when it is a large one.
+    pub fn cover(&self, key: CoverKey, px: u32) -> Ticket {
+        let url = self.core.cover_address(key.id.clone(), px);
+        let colours = key.size != CoverSize::Card;
+        self.covers.request(&url, px, px, move |r| {
             let Ok(image) = r else { return };
             let colours = colours.then(|| Box::new(derive(&image)));
             Tx.send(Msg::Cover { key, image, colours });
@@ -529,7 +554,7 @@ impl Session {
     /// What the settings pages show besides the settings, worked out off the window's thread (the server's
     /// music folders are asked for), and handed back.
     pub fn facts(&self) {
-        let (core, client, store, covers) = (self.core.clone(), self.client.clone(), self.store.clone(), self.covers.clone());
+        let (core, client, store, covers, db) = (self.core.clone(), self.client.clone(), self.store.clone(), self.covers.clone(), self.db.clone());
         spawn("nori-facts", move || {
             let index = core.index_size().unwrap_or_default();
             let downloads = core.downloads(true).unwrap_or_default();
@@ -537,7 +562,7 @@ impl Session {
                 Ok(Page::Folders { v }) => v.into_iter().map(|f| (f.name, f.id)).collect(),
                 _ => Vec::new(),
             };
-            let database = std::fs::metadata(core_db()).map(|m| m.len()).unwrap_or(0);
+            let database = std::fs::metadata(&db).map(|m| m.len()).unwrap_or(0);
             let f = crate::settings::Facts {
                 analysed: core.analysis_count().unwrap_or(0),
                 indexed: (index.songs, index.albums, index.artists),
@@ -558,7 +583,7 @@ impl Session {
 
     fn apply(&self, effect: u32, prefs: &StoredPrefs) {
         if effect & (APPLY_AUDIO | SOUND | PLAYER) != 0 {
-            self.engine.set_settings(settings(prefs));
+            self.engine.set_settings(settings(prefs, self.loudness.db()));
         }
         if effect & APPLY_GAIN != 0 {
             self.engine.gain_changed();
@@ -569,13 +594,13 @@ impl Session {
     }
 
     /// One of the settings page's buttons.
-    pub fn action(&self, action: &str) {
-        match action {
-            "sync-library" => {
+    pub fn action(&self, chore: Chore) {
+        match chore {
+            Chore::SyncLibrary => {
                 let client = self.client.clone();
                 spawn("nori-sync", move || sync(&client));
             }
-            "download-library" => {
+            Chore::DownloadLibrary => {
                 match self.core.download_queue_library() {
                     Ok(q) => Tx.send(Msg::Note { text: format!("Downloading {} songs", q.fresh.len() + q.again.len()), error: false }),
                     Err(e) => Tx.send(Msg::Note { text: format!("Could not download the library: {e}"), error: true }),
@@ -583,27 +608,26 @@ impl Session {
                 let n = settings_store::with_prefs(|p| p.parallel_downloads).unwrap_or(2);
                 self.downloader.start(n.max(1) as usize);
             }
-            "measure-again" => {
+            Chore::MeasureAgain => {
                 let n = self.core.analysis_clear().unwrap_or(0);
                 nori_core::automix::planner::analyses_changed();
                 self.engine.replan();
                 Tx.send(Msg::Note { text: format!("Forgot {n} measured songs"), error: false });
             }
-            "clear-stream" => {
+            Chore::ClearStream => {
                 self.store.clear_cache();
                 Tx.send(Msg::Note { text: "Cleared the streamed music".into(), error: false });
             }
-            "clear-lyrics" => {
+            Chore::ClearLyrics => {
                 self.core.lyrics_cache_clear();
                 Tx.send(Msg::Note { text: "Cleared the lyrics found online".into(), error: false });
             }
-            "clear-covers" => {
+            Chore::ClearCovers => {
                 if let Some(d) = self.covers.disk() {
                     d.clear();
                 }
                 Tx.send(Msg::Note { text: "Cleared the covers".into(), error: false });
             }
-            _ => {}
         }
     }
 
@@ -685,8 +709,8 @@ impl Session {
             if nori_core::autofill::autofill_arrived(fresh.songs.len() as u32) && !fresh.songs.is_empty() {
                 let len = playlist::with(|p| p.len());
                 let n = fresh.songs.len();
-                // An album comes from its page: played as an album, as the one before it.
-                playlist::playlist_take(len as u32, fresh.songs.iter().map(|s| s.id.clone()).collect(), vec![Hand::No; n], fresh.from());
+                // An album comes from its page (played as an album), a shuffle's albums from the shuffle.
+                playlist::playlist_take(len as u32, fresh.songs.iter().map(|s| s.id.clone()).collect(), vec![Hand::No; n], fresh.from);
                 me.edited();
             }
             if nori_core::autofill::autofill_landed() {
@@ -863,16 +887,4 @@ fn monotonic_ms() -> i64 {
 fn derive(image: &Image) -> CoverColours {
     let px: Vec<u32> = image.pixels.chunks_exact(4).map(|p| u32::from_be_bytes([p[3], p[0], p[1], p[2]])).collect();
     nori_look::cover::derive(&px, image.width as usize, image.height as usize, true, false)
-}
-
-/// The database's file, for its size.
-fn core_db() -> std::path::PathBuf {
-    DB.lock().clone()
-}
-
-static DB: parking_lot::Mutex<std::path::PathBuf> = parking_lot::Mutex::new(std::path::PathBuf::new());
-
-/// Where the database is, as main opened it.
-pub fn set_db_path(p: &Path) {
-    *DB.lock() = p.to_path_buf();
 }

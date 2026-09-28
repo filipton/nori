@@ -891,7 +891,7 @@ impl StoredPrefs {
         }
     }
 
-    /// What the transition planner takes from the settings (`nori_automix::planner::settings_changed`).
+    /// What the transition planner reads from the settings (`nori_automix::planner::settings_from`).
     pub fn transition_prefs(&self) -> TransitionPrefs {
         TransitionPrefs {
             auto_mix: self.auto_mix,

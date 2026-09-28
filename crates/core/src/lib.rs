@@ -289,6 +289,8 @@ pub struct Core {
     /// The downloads table's ids, for asking about one song without the database (transfers.rs); shared
     /// with nori-transfers' active downloads while this is the newest core.
     held: Arc<Mutex<transfers::Held>>,
+    /// This core's "For you" row (mixes/board.rs).
+    board: Mutex<mixes::board::Board>,
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
@@ -300,7 +302,12 @@ impl Core {
         nori_automix::beat_model::set_home(&db_path);
         let held = transfers::Held::load(&db)?;
         transfers::set_beats_wanted(transfers::beats_wanted_rows(&db)?);
-        let core =Arc::new(Core { db: Arc::new(Mutex::new(db)), server: RwLock::new(api::Server::default()), held: Arc::new(Mutex::new(held)) });
+        let core =Arc::new(Core {
+            db: Arc::new(Mutex::new(db)),
+            server: RwLock::new(api::Server::default()),
+            held: Arc::new(Mutex::new(held)),
+            board: Mutex::new(mixes::board::Board::default()),
+        });
         // The newest core is the one the app is using: the parts of the core that run without Kotlin (the
         // transition planner on the audio thread, analyses finished in the background, a song asked
         // about by a list row) find its database and its downloads through these.

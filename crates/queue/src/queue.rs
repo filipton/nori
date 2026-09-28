@@ -134,7 +134,11 @@ pub fn queue_gain(before: Option<(String, u32)>, current: Option<(String, u32)>,
         // Read with the queue's lock let go: the database's is never taken inside it.
         song.measured_lufs = measured_lufs(&current).map(|mid| stereo_loudness_of_mid(mid, channels));
     }
-    song_gain(prefs, &song, run, radio, bit_perfect)
+    // Radio has no song to level, and a bit-perfect output must not be touched.
+    if radio || bit_perfect {
+        return 1.0;
+    }
+    song_gain(prefs, &song, run)
 }
 
 /// The loudness AutoMix's analysis measured of `id` (of its mid signal, `TrackAnalysis::lufs`), if it did.

@@ -26,13 +26,12 @@ use nori_net::transport::Transport;
 use nori_player::automix::vocal::VocalCurve;
 use nori_settings::lyrics_sources::{LyricsLookup, LyricsService};
 use nori_settings::lyrics_sources::LyricsOrigin;
-use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::credits::strip_edges;
 use crate::fit::{agree, plausible};
 use crate::formats::{from_cache, timing};
-use crate::services::{self, Ask, Lookup, Shared};
+use crate::services::{self, Ask, LyricsMemory, Lookup, Shared};
 use crate::sync::{self, SyncCheck, SyncKind};
 use crate::trust::{score, with_sync, Named, Trust};
 
@@ -419,13 +418,12 @@ fn chosen_before(cache: &dyn LyricsCache, song: &Song, services: &[LyricsService
 }
 
 /// Services that failed lately: for which song (its cache key) and when, and how many songs each has
-/// failed in a row. In memory only: a failure is never an answer to keep.
-struct Failures {
+/// failed in a row. Kept in the client's [`LyricsMemory`].
+#[derive(Default)]
+pub(crate) struct Failures {
     songs: Vec<(String, Instant)>,
     services: Vec<(LyricsService, u32, Option<Instant>)>,
 }
-
-static FAILURES: Mutex<Failures> = Mutex::new(Failures { songs: Vec::new(), services: Vec::new() });
 /// How many songs' failures are remembered.
 const FAILURES_KEPT: usize = 64;
 
@@ -459,14 +457,10 @@ impl Failures {
     }
 }
 
-/// Entries from before every word timing was kept (LRC, under the old key) go, once per run.
-static OLD_DROPPED: std::sync::Once = std::sync::Once::new();
-
 /// Looks `song` up with the services `lookup` names, after the server's own lyrics, which the platform
 /// already shows (`server_has_lines`, `server_synced` describe them). Each set of lyrics to show goes to
 /// `shown` as it is chosen, and when the server had nothing and nobody found anything, an empty set from
-/// the server goes out at the end so the page can say so. `evict` drops cache entries by the start of
-/// their key (the old LRC entries). Returns what was chosen, in the log's words
+/// the server goes out at the end so the page can say so. Returns what was chosen, in the log's words
 /// ("chose BiniLyrics (0.91, word-timed), runner-up LRCLIB (0.84)"), when anything was.
 #[allow(clippy::too_many_arguments)]
 pub async fn lookup(
@@ -477,7 +471,7 @@ pub async fn lookup(
     server_synced: bool,
     lookup: &LyricsLookup,
     shown: &dyn LyricsShown,
-    evict: &(dyn Fn(&str) + Sync),
+    memory: &LyricsMemory,
 ) -> Option<String> {
     let none = || LyricsPick { lyrics: Lyrics::default(), origin: LyricsOrigin::Server };
     let provider = song.is_external || song.id.starts_with("ext-");
@@ -493,7 +487,6 @@ pub async fn lookup(
         }
         return None;
     }
-    OLD_DROPPED.call_once(|| evict("lrclib2|"));
     let server_timing = u8::from(server_has_lines);
     let mut race = Race::new(song, services.iter().map(|s| Entry::of(*s)).collect(), lookup.prefer_words, server_timing);
     let voice = cache.voice(song);
@@ -529,11 +522,11 @@ pub async fn lookup(
         match remembered(cache, &keys[rank], song) {
             Remembered::Hit(l, n) => race.answer(rank, Some((l, n))),
             Remembered::Miss => race.answer(rank, None),
-            Remembered::Unknown if FAILURES.lock().resting(services[rank], &keys[rank], now) => race.answer(rank, None),
+            Remembered::Unknown if memory.failures.lock().resting(services[rank], &keys[rank], now) => race.answer(rank, None),
             Remembered::Unknown => {}
         }
     }
-    let shared = Shared::default();
+    let shared = Shared::over(memory);
     let mut out = FuturesUnordered::new();
     loop {
         for rank in race.next(out.len(), AT_ONCE) {
@@ -582,7 +575,7 @@ async fn ask(transport: &dyn Transport, cache: &dyn LyricsCache, lookup: &Lyrics
     let a = Ask::new(transport, lookup, shared, service);
     match services::ask(service, &a, song).await {
         Lookup::Found(mut l, named) => {
-            FAILURES.lock().answered(service);
+            shared.memory.failures.lock().answered(service);
             strip_edges(&mut l, &song.title, &song.artist);
             if l.lines.is_empty() || !plausible(&l, song) {
                 // Words that cannot be this song's (a fragment, lines past its end, only credits) are
@@ -595,12 +588,12 @@ async fn ask(transport: &dyn Transport, cache: &dyn LyricsCache, lookup: &Lyrics
             Some((l, named))
         }
         Lookup::Missing => {
-            FAILURES.lock().answered(service);
+            shared.memory.failures.lock().answered(service);
             cache.put(key, Vec::new());
             None
         }
         Lookup::Failed => {
-            FAILURES.lock().failed(service, key.to_string(), Instant::now());
+            shared.memory.failures.lock().failed(service, key.to_string(), Instant::now());
             None
         }
     }
@@ -612,6 +605,7 @@ mod tests {
     use crate::fit::tests::timed;
     use crate::formats::to_cache;
     use crate::services::tests::{block, song, Web};
+    use parking_lot::Mutex;
     use serde_json::json;
     use std::collections::{HashMap, HashSet};
 
@@ -870,8 +864,13 @@ mod tests {
     }
 
     fn run_saying(web: &Web, cache: &Kept, s: &Song, server: (bool, bool), l: &LyricsLookup) -> (Vec<LyricsPick>, Option<String>) {
+        run_remembering(web, cache, s, server, l, &LyricsMemory::default())
+    }
+
+    /// A lookup by a client that remembers `memory` of its lookups before.
+    fn run_remembering(web: &Web, cache: &Kept, s: &Song, server: (bool, bool), l: &LyricsLookup, memory: &LyricsMemory) -> (Vec<LyricsPick>, Option<String>) {
         let screen = Screen::default();
-        let said = block(lookup(web, cache, s, server.0, server.1, l, &screen, &|_| {}));
+        let said = block(lookup(web, cache, s, server.0, server.1, l, &screen, memory));
         (screen.0.into_inner(), said)
     }
 
@@ -950,10 +949,14 @@ mod tests {
         let s = Song { title: "Failing".into(), ..song() };
         let l = asked(&[LyricsService::Unison]);
         web.answer("https://unison.boidu.dev/", 503, "busy");
-        assert_eq!(run(&web, &cache, &s, (false, false), &l)[0].origin, LyricsOrigin::Server);
+        let memory = LyricsMemory::default();
+        assert_eq!(run_remembering(&web, &cache, &s, (false, false), &l, &memory).0[0].origin, LyricsOrigin::Server);
         assert!(cache.0.lock().is_empty(), "a failure is never an answer");
-        run(&web, &cache, &s, (false, false), &l);
+        run_remembering(&web, &cache, &s, (false, false), &l, &memory);
         assert_eq!(web.asked().len(), 1, "the same song is not asked again straight away");
+        // Another client's lookups remember nothing of it.
+        run_remembering(&web, &cache, &s, (false, false), &l, &LyricsMemory::default());
+        assert_eq!(web.asked().len(), 2, "each client its own memory");
     }
 
     #[test]

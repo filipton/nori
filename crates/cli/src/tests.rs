@@ -11,7 +11,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, Mo
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 
-use crate::app::{App, Cmd, Focus, Hit, ListRef, Nav, Overlay, Panel, View};
+use crate::app::{App, Cmd, Focus, Hit, ListRef, Nav, Overlay, Panel, Target, View};
 use crate::backend::{Data, Msg, Req};
 use crate::settings_view::{Facts, Line, Row, SettingsView, GROUPS};
 
@@ -373,7 +373,7 @@ fn settings_are_one_page_of_every_group() {
     key(&mut a, KeyCode::Right);
     assert!(matches!(a.cmds.last(), Some(Cmd::Setting(n, _)) if n == "crossfadeSec"), "{:?}", a.cmds);
     // The output device is the terminal's own: kept for the next start.
-    let at = lines.iter().position(|l| matches!(l, Line::Row(Row::Choice { name, .. }) if name == "!device")).unwrap();
+    let at = lines.iter().position(|l| matches!(l, Line::Row(Row::Choice { target: Target::Device, .. }))).unwrap();
     key(&mut a, KeyCode::Char('g'));
     while a.settings.row.at < at {
         key(&mut a, KeyCode::Down);

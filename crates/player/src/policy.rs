@@ -161,16 +161,6 @@ pub struct GainTags {
     pub album_peak: Option<f32>,
 }
 
-/// The volume a track plays at under ReplayGain, 0..1: attenuation only at ReplayGain's own -18 LUFS, so
-/// it can be applied as the player's volume (free, and it survives offload). `tags` is `None` for a track
-/// with no tags at all, which plays at `untagged_db`; `in_album_run` is whether it sits inside an album
-/// played in order. Radio and a bit-perfect output play at full volume: the one has no track, the other
-/// must not be touched. Targets and positive gain: [`crate::gain::song_gain`].
-pub fn replay_gain(mode: GainMode, tags: Option<&GainTags>, in_album_run: bool, preamp_db: f32, untagged_db: f32, radio: bool, bit_perfect: bool) -> f32 {
-    let song = crate::gain::SongLoudness { tags: tags.copied(), ..Default::default() };
-    crate::gain::song_gain(&crate::gain::GainPrefs::attenuating(mode, preamp_db, untagged_db), &song, in_album_run, radio, bit_perfect)
-}
-
 /// Where a volume fade from `from` to `to` stands at `t` (0..1) of its length.
 pub fn fade(from: f32, to: f32, t: f32) -> f32 {
     from + (to - from) * t.clamp(0.0, 1.0)
@@ -281,35 +271,5 @@ mod tests {
         assert_eq!(capped_rate(352_800, 192_000), 176_400);
         assert_eq!(capped_rate(384_000, 192_000), 192_000);
         assert_eq!(capped_rate(64_000, 48_000), 48_000, "not halved below 44.1 kHz");
-    }
-
-    #[test]
-    fn replay_gain_picks_the_right_tag() {
-        let t = GainTags { track_gain: Some(-6.0), album_gain: Some(-3.0), track_peak: None, album_peak: None };
-        let track = replay_gain(GainMode::Track, Some(&t), true, 0.0, -6.0, false, false);
-        let album = replay_gain(GainMode::Album, Some(&t), false, 0.0, -6.0, false, false);
-        assert!((track - 10f32.powf(-6.0 / 20.0)).abs() < 1e-6);
-        assert!((album - 10f32.powf(-3.0 / 20.0)).abs() < 1e-6);
-        assert_eq!(replay_gain(GainMode::Auto, Some(&t), true, 0.0, -6.0, false, false), album, "inside an album run: album gain");
-        assert_eq!(replay_gain(GainMode::Auto, Some(&t), false, 0.0, -6.0, false, false), track, "elsewhere: track gain");
-    }
-
-    #[test]
-    fn replay_gain_never_boosts_and_respects_peaks() {
-        let loud = GainTags { track_gain: Some(6.0), ..Default::default() };
-        assert_eq!(replay_gain(GainMode::Track, Some(&loud), false, 0.0, -6.0, false, false), 1.0, "attenuation only");
-        let peaky = GainTags { track_gain: Some(-1.0), track_peak: Some(1.25), ..Default::default() };
-        assert!((replay_gain(GainMode::Track, Some(&peaky), false, 0.0, -6.0, false, false) - 0.8).abs() < 1e-6, "no clipping");
-    }
-
-    #[test]
-    fn untagged_tracks_and_exceptions() {
-        assert!((replay_gain(GainMode::Track, None, false, -3.0, -6.0, false, false) - 10f32.powf(-6.0 / 20.0)).abs() < 1e-6, "no tags: untagged level, no preamp");
-        let empty = GainTags::default();
-        assert!((replay_gain(GainMode::Track, Some(&empty), false, -3.0, -6.0, false, false) - 10f32.powf(-9.0 / 20.0)).abs() < 1e-6, "tags without gains: untagged plus preamp");
-        let t = GainTags { track_gain: Some(-6.0), ..Default::default() };
-        assert_eq!(replay_gain(GainMode::Off, Some(&t), false, 0.0, -6.0, false, false), 1.0);
-        assert_eq!(replay_gain(GainMode::Track, Some(&t), false, 0.0, -6.0, true, false), 1.0, "radio");
-        assert_eq!(replay_gain(GainMode::Track, Some(&t), false, 0.0, -6.0, false, true), 1.0, "bit perfect");
     }
 }

@@ -13,10 +13,13 @@ impl Core {
     /// else a bridge starts, and failing both the song is skipped or the music stops, as any failure
     /// would be. The run of failures is counted here either way.
     pub fn bridge_take(&self) -> BridgeTake {
-        let next = self.bridge_next_downloaded().unwrap_or(-1);
-        if next >= 0 {
+        let next = self.bridge_next_downloaded().unwrap_or_else(|e| {
+            nori_model::alog::info(&format!("bridge: the downloads could not be read: {e}"));
+            None
+        });
+        if let Some(index) = next {
             crate::rules::queue_bridged();
-            return BridgeTake::Jump { index: next as u32 };
+            return BridgeTake::Jump { index };
         }
         if let Some(edit) = self.bridge_start().ok().flatten() {
             nori_model::alog::info(&format!("bridge: bridging with {} downloads", edit.songs.len()));
@@ -57,17 +60,17 @@ impl Core {
     }
 
     /// The first song after the playing one, in play order, that is on the phone: where to skip to when
-    /// the server is out of reach before bridging at all. -1 for none.
-    pub fn bridge_next_downloaded(&self) -> Result<i32> {
+    /// the server is out of reach before bridging at all. None when there is none.
+    pub fn bridge_next_downloaded(&self) -> Result<Option<u32>> {
         let after: Vec<(usize, String)> = playlist::with(|p| p.upcoming().skip(1).map(|i| (i, p.ids()[i].clone())).collect());
         let c = self.db.lock();
         let mut st = c.prepare_cached("SELECT 1 FROM downloads WHERE server=sid() AND id=?1 AND done=1")?;
         for (i, id) in after {
             if st.exists([id])? {
-                return Ok(i as i32);
+                return Ok(Some(i as u32));
             }
         }
-        Ok(-1)
+        Ok(None)
     }
 }
 
@@ -105,7 +108,7 @@ pub(crate) mod tests {
         }
         queue::queue_register(vec![song("on1", "Muse", "y", false), song("on2", "Muse", "y", false)]);
         let _g = crate::playlist::tests::hold(&["on1", "on2"], 0);
-        assert_eq!(core.bridge_next_downloaded().unwrap(), -1, "nothing queued after it is on the phone");
+        assert_eq!(core.bridge_next_downloaded().unwrap(), None, "nothing queued after it is on the phone");
         let e = core.bridge_start().unwrap().unwrap();
         assert_eq!((e.at, e.seek, e.songs.len(), e.remove.len()), (0, 0, 2, 0));
         assert!(crate::playlist::playlist_bridge_state().bridging);

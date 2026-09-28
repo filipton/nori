@@ -139,7 +139,7 @@ fn downloads_the_disk_and_measuring_ahead_over_the_core() {
     assert_eq!(std::fs::read(&path).unwrap(), bytes_of(&url), "the whole song, byte for byte");
     let asked: Vec<u64> = audio.requests.lock().iter().map(|r| r.1).collect();
     assert_eq!(asked, [0, LEN as u64 / 2], "taken up where the connection broke");
-    assert_eq!(nori_core::transfers::held("dl-1"), 2, "the core has it as finished");
+    assert_eq!(nori_core::transfers::held("dl-1"), nori_core::transfers::HeldState::Done, "the core has it as finished");
     assert_eq!(nori_core::transfers::download_phase("dl-1".into()), Some(nori_core::DownloadPhase::Done));
 
     nori_core::queue::queue_register(vec![song]);

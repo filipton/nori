@@ -49,7 +49,6 @@ fn main() -> Result<(), String> {
     }
     std::fs::create_dir_all(&data).map_err(|e| format!("{}: {e}", data.display()))?;
     let db = session::db_path(&data);
-    session::set_db_path(std::path::Path::new(&db));
     let mut prefs = nori_core::settings_store::settings_open(db).map_err(|e| format!("the settings: {e}"))?;
     // A server given on the command line is added (or found) and used, as the terminal client does it.
     if let (Some(url), Some(user)) = (url, user) {

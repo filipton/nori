@@ -316,9 +316,9 @@ pub fn settings_sound_tool(tool: SoundTool) -> Result<Option<SoundChange>, Sound
     })
 }
 
-/// What in the core follows the settings by itself, told at once.
+/// What in the core follows the settings by itself, told at once. The transition planner is not told:
+/// it reads the settings kept here each time it plans (`planner::settings_from`).
 fn changed(prefs: &StoredPrefs) {
-    nori_automix::planner::settings_changed(prefs.transition_prefs());
     nori_automix::beat_model::switched(prefs.auto_mix_better_beats);
 }
 

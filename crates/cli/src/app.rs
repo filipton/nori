@@ -26,7 +26,7 @@ use crate::art::Theme;
 use crate::backend::{Data, Downloads, Fetch, Msg, Req, ALBUM_PAGE, HOME_ROWS};
 use crate::keys::{action, Action, Scope};
 use crate::lyrics::SongLyrics;
-use crate::settings_view::SettingsView;
+use crate::settings_view::{Chore, SettingsView};
 
 /// What the page in the middle shows, under whatever album, artist or playlist was opened over it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,7 +145,7 @@ pub enum Cmd {
     /// One graphic equalizer slider, dB.
     Graphic(u32, f32),
     Sound(SoundToolCmd),
-    Action(String),
+    Action(Chore),
     Mouse(bool),
     Images(bool),
     /// The output device for the next start, by name; empty for the system's own.
@@ -185,7 +185,7 @@ impl Cmd {
             Cmd::Shuffle(on) => format!("shuffle {on}"),
             Cmd::Repeat(m) => format!("repeat {m}"),
             Cmd::Setting(k, v) => format!("setting {k}={v}"),
-            Cmd::Action(a) => format!("action {a}"),
+            Cmd::Action(a) => format!("action {a:?}"),
             Cmd::Tuning(on) => format!("tuning {on}"),
             Cmd::Mouse(on) => format!("mouse {on}"),
             Cmd::Images(on) => format!("images {on}"),
@@ -481,10 +481,30 @@ impl Now {
 /// On top of the screen.
 pub enum Overlay {
     Help { scroll: usize },
-    /// A list of choices; `name` is the setting it sets (or a tool).
-    Picker { title: String, options: Vec<(String, String)>, sel: Sel, name: String },
+    /// A list of choices; `target` is what the one picked sets.
+    Picker { title: String, options: Vec<(String, String)>, sel: Sel, target: Target },
     /// Text typed in for a setting.
     Input { title: String, text: String, secret: bool, name: String },
+}
+
+/// What a choice sets: one of the core's settings by its name, the output device, or the equalizer's
+/// preset.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Target {
+    Setting(String),
+    Device,
+    Preset,
+}
+
+impl Target {
+    /// What `value` picked for it asks the runner to do; none for a preset that is not a number.
+    pub fn cmd(self, value: String) -> Option<Cmd> {
+        match self {
+            Target::Setting(name) => Some(Cmd::Setting(name, value)),
+            Target::Device => Some(Cmd::Device(value)),
+            Target::Preset => value.parse().ok().map(|i| Cmd::Sound(SoundToolCmd::Preset(i))),
+        }
+    }
 }
 
 /// Where a click lands.
@@ -1379,14 +1399,14 @@ impl App {
                 KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
                 _ => self.overlay = None,
             },
-            Overlay::Picker { options, sel, name, .. } => match k.code {
+            Overlay::Picker { options, sel, target, .. } => match k.code {
                 KeyCode::Down | KeyCode::Char('j') => sel.by(1, options.len()),
                 KeyCode::Up | KeyCode::Char('k') => sel.by(-1, options.len()),
                 KeyCode::Enter | KeyCode::Char('l') | KeyCode::Char(' ') => {
                     if let Some((_, value)) = options.get(sel.at) {
-                        let (name, value) = (name.clone(), value.clone());
+                        let (target, value) = (target.clone(), value.clone());
                         self.overlay = None;
-                        self.pick(&name, &value);
+                        self.cmds.extend(target.cmd(value));
                     }
                 }
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('h') => self.overlay = None,
@@ -1405,19 +1425,6 @@ impl App {
                 KeyCode::Char(c) if !k.modifiers.contains(KeyModifiers::CONTROL) => text.push(c),
                 _ => {}
             },
-        }
-    }
-
-    /// A choice made in a picker.
-    fn pick(&mut self, name: &str, value: &str) {
-        match name {
-            "!preset" => {
-                if let Ok(i) = value.parse() {
-                    self.cmds.push(Cmd::Sound(SoundToolCmd::Preset(i)));
-                }
-            }
-            "!device" => self.cmds.push(Cmd::Device(value.to_string())),
-            _ => self.cmds.push(Cmd::Setting(name.to_string(), value.to_string())),
         }
     }
 
@@ -2128,7 +2135,7 @@ impl App {
         match rows.get(self.eq_sel.at) {
             Some(crate::settings_view::EqRow::Presets) => {
                 let options = nori_core::dsp::eq_presets().iter().enumerate().map(|(i, p)| (crate::text::preset(p.kind).to_string(), i.to_string())).collect();
-                self.overlay = Some(Overlay::Picker { title: "Presets".into(), options, sel: Sel::default(), name: "!preset".into() });
+                self.overlay = Some(Overlay::Picker { title: "Presets".into(), options, sel: Sel::default(), target: Target::Preset });
             }
             Some(row) => {
                 if let Some(c) = row.open(&self.prefs) {

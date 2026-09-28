@@ -75,9 +75,6 @@ pub fn install() {
         return;
     }
     menu.init_for_nsapp();
-    if let Some(w) = window.items().first() {
-        let _ = w;
-    }
     window.set_as_windows_menu_for_nsapp();
     MENU.with(|m| *m.borrow_mut() = Some(menu));
 }

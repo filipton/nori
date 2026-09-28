@@ -602,18 +602,8 @@ fn empty(f: &mut Frame, area: Rect, t: &Theme, text: &str) {
 
 /// Good morning, afternoon or evening, by the clock of this computer.
 fn greeting() -> &'static str {
-    #[cfg(unix)]
-    let hour = {
-        // SAFETY: localtime_r writes only into the tm handed to it.
-        unsafe {
-            let now = libc::time(std::ptr::null_mut());
-            let mut tm: libc::tm = std::mem::zeroed();
-            libc::localtime_r(&now, &mut tm);
-            tm.tm_hour
-        }
-    };
-    #[cfg(not(unix))]
-    let hour = 12;
+    let now = nori_core::db::now_ms() / 1000;
+    let hour = (now + nori_core::library::local_offset_s(now)).rem_euclid(86_400) / 3600;
     match hour {
         5..=11 => "Good morning",
         12..=17 => "Good afternoon",

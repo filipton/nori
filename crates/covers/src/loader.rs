@@ -359,6 +359,11 @@ impl<P: Paint> Loader<P> {
         self.inner.bytes(Key::of(url), url, out, &waker)
     }
 
+    /// What paints this loader's covers: the client's own, for what it keeps beside them.
+    pub fn paint(&self) -> &P {
+        &self.inner.paint
+    }
+
     /// Lets go of what the loader keeps for covers to come, for a client short of memory: every worker
     /// ends as soon as it has nothing to do, with its decoder's buffers and whatever the platform keeps
     /// per thread, and the painter lets go of its own ([`Paint::rest`]). The next request starts a worker

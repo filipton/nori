@@ -115,7 +115,7 @@ impl Rig {
         let library = CoreLibrary { client, bytes: net, metered: false, store: Some(store) };
         let card = Card::new();
         let clock = Virtual::default();
-        let engine = Engine::start_on(library, CoreApp::new(), CoreQueue, Box::new(card.clone()), None, Config { memory_mb: 128, settings: settings(&prefs), ..Config::default() }, clock.clone(), |_| {});
+        let engine = Engine::start_on(library, CoreApp::new(), CoreQueue, Box::new(card.clone()), None, Config { memory_mb: 128, settings: settings(&prefs, 0.0), ..Config::default() }, clock.clone(), |_| {});
         engine.queue_changed();
         Rig { engine, time: Stepper::new(clock, card.pull.clone()), _dir: dir }
     }
@@ -142,7 +142,7 @@ impl Rig {
     /// What PlaybackService does with a change's effects.
     fn relay(&self, effect: u32) {
         if effect & APPLY_AUDIO != 0 {
-            self.engine.set_settings(settings(&nori_core::settings_store::settings_current().unwrap()));
+            self.engine.set_settings(settings(&nori_core::settings_store::settings_current().unwrap(), 0.0));
         }
         if effect & REPLAN != 0 {
             self.engine.replan();
@@ -227,14 +227,13 @@ fn a_play_right_after_a_change_is_planned_with_it() {
     assert!(rig.mixes_into(1), "the play right after the change mixes");
 }
 
-/// Two changes made at once on two threads (the screen and the engine's device sound, say) each tell the
-/// planner after they are kept: the older one told last left the planner with settings the store no
-/// longer had, and it went on planning with them until the next change or play.
+/// Two changes made at once on two threads (the screen and the engine's device sound, say) once each told
+/// the planner after they were kept: the older one told last left the planner with settings the store no
+/// longer had, and it went on planning with them until the next change or play. The planner reads the
+/// settings kept now, so there is nothing to tell out of order.
 fn the_planner_plans_with_the_settings_kept_even_when_an_older_change_is_told_last() {
     let rig = Rig::new("replan-order", &["f1", "f2", "f3"], true);
-    let older = nori_core::settings_store::settings_current().unwrap().transition_prefs();
     rig.set("crossfadeKeepAlbums", "false");
-    nori_core::automix::planner::settings_changed(older);
     rig.engine.play_at(0, 0);
     assert!(rig.mixes_into(1), "planned with the album no longer kept gapless");
 }
@@ -247,7 +246,7 @@ fn automix_and_mixing_albums_switched_on_right_before_an_album_is_played_mix_it(
     let mut prefs = nori_core::settings_store::settings_current().unwrap();
     prefs.auto_mix = false;
     nori_core::settings_store::settings_put(prefs.clone());
-    rig.engine.set_settings(settings(&prefs));
+    rig.engine.set_settings(settings(&prefs, 0.0));
     rig.engine.play_at(2, 0);
     assert!(rig.until(20, |r| r.engine.status().index == Some(2) && r.engine.status().position_ms > 2_000));
     let a = rig.set_only("crossfadeKeepAlbums", "false");

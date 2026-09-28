@@ -174,7 +174,6 @@ pub fn run(o: Options) -> Result<(), String> {
     crate::term::stderr_to(&o.data.join("nori.log"));
     crate::term::hook_panics();
     let db = crate::backend::db_path(&o.data);
-    crate::backend::set_core_db_path(db.clone());
     let mut prefs = settings_store::settings_open(db).map_err(|e| format!("the settings: {e}"))?;
     // A server given on the command line is added (or found) and used.
     if let Some((url, user, password)) = o.login.clone() {
@@ -614,7 +613,7 @@ impl Runner {
                 }
                 self.prefs_changed(app);
             }
-            Cmd::Action(a) => s.action(&a),
+            Cmd::Action(c) => s.action(c),
             Cmd::Tuning(on) => s.engine.set_tuning(on),
             Cmd::SearchTyped(text) => {
                 let v = s.search_typed(&text);

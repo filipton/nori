@@ -13,7 +13,7 @@ use nori_core::settings::{EqLevel, EqMode, SoundBand, StoredPrefs, EQ_RANGES};
 use nori_core::settings_model::{self, BeatModel, LyricsSource, SettingsState};
 use nori_core::MusicFolder;
 
-use crate::app::{Cmd, Overlay, Sel, SoundToolCmd, View};
+use crate::app::{Cmd, Overlay, Sel, SoundToolCmd, Target, View};
 
 /// The client's own group, first in the list.
 pub const OWN: &str = "terminal";
@@ -47,24 +47,45 @@ pub const GROUPS: [Group; 8] = [
     Group { id: "about", title: "About" },
 ];
 
+/// What a link or a button on the page does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Act {
+    Equalizer,
+    Downloads,
+    /// The login, for another server.
+    AddServer,
+    Chore(Chore),
+}
+
+/// What the backend does when a button asks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Chore {
+    SyncLibrary,
+    DownloadLibrary,
+    MeasureAgain,
+    ClearStream,
+    ClearCovers,
+    ClearLyrics,
+}
+
 /// One row of a page.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Row {
     Toggle { name: String, title: String, detail: String, on: bool, enabled: bool },
     /// `options` are (label, value); `shown` is the chosen one's label, or the value itself.
-    Choice { name: String, title: String, options: Vec<(String, String)>, shown: String, enabled: bool },
+    Choice { target: Target, title: String, options: Vec<(String, String)>, shown: String, enabled: bool },
     Note { text: String },
     /// Opens another screen (`action`), with a status at its end.
-    Link { title: String, status: String, action: String },
+    Link { title: String, status: String, action: Act },
     /// A line of text and a button at its end.
-    Action { title: String, detail: String, button: String, enabled: bool, action: String },
+    Action { title: String, detail: String, button: String, enabled: bool, action: Act },
     Info { title: String, detail: String },
     /// `level`: dragged through `edit_level` instead of by `name`.
     Slider { name: String, label: String, value: f32, min: f32, max: f32, centred: bool, level: Option<EqLevel> },
     /// Colour swatches, ARGB.
     Palette { name: String, colours: Vec<i64>, chosen: i64 },
     Server { id: String, label: String, detail: String, active: bool },
-    Button { title: String, action: String },
+    Button { title: String, action: Act },
     /// A lyrics service in the one ranked list: switched where it stands, moved a place with ← →.
     Ranked { name: String, id: String, title: String, detail: String, on: bool },
     /// Text typed in (a service's key).
@@ -222,14 +243,15 @@ impl SettingsView {
                 None if enabled => Opened::Cmds(vec![Cmd::Setting(name, (!on).to_string())]),
                 None => return None,
             },
-            Row::Choice { name, title, options, shown, enabled: true } => {
+            Row::Choice { target, title, options, shown, enabled: true } => {
                 let at = options.iter().position(|o| o.0 == shown).unwrap_or(0);
-                Opened::Overlay(Overlay::Picker { title, options, sel: Sel { at, top: 0 }, name })
+                Opened::Overlay(Overlay::Picker { title, options, sel: Sel { at, top: 0 }, target })
             }
-            Row::Link { action, .. } | Row::Action { action, enabled: true, .. } => match action.as_str() {
-                "equalizer" => Opened::View(View::Equalizer),
-                "downloads" => Opened::View(View::Downloads),
-                _ => Opened::Cmds(vec![Cmd::Action(action)]),
+            Row::Link { action, .. } | Row::Action { action, enabled: true, .. } | Row::Button { action, .. } => match action {
+                Act::Equalizer => Opened::View(View::Equalizer),
+                Act::Downloads => Opened::View(View::Downloads),
+                Act::AddServer => Opened::Login,
+                Act::Chore(c) => Opened::Cmds(vec![Cmd::Action(c)]),
             },
             Row::Server { id, active, .. } => {
                 if active {
@@ -237,8 +259,6 @@ impl SettingsView {
                 }
                 Opened::Cmds(vec![Cmd::SwitchServer(id)])
             }
-            Row::Button { action, .. } if action == "add-server" => Opened::Login,
-            Row::Button { action, .. } => Opened::Cmds(vec![Cmd::Action(action)]),
             Row::Ranked { name, on, .. } => Opened::Cmds(vec![Cmd::Setting(name, (!on).to_string())]),
             Row::Text { name, title, value, secret, .. } => Opened::Overlay(Overlay::Input { title, text: value, secret, name }),
             Row::Palette { name, colours, chosen } => {
@@ -253,7 +273,7 @@ impl SettingsView {
     pub fn step(&mut self, _prefs: &StoredPrefs, up: bool) -> Vec<Cmd> {
         let Some(row) = self.selected().cloned() else { return Vec::new() };
         match row {
-            Row::Choice { name, options, shown, enabled: true, .. } => {
+            Row::Choice { target, options, shown, enabled: true, .. } => {
                 let at = options.iter().position(|o| o.0 == shown);
                 let to = match at {
                     Some(i) if up => (i + 1).min(options.len() - 1),
@@ -263,11 +283,7 @@ impl SettingsView {
                 if Some(to) == at || options.is_empty() {
                     return Vec::new();
                 }
-                let value = options[to].1.clone();
-                if name == "!device" {
-                    return vec![Cmd::Device(value)];
-                }
-                vec![Cmd::Setting(name, value)]
+                target.cmd(options[to].1.clone()).into_iter().collect()
             }
             Row::Toggle { name, on, enabled, .. } => {
                 if on == up {
@@ -374,7 +390,7 @@ impl Build<'_> {
     fn choice_of(&self, name: &str, title: &str, options: Vec<(String, String)>, enabled: bool) -> Row {
         let v = self.value(name);
         let shown = options.iter().find(|o| o.1 == v).map_or(v, |o| o.0.clone());
-        Row::Choice { name: name.into(), title: title.into(), options, shown, enabled }
+        Row::Choice { target: Target::Setting(name.into()), title: title.into(), options, shown, enabled }
     }
 
     /// An enum setting: its values by name, worded in the same order.
@@ -396,8 +412,8 @@ fn info(title: &str, detail: String) -> Row {
     Row::Info { title: title.into(), detail }
 }
 
-fn action(title: &str, detail: String, button: &str, enabled: bool, act: &str) -> Row {
-    Row::Action { title: title.into(), detail, button: button.into(), enabled, action: act.into() }
+fn action(title: &str, detail: String, button: &str, enabled: bool, chore: Chore) -> Row {
+    Row::Action { title: title.into(), detail, button: button.into(), enabled, action: Act::Chore(chore) }
 }
 
 fn off_or(v: &str, words: impl Fn(&str) -> String) -> String {
@@ -435,7 +451,7 @@ fn own_page(b: &Build, o: &Own, f: &Facts) -> Vec<Section> {
         toggle("!mouse", "Mouse", "Clicks, the wheel and dragging the bars. Off, the terminal selects text (m)", o.mouse),
         toggle("!images", "Covers", "Album art in the player and on album pages (I)", o.images),
         Row::Toggle { name: "!cardCovers".into(), title: "Covers on album cards".into(), detail: "Small pictures on Home and Albums; off keeps a slow link or terminal light".into(), on: o.card_covers, enabled: o.images },
-        Row::Choice { name: "!device".into(), title: "Output device".into(), options: devices, shown, enabled: true },
+        Row::Choice { target: Target::Device, title: "Output device".into(), options: devices, shown, enabled: true },
         Row::Note { text: "The device is opened at start; --device overrides it for one run.".into() },
     ];
     let accents: Vec<i64> = options("accent").iter().filter_map(|c| c.parse().ok()).collect();
@@ -452,7 +468,7 @@ fn sound(b: &Build) -> Vec<Section> {
     let live = !s.untouched;
     let eq_status = if s.untouched { "bypassed" } else if s.sound_chain_on { "on" } else { "off" };
     let eq_status = if p.sound_bypass { "no processing" } else { eq_status };
-    let eq = vec![Row::Link { title: "Equalizer, crossfeed, balance, limiter".into(), status: eq_status.into(), action: "equalizer".into() }];
+    let eq = vec![Row::Link { title: "Equalizer, crossfeed, balance, limiter".into(), status: eq_status.into(), action: Act::Equalizer }];
 
     let mut levelling = vec![b.named("replayGain", "ReplayGain", &["off", "track", "album", "auto"])];
     if p.replay_gain != nori_core::settings::GainMode::Off {
@@ -588,13 +604,13 @@ fn playback(b: &Build, f: &Facts) -> Vec<Section> {
         b.toggle("skipOnError", "Skip unplayable songs", "Up to three in a row"),
         b.toggle("bridgeOffline", "Offline fallback", "Play downloads while the server is unreachable"),
     ];
-    let analysis = vec![action("Measured songs", format!("{} songs with tempo and beats", f.analysed), "Forget", f.analysed > 0, "measure-again")];
+    let analysis = vec![action("Measured songs", format!("{} songs with tempo and beats", f.analysed), "Forget", f.analysed > 0, Chore::MeasureAgain)];
     vec![section("Queue", queue), section("Errors", errors), section("Analysis", analysis)]
 }
 
 fn library(b: &Build, f: &Facts) -> Vec<Section> {
     let (songs, albums, artists) = f.indexed;
-    let index = vec![action("Offline index", format!("{songs} songs, {albums} albums, {artists} artists"), "Update", true, "sync-library")];
+    let index = vec![action("Offline index", format!("{songs} songs, {albums} albums, {artists} artists"), "Update", true, Chore::SyncLibrary)];
     let mut history = vec![
         b.toggle("tasteModel", "Listening history", "Kept locally; feeds mixes and stats"),
         b.toggle("scrobble", "Scrobble", "Report plays to the server"),
@@ -672,7 +688,7 @@ fn server(b: &Build, f: &Facts) -> Vec<Section> {
             Row::Server { id: s.id.clone(), label: nori_core::settings::label(&s.name, &s.url), detail, active }
         })
         .collect();
-    accounts.push(Row::Button { title: "Add a server".into(), action: "add-server".into() });
+    accounts.push(Row::Button { title: "Add a server".into(), action: Act::AddServer });
     let mut out = vec![section("Accounts", accounts)];
     let mut this = Vec::new();
     if f.folders.len() > 1 {
@@ -701,17 +717,17 @@ fn storage(b: &Build, f: &Facts) -> Vec<Section> {
         b.choice("wifi", "Streaming quality", true, quality),
         b.choice("download", "Download quality", true, quality),
         b.choice("parallelDownloads", "Parallel downloads", true, |v| v.to_string()),
-        action("Download everything", "Every indexed song".into(), "Download", f.indexed.0 > 0, "download-library"),
-        Row::Link { title: "Downloads".into(), status: format!("{} songs, {}", s.download_songs, bytes(s.downloads)), action: "downloads".into() },
+        action("Download everything", "Every indexed song".into(), "Download", f.indexed.0 > 0, Chore::DownloadLibrary),
+        Row::Link { title: "Downloads".into(), status: format!("{} songs, {}", s.download_songs, bytes(s.downloads)), action: Act::Downloads },
     ];
     let cache = vec![
         b.choice("cacheMb", "Stream cache limit", true, |v| match v.parse::<i32>() {
             Ok(mb) if mb % 1024 == 0 => format!("{} GB", mb / 1024),
             _ => format!("{v} MB"),
         }),
-        action("Stream cache", bytes(s.stream), "Clear", s.stream > 0, "clear-stream"),
-        action("Cover cache", bytes(s.covers), "Clear", s.covers > 0, "clear-covers"),
-        action("Lyrics cache", format!("{} of lyrics found online", bytes(s.lyrics)), "Clear", s.lyrics > 0, "clear-lyrics"),
+        action("Stream cache", bytes(s.stream), "Clear", s.stream > 0, Chore::ClearStream),
+        action("Cover cache", bytes(s.covers), "Clear", s.covers > 0, Chore::ClearCovers),
+        action("Lyrics cache", format!("{} of lyrics found online", bytes(s.lyrics)), "Clear", s.lyrics > 0, Chore::ClearLyrics),
         info("Database", bytes(s.database)),
     ];
     vec![section("Quality and downloads", quality_rows), section("Cache", cache)]
@@ -1060,9 +1076,9 @@ mod tests {
                     let Some(Opened::Cmds(c)) = v.open(&prefs) else { panic!("{name} does not switch") };
                     assert!(matches!(&c[0], Cmd::Setting(n, _) if n == name), "{name}");
                 }
-                Row::Choice { name, enabled: true, options, .. } if !name.starts_with('!') => {
-                    let Some(Opened::Overlay(Overlay::Picker { name: picked, options: shown, .. })) = v.open(&prefs) else { panic!("{name} offers no choice") };
-                    assert_eq!(&picked, name);
+                Row::Choice { target: Target::Setting(name), enabled: true, options, .. } => {
+                    let Some(Opened::Overlay(Overlay::Picker { target: picked, options: shown, .. })) = v.open(&prefs) else { panic!("{name} offers no choice") };
+                    assert_eq!(picked, Target::Setting(name.clone()));
                     assert_eq!(shown.len(), options.len());
                     let steps = [v.step(&prefs, true), v.step(&prefs, false)].concat();
                     assert!(steps.iter().all(|c| matches!(c, Cmd::Setting(n, _) if n == name)), "{name}");
@@ -1087,7 +1103,7 @@ mod tests {
         let shown = |name: &str| {
             rows.iter()
                 .find_map(|(_, r)| match r {
-                    Row::Choice { name: n, shown, .. } if n == name => Some(shown.clone()),
+                    Row::Choice { target: Target::Setting(n), shown, .. } if n == name => Some(shown.clone()),
                     _ => None,
                 })
                 .unwrap_or_else(|| panic!("no {name}"))
@@ -1104,7 +1120,7 @@ mod tests {
         let names: Vec<String> = every_row(&everything_on())
             .into_iter()
             .filter_map(|(_, r)| match r {
-                Row::Toggle { name, .. } | Row::Choice { name, .. } => Some(name),
+                Row::Toggle { name, .. } | Row::Choice { target: Target::Setting(name), .. } => Some(name),
                 _ => None,
             })
             .collect();

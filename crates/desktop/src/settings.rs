@@ -42,6 +42,78 @@ pub struct Facts {
     pub syncing: bool,
 }
 
+/// The name the output device's row goes by in the window: it is the window's own, not the core's.
+const DEVICE: &str = "!device";
+
+/// What a choice row sets: one of the core's settings by its name, or the output device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target<'a> {
+    Setting(&'a str),
+    Device,
+}
+
+impl<'a> Target<'a> {
+    /// The choice a row's name, as the window hands it back, is.
+    pub fn of(name: &'a str) -> Target<'a> {
+        if name == DEVICE { Target::Device } else { Target::Setting(name) }
+    }
+}
+
+/// The names the equalizer's link and the button that adds a server go by in the window.
+const EQUALIZER: &str = "equalizer";
+const ADD_SERVER: &str = "add-server";
+
+/// What a link or a button on the page does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Act {
+    Equalizer,
+    AddServer,
+    /// A server's row, by the server's id: it is switched to.
+    Server(String),
+    Chore(Chore),
+}
+
+impl Act {
+    /// The act a name the window hands back is: a server's row comes back as `server:` and its id.
+    pub fn of(name: &str) -> Option<Act> {
+        if let Some(id) = name.strip_prefix("server:") {
+            return Some(Act::Server(id.to_string()));
+        }
+        match name {
+            EQUALIZER => Some(Act::Equalizer),
+            ADD_SERVER => Some(Act::AddServer),
+            _ => Chore::ALL.into_iter().find(|c| c.name() == name).map(Act::Chore),
+        }
+    }
+}
+
+/// What the session does when a button asks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Chore {
+    SyncLibrary,
+    DownloadLibrary,
+    MeasureAgain,
+    ClearStream,
+    ClearCovers,
+    ClearLyrics,
+}
+
+impl Chore {
+    const ALL: [Chore; 6] = [Chore::SyncLibrary, Chore::DownloadLibrary, Chore::MeasureAgain, Chore::ClearStream, Chore::ClearCovers, Chore::ClearLyrics];
+
+    /// The name its button goes by in the window.
+    fn name(self) -> &'static str {
+        match self {
+            Chore::SyncLibrary => "sync-library",
+            Chore::DownloadLibrary => "download-library",
+            Chore::MeasureAgain => "measure-again",
+            Chore::ClearStream => "clear-stream",
+            Chore::ClearCovers => "clear-covers",
+            Chore::ClearLyrics => "clear-lyrics",
+        }
+    }
+}
+
 #[derive(Default)]
 struct Row {
     kind: i32,
@@ -157,8 +229,8 @@ impl Build<'_> {
         Row { kind: SLIDER, name: name.into(), title: label, value: value.clamp(min, max), min, max, centred, enabled: true, ..Default::default() }
     }
 
-    fn action(&self, title: &str, detail: String, button: &str, enabled: bool, act: &str) -> Row {
-        Row { kind: ACTION, name: act.into(), title: title.into(), detail, button: button.into(), enabled, ..Default::default() }
+    fn action(&self, title: &str, detail: String, button: &str, enabled: bool, chore: Chore) -> Row {
+        Row { kind: ACTION, name: chore.name().into(), title: title.into(), detail, button: button.into(), enabled, ..Default::default() }
     }
 
     fn info(&self, title: &str, detail: String) -> Row {
@@ -190,7 +262,7 @@ impl Build<'_> {
         let mut devices = vec![("The system's own".to_string(), String::new())];
         devices.extend(self.f.devices.iter().map(|d| (d.clone(), d.clone())));
         let output = vec![
-            Row { kind: CHOICE, name: "!device".into(), title: "Play through".into(), options: devices, enabled: true, ..Default::default() },
+            Row { kind: CHOICE, name: DEVICE.into(), title: "Play through".into(), options: devices, enabled: true, ..Default::default() },
             self.note("A new device is used from the next start of nori."),
         ];
         vec![("Look", look), ("Output device", output), ("About", vec![self.info("nori", format!("Version {}", env!("CARGO_PKG_VERSION")))])]
@@ -236,7 +308,7 @@ impl Build<'_> {
                 between.push(self.toggle_if("autoMixBetterBeats", "Better beat detection", &detail, live));
             }
             let n = self.f.analysed;
-            between.push(self.action("Measured songs", format!("{} measured for tempo and beats.", count(n, "song", "songs")), "Measure again", n > 0, "measure-again"));
+            between.push(self.action("Measured songs", format!("{} measured for tempo and beats.", count(n, "song", "songs")), "Measure again", n > 0, Chore::MeasureAgain));
         }
         between.push(self.toggle_if("crossfadeKeepAlbums", "Keep albums gapless", "An album played or added to the queue whole plays without mixing between its songs.", live));
         between.push(self.choice("fadeMs", "Fade on play and pause", |v| off_or(v, |v| if v.parse::<u32>().is_ok_and(|n| n % 1000 == 0) { seconds(&(v.parse::<u32>().unwrap_or(0) / 1000).to_string()) } else { format!("{v} ms") })));
@@ -279,7 +351,7 @@ impl Build<'_> {
         let s = self.s;
         let status = if s.untouched { "Off now" } else if s.sound_chain_on { "On" } else { "Off" };
         let eq = vec![
-            self.link("Equalizer and crossfeed", status, "equalizer"),
+            self.link("Equalizer and crossfeed", status, EQUALIZER),
             self.toggle("autoEqAuto", "AutoEQ for headphones", "Applies a known correction curve when headphones connect."),
             self.toggle("autoEqDownload", "Keep the AutoEQ list", "Downloads the headphone list (850 kB, from github.com), and again once a month, so headphones find their curve."),
             self.toggle("profilePerOutput", "Remember sound per device", "Each device keeps its own equalizer settings."),
@@ -398,7 +470,7 @@ impl Build<'_> {
         let (songs, albums, artists) = self.f.indexed;
         let counts = format!("{} · {} · {} on this Mac", count(songs, "song", "songs"), count(albums, "album", "albums"), count(artists, "artist", "artists"));
         let search = vec![
-            self.action("Offline search", counts, if self.f.syncing { "Updating…" } else { "Update" }, !self.f.syncing, "sync-library"),
+            self.action("Offline search", counts, if self.f.syncing { "Updating…" } else { "Update" }, !self.f.syncing, Chore::SyncLibrary),
             self.choice("liveSearchDelayMs", "Search delay", |v| format!("{v} ms")),
         ];
         let mut history = vec![
@@ -434,7 +506,7 @@ impl Build<'_> {
         let downloads = vec![
             self.quality("download", "Quality for downloads"),
             self.choice("parallelDownloads", "Downloads at once", |v| v.into()),
-            self.action("Download the whole library", "Every song, at the download quality.".into(), "Download", f.indexed.0 > 0, "download-library"),
+            self.action("Download the whole library", "Every song, at the download quality.".into(), "Download", f.indexed.0 > 0, Chore::DownloadLibrary),
         ];
         let ahead = vec![
             self.choice("precacheWifi", "Load ahead", |v| if v == "1" { "Next song".into() } else { format!("{v} songs") }),
@@ -455,9 +527,9 @@ impl Build<'_> {
                 _ => format!("{v} MB"),
             }),
             self.info("Stored on this Mac", stored),
-            self.action("Streamed music", "Oldest goes first. Downloads stay.".into(), "Clear", f.stream_bytes > 0, "clear-stream"),
-            self.action("Covers", "Fetched again when needed.".into(), "Clear", f.cover_bytes > 0, "clear-covers"),
-            self.action("Lyrics", format!("{} found online. Looked up again when needed.", bytes(f.lyrics_bytes)), "Clear", f.lyrics_bytes > 0, "clear-lyrics"),
+            self.action("Streamed music", "Oldest goes first. Downloads stay.".into(), "Clear", f.stream_bytes > 0, Chore::ClearStream),
+            self.action("Covers", "Fetched again when needed.".into(), "Clear", f.cover_bytes > 0, Chore::ClearCovers),
+            self.action("Lyrics", format!("{} found online. Looked up again when needed.", bytes(f.lyrics_bytes)), "Clear", f.lyrics_bytes > 0, Chore::ClearLyrics),
         ];
         vec![("Streaming quality", streaming), ("Downloads", downloads), ("Loading ahead", ahead), ("Storage", storage)]
     }
@@ -477,7 +549,7 @@ impl Build<'_> {
                 Row { kind: SERVER, name: sv.id.clone(), title: nori_core::settings::label(&sv.name, &sv.url), detail, on: active, enabled: true, ..Default::default() }
             })
             .collect();
-        accounts.push(Row { kind: BUTTON, name: "add-server".into(), title: "Add server".into(), enabled: true, ..Default::default() });
+        accounts.push(Row { kind: BUTTON, name: ADD_SERVER.into(), title: "Add server".into(), enabled: true, ..Default::default() });
         let mut out = vec![("Accounts", accounts)];
         if self.f.folders.len() > 1 {
             let mut o = vec![("All".to_string(), String::new())];
@@ -530,7 +602,10 @@ pub fn rows(p: &StoredPrefs, f: &Facts, tab: i32) -> ModelRc<SettingRow> {
         out.push(SettingRow { kind: HEADING, title: title.into(), ..Default::default() });
         let n = rows.len();
         for (i, r) in rows.into_iter().enumerate() {
-            let v = if r.name == "!device" { f.device.clone() } else { b.value(&r.name) };
+            let v = match Target::of(&r.name) {
+                Target::Device => f.device.clone(),
+                Target::Setting(name) => b.value(name),
+            };
             let chosen = r.options.iter().position(|o| o.1 == v).map_or(-1, |i| i as i32);
             let labels: Vec<SharedString> = r.options.iter().map(|o| o.0.as_str().into()).collect();
             let swatches: Vec<Color> = r.swatches.iter().map(|c| Color::from_argb_encoded(accent_shown(*c))).collect();
@@ -558,24 +633,24 @@ pub fn rows(p: &StoredPrefs, f: &Facts, tab: i32) -> ModelRc<SettingRow> {
     ModelRc::new(VecModel::from(out))
 }
 
-/// The value of option `index` of setting `name`, to hand to `setting_set`.
-pub fn option_value(name: &str, index: usize, f: &Facts) -> Option<String> {
-    match name {
-        "!device" => {
+/// The value of option `index` of `target`, to hand to `setting_set` (or keep, for the device).
+pub fn option_value(target: Target, index: usize, f: &Facts) -> Option<String> {
+    match target {
+        Target::Device => {
             if index == 0 {
                 Some(String::new())
             } else {
                 f.devices.get(index - 1).cloned()
             }
         }
-        "musicFolder" => {
+        Target::Setting("musicFolder") => {
             if index == 0 {
                 Some(String::new())
             } else {
                 f.folders.get(index - 1).map(|x| x.1.clone())
             }
         }
-        _ => options(name).into_iter().nth(index),
+        Target::Setting(name) => options(name).into_iter().nth(index),
     }
 }
 
@@ -618,6 +693,13 @@ mod tests {
         for groups in [b.general(), b.playing(), b.sound(), b.lyrics(), b.library(), b.data(), b.servers()] {
             assert!(!groups.is_empty());
         }
+        // Every button's name is the act it does, as the window hands it back.
+        for c in Chore::ALL {
+            assert_eq!(Act::of(c.name()), Some(Act::Chore(c)));
+        }
+        assert_eq!(Act::of(EQUALIZER), Some(Act::Equalizer));
+        assert_eq!(Act::of(ADD_SERVER), Some(Act::AddServer));
+        assert_eq!(Act::of("server:7"), Some(Act::Server("7".into())));
         // Every slider's level is one the core moves in place.
         for r in b.sound().into_iter().flat_map(|g| g.1) {
             if r.kind == SLIDER {

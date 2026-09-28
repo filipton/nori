@@ -852,18 +852,21 @@ impl Tracker {
     }
 }
 
-/// `id` is being measured as it comes (`on`), or that is over: `stored` when its analysis was kept, and then a
-/// saved song stops waiting for it. One not stored still waits: its analysis is done from the disk
-/// (nori-engine's processing, which is told the measuring ended).
-pub fn analysing(id: &str, on: bool, stored: bool) {
+/// `id` is being measured as it comes, from now until [`analysing_ended`].
+pub fn analysing_began(id: &str) {
     with(|t| {
-        if on {
-            t.analysing.insert(id.to_string());
-        } else {
-            t.analysing.remove(id);
-            if stored {
-                t.work_done(id, Work::Analysis);
-            }
+        t.analysing.insert(id.to_string());
+    });
+}
+
+/// Measuring `id` as it came is over: `stored` when its analysis was kept, and then a saved song stops
+/// waiting for it. One not stored still waits: its analysis is done from the disk (nori-engine's
+/// processing, which is told the measuring ended).
+pub fn analysing_ended(id: &str, stored: bool) {
+    with(|t| {
+        t.analysing.remove(id);
+        if stored {
+            t.work_done(id, Work::Analysis);
         }
     });
 }
@@ -1534,6 +1537,28 @@ pub struct Held {
 /// read as the old one's.
 pub static HELD_VERSION: AtomicU64 = AtomicU64::new(1);
 
+/// Where a song stands in the downloads table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeldState {
+    /// Not in it.
+    Absent,
+    /// Queued, or failed.
+    Pending,
+    /// Downloaded.
+    Done,
+}
+
+impl HeldState {
+    /// The number Kotlin's `DownloadsJni` reads it by: 0, 1 and 2.
+    pub fn code(self) -> i32 {
+        match self {
+            HeldState::Absent => 0,
+            HeldState::Pending => 1,
+            HeldState::Done => 2,
+        }
+    }
+}
+
 impl Held {
     pub fn load(c: &rusqlite::Connection) -> nori_model::Result<Held> {
         let mut st = c.prepare("SELECT id, done FROM downloads WHERE server=sid()")?;
@@ -1543,9 +1568,8 @@ impl Held {
         Ok(Held { ids, done })
     }
 
-    /// 0 not in the table, 1 queued or failed, 2 finished.
-    pub fn state(&self, id: &str) -> i32 {
-        self.ids.get(id).map_or(0, |d| if *d { 2 } else { 1 })
+    pub fn state(&self, id: &str) -> HeldState {
+        self.ids.get(id).map_or(HeldState::Absent, |d| if *d { HeldState::Done } else { HeldState::Pending })
     }
 
     pub fn queued(&mut self, id: &str) {
@@ -1715,10 +1739,10 @@ pub fn set_active_held(held: &Arc<Mutex<Held>>) {
     *ACTIVE_HELD.lock() = Arc::downgrade(held);
 }
 
-/// Whether `id` is in the active core's downloads table: 0 no, 1 queued or failed, 2 finished. Asked by
-/// every row a list draws and every track opened; answered from memory.
-pub fn held(id: &str) -> i32 {
-    ACTIVE_HELD.lock().upgrade().map_or(0, |held| held.lock().state(id))
+/// Where `id` stands in the active core's downloads table. Asked by every row a list draws and every track
+/// opened; answered from memory.
+pub fn held(id: &str) -> HeldState {
+    ACTIVE_HELD.lock().upgrade().map_or(HeldState::Absent, |held| held.lock().state(id))
 }
 
 /// The download statistics for checks: bytes a second over the last several seconds, and seconds left (-1 unknown).
@@ -1894,7 +1918,7 @@ mod tests {
     fn a_saved_song_is_processing_until_its_lyrics_analysis_and_beats_are_over() {
         use std::future::Future;
         let phase = |id: &str| download_phase(id.into());
-        analysing("pr-a", true, false);
+        analysing_began("pr-a");
         followed("pr-a", DOWNLOADING, 0);
         assert_eq!(phase("pr-a"), Some(DownloadPhase::Downloading));
         followed("pr-a", COMPLETED, 1_000);
@@ -1910,7 +1934,7 @@ mod tests {
         assert!(work_done("pr-a", Work::Lyrics));
         assert_eq!(phase("pr-a"), Some(DownloadPhase::Analysing), "analysing");
         // Measured as it came, but not kept: it waits for its analysis from the disk.
-        analysing("pr-a", false, false);
+        analysing_ended("pr-a", false);
         assert!(waits("pr-a", Work::Analysis));
         assert!(work_done("pr-a", Work::Analysis));
         assert_eq!(phase("pr-a"), Some(DownloadPhase::DetectingBeats), "detecting beats");
@@ -1924,9 +1948,9 @@ mod tests {
         assert_eq!(phase("ext-pr-b"), Some(DownloadPhase::Done), "a provider's song not measured has nothing to wait for");
 
         // Kept as it came: nothing is left of the analysis.
-        analysing("pr-c", true, false);
+        analysing_began("pr-c");
         followed("pr-c", COMPLETED, 0);
-        analysing("pr-c", false, true);
+        analysing_ended("pr-c", true);
         assert!(!waits("pr-c", Work::Analysis));
         assert_eq!(phase("pr-c"), Some(DownloadPhase::FindingLyrics));
         let saved = ["pr-c".to_string()];

@@ -71,12 +71,29 @@ pub struct CoreApp {
     bridge: bool,
     /// The songs' ReplayGain levels last logged.
     gains_said: Vec<(String, f32)>,
+    /// Its player's output volume, for the settings made again on another output.
+    volume: Arc<OutputVolume>,
 }
 
 impl CoreApp {
     pub fn new() -> CoreApp {
         fn nothing() {}
-        CoreApp { host: CoreHost { now_ms: 0, heard_changed: nothing }, measurer: None, devices: None, known: Vec::new(), output: None, bridge: false, gains_said: Vec::new() }
+        CoreApp {
+            host: CoreHost { now_ms: 0, heard_changed: nothing },
+            measurer: None,
+            devices: None,
+            known: Vec::new(),
+            output: None,
+            bridge: false,
+            gains_said: Vec::new(),
+            volume: Arc::default(),
+        }
+    }
+
+    /// Its player's output volume, as the client keeps it (0 dB until told).
+    pub fn volume(mut self, volume: Arc<OutputVolume>) -> CoreApp {
+        self.volume = volume;
+        self
     }
 
     /// The client runs the offline bridge (`Core::bridge_start` over the queue): a song the network would
@@ -168,7 +185,7 @@ impl App for CoreApp {
             if let Some(s) = effect.apply.take() {
                 let prefs = nori_core::settings_store::settings_current()?.with_sound(s);
                 nori_core::settings_store::settings_put(prefs.clone());
-                sound = Some(settings(&prefs).sound);
+                sound = Some(settings(&prefs, self.volume.db()).sound);
             }
             if !effect.arrive {
                 break;
@@ -287,7 +304,7 @@ impl Library for CoreLibrary {
         let song = nori_core::queue::queue_song(id.to_string());
         let duration_ms = song.as_ref().map(|s| s.duration as i64 * 1000).filter(|&d| d > 0);
         // A download may have been transcoded: the file says what it is.
-        let kept = self.store.as_ref().filter(|_| transfers::held(id) == 2).and_then(|s| s.downloaded(id));
+        let kept = self.store.as_ref().filter(|_| transfers::held(id) == transfers::HeldState::Done).and_then(|s| s.downloaded(id));
         if let Some(path) = kept {
             return Ok(Located { source: Source::File(path), hint: None, duration_ms, estimated: false });
         }
@@ -578,7 +595,7 @@ struct StoreShelf {
 
 impl Shelf for StoreShelf {
     fn whole(&self, id: &str) -> Option<Whole> {
-        if transfers::held(id) == 2 {
+        if transfers::held(id) == transfers::HeldState::Done {
             if let Some(p) = self.store.downloaded(id) {
                 return Some(Whole { files: vec![p], hint: None });
             }
@@ -976,7 +993,7 @@ fn listen_as_it_comes(id: &str, hint: Option<&str>, wait: bool) -> Option<Listen
     match Listening::start(hint.map(str::to_string), wait, Box::new(heard)) {
         Some(l) => {
             // A download saved before this is over shows it is still being analysed.
-            nori_core::transfers::analysing(id, true, false);
+            nori_core::transfers::analysing_began(id);
             Some(l)
         }
         None => {
@@ -1031,7 +1048,7 @@ impl Heard for Measuring {
             CAME.fetch_add(1, Ordering::Relaxed);
         }
         ARRIVING.lock().retain(|i| *i != id);
-        nori_core::transfers::analysing(&id, false, stored);
+        nori_core::transfers::analysing_ended(&id, stored);
         // A saved song waiting for this is looked at by the work after the bytes: from the disk, if not stored.
         crate::processing::kick();
         let measurers: Vec<Arc<Measurer>> = MEASURERS.lock().iter().filter_map(|w| w.upgrade()).collect();
@@ -1223,27 +1240,37 @@ pub(crate) fn lower_priority() {
     crate::arriving::lower_priority();
 }
 
-/// The output's volume as the platform last told it, dB (0 all the way up), as f32 bits: loudness
-/// compensation follows it. Told only while that is on.
-static VOLUME_DB: AtomicU32 = AtomicU32::new(0);
+/// One player's output volume as its platform last told it, dB (0 all the way up): loudness compensation
+/// follows it ([`settings`]). Told only while that is on. The client keeps it with its player and hands it
+/// to the player's app ([`CoreApp::volume`]), which makes the settings again when the output changes.
+#[derive(Debug, Default)]
+pub struct OutputVolume(AtomicU32);
 
-/// The platform's volume changed to `db` (`nori_player::contour::volume_db`): true when that is a change
-/// the sound would hear (a quarter of a dB or more), so the settings are to be applied again.
-pub fn set_output_volume_db(db: f64) -> bool {
-    let db = if db.is_finite() { db.clamp(-96.0, 0.0) as f32 } else { 0.0 };
-    let was = f32::from_bits(VOLUME_DB.swap(db.to_bits(), Ordering::Relaxed));
-    (was - db).abs() >= 0.25
+impl OutputVolume {
+    /// The platform's volume changed to `db` (`nori_player::contour::volume_db`): true when that is a
+    /// change the sound would hear (a quarter of a dB or more), so the settings are to be applied again.
+    pub fn set(&self, db: f64) -> bool {
+        let db = if db.is_finite() { db.clamp(-96.0, 0.0) as f32 } else { 0.0 };
+        let was = f32::from_bits(self.0.swap(db.to_bits(), Ordering::Relaxed));
+        (was - db).abs() >= 0.25
+    }
+
+    /// dB, 0 until told.
+    pub fn db(&self) -> f64 {
+        f32::from_bits(self.0.load(Ordering::Relaxed)) as f64
+    }
 }
 
-/// The sound and the controls as the core's settings ask for them.
-pub fn settings(s: &StoredPrefs) -> Settings {
+/// The sound and the controls as the core's settings ask for them, loudness compensation for an output
+/// at `volume_db` ([`OutputVolume::db`]; 0 all the way up).
+pub fn settings(s: &StoredPrefs, volume_db: f64) -> Settings {
     let bands = if s.eq_enabled { s.eq_bands.iter().map(|b| Band { kind: b.kind as i32, freq: b.freq as f64, gain_db: b.gain_db as f64, q: b.q as f64, channel: b.channel as i32 }).collect() } else { Vec::new() };
     // No processing on this output: the chain as if everything were off.
     let sound = if s.sound_bypass { Sound::default() } else { Sound {
         // The graphic equalizer plays in place of the parametric one, whose bands then stay out.
         graphic: nori_core::dsp::graphic_sliders(s),
         bands: if s.eq_mode == nori_core::settings::EqMode::Graphic { Vec::new() } else { bands },
-        effects: s.effects().player_at(f32::from_bits(VOLUME_DB.load(Ordering::Relaxed)) as f64),
+        effects: s.effects().player_at(volume_db),
         preamp_db: nori_core::dsp::effective_preamp_db(s) as f64,
         crossfeed_db: s.crossfeed_db as f64,
         crossfeed_hz: s.crossfeed_hz as f64,
@@ -1286,24 +1313,26 @@ mod tests {
     fn the_equalizer_in_use_and_the_effects_reach_the_chain() {
         use nori_core::settings::EqMode;
         let p = StoredPrefs { eq_enabled: true, eq_mode: EqMode::Parametric, eq_graphic: vec![3.0; 10], ..StoredPrefs::default() };
-        let s = settings(&p).sound;
+        let s = settings(&p, 0.0).sound;
         assert!(s.graphic.is_empty() && !s.bands.is_empty(), "parametric: the bands play");
-        let g = settings(&StoredPrefs { eq_mode: EqMode::Graphic, ..p.clone() }).sound;
+        let g = settings(&StoredPrefs { eq_mode: EqMode::Graphic, ..p.clone() }, 0.0).sound;
         assert!(g.bands.is_empty() && g.graphic == vec![3.0; 10], "graphic: the sliders play, the bands wait");
         assert_eq!(g.preamp_db, -3.0, "the automatic pre-amp pays back the sliders");
-        let off = settings(&StoredPrefs { eq_enabled: false, eq_mode: EqMode::Graphic, ..p.clone() }).sound;
+        let off = settings(&StoredPrefs { eq_enabled: false, eq_mode: EqMode::Graphic, ..p.clone() }, 0.0).sound;
         assert!(off.graphic.is_empty() && off.bands.is_empty() && !off.on());
-        let fx = settings(&StoredPrefs { volume_boost_db: 4.0, compressor: true, ..StoredPrefs::default() }).sound;
+        let fx = settings(&StoredPrefs { volume_boost_db: 4.0, compressor: true, ..StoredPrefs::default() }, 0.0).sound;
         assert!(fx.on() && fx.effects.boost_db == 4.0 && fx.effects.compressor.is_some() && fx.effects.guard());
         // Loudness compensation at the volume last told.
         let loud = StoredPrefs { loudness: true, ..StoredPrefs::default() };
-        assert!(set_output_volume_db(-30.0));
-        assert!(!set_output_volume_db(-30.1), "a tenth of a dB is no change");
-        assert_eq!(settings(&loud).sound.effects.loudness.map(|l| l.volume_db as f32), Some(-30.1));
-        assert!(set_output_volume_db(0.0));
-        assert_eq!(settings(&loud).sound.effects.loudness.map(|l| l.volume_db), Some(0.0));
+        let v = OutputVolume::default();
+        assert!(v.set(-30.0));
+        assert!(!v.set(-30.1), "a tenth of a dB is no change");
+        assert_eq!(settings(&loud, v.db()).sound.effects.loudness.map(|l| l.volume_db as f32), Some(-30.1));
+        assert!(v.set(0.0));
+        assert_eq!(settings(&loud, v.db()).sound.effects.loudness.map(|l| l.volume_db), Some(0.0));
+        assert_eq!(OutputVolume::default().db(), 0.0, "each player's own: a new one starts all the way up");
         // No processing on this output: the identity chain, whatever else is on.
-        let none = settings(&StoredPrefs { sound_bypass: true, limiter: true, crossfeed_db: 6.0, mono: true, ..StoredPrefs { eq_mode: EqMode::Graphic, ..p } });
+        let none = settings(&StoredPrefs { sound_bypass: true, limiter: true, crossfeed_db: 6.0, mono: true, ..StoredPrefs { eq_mode: EqMode::Graphic, ..p } }, 0.0);
         assert_eq!(none.sound, nori_player::pipeline::Sound::default());
         assert!(!none.sound.on());
     }
@@ -1311,8 +1340,8 @@ mod tests {
     #[test]
     fn bit_perfect_is_not_held_to_the_highest_rate() {
         use nori_core::settings::MaxRate;
-        assert_eq!(settings(&StoredPrefs { max_rate: MaxRate::Khz48, ..StoredPrefs::default() }).max_rate, 48_000);
-        assert_eq!(settings(&StoredPrefs { max_rate: MaxRate::Khz48, bit_perfect: true, ..StoredPrefs::default() }).max_rate, 0);
+        assert_eq!(settings(&StoredPrefs { max_rate: MaxRate::Khz48, ..StoredPrefs::default() }, 0.0).max_rate, 48_000);
+        assert_eq!(settings(&StoredPrefs { max_rate: MaxRate::Khz48, bit_perfect: true, ..StoredPrefs::default() }, 0.0).max_rate, 0);
     }
 
     #[test]

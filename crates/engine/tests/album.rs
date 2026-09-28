@@ -188,7 +188,7 @@ impl Rig {
         };
         let card = Card::new();
         let clock = Virtual::default();
-        let engine = Engine::start_on(library, app, CoreQueue, Box::new(card.clone()), None, Config { memory_mb: 256, settings: settings(&prefs), ..Config::default() }, clock.clone(), |_| {});
+        let engine = Engine::start_on(library, app, CoreQueue, Box::new(card.clone()), None, Config { memory_mb: 256, settings: settings(&prefs, 0.0), ..Config::default() }, clock.clone(), |_| {});
         engine.queue_changed();
         Rig { engine, time: Stepper::new(clock, card.pull.clone()), card, core, store, measurer, songs: made, _dir: dir }
     }
@@ -215,7 +215,7 @@ impl Rig {
     fn set(&self, name: &str, value: &str) {
         let effect = edit_by_name(name, value).unwrap_or_else(|| panic!("{name} is a setting")).effect;
         if effect & APPLY_AUDIO != 0 {
-            self.engine.set_settings(settings(&nori_core::settings_store::settings_current().unwrap()));
+            self.engine.set_settings(settings(&nori_core::settings_store::settings_current().unwrap(), 0.0));
         }
         if effect & REPLAN != 0 {
             self.engine.replan();
@@ -447,12 +447,10 @@ fn an_album_measured_before_plays_every_sample(auto_mix: bool, crossfade: i32) {
 /// "Keep albums gapless" switched on while another change is made on another thread (the equalizer's
 /// device sound, say): the older change reached the planner last, which went on planning with albums
 /// mixed, and an album played next was mixed song into song, cut where each mix began and each next song
-/// taken up where it came in (a194db06).
+/// taken up where it came in (a194db06). The planner reads the settings as they are kept now.
 fn an_album_kept_gapless_as_an_older_change_is_told_last_plays_every_sample() {
     let rig = Rig::new("album-older", &ALBUM, true, 0, false, Measured::Before, false);
-    let older = nori_core::settings_store::settings_current().unwrap().transition_prefs();
     rig.set("crossfadeKeepAlbums", "true");
-    nori_core::automix::planner::settings_changed(older);
     rig.engine.play_at(0, 0);
     let (mixed, order) = rig.to_the_end();
     rig.heard_as(&order, 0, 0, &[true, true], 0);

@@ -12,26 +12,22 @@ use crate::{queue, Song};
 
 pub use nori_queue::autofill::*;
 
-/// What autofill appends to the queue: its songs, and the album they are when they are one album, in its
-/// own order (autofill by albums). A client adds them from that album's page ([`Refill::from`] as
-/// `playlist_take`'s `from`), as an album's Add to queue does: the album played as an album, one album run,
-/// kept gapless with "keep albums gapless" and taking its album gain, as the album before it was.
+/// What autofill appends to the queue: its songs, and where they come from when that says how they play
+/// ([`Refill::from`]), which a client passes on as `playlist_take`'s `from`.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct Refill {
     pub songs: Vec<Song>,
-    /// The album's id, when [`Refill::songs`] are one album's.
-    pub album: Option<String>,
+    /// One album in its own order (autofill by albums): that album's page, as its Add to queue says, so it
+    /// is played as an album - one album run, gapless with "keep albums gapless", its album gain - as the
+    /// album before it was. Whole random albums (a "shuffle albums" queue's refill): that shuffle, so each
+    /// album is a run of its own. None: songs picked one by one, which mix like any others.
+    pub from: Option<crate::PageOrigin>,
 }
 
 impl Refill {
     fn songs(songs: Vec<Song>) -> Refill {
-        Refill { songs, album: None }
-    }
-
-    /// The page the songs are added from: the album's, when they are one.
-    pub fn from(&self) -> Option<crate::PageOrigin> {
-        self.album.as_ref().map(|id| crate::PageOrigin::new(crate::OriginKind::Album, id.clone()))
+        Refill { songs, from: None }
     }
 }
 
@@ -149,7 +145,7 @@ impl Client {
             let songs: Vec<Song> = read.unwrap_or_default().into_iter().filter(|s| !queued.contains(s.id.as_str()) && allowed(s, remote)).collect();
             if songs.len() >= ALBUM_MIN {
                 self.picked(Picked::Album, std::slice::from_ref(&pick));
-                return Refill { songs, album: Some(pick) };
+                return Refill { songs, from: Some(crate::PageOrigin::new(crate::OriginKind::Album, pick)) };
             }
             if songs.len() > short.len() {
                 short = songs;
@@ -159,7 +155,8 @@ impl Client {
         if let Some(id) = &short_id {
             self.picked(Picked::Album, std::slice::from_ref(id));
         }
-        Refill { album: short_id.filter(|_| !short.is_empty()), songs: short }
+        let from = short_id.filter(|_| !short.is_empty()).map(|id| crate::PageOrigin::new(crate::OriginKind::Album, id));
+        Refill { songs: short, from }
     }
 
     /// `candidates` ranked so that what was picked or played lately comes last; as they are when the
@@ -265,8 +262,10 @@ impl Client {
                 let queued: HashSet<&str> = ids.iter().map(String::as_str).collect();
                 return Refill::songs(self.random_library_songs(&queued, false).await);
             }
-            // Albums whole, several: each is a run of its own already (`playlist_take` spans them).
-            Some(crate::OriginKind::ShuffleAlbums) => return Refill::songs(self.random_albums(&ids).await),
+            // Albums whole, several: from the shuffle, so each is a run of its own (`playlist_take` spans them).
+            Some(crate::OriginKind::ShuffleAlbums) => {
+                return Refill { songs: self.random_albums(&ids).await, from: Some(crate::PageOrigin::new(crate::OriginKind::ShuffleAlbums, "")) };
+            }
             _ => {}
         }
         // Carried on from the queue's last song, not the one playing: the fetch starts a song or two
@@ -416,15 +415,15 @@ pub(crate) mod tests {
         fake.answer(&album_json("whole", &["w1", "w2", "w3", "w4"]));
         let _g = crate::playlist::tests::hold(&["af3-seed"], 0);
         let got = block(c.autofill_as(AutoFillKind::Albums, AutoFillBasis::Similar, false));
-        assert_eq!(got.album.as_deref(), Some("whole"));
-        let add = |r: &Refill| crate::playlist::playlist_take(9, r.songs.iter().map(|s| s.id.clone()).collect(), vec![nori_player::playlist::Hand::No; r.songs.len()], r.from()).at as usize;
+        assert_eq!(got.from, Some(crate::PageOrigin::new(crate::OriginKind::Album, "whole")));
+        let add = |r: &Refill| crate::playlist::playlist_take(9, r.songs.iter().map(|s| s.id.clone()).collect(), vec![nori_player::playlist::Hand::No; r.songs.len()], r.from.clone()).at as usize;
         let at = add(&got);
         let runs = crate::playlist::with(|p| p.album_runs().to_vec());
         assert!(runs[at] > 0 && runs[at..at + 4] == [runs[at]; 4], "{runs:?}");
 
         fake.answer(&songs_json(&[("z1", "a"), ("z2", "b")]));
         let got = block(c.autofill_as(AutoFillKind::Songs, AutoFillBasis::Similar, false));
-        assert_eq!((got.songs.len(), got.album.as_deref()), (2, None));
+        assert_eq!((got.songs.len(), &got.from), (2, &None));
         let at = add(&got);
         assert_eq!(crate::playlist::with(|p| p.album_runs()[at..at + 2].to_vec()), [0, 0]);
     }

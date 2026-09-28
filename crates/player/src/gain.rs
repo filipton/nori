@@ -89,10 +89,9 @@ pub struct SongLoudness {
 /// The gain a song plays at, linear: ReplayGain's (track or album, `in_album_run` for auto), then the
 /// server's fallback, then the measured loudness, then the untagged level; moved to the target. At or
 /// under 1 it is a volume, held under the peak guard; over 1 (only with a cap over 0 dB) it is for the
-/// samples, held to the cap, the limiter doing what the peak guard did. Radio and a bit-perfect output
-/// play at 1: the one has no song to level, the other must not be touched.
-pub fn song_gain(p: &GainPrefs, song: &SongLoudness, in_album_run: bool, radio: bool, bit_perfect: bool) -> f32 {
-    if p.mode == GainMode::Off || radio || bit_perfect {
+/// samples, held to the cap, the limiter doing what the peak guard did.
+pub fn song_gain(p: &GainPrefs, song: &SongLoudness, in_album_run: bool) -> f32 {
+    if p.mode == GainMode::Off {
         return 1.0;
     }
     let album = match p.mode {
@@ -180,16 +179,14 @@ mod tests {
     #[test]
     fn each_mode_picks_its_tag() {
         let s = tagged(-6.0, -3.0);
-        assert!(close(db(song_gain(&prefs(GainMode::Track), &s, true, false, false)), -6.0));
-        assert!(close(db(song_gain(&prefs(GainMode::Album), &s, false, false, false)), -3.0));
-        assert!(close(db(song_gain(&prefs(GainMode::Auto), &s, true, false, false)), -3.0), "in an album run: the album's");
-        assert!(close(db(song_gain(&prefs(GainMode::Auto), &s, false, false, false)), -6.0), "elsewhere: the song's own");
-        assert_eq!(song_gain(&prefs(GainMode::Off), &s, false, false, false), 1.0);
-        assert_eq!(song_gain(&prefs(GainMode::Track), &s, false, true, false), 1.0, "radio");
-        assert_eq!(song_gain(&prefs(GainMode::Track), &s, false, false, true), 1.0, "bit-perfect");
+        assert!(close(db(song_gain(&prefs(GainMode::Track), &s, true)), -6.0));
+        assert!(close(db(song_gain(&prefs(GainMode::Album), &s, false)), -3.0));
+        assert!(close(db(song_gain(&prefs(GainMode::Auto), &s, true)), -3.0), "in an album run: the album's");
+        assert!(close(db(song_gain(&prefs(GainMode::Auto), &s, false)), -6.0), "elsewhere: the song's own");
+        assert_eq!(song_gain(&prefs(GainMode::Off), &s, false), 1.0);
         // One tag missing: the other.
         let only_track = SongLoudness { tags: Some(GainTags { track_gain: Some(-4.0), ..Default::default() }), ..Default::default() };
-        assert!(close(db(song_gain(&prefs(GainMode::Album), &only_track, false, false, false)), -4.0));
+        assert!(close(db(song_gain(&prefs(GainMode::Album), &only_track, false)), -4.0));
     }
 
     #[test]
@@ -197,69 +194,75 @@ mod tests {
         let s = tagged(-8.0, -8.0);
         for (target, want) in [(-18.0, -8.0), (-14.0, -4.0), (-16.0, -6.0), (-23.0, -13.0)] {
             let p = GainPrefs { target_lufs: target, ..prefs(GainMode::Track) };
-            assert!(close(db(song_gain(&p, &s, false, false, false)), want), "{target} LUFS: {want} dB");
+            assert!(close(db(song_gain(&p, &s, false)), want), "{target} LUFS: {want} dB");
         }
         // A quiet song (ReplayGain +2 dB) at -14 LUFS wants +6 dB: turned up to the cap.
         let quiet = tagged(2.0, 2.0);
         let p = GainPrefs { target_lufs: -14.0, ..prefs(GainMode::Track) };
-        assert!(close(db(song_gain(&p, &quiet, false, false, false)), 6.0));
+        assert!(close(db(song_gain(&p, &quiet, false)), 6.0));
         let p = GainPrefs { target_lufs: -14.0, boost_max_db: 3.0, ..prefs(GainMode::Track) };
-        assert!(close(db(song_gain(&p, &quiet, false, false, false)), 3.0), "held to a +3 dB cap");
+        assert!(close(db(song_gain(&p, &quiet, false)), 3.0), "held to a +3 dB cap");
         // A stored target out of all reason is held within 12 dB of -18.
         let p = GainPrefs { target_lufs: 40.0, boost_max_db: 12.0, ..prefs(GainMode::Track) };
-        assert!(close(db(song_gain(&p, &tagged(-20.0, -20.0), false, false, false)), -8.0));
+        assert!(close(db(song_gain(&p, &tagged(-20.0, -20.0), false)), -8.0));
         let p = GainPrefs { target_lufs: f32::NAN, ..prefs(GainMode::Track) };
-        assert!(close(db(song_gain(&p, &s, false, false, false)), -8.0));
+        assert!(close(db(song_gain(&p, &s, false)), -8.0));
     }
 
     #[test]
     fn positive_gain_is_capped_and_the_limiter_not_the_peak_holds_it() {
         let quiet = SongLoudness { tags: Some(GainTags { track_gain: Some(4.0), track_peak: Some(0.9), ..Default::default() }), ..Default::default() };
         // Allowed: +4 dB, whatever the peak says (+4 dB on a 0.9 peak goes over full scale: the limiter's).
-        assert!(close(db(song_gain(&prefs(GainMode::Track), &quiet, false, false, false)), 4.0));
+        assert!(close(db(song_gain(&prefs(GainMode::Track), &quiet, false)), 4.0));
         // Not allowed (cap 0): attenuation only, as ReplayGain always was here, peak guard included.
         let off = GainPrefs { boost_max_db: 0.0, ..prefs(GainMode::Track) };
-        assert_eq!(song_gain(&off, &quiet, false, false, false), 1.0);
+        assert_eq!(song_gain(&off, &quiet, false), 1.0);
         let peaky = SongLoudness { tags: Some(GainTags { track_gain: Some(-1.0), track_peak: Some(1.25), ..Default::default() }), ..Default::default() };
-        assert!(close(song_gain(&prefs(GainMode::Track), &peaky, false, false, false), 0.8), "turned down: the peak guard still holds the volume under full scale");
+        assert!(close(song_gain(&prefs(GainMode::Track), &peaky, false), 0.8), "turned down: the peak guard still holds the volume under full scale");
         // The pre-amp can turn a song up too.
         let s = tagged(-2.0, -2.0);
         let p = GainPrefs { preamp_db: 5.0, ..prefs(GainMode::Track) };
-        assert!(close(db(song_gain(&p, &s, false, false, false)), 3.0));
+        assert!(close(db(song_gain(&p, &s, false)), 3.0));
         // A cap past the most there is is held to it.
         let p = GainPrefs { boost_max_db: 40.0, ..prefs(GainMode::Track) };
-        assert!(close(db(song_gain(&p, &tagged(30.0, 30.0), false, false, false)), BOOST_MAX_DB));
+        assert!(close(db(song_gain(&p, &tagged(30.0, 30.0), false)), BOOST_MAX_DB));
     }
 
     #[test]
     fn a_song_without_tags_takes_the_server_s_fallback_then_its_measure_then_the_untagged_level() {
         let p = prefs(GainMode::Track);
         let nothing = SongLoudness::default();
-        assert!(close(db(song_gain(&p, &nothing, false, false, false)), -6.0), "the untagged level");
+        assert!(close(db(song_gain(&p, &nothing, false)), -6.0), "the untagged level");
         let measured = SongLoudness { measured_lufs: Some(-9.0), ..Default::default() };
-        assert!(close(db(song_gain(&p, &measured, false, false, false)), -9.0), "-9 LUFS to -18: -9 dB");
+        assert!(close(db(song_gain(&p, &measured, false)), -9.0), "-9 LUFS to -18: -9 dB");
         let quiet = SongLoudness { measured_lufs: Some(-21.0), ..Default::default() };
-        assert!(close(db(song_gain(&p, &quiet, false, false, false)), 3.0), "-21 LUFS: +3 dB");
+        assert!(close(db(song_gain(&p, &quiet, false)), 3.0), "-21 LUFS: +3 dB");
         let p14 = GainPrefs { target_lufs: -14.0, ..p };
-        assert!(close(db(song_gain(&p14, &measured, false, false, false)), -5.0), "the target is the target");
+        assert!(close(db(song_gain(&p14, &measured, false)), -5.0), "the target is the target");
         let unmeasured = GainPrefs { measured: false, ..p };
-        assert!(close(db(song_gain(&unmeasured, &measured, false, false, false)), -6.0), "measuring off: the untagged level");
+        assert!(close(db(song_gain(&unmeasured, &measured, false)), -6.0), "measuring off: the untagged level");
         let silent = SongLoudness { measured_lufs: Some(-70.0), ..Default::default() };
-        assert!(close(db(song_gain(&p, &silent, false, false, false)), -6.0), "a silence measured is no loudness");
+        assert!(close(db(song_gain(&p, &silent, false)), -6.0), "a silence measured is no loudness");
         let fallback = SongLoudness { fallback_db: Some(-4.0), measured_lufs: Some(-9.0), ..Default::default() };
-        assert!(close(db(song_gain(&p, &fallback, false, false, false)), -4.0), "the server's fallback before a measure");
+        assert!(close(db(song_gain(&p, &fallback, false)), -4.0), "the server's fallback before a measure");
         // The untagged level moves with the target, as a guess at a tagged song's gain.
-        assert!(close(db(song_gain(&GainPrefs { target_lufs: -23.0, ..p }, &nothing, false, false, false)), -11.0));
+        assert!(close(db(song_gain(&GainPrefs { target_lufs: -23.0, ..p }, &nothing, false)), -11.0));
     }
 
     #[test]
     fn as_before_by_default() {
-        // Targets and positive gain left out: ReplayGain as `policy::replay_gain` always did it.
+        // Targets and positive gain left out: ReplayGain as it always was, at -18 LUFS and attenuation only.
         let p = GainPrefs::attenuating(GainMode::Track, -3.0, -6.0);
-        assert!(close(song_gain(&p, &SongLoudness::default(), false, false, false), 10f32.powf(-6.0 / 20.0)), "no tags: no pre-amp");
+        assert!(close(song_gain(&p, &SongLoudness::default(), false), 10f32.powf(-6.0 / 20.0)), "no tags: no pre-amp");
         let empty = SongLoudness { tags: Some(GainTags::default()), ..Default::default() };
-        assert!(close(song_gain(&p, &empty, false, false, false), 10f32.powf(-9.0 / 20.0)), "tags without gains: with the pre-amp");
-        assert_eq!(song_gain(&p, &tagged(6.0, 6.0), false, false, false), 1.0);
+        assert!(close(song_gain(&p, &empty, false), 10f32.powf(-9.0 / 20.0)), "tags without gains: with the pre-amp");
+        assert_eq!(song_gain(&p, &tagged(6.0, 6.0), false), 1.0);
+        let peaky = SongLoudness { tags: Some(GainTags { track_gain: Some(-1.0), track_peak: Some(1.25), ..Default::default() }), ..Default::default() };
+        assert!(close(song_gain(&GainPrefs::attenuating(GainMode::Track, 0.0, -6.0), &peaky, false), 0.8), "no clipping");
+        let s = tagged(-6.0, -3.0);
+        let auto = GainPrefs::attenuating(GainMode::Auto, 0.0, -6.0);
+        assert!(close(db(song_gain(&auto, &s, true)), -3.0), "inside an album run: album gain");
+        assert!(close(db(song_gain(&auto, &s, false)), -6.0), "elsewhere: track gain");
     }
 
     #[test]
@@ -267,9 +270,9 @@ mod tests {
         assert!(offload_allows(1.0) && offload_allows(0.5) && offload_allows(0.0));
         assert!(!offload_allows(1.0001) && !offload_allows(2.0));
         let quiet = tagged(3.0, 3.0);
-        assert!(!offload_allows(song_gain(&prefs(GainMode::Track), &quiet, false, false, false)), "turned up: on the CPU");
-        assert!(offload_allows(song_gain(&GainPrefs { boost_max_db: 0.0, ..prefs(GainMode::Track) }, &quiet, false, false, false)), "no positive gain: the chip may");
-        assert!(offload_allows(song_gain(&prefs(GainMode::Track), &tagged(-7.0, -7.0), false, false, false)), "turned down: a volume");
+        assert!(!offload_allows(song_gain(&prefs(GainMode::Track), &quiet, false)), "turned up: on the CPU");
+        assert!(offload_allows(song_gain(&GainPrefs { boost_max_db: 0.0, ..prefs(GainMode::Track) }, &quiet, false)), "no positive gain: the chip may");
+        assert!(offload_allows(song_gain(&prefs(GainMode::Track), &tagged(-7.0, -7.0), false)), "turned down: a volume");
     }
 
     #[test]

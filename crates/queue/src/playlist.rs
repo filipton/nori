@@ -4,7 +4,7 @@
 //! planner's window, ReplayGain, the queue as the app lists it, the queue saved for next time - reads
 //! it here, without the player's list crossing over.
 
-use nori_player::playlist::{Playlist, Splice, Taken};
+use nori_player::playlist::{Playlist, Splice};
 use parking_lot::Mutex;
 
 // Public, like model.rs's, since the uniffi scaffolding in crates/android names them by a public path.
@@ -28,13 +28,8 @@ static PUT_BACK: Mutex<Option<(Vec<String>, Vec<u32>)>> = Mutex::new(None);
 static ORIGIN: Mutex<Option<PageOrigin>> = Mutex::new(None);
 /// Moves each time a new queue is set, so a page asks again whether it is the one playing only then.
 static ORIGIN_GEN: AtomicU32 = AtomicU32::new(0);
-/// The last song taken out on its own, as it was, for an undo to put back ([`playlist_restore`]). Gone
-/// with a new queue: an undo never reaches into another one.
-static TAKEN: Mutex<Option<Taken>> = Mutex::new(None);
-
 fn set_origin(origin: Option<PageOrigin>) {
     *ORIGIN.lock() = origin;
-    *TAKEN.lock() = None;
     ORIGIN_GEN.fetch_add(1, Ordering::Release);
 }
 
@@ -221,15 +216,15 @@ pub enum Hand {
 /// Songs a controller adds at `at`, each marked with how it came (`hands`, one per song: Play next, Add
 /// to queue, or neither). Where they go is `nori_player::playlist::Playlist::take`'s call. `from` is the
 /// page they are all the songs of, when they are: an album's ([`OriginKind::Album`], its Play next or Add
-/// to queue) is the album added whole, one album run of its own; songs added any other way (one at a
-/// time, a selection, autofill's) have none, but a "shuffle albums" queue's refill is whole albums, each
-/// a run of its own as the queue's first albums are.
+/// to queue) is the album added whole, one album run of its own; a "shuffle albums" one
+/// ([`OriginKind::ShuffleAlbums`], that queue's refill) is whole albums, each a run of its own as the
+/// queue's first albums are. Songs added any other way (one at a time, a selection, autofill's songs) have
+/// none.
 #[cfg_attr(feature = "ffi", uniffi::export(default(from = None)))]
 pub fn playlist_take(at: u32, ids: Vec<String>, hands: Vec<Hand>, from: Option<PageOrigin>) -> QueueChange {
     let count = ids.len();
     let album = is_album(from.as_ref()) && count > 0;
-    let refill = hands.iter().all(|h| *h == Hand::No) && is_shuffle_albums(playlist_origin().as_ref());
-    let whole = (refill && !album).then(|| album_spans(&ids));
+    let whole = is_shuffle_albums(from.as_ref()).then(|| album_spans(&ids));
     edit(|p| {
         let at = p.take(at as usize, ids, &hands);
         if album {
@@ -245,8 +240,7 @@ pub fn playlist_take(at: u32, ids: Vec<String>, hands: Vec<Hand>, from: Option<P
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn playlist_remove(from: u32, to: u32) -> QueueChange {
     edit(|p| {
-        *TAKEN.lock() = if to == from + 1 { p.taken(from as usize) } else { None };
-        p.remove(from as usize, to as usize);
+        p.remove_undoably(from as usize, to as usize);
         p.current()
     })
 }
@@ -258,8 +252,7 @@ pub fn playlist_remove(from: u32, to: u32) -> QueueChange {
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn playlist_restore(id: String) -> QueueChange {
     let mut p = LIST.lock();
-    let t = TAKEN.lock().take_if(|t| t.id == id);
-    let at = t.map(|t| p.restore(&t));
+    let at = p.restore_taken(&id);
     change(&p, at)
 }
 
@@ -318,21 +311,9 @@ pub enum Onto {
     Song,
 }
 
-/// The player moved onto `index` (-1: onto nothing), `looped` by its own repeat. What that means is
-/// `nori_player::queue::arrival`'s call over this queue and the user's "skip explicit songs"; a new song
-/// also breaks a run of songs that would not play.
-#[cfg(test)]
-pub fn playlist_transition(index: i32, looped: bool) -> Onto {
-    playlist_moved_to(index);
-    let skip_explicit = crate::rules::prefs(|p| p.skip_explicit);
-    let (current, has_next) = with(|p| (p.current_id().map(str::to_string), p.next().is_some()));
-    let explicit = current.clone().is_some_and(|id| queue::queue_flags(id) & queue::EXPLICIT != 0);
-    let a = nori_player::queue::arrival(current.is_some(), skip_explicit, explicit, has_next, looped);
-    a
-}
-
-/// Whether arriving on list index `index` now would skip it, as [`playlist_transition`] would decide
-/// there: a player that walks the queue itself asks before it reads the song, so none of it is heard.
+/// Whether arriving on list index `index` now would skip it (`nori_player::queue::arrival` over this queue
+/// and the user's "skip explicit songs"): a player that walks the queue itself asks before it reads the
+/// song, so none of it is heard.
 pub fn playlist_skips(index: usize) -> bool {
     let skip_explicit = crate::rules::prefs(|p| p.skip_explicit);
     if !skip_explicit {
@@ -600,13 +581,17 @@ pub(crate) mod tests {
         playlist_set(ids(&["a1", "a2", "b1", "b2"]), 0, false, Some(PageOrigin::new(OriginKind::ShuffleAlbums, "")));
         let r = runs();
         assert!(r[0] > 0 && r[0] == r[1] && r[2] > 0 && r[2] == r[3] && r[0] != r[2], "{r:?}");
-        // The refill: its album a run of its own, a song of no album in none.
-        playlist_take(4, ids(&["x", "c1", "c2"]), vec![Hand::No; 3], None);
+        // The refill, from the shuffle: its album a run of its own, a song of no album in none.
+        let shuffle = Some(PageOrigin::new(OriginKind::ShuffleAlbums, ""));
+        playlist_take(4, ids(&["x", "c1", "c2"]), vec![Hand::No; 3], shuffle.clone());
         let r = runs();
         assert!(r[4] == 0 && r[5] > 0 && r[5] == r[6] && r[5] != r[2], "{r:?}");
-        // A song added by hand to it: none.
+        // A song added by hand to it: none. Nor songs added by no hand from nowhere (a controller's): only
+        // what says it comes from the shuffle is split into its albums.
         let at = playlist_take(9, ids(&["c1"]), vec![Hand::Last], None).at;
         assert_eq!(runs()[at as usize], 0);
+        let at = playlist_take(99, ids(&["c1", "c2"]), vec![Hand::No; 2], None).at as usize;
+        assert_eq!(runs()[at..at + 2], [0, 0]);
         // Any other queue's refill: none.
         playlist_set(ids(&["a1"]), 0, false, None);
         playlist_take(1, ids(&["c1", "c2"]), vec![Hand::No; 2], None);
@@ -851,9 +836,9 @@ pub(crate) mod tests {
     #[test]
     fn arriving_on_a_song() {
         let _g = hold(&["t1", "t2", "radio:9"], 0);
-        assert_eq!(playlist_transition(1, false), Onto::Song);
+        assert!(!playlist_skips(1));
+        playlist_moved_to(1);
         assert_eq!(playlist_bridge_state().current.as_deref(), Some("t2"));
-        assert_eq!(playlist_transition(1, true), Onto::Loop);
         assert_eq!(playlist_to_push(), ids(&["t1", "t2"]), "radio streams are not handed to the server");
         match push_write(Some("t2".into()), 7) {
             Some(nori_net::requests::Write::SaveQueue { ids: pushed, current, position_ms }) => {

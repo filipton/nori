@@ -21,12 +21,12 @@ use nori_core::rules::{queue_keep, song_arrived, BridgeStep, QueueMoment};
 use nori_core::transport::{Exchange, FailureKind, Transport, TransportError, TransportResponse};
 use nori_core::search::{SearchSession, SearchView};
 use nori_core::settings::{SavedServer, SettingChange, StoredPrefs};
-use crate::settings_view::{Facts, Storage};
+use crate::settings_view::{Chore, Facts, Storage};
 use nori_core::settings_store::{self, APPLY_AUDIO, APPLY_GAIN, PLAYER, REPLAN, SOUND};
 use nori_core::{AlbumDetail, ArtistDetail, Core, OriginKind, PageOrigin, PlaylistDetail, ServerConfig, Song};
 use nori_covers::loader::{Config as CoverConfig, Loader};
 use nori_covers::memory::Image;
-use nori_engine::core::{settings, CoreApp, CoreLibrary, CoreOrder, CoreQueue, Downloader, Measurer};
+use nori_engine::core::{settings, CoreApp, CoreLibrary, CoreOrder, CoreQueue, Downloader, Measurer, OutputVolume};
 use nori_engine::{AudioOutput, Body, ByteSource, Config, Engine, Event, OpenError, State, Status, Store};
 use nori_http::Http;
 use nori_look::cover::CoverColours;
@@ -293,11 +293,15 @@ pub struct Session {
     pub downloader: Arc<Downloader>,
     pub covers: Option<Arc<Loader>>,
     pub volume: Volume,
+    /// [`Session::volume`] as dB below full, for loudness compensation.
+    loudness: Arc<OutputVolume>,
     pub search: Arc<SearchSession>,
     pub offline: bool,
     mpris: Option<nori_mpris::Mpris>,
     keeper: Arc<Keeper>,
     tx: Sender<Msg>,
+    /// The database file, for its size on the settings pages.
+    db: PathBuf,
 }
 
 /// The database every profile keeps its rows in, and the settings with it.
@@ -377,7 +381,7 @@ impl Session {
     /// what is stored, and says so once [`Session::check`] hears back.
     pub fn open(o: Open) -> Result<Session, String> {
         let db = db_path(o.data);
-        let core = Core::new(db, nori_core::settings::server_db_id(&o.profile.id)).map_err(|e| format!("the database: {e}"))?;
+        let core = Core::new(db.clone(), nori_core::settings::server_db_id(&o.profile.id)).map_err(|e| format!("the database: {e}"))?;
         core.configure(config(&o.profile)).map_err(|e| format!("the server: {e}"))?;
         // Offline, the core's requests are refused before they leave: it shows what is stored and keeps
         // the writes for later, as it does with the server out of reach.
@@ -393,16 +397,17 @@ impl Session {
         let volume = output.volume();
         volume.set(own::number(own::VOLUME, 1.0));
         // Before the engine starts, so its first chain has the loudness compensation for this volume.
-        nori_engine::core::set_output_volume_db(if volume.get() > 0.0 { 20.0 * (volume.get() as f64).log10() } else { -96.0 });
+        let loudness = Arc::new(OutputVolume::default());
+        loudness.set(if volume.get() > 0.0 { 20.0 * (volume.get() as f64).log10() } else { -96.0 });
         let output: Box<dyn AudioOutput> = Box::new(output);
         let store = Store::open(o.data.join("music"), prefs.cache_mb.max(0) as u64 * 1024 * 1024, Box::new(CoreOrder)).map_err(|e| format!("the music directory: {e}"))?;
         let audio = Arc::new(Audio { http: o.http.clone(), offline: o.offline });
         let downloader = Downloader::new(core.clone(), client.clone(), audio.clone(), store.clone());
         // A song the network would not bring goes to the offline bridge (`Event::Bridge`, `bridge`).
-        let app = CoreApp::new().measuring(Measurer::new(core.clone(), client.clone(), store.clone())).per_device(core.clone()).bridging();
+        let app = CoreApp::new().measuring(Measurer::new(core.clone(), client.clone(), store.clone())).per_device(core.clone()).bridging().volume(loudness.clone());
         let library = CoreLibrary { client: client.clone(), bytes: audio, metered: false, store: Some(store.clone()) };
         let tx = o.tx.clone();
-        let engine = Engine::start(library, app, CoreQueue, output, None, Config { memory_mb: 256, settings: settings(&prefs), ..Config::default() }, move |e| {
+        let engine = Engine::start(library, app, CoreQueue, output, None, Config { memory_mb: 256, settings: settings(&prefs, loudness.db()), ..Config::default() }, move |e| {
             let _ = tx.send(Msg::Engine(e));
         });
         let engine = Arc::new(engine);
@@ -415,7 +420,7 @@ impl Session {
         };
         // The songs the last run left in the queue, picked up where they were.
         let keeper = Keeper::start(core.clone(), engine.clone());
-        let s = Session { core, client, engine, store, downloader, covers, volume, search: SearchSession::new(), offline: o.offline, mpris, keeper, tx: o.tx };
+        let s = Session { core, client, engine, store, downloader, covers, volume, loudness, search: SearchSession::new(), offline: o.offline, mpris, keeper, tx: o.tx, db: PathBuf::from(db) };
         s.restore();
         // Downloads a previous run left unfinished carry on.
         if !s.offline && s.core.download_counts().pending > 0 {
@@ -488,7 +493,7 @@ impl Session {
     /// that differs (`Client::read_each`).
     pub fn load(&self, req: Req) {
         let (client, core, tx, store) = (self.client.clone(), self.core.clone(), self.tx.clone(), self.store.clone());
-        let offline = self.offline;
+        let (offline, db) = (self.offline, self.db.clone());
         let covers_bytes = self.covers.as_ref().and_then(|l| l.disk().map(|d| d.bytes())).unwrap_or(0);
         spawn("nori-read", move || {
             let send = |r: Result<Data, String>| {
@@ -529,7 +534,7 @@ impl Session {
                         Err(e) => send(Err(e)),
                     }
                 }
-                Req::Facts => send(Ok(Data::Facts(Box::new(facts(&core, &client, &store, covers_bytes, offline))))),
+                Req::Facts => send(Ok(Data::Facts(Box::new(facts(&core, &client, &store, &db, covers_bytes, offline))))),
             }
         });
     }
@@ -706,9 +711,9 @@ impl Session {
     /// dB below full, and the chain is set up again when that moves the sound.
     pub fn volume_changed(&self, v: f32) {
         let db = if v > 0.0 { 20.0 * (v as f64).log10() } else { -96.0 };
-        if nori_engine::core::set_output_volume_db(db) {
+        if self.loudness.set(db) {
             if let Some(p) = settings_store::settings_current().filter(|p| p.loudness) {
-                self.engine.set_settings(settings(&p));
+                self.engine.set_settings(settings(&p, self.loudness.db()));
             }
         }
     }
@@ -716,7 +721,7 @@ impl Session {
     /// What a change of the kept settings asks of the engine.
     pub fn apply(&self, effect: u32, prefs: &StoredPrefs) {
         if effect & (APPLY_AUDIO | SOUND | PLAYER) != 0 {
-            self.engine.set_settings(settings(prefs));
+            self.engine.set_settings(settings(prefs, self.loudness.db()));
         }
         if effect & APPLY_GAIN != 0 {
             self.engine.gain_changed();
@@ -809,10 +814,10 @@ impl Session {
     }
 
     /// One of the settings screen's actions.
-    pub fn action(&self, action: &str) {
-        match action {
-            "sync-library" => self.sync(),
-            "download-library" => {
+    pub fn action(&self, chore: Chore) {
+        match chore {
+            Chore::SyncLibrary => self.sync(),
+            Chore::DownloadLibrary => {
                 match self.core.download_queue_library() {
                     Ok(q) => self.note(format!("Downloading {} songs", q.fresh.len() + q.again.len()), false),
                     Err(e) => self.note(format!("Could not download the library: {e}"), true),
@@ -820,28 +825,26 @@ impl Session {
                 let n = settings_store::with_prefs(|p| p.parallel_downloads).unwrap_or(2);
                 self.downloader.start(n.max(1) as usize);
             }
-            "clear-stream" => {
+            Chore::ClearStream => {
                 self.store.clear_cache();
                 self.note("Cleared the streamed music".into(), false);
             }
-            "clear-lyrics" => {
+            Chore::ClearLyrics => {
                 self.core.lyrics_cache_clear();
                 self.note("Cleared the lyrics found online".into(), false);
             }
-            "clear-covers" => {
+            Chore::ClearCovers => {
                 if let Some(d) = self.covers.as_ref().and_then(|l| l.disk()) {
                     d.clear();
                 }
                 self.note("Cleared the covers".into(), false);
             }
-            "measure-again" => {
+            Chore::MeasureAgain => {
                 let n = self.core.analysis_clear().unwrap_or(0);
                 nori_core::automix::planner::analyses_changed();
                 self.engine.replan();
                 self.note(format!("Forgot {n} measured songs"), false);
             }
-            "system-effects" => self.note("A desktop has no system audio effects here".into(), false),
-            other => self.note(format!("{other}: not in the terminal"), false),
         }
     }
 
@@ -934,8 +937,8 @@ impl Session {
             if nori_core::autofill::autofill_arrived(fresh.songs.len() as u32) && !fresh.songs.is_empty() {
                 let len = playlist::with(|p| p.len());
                 let n = fresh.songs.len();
-                // An album comes from its page: played as an album, as the one before it.
-                playlist::playlist_take(len as u32, fresh.songs.iter().map(|s| s.id.clone()).collect(), vec![Hand::No; n], fresh.from());
+                // An album comes from its page (played as an album), a shuffle's albums from the shuffle.
+                playlist::playlist_take(len as u32, fresh.songs.iter().map(|s| s.id.clone()).collect(), vec![Hand::No; n], fresh.from);
                 me.edited();
             }
             if nori_core::autofill::autofill_landed() {
@@ -1145,7 +1148,7 @@ fn sync(client: &Arc<Client>, tx: &Sender<Msg>) {
 }
 
 /// What the settings pages show besides the settings, as far as a desktop knows it.
-fn facts(core: &Arc<Core>, client: &Arc<Client>, store: &Arc<Store>, cover_bytes: u64, offline: bool) -> Facts {
+fn facts(core: &Arc<Core>, client: &Arc<Client>, store: &Arc<Store>, db: &Path, cover_bytes: u64, offline: bool) -> Facts {
     let index = core.index_size().unwrap_or_default();
     let downloads = core.downloads(true).unwrap_or_default();
     let folders = if offline {
@@ -1156,7 +1159,7 @@ fn facts(core: &Arc<Core>, client: &Arc<Client>, store: &Arc<Store>, cover_bytes
             _ => Vec::new(),
         }
     };
-    let db_bytes = std::fs::metadata(PathBuf::from(core_db_path())).map(|m| m.len() as i64).unwrap_or(0);
+    let db_bytes = std::fs::metadata(db).map(|m| m.len() as i64).unwrap_or(0);
     Facts {
         analysed: core.analysis_count().unwrap_or(0),
         indexed: (index.songs, index.albums, index.artists),
@@ -1182,17 +1185,6 @@ fn monotonic_ms() -> i64 {
 /// The local time zone's offset from UTC at wall time `wall_ms`, ms.
 fn tz_offset_ms(wall_ms: i64) -> i32 {
     (nori_core::library::local_offset_s(wall_ms / 1000) * 1000) as i32
-}
-
-/// The database file, as the runner opened it.
-static DB: parking_lot::Mutex<String> = parking_lot::Mutex::new(String::new());
-
-pub fn set_core_db_path(p: String) {
-    *DB.lock() = p;
-}
-
-fn core_db_path() -> String {
-    DB.lock().clone()
 }
 
 /// The page's colours from a cover, as Android's `CoverLoader.colours` works them out: the picture's

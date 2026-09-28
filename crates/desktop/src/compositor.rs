@@ -51,6 +51,8 @@ struct Layer {
     size: Cell<PhysicalSize>,
     dirty: Cell<bool>,
     texture: RefCell<Option<(wgpu::Texture, wgpu::TextureView)>>,
+    /// What the platform shares, for the window to ask for a frame; weak, as the layers are kept in it.
+    shared: Weak<Shared>,
 }
 
 impl WindowAdapter for Layer {
@@ -68,11 +70,9 @@ impl WindowAdapter for Layer {
 
     fn request_redraw(&self) {
         self.dirty.set(true);
-        SHARED.with(|s| {
-            if let Some(w) = s.borrow().as_ref().and_then(|s| s.window.borrow().clone()) {
-                w.request_redraw();
-            }
-        });
+        if let Some(w) = self.shared.upgrade().and_then(|s| s.window.borrow().clone()) {
+            w.request_redraw();
+        }
     }
 }
 
@@ -116,8 +116,9 @@ pub struct Focus {
 }
 
 thread_local! {
+    /// The same as the platform's, for the functions below the app calls from its callbacks, which have
+    /// no way to the platform once Slint holds it.
     static SHARED: RefCell<Option<Rc<Shared>>> = const { RefCell::new(None) };
-    static EVENT_LOOP: RefCell<Option<EventLoop<Wake>>> = const { RefCell::new(None) };
 }
 
 fn shared() -> Option<Rc<Shared>> {
@@ -126,6 +127,8 @@ fn shared() -> Option<Rc<Shared>> {
 
 struct Platform {
     shared: Rc<Shared>,
+    /// The event loop, until Slint runs it.
+    event_loop: RefCell<Option<EventLoop<Wake>>>,
 }
 
 impl slint::platform::Platform for Platform {
@@ -138,13 +141,14 @@ impl slint::platform::Platform for Platform {
             size: Cell::new(PhysicalSize::new(1, 1)),
             dirty: Cell::new(true),
             texture: RefCell::new(None),
+            shared: Rc::downgrade(&self.shared),
         });
         self.shared.layers.borrow_mut().push((layer.clone(), Cell::new(None)));
         Ok(layer)
     }
 
     fn run_event_loop(&self) -> Result<(), PlatformError> {
-        let event_loop = EVENT_LOOP.with(|e| e.borrow_mut().take()).ok_or_else(|| PlatformError::from("the event loop ran already"))?;
+        let event_loop = self.event_loop.borrow_mut().take().ok_or_else(|| PlatformError::from("the event loop ran already"))?;
         let mut runner = Runner { shared: self.shared.clone(), draw: None, pointer: LogicalPosition::new(0.0, 0.0), over: None, held: None, modifiers: Default::default() };
         event_loop.run_app(&mut runner).map_err(|e| PlatformError::from(e.to_string()))
     }
@@ -199,8 +203,7 @@ pub fn install() -> Result<(), String> {
         focus: RefCell::new(None),
     });
     SHARED.with(|s| *s.borrow_mut() = Some(shared.clone()));
-    EVENT_LOOP.with(|e| *e.borrow_mut() = Some(event_loop));
-    slint::platform::set_platform(Box::new(Platform { shared })).map_err(|e| format!("the platform: {e}"))
+    slint::platform::set_platform(Box::new(Platform { shared, event_loop: RefCell::new(Some(event_loop)) })).map_err(|e| format!("the platform: {e}"))
 }
 
 /// Which Slint window is which part: the page (the main window), and the sidebar's and the player's.

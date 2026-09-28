@@ -40,7 +40,6 @@ use crate::pcm::{mix_raw, ByteStretcher, Format};
 
 /// µs; `i64::MIN` as media3 has it: no position yet.
 pub const POSITION_NOT_SET: i64 = i64::MIN;
-const TIME_UNSET: i64 = i64::MIN + 1;
 /// How little sound may be left below before a held ending is let go rather than mixed.
 const DRY_US: i64 = 1_500_000;
 /// How young a hold is exempt from that: born with no runway (a seek just landed in the transition),
@@ -160,7 +159,7 @@ enum Phase {
 
 /// A queued piece of output. `measure`: the first chunk of a mix, whose timestamp jump the output
 /// below applies the moment it is offered; see [`TransitionEngine::drain`]. `stream_us`: the stream
-/// offset of the one song it is made of, or `TIME_UNSET` for a mix of two, so a change of that song's
+/// offset of the one song it is made of, or none for a mix of two, so a change of that song's
 /// volume reaches what the output has not taken of it yet ([`TransitionEngine::rescale`]).
 struct Chunk {
     data: Vec<u8>,
@@ -168,7 +167,7 @@ struct Chunk {
     pts_us: i64,
     resync: bool,
     measure: bool,
-    stream_us: i64,
+    stream_us: Option<i64>,
     /// The song time each frame stands for ([`Downstream::media_pace`]).
     pace: f64,
 }
@@ -221,7 +220,7 @@ pub struct TransitionEngine<C: Clone> {
     tail_heard: usize,
     tail_read: usize,
     /// The output timestamp holding began at: everything from here on is inside this engine, unheard.
-    held_from_us: i64,
+    held_from_us: Option<i64>,
     held_at: i64,
     /// The song whose ending is held and its stream offset, so the ear's place is in the song's own time.
     held_id: Option<String>,
@@ -240,20 +239,20 @@ pub struct TransitionEngine<C: Clone> {
     /// with the ending's last unheld stretch still playing out. Until the clock reaches `shift_until_us`
     /// (the first mixed sample), what is heard is the clock less this.
     shift_us: i64,
-    shift_until_us: i64,
+    shift_until_us: Option<i64>,
     /// The output timestamp the queued mix runs to, so a cut-short mix resumes the ending after it.
-    mixed_end_us: i64,
+    mixed_end_us: Option<i64>,
     /// The output timestamp the mix is heard from; mixing is true between it and `mixed_end_us`.
-    mix_from_us: i64,
+    mix_from_us: Option<i64>,
     skip_left: usize,
     resync_next: bool,
     measure_next: bool,
     /// Mixed and stretched audio carries its own continuous clock, in the incoming song's own time (a
     /// stretched frame moves it on by the song time it carries); real timestamps resume after a resync.
-    synthetic_pts_us: i64,
+    synthetic_pts_us: Option<i64>,
     /// Where in its stream the first sample of the incoming song a stretched mix takes lies (past the
     /// skip into it): the running clock starts there.
-    mix_in_pts_us: i64,
+    mix_in_pts_us: Option<i64>,
     /// The song time per frame of what the stretcher last handed out, and the song time the last frames of
     /// a stretcher that just finished carried.
     stretch_pace: f64,
@@ -263,8 +262,8 @@ pub struct TransitionEngine<C: Clone> {
     mix_out_frames: usize,
     out_loop_frames: usize,
 
-    mixer: Option<Mixer>,
-    mixer_format: u64,
+    /// The mixer, with the rate and channel count it was built for.
+    mixer: Option<(Mixer, u32, usize)>,
     stretch: Option<ByteStretcher>,
     /// What the live stretcher works in (the incoming domain while converting).
     stretch_format: Option<Format>,
@@ -339,7 +338,7 @@ impl<C: Clone> TransitionEngine<C> {
             tail_len: 0,
             tail_heard: 0,
             tail_read: 0,
-            held_from_us: TIME_UNSET,
+            held_from_us: None,
             held_at: 0,
             held_id: None,
             held_offset_us: 0,
@@ -348,21 +347,20 @@ impl<C: Clone> TransitionEngine<C> {
             held_us: 0,
             reported: i64::MIN,
             shift_us: 0,
-            shift_until_us: TIME_UNSET,
-            mixed_end_us: TIME_UNSET,
-            mix_from_us: TIME_UNSET,
+            shift_until_us: None,
+            mixed_end_us: None,
+            mix_from_us: None,
             skip_left: 0,
             resync_next: false,
             measure_next: false,
-            synthetic_pts_us: TIME_UNSET,
-            mix_in_pts_us: TIME_UNSET,
+            synthetic_pts_us: None,
+            mix_in_pts_us: None,
             stretch_pace: 1.0,
             last_content: 0.0,
             mix_out_frame: 0,
             mix_out_frames: 0,
             out_loop_frames: 0,
             mixer: None,
-            mixer_format: 0,
             stretch: None,
             stretch_format: None,
             pending_stretch: None,
@@ -679,7 +677,7 @@ impl<C: Clone> TransitionEngine<C> {
         if !ratio.is_finite() || ratio < 0.0 || ratio == 1.0 {
             return;
         }
-        for c in self.queue.iter_mut().filter(|c| c.stream_us == stream_offset_us) {
+        for c in self.queue.iter_mut().filter(|c| c.stream_us == Some(stream_offset_us)) {
             crate::pcm::scale(&mut c.data[c.pos..], out.encoding, ratio);
         }
         if self.tail_len > 0 && matches!(self.phase, Phase::Hold | Phase::Mix) && self.held_offset_us == stream_offset_us {
@@ -812,7 +810,7 @@ impl<C: Clone> TransitionEngine<C> {
         let before = start_frame.max(0) as usize * fb;
         if before > 0 {
             let head = self.copy_of(&buf[..before]);
-            self.enqueue(head, pts_us, self.offset_us);
+            self.enqueue(head, pts_us, Some(self.offset_us));
         }
         // A seek landed inside the transition: the mix will run from this far in, as it would
         // have sounded had the song played on into it (see handle_discontinuity).
@@ -821,11 +819,12 @@ impl<C: Clone> TransitionEngine<C> {
         if late {
             host.log(&format!("transition: late hold, {} ms in", self.late_us / 1000));
         }
-        self.held_from_us = pts_us + (before / fb) as i64 * 1_000_000 / out.rate as i64;
-        self.heard.audible_us = self.held_from_us - self.held_offset_us + self.takeover_us;
+        let held_from = pts_us + (before / fb) as i64 * 1_000_000 / out.rate as i64;
+        self.held_from_us = Some(held_from);
+        self.heard.audible_us = held_from - self.held_offset_us + self.takeover_us;
         self.held_at = host.now_ms();
         let at = down.position_us(false);
-        let runway = if at == POSITION_NOT_SET { i64::MAX } else { self.held_from_us - at };
+        let runway = if at == POSITION_NOT_SET { i64::MAX } else { held_from - at };
         host.log(&if runway == i64::MAX {
             "holding the ending, no sound still in the sink".to_string()
         } else {
@@ -849,7 +848,7 @@ impl<C: Clone> TransitionEngine<C> {
     /// caller's buffer, reported as taken.
     fn pass<D: Downstream<Config = C>>(&mut self, down: &mut D, buffer: &[u8], whole: usize, pts_us: i64) -> (bool, usize) {
         let c = self.copy_of(buffer);
-        self.enqueue(c, pts_us, self.offset_us);
+        self.enqueue(c, pts_us, Some(self.offset_us));
         self.drain(down);
         (true, whole)
     }
@@ -887,11 +886,7 @@ impl<C: Clone> TransitionEngine<C> {
         if bytes > 0 && self.tail.len() < bytes {
             self.tail.resize(bytes, 0);
         }
-        let key = out.rate as u64 * 100 + out.channels as u64;
-        if self.mixer.is_none() || self.mixer_format != key {
-            self.mixer = Some(Mixer::new(out.rate, out.channels));
-            self.mixer_format = key;
-        }
+        self.ensure_mixer(out);
         if p.stretching() {
             if self.pending_stretch.as_ref().is_some_and(|(_, k)| *k != p.keep_pitch) {
                 self.pending_stretch = None;
@@ -903,6 +898,14 @@ impl<C: Clone> TransitionEngine<C> {
         while self.pool.len() < 8 {
             self.pool.push(Vec::with_capacity(16384));
         }
+    }
+
+    /// The mixer for `out`, built anew only when the rate or the channel count changed.
+    fn ensure_mixer(&mut self, out: Format) -> &mut Mixer {
+        if !matches!(self.mixer, Some((_, rate, channels)) if rate == out.rate && channels == out.channels) {
+            self.mixer = Some((Mixer::new(out.rate, out.channels), out.rate, out.channels));
+        }
+        &mut self.mixer.as_mut().expect("the mixer is there, just made if it was not").0
     }
 
     fn begin_hold(&mut self, p: &Plan, out: Format) {
@@ -960,19 +963,13 @@ impl<C: Clone> TransitionEngine<C> {
                     self.mix_source_id = self.current_id.clone();
                 }
                 self.playing_id = Some(p.incoming_id.clone());
-                let key = out.rate as u64 * 100 + out.channels as u64;
-                if self.mixer.is_none() || self.mixer_format != key {
-                    self.mixer = Some(Mixer::new(out.rate, out.channels));
-                    self.mixer_format = key;
-                }
                 let late = self.late_us.clamp(0, p.duration_us);
-                if let Some(m) = self.mixer.as_mut() {
-                    m.configure(&p.mixer);
-                    // A hold that began inside the transition (a seek) runs the mix from that point: the
-                    // curves as far along as they would be, the incoming track as far in as it would be.
-                    if late > 0 {
-                        m.seek((late * out.rate as i64 / 1_000_000) as u64);
-                    }
+                let m = self.ensure_mixer(out);
+                m.configure(&p.mixer);
+                // A hold that began inside the transition (a seek) runs the mix from that point: the
+                // curves as far along as they would be, the incoming track as far in as it would be.
+                if late > 0 {
+                    m.seek((late * out.rate as i64 / 1_000_000) as u64);
                 }
                 // The stretcher and the skip work in the incoming domain, known once the incoming stream is.
                 self.skip_left = 0;
@@ -985,7 +982,10 @@ impl<C: Clone> TransitionEngine<C> {
                 host.log(&format!(
                     "mixing: the next track arrived {} ms into the hold with {} of sound left",
                     host.now_ms() - self.held_at,
-                    if at == POSITION_NOT_SET { "no".to_string() } else { format!("{} ms", (self.held_from_us - at) / 1000) }
+                    match self.held_from_us {
+                        Some(from) if at != POSITION_NOT_SET => format!("{} ms", (from - at) / 1000),
+                        _ => "no".to_string(),
+                    }
                 ));
                 // The held audio is about to go out as the mix, so it stops counting as played-but-unheard.
                 // What was already reported stands until the sound really catches up with it.
@@ -1003,8 +1003,8 @@ impl<C: Clone> TransitionEngine<C> {
                 self.mix_out_frame = 0;
                 self.mix_out_frames = ((p.duration_us - late) * out.rate as i64 / 1_000_000).max(0) as usize;
                 self.out_loop_frames = if p.out_loop_us > 0 { ((p.out_loop_us * out.rate as i64 / 1_000_000) as usize).max(1) } else { 0 };
-                self.mixed_end_us = TIME_UNSET;
-                self.mix_from_us = TIME_UNSET;
+                self.mixed_end_us = None;
+                self.mix_from_us = None;
                 self.resync_next = true;
                 self.measure_next = true;
                 self.phase = Phase::Mix;
@@ -1041,7 +1041,7 @@ impl<C: Clone> TransitionEngine<C> {
             );
             self.stretch = Some(s);
             self.stretch_format = Some(s_fmt);
-            self.mix_in_pts_us = TIME_UNSET;
+            self.mix_in_pts_us = None;
             self.stretch_pace = p.tempo_ratio as f64;
             self.last_content = 0.0;
         }
@@ -1061,9 +1061,9 @@ impl<C: Clone> TransitionEngine<C> {
                 return;
             }
         }
-        if self.stretch.is_some() && self.synthetic_pts_us == TIME_UNSET && self.mix_in_pts_us == TIME_UNSET {
+        if self.stretch.is_some() && self.synthetic_pts_us.is_none() && self.mix_in_pts_us.is_none() {
             // The first of the incoming song mixed in: the stretcher's first frame out is this one's time.
-            self.mix_in_pts_us = first_us;
+            self.mix_in_pts_us = Some(first_us);
         }
         // Through the stretcher in the incoming domain, then converted to the outgoing one the held
         // tail is in.
@@ -1103,26 +1103,26 @@ impl<C: Clone> TransitionEngine<C> {
                 let mut chunk = std::mem::take(&mut self.loop_buf);
                 chunk.resize(bytes, 0);
                 self.wrap_out(hold_frames, self.out_loop_frames, self.mix_out_frame, &mut chunk, frames, fb);
-                if let Some(m) = self.mixer.as_mut() {
+                if let Some((m, ..)) = self.mixer.as_mut() {
                     unsafe { mix_raw(m, chunk.as_ptr(), src.as_ptr(), chunk.as_mut_ptr(), frames, out.encoding) };
                 }
                 let at = self.stamp(pts_us, frames, pace, out);
                 let c = self.copy_of(&chunk);
                 self.loop_buf = chunk;
-                self.enqueue_paced(c, at, TIME_UNSET, pace);
-                self.mixed_end_us = at + span_us(frames, pace, out);
+                self.enqueue_paced(c, at, None, pace);
+                self.mixed_end_us = Some(at + span_us(frames, pace, out));
                 self.mix_out_frame += frames;
             } else {
                 let r = self.tail_read;
-                if let Some(m) = self.mixer.as_mut() {
+                if let Some((m, ..)) = self.mixer.as_mut() {
                     let t = self.tail[r..r + bytes].as_mut_ptr();
                     unsafe { mix_raw(m, t, src.as_ptr(), t, frames, out.encoding) };
                 }
                 let at = self.stamp(pts_us, frames, pace, out);
                 let mut c = self.take_pooled(bytes);
                 c.extend_from_slice(&self.tail[r..r + bytes]);
-                self.enqueue_paced(c, at, TIME_UNSET, pace);
-                self.mixed_end_us = at + span_us(frames, pace, out);
+                self.enqueue_paced(c, at, None, pace);
+                self.mixed_end_us = Some(at + span_us(frames, pace, out));
                 self.tail_read += bytes;
             }
             used = bytes;
@@ -1131,8 +1131,8 @@ impl<C: Clone> TransitionEngine<C> {
             let rest = &src[used..];
             let at = self.stamp(pts_us, rest.len() / fb, pace, out);
             let c = self.copy_of(rest);
-            self.enqueue_paced(c, at, self.offset_us, pace);
-            self.mixed_end_us = at + span_us(rest.len() / fb, pace, out);
+            self.enqueue_paced(c, at, Some(self.offset_us), pace);
+            self.mixed_end_us = Some(at + span_us(rest.len() / fb, pace, out));
         }
         if let Some(b) = converted {
             self.recycle(b);
@@ -1204,17 +1204,11 @@ impl<C: Clone> TransitionEngine<C> {
     /// `frames` of stretched audio move it on by the song time they carry (`pace` each), so that it is
     /// still the song's own where its timestamps come back.
     fn stamp(&mut self, pts_us: i64, frames: usize, pace: f64, out: Format) -> i64 {
-        if self.stretch.is_none() && self.synthetic_pts_us == TIME_UNSET {
+        if self.stretch.is_none() && self.synthetic_pts_us.is_none() {
             return pts_us;
         }
-        let at = if self.synthetic_pts_us != TIME_UNSET {
-            self.synthetic_pts_us
-        } else if self.mix_in_pts_us != TIME_UNSET {
-            std::mem::replace(&mut self.mix_in_pts_us, TIME_UNSET)
-        } else {
-            pts_us
-        };
-        self.synthetic_pts_us = at + span_us(frames, pace, out);
+        let at = self.synthetic_pts_us.or_else(|| self.mix_in_pts_us.take()).unwrap_or(pts_us);
+        self.synthetic_pts_us = Some(at + span_us(frames, pace, out));
         at
     }
 
@@ -1262,7 +1256,7 @@ impl<C: Clone> TransitionEngine<C> {
         // out as it finishes and hands the track back to its own timestamps. Stamped after that it went
         // down at 0: the output's clock fell back to the start of the queue, the next ending was held
         // against a clock that could never reach it, and it was never let go - silence to the end.
-        let at = if self.synthetic_pts_us == TIME_UNSET { pts_us } else { self.synthetic_pts_us };
+        let at = self.synthetic_pts_us.unwrap_or(pts_us);
         let Some(s) = self.stretched(host, buffer) else { return };
         let o = if self.converting() {
             let c = self.converted(host, &s);
@@ -1279,13 +1273,13 @@ impl<C: Clone> TransitionEngine<C> {
         // Finished: the track's own timestamps begin with the buffer after this audio, and that is where
         // the output takes its new reference.
         let resync = self.stretch.is_none() && std::mem::take(&mut self.resync_next);
-        self.enqueue_paced(o, at, self.offset_us, pace);
+        self.enqueue_paced(o, at, Some(self.offset_us), pace);
         self.resync_next |= resync;
         // Only a running clock moves on: the stretcher may have just finished and handed the track
         // back to its own timestamps. (The Kotlin sink added to the unset marker here, leaving a garbage
         // clock for the next mix to stamp its audio with.)
-        if self.synthetic_pts_us != TIME_UNSET {
-            self.synthetic_pts_us += span_us(frames, pace, out);
+        if let Some(at) = self.synthetic_pts_us.as_mut() {
+            *at += span_us(frames, pace, out);
         }
     }
 
@@ -1307,7 +1301,7 @@ impl<C: Clone> TransitionEngine<C> {
         self.stretch_format = None;
         // Back on the track's own timestamps: tell the real output to take the next one as a new reference.
         self.resync_next = true;
-        self.synthetic_pts_us = TIME_UNSET;
+        self.synthetic_pts_us = None;
         produced + more
     }
 
@@ -1325,16 +1319,13 @@ impl<C: Clone> TransitionEngine<C> {
                 // At the timestamp it was held at, not at nought: this audio is the ending of the track,
                 // in its own timeline, and the output below reads these to keep the clock. Past the start
                 // of a mix the queue already holds the mix, so the rest follows it.
-                let at = if self.phase == Phase::Mix && self.mixed_end_us != TIME_UNSET {
-                    self.mixed_end_us
-                } else if self.held_from_us != TIME_UNSET {
-                    self.held_from_us
-                } else {
-                    0
+                let at = match (self.phase, self.mixed_end_us) {
+                    (Phase::Mix, Some(end)) => end,
+                    _ => self.held_from_us.unwrap_or(0),
                 };
                 let rest = self.tail[from..end].to_vec();
                 let c = self.copy_of(&rest);
-                self.enqueue(c, at, self.held_offset_us);
+                self.enqueue(c, at, Some(self.held_offset_us));
             }
         }
         if self.phase != Phase::Pass {
@@ -1346,7 +1337,7 @@ impl<C: Clone> TransitionEngine<C> {
         self.phase = Phase::Pass;
         self.awaiting_incoming = None;
         self.tail_len = 0;
-        self.held_from_us = TIME_UNSET;
+        self.held_from_us = None;
         self.held_us = 0;
         self.mix_source_id = None;
         // Given up on, not forgotten: the planned point is behind us now, and without this the next
@@ -1398,13 +1389,13 @@ impl<C: Clone> TransitionEngine<C> {
 
     // ---- output queue ----
 
-    /// Queues `data` at `pts_us`, made of the song on the stream at `stream_us` alone (`TIME_UNSET`: a mix).
-    fn enqueue(&mut self, data: Vec<u8>, pts_us: i64, stream_us: i64) {
+    /// Queues `data` at `pts_us`, made of the song on the stream at `stream_us` alone (none: a mix).
+    fn enqueue(&mut self, data: Vec<u8>, pts_us: i64, stream_us: Option<i64>) {
         self.enqueue_paced(data, pts_us, stream_us, 1.0);
     }
 
     /// [`TransitionEngine::enqueue`], each frame standing for `pace` frames of the song.
-    fn enqueue_paced(&mut self, data: Vec<u8>, pts_us: i64, stream_us: i64, pace: f64) {
+    fn enqueue_paced(&mut self, data: Vec<u8>, pts_us: i64, stream_us: Option<i64>, pace: f64) {
         if data.is_empty() {
             self.recycle(data);
             return;
@@ -1455,10 +1446,10 @@ impl<C: Clone> TransitionEngine<C> {
                 let jumped = before != POSITION_NOT_SET && after != POSITION_NOT_SET && (after - before).abs() > 50_000;
                 if jumped {
                     self.shift_us = after - before;
-                    self.shift_until_us = c.pts_us;
+                    self.shift_until_us = Some(c.pts_us);
                 }
                 if jumped || taken {
-                    self.mix_from_us = c.pts_us;
+                    self.mix_from_us = Some(c.pts_us);
                     c.measure = false;
                 }
             }
@@ -1480,10 +1471,12 @@ impl<C: Clone> TransitionEngine<C> {
         if at == POSITION_NOT_SET {
             return self.held_from_nothing(host);
         }
-        if self.phase == Phase::Hold && self.held_from_us != TIME_UNSET && self.held_from_us - at < DRY_US && host.now_ms() - self.held_at > HOLD_GRACE_MS {
-            host.log(&format!("transition: nothing to mix in yet with {} ms of sound left, letting the ending play", (self.held_from_us - at) / 1000));
-            self.abandon_transition(host);
-            self.drain(down);
+        if let (Phase::Hold, Some(from)) = (self.phase, self.held_from_us) {
+            if from - at < DRY_US && host.now_ms() - self.held_at > HOLD_GRACE_MS {
+                host.log(&format!("transition: nothing to mix in yet with {} ms of sound left, letting the ending play", (from - at) / 1000));
+                self.abandon_transition(host);
+                self.drain(down);
+            }
         }
         // Held audio has left the output but has not been heard, and this is the only thing the player
         // asks about how far the track has got - so it is counted as played. The player reads the next
@@ -1493,7 +1486,7 @@ impl<C: Clone> TransitionEngine<C> {
         // still until what is really being heard has caught up with it.
         self.reported = self.reported.max(at + self.held_us);
         // The first mixed sample is heard: from here the clock below is the new song's own time.
-        if self.shift_us != 0 && at >= self.shift_until_us {
+        if self.shift_us != 0 && self.shift_until_us.is_none_or(|until| at >= until) {
             self.shift_us = 0;
         }
         let ear = at - self.shift_us;
@@ -1503,19 +1496,20 @@ impl<C: Clone> TransitionEngine<C> {
         // That clock runs in the incoming song's time, which a stretched mix moves on faster (or slower)
         // than the ending is heard: the time since the mix began is the incoming song's over its tempo.
         let pace = self.heard.next_rate.max(0.01) as f64;
-        let incoming_below = self.shift_us == 0 && self.mix_from_us != TIME_UNSET && self.held_from_us != TIME_UNSET && at >= self.mix_from_us;
-        let taking_over = incoming_below && at < self.mix_from_us + (self.takeover_us as f64 * pace) as i64;
+        // Where the mix is heard from, once the clock below is the incoming song's.
+        let incoming_from = self.mix_from_us.filter(|&from| self.shift_us == 0 && self.held_from_us.is_some() && at >= from);
+        let taking_over = incoming_from.is_some_and(|from| at < from + (self.takeover_us as f64 * pace) as i64);
         match &self.held_id {
             Some(id) if self.reported > ear + 20_000 || taking_over => {
-                let start = (self.held_from_us != TIME_UNSET).then(|| self.held_from_us - self.held_offset_us);
+                let start = self.held_from_us.map(|from| from - self.held_offset_us);
                 // Once the clock below is the incoming song's, the ending's place is only ever the mix's start
                 // plus the time since, never that clock read as the ending's own: an output's clock read a few
                 // tens of milliseconds back (a phone's corrects itself now and then) left what was reported
                 // ahead of the ear, and the incoming song's place taken for the ending's put the ear past the
                 // takeover at once - the page on the next song seconds before it was the louder, standing
                 // still where the ear was to land in it until the takeover really came.
-                self.heard.us = match start {
-                    Some(start) if incoming_below => start + ((at - self.mix_from_us) as f64 / pace) as i64,
+                self.heard.us = match (start, incoming_from) {
+                    (Some(start), Some(from)) => start + ((at - from) as f64 / pace) as i64,
                     _ => ear - self.held_offset_us,
                 };
                 self.heard.until_us = start.map_or(i64::MAX, |start| start + self.takeover_us);
@@ -1535,8 +1529,8 @@ impl<C: Clone> TransitionEngine<C> {
         if self.heard.id.is_none() && self.phase == Phase::Pass && self.shift_us == 0 {
             self.held_id = None;
         }
-        if self.mix_from_us != TIME_UNSET && self.mixed_end_us != TIME_UNSET && at >= self.mixed_end_us {
-            self.mix_from_us = TIME_UNSET;
+        if self.mix_from_us.is_some() && self.mixed_end_us.is_some_and(|end| at >= end) {
+            self.mix_from_us = None;
             // The whole mix has been heard: the page is on the next song in the player's own word, and
             // a mix still named here kept a player that wakes for one (nori-engine) waking four times
             // a second until the next song's ending.
@@ -1545,7 +1539,7 @@ impl<C: Clone> TransitionEngine<C> {
                 self.heard.from_id = None;
             }
         }
-        let mixing = self.mix_from_us != TIME_UNSET && at >= self.mix_from_us;
+        let mixing = self.mix_from_us.is_some_and(|from| at >= from);
         if mixing != self.heard.mixing {
             // Heard starting or ending: a page that says so is told, as it is of a change of song.
             self.heard.mixing = mixing;
@@ -1559,12 +1553,12 @@ impl<C: Clone> TransitionEngine<C> {
     /// counted as played all the same - else the player never reads on into the next song, the mix never
     /// comes, and the music never starts - and the ear is where the hold began.
     fn held_from_nothing<H: Host>(&mut self, host: &mut H) -> i64 {
-        if self.phase != Phase::Hold || self.held_from_us == TIME_UNSET || self.held_us <= 0 {
+        let Some(from) = self.held_from_us.filter(|_| self.phase == Phase::Hold && self.held_us > 0) else {
             return POSITION_NOT_SET;
-        }
-        self.reported = self.reported.max(self.held_from_us + self.held_us);
+        };
+        self.reported = self.reported.max(from + self.held_us);
         if let Some(id) = self.held_id.as_ref() {
-            let start = self.held_from_us - self.held_offset_us;
+            let start = from - self.held_offset_us;
             self.heard.us = start;
             self.heard.until_us = start + self.takeover_us;
             self.heard.at_ms = host.now_ms();
@@ -1607,13 +1601,13 @@ impl<C: Clone> TransitionEngine<C> {
         self.tail_len = 0;
         self.tail_read = 0;
         self.skip_left = 0;
-        self.mixed_end_us = TIME_UNSET;
-        self.mix_from_us = TIME_UNSET;
+        self.mixed_end_us = None;
+        self.mix_from_us = None;
         if self.heard.mixing {
             self.heard.mixing = false;
             host.heard_changed();
         }
-        self.held_from_us = TIME_UNSET;
+        self.held_from_us = None;
         self.held_us = 0;
         self.reported = i64::MIN;
         self.held_id = None;
@@ -1622,7 +1616,7 @@ impl<C: Clone> TransitionEngine<C> {
         self.heard.next_id = None;
         self.heard.from_id = None;
         self.shift_us = 0;
-        self.shift_until_us = TIME_UNSET;
+        self.shift_until_us = None;
         if self.heard.id.take().is_some() {
             host.heard_changed();
         }
@@ -1632,8 +1626,8 @@ impl<C: Clone> TransitionEngine<C> {
         self.mix_source_id = None;
         self.resync_next = false;
         self.measure_next = false;
-        self.synthetic_pts_us = TIME_UNSET;
-        self.mix_in_pts_us = TIME_UNSET;
+        self.synthetic_pts_us = None;
+        self.mix_in_pts_us = None;
         self.stretch_pace = 1.0;
         self.last_content = 0.0;
         self.stretch = None;

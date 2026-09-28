@@ -10,18 +10,7 @@ pub use nori_library::mixes::board::*;
 
 impl Core {
     fn board<R>(&self, f: impl FnOnce(&mut Board) -> R) -> R {
-        let address = self as *const Core as usize;
-        let path = self.db.lock().path().unwrap_or_default().to_string();
-        let mut boards = BOARDS.lock();
-        let at = match boards.iter().position(|(a, p, _)| *a == address && *p == path) {
-            Some(i) => i,
-            None => {
-                boards.retain(|(a, _, _)| *a != address);
-                boards.push((address, path, Board::default()));
-                boards.len() - 1
-            }
-        };
-        f(&mut boards[at].2)
+        f(&mut self.board.lock())
     }
 }
 

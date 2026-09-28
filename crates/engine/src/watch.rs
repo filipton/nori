@@ -2,11 +2,11 @@
 //! invariant watchdogs). The engine says what it sees once per wake of its own thread, after it has
 //! reported where the ear is: no timer, no thread and no wake of its own.
 //!
-//! Nothing is looked at unless a hook is installed and wants it: without one, a wake costs one
-//! `OnceLock` read; with one that does not want it (the watch switched off), a call that reads an
-//! atomic. What the hook makes of what it sees is the client's.
+//! Nothing is looked at unless the engine was given a [`Watch`] (`Config::watch`) and it wants it: without
+//! one, a wake costs a check of an option; with one that does not want it (the watch switched off), a call
+//! that reads an atomic. What the watch makes of what it sees is the client's.
 
-use std::sync::OnceLock;
+use std::sync::Arc;
 
 /// What the engine's thread saw at the end of one wake.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -37,27 +37,30 @@ pub struct Seen {
     pub state: String,
 }
 
-/// What a client hands the engine to be told what it sees.
-pub struct Hook {
+/// What a client hands an engine (`Config::watch`) to be told what it sees.
+pub trait Watch: Send + Sync {
     /// Whether the client wants to be told now: asked on every wake, so it should cost next to nothing.
-    pub wanted: fn() -> bool,
+    fn wanted(&self) -> bool;
     /// Told what the engine saw.
-    pub seen: fn(&Seen),
+    fn seen(&self, seen: &Seen);
 }
 
-static HOOK: OnceLock<Hook> = OnceLock::new();
+/// A [`Watch`] as the engine's settings carry it.
+#[derive(Clone)]
+pub struct Watcher(pub Arc<dyn Watch>);
 
-/// Installs the hook for the life of the process; a second one is not taken.
-pub fn install(hook: Hook) {
-    let _ = HOOK.set(hook);
+impl std::fmt::Debug for Watcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Watcher")
+    }
 }
 
-/// Tells the hook what [`Seen`] `make` makes, only when there is one and it wants it.
+/// Tells `watch` what [`Seen`] `make` makes, only when there is one and it wants it.
 #[inline]
-pub(crate) fn look(make: impl FnOnce() -> Seen) {
-    if let Some(h) = HOOK.get() {
-        if (h.wanted)() {
-            (h.seen)(&make());
+pub(crate) fn look(watch: Option<&Watcher>, make: impl FnOnce() -> Seen) {
+    if let Some(w) = watch {
+        if w.0.wanted() {
+            w.0.seen(&make());
         }
     }
 }

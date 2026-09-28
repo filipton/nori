@@ -73,7 +73,15 @@ pub fn open(path: &str, server: &str) -> rusqlite::Result<Connection> {
     })?;
     drop_old_analysis(&c)?;
     c.execute_batch(SCHEMA)?;
+    drop_old_lyrics(&c)?;
     Ok(c)
+}
+
+/// Lyrics kept from before every word timing was (LRC, under the old key `lrclib2|`) are not read any more:
+/// this server's go as its rows are opened. The range is the key's own, so it costs a look at the index.
+fn drop_old_lyrics(c: &Connection) -> rusqlite::Result<()> {
+    c.execute("DELETE FROM cache WHERE server=sid() AND key >= 'lrclib2|' AND key < 'lrclib2|' || x'ff'", [])?;
+    Ok(())
 }
 
 /// Song analyses are a cache: an older table layout is not carried over but dropped, and the songs are
@@ -260,6 +268,23 @@ mod tests {
         assert!(cols.iter().any(|c| c == "outro_grid_source"), "the current layout");
         let rows: i64 = c.query_row("SELECT count(*) FROM track_analysis", [], |r| r.get(0)).unwrap();
         assert_eq!(rows, 0, "nothing carried over: the songs are measured again");
+    }
+
+    #[test]
+    fn lyrics_kept_under_the_old_key_go_as_a_server_is_opened_and_nothing_else_does() {
+        let dir = nori_testdir::TempDir::new("db-lyrics");
+        let path = dir.join("lyrics.db").to_string_lossy().into_owned();
+        {
+            let c = open(&path, "s").unwrap();
+            c.execute_batch(
+                "INSERT INTO cache VALUES('s','lrclib2|a',x'00',0), ('s','lrclib3|a',x'00',0), ('s','lrclib2',x'00',0), ('t','lrclib2|a',x'00',0);",
+            )
+            .unwrap();
+        }
+        let c = open(&path, "s").unwrap();
+        let keys: Vec<(String, String)> = c.prepare("SELECT server, key FROM cache ORDER BY server, key").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|r| r.unwrap()).collect();
+        let kept = |s: &str, k: &str| (s.to_string(), k.to_string());
+        assert_eq!(keys, [kept("s", "lrclib2"), kept("s", "lrclib3|a"), kept("t", "lrclib2|a")], "only this server's old lyrics went");
     }
 
     #[test]

@@ -21,7 +21,8 @@ use nori_http::Http;
 use nori_look::cover::CoverColours;
 use slint::{Color, ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer, TimerMode, VecModel};
 
-use crate::session::{self, Data, Fetch, Msg, Req, Session};
+use crate::session::{self, CoverKey, CoverSize, Data, Fetch, Msg, Req, Session};
+use crate::settings::{Act, Target};
 use crate::words;
 use crate::{AppWindow, Card, LyricPiece, PlayerBar, Shelf, SidebarWindow, SongRow};
 
@@ -87,19 +88,32 @@ struct Lists {
 /// go first when there are too many.
 #[derive(Default)]
 struct Art {
-    images: HashMap<String, (Image, Instant)>,
+    images: HashMap<CoverKey, (Image, Instant)>,
     /// The page colours of the large covers, by cover id.
     colours: HashMap<String, Rc<CoverColours>>,
-    asked: HashSet<String>,
-    wanted: Vec<(String, i32)>,
+    asked: HashSet<CoverKey>,
+    wanted: Vec<CoverKey>,
     /// When a picture last looked for a cover still on its way: one not looked for lately has left the
     /// screen, and its request makes way for the ones on it.
-    missing: HashMap<String, Instant>,
+    missing: HashMap<CoverKey, Instant>,
 }
 
-/// A cover's name among the pictures: its size's letter (s a card's, l large, x an artist's hero) and its id.
-fn key(id: &str, size: i32) -> String {
-    format!("{}:{id}", ['s', 'l', 'x'][size.clamp(0, 2) as usize])
+/// The size app.slint asks a picture at: 0 a card's, 1 large, 2 an artist's hero.
+fn cover_size(size: i32) -> CoverSize {
+    match size.clamp(0, 2) {
+        0 => CoverSize::Card,
+        1 => CoverSize::Large,
+        _ => CoverSize::Hero,
+    }
+}
+
+/// Pixels a side a cover is fetched at.
+fn cover_px(size: CoverSize) -> u32 {
+    match size {
+        CoverSize::Card => SMALL_PX,
+        CoverSize::Large => LARGE_PX,
+        CoverSize::Hero => HERO_PX,
+    }
 }
 
 /// The `art` callback: the cover `id` at size 0 (a card's), 1 (large) or 2 (a page's whole width), or
@@ -108,8 +122,7 @@ fn art(id: SharedString, size: i32) -> Image {
     if id.is_empty() {
         return Image::default();
     }
-    let size = size.clamp(0, 2);
-    let k = key(&id, size);
+    let k = CoverKey { id: id.to_string(), size: cover_size(size) };
     ART.with(|a| {
         let mut a = a.borrow_mut();
         if let Some((i, drawn)) = a.images.get_mut(&k) {
@@ -117,12 +130,12 @@ fn art(id: SharedString, size: i32) -> Image {
             return i.clone();
         }
         a.missing.insert(k.clone(), Instant::now());
-        if a.asked.insert(k) {
+        if a.asked.insert(k.clone()) {
             if a.wanted.is_empty() {
                 // Asked for after this frame's drawing, not from inside it.
                 Timer::single_shot(Duration::ZERO, || with(App::ask_covers));
             }
-            a.wanted.push((id.to_string(), size));
+            a.wanted.push(k);
         }
         Image::default()
     })
@@ -180,7 +193,7 @@ pub struct App {
     sidebar: Option<SidebarWindow>,
     /// The cover whose wash is the window's backdrop.
     backdrop: Option<String>,
-    tickets: VecDeque<(String, Ticket)>,
+    tickets: VecDeque<(CoverKey, Ticket)>,
     tick: Timer,
     tick_ms: u64,
     /// The library's lists as the server gave them, and the text they are narrowed by.
@@ -525,15 +538,17 @@ fn wire(ui: &AppWindow) {
     ui.on_setting_toggled(|name, on| with(|a| a.setting(&name, if on { "true" } else { "false" })));
     ui.on_setting_chosen(|name, i| {
         with(|a| {
-            let Some(v) = crate::settings::option_value(&name, i.max(0) as usize, &a.facts) else { return };
-            if name == "!device" {
-                // Opened at the next start, as the output is opened with the engine.
-                session::own::keep(session::own::DEVICE, v.clone());
-                a.facts.device = v;
-                a.say("The new output is used from the next start", false);
-                a.settings_shown();
-            } else {
-                a.setting(&name, &v);
+            let target = Target::of(&name);
+            let Some(v) = crate::settings::option_value(target, i.max(0) as usize, &a.facts) else { return };
+            match target {
+                Target::Device => {
+                    // Opened at the next start, as the output is opened with the engine.
+                    session::own::keep(session::own::DEVICE, v.clone());
+                    a.facts.device = v;
+                    a.say("The new output is used from the next start", false);
+                    a.settings_shown();
+                }
+                Target::Setting(name) => a.setting(name, &v),
             }
         })
     });
@@ -543,7 +558,7 @@ fn wire(ui: &AppWindow) {
     ui.on_source_moved(|id, up| with(|a| a.source_moved(&id, up)));
     ui.on_accent_chosen(|i| {
         with(|a| {
-            if let Some(v) = crate::settings::option_value("accent", i.max(0) as usize, &a.facts) {
+            if let Some(v) = crate::settings::option_value(Target::Setting("accent"), i.max(0) as usize, &a.facts) {
                 a.setting("accent", &v);
             }
         })
@@ -1101,10 +1116,9 @@ impl App {
         });
         // The loader serves the newest first: a frame's pictures are asked for last to first, so the top
         // left comes first.
-        for (id, size) in wanted.into_iter().rev() {
-            let k = key(&id, size);
+        for k in wanted.into_iter().rev() {
             // The large ones are the pages' own pictures: their colours are worked out with them.
-            let t = s.cover(&id, k.clone(), [SMALL_PX, LARGE_PX, HERO_PX][size as usize], size > 0);
+            let t = s.cover(k.clone(), cover_px(k.size));
             self.tickets.push_back((k, t));
         }
         // A ticket dropped cancels its cover: one that never came may be asked for again.
@@ -1118,9 +1132,9 @@ impl App {
         }
     }
 
-    fn cover(&mut self, key: String, image: &Picture, colours: Option<Box<CoverColours>>) {
-        let id = key[2..].to_string();
-        let large = !key.starts_with('s');
+    fn cover(&mut self, key: CoverKey, image: &Picture, colours: Option<Box<CoverColours>>) {
+        let id = key.id.clone();
+        let large = key.size != CoverSize::Card;
         self.tickets.retain(|(k, _)| *k != key);
         ART.with(|a| {
             let mut a = a.borrow_mut();
@@ -1131,7 +1145,7 @@ impl App {
                 a.colours.insert(id.clone(), Rc::from(c));
             }
             let limit = if large { LARGE_KEPT } else { SMALL_KEPT };
-            let class = |k: &str| k.starts_with('s') != large;
+            let class = |k: &CoverKey| (k.size != CoverSize::Card) == large;
             let mut count = a.images.keys().filter(|k| class(k)).count();
             while count > limit {
                 let oldest = a
@@ -1144,7 +1158,7 @@ impl App {
                 a.images.remove(&old);
                 a.asked.remove(&old);
                 if large {
-                    a.colours.remove(&old[2..]);
+                    a.colours.remove(&old.id);
                 }
                 count -= 1;
             }
@@ -1372,20 +1386,22 @@ impl App {
     }
 
     fn setting_action(&mut self, name: &str) {
-        if name == "equalizer" {
-            self.go(EQUALIZER);
-        } else if name == "add-server" {
-            self.go(LOGIN);
-        } else if let Some(id) = name.strip_prefix("server:") {
-            let mut prefs = settings_store::settings_current().unwrap_or_default();
-            let Some(p) = prefs.servers.iter().find(|s| s.id == id).cloned() else { return };
-            prefs.active_server_id = id.to_string();
-            settings_store::settings_put(prefs);
-            self.open(p);
-        } else {
-            self.on_session(|s| s.action(name));
-            // What was cleared or measured shows as it is now.
-            self.on_session(|s| s.facts());
+        match Act::of(name) {
+            Some(Act::Equalizer) => self.go(EQUALIZER),
+            Some(Act::AddServer) => self.go(LOGIN),
+            Some(Act::Server(id)) => {
+                let mut prefs = settings_store::settings_current().unwrap_or_default();
+                let Some(p) = prefs.servers.iter().find(|s| s.id == id).cloned() else { return };
+                prefs.active_server_id = id;
+                settings_store::settings_put(prefs);
+                self.open(p);
+            }
+            Some(Act::Chore(c)) => {
+                self.on_session(|s| s.action(c));
+                // What was cleared or measured shows as it is now.
+                self.on_session(|s| s.facts());
+            }
+            None => {}
         }
     }
 
