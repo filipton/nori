@@ -580,7 +580,7 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                 // that here - the owner found Apple's own spacing too loose on a 20:9 screen, which is
                 // taller than the 19.5:9 those percentages were taken from - and the space that frees
                 // up goes underneath them rather than between them.
-                if (page == Panel.ART) Spacer(Modifier.weight(0.02f))
+                if (page == Panel.ART && !across) Spacer(Modifier.weight(0.02f))
                 // The lyrics view carries its own header - a thumbnail with the title, the favourite and
                 // the menu beside it, the way Apple's does - so this block would be the second copy of it.
                 // Shared between the artwork and the queue, where it stands at another height: one copy moves
@@ -589,6 +589,9 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                 // so between those it fades with the panel. On its side the title stays beside the cover for
                 // lyrics too, since the lyrics view's own header is portrait-only.
                 val titleRow = rememberSharedContentState("title")
+                // On its side the controls are one column beside every panel, laid out the same whichever it is:
+                // the art's spacing is left out (the compact one lyrics and the queue have reads better there), so
+                // nothing in the column moves as the panel changes.
                 if (page != Panel.LYRICS || across) Row(
                     Modifier.fillMaxWidth().sharedElement(titleRow, this@AnimatedContent)
                         .graphicsLayer { alpha = if (titleRow.isMatchFound) 1f else panelFade.read() }
@@ -694,7 +697,7 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                     IconButton({ if (!slide.ask(-1)) vm.next() }, Modifier.size(72.dp)) { LookIcon(Icons.Filled.FastForward, say.next, Modifier.size(55.dp), ink) }
                 }
 
-                if (page == Panel.ART) Spacer(Modifier.weight(0.17f))
+                if (page == Panel.ART && !across) Spacer(Modifier.weight(0.17f))
                 Box(kept("volume")) { VolumeRow(vm) }
 
                 Row(kept("icons").fillMaxWidth().padding(top = 2.dp, bottom = 4.dp), Arrangement.SpaceEvenly, Alignment.CenterVertically) {
@@ -705,7 +708,7 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                     OutputButton()
                     PanelButton(Icons.AutoMirrored.Filled.QueueMusic, say.queue, page == Panel.QUEUE, size = 30.dp, nudge = 0.5.dp) { choose(Panel.QUEUE) }
                 }
-                if (page == Panel.ART) Spacer(Modifier.weight(0.19f))
+                if (page == Panel.ART && !across) Spacer(Modifier.weight(0.19f))
             })
             }
             }
