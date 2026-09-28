@@ -641,6 +641,9 @@ struct Worker<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> {
     remake: Option<Remake>,
     /// Where the volume comes back up from after a dip: from silence on a device just opened.
     up_from: Option<f32>,
+    /// Where the last fade asked for goes ([`Worker::ramp`]): the volume the music is meant to be at once it
+    /// is over.
+    volume_to: f32,
     /// When the turns that panicked did, within the last [`PANICS_WITHIN_MS`].
     panics: VecDeque<i64>,
     /// The ear standing still while music should be moving, and since when.
@@ -794,6 +797,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             up_from: None,
             panics: VecDeque::new(),
             quiet: None,
+            volume_to: 1.0,
             healed: None,
             jumping: None,
             awake: true,
@@ -897,6 +901,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         self.announce(now);
         self.report(now);
         self.follow_why();
+        self.follow_volume();
         self.follow_quiet(now);
         self.watch(now);
         self.follow_awake();
@@ -1036,10 +1041,33 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     /// A fade of the volume from `from` (or where it is) to `to` over `ms`, where the music is.
     fn ramp(&mut self, from: Option<f32>, to: f32, ms: i64) {
         let now = self.now();
+        self.volume_to = to;
         match self.off.as_mut() {
             Some(o) if o.active() => o.ramp(from, to, ms, now),
-            _ => self.p.sink.track.ramp(from, to, ms),
+            _ => {
+                self.p.sink.track.ramp(from, to, ms);
+                // The output's decoder follows it too while it plays nothing, so a song it takes up later
+                // starts at the volume the music is at, never at the silence a pause or a take-over by the
+                // CPU left it at.
+                if let Some(o) = self.off.as_mut() {
+                    o.ramp(from, to, ms, now);
+                }
+            }
         }
+    }
+
+    /// Playing, with no pause, jump or dip under way, the music is meant to be at its full volume. When the
+    /// last fade asked for left it lower (silent, to the ear, while the place moves on), it is faded back
+    /// up at once, and the log says what it was left at and where the engine stood: a fade down that
+    /// nothing brought back up is a bug to find.
+    fn follow_volume(&mut self) {
+        let settled = self.state == State::Playing && self.pause_at.is_none() && self.switch_at.is_none() && self.switches.is_empty() && self.held.is_none();
+        if !settled || self.volume_to >= 1.0 {
+            return;
+        }
+        let words = self.words((self.p.sink.track.filled_us() + self.p.sink.track.latency_us()) / 1000);
+        self.p.app.log(&format!("playing, with the volume left at {:.2} and nothing fading it: brought back up ({words})", self.volume_to));
+        self.ramp(None, 1.0, RESOUND_DIP_MS);
     }
 
     /// The CPU's path lets its device go, keeping the place for the next play.

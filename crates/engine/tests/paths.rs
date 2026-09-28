@@ -1037,6 +1037,89 @@ fn a_song_replay_gain_turns_up_plays_on_the_cpu_between_songs_the_chip_plays_at_
     rig.engine.stop();
 }
 
+/// Paused on the chip (its volume faded to silence), skipped to a song the CPU plays, and played: the fade
+/// back up went to the CPU's output only, and the chip, left at the pause's silence, played the next song
+/// it took without a sound until a seek faded it up again (0.4.6: "muted in the middle of a track").
+#[test]
+fn a_song_back_on_the_chip_after_a_pause_and_the_cpu_is_heard() {
+    if !ffmpeg() {
+        eprintln!("ffmpeg is not installed: nothing to offload");
+        return;
+    }
+    let d = dir();
+    let (a, b, c) = (mp3(&d, "a", 10, 440), flac(&d, "b", 10, 550), mp3(&d, "c", 10, 660));
+    let server = Arc::new(Server::default());
+    serve(&server, &[("a", &a), ("b", &b), ("c", &c)]);
+    // b is a FLAC, which this chip does not decode: the CPU plays it.
+    let fake = Fake::new(MP3_ONLY);
+    let songs = vec![("a".into(), "mp3".into(), 10_000), ("b".into(), "flac".into(), 10_000), ("c".into(), "mp3".into(), 10_000)];
+    let rig = Rig::new(server, songs, app(), Some(fake.clone()), Settings { fade_ms: 300, ..offload() });
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait(10, |r| r.engine.status().offloaded), "a is the chip's: {:?}", rig.engine.status());
+    // A second of a, as a second goes by.
+    rig.run(1_200);
+    fake.advance(44_100);
+    assert!(rig.wait(5, |r| r.engine.status().position_ms >= 990), "{:?}", rig.engine.status());
+    rig.engine.pause();
+    assert!(rig.wait(5, |r| r.engine.status().state == State::Paused));
+    rig.run(1_000);
+    rig.engine.next();
+    rig.engine.play();
+    assert!(rig.wait(10, |r| r.heard_song("b") && !r.card.heard.lock().is_empty()), "b on the CPU: {:?}", rig.events.lock());
+    assert!(rig.wait(30, |r| r.heard_song("c")), "{:?}", rig.events.lock());
+    assert!(rig.wait(5, |r| r.engine.status().offloaded), "c is the chip's");
+    rig.run(1_000);
+    // The chip's volume calls, which `calls` leaves out, since c's track was opened.
+    let raw = fake.0.lock().calls.clone();
+    let opened = raw.iter().rposition(|c| matches!(c, Call::Open(_))).expect("c's track");
+    let volumes: Vec<f32> = raw[opened..].iter().filter_map(|c| if let Call::Volume(v) = c { Some(*v) } else { None }).collect();
+    assert!(volumes.last().is_none_or(|v| *v == 1.0), "c is heard at full volume on the chip, not silent: {volumes:?}");
+    rig.engine.stop();
+}
+
+/// Paused on the chip long enough for its track to be let go (the pause's fade left its volume at silence),
+/// then played: the song goes back on a new track, heard, not left at the pause's silence.
+#[test]
+fn played_again_after_the_chip_s_track_was_let_go_the_song_is_heard() {
+    let d = dir();
+    let Some((rig, fake)) = two_on_the_chip(&d, 20) else { return };
+    rig.engine.set_settings(Settings { fade_ms: 300, ..offload() });
+    rig.run(200);
+    rig.engine.pause();
+    assert!(rig.wait(5, |r| r.engine.status().state == State::Paused));
+    rig.run(6 * 60_000);
+    assert!(rig.engine.status().releases > 0, "the track was let go: {:?}", rig.engine.status());
+    rig.engine.play();
+    assert!(rig.wait(10, |r| r.engine.status().offloaded && r.engine.status().state == State::Playing), "{:?}", rig.engine.status());
+    rig.run(1_000);
+    let raw = fake.0.lock().calls.clone();
+    let opened = raw.iter().rposition(|c| matches!(c, Call::Open(_))).expect("a track");
+    let volumes: Vec<f32> = raw[opened..].iter().filter_map(|c| if let Call::Volume(v) = c { Some(*v) } else { None }).collect();
+    assert!(volumes.last().is_none_or(|v| *v == 1.0), "heard at full volume on the new track: {volumes:?} {raw:?}");
+    rig.engine.stop();
+}
+
+/// The equalizer on while the chip played (the CPU takes the song over, the chip silenced first), and off
+/// again: the song goes back on the chip heard, not at the silence the CPU's take-over left the chip at.
+#[test]
+fn back_on_the_chip_after_the_cpu_took_a_song_over_it_is_heard() {
+    let d = dir();
+    let Some((rig, fake)) = two_on_the_chip(&d, 20) else { return };
+    let eq = Sound { bands: vec![Band { kind: 0, freq: 1000.0, gain_db: 3.0, q: 1.0, channel: 0 }], ..Sound::default() };
+    let heard = rig.card.heard.lock().len();
+    rig.engine.set_settings(Settings { sound: eq, ..offload() });
+    assert!(rig.wait(10, |r| r.card.heard.lock().len() > heard + 44_100), "the CPU plays a on");
+    assert!(rig.wait(5, |r| !r.engine.status().offloaded));
+    rig.engine.set_settings(offload());
+    assert!(rig.wait(10, |r| r.engine.status().offloaded), "back on the chip: {:?}", rig.engine.status().pcm_why);
+    rig.run(1_000);
+    let raw = fake.0.lock().calls.clone();
+    let opened = raw.iter().rposition(|c| matches!(c, Call::Open(_))).expect("a track");
+    let volumes: Vec<f32> = raw[opened..].iter().filter_map(|c| if let Call::Volume(v) = c { Some(*v) } else { None }).collect();
+    assert!(volumes.last().is_none_or(|v| *v == 1.0), "heard at full volume on the chip again: {volumes:?} {raw:?}");
+    rig.engine.stop();
+}
+
 #[test]
 fn a_song_on_the_chip_turned_up_by_a_settings_change_goes_to_the_cpu_where_the_ear_is() {
     if !ffmpeg() {
