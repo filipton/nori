@@ -240,7 +240,7 @@ class Library(
 
 
     /** What carries the queue on past the song playing (see the core's autofill.rs); nothing on any failure. */
-    suspend fun autofill(): List<Song> = withContext(Dispatchers.IO) { client.autofill() }
+    suspend fun autofill(): dev.nori.music.ffi.Refill = withContext(Dispatchers.IO) { client.autofill() }
 
     /**
      * Draws mix [id] unless this period's draw is there already ([again]: a different one); the core
