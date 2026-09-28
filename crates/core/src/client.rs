@@ -28,6 +28,8 @@ pub struct Client {
     pub(crate) second: AtomicBool,
     /// What this client's lyrics lookups remember of each other (services failing lately, YouTube matches).
     pub(crate) lyrics: nori_lyrics::services::LyricsMemory,
+    /// The moving covers' web token and the videos kept (motion.rs).
+    pub(crate) motion: parking_lot::Mutex<crate::motion::Motion>,
 }
 
 /// The client the app streams through now: for a player that opens its songs in Rust (`stream::resolve_now`).
@@ -100,7 +102,7 @@ impl Client {
 impl Client {
     #[cfg_attr(feature = "ffi", uniffi::constructor)]
     pub fn new(core: Arc<Core>, transport: Arc<dyn Transport>) -> Arc<Self> {
-        let client = Arc::new(Client { core, transport, profile: RwLock::new(NetProfile::default()), second: AtomicBool::new(false), lyrics: Default::default() });
+        let client = Arc::new(Client { core, transport, profile: RwLock::new(NetProfile::default()), second: AtomicBool::new(false), lyrics: Default::default(), motion: Default::default() });
         // The newest client is the one the app streams through, as the newest core is the one it uses.
         *ACTIVE_CLIENT.lock() = Arc::downgrade(&client);
         client

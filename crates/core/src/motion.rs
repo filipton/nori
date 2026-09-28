@@ -12,7 +12,6 @@
 
 use std::time::{Duration, Instant};
 
-use parking_lot::Mutex;
 use serde_json::Value;
 
 use crate::cache_policy::{Page, Read};
@@ -343,14 +342,13 @@ enum Found {
 }
 
 /// The web player's token once found, when finding it last failed, and which cache entry each video
-/// came from (so a video that has gone can be forgotten).
-struct Motion {
+/// came from (so a video that has gone can be forgotten). Each client keeps its own.
+#[derive(Default)]
+pub(crate) struct Motion {
     token: Option<String>,
     token_failed: Option<Instant>,
     keys: Vec<(String, String)>,
 }
-
-static MOTION: Mutex<Motion> = Mutex::new(Motion { token: None, token_failed: None, keys: Vec::new() });
 /// How many videos are remembered for forgetting.
 const KEYS_KEPT: usize = 32;
 
@@ -381,7 +379,7 @@ impl Client {
     /// `url` would not play because it is not there any more: the album is looked up again next time.
     pub fn motion_forget(&self, url: String) {
         let key = {
-            let mut m = MOTION.lock();
+            let mut m = self.motion.lock();
             let at = m.keys.iter().position(|(u, _)| *u == url);
             at.map(|i| m.keys.remove(i).1)
         };
@@ -402,7 +400,7 @@ impl Client {
         if let Some(stored) = self.core.cache_get(key.clone()).ok().flatten() {
             if !stored.is_empty() {
                 let url = String::from_utf8_lossy(&stored).into_owned();
-                MOTION.lock().keep(url.clone(), key);
+                self.motion.lock().keep(url.clone(), key);
                 return Some(url);
             }
             if self.core.cache_fresh(key.clone(), NONE_KEPT_MS).unwrap_or(false) {
@@ -427,7 +425,7 @@ impl Client {
         match self.motion_find(&artist, &name, tracks, year).await {
             Found::Video(url) => {
                 let _ = self.core.cache_put(key.clone(), url.clone().into_bytes());
-                MOTION.lock().keep(url.clone(), key);
+                self.motion.lock().keep(url.clone(), key);
                 Some(url)
             }
             Found::None => {
@@ -454,13 +452,13 @@ impl Client {
             let Some(mut answer) = self.motion_catalogue(id, &token).await else { return Found::Failed };
             if matches!(answer.0, 401 | 403) {
                 // Refused: the token has expired or been replaced. Find the current one and ask once more.
-                MOTION.lock().token = None;
+                self.motion.lock().token = None;
                 let _ = self.core.cache_evict(TOKEN_KEY.into());
                 let Some(fresh) = self.web_token(true).await else { return Found::Failed };
                 token = fresh;
                 let Some(again) = self.motion_catalogue(id, &token).await else { return Found::Failed };
                 if matches!(again.0, 401 | 403) {
-                    MOTION.lock().token_failed = Some(Instant::now());
+                    self.motion.lock().token_failed = Some(Instant::now());
                     return Found::Failed;
                 }
                 answer = again;
@@ -490,20 +488,20 @@ impl Client {
     /// when `fresh` (the remembered one was refused). A failed search is not repeated for half an hour.
     async fn web_token(&self, fresh: bool) -> Option<String> {
         if !fresh {
-            if let Some(t) = MOTION.lock().token.clone() {
+            if let Some(t) = self.motion.lock().token.clone() {
                 return Some(t);
             }
             if let Some(t) = self.core.cache_get(TOKEN_KEY.into()).ok().flatten().filter(|t| !t.is_empty()) {
                 let t = String::from_utf8_lossy(&t).into_owned();
-                MOTION.lock().token = Some(t.clone());
+                self.motion.lock().token = Some(t.clone());
                 return Some(t);
             }
         }
-        if MOTION.lock().token_failed.is_some_and(|at| at.elapsed() < TOKEN_RETRY) {
+        if self.motion.lock().token_failed.is_some_and(|at| at.elapsed() < TOKEN_RETRY) {
             return None;
         }
         let found = self.motion_scrape().await;
-        let mut m = MOTION.lock();
+        let mut m = self.motion.lock();
         match &found {
             Some(t) => {
                 m.token = Some(t.clone());
