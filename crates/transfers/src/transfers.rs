@@ -1534,6 +1534,28 @@ pub struct Held {
 /// read as the old one's.
 pub static HELD_VERSION: AtomicU64 = AtomicU64::new(1);
 
+/// Where a song stands in the downloads table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeldState {
+    /// Not in it.
+    Absent,
+    /// Queued, or failed.
+    Pending,
+    /// Downloaded.
+    Done,
+}
+
+impl HeldState {
+    /// The number Kotlin's `DownloadsJni` reads it by: 0, 1 and 2.
+    pub fn code(self) -> i32 {
+        match self {
+            HeldState::Absent => 0,
+            HeldState::Pending => 1,
+            HeldState::Done => 2,
+        }
+    }
+}
+
 impl Held {
     pub fn load(c: &rusqlite::Connection) -> nori_model::Result<Held> {
         let mut st = c.prepare("SELECT id, done FROM downloads WHERE server=sid()")?;
@@ -1543,9 +1565,8 @@ impl Held {
         Ok(Held { ids, done })
     }
 
-    /// 0 not in the table, 1 queued or failed, 2 finished.
-    pub fn state(&self, id: &str) -> i32 {
-        self.ids.get(id).map_or(0, |d| if *d { 2 } else { 1 })
+    pub fn state(&self, id: &str) -> HeldState {
+        self.ids.get(id).map_or(HeldState::Absent, |d| if *d { HeldState::Done } else { HeldState::Pending })
     }
 
     pub fn queued(&mut self, id: &str) {
@@ -1715,10 +1736,10 @@ pub fn set_active_held(held: &Arc<Mutex<Held>>) {
     *ACTIVE_HELD.lock() = Arc::downgrade(held);
 }
 
-/// Whether `id` is in the active core's downloads table: 0 no, 1 queued or failed, 2 finished. Asked by
-/// every row a list draws and every track opened; answered from memory.
-pub fn held(id: &str) -> i32 {
-    ACTIVE_HELD.lock().upgrade().map_or(0, |held| held.lock().state(id))
+/// Where `id` stands in the active core's downloads table. Asked by every row a list draws and every track
+/// opened; answered from memory.
+pub fn held(id: &str) -> HeldState {
+    ACTIVE_HELD.lock().upgrade().map_or(HeldState::Absent, |held| held.lock().state(id))
 }
 
 /// The download statistics for checks: bytes a second over the last several seconds, and seconds left (-1 unknown).

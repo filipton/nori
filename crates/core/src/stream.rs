@@ -11,7 +11,7 @@ pub use nori_net::stream::*;
 /// last said it is on. None before a client exists.
 pub fn resolve_now(id: &str) -> Option<StreamTarget> {
     let client = crate::client::active_client()?;
-    let kept = crate::transfers::held(id) == 2;
+    let kept = crate::transfers::held(id) == crate::transfers::HeldState::Done;
     Some(client.resolve(id.to_string(), kept, !kept && metered()))
 }
 
@@ -30,8 +30,8 @@ pub fn precache_now() -> Vec<Fetch> {
 
 impl Client {
     /// [`Self::precache_targets`] over `ids`, `held` saying whether each is downloaded or queued for it.
-    fn fetches(&self, ids: Vec<String>, metered: bool, wifi: &StreamQuality, mobile: &StreamQuality, held: impl Fn(&str) -> i32) -> Vec<Fetch> {
-        crate::rules::precache_list(ids, |id| held(id) != 0)
+    fn fetches(&self, ids: Vec<String>, metered: bool, wifi: &StreamQuality, mobile: &StreamQuality, held: impl Fn(&str) -> crate::transfers::HeldState) -> Vec<Fetch> {
+        crate::rules::precache_list(ids, |id| held(id) != crate::transfers::HeldState::Absent)
             .into_iter()
             .map(|id| {
                 let t = self.stream_target(id.clone(), metered, wifi.clone(), mobile.clone());
@@ -143,9 +143,9 @@ mod tests {
         let (c, _) = client(NetProfile { url: "h".into(), ..Default::default() });
         let ids = ["a", "radio:1", "ext-2", "queued", "done", "b"].map(String::from).to_vec();
         let held = |id: &str| match id {
-            "queued" => 1,
-            "done" => 2,
-            _ => 0,
+            "queued" => crate::transfers::HeldState::Pending,
+            "done" => crate::transfers::HeldState::Done,
+            _ => crate::transfers::HeldState::Absent,
         };
         let f = c.fetches(ids, true, &q(0, ""), &q(192, "opus"), held);
         assert_eq!(f.iter().map(|f| (f.id.as_str(), f.key.as_str())).collect::<Vec<_>>(), [("a", "a:192opus"), ("b", "b:192opus")]);

@@ -304,7 +304,7 @@ impl Library for CoreLibrary {
         let song = nori_core::queue::queue_song(id.to_string());
         let duration_ms = song.as_ref().map(|s| s.duration as i64 * 1000).filter(|&d| d > 0);
         // A download may have been transcoded: the file says what it is.
-        let kept = self.store.as_ref().filter(|_| transfers::held(id) == 2).and_then(|s| s.downloaded(id));
+        let kept = self.store.as_ref().filter(|_| transfers::held(id) == transfers::HeldState::Done).and_then(|s| s.downloaded(id));
         if let Some(path) = kept {
             return Ok(Located { source: Source::File(path), hint: None, duration_ms, estimated: false });
         }
@@ -595,7 +595,7 @@ struct StoreShelf {
 
 impl Shelf for StoreShelf {
     fn whole(&self, id: &str) -> Option<Whole> {
-        if transfers::held(id) == 2 {
+        if transfers::held(id) == transfers::HeldState::Done {
             if let Some(p) = self.store.downloaded(id) {
                 return Some(Whole { files: vec![p], hint: None });
             }

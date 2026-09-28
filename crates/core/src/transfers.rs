@@ -132,18 +132,18 @@ impl Core {
             for id in &gone_ids {
                 unwanted.execute([id])?;
             }
-            let mut state: HashMap<&str, i32> = HashMap::new();
+            let mut state: HashMap<&str, HeldState> = HashMap::new();
             for (id, f) in ids.iter().zip(&finished) {
                 let now = state.entry(id.as_str()).or_insert_with(|| held.state(id));
                 match (*now, *f) {
-                    (0, _) | (2, true) => {}
+                    (HeldState::Absent, _) | (HeldState::Done, true) => {}
                     (_, true) => {
                         done.execute([id])?;
-                        *now = 2;
+                        *now = HeldState::Done;
                     }
                     (_, false) => {
                         gone.execute([id])?;
-                        *now = 0;
+                        *now = HeldState::Absent;
                     }
                 }
             }
@@ -356,12 +356,12 @@ pub(crate) mod tests {
         let state = |id: &str| core.held.lock().state(id);
         core.download_queue(vec![song("h-a"), song("h-b"), song("h-c"), song("h-d")]).unwrap();
         let v0 = core.download_counts();
-        assert_eq!((v0.done, v0.pending, state("h-a"), state("h-x")), (0, 4, 1, 0));
+        assert_eq!((v0.done, v0.pending, state("h-a"), state("h-x")), (0, 4, HeldState::Pending, HeldState::Absent));
         // In order: "h-b" finishes and then goes, "h-x" was never there.
         let ids = ["h-a", "h-b", "h-b", "h-x"].map(String::from).to_vec();
         core.download_settle(ids, vec![true, true, false, false]).unwrap();
         let v1 = core.download_counts();
-        assert_eq!((v1.done, v1.pending, state("h-a"), state("h-b")), (1, 2, 2, 0));
+        assert_eq!((v1.done, v1.pending, state("h-a"), state("h-b")), (1, 2, HeldState::Done, HeldState::Absent));
         assert!(v1.version > v0.version);
         // The version is the process's, moved by any test's downloads running beside this one: the counts only.
         let again = core.download_counts();
@@ -371,7 +371,7 @@ pub(crate) mod tests {
         let mut gone = core.download_cancel_all().unwrap();
         gone.sort();
         assert_eq!(gone, ["h-c", "h-d"]);
-        assert_eq!((core.download_counts().pending, core.downloads(false).unwrap().len(), state("h-a")), (0, 0, 2), "finished songs stay");
+        assert_eq!((core.download_counts().pending, core.downloads(false).unwrap().len(), state("h-a")), (0, 0, HeldState::Done), "finished songs stay");
         // What an opened core reads is what was written.
         let c = core.db.lock();
         let again = Held::load(&c).unwrap();

@@ -35,7 +35,7 @@ pub(crate) static LINES: Class = Class {
 
 /// Whether `id` is downloaded: 0 no, 1 queued or failed, 2 finished. Asked by every row a list draws.
 extern "system" fn held(env: JNIEnv, _: JClass, id: JString) -> jint {
-    with_str(&env, &id, transfers::held).unwrap_or(0)
+    with_str(&env, &id, |id| transfers::held(id).code()).unwrap_or(0)
 }
 
 /// media3 reported `id` in `state`; returns `transfers::followed`'s flags.
