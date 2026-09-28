@@ -993,7 +993,7 @@ fn listen_as_it_comes(id: &str, hint: Option<&str>, wait: bool) -> Option<Listen
     match Listening::start(hint.map(str::to_string), wait, Box::new(heard)) {
         Some(l) => {
             // A download saved before this is over shows it is still being analysed.
-            nori_core::transfers::analysing(id, true, false);
+            nori_core::transfers::analysing_began(id);
             Some(l)
         }
         None => {
@@ -1048,7 +1048,7 @@ impl Heard for Measuring {
             CAME.fetch_add(1, Ordering::Relaxed);
         }
         ARRIVING.lock().retain(|i| *i != id);
-        nori_core::transfers::analysing(&id, false, stored);
+        nori_core::transfers::analysing_ended(&id, stored);
         // A saved song waiting for this is looked at by the work after the bytes: from the disk, if not stored.
         crate::processing::kick();
         let measurers: Vec<Arc<Measurer>> = MEASURERS.lock().iter().filter_map(|w| w.upgrade()).collect();

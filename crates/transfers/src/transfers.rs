@@ -852,18 +852,21 @@ impl Tracker {
     }
 }
 
-/// `id` is being measured as it comes (`on`), or that is over: `stored` when its analysis was kept, and then a
-/// saved song stops waiting for it. One not stored still waits: its analysis is done from the disk
-/// (nori-engine's processing, which is told the measuring ended).
-pub fn analysing(id: &str, on: bool, stored: bool) {
+/// `id` is being measured as it comes, from now until [`analysing_ended`].
+pub fn analysing_began(id: &str) {
     with(|t| {
-        if on {
-            t.analysing.insert(id.to_string());
-        } else {
-            t.analysing.remove(id);
-            if stored {
-                t.work_done(id, Work::Analysis);
-            }
+        t.analysing.insert(id.to_string());
+    });
+}
+
+/// Measuring `id` as it came is over: `stored` when its analysis was kept, and then a saved song stops
+/// waiting for it. One not stored still waits: its analysis is done from the disk (nori-engine's
+/// processing, which is told the measuring ended).
+pub fn analysing_ended(id: &str, stored: bool) {
+    with(|t| {
+        t.analysing.remove(id);
+        if stored {
+            t.work_done(id, Work::Analysis);
         }
     });
 }
@@ -1915,7 +1918,7 @@ mod tests {
     fn a_saved_song_is_processing_until_its_lyrics_analysis_and_beats_are_over() {
         use std::future::Future;
         let phase = |id: &str| download_phase(id.into());
-        analysing("pr-a", true, false);
+        analysing_began("pr-a");
         followed("pr-a", DOWNLOADING, 0);
         assert_eq!(phase("pr-a"), Some(DownloadPhase::Downloading));
         followed("pr-a", COMPLETED, 1_000);
@@ -1931,7 +1934,7 @@ mod tests {
         assert!(work_done("pr-a", Work::Lyrics));
         assert_eq!(phase("pr-a"), Some(DownloadPhase::Analysing), "analysing");
         // Measured as it came, but not kept: it waits for its analysis from the disk.
-        analysing("pr-a", false, false);
+        analysing_ended("pr-a", false);
         assert!(waits("pr-a", Work::Analysis));
         assert!(work_done("pr-a", Work::Analysis));
         assert_eq!(phase("pr-a"), Some(DownloadPhase::DetectingBeats), "detecting beats");
@@ -1945,9 +1948,9 @@ mod tests {
         assert_eq!(phase("ext-pr-b"), Some(DownloadPhase::Done), "a provider's song not measured has nothing to wait for");
 
         // Kept as it came: nothing is left of the analysis.
-        analysing("pr-c", true, false);
+        analysing_began("pr-c");
         followed("pr-c", COMPLETED, 0);
-        analysing("pr-c", false, true);
+        analysing_ended("pr-c", true);
         assert!(!waits("pr-c", Work::Analysis));
         assert_eq!(phase("pr-c"), Some(DownloadPhase::FindingLyrics));
         let saved = ["pr-c".to_string()];
