@@ -312,6 +312,28 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
     /** The equalizer screen is open: the player answers a moved slider at once instead of seconds later. */
     fun setTuning(on: Boolean) = nori.player.setTuning(on)
 
+    /**
+     * A report of a problem (core `Report`) under [header], written to a file of its own - a day of log is a
+     * megabyte or two, more than a share's text or the clipboard carries - and handed to [share] as the
+     * address others may read it at; null when it could not be written. Older reports go.
+     */
+    fun reportProblem(header: String, share: (android.net.Uri?) -> Unit) {
+        val app = getApplication<Application>()
+        val position = nori.player.positionMs
+        viewModelScope.launch {
+            val uri = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    val dir = app.cacheDir.resolve("reports").apply { deleteRecursively(); mkdirs() }
+                    val stamp = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
+                    val file = dir.resolve("nori-report-$stamp.txt")
+                    file.writeText(dev.nori.music.Report.write(app, header, position))
+                    androidx.core.content.FileProvider.getUriForFile(app, "${app.packageName}.reports", file)
+                }.getOrNull()
+            }
+            share(uri)
+        }
+    }
+
     /** The built-in curves, straight from the core so the numbers live in one place. */
     val presets: List<NamedPreset> by lazy { eqPresets() }
 

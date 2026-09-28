@@ -15,7 +15,8 @@ class NoriApp : Application() {
         nori.updates.configure(BuildConfig.VERSION_NAME, installs = BuildConfig.BUILD_TYPE == "release")
         // Then the AutoEQ list, if the core says it is due (one request on Wi-Fi, once a month at most), and
         // whether there is a newer release (once a day at most, unless switched off).
-        Thread { nori.warmUp(); forgetCoil(); nori.updates.checkIfDue(); kotlinx.coroutines.runBlocking { nori.keepAutoEqList() } }.start()
+        // The app's log is kept on the disk for a report of a problem (Settings > About), from here on.
+        Thread { dev.nori.music.Report.start(this); nori.warmUp(); forgetCoil(); nori.updates.checkIfDue(); kotlinx.coroutines.runBlocking { nori.keepAutoEqList() } }.start()
     }
 
     /** A new locale changes the words, read again from the resources (fractions follow it by themselves: "12,4 MB"). */

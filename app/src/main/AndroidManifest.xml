@@ -32,5 +32,9 @@
             </intent-filter>
         </receiver>
         <meta-data android:name="com.google.android.gms.car.application" android:resource="@xml/automotive_app_desc" />
+        <!-- A report of a problem, shared as a file (Settings > About). -->
+        <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.reports" android:exported="false" android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/reports" />
+        </provider>
     </application>
 </manifest>
