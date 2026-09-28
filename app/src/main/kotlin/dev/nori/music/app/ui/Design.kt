@@ -303,35 +303,40 @@ fun androidx.compose.ui.draw.CacheDrawScope.sleeveWashAcross(
 }
 
 /**
- * A row that scrolls sideways (a shelf of covers, a row of chips), run out past the page's side on a phone on
- * its side, under the strip the page is kept off there - the camera's punch hole - where its items fade out
- * towards the screen's edge instead of stopping on a line. Its first item still starts where the page
- * does: the row's padding takes the strip back ([edgePadding]). Upright there is no strip and this is nothing.
+ * A row that scrolls sideways (a shelf of covers, a row of chips), run out past the page's sides on a phone on
+ * its side, under the strips the page is kept off there - the camera's punch hole at one end, the tab rail
+ * at the other - where its items fade out towards the screen's edge instead of stopping on a line, as a
+ * list upright fades out under the floating bar. Its first and last items still start and end where the
+ * page does: the row's padding takes the strips back ([edgePadding]). Upright there are no strips and this
+ * is nothing.
  */
 @Composable
 fun Modifier.bleedsToEdges(): Modifier {
     val start = LocalPageStart.current
-    if (start == 0.dp) return this
+    val end = LocalPageEnd.current
+    if (start == 0.dp && end == 0.dp) return this
     return layout { measurable, constraints ->
-        val extra = start.roundToPx()
-        val w = constraints.maxWidth + extra
+        val w = constraints.maxWidth + start.roundToPx() + end.roundToPx()
         val placeable = measurable.measure(constraints.copy(minWidth = w, maxWidth = w))
-        layout(constraints.maxWidth, placeable.height) { placeable.place(-extra, 0) }
+        layout(constraints.maxWidth, placeable.height) { placeable.place(-start.roundToPx(), 0) }
     }.graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
         .drawWithCache {
-            val edge = start.toPx()
-            val fade = Brush.horizontalGradient(0f to Color.Transparent, 1f to Color.Black, startX = 0f, endX = edge)
+            val l = start.toPx()
+            val r = end.toPx()
+            val inFade = Brush.horizontalGradient(0f to Color.Transparent, 1f to Color.Black, startX = 0f, endX = l)
+            val outFade = Brush.horizontalGradient(0f to Color.Black, 1f to Color.Transparent, startX = size.width - r, endX = size.width)
             onDrawWithContent {
                 drawContent()
-                drawRect(fade, size = Size(edge, size.height), blendMode = androidx.compose.ui.graphics.BlendMode.DstIn)
+                if (l > 0f) drawRect(inFade, size = Size(l, size.height), blendMode = androidx.compose.ui.graphics.BlendMode.DstIn)
+                if (r > 0f) drawRect(outFade, topLeft = Offset(size.width - r, 0f), size = Size(r, size.height), blendMode = androidx.compose.ui.graphics.BlendMode.DstIn)
             }
         }
 }
 
-/** A sideways row's padding: [horizontal] and [vertical], and at the start the strip it runs out under ([bleedsToEdges]). */
+/** A sideways row's padding: [horizontal] and [vertical], and at each end the strip it runs out under ([bleedsToEdges]). */
 @Composable
 fun edgePadding(horizontal: Dp = 0.dp, vertical: Dp = 0.dp): PaddingValues =
-    PaddingValues(start = horizontal + LocalPageStart.current, end = horizontal, top = vertical, bottom = vertical)
+    PaddingValues(start = horizontal + LocalPageStart.current, end = horizontal + LocalPageEnd.current, top = vertical, bottom = vertical)
 
 /** [edgePadding] with the same padding on every side. */
 @Composable
