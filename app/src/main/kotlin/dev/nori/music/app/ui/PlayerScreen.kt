@@ -619,7 +619,7 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                             Column {
                                 LookText(
                                     m.title, { live.color(CoverLook.ON) },
-                                    Modifier.readable(), style = MaterialTheme.typography.titleLarge,
+                                    Modifier.readable(key = m.key), style = MaterialTheme.typography.titleLarge,
                                     maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis,
                                 )
                                 // Artist and album, each on its own line and each a way there. On one line they
@@ -2221,16 +2221,26 @@ private fun VolumeRow(vm: PlayerViewModel) {
  * holds the line still, soft edge and all, so a row can stop walking without changing how it looks.
  */
 @Composable
-internal fun Modifier.readable(iterations: Int = READ_OUT): Modifier {
-    if (!LocalPlayerShown.current) return this
+internal fun Modifier.readable(iterations: Int = READ_OUT, key: String? = null): Modifier {
+    // Put away, the player forgets: it reads the title out again the next time it comes into view.
+    if (!LocalPlayerShown.current) { if (key != null) ReadOut.forget(); return this }
+    // [key]: the line is the same one wherever it is drawn (the player's title, in each panel). It remembers
+    // what it measured and that it has begun reading itself out, so a panel change - which draws the title
+    // anew - does not lay it out once without its soft edge and then again with it, and does not walk it from
+    // the start again: that was the title flashing and jumping back each time the lyrics or queue opened.
+    val seen = key?.let(ReadOut::of)
     // What the line needs and what it has. The first size is this element's own - the width the row
     // gives the title - and the second is the text's, measured inside the marquee, which lays it out
     // with no width limit at all. A line that fits is left alone entirely: no walk, and no soft edge
     // either, which would otherwise dim the last letters of a title that merely came close.
-    var room by remember { mutableIntStateOf(0) }
-    var needs by remember { mutableIntStateOf(0) }
+    var room by remember { mutableIntStateOf(seen?.room ?: 0) }
+    var needs by remember { mutableIntStateOf(seen?.needs ?: 0) }
     val over = needs > room + 1
-    return onSizeChanged { room = it.width }
+    // Only the first copy of the line reads it out; one drawn after it (another panel) holds still at the start,
+    // as the line settles, rather than walking it from the beginning again.
+    val walks = remember(seen) { if (seen?.started == true) 0 else iterations }
+    if (seen != null && over && walks > 0) LaunchedEffect(seen) { seen.started = true }
+    return onSizeChanged { room = it.width; seen?.room = it.width }
         .then(
             // A marquee lays its text out unbounded, so there is no ellipsis to fall back on and the
             // line would otherwise end on a half-drawn letter at the edge. It goes soft over the last
@@ -2251,13 +2261,27 @@ internal fun Modifier.readable(iterations: Int = READ_OUT): Modifier {
                 },
         )
         .basicMarquee(
-            iterations = iterations,
+            iterations = walks,
             repeatDelayMillis = 2600,
             initialDelayMillis = 2600,
             spacing = MarqueeSpacing(46.dp),
             velocity = 26.dp,
         )
-        .onSizeChanged { needs = it.width }
+        .onSizeChanged { needs = it.width; seen?.needs = it.width }
+}
+
+/** What a [readable] line with a key has measured and whether it has begun reading itself out, for its next copy. */
+private class ReadOut(val key: String) {
+    var room = 0
+    var needs = 0
+    var started = false
+
+    companion object {
+        // One line at a time: the song's title. A new song is a new key and starts over.
+        private var last: ReadOut? = null
+        fun of(key: String): ReadOut = last?.takeIf { it.key == key } ?: ReadOut(key).also { last = it }
+        fun forget() { last = null }
+    }
 }
 
 /** How many times a line too long for its width reads itself out before it settles; see [readable]. */
