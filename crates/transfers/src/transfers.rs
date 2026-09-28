@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::task::{Poll, Waker};
 
-use nori_model::{alog, Song};
+use nori_model::{alog, DownloadPhase, Song};
 use parking_lot::Mutex;
 
 /// Finished songs the downloads screen keeps listing this session.
@@ -80,16 +80,16 @@ pub enum Phase {
 }
 
 impl Phase {
-    /// The number the platform gets (`download_phase`): 1 downloading, 2 failed, 3 done, then what a saved
-    /// song is shown doing: 4 finding lyrics, 5 analysing (no lyrics awaited), 6 detecting beats (only that).
-    pub fn code(self) -> i32 {
+    /// What the screens show for it: a saved song still processing shows the step it waits for most visibly,
+    /// its lyrics, else its analysis, else the beat model.
+    pub fn shown(self) -> DownloadPhase {
         match self {
-            Phase::Downloading => 1,
-            Phase::Failed => 2,
-            Phase::Done => 3,
-            Phase::Processing { lyrics: true, .. } => 4,
-            Phase::Processing { analysing: true, .. } => 5,
-            Phase::Processing { .. } => 6,
+            Phase::Downloading => DownloadPhase::Downloading,
+            Phase::Failed => DownloadPhase::Failed,
+            Phase::Done => DownloadPhase::Done,
+            Phase::Processing { lyrics: true, .. } => DownloadPhase::FindingLyrics,
+            Phase::Processing { analysing: true, .. } => DownloadPhase::Analysing,
+            Phase::Processing { .. } => DownloadPhase::DetectingBeats,
         }
     }
 
@@ -1643,9 +1643,9 @@ pub struct DownloadSections {
     pub finished: Vec<Song>,
 }
 
-/// A download's phase for the screen: 0 waiting (or nothing), else [`Phase::code`].
-pub fn download_phase(id: String) -> i32 {
-    with(|t| t.marks.get(&id).map_or(0, |m| m.0.code()))
+/// A download's phase for the screen ([`Phase::shown`]); none when it has no mark (waiting, or nothing).
+pub fn download_phase(id: String) -> Option<DownloadPhase> {
+    with(|t| t.marks.get(&id).map(|m| m.0.shown()))
 }
 
 /// The ids with a phase, and each one's phase (as [`download_phase`]) and when it began.
@@ -1653,18 +1653,18 @@ pub fn download_phase(id: String) -> i32 {
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct DownloadMarks {
     pub ids: Vec<String>,
-    pub phases: Vec<i32>,
+    pub phases: Vec<Option<DownloadPhase>>,
     pub at: Vec<i64>,
 }
 
-/// The marks that changed since the last call, each with its phase now (0: it has none any more). The
+/// The marks that changed since the last call, each with its phase now (none: it has none any more). The
 /// platform keeps its own copy of the marks and only hears what moved.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn download_marks_changed() -> DownloadMarks {
     with(|t| {
         let mut m = DownloadMarks { ids: Vec::new(), phases: Vec::new(), at: Vec::new() };
         for id in t.changed.drain() {
-            let (p, at) = t.marks.get(&id).map_or((0, 0), |(p, at)| (p.code(), *at));
+            let (p, at) = t.marks.get(&id).map_or((None, 0), |(p, at)| (Some(p.shown()), *at));
             m.ids.push(id);
             m.phases.push(p);
             m.at.push(at);
@@ -1896,7 +1896,7 @@ mod tests {
         let phase = |id: &str| download_phase(id.into());
         analysing("pr-a", true, false);
         followed("pr-a", DOWNLOADING, 0);
-        assert_eq!(phase("pr-a"), 1);
+        assert_eq!(phase("pr-a"), Some(DownloadPhase::Downloading));
         followed("pr-a", COMPLETED, 1_000);
         assert_eq!(with(|t| t.marks["pr-a"]), (Phase::Processing { analysing: true, lyrics: true, beats: false }, 1_000));
         // Settled: the beat model was asked for it.
@@ -1905,15 +1905,15 @@ mod tests {
         let mut waiting = std::pin::pin!(processed(&ids));
         let mut cx = std::task::Context::from_waker(Waker::noop());
         assert!(waiting.as_mut().poll(&mut cx).is_pending());
-        assert_eq!(phase("pr-a"), 4, "finding lyrics");
+        assert_eq!(phase("pr-a"), Some(DownloadPhase::FindingLyrics), "finding lyrics");
         // The lookup failed: no lyrics, and still being analysed.
         assert!(work_done("pr-a", Work::Lyrics));
-        assert_eq!(phase("pr-a"), 5, "analysing");
+        assert_eq!(phase("pr-a"), Some(DownloadPhase::Analysing), "analysing");
         // Measured as it came, but not kept: it waits for its analysis from the disk.
         analysing("pr-a", false, false);
         assert!(waits("pr-a", Work::Analysis));
         assert!(work_done("pr-a", Work::Analysis));
-        assert_eq!(phase("pr-a"), 6, "detecting beats");
+        assert_eq!(phase("pr-a"), Some(DownloadPhase::DetectingBeats), "detecting beats");
         assert!(waiting.as_mut().poll(&mut cx).is_pending());
         assert!(work_done("pr-a", Work::Beats));
         assert_eq!(with(|t| t.marks["pr-a"]), (Phase::Done, 1_000), "done, where it was saved");
@@ -1921,23 +1921,23 @@ mod tests {
         assert!(!work_done("pr-a", Work::Lyrics), "done stays done");
 
         followed("ext-pr-b", COMPLETED, 0);
-        assert_eq!(phase("ext-pr-b"), 3, "a provider's song not measured has nothing to wait for");
+        assert_eq!(phase("ext-pr-b"), Some(DownloadPhase::Done), "a provider's song not measured has nothing to wait for");
 
         // Kept as it came: nothing is left of the analysis.
         analysing("pr-c", true, false);
         followed("pr-c", COMPLETED, 0);
         analysing("pr-c", false, true);
         assert!(!waits("pr-c", Work::Analysis));
-        assert_eq!(phase("pr-c"), 4);
+        assert_eq!(phase("pr-c"), Some(DownloadPhase::FindingLyrics));
         let saved = ["pr-c".to_string()];
         assert_eq!(sections(&[], &saved, &with(|t| t.marks.clone()), |s: &String| s.as_str())[0], ["pr-c"], "listed among the active ones");
         work_done("pr-c", Work::Lyrics);
 
         // A downloaded song asked for again (the settings' "Analyse downloaded songs"): processing, with no lyrics.
         assert!(plan("pr-d", Needs { analysis: true, beats: false }, None));
-        assert_eq!(phase("pr-d"), 5);
+        assert_eq!(phase("pr-d"), Some(DownloadPhase::Analysing));
         assert!(!plan("pr-e", Needs::default(), None), "nothing to do: no mark");
-        assert_eq!(phase("pr-e"), 0);
+        assert_eq!(phase("pr-e"), None);
         work_done("pr-d", Work::Analysis);
     }
 
@@ -2034,12 +2034,12 @@ mod tests {
         });
         let m = download_marks_changed();
         let mine = |m: &DownloadMarks, id: &str| m.ids.iter().position(|i| i == id).map(|i| m.phases[i]);
-        assert_eq!((mine(&m, "mk-a"), mine(&m, "mk-b")), (Some(1), Some(2)));
+        assert_eq!((mine(&m, "mk-a"), mine(&m, "mk-b")), (Some(Some(DownloadPhase::Downloading)), Some(Some(DownloadPhase::Failed))));
         with(|t| {
             t.unmark("mk-a");
         });
         let m = download_marks_changed();
-        assert_eq!((mine(&m, "mk-a"), mine(&m, "mk-b")), (Some(0), None), "gone, and the other one did not move");
+        assert_eq!((mine(&m, "mk-a"), mine(&m, "mk-b")), (Some(None), None), "gone, and the other one did not move");
         with(|t| {
             t.unmark("mk-b");
         });
@@ -2231,7 +2231,7 @@ mod tests {
         step(&mut t, "ly-b", Work::Lyrics, 4_000);
         step(&mut t, "ly-b", Work::Analysis, 2_000);
         assert_eq!(t.processing(), [0, 0, 1]);
-        assert_eq!(t.marks["ly-b"].0.code(), 6, "detecting beats");
+        assert_eq!(t.marks["ly-b"].0.shown(), DownloadPhase::DetectingBeats, "detecting beats");
         step(&mut t, "ly-b", Work::Beats, 20_000);
         assert_eq!(t.processing(), [0, 0, 0]);
         // Learned: 8 s over two lookups, 4 s over two analyses, 40 s over two model runs, each with its guess.
@@ -2272,12 +2272,12 @@ mod tests {
         let p = processing(1_000).unwrap();
         assert!(p.analysing >= 1 && p.beats >= 2 && p.eta_s > 0, "{p:?}");
         let moved = download_marks_changed();
-        assert!(moved.ids.contains(&"pf-a".to_string()) && moved.phases[moved.ids.iter().position(|i| i == "pf-b").unwrap()] == 6);
+        assert!(moved.ids.contains(&"pf-a".to_string()) && moved.phases[moved.ids.iter().position(|i| i == "pf-b").unwrap()] == Some(DownloadPhase::DetectingBeats));
         for id in ["pf-a", "pf-b"] {
             work_done(id, Work::Analysis);
             work_done(id, Work::Beats);
         }
-        assert_eq!(download_phase("pf-b".into()), 3);
+        assert_eq!(download_phase("pf-b".into()), Some(DownloadPhase::Done));
     }
 
     /// Once the bytes are in, the platform stops asking for the notice; the downloads screen and the checks

@@ -372,6 +372,30 @@ pub struct PlayQueue {
     pub origin: Option<PageOrigin>,
 }
 
+/// Where one song's download stands, as the screens show it. [`DownloadPhase::Queued`] is never a mark of
+/// its own: it is what a song waiting in the download queue with no mark shows (the downloads screen's
+/// waiting section). The last three are a song saved and still being processed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
+pub enum DownloadPhase {
+    Queued,
+    Downloading,
+    Failed,
+    Done,
+    FindingLyrics,
+    /// Its analysis, no lyrics awaited.
+    Analysing,
+    /// The beat model's reading of its ends, nothing else awaited.
+    DetectingBeats,
+}
+
+impl DownloadPhase {
+    /// Saved, and some of the work after the bytes is not over yet.
+    pub fn processing(self) -> bool {
+        matches!(self, DownloadPhase::FindingLyrics | DownloadPhase::Analysing | DownloadPhase::DetectingBeats)
+    }
+}
+
 /// What kind of place a queue was started from. Saved with the queue by name, so only ever add.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]

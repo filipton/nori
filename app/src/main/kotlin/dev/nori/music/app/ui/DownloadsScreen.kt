@@ -79,6 +79,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.nori.music.app.vm.ActionsViewModel
 import dev.nori.music.downloads.DownloadMark
 import dev.nori.music.downloads.DownloadPhase
+import dev.nori.music.downloads.processing
 import dev.nori.music.downloads.DownloadLines
 import androidx.compose.ui.platform.LocalContext
 import dev.nori.music.downloads.DownloadState
@@ -109,11 +110,11 @@ fun rememberDownloadMarks(actions: ActionsViewModel): DownloadMarks {
 /** The glyph a row's mark shows (the core's `download_glyph`). */
 private typealias Glyph = dev.nori.music.ffi.library.DownloadGlyph
 
-/** The core's answer for each phase and state, asked once each: a row asks on every composition. */
+/** The core's answer for each phase (or none) and state, asked once each: a row asks on every composition. */
 private object Glyphs {
-    private val made = arrayOfNulls<Glyph>(28)
-    fun of(phase: Int, downloaded: Boolean, pending: Boolean): Glyph {
-        val i = (phase + 1) * 4 + (if (downloaded) 2 else 0) + (if (pending) 1 else 0)
+    private val made = arrayOfNulls<Glyph>((DownloadPhase.entries.size + 1) * 4)
+    fun of(phase: DownloadPhase?, downloaded: Boolean, pending: Boolean): Glyph {
+        val i = ((phase?.ordinal ?: -1) + 1) * 4 + (if (downloaded) 2 else 0) + (if (pending) 1 else 0)
         return made[i] ?: dev.nori.music.ffi.library.downloadGlyph(phase, downloaded, pending).also { made[i] = it }
     }
 }
@@ -141,8 +142,7 @@ fun DownloadSlot(id: String, downloaded: Boolean, tint: Color) {
         return
     }
     val mark = all.marks.value[id]
-    // The phase's ordinal is the core's numbering (`download_phase`).
-    val glyph = Glyphs.of(mark?.phase?.ordinal ?: -1, downloaded, id in all.state.value.pendingIds)
+    val glyph = Glyphs.of(mark?.phase, downloaded, id in all.state.value.pendingIds)
     val last = remember { LastGlyph(glyph, glyph == Glyph.NONE) }
     if (glyph != Glyph.NONE) last.value = glyph
     if (last.value == Glyph.NONE) return

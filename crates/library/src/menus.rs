@@ -2,7 +2,7 @@
 //! download entry does: the screens draw these lists as they come, one icon and their own words per
 //! action, and do what the action names. Made once each time a menu opens.
 
-use nori_model::Song;
+use nori_model::{DownloadPhase, Song};
 use nori_settings::settings::SwipeAction;
 
 /// Something the song menu can do. The client draws one icon per kind, words it and does what it says.
@@ -158,18 +158,17 @@ pub enum DownloadGlyph {
     Failed,
 }
 
-/// A row's download mark: this session's phase for the song when it has one (as `download_phase`: 0
-/// waiting, 1 downloading, 2 failed, 3 done, 4 and 5 saved and processing; -1 none), else whether it is
-/// downloaded or in the queue.
+/// A row's download mark: this session's phase for the song when it has one ([`DownloadPhase`]), else
+/// whether it is downloaded or in the queue.
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn download_glyph(phase: i32, downloaded: bool, pending: bool) -> DownloadGlyph {
+pub fn download_glyph(phase: Option<DownloadPhase>, downloaded: bool, pending: bool) -> DownloadGlyph {
     match phase {
-        3..=5 => DownloadGlyph::Done,
-        2 => DownloadGlyph::Failed,
-        0 | 1 => DownloadGlyph::Ring,
-        _ if downloaded => DownloadGlyph::Done,
-        _ if pending => DownloadGlyph::Ring,
-        _ => DownloadGlyph::None,
+        Some(DownloadPhase::Done | DownloadPhase::FindingLyrics | DownloadPhase::Analysing | DownloadPhase::DetectingBeats) => DownloadGlyph::Done,
+        Some(DownloadPhase::Failed) => DownloadGlyph::Failed,
+        Some(DownloadPhase::Queued | DownloadPhase::Downloading) => DownloadGlyph::Ring,
+        None if downloaded => DownloadGlyph::Done,
+        None if pending => DownloadGlyph::Ring,
+        None => DownloadGlyph::None,
     }
 }
 
@@ -273,12 +272,17 @@ mod tests {
 
     #[test]
     fn a_rows_download_mark() {
-        assert_eq!(download_glyph(3, false, false), DownloadGlyph::Done);
-        assert_eq!(download_glyph(2, true, false), DownloadGlyph::Failed, "this session's phase wins");
-        assert_eq!((download_glyph(0, false, false), download_glyph(1, false, false)), (DownloadGlyph::Ring, DownloadGlyph::Ring));
-        assert_eq!(download_glyph(-1, true, true), DownloadGlyph::Done);
-        assert_eq!(download_glyph(-1, false, true), DownloadGlyph::Ring);
-        assert_eq!(download_glyph(-1, false, false), DownloadGlyph::None);
+        use DownloadPhase as P;
+        assert_eq!(download_glyph(Some(P::Done), false, false), DownloadGlyph::Done);
+        assert_eq!(download_glyph(Some(P::Failed), true, false), DownloadGlyph::Failed, "this session's phase wins");
+        assert_eq!((download_glyph(Some(P::Queued), false, false), download_glyph(Some(P::Downloading), false, false)), (DownloadGlyph::Ring, DownloadGlyph::Ring));
+        // Saved and still processing, whichever step: downloaded already.
+        for p in [P::FindingLyrics, P::Analysing, P::DetectingBeats] {
+            assert_eq!(download_glyph(Some(p), false, false), DownloadGlyph::Done, "{p:?}");
+        }
+        assert_eq!(download_glyph(None, true, true), DownloadGlyph::Done);
+        assert_eq!(download_glyph(None, false, true), DownloadGlyph::Ring);
+        assert_eq!(download_glyph(None, false, false), DownloadGlyph::None);
     }
 
     #[test]
