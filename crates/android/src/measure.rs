@@ -183,9 +183,16 @@ extern "system" fn download_open(env: JNIEnv, _: JClass, key: JString) -> jlong 
     let Some(id) = key.strip_prefix("dl:") else { return 0 };
     let hint = nori_core::queue::queue_song(id.to_string()).map(|s| s.suffix).filter(|s| !s.is_empty());
     match nori_engine::core::measure_download_as_it_comes(id, hint.as_deref()) {
-        Some(t) => Box::into_raw(Box::new(t)) as jlong,
+        Some(listening) => Box::into_raw(Box::new(Taking { listening, buf: Vec::new() })) as jlong,
         None => 0,
     }
+}
+
+/// One download being measured, with its own copy of the bytes handed over, kept between calls: nothing
+/// is allocated per piece, and downloads side by side each have theirs.
+struct Taking {
+    listening: nori_engine::arriving::Listening,
+    buf: Vec<u8>,
 }
 
 /// The next `len` bytes of the download, from Kotlin's buffer: a quarter megabyte at a time.
@@ -194,17 +201,15 @@ extern "system" fn download_take(mut env: JNIEnv, _: JClass, h: jlong, bytes: JB
         return;
     }
     // SAFETY: a handle download_open made and download_end has not taken back.
-    let taker = unsafe { &mut *(h as *mut nori_engine::arriving::Listening) };
-    let mut buf = std::mem::take(&mut *BUF.lock());
-    buf.resize(len as usize, 0);
+    let taking = unsafe { &mut *(h as *mut Taking) };
+    taking.buf.resize(len as usize, 0);
     // SAFETY: i8 and u8 have the same size and alignment.
-    let into = unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut i8, buf.len()) };
+    let into = unsafe { std::slice::from_raw_parts_mut(taking.buf.as_mut_ptr() as *mut i8, taking.buf.len()) };
     if env.get_byte_array_region(&bytes, 0, into).is_ok() {
-        taker.take(&buf);
+        taking.listening.take(&taking.buf);
     } else {
         cleared(&mut env);
     }
-    *BUF.lock() = buf;
 }
 
 /// The download ended: `whole` when every byte came and was kept. The handle is gone after this.
@@ -213,12 +218,9 @@ extern "system" fn download_end(_: JNIEnv, _: JClass, h: jlong, whole: jboolean)
         return;
     }
     // SAFETY: a handle download_open made, taken back once.
-    let taker = unsafe { Box::from_raw(h as *mut nori_engine::arriving::Listening) };
-    taker.end(whole != 0);
+    let taking = unsafe { Box::from_raw(h as *mut Taking) };
+    taking.listening.end(whole != 0);
 }
-
-/// The copy of a download's bytes handed over, kept between calls: nothing is allocated per piece.
-static BUF: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
 // ---- the work after a download's bytes (nori-engine's `processing`) ----
 
