@@ -138,6 +138,8 @@ struct Bitmaps {
     hardware: bool,
     rgb565: bool,
     idle: Mutex<Vec<Scratch>>,
+    /// Lent per page being worked out (`colours`), as the decoders are per cover.
+    colours: Mutex<Vec<Colours>>,
 }
 
 /// Why a Bitmap was not drawn: Java said no (it has thrown, or made nothing), or the decoder did.
@@ -206,7 +208,7 @@ impl Paint for Bitmaps {
 
     fn rest(&self) {
         let kept = std::mem::take(&mut *self.idle.lock());
-        COLOURS.lock().clear();
+        self.colours.lock().clear();
         let (Some(java), false) = (JAVA.get(), kept.is_empty()) else { return };
         let Some(mut env) = crate::attached(&java.vm) else { return };
         for mut scratch in kept {
@@ -393,7 +395,7 @@ extern "system" fn open(mut env: JNIEnv, _: JClass, dir: JString, disk_bytes: jl
     }
     let Some(dir) = with_str(&mut env, &dir, |d| PathBuf::from(d)) else { return 0 };
     let config = Config { disk_bytes: disk_bytes.max(0) as u64, memory_bytes: 0, ..Config::new(dir) };
-    let paint = Bitmaps { hardware: hardware != 0, rgb565: rgb565 != 0, idle: Mutex::new(Vec::new()) };
+    let paint = Bitmaps { hardware: hardware != 0, rgb565: rgb565 != 0, idle: Mutex::new(Vec::new()), colours: Mutex::new(Vec::new()) };
     Box::into_raw(Box::new(Loader::with_paint(config, Arc::new(Platform), paint))) as jlong
 }
 
@@ -476,9 +478,6 @@ struct Colours {
     argb: Vec<u32>,
 }
 
-/// Lent per page being worked out, as the decoders in `Bitmaps` are.
-static COLOURS: Mutex<Vec<Colours>> = Mutex::new(Vec::new());
-
 /// What `colours` answers, one bit for each thing it wrote.
 const PLAIN: jint = 1;
 const WASH: jint = 2;
@@ -493,7 +492,7 @@ const BLACK: jint = 4;
 #[allow(clippy::too_many_arguments)]
 extern "system" fn colours(mut env: JNIEnv, _: JClass, h: jlong, url: JString, side: jint, dark: jboolean, out: JIntArray, wash: JObject, black: JIntArray) -> jint {
     let Some(loader) = loader(h) else { return 0 };
-    let mut c = COLOURS.lock().pop().unwrap_or_default();
+    let mut c = loader.paint().colours.lock().pop().unwrap_or_default();
     // A panic unwinding out of a JNI door aborts the app: a cover that breaks the decoder is a page
     // without colours instead.
     let answer = panic::catch_unwind(AssertUnwindSafe(|| {
@@ -534,7 +533,7 @@ extern "system" fn colours(mut env: JNIEnv, _: JClass, h: jlong, url: JString, s
     if c.bytes.capacity() > KEEP_BYTES {
         c.bytes = Vec::new();
     }
-    COLOURS.lock().push(c);
+    loader.paint().colours.lock().push(c);
     answer
 }
 
