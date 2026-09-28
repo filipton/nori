@@ -190,7 +190,26 @@ pub fn state(p: &StoredPrefs, out: Output) -> SettingsState {
     }
 }
 
+/// The settings changed from their defaults, one `name = value` a line in [`specs`]' order, for a report of
+/// a problem. Typed-in text (a service's key) is left out.
+pub fn changed(p: &StoredPrefs) -> String {
+    specs()
+        .into_iter()
+        .filter(|s| s.kind != SettingKind::Text)
+        .filter_map(|s| {
+            let v = value_of(p, &s.name)?;
+            (v != s.default).then(|| format!("{} = {v}\n", s.name))
+        })
+        .collect()
+}
+
 // ---- the doors ----
+
+/// [`changed`] for the settings as they are kept now.
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn settings_changed() -> String {
+    changed(&crate::settings_store::current().unwrap_or_default())
+}
 
 /// Every setting a client can offer: its name, kind, options, range and default.
 #[cfg_attr(feature = "ffi", uniffi::export)]
@@ -225,6 +244,20 @@ pub fn theme_is_dark(theme: crate::settings::ThemeMode, system_dark: bool) -> bo
 mod tests {
     use super::*;
     use crate::settings::{set_by_name, SavedServer};
+
+    #[test]
+    fn the_report_names_only_what_was_changed_and_never_a_typed_key() {
+        let p = StoredPrefs::default();
+        assert_eq!(changed(&p), "");
+        let switch = specs().into_iter().find(|s| s.kind == SettingKind::Switch).unwrap();
+        let other = if switch.default == "true" { "false" } else { "true" };
+        let p = set_by_name(&p, &switch.name, other).unwrap().prefs;
+        let text = specs().into_iter().find(|s| s.kind == SettingKind::Text).unwrap();
+        let p = set_by_name(&p, &text.name, "secret-key").unwrap().prefs;
+        let said = changed(&p);
+        assert!(said.lines().any(|l| l == format!("{} = {other}", switch.name)), "{said}");
+        assert!(!said.contains("secret-key"), "{said}");
+    }
 
     #[test]
     fn every_setting_offered_is_one_the_core_takes_and_reads_back() {

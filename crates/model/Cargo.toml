@@ -22,3 +22,6 @@ thiserror = "2"
 # The player's own records (the equalizer's bands, AutoMix's analyses, the audio policy), described
 # again here for uniffi.
 nori-player = { path = "../player" }
+
+[dev-dependencies]
+nori-testdir = { path = "../testdir" }

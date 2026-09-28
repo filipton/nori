@@ -45,7 +45,11 @@ internal fun InfoRow(title: String, detail: String, end: String? = null, onClick
  * The lines and the report are worded by [Say.about] from what only Android knows.
  */
 @Composable
-internal fun AboutContent(section: @Composable (String, @Composable ColumnScope.() -> Unit) -> Unit, openLicences: () -> Unit, updates: @Composable () -> Unit = {}) {
+internal fun AboutContent(
+    section: @Composable (String, @Composable ColumnScope.() -> Unit) -> Unit, openLicences: () -> Unit,
+    report: (header: String, share: (android.net.Uri?) -> Unit) -> Unit, updates: @Composable () -> Unit = {},
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val clipboard = LocalClipboardManager.current
     val facts = remember {
         say.about(
@@ -55,6 +59,18 @@ internal fun AboutContent(section: @Composable (String, @Composable ColumnScope.
     }
     section("nori") {
         InfoRow(facts.title, facts.build, end = say.copyIt) { clipboard.setText(AnnotatedString(facts.report)) }
+        InfoRow(say.reportProblem, say.reportProblemDetail) {
+            report(facts.report) { uri ->
+                if (uri == null) android.widget.Toast.makeText(context, say.reportFailed, android.widget.Toast.LENGTH_SHORT).show()
+                else context.startActivity(
+                    android.content.Intent.createChooser(
+                        android.content.Intent(android.content.Intent.ACTION_SEND).setType("text/plain")
+                            .putExtra(android.content.Intent.EXTRA_STREAM, uri).addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION),
+                        say.reportProblem,
+                    ),
+                )
+            }
+        }
     }
     updates()
     section(say.underTheHood) {

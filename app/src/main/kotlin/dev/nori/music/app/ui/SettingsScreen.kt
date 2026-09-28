@@ -339,7 +339,7 @@ fun SettingsGroupScreen(vm: SettingsViewModel, id: String, highlight: String = "
             }
             when (id) {
                 // The build's facts, then the rows the page builder made for About (the update check).
-                "about" -> AboutContent({ title, content -> Section(title, content) }, { nav.settingsGroup("licences") }) {
+                "about" -> AboutContent({ title, content -> Section(title, content) }, { nav.settingsGroup("licences") }, vm::reportProblem) {
                     page.sections.forEach { s -> SettingsSectionRows(vm, s, actions) }
                 }
                 "licences" -> LicencesContent { title, content -> Section(title, content) }

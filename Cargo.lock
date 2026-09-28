@@ -3873,6 +3873,7 @@ name = "nori-model"
 version = "0.4.6"
 dependencies = [
  "nori-player",
+ "nori-testdir",
  "rusqlite",
  "serde",
  "thiserror 2.0.20",

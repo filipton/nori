@@ -110,6 +110,9 @@ pub(crate) const CHUNK_BYTES: usize = 128 * 1024;
 const FILL_TICK_MS: u64 = 20;
 /// The longest the filling waits between looks while the engine has nothing to give.
 const STARVED_MAX_MS: u64 = 1_000;
+/// Deep and playing, a track holding less than this with nothing in the ring is said in the log: the engine
+/// is running late, and a gap is near.
+const LATE_US: i64 = 1_000_000;
 /// After a start, when the device's clock is read again: its first readings come late.
 const SETTLE_MS: [i64; 2] = [250, 1_000];
 /// The track's start threshold, as it is opened (`RustPlayer.openTrack`) and made shallow
@@ -487,6 +490,10 @@ pub(crate) struct Writer<R: Ring> {
     priming: bool,
     /// The shallow track's size as found, for the engine.
     depth: Arc<Depth>,
+    /// Deep: the track's underruns when last looked at, counted from its last start ([`Writer::watch_deep`]).
+    deep_underruns: Option<u64>,
+    /// Deep: the log has said the track ran low with the ring empty, until it is full again.
+    late_said: bool,
 }
 
 impl<R: Ring> Writer<R> {
@@ -528,6 +535,8 @@ impl<R: Ring> Writer<R> {
             wants_shallow: false,
             needs: Needs::default(),
             priming: false,
+            deep_underruns: None,
+            late_said: false,
             depth,
         }
     }
@@ -633,6 +642,23 @@ impl<R: Ring> Writer<R> {
                 self.needs.lag = lag;
                 let why = format!("its latency is seen to be {} ms", self.ms(lag));
                 self.make_shallow(Some(why));
+            }
+        }
+    }
+
+    /// Deep, at a top-up the writer makes anyway (once per burst): whether the track ran dry since the last
+    /// one, which is heard as a gap. Only the log is told; a deep track has nothing to grow. Filling from a
+    /// start or a flush is not the track running dry, so the count starts again from there.
+    fn watch_deep(&mut self, now_ns: i64) {
+        let now = self.sink.underruns();
+        let was = std::mem::replace(&mut self.deep_underruns, now);
+        if self.filling {
+            return;
+        }
+        if let (Some(n), Some(was)) = (now, was) {
+            if n > was {
+                let fill = self.clock.in_track(now_ns);
+                log(&format!("the AudioTrack ran dry {} more time{} (it holds {} ms now, {} ms in the ring)", n - was, if n - was == 1 { "" } else { "s" }, self.ms(fill), self.ms(self.ring.available() as u64)));
             }
         }
     }
@@ -816,6 +842,8 @@ impl<R: Ring> Writer<R> {
             } else {
                 self.watch_output(now_ns);
             }
+        } else if self.playing {
+            self.watch_deep(now_ns);
         }
         let full = self.top_up(now_ns);
         if self.dead {
@@ -826,6 +854,9 @@ impl<R: Ring> Writer<R> {
         }
         let fill = self.clock.in_track(now_ns);
         if full {
+            if std::mem::take(&mut self.late_said) {
+                log("full again");
+            }
             self.filling = false;
             self.starved_ms = FILL_TICK_MS;
             // Never sooner than a fill tick: a track that says it is full with less than the low mark in
@@ -847,6 +878,12 @@ impl<R: Ring> Writer<R> {
         // first burst or waiting for the network: look again soon, less often the longer it takes.
         if !self.filling && fill > self.low {
             return Some(ms(fill - self.low, self.rate) + 1);
+        }
+        if !self.filling && !self.shallow && !self.late_said && fill < self.frames(LATE_US) {
+            // Deep, playing and not filling from a start: seconds of music should be behind this, and the
+            // engine has not made them (a song's bytes late from the network, or its thread kept from the CPU).
+            self.late_said = true;
+            log(&format!("down to {} ms with nothing more to give it: the engine is late", ms(fill, self.rate)));
         }
         let mut wait = self.starved_ms;
         self.starved_ms = (self.starved_ms * 2).min(STARVED_MAX_MS);
@@ -1512,6 +1549,9 @@ mod tests {
         /// The ring topped up to `cap` frames every `every` ns, whatever the pulls do: the engine before
         /// it knew its ring was shallow, on its 200 ms timer.
         Timer { cap: usize, every: i64 },
+        /// Nothing decoded however low the ring runs: the engine kept from its work (bytes late from the
+        /// network, its thread off the CPU).
+        Stalled,
     }
 
     /// The engine's ring, simulated: filled as `engine` says, until `left` frames of music have been
@@ -1559,12 +1599,13 @@ mod tests {
                     self.due = None;
                 }
                 Engine::Timer { every, .. } => self.due = Some(self.now.load(Ordering::Relaxed) as i64 + every),
+                Engine::Stalled => self.due = None,
             }
         }
 
         fn refill(&mut self) {
             let want = match self.engine {
-                Engine::Bursts => self.burst,
+                Engine::Bursts | Engine::Stalled => self.burst,
                 Engine::Shallow { cap, .. } | Engine::Timer { cap, .. } => cap.saturating_sub(self.available),
             };
             let n = (want as u64).min(self.left) as usize;
@@ -1903,6 +1944,27 @@ mod tests {
         // Every top-up took the whole ring past its low mark: each woke the engine for its next burst, so it
         // needs no timer of its own.
         assert_eq!(refills, wakes, "one burst decoded for every top-up");
+    }
+
+    #[test]
+    fn deep_an_engine_that_falls_behind_is_said_in_the_log_before_the_gap_and_the_gap_when_it_comes() {
+        // Nothing else says it: a deep track has nothing to grow, and a gap in the music left no line at all.
+        let said = |what: &str| nori_core::alog::recent().iter().any(|(_, l)| l.starts_with("rust track: ") && l.contains(what));
+        let mut s = Sim::new(600, false, false);
+        s.play();
+        s.run(30_000);
+        assert_eq!(s.track.lock().underruns, 0);
+        s.ring.lock().kept(Engine::Stalled);
+        s.run(20_000);
+        assert!(s.track.lock().underruns > 0, "the stalled engine let it run dry");
+        assert!(said("with nothing more to give it: the engine is late"), "said as it ran low");
+        assert!(said("the AudioTrack ran dry"), "the gap said at the next top-up");
+        let mut r = s.ring.lock();
+        r.kept(Engine::Bursts);
+        r.refill();
+        drop(r);
+        s.run(20_000);
+        assert!(said("full again"), "and when it is over");
     }
 
     #[test]
