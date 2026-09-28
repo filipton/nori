@@ -385,7 +385,7 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
         val next = HashMap(_marks.value)
         for (i in m.ids.indices) {
             val id = m.ids[i]
-            val phase = DownloadPhase.entries.getOrNull(m.phases[i]).takeIf { m.phases[i] > 0 }
+            val phase = m.phases[i]
             if (phase != null) next[id] = DownloadMark(phase, progressOf(id), m.at[i])
             else if (next.remove(id) != null && DownloadsJni.held(id) != DownloadsJni.PENDING) progress.remove(id)
         }

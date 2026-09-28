@@ -3,15 +3,12 @@ package dev.nori.music.downloads
 import kotlinx.coroutines.flow.StateFlow
 
 /**
- * Where one song's download stands. QUEUED is never stored: it is any pending song without a mark. The
- * last three are a song saved and still being processed (the core's `Phase::Processing`); ordinals are the
- * core's numbering (`download_phase`).
+ * Where one song's download stands: the core's (nori-model `DownloadPhase`). QUEUED is never stored: it is
+ * any pending song without a mark. The last three are a song saved and still being processed.
  */
-enum class DownloadPhase {
-    QUEUED, DOWNLOADING, FAILED, DONE, FINDING_LYRICS, ANALYSING, DETECTING_BEATS;
+typealias DownloadPhase = dev.nori.music.ffi.model.DownloadPhase
 
-    val processing get() = this == FINDING_LYRICS || this == ANALYSING || this == DETECTING_BEATS
-}
+val DownloadPhase.processing get() = this == DownloadPhase.FINDING_LYRICS || this == DownloadPhase.ANALYSING || this == DownloadPhase.DETECTING_BEATS
 
 /**
  * What a download this session has touched is doing. [progress] is 0..1, or negative while the size is

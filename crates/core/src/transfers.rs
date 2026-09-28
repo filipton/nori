@@ -346,7 +346,7 @@ pub(crate) mod tests {
         assert_eq!(r.finished, ["rc-a"]);
         assert_eq!(r.failed, [DownloadFailed { id: "rc-b".into(), progress: 0.5 }]);
         assert_eq!(core.downloads(true).unwrap().len(), 1, "recorded as finished");
-        assert_eq!(download_phase("rc-b".into()), Phase::Failed.code());
+        assert_eq!(download_phase("rc-b".into()), Some(Phase::Failed.shown()));
     }
 
     #[test]

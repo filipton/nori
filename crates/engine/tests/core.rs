@@ -140,7 +140,7 @@ fn downloads_the_disk_and_measuring_ahead_over_the_core() {
     let asked: Vec<u64> = audio.requests.lock().iter().map(|r| r.1).collect();
     assert_eq!(asked, [0, LEN as u64 / 2], "taken up where the connection broke");
     assert_eq!(nori_core::transfers::held("dl-1"), 2, "the core has it as finished");
-    assert_eq!(nori_core::transfers::download_phase("dl-1".into()), 3);
+    assert_eq!(nori_core::transfers::download_phase("dl-1".into()), Some(nori_core::DownloadPhase::Done));
 
     nori_core::queue::queue_register(vec![song]);
     let mut library = CoreLibrary { client: client.clone(), bytes: audio.clone(), metered: false, store: Some(store.clone()) };
@@ -285,7 +285,7 @@ fn downloads_read_back(core: &Arc<Core>, store: &Arc<Store>) {
     for id in ["rb-1", "rb-2"] {
         let a = core.analysis_get(id.into()).unwrap().expect("analysed from the disk");
         assert!((a.bpm - 120.0).abs() < 2.0 || (a.bpm - 60.0).abs() < 1.0 || (a.bpm - 240.0).abs() < 4.0, "the beat heard: {}", a.bpm);
-        assert_eq!(download_phase(id.into()), 3, "done with it");
+        assert_eq!(download_phase(id.into()), Some(nori_core::DownloadPhase::Done), "done with it");
     }
     // Analysed already: nothing to read back.
     assert!(!core.download_unanalysed(false).unwrap().iter().any(|id| id.starts_with("rb-")));
@@ -296,7 +296,7 @@ fn downloads_read_back(core: &Arc<Core>, store: &Arc<Store>) {
     assert_eq!(nori_engine::processing::analyse(again), 2);
     nori_engine::processing::wait();
     assert!(core.analysis_get("rb-1".into()).unwrap().is_some() && core.analysis_get("rb-2".into()).unwrap().is_some());
-    assert_eq!((download_phase("rb-1".into()), download_phase("rb-2".into())), (3, 3));
+    assert_eq!((download_phase("rb-1".into()), download_phase("rb-2".into())), (Some(nori_core::DownloadPhase::Done), Some(nori_core::DownloadPhase::Done)));
     assert!(nori_core::transfers::processing(0).is_none_or(|p| p.analysing == 0 && p.beats == 0), "nothing left waiting");
 }
 
