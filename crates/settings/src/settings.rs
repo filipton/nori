@@ -434,13 +434,7 @@ pub struct StoredPrefs {
     pub keep_awake: KeepAwake,
     #[setting("amoled", FLAG, default = false, show = K::Switch)]
     pub amoled: bool,
-<<<<<<< HEAD
-    /// With a black background, which pages keep their cover's colours rather than going black
-    /// ([`nori_look::sleeve::page_black`]): the player, album, playlist and mix pages (one choice, under the
-    /// album key it began with) and artist pages, each on its own.
-=======
     /// With AMOLED black, which pages keep their cover colours ([`nori_look::sleeve::page_black`]).
->>>>>>> cleanup/rust
     #[setting("playerColours", FLAG, default = true, show = K::Switch)]
     pub player_colours: bool,
     #[setting("albumColours", FLAG, default = false, show = K::Switch)]
