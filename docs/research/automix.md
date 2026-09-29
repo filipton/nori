@@ -30,6 +30,102 @@ two disagree on the analysis, `analysis.md` is the later one.
 
 **Lesson for us:** never throw away a lot of the song, keep the transition window bounded, and make fallbacks conservative.
 
+### 1a. Follow-up (2026-09-29, second pass with open web access): what is actually known
+
+**Short answer: still no primary source on the internals, and nothing [measured].** Apple's only technical sentence is the one in section 1. Nobody I could find has published a spectrogram, BPM trace or overlap length. What this pass settled is what the *sources say*, and which popular claims have no source. Quotes below come from pages read through a summarising fetch tool, so treat them as close paraphrase, not verbatim, unless marked otherwise.
+
+**iOS 27 is the current version (released 2026-09-14, announced 2026-06-09), so read this block first.** Everything about iOS 27 below is from June 2026 or later.
+
+- **What Apple changed [verified]:** "improved the underlying algorithms to generate new transition types, making for more seamless blends" ([MacRumors, 2026-06-09](https://www.macrumors.com/2026/06/09/apple-music-gains-automix-upgrades-and-more-in-ios-27/)); it still "blends songs using matching key and tempo", and Crossfade stays as an option. No transition type is named anywhere I could read.
+- **What reviewers say changed [verified, opinion]:** iOS 26 "tends to use a very similar and predictable style for most transitions" and defaulted to an "underwater" effect that iOS 27 "largely replaced" with more natural blending; iOS 27 will "remix the outro and intro of songs to perfectly align the tempo" and "repeat parts of the outros and intros to bridge the transition" ([9to5Mac, 2026-07-16](https://9to5mac.com/2026/07/16/ios-27-makes-one-of-my-favorite-apple-music-features-even-better/), read through a summariser, so phrasing is approximate). RouteNote ([2026-07-17](https://routenote.com/blog/apple-music-automix-upgrade/)) says it feels "less like a programmed crossfade and more like a DJ smoothly mixing", but restates 9to5Mac and Apple; it is not independent testing. A post titled "Apple Music auto mix is way better on iOS 27" ([Max Weinbach on X](https://x.com/mweinbach/status/2068158525524570417)) exists, but the page returned 402 and only the title was seen, so it is **[unread]**.
+- **So the "big improvement" is real as opinion, not as measurement.** The technique names (loop or repeat sections, re-cut intro and outro to align tempo) are the only new mechanics on record. Lengths, stretch limits, which song moves and what "new transition types" are: **[unknown]**.
+- **Not everyone agrees it improved.** [Is iOS Stable on X](https://x.com/isiosstable/status/2079892915929649661) ("AutoMix Feedback on iOS 27.0", search snippet only, 402 on the page) compares Olivia Rodrigo "Good 4 U" into The Verve "Bittersweet Symphony": "The iOS 26 transition is a proper AutoMix - iOS 27 there is no mixing", with 10+ reports. A [June Apple Community thread](https://discussions.apple.com/thread/256311704) reports AutoMix and Crossfade "not functioning" on the beta and the release candidate. Both are user reports, not measured, and may be bugs or a stricter fallback. Nothing on 27.1 was found.
+- **New platforms [verified]:** Apple TV 4K (2nd gen or later) with tvOS 27 ([MacRumors 2026-09-25](https://www.macrumors.com/2026/09/25/tvos-27-release-notes/): "transitions one song into the next like a DJ does") and HomePod, HomePod mini and the 2017 HomePod with HomePod software 27, described as "time stretching and beatmatching" ([MacRumors 2026-09-14](https://www.macrumors.com/2026/09/14/apple-releases-homepod-software-27/)). Because a HomePod does the mixing, it can not need a phone's Neural Engine, but that is my inference, not a statement.
+- **Support page, dated 2026-09-14 as the fetch tool reported it** ([105067](https://support.apple.com/en-us/105067)): same fallback rules as before (album in order, incompatible genres or tempos, uploaded or purchased content, no hi-res lossless). Whether the wording changed since iOS 26 was not compared.
+- **Still open for iOS 27:** any measured overlap, tempo limit or filter use; whether albums mix (no) and whether AirPlay and offline work (contested); a full read of the two X posts and Apple's iOS 27 newsroom page (a guessed URL returned 404). Searches found no iOS 27 hands-on from The Verge, Ars, Engadget, Tom's Guide, CNET, iDownloadBlog or Hacker News. A YouTube pass found no iOS 27 transcript; the only iOS 27 video seen is a 126-second ViWizard roundup ([link](https://www.youtube.com/watch?v=YjuuLL8AGpY)) with a "Better AutoMix" chapter and no detail, unread.
+
+**What Reddit says about iOS 27 (16 threads, read in full from PDFs the owner printed on 2026-09-29; r/AppleMusic, r/iOSBeta, one r/Beatmatch).** This is the largest first-hand body of listening reports found, and it is the best evidence on what iOS 27 changed. All of it is user report: **[verified] that people say it, nothing [measured]**, and I could not hear the linked clips. Thread URLs are in `automix-next.md` §5. Quotes are exact and short.
+
+- **The community is split, roughly evenly, on whether iOS 27 is better.** Better: "more subtle and natural" (top comment, thread "AutoMix iOS 27?"); "AutoMix was a 4 out of 10 for me. With ios27 I'm now at an 8"; "That 'underwater' sound you get sometimes is now replaced with smarter transition effects"; a house and techno listener finds it "better than your average wedding DJ"; "before out of 10 songs, maybe 3 had auto-mixes that made sense... 3 to 5". Worse: "they butchered it on 27"; "iOS27 has fixed the mixing into the middle of the next song but has all but destroyed any cool transitions... all it does now is a weird echo effect at the end of the song"; "Sounds very cheap compared to iOS 26"; several kept a playlist of iOS 26 transitions that no longer match ("mixes that worked on iOS 26 ... isn't the same on iOS 27. seems like they reworked the whole algorithm"). One user reports the whole 26 to 27 shift as "coverage expansion". A recurring third view: iOS 26 betas 2-5 were the best, then the release "neutered" it, and 27 restored variety ("It had really creative transitions ... Then they neutered it, 26RC and onward"; "now on 27RC I don't feel there's really any bad transitions anymore just amazing, good, or simple").
+- **What is new in iOS 27, as heard:**
+  - *Repeating a beat or a bar.* The first report is on iOS 27 dev beta 1: "this is automix repeating an actual beat in a song". Others: "it repeats a single beat over and over during a transition" ("Waste away, waste away, waste away"); "sometimes repeating the last measure sounds awesome. sometimes it can sound very jarring"; "similar to vocal chops/stutter edits"; "Cutting out most of the 1st drop to transition and loop the already playing one is cool, but I'm missing half the song ... the loop needs to be on the incoming track". Looping *vocals* is the loudest complaint: "They repeat lyrics or does echo out effect"; "it repeats the first phrase of the artist's rhyme several times ... a disrespect to the artists" (Portuguese, translated); "just looping a fragment of the song and ends it abruptly, no longer doing the fade and tempo adjustment". One user says a comparable loop already existed in iOS 26 betas when Repeat was on, "then later versions screwed it up".
+  - *Landing on drops.* "It's really good at knowing when the drops are and timing the transitions to that"; "It seems like it does proper phrase-matching now, not just basic beatmatching" (a guess by a non-tester). The same trait annoys others: "I don't like when it transitions into a drop all the time, I feel like automix always rush songs".
+  - *Gentler tempo change.* iOS 26: "massively altering the tempo of tracks from ages before the transition"; "It would slow or speed up tracks tremendously to sometimes be half or double the tempo of the next track". iOS 27 (one user): "It still changes the tempo of the track when it needs to but not in a way that you can tell it's coming from miles away."
+  - *Better filter sweeps, less "underwater".* "its doing loops now too and better filter sweeps" (a Golden Gate beta user). Against it: one report of a stutter glitch in the last two bars "on top of the worse filtered out muffled transition" (iPhone 13), and "it is still lowering audio quality when the mix starts, its so noticeable when using airpods".
+  - *Vocals edited.* One user says it "actually modifies the lyrics from the beginning song to the next song sometimes" (Fetty Wap "Again" into NBA YB "Murda Gang"), which reads like the vocal repeat above.
+- **Timing, the only numbers anywhere:** one user of the release candidate: "started under 30 seconds or less during the current track and no more than 40 seconds into the next". Others disagree in both directions: "98% of the transitions are significantly shorter now" and "the transitions are a bit longer and a bit more on the money. Especially with the EDM stuff". The old complaint stands: "Sometimes it cuts a full minute into a song" ("it starts way too deep in a song", "cut off a whole minute and a half"; "still skips the first minute of the song, which makes it unusable"). Also "occasionally cuts off whole first verses" and "sometimes leaves long silences between songs instead of mixing them". A user asks for "an 'AutoMix but play as much of the song as possible' setting".
+- **Song pairs named, with the user's verdict:** Nine Inch Noize "Hersey" into "Came Back Haunted" ("Crazy transition"); Sidney Charles "Canvas" into ARTMANN "Only Us"; I Monster "Return of the Blue Wrath" into Gorillaz "Stylo"; Andata & Ceres "Loca" into Argot "Club Bizarre (Edit)"; "This Is What You Came For" into "One Kiss"; "Guess ft billie" into Kim Petras "Treat Me Like a Sl*t"; Mojo "Lady Hear Me Tonight" into Stardust "Music Sounds Better With You"; a clip that samples Daft Punk "Technologic" (pair not named). Regressions on iOS 27: Eminem "Cinderella Man" into "Without Me" ("BPM change was so crisp. Now it's gone"); Von Dutch into Justice "Stress"; Oasis "Bring It On Down" (a user's mix "HATES the first 2 mins"). On iOS 26 versus 27, Olivia Rodrigo "Good 4 U" into The Verve "Bittersweet Symphony" (X post, earlier). "Biochemical (Extended Mix)" into "Breakaway (feat. Wilhelm) (Extended Mix)": tested on iOS 27 beta, "the transition was very long", while another user says EDM transitions were "very quick on iOS 26".
+- **Rules and triggers, as users learned them:**
+  - **Hi-Res Lossless disables AutoMix and Crossfade in iOS 27** (worked on iOS 26). Apple Feedback answered "Working as designed"; workaround is plain Lossless (up to 24-bit/48 kHz ALAC) for *all* the streaming and download tiers, and it still fails for some until Wi-Fi streaming is set to Lossless. This matches the Apple Support text. One user claims AutoMix "started forcing everything to play at 48KHz when enabled" and had trouble with mixed sample rates; unverified.
+  - **Which songs:** Apple, community and personal playlists; "it only works with streaming songs, no imported songs" (one user's matched-library CD rips did not mix; another says it always worked for their library); not albums in order; "certain genres it doesn't even try to AutoMix (like opera and spoken word)"; alternative rock gets "a seamless Crossfade rather than a mix", hip-hop and EDM mix most; a user says setting the *genre tag* in Apple Music changes how well it works ("game changer") **[unverified]**, and a restaurant playlist sorted by key, BPM and energy "does such a good job".
+  - **Offline is contested:** one says it "doesn't work offline, whereas it used to", another that it "requires an internet connection"; two say it works offline for them. A weak signal for server-side data, not proof **[unknown]**.
+  - Also: "it works with AirPlay" (one reply, unverified); "out-of-sync automix when using CarPlay" (iOS 26 era); a bug showing AutoMix tips on every launch (Apple has "at least 10 similar requests" and a "potential fix"); the button greyed out until "indexing" finished on a new install.
+- **Features people ask Apple for:** a thumbs up or down per mix; control over "how aggressive" it is ("I want it to sound like I'm in a club when I'm driving"); a per-playlist setting instead of a global one; an "every minute" mix for short drives; a "best for AutoMix" playlist sort by tempo, key and length (djay has one; the old PaceMaker app "would analyze songs and find choruses and drops and build ups", and let the user pick the transition point). Cider, a third-party Apple Music client, is said to have its own AutoMix.
+- **How to record it for the §8.4 measurement:** threads show two people did it by AirPlaying the iPhone to a Mac and capturing with [Audio Hijack](https://rogueamoeba.com/audiohijack/) (the built-in recorder does not capture Apple Music). That is a workable capture path for the recording plan.
+
+**The iOS 26 picture, for comparison** (these are the "before"; 2025 sources):
+
+**Settled from Apple's own pages:**
+- Mac guide ([support.apple.com/guide/music/muse5e9ec085/mac](https://support.apple.com/guide/music/muse5e9ec085/mac)) **[verified]:** works "with music from the Apple Music catalog" on iPhone, iPad, Apple-silicon Mac and Vision Pro (iOS/macOS 26 or later); it "automatically selects the best transition type" and may remove silence or "perform a simple crossfade" when a complex transition is not appropriate.
+- Support 105067 ([link](https://support.apple.com/en-us/105067)) **[verified]:** no dynamic transition when an album plays in sequence, when "the genres or tempos are incompatible", for uploaded library content or iTunes purchases; not with hi-res lossless; not on Intel Macs, Watch, Android or Windows. It says nothing on where analysis runs.
+- Apple Newsroom ([June 2025](https://www.apple.com/newsroom/2025/06/apple-services-deliver-powerful-features-and-intelligent-updates-to-users-this-fall/)) **[verified]:** "Using AI to analyze audio features, it crafts unique transitions between songs with time stretching and beat matching". No location given.
+- 9to5Mac ([2025-06-16](https://9to5mac.com/2025/06/16/automix-apple-music-ios-26/)) **[verified]:** AutoMix "isn't an Apple Intelligence feature" and runs on iPhone 11 and later.
+- iOS 27 ([MacRumors](https://www.macrumors.com/2026/06/09/apple-music-gains-automix-upgrades-and-more-in-ios-27/)) **[verified]:** "improved the underlying algorithms to generate new transition types"; also coming to Apple TV and HomePod.
+
+**Where the analysis runs: [unknown].**
+- "Entirely on device, on the Neural Engine" traces to AppleMagazine ([link](https://applemagazine.com/everyones-going-crazy-about-apple-automix-heres-why/)) and TechPulse ([link](https://techpulse.press/faq/ios-27-new-apple-music-features/)). Neither quotes Apple; the Apple pages they link do not contain it, and TechPulse cites a support article (HT213752) that I could not open. **No primary source exists; treat the claim as an unsourced embellishment.**
+- The only opposite claim is a search snippet from mystats.music ("Likely, Apple has precomputed audio features for the catalog"), which is speculation.
+- Patents: none found for Apple. Only prior art surfaced (US 7,518,053, Texas Instruments, beat-matched crossfade by playback speed, [Google Patents](https://patents.google.com/patent/US7518053B1/en); US 10,721,556, Spotify, per a search snippet). Justia and the USPTO mirror were blocked, so an Apple filing is **[unknown]**, not ruled out.
+- No WWDC25 or WWDC26 session covers it; the WWDC26 MusicKit session ([link](https://developer.apple.com/videos/play/wwdc2026/254/)) does not mention transitions, and no MusicKit API for AutoMix was found.
+- TechRadar's reviewer guesses "Perhaps some AI is being done on a server" and says the exact details "remain a mystery"; AppleMagazine hedges that Apple "Likely" precomputed beat and key data. Both are guesses **[unknown]**. An interview snippet attributed to Apple Music's Oliver Schusser ("AI helps with beat matching and making sure we find the right moment") is generic and its outlet was not found **[unverified]**.
+- Apple ML research on this exact problem exists and is Apple-affiliated: [Downbeat Tracking with Tempo-Invariant CNNs](https://machinelearning.apple.com/research/downbeat-tracking-with-tempo) (Di Giorgi, Mauch, Levy; ISMIR 2020). It never mentions Apple Music or transitions, so any link to AutoMix is **[unknown]**, but it shows Apple has neural beat and downbeat tracking in-house.
+- Apple patents found are older and not beat-aware: US 8,553,504 "Crossfading of audio signals" ([Google Patents](https://patents.google.com/patent/US8553504B2/en), filed 2008) analyses RMS and energy at the ends of each track, on the fly or from precomputed metadata, to choose when a fade starts (for example 15-20 s from the end) and a non-linear curve. That is Apple's own version of the MixRamp-style fallback in section 4, and it allows for precomputed per-track metadata. US 8,473,084 covers low-latency crossfade buffering only. A 2026 application, US 2026/0270530 A1 (per [Patentlyze](https://patentlyze.com/patent/apple-ai-generated-media-collections-smart-transitions/), unread), is about transition duration by media type, not beats. **No Apple patent on beat-matched song mixing was found; that is a weak negative** because Google Patents search would not render. Texas Instruments US 7,518,053, Spotify's US 10,721,556 and Echo Nest US 8,280,539 (3-5 s timbre-matched segues) are prior art, not Apple.
+- The iPhone guide, read in a browser, adds: "Albums and some genres play without transitions." Public API: only the older MusicKit `Transition.crossfade(duration:)` from iOS 18 ([exploringmusickit.com](https://exploringmusickit.com/musickit-crossfade)); no AutoMix API and no WWDC25 or WWDC26 session on it.
+- Ben Aqua says it "uses AI to analyze in real time" the outro and intro, and that it does not seem to work on songs uploaded from your own library. The first is only his claim; the second is consistent with catalogue-side data but does not prove it **[unknown]**.
+- Only a measurement can settle it (does an offline-downloaded, airplane-mode catalogue track still mix?). That is a device task.
+
+**Technique and behaviour, by evidence (table).** All rows are reviewer or user description; none is measured.
+
+| Finding | Source | Label | iOS |
+|---|---|---|---|
+| Time-stretch and beat-match; ending of a fast song is slowed toward a slower next one, slow songs sped up before a faster one (so the outgoing side moves too, not only the incoming) | [Yahoo](https://tech.yahoo.com/audio/articles/tried-apple-musics-dj-feature-153000036.html) | [verified], reviewer's impression, "comically bad at times" | 26 |
+| Tempo adjust described as acting on the incoming track (124 to 126 BPM) | [mystats.music](https://mystats.music/blog/apple-music-automix-2026) | weak: illustrative, SEO-style; conflicts with Yahoo | 26 |
+| Sound of the default mix is "underwater" and predictable | [9to5Mac](https://9to5mac.com/2026/07/16/ios-27-makes-one-of-my-favorite-apple-music-features-even-better/) | effect [verified]; mechanism [unknown], though a DJ heard high-pass and low-pass filters (Ben Aqua, below), which fits a filter sweep | 26 |
+| Outro and intro are remixed to align tempo, and parts repeated to bridge; "more natural" than 26 | 9to5Mac, [RouteNote](https://routenote.com/radar/apple-music-automix-gets-a-major-upgrade-in-ios-27/) | [verified], one reviewer; lengths [unknown] | 27 |
+| Waits for the end of a vocal phrase before the next song kicks in; 95 % of examples sensible | [Cridland](https://james.cridland.net/blog/2025/apple-music-auto-mix-examples/) | [verified], author's judgement | 26 |
+| Beat-matching a false ending gives a bad result (rated "0/10") | Cridland | [verified] | 26 |
+| Long fade-outs or over ~10 s of trailing silence defeat it; electronic (trance, house) best, classic rock worst; a scrub can stutter up to three repeated beats | [AppleInsider](https://appleinsider.com/articles/25/06/10/apples-automix-in-macos-26-isnt-a-house-dj-but-is-a-good-fm-radio-simulator) | [verified], macOS 26 beta | 26 |
+| Mix started far too early, "chopping the last 30 seconds off a song"; one clip cut a song at 25 s left and entered the next at 49 s, skipping its first verse | [Yahoo/TechRadar](https://tech.yahoo.com/audio/articles/apple-music-users-loving-automix-140000012.html) | [verified] as a user clip relayed by a journalist; not measured | 26 beta |
+| Skipped "as much as a full minute" to align tempos; final chords cut | [How-To Geek](https://www.howtogeek.com/i-disabled-apple-music-automix/), [BGR](https://www.bgr.com/2059450/how-to-turn-off-automix-apple-music-worst-feature/) (ABBA, "Keep An Eye on Dan": fade-out overlapped the next song) | [verified] anecdote | 26 |
+| No fixed duration; timing chosen from "key and tempo" | How-To Geek | [verified]; overlap length [unknown] | 26 |
+| Fallbacks: silence trim, simple crossfade, brief gap; on some songs only one side mixes and the other "just skips" | Mac guide; [Apple Community](https://discussions.apple.com/thread/256143899) | [verified]; regression said fixed in 26.2 | 26 |
+| No AirPlay speaker support | AppleInsider | [verified] at launch; a claim that 26.1 added it is from mystats only, weak | 26 |
+| Uses "a high pass and a low pass filter" on the two songs, live-DJ style ("not just mixing the songs based on BPM", 1:23-1:45) | [Ben Aqua, YouTube, 2025-06-20](https://www.youtube.com/watch?v=7IbPywte4Ko), a self-described DJ, dev beta | [verified] as his description by ear; not measured. The only source naming filters | 26 beta |
+| House into drum and bass: it "speed up the house song outro" then "slowly ramp up the BPM" (3:09-3:30), i.e. the outgoing song moves and the tempo ramps; pitch behaviour not stated | Ben Aqua | [verified] as his description; not measured | 26 beta |
+| Mix sometimes starts with "40 or 30 seconds" of the song left; his example began about 18 s before the end and cut "almost 20 seconds" off the next intro | Ben Aqua | [verified], by ear | 26 beta |
+| Works well for similar genre and BPM (house, drum and bass); death metal into drum and bass gives "weird transitions" that can shave a vital outro; rock, metal and classical without a clear beat "typically won't try to beat match"; without a beat it trims end silence and quiet intros like an "AI crossfade" | Ben Aqua | [verified] by ear | 26 beta |
+| Does not seem to mix songs uploaded from the user's own library | Ben Aqua (agrees with Apple Support) | [verified] | 26 |
+| Bass swap, echo or reverb, key-based pitch shift, hard cuts | none | **[unknown]**; nobody names them | - |
+| Overlap length in seconds or bars; maximum stretch; ramp shape | none | **[unknown]** | - |
+| Tempo gap or half/double handling | none beyond "tempos are incompatible" (Apple) | **[unknown]** | - |
+| Named pair: Bon Iver "29 #Strafford APTS" into Mumford & Sons "The Wolf" fades out "just as the four-count intro" starts; sometimes a gap, sometimes an overlap; false endings "can definitely catch it out" | [TechRadar](https://www.techradar.com/audio/apple-music/automix-is-the-apple-music-feature-that-made-me-love-listening-to-music-on-my-iphone-again) (read in a browser) | [verified], reviewer listening | 26 |
+| Users time it: fade out about 30 s before the end, next song fades in about 30 s in, both audible together for about 5 s | [Apple Community](https://discussions.apple.com/search?q=AutoMix) (search snippet, iOS 26.0.1) | user report, roughly [measured]; snippet only | 26 |
+| Manual skips get no mix ("only work when you let it go to the end"); some pop songs skip the first minute with an audible tempo change; rock rarely mixes | MacRumors forums ([1](https://forums.macrumors.com/threads/automix.2458553/), [2](https://forums.macrumors.com/threads/apple-music-skipping-beginning-of-songs.2479279/)) | user reports | 26 |
+| Over AirPlay the mix glitches; AirPlay support said to arrive in 26.1 | Apple Community; RouteNote (per a subagent, not re-read) | user report; weak | 26 |
+
+**Strongest evidence, with the pairs and quotes we have.** Song pairs are almost absent: only ABBA "Keep An Eye on Dan" (BGR). Cridland's page likely names more (his false-ending "0/10" song's title did not survive the summary); re-read it in a browser if the pair matters. Short quotes (summariser-rendered, not guaranteed verbatim): "chopping the last 30 seconds off a song" (Yahoo/TechRadar); "wait until the end of the vocal phrase" (Cridland); "underwater" and "largely replaced by more natural transitions" (9to5Mac).
+
+**Could not open:** reddit.com (blocked in both the fetch tool and the extension-driven browser; 16 threads were read instead from PDFs the owner printed, see above; the Threads clip and the twink.forsale clip linked in them, and all audio and video in those threads, were not heard); X posts (402, snippets only); Justia patents (403) and the USPTO PDF mirror; Google Patents search results (would not render); the MacRumors iOS 27 bug-fix forum thread (403); Apple's iOS 26 and iOS 27 newsroom pages and apple.com/ios/ios-27 (404 or blocked); Apple HT213752; podcastvideos.com and mystats.music (only partly); individual Apple Community threads beyond the ones cited (only search snippets). Read later in a real browser, so no longer blocked: the Apple iPhone guide, both TechRadar articles, Mac Observer and part of the MacRumors forums. Searches of Hacker News (one story, no comments), Gearspace, Digital DJ Tips, DJ TechTools, Mixed In Key and the Pioneer, djay and VirtualDJ forums turned up nothing technical on AutoMix, so their silence is a search result, not proof.
+
+**What this changes for nori** (proposals only; the design sections are untouched):
+- **Step 2, loops:** Apple's iOS 27 loop is now the most praised and most disliked change at once. Repeating a beat or bar under an incoming song is heard as "DJ-like", but a looped *vocal* is heard as "cheap" and "a disrespect". That backs the never-loop-vocals rule in §3 and instrumental-only bars; also loop the *outgoing* song's tail under the incoming, not by cutting into the incoming's first drop.
+- **Step 3, tempo ramps:** iOS 26 stretched an outgoing song "tremendously", to half or double tempo, from far ahead; iOS 27 is described as still changing tempo but late and subtly. Keep our ±6-8 % cap and the ×½ and ×2 fold, glide the outgoing side, and start the glide close to the swap. Apple's actual limit is [unknown].
+- **Step 4, natural blends:** "underwater" was dropped and users still hear "better filter sweeps". Keep the low-pass rise subtle and short, and avoid a muffled last-two-bars tail (one iOS 27 stutter report).
+- **Skip cap and a setting (§3 plus §5 of `automix.md`):** the loudest iOS 27 complaint is still "cuts a full minute into a song". Our 15 s hard cap addresses it; add an "as much of the song as possible" option, and an aggressiveness control, both of which users ask Apple for.
+- **Landing on the drop:** users praise that iOS 27 "knows when the drops are" and also say it "rushes songs". Our `drop_aligned` search is the same idea; keep the skip cap and drum-intro rule so it never rushes past a song's opening, and consider a per-pair "did this sound right" mark in the perf report (users ask for thumbs up and down).
+
+**Open, needs a device:** overlap length, stretch range, bass or filter handling, and where analysis runs. Section 8.4's recording method is the only route; the public web has no ground truth.
+
 ## 2. Comparable features
 
 - **Spotify Automix.** It looks at tempo, key, energy and rhythmic structure. Spotify, not the user, chooses the start and end points, and the user cannot change the overlap length ([Spotify Community](https://community.spotify.com/t5/FAQs/Automix-Overview/ta-p/5257278)). Its newer Mix feature for playlists shows waveform, key and BPM and offers transition presets such as "Fade" and "Rise", with EQ, effects and cue-point editing ([MusicRadar](https://www.musicradar.com/music-tech/spotify-responds-to-apple-musics-new-automix-feature-by-letting-you-turn-your-playlists-into-ready-made-dj-sets-with-seamless-transitions)). Spotify computed bars, beats, sections, key and loudness on its servers for years. Its Web API exposed this as `/audio-analysis` until access was cut on 27 Nov 2024 ([Music Ally](https://musically.com/2024/11/28/spotify-removes-features-from-web-api-citing-security-issues/)). This supports the idea that server-side analysis is standard in the industry.
@@ -381,3 +477,79 @@ letting the outgoing song go a beat after it sounds like a DJ or like a jump on 
 vocal duck and the high-pass ride sound like two singers handing over or like a filter; whether skipping up to
 15 s of an instrumental intro is noticed; whether leaving on a closing breakdown or before a short hidden track is
 welcome or feels like a song cut short.
+
+## 8. Research brief: how Apple's AutoMix really sounds (for an agent with open web access)
+
+**Status:** done on 2026-09-29; the findings are in section 1a. What remains open needs a recording (8.4).
+
+Written 2026-09-29 by a session whose network allowlist blocked almost every publisher, so section 1 and 1a rest on search snippets. This section lets another agent, with unrestricted fetching, close the gap without rereading the whole repo. Read section 1, 1a, and `automix-next.md` §1 first (about 5 minutes); don't redo what they hold.
+
+### 8.1 The question
+
+What does Apple Music's AutoMix (iOS 26, reworked in iOS 27) actually do to the audio, according to people who listened closely? Concretely, for each item the answer is one of **[verified]** (a named source says it), **[measured]** (someone published numbers or a spectrogram), **[inferred]**, or **[unknown]**:
+
+1. Technique per transition: plain crossfade, low-pass or high-pass sweep, EQ or bass swap, echo or reverb tail, loop or repeat of intro/outro, tempo ramp, or hard cut.
+2. Length of the overlap, in seconds and in bars, and how it varies between pairs.
+3. How tempo is matched: fixed stretch ratio, gradual ramp, which track moves, largest change seen, and what happens when tempos are far apart or half/double.
+4. Where in each song the mix starts and ends (phrase boundaries, downbeats, lulls, on the drop, in the outro's last seconds), and how much of a song gets skipped.
+5. What triggers the fallback (plain crossfade, silence trim, no mix): album order, genre, tempo gap, key clash.
+6. Where the analysis runs: on device (Neural Engine?) or precomputed by Apple for catalogue tracks. Find a primary source, or say **[unknown]**.
+7. Known failure modes, with concrete song pairs where possible.
+8. iOS 26 versus iOS 27 differences, described by someone who heard both.
+
+### 8.2 What is already settled, so don't re-fetch it
+
+Apple's wording (time stretching, beat matching, tempo and key); catalogue-only and no hi-res lossless; the Apple-silicon Mac requirement; Crossfade's 1-12 s; the iOS 27 claims of re-cut intros and outros, repeated sections, and a more natural, less "underwater" sound; the complaints in section 1. These come from Apple Support (105067), Apple Newsroom, MacRumors, 9to5Mac, RouteNote, MusicTech and How-To Geek. Confirm quotes only if you touch them.
+
+### 8.3 Sources to fetch, in priority order
+
+The first three groups are where the specific answers most likely are. Everything below was blocked in the last session, so none of it has been read in full.
+
+**Hands-on listening write-ups** (extract: named song pairs, described technique, length, faults):
+- https://james.cridland.net/blog/2025/apple-music-auto-mix-examples/ (examples, and possibly audio)
+- https://appleinsider.com/articles/25/06/10/apples-automix-in-macos-26-isnt-a-house-dj-but-is-a-good-fm-radio-simulator
+- https://tech.yahoo.com/audio/articles/tried-apple-musics-dj-feature-153000036.html
+- https://www.techradar.com/audio/apple-music/automix-is-the-apple-music-feature-that-made-me-love-listening-to-music-on-my-iphone-again
+- https://www.howtogeek.com/i-disabled-apple-music-automix/
+- https://mystats.music/blog/apple-music-automix-2026
+- https://digdis.de/en/blog/post/apple-music-automix-smooth-dj-transitions-directly-in-the-app
+
+**DJ and producer communities** (look for people who name techniques: "bass swap", "filter", "phrase", "bars", "loop", "echo"):
+- https://community.enginedj.com/t/apple-music-to-add-automix-in-ios-26/64354
+- Reddit: r/DJs, r/Beatmatch, r/AppleMusic, r/audioengineering, r/musicproduction, r/iOSBeta. Search "AutoMix", "Apple Music AutoMix DJ", "AutoMix iOS 27".
+- Gearspace, Digital DJ Tips, DJ TechTools and Mixed In Key blog and forums, Pioneer DJ forum, the Algoriddim (djay) forum, VirtualDJ forum, Hacker News, and the Apple Developer Forums.
+- YouTube: search "AutoMix iOS 26 spectrogram", "AutoMix vs DJ", "AutoMix iOS 27 test". Transcripts and pinned comments often contain the technique names. Note video title, channel and timestamp.
+
+**Primary and semi-primary:**
+- https://support.apple.com/guide/iphone/transition-songs-iphadf2fe1f4/ios and https://support.apple.com/en-us/105067 (device list, and any statement on where analysis runs)
+- WWDC25 and WWDC26 session lists, Apple Newsroom (June 2025 and June 2026), and iOS 27 release notes for any AutoMix technical sentence.
+- Apple patents and applications: Google Patents and USPTO for Apple Inc. filings on song transition, beat-matched crossfade, and tempo-adjusted playback. Search terms include "transition between audio tracks", "beat alignment", "playback rate", "loop intro outro". Give patent number, filing date and the passage.
+- https://github.com/chenqi92/primuse/issues/117 (already read; only the MusicKit limitation matters).
+
+**Secondary, low trust** (AppleMagazine, podcastvideos.com, Mac Observer, TechPulse) are the origin of the unverified "entirely on device, Neural Engine" claim. Trace it to an Apple statement, or record that no primary source exists.
+
+### 8.4 If you can get audio
+
+Best evidence is a recording. If a device with an Apple Music subscription is available, or someone has posted clean captures (line-in, or a screen recording with audio), analyse them rather than relying on prose. Do this without touching the app:
+
+1. Capture 10 or more transitions, mixed genres, iOS 26 and 27 if possible. Keep the raw files out of the repo (size); record song pairs and OS version in the notes.
+2. Per transition, measure: overlap length; per-band level of the outgoing and incoming song over time (low, mid, high), which shows a bass swap or filter sweep; tempo of each song before, during and after (a ramp or a step); loop or repeat detection (self-similarity of the outgoing tail); position of the mix relative to the beat grid.
+3. The repo's own harness, `crates/core/src/automix/tests.rs` and the sections 7.3 harness described above, already scores our mixes on similar quantities. Reuse its measures so Apple and nori numbers are comparable.
+
+### 8.5 Deliverable
+
+Update this file in place; don't create a new one.
+
+- Replace section 1a with the corrected findings, keeping the labels. Move settled items up into section 1.
+- Add one table: transition technique, source, evidence label, iOS version. One row per finding.
+- List the song pairs and quotes that carry the strongest evidence, each with its URL. Keep quotes short and exact.
+- Mark every claim you couldn't source **[unknown]**. Don't fill gaps with plausible DSP guesses; section 1 already has those, labelled **[inferred]**.
+- End with "What this changes for nori": at most 5 bullets, each tied to a step in `automix-next.md` §3 (loops, tempo ramps, natural blends, and so on), so a builder can act on it. Don't edit the design sections yourself; propose changes.
+- Add each new source URL to `automix-next.md` §5.
+
+### 8.6 Constraints
+
+- Follow `AGENTS.md`. Docs only in this task; no code changes.
+- Cite a URL for every **[verified]** claim. If a page couldn't be opened, don't cite it as read.
+- Nothing from a paywalled or private page beyond a short quote.
+- If a site is blocked in your environment too, list it under "Could not open" at the end of section 1a, so the next person knows.
