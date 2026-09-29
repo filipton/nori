@@ -174,11 +174,6 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
     // Each change's arriving panel goes under every panel before it (see the panels' AnimatedContent).
     var changes by remember { mutableIntStateOf(0) }
     val choose: (Panel) -> Unit = { panel = if (panel == it) Panel.ART else it; changes++ }
-    LaunchedEffect(sheet.lyricsAsked) {
-        if (!sheet.lyricsAsked) return@LaunchedEffect
-        sheet.lyricsAsked = false
-        if (panel != Panel.LYRICS) choose(Panel.LYRICS)
-    }
     // Where the sleeve ends, so the page behind it can be drawn at the same scale. Written on layout,
     // read in the draw phase; it only moves when the window does.
     var sleeveBottom by remember { mutableFloatStateOf(0f) }
@@ -188,6 +183,15 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
     // drawn inside the sheet, then sat a whole sheet's travel below the cover all the way up.
     val player = remember { arrayOfNulls<androidx.compose.ui.layout.LayoutCoordinates>(1) }
     var sleeveHeight by remember { mutableFloatStateOf(0f) }
+    // The lyrics widget's tap: the lyrics once the player is up and its sleeve measured, as its button there
+    // would have them. Asked for while the app was still opening, the change ran before either, and its
+    // fade stopped with the cover still whole and the lyrics not shown.
+    LaunchedEffect(sheet.lyricsAsked) {
+        if (!sheet.lyricsAsked) return@LaunchedEffect
+        androidx.compose.runtime.snapshotFlow { sheet.progress.value >= 1f && sleeveHeight > 0f }.first { it }
+        sheet.lyricsAsked = false
+        if (panel != Panel.LYRICS) choose(Panel.LYRICS)
+    }
     // The transport's way of asking the sleeve to change record; see SleeveSlide.
     val slide = remember { SleeveSlide() }
     // Where the page's colours are between records while one is moving; see PageShift.
