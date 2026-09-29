@@ -7,7 +7,7 @@
 use nori_model::Lyrics;
 use serde_json::{Map, Value};
 
-use crate::formats::{append, decode_html, finish, from_netease, from_qrc, from_ttml, keep_backing, plain, timing, voices, Timed};
+use crate::formats::{append, decode_html, finish, from_netease, from_qrc, from_ttml, keep_backing, plain, timing, voices, Timed, Timing};
 
 /// A number written as a number or as a string of one; negative and non-finite ones are not times.
 fn number(v: &Value) -> Option<f64> {
@@ -386,7 +386,7 @@ fn from_value(v: &Value, title: &str, depth: usize) -> Option<Lyrics> {
     }
     let mut best: Option<Lyrics> = None;
     let mut offer = |l: Lyrics| {
-        if timing(&l) > best.as_ref().map_or(0, timing) {
+        if timing(&l) > best.as_ref().map_or(Timing::Empty, timing) {
             best = Some(l);
         }
     };

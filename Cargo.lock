@@ -3861,11 +3861,9 @@ dependencies = [
  "nori-settings",
  "parking_lot",
  "roxmltree",
- "rustfft",
  "serde",
  "serde_json",
  "uniffi",
- "ureq",
  "yaml-rust2",
 ]
 

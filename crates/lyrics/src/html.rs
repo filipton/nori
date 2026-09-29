@@ -5,6 +5,7 @@
 
 use nori_model::Lyrics;
 
+use crate::fit::norm;
 use crate::formats::{decode_html, plain};
 
 /// Elements that never have a closing tag.
@@ -113,11 +114,6 @@ fn inner_text(html: &str, from: usize, container: &str, skip: impl Fn(&Tag) -> b
         }
     }
     (out, html.len())
-}
-
-/// Lower case, letters and digits only, one space between words.
-fn norm(s: &str) -> String {
-    s.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
 // ---- Genius -----------------------------------------------------------------------------------------

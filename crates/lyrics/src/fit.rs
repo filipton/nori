@@ -18,12 +18,12 @@ const SPREAD_SHARE: f64 = 0.5;
 /// Two sets of lyrics are the same song's when each has at least this share of its words in the other.
 const SHARED_WORDS: f64 = 0.5;
 
-/// A line's text as it is compared: lower case, letters and digits only, one space between words.
+/// Text as it is compared: lower case, letters, digits and the marks on them, one space between words.
 pub(crate) fn norm(v: &str) -> String {
     let mut out = String::with_capacity(v.len());
     let mut gap = false;
     for c in v.chars().flat_map(char::to_lowercase) {
-        if c.is_alphanumeric() {
+        if c.is_alphanumeric() || matches!(c, '\u{300}'..='\u{36f}' | '\u{3099}'..='\u{309a}') {
             if gap && !out.is_empty() {
                 out.push(' ');
             }

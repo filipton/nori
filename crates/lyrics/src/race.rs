@@ -1,22 +1,13 @@
-//! Lyrics from the services a lookup asks (the settings' `lyrics_lookup`), for a song the server has no
-//! timed lyrics for, each answer scored (trust.rs) and the best shown.
+//! Lyrics from the lyrics services for a song the server has no timed lyrics for: each answer scored
+//! (trust.rs) and the best shown.
 //!
-//! The lyrics chosen for a song last time are read first, with their score and source: they are shown
-//! at once and nothing is asked, unless they scored low, in which case the services are asked again
-//! after a few days ([`LOW_RETRY_MS`]) for something better. Otherwise what each service answered before
-//! is read (a hit kept for good, a miss asked again after a week), and the rest are asked in waves:
-//! first the cheap and good ones (`LyricsService::first_wave`), together; the others that are on only
-//! when the first wave missed or its best scored low ([`WIDEN_BELOW`]); services with untimed words
-//! only when nobody timed anything. [`Race`] scores every answer against the song and against each
-//! other, and decides what is shown: the best, at once when it is sure, otherwise when the first wave
-//! is in; and what is shown is replaced only by an answer strictly better by score that agrees with it.
-//! A failed or too slow service is never remembered as a miss, but it is not asked about the same song
-//! again for a while, and one that keeps failing rests for a while altogether. Provider (`ext-`) songs
-//! are never looked up. Nothing here runs a thread: the lookup is one future, polled by whoever asked.
-//!
-//! Once the song has been measured, every timed answer is also checked against its vocal activity curve
-//! (sync.rs): the check is part of its score, and an offset the check is sure of goes out with the lyrics
-//! shown (`Lyrics::offset_ms`), for the clock to apply.
+//! The choice from last time is shown at once and kept unless it scored below [`LOW`], when the services
+//! are asked again after [`LOW_RETRY_MS`]. Each service's own answers are cached (a hit for good, a miss
+//! for [`MISS_KEPT_MS`]); the rest are asked in waves: the first wave together, the others only when it
+//! missed or scored below [`WIDEN_BELOW`], untimed services only when nobody timed anything. A failing
+//! service is rested, never cached as a miss. Provider songs are never looked up. Once the song is
+//! measured, timed answers are also checked against its voice (sync.rs), and a sure offset goes out
+//! with the lyrics. The lookup is one future: no thread.
 
 use std::time::{Duration, Instant};
 
@@ -24,36 +15,32 @@ use futures_util::stream::{FuturesUnordered, StreamExt};
 use nori_model::{Lyrics, Song};
 use nori_net::transport::Transport;
 use nori_player::automix::vocal::VocalCurve;
-use nori_settings::lyrics_sources::{LyricsLookup, LyricsService};
-use nori_settings::lyrics_sources::LyricsOrigin;
+use nori_settings::lyrics_sources::{LyricsLookup, LyricsOrigin, LyricsService};
 use serde::{Deserialize, Serialize};
 
 use crate::credits::strip_edges;
 use crate::fit::{agree, plausible};
-use crate::formats::{from_cache, timing};
+use crate::formats::{from_cache, timing, Timing};
 use crate::services::{self, Ask, LyricsMemory, Lookup, Shared};
 use crate::sync::{self, SyncCheck, SyncKind};
-use crate::trust::{score, with_sync, Named, Trust};
+use crate::trust::{name_alike, score, with_sync, Named, Trust};
 
 /// How many services are asked at once.
 pub const AT_ONCE: usize = 6;
-/// A miss is asked again after a week: someone may have added the song since.
+/// A miss is asked again after a week.
 pub const MISS_KEPT_MS: i64 = 7 * 24 * 3_600_000;
-/// An answer this sure is shown as soon as it arrives, when there is evidence beyond its service's word
-/// (it names the song, or another answer agrees); otherwise it waits for the first wave.
+/// An answer this sure is shown at once when evidenced (it names the song, or another agrees);
+/// otherwise it waits for the first wave.
 pub const SURE: f64 = 0.75;
-/// The first wave's best must score at least this for the other services not to be asked: a lone
-/// word-timed answer naming the song passes, a lone line-timed one or one naming nothing does not, and
-/// line-timed lyrics another service agrees with do.
+/// Below this, the first wave's best has the other services asked.
 pub const WIDEN_BELOW: f64 = 0.82;
-/// Never shown below this: more likely another song's words than this one's.
+/// Never shown below this.
 pub const FLOOR: f64 = 0.4;
-/// What is shown is replaced by an answer that agrees with it and scores at least this much more...
+/// What is shown is replaced by an answer that agrees with it and scores this much more...
 pub const MARGIN: f64 = 0.03;
-/// ...or by one that does not agree and scores this much more (what is shown was another song's).
+/// ...or by one that does not agree and scores this much more.
 pub const OVERRULE: f64 = 0.2;
-/// Lyrics chosen with a score below this are asked about again after [`LOW_RETRY_MS`]; at or above it
-/// they are kept for good.
+/// A choice scored below this is asked about again after [`LOW_RETRY_MS`].
 pub const LOW: f64 = 0.7;
 pub const LOW_RETRY_MS: i64 = 3 * 24 * 3_600_000;
 /// The user's ranking breaks near ties: the first service gets this much, the last nothing.
@@ -73,77 +60,75 @@ pub struct LyricsPick {
     pub origin: LyricsOrigin,
 }
 
-/// Where the platform is told each set of lyrics to show, as they come.
+/// Where the platform is handed each set of lyrics to show.
 #[cfg_attr(feature = "ffi", uniffi::export(with_foreign))]
 pub trait LyricsShown: Send + Sync {
     fn show(&self, pick: LyricsPick);
 }
 
-/// Whether `a` and `b` show the same thing: the same words with the same timing (and offset) from the same place,
-/// whatever key their timing was kept under ([`crate::look::keep`] gives each reading a key of its own,
-/// so the same lyrics read again - the lookup run again for a song come back to - come under another).
+/// Whether `a` and `b` show the same: words, timing, offset and origin; the clock key does not count.
 pub fn same_lyrics(a: &LyricsPick, b: &LyricsPick) -> bool {
     let (x, y) = (&a.lyrics, &b.lyrics);
     a.origin == b.origin && x.synced == y.synced && x.word_timed == y.word_timed && x.offset_ms == y.offset_ms && x.lines == y.lines
 }
 
-/// [`same_lyrics`] for a platform holding the answers itself (Android's lyrics state, kept per song).
+/// [`same_lyrics`] for a platform holding the answers itself.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn lyrics_same(a: LyricsPick, b: LyricsPick) -> bool {
     same_lyrics(&a, &b)
 }
 
-/// Whether `next` goes on screen in place of what is `shown` (None: nothing yet). Which answer is
-/// better is decided before an answer is handed out at all: the race hands over only an answer that
-/// beats the one it showed ([`Race::to_show`], by the scores of trust.rs), and `Client::lyrics_for` the
-/// server's answer only when it changed. What is left to the screen is not to show the same lyrics
-/// again as if they were new: they would fade out and in and start their clock from the top.
+/// Whether `next` replaces what is `shown`: not when it is the same lyrics read again, which would
+/// restart their fade and clock.
 pub fn lyrics_replaces(shown: Option<&LyricsPick>, next: &LyricsPick) -> bool {
     shown.is_none_or(|s| !same_lyrics(s, next))
 }
 
-/// Where answers are remembered: the core's response cache in the app's database.
+/// Where answers are remembered: the core's response cache.
 pub trait LyricsCache: Send + Sync {
     fn get(&self, key: &str) -> Option<Vec<u8>>;
     /// Whether `key` was kept less than `max_age_ms` ago.
     fn fresh(&self, key: &str, max_age_ms: i64) -> bool;
     fn put(&self, key: &str, body: Vec<u8>);
-    /// The song's vocal activity curve, measured with its AutoMix analysis; None before it is measured.
+    /// The song's vocal activity curve; none before it is measured.
     fn voice(&self, _song: &Song) -> Option<VocalCurve> {
         None
     }
 }
 
-/// Every lookup's cache entries start with this: what "Clear lyrics cache" empties.
+/// The prefix of every lookup cache entry: what "Clear lyrics cache" empties.
 pub const CACHE_PREFIX: &str = "lyrics|";
 
-/// One service in a race: the finest timing it can answer with (3 word by word, 2 line by line, 1 not
-/// timed), how far it is trusted, and whether it is in the first wave.
+/// One service in a race: the finest timing it can answer with, its trust, and whether it is first wave.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Entry {
-    pub best: u8,
+    pub best: Timing,
     pub prior: f64,
     pub first_wave: bool,
 }
 
 impl Entry {
     pub fn of(s: LyricsService) -> Self {
-        Entry { best: s.best(), prior: s.prior(), first_wave: s.first_wave() }
+        let best = match s.best() {
+            3 => Timing::Words,
+            2 => Timing::Lines,
+            _ => Timing::Untimed,
+        };
+        Entry { best, prior: s.prior(), first_wave: s.first_wave() }
     }
 }
 
-/// Which answer is shown, as answers come in from services asked together. Services are ranked by their
-/// position (0 is the best), which only breaks near ties; the score (trust.rs) decides. The server's own
-/// untimed words (`server_timing` 1) are never replaced by a service's untimed words.
+/// Which answer is shown as answers come in. Services are ranked by position (0 best), which only breaks
+/// near ties. Answers timed no better than the server's own lyrics (`server_timing`) never count.
 pub struct Race {
     song: Song,
     entries: Vec<Entry>,
     prefer_words: bool,
-    server_timing: u8,
+    server_timing: Timing,
     done: Vec<bool>,
     waiting: Vec<usize>,
     answers: Vec<Option<(Lyrics, Named)>>,
-    /// What is on screen: its rank.
+    /// The rank on screen.
     shown: Option<usize>,
     /// The song's vocal curve, once measured, and each answer checked against it.
     voice: Option<VocalCurve>,
@@ -151,29 +136,28 @@ pub struct Race {
 }
 
 impl Race {
-    pub fn new(song: &Song, entries: Vec<Entry>, prefer_words: bool, server_timing: u8) -> Self {
+    pub fn new(song: &Song, entries: Vec<Entry>, prefer_words: bool, server_timing: Timing) -> Self {
         let n = entries.len();
         Race { song: song.clone(), entries, prefer_words, server_timing, done: vec![false; n], waiting: (0..n).collect(), answers: vec![None; n], shown: None, voice: None, checks: vec![None; n] }
     }
 
-    /// The song's vocal curve: every timed answer, those in and those to come, is checked against it.
+    /// The song's vocal curve: every timed answer, in and to come, is checked against it.
     pub fn hear(&mut self, curve: VocalCurve) {
         self.checks = self.answers.iter().map(|a| a.as_ref().and_then(|(l, _)| sync::check(l, &curve))).collect();
         self.voice = Some(curve);
     }
 
-    /// How `rank`'s answer fits the song's voice, when it was checked.
     pub fn check(&self, rank: usize) -> Option<SyncCheck> {
         self.checks.get(rank).copied().flatten()
     }
 
-    /// `rank`'s lyrics as they are shown: with the offset their check is sure of.
+    /// `rank`'s lyrics with the offset their check is sure of.
     fn to_screen(&self, rank: usize, mut lyrics: Lyrics) -> Lyrics {
         lyrics.offset_ms = self.check(rank).map_or(0, |c| c.applied_ms());
         lyrics
     }
 
-    /// Every answer's score, none for a rank without one or whose timing is no better than the server's.
+    /// Every rank's score; none without an answer or one timed no better than the server's.
     pub fn scores(&self) -> Vec<Option<Trust>> {
         let n = self.entries.len().max(1) as f64;
         (0..self.entries.len())
@@ -190,15 +174,19 @@ impl Race {
             .collect()
     }
 
-    /// The best answer that clears the [`FLOOR`], by score and then by rank.
-    fn leader_in(scores: &[Option<Trust>]) -> Option<(usize, f64)> {
-        scores.iter().enumerate().filter_map(|(r, t)| t.map(|t| (r, t.score))).filter(|(_, s)| *s >= FLOOR).fold(None, |best, (r, s)| match best {
+    /// The best (rank, score), lowest rank on ties, among `ranks`.
+    fn best_of(scores: &[Option<Trust>], ranks: impl Fn(usize) -> bool) -> Option<(usize, f64)> {
+        scores.iter().enumerate().filter(|(r, _)| ranks(*r)).filter_map(|(r, t)| t.map(|t| (r, t.score))).fold(None, |best, (r, s)| match best {
             Some((_, b)) if b >= s => best,
             _ => Some((r, s)),
         })
     }
 
-    /// The best answer so far and its score.
+    /// The best answer clearing the [`FLOOR`].
+    fn leader_in(scores: &[Option<Trust>]) -> Option<(usize, f64)> {
+        Self::best_of(scores, |_| true).filter(|(_, s)| *s >= FLOOR)
+    }
+
     pub fn leader(&self) -> Option<(usize, f64)> {
         Self::leader_in(&self.scores())
     }
@@ -208,10 +196,10 @@ impl Race {
     }
 
     fn timed_done(&self) -> bool {
-        (0..self.entries.len()).all(|r| self.done[r] || self.entries[r].best < 2)
+        (0..self.entries.len()).all(|r| self.done[r] || self.entries[r].best < Timing::Lines)
     }
 
-    /// `rank` answered, with lyrics and what it named, or with nothing (a miss, a failure, too slow).
+    /// `rank` answered, with lyrics and what it named, or with nothing.
     pub fn answer(&mut self, rank: usize, found: Option<(Lyrics, Named)>) {
         if self.done[rank] {
             return;
@@ -222,7 +210,7 @@ impl Race {
         self.checks[rank] = self.voice.as_ref().zip(self.answers[rank].as_ref()).and_then(|(v, (l, _))| sync::check(l, v));
     }
 
-    /// Lyrics already on screen as `rank`'s answer: the ones chosen last time.
+    /// Lyrics already on screen as `rank`'s answer: last time's choice.
     pub fn shown_already(&mut self, rank: usize, lyrics: Lyrics, named: Named) {
         self.answer(rank, Some((lyrics, named)));
         self.shown = Some(rank);
@@ -234,33 +222,29 @@ impl Race {
         if e.best <= self.server_timing {
             return false;
         }
-        if e.best < 2 {
+        if e.best < Timing::Lines {
             return self.timed_done() && leader.is_none();
         }
         e.first_wave || (self.first_wave_done() && (leader.is_none_or(|(_, s)| s < WIDEN_BELOW) || self.wants_words(rank, leader)))
     }
 
-    /// Whether `rank` is still worth asking for word timing: words are preferred, the best answer in hand
-    /// is only line-timed, and `rank` can time words. Without this a good line-timed answer from the first
-    /// wave ended the search, and the services that time words were never asked (the owner saw word-timed
-    /// lyrics only once every service was on). The answer is kept per song, so it costs once.
+    /// Whether `rank` is still worth asking for word timing: words preferred, the leader only
+    /// line-timed, and `rank` able to time words.
     fn wants_words(&self, rank: usize, leader: Option<(usize, f64)>) -> bool {
         self.prefer_words
-            && self.entries[rank].best >= 3
-            && leader.is_some_and(|(r, _)| self.answers[r].as_ref().is_some_and(|(l, _)| timing(l) < 3))
+            && self.entries[rank].best == Timing::Words
+            && leader.is_some_and(|(r, _)| self.answers[r].as_ref().is_some_and(|(l, _)| timing(l) < Timing::Words))
     }
 
-    /// Whether `rank`, not asked yet, can ever be asked: a service whose timing is no better than the
-    /// server's never is, nor one past a wave the answers in hand made unnecessary.
+    /// Whether `rank`, not asked yet, can never be asked with the answers in hand.
     fn hopeless(&self, rank: usize, leader: Option<(usize, f64)>) -> bool {
         let e = self.entries[rank];
         e.best <= self.server_timing
-            || (e.best >= 2 && !e.first_wave && self.first_wave_done() && leader.is_some_and(|(_, s)| s >= WIDEN_BELOW) && !self.wants_words(rank, leader))
-            || (e.best < 2 && self.timed_done() && leader.is_some())
+            || (e.best >= Timing::Lines && !e.first_wave && self.first_wave_done() && leader.is_some_and(|(_, s)| s >= WIDEN_BELOW) && !self.wants_words(rank, leader))
+            || (e.best < Timing::Lines && self.timed_done() && leader.is_some())
     }
 
-    /// The ranks to start asking now, best first, so that no more than `pool` are out at once. Those
-    /// that can never be asked are dropped unasked.
+    /// The ranks to ask now, best first, so that no more than `pool` are out; hopeless ones are dropped.
     pub fn next(&mut self, running: usize, pool: usize) -> Vec<usize> {
         let leader = self.leader();
         let hopeless: Vec<usize> = self.waiting.iter().copied().filter(|r| self.hopeless(*r, leader)).collect();
@@ -272,9 +256,8 @@ impl Race {
         start
     }
 
-    /// What to put on screen now, if anything. Nothing shown yet: the leader, once it is sure, or the
-    /// first wave is in, or at the `last`. Something shown: the leader only when it is strictly better by
-    /// score and the same song's words, or far better (what is shown was another song's).
+    /// What to put on screen now. With nothing shown: the leader once sure, once the first wave is in, or
+    /// at the `last`. Otherwise the leader only when strictly better and agreeing, or far better.
     pub fn to_show(&mut self, last: bool) -> Option<(usize, Lyrics)> {
         let scores = self.scores();
         let (leader, best) = Self::leader_in(&scores)?;
@@ -294,11 +277,11 @@ impl Race {
         self.answers[leader].as_ref().map(|a| (leader, self.to_screen(leader, a.0.clone())))
     }
 
-    /// Whether `rank`'s answer is backed by more than its service's word: the title it named is this
-    /// song's, or another answer has the same words.
+    /// Whether `rank`'s answer is backed by more than its service: it names this title, or another
+    /// answer has the same words.
     fn evidenced(&self, rank: usize) -> bool {
         let Some((l, named)) = self.answers[rank].as_ref() else { return false };
-        named.title.as_deref().is_some_and(|t| crate::trust::name_alike(t, &self.song.title) >= 0.85)
+        named.title.as_deref().is_some_and(|t| name_alike(t, &self.song.title) >= 0.85)
             || self.answers.iter().enumerate().any(|(o, a)| o != rank && a.as_ref().is_some_and(|a| agree(l, &a.0)))
     }
 
@@ -310,17 +293,13 @@ impl Race {
         Some((r, t, l, n))
     }
 
-    /// The best of the rest, by score.
+    /// The best of the rest.
     pub fn runner_up(&self) -> Option<(usize, f64)> {
-        let shown = self.shown;
-        self.scores().iter().enumerate().filter(|(r, _)| Some(*r) != shown).filter_map(|(r, t)| t.map(|t| (r, t.score))).fold(None, |best, (r, s)| match best {
-            Some((_, b)) if b >= s => best,
-            _ => Some((r, s)),
-        })
+        Self::best_of(&self.scores(), |r| Some(r) != self.shown)
     }
 }
 
-/// How an answer's sync check is said in the log: "sync 0.93 shifted +500 ms, drift +0 ms".
+/// A sync check in the log: "sync 0.93 shifted +500 ms (sure 0.80), drift +0 ms".
 pub fn sync_words(c: &SyncCheck) -> String {
     let kind = match c.kind {
         SyncKind::Unsure => "unsure",
@@ -332,30 +311,18 @@ pub fn sync_words(c: &SyncCheck) -> String {
     format!("sync {:.2} {kind} {:+} ms (sure {:.2}), drift {:+} ms", c.score, c.offset_ms, c.confidence, c.drift_ms)
 }
 
-/// How an answer's timing is said in the log.
-pub fn timing_words(l: &Lyrics) -> &'static str {
-    match timing(l) {
-        3 => "word-timed",
-        2 => "line-timed",
-        1 => "not timed",
-        _ => "empty",
-    }
-}
-
-/// What a service's answers about a song are remembered under. BetterLyrics answers more with a key
-/// than without, so a song it had nothing for without one is asked again once a key is given.
+/// A service's cache key for a song. With a BetterLyrics key given, a miss without one is asked again.
 fn cache_key(service: LyricsService, song: &Song, lookup: &LyricsLookup) -> String {
     let keyed = matches!(service, LyricsService::BetterLyrics | LyricsService::Portato) && !lookup.better_lyrics_key.is_empty();
-    format!("lyrics|{}{}|{}|{}|{}", service.name(), if keyed { "+key" } else { "" }, song.artist, song.title, song.duration)
+    format!("{CACHE_PREFIX}{}{}|{}|{}|{}", service.name(), if keyed { "+key" } else { "" }, song.artist, song.title, song.duration)
 }
 
-/// What the lyrics chosen for a song are remembered under.
+/// The cache key of the lyrics chosen for a song.
 pub fn best_key(song: &Song) -> String {
     format!("{CACHE_PREFIX}BEST|{}|{}|{}", song.artist, song.title, song.duration)
 }
 
-/// A service's answer as it is kept: the words and what the service named, after this mark. Entries
-/// kept before (the words alone, formats.rs's cache form) still read, naming nothing.
+/// Marks a cached answer (words and what the service named); older entries are formats.rs's cache form.
 const ANSWER_MARK: &str = "nori-answer1:";
 
 #[derive(Serialize, Deserialize)]
@@ -363,7 +330,7 @@ struct Kept {
     lyrics: Lyrics,
     #[serde(default)]
     named: Named,
-    /// The chosen lyrics only: whose they are and how they scored.
+    /// The chosen lyrics only: their service and score.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -392,9 +359,8 @@ enum Remembered {
 
 fn remembered(cache: &dyn LyricsCache, key: &str, song: &Song) -> Remembered {
     match cache.get(key) {
-        // An entry that no longer reads falls through to asking again; one kept before answers were
-        // checked, which cannot be this song's, is the miss it should have been. Credits are stripped
-        // again, for entries kept before they were.
+        // Credits are stripped again for entries cached before stripping; an entry that no longer reads
+        // is asked again, and one that cannot be this song's is the miss it should have been.
         Some(b) if !b.is_empty() => match read_kept(&b).map(|mut k| {
             strip_edges(&mut k.lyrics, &song.title, &song.artist);
             k
@@ -409,16 +375,14 @@ fn remembered(cache: &dyn LyricsCache, key: &str, song: &Song) -> Remembered {
     }
 }
 
-/// The lyrics chosen for `song` last time, if their service is still asked: its rank, the words, what it
-/// named, and the score.
+/// Last time's choice for `song`, while its service is still asked: rank, words, what it named, score.
 fn chosen_before(cache: &dyn LyricsCache, song: &Song, services: &[LyricsService]) -> Option<(usize, Lyrics, Named, f64)> {
     let k = read_kept(&cache.get(&best_key(song))?)?;
     let rank = services.iter().position(|s| Some(s.name()) == k.source.as_deref())?;
     plausible(&k.lyrics, song).then(|| (rank, k.lyrics, k.named, k.score.unwrap_or(0.0)))
 }
 
-/// Services that failed lately: for which song (its cache key) and when, and how many songs each has
-/// failed in a row. Kept in the client's [`LyricsMemory`].
+/// Services that failed lately: for which song (cache key) and when, and each one's failures in a row.
 #[derive(Default)]
 pub(crate) struct Failures {
     songs: Vec<(String, Instant)>,
@@ -457,11 +421,10 @@ impl Failures {
     }
 }
 
-/// Looks `song` up with the services `lookup` names, after the server's own lyrics, which the platform
-/// already shows (`server_has_lines`, `server_synced` describe them). Each set of lyrics to show goes to
-/// `shown` as it is chosen, and when the server had nothing and nobody found anything, an empty set from
-/// the server goes out at the end so the page can say so. Returns what was chosen, in the log's words
-/// ("chose BiniLyrics (0.91, word-timed), runner-up LRCLIB (0.84)"), when anything was.
+/// Looks `song` up with the services `lookup` names, the server's own lyrics (described by
+/// `server_has_lines`, `server_synced`) already shown. Each choice goes to `shown`; with nothing from
+/// the server or anyone, an empty server answer goes out at the end. Returns the log line of the choice
+/// ("lyrics: chose BiniLyrics (0.91, word-timed), runner-up LRCLIB (0.84)").
 #[allow(clippy::too_many_arguments)]
 pub async fn lookup(
     transport: &dyn Transport,
@@ -486,21 +449,21 @@ pub async fn lookup(
         }
         return None;
     }
-    let server_timing = u8::from(server_has_lines);
+    let server_timing = if server_has_lines { Timing::Untimed } else { Timing::Empty };
     let mut race = Race::new(song, services.iter().map(|s| Entry::of(*s)).collect(), lookup.prefer_words, server_timing);
     let voice = cache.voice(song);
     if let Some(v) = voice.clone() {
         race.hear(v);
     }
-    // The lyrics chosen last time: shown at once, and final unless they scored low (or, checked against the
-    // song's voice now, do not fit it) and a few days passed.
+    // Last time's choice: shown at once, and final unless it scored low (or no longer fits the voice)
+    // and a few days passed.
     let mut before: Option<(usize, f64)> = None;
     if let Some((rank, lyrics, named, was)) = chosen_before(cache, song, &services).filter(|c| timing(&c.1) > server_timing) {
         let check = voice.as_ref().and_then(|v| sync::check(&lyrics, v));
         let mut on_screen = lyrics.clone();
         on_screen.offset_ms = check.map_or(0, |c| c.applied_ms());
         shown.show(LyricsPick { lyrics: on_screen, origin: services[rank].origin() });
-        let mut line = format!("lyrics: kept {} ({was:.2}, {})", services[rank].title(), timing_words(&lyrics));
+        let mut line = format!("lyrics: kept {} ({was:.2}, {})", services[rank].title(), timing(&lyrics).words());
         if let Some(c) = &check {
             line.push_str(&format!(", {}", sync_words(c)));
         }
@@ -549,16 +512,14 @@ pub async fn lookup(
         }
         return None;
     };
-    // What is on screen is what is kept, with its score, and served from here next time.
     cache.put(&best_key(song), kept(lyrics, named, Some((services[rank], trust.score))));
-    let mut line = format!("lyrics: chose {} ({:.2}, {})", services[rank].title(), trust.score, timing_words(lyrics));
+    let mut line = format!("lyrics: chose {} ({:.2}, {})", services[rank].title(), trust.score, timing(lyrics).words());
     if let Some((r, s)) = race.runner_up() {
         line.push_str(&format!(", runner-up {} ({s:.2})", services[r].title()));
     }
     if let Some((r, was)) = before {
         line.push_str(&format!(", was {} ({was:.2})", services[r].title()));
     }
-    // Each answer's fit to the song's voice, for the perf report: its score, offset and drift.
     for (r, service) in services.iter().enumerate() {
         if let Some(c) = race.check(r) {
             line.push_str(&format!("; {} {}", service.title(), sync_words(&c)));
@@ -568,8 +529,7 @@ pub async fn lookup(
     Some(line)
 }
 
-/// Asks one service and remembers its answer (see [`remembered`]), its credits stripped first; a
-/// failure is remembered only in memory, for a while, so the song is not asked about again straight away.
+/// Asks one service and caches its answer, credits stripped; a failure is only rested in memory.
 async fn ask(transport: &dyn Transport, cache: &dyn LyricsCache, lookup: &LyricsLookup, shared: &Shared, service: LyricsService, key: &str, song: &Song) -> Option<(Lyrics, Named)> {
     let a = Ask::new(transport, lookup, shared, service);
     match services::ask(service, &a, song).await {
@@ -577,8 +537,6 @@ async fn ask(transport: &dyn Transport, cache: &dyn LyricsCache, lookup: &Lyrics
             shared.memory.failures.lock().answered(service);
             strip_edges(&mut l, &song.title, &song.artist);
             if l.lines.is_empty() || !plausible(&l, song) {
-                // Words that cannot be this song's (a fragment, lines past its end, only credits) are
-                // another song's: a miss.
                 nori_model::alog::info(&format!("{} lyrics do not fit the song: taken as a miss", service.name()));
                 cache.put(key, Vec::new());
                 return None;
@@ -650,7 +608,11 @@ mod tests {
         Named::new(title, "The Lanterns", "", 180.0)
     }
 
-    fn entry(prior: f64, first_wave: bool, best: u8) -> Entry {
+    const W: Timing = Timing::Words;
+    const L: Timing = Timing::Lines;
+    const U: Timing = Timing::Untimed;
+
+    fn entry(prior: f64, first_wave: bool, best: Timing) -> Entry {
         Entry { best, prior, first_wave }
     }
 
@@ -658,7 +620,7 @@ mod tests {
     fn a_wrong_song_from_a_loose_source_is_not_chosen() {
         // A service that matches loosely and names nothing answers first, word by word, with another song;
         // LRCLIB (line by line, naming the song) and Unison (word by word) have this one's words.
-        let mut r = Race::new(&tune(), vec![entry(0.9, true, 3), entry(0.85, true, 3), entry(0.85, true, 3)], true, 0);
+        let mut r = Race::new(&tune(), vec![entry(0.9, true, W), entry(0.85, true, W), entry(0.85, true, W)], true, Timing::Empty);
         assert_eq!(r.next(0, 6), [0, 1, 2]);
         r.answer(0, Some((words(&THEIRS, true), Named::default())));
         assert_eq!(r.to_show(false), None, "a lone answer naming nothing waits for the first wave");
@@ -677,9 +639,9 @@ mod tests {
         // well. Second wave: one that times words. With words preferred it is asked; without, the good
         // line-timed answer ends the search, as it did for every song before (the owner saw word-timed
         // lyrics only once every service was on).
-        let wave = || vec![entry(0.95, true, 3), entry(0.9, true, 3), entry(0.75, false, 3)];
+        let wave = || vec![entry(0.95, true, W), entry(0.9, true, W), entry(0.75, false, W)];
         let answered = |prefer: bool| {
-            let mut r = Race::new(&tune(), wave(), prefer, 0);
+            let mut r = Race::new(&tune(), wave(), prefer, Timing::Empty);
             assert_eq!(r.next(0, 6), [0, 1]);
             r.answer(0, Some((words(&OURS, false), naming("Glass Harbour"))));
             r.answer(1, Some((words(&OURS, false), naming("Glass Harbour"))));
@@ -694,13 +656,13 @@ mod tests {
 
     #[test]
     fn a_line_timed_answer_naming_the_song_beats_word_timed_words_nobody_backs() {
-        let mut r = Race::new(&tune(), vec![entry(0.85, true, 3), entry(0.85, true, 3)], true, 0);
+        let mut r = Race::new(&tune(), vec![entry(0.85, true, W), entry(0.85, true, W)], true, Timing::Empty);
         r.next(0, 6);
         r.answer(0, Some((words(&OURS, false), naming("Glass Harbour"))));
         r.answer(1, Some((words(&THEIRS, true), Named::default())));
         assert_eq!(r.to_show(true).map(|x| x.0), Some(0), "the answer naming the song, though timed by line");
         // A third answer with the named one's words, timed word by word, then wins over both.
-        let mut three = Race::new(&tune(), vec![entry(0.85, true, 3), entry(0.85, true, 3), entry(0.9, true, 3)], true, 0);
+        let mut three = Race::new(&tune(), vec![entry(0.85, true, W), entry(0.85, true, W), entry(0.9, true, W)], true, Timing::Empty);
         three.next(0, 6);
         three.answer(0, Some((words(&OURS, false), naming("Glass Harbour"))));
         three.answer(1, Some((words(&THEIRS, true), Named::default())));
@@ -716,7 +678,7 @@ mod tests {
             12 => "[Instrumental]",
             _ => "la la la",
         })).collect();
-        let mut r = Race::new(&tune(), vec![entry(0.9, true, 3), entry(0.85, true, 3)], true, 0);
+        let mut r = Race::new(&tune(), vec![entry(0.9, true, W), entry(0.85, true, W)], true, Timing::Empty);
         r.next(0, 6);
         r.answer(0, Some((timed(&junk, true), naming("Glass Harbour"))));
         r.answer(1, Some((words(&OURS, false), naming("Glass Harbour"))));
@@ -727,14 +689,14 @@ mod tests {
 
     #[test]
     fn the_second_wave_is_asked_only_when_the_first_misses_or_scores_low() {
-        let entries = vec![entry(0.95, true, 3), entry(0.85, true, 2), entry(0.75, false, 3), entry(0.7, false, 1)];
-        let mut good = Race::new(&tune(), entries.clone(), true, 0);
+        let entries = vec![entry(0.95, true, W), entry(0.85, true, L), entry(0.75, false, W), entry(0.7, false, U)];
+        let mut good = Race::new(&tune(), entries.clone(), true, Timing::Empty);
         assert_eq!(good.next(0, 6), [0, 1], "the first wave only");
         good.answer(0, Some((words(&OURS, true), naming("Glass Harbour"))));
         good.answer(1, Some((words(&OURS, false), naming("Glass Harbour"))));
         assert!(good.leader().unwrap().1 >= WIDEN_BELOW);
         assert!(good.next(0, 6).is_empty(), "nobody else asked");
-        let mut missed = Race::new(&tune(), entries.clone(), true, 0);
+        let mut missed = Race::new(&tune(), entries.clone(), true, Timing::Empty);
         missed.next(0, 6);
         missed.answer(0, None);
         assert!(missed.next(1, 6).is_empty(), "not while the first wave is out");
@@ -742,7 +704,7 @@ mod tests {
         assert_eq!(missed.next(0, 6), [2], "the first wave missed: the next one, still timed");
         missed.answer(2, None);
         assert_eq!(missed.next(0, 6), [3], "untimed words last, when nobody timed anything");
-        let mut low = Race::new(&tune(), entries, true, 0);
+        let mut low = Race::new(&tune(), entries, true, Timing::Empty);
         low.next(0, 6);
         low.answer(0, None);
         low.answer(1, Some((words(&OURS, false), Named::default())));
@@ -752,7 +714,7 @@ mod tests {
 
     #[test]
     fn whats_shown_is_replaced_only_by_a_strictly_better_answer_that_agrees() {
-        let mut r = Race::new(&tune(), vec![entry(0.85, true, 3), entry(0.85, true, 3), entry(0.85, true, 3)], true, 0);
+        let mut r = Race::new(&tune(), vec![entry(0.85, true, W), entry(0.85, true, W), entry(0.85, true, W)], true, Timing::Empty);
         r.next(0, 6);
         r.answer(1, Some((words(&OURS, false), naming("Glass Harbour"))));
         assert_eq!(r.to_show(false).map(|x| x.0), Some(1), "sure, and naming the song: shown at once");
@@ -783,7 +745,7 @@ mod tests {
         let mid = phrases[phrases.len() / 2][0].0 - 0.1;
         let other_version = crate::sync::tests::lyrics(&phrases, true, true, &|t| if t < mid { t } else { t + 3.2 });
         let race = |voice: bool| {
-            let mut r = Race::new(&s, vec![entry(0.9, true, 3), entry(0.85, true, 3)], true, 0);
+            let mut r = Race::new(&s, vec![entry(0.9, true, W), entry(0.85, true, W)], true, Timing::Empty);
             if voice {
                 r.hear(curve.clone());
             }
@@ -807,7 +769,7 @@ mod tests {
     fn lyrics_that_run_late_go_out_with_their_offset() {
         let (s, curve, phrases) = measured();
         let late = crate::sync::tests::lyrics(&phrases, true, false, &|t| t + 1.0);
-        let mut r = Race::new(&s, vec![entry(0.9, true, 3)], true, 0);
+        let mut r = Race::new(&s, vec![entry(0.9, true, W)], true, Timing::Empty);
         r.hear(curve);
         r.next(0, 6);
         r.answer(0, Some((late, Named::new("Glass Harbour", "The Lanterns", "", s.duration as f64))));
@@ -819,13 +781,13 @@ mod tests {
 
     #[test]
     fn the_servers_own_untimed_words_are_never_replaced_by_untimed_ones() {
-        let mut r = Race::new(&tune(), vec![entry(0.85, true, 3), entry(0.7, false, 1)], true, 1);
+        let mut r = Race::new(&tune(), vec![entry(0.85, true, W), entry(0.7, false, U)], true, Timing::Untimed);
         assert_eq!(r.next(0, 6), [0]);
         r.answer(0, None);
         assert!(r.next(0, 6).is_empty(), "an untimed service cannot beat the server's words");
         let mut plain = words(&OURS, false);
         plain.synced = false;
-        let mut s = Race::new(&tune(), vec![entry(0.85, true, 1)], true, 1);
+        let mut s = Race::new(&tune(), vec![entry(0.85, true, U)], true, U);
         s.answer(0, Some((plain, Named::default())));
         assert_eq!(s.to_show(true), None);
     }

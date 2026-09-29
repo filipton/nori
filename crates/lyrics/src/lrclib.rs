@@ -1,22 +1,19 @@
-//! LRCLIB, an open, community-run database of synced lyrics with a documented API: its addresses, how
-//! titles are cleaned before they are asked for (the other services clean them the same way), and which
-//! lyrics in one of its records are worth taking. It is asked like every other service (services.rs).
-
-use std::borrow::Cow;
+//! LRCLIB's addresses and records, and the title cleaning every service uses.
 
 use nori_model::{Lyrics, Song};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
+use crate::services::{text, truthy};
 use crate::{formats, lyrics};
 
 const BASE: &str = "https://lrclib.net/api";
-/// Search hits further than this from the song's length are another recording.
+/// A reported length further than this from the song's is another recording.
 pub const DURATION_SLACK_S: f64 = 4.0;
 
-// ---- matching titles the way providers write them -------------------------------------------------------
+// ---- cleaning titles ------------------------------------------------------------------------------------
+// A port of the regular expressions the Kotlin app used, kept to the same matches.
 
-/// `\s` as the platform's regular expressions had it: tab, line feed, form feed, carriage return and the
-/// Unicode separators.
+/// `\s` as Java's regular expressions have it.
 fn regex_space(c: char) -> bool {
     matches!(c, '\t' | '\n' | '\x0c' | '\r') || separator(c)
 }
@@ -26,12 +23,12 @@ fn separator(c: char) -> bool {
     matches!(c, ' ' | '\u{a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}')
 }
 
-/// What a line of text ends at for `.` and `$`.
+/// What `.` and `$` treat as a line end.
 fn line_end(c: char) -> bool {
     matches!(c, '\n' | '\x0b' | '\x0c' | '\r' | '\u{85}' | '\u{2028}' | '\u{2029}')
 }
 
-/// Case-insensitive, the way Unicode folds case: the long s and the Kelvin sign are an s and a k.
+/// Unicode case folding for the letters that matter here: the long s and the Kelvin sign.
 fn fold(c: char) -> char {
     match c {
         '\u{17f}' => 's',
@@ -40,7 +37,7 @@ fn fold(c: char) -> char {
     }
 }
 
-/// The length in bytes of `word` at the start of `s`, ignoring case; `#` stands for a digit.
+/// The byte length of `word` at the start of `s`, ignoring case; `#` stands for a digit.
 fn starts_with(s: &str, word: &str) -> Option<usize> {
     let mut it = s.char_indices();
     for w in word.chars() {
@@ -57,28 +54,23 @@ fn starts_with_any(s: &str, words: &[&str]) -> Option<usize> {
     words.iter().find_map(|w| starts_with(s, w))
 }
 
-/// What may follow the opening bracket of a credit or version note: `feat.?|ft.?|with|remaster(ed)?|
-/// \d{4} remaster|live|mono|stereo`. The rest up to the bracket is taken whatever it is, so the optional
-/// endings need no words of their own.
+/// What may open a bracketed note: `feat.?|ft.?|with|remaster(ed)?|\d{4} remaster|live|mono|stereo`.
 const BRACKETED: [&str; 8] = ["feat", "ft", "with", "remaster", "#### remaster", "live", "mono", "stereo"];
 /// What may follow " - ": `remaster(ed)?|\d{4} remaster|live|single version|radio edit`.
 const DASHED: [&str; 5] = ["remaster", "#### remaster", "live", "single version", "radio edit"];
 
-/// `\s*[(\[](feat\.?|ft\.?|with|remaster(ed)?|\d{4} remaster|live|mono|stereo)[^)\]]*[)\]]`, all of them.
+/// Drops every `\s*[(\[](<BRACKETED>)[^)\]]*[)\]]`.
 fn drop_bracketed(title: &str) -> String {
     let mut out = String::with_capacity(title.len());
     let mut i = 0;
-    'scan: while i < title.len() {
+    while i < title.len() {
         let rest = &title[i..];
         let ws = rest.find(|c| !regex_space(c)).unwrap_or(rest.len());
         let open = &rest[ws..];
-        if open.starts_with(['(', '[']) {
-            let inner = &open[1..];
-            if starts_with_any(inner, &BRACKETED).is_some() {
-                if let Some(close) = inner.find([')', ']']) {
-                    i += ws + 1 + close + 1;
-                    continue 'scan;
-                }
+        if open.starts_with(['(', '[']) && starts_with_any(&open[1..], &BRACKETED).is_some() {
+            if let Some(close) = open[1..].find([')', ']']) {
+                i += ws + 1 + close + 1;
+                continue;
             }
         }
         let c = rest.chars().next().unwrap();
@@ -88,7 +80,7 @@ fn drop_bracketed(title: &str) -> String {
     out
 }
 
-/// `\s+-\s+(remaster(ed)?|\d{4} remaster|live|single version|radio edit).*$`: the first one and all after it.
+/// Cuts at the first `\s+-\s+(<DASHED>).*$`.
 fn drop_dashed(title: &str) -> &str {
     for (i, c) in title.char_indices() {
         if !regex_space(c) || title[..i].ends_with(regex_space) {
@@ -102,7 +94,7 @@ fn drop_dashed(title: &str) -> &str {
             continue;
         }
         let Some(n) = starts_with_any(&after[ws2..], &DASHED) else { continue };
-        // `.*$`: the rest of the line, which has to be the end of the text (or a last line break).
+        // `.*$`: the rest must run to the end of the text, or to a last line break.
         let tail = &after[ws2 + n..];
         match tail.find(line_end) {
             None => return &title[..i],
@@ -113,17 +105,17 @@ fn drop_dashed(title: &str) -> &str {
     title
 }
 
-/// Kotlin's `trim()`: whitespace and the Unicode separators.
+/// Kotlin's `trim()`.
 fn trim(s: &str) -> &str {
     s.trim_matches(|c| matches!(c, '\t'..='\r' | '\x1c'..='\x1f') || separator(c))
 }
 
-/// Removes "(feat. X)", "- Remastered 2011" and similar, which providers rarely carry.
+/// The title without "(feat. X)", "- Remastered 2011" and the like, which services rarely carry.
 pub fn clean(title: &str) -> String {
     trim(drop_dashed(&drop_bracketed(title))).to_string()
 }
 
-/// `application/x-www-form-urlencoded`, as LRCLIB's query string wants it.
+/// `application/x-www-form-urlencoded`.
 pub fn form_encode(out: &mut String, v: &str) {
     for b in v.bytes() {
         match b {
@@ -151,7 +143,7 @@ pub fn get_url(song: &Song, title: &str) -> String {
     u
 }
 
-/// LRCLIB's search for `song` by its cleaned `title`, for when the exact lookup finds nothing.
+/// LRCLIB's search for `song` by its cleaned `title`.
 pub fn search_url(song: &Song, title: &str) -> String {
     let mut u = format!("{BASE}/search?track_name=");
     form_encode(&mut u, title);
@@ -160,53 +152,17 @@ pub fn search_url(song: &Song, title: &str) -> String {
     u
 }
 
-// ---- reading LRCLIB's answers ---------------------------------------------------------------------------
-
-/// A field as text: missing is empty, JSON null is the word "null" (hence the guard in [`pick`]).
-pub fn text<'a>(o: &'a Map<String, Value>, k: &str) -> Cow<'a, str> {
-    match o.get(k) {
-        None => Cow::Borrowed(""),
-        Some(Value::String(s)) => Cow::Borrowed(s),
-        Some(Value::Null) => Cow::Borrowed("null"),
-        Some(v) => Cow::Owned(v.to_string()),
-    }
-}
-
-fn flag(o: &Map<String, Value>, k: &str) -> bool {
-    match o.get(k) {
-        Some(Value::Bool(b)) => *b,
-        Some(Value::String(s)) => s.eq_ignore_ascii_case("true"),
-        _ => false,
-    }
-}
-
-/// A number field of an answer; 0 when it is missing or not a number.
-pub fn number(o: &Map<String, Value>, k: &str) -> f64 {
-    match o.get(k) {
-        Some(Value::Number(n)) => n.as_f64().unwrap_or(0.0),
-        Some(Value::String(s)) => s.trim().parse().unwrap_or(0.0),
-        _ => 0.0,
-    }
-}
-
-fn blank(s: &str) -> bool {
-    s.chars().all(|c| matches!(c, '\t'..='\r' | '\x1c'..='\x1f') || separator(c))
-}
-
-/// The lyrics in one LRCLIB record: none for an instrumental, the finest timed of what it has. LRCLIB
-/// keeps word timing only in the record's lyricsfile (open YAML, contributed with LRCGET's editor); its
-/// LRC fields are made from it a line at a time. So the lyricsfile wins when it times words, and the LRC
-/// otherwise, synced over plain.
-pub fn pick(o: &Map<String, Value>) -> Option<Lyrics> {
-    if flag(o, "instrumental") {
+/// The lyrics of one LRCLIB record: none for an instrumental. Word timing lives only in the record's
+/// lyricsfile, so that wins when it times words; otherwise the LRC, synced over plain.
+pub fn pick(o: &Value) -> Option<Lyrics> {
+    if truthy(o, "instrumental") {
         return None;
     }
-    let usable = |k| Some(text(o, k)).filter(|t| !blank(t) && t != "null");
-    let file = usable("lyricsfile").map(|t| formats::from_lyricsfile(&t)).filter(|l| !l.lines.is_empty());
+    let file = text(o, "lyricsfile").map(formats::from_lyricsfile).filter(|l| !l.lines.is_empty());
     if file.as_ref().is_some_and(|f| f.word_timed) {
         return file;
     }
-    let lrc = usable("syncedLyrics").or_else(|| usable("plainLyrics")).map(|t| lyrics::from_lrc(&t)).filter(|l| !l.lines.is_empty());
+    let lrc = text(o, "syncedLyrics").or_else(|| text(o, "plainLyrics")).map(lyrics::from_lrc).filter(|l| !l.lines.is_empty());
     match (lrc, file) {
         (Some(l), Some(f)) if formats::timing(&f) > formats::timing(&l) => Some(f),
         (Some(l), _) => Some(l),
@@ -217,24 +173,32 @@ pub fn pick(o: &Map<String, Value>) -> Option<Lyrics> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn titles_lose_credits_and_version_notes() {
-        assert_eq!(clean("Song (feat. Someone)"), "Song");
-        assert_eq!(clean("Song [Ft Someone] (Live at Wembley)"), "Song");
-        assert_eq!(clean("Song (2011 Remaster)"), "Song");
-        assert_eq!(clean("Song - Remastered 2011"), "Song");
-        assert_eq!(clean("Song - 2009 Remaster"), "Song");
-        assert_eq!(clean("Song - Single Version"), "Song");
-        assert_eq!(clean("Song - Radio Edit (x)"), "Song");
-        assert_eq!(clean("Song (Without You]"), "Song", "any closing bracket, and `with` starts `without`");
-        assert_eq!(clean("Song (Acoustic)"), "Song (Acoustic)");
-        assert_eq!(clean("Song (feat. unclosed"), "Song (feat. unclosed");
-        assert_eq!(clean("Song -Live"), "Song -Live", "a dash needs space on both sides");
-        assert_eq!(clean("Song - Liverpool - Live"), "Song", "the first match takes the rest of the line");
-        assert_eq!(clean("Song - Live\nmore"), "Song - Live\nmore", "not at the end of the text");
-        assert_eq!(clean("Song\u{a0}(ſtereo)  "), "Song");
-        assert_eq!(clean("  Zażółć (Mono) "), "Zażółć");
+        for (title, clean_title) in [
+            ("Song (feat. Someone)", "Song"),
+            ("Song [Ft Someone] (Live at Wembley)", "Song"),
+            ("Song (2011 Remaster)", "Song"),
+            ("Song - Remastered 2011", "Song"),
+            ("Song - 2009 Remaster", "Song"),
+            ("Song - Single Version", "Song"),
+            ("Song - Radio Edit (x)", "Song"),
+            // Any closing bracket; `with` starts `without`.
+            ("Song (Without You]", "Song"),
+            ("Song (Acoustic)", "Song (Acoustic)"),
+            ("Song (feat. unclosed", "Song (feat. unclosed"),
+            // A dash needs space on both sides.
+            ("Song -Live", "Song -Live"),
+            // The first match takes the rest of the line.
+            ("Song - Liverpool - Live", "Song"),
+            ("Song - Live\nmore", "Song - Live\nmore"),
+            ("Song\u{a0}(ſtereo)  ", "Song"),
+            ("  Zażółć (Mono) ", "Zażółć"),
+        ] {
+            assert_eq!(clean(title), clean_title, "{title:?}");
+        }
     }
 
     #[test]
@@ -245,26 +209,17 @@ mod tests {
     }
 
     #[test]
-    fn records_pick_synced_then_plain_and_skip_instrumentals() {
-        let o = |j: &str| serde_json::from_str::<Value>(j).unwrap().as_object().unwrap().clone();
-        assert!(pick(&o(r#"{"instrumental":true,"syncedLyrics":"[00:01.00]x"}"#)).is_none());
-        assert!(pick(&o(r#"{"instrumental":"TRUE","plainLyrics":"x"}"#)).is_none());
-        assert!(pick(&o(r#"{"syncedLyrics":"[00:01.00]x","plainLyrics":"y"}"#)).unwrap().synced);
-        assert!(!pick(&o(r#"{"syncedLyrics":null,"plainLyrics":"y"}"#)).unwrap().synced);
-        assert!(pick(&o(r#"{"syncedLyrics":"  ","plainLyrics":null}"#)).is_none());
-    }
-
-    #[test]
-    fn a_word_timed_lyricsfile_beats_the_lrc_beside_it() {
-        let o = |j: &str| serde_json::from_str::<Value>(j).unwrap().as_object().unwrap().clone();
+    fn records_pick_the_finest_timing_and_skip_instrumentals() {
+        assert!(pick(&json!({"instrumental": true, "syncedLyrics": "[00:01.00]x"})).is_none());
+        assert!(pick(&json!({"instrumental": "TRUE", "plainLyrics": "x"})).is_none());
+        assert!(pick(&json!({"syncedLyrics": "[00:01.00]x", "plainLyrics": "y"})).unwrap().synced);
+        assert!(!pick(&json!({"syncedLyrics": null, "plainLyrics": "y"})).unwrap().synced);
+        assert!(pick(&json!({"syncedLyrics": "  ", "plainLyrics": null})).is_none());
         let file = "version: '1.0'\nmetadata: {title: t, artist: a}\nlines:\n  - {text: hi there, start_ms: 1000, words: [{text: 'hi ', start_ms: 1000, end_ms: 1400}, {text: there, start_ms: 1400, end_ms: 2000}]}\n";
-        let both = serde_json::json!({"syncedLyrics": "[00:01.00]hi there", "lyricsfile": file}).to_string();
-        assert!(pick(&o(&both)).unwrap().word_timed);
-        // A lyricsfile timed by line only is no better than the LRC made from it.
-        let lined = serde_json::json!({"syncedLyrics": "[00:01.00]from lrc", "lyricsfile": "version: '1.0'\nmetadata: {title: t, artist: a}\nlines:\n  - {text: from file, start_ms: 1000}\n"}).to_string();
-        assert_eq!(pick(&o(&lined)).unwrap().lines[0].text, "from lrc");
-        // Plain words only, and a lyricsfile that times them: the file.
-        let plain = serde_json::json!({"plainLyrics": "words", "lyricsfile": "version: '1.0'\nmetadata: {title: t, artist: a}\nlines:\n  - {text: timed, start_ms: 1000}\n"}).to_string();
-        assert!(pick(&o(&plain)).unwrap().synced);
+        assert!(pick(&json!({"syncedLyrics": "[00:01.00]hi there", "lyricsfile": file})).unwrap().word_timed);
+        // A line-timed lyricsfile is no better than the LRC made from it, but beats plain words.
+        let lined = "version: '1.0'\nmetadata: {title: t, artist: a}\nlines:\n  - {text: from file, start_ms: 1000}\n";
+        assert_eq!(pick(&json!({"syncedLyrics": "[00:01.00]from lrc", "lyricsfile": lined})).unwrap().lines[0].text, "from lrc");
+        assert!(pick(&json!({"plainLyrics": "words", "lyricsfile": lined})).unwrap().synced);
     }
 }

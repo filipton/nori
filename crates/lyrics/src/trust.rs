@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::credits::credits_inside;
 use crate::fit::{agree, norm};
-use crate::formats::timing;
+use crate::formats::{timing, Timing};
 use crate::lrclib::clean;
 use crate::sync::{SyncCheck, SyncKind};
 
@@ -76,7 +76,8 @@ const W_SHAPE: f64 = 0.15;
 /// A part nothing is known about: the service matched the song on its side, which is worth something.
 const UNKNOWN: f64 = 0.7;
 
-fn latin(v: &str) -> bool {
+/// Whether every letter is Latin (or not a letter): two such names can be compared.
+pub(crate) fn latin(v: &str) -> bool {
     v.chars().all(|c| !c.is_alphabetic() || c <= '\u{024F}')
 }
 
@@ -117,15 +118,14 @@ fn meta(song: &Song, named: &Named) -> f64 {
     0.45 * part(title) + 0.25 * part(artist) + 0.05 * part(album) + 0.25 * part(length)
 }
 
-/// Word by word over line by line over not timed. Without preferring words, a line-timed answer is
-/// nearly as good as a word-timed one.
+/// Words over lines over untimed; without `prefer_words`, lines are nearly as good as words.
 fn timing_part(l: &Lyrics, prefer_words: bool) -> f64 {
     match timing(l) {
-        3 => 1.0,
-        2 if prefer_words => 0.7,
-        2 => 0.95,
-        1 => 0.35,
-        _ => 0.0,
+        Timing::Words => 1.0,
+        Timing::Lines if prefer_words => 0.7,
+        Timing::Lines => 0.95,
+        Timing::Untimed => 0.35,
+        Timing::Empty => 0.0,
     }
 }
 

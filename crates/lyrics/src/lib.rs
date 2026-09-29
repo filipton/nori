@@ -16,6 +16,4 @@ pub mod lyrics;
 pub mod race;
 pub mod services;
 pub mod sync;
-#[cfg(test)]
-mod sync_tune;
 pub mod trust;
