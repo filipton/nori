@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use nori_model::{EqBand, EqKind, EqPreset, NamedPreset, TransitionPrefs};
 use serde_json::{Map, Value};
 
-use crate::codec::{clamped, names, on, within, Choice, Custom, Picks, Preamp, Quality, Raw, Row, FLAG, FLOAT, INT, K, LONG, PICK, PICK_NEAREST, TEXT};
-use crate::lyrics_sources;
+use crate::codec::{clamped, on, within, Choice, Custom, Picks, Preamp, Quality, Raw, Row, FLAG, FLOAT, INT, K, LONG, PICK, PICK_NEAREST, TEXT};
+use crate::lyrics_sources::{self, LyricsService};
 use crate::settings_store::{APPLY_AUDIO, APPLY_GAIN, CACHE_LIMIT, PLAYER, REPLAN, SOUND};
 
 /// One stored value.
@@ -480,12 +480,12 @@ pub struct StoredPrefs {
     /// Look lyrics up online when the server has no timed ones. Stored under its old key "lyricsLrclib".
     #[setting("lyricsLrclib", FLAG, default = true, name = "lyricsOnline", show = K::Switch, lookups)]
     pub lyrics_online: bool,
-    /// Every lyrics service by name, in rank order (`lyrics_sources`).
+    /// Every lyrics service, in rank order; stored by name (`lyrics_sources`).
     #[setting("lyricsOrder", LYRICS_ORDER, default = lyrics_sources::default_order())]
-    pub lyrics_order: Vec<String>,
-    /// The lyrics services switched on, by name (changed by `lyricsService:<name>`).
+    pub lyrics_order: Vec<LyricsService>,
+    /// The lyrics services switched on (changed by `lyricsService:<name>`).
     #[setting("lyricsOn", LYRICS_ON, default = lyrics_sources::default_order(), hidden)]
-    pub lyrics_on: Vec<String>,
+    pub lyrics_on: Vec<LyricsService>,
     /// Keep asking lower-ranked services for word timing after a line-timed answer.
     #[setting("lyricsPreferWords", FLAG, default = true, show = K::Switch)]
     pub lyrics_prefer_words: bool,
@@ -608,14 +608,14 @@ const BASS_BOOST_MAX: f32 = nori_player::dsp::BASS_BOOST_MAX_DB as f32;
 const VOLUME_BOOST_MAX: f32 = nori_player::dsp::VOLUME_BOOST_MAX_DB as f32;
 
 /// The stored ranking, completed with any service it does not name.
-const LYRICS_ORDER: Custom<Vec<String>> = Custom {
-    load: |t, _| lyrics_sources::complete_order(&t.map(names).unwrap_or_default()),
-    save: |o| o.join(","),
-    set: Some(|v| Some(lyrics_sources::complete_order(&names(v)))),
-    show: Some(|o| o.join(",")),
+const LYRICS_ORDER: Custom<Vec<LyricsService>> = Custom {
+    load: |t, _| lyrics_sources::complete_order(&lyrics_sources::parse(t.unwrap_or_default())),
+    save: |o| lyrics_sources::to_names(o),
+    set: Some(|v| Some(lyrics_sources::complete_order(&lyrics_sources::parse(v)))),
+    show: Some(|o| lyrics_sources::to_names(o)),
 };
 
-const LYRICS_ON: Custom<Vec<String>> = Custom { load: |t, d| t.map_or(d, |s| lyrics_sources::known(&names(s))), save: |o| o.join(","), set: None, show: None };
+const LYRICS_ON: Custom<Vec<LyricsService>> = Custom { load: |t, d| t.map_or(d, lyrics_sources::parse), save: |o| lyrics_sources::to_names(o), set: None, show: None };
 
 /// One per line, empty lines dropped.
 const LINES: Custom<Vec<String>> =
@@ -1218,7 +1218,7 @@ pub fn set_by_name(p: &StoredPrefs, name: &str, value: &str) -> Option<SettingCh
 fn set_special(p: &StoredPrefs, n: &mut StoredPrefs, server: &mut bool, name: &str, value: &str) -> Option<Option<()>> {
     let service = |v: &str| {
         let (service, at) = v.split_once(':')?;
-        Some((lyrics_sources::LyricsService::named(service)?, at.trim().to_string()))
+        Some((LyricsService::named(service)?, at.trim().to_string()))
     };
     Some(match name {
         // Test bridge: "raw" or "<format>:<kbps>" (e.g. "opus:128").
@@ -1236,9 +1236,9 @@ fn set_special(p: &StoredPrefs, n: &mut StoredPrefs, server: &mut bool, name: &s
         }
         // Test bridge: only these services, in this order (`lrclib,unison`).
         "lyricsSources" => {
-            let on = lyrics_sources::known(&names(value));
-            let rest = p.lyrics_order.iter().filter(|s| !on.contains(s)).cloned();
-            n.lyrics_order = on.iter().cloned().chain(rest).collect();
+            let on = lyrics_sources::parse(value);
+            let rest = p.lyrics_order.iter().filter(|s| !on.contains(s)).copied();
+            n.lyrics_order = on.iter().copied().chain(rest).collect();
             Some(n.lyrics_on = on)
         }
         // One service moved to a rank (drag and drop): `NETEASE:3`.
@@ -1246,10 +1246,10 @@ fn set_special(p: &StoredPrefs, n: &mut StoredPrefs, server: &mut bool, name: &s
         // One service moved by places: `NETEASE:-1`.
         "lyricsMove" => service(value).and_then(|(s, by)| Some(n.lyrics_order = lyrics_sources::moved(p, s, by.parse().ok()?))),
         // `lyricsService:NETEASE`: one service on or off.
-        _ if name.starts_with("lyricsService:") => lyrics_sources::LyricsService::named(&name["lyricsService:".len()..]).map(|s| {
-            n.lyrics_on.retain(|x| x != s.name());
+        _ if name.starts_with("lyricsService:") => LyricsService::named(&name["lyricsService:".len()..]).map(|s| {
+            n.lyrics_on.retain(|x| *x != s);
             if on(value) {
-                n.lyrics_on.push(s.name().to_string());
+                n.lyrics_on.push(s);
             }
         }),
         "compressorPreset" => compressor_preset_named(value).map(|c| {
@@ -2191,7 +2191,7 @@ mod tests {
         assert!(fresh.third_party_lookups && fresh.lyrics_online && fresh.auto_eq_download);
         assert!(!fresh.motion_artwork, "moving covers are heavier and stay off");
         let asked: Vec<&str> = crate::lyrics_sources::lyrics_lookup(&fresh).services.iter().map(|s| s.name()).collect();
-        let keyless: Vec<String> = crate::lyrics_sources::default_order().into_iter().filter(|n| crate::lyrics_sources::LyricsService::named(n).is_some_and(|s| !s.needs_key())).collect();
+        let keyless: Vec<&str> = LyricsService::ALL.iter().filter(|s| !s.needs_key()).map(|s| s.name()).collect();
         assert_eq!(asked, keyless, "every service on; the ones that need a key wait for it");
         // Stored off stays off.
         let kept = load(&save(&StoredPrefs { third_party_lookups: false, auto_eq_download: false, ..StoredPrefs::default() }));
@@ -2220,23 +2220,23 @@ mod tests {
         let p = StoredPrefs::default();
         let all = p.lyrics_on.len();
         let off = set_by_name(&p, "lyricsService:portato", "false").unwrap().prefs;
-        assert!(!off.lyrics_on.iter().any(|n| n == "PORTATO") && off.lyrics_on.len() == all - 1);
+        assert!(!off.lyrics_on.contains(&LyricsService::Portato) && off.lyrics_on.len() == all - 1);
         let on = set_by_name(&off, "lyricsService:portato", "true").unwrap().prefs;
-        assert!(on.lyrics_on.iter().any(|n| n == "PORTATO") && on.lyrics_on.len() == all);
+        assert!(on.lyrics_on.contains(&LyricsService::Portato) && on.lyrics_on.len() == all);
         assert_eq!(on.lyrics_order, p.lyrics_order, "a switch never moves a service");
         let off = set_by_name(&on, "lyricsService:paxsenix", "false").unwrap().prefs;
         assert_eq!((off.lyrics_order.clone(), off.lyrics_on.len()), (p.lyrics_order.clone(), all - 1));
         assert!(set_by_name(&p, "lyricsService:nobody", "true").is_none(), "no such service");
-        let at = |o: &[String], n: &str| o.iter().position(|x| x == n).unwrap();
+        let at = |o: &[LyricsService]| o.iter().position(|x| *x == LyricsService::Lrclib).unwrap();
         let moved = set_by_name(&on, "lyricsMove", "LRCLIB:-1").unwrap().prefs;
-        assert_eq!(at(&moved.lyrics_order, "LRCLIB"), at(&on.lyrics_order, "LRCLIB") - 1, "one place, whoever is above it");
+        assert_eq!(at(&moved.lyrics_order), at(&on.lyrics_order) - 1, "one place, whoever is above it");
         let placed = set_by_name(&on, "lyricsPlace", "LRCLIB:0").unwrap().prefs;
         assert_eq!(crate::lyrics_sources::switched_on(&placed)[0].name(), "LRCLIB", "dropped first, asked first");
         assert_eq!(placed.lyrics_on, on.lyrics_on);
         assert!(set_by_name(&on, "lyricsPlace", "LRCLIB:x").is_none());
         let only = set_by_name(&p, "lyricsSources", "lrclib, kugou").unwrap().prefs;
-        assert_eq!(only.lyrics_on, ["LRCLIB", "KUGOU"]);
-        assert_eq!(only.lyrics_order[..2], ["LRCLIB", "KUGOU"]);
+        assert_eq!(only.lyrics_on, [LyricsService::Lrclib, LyricsService::Kugou]);
+        assert_eq!(only.lyrics_order[..2], [LyricsService::Lrclib, LyricsService::Kugou]);
         let back = set_by_name(&only, "lyricsSources", "default").unwrap().prefs;
         assert_eq!((back.lyrics_on, back.lyrics_order), (p.lyrics_on.clone(), p.lyrics_order.clone()));
         let keyed = set_by_name(&placed, "paxSenixKey", "  k  ").unwrap().prefs;

@@ -273,3 +273,15 @@ pub struct TransitionPlan {
     /// Why this plan, for logs.
     pub reason: String,
 }
+
+impl TransitionPlan {
+    /// Whether both plans mix the same audio: equal but for `kind`, `reason` and `tempo_ramp_beats`
+    /// (`tempo_ramp_ms` is what runs).
+    pub fn sounds_same(&self, o: &TransitionPlan) -> bool {
+        let TransitionPlan { kind: _, reason: _, tempo_ramp_beats: _, out_start_ms, in_start_ms, duration_ms, tempo_ratio, tempo_ramp_ms, keep_pitch, fade_curve, out_fade_start_ms, out_fade_end_ms, in_fade_start_ms, in_fade_end_ms, out_gain_db, in_gain_db, bass_swap, low_pass, high_pass, echo, out_loop_ms, vocal_duck } = self;
+        (*out_start_ms, *in_start_ms, *duration_ms, *tempo_ramp_ms, *out_fade_start_ms, *out_fade_end_ms, *in_fade_start_ms, *in_fade_end_ms, *out_loop_ms)
+            == (o.out_start_ms, o.in_start_ms, o.duration_ms, o.tempo_ramp_ms, o.out_fade_start_ms, o.out_fade_end_ms, o.in_fade_start_ms, o.in_fade_end_ms, o.out_loop_ms)
+            && (*tempo_ratio, *keep_pitch, *fade_curve, *out_gain_db, *in_gain_db) == (o.tempo_ratio, o.keep_pitch, o.fade_curve, o.out_gain_db, o.in_gain_db)
+            && (*bass_swap, *low_pass, *high_pass, *echo, *vocal_duck) == (o.bass_swap, o.low_pass, o.high_pass, o.echo, o.vocal_duck)
+    }
+}

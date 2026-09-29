@@ -132,7 +132,7 @@ fn sample() -> StoredPrefs {
             o.reverse();
             o
         },
-        lyrics_on: vec!["LRCLIB".into(), "KUGOU".into()],
+        lyrics_on: vec![nori_settings::lyrics_sources::LyricsService::Lrclib, nori_settings::lyrics_sources::LyricsService::Kugou],
         lyrics_prefer_words: false,
         paxsenix_key: "pax".into(),
         better_lyrics_key: "better".into(),

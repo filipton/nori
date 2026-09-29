@@ -447,9 +447,11 @@ async fn kugou(a: &Ask<'_>, song: &Song) -> Asked<Lookup> {
     let o = a.get_json(&search, &[]).await?;
     status(&o)?;
     let Some(candidates) = list(&o, "candidates") else { return Ok(Lookup::Missing) };
+    // Its singers are mostly in Chinese, so an artist in another script does not pass here.
+    let singer_fits = |x: &Value| str_of(x, "singer").trim().is_empty() || alike(&str_of(x, "singer"), &song.artist);
     let best = candidates
         .iter()
-        .filter(|x| fits(song, &title, &str_of(x, "song"), &str_of(x, "singer"), num(x, "duration")))
+        .filter(|x| fits(song, &title, &str_of(x, "song"), &str_of(x, "singer"), num(x, "duration")) && singer_fits(x))
         .min_by(|x, y| distance(num(x, "duration"), song).total_cmp(&distance(num(y, "duration"), song)));
     let Some(best) = best else { return Ok(Lookup::Missing) };
     let (id, key) = (str_of(best, "id"), str_of(best, "accesskey"));
@@ -880,6 +882,15 @@ pub(crate) mod tests {
         web.answer("https://lyrics-storage.binimum.org/X.ttml", 200, ttml);
         let Lookup::Found(l, _) = asking(&web, LyricsService::Binilyrics) else { panic!("found") };
         assert!(l.word_timed);
+    }
+
+    #[test]
+    fn kugou_skips_other_artist_in_other_script() {
+        let web = Web::default();
+        let found = json!({"status": 200, "candidates": [{"id": "1", "accesskey": "k", "song": "Glass Harbour", "singer": "周杰伦", "duration": 239_000}]});
+        web.answer("https://lyrics.kugou.com/search", 200, &found.to_string());
+        assert_eq!(asking(&web, LyricsService::Kugou), Lookup::Missing);
+        assert_eq!(web.asked().len(), 1, "no download for another artist");
     }
 
     #[test]

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use nori_automix::beat_model;
 use nori_player::automix::beats;
 
-use crate::lyrics_sources::{self, LyricsService};
+use crate::lyrics_sources;
 use crate::codec::K;
 use crate::settings::{row, value_of_special, SettingChange, StoredPrefs, ROWS, SPECIAL_SPECS};
 
@@ -152,8 +152,7 @@ pub fn state(p: &StoredPrefs, out: Output) -> SettingsState {
     let policy = nori_player::policy::audio_policy(&prefs, &output);
     let on = lyrics_sources::switched_on(p);
     let lyrics_sources = lyrics_sources::complete_order(&p.lyrics_order)
-        .iter()
-        .filter_map(|n| LyricsService::named(n))
+        .into_iter()
         .map(|s| LyricsSource { id: s.name().into(), on: on.contains(&s), timing: s.best(), needs_key: s.needs_key() })
         .collect();
     SettingsState {
@@ -353,9 +352,10 @@ mod tests {
         let none = state(&StoredPrefs { sound_bypass: true, ..eq.clone() }, Output::default());
         assert!(!none.sound_chain_on && !none.offload_paused);
         // Every lyrics service, in the order they are asked, each on or off where it stands.
-        assert_eq!(s.lyrics_sources.iter().map(|l| l.id.clone()).collect::<Vec<_>>(), d.lyrics_order);
+        let order: Vec<&str> = d.lyrics_order.iter().map(|s| s.name()).collect();
+        assert_eq!(s.lyrics_sources.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(), order);
         let on: Vec<&str> = s.lyrics_sources.iter().filter(|l| l.on).map(|l| l.id.as_str()).collect();
-        assert_eq!(on, d.lyrics_order.iter().map(String::as_str).collect::<Vec<_>>(), "every service on");
+        assert_eq!(on, order, "every service on");
         let off = set_by_name(&d, "lyricsService:BINILYRICS", "false").unwrap().prefs;
         let s2 = state(&off, Output::default());
         assert_eq!(s2.lyrics_sources[1], LyricsSource { id: "BINILYRICS".into(), on: false, timing: 3, needs_key: false }, "switched off where it stands");
