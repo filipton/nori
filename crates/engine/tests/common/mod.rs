@@ -53,14 +53,8 @@ struct Shared {
     cv: Condvar,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Virtual(Arc<Shared>);
-
-impl Default for Virtual {
-    fn default() -> Virtual {
-        Virtual(Arc::default())
-    }
-}
 
 impl Clock for Virtual {
     /// Retries take milliseconds, and a request never stalls: this clock cannot see real time, and a
