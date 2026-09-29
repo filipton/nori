@@ -1350,7 +1350,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         self.blocked = if self.off.is_some() { offload_blocked(&prefs, &state) } else { Some("the output does not decode songs itself") };
         // Turning up needs float samples and the limiter; the limiter alone does not block offload
         // (only a song actually turned up does).
-        let boost_db = s.gain_boost_db.max(0.0).min(nori_player::gain::BOOST_MAX_DB);
+        let boost_db = if s.gain_boost_db > 0.0 { s.gain_boost_db.min(nori_player::gain::BOOST_MAX_DB) } else { 0.0 };
         let gain_max = if policy.untouched || boost_db == 0.0 { 1.0 } else { 10f32.powf(boost_db / 20.0) };
         let mut sound = if policy.untouched { Sound::default() } else { s.sound.clone() };
         sound.limiter |= gain_max > 1.0;

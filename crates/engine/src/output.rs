@@ -1,12 +1,8 @@
-//! The sound card's side. A platform writes one small [`AudioOutput`]: open a device, and from the
-//! device's own thread call [`Feed::pull`] for every buffer it wants. The feed reads a lock-free ring
-//! that one engine thread fills in bursts; pulling never blocks, never allocates and never takes a
-//! lock, so the device thread cannot be held up by anything the player does.
-//!
-//! The ring holds float samples at the device's rate and channel count. The engine's output below the
-//! sound chain ([`RingTrack`]) converts the chain's audio (16-bit, or float for high quality output)
-//! into it, resampling only when the device would not take the stream's own rate, and keeps the map
-//! from ring frames back to song time that the playhead is read through.
+//! The sound card side. A platform implements [`AudioOutput`] and calls [`Feed::pull`] from the device
+//! thread. The feed reads a lock-free ring of float samples (device rate and channels) that the engine
+//! fills in bursts: pulling never blocks, allocates or locks. [`RingTrack`] converts the chain's audio
+//! into the ring, resampling only when the device will not take the stream's rate, and maps ring frames
+//! back to song time for the playhead.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -25,154 +21,129 @@ use nori_player::pipeline::Track;
 pub struct OutputFormat {
     pub rate: u32,
     pub channels: usize,
-    /// The bits per sample of the song, as its file stores them, when the song's own samples are to
-    /// reach the device as they are (bit-perfect output): a device that can takes them at that depth.
-    /// 0 otherwise.
+    /// Bit-perfect output: the song's own bits per sample, for a device that can take them. 0 otherwise.
     pub bits: u32,
 }
 
-/// Where the music goes: the kind of device, and the name it gives itself.
+/// The device the music goes to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Device {
     pub kind: OutputKind,
     pub name: String,
 }
 
-/// Called by an output whenever the device the music goes to changes (from any thread).
+/// Told the new device whenever it changes (from any thread).
 pub type DeviceWatch = Box<dyn Fn(Device) + Send + Sync>;
 
-/// A sound card, or anything that takes the music the way one does (a file). Called only from the
-/// engine's thread; the device's own thread only ever calls [`Feed::pull`].
+/// A sound card, or anything that takes music like one (a file). Called only on the engine's thread;
+/// the device thread only calls [`Feed::pull`].
 pub trait AudioOutput: Send {
-    /// From now on `changed` is told which device the music goes to: once when the output knows, and
-    /// again whenever the system moves it (headphones plugged in, a Bluetooth device connected), so
-    /// the core can give each device its own sound. An output that cannot tell says nothing.
+    /// Registers `changed`, told the device now and whenever the system moves the music (headphones,
+    /// Bluetooth), so each device can have its own sound. Optional.
     fn watch(&mut self, _changed: DeviceWatch) {}
-    /// Picks the device's format, as close to `want` as it goes. Nothing plays yet.
+    /// Picks the device format closest to `want`. Nothing plays yet.
     fn open(&mut self, want: OutputFormat) -> Result<OutputFormat, String>;
-    /// From now on the device pulls every buffer it plays from `feed`; it starts paused.
+    /// The device pulls from `feed` from now on; it starts paused.
     fn start(&mut self, feed: Feed) -> Result<(), String>;
-    /// Stops pulling, and lets the device sleep.
+    /// Stops pulling; the device may sleep.
     fn pause(&mut self);
     fn resume(&mut self);
     /// How long a sample pulled now takes to be heard, µs.
     fn latency_us(&self) -> u64;
-    /// Whether the device plays float samples as they are ([`Feed::pull`]) rather than 16-bit ones
-    /// ([`Feed::pull_i16`]). With high quality output on, songs are then decoded and carried to it in
-    /// float; otherwise the chain runs in 16 bits, as Android's does without float output.
+    /// Whether the device takes float ([`Feed::pull`]) rather than 16-bit ([`Feed::pull_i16`]). With
+    /// high quality output, songs are then decoded and carried in float.
     fn takes_float(&mut self) -> bool {
         false
     }
-    /// High quality output was switched on or off: a device that plays float or 16-bit as it is opened
-    /// opens in float from its next opening only while it is on. The engine opens it again for the next
-    /// song when it was opened without.
+    /// High quality output switched: a device opening in either format opens in float from its next
+    /// opening only while on (the engine reopens it at the next song).
     fn float(&mut self, _on: bool) {}
-    /// The music the ring held was dropped (a seek, a jump): what the device itself still holds of it is
-    /// stale too. Called on the engine's thread after the ring let it go; an output with a buffer of its
-    /// own worth hearing (seconds, not milliseconds) wakes its thread here, and [`Feed::flushed`] says
-    /// where the new music starts.
+    /// The ring's music was dropped (seek, jump): an output with a buffer of seconds drops its own too;
+    /// [`Feed::flushed`] marks where the new music starts.
     fn flush(&mut self) {}
-    /// A volume fade from `from` (or wherever the volume is) to `target` over `ms`. An output whose device
-    /// holds seconds of music runs it at the device (its own volume), where it is heard when asked for,
-    /// and says true; otherwise the ring runs it on the samples it hands out.
+    /// Fades from `from` (or where it is) to `target` over `ms`. An output holding seconds runs it on
+    /// the device's volume, where it is heard at once, and returns true; otherwise the ring runs it.
     fn ramp(&mut self, _from: Option<f32>, _target: f32, _ms: i64) -> bool {
         false
     }
-    /// Whether the device still holds music it took from the ring and has not played: with a buffer of
-    /// seconds, the music is not over when the ring runs empty.
+    /// The device still holds unplayed music taken from the ring.
     fn holding(&self) -> bool {
         false
     }
-    /// Whether the device takes the ring's music in bursts of seconds rather than a steady trickle. The
-    /// ring then does not run down between its pulls, so the engine sleeps until the pull that crosses
-    /// the low mark wakes it, with no timer guessing when that will be.
+    /// The device pulls in bursts of seconds: the engine sleeps until the pull that crosses the low
+    /// mark wakes it, with no timer.
     fn bursts(&self) -> bool {
         false
     }
-    /// Whether the device should hold no more than a fraction of a second of music from now on (the
-    /// equalizer is being tuned, and a band moved is to be heard at once) or its deep buffer again. Told
-    /// just before the flush that comes with it ([`AudioOutput::flush`]), or with none for a device that
-    /// [`AudioOutput::resizes`], and before the device is started; the ring is kept as shallow then
-    /// ([`SHALLOW_US`]). A device whose buffer is a few milliseconds anyway has nothing to do.
+    /// Hold only a fraction of a second (equalizer tuning) or the deep buffer again. Told before the
+    /// flush that comes with it (no flush if [`AudioOutput::resizes`]) and before starting; the ring is
+    /// kept at [`SHALLOW_US`] meanwhile.
     fn shallow(&mut self, _on: bool) {}
-    /// Whether [`AudioOutput::shallow`] takes effect at once over the same device, which keeps what it
-    /// holds and plays on (a phone's AudioTrack, whose buffer size moves inside the one it was opened
-    /// with). The engine then changes its ring's depth in place too, with no flush and no dip, so the
-    /// equalizer screen opening or closing is not heard; otherwise both are made again behind a dip.
+    /// [`AudioOutput::shallow`] applies in place without dropping what the device holds (a phone's
+    /// AudioTrack): the engine then resizes the ring in place too, with no flush or dip.
     fn resizes(&self) -> bool {
         false
     }
-    /// How deep a device kept shallow found it must be for where it plays, once it knows: a Bluetooth
-    /// output has a latency and pulls of its own far beyond a phone speaker's, and a track kept as shallow
-    /// as for the speaker runs dry there. The engine keeps its ring at least [`ShallowDepth::ring_us`]
-    /// while tuned, and counts [`ShallowDepth::device_us`] as the shallow device's when it tells a band
-    /// moved that is heard as it is from one made again. None: [`SHALLOW_US`] and the device's own say.
+    /// How deep a shallow device must be where it plays (a Bluetooth output needs far more than a
+    /// speaker), once known. None: [`SHALLOW_US`] and the device's own say.
     fn shallow_depth(&self) -> Option<ShallowDepth> {
         None
     }
-    /// The device stopped taking music and could not be opened again (a sound server that died): asked
-    /// by the engine whenever it looks, and woken for with [`Feed::wake_engine`]. The engine then stops,
-    /// says so, and lets the output go, so the next play opens a new one where the music was.
+    /// The device stopped and could not reopen (a dead sound server); the engine checks after
+    /// [`Feed::wake_engine`], stops, reports it and releases the output.
     fn failed(&mut self) -> Option<String> {
         None
     }
-    /// Lets the device go.
     fn close(&mut self);
 }
 
-/// How far above empty the ring is when the engine is woken to fill it: a little under the burst's
-/// low mark, so the burst's own count (which includes what the device holds) agrees it is time.
+/// Ring fill at which the engine is woken: a little under the burst's low mark, so the burst's own
+/// count (which includes the device) agrees it is time.
 pub const WAKE_LOW_US: i64 = LOW_US - 250_000;
-/// How much the ring holds while the equalizer is tuned (`nori_player::pipeline::Player::shallow_us`):
-/// with a device kept as shallow ([`AudioOutput::shallow`]), a band moved is heard within a quarter of a
-/// second. The engine is woken to top it up when half of it is left.
+/// Ring depth while tuning (`nori_player::pipeline::Player::shallow_us`): with a shallow device a band
+/// moved is heard within a quarter second. Topped up at half.
 pub const SHALLOW_US: i64 = 80_000;
-/// What a device kept shallow needs ([`AudioOutput::shallow_depth`]), µs.
+/// What a shallow device needs ([`AudioOutput::shallow_depth`]), µs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShallowDepth {
-    /// The most music the device holds while shallow, counted as its clock counts it (the output's own
-    /// latency in it).
+    /// Most the device holds while shallow, its latency included.
     pub device_us: i64,
-    /// The ring that keeps it fed: what one of the device's top-ups takes from it.
+    /// Ring depth that keeps it fed: one of its top-ups.
     pub ring_us: i64,
 }
 
-/// The ring's room beyond the sink's deep buffer: the resampler's rounding and a device's first pull.
+/// Ring room beyond the deep buffer: resampler rounding and a device's first pull.
 const SLACK_US: i64 = 2_000_000;
-/// A flush is told to the device ([`AudioOutput::flush`]) once this much of the music that follows it
-/// is in the ring, or at the end of the engine's turn if that comes first: a device with a buffer of
-/// seconds empties it when told, and starts again from what the ring has then. Told at once, it found
-/// the ring empty and waited a tick for the music (and a phone's track waits for a quarter of a second
-/// of it before it starts).
+/// A flush reaches the device ([`AudioOutput::flush`]) once this much new music is in the ring, or at
+/// the turn's end: told at once, a deep device found the ring empty and waited a tick (a phone's track
+/// waits for a quarter second of music before starting).
 const TELL_FLUSH_US: i64 = 300_000;
 
-/// Shared between the engine's thread (the only writer) and the device's (the only reader).
+/// Shared by the engine thread (sole writer) and the device thread (sole reader).
 pub(crate) struct Ring {
-    /// Float samples as their bits: plain loads and stores on every machine that matters, and no
-    /// data race even when a flush lets the writer run over what the reader is still looking at.
+    /// Float samples as bits: no data race even when a flush lets the writer overrun the reader.
     slots: Box<[AtomicU32]>,
     frames: u64,
     channels: usize,
     rate: u32,
     bits: u32,
-    /// Frames written and read since the ring was made; they only grow.
+    /// Frames written and read since creation; monotonic.
     write: AtomicU64,
     read: AtomicU64,
-    /// A flush: everything before this frame is dropped unplayed.
+    /// Flush: frames before this are dropped.
     discard: AtomicU64,
-    /// The engine sleeps until the ring runs down to `low` frames: the reader wakes it then, once.
+    /// The engine sleeps until the ring falls to `low` frames; the reader wakes it once.
     waiting: AtomicBool,
     low: AtomicU64,
     engine: Thread,
-    /// A volume fade the reader runs sample by sample: where from (NaN: wherever it is), where to,
-    /// over how many frames, and a count that moves whenever a new one is asked for.
+    /// A fade run per sample by the reader: from (NaN: current), to, length, and a generation bumped
+    /// per request.
     gain_from: AtomicU32,
     gain_target: AtomicU32,
     ramp_frames: AtomicU32,
     ramp_gen: AtomicU32,
-    /// The music is over: running dry now is the end, not an underrun.
+    /// The music is over: running dry is not an underrun.
     ended: AtomicBool,
-    /// Pulls that found the ring short while music was due.
     underruns: AtomicU64,
 }
 
@@ -202,7 +173,7 @@ impl Ring {
         }
     }
 
-    /// Where the reader is, a flush taken into account.
+    /// The reader's position, after any flush.
     fn read_at(&self) -> u64 {
         self.read.load(Ordering::Acquire).max(self.discard.load(Ordering::Acquire))
     }
@@ -226,22 +197,22 @@ impl Drop for Ring {
     }
 }
 
-/// Bytes every ring alive holds, for the perf report's memory line.
+/// Bytes held by all rings, for the perf report. Process-wide: the report reads memory per process.
 static RING_BYTES: AtomicU64 = AtomicU64::new(0);
 
-/// Bytes the engines' rings hold now: twelve seconds of float samples each.
+/// Bytes held by all rings now.
 pub fn ring_bytes() -> u64 {
     RING_BYTES.load(Ordering::Relaxed)
 }
 
-/// The device thread's end of the ring. Owned by the device's callback; see [`Feed::pull`].
+/// The device thread's end of the ring.
 pub struct Feed {
     ring: Arc<Ring>,
     gain: f32,
     target: f32,
     step: f32,
     gen: u32,
-    /// The flush the last pull saw, and whether one happened since [`Feed::flushed`] was last asked.
+    /// The last flush seen, and whether one happened since [`Feed::flushed`] was asked.
     seen: u64,
     flushed: bool,
 }
@@ -251,9 +222,8 @@ impl Feed {
         Feed { ring, gain: 1.0, target: 1.0, step: 0.0, gen: 0, seen: 0, flushed: false }
     }
 
-    /// Whether the ring was flushed since this was last asked, as the pulls found it: the frames the
-    /// last pull returned (if any) are then the new music's, and what the device held from before it
-    /// should go. A pull never mixes the two.
+    /// Whether a pull found a flush since last asked: the last pull's frames are new music, and what the
+    /// device held before should go. A pull never mixes the two.
     pub fn flushed(&mut self) -> bool {
         std::mem::take(&mut self.flushed)
     }
@@ -262,9 +232,8 @@ impl Feed {
         OutputFormat { rate: self.ring.rate, channels: self.ring.channels, bits: self.ring.bits }
     }
 
-    /// Fills `out` (interleaved, the device's channels) with the music, silence past what there is.
-    /// Returns the frames of music it held. Lock-free and allocation-free: made for the device's own
-    /// real-time thread.
+    /// Fills `out` (interleaved) with music, then silence. Returns the frames of music. Lock- and
+    /// allocation-free, for a real-time thread.
     pub fn pull(&mut self, out: &mut [f32]) -> usize {
         self.pull_as(out, |v| v)
     }
@@ -279,7 +248,7 @@ impl Feed {
         let ch = r.channels;
         let want = (out.len() / ch) as u64;
         let w = r.write.load(Ordering::Acquire);
-        // Read after the write position: a pull that sees music written after a flush sees the flush.
+        // Read after `write`, so music written after a flush comes with the flush.
         let discard = r.discard.load(Ordering::Acquire);
         if discard != self.seen {
             self.seen = discard;
@@ -316,20 +285,19 @@ impl Feed {
         if n < want && !r.ended.load(Ordering::Relaxed) && w > 0 {
             r.underruns.fetch_add(1, Ordering::Relaxed);
         }
-        // Run down to the low mark: the engine's next burst is due. One wake per burst.
+        // At the low mark: wake the engine for the next burst, once.
         if w - (at + n) <= r.low.load(Ordering::Relaxed) && r.waiting.load(Ordering::Relaxed) && r.waiting.swap(false, Ordering::AcqRel) {
             r.engine.unpark();
         }
         n as usize
     }
 
-    /// Wakes the engine now, for something the device must tell it at once ([`AudioOutput::failed`]).
+    /// Wakes the engine, e.g. for [`AudioOutput::failed`].
     pub fn wake_engine(&self) {
         self.ring.engine.unpark();
     }
 
-    /// Whether the engine sleeps until a pull takes the ring down to its low mark: a pull that finds it
-    /// so, and leaves it not so, woke it. For a test's device on a clock it moves by hand.
+    /// The engine waits for the low mark (a pull that clears this woke it). For test devices.
     pub fn engine_waits(&self) -> bool {
         self.ring.waiting.load(Ordering::Acquire)
     }
@@ -339,63 +307,61 @@ impl Feed {
         self.ring.filled() as usize
     }
 
-    /// The music is over: what is left in the ring is the last of it.
+    /// The music is over: the ring holds the last of it.
     pub fn ending(&self) -> bool {
         self.ring.ended.load(Ordering::Acquire)
     }
 
-    /// The music is over and everything was pulled: a file stops writing here.
+    /// The music is over and all pulled.
     pub fn finished(&self) -> bool {
         self.ring.ended.load(Ordering::Acquire) && self.ring.filled() == 0
     }
 }
 
-/// The [`Track`] under the engine's sink: the ring, the device, and the way back from ring frames
-/// to song time.
+/// The [`Track`] under the engine's sink: the ring, the device, and the ring-frame-to-song-time map.
 pub(crate) struct RingTrack {
     output: Box<dyn AudioOutput>,
     ring: Option<Arc<Ring>>,
     device: Option<OutputFormat>,
-    /// What the device was asked for when it was opened (it may have given something else).
+    /// What the device was asked for (it may have given something else).
     asked: Option<OutputFormat>,
     format: Option<Format>,
     resampler: Option<Resampler>,
     converted: Vec<u8>,
     engine: Thread,
-    /// The ring's write position at the last flush: frames from here on are this timeline's.
+    /// The ring's write position at the last flush.
     base: u64,
-    /// Where each stretch of written frames ends (frames since the flush) and the song time it takes
-    /// the playhead to, and the start of the first stretch still ahead of the playhead.
+    /// End of each written stretch (frames since the flush, song time), and the start of the first
+    /// stretch still ahead of the playhead.
     marks: VecDeque<(u64, f64)>,
     from: (u64, f64),
     written: (u64, f64),
     playing: bool,
-    /// Whether the device plays float, once asked.
+    /// Whether the device takes float, once asked.
     float: Option<bool>,
-    /// Why the device would not open, until the engine has said so.
+    /// Why the device would not open, until reported.
     pub failed: Option<String>,
-    /// Each song reaches the device as it is (bit-perfect): the device is opened in the song's own bits
-    /// too, never converted, and opened again when the next song's differ, once what it holds of the song
-    /// before has played (`Track::must_reopen`).
+    /// Bit-perfect: the device opens at each song's own format and bits, reopening between songs that
+    /// differ (`Track::must_reopen`).
     pub(crate) exact: bool,
-    /// The bits per sample of the song whose stream is configured next.
+    /// Bits per sample of the next stream.
     bits: u32,
-    /// The highest rate the device is opened at, Hz (0: the song's own); not for a song played as it is.
+    /// Highest device rate, Hz (0: the song's own); ignored when bit-perfect.
     pub(crate) max_rate: u32,
-    /// High quality output is on, and whether it was when the device was opened.
+    /// High quality output is on, and was when the device opened.
     float_on: bool,
     opened_float: bool,
-    /// The device is kept shallow ([`AudioOutput::shallow`]), as last told.
+    /// As last told to [`AudioOutput::shallow`].
     shallow: bool,
-    /// A flush the device has not been told of yet ([`TELL_FLUSH_US`]), the frames written since it,
-    /// and a fade asked for meanwhile, which the device takes with the flush.
+    /// A flush not yet told to the device ([`TELL_FLUSH_US`]), frames written since, and a fade to apply
+    /// with it.
     untold: bool,
     since_flush: u64,
     held_ramp: Option<(Option<f32>, f32, i64)>,
 }
 
 impl RingTrack {
-    /// What the device found it needs while shallow ([`AudioOutput::shallow_depth`]).
+    /// [`AudioOutput::shallow_depth`].
     pub(crate) fn shallow_depth(&self) -> Option<ShallowDepth> {
         self.output.shallow_depth()
     }
@@ -429,8 +395,8 @@ impl RingTrack {
         }
     }
 
-    /// The device's format for a stream in `format`: its own, with its bits when it goes out exactly, and
-    /// otherwise its rate held under the maximum (halved within its family, the ring's resampler converting).
+    /// The device format for `format`: as is (with bits) when bit-perfect, else the rate capped within its
+    /// family.
     fn wanted(&self, format: Format) -> OutputFormat {
         if self.exact {
             return OutputFormat { rate: format.rate, channels: format.channels, bits: self.bits };
@@ -443,7 +409,7 @@ impl RingTrack {
         self.device.is_some()
     }
 
-    /// The device is let go (a long pause); the next stream opens it again.
+    /// Releases the device; the next stream reopens it.
     pub(crate) fn release(&mut self) {
         if self.device.take().is_some() {
             self.output.close();
@@ -459,7 +425,7 @@ impl RingTrack {
         self.held_ramp = None;
     }
 
-    /// The device is told of the flush now, and takes the fade asked for since with it.
+    /// Tells the device of a pending flush, with the fade asked for since.
     fn tell_flush(&mut self) {
         if !std::mem::take(&mut self.untold) {
             return;
@@ -470,33 +436,30 @@ impl RingTrack {
         }
     }
 
-    /// The end of the engine's turn: a flush not told yet is told now, with whatever came after it.
+    /// End of the engine's turn: a pending flush is told now.
     pub(crate) fn told(&mut self) {
         self.tell_flush();
     }
 
-    /// High quality output on or off: from the device's next opening, which the next song brings when it
-    /// was opened without ([`Track::must_reopen`]).
+    /// High quality output on or off, from the device's next opening ([`Track::must_reopen`]).
     pub(crate) fn set_float(&mut self, on: bool) {
         self.float_on = on;
         self.output.float(on);
     }
 
-    /// Whether the device must be opened again for a stream in `format` before it plays: a stream the
-    /// engine hands over at another rate or channel count than the device was asked for (the transition
-    /// engine converts only what it mixes, and lets the output follow a song that begins with nothing
-    /// overlapping it), or at other bits played as it is; or opened in 16 bits with high quality output on
-    /// since. A device that would not take what it was asked is converted to by the ring's resampler.
+    /// Whether the device must reopen for `format`: another rate, channels or (bit-perfect) bits than it
+    /// was asked for, or opened 16-bit before high quality output was switched on. A device that gave
+    /// another format than asked is fed through the resampler instead.
     fn reopens(&self, format: Format) -> bool {
         self.device.is_some() && (self.asked != Some(self.wanted(format)) || (self.float_on && !self.opened_float))
     }
 
-    /// Whether the device plays float samples as they are; asked of it once.
+    /// Whether the device takes float; asked once.
     pub(crate) fn takes_float(&mut self) -> bool {
         *self.float.get_or_insert_with(|| self.output.takes_float())
     }
 
-    /// Music in the ring, µs of the device's time.
+    /// Music in the ring, µs.
     pub(crate) fn filled_us(&self) -> i64 {
         match (&self.ring, self.device) {
             (Some(r), Some(d)) => (r.filled() as i128 * 1_000_000 / d.rate as i128) as i64,
@@ -513,20 +476,20 @@ impl RingTrack {
         self.output.bursts()
     }
 
-    /// The engine goes to sleep until the ring holds no more than `us` of music.
+    /// The engine sleeps until the ring holds `us` or less.
     pub(crate) fn wake_at(&self, us: i64) {
         if let Some(r) = &self.ring {
-            r.low.store((us.max(0) as u64 * r.rate as u64 / 1_000_000) as u64, Ordering::Relaxed);
+            r.low.store(us.max(0) as u64 * r.rate as u64 / 1_000_000, Ordering::Relaxed);
             r.waiting.store(true, Ordering::Release);
         }
     }
 
-    /// A volume fade from `from` (or wherever the volume is) to `target` over `ms`: run by the device
-    /// when it says it does fades itself, otherwise by the device thread from its next pull.
+    /// Fades from `from` (or where it is) to `target` over `ms`, on the device if it fades itself, else
+    /// in the pulls.
     pub(crate) fn ramp(&mut self, from: Option<f32>, target: f32, ms: i64) {
         if self.untold && self.ring.is_some() {
-            // The device still plays what it held before the flush: the fade is for the music after it,
-            // and goes with the flush. A level to start from is taken at once.
+            // The device still plays pre-flush music: the fade goes with the flush; a start level
+            // applies at once.
             if let Some(v) = from {
                 self.ramp_now(Some(v), v, 0);
             }
@@ -544,8 +507,7 @@ impl RingTrack {
         }
     }
 
-    /// The ring frame (since the flush) the music reaches song time `media` at, from the stretches
-    /// written: the map the playhead is read through, the other way round.
+    /// The ring frame (since the flush) at song time `media`.
     fn frame_of(&self, media: f64) -> u64 {
         let mut before = self.from;
         for &m in self.marks.iter().chain(std::iter::once(&self.written)) {
@@ -559,14 +521,14 @@ impl RingTrack {
         self.written.0
     }
 
-    /// Whether the music is over (no gaps are counted past it).
+    /// Marks the music over (no underruns counted past it).
     pub(crate) fn set_ended(&self, ended: bool) {
         if let Some(r) = &self.ring {
             r.ended.store(ended, Ordering::Release);
         }
     }
 
-    /// Why the device failed, once: it would not open, or it stopped taking music and would not open again.
+    /// Why the device failed, once: it would not open, or stopped and would not reopen.
     pub(crate) fn take_failure(&mut self) -> Option<String> {
         self.failed.take().map(|e| format!("the output would not open: {e}")).or_else(|| self.output.failed().map(|e| format!("the output stopped: {e}")))
     }
@@ -575,7 +537,7 @@ impl RingTrack {
         self.ring.as_ref().map_or(0, |r| r.underruns.load(Ordering::Relaxed))
     }
 
-    /// Song time up to ring frame `p` (since the flush), from the stretches written.
+    /// Song time at ring frame `p` (since the flush).
     fn media_at(&mut self, p: u64) -> f64 {
         while let Some(&m) = self.marks.front() {
             if m.0 > p {
@@ -596,14 +558,12 @@ impl Track for RingTrack {
         self.format = Some(format);
         let want = self.wanted(format);
         if self.reopens(format) {
-            // A stream in another format gets a device of its own (the one before has played out,
-            // `Track::must_reopen`), its playhead from nought.
+            // Another format: a new device (the old one played out, `Track::must_reopen`).
             self.release();
             self.format = Some(format);
         }
         if self.device.is_none() {
-            // The stream picks the device's format. Songs mixed into it arrive converted to it by the
-            // transition engine; one that begins alone at another rate opens the device again above.
+            // The stream picks the format; mixed songs arrive converted by the transition engine.
             let opened = self.output.open(want).and_then(|d| {
                 let ring = Arc::new(Ring::new(d, self.engine.clone()));
                 self.output.start(Feed::new(ring.clone()))?;
@@ -675,8 +635,7 @@ impl Track for RingTrack {
                 self.tell_flush();
             }
         }
-        // Stretches at the same pace are one: at one times speed, with no resampling, the whole song
-        // is a single mark.
+        // Merge stretches at the same pace (at 1x without resampling a song is one mark).
         let pace = |from: (u64, f64), to: (u64, f64)| (to.1 - from.1) / (to.0 - from.0).max(1) as f64;
         let before = self.marks.len().checked_sub(2).map_or(self.from, |i| self.marks[i]);
         match self.marks.back_mut() {
@@ -702,7 +661,6 @@ impl Track for RingTrack {
             r.discard.store(w, Ordering::Release);
             r.ended.store(false, Ordering::Release);
             self.base = w;
-            // Told once the music after it is there to start from.
             self.untold = true;
             self.since_flush = 0;
         }
@@ -716,9 +674,7 @@ impl Track for RingTrack {
         }
     }
 
-    /// What the ring holds of it and the device has not pulled yet is scaled where it lies. A frame the
-    /// device pulls in the same instant may come out at either volume, which nobody can hear; what the
-    /// device itself already holds (a phone's track holds seconds) stays as it was.
+    /// Scales what the ring still holds of song time `from..to`. What the device already took stays.
     fn rescale(&mut self, from: f64, to: f64, ratio: f32) {
         let Some(r) = self.ring.clone() else { return };
         let ch = r.channels;
@@ -748,9 +704,8 @@ impl Track for RingTrack {
         }
     }
 
-    /// Played as it is, a stream in another format than the device's waits for what the device holds to
-    /// play out: the ring says that is the end of the music, so the device plays all of it and counts no
-    /// gap.
+    /// A stream needing a reopen waits for the device to play out: marked as the end, so it is played
+    /// whole with no underrun counted.
     fn must_reopen(&mut self, format: Format) -> bool {
         let reopen = self.reopens(format);
         if reopen {
@@ -784,7 +739,7 @@ impl Drop for RingTrack {
 mod tests {
     use super::*;
 
-    /// An output that only remembers the feed, for pulling by hand.
+    /// Keeps the feed for pulling by hand.
     struct Hand(Arc<parking_lot::Mutex<Option<Feed>>>);
 
     impl AudioOutput for Hand {
@@ -810,11 +765,11 @@ mod tests {
     }
 
     #[test]
-    fn the_playhead_follows_song_time_through_a_change_of_pace() {
+    fn playhead_follows_pace_changes() {
         let feed = Arc::new(parking_lot::Mutex::new(None));
         let mut t = RingTrack::new(Box::new(Hand(feed.clone())));
         t.open(F);
-        // 100 frames standing for 100 of the song, then 100 standing for 200 (twice the speed).
+        // 100 frames for 100 of song time, then 100 for 200 (2x speed).
         t.write(&pcm(&[1000; 100]), 100.0);
         t.write(&pcm(&[1000; 100]), 200.0);
         let mut out = vec![0f32; 150];
@@ -830,7 +785,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pull_says_when_the_music_before_it_was_flushed() {
+    fn pull_reports_flush() {
         let feed = Arc::new(parking_lot::Mutex::new(None));
         let mut t = RingTrack::new(Box::new(Hand(feed.clone())));
         t.open(F);
@@ -849,20 +804,20 @@ mod tests {
     }
 
     #[test]
-    fn a_new_volume_reaches_the_music_the_ring_still_holds_of_that_song() {
+    fn rescale_touches_only_that_songs_ring_music() {
         let feed = Arc::new(parking_lot::Mutex::new(None));
         let mut t = RingTrack::new(Box::new(Hand(feed.clone())));
         t.open(F);
-        // Two songs of 100 frames each, the second at twice the speed (100 frames for 200 of song).
+        // Two songs of 100 frames, the second at 2x speed.
         t.write(&pcm(&[16384; 100]), 100.0);
         t.write(&pcm(&[16384; 100]), 200.0);
         let mut out = vec![0f32; 300];
         let mut f = feed.lock();
         let f = f.as_mut().unwrap();
         assert_eq!(f.pull(&mut out[..40]), 40);
-        // The first song's volume halves: what is left of it in the ring, and nothing of the next.
+        // Halve what is left of the first song.
         t.rescale(0.0, 100.0, 0.5);
-        // The second one's from half way into it (song time 200 is ring frame 150).
+        // The second from song time 200 (ring frame 150).
         t.rescale(200.0, f64::MAX, 0.25);
         assert_eq!(f.pull(&mut out[40..200]), 160);
         assert!(out[..40].iter().all(|&v| v == 0.5), "pulled before the change: as it was");
@@ -872,7 +827,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fade_is_run_by_the_puller() {
+    fn fade_runs_in_pulls() {
         let feed = Arc::new(parking_lot::Mutex::new(None));
         let mut t = RingTrack::new(Box::new(Hand(feed.clone())));
         t.open(F);

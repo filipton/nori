@@ -474,7 +474,7 @@ mod tests {
         go.send(()).unwrap();
         let mut w = taking.join().unwrap().expect("the player's entry, where the fetch left it");
         let got = w.written() as usize;
-        assert!(got >= CHUNK && got < LEN, "what came is kept, not fetched again: {got}");
+        assert!((CHUNK..LEN).contains(&got), "what came is kept, not fetched again: {got}");
         assert_eq!(w.read_back().unwrap().len(), got);
         assert!(w.write(got as u64, &vec![3u8; LEN - got]));
         assert!(w.finish(LEN as u64));

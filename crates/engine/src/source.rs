@@ -820,9 +820,7 @@ impl Loaded {
                             t.end(s.error.is_none());
                         }
                         self.wake(&mut s);
-                    } else if body.is_some() && s.ahead() < w.high {
-                        break;
-                    } else if body.is_none() && (go_on || s.ahead() < w.low.max(1)) {
+                    } else if (body.is_some() && s.ahead() < w.high) || (body.is_none() && (go_on || s.ahead() < w.low.max(1))) {
                         break;
                     } else if body.is_some() {
                         // At the high mark: close until the reader nears the low mark.
