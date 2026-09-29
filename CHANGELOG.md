@@ -6,6 +6,26 @@ hand. Versions follow [semantic versioning](https://semver.org).
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-09-29
+
+### Added
+
+- A mix's page shows its covers as one picture, blurred into the page like an album's, upright and on its side
+- With a black background mix pages follow the albums and playlists choice, as the playlists they are
+- On its side a cover is a wider band that reaches in under the words and controls beside it, going soft over a wider edge
+- Home-screen widgets: a resizable player, the cover, for you, random albums and lyrics
+- The app icon follows android's themed icons
+
+### Fixed
+
+- On its side the library's album cards are large again, filling the row
+- On its side shelves run to the screen edges under the camera and the tab rail, fading out smoothly on both sides
+- On its side the player's controls stand in the middle of the screen's height
+- On its side the page leaves the tab rail its strip from the first frame, so shelves never show unfaded as the app opens
+- On its side a cover reaches less far under the words and controls beside it, so they read clearly over its soft edge
+- On its side a page whose cover did not load keeps the same layout, with the plain plate standing in for the picture
+- The lyrics widget opens the player on its lyrics when the app was closed
+
 ## [0.4.7] - 2026-09-29
 
 ### Added
