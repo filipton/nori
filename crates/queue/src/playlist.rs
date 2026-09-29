@@ -385,7 +385,7 @@ pub fn playlist_gain_of(index: usize, bit_perfect: bool) -> f32 {
 }
 
 fn gain_at(index: Option<usize>, bit_perfect: bool) -> f32 {
-    let Some(s) = nori_settings::settings_store::current() else { return 1.0 };
+    let Some(s) = nori_settings::settings_store::settings_current() else { return 1.0 };
     let prefs = s.gain_prefs();
     let (before, current, after, shuffling) = with(|p| {
         let id = |i: Option<usize>| i.map(|i| (p.ids()[i].clone(), p.album_run(i)));

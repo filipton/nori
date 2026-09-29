@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 
 use crate::codec::{clamped, names, on, within, Choice, Custom, Picks, Preamp, Quality, Raw, Row, FLAG, FLOAT, INT, K, LONG, PICK, PICK_NEAREST, TEXT};
 use crate::lyrics_sources;
-use crate::settings_store::{APPLY_AUDIO, APPLY_GAIN, PLAYER, REPLAN, SOUND};
+use crate::settings_store::{APPLY_AUDIO, APPLY_GAIN, CACHE_LIMIT, PLAYER, REPLAN, SOUND};
 
 /// One stored value.
 #[derive(Debug, Clone, PartialEq)]
@@ -593,7 +593,7 @@ pub struct StoredPrefs {
     /// Covers of the songs coming up fetched ahead; the one before is always kept.
     #[setting("coversAhead", clamped(0, 10), default = 3, show = K::Choice(&["0", "1", "2", "3", "5", "8", "10"]))]
     pub covers_ahead: i32,
-    #[setting("cacheMb", within(256, 16384), default = 1024, show = K::Choice(&["256", "1024", "4096", "16384"]))]
+    #[setting("cacheMb", within(256, 16384), default = 1024, show = K::Choice(&["256", "1024", "4096", "16384"]), effect = CACHE_LIMIT)]
     pub cache_mb: i32,
 }
 
@@ -1248,49 +1248,44 @@ pub fn save(p: &StoredPrefs) -> HashMap<String, PrefValue> {
     put
 }
 
-/// What a change by name did: the settings after it, whether the stream cache has to shrink to a new
-/// limit now, and whether the active server's own profile changed (its connection is set up again).
-/// `effect` is what the player has to apply again (`settings_store`'s bits), once the change is kept.
+/// The result of a change by name. `server`: the active server's profile changed (the platform
+/// reconnects). `effect`: `settings_store`'s effect bits, set once the change is kept.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct SettingChange {
     pub prefs: StoredPrefs,
-    pub apply_cache_limit: bool,
     pub server: bool,
     pub effect: u32,
 }
 
-/// The setting a client changes and reads by `name`, from the table.
 pub(crate) fn row(name: &str) -> Option<&'static Row> {
     ROWS.iter().find(|r| r.name == Some(name))
 }
 
-/// Changes one setting by name: the settings screen's rows (each row says which name it sets) and the
-/// debug test bridge (`tools/app.sh set <name> <value>`). A switch reads "true"/"1" as on; an enum reads
-/// its name or its ordinal; a number that does not read leaves the setting as it is. Anything that is
-/// not a setting is `None`, so a typo in a script fails loudly instead of silently doing nothing.
+/// Changes one setting by name (settings rows and the test bridge's `tools/app.sh set`). A switch reads
+/// "true"/"1" as on; an enum its name or ordinal; an unreadable number keeps the value. None for an
+/// unknown name or a refused value, so script typos fail loudly.
 pub fn set_by_name(p: &StoredPrefs, name: &str, value: &str) -> Option<SettingChange> {
     let mut n = p.clone();
     let mut server = false;
-    // Lyrics online still answer to the name they are stored under.
+    // The stored key, kept as an alias.
     let name = if name == "lyricsLrclib" { "lyricsOnline" } else { name };
     match set_special(p, &mut n, &mut server, name, value) {
         Some(done) => done?,
         None => {
             let row = row(name)?;
             (row.set)(&mut n, value)?;
-            // A switch over something looked up online switches the lookups on with it; off leaves them.
+            // Switching on an online lookup switches the master lookups switch on too.
             if row.lookups && on(value) {
                 n.third_party_lookups = true;
             }
         }
     }
-    // "Space for streamed music" is applied at once instead of at the next track.
-    Some(SettingChange { prefs: n, apply_cache_limit: name == "cacheMb", server, effect: 0 })
+    Some(SettingChange { prefs: n, server, effect: 0 })
 }
 
-/// The changes by name the table cannot say line by line: `None` for a name that is the table's, else
-/// whether the value was taken.
+/// Changes by name that are not a single table row: None for a table name, else whether the value was
+/// taken.
 fn set_special(p: &StoredPrefs, n: &mut StoredPrefs, server: &mut bool, name: &str, value: &str) -> Option<Option<()>> {
     let service = |v: &str| {
         let (service, at) = v.split_once(':')?;
@@ -2299,10 +2294,7 @@ mod tests {
         assert!(!set_by_name(&StoredPrefs { mono: true, ..p.clone() }, "mono", "yes").unwrap().prefs.mono);
         assert_eq!(set_by_name(&p, "parallelDownloads", "99").unwrap().prefs.parallel_downloads, 10);
         assert_eq!(set_by_name(&p, "coversAhead", "x").unwrap().prefs.covers_ahead, 3, "unreadable keeps the value");
-        let cache = set_by_name(&p, "cacheMb", "10").unwrap();
-        assert_eq!(cache.prefs.cache_mb, 256);
-        assert!(cache.apply_cache_limit);
-        assert!(!set_by_name(&p, "speed", "9").unwrap().apply_cache_limit);
+        assert_eq!(set_by_name(&p, "cacheMb", "10").unwrap().prefs.cache_mb, 256);
         assert_eq!(set_by_name(&p, "speed", "9").unwrap().prefs.speed, 4.0);
         assert_eq!(set_by_name(&p, "fadeMs", "-5").unwrap().prefs.fade_ms, 0);
         assert_eq!(set_by_name(&p, "autoFillKind", "albums").unwrap().prefs.auto_fill_kind, AutoFillKind::Albums);

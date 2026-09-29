@@ -62,7 +62,7 @@ impl Client {
     /// neither: the entry is then left out of every list from now on. A failed request is an error and
     /// hides nothing.
     pub async fn autoeq_curve(&self, entry: AutoEqEntry) -> NetResult<Option<String>> {
-        let graphic = crate::settings_store::current().is_some_and(|p| p.eq_mode == crate::settings::EqMode::Graphic);
+        let graphic = crate::settings_store::settings_current().is_some_and(|p| p.eq_mode == crate::settings::EqMode::Graphic);
         match autoeq::fetch_curve(&*self.transport, &entry, graphic).await? {
             autoeq::Curve::Found(text) => Ok(Some(text)),
             autoeq::Curve::Missing => {

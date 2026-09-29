@@ -236,7 +236,7 @@ impl Client {
     /// carries on from the library ([`Client::library_seed`]) unless that setting is on. Nothing for a song the queue does not know; a failed read is nothing too.
     pub async fn autofill(&self) -> Refill {
         let (kind, basis, remote) =
-            crate::settings_store::current().map_or((AutoFillKind::Songs, AutoFillBasis::Similar, false), |p| (p.auto_fill_kind, p.auto_fill_basis, p.auto_fill_remote));
+            crate::settings_store::settings_current().map_or((AutoFillKind::Songs, AutoFillBasis::Similar, false), |p| (p.auto_fill_kind, p.auto_fill_basis, p.auto_fill_remote));
         self.autofill_as(kind, basis, remote).await
     }
 }

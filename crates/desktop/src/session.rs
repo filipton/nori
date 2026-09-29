@@ -20,7 +20,7 @@ use nori_core::rules::{queue_keep, song_arrived, BridgeStep, QueueMoment};
 use nori_core::race::{LyricsPick, LyricsShown};
 use nori_core::search::{SearchSession, SearchView};
 use nori_core::settings::{SavedServer, SettingChange, StoredPrefs};
-use nori_core::settings_store::{self, APPLY_AUDIO, APPLY_GAIN, PLAYER, REPLAN, SOUND};
+use nori_core::settings_store::{self, APPLY_AUDIO, APPLY_GAIN, CACHE_LIMIT, PLAYER, REPLAN, SOUND};
 use nori_core::{AlbumDetail, ArtistDetail, Core, OriginKind, PageOrigin, PlaylistDetail, ServerConfig, Song};
 use nori_covers::loader::{Config as CoverConfig, Loader, Ticket};
 use nori_covers::memory::Image;
@@ -533,7 +533,7 @@ impl Session {
     pub fn setting(&self, name: &str, value: &str) -> Option<SettingChange> {
         let change = nori_core::settings_model::setting_set(name.to_string(), value.to_string())?;
         self.apply(change.effect, &change.prefs);
-        if change.apply_cache_limit {
+        if change.effect & CACHE_LIMIT != 0 {
             self.store.set_limit(change.prefs.cache_mb.max(0) as u64 * 1024 * 1024);
         }
         Some(change)

@@ -168,7 +168,7 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
             return
         }
         nori.settings.took(change)
-        if (change.applyCacheLimit) applyCacheLimit()
+        if (change.effect and 32u != 0u) applyCacheLimit() // settings_store.rs CACHE_LIMIT
     }
 
     /** A button on a settings row. */

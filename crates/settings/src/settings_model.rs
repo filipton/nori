@@ -208,7 +208,7 @@ pub fn changed(p: &StoredPrefs) -> String {
 /// [`changed`] for the settings as they are kept now.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn settings_changed() -> String {
-    changed(&crate::settings_store::current().unwrap_or_default())
+    changed(&crate::settings_store::settings_current().unwrap_or_default())
 }
 
 /// Every setting a client can offer: its name, kind, options, range and default.
@@ -221,7 +221,7 @@ pub fn setting_specs() -> Vec<SettingSpec> {
 /// platform's view of the output.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn settings_state(dac_bit_perfect: bool, usb: bool) -> SettingsState {
-    let p = crate::settings_store::current().unwrap_or_default();
+    let p = crate::settings_store::settings_current().unwrap_or_default();
     state(&p, Output { dac_bit_perfect, usb })
 }
 

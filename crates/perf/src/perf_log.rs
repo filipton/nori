@@ -388,7 +388,7 @@ pub fn perf_state(charging: bool, screen_on: bool, playing: bool, foreground: bo
 /// this line ends a stretch as a change of state does.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_config(engine: Option<String>) -> String {
-    let p = settings_store::current().unwrap_or_default();
+    let p = settings_store::settings_current().unwrap_or_default();
     config(engine, &p)
 }
 
@@ -1319,7 +1319,7 @@ pub fn perf_note(wall_ms: i64, note: PerfNote) {
 /// The settings changed (or are read for the first time): which ones, and to what, go on the timeline.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_note_settings(wall_ms: i64) {
-    let Some(p) = settings_store::current() else { return };
+    let Some(p) = settings_store::settings_current() else { return };
     timeline().settings(wall_ms, nori_settings::settings::save(&p));
 }
 
@@ -1372,7 +1372,7 @@ pub fn perf_events_since(since_ms: i64) -> Vec<String> {
 /// Why the settings keep the audio chip from decoding (`nori_player::policy::offload_blocked`, over the
 /// settings as the output policy reads them); none when they allow it, or before they are open.
 fn offload_reason() -> Option<&'static str> {
-    let s = settings_store::current()?;
+    let s = settings_store::settings_current()?;
     let prefs = nori_model::AudioPrefs {
         dsp: s.sound_chain_on(),
         skip_silence: s.skip_silence,
