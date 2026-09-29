@@ -1,19 +1,15 @@
-//! Whether an answer can be this song's lyrics at all, and whether a second answer is the same song's
-//! words as the one shown. The services match on title, artist and length, some of them loosely on their
-//! own side, and a service that fell back to another song answers with that song's words as if they were
-//! these: a few lines of something else, repeated, took the place of the right lyrics while they were
-//! being read. These are the checks every answer passes before it is shown or kept.
+//! Whether an answer can be this song's lyrics at all, and whether two answers are the same words:
+//! a loose service answers with another song's words as if they were these.
 
 use std::collections::HashSet;
 
 use nori_model::{Lyrics, Song};
 
-/// Timed lyrics may run this far past the song's end (a longer cut, a late last line) and still be its.
+/// Timed lyrics may run this far past the song's end and still be its.
 const PAST_END_MS: i64 = 10_000;
 /// Fewer distinct lines than this is a fragment, not a song's lyrics...
 const FEWEST_LINES: usize = 4;
-/// ...unless they are timed across at least this share of the song: a song that is one line sung over
-/// and over (a chant, a dance track) is still sung all the way through.
+/// ...unless timed across at least this share of the song (a chant repeating one line).
 const SPREAD_SHARE: f64 = 0.5;
 /// Two sets of lyrics are the same song's when each has at least this share of its words in the other.
 const SHARED_WORDS: f64 = 0.5;
@@ -56,8 +52,8 @@ fn words(l: &Lyrics) -> HashSet<String> {
     out
 }
 
-/// Whether `l` can be `song`'s lyrics: some words, timed lines that do not run on past the song's end,
-/// and more than a fragment of a few lines (repeated or not) unless they are sung across the song.
+/// Whether `l` can be `song`'s lyrics: some words, no line past the song's end, and more than a
+/// fragment unless sung across the song.
 pub fn plausible(l: &Lyrics, song: &Song) -> bool {
     let texts: HashSet<String> = l.lines.iter().map(|x| norm(&x.text)).filter(|t| !t.is_empty()).collect();
     if texts.is_empty() {
@@ -75,9 +71,7 @@ pub fn plausible(l: &Lyrics, song: &Song) -> bool {
     song_ms > 0 && (last - first) as f64 >= song_ms as f64 * SPREAD_SHARE
 }
 
-/// Whether `a` and `b` are the same song's words: each has at least half its words in the other. The
-/// same song from two services is written a little differently (a backing vocal, a spelling), never
-/// half different.
+/// Whether `a` and `b` are the same song's words: each has at least half its words in the other.
 pub fn agree(a: &Lyrics, b: &Lyrics) -> bool {
     let (x, y) = (words(a), words(b));
     if x.is_empty() || y.is_empty() {

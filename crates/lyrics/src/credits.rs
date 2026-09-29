@@ -1,9 +1,6 @@
-//! What is not sung, at either end of an answer: the credits a service opens or closes the words with
-//! ("Lyrics by …", "作词 : …"), its watermarks and ads ("Lyrics from …", "Embed", "You might also like"),
-//! a header naming the song, an "[Instrumental]" placeholder, and empty or time-only lines. Only a
-//! contiguous run at the start or the end goes; nothing in the middle of the words is touched, so a sung
-//! line that happens to hold "by" or a colon stays. Every answer passes through [`strip_edges`] once, as
-//! it is read, before it is scored and kept, so the cached copy is already clean.
+//! What is not sung at either end of an answer: credits ("Lyrics by …", "作词 : …"), watermarks and ads,
+//! a header naming the song, an "[Instrumental]" placeholder, empty lines. Only a run at an end goes,
+//! so a sung line holding "by" or a colon stays.
 
 use nori_model::Lyrics;
 
@@ -59,8 +56,7 @@ const WATERMARKS: &[&str] = &[
 /// Placeholders standing in for words where a song has none, after brackets and stars are gone.
 const INSTRUMENTAL: &[&str] = &["instrumental", "instrumental break", "instrumental outro", "instrumental intro", "music", "inst", "インスト", "연주곡", "間奏", "间奏"];
 
-/// "Role: name", the shape every credit list has: a short label before a colon that names a credit in
-/// English, or is written in another script (作词, 編曲, 작사), and something after it.
+/// "Role: name": a short label naming a credit in English or written in another script (作词, 작사).
 fn role_and_name(t: &str) -> bool {
     let Some((label, value)) = t.split_once([':', '：']) else { return false };
     let label = label.trim();
@@ -70,9 +66,8 @@ fn role_and_name(t: &str) -> bool {
     !value.trim().is_empty() && label.chars().count() <= 24 && (named || native)
 }
 
-/// "Written by Someone", "Words and music by A & B", "Lyrics provided by a service": credit words, then
-/// " by ", then a name. A sung line that holds "by" ("stand by the water") does not open with credit
-/// words; and the name after "by" starts with a capital, a digit or another script, never with "the" or "me".
+/// "Written by Someone": only credit words before " by ", and a name after it (a capital, a digit or
+/// another script), so "stand by the water" is not one.
 fn by_line(t: &str) -> bool {
     let lower = t.to_lowercase();
     let Some(at) = lower.find(" by ") else { return false };
@@ -109,8 +104,7 @@ fn blank(t: &str) -> bool {
     !t.chars().any(char::is_alphanumeric)
 }
 
-/// A header naming the song: its title alone, "Title Lyrics" (Genius), "Artist - Title" (KuGou) or
-/// "Title by Artist". Only asked of the opening lines.
+/// A header naming the song: the title, "Title Lyrics", "Artist - Title" or "Title by Artist".
 fn header(t: &str, title: &str, artist: &str) -> bool {
     let (line, title, artist) = (norm(t), norm(title), norm(artist));
     if title.is_empty() || line.is_empty() {
@@ -123,15 +117,13 @@ fn header(t: &str, title: &str, artist: &str) -> bool {
     bare.contains(&title) && (dashed || rest.split_whitespace().all(|w| w == "by"))
 }
 
-/// Whether `text` is a credit at an end of the words (see the module's opening). `title` and `artist`
-/// name the song, for a header naming it; empty where only credits are looked for.
+/// Whether `text` is a credit; with `title` and `artist`, a header naming the song counts too.
 pub(crate) fn is_credit(text: &str, title: &str, artist: &str) -> bool {
     let t = text.trim();
     role_and_name(t) || by_line(t) || watermark(t) || instrumental(t) || header(t, title, artist)
 }
 
-/// Drops credits, watermarks and empty lines from the top of `lines` (up to [`HEAD_MOST`]) and the bottom
-/// (up to [`TAIL_MOST`]); each line's `text` says what it is. Whatever is left keeps its own times.
+/// Drops credits and empty lines from the first [`HEAD_MOST`] and last [`TAIL_MOST`] of `lines`.
 pub(crate) fn strip_lines<T>(lines: &mut Vec<T>, text: impl Fn(&T) -> &str, title: &str, artist: &str) {
     let head = lines.iter().take(HEAD_MOST).take_while(|l| blank(text(l)) || is_credit(text(l), title, artist)).count();
     lines.drain(..head);
@@ -139,8 +131,7 @@ pub(crate) fn strip_lines<T>(lines: &mut Vec<T>, text: impl Fn(&T) -> &str, titl
     lines.truncate(lines.len() - tail);
 }
 
-/// `l` without the credits at either end. The lines left keep their times; a line whose end ran into a
-/// credit dropped after it ends where it did. Lyrics with nothing left are empty.
+/// `l` without the credits at either end; empty when nothing is left.
 pub fn strip_edges(l: &mut Lyrics, title: &str, artist: &str) {
     strip_lines(&mut l.lines, |x| x.text.as_str(), title, artist);
     if l.lines.is_empty() {
@@ -148,8 +139,7 @@ pub fn strip_edges(l: &mut Lyrics, title: &str, artist: &str) {
     }
 }
 
-/// How many lines in the middle of `l` still look like credits or placeholders: what [`strip_edges`]
-/// leaves alone, which a score counts against an answer.
+/// How many lines still look like credits or placeholders (the middle, which [`strip_edges`] keeps).
 pub fn credits_inside(l: &Lyrics) -> usize {
     l.lines.iter().filter(|x| !blank(&x.text) && (role_and_name(&x.text) || watermark(&x.text) || instrumental(&x.text))).count()
 }
