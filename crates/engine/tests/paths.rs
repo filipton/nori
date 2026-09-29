@@ -10,7 +10,7 @@
 //! The engine runs on a clock the test moves (`common::Virtual`), as in tests/engine.rs: the CPU's card
 //! pulls on it, and the chip's play head wakes the engine through it.
 
-mod common;
+use crate::common;
 
 use std::collections::VecDeque;
 use std::io::{Cursor, Read};
@@ -34,9 +34,7 @@ use parking_lot::Mutex;
 
 // ---- songs ----
 
-fn ffmpeg() -> bool {
-    Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
-}
+use common::ffmpeg;
 
 /// A tone of `secs` encoded by ffmpeg with `codec` into a file of extension `ext`, its bytes. Encoded
 /// once per tone and codec for the whole binary: the same few tones are asked for again and again.
@@ -82,28 +80,7 @@ fn flac(dir: &Path, name: &str, secs: u32, hz: u32) -> Vec<u8> {
     made(dir, name, secs, hz, &["-c:a", "flac"], "flac")
 }
 
-/// Samples as a WAV file stores them: `bits` of 16 or 24, interleaved stereo.
-fn wav(rate: u32, bits: u16, samples: &[i32]) -> Vec<u8> {
-    let width = bits as u32 / 8;
-    let data = samples.len() as u32 * width;
-    let mut w = Vec::new();
-    w.extend_from_slice(b"RIFF");
-    w.extend_from_slice(&(36 + data).to_le_bytes());
-    w.extend_from_slice(b"WAVEfmt ");
-    w.extend_from_slice(&16u32.to_le_bytes());
-    w.extend_from_slice(&1u16.to_le_bytes());
-    w.extend_from_slice(&2u16.to_le_bytes());
-    w.extend_from_slice(&rate.to_le_bytes());
-    w.extend_from_slice(&(rate * 2 * width).to_le_bytes());
-    w.extend_from_slice(&(2 * width as u16).to_le_bytes());
-    w.extend_from_slice(&bits.to_le_bytes());
-    w.extend_from_slice(b"data");
-    w.extend_from_slice(&data.to_le_bytes());
-    for v in samples {
-        w.extend_from_slice(&v.to_le_bytes()[..width as usize]);
-    }
-    w
-}
+use common::wav_bits as wav;
 
 /// Every sample a different value, spread over the whole range of `bits`.
 fn ramp(frames: usize, bits: u32, seed: i64) -> Vec<i32> {

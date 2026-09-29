@@ -40,32 +40,7 @@ impl Transport for NoApi {
 
 /// Forty seconds of a steady beat at 120 bpm as a 16-bit stereo WAV file, a little different per song.
 fn beat_wav(seed: u32) -> Vec<u8> {
-    let rate = 44_100u32;
-    let frames = rate as usize * 40;
-    let mut samples = Vec::with_capacity(frames * 2);
-    for i in 0..frames {
-        let in_beat = i % (rate as usize / 2);
-        let click = if in_beat < 2000 { (1.0 - in_beat as f64 / 2000.0) * 0.8 } else { 0.0 };
-        let tone = (i as f64 * (220.0 + seed as f64) * std::f64::consts::TAU / rate as f64).sin() * 0.1;
-        let v = (((click * ((i * 7919) % 97) as f64 / 97.0) + tone) * 32767.0) as i16;
-        samples.extend([v, v]);
-    }
-    let data = samples.len() as u32 * 2;
-    let mut w = Vec::new();
-    w.extend_from_slice(b"RIFF");
-    w.extend_from_slice(&(36 + data).to_le_bytes());
-    w.extend_from_slice(b"WAVEfmt ");
-    w.extend_from_slice(&16u32.to_le_bytes());
-    w.extend_from_slice(&1u16.to_le_bytes());
-    w.extend_from_slice(&2u16.to_le_bytes());
-    w.extend_from_slice(&rate.to_le_bytes());
-    w.extend_from_slice(&(rate * 4).to_le_bytes());
-    w.extend_from_slice(&4u16.to_le_bytes());
-    w.extend_from_slice(&16u16.to_le_bytes());
-    w.extend_from_slice(b"data");
-    w.extend_from_slice(&data.to_le_bytes());
-    w.extend(samples.iter().flat_map(|v| v.to_le_bytes()));
-    w
+    common::wav(44_100, &common::beat(220.0 + seed as f64))
 }
 
 /// The server: each song's file by the id in its address, every byte sent counted per song. A song named

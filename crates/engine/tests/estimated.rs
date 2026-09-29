@@ -6,7 +6,7 @@
 //! The Ogg Opus songs are made by ffmpeg on the machine running the tests; without it the tests say so
 //! and pass. The engine runs on a clock the test moves (`common::Virtual`).
 
-mod common;
+use crate::common;
 
 use std::io::Read;
 use std::path::Path;
@@ -22,9 +22,7 @@ use nori_player::sim;
 use nori_player::transitions::WindowSong;
 use parking_lot::Mutex;
 
-fn ffmpeg() -> bool {
-    Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
-}
+use common::ffmpeg;
 
 /// `a`, `b` and `c`, made once for every test in the binary: None without ffmpeg.
 fn songs() -> Option<&'static [Arc<Vec<u8>>; 3]> {

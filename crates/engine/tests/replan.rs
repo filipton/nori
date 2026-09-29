@@ -3,7 +3,7 @@
 //! transition planner, on the test's clock, as Android and the terminal run it. The core keeps one queue,
 //! one planner and one set of settings per process, so these stories run one after the other in one test,
 //! never beside album.rs's (both hold `core_turn` in main.rs).
-mod common;
+use crate::common;
 
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -34,30 +34,9 @@ impl Transport for NoApi {
     fn address_changed(&self) {}
 }
 
-/// `secs` of a quiet tone as a 16-bit stereo WAV file, a different pitch per seed.
+/// `secs` of a quiet tone as a WAV file, a different pitch per seed.
 fn tone_wav(secs: usize, seed: u32) -> Vec<u8> {
-    let rate = 44_100u32;
-    let frames = rate as usize * secs;
-    let mut w = Vec::with_capacity(44 + frames * 4);
-    let data = frames as u32 * 4;
-    w.extend_from_slice(b"RIFF");
-    w.extend_from_slice(&(36 + data).to_le_bytes());
-    w.extend_from_slice(b"WAVEfmt ");
-    w.extend_from_slice(&16u32.to_le_bytes());
-    w.extend_from_slice(&1u16.to_le_bytes());
-    w.extend_from_slice(&2u16.to_le_bytes());
-    w.extend_from_slice(&rate.to_le_bytes());
-    w.extend_from_slice(&(rate * 4).to_le_bytes());
-    w.extend_from_slice(&4u16.to_le_bytes());
-    w.extend_from_slice(&16u16.to_le_bytes());
-    w.extend_from_slice(b"data");
-    w.extend_from_slice(&data.to_le_bytes());
-    for i in 0..frames {
-        let v = ((i as f64 * (220.0 + seed as f64 * 30.0) * std::f64::consts::TAU / rate as f64).sin() * 0.2 * 32767.0) as i16;
-        w.extend_from_slice(&v.to_le_bytes());
-        w.extend_from_slice(&v.to_le_bytes());
-    }
-    w
+    common::wav(44_100, &common::sine(44_100, 220.0 + seed as f64 * 30.0, secs as f64, 0.2 * 32767.0))
 }
 
 struct Net(HashMap<String, Arc<Vec<u8>>>);

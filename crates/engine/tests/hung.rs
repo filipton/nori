@@ -8,7 +8,7 @@
 //! The engine runs on a clock the test moves (`common::Virtual`); a request that hangs lets that time
 //! move (`Virtual::hang_while`), as a server waiting on the clock does.
 
-mod common;
+use crate::common;
 
 use std::io::{Cursor, Read};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,29 +30,8 @@ const SLOTS: usize = 6;
 /// Longest a hung request waits, in real time, for anyone to call it off: far past any test.
 const FOREVER: Duration = Duration::from_secs(300);
 
-/// A tone as a WAV file, 16-bit stereo.
 fn wav(hz: f64) -> Arc<Vec<u8>> {
-    let frames = (SECS * RATE) as usize;
-    let data = frames as u32 * 4;
-    let mut w = Vec::with_capacity(44 + data as usize);
-    w.extend_from_slice(b"RIFF");
-    w.extend_from_slice(&(36 + data).to_le_bytes());
-    w.extend_from_slice(b"WAVEfmt ");
-    w.extend_from_slice(&16u32.to_le_bytes());
-    w.extend_from_slice(&1u16.to_le_bytes());
-    w.extend_from_slice(&2u16.to_le_bytes());
-    w.extend_from_slice(&RATE.to_le_bytes());
-    w.extend_from_slice(&(RATE * 4).to_le_bytes());
-    w.extend_from_slice(&4u16.to_le_bytes());
-    w.extend_from_slice(&16u16.to_le_bytes());
-    w.extend_from_slice(b"data");
-    w.extend_from_slice(&data.to_le_bytes());
-    for i in 0..frames {
-        let v = ((std::f64::consts::TAU * hz * i as f64 / RATE as f64).sin() * 12_000.0) as i16;
-        w.extend_from_slice(&v.to_le_bytes());
-        w.extend_from_slice(&v.to_le_bytes());
-    }
-    Arc::new(w)
+    Arc::new(common::wav(RATE, &common::sine(RATE, hz, SECS as f64, 12_000.0)))
 }
 
 /// How a song's request hangs.

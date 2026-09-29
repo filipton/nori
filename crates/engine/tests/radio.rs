@@ -8,7 +8,7 @@
 //! The tones are made by ffmpeg on the machine running the tests; without it those tests say so and
 //! pass. The HE-AAC capture (six seconds of SomaFM's 32 kbps AAC+ stream) is in `testdata`.
 
-mod common;
+use crate::common;
 
 use std::io::Read;
 use std::process::Command;
@@ -24,9 +24,7 @@ use nori_player::decode::{lend_platform_aac, Fault, PlatformDecoder};
 use nori_player::sim;
 use nori_player::transitions::WindowSong;
 
-fn ffmpeg() -> bool {
-    Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
-}
+use common::ffmpeg;
 
 /// Whether this ffmpeg has `encoder` built in: Homebrew's has no libvorbis, and its own Vorbis encoder
 /// makes no mono.

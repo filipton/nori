@@ -21,7 +21,7 @@ use nori_core::{Core, ServerConfig, Song};
 use nori_engine::core::{settings, CoreApp, CoreLibrary, CoreOrder, CoreQueue, Measurer};
 use nori_engine::{Body, ByteSource, Config, Engine, State, Store};
 
-mod common;
+use crate::common;
 
 struct NoApi;
 
@@ -63,22 +63,7 @@ fn samples(seed: u32) -> Vec<i16> {
 }
 
 fn wav(samples: &[i16]) -> Vec<u8> {
-    let data = samples.len() as u32 * 2;
-    let mut w = Vec::with_capacity(44 + data as usize);
-    w.extend_from_slice(b"RIFF");
-    w.extend_from_slice(&(36 + data).to_le_bytes());
-    w.extend_from_slice(b"WAVEfmt ");
-    w.extend_from_slice(&16u32.to_le_bytes());
-    w.extend_from_slice(&1u16.to_le_bytes());
-    w.extend_from_slice(&2u16.to_le_bytes());
-    w.extend_from_slice(&(RATE as u32).to_le_bytes());
-    w.extend_from_slice(&(RATE as u32 * 4).to_le_bytes());
-    w.extend_from_slice(&4u16.to_le_bytes());
-    w.extend_from_slice(&16u16.to_le_bytes());
-    w.extend_from_slice(b"data");
-    w.extend_from_slice(&data.to_le_bytes());
-    w.extend(samples.iter().flat_map(|v| v.to_le_bytes()));
-    w
+    common::wav(RATE as u32, samples)
 }
 
 struct Net(HashMap<String, Arc<Vec<u8>>>);

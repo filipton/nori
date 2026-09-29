@@ -7,7 +7,7 @@
 //! On the clock the test moves (`common::Virtual`); the songs are tones, each its own pitch, so what the
 //! card hears says which song it is.
 
-mod common;
+use crate::common;
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -25,33 +25,13 @@ const RATE: u32 = 44_100;
 /// Seconds of each song: long enough to stand still in for longer than the engine lets it.
 const SECS: u32 = 40;
 
-/// A tone as a WAV file, 16-bit stereo.
+/// A tone as a WAV file, made once per pitch.
 fn wav(hz: f64) -> Arc<Vec<u8>> {
     static MADE: Mutex<Vec<(u64, Arc<Vec<u8>>)>> = Mutex::new(Vec::new());
     if let Some((_, w)) = MADE.lock().iter().find(|(h, _)| *h == hz.to_bits()) {
         return w.clone();
     }
-    let frames = (SECS * RATE) as usize;
-    let data = frames as u32 * 4;
-    let mut w = Vec::with_capacity(44 + data as usize);
-    w.extend_from_slice(b"RIFF");
-    w.extend_from_slice(&(36 + data).to_le_bytes());
-    w.extend_from_slice(b"WAVEfmt ");
-    w.extend_from_slice(&16u32.to_le_bytes());
-    w.extend_from_slice(&1u16.to_le_bytes());
-    w.extend_from_slice(&2u16.to_le_bytes());
-    w.extend_from_slice(&RATE.to_le_bytes());
-    w.extend_from_slice(&(RATE * 4).to_le_bytes());
-    w.extend_from_slice(&4u16.to_le_bytes());
-    w.extend_from_slice(&16u16.to_le_bytes());
-    w.extend_from_slice(b"data");
-    w.extend_from_slice(&data.to_le_bytes());
-    for i in 0..frames {
-        let v = ((std::f64::consts::TAU * hz * i as f64 / RATE as f64).sin() * 12_000.0) as i16;
-        w.extend_from_slice(&v.to_le_bytes());
-        w.extend_from_slice(&v.to_le_bytes());
-    }
-    let w = Arc::new(w);
+    let w = Arc::new(common::wav(RATE, &common::sine(RATE, hz, SECS as f64, 12_000.0)));
     MADE.lock().push((hz.to_bits(), w.clone()));
     w
 }

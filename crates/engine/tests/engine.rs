@@ -6,7 +6,7 @@
 //! waits with [`Rig::wait_for`] and [`Rig::run`], never a real sleep, so what it sees does not depend on
 //! how busy the machine is, and a minute of music takes a fraction of a second.
 
-mod common;
+use crate::common;
 
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -59,48 +59,11 @@ fn make_music(secs: f64, seed: u64) -> Vec<i16> {
 }
 
 fn wav(samples: &[i16]) -> Vec<u8> {
-    let data = samples.len() as u32 * 2;
-    let mut w = Vec::with_capacity(44 + data as usize);
-    w.extend_from_slice(b"RIFF");
-    w.extend_from_slice(&(36 + data).to_le_bytes());
-    w.extend_from_slice(b"WAVEfmt ");
-    w.extend_from_slice(&16u32.to_le_bytes());
-    w.extend_from_slice(&1u16.to_le_bytes());
-    w.extend_from_slice(&2u16.to_le_bytes());
-    w.extend_from_slice(&RATE.to_le_bytes());
-    w.extend_from_slice(&(RATE * 4).to_le_bytes());
-    w.extend_from_slice(&4u16.to_le_bytes());
-    w.extend_from_slice(&16u16.to_le_bytes());
-    w.extend_from_slice(b"data");
-    w.extend_from_slice(&data.to_le_bytes());
-    w.resize(44 + data as usize, 0);
-    for (i, v) in samples.iter().enumerate() {
-        w[44 + 2 * i..46 + 2 * i].copy_from_slice(&v.to_le_bytes());
-    }
-    w
+    common::wav(RATE, samples)
 }
 
-/// 24-bit samples as a WAV file stores them.
 fn wav24(samples: &[i32]) -> Vec<u8> {
-    let data = samples.len() as u32 * 3;
-    let mut w = Vec::with_capacity(44 + data as usize);
-    w.extend_from_slice(b"RIFF");
-    w.extend_from_slice(&(36 + data).to_le_bytes());
-    w.extend_from_slice(b"WAVEfmt ");
-    w.extend_from_slice(&16u32.to_le_bytes());
-    w.extend_from_slice(&1u16.to_le_bytes());
-    w.extend_from_slice(&2u16.to_le_bytes());
-    w.extend_from_slice(&RATE.to_le_bytes());
-    w.extend_from_slice(&(RATE * 6).to_le_bytes());
-    w.extend_from_slice(&6u16.to_le_bytes());
-    w.extend_from_slice(&24u16.to_le_bytes());
-    w.extend_from_slice(b"data");
-    w.extend_from_slice(&data.to_le_bytes());
-    w.resize(44 + data as usize, 0);
-    for (i, v) in samples.iter().enumerate() {
-        w[44 + 3 * i..47 + 3 * i].copy_from_slice(&v.to_le_bytes()[..3]);
-    }
-    w
+    common::wav_bits(RATE, 24, samples)
 }
 
 /// A file's bytes, shared between requests.
@@ -917,12 +880,8 @@ fn hi_res_equalizer_on_24_bits() {
     assert!(worst(&cut) > 64.0, "the low byte is heard: {} 24-bit steps from the 16-bit song's", worst(&cut));
 }
 
-/// A 16-bit stereo WAV at `rate`.
 fn wav_at(samples: &[i16], rate: u32) -> Vec<u8> {
-    let mut w = wav(samples);
-    w[24..28].copy_from_slice(&rate.to_le_bytes());
-    w[28..32].copy_from_slice(&(rate * 4).to_le_bytes());
-    w
+    common::wav(rate, samples)
 }
 
 /// Gapless into a song at another rate: the device plays out the first song, opens again at the second's

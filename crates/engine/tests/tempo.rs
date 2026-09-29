@@ -5,7 +5,7 @@
 //! are of two rates, so the incoming one is converted to the rate the output was opened at, as a library
 //! of 44.1 and 48 kHz albums is.
 
-mod common;
+use crate::common;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -23,29 +23,9 @@ use nori_player::types::AutoMixSettings;
 
 const HZ: f64 = 1000.0;
 
-/// `secs` of a stereo 16-bit sine of [`HZ`] at `rate`, as a WAV file's bytes.
+/// `secs` of a sine at [`HZ`] as a WAV file at `rate`.
 fn wav(rate: u32, secs: f64) -> Vec<u8> {
-    let frames = (rate as f64 * secs) as usize;
-    let data = (frames * 4) as u32;
-    let mut w = Vec::new();
-    w.extend_from_slice(b"RIFF");
-    w.extend_from_slice(&(36 + data).to_le_bytes());
-    w.extend_from_slice(b"WAVEfmt ");
-    w.extend_from_slice(&16u32.to_le_bytes());
-    w.extend_from_slice(&1u16.to_le_bytes());
-    w.extend_from_slice(&2u16.to_le_bytes());
-    w.extend_from_slice(&rate.to_le_bytes());
-    w.extend_from_slice(&(rate * 4).to_le_bytes());
-    w.extend_from_slice(&4u16.to_le_bytes());
-    w.extend_from_slice(&16u16.to_le_bytes());
-    w.extend_from_slice(b"data");
-    w.extend_from_slice(&data.to_le_bytes());
-    for k in 0..frames {
-        let v = ((k as f64 * HZ * std::f64::consts::TAU / rate as f64).sin() * 8000.0).round() as i16;
-        w.extend_from_slice(&v.to_le_bytes());
-        w.extend_from_slice(&v.to_le_bytes());
-    }
-    w
+    common::wav(rate, &common::sine(rate, HZ, secs, 8000.0))
 }
 
 /// The songs, as files: `a` at 44.1 kHz (it opens the output), `b` and `c` at 48 kHz, in a directory

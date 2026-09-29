@@ -1,12 +1,12 @@
-//! A sound card on the test's clock that keeps everything it plays, as float, and the formats it was
-//! opened in: for a test that measures what reached the ear (a tone's pitch, a station's waveform).
+//! A sound card on the virtual clock that records everything it plays (as float) and every format it
+//! was opened in.
 
 use std::sync::Arc;
 
 use nori_engine::{AudioOutput, Feed, OutputFormat};
 use parking_lot::Mutex;
 
-/// What the card pulls from, on the test's clock.
+/// The card's puller, driven by the clock.
 #[derive(Default)]
 pub struct Pull {
     feed: Option<Feed>,
@@ -14,25 +14,22 @@ pub struct Pull {
     due_ns: i64,
     heard: Arc<Mutex<Vec<f32>>>,
     block: Vec<f32>,
-    /// Pulls that came while the card played music and found less than a block in the ring: each a gap
-    /// a sound card that pulls whatever there is would have played as silence (an underrun).
+    /// Pulls that found less than a block while playing: underruns.
     pub dry: u64,
-    /// The device took no more music, as a dead one does, until it is opened again.
+    /// Takes no music until opened again, as a dead device.
     dead: bool,
-    /// How long a sample pulled now takes to be heard, as the device says it, µs. A phone's output
-    /// corrects what it says as it goes, now and then by some tens of milliseconds either way: a test
-    /// moves this to read the clock below the engine a little back.
+    /// Reported latency, µs; a test changes it to move the engine's clock reading back a little.
     pub latency_us: u64,
 }
 
 impl Pull {
-    /// The device stops taking music, as a dead track would, until the engine opens it again.
+    /// Stops taking music until the engine opens the device again.
     pub fn pause_pulling(&mut self) {
         self.dead = true;
     }
 }
 
-/// Frames the card pulls at a time.
+/// Frames per pull.
 const BLOCK: usize = 512;
 
 impl super::Device for Pull {
@@ -62,7 +59,7 @@ impl super::Device for Pull {
     }
 }
 
-/// The card: what it heard since it was last opened, and every format it was opened in.
+/// What the card heard since last opened, and every format it was opened in.
 #[derive(Clone)]
 pub struct Card {
     pub heard: Arc<Mutex<Vec<f32>>>,
@@ -80,13 +77,12 @@ impl Card {
         self.opened.lock().last().copied()
     }
 
-    /// Seconds heard since the card was last opened (or its ears last cleared).
+    /// Seconds heard since last opened.
     pub fn secs(&self) -> f64 {
         self.format().map_or(0.0, |f| self.heard.lock().len() as f64 / f.channels as f64 / f.rate as f64)
     }
 
-    /// The pitch of the last second heard, from the zero crossings of its first channel: a tone's
-    /// frequency, times whatever the speed was.
+    /// The frequency of the last second heard, from zero crossings of the left channel.
     pub fn last_second_hz(&self) -> f64 {
         let f = self.format().expect("opened");
         let heard = self.heard.lock();

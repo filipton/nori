@@ -8,7 +8,7 @@
 //! right a tone that rises with the place in the song, so the ratio of the two pitches heard says the
 //! place, whatever the tempo, the pitch kept or not, and the output's rate.
 
-mod common;
+use crate::common;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -42,45 +42,24 @@ const SKIP_MS: i64 = 4_000;
 const RAMP_MS: i64 = 5_000;
 const TEMPO: f32 = 1.071;
 
-fn header(w: &mut Vec<u8>, rate: u32, frames: usize) {
-    let data = (frames * 4) as u32;
-    w.extend_from_slice(b"RIFF");
-    w.extend_from_slice(&(36 + data).to_le_bytes());
-    w.extend_from_slice(b"WAVEfmt ");
-    w.extend_from_slice(&16u32.to_le_bytes());
-    w.extend_from_slice(&1u16.to_le_bytes());
-    w.extend_from_slice(&2u16.to_le_bytes());
-    w.extend_from_slice(&rate.to_le_bytes());
-    w.extend_from_slice(&(rate * 4).to_le_bytes());
-    w.extend_from_slice(&4u16.to_le_bytes());
-    w.extend_from_slice(&16u16.to_le_bytes());
-    w.extend_from_slice(b"data");
-    w.extend_from_slice(&data.to_le_bytes());
-}
-
-/// `secs` of silence at `rate`: the outgoing song, so that only the incoming one is measured.
+/// `secs` of silence at `rate`: the outgoing song, so only the incoming one is measured.
 fn silence(rate: u32, secs: f64) -> Vec<u8> {
-    let frames = (rate as f64 * secs) as usize;
-    let mut w = Vec::new();
-    header(&mut w, rate, frames);
-    w.resize(w.len() + frames * 4, 0);
-    w
+    common::wav(rate, &vec![0; (rate as f64 * secs) as usize * 2])
 }
 
-/// `secs` of the two tones at `rate`: the steady one left, the rising one right.
+/// `secs` of two tones at `rate`: a steady one left, a rising one right.
 fn marked(rate: u32, secs: f64) -> Vec<u8> {
     let frames = (rate as f64 * secs) as usize;
-    let mut w = Vec::new();
-    header(&mut w, rate, frames);
-    for k in 0..frames {
-        let t = k as f64 / rate as f64;
-        let l = (t * STEADY * std::f64::consts::TAU).sin();
-        // The phase of a tone whose pitch is BASE + SLOPE * t.
-        let r = ((BASE * t + SLOPE * t * t / 2.0) * std::f64::consts::TAU).sin();
-        w.extend_from_slice(&((l * 8000.0).round() as i16).to_le_bytes());
-        w.extend_from_slice(&((r * 8000.0).round() as i16).to_le_bytes());
-    }
-    w
+    let samples: Vec<i16> = (0..frames)
+        .flat_map(|k| {
+            let t = k as f64 / rate as f64;
+            let l = (t * STEADY * std::f64::consts::TAU).sin();
+            // The phase of a tone whose pitch is BASE + SLOPE * t.
+            let r = ((BASE * t + SLOPE * t * t / 2.0) * std::f64::consts::TAU).sin();
+            [(l * 8000.0).round() as i16, (r * 8000.0).round() as i16]
+        })
+        .collect();
+    common::wav(rate, &samples)
 }
 
 /// The songs as files: `a`, silent, at 44.1 kHz (it opens the output), `b`, marked, at 48 kHz.
