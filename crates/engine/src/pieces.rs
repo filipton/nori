@@ -1,6 +1,5 @@
-//! A song whole on the disk, kept in one file or several one after the other (media3's cache keeps a
-//! song in pieces of a few megabytes), read as one stream in large sequential reads: for measuring a
-//! song ahead, which reads it once from its first byte to its last.
+//! A song on disk in one or more files (media3's cache splits songs into pieces), read as one stream
+//! in large sequential reads, for measuring.
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -8,27 +7,24 @@ use std::path::PathBuf;
 
 use symphonia::core::io::MediaSource;
 
-/// How much is read from the disk at a time. The demuxer asks for a few kilobytes per call; each of
-/// those is a copy out of this, and the disk is read about twice a second at most.
+/// Bytes read from disk at a time; the demuxer's small reads are served from this buffer.
 pub const READ: usize = 512 * 1024;
 
-/// The pieces of one song in order, each with its length, read through one buffer made once.
+/// A song's pieces in order, with their lengths, read through one buffer.
 pub struct Pieces<F = File> {
     parts: Vec<(F, u64)>,
     len: u64,
-    /// Where the reader is in the song.
     pos: u64,
-    /// The bytes read ahead (the first `filled` of `buf`), and where in the song they start.
+    /// Bytes buffered (the first `filled` of `buf`) and their offset in the song.
     buf: Box<[u8]>,
     filled: usize,
     buf_at: u64,
-    /// Which part is where, and where that part's own cursor stands: a read that follows the one
-    /// before is not preceded by a seek.
+    /// The part whose file cursor is where, so sequential reads need no seek.
     part_at: Option<(usize, u64)>,
 }
 
 impl Pieces<File> {
-    /// Opens every file at once: a piece the cache lets go while the song is read stays readable.
+    /// Opens every file up front, so a piece the cache evicts meanwhile stays readable.
     pub fn open(files: &[PathBuf]) -> io::Result<Pieces<File>> {
         let mut parts = Vec::with_capacity(files.len());
         for f in files {
@@ -46,7 +42,6 @@ impl<F: Read + Seek> Pieces<F> {
         Pieces { parts, len, pos: 0, buf: vec![0; READ].into_boxed_slice(), filled: 0, buf_at: 0, part_at: None }
     }
 
-    /// All of the song's bytes.
     pub fn len(&self) -> u64 {
         self.len
     }
@@ -55,7 +50,7 @@ impl<F: Read + Seek> Pieces<F> {
         self.len == 0
     }
 
-    /// Fills the buffer from `self.pos` on, across as many pieces as it takes.
+    /// Fills the buffer from `pos`, across pieces.
     fn fill(&mut self) -> io::Result<()> {
         self.filled = 0;
         self.buf_at = self.pos;
@@ -71,7 +66,7 @@ impl<F: Read + Seek> Pieces<F> {
             let take = (want - got).min((*len - offset) as usize);
             let n = file.read(&mut self.buf[got..got + take])?;
             if n == 0 {
-                // The file is shorter than it said: the song ends here.
+                // Shorter than its length said: the song ends here.
                 break;
             }
             got += n;
@@ -85,7 +80,7 @@ impl<F: Read + Seek> Pieces<F> {
         Ok(())
     }
 
-    /// The piece that holds byte `at`, and where that piece starts in the song.
+    /// The piece holding byte `at`, and its offset in the song.
     fn part_of(&self, at: u64) -> (usize, u64) {
         let mut start = 0;
         for (i, (_, len)) in self.parts.iter().enumerate() {
@@ -149,7 +144,7 @@ mod tests {
     use std::io::Cursor;
     use std::sync::{Arc, Mutex};
 
-    /// A piece that notes the size of every read made of it.
+    /// Records the size of every read.
     struct Counted {
         inner: Cursor<Vec<u8>>,
         reads: Arc<Mutex<Vec<usize>>>,
@@ -184,10 +179,10 @@ mod tests {
     }
 
     #[test]
-    fn pieces_read_as_one_song_in_large_reads_however_small_the_reader_s_steps() {
+    fn pieces_read_as_one_stream_in_large_reads() {
         let bytes = song(3 * READ + 12_345);
         let reads = Arc::new(Mutex::new(Vec::new()));
-        // Cut where media3 would, and once more at an odd place.
+        // Cut where media3 would, and at an odd place.
         let mut p = cut(&bytes, &[1_000_000, 1_048_576 + 7], &reads);
         let mut out = Vec::new();
         let mut step = [0u8; 4096];
@@ -200,14 +195,14 @@ mod tests {
         }
         assert!(out == bytes, "every byte, in order");
         let reads = reads.lock().unwrap();
-        // One read per buffer's worth, plus one more where a buffer runs over a piece's end.
+        // One read per buffer, plus one per piece boundary.
         assert!(reads.len() <= bytes.len().div_ceil(READ) + 2, "{} reads for {} bytes: {:?}", reads.len(), bytes.len(), *reads);
         let small = reads.iter().filter(|&&n| n < 64 * 1024).count();
         assert!(small <= 3, "only a piece's end or the song's is read short: {:?}", *reads);
     }
 
     #[test]
-    fn a_seek_reads_from_there_and_a_seek_inside_what_is_read_costs_nothing() {
+    fn seek_within_buffer_reads_nothing() {
         let bytes = song(2 * READ);
         let reads = Arc::new(Mutex::new(Vec::new()));
         let mut p = cut(&bytes, &[READ / 2], &reads);
