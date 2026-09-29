@@ -1,15 +1,9 @@
-//! Streaming front end of the track analysis. Mono samples go in at any rate, in any buffer size (stereo ones are
-//! measured on their downmix, and their side only tells the vocal curve where the middle is); what comes out is a
-//! handful of per-frame feature curves (onset strength, low-band onset, power, chroma) and 100 ms loudness blocks.
-//! All the expensive work (two FFTs, K-weighting) happens here, once per sample, so the same code serves a whole
-//! decoded file (`analyse`) and the songs decoded ahead or as they come (nori-engine's measurer). `finish` then runs the
-//! cheap whole-track steps: tempo, beats, downbeats, phrases, key.
+//! Streaming front end of the track analysis: samples in at any rate and buffer size, per-frame feature curves
+//! (onset, low-band onset, power, voice share, centroid, chroma) and 100 ms loudness blocks out. All per-sample
+//! work (FFTs, K-weighting) is here; `finish` runs the cheap whole-track steps.
 //!
-//! **Rate.** The input is decimated by an integer factor to about 22 kHz (44.1 -> 22.05, 48 -> 24, 96 -> 24 kHz)
-//! with a boxcar pre-filter, and the FFT sizes and hop are then picked in seconds, not samples. Integer decimation
-//! costs one add per input sample, needs no resampler state, and keeps every frame the same length in time within
-//! a few percent; the leftover aliasing lands above 5 kHz, where the onset detector only needs "something changed"
-//! and chroma does not look at all. All timing downstream goes through `fps`, so the exact rate never matters.
+//! The input is decimated by an integer factor to about 22 kHz with a boxcar filter (no resampler state; the
+//! aliasing lands above 5 kHz where it does not matter). Timing downstream goes through `fps`.
 
 use std::sync::Arc;
 
@@ -20,9 +14,9 @@ use super::loudness::Meter;
 use super::vocal;
 
 pub const TARGET_RATE: f64 = 22050.0;
-/// Hop between onset frames, seconds (256 samples at 22.05 kHz, 86 frames/s).
 /// What an analysis of a song of unknown length is sized for.
 const UNKNOWN_LENGTH_MS: u64 = 8 * 60_000;
+/// Hop between onset frames, seconds (256 samples at 22.05 kHz, 86 frames/s).
 const HOP_S: f64 = 256.0 / 22050.0;
 /// Log-spaced bands for the spectral flux, 30 Hz up to 11 kHz (or Nyquist).
 const BANDS: usize = 40;
@@ -30,7 +24,7 @@ const FLUX_LO_HZ: f64 = 30.0;
 const FLUX_HI_HZ: f64 = 11000.0;
 /// The "kick" band for downbeat voting and bass energy.
 pub const LOW_HZ: f64 = 150.0;
-/// The "voice" band for vocal-activity estimation: most speech and sung energy sits here.
+/// The voice band.
 pub const VOCAL_LO_HZ: f64 = 300.0;
 pub const VOCAL_HI_HZ: f64 = 3400.0;
 /// Log compression: linear below -60 dB, logarithmic above, so dither does not become onsets.
@@ -43,8 +37,8 @@ const CHROMA_HI_HZ: f64 = 2500.0;
 pub const PITCH_SLOTS: usize = 120;
 /// Peaks below this are too coarsely resolved by the long FFT (5.4 Hz bins) to say where A is.
 const TUNING_LO_HZ: f64 = 250.0;
-/// Where an onset frame sits in time relative to the end of its window, in hops. Measured on click tracks
-/// (`beat_times_line_up_with_the_clicks`): log-compressed flux peaks as soon as a click enters the window.
+/// Where an onset frame sits relative to the end of its window, in hops; measured on click tracks
+/// (`grid_lands_on_clicks`).
 const FRAME_LAG_HOPS: f64 = 1.28;
 
 /// The per-frame curves `finish` works from.
@@ -68,23 +62,21 @@ pub struct Features {
     pub chroma: Vec<[f32; 12]>,
     pub chroma_t0: f64,
     pub chroma_step: f64,
-    /// The whole song's pitch-class magnitudes in 10-cent slots (slot `s` is `s / 10` semitones above C at
-    /// A = 440 Hz), summed over every chroma frame: what the key is read from once the tuning is known.
+    /// The whole song's pitch-class magnitudes in 10-cent slots from C at A = 440 Hz; the key is read from it.
     pub pitch: Vec<f64>,
-    /// Where the spectral peaks sit between semitones: magnitude-weighted sums of cos and sin of 2π times
-    /// the peak's distance from the nearest equal-tempered pitch. Their angle is the tuning.
+    /// Magnitude-weighted sums of cos and sin of 2π × each spectral peak's offset from equal temperament;
+    /// their angle is the tuning.
     pub tuning_cs: (f64, f64),
     /// 100 ms mean squares at the native rate, K-weighted and plain.
     pub blocks_k: Vec<f32>,
     pub blocks_raw: Vec<f32>,
     pub duration_s: f64,
-    /// Pitched movement in the voice band, one value per `vocal::CURVE_EVERY` onset frames: what the vocal
-    /// activity curve is made of (`voice_curve`).
+    /// Raw vocal activity, one value per `vocal::CURVE_EVERY` onset frames (`voice_curve`).
     pub voice: Vec<f32>,
 }
 
 impl Features {
-    /// The song's vocal activity curve, as it is stored beside its analysis.
+    /// The song's vocal activity curve, as stored.
     pub fn voice_curve(&self) -> vocal::VocalCurve {
         vocal::VocalCurve::from_raw(&self.voice, self.fps, self.t0)
     }
@@ -98,11 +90,10 @@ pub struct Analyzer {
     acc_n: usize,
     /// The last `cn` decimated samples; `cn` is a power of two.
     ring: Vec<f32>,
-    /// A stereo source's side, (L - R) / 2, decimated alike: the last `n` samples, 0 for a mono source.
+    /// A stereo source's side, (L - R) / 2, decimated: the last `n` samples; 0 for mono.
     side_ring: Vec<f32>,
     side_acc: f32,
-    /// The frames computed while `written` is at most this have a side in their window, and take the
-    /// stereo path (`frame`).
+    /// Frames computed while `written` is at most this have side signal in their window.
     side_until: usize,
     /// The side's spectrum, `n / 2 + 1` bins.
     side_buf: Vec<Complex32>,
@@ -197,8 +188,7 @@ impl Analyzer {
             }
         }
 
-        // Sized for the whole song, with room for a length that was a little off, so that nothing grows
-        // (and reallocates) while it plays. Unknown, it is sized for a long song.
+        // Sized for the whole song plus slack so nothing reallocates while it plays.
         let expected_ms = if expected_ms == 0 { UNKNOWN_LENGTH_MS } else { expected_ms + expected_ms / 20 + 10_000 };
         let tune_bins = (((TUNING_LO_HZ / cbin_hz).ceil() as usize).max(2), ((CHROMA_HI_HZ / cbin_hz) as usize).min(cn / 2 - 2));
         let frames = (expected_ms as f64 / 1000.0 / HOP_S) as usize + 16;
@@ -289,8 +279,8 @@ impl Analyzer {
         self.samples += x.len() as u64;
     }
 
-    /// A stereo source's mid, (L + R) / 2, which everything is measured on, and its side, (L - R) / 2, with
-    /// which the vocal curve measures only the middle of the stereo image (vocal.rs `frame_stereo`).
+    /// A stereo source's mid, (L + R) / 2, which everything is measured on, and side, (L - R) / 2, which the
+    /// vocal curve uses to keep to the middle of the image.
     fn feed_stereo(&mut self, mid: &[f32], side: &[f32]) {
         self.meter.feed(mid);
         for (v, s) in mid.iter().zip(side) {
@@ -308,9 +298,8 @@ impl Analyzer {
         self.samples += mid.len() as u64;
     }
 
-    /// Interleaved frames of `channels` samples, averaged to mono. `load` converts one sample to [-1, 1]. Two
-    /// channels also give the vocal curve their side (`feed_stereo`); a stereo source whose channels are the
-    /// same is measured exactly as the mono one.
+    /// Interleaved frames of `channels` samples, averaged to mono; `load` converts a sample to [-1, 1]. Stereo also
+    /// feeds the side to the vocal curve.
     pub fn feed_interleaved<T: Copy>(&mut self, x: &[T], channels: usize, load: impl Fn(T) -> f32) {
         let channels = channels.max(1);
         let scale = 1.0 / channels as f32;
@@ -321,7 +310,6 @@ impl Analyzer {
                 let frames = chunk.len() / 2;
                 for (i, p) in chunk.as_chunks::<2>().0.iter().enumerate() {
                     let (l, r) = (load(p[0]), load(p[1]));
-                    // As the sum below makes it, to the bit.
                     mono[i] = (l + r) * scale;
                     side[i] = (l - r) * scale;
                 }
@@ -363,8 +351,7 @@ impl Analyzer {
         }
     }
 
-    /// The mid's last `n` samples windowed into the real part of `buf`, the side's into the imaginary part: one
-    /// FFT then gives both spectra (`frame`).
+    /// Mid windowed into the real part, side into the imaginary part: one FFT gives both spectra.
     fn window_pair_into(ring: &[f32], side: &[f32], written: usize, win: &[f32], out: &mut [Complex32]) {
         let (cn, n) = (ring.len(), side.len());
         let start = written.wrapping_sub(n);
@@ -376,10 +363,8 @@ impl Analyzer {
 
     fn frame(&mut self) {
         if self.written <= self.side_until {
-            // Stereo: the mid and the side through one FFT as the real and imaginary parts of one signal, and
-            // parted by the symmetry of a real signal's spectrum: X_mid[k] = (Z[k] + Z*[n-k]) / 2, X_side[k] =
-            // (Z[k] - Z*[n-k]) / 2i. Only bins 0..=n/2 of `buf` are read, and bin k's partner n-k is above
-            // them, so the mid is written over them in place.
+            // Split the two spectra: X_mid[k] = (Z[k] + Z*[n-k]) / 2, X_side[k] = (Z[k] - Z*[n-k]) / 2i. Only bins
+            // 0..=n/2 are read later, so the mid is written over them in place.
             let n = self.n;
             Self::window_pair_into(&self.ring, &self.side_ring, self.written, &self.win, &mut self.buf);
             self.fft.process_with_scratch(&mut self.buf, &mut self.scratch);
@@ -458,9 +443,7 @@ impl Analyzer {
         self.hops += 1;
     }
 
-    /// Adds this chroma frame's spectral peaks to the tuning estimate: each clear peak, its frequency refined
-    /// by a parabola through the log magnitudes, votes for how far above or below the equal-tempered grid it
-    /// sits, weighted by its magnitude.
+    /// Adds this chroma frame's peaks (parabola-refined) to the tuning estimate, weighted by magnitude.
     fn tuning_peaks(&mut self) {
         let (lo, hi) = self.tune_bins;
         let m = &self.mags;
@@ -486,7 +469,7 @@ impl Analyzer {
         self.f.tuning_cs.1 += sn;
     }
 
-    /// Everything measured so far. The analyser is left empty and can be fed again from the start.
+    /// Everything measured so far; the analyser is reset.
     pub fn take_features(&mut self) -> Features {
         self.meter.finish();
         let (fps, t0, chroma_step) = (self.f.fps, self.f.t0, self.f.chroma_step);
@@ -520,7 +503,7 @@ impl Analyzer {
         f
     }
 
-    pub fn reset(&mut self) {
+    fn reset(&mut self) {
         self.ring.fill(0.0);
         self.side_ring.fill(0.0);
         (self.side_acc, self.side_until) = (0.0, 0);
