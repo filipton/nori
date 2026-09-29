@@ -75,7 +75,7 @@ fn the_database_keeps_what_the_beat_model_found() {
     core.analysis_store(row.clone()).unwrap();
     core.analysis_store(TrackAnalysis { song_id: "old".into(), analysis_version: 1, ..row.clone() }).unwrap();
     assert_eq!(core.analysis_neural_missing(vec!["s".into(), "old".into(), "none".into()]).unwrap(), vec!["s".to_string()]);
-    let sure = EndGrid { bpm: 90.0, offset_ms: 10.0, confidence: 1.0, stability: 1.0, downbeat_phase: 0, beats_per_bar: 3, other_phase: -1, anchor_ms: 0.0 };
+    let sure = EndGrid { bpm: 90.0, offset_ms: 10.0, confidence: 1.0, stability: 1.0, downbeat_phase: 0, beats_per_bar: 3, other_phase: None, anchor_ms: 0.0 };
     assert!(core.analysis_neural_store("s", MixEnd::Intro, Some(sure)).unwrap());
     assert!(!core.analysis_neural_store("s", MixEnd::Outro, None).unwrap());
     assert!(!core.analysis_neural_store("none", MixEnd::Outro, None).unwrap());

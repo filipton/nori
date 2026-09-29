@@ -1307,7 +1307,7 @@ fn neural_eval() {
             let g = end_grid(&t);
             beats::merge(&mut shipped, end, g);
             if let Some(g) = g {
-                beats::merge(&mut always, end, Some(EndGrid { confidence: 1.0, stability: 1.0, other_phase: -1, ..g }));
+                beats::merge(&mut always, end, Some(EndGrid { confidence: 1.0, stability: 1.0, other_phase: None, ..g }));
                 // Its own confidence stays what it said, so the planner still refuses a grid it doubts.
                 match end {
                     MixEnd::Intro => (always.intro_bpm_confidence, always.intro_stability) = (g.confidence, g.stability),

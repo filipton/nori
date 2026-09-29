@@ -308,10 +308,9 @@ pub struct NeuralGrid {
     pub confidence: f32,
     pub downbeat_phase: i32,
     pub beats_per_bar: i32,
-    /// A second bar start the downbeats point at almost as often as `downbeat_phase` (-1 when there is none). Where
-    /// the bar is not in the sound - a drum-only intro, four kicks to the bar and nothing else - the model marks
-    /// every other beat, and which of the two is the bar is a coin toss.
-    pub other_phase: i32,
+    /// A second bar start the downbeats point at almost as often (the model marks every other beat where only
+    /// drums play).
+    pub other_phase: Option<i32>,
     /// A beat in the middle of the window, seconds: where two grids are compared.
     pub anchor_s: f64,
 }
@@ -354,7 +353,7 @@ pub fn grid(tracked: &Tracked) -> Option<NeuralGrid> {
         confidence: ((regular - 0.5) / 0.4).clamp(0.0, 1.0) as f32,
         downbeat_phase: phase as i32,
         beats_per_bar: meter as i32,
-        other_phase: other.map_or(-1, |p| p as i32),
+        other_phase: other.map(|p| p as i32),
         anchor_s: beats[beats.len() / 2],
     })
 }
@@ -488,7 +487,7 @@ mod tests {
         let t = Tracked { downbeats: beats.iter().skip(2).step_by(3).copied().collect(), beats };
         let g = grid(&t).unwrap();
         assert!((g.bpm - 120.0).abs() < 1e-6 && (g.offset_s - 0.3).abs() < 1e-6);
-        assert_eq!((g.beats_per_bar, g.downbeat_phase, g.other_phase), (3, 2, -1));
+        assert_eq!((g.beats_per_bar, g.downbeat_phase, g.other_phase), (3, 2, None));
         assert!(g.stability > 0.9 && g.confidence > 0.9);
     }
 
@@ -499,7 +498,7 @@ mod tests {
         let t = Tracked { downbeats: beats.iter().skip(1).step_by(2).copied().collect(), beats };
         let g = grid(&t).unwrap();
         assert_eq!(g.beats_per_bar, 4);
-        let mut both = [g.downbeat_phase, g.other_phase];
+        let mut both = [g.downbeat_phase, g.other_phase.unwrap()];
         both.sort();
         assert_eq!(both, [1, 3]);
     }
