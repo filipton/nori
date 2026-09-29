@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- For you on the home screen: favourites and the mixes, each tile as the Home page draws it. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root" android:layout_width="match_parent" android:layout_height="match_parent">
+    <ImageView android:id="@+id/widget_back" android:layout_width="match_parent" android:layout_height="match_parent"
+        android:scaleType="fitXY" android:src="@drawable/widget_back" android:importantForAccessibility="no" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="match_parent"
+        android:orientation="vertical" android:paddingHorizontal="14dp" android:paddingTop="10dp" android:paddingBottom="14dp">
+        <LinearLayout android:id="@+id/widget_head" android:layout_width="match_parent" android:layout_height="36dp"
+            android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="4dp">
+            <TextView android:id="@+id/widget_header" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+                android:ellipsize="end" android:maxLines="1" android:fontFamily="@font/inter" android:textFontWeight="600"
+                android:textSize="20sp" android:letterSpacing="-0.02" android:textColor="#FFFFFFFF" android:text="@string/for_you" />
+            
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:orientation="horizontal"
+            android:layout_marginEnd="@dimen/widget_gap_back">
+            <FrameLayout android:id="@+id/widget_slot0" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
+                android:layout_marginEnd="@dimen/widget_gap">
+                <ImageView android:id="@+id/widget_art0" android:layout_width="match_parent" android:layout_height="match_parent"
+                    android:scaleType="fitXY" android:importantForAccessibility="no" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_gravity="bottom"
+                    android:orientation="vertical" android:padding="10dp">
+                    <ImageView android:id="@+id/widget_mark0" android:layout_width="14dp" android:layout_height="14dp"
+                        android:src="@drawable/widget_sparkle" android:alpha="0.9" android:importantForAccessibility="no" />
+                    <TextView android:id="@+id/widget_name0" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:layout_marginTop="3dp" android:ellipsize="end" android:maxLines="2" android:fontFamily="@font/inter"
+                        android:textFontWeight="600" android:textSize="14sp" android:textColor="#FFFFFFFF" />
+                </LinearLayout>
+            </FrameLayout>
+            <FrameLayout android:id="@+id/widget_slot1" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
+                android:layout_marginEnd="@dimen/widget_gap">
+                <ImageView android:id="@+id/widget_art1" android:layout_width="match_parent" android:layout_height="match_parent"
+                    android:scaleType="fitXY" android:importantForAccessibility="no" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_gravity="bottom"
+                    android:orientation="vertical" android:padding="10dp">
+                    <ImageView android:id="@+id/widget_mark1" android:layout_width="14dp" android:layout_height="14dp"
+                        android:src="@drawable/widget_sparkle" android:alpha="0.9" android:importantForAccessibility="no" />
+                    <TextView android:id="@+id/widget_name1" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:layout_marginTop="3dp" android:ellipsize="end" android:maxLines="2" android:fontFamily="@font/inter"
+                        android:textFontWeight="600" android:textSize="14sp" android:textColor="#FFFFFFFF" />
+                </LinearLayout>
+            </FrameLayout>
+            <FrameLayout android:id="@+id/widget_slot2" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
+                android:layout_marginEnd="@dimen/widget_gap">
+                <ImageView android:id="@+id/widget_art2" android:layout_width="match_parent" android:layout_height="match_parent"
+                    android:scaleType="fitXY" android:importantForAccessibility="no" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_gravity="bottom"
+                    android:orientation="vertical" android:padding="10dp">
+                    <ImageView android:id="@+id/widget_mark2" android:layout_width="14dp" android:layout_height="14dp"
+                        android:src="@drawable/widget_sparkle" android:alpha="0.9" android:importantForAccessibility="no" />
+                    <TextView android:id="@+id/widget_name2" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:layout_marginTop="3dp" android:ellipsize="end" android:maxLines="2" android:fontFamily="@font/inter"
+                        android:textFontWeight="600" android:textSize="14sp" android:textColor="#FFFFFFFF" />
+                </LinearLayout>
+            </FrameLayout>
+            <FrameLayout android:id="@+id/widget_slot3" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
+                android:layout_marginEnd="@dimen/widget_gap">
+                <ImageView android:id="@+id/widget_art3" android:layout_width="match_parent" android:layout_height="match_parent"
+                    android:scaleType="fitXY" android:importantForAccessibility="no" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_gravity="bottom"
+                    android:orientation="vertical" android:padding="10dp">
+                    <ImageView android:id="@+id/widget_mark3" android:layout_width="14dp" android:layout_height="14dp"
+                        android:src="@drawable/widget_sparkle" android:alpha="0.9" android:importantForAccessibility="no" />
+                    <TextView android:id="@+id/widget_name3" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:layout_marginTop="3dp" android:ellipsize="end" android:maxLines="2" android:fontFamily="@font/inter"
+                        android:textFontWeight="600" android:textSize="14sp" android:textColor="#FFFFFFFF" />
+                </LinearLayout>
+            </FrameLayout>
+            <FrameLayout android:id="@+id/widget_slot4" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
+                android:layout_marginEnd="@dimen/widget_gap">
+                <ImageView android:id="@+id/widget_art4" android:layout_width="match_parent" android:layout_height="match_parent"
+                    android:scaleType="fitXY" android:importantForAccessibility="no" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_gravity="bottom"
+                    android:orientation="vertical" android:padding="10dp">
+                    <ImageView android:id="@+id/widget_mark4" android:layout_width="14dp" android:layout_height="14dp"
+                        android:src="@drawable/widget_sparkle" android:alpha="0.9" android:importantForAccessibility="no" />
+                    <TextView android:id="@+id/widget_name4" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:layout_marginTop="3dp" android:ellipsize="end" android:maxLines="2" android:fontFamily="@font/inter"
+                        android:textFontWeight="600" android:textSize="14sp" android:textColor="#FFFFFFFF" />
+                </LinearLayout>
+            </FrameLayout>
+            <FrameLayout android:id="@+id/widget_slot5" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
+                android:layout_marginEnd="@dimen/widget_gap">
+                <ImageView android:id="@+id/widget_art5" android:layout_width="match_parent" android:layout_height="match_parent"
+                    android:scaleType="fitXY" android:importantForAccessibility="no" />
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_gravity="bottom"
+                    android:orientation="vertical" android:padding="10dp">
+                    <ImageView android:id="@+id/widget_mark5" android:layout_width="14dp" android:layout_height="14dp"
+                        android:src="@drawable/widget_sparkle" android:alpha="0.9" android:importantForAccessibility="no" />
+                    <TextView android:id="@+id/widget_name5" android:layout_width="match_parent" android:layout_height="wrap_content"
+                        android:layout_marginTop="3dp" android:ellipsize="end" android:maxLines="2" android:fontFamily="@font/inter"
+                        android:textFontWeight="600" android:textSize="14sp" android:textColor="#FFFFFFFF" />
+                </LinearLayout>
+            </FrameLayout>
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>

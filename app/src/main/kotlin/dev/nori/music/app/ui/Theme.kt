@@ -26,15 +26,7 @@ fun NoriTheme(prefs: StoredPrefs, content: @Composable () -> Unit) {
     val system = isSystemInDarkTheme()
     // Light, dark or the phone's: the core's rule (nori_look::theme::is_dark), the same for every screen.
     val dark = remember(prefs.theme, system) { dev.nori.music.ffi.settings.themeIsDark(prefs.theme, system) }
-    val dynamic = prefs.dynamicColor && Build.VERSION.SDK_INT >= 31
-    val scheme = remember(dark, dynamic, prefs.accent, prefs.amoled) {
-        val base = when {
-            dynamic && dark -> dynamicDarkColorScheme(context)
-            dynamic -> dynamicLightColorScheme(context)
-            else -> seeded(Color(prefs.accent), dark)
-        }
-        if (dark && prefs.amoled) base.black() else base
-    }
+    val scheme = remember(dark, prefs.dynamicColor, prefs.accent, prefs.amoled) { schemeOf(context, prefs, dark) }
     val systemDensity = androidx.compose.ui.platform.LocalDensity.current
     // The shorter side, not the width: the same in both orientations, so text keeps its size on a turn.
     val widthDp = androidx.compose.ui.platform.LocalConfiguration.current.smallestScreenWidthDp
@@ -46,21 +38,33 @@ fun NoriTheme(prefs: StoredPrefs, content: @Composable () -> Unit) {
     }
     // Everything dressed in the theme's own colours - the plates behind the buttons, the chrome, the
     // status bar - worked out once per scheme in Rust (nori_look::dress) and only looked up after.
-    val look = remember(scheme) {
-        FixedLook(
-            dev.nori.music.look.CoverLook.plain(
-                intArrayOf(
-                    scheme.background.toArgb(), scheme.onSurface.toArgb(), scheme.onSurfaceVariant.toArgb(), scheme.primary.toArgb(),
-                    scheme.onPrimary.toArgb(), scheme.surfaceVariant.toArgb(), scheme.surfaceContainer.toArgb(),
-                    scheme.surfaceContainerHigh.toArgb(), scheme.secondaryContainer.toArgb(), scheme.outlineVariant.toArgb(),
-                ),
-            ),
-        )
-    }
+    val look = remember(scheme) { FixedLook(plainLook(scheme)) }
     androidx.compose.runtime.CompositionLocalProvider(androidx.compose.ui.platform.LocalDensity provides density, LocalLook provides look) {
         MaterialTheme(colorScheme = scheme, typography = NoriTypography, content = content)
     }
 }
+
+/**
+ * The scheme the app wears: the wallpaper's colours on Android 12+ when asked for, otherwise grown from the
+ * accent, with AMOLED black over a dark one. Outside composition too, for the home-screen widgets.
+ */
+fun schemeOf(context: android.content.Context, prefs: StoredPrefs, dark: Boolean): ColorScheme {
+    val base = when {
+        prefs.dynamicColor && Build.VERSION.SDK_INT >= 31 && dark -> dynamicDarkColorScheme(context)
+        prefs.dynamicColor && Build.VERSION.SDK_INT >= 31 -> dynamicLightColorScheme(context)
+        else -> seeded(Color(prefs.accent), dark)
+    }
+    return if (dark && prefs.amoled) base.black() else base
+}
+
+/** Everything dressed in [scheme]'s own colours (nori_look::dress), as the core lays a look out. */
+fun plainLook(scheme: ColorScheme): IntArray = dev.nori.music.look.CoverLook.plain(
+    intArrayOf(
+        scheme.background.toArgb(), scheme.onSurface.toArgb(), scheme.onSurfaceVariant.toArgb(), scheme.primary.toArgb(),
+        scheme.onPrimary.toArgb(), scheme.surfaceVariant.toArgb(), scheme.surfaceContainer.toArgb(),
+        scheme.surfaceContainerHigh.toArgb(), scheme.secondaryContainer.toArgb(), scheme.outlineVariant.toArgb(),
+    ),
+)
 
 /** Every size in the app was measured as a share of the width of a phone this many dp wide. */
 private const val REFERENCE_WIDTH_DP = 411f

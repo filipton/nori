@@ -302,6 +302,17 @@
     <string name="sleep_end_of_track">Sleep · end of track</string>
     <string name="sleep_minutes">Sleep · %1$d min</string>
     <string name="widget_idle">nori</string>
+    <!-- The home-screen widgets: their names and lines in the widget picker. -->
+    <string name="widget_player">Player</string>
+    <string name="widget_player_about">What’s playing, with its controls. Resize it for a bigger cover.</string>
+    <string name="widget_cover">Cover</string>
+    <string name="widget_cover_about">The cover of what’s playing, with play and pause.</string>
+    <string name="widget_mixes">For you</string>
+    <string name="widget_mixes_about">Your favorites and today’s mixes.</string>
+    <string name="widget_albums">Random albums</string>
+    <string name="widget_albums_about">A few albums from your library, shuffled when you want.</string>
+    <string name="widget_lyrics">Lyrics</string>
+    <string name="widget_lyrics_about">The line being sung, as it’s sung.</string>
 
     <!-- Lyrics. -->
     <string name="lyrics_your_server">your server</string>

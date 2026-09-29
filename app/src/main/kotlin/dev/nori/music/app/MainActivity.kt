@@ -22,6 +22,12 @@ const val SHUFFLE_SONGS = "shuffle:songs"
 const val SHUFFLE_ALBUMS = "shuffle:albums"
 
 class MainActivity : ComponentActivity() {
+    companion object {
+        /** A home-screen widget's tap: [EXTRA_ROUTE] is where it goes (App's launch routes), none for the app as it was. */
+        const val ACTION_WIDGET = "dev.nori.music.WIDGET"
+        const val EXTRA_ROUTE = "route"
+    }
+
     private var started = false
     private val askNotifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
     /** What was asked for from outside (the download notification, a launcher shortcut); App does it and clears this. */
@@ -50,12 +56,13 @@ class MainActivity : ComponentActivity() {
         routeOf(intent)?.let { launchRoute.value = it }
     }
 
-    /** What an intent from outside asks for: the download notification's screen, or a launcher shortcut's (res/xml/shortcuts.xml). */
+    /** What an intent from outside asks for: the download notification's screen, a launcher shortcut's (res/xml/shortcuts.xml) or a widget's. */
     private fun routeOf(intent: Intent?): String? = when (intent?.action) {
         ACTION_OPEN_DOWNLOADS -> "downloads"
         "dev.nori.music.SHORTCUT_SEARCH" -> "search"
         "dev.nori.music.SHORTCUT_SHUFFLE_SONGS" -> SHUFFLE_SONGS
         "dev.nori.music.SHORTCUT_SHUFFLE_ALBUMS" -> SHUFFLE_ALBUMS
+        ACTION_WIDGET -> intent.getStringExtra(EXTRA_ROUTE)
         else -> null
     }
 
@@ -80,5 +87,7 @@ class MainActivity : ComponentActivity() {
         started = false
         // The service keeps playing on its own; holding a controller while hidden would only keep callbacks flowing.
         Nori.get(this).player.disconnect()
+        // Leaving the app is going to the home screen: its "For you" widget shows the mixes as they are now.
+        dev.nori.music.app.widget.MixesWidget.refresh(this)
     }
 }

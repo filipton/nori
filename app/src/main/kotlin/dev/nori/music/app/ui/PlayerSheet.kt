@@ -49,6 +49,9 @@ class PlayerSheet(private val scope: CoroutineScope) {
      */
     var panelFlight by mutableStateOf(false)
 
+    /** The lyrics widget's tap: the player opens on its lyrics. The player takes it and clears it. */
+    var lyricsAsked by mutableStateOf(false)
+
     /** The top of the mini player, in root coordinates: where the sheet's top edge starts. */
     var miniTop by mutableFloatStateOf(0f)
 

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The line being sung, large, the next one quieter under it, on the song's own colours. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root" android:layout_width="match_parent" android:layout_height="match_parent">
+    <ImageView android:id="@+id/widget_back" android:layout_width="match_parent" android:layout_height="match_parent"
+        android:scaleType="fitXY" android:src="@drawable/widget_back" android:importantForAccessibility="no" />
+    <LinearLayout android:id="@+id/widget_open" android:layout_width="match_parent" android:layout_height="match_parent"
+        android:orientation="vertical" android:padding="16dp">
+        <LinearLayout android:id="@+id/widget_head" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal"
+            android:gravity="center_vertical">
+            <ImageView android:id="@+id/widget_cover" android:layout_width="30dp" android:layout_height="30dp" android:scaleType="fitXY"
+                android:importantForAccessibility="no" />
+            <TextView android:id="@+id/widget_title" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+            android:ellipsize="end" android:maxLines="1" android:fontFamily="@font/inter" android:textFontWeight="500"
+            android:textSize="13sp" android:textColor="#FFFFFFFF" android:layout_marginStart="10dp"/>
+        </LinearLayout>
+        <TextView android:id="@+id/widget_line" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"
+            android:gravity="center_vertical" android:ellipsize="end" android:maxLines="3" android:fontFamily="@font/inter"
+            android:textFontWeight="700" android:textSize="24sp" android:letterSpacing="-0.02" android:textColor="#FFFFFFFF"
+            android:autoSizeTextType="uniform" android:autoSizeMinTextSize="15sp" android:autoSizeMaxTextSize="26sp" />
+        <TextView android:id="@+id/widget_next_line" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:ellipsize="end" android:maxLines="1" android:fontFamily="@font/inter" android:textFontWeight="700"
+            android:textSize="16sp" android:textColor="#FFFFFFFF" />
+    </LinearLayout>
+</FrameLayout>

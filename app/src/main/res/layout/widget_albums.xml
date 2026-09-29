@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Random albums, as the Home page's Random row: a grid of covers, drawn again with the shuffle. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root" android:layout_width="match_parent" android:layout_height="match_parent">
+    <ImageView android:id="@+id/widget_back" android:layout_width="match_parent" android:layout_height="match_parent"
+        android:scaleType="fitXY" android:src="@drawable/widget_back" android:importantForAccessibility="no" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="match_parent"
+        android:orientation="vertical" android:paddingHorizontal="14dp" android:paddingTop="10dp" android:paddingBottom="14dp">
+        <LinearLayout android:id="@+id/widget_head" android:layout_width="match_parent" android:layout_height="36dp"
+            android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="4dp">
+            <TextView android:id="@+id/widget_header" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+                android:ellipsize="end" android:maxLines="1" android:fontFamily="@font/inter" android:textFontWeight="600"
+                android:textSize="20sp" android:letterSpacing="-0.02" android:textColor="#FFFFFFFF" android:text="@string/home_row_random" />
+            <FrameLayout android:id="@+id/widget_shuffle" android:layout_width="36dp" android:layout_height="36dp">
+            <ImageView android:id="@+id/widget_shuffle_glyph" android:layout_width="match_parent" android:layout_height="match_parent"
+                android:padding="7dp" android:src="@drawable/widget_shuffle" android:contentDescription="@string/shuffle" />
+        </FrameLayout>
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:orientation="vertical"
+            android:layout_marginEnd="@dimen/widget_gap_back" android:layout_marginBottom="@dimen/widget_gap_back">
+            <LinearLayout android:id="@+id/widget_row0" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"
+            android:orientation="horizontal" android:layout_marginBottom="@dimen/widget_gap">
+                <ImageView android:id="@+id/widget_album00" android:layout_width="0dp" android:layout_height="match_parent"
+                    android:layout_weight="1" android:layout_marginEnd="@dimen/widget_gap" android:scaleType="fitCenter" />
+                <ImageView android:id="@+id/widget_album01" android:layout_width="0dp" android:layout_height="match_parent"
+                    android:layout_weight="1" android:layout_marginEnd="@dimen/widget_gap" android:scaleType="fitCenter" />
+                <ImageView android:id="@+id/widget_album02" android:layout_width="0dp" android:layout_height="match_parent"
+                    android:layout_weight="1" android:layout_marginEnd="@dimen/widget_gap" android:scaleType="fitCenter" />
+                <ImageView android:id="@+id/widget_album03" android:layout_width="0dp" android:layout_height="match_parent"
+                    android:layout_weight="1" android:layout_marginEnd="@dimen/widget_gap" android:scaleType="fitCenter" />
+                <ImageView android:id="@+id/widget_album04" android:layout_width="0dp" android:layout_height="match_parent"
+                    android:layout_weight="1" android:layout_marginEnd="@dimen/widget_gap" android:scaleType="fitCenter" />
+                <ImageView android:id="@+id/widget_album05" android:layout_width="0dp" android:layout_height="match_parent"
+                    android:layout_weight="1" android:layout_marginEnd="@dimen/widget_gap" android:scaleType="fitCenter" />
+            </LinearLayout>
+            <LinearLayout android:id="@+id/widget_row1" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"
+            android:orientation="horizontal" android:layout_marginBottom="@dimen/widget_gap">
+                <ImageView android:id="@+id/widget_album10" android:layout_width="0dp" android:layout_height="match_parent"
+                    android:layout_weight="1" android:layout_marginEnd="@dimen/widget_gap" android:scaleType="fitCenter" />
+                <ImageView android:id="@+id/widget_album11" android:layout_width="0dp" android:layout_height="match_parent"
+                    android:layout_weight="1" android:layout_marginEnd="@dimen/widget_gap" android:scaleType="fitCenter" />
+                <ImageView android:id="@+id/widget_album12" android:layout_width="0dp" android:layout_height="match_parent"
+                    android:layout_weight="1" android:layout_marginEnd="@dimen/widget_gap" android:scaleType="fitCenter" />
+                <ImageView android:id="@+id/widget_album13" android:layout_width="0dp" android:layout_height="match_parent"
+                    android:layout_weight="1" android:layout_marginEnd="@dimen/widget_gap" android:scaleType="fitCenter" />
+                <ImageView android:id="@+id/widget_album14" android:layout_width="0dp" android:layout_height="match_parent"
+                    android:layout_weight="1" android:layout_marginEnd="@dimen/widget_gap" android:scaleType="fitCenter" />
+                <ImageView android:id="@+id/widget_album15" android:layout_width="0dp" android:layout_height="match_parent"
+                    android:layout_weight="1" android:layout_marginEnd="@dimen/widget_gap" android:scaleType="fitCenter" />
+            </LinearLayout>
+            <LinearLayout android:id="@+id/widget_row2" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"
+            android:orientation="horizontal" android:layout_marginBottom="@dimen/widget_gap">
+                <ImageView android:id="@+id/widget_album20" android:layout_width="0dp" android:layout_height="match_parent"
+                    android:layout_weight="1" android:layout_marginEnd="@dimen/widget_gap" android:scaleType="fitCenter" />
+                <ImageView android:id="@+id/widget_album21" android:layout_width="0dp" android:layout_height="match_parent"
+                    android:layout_weight="1" android:layout_marginEnd="@dimen/widget_gap" android:scaleType="fitCenter" />
+                <ImageView android:id="@+id/widget_album22" android:layout_width="0dp" android:layout_height="match_parent"
+                    android:layout_weight="1" android:layout_marginEnd="@dimen/widget_gap" android:scaleType="fitCenter" />
+                <ImageView android:id="@+id/widget_album23" android:layout_width="0dp" android:layout_height="match_parent"
+                    android:layout_weight="1" android:layout_marginEnd="@dimen/widget_gap" android:scaleType="fitCenter" />
+                <ImageView android:id="@+id/widget_album24" android:layout_width="0dp" android:layout_height="match_parent"
+                    android:layout_weight="1" android:layout_marginEnd="@dimen/widget_gap" android:scaleType="fitCenter" />
+                <ImageView android:id="@+id/widget_album25" android:layout_width="0dp" android:layout_height="match_parent"
+                    android:layout_weight="1" android:layout_marginEnd="@dimen/widget_gap" android:scaleType="fitCenter" />
+            </LinearLayout>
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>

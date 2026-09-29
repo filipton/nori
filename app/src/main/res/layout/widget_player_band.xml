@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The player wider than tall: the cover at the start, melting into the page the song and controls sit on, as on its side in the app. The words' start is set in code, past the cover. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root" android:layout_width="match_parent" android:layout_height="match_parent">
+    <ImageView android:id="@+id/widget_back" android:layout_width="match_parent" android:layout_height="match_parent"
+        android:scaleType="fitXY" android:src="@drawable/widget_back" android:importantForAccessibility="no" />
+    <LinearLayout android:id="@+id/widget_open" android:layout_width="match_parent" android:layout_height="match_parent"
+        android:orientation="vertical" android:gravity="center_vertical" android:paddingEnd="14dp">
+        <TextView android:id="@+id/widget_title" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:ellipsize="end" android:maxLines="2" android:fontFamily="@font/inter" android:textFontWeight="700"
+            android:textSize="19sp" android:textColor="#FFFFFFFF" android:letterSpacing="-0.02"/>
+        <TextView android:id="@+id/widget_artist" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:ellipsize="end" android:maxLines="1" android:fontFamily="@font/inter" android:textFontWeight="400"
+            android:textSize="15sp" android:textColor="#FFFFFFFF" />
+        <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp"
+            android:orientation="horizontal" android:gravity="center_vertical" android:layout_gravity="start">
+            <FrameLayout android:id="@+id/widget_previous" android:layout_width="48dp" android:layout_height="48dp">
+            <ImageView android:id="@+id/widget_previous_glyph" android:layout_width="match_parent" android:layout_height="match_parent"
+                android:padding="11dp" android:src="@drawable/widget_rewind" android:contentDescription="@string/previous" />
+        </FrameLayout>
+            <FrameLayout android:id="@+id/widget_toggle" android:layout_width="52dp" android:layout_height="52dp">
+            <ImageView android:id="@+id/widget_toggle_glyph" android:layout_width="match_parent" android:layout_height="match_parent"
+                android:padding="10dp" android:src="@drawable/widget_play" android:contentDescription="@string/play" />
+        </FrameLayout>
+            <FrameLayout android:id="@+id/widget_next" android:layout_width="48dp" android:layout_height="48dp">
+            <ImageView android:id="@+id/widget_next_glyph" android:layout_width="match_parent" android:layout_height="match_parent"
+                android:padding="11dp" android:src="@drawable/widget_forward" android:contentDescription="@string/next" />
+        </FrameLayout>
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>

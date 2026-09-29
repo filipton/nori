@@ -87,6 +87,9 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
      * jump back a heartbeat later). Those rules are nori-player's (heard.rs Playhead); this is one JNI
      * call with primitives in and out per frame.
      */
+    /** Moves whenever a new queue is set (nori-queue `playlist_origin_gen`): when to ask again which page it came from. */
+    val queueOrigin: Int get() = PlaylistJni.origin()
+
     val positionMs: Long get() {
         val c = controller ?: local() ?: return PlayheadJni.runOn(clock, android.os.SystemClock.elapsedRealtime(), _state.value.playing)
         return heard(c, _state.value.index)

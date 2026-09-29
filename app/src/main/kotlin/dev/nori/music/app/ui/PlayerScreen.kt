@@ -174,6 +174,11 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
     // Each change's arriving panel goes under every panel before it (see the panels' AnimatedContent).
     var changes by remember { mutableIntStateOf(0) }
     val choose: (Panel) -> Unit = { panel = if (panel == it) Panel.ART else it; changes++ }
+    LaunchedEffect(sheet.lyricsAsked) {
+        if (!sheet.lyricsAsked) return@LaunchedEffect
+        sheet.lyricsAsked = false
+        if (panel != Panel.LYRICS) choose(Panel.LYRICS)
+    }
     // Where the sleeve ends, so the page behind it can be drawn at the same scale. Written on layout,
     // read in the draw phase; it only moves when the window does.
     var sleeveBottom by remember { mutableFloatStateOf(0f) }

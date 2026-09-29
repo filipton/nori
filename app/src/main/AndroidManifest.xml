@@ -19,12 +19,40 @@
             </intent-filter>
             <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
         </activity>
-        <receiver android:name=".PlayerWidget" android:exported="false">
+        <receiver android:name=".PlayerWidget" android:exported="false" android:label="@string/widget_player">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
                 <action android:name="dev.nori.music.STATE" />
             </intent-filter>
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_player_info" />
+        </receiver>
+        <receiver android:name=".widget.CoverWidget" android:exported="false" android:label="@string/widget_cover">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="dev.nori.music.STATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_cover_info" />
+        </receiver>
+        <receiver android:name=".widget.LyricsWidget" android:exported="false" android:label="@string/widget_lyrics">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="dev.nori.music.STATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_lyrics_info" />
+        </receiver>
+        <receiver android:name=".widget.MixesWidget" android:exported="false" android:label="@string/widget_mixes">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="dev.nori.music.STATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_mixes_info" />
+        </receiver>
+        <receiver android:name=".widget.AlbumsWidget" android:exported="false" android:label="@string/widget_albums">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="dev.nori.music.STATE" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_albums_info" />
         </receiver>
         <receiver android:name="androidx.media3.session.MediaButtonReceiver" android:exported="true">
             <intent-filter>

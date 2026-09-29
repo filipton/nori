@@ -260,6 +260,9 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
                     "downloads" -> nav.downloads()
                     // A tab, as a tap on it: the keyboard comes up with it.
                     "search" -> nav.tab(route)
+                    // A widget's song: the player, or the player turned to the lyrics.
+                    "player" -> nav.player()
+                    "lyrics" -> { sheet.lyricsAsked = true; nav.player() }
                     dev.nori.music.app.SHUFFLE_SONGS -> actions.shuffleAll()
                     dev.nori.music.app.SHUFFLE_ALBUMS -> actions.shuffleAlbums()
                     else -> nav.go(route)

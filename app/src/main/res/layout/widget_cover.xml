@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The cover on its own, dissolving at the bottom into its page under the song's name, as an album's page opens; its Play in the page's own plate. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root" android:layout_width="match_parent" android:layout_height="match_parent">
+    <ImageView android:id="@+id/widget_back" android:layout_width="match_parent" android:layout_height="match_parent"
+        android:scaleType="fitXY" android:src="@drawable/widget_back" android:importantForAccessibility="no" />
+    <LinearLayout android:id="@+id/widget_open" android:layout_width="match_parent" android:layout_height="match_parent"
+        android:orientation="vertical" android:gravity="bottom" android:paddingStart="12dp" android:paddingEnd="58dp" android:paddingBottom="12dp">
+        <TextView android:id="@+id/widget_title" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:ellipsize="end" android:maxLines="1" android:fontFamily="@font/inter" android:textFontWeight="600"
+            android:textSize="15sp" android:textColor="#FFFFFFFF" />
+        <TextView android:id="@+id/widget_artist" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:ellipsize="end" android:maxLines="1" android:fontFamily="@font/inter" android:textFontWeight="400"
+            android:textSize="13sp" android:textColor="#FFFFFFFF" />
+    </LinearLayout>
+    <FrameLayout android:id="@+id/widget_toggle" android:layout_width="40dp" android:layout_height="40dp"
+        android:layout_gravity="bottom|end" android:layout_margin="10dp">
+        <ImageView android:id="@+id/widget_plate" android:layout_width="match_parent" android:layout_height="match_parent"
+            android:src="@drawable/widget_circle" android:importantForAccessibility="no" />
+        <ImageView android:id="@+id/widget_toggle_glyph" android:layout_width="match_parent" android:layout_height="match_parent"
+            android:padding="9dp" android:src="@drawable/widget_play" android:contentDescription="@string/play" />
+    </FrameLayout>
+</FrameLayout>

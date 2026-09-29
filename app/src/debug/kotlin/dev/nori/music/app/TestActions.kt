@@ -111,6 +111,40 @@ object TestActions {
             "beats" -> { actions.answerBeats(ref.startsWith("yes"), ref.endsWith(",remember")); return@attempt }
             // Settings' "Analyse downloaded songs" (asks first, as Download does).
             "analysedownloads" -> { actions.analyseDownloads(); return@attempt }
+            // "widgetfaces": the song's widget faces at the sizes a launcher gives them, drawn off screen into
+            // the cache (widget-<face>-<w>x<h>.png), to look at every size without resizing one on the home screen.
+            "widgetfaces" -> {
+                val dm = context.resources.displayMetrics
+                for ((face, w, h) in listOf(
+                    Triple(dev.nori.music.app.widget.Face.MINI, 360, 110), Triple(dev.nori.music.app.widget.Face.BAND, 360, 200),
+                    Triple(dev.nori.music.app.widget.Face.TALL, 270, 300), Triple(dev.nori.music.app.widget.Face.TILE, 170, 180),
+                    Triple(dev.nori.music.app.widget.Face.STRIP, 360, 110), Triple(dev.nori.music.app.widget.Face.STRIP, 170, 110),
+                )) {
+                    val views = dev.nori.music.app.widget.NowFaces.views(context, face, w, h)
+                    val parent = android.widget.FrameLayout(context)
+                    val view = views.apply(context, parent)
+                    val wp = (w * dm.density).toInt()
+                    val hp = (h * dm.density).toInt()
+                    view.measure(android.view.View.MeasureSpec.makeMeasureSpec(wp, android.view.View.MeasureSpec.EXACTLY), android.view.View.MeasureSpec.makeMeasureSpec(hp, android.view.View.MeasureSpec.EXACTLY))
+                    view.layout(0, 0, wp, hp)
+                    val shot = android.graphics.Bitmap.createBitmap(wp, hp, android.graphics.Bitmap.Config.ARGB_8888)
+                    view.draw(android.graphics.Canvas(shot))
+                    java.io.File(context.cacheDir, "widget-${face.name.lowercase()}-${w}x${h}.png").outputStream().use { shot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+                }
+                return@attempt
+            }
+            // "pinwidget player|cover|mixes|albums|lyrics": the launcher's own "add to home screen" for that widget.
+            "pinwidget" -> {
+                val provider = when (ref) {
+                    "player" -> PlayerWidget::class.java
+                    "cover" -> dev.nori.music.app.widget.CoverWidget::class.java
+                    "mixes" -> dev.nori.music.app.widget.MixesWidget::class.java
+                    "albums" -> dev.nori.music.app.widget.AlbumsWidget::class.java
+                    else -> dev.nori.music.app.widget.LyricsWidget::class.java
+                }
+                android.appwidget.AppWidgetManager.getInstance(context).requestPinAppWidget(android.content.ComponentName(context, provider), null, null)
+                return@attempt
+            }
         }
         val r = testRef(ref)
         val songs = songsOf(nori, r)

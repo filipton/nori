@@ -66,6 +66,12 @@ class PlaybackService : MediaLibraryService() {
         const val EXTRA_TITLE = "title"
         const val EXTRA_ARTIST = "artist"
         const val EXTRA_PLAYING = "playing"
+        const val EXTRA_ID = "id"
+        const val EXTRA_COVER = "cover"
+        /** Where the song was when this was sent, ms, at [EXTRA_AT] (elapsedRealtime), moving at [EXTRA_SPEED]. */
+        const val EXTRA_POSITION = "position"
+        const val EXTRA_AT = "at"
+        const val EXTRA_SPEED = "speed"
         const val ARG_ON = "on"
         const val ARG_MINUTES = "minutes"
         const val ARG_END_OF_TRACK = "endOfTrack"
@@ -300,6 +306,13 @@ class PlaybackService : MediaLibraryService() {
             if (steps.pauseAtEnd) pauseAtEnd(true)
         }
 
+        // A seek moves the lyrics widget's line; the song's own playing on is worked out from the last announce.
+        override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+            if (reason == Player.DISCONTINUITY_REASON_SEEK) announce()
+        }
+
+        override fun onPlaybackParametersChanged(playbackParameters: androidx.media3.common.PlaybackParameters) = announce()
+
         override fun onIsLoadingChanged(isLoading: Boolean) {
             if (isLoading && !wifiLock.isHeld) wifiLock.acquire() else if (!isLoading && wifiLock.isHeld) wifiLock.release()
         }
@@ -402,7 +415,10 @@ class PlaybackService : MediaLibraryService() {
     private fun announce() {
         val m = player.currentMediaItem?.mediaMetadata
         sendBroadcast(android.content.Intent(ACTION_STATE).setPackage(packageName)
-            .putExtra(EXTRA_TITLE, m?.title?.toString()).putExtra(EXTRA_ARTIST, m?.artist?.toString()).putExtra(EXTRA_PLAYING, player.isPlaying))
+            .putExtra(EXTRA_TITLE, m?.title?.toString()).putExtra(EXTRA_ARTIST, m?.artist?.toString()).putExtra(EXTRA_PLAYING, player.isPlaying)
+            .putExtra(EXTRA_ID, player.currentMediaItem?.mediaId).putExtra(EXTRA_COVER, m?.artworkUri?.toString())
+            .putExtra(EXTRA_POSITION, player.currentPosition).putExtra(EXTRA_AT, android.os.SystemClock.elapsedRealtime())
+            .putExtra(EXTRA_SPEED, player.playbackParameters.speed))
     }
 
     /**

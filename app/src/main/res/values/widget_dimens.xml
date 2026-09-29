@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- A widget's corners: the app's tile radius, or the launcher's own on Android 12+ (values-v31). -->
+    <dimen name="widget_radius">18dp</dimen>
+    <!-- Between two tiles of a widget's shelf. Every tile has it after it, and the shelf reaches back over the last one's. -->
+    <dimen name="widget_gap">10dp</dimen>
+    <dimen name="widget_gap_back">-10dp</dimen>
+</resources>
