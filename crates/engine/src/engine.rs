@@ -608,6 +608,8 @@ struct Worker<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> {
 /// The current song opened ahead of playback, to remake the music from there ([`Worker::remake`]) while
 /// the output plays what it holds.
 struct Remake {
+    /// The song's queue index and id.
+    index: usize,
     id: String,
     from_ms: i64,
     r: Demuxed,
@@ -1508,7 +1510,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             return false;
         }
         let now = self.now();
-        if !self.open_remake(id, from_ms, now + REMAKE_LEAD_MS - RESOUND_DIP_MS, true) {
+        if !self.open_remake(i, id, from_ms, now + REMAKE_LEAD_MS - RESOUND_DIP_MS, true) {
             return false;
         }
         self.p.app.log("offload given up: the CPU takes over once the song is open");
@@ -1649,13 +1651,13 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         if length <= 0 || from_ms + REMAKE_LEAD_MS >= length {
             return false;
         }
-        self.open_remake(id, from_ms, now + REMAKE_LEAD_MS - RESOUND_DIP_MS, false)
+        self.open_remake(i, id, from_ms, now + REMAKE_LEAD_MS - RESOUND_DIP_MS, false)
     }
 
-    fn open_remake(&mut self, id: String, from_ms: i64, dip_at: i64, leaving: bool) -> bool {
+    fn open_remake(&mut self, index: usize, id: String, from_ms: i64, dip_at: i64, leaving: bool) -> bool {
         match self.p.tracks.open(&id, from_ms) {
             Ok(r) => {
-                self.remake = Some(Remake { id, from_ms, r, ready: false, dip_at, leaving });
+                self.remake = Some(Remake { index, id, from_ms, r, ready: false, dip_at, leaving });
                 true
             }
             Err(_) => false,
@@ -1717,9 +1719,9 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             return;
         }
         if !m.leaving {
-            let (from_ms, id) = (m.from_ms, m.id.clone());
+            let (from_ms, index) = (m.from_ms, m.index);
             match self.p.ear_now() {
-                Some((i, _)) if self.p.id_at(i) != id => {
+                Some((i, _)) if i != index => {
                     // Playback moved into the next song: open again there.
                     self.remake = None;
                     self.resound_soon();

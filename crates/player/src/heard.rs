@@ -55,14 +55,17 @@ fn set_to(slot: &mut Option<String>, id: Option<&str>) {
     }
 }
 
-fn duration(queue: &[(String, i64)], id: &str) -> i64 {
-    queue.iter().find(|(q, _)| q == id).map_or(i64::MAX, |q| q.1)
+/// Finds a song id's queue index and length in ms.
+pub type Lookup<'a> = &'a dyn Fn(&str) -> Option<(usize, i64)>;
+
+fn duration(find: Lookup, id: &str) -> i64 {
+    find(id).map_or(i64::MAX, |(_, ms)| ms)
 }
 
 /// Position in the next song `ms_in` after takeover.
-fn into_next(queue: &[(String, i64)], h: &Heard, ms_in: i64) -> i64 {
+fn into_next(find: Lookup, h: &Heard, ms_in: i64) -> i64 {
     let Some(id) = &h.next_id else { return 0 };
-    (h.next_from_us / 1000 + (ms_in as f64 * h.next_rate as f64) as i64).clamp(0, duration(queue, id))
+    (h.next_from_us / 1000 + (ms_in as f64 * h.next_rate as f64) as i64).clamp(0, duration(find, id))
 }
 
 impl HeardTracker {
@@ -77,14 +80,22 @@ impl HeardTracker {
     }
 
     pub fn at(&mut self, h: &Heard, p: PlayerNow) -> Seen {
-        self.ear.at(&self.queue, h, p)
+        let q = &self.queue;
+        self.ear.at(&|id| q.iter().position(|(s, _)| s == id).map(|i| (i, q[i].1)), h, p)
+    }
+
+    /// [`HeardTracker::at`] where the ids in `h` and `p` identify streams, not songs: `find` gives each
+    /// one's queue index and length, so two copies of a song in a row are told apart.
+    pub fn at_streams(&mut self, h: &Heard, p: PlayerNow, find: Lookup) -> Seen {
+        self.ear.at(find, h, p)
     }
 
     /// [`HeardTracker::at`] by queue index. For a song queued twice, the audible copy is the player's
     /// next song if it matches, else the nearest earlier copy, else the last.
     pub fn at_index(&mut self, h: &Heard, now_ms: i64, playing: bool, on: Option<usize>, next: Option<usize>, position_ms: i64) -> Seen {
         let on_id = on.and_then(|i| self.queue.get(i)).map(|(id, _)| id.as_str());
-        let mut seen = self.ear.at(&self.queue, h, PlayerNow { now_ms, playing, on: on_id, position_ms });
+        let q = &self.queue;
+        let mut seen = self.ear.at(&|id| q.iter().position(|(s, _)| s == id).map(|i| (i, q[i].1)), h, PlayerNow { now_ms, playing, on: on_id, position_ms });
         if let Some(first) = seen.index {
             let id = self.queue[first].0.as_str();
             let is = |i: usize| self.queue.get(i).is_some_and(|(q, _)| q == id);
@@ -226,7 +237,7 @@ impl Ear {
         self.crossed == Some((until_us, h.next_from_us))
     }
 
-    fn at(&mut self, q: &[(String, i64)], h: &Heard, p: PlayerNow) -> Seen {
+    fn at(&mut self, q: Lookup, h: &Heard, p: PlayerNow) -> Seen {
         let next = h.next_id.as_deref();
         let result: Option<(&str, i64)> = if let Some(id) = h.id.as_deref() {
             let since = if p.playing { p.now_ms - h.at_ms } else { 0 };
@@ -263,7 +274,7 @@ impl Ear {
             })
         });
         let (shown_id, shown_ms) = shown.map_or((None, p.position_ms), |(id, ms)| (Some(id), ms));
-        let index = shown_id.and_then(|id| q.iter().position(|(s, _)| s == id));
+        let index = shown_id.and_then(q).map(|(i, _)| i);
         let changed = self.before.as_deref() != shown_id;
         let before = changed.then(|| shown_id.map(str::to_string));
         let carrying = shown_id.is_some() && shown_id == next && p.on != next;

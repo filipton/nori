@@ -6,8 +6,9 @@ use std::collections::VecDeque;
 
 use crate::burst::{Burst, Fed, BUFFER_US};
 use crate::dsp::{Band, Effects, Equalizer};
-use crate::engine::{Downstream, Heard, Host, StreamFormat, TransitionEngine};
-use crate::heard::{HeardTracker, Seen};
+use crate::automix::analysis::Analyzer;
+use crate::engine::{Downstream, Heard, Host, Plan, StreamFormat, TransitionEngine};
+use crate::heard::{HeardTracker, PlayerNow, Seen};
 use crate::pcm::{Encoding, Format};
 use crate::playlist::Playlist;
 use crate::queue::{measure_ahead, ErrorRun, OnError, PlaybackError};
@@ -751,13 +752,80 @@ impl Queue for Playlist {
     }
 }
 
-/// A stream handed to the output: song index, start in renderer time, length and applied gain.
+/// A stream handed to the output: song index, start in renderer time, length, applied gain, and the
+/// serial that tells it from another stream of the same song ([`stream_key`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Period {
     index: usize,
     offset_us: i64,
     duration_us: i64,
     gain: f32,
+    serial: u64,
+}
+
+/// The transition engine's id for a stream: the song id and a per-stream serial, so the same song
+/// twice in a row (queued twice, repeat one) is two streams to it.
+fn stream_key(id: &str, serial: u64) -> String {
+    format!("{id}\u{1}{serial}")
+}
+
+/// The song id and serial of a [`stream_key`].
+fn split_key(key: &str) -> (&str, Option<u64>) {
+    match key.rsplit_once('\u{1}') {
+        Some((id, serial)) => (id, serial.parse().ok()),
+        None => (key, None),
+    }
+}
+
+/// The app as the transition engine's host: stream keys become song ids on the way in, and a plan's
+/// incoming song becomes the key of the stream that follows the outgoing one.
+struct Keyed<'a, A: App> {
+    app: &'a mut A,
+    /// Serials of the streams handed out, and the last serial given.
+    periods: &'a [Period],
+    serials: u64,
+}
+
+impl<A: App> Host for Keyed<'_, A> {
+    fn plan_for(&mut self, outgoing_id: &str) -> Option<Plan> {
+        let (id, serial) = split_key(outgoing_id);
+        let mut plan = self.app.plan_for(id)?;
+        let serial = serial.unwrap_or(self.serials);
+        let incoming = self.periods.iter().map(|p| p.serial).filter(|&s| s > serial).min().unwrap_or(self.serials + 1);
+        plan.incoming_id = stream_key(&plan.incoming_id, incoming);
+        Some(plan)
+    }
+
+    fn wants_analysis(&mut self, song_id: &str) -> Option<u64> {
+        self.app.wants_analysis(split_key(song_id).0)
+    }
+
+    fn analysed(&mut self, song_id: &str, analyzer: Analyzer, channels: usize, frames: u64, rate: u32) {
+        self.app.analysed(split_key(song_id).0, analyzer, channels, frames, rate);
+    }
+
+    fn heard_changed(&mut self) {
+        self.app.heard_changed();
+    }
+
+    fn log(&mut self, message: &str) {
+        if !message.contains('\u{1}') {
+            return self.app.log(message);
+        }
+        // Keys read as song ids in the log.
+        let mut plain = String::with_capacity(message.len());
+        let mut rest = message;
+        while let Some(k) = rest.find('\u{1}') {
+            plain.push_str(&rest[..k]);
+            rest = rest[k + 1..].trim_start_matches(|c: char| c.is_ascii_digit());
+        }
+        plain.push_str(rest);
+        self.app.log(&plain);
+    }
+
+    fn now_ms(&self) -> i64 {
+        self.app.now_ms()
+    }
 }
 
 /// The song being read and its start in renderer time.
@@ -859,6 +927,9 @@ pub struct Player<S: Songs, T: Track, A: App, Q: Queue> {
     pub read_held: bool,
     /// Start of the stream the clock is in; a new stream of the same song is a repeat-one loop.
     heard_period: Option<i64>,
+    /// The [`stream_key`] of the stream the clock is in, and the last serial given.
+    on_key: Option<String>,
+    serials: u64,
     /// Repeat-one loops heard.
     pub loops: u32,
     /// A song failed for lack of network and the offline bridge takes over.
@@ -910,6 +981,8 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
             hungry: false,
             read_held: false,
             heard_period: None,
+            on_key: None,
+            serials: 0,
             loops: 0,
             bridge: false,
             ids: Vec::new(),
@@ -968,16 +1041,35 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
     }
 
     /// Calls into the engine with the output fed in bursts, on the player's clock.
-    fn call<R>(&mut self, f: impl FnOnce(&mut TransitionEngine<u32>, &mut Fed<'_, Sink<T>>, &mut A) -> R) -> R {
+    fn call<R>(&mut self, f: impl FnOnce(&mut TransitionEngine<u32>, &mut Fed<'_, Sink<T>>, &mut Keyed<'_, A>) -> R) -> R {
         self.app.clock(self.now_ms);
         let mut fed = Fed::new(&mut self.sink, &mut self.burst, self.now_ms);
-        f(&mut self.engine, &mut fed, &mut self.app)
+        let mut host = Keyed { app: &mut self.app, periods: &self.periods, serials: self.serials };
+        f(&mut self.engine, &mut fed, &mut host)
     }
 
-    fn configure(&mut self, i: usize, format: Format) {
+    fn configure(&mut self, i: usize, serial: u64, format: Format) {
         self.token += 1;
-        let (s, t) = (StreamFormat { id: Some(self.id_at(i)), format: Some(format) }, self.token);
+        let (s, t) = (StreamFormat { id: Some(stream_key(&self.id_at(i), serial)), format: Some(format) }, self.token);
         self.call(|e, d, a| e.configure(d, a, s, t));
+    }
+
+    fn new_serial(&mut self) -> u64 {
+        self.serials += 1;
+        self.serials
+    }
+
+    /// The serial of song `i`'s latest stream, or a new one.
+    fn serial_for(&mut self, i: usize) -> u64 {
+        match self.periods.iter().rev().find(|p| p.index == i) {
+            Some(p) => p.serial,
+            None => self.new_serial(),
+        }
+    }
+
+    /// The [`stream_key`] of song `i`'s latest stream.
+    fn key_at(&self, i: usize) -> Option<String> {
+        self.periods.iter().rev().find(|p| p.index == i).map(|p| stream_key(&self.id_at(i), p.serial))
     }
 
     /// Starts reading song `i` (opened as `r`) from `from_ms` at `offset_us`, after a flush: now if
@@ -986,7 +1078,10 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         self.reading = None;
         self.next = None;
         self.opening = None;
-        self.periods = vec![Period { index: i, offset_us, duration_us: 0, gain: 1.0 }];
+        // A seek or rebuild within the same song keeps its stream's identity.
+        let serial = self.serial_for(i);
+        self.periods = vec![Period { index: i, offset_us, duration_us: 0, gain: 1.0, serial }];
+        self.on_key = Some(stream_key(&self.id_at(i), serial));
         self.position_us = Some(offset_us + from_ms * 1000);
         self.source_ended = false;
         self.heard_period = None;
@@ -1018,11 +1113,12 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         self.reading = Some(Reader::new(i, offset_us, r));
         self.next = None;
         let gain = self.song_gain(i);
-        self.periods = vec![Period { index: i, offset_us, duration_us, gain }];
+        let serial = self.serial_for(i);
+        self.periods = vec![Period { index: i, offset_us, duration_us, gain, serial }];
         self.position_us = Some(offset_us + from_ms * 1000);
         self.heard_from = self.position_us;
         self.source_ended = false;
-        self.configure(i, format);
+        self.configure(i, serial, format);
         self.engine.set_output_stream_offset_us(offset_us);
         self.engine.set_gain(gain);
         true
@@ -1493,10 +1589,10 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
     }
 
     /// Sends the planner its window (previous song, then eight in play order, as the core's
-    /// `playlist_window`) and the tracker every song's length.
+    /// `playlist_window`).
     fn sync_queue(&mut self) {
         let current = self.current;
-        let (window, shuffling, all) = self.queue.read(|q| {
+        let (window, shuffling) = self.queue.read(|q| {
             let repeat = q.repeat();
             let mut window = Vec::new();
             if let Some(c) = current.or(q.current()) {
@@ -1509,12 +1605,10 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
                 }
             }
             let ids: Vec<(String, u32)> = window.into_iter().map(|i| (q.ids()[i].clone(), q.album_run(i))).collect();
-            (ids, q.shuffling(), q.ids().to_vec())
+            (ids, q.shuffling())
         });
         let window = window.iter().map(|(id, run)| WindowSong { album_run: *run, ..self.tracks.about(id) }).collect();
         self.app.window(window, shuffling);
-        let songs: Vec<(String, i64)> = all.into_iter().map(|id| (id.clone(), self.tracks.about(&id).duration_ms)).collect();
-        self.tracker.set_queue(songs);
     }
 
     fn set_current(&mut self, i: usize) {
@@ -1568,9 +1662,16 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
 
     /// The seek bar's song and position.
     pub fn bar(&mut self) -> Seen {
-        let (on, next, pos) = (self.current, self.queue.read(Playlist::next), self.position_ms());
-        let heard = self.engine.heard().clone();
-        self.tracker.at_index(&heard, self.now_ms, self.playing, on, next, pos)
+        let pos = self.position_ms();
+        let now = PlayerNow { now_ms: self.now_ms, playing: self.playing, on: self.on_key.as_deref(), position_ms: pos };
+        let (periods, last) = (&self.periods, self.serials);
+        let after = self.reading.as_ref().and_then(|r| self.next_of(r.index));
+        // A stream not handed out yet is the one after the song being read.
+        let find = |key: &str| match split_key(key).1 {
+            Some(s) => periods.iter().find(|p| p.serial == s).map(|p| (p.index, if p.duration_us > 0 { p.duration_us / 1000 } else { i64::MAX })).or_else(|| (s > last).then_some(after).flatten().map(|n| (n, i64::MAX))),
+            None => None,
+        };
+        self.tracker.at_streams(self.engine.heard(), now, &find)
     }
 
     /// What is audible now, per the engine.
@@ -1610,11 +1711,14 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
     /// out (`Some(None)`: gapless), also `Some(None)` while still reading it past `start_us`. `None`
     /// while a plan starting at `start_us` can still be taken up.
     pub fn ending_made(&self, cur: usize, start_us: Option<i64>) -> Option<Option<crate::engine::Plan>> {
-        let id = self.id_at(cur);
         let reading = self.reading.as_ref().filter(|r| r.index == cur);
-        if let Some(made) = self.engine.made(&id) {
+        if let Some(made) = self.key_at(cur).and_then(|k| self.engine.made(&k)) {
             if self.engine.holding() || reading.is_none() {
-                return Some(made.cloned());
+                // As the app made it: the incoming song by its id, not its stream key.
+                return Some(made.cloned().map(|mut p| {
+                    p.incoming_id = split_key(&p.incoming_id).0.to_string();
+                    p
+                }));
             }
         }
         let r = reading?;
@@ -1726,6 +1830,9 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
                 if self.heard_period.is_some_and(|o| o != p.offset_us) && self.current == Some(p.index) {
                     self.loops += 1;
                 }
+                if self.heard_period != Some(p.offset_us) {
+                    self.on_key = Some(stream_key(&self.id_at(p.index), p.serial));
+                }
                 self.heard_period = Some(p.offset_us);
                 self.set_current(p.index);
             }
@@ -1747,12 +1854,13 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
                 break;
             }
             self.hungry = k + 1 == BUFFERS_PER_TURN;
-            let Player { engine, sink, burst, app, reading, now_ms, .. } = self;
+            let Player { engine, sink, burst, app, reading, now_ms, periods, serials, .. } = self;
             let r = reading.as_mut().expect("a buffer is ready");
             app.clock(*now_ms);
             let mut fed = Fed::new(sink, burst, *now_ms);
             let pts = r.offset_us + r.r.at_us();
-            let (taken, used) = engine.handle_buffer(&mut fed, app, &r.r.buffer()[r.pos..], pts);
+            let mut host = Keyed { app, periods, serials: *serials };
+            let (taken, used) = engine.handle_buffer(&mut fed, &mut host, &r.r.buffer()[r.pos..], pts);
             r.pos += used;
             if !taken {
                 self.hungry = false;
@@ -1831,12 +1939,13 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
             let (format, duration_us) = (next.format(), next.duration_us());
             self.sink.track.source_bits(next.bits());
             let gain = self.song_gain(n);
-            self.configure(n, format);
+            let serial = self.new_serial();
+            self.configure(n, serial, format);
             self.call(|e, d, a| e.handle_discontinuity(d, a));
             self.engine.set_output_stream_offset_us(end);
             self.engine.set_gain(gain);
             self.reading = Some(Reader::new(n, end, next));
-            self.periods.push(Period { index: n, offset_us: end, duration_us, gain });
+            self.periods.push(Period { index: n, offset_us: end, duration_us, gain, serial });
         }
     }
 }

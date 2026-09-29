@@ -2553,4 +2553,93 @@ fn with_the_equalizer_on_the_chain_stays_in_the_path_whatever_else_the_settings_
     rig.engine.stop();
 }
 
+// ---- the same song twice in a row (issue #19) ----
+
+/// `a` twice in the queue with AutoMix on, played from `from_ms` into the first copy at the music's pace.
+fn twice(secs: f64, from_ms: i64) -> (Rig, Live) {
+    let a = music(secs, 77);
+    let ms = (secs * 1000.0) as i64;
+    let live = Live::new(TransitionPrefs { auto_mix: true, auto_mix_max_s: 12, echo_out: false, ..prefs_off() });
+    live.0.lock().analyses.insert("a".into(), measured("a", 120.0, ms));
+    let rig = at_pace(&[("a", &a), ("a", &a)], live.clone(), from_ms);
+    (rig, live)
+}
+
+/// Where the planner put the mix out of `a` into its second copy, ms into `a`.
+fn planned_into_itself(live: &Live) -> Option<i64> {
+    let log = live.0.lock().log.clone();
+    let line = log.iter().find(|l| l.starts_with("transition a -> a"))?;
+    line.split(" at ").nth(1)?.split(',').next()?.trim().parse().ok()
+}
+
+fn song_events(rig: &Rig) -> Vec<usize> {
+    rig.events.lock().iter().filter_map(|e| if let Event::Song { index, .. } = e { Some(*index) } else { None }).collect()
+}
+
+/// The song and place read afresh (the engine otherwise reports once per burst).
+fn place(rig: &Rig) -> (Option<usize>, i64) {
+    rig.engine.look();
+    rig.run(1);
+    rig.engine.status_with(|s| (s.index, s.position_ms))
+}
+
+#[test]
+fn same_song_twice_mixes_at_the_planned_point_and_plays_the_second_copy_on() {
+    let (rig, live) = twice(60.0, 30_000);
+    assert!(rig.wait_for(10, |_| planned_into_itself(&live).is_some()), "a mix is planned: {:?}", live.0.lock().log);
+    let at = planned_into_itself(&live).expect("checked");
+    let ear = |r: &Rig| 30_000 + (r.heard.lock().len() / 2) as i64 * 1000 / RATE as i64;
+    assert!(rig.wait_for(60, |r| ear(r) >= at - 1_000), "reaches the mix");
+    assert_eq!(song_events(&rig), [0], "still on the first copy a second before the mix");
+    assert!(rig.wait_for(60, |r| r.engine.status().index == Some(1)), "on to the second copy: {:?}", rig.events.lock());
+    let switched = ear(&rig);
+    assert!(switched >= at, "the second copy is said once the mix is heard ({switched} ms), not before the plan ({at} ms)");
+    let (i1, p1) = place(&rig);
+    rig.run(5_000);
+    let (i2, p2) = place(&rig);
+    assert_eq!((i1, i2), (Some(1), Some(1)), "{:?}", rig.events.lock());
+    assert!(p1 < 20_000 && (4_500..5_500).contains(&(p2 - p1)), "the second copy plays on from its start: {p1} -> {p2}");
+    assert_eq!(song_events(&rig), [0, 1], "one change of song");
+    rig.engine.stop();
+}
+
+#[test]
+fn same_song_twice_a_seek_before_the_mix_stays_in_the_first_copy() {
+    let (rig, live) = twice(90.0, 20_000);
+    assert!(rig.wait_for(10, |_| planned_into_itself(&live).is_some()), "a mix is planned: {:?}", live.0.lock().log);
+    // 50 s before the end, as a seek bar at -0:50.
+    rig.engine.seek(40_000);
+    rig.run(3_000);
+    let (index, ms) = place(&rig);
+    assert_eq!(index, Some(0), "still the first copy: {:?}", rig.events.lock());
+    assert!((42_500..43_500).contains(&ms), "plays on from the seek: {ms}");
+    assert_eq!(song_events(&rig), [0], "no change of song");
+    assert!(rig.wait_for(60, |r| r.engine.status().index == Some(1)), "on to the second copy: {:?}", rig.events.lock());
+    let (_, p1) = place(&rig);
+    rig.run(3_000);
+    let (_, p2) = place(&rig);
+    assert!(p1 < 20_000 && p2 >= p1 + 2_500, "the second copy plays on: {p1} -> {p2}");
+    rig.engine.stop();
+}
+
+#[test]
+fn repeat_one_with_automix_loops_and_plays_on() {
+    let a = music(60.0, 78);
+    let live = Live::new(TransitionPrefs { auto_mix: true, auto_mix_max_s: 12, echo_out: false, ..prefs_off() });
+    live.0.lock().analyses.insert("a".into(), measured("a", 120.0, 60_000));
+    let rig = at_pace(&[("a", &a)], live.clone(), 30_000);
+    rig.engine.set_repeat(nori_player::playlist::REPEAT_ONE);
+    assert!(rig.wait_for(60, |r| r.events.lock().iter().any(|e| matches!(e, Event::Looped { .. }))), "loops: {:?}", rig.events.lock());
+    // Past the mix: the song again from near its start, playing on.
+    rig.run(15_000);
+    let (i1, p1) = place(&rig);
+    rig.run(3_000);
+    let (i2, p2) = place(&rig);
+    assert_eq!((i1, i2), (Some(0), Some(0)));
+    assert!(p1 < 30_000 && p2 >= p1 + 2_500, "plays on from the start: {p1} -> {p2}");
+    assert_eq!(rig.events.lock().iter().filter(|e| matches!(e, Event::Looped { .. })).count(), 1, "one loop: {:?}", rig.events.lock());
+    assert!(!rig.ended());
+    rig.engine.stop();
+}
+
 include!("perf_bench.rs");
