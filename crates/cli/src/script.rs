@@ -153,7 +153,7 @@ impl Cli {
 
     fn queue(&mut self, songs: Vec<Song>, start_ms: i64) {
         nori_core::queue::queue_register(songs.clone());
-        nori_core::playlist::playlist_set(songs.iter().map(|s| s.id.clone()).collect(), 0, false, None);
+        nori_core::playlist::playlist_set(songs.iter().map(|s| s.id.clone()).collect(), Some(0), false, None);
         *self.songs.lock().unwrap() = songs;
         self.engine.queue_changed();
         self.engine.play_at(0, start_ms);

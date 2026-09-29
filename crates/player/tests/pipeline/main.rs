@@ -1,6 +1,4 @@
-//! The player end to end, on a simulated output and a virtual clock (`nori_player::sim`): decoder,
-//! transition engine fed in bursts, sound chain, and what the ear gets, asserted sample by sample.
-//! These are the checks `tools/audio-e2e.sh` makes on an emulator, where the Rust decides the answer.
+//! The player end to end on `nori_player::sim`, asserted sample by sample.
 
 mod automix;
 mod chain;

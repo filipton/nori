@@ -1,5 +1,4 @@
-//! How the output is fed: in bursts, a deep buffer topped up only when it runs low, and at one
-//! format for the whole queue, a song at another rate converted rather than the output rebuilt.
+//! Output feeding: bursts, and one format per queue with conversion or reopening.
 
 use std::f64::consts::TAU;
 
@@ -9,7 +8,7 @@ use nori_player::sim::{Audio, Player, Track, STEP_MS};
 use crate::common::*;
 
 #[test]
-fn the_output_is_topped_up_in_bursts_and_left_alone_in_between() {
+fn output_fed_in_bursts() {
     let mut p = Player::new(vec![track("a", &music(60.0, 40))]);
     p.play_from(0);
     p.run_for(3_000);
@@ -33,7 +32,7 @@ fn tone_at(rate: u32, hz: f64, secs: f64) -> Vec<i16> {
 }
 
 #[test]
-fn a_song_at_another_rate_with_nothing_overlapping_opens_the_output_again_at_its_rate() {
+fn gapless_rate_change_reopens_output() {
     let a = Track::new("a", Audio::pcm(RATE, 2, &tone_at(RATE, 440.0, 5.0)));
     let b_pcm = tone_at(48_000, 440.0, 5.0);
     let b = Track::new("b", Audio::pcm(48_000, 2, &b_pcm));
@@ -52,7 +51,7 @@ fn a_song_at_another_rate_with_nothing_overlapping_opens_the_output_again_at_its
 }
 
 #[test]
-fn a_crossfade_across_two_rates_mixes_at_the_first_songs_rate() {
+fn crossfade_across_rates() {
     let a = Track::new("a", Audio::pcm(RATE, 2, &tone_at(RATE, 440.0, 30.0)));
     let b = Track::new("b", Audio::pcm(48_000, 2, &tone_at(48_000, 660.0, 30.0)));
     let mut p = Player::with_prefs(vec![a, b], crossfade(6));

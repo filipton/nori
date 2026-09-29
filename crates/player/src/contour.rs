@@ -1,21 +1,10 @@
-//! Loudness compensation that follows the volume: the ear hears less bass (and a little less of the
-//! top octave) the quieter the music is, so a mix balanced at a loud level sounds thin turned down. The
-//! ISO 226:2003 equal-loudness contours say by how much: [`spl_db`] is the sound pressure level a tone
-//! at `freq` needs to sound as loud as a 1 kHz tone at `phon`.
+//! Volume-dependent loudness compensation from the ISO 226:2003 equal-loudness contours.
 //!
-//! The music is taken to have been balanced at a reference level (80 phon unless the listener says
-//! otherwise) with the volume all the way up, and to be heard at that level less however far the
-//! volume is turned down ([`listening_phon`]). What the ear then misses at `f` is the difference of the
-//! two contours, each taken relative to 1 kHz ([`compensation_db`]): at 40 phon against 80 it is some
-//! +12 dB at 100 Hz and +21 dB at 20 Hz, about -1.5 dB around 3 kHz and +6 dB at 12.5 kHz.
-//!
-//! Two shelving filters draw it ([`design`]): a low shelf fitted over 31.5 Hz to 1 kHz and a high shelf
-//! over 4 to 12.5 kHz, each by least squares in dB, the corner picked from a few candidates for the
-//! smallest error. The mid-range dip of a dB or so is left out: a shelf cannot draw it, and it is the
-//! smallest part. A pre-gain pays back the larger boost, so the compensation can never clip: turned
-//! down, the middle comes down to meet the bass rather than the bass going up past full scale.
-//!
-//! Everything here runs when the volume or the setting changes, never per buffer.
+//! Music is assumed balanced at a reference level (default 80 phon) at full volume and heard that many
+//! dB lower as the volume drops ([`listening_phon`]). The missing response is the difference of the two
+//! contours relative to 1 kHz ([`compensation_db`]), drawn by a least-squares-fitted low shelf and high
+//! shelf ([`design`]; the small mid dip is ignored) with a pre-gain that prevents clipping. Computed on
+//! volume or setting changes, never per buffer.
 
 use crate::dsp::{band_coefficients, Band, CH_BOTH, HIGH_SHELF_SLOPE, LOW_SHELF_SLOPE};
 
@@ -38,32 +27,30 @@ const TF: [f64; 29] = [
     -1.5, 6.0, 12.6, 13.9, 12.3,
 ];
 
-/// What loudness compensation is asked for: the level the music is taken to be balanced at, and how far
-/// the volume is turned down now.
+/// Loudness compensation settings.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Loudness {
     /// Phon, [`REFERENCE_PHON`].
     pub reference_phon: f64,
-    /// 0 all the way up, negative below that ([`volume_db`]).
+    /// 0 at full volume, negative below ([`volume_db`]).
     pub volume_db: f64,
 }
 
-/// The loudness levels the contours are defined for (ISO 226:2003 holds 20 to 90 phon).
+/// Range the contours are defined for, phon.
 pub const PHON: (f64, f64) = (20.0, 90.0);
-/// The reference levels a listener can pick, phon.
+/// Selectable reference levels, phon.
 pub const REFERENCE_PHON: (f64, f64) = (60.0, 90.0);
-/// The largest boost either shelf is given, dB.
+/// Largest shelf boost, dB.
 pub const MAX_DB: f64 = 18.0;
 
-/// The level in dB SPL a tone at the table's `i`th frequency needs to be `phon` loud (ISO 226:2003,
-/// section 4.1).
+/// dB SPL at the table's `i`th frequency for `phon` (ISO 226:2003 4.1).
 fn spl_at(i: usize, phon: f64) -> f64 {
     let af = 4.47e-3 * (10f64.powf(0.025 * phon) - 1.15) + (0.4 * 10f64.powf((TF[i] + LU[i]) / 10.0 - 9.0)).powf(ALPHA[i]);
     10.0 / ALPHA[i] * af.log10() - LU[i] + 94.0
 }
 
-/// The equal-loudness contour at `phon`: the dB SPL a tone at `freq` needs to sound as loud as 1 kHz at
-/// `phon` dB SPL. Between the table's frequencies it is read in log frequency; past its ends it is held.
+/// The equal-loudness contour: dB SPL at `freq` as loud as 1 kHz at `phon`. Interpolated in log
+/// frequency, held past the table's ends.
 pub fn spl_db(phon: f64, freq: f64) -> f64 {
     let phon = phon.clamp(PHON.0, PHON.1);
     if !(freq > FREQ[0]) {
@@ -77,27 +64,21 @@ pub fn spl_db(phon: f64, freq: f64) -> f64 {
     spl_at(i, phon) + x * (spl_at(i + 1, phon) - spl_at(i, phon))
 }
 
-/// What the ear misses at `freq` hearing at `listening` phon music balanced at `reference` phon, dB, 0
-/// at 1 kHz: the two contours' shapes apart.
+/// Boost needed at `freq` to hear `reference`-phon music at `listening` phon, dB (0 at 1 kHz).
 pub fn compensation_db(listening: f64, reference: f64, freq: f64) -> f64 {
     let l = listening.clamp(PHON.0, PHON.1);
     let r = reference.clamp(PHON.0, PHON.1);
     (spl_db(l, freq) - l) - (spl_db(r, freq) - r)
 }
 
-/// How loud the music is heard, phon: the reference level with the volume all the way up, that much
-/// less for each dB the volume is turned down (`volume_db`, 0 or below), and never under the contours'
-/// lowest.
+/// Listening level: `reference` lowered by the volume attenuation, within [`PHON`].
 pub fn listening_phon(reference: f64, volume_db: f64) -> f64 {
     let v = if volume_db.is_finite() { volume_db.min(0.0) } else { 0.0 };
     (reference + v).clamp(PHON.0, PHON.1)
 }
 
-/// The volume in dB (0 all the way up, below that turned down) for a volume step `index` of `max`. The
-/// platform's own figure when it has one (`platform_db`, Android's `getStreamVolumeDb`); otherwise
-/// Android's default media volume curve (AOSP `DEFAULT_MEDIA_VOLUME_CURVE`: 1 % at -58 dB, 20 % at -40,
-/// 60 % at -17, full at 0), read in a straight line between its points. Step 0 is silence, which needs
-/// no compensation: it reads as the curve's bottom.
+/// Volume in dB for step `index` of `max`: `platform_db` (Android's `getStreamVolumeDb`) when valid,
+/// else AOSP's `DEFAULT_MEDIA_VOLUME_CURVE` interpolated linearly. Step 0 reads as the curve's bottom.
 pub fn volume_db(index: i32, max: i32, platform_db: f32) -> f64 {
     if platform_db.is_finite() && platform_db <= 0.0 {
         return (platform_db as f64).max(-96.0);
@@ -112,8 +93,7 @@ pub fn volume_db(index: i32, max: i32, platform_db: f32) -> f64 {
     y0 + (pct - x0) / (x1 - x0) * (y1 - y0)
 }
 
-/// The compensation for one listening level: the two shelves (either may be absent when it would do
-/// less than a twentieth of a dB) and the pre-gain that pays their larger boost back, dB.
+/// The shelves for one listening level (absent below 0.05 dB) and the pre-gain undoing their peak boost.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shelves {
     pub low: Option<Band>,
@@ -121,11 +101,9 @@ pub struct Shelves {
     pub pre_db: f64,
 }
 
-/// The rate the shelves are fitted at; the chain plays them at its own rate, which moves them by a
-/// fraction of a dB at most at these frequencies.
+/// Fitting rate (other chain rates shift the result by a fraction of a dB).
 const FIT_RATE: f64 = 48_000.0;
-/// Where each shelf is fitted, Hz, and the corners (half-gain points) tried. The low shelf's slope is
-/// gentle (the contours rise steadily from 1 kHz down), the high one's the steepest without overshoot.
+/// Fit spans (Hz), candidate corners and slopes: a gentle low shelf, the steepest non-overshooting high one.
 const LOW_FIT: (f64, f64) = (31.5, 1000.0);
 const LOW_CORNERS: [f64; 6] = [80.0, 100.0, 125.0, 160.0, 200.0, 250.0];
 const LOW_SLOPE: f64 = 0.4;
@@ -142,14 +120,12 @@ fn db_at(rate: f64, band: &Band, freq: f64) -> f64 {
     10.0 * ((nr * nr + ni * ni) / (dr * dr + di * di)).max(1e-30).log10()
 }
 
-/// Points past the table's top the high shelf is also fitted at, where the contours are held at their
-/// 12.5 kHz value: without them the fit is free to put the shelf's corner at the table's last point
-/// and double its gain over the octave above, which no contour asks for.
+/// Extra high-shelf fit points above the table (held at 12.5 kHz), so the fit cannot keep rising
+/// above the table's end.
 const ABOVE_TABLE: [f64; 2] = [16_000.0, 20_000.0];
 
-/// One shelf fitted to `target` over the table's frequencies in `span` (and `extra`): for each corner the
-/// gain that fits best (a shelf's dB response is very nearly its gain times a fixed shape), the corner
-/// with the smallest error kept.
+/// Fits a shelf to `target` over the table points in `span` plus `extra`: per corner the least-squares
+/// gain (the dB response scales almost linearly with gain), keeping the corner with the least error.
 fn fit(kind: i32, corners: &[f64], slope: f64, span: (f64, f64), extra: &[f64], target: impl Fn(f64) -> f64) -> Option<Band> {
     let points: Vec<f64> = FREQ.iter().copied().filter(|f| *f >= span.0 && *f <= span.1).chain(extra.iter().copied()).collect();
     let want: Vec<f64> = points.iter().map(|f| target(*f)).collect();
@@ -165,13 +141,11 @@ fn fit(kind: i32, corners: &[f64], slope: f64, span: (f64, f64), extra: &[f64], 
             best = Some((err, band));
         }
     }
-    // The corner is the one that fits the whole contour; only then is the gain held to its range. Held
-    // first, a capped shelf would move its corner up to make up the area, and lift the low middle
-    // (250 Hz at +18 dB) where no contour asks for it.
+    // Cap after choosing the corner: capping first would push the corner up into the low mids.
     best.map(|b| Band { gain_db: b.1.gain_db.min(MAX_DB), ..b.1 }).filter(|b| b.gain_db >= 0.05)
 }
 
-/// The shelves for music balanced at `reference` phon heard with the volume `volume_db` down.
+/// The shelves for `reference` phon music heard `volume_db` down.
 pub fn design(reference: f64, volume_db: f64) -> Shelves {
     let reference = if reference.is_finite() { reference.clamp(REFERENCE_PHON.0, REFERENCE_PHON.1) } else { 80.0 };
     let listening = listening_phon(reference, volume_db);
@@ -181,7 +155,7 @@ pub fn design(reference: f64, volume_db: f64) -> Shelves {
     let c = |f: f64| compensation_db(listening, reference, f);
     let low = fit(LOW_SHELF_SLOPE, &LOW_CORNERS, LOW_SLOPE, LOW_FIT, &[], c);
     let high = fit(HIGH_SHELF_SLOPE, &HIGH_CORNERS, HIGH_SLOPE, HIGH_FIT, &ABOVE_TABLE, c);
-    // The largest boost the two make anywhere you can hear, on a sixth-octave grid.
+    // Peak combined boost on a sixth-octave grid, 20 Hz up.
     let bands: Vec<&Band> = low.iter().chain(high.iter()).collect();
     let most = (0..=60).map(|k| 20.0 * 2f64.powf(k as f64 / 6.0)).map(|f| bands.iter().map(|b| db_at(FIT_RATE, b, f)).sum::<f64>()).fold(0.0, f64::max);
     Shelves { low, high, pre_db: -(most * 10.0).ceil() / 10.0 }
@@ -192,7 +166,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_contours_are_iso_226s() {
+    fn contours_match_iso_226() {
         // At 1 kHz a phon is a dB SPL, by definition.
         for phon in [20.0, 40.0, 60.0, 80.0, 90.0] {
             assert!((spl_db(phon, 1000.0) - phon).abs() < 0.1, "{phon} phon at 1 kHz: {}", spl_db(phon, 1000.0));
@@ -211,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn the_compensation_grows_as_the_volume_goes_down() {
+    fn compensation_grows_as_volume_drops() {
         assert!(compensation_db(80.0, 80.0, 50.0).abs() < 1e-9, "at the reference level nothing is missing");
         assert!(compensation_db(40.0, 80.0, 1000.0).abs() < 0.05, "and 1 kHz is where it is measured from");
         let bass = |l: f64| compensation_db(l, 80.0, 100.0);
@@ -225,7 +199,7 @@ mod tests {
     }
 
     #[test]
-    fn the_volume_in_decibels() {
+    fn volume_in_db() {
         assert_eq!(volume_db(7, 15, -12.5), -12.5, "the platform's own figure first");
         assert_eq!(volume_db(15, 15, f32::NAN), 0.0, "all the way up");
         assert!((volume_db(3, 15, f32::NAN) - (-40.0)).abs() < 1e-9, "a fifth of the way: the curve's 20 % point");
@@ -250,14 +224,12 @@ mod tests {
     }
 
     #[test]
-    fn the_shelves_draw_the_compensation() {
+    fn shelves_fit_compensation() {
         let none = design(80.0, 0.0);
         assert_eq!(none, Shelves { low: None, high: None, pre_db: 0.0 }, "all the way up: nothing");
-        // Down to 50 phon the shelves fit; below it the bass would want more than [`MAX_DB`] (see below).
+        // Down to 50 phon the shelves fit; below, the bass exceeds MAX_DB.
         for volume in [-10.0, -20.0, -30.0] {
             let (w, s) = worst(80.0, volume);
-            let low = s.low.as_ref().unwrap();
-            eprintln!("{volume} dB: low {:.1} dB at {} Hz, high {:?}, pre {:.1}, worst {w:.2} dB", low.gain_db, low.freq, s.high.as_ref().map(|h| (h.gain_db, h.freq)), s.pre_db);
             assert!(w < 3.0, "{volume} dB down: {w} dB off in the bass or the top");
             // The pre-gain pays back the most the two add anywhere from 20 Hz to 20 kHz.
             let peak = (0..2000).map(|k| 20.0 * 1000f64.powf(k as f64 / 1999.0)).map(|f| s.low.iter().chain(s.high.iter()).map(|b| db_at(FIT_RATE, b, f)).sum::<f64>()).fold(0.0, f64::max);

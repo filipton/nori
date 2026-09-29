@@ -1,5 +1,4 @@
-//! The sound chain on the way to the ear: the limiter's ceiling and its transparency, the equalizer's
-//! response, settings changed while music plays, and the rebuilds that wait for a song boundary.
+//! The sound chain end to end: limiter, equalizer, live setting changes and boundary rebuilds.
 
 use nori_player::automix::synth::Rng;
 use nori_player::burst::BUFFER_US;
@@ -26,7 +25,7 @@ fn limiter() -> Sound {
 const LOOKAHEAD: usize = 220;
 
 #[test]
-fn the_limiter_only_catches_peaks() {
+fn limiter_only_catches_peaks() {
     // Mastered music peaks just under full scale; at the default -1 dB it needs a few dB at most.
     let song: Vec<i16> = music(20.0, 5).iter().map(|&v| (v as f64 * 2.4).clamp(-32768.0, 32767.0) as i16).collect();
     let mut p = Player::new(vec![track("a", &song)]);
@@ -43,7 +42,7 @@ fn the_limiter_only_catches_peaks() {
 }
 
 #[test]
-fn the_compressor_meter_reads_what_it_takes_off() {
+fn compressor_meter() {
     let song = music(20.0, 5);
     let mut p = Player::new(vec![track("a", &song)]);
     p.set_sound(Sound { effects: Effects { compressor: Some(CompressorPreset::Strong.settings()), ..Effects::default() }, ..limiter() });
@@ -61,7 +60,7 @@ fn the_compressor_meter_reads_what_it_takes_off() {
 }
 
 #[test]
-fn below_its_threshold_the_limiter_changes_no_sample() {
+fn limiter_bit_exact_below_threshold() {
     let song = music(10.0, 6);
     let mut p = Player::new(vec![track("a", &song)]);
     p.set_sound(limiter());
@@ -74,7 +73,7 @@ fn below_its_threshold_the_limiter_changes_no_sample() {
 }
 
 #[test]
-fn nothing_passes_the_limiter_ceiling_at_any_setting() {
+fn limiter_ceiling_holds_at_any_setting() {
     // Hot random input, up to 24 dB over full scale, through every threshold, release and look-ahead.
     for threshold in [0.0, -1.0, -3.0, -6.0, -12.0] {
         for release in [5.0, 50.0, 120.0, 1000.0] {
@@ -101,7 +100,7 @@ fn nothing_passes_the_limiter_ceiling_at_any_setting() {
 }
 
 #[test]
-fn the_equalizer_answers_with_the_gains_it_was_given() {
+fn equalizer_gains() {
     // One tone for each band, where the band has its whole effect, and one where none of them does.
     let tones = [(30.0, -6.0), (1000.0, 6.0), (16000.0, 4.0), (380.0, 0.35)];
     let x: Vec<i16> = (0..frames(6.0))
@@ -124,7 +123,7 @@ fn the_equalizer_answers_with_the_gains_it_was_given() {
 }
 
 #[test]
-fn the_graphic_equalizer_answers_with_its_sliders() {
+fn graphic_equalizer_gains() {
     // Tones at four band centres of the ten-band layout, far enough apart to be read one by one.
     let sliders = vec![0.0, 0.0, 6.0, 6.0, 0.0, -6.0, 0.0, 0.0, 3.0, 0.0];
     let centres = nori_player::graphic::centres(10);
@@ -149,7 +148,7 @@ fn the_graphic_equalizer_answers_with_its_sliders() {
 }
 
 #[test]
-fn a_volume_boost_is_louder_and_never_past_the_ceiling() {
+fn volume_boost_under_ceiling() {
     // Music boosted 6 dB with the limiter switch left off: the boost
     // brings it anyway.
     let song = music(12.0, 5);
@@ -166,7 +165,7 @@ fn a_volume_boost_is_louder_and_never_past_the_ceiling() {
 }
 
 #[test]
-fn the_compressor_brings_quiet_and_loud_closer() {
+fn compressor_narrows_dynamics() {
     // A quiet half and a loud half, 24 dB apart.
     let quiet = sine(220.0, 0.03, 4.0);
     let loud = sine(220.0, 0.5, 4.0);
@@ -208,7 +207,7 @@ fn step_through(base: Sound, change: Sound, tone: &[i16]) -> (f64, f64) {
 }
 
 #[test]
-fn settings_changed_while_playing_never_click() {
+fn live_settings_changes_do_not_click() {
     let tone = sine(220.0, 0.3, 4.0);
     let eq = Sound { bands: curve(), ..Sound::default() };
     for (what, base, change) in [
@@ -233,7 +232,7 @@ fn settings_changed_while_playing_never_click() {
 }
 
 #[test]
-fn taking_the_equalizer_out_waits_for_the_boundary() {
+fn removing_equalizer_waits_for_boundary() {
     let (a, b) = (music(20.0, 8), music(20.0, 9));
     let mut p = Player::new(vec![track("a", &a), track("b", &b)]);
     p.set_sound(Sound { bands: curve(), ..Sound::default() });
@@ -253,7 +252,7 @@ fn taking_the_equalizer_out_waits_for_the_boundary() {
 }
 
 #[test]
-fn tuning_borrows_the_shallow_buffer_and_gives_it_back_at_the_next_boundary() {
+fn tuning_shallow_buffer_until_boundary() {
     let songs: Vec<Vec<i16>> = (0..3).map(|k| music(15.0, 20 + k)).collect();
     let mut p = Player::new(songs.iter().enumerate().map(|(k, s)| track(&format!("s{k}"), s)).collect());
     p.set_sound(Sound { bands: curve(), ..Sound::default() });
@@ -281,7 +280,7 @@ fn tuning_borrows_the_shallow_buffer_and_gives_it_back_at_the_next_boundary() {
 }
 
 #[test]
-fn a_swap_waiting_for_a_boundary_is_made_at_a_jump_and_leaves_the_next_mix_whole() {
+fn pending_swap_done_at_jump_keeps_next_mix() {
     // The limiter leaves the chain while a song plays: the rebuild waits. Then the same song is played
     // again from near its end, with a crossfade into the next: the jump empties the output anyway, so
     // the rebuild is made there - not at the next song's start, in the middle of the mix it would cut.

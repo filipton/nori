@@ -22,7 +22,7 @@ use nori_core::search::{SearchSession, SearchView};
 use nori_core::settings::{SavedServer, SettingChange, StoredPrefs};
 use crate::settings_view::{Chore, Facts, Storage};
 use crate::text::net_error;
-use nori_core::settings_store::{self, APPLY_AUDIO, APPLY_GAIN, PLAYER, REPLAN, SOUND};
+use nori_core::settings_store::{self, APPLY_AUDIO, APPLY_GAIN, CACHE_LIMIT, PLAYER, REPLAN, SOUND};
 use nori_core::{AlbumDetail, ArtistDetail, Core, OriginKind, PageOrigin, PlaylistDetail, ServerConfig, Song};
 use nori_covers::loader::{Config as CoverConfig, Loader};
 use nori_covers::memory::Image;
@@ -464,7 +464,7 @@ impl Session {
             return;
         }
         let index = q.index as usize;
-        playlist::playlist_set(q.songs.iter().map(|s| s.id.clone()).collect(), index as i32, false, q.origin);
+        playlist::playlist_set(q.songs.iter().map(|s| s.id.clone()).collect(), Some(index as u32), false, q.origin);
         self.engine.queue_changed();
         self.engine.go_to(index, q.position_ms as i64);
     }
@@ -585,11 +585,11 @@ impl Session {
         let playing = self.engine.status().state == State::Playing;
         let change = playlist::playlist_remove(index as u32, index as u32 + 1);
         self.edited();
-        if current == Some(index) && change.at >= 0 {
+        if let (true, Some(at)) = (current == Some(index), change.at) {
             if playing {
-                self.engine.play_at(change.at as usize, 0);
+                self.engine.play_at(at as usize, 0);
             } else {
-                self.engine.go_to(change.at as usize, 0);
+                self.engine.go_to(at as usize, 0);
             }
         }
     }
@@ -597,7 +597,7 @@ impl Session {
     /// Undoes the removal of `id`; the playing song is unchanged.
     pub fn put_back(&self, id: &str) {
         let was_empty = playlist::with(|p| p.is_empty());
-        if playlist::playlist_restore(id.to_string()).at < 0 {
+        if playlist::playlist_restore(id.to_string()).at.is_none() {
             return note(&self.tx, "Nothing to put back".into(), false);
         }
         self.edited();
@@ -659,7 +659,7 @@ impl Session {
     pub fn setting(&self, name: &str, value: &str) -> Option<SettingChange> {
         let change = nori_core::settings_model::setting_set(name.to_string(), value.to_string())?;
         self.apply(change.effect, &change.prefs);
-        if change.apply_cache_limit {
+        if change.effect & CACHE_LIMIT != 0 {
             self.store.set_limit(change.prefs.cache_mb.max(0) as u64 * 1024 * 1024);
         }
         if change.server {
@@ -944,8 +944,8 @@ impl Handle {
     /// Applies a queue edit the core made itself (the offline bridge).
     fn apply(&self, e: &QueueEdit) {
         self.edited();
-        if e.seek >= 0 {
-            self.engine.play_at(e.seek as usize, 0);
+        if let Some(seek) = e.seek {
+            self.engine.play_at(seek as usize, 0);
         }
     }
 
@@ -954,9 +954,9 @@ impl Handle {
             return;
         }
         nori_core::queue::queue_register(songs.clone());
-        let change = playlist::playlist_set(songs.iter().map(|s| s.id.clone()).collect(), if shuffle { -1 } else { start as i32 }, shuffle, from);
+        let change = playlist::playlist_set(songs.iter().map(|s| s.id.clone()).collect(), (!shuffle).then_some(start as u32), shuffle, from);
         self.edited();
-        self.engine.play_at(change.at.max(0) as usize, 0);
+        self.engine.play_at(change.at.unwrap_or(0) as usize, 0);
     }
 
     /// `from`: the page these are all the songs of.

@@ -1,6 +1,5 @@
-//! The settings, owned here: read once when the app starts, kept in memory, and written back to the
-//! app's database (`settings`, one row per key, the app's and not a server's) whenever they change. The
-//! platform only shows and changes them. Codec, defaults and ranges are settings.rs's.
+//! The live settings: loaded from the app database's `settings` table (one row per key), kept in memory
+//! and written back on the background thread after each change.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,14 +14,30 @@ use serde_json::{json, Value};
 
 use crate::settings::{load, save, set_band, set_by_name, set_level, EqLevel, PrefValue, SettingChange, SoundBand, SoundError, SoundSettings, StoredPrefs};
 
-struct Kept {
+// Effect bits: what a settings change asks the player (or client) to apply again.
+/// Which parts of the output chain may run, speed and pitch.
+pub const APPLY_AUDIO: u32 = 1;
+/// The ReplayGain volume.
+pub const APPLY_GAIN: u32 = 2;
+/// The transition plan for the playing song.
+pub const REPLAN: u32 = 4;
+/// The sound chain's values (bands, pre-amp, balance, crossfeed, limiter, effects).
+pub const SOUND: u32 = 8;
+/// The player's fades and high quality output.
+pub const PLAYER: u32 = 16;
+/// The stream cache's size limit, applied at once.
+pub const CACHE_LIMIT: u32 = 32;
+
+/// The open settings and the database they are kept in.
+struct SettingsStore {
     db: Arc<Mutex<Connection>>,
     prefs: StoredPrefs,
+    /// Bumped per change; a queued write skips itself when a newer one is queued behind it.
+    writes: Arc<AtomicU64>,
 }
 
-static KEPT: RwLock<Option<Kept>> = RwLock::new(None);
-/// Bumped on every change; a write that finds a newer change waiting leaves the writing to that one.
-static CHANGES: AtomicU64 = AtomicU64::new(0);
+/// Global: the platform and every crate reach the open settings through the free functions below.
+static KEPT: RwLock<Option<SettingsStore>> = RwLock::new(None);
 
 fn to_json(v: &PrefValue) -> String {
     match v {
@@ -56,18 +71,15 @@ fn read(c: &Connection) -> rusqlite::Result<HashMap<String, PrefValue>> {
     Ok(rows.filter_map(|r| r.ok()).filter_map(|(k, v)| Some((k, from_json(&v)?))).collect())
 }
 
-/// Whether any saved sound profile in this database has a parametric equalizer in it; none when there is
-/// no profiles table (a database the core has not opened yet).
+/// Whether any saved sound profile has a parametric equalizer; false without a profiles table.
 fn profiles_parametric(c: &Connection) -> bool {
     let Ok(mut st) = c.prepare("SELECT json FROM profiles") else { return false };
-    let jsons: Vec<String> = match st.query_map([], |r| r.get::<_, String>(0)) {
-        Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
-        Err(_) => return false,
-    };
+    let Ok(rows) = st.query_map([], |r| r.get::<_, String>(0)) else { return false };
+    let jsons: Vec<String> = rows.filter_map(|r| r.ok()).collect();
     jsons.iter().any(|json| crate::settings::profile_parametric(json))
 }
 
-/// Every value these settings store, in one transaction; keys no longer written go.
+/// Replaces every stored setting in one transaction.
 fn write(c: &mut Connection, prefs: &StoredPrefs) -> rusqlite::Result<()> {
     let put = save(prefs);
     let tx = c.transaction()?;
@@ -81,47 +93,140 @@ fn write(c: &mut Connection, prefs: &StoredPrefs) -> rusqlite::Result<()> {
     tx.commit()
 }
 
-/// The settings kept in the app's database at `db_path`. The first time there are none, the defaults
-/// become them.
+/// What a change from `a` to `b` asks the player to apply again: each changed setting's effect bits, plus
+/// [`APPLY_AUDIO`] when the sound chain starts or stops being needed.
+fn effects(a: &StoredPrefs, b: &StoredPrefs) -> u32 {
+    let chain = if a.sound_chain_on() != b.sound_chain_on() { APPLY_AUDIO } else { 0 };
+    crate::settings::ROWS.iter().filter(|r| r.effect != 0 && (r.changed)(a, b)).fold(chain, |e, r| e | r.effect)
+}
+
+/// Core state that follows the settings directly. The transition planner reads them itself
+/// (`planner::settings_from`).
+fn changed(prefs: &StoredPrefs) {
+    nori_automix::beat_model::switched(prefs.auto_mix_better_beats);
+}
+
+impl SettingsStore {
+    /// The settings in the app database at `db_path`; the defaults are written the first time.
+    fn open(db_path: &str) -> nori_model::Result<Self> {
+        let mut c = db::open_app(db_path)?;
+        let raw = read(&c)?;
+        let mut prefs = load(&raw);
+        // Stored before the equalizer had a graphic mode: a saved profile with a parametric curve keeps
+        // the parametric equalizer too. The choice is written at once.
+        let chosen = raw.contains_key(crate::settings::EQ_MODE_KEY);
+        if !raw.is_empty() && !chosen && profiles_parametric(&c) {
+            prefs.eq_mode = crate::settings::EqMode::Parametric;
+        }
+        if raw.is_empty() || !chosen {
+            write(&mut c, &prefs)?;
+        }
+        Ok(SettingsStore { db: Arc::new(Mutex::new(c)), prefs, writes: Arc::new(AtomicU64::new(0)) })
+    }
+
+    /// Replaces the settings with what `make` makes of them and queues the write. Returns the effect
+    /// bits, or None when nothing changed. Called under [`KEPT`]'s write lock, so concurrent edits reach
+    /// [`changed`] in the order they were kept.
+    fn edit(&mut self, make: impl FnOnce(&StoredPrefs) -> StoredPrefs) -> Option<u32> {
+        let prefs = make(&self.prefs);
+        if prefs == self.prefs {
+            return None;
+        }
+        let effect = effects(&self.prefs, &prefs);
+        changed(&prefs);
+        self.prefs = prefs;
+        let (db, writes, prefs) = (self.db.clone(), self.writes.clone(), self.prefs.clone());
+        let n = writes.fetch_add(1, Ordering::SeqCst) + 1;
+        background::run(move || {
+            if writes.load(Ordering::SeqCst) != n {
+                return;
+            }
+            if let Err(e) = write(&mut db.lock(), &prefs) {
+                alog::info(&format!("settings: could not write: {e}"));
+            }
+        });
+        Some(effect)
+    }
+
+    fn edit_sound(&mut self, sound: SoundSettings) -> Option<u32> {
+        self.edit(|p| p.clone().with_sound(sound))
+    }
+
+    fn edit_band(&mut self, index: u32, asked: SoundBand) -> Option<(u32, SoundBand)> {
+        let s = set_band(self.prefs.sound(), index, asked);
+        let kept = *s.eq_bands.get(index as usize)?;
+        Some((self.edit_sound(s)?, kept))
+    }
+
+    fn edit_graphic(&mut self, index: u32, gain_db: f32) -> Option<(u32, f32)> {
+        let s = crate::settings::set_graphic(self.prefs.sound(), index, gain_db);
+        let kept = *s.eq_graphic.get(index as usize)?;
+        Some((self.edit_sound(s)?, kept))
+    }
+
+    fn edit_level(&mut self, level: EqLevel, value: f32) -> Option<(u32, f32)> {
+        let s = set_level(self.prefs.sound(), level, value);
+        let kept = match level {
+            EqLevel::Preamp => s.eq_preamp_db.unwrap_or(value),
+            other => other.of(&s),
+        };
+        Some((self.edit_sound(s)?, kept))
+    }
+
+    /// The active server's own settings (`SettingChange::server`) are returned but not kept: the
+    /// platform applies them through its server update.
+    fn edit_by_name(&mut self, name: &str, value: &str) -> Option<SettingChange> {
+        let mut change = None;
+        let effect = self.edit(|p| {
+            let Some(c) = set_by_name(p, name, value) else { return p.clone() };
+            let next = if c.server { p.clone() } else { c.prefs.clone() };
+            change = Some(c);
+            next
+        });
+        change.map(|c| SettingChange { effect: effect.unwrap_or(0), ..c })
+    }
+
+    fn sound_tool(&mut self, tool: SoundTool) -> Result<Option<SoundChange>, SoundError> {
+        let sound = tool.apply(self.prefs.sound())?;
+        Ok(self.edit_sound(sound.clone()).map(|effect| SoundChange { sound, effect }))
+    }
+
+    fn app_value(&self, key: &str) -> Option<String> {
+        self.db.lock().query_row("SELECT value FROM app_kv WHERE key=?1", [key], |r| r.get(0)).optional().ok().flatten()
+    }
+}
+
+fn with_store<R>(f: impl FnOnce(&mut SettingsStore) -> Option<R>) -> Option<R> {
+    KEPT.write().as_mut().and_then(f)
+}
+
+/// Opens the settings kept in the app database at `db_path` and makes them the live ones.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn settings_open(db_path: String) -> nori_model::Result<StoredPrefs> {
-    let mut c = db::open_app(&db_path)?;
-    let raw = read(&c)?;
-    let mut prefs = load(&raw);
-    // Settings from before the equalizer had a graphic mode: the choice is made once, here, and kept. A
-    // saved sound profile with a parametric curve in it counts as set up too.
-    let chosen = raw.contains_key(crate::settings::EQ_MODE_KEY);
-    if !raw.is_empty() && !chosen && profiles_parametric(&c) {
-        prefs.eq_mode = crate::settings::EqMode::Parametric;
+    let store = SettingsStore::open(&db_path)?;
+    let prefs = store.prefs.clone();
+    {
+        let mut k = KEPT.write();
+        changed(&prefs);
+        *k = Some(store);
     }
-    if raw.is_empty() || !chosen {
-        write(&mut c, &prefs)?;
-    }
-    let mut k = KEPT.write();
-    *k = Some(Kept { db: Arc::new(Mutex::new(c)), prefs: prefs.clone() });
-    changed(&prefs);
-    drop(k);
     nori_automix::planner::settings_from(|| with_prefs(StoredPrefs::transition_prefs));
     Ok(prefs)
 }
 
-/// One of the app's own values (`app_kv`), read from the database the settings are kept in; none before
-/// the settings are open.
+/// A value from the app database's `app_kv` table; None before the settings are open.
 pub fn app_value(key: &str) -> Option<String> {
-    let db = KEPT.read().as_ref()?.db.clone();
-    let c = db.lock();
-    c.query_row("SELECT value FROM app_kv WHERE key=?1", [key], |r| r.get(0)).optional().ok().flatten()
+    KEPT.read().as_ref()?.app_value(key)
 }
 
-/// The app's database the settings were opened from, for the few app-wide tables kept beside them
-/// (perf_log.rs); none before the settings are open.
+/// The app database the settings were opened from, for other app-wide tables; None before it is open.
 pub fn app_db() -> Option<Arc<Mutex<Connection>>> {
     KEPT.read().as_ref().map(|k| k.db.clone())
 }
 
-/// One of the app's own values kept, written on the core's background thread.
+/// Stores an `app_kv` value on the background thread.
 pub fn keep_app_value(key: &'static str, value: String) {
-    let Some(db) = KEPT.read().as_ref().map(|k| k.db.clone()) else { return };
+    let Some(db) = app_db() else { return };
     background::run(move || {
         if let Err(e) = db.lock().execute("INSERT OR REPLACE INTO app_kv(key, value) VALUES(?1, ?2)", params![key, value]) {
             alog::info(&format!("{key}: could not write: {e}"));
@@ -129,137 +234,39 @@ pub fn keep_app_value(key: &'static str, value: String) {
     });
 }
 
-/// [`settings_put`]'s answer: what the platform's player has to apply again. The transition planner's
-/// settings follow by themselves.
-/// Which parts of the output chain may run, speed and pitch.
-pub const APPLY_AUDIO: u32 = 1;
-/// The ReplayGain volume.
-pub const APPLY_GAIN: u32 = 2;
-/// A plan already made for the song playing is asked for again.
-pub const REPLAN: u32 = 4;
-/// The sound chain's values moved (a band, the pre-amp, balance, crossfeed, the limiter): the player
-/// (nori-engine, which keeps its own chain) is handed them. Only a change in which parts may run is
-/// [`APPLY_AUDIO`] as well.
-pub const SOUND: u32 = 8;
-/// The fades on play, pause and switches, or high quality output: the player (nori-engine, which keeps
-/// its own copy) is handed them, or it went on with the ones it started with until the app was started
-/// again.
-pub const PLAYER: u32 = 16;
-
-/// What a change from `a` to `b` asks of the player: each setting's own bits from the table
-/// (settings.rs), and the output chain rebuilt when the sound chain starts or stops being needed.
-/// Balance and crossfeed are read by the chain as it runs, so dragging them matters only then: a drag's
-/// every step used to rebuild the audio policy, the transitions and the track selection.
-fn effects(a: &StoredPrefs, b: &StoredPrefs) -> u32 {
-    let chain = if a.sound_chain_on() != b.sound_chain_on() { APPLY_AUDIO } else { 0 };
-    crate::settings::ROWS.iter().filter(|r| r.effect != 0 && (r.changed)(a, b)).fold(chain, |e, r| e | r.effect)
-}
-
-/// The settings changed; kept now and written on the core's background thread. Returns what the
-/// platform's player has to apply again ([`APPLY_AUDIO`], [`APPLY_GAIN`], [`REPLAN`], [`SOUND`], [`PLAYER`]); 0 for a change
-/// only screens care about.
+/// Replaces the settings. Returns the effect bits; 0 when nothing changed or the settings are not open.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn settings_put(prefs: StoredPrefs) -> u32 {
-    edit(|_| prefs).unwrap_or(0)
+    with_store(|s| s.edit(|_| prefs)).unwrap_or(0)
 }
 
-/// The kept settings replaced by what `make` makes of them, and written as [`settings_put`] writes
-/// them. Returns what the player has to apply again, or none when nothing changed.
-fn edit(make: impl FnOnce(&StoredPrefs) -> StoredPrefs) -> Option<u32> {
-    let (db, effect) = {
-        let mut k = KEPT.write();
-        let k = k.as_mut()?;
-        let prefs = make(&k.prefs);
-        if k.prefs == prefs {
-            return None;
-        }
-        let effect = effects(&k.prefs, &prefs);
-        // Told under the lock: two changes on two threads reach what follows them in the order they were
-        // kept, never the older one last.
-        changed(&prefs);
-        k.prefs = prefs;
-        (k.db.clone(), effect)
-    };
-    let change = CHANGES.fetch_add(1, Ordering::SeqCst) + 1;
-    background::run(move || {
-        // A newer change is queued behind this one and writes everything anyway.
-        if CHANGES.load(Ordering::SeqCst) != change {
-            return;
-        }
-        if let Some(p) = current() {
-            if let Err(e) = write(&mut db.lock(), &p) {
-                alog::info(&format!("settings: could not write: {e}"));
-            }
-        }
-    });
-    Some(effect)
-}
-
-/// One band of the equalizer moved (`settings::set_band`), edited where the settings are kept: what the
-/// player has to apply again and the band as it was kept, held in its ranges; none when nothing changed.
+/// One parametric band changed (`settings::set_band`): the effect bits and the band as kept (held in
+/// range); None when nothing changed.
 pub fn edit_band(index: u32, asked: SoundBand) -> Option<(u32, SoundBand)> {
-    let mut kept = asked;
-    let effect = edit(|p| {
-        let s = set_band(p.sound(), index, asked);
-        if let Some(k) = s.eq_bands.get(index as usize) {
-            kept = *k;
-        }
-        p.clone().with_sound(s)
-    })?;
-    Some((effect, kept))
+    with_store(|s| s.edit_band(index, asked))
 }
 
-/// One graphic equalizer slider moved (`settings::set_graphic`), edited where the settings are kept:
-/// what the player has to apply again and the value as it was kept; none when nothing changed.
+/// One graphic slider changed (`settings::set_graphic`): the effect bits and the value as kept.
 pub fn edit_graphic(index: u32, gain_db: f32) -> Option<(u32, f32)> {
-    let mut kept = gain_db;
-    let effect = edit(|p| {
-        let s = crate::settings::set_graphic(p.sound(), index, gain_db);
-        if let Some(k) = s.eq_graphic.get(index as usize) {
-            kept = *k;
-        }
-        p.clone().with_sound(s)
-    })?;
-    Some((effect, kept))
+    with_store(|s| s.edit_graphic(index, gain_db))
 }
 
-/// Pre-amp, balance, limiter ceiling or crossfeed moved (`settings::set_level`), edited where the
-/// settings are kept: what the player has to apply again and the value as it was kept, held in range
-/// and snapped; none when nothing changed.
+/// A level slider changed (`settings::set_level`): the effect bits and the value as kept (held in range
+/// and snapped).
 pub fn edit_level(level: EqLevel, value: f32) -> Option<(u32, f32)> {
-    let mut kept = value;
-    let effect = edit(|p| {
-        let s = set_level(p.sound(), level, value);
-        kept = match level {
-            EqLevel::Preamp => s.eq_preamp_db.unwrap_or(value),
-            other => other.of(&s),
-        };
-        p.clone().with_sound(s)
-    })?;
-    Some((effect, kept))
+    with_store(|s| s.edit_level(level, value))
 }
 
-/// A change by name (`settings::set_by_name`) made where the settings are kept, answered once with the
-/// settings after it and what the player has to apply again: the platform takes them in and sends
-/// nothing back. The active server's own settings are left as they are (see `SettingChange::server`).
-/// `None` for a name that is not a setting.
+/// A change by name (`settings::set_by_name`), kept, with the settings after it and the effect bits.
+/// None for an unknown name. Before the settings are open it is applied to the defaults and not kept.
 pub fn edit_by_name(name: &str, value: &str) -> Option<SettingChange> {
-    let mut change = None;
-    let effect = edit(|p| {
-        let Some(c) = set_by_name(p, name, value) else { return p.clone() };
-        let next = if c.server { p.clone() } else { c.prefs.clone() };
-        change = Some(c);
-        next
-    });
-    match change {
-        Some(c) => Some(SettingChange { effect: effect.unwrap_or(0), ..c }),
-        // Before the app opened them there is nothing to keep: the change is said, against the defaults.
-        None if with_prefs(|_| ()).is_none() => set_by_name(&StoredPrefs::default(), name, value),
-        None => None,
+    match KEPT.write().as_mut() {
+        Some(s) => s.edit_by_name(name, value),
+        None => set_by_name(&StoredPrefs::default(), name, value),
     }
 }
 
-/// One of the equalizer screen's tools (not a slider: those are [`edit_band`] and [`edit_level`]).
+/// An equalizer screen tool (sliders are [`edit_band`] and [`edit_level`]).
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 pub enum SoundTool {
@@ -272,7 +279,7 @@ pub enum SoundTool {
     Import { text: String },
 }
 
-/// What a [`SoundTool`] made of the sound, and what the player has to apply again.
+/// The sound after a [`SoundTool`], and the effect bits.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct SoundChange {
@@ -294,46 +301,19 @@ impl SoundTool {
     }
 }
 
-/// One of the equalizer screen's tools used on the settings where they are kept: only the sound part
-/// comes back, and the platform sends nothing back. `None` when nothing changed (or before the app
-/// opened the settings); an import with no filters in it says so.
+/// Applies an equalizer tool to the live settings. None when nothing changed or the settings are not
+/// open; an import without filters is an error.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn settings_sound_tool(tool: SoundTool) -> Result<Option<SoundChange>, SoundError> {
-    let mut made = Ok(None);
-    let effect = edit(|p| match tool.apply(p.sound()) {
-        Ok(s) => {
-            made = Ok(Some(s.clone()));
-            p.clone().with_sound(s)
-        }
-        Err(e) => {
-            made = Err(e);
-            p.clone()
-        }
-    });
-    Ok(match (made?, effect) {
-        (Some(sound), Some(effect)) => Some(SoundChange { sound, effect }),
-        _ => None,
-    })
+    KEPT.write().as_mut().map_or(Ok(None), |s| s.sound_tool(tool))
 }
 
-/// What in the core follows the settings by itself, told at once. The transition planner is not told:
-/// it reads the settings kept here each time it plans (`planner::settings_from`).
-fn changed(prefs: &StoredPrefs) {
-    nori_automix::beat_model::switched(prefs.auto_mix_better_beats);
-}
-
-/// The settings as they are kept now, for a Rust client that edits them and puts them back; none
-/// before the app opened them.
+/// A copy of the live settings; None before they are open.
 pub fn settings_current() -> Option<StoredPrefs> {
-    current()
-}
-
-/// The settings as they are now, for the core's own decisions; none before the app opened them.
-pub fn current() -> Option<StoredPrefs> {
     with_prefs(StoredPrefs::clone)
 }
 
-/// One answer from the settings as they are now, without copying them; none before the app opened them.
+/// `f` applied to the live settings without copying them; None before they are open.
 pub fn with_prefs<R>(f: impl FnOnce(&StoredPrefs) -> R) -> Option<R> {
     KEPT.read().as_ref().map(|k| f(&k.prefs))
 }
@@ -341,9 +321,14 @@ pub fn with_prefs<R>(f: impl FnOnce(&StoredPrefs) -> R) -> Option<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::{band_from, sound_json, EqMode, GainMode, SavedServer, EQ_MODE_KEY, EQ_RANGES};
+
+    fn open(dir: &nori_testdir::TempDir) -> SettingsStore {
+        SettingsStore::open(&dir.join("nori.db").display().to_string()).unwrap()
+    }
 
     #[test]
-    fn every_kind_of_value_survives_the_database() {
+    fn pref_values_round_trip_through_json() {
         for v in [
             PrefValue::Flag { v: true },
             PrefValue::Number { v: -3 },
@@ -357,149 +342,132 @@ mod tests {
     }
 
     #[test]
-    fn only_what_the_player_uses_asks_it_to_apply_again() {
+    fn effects_per_setting() {
         let a = StoredPrefs::default();
-        let theme = StoredPrefs { amoled: !a.amoled, ..a.clone() };
-        assert_eq!(effects(&a, &theme), 0, "a screen's setting");
-        let bands = StoredPrefs { eq_bands: vec![crate::settings::band_from(0, 100.0, 3.0, 1.0, 0)], ..a.clone() };
-        assert_eq!(effects(&a, &bands), SOUND, "the sound chain follows its bands by itself");
-        assert_eq!(effects(&a, &StoredPrefs { eq_enabled: true, ..a.clone() }), APPLY_AUDIO | SOUND);
-        assert_eq!(effects(&a, &StoredPrefs { replay_gain: crate::settings::GainMode::Track, ..a.clone() }), APPLY_GAIN | REPLAN | SOUND, "and whether songs may be turned up");
-        assert_eq!(effects(&a, &StoredPrefs { loudness_target: -14.0, ..a.clone() }), APPLY_GAIN);
-        assert_eq!(effects(&a, &StoredPrefs { gain_boost_db: 6.0, ..a.clone() }), APPLY_GAIN | SOUND, "the chain reads floats and limits only while songs may be turned up");
-        assert_eq!(effects(&a, &StoredPrefs { crossfade_sec: 6, ..a.clone() }), APPLY_AUDIO | REPLAN);
-        assert_eq!(effects(&a, &StoredPrefs { auto_mix_bass_swap: !a.auto_mix_bass_swap, ..a.clone() }), REPLAN);
-        // Read once when the player started, these went unheard until the app was started again.
-        assert_eq!(effects(&a, &StoredPrefs { fade_ms: a.fade_ms + 300, ..a.clone() }), PLAYER, "the fades");
-        assert_eq!(effects(&a, &StoredPrefs { hi_res: !a.hi_res, ..a.clone() }), PLAYER, "high quality output");
+        let cases = [
+            (StoredPrefs { amoled: !a.amoled, ..a.clone() }, 0),
+            (StoredPrefs { eq_bands: vec![band_from(0, 100.0, 3.0, 1.0, 0)], ..a.clone() }, SOUND),
+            (StoredPrefs { eq_enabled: true, ..a.clone() }, APPLY_AUDIO | SOUND),
+            (StoredPrefs { replay_gain: GainMode::Track, ..a.clone() }, APPLY_GAIN | REPLAN | SOUND),
+            (StoredPrefs { loudness_target: -14.0, ..a.clone() }, APPLY_GAIN),
+            (StoredPrefs { gain_boost_db: 6.0, ..a.clone() }, APPLY_GAIN | SOUND),
+            (StoredPrefs { crossfade_sec: 6, ..a.clone() }, APPLY_AUDIO | REPLAN),
+            (StoredPrefs { auto_mix_bass_swap: !a.auto_mix_bass_swap, ..a.clone() }, REPLAN),
+            (StoredPrefs { fade_ms: a.fade_ms + 300, ..a.clone() }, PLAYER),
+            (StoredPrefs { hi_res: !a.hi_res, ..a.clone() }, PLAYER),
+            (StoredPrefs { cache_mb: 4096, ..a.clone() }, CACHE_LIMIT),
+        ];
+        for (b, want) in cases {
+            assert_eq!(effects(&a, &b), want, "{b:?}");
+        }
     }
 
     #[test]
-    fn dragging_balance_or_crossfeed_only_rebuilds_when_the_chain_starts_or_stops() {
+    fn balance_and_crossfeed_rebuild_only_when_chain_toggles() {
         let a = StoredPrefs::default();
-        assert!(!a.sound_chain_on(), "the defaults run no chain");
+        assert!(!a.sound_chain_on());
         let off_centre = StoredPrefs { balance: -0.4, ..a.clone() };
-        assert_eq!(effects(&a, &off_centre), APPLY_AUDIO | SOUND, "the chain starts");
-        assert_eq!(effects(&off_centre, &StoredPrefs { balance: -0.5, ..a.clone() }), SOUND, "a drag step: the chain reads it as it runs");
-        assert_eq!(effects(&off_centre, &a), APPLY_AUDIO | SOUND, "back in the middle, the chain stops");
+        assert_eq!(effects(&a, &off_centre), APPLY_AUDIO | SOUND, "chain starts");
+        assert_eq!(effects(&off_centre, &StoredPrefs { balance: -0.5, ..a.clone() }), SOUND, "drag step");
+        assert_eq!(effects(&off_centre, &a), APPLY_AUDIO | SOUND, "chain stops");
         let feed = StoredPrefs { crossfeed_db: 3.0, ..a.clone() };
         assert_eq!(effects(&a, &feed), APPLY_AUDIO | SOUND);
         assert_eq!(effects(&feed, &StoredPrefs { crossfeed_db: 4.5, ..a.clone() }), SOUND);
         let eq = StoredPrefs { eq_enabled: true, ..a.clone() };
-        assert_eq!(effects(&eq, &StoredPrefs { balance: 0.3, ..eq.clone() }), SOUND, "the chain was running already");
+        assert_eq!(effects(&eq, &StoredPrefs { balance: 0.3, ..eq.clone() }), SOUND, "chain already running");
         assert_eq!(effects(&eq, &StoredPrefs { limiter_threshold_db: -3.0, ..eq.clone() }), SOUND);
     }
 
-    /// The tests that open the store take turns: it is one for the whole process.
-    static OPEN: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-
     #[test]
-    fn a_slider_edits_the_kept_settings_in_place() {
-        let _turn = OPEN.lock();
+    fn slider_edits() {
         let dir = nori_testdir::TempDir::new("settings-edit");
-        settings_open(dir.join("nori.db").display().to_string()).unwrap();
-        let band = current().unwrap().eq_bands[2];
-        let (effect, kept) = edit_band(2, SoundBand { gain_db: 99.0, ..band }).unwrap();
-        assert_eq!(effect, SOUND, "the sound chain follows its bands by itself");
-        assert_eq!(kept.gain_db, crate::settings::EQ_RANGES.gain.max, "held in range");
-        assert_eq!(current().unwrap().eq_bands[2], kept);
-        assert_eq!(edit_band(2, kept), None, "the same band again changes nothing");
-        assert_eq!(edit_band(99, band), None, "a band that is not there");
-        assert_eq!(edit_level(EqLevel::Balance, 0.02), None, "near the middle is the middle, as it was");
-        assert_eq!(edit_level(EqLevel::Balance, -0.5), Some((APPLY_AUDIO | SOUND, -0.5)));
-        assert_eq!(current().unwrap().balance, -0.5);
-        assert_eq!(edit_level(EqLevel::Balance, -0.6), Some((SOUND, -0.6)), "a drag step");
-        assert_eq!(edit_level(EqLevel::ReplayGainPreamp, 20.0), Some((APPLY_GAIN, 6.0)), "the overall level, held in range");
-        assert_eq!(current().unwrap().preamp_db, 6.0);
+        let mut s = open(&dir);
+        let band = s.prefs.eq_bands[2];
+        let (effect, kept) = s.edit_band(2, SoundBand { gain_db: 99.0, ..band }).unwrap();
+        assert_eq!(effect, SOUND);
+        assert_eq!(kept.gain_db, EQ_RANGES.gain.max, "held in range");
+        assert_eq!(s.prefs.eq_bands[2], kept);
+        assert_eq!(s.edit_band(2, kept), None, "unchanged");
+        assert_eq!(s.edit_band(99, band), None, "no such band");
+        assert_eq!(s.edit_graphic(0, 20.0), Some((SOUND, 12.0)), "held in range");
+        assert_eq!(s.prefs.eq_graphic[0], 12.0);
+        assert_eq!(s.edit_level(EqLevel::Balance, 0.02), None, "snaps to the centre");
+        assert_eq!(s.edit_level(EqLevel::Balance, -0.5), Some((APPLY_AUDIO | SOUND, -0.5)));
+        assert_eq!(s.prefs.balance, -0.5);
+        assert_eq!(s.edit_level(EqLevel::Balance, -0.6), Some((SOUND, -0.6)));
+        assert_eq!(s.edit_level(EqLevel::ReplayGainPreamp, 20.0), Some((APPLY_GAIN, 6.0)));
+        assert_eq!(s.prefs.preamp_db, 6.0);
     }
 
-    /// An install from before the graphic equalizer, opened: the choice is made from its settings and
-    /// its sound profiles, written at once, and kept from then on.
+    /// An install from before the graphic equalizer: the mode is chosen from its settings and sound
+    /// profiles, and written at once.
     #[test]
-    fn an_old_install_keeps_its_parametric_equalizer_and_the_choice_is_written() {
-        use crate::settings::{load, save, sound_json, EqMode, EQ_MODE_KEY};
-        let _turn = OPEN.lock();
+    fn old_install_keeps_parametric_equalizer() {
         let open_with = |name: &str, prefs: &StoredPrefs, profile: Option<String>| {
             let dir = nori_testdir::TempDir::new(name);
             let path = dir.join("nori.db").display().to_string();
             {
                 let mut c = db::open_app(&path).unwrap();
-                let mut p = prefs.clone();
-                p.eq_mode = EqMode::Graphic; // what a missing key would read as; the key goes next
-                write(&mut c, &p).unwrap();
+                write(&mut c, &StoredPrefs { eq_mode: EqMode::Graphic, ..prefs.clone() }).unwrap();
                 c.execute("DELETE FROM settings WHERE key = ?1", [EQ_MODE_KEY]).unwrap();
                 if let Some(json) = profile {
                     c.execute_batch("CREATE TABLE profiles(name TEXT PRIMARY KEY, json TEXT NOT NULL, outputs TEXT NOT NULL DEFAULT '') WITHOUT ROWID").unwrap();
                     c.execute("INSERT INTO profiles(name, json) VALUES('Mine', ?1)", [json]).unwrap();
                 }
             }
-            let opened = settings_open(path.clone()).unwrap();
+            let opened = SettingsStore::open(&path).unwrap().prefs.eq_mode;
             let raw = read(&db::open_app(&path).unwrap()).unwrap();
-            (opened.eq_mode, raw.contains_key(EQ_MODE_KEY), load(&raw).eq_mode, dir)
+            (opened, raw.contains_key(EQ_MODE_KEY), load(&raw).eq_mode)
         };
         let d = StoredPrefs::default();
-        let (mode, written, reread, _dir) = open_with("settings-old-flat", &d, None);
-        assert_eq!((mode, written, reread), (EqMode::Graphic, true, EqMode::Graphic), "nothing set up: graphic, and kept");
-        let with_bands = StoredPrefs { eq_enabled: true, eq_bands: vec![crate::settings::band_from(1, 100.0, 6.0, 0.7, 0)], ..d.clone() };
-        let (mode, written, reread, _dir) = open_with("settings-old-bands", &with_bands, None);
-        assert_eq!((mode, written, reread), (EqMode::Parametric, true, EqMode::Parametric), "bands set up: parametric, and kept");
+        assert_eq!(open_with("settings-old-flat", &d, None), (EqMode::Graphic, true, EqMode::Graphic));
+        let with_bands = StoredPrefs { eq_enabled: true, eq_bands: vec![band_from(1, 100.0, 6.0, 0.7, 0)], ..d.clone() };
+        assert_eq!(open_with("settings-old-bands", &with_bands, None), (EqMode::Parametric, true, EqMode::Parametric));
         let profile = sound_json(&with_bands.sound());
-        let (mode, _, reread, _dir) = open_with("settings-old-profile", &d, Some(profile));
-        assert_eq!((mode, reread), (EqMode::Parametric, EqMode::Parametric), "a profile with a curve in it");
-        // A new install: graphic, written with everything else.
+        assert_eq!(open_with("settings-old-profile", &d, Some(profile)), (EqMode::Parametric, true, EqMode::Parametric));
         let dir = nori_testdir::TempDir::new("settings-new-install");
-        let path = dir.join("nori.db").display().to_string();
-        assert_eq!(settings_open(path.clone()).unwrap().eq_mode, EqMode::Graphic);
-        assert!(read(&db::open_app(&path).unwrap()).unwrap().contains_key(EQ_MODE_KEY));
-        let _ = save; // the stored format is `save`'s, as write uses it
+        let s = open(&dir);
+        assert_eq!(s.prefs.eq_mode, EqMode::Graphic);
+        assert!(read(&s.db.lock()).unwrap().contains_key(EQ_MODE_KEY), "a new install writes the mode");
     }
 
     #[test]
-    fn a_change_by_name_is_kept_where_it_is_made_and_answered_once() {
-        let _turn = OPEN.lock();
+    fn edit_by_name_and_sound_tools() {
         let dir = nori_testdir::TempDir::new("settings-by-name");
-        settings_open(dir.join("nori.db").display().to_string()).unwrap();
-        let c = edit_by_name("limiter", "true").unwrap();
-        assert!(c.prefs.limiter && current().unwrap().limiter, "kept, with nothing put back");
+        let mut s = open(&dir);
+        let c = s.edit_by_name("limiter", "true").unwrap();
+        assert!(c.prefs.limiter && s.prefs.limiter);
         assert_eq!(c.effect, APPLY_AUDIO | SOUND);
-        assert_eq!(c.prefs, current().unwrap());
-        let again = edit_by_name("limiter", "true").unwrap();
-        assert_eq!(again.effect, 0, "nothing changed");
-        assert_eq!(edit_by_name("cacheMb", "512").map(|c| (c.apply_cache_limit, c.effect)), Some((true, 0)));
-        assert!(edit_by_name("noSuchSetting", "1").is_none());
-        // The active server's own settings go through the platform's server update, which connects again.
-        let before = current().unwrap();
-        let mut with_server = before.clone();
-        with_server.servers = vec![crate::settings::SavedServer { id: "s1".into(), ..Default::default() }];
-        with_server.active_server_id = "s1".into();
-        settings_put(with_server.clone());
-        let c = edit_by_name("musicFolder", "7").unwrap();
+        assert_eq!(c.prefs, s.prefs);
+        assert_eq!(s.edit_by_name("limiter", "true").unwrap().effect, 0, "unchanged");
+        assert_eq!(s.edit_by_name("cacheMb", "512").unwrap().effect, CACHE_LIMIT);
+        assert!(s.edit_by_name("noSuchSetting", "1").is_none());
+        // The active server's own settings are returned, not kept.
+        let with_server = StoredPrefs { servers: vec![SavedServer { id: "s1".into(), ..Default::default() }], active_server_id: "s1".into(), ..s.prefs.clone() };
+        s.edit(|_| with_server.clone());
+        let c = s.edit_by_name("musicFolder", "7").unwrap();
         assert!(c.server);
-        assert_eq!(c.prefs.servers[0].music_folder_id, "7", "the change is said");
-        assert_eq!(current().unwrap(), with_server, "but not kept here");
+        assert_eq!(c.prefs.servers[0].music_folder_id, "7");
+        assert_eq!(s.prefs, with_server);
         assert_eq!(c.effect, 0);
 
-        let tool = settings_sound_tool(SoundTool::AddBand).unwrap().unwrap();
-        assert_eq!(tool.sound, current().unwrap().sound(), "kept, and only the sound part answered");
+        let tool = s.sound_tool(SoundTool::AddBand).unwrap().unwrap();
+        assert_eq!(tool.sound, s.prefs.sound());
         assert_eq!(tool.effect, SOUND);
         let n = tool.sound.eq_bands.len();
-        let removed = settings_sound_tool(SoundTool::RemoveBand { index: n as u32 - 1 }).unwrap().unwrap();
-        assert_eq!(removed.sound.eq_bands.len(), n - 1);
-        assert!(matches!(settings_sound_tool(SoundTool::Import { text: "nothing here".into() }), Err(SoundError::NoFilters)));
-        assert_eq!(current().unwrap().eq_bands.len(), n - 1, "a failed import changes nothing");
-        assert_eq!(settings_sound_tool(SoundTool::RemoveBand { index: 999 }).unwrap(), None, "no band there: nothing changed");
+        assert_eq!(s.sound_tool(SoundTool::RemoveBand { index: n as u32 - 1 }).unwrap().unwrap().sound.eq_bands.len(), n - 1);
+        assert!(matches!(s.sound_tool(SoundTool::Import { text: "nothing here".into() }), Err(SoundError::NoFilters)));
+        assert_eq!(s.prefs.eq_bands.len(), n - 1, "a failed import changes nothing");
+        assert_eq!(s.sound_tool(SoundTool::RemoveBand { index: 999 }).unwrap(), None);
     }
 
     #[test]
-    fn the_defaults_first_then_the_database_is_the_settings() {
-        let _turn = OPEN.lock();
+    fn saved_settings_load_back() {
         let dir = nori_testdir::TempDir::new("settings");
-        let path = dir.join("nori.db").display().to_string();
-        assert_eq!(settings_open(path.clone()).unwrap(), StoredPrefs::default());
-        let mut p = current().unwrap();
-        p.fade_ms = 400;
-        // Written straight away here rather than through the background thread.
-        write(&mut KEPT.read().as_ref().unwrap().db.lock(), &p).unwrap();
-        assert_eq!(settings_open(path).unwrap().fade_ms, 400, "what was saved comes back");
+        let s = open(&dir);
+        assert_eq!(s.prefs, StoredPrefs::default());
+        write(&mut s.db.lock(), &StoredPrefs { fade_ms: 400, ..s.prefs.clone() }).unwrap();
+        drop(s);
+        assert_eq!(open(&dir).prefs.fade_ms, 400);
     }
 }

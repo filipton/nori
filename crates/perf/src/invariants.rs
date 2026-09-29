@@ -671,7 +671,7 @@ pub fn perf_watch_queue(wall_ms: i64, missing: Vec<String>, total: u32) {
     if !on() {
         return;
     }
-    let auto_mix = nori_settings::settings_store::current().is_some_and(|p| p.auto_mix);
+    let auto_mix = nori_settings::settings_store::settings_current().is_some_and(|p| p.auto_mix);
     let b = with(|w| w.queue(auto_mix, &missing, total));
     said(wall_ms, b);
 }
@@ -690,7 +690,7 @@ pub fn perf_watch_settings(wall_ms: i64, offload_wanted: bool, chain_in: bool, o
     if !settings_judged(wall_ms, playing, output_open, (since != i64::MIN).then_some(since)) {
         return;
     }
-    let Some(s) = nori_settings::settings_store::current() else { return };
+    let Some(s) = nori_settings::settings_store::settings_current() else { return };
     let want_offload = s.offload && !usb && crate::perf_log::offload_blocked().is_none();
     // With the equalizer on, the chain is in the samples' path; off, it may stay in, flat.
     said(wall_ms, settings_held(&settings_pairs(s.eq_enabled, want_offload, offload_wanted, chain_in, on_cpu)));

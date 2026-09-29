@@ -1,12 +1,6 @@
-//! Every read the app makes of its server, and which of them are answered from the stored response.
-//! A screen opens with the stored answer at once; the network answer replaces it only when it differs.
-//! An answer younger than its freshness window is not asked again: opening the same screens within a
-//! couple of minutes then costs no request at all, which on mobile data means no radio wake-up. Writes
-//! evict what they change (client.rs), so the user's own actions are never hidden by this.
-//!
-//! The platform asks in two steps - [`Client::read_stored`] paints, [`Client::read_fetch`] refreshes - so
-//! the stored answer is on screen while the request is out. Keys, windows, parameters and parsing are all
-//! here; the platform only emits what comes back.
+//! Server reads and their response cache. [`Client::read_stored`] returns the cached page at once (and
+//! whether it is fresh enough to skip the server); [`Client::read_fetch`] asks the server and returns a
+//! page only if it changed. Writes evict what they change (client.rs).
 
 use std::hash::{Hash, Hasher};
 
@@ -21,20 +15,17 @@ use crate::{
 const MINUTE: i64 = 60_000;
 const HOUR: i64 = 60 * MINUTE;
 const DAY: i64 = 24 * HOUR;
-/// Most reads: long enough for going back and forth between screens, short enough that the server's
-/// own changes show up soon.
+/// Freshness window of most reads.
 const BROWSE: i64 = 2 * MINUTE;
 
-/// A read of the server. The cached ones come first; the rest always ask.
+/// A server read. Variants up to `FolderById` are cached; the rest always ask.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 pub enum Read {
-    /// getAlbumList2 of `kind` (newest, recent, frequent, random, alphabeticalByName, ...). "byYear" means
-    /// this year's albums; "random" is never stored, or it would be the same shuffle every time.
+    /// getAlbumList2 of `kind`. "byYear" means this year; "random" is never cached.
     AlbumList { kind: String, size: i32, offset: i32, genre: Option<String> },
     AlbumsByYear { from: i32, to: i32, size: i32, offset: i32 },
-    /// The first `size` starred albums, the same request and stored answer as that `AlbumList`, with this
-    /// session's marks laid over it: the home page's favourites shelf, which follows the hearts.
+    /// The starred `AlbumList` (same cache entry) with this session's star changes applied.
     FavouriteAlbums { size: i32 },
     ArtistIndex,
     AlbumById { id: String },
@@ -46,16 +37,15 @@ pub enum Read {
     StarredItems,
     GenreList,
     RadioList,
-    /// `enhanced` asks OpenSubsonic servers for word cues and translation layers (songLyrics v2).
+    /// Asks with `enhanced=true` for word cues and translations (OpenSubsonic songLyrics v2).
     LyricsBySong { song_id: String },
-    /// The server's folder tree, for libraries organised by directory rather than by tags.
+    /// The folder tree, for libraries organised by directory.
     FolderIndex,
     FolderById { id: String },
-    // ---- never stored ----
+    // Never cached:
     MusicFolders,
     Ping,
-    /// Always asks the server, so provider results from octo-fiesta show up. One big page: the proxy
-    /// repeats its external results on every offset.
+    /// Uncached so octo-fiesta's provider results show; one big page since the proxy repeats them per offset.
     Search { query: String, songs: i32, albums: i32, artists: i32 },
     RandomSongs { size: i32, genre: Option<String> },
     SongsByGenre { genre: String, count: i32 },
@@ -63,14 +53,14 @@ pub enum Read {
     SongById { id: String },
     AlbumSongs { id: String },
     PlaylistSongs { id: String },
-    /// Not queued like a play: by the time it could be replayed it is no longer true.
+    /// Not queued offline: stale by the time it could be replayed.
     NowPlaying { id: String },
-    /// A public link to a song or album; the server must have sharing enabled.
+    /// A public share link (needs sharing enabled on the server).
     ShareLink { id: String },
     PullQueue,
 }
 
-/// A parsed answer. The variant follows the read.
+/// A parsed answer; the variant follows the read.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 pub enum Page {
@@ -95,14 +85,13 @@ pub enum Page {
     Queue { v: PlayQueue },
 }
 
-/// What is stored for a read. `digest` identifies the stored bytes (None: nothing stored) and goes back
-/// into [`Client::read_fetch`], which only returns a page when the server's answer differs from it.
+/// The cached answer for a read. `digest` (None: nothing cached) is passed back to [`Client::read_fetch`].
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct Stored {
     pub page: Option<Page>,
     pub digest: Option<u64>,
-    /// The stored answer was shown and is young enough: the server is not asked.
+    /// Parsed and within its freshness window: skip the server.
     pub fresh: bool,
 }
 
@@ -136,14 +125,15 @@ enum Parser {
 struct Spec {
     endpoint: &'static str,
     params: Vec<(String, String)>,
-    /// None: never stored.
+    /// None: never cached.
     fresh_ms: Option<i64>,
     parser: Parser,
 }
 
-/// The year it is where the phone is.
+/// The current local year.
 fn this_year() -> i32 {
     #[cfg(unix)]
+    // SAFETY: `time` with a null pointer and `localtime_r` into a zeroed local `tm` are sound.
     unsafe {
         let now = libc::time(std::ptr::null_mut());
         let mut tm: libc::tm = std::mem::zeroed();
@@ -151,7 +141,7 @@ fn this_year() -> i32 {
             return tm.tm_year + 1900;
         }
     }
-    // Days since 1970 over the mean Gregorian year: exact except within hours of New Year.
+    // UTC approximation: off only within hours of New Year.
     (1970.0 + (crate::db::now_ms() as f64 / 86_400_000.0) / 365.2425) as i32
 }
 
@@ -219,8 +209,8 @@ fn spec(read: Read) -> Spec {
     }
 }
 
-/// The stored answer's key: the endpoint and its parameters (the music folder included) as they are
-/// sent, in order and unencoded. Eviction prefixes depend on this shape ("getAlbumList2&type=starred").
+/// Cache key: the endpoint then `&k=v` for each sent param (folder included), in order, unencoded.
+/// Eviction prefixes rely on this shape ("getAlbumList2&type=starred").
 fn key(endpoint: &str, params: &[(String, String)]) -> String {
     let mut k = String::with_capacity(endpoint.len() + params.iter().map(|(a, b)| a.len() + b.len() + 2).sum::<usize>());
     k.push_str(endpoint);
@@ -239,9 +229,8 @@ fn digest(bytes: &[u8]) -> u64 {
     h.finish()
 }
 
-/// Whether `page` lists a provider's item (octo-fiesta's `isExternal`, `ext-` and `pl-` ids). The server's
-/// answer for it moves as the provider's songs are downloaded (a song played is the library's afterwards,
-/// its cloud gone), so a stored one is shown but never young enough to skip asking again.
+/// Whether `page` lists a provider item. Such answers change as provider songs get downloaded, so they
+/// are never fresh.
 fn lists_provider_items(page: &Page) -> bool {
     let song = |s: &Song| s.is_external || crate::db::external(&s.id);
     let album = |a: &Album| a.is_external || crate::db::external(&a.id);
@@ -271,8 +260,7 @@ impl Client {
             Parser::Playlists => Page::Playlists { v: c.parse_playlists(body)? },
             Parser::Playlist => Page::PlaylistPage { v: c.parse_playlist(body)? },
             Parser::PlaylistSongs => Page::Songs { v: c.parse_playlist(body)?.songs },
-            // This session's marks are laid over the favourites wherever they are read, stored or fresh,
-            // so an unstarred item leaves them at once rather than when the server's new answer comes.
+            // This session's star changes apply to cached and fresh answers alike.
             Parser::Starred => Page::StarredPage { v: c.stars.lock().overlay(c.parse_starred(body)?) },
             Parser::Genres => Page::Genres { v: c.parse_genres(body)? },
             Parser::Radio => Page::Stations { v: c.parse_radio(body)? },
@@ -294,7 +282,7 @@ impl Client {
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Client {
-    /// Asks the server, nothing stored: the reads that must be current.
+    /// Asks the server, bypassing the cache.
     pub async fn read_now(&self, read: Read) -> NetResult<Page> {
         let sp = spec(read);
         let body = self.fetch(sp.endpoint, sp.params).await?;
@@ -302,25 +290,22 @@ impl Client {
     }
 }
 
-/// Asked only in Rust, so not exported to Kotlin.
 impl Client {
-    /// The stored answer for `read`, parsed, and whether it is young enough to skip the server. A stored
-    /// answer that no longer parses is not shown, and the server is asked. Reads that are never stored
-    /// come back empty and not fresh.
+    /// The cached page for `read` (None if absent or unparseable) and whether it is fresh.
     pub fn read_stored(&self, read: Read) -> NetResult<Stored> {
-        let fresh_ms = spec(read.clone()).fresh_ms;
-        self.stored_for(read, fresh_ms)
-    }
-
-    /// [`Client::read_stored`] with its own measure of young enough: fresh when stored less than
-    /// `fresh_ms` ago, whatever the read's usual time is (a downloaded song's lyrics stand for longer).
-    pub fn read_stored_within(&self, read: Read, fresh_ms: i64) -> NetResult<Stored> {
-        let stored = spec(read.clone()).fresh_ms.is_some();
-        self.stored_for(read, stored.then_some(fresh_ms))
-    }
-
-    fn stored_for(&self, read: Read, fresh_ms: Option<i64>) -> NetResult<Stored> {
         let sp = spec(read);
+        let fresh_ms = sp.fresh_ms;
+        self.stored_for(sp, fresh_ms)
+    }
+
+    /// [`Client::read_stored`] with a custom freshness window (for cached reads only).
+    pub fn read_stored_within(&self, read: Read, fresh_ms: i64) -> NetResult<Stored> {
+        let sp = spec(read);
+        let fresh_ms = sp.fresh_ms.map(|_| fresh_ms);
+        self.stored_for(sp, fresh_ms)
+    }
+
+    fn stored_for(&self, sp: Spec, fresh_ms: Option<i64>) -> NetResult<Stored> {
         let Some(fresh_ms) = fresh_ms else { return Ok(Stored { page: None, digest: None, fresh: false }) };
         let k = key(sp.endpoint, &self.scoped(sp.endpoint, sp.params));
         let row: Option<(Vec<u8>, i64)> = {
@@ -335,9 +320,8 @@ impl Client {
         Ok(Stored { page, digest, fresh })
     }
 
-    /// Asks the server. The answer is returned when it differs from what was stored (`stored_digest`,
-    /// None when nothing was) and stored again either way: an unchanged answer restarts the freshness
-    /// window. A read that is never stored always returns its page.
+    /// Asks the server; returns the page only if it differs from `stored_digest`, and re-caches it either
+    /// way (restarting the window). Uncached reads always return their page.
     pub async fn read_fetch(&self, read: Read, stored_digest: Option<u64>) -> NetResult<Option<Page>> {
         let sp = spec(read);
         if sp.fresh_ms.is_none() {
@@ -375,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn stored_answer_paints_and_a_fresh_one_skips_the_server() {
+    fn cached_answer_is_fresh_after_fetch() {
         let (c, fake) = setup();
         let s = c.read_stored(Read::GenreList).unwrap();
         assert!(s.page.is_none() && s.digest.is_none() && !s.fresh);
@@ -384,12 +368,12 @@ mod tests {
 
         let s = c.read_stored(Read::GenreList).unwrap();
         assert_eq!(genres(&s.page), "Rock");
-        assert!(s.fresh, "an hour's window");
+        assert!(s.fresh);
         assert_eq!(fake.asked().len(), 1);
     }
 
     #[test]
-    fn unchanged_answer_is_not_emitted_again_but_restarts_the_window() {
+    fn unchanged_answer_returns_none_and_refreshes() {
         let (c, fake) = setup();
         c.core.cache_put("getGenres".into(), GENRES.into()).unwrap();
         c.core.db.lock().execute("UPDATE cache SET ts = 0", []).unwrap();
@@ -405,7 +389,7 @@ mod tests {
     }
 
     #[test]
-    fn a_page_with_a_providers_songs_is_shown_stored_and_always_asked_again() {
+    fn provider_pages_are_never_fresh() {
         let (c, fake) = setup();
         let album = |ext: bool| {
             format!(
@@ -416,12 +400,12 @@ mod tests {
         fake.answer(&album(true));
         block(c.read_fetch(read(), None)).unwrap();
         let s = c.read_stored(read()).unwrap();
-        assert!(s.page.is_some() && !s.fresh, "the provider's song may be the library's by now");
+        assert!(s.page.is_some() && !s.fresh);
 
         let library = r#"{"subsonic-response":{"status":"ok","album":{"id":"al-1","name":"A","song":[{"id":"s1","title":"t"}]}}}"#;
         fake.answer(library);
         block(c.read_fetch(Read::AlbumById { id: "al-1".into() }, None)).unwrap();
-        assert!(c.read_stored(Read::AlbumById { id: "al-1".into() }).unwrap().fresh, "the library's own keeps its window");
+        assert!(c.read_stored(Read::AlbumById { id: "al-1".into() }).unwrap().fresh);
     }
 
     #[test]
@@ -433,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn keys_carry_the_folder_and_the_parameters_in_order() {
+    fn keys_hold_params_in_order_with_folder() {
         let (c, fake) = setup();
         fake.answer(r#"{"subsonic-response":{"status":"ok","albumList2":{"album":[]}}}"#);
         block(c.read_fetch(Read::AlbumList { kind: "starred".into(), size: 20, offset: 0, genre: None }, None)).unwrap();
@@ -445,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn favourite_albums_share_the_starred_list_and_wear_this_sessions_marks() {
+    fn favourite_albums_apply_session_stars() {
         let (c, fake) = setup();
         fake.answer(r#"{"subsonic-response":{"status":"ok","albumList2":{"album":[{"id":"fa-1","name":"A"},{"id":"fa-2","name":"B"}]}}}"#);
         block(c.read_fetch(Read::AlbumList { kind: "starred".into(), size: 20, offset: 0, genre: None }, None)).unwrap();
@@ -455,13 +439,13 @@ mod tests {
             other => panic!("{other:?}"),
         }
         match c.read_stored(Read::AlbumList { kind: "starred".into(), size: 20, offset: 0, genre: None }).unwrap().page {
-            Some(Page::Albums { v }) => assert_eq!(v.len(), 2, "the album grid is not a favourites answer"),
+            Some(Page::Albums { v }) => assert_eq!(v.len(), 2, "plain AlbumList is not overlaid"),
             other => panic!("{other:?}"),
         }
     }
 
     #[test]
-    fn random_is_never_stored_and_by_year_means_this_year() {
+    fn random_is_uncached_and_by_year_is_this_year() {
         let (c, fake) = setup();
         let random = Read::AlbumList { kind: "random".into(), size: 5, offset: 0, genre: Some("Rock".into()) };
         assert!(c.read_stored(random.clone()).unwrap().digest.is_none());
@@ -469,7 +453,7 @@ mod tests {
         fake.answer(list);
         assert!(block(c.read_fetch(random.clone(), None)).unwrap().is_some());
         fake.answer(list);
-        assert!(block(c.read_fetch(random, None)).unwrap().is_some(), "every time");
+        assert!(block(c.read_fetch(random, None)).unwrap().is_some());
         assert_eq!(c.core.db.lock().query_row("SELECT count(*) FROM cache", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
         assert!(fake.asked()[0].ends_with("&type=random&size=5&offset=0&genre=Rock&musicFolderId=7"));
 
@@ -481,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn failure_reaches_the_caller() {
+    fn failures_and_uncached_reads_reach_the_caller() {
         let (c, fake) = setup();
         fake.fail(FailureKind::Connect);
         assert!(block(c.read_fetch(Read::GenreList, None)).is_err());

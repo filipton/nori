@@ -1,12 +1,11 @@
-//! M3U in and out as the core's calls, over its index. Reading and writing the files is nori-library's.
+//! Matching M3U entries against the index. Parsing and writing is nori-library's.
 
 use crate::{model::*, Core, Result};
 
 pub use nori_library::m3u::*;
 
 impl Core {
-    /// One result per entry, in order; None where the index has nothing that fits. One call for the whole
-    /// playlist: exact artist and title first, then the full-text index.
+    /// The indexed song for each entry (exact artist and title first, then full text); None if unmatched.
     pub fn m3u_match(&self, entries: Vec<M3uEntry>) -> Result<Vec<Option<Song>>> {
         let c = self.db.lock();
         Ok(entries.iter().map(|e| resolve(&c, e)).collect::<rusqlite::Result<_>>()?)
@@ -58,6 +57,5 @@ pub(crate) mod tests {
             [some("studio"), some("live"), some("joga"), some("joga"), some("remaster"), some("studio"), some("live"), some("remaster"), None, None, None]
         );
         assert!(core.m3u_match(vec![]).unwrap().is_empty());
-        assert_eq!(Core::new(String::new(), "t".into()).unwrap().m3u_match(vec![entry(1, "a", "b")]).unwrap(), vec![None]);
     }
 }

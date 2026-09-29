@@ -1,33 +1,27 @@
-//! The Linux desktop's media controls for a nori client: MPRIS (`org.mpris.MediaPlayer2`) on the session
-//! bus, so the desktop's play, pause, next, previous and seek reach the player, and its "now playing"
-//! shows the song. The client says what a control does ([`Controls`]) and tells this when something
-//! changed ([`Mpris::changed`]); a desktop asking for the position reads it then, so nothing ticks.
-//!
-//! One thread serves the bus, asleep until a message comes. libdbus through thin bindings (`dbus`,
-//! `dbus-crossroads`): a handful of small crates where zbus would bring an async runtime of its own.
-//! Built on Linux only; elsewhere [`Mpris::start`] says so.
+//! MPRIS (`org.mpris.MediaPlayer2`) media controls on the Linux session bus, served on one thread.
+//! Position is read on request, so nothing ticks. Elsewhere [`Mpris::start`] returns an error.
 
 use std::sync::Arc;
 
-/// What the desktop's controls do, and what "now playing" shows. Called on the bus thread.
+/// Client callbacks, called on the bus thread.
 pub trait Controls: Send + Sync + 'static {
     fn play(&self);
     fn pause(&self);
     fn toggle(&self);
     fn next(&self);
     fn previous(&self);
-    /// To `ms` into the song playing.
+    /// Seeks the current song to `ms`.
     fn seek(&self, ms: i64);
     fn now(&self) -> Now;
 }
 
-/// The song and the state as the desktop shows them.
+/// Playback state and current song.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Now {
     pub playing: bool,
-    /// Something is loaded (paused rather than stopped).
+    /// A song is loaded: paused rather than stopped.
     pub loaded: bool,
-    /// The queue index of the song, for its track id.
+    /// Queue index, used as the track id.
     pub index: Option<usize>,
     pub title: String,
     pub artist: String,
@@ -111,7 +105,6 @@ mod linux {
             let player = cr.register(PLAYER, |b| {
                 b.property("PlaybackStatus").get(|_, c: &mut Arc<dyn Controls>| Ok(status(&c.now())));
                 b.property("Metadata").get(|_, c: &mut Arc<dyn Controls>| Ok(metadata(&c.now())));
-                // Read when asked: a desktop moves its bar on by itself between readings.
                 b.property("Position").emits_changed_false().get(|_, c: &mut Arc<dyn Controls>| Ok(c.now().position_ms * 1000));
                 b.property("Rate").get(|_, _: &mut Arc<dyn Controls>| Ok(1.0f64));
                 b.property("MinimumRate").get(|_, _: &mut Arc<dyn Controls>| Ok(1.0f64));
@@ -150,7 +143,7 @@ mod linux {
                     Ok(())
                 });
                 b.method("SetPosition", ("TrackId", "Position"), (), |_, c: &mut Arc<dyn Controls>, (track, at): (Path<'static>, i64)| {
-                    // Only for the song playing: a request made for one that has moved on is dropped.
+                    // Ignored for a stale track id.
                     if track == track_id(&c.now()) {
                         c.seek(at / 1000);
                     }
@@ -172,7 +165,6 @@ mod linux {
                             true
                         }),
                     );
-                    // Asleep on the bus's socket until a message comes.
                     while served.process(Duration::from_secs(3600)).is_ok() {}
                 })
                 .map_err(|e| e.to_string())?;
@@ -190,14 +182,14 @@ mod linux {
     }
 }
 
-/// The player on the session bus as `org.mpris.MediaPlayer2.<name>`, for as long as this is kept.
+/// Served as `org.mpris.MediaPlayer2.<name>` while kept alive.
 pub struct Mpris {
     #[cfg(target_os = "linux")]
     served: linux::Served,
 }
 
 impl Mpris {
-    /// Serves `controls` on the session bus; an error when there is no session bus (or not on Linux).
+    /// Errors without a session bus, or off Linux.
     pub fn start(name: &str, controls: Arc<dyn Controls>) -> Result<Mpris, String> {
         #[cfg(target_os = "linux")]
         return Ok(Mpris { served: linux::Served::start(name, controls)? });
@@ -208,7 +200,7 @@ impl Mpris {
         }
     }
 
-    /// The state or the song changed: the desktop is told.
+    /// Emits PropertiesChanged for status and metadata.
     pub fn changed(&self) {
         #[cfg(target_os = "linux")]
         self.served.changed();
@@ -252,10 +244,9 @@ mod tests {
     }
 
     #[test]
-    fn the_desktop_controls_reach_the_player_and_see_the_song() {
-        // A machine without a session bus (a build server) has no desktop to test against.
+    fn controls_and_properties_over_dbus() {
         let Ok(client) = Connection::new_session() else {
-            eprintln!("no session bus: the desktop controls are not tested here");
+            eprintln!("no session bus: skipped");
             return;
         };
         let name = format!("nori_test_{}", std::process::id());
@@ -265,12 +256,14 @@ mod tests {
         let status: String = p.get("org.mpris.MediaPlayer2.Player", "PlaybackStatus").unwrap();
         assert_eq!(status, "Playing");
         let position: i64 = p.get("org.mpris.MediaPlayer2.Player", "Position").unwrap();
-        assert_eq!(position, 30_000_000, "µs, read when asked");
+        assert_eq!(position, 30_000_000, "µs");
         let _: () = p.method_call("org.mpris.MediaPlayer2.Player", "PlayPause", ()).unwrap();
         let _: () = p.method_call("org.mpris.MediaPlayer2.Player", "Next", ()).unwrap();
         let _: () = p.method_call("org.mpris.MediaPlayer2.Player", "Seek", (5_000_000i64,)).unwrap();
         let track = dbus::Path::new("/org/nori/track/2").unwrap();
         let _: () = p.method_call("org.mpris.MediaPlayer2.Player", "SetPosition", (track, 90_000_000i64)).unwrap();
+        let stale = dbus::Path::new("/org/nori/track/1").unwrap();
+        let _: () = p.method_call("org.mpris.MediaPlayer2.Player", "SetPosition", (stale, 10_000_000i64)).unwrap();
         assert_eq!(*asked.0.lock().unwrap(), ["toggle", "next", "seek 35000", "seek 90000"]);
         m.changed();
     }

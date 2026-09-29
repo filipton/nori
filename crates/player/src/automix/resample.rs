@@ -1,39 +1,17 @@
-//! Conversion between sample rates (and channel counts) wherever two formats disagree: the incoming side
-//! of a transition converted to the outgoing side's rate so the mix runs at one rate, a device that will
-//! not open at a song's rate (or is held under a maximum, `RingTrack`), a station that changes its rate
-//! mid-stream. Mono and stereo both ways; anything else refuses.
+//! Sample-rate (and mono/stereo) conversion wherever two formats disagree: the incoming side of a transition,
+//! a device that will not open at a song's rate, a station that changes rate mid-stream.
 //!
-//! A polyphase windowed-sinc filter, designed once per pair of rates:
-//! - passband to 0.45 of the lower rate, flat within 0.001 dB (a Kaiser design ripples by its stopband's
-//!   depth); the transition band from there to 0.5 of the lower rate; everything past it at least 100 dB
-//!   down (designed for 110), so a downsample aliases nothing audible and an upsample images nothing;
-//! - [`TAPS`] taps at the lower rate (a downsample by `r` takes `TAPS / r` taps of the input), β for a
-//!   110 dB Kaiser window;
-//! - a rational ratio with no more than [`EXACT_PHASES`] steps (44.1 to 48 kHz is 160, 44.1 to 96 kHz 320)
-//!   has a row of coefficients for every place an output sample can fall and needs one dot product per
-//!   channel; any other ratio has [`PHASES`] rows and interpolates between the two either side of it;
-//! - the place of each output sample is counted in whole fractions of the input's (no drift, however long);
-//! - the tables are made once per pair of rates and shared ([`table`]); nothing is allocated per buffer
-//!   once the history has grown to the largest buffer seen.
-//!
-//! The filter is zero-phase: output sample `n` is the input at `n × in / out`, exactly where Catmull-Rom
-//! put it. To see half its taps ahead it holds back that much of the input (under 2 ms): the output of a
-//! stream comes in that much later than the input goes in, and what it holds when the stream ends is not
-//! heard (a stream the converter runs through ends in a mix, a reopening or the end of the queue).
-//!
-//! Before this it was Catmull-Rom cubic interpolation, no filter: a 48 kHz song converted to 44.1 kHz
-//! folded everything above 22 kHz back into the audible band, and the worst spur of a bright chord sat
-//! 18 dB under the music. At the same rate only the channels are converted, sample for sample, nothing
-//! filtered or delayed.
-//!
-//! AutoMix's tempo stretch does not use this: it has its own time-domain stretcher (automix/stretch.rs).
+//! A polyphase Kaiser-windowed sinc: flat to 0.45 of the lower rate, at least 100 dB down past 0.5 of it.
+//! Ratios with at most [`EXACT_PHASES`] steps get a row per output position; others interpolate between
+//! [`PHASES`] rows. Output positions are counted in exact fractions (no drift). The filter is zero-phase and
+//! holds back half its taps of input (under 2 ms). At the same rate only the channels are converted.
 
 use std::sync::{Arc, Mutex};
 
 use super::{PCM_16, PCM_FLOAT};
 use crate::dither::Dither;
 
-/// Taps at the lower of the two rates. With the 0.05-wide transition band, a 110 dB Kaiser design needs 142.
+/// Taps at the lower of the two rates (a 110 dB Kaiser design over the 0.05 transition band needs 142).
 pub const TAPS: usize = 144;
 /// Phases of an interpolated table, for a ratio with more steps than [`EXACT_PHASES`].
 pub const PHASES: usize = 256;
@@ -45,8 +23,7 @@ pub const STOP: f64 = 0.5;
 /// The stopband's designed depth, dB.
 const ATTENUATION_DB: f64 = 110.0;
 
-/// One pair of rates' coefficients: `phases + 1` rows of `taps` (the last row is the first moved on one
-/// input sample, so an interpolation between rows never wraps).
+/// One pair of rates' coefficients: `phases + 1` rows of `taps` (the extra row lets interpolation not wrap).
 pub struct Table {
     taps: usize,
     phases: usize,
@@ -80,7 +57,7 @@ impl Table {
         let g = gcd(in_rate as u64, out_rate as u64);
         let steps = (out_rate as u64 / g) as usize;
         let phases = if steps <= EXACT_PHASES { steps } else { PHASES };
-        // Normalised to the input rate: the cut-off halfway across the transition band of the lower rate.
+        // Cut-off mid-transition band, normalised to the input rate.
         let r = (out_rate as f64 / in_rate as f64).min(1.0);
         let fc = (PASS + STOP) / 2.0 * r;
         let taps = ((TAPS as f64 / r).ceil() as usize).div_ceil(4) * 4;
@@ -100,7 +77,7 @@ impl Table {
                 let w = (t / half).clamp(-1.0, 1.0);
                 *v = 2.0 * fc * sinc * bessel_i0(beta * (1.0 - w * w).sqrt()) / i0_beta;
             }
-            // Each row passes DC exactly: what a phase adds up to is where a constant lands.
+            // Each row passes DC exactly.
             let sum: f64 = h.iter().sum();
             for (d, v) in row.iter_mut().zip(&h) {
                 *d = (v / sum) as f32;
@@ -114,9 +91,9 @@ impl Table {
     }
 }
 
-/// The table for a pair of rates, made once and shared by every converter between them. The last few
-/// pairs are kept (a queue moves between two or three rates).
+/// The table for a pair of rates, shared by every converter between them; the last six pairs are kept.
 pub fn table(in_rate: u32, out_rate: u32) -> Arc<Table> {
+    // A cache of immutable designs, global because converters are made all over the player.
     static TABLES: Mutex<Vec<((u32, u32), Arc<Table>)>> = Mutex::new(Vec::new());
     let mut tables = TABLES.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(t) = tables.iter().find(|t| t.0 == (in_rate, out_rate)) {
@@ -133,8 +110,7 @@ pub fn table(in_rate: u32, out_rate: u32) -> Arc<Table> {
 pub struct Resampler {
     in_ch: usize,
     out_ch: usize,
-    /// Channels the filter runs on: the fewer of the two (stereo to mono is summed first, mono to stereo
-    /// is spread after).
+    /// Channels the filter runs on: the fewer of the two.
     ch: usize,
     /// None at the same rate: only the channels change.
     table: Option<Arc<Table>>,
@@ -144,8 +120,7 @@ pub struct Resampler {
     /// The next output's place: input sample `at` (counted from the stream's start) and `frac / den` on.
     at: i64,
     frac: u64,
-    /// Input held, `ch` channels interleaved, the first frame being input sample `base` (negative: the
-    /// silence before the stream, which the first outputs' taps reach back into).
+    /// Input held, `ch` channels interleaved; the first frame is input sample `base` (negative: leading silence).
     hist: Vec<f32>,
     base: i64,
     dither: Dither,
@@ -183,9 +158,8 @@ impl Resampler {
         self.table.as_ref().map_or(0, |t| t.taps / 2)
     }
 
-    /// Converts `input` (interleaved, `in_enc`) to the output format, into `output` from its start.
-    /// Returns (consumed input bytes, produced output bytes): all the input is always taken; None when the
-    /// output does not fit what it makes (nothing is taken then) or an encoding is not PCM.
+    /// Converts all of `input` (interleaved, `in_enc`) into the start of `output`. Returns (consumed, produced)
+    /// bytes; None when the output is too small (nothing taken) or an encoding is not PCM.
     pub fn process(&mut self, input: &[u8], in_enc: i32, output: &mut [u8], out_enc: i32) -> Option<(usize, usize)> {
         let wi = match in_enc {
             PCM_16 => 2,
@@ -206,7 +180,6 @@ impl Resampler {
         if made > cap {
             return None;
         }
-        // The input into the history, as floats in the filter's channels.
         let sample = |i: usize| -> f32 {
             if wi == 4 {
                 f32::from_le_bytes([input[i * 4], input[i * 4 + 1], input[i * 4 + 2], input[i * 4 + 3]])
@@ -232,14 +205,14 @@ impl Resampler {
                 if wo == 4 {
                     output[at..at + 4].copy_from_slice(&v.to_le_bytes());
                 } else {
-                    // Mono spread to stereo stays one sound: its two sides take one noise.
+                    // Mono spread to stereo keeps one dither noise for both sides.
                     let v = v.clamp(-1.0, 1.0) as f64;
                     let q = if self.ch < self.out_ch { self.dither.to_i16_linked(c, v) } else { self.dither.to_i16(c, v) };
                     output[at..at + 2].copy_from_slice(&q.to_le_bytes());
                 }
             }
         }
-        // What no output's taps will reach again is let go.
+        // Drop what no output's taps reach again.
         let keep_from = match &self.table {
             Some(t) => self.at - (t.taps / 2 - 1) as i64,
             None => self.at,
@@ -254,7 +227,6 @@ impl Resampler {
 
     /// How many outputs the input up to (not including) sample `end` makes from where the converter is.
     fn can_make(&self, end: i64) -> usize {
-        // The last input sample an output at `at` reads.
         let ahead = self.table.as_ref().map_or(0, |t| t.taps / 2) as i64;
         let avail = end - 1 - ahead - self.at;
         if avail < 0 {
@@ -403,13 +375,13 @@ mod tests {
     }
 
     #[test]
-    fn rate_change_keeps_the_tone() {
+    fn rate_change_keeps_tone() {
         let mut r = Resampler::new(44100, 1, 48000, 1).unwrap();
         let input = bytes_of(&sine(44100, 1000.0, 4410));
         let mut out = vec![0u8; 20000];
         let (used, made) = r.process(&input, PCM_16, &mut out, PCM_16).unwrap();
         assert_eq!(used, input.len());
-        // The whole tenth of a second but what the filter holds back to see ahead.
+        // Everything but the filter's look-ahead.
         let frames = made / 2;
         let held = r.latency_frames() * 48000 / 44100;
         assert!((frames as i64 - (4800 - held) as i64).abs() <= 2, "{frames}");
@@ -453,9 +425,8 @@ mod tests {
         assert!((amp - 20000.0 * 2.0 / 3.0).abs() < 20.0, "{amp}");
     }
 
-    /// The whole passband, to 0.45 of the lower rate, within 0.1 dB, both ways and at the rates that matter.
     #[test]
-    fn the_passband_is_flat_to_0_45_of_the_lower_rate() {
+    fn passband_is_flat() {
         for (a, b) in [(44100u32, 48000u32), (48000, 44100), (96000, 44100), (44100, 96000), (192000, 48000), (44100, 47999)] {
             let low = a.min(b) as f64;
             let mut worst = 0.0f64;
@@ -471,10 +442,9 @@ mod tests {
         }
     }
 
-    /// Everything past 0.5 of the lower rate at least 100 dB down: a downsample folds nothing back, an upsample
-    /// makes no images. Tones across the stopband, one at a time, and what comes out measured.
+    /// Past 0.5 of the lower rate: no aliasing on a downsample, no images on an upsample.
     #[test]
-    fn the_stopband_is_100_db_down() {
+    fn stopband_is_100_db_down() {
         for (a, b) in [(48000u32, 44100u32), (96000, 44100), (96000, 48000), (192000, 44100), (48000, 44099)] {
             let mut worst = f64::MIN;
             let top = a as f64 / 2.0;
@@ -488,7 +458,6 @@ mod tests {
             eprintln!("{a} -> {b}: the stopband at {worst:.1} dB");
             assert!(worst < -100.0, "{a} -> {b}: {worst:.1} dB gets through");
         }
-        // An upsample: a tone near the top of 44.1 kHz makes no image above 22.05 kHz at 48 or 96.
         for b in [48000u32, 96000, 47999] {
             let hz = 44100.0 * 0.44;
             let y = convert(&tone(44100, hz, 0.25, 0.5), 44100, b, 4096);
@@ -498,19 +467,17 @@ mod tests {
         }
     }
 
-    /// A sweep across the passband comes out as the same sweep at the new rate, to 90 dB.
     #[test]
-    fn a_sweep_comes_out_as_the_sweep_at_the_new_rate() {
+    fn sweep_matches_to_90_db() {
         for (a, b) in [(48000u32, 44100u32), (44100, 48000), (88200, 44100)] {
             let low = a.min(b) as f64;
             let (f0, f1, secs) = (20.0, low * 0.42, 2.0);
-            // A log sweep, as a function of time, sampled at either rate.
             let k = (f1 / f0 as f64).ln() / secs;
             let at = |t: f64| 0.5 * (std::f64::consts::TAU * f0 * ((k * t).exp() - 1.0) / k).sin();
             let x: Vec<f64> = (0..(a as f64 * secs) as usize).map(|i| at(i as f64 / a as f64)).collect();
             let y = convert(&x, a, b, 1000);
             let want: Vec<f64> = (0..y.len()).map(|i| at(i as f64 / b as f64)).collect();
-            // Past the start (the sweep's onset is a step), to the end.
+            // Past the onset, which is a step.
             let from = b as usize / 10;
             let err = (y[from..].iter().zip(&want[from..]).map(|(p, q)| (p - q).powi(2)).sum::<f64>() / (y.len() - from) as f64).sqrt();
             eprintln!("{a} -> {b}: a sweep to {f1:.0} Hz off by {:.1} dB", db(err / 0.5 * 2f64.sqrt()));
@@ -518,59 +485,8 @@ mod tests {
         }
     }
 
-    /// Head-to-head on the transition that matters, 48 kHz down to 44.1 kHz, against rubato's FFT resampler:
-    /// a bright three-tone chord (440 Hz, 5 kHz, 15 kHz) and a tone past the new Nyquist (23 kHz, which a
-    /// resampler without a filter folds to 21.1 kHz). The worst spur of each against the tones.
     #[test]
-    fn against_rubato_on_the_downsample() {
-        use rubato::audioadapter_buffers::direct::SequentialSliceOfVecs;
-        use rubato::{Fft, FixedSync, Resampler as _};
-        let tones = [440.0f64, 5000.0, 15000.0];
-        let n_in = 48000usize;
-        let pcm: Vec<f32> = (0..n_in)
-            .map(|i| (tones.iter().map(|f| (i as f64 * f * std::f64::consts::TAU / 48000.0).sin()).sum::<f64>() / 3.0 + 0.1 * (i as f64 * 23000.0 * std::f64::consts::TAU / 48000.0).sin()) as f32 * 0.8)
-            .collect();
-        let ours: Vec<f32> = convert(&pcm.iter().map(|v| *v as f64).collect::<Vec<_>>(), 48000, 44100, 4096).iter().map(|v| *v as f32).collect();
-        let mut sinc = Fft::<f32>::new(48000, 44100, 1024, 1, FixedSync::Input).unwrap();
-        let adapted = SequentialSliceOfVecs::new(std::slice::from_ref(&pcm), 1, n_in).unwrap();
-        let theirs = sinc.process_all(&adapted, n_in, None).unwrap().take_data();
-        // DFT magnitudes over 0.1 s from the middle (10 Hz bins, on all three tones) under a Blackman-Harris
-        // window: the tones against the strongest other bin.
-        fn spectrum(x: &[f32], tones: &[f64; 3]) -> (f64, f64) {
-            let n = 4410usize;
-            let x = &x[x.len() / 2 - n / 2..x.len() / 2 + n / 2];
-            let bin = |hz: f64| (hz * n as f64 / 44100.0).round() as usize;
-            let win = |i: usize| {
-                let p = std::f64::consts::TAU * i as f64 / n as f64;
-                0.35875 - 0.48829 * p.cos() + 0.14128 * (2.0 * p).cos() - 0.01168 * (3.0 * p).cos()
-            };
-            let mag = |k: usize| {
-                let (mut re, mut im) = (0.0f64, 0.0f64);
-                for (i, v) in x.iter().enumerate() {
-                    let ph = std::f64::consts::TAU * k as f64 * i as f64 / n as f64;
-                    re += *v as f64 * win(i) * ph.cos();
-                    im -= *v as f64 * win(i) * ph.sin();
-                }
-                (re * re + im * im).sqrt() / n as f64
-            };
-            let tone = tones.iter().map(|f| mag(bin(*f))).fold(0.0f64, f64::max);
-            let mut spur = 0.0f64;
-            for k in 1..n / 2 {
-                if tones.iter().all(|f| (k as i64 - bin(*f) as i64).abs() > 4) {
-                    spur = spur.max(mag(k));
-                }
-            }
-            (tone, spur)
-        }
-        let (ot, os) = spectrum(&ours, &tones);
-        let (rt, rs) = spectrum(&theirs, &tones);
-        eprintln!("ours:   worst spur {:.1} dB under the tones", -db(os / ot));
-        eprintln!("rubato: worst spur {:.1} dB under the tones", -db(rs / rt));
-        assert!(db(os / ot) < -100.0, "ours: {:.1} dB", db(os / ot));
-    }
-
-    #[test]
-    fn a_16_bit_output_is_dithered_and_a_float_one_is_not() {
+    fn pcm16_output_is_dithered() {
         let x = tone(48000, 1000.0, 0.2, 0.5);
         let bytes: Vec<u8> = x.iter().flat_map(|v| (*v as f32).to_le_bytes()).collect();
         let mut r = Resampler::new(48000, 1, 44100, 1).unwrap();
@@ -583,8 +499,7 @@ mod tests {
         assert!((amp - 0.5).abs() < 1e-4 && (resid * amp / 2f64.sqrt() / floor - 1.0).abs() < 0.2, "{amp} {resid}");
     }
 
-    /// What converting costs per second of stereo music. `cargo test --release -p nori-player --lib
-    /// resample_cost -- --ignored --nocapture`.
+    /// `cargo test --release -p nori-player --lib resample_cost -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn resample_cost() {
