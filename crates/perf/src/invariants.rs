@@ -412,7 +412,7 @@ pub fn on() -> bool {
     ON.load(Ordering::Relaxed)
 }
 
-fn wall_ms() -> i64 {
+pub(crate) fn wall_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
 }
 
@@ -432,7 +432,7 @@ fn said(t: i64, b: Option<Break>) {
     nori_model::alog::info(&format!("invariant: {line}"));
     crate::perf_log::note_invariant(t, &line);
     crate::perf_log::keep_break_log(t, &line);
-    let kept = format!("{} invariant: {line}", crate::perf_log::clock_words(t));
+    let kept = format!("{} invariant: {line}", crate::perf_log::clock(t));
     with_state(|s| {
         if s.breaks.len() >= MOST_BREAKS {
             s.breaks.remove(0);
@@ -629,7 +629,7 @@ pub fn perf_watch_settings(wall_ms: i64, offload_wanted: bool, chain_in: bool, o
         return;
     }
     let Some(s) = nori_settings::settings_store::current() else { return };
-    let want_offload = s.offload && !usb && crate::perf_log::offload_blocked().is_none();
+    let want_offload = s.offload && !usb && crate::perf_log::offload_reason().is_none();
     said(wall_ms, settings_held(&settings_pairs(s.eq_enabled, want_offload, offload_wanted, chain_in, on_cpu)));
 }
 
