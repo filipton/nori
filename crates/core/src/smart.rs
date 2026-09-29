@@ -1,5 +1,4 @@
-//! Smart playlists as the core's calls, over its index and play statistics. The rule trees and their
-//! evaluation are nori-library's.
+//! Smart playlist storage and evaluation over the index. Rules and evaluation are nori-library's.
 
 use rusqlite::params;
 
@@ -10,7 +9,7 @@ use nori_library::smart::Field::*;
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Core {
-    /// Newest first.
+    /// Stored smart playlists, newest first.
     pub fn smart_list(&self) -> Result<Vec<SmartPlaylist>> {
         let c = self.db.lock();
         let mut st = c.prepare_cached("SELECT id, name, json FROM smart_playlists WHERE server=sid() ORDER BY updated_ms DESC, id")?;
@@ -18,7 +17,7 @@ impl Core {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// An empty `id` creates the playlist. Returns the id. A definition that does not validate is not stored.
+    /// Stores a validated definition; an empty `id` creates a new one. Returns the id.
     pub fn smart_save(&self, id: String, name: String, json: String) -> Result<String> {
         parse(&json)?;
         let c = self.db.lock();
@@ -38,41 +37,37 @@ impl Core {
         Ok(())
     }
 
-    /// The playlist's page: its first `limit` songs and their summed length, for the caption over them.
+    /// The first `limit` songs and their total length.
     pub fn smart_page(&self, json: String, limit: u32) -> Result<SmartPage> {
         let songs = self.smart_evaluate(json, 0, limit)?;
         Ok(SmartPage { seconds: crate::pages::total_seconds(&songs), songs })
     }
 }
 
-/// Asked only in Rust, so not exported to Kotlin.
 impl Core {
-    /// One page of the playlist. `offset` and `limit` page inside the playlist's own `limit` / `limitMs`.
+    /// One page of the playlist, within its own `limit` / `limitMs`.
     pub fn smart_evaluate(&self, json: String, offset: u32, limit: u32) -> Result<Vec<Song>> {
         let def = parse(&json)?;
         let downloaded = self.downloaded_for(&def)?;
         Ok(run(&self.db.lock(), &def, &downloaded, offset as usize, limit as usize, false, db::now_ms())?.0)
     }
-}
 
-/// Only the tests count a playlist without reading it; the app reads its page (`smart_page`).
-#[cfg(test)]
-impl Core {
-    /// How many songs the playlist has, its own caps applied.
-    pub fn smart_count(&self, json: String) -> Result<u32> {
-        let def = parse(&json)?;
-        let downloaded = self.downloaded_for(&def)?;
-        Ok(run(&self.db.lock(), &def, &downloaded, 0, 0, true, db::now_ms())?.1 as u32)
-    }
-}
-
-impl Core {
-    /// The finished downloads, read only when a rule asks whether a song is downloaded.
+    /// The finished download ids, read only when a rule asks about downloads.
     fn downloaded_for(&self, def: &Def) -> Result<Vec<String>> {
         if !def.root.asks(IsDownloaded) {
             return Ok(Vec::new());
         }
         Ok(self.downloads(true)?.into_iter().map(|s| s.id).collect())
+    }
+}
+
+#[cfg(test)]
+impl Core {
+    /// The playlist's song count, caps applied.
+    pub fn smart_count(&self, json: String) -> Result<u32> {
+        let def = parse(&json)?;
+        let downloaded = self.downloaded_for(&def)?;
+        Ok(run(&self.db.lock(), &def, &downloaded, 0, 0, true, db::now_ms())?.1 as u32)
     }
 }
 
@@ -98,7 +93,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// Both engines at once: SQL alone, and SQL relaxed to "everything" with Rust deciding. They must agree.
+    /// Evaluates with SQL and with the Rust matcher and asserts they agree.
     fn eval(core: &Core, json: &str, downloaded: &[&str]) -> Vec<String> {
         let def = parse(json).unwrap();
         let downloaded: Vec<String> = downloaded.iter().map(|s| s.to_string()).collect();
@@ -147,7 +142,7 @@ pub(crate) mod tests {
         songs[4].bit_depth = 24;
         songs[4].size = 123_456_789;
         db::index(&mut core.db.lock(), &[], &[], &songs).unwrap();
-        // what the server will send once Song carries these keys
+        // Keys Song does not carry yet.
         let c = core.db.lock();
         c.execute("UPDATE items SET json=json_set(json,'$.created','2026-08-20T10:00:00.000Z','$.playCount',40) WHERE id='dogs'", []).unwrap();
         c.execute("UPDATE items SET json=json_set(json,'$.created','2024-02-29T23:59:59Z','$.playCount',2) WHERE id='so'", []).unwrap();
@@ -167,7 +162,7 @@ pub(crate) mod tests {
         let core = library();
         assert_eq!(eval(&core, &one("artist", "is", json!("björk")), &[]), ["joga", "bach"]);
         assert_eq!(eval(&core, &one("title", "contains", json!("Ó")), &[]), ["joga"]);
-        // mixed with SQL rules, paged, counted
+        // Mixed with SQL rules, paged and counted.
         let def = json!({ "match": { "all": false, "rules": [
             { "field": "artist", "op": "is", "value": "BJÖRK" }, { "field": "year", "op": "less", "value": 1960 } ] },
             "sort": { "field": "title", "descending": true } })
@@ -178,7 +173,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn flags() {
+    fn flag_fields() {
         let core = library();
         let flag = |field: &str, op: &str| json!({ "match": { "rules": [{ "field": field, "op": op }] } }).to_string();
         assert_eq!(eval(&core, &flag("starred", "isTrue"), &[]), ["dogs", "so"]);
@@ -188,12 +183,12 @@ pub(crate) mod tests {
         assert_eq!(eval(&core, &flag("isDownloaded", "isTrue"), &["joga", "so", "gone"]), ["joga", "so"]);
         assert_eq!(eval(&core, &flag("isDownloaded", "isFalse"), &["joga", "so"]).len(), 5);
         assert!(eval(&core, &flag("isDownloaded", "isTrue"), &[]).is_empty());
-        // used twice, bound once
+        // Used twice, bound once.
         let both = json!({ "match": { "all": false, "rules": [{ "field": "isDownloaded", "op": "isTrue" }, { "all": true, "rules": [
             { "field": "isDownloaded", "op": "isFalse" }, { "field": "year", "op": "is", "value": 1959 }] }] } })
         .to_string();
         assert_eq!(eval(&core, &both, &["joga", "it's"]), ["joga", "so"]);
-        // Asked through the core, the downloads are its own: only finished ones count.
+        // Through the core only finished downloads count.
         let songs: Vec<Song> = ["joga", "so"].map(|id| Song { id: id.into(), ..Default::default() }).to_vec();
         core.download_queue(songs).unwrap();
         core.download_done("joga".into()).unwrap();
@@ -214,7 +209,7 @@ pub(crate) mod tests {
         let capped = json!({ "sort": { "field": "year" }, "limit": 3 }).to_string();
         assert_eq!(eval(&core, &capped, &[]), ["bare", "so", "dogs"]);
         assert_eq!(core.smart_count(capped.clone()).unwrap(), 3);
-        assert_eq!(ids(&core.smart_evaluate(capped.clone(), 2, 50).unwrap()), ["dogs"], "paging stops at the playlist's own limit");
+        assert_eq!(ids(&core.smart_evaluate(capped.clone(), 2, 50).unwrap()), ["dogs"], "paging stops at the limit");
         assert!(core.smart_evaluate(capped.clone(), 3, 50).unwrap().is_empty());
         assert!(core.smart_evaluate(capped, 0, 0).unwrap().is_empty());
 
@@ -230,28 +225,28 @@ pub(crate) mod tests {
         assert_eq!(shuffled(1).len(), 7);
         assert!((2..12).any(|s| shuffled(s) != shuffled(1)));
         let paged: Vec<String> = (0..7).flat_map(|p| core.smart_evaluate(json!({ "sort": { "field": "random", "seed": 1 } }).to_string(), p, 1).unwrap()).map(|s| s.id).collect();
-        assert_eq!(paged, shuffled(1), "pages of a random order still tile");
+        assert_eq!(paged, shuffled(1), "pages tile");
     }
 
     #[test]
     fn duration_budget() {
         let core = library();
-        // durations: dogs 1024 s, five of 200 s, bare 0 s
+        // Durations: dogs 1024 s, five of 200 s, bare 0 s.
         let def = |ms: i64| json!({ "sort": { "field": "duration", "descending": true }, "limitMs": ms }).to_string();
         assert_eq!(eval(&core, &def(1_500_000), &[]), ["dogs", "pigs", "joga"]);
         assert_eq!(core.smart_count(def(1_500_000)).unwrap(), 3);
         assert_eq!(ids(&core.smart_evaluate(def(1_500_000), 1, 5).unwrap()), ["pigs", "joga"]);
-        assert!(eval(&core, &def(1000), &[]).is_empty(), "the first song is already over");
+        assert!(eval(&core, &def(1000), &[]).is_empty(), "first song exceeds it");
         assert_eq!(eval(&core, &def(100_000_000), &[]).len(), 7);
         let both = json!({ "sort": { "field": "duration", "descending": true }, "limitMs": 1_500_000, "limit": 2 }).to_string();
         assert_eq!(eval(&core, &both, &[]), ["dogs", "pigs"]);
-        // with the Rust fallback in play as well
+        // With the Rust fallback too.
         let uni = json!({ "match": { "rules": [{ "field": "artist", "op": "is", "value": "björk" }] }, "limitMs": 250_000 }).to_string();
         assert_eq!(eval(&core, &uni, &[]), ["joga"]);
     }
 
     #[test]
-    fn empty_index() {
+    fn empty_index_yields_nothing() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         for d in smart_defaults() {
             assert!(core.smart_evaluate(d.json.clone(), 0, 50).unwrap().is_empty());
@@ -261,7 +256,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn validation_says_where_and_what() {
+    fn validation_errors_name_path_and_problem() {
         smart_validate(r#"{"match":null,"sort":null,"limit":null,"limitMs":0}"#.into()).unwrap();
         assert!(error("nope").contains("not JSON"));
         assert!(error("[]").contains("must be a JSON object"));
@@ -294,7 +289,7 @@ pub(crate) mod tests {
             deep = format!(r#"{{"rules":[{deep}]}}"#);
         }
         assert!(error(&format!(r#"{{"match":{deep}}}"#)).contains("nested more than 8"));
-        // a broken definition is refused everywhere, not only by validate
+        // Invalid definitions are refused by every entry point.
         let core = Core::new(String::new(), "t".into()).unwrap();
         assert!(matches!(core.smart_evaluate("{".into(), 0, 1), Err(CoreError::Parse { .. })));
         assert!(matches!(core.smart_count("{".into()), Err(CoreError::Parse { .. })));
@@ -303,7 +298,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn storage_round_trip() {
+    fn save_list_delete() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         let def = one("genre", "is", json!("Jazz"));
         let a = core.smart_save(String::new(), "Jazz".into(), def.clone()).unwrap();
@@ -320,7 +315,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn played_rules_are_driven_from_the_stats_table() {
+    fn played_rules_scan_stats_first() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         let c = core.db.lock();
         let plan = |json: &str| -> String {
@@ -336,17 +331,14 @@ pub(crate) mod tests {
         let of = |id: &str| defaults.iter().find(|d| d.id == id).unwrap().json.clone();
         for id in ["default-most-played", "default-recently-played"] {
             let p = plan(&of(id));
-            // Stats first: scanned, or searched by the server's part of its key.
             assert!(p.starts_with("SCAN s") || p.starts_with("SEARCH s "), "{id}: {p}");
         }
         assert!(plan(&one("genre", "is", json!("rock"))).contains("items_genre"));
         assert!(plan(&of("default-forgotten-favourites")).contains("items_starred"));
     }
 
-    /// A library large enough that the limit, paging, the count and the time budget all bite (the index is
-    /// meant for a hundred thousand songs; ten thousand checks the same paging in a tenth of the time).
     #[test]
-    fn ten_thousand_songs_page_count_and_fill_a_time_budget() {
+    fn large_library_pages_counts_and_fills_time_budget() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         {
             let mut c = core.db.lock();
@@ -375,12 +367,12 @@ pub(crate) mod tests {
             "sort": { "field": "duration", "descending": true }, "limit": 100 })
         .to_string();
         let first = core.smart_evaluate(def.clone(), 0, 50).unwrap();
-        assert_eq!(first.len(), 50, "a full first page");
+        assert_eq!(first.len(), 50);
         assert!(first.windows(2).all(|w| w[0].duration >= w[1].duration));
         assert!(first.iter().all(|s| s.genre.as_deref() == Some("Jazz") && (1990..2000).contains(&s.year) && s.title.contains('7')));
         let last = core.smart_evaluate(def.clone(), 80, 50).unwrap();
-        assert_eq!(last.len(), 20, "the last page ends at the limit of 100");
-        assert_eq!(core.smart_count(def).unwrap(), 100, "225 match; the limit keeps 100");
+        assert_eq!(last.len(), 20, "ends at the limit of 100");
+        assert_eq!(core.smart_count(def).unwrap(), 100, "225 match, capped");
 
         let starred = json!({ "match": { "rules": [{ "field": "starred", "op": "isTrue" }] }, "sort": { "field": "random", "seed": 7 } }).to_string();
         assert_eq!(core.smart_count(starred.clone()).unwrap(), 100);
@@ -389,7 +381,7 @@ pub(crate) mod tests {
         let budget = json!({ "sort": { "field": "random", "seed": 3 }, "limitMs": 3_600_000 }).to_string();
         let hour = core.smart_evaluate(budget.clone(), 0, 1000).unwrap();
         let total: u32 = hour.iter().map(|s| s.duration).sum();
-        assert!(total <= 3600 && total > 3600 - 520, "an hour filled to within one song: {total} s in {} songs", hour.len());
+        assert!(total <= 3600 && total > 3600 - 520, "{total} s in {} songs", hour.len());
         assert_eq!(core.smart_count(budget).unwrap() as usize, hour.len());
 
         let unicode = json!({ "match": { "rules": [{ "field": "artist", "op": "is", "value": "ärtist 5" }] }, "limit": 10 }).to_string();
@@ -397,20 +389,20 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn added_reads_the_server_date() {
+    fn added_uses_server_date() {
         let core = library();
         assert_eq!(eval(&core, &one("added", "withinDays", json!(30)), &[]), ["dogs"]);
-        assert_eq!(eval(&core, &one("added", "notWithinDays", json!(30)), &[]).len(), 6, "no date is not within");
-        assert_eq!(eval(&core, &one("added", "greater", json!("2024-02-29")), &[]), ["dogs"], "after a day means after it ended");
+        assert_eq!(eval(&core, &one("added", "notWithinDays", json!(30)), &[]).len(), 6, "no date counts as not within");
+        assert_eq!(eval(&core, &one("added", "greater", json!("2024-02-29")), &[]), ["dogs"], "after the whole day");
         assert_eq!(eval(&core, &one("added", "greater", json!("2024-02-29T23:00:00")), &[]), ["dogs", "so"]);
-        assert_eq!(eval(&core, &one("added", "between", json!(["2024-02-01", "2024-02-29"])), &[]), ["so"], "the end day is included");
+        assert_eq!(eval(&core, &one("added", "between", json!(["2024-02-01", "2024-02-29"])), &[]), ["so"], "end day inclusive");
         assert_eq!(eval(&core, &one("added", "less", json!("2025-01-01")), &[]).len(), 6);
         let newest = json!({ "sort": { "field": "added", "descending": true }, "limit": 2 }).to_string();
         assert_eq!(eval(&core, &newest, &[]), ["dogs", "so"]);
     }
 
     #[test]
-    fn defaults_validate_and_do_what_they_say() {
+    fn built_in_definitions_validate_and_filter() {
         let core = library();
         let defaults = smart_defaults();
         assert_eq!(defaults.len(), 7);
@@ -431,7 +423,6 @@ pub(crate) mod tests {
     #[test]
     fn nested_groups() {
         let core = library();
-        // (rock AND (starred OR rated 5)) OR (jazz AND NOT recently played)
         let def = json!({ "match": { "all": false, "rules": [
             { "all": true, "rules": [
                 { "field": "genre", "op": "contains", "value": "rock" },
@@ -453,7 +444,7 @@ pub(crate) mod tests {
         assert_eq!(eval(&core, &one("year", "is", json!(1977)), &[]), ["dogs", "pigs"]);
         assert_eq!(eval(&core, &one("year", "isNot", json!(1977)), &[]).len(), 5);
         assert_eq!(eval(&core, &one("year", "between", json!([1959, 1977])), &[]), ["dogs", "pigs", "so"]);
-        assert_eq!(eval(&core, &one("year", "greater", json!("1994")), &[]), ["joga", "bach"], "numeric strings are fine");
+        assert_eq!(eval(&core, &one("year", "greater", json!("1994")), &[]), ["joga", "bach"], "numeric string");
         assert_eq!(eval(&core, &one("duration", "greater", json!(600)), &[]), ["dogs"]);
         assert_eq!(eval(&core, &one("bitRate", "is", json!(320)), &[]), ["joga"]);
         assert_eq!(eval(&core, &one("sampleRate", "greater", json!(48_000)), &[]), ["so"]);
@@ -475,10 +466,10 @@ pub(crate) mod tests {
         assert_eq!(eval(&core, &one("playCount", "less", json!(1)), &[]).len(), 5);
         assert_eq!(eval(&core, &one("skipCount", "greater", json!(1)), &[]), ["pct"]);
         assert_eq!(eval(&core, &one("serverPlayCount", "greater", json!(1)), &[]), ["dogs", "so"]);
-        assert_eq!(eval(&core, &one("serverPlayCount", "is", json!(0)), &[]).len(), 5, "rows from before the key existed");
+        assert_eq!(eval(&core, &one("serverPlayCount", "is", json!(0)), &[]).len(), 5, "missing key is 0");
         assert_eq!(eval(&core, &one("lastPlayed", "withinDays", json!(7)), &[]), ["dogs"]);
         assert_eq!(eval(&core, &one("lastPlayed", "withinDays", json!(365)), &[]), ["dogs", "so"]);
-        assert_eq!(eval(&core, &one("lastPlayed", "notWithinDays", json!(7)), &[]).len(), 6, "never played is not within");
+        assert_eq!(eval(&core, &one("lastPlayed", "notWithinDays", json!(7)), &[]).len(), 6, "never played counts");
         assert_eq!(eval(&core, &one("lastPlayed", "greater", json!("2026-08-01")), &[]), ["dogs"]);
         assert_eq!(eval(&core, &one("lastPlayed", "less", json!("2026-08-01")), &[]).len(), 6);
         assert_eq!(eval(&core, &one("lastPlayed", "between", json!(["2026-01-01", "2026-03-01"])), &[]), ["so"]);
@@ -490,13 +481,13 @@ pub(crate) mod tests {
         assert_eq!(eval(&core, &one("artist", "is", json!("pink floyd")), &[]), ["dogs", "pigs"]);
         assert_eq!(eval(&core, &one("artist", "isNot", json!("Pink Floyd")), &[]).len(), 5);
         assert_eq!(eval(&core, &one("genre", "contains", json!("rock")), &[]), ["dogs", "pigs"]);
-        assert_eq!(eval(&core, &one("genre", "notContains", json!("rock")), &[]), ["joga", "bach", "so", "pct", "bare"], "no genre is not rock");
+        assert_eq!(eval(&core, &one("genre", "notContains", json!("rock")), &[]), ["joga", "bach", "so", "pct", "bare"], "no genre counts");
         assert_eq!(eval(&core, &one("title", "startsWith", json!("PIGS")), &[]), ["pigs"]);
         assert_eq!(eval(&core, &one("title", "endsWith", json!("ones)")), &[]), ["pigs"]);
         assert_eq!(eval(&core, &one("genre", "is", json!("")), &[]), ["bare"]);
         assert_eq!(eval(&core, &one("genre", "isNot", json!("")), &[]).len(), 6);
         assert_eq!(eval(&core, &one("suffix", "is", json!("MP3")), &[]), ["joga"]);
-        // LIKE wildcards in the value are literal
+        // LIKE wildcards are literal.
         assert_eq!(eval(&core, &one("title", "contains", json!("100%")), &[]), ["pct"]);
         assert_eq!(eval(&core, &one("title", "contains", json!("e_l")), &[]), ["pct"]);
         assert_eq!(eval(&core, &one("title", "contains", json!("%")), &[]), ["pct"]);
