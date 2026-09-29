@@ -1,5 +1,5 @@
-//! The test binary's allocator: the system's, counting every allocation and the bytes asked for, for the
-//! host perf report ([`counts`], tests/perf_bench.rs). Two relaxed atomic adds per allocation, nothing else.
+//! The test binary's allocator: the system's, counting allocations and bytes for the perf report
+//! ([`counts`]). Process-wide by nature (a global allocator).
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,7 +37,7 @@ unsafe impl GlobalAlloc for Counted {
 #[global_allocator]
 static COUNTED: Counted = Counted;
 
-/// Allocations made in this process so far, and the bytes they asked for.
+/// Allocations so far, and their bytes.
 pub fn counts() -> (u64, u64) {
     (ALLOCATIONS.load(Ordering::Relaxed), BYTES.load(Ordering::Relaxed))
 }

@@ -1,7 +1,5 @@
-//! The engine's pieces over the core: downloads run from the core's queue into the store, a downloaded
-//! or cached song is found on the disk before the network is asked, and with AutoMix on the songs
-//! coming up that are on the disk are measured ahead. The core keeps one active database and one queue
-//! per process, so it is all one test.
+//! The engine's core pieces: downloads into the store, songs found on disk before the network, and
+//! measuring ahead. The core is per process, so it is one test.
 #![cfg(feature = "core")]
 
 mod common;
@@ -19,8 +17,7 @@ use parking_lot::Mutex;
 
 use common::NoApi;
 
-/// Audio: each song's bytes made up from its id, every request counted, and a connection that breaks
-/// half way through the first time it is asked for a song.
+/// Songs made up from their ids, requests counted; each song's first connection breaks half way.
 #[derive(Default)]
 struct Audio {
     requests: Mutex<Vec<(String, u64)>>,
@@ -58,14 +55,13 @@ impl ByteSource for Audio {
     }
 }
 
-/// A client's disk: which songs are whole there and in which files, and every song it was asked about.
+/// A client's disk: which songs are whole and in which files, and what it was asked about.
 #[derive(Default)]
 struct Disk {
     whole: Mutex<std::collections::HashMap<String, Vec<std::path::PathBuf>>>,
     asked: Mutex<Vec<String>>,
 }
 
-/// The measurer's view of it.
 struct OnDisk(Arc<Disk>);
 
 impl Shelf for OnDisk {
@@ -76,7 +72,6 @@ impl Shelf for OnDisk {
     }
 }
 
-/// Forty seconds of a steady beat at 120 bpm as a 16-bit stereo WAV file.
 fn beat_wav() -> Vec<u8> {
     common::wav(44_100, &common::beat(220.0))
 }
@@ -119,7 +114,7 @@ fn downloads_disk_and_measuring_over_core() {
     metered_and_ahead(&client, &store, &dir);
     downloads_read_back(&core, &store);
 
-    // AutoMix on: the songs coming up are measured, those on the disk only.
+    // AutoMix on: upcoming songs on disk are measured.
     let mut prefs = nori_core::settings_store::settings_open(dir.join("app.db").to_string_lossy().into_owned()).unwrap();
     prefs.auto_mix = true;
     nori_core::settings_store::settings_put(prefs);
@@ -143,7 +138,7 @@ fn downloads_disk_and_measuring_over_core() {
     assert!((a.bpm - 120.0).abs() < 2.0 || (a.bpm - 60.0).abs() < 1.0 || (a.bpm - 240.0).abs() < 4.0, "the beat heard: {}", a.bpm);
     assert!(core.analysis_get("m-2".into()).unwrap().is_none(), "not on the disk: left for later");
     assert!(audio.requests.lock().iter().all(|(u, _)| !u.contains("m-2")), "and never fetched for it");
-    // The player fetches it (the next song, or one a queue edit put next): measured as it becomes whole.
+    // Fetched by the player: measured once whole.
     let key = client.resolve("m-2".into(), false, nori_core::stream::metered()).key;
     let beat = beat_wav();
     let mut w = store.writer(&key).unwrap();
@@ -156,8 +151,7 @@ fn downloads_disk_and_measuring_over_core() {
     }
     drop(measurer);
 
-    // From a client's own disk (Android's media3 cache, a song in pieces): each song decoded once, only
-    // once it is whole, and one that cannot be measured is not tried again every time it is looked at.
+    // From a client's disk in pieces: decoded once when whole; a failure is not retried per look.
     let beat = beat_wav();
     let pieces = dir.join("pieces");
     std::fs::create_dir_all(&pieces).unwrap();
@@ -193,13 +187,13 @@ fn downloads_disk_and_measuring_over_core() {
     assert!(core.analysis_get("m-4".into()).unwrap().is_none(), "one still coming is not");
     assert_eq!(measurer.decoded(), 2, "m-3, and m-5 which could not be");
     let looked = disk.asked.lock().len();
-    // Every loading burst, precache and queue event asks again: with nothing changed, nothing runs.
+    // Repeated asks with nothing changed run nothing.
     for _ in 0..50 {
         measurer.ask(nori_core::rules::queue_measure());
         assert!(!measurer.busy(), "no thread for the same songs");
     }
     assert_eq!(disk.asked.lock().len(), looked, "and nothing is looked at");
-    // Another song arrives on the disk: a look, in which the song that failed is not decoded again.
+    // An arrival triggers a look; the failed song is not decoded again.
     measurer.arrived();
     settle(&measurer);
     assert_eq!(measurer.decoded(), 2, "m-5 is not tried again with the same bytes, m-4 is not whole");
@@ -213,8 +207,7 @@ fn downloads_disk_and_measuring_over_core() {
     measurer.ask(Vec::new());
     assert!(!measurer.busy(), "AutoMix off: nothing to measure");
 
-    // "Better beat detection" on: a build without the model's runtime, or one whose model cannot be fetched
-    // (this transport answers nothing), decodes nothing more for it, and says why on the settings page.
+    // "Better beat detection" without a model decodes nothing more and says why.
     let mut prefs = nori_core::settings_store::settings_current().unwrap();
     (prefs.auto_mix_better_beats, prefs.auto_mix_beats_mobile_data) = (true, true);
     nori_core::settings_store::settings_put(prefs);
@@ -228,9 +221,8 @@ fn downloads_disk_and_measuring_over_core() {
     listens_with_a_real_model(&core, &dir, &measurer, &settle);
 }
 
-/// A download that was not measured as it came (an MP4, one taken up half way, an analysis of an older version)
-/// is read back from the disk once saved, whatever AutoMix says, one song at a time, and nothing is left running
-/// after; the settings' "Analyse downloaded songs" does the same for the downloads already there.
+/// Unmeasured downloads are read back from disk once saved, one at a time; "Analyse downloaded songs"
+/// does the same for existing ones.
 fn downloads_read_back(core: &Arc<Core>, store: &Arc<Store>) {
     use nori_core::transfers::{download_phase, followed, work_done, Work, COMPLETED};
     assert!(!nori_core::settings_store::with_prefs(|p| p.auto_mix).unwrap_or(false), "AutoMix is off");
@@ -251,9 +243,9 @@ fn downloads_read_back(core: &Arc<Core>, store: &Arc<Store>) {
         assert!((a.bpm - 120.0).abs() < 2.0 || (a.bpm - 60.0).abs() < 1.0 || (a.bpm - 240.0).abs() < 4.0, "the beat heard: {}", a.bpm);
         assert_eq!(download_phase(id.into()), Some(nori_core::DownloadPhase::Done), "done with it");
     }
-    // Analysed already: nothing to read back.
+    // Already analysed: nothing to read back.
     assert!(!core.download_unanalysed(false).unwrap().iter().any(|id| id.starts_with("rb-")));
-    // Its analysis gone (an older version): "Analyse downloaded songs" reads it back again.
+    // Analysis gone: read back again.
     core.analysis_clear().unwrap();
     let again: Vec<String> = core.download_unanalysed(false).unwrap().into_iter().filter(|id| id.starts_with("rb-")).collect();
     assert_eq!(again.len(), 2);
@@ -264,7 +256,7 @@ fn downloads_read_back(core: &Arc<Core>, store: &Arc<Store>) {
     assert!(nori_core::transfers::processing(0).is_none_or(|p| p.analysing == 0 && p.beats == 0), "nothing left waiting");
 }
 
-/// Whole songs, every request counted: the precacher's network.
+/// Whole songs, requests counted.
 #[derive(Default)]
 struct Plain(Mutex<Vec<String>>);
 
@@ -277,10 +269,8 @@ impl ByteSource for Plain {
     }
 }
 
-/// The network turning metered in the middle of a queue: the song playing and the one already on its way
-/// keep their addresses, the next song fetched streams at the metered quality. And the songs after the
-/// next are fetched whole ahead of their turn, as many as the settings give the network, none on a metered
-/// one by default.
+/// Turning metered mid-queue: songs already fetched keep their address, the next streams at the metered
+/// quality; fetching ahead follows the network's setting (none on metered by default).
 fn metered_and_ahead(client: &Arc<Client>, store: &Arc<Store>, dir: &std::path::Path) {
     use nori_player::pipeline::Songs;
     let songs: Vec<Song> = (1..=5).map(|i| Song { id: format!("p-{i}"), title: format!("P{i}"), duration: 3, suffix: "mp3".into(), ..Default::default() }).collect();
@@ -309,7 +299,7 @@ fn metered_and_ahead(client: &Arc<Client>, store: &Arc<Store>, dir: &std::path::
     assert!(store.peek("p-4:0").is_none(), "two ahead on Wi-Fi by default: the next (the engine's own) and this one");
     assert_eq!(net.0.lock().iter().filter(|u| u.ends_with("&id=p-3")).count(), 1, "in one request");
 
-    // Mobile data plays the original file too out of the box; a lower quality there shows the switch.
+    // A lower metered quality makes the switch visible.
     nori_core::settings_store::edit_by_name("mobile", "192:opus");
     let q = nori_engine::core::network_metered(client, true);
     assert_eq!((q.bit_rate, q.format.as_str()), (192, "opus"), "the settings' quality for mobile data");
@@ -332,7 +322,7 @@ fn metered_and_ahead(client: &Arc<Client>, store: &Arc<Store>, dir: &std::path::
     nori_engine::core::network_metered(client, false);
 }
 
-/// The authors' checkpoint, served where they publish it; anything else is not found.
+/// Serves the Beat This! checkpoint at its URL; anything else is 404.
 #[cfg(feature = "neural-beats")]
 struct Authors(Vec<u8>, Mutex<Vec<String>>);
 
@@ -352,11 +342,9 @@ impl Transport for Authors {
     fn address_changed(&self) {}
 }
 
-/// The measurer with the real model, made as every client makes it: the checkpoint fetched from the authors'
-/// address, checked, converted and kept where the app keeps it; then the songs measured before it are decoded once
-/// more, and each end is read and marked. Needs the checkpoint (no network here):
-/// `NORI_BEAT_THIS_CKPT=<small0.ckpt> cargo test --release -p nori-engine --features neural-beats --test core`;
-/// without it there is nothing to run.
+/// The measurer with the real model: fetched, checked, converted and stored, then earlier songs decoded
+/// again for their ends. Needs the checkpoint:
+/// `NORI_BEAT_THIS_CKPT=<small0.ckpt> cargo test --release -p nori-engine --features neural-beats --test core`.
 #[cfg(feature = "neural-beats")]
 fn listens_with_a_real_model(core: &Arc<Core>, dir: &std::path::Path, measurer: &Arc<Measurer>, settle: &dyn Fn(&Measurer)) {
     use nori_core::automix::beat_model::{self, State};
@@ -382,7 +370,7 @@ fn listens_with_a_real_model(core: &Arc<Core>, dir: &std::path::Path, measurer: 
     }
     assert!(core.analysis_neural_missing(vec!["m-3".into(), "m-4".into()]).unwrap().is_empty());
 
-    // A file changed on the disk is refused, not misread.
+    // A changed file is refused.
     let mut bytes = std::fs::read(&kept).unwrap();
     bytes[1000] ^= 1;
     std::fs::write(&kept, &bytes).unwrap();

@@ -1,14 +1,9 @@
-// The host perf report: the engine playing minutes of music on the test's clock, what each minute of it
-// costs. Included into tests/engine.rs for its rig. Not a check (numbers vary with the machine): run it on
-// its own, and on another revision to compare, with tools/perf-host.sh.
+// Host perf report, included into tests/engine.rs for its rig: per minute of music, the engine's wakes,
+// the process's CPU time, and allocations. Not a check; compare revisions with tools/perf-host.sh.
 //
 //   cargo test --release -p nori-engine --test engine perf_report -- --ignored --nocapture --test-threads=1
-//
-// Per minute of music: the engine's wakes (each sleep of its thread: what keeps a phone's CPU from its deep
-// idle), the CPU time the whole process spent (decoding, the sound chain, mixing), and the allocations
-// made and the bytes they asked for. One line per case, starting "perf:".
 
-/// CPU time this process has spent so far, user and system, ms.
+/// Process CPU time (user and system), ms.
 fn cpu_ms() -> f64 {
     let mut u: libc::rusage = unsafe { std::mem::zeroed() };
     // SAFETY: getrusage fills the struct it is handed.
@@ -17,7 +12,7 @@ fn cpu_ms() -> f64 {
     ms(u.ru_utime) + ms(u.ru_stime)
 }
 
-/// Plays `songs` with `prefs` and `settings`: a moment to start, then `minutes` measured, one line said.
+/// Plays `songs` and prints one "perf:" line measured over `minutes`.
 fn perf_case(name: &str, songs: &[(&str, &[i16])], prefs: TransitionPrefs, settings: Settings, minutes: u64) {
     let rig = Rig::new(songs, prefs, settings);
     rig.engine.play_at(0, 0);

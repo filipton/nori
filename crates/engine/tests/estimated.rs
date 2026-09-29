@@ -1,10 +1,7 @@
-//! A transcoding server that promises an estimated length (Navidrome's `estimateContentLength`) longer
-//! than what it sends, and answers a range from past the real end with a 416: the song plays whole, its
-//! length and seeks are the real ones, and neither the answer past the end nor a clean end short of the
-//! promise counts as a failure. A network that drops in the middle still does, and is asked again.
-//!
-//! The Ogg Opus songs are made by ffmpeg on the machine running the tests; without it the tests say so
-//! and pass. The engine runs on a clock the test moves (`common::Virtual`).
+//! A transcoding server that promises a longer length than it sends (Navidrome's
+//! `estimateContentLength`) and answers 416 past the real end: songs play whole with their real length
+//! and seeks, and neither the 416 nor a clean early end is a failure. Ogg Opus songs come from ffmpeg;
+//! without it the tests pass trivially.
 
 use crate::common;
 
@@ -24,7 +21,7 @@ use parking_lot::Mutex;
 
 use common::ffmpeg;
 
-/// `a`, `b` and `c`, made once for every test in the binary: None without ffmpeg.
+/// `a`, `b` and `c`, made once per binary; None without ffmpeg.
 fn songs() -> Option<&'static [Arc<Vec<u8>>; 3]> {
     static MADE: std::sync::OnceLock<Option<[Arc<Vec<u8>>; 3]>> = std::sync::OnceLock::new();
     MADE.get_or_init(|| {
@@ -37,7 +34,7 @@ fn songs() -> Option<&'static [Arc<Vec<u8>>; 3]> {
     .as_ref()
 }
 
-/// A tone of `secs` as Ogg Opus at 192 kbps, as the server transcodes for a phone on mobile data.
+/// A tone of `secs` as 192 kbps Ogg Opus.
 fn opus(dir: &Path, name: &str, secs: u32, hz: u32) -> Vec<u8> {
     let out = dir.join(format!("{name}.opus"));
     let ok = Command::new("ffmpeg")
@@ -53,23 +50,17 @@ fn opus(dir: &Path, name: &str, secs: u32, hz: u32) -> Vec<u8> {
 /// How a body from the server ends.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Ends {
-    /// Cleanly, where the real bytes do.
+    /// Cleanly at the real end.
     Clean,
-    /// With an error there: a body shorter than its Content-Length, as OkHttp reads it.
+    /// With an error at the real end, as OkHttp reads a short body.
     Broken,
 }
 
-/// The transcoding server. Every answer promises `extra` bytes more than there are; a range from the
-/// real end on is a 416, saying the real length when `says`. A song's first body sends its first
-/// `hold` bytes at once and the rest only a moment later, so the container reader looks for the end
-/// while the song is still on its way; `cut`: the named song's first body breaks off with an error at
-/// that byte, once.
-///
-/// A song's transcode is made as it is first sent: a range from anywhere but its start, asked before
-/// the first body has sent it all, makes the server transcode the whole song first (Navidrome skips
-/// through it from the start), which takes `charge` of the test's time. With `arrives`, a body from the
-/// start sends its first bytes at once and the rest at so many bytes a second of the test's clock: the
-/// transcode coming out, faster than the song plays.
+/// The transcoding server. Answers promise `extra` bytes too many; a range past the real end is a 416
+/// (with the real length when `says`). A first body sends `hold` bytes, then the rest a moment later;
+/// `cut` breaks the named song's first body once at that byte. A range not from the start, asked before
+/// the transcode is complete, costs `charge` of clock time; with `arrives`, a body from the start
+/// streams at a set rate of the test's clock.
 struct Transcoder {
     files: Vec<(String, Arc<Vec<u8>>)>,
     extra: u64,
@@ -81,11 +72,11 @@ struct Transcoder {
     clock: Virtual,
     charge: Duration,
     arrives: Option<(usize, u64)>,
-    /// Each file's transcode is whole on the server: its ranges are answered at once.
+    /// Files fully transcoded: ranges are answered at once.
     made: Vec<Arc<AtomicBool>>,
-    /// The ranges that had to wait for a whole transcode to be made.
+    /// Ranges that waited for a full transcode.
     charged: Mutex<Vec<(String, u64)>>,
-    /// Each file has been asked for from past its start (the reader looking for its last page).
+    /// Files asked for from past their start.
     probed: Vec<Arc<AtomicBool>>,
 }
 
@@ -93,32 +84,30 @@ struct Sent {
     file: Arc<Vec<u8>>,
     at: usize,
     hold: Option<usize>,
-    /// Ends the hold early: the file was asked for from further on meanwhile.
+    /// Ends the hold once the file is asked for further on.
     probed: Arc<AtomicBool>,
     cut: Option<usize>,
     ends: Ends,
-    /// The first bytes at once, the rest at so many a second from the time given, on the test's clock.
+    /// First bytes at once, the rest at a rate from this clock time.
     arrives: Option<(usize, u64, i64, Virtual)>,
-    /// Set once the whole transcode has been sent.
+    /// Set once the whole transcode was sent.
     made: Arc<AtomicBool>,
 }
 
-/// Longest the rest of a held body waits, in real time, for the reader to look past it.
+/// Real time a held body waits for the reader to look past it.
 const HOLD: Duration = Duration::from_millis(300);
 
 impl Read for Sent {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.hold.is_some_and(|h| self.at >= h) {
-            // The rest comes a moment later, in real time: the engine's clock stands still meanwhile. The
-            // moment is over once the reader has looked further on (what the hold is there to make it do
-            // while the song is still on its way), or after HOLD for a reader that never does.
+            // Hold until the reader looks further on, or HOLD passes.
             let held = Instant::now();
             while !self.probed.load(Ordering::Acquire) && held.elapsed() < HOLD {
                 std::thread::sleep(Duration::from_millis(1));
             }
             self.hold = None;
         }
-        // As far as the transcode has come, waiting for the next byte of it.
+        // Wait until the transcode has come this far.
         let made = self.arrives.as_ref().filter(|_| self.at < self.file.len()).map_or(usize::MAX, |(first, rate, t0, clock)| {
             let by = |ns: i64| first + ((ns - t0).max(0) as u128 * *rate as u128 / 1_000_000_000) as usize;
             if by(clock.now_ns()) <= self.at {
@@ -152,7 +141,7 @@ impl ByteSource for Transcoder {
             probed.store(true, Ordering::Release);
         }
         if from > 0 && !self.charge.is_zero() && !made.load(Ordering::Acquire) {
-            // Nothing past the start is sent before the whole song has been transcoded.
+            // Past the start only once fully transcoded.
             self.charged.lock().push((url.to_string(), from));
             self.clock.wait_until(self.clock.now_ns() + self.charge.as_nanos() as i64);
             made.store(true, Ordering::Release);
@@ -180,8 +169,7 @@ impl Transcoder {
     }
 }
 
-/// The songs, each with its length as the server's tags say it: 0 when they say none.
-/// Kept in `2`'s stream cache as they come, when there is one.
+/// The songs with their tagged lengths (0: none), cached in `2` when given.
 struct Songs(Arc<Transcoder>, Vec<(String, i64)>, Option<Arc<Store>>);
 
 impl Library for Songs {
@@ -210,40 +198,37 @@ struct Rig {
     _dir: nori_testdir::TempDir,
 }
 
-/// Seconds of song `a`, and of `b` and `c` after it. `a` is long enough that an Ogg reader's look for its
-/// last page lands further past what has come than the loader reads on to: the fetch starts again
-/// there, as it did on a phone for a 6 MB transcode. `b` is short: the look waits for the bytes.
+/// Song lengths: `a` long enough that the last-page probe lands past what the loader reads on to (as a
+/// 6 MB transcode on a phone); `b` short enough that the probe waits for bytes.
 const A_SECS: u32 = 60;
 const B_SECS: u32 = 5;
 
-/// `a`, `b` and `c` from a [`Transcoder`], each promised `extra` bytes too many (well past one Ogg page, so an
-/// Ogg reader looking for the last page looks past the real end). None without ffmpeg.
+/// `a`, `b` and `c` from a [`Transcoder`] promising `extra` bytes too many (past one Ogg page). None
+/// without ffmpeg.
 fn rig(extra: u64, says: bool, ends: Ends, cut: Option<(&str, usize)>) -> Option<Rig> {
     rig_making(extra, says, ends, cut, Making::default())
 }
 
-/// How a [`Transcoder`] makes its songs, and the length the server's tags give `a`.
+/// How a [`Transcoder`] produces songs, and `a`'s tagged length.
 #[derive(Clone, Copy)]
 struct Making {
     charge: Duration,
     arrives: Option<(usize, u64)>,
     hold: usize,
     a_ms: i64,
-    /// The songs go through a stream cache, empty at first.
+    /// Songs go through an empty stream cache.
     cache: bool,
 }
 
 impl Default for Making {
-    /// Ranges answered at once, a song's first 48 kB sent at once and the rest a moment later, and `a`
-    /// a fraction of a second longer than it is: the server's tags round the length, as a library's do.
+    /// Immediate ranges, 48 kB held, and `a` tagged slightly long (rounded).
     fn default() -> Making {
         Making { charge: Duration::ZERO, arrives: None, hold: 48 * 1024, a_ms: A_SECS as i64 * 1000 + 400, cache: false }
     }
 }
 
-/// A transcode the server has not made yet: some twelve seconds of `a` sent at once, the rest eight times
-/// as fast as it plays (all of it in some seven seconds), and a range past the start of it twenty
-/// seconds' work. The server gives `a` `a_ms`.
+/// A fresh transcode: ~12 s of `a` at once, the rest at 8x real time, a range past the start costing
+/// 20 s. `a` is tagged `a_ms`.
 fn uncached(a_ms: i64) -> Making {
     Making { charge: Duration::from_secs(20), arrives: Some((320 * 1024, 192 * 1024)), hold: usize::MAX, a_ms, cache: false }
 }
@@ -290,12 +275,11 @@ impl Rig {
         self.events.lock().iter().filter(|e| matches!(e, Event::Error { .. } | Event::Bridge { .. } | Event::Stopped { .. })).cloned().collect()
     }
 
-    /// Whether `id` was heard since the `from`th event.
     fn heard_song_since(&self, from: usize, id: &str) -> bool {
         self.events.lock().iter().skip(from).any(|e| matches!(e, Event::Song { id: i, .. } if i == id))
     }
 
-    /// Starts `a` from its start: the time, on the test's clock, until the first of it is heard.
+    /// Plays `a`; returns clock time until it is heard.
     fn first_sound(&self) -> Duration {
         let t0 = self.time.clock.now_ns();
         self.engine.play_at(0, 0);
@@ -304,7 +288,7 @@ impl Rig {
         Duration::from_nanos((self.time.clock.now_ns() - t0) as u64)
     }
 
-    /// Seeks `a` to `ms`: the time, on the test's clock, until the ear is past that place.
+    /// Seeks to `ms`; returns clock time until playback passes it.
     fn seek_heard(&self, ms: i64) -> f64 {
         let (t0, seen) = (self.time.clock.now_ns(), self.events.lock().len());
         self.engine.seek(ms);
@@ -313,7 +297,7 @@ impl Rig {
         (self.time.clock.now_ns() - t0) as f64 / 1e9
     }
 
-    /// Plays on until `b` is heard: the time that took on the test's clock, and the seconds heard.
+    /// Plays until `b` is heard; returns the clock time taken and the seconds heard.
     fn on_to_b(&self) -> (f64, f64) {
         let (t0, before, seen) = (self.time.clock.now_ns(), self.card.secs(), self.events.lock().len());
         let limit = Duration::from_secs(A_SECS as u64 + 60);
@@ -322,12 +306,12 @@ impl Rig {
         ((self.time.clock.now_ns() - t0) as f64 / 1e9, self.card.secs() - before)
     }
 
-    /// Plays `a` from `from_ms` until `b` is heard: the seconds of `a` the card heard.
+    /// Plays `a` from `from_ms` until `b`; returns the seconds of `a` heard.
     fn play_a_to_its_end(&self, from_ms: i64) -> f64 {
         self.play_to_its_end(0, from_ms)
     }
 
-    /// Plays the song at queue `index` from `from_ms` until the next is heard: the seconds of it heard.
+    /// Plays queue `index` from `from_ms` until the next song; returns the seconds heard.
     fn play_to_its_end(&self, index: usize, from_ms: i64) -> f64 {
         let (id, next) = (["a", "b"][index], ["b", "c"][index]);
         let (before, seen) = (self.card.secs(), self.events.lock().len());
@@ -337,16 +321,12 @@ impl Rig {
         assert!(self.errors().is_empty(), "{id} played without a failure: {:?} asked {:?}", self.errors(), self.server.asked(id));
         let s = self.engine.status();
         assert!(s.index == Some(index + 1) && s.state == State::Playing, "{next} plays after {id}: {s:?}");
-        // What was heard up to the next song's first sound: this one's seconds, and a little of the next.
         let heard = self.card.secs();
-        // The card is opened again for a song of another shape, and hears from nothing then.
         if heard >= before { heard - before } else { heard }
     }
 }
 
-/// The Ogg reader looks for the song's last page (for its length) where the promised length puts it,
-/// past the real end; the server says the real length in its 416. The song plays whole, and the 416 is
-/// asked for once, not tried again and again until the song counts as failed.
+/// The last-page probe past the real end gets a 416 with the real length, once; the song plays whole.
 #[test]
 fn estimated_ogg_plays_whole_with_real_length() {
     let Some(rig) = rig(200_000, true, Ends::Broken, None) else { return };
@@ -359,8 +339,7 @@ fn estimated_ogg_plays_whole_with_real_length() {
     rig.engine.stop();
 }
 
-/// The same without the server saying the real length: each look past the end learns only that it is
-/// sooner, and the reader looks again until it finds the last page.
+/// The same without the length in the 416: the reader probes again until it finds the last page.
 #[test]
 fn estimated_ogg_plays_whole_without_real_length() {
     let Some(rig) = rig(200_000, false, Ends::Clean, None) else { return };
@@ -369,8 +348,7 @@ fn estimated_ogg_plays_whole_without_real_length() {
     rig.engine.stop();
 }
 
-/// Played from near its end: the seek finds its place with the real length, and the song ends there
-/// rather than failing (a seek bar that took the estimate would put the place past the real end).
+/// A seek near the end uses the real length and the song ends there without failing.
 #[test]
 fn estimated_song_seek_near_end_plays() {
     for says in [true, false] {
@@ -382,9 +360,7 @@ fn estimated_song_seek_near_end_plays() {
     }
 }
 
-/// A body that ends cleanly short of the promised length: that is where the song ends. A short song's
-/// look for its last page waits for the bytes to come rather than asking past the end, so it is the clean
-/// end that tells the real length; the song plays whole into the next.
+/// A body ending cleanly short of the promise is the song's end; the short song plays into the next.
 #[test]
 fn clean_early_end_ends_song() {
     let Some(rig) = rig(200_000, false, Ends::Clean, None) else { return };
@@ -395,11 +371,10 @@ fn clean_early_end_ends_song() {
     rig.engine.stop();
 }
 
-/// A network that drops in the middle of the song is not taken for its end: the bytes are asked for
-/// again from where they stopped, and the song plays whole.
+/// A connection dropped mid-song is resumed, not taken for the end.
 #[test]
 fn dropped_network_resumes_song() {
-    // b: short enough that nothing jumps ahead of the break, so it is the break that is asked again.
+    // b is short enough that the break itself is resumed.
     let Some(rig) = rig(200_000, true, Ends::Broken, Some(("b", 32_000))) else { return };
     let heard = rig.play_to_its_end(1, 0);
     assert!(heard >= B_SECS as f64 - 0.1, "all of b heard: {heard} s");
@@ -408,9 +383,7 @@ fn dropped_network_resumes_song() {
     rig.engine.stop();
 }
 
-/// The first play of a song the server has not transcoded yet: nothing past its start is asked for (an
-/// Ogg reader looking for the last page, for the song's length, made the server transcode the whole song
-/// before it answered), so it is heard at once. It plays whole, ended by the real end of its bytes.
+/// A fresh transcode is heard at once (no probe past its start) and plays whole to its real end.
 #[test]
 fn uncached_transcode_starts_at_once() {
     let Some(rig) = rig_making(200_000, true, Ends::Broken, None, uncached(A_SECS as i64 * 1000 + 400)) else { return };
@@ -423,27 +396,23 @@ fn uncached_transcode_starts_at_once() {
     rig.engine.stop();
 }
 
-/// Seeks while the transcode is still coming: to a place already here, and to one not sent yet. Each is
-/// read on to in the bytes coming rather than asked of the server as a range it would transcode the
-/// whole song for, and plays from its place to the song's end.
+/// Seeks during a transcode read on through the arriving bytes instead of asking for a costly range.
 #[test]
 fn uncached_transcode_seeks_read_on() {
     let Some(rig) = rig_making(200_000, true, Ends::Broken, None, uncached(A_SECS as i64 * 1000 + 400)) else { return };
     rig.engine.position_updates(Some(Duration::from_millis(500)));
     rig.first_sound();
     rig.time.run(Duration::from_secs(2));
-    // Here already: the transcode has come some thirty seconds by now.
+    // Already here (~30 s have come).
     let waited = rig.seek_heard(10_000);
     assert!(waited <= 0.6, "heard at once, as soon as the next position is said: {waited} s");
     rig.time.run(Duration::from_secs(1));
-    // Not sent yet (some forty seconds have come): heard once the transcode has come that far and a
-    // little past it (`source::READY`), a few seconds on - and not the twenty a range would cost.
-    // No positions said meanwhile: each wakes an engine waiting for bytes, which holds the test's clock.
+    // Not sent yet: heard a few seconds later as the transcode arrives, not after a 20 s range. Position
+    // events are off: each would wake an engine waiting for bytes and hold the clock.
     rig.engine.position_updates(None);
     let far = A_SECS as i64 * 1000 - 10_000;
     let (t0, before) = (rig.time.clock.now_ns(), rig.card.secs());
     rig.engine.seek(far);
-    // Heard: a second of it past what the seek's dip let play out.
     assert!(rig.time.until(Duration::from_secs(30), || rig.card.secs() >= before + 1.3), "the far place heard");
     let waited = (rig.time.clock.now_ns() - t0) as f64 / 1e9;
     eprintln!("a seek past what had come heard after {waited} s");
@@ -454,8 +423,7 @@ fn uncached_transcode_seeks_read_on() {
     rig.engine.stop();
 }
 
-/// The server's length is a little longer, or shorter, than the audio: the song ends where its bytes do,
-/// neither cut short nor followed by silence, and the next one starts right there.
+/// The song ends where its bytes do, whatever length the server gives, and the next starts there.
 #[test]
 fn bytes_end_ends_song() {
     for off_ms in [2_500, -2_500] {
@@ -469,8 +437,7 @@ fn bytes_end_ends_song() {
         assert!((took - heard).abs() < 0.2, "b right after a, no silence between (off by {off_ms} ms): {took} s for {heard} s heard, {all}");
         assert_eq!(rig.engine.status().underruns, 0, "no gap (off by {off_ms} ms)");
         assert!(rig.server.charged().is_empty(), "nothing asked past the start (off by {off_ms} ms): {:?}", rig.server.charged());
-        // A seek between the real end and the one the server gives: the song is over there, and the next
-        // one plays, rather than a failure.
+        // A seek between the real and the stated end: the next song plays, no failure.
         if off_ms > 0 {
             let heard = rig.play_a_to_its_end(A_SECS as i64 * 1000 + off_ms / 2);
             assert!(heard < 0.5, "nothing of a past its end: {heard} s");
@@ -479,9 +446,7 @@ fn bytes_end_ends_song() {
     }
 }
 
-/// A server that gives the song no length: it is not looked for at the song's end either, and the song
-/// is of no known length until its bytes end. It is heard at once and plays whole, and a seek still
-/// reads on to its place.
+/// Without a length: heard at once, played whole, and seeks read on.
 #[test]
 fn unsized_song_plays_and_seeks() {
     let Some(rig) = rig_making(200_000, true, Ends::Broken, None, uncached(0)) else { return };
@@ -495,9 +460,7 @@ fn unsized_song_plays_and_seeks() {
     rig.engine.stop();
 }
 
-/// A seek to fifteen seconds before the end of a transcode still coming, into a stream cache that is
-/// empty, and on through the songs after it: each plays in turn, the next one's bytes coming as they
-/// should, rather than the player standing at the end of the song.
+/// A seek 15 s before the end of an arriving transcode (empty cache) plays on through the next songs.
 #[test]
 fn uncached_transcode_seek_near_end_plays_on() {
     let making = Making { cache: true, ..uncached(A_SECS as i64 * 1000 + 400) };
