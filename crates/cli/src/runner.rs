@@ -457,7 +457,7 @@ impl Runner {
                 app.settings.own.device = name.clone();
                 app.settings.invalidate();
                 let said = if name.is_empty() { "the system default".to_string() } else { name };
-                app.say(&format!("Output device: {said}, from the next start"), false);
+                app.say(format!("Output device: {said}, from the next start"), false);
                 return;
             }
             Cmd::CardCovers(on) => {

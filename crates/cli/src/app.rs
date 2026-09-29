@@ -953,12 +953,10 @@ impl App {
                 }
             }
             Msg::Lyrics { song, pick } => {
-                if self.lyrics_for.as_deref() == Some(&song) {
-                    if self.lyrics.as_ref().is_none_or(|l| l.replaced_by(&pick)) {
-                        let pos = self.now.position(Instant::now());
-                        self.lyrics = Some(SongLyrics::new(pick, pos));
-                        self.lyrics_wake = Some(Instant::now());
-                    }
+                if self.lyrics_for.as_deref() == Some(&song) && self.lyrics.as_ref().is_none_or(|l| l.replaced_by(&pick)) {
+                    let pos = self.now.position(Instant::now());
+                    self.lyrics = Some(SongLyrics::new(pick, pos));
+                    self.lyrics_wake = Some(Instant::now());
                 }
             }
             Msg::Search(v) => {
@@ -1991,13 +1989,11 @@ impl App {
             Action::Down => self.lyrics_sel = Some((at + 1).min(len.saturating_sub(1))),
             Action::Top => self.lyrics_sel = Some(0),
             Action::Bottom => self.lyrics_sel = Some(len.saturating_sub(1)),
-            Action::Open => {
-                if l.pick.lyrics.synced {
-                    let to = l.clock.tap(at);
-                    self.lyrics_sel = None;
-                    self.sought(to);
-                    self.lyrics_wake = Some(Instant::now());
-                }
+            Action::Open if l.pick.lyrics.synced => {
+                let to = l.clock.tap(at);
+                self.lyrics_sel = None;
+                self.sought(to);
+                self.lyrics_wake = Some(Instant::now());
             }
             _ => {}
         }

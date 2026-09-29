@@ -334,6 +334,7 @@ fn song_line(s: &Song, number: usize, w: usize, t: &Theme, playing: bool, album:
 
 // ---- the frame ----
 
+#[allow(clippy::needless_option_as_deref)]
 pub fn draw(f: &mut Frame, app: &mut App, mut art: Option<&mut Art>) {
     app.hits.clear();
     let area = f.area();
