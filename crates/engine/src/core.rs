@@ -41,7 +41,7 @@ pub struct CoreQueue;
 
 impl Queue for CoreQueue {
     fn read<R>(&self, f: impl FnOnce(&Playlist) -> R) -> R {
-        nori_core::playlist::playlist_read(f)
+        nori_core::playlist::with(f)
     }
 
     fn moved_to(&mut self, index: usize) {

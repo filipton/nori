@@ -1,7 +1,6 @@
 //! Interleaved PCM bytes (16-bit or float) and byte-level adapters for the sample-based mixer and
 //! stretcher.
 
-use crate::automix::mixer::Mixer;
 use crate::dither::Dither;
 use crate::automix::stretch::{Stretcher, BLOCK};
 
@@ -117,20 +116,6 @@ pub fn scale_dithered(bytes: &mut [u8], enc: Encoding, gain: f32, channels: usiz
             }
         }
         Encoding::Float => scale(bytes, enc, gain),
-    }
-}
-
-/// Mixes `frames` frames of `outgoing` and `incoming` into `dest`, all in the mixer's channel count
-/// and `enc`. `dest` may alias `outgoing`.
-///
-/// # Safety
-/// Each pointer must be valid for `frames * channels` samples of `enc`.
-pub unsafe fn mix_raw(m: &mut Mixer, outgoing: *const u8, incoming: *const u8, dest: *mut u8, frames: usize, enc: Encoding) {
-    match enc {
-        Encoding::Pcm16 => {
-            m.run(outgoing as *const i16, incoming as *const i16, dest as *mut i16, frames, |x| x as f64, |y| y.round().clamp(-32768.0, 32767.0) as i16)
-        }
-        Encoding::Float => m.run(outgoing as *const f32, incoming as *const f32, dest as *mut f32, frames, |x| x as f64, |y| y as f32),
     }
 }
 

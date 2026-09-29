@@ -8,17 +8,14 @@ fn octave_ok(got: f64, want: f64, tol: f64) -> bool {
     [0.5, 1.0, 2.0].iter().any(|k| (got / (want * k) - 1.0).abs() < tol)
 }
 
-/// `f` over every case at once, one thread each, the answers in the cases' order: a table of synthetic
-/// songs is rendered and analysed side by side rather than one after another, which is most of this
-/// module's time.
+/// `f` over every case, one thread each, results in case order (rendering and analysis dominate test time).
 fn each<C: Sync, R: Send>(cases: &[C], f: impl Fn(&C) -> R + Sync) -> Vec<R> {
     std::thread::scope(|s| cases.iter().map(|c| s.spawn(|| f(c))).collect::<Vec<_>>().into_iter().map(|h| h.join().unwrap()).collect())
 }
 
-/// Tempo accuracy on the synthetic set: click tracks at 90/120/128/174 BPM, straight, swung, and with noise.
-/// Prints the table the report quotes.
+/// Click tracks at 90/120/128/174 BPM, straight, swung and noisy.
 #[test]
-fn tempo_accuracy_on_synthetic_tracks() {
+fn tempo_accuracy() {
     let mut cases = Vec::new();
     for bpm in [90.0, 120.0, 128.0, 174.0] {
         cases.push((bpm, "plain", Synth::new(bpm)));
@@ -57,9 +54,9 @@ fn grid_bpm_is_precise() {
     }
 }
 
-/// The grid lands on the clicks: `offset + n * period` within a few ms of every true beat.
+/// `offset + n * period` within a few ms of every true beat.
 #[test]
-fn beat_times_line_up_with_the_clicks() {
+fn grid_lands_on_clicks() {
     let cases: Vec<(f64, f64)> = [90.0, 128.0, 174.0].into_iter().flat_map(|bpm| [(bpm, 0.1), (bpm, 0.33)]).collect();
     let synth = |&(bpm, first): &(f64, f64)| Synth { first_beat: first, lead_silence: 1.5, ..Synth::new(bpm) };
     let got = each(&cases, |c| {
@@ -95,7 +92,6 @@ fn downbeats_follow_the_kick() {
         analyse("t", &s.render(), s.rate).track
     });
     for (phase, t) in phases.into_iter().zip(got) {
-        // Beat 0 of the synth is the first grid beat: the offset is its time.
         let period = 60_000.0 / t.bpm;
         let first_grid = ((synth(phase).first_beat * 1000.0 - t.beat_offset_ms) / period).round() as i64;
         let want = (phase as i64 + first_grid).rem_euclid(4) as i32;
@@ -105,7 +101,7 @@ fn downbeats_follow_the_kick() {
 }
 
 #[test]
-fn noise_is_reported_as_unreliable() {
+fn noise_is_unreliable() {
     let rate = 44100;
     let mut rng = Rng(12345);
     let x: Vec<f32> = (0..rate * 60).map(|_| (0.3 * rng.next()) as f32).collect();
@@ -116,7 +112,7 @@ fn noise_is_reported_as_unreliable() {
     let p = plan::plan(Some(&t), Some(&t), 60_000, 60_000, &crate::types::AutoMixSettings::default());
     assert_ne!(p.kind, crate::types::TransitionKind::BeatMatched);
 
-    // Brown-ish noise with slow swells: still no confident beat.
+    // Brown noise with slow swells.
     let mut y = 0f64;
     let x: Vec<f32> = (0..rate * 60)
         .map(|i| {
@@ -129,15 +125,15 @@ fn noise_is_reported_as_unreliable() {
 }
 
 #[test]
-fn a_steady_tone_without_a_beat_is_measured() {
-    // No beat means no bars: the closing breakdown is looked for in plain blocks instead.
+fn beatless_tone_is_measured() {
     let x: Vec<f32> = (0..44100 * 5).map(|i| (2.0 * std::f64::consts::PI * 997.0 * i as f64 / 44100.0).sin() as f32).collect();
     let t = analyse("tone", &x, 44100).track;
     assert!((t.lufs + 3.01).abs() < 0.1, "lufs {}", t.lufs);
 }
 
 #[test]
-fn silence_and_trims() {    let t = analyse("s", &vec![0f32; 44100 * 20], 44100).track;
+fn silence_and_trims() {
+    let t = analyse("s", &vec![0f32; 44100 * 20], 44100).track;
     assert_eq!((t.bpm, t.bpm_confidence, t.lufs, t.key), (0.0, 0.0, -70.0, 0));
     assert_eq!((t.silence_start_ms, t.silence_end_ms), (0, 0));
     assert_eq!(t.duration_ms, 20_000);
@@ -153,14 +149,11 @@ fn silence_and_trims() {    let t = analyse("s", &vec![0f32; 44100 * 20], 44100)
 }
 
 #[test]
-fn overlap_windows_describe_vocals_and_brightness() {
-    // Sustained chords put pitched energy in the voice band; drums alone are clicks and hats.
+fn overlap_windows_measure_voice_and_brightness() {
     let sung = analyse("t", &Synth { chords: vec![(0, false), (5, false)], ..Synth::new(128.0) }.render(), 44100).track;
     let drums = analyse("t", &Synth::new(128.0).render(), 44100).track;
     assert!(sung.outro_vocal > drums.outro_vocal, "{} vs {}", sung.outro_vocal, drums.outro_vocal);
     assert!(sung.intro_vocal > drums.intro_vocal, "{} vs {}", sung.intro_vocal, drums.intro_vocal);
-    // The kick carries drums-only power (low centroid); chords pull it up into the voice band.
-    // Either way the windows disagree by well over half an octave - the mismatch signal is real.
     assert!((sung.outro_centroid / drums.outro_centroid).log2().abs() > 0.5, "{} vs {}", sung.outro_centroid, drums.outro_centroid);
     for t in [&sung, &drums] {
         assert!((0.0..=1.0).contains(&t.outro_vocal) && (0.0..=1.0).contains(&t.intro_vocal));
@@ -171,7 +164,7 @@ fn overlap_windows_describe_vocals_and_brightness() {
 }
 
 #[test]
-fn the_sample_rate_does_not_matter() {
+fn sample_rate_independent() {
     let got = each(&[22050, 32000, 44100, 48000, 96000], |&rate| {
         let s = Synth { rate, chords: vec![(9, true), (2, true)], ..Synth::new(126.0) };
         let t = analyse("t", &s.render(), rate).track;
@@ -186,7 +179,7 @@ fn the_sample_rate_does_not_matter() {
 }
 
 #[test]
-fn streaming_in_odd_chunks_gives_the_same_answer() {
+fn streaming_matches_whole() {
     let s = Synth { chords: vec![(0, false), (5, false)], ..Synth::new(128.0) };
     let x = s.render();
     let whole = analyse("t", &x, s.rate).track;
@@ -202,7 +195,7 @@ fn streaming_in_odd_chunks_gives_the_same_answer() {
     let streamed = finish("t", &a.take_features()).track;
     assert_eq!(TrackAnalysis { analysed_ms: 0, ..whole }, TrackAnalysis { analysed_ms: 0, ..streamed });
 
-    // Interleaved stereo 16-bit through the same door the JNI tap uses.
+    // Interleaved stereo 16-bit.
     let pcm: Vec<i16> = x.iter().flat_map(|v| {
         let s = (v * 32767.0) as i16;
         [s, s]
@@ -212,7 +205,7 @@ fn streaming_in_odd_chunks_gives_the_same_answer() {
     assert!((t.bpm - 128.0).abs() < 0.05);
 }
 
-/// The coarse uniffi entry: decoder bytes, 16-bit stereo or float mono, give the same answer as the f32 path.
+/// Decoder bytes, 16-bit stereo or float mono, analyse like f32 samples.
 #[test]
 fn decoder_bytes_in_any_layout() {
     let s = Synth { rate: 48000, chords: vec![(9, true), (4, false)], ..Synth::new(96.0) };
@@ -229,7 +222,7 @@ fn decoder_bytes_in_any_layout() {
     let mono: Vec<u8> = x.iter().flat_map(|v| v.to_le_bytes()).collect();
     let t = analyse_bytes("t", &mono, 48000, 1, PCM_FLOAT).track;
     assert_eq!(TrackAnalysis { analysed_ms: 0, ..t }, TrackAnalysis { analysed_ms: 0, ..reference });
-    // Garbage in: nothing to analyse, no panic.
+    // Garbage in: no panic.
     let t = analyse_bytes("t", &vec![1, 2, 3], 0, 0, 99).track;
     assert!(t.bpm == 0.0 && t.duration_ms <= 1, "{t:?}");
 }
@@ -254,14 +247,13 @@ fn keys_of_simple_progressions() {
                 assert_eq!(t.key, *want, "want {} got {}", structure::camelot_name(*want), structure::camelot_name(t.key));
                 assert!(t.key_confidence >= 0.3, "{}: confidence {}", structure::camelot_name(*want), t.key_confidence);
             }
-            // Drums only: no key worth trusting.
             None => assert!(t.key_confidence < 0.3, "drums got key confidence {}", t.key_confidence),
         }
     }
 }
 
 #[test]
-fn a_drifting_tempo_is_flagged_unstable() {
+fn drifting_tempo_is_unstable() {
     let s = Synth { secs: 120.0, end_bpm: 132.0, ..Synth::new(120.0) };
     let t = analyse("t", &s.render(), s.rate).track;
     println!("drift: bpm {:.2} conf {:.2} stability {:.2}", t.bpm, t.bpm_confidence, t.stability);
@@ -269,8 +261,8 @@ fn a_drifting_tempo_is_flagged_unstable() {
 }
 
 #[test]
-fn phrase_cues_land_on_the_structure() {
-    // 16 bars of hats only, full groove, 16 bars of hats only at the end. 128 BPM: a bar is 1.875 s.
+fn phrase_cues_land_on_sections() {
+    // 16 bars of hats, the full groove, 16 bars of hats.
     let s = Synth { secs: 150.0, intro_bars: 16, outro_bars: 16, chords: vec![(0, false), (5, false)], ..Synth::new(128.0) };
     let t = analyse("t", &s.render(), s.rate).track;
     let bar = 4.0 * 60_000.0 / 128.0;
@@ -281,7 +273,7 @@ fn phrase_cues_land_on_the_structure() {
     assert!((t.intro_end_ms as f64 - intro_want).abs() < 60.0, "intro {}", t.intro_end_ms);
     assert!((t.outro_start_ms as f64 - outro_want).abs() < 60.0, "outro {}", t.outro_start_ms);
 
-    // A steady track: no intro, the outro cue is a phrase boundary at least 16 bars before the end.
+    // A steady track: no intro; the outro cue on an 8-bar line at least 16 bars before the end.
     let s = Synth { secs: 120.0, ..Synth::new(128.0) };
     let t = analyse("t", &s.render(), s.rate).track;
     assert!(t.intro_end_ms <= t.silence_start_ms + 1, "{t:?}");
@@ -290,11 +282,10 @@ fn phrase_cues_land_on_the_structure() {
     assert!(t.silence_end_ms as f64 - t.outro_start_ms as f64 >= 16.0 * bar - 100.0);
 }
 
-/// Grooves whose strongest single lag is not the beat: drum and bass (kick on 1 and the and of 3) and a funk
-/// groove built on dotted eighths. The autocorrelation alone read 116 and 139; the metrical comb reads the
-/// beat (or its octave, which the planner folds).
+/// Grooves whose strongest lag is not the beat (drum and bass, dotted-eighth funk): autocorrelation alone read
+/// 116 and 139 BPM.
 #[test]
-fn the_tempo_is_a_beat_whose_bar_repeats() {
+fn syncopated_grooves_read_the_beat() {
     use super::eval::{Song, Style, FULL};
     for (song, want) in [
         (Song { sections: vec![(28, FULL)], ..Song::new("dnb", Style::DnB, 174.0, 0, true) }, 174.0),
@@ -307,12 +298,10 @@ fn the_tempo_is_a_beat_whose_bar_repeats() {
     }
 }
 
-/// A steady syncopated groove whose tempo is read right is trusted, over the whole song and at both ends, so the
-/// planner mixes it on the beat. Its lag of five sixteenths scores nearly as well as the beat itself, and counting
-/// that as a rival took the trust from grids like these: the 125 BPM outro, read right and steady to 0.95, scored
-/// confidence 0.44.
+/// A steady syncopated groove is trusted at both ends. Regression: its five-sixteenths lag counted as a rival
+/// tempo and dropped confidence to 0.44.
 #[test]
-fn a_steady_syncopated_groove_is_trusted() {
+fn steady_syncopated_groove_is_trusted() {
     use super::eval::{Song, Style, DRUMS, FULL};
     use super::plan::{MIN_BPM_CONFIDENCE, MIN_STABILITY};
     for (bpm, swing) in [(125.0, 0.66), (128.0, 0.5), (130.0, 0.58)] {
@@ -331,10 +320,9 @@ fn a_steady_syncopated_groove_is_trusted() {
     }
 }
 
-/// A band tuned 40 cents sharp or flat is still in its key: the tuning is measured from the spectral peaks and
-/// taken out before the profile is matched. Before, +38 cents read a semitone high.
+/// A band tuned ±40 cents keeps its key: the tuning is measured and removed first.
 #[test]
-fn a_detuned_band_keeps_its_key() {
+fn detuned_band_keeps_key() {
     use super::eval::{Song, Style, FULL, KEYS};
     for (cents, tonic, minor) in [(40.0, 7, true), (-40.0, 2, false), (0.0, 9, true)] {
         let song = Song { cents, progression: 1, sections: vec![(4, KEYS), (16, FULL)], ..Song::new("detuned", Style::Backbeat, 120.0, tonic, minor) };
@@ -351,9 +339,8 @@ fn a_detuned_band_keeps_its_key() {
     }
 }
 
-/// DJ-friendly house: 16 bars of drums alone, the groove, 16 bars of drums alone. The kick carries nearly all the
-/// level, so the old level-jump rule saw no intro or outro at all; the bass and chords arriving (tonal energy,
-/// brightness) are what mark them. A beatless pad opening ends where the beat starts.
+/// House with 16-bar drum intro and outro, marked by tonal energy, not level. A beatless pad intro ends where the
+/// beat starts.
 #[test]
 fn drum_intros_and_outros_are_sections() {
     use super::eval::{Song, Style, DRUMS, FULL};
@@ -373,9 +360,8 @@ fn drum_intros_and_outros_are_sections() {
     assert!((intro - truth.intro_end).abs() <= 60.0 / 122.0, "intro {intro}, the beat starts at {}", truth.intro_end);
 }
 
-/// A waltz is measured in bars of three, its downbeats on the bass; a four-beat song keeps bars of four.
 #[test]
-fn a_waltz_has_three_beats_to_the_bar() {
+fn waltz_has_three_beats() {
     use super::eval::{grid, precision, Song, Style, FULL};
     let song = Song { sections: vec![(24, FULL)], ..Song::new("waltz", Style::Waltz, 150.0, 5, false) };
     let (x, truth) = song.render();
@@ -387,8 +373,7 @@ fn a_waltz_has_three_beats_to_the_bar() {
     assert_eq!(four.beats_per_bar, 4);
 }
 
-/// Half-time: the grid may run at half the written tempo, but a bar must still start on the kick, not on the
-/// snare's beat three. The kick is what lands heavily in the low band; the snare only leaks into it.
+/// Half-time: bars start on the kick, not on the snare's beat three.
 #[test]
 fn half_time_bars_start_on_the_kick() {
     use super::eval::{grid, precision, Song, Style, FULL};
@@ -407,9 +392,6 @@ fn plan_from_real_analyses() {
     let p = plan::plan(Some(&a), Some(&b), a.duration_ms, b.duration_ms, &crate::types::AutoMixSettings::default());
     assert_eq!(p.kind, crate::types::TransitionKind::BeatMatched, "{}", p.reason);
     assert!((p.tempo_ratio - a.bpm / b.bpm).abs() < 1e-6);
-    let params = mixer::params(&p);
-    assert_eq!(params.len(), mixer::param::COUNT);
-    assert_eq!(params[mixer::param::DURATION], p.duration_ms as f32);
 }
 
 /// `cargo test --release -p nori-player analysis_cost -- --ignored --nocapture`
@@ -423,7 +405,6 @@ fn analysis_cost() {
         let a = analyse("t", &x, rate);
         let el = t0.elapsed();
         println!("{rate} Hz, 4 min mono: {:.0} ms ({:.2} BPM, conf {:.2})", el.as_secs_f64() * 1000.0, a.track.bpm, a.track.bpm_confidence);
-        // Split: the streaming front end vs the whole-track steps.
         let mut an = analysis::Analyzer::new(rate, 240_000);
         let t1 = std::time::Instant::now();
         an.feed(&x);
@@ -435,7 +416,7 @@ fn analysis_cost() {
     }
 }
 
-/// Analyses a raw PCM file, to compare what the app measures with what the file really is:
+/// Analyses raw PCM files:
 /// `NORI_PCM=/path/file.s16 NORI_RATE=44100 NORI_CH=2 cargo test --release -p nori-player -- --ignored --nocapture pcm_file`
 #[test]
 #[ignore]

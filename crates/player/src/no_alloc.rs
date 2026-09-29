@@ -5,7 +5,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use crate::automix::analysis::Analyzer;
-use crate::automix::{mixer, plan};
+use crate::automix::plan;
 use crate::dsp::{Band, Equalizer};
 use crate::engine::{Downstream, Heard, Host, Plan, StreamFormat, TransitionEngine};
 use crate::heard::{HeardTracker, PlayerNow};
@@ -162,7 +162,7 @@ fn holding_and_mixing() {
             out_start_us: 4_000_000,
             duration_us: t.duration_ms * 1000,
             in_skip_us: 0,
-            mixer: mixer::params(&t),
+            mixer: t.clone(),
             tempo_ratio: 1.0,
             keep_pitch: true,
             ramp_us: 0,

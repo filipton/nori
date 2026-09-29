@@ -185,7 +185,6 @@ pub enum TransitionKind {
     EchoOut,
 }
 
-/// Ordinals are carried in `automix::mixer::params`: only append.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FadeCurve {
     /// cos/sin: constant power, for material that does not add coherently.
@@ -195,7 +194,43 @@ pub enum FadeCurve {
     SineSquared,
 }
 
-/// A transition between two tracks. "Relative" fields count from the transition's start; -1 means unused.
+/// A filter sweep on the outgoing deck over `[start_ms, end_ms]` of the transition, exponential in frequency.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Sweep {
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub from_hz: f32,
+    pub to_hz: f32,
+}
+
+/// The incoming lows are cut below `cut_hz` until `at_ms`; over `len_ms` they come in and the outgoing lows go.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BassSwap {
+    pub at_ms: i64,
+    pub len_ms: i64,
+    pub cut_hz: f32,
+}
+
+/// Beat-synced echo on the outgoing deck: `delay_ms` is one outgoing beat, `feedback` (0..1) what each repeat
+/// keeps, `wet_db` the repeats' level.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Echo {
+    pub delay_ms: i64,
+    pub feedback: f32,
+    pub wet_db: f32,
+}
+
+/// The incoming voice band (centred on `hz`) is held `db` down until `until_ms`, released over the
+/// `release_ms` before it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VocalDuck {
+    pub until_ms: i64,
+    pub release_ms: i64,
+    pub db: f32,
+    pub hz: f32,
+}
+
+/// A transition between two tracks. "Relative" fields count from the transition's start.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TransitionPlan {
     pub kind: TransitionKind,
@@ -207,9 +242,9 @@ pub struct TransitionPlan {
     pub duration_ms: i64,
     /// Playback speed of the incoming track during the overlap (1 = native).
     pub tempo_ratio: f64,
-    /// After the overlap the incoming track ramps back to native speed over this many of its beats...
+    /// After the overlap the incoming track ramps back to native speed over this many of its beats,
     pub tempo_ramp_beats: i32,
-    /// ...which takes this long, wall-clock. 0 when there is no tempo change.
+    /// which takes this long, wall-clock. 0 when there is no tempo change.
     pub tempo_ramp_ms: i64,
     /// Time-stretch (true) or varispeed.
     pub keep_pitch: bool,
@@ -222,35 +257,19 @@ pub struct TransitionPlan {
     pub in_fade_end_ms: i64,
     /// Constant trim on the outgoing deck during the overlap.
     pub out_gain_db: f32,
-    /// Trim on the incoming deck; the mixer glides it back to 0 dB over the last quarter of the overlap.
+    /// Trim on the incoming deck; the mixer glides it back to 0 dB by the end of the overlap.
     pub in_gain_db: f32,
-    /// Relative. Until here the incoming lows are cut; over `bass_swap_len_ms` they come in and the outgoing lows go.
-    pub bass_swap_ms: i64,
-    pub bass_swap_len_ms: i64,
-    pub bass_cut_hz: f32,
-    /// Relative. Low-pass sweep on the outgoing track, `filter_from_hz` -> `filter_to_hz`.
-    pub filter_start_ms: i64,
-    pub filter_end_ms: i64,
-    pub filter_from_hz: f32,
-    pub filter_to_hz: f32,
-    /// Beat-synced echo on the outgoing deck, `-1` when off. `echo_delay_ms` is one outgoing beat;
-    /// `echo_feedback` 0..1 is what each repeat keeps; `echo_wet_db` is the repeats' level.
-    pub echo_delay_ms: i64,
-    pub echo_feedback: f32,
-    pub echo_wet_db: f32,
-    /// Outro loop: capture this many ms and loop it for `duration_ms`; -1 captures the full duration.
-    pub out_loop_ms: i64,
-    /// High-pass sweep on the outgoing track, -1 when off.
-    pub hp_start_ms: i64,
-    pub hp_end_ms: i64,
-    pub hp_from_hz: f32,
-    pub hp_to_hz: f32,
-    /// Relative. When both songs have vocals over the run-up, the incoming voice band (centred on
-    /// `vocal_duck_hz`) is held `vocal_duck_db` down until here, released over `vocal_duck_release_ms`; -1 off.
-    pub vocal_duck_until_ms: i64,
-    pub vocal_duck_release_ms: i64,
-    pub vocal_duck_db: f32,
-    pub vocal_duck_hz: f32,
+    /// Relative.
+    pub bass_swap: Option<BassSwap>,
+    /// Relative. Low-pass sweep on the outgoing track.
+    pub low_pass: Option<Sweep>,
+    /// Relative. High-pass sweep on the outgoing track (DJ "filter open").
+    pub high_pass: Option<Sweep>,
+    pub echo: Option<Echo>,
+    /// Outro loop: the engine holds this many ms of the outgoing track and reads it round for `duration_ms`.
+    pub out_loop_ms: Option<i64>,
+    /// Relative.
+    pub vocal_duck: Option<VocalDuck>,
     /// Why this plan, for logs.
     pub reason: String,
 }

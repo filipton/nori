@@ -1,7 +1,6 @@
 //! Whether a song's ending gets a transition, with which next song and settings, and converting the
 //! planner's answer (`automix::plan`) into the engine's [`Plan`].
 
-use crate::automix::mixer;
 use crate::engine::Plan;
 use crate::types::{AutoMixSettings, FadeCurve, TransitionKind, TransitionPlan};
 
@@ -166,11 +165,11 @@ pub fn engine_plan(p: &TransitionPlan, incoming_id: &str) -> Option<Plan> {
         out_start_us: p.out_start_ms * 1000,
         duration_us: p.duration_ms * 1000,
         in_skip_us: p.in_start_ms * 1000,
-        mixer: mixer::params(p),
+        mixer: p.clone(),
         tempo_ratio: p.tempo_ratio as f32,
         keep_pitch: p.keep_pitch,
         ramp_us: p.tempo_ramp_ms * 1000,
-        out_loop_us: p.out_loop_ms.max(0) * 1000,
+        out_loop_us: p.out_loop_ms.unwrap_or(0) * 1000,
     })
 }
 
@@ -324,7 +323,7 @@ mod tests {
     /// Mid-crossfade level of two uncorrelated signals relative to one alone, per curve.
     #[test]
     fn curve_levels_mid_fade() {
-        use crate::automix::mixer::{params, Mixer};
+        use crate::automix::mixer::Mixer;
         let n = 48_000usize;
         let mut rng = crate::automix::synth::Rng(0x9E37_79B9_7F4A_7C15);
         let a: Vec<f32> = (0..n).map(|_| rng.next() as f32 * 0.25).collect();
@@ -336,9 +335,9 @@ mod tests {
             let mut t = crate::automix::plan::plan(None, None, 200_000, 200_000, &s);
             shape_crossfade(&plain, &mut t);
             let mut m = Mixer::new(48_000, 1);
-            m.configure(&params(&t));
-            let mut out = vec![0f32; n];
-            unsafe { m.run(a.as_ptr(), b.as_ptr(), out.as_mut_ptr(), n, |v: f32| v as f64, |v| v as f32) };
+            m.configure(&t);
+            let mut out = a.clone();
+            m.process(&mut out, &b);
             let mid = n / 2 - 2_400..n / 2 + 2_400;
             20.0 * (rms(&out[mid.clone()]) / rms(&a[mid])).log10()
         };
