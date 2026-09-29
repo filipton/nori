@@ -260,7 +260,7 @@ mod tests {
         let path = dir.join("nori.db").display().to_string();
         settings_open(path.clone()).unwrap();
         let speaker = outputs_speaker();
-        assert_eq!(outputs_known(), [speaker.clone()], "the speaker the first time");
+        assert_eq!(outputs_known(), std::slice::from_ref(&speaker), "the speaker the first time");
         let seen = outputs_refresh(vec![8], vec!["Buds".into()], vec![speaker.clone()], None);
         assert_eq!(seen.known.unwrap(), ["Bluetooth: Buds", speaker.as_str()]);
         // Wait for the background write.
