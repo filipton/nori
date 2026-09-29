@@ -1638,7 +1638,7 @@ mod tests {
     }
 
     #[test]
-    fn a_track_too_big_for_the_sound_server_is_asked_for_again_smaller() {
+    fn open_fitting_halves_until_it_fits() {
         let track = Arc::new(Mutex::new(Track::default()));
         let fake = FakeOpener { track: track.clone(), float: true, now: Arc::new(AtomicU64::new(0)) };
         let format = OutputFormat { rate: 96_000, channels: 2, bits: 0 };
@@ -1647,7 +1647,7 @@ mod tests {
         let opened = open_fitting(&mut o, format, true, asked).expect("opened smaller");
         assert_eq!(o.2, vec![asked, asked / 2, asked / 4]);
         assert_eq!(opened.frames, asked / 4);
-        // Down to a second, and no further.
+        // Not below one second.
         let fake = FakeOpener { track, float: true, now: Arc::new(AtomicU64::new(0)) };
         let mut o = Cramped(fake, 1_000, Vec::new());
         assert!(open_fitting(&mut o, format, true, asked).is_err());
@@ -1782,7 +1782,7 @@ mod tests {
     }
 
     #[test]
-    fn while_music_plays_the_track_is_topped_up_about_every_ten_seconds_with_the_engine_woken_at_once() {
+    fn playing_wakes_once_per_burst() {
         let mut s = Sim::new(600, false, false);
         s.play();
         s.run(5_000);
@@ -1794,14 +1794,11 @@ mod tests {
         let refills = s.ring.lock().refills - refills;
         assert!((11..=14).contains(&wakes), "the writer woke {wakes} times in two minutes");
         assert!((11..=14).contains(&refills), "the engine decoded {refills} bursts in two minutes");
-        // Every top-up took the whole ring past its low mark: each woke the engine for its next burst, so it
-        // needs no timer of its own.
         assert_eq!(refills, wakes, "one burst decoded for every top-up");
     }
 
     #[test]
-    fn deep_an_engine_that_falls_behind_is_said_in_the_log_before_the_gap_and_the_gap_when_it_comes() {
-        // Nothing else says it: a deep track has nothing to grow, and a gap in the music left no line at all.
+    fn stalled_engine_is_logged() {
         let said = |what: &str| nori_core::alog::recent().iter().any(|(_, l)| l.starts_with("rust track: ") && l.contains(what));
         let mut s = Sim::new(600, false, false);
         s.play();
@@ -1821,9 +1818,8 @@ mod tests {
     }
 
     #[test]
-    fn a_track_that_gives_less_than_asked_is_topped_up_once_per_half_of_it() {
-        // A sound server that gives a third of a second of the eleven and a half asked. Timed by what was
-        // pulled for it rather than what it held, the writer looked every fill tick: fifty wakes a second.
+    fn small_track_tops_up_once_per_half() {
+        // 300 ms granted of 11.5 s asked. Regression: timing by pulled frames woke every fill tick.
         let mut s = Sim::granted(600, false, false, 300_000, 300_000);
         s.play();
         s.run(5_000);
@@ -1835,8 +1831,8 @@ mod tests {
     }
 
     #[test]
-    fn a_track_that_holds_less_than_it_says_is_counted_as_what_it_holds() {
-        // Says it holds the eleven and a half seconds asked, and takes half a second.
+    fn track_holding_less_than_claimed_is_resized() {
+        // Claims 11.5 s, takes 0.5 s.
         let mut s = Sim::granted(600, true, false, TRACK_US, 500_000);
         s.play();
         s.run(5_000);
@@ -1848,7 +1844,7 @@ mod tests {
     }
 
     #[test]
-    fn a_song_s_24_bit_samples_are_packed_in_place_bit_for_bit() {
+    fn pack24_is_exact() {
         let values = [0i32, 1, -1, 8_388_607, -8_388_608, 123_456, -654_321, 42];
         let mut staging: Vec<f32> = values.iter().map(|&v| v as f32 / 8_388_608.0).collect();
         staging.resize(16, 0.0);
@@ -1865,7 +1861,7 @@ mod tests {
     }
 
     #[test]
-    fn the_play_head_counts_on_past_its_32_bits() {
+    fn head_count_unwraps() {
         let mut h = HeadCount::default();
         assert_eq!(h.read(10), 10);
         assert_eq!(h.read(u32::MAX - 5), u32::MAX as u64 - 5);
@@ -1874,13 +1870,12 @@ mod tests {
     }
 
     #[test]
-    fn a_track_that_dies_is_opened_again_and_the_music_goes_on() {
+    fn dead_track_is_reopened() {
         let mut s = Sim::new(600, false, false);
         s.play();
         s.run(15_000);
         let wakes = s.wakes;
         s.track.lock().dead = true;
-        // Its next top-up finds it dead: another is opened and filled, and the music goes on from the ring.
         s.run(15_000);
         let t = s.track.lock();
         assert_eq!(t.reopened, 1, "one track opened in place of the dead one");
@@ -1890,7 +1885,7 @@ mod tests {
     }
 
     #[test]
-    fn a_track_that_dies_and_will_not_open_again_is_the_engine_s_to_hear_of() {
+    fn dead_track_that_wont_reopen_fails_the_output() {
         let mut s = Sim::new(600, false, false);
         s.play();
         s.run(15_000);
@@ -1906,7 +1901,7 @@ mod tests {
     }
 
     #[test]
-    fn a_start_fills_the_track_before_anything_else_and_then_sleeps() {
+    fn start_fills_then_sleeps() {
         let mut s = Sim::new(600, false, true);
         s.play();
         s.run(1_500);
@@ -1914,14 +1909,14 @@ mod tests {
         assert_eq!(t.buffered + t.played, t.capacity, "filled to full, so a track that waits for that starts");
         assert!(t.ready && t.played > 0, "and it plays");
         drop(t);
-        // One wake to fill it, two to read the device's clock as it settles.
+        // One fill wake and two settle readings.
         assert!(s.wakes <= 4, "the first second and a half took {} wakes", s.wakes);
         let next = s.next.unwrap() - s.now();
         assert!(next > 8_000 * MS, "then it sleeps until the track is low: {} ms", next / MS);
     }
 
     #[test]
-    fn the_clock_says_how_far_behind_the_ring_the_ear_is() {
+    fn latency_is_what_the_track_holds() {
         let mut s = Sim::new(600, true, false);
         s.play();
         s.run(3_333);
@@ -1932,12 +1927,11 @@ mod tests {
     }
 
     #[test]
-    fn a_flush_empties_the_track_and_it_fills_with_the_new_music() {
+    fn flush_refills_with_new_music() {
         let mut s = Sim::new(600, false, false);
         s.play();
         s.run(4_000);
         s.ring.lock().flush(-0.25);
-        // The engine's flush wakes the writer.
         s.wake();
         let t = s.track.lock();
         assert_eq!(t.flushes, 1);
@@ -1946,15 +1940,11 @@ mod tests {
         assert_eq!(s.clock.latency_frames(s.now()), t.buffered, "and the clock with it");
     }
 
-    /// The S22's silence after next was pressed fast and long: every skip is a flush of a track the songs
-    /// from the stream cache had just filled, and the platform lets go of what a flush dropped only at its
-    /// mixer's next period, so the write straight after it finds the track still full of the old music. A
-    /// track that refused a write so was once taken to hold no more than that (a tenth of a second), under
-    /// the quarter of a second it must hold before it starts after a flush: it never started again, the
-    /// engine's ring stood full, and the player said it played. A flush of the same track (the equalizer
-    /// switched) kept the size; only a new track, the output opened again, brought the music back.
+    /// Regression (Galaxy S22): fast skips flush a full track whose flush the platform applies only at the
+    /// next mixer period; the refused writes shrank the capacity below the start threshold and the track
+    /// never started again.
     #[test]
-    fn next_pressed_fast_over_a_full_track_leaves_it_playing() {
+    fn fast_skips_over_full_track_keep_playing() {
         for round in 0..40u64 {
             let mut s = Sim::new(600, false, false);
             let mut dice = Dice(1 + round * 7919);
@@ -1970,9 +1960,8 @@ mod tests {
             s.run(3_000 + dice.roll(8_000));
             let presses = 10 + dice.roll(10);
             for k in 0..presses {
-                // Each song from the cache: its first burst is in the ring at once.
+                // A cached song: its first burst is ready at once; the writer wakes up to 3 ms later.
                 s.ring.lock().flush(if k % 2 == 0 { -0.25 } else { 0.25 });
-                // The engine's flush wakes the writer, now or a moment later.
                 let late = dice.roll(3) * MS;
                 s.next = Some(s.now() + late);
                 s.run(2 + dice.roll(200));
@@ -1993,16 +1982,14 @@ mod tests {
         }
     }
 
-    /// A pause stops the track's clock at once, on the engine's thread (`TrackOutput::pause`), so the ear is
-    /// read where it stopped. Played again before the writer woke, the writer never saw the pause: the track
-    /// played on, and so must the clock that times its top-ups, or it stands with the track's seconds
-    /// counted as still in it and the track runs dry while the player says it plays.
+    /// Regression: `TrackOutput::pause` freezes the clock at once; resumed before the writer woke, the
+    /// clock stayed frozen and the track ran dry.
     #[test]
-    fn a_pause_taken_back_before_the_writer_woke_leaves_the_music_playing() {
+    fn pause_undone_before_wake_keeps_playing() {
         let mut s = Sim::new(600, false, false);
         s.play();
         s.run(3_000);
-        // `TrackOutput::pause` and `resume`, one after the other.
+        // `TrackOutput::pause` then `resume`.
         s.clock.freeze(s.now());
         s.control.playing = false;
         s.control.playing = true;
@@ -2014,11 +2001,9 @@ mod tests {
         assert!(t.played >= played + 29 * RATE as u64, "thirty seconds heard: {} ms", (t.played - played) * 1000 / RATE as u64);
     }
 
-    /// A flush on a track that starts only once full (before Android 12), the engine decoding the new
-    /// music half a second at a time: the track is heard again within a moment, not once all of its
-    /// eleven seconds have been decoded and written; then it is deep again, and never runs dry.
+    /// Pre-Android 12 track (starts when full): audible within 60 ms of a flush, then deep again.
     #[test]
-    fn a_track_that_starts_only_full_is_heard_again_at_once_after_a_flush() {
+    fn starts_full_track_resumes_quickly_after_flush() {
         let mut s = Sim::new(600, false, true);
         s.play();
         s.run(4_000);
@@ -2042,7 +2027,7 @@ mod tests {
     }
 
     #[test]
-    fn paused_it_writes_nothing_and_sleeps_until_told() {
+    fn paused_writes_nothing_and_sleeps() {
         let mut s = Sim::new(600, false, false);
         s.play();
         s.run(2_000);
@@ -2058,7 +2043,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fade_runs_at_the_track_s_volume_and_ticks_only_while_it_lasts() {
+    fn fade_ticks_only_while_running() {
         let mut s = Sim::new(600, false, false);
         s.play();
         s.run(1_000);
@@ -2074,12 +2059,9 @@ mod tests {
     }
 
     #[test]
-    fn a_ring_kept_shallower_than_the_track_never_lets_it_run_dry() {
-        // The phone's report: the equalizer screen's shallow buffer reached the engine's ring at a song's
-        // start, and from there the ring held half a second, topped up on the engine's 200 ms timer, while
-        // the track was the deep one. Filling the track after that flush never ended, and the writer
-        // backed off to a second between looks while each moved half a second in: a gap about once a
-        // second.
+    fn shallow_ring_never_starves_deep_track() {
+        // Regression: a 0.5 s ring on a 200 ms timer never filled the deep track, and the fill back-off
+        // grew to a second: a gap every second.
         let mut s = Sim::new(600, false, false);
         s.ring.lock().kept(Engine::Timer { cap: RATE as usize / 2, every: 200 * MS });
         s.ring.lock().flush(0.25);
@@ -2089,22 +2071,20 @@ mod tests {
         assert_eq!(s.track.lock().underruns, 0, "never runs dry");
     }
 
-    /// The ring the engine keeps while the equalizer is tuned, in frames.
+    /// The engine's shallow ring, frames.
     fn shallow_ring() -> usize {
         (RATE as i64 * nori_engine::output::SHALLOW_US / 1_000_000) as usize
     }
 
     #[test]
-    fn tuned_the_track_is_made_shallow_in_place_and_never_runs_dry_for_a_late_writer_and_a_jittery_mixer() {
+    fn shallow_in_place_survives_jitter() {
         let mut s = Sim::new(600, false, false);
-        // A mixer reading 20 ms at a time, up to 8 ms late; a writer woken up to 30 ms late.
+        // Mixer: 20 ms periods, up to 8 ms late; writer up to 30 ms late.
         s.mixed(20, 8);
         s.late = 30 * MS;
         s.play();
         s.run(15_000);
-        // The equalizer screen: the engine keeps its ring shallow and says so; a band moved before the
-        // deep seconds have played out makes the music again where the ear is (a flush), and from then on
-        // the engine wakes up to 15 ms late whenever the ring runs down to half.
+        // Equalizer opened: shallow ring, a band move flushes, the engine refills up to 15 ms late.
         s.control.shallow = true;
         s.wake();
         {
@@ -2125,7 +2105,7 @@ mod tests {
         assert!(ms <= 250, "a band moved is heard {ms} ms later at most");
         let wakes = s.wakes - wakes;
         assert!(wakes <= 60 * 16, "about once per 80 ms: {wakes} wakes in a minute");
-        // The screen closed: deep again at once, and in bursts.
+        // Closed: deep again, in bursts.
         s.control.shallow = false;
         s.ring.lock().kept(Engine::Bursts);
         s.wake();
@@ -2140,9 +2120,7 @@ mod tests {
         assert!(s.wakes - wakes <= 8, "back to a wake every ten seconds or so: {}", s.wakes - wakes);
     }
 
-    /// The equalizer screen opened and closed `rounds` times over a track that records what it plays,
-    /// read by a jittery mixer and written by a late writer: the longest silence heard and the frames
-    /// heard out of their order.
+    /// Toggles shallow/deep `rounds` times under jitter; returns the longest silence and out-of-order frames.
     fn tuned_back_and_forth(starts_full: bool, rounds: usize) -> (u64, u32) {
         let mut s = Sim::new(900, true, starts_full);
         s.ring.lock().counting = true;
@@ -2153,13 +2131,11 @@ mod tests {
         s.run(15_000);
         let deep = track_frames(RATE, false);
         for round in 0..rounds {
-            // Opened while the track is full, or while the deep seconds are still playing out.
             s.control.shallow = true;
             s.ring.lock().kept(Engine::Shallow { cap: shallow_ring(), late: 15 * MS });
             s.wake();
             assert_eq!(s.track.lock().size, track_frames(RATE, true), "round {round}: shallow at once");
-            // What the ring and the track held of the deep buffer plays out first; then a band moved is
-            // heard within a quarter of a second.
+            // After the deep buffer plays out, latency is at most 250 ms.
             s.run(25_000);
             s.deepest = 0;
             s.run(5_000);
@@ -2169,7 +2145,7 @@ mod tests {
             s.ring.lock().kept(Engine::Bursts);
             s.wake();
             assert_eq!(s.track.lock().size, deep, "round {round}: deep at once");
-            // Closed again before the deep buffer has filled, once in a while.
+            // Every other round, reopened before the deep buffer refills.
             s.run(if round % 2 == 0 { 20_000 } else { 3_000 });
         }
         let t = s.track.lock();
@@ -2180,7 +2156,7 @@ mod tests {
     }
 
     #[test]
-    fn the_equalizer_screen_opening_and_closing_is_not_heard_either_way() {
+    fn shallow_deep_switches_are_seamless() {
         for starts_full in [false, true] {
             let (silence, jumps) = tuned_back_and_forth(starts_full, 6);
             let ms = silence as f64 * 1000.0 / RATE as f64;
@@ -2190,7 +2166,7 @@ mod tests {
     }
 
     #[test]
-    fn a_track_made_shallow_plays_what_it_holds_and_takes_more_once_below_its_new_size() {
+    fn shallowing_plays_out_what_it_holds() {
         let mut s = Sim::new(600, false, false);
         s.play();
         s.run(3_000);
@@ -2208,7 +2184,7 @@ mod tests {
     }
 
     #[test]
-    fn a_track_that_died_while_tuned_is_opened_deep_and_made_shallow_again() {
+    fn dead_shallow_track_reopens_shallow() {
         let mut s = Sim::new(600, false, false);
         s.play();
         s.run(3_000);
@@ -2222,9 +2198,7 @@ mod tests {
         assert_eq!((t.capacity, t.size), (track_frames(RATE, false), track_frames(RATE, true)));
     }
 
-    /// Tuned over a Bluetooth output ([`Sim::bluetooth`], which says what it is or not) after 15 s played
-    /// deep: made shallow in place, a band moved made again at once (a flush) as the engine does, and
-    /// the engine's ring following what the writer found. Returns the sim, playing shallow.
+    /// 15 s deep over Bluetooth ([`Sim::bluetooth`]), then shallow with a flush; returns the sim.
     fn tuned_over_bluetooth(says: bool) -> Sim {
         let mut s = Sim::new(900, false, false);
         s.bluetooth(200, says);
@@ -2250,7 +2224,7 @@ mod tests {
     }
 
     #[test]
-    fn tuned_over_bluetooth_the_track_is_as_deep_as_the_output_needs_and_never_runs_dry() {
+    fn shallow_sized_for_reported_bluetooth_route() {
         let mut s = tuned_over_bluetooth(true);
         let bt = RATE as u64 / 5;
         let (_, capacity) = shallow_marks(RATE, bt, bt);
@@ -2271,7 +2245,6 @@ mod tests {
         assert!(ms <= 700, "a band moved reaches the output {ms} ms later at most (and its own 200 ms after that)");
         let wakes = s.wakes - wakes;
         assert!(wakes <= 60 * 12, "{wakes} wakes in a minute");
-        // Closed: deep again, in place.
         s.control.shallow = false;
         s.ring.lock().kept(Engine::Bursts);
         s.wake();
@@ -2281,7 +2254,7 @@ mod tests {
     }
 
     #[test]
-    fn tuned_over_an_output_that_says_nothing_the_track_grows_for_what_it_sees_and_stops_running_dry() {
+    fn shallow_grows_for_unreported_latency() {
         let mut s = tuned_over_bluetooth(false);
         assert_eq!(s.track.lock().size, track_frames(RATE, true), "at first, as for the speaker");
         for _ in 0..20 {
@@ -2304,7 +2277,7 @@ mod tests {
     }
 
     #[test]
-    fn the_shallow_marks_are_the_speaker_s_for_an_output_that_needs_no_more_and_grow_with_what_it_does() {
+    fn shallow_marks_by_route() {
         let f = |ms: u64| ms * RATE as u64 / 1000;
         assert_eq!(shallow_marks(RATE, 0, 0), (f(80), f(160)), "the speaker's, as before");
         assert_eq!(shallow_marks(RATE, f(10), f(20)), (f(80), f(160)));
@@ -2316,7 +2289,7 @@ mod tests {
         assert!(capacity < f(2_000));
     }
 
-    /// An AudioTrack playing on the real clock, keeping every sample written since its last flush.
+    /// A fake AudioTrack on the real clock, keeping every sample since the last flush.
     #[derive(Default)]
     struct Live {
         written: Vec<i16>,
@@ -2324,10 +2297,8 @@ mod tests {
         since: Option<std::time::Instant>,
         flushes: u32,
         volumes: Vec<f32>,
-        /// As a phone's track is (the S22's): it holds only the buffer it was opened with (`bounded`), plays
-        /// nothing after a flush until it holds its start threshold, and a flush straight after a pause of
-        /// the music is done only at the mixer's next period (`defer`), what it dropped taking up room until
-        /// then. Off, it takes everything and plays at once.
+        /// Phone-like behaviour: bounded buffer, start threshold after a flush, and a flush right after a
+        /// pause applied only after `defer` (the dropped frames take room until then).
         bounded: bool,
         size: u64,
         threshold: u64,
@@ -2348,7 +2319,7 @@ mod tests {
             (self.written.len() as u64 / 2).saturating_sub(self.played())
         }
 
-        /// The mixer's period since a pause came round: a flush waiting for it is done.
+        /// Applies a deferred flush once its period has passed.
         fn mixed(&mut self) {
             if self.pausing_until.is_some_and(|t| std::time::Instant::now() >= t) {
                 self.pausing_until = None;
@@ -2356,7 +2327,7 @@ mod tests {
             }
         }
 
-        /// Started, the flush before done, and holding what it must to play: the clock runs from now.
+        /// Starts the clock once playing, flushed and above the threshold.
         fn start_if_filled(&mut self) {
             self.mixed();
             if self.playing && self.since.is_none() && self.stale == 0 && (!self.filling_up || self.buffered() >= self.threshold) {
@@ -2489,7 +2460,7 @@ mod tests {
     }
 
     #[test]
-    fn the_engine_plays_through_it_sample_for_sample_and_its_fades_and_jumps_reach_the_track() {
+    fn engine_end_to_end_samples_seek_fade() {
         let songs = [tone(3, 440.0), tone(3, 660.0)];
         let wavs = Arc::new(Wavs(vec![("a".into(), Arc::new(wav(&songs[0]))), ("b".into(), Arc::new(wav(&songs[1])))]));
         let live = Arc::new(Mutex::new(Live::default()));
@@ -2513,7 +2484,7 @@ mod tests {
         }
         assert_eq!(engine.status().state, nori_engine::State::Playing, "the ring ran empty, the track did not: still playing");
 
-        // A jump to the second song a second in: the track is emptied, and holds the new music only.
+        // Seek to song 2 at 1 s: the track holds only the new music.
         engine.play_at(1, 1_000);
         assert!(
             wait(5, || {
@@ -2531,19 +2502,18 @@ mod tests {
         let at = engine.status().position_ms;
         assert!(at < 2_500, "a second and a bit into the song, not further: {at}");
 
-        // A pause fades at the track's volume, then the track stops.
+        // Pause fades the track volume, then pauses.
         live.lock().volumes.clear();
         engine.pause();
         assert!(wait(5, || live.lock().since.is_none()), "paused");
         let l = live.lock();
-        // A fade, not a cut: more than one step, only ever down. How many steps fit in the 200 ms depends
-        // on how often a loaded machine wakes the writer, so the count is not the test.
+        // Several monotonic steps (the count depends on machine load).
         assert!(l.volumes.len() >= 2, "the fade out ran in steps: {:?}", l.volumes);
         assert!(l.volumes.windows(2).all(|w| w[1] <= w[0]), "only ever down: {:?}", l.volumes);
         assert_eq!(l.volumes.last(), Some(&0.0));
         drop(l);
 
-        // Played on to the end of the queue: over only once the track has played its last frame.
+        // Ended only once the track played its last frame.
         engine.play();
         assert!(wait(6, || engine.status().state == nori_engine::State::Ended), "the queue ends");
         let l = live.lock();
@@ -2552,7 +2522,7 @@ mod tests {
         engine.stop();
     }
 
-    /// Songs as WAV files on the disk, as the stream cache keeps them: opened and decoded at once.
+    /// Songs as WAV files on disk.
     struct Files {
         dir: nori_testdir::TempDir,
         ms: i64,
@@ -2569,18 +2539,15 @@ mod tests {
         }
     }
 
-    /// The phone's report, end to end: the equalizer and AutoMix on, next pressed a dozen times and more,
-    /// most a few to two hundred milliseconds apart and every fourth once the track has been filled to the
-    /// brim again, through songs the stream cache has whole; the engine on its own thread and
-    /// this output over a track that behaves as a phone's does (its buffer, its start threshold, a flush
-    /// done at the mixer's next period). The music must be heard again after the last press, and go on.
+    /// End to end regression for [`fast_skips_over_full_track_keep_playing`]: equalizer and AutoMix on,
+    /// 12-15 skips 5-200 ms apart (every fourth after the track refilled), on a phone-like track.
     #[test]
-    fn the_engine_through_it_plays_on_after_next_is_pressed_fast_and_long() {
+    fn engine_plays_on_after_fast_skips() {
         const SECS: u32 = 30;
         let ms = SECS as i64 * 1000;
         let ids: Vec<String> = (0..20).map(|k| format!("s{k}")).collect();
         let files = Arc::new(Files { dir: nori_testdir::TempDir::new("nori-android-skips"), ms });
-        // One song's bytes under every name.
+        // One file, hard-linked under every id.
         let first = files.dir.join("s0.wav");
         std::fs::write(&first, wav(&tone(SECS, 330.0))).expect("a song on the disk");
         for id in &ids[1..] {
@@ -2592,8 +2559,7 @@ mod tests {
         queue.0.lock().set(ids.clone(), Some(0), false, 0);
         let mut app = nori_player::sim::App::new();
         app.prefs = nori_player::transitions::TransitionPrefs { auto_mix: true, keep_albums: false, ..nori_player::sim::prefs_off() };
-        // Measured already, as the core's measurer does it off the engine's thread: the simulated app would
-        // measure whole songs on it.
+        // Pre-measured, so the simulated app doesn't analyse on the engine thread.
         for id in &ids {
             let a = nori_player::types::TrackAnalysis { song_id: id.clone(), analysis_version: nori_player::automix::ANALYSIS_VERSION, duration_ms: ms, bpm: 120.0, bpm_confidence: 1.0, lufs: -14.0, silence_end_ms: ms, mixramp_end_ms: ms, outro_start_ms: ms - 8_000, ..Default::default() };
             app.analyses.insert(id.clone(), a);
@@ -2603,7 +2569,7 @@ mod tests {
         let config = nori_engine::Config { settings, ..Default::default() };
         let engine = nori_engine::Engine::start(OnDisk(files.clone()), app, queue, Box::new(output), None, config, |_| {});
         engine.queue_changed();
-        // The place is read four times a second, as the screen asks for it while it is open.
+        // Position polled 4x/s, as the screen does.
         engine.position_updates(Some(Duration::from_millis(250)));
         engine.play_at(0, 0);
         let brim = || {
@@ -2615,10 +2581,8 @@ mod tests {
         let mut dice = Dice(0x5EED);
         let presses = 12 + dice.roll(4) as usize;
         for k in 1..=presses {
-            // As the app skips: a jump to the song after the one on the screen.
             engine.go_to(k, 0);
             if k % 4 == 0 {
-                // A breath between presses: the song pressed to fills the track to the brim again.
                 wait(3, brim);
             } else {
                 std::thread::sleep(Duration::from_millis(5 + dice.roll(195) as u64));
@@ -2644,7 +2608,7 @@ mod tests {
     }
 
     #[test]
-    fn at_the_end_a_track_that_starts_only_full_is_told_to_play_what_it_has() {
+    fn starts_full_track_is_stopped_at_the_end() {
         let mut s = Sim::new(4, false, true);
         s.play();
         s.run(10_000);
