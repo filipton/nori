@@ -392,7 +392,7 @@ impl Analyzer {
             let bin = i + 1;
             let f = bin as f64 * bin_hz;
             fsum += f * p as f64;
-            if f >= VOCAL_LO_HZ && f <= VOCAL_HI_HZ {
+            if (VOCAL_LO_HZ..=VOCAL_HI_HZ).contains(&f) {
                 vocal += p;
             }
             if bin < self.low_bins {
@@ -420,7 +420,7 @@ impl Analyzer {
         self.f.vocal.push(vocal / (total + 1e-12));
         self.f.centroid.push((fsum / (total as f64 + 1e-9)) as f32);
 
-        if self.hops % CHROMA_EVERY == 0 {
+        if self.hops.is_multiple_of(CHROMA_EVERY) {
             if self.hops == 0 {
                 self.f.chroma_t0 = (self.written as f64 - self.cn as f64 / 2.0) / self.sr;
             }

@@ -310,7 +310,8 @@ fn pair_gate(a: &TrackAnalysis, b: &TrackAnalysis) -> Verdict {
 
 /// Echo-out for a clashing pair: four outgoing beats from a downbeat, the outgoing track into a beat-synced echo
 /// while the incoming one fades in. No tempo change, no bass swap.
-fn echo_out(a: &TrackAnalysis, b: &TrackAnalysis, out_dur: i64, in_dur: i64, max_len: i64, s: &AutoMixSettings, cause: &str) -> Option<TransitionPlan> {
+fn echo_out(a: &TrackAnalysis, b: &TrackAnalysis, room: Room, s: &AutoMixSettings, cause: &str) -> Option<TransitionPlan> {
+    let Room { out_dur, in_dur, max_len } = room;
     let beat = 60_000.0 / a.bpm;
     if !beat.is_finite() || beat <= 0.0 {
         return None;
@@ -325,7 +326,7 @@ fn echo_out(a: &TrackAnalysis, b: &TrackAnalysis, out_dur: i64, in_dur: i64, max
     let end_a = ending.leave(0.0);
     let bpb = bar_beats(a);
     let phase = (a.downbeat_phase as i64).rem_euclid(bpb);
-    let mut n = ((end_a as f64 - dur as f64 - a.beat_offset_ms) / beat).floor() as i64;
+    let mut n = ((end_a - dur as f64 - a.beat_offset_ms) / beat).floor() as i64;
     while n.rem_euclid(bpb) != phase {
         n -= 1;
     }
@@ -378,6 +379,7 @@ pub fn plan(out: Option<&TrackAnalysis>, inc: Option<&TrackAnalysis>, out_durati
     if max_len < MIN_FADE_MS {
         return blank(TransitionKind::Gapless, out_dur, 0, 0, "tracks too short: gapless".into());
     }
+    let room = Room { out_dur, in_dur, max_len };
     let (a, b) = (usable(out, out_dur).map(at_end), usable(inc, in_dur).map(at_start));
     let (a, b) = (a.as_ref(), b.as_ref());
     let mut why_not = String::new();
@@ -397,21 +399,21 @@ pub fn plan(out: Option<&TrackAnalysis>, inc: Option<&TrackAnalysis>, out_durati
             // Singers can be kept apart by filters, so try a beat-matched mix before an echo-out; far keys cannot.
             let separable = v.cause == VOCALS_OVERLAP && s.filter_effects;
             if v.clash && s.echo_out && !separable {
-                if let Some(p) = echo_out(a, b, out_dur, in_dur, max_len, s, v.cause) {
+                if let Some(p) = echo_out(a, b, room, s, v.cause) {
                     return p;
                 }
             }
-            match beat_matched(a, b, out_dur, in_dur, max_len, s, short_cause) {
+            match beat_matched(a, b, room, s, short_cause) {
                 Ok(p) => return p,
                 Err(e) => why_not = e,
             }
             if v.clash && s.echo_out && separable {
-                if let Some(p) = echo_out(a, b, out_dur, in_dur, max_len, s, v.cause) {
+                if let Some(p) = echo_out(a, b, room, s, v.cause) {
                     return p;
                 }
             }
         } else {
-            match beat_matched(a, b, out_dur, in_dur, max_len, s, "") {
+            match beat_matched(a, b, room, s, "") {
                 Ok(p) => return p,
                 Err(e) => why_not = e,
             }
@@ -419,18 +421,26 @@ pub fn plan(out: Option<&TrackAnalysis>, inc: Option<&TrackAnalysis>, out_durati
     }
     let sung_both = verdict.is_some_and(|v| v.cause == VOCALS_OVERLAP);
     if s.beat_match && (a.is_some_and(grid_ok) || b.is_some_and(grid_ok)) {
-        if let Some(mut p) = one_grid(a, b, out_dur, in_dur, max_len, s, short, &why_not) {
+        if let Some(mut p) = one_grid(a, b, room, s, short, &why_not) {
             separate_in_fade(&mut p, s, sung_both);
             return p;
         }
     }
     if a.is_some() || b.is_some() {
-        let mut p = mixramp(a, b, out_dur, in_dur, max_len, s, &why_not);
+        let mut p = mixramp(a, b, room, s, &why_not);
         separate_in_fade(&mut p, s, sung_both);
         return p;
     }
     let dur = max_len.min(MAX_BLIND_FADE_MS);
     blank(TransitionKind::EqualPowerFade, out_dur - dur, 0, dur, "not analysed: equal-power fade".into())
+}
+
+/// What a transition must fit in, ms: both songs' lengths and the longest overlap.
+#[derive(Clone, Copy)]
+struct Room {
+    out_dur: i64,
+    in_dur: i64,
+    max_len: i64,
 }
 
 /// Two grids locked together.
@@ -532,7 +542,8 @@ const CHORDLESS_DB: f32 = 3.0;
 /// every downbeat of the outgoing song's last sixteen bars (and those before its exit), with run-ups of 16 bars
 /// down to none and tails of a beat to four bars. Windows over the skip cap or that do not fit are dropped; the
 /// rest are scored.
-fn drop_aligned(a: &TrackAnalysis, b: &TrackAnalysis, out_dur: i64, in_dur: i64, max_len: i64, bpm_b: f64, k: &Lock) -> Option<Window> {
+fn drop_aligned(a: &TrackAnalysis, b: &TrackAnalysis, room: Room, bpm_b: f64, k: &Lock) -> Option<Window> {
+    let Room { out_dur, in_dur, max_len } = room;
     let (beat, bar, ratio) = (k.beat, k.bar, k.ratio);
     let ending = Ending::of(a, out_dur);
     let phase_a = (a.downbeat_phase as i64).rem_euclid(k.bpb);
@@ -692,7 +703,8 @@ fn drop_aligned(a: &TrackAnalysis, b: &TrackAnalysis, out_dur: i64, in_dur: i64,
     best
 }
 
-fn beat_matched(a: &TrackAnalysis, b: &TrackAnalysis, out_dur: i64, in_dur: i64, max_len: i64, s: &AutoMixSettings, short_cause: &str) -> Result<TransitionPlan, String> {
+fn beat_matched(a: &TrackAnalysis, b: &TrackAnalysis, room: Room, s: &AutoMixSettings, short_cause: &str) -> Result<TransitionPlan, String> {
+    let out_dur = room.out_dur;
     let bpm_a = bpm_with_tag(a.bpm, s.out_tag_bpm);
     let bpm_b = bpm_with_tag(b.bpm, s.in_tag_bpm);
     let mut ratio = match_ratio(bpm_a, bpm_b);
@@ -719,7 +731,7 @@ fn beat_matched(a: &TrackAnalysis, b: &TrackAnalysis, out_dur: i64, in_dur: i64,
     let mild_clash = dist.is_some_and(|d| d > 2);
     let max_bars = if mild_clash || !short_cause.is_empty() || dist == Some(2) { 8 } else { 16 };
     let k = Lock { ratio, pct, bpm_a, b_bpm, bpb, beat: beat_a, bar, dist, mild_clash, max_bars, separate: s.filter_effects };
-    let w = drop_aligned(a, b, out_dur, in_dur, max_len, bpm_b, &k).ok_or("no bar-aligned window fits")?;
+    let w = drop_aligned(a, b, room, bpm_b, &k).ok_or("no bar-aligned window fits")?;
     let ending = Ending::of(a, out_dur);
     let left = ending.exit < ending.music_end && (w.start + w.swap - ending.exit).abs() <= 0.5 * k.beat;
     let leaving = match (left, ending.breakdown) {
@@ -825,7 +837,8 @@ fn finish_beat_matched(a: &TrackAnalysis, b: &TrackAnalysis, s: &AutoMixSettings
 
 /// A fade aligned to the one usable grid when the two could not be locked: an exit on outgoing downbeats, or an
 /// entrance on an incoming downbeat. No tempo change.
-fn one_grid(a: Option<&TrackAnalysis>, b: Option<&TrackAnalysis>, out_dur: i64, in_dur: i64, max_len: i64, s: &AutoMixSettings, short: bool, why_not: &str) -> Option<TransitionPlan> {
+fn one_grid(a: Option<&TrackAnalysis>, b: Option<&TrackAnalysis>, room: Room, s: &AutoMixSettings, short: bool, why_not: &str) -> Option<TransitionPlan> {
+    let Room { out_dur, in_dur, max_len } = room;
     let tail = if why_not.is_empty() { String::new() } else { format!(" ({why_not})") };
     let ending = a.map(|x| Ending::of(x, out_dur));
     let end_a = ending.map_or(out_dur, |e| e.leave(0.0).round() as i64);
@@ -891,7 +904,8 @@ fn one_grid(a: Option<&TrackAnalysis>, b: Option<&TrackAnalysis>, out_dur: i64, 
     None
 }
 
-fn mixramp(a: Option<&TrackAnalysis>, b: Option<&TrackAnalysis>, out_dur: i64, in_dur: i64, max_len: i64, s: &AutoMixSettings, why_not: &str) -> TransitionPlan {
+fn mixramp(a: Option<&TrackAnalysis>, b: Option<&TrackAnalysis>, room: Room, s: &AutoMixSettings, why_not: &str) -> TransitionPlan {
+    let Room { out_dur, in_dur, max_len } = room;
     let end_a = a.map_or(out_dur, |a| Ending::of(a, out_dur).leave(0.0).round() as i64);
     let in_start = b.map_or(0, |b| b.silence_start_ms.clamp(0, in_dur / 3));
     // The outgoing quiet tail and the incoming quiet head (an exit before the end has no quiet tail).

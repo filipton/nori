@@ -165,7 +165,7 @@ impl SweepFilter {
         if p < self.span.start {
             return 0.0;
         }
-        if (p - self.span.start) % SWEEP_STEP == 0 {
+        if (p - self.span.start).is_multiple_of(SWEEP_STEP) {
             self.retune(rate, p);
         }
         ((p - self.entry_from.min(p)) as f64 / entry as f64).min(1.0)
@@ -392,8 +392,8 @@ impl Mixer {
         for f in [&mut self.high_pass, &mut self.low_pass].into_iter().flatten() {
             let wet = f.wet(rate, entry, p);
             if wet > 0.0 {
-                for c in 0..ch {
-                    o[c] = f.run(c, o[c], wet);
+                for (c, x) in o[..ch].iter_mut().enumerate() {
+                    *x = f.run(c, *x, wet);
                 }
             }
         }
@@ -403,8 +403,8 @@ impl Mixer {
             _ => 0.0,
         };
         if duck > 0.0 {
-            for c in 0..ch {
-                i[c] -= duck * self.duck_coef.run(&mut self.duck_state[c], i[c]);
+            for (x, s) in i[..ch].iter_mut().zip(&mut self.duck_state) {
+                *x -= duck * self.duck_coef.run(s, *x);
             }
         }
         if let Some((d, fb, wet)) = self.echo {
