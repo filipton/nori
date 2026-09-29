@@ -20,7 +20,7 @@ use std::sync::Arc;
 use nori_engine::{Config, Engine, Event, Library, Located, Settings, SharedQueue, Source};
 use parking_lot::Mutex;
 use nori_player::automix::analysis::Analyzer;
-use nori_player::automix::{mixer, plan};
+use nori_player::automix::plan;
 use nori_player::engine::{Host, Plan};
 use nori_player::pipeline::App;
 use nori_player::sim;
@@ -126,7 +126,7 @@ fn beat_matched() -> Plan {
         out_start_us: MIX_AT_MS * 1000,
         duration_us: MIX_MS * 1000,
         in_skip_us: SKIP_MS * 1000,
-        mixer: mixer::params(&t),
+        mixer: t.clone(),
         tempo_ratio: TEMPO,
         keep_pitch: true,
         ramp_us: RAMP_MS * 1000,

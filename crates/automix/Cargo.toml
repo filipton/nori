@@ -3,14 +3,12 @@ name = "nori-automix"
 version.workspace = true
 edition.workspace = true
 
-# AutoMix over the app's database: the analysis store, the transition planner the audio path asks, the
-# transition engine's host and measuring ahead. The analysis and planning themselves are nori-player's.
+# AutoMix over the app's database. The analysis and planning themselves are nori-player's.
 [lib]
 name = "nori_automix"
 
 [features]
-# The uniffi exports the Android app's Kotlin bindings are generated from. A Rust client links the
-# crate without them.
+# uniffi exports for the Android app's Kotlin bindings.
 ffi = ["dep:uniffi", "nori-model/ffi", "nori-db/ffi"]
 
 [dependencies]

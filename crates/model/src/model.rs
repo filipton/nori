@@ -3,7 +3,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
 // Player types, redeclared below for uniffi.
-pub use nori_player::types::{AutoMixSettings, EqBand, EqKind, FadeCurve, NamedPreset, PresetKind, TrackAnalysis, TransitionKind, TransitionPlan};
+pub use nori_player::types::{AutoMixSettings, EqBand, EqKind, FadeCurve, NamedPreset, PresetKind, TrackAnalysis};
 
 /// `starred` is a timestamp on the wire and a bool once stored.
 fn flag<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
@@ -699,61 +699,10 @@ pub struct AutoMixSettings {
 
 #[cfg(feature = "ffi")]
 #[uniffi::remote(Enum)]
-pub enum TransitionKind {
-    Gapless,
-    EqualPowerFade,
-    MixRampFade,
-    BeatMatched,
-    EchoOut,
-}
-
-/// Ordinals are stored in mixer params (`automix::mixer::params`): only append.
-#[cfg(feature = "ffi")]
-#[uniffi::remote(Enum)]
 pub enum FadeCurve {
     EqualPower,
     Linear,
     SineSquared,
-}
-
-#[cfg(feature = "ffi")]
-#[uniffi::remote(Record)]
-pub struct TransitionPlan {
-    pub kind: TransitionKind,
-    pub out_start_ms: i64,
-    pub in_start_ms: i64,
-    pub duration_ms: i64,
-    pub tempo_ratio: f64,
-    pub tempo_ramp_beats: i32,
-    pub tempo_ramp_ms: i64,
-    pub keep_pitch: bool,
-    pub fade_curve: FadeCurve,
-    pub out_fade_start_ms: i64,
-    pub out_fade_end_ms: i64,
-    pub in_fade_start_ms: i64,
-    pub in_fade_end_ms: i64,
-    pub out_gain_db: f32,
-    pub in_gain_db: f32,
-    pub bass_swap_ms: i64,
-    pub bass_swap_len_ms: i64,
-    pub bass_cut_hz: f32,
-    pub filter_start_ms: i64,
-    pub filter_end_ms: i64,
-    pub filter_from_hz: f32,
-    pub filter_to_hz: f32,
-    pub echo_delay_ms: i64,
-    pub echo_feedback: f32,
-    pub echo_wet_db: f32,
-    pub out_loop_ms: i64,
-    pub hp_start_ms: i64,
-    pub hp_end_ms: i64,
-    pub hp_from_hz: f32,
-    pub hp_to_hz: f32,
-    pub vocal_duck_until_ms: i64,
-    pub vocal_duck_release_ms: i64,
-    pub vocal_duck_db: f32,
-    pub vocal_duck_hz: f32,
-    pub reason: String,
 }
 
 pub use nori_player::policy::{AudioPolicy, AudioPrefs, GainMode, GainTags, OutputState};

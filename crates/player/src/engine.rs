@@ -35,8 +35,9 @@ use std::collections::VecDeque;
 
 use crate::automix::analysis::Analyzer;
 use crate::automix::mixer::Mixer;
+use crate::types::TransitionPlan;
 use crate::automix::resample::Resampler;
-use crate::pcm::{mix_raw, ByteStretcher, Format};
+use crate::pcm::{ByteStretcher, Format};
 
 /// µs; `i64::MIN` as media3 has it: no position yet.
 pub const POSITION_NOT_SET: i64 = i64::MIN;
@@ -63,8 +64,8 @@ pub struct Plan {
     pub out_start_us: i64,
     pub duration_us: i64,
     pub in_skip_us: i64,
-    /// `automix::mixer::params(plan)`.
-    pub mixer: Vec<f32>,
+    /// What the mixer runs.
+    pub mixer: TransitionPlan,
     pub tempo_ratio: f32,
     pub keep_pitch: bool,
     pub ramp_us: i64,
@@ -1104,7 +1105,7 @@ impl<C: Clone> TransitionEngine<C> {
                 chunk.resize(bytes, 0);
                 self.wrap_out(hold_frames, self.out_loop_frames, self.mix_out_frame, &mut chunk, frames, fb);
                 if let Some((m, ..)) = self.mixer.as_mut() {
-                    unsafe { mix_raw(m, chunk.as_ptr(), src.as_ptr(), chunk.as_mut_ptr(), frames, out.encoding) };
+                    m.process_bytes(&mut chunk, &src[..bytes], out.encoding);
                 }
                 let at = self.stamp(pts_us, frames, pace, out);
                 let c = self.copy_of(&chunk);
@@ -1115,8 +1116,7 @@ impl<C: Clone> TransitionEngine<C> {
             } else {
                 let r = self.tail_read;
                 if let Some((m, ..)) = self.mixer.as_mut() {
-                    let t = self.tail[r..r + bytes].as_mut_ptr();
-                    unsafe { mix_raw(m, t, src.as_ptr(), t, frames, out.encoding) };
+                    m.process_bytes(&mut self.tail[r..r + bytes], &src[..bytes], out.encoding);
                 }
                 let at = self.stamp(pts_us, frames, pace, out);
                 let mut c = self.take_pooled(bytes);
@@ -1667,7 +1667,7 @@ impl<C: Clone> TransitionEngine<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::automix::{mixer, plan};
+    use crate::automix::plan;
     use crate::pcm::Encoding;
     use crate::types::AutoMixSettings;
 
@@ -1777,7 +1777,7 @@ mod tests {
             out_start_us: start_us,
             duration_us: 2_000_000,
             in_skip_us: 0,
-            mixer: mixer::params(&t),
+            mixer: t,
             tempo_ratio: 1.0,
             keep_pitch: true,
             ramp_us: 0,
