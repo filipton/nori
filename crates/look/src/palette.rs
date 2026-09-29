@@ -1,8 +1,6 @@
-//! AndroidX Palette 1.0.0 (Apache-2.0, The Android Open Source Project), ported line for line: the
-//! page's accent was tuned against its "vibrant" swatches, so they have to come out the same. That
-//! includes its quirks - the bitmap shrunk to 112 px with no filtering, colours cut to 5 bits, the
-//! boxes kept in a Java `PriorityQueue` whose array order decides ties - since each of them moves
-//! which swatch wins.
+//! Line-for-line port of AndroidX Palette 1.0.0 (Apache-2.0, The Android Open Source Project). The
+//! accent was tuned against its swatches, so its quirks are kept: unfiltered 112 px downscale, 5-bit
+//! colours, and Java `PriorityQueue` array order deciding ties.
 
 use crate::color::{blue, color_to_hsl, green, red, rgb, rgb_to_hsl, round};
 
@@ -22,7 +20,7 @@ impl Swatch {
     }
 }
 
-/// The swatches Palette's default targets pick, in the order it picks them.
+/// Swatches picked by Palette's default targets, in pick order.
 #[derive(Debug, Clone, Default)]
 pub struct Palette {
     pub dominant: Option<Swatch>,
@@ -41,10 +39,9 @@ pub fn generate(pixels: &[u32], w: usize, h: usize, max_colors: usize) -> Palett
     score(swatches)
 }
 
-/// `Palette.Builder.scaleBitmapDown`: over 112 x 112 pixels, shrunk to that area with
-/// `Bitmap.createScaledBitmap(..., filter = false)`. Android samples each destination pixel's centre
-/// and rounds down, landing on the pixel before when the centre falls exactly on a boundary - which
-/// is the integer formula below, measured against Android sample for sample.
+/// `Palette.Builder.scaleBitmapDown`: above 112² pixels, nearest-neighbour downscale to that area, as
+/// `Bitmap.createScaledBitmap(..., filter = false)` samples (centre rounded down; verified on device).
+/// None when no scaling is needed.
 fn scale_down(pixels: &[u32], w: usize, h: usize) -> Option<Vec<u32>> {
     let area = w * h;
     if area <= RESIZE_AREA {
@@ -91,7 +88,7 @@ fn approximate(c: i32) -> u32 {
     approximate_to_rgb888(quantized_red(c), quantized_green(c), quantized_blue(c))
 }
 
-/// Palette's default filter: not near white, not near black, not in the "red I line" of skin tones.
+/// Palette's default filter: rejects near white, near black and the skin-tone "red I line".
 fn allowed(hsl: [f32; 3]) -> bool {
     let white = hsl[2] >= 0.95;
     let black = hsl[2] <= 0.05;
@@ -185,8 +182,8 @@ impl Quantizer {
     fn split_point(&mut self, i: usize) -> usize {
         let dim = self.longest_dimension(i);
         let (lower, upper, population) = (self.boxes[i].lower, self.boxes[i].upper, self.boxes[i].population);
-        // Swapping the longest channel into the most significant bits makes a plain sort order by it;
-        // swapping back restores the colours. For green and blue the swap is its own inverse.
+        // Sort by the longest channel by swapping it into the top bits and back (the swap is its own
+        // inverse).
         self.modify_significant_octet(dim, lower, upper);
         self.colors[lower..=upper].sort_unstable();
         self.modify_significant_octet(dim, lower, upper);
@@ -225,8 +222,8 @@ impl Quantizer {
     }
 }
 
-/// Java's `PriorityQueue` with `rhs.volume - lhs.volume`: the same array, the same sifts, so that
-/// iterating it afterwards visits the boxes in the order Java's did.
+/// Java's `PriorityQueue` ordered by `rhs.volume - lhs.volume`, with identical sifts so iteration
+/// order matches Java's.
 struct Heap {
     items: Vec<usize>,
 }
@@ -313,7 +310,7 @@ fn quantize(pixels: &[u32], max_colors: usize) -> Vec<Swatch> {
     heap.items.iter().map(|&b| q.average(b)).filter(|s| allowed(s.hsl())).collect()
 }
 
-/// A Palette `Target`: saturation and lightness ranges and the weights it scores with.
+/// A Palette `Target`: [min, target, max] saturation and lightness, and scoring weights.
 struct Target {
     sat: [f32; 3],
     light: [f32; 3],
@@ -330,7 +327,7 @@ const DARK: [f32; 3] = [0.0, 0.26, 0.45];
 const VIBRANT: [f32; 3] = [0.35, 1.0, 1.0];
 const MUTED: [f32; 3] = [0.0, 0.3, 0.4];
 
-/// Scores every target in Palette's order; each one's pick is taken out of the running for the rest.
+/// Scores each target in Palette's order; a picked swatch is excluded from later targets.
 fn score(swatches: Vec<Swatch>) -> Palette {
     let dominant = swatches.iter().fold(None::<Swatch>, |best, s| match best {
         Some(b) if s.population <= b.population => Some(b),
@@ -384,7 +381,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_two_colour_picture_gives_its_two_colours() {
+    fn two_colour_picture() {
         let mut px = vec![0xFF20_40C0u32; 100 * 100];
         px[..3000].fill(0xFFE0_3030);
         let p = generate(&px, 100, 100, 16);
@@ -394,9 +391,9 @@ mod tests {
     }
 
     #[test]
-    fn the_downscale_samples_where_android_does() {
-        // Which source column Android's createScaledBitmap(filter = false) took for each of the 112
-        // columns of a 320 px picture, read off a device with a picture whose pixels name their own x.
+    fn downscale_samples_like_android() {
+        // Source columns Android's createScaledBitmap(filter = false) picked for 320 -> 112, measured on
+        // device.
         let xs: Vec<u32> = (0..320).map(|x: i32| rgb(0, x / 256, x % 256)).collect();
         let row: Vec<u32> = (0..320 * 320).map(|i| xs[i % 320]).collect();
         let small = scale_down(&row, 320, 320).unwrap();
@@ -406,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn near_white_and_black_are_ignored() {
+    fn ignores_near_white_and_black() {
         let mut px = vec![0xFFFF_FFFFu32; 50 * 50];
         px[..1250].fill(0xFF00_0000);
         let p = generate(&px, 50, 50, 16);
@@ -414,11 +411,11 @@ mod tests {
     }
 
     #[test]
-    fn many_colours_are_cut_to_at_most_sixteen() {
+    fn quantizes_to_at_most_max_colors() {
         let px: Vec<u32> = (0..160 * 160).map(|i| rgb((i * 7 % 256) as i32, (i * 13 % 256) as i32, (i * 29 % 256) as i32)).collect();
         let scaled = scale_down(&px, 160, 160);
         let swatches = quantize(scaled.as_deref().unwrap_or(&px), 16);
-        assert!((2..=16).contains(&swatches.len()), "{} colours kept of thousands", swatches.len());
+        assert!((2..=16).contains(&swatches.len()), "{} swatches", swatches.len());
         let p = generate(&px, 160, 160, 16);
         assert!(p.dominant.is_some() && p.vibrant.is_some(), "{p:?}");
     }

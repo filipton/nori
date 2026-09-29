@@ -1,8 +1,5 @@
-//! Decoded covers kept in memory, by address and size, under a limit in bytes: the least recently drawn
-//! go first. A list scrolled back and forth draws from here without decoding again.
-//!
-//! Generic over what a picture is: RGBA rows ([`Image`]) for a client that draws them itself, or a
-//! handle to a platform's own picture, whose size in bytes is said when it is kept.
+//! LRU cache of decoded covers keyed by URL and size, bounded in bytes. Generic over the picture type
+//! (RGBA [`Image`] or a platform handle whose byte size is given on insert).
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -50,7 +47,7 @@ impl<P: Clone> MemoryCache<P> {
         MemoryCache { limit, kept: Mutex::new(Kept::default()) }
     }
 
-    /// The cover, if kept; a hit counts as a use.
+    /// Looks up a cover; a hit marks it most recently used.
     pub fn get(&self, key: &Sized) -> Option<P> {
         if self.limit == 0 {
             return None;
@@ -65,8 +62,8 @@ impl<P: Clone> MemoryCache<P> {
         Some(picture)
     }
 
-    /// Keeps `picture`, `size` bytes of it, letting the least recently used go until it fits. A picture
-    /// larger than the whole limit is not kept.
+    /// Inserts `picture` of `size` bytes, evicting least recently used entries until it fits. A picture
+    /// larger than the limit is dropped.
     pub fn put(&self, key: Sized, picture: P, size: usize) {
         if size > self.limit {
             return;
@@ -88,7 +85,7 @@ impl<P: Clone> MemoryCache<P> {
         k.bytes += size;
     }
 
-    /// Lets everything go, for a client told memory is short.
+    /// Drops everything (low-memory signal).
     pub fn clear(&self) {
         *self.kept.lock() = Kept::default();
     }
@@ -117,7 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn the_least_recently_drawn_go_first_under_the_byte_limit() {
+    fn evicts_least_recently_used() {
         // Room for three 4x4 covers (64 bytes each).
         let m = MemoryCache::new(200);
         put(&m, "a", 4);
@@ -128,13 +125,13 @@ mod tests {
         assert!(m.get(&at("b", 4)).is_none());
         assert!(m.get(&at("a", 4)).is_some() && m.get(&at("c", 4)).is_some() && m.get(&at("d", 4)).is_some());
         assert_eq!(m.bytes(), 192);
-        // One size is not another.
+        // Sizes are separate entries.
         assert!(m.get(&at("a", 2)).is_none());
-        // A bigger cover pushes out as many as it needs.
+        // A bigger cover evicts as many as it needs.
         put(&m, "e", 6);
         assert_eq!(m.bytes(), 144);
         assert!(m.get(&at("e", 6)).is_some());
-        // Larger than the whole limit: not kept, nothing lost.
+        // Larger than the limit: dropped, nothing evicted.
         put(&m, "f", 8);
         assert!(m.get(&at("f", 8)).is_none() && m.get(&at("e", 6)).is_some());
         m.clear();
@@ -142,7 +139,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cache_of_nothing_keeps_nothing() {
+    fn zero_limit_keeps_nothing() {
         let m = MemoryCache::new(0);
         put(&m, "a", 1);
         assert!(m.get(&at("a", 1)).is_none());

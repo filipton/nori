@@ -1,9 +1,6 @@
-//! Making the beat model for "Better beat detection" (`nori_automix::beat_model` says where it goes and how it
-//! stands): the authors' checkpoint fetched through the platform's transport, the same way the AutoEQ list comes,
-//! checked, and turned into the weights file the app's graph reads (nori-player `automix::weights`), once. It all
-//! runs on the calling thread, which is nori-engine's measuring thread at the lowest priority. It is asked for only
-//! when a song is about to be read by the model, so there is no timer and no network listener waiting for Wi-Fi: a
-//! download that waited or failed is tried again at the next song. Every client does this the same way.
+//! Fetches the Beat This! checkpoint through the platform transport, verifies it and converts it to the
+//! weights file (`nori_player::automix::weights`). Runs on the calling thread (nori-engine's measuring
+//! thread) when a song is about to be read; a skipped or failed download is retried at the next song.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -14,11 +11,11 @@ use std::task::{Context, Poll, Wake, Waker};
 use nori_automix::beat_model::{self, BeatFailure, State, BYTES, CHECKPOINT_BYTES, CHECKPOINT_SHA256, CHECKPOINT_URL, SHA256};
 use sha2::{Digest, Sha256};
 
-/// How long the whole checkpoint may take.
+/// Timeout for the checkpoint download.
 const TIMEOUT_MS: u32 = 120_000;
 
-/// The weights file, made first when it is not on the device yet and the network allows. None when it is not
-/// wanted, not there and cannot come now (mobile data not allowed, no server connection, a failed download).
+/// The weights file, downloading and converting it first if needed. None when disabled or unavailable now
+/// (metered network not allowed, no client, failure).
 pub fn ensure() -> Option<PathBuf> {
     let wanted = || crate::settings_store::with_prefs(|p| p.auto_mix && p.auto_mix_better_beats).unwrap_or(false);
     if !wanted() {
@@ -46,7 +43,7 @@ pub fn ensure() -> Option<PathBuf> {
             Ok((fetched, t0.elapsed()))
         });
     match got {
-        // Switched off while it came: nothing stays.
+        // Disabled meanwhile: discard.
         Ok(_) if !wanted() => {
             let _ = std::fs::remove_file(&file);
             beat_model::set_state(State::Absent);
@@ -65,20 +62,19 @@ pub fn ensure() -> Option<PathBuf> {
     }
 }
 
-/// The weights file from the checkpoint's bytes: the checkpoint checked against its pin, converted, and the result
-/// checked against its own.
+/// Converts a checkpoint to weights, verifying both against their pins.
 pub fn make(ckpt: &[u8]) -> Result<Vec<u8>, (BeatFailure, String)> {
-    if ckpt.len() as u64 != CHECKPOINT_BYTES || hex(&Sha256::digest(ckpt)) != CHECKPOINT_SHA256 {
+    if !pinned(ckpt, CHECKPOINT_BYTES, CHECKPOINT_SHA256) {
         return Err((BeatFailure::WrongFile, format!("{} bytes, not the pinned checkpoint", ckpt.len())));
     }
     let weights = nori_player::automix::weights::convert(ckpt).map_err(|e| (BeatFailure::WrongFile, format!("converting the checkpoint: {e}")))?;
-    if weights.len() as u64 != BYTES || hex(&Sha256::digest(&weights)) != SHA256 {
+    if !pinned(&weights, BYTES, SHA256) {
         return Err((BeatFailure::WrongFile, format!("the checkpoint made {} bytes, not the pinned weights", weights.len())));
     }
     Ok(weights)
 }
 
-/// Written whole beside the database: an earlier model's files go first, and the new file is renamed into place.
+/// Replaces the models directory's contents with `weights`, written then renamed into place.
 fn store(file: &Path, weights: &[u8]) -> std::io::Result<()> {
     let dir = file.parent().expect("a file in the models directory");
     let _ = std::fs::remove_dir_all(dir);
@@ -88,21 +84,21 @@ fn store(file: &Path, weights: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&part, file)
 }
 
-/// The weights file's bytes, checked against the pin again: a file changed on the disk says so instead of
-/// misreading songs.
+/// Reads the weights file, verifying it against the pin.
 pub fn read(file: &Path) -> Result<Vec<u8>, String> {
     let bytes = std::fs::read(file).map_err(|e| e.to_string())?;
-    if bytes.len() as u64 != BYTES || hex(&Sha256::digest(&bytes)) != SHA256 {
+    if !pinned(&bytes, BYTES, SHA256) {
         return Err(format!("{} is not the pinned weights", file.display()));
     }
     Ok(bytes)
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+/// Whether `bytes` has length `len` and SHA-256 `sha` (lowercase hex).
+fn pinned(bytes: &[u8], len: u64, sha: &str) -> bool {
+    bytes.len() as u64 == len && Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect::<String>() == sha
 }
 
-/// Wakes the thread parked on a transport that has not answered yet.
+/// Wakes the parked thread.
 struct Unpark(std::thread::Thread);
 
 impl Wake for Unpark {
@@ -111,8 +107,7 @@ impl Wake for Unpark {
     }
 }
 
-/// Runs `f` to its end on this thread. A desktop transport finishes on its first poll; Android's is answered by
-/// OkHttp's own threads, which wake this one.
+/// Runs `f` to completion on this thread, parking until woken (Android's transport answers from OkHttp threads).
 fn block_on<F: Future>(f: F) -> F::Output {
     let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
     let mut cx = Context::from_waker(&waker);
@@ -130,7 +125,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_the_pinned_checkpoint_is_converted() {
+    fn make_rejects_unpinned_checkpoint() {
         assert_eq!(make(b"<html>not found</html>").unwrap_err().0, BeatFailure::WrongFile);
         assert_eq!(make(&vec![0u8; CHECKPOINT_BYTES as usize]).unwrap_err().0, BeatFailure::WrongFile);
     }

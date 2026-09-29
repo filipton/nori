@@ -231,7 +231,7 @@ fn push_line(lines: &mut Vec<Timed>, start: i64, end: Option<i64>, text: &str) {
 /// The `words` of every row, untimed, when `syncType` says so.
 fn unsynced(o: &Value, rows: &[Value]) -> Option<Lyrics> {
     let unsynced = o.get("syncType").and_then(Value::as_str).is_some_and(|s| s.eq_ignore_ascii_case("unsynced"));
-    unsynced.then(|| plain(&rows.iter().map(|r| words(r)).collect::<Vec<_>>().join("\n")))
+    unsynced.then(|| plain(&rows.iter().map(words).collect::<Vec<_>>().join("\n")))
 }
 
 fn words(r: &Value) -> &str {

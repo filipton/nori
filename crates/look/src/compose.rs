@@ -1,44 +1,42 @@
-//! What Jetpack Compose does to a colour, reproduced step for step so a colour worked out here is the
-//! one the Android app used to work out itself: `Color.copy(alpha)`, the app's own `blend` and `over`,
-//! and Compose's `lerp`, which mixes in Oklab (through its half-float colour storage) rather than in
-//! sRGB. Every rule that was tuned by eye on screen was tuned against these, so they are kept exact.
+//! Bit-exact Compose colour maths: `Color.copy(alpha)`, the app's `blend`/`over`, and Compose's `lerp`
+//! (Oklab via half-float storage). Visual tuning depends on these being exact.
 
 use crate::color::{alpha, argb, blue, green, red};
 
-/// A channel as Compose reads it back: 8 bits over 255, in float.
+/// 8-bit channel to float, as Compose reads it.
 fn ch(v: i32) -> f32 {
     v as f32 / 255.0
 }
 
-/// Compose's `Color(red, green, blue, alpha)` in sRGB: each channel clamped and rounded half up.
+/// Compose's `Color(red, green, blue, alpha)`: clamped, rounded half up.
 pub fn from_floats_a(r: f32, g: f32, b: f32, a: f32) -> u32 {
     let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as i32;
     argb(q(a), q(r), q(g), q(b))
 }
 
-/// `color.copy(alpha = a)`: the same colour with its alpha stored in 8 bits.
+/// `color.copy(alpha = a)`.
 pub fn with_alpha(c: u32, a: f32) -> u32 {
     from_floats_a(ch(red(c)), ch(green(c)), ch(blue(c)), a)
 }
 
-/// The app's `blend(a, b, t)`: two opaque colours mixed channel by channel in sRGB, opaque.
+/// The app's `blend(a, b, t)`: per-channel sRGB mix, opaque.
 pub fn blend(a: u32, b: u32, t: f32) -> u32 {
     let (ar, ag, ab) = (ch(red(a)), ch(green(a)), ch(blue(a)));
     from_floats_a(ar + (ch(red(b)) - ar) * t, ag + (ch(green(b)) - ag) * t, ab + (ch(blue(b)) - ab) * t, 1.0)
 }
 
-/// The app's `Color.over(background)`: a translucent colour laid on an opaque one, as one opaque colour.
+/// The app's `Color.over(background)`: composites onto an opaque background.
 pub fn over(fg: u32, bg: u32) -> u32 {
     blend(bg, fg | 0xFF00_0000, ch(alpha(fg)))
 }
 
-/// `on.copy(alpha = a).over(bg)`, the way every tinted surface in the app is made.
+/// `on.copy(alpha = a).over(bg)`: a tinted surface.
 pub fn veil(on: u32, a: f32, bg: u32) -> u32 {
     over(with_alpha(on, a), bg)
 }
 
-// Oklab, as Compose's colour space classes compute it. Matrices are the exact floats Compose holds at
-// run time (its sRGB matrix is adapted to D50 by the connector, so it is not the textbook one).
+// Oklab as Compose computes it. The matrices are Compose's runtime floats (its sRGB matrix is D50-adapted,
+// not the textbook one).
 
 const SRGB_TO_XYZ: [f32; 9] = [
     f32::from_bits(0x3edf3e3e), f32::from_bits(0x3e63d085), f32::from_bits(0x3c6432cf),
@@ -71,12 +69,12 @@ const INV_M2: [f32; 9] = [
     f32::from_bits(0x3e5cfba9), f32::from_bits(0xbd82c5fb), f32::from_bits(0xbfa54f66),
 ];
 
-/// Column-major 3x3 times a vector, summed in the order Compose sums it.
+/// Column-major 3x3 times a vector, in Compose's summation order.
 fn mul(m: &[f32; 9], x: f32, y: f32, z: f32) -> (f32, f32, f32) {
     (m[0] * x + m[3] * y + m[6] * z, m[1] * x + m[4] * y + m[7] * z, m[2] * x + m[5] * y + m[8] * z)
 }
 
-// sRGB's transfer parameters, as Compose's `TransferParameters` holds them.
+// sRGB transfer parameters from Compose's `TransferParameters`.
 const TA: f64 = 0.9478672985781991;
 const TB: f64 = 0.05213270142180095;
 const TC: f64 = 0.07739938080495357;
@@ -94,7 +92,7 @@ fn oetf(x: f32) -> f32 {
     v.clamp(0.0, 1.0) as f32
 }
 
-/// `androidx.compose.ui.util.fastCbrt`: a bit trick and two Newton steps, not `cbrt`.
+/// `androidx.compose.ui.util.fastCbrt` (bit trick plus two Newton steps).
 fn fast_cbrt(x: f32) -> f32 {
     let bits = (x.to_bits() as i32 as i64) & 0x1_FFFF_FFFF;
     let mut y = f32::from_bits(709_952_852i32.wrapping_add((bits / 3) as i32) as u32);
@@ -102,7 +100,7 @@ fn fast_cbrt(x: f32) -> f32 {
     y - (y - x / (y * y)) * 0.333_333_34
 }
 
-/// Compose's float to half-float, rounding the way `Color` packs a component (half up on the 13th bit).
+/// Float to half-float, rounding as Compose's `Color` packs a component.
 fn half(f: f32) -> u16 {
     let bits = f.to_bits() as i32;
     let s = ((bits as u32) >> 31) as i32;
@@ -160,7 +158,7 @@ fn unhalf(h: u16) -> f32 {
     f32::from_bits(((s << 16) | (out_e << 23) | out_m) as u32)
 }
 
-/// An sRGB colour in Oklab the way Compose stores it: L, a, b as half floats, alpha in ten bits.
+/// sRGB to Compose's Oklab storage: L, a, b as half floats, 10-bit alpha.
 fn to_oklab(c: u32) -> ([u16; 3], i32) {
     let (r, g, b) = (eotf(ch(red(c))), eotf(ch(green(c))), eotf(ch(blue(c))));
     let (x, y, z) = mul(&SRGB_TO_XYZ, r, g, b);
@@ -184,7 +182,7 @@ fn mix(a: f32, b: f32, t: f32) -> f32 {
     (1.0 - t) * a + t * b
 }
 
-/// Compose's `lerp(start, stop, fraction)` for two sRGB colours: mixed in Oklab and brought back.
+/// Compose's `lerp(start, stop, fraction)` for sRGB colours (mixes in Oklab).
 pub fn lerp(start: u32, stop: u32, fraction: f32) -> u32 {
     let t = fraction.clamp(0.0, 1.0);
     let (s, sa) = to_oklab(start);
@@ -199,11 +197,11 @@ pub fn lerp(start: u32, stop: u32, fraction: f32) -> u32 {
 mod tests {
     use super::*;
 
-    /// Worked out by Compose itself (ui-graphics 1.12, on the JVM): start, stop, fraction bits, result.
+    /// Compose (ui-graphics 1.12, JVM) output: start, stop, fraction bits, result.
     const LERPS: &[(u32, u32, u32, u32)] = include!("compose_lerps.in");
 
     #[test]
-    fn lerp_is_composes() {
+    fn lerp_matches_compose() {
         let wrong: Vec<String> = LERPS
             .iter()
             .filter_map(|&(a, b, t, want)| {
@@ -215,14 +213,10 @@ mod tests {
     }
 
     #[test]
-    fn copy_over_and_blend_are_composes() {
-        // Worked out by Compose: Color(0xFFEEDDCC).copy(alpha = 0.10f).over(Color(0xFF102030)).
+    fn copy_over_blend_match_compose() {
+        // Values from Compose.
         assert_eq!(with_alpha(0xFFEE_DDCC, 0.10), 0x1AEE_DDCC);
-        assert_eq!(veil(0xFFEE_DDCC, 0.10, 0xFF10_2030), OVER_10);
-        assert_eq!(blend(0xFF10_2030, 0xFFEE_DDCC, 0.30), BLEND_30);
+        assert_eq!(veil(0xFFEE_DDCC, 0.10, 0xFF10_2030), 0xFF27_3340);
+        assert_eq!(blend(0xFF10_2030, 0xFFEE_DDCC, 0.30), 0xFF53_595F);
     }
-
-    /// Worked out by Compose: the veil above, and `blend(Color(0xFF102030), Color(0xFFEEDDCC), 0.30f)`.
-    const OVER_10: u32 = 0xFF27_3340;
-    const BLEND_30: u32 = 0xFF53_595F;
 }

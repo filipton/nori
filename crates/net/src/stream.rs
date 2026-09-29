@@ -1,21 +1,16 @@
-//! Where a song's audio comes from and under which name it is cached. Songs are resolved when they are
-//! opened, not when they are queued, so the quality follows the network the phone is on at that moment.
-//! Both caches are keyed by song id and quality, never by URL, so a replayed track costs no radio time.
-//! Which address and quality the client picks for a song is the core's (its stream.rs).
+//! Stream targets and cache keys. Caches are keyed by song id and quality, never by URL.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Whether the phone's network is metered, as the platform last said ([`network_metered`]).
+/// Whether the phone's network is metered. Global: the platform reports it through a free FFI function.
 static METERED: AtomicBool = AtomicBool::new(false);
 
-/// The network the phone is on changed: metered or not. Told whenever it changes, so a song opened in
-/// Rust ([`resolve_now`]) streams at the right quality without asking the platform.
+/// Called by the platform whenever the network changes between metered and not.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn network_metered(metered: bool) {
     METERED.store(metered, Ordering::Relaxed);
 }
 
-/// Whether the phone's network is metered, as the platform last said.
 pub fn metered() -> bool {
     METERED.load(Ordering::Relaxed)
 }
@@ -36,7 +31,7 @@ pub struct StreamTarget {
     pub key: String,
 }
 
-/// A song to fetch whole into the stream cache ahead of its turn: where from and under which key.
+/// A song to fetch whole into the stream cache ahead of its turn.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct Fetch {
@@ -51,8 +46,7 @@ pub fn download_key(id: String) -> String {
     format!("dl:{id}")
 }
 
-/// Whether `key` is a streamed copy of `id`, at whatever quality it was fetched. Keys are
-/// `<id>:<quality>` and the quality never holds a colon, so this is exact.
+/// Whether `key` is a streamed copy of `id` at any quality (the quality part never holds a colon).
 pub fn is_copy(id: &str, key: &str) -> bool {
     key.rsplit_once(':').is_some_and(|(before, _)| before == id)
 }

@@ -1,7 +1,4 @@
-//! ReplayGain through a mix: each song is heard at its own volume the whole way, so a crossfade or an
-//! AutoMix between a quiet song and a loud one sounds exactly as the two songs turned to their volumes
-//! first and mixed after - no step anywhere, the end of the mix included - and the end of a mix joins
-//! the song that plays on without a click.
+//! ReplayGain through mixes: each song keeps its own gain throughout, with no steps or clicks.
 
 use nori_player::automix::ANALYSIS_VERSION;
 use nori_player::sim::{prefs_off, Audio, Player, Sound, Track};
@@ -96,12 +93,12 @@ fn check_gain_then_mix(prefs: TransitionPrefs, what: &str) {
 }
 
 #[test]
-fn a_crossfade_mixes_each_song_at_its_own_replay_gain() {
+fn crossfade_uses_each_song_gain() {
     check_gain_then_mix(crossfade(6), "crossfade");
 }
 
 #[test]
-fn automix_mixes_each_song_at_its_own_replay_gain() {
+fn automix_uses_each_song_gain() {
     check_gain_then_mix(automix(), "automix");
 }
 
@@ -112,7 +109,7 @@ fn step_near(x: &[f64], at: usize, ms: usize) -> f64 {
 }
 
 #[test]
-fn a_crossfade_ends_without_a_click() {
+fn crossfade_ends_without_click() {
     let (a, b) = (music(SONG_S, 23), music(SONG_S, 24));
     let (got, log) = heard(&[("a", &a, 120.0), ("b", &b, 120.0)], &crossfade(6), &[]);
     assert!(log.iter().any(|l| l.contains("transition a -> b: EqualPowerFade 6000 ms at 39000")), "{log:?}");
@@ -125,7 +122,7 @@ fn a_crossfade_ends_without_a_click() {
 }
 
 #[test]
-fn an_automix_ends_and_its_stretch_hands_back_without_a_click() {
+fn automix_stretch_ends_without_click() {
     let (a, b) = (music(SONG_S, 25), music(SONG_S, 26));
     let (got, log) = heard(&[("a", &a, 120.0), ("b", &b, 123.0)], &automix(), &[]);
     let plan = log.iter().find(|l| l.contains("transition a -> b: BeatMatched")).unwrap_or_else(|| panic!("{log:?}")).clone();
@@ -166,7 +163,7 @@ fn turned_up(song: Track, gain: f32, max: f32) -> Player {
 }
 
 #[test]
-fn a_song_turned_up_is_louder_and_the_limiter_holds_the_ceiling() {
+fn boosted_song_under_ceiling() {
     // Music peaking at 0.45 of full scale, turned up 9 dB: peaks at 1.27, over full scale.
     let song = music(20.0, 41);
     let x = floats(&song);
@@ -199,7 +196,7 @@ fn a_song_turned_up_is_louder_and_the_limiter_holds_the_ceiling() {
 }
 
 #[test]
-fn a_crossfade_mixes_a_song_turned_up_and_one_turned_down_each_at_its_own_level() {
+fn crossfade_boosted_and_cut_songs() {
     // a turned up 3.5 dB (its peaks stay under the limiter's knee, so the limiter changes nothing), b
     // turned down 6 dB, crossfaded: as the two turned first and mixed after, sample for sample.
     let (a, b) = (music(SONG_S, 43), music(SONG_S, 44));
@@ -230,7 +227,7 @@ fn a_crossfade_mixes_a_song_turned_up_and_one_turned_down_each_at_its_own_level(
 }
 
 #[test]
-fn a_song_in_16_bits_is_never_turned_up_where_it_would_clip() {
+fn no_boost_on_16_bit() {
     // 16-bit samples cannot go over full scale on their way to the limiter: the player leaves such a song
     // at its own level (nori-engine reads songs as floats whenever they may be turned up).
     let song = music(10.0, 42);
