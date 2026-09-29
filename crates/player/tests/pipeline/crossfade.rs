@@ -2,7 +2,7 @@
 //! ending held until the next song arrives, the mix exactly the mixer's and starting on the planned
 //! sample, equal power through the overlap, and the player and the seek bar following the ear.
 
-use nori_player::automix::mixer::{self, Mixer};
+use nori_player::automix::mixer::Mixer;
 use nori_player::playlist::Hand;
 use nori_player::sim::{prefs_off, Player};
 
@@ -181,11 +181,11 @@ fn a_scrub_into_the_mix_stays_to_hear_the_ending_and_the_mix_still_fires() {
     let heard = &p.sink.heard_samples()[from * 2..];
     let late = frames(4.0);
     let mut m = Mixer::new(RATE, 2);
-    m.configure(&mixer::params(&blind_plan(SONG_MS, SONG_MS, 12.0)));
+    m.configure(&blind_plan(SONG_MS, SONG_MS, 12.0));
     m.seek(late as u64);
     let rest = frames(8.0) * 2;
-    let mut mix = vec![0i16; rest];
-    m.process_i16(&b[b.len() - rest..], &c[late * 2..late * 2 + rest], &mut mix);
+    let mut mix = b[b.len() - rest..].to_vec();
+    m.process(&mut mix, &c[late * 2..late * 2 + rest]);
     let start = heard.iter().position(|&v| v != 0).unwrap_or(0) / 2 * 2;
     assert!(heard[start..start + rest] == mix[..], "the mix from where the scrub landed, sample for sample");
     assert!(heard[start + rest..start + rest + frames(2.0) * 2] == c[late * 2 + rest..late * 2 + rest + frames(2.0) * 2], "then c alone");

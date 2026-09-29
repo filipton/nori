@@ -1451,7 +1451,7 @@ pub fn mix_pairs() -> Vec<(&'static str, &'static str)> {
 fn deck_level(plan: &crate::types::TransitionPlan, outgoing: bool) -> Vec<f64> {
     const RATE: u32 = 16_000;
     let mut m = mixer::Mixer::new(RATE, 1);
-    m.configure(&mixer::params(plan));
+    m.configure(plan);
     let n = (plan.duration_ms.max(0) as usize * RATE as usize / 1000).max(1);
     let tone: Vec<f32> = (0..n)
         .map(|i| {
@@ -1460,12 +1460,8 @@ fn deck_level(plan: &crate::types::TransitionPlan, outgoing: bool) -> Vec<f64> {
         })
         .collect();
     let zero = vec![0f32; n];
-    let mut y = vec![0f32; n];
-    if outgoing {
-        m.process_f32(&tone, &zero, &mut y);
-    } else {
-        m.process_f32(&zero, &tone, &mut y);
-    }
+    let mut y = if outgoing { tone.clone() } else { zero.clone() };
+    m.process(&mut y, if outgoing { &zero } else { &tone });
     y.chunks(RATE as usize / 20).map(|c| (c.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / c.len() as f64 * 2.0).sqrt()).collect()
 }
 
@@ -1485,7 +1481,7 @@ fn loudness_bump(p: &crate::types::TransitionPlan, xa: &[f32], xb: &[f32], rate:
     let at = |ms: i64| (ms.max(0) as f64 * rate / 1000.0) as usize;
     let (o0, i0, n) = (at(p.out_start_ms), at(p.in_start_ms), at(p.duration_ms));
     let ratio = if p.tempo_ratio > 0.0 { p.tempo_ratio } else { 1.0 };
-    let loop_n = if p.out_loop_ms > 0 { at(p.out_loop_ms).max(1) } else { usize::MAX };
+    let loop_n = p.out_loop_ms.map_or(usize::MAX, |l| at(l).max(1));
     let seg_a: Vec<f32> = (0..n).map(|k| xa.get(o0 + k % loop_n).copied().unwrap_or(0.0)).collect();
     let b_at = |k: f64| {
         let t = i0 as f64 + k;
@@ -1496,9 +1492,9 @@ fn loudness_bump(p: &crate::types::TransitionPlan, xa: &[f32], xb: &[f32], rate:
     };
     let seg_b: Vec<f32> = (0..n).map(|k| b_at(k as f64 * ratio)).collect();
     let mut m = mixer::Mixer::new(rate as u32, 1);
-    m.configure(&mixer::params(p));
-    let mut mixed = vec![0f32; n];
-    m.process_f32(&seg_a, &seg_b, &mut mixed);
+    m.configure(p);
+    let mut mixed = seg_a;
+    m.process(&mut mixed, &seg_b);
     let pre = at(8_000);
     let before: Vec<f32> = xa[o0.saturating_sub(pre).min(xa.len())..o0.min(xa.len())].to_vec();
     let b_end = i0 + (n as f64 * ratio) as usize;
@@ -1560,11 +1556,11 @@ pub fn score_mix(name: &str, p: &crate::types::TransitionPlan, a: &Truth, b: &Tr
     let dur = ms(p.duration_ms);
     let ratio = if p.tempo_ratio > 0.0 { p.tempo_ratio } else { 1.0 };
     let (out_start, in_start) = (ms(p.out_start_ms), ms(p.in_start_ms));
-    let heard_end = out_start + if p.out_loop_ms > 0 { ms(p.out_loop_ms) } else { dur };
+    let heard_end = out_start + p.out_loop_ms.map_or(dur, ms);
     let beat_a = 60.0 / a.bpm.max(1.0);
     // The bass swap, from where the incoming lows start to come in to where they are all in: a swap that starts on
     // a line and one that finishes on it are both on it.
-    let swap = (p.bass_swap_ms >= 0).then(|| (ms(p.bass_swap_ms), ms(p.bass_swap_ms + p.bass_swap_len_ms.max(0))));
+    let swap = p.bass_swap.map(|s| (ms(s.at_ms), ms(s.at_ms + s.len_ms.max(0))));
     // Where the incoming drop lands in wall time from the start of the mix.
     let lands = b.drop.map(|d| (d - in_start) / ratio);
     let has_drop = lands.is_some();
@@ -1621,7 +1617,7 @@ pub fn score_mix(name: &str, p: &crate::types::TransitionPlan, a: &Truth, b: &Tr
     let dead_runup_s = (0..(run_up / 0.05) as usize)
         .filter(|k| {
             let t = *k as f64 * 0.05 + 0.025;
-            dead_at(if p.out_loop_ms > 0 { out_start + t % ms(p.out_loop_ms) } else { out_start + t })
+            dead_at(out_start + p.out_loop_ms.map_or(t, |l| t % ms(l)))
         })
         .count() as f64
         * 0.05;
@@ -1632,7 +1628,7 @@ pub fn score_mix(name: &str, p: &crate::types::TransitionPlan, a: &Truth, b: &Tr
         let (mut clash_s, mut both_sung_s) = (0.0, 0.0);
         for (k, (ga, gb)) in la.iter().zip(&lb).enumerate() {
             let t = k as f64 * 0.05 + 0.025;
-            let ta = if p.out_loop_ms > 0 { out_start + t % ms(p.out_loop_ms) } else { out_start + t };
+            let ta = out_start + p.out_loop_ms.map_or(t, |l| t % ms(l));
             if a.sung_at(ta) && b.sung_at(in_start + t * ratio) {
                 both_sung_s += 0.05;
                 let (da, db) = (20.0 * ga.max(1e-9).log10(), 20.0 * gb.max(1e-9).log10());
@@ -1645,9 +1641,9 @@ pub fn score_mix(name: &str, p: &crate::types::TransitionPlan, a: &Truth, b: &Tr
     };
     let (clash_s, both_sung_s) = competing(p);
     let mut bare = p.clone();
-    bare.vocal_duck_until_ms = -1;
-    if bare.reason.contains("voices kept apart") && bare.hp_to_hz == plan::VOCAL_HP_TO_HZ {
-        bare.hp_start_ms = -1;
+    bare.vocal_duck = None;
+    if bare.reason.contains("voices kept apart") && bare.high_pass.is_some_and(|h| h.to_hz == plan::VOCAL_HP_TO_HZ) {
+        bare.high_pass = None;
     }
     let (clash_bare_s, _) = if bare != *p { competing(&bare) } else { (clash_s, both_sung_s) };
     MixScore {

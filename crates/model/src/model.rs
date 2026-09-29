@@ -5,7 +5,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 // Defined in the player crate, where the audio code that uses them lives; described here again so
 // uniffi can hand them to Kotlin unchanged.
-pub use nori_player::types::{AutoMixSettings, EqBand, EqKind, FadeCurve, NamedPreset, PresetKind, TrackAnalysis, TransitionKind, TransitionPlan};
+pub use nori_player::types::{AutoMixSettings, EqBand, EqKind, FadeCurve, NamedPreset, PresetKind, TrackAnalysis};
 
 /// `starred` is a timestamp on the wire and a bool once stored.
 fn flag<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
@@ -780,91 +780,12 @@ pub struct AutoMixSettings {
 
 #[cfg(feature = "ffi")]
 #[uniffi::remote(Enum)]
-pub enum TransitionKind {
-    /// No overlap: the next track follows sample for sample.
-    Gapless,
-    /// Fixed cos/sin crossfade; nothing is known about either track.
-    EqualPowerFade,
-    /// Overlap chosen from loudness ramps and trimmed silence, optionally with a filter sweep.
-    MixRampFade,
-    /// Tempo-locked, bar-aligned mix, optionally with a bass swap.
-    BeatMatched,
-    /// The outgoing track exits into a beat-synced echo while the incoming track fades in over its tail.
-    EchoOut,
-}
-
-/// The order is the number the mixer's parameters carry (`automix::mixer::params`); only append.
-#[cfg(feature = "ffi")]
-#[uniffi::remote(Enum)]
 pub enum FadeCurve {
     /// cos/sin: constant power, for material that does not add coherently.
     EqualPower,
     Linear,
     /// sin²/cos²: constant amplitude, for beat-matched material that adds coherently.
     SineSquared,
-}
-
-/// How to get from one track to the next. Fields marked "relative" count from the moment the transition starts;
-/// -1 means "not used".
-#[cfg(feature = "ffi")]
-#[uniffi::remote(Record)]
-pub struct TransitionPlan {
-    pub kind: TransitionKind,
-    /// Position in the outgoing track where the transition starts. It stops at `out_start_ms + duration_ms`.
-    pub out_start_ms: i64,
-    /// Position in the incoming track that plays at the start of the transition.
-    pub in_start_ms: i64,
-    /// Length of the overlap, wall-clock.
-    pub duration_ms: i64,
-    /// Playback speed of the incoming track during the overlap (1 = native).
-    pub tempo_ratio: f64,
-    /// After the overlap the incoming track ramps back to native speed over this many of its beats...
-    pub tempo_ramp_beats: i32,
-    /// ...which takes this long, wall-clock. 0 when there is no tempo change.
-    pub tempo_ramp_ms: i64,
-    /// Time-stretch (true) or varispeed.
-    pub keep_pitch: bool,
-    pub fade_curve: FadeCurve,
-    /// Relative. The outgoing gain goes 1 -> 0 between these.
-    pub out_fade_start_ms: i64,
-    pub out_fade_end_ms: i64,
-    /// Relative. The incoming gain goes 0 -> 1 between these.
-    pub in_fade_start_ms: i64,
-    pub in_fade_end_ms: i64,
-    /// Constant trim on the outgoing deck during the overlap.
-    pub out_gain_db: f32,
-    /// Trim on the incoming deck; the mixer glides it back to 0 dB over the last quarter of the overlap.
-    pub in_gain_db: f32,
-    /// Relative. Until here the incoming lows are cut; over `bass_swap_len_ms` they come in and the outgoing lows go.
-    pub bass_swap_ms: i64,
-    pub bass_swap_len_ms: i64,
-    pub bass_cut_hz: f32,
-    /// Relative. Low-pass sweep on the outgoing track, `filter_from_hz` -> `filter_to_hz`.
-    pub filter_start_ms: i64,
-    pub filter_end_ms: i64,
-    pub filter_from_hz: f32,
-    pub filter_to_hz: f32,
-    /// Beat-synced echo on the outgoing deck, `-1` when off. `echo_delay_ms` is one outgoing beat;
-    /// `echo_feedback` 0..1 is what each repeat keeps; `echo_wet_db` is the repeats' level.
-    pub echo_delay_ms: i64,
-    pub echo_feedback: f32,
-    pub echo_wet_db: f32,
-    /// Outro remix: hold captures this many ms and the mixer reads it with wrap for `duration_ms`.
-    /// `-1` means capture the full duration with no loop (Apple iOS 27-style intro/outro extend).
-    pub out_loop_ms: i64,
-    /// High-pass sweep on the outgoing track (DJ "filter open"), `-1` when off.
-    pub hp_start_ms: i64,
-    pub hp_end_ms: i64,
-    pub hp_from_hz: f32,
-    pub hp_to_hz: f32,
-    /// Relative. When both songs sing over the run-up, the incoming song's voice band (`vocal_duck_hz` at the
-    /// centre) is held `vocal_duck_db` down until here, released over `vocal_duck_release_ms` before it; -1 when off.
-    pub vocal_duck_until_ms: i64,
-    pub vocal_duck_release_ms: i64,
-    pub vocal_duck_db: f32,
-    pub vocal_duck_hz: f32,
-    /// Why this plan, for logs.
-    pub reason: String,
 }
 
 // ---- the player's decisions (nori_player::policy), described again for uniffi ----

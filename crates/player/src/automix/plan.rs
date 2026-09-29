@@ -23,7 +23,7 @@
 
 use super::structure::key_distance;
 use super::tempo::{fold, match_ratio};
-use crate::types::{AutoMixSettings, FadeCurve, TrackAnalysis, TransitionKind, TransitionPlan};
+use crate::types::{AutoMixSettings, BassSwap, Echo, FadeCurve, Sweep, TrackAnalysis, TransitionKind, TransitionPlan, VocalDuck};
 
 pub const MAX_SKIP_MS: i64 = 15_000;
 pub const MIN_BPM_CONFIDENCE: f32 = 0.5;
@@ -46,6 +46,10 @@ const SWEEP_TO_HZ_FADE: f32 = 500.0;
 /// Camelot neighbour / relative: gentle muffling, not Apple iOS 26's "underwater" dump.
 const SWEEP_TO_HZ_SOFT: f32 = 2_500.0;
 
+fn low_pass(start_ms: i64, end_ms: i64, to_hz: f32) -> Sweep {
+    Sweep { start_ms, end_ms, from_hz: SWEEP_FROM_HZ, to_hz }
+}
+
 fn blank(kind: TransitionKind, out_start: i64, in_start: i64, duration: i64, reason: String) -> TransitionPlan {
     TransitionPlan {
         kind,
@@ -63,25 +67,12 @@ fn blank(kind: TransitionKind, out_start: i64, in_start: i64, duration: i64, rea
         in_fade_end_ms: duration,
         out_gain_db: 0.0,
         in_gain_db: 0.0,
-        bass_swap_ms: -1,
-        bass_swap_len_ms: 0,
-        bass_cut_hz: BASS_CUT_HZ,
-        filter_start_ms: -1,
-        filter_end_ms: -1,
-        filter_from_hz: 0.0,
-        filter_to_hz: 0.0,
-        echo_delay_ms: -1,
-        echo_feedback: 0.5,
-        echo_wet_db: -6.0,
-        out_loop_ms: -1,
-        hp_start_ms: -1,
-        hp_end_ms: -1,
-        hp_from_hz: 0.0,
-        hp_to_hz: 0.0,
-        vocal_duck_until_ms: -1,
-        vocal_duck_release_ms: 0,
-        vocal_duck_db: 0.0,
-        vocal_duck_hz: 0.0,
+        bass_swap: None,
+        low_pass: None,
+        high_pass: None,
+        echo: None,
+        out_loop_ms: None,
+        vocal_duck: None,
         reason,
     }
 }
@@ -310,8 +301,7 @@ fn separate_in_fade(p: &mut TransitionPlan, s: &AutoMixSettings, sung_both: bool
     if !sung_both || !s.filter_effects || p.duration_ms < 2 * MIN_FADE_MS {
         return;
     }
-    (p.vocal_duck_until_ms, p.vocal_duck_release_ms, p.vocal_duck_db, p.vocal_duck_hz) =
-        (p.duration_ms / 2, (p.duration_ms / 4).min(500), VOCAL_DUCK_DB, VOCAL_DUCK_HZ);
+    p.vocal_duck = Some(VocalDuck { until_ms: p.duration_ms / 2, release_ms: (p.duration_ms / 4).min(500), db: VOCAL_DUCK_DB, hz: VOCAL_DUCK_HZ });
     p.reason += ", voices kept apart";
 }
 
@@ -378,7 +368,7 @@ fn echo_out(a: &TrackAnalysis, b: &TrackAnalysis, out_dur: i64, in_dur: i64, max
     // while the repeats decay (DJ.Studio-style echo-out into the next track).
     (p.out_fade_start_ms, p.out_fade_end_ms) = (0, (2 * beat_ms).min(dur));
     (p.in_fade_start_ms, p.in_fade_end_ms) = ((dur - 3 * beat_ms).max(0), dur);
-    (p.echo_delay_ms, p.echo_feedback, p.echo_wet_db) = (delay, 0.45, -7.0);
+    p.echo = Some(Echo { delay_ms: delay, feedback: 0.45, wet_db: -7.0 });
     p.in_gain_db = loudness_trim(Some(a), Some(b), s);
     p.reason = format!("echo-out over {beats} beats, {cause}");
     Some(p)
@@ -402,13 +392,7 @@ fn apply_fade_filter(p: &mut TransitionPlan, a: Option<&TrackAnalysis>, b: Optio
         let d = camelot_dist(a, b);
         d == 0 || d == 1
     });
-    if soft {
-        (p.filter_start_ms, p.filter_end_ms, p.filter_from_hz, p.filter_to_hz) =
-            (dur / 2, dur, SWEEP_FROM_HZ, SWEEP_TO_HZ_SOFT);
-    } else {
-        (p.filter_start_ms, p.filter_end_ms, p.filter_from_hz, p.filter_to_hz) =
-            (0, dur, SWEEP_FROM_HZ, SWEEP_TO_HZ_FADE);
-    }
+    p.low_pass = Some(if soft { low_pass(dur / 2, dur, SWEEP_TO_HZ_SOFT) } else { low_pass(0, dur, SWEEP_TO_HZ_FADE) });
 }
 
 pub fn plan(out: Option<&TrackAnalysis>, inc: Option<&TrackAnalysis>, out_duration_ms: i64, in_duration_ms: i64, s: &AutoMixSettings) -> TransitionPlan {
@@ -818,7 +802,6 @@ fn swap_len(beat: f64) -> f64 {
 }
 
 fn finish_beat_matched(a: &TrackAnalysis, b: &TrackAnalysis, s: &AutoMixSettings, k: &Lock, w: &Window, short_cause: &str, notes: &[&str]) -> TransitionPlan {
-    let out_loop_ms = if w.out_loop > 0.0 { w.out_loop.round() as i64 } else { -1 };
     let dur_ms = w.dur.round() as i64;
     let swap = (w.swap.round() as i64).clamp(0, dur_ms);
     let beat_ms = k.beat.round() as i64;
@@ -836,7 +819,7 @@ fn finish_beat_matched(a: &TrackAnalysis, b: &TrackAnalysis, s: &AutoMixSettings
     (p.out_fade_start_ms, p.out_fade_end_ms) = (swap.min(dur_ms - 1).max(0), dur_ms);
     if s.bass_swap {
         let len = swap_len(k.beat).round() as i64;
-        (p.bass_swap_ms, p.bass_swap_len_ms) = ((swap - len).max(0), len);
+        p.bass_swap = Some(BassSwap { at_ms: (swap - len).max(0), len_ms: len, cut_hz: BASS_CUT_HZ });
     }
     // Harmonic pairs: skip or soften the LPF (iOS 27 moved off the predictable underwater dump).
     // Stretched keys: DJ filter-open (HPF). Farther / unknown: classic LPF after the bass hand-over.
@@ -844,14 +827,13 @@ fn finish_beat_matched(a: &TrackAnalysis, b: &TrackAnalysis, s: &AutoMixSettings
         match k.dist {
             0 => {}
             1 => {
-                let start_f = ((swap + dur_ms) / 2).max(swap);
-                (p.filter_start_ms, p.filter_end_ms, p.filter_from_hz, p.filter_to_hz) = (start_f, dur_ms, SWEEP_FROM_HZ, SWEEP_TO_HZ_SOFT);
+                p.low_pass = Some(low_pass(((swap + dur_ms) / 2).max(swap), dur_ms, SWEEP_TO_HZ_SOFT));
             }
             2 => {
-                (p.hp_start_ms, p.hp_end_ms, p.hp_from_hz, p.hp_to_hz) = (0, swap.max(beat_ms * 4).min(dur_ms), 40.0, 1_200.0);
+                p.high_pass = Some(Sweep { start_ms: 0, end_ms: swap.max(beat_ms * 4).min(dur_ms), from_hz: 40.0, to_hz: 1_200.0 });
             }
             _ => {
-                (p.filter_start_ms, p.filter_end_ms, p.filter_from_hz, p.filter_to_hz) = (swap, dur_ms, SWEEP_FROM_HZ, SWEEP_TO_HZ_MATCHED);
+                p.low_pass = Some(low_pass(swap, dur_ms, SWEEP_TO_HZ_MATCHED));
             }
         }
     }
@@ -862,21 +844,21 @@ fn finish_beat_matched(a: &TrackAnalysis, b: &TrackAnalysis, s: &AutoMixSettings
     let mut apart = false;
     if k.separate && sung_end {
         if swap > 0 && w.runup_vocal >= VOCAL_MIN {
-            (p.vocal_duck_until_ms, p.vocal_duck_release_ms, p.vocal_duck_db, p.vocal_duck_hz) = (swap, beat_ms.min(swap), VOCAL_DUCK_DB, VOCAL_DUCK_HZ);
+            p.vocal_duck = Some(VocalDuck { until_ms: swap, release_ms: beat_ms.min(swap), db: VOCAL_DUCK_DB, hz: VOCAL_DUCK_HZ });
             apart = true;
         }
         if w.after_vocal >= VOCAL_MIN && dur_ms - swap >= beat_ms {
-            (p.hp_start_ms, p.hp_end_ms, p.hp_from_hz, p.hp_to_hz) = (swap, swap + (dur_ms - swap) / 2, VOCAL_HP_FROM_HZ, VOCAL_HP_TO_HZ);
+            p.high_pass = Some(Sweep { start_ms: swap, end_ms: swap + (dur_ms - swap) / 2, from_hz: VOCAL_HP_FROM_HZ, to_hz: VOCAL_HP_TO_HZ });
             apart = true;
         }
     }
-    p.out_loop_ms = out_loop_ms;
+    p.out_loop_ms = (w.out_loop > 0.0).then(|| w.out_loop.round() as i64);
     p.in_gain_db = loudness_trim(Some(a), Some(b), s);
     let mut bits: Vec<String> = notes.iter().filter(|n| !n.is_empty()).map(|n| n.to_string()).collect();
     if apart {
         bits.push("voices kept apart".to_string());
     }
-    if w.runup_bars > 0 && out_loop_ms <= 0 {
+    if w.runup_bars > 0 && p.out_loop_ms.is_none() {
         bits.push(format!("{}-bar run-up", w.runup_bars));
     }
     if k.mild_clash {
@@ -1057,7 +1039,7 @@ mod tests {
     fn check_skip(p: &TransitionPlan, a: &TrackAnalysis, b: &TrackAnalysis, out_dur: i64) {
         assert!(p.in_start_ms - b.silence_start_ms <= MAX_SKIP_MS, "{p:?}");
         // Outro remix: only the captured loop must stay inside the track; duration may wrap past it.
-        let heard_end = if p.out_loop_ms > 0 { p.out_start_ms + p.out_loop_ms } else { p.out_start_ms + p.duration_ms };
+        let heard_end = p.out_start_ms + p.out_loop_ms.unwrap_or(p.duration_ms);
         assert!(Ending::of(a, out_dur).skipped(heard_end as f64) <= MAX_SKIP_MS as f64, "{p:?}");
         assert!(p.out_start_ms >= 0 && p.duration_ms >= 0 && heard_end <= out_dur, "{p:?}");
     }
@@ -1082,7 +1064,7 @@ mod tests {
         assert_eq!(p.kind, TransitionKind::EqualPowerFade);
         assert_eq!(p.fade_curve, FadeCurve::EqualPower);
         assert_eq!((p.out_start_ms, p.in_start_ms, p.duration_ms), (192_000, 0, 8000));
-        assert_eq!((p.bass_swap_ms, p.filter_start_ms, p.tempo_ratio), (-1, -1, 1.0));
+        assert_eq!((p.bass_swap, p.low_pass, p.tempo_ratio), (None, None, 1.0));
         check_skip_blind(&p, 200_000);
         // The blind fade is capped, and never longer than a third of a short track.
         let p = plan(None, None, 200_000, 180_000, &AutoMixSettings { max_transition_s: 30.0, ..Default::default() });
@@ -1095,7 +1077,7 @@ mod tests {
 
     /// Where the bass has changed hands, relative to the start of the mix.
     fn swap_at(p: &TransitionPlan) -> i64 {
-        p.bass_swap_ms + p.bass_swap_len_ms
+        p.bass_swap.map_or(-1, |s| s.at_ms + s.len_ms)
     }
 
     /// Where `t` of the incoming track (its own time) is heard, relative to the start of the mix.
@@ -1129,11 +1111,11 @@ mod tests {
         // The mix starts on a downbeat of the outgoing track and the swap is on one too.
         assert!(on_downbeat(&a, p.out_start_ms as f64) && on_downbeat(&a, (p.out_start_ms + swap_at(&p)) as f64), "{}", p.out_start_ms);
         // The lows change hands over the sixteenth before the swap, which splits the fades.
-        assert_eq!(p.bass_swap_len_ms, (beat / 4.0).round() as i64);
+        assert_eq!(p.bass_swap.unwrap().len_ms, (beat / 4.0).round() as i64);
         assert_eq!((p.in_fade_start_ms, p.in_fade_end_ms), (0, swap_at(&p)));
         assert_eq!((p.out_fade_start_ms, p.out_fade_end_ms), (swap_at(&p), p.duration_ms));
         assert_eq!(p.fade_curve, FadeCurve::SineSquared);
-        assert_eq!(p.filter_start_ms, -1, "same key: natural blend, no underwater LPF");
+        assert_eq!(p.low_pass, None, "same key: no low-pass");
         assert_eq!(p.in_gain_db, 0.0, "loudness matching is off by default");
         assert!(p.reason.contains("same key") && p.reason.contains("end of the intro"), "{}", p.reason);
 
@@ -1237,8 +1219,7 @@ mod tests {
         assert!(p.reason.contains("harmonic"), "{}", p.reason);
         let bar = 4.0 * 60_000.0 / 128.0;
         assert!(p.duration_ms as f64 > 9.0 * bar, "{}", p.duration_ms);
-        assert!(p.filter_start_ms >= 0);
-        assert!((p.filter_to_hz - SWEEP_TO_HZ_SOFT).abs() < 1.0, "soft, not underwater: {}", p.filter_to_hz);
+        assert_eq!(p.low_pass.map(|f| f.to_hz), Some(SWEEP_TO_HZ_SOFT), "soft low-pass");
     }
 
     #[test]
@@ -1250,8 +1231,8 @@ mod tests {
         assert_eq!(p.kind, TransitionKind::BeatMatched, "{}", p.reason);
         assert!(p.reason.contains("filter-open"), "{}", p.reason);
         assert!(p.duration_ms as f64 <= 8.25 * 4.0 * 60_000.0 / 128.0 + 1.0, "{}", p.duration_ms);
-        assert!(p.hp_start_ms >= 0 && p.hp_to_hz > 500.0, "DJ filter-open HPF");
-        assert_eq!(p.filter_start_ms, -1, "no underwater LPF on stretched keys");
+        assert!(p.high_pass.is_some_and(|f| f.to_hz > 500.0), "filter-open high-pass");
+        assert_eq!(p.low_pass, None);
     }
 
     #[test]
@@ -1270,16 +1251,16 @@ mod tests {
         let b = track(128.0);
         let p = plan(Some(&a), Some(&b), 240_000, 240_000, &AutoMixSettings { max_transition_s: 40.0, ..Default::default() });
         assert_eq!(p.kind, TransitionKind::BeatMatched, "{}", p.reason);
-        assert!(p.out_loop_ms > 0, "outro should loop: {}", p.reason);
+        let out_loop = p.out_loop_ms.expect(&p.reason);
         assert!(p.reason.contains("remix"), "{}", p.reason);
-        assert!(p.duration_ms > p.out_loop_ms);
+        assert!(p.duration_ms > out_loop);
         assert_eq!(p.in_start_ms, 120, "{}", p.reason);
         check_skip(&p, &a, &b, 240_000);
         // Sung: the run-up is what the four bars hold, played once.
         let a = TrackAnalysis { outro_vocal: 0.7, ..a };
         let p = plan(Some(&a), Some(&b), 240_000, 240_000, &AutoMixSettings { max_transition_s: 40.0, ..Default::default() });
         assert_eq!(p.kind, TransitionKind::BeatMatched, "{}", p.reason);
-        assert_eq!(p.out_loop_ms, -1, "{}", p.reason);
+        assert_eq!(p.out_loop_ms, None, "{}", p.reason);
         check_skip(&p, &a, &b, 240_000);
     }
 
@@ -1391,8 +1372,7 @@ mod tests {
         // 4 s of quiet tail plus 2 s of quiet head.
         assert_eq!((p.out_start_ms, p.in_start_ms, p.duration_ms), (224_000, 1_000, 6_000));
         assert_eq!(p.in_fade_end_ms, 2_000, "the incoming fade follows its own ramp");
-        assert_eq!(p.filter_start_ms, 3_000, "same key: soft LPF in the second half");
-        assert!((p.filter_to_hz - SWEEP_TO_HZ_SOFT).abs() < 1.0);
+        assert_eq!(p.low_pass.map(|f| (f.start_ms, f.to_hz)), Some((3_000, SWEEP_TO_HZ_SOFT)), "same key: soft low-pass in the second half");
         assert_eq!(p.in_gain_db, 6.0, "incoming 6 dB quieter gets 6 dB");
         check_skip(&p, &a, &b, 240_000);
 
@@ -1429,7 +1409,7 @@ mod tests {
             check_skip(&p, &a, &b, 240_000);
             // What the incoming song rises under is music; the outgoing song's last beats may fall away into its
             // own silence after the swap.
-            let swap = if p.bass_swap_ms >= 0 { swap_at(&p) } else { p.duration_ms / 2 };
+            let swap = if p.bass_swap.is_some() { swap_at(&p) } else { p.duration_ms / 2 };
             assert!(p.out_start_ms + swap <= 200_000 + 500, "{}: {p:?}", p.reason);
             assert!(p.in_start_ms >= 25_000 - 500, "{}: {p:?}", p.reason);
         }
@@ -1492,9 +1472,8 @@ mod tests {
         let p = plan(Some(&a), Some(&b), 240_000, 240_000, &AutoMixSettings { max_transition_s: 40.0, ..Default::default() });
         assert_eq!(p.kind, TransitionKind::EchoOut, "{}", p.reason);
         assert!(p.reason.contains("keys far apart"), "{}", p.reason);
-        assert_eq!(p.echo_delay_ms, (60_000.0_f64 / 128.0).round() as i64);
-        assert_eq!((p.echo_feedback, p.echo_wet_db), (0.45, -7.0));
-        assert_eq!(p.bass_swap_ms, -1, "no bass swap on an echo-out");
+        assert_eq!(p.echo, Some(Echo { delay_ms: (60_000.0_f64 / 128.0).round() as i64, feedback: 0.45, wet_db: -7.0 }));
+        assert_eq!(p.bass_swap, None, "no bass swap on an echo-out");
         assert!((p.tempo_ratio - 1.0).abs() < 1e-9);
         check_skip(&p, &a, &b, 240_000);
         // With the echo off a clashing pair gets a short beat-matched mix instead.
@@ -1516,11 +1495,13 @@ mod tests {
         assert!(p.duration_ms as f64 <= 8.25 * 4.0 * 60_000.0 / 128.0 + 1.0, "{}", p.reason);
         let swap = swap_at(&p);
         if swap > 0 {
-            assert_eq!((p.vocal_duck_until_ms, p.vocal_duck_db), (swap, VOCAL_DUCK_DB), "{}", p.reason);
-            assert!(p.vocal_duck_release_ms > 0 && p.vocal_duck_release_ms <= swap);
+            let d = p.vocal_duck.expect(&p.reason);
+            assert_eq!((d.until_ms, d.db), (swap, VOCAL_DUCK_DB), "{}", p.reason);
+            assert!(d.release_ms > 0 && d.release_ms <= swap);
         }
         if p.duration_ms - swap >= (60_000.0f64 / 128.0) as i64 {
-            assert_eq!((p.hp_start_ms, p.hp_end_ms, p.hp_to_hz), (swap, swap + (p.duration_ms - swap) / 2, VOCAL_HP_TO_HZ), "{}", p.reason);
+            let h = p.high_pass.expect(&p.reason);
+            assert_eq!((h.start_ms, h.end_ms, h.to_hz), (swap, swap + (p.duration_ms - swap) / 2, VOCAL_HP_TO_HZ), "{}", p.reason);
         }
         check_skip(&p, &a, &b, 240_000);
         // Without the filters there is nothing to keep them apart with: the echo-out, as before.
@@ -1529,12 +1510,12 @@ mod tests {
         assert!(p.reason.contains("vocals overlap"), "{}", p.reason);
         // Only one side sings: no separation.
         let p = plan(Some(&track(128.0)), Some(&b), 240_000, 240_000, &AutoMixSettings::default());
-        assert_eq!((p.vocal_duck_until_ms, p.hp_start_ms), (-1, -1), "{}", p.reason);
+        assert_eq!((p.vocal_duck, p.high_pass), (None, None), "{}", p.reason);
         // Without a grid, a fade: the incoming voice is held down through its first half.
         let (a, b) = (TrackAnalysis { bpm: 0.0, outro_bpm: 0.0, ..a }, TrackAnalysis { bpm: 0.0, intro_bpm: 0.0, ..b });
         let p = plan(Some(&a), Some(&b), 240_000, 240_000, &AutoMixSettings::default());
         assert_eq!(p.kind, TransitionKind::MixRampFade, "{}", p.reason);
-        assert_eq!(p.vocal_duck_until_ms, p.duration_ms / 2, "{}", p.reason);
+        assert_eq!(p.vocal_duck.map(|d| d.until_ms), Some(p.duration_ms / 2), "{}", p.reason);
         // Quiet outro into a far louder intro: still beat-matched, but short.
         let b = TrackAnalysis { lufs: -2.0, ..track(128.0) };
         let p = plan(Some(&track(128.0)), Some(&b), 240_000, 240_000, &AutoMixSettings { max_transition_s: 40.0, ..Default::default() });
@@ -1579,6 +1560,6 @@ mod tests {
         let s = AutoMixSettings { bass_swap: false, filter_effects: false, ..Default::default() };
         let p = plan(Some(&track(128.0)), Some(&track(128.0)), 240_000, 240_000, &s);
         assert_eq!(p.kind, TransitionKind::BeatMatched);
-        assert_eq!((p.bass_swap_ms, p.filter_start_ms, p.tempo_ratio, p.tempo_ramp_ms), (-1, -1, 1.0, 0));
+        assert_eq!((p.bass_swap, p.low_pass, p.tempo_ratio, p.tempo_ramp_ms), (None, None, 1.0, 0));
     }
 }

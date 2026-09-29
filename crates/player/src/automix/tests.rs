@@ -407,9 +407,6 @@ fn plan_from_real_analyses() {
     let p = plan::plan(Some(&a), Some(&b), a.duration_ms, b.duration_ms, &crate::types::AutoMixSettings::default());
     assert_eq!(p.kind, crate::types::TransitionKind::BeatMatched, "{}", p.reason);
     assert!((p.tempo_ratio - a.bpm / b.bpm).abs() < 1e-6);
-    let params = mixer::params(&p);
-    assert_eq!(params.len(), mixer::param::COUNT);
-    assert_eq!(params[mixer::param::DURATION], p.duration_ms as f32);
 }
 
 /// `cargo test --release -p nori-player analysis_cost -- --ignored --nocapture`

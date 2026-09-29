@@ -3,7 +3,7 @@
 use std::f64::consts::TAU;
 use std::sync::{Arc, Mutex};
 
-use nori_player::automix::mixer::{self, Mixer};
+use nori_player::automix::mixer::Mixer;
 use nori_player::automix::plan;
 use nori_player::automix::synth::Rng;
 use nori_player::sim::{prefs_off, Audio, Track};
@@ -162,8 +162,8 @@ pub fn blind_plan(out_ms: i64, in_ms: i64, secs: f32) -> TransitionPlan {
 /// `out` and `inc` mixed as the plan says, by the mixer alone: what the engine must have produced.
 pub fn reference_mix(out: &[i16], inc: &[i16], p: &TransitionPlan) -> Vec<i16> {
     let mut m = Mixer::new(RATE, 2);
-    m.configure(&mixer::params(p));
-    let mut dst = vec![0i16; out.len().min(inc.len())];
-    m.process_i16(out, inc, &mut dst);
+    m.configure(p);
+    let mut dst = out[..out.len().min(inc.len())].to_vec();
+    m.process(&mut dst, inc);
     dst
 }
