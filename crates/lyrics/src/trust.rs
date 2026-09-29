@@ -261,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn word_timing_beats_line_timing_and_both_beat_plain_words() {
+    fn timing_ranks_words_lines_plain() {
         let s = song();
         let n = named("Glass Harbour", 180.0);
         let words = score(&s, &song_words(true), &n, 0.85, &[], true).score;
@@ -275,7 +275,7 @@ mod tests {
     }
 
     #[test]
-    fn a_length_or_title_that_is_not_the_songs_costs() {
+    fn wrong_length_or_title_costs() {
         let s = song();
         let right = score(&s, &song_words(true), &named("Glass Harbour", 180.0), 0.8, &[], true).score;
         let long = score(&s, &song_words(true), &named("Glass Harbour", 188.0), 0.8, &[], true).score;
@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn times_past_the_end_out_of_order_or_ending_early_cost() {
+    fn implausible_times_cost() {
         let s = song();
         let good = score(&s, &song_words(true), &Named::default(), 0.8, &[], true).score;
         let early: Vec<(i64, &str)> = (0..18).map(|i| (5_000 + i * 4_000, ["line one here", "line two here", "a third line", "line four", "the fifth one", "and a sixth"][i as usize % 6])).collect();
@@ -309,7 +309,7 @@ mod tests {
     }
 
     #[test]
-    fn another_script_than_every_other_answer_costs() {
+    fn lone_script_costs() {
         let s = song();
         let lines: Vec<(i64, &str)> = (0..18).map(|i| (10_000 + i * 9_000, ["紙の舟が行く", "港の灯り", "波が遠く", "朝が来る", "水をつかむ", "光をつかむ"][i as usize % 6])).collect();
         let japanese = timed(&lines, true);

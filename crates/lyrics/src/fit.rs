@@ -110,7 +110,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn three_lines_repeated_are_not_a_songs_lyrics() {
+    fn repeated_fragment_is_implausible() {
         let junk: Vec<(i64, &str)> = (0..6).map(|i| (5_000 + i * 4_000, ["Pour another glass", "The whisky's on the table", "Drink until the morning"][i as usize % 3])).collect();
         assert!(!plausible(&timed(&junk, true), &song()), "three lines over thirty seconds of a three-minute song");
         assert!(plausible(&song_words(false), &song()));
@@ -121,7 +121,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn lines_timed_past_the_songs_end_are_another_songs() {
+    fn lines_past_end_are_implausible() {
         let mut long = song_words(true);
         long.lines.push(LyricLine { start_ms: 260_000, text: "a longer song".into(), ..Default::default() });
         assert!(!plausible(&long, &song()));
@@ -129,7 +129,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_same_song_from_two_services_agrees_and_another_does_not() {
+    fn agree_same_song_only() {
         let lines = song_words(false);
         let mut words = song_words(true);
         words.lines[0].text = "Paper boats drift down the harbor (ooh)".into();

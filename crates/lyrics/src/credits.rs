@@ -201,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn an_instrumental_placeholder_leaves_nothing() {
+    fn instrumental_placeholder_is_empty() {
         for only in [["[Instrumental]"], ["(Instrumental)"], ["纯音乐，请欣赏"], ["此歌曲为没有填词的纯音乐，请您欣赏"]] {
             let mut l = lyrics(&only, true);
             strip_edges(&mut l, "Glass Harbour", "The Lanterns");
@@ -210,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn sung_lines_with_by_or_a_colon_stay_and_the_middle_is_never_touched() {
+    fn sung_lines_and_middle_stay() {
         let edges = ["Stand by the water", "Music by the river tonight", "She said: stay a while", "Written in the stars above"];
         let mut l = lyrics(&edges, true);
         strip_edges(&mut l, "Glass Harbour", "The Lanterns");

@@ -222,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_lrc_gets_estimated_words_inside_the_line() {
+    fn plain_lrc_estimates_words() {
         let l = parse(r#"[{"synced":true,"line":[{"start":0,"value":"one three"},{"start":4000,"value":"next"}]}]"#);
         assert!(!l.word_timed);
         let w = &l.lines[0].words;
@@ -246,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn an_lrc_lines_last_word_before_a_long_pause_ends_by_itself() {
+    fn lrc_last_word_before_pause() {
         // The last word has no closing mark and the next line is thirty seconds away.
         let l = from_lrc("[00:10.00]<00:10.00>Hold <00:10.40>on <00:10.80>tonight\n[00:40.00]<00:40.00>Again\n");
         let last = l.lines[0].words.last().unwrap().clone();
@@ -261,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn lrc_text_with_repeats_offset_and_plain_fallback() {
+    fn lrc_repeats_offset_and_plain() {
         let l = from_lrc("[ar:Someone]\n[offset:+200]\n[00:01.00][00:10.50]chorus\n[00:05.25]verse\n\n");
         assert!(l.synced);
         let got: Vec<(i64, &str)> = l.lines.iter().map(|x| (x.start_ms, x.text.as_str())).collect();

@@ -574,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn the_same_words_read_again_under_another_key_are_not_new() {
+    fn same_lyrics_ignores_key() {
         let shown = pick("hold on", 7, LyricsOrigin::Lrclib);
         assert!(same_lyrics(&shown, &pick("hold on", 12, LyricsOrigin::Lrclib)), "the lookup run again keeps them under a new key");
         assert!(!same_lyrics(&shown, &pick("let go", 7, LyricsOrigin::Lrclib)), "other words");
@@ -617,7 +617,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wrong_song_from_a_loose_source_is_not_chosen() {
+    fn loose_wrong_song_not_chosen() {
         // A service that matches loosely and names nothing answers first, word by word, with another song;
         // LRCLIB (line by line, naming the song) and Unison (word by word) have this one's words.
         let mut r = Race::new(&tune(), vec![entry(0.9, true, W), entry(0.85, true, W), entry(0.85, true, W)], true, Timing::Empty);
@@ -634,11 +634,9 @@ mod tests {
     }
 
     #[test]
-    fn a_good_line_timed_first_wave_still_asks_the_services_that_time_words() {
-        // First wave: two services agreeing on this song's words, timed by line, so their best scores
-        // well. Second wave: one that times words. With words preferred it is asked; without, the good
-        // line-timed answer ends the search, as it did for every song before (the owner saw word-timed
-        // lyrics only once every service was on).
+    fn line_timed_leader_still_asks_word_timers() {
+        // First wave: two agreeing line-timed answers, scoring well; second wave: a word timer, asked
+        // only when words are preferred.
         let wave = || vec![entry(0.95, true, W), entry(0.9, true, W), entry(0.75, false, W)];
         let answered = |prefer: bool| {
             let mut r = Race::new(&tune(), wave(), prefer, Timing::Empty);
@@ -655,7 +653,7 @@ mod tests {
     }
 
     #[test]
-    fn a_line_timed_answer_naming_the_song_beats_word_timed_words_nobody_backs() {
+    fn named_line_timing_beats_unbacked_word_timing() {
         let mut r = Race::new(&tune(), vec![entry(0.85, true, W), entry(0.85, true, W)], true, Timing::Empty);
         r.next(0, 6);
         r.answer(0, Some((words(&OURS, false), naming("Glass Harbour"))));
@@ -688,7 +686,7 @@ mod tests {
     }
 
     #[test]
-    fn the_second_wave_is_asked_only_when_the_first_misses_or_scores_low() {
+    fn second_wave_only_after_a_weak_first() {
         let entries = vec![entry(0.95, true, W), entry(0.85, true, L), entry(0.75, false, W), entry(0.7, false, U)];
         let mut good = Race::new(&tune(), entries.clone(), true, Timing::Empty);
         assert_eq!(good.next(0, 6), [0, 1], "the first wave only");
@@ -713,7 +711,7 @@ mod tests {
     }
 
     #[test]
-    fn whats_shown_is_replaced_only_by_a_strictly_better_answer_that_agrees() {
+    fn shown_is_replaced_only_by_better_agreeing() {
         let mut r = Race::new(&tune(), vec![entry(0.85, true, W), entry(0.85, true, W), entry(0.85, true, W)], true, Timing::Empty);
         r.next(0, 6);
         r.answer(1, Some((words(&OURS, false), naming("Glass Harbour"))));
@@ -737,7 +735,7 @@ mod tests {
     }
 
     #[test]
-    fn with_the_songs_voice_timing_that_fits_it_beats_timing_that_does_not() {
+    fn voice_fit_beats_drifting_timing() {
         let (s, curve, phrases) = measured();
         let named = Named::new("Glass Harbour", "The Lanterns", "", s.duration as f64);
         let fits = crate::sync::tests::lyrics(&phrases, true, false, &|t| t);
@@ -766,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    fn lyrics_that_run_late_go_out_with_their_offset() {
+    fn late_lyrics_carry_offset() {
         let (s, curve, phrases) = measured();
         let late = crate::sync::tests::lyrics(&phrases, true, false, &|t| t + 1.0);
         let mut r = Race::new(&s, vec![entry(0.9, true, W)], true, Timing::Empty);
@@ -780,7 +778,7 @@ mod tests {
     }
 
     #[test]
-    fn the_servers_own_untimed_words_are_never_replaced_by_untimed_ones() {
+    fn server_untimed_not_replaced_by_untimed() {
         let mut r = Race::new(&tune(), vec![entry(0.85, true, W), entry(0.7, false, U)], true, Timing::Untimed);
         assert_eq!(r.next(0, 6), [0]);
         r.answer(0, None);
@@ -794,7 +792,7 @@ mod tests {
 
     // ---- the lookup, through the fake web and cache ----------------------------------------------------
 
-    /// The response cache, in memory; keys in `old` are as old as can be.
+    /// The response cache in memory; keys in the second set count as old.
     #[derive(Default)]
     struct Kept(Mutex<HashMap<String, Vec<u8>>>, Mutex<HashSet<String>>);
 
@@ -839,7 +837,6 @@ mod tests {
         run_saying(web, cache, s, server, l).0
     }
 
-    const VERSE: [&str; 6] = OURS;
 
     /// `lines` as LRC across the song, a line every ten seconds; `words` times each word inline.
     fn lrc(lines: &[&str], words: bool) -> String {
@@ -869,9 +866,9 @@ mod tests {
     }
 
     #[test]
-    fn a_song_is_asked_once_and_the_choice_is_kept_with_its_score() {
+    fn choice_is_cached_with_score() {
         let (web, cache) = (Web::default(), Kept::default());
-        unison(&web, &lrc(&VERSE, true));
+        unison(&web, &lrc(&OURS, true));
         // LRCLIB has nothing: a 404 to the exact lookup and an empty search (a miss, not a failure).
         web.answer("https://lrclib.net/api/search", 200, "[]");
         web.answer("https://lrclib.net/", 404, r#"{"statusCode":404}"#);
@@ -894,7 +891,7 @@ mod tests {
     }
 
     #[test]
-    fn nothing_is_asked_for_synced_server_lyrics_a_provider_song_or_with_no_service() {
+    fn nothing_asked_without_need() {
         let (web, cache) = (Web::default(), Kept::default());
         let l = asked(&[LyricsService::Unison]);
         assert!(run(&web, &cache, &song(), (true, true), &l).is_empty());
@@ -905,7 +902,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_is_not_kept_but_not_asked_again_at_once() {
+    fn failure_rests_in_memory_only() {
         let (web, cache) = (Web::default(), Kept::default());
         let s = Song { title: "Failing".into(), ..song() };
         let l = asked(&[LyricsService::Unison]);
@@ -923,8 +920,8 @@ mod tests {
     #[test]
     fn word_timed_words_win_over_line_timed_ones() {
         let (web, cache) = (Web::default(), Kept::default());
-        unison(&web, &lrc(&VERSE, true));
-        lrclib_synced(&web, &lrc(&VERSE, false));
+        unison(&web, &lrc(&OURS, true));
+        lrclib_synced(&web, &lrc(&OURS, false));
         let s = Song { title: "Glass Harbour".into(), id: "both".into(), ..song() };
         let picks = run(&web, &cache, &s, (true, false), &asked(&[LyricsService::Lrclib, LyricsService::Unison]));
         assert_eq!(picks.last().unwrap().origin, LyricsOrigin::Unison);
@@ -932,19 +929,19 @@ mod tests {
     }
 
     #[test]
-    fn another_songs_words_never_replace_the_lyrics_shown() {
+    fn other_songs_words_never_replace_shown() {
         let (web, cache) = (Web::default(), Kept::default());
         // LRCLIB's lines; Unison, below it, times words - but of another song, and a fragment of one.
-        lrclib_synced(&web, &lrc(&VERSE, false));
+        lrclib_synced(&web, &lrc(&OURS, false));
         unison(&web, &lrc(&THEIRS[..3], true));
         let s = Song { title: "Glass Harbour".into(), id: "stable".into(), ..song() };
         let picks = run(&web, &cache, &s, (false, false), &asked(&[LyricsService::Lrclib, LyricsService::Unison]));
         assert_eq!(picks.len(), 1, "shown once: {:?}", picks.iter().map(|p| p.origin).collect::<Vec<_>>());
-        assert_eq!((picks[0].origin, picks[0].lyrics.lines[0].text.as_str()), (LyricsOrigin::Lrclib, VERSE[0]));
+        assert_eq!((picks[0].origin, picks[0].lyrics.lines[0].text.as_str()), (LyricsOrigin::Lrclib, OURS[0]));
     }
 
     #[test]
-    fn a_fragment_is_a_miss_and_one_kept_before_the_check_is_not_shown() {
+    fn fragments_are_misses_even_cached() {
         let (web, cache) = (Web::default(), Kept::default());
         let s = Song { title: "Fragment".into(), ..song() };
         let only = asked(&[LyricsService::Unison]);
@@ -961,26 +958,26 @@ mod tests {
     }
 
     #[test]
-    fn credits_are_stripped_before_the_answer_is_scored_or_kept() {
+    fn credits_stripped_before_scoring() {
         let (web, cache) = (Web::default(), Kept::default());
         let s = Song { title: "Glass Harbour".into(), id: "credited".into(), ..song() };
-        let body = format!("[00:00.00]Lyrics by: Some Person\n[00:02.00]Composed by: Another Person\n{}[03:50.00]Transcribed by A. Listener\n", lrc(&VERSE, false));
+        let body = format!("[00:00.00]Lyrics by: Some Person\n[00:02.00]Composed by: Another Person\n{}[03:50.00]Transcribed by A. Listener\n", lrc(&OURS, false));
         unison(&web, &body);
         let picks = run(&web, &cache, &s, (false, false), &asked(&[LyricsService::Unison]));
         let l = &picks.last().unwrap().lyrics;
-        assert_eq!((l.lines.len(), l.lines[0].text.as_str(), l.lines[0].start_ms), (18, VERSE[0], 10_000));
+        assert_eq!((l.lines.len(), l.lines[0].text.as_str(), l.lines[0].start_ms), (18, OURS[0], 10_000));
         let kept = read_kept(&cache.get(&cache_key(LyricsService::Unison, &s, &asked(&[LyricsService::Unison]))).unwrap()).unwrap();
         assert_eq!(kept.lyrics.lines.len(), 18, "the cached copy is already clean");
     }
 
     #[test]
-    fn the_chosen_lyrics_are_served_without_asking_even_with_more_services_on() {
+    fn choice_is_served_from_cache() {
         let (web, cache) = (Web::default(), Kept::default());
         let s = Song { title: "Glass Harbour".into(), id: "chosen".into(), ..song() };
-        unison(&web, &lrc(&VERSE, true));
+        unison(&web, &lrc(&OURS, true));
         run(&web, &cache, &s, (false, false), &asked(&[LyricsService::Unison]));
         let n = web.asked().len();
-        lrclib_synced(&web, &lrc(&VERSE, false));
+        lrclib_synced(&web, &lrc(&OURS, false));
         let picks = run(&web, &cache, &s, (false, false), &asked(&[LyricsService::Lrclib, LyricsService::Unison]));
         assert_eq!(picks.iter().map(|p| p.origin).collect::<Vec<_>>(), [LyricsOrigin::Unison]);
         assert_eq!(web.asked().len(), n, "no network");
@@ -990,13 +987,13 @@ mod tests {
     }
 
     #[test]
-    fn a_low_scored_choice_is_asked_about_again_only_after_some_days() {
+    fn low_choice_retried_after_days() {
         let (web, cache) = (Web::default(), Kept::default());
         let s = Song { title: "Glass Harbour".into(), id: "low".into(), ..song() };
         let l = asked(&[LyricsService::Lrclib, LyricsService::Unison]);
-        let lines = crate::lyrics::from_lrc(&lrc(&VERSE, false));
+        let lines = crate::lyrics::from_lrc(&lrc(&OURS, false));
         cache.put(&best_key(&s), kept(&lines, &Named::default(), Some((LyricsService::Lrclib, 0.5))));
-        unison(&web, &lrc(&VERSE, true));
+        unison(&web, &lrc(&OURS, true));
         let picks = run(&web, &cache, &s, (false, false), &l);
         assert_eq!(picks.iter().map(|p| p.origin).collect::<Vec<_>>(), [LyricsOrigin::Lrclib], "shown at once");
         assert!(web.asked().is_empty(), "low, but kept only lately: not asked again yet");

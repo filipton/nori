@@ -209,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn records_pick_the_finest_timing_and_skip_instrumentals() {
+    fn pick_finest_record() {
         assert!(pick(&json!({"instrumental": true, "syncedLyrics": "[00:01.00]x"})).is_none());
         assert!(pick(&json!({"instrumental": "TRUE", "plainLyrics": "x"})).is_none());
         assert!(pick(&json!({"syncedLyrics": "[00:01.00]x", "plainLyrics": "y"})).unwrap().synced);

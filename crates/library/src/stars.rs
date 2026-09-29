@@ -111,7 +111,7 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_star_puts_the_mark_from_before_back() {
+    fn refused_star_restores_mark() {
         let mut m = StarMarks::default();
         let first = m.mark(Starrable::Album, "1".into(), true);
         assert_eq!(first.previous, None);

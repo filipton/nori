@@ -844,7 +844,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_answer_naming_another_song_is_not_this_ones() {
+    fn names_this_rejects_other_songs() {
         let s = song();
         assert!(names_this(&json!({"title": "Glass Harbour", "artist": "The Lanterns", "totalDuration": "3:59.320"}), &s));
         assert!(names_this(&json!({}), &s), "an answer that names nothing passes");
@@ -856,7 +856,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn lyrics_plus_with_another_songs_words_is_a_miss() {
+    fn lyrics_plus_other_song_is_a_miss() {
         let web = Web::default();
         let body = include_str!("../testdata/lyricsplus.json").replace(r#""source":"Apple","#, r#""source":"Apple","title":"Whisky on the Table","artist":"The Lanterns","#);
         web.answer("https://lyricsplus", 200, &body);
@@ -883,7 +883,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn unison_reads_ttml_and_lrc_and_says_a_miss_from_a_failure() {
+    fn unison_miss_and_failure() {
         let web = Web::default();
         let ttml = include_str!("../testdata/apple.ttml");
         web.answer("https://unison.boidu.dev/lyrics?song=Glass+Harbour&artist=The+Lanterns&album=Low+Tide&duration=239", 200, &json!({"success": true, "data": {"lyrics": ttml, "format": "ttml", "duration": 239}}).to_string());
@@ -904,7 +904,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn netease_matches_the_song_then_reads_its_yrc_with_its_referer() {
+    fn netease_matches_and_sends_referer() {
         let web = Web::default();
         let found = json!({"code": 200, "result": {"songs": [
             {"id": 7, "name": "Glass Harbour (Live)", "duration": 300_000, "artists": [{"name": "The Lanterns"}]},
@@ -924,7 +924,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn better_lyrics_without_a_key_takes_a_401_as_a_miss_and_moves_host_only_when_unreachable() {
+    fn better_lyrics_401_is_a_miss_and_host_moves_when_unreachable() {
         let web = Web::default();
         web.answer("https://api.betterlyrics.org/getLyrics", 401, "");
         assert_eq!(asking(&web, LyricsService::BetterLyrics), Lookup::Missing);
@@ -938,7 +938,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn lrclib_takes_a_word_timed_search_hit_over_a_line_timed_one() {
+    fn lrclib_prefers_word_timed_hit() {
         let web = Web::default();
         web.answer("https://lrclib.net/api/get", 404, r#"{"statusCode":404,"message":"not found"}"#);
         let file = include_str!("../testdata/lrclib.lyricsfile.yaml");
@@ -955,7 +955,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn youtube_services_share_one_search_per_song() {
+    fn youtube_search_shared() {
         let web = Web::default();
         web.answer("https://music.youtube.com/youtubei/v1/search", 200, include_str!("../testdata/youtube-search.json"));
         web.answer("https://music.youtube.com/youtubei/v1/get_transcript", 400, "");
@@ -972,7 +972,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_key_that_is_not_there_is_a_failure_and_a_key_goes_as_a_bearer() {
+    fn paxsenix_key_is_required_and_sent_as_bearer() {
         let web = Web::default();
         assert_eq!(asking(&web, LyricsService::PaxsenixMusixmatch), Lookup::Failed);
         assert!(web.asked().is_empty());

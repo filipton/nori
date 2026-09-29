@@ -517,7 +517,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn exact_lyrics_fit_and_shifted_ones_are_found_out_and_put_right() {
+    fn exact_fit_and_shift_is_found() {
         let (curve, phrases, _) = sung(&song());
         let exact = check(&lyrics(&phrases, false, false, &|t| t), &curve).unwrap();
         assert_eq!(exact.kind, SyncKind::Fits, "{exact:?}");
@@ -533,7 +533,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn another_version_drifts_and_another_songs_times_are_poor() {
+    fn drift_and_poor_fit() {
         let (curve, phrases, secs) = sung(&song());
         let mid = phrases[phrases.len() / 2][0].0;
         let edit = check(&lyrics(&phrases, true, false, &|t| if t < mid - 0.1 { t } else { t + 2.0 }), &curve).unwrap();

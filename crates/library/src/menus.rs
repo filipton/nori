@@ -230,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn a_providers_song_is_offered_to_the_library_and_nothing_that_needs_it_there() {
+    fn provider_song_menu() {
         let s = Song {
             id: "ext-deezer-song-9".into(),
             is_external: true,

@@ -534,7 +534,7 @@ mod tests {
     }
 
     #[test]
-    fn an_album_page_leaves_its_own_artist_off_the_rows() {
+    fn album_rows_omit_album_artist() {
         let album = Album { artist: "Björk".into(), ..Default::default() };
         let by = |artist: &str, explicit: &str| Song { artist: artist.into(), explicit_status: explicit.into(), ..Default::default() };
         let d = AlbumDetail::new(album, vec![by("BJÖRK", ""), by("Björk", "explicit"), by("Thom Yorke", "")], vec![]);
@@ -543,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn an_artist_page_shows_only_its_albums_years() {
+    fn artist_page_album_years() {
         let artist = Artist { name: "Björk".into(), ..Default::default() };
         let album = |artist: &str, year: u32| Album { artist: artist.into(), year, ..Default::default() };
         let d = ArtistDetail::new(artist, vec![album("björk", 1997), album("Björk & Thom Yorke", 2001), album("Björk", 0)]);
@@ -585,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn a_page_knows_its_own_queue_by_what_it_shows() {
+    fn page_queue_origin() {
         let album = AlbumDetail::new(Album { id: "al".into(), ..Default::default() }, vec![], vec![]);
         assert_eq!(album.queue.origin(), PageOrigin::new(OriginKind::Album, "al"));
         let artist = ArtistDetail::new(Artist { id: "ar".into(), ..Default::default() }, vec![Album { id: "al".into(), ..Default::default() }]);
@@ -596,7 +596,7 @@ mod tests {
     }
 
     #[test]
-    fn the_big_buttons_answer_for_the_pages_own_queue() {
+    fn hero_buttons_follow_own_queue() {
         // Another page's queue playing and shuffling: this page shows Play and Shuffle, and both start its own.
         let away = hero_buttons(false, true, true, false, true, true);
         assert_eq!((away.shuffle_lit, away.pausing, away.play_press, away.shuffle_press), (false, false, HeroPress::Start, HeroPress::Start));
@@ -613,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn a_playlist_shows_its_own_description_but_not_the_servers_import_note() {
+    fn playlist_description_hides_import_note() {
         let d = |c: &str, show, hide| playlist_description(Some(c.into()), show, hide);
         assert_eq!(d("Late night driving", true, true).as_deref(), Some("Late night driving"));
         assert_eq!(d("Auto-imported from 'Glitch.m3u8'", true, true), None);
@@ -624,7 +624,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_pages_offer_the_library_and_long_lists_a_filter() {
+    fn library_offer_and_filter() {
         let offer = |playlist: bool| Some(LibraryOffer { playlist });
         assert_eq!(library_offer("ext-deezer-album-1".into(), true), offer(false));
         assert_eq!(library_offer("pl-deezer-1".into(), false), offer(true));

@@ -384,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn every_built_in_definition_reads_into_the_form() {
+    fn builtins_read_into_form() {
         for p in super::super::smart_defaults() {
             let e = smart_edit_read(p.clone()).unwrap();
             assert!(!e.rules.is_empty(), "{}", p.id);

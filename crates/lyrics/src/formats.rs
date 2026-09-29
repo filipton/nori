@@ -623,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn a_last_word_without_an_end_is_neither_instant_nor_stretched_over_the_pause() {
+    fn open_last_word_gets_a_sung_length() {
         let l = from_lyricsfile("version: '1.0'\nmetadata: {title: t, artist: a}\nlines:\n  - {text: hold on tonight, start_ms: 10000, words: [{text: 'hold ', start_ms: 10000}, {text: 'on ', start_ms: 10400}, {text: tonight, start_ms: 10800}]}\n  - {text: again, start_ms: 40000}\n");
         let last = l.lines[0].words.last().unwrap().clone();
         assert!(last.end_ms > 10_800 && last.end_ms <= 12_800, "{last:?}");
@@ -760,7 +760,7 @@ mod tests {
     }
 
     #[test]
-    fn netease_falls_back_to_its_lrc_and_strips_timed_credits() {
+    fn netease_lrc_fallback() {
         let lrc = "{\"t\":0,\"c\":[{\"tx\":\"作词: Someone\"}]}\n[00:00.000] 作词 : Thom Yorke\n[00:01.000] 作曲 : Radiohead\n[00:02.000] Produced by: Someone\n[00:22.500]When you were here before\n[00:26.000]Couldn't look you in the eye\n[03:50.000]Mixed by: Someone\n";
         let l = from_netease("", lrc, "Creep");
         assert!(l.synced && !l.word_timed, "line timing stays line timing");

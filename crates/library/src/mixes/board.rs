@@ -234,7 +234,7 @@ mod tests {
     use crate::history::tests::song;
 
     #[test]
-    fn tiles_wear_their_own_colour_deepened_towards_black() {
+    fn tile_colours() {
         let c = mix_tile_colours("top".into());
         // Compose's blend(Color(0xFFE0662B), Color.Black, 0.45f), and the band's alphas in 8 bits.
         assert_eq!(c, [0xFFE0_662B, 0xFF7B_3818, 0x007B_3818, 0xB87B_3818, 0xF07B_3818]);

@@ -480,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn a_long_queue_shuffles_quickly_and_keeps_its_artists_apart() {
+    fn long_queue_shuffles_fast() {
         // Five thousand songs: a shuffle that compared every song with every other would take seconds here.
         let l: Vec<Song> = (0..5_000).map(|i| song(&i.to_string(), "t", &format!("artist {}", i % 1500), "", "", 0)).collect();
         let started = std::time::Instant::now();
