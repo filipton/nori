@@ -1,25 +1,16 @@
-//! Covers for a screen: asked for by address and size, answered from memory, the disk or the network, on
-//! a few worker threads. Views asking for one cover at one size while it is on its way share the one
-//! fetch and decode. A request whose views have all gone (a row scrolled away) is dropped before it
-//! starts, or before its decode when the bytes are already coming: those are kept on disk all the same.
+//! Cover requests by URL and size, served from memory, disk or network on a few worker threads.
 //!
-//! The newest request is served first. In a list flung past a hundred covers, the ones on screen now
-//! were asked for last, and the rows that flew by may be cancelled before a worker reaches them.
+//! - Concurrent requests for the same cover and size share one fetch and decode (a "flight").
+//! - A flight whose tickets are all dropped is skipped before it starts, or before decoding (the bytes
+//!   are still kept on disk).
+//! - Newest request first (LIFO), so the covers on screen after a fling come before the ones scrolled
+//!   past.
+//! - Workers start on demand up to the limit and sleep on a condvar; the disk cache is opened by the
+//!   first worker, so the requesting (UI) thread never touches the disk.
+//! - Workers exit and free their buffers when the loader rests: after [`Config::idle`] with no work,
+//!   when hidden ([`Loader::show`]) or on low memory ([`Loader::rest`]). While hidden no worker waits.
 //!
-//! Workers are started on the first requests, as many as are waited for up to the limit, and sleep on a
-//! condition variable when there is nothing to do: an idle loader never wakes. Nothing touches the disk
-//! on the thread that asks, not even opening the cache (its directory is read by the first worker), so a
-//! GUI can ask from its own thread.
-//!
-//! A worker keeps its buffers from cover to cover while covers come, and lets them go with its thread
-//! once the loader rests: when no cover has been asked for in a while ([`Config::idle`]), when no screen
-//! shows covers ([`Loader::show`]), or when the client is short of memory ([`Loader::rest`]). Only the
-//! first waits: the last worker to run out of work waits that long for the next cover, and only while a
-//! screen shows covers (the phone is awake then). Out of sight, a worker ends as soon as it runs out of
-//! work, so nothing waits and nothing wakes.
-//!
-//! What a cover is decoded into is the client's ([`Paint`]): RGBA rows ([`Rgba`]), or a platform's own
-//! picture made at the right size and decoded straight into (Android's Bitmaps, crates/android).
+//! [`Paint`] decides the output: RGBA rows ([`Rgba`]) or a platform picture (Android Bitmaps).
 
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -43,26 +34,24 @@ use crate::memory::{Image, MemoryCache, Sized};
 use crate::scale::Alpha;
 
 pub struct Config {
-    /// Where covers are kept on disk; None keeps none.
+    /// Disk cache directory; None disables the disk cache.
     pub dir: Option<PathBuf>,
     pub disk_bytes: u64,
-    /// Decoded covers kept in memory, in bytes. 0 for a client that keeps its own (Android keeps the
-    /// Bitmaps it draws, which only it can hold).
+    /// Memory cache limit in bytes; 0 for a client with its own cache (Android keeps its Bitmaps).
     pub memory_bytes: usize,
-    /// At most this many covers fetched and decoded at once.
+    /// Maximum worker threads.
     pub workers: usize,
-    /// How [`Rgba`] writes a picture with transparency.
+    /// Alpha encoding for [`Rgba`].
     pub alpha: Alpha,
-    /// A fetch gives up after this long; 0 is the transport's own timeouts.
+    /// Fetch timeout; 0 uses the transport's default.
     pub timeout_ms: u32,
-    /// A loader on screen whose workers have all waited this long for a cover rests ([`Loader::rest`]).
+    /// Idle time after which a visible loader rests ([`Loader::rest`]).
     pub idle: Duration,
 }
 
 impl Config {
-    /// The core's limits (`cover_rules`) for the disk, 64 MB of decoded covers (about 180 at 300x300 and
-    /// the player's at full size), and two to four workers: decoding is CPU work, and a fifth thread
-    /// makes no cover on screen come sooner.
+    /// Defaults: the core's disk limit (`cover_rules`), 64 MB in memory, 2 to 4 workers (decoding is
+    /// CPU-bound; more threads do not help).
     pub fn new(dir: impl Into<PathBuf>) -> Config {
         Config {
             dir: Some(dir.into()),
@@ -78,14 +67,14 @@ impl Config {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Error {
-    /// The request did not come back.
+    /// The request failed.
     Transport { kind: FailureKind, detail: Option<String> },
-    /// The server answered with an error, or with nothing.
+    /// Non-2xx status or empty body.
     Status(u16),
     Decode(decode::Error),
-    /// The loader was dropped first.
+    /// The loader was dropped.
     Closed,
-    /// Fetching, keeping or decoding this cover panicked; the loader goes on with the next.
+    /// Processing this cover panicked; the loader continues with the next.
     Panicked(String),
 }
 
@@ -110,24 +99,23 @@ impl From<TransportError> for Error {
     }
 }
 
-/// What a loader makes of a cover's file, on the worker that fetched it.
+/// Turns a cover file into the client's picture type, on a worker thread.
 pub trait Paint: Send + Sync + 'static {
-    /// A decoded cover, handed to every view that waits for it (so cheap to clone: an `Arc`, a handle).
+    /// Decoded cover, cloned to every waiter (should be cheap: an `Arc` or a handle).
     type Picture: Clone + Send + 'static;
 
-    /// The cover in `bytes`, decoded with `decoder` for a view `width` x `height` (0 x 0: at the file's
-    /// own size, at most `decode::WHOLE_SIDE` a side).
+    /// Decodes `bytes` for a `width` x `height` view (0 x 0: own size, capped at `decode::WHOLE_SIDE`).
     fn paint(&self, decoder: &mut Decoder, bytes: &[u8], width: u32, height: u32) -> Result<Self::Picture, decode::Error>;
 
-    /// How many bytes the picture holds, for the memory cache's limit.
+    /// Size in bytes, for the memory cache.
     fn bytes(picture: &Self::Picture) -> usize;
 
-    /// Lets go of whatever is kept between covers, for a loader that rests (see [`Loader::rest`]). Called
-    /// outside the loader's lock, possibly while other covers are painted.
+    /// Frees per-cover scratch when the loader rests. Called outside the loader lock, possibly while
+    /// other covers are painted.
     fn rest(&self) {}
 }
 
-/// RGBA rows at exactly the size asked for, for a client that draws them itself.
+/// Paints tight RGBA rows at exactly the requested size.
 pub struct Rgba(pub Alpha);
 
 impl Paint for Rgba {
@@ -150,34 +138,33 @@ impl Paint for Rgba {
 
 type Done<P> = Box<dyn FnOnce(Result<P, Error>) + Send>;
 
-/// The size a warm-up is filed under: no view is that big, so it never shares a flight with one.
+/// Size key for warm-ups, so they never share a flight with a view's request.
 const WARM: u32 = u32::MAX;
 
-/// How long a loader's workers wait for the next cover before the loader rests ([`Config::idle`]): long
-/// past the gaps between a scrolling list's covers, so a list scrolled on keeps its threads and buffers.
+/// Default [`Config::idle`]: well above the gaps between covers while scrolling.
 const IDLE: Duration = Duration::from_secs(20);
 
-/// One cover at one size on its way, and who waits for it.
+/// One in-progress cover at one size and its waiters.
 struct Flight<P> {
     url: String,
     started: bool,
-    /// Fetched onto the disk whether or not anyone waits, and not decoded (`Loader::warm`).
+    /// Disk-only prefetch with no waiters (`Loader::warm`).
     warm: bool,
     waiters: Vec<(u64, Done<P>)>,
 }
 
 struct Jobs<P> {
     flights: HashMap<Sized, Flight<P>>,
-    /// Flights not started yet, newest last. A cancelled one stays here until a worker skips it.
+    /// Unstarted flights, newest last. Cancelled ones stay until a worker skips them.
     queue: Vec<Sized>,
-    /// Worker threads running, and how many of them wait for work.
+    /// Running worker threads, and how many of them are waiting.
     workers: usize,
     idle: usize,
-    /// Which rest this is: a worker started before the last one ends when it finds nothing to do.
+    /// Bumped on each rest; workers from an older generation exit when out of work.
     generation: u64,
-    /// Workers started since the last rest, which count against the limit.
+    /// Workers of the current generation (counted against the limit).
     current: usize,
-    /// No screen shows covers ([`Loader::show`]).
+    /// Set by [`Loader::show`].
     hidden: bool,
     next_id: u64,
     closed: bool,
@@ -190,7 +177,7 @@ impl<P> Default for Jobs<P> {
 }
 
 impl<P> Jobs<P> {
-    /// Asks every worker running to end once it has nothing to do, and answers whether there was any.
+    /// Starts a new generation so running workers exit when idle; returns whether any are running.
     fn retire(&mut self) -> bool {
         self.generation += 1;
         self.current = 0;
@@ -202,7 +189,7 @@ struct Inner<P: Paint> {
     transport: Arc<dyn Transport>,
     dir: Option<PathBuf>,
     disk_bytes: u64,
-    /// Opened by the first worker that needs it.
+    /// Opened lazily, off the requesting thread.
     disk: OnceLock<Option<DiskCache>>,
     memory: MemoryCache<P::Picture>,
     jobs: Mutex<Jobs<P::Picture>>,
@@ -217,7 +204,7 @@ pub struct Loader<P: Paint = Rgba> {
     inner: Arc<Inner<P>>,
 }
 
-/// What a ticket reaches back into when it is dropped: the loader, whatever it paints.
+/// Type-erased loader handle so [`Ticket`] is not generic over [`Paint`].
 trait Leave: Send + Sync {
     fn leave(&self, key: &Sized, id: u64);
 }
@@ -233,12 +220,10 @@ impl<P: Paint> Leave for Inner<P> {
     }
 }
 
-/// A request's claim on its cover. Dropping it (or [`Ticket::cancel`]) says the view no longer wants the
-/// cover, and its callback is not called for a cover finished after that; [`Ticket::detach`] lets the
-/// request run on unwatched. A cover finished as the ticket is dropped may still be handed over, once:
-/// the callback runs outside the loader's lock, and holding a lock over it would make whoever drops a
-/// ticket wait on the client's own code (on Android, a `@FastNative` door waiting on Java, which can hold
-/// up the garbage collector). A client drops such a late cover on its own side.
+/// A request's handle. Dropping it (or [`Ticket::cancel`]) cancels the callback; [`Ticket::detach`]
+/// lets the request finish unobserved. A cover completing concurrently with the drop may still be
+/// delivered once: callbacks run outside the loader lock so a drop never waits on client code (on
+/// Android a `@FastNative` call waiting on Java could stall the GC). Clients ignore such late covers.
 #[must_use = "dropping a ticket cancels its request"]
 pub struct Ticket {
     inner: Option<Arc<dyn Leave>>,
@@ -263,7 +248,7 @@ impl Drop for Ticket {
 }
 
 impl Loader {
-    /// A loader of RGBA rows over the client's `transport` (on a desktop, `nori-http`'s).
+    /// A loader producing RGBA rows.
     pub fn new(config: Config, transport: Arc<dyn Transport>) -> Loader {
         let alpha = config.alpha;
         Loader::with_paint(config, transport, Rgba(alpha))
@@ -271,7 +256,6 @@ impl Loader {
 }
 
 impl<P: Paint> Loader<P> {
-    /// A loader whose covers `paint` decodes.
     pub fn with_paint(config: Config, transport: Arc<dyn Transport>, paint: P) -> Loader<P> {
         let inner = Inner {
             transport,
@@ -289,16 +273,14 @@ impl<P: Paint> Loader<P> {
         Loader { inner: Arc::new(inner) }
     }
 
-    /// The cover at `width` x `height` if it is decoded and kept: what a view draws right away, with no
-    /// placeholder, before it asks.
+    /// The decoded cover from memory, if cached (lets a view skip the placeholder).
     pub fn cached(&self, url: &str, width: u32, height: u32) -> Option<P::Picture> {
         self.inner.memory.get(&Sized { key: Key::of(url), width, height })
     }
 
-    /// Asks for the cover at `url`, decoded to fill `width` x `height` (0 x 0: at its own size, at most
-    /// `decode::WHOLE_SIDE` a side). `done` gets it on a worker thread (a GUI posts it to its own), or at
-    /// once on this one when it is in memory; it is not called if the ticket is dropped before the cover
-    /// is finished (see [`Ticket`]).
+    /// Requests `url` decoded for `width` x `height` (0 x 0: own size, capped at `decode::WHOLE_SIDE`).
+    /// `done` runs on a worker thread, or synchronously on a memory hit; not after the ticket is dropped
+    /// (see [`Ticket`]).
     pub fn request(&self, url: &str, width: u32, height: u32, done: impl FnOnce(Result<P::Picture, Error>) + Send + 'static) -> Ticket {
         let key = Sized { key: Key::of(url), width, height };
         let inner = &self.inner;
@@ -312,7 +294,7 @@ impl<P: Paint> Loader<P> {
         match jobs.flights.entry(key) {
             Entry::Occupied(mut f) => f.get_mut().waiters.push((id, Box::new(done))),
             Entry::Vacant(v) => {
-                // A flight that landed between the look above and the lock left its cover in memory.
+                // A flight may have completed between the first lookup and taking the lock.
                 if let Some(picture) = inner.memory.get(&key) {
                     drop(jobs);
                     done(Ok(picture));
@@ -325,10 +307,8 @@ impl<P: Paint> Loader<P> {
         Ticket { inner: Some(inner.clone()), key, id }
     }
 
-    /// Fetches the cover at `url` onto the disk, if it is not there, without decoding it: a cover that
-    /// will be wanted (a song downloaded from a menu, which should arrive with its picture) without
-    /// holding memory for it now. It waits behind every view's request, so it never keeps a cover on
-    /// screen waiting. Provider covers are never kept, so they are not fetched either.
+    /// Prefetches `url` to disk without decoding (e.g. for a downloaded song). Queued behind every view
+    /// request. No-op for provider covers, which are never kept.
     pub fn warm(&self, url: &str) {
         if is_provider_cover(url) || self.inner.dir.is_none() {
             return;
@@ -342,8 +322,7 @@ impl<P: Paint> Loader<P> {
         }
     }
 
-    /// The cover, waiting for it on this thread. Not from a `request` callback: that would wait on the
-    /// worker it runs on.
+    /// Blocking [`Loader::request`]. Must not be called from a request callback (deadlock).
     pub fn load(&self, url: &str, width: u32, height: u32) -> Result<P::Picture, Error> {
         let (tx, rx) = mpsc::sync_channel(1);
         let _ticket = self.request(url, width, height, move |r| {
@@ -352,22 +331,18 @@ impl<P: Paint> Loader<P> {
         rx.recv().unwrap_or(Err(Error::Closed))
     }
 
-    /// The file of the cover at `url` into `out`, from the disk or fetched (and kept), on this thread:
-    /// for a caller that wants something other than a picture out of it (a page's colours).
+    /// Reads the raw cover file into `out` on this thread (from disk, or fetched and kept).
     pub fn read(&self, url: &str, out: &mut Vec<u8>) -> Result<(), Error> {
         let waker = Waker::from(Arc::new(Unpark(thread::current())));
         self.inner.bytes(Key::of(url), url, out, &waker)
     }
 
-    /// What paints this loader's covers: the client's own, for what it keeps beside them.
     pub fn paint(&self) -> &P {
         &self.inner.paint
     }
 
-    /// Lets go of what the loader keeps for covers to come, for a client short of memory: every worker
-    /// ends as soon as it has nothing to do, with its decoder's buffers and whatever the platform keeps
-    /// per thread, and the painter lets go of its own ([`Paint::rest`]). The next request starts a worker
-    /// again. Decoded covers in memory stay.
+    /// Frees worker threads and their buffers once idle, and calls [`Paint::rest`]. The memory cache
+    /// is kept; the next request starts a worker again.
     pub fn rest(&self) {
         if self.inner.jobs.lock().retire() {
             self.inner.work.notify_all();
@@ -375,30 +350,23 @@ impl<P: Paint> Loader<P> {
         self.inner.paint.rest();
     }
 
-    /// Whether a screen shows this loader's covers (at first, one does). Out of sight the loader rests,
-    /// and a worker started for a cover asked for then (a notification's) ends as soon as it runs out of
-    /// work: nobody scrolls, and a worker that waited would hold its buffers, or wake to let them go.
+    /// Sets whether covers are on screen (initially true). Hidden, the loader rests and workers exit as
+    /// soon as they run out of work instead of waiting.
     pub fn show(&self, shown: bool) {
-        let mut jobs = self.inner.jobs.lock();
-        jobs.hidden = !shown;
+        self.inner.jobs.lock().hidden = !shown;
         if !shown {
-            let any = jobs.retire();
-            drop(jobs);
-            if any {
-                self.inner.work.notify_all();
-            }
-            self.inner.paint.rest();
+            self.rest();
         }
     }
 
-    /// The disk cache, opened now if no worker has yet: this reads its directory.
+    /// The disk cache, opening it (reads the directory) if no worker has.
     pub fn disk(&self) -> Option<&DiskCache> {
         self.inner.disk()
     }
 }
 
 impl<P: Paint> Drop for Loader<P> {
-    /// Stops the workers once they finish what they are on; whoever still waits gets `Closed`.
+    /// Stops workers after their current cover; pending waiters get `Closed`.
     fn drop(&mut self) {
         let flights = {
             let mut jobs = self.inner.jobs.lock();
@@ -415,7 +383,7 @@ impl<P: Paint> Drop for Loader<P> {
     }
 }
 
-/// Wakes the thread parked on a future the transport has not finished.
+/// Waker that unparks the thread blocked in [`block_on`].
 struct Unpark(Thread);
 
 impl Wake for Unpark {
@@ -428,8 +396,7 @@ impl Wake for Unpark {
     }
 }
 
-/// Runs `f` to its end on this thread. A desktop transport finishes on its first poll; one that does not
-/// (Android's, answered by OkHttp's own threads) wakes this thread when it can go on.
+/// Polls `f` to completion, parking between polls (Android's transport completes on OkHttp threads).
 fn block_on<F: Future>(f: F, waker: &Waker) -> F::Output {
     let mut cx = Context::from_waker(waker);
     let mut f = pin!(f);
@@ -441,7 +408,7 @@ fn block_on<F: Future>(f: F, waker: &Waker) -> F::Output {
     }
 }
 
-/// What a worker keeps from cover to cover.
+/// Per-worker state reused across covers.
 struct Worker {
     decoder: Decoder,
     bytes: Vec<u8>,
@@ -454,8 +421,7 @@ impl Worker {
     }
 }
 
-/// Counts a worker (started in the rest `.1`) out however its thread ends, so the next request starts
-/// another in its place.
+/// Decrements the worker counts (for generation `.1`) however the thread exits.
 struct Leaving<'a, P: Paint>(&'a Inner<P>, u64);
 
 impl<P: Paint> Drop for Leaving<'_, P> {
@@ -468,8 +434,8 @@ impl<P: Paint> Drop for Leaving<'_, P> {
     }
 }
 
-/// What a panic said, when it said it in words.
-fn said(p: &(dyn std::any::Any + Send)) -> String {
+/// The panic payload's message, if it is a string.
+fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
     p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_default()
 }
 
@@ -478,15 +444,14 @@ impl<P: Paint> Inner<P> {
         self.disk.get_or_init(|| self.dir.as_ref().and_then(|d| DiskCache::open(d, self.disk_bytes).ok())).as_ref()
     }
 
-    /// Queues the flight `key`, just filed, for a worker, `first` ahead of everything waiting or else
-    /// behind it: an idle worker is woken, or one more started while there are fewer than the limit.
+    /// Queues flight `key` (`first`: served next, else last), waking an idle worker or spawning one
+    /// below the limit.
     fn enqueue(self: &Arc<Self>, jobs: &mut Jobs<P::Picture>, key: Sized, first: bool) {
         if first {
             jobs.queue.push(key);
         } else {
             jobs.queue.insert(0, key);
         }
-        // Only workers started since the last rest count against the limit: the others end.
         if jobs.idle == 0 && jobs.current < self.workers {
             jobs.workers += 1;
             jobs.current += 1;
@@ -507,8 +472,8 @@ impl<P: Paint> Inner<P> {
                     if jobs.closed {
                         return;
                     }
-                    // A worker from before the last rest leaves what is queued to those started since, and
-                    // takes it only when there are none (the client said rest while covers were queued).
+                    // A worker from an old generation leaves the queue to newer ones, taking it only if
+                    // none exist (rest was called with covers queued).
                     if jobs.generation != generation && jobs.current > 0 {
                         if !jobs.queue.is_empty() {
                             self.work.notify_one();
@@ -528,8 +493,7 @@ impl<P: Paint> Inner<P> {
                         return;
                     }
                     jobs.idle += 1;
-                    // The last worker to run out of work waits only so long: if no cover has come for any
-                    // worker by then, the loader rests.
+                    // The last idle worker waits `idle` at most, then rests the loader.
                     let timed_out = if jobs.idle == jobs.workers {
                         self.work.wait_for(&mut jobs, self.idle).timed_out()
                     } else {
@@ -546,76 +510,82 @@ impl<P: Paint> Inner<P> {
                     }
                 }
             };
-            // One broken file must not stop every cover after it: a panic is this cover's error, and its
-            // waiters are answered like any other's.
-            let job = panic::catch_unwind(AssertUnwindSafe(|| if warm { self.warm(&key, &url, &mut w) } else { self.fetch(&key, &url, &mut w) }));
-            let result = job.unwrap_or_else(|p| {
-                // The decoder's buffers may be anywhere mid-picture, and the file is fetched again next
-                // time rather than kept.
-                w = Worker::new();
-                if let Some(d) = self.disk() {
-                    d.remove(key.key);
+            // A panic fails only this cover.
+            let job = panic::catch_unwind(AssertUnwindSafe(|| {
+                if warm {
+                    self.warm(&key, &url, &mut w);
+                    None
+                } else {
+                    self.fetch(&key, &url, &mut w)
                 }
-                Err(Error::Panicked(said(&*p)))
-            });
-            // A fetch nobody waited for has ended its flight already; the one filed under the same key
-            // since is a new request's, not this one's to answer.
-            let ended = !warm && matches!(result, Err(Error::Closed));
-            let waiters = if ended { Vec::new() } else { self.jobs.lock().flights.remove(&key).map(|f| f.waiters).unwrap_or_default() };
+            }));
+            let result = match job {
+                Ok(Some(result)) => result,
+                // The flight has already ended.
+                Ok(None) => continue,
+                Err(p) => {
+                    // Reset possibly inconsistent buffers and refetch the file next time.
+                    w = Worker::new();
+                    if let Some(d) = self.disk() {
+                        d.remove(key.key);
+                    }
+                    Err(Error::Panicked(panic_message(&*p)))
+                }
+            };
+            let waiters = self.jobs.lock().flights.remove(&key).map(|f| f.waiters).unwrap_or_default();
             for (_, done) in waiters {
                 let r = result.clone();
-                // Nor does a client's call back that panics: it loses its own cover, not the thread.
+                // A panicking callback loses its own cover, not the worker.
                 let _ = panic::catch_unwind(AssertUnwindSafe(move || done(r)));
             }
         }
     }
 
-    /// The file onto the disk, unless it is there; no one waits for a warm-up, so it answers nobody.
-    fn warm(&self, key: &Sized, url: &str, w: &mut Worker) -> Result<P::Picture, Error> {
+    /// Fetches the file to disk if missing, then ends the (waiter-less) flight.
+    fn warm(&self, key: &Sized, url: &str, w: &mut Worker) {
         if self.disk().is_some_and(|d| !d.contains(key.key)) {
-            self.bytes(key.key, url, &mut w.bytes, &w.waker)?;
+            let _ = self.bytes(key.key, url, &mut w.bytes, &w.waker);
         }
-        Err(Error::Closed)
+        self.jobs.lock().flights.remove(key);
     }
 
-    fn fetch(&self, key: &Sized, url: &str, w: &mut Worker) -> Result<P::Picture, Error> {
-        self.bytes(key.key, url, &mut w.bytes, &w.waker)?;
+    /// Fetches and decodes; None when every waiter left, in which case the flight is already ended.
+    fn fetch(&self, key: &Sized, url: &str, w: &mut Worker) -> Option<Result<P::Picture, Error>> {
+        if let Err(e) = self.bytes(key.key, url, &mut w.bytes, &w.waker) {
+            return Some(Err(e));
+        }
         {
             let mut jobs = self.jobs.lock();
             if jobs.flights.get(key).is_none_or(|f| f.waiters.is_empty()) {
-                // Nobody wants it decoded any more, and the flight ends here, under the same lock as the
-                // look: a view that asks for this cover from now on starts a flight of its own, answered
-                // from the disk. Ended by the worker after the lock was let go, a view that joined in
-                // between (the player skipping away from a song and straight back) was answered with
-                // nothing, and drew the placeholder for good.
+                // End the flight under the same lock as the check, so a request arriving later starts
+                // its own flight instead of joining one that will never answer.
                 jobs.flights.remove(key);
-                return Err(Error::Closed);
+                return None;
             }
         }
-        match self.paint.paint(&mut w.decoder, &w.bytes, key.width, key.height) {
+        Some(match self.paint.paint(&mut w.decoder, &w.bytes, key.width, key.height) {
             Ok(picture) => {
                 self.memory.put(*key, picture.clone(), P::bytes(&picture));
                 Ok(picture)
             }
             Err(e) => {
-                // A file that does not decode is fetched again next time rather than kept: it may have
-                // been cut short. One in a format this cannot decode stays, or it would be fetched
-                // again every time it is shown.
+                // Drop corrupt files (maybe truncated) so they are refetched; keep unsupported formats
+                // so they are not refetched every time.
                 if let (decode::Error::Corrupt(_), Some(d)) = (&e, self.disk()) {
                     d.remove(key.key);
                 }
                 Err(Error::Decode(e))
             }
-        }
+        })
     }
 
-    /// The cover's file into `out`: from the disk, or fetched and kept there (a provider's is not).
+    /// Reads the cover file into `out` from disk, or fetches it and stores it (except provider covers).
     fn bytes(&self, key: Key, url: &str, out: &mut Vec<u8>, waker: &Waker) -> Result<(), Error> {
         if let Some(d) = self.disk() {
             if d.read(key, out) {
                 return Ok(());
             }
-            // Kept before keys left the signature out: moved under its key the first time it is read.
+            // Migrate a file stored under the legacy full-URL key.
             let whole = Key::of_address(url);
             if whole != key && d.read(whole, out) {
                 let _ = d.put(key, out);
@@ -628,7 +598,7 @@ impl<P: Paint> Inner<P> {
             return Err(Error::Status(r.status));
         }
         *out = r.body;
-        // Provider artwork is redrawn under the same address once the item is in the library.
+        // Provider artwork changes under the same URL once the item is in the library.
         if !is_provider_cover(url) {
             if let Some(d) = self.disk() {
                 let _ = d.put(key, out);

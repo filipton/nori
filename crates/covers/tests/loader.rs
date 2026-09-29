@@ -1,5 +1,4 @@
-//! The loader on real worker threads over a transport that counts its requests and holds them until the
-//! test lets them through.
+//! Loader tests on real worker threads over a transport that records requests and can hold them.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -14,7 +13,7 @@ const PHOTO: &str = "http://s/rest/getCoverArt.view?u=a&t=b&s=c&id=al-1&size=320
 
 struct Server {
     calls: AtomicUsize,
-    /// What was asked for, in order.
+    /// Requested URLs, in order.
     asked: Mutex<Vec<String>>,
     open: Mutex<bool>,
     opened: Condvar,
@@ -41,7 +40,7 @@ impl Server {
         self.calls.load(Ordering::SeqCst)
     }
 
-    /// Waits until `n` requests have reached the server, failing the test rather than hanging it.
+    /// Waits (10 s max) until `n` requests arrived.
     fn wait_calls(&self, n: usize) {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while self.calls() < n {
@@ -73,7 +72,6 @@ impl Transport for Server {
     fn address_changed(&self) {}
 }
 
-/// A directory of the test's own, gone when the test is.
 fn dir(name: &str) -> nori_testdir::TempDir {
     nori_testdir::TempDir::new(&format!("covers-loader-{name}"))
 }
@@ -82,13 +80,13 @@ fn config(dir: Option<PathBuf>, workers: usize) -> Config {
     Config { dir, disk_bytes: 1 << 20, memory_bytes: 1 << 20, workers, alpha: Alpha::Straight, timeout_ms: 0, idle: Duration::from_secs(20) }
 }
 
-/// Waits for `n` answers, failing the test rather than hanging it.
+/// Receives `n` answers (10 s max each).
 fn answers(rx: &mpsc::Receiver<Result<Arc<Image>, Error>>, n: usize) -> Vec<Result<Arc<Image>, Error>> {
     (0..n).map(|_| rx.recv_timeout(Duration::from_secs(10)).expect("an answer")).collect()
 }
 
 #[test]
-fn views_asking_for_one_cover_share_one_fetch_and_one_decode() {
+fn concurrent_requests_share_one_fetch_and_decode() {
     let server = Server::new(200);
     server.hold();
     let loader = Loader::new(config(None, 3), server.clone());
@@ -105,39 +103,38 @@ fn views_asking_for_one_cover_share_one_fetch_and_one_decode() {
     let first = got[0].as_ref().unwrap();
     assert_eq!((first.width, first.height, first.pixels.len()), (16, 16, 16 * 16 * 4));
     assert!(got.iter().all(|r| Arc::ptr_eq(r.as_ref().unwrap(), first)));
-    // Kept decoded: asked again, it is there at once, without a fetch.
+    // Served from memory afterwards.
     assert!(Arc::ptr_eq(&loader.cached(PHOTO, 16, 16).unwrap(), first));
     assert!(Arc::ptr_eq(&loader.load(PHOTO, 16, 16).unwrap(), first));
     assert_eq!(server.calls(), 1);
-    // Another size is another decode, from the same address.
+    // Another size decodes again.
     assert_eq!(loader.load(PHOTO, 8, 8).unwrap().width, 8);
     drop(tickets);
 }
 
 #[test]
-fn a_cancelled_request_is_never_fetched_and_never_answered() {
+fn cancelled_request_is_not_fetched_or_answered() {
     let server = Server::new(200);
     server.hold();
     let loader = Loader::new(config(None, 1), server.clone());
     let (tx, rx) = mpsc::channel();
     let tx2 = tx.clone();
-    // The one worker is held on the first cover; the second waits behind it and is let go.
+    // The single worker is held on `a`; `b` is queued and cancelled.
     let first = loader.request("http://s/a", 8, 8, move |r| tx.send(r).unwrap());
     server.wait_calls(1);
     let second = loader.request("http://s/b", 8, 8, move |r| tx2.send(r).unwrap());
     second.cancel();
     server.release();
     assert!(answers(&rx, 1)[0].is_ok());
-    // Something after it still gets through, and the cancelled one was never asked for.
     assert!(loader.load("http://s/c", 8, 8).is_ok());
     assert_eq!(*server.asked.lock(), ["http://s/a", "http://s/c"], "b was never fetched");
-    // The one worker took c after anything queued before it: b would have been answered by now.
+    // The single worker served c after b's slot, so b would have been answered by now.
     assert!(rx.try_recv().is_err(), "the cancelled request was answered");
     first.detach();
 }
 
 #[test]
-fn one_view_letting_go_leaves_the_cover_to_the_others() {
+fn dropping_one_of_two_tickets_still_answers_the_other() {
     let server = Server::new(200);
     server.hold();
     let loader = Loader::new(config(None, 1), server.clone());
@@ -151,8 +148,7 @@ fn one_view_letting_go_leaves_the_cover_to_the_others() {
     server.release();
     let got = answers(&rx, 1).remove(0).expect("the view still there gets the cover");
     assert_eq!((got.width, got.height), (8, 8));
-    // The one worker answers a cover's views together, and has moved on to another: the view that went
-    // would have been called back by now.
+    // The worker has moved on, so the dropped ticket would have been called back by now.
     loader.load("http://s/after", 8, 8).unwrap();
     assert!(rx.try_recv().is_err(), "the view that let go was called back");
     assert_eq!(*server.asked.lock(), ["http://s/busy", PHOTO, "http://s/after"], "one fetch for the two views");
@@ -160,7 +156,7 @@ fn one_view_letting_go_leaves_the_cover_to_the_others() {
 }
 
 #[test]
-fn covers_are_kept_on_disk_for_the_next_run_but_a_providers_are_not() {
+fn disk_cache_survives_restart_except_provider_covers() {
     let d = dir("disk");
     let provider = "http://s/rest/getCoverArt.view?u=a&id=ext-deezer-1&size=320";
     {
@@ -171,7 +167,7 @@ fn covers_are_kept_on_disk_for_the_next_run_but_a_providers_are_not() {
         assert!(disk.contains(Key::of(PHOTO)) && disk.path(Key::of(PHOTO)).exists());
         assert!(!disk.contains(Key::of(provider)));
     }
-    // A server that is not there: the kept cover still comes, the provider's does not.
+    // Server down: the kept cover loads, the provider's fails.
     let down = Server::new(0);
     let loader = Loader::new(config(Some(d.to_path_buf()), 2), down.clone());
     assert_eq!(loader.load(PHOTO, 8, 8).unwrap().width, 8);
@@ -180,12 +176,10 @@ fn covers_are_kept_on_disk_for_the_next_run_but_a_providers_are_not() {
     drop(loader);
 }
 
-/// A playlist's cover, which Navidrome names `pl-<id>_<when it changed>` (octo-fiesta's provider
-/// playlists are `pl-<provider>-<id>`), is kept on disk like an album's and comes offline; and any cover
-/// comes offline asked for under another token and salt (a new password), or at the server's other
-/// address (offline, the app has fallen back to it), but not at another size.
+/// Playlist covers (`pl-<id>_<changed>`) are kept like albums', and a cached cover is found offline
+/// under another token/salt or the server's alternate address, but not at another size.
 #[test]
-fn a_playlists_cover_is_kept_and_comes_offline_whatever_signs_it_and_at_either_address() {
+fn playlist_cover_found_offline_across_auth_and_address() {
     let d = dir("playlist");
     nori_core::covers::cover_address_alike("http://lan.test:4533", "https://wan.test");
     let id = "pl-6b2d0c1e-5f7a-4e21-9d3c-0a1b2c3d4e5f_65f0a1b2";
@@ -204,7 +198,7 @@ fn a_playlists_cover_is_kept_and_comes_offline_whatever_signs_it_and_at_either_a
     assert_eq!(down.calls(), 0);
     assert!(loader.load(&at("http://lan.test:4533", "tok1", "salt1", 800), 8, 8).is_err(), "another size is another file");
     assert!(loader.load(&at("http://elsewhere.test", "tok1", "salt1", 320), 8, 8).is_err(), "another server's is its own");
-    // A provider's playlist is still never kept.
+    // Provider playlists are never kept.
     let provider = "http://lan.test:4533/rest/getCoverArt?u=a&id=pl-deezer-9&size=320";
     let up = Loader::new(config(Some(d.to_path_buf()), 1), Server::new(200));
     up.load(provider, 8, 8).unwrap();
@@ -212,10 +206,8 @@ fn a_playlists_cover_is_kept_and_comes_offline_whatever_signs_it_and_at_either_a
     drop((loader, up));
 }
 
-/// A cover kept before keys left the signature out (under its whole address) is still found, offline,
-/// and moved under its new key.
 #[test]
-fn a_cover_kept_under_its_whole_address_is_still_found() {
+fn legacy_full_url_key_is_found_and_migrated() {
     let d = dir("legacy");
     let bytes = std::fs::read(format!("{}/testdata/photo.jpg", env!("CARGO_MANIFEST_DIR"))).unwrap();
     nori_covers::DiskCache::open(d.to_path_buf(), 1 << 20).unwrap().put(Key::of_address(PHOTO), &bytes).unwrap();
@@ -229,20 +221,20 @@ fn a_cover_kept_under_its_whole_address_is_still_found() {
 }
 
 #[test]
-fn an_error_answer_is_an_error_and_is_not_kept() {
+fn error_status_is_not_cached() {
     let d = dir("error");
     let server = Server::new(404);
     let loader = Loader::new(config(Some(d.to_path_buf()), 1), server.clone());
     assert_eq!(loader.load(PHOTO, 8, 8), Err(Error::Status(404)));
     assert_eq!(loader.disk().unwrap().bytes(), 0);
-    // Not remembered as a failure either: the next ask asks again.
+    // Failures are not cached either.
     assert_eq!(loader.load(PHOTO, 8, 8), Err(Error::Status(404)));
     assert_eq!(server.calls(), 2);
     drop(loader);
 }
 
 #[test]
-fn dropping_the_loader_answers_whoever_still_waits() {
+fn dropping_loader_answers_waiters_with_closed() {
     let server = Server::new(200);
     server.hold();
     let loader = Loader::new(config(None, 1), server.clone());
@@ -255,7 +247,7 @@ fn dropping_the_loader_answers_whoever_still_waits() {
     server.release();
 }
 
-/// A client's own picture: what was asked for and what came out, and how many decodes there were.
+/// Custom painter recording the requested and computed sizes and counting decodes.
 struct Counted(Arc<AtomicUsize>);
 
 #[derive(Debug, Clone, PartialEq)]
@@ -279,7 +271,7 @@ impl Paint for Counted {
 }
 
 #[test]
-fn a_clients_painter_decodes_once_and_every_waiter_is_called_back_with_the_one_picture() {
+fn custom_painter_decodes_once_for_all_waiters() {
     let server = Server::new(200);
     server.hold();
     let painted = Arc::new(AtomicUsize::new(0));
@@ -297,25 +289,25 @@ fn a_clients_painter_decodes_once_and_every_waiter_is_called_back_with_the_one_p
     assert_eq!(got.iter().map(|(i, ..)| *i).collect::<Vec<_>>(), [0, 1, 2], "one call back each");
     let first = got[0].1.as_ref().unwrap();
     assert!(got.iter().all(|(_, r, _)| Arc::ptr_eq(r.as_ref().unwrap(), first)));
-    // Called on a worker, never on the thread that asked.
+    // Callbacks run on a worker thread.
     assert!(got.iter().all(|(.., thread)| thread.as_deref() == Some("nori-covers")));
-    // photo.jpg is 40x30: a 30x30 view is filled at 30x30.
+    // photo.jpg is 40x30.
     assert_eq!(**first, Picture { asked: (30, 30), got: (30, 30) });
     assert_eq!(painted.load(Ordering::SeqCst), 1);
-    // Nothing kept in memory when the client keeps its own: asked again, it is decoded again.
+    // memory_bytes 0: nothing cached, so it decodes again.
     assert!(loader.cached(PHOTO, 30, 30).is_none());
     loader.load(PHOTO, 30, 30).unwrap();
     assert_eq!(painted.load(Ordering::SeqCst), 2);
-    // A view bigger than the picture gets it at the picture's size, and 0 x 0 is its own size.
+    // Never upscaled; 0 x 0 is the picture's own size.
     assert_eq!(loader.load(PHOTO, 300, 300).unwrap().got, (30, 30));
     assert_eq!(loader.load(PHOTO, 0, 0).unwrap().got, (40, 30));
     drop(tickets);
 }
 
 #[test]
-fn a_cover_let_go_of_while_fetched_and_asked_for_again_comes() {
-    // The player skipping away from a song and back while its cover is on the wire: the second view gets
-    // the picture, whether it asked while the first fetch was out or after it ended with nobody waiting.
+fn rerequest_after_drop_during_fetch_is_answered() {
+    // Regression: skipping away and back while the cover downloads left the placeholder forever. The
+    // new request must be answered whether it joins the running fetch or comes after it ended unwatched.
     let d = dir("again");
     let server = Server::new(200);
     server.hold();
@@ -334,7 +326,7 @@ fn a_cover_let_go_of_while_fetched_and_asked_for_again_comes() {
     server.wait_calls(2);
     drop(gone);
     server.release();
-    // The fetch nobody waited for has ended; asked again, the cover comes from the disk.
+    // The unwatched fetch has ended; a new request is served from disk.
     loader.load("http://s/next", 8, 8).unwrap();
     let again = loader.request("http://s/other", 8, 8, move |r| tx.send(r).unwrap());
     assert!(answers(&rx, 1)[0].is_ok(), "asked again after the flight ended with nobody waiting");
@@ -343,7 +335,7 @@ fn a_cover_let_go_of_while_fetched_and_asked_for_again_comes() {
 }
 
 #[test]
-fn a_view_that_leaves_while_its_cover_is_fetched_is_never_called_back_nor_decoded_for() {
+fn ticket_dropped_during_fetch_skips_decode_and_callback() {
     let server = Server::new(200);
     server.hold();
     let painted = Arc::new(AtomicUsize::new(0));
@@ -351,23 +343,22 @@ fn a_view_that_leaves_while_its_cover_is_fetched_is_never_called_back_nor_decode
     let (tx, rx) = mpsc::channel::<()>();
     let ticket = loader.request(PHOTO, 8, 8, move |_| tx.send(()).unwrap());
     server.wait_calls(1);
-    // The bytes are on their way; the view goes.
     drop(ticket);
     server.release();
-    // The worker is free again (so done with the cover that was left), and it never decoded it.
+    // Once the worker is free, the dropped cover was neither decoded nor answered.
     loader.load("http://s/next", 8, 8).unwrap();
     assert!(rx.try_recv().is_err(), "the view that left was called back");
     assert_eq!(painted.load(Ordering::SeqCst), 1, "decoded only the cover still wanted");
 }
 
 #[test]
-fn a_warm_up_fetches_onto_the_disk_once_and_decodes_nothing() {
+fn warm_fetches_to_disk_once_without_decoding() {
     let d = dir("warm");
     let server = Server::new(200);
     let painted = Arc::new(AtomicUsize::new(0));
     let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(Some(d.to_path_buf()), 1) }, server.clone(), Counted(painted.clone()));
     server.hold();
-    // The one worker is busy with a view; a warm-up and another view queue behind it.
+    // Worker busy; warm-ups and a later view queue behind it.
     let busy = loader.request("http://s/busy", 8, 8, |_| {});
     server.wait_calls(1);
     loader.warm(PHOTO);
@@ -379,12 +370,11 @@ fn a_warm_up_fetches_onto_the_disk_once_and_decodes_nothing() {
         assert!(std::time::Instant::now() < deadline, "warmed");
         std::thread::sleep(Duration::from_millis(5));
     }
-    // The view asked for after the warm-up went first, the provider's cover was not fetched, and the
-    // warmed one was not decoded.
+    // The view went before the warm-up, the provider cover was skipped, nothing warmed was decoded.
     assert_eq!(*server.asked.lock(), ["http://s/busy", "http://s/late", PHOTO]);
     assert_eq!(painted.load(Ordering::SeqCst), 2);
-    // Already on the disk: warmed again, it is not fetched again. Warm-ups are taken in turn, so once a
-    // new one warmed after it is on the disk, that one has been seen to.
+    // Warming a cached cover does not refetch; warm-ups run in order, so once `then` is on disk the
+    // repeated warm has been processed.
     loader.warm(PHOTO);
     let then = "http://s/rest/getCoverArt.view?u=a&id=al-2&size=320";
     loader.warm(then);
@@ -394,7 +384,7 @@ fn a_warm_up_fetches_onto_the_disk_once_and_decodes_nothing() {
         std::thread::sleep(Duration::from_millis(2));
     }
     assert_eq!(*server.asked.lock(), ["http://s/busy", "http://s/late", PHOTO, then], "the warmed cover not fetched again");
-    // Read back as bytes, as a page's colours are worked out from them.
+    // `read` serves the raw bytes from disk.
     let mut bytes = Vec::new();
     loader.read(PHOTO, &mut bytes).unwrap();
     assert_eq!(bytes, server.body);
@@ -403,7 +393,7 @@ fn a_warm_up_fetches_onto_the_disk_once_and_decodes_nothing() {
     drop(loader);
 }
 
-/// A painter that panics on one size, as a decoder might on one hostile file.
+/// Painter that panics at width 13.
 struct Fragile;
 
 impl Paint for Fragile {
@@ -420,17 +410,17 @@ impl Paint for Fragile {
 }
 
 #[test]
-fn a_cover_that_panics_is_its_own_error_and_every_cover_after_it_still_comes() {
+fn panic_fails_only_that_cover() {
     let d = dir("panic");
     let server = Server::new(200);
     let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(Some(d.to_path_buf()), 1) }, server.clone(), Fragile);
     for _ in 0..3 {
         assert!(matches!(loader.load(PHOTO, 13, 13), Err(Error::Panicked(why)) if why == "a decoder bug"));
-        // Not kept: the file may be what broke it.
+        // The file is dropped from disk: it may be what broke the decoder.
         assert!(!loader.disk().unwrap().contains(Key::of(PHOTO)));
         assert_eq!(loader.load(PHOTO, 8, 8), Ok((8, 8)));
     }
-    // A call back that panics costs its own cover, not the worker.
+    // A panicking callback does not kill the worker.
     let (tx, rx) = mpsc::channel();
     let t = loader.request(PHOTO, 9, 9, move |_| {
         tx.send(()).unwrap();
@@ -442,14 +432,12 @@ fn a_cover_that_panics_is_its_own_error_and_every_cover_after_it_still_comes() {
     drop(loader);
 }
 
-/// A painter that counts the worker threads alive (each marks itself on its first cover, and is counted
-/// out when it ends) and how many times it was told to rest.
+/// Painter counting live worker threads (via a thread-local guard) and `rest` calls.
 struct Threads {
     alive: Arc<AtomicUsize>,
     rests: Arc<AtomicUsize>,
 }
 
-/// Counts its thread out of `alive` when the thread ends.
 struct Alive(Arc<AtomicUsize>);
 
 impl Drop for Alive {
@@ -484,7 +472,7 @@ impl Paint for Threads {
     }
 }
 
-/// Waits for `n` of `count`, failing the test rather than hanging it.
+/// Waits (10 s max) until `count` is `n`.
 fn until(count: &AtomicUsize, n: usize) {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while count.load(Ordering::SeqCst) != n {
@@ -493,7 +481,7 @@ fn until(count: &AtomicUsize, n: usize) {
     }
 }
 
-/// Three covers at once, held at the server until all three workers have one: three threads.
+/// Starts three workers by holding three requests at the server at once.
 fn three_at_once(loader: &Loader<Threads>, server: &Server) {
     server.hold();
     let calls = server.calls();
@@ -513,7 +501,7 @@ fn three_at_once(loader: &Loader<Threads>, server: &Server) {
 }
 
 #[test]
-fn a_resting_loader_ends_its_threads_and_the_next_cover_starts_one_again() {
+fn rest_ends_workers_and_next_request_restarts_one() {
     let server = Server::new(200);
     let (alive, rests) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
     let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(None, 3) }, server.clone(), Threads { alive: alive.clone(), rests: rests.clone() });
@@ -524,20 +512,19 @@ fn a_resting_loader_ends_its_threads_and_the_next_cover_starts_one_again() {
     assert_eq!(rests.load(Ordering::SeqCst), 1);
     loader.load("http://s/after", 8, 8).unwrap();
     assert_eq!(alive.load(Ordering::SeqCst), 1);
-    // Idle for less than the loader's while: the thread stays, nothing rests.
+    // Shorter than `idle`: the thread stays.
     loader.load("http://s/again", 8, 8).unwrap();
     assert_eq!((alive.load(Ordering::SeqCst), rests.load(Ordering::SeqCst)), (1, 1));
 }
 
 #[test]
-fn a_loader_no_cover_is_asked_of_for_a_while_rests() {
+fn idle_loader_rests() {
     let server = Server::new(200);
     let (alive, rests) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
     let config = Config { memory_bytes: 0, idle: Duration::from_millis(500), ..config(None, 3) };
     let loader = Loader::with_paint(config, server.clone(), Threads { alive: alive.clone(), rests: rests.clone() });
     three_at_once(&loader, &server);
-    // Covers asked for closer together than that (a tenth of it: a machine this busy is not a phone) keep
-    // the threads.
+    // Requests closer together than `idle` keep the threads.
     for i in 0..5 {
         std::thread::sleep(Duration::from_millis(50));
         loader.load(&format!("http://s/soon-{i}"), 8, 8).unwrap();
@@ -550,7 +537,7 @@ fn a_loader_no_cover_is_asked_of_for_a_while_rests() {
 }
 
 #[test]
-fn out_of_sight_the_loader_rests_and_a_cover_asked_for_then_keeps_no_thread() {
+fn hidden_loader_rests_and_keeps_no_idle_thread() {
     let server = Server::new(200);
     let (alive, rests) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
     let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(None, 3) }, server.clone(), Threads { alive: alive.clone(), rests: rests.clone() });
@@ -558,7 +545,7 @@ fn out_of_sight_the_loader_rests_and_a_cover_asked_for_then_keeps_no_thread() {
     loader.show(false);
     until(&alive, 0);
     assert_eq!(rests.load(Ordering::SeqCst), 1);
-    // A notification's cover while the screen is off: its thread ends with it, rather than waiting.
+    // A request while hidden (a notification's cover): its worker exits right after.
     loader.load("http://s/notification", 8, 8).unwrap();
     until(&alive, 0);
     loader.show(true);
