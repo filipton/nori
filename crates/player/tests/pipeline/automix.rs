@@ -159,7 +159,7 @@ fn unmeasured_fade_bar_waits_for_next_song() {
     // named would otherwise wake four times a second until the next ending.
     assert!(p.run_until(12_000, |p| !p.mixing()), "{:?}", p.app.log);
     p.run_for(1_000);
-    assert!(p.heard().next_id.is_none() && p.heard().id.is_none(), "{:?}", p.heard());
+    assert!(p.heard().from.is_none() && p.heard().id.is_none(), "{:?}", p.heard());
     assert!(p.run_to_end(120_000), "the queue plays to its end: {:?}", p.app.log);
     assert_eq!(p.app.log.iter().filter(|l| l.contains("mixing: the next track arrived")).count(), 2, "{:?}", p.app.log);
     assert!(!p.app.logged("letting the ending play"), "{:?}", p.app.log);

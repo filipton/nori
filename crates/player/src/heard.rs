@@ -1,17 +1,18 @@
 //! The audible song and position for the seek bar and now-playing page. During a transition the player
 //! runs ahead of what is audible; this turns the engine's sparse [`Heard`] readings into a position
-//! that advances in real time, switches to the next song at takeover (`until_us`), and does not flash
-//! back to the old song between the engine releasing the mix and the player moving on.
+//! that advances in real time, switches to the next stream at takeover (`until_us`), and does not flash
+//! back to the old one between the engine releasing the mix and the player moving on. Streams are told
+//! apart by serial, so the same song twice in a row is two streams.
 
 use crate::engine::Heard;
 
 /// The player's own state when asked.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PlayerNow<'a> {
+pub struct PlayerNow {
     pub now_ms: i64,
     pub playing: bool,
-    /// The song the player is on.
-    pub on: Option<&'a str>,
+    /// The serial of the stream the player is on.
+    pub on: Option<u64>,
     pub position_ms: i64,
 }
 
@@ -24,7 +25,18 @@ pub struct Seen {
     pub changed: bool,
 }
 
-/// Called every frame, so it only allocates when the audible song changes.
+/// A stream to look up: by serial, or the stream after a serial (the incoming side of a mix, which may
+/// not be announced yet).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamAt {
+    Serial(u64),
+    After(u64),
+}
+
+/// Finds a stream's queue index and length in ms.
+pub type Lookup<'a> = &'a dyn Fn(StreamAt) -> Option<(usize, i64)>;
+
+/// The queue's songs for [`Playhead`], and the audible stream. Called every frame; allocates nothing.
 #[derive(Debug, Default)]
 pub struct HeardTracker {
     queue: Vec<(String, i64)>,
@@ -33,39 +45,28 @@ pub struct HeardTracker {
 
 #[derive(Debug, Default)]
 struct Ear {
-    /// (song carried onto, ms, at ms, the player's song then), kept after the engine lets go.
-    carry: Option<(String, i64, i64, Option<String>)>,
-    /// The next song the player has reached (its mix is done).
-    consumed: Option<String>,
-    /// The audible song at the last call.
-    before: Option<String>,
-    /// (takeover µs, entry µs) of the transition already crossed: never cross back. Numbers, not ids,
-    /// so checking allocates nothing.
+    /// (serial mixed out of, ms, at ms, the player's stream then): the stream after it stays shown after
+    /// the engine lets go.
+    carry: Option<(u64, i64, i64, Option<u64>)>,
+    /// The serial mixed out of whose next stream the player has reached (its mix is done).
+    consumed: Option<u64>,
+    /// The audible stream at the last call.
+    before: Option<StreamAt>,
+    /// (takeover µs, entry µs) of the transition already crossed: never cross back.
     crossed: Option<(i64, i64)>,
 }
 
-/// How long the page stays carried on the new song after the engine released the mix, waiting for
+/// How long the page stays carried on the new stream after the engine released the mix, waiting for
 /// the player (normally milliseconds).
 const CARRY_GRACE_MS: i64 = 1_000;
 
-/// Sets `slot` to `id`, allocating only on change.
-fn set_to(slot: &mut Option<String>, id: Option<&str>) {
-    if slot.as_deref() != id {
-        *slot = id.map(str::to_string);
-    }
+fn duration(find: Lookup, s: StreamAt) -> i64 {
+    find(s).map_or(i64::MAX, |(_, ms)| ms)
 }
 
-/// Finds a song id's queue index and length in ms.
-pub type Lookup<'a> = &'a dyn Fn(&str) -> Option<(usize, i64)>;
-
-fn duration(find: Lookup, id: &str) -> i64 {
-    find(id).map_or(i64::MAX, |(_, ms)| ms)
-}
-
-/// Position in the next song `ms_in` after takeover.
-fn into_next(find: Lookup, h: &Heard, ms_in: i64) -> i64 {
-    let Some(id) = &h.next_id else { return 0 };
-    (h.next_from_us / 1000 + (ms_in as f64 * h.next_rate as f64) as i64).clamp(0, duration(find, id))
+/// Position in the stream after `from` `ms_in` after takeover.
+fn into_next(find: Lookup, h: &Heard, from: u64, ms_in: i64) -> i64 {
+    (h.next_from_us / 1000 + (ms_in as f64 * h.next_rate as f64) as i64).clamp(0, duration(find, StreamAt::After(from)))
 }
 
 impl HeardTracker {
@@ -73,38 +74,15 @@ impl HeardTracker {
         HeardTracker::default()
     }
 
-    /// The queue as (id, length ms); answers index into it.
+    /// The queue as (id, length ms), for [`HeardTracker::differs`].
     pub fn set_queue<I: IntoIterator<Item = (String, i64)>>(&mut self, songs: I) {
         self.queue.clear();
         self.queue.extend(songs);
     }
 
-    pub fn at(&mut self, h: &Heard, p: PlayerNow) -> Seen {
-        let q = &self.queue;
-        self.ear.at(&|id| q.iter().position(|(s, _)| s == id).map(|i| (i, q[i].1)), h, p)
-    }
-
-    /// [`HeardTracker::at`] where the ids in `h` and `p` identify streams, not songs: `find` gives each
-    /// one's queue index and length, so two copies of a song in a row are told apart.
-    pub fn at_streams(&mut self, h: &Heard, p: PlayerNow, find: Lookup) -> Seen {
+    /// The audible stream given the engine's `h` and the player's `p`; `find` places streams in the queue.
+    pub fn at(&mut self, h: &Heard, p: PlayerNow, find: Lookup) -> Seen {
         self.ear.at(find, h, p)
-    }
-
-    /// [`HeardTracker::at`] by queue index. For a song queued twice, the audible copy is the player's
-    /// next song if it matches, else the nearest earlier copy, else the last.
-    pub fn at_index(&mut self, h: &Heard, now_ms: i64, playing: bool, on: Option<usize>, next: Option<usize>, position_ms: i64) -> Seen {
-        let on_id = on.and_then(|i| self.queue.get(i)).map(|(id, _)| id.as_str());
-        let q = &self.queue;
-        let mut seen = self.ear.at(&|id| q.iter().position(|(s, _)| s == id).map(|i| (i, q[i].1)), h, PlayerNow { now_ms, playing, on: on_id, position_ms });
-        if let Some(first) = seen.index {
-            let id = self.queue[first].0.as_str();
-            let is = |i: usize| self.queue.get(i).is_some_and(|(q, _)| q == id);
-            seen.index = next
-                .filter(|&n| is(n))
-                .or_else(|| on.and_then(|cur| (0..cur).rev().find(|&i| is(i))))
-                .or_else(|| (0..self.queue.len()).rev().find(|&i| is(i)));
-        }
-        seen
     }
 
     /// Whether queue entries `heard` and `shown` are different songs (false if `shown` is out of range).
@@ -238,22 +216,23 @@ impl Ear {
     }
 
     fn at(&mut self, q: Lookup, h: &Heard, p: PlayerNow) -> Seen {
-        let next = h.next_id.as_deref();
-        let result: Option<(&str, i64)> = if let Some(id) = h.id.as_deref() {
+        let next = h.from.map(StreamAt::After);
+        let result: Option<(StreamAt, i64)> = if let Some(id) = h.id {
+            let held = StreamAt::Serial(id);
             let since = if p.playing { p.now_ms - h.at_ms } else { 0 };
             let ms = h.us / 1000 + since;
             let until = h.until_us / 1000;
-            match next {
-                Some(n) if ms >= until || self.over(h, h.until_us) => Some((n, into_next(q, h, (ms - until).max(0)))),
-                Some(_) => Some((id, ms.clamp(0, duration(q, id)))),
-                None if ms < until => Some((id, ms.clamp(0, duration(q, id)))),
+            match h.from {
+                Some(from) if ms >= until || self.over(h, h.until_us) => Some((StreamAt::After(from), into_next(q, h, from, (ms - until).max(0)))),
+                Some(_) => Some((held, ms.clamp(0, duration(q, held)))),
+                None if ms < until => Some((held, ms.clamp(0, duration(q, held)))),
                 None => None,
             }
-        } else if let (Some(n), Some(on)) = (next, p.on) {
-            // No hold: the player's clock is right, but past the takeover the next song is audible.
+        } else if let (Some(from), Some(on)) = (h.from, p.on) {
+            // No hold: the player's clock is right, but past the takeover the next stream is audible.
             let until = h.audible_us / 1000;
-            (Some(on) == h.from_id.as_deref() && Some(n) != self.consumed.as_deref() && (p.position_ms >= until || self.over(h, h.audible_us)))
-                .then(|| (n, into_next(q, h, (p.position_ms - until).max(0))))
+            (on == from && self.consumed != Some(from) && (p.position_ms >= until || self.over(h, h.audible_us)))
+                .then(|| (StreamAt::After(from), into_next(q, h, from, (p.position_ms - until).max(0))))
         } else {
             None
         };
@@ -264,35 +243,27 @@ impl Ear {
             (_, None) => self.crossed = None,
             _ => {}
         }
-        // Stay on the next song until the player has left the old one (the engine may release first).
-        let shown: Option<(&str, i64)> = result.or_else(|| {
-            let (held, ms, at, from) = self.carry.as_ref()?;
-            let left = p.on == h.from_id.as_deref() || h.from_id.is_none() && p.on == from.as_deref() && p.now_ms - at < CARRY_GRACE_MS;
-            (left && Some(held.as_str()) != self.consumed.as_deref()).then(|| {
+        // Stay on the next stream until the player has left the old one (the engine may release first).
+        let shown = result.or_else(|| {
+            let (from, ms, at, on_then) = self.carry?;
+            let left = p.on == h.from || h.from.is_none() && p.on == on_then && p.now_ms - at < CARRY_GRACE_MS;
+            (left && self.consumed != Some(from)).then(|| {
                 let since = if p.playing { p.now_ms - at } else { 0 };
-                (held.as_str(), (ms + since).clamp(0, duration(q, held)))
+                let s = StreamAt::After(from);
+                (s, (ms + since).clamp(0, duration(q, s)))
             })
         });
-        let (shown_id, shown_ms) = shown.map_or((None, p.position_ms), |(id, ms)| (Some(id), ms));
-        let index = shown_id.and_then(q).map(|(i, _)| i);
-        let changed = self.before.as_deref() != shown_id;
-        let before = changed.then(|| shown_id.map(str::to_string));
-        let carrying = shown_id.is_some() && shown_id == next && p.on != next;
-        if let Some(b) = before {
-            self.before = b;
+        let (shown_at, shown_ms) = shown.map_or((None, p.position_ms), |(s, ms)| (Some(s), ms));
+        let index = shown_at.and_then(q).map(|(i, _)| i);
+        let changed = self.before != shown_at;
+        self.before = shown_at;
+        // The player is on a stream after `from`: its mix is done.
+        let reached = |from: u64| p.on.is_some_and(|on| on > from);
+        if let Some(from) = h.from.filter(|&f| shown_at == Some(StreamAt::After(f)) && !reached(f)) {
+            self.carry = Some((from, shown_ms, p.now_ms, p.on));
         }
-        if carrying {
-            match &mut self.carry {
-                Some((id, ms, at, from)) if Some(id.as_str()) == next => {
-                    (*ms, *at) = (shown_ms, p.now_ms);
-                    set_to(from, p.on);
-                }
-                c => *c = next.map(|id| (id.to_string(), shown_ms, p.now_ms, p.on.map(str::to_string))),
-            }
-        }
-        // The player reached the next song: the mix is done.
-        if next.is_some() && p.on == next {
-            set_to(&mut self.consumed, next);
+        if let Some(from) = h.from.filter(|&f| reached(f)) {
+            self.consumed = Some(from);
             self.carry = None;
         }
         Seen { index, ms: shown_ms, changed }
@@ -312,6 +283,21 @@ mod tests {
         }
     }
 
+    /// Streams: `a` (serial 1, queue index 0, 200 s) then `b` (serial 2, index 1, 180 s).
+    fn find(s: StreamAt) -> Option<(usize, i64)> {
+        match s {
+            StreamAt::Serial(1) => Some((A, 200_000)),
+            StreamAt::Serial(2) | StreamAt::After(1) => Some((B, 180_000)),
+            _ => None,
+        }
+    }
+
+    impl HeardTracker {
+        fn ab(&mut self, h: &Heard, p: PlayerNow) -> Seen {
+            self.at(h, p, &find)
+        }
+    }
+
     fn tracker() -> HeardTracker {
         let mut t = HeardTracker::new();
         t.set_queue([("a".to_string(), 200_000), ("b".to_string(), 180_000)]);
@@ -320,48 +306,40 @@ mod tests {
 
     /// Held on the last seconds of `a`, which mix into `b` from 5 s in; the player is already on `b`.
     fn holding(us: i64, at_ms: i64) -> Heard {
-        Heard {
-            id: Some("a".into()),
-            us,
-            at_ms,
-            until_us: 194_000_000,
-            mixing: false,
-            next_id: Some("b".into()),
-            next_from_us: 5_000_000,
-            next_rate: 1.0,
-            from_id: Some("a".into()),
-            audible_us: 194_000_000,
-        }
+        Heard { id: Some(1), us, at_ms, until_us: 194_000_000, mixing: false, next_from_us: 5_000_000, next_rate: 1.0, from: Some(1), audible_us: 194_000_000 }
     }
 
-    fn now(ms: i64, on: &str, pos: i64) -> PlayerNow<'_> {
-        PlayerNow { now_ms: ms, playing: true, on: Some(on), position_ms: pos }
+    fn now(ms: i64, on: &str, pos: i64) -> PlayerNow {
+        PlayerNow { now_ms: ms, playing: true, on: Some(if on == "a" { 1 } else { 2 }), position_ms: pos }
     }
 
     #[test]
-    fn duplicate_song_resolves_to_reachable_copy() {
+    fn same_song_twice_is_two_streams() {
         let mut t = HeardTracker::new();
-        t.set_queue(["a", "b", "a", "b"].map(|id| (id.to_string(), 200_000)));
-        // Held on the ending of `a`; the player is on the second `b` (3), and its next song is none.
-        let s = t.at_index(&holding(190_000_000, 0), 1_000, true, Some(3), None, 0);
-        assert_eq!(s.index, Some(2), "the nearest earlier copy: the song just left");
-        let s = t.at_index(&holding(190_000_000, 0), 1_000, true, Some(1), Some(2), 0);
-        assert_eq!(s.index, Some(2), "the player's next song, when it is that one");
+        // `a` queued twice: streams 1 (index 0) and 2 (index 1).
+        let find = |s: StreamAt| match s {
+            StreamAt::Serial(1) => Some((0, 200_000)),
+            StreamAt::Serial(2) | StreamAt::After(1) => Some((1, 200_000)),
+            _ => None,
+        };
+        let p = |ms, on| PlayerNow { now_ms: ms, playing: true, on: Some(on), position_ms: 0 };
+        assert_eq!(t.at(&holding(190_000_000, 0), p(1_000, 2), &find).index, Some(0), "the held first copy");
+        assert_eq!(t.at(&holding(190_000_000, 0), p(5_000, 2), &find).index, Some(1), "the second copy after takeover");
     }
 
     #[test]
     fn held_ending_runs_on() {
         let mut t = tracker();
-        let s = t.at(&holding(190_000_000, 1_000), now(3_000, "b", 800));
+        let s = t.ab(&holding(190_000_000, 1_000), now(3_000, "b", 800));
         assert_eq!((s.index, s.ms), (Some(A), 192_000));
         assert!(s.changed);
-        assert!(!t.at(&holding(190_000_000, 1_000), now(3_100, "b", 900)).changed, "same song, no change");
+        assert!(!t.ab(&holding(190_000_000, 1_000), now(3_100, "b", 900)).changed, "same song, no change");
     }
 
     #[test]
     fn next_song_after_takeover() {
         let mut t = tracker();
-        let s = t.at(&holding(190_000_000, 1_000), now(6_500, "b", 900));
+        let s = t.ab(&holding(190_000_000, 1_000), now(6_500, "b", 900));
         // 5.5 s since the reading: 195.5 s into a, 1.5 s past the audible point, so 6.5 s into b.
         assert_eq!((s.index, s.ms), (Some(B), 6_500));
         assert!(s.changed);
@@ -371,19 +349,19 @@ mod tests {
     fn stretched_mix_uses_next_rate() {
         let mut t = tracker();
         let h = Heard { next_rate: 0.5, ..holding(194_000_000, 0) };
-        assert_eq!(t.at(&h, now(2_000, "b", 0)).seen(), Some((B, 6_000)));
+        assert_eq!(t.ab(&h, now(2_000, "b", 0)).seen(), Some((B, 6_000)));
     }
 
     #[test]
     fn no_flash_back_before_player_moves_on() {
         let mut t = tracker();
         // Heard on b already, the player not yet moved on from a.
-        assert_eq!(t.at(&holding(195_000_000, 0), now(0, "a", 195_000)).seen(), Some((B, 6_000)));
+        assert_eq!(t.ab(&holding(195_000_000, 0), now(0, "a", 195_000)).seen(), Some((B, 6_000)));
         // The engine let go (no hold any more) but the player is still on a: the page stays on b, moving.
-        let released = Heard { id: None, next_id: None, ..holding(0, 0) };
-        assert_eq!(t.at(&released, now(2_000, "a", 197_000)).seen(), Some((B, 8_000)));
+        let released = Heard { id: None, from: None, ..holding(0, 0) };
+        assert_eq!(t.ab(&released, now(500, "a", 195_500)).seen(), Some((B, 6_500)));
         // The player reached b: its own word is the truth again.
-        let s = t.at(&Heard { id: None, ..holding(0, 0) }, now(2_100, "b", 8_100));
+        let s = t.ab(&Heard { id: None, ..holding(0, 0) }, now(2_100, "b", 8_100));
         assert_eq!((s.index, s.ms), (None, 8_100), "the player's own position");
         assert!(s.changed);
     }
@@ -392,22 +370,22 @@ mod tests {
     fn late_engine_reading_does_not_cross_back() {
         let mut t = tracker();
         // Run on from a reading at 193.9 s, the page crosses into b at 194 s.
-        assert_eq!(t.at(&holding(193_900_000, 0), now(150, "b", 0)).seen(), Some((B, 5_050)));
+        assert_eq!(t.ab(&holding(193_900_000, 0), now(150, "b", 0)).seen(), Some((B, 5_050)));
         // The next reading, taken a little later, finds the ending 30 ms short of the takeover (an
         // output's clock read in steps, or corrected): the page stays on b, at the point it entered.
-        let s = t.at(&holding(193_970_000, 200), now(200, "b", 0));
+        let s = t.ab(&holding(193_970_000, 200), now(200, "b", 0));
         assert_eq!(s.seen(), Some((B, 5_000)));
         assert!(!s.changed, "no second change of song");
         // And moves on with it from there.
-        assert_eq!(t.at(&holding(193_970_000, 200), now(300, "b", 0)).seen(), Some((B, 5_070)));
+        assert_eq!(t.ab(&holding(193_970_000, 200), now(300, "b", 0)).seen(), Some((B, 5_070)));
     }
 
     #[test]
     fn late_player_clock_does_not_cross_back() {
         let mut t = tracker();
         let direct = Heard { id: None, ..holding(0, 0) };
-        assert_eq!(t.at(&direct, now(0, "a", 194_010)).seen(), Some((B, 5_010)));
-        let s = t.at(&direct, now(16, "a", 193_990));
+        assert_eq!(t.ab(&direct, now(0, "a", 194_010)).seen(), Some((B, 5_010)));
+        let s = t.ab(&direct, now(16, "a", 193_990));
         assert_eq!(s.seen(), Some((B, 5_000)), "the player's clock stepped back 20 ms: still b");
         assert!(!s.changed);
     }
@@ -416,39 +394,39 @@ mod tests {
     fn released_mix_carries_briefly() {
         let mut t = tracker();
         let direct = Heard { id: None, ..holding(0, 0) };
-        assert_eq!(t.at(&direct, now(0, "a", 196_000)).seen(), Some((B, 7_000)));
+        assert_eq!(t.ab(&direct, now(0, "a", 196_000)).seen(), Some((B, 7_000)));
         // The engine lets go of the mix and forgets which song it left, a moment before the player
         // moves on: the page stays on b.
-        let released = Heard { next_id: None, from_id: None, ..direct.clone() };
-        let s = t.at(&released, now(40, "a", 196_040));
+        let released = Heard { from: None, ..direct };
+        let s = t.ab(&released, now(40, "a", 196_040));
         assert_eq!(s.seen(), Some((B, 7_040)));
         assert!(!s.changed);
-        let s = t.at(&released, now(60, "b", 7_060));
+        let s = t.ab(&released, now(60, "b", 7_060));
         assert_eq!((s.index, s.ms), (None, 7_060), "the player's own word once it is on b");
         // Not for long, though: a player still on a a second later has been sent back there.
         let mut t = tracker();
-        t.at(&direct, now(0, "a", 196_000));
-        assert_eq!(t.at(&released, now(1_500, "a", 10_000)).seen(), None);
+        t.ab(&direct, now(0, "a", 196_000));
+        assert_eq!(t.ab(&released, now(1_500, "a", 10_000)).seen(), None);
     }
 
     #[test]
     fn no_hold_uses_player_clock() {
         let mut t = tracker();
         let direct = Heard { id: None, ..holding(0, 0) };
-        assert_eq!(t.at(&direct, now(0, "a", 190_000)).seen(), None, "before the mix is audible");
-        assert_eq!(t.at(&direct, now(0, "a", 196_000)).seen(), Some((B, 7_000)));
+        assert_eq!(t.ab(&direct, now(0, "a", 190_000)).seen(), None, "before the mix is audible");
+        assert_eq!(t.ab(&direct, now(0, "a", 196_000)).seen(), Some((B, 7_000)));
         // After the player moved on to b, a later visit to a is not mistaken for the mix.
-        t.at(&direct, now(0, "b", 7_000));
-        assert_eq!(t.at(&direct, now(0, "a", 196_000)).seen(), None);
+        t.ab(&direct, now(0, "b", 7_000));
+        assert_eq!(t.ab(&direct, now(0, "a", 196_000)).seen(), None);
     }
 
     #[test]
     fn paused_stands_and_clamps() {
         let mut t = tracker();
         let p = PlayerNow { playing: false, ..now(60_000, "b", 0) };
-        assert_eq!(t.at(&holding(190_000_000, 0), p).seen(), Some((A, 190_000)));
+        assert_eq!(t.ab(&holding(190_000_000, 0), p).seen(), Some((A, 190_000)));
         let late = Heard { until_us: i64::MAX, ..holding(199_000_000, 0) };
-        assert_eq!(t.at(&late, now(60_000, "b", 0)).seen(), Some((A, 200_000)), "clamped to the song's length");
+        assert_eq!(t.ab(&late, now(60_000, "b", 0)).seen(), Some((A, 200_000)), "clamped to the song's length");
     }
 
     #[test]
@@ -523,7 +501,7 @@ mod tests {
         let mut last = 0;
         for (i, at) in (60_000..61_000).step_by(16).enumerate() {
             let us = 190_000_000 + (at - 60_000) * 1000 - if i >= 30 { 120_000 } else { 0 };
-            let seen = t.at(&holding(us, at), now(at, "b", 0));
+            let seen = t.ab(&holding(us, at), now(at, "b", 0));
             let shown = p.show_for(&t, seen, Some(A), at, Some(B), 0, true);
             assert!(shown >= last, "back from {last} to {shown} at {at} ms");
             last = shown;

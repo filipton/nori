@@ -2,7 +2,7 @@
 //! player's own report). Asked every frame, so answers are packed into an `i64` and nothing allocates.
 
 use nori_player::engine::Heard;
-use nori_player::heard::{HeardTracker, Playhead, Seen};
+use nori_player::heard::{HeardTracker, PlayerNow, Playhead, Seen};
 
 /// No held ending, no mix: the player's report stands.
 const NOTHING: Heard = Heard {
@@ -11,10 +11,9 @@ const NOTHING: Heard = Heard {
     at_ms: 0,
     until_us: i64::MAX,
     mixing: false,
-    next_id: None,
     next_from_us: 0,
     next_rate: 1.0,
-    from_id: None,
+    from: None,
     audible_us: i64::MAX,
 };
 
@@ -84,9 +83,10 @@ impl HeardClock {
         Self::default()
     }
 
-    /// The audible song given the player's current index `on`, its `next`, and `position_ms`.
-    pub fn at(&mut self, now_ms: i64, playing: bool, on: Option<usize>, next: Option<usize>, position_ms: i64) -> HeardAt {
-        let s = self.seen(now_ms, playing, on, next, position_ms);
+    /// The audible song at `position_ms`. `_on` and `_next` (the player's current and next index) are
+    /// unused: nothing is held on this path, so the player's position is what is audible.
+    pub fn at(&mut self, now_ms: i64, playing: bool, _on: Option<usize>, _next: Option<usize>, position_ms: i64) -> HeardAt {
+        let s = self.seen(now_ms, playing, position_ms);
         at(s, s.ms)
     }
 
@@ -94,9 +94,9 @@ impl HeardClock {
     /// page has not followed the audible song yet (`Playhead`). `engine_ms` (negative: none) is preferred
     /// to `position_ms`, which through a media controller is only extrapolated from the last event.
     #[allow(clippy::too_many_arguments)]
-    pub fn position(&mut self, now_ms: i64, playing: bool, on: Option<usize>, next: Option<usize>, position_ms: i64, shown: Option<usize>, engine_ms: i64) -> HeardAt {
+    pub fn position(&mut self, now_ms: i64, playing: bool, on: Option<usize>, _next: Option<usize>, position_ms: i64, shown: Option<usize>, engine_ms: i64) -> HeardAt {
         let position_ms = if engine_ms >= 0 { engine_ms } else { position_ms };
-        let s = self.seen(now_ms, playing, on, next, position_ms);
+        let s = self.seen(now_ms, playing, position_ms);
         let ms = self.head.show_for(&self.t, s, shown, now_ms, on, position_ms, playing);
         at(s, ms)
     }
@@ -111,13 +111,13 @@ impl HeardClock {
         self.head.run_on(now_ms, playing)
     }
 
-    fn seen(&mut self, now_ms: i64, playing: bool, on: Option<usize>, next: Option<usize>, position_ms: i64) -> Seen {
+    fn seen(&mut self, now_ms: i64, playing: bool, position_ms: i64) -> Seen {
         let rev = crate::playlist::playlist_rev();
         if self.rev != rev {
             self.rev = rev;
             self.t.set_queue(crate::playlist::with(|p| crate::queue::durations(p.ids())));
         }
-        self.t.at_index(&NOTHING, now_ms, playing, on, next, position_ms)
+        self.t.at(&NOTHING, PlayerNow { now_ms, playing, on: None, position_ms }, &|_| None)
     }
 }
 

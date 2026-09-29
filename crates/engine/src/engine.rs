@@ -2569,7 +2569,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             at((u as f64 / speed / 1000.0) as i64 + 5);
         }
         let h = self.p.heard();
-        if h.id.is_some() || h.mixing || h.next_id.is_some() {
+        if h.id.is_some() || h.mixing || h.from.is_some() {
             at(250);
         }
         if self.probe.as_ref().is_some_and(|p| p.2.is_none()) {

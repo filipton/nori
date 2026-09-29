@@ -105,7 +105,7 @@ impl Host for App {
 }
 
 fn stream(id: &str, f: Format) -> StreamFormat {
-    StreamFormat { id: Some(id.into()), format: Some(f) }
+    StreamFormat { id: Some(crate::engine::StreamId { song: id.into(), serial: id.as_bytes()[0] as u64 }), format: Some(f) }
 }
 
 /// Feeds `data` from `from_us`; total allocations after the first `warm` buffers.
@@ -253,27 +253,16 @@ fn analysis() {
 #[test]
 fn heard_tracker() {
     let mut t = HeardTracker::new();
-    t.set_queue([("a".to_string(), 200_000), ("b".to_string(), 180_000)]);
-    let h = Heard {
-        id: Some("a".into()),
-        us: 190_000_000,
-        at_ms: 0,
-        until_us: 194_000_000,
-        mixing: false,
-        next_id: Some("b".into()),
-        next_from_us: 5_000_000,
-        next_rate: 1.0,
-        from_id: Some("a".into()),
-        audible_us: 194_000_000,
-    };
-    t.at(&h, PlayerNow { now_ms: 0, playing: true, on: Some("b"), position_ms: 0 });
-    // 8 s of frames across the takeover (4 s in): one id copy when the audible song changes.
+    let find = |s: crate::heard::StreamAt| Some(if s == crate::heard::StreamAt::Serial(1) { (0, 200_000) } else { (1, 180_000) });
+    let h = Heard { id: Some(1), us: 190_000_000, at_ms: 0, until_us: 194_000_000, mixing: false, next_from_us: 5_000_000, next_rate: 1.0, from: Some(1), audible_us: 194_000_000 };
+    t.at(&h, PlayerNow { now_ms: 0, playing: true, on: Some(2), position_ms: 0 }, &find);
+    // 8 s of frames across the takeover (4 s in).
     let n = allocations(|| {
         for ms in (16..8_000).step_by(16) {
-            t.at(&h, PlayerNow { now_ms: ms, playing: true, on: Some("b"), position_ms: ms });
+            t.at(&h, PlayerNow { now_ms: ms, playing: true, on: Some(2), position_ms: ms }, &find);
         }
     });
-    assert_eq!(n, 1);
+    assert_eq!(n, 0);
 }
 
 /// Asked every frame / every 16 ms.
