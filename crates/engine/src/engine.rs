@@ -2482,7 +2482,6 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         }
     }
 
-
     /// How long the thread may sleep: `None` until a command, `Some(0)` not at all. The music's timers,
     /// and while music should move, the stall checks ([`Worker::restart_if_stalled`]).
     fn wake_in(&self, now: i64) -> Option<i64> {
