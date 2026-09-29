@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.width
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.displayCutout
@@ -100,6 +101,12 @@ fun HeroPage(
      */
     art: (@Composable () -> Unit)? = null,
     /**
+     * A page made of several records (a mix): up to four covers standing in for the one cover, drawn as a
+     * 2x2 mosaic where a cover would be - full width, dissolving into the page upright, the soft band on its
+     * side - and the page's colours taken from the first. Used only when [coverUrl] is null.
+     */
+    mosaic: List<String> = emptyList(),
+    /**
      * Whether this kind of page keeps its cover's colours with a black background (album and artist
      * pages each have a setting); the others go black.
      */
@@ -113,7 +120,14 @@ fun HeroPage(
     val black = remember(prefs.amoled, keeps) { dev.nori.music.ffi.pageBlack(prefs.amoled, keeps) }
     // A provider's page too: its cover is on screen already, so measuring it asks the provider for
     // nothing more, and the cover loader never keeps it (only the colours stay, in memory).
-    val palette = if (prefs.coverColors) rememberCoverPalette(coverUrl, dark, black) else null
+    // The picture that stands at the top of the page: the cover, or the mosaic of a page of several records.
+    val lead = coverUrl ?: mosaic.firstOrNull()
+    val picture: (@Composable (Modifier) -> Unit)? = when {
+        coverUrl != null -> { m -> Cover(coverUrl, 0.dp, m, radius = 0.dp) }
+        mosaic.isNotEmpty() -> { m -> Mosaic(mosaic, m) }
+        else -> null
+    }
+    val palette = if (prefs.coverColors) rememberCoverPalette(lead, dark, black) else null
     // Shuffle stays labelled Shuffle (never Pause); it lights while this page's queue is shuffling.
     val player: PlayerViewModel = viewModel()
     val playerState by player.state.collectAsStateWithLifecycle()
@@ -135,7 +149,7 @@ fun HeroPage(
     TintedTheme(palette) {
         val scheme = MaterialTheme.colorScheme
         SystemBarIcons(LocalLook.current)
-        PageTint(palette, waiting = palette == null && prefs.coverColors && coverUrl != null)
+        PageTint(palette, waiting = palette == null && prefs.coverColors && lead != null)
         val list = rememberLazyListState()
         // How far the hero has scrolled off, for its parallax: the list's own scroll upright; on its side the
         // hero stands still in its half and does not move with the songs (see below).
@@ -151,11 +165,11 @@ fun HeroPage(
             if (showArt) {
             // On its side the cover is a card standing in its half, as on a shelf, not a sleeve bleeding to the
             // screen's edges: nothing for it to dissolve into above or beside it.
-            if (coverUrl != null && coverSide != null) Box(
+            if (picture != null && coverSide != null) Box(
                 Modifier.fillMaxWidth().statusBarsPadding().padding(top = WIDE_TOP, bottom = 14.dp),
                 Alignment.Center,
-            ) { Cover(coverUrl, coverSide, radius = Radius.card) }
-            else if (coverUrl != null) Box(
+            ) { picture(Modifier.size(coverSide).clip(androidx.compose.foundation.shape.RoundedCornerShape(Radius.card))) }
+            else if (picture != null) Box(
                 Modifier.fillMaxWidth().aspectRatio(1f)
                     // Parallax and fade, read in the draw phase: scrolling never recomposes the hero.
                     .graphicsLayer {
@@ -164,7 +178,7 @@ fun HeroPage(
                         alpha = 1f - (scrolled / size.height).coerceIn(0f, 1f) * 0.5f
                     },
             ) {
-                Cover(coverUrl, 0.dp, Modifier.fillMaxSize())
+                picture(Modifier.fillMaxSize())
                 val look = LocalLook.current
                 Box(
                     Modifier.fillMaxSize().drawWithCache {
@@ -297,7 +311,7 @@ fun HeroPage(
                     // buttons stand on the right above the songs, as the player's controls stand beside its sleeve,
                     // so nothing is written over the picture. A page with no cover of its own (a mix) keeps its
                     // artwork as a tile beside its buttons.
-                    if (coverUrl != null) {
+                    if (picture != null) {
                         val cutout = LocalPageStart.current
                         val under = (half - textAt).coerceAtLeast(0.dp)
                         Box(
@@ -310,7 +324,7 @@ fun HeroPage(
                                 layout(constraints.maxWidth, placeable.height) { placeable.place(-extra, 0) }
                             },
                         ) {
-                            SoftSleeve(Modifier.fillMaxSize()) { Cover(coverUrl, 0.dp, Modifier.fillMaxSize(), radius = 0.dp) }
+                            SoftSleeve(Modifier.fillMaxSize()) { picture(Modifier.fillMaxSize()) }
                             // The shade under the status bar, faded out with the soft right edge so it does not end on a line.
                             Box(
                                 Modifier.fillMaxSize().graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }.drawWithCache {
@@ -330,7 +344,7 @@ fun HeroPage(
                     LazyColumn(Modifier.weight(1f).fillMaxHeight(), state = list) {
                         // The first song level with the top of the cover beside it.
                         item(key = "hero-wide-top") { Spacer(Modifier.statusBarsPadding().height(WIDE_TOP)) }
-                        if (coverUrl != null) item(key = "hero-wide-head", contentType = "hero") { Column(Modifier.padding(bottom = 8.dp)) { hero(null, false) } }
+                        if (picture != null) item(key = "hero-wide-head", contentType = "hero") { Column(Modifier.padding(bottom = 8.dp)) { hero(null, false) } }
                         content()
                         item(key = "tail") { Spacer(Modifier.height(Space.section + LocalChromeInset.current)) }
                     }
@@ -346,6 +360,21 @@ fun HeroPage(
             }
             // No back button over the artwork: the back gesture is how these pages are left, and a dimmed disc
             // on the cover only covered part of it.
+        }
+    }
+}
+
+/**
+ * Several covers as one picture: two by two, each cell a cover cropped square, filling whatever box it is
+ * given (a cover's place on a page). Fewer than four: the first alone. The seams are left as they are - the
+ * page's dissolve and its soft edge run over all four at once, which is what makes them read as one picture.
+ */
+@Composable
+private fun Mosaic(urls: List<String>, modifier: Modifier) {
+    if (urls.size < 4) { Cover(urls.first(), 0.dp, modifier, radius = 0.dp); return }
+    Column(modifier) {
+        for (row in 0..1) Row(Modifier.weight(1f).fillMaxWidth()) {
+            for (col in 0..1) Cover(urls[row * 2 + col], 0.dp, Modifier.weight(1f).fillMaxHeight(), radius = 0.dp)
         }
     }
 }
