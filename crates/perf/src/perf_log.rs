@@ -359,7 +359,7 @@ pub fn perf_state(charging: bool, screen_on: bool, playing: bool, foreground: bo
 /// service's player (default "rust").
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_config(engine: Option<String>) -> String {
-    let p = settings_store::current().unwrap_or_default();
+    let p = settings_store::settings_current().unwrap_or_default();
     config(engine, &p)
 }
 
@@ -1269,7 +1269,7 @@ pub fn perf_note(wall_ms: i64, note: PerfNote) {
 /// Records the current settings (a change becomes an event).
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_note_settings(wall_ms: i64) {
-    let Some(p) = settings_store::current() else { return };
+    let Some(p) = settings_store::settings_current() else { return };
     timeline().settings(wall_ms, nori_settings::settings::save(&p));
 }
 
@@ -1303,7 +1303,7 @@ pub fn perf_events_since(since_ms: i64) -> Vec<String> {
 
 /// Why the settings block offload (`nori_player::policy::offload_blocked`); None if allowed or unknown.
 pub(crate) fn offload_reason() -> Option<&'static str> {
-    let s = settings_store::current()?;
+    let s = settings_store::settings_current()?;
     let prefs = nori_model::AudioPrefs {
         dsp: s.sound_chain_on(),
         skip_silence: s.skip_silence,

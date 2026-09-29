@@ -1,18 +1,10 @@
-//! Logging to Android's log (logcat, tag `nori`) straight from Rust, so the core can say what it is
-//! doing from any thread without calling back into Kotlin. Elsewhere (tests, a desktop app) it goes to
-//! stderr. Only for events - never per buffer - since each line is formatted and copied once.
+//! The core's log: logcat (tag `nori`) on Android, stderr elsewhere. Events only, never per buffer.
 //!
-//! The last [`KEPT`] lines are also kept in memory, each with the wall clock it was said at, whatever
-//! logcat does with them: logcat's buffer is shared with the whole system and a codec's chatter turns it
-//! over in minutes, so a report written after something broke would no longer find what the app said as
-//! it broke. The perf build's invariant watch takes a copy of them the moment one breaks ([`recent`]).
-//! Keeping one costs a lock and the line's copy, on a line that was formatted anyway.
+//! The last [`KEPT`] lines are also kept in memory ([`recent`]), since logcat's shared buffer rotates
+//! quickly. After [`alog_persist`], lines are also appended unbuffered to `nori.log`, rotated to
+//! `nori.log.1` past [`JOURNAL_BYTES`], so they survive the process.
 //!
-//! Once a client says where ([`alog_persist`]), each line is also appended to a file there, with its local
-//! time: `nori.log`, moved to `nori.log.1` when it passes [`JOURNAL_BYTES`], so the two hold the last day or
-//! so of what the app said, across the process ending. A problem heard once in hours (a gap in the music)
-//! is found there afterwards, in a release build too ([`alog_journal`], the report a client copies). One
-//! write per line, unbuffered, so a line said just before the process died is kept; lines are events only.
+//! The statics are global because every thread logs without a handle.
 
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
@@ -29,16 +21,16 @@ mod sys {
     }
 }
 
-/// How many of the latest lines are kept in memory.
+/// Lines kept in memory.
 pub const KEPT: usize = 500;
 
-/// The latest lines, oldest first, each with when it was said (wall clock ms).
+/// Latest lines, oldest first, with wall clock ms.
 static LINES: Mutex<VecDeque<(i64, String)>> = Mutex::new(VecDeque::new());
 
-/// How big `nori.log` grows before it becomes `nori.log.1` (the one before it going).
+/// Size at which `nori.log` is rotated to `nori.log.1`.
 pub const JOURNAL_BYTES: u64 = 1 << 20;
 
-/// The file the lines are appended to, once a client has said where.
+/// The on-disk log file, once [`alog_persist`] has run.
 struct Journal {
     dir: PathBuf,
     file: File,
@@ -77,7 +69,7 @@ fn open_journal(dir: &std::path::Path) -> Option<(File, u64)> {
     Some((file, bytes))
 }
 
-/// The line appended to the journal, if there is one; moved on to a new file once this one is full.
+/// Appends to the journal if any, rotating when full.
 fn journal(ms: i64, message: &str) {
     let mut j = JOURNAL.lock().unwrap_or_else(|e| e.into_inner());
     let Some(journal) = j.as_mut() else { return };
@@ -97,12 +89,11 @@ fn journal(ms: i64, message: &str) {
     }
 }
 
-/// A line kept in memory only, as said elsewhere (the app's own Kotlin, which writes to logcat itself).
+/// Records a line in memory and the journal, without writing it to logcat.
 pub fn keep(message: &str) {
     let ms = wall_ms();
     journal(ms, message);
     let line = (ms, message.to_string());
-    // A panic while it was held leaves the lines as they were: the log must never stop the app.
     let mut kept = LINES.lock().unwrap_or_else(|e| e.into_inner());
     if kept.len() >= KEPT {
         kept.pop_front();
@@ -110,8 +101,7 @@ pub fn keep(message: &str) {
     kept.push_back(line);
 }
 
-/// From now on every line is also appended to `nori.log` in `dir` (made if it is not there), with its
-/// time `utc_offset_min` east of UTC; asked again, it moves there. False when the file cannot be opened.
+/// Starts appending lines to `dir/nori.log` with local times at `utc_offset_min`. False if it can't open.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn alog_persist(dir: String, utc_offset_min: i32) -> bool {
     let dir = PathBuf::from(dir);
@@ -121,7 +111,7 @@ pub fn alog_persist(dir: String, utc_offset_min: i32) -> bool {
     true
 }
 
-/// What the journal holds, oldest first (both files), or empty when there is none.
+/// Both journal files' contents, oldest first; empty without a journal.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn alog_journal() -> String {
     let Some(dir) = JOURNAL.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|j| j.dir.clone()) else { return String::new() };
@@ -129,18 +119,17 @@ pub fn alog_journal() -> String {
     read("nori.log.1") + &read("nori.log")
 }
 
-/// The lines kept, oldest first, with when each was said (wall clock ms).
+/// The in-memory lines, oldest first, with wall clock ms.
 pub fn recent() -> Vec<(i64, String)> {
     LINES.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect()
 }
 
-/// One line at INFO under the app's tag.
+/// Logs one line at INFO.
 pub fn info(message: &str) {
     keep(message);
     #[cfg(target_os = "android")]
     {
         const INFO: std::ffi::c_int = 4;
-        // Interior NULs would end the line early; there are none in what the core logs, but never panic.
         if let Ok(text) = std::ffi::CString::new(message) {
             unsafe { sys::__android_log_write(INFO, c"nori".as_ptr(), text.as_ptr()) };
         }
@@ -149,8 +138,7 @@ pub fn info(message: &str) {
     eprintln!("nori: {message}");
 }
 
-/// One line the app's Kotlin wrote to logcat under the `nori` tag, kept with the core's own so that a
-/// copy of the latest lines has both.
+/// Keeps a line Kotlin already wrote to logcat.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn alog_keep(line: String) {
     keep(&line);
@@ -161,7 +149,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_line_s_local_time_is_the_calendar_s() {
+    fn local_time_formats_calendar_date() {
         // 2026-09-28 11:22:05.123 UTC, in CEST.
         assert_eq!(local_time(1_790_594_525_123, 120), "2026-09-28 13:22:05.123");
         assert_eq!(local_time(0, 0), "1970-01-01 00:00:00.000");
@@ -170,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn the_journal_keeps_the_lines_across_files_and_goes_on_in_a_new_one_when_full() {
+    fn journal_rotates_and_keeps_order() {
         let dir = nori_testdir::TempDir::new("alog-journal");
         assert!(alog_persist(dir.to_string_lossy().into_owned(), 120));
         let long = "x".repeat(1000);
@@ -188,14 +176,13 @@ mod tests {
     }
 
     #[test]
-    fn the_latest_lines_are_kept_in_order_and_no_more_than_kept() {
+    fn recent_keeps_last_lines_in_order() {
         for k in 0..KEPT + 20 {
             info(&format!("alog-test line {k}"));
         }
         let mine: Vec<String> = recent().into_iter().map(|(_, l)| l).filter(|l| l.starts_with("alog-test line ")).collect();
         assert!(mine.len() <= KEPT);
         assert_eq!(mine.last().map(String::as_str), Some(format!("alog-test line {}", KEPT + 19).as_str()));
-        // In order, and the oldest gone first.
         let numbers: Vec<usize> = mine.iter().map(|l| l.rsplit(' ').next().unwrap().parse().unwrap()).collect();
         assert!(numbers.windows(2).all(|w| w[1] == w[0] + 1), "in order: {numbers:?}");
         assert!(!mine.contains(&"alog-test line 0".to_string()), "the oldest went first");

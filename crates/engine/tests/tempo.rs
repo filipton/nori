@@ -14,7 +14,7 @@ use common::card::{Card, Pull};
 use common::{Stepper, Virtual};
 use nori_engine::{Config, Engine, Library, Located, SharedQueue, Source};
 use nori_player::automix::analysis::Analyzer;
-use nori_player::automix::{mixer, plan};
+use nori_player::automix::plan;
 use nori_player::engine::{Host, Plan};
 use nori_player::pipeline::App;
 use nori_player::sim;
@@ -92,7 +92,7 @@ fn beat_matched() -> Plan {
         out_start_us: 8_000_000,
         duration_us: 3_000_000,
         in_skip_us: 0,
-        mixer: mixer::params(&t),
+        mixer: t.clone(),
         tempo_ratio: 1.04,
         keep_pitch: false,
         ramp_us: 1_000_000,

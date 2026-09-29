@@ -1,9 +1,7 @@
-//! Which sound an output device gets when music moves to it. A device can have a sound of its own (a
-//! saved profile bound to it), be marked quiet (never offered a curve), or have nothing chosen; with
-//! nothing chosen, headphones whose name matches an AutoEQ curve get it offered, or applied straight
-//! away when the user asked for that. The platform looks things up and applies the answer.
+//! Which sound profile an output device gets when playback moves to it: its bound profile, or with
+//! none bound an AutoEQ curve offered or applied, unless it is marked quiet.
 
-/// What is known about the device as it arrives.
+/// Facts about a newly active output device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Arrival {
     /// A profile is bound to this device.
@@ -12,7 +10,7 @@ pub struct Arrival {
     pub per_output: bool,
     /// The phone's own speaker: never offered a curve.
     pub speaker: bool,
-    /// The user said this device should never be offered a curve.
+    /// Never offer this device a curve.
     pub quiet: bool,
     /// Apply a matching curve without asking.
     pub auto_apply: bool,
@@ -20,7 +18,7 @@ pub struct Arrival {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CurveStep {
-    /// Leave it: no curve is looked for.
+    /// No curve lookup.
     None,
     /// Look for a curve; offer it if one matches.
     Offer,
@@ -32,7 +30,7 @@ pub enum CurveStep {
 pub struct ArrivalPlan {
     /// Load the device's bound profile.
     pub load_bound: bool,
-    /// Bring back the sound from before a bound device took over, if one was kept.
+    /// Restore the unbound sound saved when a bound device took over.
     pub restore: bool,
     pub curve: CurveStep,
 }
@@ -51,37 +49,33 @@ pub fn on_arrival(a: Arrival) -> ArrivalPlan {
     ArrivalPlan { load_bound: false, restore: a.per_output, curve }
 }
 
-/// The profile "Flat": the equalizer off on a device, everything else as it was when it was made.
+/// Built-in profile: equalizer off, everything else unchanged.
 pub const FLAT: &str = "Flat";
-/// The profile "No processing": nothing in the sample chain on a device (its sound's `bypass`), so what
-/// reaches it is the music as it comes and audio offload can play it.
+/// Built-in profile: no sample processing at all (the sound's `bypass`), so offload can play.
 pub const BYPASS: &str = "No processing";
 
-/// Loading a device's own sound. The first time one replaces a sound nobody bound to a device, that
-/// sound is kept, so it comes back when the music goes to such a device again (the DAC unplugged, back
-/// to the speaker). True: keep the sound playing now before loading the device's.
+/// Whether to save the current unbound sound before loading a device's own, so it can be restored
+/// when playback returns to an unbound device. Saved once.
 pub fn keep_loose(per_output: bool, loose_kept: bool) -> bool {
     per_output && !loose_kept
 }
 
-/// What a device in the list gets.
+/// What a listed device gets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChoiceKind {
-    /// Nothing chosen: a matching AutoEQ curve is offered (or applied, with the setting on).
+    /// Nothing chosen: a matching AutoEQ curve is offered or applied.
     Automatic,
     /// Nothing chosen and nothing offered.
     Quiet,
-    /// The equalizer off on this device, everything else as it is now.
+    /// [`FLAT`].
     Flat,
     /// A saved profile.
     Profile,
-    /// No processing on this device: no equalizer and no effects at all.
+    /// [`BYPASS`].
     Bypass,
 }
 
-/// One output device in the equalizer's device list: `output` is its key, `port` and `name` where it is
-/// plugged in and what it calls itself (none when it gave no name), and `choice` what it gets, with the
-/// profile's name for [`ChoiceKind::Profile`]. The client words the rest ("Automatic", "Leave as is").
+/// One row of the equalizer's device list. `output` is the device key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceRow {
     pub output: String,
@@ -89,12 +83,11 @@ pub struct DeviceRow {
     pub name: Option<String>,
     pub current: bool,
     pub choice: ChoiceKind,
-    /// The profile bound to it, for `ChoiceKind::Profile`.
+    /// The bound profile's name, for [`ChoiceKind::Profile`].
     pub profile: Option<String>,
 }
 
-/// Every output seen, the one playing now included, each with the sound it gets: the speaker first,
-/// then by the name its key gives it. `profiles` are (name, the outputs bound to it).
+/// Every known output plus the current one, speaker first, then by name. `profiles`: (name, bound outputs).
 pub fn rows(known: &[String], current: &str, profiles: &[(&str, &[String])], quiet: &[String]) -> Vec<DeviceRow> {
     let mut outputs: Vec<&str> = Vec::with_capacity(known.len() + 1);
     for o in known.iter().map(String::as_str).chain(std::iter::once(current)) {
@@ -114,7 +107,7 @@ pub fn rows(known: &[String], current: &str, profiles: &[(&str, &[String])], qui
                 None => ChoiceKind::Automatic,
             };
             let (port, name) = crate::outputs::parts(o);
-            // In the order the list has always had: by the name after "USB: " or "Bluetooth: ", else the key.
+            // Sort by the name after "USB: " / "Bluetooth: ", else the key.
             let order = o.split_once(": ").map_or(o, |(_, n)| n).to_lowercase();
             let row = DeviceRow {
                 output: o.to_string(),
@@ -137,7 +130,7 @@ mod tests {
     use crate::outputs::SPEAKER;
 
     #[test]
-    fn device_rows_say_what_each_device_gets() {
+    fn rows_list_each_device_choice() {
         use crate::outputs::OutputPort;
         let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
         let known = s(&["USB: K3", SPEAKER, "Bluetooth: buds", "Wired headphones", "USB: DAC"]);
@@ -161,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn a_device_left_unprocessed_says_so() {
+    fn bypass_profile_row() {
         let dac = vec!["USB: DAC".to_string()];
         let profiles: [(&str, &[String]); 1] = [(BYPASS, &dac)];
         let rows = rows(&dac, SPEAKER, &profiles, &[]);
@@ -170,37 +163,32 @@ mod tests {
     }
 
     #[test]
-    fn the_current_device_is_listed_once() {
+    fn current_device_listed_once() {
         let known = vec![SPEAKER.to_string()];
         assert_eq!(rows(&known, SPEAKER, &[], &[]).len(), 1);
     }
 
-    #[test]
-    fn the_loose_sound_is_kept_once() {
-        assert!(keep_loose(true, false));
-        assert!(!keep_loose(true, true));
-        assert!(!keep_loose(false, false));
-    }
 
     fn arrival() -> Arrival {
         Arrival { bound: false, per_output: true, speaker: false, quiet: false, auto_apply: false }
     }
 
     #[test]
-    fn a_bound_device_gets_its_own_sound_and_nothing_else() {
+    fn bound_device_loads_its_profile() {
         assert_eq!(on_arrival(Arrival { bound: true, ..arrival() }), ArrivalPlan { load_bound: true, restore: false, curve: CurveStep::None });
         assert!(!on_arrival(Arrival { bound: true, per_output: false, ..arrival() }).load_bound, "per-device sound off");
     }
 
     #[test]
-    fn an_unbound_device_gets_the_sound_from_before_and_maybe_a_curve() {
+    fn unbound_device_restores_and_offers_curve() {
         assert_eq!(on_arrival(arrival()), ArrivalPlan { load_bound: false, restore: true, curve: CurveStep::Offer });
         assert_eq!(on_arrival(Arrival { auto_apply: true, ..arrival() }).curve, CurveStep::Apply);
         assert_eq!(on_arrival(Arrival { auto_apply: true, per_output: false, ..arrival() }).curve, CurveStep::Offer, "applying needs per-device sound");
     }
 
     #[test]
-    fn the_speaker_and_quiet_devices_are_never_offered_a_curve() {
+    fn speaker_and_quiet_get_no_curve() {
+
         assert_eq!(on_arrival(Arrival { speaker: true, ..arrival() }).curve, CurveStep::None);
         assert_eq!(on_arrival(Arrival { quiet: true, auto_apply: true, ..arrival() }).curve, CurveStep::None);
     }

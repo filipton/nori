@@ -1,6 +1,4 @@
-//! What only the app knows, as the transition engine (`nori_player::engine`) asks it: plans, the analysis
-//! store and the log, all the core's own. A client runs the engine with this as its host and adds only
-//! how its screen hears that the ear moved to another song.
+//! The transition engine's host backed by the core: plans, the analysis store and the log.
 
 use nori_player::automix::analysis::Analyzer;
 use nori_player::engine::{Host, Plan};
@@ -8,7 +6,7 @@ use nori_player::engine::{Host, Plan};
 pub struct CoreHost<F: FnMut()> {
     /// The clock the engine's call was made at.
     pub now_ms: i64,
-    /// The heard song changed: a page on screen follows the ear at once.
+    /// Called when the song being heard changes.
     pub heard_changed: F,
 }
 

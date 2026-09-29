@@ -1,5 +1,5 @@
-//! The screen drawn into ratatui's TestBackend, and keys and clicks dispatched, with no server, no sound
-//! card and no terminal. `NORI_TUI_DUMP=<dir>` also writes each screen drawn here as text.
+//! Screens drawn into a TestBackend with keys and clicks dispatched. `NORI_TUI_DUMP=<dir>` writes the
+//! drawn screens as text.
 
 use std::time::{Duration, Instant};
 
@@ -13,7 +13,7 @@ use ratatui::Terminal;
 
 use crate::app::{App, Cmd, Focus, Hit, ListRef, Nav, Overlay, Panel, Target, View};
 use crate::backend::{Data, Msg, Req};
-use crate::settings_view::{Facts, Line, Row, SettingsView, GROUPS};
+use crate::settings_view::{Facts, Line, Row, SettingsView, Switch, GROUPS};
 
 fn app() -> App {
     let mut a = App::new(StoredPrefs::default());
@@ -39,7 +39,7 @@ fn draw_with(a: &mut App, w: u16, h: u16, art: Option<&mut crate::art::Art>) -> 
     out
 }
 
-/// The screen as text, kept where NORI_TUI_DUMP says (for showing people what it looks like).
+/// Writes a drawn screen to $NORI_TUI_DUMP, if set.
 fn dump(name: &str, text: &str) {
     if let Some(dir) = std::env::var_os("NORI_TUI_DUMP") {
         let _ = std::fs::create_dir_all(&dir);
@@ -87,7 +87,7 @@ fn playlists(a: &mut App, names: &[&str]) {
 }
 
 #[test]
-fn the_window_is_a_sidebar_a_page_a_panel_and_the_player() {
+fn window_layout() {
     let mut a = app();
     a.go(View::Home);
     playlists(&mut a, &["Morning", "Late night"]);
@@ -100,7 +100,7 @@ fn the_window_is_a_sidebar_a_page_a_panel_and_the_player() {
 }
 
 #[test]
-fn a_tiny_terminal_draws_without_panicking() {
+fn tiny_terminal_no_panic() {
     let mut a = app();
     a.song = Some(song("1", "One", 200));
     a.queue = Some(queue_of(5, 1));
@@ -123,7 +123,7 @@ fn a_tiny_terminal_draws_without_panicking() {
 }
 
 #[test]
-fn keys_go_places_and_ask_for_what_they_show() {
+fn keys_navigate_and_load() {
     let mut a = app();
     key(&mut a, KeyCode::Char('2'));
     assert_eq!(a.view, View::Albums);
@@ -163,7 +163,7 @@ fn keys_go_places_and_ask_for_what_they_show() {
 }
 
 #[test]
-fn tab_moves_the_keys_between_the_sidebar_the_page_and_the_panel() {
+fn tab_cycles_focus() {
     let mut a = app();
     a.go(View::Home);
     playlists(&mut a, &["Morning"]);
@@ -198,7 +198,7 @@ fn tab_moves_the_keys_between_the_sidebar_the_page_and_the_panel() {
 }
 
 #[test]
-fn albums_are_cards_clicked_open_and_moved_through_with_arrows() {
+fn album_grid_keys_and_clicks() {
     let mut a = app();
     a.go(View::Albums);
     let albums: Vec<Album> = (0..100).map(|i| album(&format!("al-{i}"), &format!("Album {i}"))).collect();
@@ -236,7 +236,7 @@ fn albums_are_cards_clicked_open_and_moved_through_with_arrows() {
 }
 
 #[test]
-fn songs_are_a_table_and_a_second_click_plays_one() {
+fn song_table_double_click_plays() {
     let mut a = app();
     a.go(View::Songs);
     let songs: Vec<Song> = (0..30).map(|i| Song { starred: i == 2, ..song(&format!("s{i}"), &format!("Song {i}"), 200) }).collect();
@@ -255,7 +255,7 @@ fn songs_are_a_table_and_a_second_click_plays_one() {
 }
 
 #[test]
-fn the_home_page_is_shelves_moved_along_and_between() {
+fn home_shelves() {
     let mut a = app();
     a.go(View::Home);
     let shelf = |n: usize, p: &str| (0..n).map(|i| album(&format!("{p}-{i}"), &format!("{p} {i}"))).collect::<Vec<_>>();
@@ -285,7 +285,7 @@ fn the_home_page_is_shelves_moved_along_and_between() {
 }
 
 #[test]
-fn the_seek_bar_and_the_volume_are_clicked_and_dragged() {
+fn player_bar_mouse() {
     let mut a = app();
     a.song = Some(song("1", "One", 200));
     a.now.state = State::Playing;
@@ -318,7 +318,7 @@ fn the_seek_bar_and_the_volume_are_clicked_and_dragged() {
 }
 
 #[test]
-fn with_the_mouse_off_clicks_do_nothing() {
+fn mouse_off_ignores_clicks() {
     let mut a = app();
     draw(&mut a, 160, 30);
     key(&mut a, KeyCode::Char('m'));
@@ -329,7 +329,7 @@ fn with_the_mouse_off_clicks_do_nothing() {
 }
 
 #[test]
-fn settings_are_one_page_of_every_group() {
+fn settings_page() {
     let mut a = app();
     a.go(View::Settings);
     a.settings.set_facts(Facts { devices: vec!["hw:0".into()], ..Facts::default() });
@@ -360,7 +360,7 @@ fn settings_are_one_page_of_every_group() {
     let lines = SettingsView::lines(&pages);
     assert!(matches!(lines[a.settings.row.at], Line::Row(_)));
     a.cmds.clear();
-    let at = lines.iter().position(|l| matches!(l, Line::Row(Row::Toggle { name, .. }) if name == "autoMix")).unwrap();
+    let at = lines.iter().position(|l| matches!(l, Line::Row(Row::Toggle { switch: Switch::Setting(name), .. }) if name == "autoMix")).unwrap();
     while a.settings.row.at < at {
         key(&mut a, KeyCode::Down);
         assert!(matches!(lines[a.settings.row.at], Line::Row(_)), "no stop on a heading");
@@ -384,7 +384,7 @@ fn settings_are_one_page_of_every_group() {
 }
 
 #[test]
-fn a_page_that_would_not_load_says_why() {
+fn load_error_shown() {
     let mut a = app();
     a.go(View::Albums);
     a.handle(Msg::Data(Req::Albums { offset: 0 }, Err("The server did not answer: HTTP 522".into())));
@@ -400,7 +400,7 @@ fn a_page_that_would_not_load_says_why() {
 }
 
 #[test]
-fn the_queue_panel_is_listed_in_play_order_and_edited_with_keys() {
+fn queue_panel_editing() {
     let mut a = app();
     a.queue = Some(queue_of(5, 1));
     key(&mut a, KeyCode::Char('Q'));
@@ -431,7 +431,7 @@ fn the_queue_panel_is_listed_in_play_order_and_edited_with_keys() {
 }
 
 #[test]
-fn a_narrow_terminal_shows_the_part_with_the_keys_in_the_pages_place() {
+fn narrow_shows_focused_part() {
     let mut a = app();
     a.go(View::Home);
     a.queue = Some(queue_of(5, 1));
@@ -451,7 +451,7 @@ fn a_narrow_terminal_shows_the_part_with_the_keys_in_the_pages_place() {
 }
 
 #[test]
-fn the_panel_shows_the_song_heard_and_how_the_next_comes_in() {
+fn now_playing_panel() {
     let mut a = app();
     let next = song("s2", "Second", 180);
     nori_core::queue::queue_register(vec![next.clone()]);
@@ -482,7 +482,7 @@ fn the_panel_shows_the_song_heard_and_how_the_next_comes_in() {
 }
 
 #[test]
-fn lyrics_follow_the_song_word_by_word() {
+fn lyrics_panel() {
     use nori_core::{LyricLine, LyricWord, Lyrics};
     let mut a = app();
     a.heard(Some(song("s1", "First", 200)));
@@ -507,7 +507,7 @@ fn lyrics_follow_the_song_word_by_word() {
 }
 
 #[test]
-fn the_equalizer_is_a_console_of_faders_and_chips() {
+fn equalizer_screen() {
     let mut a = app();
     a.prefs.eq_enabled = true;
     a.prefs.eq_graphic[2] = 12.0;
@@ -581,7 +581,7 @@ fn the_equalizer_is_a_console_of_faders_and_chips() {
 }
 
 #[test]
-fn a_seek_is_not_undone_by_the_engines_status_from_before_it() {
+fn seek_survives_stale_status() {
     let mut a = app();
     a.go(View::Songs);
     a.song = Some(song("1", "One", 200));
@@ -603,7 +603,7 @@ fn a_seek_is_not_undone_by_the_engines_status_from_before_it() {
 }
 
 #[test]
-fn pages_and_the_player_have_favourite_and_download_buttons() {
+fn star_and_download_buttons() {
     let mut a = app();
     a.go(View::Albums);
     a.open_album("al-3".into());
@@ -628,7 +628,7 @@ fn pages_and_the_player_have_favourite_and_download_buttons() {
 }
 
 #[test]
-fn album_cards_show_small_covers_asked_for_as_they_come_on_screen() {
+fn card_covers_requested_once() {
     use ratatui_image::picker::Picker;
     let mut a = app();
     a.go(View::Albums);
@@ -653,7 +653,7 @@ fn album_cards_show_small_covers_asked_for_as_they_come_on_screen() {
 }
 
 #[test]
-fn a_picture_in_a_graphics_protocol_does_not_hide_the_rest_of_the_frame() {
+fn graphics_cell_does_not_hide_frame() {
     use ratatui_image::picker::{Picker, ProtocolType};
     for protocol in [ProtocolType::Sixel, ProtocolType::Kitty, ProtocolType::Iterm2, ProtocolType::Halfblocks] {
         let mut a = app();
@@ -684,7 +684,7 @@ fn button(s: &str) -> &'static str {
 }
 
 #[test]
-fn space_and_the_engines_answer_change_the_play_button_at_once() {
+fn play_button_follows_state() {
     let mut t = Terminal::new(TestBackend::new(100, 20)).unwrap();
     let mut frame = |a: &mut App| {
         t.draw(|f| crate::ui::draw(f, a, None)).unwrap();
@@ -710,7 +710,7 @@ fn space_and_the_engines_answer_change_the_play_button_at_once() {
 }
 
 #[test]
-fn a_cover_is_sent_on_the_first_frame_and_again_when_the_song_changes() {
+fn cover_sent_once_per_change() {
     use ratatui_image::picker::{Picker, ProtocolType};
     let image = |v: u8| std::sync::Arc::new(nori_covers::memory::Image { width: 64, height: 64, pixels: vec![v; 64 * 64 * 4].into_boxed_slice() });
     for protocol in [ProtocolType::Sixel, ProtocolType::Kitty, ProtocolType::Iterm2] {
@@ -745,7 +745,7 @@ fn a_cover_is_sent_on_the_first_frame_and_again_when_the_song_changes() {
 }
 
 #[test]
-fn a_queue_started_from_a_page_carries_the_page() {
+fn queue_origin_is_page() {
     use nori_core::{OriginKind, PageOrigin, Playlist, PlaylistDetail};
     let mut a = app();
     a.go(View::Albums);
@@ -777,7 +777,7 @@ fn a_queue_started_from_a_page_carries_the_page() {
 }
 
 #[test]
-fn search_results_are_one_list_of_songs_albums_and_artists() {
+fn search_results_list() {
     let mut a = app();
     key(&mut a, KeyCode::Char('/'));
     chars(&mut a, "one");
@@ -796,7 +796,7 @@ fn search_results_are_one_list_of_songs_albums_and_artists() {
 }
 
 #[test]
-fn seeking_needs_a_song_and_stays_inside_it() {
+fn seek_bounds() {
     let mut a = app();
     // On a list ← and → seek (on the cards of Home and Albums they move: , and . seek there).
     a.go(View::Songs);
@@ -816,7 +816,7 @@ fn seeking_needs_a_song_and_stays_inside_it() {
 }
 
 #[test]
-fn nothing_wakes_the_screen_while_nothing_plays() {
+fn idle_never_wakes() {
     let mut a = app();
     let now = Instant::now();
     assert_eq!(a.next_wake(now), None, "idle: no timer at all");
@@ -831,27 +831,22 @@ fn nothing_wakes_the_screen_while_nothing_plays() {
 }
 
 #[test]
-fn focus_lost_draws_nothing_and_focus_back_draws() {
+fn focus_redraw() {
     let mut a = app();
     a.dirty = false;
     a.handle(Msg::Focus(false));
-    assert!(!a.dirty, "nothing changed on screen");
+    assert!(!a.dirty, "focus lost changes nothing");
     a.handle(Msg::Focus(true));
-    assert!(a.dirty, "back in view: drawn again");
-}
-
-#[test]
-fn a_message_that_changes_nothing_does_not_undo_the_draw_an_event_before_it_asked_for() {
-    let mut a = app();
+    assert!(a.dirty, "focus back redraws");
+    // A no-op message after a real change in the same batch keeps the redraw.
     a.dirty = false;
-    // Taken in one batch: the engine paused, then the terminal lost focus (which alone draws nothing).
     a.handle(Msg::Engine(nori_engine::Event::State(State::Paused)));
     a.handle(Msg::Focus(false));
-    assert!(a.dirty, "the pause is still to be drawn");
+    assert!(a.dirty);
 }
 
 #[test]
-fn the_clock_stops_where_it_was_when_the_engine_says_paused() {
+fn pause_freezes_clock() {
     let mut a = app();
     let start = Instant::now() - Duration::from_secs(5);
     a.now = crate::app::Now { state: State::Playing, position_ms: 10_000, at: start, ..Default::default() };
@@ -862,8 +857,7 @@ fn the_clock_stops_where_it_was_when_the_engine_says_paused() {
 }
 
 #[test]
-fn the_engines_status_is_not_believed_over_its_newer_events() {
-    // The engine says a change before its status shows it: read in between, the status is behind.
+fn stale_status_behind_events() {
     let mut said = crate::runner::Said::default();
     assert_eq!(said.behind(State::Idle, None), None, "no event yet: the status stands");
     said.state = Some(State::Playing);
@@ -875,20 +869,17 @@ fn the_engines_status_is_not_believed_over_its_newer_events() {
 }
 
 #[test]
-fn tmux_is_trusted_with_sixel_only_on_a_terminal_it_found_draws_sixel() {
+fn tmux_sixel_feature() {
     use crate::term::sixel_feature;
-    // Ghostty (kitty graphics, no sixel) under tmux 3.7: tmux still answers that it draws sixel, and
-    // would show a box of + signs; the pictures go through to Ghostty instead.
+    // Ghostty (no sixel) under tmux: tmux claims sixel but would show a placeholder.
     assert!(!sixel_feature("bpaste,ccolour,clipboard,cstyle,focus,RGB,title"));
     assert!(!sixel_feature(""));
-    // xterm as a VT340, foot, WezTerm with sixel: tmux keeps and draws the picture.
     assert!(sixel_feature("256,bpaste,ccolour,clipboard,cstyle,extkeys,focus,mouse,rectfill,RGB,sixel,strikethrough,title"));
 }
 
 #[test]
-fn a_terminals_late_answer_is_not_taken_for_keys() {
-    // kitty's answer to "do you draw pictures", arriving after the asking gave up (over ssh): alt+_, then
-    // its letters, then alt+\\. None of it is a key; the key after it is.
+fn late_query_reply_swallowed() {
+    // A late kitty graphics reply: alt+_, its letters, alt+\\. Only the key after it counts.
     let mut r = crate::runner::Replies::default();
     let k = |c: char, m: KeyModifiers| KeyEvent::new(KeyCode::Char(c), m);
     let mut taken = Vec::new();
