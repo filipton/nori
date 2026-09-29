@@ -1,5 +1,4 @@
-//! The car's browse tree as the client's calls: each folder read from the server. The tree and how its
-//! rows read are nori-library's.
+//! Android Auto browse tree reads. The tree itself is nori-library's.
 
 use crate::cache_policy::{Page, Read};
 use crate::client::Client;
@@ -13,7 +12,7 @@ impl Client {
         folder(ROOT, CarFolder::Root)
     }
 
-    /// What the folder `parent` holds; nothing for one that is not known or cannot be read now.
+    /// The contents of folder `parent`; empty if unknown or unreadable.
     pub async fn browse_children(&self, parent: String) -> BrowsePage {
         let (kind, arg) = parent.split_once(':').unwrap_or((parent.as_str(), ""));
         let art = |id: &Option<String>| id.as_ref().map(|c| self.core.cover_url(c.clone(), ART));
@@ -21,7 +20,7 @@ impl Client {
             Ok(Page::Songs { v }) => v,
             _ => Vec::new(),
         };
-        let page = match kind {
+        match kind {
             ROOT => BrowsePage { folders: root(), songs: Vec::new() },
             "albums" => match self.first(Read::AlbumList { kind: arg.to_lowercase(), size: 40, offset: 0, genre: None }).await {
                 Ok(Page::Albums { v }) => BrowsePage {
@@ -59,8 +58,7 @@ impl Client {
             "random" => BrowsePage { folders: Vec::new(), songs: songs(self.read_now(Read::RandomSongs { size: 50, genre: None }).await) },
             "downloads" => BrowsePage { folders: Vec::new(), songs: self.core.downloads(true).unwrap_or_default() },
             _ => BrowsePage::default(),
-        };
-        page
+        }
     }
 }
 
@@ -71,15 +69,15 @@ pub(crate) mod tests {
     use crate::client::NetProfile;
 
     #[test]
-    fn the_root_lists_the_folders_a_car_offers() {
+    fn root_lists_folders_without_network() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         let p = block(c.browse_children(ROOT.into()));
         assert_eq!(p.folders.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), ["albums:recent", "albums:newest", "albums:frequent", "playlists", "starred", "random", "downloads"]);
-        assert!(fake.asked.lock().is_empty(), "the root asks nothing of the server");
+        assert!(fake.asked.lock().is_empty());
     }
 
     #[test]
-    fn a_playlist_folder_has_its_count_of_songs() {
+    fn playlists_folder_lists_song_counts() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         fake.answer(r#"{"subsonic-response":{"status":"ok","playlists":{"playlist":[{"id":"p1","name":"Evening","songCount":12}]}}}"#);
         let p = block(c.browse_children("playlists".into()));
