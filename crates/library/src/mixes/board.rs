@@ -90,9 +90,9 @@ pub fn mix_tile_colours(id: String) -> Vec<u32> {
     vec![seed, deep, with_alpha(deep, 0.0), with_alpha(deep, 0.72), with_alpha(deep, 0.94)]
 }
 
-/// Provider tracks are never queued unasked: a stream request makes octo-fiesta download them.
+/// Provider songs are never queued unasked: a stream request makes octo-fiesta download them.
 pub fn playable(s: &Song) -> bool {
-    !s.is_external && !s.id.starts_with("ext-") && !s.id.starts_with("pl-")
+    !s.is_provider()
 }
 
 /// Four different covers, for a tile's collage.

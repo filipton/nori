@@ -41,7 +41,6 @@ pub use nori_model::{alog, heap, lines, model, CoreError};
 pub use nori_automix::beat_model;
 pub use nori_devices::{autoeq, outputs};
 pub use nori_library::{menus, pages, rows, stars};
-pub use nori_lyrics::lyrics::lyrics_from_lrc;
 pub use nori_lyrics::{formats, look, lrclib, lyrics, services};
 pub use nori_net::{api, transport};
 pub use nori_perf::perf_log;

@@ -81,14 +81,14 @@ pub fn song_menu(song: Song, starred: bool, download: SongDownload, player: bool
     } else if let Some(id) = &song.artist_id {
         add(SongAction::GoToArtist { id: id.clone(), name: song.artist.clone(), named: false }, false);
     }
-    if song.is_external {
+    if song.is_provider() {
         add(SongAction::AddToLibrary, false);
     }
     if player {
         add(SongAction::SleepTimer, false);
     }
     add(SongAction::StartRadio, true);
-    if !song.is_external {
+    if !song.is_provider() {
         add(SongAction::InstantMix, true);
         add(SongAction::ExcludeFromMixes, true);
         add(SongAction::Share, true);

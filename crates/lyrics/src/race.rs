@@ -474,14 +474,13 @@ pub async fn lookup(
     memory: &LyricsMemory,
 ) -> Option<String> {
     let none = || LyricsPick { lyrics: Lyrics::default(), origin: LyricsOrigin::Server };
-    let provider = song.is_external || song.id.starts_with("ext-");
     let mut services: Vec<LyricsService> = Vec::new();
     for s in &lookup.services {
         if !services.contains(s) {
             services.push(*s);
         }
     }
-    if services.is_empty() || provider || (server_has_lines && server_synced) {
+    if services.is_empty() || song.is_provider() || (server_has_lines && server_synced) {
         if !server_has_lines {
             shown.show(none());
         }

@@ -132,11 +132,6 @@ fn stamp(tag: &str) -> Option<i64> {
     Some(m.trim().parse::<i64>().ok()? * 60_000 + (secs * 1000.0).round() as i64)
 }
 
-/// LRC or plain lyrics text, from a third-party provider, into the app's lyrics shape.
-pub fn lyrics_from_lrc(text: String) -> Lyrics {
-    from_lrc(&text)
-}
-
 /// Plain LRC text (what LRCLIB, sidecar files and most providers return) in the same shape as the server's
 /// structured lyrics, so the same line and word timing applies. Lines with several timestamps repeat;
 /// `[offset:+n]` is honoured; `[ar:]`-style tags are skipped.

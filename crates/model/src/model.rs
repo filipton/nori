@@ -143,7 +143,17 @@ pub struct Song {
     pub line: String,
 }
 
+/// Whether `id` is an octo-fiesta provider item's: it changes once downloaded, so it is never indexed.
+pub fn is_provider_id(id: &str) -> bool {
+    id.starts_with("ext-") || id.starts_with("pl-")
+}
+
 impl Song {
+    /// A provider's song, not yet in the library.
+    pub fn is_provider(&self) -> bool {
+        self.is_external || is_provider_id(&self.id)
+    }
+
     fn dress(&mut self) {
         self.line = crate::lines::song_line(&self.explicit_status, &self.artist, None);
     }
@@ -200,6 +210,11 @@ pub struct Album {
 }
 
 impl Album {
+    /// A provider's album, not yet in the library.
+    pub fn is_provider(&self) -> bool {
+        self.is_external || is_provider_id(&self.id)
+    }
+
     fn dress(&mut self) {
         self.subtitle = crate::lines::album_subtitle(&self.artist, self.year);
     }

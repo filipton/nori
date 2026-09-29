@@ -365,7 +365,7 @@ pub struct LibraryOffer {
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn library_offer(id: String, is_external: bool) -> Option<LibraryOffer> {
     let playlist = id.starts_with("pl-");
-    if !is_external && !playlist {
+    if !is_external && !nori_model::is_provider_id(&id) {
         return None;
     }
     Some(LibraryOffer { playlist })
@@ -508,7 +508,7 @@ pub struct Starred {
 
 impl Starred {
     pub fn new(artists: Vec<Artist>, albums: Vec<Album>, songs: Vec<Song>) -> Self {
-        let library_songs = songs.iter().filter(|s| !s.is_external).count() as u32;
+        let library_songs = songs.iter().filter(|s| !s.is_provider()).count() as u32;
         Starred { artists, albums, songs, library_songs }
     }
 }

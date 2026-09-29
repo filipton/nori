@@ -72,7 +72,7 @@ pub fn taste(song: &Song, stored: f64, now_ms: i64) -> f64 {
 
 /// False when the listen was not worth recording.
 pub fn record(c: &mut Connection, song: &Song, started_ms: i64, heard_ms: i64, tz_offset_ms: i32, now_ms: i64) -> rusqlite::Result<bool> {
-    if song.id.is_empty() || song.is_external || db::external(&song.id) || heard_ms < MIN_HEARD_MS {
+    if song.id.is_empty() || song.is_provider() || heard_ms < MIN_HEARD_MS {
         return Ok(false);
     }
     // A clock that was wrong at the time must not mint a score that outlives everything else.

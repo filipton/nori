@@ -147,10 +147,9 @@ pub fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
-/// Provider items from octo-fiesta are not library rows: they change id once
-/// downloaded, so they are never indexed.
+/// Provider items are not library rows ([`nori_model::model::is_provider_id`]).
 pub fn external(id: &str) -> bool {
-    id.starts_with("ext-") || id.starts_with("pl-")
+    nori_model::model::is_provider_id(id)
 }
 
 fn upsert<T: Serialize>(c: &Connection, kind: i64, id: &str, text: &str, item: &T) -> rusqlite::Result<bool> {
