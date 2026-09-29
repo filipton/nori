@@ -197,8 +197,8 @@ impl Watch {
     }
 
     /// "silent": playing, position still for `quiet_ms` >= [`SILENT_MS`] with no output open. Reported once
-    /// per stretch, quoting the engine `state` and the stream cache (`disk`).
-    pub fn silent(&mut self, quiet_ms: i64, output_open: bool, song: Option<&str>, state: &str, disk: impl FnOnce() -> String) -> Option<Break> {
+    /// per stretch, quoting the engine `state`; the caller appends the stream cache.
+    pub fn silent(&mut self, quiet_ms: i64, output_open: bool, song: Option<&str>, state: &str) -> Option<Break> {
         if quiet_ms < SILENT_MS || output_open {
             if quiet_ms == 0 {
                 self.silent_said = false;
@@ -212,7 +212,7 @@ impl Watch {
         let song = song.unwrap_or("no song");
         Some(Break::new(
             "silent",
-            format!("playing, but {song} stood still for {quiet_ms} ms with no output open and none of its bytes on their way; the engine: {state}; the stream cache: {}", disk()),
+            format!("playing, but {song} stood still for {quiet_ms} ms with no output open and none of its bytes on their way; the engine: {state}"),
         ))
     }
 
@@ -507,7 +507,7 @@ pub fn engine_seen(l: &EngineLook) {
         s.engine_state.0 = t;
         s.engine_state.1.clear();
         s.engine_state.1.push_str(state);
-        let silent = s.watch.silent(l.quiet_ms, l.output_open, l.id, state, || disk_of(l.id));
+        let silent = s.watch.silent(l.quiet_ms, l.output_open, l.id, state);
         let output = if offloaded {
             let pos = position_ms.max(0) as u64;
             let m = Moving { now_ms, playing, offloaded, song: index, written: pos + in_output_ms.max(0) as u64, presented: pos, rate: 1000 };
@@ -516,6 +516,11 @@ pub fn engine_seen(l: &EngineLook) {
             None
         };
         (silent, output)
+    });
+    // The platform hook calls into Kotlin, so it runs with the state unlocked.
+    let silent = silent.map(|mut b| {
+        b.detail = format!("{}; the stream cache: {}", b.detail, disk_of(l.id));
+        b
     });
     said(t, silent);
     said(t, output);
@@ -728,20 +733,37 @@ mod tests {
     #[test]
     fn silent_reported_once_per_stretch() {
         let mut w = Watch::default();
-        let disk = || "no entry".to_string();
-        assert!(w.silent(SILENT_MS - 1, false, Some("s1"), "Playing", disk).is_none());
-        assert!(w.silent(9_000, true, Some("s1"), "Playing", disk).is_none(), "output open");
-        let b = w.silent(SILENT_MS, false, Some("s1"), "Playing; loaders: no loaders", disk).expect("silent");
+        assert!(w.silent(SILENT_MS - 1, false, Some("s1"), "Playing").is_none());
+        assert!(w.silent(9_000, true, Some("s1"), "Playing").is_none(), "output open");
+        let b = w.silent(SILENT_MS, false, Some("s1"), "Playing; loaders: no loaders").expect("silent");
         assert_eq!(b.kind, "silent");
-        assert!(b.detail.contains("s1 stood still for 5000 ms") && b.detail.ends_with("loaders: no loaders; the stream cache: no entry"), "{}", b.detail);
-        assert!(w.silent(8_000, false, Some("s1"), "Playing", disk).is_none(), "said once");
+        assert!(b.detail.contains("s1 stood still for 5000 ms") && b.detail.ends_with("the engine: Playing; loaders: no loaders"), "{}", b.detail);
+        assert!(w.silent(8_000, false, Some("s1"), "Playing").is_none(), "said once");
         // Moving again resets.
-        assert!(w.silent(0, false, Some("s1"), "Playing", disk).is_none());
-        assert!(w.silent(6_000, false, Some("s2"), "Playing", disk).is_some());
+        assert!(w.silent(0, false, Some("s1"), "Playing").is_none());
+        assert!(w.silent(6_000, false, Some("s2"), "Playing").is_some());
+    }
+
+    /// The tests that go through the global watch state.
+    static GLOBAL: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn disk_hook_runs_outside_state_lock() {
+        let _g = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
+        // The Android hook calls into Kotlin, which may read the watch.
+        describe_disk(|id| format!("{id}: {} breaks", perf_invariant_breaks().len()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            engine_seen(&EngineLook { playing: true, id: Some("hooked"), quiet_ms: SILENT_MS, state: "Playing", ..EngineLook::default() });
+            tx.send(()).unwrap();
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5)).expect("engine_seen deadlocked on its own hook");
+        assert!(perf_invariant_breaks().iter().any(|l| l.contains("hooked stood still") && l.contains("the stream cache: hooked: ")));
     }
 
     #[test]
     fn track_break_quotes_engine_state() {
+        let _g = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
         let state = "Playing; playing on 16 (s16) at 51 ms; reading 16 (s16) at 11000 ms; transition engine passing; loaders: s16: 0..90 of 90 bytes";
         engine_seen(&EngineLook { playing: true, index: Some(16), position_ms: 51, in_output_ms: 100, state, ..EngineLook::default() });
         track_seen(0, true, 4410, 90_000, 44_100);
