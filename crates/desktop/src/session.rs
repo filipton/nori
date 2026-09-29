@@ -1,12 +1,10 @@
-//! Everything the window talks to, as the terminal client's backend.rs has it: the core opened for one
-//! server profile, its client over nori-http, the engine playing through cpal, the store, the downloader,
-//! the measurer, the cover loader and the desktop's media controls. Every call that may wait on the
-//! network runs on a thread of its own and answers with a [`Msg`], handed to the window's event loop.
-//!
-//! This is the terminal's backend with only what this window uses; the words are this client's own.
+//! One opened server profile: core, client, engine (cpal), store, downloader, cover loader and MPRIS.
+//! A trimmed copy of the terminal's backend.rs. Network calls run on their own threads and answer with a
+//! [`Msg`] through [`Tx`].
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
@@ -31,8 +29,9 @@ use nori_look::cover::CoverColours;
 use nori_output_cpal::{CpalOutput, Volume};
 
 use crate::settings::Chore;
+use crate::AppWindow;
 
-/// The core's calls are async over a transport that answers at once: polling them finishes them.
+/// Runs a core future on this thread. The core's transport is blocking, so the future completes as it is polled.
 pub fn block_on<F: Future>(f: F) -> F::Output {
     let mut f = std::pin::pin!(f);
     let mut cx = Context::from_waker(Waker::noop());
@@ -44,8 +43,7 @@ pub fn block_on<F: Future>(f: F) -> F::Output {
     }
 }
 
-/// How large a cover is drawn: a card's, a large one (now playing, a page's), or an artist's picture
-/// across the page's whole width. The large ones are the pages' own, and their colours are worked out too.
+/// Cover draw size. Large and hero covers also get their page colours derived.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CoverSize {
     Card,
@@ -53,40 +51,51 @@ pub enum CoverSize {
     Hero,
 }
 
-/// A cover among the pictures: its id and the size it is drawn at.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CoverKey {
     pub id: String,
     pub size: CoverSize,
 }
 
-/// Everything that wakes the window from another thread.
+/// Messages from other threads to the UI thread.
 pub enum Msg {
     Engine(Event),
     Data(Req, Result<Data, String>),
-    /// A cover by the key it was asked under, decoded, and the page's colours when they were asked for.
+    /// A decoded cover, with page colours for large sizes.
     Cover { key: CoverKey, image: Arc<Image>, colours: Option<Box<CoverColours>> },
     Search(SearchView),
-    /// Lyrics for a song, and where they are from, as the core hands them over (`Client::lyrics_for`).
     Lyrics { song: String, pick: LyricsPick },
-    /// What the settings pages show besides the settings.
     Facts(Box<crate::settings::Facts>),
     Note { text: String, error: bool },
     LoggedIn(Result<SavedServer, String>),
     Reachable(Result<(), String>),
 }
 
-/// Hands a message to the window's thread. Cheap to copy into any worker or the engine's callback.
-#[derive(Clone, Copy)]
-pub struct Tx;
+/// Sends [`Msg`]s to the UI thread: queued in the app's inbox, then the window is woken to drain it.
+#[derive(Clone)]
+pub struct Tx {
+    inbox: mpsc::Sender<Msg>,
+    ui: slint::Weak<AppWindow>,
+}
 
 impl Tx {
+    pub fn new(ui: slint::Weak<AppWindow>) -> (Tx, mpsc::Receiver<Msg>) {
+        let (inbox, rx) = mpsc::channel();
+        (Tx { inbox, ui }, rx)
+    }
+
     pub fn send(&self, m: Msg) {
-        let _ = slint::invoke_from_event_loop(move || crate::app::take(m));
+        if self.inbox.send(m).is_ok() {
+            let _ = self.ui.upgrade_in_event_loop(|ui| ui.invoke_messages_arrived());
+        }
+    }
+
+    fn note(&self, text: impl Into<String>, error: bool) {
+        self.send(Msg::Note { text: text.into(), error });
     }
 }
 
-/// A read a page asked for.
+/// A page read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Req {
     Home,
@@ -110,13 +119,13 @@ pub enum Data {
     Playlist(Box<PlaylistDetail>),
 }
 
-/// The home page's shelves, in order: title and album list kind (the terminal's).
+/// Home shelves: title and album list kind.
 pub const HOME_ROWS: [(&str, &str); 5] =
     [("Recently added", "newest"), ("Recently played", "recent"), ("Most played", "frequent"), ("Favorites", "starred"), ("Something random", "random")];
 
 const ALBUM_PAGE: i32 = 500;
 
-/// Songs a card stands for, still to be read.
+/// A collection whose songs are fetched on demand.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Fetch {
     Album(String),
@@ -125,7 +134,6 @@ pub enum Fetch {
 }
 
 impl Fetch {
-    /// The page these songs are the whole of: played, they are that page's queue.
     pub fn origin(&self) -> PageOrigin {
         match self {
             Fetch::Album(id) => PageOrigin::new(OriginKind::Album, id.as_str()),
@@ -149,18 +157,19 @@ impl ByteSource for Audio {
     }
 }
 
-/// Hands the lyrics to the window as they come.
+/// Forwards each lyrics answer to the UI.
 struct Shown {
     song: String,
+    tx: Tx,
 }
 
 impl LyricsShown for Shown {
     fn show(&self, pick: LyricsPick) {
-        Tx.send(Msg::Lyrics { song: self.song.clone(), pick });
+        self.tx.send(Msg::Lyrics { song: self.song.clone(), pick });
     }
 }
 
-/// The desktop's media controls (MPRIS on Linux) drive the engine and read what plays from it.
+/// MPRIS controls over the engine.
 struct Desktop {
     engine: Arc<Engine>,
 }
@@ -200,8 +209,7 @@ impl nori_mpris::Controls for Desktop {
     }
 }
 
-/// Keeps the queue for next time a moment after it changed (`queue_keep`), on a thread that sleeps
-/// until a save is due.
+/// Saves the queue after a delay (`queue_keep`) on a thread that sleeps until a save is due.
 struct Keeper {
     due: parking_lot::Mutex<(Option<Instant>, bool)>,
     wake: parking_lot::Condvar,
@@ -245,10 +253,10 @@ fn save(core: &Core, engine: &Engine) {
     let _ = core.playlist_save(engine.status().position_now().max(0) as u64);
 }
 
-/// The client's own settings, kept beside the app's in the database.
+/// Desktop-only settings, stored as app values in the database.
 pub mod own {
     pub const VOLUME: &str = "desktop.volume";
-    /// The output device opened at start, by name; none or empty for the system's own.
+    /// Output device name; empty for the system default.
     pub const DEVICE: &str = "desktop.device";
 
     pub fn text(key: &str) -> Option<String> {
@@ -276,7 +284,7 @@ fn net(p: &SavedServer) -> NetProfile {
     NetProfile { url: p.url.clone(), alt_url: p.alt_url.clone(), music_folder_id: p.music_folder_id.clone(), alt_max_bit_rate: p.alt_max_bit_rate.max(0) as u32 }
 }
 
-/// Checks `draft` against its server, as the other clients' logins do. Waits on the network.
+/// Logs `draft` in against its server (blocking).
 pub fn check_login(data: &Path, http: Arc<Http>, draft: SavedServer) -> Result<SavedServer, String> {
     let probe = Core::new(db_path(data), nori_core::settings::server_db_id(&draft.id)).map_err(|e| e.to_string())?;
     let client = Client::new(probe, http);
@@ -284,28 +292,29 @@ pub fn check_login(data: &Path, http: Arc<Http>, draft: SavedServer) -> Result<S
     Ok(SavedServer { legacy_auth: legacy || draft.legacy_auth, ..draft })
 }
 
-/// One server profile opened: the core, its client and the player.
 pub struct Session {
     pub core: Arc<Core>,
     pub client: Arc<Client>,
     pub engine: Arc<Engine>,
     covers: Arc<Loader>,
     store: Arc<Store>,
-    /// The one downloader: a second would fetch the same songs beside it, past "downloads at once".
+    /// Single instance so the "downloads at once" limit holds.
     downloader: Arc<Downloader>,
     pub volume: Volume,
-    /// [`Session::volume`] as dB below full, for loudness compensation.
+    /// [`Session::volume`] in dB, for loudness compensation.
     loudness: Arc<OutputVolume>,
     search: Arc<SearchSession>,
     mpris: Option<nori_mpris::Mpris>,
     keeper: Arc<Keeper>,
-    /// The database file, for its size on the settings pages.
     db: PathBuf,
+    tx: Tx,
+    /// Monotonic clock origin for scrobbling; shared by every session of the process.
+    epoch: Instant,
 }
 
 impl Session {
-    /// Opens the profile: nothing here asks the network, so a server that is down still opens.
-    pub fn open(data: &Path, http: Arc<Http>, profile: SavedServer) -> Result<Session, String> {
+    /// Opens the profile without touching the network, so an unreachable server still opens.
+    pub fn open(data: &Path, http: Arc<Http>, profile: SavedServer, tx: Tx, epoch: Instant) -> Result<Session, String> {
         let db = db_path(data);
         let core = Core::new(db.clone(), nori_core::settings::server_db_id(&profile.id)).map_err(|e| format!("The database: {e}"))?;
         core.configure(config(&profile)).map_err(|e| format!("The server: {e}"))?;
@@ -326,13 +335,13 @@ impl Session {
         let audio = Arc::new(Audio { http: http.clone() });
         let app = CoreApp::new().measuring(Measurer::new(core.clone(), client.clone(), store.clone())).per_device(core.clone()).bridging().volume(loudness.clone());
         let library = CoreLibrary { client: client.clone(), bytes: audio.clone(), metered: false, store: Some(store.clone()) };
-        // The engine's events are handed to the window as they come; nothing polls.
-        let engine = Arc::new(Engine::start(library, app, CoreQueue, output, None, Config { memory_mb: 256, settings: settings(&prefs, loudness.db()), ..Config::default() }, |e| Tx.send(Msg::Engine(e))));
+        let events = tx.clone();
+        let engine = Arc::new(Engine::start(library, app, CoreQueue, output, None, Config { memory_mb: 256, settings: settings(&prefs, loudness.db()), ..Config::default() }, move |e| events.send(Msg::Engine(e))));
         let covers = Arc::new(Loader::new(CoverConfig::new(data.join("covers")), http));
         let mpris = nori_mpris::Mpris::start(&format!("nori.desktop{}", std::process::id()), Arc::new(Desktop { engine: engine.clone() })).ok();
         let keeper = Keeper::start(core.clone(), engine.clone());
         let downloader = Downloader::new(core.clone(), client.clone(), audio.clone(), store.clone());
-        let s = Session { core, client, engine, covers, store, downloader, volume, loudness, search: SearchSession::new(), mpris, keeper, db: PathBuf::from(db) };
+        let s = Session { core, client, engine, covers, store, downloader, volume, loudness, search: SearchSession::new(), mpris, keeper, db: PathBuf::from(db), tx, epoch };
         s.restore();
         if s.core.download_counts().pending > 0 {
             s.downloader.start(prefs.parallel_downloads.max(1) as usize);
@@ -340,28 +349,27 @@ impl Session {
         Ok(s)
     }
 
-    /// The desktop's media controls are told the song or the state changed.
-    pub fn desktop_changed(&self) {
+    pub fn mpris_changed(&self) {
         if let Some(m) = &self.mpris {
             m.changed();
         }
     }
 
-    /// Asks the server whether it is there, and fills the offline index once if it is empty.
+    /// Pings the server, and fills the offline index if it is empty.
     pub fn check(&self) {
-        let (client, core) = (self.client.clone(), self.core.clone());
+        let (client, core, tx) = (self.client.clone(), self.core.clone(), self.tx.clone());
         spawn("nori-check", move || {
             let r = block_on(client.read_now(Read::Ping)).map(|_| ()).map_err(|e| crate::words::net_error(&e));
             let ok = r.is_ok();
-            Tx.send(Msg::Reachable(r));
+            tx.send(Msg::Reachable(r));
             if ok && core.index_size().map_or(true, |s| s.songs == 0) {
-                sync(&client);
+                sync(&client, &tx);
             }
             let _ = block_on(client.flush_pending());
         });
     }
 
-    /// The last queue kept, put back, paused at its place.
+    /// Restores the saved queue, paused at its position.
     fn restore(&self) {
         let Ok(q) = self.core.load_queue() else { return };
         if q.songs.is_empty() {
@@ -388,11 +396,11 @@ impl Session {
         }
     }
 
-    /// A read for a page: what is stored first, the server's answer after it when that differs.
+    /// Reads a page: the cached answer first, then the server's if it differs.
     pub fn load(&self, req: Req) {
-        let (client, core) = (self.client.clone(), self.core.clone());
+        let (client, core, tx) = (self.client.clone(), self.core.clone(), self.tx.clone());
         spawn("nori-read", move || {
-            let send = |r: Result<Data, String>| Tx.send(Msg::Data(req.clone(), r));
+            let send = |r: Result<Data, String>| tx.send(Msg::Data(req.clone(), r));
             match &req {
                 Req::Home => {
                     for (i, (_, kind)) in HOME_ROWS.iter().enumerate() {
@@ -420,31 +428,30 @@ impl Session {
         });
     }
 
-    /// Plays `songs` from `start` (with `shuffle`, wherever shuffle starts). A provider's song
-    /// (octo-fiesta's `ext-`) goes in only when it is the one picked: the server downloads whatever is asked for.
+    /// Plays `songs` from `start`. Provider songs (octo-fiesta `ext-`) are kept only if picked, since the
+    /// server downloads whatever is requested.
     pub fn play(&self, songs: Vec<Song>, start: usize, shuffle: bool, from: Option<PageOrigin>) {
         self.handle().play(songs, start, shuffle, from);
     }
 
-    /// Plays an album, a playlist or an artist whose songs are not loaded yet.
     pub fn play_later(&self, what: Fetch, shuffle: bool) {
         let (client, me) = (self.client.clone(), self.handle());
         let origin = what.origin();
         spawn("nori-play", move || match fetch_songs(&client, what) {
             Ok(songs) if !songs.is_empty() => me.play(songs, 0, shuffle, Some(origin)),
-            Ok(_) => Tx.send(Msg::Note { text: "Nothing to play".into(), error: false }),
-            Err(e) => Tx.send(Msg::Note { text: format!("Could not load the songs: {e}"), error: true }),
+            Ok(_) => me.tx.note("Nothing to play", false),
+            Err(e) => me.tx.note(format!("Could not load the songs: {e}"), true),
         });
     }
 
-    /// Songs added after the current one (`next`) or at the end of the queue, all of them the songs of the
-    /// page `from` when they are (an album added whole stays gapless, as its page's Play does).
+    /// Adds songs after the current one (`next`) or at the end. `from` marks a whole page (keeps an album
+    /// gapless).
     pub fn enqueue(&self, songs: Vec<Song>, next: bool, from: Option<PageOrigin>) {
         self.handle().enqueue(songs, next, from);
     }
 
     fn handle(&self) -> Handle {
-        Handle { engine: self.engine.clone(), keeper: self.keeper.clone() }
+        Handle { engine: self.engine.clone(), keeper: self.keeper.clone(), tx: self.tx.clone() }
     }
 
     pub fn shuffle(&self, on: bool) {
@@ -453,7 +460,7 @@ impl Session {
         self.handle().edited();
     }
 
-    /// Everything after the song playing taken out of the queue, as Clear does it.
+    /// Removes everything after the current song.
     pub fn clear_upcoming(&self) {
         let mut upcoming: Vec<u32> = playlist::with(|p| p.upcoming().map(|i| i as u32).collect());
         upcoming.sort_unstable_by(|a, b| b.cmp(a));
@@ -468,8 +475,7 @@ impl Session {
         self.engine.set_repeat(mode);
     }
 
-    /// This client's volume (0 to 1) moved: loudness compensation follows it, and the chain is set up
-    /// again when that moves the sound.
+    /// Sets the volume (0..1); rebuilds the chain when loudness compensation changes with it.
     pub fn set_volume(&self, v: f32) {
         self.volume.set(v);
         if self.loudness.set(volume_db(v)) {
@@ -479,19 +485,19 @@ impl Session {
         }
     }
 
-    /// The cover `key` names at `px` pixels a side, handed back under `key`; with the page's colours (worked
-    /// out on the loader's worker) when it is a large one.
+    /// Requests a cover at `px` square; large ones also get page colours, derived on the loader thread.
     pub fn cover(&self, key: CoverKey, px: u32) -> Ticket {
         let url = self.core.cover_address(key.id.clone(), px);
         let colours = key.size != CoverSize::Card;
+        let tx = self.tx.clone();
         self.covers.request(&url, px, px, move |r| {
             let Ok(image) = r else { return };
             let colours = colours.then(|| Box::new(derive(&image)));
-            Tx.send(Msg::Cover { key, image, colours });
+            tx.send(Msg::Cover { key, image, colours });
         })
     }
 
-    /// Typed into the search field: the offline index answers at once.
+    /// Searches the offline index at once.
     pub fn search_typed(&self, text: &str) -> SearchView {
         let view = self.search.typed(text.to_string());
         if view.query.is_empty() {
@@ -501,35 +507,33 @@ impl Session {
         self.search.local(self.core.clone(), view.query.clone(), limit).ok().flatten().unwrap_or(view)
     }
 
-    /// Typing paused: the server is asked too.
+    /// Searches the server (after a typing pause).
     pub fn search_server(&self, query: String) {
         if query.trim().is_empty() {
             return;
         }
         let _ = self.core.search_remember_recent(query.clone());
-        let (search, client) = (self.search.clone(), self.client.clone());
+        let (search, client, tx) = (self.search.clone(), self.client.clone(), self.tx.clone());
         spawn("nori-search", move || match block_on(search.ask(client, query.clone())) {
-            Ok(Some(v)) => Tx.send(Msg::Search(v)),
+            Ok(Some(v)) => tx.send(Msg::Search(v)),
             Ok(None) => {}
             Err(e) => {
                 if let Some(v) = search.failed(query, Some(crate::words::net_error(&e))) {
-                    Tx.send(Msg::Search(v));
+                    tx.send(Msg::Search(v));
                 }
             }
         });
     }
 
-    /// Lyrics for `song`, each better answer as it comes: the server's first, then the lyrics services the
-    /// settings switch on, in the core's order (`Client::lyrics_for`).
+    /// Fetches lyrics for `song`; each better answer is sent as it arrives (`Client::lyrics_for`).
     pub fn lyrics(&self, song: String) {
-        let client = self.client.clone();
+        let (client, tx) = (self.client.clone(), self.tx.clone());
         spawn("nori-lyrics", move || {
-            let _ = block_on(client.lyrics_for(song.clone(), Arc::new(Shown { song })));
+            let _ = block_on(client.lyrics_for(song.clone(), Arc::new(Shown { song, tx })));
         });
     }
 
-    /// A setting changed by name, kept by the core, and whatever it changes applied to the engine, as the
-    /// other clients take a change in.
+    /// Sets a setting by name and applies its effect to the engine. None if no such setting.
     pub fn setting(&self, name: &str, value: &str) -> Option<SettingChange> {
         let change = nori_core::settings_model::setting_set(name.to_string(), value.to_string())?;
         self.apply(change.effect, &change.prefs);
@@ -539,22 +543,21 @@ impl Session {
         Some(change)
     }
 
-    /// The effect of an edit made in place (an equalizer band, a level), applied.
+    /// Applies the effect of an in-place edit (an EQ band, a level).
     pub fn applied(&self, effect: u32) {
         if let Some(p) = settings_store::settings_current() {
             self.apply(effect, &p);
         }
     }
 
-    /// The engine trades its deep buffer for an instant response while the equalizer is being moved.
+    /// Shallow engine buffer while the equalizer is being edited, so changes are heard at once.
     pub fn tuning(&self, on: bool) {
         self.engine.set_tuning(on);
     }
 
-    /// What the settings pages show besides the settings, worked out off the window's thread (the server's
-    /// music folders are asked for), and handed back.
+    /// Gathers [`Facts`](crate::settings::Facts) on a worker (asks the server for music folders).
     pub fn facts(&self) {
-        let (core, client, store, covers, db) = (self.core.clone(), self.client.clone(), self.store.clone(), self.covers.clone(), self.db.clone());
+        let (core, client, store, covers, db, tx) = (self.core.clone(), self.client.clone(), self.store.clone(), self.covers.clone(), self.db.clone(), self.tx.clone());
         spawn("nori-facts", move || {
             let index = core.index_size().unwrap_or_default();
             let downloads = core.downloads(true).unwrap_or_default();
@@ -577,7 +580,7 @@ impl Session {
                 device: own::text(own::DEVICE).unwrap_or_default(),
                 syncing: false,
             };
-            Tx.send(Msg::Facts(Box::new(f)));
+            tx.send(Msg::Facts(Box::new(f)));
         });
     }
 
@@ -593,17 +596,16 @@ impl Session {
         }
     }
 
-    /// One of the settings page's buttons.
     pub fn action(&self, chore: Chore) {
         match chore {
             Chore::SyncLibrary => {
-                let client = self.client.clone();
-                spawn("nori-sync", move || sync(&client));
+                let (client, tx) = (self.client.clone(), self.tx.clone());
+                spawn("nori-sync", move || sync(&client, &tx));
             }
             Chore::DownloadLibrary => {
                 match self.core.download_queue_library() {
-                    Ok(q) => Tx.send(Msg::Note { text: format!("Downloading {} songs", q.fresh.len() + q.again.len()), error: false }),
-                    Err(e) => Tx.send(Msg::Note { text: format!("Could not download the library: {e}"), error: true }),
+                    Ok(q) => self.tx.note(format!("Downloading {} songs", q.fresh.len() + q.again.len()), false),
+                    Err(e) => self.tx.note(format!("Could not download the library: {e}"), true),
                 }
                 let n = settings_store::with_prefs(|p| p.parallel_downloads).unwrap_or(2);
                 self.downloader.start(n.max(1) as usize);
@@ -612,30 +614,29 @@ impl Session {
                 let n = self.core.analysis_clear().unwrap_or(0);
                 nori_core::automix::planner::analyses_changed();
                 self.engine.replan();
-                Tx.send(Msg::Note { text: format!("Forgot {n} measured songs"), error: false });
+                self.tx.note(format!("Forgot {n} measured songs"), false);
             }
             Chore::ClearStream => {
                 self.store.clear_cache();
-                Tx.send(Msg::Note { text: "Cleared the streamed music".into(), error: false });
+                self.tx.note("Cleared the streamed music", false);
             }
             Chore::ClearLyrics => {
                 self.core.lyrics_cache_clear();
-                Tx.send(Msg::Note { text: "Cleared the lyrics found online".into(), error: false });
+                self.tx.note("Cleared the lyrics found online", false);
             }
             Chore::ClearCovers => {
                 if let Some(d) = self.covers.disk() {
                     d.clear();
                 }
-                Tx.send(Msg::Note { text: "Cleared the covers".into(), error: false });
+                self.tx.note("Cleared the covers", false);
             }
         }
     }
 
-    /// What the engine said, followed where the core keeps track: plays counted and sent, the queue
-    /// refilled at its end, the offline bridge.
-    pub fn followed(&self, e: &Event) {
+    /// Feeds an engine event to the core: scrobbling, queue refill, the offline bridge.
+    pub fn on_engine_event(&self, e: &Event) {
         use nori_core::scrobble::{scrobble_playing, scrobble_track, TrackChange};
-        let (now, wall) = (monotonic_ms(), nori_core::db::now_ms());
+        let (now, wall) = (self.epoch.elapsed().as_millis() as i64, nori_core::db::now_ms());
         let playing = self.engine.status_with(|s| s.state == State::Playing);
         let tz = (nori_core::library::local_offset_s(wall / 1000) * 1000) as i32;
         let send = match e {
@@ -701,7 +702,7 @@ impl Session {
         }
     }
 
-    /// Songs for the queue's end, as "Keep playing when the queue ends" says.
+    /// Appends autofill songs ("Keep playing when the queue ends").
     fn refill(&self) {
         let (client, me) = (self.client.clone(), self.handle());
         spawn("nori-autofill", move || {
@@ -709,7 +710,6 @@ impl Session {
             if nori_core::autofill::autofill_arrived(fresh.songs.len() as u32) && !fresh.songs.is_empty() {
                 let len = playlist::with(|p| p.len());
                 let n = fresh.songs.len();
-                // An album comes from its page (played as an album), a shuffle's albums from the shuffle.
                 playlist::playlist_take(len as u32, fresh.songs.iter().map(|s| s.id.clone()).collect(), vec![Hand::No; n], fresh.from);
                 me.edited();
             }
@@ -719,7 +719,7 @@ impl Session {
         });
     }
 
-    /// Next, as the button does it: at the queue's end with refilling on, songs are fetched first.
+    /// Next; at the queue's end with autofill on, fetches songs first.
     pub fn next(&self) {
         if playlist::with(|p| p.next().is_some()) {
             self.engine.next();
@@ -734,7 +734,7 @@ impl Session {
         }
     }
 
-    /// Let everything go: the queue kept, the engine stopped, the output closed.
+    /// Saves the queue and stops the engine.
     pub fn close(&self) {
         self.keep(QueueMoment::Closing);
         self.keeper.stop();
@@ -742,11 +742,12 @@ impl Session {
     }
 }
 
-/// What a worker thread may do with the session.
+/// The parts of a session worker threads use.
 #[derive(Clone)]
 struct Handle {
     engine: Arc<Engine>,
     keeper: Arc<Keeper>,
+    tx: Tx,
 }
 
 impl Handle {
@@ -776,7 +777,7 @@ impl Handle {
     }
 
     fn enqueue(&self, songs: Vec<Song>, next: bool, from: Option<PageOrigin>) {
-        // Only the one song picked may be a provider's; a list of them never goes in whole.
+        // A provider song goes in only when picked alone.
         let songs: Vec<Song> = if songs.len() == 1 { songs } else { songs.into_iter().filter(|s| !is_provider(s)).collect() };
         if songs.is_empty() {
             return;
@@ -792,7 +793,7 @@ impl Handle {
             self.engine.go_to(0, 0);
         }
         let words = if next { "Playing next" } else { "Added to the queue" };
-        Tx.send(Msg::Note { text: format!("{words}: {}", crate::words::songs(n)), error: false });
+        self.tx.note(format!("{words}: {}", crate::words::songs(n)), false);
     }
 }
 
@@ -816,7 +817,7 @@ fn fetch_songs(client: &Arc<Client>, what: Fetch) -> Result<Vec<Song>, String> {
     }
 }
 
-/// A provider's item: octo-fiesta downloads it the moment it is asked for.
+/// An octo-fiesta provider item; the server downloads it when requested.
 fn is_provider(s: &Song) -> bool {
     s.is_external || s.id.starts_with("ext-")
 }
@@ -854,8 +855,8 @@ fn report(client: &Arc<Client>, read: Read, send: impl Fn(Result<Data, String>),
 }
 
 /// Fills the offline index from the server, page by page.
-fn sync(client: &Arc<Client>) {
-    Tx.send(Msg::Note { text: "Filling the offline index…".into(), error: false });
+fn sync(client: &Arc<Client>, tx: &Tx) {
+    tx.note("Filling the offline index…", false);
     let mut total = nori_core::IngestStats::default();
     let mut offset = 0;
     let page = nori_core::browse::library_sizes().sync_page;
@@ -869,22 +870,16 @@ fn sync(client: &Arc<Client>) {
                 }
             }
             Err(e) => {
-                Tx.send(Msg::Note { text: format!("The offline index stopped: {e}"), error: true });
+                tx.note(format!("The offline index stopped: {e}"), true);
                 return;
             }
         }
     }
-    Tx.send(Msg::Note { text: format!("Offline index: {} songs", total.songs), error: false });
+    tx.note(format!("Offline index: {} songs", total.songs), false);
 }
 
-fn monotonic_ms() -> i64 {
-    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-    START.get_or_init(Instant::now).elapsed().as_millis() as i64
-}
-
-/// The page's colours from a cover, as Android's `CoverLoader.colours` works them out: the picture's
-/// straight RGBA as ARGB, into `nori_look::cover::derive`, for the dark theme.
+/// Page colours from a cover (dark theme), as Android's `CoverLoader.colours`: RGBA converted to ARGB.
 fn derive(image: &Image) -> CoverColours {
-    let px: Vec<u32> = image.pixels.chunks_exact(4).map(|p| u32::from_be_bytes([p[3], p[0], p[1], p[2]])).collect();
+    let px: Vec<u32> = image.pixels.as_chunks::<4>().0.iter().map(|p| u32::from_be_bytes([p[3], p[0], p[1], p[2]])).collect();
     nori_look::cover::derive(&px, image.width as usize, image.height as usize, true, false)
 }

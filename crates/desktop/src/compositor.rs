@@ -1,11 +1,7 @@
-//! The window, drawn by us: a Slint platform of our own that renders each part of the interface into a texture
-//! of its own (the page, the sidebar's rows, the player's controls, each a Slint window with Skia drawing it
-//! offscreen on our GPU device) and puts them together through our shaders (glass.wgsl). Where the sidebar
-//! and the player are, the page is seen through glass: blurred, tinted, bent at the rim so the rim carries
-//! the colours beside it. The sharp rows and controls go on top. Metal on macOS, Vulkan (or GL) elsewhere.
-//!
-//! The event loop is winit's; the pointer goes to the layer under it (or the one it was pressed in), the keys
-//! to the page. Nothing is drawn unless a layer asked to be (or an animation runs).
+//! A custom Slint platform on winit + wgpu. Each Slint window (page, sidebar, player) is a layer Skia
+//! renders offscreen; glass.wgsl composites them, drawing the sidebar and player as blurred glass over
+//! the page. Pointer events go to the layer under the pointer (or the one pressed in), keys to the page.
+//! Frames are drawn only when a layer is dirty or animating.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -22,16 +18,17 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::keyboard::{Key as WKey, NamedKey};
 use winit::window::{Window as WinitWindow, WindowAttributes, WindowId};
 
-/// The sidebar's width, and the player's size and place (logical pixels), as app.slint lays the page out.
+use crate::menu::MenuBar;
+
+/// Layer geometry in logical pixels; must match app.slint.
 pub const SIDEBAR_W: f32 = 216.0;
 const PLAYER_H: f32 = 54.0;
 const PLAYER_MAX_W: f32 = 720.0;
 const PLAYER_BOTTOM: f32 = 12.0;
 
-/// The one format every layer and the window are drawn in: Skia renders into it on Metal and Vulkan alike.
+/// Format of every layer and the surface; Skia renders it on Metal and Vulkan.
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
-/// What wakes the event loop from another thread.
 enum Wake {
     Call(Box<dyn FnOnce() + Send>),
     Quit,
@@ -44,14 +41,14 @@ struct Gpu {
     queue: wgpu::Queue,
 }
 
-/// One part of the interface: a Slint window drawn into a texture of its own.
+/// A Slint window rendered into its own texture.
 struct Layer {
     window: slint::Window,
     renderer: SkiaWGPU30Renderer,
     size: Cell<PhysicalSize>,
     dirty: Cell<bool>,
     texture: RefCell<Option<(wgpu::Texture, wgpu::TextureView)>>,
-    /// What the platform shares, for the window to ask for a frame; weak, as the layers are kept in it.
+    /// Weak: `Shared` owns the layers.
     shared: Weak<Shared>,
 }
 
@@ -83,31 +80,30 @@ enum Role {
     Player,
 }
 
-/// The layers, in the order Slint made their windows, each with the part it plays once known.
+/// Layers in creation order, each with its role once assigned.
 type Layers = RefCell<Vec<(Rc<Layer>, Cell<Option<Role>>)>>;
 
-/// One blur pass: from, into (which of the two), the step's direction, and the source's size.
-type BlurPass<'a> = (&'a wgpu::TextureView, usize, [f32; 2], (f32, f32));
+/// Ping-pong textures for the blur passes.
+type TexturePair = [(wgpu::Texture, wgpu::TextureView); 2];
 
-/// Everything the platform and the event loop share, on the main thread.
+/// State shared by the platform, the event loop and [`Compositor`] handles (main thread only).
 struct Shared {
     gpu: Rc<Gpu>,
     layers: Layers,
     window: RefCell<Option<Arc<WinitWindow>>>,
     proxy: EventLoopProxy<Wake>,
-    /// Whether the sidebar and the player are shown over the page (not over Now Playing, nor the sign-in page).
     sidebar_shown: Cell<bool>,
     player_shown: Cell<bool>,
-    /// The panel docked on the right (logical pixels, 0 when shut): the player centres over what is left.
+    /// Width of the right panel (0 when closed); the player centres in the remaining page.
     right: Cell<f32>,
-    /// Where the page wants a focus (Now Playing's lyrics), asked each frame.
+    /// Queried each frame for the lyrics focus blur.
     focus: RefCell<Option<FocusSource>>,
+    menu: MenuBar,
 }
 
-/// What says, each frame, where the page wants its focus.
 type FocusSource = Box<dyn Fn() -> Option<Focus>>;
 
-/// A part of the page drawn soft but for a sharp band (logical pixels): Now Playing's lyrics.
+/// A page region drawn blurred except for a sharp horizontal band (logical pixels).
 #[derive(Clone, Copy)]
 pub struct Focus {
     pub region: [f32; 4],
@@ -115,19 +111,12 @@ pub struct Focus {
     pub band_h: f32,
 }
 
-thread_local! {
-    /// The same as the platform's, for the functions below the app calls from its callbacks, which have
-    /// no way to the platform once Slint holds it.
-    static SHARED: RefCell<Option<Rc<Shared>>> = const { RefCell::new(None) };
-}
-
-fn shared() -> Option<Rc<Shared>> {
-    SHARED.with(|s| s.borrow().clone())
-}
+/// The app's handle to the compositor, alongside the platform Slint owns.
+#[derive(Clone)]
+pub struct Compositor(Rc<Shared>);
 
 struct Platform {
     shared: Rc<Shared>,
-    /// The event loop, until Slint runs it.
     event_loop: RefCell<Option<EventLoop<Wake>>>,
 }
 
@@ -185,8 +174,8 @@ impl slint::platform::EventLoopProxy for Proxy {
     }
 }
 
-/// Makes this the platform Slint draws with: before any window is created.
-pub fn install() -> Result<(), String> {
+/// Installs the platform. Must run before any Slint window is created.
+pub fn install() -> Result<Compositor, String> {
     let event_loop = EventLoop::<Wake>::with_user_event().build().map_err(|e| format!("the event loop: {e}"))?;
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::LowPower, ..Default::default() }))
@@ -201,68 +190,70 @@ pub fn install() -> Result<(), String> {
         player_shown: Cell::new(false),
         right: Cell::new(0.0),
         focus: RefCell::new(None),
+        menu: MenuBar::default(),
     });
-    SHARED.with(|s| *s.borrow_mut() = Some(shared.clone()));
-    slint::platform::set_platform(Box::new(Platform { shared, event_loop: RefCell::new(Some(event_loop)) })).map_err(|e| format!("the platform: {e}"))
+    slint::platform::set_platform(Box::new(Platform { shared: shared.clone(), event_loop: RefCell::new(Some(event_loop)) })).map_err(|e| format!("the platform: {e}"))?;
+    Ok(Compositor(shared))
 }
 
-/// Which Slint window is which part: the page (the main window), and the sidebar's and the player's.
-pub fn roles(page: &slint::Window, sidebar: Option<&slint::Window>, player: Option<&slint::Window>) {
-    let Some(s) = shared() else { return };
-    for (layer, role) in s.layers.borrow().iter() {
-        let w = &layer.window as *const slint::Window;
-        if std::ptr::eq(w, page) {
-            role.set(Some(Role::Page));
-        } else if sidebar.is_some_and(|x| std::ptr::eq(w, x)) {
-            role.set(Some(Role::Sidebar));
-        } else if player.is_some_and(|x| std::ptr::eq(w, x)) {
-            role.set(Some(Role::Player));
+impl Compositor {
+    /// Assigns each Slint window its layer role.
+    pub fn roles(&self, page: &slint::Window, sidebar: Option<&slint::Window>, player: Option<&slint::Window>) {
+        let s = &self.0;
+        for (layer, role) in s.layers.borrow().iter() {
+            let w = &layer.window as *const slint::Window;
+            if std::ptr::eq(w, page) {
+                role.set(Some(Role::Page));
+            } else if sidebar.is_some_and(|x| std::ptr::eq(w, x)) {
+                role.set(Some(Role::Sidebar));
+            } else if player.is_some_and(|x| std::ptr::eq(w, x)) {
+                role.set(Some(Role::Player));
+            }
+        }
+        s.sidebar_shown.set(sidebar.is_some());
+        s.player_shown.set(player.is_some());
+        relayout(s);
+    }
+
+    pub fn set_focus_source(&self, f: impl Fn() -> Option<Focus> + 'static) {
+        *self.0.focus.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn set_right_panel(&self, w: f32) {
+        if self.0.right.get() != w {
+            self.0.right.set(w);
+            relayout(&self.0);
         }
     }
-    s.sidebar_shown.set(sidebar.is_some());
-    s.player_shown.set(player.is_some());
-    relayout(&s);
-}
 
-/// What asks, each frame, where the page wants its focus blur.
-pub fn set_focus_source(f: impl Fn() -> Option<Focus> + 'static) {
-    if let Some(s) = shared() {
-        *s.focus.borrow_mut() = Some(Box::new(f));
+    /// Shows or hides the sidebar and player layers over the page.
+    pub fn show_glass(&self, sidebar: bool, player: bool) {
+        let s = &self.0;
+        let has = |r| s.layers.borrow().iter().any(|(_, x)| x.get() == Some(r));
+        let (sidebar, player) = (sidebar && has(Role::Sidebar), player && has(Role::Player));
+        if s.sidebar_shown.get() != sidebar || s.player_shown.get() != player {
+            s.sidebar_shown.set(sidebar);
+            s.player_shown.set(player);
+            redraw(s);
+        }
     }
-}
 
-/// The panel docked on the right: the player centres over the page beside it.
-pub fn set_right(w: f32) {
-    let Some(s) = shared() else { return };
-    if s.right.get() != w {
-        s.right.set(w);
-        relayout(&s);
+    /// Starts a window drag, as from a titlebar.
+    pub fn drag_window(&self) {
+        if let Some(w) = self.0.window.borrow().as_ref() {
+            let _ = w.drag_window();
+        }
     }
-}
 
-/// Whether the sidebar and the player show over the page.
-pub fn show_glass(sidebar: bool, player: bool) {
-    let Some(s) = shared() else { return };
-    let has = |r| s.layers.borrow().iter().any(|(_, x)| x.get() == Some(r));
-    let (sidebar, player) = (sidebar && has(Role::Sidebar), player && has(Role::Player));
-    if s.sidebar_shown.get() != sidebar || s.player_shown.get() != player {
-        s.sidebar_shown.set(sidebar);
-        s.player_shown.set(player);
-        redraw(&s);
+    /// Toggles maximized, as a titlebar double click does.
+    pub fn zoom_window(&self) {
+        if let Some(w) = self.0.window.borrow().as_ref() {
+            w.set_maximized(!w.is_maximized());
+        }
     }
-}
 
-/// The window follows the pointer, as a titlebar does (the content runs up under it).
-pub fn drag_window() {
-    if let Some(w) = shared().and_then(|s| s.window.borrow().clone()) {
-        let _ = w.drag_window();
-    }
-}
-
-/// A double click on the titlebar: the window zooms, or comes back.
-pub fn zoom_window() {
-    if let Some(w) = shared().and_then(|s| s.window.borrow().clone()) {
-        w.set_maximized(!w.is_maximized());
+    pub fn menu(&self) -> &MenuBar {
+        &self.0.menu
     }
 }
 
@@ -272,7 +263,7 @@ fn redraw(s: &Shared) {
     }
 }
 
-/// A layer's place in the window, logical pixels.
+/// A layer's rect in the window, logical pixels.
 fn place(s: &Shared, role: Role, window: LogicalSize) -> (LogicalPosition, LogicalSize) {
     match role {
         Role::Page => (LogicalPosition::new(0.0, 0.0), window),
@@ -285,7 +276,7 @@ fn place(s: &Shared, role: Role, window: LogicalSize) -> (LogicalPosition, Logic
     }
 }
 
-/// Every layer sized for the window as it is now.
+/// Resizes every layer to the current window size.
 fn relayout(s: &Shared) {
     let Some(win) = s.window.borrow().clone() else { return };
     let scale = win.scale_factor() as f32;
@@ -311,8 +302,7 @@ struct Runner {
     shared: Rc<Shared>,
     draw: Option<Draw>,
     pointer: LogicalPosition,
-    /// The layer the pointer is over, and the one a button was pressed in (it keeps the pointer until the
-    /// button is let go).
+    /// Layer under the pointer, and the layer a button was pressed in (captures until release).
     over: Option<Role>,
     held: Option<Role>,
     modifiers: winit::keyboard::ModifiersState,
@@ -330,7 +320,6 @@ impl Runner {
         Some(LogicalSize::new(p.width as f32 / scale, p.height as f32 / scale))
     }
 
-    /// The layer under `at`: the player, the sidebar or the page.
     fn under(&self, at: LogicalPosition) -> Role {
         let Some(win) = self.logical_window() else { return Role::Page };
         for role in [Role::Player, Role::Sidebar] {
@@ -384,8 +373,8 @@ impl Runner {
     }
 }
 
-/// What Slint calls a key, from what winit says was pressed. On macOS, Command is Slint's Control (its
-/// shortcuts are written with Control), and Control its Meta, as Slint's own macOS backend has them.
+/// Maps a winit key to Slint's key text. On macOS, Command maps to Control and Control to Meta, as in
+/// Slint's own macOS backend.
 fn key_text(event: &winit::event::KeyEvent) -> Option<SharedString> {
     let mac = cfg!(target_os = "macos");
     let named = |k: Key| Some(SharedString::from(k));
@@ -447,7 +436,7 @@ impl ApplicationHandler<Wake> for Runner {
         unified_toolbar(&window);
         *self.shared.window.borrow_mut() = Some(window);
         relayout(&self.shared);
-        crate::menu::install();
+        self.shared.menu.install();
     }
 
     fn user_event(&mut self, el: &ActiveEventLoop, event: Wake) {
@@ -531,7 +520,7 @@ impl ApplicationHandler<Wake> for Runner {
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         slint::platform::update_timers_and_animations();
-        crate::menu::poll();
+        self.shared.menu.poll();
         if self.animating() {
             redraw(&self.shared);
         }
@@ -542,7 +531,6 @@ impl ApplicationHandler<Wake> for Runner {
     }
 }
 
-/// The GPU side of the window: the surface, the pipelines, and the textures the glass looks through.
 struct Draw {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
@@ -553,11 +541,11 @@ struct Draw {
     focus: wgpu::RenderPipeline,
     bind: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    /// The page a quarter size, blurred: two textures the blur passes go back and forth between.
-    blurred: Option<[(wgpu::Texture, wgpu::TextureView); 2]>,
-    /// The page a sixteenth size, blurred much further: the soft light the glass takes from beside it.
-    glow: Option<[(wgpu::Texture, wgpu::TextureView); 2]>,
-    /// The window changed size: the surface is set up again before the next frame.
+    /// Quarter-size blurred page (ping-pong pair).
+    blurred: Option<TexturePair>,
+    /// Sixteenth-size, heavily blurred page: ambient light for the glass rim.
+    glow: Option<TexturePair>,
+    /// Surface must be reconfigured before the next frame.
     stale: bool,
 }
 
@@ -648,13 +636,11 @@ impl Draw {
         self.stale = true;
     }
 
-    /// Draws the layers that asked to be, then the window: the page, the glass where the sidebar and the
-    /// player are, and them on top.
+    /// Renders dirty layers, then composites page, glass and the sidebar/player on top.
     fn frame(&mut self, s: &Shared, win: LogicalSize) {
         let gpu = s.gpu.clone();
         let d = &gpu.device;
         let scale = s.window.borrow().as_ref().map_or(1.0, |w| w.scale_factor() as f32);
-        // Each layer drawn into its texture, only when it changed.
         for (layer, role) in s.layers.borrow().iter() {
             if role.get().is_none() {
                 continue;
@@ -667,8 +653,7 @@ impl Draw {
                 *layer.texture.borrow_mut() = Some((t, v));
             }
             if fresh || layer.dirty.get() {
-                // A new texture is drawn again on the next frame too: the first drawing into it can come out
-                // empty (the layer's first frame at a new size), and nothing else would ask for another.
+                // A fresh texture is rendered again next frame: the first render at a new size can come out empty.
                 layer.dirty.set(fresh);
                 if let Some((t, _)) = layer.texture.borrow().as_ref() {
                     if let Err(e) = layer.renderer.render_to_texture(t) {
@@ -692,52 +677,18 @@ impl Draw {
         let find = |r: Role| layers.iter().find(|(_, x)| x.get() == Some(r)).and_then(|(l, _)| l.texture.borrow().as_ref().map(|(_, v)| v.clone()));
         let Some(page) = find(Role::Page) else { return };
         let (w, h) = (self.config.width as f32, self.config.height as f32);
-        // The page, a quarter size and blurred, for the glass to look through.
         let (bw, bh) = ((self.config.width / 4).max(1), (self.config.height / 4).max(1));
-        if self.blurred.as_ref().is_none_or(|b| b[0].0.width() != bw || b[0].0.height() != bh) {
-            let mk = || {
-                let t = texture(d, bw, bh, "blur");
-                let v = t.create_view(&Default::default());
-                (t, v)
-            };
-            self.blurred = Some([mk(), mk()]);
-        }
-        let (gw, gh) = ((self.config.width / 16).max(1), (self.config.height / 16).max(1));
-        if self.glow.as_ref().is_none_or(|b| b[0].0.width() != gw || b[0].0.height() != gh) {
-            let mk = || {
-                let t = texture(d, gw, gh, "glow");
-                let v = t.create_view(&Default::default());
-                (t, v)
-            };
-            self.glow = Some([mk(), mk()]);
-        }
+        ensure_pair(&mut self.blurred, d, bw, bh, "blur");
+        ensure_pair(&mut self.glow, d, (self.config.width / 16).max(1), (self.config.height / 16).max(1), "glow");
         let mut enc = d.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
         let focus = s.focus.borrow().as_ref().and_then(|f| f());
         let glass_needed = s.sidebar_shown.get() || s.player_shown.get() || focus.is_some();
-        if glass_needed {
-            let b = self.blurred.as_ref().expect("made above");
-            let (bwf, bhf) = (bw as f32, bh as f32);
-            let passes: [BlurPass; 4] =
-                [(&page, 0, [1.5, 0.0], (w, h)), (&b[0].1, 1, [0.0, 1.5], (bwf, bhf)), (&b[1].1, 0, [2.5, 0.0], (bwf, bhf)), (&b[0].1, 1, [0.0, 2.5], (bwf, bhf))];
-            for (src, dst, dir, src_size) in passes {
-                let u = uniforms([0.0, 0.0, bwf, bhf], [bwf, bhf, src_size.0, src_size.1], [0.0; 4], [0.0; 4], [0.0, 0.0, dir[0], dir[1]]);
-                let group = self.group(d, &gpu.queue, &u, src, src, src);
-                pass(&mut enc, &b[dst].1, &self.blur, &group, false);
-            }
-            // And from it, the glow: a sixteenth of the page, blurred until no edge is left in it.
-            let gl = self.glow.as_ref().expect("made above");
-            let (gwf, ghf) = (gw as f32, gh as f32);
-            let passes: [BlurPass; 4] =
-                [(&b[1].1, 0, [2.0, 0.0], (bwf, bhf)), (&gl[0].1, 1, [0.0, 2.0], (gwf, ghf)), (&gl[1].1, 0, [3.0, 0.0], (gwf, ghf)), (&gl[0].1, 1, [0.0, 3.0], (gwf, ghf))];
-            for (src, dst, dir, src_size) in passes {
-                let u = uniforms([0.0, 0.0, gwf, ghf], [gwf, ghf, src_size.0, src_size.1], [0.0; 4], [0.0; 4], [0.0, 0.0, dir[0], dir[1]]);
-                let group = self.group(d, &gpu.queue, &u, src, src, src);
-                pass(&mut enc, &gl[dst].1, &self.blur, &group, false);
-            }
+        if let (true, Some(b), Some(gl)) = (glass_needed, &self.blurred, &self.glow) {
+            self.blur(d, &gpu.queue, &mut enc, &page, (w, h), b, [1.5, 2.5]);
+            self.blur(d, &gpu.queue, &mut enc, &b[1].1, (bw as f32, bh as f32), gl, [2.0, 3.0]);
         }
         let blurred = self.blurred.as_ref().map(|b| b[1].1.clone()).unwrap_or_else(|| page.clone());
         let glow = self.glow.as_ref().map(|b| b[1].1.clone()).unwrap_or_else(|| page.clone());
-        // The window: the page, then glass and what sits on it.
         let full = uniforms([0.0, 0.0, w, h], [w, h, w, h], [0.0; 4], [0.0; 4], [0.0; 4]);
         let g = self.group(d, &gpu.queue, &full, &page, &page, &page);
         pass(&mut enc, &target, &self.copy, &g, true);
@@ -759,22 +710,34 @@ impl Draw {
             pass(&mut enc, &target, &self.over, &g, false);
         };
         if s.sidebar_shown.get() {
-            // The pane runs past the window's other edges, so only its right edge (by the page) is a rim.
-            // Far past them: the right edge is the nearest everywhere in the pane, so all of it looks to the page.
+            // Extended far past the window so only the right edge acts as a rim.
             let r = [-8000.0 * scale, -8000.0 * scale, (SIDEBAR_W + 8000.0) * scale, h + 16000.0 * scale];
-            // Light from as far as 180 points beside it, faint, and gone within a few dozen points of the edge.
             glass(Role::Sidebar, [0.0, 28.0 * scale, 8.0 * scale, 0.04], [0.1, 0.095, 0.09, 0.18], [0.06, 0.04, 0.34, 45.0 * scale], [180.0 * scale, 1.0, 0.0, 0.0], r);
         }
         if s.player_shown.get() {
             let (o, sz) = place(s, Role::Player, win);
             let r = [o.x * scale, o.y * scale, sz.width * scale, sz.height * scale];
-            // Nearly invisible, as Music's is: the page lightly blurred and hardly veiled, keeping its colours,
-            // none washed in from beside it, a gentle bend and a thin rim.
+            // Near-clear glass: light blur, faint tint, thin rim.
             glass(Role::Player, [PLAYER_H * 0.5 * scale, 14.0 * scale, 6.0 * scale, 0.05], [0.14, 0.14, 0.145, 0.06], [0.12, 0.0, 0.0, 1.0], [0.0, 1.0, 0.35, 0.0], r);
         }
         drop(layers);
         gpu.queue.submit([enc.finish()]);
         gpu.queue.present(frame);
+    }
+
+    /// Two separable blur rounds (horizontal then vertical, at `steps[0]` then `steps[1]`) from `src`
+    /// into `t[1]`, ping-ponging through `t`.
+    #[allow(clippy::too_many_arguments)]
+    fn blur(&self, d: &wgpu::Device, q: &wgpu::Queue, enc: &mut wgpu::CommandEncoder, src: &wgpu::TextureView, src_size: (f32, f32), t: &TexturePair, steps: [f32; 2]) {
+        let (tw, th) = (t[0].0.width() as f32, t[0].0.height() as f32);
+        for k in 0..4 {
+            let (from, size) = if k == 0 { (src, src_size) } else { (&t[(k + 1) % 2].1, (tw, th)) };
+            let step = steps[k / 2];
+            let dir = if k % 2 == 0 { [step, 0.0] } else { [0.0, step] };
+            let u = uniforms([0.0, 0.0, tw, th], [tw, th, size.0, size.1], [0.0; 4], [0.0; 4], [0.0, 0.0, dir[0], dir[1]]);
+            let group = self.group(d, q, &u, from, from, from);
+            pass(enc, &t[k % 2].1, &self.blur, &group, false);
+        }
     }
 
     fn group(&self, d: &wgpu::Device, q: &wgpu::Queue, u: &[u8], a: &wgpu::TextureView, b: &wgpu::TextureView, c: &wgpu::TextureView) -> wgpu::BindGroup {
@@ -791,6 +754,17 @@ impl Draw {
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(c) },
             ],
         })
+    }
+}
+
+/// (Re)creates `slot` when missing or not `w` x `h`.
+fn ensure_pair(slot: &mut Option<TexturePair>, d: &wgpu::Device, w: u32, h: u32, label: &str) {
+    if slot.as_ref().is_none_or(|p| p[0].0.width() != w || p[0].0.height() != h) {
+        *slot = Some(std::array::from_fn(|_| {
+            let t = texture(d, w, h, label);
+            let v = t.create_view(&Default::default());
+            (t, v)
+        }));
     }
 }
 
@@ -826,7 +800,7 @@ fn pass(enc: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, pipeline: &w
     p.draw(0..4, 0..1);
 }
 
-/// The shaders' uniforms, as glass.wgsl lays them out (six vec4s); `gather` only for the glass.
+/// Uniforms as glass.wgsl lays them out (six vec4s); `gather` is used only by the glass pass.
 fn uniforms(rect: [f32; 4], view: [f32; 4], shape: [f32; 4], tint: [f32; 4], light: [f32; 4]) -> Vec<u8> {
     uniforms_gather(rect, view, shape, tint, light, [0.0; 4])
 }
@@ -835,8 +809,7 @@ fn uniforms_gather(rect: [f32; 4], view: [f32; 4], shape: [f32; 4], tint: [f32; 
     [rect, view, shape, tint, light, gather].iter().flatten().flat_map(|f| f.to_ne_bytes()).collect()
 }
 
-/// An empty toolbar in the unified style: the window's titlebar grows to a toolbar's height, and the traffic
-/// lights come down to its middle, level with the page's own toolbar (Music's window has them there).
+/// Adds an empty unified toolbar so the traffic lights sit lower, level with the page's toolbar.
 #[cfg(target_os = "macos")]
 fn unified_toolbar(window: &WinitWindow) {
     use objc2::MainThreadMarker;
@@ -845,7 +818,7 @@ fn unified_toolbar(window: &WinitWindow) {
     let Some(mtm) = MainThreadMarker::new() else { return };
     let Ok(handle) = window.window_handle() else { return };
     let RawWindowHandle::AppKit(h) = handle.as_raw() else { return };
-    // SAFETY: winit's AppKit handle is the window's content view, alive while the window is.
+    // SAFETY: winit's AppKit handle is the content view, alive as long as the window.
     let view: &NSView = unsafe { h.ns_view.cast().as_ref() };
     let Some(ns) = view.window() else { return };
     let toolbar = NSToolbar::new(mtm);

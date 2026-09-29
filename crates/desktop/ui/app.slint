@@ -2278,6 +2278,8 @@ export component AppWindow inherits Window {
     callback setting-action(string);
     callback drag-window();
     callback zoom-window();
+    // Worker messages are waiting in the app's inbox.
+    callback messages-arrived();
 
     function clock(ms: int) -> string {
         let s = floor(max(0, ms) / 1000);
