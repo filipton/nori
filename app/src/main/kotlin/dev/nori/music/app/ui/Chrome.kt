@@ -187,12 +187,12 @@ private fun SearchCircle(search: Tab, selected: Boolean, slab: Color, content: C
  * places under the finger: only the glyphs turn upright ([LocalTabTurn]). [atLeft]: the phone turned the
  * other way round, which leaves that edge on the left and the tabs in the other order. The pill is shortened
  * only by what the status bar takes from the end it reaches. It slides off its edge as the player opens,
- * as the bar slides down. [onWidth]: how much of that edge it takes, which the page leaves to it.
+ * as the bar slides down. How much of that edge it takes is [tabRailWidth], which the page leaves to it.
  */
 @Composable
 fun TabRail(
     route: String?, tabs: List<Tab>, onTab: (String) -> Unit, look: Look, player: PlayerViewModel,
-    atLeft: Boolean, onWidth: (androidx.compose.ui.unit.Dp) -> Unit,
+    atLeft: Boolean,
 ) {
     val slab = look.color(CoverLook.CHROME_SLAB)
     val content = look.color(CoverLook.CHROME_CONTENT)
@@ -219,7 +219,6 @@ fun TabRail(
             Modifier.fillMaxHeight()
                 .onGloballyPositioned {
                     reach = if (atLeft) it.boundsInRoot().right else it.findRootCoordinates().size.width - it.boundsInRoot().left
-                    onWidth(with(density) { reach.toDp() })
                 }
                 .graphicsLayer {
                     val t = (sheet.progress.value / 0.7f).coerceIn(0f, 1f)
@@ -241,6 +240,17 @@ fun TabRail(
             if (atLeft && search != null) SearchCircle(search, route == search.route, slab, content, edge, accent) { onTab(search.route) }
         }
     }
+}
+
+/**
+ * How much of the screen's edge the rail takes (it stands against the edge): its thickness and its two margins,
+ * one of them the gesture bar's height. Known before anything is laid out, so the page leaves the rail its strip
+ * - and the shelves fade under it - from the very first frame, rather than one frame after the rail was measured.
+ */
+@Composable
+fun tabRailWidth(): androidx.compose.ui.unit.Dp {
+    val d = androidx.compose.ui.platform.LocalDensity.current
+    return BAR_THICK + 4.dp + BAR_OFF + with(d) { androidx.compose.foundation.layout.WindowInsets.navigationBars.getBottom(this).toDp() }
 }
 
 /** The tab bar's measures, shared by the bar and the rail so a turn changes neither. */

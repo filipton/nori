@@ -295,7 +295,6 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             // the left edge is kept clear of the camera's punch hole.
             val config = androidx.compose.ui.platform.LocalConfiguration.current
             val wide = isWide(config.screenWidthDp, config.screenHeightDp)
-            var railWidth by remember { mutableStateOf(0.dp) }
             // The status bar put away where the setting says (the core's `status_bar_hidden`) - on its side out of
             // the box, where the screen is short and the page runs to the top edge. A swipe from the edge brings it
             // back for a moment, as in any full screen app.
@@ -323,7 +322,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             val view = androidx.compose.ui.platform.LocalView.current
             val rotation = remember(config) { view.display?.rotation ?: android.view.Surface.ROTATION_0 }
             val railLeft = wide && rotation == android.view.Surface.ROTATION_270
-            val railInset = if (wide) railWidth else 0.dp
+            val railInset = if (wide) tabRailWidth() else 0.dp
             val cutout = androidx.compose.foundation.layout.WindowInsets.displayCutout.asPaddingValues()
             val cutoutStart = if (wide && !railLeft) cutout.calculateStartPadding(androidx.compose.ui.unit.LayoutDirection.Ltr) else 0.dp
             val cutoutEnd = if (wide && railLeft) cutout.calculateEndPadding(androidx.compose.ui.unit.LayoutDirection.Ltr) else 0.dp
@@ -421,7 +420,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
               // The tab bar is over the player, not under it: as the player rises it slides down off the
               // screen instead of vanishing under the sheet in one frame. See BottomChrome.
               if (wide) Box(Modifier.align(if (railLeft) Alignment.CenterStart else Alignment.CenterEnd).fillMaxHeight()) {
-                  TabRail(tabRoute, tabs, nav::tab, chromeLook, player, railLeft) { railWidth = it }
+                  TabRail(tabRoute, tabs, nav::tab, chromeLook, player, railLeft)
               }
               else Box(Modifier.align(Alignment.BottomCenter)) { TabBar(tabRoute, tabs, nav::tab, chromeLook, player) { tabsHeight = it } }
               }
