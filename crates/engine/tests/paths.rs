@@ -2940,7 +2940,7 @@ fn cpu_sleeps_while_offloaded() {
     assert!((secs as u64 * 1000..=secs as u64 * 1000 + 50).contains(&b), "b said at {b} ms of the chip's music");
     // Also as events, for platform wake locks.
     let said: Vec<bool> = rig.events.lock().iter().filter_map(|e| if let Event::Awake(a) = e { Some(*a) } else { None }).collect();
-    assert!(said.len() >= 4 && said.windows(2).all(|w| w[0] != w[1]) && said[0] == false, "{said:?}");
+    assert!(said.len() >= 4 && said.windows(2).all(|w| w[0] != w[1]) && !said[0], "{said:?}");
     rig.engine.stop();
 }
 

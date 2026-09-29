@@ -295,10 +295,10 @@ impl Drop for Rig {
 
 /// Tagging beyond the defaults (as an imperfect library does), and how songs were queued.
 struct Tags {
-    tag: fn(&mut Vec<Song>),
+    tag: fn(&mut [Song]),
     queued: Queued,
     /// Re-registers the songs with these tags.
-    again: Option<fn(&mut Vec<Song>)>,
+    again: Option<fn(&mut [Song])>,
     /// Songs fade out over their last four seconds.
     quiet_ends: bool,
 }
@@ -479,25 +479,25 @@ fn a_shuffled_album_is_mixed() {
 /// An album with gaps or odd numbering in its tags still plays gapless in queue order. Regression: read
 /// as out of order, each song was mixed into the next.
 fn an_album_tagged_without_some_numbers_plays_every_sample() {
-    fn no_tracks(v: &mut Vec<Song>) {
+    fn no_tracks(v: &mut [Song]) {
         for s in v.iter_mut() {
             s.track = 0;
         }
     }
-    fn one_track_missing(v: &mut Vec<Song>) {
+    fn one_track_missing(v: &mut [Song]) {
         v[1].track = 0;
     }
-    fn one_disc_missing(v: &mut Vec<Song>) {
+    fn one_disc_missing(v: &mut [Song]) {
         v[1].disc_number = 0;
     }
-    fn numbered_on(v: &mut Vec<Song>) {
+    fn numbered_on(v: &mut [Song]) {
         v[2].disc_number = 2;
     }
-    fn gap(v: &mut Vec<Song>) {
+    fn gap(v: &mut [Song]) {
         v[2].track = 4;
     }
     // Navidrome lists a track without a disc number first.
-    fn listed_first(v: &mut Vec<Song>) {
+    fn listed_first(v: &mut [Song]) {
         (v[0].track, v[0].disc_number, v[1].track, v[2].track) = (2, 0, 1, 3);
     }
     let stories: [(&str, Tags); 7] = [

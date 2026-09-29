@@ -806,7 +806,7 @@ fn replay_gain_boost_uses_floats_and_limiter() {
 
 /// 24-bit music: 16-bit music with its own low byte.
 fn music24(secs: f64, seed: u64) -> Vec<i32> {
-    music(secs, seed).iter().enumerate().map(|(i, v)| ((*v as i32) << 8) | (i as i32 * 37 & 0xFF)).collect()
+    music(secs, seed).iter().enumerate().map(|(i, v)| ((*v as i32) << 8) | ((i as i32 * 37) & 0xFF)).collect()
 }
 
 fn loud_eq() -> Settings {
@@ -1874,7 +1874,7 @@ fn planned(live: &Live) -> Option<i64> {
 fn next_before_the_end(prefs: TransitionPrefs, measured_songs: bool, name: &str) {
     let songs = many(3, 40.0, 420);
     for lead in [500i64, 300, 100] {
-        let live = Live::new(prefs.clone());
+        let live = Live::new(prefs);
         if measured_songs {
             let mut app = live.0.lock();
             for (id, _) in &songs {
