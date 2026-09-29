@@ -287,6 +287,21 @@ Where the text lives (nori-words was removed 2026-09-25):
 Prefer fewer boundary crossings: the client should not call into Rust just to get a string or a
 label.
 
+## Writing code
+
+- Comments are short and factual: what a thing is, or why a non-obvious choice was made. No history, no
+  restating the code, no describing what the code doesn't do. Prefer a clear name over a comment.
+- Names are plain and descriptive; test names are short and state the behaviour.
+- "None" or "special" is an `Option` or an enum, not a magic value; kinds are enums, not strings or codes.
+- State lives in the struct that owns it and is passed in. A global holding state only where nothing can
+  carry a handle, with a one-line reason.
+- Fix the cause of a bug, not its symptom: no flags steering other code, no retry loops or sleeps, no
+  safeguards for states that shouldn't arise.
+- Entries and streams are identified by index or sequence, not by content ids.
+- No abstraction with one implementation or caller, no dead code, no unused `pub`, no copied blocks.
+- Every test can fail on a real bug; near-duplicate tests are one table test.
+- Prefer the change that removes code while keeping the behaviour.
+
 ## Build and test
 
 ```sh
