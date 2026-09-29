@@ -158,14 +158,6 @@ fn colour(argb: u32) -> Color {
     Color::from_argb_encoded(argb)
 }
 
-/// State and song from engine events, ahead of the engine status (written at the end of the same wake).
-#[derive(Default)]
-struct Said {
-    state: Option<State>,
-    song: Option<String>,
-    tries: u32,
-}
-
 pub struct App {
     me: AppHandle,
     ui: slint::Weak<AppWindow>,
@@ -182,7 +174,6 @@ pub struct App {
     /// Id and record of the song being heard.
     heard: Option<String>,
     song: Option<Song>,
-    said: Said,
     queue: Option<PlaylistView>,
     /// Songs behind the clickable lists: the page's, the Songs view's, the search's.
     page_songs: Vec<Song>,
@@ -205,7 +196,6 @@ pub struct App {
     facts: crate::settings::Facts,
     /// The engine is in its shallow equalizer-tuning buffer.
     tuning: bool,
-    again: Timer,
     lyrics: Option<crate::lyrics::SongLyrics>,
     lyrics_timer: Timer,
     /// Active lyric line pieces in the side panel and Now Playing, updated in place each frame.
@@ -311,7 +301,6 @@ pub fn start(ui: &AppWindow, data: PathBuf, compositor: Compositor) -> Rc<RefCel
             lyric_face: crate::sung::bold_face(),
             heard: None,
             song: None,
-            said: Said::default(),
             queue: None,
             page_songs: Vec::new(),
             page_fetch: None,
@@ -327,7 +316,6 @@ pub fn start(ui: &AppWindow, data: PathBuf, compositor: Compositor) -> Rc<RefCel
             lists: Lists::default(),
             find: String::new(),
             tuning: false,
-            again: Timer::default(),
             lyrics: None,
             lyrics_timer: Timer::default(),
             pieces: [Rc::new(VecModel::default()), Rc::new(VecModel::default())],
@@ -417,10 +405,7 @@ fn wire(ui: &AppWindow, h: &AppHandle) {
     on!(ui.on_previous, h, |a| a.on_session(|s| {
         s.engine.previous();
     }));
-    on!(ui.on_seek, h, |a, f| {
-        a.seek(f);
-        a.lyrics_after_seek();
-    });
+    on!(ui.on_seek, h, |a, f| a.seek(f));
     on!(ui.on_set_volume, h, |a, v| {
         a.on_session(|s| s.set_volume(v));
         a.ui().set_volume(v);
@@ -451,7 +436,6 @@ fn wire(ui: &AppWindow, h: &AppHandle) {
         a.on_session(|s| {
             s.engine.seek((s.engine.status().position_now() + ms as i64).max(0));
         });
-        a.lyrics_after_seek();
     });
     on!(ui.on_drag_window, h, |a| a.compositor.drag_window());
     on!(ui.on_zoom_window, h, |a| a.compositor.zoom_window());
@@ -523,12 +507,6 @@ impl App {
         }
     }
 
-    /// Re-reads the lyrics clock shortly after a seek, once the engine has landed.
-    fn lyrics_after_seek(&self) {
-        let me = self.me.clone();
-        Timer::single_shot(Duration::from_millis(120), move || me.with(|a| a.lyrics_step(true)));
-    }
-
     /// Adds the whole page to the queue; `from` keeps an album gapless.
     fn enqueue_page(&self) {
         if !self.page_songs.is_empty() {
@@ -580,7 +558,6 @@ impl App {
                 self.heard = None;
                 self.song = None;
                 self.queue = None;
-                self.said = Said::default();
                 for i in 0..self.shelves.row_count() {
                     if let Some(mut shelf) = self.shelves.row_data(i) {
                         shelf.cards = ModelRc::default();
@@ -973,8 +950,8 @@ impl App {
         match m {
             Msg::Engine(e) => {
                 match &e {
-                    Event::State(st) => self.said.state = Some(*st),
-                    Event::Song { id, .. } | Event::Looped { id, .. } => self.said.song = Some(id.clone()),
+                    // A seek landed: the lyrics follow from the new place.
+                    Event::Position { .. } => self.lyrics_step(true),
                     Event::Buffering(b) => self.ui().set_buffering(*b),
                     Event::Error { message, .. } => self.say(&format!("Could not play: {message}"), true),
                     _ => {}
@@ -1187,8 +1164,6 @@ impl App {
         let (Some(l), Ok(line)) = (&self.lyrics, usize::try_from(line)) else { return };
         let ms = l.tap(line);
         self.on_session(|s| s.engine.seek(ms));
-        self.lyrics_step(true);
-        self.lyrics_after_seek();
     }
 
     /// Shows `rows` in the queue: leaving rows fold away first, then the list settles.
@@ -1340,32 +1315,14 @@ impl App {
     fn follow(&mut self) {
         let Some(s) = &self.session else { return };
         let st = s.engine.status();
-        let said = &self.said;
-        let song_said = said.song.as_deref().filter(|x| st.id.as_deref() != Some(*x));
-        let agrees = said.state.is_none_or(|x| x == st.state) && song_said.is_none();
-        let (state, id) = if agrees { (st.state, st.id.clone()) } else { (said.state.unwrap_or(st.state), song_said.map(String::from).or(st.id.clone())) };
-        if agrees {
-            self.said = Said::default();
-        } else if self.said.tries < 50 {
-            // The status lags the events: retry shortly (up to 1 s).
-            self.said.tries += 1;
-            let me = self.me.clone();
-            self.again.start(TimerMode::SingleShot, Duration::from_millis(20), move || me.with(App::follow));
-        } else {
-            self.said = Said::default();
-        }
         let ui = self.ui();
-        let playing = state == State::Playing;
+        let playing = st.state == State::Playing;
         ui.set_playing(playing);
-        if agrees {
-            ui.set_position_ms(st.position_now() as i32);
-        }
+        ui.set_position_ms(st.position_now() as i32);
+        let id = st.id.clone();
         if id != self.heard {
             self.heard = id.clone();
             self.song = id.and_then(nori_core::queue::queue_song);
-            if !agrees {
-                ui.set_position_ms(0);
-            }
             let song = self.song.clone().unwrap_or_default();
             ui.set_has_song(self.song.is_some());
             ui.set_now_title(song.title.as_str().into());

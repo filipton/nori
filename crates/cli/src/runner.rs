@@ -131,36 +131,7 @@ struct Runner {
     focused: bool,
     /// A cover arrived while unfocused: repaint when focus returns.
     unseen_cover: bool,
-    /// State and song from the engine's latest events, until its status agrees.
-    said: Said,
 }
-
-/// The engine emits an event before its status reflects it (the status is written at the end of the
-/// same wake). Read in between, the stale status would stay on screen when nothing else is due (a
-/// pause), so the events win until the status agrees, and the status is re-read shortly after.
-#[derive(Default)]
-pub(crate) struct Said {
-    pub(crate) state: Option<nori_engine::State>,
-    pub(crate) song: Option<String>,
-    /// When to read the status again, and how many times it was read without agreeing.
-    again: Option<Instant>,
-    tries: u32,
-}
-
-impl Said {
-    /// None when the status matches the events; else Some, with the events' song if the status has another.
-    pub(crate) fn behind(&self, state: nori_engine::State, id: Option<&str>) -> Option<Option<String>> {
-        let song = self.song.as_deref().filter(|x| id != Some(*x));
-        if self.state.is_none_or(|x| x == state) && song.is_none() {
-            return None;
-        }
-        Some(song.map(String::from))
-    }
-}
-
-/// Re-read interval and retry cap for a status that disagrees with the events.
-const AGAIN_MS: u64 = 20;
-const AGAIN_TRIES: u32 = 50;
 
 pub fn run(o: Options) -> Result<(), String> {
     crate::term::stderr_to(&o.data.join("nori.log"));
@@ -206,7 +177,7 @@ pub fn run(o: Options) -> Result<(), String> {
     app.settings.own.data = o.data.display().to_string();
     app.settings.own.device = own::text(own::DEVICE).unwrap_or_default();
     let art = picker.clone().map(Art::new);
-    let mut r = Runner { http: Http::new(), tx, session: None, art, picker, tickets: Vec::new(), thumb_tickets: Vec::new(), heard: None, repaint: false, focused: true, unseen_cover: false, said: Said::default(), o };
+    let mut r = Runner { http: Http::new(), tx, session: None, art, picker, tickets: Vec::new(), thumb_tickets: Vec::new(), heard: None, repaint: false, focused: true, unseen_cover: false, o };
     match prefs.servers.iter().find(|s| s.id == prefs.active_server_id).cloned() {
         Some(p) => r.open(&mut app, p),
         None => app.view = View::Login,
@@ -246,7 +217,6 @@ impl Runner {
                 app.unreachable = None;
                 self.session = Some(s);
                 self.heard = None;
-                self.said = Said::default();
                 // Fresh screens for the new server, keeping client-wide state.
                 let prefs = app.prefs.clone();
                 let keep = (app.mouse, app.images, app.card_covers, app.volume, app.protocol, app.offline, app.server.clone(), app.settings.own.data.clone());
@@ -286,11 +256,7 @@ impl Runner {
                 app.dirty = false;
             }
             let now = Instant::now();
-            let wake = match (app.next_wake(now), self.said.again) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            };
-            let msg = match wake {
+            let msg = match app.next_wake(now) {
                 Some(at) => rx.recv_timeout(at.saturating_duration_since(now)),
                 None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
             };
@@ -314,11 +280,6 @@ impl Runner {
         crate::term::debug!("took {}", m.brief());
         match &m {
             Msg::Engine(e @ (Event::Song { .. } | Event::State(_) | Event::Looped { .. } | Event::Bridge { .. })) => {
-                match e {
-                    Event::State(st) => self.said.state = Some(*st),
-                    Event::Song { id, .. } | Event::Looped { id, .. } => self.said.song = Some(id.clone()),
-                    _ => {}
-                }
                 if let Some(s) = &self.session {
                     s.desktop_changed();
                     s.followed(e);
@@ -356,39 +317,11 @@ impl Runner {
     /// Reads engine status and the queue into `app`, copying strings only when the song changed.
     fn follow(&mut self, app: &mut App) {
         let Some(s) = &self.session else { return };
-        let said = &self.said;
-        let (now, id_changed, agrees) = s.engine.status_with(|st| {
-            if let Some(song) = said.behind(st.state, st.id.as_deref()) {
-                // Status lags the events: keep the events' state (App::engine) and song, from its start.
-                let changed = song.is_some() && song != self.heard;
-                return (None, changed.then_some(song), false);
-            }
+        let (now, id_changed) = s.engine.status_with(|st| {
             let changed = st.id.as_deref() != self.heard.as_deref();
-            (
-                Some(crate::app::Now { state: st.state, position_ms: st.position_ms, at: st.at, speed: st.pace, mixing: st.mixing, buffering: app.now.buffering }),
-                changed.then(|| st.id.clone()),
-                true,
-            )
+            (crate::app::Now { state: st.state, position_ms: st.position_ms, at: st.at, speed: st.pace, mixing: st.mixing, buffering: app.now.buffering }, changed.then(|| st.id.clone()))
         });
-        let at = Instant::now();
-        if agrees {
-            self.said = Said::default();
-        } else if self.said.tries < AGAIN_TRIES {
-            self.said.tries += 1;
-            self.said.again = Some(at + std::time::Duration::from_millis(AGAIN_MS));
-            crate::term::debug!("the engine's status is behind its events: read again in {AGAIN_MS} ms");
-        } else {
-            // Give up; the events' state stands until the next event.
-            self.said = Said::default();
-        }
-        match now {
-            Some(now) => app.follow_now(now),
-            None if id_changed.is_some() => {
-                app.now.position_ms = 0;
-                app.now.at = at;
-            }
-            None => {}
-        }
+        app.follow_now(now);
         if let Some(id) = id_changed {
             self.heard = id.clone();
             app.heard(id.and_then(nori_core::queue::queue_song));

@@ -857,18 +857,6 @@ fn pause_freezes_clock() {
 }
 
 #[test]
-fn stale_status_behind_events() {
-    let mut said = crate::runner::Said::default();
-    assert_eq!(said.behind(State::Idle, None), None, "no event yet: the status stands");
-    said.state = Some(State::Playing);
-    assert_eq!(said.behind(State::Idle, Some("a")), Some(None), "the status still says idle");
-    assert_eq!(said.behind(State::Playing, Some("a")), None, "caught up");
-    said.song = Some("b".into());
-    assert_eq!(said.behind(State::Playing, Some("a")), Some(Some("b".into())), "the song the event named is shown");
-    assert_eq!(said.behind(State::Playing, Some("b")), None);
-}
-
-#[test]
 fn tmux_sixel_feature() {
     use crate::term::sixel_feature;
     // Ghostty (no sixel) under tmux: tmux claims sixel but would show a placeholder.
