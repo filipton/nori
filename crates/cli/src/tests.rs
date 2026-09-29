@@ -13,7 +13,7 @@ use ratatui::Terminal;
 
 use crate::app::{App, Cmd, Focus, Hit, ListRef, Nav, Overlay, Panel, Target, View};
 use crate::backend::{Data, Msg, Req};
-use crate::settings_view::{Facts, Line, Row, SettingsView, GROUPS};
+use crate::settings_view::{Facts, Line, Row, SettingsView, Switch, GROUPS};
 
 fn app() -> App {
     let mut a = App::new(StoredPrefs::default());
@@ -360,7 +360,7 @@ fn settings_are_one_page_of_every_group() {
     let lines = SettingsView::lines(&pages);
     assert!(matches!(lines[a.settings.row.at], Line::Row(_)));
     a.cmds.clear();
-    let at = lines.iter().position(|l| matches!(l, Line::Row(Row::Toggle { name, .. }) if name == "autoMix")).unwrap();
+    let at = lines.iter().position(|l| matches!(l, Line::Row(Row::Toggle { switch: Switch::Setting(name), .. }) if name == "autoMix")).unwrap();
     while a.settings.row.at < at {
         key(&mut a, KeyCode::Down);
         assert!(matches!(lines[a.settings.row.at], Line::Row(_)), "no stop on a heading");
