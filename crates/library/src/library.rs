@@ -1,22 +1,18 @@
-//! What the app's repository used to decide for itself between two calls into the core: when a failed
-//! refresh is an error, how a favourite that the server refused is taken back, how a mix gets drawn when
-//! the index has nothing to draw from, and what picking the server's queue back up plays. Each is one
-//! call here, so a second client asks the same question and gets the same answer.
+//! Small decisions every client shares: the local day, the random-songs fallback of a mix, and what
+//! resuming the server's queue plays.
 
 use nori_model::{PlayQueue, Song};
 
-/// How many random songs stand in for a mix the index could not draw (no listening history yet).
+/// How many random songs stand in for a mix the index could not draw.
 pub const MIX_FALLBACK_SONGS: i32 = 50;
 
-/// Today where the phone is, as days since 1970: a mix is drawn once a day (or a week) by the calendar the
-/// listener lives by, not by UTC's midnight.
+/// Today in local time, as days since 1970: mixes are drawn per local day.
 pub fn local_epoch_day() -> i64 {
     let now = nori_db::now_ms() / 1000;
     (now + local_offset_s(now)).div_euclid(86_400)
 }
 
-/// How far the phone's clock is ahead of UTC at `at_s` seconds since 1970, in seconds (summer time
-/// included); 0 where the C library cannot say.
+/// The local UTC offset at `at_s` (seconds since 1970), in seconds; 0 where the C library cannot say.
 #[cfg_attr(not(unix), allow(unused_variables))]
 pub fn local_offset_s(at_s: i64) -> i64 {
     #[cfg(unix)]
@@ -30,13 +26,13 @@ pub fn local_offset_s(at_s: i64) -> i64 {
     0
 }
 
-/// The lyrics of nothing playing: no lines, untimed, as if the server had said so.
+/// The lyrics of nothing playing.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn lyrics_none() -> nori_model::Lyrics {
-    nori_model::Lyrics { synced: false, word_timed: false, lines: Vec::new(), key: 0, offset_ms: 0 }
+    nori_model::Lyrics::default()
 }
 
-/// What a press on "Resume from server" does with the queue the server kept.
+/// What "Resume from server" does with the server's queue.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 pub enum ResumePlan {
@@ -46,7 +42,6 @@ pub enum ResumePlan {
     Play { songs: Vec<Song>, index: u32, position_ms: u64 },
 }
 
-/// What the server's queue `q` plays when it is picked back up.
 pub fn resume_plan(q: PlayQueue) -> ResumePlan {
     if q.songs.is_empty() {
         ResumePlan::Nothing
@@ -55,8 +50,7 @@ pub fn resume_plan(q: PlayQueue) -> ResumePlan {
     }
 }
 
-/// The favourites handed to the mixes from the stored answer: whether there was one, and what
-/// the client's `mix_favourites_refresh` needs to ask the server after it.
+/// The favourites handed to the mixes from the stored answer, and what `mix_favourites_refresh` needs.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct FavouritesHanded {

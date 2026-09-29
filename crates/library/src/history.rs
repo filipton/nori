@@ -1,25 +1,12 @@
-//! Play history and the taste model. Everything is local: the server's play counts are per
-//! account, not per device, and know nothing about skips.
+//! Local play history and the taste model (the server's counts are per account and know no skips).
 //!
-//! One `plays` row per listen, plus `song_stats`, a per-song roll-up written in the same
-//! transaction so mixes and smart playlists never aggregate `plays` at query time.
+//! One `plays` row per listen, and `song_stats`, a per-song roll-up written in the same transaction.
+//! A listen under 2 s is dropped; under 30 s and 30 % is a skip; 90 % is complete; else partial.
 //!
-//! How a listen is classified (`classify`):
-//! - heard under 2 s: dropped. Flipping through a queue says nothing about the songs.
-//! - skipped: heard under 30 s and under 30 % of the track (a 20 s interlude heard for 15 s is a play).
-//! - completed: heard at least 90 % of a known duration.
-//! - anything else is a partial play. Skips do not count as plays and do not move `last_played_ms`.
-//!
-//! Taste. Each listen has a weight: 1 when completed, the heard fraction (0.3..1) when partial,
-//! 0.5 when the duration is unknown, -0.6 for a skip. A song's play score is the sum of its weights,
-//! each decayed with a 30 day half-life. Exponential decay composes, so `song_stats.taste` stores
-//! that sum scaled to a fixed epoch (`weight * 2^((t - EPOCH) / HALF_LIFE)`): recording is one
-//! addition, late and out-of-order listens need no special case, and `ORDER BY taste` is already the
-//! order of today's scores. `decayed` scales back to now; `taste` adds what the user said explicitly:
-//! +1.5 starred, +2 / +1 for a rating of 5 / 4, -1.5 / -3 for 2 / 1.
-//!
-//! Provider tracks (`ext-`, `pl-`, `isExternal`) are not recorded: their ids change once the server
-//! has downloaded them and they must never enter the index.
+//! Taste: each listen weighs 1 complete, its heard fraction (0.3..1) partial, 0.5 with no known length,
+//! -0.6 skipped, decayed with a 30-day half-life. `song_stats.taste` stores the sum scaled to a fixed
+//! epoch, so recording is one addition and `ORDER BY taste` is today's order; [`taste`] adds stars and
+//! ratings. Provider songs are never recorded.
 
 use std::collections::HashMap;
 
@@ -75,7 +62,7 @@ pub fn record(c: &mut Connection, song: &Song, started_ms: i64, heard_ms: i64, t
     if song.id.is_empty() || song.is_provider() || heard_ms < MIN_HEARD_MS {
         return Ok(false);
     }
-    // A clock that was wrong at the time must not mint a score that outlives everything else.
+    // A wrong clock must not mint a score that outlives everything.
     let started_ms = started_ms.clamp(TASTE_EPOCH_MS, now_ms.max(TASTE_EPOCH_MS) + DAY_MS);
     let known: Option<i64> = c.prepare_cached("SELECT 1 FROM items WHERE server=sid() AND kind=?1 AND id=?2")?.query_row(params![db::SONG, song.id], |r| r.get(0)).optional()?;
     if known.is_none() {

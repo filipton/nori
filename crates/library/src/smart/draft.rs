@@ -75,7 +75,7 @@ fn is_number(field: &str) -> bool {
 
 /// What a person types between two numbers: "1970-1979", "1970, 1979", "1970 1979".
 fn range_parts(value: &str) -> impl Iterator<Item = &str> {
-    value.split(|c: char| c == ',' || c == '-' || matches!(c, ' ' | '\t' | '\n' | '\u{0B}' | '\u{0C}' | '\r')).filter(|p| !p.trim().is_empty())
+    value.split([',', '-', ' ', '\t', '\n', '\u{0B}', '\u{0C}', '\r']).filter(|p| !p.trim().is_empty())
 }
 
 /// A number where one is typed, the text otherwise; the definition's parser says if that is wrong.
@@ -178,7 +178,7 @@ fn read(p: &SmartPlaylist) -> Option<SmartEdit> {
     Some(SmartEdit {
         id: p.id.clone(),
         name: p.name.clone(),
-        all: m.map_or(true, |m| flag_of(m.get("all"), true)),
+        all: m.is_none_or(|m| flag_of(m.get("all"), true)),
         rules,
         sort_field: s.and_then(|s| s.get("field")).map_or_else(|| "random".into(), text_of),
         descending: s.is_some_and(|s| flag_of(s.get("descending"), false)),
@@ -289,20 +289,8 @@ pub fn smart_limit_text(limit: i32) -> String {
     if limit > 0 { limit.to_string() } else { String::new() }
 }
 
-/// The definition the draft stands for. The app hands the draft over whole (`smart_edit_prepare`).
-#[cfg(test)]
-pub fn smart_edit_json(edit: SmartEdit) -> String {
-    to_json(&edit)
-}
-
-/// Reads back what this editor wrote; None for definitions with nested groups, which the caller keeps as raw JSON.
-#[cfg(test)]
-pub fn smart_edit_read(playlist: SmartPlaylist) -> Option<SmartEdit> {
-    read(&playlist)
-}
-
-/// A built-in definition ("default-...") is saved as a new playlist of the user's own. A name left
-/// blank comes back empty: the client gives it its own word for a smart playlist.
+/// The draft ready to store: a built-in ("default-…") saves as a new playlist, a blank name comes back
+/// empty for the client to word, and the definition is checked.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn smart_edit_prepare(edit: SmartEdit) -> SmartPrepared {
     let json = to_json(&edit);
@@ -359,26 +347,26 @@ mod tests {
             rule("year", "between", "1970,abc"),
         ]);
         assert_eq!(
-            smart_edit_json(e.clone()),
+            to_json(&e),
             r#"{"match":{"all":true,"rules":[{"field":"genre","op":"contains","value":"Rock"},{"field":"year","op":"between","value":[1970,1979]},{"field":"title","op":"is","value":"1999"},{"field":"year","op":"greater","value":1990},{"field":"added","op":"withinDays","value":30},{"field":"starred","op":"isTrue"},{"field":"year","op":"between","value":[1970,"abc"]}]},"sort":{"field":"random","descending":false,"seed":1},"limit":100}"#
         );
         let none = SmartEdit { limit: 0, all: false, sort_field: "year".into(), descending: true, ..edit(vec![]) };
-        assert_eq!(smart_edit_json(none), r#"{"match":{"all":false,"rules":[]},"sort":{"field":"year","descending":true,"seed":1}}"#);
+        assert_eq!(to_json(&none), r#"{"match":{"all":false,"rules":[]},"sort":{"field":"year","descending":true,"seed":1}}"#);
     }
 
     #[test]
     fn reads_back_what_it_wrote() {
         let e = SmartEdit { id: "sp-1".into(), name: "Old".into(), ..edit(vec![rule("genre", "is", "Jazz"), rule("year", "between", "1970 1979"), rule("starred", "isFalse", "")]) };
-        let p = SmartPlaylist { id: e.id.clone(), name: e.name.clone(), json: smart_edit_json(e.clone()), builtin: None };
-        assert_eq!(smart_edit_read(p), Some(e));
+        let p = SmartPlaylist { id: e.id.clone(), name: e.name.clone(), json: to_json(&e), builtin: None };
+        assert_eq!(read(&p), Some(e));
         let nested = SmartPlaylist { json: r#"{"match":{"rules":[{"all":false,"rules":[]}]}}"#.into(), ..Default::default() };
-        assert_eq!(smart_edit_read(nested), None);
-        assert_eq!(smart_edit_read(SmartPlaylist { json: "not json".into(), ..Default::default() }), None);
-        assert_eq!(smart_edit_read(SmartPlaylist { json: r#"{"match":{"rules":[{"op":"is"}]}}"#.into(), ..Default::default() }), None);
+        assert_eq!(read(&nested), None);
+        assert_eq!(read(&SmartPlaylist { json: "not json".into(), ..Default::default() }), None);
+        assert_eq!(read(&SmartPlaylist { json: r#"{"match":{"rules":[{"op":"is"}]}}"#.into(), ..Default::default() }), None);
         // Nothing but defaults: one empty genre rule, random order, no limit.
-        let bare = smart_edit_read(SmartPlaylist { json: "{}".into(), ..Default::default() }).unwrap();
+        let bare = read(&SmartPlaylist { json: "{}".into(), ..Default::default() }).unwrap();
         assert_eq!(bare, SmartEdit { limit: 0, ..smart_edit_new() });
-        let loose = smart_edit_read(SmartPlaylist { json: r#"{"match":{"all":"false"},"sort":{"field":"year","descending":true},"limit":"50.7"}"#.into(), ..Default::default() }).unwrap();
+        let loose = read(&SmartPlaylist { json: r#"{"match":{"all":"false"},"sort":{"field":"year","descending":true},"limit":"50.7"}"#.into(), ..Default::default() }).unwrap();
         assert!(!loose.all && loose.descending);
         assert_eq!((loose.sort_field.as_str(), loose.limit), ("year", 50));
     }
@@ -386,7 +374,7 @@ mod tests {
     #[test]
     fn builtins_read_into_form() {
         for p in super::super::smart_defaults() {
-            let e = smart_edit_read(p.clone()).unwrap();
+            let e = read(&p).unwrap();
             assert!(!e.rules.is_empty(), "{}", p.id);
         }
     }

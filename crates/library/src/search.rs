@@ -1,6 +1,5 @@
-//! Search results as the search screen shows them: everything, only the library, or only what the
-//! providers offer (octo-fiesta marks provider items `isExternal`; Navidrome's are the rest). The split
-//! is made once per answer, so switching between the three costs nothing.
+//! Search results split once per answer into everything, the library's and the providers' (`isExternal`),
+//! and the search screen's state.
 
 use std::collections::HashSet;
 
@@ -17,7 +16,6 @@ pub struct SearchSplit {
     pub has_providers: bool,
 }
 
-/// A server's answer split once into everything, the library's and the providers'.
 pub fn split(r: SearchResult) -> SearchSplit {
     let has_providers = r.songs.iter().any(|s| s.is_external) || r.albums.iter().any(|a| a.is_external) || r.artists.iter().any(|a| a.is_external);
     if !has_providers {
@@ -37,8 +35,7 @@ fn distinct<T>(list: Vec<T>, id: impl Fn(&T) -> &str) -> Vec<T> {
     list.into_iter().filter(|x| seen.insert(id(x).to_string())).collect()
 }
 
-/// The server's answer, ready to show. A merged provider result may repeat an id, and lists are keyed by
-/// id, so only the first of each is kept.
+/// The server's answer split, the first of each repeated id kept (merged provider results repeat ids).
 pub fn search_split(result: SearchResult) -> SearchSplit {
     split(SearchResult {
         artists: distinct(result.artists, |a| &a.id),
@@ -65,8 +62,7 @@ pub fn search_scopes() -> Vec<SearchScope> {
     vec![SearchScope::Everything, SearchScope::Library, SearchScope::Providers]
 }
 
-/// The server could not be asked and the offline answer stays on screen: the client says so, with
-/// `reason`, what it said the failure was when it reported it (`SearchSession::failed`).
+/// The server could not be asked and the offline answer stays; `reason` as `SearchSession::failed` gave it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct SearchFallback {
@@ -146,18 +142,13 @@ impl Session {
 /// Shorter than this, a query is a keystroke on the way to one, not one worth remembering.
 pub const REMEMBER_MIN_UTF16: usize = 2;
 
-/// How long live search waits after the last keystroke before it asks the server: at once for a blank
-/// field (which only clears the results), otherwise the user's `delay_ms`.
-///
-/// Twin of the `debounce` in `SearchViewModel` (app/.../vm/SearchViewModel.kt), which Android keeps: it
-/// is the argument of a coroutine operator, asked on the main thread per keystroke.
+/// Live search's wait after a keystroke: none for a blank field, else `delay_ms`. Twin of Android's
+/// `SearchViewModel` debounce.
 pub fn live_delay_ms(query: &str, delay_ms: i64) -> i64 {
     if query.chars().all(kotlin_whitespace) { 0 } else { delay_ms }
 }
 
-/// Kotlin's `Char.isWhitespace` on the JVM, which `isBlank` goes by: Java's whitespace or a Unicode space
-/// separator. That is not Rust's `char::is_whitespace` - the four ASCII separators U+001C-U+001F count,
-/// U+0085 does not - and a blank field must be blank to both.
+/// Kotlin's `Char.isWhitespace`, which differs from Rust's (U+001C-U+001F count, U+0085 does not).
 pub fn kotlin_whitespace(c: char) -> bool {
     matches!(
         c,
@@ -168,9 +159,7 @@ pub fn kotlin_whitespace(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nori_model::Album;
-use nori_model::Artist;
-use nori_model::Song;
+    use nori_model::{Album, Artist, Song};
 
     fn result() -> SearchResult {
         let s = |id: &str, ext: bool| Song { id: id.into(), is_external: ext, ..Default::default() };
