@@ -232,10 +232,10 @@ fn speed_and_silence_skipping() {
     };
     assert_eq!(run(&mut |c, o| sp.process(c, o), &x, CHUNK), 0, "speed and pitch");
     let quiet: Vec<u8> = x.iter().enumerate().map(|(i, &b)| if (i / 40_000) % 3 == 0 { 0 } else { b }).collect();
-    let mut si = SilenceSkipper::new(RATE, 2);
+    let mut si = SilenceSkipper::new(RATE, 2, false);
     assert_eq!(run(&mut |c, o| si.process(c, o), &quiet, CHUNK), 0, "silence skipping");
     let quiet_f: Vec<u8> = quiet.chunks_exact(2).flat_map(|c| (i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0).to_le_bytes()).collect();
-    let mut si = SilenceSkipper::of(RATE, 2, true);
+    let mut si = SilenceSkipper::new(RATE, 2, true);
     assert_eq!(run(&mut |c, o| si.process(c, o), &quiet_f, CHUNK * 2), 0, "float silence skipping");
 }
 

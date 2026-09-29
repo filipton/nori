@@ -306,7 +306,7 @@ impl<T: Track> Sink<T> {
 
     fn build_stages(&mut self) {
         let Some(f) = self.format else { return };
-        self.silence = self.skip_silence.then(|| SilenceSkipper::of(f.rate, f.channels, f.encoding == Encoding::Float));
+        self.silence = self.skip_silence.then(|| SilenceSkipper::new(f.rate, f.channels, f.encoding == Encoding::Float));
         self.speed = speed_active(self.speed_pitch.0, self.speed_pitch.1).then(|| {
             let mut s = SpeedPitch::new(f.rate, f.channels, f.encoding);
             s.set(self.speed_pitch.0, self.speed_pitch.1);
