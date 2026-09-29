@@ -1,17 +1,12 @@
 //! AutoMix: DJ-style transitions (see docs/research/automix.md).
 //!
-//! - `analysis` + `tempo` + `structure` + `loudness`: one pass over a track's PCM gives a `TrackAnalysis`
-//!   (tempo and beat grid, downbeats, phrase cues, the drop, the exit, key, loudness, silence, a hidden track's gap
-//!   and MixRamp points), streamed: from a whole song decoded ahead (nori-engine's measurer) or from the PCM the
-//!   player already decodes (the transition engine's tap). The `track_analysis` table is nori-automix's.
-//! - `beats` (+ `neural` with the `neural-beats` feature): Beat This!, an optional neural beat tracker, run over the
-//!   first and last 30 s of a song; its grids replace the classical intro and outro grids where it is sure. Its
-//!   network ships as a graph without weights; `weights` fills it from the authors' checkpoint, read by
-//!   `checkpoint` (a zip and a restricted unpickler).
-//! - `plan`: a pure function from two analyses and the user's settings to a `TransitionPlan`.
-//! - `mixer` and `stretch`: per-buffer building blocks that render a plan (gain curves, bass swap, filter
-//!   sweeps, vocal duck, echo; time-stretch of the incoming track).
-//! - `eval` (tests only): the synthetic songs and pairs the analysis and the planned transitions are scored on.
+//! - `analysis`, `tempo`, `structure`, `loudness`: one streamed pass over a track's PCM gives a `TrackAnalysis`.
+//! - `beats` (+ `neural`, `weights`, `checkpoint` with `neural-beats`): the optional Beat This! tracker, whose
+//!   grids replace the classical intro and outro grids where it is sure.
+//! - `plan`: two analyses and the settings to a `TransitionPlan`.
+//! - `mixer`, `stretch`, `resample`: per-buffer rendering of a plan.
+//! - `vocal`: the vocal activity curve synced lyrics are checked against.
+//! - `synth`, `eval` (tests and `synth`): synthetic songs the analysis and plans are scored on.
 
 pub mod analysis;
 pub mod beats;
@@ -44,25 +39,18 @@ use crate::types::TrackAnalysis;
 use analysis::Analyzer;
 use analysis::Features;
 
-/// Bump when the analysis changes enough that stored rows should be redone. 10: the vocal activity curve
-/// (`vocal`) is measured with it, so songs measured before get one. 11: the curve is measured in a narrower
-/// band with a looser peak test (vocal.rs, tuned on a real library), so curves of 10 are measured again. 12: a
-/// stereo song's curve is measured on the middle of its stereo image (vocal.rs); the rest of the analysis is as
-/// it was. The curve's stored form did not change (`vocal::CURVE_VERSION`), so a song's old curve is still read
-/// until the song is measured again.
+/// Bump when stored rows should be measured again. 12: vocal curve measured on the stereo middle.
 pub const ANALYSIS_VERSION: i32 = 12;
-/// How much music at each end the intro and outro grids are measured over: long enough for a steady
-/// tempo estimate (dozens of beats at any tempo), short enough that a live band's drift inside it is
-/// a fraction of a beat.
+/// Seconds of music at each end the intro and outro grids are measured over: dozens of beats, short enough that
+/// a live band drifts a fraction of a beat.
 pub const GRID_WINDOW_S: f64 = 40.0;
-/// A silence inside the music at least this long is a gap a mix may leave by (a hidden track's), not a rest.
+/// A silence inside the music at least this long is a gap (before a hidden track), not a rest.
 const LONG_GAP_MS: i64 = 6_000;
-/// Below these the grid is not used for cue placement either (cues fall back to the energy envelope).
+/// Below these, cues are placed from the energy envelope instead of the grid.
 const CUE_MIN_CONFIDENCE: f32 = 0.4;
 const CUE_MIN_STABILITY: f32 = 0.5;
 
-/// Mean of a per-frame `curve` over `[from_s, to_s)`. Too short a window to say anything (under a
-/// second of frames) falls back to the whole track rather than to noise.
+/// Mean of a per-frame `curve` over `[from_s, to_s)`; the whole track's when the window is under a second.
 fn window_mean(curve: &[f32], fps: f64, t0: f64, from_s: f64, to_s: f64) -> f32 {
     if curve.is_empty() || !fps.is_finite() || fps <= 0.0 {
         return 0.0;
@@ -88,9 +76,7 @@ pub struct Grid {
     pub downbeat_phase: i32,
 }
 
-/// The beat grid of `[from_s, to_s)` alone: the same tempo estimate and downbeat search as the whole
-/// track, on that stretch of the onset envelope. The first beat is given in track time, so the grid
-/// `offset + n * period` lands on the same beats as it does inside the window.
+/// The beat grid of `[from_s, to_s)` alone, its offset in track time.
 pub fn window_grid(f: &Features, from_s: f64, to_s: f64, meter: i64) -> Grid {
     if !(f.fps > 0.0) || to_s - from_s < GRID_WINDOW_S / 2.0 {
         return Grid::default();
@@ -108,7 +94,7 @@ pub fn window_grid(f: &Features, from_s: f64, to_s: f64, meter: i64) -> Grid {
     Grid { bpm: t.bpm, confidence: t.confidence, offset_ms: t.offset_s * 1000.0, stability: t.stability, downbeat_phase: db.phase }
 }
 
-/// Wall-clock time, ms since the epoch: when an analysis was made.
+/// Wall-clock ms since the epoch.
 fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
 }
@@ -133,16 +119,14 @@ pub fn finish(song_id: &str, f: &Features) -> Analysis {
     let db = structure::downbeat(&t, f, music, None);
     let meter = if db.beats_per_bar == 3 { 3 } else { 4 };
     let grid_ok = t.bpm > 0.0 && t.confidence >= CUE_MIN_CONFIDENCE && t.stability >= CUE_MIN_STABILITY;
-    // A hidden track short enough to leave, after a long silence: the song proper ends at the silence, and its
-    // outro, the grid a mix locks to and the voices over its end are measured there, not on the hidden track.
-    // (The music after it counts against the skip cap; the silence does not.)
+    // A short hidden track after a long silence: the song proper ends at the silence, and its outro, end grid and
+    // end voices are measured there.
     let gap = if silent { None } else { loudness::last_gap(&f.blocks_raw, LONG_GAP_MS) };
     let leave = gap.filter(|(_, g1)| s1 - g1 <= plan::MAX_SKIP_MS);
     let song = leave.map_or(music, |(g0, _)| (music.0, g0 as f64 / 1000.0));
     let (intro, outro) = if silent { (0.0, 0.0) } else { structure::cues(&t, &db, f, song, grid_ok) };
     let (key, key_confidence) = if silent { (0, 0.0) } else { structure::key_of(structure::tuned_profile(f)) };
-    // What the overlap windows sound like: vocal share and brightness of the outgoing outro and the
-    // incoming intro, for the pair gates in `plan`. Silence has neither.
+    // Vocal share and brightness of the outro and intro windows, for the pair gates in `plan`.
     let (outro_vocal, outro_centroid, intro_vocal, intro_centroid) = if silent {
         (0.0, 0.0, 0.0, 0.0)
     } else {
@@ -154,7 +138,7 @@ pub fn finish(song_id: &str, f: &Features) -> Analysis {
         )
     };
 
-    // Where the arrangement arrives, and whether the run-up to it and what follows it are sung.
+    // The drop, and the vocal share of the 8 bars before and after it.
     let bar_s = if t.bpm > 0.0 { 60.0 / t.bpm * meter as f64 } else { 0.0 };
     let found = if silent || !grid_ok { None } else { structure::drop_point(&t, &db, f, music) };
     let drop = found.map(|d| d.at);
@@ -165,7 +149,7 @@ pub fn finish(song_id: &str, f: &Features) -> Analysis {
         )
     });
 
-    // Where the ending stops being worth playing: a closing breakdown, or the gap before a hidden track.
+    // Where to leave: a closing breakdown, or the gap before a hidden track.
     let exit = if silent { None } else { structure::breakdown(&t, &db, f, music, song.1, grid_ok) }.or(leave.map(|(g0, _)| g0 as f64 / 1000.0));
     let last = exit.unwrap_or(music.1);
     let exit_vocal = if silent { 0.0 } else { window_mean(&f.vocal, f.fps, f.t0, (last - if bar_s > 0.0 { 8.0 * bar_s } else { 16.0 }).max(music.0), last) };
@@ -239,11 +223,11 @@ pub fn analyse(song_id: &str, pcm: &[f32], sample_rate: u32) -> Analysis {
     finish(song_id, &f)
 }
 
-/// `C.ENCODING_PCM_16BIT` and `C.ENCODING_PCM_FLOAT`, as media3 numbers them.
+/// media3's `C.ENCODING_PCM_16BIT` and `C.ENCODING_PCM_FLOAT`.
 pub const PCM_16: i32 = 2;
 pub const PCM_FLOAT: i32 = 4;
 
-/// Analyses interleaved little-endian PCM bytes, 16-bit or float, as a decoder hands them out.
+/// Analyses interleaved little-endian PCM bytes, 16-bit or float.
 #[cfg(any(test, feature = "synth"))]
 pub fn analyse_bytes(song_id: &str, pcm: &[u8], sample_rate: i32, channels: i32, encoding: i32) -> Analysis {
     let ch = channels.clamp(1, 8) as usize;
@@ -251,7 +235,7 @@ pub fn analyse_bytes(song_id: &str, pcm: &[u8], sample_rate: i32, channels: i32,
     let width = if encoding == PCM_FLOAT { 4 } else { 2 };
     let frames = pcm.len() / width / ch;
     let mut a = Analyzer::new(rate, frames as u64 * 1000 / rate as u64);
-    // Decoded in slices so a whole track never exists as f32 on top of the bytes.
+    // Converted in slices so the whole track never exists as f32 too.
     let chunk = 1024 * ch * width;
     for part in pcm.chunks(chunk) {
         let part = &part[..part.len() / (ch * width) * (ch * width)];
