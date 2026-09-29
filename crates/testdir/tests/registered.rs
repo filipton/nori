@@ -43,7 +43,7 @@ fn targets(krate: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Adds every file reachable from `root` through `mod x;` and `#[path = "..."] mod x;` to `seen`.
+/// Adds every file reachable from `root` through `mod x;`, `#[path = "..."] mod x;` and `include!` to `seen`.
 /// `owns_dir`: children live beside `root` (crate roots, `#[path]` files), otherwise in `<stem>/`.
 fn reach(root: &Path, owns_dir: bool, seen: &mut BTreeSet<PathBuf>) {
     let Ok(root) = root.canonicalize() else { return };
@@ -61,6 +61,11 @@ fn reach(root: &Path, owns_dir: bool, seen: &mut BTreeSet<PathBuf>) {
     for line in text.lines().map(str::trim) {
         if let Some(rest) = line.strip_prefix("#[path = \"") {
             path_attr = rest.split('"').next().map(str::to_owned);
+            continue;
+        }
+        // `include!("x.rs")` pastes the file in place: relative to this file, children as this file's.
+        if let Some(file) = line.strip_prefix("include!(\"").and_then(|r| r.split('"').next()) {
+            reach(&here.join(file), owns_dir, seen);
             continue;
         }
         let decl = line.strip_prefix("pub ").unwrap_or(line);
