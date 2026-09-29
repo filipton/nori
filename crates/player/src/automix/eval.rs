@@ -942,7 +942,7 @@ pub fn score(name: &str, a: &Analysis, truth: &Truth, with_key: bool) -> SongSco
         outro,
         key_ok: with_key.then_some(t.key == truth.key),
         key_mirex: with_key.then(|| mirex_key(t.key, truth.key)),
-        key_near: with_key.then(|| (0..=1).contains(&structure::key_distance(t.key, truth.key))),
+        key_near: with_key.then(|| structure::key_distance(t.key, truth.key).is_some_and(|d| d <= 1)),
         vocal,
         intro_cue_ok,
         outro_cue_ok,

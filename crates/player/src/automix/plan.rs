@@ -351,7 +351,7 @@ fn echo_out(a: &TrackAnalysis, b: &TrackAnalysis, out_dur: i64, in_dur: i64, max
 
 /// Camelot distance when both keys are trusted.
 fn camelot_dist(a: &TrackAnalysis, b: &TrackAnalysis) -> Option<i32> {
-    (a.key_confidence >= KEY_MIN_CONFIDENCE && b.key_confidence >= KEY_MIN_CONFIDENCE).then(|| key_distance(a.key, b.key))
+    (a.key_confidence >= KEY_MIN_CONFIDENCE && b.key_confidence >= KEY_MIN_CONFIDENCE).then(|| key_distance(a.key, b.key)).flatten()
 }
 
 /// Low-pass for MixRamp and one-grid fades: soft when keys are neighbours, full otherwise.
