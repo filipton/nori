@@ -70,11 +70,6 @@ pub(crate) fn on(value: &str) -> bool {
     bool::parse(value) == Some(true)
 }
 
-/// Comma-separated names, trimmed, empty ones dropped.
-pub(crate) fn names(value: &str) -> Vec<String> {
-    value.split(',').map(str::trim).filter(|n| !n.is_empty()).map(str::to_string).collect()
-}
-
 /// A scalar stored as is. Changes by name are held in `range`; with `held`, loaded values are too. An
 /// unreadable change keeps the value.
 pub(crate) struct Plain<T> {

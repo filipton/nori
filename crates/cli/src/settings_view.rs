@@ -1110,7 +1110,7 @@ mod tests {
     fn lyrics_sources_move_and_switch() {
         // All services default on; one is switched off to have an off row.
         let d = StoredPrefs::default();
-        let prefs = StoredPrefs { lyrics_online: true, third_party_lookups: true, lyrics_on: d.lyrics_on.iter().filter(|n| *n != "GENIUS").cloned().collect(), ..d };
+        let prefs = StoredPrefs { lyrics_online: true, third_party_lookups: true, lyrics_on: d.lyrics_on.iter().filter(|s| s.name() != "GENIUS").copied().collect(), ..d };
         let mut v = SettingsView::default();
         let pages = v.pages(&prefs).to_vec();
         let lines = SettingsView::lines(&pages);

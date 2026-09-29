@@ -30,6 +30,7 @@ pub enum LyricsOrigin {
 /// best first: word-timed, then line-timed from LRCLIB on, untimed last (docs/features.md, "Lyrics
 /// sources"). Rankings and switches are stored by [`name`](Self::name), so this order can change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 pub enum LyricsService {
     Paxsenix,
     Binilyrics,
@@ -179,35 +180,39 @@ impl LyricsService {
     }
 }
 
-/// Every service's name in default rank order. Also the default set switched on.
-pub fn default_order() -> Vec<String> {
-    LyricsService::ALL.iter().map(|s| s.name().to_string()).collect()
+/// Every service in default rank order. Also the default set switched on.
+pub fn default_order() -> Vec<LyricsService> {
+    LyricsService::ALL.to_vec()
 }
 
-/// A stored ranking completed: unknown names dropped, duplicates removed, and services added since
-/// inserted after their default predecessor.
-pub fn complete_order(stored: &[String]) -> Vec<String> {
-    let mut order: Vec<LyricsService> = Vec::new();
-    for s in stored.iter().filter_map(|n| LyricsService::named(n)) {
-        if !order.contains(&s) {
-            order.push(s);
-        }
-    }
+/// A ranking completed: duplicates removed, and services missing from it inserted after their default
+/// predecessor.
+pub fn complete_order(stored: &[LyricsService]) -> Vec<LyricsService> {
+    let mut order = distinct(stored.iter().copied());
     for (i, s) in LyricsService::ALL.into_iter().enumerate() {
         if !order.contains(&s) {
             let above = LyricsService::ALL[..i].iter().rev().find_map(|a| order.iter().position(|o| o == a));
             order.insert(above.map_or(0, |at| at + 1), s);
         }
     }
-    order.into_iter().map(|s| s.name().to_string()).collect()
+    order
 }
 
-/// Known service names only, each once, in stored order.
-pub fn known(stored: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for s in stored.iter().filter_map(|n| LyricsService::named(n)) {
-        if !out.iter().any(|o| o == s.name()) {
-            out.push(s.name().to_string());
+/// The services a stored list names (`LRCLIB,KUGOU`), each once, in order; unknown names dropped.
+pub fn parse(names: &str) -> Vec<LyricsService> {
+    distinct(names.split(',').filter_map(LyricsService::named))
+}
+
+/// The stored form of a list: names joined by commas.
+pub fn to_names(services: &[LyricsService]) -> String {
+    services.iter().map(|s| s.name()).collect::<Vec<_>>().join(",")
+}
+
+fn distinct(services: impl Iterator<Item = LyricsService>) -> Vec<LyricsService> {
+    let mut out = Vec::new();
+    for s in services {
+        if !out.contains(&s) {
+            out.push(s);
         }
     }
     out
@@ -215,21 +220,20 @@ pub fn known(stored: &[String]) -> Vec<String> {
 
 /// The services switched on, in rank order.
 pub fn switched_on(p: &StoredPrefs) -> Vec<LyricsService> {
-    p.lyrics_order.iter().filter(|n| p.lyrics_on.contains(n)).filter_map(|n| LyricsService::named(n)).collect()
+    p.lyrics_order.iter().copied().filter(|s| p.lyrics_on.contains(s)).collect()
 }
 
 /// The ranking with `service` moved `by` places (-1 up), past switched-off neighbours too.
-pub fn moved(p: &StoredPrefs, service: LyricsService, by: i32) -> Vec<String> {
-    let Some(at) = p.lyrics_order.iter().position(|n| n == service.name()) else { return p.lyrics_order.clone() };
+pub fn moved(p: &StoredPrefs, service: LyricsService, by: i32) -> Vec<LyricsService> {
+    let Some(at) = p.lyrics_order.iter().position(|s| *s == service) else { return p.lyrics_order.clone() };
     placed(p, service, (at as i64 + by as i64).max(0) as usize)
 }
 
 /// The ranking with `service` moved to place `to` (past the end is last).
-pub fn placed(p: &StoredPrefs, service: LyricsService, to: usize) -> Vec<String> {
+pub fn placed(p: &StoredPrefs, service: LyricsService, to: usize) -> Vec<LyricsService> {
     let mut order = complete_order(&p.lyrics_order);
-    let Some(at) = order.iter().position(|n| n == service.name()) else { return order };
-    let name = order.remove(at);
-    order.insert(to.min(order.len()), name);
+    order.retain(|s| *s != service);
+    order.insert(to.min(order.len()), service);
     order
 }
 
@@ -255,8 +259,8 @@ pub fn lyrics_lookup(p: &StoredPrefs) -> LyricsLookup {
 mod tests {
     use super::*;
 
-    fn names(v: &[&str]) -> Vec<String> {
-        v.iter().map(|s| s.to_string()).collect()
+    fn named(v: &[&str]) -> Vec<LyricsService> {
+        v.iter().map(|s| LyricsService::named(s).unwrap()).collect()
     }
 
     #[test]
@@ -275,7 +279,7 @@ mod tests {
         assert!(lyrics_lookup(&StoredPrefs { third_party_lookups: false, ..on.clone() }).services.is_empty(), "off under the lookups switch");
         let first: Vec<LyricsService> = lyrics_lookup(&on).services.into_iter().filter(|s| s.first_wave()).collect();
         let mut want = vec![LyricsService::Paxsenix, LyricsService::Binilyrics, LyricsService::Unison, LyricsService::Kugou, LyricsService::Simpmusic, LyricsService::Lrclib];
-        want.sort_by_key(|s| default_order().iter().position(|n| n == s.name()));
+        want.sort_by_key(|s| default_order().iter().position(|n| n == s));
         assert_eq!(first, want, "the cheap and good ones first");
         assert!(lyrics_lookup(&on).services.iter().all(|s| !s.needs_key()), "keyed services wait for a key");
         let off = StoredPrefs { lyrics_online: false, ..on };
@@ -284,7 +288,7 @@ mod tests {
 
     #[test]
     fn default_order_by_timing() {
-        let order: Vec<LyricsService> = default_order().iter().filter_map(|n| LyricsService::named(n)).collect();
+        let order = default_order();
         assert_eq!(order.len(), 16);
         let rank = |s: LyricsService| order.iter().position(|o| *o == s).unwrap();
         // Word timing first, LRCLIB the first of those that time lines, untimed words last.
@@ -298,7 +302,7 @@ mod tests {
 
     #[test]
     fn keyed_service_waits_for_key() {
-        let p = StoredPrefs { third_party_lookups: true, lyrics_on: names(&["PAXSENIX_SPOTIFY", "LRCLIB"]), ..StoredPrefs::default() };
+        let p = StoredPrefs { third_party_lookups: true, lyrics_on: named(&["PAXSENIX_SPOTIFY", "LRCLIB"]), ..StoredPrefs::default() };
         assert_eq!(lyrics_lookup(&p).services, [LyricsService::Lrclib]);
         let keyed = StoredPrefs { paxsenix_key: " abc ".into(), ..p };
         let l = lyrics_lookup(&keyed);
@@ -308,10 +312,10 @@ mod tests {
 
     #[test]
     fn complete_order_inserts_new_services() {
-        let order = complete_order(&names(&["LRCLIB", "UNISON", "MUSIXMATCH", "LRCLIB"]));
+        let order = complete_order(&parse("LRCLIB, UNISON,MUSIXMATCH,,LRCLIB"));
         assert_eq!(order.len(), 16);
-        assert_eq!(order[..2], names(&["PAXSENIX", "BINILYRICS"]), "the ones ranked above everything stored come first");
-        let at = |n: &str| order.iter().position(|o| o == n).unwrap();
+        assert_eq!(order[..2], named(&["PAXSENIX", "BINILYRICS"]), "the ones ranked above everything stored come first");
+        let at = |n: &str| order.iter().position(|o| o.name() == n).unwrap();
         assert!(at("LRCLIB") < at("UNISON"), "the stored order stands");
         assert_eq!(at("PAXSENIX_SPOTIFY"), at("LRCLIB") + 1, "put in after the one above it out of the box");
         assert_eq!(complete_order(&[]), default_order());
@@ -319,18 +323,18 @@ mod tests {
 
     #[test]
     fn move_passes_switched_off_services() {
-        let p = StoredPrefs { lyrics_on: names(&["NETEASE", "LRCLIB", "GENIUS"]), ..StoredPrefs::default() };
-        let at = |o: &[String], n: &str| o.iter().position(|x| x == n).unwrap();
+        let p = StoredPrefs { lyrics_on: named(&["NETEASE", "LRCLIB", "GENIUS"]), ..StoredPrefs::default() };
+        let at = |o: &[LyricsService], n: &str| o.iter().position(|x| x.name() == n).unwrap();
         let order = moved(&p, LyricsService::Lrclib, -1);
         assert_eq!(at(&order, "LRCLIB"), at(&p.lyrics_order, "LRCLIB") - 1, "one place, past a service that is off");
         assert_eq!(at(&order, "PAXSENIX_MUSIXMATCH"), at(&p.lyrics_order, "LRCLIB"));
         let first = StoredPrefs { lyrics_order: placed(&p, LyricsService::Lrclib, 0), ..p.clone() };
-        assert_eq!(first.lyrics_order[0], "LRCLIB");
+        assert_eq!(first.lyrics_order[0], LyricsService::Lrclib);
         assert_eq!(moved(&first, LyricsService::Lrclib, -1), first.lyrics_order, "the first stays first");
         assert_eq!(switched_on(&first), [LyricsService::Lrclib, LyricsService::Netease, LyricsService::Genius]);
         let off = moved(&p, LyricsService::Kugou, 1);
         assert_eq!(at(&off, "KUGOU"), at(&p.lyrics_order, "KUGOU") + 1, "one switched off moves too");
-        assert_eq!(p.lyrics_on, names(&["NETEASE", "LRCLIB", "GENIUS"]), "moving switches nothing");
+        assert_eq!(p.lyrics_on, named(&["NETEASE", "LRCLIB", "GENIUS"]), "moving switches nothing");
     }
 
     #[test]
@@ -338,12 +342,12 @@ mod tests {
         let p = StoredPrefs::default();
         let last = placed(&p, LyricsService::Paxsenix, 99);
         assert_eq!(last.len(), 16);
-        assert_eq!(last[15], "PAXSENIX");
+        assert_eq!(last[15], LyricsService::Paxsenix);
         assert_eq!(last[..15], p.lyrics_order[1..]);
         let back = StoredPrefs { lyrics_order: last, ..p.clone() };
         assert_eq!(placed(&back, LyricsService::Paxsenix, 0), p.lyrics_order);
         let mid = placed(&p, LyricsService::Genius, 3);
-        assert_eq!(mid[3], "GENIUS");
-        assert_eq!(mid.iter().filter(|n| *n == "GENIUS").count(), 1);
+        assert_eq!(mid[3], LyricsService::Genius);
+        assert_eq!(mid.iter().filter(|n| **n == LyricsService::Genius).count(), 1);
     }
 }
