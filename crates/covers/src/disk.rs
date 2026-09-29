@@ -1,14 +1,9 @@
-//! Cover files on disk, in a directory the client names, under a size limit: the least recently used go
-//! first. Each file is named by the hash of its address and holds the server's bytes as they came.
+//! LRU cache of raw cover files in a directory, bounded in bytes, one file per MD5 of the cover key.
 //!
-//! The index is only in memory, rebuilt from the directory when it is opened: it is what is in the
-//! directory, not state of the app's (so it stays out of the app's database), and a file's modification
-//! time is its last use, set again on every read, so the order survives a restart.
-//!
-//! What changes the directory (a file renamed into place, a file deleted) is done under the index's lock,
-//! together with the index's own change, so the two cannot disagree: a trim or a remove cannot delete a
-//! file a concurrent put has just put in place, nor a put's file be indexed at another put's size.
-//! Writing a file and reading one are done outside it; they are the slow part.
+//! The index lives in memory and is rebuilt from the directory on open; a file's mtime is its last use
+//! (reset on every read), so the order survives restarts. Renames and deletes happen under the index lock
+//! together with the index update so the two never disagree; writing and reading file contents happen
+//! outside it.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
@@ -20,22 +15,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use md5::{Digest, Md5};
 use parking_lot::Mutex;
 
-/// A cover's address as a file's name: its MD5.
+/// MD5 of a cover's key; the hex form is the file name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Key(pub [u8; 16]);
 
 impl Key {
-    /// The key of the cover at `url`: the server, the endpoint and the cover's id and size, never what
-    /// signs the request (nori-core's `cover_key_parts`). The same cover fetched under another token or
-    /// salt, or at the server's other address, is the same file.
+    /// Key of the cover at `url`, ignoring the auth parameters (nori-core's `cover_key_parts`), so the
+    /// same cover under another token or salt maps to the same file.
     pub fn of(url: &str) -> Key {
         let mut h = Md5::new();
         nori_core::covers::cover_key_parts(url, |p| h.update(p));
         Key(h.finalize().into())
     }
 
-    /// The key covers were kept under before [`Key::of`]: the whole address, signature and all. Looked
-    /// for once when a cover is not found under its key, and moved.
+    /// Legacy key: MD5 of the full URL. Checked on a miss and migrated to [`Key::of`].
     pub fn of_address(url: &str) -> Key {
         Key(Md5::digest(url.as_bytes()).into())
     }
@@ -67,23 +60,21 @@ impl Key {
 struct Entry {
     bytes: u64,
     used: u64,
-    /// Which put wrote the file (the clock then): a read that fails forgets the file only if it is still
-    /// the one it tried to read.
+    /// Clock value of the put that wrote the file; a failed read only forgets the entry if it matches.
     written: u64,
 }
 
-/// Which files there are and in which order they were last used.
 #[derive(Default)]
 struct Index {
     files: HashMap<Key, Entry>,
-    /// Last use (a counter, oldest first) to the file.
+    /// Last-use clock -> key, oldest first.
     order: BTreeMap<u64, Key>,
     bytes: u64,
     clock: u64,
 }
 
 impl Index {
-    /// Counts a use of the file `key`; which put wrote it, or None when it is not kept.
+    /// Marks `key` used; returns its `written` clock, or None if not indexed.
     fn touch(&mut self, key: Key) -> Option<u64> {
         let e = self.files.get_mut(&key)?;
         self.order.remove(&e.used);
@@ -108,7 +99,7 @@ impl Index {
         true
     }
 
-    /// The least recently used files to delete for the rest to fit `limit`.
+    /// Pops least recently used entries into `out` until the rest fits `limit`.
     fn over(&mut self, limit: u64, out: &mut Vec<Key>) {
         while self.bytes > limit {
             let Some((_, key)) = self.order.pop_first() else { break };
@@ -123,14 +114,13 @@ pub struct DiskCache {
     dir: PathBuf,
     limit: u64,
     index: Mutex<Index>,
+    /// Numbers temp files so concurrent writers never share one.
+    writes: AtomicU64,
 }
 
-/// Makes each writer's temporary file its own.
-static WRITES: AtomicU64 = AtomicU64::new(0);
-
 impl DiskCache {
-    /// Opens (creating it if need be) the cache in `dir`, keeping at most `limit` bytes. Files left half
-    /// written by a crash are deleted, and so is anything over the limit.
+    /// Opens (creating) the cache in `dir` with a `limit` in bytes, deleting leftover temp files and
+    /// anything over the limit.
     pub fn open(dir: impl Into<PathBuf>, limit: u64) -> io::Result<DiskCache> {
         let dir = dir.into();
         fs::create_dir_all(&dir)?;
@@ -153,13 +143,13 @@ impl DiskCache {
         for (_, key, bytes) in found {
             index.insert(key, bytes);
         }
-        let cache = DiskCache { dir, limit, index: Mutex::new(Index::default()) };
+        let cache = DiskCache { dir, limit, index: Mutex::new(Index::default()), writes: AtomicU64::new(0) };
         cache.trim(&mut index);
         *cache.index.lock() = index;
         Ok(cache)
     }
 
-    /// Where the cover `key` is kept, whether or not it is there.
+    /// File path for `key`, whether or not it exists.
     pub fn path(&self, key: Key) -> PathBuf {
         let name = key.name();
         self.dir.join(std::str::from_utf8(&name).expect("hex is ASCII"))
@@ -169,21 +159,19 @@ impl DiskCache {
         self.index.lock().files.contains_key(&key)
     }
 
-    /// Reads the cover `key` into `buf` (cleared first); false when it is not kept. A read counts as a
-    /// use.
+    /// Reads `key` into `buf` (cleared first) and marks it used; false on a miss.
     pub fn read(&self, key: Key, buf: &mut Vec<u8>) -> bool {
         let Some(written) = self.index.lock().touch(key) else { return false };
         buf.clear();
         let path = self.path(key);
         let read = File::open(&path).and_then(|mut f| {
             f.read_to_end(buf)?;
-            // One more syscall on a file already open, so that the order holds after a restart.
+            // Persists the LRU order across restarts.
             let _ = f.set_modified(SystemTime::now());
             Ok(())
         });
         if read.is_err() {
-            // Deleted behind the cache's back: forget it, unless a put has put a new one in its place
-            // since.
+            // Deleted externally: forget it, unless a newer put replaced it meanwhile.
             let mut index = self.index.lock();
             if index.files.get(&key).is_some_and(|e| e.written == written) {
                 index.remove(key);
@@ -193,14 +181,13 @@ impl DiskCache {
         true
     }
 
-    /// Keeps `bytes` as the cover `key`, then deletes the least recently used covers over the limit. A
-    /// file larger than the whole limit is not kept at all.
+    /// Stores `bytes` under `key`, then evicts over the limit. A file larger than the limit is dropped.
     pub fn put(&self, key: Key, bytes: &[u8]) -> io::Result<()> {
         if bytes.len() as u64 > self.limit {
             return Ok(());
         }
         let path = self.path(key);
-        let tmp = path.with_extension(format!("{}-{}.tmp", std::process::id(), WRITES.fetch_add(1, Ordering::Relaxed)));
+        let tmp = path.with_extension(format!("{}-{}.tmp", std::process::id(), self.writes.fetch_add(1, Ordering::Relaxed)));
         let written = File::create(&tmp).and_then(|mut f| f.write_all(bytes)).and_then(|_| {
             let mut index = self.index.lock();
             fs::rename(&tmp, &path)?;
@@ -221,7 +208,7 @@ impl DiskCache {
         }
     }
 
-    /// Deletes every cover, for a user who asked for the space back.
+    /// Deletes every cover.
     pub fn clear(&self) {
         let mut index = self.index.lock();
         for key in std::mem::take(&mut *index).files.into_keys() {
@@ -229,7 +216,6 @@ impl DiskCache {
         }
     }
 
-    /// Bytes kept.
     pub fn bytes(&self) -> u64 {
         self.index.lock().bytes
     }
@@ -238,7 +224,7 @@ impl DiskCache {
         &self.dir
     }
 
-    /// Deletes what is over the limit, under the lock `index` is held by: a file or two after a put.
+    /// Evicts over the limit; the caller holds the index lock.
     fn trim(&self, index: &mut Index) {
         let mut gone = Vec::new();
         index.over(self.limit, &mut gone);
@@ -252,13 +238,12 @@ impl DiskCache {
 mod tests {
     use super::*;
 
-    /// A directory of the test's own, gone when the test is.
     fn dir(name: &str) -> nori_testdir::TempDir {
         nori_testdir::TempDir::new(&format!("covers-{name}"))
     }
 
     #[test]
-    fn a_key_is_its_file_name_and_back() {
+    fn key_file_name_round_trips() {
         let k = Key::of("http://x/rest/getCoverArt?id=1&size=320");
         assert_eq!(Key::parse(std::str::from_utf8(&k.name()).unwrap()), Some(k));
         assert_eq!(Key::parse("nope"), None);
@@ -266,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn the_least_recently_used_go_first_and_a_read_is_a_use() {
+    fn evicts_least_recently_used_and_read_counts_as_use() {
         let d = dir("lru");
         let c = DiskCache::open(d.path(), 30).unwrap();
         let (a, b, x) = (Key::of("a"), Key::of("b"), Key::of("c"));
@@ -276,24 +261,24 @@ mod tests {
         let mut buf = Vec::new();
         assert!(c.read(a, &mut buf));
         assert_eq!(buf, [1; 10]);
-        // Over the limit: b is the oldest now, a having been read.
+        // b is now the oldest, a having been read.
         c.put(Key::of("d"), &[4; 10]).unwrap();
         assert!(!c.contains(b) && !c.path(b).exists());
         assert!(c.contains(a) && c.contains(x));
         assert_eq!(c.bytes(), 30);
-        // Larger than the whole cache: not kept, nothing else lost.
+        // Larger than the limit: dropped, nothing evicted.
         c.put(Key::of("e"), &[5; 31]).unwrap();
         assert!(!c.contains(Key::of("e")) && c.contains(a));
     }
 
     #[test]
-    fn opening_again_finds_the_files_in_the_order_they_were_used_and_trims_to_a_new_limit() {
+    fn reopen_restores_lru_order_and_trims_to_new_limit() {
         let d = dir("reopen");
         {
             let c = DiskCache::open(d.path(), 100).unwrap();
             for (i, name) in ["a", "b", "c"].iter().enumerate() {
                 c.put(Key::of(name), &[i as u8; 10]).unwrap();
-                // Modification times a clear step apart, whatever the file system's resolution.
+                // Distinct mtimes regardless of file system resolution.
                 File::options().write(true).open(c.path(Key::of(name))).unwrap().set_modified(UNIX_EPOCH + std::time::Duration::from_secs(1000 + i as u64)).unwrap();
             }
             File::create(d.join("0123.5-1.tmp")).unwrap();
@@ -305,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_deleted_behind_its_back_is_a_miss() {
+    fn externally_deleted_file_is_a_miss() {
         let d = dir("gone");
         let c = DiskCache::open(d.path(), 100).unwrap();
         c.put(Key::of("a"), &[1; 4]).unwrap();
@@ -314,8 +299,7 @@ mod tests {
         assert_eq!(c.bytes(), 0);
     }
 
-    /// Whether the index and the directory say the same: every file kept is indexed at its size, and
-    /// nothing indexed is missing.
+    /// Checks the index matches the directory: same files, same sizes, same total.
     fn agree(c: &DiskCache) -> Result<(), String> {
         let index = c.index.lock();
         let mut on_disk = HashMap::new();
@@ -340,12 +324,11 @@ mod tests {
     }
 
     #[test]
-    fn threads_putting_reading_and_trimming_the_same_covers_leave_the_index_and_the_directory_agreeing() {
+    fn concurrent_ops_keep_index_and_directory_in_sync() {
         let d = dir("race");
         let c = std::sync::Arc::new(DiskCache::open(d.path(), 60).unwrap());
         let keys: Vec<Key> = (0..3).map(|i| Key::of(&i.to_string())).collect();
-        // Short rounds, each checked once its threads are done: a race that leaves the two disagreeing
-        // is mended by a later put of the same cover, so one long run would hide it.
+        // Many short rounds: a later put of the same key would mask a race in one long run.
         for round in 0..300 {
             let go = std::sync::Arc::new(std::sync::Barrier::new(4));
             let threads: Vec<_> = (0..4)
@@ -377,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn clearing_deletes_every_cover_and_the_cache_goes_on() {
+    fn clear_deletes_everything_and_cache_stays_usable() {
         let d = dir("clear");
         let c = DiskCache::open(d.path(), 100).unwrap();
         c.put(Key::of("a"), &[1; 4]).unwrap();

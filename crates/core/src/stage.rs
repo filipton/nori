@@ -1,13 +1,9 @@
-//! How the app draws its pages and times them, as numbers and small rules every front end shares: how
-//! long the waits and fades are, which glyph the transport shows, where the seek bar's time comes from and
-//! every gradient's stops (`nori_look::sleeve`). Where things sit on a phone's screen is the phone's. The platform reads [`stage`] once,
-//! at start, and asks the rules at the moment something happens (a song changes) - never per frame. How a
-//! touch gesture feels (flick speeds, how far a drag turns a record, where the sheet settles) is the
-//! platform's own: a desktop or terminal client has other input.
+//! UI timings, gradient stops and small display rules shared by every client. [`stage`] is read once;
+//! the rules are asked on events, never per frame. Layout and gestures are each platform's own.
 
 use nori_look::sleeve;
 
-/// One stop of a gradient: where along it (0..1) and how opaque.
+/// A gradient stop: position (0..1) and opacity.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct GradientStop {
@@ -19,12 +15,11 @@ fn stops(s: &[sleeve::Stop]) -> Vec<GradientStop> {
     s.iter().map(|s| GradientStop { at: s.at, alpha: s.alpha }).collect()
 }
 
-/// Everything the platform lays out and times by, read once.
+/// UI constants, read once.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct Stage {
-    /// How much of the sleeve's height goes soft at its bottom; the same share its colour is averaged
-    /// from (`nori_look::cover`).
+    /// Share of the sleeve height that fades at the bottom (also the colour sampling share).
     pub melt: f32,
     pub rub_out: Vec<GradientStop>,
     pub soft: Vec<GradientStop>,
@@ -36,36 +31,28 @@ pub struct Stage {
     pub floor_stops: Vec<f32>,
     pub lyrics_mask: Vec<GradientStop>,
 
-    /// The spinner in Play only comes in after this long buffering: most skips start inside it, and a
-    /// spinner flicking into the pause button for a frame made skipping feel rough.
+    /// Buffering time before Play shows a spinner (most skips start within it).
     pub spinner_after_ms: i64,
-    /// How long the artwork, the lyrics and the queue take to dissolve into one another.
+    /// Cross-fade between artwork, lyrics and queue panels.
     pub panel_ms: i32,
-    /// How long a song whose cover is not at hand yet keeps the last picture on the sleeve before it fades
-    /// to the placeholder: long enough for a cover read from the disk to arrive without the placeholder
-    /// blinking in first, short enough that the last song's cover never reads as the new song's.
+    /// How long the previous cover stays while the new one loads, before the placeholder.
     pub sleeve_hold_ms: i64,
-    /// The same grace for the page's colours: a song whose colours are not worked out yet keeps the last
-    /// song's this long, then the page fades to the plain page until its own come (or for good, when it has
-    /// no artwork).
+    /// How long the previous page colours stay while the new ones are computed.
     pub colour_wait_ms: i64,
-    /// How long the page's colours take to cross-fade to a song's (as long as a record takes to slide).
+    /// Page colour cross-fade.
     pub colour_fade_ms: i32,
-    /// How long the lyrics stay where a finger left them.
+    /// How long scrolled lyrics stay before following playback again.
     pub lyrics_reading_ms: i64,
-    /// A sung word's rise takes at least this long, its settling back this long once it is done, and a
-    /// note held `lyrics_held_ms` or more glows, fading over `lyrics_glow_fade_ms` after it ends. The
-    /// clock draws every frame while any of it moves (`nori_look::lyrics::MOTION_TAIL_MS`).
+    /// Word animation: minimum rise, settle, hold time before glowing, and glow fade (`nori_look::lyrics`).
     pub lyrics_rise_min_ms: i64,
     pub lyrics_settle_ms: i64,
     pub lyrics_held_ms: i64,
     pub lyrics_glow_fade_ms: i64,
-    /// How lit the unsung words of the line being filled are (`nori_look::lyrics::UNSUNG`).
+    /// Brightness of unsung words in the active line.
     pub lyrics_unsung: f32,
-    /// Data that arrives within this long of a page opening was never waited for: it snaps in.
+    /// Data arriving this soon after a page opens appears without animation.
     pub quick_load_ms: i64,
-    /// How often the limiter's meter is read while the equalizer is on screen: quick enough to follow a
-    /// peak, slow enough that the screen is not redrawn for nothing between them.
+    /// Limiter meter poll interval on the equalizer screen.
     pub meter_ms: i64,
 }
 
@@ -98,8 +85,6 @@ pub fn stage() -> Stage {
     }
 }
 
-// ---- the transport -----------------------------------------------------------------------------------------
-
 /// What the play button shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
@@ -110,9 +95,8 @@ pub enum TransportGlyph {
     Spinner,
 }
 
-/// The play button: a spinner once buffering has lasted `spinner_after_ms` (`waited`); before that the
-/// wait is "playing" - the player is going to play, that is what buffering means - and showing Play
-/// meanwhile said "paused" for a fraction of a second after every skip.
+/// The play button's glyph: Spinner once buffering outlasted `spinner_after_ms` (`waited`), Pause while
+/// playing or buffering, else Play.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn transport_glyph(playing: bool, buffering: bool, waited: bool) -> TransportGlyph {
     if waited {
@@ -124,22 +108,19 @@ pub fn transport_glyph(playing: bool, buffering: bool, waited: bool) -> Transpor
     }
 }
 
-/// Whether movement is kept to a minimum: the app's own switch, or the system's animations turned off
-/// (Developer options, or the accessibility setting some people rely on) unless the listener asked the
-/// app to animate regardless.
+/// Reduced motion: the app setting, or system animations off unless `ignore_system`.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn motion_reduced(reduce: bool, ignore_system: bool, system_off: bool) -> bool {
     reduce || (system_off && !ignore_system)
 }
 
-/// Whether a page that can wear its cover goes black (see `nori_look::sleeve::page_black`).
+/// See `nori_look::sleeve::page_black`.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn page_black(amoled: bool, cover_colours: bool) -> bool {
     sleeve::page_black(amoled, cover_colours)
 }
 
-/// The sleeve band's colour matrix for the look's band tint (see `nori_look::sleeve::band_matrix`).
-/// Asked once per tint and kept.
+/// See `nori_look::sleeve::band_matrix`.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn band_matrix(strength: f32, kr: f32, kg: f32, kb: f32) -> Vec<f32> {
     sleeve::band_matrix(strength, kr, kg, kb).to_vec()
@@ -151,8 +132,6 @@ pub fn lyrics_keep_screen_on(asked: bool, shown: bool, playing: bool) -> bool {
     nori_look::lyrics::keeps_screen_on(asked, shown, playing)
 }
 
-// ---- the seek bar ------------------------------------------------------------------------------------------
-
 /// The times either side of the seek bar, in whole seconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
@@ -161,9 +140,8 @@ pub struct SeekTimes {
     pub left_s: i64,
 }
 
-/// The seek bar shows one of three places: the finger's, while it is down (`drag`, a share of the bar);
-/// the place a released scrub asked for (`held_ms`, -1 for none) until the player is really there;
-/// otherwise the music's. The time left is counted from the same place.
+/// Seek bar times for the drag position while `dragging`, else the pending seek `held_ms` (-1: none),
+/// else the playback position.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn seek_times(dragging: bool, drag: f32, held_ms: i64, position_ms: i64, duration_ms: i64) -> SeekTimes {
     let d = duration_ms.max(1) as f32;
@@ -177,29 +155,22 @@ pub fn seek_times(dragging: bool, drag: f32, held_ms: i64, position_ms: i64, dur
     SeekTimes { at_s: shown / 1000, left_s: (duration_ms - shown).max(0) / 1000 }
 }
 
-// ---- the queue panel ---------------------------------------------------------------------------------------
-
-/// The queue as the panel lists it.
+/// The queue panel's rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct QueueRows {
-    /// Positions in the queue in the order they will play (under shuffle not the list's own order).
+    /// List indexes in play order.
     pub order: Vec<u32>,
-    /// A drag moves a song within the list, so reordering is offered only when the two orders are one.
+    /// Dragging is offered only when play order is list order (not shuffled).
     pub reorderable: bool,
-    /// The rows a sideways swipe does not take out (list indexes): the song playing, as the page shows it
-    /// and as the queue has it (the two differ while a mix hands over). A swipe is quick and easy to make
-    /// by accident, and taking the song playing out cuts the music; the row's × still does it on purpose.
+    /// List indexes a swipe cannot remove: the current song as shown and as queued (they differ during a mix).
     pub kept: Vec<u32>,
-    /// The row (a place in `order`) of the song the page shows playing, -1 for none. The panel opens with
-    /// it at the top; the rows before it have played (earlier in the play order, which under shuffle is
-    /// not the list's), are drawn dimmed above it, and a drag neither lifts them nor drops a song among them.
+    /// Position in `order` of the shown current song, -1 for none; rows before it have played.
     pub now: i32,
 }
 
-/// The panel's rows for a queue of `len` songs as the page holds it, in the core's play order, with the
-/// song the page shows playing at `shown` (-1 none); when the core's order does not cover the page's queue
-/// (the change has not reached it yet) the list's own order stands in.
+/// Rows for the page's `len`-song queue with `shown` current (-1: none). Uses the core's play order when
+/// it has the same length, else list order.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn queue_rows(len: u32, shuffle: bool, shown: i32) -> QueueRows {
     let (order, current) = crate::playlist::with(|p| {
@@ -222,7 +193,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn play_shows_pause_while_it_waits_and_spins_only_late() {
+    fn transport_glyph_and_reduced_motion() {
         assert_eq!(transport_glyph(false, true, false), TransportGlyph::Pause);
         assert_eq!(transport_glyph(false, true, true), TransportGlyph::Spinner);
         assert_eq!(transport_glyph(true, false, false), TransportGlyph::Pause);
@@ -234,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn the_seek_bar_reads_finger_then_hold_then_music() {
+    fn seek_times_prefer_drag_then_held_then_position() {
         assert_eq!(seek_times(true, 0.5, 9_000, 1_000, 200_000), SeekTimes { at_s: 100, left_s: 100 });
         assert_eq!(seek_times(false, 0.5, 9_000, 1_000, 200_000), SeekTimes { at_s: 9, left_s: 191 });
         assert_eq!(seek_times(false, 0.5, -1, 61_500, 200_000), SeekTimes { at_s: 61, left_s: 138 });
@@ -242,27 +213,25 @@ mod tests {
     }
 
     #[test]
-    fn the_queue_lists_in_play_order_and_reorders_only_unshuffled() {
+    fn rows_use_play_order_and_reorder_unshuffled() {
         assert_eq!(rows(Some(vec![2, 0, 1]), 3, true, 2, Some(2)), QueueRows { order: vec![2, 0, 1], reorderable: false, kept: vec![2], now: 0 });
         assert_eq!(rows(None, 3, false, -1, None), QueueRows { order: vec![0, 1, 2], reorderable: true, kept: vec![], now: -1 });
     }
 
     #[test]
-    fn what_has_played_is_what_comes_before_the_song_playing_in_play_order() {
-        // Unshuffled the list's own order: the two before the third have played.
+    fn now_is_position_in_play_order() {
         assert_eq!(rows(None, 5, false, 2, Some(2)).now, 2);
-        // Shuffled, list index 1 plays fourth: the three rows before it have played, list index 4 among them.
+        // Shuffled: list index 1 plays fourth.
         assert_eq!(rows(Some(vec![3, 4, 0, 1, 2]), 5, true, 1, Some(1)).now, 3);
-        // Nothing shown playing, or a place past the end: nothing has played.
         assert_eq!(rows(None, 3, false, -1, None).now, -1);
         assert_eq!(rows(None, 3, false, 7, None).now, -1);
     }
 
     #[test]
-    fn a_swipe_leaves_the_song_playing() {
-        // The page still on the song a mix is leaving, the queue already on the next: both stay.
+    fn current_rows_are_kept_from_swipes() {
+        // During a mix the page and queue disagree: both kept.
         assert_eq!(rows(None, 4, false, 1, Some(2)).kept, [1, 2]);
-        assert_eq!(rows(None, 4, false, 3, None).kept, [3], "the page's own, before the core has the queue");
-        assert_eq!(rows(None, 2, false, 5, Some(7)).kept, Vec::<u32>::new(), "nothing past the end");
+        assert_eq!(rows(None, 4, false, 3, None).kept, [3]);
+        assert_eq!(rows(None, 2, false, 5, Some(7)).kept, Vec::<u32>::new(), "out of range");
     }
 }

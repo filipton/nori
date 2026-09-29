@@ -1,5 +1,4 @@
-//! The stages that change how long the audio is: speed, pitch and silence skipping, through the
-//! output's clock and out to the ear.
+//! Speed, pitch and silence skipping through the output clock.
 
 use nori_player::sim::Player;
 
@@ -15,7 +14,7 @@ fn pace(p: &mut Player, settle_ms: i64, ms: i64) -> i64 {
 }
 
 #[test]
-fn at_one_and_a_half_times_six_seconds_play_nine_of_the_song_at_its_own_pitch() {
+fn speed_1_5x_keeps_pitch() {
     let song = centred(440.0, 0.4, 60.0);
     let mut p = Player::new(vec![track("a", &song)]);
     p.play_from(0);
@@ -36,7 +35,7 @@ fn at_one_and_a_half_times_six_seconds_play_nine_of_the_song_at_its_own_pitch() 
 }
 
 #[test]
-fn pitch_alone_keeps_the_pace() {
+fn pitch_keeps_pace() {
     let song = centred(440.0, 0.4, 40.0);
     let mut p = Player::new(vec![track("a", &song)]);
     p.set_speed(1.0, 1.1);
@@ -51,7 +50,7 @@ fn pitch_alone_keeps_the_pace() {
 }
 
 #[test]
-fn skipping_silence_takes_out_the_pause_and_keeps_every_note() {
+fn silence_skipping_keeps_notes() {
     // Three seconds of music, four of silence, three of music.
     let (a, b) = (music(3.0, 31), music(3.0, 32));
     let song: Vec<i16> = [a.clone(), vec![0; frames(4.0) * 2], b.clone()].concat();
@@ -74,7 +73,7 @@ fn skipping_silence_takes_out_the_pause_and_keeps_every_note() {
 }
 
 #[test]
-fn a_short_rest_is_left_alone_by_silence_skipping() {
+fn silence_skipping_keeps_short_rest() {
     let song: Vec<i16> = [music(2.0, 33), vec![0; frames(0.05) * 2], music(2.0, 34)].concat();
     let mut p = Player::new(vec![track("a", &song)]);
     p.set_skip_silence(true);

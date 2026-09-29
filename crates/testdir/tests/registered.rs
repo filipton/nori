@@ -1,8 +1,5 @@
-//! Every file under a crate's `tests/` is compiled into some test binary. A crate with `autotests = false`
-//! runs only the `[[test]]` targets its Cargo.toml lists, and a test directory runs only the modules its
-//! `main.rs` declares: a file left out of either is never built, and its tests silently never run (the
-//! engine's `estimated.rs` sat there unregistered once). This walks every crate the way Cargo and rustc
-//! would and names each file nothing reaches.
+//! Checks that every file under each crate's `tests/` is reachable from a test target (a `[[test]]` or
+//! an auto-discovered one) through `mod` declarations; an unregistered file silently never runs.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -46,9 +43,8 @@ fn targets(krate: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Every file reachable from `root` through `mod x;`, `#[path = "..."] mod x;` and `include!("...")`
-/// (a path beside the including file). A crate root, a `mod.rs` and a file named by `#[path]` keep their
-/// children beside them; any other `x.rs` in `x/`.
+/// Adds every file reachable from `root` through `mod x;`, `#[path = "..."] mod x;` and `include!` to `seen`.
+/// `owns_dir`: children live beside `root` (crate roots, `#[path]` files), otherwise in `<stem>/`.
 fn reach(root: &Path, owns_dir: bool, seen: &mut BTreeSet<PathBuf>) {
     let Ok(root) = root.canonicalize() else { return };
     if !seen.insert(root.clone()) {
@@ -67,10 +63,9 @@ fn reach(root: &Path, owns_dir: bool, seen: &mut BTreeSet<PathBuf>) {
             path_attr = rest.split('"').next().map(str::to_owned);
             continue;
         }
-        if let Some(rest) = line.strip_prefix("include!(\"") {
-            if let Some(p) = rest.split('"').next() {
-                reach(&here.join(p), true, seen);
-            }
+        // `include!("x.rs")` pastes the file in place: relative to this file, children as this file's.
+        if let Some(file) = line.strip_prefix("include!(\"").and_then(|r| r.split('"').next()) {
+            reach(&here.join(file), owns_dir, seen);
             continue;
         }
         let decl = line.strip_prefix("pub ").unwrap_or(line);
@@ -102,7 +97,7 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 #[test]
-fn every_file_under_a_crates_tests_is_built_into_a_test_binary() {
+fn every_test_file_is_registered() {
     let mut orphans = Vec::new();
     let mut checked = 0;
     let root = crates_dir().canonicalize().unwrap();

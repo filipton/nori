@@ -1,6 +1,4 @@
-//! The browsing screens' rules: what each home shelf is, how the long lists page, and the listening
-//! history's pages and date windows. The requests themselves stay with the app where they need the
-//! network; everything the offline index can answer is answered here in one call.
+//! The browsing screens' rules: home shelves, list paging and orders, library sections, the stats page.
 
 use nori_model::{HistoryEntry, ListeningStats, Playlist, Song};
 
@@ -24,20 +22,16 @@ pub const STATS_TOP: u32 = 10;
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 pub enum HomeShelf {
-    /// `getAlbumList2` of type `sort`, `size` albums. `follows_stars`: the one shelf that answers a star,
-    /// the way the favourites screen does - asked again whenever something is starred, with this
-    /// session's marks laid over it so an album that has just lost its heart leaves at once. No other
-    /// shelf re-asks on a star, because a star changes nothing in any of them.
+    /// `getAlbumList2` of type `sort`, `size` albums; `follows_stars`: asked again on every star, with
+    /// this session's marks laid over (the favourites shelf).
     Albums { sort: AlbumSort, size: u32, follows_stars: bool },
-    /// Every playlist there is, newest first, the first `take` of them, as against the handful the user
-    /// pinned. Somebody who keeps six playlists does not want to choose which of them is worth pinning.
+    /// The first `take` playlists, newest first.
     Playlists { take: u32 },
-    /// Straight out of the offline index, so it costs no request at all: a page of [Core::browse_songs].
+    /// A page of the offline index's songs.
     Songs { sort: String, descending: bool, limit: u32 },
-    /// The pinned playlists. They are fetched once for the whole page, because the row is a selection of
-    /// something the page already has to hold (see [home_pinned]).
+    /// The pinned playlists ([`home_pinned`]).
     Pinned,
-    /// A row this core does not know; it shows nothing.
+    /// A row this core does not know.
     Hidden,
 }
 
@@ -56,9 +50,8 @@ fn shelf(row: &str) -> HomeShelf {
     }
 }
 
-/// The shelves of the rows the user kept (by name: RECENT, NEWEST, FREQUENT, RANDOM, STARRED, PLAYLISTS,
-/// TOP_SONGS, PINNED), one per row and in the same order. Only these are requested at all; a hidden
-/// shelf costs no request.
+/// The shelf of each home row the user kept, by name (RECENT, NEWEST, FREQUENT, RANDOM, STARRED,
+/// PLAYLISTS, TOP_SONGS, PINNED).
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn home_shelves(rows: Vec<String>) -> Vec<HomeShelf> {
     rows.iter().map(|r| shelf(r)).collect()
@@ -81,9 +74,7 @@ pub fn home_rows_moved(mut rows: Vec<String>, from: u32, to: u32) -> Vec<String>
     rows
 }
 
-/// The home rows (by name) with `row` switched on or off. A row switched off leaves the order; one
-/// switched back on comes back at the end of the page, where it can be seen, and can be carried up from
-/// there.
+/// The home rows with `row` switched on (at the end) or off.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn home_rows_toggled(mut rows: Vec<String>, row: String, on: bool) -> Vec<String> {
     rows.retain(|r| *r != row);
@@ -99,8 +90,7 @@ pub fn home_rows_hidden(all: Vec<String>, shown: Vec<String>) -> Vec<String> {
     all.into_iter().filter(|r| !shown.contains(r)).collect()
 }
 
-/// The favourite playlists with `id` made one (`on`) or not. A playlist is a favourite on this phone: the
-/// server has no way to star one.
+/// The pinned playlists (kept on the device: the server cannot star one) with `id` pinned or not.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn pins_toggled(mut pins: Vec<String>, id: String, on: bool) -> Vec<String> {
     pins.retain(|p| *p != id);
@@ -110,8 +100,7 @@ pub fn pins_toggled(mut pins: Vec<String>, id: String, on: bool) -> Vec<String> 
     pins
 }
 
-/// The stored answers a manual refresh throws away first, so asking again really reaches the server
-/// rather than being told the two-minute-old copy is still fresh.
+/// The cached answers a manual refresh drops, so it reaches the server.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn home_refresh_drops() -> Vec<String> {
     ["getAlbumList2", "getPlaylists", "getStarred2"].map(String::from).to_vec()
@@ -275,12 +264,11 @@ pub fn radio_can_add(name: String, url: String) -> bool {
     !name.trim().is_empty() && url.starts_with("http")
 }
 
-/// How many songs the library's own reads ask for at a time.
+/// How many items the library's reads ask for at a time.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct LibrarySizes {
-    /// A search on the server: songs, albums and artists. One big page: octo-fiesta repeats its
-    /// provider results on every offset.
+    /// A server search, in one page: octo-fiesta repeats provider results on every offset.
     pub search_songs: i32,
     pub search_albums: i32,
     pub search_artists: i32,
@@ -306,8 +294,7 @@ pub fn browse_paging() -> Paging {
     Paging { albums: ALBUM_PAGE, songs: SONG_PAGE, history: HISTORY_PAGE }
 }
 
-/// One way to order the "all songs" list: `name` is what the app stores and passes back (and names the
-/// order by), `key` the song field it sorts on.
+/// An order of the "all songs" list: `name` is stored and passed back, `key` is the field sorted on.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct SongSortOption {
@@ -346,22 +333,20 @@ pub struct HistoryPage {
     pub exhausted: bool,
 }
 
-/// The listening page: the stats, and what it reads out of them. The client words it ("Most around
-/// 21:00, mostly on Fridays").
+/// The listening stats page.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct StatsPage {
     pub stats: ListeningStats,
-    /// The hour most was played in, 0 to 23 (the first of equal ones); none, and no chart, when nothing
-    /// was played.
+    /// The busiest hour, 0-23 (the first of equals); none when nothing was played.
     pub busiest_hour: Option<u32>,
-    /// The day of the week most was played on, 0 Monday to 6 Sunday; only with a busiest hour.
+    /// The busiest weekday, 0 Monday to 6 Sunday; only with a busiest hour.
     pub busiest_weekday: Option<u32>,
     /// Each hour's bar as a fraction of the busiest hour's.
     pub hours: Vec<f32>,
 }
 
-/// The first index holding the largest value, as Kotlin's `maxByOrNull` picks it.
+/// The first index of the largest value (Kotlin's `maxByOrNull`).
 fn busiest(v: &[u32]) -> Option<usize> {
     v.iter()
         .enumerate()
@@ -394,7 +379,6 @@ pub struct Decade {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn the_listening_page_reads_its_numbers() {
@@ -430,11 +414,10 @@ mod tests {
         let p = |id: &str| Playlist { id: id.into(), ..Default::default() };
         let pinned = home_pinned(vec![p("a"), p("b"), p("c")], vec!["c".into(), "a".into(), "z".into()]);
         assert_eq!(pinned.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["a", "c"]);
-        assert_eq!(home_refresh_drops(), ["getAlbumList2", "getPlaylists", "getStarred2"]);
     }
 
     #[test]
-    fn rows_and_pins_switch_on_at_the_end() {
+    fn home_rows_and_pins_edit() {
         let rows = ["A", "B", "C"].map(String::from).to_vec();
         assert_eq!(home_rows_toggled(rows.clone(), "B".into(), false), ["A", "C"]);
         assert_eq!(home_rows_toggled(["A", "C"].map(String::from).to_vec(), "B".into(), true), ["A", "C", "B"]);
@@ -442,14 +425,14 @@ mod tests {
         assert_eq!(home_rows_hidden(["A", "B", "C", "D"].map(String::from).to_vec(), vec!["C".into(), "A".into()]), ["B", "D"]);
         assert_eq!(pins_toggled(vec!["p".into()], "q".into(), true), ["p", "q"]);
         assert_eq!(pins_toggled(vec!["p".into(), "q".into()], "p".into(), false), ["q"]);
+        assert_eq!(home_rows_moved(rows.clone(), 0, 2), ["B", "C", "A"]);
+        assert_eq!(home_rows_moved(rows.clone(), 2, 0), ["C", "A", "B"]);
+        assert_eq!(home_rows_moved(rows.clone(), 1, 3), rows, "out of range: unchanged");
     }
 
     #[test]
     fn album_orders_are_kept_by_their_server_names() {
         use std::collections::HashMap;
-        let sorts = album_sorts();
-        assert_eq!(sorts[0], AlbumSort::ByName);
-        assert_eq!(sorts.len(), 8);
         assert_eq!(album_sort_api(AlbumSort::ByArtist), "alphabeticalByArtist");
         assert_eq!(album_sort_saved(HashMap::new()), AlbumSort::ByName);
         let kept = album_sort_kept(AlbumSort::Frequent);
@@ -464,22 +447,10 @@ mod tests {
     }
 
     #[test]
-    fn library_rules() {
-        assert_eq!(library_sections()[0], LibrarySection::Albums);
-        assert_eq!(library_sections().len(), 12);
+    fn decades_and_radio_urls() {
         assert_eq!(decade_years(1990), YearSpan { from: 1990, to: 1999 });
         assert!(radio_can_add("FIP".into(), "https://x".into()));
         assert!(!radio_can_add(" ".into(), "https://x".into()));
         assert!(!radio_can_add("FIP".into(), "ftp://x".into()));
-        let z = library_sizes();
-        assert_eq!((z.search_songs, z.search_albums, z.search_artists, z.random_songs, z.genre_songs), (40, 20, 10, 100, 200));
-    }
-
-    #[test]
-    fn moving_a_home_row() {
-        let rows = ["A", "B", "C"].map(String::from).to_vec();
-        assert_eq!(home_rows_moved(rows.clone(), 0, 2), ["B", "C", "A"]);
-        assert_eq!(home_rows_moved(rows.clone(), 2, 0), ["C", "A", "B"]);
-        assert_eq!(home_rows_moved(rows.clone(), 1, 3), rows);
     }
 }

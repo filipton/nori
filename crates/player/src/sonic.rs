@@ -1,9 +1,6 @@
-//! Sonic: time stretching and pitch shifting by pitch-synchronous overlap-add, the algorithm media3
-//! plays speed and pitch changes with. Ported line for line from media3's `Sonic.java` (Apache-2.0,
-//! Copyright 2017 The Android Open Source Project, Copyright 2010 Bill Cox, Sonic Library;
-//! https://github.com/waywardgeek/sonic), both its 16-bit integer and its float variant, so a speed
-//! change sounds - to the sample - as it did through media3, and costs what it did: a few multiplies
-//! per sample and a pitch search every period, nothing like an FFT stretcher.
+//! Sonic speed/pitch (pitch-synchronous overlap-add), a line-for-line port of media3's `Sonic.java`
+//! (Apache-2.0, Copyright 2017 The Android Open Source Project, Copyright 2010 Bill Cox, Sonic Library;
+//! https://github.com/waywardgeek/sonic), 16-bit and float variants, sample-exact with media3.
 
 const MINIMUM_PITCH: i32 = 65;
 const MAXIMUM_PITCH: i32 = 400;
@@ -11,7 +8,7 @@ const AMDF_FREQUENCY: i32 = 4000;
 const MINIMUM_SPEEDUP_RATE: f32 = 1.00001;
 const MINIMUM_SLOWDOWN_RATE: f32 = 0.99999;
 
-/// The sample-format-specific arithmetic, exactly as each of media3's two implementations does it.
+/// Per-format arithmetic, as in media3's two implementations.
 pub trait Sample: Copy + Default + Send + 'static {
     fn overlap_add(frame_count: usize, ch: usize, out: &mut [Self], out_pos: usize, input: &[Self], down: usize, up: usize);
     fn interpolate(input: &[Self], pos: usize, ch: usize, old_rate_pos: i64, new_rate_pos: i64, old_rate: i64, new_rate: i64) -> Self;

@@ -1,13 +1,11 @@
-//! The engine never says it plays while nothing can be heard (the S22's classical playlist, 2026-09-26:
-//! the player said it played, no output was open, no song was being fetched, and nothing was said; every
-//! song after it was silent until the app was started again). Whatever leaves it so - a panic on its own
-//! thread, a song's loader that died, an output that stopped taking music - the music is made again from
-//! scratch, said as an error, and a song that does it twice is skipped as one that would not play.
+//! The engine never claims to play while silent: after a panic on its thread, a dead loader, or an
+//! output that stops taking music, the song restarts from scratch with an error, and a song that fails
+//! twice is skipped. (Regression: a phone once stayed silent while "playing" until restarted.)
 //!
 //! On the clock the test moves (`common::Virtual`); the songs are tones, each its own pitch, so what the
 //! card hears says which song it is.
 
-mod common;
+use crate::common;
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -25,33 +23,13 @@ const RATE: u32 = 44_100;
 /// Seconds of each song: long enough to stand still in for longer than the engine lets it.
 const SECS: u32 = 40;
 
-/// A tone as a WAV file, 16-bit stereo.
+/// A tone as a WAV file, made once per pitch.
 fn wav(hz: f64) -> Arc<Vec<u8>> {
     static MADE: Mutex<Vec<(u64, Arc<Vec<u8>>)>> = Mutex::new(Vec::new());
     if let Some((_, w)) = MADE.lock().iter().find(|(h, _)| *h == hz.to_bits()) {
         return w.clone();
     }
-    let frames = (SECS * RATE) as usize;
-    let data = frames as u32 * 4;
-    let mut w = Vec::with_capacity(44 + data as usize);
-    w.extend_from_slice(b"RIFF");
-    w.extend_from_slice(&(36 + data).to_le_bytes());
-    w.extend_from_slice(b"WAVEfmt ");
-    w.extend_from_slice(&16u32.to_le_bytes());
-    w.extend_from_slice(&1u16.to_le_bytes());
-    w.extend_from_slice(&2u16.to_le_bytes());
-    w.extend_from_slice(&RATE.to_le_bytes());
-    w.extend_from_slice(&(RATE * 4).to_le_bytes());
-    w.extend_from_slice(&4u16.to_le_bytes());
-    w.extend_from_slice(&16u16.to_le_bytes());
-    w.extend_from_slice(b"data");
-    w.extend_from_slice(&data.to_le_bytes());
-    for i in 0..frames {
-        let v = ((std::f64::consts::TAU * hz * i as f64 / RATE as f64).sin() * 12_000.0) as i16;
-        w.extend_from_slice(&v.to_le_bytes());
-        w.extend_from_slice(&v.to_le_bytes());
-    }
-    let w = Arc::new(w);
+    let w = Arc::new(common::wav(RATE, &common::sine(RATE, hz, SECS as f64, 12_000.0)));
     MADE.lock().push((hz.to_bits(), w.clone()));
     w
 }
@@ -180,7 +158,7 @@ fn rig(songs: usize) -> Rig {
 }
 
 impl Rig {
-    /// Song `k` is what the card hears now: a second of it, at its pitch.
+    /// The card heard a second of song `k` (by its pitch).
     fn hears(&self, k: usize) -> bool {
         self.card.secs() >= 1.0 && (self.card.last_second_hz() - hz(k)).abs() < 3.0
     }
@@ -199,11 +177,8 @@ impl Rig {
     }
 }
 
-/// The engine's own thread panics as a song is opened: it is said (an error naming the song and the
-/// panic), the song is let go of from scratch - its bytes and what the disk keeps of it - and opened
-/// again, and it plays. The engine goes on taking commands after.
 #[test]
-fn a_panic_on_the_engines_thread_is_said_and_the_song_plays_from_scratch() {
+fn panic_restarts_song() {
     let r = rig(3);
     r.engine.play_at(0, 0);
     assert!(r.wait_to_hear(0, Duration::from_secs(5)), "the first song plays: {}", r.state());
@@ -217,10 +192,8 @@ fn a_panic_on_the_engines_thread_is_said_and_the_song_plays_from_scratch() {
     assert!(r.wait_to_hear(2, Duration::from_secs(5)), "the engine still takes commands: {}", r.state());
 }
 
-/// A song the engine panics on every time it is opened is skipped as one that would not play, and the
-/// song after it plays: never a player that says it plays and makes no sound.
 #[test]
-fn a_song_the_engine_panics_on_again_is_skipped_and_the_next_plays() {
+fn repeated_panic_skips_song() {
     let r = rig(3);
     r.engine.play_at(0, 0);
     assert!(r.wait_to_hear(0, Duration::from_secs(5)), "the first song plays: {}", r.state());
@@ -230,10 +203,8 @@ fn a_song_the_engine_panics_on_again_is_skipped_and_the_next_plays() {
     assert!(r.events.lock().iter().any(|e| matches!(e, Event::Song { id, .. } if id == &r.ids[2])), "and is said: {}", r.state());
 }
 
-/// The loader's thread panics with the song half fetched: the song fails, as one whose bytes stopped
-/// coming (said, skipped), rather than waiting for bytes for ever.
 #[test]
-fn a_loader_that_panics_fails_its_song_and_the_next_plays() {
+fn loader_panic_fails_song() {
     let r = rig(3);
     r.trouble.lock().panics_on_read.insert(r.ids[1].clone(), 10);
     r.engine.play_at(1, 0);
@@ -242,17 +213,13 @@ fn a_loader_that_panics_fails_its_song_and_the_next_plays() {
     assert!(errors.iter().any(|(id, _)| id == &r.ids[1]), "the song's failure is said: {errors:?}");
 }
 
-/// The output stops taking music while the engine plays (a device gone quiet): after a while standing
-/// still with nothing on its way, the music is made again from scratch where the ear was, on a new output,
-/// and the song plays on from there. Said as an error.
 #[test]
-fn an_output_that_stops_taking_music_is_opened_again_and_the_song_plays_on() {
+fn silent_output_restarts_song() {
     let r = rig(2);
     r.engine.play_at(0, 0);
     assert!(r.wait_to_hear(0, Duration::from_secs(5)), "the song plays: {}", r.state());
     r.time.run(Duration::from_secs(3));
     let opened = r.card.opened.lock().len();
-    // The device stops pulling, as a dead track would.
     r.card.pull.lock().pause_pulling();
     r.time.run(Duration::from_secs(8));
     assert_eq!(r.card.opened.lock().len(), opened, "not before it has stood still a while: {}", r.state());
@@ -262,9 +229,8 @@ fn an_output_that_stops_taking_music_is_opened_again_and_the_song_plays_on() {
     assert!(errors.iter().any(|(id, m)| id == &r.ids[0] && m.contains("no music")), "said: {errors:?}");
 }
 
-/// Paused, the music standing still is no fault: nothing is made again, nothing said.
 #[test]
-fn paused_nothing_is_made_again() {
+fn paused_is_not_a_stall() {
     let r = rig(2);
     r.engine.play_at(0, 0);
     assert!(r.wait_to_hear(0, Duration::from_secs(5)), "the song plays: {}", r.state());

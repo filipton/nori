@@ -296,7 +296,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
         // the player is still on the old one. Which row of the page's list that is, the core decides
         // (crates/queue/src/heard.rs shown_row).
         val heardIndex = (p as? MediaController)?.takeIf(::heard)?.let {
-            dev.nori.music.ffi.queue.heardShownRow(this.heardIndex, queue.map { it.id }, item?.mediaId).takeIf { it >= 0 }
+            dev.nori.music.ffi.queue.heardShownRow(this.heardIndex.takeIf { it >= 0 }?.toUInt(), queue.map { it.id }, item?.mediaId)?.toInt()
         }
         _mixing.value = p.isPlaying && PlaybackService.rustPlayer?.mixing == true
         _state.value = old.copy(

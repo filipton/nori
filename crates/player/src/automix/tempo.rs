@@ -1,23 +1,19 @@
-//! Tempo and beats from the onset-strength curve: autocorrelation weighted by a log-normal prior around 120 BPM,
-//! then Ellis (2007) dynamic-programming beat tracking, then a least-squares constant grid through the beats.
-//! The grid fit is what gives the precise BPM (the autocorrelation lag is only good to about 2 %) and the
-//! stability measure (residual jitter against the grid, relative to the beat).
+//! Tempo and beats from the onset curve: autocorrelation scored over the metre with a log-normal prior around
+//! 120 BPM, Ellis (2007) dynamic-programming beat tracking, then a least-squares grid through the beats for the
+//! precise BPM and stability.
 
 const MIN_BPM: f64 = 40.0;
 const MAX_BPM: f64 = 240.0;
 const PRIOR_BPM: f64 = 120.0;
 /// Width of the log-normal prior, octaves.
 const PRIOR_OCTAVES: f64 = 1.0;
-/// Autocorrelation taper, seconds: the same bias towards short lags that averaging 8 s local autocorrelations gives.
+/// Autocorrelation taper, seconds (the short-lag bias of averaging 8 s local autocorrelations).
 const AC_WINDOW_S: f64 = 8.0;
 /// How far out the autocorrelation is measured for the metrical comb, seconds: a 4/4 bar down to 57 BPM.
 const COMB_S: f64 = 4.2;
-/// A rival tempo scoring this share of the winner's starts to cost confidence; at `RIVAL_ALL` (a tie) it costs all
-/// of it. Only a near tie counts. In any groove with eighths, sixteenths or triplets, lags of 3/4, 5/4, 3/2 or 2/3
-/// of the beat are multiples of the subdivision and score 85 to 95 % of the beat's own, so a rival counted from 80 %
-/// took the trust from right, steady grids of syncopated rock and dance music (0.88 to 0.12 on a real song) and
-/// never refused a wrong one: a grid at such a ratio to the music cannot hold still, and its stability refuses it
-/// anyway (no wrong grid passed the planner's gates in 1,700 synthetic windows, with the rival counted or not).
+/// A non-octave rival tempo scoring this share of the winner's starts to cost confidence, all of it at a tie. Only
+/// near ties count: subdivision lags (3/4, 5/4, 3/2 of the beat) score 85-95 % in any syncopated groove, and a
+/// wrong grid is refused by its stability anyway.
 const RIVAL_FROM: f64 = 0.95;
 const RIVAL_ALL: f64 = 1.0;
 /// Ellis / librosa tightness: how hard the DP holds to the period.
@@ -29,9 +25,6 @@ pub struct Tempo {
     pub bpm: f64,
     /// The autocorrelation peak, before the grid fit.
     pub raw_bpm: f64,
-    /// The stronger of the half / double alternatives to `raw_bpm`, and its score relative to the winner (0..1).
-    pub alt_bpm: f64,
-    pub alt_score: f64,
     pub confidence: f32,
     /// First grid beat, seconds, 0 <= offset < period.
     pub offset_s: f64,
@@ -122,7 +115,7 @@ pub fn estimate(onset: &[f32], fps: f64, t0: f64) -> Tempo {
     let inv = (1.0 / var.sqrt()) as f32;
     env.iter_mut().for_each(|v| *v *= inv);
 
-    // The autocorrelation, out to a bar at the slowest tempos the comb below reads.
+    // The autocorrelation, out to a bar at the slowest tempo the comb reads.
     let ac_hi = ((COMB_S * fps).ceil() as usize).max(tau_hi + 3).min(n - 1);
     let mut ac = vec![0f64; ac_hi + 1];
     for (tau, a) in ac.iter_mut().enumerate().skip(tau_lo.saturating_sub(1)) {
@@ -146,12 +139,9 @@ pub fn estimate(onset: &[f32], fps: f64, t0: f64) -> Tempo {
         let hi = (i + 1).min(ac_hi);
         (ac[i] * (1.0 - f) + ac[hi] * f).max(0.0)
     };
-    // A beat is only a beat if the bar is periodic too, so every lag is scored with its multiples two and four
-    // (or three and six) beats on - a comb over the metre rather than one peak. Scored alone, the strongest
-    // single lag wins, and in a swung or syncopated groove that is often five quarters or a beat and a half:
-    // neither half nor double the tempo, so no octave folding repairs it (a real jazz track read 102 BPM
-    // for 130 that way).
-    // The k-th multiple of a lag known to half a frame is known to k/2 frames: its strongest value there.
+    // Every lag is scored with its multiples two and four (or three and six) beats on: a comb over the metre. The
+    // strongest single lag is often 5/4 or 3/2 of the beat in a syncopated groove, which octave folding cannot fix.
+    // The k-th multiple of a lag known to half a frame is known to k/2 frames: take its strongest value there.
     let ac_near = |t: f64, k: f64| -> f64 {
         let r = 0.5 * k;
         let (a, b) = ((t * k - r).floor().max(0.0) as usize, ((t * k + r).ceil() as usize).min(ac_hi));
@@ -178,11 +168,7 @@ pub fn estimate(onset: &[f32], fps: f64, t0: f64) -> Tempo {
     let raw_bpm = 60.0 * fps / tau;
     let pulse = ac[best] / ac0.max(1e-12);
 
-    // Octave alternatives, scored the same way.
-    let (half, double) = (comb(tau * 2.0), comb(tau / 2.0));
-    let (alt_bpm, alt_raw) = if half >= double { (raw_bpm / 2.0, half) } else { (raw_bpm * 2.0, double) };
-    // The strongest rival that is not an octave (or a third) of the winner: a groove that reads as well at three
-    // quarters or two thirds of the tempo is a coin flip, and a coin flip must not be trusted.
+    // The strongest rival that is not an octave (or a third) of the winner.
     let related = |t: f64| [0.25, 1.0 / 3.0, 0.5, 1.0, 2.0, 3.0, 4.0].iter().any(|k| (t / (tau * k) - 1.0).abs() < 0.06);
     let rival = (tau_lo + 1..tau_hi)
         .filter(|&t| score[t] > score[t - 1] && score[t] >= score[t + 1] && !related(t as f64))
@@ -203,7 +189,7 @@ pub fn estimate(onset: &[f32], fps: f64, t0: f64) -> Tempo {
         })
         .collect();
 
-    let mut t = Tempo { raw_bpm, alt_bpm, alt_score: alt_raw / score[best], period_s: 60.0 / raw_bpm, ..Default::default() };
+    let mut t = Tempo { raw_bpm, period_s: 60.0 / raw_bpm, ..Default::default() };
     if beats.len() < 8 {
         t.beats = beats;
         t.bpm = raw_bpm;
@@ -211,7 +197,7 @@ pub fn estimate(onset: &[f32], fps: f64, t0: f64) -> Tempo {
     }
 
     let (a, b, rms) = fit_grid(&beats, 60.0 / raw_bpm);
-    // The fit is trusted when it lands within 4 % of the autocorrelation (it cannot jump an octave).
+    // The fit is trusted within 4 % of the autocorrelation (so it cannot jump an octave).
     let period = if (b / (60.0 / raw_bpm) - 1.0).abs() < 0.04 { b } else { 60.0 / raw_bpm };
     t.period_s = period;
     t.bpm = 60.0 / period;
@@ -251,9 +237,9 @@ fn gaussian_smooth(x: &[f32], sigma: f64) -> Vec<f32> {
         .collect()
 }
 
-/// Ellis 2007: every frame's best score is its own onset strength plus the best predecessor's score minus a penalty
-/// for straying from the period, `TIGHTNESS * ln(gap / period)²`. Backtracking from the last strong frame gives the
-/// beats. Leading and trailing beats weaker than half the beats' RMS are trimmed (silence, fade-outs).
+/// Ellis 2007 beat tracking: each frame scores its onset plus the best predecessor's score minus
+/// `TIGHTNESS * ln(gap / period)²`; backtracking from the last strong frame gives the beats. Weak leading and
+/// trailing beats are trimmed.
 fn track(local: &[f32], period: f64) -> Vec<usize> {
     let n = local.len();
     let lo = ((period / 2.0).round() as usize).max(1);
@@ -308,22 +294,13 @@ fn track(local: &[f32], period: f64) -> Vec<usize> {
     beats[first..end].to_vec()
 }
 
-/// Least-squares line `t = a + b k` through the beats, where `k` counts periods (a dropped or doubled beat moves
-/// `k` by the right amount instead of bending the line). One pass of outlier rejection. Returns (a, b, residual
-/// spread in seconds).
-/// Per-beat timing spread (median, ms) that still scores zero; 14 ms or less passes the planner's 0.6.
+/// Per-beat timing spread (median, ms) that scores zero; 14 ms or less passes the planner's 0.6.
 const JITTER_ZERO_MS: f64 = 35.0;
 /// Tempo change between a stretch's first and second half that scores zero; 1.2 % or less passes.
 const DRIFT_ZERO_PCT: f64 = 3.0;
 
-/// Whether one grid can stand for these beats: the lower of how tightly they sit on it and how little
-/// the tempo moves between the first half and the second.
-///
-/// It used to be the spread alone, against 5 % of a beat. Measured on real records that was wrong both
-/// ways: a band played to within 6-14 ms scored nothing (and half of that at a doubled tempo, because
-/// the allowance shrank with the beat), while what really spoils a beat-matched mix - the tempo moving
-/// under it - was never looked at. Milliseconds are what the ear hears, so the spread is judged in them;
-/// the drift is judged by fitting each half on its own.
+/// How well one grid stands for these beats: the lower of timing spread (in ms, as heard) and the tempo change
+/// between the first and second half.
 pub(super) fn stability(beats: &[f64], period: f64, rms: f64) -> f32 {
     let jitter = 1.0 - (rms / 1.4826 * 1000.0) / JITTER_ZERO_MS;
     let half = beats.len() / 2;
@@ -337,6 +314,8 @@ pub(super) fn stability(beats: &[f64], period: f64, rms: f64) -> f32 {
     jitter.min(drift).clamp(0.0, 1.0) as f32
 }
 
+/// Least-squares line `t = a + b k` through the beats, `k` counting periods (so a dropped beat does not bend it),
+/// with one pass of outlier rejection. Returns (a, b, robust residual spread in seconds).
 pub fn fit_grid(beats: &[f64], period: f64) -> (f64, f64, f64) {
     let mut d: Vec<f64> = beats.windows(2).map(|w| w[1] - w[0]).collect();
     let p = {
@@ -377,8 +356,7 @@ pub fn fit_grid(beats: &[f64], period: f64) -> (f64, f64, f64) {
     let mut abs: Vec<f64> = res.iter().map(|r| r.abs()).collect();
     let mad = median(&mut abs).max(0.002);
     let (a, b) = line(&|i| res[i].abs() <= 4.0 * mad);
-    // Robust spread (1.4826 MAD ~ sigma for Gaussian jitter): a few misplaced beats do not make a steady track
-    // look unsteady, a drifting tempo still does because most residuals grow.
+    // 1.4826 MAD ~ sigma: a few misplaced beats do not count, a drift does.
     let mut abs: Vec<f64> = k.iter().zip(beats).map(|(ki, ti)| (ti - (a + b * ki)).abs()).collect();
     (a, b, 1.4826 * median(&mut abs))
 }
@@ -388,7 +366,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn folding_compares_tempos_modulo_octaves() {
+    fn fold_and_match_ratio_ignore_octaves() {
         assert!((fold(128.0, 64.5) - 129.0).abs() < 1e-9);
         assert!((fold(87.0, 174.0) - 87.0).abs() < 1e-9);
         assert!((fold(120.0, 123.0) - 123.0).abs() < 1e-9);
@@ -401,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn the_grid_fit_survives_a_dropped_beat() {
+    fn grid_fit_survives_dropped_beat() {
         let mut beats: Vec<f64> = (0..40).map(|i| 0.25 + i as f64 * 0.5).collect();
         beats.remove(17);
         let (a, b, rms) = fit_grid(&beats, 0.5);
@@ -409,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn a_flat_envelope_has_no_tempo() {
+    fn flat_envelope_has_no_tempo() {
         let t = estimate(&vec![0.0; 5000], 86.0, 0.0);
         assert_eq!(t.bpm, 0.0);
         assert_eq!(t.confidence, 0.0);

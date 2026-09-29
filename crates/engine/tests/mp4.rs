@@ -1,7 +1,5 @@
-//! An AAC song in an MP4 file joins without a gap: the encoder's delay and padding, which only the
-//! file's edit list (or iTunes' comment) states, are cut as media3 cuts them. The file is made by
-//! ffmpeg on the machine running the tests; without ffmpeg there is nothing to test with, and the
-//! test says so and passes.
+//! An AAC song in MP4 keeps its exact length: encoder delay and padding from the edit list are cut as
+//! media3 cuts them. Needs ffmpeg; passes trivially without it.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -22,8 +20,7 @@ fn run(args: &[&str]) {
     assert!(ok, "ffmpeg {args:?}");
 }
 
-/// Three seconds and a bit of a tone as 16-bit stereo, encoded to AAC in an MP4, and what ffmpeg itself
-/// decodes of that file (it honours the edit list).
+/// A tone of [`FRAMES`] encoded to AAC in MP4, and ffmpeg's decode of it (which honours the edit list).
 fn made(dir: &Path) -> (PathBuf, Vec<i16>) {
     let m4a = dir.join("tone.m4a");
     let raw = dir.join("tone.raw");
@@ -46,7 +43,7 @@ fn decode(path: &Path, from_ms: i64) -> Vec<i16> {
 }
 
 #[test]
-fn an_aac_song_in_mp4_is_exactly_as_long_as_it_was_before_it_was_encoded() {
+fn mp4_aac_keeps_exact_length() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: the MP4 gapless test has nothing to test with");
         return;
@@ -56,10 +53,10 @@ fn an_aac_song_in_mp4_is_exactly_as_long_as_it_was_before_it_was_encoded() {
     assert_eq!(reference.len(), FRAMES * 2, "ffmpeg cuts to the edit list");
     let ours = decode(&m4a, 0);
     assert_eq!(ours.len(), FRAMES * 2, "not a frame of priming or padding left");
-    // Two decoders, the same AAC: a rounding apart, not a block of samples apart.
+    // Two decoders differ by rounding, not by a block of samples.
     let worst = ours.iter().zip(&reference).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap();
     assert!(worst <= 4, "lined up with ffmpeg's own decode: {worst}");
-    // A seek lands on the same samples a play from the start reaches there.
+    // A seek lands on the same samples as playing from the start.
     let from = decode(&m4a, 1_000);
     assert_eq!(from.len(), (FRAMES - RATE) * 2);
     let worst = from.iter().zip(&ours[RATE * 2..]).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap();

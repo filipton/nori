@@ -1,24 +1,12 @@
-//! The virtualizer: a headphone effect that moves the music out of the middle of the head, kept
-//! modest. Three cheap parts, all scaled by one strength:
+//! Stereo headphone virtualizer, scaled by one strength:
+//! - width: side signal above ~400 Hz lifted up to +3.5 dB;
+//! - head: crossfeed delayed 0.28 ms, low-passed at 1.4 kHz, up to -12 dB;
+//! - room: one early reflection per ear of the opposite highs (9.3 / 11.7 ms), up to -18 dB.
 //!
-//! - **Width.** Mid/side: the side signal above about 400 Hz is lifted (up to +3.5 dB), so what is
-//!   already stereo spreads a little further; the bass stays as it was, where widening only sounds
-//!   phasey.
-//! - **Head.** Each ear also hears the other channel the way a loudspeaker in front would reach it:
-//!   0.28 ms later (the time sound takes round a head), low-passed at 1.4 kHz (the head's shadow) and
-//!   up to 12 dB down.
-//! - **Room.** One early reflection per ear of the opposite channel's highs (above the shadow's corner:
-//!   an echo this early in the bass is a comb, not a room), at 9.3 and 11.7 ms (different, so the two
-//!   ears do not hear the same echo), up to 18 dB down.
-//!
-//! The head and the room are fed the *difference* between the channels, not the other channel itself:
-//! each ear gets the other side's delayed signal and loses its own by the same path. For anything in
-//! the middle the two cancel, so a centred voice passes sample for sample as it came (a plain delayed
-//! crossfeed puts a comb into it, 2 to 3 dB deep around 1 kHz), and only what is off centre is moved.
-//!
-//! Per frame: a few multiply-adds and a ring buffer of 12 ms allocated when it is made. Stereo only.
+//! Head and room are fed the L-R difference, so centred content cancels and passes bit-exact
+//! (plain crossfeed would comb it).
 
-/// How long the ring is: longer than the latest tap.
+/// Ring length; longer than the latest tap.
 const RING_MS: f64 = 12.5;
 const ITD_MS: f64 = 0.28;
 const SHADOW_HZ: f64 = 1400.0;
@@ -40,8 +28,7 @@ pub struct Virtualizer {
     reflect: f64,
     itd: usize,
     taps: [usize; 2],
-    /// Per frame: the difference between the channels (left minus right), low-passed and what is left
-    /// above it.
+    /// Per frame: L-R low-passed, and the rest above it.
     ring: Vec<[f64; 2]>,
     pos: usize,
     lp: f64,
@@ -53,7 +40,7 @@ fn one_pole(rate: f64, hz: f64) -> f64 {
 }
 
 impl Virtualizer {
-    /// `strength` 0 to 1; 0 (or anything that is not a number) is none.
+    /// `strength` 0 to 1; NaN is 0.
     pub fn new(rate: f64, strength: f64) -> Self {
         let frames = |ms: f64| ((ms / 1000.0 * rate).round() as usize).max(1);
         let len = frames(RING_MS) + 1;
@@ -75,7 +62,7 @@ impl Virtualizer {
         v
     }
 
-    /// A new strength, the ring and the filters' memories kept.
+    /// Sets the strength, keeping the filter state.
     pub fn tune(&mut self, strength: f64) {
         let s = if strength.is_finite() { strength.clamp(0.0, 1.0) } else { 0.0 };
         self.strength = s;
@@ -96,12 +83,11 @@ impl Virtualizer {
 
     #[inline]
     pub fn frame(&mut self, l: f64, r: f64) -> (f64, f64) {
-        // Width: the side's highs lifted.
+        // Width: lift the side's highs.
         let (m, s) = ((l + r) * 0.5, (l - r) * 0.5);
         self.side_lp += self.side_a * (s - self.side_lp);
         let s = s + self.side_lift * (s - self.side_lp);
         let (l, r) = (m + s, m - s);
-        // The difference: what the far ear should get of the right, minus what it loses of its own.
         let d = l - r;
         self.lp += self.shadow_a * (d - self.lp);
         self.ring[self.pos] = [self.lp, d - self.lp];
@@ -123,8 +109,7 @@ mod tests {
 
     const RATE: f64 = 48_000.0;
 
-    /// Runs a stereo tone (`gl`, `gr` its level in each channel) and returns each ear's level in dB
-    /// against a full tone, over the second half.
+    /// Each ear's level in dB relative to the input tone (scaled `gl`, `gr` per channel), second half.
     fn run(v: &mut Virtualizer, freq: f64, gl: f64, gr: f64) -> (f64, f64) {
         v.reset();
         let n = 24_000;
@@ -140,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn a_centred_voice_passes_untouched() {
+    fn centred_signal_is_bit_exact() {
         let mut v = Virtualizer::new(RATE, 1.0);
         for i in 0..20_000 {
             let x = 0.3 * (i as f64 * 0.0371).sin() + 0.2 * (i as f64 * 0.51).sin();
@@ -149,7 +134,7 @@ mod tests {
     }
 
     #[test]
-    fn one_side_reaches_the_other_ear_later_softer_and_duller() {
+    fn crossfeed_is_delayed_quieter_and_low_passed() {
         let mut v = Virtualizer::new(RATE, 1.0);
         v.side_lift = 0.0; // the head alone
         let (l, r) = run(&mut v, 300.0, 1.0, 0.0);
@@ -166,8 +151,7 @@ mod tests {
     #[test]
     fn stereo_gets_wider() {
         let mut off = Virtualizer::new(RATE, 0.0);
-        
-        // Opposite phase: all side. At 3 kHz the side is lifted; at 100 Hz hardly.
+        // Opposite phase is all side.
         let (l0, _) = run(&mut off, 3000.0, 1.0, -1.0);
         assert!(l0.abs() < 1e-9, "strength 0 changes nothing: {l0}");
         let mut v = Virtualizer::new(RATE, 1.0);
@@ -179,7 +163,8 @@ mod tests {
     }
 
     #[test]
-    fn nothing_that_is_not_a_number_gets_in() {
+    fn strength_is_clamped() {
+
         let mut v = Virtualizer::new(RATE, f64::NAN);
         assert_eq!(v.strength(), 0.0);
         v.tune(5.0);

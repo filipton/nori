@@ -1,8 +1,6 @@
-//! Drawing, laid out as a desktop music player: the sidebar of places on the left, the page in the
-//! middle, the panel on the right (what plays, the queue or the lyrics, in the cover's colours) and the
-//! player along the bottom. A narrow terminal drops the sidebar and the panel beside the page and shows
-//! whichever has the keys in its place. Every clickable place is recorded as it is drawn (`App::hits`),
-//! so a click lands on what the eye sees. Lists and grids draw only what shows.
+//! Drawing: sidebar, page, right panel (in the cover's colours) and the player bar. A narrow terminal
+//! drops the sidebar and panel and shows the focused one in the page's place. Every clickable area is
+//! recorded in `App::hits` as it is drawn. Lists and grids draw only visible rows.
 
 use std::borrow::Cow;
 use std::time::Instant;
@@ -22,15 +20,16 @@ use crate::app::{App, Button, Focus, Hit, ListRef, Load, Nav, Overlay, Page, Pan
 use crate::art::{Art, Theme};
 use crate::keys::{Scope, BINDINGS};
 use crate::settings_view::{self, EqRow, Line as SLine, SettingsView};
+use crate::text::clock;
 
-/// The sidebar's width, and the narrowest the page is let be beside it and the panel.
+/// Sidebar width, and the narrowest page allowed beside the sidebar and panel.
 const SIDE_W: u16 = 26;
 const MAIN_MIN: u16 = 50;
-/// A card of the album grids: its narrowest and its height.
+/// Album card minimum width and height without covers.
 const CARD_W: u16 = 22;
 const CARD_H: u16 = 4;
 
-/// `s` cut to `w` columns, with an ellipsis when it did not fit.
+/// `s` cut to `w` columns, with an ellipsis if cut.
 pub fn fit(s: &str, w: usize) -> Cow<'_, str> {
     if s.width() <= w {
         return Cow::Borrowed(s);
@@ -52,7 +51,7 @@ pub fn fit(s: &str, w: usize) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-/// `s` in exactly `w` columns: cut, or filled out with spaces.
+/// `s` cut or space-padded to exactly `w` columns.
 fn pad(s: &str, w: usize) -> String {
     let cut = fit(s, w);
     let used = cut.width();
@@ -61,7 +60,7 @@ fn pad(s: &str, w: usize) -> String {
     out
 }
 
-/// `left` and `right` on one line of `w` columns, the left cut to make room.
+/// `left` and right-aligned `right` in `w` columns, cutting `left` to fit.
 fn spread<'a>(left: Vec<Span<'a>>, right: Span<'a>, w: usize) -> Line<'a> {
     let rw = right.content.width();
     let room = w.saturating_sub(rw + 1);
@@ -84,11 +83,7 @@ fn spread<'a>(left: Vec<Span<'a>>, right: Span<'a>, w: usize) -> Line<'a> {
     Line::from(spans)
 }
 
-pub fn clock(ms: i64) -> String {
-    crate::text::duration(ms.max(0) / 1000)
-}
-
-/// Readable text on `bg`.
+/// Black or white, whichever reads on `bg`.
 fn on(bg: Color) -> Color {
     match bg {
         Color::Rgb(r, g, b) if (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000 > 140 => Color::Black,
@@ -96,7 +91,7 @@ fn on(bg: Color) -> Color {
     }
 }
 
-/// A widget drawn into `r`, only as much of it as is on the screen.
+/// Renders `w` clipped to the frame.
 fn put<W: Widget>(f: &mut Frame, w: W, r: Rect) {
     let r = r.intersection(f.area());
     if r.width > 0 && r.height > 0 {
@@ -124,19 +119,18 @@ fn dim(t: &Theme) -> Style {
     Style::default().fg(t.dim)
 }
 
-/// A list: the rows that show, the selection kept in view, each row recorded for the mouse.
+/// A scrolling list with the selection kept in view and a scrollbar when it overflows.
 #[allow(clippy::too_many_arguments)]
 fn list<'a>(f: &mut Frame, area: Rect, sel: &mut Sel, len: usize, lref: ListRef, hits: &mut Vec<(Rect, Hit)>, t: &Theme, focused: bool, row: &dyn Fn(usize, usize) -> Line<'a>) {
     hits.push((area, Hit::List(lref)));
     let h = area.height as usize;
     sel.fit(h, len);
-    // A list longer than its area keeps its last column for where the view is.
     let width = if len > h { area.width.saturating_sub(1) } else { area.width };
     for (n, i) in (sel.top..len.min(sel.top + h)).enumerate() {
         let r = Rect { x: area.x, y: area.y + n as u16, width, height: 1 };
         let mut line = row(i, width as usize);
         if i == sel.at {
-            // The selection's colours over every span's own, so a coloured span stays readable on it.
+            // Patch every span so coloured spans stay readable on the selection.
             let st = selected(t, focused);
             line.spans.iter_mut().for_each(|s| s.style = s.style.patch(st));
             line = line.style(st);
@@ -145,7 +139,6 @@ fn list<'a>(f: &mut Frame, area: Rect, sel: &mut Sel, len: usize, lref: ListRef,
         hits.push((r, Hit::Row(lref, i)));
     }
     if len > h && area.width > 2 && h > 0 {
-        // Where the view is in the list: a thumb on a thin track on the right.
         let x = area.x + area.width - 1;
         let thumb = (h * h / len).clamp(1, h);
         let y0 = (sel.top * h) / len.max(1);
@@ -156,8 +149,7 @@ fn list<'a>(f: &mut Frame, area: Rect, sel: &mut Sel, len: usize, lref: ListRef,
     }
 }
 
-/// The cards' covers: the pictures there are, whether cards show them, and those found missing while
-/// drawing (asked for after the frame).
+/// Card cover state for a frame: the covers, whether cards show them, and missing ones to request after.
 pub struct Pics<'a> {
     art: Option<&'a mut Art>,
     on: bool,
@@ -165,7 +157,7 @@ pub struct Pics<'a> {
 }
 
 impl Pics<'_> {
-    /// A card's width at the least, and its height with the line under it.
+    /// Card minimum width and height.
     fn card(&self) -> (u16, u16) {
         if self.on {
             (CARD_W + 8, CARD_H + 2)
@@ -175,10 +167,8 @@ impl Pics<'_> {
     }
 }
 
-/// Cards in rows, as a desktop player lays out albums: each a cover with its words beside it (or, with
-/// no covers, a rounded box with a title and a line under it). The selection keeps its row in view;
-/// `sel.top` is the first row shown. Gives back how many cards a row holds, for the keys that move up
-/// and down.
+/// A grid of cards (cover with text beside it, or a box without covers), selection kept in view;
+/// `sel.top` is the first visible row. Returns the number of columns.
 #[allow(clippy::too_many_arguments)]
 fn cards(f: &mut Frame, area: Rect, sel: &mut Sel, len: usize, lref: ListRef, hits: &mut Vec<(Rect, Hit)>, t: &Theme, focused: bool, pics: &mut Pics, card: &dyn Fn(usize) -> (String, String, Option<String>)) -> usize {
     hits.push((area, Hit::List(lref)));
@@ -211,7 +201,6 @@ fn cards(f: &mut Frame, area: Rect, sel: &mut Sel, len: usize, lref: ListRef, hi
 #[allow(clippy::too_many_arguments)]
 fn one_card(f: &mut Frame, r: Rect, title: &str, sub: &str, art: Option<&str>, pics: &mut Pics, t: &Theme, chosen: bool, focused: bool) {
     if pics.on {
-        // The cover, square in cells, and the words beside it.
         let h = r.height.saturating_sub(1).min(CARD_H + 1);
         let cr = Rect { width: (h * 2).min(r.width), height: h, ..r };
         let key = art.map(|a| format!("{}{a}", crate::backend::THUMB));
@@ -254,7 +243,7 @@ fn centred(area: Rect, w: u16, h: u16) -> Rect {
     Rect { x: area.x + (area.width - w) / 2, y: area.y + (area.height - h) / 2, width: w, height: h }
 }
 
-/// A rounded box in the accent colour over whatever is under `r`, titled `title`: the area inside it.
+/// A titled accent box over `r`; returns its inner area.
 fn popup(f: &mut Frame, r: Rect, title: Span, t: &Theme) -> Rect {
     let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(title).border_style(Style::default().fg(t.accent));
     let inner = block.inner(r);
@@ -263,8 +252,7 @@ fn popup(f: &mut Frame, r: Rect, title: Span, t: &Theme) -> Rect {
     inner
 }
 
-/// A page's title, large as a terminal can make it (bold), with a caption on the right: the area under
-/// it, a line left empty between.
+/// A bold page title with a right-aligned caption; returns the area below plus a blank line.
 fn heading(f: &mut Frame, area: Rect, title: &str, caption: &str, t: &Theme) -> Rect {
     if area.height < 3 {
         return area;
@@ -276,8 +264,8 @@ fn heading(f: &mut Frame, area: Rect, title: &str, caption: &str, t: &Theme) -> 
 
 // ---- songs as a table ----
 
-/// The widths of a song table's columns in `w`: number, title, artist, album, time. An album column
-/// only where it is asked for and there is room; the artist's goes last.
+/// Song table column widths in `w`: number, title, artist, album, time. Album only if asked and room;
+/// artist dropped first.
 fn columns(w: usize, album: bool) -> [usize; 5] {
     let num = 4;
     let time = 6;
@@ -314,8 +302,7 @@ fn table_head(f: &mut Frame, area: Rect, t: &Theme, album: bool) -> Rect {
     Rect { y: area.y + 2, height: area.height - 2, ..area }
 }
 
-/// A song as a row of its table: its number (none for 0; the one heard marked), title, artist, album
-/// and length.
+/// A song table row; `number` 0 shows none, `playing` shows a marker instead.
 fn song_line(s: &Song, number: usize, w: usize, t: &Theme, playing: bool, album: bool) -> Line<'static> {
     let c = columns(w, album);
     let num = if playing {
@@ -362,7 +349,6 @@ pub fn draw(f: &mut Frame, app: &mut App, mut art: Option<&mut Art>) {
     if app.full {
         full_player(f, body, app, art.as_deref_mut());
     } else {
-        // Beside the page as room allows; else whichever has the keys takes the page's place.
         let side = area.width >= SIDE_W + MAIN_MIN;
         let panel_w = (area.width / 4).clamp(34, 48);
         let panel = app.panel.is_some() && area.width >= SIDE_W + MAIN_MIN + panel_w;
@@ -388,7 +374,7 @@ pub fn draw(f: &mut Frame, app: &mut App, mut art: Option<&mut Art>) {
     overlay(f, area, app, &ui);
 }
 
-/// A note for a few seconds, over the bottom right of the page.
+/// The status note, bottom right of the page.
 fn toast(f: &mut Frame, area: Rect, app: &App) {
     let Some((msg, error, _)) = &app.note else { return };
     let w = (msg.width() as u16 + 4).min(area.width);
@@ -396,22 +382,12 @@ fn toast(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
     let r = Rect { x: area.x + area.width - w - area.width.min(1), y: area.y + area.height - 3, width: w, height: 3 };
-    let colour = if *error { Color::LightRed } else { app.prefs.accent_colour() };
+    let colour = if *error { Color::LightRed } else { crate::art::argb(app.prefs.accent as u32) };
     let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(Style::default().fg(colour));
     let inner = block.inner(r);
     put(f, Clear, r);
     put(f, block, r);
     text(f, Rect { x: inner.x + 1, width: inner.width.saturating_sub(1), ..inner }, msg, Style::default().fg(colour));
-}
-
-trait AccentColour {
-    fn accent_colour(&self) -> Color;
-}
-
-impl AccentColour for nori_core::settings::StoredPrefs {
-    fn accent_colour(&self) -> Color {
-        crate::art::argb(self.accent as u32)
-    }
 }
 
 // ---- the sidebar ----
@@ -420,7 +396,6 @@ fn sidebar(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
     if area.width < 6 || area.height < 3 {
         return;
     }
-    // A thin line between it and the page.
     let sep = Rect { x: area.x + area.width - 1, width: 1, ..area };
     for y in sep.top()..sep.bottom() {
         put(f, Paragraph::new(Span::styled("│", dim(t))), Rect { y, height: 1, ..sep });
@@ -431,7 +406,6 @@ fn sidebar(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
     let w = area.width as usize;
     let mut y = area.y;
     let bottom = area.y + area.height;
-    // The name, in the accent.
     put(f, Paragraph::new(Line::from(vec![Span::styled(" ♫ ", Style::default().fg(t.accent).add_modifier(Modifier::BOLD)), Span::styled("nori", bold())])), Rect { y, height: 1, ..area });
     y += 2;
     let item = |f: &mut Frame, hits: &mut Vec<(Rect, Hit)>, y: u16, i: usize, n: Nav, name: &str| {
@@ -477,7 +451,7 @@ fn sidebar(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
     y += 1;
     label(f, y, "PLAYLISTS");
     y += 1;
-    // The playlists fill what is left above the foot, scrolled to keep the one selected in view.
+    // Playlists fill the space above the foot, scrolled to keep the selection visible.
     let foot = 5u16;
     let room = bottom.saturating_sub(y + foot) as usize;
     let names: Vec<String> = app.library.playlists.ready().map_or_else(Vec::new, |v| v.iter().map(|p| p.name.clone()).collect());
@@ -514,7 +488,7 @@ fn sidebar(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
         }
     }
     i = first + names.len();
-    // The foot: the equalizer and settings, whose server this is, and where the keys are listed.
+    // Foot: equalizer, settings, server status, help hint.
     let fy = bottom.saturating_sub(foot);
     if fy <= y {
         return;
@@ -543,7 +517,7 @@ fn main(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, art: Option<&mut Ar
     let on = app.images && app.card_covers && art.is_some();
     let mut pics = Pics { art, on, want: Vec::new() };
     page_view(f, area, app, t, &mut pics);
-    // The covers found missing, each asked for once.
+    // Request missing card covers once each.
     for id in pics.want {
         if app.thumbs_asked.len() > 2000 {
             app.thumbs_asked.clear();
@@ -563,7 +537,6 @@ fn page_view(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, pics: &mut Pic
         text(f, Rect { x: area.x + 2, width: area.width.saturating_sub(4), ..area }, &format!("⚠ {e} · showing what is stored · R tries again"), Style::default().fg(Color::LightRed));
         area = Rect { y: area.y + 1, height: area.height - 1, ..area };
     }
-    // Room around the page, as a window's margins.
     let inner = Rect { x: area.x + 2, y: area.y + 1, width: area.width.saturating_sub(4), height: area.height.saturating_sub(1) };
     let focused = app.focus == Focus::Main;
     if !app.pages.is_empty() {
@@ -600,7 +573,7 @@ fn empty(f: &mut Frame, area: Rect, t: &Theme, text: &str) {
     put(f, Paragraph::new(Span::styled(text.to_string(), dim(t))).alignment(Alignment::Center).wrap(ratatui::widgets::Wrap { trim: true }), centred(area, area.width, 2));
 }
 
-/// Good morning, afternoon or evening, by the clock of this computer.
+/// Greeting by local time of day.
 fn greeting() -> &'static str {
     let now = nori_core::db::now_ms() / 1000;
     let hour = (now + nori_core::library::local_offset_s(now)).rem_euclid(86_400) / 3600;
@@ -621,7 +594,7 @@ fn home(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool, pics
         }
         return;
     }
-    // Each shelf: its title, a row of cards, a line between.
+    // Each shelf: title line, a row of cards, a blank line.
     let (min_w, card_h) = pics.card();
     let shelf_h = card_h + 2;
     let fits = (area.height / shelf_h).max(1) as usize;
@@ -725,7 +698,6 @@ fn search(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool) {
     if area.height < 4 {
         return;
     }
-    // The field: a rounded box, lit while it is typed in.
     let s = &app.search;
     let field = Rect { height: 3, width: area.width.min(72), ..area };
     let editing = s.editing && focused;
@@ -774,7 +746,7 @@ fn search(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool) {
     s.sel = sel;
 }
 
-/// A picture in `area`, or a plate with a note where there is none (yet).
+/// A cover in `area`, or a placeholder box if it is not loaded.
 fn cover(f: &mut Frame, area: Rect, art: Option<&mut Art>, key: Option<&str>, t: &Theme) {
     let area = area.intersection(f.area());
     if area.width < 2 || area.height < 1 {
@@ -790,7 +762,7 @@ fn cover(f: &mut Frame, area: Rect, art: Option<&mut Art>, key: Option<&str>, t:
             let encode = ratatui_image::ResizeEncodeRender::needs_resize(p, &resize, area);
             f.render_stateful_widget(StatefulImage::<StatefulProtocol>::default().resize(resize), area, p);
             forced_width(f, area);
-            // Made for this area now: the next frame written sends the picture to the terminal.
+            // Encoded for this area now: this frame transmits it.
             if let Some(rect) = encode {
                 match p.last_encoding_result() {
                     Some(Err(e)) => eprintln!("nori: cover {} would not encode for {}x{} cells: {e}", key.unwrap_or_default(), rect.width, rect.height),
@@ -807,10 +779,8 @@ fn cover(f: &mut Frame, area: Rect, art: Option<&mut Art>, key: Option<&str>, t:
     }
 }
 
-/// A graphics protocol's picture is one escape sequence written into the first cell of its area. ratatui
-/// 0.30 takes a cell's text width as the columns it covers and skips that many cells when it works out
-/// what changed, so a sixel or kitty picture (thousands of characters of escape codes) hid the rest of
-/// the frame after it. The cell is marked as one column wide, which is what it is on screen.
+/// Marks graphics-protocol cells as one column wide. The picture is one long escape sequence in a single
+/// cell, and ratatui 0.30's diff would otherwise skip that many columns, hiding the rest of the frame.
 fn forced_width(f: &mut Frame, area: Rect) {
     let one = ratatui::buffer::CellDiffOption::ForcedWidth(std::num::NonZeroU16::MIN);
     let buf = f.buffer_mut();
@@ -825,13 +795,13 @@ fn forced_width(f: &mut Frame, area: Rect) {
     }
 }
 
-/// A square cover in cells, `rows` tall (twice as wide), inside `area`.
+/// A square cover `rows` tall (twice as wide in cells) at the top left of `area`.
 fn cover_box(area: Rect, rows: u16) -> Rect {
     let h = rows.min(area.height).min(area.width / 2);
     Rect { x: area.x, y: area.y, width: h * 2, height: h }
 }
 
-/// A button drawn as a pill: filled in the accent, or outlined in it.
+/// A pill button, filled or plain accent; advances `x`.
 fn pill(f: &mut Frame, hits: &mut Vec<(Rect, Hit)>, x: &mut u16, y: u16, end: u16, label: &str, filled: bool, b: Button, t: &Theme) {
     let s = format!(" {label} ");
     let w = s.width() as u16;
@@ -850,7 +820,7 @@ fn page(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool, pics
     let playing = app.song.as_ref().map(|s| s.id.clone());
     let App { pages, hits, shown, .. } = app;
     let Some(p) = pages.last_mut() else { return };
-    // The kind, the name, what is under it, and whether it can be (and is) a favourite.
+    // star: None when the page cannot be starred.
     let (kind, title, sub, caption, art_key, star): (&str, String, String, String, Option<String>, Option<bool>) = match p {
         Page::Album { detail: Load::Ready(d), .. } => ("ALBUM", d.album.name.clone(), d.album.artist.clone(), crate::text::album_caption(d), d.album.cover_art.clone(), Some(d.album.starred)),
         Page::Artist { detail: Load::Ready(d), .. } => ("ARTIST", d.artist.name.clone(), crate::text::albums(d.artist.album_count), String::new(), None, Some(d.artist.starred)),
@@ -860,7 +830,6 @@ fn page(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool, pics
         }
         _ => return loading(f, area, t),
     };
-    // The header: the cover beside the name, as a desktop player's album page.
     let with_cover = images && matches!(p, Page::Album { .. }) && area.height >= 16;
     let head_h = if with_cover { 8 } else { 6 }.min(area.height);
     let head = Rect { height: head_h, ..area };
@@ -878,7 +847,6 @@ fn page(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool, pics
     lines.push(Line::from(Span::styled(fit(&caption, w).into_owned(), dim(t))));
     let top = if with_cover { words.y + words.height.saturating_sub(6) } else { words.y };
     put(f, Paragraph::new(lines), Rect { y: top, height: 4.min(words.height), ..words });
-    // Its buttons.
     let y = top + 5;
     if y < area.y + area.height {
         let mut x = words.x;
@@ -950,9 +918,8 @@ fn downloads(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool)
     list(f, body, downloads_sel, len, ListRef::Downloads, hits, t, focused, &|i, _| lines[i].clone());
 }
 
-/// The equalizer as a console: a row of chips (on or off, the kind, the presets, the pre-amp), the bands
-/// as sliders, and the rest of the chain as chips under them. ← and → walk them all in that order; ↑ and
-/// ↓ change the one chosen.
+/// The equalizer: toolbar chips, band faders, then the rest of the chain as chips. ← → walk them in
+/// that order; ↑ ↓ change the selected one.
 fn equalizer(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool) {
     let p = app.prefs.clone();
     let bypass = nori_core::settings::eq_bypass(p.bit_perfect, p.sound_bypass);
@@ -971,7 +938,6 @@ fn equalizer(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool)
     let top: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].above_bands()).collect();
     let bands: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].band(&p).is_some()).collect();
     let under: Vec<usize> = (0..rows.len()).filter(|&i| !rows[i].above_bands() && rows[i].band(&p).is_none()).collect();
-    // Boxed chips where there is room for them, plain ones where there is not.
     let boxed = area.height >= 26;
     let chip = |i: usize| rows[i].chip(&p);
     let top_h = chips(f, area, &top, &chip, chosen, focused, boxed, &mut app.hits, t, &|i| lit(&rows[i], &p));
@@ -983,10 +949,10 @@ fn equalizer(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool)
     chips(f, under_area, &under, &chip, chosen, focused, boxed, &mut app.hits, t, &|i| lit(&rows[i], &p));
     let mid = Rect { y: area.y + top_h + 1, height: under_area.y.saturating_sub(area.y + top_h + 2), ..area };
     let on_ = p.eq_enabled && bypass.is_none();
-    sliders(f, mid, &rows, &bands, &p, chosen, focused, on_, app, t);
+    sliders(f, mid, &rows, &bands, &p, chosen, on_, app, t);
 }
 
-/// Whether a chip's switch is on (drawn in the accent).
+/// Whether a chip's switch is on.
 fn lit(row: &EqRow, p: &nori_core::settings::StoredPrefs) -> bool {
     match row {
         EqRow::Enabled => p.eq_enabled,
@@ -998,7 +964,7 @@ fn lit(row: &EqRow, p: &nori_core::settings::StoredPrefs) -> bool {
     }
 }
 
-/// How many rows chips take in `w` columns, laid out as words in a paragraph.
+/// Rows the wrapped chips take in `w` columns.
 fn chips_height(w: u16, which: &[usize], label: &dyn Fn(usize) -> String, boxed: bool) -> u16 {
     let (mut x, mut lines) = (0u16, 1u16);
     for &i in which {
@@ -1015,8 +981,8 @@ fn chips_height(w: u16, which: &[usize], label: &dyn Fn(usize) -> String, boxed:
     lines * if boxed { 3 } else { 1 }
 }
 
-/// Chips laid out as words in a paragraph: the one chosen filled with the accent (outlined while the page
-/// has not the keys), a switch that is on in the accent. The rows they took.
+/// Wrapped chips; the selected one filled (bold only when unfocused), switches that are on in the
+/// accent. Returns the rows used.
 #[allow(clippy::too_many_arguments)]
 fn chips(f: &mut Frame, area: Rect, which: &[usize], label: &dyn Fn(usize) -> String, chosen: usize, focused: bool, boxed: bool, hits: &mut Vec<(Rect, Hit)>, t: &Theme, on_: &dyn Fn(usize) -> bool) -> u16 {
     let line_h = if boxed { 3 } else { 1 };
@@ -1055,15 +1021,14 @@ fn chips(f: &mut Frame, area: Rect, which: &[usize], label: &dyn Fn(usize) -> St
     (y + line_h).saturating_sub(area.y)
 }
 
-/// The bands as a console's faders: a track, the fill from 0 dB to the knob, the band's frequency and
-/// gain under it; the one chosen in the accent.
+/// Band faders: a track filled from 0 dB to the knob, frequency and gain below.
 #[allow(clippy::too_many_arguments)]
-fn sliders(f: &mut Frame, area: Rect, rows: &[EqRow], bands: &[usize], p: &nori_core::settings::StoredPrefs, chosen: usize, focused: bool, on_: bool, app: &mut App, t: &Theme) {
+fn sliders(f: &mut Frame, area: Rect, rows: &[EqRow], bands: &[usize], p: &nori_core::settings::StoredPrefs, chosen: usize, on_: bool, app: &mut App, t: &Theme) {
     if bands.is_empty() || area.height < 6 || area.width < 16 {
         return;
     }
     let range = nori_core::settings::EQ_RANGES.gain.max;
-    // An odd number of rows, so 0 dB is a row of its own in the middle; two rows under it for the words.
+    // An odd height so 0 dB gets its own middle row; two rows below for labels.
     let h = (area.height - 2).min(25);
     let h = if h % 2 == 0 { h - 1 } else { h };
     let mid = h / 2;
@@ -1075,7 +1040,6 @@ fn sliders(f: &mut Frame, area: Rect, rows: &[EqRow], bands: &[usize], p: &nori_
     for (y, s) in [(0, format!("+{range:.0}")), (mid, "0 dB".into()), (h - 1, format!("-{range:.0}"))] {
         put(f, Paragraph::new(Span::styled(format!("{s:>5}"), dim(t))), Rect { x: area.x, y: top + y, width: 5, height: 1 });
     }
-    // The 0 dB line across the console.
     let line_w = col * n;
     put(f, Paragraph::new(Span::styled("┈".repeat(line_w as usize), dim(t))), Rect { x: x0, y: top + mid, width: line_w, height: 1 });
     for (k, &i) in bands.iter().enumerate() {
@@ -1106,7 +1070,6 @@ fn sliders(f: &mut Frame, area: Rect, rows: &[EqRow], bands: &[usize], p: &nori_
         put(f, Paragraph::new(Span::styled(centre(&value), value_style)), Rect { x, y: top + h + 1, width: col - 1, height: 1 });
         app.hits.push((Rect { x, y: top, width: col, height: h + 2 }.intersection(area), Hit::Row(ListRef::Eq, i)));
     }
-    let _ = focused;
 }
 
 fn settings(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool) {
@@ -1121,7 +1084,7 @@ fn settings(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool) 
     if v.row.at == 0 && len > 0 {
         v.skip_titles(true);
     }
-    // An index of the groups on the left where there is room, the group the selection is in lit.
+    // Group index on the left when wide enough.
     let body = if body.width >= 96 {
         let at = v.group_at();
         for (g, group) in settings_view::GROUPS.iter().enumerate() {
@@ -1141,7 +1104,7 @@ fn settings(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool) 
     list(f, body, &mut v.row, len, ListRef::Settings, hits, t, focused, &|i, w| setting_line(&lines[i], w, t));
 }
 
-/// One line of the settings page, drawn from its row.
+/// One settings page line.
 fn setting_line(line: &SLine<'_>, w: usize, t: &Theme) -> Line<'static> {
     let row = match line {
         SLine::Group(title) => return Line::from(vec![Span::styled(format!("{title}  "), Style::default().fg(t.accent).add_modifier(Modifier::BOLD)), Span::styled("─".repeat(w.saturating_sub(title.width() + 3)), dim(t))]),
@@ -1178,10 +1141,8 @@ fn setting_line(line: &SLine<'_>, w: usize, t: &Theme) -> Line<'static> {
         return spread(vec![Span::styled(format!("    {title}"), text_style)], Span::styled(bar, Style::default().fg(t.accent)), w);
     }
     if title.is_empty() && !detail.is_empty() {
-        // A note: a line of explanation between the rows.
         return Line::from(Span::styled(fit(&format!("    {detail}"), w).into_owned(), dim(t).add_modifier(Modifier::ITALIC)));
     }
-    // A switch drawn as one.
     let value = match row {
         settings_view::Row::Toggle { on, .. } | settings_view::Row::Ranked { on, .. } => (if *on { "━━●" } else { "○──" }).to_string(),
         _ => settings_view::row_value(row),
@@ -1191,14 +1152,12 @@ fn setting_line(line: &SLine<'_>, w: usize, t: &Theme) -> Line<'static> {
         left.push(Span::styled(format!("  {detail}"), dim(t)));
     }
     let value_style = if live { Style::default().fg(t.accent) } else { dim(t) };
-    let line = spread(left, Span::styled(value + " ", value_style), w);
-    Line::from(line.spans.into_iter().map(|s| Span::styled(s.content.into_owned(), s.style)).collect::<Vec<_>>())
+    spread(left, Span::styled(value + " ", value_style), w)
 }
 
 // ---- the panel on the right ----
 
-/// The panel, in the cover's colours: a switch between what plays, the queue and the lyrics, and the
-/// one chosen under it.
+/// The right panel in the cover's colours: tabs, then the chosen panel.
 fn right_panel(f: &mut Frame, area: Rect, app: &mut App, art: Option<&mut Art>) {
     let Some(which) = app.panel else { return };
     if area.width < 10 || area.height < 4 {
@@ -1215,13 +1174,12 @@ fn right_panel(f: &mut Frame, area: Rect, app: &mut App, art: Option<&mut Art>) 
     }
     let area = Rect { x: area.x + 2, width: area.width.saturating_sub(3), y: area.y + 1, height: area.height.saturating_sub(1) };
     let focused = app.focus == Focus::Panel;
-    // The switch.
     let mut x = area.x;
     for (p, name) in PANELS {
-        let on = p == which;
-        let style = if on && focused {
-            Style::default().bg(t.accent).fg(on_colour(&t)).add_modifier(Modifier::BOLD)
-        } else if on {
+        let chosen = p == which;
+        let style = if chosen && focused {
+            Style::default().bg(t.accent).fg(on(t.accent)).add_modifier(Modifier::BOLD)
+        } else if chosen {
             Style::default().fg(t.accent).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         } else {
             dim(&t)
@@ -1242,10 +1200,6 @@ fn right_panel(f: &mut Frame, area: Rect, app: &mut App, art: Option<&mut Art>) 
         Panel::Queue => queue(f, body, app, focused),
         Panel::Lyrics => lyrics(f, body, app),
     }
-}
-
-fn on_colour(t: &Theme) -> Color {
-    on(t.accent)
 }
 
 fn now_playing(f: &mut Frame, area: Rect, app: &mut App, art: Option<&mut Art>, focused: bool) {
@@ -1286,26 +1240,31 @@ fn now_playing(f: &mut Frame, area: Rect, app: &mut App, art: Option<&mut Art>, 
     if y + 2 >= area.y + area.height {
         return;
     }
-    text(f, Rect { y, height: 1, ..area }, "Next up", bold().fg(t.text));
-    let next_area = Rect { y: y + 1, height: (area.y + area.height).saturating_sub(y + 1), ..area };
+    up_next(f, Rect { y, height: (area.y + area.height).saturating_sub(y), ..area }, app, focused, true);
+}
+
+/// "Next up" and the upcoming songs.
+fn up_next(f: &mut Frame, area: Rect, app: &mut App, focused: bool, say_end: bool) {
+    let t = app.theme;
+    text(f, area, "Next up", bold().fg(t.text));
+    let body = Rect { y: area.y + 1, height: area.height.saturating_sub(1), ..area };
     let upcoming = app.up_next();
     let App { queue, up_next_sel, hits, .. } = app;
     let Some(q) = queue.as_ref() else { return };
-    if upcoming.is_empty() {
-        text(f, next_area, "The queue ends here", dim(&t));
-        return;
+    if upcoming.is_empty() && say_end {
+        return text(f, body, "The queue ends here", dim(&t));
     }
-    list(f, next_area, up_next_sel, upcoming.len(), ListRef::UpNext, hits, &t, focused, &|row, w| match q.songs.get(upcoming[row]) {
+    list(f, body, up_next_sel, upcoming.len(), ListRef::UpNext, hits, &t, focused, &|row, w| match q.songs.get(upcoming[row]) {
         Some(s) => spread(vec![Span::styled(s.title.clone(), Style::default().fg(t.text)), Span::styled(format!("  {}", s.artist), dim(&t))], Span::styled(clock(s.duration as i64 * 1000), dim(&t)), w),
         None => Line::from(""),
     });
 }
 
-/// How the song heard came in and how the next one will: the mix the ear is in, the one planned.
+/// The current mix and the planned transition.
 fn mix_lines(app: &App, w: usize) -> Vec<Line<'static>> {
     let t = app.theme;
     let mut lines = Vec::new();
-    // Through a mix the ear is on the louder song: still the outgoing one, or already the incoming one.
+    // While mixing, `song` is the louder of the two.
     if app.now.mixing {
         let from = app.mixed_in.as_ref().and_then(|n| nori_core::queue::queue_song(n.outgoing_id.clone())).map(|s| s.title);
         let heard = match &from {
@@ -1331,7 +1290,7 @@ fn mix_lines(app: &App, w: usize) -> Vec<Line<'static>> {
     lines
 }
 
-/// A planned transition in words: its kind, how long, from where, and the incoming song's speed.
+/// A transition in words: kind, length, start and tempo ratio.
 fn how_mixed(n: &nori_core::automix::planner::TransitionNote) -> String {
     if n.duration_ms <= 0 {
         return "Gapless".to_string();
@@ -1340,7 +1299,7 @@ fn how_mixed(n: &nori_core::automix::planner::TransitionNote) -> String {
     format!("{}, {:.1} s from {}{tempo}", words_kind(&n.kind), n.duration_ms as f32 / 1000.0, clock(n.start_ms))
 }
 
-/// A transition's kind as the planner names it, in words.
+/// A planner transition kind in words.
 fn words_kind(kind: &str) -> &'static str {
     match kind {
         "BeatMatched" => "AutoMix: beat-matched mix",
@@ -1365,8 +1324,8 @@ fn queue(f: &mut Frame, area: Rect, app: &mut App, focused: bool) {
         modes.push_str(" · shuffle");
     }
     match q.repeat {
-        1 => modes.push_str(" · repeat one"),
-        2 => modes.push_str(" · repeat all"),
+        crate::app::REPEAT_ONE => modes.push_str(" · repeat one"),
+        crate::app::REPEAT_ALL => modes.push_str(" · repeat all"),
         _ => {}
     }
     text(f, Rect { height: 1, ..area }, &format!("{}{modes}", crate::text::songs_caption(q.len, secs)), dim(&t));
@@ -1389,7 +1348,7 @@ fn queue(f: &mut Frame, area: Rect, app: &mut App, focused: bool) {
     });
 }
 
-/// `s` in lines of at most `w` columns, broken between words.
+/// `s` word-wrapped to `w` columns.
 fn wrap(s: &str, w: usize) -> Vec<String> {
     let w = w.max(1);
     let mut out = Vec::new();
@@ -1437,12 +1396,12 @@ fn lyrics(f: &mut Frame, area: Rect, app: &mut App) {
     let sweep = app.prefs.lyrics_sweep && l.clock.timing().sweeps();
     let translate = app.prefs.lyrics_translation;
     let active = frame.active;
-    // Once the last line is over (`active` past it) the page stays on it, drawn as sung.
+    // After the last line `active` is past the end; stay on the last line.
     let focus = app.lyrics_sel.unwrap_or((active.max(0) as usize).min(l.pick.lyrics.lines.len().saturating_sub(1)));
     let credit = l.credit();
     let body = if credit.is_some() { Rect { height: area.height.saturating_sub(1), ..area } } else { area };
     let w = body.width as usize;
-    // Each lyric line as it is drawn: its own text wrapped, then the backing vocals and a translation.
+    // A lyric line's rows: text (0), backing vocals (1), translation (2), each wrapped.
     let block = |i: usize| -> Vec<(String, u8)> {
         let line = &l.pick.lyrics.lines[i];
         let mut v: Vec<(String, u8)> = wrap(&line.text, w.saturating_sub(2)).into_iter().map(|s| (s, 0)).collect();
@@ -1456,7 +1415,7 @@ fn lyrics(f: &mut Frame, area: Rect, app: &mut App) {
         }
         v
     };
-    // The line in focus sits a third of the way down, as Android's does.
+    // The focused line sits a third of the way down, as on Android.
     let anchor = body.y + body.height / 3;
     let mut y = anchor as i32;
     let mut i = focus as i32;
@@ -1473,7 +1432,6 @@ fn lyrics(f: &mut Frame, area: Rect, app: &mut App) {
         let strength = nori_look::lyrics::line_strength(synced, n as i32, active);
         let lit = t.lit(strength);
         let is_active = synced && n as i32 == active;
-        // Word by word: what is sung fully lit, the rest as the clock's unsung words.
         let mut sung = if is_active && sweep { l.sung_chars(n, frame.sung) } else { 0 };
         for (part, kind) in block(n) {
             let spans = match kind {
@@ -1512,8 +1470,7 @@ fn lyrics(f: &mut Frame, area: Rect, app: &mut App) {
 
 // ---- the full player ----
 
-/// The player over the page, in the cover's colours: the cover large, and beside it the song and its
-/// lyrics (or what comes next, where there are none).
+/// The full-window player: large cover, song info, and lyrics or the up-next list.
 fn full_player(f: &mut Frame, area: Rect, app: &mut App, art: Option<&mut Art>) {
     let t = app.theme;
     if let Some(page) = t.page {
@@ -1546,32 +1503,15 @@ fn full_player(f: &mut Frame, area: Rect, app: &mut App, art: Option<&mut Art>) 
     let rest = Rect { y: words.y + n + 1, height: words.height.saturating_sub(n + 1), ..words };
     if app.lyrics.as_ref().is_some_and(|l| !l.pick.lyrics.lines.is_empty()) || app.lyrics_for.is_some() {
         lyrics(f, rest, app);
-    } else {
-        now_playing_list(f, rest, app);
+    } else if rest.height >= 3 {
+        up_next(f, rest, app, false, false);
     }
-}
-
-/// What comes next, without the song's own words (the full player where there are no lyrics).
-fn now_playing_list(f: &mut Frame, area: Rect, app: &mut App) {
-    let t = app.theme;
-    if area.height < 3 {
-        return;
-    }
-    text(f, area, "Next up", bold().fg(t.text));
-    let upcoming = app.up_next();
-    let App { queue, up_next_sel, hits, .. } = app;
-    let Some(q) = queue.as_ref() else { return };
-    let body = Rect { y: area.y + 1, height: area.height - 1, ..area };
-    list(f, body, up_next_sel, upcoming.len(), ListRef::UpNext, hits, &t, false, &|row, w| match q.songs.get(upcoming[row]) {
-        Some(s) => spread(vec![Span::styled(s.title.clone(), Style::default().fg(t.text)), Span::styled(format!("  {}", s.artist), dim(&t))], Span::styled(clock(s.duration as i64 * 1000), dim(&t)), w),
-        None => Line::from(""),
-    });
 }
 
 // ---- the player bar ----
 
-/// The player along the bottom: the song on the left, the controls and the seek bar in the middle,
-/// the panel's switches and the volume on the right.
+/// The player bar: song on the left, controls and seek bar in the middle, panel switches and volume
+/// on the right.
 fn player_bar(f: &mut Frame, area: Rect, app: &mut App, ui: &Theme) {
     let t = *ui;
     put(f, Paragraph::new(Span::styled("─".repeat(area.width as usize), dim(&t))), Rect { height: 1, ..area });
@@ -1582,12 +1522,10 @@ fn player_bar(f: &mut Frame, area: Rect, app: &mut App, ui: &Theme) {
     let left_w = if wide { (w / 4).min(40) } else if w >= 60 { w / 4 } else { 0 };
     let right_w = if wide { 30 } else { 0 };
     let mid = Rect { x: area.x + left_w, width: w.saturating_sub(left_w + right_w), ..area };
-    // The song.
     if left_w > 4 {
         let lw = left_w as usize - 2;
         match &app.song {
             Some(s) => {
-                // The heart, clickable: a favourite or not.
                 let heart = if s.starred { "♥ " } else { "♡ " };
                 let hr = Rect { x: area.x + 1, width: 2, ..l1 };
                 put(f, Paragraph::new(Span::styled(heart, Style::default().fg(if s.starred { t.accent } else { t.dim }))), hr);
@@ -1598,20 +1536,16 @@ fn player_bar(f: &mut Frame, area: Rect, app: &mut App, ui: &Theme) {
             None => text(f, Rect { x: area.x + 1, width: left_w - 1, ..l1 }, "Nothing playing", dim(&t)),
         }
     }
-    // The controls, in the middle of the middle.
     let playing = app.now.state == State::Playing;
     let lit = |on: bool| if on { Style::default().fg(t.accent).add_modifier(Modifier::BOLD) } else { dim(&t) };
-    let repeat = match app.repeat() {
-        1 => "↻¹",
-        _ => "↻",
-    };
+    let repeat = if app.repeat() == crate::app::REPEAT_ONE { "↻¹" } else { "↻" };
     let toggle = if app.now.buffering { " ⋯ " } else if playing { " ⏸ " } else { " ▶ " };
     let controls: [(&str, Style, Button); 5] = [
         ("⤮", lit(app.queue_shuffled()), Button::Shuffle),
         ("⏮", Style::default().fg(t.text), Button::Previous),
         (toggle, Style::default().bg(t.accent).fg(on(t.accent)).add_modifier(Modifier::BOLD), Button::Toggle),
         ("⏭", Style::default().fg(t.text), Button::Next),
-        (repeat, lit(app.repeat() != 0), Button::Repeat),
+        (repeat, lit(app.repeat() != crate::app::REPEAT_OFF), Button::Repeat),
     ];
     let gap = 3u16;
     let total: u16 = controls.iter().map(|c| c.0.width() as u16).sum::<u16>() + gap * 4;
@@ -1626,7 +1560,6 @@ fn player_bar(f: &mut Frame, area: Rect, app: &mut App, ui: &Theme) {
         app.hits.push((Rect { x: r.x.saturating_sub(1), width: r.width + 2, ..r }, Hit::Button(b)));
         x += cw + gap;
     }
-    // The seek bar with its times.
     let now = Instant::now();
     let len = app.song.as_ref().map_or(0, |s| s.duration as i64 * 1000);
     let pos = match app.drag {
@@ -1655,7 +1588,6 @@ fn player_bar(f: &mut Frame, area: Rect, app: &mut App, ui: &Theme) {
         x += bar_w + 1;
     }
     text(f, Rect { x, width: b.width() as u16, ..l2 }, &b, dim(&t));
-    // The panel's switches and the volume.
     if right_w > 0 {
         let rx = area.x + w - right_w;
         let mut x = rx;
@@ -1669,7 +1601,6 @@ fn player_bar(f: &mut Frame, area: Rect, app: &mut App, ui: &Theme) {
         let r = Rect { x, width: 1, ..l1 };
         put(f, Paragraph::new(Span::styled("⤢", lit(app.full))), r);
         app.hits.push((Rect { x: x.saturating_sub(1), width: 3, ..r }, Hit::Button(Button::Full)));
-        // The volume as a small slider.
         let vw = 12u16;
         let label = format!("{:>3}%", (app.volume * 100.0).round() as i32);
         let icon = if app.volume <= 0.0 { "mute" } else { "vol" };
@@ -1743,7 +1674,7 @@ fn overlay(f: &mut Frame, area: Rect, app: &mut App, t: &Theme) {
             let inner = popup(f, r, Span::styled(" Keys · any key closes ", Style::default().fg(t.accent).add_modifier(Modifier::BOLD)), t);
             let inner = Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner };
             let mut lines = Vec::new();
-            for scope in [Scope::Global, Scope::List, Scope::Grid, Scope::Edit, Scope::Lyrics, Scope::Values] {
+            for scope in Scope::ALL {
                 lines.push(Line::from(Span::styled(scope.title(), Style::default().fg(t.accent).add_modifier(Modifier::BOLD))));
                 for b in BINDINGS.iter().filter(|b| b.scope == scope && !b.label.is_empty()) {
                     lines.push(Line::from(vec![Span::styled(format!("  {:<22}", b.label), Style::default().fg(t.text)), Span::styled(b.help, dim(t))]));

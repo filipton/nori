@@ -41,6 +41,3 @@ nori-player = { path = "../player" }
 async-trait = "0.1"
 # Synthetic songs with a sung line at known times, for the sync check.
 nori-player = { path = "../player", features = ["synth"] }
-# sync_tune.rs, run by hand against a real server: its requests (already in the tree through nori-http).
-ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
-rustfft = "6"

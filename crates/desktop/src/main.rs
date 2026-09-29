@@ -1,13 +1,9 @@
-//! nori's desktop client: a native window (Slint) laid out as the terminal client is - the sidebar, the
-//! page, the panel on the right and the player bar - over the same core and nori-engine. It keeps its
-//! files where the terminal client does, so both share the servers, the library and the downloads.
-//!
-//! Everything a player decides is the core's and nori-engine's; this crate only draws and forwards clicks.
+//! nori's Slint desktop client over the core and nori-engine. Shares its data directory with the
+//! terminal client; this crate only draws and forwards input.
 
 mod app;
 mod compositor;
 mod eq;
-mod glass;
 mod lyrics;
 mod menu;
 mod session;
@@ -21,7 +17,7 @@ use nori_core::settings::SavedServer;
 
 slint::include_modules!();
 
-/// Where the client keeps its files: $XDG_DATA_HOME/nori, else ~/.local/share/nori (the terminal's).
+/// $XDG_DATA_HOME/nori, else ~/.local/share/nori (same as the terminal client).
 fn data_dir() -> PathBuf {
     if let Some(d) = std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
         return PathBuf::from(d).join("nori");
@@ -50,7 +46,7 @@ fn main() -> Result<(), String> {
     std::fs::create_dir_all(&data).map_err(|e| format!("{}: {e}", data.display()))?;
     let db = session::db_path(&data);
     let mut prefs = nori_core::settings_store::settings_open(db).map_err(|e| format!("the settings: {e}"))?;
-    // A server given on the command line is added (or found) and used, as the terminal client does it.
+    // A server given on the command line is added if new, and made active.
     if let (Some(url), Some(user)) = (url, user) {
         let found = prefs.servers.iter().find(|s| s.url == url && s.user == user).map(|s| s.id.clone());
         let id = found.unwrap_or_else(|| {
@@ -62,11 +58,15 @@ fn main() -> Result<(), String> {
         prefs.active_server_id = id;
         nori_core::settings_store::settings_put(prefs);
     }
-    compositor::install()?;
+    let compositor = compositor::install()?;
     let ui = AppWindow::new().map_err(|e| e.to_string())?;
-    glass::dress(&ui);
-    app::start(&ui, data);
+    // Room for the traffic lights; SF Pro on macOS (the bundled Inter elsewhere).
+    if cfg!(target_os = "macos") {
+        ui.set_inset_top(44.0);
+        ui.set_font("System Font".into());
+    }
+    let app = app::start(&ui, data, compositor);
     let r = ui.run().map_err(|e| e.to_string());
-    app::stop();
+    app::stop(&app);
     r
 }

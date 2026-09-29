@@ -1,12 +1,7 @@
-//! A clock the test moves by hand, for the engine's thread and the sound card the test plays it
-//! through: time only moves when the engine sleeps (it takes no time to do anything), and the sound card
-//! pulls on that time rather than on a thread of its own. What a test sees no longer depends on how busy
-//! the machine is, and minutes of music take as long as the engine takes to make them.
-//!
-//! A test drives it through [`Stepper`]: each step waits until the engine sleeps, moves the time to the
-//! next thing due (the engine's own timer, or the card's next pull) and does it. A song's bytes still
-//! come on the loader's own thread; while the engine waits for them the time stands still, as though the
-//! network were instant (a server made slow on purpose holds it up to [`BYTES_WAIT`]).
+//! A virtual clock for engine tests: time moves only while the engine sleeps, and the test's sound card
+//! pulls on that time, so results do not depend on machine load and minutes of music run in moments.
+//! [`Stepper`] waits for the engine to sleep, then advances to the next engine timer or card pull.
+//! While the engine waits for a song's bytes, time stands still (up to [`BYTES_WAIT`] of real time).
 
 #![allow(dead_code)]
 
@@ -19,31 +14,27 @@ use std::time::{Duration, Instant};
 use nori_engine::Clock;
 use parking_lot::{Condvar, Mutex};
 
-/// How long, in real time, the time stands still while the engine waits for a song's bytes, per sleep:
-/// longer than any in-memory server takes, however busy the machine.
+/// Real time the clock waits per sleep for bytes the engine awaits; longer than any in-memory server takes.
 pub const BYTES_WAIT: Duration = Duration::from_millis(2_000);
-/// How long the time stands still instead while a server is itself waiting for the time to move (a
-/// transcode coming out at so many bytes a second of the test's clock): only long enough for bytes
-/// already on their way to land, since waiting longer only waits for itself.
+/// The shorter wait while a server itself waits for the clock (a paced transcode).
 pub const TIME_WAIT: Duration = Duration::from_millis(20);
-/// An engine that has not gone to sleep after this long, in real time, is stuck.
+/// Real time after which an engine that never sleeps is taken as stuck.
 const STUCK: Duration = Duration::from_secs(120);
 
 #[derive(Default)]
 struct State {
     now_ns: i64,
     engine: Option<Thread>,
-    /// The engine sleeps, until `deadline_ns` if it said, waiting for bytes if `bytes`.
+    /// The engine sleeps (until `deadline_ns`, if any), awaiting bytes if `bytes`.
     parked: bool,
     deadline_ns: Option<i64>,
     bytes: bool,
-    /// Sleeps so far, and the one the test stopped waiting for bytes in.
+    /// Sleeps so far, and the one whose byte wait was given up.
     sleeps: u64,
     gave_up: u64,
-    /// Servers waiting, in [`Virtual::wait_until`], for the time to move.
+    /// Servers waiting for the clock ([`Virtual::wait_until`]).
     time_waiters: u32,
-    /// The engine was woken by the test (a command, its timer, the card's pull) and has not yet taken a
-    /// turn since.
+    /// Woken by the test and no turn taken since.
     woken: bool,
 }
 
@@ -53,25 +44,16 @@ struct Shared {
     cv: Condvar,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Virtual(Arc<Shared>);
 
-impl Default for Virtual {
-    /// A new clock at nought. The loader's tries again after a dropped connection wait seconds of real
-    /// time, which this clock cannot see (it would move on, or not, by how the threads fall): on it they
-    /// take a few milliseconds instead, and so none of the test's time.
-    /// A request's stall is real time too, which a server paced on this clock can take far more of than
-    /// a phone ever waits: it is not timed on it. And the engines of a binary's tests, side by side, do
-    /// not crowd each other's requests out, as the one engine of an app would its own.
-    fn default() -> Virtual {
-        nori_engine::source::set_retry_wait_ms(2);
-        nori_engine::source::set_stall_ms(600_000);
-        nori_engine::source::set_crowding(false);
-        Virtual(Arc::default())
-    }
-}
-
 impl Clock for Virtual {
+    /// Retries take milliseconds, and a request never stalls: this clock cannot see real time, and a
+    /// server paced on it takes far longer in real time than any stall on a phone.
+    fn waits(&self) -> nori_engine::Waits {
+        nori_engine::Waits { stall_ms: 600_000, retry_ms: 2 }
+    }
+
     fn now_ms(&self) -> i64 {
         self.0.s.lock().now_ns / 1_000_000
     }
@@ -81,7 +63,7 @@ impl Clock for Virtual {
         let mut s = self.0.s.lock();
         s.engine.get_or_insert_with(std::thread::current);
         if s.woken {
-            // Woken since the turn began: another turn, which takes the unpark that came with it.
+            // Woken during the turn: turn again.
             return;
         }
         s.parked = true;
@@ -99,8 +81,7 @@ impl Clock for Virtual {
     fn woke(&self) {
         let mut s = self.0.s.lock();
         if std::mem::take(&mut s.woken) {
-            // The unpark that came with the wake (made under this lock) is taken now, so the next sleep
-            // is not cut short by it once the time has moved on.
+            // Consume the wake's unpark so it cannot cut the next sleep short.
             std::thread::park_timeout(Duration::ZERO);
         }
     }
@@ -117,7 +98,7 @@ impl Virtual {
         self.0.s.lock().now_ns
     }
 
-    /// Waits, in real time, until the engine sleeps with nothing left to do at this time.
+    /// Blocks until the engine sleeps with nothing due now.
     pub fn settle(&self) {
         let started = Instant::now();
         let mut s = self.0.s.lock();
@@ -143,8 +124,7 @@ impl Virtual {
         }
     }
 
-    /// Blocks a server's thread, in real time, until the test's clock reaches `ns`. While it waits, an
-    /// engine waiting for bytes lets the time move after [`TIME_WAIT`] rather than [`BYTES_WAIT`].
+    /// Blocks a server thread until the clock reaches `ns`; meanwhile byte waits are [`TIME_WAIT`].
     pub fn wait_until(&self, ns: i64) {
         let started = Instant::now();
         let mut s = self.0.s.lock();
@@ -156,10 +136,8 @@ impl Virtual {
         s.time_waiters -= 1;
     }
 
-    /// Blocks a server's thread, in real time, while `on` holds (a request that hangs), for `limit` at
-    /// most: whether it still held then. Meanwhile an engine waiting for bytes lets the time move after
-    /// [`TIME_WAIT`], as it does for a server waiting on the clock: a request that never answers must not
-    /// hold the test's time up.
+    /// Blocks a server thread while `on` holds (a hung request), at most `limit`; returns whether it
+    /// still held. Meanwhile byte waits are [`TIME_WAIT`].
     pub fn hang_while(&self, mut on: impl FnMut() -> bool, limit: Duration) -> bool {
         let started = Instant::now();
         let mut s = self.0.s.lock();
@@ -177,22 +155,22 @@ impl Virtual {
         held
     }
 
-    /// The engine's thread, once it has slept on this clock: to tell its doings from other tests' engines.
+    /// The engine's thread, once it slept on this clock.
     pub fn engine_thread(&self) -> Option<std::thread::ThreadId> {
         self.0.s.lock().engine.as_ref().map(Thread::id)
     }
 
-    /// How many times the engine has gone to sleep so far: each one ends in a wake.
+    /// Sleeps so far.
     pub fn sleeps(&self) -> u64 {
         self.0.s.lock().sleeps
     }
 
-    /// When the engine asked to be woken, if it did.
+    /// When the engine asked to be woken.
     pub fn deadline_ns(&self) -> Option<i64> {
         self.0.s.lock().deadline_ns
     }
 
-    /// The time is `ns`: the engine is woken if its timer ran out.
+    /// Advances to `ns`, waking the engine if its timer ran out.
     pub fn move_to(&self, ns: i64) {
         let mut s = self.0.s.lock();
         s.now_ns = s.now_ns.max(ns);
@@ -203,7 +181,7 @@ impl Virtual {
         }
     }
 
-    /// Something the test did (a pull that took the ring to its low mark) woke the engine.
+    /// The test woke the engine (e.g. a pull reached the ring's low mark).
     pub fn woke_engine(&self) {
         Self::poke(&mut self.0.s.lock());
     }
@@ -216,15 +194,88 @@ impl Virtual {
     }
 }
 
-/// A device on the clock: pulls when due, and says whether that woke the engine.
+/// A device on the clock.
 pub trait Device: Send {
-    /// When it next wants to pull, ns.
+    /// When it next pulls, ns.
     fn due_ns(&self) -> i64;
-    /// Its pull at `now_ns`: true when it woke the engine.
+    /// Pulls at `now_ns`; true when that woke the engine.
     fn tick(&mut self, now_ns: i64) -> bool;
 }
 
-/// Moves a [`Virtual`] clock through the engine's timers and a device's pulls.
+/// A 16-bit stereo WAV file of interleaved `samples`.
+pub fn wav(rate: u32, samples: &[i16]) -> Vec<u8> {
+    let samples: Vec<i32> = samples.iter().map(|&v| v as i32).collect();
+    wav_bits(rate, 16, &samples)
+}
+
+/// A stereo PCM WAV file with `bits` (16 or 24) per sample.
+pub fn wav_bits(rate: u32, bits: u16, samples: &[i32]) -> Vec<u8> {
+    let width = bits as u32 / 8;
+    let data = samples.len() as u32 * width;
+    let mut w = Vec::with_capacity(44 + data as usize);
+    w.extend_from_slice(b"RIFF");
+    w.extend_from_slice(&(36 + data).to_le_bytes());
+    w.extend_from_slice(b"WAVEfmt ");
+    w.extend_from_slice(&16u32.to_le_bytes());
+    w.extend_from_slice(&1u16.to_le_bytes());
+    w.extend_from_slice(&2u16.to_le_bytes());
+    w.extend_from_slice(&rate.to_le_bytes());
+    w.extend_from_slice(&(rate * 2 * width).to_le_bytes());
+    w.extend_from_slice(&(2 * width as u16).to_le_bytes());
+    w.extend_from_slice(&bits.to_le_bytes());
+    w.extend_from_slice(b"data");
+    w.extend_from_slice(&data.to_le_bytes());
+    for v in samples {
+        w.extend_from_slice(&v.to_le_bytes()[..width as usize]);
+    }
+    w
+}
+
+/// Interleaved stereo 16-bit samples of a sine at `hz`, `secs` long, peaking at `peak`.
+pub fn sine(rate: u32, hz: f64, secs: f64, peak: f64) -> Vec<i16> {
+    let frames = (rate as f64 * secs) as usize;
+    (0..frames).flat_map(|i| {
+        let v = ((std::f64::consts::TAU * hz * i as f64 / rate as f64).sin() * peak) as i16;
+        [v, v]
+    }).collect()
+}
+
+/// Forty seconds of a 120 bpm click over a quiet tone at `hz`, stereo 16-bit at 44.1 kHz.
+pub fn beat(hz: f64) -> Vec<i16> {
+    let rate = 44_100usize;
+    (0..rate * 40).flat_map(|i| {
+        let in_beat = i % (rate / 2);
+        let click = if in_beat < 2000 { (1.0 - in_beat as f64 / 2000.0) * 0.8 } else { 0.0 };
+        let tone = (i as f64 * hz * std::f64::consts::TAU / rate as f64).sin() * 0.1;
+        let v = (((click * ((i * 7919) % 97) as f64 / 97.0) + tone) * 32767.0) as i16;
+        [v, v]
+    }).collect()
+}
+
+/// Whether ffmpeg is installed (tests that need encoded songs pass without it).
+pub fn ffmpeg() -> bool {
+    std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
+}
+
+/// A core transport that answers every API call with a 500: resolving songs needs none.
+#[cfg(feature = "core")]
+pub struct NoApi;
+
+#[cfg(feature = "core")]
+#[async_trait::async_trait]
+impl nori_core::transport::Transport for NoApi {
+    async fn get(&self, _url: String, _timeout_ms: u32) -> Result<nori_core::transport::TransportResponse, nori_core::transport::TransportError> {
+        Ok(nori_core::transport::TransportResponse { status: 500, body: Vec::new() })
+    }
+
+    async fn send(&self, _request: nori_core::transport::Exchange) -> Result<nori_core::transport::TransportResponse, nori_core::transport::TransportError> {
+        Ok(nori_core::transport::TransportResponse { status: 500, body: Vec::new() })
+    }
+
+    fn address_changed(&self) {}
+}
+
+/// Drives a [`Virtual`] clock through engine timers and device pulls.
 pub struct Stepper<D: Device> {
     pub clock: Virtual,
     pub device: Arc<Mutex<D>>,
@@ -235,8 +286,7 @@ impl<D: Device> Stepper<D> {
         Stepper { clock, device }
     }
 
-    /// One thing due: the engine's timer or the device's pull, whichever comes first, once the engine
-    /// sleeps.
+    /// Runs the next due event: the engine's timer or the device's pull.
     pub fn step(&self) {
         self.clock.settle();
         let pull = self.device.lock().due_ns();
@@ -252,7 +302,7 @@ impl<D: Device> Stepper<D> {
         }
     }
 
-    /// Runs the time on by `d`.
+    /// Advances by `d`.
     pub fn run(&self, d: Duration) {
         let until = self.clock.now_ns() + d.as_nanos() as i64;
         while self.clock.now_ns() < until {
@@ -261,7 +311,7 @@ impl<D: Device> Stepper<D> {
         self.clock.settle();
     }
 
-    /// Runs the time on until `done`, for `limit` at most: whether it came.
+    /// Advances until `done`, at most `limit`; returns whether it came.
     pub fn until(&self, limit: Duration, mut done: impl FnMut() -> bool) -> bool {
         let until = self.clock.now_ns() + limit.as_nanos() as i64;
         self.clock.settle();

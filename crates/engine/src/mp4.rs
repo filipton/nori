@@ -1,23 +1,19 @@
-//! The encoder's delay and padding of an MP4 audio track, which symphonia's MP4 reader does not read:
-//! from iTunes' `iTunSMPB` comment when there is one, else from the track's edit list, the two places
-//! media3 reads them from. Only the atoms on the way to those are read (the `moov` box and what is in
-//! it); the audio itself is skipped over.
+//! An MP4 audio track's encoder delay and padding, which symphonia does not read: from iTunes'
+//! `iTunSMPB` comment, else the edit list (as media3 does). Only `moov` is read.
 
 use std::io::{self, Read, Seek, SeekFrom};
 
-/// The frames to cut, in the track's timescale (for an audio track, its sample rate): `delay` from the
-/// start of what the decoder makes, and whatever lies past `delay + frames` (the padding), when the
-/// file says how long it really is.
+/// Frames to cut, in the track's timescale (its sample rate): `delay` at the start, and everything past
+/// `delay + frames` when known.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Gapless {
     pub delay: u64,
     pub frames: Option<u64>,
-    /// Every frame the track's samples make, delay and padding with them (its `mdhd` length): what an
-    /// output that decodes the packets itself works the padding out from.
+    /// All decoder frames, delay and padding included (`mdhd`): offload derives the padding from it.
     pub total: u64,
 }
 
-/// A box: its type and where its contents are.
+/// A box: its type and body range.
 struct Atom {
     kind: [u8; 4],
     body: u64,
@@ -84,8 +80,8 @@ fn header_times(r: &mut (impl Read + Seek), a: &Atom) -> io::Result<(u64, u64)> 
     Ok(if b.first() == Some(&1) { (be32(&b, 20), be64(&b, 24)) } else { (be32(&b, 12), be32(&b, 16)) })
 }
 
-/// The one edit of an edit list: (segment duration in the movie's timescale, media time in the
-/// track's); none when there is not exactly one, as media3 then leaves the stream alone.
+/// The single edit (segment duration in movie timescale, media time in track timescale); None unless
+/// there is exactly one, as in media3.
 fn edit(r: &mut (impl Read + Seek), elst: &Atom) -> io::Result<Option<(u64, i64)>> {
     let b = read_at(r, elst.body, (elst.end - elst.body).min(40) as usize)?;
     if b.len() < 8 || be32(&b, 4) != 1 {
@@ -98,7 +94,7 @@ fn edit(r: &mut (impl Read + Seek), elst: &Atom) -> io::Result<Option<(u64, i64)
     })
 }
 
-/// iTunes' ` 00000000 00000840 000001CA 0000000000059E36 ...`: the delay and padding, in hex.
+/// Parses iTunes' ` 00000000 00000840 000001CA 0000000000059E36 ...` into delay and padding.
 pub fn smpb(text: &str) -> Option<(u64, u64)> {
     let mut parts = text.split_whitespace();
     parts.next()?;
@@ -107,12 +103,12 @@ pub fn smpb(text: &str) -> Option<(u64, u64)> {
     Some((delay, padding))
 }
 
-/// The `iTunSMPB` comment in `moov/udta/meta/ilst`, if there is one.
+/// The `iTunSMPB` comment in `moov/udta/meta/ilst`.
 fn itunes(r: &mut (impl Read + Seek), moov: &[Atom]) -> io::Result<Option<(u64, u64)>> {
     let Some(udta) = find(moov, b"udta") else { return Ok(None) };
     let udta = children(r, udta.body, udta.end)?;
     let Some(meta) = find(&udta, b"meta") else { return Ok(None) };
-    // A full box: its version and flags come before the boxes in it.
+    // A full box: skip version and flags.
     let meta = children(r, meta.body + 4, meta.end)?;
     let Some(ilst) = find(&meta, b"ilst") else { return Ok(None) };
     for item in children(r, ilst.body, ilst.end)?.iter().filter(|a| &a.kind == b"----") {
@@ -128,10 +124,9 @@ fn itunes(r: &mut (impl Read + Seek), moov: &[Atom]) -> io::Result<Option<(u64, 
     Ok(None)
 }
 
-/// The gapless numbers of the file `r` holds (an MP4 or not). `r` is left wherever reading took it.
+/// The gapless numbers of `r` (None if not an MP4). Leaves `r`'s position anywhere.
 pub fn gapless(r: &mut (impl Read + Seek)) -> io::Result<Option<Gapless>> {
     let len = r.seek(SeekFrom::End(0))?;
-    // Anything else is left alone at its first eight bytes.
     if atom(r, 0, len)?.is_none_or(|a| &a.kind != b"ftyp") {
         return Ok(None);
     }
@@ -139,7 +134,6 @@ pub fn gapless(r: &mut (impl Read + Seek)) -> io::Result<Option<Gapless>> {
     let Some(moov) = find(&top, b"moov") else { return Ok(None) };
     let moov = children(r, moov.body, moov.end)?;
     if let Some((delay, padding)) = itunes(r, &moov)? {
-        // The comment's padding is counted against the samples the file holds.
         let total = audio_track(r, &moov)?.map_or(0, |t| t.duration);
         let frames = total.checked_sub(delay + padding);
         return Ok(Some(Gapless { delay, frames, total }));
@@ -148,7 +142,7 @@ pub fn gapless(r: &mut (impl Read + Seek)) -> io::Result<Option<Gapless>> {
     let Some((segment, media_time)) = track.edit.filter(|e| e.1 >= 0) else { return Ok(None) };
     let movie_scale = find(&moov, b"mvhd").map(|a| header_times(r, a)).transpose()?.map_or(1, |t| t.0.max(1));
     let scale = track.timescale.max(1);
-    // media3's AtomParsers: the edit's start is the delay, what lies past its end the padding.
+    // As media3's AtomParsers: the edit's start is the delay, past its end the padding.
     let start = media_time as u64;
     let end = start + segment * scale / movie_scale;
     if end > track.duration || (start == 0 && end == track.duration) {
@@ -163,7 +157,7 @@ struct Track {
     edit: Option<(u64, i64)>,
 }
 
-/// The first sound track: its timescale and length (`mdhd`) and its one edit.
+/// The first sound track's timescale, length (`mdhd`) and single edit.
 fn audio_track(r: &mut (impl Read + Seek), moov: &[Atom]) -> io::Result<Option<Track>> {
     for trak in moov.iter().filter(|a| &a.kind == b"trak") {
         let inner = children(r, trak.body, trak.end)?;
@@ -223,8 +217,8 @@ mod tests {
     }
 
     #[test]
-    fn the_edit_list_says_where_the_music_starts_and_ends() {
-        // 2.2 s (in the movie's milliseconds) from frame 1024 on.
+    fn edit_list_gives_delay_and_length() {
+        // 2.2 s (movie ms) from frame 1024.
         let g = gapless(&mut Cursor::new(file(Some((2200, 1024)), None))).unwrap();
         assert_eq!(g, Some(Gapless { delay: 1024, frames: Some(97_020), total: 102_400 }));
         assert_eq!(gapless(&mut Cursor::new(file(None, None))).unwrap(), None, "no edit, nothing to cut");
@@ -232,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn itunes_comment_wins_over_the_edit_list() {
+    fn itunes_comment_wins_over_edit_list() {
         let c = " 00000000 00000840 000001CA 00000000000186A0 00000000 00000000";
         let g = gapless(&mut Cursor::new(file(Some((2200, 1024)), Some(c)))).unwrap();
         assert_eq!(g, Some(Gapless { delay: 0x840, frames: Some(102_400 - 0x840 - 0x1CA), total: 102_400 }));

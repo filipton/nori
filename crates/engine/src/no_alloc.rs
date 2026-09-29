@@ -1,6 +1,5 @@
-//! Steady playback must not allocate: not on the engine's thread for each buffer that goes through the
-//! sink into the ring, and never on the device's thread. The test binary counts every allocation made
-//! on the calling thread; each path runs past its warm-up and must then make none.
+//! Steady playback must not allocate, per buffer on the engine's thread or ever on the device's. This
+//! test binary counts allocations per thread; each path must make none after warm-up.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -46,7 +45,7 @@ fn allocations(f: impl FnOnce()) -> u64 {
     ALLOCS.with(Cell::get) - before
 }
 
-/// A device at `rate` whose feed the test pulls by hand.
+/// A device at `rate` whose feed the test pulls.
 struct Hand(Arc<parking_lot::Mutex<Option<Feed>>>, u32);
 
 impl AudioOutput for Hand {
@@ -78,7 +77,7 @@ fn tone(frames: usize, enc: Encoding) -> Vec<u8> {
         .collect()
 }
 
-/// Buffers through the sink into the ring and out of the device, as playback runs them.
+/// Allocations while buffers go through the sink and ring and out of the device, after warm-up.
 fn steady(device_rate: u32, sound: Sound, speed: f32, skip_silence: bool) -> u64 {
     steady_in(Encoding::Pcm16, device_rate, sound, speed, skip_silence)
 }
@@ -111,7 +110,7 @@ fn steady_in(encoding: Encoding, device_rate: u32, sound: Sound, speed: f32, ski
 }
 
 #[test]
-fn a_buffer_through_the_sink_and_the_ring_allocates_nothing() {
+fn pcm16_buffer_path_allocates_nothing() {
     assert_eq!(steady(44_100, Sound::default(), 1.0, false), 0, "straight through");
     let eq = Sound { bands: vec![Band { kind: PEAKING, freq: 1000.0, gain_db: 4.0, q: 1.0, channel: 0 }], limiter: true, ..Sound::default() };
     assert_eq!(steady(44_100, eq, 1.25, true), 0, "equalizer, limiter, silence skipping and speed");
@@ -119,7 +118,7 @@ fn a_buffer_through_the_sink_and_the_ring_allocates_nothing() {
 }
 
 #[test]
-fn a_float_buffer_through_the_sink_and_the_ring_allocates_nothing() {
+fn float_buffer_path_allocates_nothing() {
     assert_eq!(steady_in(Encoding::Float, 44_100, Sound::default(), 1.0, false), 0, "straight through");
     let eq = Sound { bands: vec![Band { kind: PEAKING, freq: 1000.0, gain_db: 4.0, q: 1.0, channel: 0 }], limiter: true, ..Sound::default() };
     assert_eq!(steady_in(Encoding::Float, 44_100, eq, 1.25, true), 0, "equalizer, limiter and speed in float");

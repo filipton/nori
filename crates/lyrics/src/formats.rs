@@ -1,34 +1,30 @@
-//! Lyrics from services outside the music server, each in its own format, turned into the app's one
-//! shape. Word timings are taken only where a format really carries them: nothing in this file spreads
-//! a line's time over its words (that is `lyrics::estimate`, and it is only for the server's own LRC).
-//! A line a source timed as a whole stays a whole line; the player lights it up and does not sweep it.
-//!
-//! Here: LRCLIB's lyricsfile (YAML), Apple-style TTML, NetEase's YRC, KuGou's KRC, QQ Music's QRC, and
-//! the form the response cache keeps them in. JSON shapes are json.rs's, web pages html.rs's.
+//! Third-party lyrics formats read into the app's shape: LRCLIB's lyricsfile (YAML), Apple-style TTML,
+//! NetEase's YRC, KuGou's KRC, QQ Music's QRC, and the response cache's form. Words are timed only
+//! where the format times them; a line timed as a whole stays whole. JSON is json.rs's, HTML html.rs's.
 
 use nori_model::{LyricLine, LyricWord, Lyrics};
 use yaml_rust2::{Yaml, YamlLoader};
 
 use crate::lyrics::utf16_at;
 
-/// One line as a source gives it, before its offsets are turned into UTF-16.
+/// One line as a source gives it, offsets still in bytes.
 #[derive(Default)]
 pub(crate) struct Timed {
     pub(crate) start: i64,
     pub(crate) end: Option<i64>,
     pub(crate) text: String,
     pub(crate) words: Vec<Word>,
-    /// Backing vocals sung over the line, kept apart from its lead (see [keep_backing]).
+    /// Backing vocals sung over the line ([`keep_backing`]).
     pub(crate) backing: Option<Box<Timed>>,
     /// Nothing but backing vocals, shown as a line of its own.
     pub(crate) background: bool,
-    /// Who sings it, as the source names them (an agent id); see [voices].
+    /// The singer's agent id, as the source names it ([`voices`]).
     pub(crate) agent: Option<String>,
-    /// The side it is drawn on: 0 the first, 1 the other, 2 everyone together.
+    /// The duet side: 0 the first, 1 the other, 2 everyone together.
     pub(crate) voice: u8,
 }
 
-/// A sung word or syllable: when, and where it sits in its line's text (bytes).
+/// A sung word or syllable: its times and its byte range in the line's text.
 pub(crate) struct Word {
     start: i64,
     end: Option<i64>,
@@ -37,8 +33,7 @@ pub(crate) struct Word {
 }
 
 impl Timed {
-    /// Appends `piece` to the line. When it is timed, it becomes a word covering its letters but not
-    /// the spaces around them, so the fill stops on the last letter rather than half way to the next.
+    /// Appends `piece`; a timed piece becomes a word over its letters, not the spaces around them.
     pub(crate) fn push(&mut self, piece: &str, time: Option<(i64, Option<i64>)>) {
         let lead = piece.len() - piece.trim_start().len();
         let at = self.text.len() + lead;
@@ -50,9 +45,8 @@ impl Timed {
     }
 }
 
-/// Lines in time order with their ends filled in: a line without an end runs to its last word or to
-/// the next line, a word without an end to the next word or the end of its line. Words keep the order
-/// they are written in, which is the order the fill passes through them.
+/// Lines in time order with their ends filled in: a line without an end runs to its last word or the
+/// next line, a word without an end to the next word. Words keep their written order.
 pub(crate) fn finish(mut lines: Vec<Timed>) -> Lyrics {
     for l in &mut lines {
         let kept = l.text.trim_end().len();
@@ -62,10 +56,8 @@ pub(crate) fn finish(mut lines: Vec<Timed>) -> Lyrics {
     lines.sort_by_key(|l| l.start);
     let starts: Vec<i64> = lines.iter().map(|l| l.start).collect();
     let word_timed = lines.iter().any(|l| !l.words.is_empty() || l.backing.as_ref().is_some_and(|b| !b.words.is_empty()));
-    /// The words of `text` in UTF-16, each running to its own end, or the next word's start; the last
-    /// one without an end to the line's own end when the source gave one, otherwise for as long as a
-    /// word that long is sung, and no further than `until` (the next line). A last word ended at its own
-    /// start was filled in one frame; one ended at the next line crept through the pause before it.
+    /// The words in UTF-16, each to its own end or the next word's start. A last word without an end
+    /// runs to the line's given `end`, else for as long as a word that long is sung, never past `until`.
     fn timed(words: &[Word], text: &str, end: Option<i64>, until: i64) -> Vec<LyricWord> {
         words
             .iter()
@@ -101,18 +93,37 @@ pub(crate) fn finish(mut lines: Vec<Timed>) -> Lyrics {
     Lyrics { synced: !out.is_empty(), word_timed, lines: out, ..Default::default() }
 }
 
-/// What a set of lyrics is worth next to another: 3 timed word by word, 2 line by line, 1 not timed,
-/// 0 none.
-pub fn timing(l: &Lyrics) -> u8 {
-    match (l.lines.is_empty(), l.synced, l.word_timed) {
-        (true, _, _) => 0,
-        (_, false, _) => 1,
-        (_, true, true) => 3,
-        _ => 2,
+/// How finely lyrics are timed, worst to best.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Timing {
+    Empty,
+    Untimed,
+    Lines,
+    Words,
+}
+
+impl Timing {
+    /// The words for it in the log.
+    pub fn words(self) -> &'static str {
+        match self {
+            Timing::Words => "word-timed",
+            Timing::Lines => "line-timed",
+            Timing::Untimed => "not timed",
+            Timing::Empty => "empty",
+        }
     }
 }
 
-/// Untimed text, one line per line, blank lines kept as the gaps between verses.
+pub fn timing(l: &Lyrics) -> Timing {
+    match (l.lines.is_empty(), l.synced, l.word_timed) {
+        (true, _, _) => Timing::Empty,
+        (_, false, _) => Timing::Untimed,
+        (_, true, true) => Timing::Words,
+        _ => Timing::Lines,
+    }
+}
+
+/// Untimed text, one line per line, blank lines kept between verses.
 pub(crate) fn plain(text: &str) -> Lyrics {
     let lines: Vec<LyricLine> = text.lines().map(|l| LyricLine { start_ms: -1, end_ms: -1, text: l.trim().to_string(), ..Default::default() }).collect();
     if lines.iter().all(|l| l.text.is_empty()) {
@@ -123,17 +134,16 @@ pub(crate) fn plain(text: &str) -> Lyrics {
 
 // ---- LRCLIB's lyricsfile ---------------------------------------------------------------------------
 
-/// A lyricsfile (the open YAML format LRCLIB and LRCGET share, version 1.0) into lyrics. Words are
-/// timed where the file times them; lines without words stay line-timed; a file with only `plain`
-/// text is unsynced. An unknown version, an instrumental, or anything that does not parse is empty.
+/// A lyricsfile (LRCLIB's and LRCGET's YAML, version 1.0). A file with only `plain` text is untimed; an
+/// unknown version, an instrumental or anything that does not parse is empty.
 pub fn from_lyricsfile(text: &str) -> Lyrics {
-    // Lyrics are a few kilobytes. The cap keeps a hostile file from nesting the parser into the ground.
+    // Lyrics are kilobytes; the cap stops a hostile file nesting the parser deep.
     if text.len() > 256 * 1024 {
         return Lyrics::default();
     }
     let Ok(docs) = YamlLoader::load_from_str(text) else { return Lyrics::default() };
     let Some(doc) = docs.first() else { return Lyrics::default() };
-    // "Readers must not treat an unknown version as version 1.0." Unquoted, `1.0` reads as a number.
+    // The spec: an unknown version is not 1.0. Unquoted, `1.0` reads as a number.
     let version = match &doc["version"] {
         Yaml::String(v) | Yaml::Real(v) => v.trim().to_string(),
         _ => String::new(),
@@ -156,8 +166,7 @@ pub fn from_lyricsfile(text: &str) -> Lyrics {
                 line.push(piece, Some((s, e)));
             }
         } else {
-            // The words should spell the line; when they do not, their places in it are guesses, and a
-            // guessed place is a sweep over the wrong letters. The line keeps its own timing instead.
+            // Words that do not spell the line cannot be placed in it: the line stays line-timed.
             line.push(text, None);
         }
         lines.push(line);
@@ -194,13 +203,13 @@ fn clock(s: &str) -> Option<i64> {
     Some(ms.round() as i64)
 }
 
-/// An attribute by its local name, whatever namespace prefix the document gave it (`ttm:role`).
+/// An attribute by its local name, whatever its namespace prefix (`ttm:role`).
 fn attr<'a>(n: roxmltree::Node<'a, '_>, local: &str) -> Option<&'a str> {
     n.attributes().find(|a| a.name() == local).map(|a| a.value())
 }
 
-/// Adds text to a line with every run of whitespace as one space and none at the start, so a document
-/// laid out over several lines reads the same as one written on a single line.
+/// Adds text to a line with each run of whitespace as one space and none at the start, so layout in
+/// the source is not part of the words.
 pub(crate) fn append(t: &mut Timed, raw: &str, time: Option<(i64, Option<i64>)>) {
     let mut piece = String::with_capacity(raw.len());
     for (i, part) in raw.split(char::is_whitespace).enumerate() {
@@ -213,11 +222,10 @@ pub(crate) fn append(t: &mut Timed, raw: &str, time: Option<(i64, Option<i64>)>)
     t.push(piece, time);
 }
 
-/// Walks one `<p>`: timed spans become words (Apple's are syllables; the spaces between spans are where
-/// words end), backing vocals (`ttm:role="x-bg"`) go to `backing`, translations and romanisations that
-/// some documents carry inline are left out.
+/// Walks one `<p>`: timed spans become words (syllables; a space between spans ends a word), backing
+/// vocals (`x-bg`) go to `backing`, inline translations and romanisations are left out.
 fn walk(node: roxmltree::Node, line: &mut Timed, backing: &mut Timed, in_bg: bool, depth: usize) {
-    // Real documents nest spans two deep at most; this only stops a hostile one recursing the stack away.
+    // Real documents nest two deep; the limit stops a hostile one overflowing the stack.
     if depth > 16 {
         return;
     }
@@ -252,11 +260,8 @@ fn walk(node: roxmltree::Node, line: &mut Timed, backing: &mut Timed, in_bg: boo
     }
 }
 
-/// Keeps a line's backing vocals with it but apart from its lead, with their own times: the player draws
-/// them smaller under the line, lit as they are sung. The player lights one line at a time, so a second
-/// voice sung over the first stays inside its line rather than becoming one of its own, which would take
-/// the light off the lead while it is still singing. A line that is nothing but backing vocals is shown
-/// as a line, marked as backing.
+/// Keeps backing vocals inside their line with their own times, since the player lights one line at a
+/// time; a line of nothing but backing vocals becomes a line marked as backing.
 pub(crate) fn keep_backing(line: &mut Timed, mut backing: Timed) {
     let sung = backing.text.trim_end().len();
     backing.text.truncate(sung);
@@ -272,8 +277,7 @@ pub(crate) fn keep_backing(line: &mut Timed, mut backing: Timed) {
     line.backing = Some(Box::new(backing));
 }
 
-/// Whether an agent id stands for everyone singing together: declared as a group, or Apple's own id for
-/// that (`v1000`), which its documents do not declare.
+/// Whether an agent id is everyone together: declared a group, or Apple's undeclared `v1000`.
 fn together(id: &str, kinds: &std::collections::HashMap<String, String>) -> bool {
     match kinds.get(id) {
         Some(kind) => kind == "group",
@@ -281,14 +285,10 @@ fn together(id: &str, kinds: &std::collections::HashMap<String, String>) -> bool
     }
 }
 
-/// Sides for a duet, from who sings each line: `lines[..].agent`, with `kinds` the type each agent id
-/// was declared as ("person", "group", "other"; an undeclared id is a person). The side changes every
-/// time the singer does, rather than one side per singer, so three voices still read as a conversation
-/// instead of two of them sharing a side. A line sung by everyone together stays on the first side
-/// without changing whose turn it is; a line naming nobody stays on the side whose turn it is. With
-/// fewer than two singers named, every line is on the first side. And a song that comes out nearly all
-/// on the other side is turned round: that only means it began with the voice the turns were counted
-/// away from, and a whole song down the right-hand edge is not what anyone meant.
+/// Duet sides from each line's agent (`kinds`: each id's declared type; undeclared is a person). The
+/// side flips whenever the singer changes, so three voices still alternate. Everyone together is side 2
+/// and does not flip; a line naming nobody keeps the current side. Under two singers, all is side 0; a
+/// song nearly all on side 1 is flipped.
 pub(crate) fn voices(lines: &mut [Timed], kinds: &std::collections::HashMap<String, String>) {
     lines.sort_by_key(|l| l.start);
     let people: std::collections::HashSet<&str> =
@@ -319,13 +319,8 @@ pub(crate) fn voices(lines: &mut [Timed], kinds: &std::collections::HashMap<Stri
     }
 }
 
-/// Timed Text as Apple Music writes it, which is what Unison's word-synced entries and BiniLyrics
-/// serve: a `<p begin end>` per line and a `<span begin end>` per syllable. A document whose lines
-/// carry no times is unsynced; one timed by line only has no words.
-///
-/// Backing vocals are sung over the main line, and the player lights one line at a time, so they are
-/// kept at the end of their line (with their own times) rather than as a line of their own that would
-/// take the light off the lead vocal while it is still singing.
+/// Apple-style TTML (Unison, BiniLyrics): a `<p begin end>` per line, a `<span begin end>` per syllable.
+/// Untimed lines make untimed lyrics; line times alone give no words.
 pub fn from_ttml(text: &str) -> Lyrics {
     if text.len() > 2 * 1024 * 1024 {
         return Lyrics::default();
@@ -333,7 +328,7 @@ pub fn from_ttml(text: &str) -> Lyrics {
     let Ok(doc) = roxmltree::Document::parse(text) else { return Lyrics::default() };
     let mut lines = Vec::new();
     let mut untimed = Vec::new();
-    // Who is singing: each agent's declared type, and each line's agent (on the line, or on its section).
+    // Each agent's declared type; a line's agent is on the line or its section.
     let kinds: std::collections::HashMap<String, String> = doc
         .descendants()
         .filter(|n| n.is_element() && n.tag_name().name() == "agent")
@@ -353,7 +348,7 @@ pub fn from_ttml(text: &str) -> Lyrics {
             None => untimed.push(line.text),
         }
     }
-    // A line without a time in an otherwise timed document has nowhere honest to go, so it is left out.
+    // An untimed line in a timed document has no place: it is left out.
     if lines.is_empty() {
         return plain(&untimed.join("\n"));
     }
@@ -363,8 +358,8 @@ pub fn from_ttml(text: &str) -> Lyrics {
 
 // ---- karaoke lines: NetEase's YRC, KuGou's KRC --------------------------------------------------
 
-/// A numeric tag at the start of `s` - `[12,34]`, `(12,34,0)`, `<12,34,0>` - as its numbers and the bytes
-/// it took. Anything else between those brackets (`(ooh)`, `[ar:Someone]`) is not a tag.
+/// A numeric tag at the start of `s` (`[12,34]`, `(12,34,0)`, `<12,34,0>`): its numbers and byte length.
+/// Other bracketed text (`(ooh)`) is not a tag.
 fn tag(s: &str, open: char, close: char) -> Option<(Vec<i64>, usize)> {
     let body = s.strip_prefix(open)?;
     let end = body.find(close)?;
@@ -372,16 +367,8 @@ fn tag(s: &str, open: char, close: char) -> Option<(Vec<i64>, usize)> {
     (2..=3).contains(&nums.len()).then_some((nums, open.len_utf8() + end + close.len_utf8()))
 }
 
-/// The five XML entities NetEase sometimes leaves in its words (`&apos;`), and numeric apostrophes.
-fn entities(s: &str) -> String {
-    if !s.contains('&') {
-        return s.to_string();
-    }
-    s.replace("&apos;", "'").replace("&#39;", "'").replace("&quot;", "\"").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
-}
-
-/// One karaoke line: `[start,length]`, then each word led by its own tag - `(start,length,0)` in YRC,
-/// timed from the start of the song, or `<offset,length,0>` in KRC, timed from the start of the line.
+/// One karaoke line: `[start,length]`, then each word led by its tag: `(start,length,0)` from the song's
+/// start in YRC, `<offset,length,0>` from the line's start in KRC.
 fn karaoke_line(raw: &str, open: char, close: char, from_line: bool) -> Option<Timed> {
     let (head, used) = tag(raw, '[', ']')?;
     let start = head[0].max(0);
@@ -391,7 +378,7 @@ fn karaoke_line(raw: &str, open: char, close: char, from_line: bool) -> Option<T
     loop {
         let next = rest.char_indices().filter(|(_, c)| *c == open).find_map(|(i, _)| tag(&rest[i..], open, close).map(|t| (i, t)));
         let upto = next.as_ref().map_or(rest.len(), |(i, _)| *i);
-        append(&mut line, &entities(&rest[..upto]), time);
+        append(&mut line, &decode_html(&rest[..upto]), time);
         let Some((i, (nums, len))) = next else { break };
         let at = nums[0].max(0) + if from_line { start } else { 0 };
         time = Some((at, Some(at + nums[1].max(0))));
@@ -400,8 +387,7 @@ fn karaoke_line(raw: &str, open: char, close: char, from_line: bool) -> Option<T
     Some(line)
 }
 
-/// Every karaoke line of a file, as `line` reads one, and its `[offset:]` (LRC's convention: positive
-/// means sooner).
+/// Every line `line` reads, shifted by the file's `[offset:]` (positive is sooner, as in LRC).
 fn karaoke(text: &str, line: impl Fn(&str) -> Option<Timed>) -> Vec<Timed> {
     let mut offset = 0i64;
     let mut lines = Vec::new();
@@ -426,31 +412,34 @@ fn karaoke(text: &str, line: impl Fn(&str) -> Option<Timed>) -> Vec<Timed> {
     lines
 }
 
-/// Drops the credits NetEase, KuGou and QQ Music open and close their words with (credits.rs).
-pub(crate) fn strip_credits<T>(lines: &mut Vec<T>, text: impl Fn(&T) -> &str, title: &str) {
-    crate::credits::strip_lines(lines, text, title, "");
+/// Karaoke lines without the credits at their ends (`title` spots a header naming the song).
+fn finish_karaoke(mut lines: Vec<Timed>, title: &str) -> Lyrics {
+    crate::credits::strip_lines(&mut lines, |l| l.text.as_str(), title, "");
+    finish(lines)
 }
 
-/// NetEase Cloud Music's lyrics: YRC (word by word, times from the start of the song) when the song has
-/// it, otherwise its LRC (line by line). Its JSON credit lines (`{"t":0,"c":[…]}`) and timed credit
-/// lines are left out. `title` is only used to spot a credit line naming the song.
+/// LRC without the credits at its ends; empty when nothing is left.
+fn lrc_without_credits(text: &str, title: &str) -> Lyrics {
+    let mut lrc = crate::lyrics::from_lrc(text);
+    crate::credits::strip_lines(&mut lrc.lines, |l| l.text.as_str(), title, "");
+    if lrc.lines.iter().all(|l| l.text.trim().is_empty()) {
+        return Lyrics::default();
+    }
+    lrc
+}
+
+/// NetEase's lyrics: its YRC (word-timed, from the song's start) when it times words, else its LRC
+/// without the JSON credit lines (`{"t":0,"c":[…]}`).
 pub fn from_netease(yrc: &str, lrc: &str, title: &str) -> Lyrics {
-    let mut words = karaoke(yrc, |l| karaoke_line(l, '(', ')', false));
-    strip_credits(&mut words, |l| l.text.as_str(), title);
-    let yrc = finish(words);
+    let yrc = finish_karaoke(karaoke(yrc, |l| karaoke_line(l, '(', ')', false)), title);
     if yrc.word_timed {
         return yrc;
     }
     let lrc: String = lrc.lines().filter(|l| !l.trim_start().starts_with('{')).collect::<Vec<_>>().join("\n");
-    let mut lines = crate::lyrics::from_lrc(&lrc);
-    strip_credits(&mut lines.lines, |l| l.text.as_str(), title);
-    if lines.lines.iter().all(|l| l.text.trim().is_empty()) {
-        return Lyrics::default();
-    }
-    lines
+    lrc_without_credits(&lrc, title)
 }
 
-/// The key KuGou's own players XOR a KRC file with: the same in every client, and public for years.
+/// The public key every KuGou client XORs a KRC file with.
 const KRC_KEY: [u8; 16] = [0x40, 0x47, 0x61, 0x77, 0x5e, 0x32, 0x74, 0x47, 0x51, 0x36, 0x31, 0x2d, 0xce, 0xd2, 0x6e, 0x69];
 
 /// Standard or URL-safe base64, padding and line breaks allowed.
@@ -479,19 +468,15 @@ fn base64(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// KuGou's KRC, as its download API hands it over (`content`, base64): `krc1`, then a zlib stream XORed
-/// with [KRC_KEY]. Inside, `[start,length]` lines whose words carry `<offset,length,0>` from the start of
-/// their line. Its credit lines and "Artist - Title" opening are left out; translations (a base64 JSON
-/// `[language:]` tag) are not used. An error means the file is not what KuGou sends, not a missing song.
+/// KuGou's KRC as its download API sends it: base64 of `krc1` and a zlib stream XORed with [KRC_KEY].
+/// Translations are not used. An error means the content is not KRC.
 pub fn from_krc(content: &str, title: &str) -> Result<Lyrics, String> {
     let bytes = base64(content.trim()).ok_or("not base64")?;
     let body = bytes.strip_prefix(b"krc1".as_slice()).ok_or("not a KRC file")?;
     let packed: Vec<u8> = body.iter().enumerate().map(|(i, b)| b ^ KRC_KEY[i % KRC_KEY.len()]).collect();
-    // A song's words are kilobytes; the limit keeps a hostile stream from inflating into the heap.
+    // The limit stops a hostile stream inflating without bound.
     let text = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&packed, 4 << 20).map_err(|e| format!("inflate: {e}"))?;
-    let mut lines = karaoke(&String::from_utf8_lossy(&text), |l| karaoke_line(l, '<', '>', true));
-    strip_credits(&mut lines, |l| l.text.as_str(), title);
-    Ok(finish(lines))
+    Ok(finish_karaoke(karaoke(&String::from_utf8_lossy(&text), |l| karaoke_line(l, '<', '>', true)), title))
 }
 
 // ---- QQ Music's QRC (through BetterLyrics' Portato) ------------------------------------------------
@@ -513,9 +498,8 @@ const NAMED: &[(&str, char)] = &[
     ("ndash", '\u{2013}'),
 ];
 
-/// XML's entities, numeric references (`&#39;`, `&#x27;`) and the few named ones lyrics pages use, in
-/// one pass, so `&amp;#39;` stays the text `&#39;` instead of turning into an apostrophe. A no-break
-/// space becomes a plain one (the view wraps lyrics, not the page). Anything else is left as written.
+/// Decodes XML's entities, numeric references and [`NAMED`] in one pass (so `&amp;#39;` stays `&#39;`);
+/// a no-break space becomes a plain one. Anything else is left as written.
 pub(crate) fn decode_html(s: &str) -> String {
     if !s.contains('&') {
         return s.to_string();
@@ -551,8 +535,7 @@ pub(crate) fn decode_html(s: &str) -> String {
     out
 }
 
-/// The lyric text of a QRC document: the `LyricContent` attribute of the XML QQ Music wraps it in,
-/// when it is wrapped, or the text itself.
+/// A QRC document's text: the `LyricContent` attribute of QQ's XML wrapper, or the text itself.
 fn qrc_body(text: &str) -> String {
     const ATTR: &str = "LyricContent=\"";
     match text.find(ATTR) {
@@ -564,9 +547,8 @@ fn qrc_body(text: &str) -> String {
     }
 }
 
-/// One QRC line: `[start,length]`, then each word followed by its own `(start,length)`, timed from the
-/// start of the song. The tag comes after its word, the other way round from NetEase's YRC, and text
-/// after the last tag has no time of its own.
+/// One QRC line: `[start,length]`, then each word followed (unlike YRC) by its `(start,length)` from the
+/// song's start; text after the last tag is untimed.
 fn qrc_line(raw: &str) -> Option<Timed> {
     let (head, used) = tag(raw, '[', ']')?;
     let start = head[0].max(0);
@@ -578,45 +560,35 @@ fn qrc_line(raw: &str) -> Option<Timed> {
             .filter(|(_, c)| *c == '(')
             .find_map(|(i, _)| tag(&rest[i..], '(', ')').filter(|(n, _)| n.len() == 2).map(|t| (i, t)));
         let Some((i, (nums, len))) = next else {
-            append(&mut line, &entities(rest), None);
+            append(&mut line, &decode_html(rest), None);
             break;
         };
         let at = nums[0].max(0);
-        append(&mut line, &entities(&rest[..i]), Some((at, Some(at + nums[1].max(0)))));
+        append(&mut line, &decode_html(&rest[..i]), Some((at, Some(at + nums[1].max(0)))));
         rest = &rest[i + len..];
     }
     Some(line)
 }
 
-/// QQ Music's QRC, as BetterLyrics' Portato endpoint hands it over (already decrypted), bare or in QQ's
-/// XML wrapper: word by word, every time from the start of the song. Its credit lines go, as NetEase's
-/// and KuGou's do. For a song without QRC, QQ gives plain LRC, which is read a line at a time.
+/// QQ Music's QRC as Portato sends it (decrypted, bare or wrapped); a song without QRC comes as LRC.
 pub fn from_qrc(text: &str, title: &str) -> Lyrics {
     if text.len() > 4 << 20 {
         return Lyrics::default();
     }
     let body = qrc_body(text);
-    let mut lines = karaoke(&body, qrc_line);
-    strip_credits(&mut lines, |l| l.text.as_str(), title);
-    let qrc = finish(lines);
+    let qrc = finish_karaoke(karaoke(&body, qrc_line), title);
     if !qrc.lines.is_empty() {
         return qrc;
     }
-    let mut lrc = crate::lyrics::from_lrc(&body);
-    strip_credits(&mut lrc.lines, |l| l.text.as_str(), title);
-    if lrc.lines.iter().all(|l| l.text.trim().is_empty()) {
-        return Lyrics::default();
-    }
-    lrc
+    lrc_without_credits(&body, title)
 }
 
 // ---- the cache ------------------------------------------------------------------------------------
 
-/// Marks a cached entry as this crate's own JSON. Anything without it is the LRC text older versions
-/// stored, and is read as LRC.
+/// Marks a cache entry as this crate's JSON; older entries without it are LRC.
 const CACHE_MARK: &str = "nori-lyrics-1\n";
 
-/// Lyrics as stored in the response cache: every word timing kept, unlike LRC.
+/// Lyrics as the response cache keeps them, every word timing included.
 pub fn to_cache(lyrics: &Lyrics) -> String {
     format!("{CACHE_MARK}{}", serde_json::to_string(lyrics).unwrap_or_default())
 }
@@ -651,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn a_last_word_without_an_end_is_neither_instant_nor_stretched_over_the_pause() {
+    fn open_last_word_gets_a_sung_length() {
         let l = from_lyricsfile("version: '1.0'\nmetadata: {title: t, artist: a}\nlines:\n  - {text: hold on tonight, start_ms: 10000, words: [{text: 'hold ', start_ms: 10000}, {text: 'on ', start_ms: 10400}, {text: tonight, start_ms: 10800}]}\n  - {text: again, start_ms: 40000}\n");
         let last = l.lines[0].words.last().unwrap().clone();
         assert!(last.end_ms > 10_800 && last.end_ms <= 12_800, "{last:?}");
@@ -788,7 +760,7 @@ mod tests {
     }
 
     #[test]
-    fn netease_falls_back_to_its_lrc_and_strips_timed_credits() {
+    fn netease_lrc_fallback() {
         let lrc = "{\"t\":0,\"c\":[{\"tx\":\"作词: Someone\"}]}\n[00:00.000] 作词 : Thom Yorke\n[00:01.000] 作曲 : Radiohead\n[00:02.000] Produced by: Someone\n[00:22.500]When you were here before\n[00:26.000]Couldn't look you in the eye\n[03:50.000]Mixed by: Someone\n";
         let l = from_netease("", lrc, "Creep");
         assert!(l.synced && !l.word_timed, "line timing stays line timing");
@@ -807,15 +779,7 @@ mod tests {
         let packed = miniz_oxide::deflate::compress_to_vec_zlib(text.as_bytes(), 6);
         let mut bytes = b"krc1".to_vec();
         bytes.extend(packed.iter().enumerate().map(|(i, b)| b ^ KRC_KEY[i % 16]));
-        const ABC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut out = String::new();
-        for chunk in bytes.chunks(3) {
-            let n = chunk.iter().enumerate().fold(0u32, |acc, (i, b)| acc | (u32::from(*b) << (16 - 8 * i)));
-            for k in 0..4 {
-                out.push(if k <= chunk.len() { ABC[(n >> (18 - 6 * k) & 63) as usize] as char } else { '=' });
-            }
-        }
-        out
+        crate::services::base64(&bytes)
     }
 
     const KRC: &str = include_str!("../testdata/kugou.krc.txt");

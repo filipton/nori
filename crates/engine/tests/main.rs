@@ -1,6 +1,7 @@
-//! The engine's tests on the virtual clock, in one test binary so that they run side by side instead of
-//! one binary after another (Cargo.toml lists the test targets). Each file stays a test file of its own
-//! with its own helpers, and `cargo test -p nori-engine --test engine <name>` picks any of them.
+//! The engine's virtual-clock tests as one binary, so they run side by side. Each file keeps its own
+//! helpers; `cargo test -p nori-engine --test engine <name>` picks any test.
+
+mod common;
 
 #[path = "perf_alloc.rs"]
 mod perf_alloc;
@@ -27,8 +28,7 @@ mod replan;
 #[path = "album.rs"]
 mod album;
 
-/// The core keeps one queue, planner, database and set of settings per process: the tests here that play
-/// through it take turns.
+/// The core's queue, planner, database and settings are per process: tests using it take turns.
 #[cfg(feature = "core")]
 fn core_turn() -> parking_lot::MutexGuard<'static, ()> {
     static CORE: parking_lot::Mutex<()> = parking_lot::Mutex::new(());

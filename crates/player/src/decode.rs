@@ -1,13 +1,8 @@
-//! Compressed audio to PCM, one packet at a time: the platform's extractor splits the file (an MP3
-//! frame, a FLAC frame, an AAC access unit) and hands each packet in; the samples come out interleaved
-//! straight into the caller's buffer. The same decoder on every platform, so every client hears the
-//! same samples, and nothing is allocated per packet once the first one is decoded.
+//! Packet-by-packet decoding to interleaved PCM (symphonia for MP3, FLAC, AAC-LC, Vorbis, ALAC;
+//! opus-rs for Opus); no allocation per packet after the first.
 //!
-//! HE-AAC (AAC+, SBR; v2 with PS) is the exception: symphonia decodes only its core (the lower half of
-//! the band), and no decoder of its SBR in Rust is both free to link and fast enough. A platform lends
-//! its own ([`lend_platform_aac`]: Android's MediaCodec, crates/android mediacodec.rs), and a stream
-//! [`he_aac`] says is HE-AAC is decoded by it, packet by packet on the caller's thread, when the caller
-//! asks for the whole ([`Decoder::whole_aac`]). Without one, the core is what plays.
+//! HE-AAC's SBR/PS is not decoded here (symphonia only decodes the core): a platform may lend its
+//! decoder ([`lend_platform_aac`]), used by [`Decoder::whole_aac`] for streams [`he_aac`] identifies.
 
 use symphonia::core::audio::{Channels, Position};
 use symphonia::core::codecs::audio::{well_known, AudioCodecParameters, AudioDecoder as Inner, AudioDecoderOptions};
@@ -15,16 +10,16 @@ use symphonia::core::errors::Error;
 use symphonia::core::packet::PacketRef;
 use symphonia::core::units::{Duration, Timestamp};
 
-/// What the decoder can take, by the MIME type the platform's extractor names it with.
+/// Supported codecs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Codec {
     Mp3,
     Flac,
-    /// AAC-LC. HE-AAC (SBR, PS) is not decoded here; the platform's decoder takes it.
+    /// AAC-LC (HE-AAC goes to the platform's decoder).
     Aac,
     Vorbis,
     Alac,
-    /// Mono and stereo Opus (channel mapping family 0); surround Opus is the platform's.
+    /// Mono and stereo Opus (mapping family 0).
     Opus,
 }
 
@@ -42,7 +37,7 @@ impl Codec {
         })
     }
 
-    /// Stable numbers for crossing to the platform.
+    /// Stable id for the platform boundary.
     pub fn id(self) -> i32 {
         self as i32 + 1
     }
@@ -51,16 +46,14 @@ impl Codec {
         [Codec::Mp3, Codec::Flac, Codec::Aac, Codec::Vorbis, Codec::Alac, Codec::Opus].get(usize::try_from(id - 1).ok()?).copied()
     }
 
-    /// The most frames one packet decodes to, for sizing the output before the first packet.
+    /// Most frames one packet decodes to.
     pub fn max_frames(self) -> usize {
         match self {
             Codec::Mp3 => 1152,
             Codec::Aac => 2048,
             Codec::Vorbis => 8192,
-            // FLAC's block size is at most 65535 frames; ALAC's frame is 4096 by default.
             Codec::Flac => 65535,
             Codec::Alac => 4096,
-            // 120 ms at 48 kHz, the longest an Opus packet can be.
             Codec::Opus => OPUS_MAX_FRAMES,
         }
     }
@@ -82,7 +75,7 @@ impl Codec {
 pub enum Fault {
     /// This packet could not be decoded; the next one may be. Skip it.
     BadPacket,
-    /// The caller's buffer is too small; the decoded samples are kept, ask for them with [`Decoder::take`].
+    /// The caller's buffer needs this many samples; they are kept for `take_*`.
     NeedRoom(usize),
     /// The stream cannot be decoded any further.
     Broken,
@@ -104,61 +97,55 @@ impl Sample {
     }
 }
 
-/// What an MP3 decoder holds back: the first 529 samples it makes are its filterbank warming up.
-/// media3 (1.11+) counts them into the encoder delay it reads from a LAME/Lavc header and trims them
-/// itself, so a stream with that header is decoded raw; one without it, and every stream after a seek
-/// (the trimming happens only once), has them dropped here - which is what Android's own MP3 decoder
-/// does, so the samples line up with the packets' times either way.
+/// The MP3 decoder's filterbank delay. media3 trims it with the encoder delay when a LAME header says
+/// so; otherwise, and after every seek, it is dropped here (as Android's decoder does).
 pub const MP3_DECODER_DELAY: usize = 529;
 
 const OPUS_MAX_FRAMES: usize = 5760;
 /// Opus always decodes at 48 kHz.
 const OPUS_RATE: u32 = 48_000;
-/// What Opus plays in again after a seek when the stream does not say (80 ms, RFC 7845).
+/// Default Opus seek pre-roll (80 ms, RFC 7845).
 const OPUS_SEEK_PREROLL: usize = 3840;
 
-/// The engines behind one decoder: symphonia's codecs, Opus, and a decoder the platform lends.
+/// The decoding backend.
 enum Engine {
     Symphonia(Box<dyn Inner>),
     Opus { dec: opus_rs::OpusDecoder, channels: usize, pre_skip: usize, pre_roll: usize, gain: f32 },
     Platform(Box<dyn PlatformDecoder>),
 }
 
-/// A decoder a platform lends for what is not decoded whole here (HE-AAC's SBR and PS), driven packet by
-/// packet on the caller's thread: no thread of its own is woken for it.
+/// A platform decoder for HE-AAC, driven packet by packet on the caller's thread.
 pub trait PlatformDecoder: Send {
-    /// Decodes one access unit, appending what came out to `out` (interleaved float; cleared by the
-    /// caller, its room kept from packet to packet): the channels and rate of it. What comes out may
-    /// lag what goes in by a packet or so, as the platform's decoder holds it.
+    /// Decodes one access unit, appending interleaved float to `out`; returns (channels, rate). Output
+    /// may lag input by a packet.
     fn decode(&mut self, unit: &[u8], out: &mut Vec<f32>) -> Result<(usize, u32), Fault>;
-    /// The next unit does not follow the last one (a seek): forget what is held.
+    /// Discontinuity (seek): drop held state.
     fn reset(&mut self);
 }
 
-/// An AAC stream as a platform's decoder is set up for it.
+/// An AAC stream's setup for a platform decoder.
 #[derive(Debug, Clone, Copy)]
 pub struct AacSetup<'a> {
-    /// The rate and channels the stream states (its core's, for HE-AAC signalled only in the stream).
+    /// Rate and channels as stated (the core's for implicitly signalled HE-AAC).
     pub rate: u32,
     pub channels: usize,
-    /// Its AudioSpecificConfig, when the container holds one (MP4); an ADTS stream has none.
+    /// AudioSpecificConfig (MP4); `None` for ADTS.
     pub config: Option<&'a [u8]>,
 }
 
-/// What makes a platform's decoder for an HE-AAC stream; none when it cannot.
+/// Makes a platform decoder for an HE-AAC stream, `None` if it cannot.
 pub type PlatformAac = fn(&AacSetup) -> Option<Box<dyn PlatformDecoder>>;
 
+/// Global because the platform registers it once at load time, with no handle reaching the decoders.
 static PLATFORM_AAC: std::sync::OnceLock<PlatformAac> = std::sync::OnceLock::new();
 
-/// The platform lends its HE-AAC decoder, once, for the life of the process.
+/// Registers the platform's HE-AAC decoder (first call wins).
 pub fn lend_platform_aac(make: PlatformAac) {
     let _ = PLATFORM_AAC.set(make);
 }
 
-/// Whether an AAC stream at `rate` with `config` (its AudioSpecificConfig; none for ADTS) is HE-AAC: its
-/// object type says SBR (5) or PS (29), or its config carries the SBR extension (backward-compatible
-/// explicit signalling), or it says AAC-LC at 24 kHz or less, which is how HE-AAC signalled only inside
-/// the stream announces itself (internet radio's AAC+; `nori_settings::decoder::implicit_sbr`).
+/// Whether an AAC stream is HE-AAC: object type 5 (SBR) or 29 (PS), an explicit SBR extension in the
+/// config, or AAC-LC at 24 kHz or less (implicit signalling, as radio AAC+ does).
 pub fn he_aac(config: Option<&[u8]>, rate: u32) -> bool {
     let implicit = rate > 0 && rate <= 24_000;
     let Some(c) = config.filter(|c| c.len() >= 2) else { return implicit };
@@ -171,9 +158,8 @@ pub fn he_aac(config: Option<&[u8]>, rate: u32) -> bool {
     match aot {
         5 | 29 => true,
         2 => {
-            // The rest of the config: the rate (an index, or 24 bits), the channels, then the 3 bits of
-            // GASpecificConfig a stream with a channel configuration has; after them may come the SBR
-            // extension: sync 0x2b7, object type 5, and whether SBR is present.
+            // Rate (index or 24 bits), channels, 3 GASpecificConfig bits, then maybe the SBR
+            // extension: sync 0x2b7, object type 5, present flag.
             let explicit = (|| {
                 if bits.take(4)? == 15 {
                     bits.take(24)?;
@@ -194,7 +180,7 @@ pub fn he_aac(config: Option<&[u8]>, rate: u32) -> bool {
     }
 }
 
-/// Bits read from the front, most significant first.
+/// MSB-first bit reader.
 struct Bits<'a> {
     b: &'a [u8],
     at: usize,
@@ -212,9 +198,8 @@ impl Bits<'_> {
     }
 }
 
-/// An Opus stream's setup as media3 hands it over: the OpusHead, then the pre-skip and the seek
-/// pre-roll in nanoseconds (8 bytes each, native order). Channels, pre-skip in samples, pre-roll in
-/// samples, and the output gain as a factor; none for what this cannot decode (surround).
+/// Parses media3's Opus setup (OpusHead, then pre-skip and seek pre-roll in ns, 8 bytes each, native
+/// order): (channels, pre-skip samples, pre-roll samples, linear gain); `None` for surround.
 fn opus_setup(extra: Option<&[u8]>) -> Option<(usize, usize, usize, f32)> {
     let e = extra?;
     if e.len() < 19 || &e[..8] != b"OpusHead" || e[18] != 0 {
@@ -235,7 +220,7 @@ fn opus_setup(extra: Option<&[u8]>) -> Option<(usize, usize, usize, f32)> {
     Some((channels, pre_skip, pre_roll, gain))
 }
 
-/// One packet's samples as [`Decoder::decode_lent`] lends them, and the shape they came out in.
+/// One packet's samples borrowed from [`Decoder::decode_lent`].
 pub struct Lent<'a> {
     pub samples: &'a [f32],
     pub channels: usize,
@@ -247,24 +232,22 @@ pub struct Decoder {
     codec: Codec,
     channels: usize,
     rate: u32,
-    /// The last packet's samples, interleaved, before anything is dropped from their start.
+    /// The last packet's interleaved samples.
     scratch: Vec<f32>,
-    /// Frames of the last packet still to be handed out, and where in `scratch` they start.
+    /// Frames of the last packet not yet handed out, starting at frame `from` of `scratch`.
     held: usize,
     from: usize,
-    /// Frames still to drop from the start of what comes out.
+    /// Frames still to drop from the output's start.
     skip: usize,
     /// The next packet is the first after a reset.
     fresh: bool,
-    /// A packet has been decoded: the rate and channels are the stream's own, not what it was opened with.
+    /// Rate and channels come from a decoded packet, not the opening parameters.
     decoded: bool,
 }
 
 impl Decoder {
-    /// A decoder for `codec` at `rate` Hz and `channels` channels. `extra` is the codec's own setup data
-    /// as the platform's extractor gives it (FLAC's STREAMINFO, AAC's AudioSpecificConfig, Vorbis's
-    /// headers, ALAC's magic cookie). `delay_known`: the stream says its encoder delay (an MP3's LAME
-    /// header), which the platform then trims, decoder delay included.
+    /// `extra` is the extractor's codec setup (STREAMINFO, AudioSpecificConfig, Vorbis headers, ALAC
+    /// cookie, OpusHead). `delay_known`: an MP3 LAME header lets the platform trim the decoder delay.
     pub fn new(codec: Codec, rate: u32, channels: usize, extra: Option<&[u8]>, delay_known: bool) -> Result<Decoder, String> {
         if codec == Codec::Opus {
             let (channels, pre_skip, pre_roll, gain) = opus_setup(extra).ok_or("not a mono or stereo Opus stream")?;
@@ -306,18 +289,16 @@ impl Decoder {
             params.with_channels(Channels::Positioned(p));
         }
         if let Some(e) = extra.filter(|e| !e.is_empty()) {
-            // media3 hands FLAC over as the stream starts: "fLaC" and the block header before STREAMINFO.
+            // media3 prefixes STREAMINFO with "fLaC" and the block header.
             let e = if codec == Codec::Flac && e.starts_with(b"fLaC") && e.len() >= 8 { &e[8..] } else { e };
             params.with_extra_data(e.into());
         }
-        // media3's sink trims the encoder's delay and padding itself; trimming here as well would do it twice.
+        // media3 trims encoder delay and padding itself.
         let opts = AudioDecoderOptions::default().gapless(false);
         symphonia::default::get_codecs().make_audio_decoder(&params, &opts).map_err(|e| e.to_string())
     }
 
-    /// A decoder for an AAC stream that plays it whole: the platform's (see [`lend_platform_aac`]) when
-    /// [`he_aac`] says it is HE-AAC and a platform lent one, which then says the real rate and channels
-    /// once the first packets are decoded; this crate's (the core alone, for HE-AAC) otherwise.
+    /// An AAC decoder: the platform's for HE-AAC when one is lent, else symphonia (core only for HE-AAC).
     pub fn whole_aac(rate: u32, channels: usize, config: Option<&[u8]>) -> Result<Decoder, String> {
         let platform = PLATFORM_AAC.get().filter(|_| he_aac(config, rate)).and_then(|make| make(&AacSetup { rate, channels, config }));
         match platform {
@@ -326,7 +307,7 @@ impl Decoder {
                 codec: Codec::Aac,
                 channels: channels.max(1),
                 rate,
-                // Two packets of HE-AAC at twice the core's rate, in stereo (PS makes stereo of mono).
+                // Two HE-AAC packets at twice the core rate, stereo.
                 scratch: Vec::with_capacity(2 * 2048 * 2.max(channels)),
                 held: 0,
                 from: 0,
@@ -338,7 +319,7 @@ impl Decoder {
         }
     }
 
-    /// Whether the platform's decoder decodes this stream.
+    /// The platform's decoder is in use.
     #[cfg(any(test, feature = "synth"))]
     pub fn on_platform(&self) -> bool {
         matches!(self.inner, Engine::Platform(_))
@@ -348,7 +329,7 @@ impl Decoder {
         self.codec
     }
 
-    /// The channels and rate of what comes out: known for certain after the first packet.
+    /// Output channels and rate (certain after the first packet).
     pub fn channels(&self) -> usize {
         self.channels
     }
@@ -356,8 +337,7 @@ impl Decoder {
         self.rate
     }
 
-    /// Decodes `packet` into `out` (interleaved), returning the frames written. A packet that does not
-    /// fit is kept: [`Fault::NeedRoom`] says how many samples it needs, and `take_*` hands it over.
+    /// Decodes `packet` into `out`, returning frames written; see [`Fault::NeedRoom`].
     #[cfg(any(test, feature = "synth"))]
     pub fn decode_i16(&mut self, packet: &[u8], out: &mut [i16]) -> Result<usize, Fault> {
         self.decode(packet)?;
@@ -370,9 +350,7 @@ impl Decoder {
         self.take_f32(out)
     }
 
-    /// Decodes `packet` and lends its samples where they lie, interleaved: for a reader in the same
-    /// process (the analyser measuring a track ahead) that would only copy them on. Nothing is kept
-    /// for `take_*`.
+    /// Decodes `packet` and borrows its samples without copying; nothing is kept for `take_*`.
     pub fn decode_lent(&mut self, packet: &[u8]) -> Result<Lent<'_>, Fault> {
         self.decode(packet)?;
         let n = std::mem::take(&mut self.held) * self.channels;
@@ -399,10 +377,8 @@ impl Decoder {
                 self.scratch.len() / self.channels
             }
             Engine::Symphonia(inner) => {
-                // An MP3 stream whose rate or channels changed (a station's next song): symphonia's decoder
-                // refuses every frame of another shape than its first, so one for the new shape takes
-                // over. What the old one still held (its filterbank's last 529 samples) is not heard; the
-                // new one's first frame, whose audio may begin in frames it never saw, is silence.
+                // symphonia rejects MP3 frames of another shape (a radio's next song): switch to a new
+                // decoder, treating its first frame as after a seek.
                 if self.codec == Codec::Mp3 && self.decoded {
                     if let Some((rate, channels)) = mp3_shape(packet).filter(|&s| s != (self.rate, self.channels)) {
                         *inner = Decoder::symphonia(Codec::Mp3, rate, channels, None).map_err(|_| Fault::Broken)?;
@@ -418,7 +394,6 @@ impl Decoder {
                         self.rate = spec.rate();
                         let n = buf.frames();
                         if self.scratch.len() < n * self.channels {
-                            // A stream larger than its codec's usual packet: grown once, then kept.
                             self.scratch.resize(n * self.channels, 0.0);
                         }
                         buf.copy_to_slice_interleaved::<f32, _>(&mut self.scratch[..n * self.channels]);
@@ -434,8 +409,8 @@ impl Decoder {
                 }
             }
         };
-        // The first MP3 frame after a seek whose audio begins in frames before it (the bit reservoir)
-        // cannot be decoded whole: silence, as Android's decoder gives, rather than half a frame.
+        // The first MP3 frame after a seek that uses the bit reservoir decodes as garbage: silence it,
+        // as Android's decoder does.
         if fresh && self.codec == Codec::Mp3 && mp3_main_data_begin(packet) != 0 {
             self.scratch[..frames * self.channels].fill(0.0);
         }
@@ -446,8 +421,7 @@ impl Decoder {
         Ok(())
     }
 
-    /// The last packet's samples, into `out`: rounded to 16 bits the way every reference decoder does
-    /// (symphonia's own conversion truncates towards zero, half a step low on average).
+    /// The last packet's samples as 16-bit, rounded (symphonia's own conversion truncates).
     pub fn take_i16(&mut self, out: &mut [i16]) -> Result<usize, Fault> {
         let n = self.held * self.channels;
         if n > out.len() {
@@ -469,9 +443,8 @@ impl Decoder {
         Ok(std::mem::take(&mut self.held))
     }
 
-    /// The next packet does not follow the last one (a seek; `at_start` when back at the very
-    /// beginning): forget what came before. An MP3's filterbank warms up again, and the platform does
-    /// not trim a second time; Opus plays its pre-skip again at the start, and its pre-roll anywhere else.
+    /// Discontinuity (a seek; `at_start` at the very beginning). MP3 drops its decoder delay again;
+    /// Opus skips its pre-skip at the start, its pre-roll elsewhere.
     pub fn reset(&mut self, at_start: bool) {
         self.held = 0;
         self.fresh = true;
@@ -484,7 +457,7 @@ impl Decoder {
             }
             Engine::Platform(dec) => dec.reset(),
             Engine::Opus { dec, channels, pre_skip, pre_roll, .. } => {
-                // No reset of its own: a new one, once per seek.
+                // opus-rs has no reset: replace it.
                 if let Ok(d) = opus_rs::OpusDecoder::new(OPUS_RATE as i32, *channels) {
                     *dec = d;
                 }
@@ -494,8 +467,7 @@ impl Decoder {
     }
 }
 
-/// The rate and channels an MPEG audio frame (layer I, II or III, MPEG-1, 2 or 2.5) says it holds, from its
-/// header; none for bytes that are not one.
+/// (rate, channels) from an MPEG audio frame header; `None` if not one.
 pub fn mp3_shape(frame: &[u8]) -> Option<(u32, usize)> {
     let h = u32::from_be_bytes(frame.get(..4)?.try_into().ok()?);
     let (version, layer, bitrate, rate) = ((h >> 19) & 3, (h >> 17) & 3, (h >> 12) & 0xf, (h >> 10) & 3);
@@ -511,7 +483,7 @@ pub fn mp3_shape(frame: &[u8]) -> Option<(u32, usize)> {
     Some((rate, if (h >> 6) & 3 == 3 { 1 } else { 2 }))
 }
 
-/// Where an MP3 frame's audio data starts, counted back into the frames before it (0: in this one).
+/// An MP3 frame's `main_data_begin`: bytes back into earlier frames (0: none).
 fn mp3_main_data_begin(frame: &[u8]) -> u16 {
     if frame.len() < 7 {
         return 0;
@@ -532,8 +504,12 @@ mod tests {
     use super::*;
     use crate::sim::{mp3_frames, ogg_opus};
 
+    fn tone_mp3() -> Vec<u8> {
+        std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/tone440.mp3")).unwrap()
+    }
+
     #[test]
-    fn codecs_cross_by_number_and_are_named_by_mime() {
+    fn codec_ids_and_mimes() {
         for c in [Codec::Mp3, Codec::Flac, Codec::Aac, Codec::Vorbis, Codec::Alac, Codec::Opus] {
             assert_eq!(Codec::from_id(c.id()), Some(c));
         }
@@ -543,8 +519,8 @@ mod tests {
     }
 
     #[test]
-    fn an_mp3_decodes_to_the_tone_it_was_made_from() {
-        let file = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/tone440.mp3")).unwrap();
+    fn mp3_decodes_tone() {
+        let file = tone_mp3();
         let frames = mp3_frames(&file);
         assert!(frames.len() > 30);
         let mut d = Decoder::new(Codec::Mp3, 44_100, 2, None, true).unwrap();
@@ -555,19 +531,17 @@ mod tests {
             pcm.extend_from_slice(&out[..n * 2]);
         }
         assert_eq!((d.channels(), d.rate()), (2, 44_100));
-        // Well past the start (the encoder's delay is silence), the left channel is the 440 Hz tone.
         let left: Vec<f64> = pcm.chunks(2).skip(4410).take(22_050).map(|c| c[0] as f64).collect();
         let rms = (left.iter().map(|v| v * v).sum::<f64>() / left.len() as f64).sqrt();
-        // ffmpeg's decoder gives 8060.1 over the same stretch (the encoder took the tone down a little).
+        // ffmpeg's decoder gives 8060.1 over the same stretch.
         assert!((rms - 8060.1).abs() < 5.0, "rms {rms}");
         let crossings = left.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count();
-        // Half a second of 440 Hz crosses zero 440 times.
         assert!((438..=442).contains(&crossings), "{crossings} crossings");
     }
 
     #[test]
-    fn a_seek_resets_and_decoding_carries_on() {
-        let file = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/tone440.mp3")).unwrap();
+    fn reset_then_continue() {
+        let file = tone_mp3();
         let frames = mp3_frames(&file);
         let mut d = Decoder::new(Codec::Mp3, 44_100, 2, None, true).unwrap();
         let mut out = vec![0i16; 1152 * 2];
@@ -577,25 +551,22 @@ mod tests {
         d.reset(false);
         let n: usize = frames[20..].iter().map(|f| d.decode_i16(f, &mut out).unwrap_or(0)).sum();
         assert!(n > 1152 * (frames.len() - 22));
-        // Too small a buffer keeps the packet for a second ask.
         let mut small = [0i16; 16];
         assert_eq!(d.decode_i16(frames[5], &mut small), Err(Fault::NeedRoom(2304)));
         assert_eq!(d.take_i16(&mut out), Ok(1152));
     }
 
     #[test]
-    fn the_mp3_decoder_delay_is_dropped_only_where_nobody_else_trims_it() {
-        let file = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/tone440.mp3")).unwrap();
+    fn mp3_decoder_delay_dropped_unless_trimmed() {
+        let file = tone_mp3();
         let frames = mp3_frames(&file);
         let mut out = vec![0i16; 1152 * 2];
-        // With a LAME header the platform trims the delay: raw frames.
         let mut known = Decoder::new(Codec::Mp3, 44_100, 2, None, true).unwrap();
         assert_eq!(known.decode_i16(frames[0], &mut out), Ok(1152));
-        // Without one, the decoder's own 529 go here.
         let mut unknown = Decoder::new(Codec::Mp3, 44_100, 2, None, false).unwrap();
         assert_eq!(unknown.decode_i16(frames[0], &mut out), Ok(1152 - MP3_DECODER_DELAY));
         assert_eq!(unknown.decode_i16(frames[1], &mut out), Ok(1152));
-        // After a seek, always: the platform trims only once.
+        // After a seek, always.
         known.decode_i16(frames[1], &mut out).unwrap();
         known.reset(false);
         assert_eq!(known.decode_i16(frames[20], &mut out), Ok(1152 - MP3_DECODER_DELAY));
@@ -603,8 +574,8 @@ mod tests {
     }
 
     #[test]
-    fn lent_samples_are_the_ones_taken_otherwise() {
-        let file = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/tone440.mp3")).unwrap();
+    fn lent_equals_taken() {
+        let file = tone_mp3();
         let frames = mp3_frames(&file);
         let mut taken = Decoder::new(Codec::Mp3, 44_100, 2, None, false).unwrap();
         let mut lent = Decoder::new(Codec::Mp3, 44_100, 2, None, false).unwrap();
@@ -618,8 +589,8 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_whose_audio_began_before_the_seek_is_silence() {
-        let file = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/tone440.mp3")).unwrap();
+    fn reservoir_frame_after_seek_is_silent() {
+        let file = tone_mp3();
         let frames = mp3_frames(&file);
         let reservoir = frames.iter().position(|f| mp3_main_data_begin(f) != 0).expect("a frame using the bit reservoir");
         let mut d = Decoder::new(Codec::Mp3, 44_100, 2, None, true).unwrap();
@@ -630,9 +601,8 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_header_says_its_rate_and_channels() {
-        let file = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/tone440.mp3")).unwrap();
-        assert_eq!(mp3_shape(mp3_frames(&file)[3]), Some((44_100, 2)));
+    fn mp3_header_shape() {
+        assert_eq!(mp3_shape(mp3_frames(&tone_mp3())[3]), Some((44_100, 2)));
         // MPEG-2 at 22.05 kHz, mono; MPEG-2.5 at 8 kHz, joint stereo; MPEG-1 at 48 kHz.
         assert_eq!(mp3_shape(&[0xff, 0xf3, 0x00, 0xc0]), Some((22_050, 1)));
         assert_eq!(mp3_shape(&[0xff, 0xe3, 0x08, 0x40]), Some((8_000, 2)));
@@ -645,8 +615,8 @@ mod tests {
     }
 
     #[test]
-    fn an_mp3_decoder_follows_the_stream_to_another_rate_and_channel_count() {
-        let file = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/tone440.mp3")).unwrap();
+    fn mp3_follows_shape_change() {
+        let file = tone_mp3();
         let frames = mp3_frames(&file);
         let mut d = Decoder::new(Codec::Mp3, 44_100, 2, None, true).unwrap();
         let mut out = vec![0f32; 1152 * 2];
@@ -668,7 +638,7 @@ mod tests {
     }
 
     #[test]
-    fn he_aac_is_known_by_its_config_or_by_a_core_rate() {
+    fn he_aac_detection() {
         // AudioSpecificConfigs: object type, rate index, channels, GASpecificConfig, extension.
         let lc_44 = [0x12, 0x10]; // AAC-LC, 44.1 kHz, stereo
         let lc_22 = [0x13, 0x90]; // AAC-LC, 22.05 kHz, stereo
@@ -687,8 +657,7 @@ mod tests {
         assert!(!he_aac(Some(&[0x0a, 0x10]), 22_050), "AAC Main, whatever its rate");
     }
 
-    /// A platform decoder that says what it was handed: each unit's first byte, as a frame of 2048 at
-    /// twice the rate, in stereo.
+    /// Outputs each unit's first byte as 2048 stereo frames at 44.1 kHz.
     struct Echo;
 
     impl PlatformDecoder for Echo {
@@ -700,7 +669,7 @@ mod tests {
     }
 
     #[test]
-    fn he_aac_goes_to_the_platforms_decoder_and_aac_lc_stays_here() {
+    fn he_aac_uses_platform_decoder() {
         lend_platform_aac(|_| Some(Box::new(Echo)));
         let mut d = Decoder::whole_aac(22_050, 2, None).unwrap();
         assert!(d.on_platform(), "an ADTS stream at a core rate");
@@ -713,7 +682,7 @@ mod tests {
     }
 
     #[test]
-    fn samples_are_rounded_not_truncated() {
+    fn i16_rounds_not_truncates() {
         let mut d = Decoder::new(Codec::Mp3, 44_100, 2, None, true).unwrap();
         d.scratch[..4].copy_from_slice(&[0.5 / 32768.0, -1.6 / 32768.0, 1.0, -1.0]);
         d.held = 2;
@@ -724,7 +693,7 @@ mod tests {
     }
 
     #[test]
-    fn flac_setup_is_taken_as_media3_hands_it_over() {
+    fn flac_setup_from_media3() {
         // "fLaC", a STREAMINFO block header, then a 34-byte STREAMINFO for 44.1 kHz stereo 16-bit.
         let mut e = b"fLaC\x80\x00\x00\x22".to_vec();
         e.extend_from_slice(&[0x10, 0x00, 0x10, 0x00, 0, 0, 0, 0, 0, 0, 0x0A, 0xC4, 0x42, 0xF0, 0, 0, 0, 0]);
@@ -733,7 +702,7 @@ mod tests {
     }
 
     #[test]
-    fn an_opus_stream_decodes_to_its_tone_without_the_pre_skip() {
+    fn opus_decodes_tone_without_pre_skip() {
         let file = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/tone440.opus")).unwrap();
         let (setup, packets) = ogg_opus(&file);
         let mut d = Decoder::new(Codec::Opus, 48_000, 2, Some(&setup), false).unwrap();
@@ -744,7 +713,7 @@ mod tests {
             pcm.extend_from_slice(&out[..n * 2]);
         }
         assert_eq!((d.channels(), d.rate()), (2, 48_000));
-        // The pre-skip is gone: what is left is the second of tone, plus at most the last packet's padding.
+        // One second of tone plus at most the last packet's padding.
         assert!(pcm.len() / 2 >= 48_000 && pcm.len() / 2 < 48_000 + 960, "{} frames", pcm.len() / 2);
         let left: Vec<f64> = pcm.chunks(2).skip(4800).take(24_000).map(|c| c[0] as f64).collect();
         let rms = (left.iter().map(|v| v * v).sum::<f64>() / left.len() as f64).sqrt();
@@ -752,13 +721,12 @@ mod tests {
         assert!((rms - 8463.3).abs() < 30.0, "rms {rms}");
         let crossings = left.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count();
         assert!((438..=442).contains(&crossings), "{crossings} crossings");
-        // A seek away from the start plays the pre-roll in again rather than the pre-skip.
         d.reset(false);
         assert_eq!(d.decode_i16(&packets[20], &mut out), Ok(0), "the first 20 ms go to the 80 ms pre-roll");
     }
 
     #[test]
-    fn surround_opus_is_the_platforms() {
+    fn surround_opus_rejected() {
         let mut head = b"OpusHead\x01\x06\x38\x01\x80\xbb\x00\x00\x00\x00\x01".to_vec();
         head.extend_from_slice(&[4, 2, 0, 4, 1, 2, 3, 5]);
         assert!(Decoder::new(Codec::Opus, 48_000, 6, Some(&head), false).is_err());

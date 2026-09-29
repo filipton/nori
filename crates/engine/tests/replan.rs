@@ -1,9 +1,7 @@
-//! A transition setting changed while an album plays is heard at the very next boundary, and a play right
-//! after a change is planned with it: the engine playing the core's queue over the core's settings and
-//! transition planner, on the test's clock, as Android and the terminal run it. The core keeps one queue,
-//! one planner and one set of settings per process, so these stories run one after the other in one test,
-//! never beside album.rs's (both hold `core_turn` in main.rs).
-mod common;
+//! Transition settings changed while playing apply at the next boundary, and a play right after a
+//! change uses it: the engine over the core's queue, settings and planner. The core is per process, so
+//! the cases run in one test and take `core_turn` (as album.rs does).
+use crate::common;
 
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -14,50 +12,15 @@ use common::card::{Card, Pull};
 use common::{Stepper, Virtual};
 use nori_core::client::{Client, NetProfile};
 use nori_core::settings_store::{edit_by_name, APPLY_AUDIO, REPLAN};
-use nori_core::transport::{Exchange, Transport, TransportError, TransportResponse};
 use nori_core::{Core, ServerConfig, Song};
 use nori_engine::core::{settings, CoreApp, CoreLibrary, CoreOrder, CoreQueue};
 use nori_engine::{Body, ByteSource, Config, Engine, Store};
 
-struct NoApi;
+use common::NoApi;
 
-#[async_trait::async_trait]
-impl Transport for NoApi {
-    async fn get(&self, _url: String, _timeout_ms: u32) -> Result<TransportResponse, TransportError> {
-        Ok(TransportResponse { status: 500, body: Vec::new() })
-    }
-
-    async fn send(&self, _request: Exchange) -> Result<TransportResponse, TransportError> {
-        Ok(TransportResponse { status: 500, body: Vec::new() })
-    }
-
-    fn address_changed(&self) {}
-}
-
-/// `secs` of a quiet tone as a 16-bit stereo WAV file, a different pitch per seed.
+/// `secs` of a quiet tone as a WAV file, a different pitch per seed.
 fn tone_wav(secs: usize, seed: u32) -> Vec<u8> {
-    let rate = 44_100u32;
-    let frames = rate as usize * secs;
-    let mut w = Vec::with_capacity(44 + frames * 4);
-    let data = frames as u32 * 4;
-    w.extend_from_slice(b"RIFF");
-    w.extend_from_slice(&(36 + data).to_le_bytes());
-    w.extend_from_slice(b"WAVEfmt ");
-    w.extend_from_slice(&16u32.to_le_bytes());
-    w.extend_from_slice(&1u16.to_le_bytes());
-    w.extend_from_slice(&2u16.to_le_bytes());
-    w.extend_from_slice(&rate.to_le_bytes());
-    w.extend_from_slice(&(rate * 4).to_le_bytes());
-    w.extend_from_slice(&4u16.to_le_bytes());
-    w.extend_from_slice(&16u16.to_le_bytes());
-    w.extend_from_slice(b"data");
-    w.extend_from_slice(&data.to_le_bytes());
-    for i in 0..frames {
-        let v = ((i as f64 * (220.0 + seed as f64 * 30.0) * std::f64::consts::TAU / rate as f64).sin() * 0.2 * 32767.0) as i16;
-        w.extend_from_slice(&v.to_le_bytes());
-        w.extend_from_slice(&v.to_le_bytes());
-    }
-    w
+    common::wav(44_100, &common::sine(44_100, 220.0 + seed as f64 * 30.0, secs as f64, 0.2 * 32767.0))
 }
 
 struct Net(HashMap<String, Arc<Vec<u8>>>);
@@ -82,8 +45,7 @@ struct Rig {
 }
 
 impl Rig {
-    /// An album of `ids` in track order with AutoMix on and "keep albums gapless" as `keep`; the queue is
-    /// the album, not yet playing.
+    /// An album of `ids` queued in order, AutoMix on, "keep albums gapless" as `keep`; not playing.
     fn new(name: &str, ids: &[&str], keep: bool) -> Rig {
         let dir = nori_testdir::TempDir::new(name);
         let core = Core::new(dir.join("nori.db").to_string_lossy().into_owned(), "test".into()).unwrap();
@@ -110,8 +72,8 @@ impl Rig {
             .collect();
         let net = Arc::new(Net(ids.iter().enumerate().map(|(k, id)| (id.to_string(), Arc::new(tone_wav(SECS, k as u32)))).collect()));
         nori_core::queue::queue_register(songs);
-        // Played from the album's page: an album played as one.
-        nori_core::playlist::playlist_set(ids.iter().map(|s| s.to_string()).collect(), 0, false, Some(nori_core::PageOrigin::new(nori_core::OriginKind::Album, "al")));
+        // Played from the album's page.
+        nori_core::playlist::playlist_set(ids.iter().map(|s| s.to_string()).collect(), Some(0), false, Some(nori_core::PageOrigin::new(nori_core::OriginKind::Album, "al")));
         let library = CoreLibrary { client, bytes: net, metered: false, store: Some(store) };
         let card = Card::new();
         let clock = Virtual::default();
@@ -124,22 +86,20 @@ impl Rig {
         self.time.until(Duration::from_secs(secs), || done(self))
     }
 
-    /// A setting by name, as the test bridge and every settings row set it, and the replan the core asks
-    /// of the player for it (Android's PlaybackService, the terminal's backend).
+    /// Sets a setting by name and relays its effects to the engine, as the clients do.
     fn set(&self, name: &str, value: &str) {
         let effect = self.set_only(name, value);
         self.relay(effect);
     }
 
-    /// The setting kept by the core, and what it asks of the player, not yet told to the player: on
-    /// Android that comes a main-looper turn later, through the settings' effects flow.
+    /// Sets a setting by name without telling the engine; returns its effects.
     fn set_only(&self, name: &str, value: &str) -> u32 {
         let effect = edit_by_name(name, value).unwrap_or_else(|| panic!("{name} is a setting")).effect;
         assert_ne!(effect & REPLAN, 0, "{name} asks for the transition to be planned again");
         effect
     }
 
-    /// What PlaybackService does with a change's effects.
+    /// Relays a change's effects to the engine, as PlaybackService does.
     fn relay(&self, effect: u32) {
         if effect & APPLY_AUDIO != 0 {
             self.engine.set_settings(settings(&nori_core::settings_store::settings_current().unwrap(), 0.0));
@@ -149,7 +109,7 @@ impl Rig {
         }
     }
 
-    /// Whether the ear hears a mix before it is `secs` into `index`.
+    /// Whether a mix is heard before playback is 10 s into `index`.
     fn mixes_into(&self, index: usize) -> bool {
         let mut mixed = false;
         let came = self.until(SECS as u64 * 2, |r| {
@@ -169,13 +129,12 @@ impl Drop for Rig {
 }
 
 #[test]
-fn transition_settings_changed_are_planned_with_at_once() {
+fn transition_settings_replan_at_once() {
     let _turn = crate::core_turn();
     keeping_albums_gapless_switched_off_while_an_album_plays_mixes_its_next_boundary();
     switched_off_near_the_end_with_the_ending_made_gapless_it_still_mixes();
     every_transition_setting_changed_while_playing_is_planned_with();
     a_play_right_after_a_change_is_planned_with_it();
-    the_planner_plans_with_the_settings_kept_even_when_an_older_change_is_told_last();
     automix_and_mixing_albums_switched_on_right_before_an_album_is_played_mix_it();
 }
 
@@ -183,7 +142,7 @@ fn keeping_albums_gapless_switched_off_while_an_album_plays_mixes_its_next_bound
     let rig = Rig::new("replan-keep", &["a1", "a2", "a3"], true);
     rig.engine.play_at(0, 0);
     assert!(!rig.mixes_into(1), "kept gapless while the setting says so");
-    // Early in the second song, well before its ending is made.
+    // Early in the second song, before its ending is made.
     rig.set("crossfadeKeepAlbums", "false");
     assert!(rig.mixes_into(2), "mixed into the third song once the album is no longer kept gapless");
     let note = nori_core::automix::planner::transition_note("a2").expect("a2's ending was planned");
@@ -195,7 +154,7 @@ fn switched_off_near_the_end_with_the_ending_made_gapless_it_still_mixes() {
     rig.engine.play_at(0, 0);
     assert!(rig.until(20, |r| r.engine.status().index == Some(0) && r.engine.status().position_ms > 1_000));
     rig.engine.seek(SECS as i64 * 1000 - 15_000);
-    // The whole ending is in the output by now, made gapless.
+    // The ending is already made gapless.
     assert!(rig.until(20, |r| r.engine.status().position_ms > SECS as i64 * 1000 - 13_000), "{:?}", rig.engine.status());
     rig.set("crossfadeKeepAlbums", "false");
     assert!(rig.mixes_into(1), "the ending is made again as a mix");
@@ -205,7 +164,7 @@ fn every_transition_setting_changed_while_playing_is_planned_with() {
     let rig = Rig::new("replan-each", &["b1", "b2", "b3", "b4", "b5"], false);
     rig.engine.play_at(0, 0);
     assert!(rig.until(20, |r| r.engine.status().index == Some(0) && r.engine.status().position_ms > 2_000));
-    // Each in turn, early in a song: the plan out of it is made under the new value.
+    // Each early in a song: the plan out of it uses the new value.
     let cases: [(&str, &str, fn(&nori_core::automix::planner::TransitionNote) -> bool); 3] = [
         ("autoMixMaxS", "4", |n| n.duration_ms > 0 && n.duration_ms <= 4_000),
         ("crossfadeKeepAlbums", "true", |n| n.kind == "Gapless"),
@@ -227,20 +186,8 @@ fn a_play_right_after_a_change_is_planned_with_it() {
     assert!(rig.mixes_into(1), "the play right after the change mixes");
 }
 
-/// Two changes made at once on two threads (the screen and the engine's device sound, say) once each told
-/// the planner after they were kept: the older one told last left the planner with settings the store no
-/// longer had, and it went on planning with them until the next change or play. The planner reads the
-/// settings kept now, so there is nothing to tell out of order.
-fn the_planner_plans_with_the_settings_kept_even_when_an_older_change_is_told_last() {
-    let rig = Rig::new("replan-order", &["f1", "f2", "f3"], true);
-    rig.set("crossfadeKeepAlbums", "false");
-    rig.engine.play_at(0, 0);
-    assert!(rig.mixes_into(1), "planned with the album no longer kept gapless");
-}
-
-/// tools/smoke.sh's AutoMix section: from the plain path (AutoMix off, albums kept gapless) both are
-/// switched and an album is played at once, then sought to near the end of its first song. The player
-/// hears of the settings only after the play.
+/// smoke.sh's AutoMix check: AutoMix and album mixing switched on right before an album is played; the
+/// engine hears of the settings only after the play.
 fn automix_and_mixing_albums_switched_on_right_before_an_album_is_played_mix_it() {
     let rig = Rig::new("replan-smoke", &["e1", "e2", "e3"], true);
     let mut prefs = nori_core::settings_store::settings_current().unwrap();

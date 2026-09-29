@@ -1,19 +1,13 @@
-//! A song's container, read packet by packet with symphonia's format readers (MP3, FLAC, Ogg Vorbis
-//! and Opus, MP4/AAC and ALAC, WAV), and the packets decoded by `nori_player::decode`, the decoder
-//! every platform uses. The encoder's delay and padding the container states are cut off, so songs
-//! join sample for sample; a seek lands on the exact sample asked for.
+//! Containers read with symphonia's format readers (MP3, FLAC, Ogg Vorbis/Opus, MP4 AAC/ALAC, WAV),
+//! decoded by `nori_player::decode` (the decoder every platform uses). Encoder delay and padding are cut
+//! so songs join sample-exactly; seeks are sample-exact.
 //!
-//! Opening a song reads its first bytes (and, for an MP4 with its index at the end, its last ones), so
-//! a song still on its way is opened on a thread of its own, and the engine's thread is woken when it
-//! is open; it never waits for the network.
+//! A song still downloading is opened on a thread of its own (opening reads its first, and for some
+//! MP4s last, bytes); the engine is woken when it is open and never waits for the network. symphonia
+//! allocates one buffer per packet read; decoding allocates nothing.
 //!
-//! symphonia's readers hand each packet over in a buffer of their own (`FormatReader::next_packet`
-//! returns it boxed, and has no way to read into one kept), so reading allocates once a packet. That
-//! happens only while the engine fills the output in a burst; decoding allocates nothing.
-//!
-//! A song can also be read as its packets alone, undecoded ([`Demuxed::load_packets`]), for an output
-//! that decodes them itself (audio offload): what they are, the encoder's delay and padding as that
-//! output takes them, and each packet with the frames of music it stands for.
+//! [`Demuxed::load_packets`] reads undecoded packets for audio offload, with the encoder delay and
+//! padding as that output takes them and each packet's frame count.
 
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,16 +35,14 @@ use crate::mpeg::Frames;
 use crate::panic_words;
 use crate::source::Loader;
 
-/// What an Opus stream plays in again after a seek, as the decoder drops it (80 ms, RFC 7845).
+/// Opus pre-roll after a seek, dropped by the decoder (80 ms, RFC 7845).
 const OPUS_PRE_ROLL: i64 = 3840;
-/// Frames read ahead of a seek into an MP4, for the decoder to warm up on: two AAC frames.
+/// Frames read before an MP4 seek target for the decoder to warm up: two AAC frames.
 const AAC_WARM_UP: i64 = 2048;
-/// Times a song is opened again after its length was found shorter than promised (`Demuxed::start`):
-/// once for the real length, or for none known when the server did not say it, and once more should the
-/// bytes then run out before the reader is open.
+/// Times a song is reopened after its length turned out shorter than promised (`Demuxed::start`).
 const REOPENS: usize = 3;
 
-/// Samples as a WAV file stores them.
+/// A WAV file's sample format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pcm {
     U8,
@@ -81,8 +73,7 @@ impl Pcm {
         }
     }
 
-    /// One stored sample, written to `out` in `to`: as 16 bits rounded as the decoder rounds, or as a
-    /// float.
+    /// Appends one stored sample to `out` in `to` (16-bit rounded as the decoder rounds, or float).
     fn put(self, b: &[u8], to: Encoding, out: &mut Vec<u8>) {
         let v = match (self, to) {
             (Pcm::U8, Encoding::Pcm16) => return out.extend_from_slice(&(((b[0] as i16) - 128) << 8).to_le_bytes()),
@@ -97,7 +88,7 @@ impl Pcm {
     }
 }
 
-/// A decoded sample into `out` in `to`: 16 bits rounded as `Decoder::take_i16` rounds, or the float.
+/// Appends a sample to `out` in `to` (16-bit rounded as `Decoder::take_i16` rounds, or float).
 fn put(v: f32, to: Encoding, out: &mut Vec<u8>) {
     match to {
         Encoding::Pcm16 => out.extend_from_slice(&((v * 32768.0).round_ties_even().clamp(-32768.0, 32767.0) as i16).to_le_bytes()),
@@ -106,13 +97,44 @@ fn put(v: f32, to: Encoding, out: &mut Vec<u8>) {
 }
 
 enum Inner {
-    Coded(Decoder),
+    Coded(Box<Decoder>),
     Pcm(Pcm),
     /// Read as packets, not decoded.
     Raw,
 }
 
-/// A compression an output may decode itself.
+/// How a stream is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Play,
+    /// Decoded for measuring: HE-AAC's core alone is enough.
+    Measure,
+    /// Undecoded packets for an output that decodes them.
+    Packets,
+}
+
+/// How to open a stream.
+#[derive(Clone, Copy)]
+struct Spec<'a> {
+    hint: Option<&'a str>,
+    from_ms: i64,
+    /// The tagged length, for a container that does not say.
+    duration_ms: Option<i64>,
+    encoding: Encoding,
+    mode: Mode,
+    /// Every byte is here: MP4 gapless boxes are read wherever they are.
+    whole: bool,
+    /// The source's length is the song's; otherwise it is read in order as of unknown length ([`Unsized`]).
+    sized: bool,
+}
+
+impl<'a> Spec<'a> {
+    fn new(hint: Option<&'a str>, from_ms: i64, duration_ms: Option<i64>, encoding: Encoding, mode: Mode) -> Self {
+        Spec { hint, from_ms, duration_ms, encoding, mode, whole: true, sized: true }
+    }
+}
+
+/// A compression an offload output may decode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Coding {
     Mp3,
@@ -122,7 +144,6 @@ pub enum Coding {
 }
 
 impl Coding {
-    /// Its name, as a report says it.
     pub fn name(self) -> &'static str {
         match self {
             Coding::Mp3 => "MP3",
@@ -132,7 +153,7 @@ impl Coding {
     }
 }
 
-/// A compressed stream as an output that decodes it is asked about it.
+/// A compressed stream, as an offload output is asked about it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Coded {
     pub coding: Coding,
@@ -140,21 +161,19 @@ pub struct Coded {
     pub channels: usize,
 }
 
-/// A song read as packets: what they are, and how the output that decodes them cuts the encoder's delay
-/// and padding.
+/// A song read as packets: their format, and the encoder gap the output should cut.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodedSong {
     pub coded: Coded,
-    /// Bits a second, as the song's bytes and length say (0 unknown): what sizes a track for it.
+    /// Bits per second from bytes and length (0 unknown), for sizing a track.
     pub bitrate: u32,
-    /// Frames the decoder makes that are cut from the start and from the end, as media3 hands them to an
-    /// offloaded AudioTrack: an MP3's LAME numbers, an MP4's edit list. An Opus stream's pre-skip is in
-    /// its header, which the output reads.
+    /// Frames to cut at the start and end, as media3 passes them to an offload AudioTrack (LAME tag, MP4
+    /// edit list). Opus pre-skip is in its header.
     pub delay: u32,
     pub padding: u32,
-    /// The codec's own header: an Opus stream's `OpusHead`.
+    /// The codec header (Opus's `OpusHead`).
     pub setup: Option<Box<[u8]>>,
-    /// Where the first packet read starts in the song, frames: after a seek, the packet it landed in.
+    /// First packet's frame in the song (after a seek, the packet it landed in).
     pub from_frame: i64,
 }
 
@@ -170,16 +189,14 @@ fn codec_of(id: AudioCodecId) -> Option<Codec> {
     })
 }
 
-/// Where a song's packets come from: symphonia's reader for its container, or, for a live MP3 stream,
-/// the frames found and checked in `mpeg.rs`.
+/// A song's packets: symphonia's container reader, or `mpeg.rs` for a live MP3 stream.
 enum Packets {
     Container(Box<dyn FormatReader + 'static>),
     Mpeg(Frames),
 }
 
 impl Packets {
-    /// The next packet; none at the end. An I/O error of kind `WouldBlock` is a read that gave up for
-    /// now (it looked through as much as it may in one go): ask again once the bytes are there.
+    /// The next packet; None at the end. `WouldBlock` means try again later.
     fn next_packet(&mut self) -> symphonia::core::errors::Result<Option<Packet>> {
         match self {
             Packets::Container(r) => r.next_packet(),
@@ -195,13 +212,12 @@ impl Packets {
     }
 }
 
-/// A read that gave up for now, rather than failed.
+/// A read to retry later, not a failure.
 fn for_now(e: &SymphoniaError) -> bool {
     matches!(e, SymphoniaError::IoError(e) if e.kind() == io::ErrorKind::WouldBlock)
 }
 
-/// A seek that found the song over before its place: out of the range the reader knows, or the bytes
-/// ended on the way to it.
+/// A seek past the song's end.
 fn past_end(e: &SymphoniaError) -> bool {
     match e {
         SymphoniaError::SeekError(SeekErrorKind::OutOfRange) => true,
@@ -210,52 +226,47 @@ fn past_end(e: &SymphoniaError) -> bool {
     }
 }
 
-/// Packets read in one call that gave nothing to hear (skipped, broken, dropped before a seek's place)
-/// before the call gives up for now: the engine asks again, so a stream of nothing but broken packets
-/// never holds its thread.
+/// Silent packets (broken, skipped, before a seek target) read in one call before returning empty, so
+/// a stream of broken packets never holds the engine's thread.
 const IDLE_PACKETS: u32 = 64;
 
-/// One song being read: its container, its decoder, and the buffer the last packet decoded into, in
-/// the encoding asked for (float for high quality output).
+/// One song being read: container, decoder, and the last decoded buffer.
 struct Stream {
     reader: Packets,
     track: u32,
     inner: Inner,
     codec: Option<Codec>,
-    /// The container states the encoder's delay (an MP3's LAME header): its trims are the ones to cut.
+    /// The container states the encoder delay (an MP3's LAME header).
     delay_known: bool,
     format: Format,
     buf: Vec<u8>,
-    /// The next frame to come out, counted from the start of the song; unknown right after a seek
-    /// until the first packet says where it is.
+    /// The next frame out, from the song's start; None after a seek until a packet says.
     frame: Option<i64>,
-    /// After a seek, what comes before this frame is decoded and dropped.
+    /// Frames before this are decoded and dropped (after a seek).
     skip_to: i64,
     at_us: i64,
     duration_us: i64,
     ended: bool,
-    /// The first buffer, decoded while opening to learn the stream's true shape.
+    /// The first buffer was decoded while opening (to learn the true format) and not handed out.
     primed: bool,
-    /// An MP4's encoder delay and where its music ends, in frames of what the decoder makes, as the
-    /// file's `iTunSMPB` or edit list says (symphonia's reader reads neither): cut as media3 cuts them.
+    /// An MP4's encoder delay and music end, in decoder frames, from `iTunSMPB` or the edit list
+    /// (symphonia reads neither).
     mp4: Option<(i64, i64)>,
-    /// Bits per sample as the file stores them (0 unknown or not stored that way).
+    /// Stored bits per sample (0 unknown).
     bits: u32,
-    /// What the song's compression is called, for a report of why it plays where it does.
+    /// The compression's name, for reports.
     compression: &'static str,
-    /// Read as packets: what they are, and the frames of music the last one stands for.
+    /// Read as packets: their format, and the last packet's frames.
     coded: Option<CodedSong>,
     packet_frames: u64,
     first_packet: bool,
-    /// The format has been told (from the first packet): anything decoded in another shape from here on
-    /// is converted to it.
+    /// The format is fixed (after the first packet): later audio in another shape is converted.
     settled: bool,
-    /// Decoded audio in another shape than the one told, converted to it: a live stream whose station
-    /// changed its rate or channels (the next song of a chained Ogg stream).
+    /// Converter for a live stream whose rate or channels changed (a chained Ogg stream's next song).
     reshape: Option<Reshape>,
 }
 
-/// Audio of one shape made into another, as floats.
+/// Converts float audio from one rate and channel count to another.
 struct Reshape {
     from: (u32, usize),
     resampler: Resampler,
@@ -263,8 +274,7 @@ struct Reshape {
     output: Vec<u8>,
 }
 
-/// `samples` (interleaved float, `from` rate and channels) into `out` in `to`'s rate, channels and
-/// encoding, through `reshape` (made for `from` if it is not): the frames made.
+/// Converts `samples` (interleaved float at `from`) into `out` at `to`. Returns the frames made.
 fn reshaped(reshape: &mut Option<Reshape>, from: (u32, usize), to: Format, samples: &[f32], out: &mut Vec<u8>) -> usize {
     if reshape.as_ref().is_none_or(|r| r.from != from) {
         let Some(resampler) = Resampler::new(from.0 as i32, from.1 as i32, to.rate as i32, to.channels as i32) else { return 0 };
@@ -283,25 +293,14 @@ fn reshaped(reshape: &mut Option<Reshape>, from: (u32, usize), to: Format, sampl
 }
 
 impl Stream {
-    /// `whole`: every byte of `source` is here, so the MP4 boxes that hold the gapless numbers can be
-    /// read wherever they are without waiting for the network. `packets`: read undecoded, for an output
-    /// that decodes them itself.
-    /// `core_only`: an HE-AAC stream is decoded here, its core alone, rather than by the platform's decoder
-    /// (measuring a song ahead needs no more).
-    /// `sized`: the source's length is the song's, so the container reader may measure the song from its
-    /// end and seek by bytes; otherwise it is read in order, as one of no known length ([`Unsized`]).
-    ///
-    /// A container reader or decoder that panics on a song's bytes fails the song (said, and skipped as
-    /// the queue's rules say) rather than the thread it was opened on: on the engine's own, that was every
-    /// song after it silent; on a thread of its own, the song waited to open for ever.
-    #[allow(clippy::too_many_arguments)]
-    fn open(source: Box<dyn MediaSource>, hint: Option<&str>, from_ms: i64, duration_ms: Option<i64>, encoding: Encoding, whole: bool, sized: bool, packets: bool, core_only: bool) -> Result<Stream, String> {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Stream::open_as_is(source, hint, from_ms, duration_ms, encoding, whole, sized, packets, core_only)))
-            .unwrap_or_else(|p| Err(format!("the song would not open: {}", panic_words(&*p))))
+    /// Opens `source` as `spec` says. A panic in symphonia or the decoder fails the song, not the thread.
+    fn open(source: Box<dyn MediaSource>, spec: Spec) -> Result<Stream, String> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Stream::open_unguarded(source, spec))).unwrap_or_else(|p| Err(format!("the song would not open: {}", panic_words(&*p))))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn open_as_is(mut source: Box<dyn MediaSource>, hint: Option<&str>, from_ms: i64, duration_ms: Option<i64>, encoding: Encoding, whole: bool, sized: bool, packets: bool, core_only: bool) -> Result<Stream, String> {
+    fn open_unguarded(mut source: Box<dyn MediaSource>, spec: Spec) -> Result<Stream, String> {
+        let Spec { hint, from_ms, duration_ms, encoding, mode, whole, sized } = spec;
+        let packets = mode == Mode::Packets;
         let gapless = if whole { crate::mp4::gapless(&mut source).ok().flatten() } else { None };
         let byte_len = source.byte_len();
         source.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
@@ -325,16 +324,15 @@ impl Stream {
         let delay_known = track.delay.is_some();
         let inner = match (codec, Pcm::of(params.codec)) {
             _ if packets => Inner::Raw,
-            (Some(Codec::Aac), _) if !core_only => Inner::Coded(Decoder::whole_aac(rate, channels, params.extra_data.as_deref())?),
-            (Some(c), _) => Inner::Coded(Decoder::new(c, rate, channels, params.extra_data.as_deref(), c == Codec::Mp3 && delay_known)?),
+            (Some(Codec::Aac), _) if mode == Mode::Play => Inner::Coded(Box::new(Decoder::whole_aac(rate, channels, params.extra_data.as_deref())?)),
+            (Some(c), _) => Inner::Coded(Box::new(Decoder::new(c, rate, channels, params.extra_data.as_deref(), c == Codec::Mp3 && delay_known)?)),
             (None, Some(p)) => Inner::Pcm(p),
             _ => return Err(format!("{:?} is not decoded here", params.codec)),
         };
         let (track_delay, track_padding) = (track.delay, track.padding);
         let setup = params.extra_data.clone();
         let bits = params.bits_per_sample.or(params.bits_per_coded_sample).unwrap_or(0);
-        // The gapless numbers are in the track's timescale: taken when it counts in frames, as audio
-        // tracks do.
+        // The gapless numbers are in the track's timescale: used when it counts frames.
         let per_frame = track.time_base.is_some_and(|t| t.numer.get() == 1 && t.denom.get() == rate);
         let mp4 = gapless.filter(|_| per_frame && codec.is_some()).map(|g| (g.delay as i64, g.frames.map_or(i64::MAX, |f| (g.delay + f) as i64)));
         let mp4_total = gapless.map_or(0, |g| g.total as i64);
@@ -349,15 +347,15 @@ impl Stream {
                 _ => 0,
             };
             let (delay, padding) = match (coding, mp4) {
-                // An MP4's numbers are in what the decoder makes, which is how media3 hands them over.
+                // An MP4's numbers are in decoder frames, as media3 passes them.
                 (_, Some((delay, end))) => (delay as u32, if end < i64::MAX { (mp4_total - end).max(0) as u32 } else { 0 }),
-                // symphonia counts the MP3 decoder's own 529 frames into the delay and out of the padding;
-                // media3 hands the LAME tag's numbers over as they are.
+                // symphonia moves the MP3 decoder's 529 frames from padding to delay; media3 passes
+                // the LAME tag's numbers as they are.
                 (Coding::Mp3, None) => match track_delay {
                     Some(d) => (d.saturating_sub(MP3_DECODER_DELAY as u32), track_padding.unwrap_or(0) + MP3_DECODER_DELAY as u32),
                     None => (0, 0),
                 },
-                // The pre-skip is in the stream's header, which the output reads itself.
+                // Pre-skip is in the header the output reads.
                 (Coding::Opus, None) => (0, track_padding.unwrap_or(0)),
                 (Coding::Aac, None) => (track_delay.unwrap_or(0), track_padding.unwrap_or(0)),
             };
@@ -376,10 +374,8 @@ impl Stream {
         };
         let max_frames = codec.map_or(8192, Codec::max_frames);
         let id = track.id;
-        // A live MP3 stream (a station: no length, no duration, read from where it is) is read frame by
-        // frame here, checked, so that it plays on through noise and into a next song of another rate or
-        // channel count. A song of the library whose server does not say its length (sent as it is
-        // transcoded) is not one: it is seeked, as the CPU taking it over from the chip seeks it.
+        // A live MP3 station (no length or duration, from the start) is read frame by frame by `mpeg.rs`
+        // so it plays through noise and format changes. A transcode without a length is not live.
         let live = byte_len.is_none() && duration_ms.is_none() && from_ms == 0;
         let reader = if live && !packets && params.codec == CODEC_ID_MP3 {
             Packets::Mpeg(Frames::new(reader.into_inner(), id))
@@ -414,13 +410,12 @@ impl Stream {
             d.seek(from_ms)?;
         }
         if packets {
-            // The first packet says where the reading starts after a seek.
+            // The first packet says where reading starts after a seek.
             d.primed = d.next_packet();
             return Ok(d);
         }
-        // The first packet says for certain what comes out (an AAC stream's real rate, say). A read that
-        // gave up for now (noise at the start of a station) is asked again, as often as a station's
-        // first bytes could need.
+        // The first decoded packet gives the true format (an AAC stream's real rate). Retried through a
+        // station's initial noise.
         d.primed = d.next();
         for _ in 0..64 {
             if !d.primed || !d.buf.is_empty() {
@@ -438,16 +433,13 @@ impl Stream {
 
     fn seek(&mut self, ms: i64) -> Result<(), String> {
         let to = match self.mp4 {
-            // The song's time is past the delay in the track's. AAC's first frame after a reset is
-            // only the decoder warming up, so the read starts two frames early and drops them.
+            // Song time is track time minus the delay; start two AAC frames early to warm the decoder.
             Some((delay, _)) => SeekTo::Timestamp { ts: Timestamp::new((ms * self.format.rate as i64 / 1000 + delay - AAC_WARM_UP).max(0)), track_id: self.track },
             None => SeekTo::Time { time: Time::from_millis(ms), track_id: Some(self.track) },
         };
         let seeked = match self.reader.container().ok_or("a live stream is not seeked")?.seek(SeekMode::Accurate, to) {
             Ok(s) => s,
-            // Past the song's end, the bytes read through to it: the length it was given (the server's, or
-            // its container's) was longer than the music. The song is over there, as if played to its end.
-            // A network that failed on the way is an error of its own kind, not this.
+            // Past the end (the stated length was longer than the music): ended, as if played through.
             Err(e) if ms > 0 && past_end(&e) => {
                 self.ended = true;
                 self.frame = None;
@@ -466,8 +458,7 @@ impl Stream {
         Ok(())
     }
 
-    /// What the decoder drops of the first packet after a reset: an MP3's filterbank warming up, an
-    /// Opus stream's pre-roll.
+    /// Frames the decoder drops of the first packet after a reset (MP3 filterbank, Opus pre-roll).
     fn dropped_after_reset(&self) -> i64 {
         match self.codec {
             Some(Codec::Mp3) => MP3_DECODER_DELAY as i64,
@@ -476,15 +467,14 @@ impl Stream {
         }
     }
 
-    /// Where a packet stamped `pts` starts in the song, as its samples come out of the decoder. An MP3
-    /// without a LAME header is stamped from its first decoded sample, which the decoder drops.
+    /// The song frame of a packet's first decoded sample. An MP3 without a LAME header is stamped from
+    /// its first decoded sample, which the decoder drops.
     fn song_frame(&self, pts: i64) -> i64 {
         let origin = if self.codec == Some(Codec::Mp3) && !self.delay_known { MP3_DECODER_DELAY as i64 } else { 0 };
         pts - origin + self.dropped_after_reset()
     }
 
-    /// The next packet of the song as it is into `buf`, and the frames of music it stands for; false at
-    /// the end of the song.
+    /// Reads the next undecoded packet into `buf`; false at the end.
     fn next_packet(&mut self) -> bool {
         loop {
             let packet = match self.reader.next_packet() {
@@ -498,8 +488,8 @@ impl Stream {
                 continue;
             }
             let (pts, dur) = (packet.pts.get(), packet.dur.get() as i64);
-            // What of it is heard: an MP4's stamps and lengths count its delay and padding in; elsewhere
-            // the packet's trims say it (symphonia 0.6.1 leaves them inside its length, as `dur` builds it).
+            // The audible part: an MP4's stamps include delay and padding; elsewhere the packet's trims
+            // say it (symphonia 0.6.1 counts them inside `dur`).
             let (start, frames) = match self.mp4 {
                 Some((delay, end)) => {
                     let (from, to) = (pts.max(delay), (pts + dur).min(end));
@@ -524,12 +514,11 @@ impl Stream {
         }
     }
 
-    /// Decodes the next packet with anything in it into `buf`; false at the end of the song.
+    /// Decodes the next audible packet into `buf` (empty: retry later); false at the end.
     fn next(&mut self) -> bool {
         let (ch, enc) = (self.format.channels, self.format.encoding);
         let mut idle = 0;
         loop {
-            // Nothing to hear for a while: given up for now, with nothing in the buffer.
             if idle == IDLE_PACKETS {
                 self.buf.clear();
                 return true;
@@ -537,14 +526,13 @@ impl Stream {
             idle += 1;
             let packet = match self.reader.next_packet() {
                 Ok(Some(p)) => p,
-                // Looked through as much as one read may without finding a packet (noise on a station).
+                // No packet found yet (noise on a station).
                 Err(e) if for_now(&e) => {
                     self.buf.clear();
                     return true;
                 }
-                // The next stream of a chained Ogg one (a station's next song): read on in it.
+                // A chained Ogg stream's next song.
                 Err(SymphoniaError::ResetRequired) if self.chain_on() => continue,
-                // The end, or a stream that cannot be read any further: either way the song is over.
                 Ok(None) | Err(_) => {
                     self.ended = true;
                     return false;
@@ -558,7 +546,6 @@ impl Stream {
                 None if matches!(self.inner, Inner::Pcm(_)) => packet.pts.get(),
                 None => self.song_frame(packet.pts.get()),
             };
-            // The samples as the decoder lends them (or as the file stores them), where they lie.
             let (samples, pcm, ch, rate): (&[f32], Option<(Pcm, usize)>, usize, u32) = match &mut self.inner {
                 Inner::Coded(dec) => match dec.decode_lent(&packet.data) {
                     Ok(lent) => (lent.samples, None, lent.channels.max(1), lent.rate),
@@ -578,11 +565,10 @@ impl Stream {
             if n == 0 {
                 continue;
             }
-            // The encoder's delay and padding, as the container states them. An Opus decoder drops its
-            // own pre-skip.
+            // Encoder delay and padding as the container states them (Opus drops its own pre-skip).
             let (mut trim_start, mut trim_end) = if self.codec == Some(Codec::Opus) || self.frame.is_none() { (0, packet.trim_end.get() as usize) } else { (packet.trim_start.get() as usize, packet.trim_end.get() as usize) };
             if let Some((delay, end)) = self.mp4 {
-                // An MP4 packet's stamp is where it starts in what the decoder makes, delay included.
+                // An MP4 stamp counts decoder frames, delay included.
                 let raw = packet.pts.get();
                 trim_start = (delay - raw).clamp(0, n as i64) as usize;
                 trim_end = (raw + n as i64 - end).clamp(0, n as i64) as usize;
@@ -590,7 +576,7 @@ impl Stream {
             }
             let (from, to) = (trim_start.min(n), n.saturating_sub(trim_end).max(trim_start.min(n)));
             let mut from = from;
-            // A seek: what comes before the place asked for is decoded and dropped.
+            // After a seek, drop what comes before the target.
             let (mut first, end) = (at, at + (to - from) as i64);
             self.frame = Some(end);
             if end <= self.skip_to {
@@ -610,9 +596,8 @@ impl Stream {
                         p.put(b, enc, &mut self.buf);
                     }
                 }
-                // Decoded in another shape than the one told (the station's next song, of another rate or
-                // channel count): converted to it, which the output below goes on playing at. Handed on
-                // as it is, it would play at the wrong speed and pitch.
+                // A format change mid-stream (a station's next song): converted, or it would play at the
+                // wrong speed.
                 None if self.settled && (rate, ch) != (self.format.rate, self.format.channels) => {
                     let made = reshaped(&mut self.reshape, (rate, ch), self.format, &samples[from * ch..to * ch], &mut self.buf);
                     self.frame = Some(first + made as i64);
@@ -634,8 +619,8 @@ impl Stream {
 }
 
 impl Stream {
-    /// A chained Ogg stream began its next logical stream (an Ogg station's next song, with headers of
-    /// its own): its track and a decoder for it, read on at the format told. False when it cannot be.
+    /// Follows a chained Ogg stream into its next logical stream (a station's next song) with a new
+    /// decoder, keeping the output format. False when it cannot.
     fn chain_on(&mut self) -> bool {
         let Some(reader) = self.reader.container() else { return false };
         let Some(track) = reader.default_track(TrackType::Audio) else { return false };
@@ -647,7 +632,7 @@ impl Stream {
         if !matches!(self.inner, Inner::Coded(_)) {
             return false;
         }
-        self.inner = Inner::Coded(dec);
+        self.inner = Inner::Coded(Box::new(dec));
         self.codec = Some(codec);
         self.track = id;
         true
@@ -657,15 +642,14 @@ impl Stream {
 impl Stream {
     fn duration_us(&self) -> i64 {
         match self.frame {
-            // Read to its end: exactly as long as what came out.
+            // Read to its end: exactly what came out.
             Some(f) if self.ended => f * 1_000_000 / self.format.rate as i64,
             _ => self.duration_us,
         }
     }
 
-    /// Nothing before `ms` of the song is handed out: the first buffer, decoded while opening and not
-    /// handed out yet, loses what comes before, and what is decoded after it is dropped up to there, as
-    /// after a seek. False once a buffer has been handed out, or for a song read as packets.
+    /// Drops everything before `ms`, trimming the primed first buffer. False once a buffer was handed
+    /// out, or for packets.
     fn skip_ahead(&mut self, ms: i64) -> bool {
         if !self.primed || self.coded.is_some() {
             return false;
@@ -678,7 +662,6 @@ impl Stream {
         let Some(end) = self.frame else { return true };
         let first = end - n;
         if end <= to {
-            // All of it comes before: the next buffer is decoded, and dropped up to there.
             self.buf.clear();
             self.primed = false;
         } else if first < to {
@@ -700,7 +683,7 @@ impl Stream {
     }
 
     fn buffer(&self) -> &[u8] {
-        // The first buffer is only handed out by the first fill.
+        // The primed buffer is handed out by the first fill.
         if self.primed {
             &[]
         } else {
@@ -713,27 +696,26 @@ impl Stream {
     }
 }
 
-/// Decodes the song in `source`, every byte of it on the disk, from its start to its end, as it plays
-/// (delay and padding cut), handing each buffer over as float samples with the rate and channels: for
-/// measuring a song ahead of time. `each` answers whether to go on. False when it was not read to its
-/// end, or was stopped.
+/// Decodes a song whole on disk (delay and padding cut) into `each` as float buffers with rate and
+/// channels, for measuring. `each` returns whether to go on. Ok(false) when stopped or not read to the end.
+#[cfg(feature = "core")]
 pub(crate) fn decode_whole(source: Box<dyn MediaSource>, hint: Option<&str>, each: impl FnMut(u32, usize, &[f32]) -> bool) -> Result<bool, String> {
     decode_from_start(source, hint, true, each)
 }
 
-/// [`decode_whole`] over bytes still coming, read in order as they arrive (`crate::arriving`): nothing is
-/// looked for at the end of the song (an MP4's gapless numbers), so an MP4 is not decoded so.
+/// [`decode_whole`] over bytes still arriving, in order (`crate::arriving`); not for MP4.
 pub(crate) fn decode_as_it_comes(source: Box<dyn MediaSource>, hint: Option<&str>, each: impl FnMut(u32, usize, &[f32]) -> bool) -> Result<bool, String> {
     decode_from_start(source, hint, false, each)
 }
 
-/// Whether a song in this container can be decoded as it comes: an MP4 may keep what it is at its end.
+/// Whether a container can be decoded as it arrives (an MP4 may keep its index at the end).
+#[cfg(feature = "core")]
 pub(crate) fn decodes_as_it_comes(hint: Option<&str>) -> bool {
     !hint.is_some_and(mp4_like)
 }
 
 fn decode_from_start(source: Box<dyn MediaSource>, hint: Option<&str>, whole: bool, mut each: impl FnMut(u32, usize, &[f32]) -> bool) -> Result<bool, String> {
-    let mut s = Stream::open(source, hint, 0, None, Encoding::Float, whole, true, false, true)?;
+    let mut s = Stream::open(source, Spec { whole, ..Spec::new(hint, 0, None, Encoding::Float, Mode::Measure) })?;
     let mut floats: Vec<f32> = Vec::new();
     while s.fill() {
         if s.buffer().is_empty() {
@@ -748,13 +730,9 @@ fn decode_from_start(source: Box<dyn MediaSource>, hint: Option<&str>, whole: bo
     Ok(s.ended)
 }
 
-/// The source from the first byte after its ID3v2 tags, which is where the music starts.
-///
-/// symphonia's probe does not know the tag (its reader is a feature left out: it would keep the cover
-/// picture in memory for as long as the song plays), so it would look for the music inside it, and a
-/// cover of a megabyte or two holds bytes that look like an MPEG frame header often enough: a song
-/// opened as MPEG layer I, which nothing decodes. The tag is read through and dropped rather than
-/// seeked over, so that a song still coming is fetched in one piece.
+/// The source from after its ID3v2 tags. symphonia's ID3 reader is left out (it keeps the cover in
+/// memory), and its probe would find false MPEG headers inside a large cover. Read through rather than
+/// seeked over, so a song still arriving is fetched in one piece.
 fn past_id3(mut source: Box<dyn MediaSource>) -> io::Result<Box<dyn MediaSource>> {
     let mut start = 0u64;
     loop {
@@ -763,7 +741,7 @@ fn past_id3(mut source: Box<dyn MediaSource>) -> io::Result<Box<dyn MediaSource>
         let size = header[6..].iter().try_fold(0u64, |n, &b| (b < 0x80).then_some(n << 7 | b as u64));
         match size {
             Some(size) if whole && header.starts_with(b"ID3") && header[3] < 0xff && header[4] < 0xff => {
-                // A footer, when the flags say there is one, is ten bytes more.
+                // Plus a 10-byte footer if flagged.
                 let length = size + if header[5] & 0x10 != 0 { 10 } else { 0 };
                 if io::copy(&mut (&mut source).take(length), &mut io::sink())? < length {
                     return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "the song ends inside its tag"));
@@ -777,7 +755,7 @@ fn past_id3(mut source: Box<dyn MediaSource>) -> io::Result<Box<dyn MediaSource>
     Ok(if start == 0 { source } else { Box::new(After { inner: source, start }) })
 }
 
-/// Reads until `buf` is full or the source ends: the bytes read.
+/// Reads until `buf` is full or the source ends; returns the bytes read.
 fn read_up_to(source: &mut dyn Read, buf: &mut [u8]) -> io::Result<usize> {
     let mut n = 0;
     while n < buf.len() {
@@ -791,7 +769,7 @@ fn read_up_to(source: &mut dyn Read, buf: &mut [u8]) -> io::Result<usize> {
     Ok(n)
 }
 
-/// A source seen from byte `start` on, as if that were its first.
+/// A source offset to start at byte `start`.
 struct After {
     inner: Box<dyn MediaSource>,
     start: u64,
@@ -824,14 +802,9 @@ impl MediaSource for After {
     }
 }
 
-/// A song whose length is only the server's estimate (a transcode being made as it is sent), as the
-/// container reader is shown it: of no known length, and read in order. A reader shown a length looks
-/// for the song's end there (an Ogg stream's last page, for its duration; an ADTS stream's frames at four
-/// places through it; a FLAC or Ogg seek bisecting by bytes), and each such look is a range the server
-/// answers only once it has transcoded the whole song from its start: tens of seconds before the first
-/// sound. Shown none, the length is the server's tags' until the song is read to its end, which decides
-/// it; a seek reads on to its place from the start as the bytes come, which is no slower than a range
-/// of a transcode still being made.
+/// Hides the length of a transcode whose length is only an estimate. Shown a length, readers probe near
+/// the end (Ogg's last page, ADTS, bisecting seeks), each a range the server answers only after
+/// transcoding up to there: tens of seconds of silence. Unsized, the song is read in order.
 struct Unsized(Box<dyn MediaSource>);
 
 impl Read for Unsized {
@@ -856,10 +829,9 @@ impl MediaSource for Unsized {
     }
 }
 
-/// Which of the compressions an output may decode itself `codec` is, by its setup: AAC only as Low
-/// Complexity (object type 2), which is all `AudioFormat.ENCODING_AAC_LC` promises - and not at 24 kHz or
-/// less, where "AAC-LC" is how HE-AAC whose SBR is signalled only inside the stream announces itself
-/// (`nori_settings::decoder::implicit_sbr`): an output set up for what it says would play it at half its rate.
+/// The offloadable compression of `codec`, if any. AAC only as LC (object type 2, what
+/// `ENCODING_AAC_LC` promises) above 24 kHz: at or below, "AAC-LC" may be implicit-SBR HE-AAC
+/// (`nori_settings::decoder::implicit_sbr`), which would play at half rate.
 fn coding(codec: Option<Codec>, setup: Option<&[u8]>, rate: u32) -> Option<Coding> {
     match codec? {
         Codec::Mp3 => Some(Coding::Mp3),
@@ -874,10 +846,10 @@ fn mp4_like(hint: &str) -> bool {
     matches!(hint.to_ascii_lowercase().as_str(), "m4a" | "m4b" | "mp4" | "aac" | "alac" | "audio/mp4" | "audio/x-m4a" | "audio/aac")
 }
 
-/// A song opened for the engine: open, being opened on a thread of its own, or not to be opened.
+/// A song opened for the engine: open, opening on a thread of its own, or failed.
 pub struct Demuxed {
     state: State,
-    /// Bytes still on their way, and who to wake when they come.
+    /// The loader of bytes still arriving, and the thread to wake.
     loader: Option<(Arc<Loader>, Thread)>,
 }
 
@@ -887,18 +859,24 @@ enum State {
     Failed(PlaybackError, String),
 }
 
-/// A song being opened elsewhere: what came of it, and who to wake when it does.
+/// A song opening on another thread.
 #[derive(Default)]
 struct Opening {
-    done: Mutex<(Option<Result<Stream, String>>, Option<Thread>)>,
-    /// Nobody wants it any more (the engine moved on while it opened): its reads give up.
+    done: Mutex<Done>,
+    /// Nobody wants it any more: its reads fail.
     abandoned: Arc<AtomicBool>,
+}
+
+#[derive(Default)]
+struct Done {
+    opened: Option<Result<Stream, String>>,
+    /// Woken when it is open.
+    waiter: Option<Thread>,
 }
 
 impl Drop for Demuxed {
     fn drop(&mut self) {
-        // Still opening: the thread opening it stops reading, rather than keep moving the song's fetch
-        // to where it reads while another reader of the same bytes moves it back.
+        // Stop the opening thread's reads, which would fight another reader over the fetch position.
         if let (State::Opening(o), Some((l, _))) = (&self.state, &self.loader) {
             o.abandoned.store(true, Ordering::Release);
             l.nudge();
@@ -907,38 +885,36 @@ impl Drop for Demuxed {
 }
 
 impl Demuxed {
-    /// Opens `source` (with a file extension or MIME type as a hint) and reads from `from_ms`, decoding
-    /// to `encoding`. `duration_ms` is the song's tagged length, for a container that does not say its
-    /// own. For bytes that are all here (a file): nothing is waited for.
+    /// Opens bytes that are all here (a file) at `from_ms`, decoding to `encoding`. `hint` is an extension
+    /// or MIME type; `duration_ms` the tagged length.
     pub fn open(source: Box<dyn MediaSource>, hint: Option<&str>, from_ms: i64, duration_ms: Option<i64>, encoding: Encoding) -> Result<Demuxed, String> {
-        let s = Stream::open(source, hint, from_ms, duration_ms, encoding, true, true, false, false)?;
+        let s = Stream::open(source, Spec::new(hint, from_ms, duration_ms, encoding, Mode::Play))?;
         Ok(Demuxed { state: State::Open(Box::new(s)), loader: None })
     }
 
-    /// [`Demuxed::open`], read as packets and not decoded ([`Demuxed::packet`]).
+    /// [`Demuxed::open`] as undecoded packets ([`Demuxed::packet`]).
     pub fn open_packets(source: Box<dyn MediaSource>, hint: Option<&str>, from_ms: i64, duration_ms: Option<i64>) -> Result<Demuxed, String> {
-        let s = Stream::open(source, hint, from_ms, duration_ms, Encoding::Pcm16, true, true, true, false)?;
+        let s = Stream::open(source, Spec::new(hint, from_ms, duration_ms, Encoding::Pcm16, Mode::Packets))?;
         Ok(Demuxed { state: State::Open(Box::new(s)), loader: None })
     }
 
-    /// [`Demuxed::load`], read as packets and not decoded ([`Demuxed::packet`]).
+    /// [`Demuxed::load`] as undecoded packets ([`Demuxed::packet`]).
     pub fn load_packets(loader: Arc<Loader>, engine: Thread, hint: Option<&str>, from_ms: i64, duration_ms: Option<i64>, estimated: bool) -> Demuxed {
-        Demuxed::start(loader, engine, hint, from_ms, duration_ms, estimated, Encoding::Pcm16, true)
+        Demuxed::start(loader, engine, hint, from_ms, duration_ms, estimated, Encoding::Pcm16, Mode::Packets)
     }
 
-    /// What the packets are and how the output cuts them, once the song is open; none when it is read
-    /// decoded, or is in a compression no output decodes itself.
+    /// The packets' format and encoder gap once open; None when decoded or not offloadable.
     pub fn coded(&self) -> Option<&CodedSong> {
         self.stream().and_then(|s| s.coded.as_ref())
     }
 
-    /// What the song's compression is called (MP3, FLAC, HE-AAC, ...), once it is open.
+    /// The compression's name (MP3, FLAC, HE-AAC, ...), once open.
     pub fn compression(&self) -> Option<&'static str> {
         self.stream().map(|s| s.compression)
     }
 
-    /// The next packet into [`Reading::buffer`], with the frames of music it stands for
-    /// ([`Demuxed::packet_frames`]); false at the end of the song. Asked only once it is ready.
+    /// Reads the next packet into [`Reading::buffer`] ([`Demuxed::packet_frames`] its frames); false at
+    /// the end. Only once ready.
     pub fn packet(&mut self) -> bool {
         match &mut self.state {
             State::Open(s) if s.primed => {
@@ -950,32 +926,27 @@ impl Demuxed {
         }
     }
 
-    /// The frames of music the last packet stands for.
+    /// The last packet's frames.
     pub fn packet_frames(&self) -> u64 {
         self.stream().map_or(0, |s| s.packet_frames)
     }
 
-    /// The song's bytes, while a loader holds them: a live stream's announcements are read there.
+    /// The song's loader, if any.
     pub fn loader(&self) -> Option<&Arc<Loader>> {
         self.loader.as_ref().map(|(l, _)| l)
     }
 
-    /// The song `loader` is fetching, read from `from_ms`. Unless all of it is here already it is opened
-    /// on a thread of its own, since opening reads bytes that may still be on their way; `engine` is
-    /// woken when it is open, and again whenever it waited for bytes.
-    ///
-    /// `estimated`: the length the server answers with is only its estimate (a transcode): while the song
-    /// is still coming, the container reader is not shown it ([`Unsized`]), so nothing is asked for past
-    /// what is on its way. Its length is then `duration_ms` until it is read to its end (none when the
-    /// server gives none), and a seek reads on to its place.
+    /// Opens the song `loader` fetches at `from_ms`: on a thread of its own unless all of it is here;
+    /// `engine` is woken when it is open and whenever it waited for bytes. `estimated`: the server's
+    /// length is a transcode's estimate, hidden from the reader while the song arrives ([`Unsized`]).
     pub fn load(loader: Arc<Loader>, engine: Thread, hint: Option<&str>, from_ms: i64, duration_ms: Option<i64>, estimated: bool, encoding: Encoding) -> Demuxed {
-        Demuxed::start(loader, engine, hint, from_ms, duration_ms, estimated, encoding, false)
+        Demuxed::start(loader, engine, hint, from_ms, duration_ms, estimated, encoding, Mode::Play)
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn start(loader: Arc<Loader>, engine: Thread, hint: Option<&str>, from_ms: i64, duration_ms: Option<i64>, estimated: bool, encoding: Encoding, packets: bool) -> Demuxed {
+    fn start(loader: Arc<Loader>, engine: Thread, hint: Option<&str>, from_ms: i64, duration_ms: Option<i64>, estimated: bool, encoding: Encoding, mode: Mode) -> Demuxed {
         if loader.complete() {
-            let state = match Stream::open(Box::new(loader.reader()), hint, from_ms, duration_ms, encoding, true, true, packets, false) {
+            let state = match Stream::open(Box::new(loader.reader()), Spec::new(hint, from_ms, duration_ms, encoding, mode)) {
                 Ok(s) => State::Open(Box::new(s)),
                 Err(why) => State::Failed(PlaybackError::Other, why),
             };
@@ -984,30 +955,26 @@ impl Demuxed {
         let opening = Arc::new(Opening::default());
         let (o, l, hint) = (opening.clone(), loader.clone(), hint.map(str::to_string));
         let spawned = std::thread::Builder::new().name("nori-open".into()).spawn(move || {
-            // An MP4's gapless numbers may sit at its very end: it is read once all of it is here (a
-            // song that fits one burst, as most do), rather than fetched from the end and again.
+            // An MP4's gapless boxes may be at its end: wait for the whole song (one burst, mostly)
+            // rather than fetching the end separately.
             let whole = hint.as_deref().is_some_and(mp4_like) && l.wait_whole();
-            // All of it here, the length is what came.
-            let sized = !estimated || whole;
+            let spec = Spec { whole, sized: !estimated || whole, ..Spec::new(hint.as_deref(), from_ms, duration_ms, encoding, mode) };
             let mut seen = l.shortened();
             let reader = || Box::new(l.reader_until(o.abandoned.clone()));
-            let mut opened = Stream::open(reader(), hint.as_deref(), from_ms, duration_ms, encoding, whole, sized, packets, false);
-            // The server's first answer promised an estimated length (a transcode), and the container
-            // reader looked for the song's end (an Ogg stream's last page, for its length) where that
-            // put it, past the real one: it failed, or took the song for one of unknown length and so
-            // one that cannot be seeked. The real end is known now, or that the promise was wrong: opened
-            // again on what is known.
+            let mut opened = Stream::open(reader(), spec);
+            // The reader probed the end where an estimated length put it, past the real end, and failed
+            // or found no length: reopen now the real end is known.
             for _ in 0..REOPENS {
                 let now = l.shortened();
                 if now == seen || o.abandoned.load(Ordering::Acquire) {
                     break;
                 }
                 seen = now;
-                opened = Stream::open(reader(), hint.as_deref(), from_ms, duration_ms, encoding, whole, sized, packets, false);
+                opened = Stream::open(reader(), spec);
             }
             let mut done = o.done.lock();
-            done.0 = Some(opened);
-            if let Some(t) = done.1.take() {
+            done.opened = Some(opened);
+            if let Some(t) = done.waiter.take() {
                 t.unpark();
             }
         });
@@ -1025,14 +992,12 @@ impl Demuxed {
         }
     }
 
-    /// Why the song failed: the connection's own failure when there was one, which says more than
-    /// what the container reader made of the bytes running out.
+    /// Why the song failed: the loader's failure if any (more telling than the reader's).
     fn failure(&self, why: String) -> (PlaybackError, String) {
         self.loader_failure().unwrap_or((PlaybackError::Other, why))
     }
 
-    /// The connection's failure, once it gave up: the network's when the server could not be reached; a
-    /// server that answered with an error status was reached, and the song failed for its own reasons.
+    /// The loader's failure: the network's, unless the server answered with an error status.
     fn loader_failure(&self) -> Option<(PlaybackError, String)> {
         let (l, _) = self.loader.as_ref()?;
         let e = l.error()?;
@@ -1052,8 +1017,8 @@ impl Reading for Demuxed {
     fn ready(&mut self) -> bool {
         if let State::Opening(o) = &self.state {
             let mut done = o.done.lock();
-            let Some(opened) = done.0.take() else {
-                done.1 = self.loader.as_ref().map(|(_, engine)| engine.clone());
+            let Some(opened) = done.opened.take() else {
+                done.waiter = self.loader.as_ref().map(|(_, engine)| engine.clone());
                 return false;
             };
             drop(done);
@@ -1074,14 +1039,13 @@ impl Reading for Demuxed {
     fn error(&self) -> Option<(PlaybackError, String)> {
         match &self.state {
             State::Failed(kind, why) => Some((*kind, why.clone())),
-            // Read to an early end because the bytes stopped coming.
+            // Ended early because the bytes stopped.
             State::Open(s) if s.ended => self.loader_failure(),
             _ => None,
         }
     }
 
-    /// A decoder that panics on the song's bytes fails the song where it got to, as bytes that stopped
-    /// coming would, rather than the engine's thread.
+    /// A decoder panic fails the song, not the engine's thread.
     fn fill(&mut self) -> bool {
         let State::Open(s) = &mut self.state else { return false };
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.fill())) {

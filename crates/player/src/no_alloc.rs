@@ -1,13 +1,11 @@
-//! Steady-state playback must not allocate: an allocation per buffer is a lock, a search and cache
-//! misses tens of times a second for as long as music plays, on the thread that feeds the output. The
-//! test binary counts every allocation made on the calling thread, and each per-buffer path is run
-//! past its warm-up (the first buffers may size the reused buffers) and then required to make none.
+//! Steady-state playback must not allocate on the audio thread. The test binary counts allocations
+//! per thread; each per-buffer path runs past a warm-up and must then make none.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use crate::automix::analysis::Analyzer;
-use crate::automix::{mixer, plan};
+use crate::automix::plan;
 use crate::dsp::{Band, Equalizer};
 use crate::engine::{Downstream, Heard, Host, Plan, StreamFormat, TransitionEngine};
 use crate::heard::{HeardTracker, PlayerNow};
@@ -19,6 +17,7 @@ use crate::types::AutoMixSettings;
 struct Counting;
 
 thread_local! {
+    // Global by necessity: the allocator has no other place to count.
     static ALLOCS: Cell<u64> = const { Cell::new(0) };
 }
 
@@ -50,6 +49,11 @@ fn allocations(f: impl FnOnce()) -> u64 {
     ALLOCS.with(Cell::get) - before
 }
 
+/// Allocations of `f` over `chunk`-sized pieces of `data`, after the first 16.
+fn steady<T>(data: &[T], chunk: usize, mut f: impl FnMut(&[T])) -> u64 {
+    data.chunks(chunk).enumerate().map(|(i, c)| allocations(|| f(c)) * (i >= 16) as u64).sum()
+}
+
 const RATE: u32 = 44_100;
 const FMT: Format = Format { rate: RATE, channels: 2, encoding: Encoding::Pcm16 };
 const CHUNK: usize = 4608;
@@ -64,7 +68,7 @@ fn tone(secs: f64, hz: f64) -> Vec<u8> {
         .collect()
 }
 
-/// An output that takes everything and keeps nothing, like an AudioTrack with room.
+/// Takes everything, with a playhead 2 s behind what was written.
 struct Sink {
     bytes: usize,
 }
@@ -77,9 +81,8 @@ impl Downstream for Sink {
         (true, data.len() - from)
     }
     fn handle_discontinuity(&mut self) {}
-    /// A playhead two seconds behind what was written, as a deep track has.
-    fn position_us(&mut self, _: bool) -> i64 {
-        (FMT.us(self.bytes) - 2_000_000).max(0)
+    fn position_us(&mut self, _: bool) -> Option<i64> {
+        Some((FMT.us(self.bytes) - 2_000_000).max(0))
     }
 }
 
@@ -102,15 +105,15 @@ impl Host for App {
 }
 
 fn stream(id: &str, f: Format) -> StreamFormat {
-    StreamFormat { id: Some(id.into()), format: Some(f) }
+    StreamFormat { id: Some(crate::engine::StreamId { song: id.into(), serial: id.as_bytes()[0] as u64 }), format: Some(f) }
 }
 
-/// Feeds `data` from `from_us` in decoder-sized buffers; the allocations made after the first `warm` buffers.
+/// Feeds `data` from `from_us`; total allocations after the first `warm` buffers.
 fn feed(e: &mut TransitionEngine<u32>, d: &mut Sink, h: &mut App, data: &[u8], from_us: i64, warm: usize) -> u64 {
     allocating(e, d, h, data, from_us, warm).iter().map(|&(_, a)| a).sum()
 }
 
-/// The buffers after the first `warm` that allocated, and how many times each did.
+/// (buffer index, allocations) of the buffers after the first `warm` that allocated.
 fn allocating(e: &mut TransitionEngine<u32>, d: &mut Sink, h: &mut App, data: &[u8], from_us: i64, warm: usize) -> Vec<(usize, u64)> {
     let mut found = Vec::new();
     for (i, c) in data.chunks(CHUNK).enumerate() {
@@ -128,8 +131,8 @@ fn allocating(e: &mut TransitionEngine<u32>, d: &mut Sink, h: &mut App, data: &[
 }
 
 #[test]
-fn passing_straight_through_allocates_nothing() {
-    // At a song's ReplayGain the buffer is scaled in a copy from the pool, which is sized once.
+fn pass_through() {
+    // With a gain the buffer is scaled in a pooled copy.
     for (analyse, gain) in [(false, 1.0), (true, 1.0), (false, 0.5), (true, 0.5)] {
         let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Sink { bytes: 0 }, App { plan: None, analyse });
         e.configure(&mut d, &mut h, stream("a", FMT), 1);
@@ -139,86 +142,61 @@ fn passing_straight_through_allocates_nothing() {
 }
 
 #[test]
-fn converting_another_rate_allocates_nothing() {
+fn rate_conversion() {
     let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Sink { bytes: 0 }, App { plan: None, analyse: false });
     e.configure(&mut d, &mut h, stream("a", FMT), 1);
     feed(&mut e, &mut d, &mut h, &tone(0.5, 440.0), 0, 0);
     e.configure(&mut d, &mut h, stream("b", Format { rate: 48_000, ..FMT }), 2);
     e.handle_discontinuity(&mut d, &mut h);
-    let b: Vec<u8> = tone(10.0, 300.0);
-    let mut n = 0;
-    for (i, c) in b.chunks(CHUNK).enumerate() {
-        let a = allocations(|| {
-            e.handle_buffer(&mut d, &mut h, c, 1_000_000 + i as i64 * 20_000);
-        });
-        if i >= 8 {
-            n += a;
-        }
+    assert_eq!(feed(&mut e, &mut d, &mut h, &tone(10.0, 300.0), 1_000_000, 8), 0);
+}
+
+#[test]
+fn holding_and_mixing() {
+    // Equal gains, and each song at its own gain.
+    for (a, b) in [(1.0, 1.0), (0.5, 0.8)] {
+        let s = AutoMixSettings { max_transition_s: 6.0, ..Default::default() };
+        let t = plan::plan(None, None, 60_000, 60_000, &s);
+        let p = Plan {
+            incoming_id: "b".into(),
+            out_start_us: 4_000_000,
+            duration_us: t.duration_ms * 1000,
+            in_skip_us: 0,
+            mixer: t.clone(),
+            tempo_ratio: 1.0,
+            keep_pitch: true,
+            ramp_us: 0,
+            out_loop_us: 0,
+        };
+        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Sink { bytes: 0 }, App { plan: Some(p), analyse: false });
+        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        e.set_gain(a);
+        feed(&mut e, &mut d, &mut h, &tone(4.0, 440.0), 0, 0);
+        let held = feed(&mut e, &mut d, &mut h, &tone(6.0, 440.0), 4_000_000, 16);
+        e.configure(&mut d, &mut h, stream("b", FMT), 2);
+        e.handle_discontinuity(&mut d, &mut h);
+        e.set_gain(b);
+        let mixed = allocating(&mut e, &mut d, &mut h, &tone(12.0, 330.0), 10_000_000, 16);
+        assert_eq!(held, 0, "holding");
+        // The buffer the mix ends in may allocate a few times, once per transition.
+        let end = (t.duration_ms as usize * RATE as usize / 1000 * FMT.frame_bytes()) / CHUNK;
+        assert!(mixed.iter().all(|&(i, a)| i.abs_diff(end) <= 1 && a <= 8), "allocating buffers {mixed:?}, the mix ends in {end}");
     }
-    assert_eq!(n, 0);
 }
 
 #[test]
-fn holding_and_mixing_allocate_nothing_per_buffer() {
-    holding_and_mixing(1.0, 1.0);
-}
-
-#[test]
-fn holding_and_mixing_songs_at_their_own_volumes_allocate_nothing_per_buffer() {
-    holding_and_mixing(0.5, 0.8);
-}
-
-/// A crossfade from a song at volume `a` into one at `b`.
-fn holding_and_mixing(a: f32, b: f32) {
-    let s = AutoMixSettings { max_transition_s: 6.0, ..Default::default() };
-    let t = plan::plan(None, None, 60_000, 60_000, &s);
-    let p = Plan {
-        incoming_id: "b".into(),
-        out_start_us: 4_000_000,
-        duration_us: t.duration_ms * 1000,
-        in_skip_us: 0,
-        mixer: mixer::params(&t),
-        tempo_ratio: 1.0,
-        keep_pitch: true,
-        ramp_us: 0,
-        out_loop_us: 0,
-    };
-    let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Sink { bytes: 0 }, App { plan: Some(p), analyse: false });
-    e.configure(&mut d, &mut h, stream("a", FMT), 1);
-    e.set_gain(a);
-    // Up to the hold, then the held ending (the first buffers into the hold size its storage).
-    feed(&mut e, &mut d, &mut h, &tone(4.0, 440.0), 0, 0);
-    let held = feed(&mut e, &mut d, &mut h, &tone(6.0, 440.0), 4_000_000, 16);
-    e.configure(&mut d, &mut h, stream("b", FMT), 2);
-    e.handle_discontinuity(&mut d, &mut h);
-    e.set_gain(b);
-    let mixed = allocating(&mut e, &mut d, &mut h, &tone(12.0, 330.0), 10_000_000, 16);
-    assert_eq!(held, 0, "holding");
-    // The one buffer the mix ends in hands the rest of itself on in a chunk of a new size and closes
-    // the mix: a few allocations once per transition. Every other buffer makes none.
-    let end = (t.duration_ms as usize * RATE as usize / 1000 * FMT.frame_bytes()) / CHUNK;
-    assert!(mixed.iter().all(|&(i, a)| i.abs_diff(end) <= 1 && a <= 8), "allocating buffers {mixed:?}, the mix ends in {end}");
-}
-
-#[test]
-fn the_sound_chain_allocates_nothing() {
+fn parametric_equalizer() {
     let mut eq = Equalizer::new(RATE, 2);
     let bands = [Band { kind: 0, freq: 1000.0, gain_db: 4.0, q: 1.0, channel: 0 }, Band { kind: 1, freq: 90.0, gain_db: 3.0, q: 0.7, channel: 0 }];
     eq.configure(&bands, -3.0, -6.0);
     eq.configure_output(0.1, false, -1.0, 120.0, 5.0);
     let x: Vec<i16> = tone(2.0, 440.0).chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
     let mut y = vec![0i16; CHUNK / 2];
-    eq.process_i16(&x[..CHUNK / 2], &mut y);
-    let n = allocations(|| {
-        for c in x.chunks_exact(CHUNK / 2) {
-            eq.process_i16(c, &mut y);
-        }
-    });
-    assert_eq!(n, 0);
+    assert_eq!(steady(&x, CHUNK / 2, |c| eq.process_i16(c, &mut y[..c.len()])), 0);
 }
 
 #[test]
-fn the_graphic_equalizer_and_the_effects_allocate_nothing() {
+fn graphic_equalizer_and_effects() {
     let mut eq = Equalizer::new(RATE, 2);
     eq.configure_graphic(&[3.0, 5.0, 2.0, 0.0, -2.0, -4.0, 0.0, 2.0, 4.0, 6.0, 3.0, 1.0, 0.0, -1.0, 2.0], -6.0, 3.0);
     let fx = crate::dsp::Effects {
@@ -231,193 +209,65 @@ fn the_graphic_equalizer_and_the_effects_allocate_nothing() {
     };
     eq.configure_effects(&fx);
     eq.configure_output(0.0, true, -1.0, 120.0, 5.0);
-    let x: Vec<i16> = tone(2.0, 440.0).chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
+    let x: Vec<i16> = tone(4.0, 440.0).chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
     let mut y = vec![0i16; CHUNK / 2];
-    eq.process_i16(&x[..CHUNK / 2], &mut y);
-    let n = allocations(|| {
-        for c in x.chunks_exact(CHUNK / 2) {
-            eq.process_i16(c, &mut y);
-        }
-    });
-    assert_eq!(n, 0, "16-bit, dithered");
-    // The high quality chain: the same, on floats.
+    assert_eq!(steady(&x, CHUNK / 2, |c| eq.process_i16(c, &mut y[..c.len()])), 0, "16-bit, dithered");
     let xf: Vec<f32> = x.iter().map(|v| *v as f32 / 32768.0).collect();
     let mut yf = vec![0f32; CHUNK / 2];
-    let n = allocations(|| {
-        for c in xf.chunks_exact(CHUNK / 2) {
-            eq.process_f32(c, &mut yf);
-        }
-    });
-    assert_eq!(n, 0, "float");
-}
-
-/// The chain's cost per buffer, 16-bit (dithered) against float, as the sink runs it: bytes in, samples,
-/// the chain, bytes out, over reused buffers (and required to allocate nothing). Ten seconds of 48 kHz stereo
-/// through a ten-band graphic equalizer, a compressor and the limiter, the best of five runs. Timing, so off
-/// by default: `cargo test --release -p nori-player --lib chain_cost -- --ignored --nocapture`.
-#[test]
-#[ignore]
-fn chain_cost() {
-    const SECS: usize = 10;
-    let x16: Vec<u8> = (0..48_000 * SECS * 2).flat_map(|i| ((((i as f64 * 0.0123).sin() * 12000.0) + (i as f64 * 0.77).sin() * 3000.0) as i16).to_le_bytes()).collect();
-    let xf: Vec<u8> = x16.chunks_exact(2).flat_map(|c| (i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0).to_le_bytes()).collect();
-    let make = || {
-        let mut eq = Equalizer::new(48_000, 2);
-        eq.configure_graphic(&[3.0, 5.0, 2.0, 0.0, -2.0, -4.0, 0.0, 2.0, 4.0, 6.0], -6.0, 0.0);
-        eq.configure_effects(&crate::dsp::Effects { compressor: Some(crate::compressor::CompressorPreset::Strong.settings()), ..Default::default() });
-        eq.configure_output(0.0, false, -1.0, 120.0, 5.0);
-        eq
-    };
-    // A buffer of 4096 frames, as the engine's are.
-    const FRAMES: usize = 4096;
-    let (mut si, mut so, mut fi, mut fo) = (vec![0i16; FRAMES * 2], vec![0i16; FRAMES * 2], vec![0f32; FRAMES * 2], vec![0f32; FRAMES * 2]);
-    let (mut out16, mut outf) = (vec![0u8; FRAMES * 4], vec![0u8; FRAMES * 8]);
-    let mut best = (f64::MAX, f64::MAX);
-    for _ in 0..5 {
-        let mut eq = make();
-        let mut ms = 0.0;
-        let n = allocations(|| {
-            let t = std::time::Instant::now();
-            for c in x16.chunks_exact(FRAMES * 4) {
-                for (d, b) in si.iter_mut().zip(c.chunks_exact(2)) {
-                    *d = i16::from_le_bytes([b[0], b[1]]);
-                }
-                eq.process_i16(&si, &mut so);
-                for (d, v) in out16.chunks_exact_mut(2).zip(&so) {
-                    d.copy_from_slice(&v.to_le_bytes());
-                }
-            }
-            ms = t.elapsed().as_secs_f64() * 1000.0;
-        });
-        assert_eq!(n, 0, "16-bit");
-        best.0 = best.0.min(ms);
-        let mut eq = make();
-        let n = allocations(|| {
-            let t = std::time::Instant::now();
-            for c in xf.chunks_exact(FRAMES * 8) {
-                for (d, b) in fi.iter_mut().zip(c.chunks_exact(4)) {
-                    *d = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
-                }
-                eq.process_f32(&fi, &mut fo);
-                for (d, v) in outf.chunks_exact_mut(4).zip(&fo) {
-                    d.copy_from_slice(&v.to_le_bytes());
-                }
-            }
-            ms = t.elapsed().as_secs_f64() * 1000.0;
-        });
-        assert_eq!(n, 0, "float");
-        best.1 = best.1.min(ms);
-    }
-    std::hint::black_box((&out16, &outf));
-    eprintln!("10 s of 48 kHz stereo: 16-bit dithered {:.1} ms, float {:.1} ms, float/16-bit {:.3}", best.0, best.1, best.1 / best.0);
+    assert_eq!(steady(&xf, CHUNK / 2, |c| eq.process_f32(c, &mut yf[..c.len()])), 0, "float");
 }
 
 #[test]
-fn float_silence_skipping_allocates_nothing_once_warm() {
-    let x: Vec<u8> = tone(20.0, 440.0).chunks_exact(2).enumerate().flat_map(|(i, c)| {
-        let v = if (i / 20_000) % 3 == 0 { 0 } else { i16::from_le_bytes([c[0], c[1]]) };
-        (v as f32 / 32768.0).to_le_bytes()
-    }).collect();
-    let mut si = SilenceSkipper::of(RATE, 2, true);
-    let mut out = Vec::with_capacity(1 << 17);
-    let mut n = 0;
-    for (i, c) in x.chunks(CHUNK * 2).enumerate() {
-        let a = allocations(|| {
-            si.process(c, &mut out);
-            out.clear();
-        });
-        if i >= 16 {
-            n += a;
-        }
-    }
-    assert_eq!(n, 0);
-}
-
-#[test]
-fn speed_and_silence_allocate_nothing_once_warm() {
+fn speed_and_silence_skipping() {
     let x = tone(20.0, 440.0);
+    let mut out = Vec::with_capacity(1 << 17);
     let mut sp = SpeedPitch::new(RATE, 2, Encoding::Pcm16);
     sp.set(1.25, 1.1);
     sp.flush();
-    let mut out = Vec::with_capacity(1 << 16);
-    let mut run = |f: &mut dyn FnMut(&[u8], &mut Vec<u8>)| {
-        let mut n = 0;
-        for (i, c) in x.chunks(CHUNK).enumerate() {
-            let a = allocations(|| {
-                f(c, &mut out);
-                out.clear();
-            });
-            if i >= 16 {
-                n += a;
-            }
-        }
-        n
-    };
-    assert_eq!(run(&mut |c, o| sp.process(c, o)), 0, "speed and pitch");
-    let mut si = SilenceSkipper::new(RATE, 2);
-    let quiet: Vec<u8> = x.iter().enumerate().map(|(i, &b)| if (i / 40_000) % 3 == 0 { 0 } else { b }).collect();
-    let mut n = 0;
-    for (i, c) in quiet.chunks(CHUNK).enumerate() {
-        let a = allocations(|| {
-            si.process(c, &mut out);
+    let mut run = |f: &mut dyn FnMut(&[u8], &mut Vec<u8>), data: &[u8], chunk: usize| {
+        steady(data, chunk, |c| {
+            f(c, &mut out);
             out.clear();
-        });
-        if i >= 16 {
-            n += a;
-        }
-    }
-    assert_eq!(n, 0, "silence skipping");
+        })
+    };
+    assert_eq!(run(&mut |c, o| sp.process(c, o), &x, CHUNK), 0, "speed and pitch");
+    let quiet: Vec<u8> = x.iter().enumerate().map(|(i, &b)| if (i / 40_000) % 3 == 0 { 0 } else { b }).collect();
+    let mut si = SilenceSkipper::new(RATE, 2, false);
+    assert_eq!(run(&mut |c, o| si.process(c, o), &quiet, CHUNK), 0, "silence skipping");
+    let quiet_f: Vec<u8> = quiet.chunks_exact(2).flat_map(|c| (i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0).to_le_bytes()).collect();
+    let mut si = SilenceSkipper::new(RATE, 2, true);
+    assert_eq!(run(&mut |c, o| si.process(c, o), &quiet_f, CHUNK * 2), 0, "float silence skipping");
 }
 
 #[test]
-fn analysing_allocates_nothing_per_buffer() {
+fn analysis() {
     let x: Vec<f32> = tone(30.0, 440.0).chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0).collect();
-    // Both channels alike (the mono path), and panned (the side read for the vocal curve).
+    // Mono-alike and panned (the side feeds the vocal curve).
     let panned: Vec<f32> = x.iter().enumerate().map(|(i, v)| if i % 2 == 0 { *v } else { *v * 0.5 }).collect();
     for x in [&x, &panned] {
         let mut a = Analyzer::new(RATE, 30_000);
-        let mut n = 0;
-        for (i, c) in x.chunks(CHUNK / 2).enumerate() {
-            let k = allocations(|| a.feed_interleaved(c, 2, |v| v));
-            if i >= 16 {
-                n += k;
-            }
-        }
-        assert_eq!(n, 0);
+        assert_eq!(steady(x, CHUNK / 2, |c| a.feed_interleaved(c, 2, |v| v)), 0);
     }
 }
 
 #[test]
-fn asking_what_is_heard_allocates_nothing() {
+fn heard_tracker() {
     let mut t = HeardTracker::new();
-    t.set_queue([("a".to_string(), 200_000), ("b".to_string(), 180_000)]);
-    let h = Heard {
-        id: Some("a".into()),
-        us: 190_000_000,
-        at_ms: 0,
-        until_us: 194_000_000,
-        mixing: false,
-        next_id: Some("b".into()),
-        next_from_us: 5_000_000,
-        next_rate: 1.0,
-        from_id: Some("a".into()),
-        audible_us: 194_000_000,
-    };
-    t.at(&h, PlayerNow { now_ms: 0, playing: true, on: Some("b"), position_ms: 0 });
-    // Eight seconds of frames, through the moment the mix becomes audible (4 s in) and the ear moves
-    // from a to b: the one copy of an id is that change, nothing per frame.
+    let find = |s: crate::heard::StreamAt| Some(if s == crate::heard::StreamAt::Serial(1) { (0, 200_000) } else { (1, 180_000) });
+    let h = Heard { id: Some(1), us: 190_000_000, at_ms: 0, until_us: 194_000_000, mixing: false, next_from_us: 5_000_000, next_rate: 1.0, from: Some(1), audible_us: 194_000_000 };
+    t.at(&h, PlayerNow { now_ms: 0, playing: true, on: Some(2), position_ms: 0 }, &find);
+    // 8 s of frames across the takeover (4 s in).
     let n = allocations(|| {
         for ms in (16..8_000).step_by(16) {
-            t.at(&h, PlayerNow { now_ms: ms, playing: true, on: Some("b"), position_ms: ms });
+            t.at(&h, PlayerNow { now_ms: ms, playing: true, on: Some(2), position_ms: ms }, &find);
         }
     });
-    assert_eq!(n, 1);
+    assert_eq!(n, 0);
 }
 
-/// The seek bar's place (held while the page is a song behind, run on while reconnecting) and a volume
-/// fade's tick are asked every frame and every 16 ms: neither may allocate.
+/// Asked every frame / every 16 ms.
 #[test]
-fn the_playhead_and_a_fade_tick_allocate_nothing() {
+fn playhead_and_fade_tick() {
     use crate::heard::{Playhead, Seen};
     let mut t = HeardTracker::new();
     t.set_queue([("a".to_string(), 200_000), ("b".to_string(), 180_000)]);
@@ -437,7 +287,7 @@ fn the_playhead_and_a_fade_tick_allocate_nothing() {
 }
 
 #[test]
-fn decoding_a_packet_allocates_nothing_after_the_first() {
+fn mp3_decoding() {
     use crate::decode::{Codec, Decoder};
     let file = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/tone440.mp3")).unwrap();
     let frames = crate::sim::mp3_frames(&file);
@@ -455,11 +305,11 @@ fn decoding_a_packet_allocates_nothing_after_the_first() {
             d.decode_f32(f, &mut outf).unwrap();
         }
     });
-    assert_eq!(n, 0, "allocations while decoding");
+    assert_eq!(n, 0);
 }
 
 #[test]
-fn decoding_opus_allocates_nothing_after_the_first_packets() {
+fn opus_decoding() {
     use crate::decode::{Codec, Decoder};
     let file = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/tone440.opus")).unwrap();
     let (setup, packets) = crate::sim::ogg_opus(&file);
@@ -473,5 +323,5 @@ fn decoding_opus_allocates_nothing_after_the_first_packets() {
             d.decode_i16(p, &mut out).unwrap();
         }
     });
-    assert_eq!(n, 0, "allocations while decoding Opus");
+    assert_eq!(n, 0);
 }

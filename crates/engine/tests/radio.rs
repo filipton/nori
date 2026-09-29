@@ -1,14 +1,9 @@
-//! Internet radio through the whole engine: a station's bytes (MP3, AAC, HE-AAC, Vorbis, Opus, at the
-//! rates and channel counts stations send), with the ICY announcements between them, and what reaches
-//! the sound card measured: a tone's pitch from its zero crossings, a real station's capture against
-//! what ffmpeg decodes from the same bytes. A station that plays at the wrong pitch or speed (a rate or a
-//! channel count taken wrong between the decoder and the card: 48 kHz played as 44.1, mono as stereo)
-//! fails here, and so does one that goes quiet when its format changes mid-stream.
-//!
-//! The tones are made by ffmpeg on the machine running the tests; without it those tests say so and
-//! pass. The HE-AAC capture (six seconds of SomaFM's 32 kbps AAC+ stream) is in `testdata`.
+//! Internet radio end to end (MP3, AAC, HE-AAC, Vorbis, Opus; various rates and channels; ICY titles):
+//! the card's output must keep the right pitch and speed and survive mid-stream format changes. Tones
+//! are measured by zero crossings; a real HE-AAC capture (`testdata`) is compared with ffmpeg's decode.
+//! Tests needing ffmpeg pass trivially without it.
 
-mod common;
+use crate::common;
 
 use std::io::Read;
 use std::process::Command;
@@ -24,24 +19,20 @@ use nori_player::decode::{lend_platform_aac, Fault, PlatformDecoder};
 use nori_player::sim;
 use nori_player::transitions::WindowSong;
 
-fn ffmpeg() -> bool {
-    Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
-}
+use common::ffmpeg;
 
-/// Whether this ffmpeg has `encoder` built in: Homebrew's has no libvorbis, and its own Vorbis encoder
-/// makes no mono.
+/// Whether ffmpeg has `encoder` (Homebrew's lacks libvorbis; its own Vorbis encoder makes no mono).
 fn encodes(encoder: &str) -> bool {
     Command::new("ffmpeg").args(["-hide_banner", "-encoders"]).output()
         .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().any(|w| w == encoder))
 }
 
-/// A directory of the call's own, gone with the guard.
+/// A temporary directory.
 fn dir() -> nori_testdir::TempDir {
     nori_testdir::TempDir::new("radio")
 }
 
-/// A tone of `hz` for `secs` at `rate` and `channels`, encoded by ffmpeg with `codec` into a stream of
-/// container `format`, as a station sends it (no Xing or LAME header, no end to wait for).
+/// A tone encoded by ffmpeg as a station sends it (no Xing/LAME header).
 fn tone(hz: u32, secs: f64, rate: u32, channels: u32, codec: &[&str], format: &str) -> Vec<u8> {
     let d = dir();
     let out = d.join(format!("tone.{format}"));
@@ -61,14 +52,12 @@ fn mp3(hz: u32, secs: f64, rate: u32, channels: u32) -> Vec<u8> {
     tone(hz, secs, rate, channels, &["-c:a", "libmp3lame", "-b:a", "96k", "-write_xing", "0"], "mp3")
 }
 
-/// [`mp3`] as a station sends it on from one song to the next: no ID3 tag in front of it.
+/// [`mp3`] without an ID3 tag, as between two songs on a station.
 fn mp3_bare(hz: u32, secs: f64, rate: u32, channels: u32) -> Vec<u8> {
     tone(hz, secs, rate, channels, &["-c:a", "libmp3lame", "-b:a", "96k", "-write_xing", "0", "-id3v2_version", "0"], "mp3")
 }
 
-/// `n` bytes of noise, as a station's server may put between two songs (or a relay, when it drops
-/// some): random, with sync words of every MPEG version and layer strewn through it, so a reader that
-/// looks for a frame finds plenty of false ones.
+/// `n` bytes of noise strewn with MPEG sync words (false frame headers), as between songs on a station.
 fn junk(n: usize, seed: u32) -> Vec<u8> {
     let mut x = seed.max(1);
     let mut v: Vec<u8> = (0..n)
@@ -88,10 +77,10 @@ fn junk(n: usize, seed: u32) -> Vec<u8> {
 
 // ---- the station ----
 
-/// Bytes of music between two announcements, as many stations send.
+/// Music bytes between ICY blocks.
 const EVERY: usize = 16_000;
 
-/// A station sending `bytes` once, an announcement every [`EVERY`] bytes of music.
+/// A station sending `bytes` once, with an ICY block every [`EVERY`] bytes.
 struct Station(Arc<Vec<u8>>);
 
 struct Live {
@@ -136,13 +125,12 @@ impl ByteSource for Station {
     }
 }
 
-/// The stations queued, by id.
 struct Radio(Vec<(String, Arc<Vec<u8>>)>);
 
 impl Library for Radio {
     fn locate(&mut self, id: &str) -> Result<Located, String> {
         let bytes = self.0.iter().find(|(i, _)| i == id).map(|(_, b)| b.clone()).ok_or("no such station")?;
-        // Android hands no hint for a station: the bytes say what they are.
+        // No hint for a station, as on Android.
         Ok(Located { source: Source::Live { url: id.into(), bytes: Arc::new(Station(bytes)) }, hint: None, duration_ms: None, estimated: false })
     }
 
@@ -164,7 +152,7 @@ struct Rig {
 }
 
 impl Rig {
-    /// The stations queued in this order, the first one playing.
+    /// Queues the stations and plays the first.
     fn new(stations: Vec<(&str, Vec<u8>)>) -> Rig {
         let queue = SharedQueue::default();
         queue.0.lock().set(stations.iter().map(|s| s.0.to_string()).collect(), Some(0), false, 0);
@@ -177,8 +165,7 @@ impl Rig {
         Rig { engine, time: Stepper::new(clock, card.pull.clone()), card }
     }
 
-    /// Plays on until `secs` more have reached the card since it was last opened: what it was opened
-    /// at, and all it heard since (interleaved float).
+    /// Plays until `secs` reached the card since it opened; returns its format and what it heard.
     fn hear(&self, secs: f64) -> (OutputFormat, Vec<f32>) {
         let played = self.time.until(Duration::from_secs(600), || self.card.secs() >= secs);
         assert!(played, "{secs} s reached the card: {} s did", self.card.secs());
@@ -192,7 +179,7 @@ impl Drop for Rig {
     }
 }
 
-/// A station's `bytes` played from its start until `secs` reached the card.
+/// Plays a station's `bytes` until `secs` reached the card.
 fn play(bytes: Vec<u8>, secs: f64) -> (OutputFormat, Vec<f32>) {
     Rig::new(vec![("radio:1", bytes)]).hear(secs)
 }
@@ -203,13 +190,13 @@ fn mono(x: &[f32], channels: usize) -> Vec<f32> {
     x.chunks_exact(channels).map(|f| f.iter().sum::<f32>() / channels as f32).collect()
 }
 
-/// A tone's frequency in `x` at `rate`, from its zero crossings.
+/// A tone's frequency from zero crossings.
 fn hz(x: &[f32], rate: u32) -> f64 {
     let crossings = x.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count();
     crossings as f64 / 2.0 / (x.len() as f64 / rate as f64)
 }
 
-/// The pitch of each whole second heard (mono), from `from_s` on.
+/// The pitch of each whole second heard (mono) from `from_s`.
 fn pitches(heard: &[f32], f: OutputFormat, from_s: usize) -> Vec<f64> {
     let m = mono(heard, f.channels);
     let r = f.rate as usize;
@@ -224,7 +211,7 @@ fn assert_pitch(what: &str, heard: &[f32], f: OutputFormat, want: f64) {
     }
 }
 
-/// ffmpeg's decode of `bytes` at `rate` and `channels`, interleaved float.
+/// ffmpeg's decode of `bytes`, interleaved float.
 fn reference(bytes: &[u8], rate: u32, channels: usize) -> Vec<f32> {
     let d = dir();
     let input = d.join("in.bin");
@@ -239,9 +226,8 @@ fn reference(bytes: &[u8], rate: u32, channels: usize) -> Vec<f32> {
     out.stdout.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()
 }
 
-/// How alike `ours` and `theirs` are at the best lag within `max_lag` frames (a decoder's delay): the
-/// normalised correlation of a stretch of a third of a second, 1 for the same waveform. Music at
-/// another pitch or speed does not line up with itself anywhere and scores far lower.
+/// Best normalised correlation of a third of a second within `max_lag` frames: 1 for the same waveform,
+/// far lower at another pitch or speed.
 fn likeness(ours: &[f32], theirs: &[f32], max_lag: usize) -> f64 {
     let len = 8_192;
     let from = max_lag + 8_192;
@@ -261,7 +247,7 @@ fn likeness(ours: &[f32], theirs: &[f32], max_lag: usize) -> f64 {
 // ---- the tests ----
 
 #[test]
-fn a_station_plays_at_its_own_pitch_whatever_its_rate_and_channels() {
+fn station_pitch_at_any_format() {
     if !ffmpeg() {
         eprintln!("no ffmpeg: skipped");
         return;
@@ -296,12 +282,12 @@ fn a_station_plays_at_its_own_pitch_whatever_its_rate_and_channels() {
 }
 
 #[test]
-fn a_station_joined_in_the_middle_of_a_frame_plays_at_its_own_pitch() {
+fn station_joined_mid_frame() {
     if !ffmpeg() {
         eprintln!("no ffmpeg: skipped");
         return;
     }
-    // A station's first bytes are wherever its server's buffer began, seldom a frame's start.
+    // A station starts mid-frame.
     let bytes = mp3(1000, 4.0, 48_000, 2);
     let (f, heard) = play(bytes[1001..].to_vec(), 3.0);
     assert_eq!(f.rate, 48_000);
@@ -309,13 +295,12 @@ fn a_station_joined_in_the_middle_of_a_frame_plays_at_its_own_pitch() {
 }
 
 #[test]
-fn a_chained_ogg_station_plays_on_into_its_next_song_at_its_own_pitch() {
+fn chained_ogg_station_plays_on() {
     if !ffmpeg() || !encodes("libvorbis") {
         eprintln!("no ffmpeg with libvorbis: skipped");
         return;
     }
-    // An Ogg station starts a new logical stream, headers and all, with every song, and the next may be
-    // of another rate and channel count. Reading stopped at the first song's end.
+    // A chained Ogg station: each song a new logical stream, possibly another format.
     let vorbis = ["-c:a", "libvorbis", "-q:a", "3"];
     let mut bytes = tone(1000, 3.0, 44_100, 2, &vorbis, "ogg");
     bytes.extend_from_slice(&tone(1000, 4.0, 22_050, 1, &vorbis, "ogg"));
@@ -329,7 +314,7 @@ fn a_chained_ogg_station_plays_on_into_its_next_song_at_its_own_pitch() {
 }
 
 #[test]
-fn the_next_station_at_another_rate_plays_at_its_own_pitch() {
+fn next_station_at_other_rate() {
     if !ffmpeg() {
         eprintln!("no ffmpeg: skipped");
         return;
@@ -343,15 +328,13 @@ fn the_next_station_at_another_rate_plays_at_its_own_pitch() {
     assert_pitch("the second station", &heard, f, 1000.0);
 }
 
-/// The HE-AAC capture's access units, as its ADTS frames hold them, and ffmpeg's decode of it (SBR and
-/// all, 44.1 kHz stereo, 2048 frames a unit): what [`Reference`] plays.
+/// The HE-AAC capture's access units and ffmpeg's full decode (44.1 kHz, 2048 frames each).
 static REFERENCE: OnceLock<(Vec<Vec<u8>>, Vec<f32>)> = OnceLock::new();
-/// A unit [`Reference`] was handed that is not the capture's next.
+/// A unit handed to [`Reference`] out of order.
 static STRAY_UNIT: AtomicBool = AtomicBool::new(false);
 
-/// A platform's HE-AAC decoder as the engine drives it (Android's MediaCodec, on the device), standing
-/// in on the host with ffmpeg's decode of the one stream it is lent for: every unit handed to it is
-/// checked to be the capture's next, and what comes out is ffmpeg's decode of that unit.
+/// Stands in for a platform HE-AAC decoder (MediaCodec): checks each unit is the capture's next and
+/// returns ffmpeg's decode of it.
 struct Reference {
     next: Option<usize>,
 }
@@ -359,8 +342,7 @@ struct Reference {
 impl PlatformDecoder for Reference {
     fn decode(&mut self, unit: &[u8], out: &mut Vec<f32>) -> Result<(usize, u32), Fault> {
         let (units, pcm) = REFERENCE.get().expect("lent only once made");
-        // The first unit may be any (the reader may begin a frame or two in), and a station that ends is
-        // connected to again, from its first: found, then followed.
+        // The first unit may be any; a reconnect starts over.
         let at = |i: usize| units.get(i).is_some_and(|u| u == unit);
         let Some(i) = self.next.filter(|&i| at(i)).or_else(|| (0..units.len()).find(|&i| at(i))) else {
             STRAY_UNIT.store(true, Ordering::Relaxed);
@@ -376,7 +358,7 @@ impl PlatformDecoder for Reference {
     }
 }
 
-/// The ADTS frames' payloads (after the header and its CRC) of `bytes`.
+/// The ADTS frame payloads of `bytes`.
 fn adts_units(bytes: &[u8]) -> Vec<Vec<u8>> {
     let mut units = Vec::new();
     let mut at = 0;
@@ -392,7 +374,7 @@ fn adts_units(bytes: &[u8]) -> Vec<Vec<u8>> {
     units
 }
 
-/// The share of `x`'s energy (mono, at `rate`) above `hz`, over a few windows of 4096: a plain DFT.
+/// The share of energy above `hz` in `x` (mono), by DFT over a few windows.
 fn energy_above(x: &[f32], rate: u32, hz: f64) -> f64 {
     let n = 4096;
     let (mut high, mut all) = (0.0, 0.0);
@@ -417,10 +399,9 @@ fn energy_above(x: &[f32], rate: u32, hz: f64) -> f64 {
 }
 
 #[test]
-fn an_he_aac_station_plays_its_core_here_and_whole_through_the_platforms_decoder() {
-    // SomaFM's Groove Salad at 32 kbps: ADTS saying AAC-LC at 22.05 kHz, stereo, SBR inside. symphonia
-    // has no SBR, so on its own (a desktop client that lends no decoder) the core plays at the rate the
-    // stream states: the right pitch, nothing above 11 kHz.
+fn he_aac_station_decoding() {
+    // SomaFM at 32 kbps: ADTS says AAC-LC 22.05 kHz with implicit SBR. Without a platform decoder the
+    // core plays at 22.05 kHz: right pitch, nothing above 11 kHz.
     let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/he-aac-32k.aac")).unwrap();
     let (f, heard) = play(bytes.clone(), 4.0);
     assert_eq!((f.rate, f.channels), (22_050, 2), "opened at the core's rate, which is what comes out");
@@ -428,18 +409,17 @@ fn an_he_aac_station_plays_its_core_here_and_whole_through_the_platforms_decoder
         eprintln!("no ffmpeg: the pitch is not compared, the platform's decoder not stood in for");
         return;
     }
-    // ffmpeg decodes the SBR too, at 44.1 kHz; brought down to the core's rate the two are one waveform.
+    // Downsampled, ffmpeg's SBR decode matches.
     let theirs = mono(&reference(&bytes, f.rate, f.channels), f.channels);
     let c = likeness(&mono(&heard, f.channels), &theirs, 1024);
     assert!(c > 0.95, "the same music at the same pitch: likeness {c:.3}");
 
-    // A platform that lends its HE-AAC decoder (Android's MediaCodec) gets every unit of the stream, in
-    // order, and the card is opened at the rate it plays at, 44.1 kHz, with the SBR's band above the
-    // core's 11 kHz in it.
+    // With a platform decoder, every unit goes to it in order and the card opens at 44.1 kHz with the
+    // SBR band present.
     let whole = reference(&bytes, 44_100, 2);
     REFERENCE.set((adts_units(&bytes), whole.clone())).unwrap();
     lend_platform_aac(|setup| {
-        // Lent for the capture alone: other AAC stations of the tests running alongside stay as they are.
+        // Lent for this capture only.
         ((setup.rate, setup.channels) == (22_050, 2)).then(|| Box::new(Reference { next: None }) as Box<dyn PlatformDecoder>)
     });
     let (f, heard) = play(bytes.clone(), 4.0);
@@ -454,8 +434,7 @@ fn an_he_aac_station_plays_its_core_here_and_whole_through_the_platforms_decoder
     assert!(high > 1e-3, "the band above the core's is heard: {high:.2e} of the energy");
 }
 
-/// Runs `test` on a thread of its own and fails if it has not finished within `secs` of real time: an
-/// engine that hangs on what it is fed fails here rather than holding the test run up for ever.
+/// Runs `test` on a thread and fails if it takes more than `secs` of real time.
 fn within(secs: u64, test: impl FnOnce() + Send + 'static) {
     let (tx, rx) = std::sync::mpsc::channel();
     let t = std::thread::spawn(move || {
@@ -464,13 +443,13 @@ fn within(secs: u64, test: impl FnOnce() + Send + 'static) {
     });
     match rx.recv_timeout(Duration::from_secs(secs)) {
         Ok(()) => t.join().unwrap(),
-        // The thread panicked: its panic is the failure.
+
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => std::panic::resume_unwind(t.join().unwrap_err()),
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!("hung: not done in {secs} s"),
     }
 }
 
-/// The longest stretch of `heard` (mono) quieter than -40 dBFS, seconds, in windows of 10 ms.
+/// The longest stretch below -40 dBFS in `heard` (mono), s, in 10 ms windows.
 fn longest_silence(heard: &[f32], f: OutputFormat) -> f64 {
     let m = mono(heard, f.channels);
     let w = f.rate as usize / 100;
@@ -484,16 +463,13 @@ fn longest_silence(heard: &[f32], f: OutputFormat) -> f64 {
 }
 
 #[test]
-fn an_mp3_station_that_changes_its_rate_and_channels_plays_on_at_its_own_pitch() {
+fn mp3_station_format_change() {
     if !ffmpeg() {
         eprintln!("no ffmpeg: skipped");
         return;
     }
-    // Three songs as one station sends them: 44.1 kHz stereo, 48 kHz mono, 22.05 kHz (MPEG-2) stereo,
-    // each a tone of its own, joined in the middle of a frame, with noise full of false frame headers
-    // between them. The card stays open at the first song's format; the others are converted to it, at
-    // their own pitch. (A station that ends is connected to again, so a reader stopped at the first
-    // change plays the first song over and over: the tones tell the songs apart.)
+    // Three songs of different formats, each its own tone, joined mid-frame with noise between. The card
+    // keeps the first format; the others are converted at their own pitch.
     within(120, || {
         let mut bytes = mp3_bare(1000, 3.0, 44_100, 2)[1001..].to_vec();
         bytes.extend_from_slice(&junk(3000, 7));
@@ -504,25 +480,24 @@ fn an_mp3_station_that_changes_its_rate_and_channels_plays_on_at_its_own_pitch()
         assert_eq!((f.rate, f.channels), (44_100, 2));
         let p = pitches(&heard, f, 0);
         assert!(p.len() >= 8, "it plays on through both changes: {p:?}");
-        // Seconds 2 and 5 hold a change (and the songs' own silent edges); every other one is its song's tone.
+        // Seconds 2 and 5 hold a change; every other second is its song's tone.
         for (s, want) in [(1, 1000.0), (3, 1500.0), (4, 1500.0), (6, 700.0), (7, 700.0)] {
             assert!((p[s] - want).abs() < want * 0.005, "{:.1} Hz in second {s}, not {want}: {p:?}", p[s]);
         }
-        // No gap beyond the songs' own edges (the encoder's delay and padding, some 50 ms each side).
+        // No gap beyond the encoder edges (~50 ms each side).
         let gap = longest_silence(&heard[f.channels * f.rate as usize / 2..], f);
         assert!(gap <= 0.15, "a {gap} s gap");
     });
 }
 
 #[test]
-fn an_mp3_station_of_noise_and_broken_frames_never_hangs_the_engine() {
+fn noisy_mp3_station_never_hangs() {
     if !ffmpeg() {
         eprintln!("no ffmpeg: skipped");
         return;
     }
-    // A long stretch of noise (more than the engine asks to have before it reads), a frame cut short, a
-    // second song at another rate, and the stream ending in the middle of a frame: the engine plays what
-    // music there is and goes on, within the real time allowed.
+    // Long noise, a cut frame, a second song at another rate, and a mid-frame end: plays what music
+    // there is within the real time allowed.
     within(120, || {
         let first = mp3_bare(1000, 2.0, 44_100, 2);
         let second = mp3_bare(1500, 2.0, 32_000, 1);
@@ -536,7 +511,7 @@ fn an_mp3_station_of_noise_and_broken_frames_never_hangs_the_engine() {
         let m = mono(&heard, f.channels);
         let r = f.rate as usize;
         let first_hz = hz(&m[r / 2..3 * r / 2], f.rate);
-        // Past the first song and whatever of the noise decodes as noise: the second song's tone.
+        // After the noise: the second song's tone.
         let second_hz = hz(&m[5 * r / 2..7 * r / 2], f.rate);
         assert!((first_hz - 1000.0).abs() < 5.0 && (second_hz - 1500.0).abs() < 7.5, "both songs at their own pitch: {first_hz} then {second_hz}");
     });

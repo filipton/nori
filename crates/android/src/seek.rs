@@ -1,4 +1,4 @@
-//! Making a seek stick (`nori_player::seek`), as Kotlin reaches it: primitives in, one number out.
+//! `nori_player::seek::SeekKeeper` (re-issuing seeks the player dropped) for Kotlin.
 
 use jni::sys::{jboolean, jlong};
 use nori_player::seek::{SeekKeeper, Verdict};
@@ -17,11 +17,11 @@ pub(crate) static CLASS: Class = Class {
 };
 
 fn keeper<'a>(h: jlong) -> Option<&'a Mutex<SeekKeeper>> {
-    // SAFETY: a non-zero `h` is a pointer `create` made, which is never freed.
+    // SAFETY: a non-zero `h` came from `create` and is never freed.
     (h != 0).then(|| unsafe { &*(h as *const Mutex<SeekKeeper>) })
 }
 
-/// What a look answers: keep watching, forget it, or (zero or more) the place to ask for again.
+/// `look` results besides a position (>= 0) to seek to again.
 const WATCH: jlong = -1;
 const FORGET: jlong = -2;
 
@@ -41,9 +41,8 @@ extern "system" fn forget(h: jlong) {
     }
 }
 
-/// -1: keep watching; -2: done with it; otherwise the place to ask the player for again.
-extern "system" fn look(h: jlong, now: jlong, same_song: jboolean, ready: jboolean, pos: jlong, playing: jboolean,
-) -> jlong {
+/// [`WATCH`], [`FORGET`], or the position to seek to again.
+extern "system" fn look(h: jlong, now: jlong, same_song: jboolean, ready: jboolean, pos: jlong, playing: jboolean) -> jlong {
     let Some(k) = keeper(h) else { return FORGET };
     match k.lock().look(now, same_song != 0, ready != 0, pos, playing != 0) {
         Verdict::Watch => WATCH,

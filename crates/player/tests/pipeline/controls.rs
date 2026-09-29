@@ -1,5 +1,4 @@
-//! The controls and the queue: next and previous, seeks that land where they were asked (playing,
-//! paused, or asked again after a restart dropped them), songs that will not play, and shuffle.
+//! Controls and queue: next/previous, seeks, failing songs, repeat and shuffle.
 
 use nori_player::playlist::{Hand, REPEAT_ALL, REPEAT_ONE};
 use nori_player::seek::{SeekKeeper, Verdict};
@@ -21,7 +20,7 @@ fn heard_from(p: &Player, from: u64) -> Vec<i16> {
 }
 
 #[test]
-fn next_and_previous_start_their_song_at_its_first_sample() {
+fn next_previous_start_at_first_sample() {
     let s = songs(3, 10.0);
     let mut p = Player::new(queue(&s));
     p.play_from(0);
@@ -44,7 +43,7 @@ fn next_and_previous_start_their_song_at_its_first_sample() {
 }
 
 #[test]
-fn next_in_the_middle_of_a_crossfade_cuts_cleanly_to_the_song_after() {
+fn next_mid_crossfade_cuts_cleanly() {
     let s = songs(3, 40.0);
     let mut p = Player::with_prefs(queue(&s), crossfade(10));
     p.play_from(0);
@@ -59,7 +58,7 @@ fn next_in_the_middle_of_a_crossfade_cuts_cleanly_to_the_song_after() {
 }
 
 #[test]
-fn a_seek_lands_on_the_sample_asked_for() {
+fn seek_lands_on_sample() {
     let song = music(30.0, 7);
     let mut p = Player::new(vec![track("a", &song)]);
     p.play_from(0);
@@ -80,7 +79,7 @@ fn a_seek_lands_on_the_sample_asked_for() {
 const STEP: i64 = 10;
 
 #[test]
-fn a_seek_in_an_mp3_lands_on_the_frame_before_it_and_decodes_on_exactly() {
+fn mp3_seek_is_sample_exact() {
     let audio = Audio::mp3(&testdata("tone440.mp3"));
     let whole = audio.decode_all();
     let mut p = Player::new(vec![Track::new("a", audio)]);
@@ -101,7 +100,7 @@ fn a_seek_in_an_mp3_lands_on_the_frame_before_it_and_decodes_on_exactly() {
 }
 
 #[test]
-fn a_seek_in_an_opus_stream_lands_after_its_pre_roll_on_the_same_samples() {
+fn opus_seek_is_sample_exact() {
     let audio = Audio::opus(&testdata("tone440.opus"));
     let whole = left(&audio.decode_all());
     let mut p = Player::new(vec![Track::new("a", audio)]);
@@ -136,7 +135,7 @@ fn a_seek_in_an_opus_stream_lands_after_its_pre_roll_on_the_same_samples() {
 }
 
 #[test]
-fn a_seek_while_paused_sticks_and_play_resumes_from_it() {
+fn seek_while_paused_sticks() {
     let song = music(40.0, 8);
     let mut p = Player::new(vec![track("a", &song)]);
     p.play_from(0);
@@ -156,7 +155,7 @@ fn a_seek_while_paused_sticks_and_play_resumes_from_it() {
 }
 
 #[test]
-fn a_seek_dropped_while_the_player_was_opening_is_asked_again_and_sticks() {
+fn seek_dropped_while_opening_is_retried() {
     // After a restart the player comes back paused at 10 s, and the seek to 30 s is asked while it is
     // still opening: the player drops it. The keeper notices and asks again.
     let song = music(40.0, 9);
@@ -187,7 +186,7 @@ fn a_seek_dropped_while_the_player_was_opening_is_asked_again_and_sticks() {
 }
 
 #[test]
-fn songs_that_will_not_play_are_skipped_three_in_a_row_then_it_stops() {
+fn failing_songs_skip_three_then_stop() {
     let s = songs(6, 4.0);
     let mut p = Player::new(queue(&s));
     p.tracks.broken = ["s1", "s2", "s3", "s4"].map(String::from).to_vec();
@@ -200,7 +199,7 @@ fn songs_that_will_not_play_are_skipped_three_in_a_row_then_it_stops() {
 }
 
 #[test]
-fn a_song_that_plays_breaks_the_run() {
+fn playing_song_resets_error_run() {
     let s = songs(7, 3.0);
     let mut p = Player::new(queue(&s));
     p.tracks.broken = ["s1", "s3", "s4", "s5"].map(String::from).to_vec();
@@ -213,7 +212,7 @@ fn a_song_that_plays_breaks_the_run() {
 }
 
 #[test]
-fn repeat_all_goes_round_and_repeat_one_loops_without_a_gap() {
+fn repeat_all_and_one_gapless() {
     let s = songs(2, 3.0);
     let mut p = Player::new(queue(&s));
     p.set_repeat(REPEAT_ALL);
@@ -232,7 +231,7 @@ fn repeat_all_goes_round_and_repeat_one_loops_without_a_gap() {
 }
 
 #[test]
-fn shuffle_plays_every_song_once_in_the_order_of_its_seed() {
+fn shuffle_plays_each_song_once() {
     let s = songs(6, 2.0);
     let mut p = Player::shuffled(queue(&s), 42);
     let order: Vec<usize> = p.queue.play_order().collect();
@@ -247,7 +246,7 @@ fn shuffle_plays_every_song_once_in_the_order_of_its_seed() {
 }
 
 #[test]
-fn an_edit_ahead_of_the_song_playing_leaves_the_player_on_it_and_the_next_one_is_the_queue_s() {
+fn edit_before_current_keeps_player_on_it() {
     let s = songs(4, 12.0);
     let mut p = Player::new(queue(&s));
     p.play_from(1);
@@ -268,7 +267,7 @@ fn an_edit_ahead_of_the_song_playing_leaves_the_player_on_it_and_the_next_one_is
 }
 
 #[test]
-fn shuffle_switched_on_keeps_the_song_playing_first_and_play_next_next() {
+fn shuffle_on_keeps_current_and_play_next() {
     let s = songs(6, 2.0);
     let mut p = Player::new(queue(&s));
     p.play_from(2);

@@ -1,16 +1,9 @@
 //! Evaluation harness for the track analysis.
 //!
-//! Synthetic songs whose beats, downbeats, metre, key, vocals and sections are known exactly: drums, bass, chords
-//! and a sung line, in the styles that trip beat trackers up (swing, syncopation, a one-drop, half-time, 3/4, a
-//! band that drifts, an accelerando, a long beatless intro, silence, a detuned band, a kick that moves from bar to
-//! bar). They are scored the way the MIR literature scores these tasks: beat F-measure at ±70 ms, tempo Acc1
-//! (within 4 %) and Acc2 (also ×2, ×½, ×3, ×⅓), downbeat F-measure, key accuracy and the MIREX weighted key score.
-//!
-//! Beside the textbook scores it keeps the ones the mix depends on. Over the half minute at each end that a
-//! transition actually plays, is the grid the planner would use right, and did the analysis say it could be
-//! trusted? A wrong grid that claims to be right is a train wreck; one that admits it is unsure only costs a
-//! plainer fade. So every mix window is one of: bar-locked (beats and downbeats right, and trusted), beat-locked
-//! but on the wrong beat of the bar, wrong, or refused.
+//! Synthetic songs with exactly known beats, downbeats, metre, key, vocals and sections, in styles that trip beat
+//! trackers (swing, syncopation, half-time, 3/4, drift, beatless intros, detuning). Scored with the MIR metrics
+//! (beat and downbeat F-measure at ±70 ms, tempo Acc1/Acc2, key accuracy, MIREX key score) and per mix window:
+//! bar-locked, beat-locked on the wrong beat, wrong, or refused (an unsure grid only costs a plainer fade).
 //!
 //! `cargo test --release -p nori-player analysis_eval -- --ignored --nocapture` prints the tables.
 //! `NORI_EVAL_DUMP=<dir>` also writes every song as a 16-bit WAV with its reference beats, for other trackers.
@@ -942,7 +935,7 @@ pub fn score(name: &str, a: &Analysis, truth: &Truth, with_key: bool) -> SongSco
         outro,
         key_ok: with_key.then_some(t.key == truth.key),
         key_mirex: with_key.then(|| mirex_key(t.key, truth.key)),
-        key_near: with_key.then(|| (0..=1).contains(&structure::key_distance(t.key, truth.key))),
+        key_near: with_key.then(|| structure::key_distance(t.key, truth.key).is_some_and(|d| d <= 1)),
         vocal,
         intro_cue_ok,
         outro_cue_ok,
@@ -1242,12 +1235,9 @@ fn analysis_eval() {
     }
 }
 
-/// The songs again with Beat This! run over each end as the app runs it (`beats::window`, `track_window`, the grid
-/// and `beats::merge`), everything else (silence, cues, key) as analysed: what the model changes in the mix windows.
-/// Scored twice: as shipped (its grid only where it is sure, the classical one kept elsewhere) and with its grid
-/// wherever it has one. With `NORI_BEAT_THIS_REF` (another model, normally the full fp32 one) it also prints how
-/// far the two agree on each window's beats and downbeats, which is how an export or a smaller model is checked.
-/// Real recordings come from `NORI_REAL` as for `analysis_eval`; `NORI_BT_CHUNK` runs the model in shorter chunks.
+/// The corpus with Beat This! run over each end as the app runs it, scored as shipped and with the model's grid
+/// everywhere. `NORI_BEAT_THIS_REF` compares against a reference model; `NORI_REAL` adds real recordings;
+/// `NORI_BT_CHUNK` sets the chunk length.
 /// `NORI_BEAT_THIS=<model.onnx> [NORI_BEAT_THIS_REF=<full.onnx>] cargo test --release -p nori-player --features
 /// neural-beats neural_eval -- --ignored --nocapture`
 #[cfg(feature = "neural-beats")]
@@ -1307,7 +1297,7 @@ fn neural_eval() {
             let g = end_grid(&t);
             beats::merge(&mut shipped, end, g);
             if let Some(g) = g {
-                beats::merge(&mut always, end, Some(EndGrid { confidence: 1.0, stability: 1.0, other_phase: -1, ..g }));
+                beats::merge(&mut always, end, Some(EndGrid { confidence: 1.0, stability: 1.0, other_phase: None, ..g }));
                 // Its own confidence stays what it said, so the planner still refuses a grid it doubts.
                 match end {
                     MixEnd::Intro => (always.intro_bpm_confidence, always.intro_stability) = (g.confidence, g.stability),
@@ -1371,19 +1361,9 @@ fn neural_eval() {
 
 // ---- Transitions ------------------------------------------------------------------------------------------------
 //
-// The analysis above scores what AutoMix reads; this scores what it does with it. Pairs of synthetic songs are
-// rendered, analysed as the app would, planned with the app's settings, and the plan is measured against what the
-// songs really are:
-//
-// - **drop**: where the incoming song's arrangement really arrives, against the bass swap: on it (within a beat),
-//   or how long the incoming intro then plays alone after the mix (`dip`, an energy hole), or skipped over;
-// - **phrase**: whether the swap falls on a downbeat of the outgoing song, and on a four-bar line of its sections;
-// - **skipped music** on either side (silence is free), and whether the 15 s cap held;
-// - **dead air**: a long silence of the outgoing song heard before the mix (a hidden track's gap), and **coda**:
-//   the outgoing song's closing breakdown heard on its own before the mix;
-// - **voices**: how long two sung lines compete - both sounding, neither 10 dB under the other across the voice
-//   band. The level of each deck there is measured by running the real mixer with tones on that deck alone, so the
-//   gains, filters and any separation are the ones the phone would apply.
+// Pairs of synthetic songs analysed and planned as the app does, each plan scored against the truth: drop hit,
+// dip or skip; swap on a bar and phrase line; music skipped; dead air and coda before the mix; and how long two
+// voices compete (deck levels measured through the real mixer).
 //
 // `cargo test --release -p nori-player transition_eval -- --ignored --nocapture`
 
@@ -1451,7 +1431,7 @@ pub fn mix_pairs() -> Vec<(&'static str, &'static str)> {
 fn deck_level(plan: &crate::types::TransitionPlan, outgoing: bool) -> Vec<f64> {
     const RATE: u32 = 16_000;
     let mut m = mixer::Mixer::new(RATE, 1);
-    m.configure(&mixer::params(plan));
+    m.configure(plan);
     let n = (plan.duration_ms.max(0) as usize * RATE as usize / 1000).max(1);
     let tone: Vec<f32> = (0..n)
         .map(|i| {
@@ -1460,12 +1440,8 @@ fn deck_level(plan: &crate::types::TransitionPlan, outgoing: bool) -> Vec<f64> {
         })
         .collect();
     let zero = vec![0f32; n];
-    let mut y = vec![0f32; n];
-    if outgoing {
-        m.process_f32(&tone, &zero, &mut y);
-    } else {
-        m.process_f32(&zero, &tone, &mut y);
-    }
+    let mut y = if outgoing { tone.clone() } else { zero.clone() };
+    m.process(&mut y, if outgoing { &zero } else { &tone });
     y.chunks(RATE as usize / 20).map(|c| (c.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / c.len() as f64 * 2.0).sqrt()).collect()
 }
 
@@ -1477,15 +1453,13 @@ fn short_term(x: &[f32], rate: f64) -> Vec<f64> {
     m.blocks_k.windows(30).map(|w| -0.691 + 10.0 * (w.iter().map(|v| *v as f64).sum::<f64>() / 30.0).max(1e-12).log10()).collect()
 }
 
-/// How much louder the transition gets than either song on its own, LU: the loudest 3 s inside the mix (and the
-/// second and a half after it) against the louder of the outgoing song's 8 s before it and the incoming song's 8 s
-/// after it (medians). The mix is rendered through the real mixer; the incoming song is varispeeded by the plan's
-/// ratio (pitch moves, loudness does not).
+/// How much louder the mix gets than either song alone, LU: the loudest short-term window in it against the louder
+/// median of the 8 s before and after. Rendered through the real mixer.
 fn loudness_bump(p: &crate::types::TransitionPlan, xa: &[f32], xb: &[f32], rate: f64) -> f64 {
     let at = |ms: i64| (ms.max(0) as f64 * rate / 1000.0) as usize;
     let (o0, i0, n) = (at(p.out_start_ms), at(p.in_start_ms), at(p.duration_ms));
     let ratio = if p.tempo_ratio > 0.0 { p.tempo_ratio } else { 1.0 };
-    let loop_n = if p.out_loop_ms > 0 { at(p.out_loop_ms).max(1) } else { usize::MAX };
+    let loop_n = p.out_loop_ms.map_or(usize::MAX, |l| at(l).max(1));
     let seg_a: Vec<f32> = (0..n).map(|k| xa.get(o0 + k % loop_n).copied().unwrap_or(0.0)).collect();
     let b_at = |k: f64| {
         let t = i0 as f64 + k;
@@ -1496,9 +1470,9 @@ fn loudness_bump(p: &crate::types::TransitionPlan, xa: &[f32], xb: &[f32], rate:
     };
     let seg_b: Vec<f32> = (0..n).map(|k| b_at(k as f64 * ratio)).collect();
     let mut m = mixer::Mixer::new(rate as u32, 1);
-    m.configure(&mixer::params(p));
-    let mut mixed = vec![0f32; n];
-    m.process_f32(&seg_a, &seg_b, &mut mixed);
+    m.configure(p);
+    let mut mixed = seg_a;
+    m.process(&mut mixed, &seg_b);
     let pre = at(8_000);
     let before: Vec<f32> = xa[o0.saturating_sub(pre).min(xa.len())..o0.min(xa.len())].to_vec();
     let b_end = i0 + (n as f64 * ratio) as usize;
@@ -1515,7 +1489,7 @@ fn loudness_bump(p: &crate::types::TransitionPlan, xa: &[f32], xb: &[f32], rate:
     let reference = median(&before).max(median(&after));
     // Windows (every 100 ms, 3 s long) that end inside the mix or up to 1.5 s after it.
     let (w0, w1) = ((before.len() as f64 / rate * 10.0) as usize, ((before.len() + n) as f64 / rate * 10.0 + 15.0) as usize);
-    let peak = (w0.saturating_sub(30)..w1.saturating_sub(30).min(st.len())).map(|j| st[j + 0]).fold(f64::MIN, f64::max);
+    let peak = (w0.saturating_sub(30)..w1.saturating_sub(30).min(st.len())).map(|j| st[j]).fold(f64::MIN, f64::max);
     if peak == f64::MIN { 0.0 } else { peak - reference }
 }
 
@@ -1560,11 +1534,11 @@ pub fn score_mix(name: &str, p: &crate::types::TransitionPlan, a: &Truth, b: &Tr
     let dur = ms(p.duration_ms);
     let ratio = if p.tempo_ratio > 0.0 { p.tempo_ratio } else { 1.0 };
     let (out_start, in_start) = (ms(p.out_start_ms), ms(p.in_start_ms));
-    let heard_end = out_start + if p.out_loop_ms > 0 { ms(p.out_loop_ms) } else { dur };
+    let heard_end = out_start + p.out_loop_ms.map_or(dur, ms);
     let beat_a = 60.0 / a.bpm.max(1.0);
     // The bass swap, from where the incoming lows start to come in to where they are all in: a swap that starts on
     // a line and one that finishes on it are both on it.
-    let swap = (p.bass_swap_ms >= 0).then(|| (ms(p.bass_swap_ms), ms(p.bass_swap_ms + p.bass_swap_len_ms.max(0))));
+    let swap = p.bass_swap.map(|s| (ms(s.at_ms), ms(s.at_ms + s.len_ms.max(0))));
     // Where the incoming drop lands in wall time from the start of the mix.
     let lands = b.drop.map(|d| (d - in_start) / ratio);
     let has_drop = lands.is_some();
@@ -1621,7 +1595,7 @@ pub fn score_mix(name: &str, p: &crate::types::TransitionPlan, a: &Truth, b: &Tr
     let dead_runup_s = (0..(run_up / 0.05) as usize)
         .filter(|k| {
             let t = *k as f64 * 0.05 + 0.025;
-            dead_at(if p.out_loop_ms > 0 { out_start + t % ms(p.out_loop_ms) } else { out_start + t })
+            dead_at(out_start + p.out_loop_ms.map_or(t, |l| t % ms(l)))
         })
         .count() as f64
         * 0.05;
@@ -1632,7 +1606,7 @@ pub fn score_mix(name: &str, p: &crate::types::TransitionPlan, a: &Truth, b: &Tr
         let (mut clash_s, mut both_sung_s) = (0.0, 0.0);
         for (k, (ga, gb)) in la.iter().zip(&lb).enumerate() {
             let t = k as f64 * 0.05 + 0.025;
-            let ta = if p.out_loop_ms > 0 { out_start + t % ms(p.out_loop_ms) } else { out_start + t };
+            let ta = out_start + p.out_loop_ms.map_or(t, |l| t % ms(l));
             if a.sung_at(ta) && b.sung_at(in_start + t * ratio) {
                 both_sung_s += 0.05;
                 let (da, db) = (20.0 * ga.max(1e-9).log10(), 20.0 * gb.max(1e-9).log10());
@@ -1645,9 +1619,9 @@ pub fn score_mix(name: &str, p: &crate::types::TransitionPlan, a: &Truth, b: &Tr
     };
     let (clash_s, both_sung_s) = competing(p);
     let mut bare = p.clone();
-    bare.vocal_duck_until_ms = -1;
-    if bare.reason.contains("voices kept apart") && bare.hp_to_hz == plan::VOCAL_HP_TO_HZ {
-        bare.hp_start_ms = -1;
+    bare.vocal_duck = None;
+    if bare.reason.contains("voices kept apart") && bare.high_pass.is_some_and(|h| h.to_hz == plan::VOCAL_HP_TO_HZ) {
+        bare.high_pass = None;
     }
     let (clash_bare_s, _) = if bare != *p { competing(&bare) } else { (clash_s, both_sung_s) };
     MixScore {
@@ -1783,10 +1757,8 @@ pub fn mix_report(scores: &[MixScore]) -> MixTotals {
     t
 }
 
-/// The analysis with its voice-band shares replaced by what the truth says is sung over the same windows (0.7
-/// where a voice sounds over at least 30 % of it, 0.1 elsewhere): the planner and mixer measured on their own,
-/// with a vocal detector that is right. The classical voice-band share cannot tell the synthetic voices from an
-/// unsung band (0.28-0.37 against 0.20-0.34, pads 0.8), which is `analysis.md`'s open problem, not the mixer's.
+/// The analysis with its voice shares taken from the truth (0.7 where sung over 30 % of the window, else 0.1), to
+/// score the planner and mixer with a perfect vocal detector.
 pub fn oracle_vocals(t: &TrackAnalysis, truth: &Truth) -> TrackAnalysis {
     let s = |a: f64, b: f64| if truth.voice_share(a, b) >= 0.3 { 0.7 } else { 0.1 };
     let ms = |v: i64| v as f64 / 1000.0;
@@ -1851,9 +1823,8 @@ fn transition_eval() {
     }
 }
 
-/// How well the analysis finds the landmarks the planner enters and leaves on, over every synthetic song (the
-/// analysis corpus and the mix songs): the drop, and the exit (a closing breakdown, or the gap before a short hidden
-/// track). A landmark within a beat of the truth is found; one claimed where the truth has none is a false alarm.
+/// How well the analysis finds drops and exits over every synthetic song: within a beat is found, one where the
+/// truth has none is a false alarm.
 /// `cargo test --release -p nori-player landmark_eval -- --ignored --nocapture`
 #[test]
 #[ignore]

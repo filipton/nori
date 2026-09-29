@@ -1,10 +1,8 @@
-//! The tree a car (Android Auto) or any other remote browser walks: which folders there are, what each
-//! holds and how its rows read. The platform turns the rows into its own items and plays what is picked.
+//! The browse tree of a car (Android Auto) or other remote browser.
 
 use nori_model::Song;
 
-/// One of the tree's own folders, which the client names ("Recently played"); an album's or a playlist's
-/// folder has none and carries its name as data.
+/// One of the tree's own folders, which the client names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 #[repr(u8)]
@@ -68,12 +66,8 @@ pub fn root() -> Vec<BrowseFolder> {
     ]
 }
 
-/// The rows of page `page` of `page_size` a browser asks for, out of `len`: what the platform hands back
-/// for one request; empty past the end.
-///
-/// Twin of the paging in `PlaybackService.Callback.onGetChildren` and `onGetSearchResult`
-/// (core/.../playback/PlaybackService.kt, `drop(page * pageSize).take(pageSize)`), which Android keeps on
-/// its media3 lists.
+/// The rows of page `page` of `page_size` out of `len`; empty past the end. Twin of the paging in
+/// Android's `PlaybackService` (`drop(page * pageSize).take(pageSize)`).
 pub fn page(len: usize, page: u32, page_size: u32) -> std::ops::Range<usize> {
     let from = (page as usize).saturating_mul(page_size as usize).min(len);
     from..from.saturating_add(page_size as usize).min(len)

@@ -1,5 +1,4 @@
-//! What the player page asks of the core's queue (`nori_core::playlist`) on every player event:
-//! primitives only, and the play order written straight into the array the player takes.
+//! `nori_core::playlist` queries made on every player event, primitives only.
 
 use jni::objects::{JClass, JIntArray};
 use jni::sys::{jboolean, jint, jlong};
@@ -22,14 +21,14 @@ extern "system" fn shuffle_shown() -> jboolean {
     playlist::playlist_shuffle_shown() as jboolean
 }
 
-/// The play order while shuffling, written into `out` (the array the player's shuffle order is made
-/// from) when it is exactly that long. Returns its length; -1 when not shuffling.
+/// Writes the shuffle order into `out` if it has exactly that length. Returns the order's length; -1
+/// when not shuffling.
 extern "system" fn order(env: JNIEnv, _: JClass, out: JIntArray) -> jint {
     let Ok(cap) = env.get_array_length(&out) else { return -1 };
     playlist::playlist_shuffle_order(|o| {
         let Some(o) = o else { return -1 };
         if o.len() == cap as usize {
-            // One copy into the array, a page of the order at a time: nothing allocated.
+            // Copied through a stack buffer: no allocation.
             let mut page = [0 as jint; 256];
             for (k, chunk) in o.chunks(page.len()).enumerate() {
                 for (d, &i) in page.iter_mut().zip(chunk) {
@@ -44,13 +43,12 @@ extern "system" fn order(env: JNIEnv, _: JClass, out: JIntArray) -> jint {
     })
 }
 
-/// What the list looks like now, cheaply, so an unchanged queue is not copied over again.
+/// Queue revision: unchanged means no need to copy the queue again.
 extern "system" fn rev() -> jlong {
     playlist::playlist_rev() as jlong
 }
 
-/// Moves whenever a new queue is set (`playlist_origin_gen`): a page asks whether the queue is its own
-/// only when this has moved.
+/// Changes whenever a new queue is set (`playlist_origin_gen`).
 extern "system" fn origin() -> jint {
     playlist::playlist_origin_gen() as jint
 }

@@ -1,26 +1,15 @@
-//! HE-AAC (AAC+, SBR; v2 with PS) for the Rust engine, decoded by the platform's own AAC decoder through
-//! the NDK's MediaCodec (`libmediandk`), lent to `nori_player::decode` ([`lend`]) so that a station's
-//! treble is heard: symphonia decodes only the core.
-//!
-//! The NDK's C API is used rather than MediaCodec through JNI: no Java object per packet and no thread of
-//! ours. It is driven synchronously on the thread that decodes (the engine's, in its bursts): a packet
-//! goes into one of the codec's input buffers and what came out is taken from its output buffers, waiting
-//! at most [`WAIT_US`] for it. Nothing is allocated here per packet: the packet is copied into the codec's
-//! own buffer, and its output converted straight into the caller's (kept) buffer. MediaCodec's own
-//! message thread in this process still answers each call, as it does for ExoPlayer's MediaCodec path.
-//!
-//! A stream is set up as the demuxer states it (AAC-LC at the core's rate for SBR signalled only inside
-//! the stream, as ADTS radio says it): the platform's decoder finds the SBR and PS itself and says the
-//! real rate and channels in its output format, which is what the engine then plays at.
+//! HE-AAC (SBR, PS) through the NDK's MediaCodec, registered with `nori_player::decode` (symphonia only
+//! decodes the AAC-LC core). Driven synchronously on the decoding thread; no allocation per packet.
+//! Configured as the demuxer states the stream; the decoder detects SBR/PS itself and reports the real
+//! rate and channels in its output format.
 
-/// Lends the platform's HE-AAC decoder to the core's decoder, for the life of the process.
+/// Registers the platform HE-AAC decoder with `nori_player::decode`.
 pub(crate) fn lend() {
     #[cfg(target_os = "android")]
     nori_player::decode::lend_platform_aac(ndk::open);
 }
 
-/// The AudioSpecificConfig of an AAC-LC stream at `rate` with `channels` (what an ADTS header says, as
-/// MediaCodec wants it in `csd-0`); none for a rate AAC has no index for.
+/// AAC-LC AudioSpecificConfig (`csd-0`) for `rate` and `channels`; None for a non-AAC rate.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub(crate) fn lc_config(rate: u32, channels: usize) -> Option<[u8; 2]> {
     const RATES: [u32; 13] = [96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350];
@@ -30,7 +19,7 @@ pub(crate) fn lc_config(rate: u32, channels: usize) -> Option<[u8; 2]> {
     Some(asc.to_be_bytes())
 }
 
-/// Frames of 16-bit or float PCM in `bytes`, appended to `out` as floats.
+/// Appends 16-bit or float little-endian PCM in `bytes` to `out` as floats.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub(crate) fn append_pcm(bytes: &[u8], float: bool, out: &mut Vec<f32>) {
     if float {
@@ -40,12 +29,6 @@ pub(crate) fn append_pcm(bytes: &[u8], float: bool, out: &mut Vec<f32>) {
     }
 }
 
-/// How long one call waits for the platform's decoder to hand out what it made of the packet, µs. A
-/// software AAC decoder answers well within it; a decoder that holds a packet back is learnt (see
-/// `lag`) and not waited on again.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
-const WAIT_US: i64 = 20_000;
-
 #[cfg(target_os = "android")]
 mod ndk {
     use std::ffi::{c_char, c_void, CStr};
@@ -53,6 +36,9 @@ mod ndk {
     use nori_player::decode::{AacSetup, Fault, PlatformDecoder};
 
     use super::*;
+
+    /// Max wait for a packet's output, µs. A decoder found to hold packets back is not waited on (`lag`).
+    const WAIT_US: i64 = 20_000;
 
     #[repr(C)]
     struct AMediaCodec {
@@ -274,7 +260,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_adts_stream_is_described_as_the_config_it_would_have() {
+    fn lc_config_encodes_rate_and_channels() {
         assert_eq!(lc_config(22_050, 2), Some([0x13, 0x90]), "AAC-LC, 22.05 kHz, stereo");
         assert_eq!(lc_config(44_100, 2), Some([0x12, 0x10]));
         assert_eq!(lc_config(24_000, 1), Some([0x13, 0x08]));
@@ -282,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn pcm_comes_out_as_floats() {
+    fn append_pcm_converts_to_float() {
         let mut out = Vec::new();
         append_pcm(&[0x00, 0x40, 0x00, 0xc0], false, &mut out);
         append_pcm(&0.25f32.to_le_bytes(), true, &mut out);

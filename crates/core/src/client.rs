@@ -1,8 +1,5 @@
-//! The Subsonic client: every request the app makes to its server goes through here. It picks the
-//! address, adds the music folder, retries once through the profile's other address, keeps writes that
-//! could not be sent and replays them, and walks the library into the index. The platform supplies the
-//! GET ([`Transport`]); the reads and their cache are in cache_policy.rs, lyrics from LRCLIB in lrclib.rs,
-//! the audio URLs in stream.rs.
+//! The Subsonic client over the platform's [`Transport`]: address choice and fallback, music folder
+//! scoping, offline write queue and replay, library sync. Reads and caching are in cache_policy.rs.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -15,24 +12,25 @@ use crate::{Core, IngestStats, ServerConfig};
 pub use nori_net::requests::{NetProfile, NetResult, Starrable, SyncStep, Write};
 pub(crate) use nori_net::requests::{blank, pairs, request, FOLDERED};
 
-/// How long the first address gets to answer before the second one is used.
+/// Ping timeout for the first address before falling back to the second.
 const ADDRESS_PROBE_MS: u32 = 2_500;
 
-/// The client for one server profile, over that profile's core (its index and caches).
+/// The client for one server profile, over its core.
 #[cfg_attr(feature = "ffi", derive(uniffi::Object))]
 pub struct Client {
     pub(crate) core: Arc<Core>,
     pub(crate) transport: Arc<dyn Transport>,
     pub(crate) profile: RwLock<NetProfile>,
-    /// True while requests go to the profile's second address; stream quality is capped then.
+    /// Requests go to the profile's second address (stream quality is capped then).
     pub(crate) second: AtomicBool,
-    /// What this client's lyrics lookups remember of each other (services failing lately, YouTube matches).
+    /// State shared between lyrics lookups (failing services, YouTube matches).
     pub(crate) lyrics: nori_lyrics::services::LyricsMemory,
-    /// The moving covers' web token and the videos kept (motion.rs).
+    /// Motion cover token and cached videos (motion.rs).
     pub(crate) motion: parking_lot::Mutex<crate::motion::Motion>,
 }
 
-/// The client the app streams through now: for a player that opens its songs in Rust (`stream::resolve_now`).
+/// The newest client, for code without a handle (`stream::resolve_now`, the beat model download).
+// Global: reached from the engine's threads with no client handle.
 static ACTIVE_CLIENT: parking_lot::Mutex<std::sync::Weak<Client>> = parking_lot::Mutex::new(std::sync::Weak::new());
 
 pub(crate) fn active_client() -> Option<Arc<Client>> {
@@ -46,7 +44,7 @@ async fn ping(core: &Core, transport: &dyn Transport, timeout_ms: u32) -> NetRes
 }
 
 impl Client {
-    /// The parameters with the music folder added, for the endpoints that take one.
+    /// `params` plus the music folder, for endpoints that take one.
     pub(crate) fn scoped(&self, endpoint: &str, mut params: Vec<(String, String)>) -> Vec<(String, String)> {
         let p = self.profile.read();
         if !p.music_folder_id.is_empty() && FOLDERED.contains(&endpoint) {
@@ -60,9 +58,8 @@ impl Client {
         transport::get(&*self.transport, url, 0).await
     }
 
-    /// One request; if the server is unreachable and the profile has a second address, that is tried
-    /// once. Not when the phone is on a metered network and the server is Wi-Fi only: the other address
-    /// is the same server and the same rule.
+    /// One request, retried once through the other address on an I/O failure (not a metered refusal:
+    /// the other address is the same server under the same rule).
     pub(crate) async fn fetch(&self, endpoint: &str, params: Vec<(String, String)>) -> NetResult<Vec<u8>> {
         let p = self.scoped(endpoint, params);
         match self.get(endpoint, &p).await {
@@ -76,9 +73,8 @@ impl Client {
         }
     }
 
-    /// A write that cannot reach the server is kept and replayed later, in order, so stars, playlist
-    /// edits and plays made offline are not lost. The caller is told it worked either way. Each write
-    /// drops the stored reads it makes stale.
+    /// Sends a write, or queues it for replay on an I/O failure (reported as success). Evicts the `stale`
+    /// cache prefixes either way.
     pub(crate) async fn write_raw(&self, endpoint: &str, params: Vec<(String, String)>, stale: &[&str]) -> NetResult<()> {
         match self.fetch(endpoint, params.clone()).await {
             Ok(body) => {
@@ -103,12 +99,11 @@ impl Client {
     #[cfg_attr(feature = "ffi", uniffi::constructor)]
     pub fn new(core: Arc<Core>, transport: Arc<dyn Transport>) -> Arc<Self> {
         let client = Arc::new(Client { core, transport, profile: RwLock::new(NetProfile::default()), second: AtomicBool::new(false), lyrics: Default::default(), motion: Default::default() });
-        // The newest client is the one the app streams through, as the newest core is the one it uses.
         *ACTIVE_CLIENT.lock() = Arc::downgrade(&client);
         client
     }
 
-    /// The profile's addresses, folder and bitrate cap; called when the profile is opened or edited.
+    /// Sets the profile's addresses, folder and bitrate cap.
     pub fn set_profile(&self, profile: NetProfile) {
         if !blank(&profile.alt_url) {
             crate::covers::cover_address_alike(&profile.url, &profile.alt_url);
@@ -116,14 +111,13 @@ impl Client {
         *self.profile.write() = profile;
     }
 
-    /// True while requests go to the profile's second address.
+    /// Whether requests go to the second address.
     pub fn on_second_address(&self) -> bool {
         self.second.load(Ordering::Relaxed)
     }
 
-    /// A profile with two addresses: ask the first one, briefly; if it does not answer use the second.
-    /// Runs when the app comes to the foreground and after a request failed, never on a timer. Returns
-    /// true when the address in use changed.
+    /// Pings the first address briefly and uses the second if it does not answer. Called on foreground and
+    /// after failures. Returns whether the address changed.
     pub async fn choose_address(&self) -> bool {
         let (url, alt) = {
             let p = self.profile.read();
@@ -144,9 +138,8 @@ impl Client {
         changed
     }
 
-    /// Checks a profile against the server before it is kept, on a core opened for it. When the first
-    /// address does not answer the second is asked. Servers without token auth say so (error 41) and are
-    /// asked again with legacy auth; returns true when that is what worked, so the profile remembers it.
+    /// Verifies a profile (trying `alt_url` if the first address fails). On error 41 (no token auth)
+    /// retries with legacy auth and returns true if that worked.
     pub async fn login(&self, config: ServerConfig, alt_url: String) -> NetResult<bool> {
         let legacy_possible = !config.legacy_auth && config.api_key.as_deref().unwrap_or("").is_empty();
         match self.attempt(config.clone(), &alt_url).await {
@@ -159,8 +152,7 @@ impl Client {
         }
     }
 
-    /// Replays queued writes. Stops at the first network failure; a write the server rejects is dropped,
-    /// since replaying it again would not help.
+    /// Replays queued writes in order, stopping at the first network failure; rejected writes are dropped.
     pub async fn flush_pending(&self) -> NetResult<()> {
         for p in self.core.pending_list()? {
             let params: Vec<(String, String)> = p.params.into_iter().map(|p| (p.key, p.value)).collect();
@@ -176,9 +168,8 @@ impl Client {
         Ok(())
     }
 
-    /// One page of the library walk: the page goes from the socket into SQLite here, only the counters
-    /// come back. `total` is what the earlier pages brought; the step says where to go on from, or
-    /// nothing once a page brought nothing.
+    /// Indexes one search3 page of the library; returns running totals and the next offset (None after
+    /// an empty page).
     pub async fn sync_page(&self, offset: u32, page: u32, total: IngestStats) -> NetResult<SyncStep> {
         let n = page.to_string();
         let o = offset.to_string();
@@ -197,11 +188,7 @@ impl Client {
         Ok(SyncStep { total, next_offset: if empty { None } else { Some(offset + page) } })
     }
 
-    /// Throws away the stored answers whose key starts with one of `prefixes`, so the next read of them
-    /// has to ask the server. A key is the endpoint followed by its parameters in the order they were
-    /// passed, so an endpoint on its own drops every read of it. This is what a manual refresh is for: the
-    /// freshness window exists so that browsing costs no requests, and the only way past it is to be told
-    /// the stored answer is not wanted.
+    /// Evicts cached reads whose key (endpoint then params) starts with one of `prefixes`: a manual refresh.
     pub fn drop_cached(&self, prefixes: Vec<String>) -> NetResult<()> {
         for p in prefixes {
             self.core.cache_evict(p)?;
@@ -223,21 +210,16 @@ impl Client {
     }
 }
 
-/// The app's one database file, and dropping a removed profile's rows from it: the database's own.
 pub use nori_db::{db_file_name, db_forget_server, DB_FILE};
-
-// ---- writes -------------------------------------------------------------------------------------------
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Client {
-    /// Sends one change, or keeps it for later when the server cannot be reached.
+    /// Sends one change, or queues it while the server is unreachable.
     pub async fn write(&self, w: Write) -> NetResult<()> {
         let (endpoint, params, stale) = request(w);
         self.write_raw(endpoint, params, stale).await
     }
 }
-
-// ---- tests ---------------------------------------------------------------------------------------------
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -253,11 +235,12 @@ pub(crate) mod tests {
 
     pub const OK: &str = r#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#;
 
-    /// Answers from a script, in order, and remembers every URL it was asked for (and the headers and
-    /// body of a request that had them).
+    type Answer = Result<(u16, Vec<u8>), FailureKind>;
+
+    /// A scripted transport: answers in order, records every request.
     #[derive(Default)]
     pub struct Fake {
-        pub answers: Mutex<VecDeque<Result<(u16, Vec<u8>), FailureKind>>>,
+        pub answers: Mutex<VecDeque<Answer>>,
         pub asked: Mutex<Vec<(String, u32)>>,
         pub sent: Mutex<Vec<Exchange>>,
         pub switched: Mutex<u32>,
@@ -293,7 +276,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// The fake answers at once, so a future here never has to wait.
+    /// Polls `f` to completion; the fake transport never pends.
     pub fn block<F: Future>(f: F) -> F::Output {
         let mut f = pin!(f);
         let mut cx = Context::from_waker(Waker::noop());
@@ -318,7 +301,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn folder_goes_only_to_the_endpoints_that_take_it() {
+    fn music_folder_only_on_foldered_endpoints() {
         let (c, _) = client(NetProfile { url: "h".into(), music_folder_id: "3".into(), ..Default::default() });
         assert_eq!(c.scoped("search3", vec![]), vec![("musicFolderId".to_string(), "3".to_string())]);
         assert!(c.scoped("getAlbum", vec![]).is_empty());
@@ -327,7 +310,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn unreachable_server_is_asked_again_through_the_other_address() {
+    fn io_failure_retries_through_other_address() {
         let (c, fake) = client(two_addresses());
         fake.fail(FailureKind::Connect); // the request
         fake.fail(FailureKind::Timeout); // the ping to the first address
@@ -341,17 +324,16 @@ pub(crate) mod tests {
         assert!(c.on_second_address());
         assert_eq!(*fake.switched.lock(), 1);
 
-        // Back home: the first address answers again, so the switch goes back and is reported.
         fake.answer(OK);
         assert!(block(c.choose_address()));
         assert!(!c.on_second_address());
         assert_eq!(*fake.switched.lock(), 2);
         fake.answer(OK);
-        assert!(!block(c.choose_address()), "no change, nothing to report");
+        assert!(!block(c.choose_address()));
     }
 
     #[test]
-    fn metered_and_refused_requests_are_not_retried() {
+    fn metered_and_other_failures_are_not_retried() {
         let (c, fake) = client(two_addresses());
         fake.fail(FailureKind::Metered);
         assert!(matches!(block(c.fetch("ping", vec![])), Err(NetError::Transport { kind: FailureKind::Metered, .. })));
@@ -359,7 +341,6 @@ pub(crate) mod tests {
         assert!(block(c.fetch("ping", vec![])).is_err());
         assert_eq!(fake.asked().len(), 2);
 
-        // One address only: nothing to switch to.
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         fake.fail(FailureKind::Connect);
         assert!(block(c.fetch("ping", vec![])).is_err());
@@ -367,20 +348,20 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn empty_error_status_is_a_failure_but_an_error_body_is_read() {
+    fn http_error_status_vs_error_body() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         fake.answers.lock().push_back(Ok((502, vec![])));
         assert!(matches!(block(c.fetch("ping", vec![])), Err(NetError::Http { status: 502 })));
         fake.answers.lock().push_back(Ok((401, br#"{"subsonic-response":{"status":"failed","error":{"code":40,"message":"no"}}}"#.to_vec())));
         let body = block(c.fetch("ping", vec![])).unwrap();
         assert!(matches!(c.core.parse_status(body), Err(crate::CoreError::Api { code: 40, .. })));
-        // A proxy's own page for a server that is down says its status, not that the answer did not parse.
+        // A proxy's HTML error page reports its status, not a parse error.
         fake.answers.lock().push_back(Ok((522, b"<html><body>error code: 522</body></html>".to_vec())));
         assert!(matches!(block(c.fetch("ping", vec![])), Err(NetError::Http { status: 522 })));
     }
 
     #[test]
-    fn offline_writes_are_queued_and_replayed_in_order() {
+    fn offline_writes_queue_and_replay_in_order() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         c.core.cache_put("getPlaylist&id=1".into(), b"x".to_vec()).unwrap();
         fake.fail(FailureKind::UnknownHost);
@@ -388,9 +369,9 @@ pub(crate) mod tests {
         fake.fail(FailureKind::UnknownHost);
         block(c.write(Write::Scrobble { id: "s".into(), submission: true, time_ms: Some(5) })).unwrap();
         assert_eq!(c.core.pending_list().unwrap().len(), 2);
-        assert_eq!(c.core.cache_get("getPlaylist&id=1".into()).unwrap(), None, "the stale read goes even when queued");
+        assert_eq!(c.core.cache_get("getPlaylist&id=1".into()).unwrap(), None, "evicted even when queued");
 
-        // Back online: the next write goes, then the queue in order; a rejected one is dropped.
+        // Online: the new write, then the queue in order; the rejected one is dropped.
         fake.answer(OK);
         fake.answer(r#"{"subsonic-response":{"status":"failed","error":{"code":70,"message":"gone"}}}"#);
         fake.answer(OK);
@@ -403,7 +384,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn replay_stops_at_the_first_network_failure() {
+    fn replay_stops_at_network_failure() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         c.core.pending_add("star".into(), vec![]).unwrap();
         c.core.pending_add("unstar".into(), vec![]).unwrap();
@@ -414,19 +395,17 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_rejected_write_is_an_error_and_is_not_queued() {
+    fn rejected_write_errors_and_is_not_queued() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         c.core.cache_put("getStarred2".into(), b"x".to_vec()).unwrap();
         fake.answer(r#"{"subsonic-response":{"status":"failed","error":{"code":50,"message":"no"}}}"#);
         assert!(matches!(block(c.write(Write::Star { kind: Starrable::Song, id: "1".into(), on: false })), Err(NetError::Api { code: 50, .. })));
         assert!(c.core.pending_list().unwrap().is_empty());
-        assert!(c.core.cache_get("getStarred2".into()).unwrap().is_some(), "nothing changed, nothing is stale");
+        assert!(c.core.cache_get("getStarred2".into()).unwrap().is_some());
     }
 
-    /// What tools/feature-e2e.sh used to check against a real server: a heart, a new playlist and "now
-    /// playing" leave as the Subsonic calls the server agrees with.
     #[test]
-    fn a_heart_a_new_playlist_and_now_playing_are_asked_as_subsonic_says() {
+    fn star_playlist_and_now_playing_requests() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         c.core.cache_put("getStarred2".into(), b"x".to_vec()).unwrap();
         c.core.cache_put("getPlaylist&id=9".into(), b"x".to_vec()).unwrap();
@@ -434,21 +413,21 @@ pub(crate) mod tests {
             fake.answer(OK);
         }
         block(c.write(Write::Star { kind: Starrable::Song, id: "s1".into(), on: true })).unwrap();
-        assert_eq!(c.core.cache_get("getStarred2".into()).unwrap(), None, "the favourites are read again");
+        assert_eq!(c.core.cache_get("getStarred2".into()).unwrap(), None);
         block(c.write(Write::Star { kind: Starrable::Song, id: "s1".into(), on: false })).unwrap();
         block(c.write(Write::CreatePlaylist { name: "nori check".into(), song_ids: vec!["s1".into(), "s2".into()] })).unwrap();
-        assert_eq!(c.core.cache_get("getPlaylist&id=9".into()).unwrap(), None, "the playlists are read again");
+        assert_eq!(c.core.cache_get("getPlaylist&id=9".into()).unwrap(), None);
         block(c.read_now(crate::cache_policy::Read::NowPlaying { id: "s1".into() })).unwrap();
         let asked = fake.asked();
         assert!(asked[0].contains("/rest/star?") && asked[0].ends_with("&id=s1"), "{}", asked[0]);
         assert!(asked[1].contains("/rest/unstar?") && asked[1].ends_with("&id=s1"), "{}", asked[1]);
         assert!(asked[2].contains("/rest/createPlaylist?") && asked[2].contains("&name=nori") && asked[2].ends_with("&songId=s1&songId=s2"), "{}", asked[2]);
         assert!(asked[3].contains("/rest/scrobble?") && asked[3].ends_with("&id=s1&submission=false"), "{}", asked[3]);
-        assert!(c.core.pending_list().unwrap().is_empty(), "all of it answered, nothing waits");
+        assert!(c.core.pending_list().unwrap().is_empty());
     }
 
     #[test]
-    fn login_falls_back_to_the_other_address_and_to_legacy_auth() {
+    fn login_falls_back_to_other_address_and_legacy_auth() {
         let (c, fake) = client(NetProfile::default());
         let config = ServerConfig { url: "http://lan".into(), user: "u".into(), password: "p".into(), ..Default::default() };
         fake.fail(FailureKind::Connect);
@@ -462,14 +441,13 @@ pub(crate) mod tests {
         assert!(block(c.login(config.clone(), String::new())).unwrap());
         assert!(fake.asked()[3].contains("&p=enc:70&"));
 
-        // An API key cannot fall back to a password.
         fake.answer(no_token);
         let keyed = ServerConfig { api_key: Some("k".into()), ..config };
         assert!(matches!(block(c.login(keyed, String::new())), Err(NetError::Api { code: 41, .. })));
     }
 
     #[test]
-    fn sync_walks_pages_until_one_brings_nothing() {
+    fn sync_pages_until_empty() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         fake.answer(r#"{"subsonic-response":{"status":"ok","searchResult3":{"artist":[{"id":"ar1","name":"A"}],
             "album":[{"id":"al1","name":"B"},{"id":"al2","name":"C"}],"song":[{"id":"s1","title":"x"},{"id":"s2","title":"y"},{"id":"s3","title":"z"}]}}}"#);

@@ -1,60 +1,42 @@
-//! Whether synced lyrics fit the song's audio: their line (and word) times against the song's vocal activity
-//! curve (nori-player automix/vocal.rs), measured with the AutoMix analysis. It gives
-//!
-//! - a **score**, 0 to 1: how many lines start where a voice is heard (after a breath or a rest, unless the
-//!   line before runs straight into it), less for lines laid over long instrumental stretches and for long
-//!   stretches of singing with no line;
-//! - a **global offset**: the shift within ±[`REACH_MS`] under which the lines fit the voice best, found by
-//!   sliding the lines' sung spans and their starts over the curve (a cross-correlation of the lines with the
-//!   voice's activity and its rises), with how clearly it stands out;
-//! - **drift**: the same done for the lines before and after a cut, at the cut where the two parts fit best
-//!   each on its own; parts that want offsets far apart were timed for another version of the song (a radio edit, a live take).
-//!
-//! What it makes of them is a [`SyncKind`]; the trust score (trust.rs) takes the score in, and an offset it is
-//! sure of is applied when the lyrics are shown (`Lyrics::offset_ms`). Everything is numbers and kinds.
+//! Whether synced lyrics fit the song's audio, checked against its vocal activity curve (AutoMix
+//! analysis): a score (lines starting where a voice is heard, less for lines over instrumental stretches
+//! and singing with no line), the best global offset within ±[`REACH_MS`] with its confidence, and drift
+//! (two parts of the song wanting different offsets: another version's timing). The result is a
+//! [`SyncKind`]; trust.rs weighs the score and a sure offset is applied when the lyrics are shown.
 
 use nori_model::Lyrics;
 use nori_player::automix::vocal::VocalCurve;
 
-/// How far the lines are slid each way looking for the best fit.
+/// How far the lines are slid each way for the best fit.
 pub const REACH_MS: i64 = 3_000;
 /// Each part is slid further: a version's timing can be off by more than the whole's.
 const PART_REACH_MS: i64 = 5_000;
-/// Fewer timed lines than this say too little to check.
+/// Fewer timed lines than this say too little.
 const MIN_LINES: usize = 4;
-// The thresholds below were tuned on a real library (sync_tune.rs: 59 songs, 340 answers from the lyrics
-// services, the answers that agree with each other taken as good, and those shifted, half-shifted or laid on
-// another song by hand), keeping good answers from being demoted first.
-/// An offset smaller than this is left alone: within what a listener notices and the clock's own steps.
+// The thresholds were tuned on 59 songs of a real library (340 service answers), not demoting good ones.
+/// A smaller offset is left alone.
 pub const OFFSET_MIN_MS: i64 = 250;
-/// An offset is applied only this sure. (0.5 left 18 % of real timings shifted by hand unfixed, 0.4 15 %,
-/// 0.3 12 %, with good answers shifted no more often; but lower also lets another song's lines be slid to
-/// where they fit best, which lifts their score.)
+/// An offset is applied only this sure; lower lets another song's lines slide to where they fit.
 pub const OFFSET_SURE: f64 = 0.4;
-/// Parts whose best offsets are this far apart drift, when each is this sure of its own.
+/// Parts whose offsets are this far apart drift, when each is [`PART_SURE`] of its own...
 pub const DRIFT_MS: i64 = 700;
 const PART_SURE: f64 = 0.3;
-/// ...and fit this much better apart, per line, than together. (Lower catches more half-shifted timings but
-/// demotes good ones fast: 0.08 twice as many, 0.05 six times.)
+/// ...and they fit this much better apart, per line, than together.
 const PART_GAIN: f64 = 0.1;
-/// Below this score the lines do not fit the voice. (0.4 demoted good answers in songs whose voice the curve
-/// hardly hears, metal most; [`LIFT`] catches the wrong ones instead.)
+/// Below this score the lines do not fit the voice...
 pub const POOR: f64 = 0.35;
-/// Nor when they fit it hardly better at their best offset than slid far off ([`Measure::null`]): in a song
-/// whose band is as restless as the voice, anyone's timing scores well, and only how much better the lines
-/// fit where they are than anywhere else tells. Up to this, no good answer was demoted by it.
+/// ...nor when they fit less than this better than slid far off: with a band as busy as the voice,
+/// any timing scores well.
 const LIFT: f64 = 0.06;
-/// The offset found is this much too early for any lyrics: the curve hears a word when its vowel is pitched,
-/// after its first consonant (word-timed answers that agree with each other came out 100 ms early)...
+/// The curve hears a word at its pitched vowel, this long after the timing's first consonant...
 const LAG_MS: i64 = 100;
-/// ...and this much more for line-timed ones, whose lines the services start a little before the voice, to be
-/// read (another 140 ms). It is their way, not an error to put right.
+/// ...and services start a line-timed line this much before the voice, to be read.
 const LINE_LEAD_MS: i64 = 100;
-/// How much the voice rising at the line starts counts beside the lines' spans being sung.
+/// How much the voice rising at line starts counts beside the spans being sung.
 const ONSET_WEIGHT: f64 = 1.0;
-/// Seconds of the activity either side of a line's start that say whether the voice starts there.
+/// Seconds of activity either side of a line's start that show the voice starting.
 const RISE_S: f64 = 0.4;
-/// The first moments of a line, seconds: the voice should be heard in them.
+/// A line's first seconds, where the voice should be heard.
 const ONSET_S: f64 = 0.6;
 /// A line with no end of its own is sung for about this long per character, within [`SPAN_MIN_S`, `SPAN_MAX_S`].
 const SECS_PER_CHAR: f64 = 0.09;
@@ -159,9 +141,7 @@ impl Voice {
         }
         let raw: Vec<f32> = c.level.iter().map(|v| *v as f32).collect();
         let smooth = box_mean(&raw, (0.08 * fps).round() as usize);
-        // 0 is the song's quiet stretches, 1 its busiest singing. (Saturating earlier, so that a softer moment
-        // of the singing counts as much as a busier one, was tried: in songs whose band is as restless as the
-        // voice everything saturates, and the lines fit anywhere.)
+        // 0 is the song's quiet stretches, 1 its busiest singing; saturating lower makes a busy band fit anywhere.
         let (lo, hi) = (percentile(&smooth, 0.15), percentile(&smooth, 0.9));
         // A curve that hardly moves has nothing to say: no voice, or voice all through.
         if hi - lo < 12.0 {
@@ -404,69 +384,18 @@ fn drift(v: &Voice, spans: &[Span], starts: &[(f64, bool)], whole: f64) -> Optio
     Some(Drift { ms: -((b.0 - a.0) / v.fps * 1000.0).round() as i64, sure: a.1.min(b.1), gain: (apart - a.3 - b.3) / n as f64 })
 }
 
-/// The best cut's parts: the second's offset less the first's, the less sure part's confidence, and how much
-/// better per line the parts fit apart than together.
+/// The best cut's parts: the second's offset less the first's, the less sure part's confidence, and how
+/// much better per line the parts fit apart than together.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Drift {
-    pub ms: i64,
-    pub sure: f64,
-    pub gain: f64,
+struct Drift {
+    ms: i64,
+    sure: f64,
+    gain: f64,
 }
 
-/// What the check measured, before the thresholds make a [`SyncKind`] of it.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Measure {
-    /// The score at the lyrics' own timing.
-    pub given: f64,
-    pub best_score: f64,
-    pub offset_ms: i64,
-    pub confidence: f64,
-    pub drift: Option<Drift>,
-    /// The mean score with the lines slid far off (7 to 23 s either way): what any timing scores here.
-    pub null: f64,
-}
-
-/// The thresholds a [`Measure`] is read with.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct Thresholds {
-    pub poor: f64,
-    pub offset_sure: f64,
-    pub offset_min_ms: i64,
-    pub drift_ms: i64,
-    pub part_sure: f64,
-    pub part_gain: f64,
-    /// Poor too when the best score is less than this above the far offsets' ([`Measure::null`]).
-    pub lift: f64,
-}
-
-impl Thresholds {
-    pub const USED: Thresholds = Thresholds { poor: POOR, offset_sure: OFFSET_SURE, offset_min_ms: OFFSET_MIN_MS, drift_ms: DRIFT_MS, part_sure: PART_SURE, part_gain: PART_GAIN, lift: LIFT };
-
-    pub fn read(&self, m: &Measure) -> SyncCheck {
-        let drift_ms = m.drift.filter(|d| d.sure >= self.part_sure && d.gain >= self.part_gain).map_or(0, |d| d.ms);
-        let kind = if m.best_score < self.poor || m.best_score - m.null < self.lift {
-            SyncKind::Poor
-        } else if drift_ms.abs() >= self.drift_ms {
-            SyncKind::Drifts
-        } else if m.offset_ms.abs() >= self.offset_min_ms && m.confidence >= self.offset_sure && m.best_score > m.given {
-            SyncKind::Shifted
-        } else {
-            SyncKind::Fits
-        };
-        let score = if kind == SyncKind::Shifted { m.best_score } else { m.given };
-        SyncCheck { kind, score, best_score: m.best_score, offset_ms: m.offset_ms, confidence: m.confidence, drift_ms }
-    }
-}
-
-/// Checks timed lyrics against a song's vocal curve; None for lyrics that are not timed, or a curve too short
-/// or too flat to say anything.
+/// Checks timed lyrics against a song's vocal curve; none for untimed lyrics or a curve too short or
+/// too flat to say anything.
 pub fn check(l: &Lyrics, curve: &VocalCurve) -> Option<SyncCheck> {
-    let unsure = SyncCheck { kind: SyncKind::Unsure, score: 0.0, best_score: 0.0, offset_ms: 0, confidence: 0.0, drift_ms: 0 };
-    Some(measure(l, curve)?.map_or(unsure, |m| Thresholds::USED.read(&m)))
-}
-
-/// The check's measurements: None where [`check`] has none, Some(None) for too few lines to say.
-pub(crate) fn measure(l: &Lyrics, curve: &VocalCurve) -> Option<Option<Measure>> {
     if !l.synced {
         return None;
     }
@@ -474,23 +403,32 @@ pub(crate) fn measure(l: &Lyrics, curve: &VocalCurve) -> Option<Option<Measure>>
     let spans = spans(l, &v);
     let starts = starts(l, &spans, &v);
     if starts.len() < MIN_LINES {
-        return Some(None);
+        return Some(SyncCheck { kind: SyncKind::Unsure, score: 0.0, best_score: 0.0, offset_ms: 0, confidence: 0.0, drift_ms: 0 });
     }
     let reach = (REACH_MS as f64 / 1000.0 * v.fps).round() as i64;
     let (shift, _, confidence) = best_shift(&v, &spans, &starts, reach);
-    let ms = |frames: f64| (frames / v.fps * 1000.0).round() as i64;
-    // Shifting the lines later by `shift` fits them: the lyrics run that much earlier than the audio.
-    // Where the lines are as they should be: later by how late the curve hears the voice, and for lines,
-    // by how early they are shown.
+    // Lines in place sit later than the fit by the curve's lag, and line-timed ones also lead the voice.
     let bias_ms = LAG_MS + if l.word_timed { 0 } else { LINE_LEAD_MS };
-    let offset_ms = bias_ms - ms(shift);
+    let offset_ms = bias_ms - (shift / v.fps * 1000.0).round() as i64;
     let given = score_at(&v, &spans, &starts, bias_ms as f64 / 1000.0 * v.fps);
     let best_score = score_at(&v, &spans, &starts, shift).max(given);
-    let drift = drift(&v, &spans, &starts, shift);
+    // What any timing scores here: the lines slid 7 to 23 s off.
     let far = [-23.0, -19.0, -17.0, -13.0, -11.0, -7.0, 7.0, 11.0, 13.0, 17.0, 19.0, 23.0];
     let null = far.iter().map(|s| score_at(&v, &spans, &starts, shift + s * v.fps)).sum::<f64>() / far.len() as f64;
-    Some(Some(Measure { given, best_score, offset_ms, confidence, drift, null }))
+    let drift_ms = drift(&v, &spans, &starts, shift).filter(|d| d.sure >= PART_SURE && d.gain >= PART_GAIN).map_or(0, |d| d.ms);
+    let kind = if best_score < POOR || best_score - null < LIFT {
+        SyncKind::Poor
+    } else if drift_ms.abs() >= DRIFT_MS {
+        SyncKind::Drifts
+    } else if offset_ms.abs() >= OFFSET_MIN_MS && confidence >= OFFSET_SURE && best_score > given {
+        SyncKind::Shifted
+    } else {
+        SyncKind::Fits
+    };
+    let score = if kind == SyncKind::Shifted { best_score } else { given };
+    Some(SyncCheck { kind, score, best_score, offset_ms, confidence, drift_ms })
 }
+
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -501,7 +439,7 @@ pub(crate) mod tests {
     use super::*;
     use nori_model::{LyricLine, LyricWord};
     use nori_player::automix::analysis::Analyzer;
-    use nori_player::automix::eval::{corpus_all, Rng, Song, Style, FULL, SUNG};
+    use nori_player::automix::eval::{Rng, Song, Style, FULL, SUNG};
 
     /// Invented words, one per sung note: about as many letters a second as a sung line has.
     const SYLLABLES: [&str; 12] = ["lomira", "teshvan", "korupel", "sumidah", "netori", "falquen", "birosa", "mekanu", "dovelin", "saruto", "pemial", "quorest"];
@@ -579,7 +517,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn exact_lyrics_fit_and_shifted_ones_are_found_out_and_put_right() {
+    fn exact_fit_and_shift_is_found() {
         let (curve, phrases, _) = sung(&song());
         let exact = check(&lyrics(&phrases, false, false, &|t| t), &curve).unwrap();
         assert_eq!(exact.kind, SyncKind::Fits, "{exact:?}");
@@ -595,7 +533,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn another_version_drifts_and_another_songs_times_are_poor() {
+    fn drift_and_poor_fit() {
         let (curve, phrases, secs) = sung(&song());
         let mid = phrases[phrases.len() / 2][0].0;
         let edit = check(&lyrics(&phrases, true, false, &|t| if t < mid - 0.1 { t } else { t + 2.0 }), &curve).unwrap();
@@ -611,88 +549,5 @@ pub(crate) mod tests {
         assert_eq!(check(&few, &curve).map(|c| c.kind), Some(SyncKind::Unsure), "three lines say too little");
         let flat = VocalCurve { fps: curve.fps, t0: curve.t0, level: vec![40; curve.level.len()] };
         assert_eq!(check(&lyrics(&phrases, false, false, &|t| t), &flat), None, "a curve with no voice in it says nothing");
-    }
-
-    fn row(name: &str, c: Option<SyncCheck>, want_ms: Option<i64>) -> (String, Option<f64>, f64) {
-        let c = c.unwrap_or(SyncCheck { kind: SyncKind::Unsure, score: 0.0, best_score: 0.0, offset_ms: 0, confidence: 0.0, drift_ms: 0 });
-        let err = want_ms.map(|w| (c.offset_ms - w).abs() as f64);
-        let line = format!(
-            "{name:<14} {:<8} score {:.2} (best {:.2}) offset {:+5} ms conf {:.2} drift {:+5} ms{}",
-            format!("{:?}", c.kind),
-            c.score,
-            c.best_score,
-            c.offset_ms,
-            c.confidence,
-            c.drift_ms,
-            err.map_or(String::new(), |e| format!("  err {e:.0} ms"))
-        );
-        (line, err, c.score)
-    }
-
-    /// How often a score from `a` is above one from `b`.
-    fn auc(a: &[f64], b: &[f64]) -> f64 {
-        a.iter().map(|x| b.iter().map(|y| if x > y { 1.0 } else if x == y { 0.5 } else { 0.0 }).sum::<f64>()).sum::<f64>() / (a.len() * b.len()) as f64
-    }
-
-    /// `cargo test --release -p nori-lyrics sync_eval -- --ignored --nocapture`: every sung song of the AutoMix
-    /// corpus with its lyrics exact (a line per phrase, two lines per phrase, word-timed), shifted by ±0.5, 1 and
-    /// 2 s, timed for another version (half of it 2 s later, or 4 % slower), another song's and at random; how
-    /// far off the offsets are, and how well the scores tell the good timings from the wrong ones.
-    #[test]
-    #[ignore]
-    fn sync_eval() {
-        let songs: Vec<Song> = corpus_all().into_iter().filter(|s| s.sections.iter().any(|x| x.1.voice)).collect();
-        let measured: Vec<_> = std::thread::scope(|sc| songs.iter().map(|s| sc.spawn(move || sung(s))).collect::<Vec<_>>().into_iter().map(|h| h.join().unwrap()).collect());
-        let (mut errs, mut good, mut version, mut wrong) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        let mut kinds: Vec<(String, SyncKind)> = Vec::new();
-        for (i, (song, (curve, phrases, secs))) in songs.iter().zip(&measured).enumerate() {
-            println!("{} ({} phrases, {:.0} s)", song.name, phrases.len(), secs);
-            // 0 good, 1 another version, 2 wrong.
-            let mut cases: Vec<(String, Lyrics, Option<i64>, u8)> = Vec::new();
-            cases.push(("exact".into(), lyrics(phrases, false, false, &|t| t), Some(0), 0));
-            cases.push(("exact words".into(), lyrics(phrases, true, true, &|t| t), Some(0), 0));
-            cases.push(("split lines".into(), lyrics(phrases, true, false, &|t| t), Some(0), 0));
-            for s in [-2.0, -1.0, -0.5, 0.5, 1.0, 2.0] {
-                cases.push((format!("shift {s:+}"), lyrics(phrases, false, false, &|t| t + s), Some((s * 1000.0) as i64), 0));
-            }
-            cases.push(("words +1".into(), lyrics(phrases, true, true, &|t| t + 1.0), Some(1000), 0));
-            let mid = phrases[phrases.len() / 2][0].0 - 0.1;
-            cases.push(("edit +2 half".into(), lyrics(phrases, true, false, &|t| if t < mid { t } else { t + 2.0 }), None, 1));
-            cases.push(("slower 4%".into(), lyrics(phrases, true, false, &|t| t * 1.04), None, 1));
-            let other = &measured[(i + 1) % measured.len()].1;
-            cases.push(("other song".into(), lyrics(other, true, false, &|t| t), None, 2));
-            cases.push(("random".into(), random(2 * phrases.len(), *secs, 11 + i as u64), None, 2));
-            for (name, l, want, class) in cases {
-                let c = check(&l, curve);
-                let (line, err, score) = row(&name, c, want);
-                println!("  {line}");
-                errs.extend(err);
-                if let Some(c) = c {
-                    kinds.push((name.clone(), c.kind));
-                }
-                [&mut good, &mut version, &mut wrong][class as usize].push(score);
-            }
-        }
-        errs.sort_by(f64::total_cmp);
-        let within = |ms: f64| errs.iter().filter(|e| **e <= ms).count();
-        println!(
-            "offsets: {} cases, median error {:.0} ms, worst {:.0} ms; within 60 ms {}, 120 ms {}, 250 ms {}",
-            errs.len(),
-            errs[errs.len() / 2],
-            errs.last().unwrap(),
-            within(60.0),
-            within(120.0),
-            within(250.0)
-        );
-        let stats = |v: &[f64]| (v.iter().copied().fold(f64::MAX, f64::min), v.iter().sum::<f64>() / v.len() as f64, v.iter().copied().fold(f64::MIN, f64::max));
-        for (name, v) in [("good", &good), ("another version", &version), ("wrong", &wrong)] {
-            let (lo, mean, hi) = stats(v);
-            println!("scores, {name}: {} cases, min {lo:.2}, mean {mean:.2}, max {hi:.2}", v.len());
-        }
-        println!("AUC good over wrong {:.3}, good over another version {:.3}", auc(&good, &wrong), auc(&good, &version));
-        for name in ["exact", "exact words", "split lines", "shift -2", "shift -0.5", "shift +1", "words +1", "edit +2 half", "slower 4%", "other song", "random"] {
-            let ks: Vec<String> = kinds.iter().filter(|(n, _)| n == name).map(|(_, k)| format!("{k:?}")).collect();
-            println!("  {name:<14} {}", ks.join(" "));
-        }
     }
 }

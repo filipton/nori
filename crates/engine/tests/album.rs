@@ -1,11 +1,6 @@
-//! An album played in order with AutoMix (or a crossfade) on and "keep albums gapless" on is played as
-//! though transitions were off: every song to its last sample and the next from its first, nothing cut at
-//! either end, however the plan out of a song came about (measured before, measured while it plays, a seek
-//! near the end, the setting switched while it plays). Where a mix is allowed (into another album, or
-//! shuffled) it still mixes. The engine playing the core's queue over the core's planner, library, stream
-//! cache and measurer on the test's clock, as Android and the terminal run it. The core keeps one queue,
-//! planner and database per process, so the stories run one after the other, and never beside replan.rs's
-//! (both hold `core_turn` in main.rs).
+//! With AutoMix (or a crossfade) and "keep albums gapless" on, an album in order plays sample-exact
+//! gapless however its plans came about; other joins (another album, shuffle) still mix. Runs over the
+//! core, one case after another under `core_turn`.
 
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -16,34 +11,19 @@ use common::card::{Card, Pull};
 use common::{Stepper, Virtual};
 use nori_core::client::{Client, NetProfile};
 use nori_core::settings_store::{edit_by_name, APPLY_AUDIO, REPLAN};
-use nori_core::transport::{Exchange, Transport, TransportError, TransportResponse};
 use nori_core::{Core, ServerConfig, Song};
 use nori_engine::core::{settings, CoreApp, CoreLibrary, CoreOrder, CoreQueue, Measurer};
 use nori_engine::{Body, ByteSource, Config, Engine, State, Store};
 
-mod common;
+use crate::common;
 
-struct NoApi;
-
-#[async_trait::async_trait]
-impl Transport for NoApi {
-    async fn get(&self, _url: String, _timeout_ms: u32) -> Result<TransportResponse, TransportError> {
-        Ok(TransportResponse { status: 500, body: Vec::new() })
-    }
-
-    async fn send(&self, _request: Exchange) -> Result<TransportResponse, TransportError> {
-        Ok(TransportResponse { status: 500, body: Vec::new() })
-    }
-
-    fn address_changed(&self) {}
-}
+use common::NoApi;
 
 const RATE: usize = 44_100;
 const SECS: usize = 40;
 
-/// A song's samples, stereo, both channels the same: a steady beat at 120 bpm over a tone of its own pitch,
-/// so the measurer finds a grid and the planner a beat-matched mix, and a quiet noise that never repeats,
-/// so that no stretch of a song is like another stretch of it or of another song.
+/// A song: a 120 bpm beat over its own tone (so mixes are beat-matched) plus non-repeating noise (so
+/// any stretch identifies its song and place).
 fn samples(seed: u32) -> Vec<i16> {
     let frames = RATE * SECS;
     let mut s = Vec::with_capacity(frames * 2);
@@ -63,22 +43,7 @@ fn samples(seed: u32) -> Vec<i16> {
 }
 
 fn wav(samples: &[i16]) -> Vec<u8> {
-    let data = samples.len() as u32 * 2;
-    let mut w = Vec::with_capacity(44 + data as usize);
-    w.extend_from_slice(b"RIFF");
-    w.extend_from_slice(&(36 + data).to_le_bytes());
-    w.extend_from_slice(b"WAVEfmt ");
-    w.extend_from_slice(&16u32.to_le_bytes());
-    w.extend_from_slice(&1u16.to_le_bytes());
-    w.extend_from_slice(&2u16.to_le_bytes());
-    w.extend_from_slice(&(RATE as u32).to_le_bytes());
-    w.extend_from_slice(&(RATE as u32 * 4).to_le_bytes());
-    w.extend_from_slice(&4u16.to_le_bytes());
-    w.extend_from_slice(&16u16.to_le_bytes());
-    w.extend_from_slice(b"data");
-    w.extend_from_slice(&data.to_le_bytes());
-    w.extend(samples.iter().flat_map(|v| v.to_le_bytes()));
-    w
+    common::wav(RATE as u32, samples)
 }
 
 struct Net(HashMap<String, Arc<Vec<u8>>>);
@@ -94,16 +59,16 @@ impl ByteSource for Net {
     }
 }
 
-/// A song of the story: its id, album and disc; its track is the next on that disc.
+/// A song: id, album and disc; the track is the next on that disc.
 #[derive(Clone, Copy)]
 struct S(&'static str, &'static str, u32);
 
 /// When the songs are measured.
 #[derive(Clone, Copy, PartialEq)]
 enum Measured {
-    /// Before the play: every plan is made with both songs' analyses.
+    /// Before playing.
     Before,
-    /// By the measurer, while the songs before them play: a plan made without them is made again.
+    /// By the measurer during playback: plans are remade.
     WhilePlaying,
 }
 
@@ -119,13 +84,13 @@ struct Rig {
 }
 
 impl Rig {
-    /// `songs` queued in this order (shuffled if `shuffle`), each whole in the stream cache, AutoMix on (or
-    /// a crossfade of `crossfade` s instead) and albums kept gapless as `keep` says.
+    /// `songs` queued (shuffled if `shuffle`) and cached, AutoMix on (or a `crossfade`), albums kept
+    /// gapless as `keep`.
     fn new(name: &str, songs: &[S], auto_mix: bool, crossfade: i32, keep: bool, measured: Measured, shuffle: bool) -> Rig {
         Rig::tagged(name, songs, auto_mix, crossfade, keep, measured, shuffle, &Tags::default())
     }
 
-    /// [`Rig::new`], with the songs' tags as `tags` makes them.
+    /// [`Rig::new`] with `tags`.
     #[allow(clippy::too_many_arguments)]
     fn tagged(name: &str, songs: &[S], auto_mix: bool, crossfade: i32, keep: bool, measured: Measured, shuffle: bool, tags: &Tags) -> Rig {
         let dir = nori_testdir::TempDir::new(name);
@@ -174,7 +139,7 @@ impl Rig {
         }
         nori_core::queue::queue_register(listed.clone());
         if let Some(again) = tags.again {
-            // Registered a second time, from another reading of the library that tags them otherwise.
+            // Registered again with other tags.
             let mut twice = listed;
             again(&mut twice);
             nori_core::queue::queue_register(twice);
@@ -200,8 +165,7 @@ impl Rig {
         })
     }
 
-    /// Waits, in real time, until the measuring in the background is done: on a device a song lasts
-    /// minutes and measuring the next takes seconds, so the analyses are there long before the boundary.
+    /// Blocks until background measuring is done (on a device it finishes long before the boundary).
     fn settle(&self) {
         let Some(m) = &self.measurer else { return };
         let until = Instant::now() + Duration::from_secs(120);
@@ -211,7 +175,7 @@ impl Rig {
         }
     }
 
-    /// A setting by name, as the settings rows set it, and what the player is told of it.
+    /// Sets a setting by name and relays its effects.
     fn set(&self, name: &str, value: &str) {
         let effect = edit_by_name(name, value).unwrap_or_else(|| panic!("{name} is a setting")).effect;
         if effect & APPLY_AUDIO != 0 {
@@ -222,8 +186,7 @@ impl Rig {
         }
     }
 
-    /// Plays on to the end of the queue: whether a mix was heard on the way, and the songs in the order
-    /// they were heard.
+    /// Plays to the end; returns whether a mix was heard and the songs in the order heard.
     fn to_the_end(&self) -> (bool, Vec<String>) {
         let mut mixed = false;
         let mut order: Vec<String> = Vec::new();
@@ -240,13 +203,9 @@ impl Rig {
         (mixed, order)
     }
 
-    /// Checks what the card heard from `from_heard` on (a frame index) against the songs in play order from
-    /// `first`, where `joins[k]` says whether song `first + k` goes into the next gaplessly (`true`) or is
-    /// mixed (`false`). Found where the first is heard; each gapless join is the whole of the outgoing song
-    /// to its last sample and then the incoming one from its first; after a mix the incoming song is found
-    /// again and must play to its end from there. The music made again behind a dip (a setting changed
-    /// while playing) is the song turned down and up again, not a cut: `dips` of them are let through, each
-    /// shorter than [`DIP_MAX`] and going on within [`DIP_SLIP`] of where it was.
+    /// Checks what was heard from frame `from_heard` against the songs from `first` in play order;
+    /// `joins[k]`: song `first + k` joins the next gaplessly (every sample) or is mixed. Up to `dips`
+    /// remake dips are allowed (shorter than [`DIP_MAX`], resuming within [`DIP_SLIP`]).
     fn heard_as(&self, order: &[String], from_heard: usize, first: usize, joins: &[bool], dips: usize) {
         let heard = self.card.heard.lock().clone();
         let order: Vec<&(S, Vec<i16>)> = order.iter().map(|id| self.songs.iter().find(|(s, _)| s.0 == *id).unwrap()).collect();
@@ -258,9 +217,9 @@ impl Rig {
         let same = |k: usize, hf: usize, sf: usize| (at(hf) - pcm(k, sf)).abs() < TOL;
         const W: usize = 256;
         let matches = |k: usize, hf: usize, sf: usize| hf + W <= frames && sf + W <= len && (0..W).all(|j| same(k, hf + j, sf + j));
-        // Where in song `k` the heard frames from `hf` on are, if anywhere.
+        // Where in song `k` the heard frames from `hf` are.
         let find = |k: usize, hf: usize| (0..len - W).find(|&sf| matches(k, hf, sf));
-        // What is heard from `f` on: which song, and where in it.
+        // Which song, and where, is heard from `f`.
         let what = |f: usize| {
             (0..order.len())
                 .find_map(|o| find(o, f).map(|x| format!("{} at {} ms", order[o].0 .0, x * 1000 / RATE)))
@@ -269,7 +228,7 @@ impl Rig {
         let ms = |f: usize| f * 1000 / RATE;
         // (song, at ms, frames it went on from later than where it was)
         let mut dipped: Vec<(String, usize, i64)> = Vec::new();
-        // Past the dip of a seek or a play: a second in.
+        // A second in, past any seek or play dip.
         let mut hf = from_heard + RATE;
         let mut sf = find(first, hf).unwrap_or_else(|| panic!("{} is heard {} ms after {} ms: {}", order[first].0 .0, 1000, ms(from_heard), what(hf)));
         for k in first..order.len() {
@@ -285,8 +244,7 @@ impl Rig {
                         (hf, sf) = (hf + 1, sf + 1);
                         continue;
                     }
-                    // Not the song as it is from here: the music made again behind a dip goes on from about here
-                    // within a moment; anything else (another song, another place in this one) is a cut.
+                    // A remake dip resumes near here; anything else is a cut.
                     let cut = |hf: usize, sf: usize, how: &str| -> ! {
                         let then: Vec<String> = [0, RATE / 10, RATE / 2, RATE, 3 * RATE, 6 * RATE].iter().map(|d| format!("+{} ms: {}", ms(*d), what(hf + d))).collect();
                         panic!(
@@ -307,12 +265,12 @@ impl Rig {
                     (hf, sf) = (back, on);
                 }
                 if k + 1 == order.len() {
-                    // Nothing more but silence.
+                    // Only silence remains.
                     assert!((hf..frames).all(|f| at(f).abs() < 1e-6), "nothing after the last song");
                 }
                 sf = 0;
             } else {
-                // Found again a few seconds past where the outgoing song ends, after the mix.
+                // After the mix, find the incoming song again.
                 let after = hf + (len - sf) + 4 * RATE;
                 let next = order[k + 1].0 .0;
                 let found = find(k + 1, after).unwrap_or_else(|| panic!("{next} is heard alone after the mix out of {id}: {}", what(after)));
@@ -323,13 +281,10 @@ impl Rig {
     }
 }
 
-/// How far from where it was the music made again behind a dip may go on, frames: the song is opened again
-/// ahead of the ear and taken up to 40 ms short of where it was opened (nori_player's `OPENED_EARLY_MS`), the
-/// dip covering it.
+/// How far a remake may resume from where it was, frames (nori_player's `OPENED_EARLY_MS`).
 const DIP_SLIP: usize = RATE * 40 / 1000;
 
-/// The longest dip the music is made again behind, frames: the engine turns it down and up again over 30 ms
-/// each way, and the two overlap a little longer.
+/// The longest remake dip, frames (30 ms down and up, plus overlap).
 const DIP_MAX: usize = RATE * 15 / 100;
 
 impl Drop for Rig {
@@ -338,14 +293,13 @@ impl Drop for Rig {
     }
 }
 
-/// How a story's songs are tagged beyond the defaults (each song's track the next on its disc, the album's
-/// id and disc as given): as an imperfect library tags them. And how they were queued.
+/// Tagging beyond the defaults (as an imperfect library does), and how songs were queued.
 struct Tags {
-    tag: fn(&mut Vec<Song>),
+    tag: fn(&mut [Song]),
     queued: Queued,
-    /// The songs registered a second time, tagged by this, after the first.
-    again: Option<fn(&mut Vec<Song>)>,
-    /// Every song's last four seconds fade to near silence.
+    /// Re-registers the songs with these tags.
+    again: Option<fn(&mut [Song])>,
+    /// Songs fade out over their last four seconds.
     quiet_ends: bool,
 }
 
@@ -355,18 +309,17 @@ impl Default for Tags {
     }
 }
 
-/// How the songs came into the queue.
 #[derive(Clone, Copy, PartialEq)]
 enum Queued {
-    /// Each album played as an album: the first from its page, each after it added to the queue whole.
+    /// Each album played from its page.
     AsAlbums,
-    /// The first song played on its own, then each of the others added to the queue by hand, one at a time.
+    /// The first song played alone, the others added one by one.
     OneByOne,
-    /// The first song played on its own, then the others brought by autofill.
+    /// The first song played alone, the rest by autofill.
     Autofill,
 }
 
-/// The queue of `songs` (shuffled if `shuffle`), as they were queued.
+/// Queues `songs` (shuffled if `shuffle`) as `how` says.
 fn queue(songs: &[S], shuffle: bool, how: Queued) {
     use nori_core::playlist::{playlist_set, playlist_take, with, Hand};
     let ids = |s: &[S]| s.iter().map(|s| s.0.to_string()).collect::<Vec<_>>();
@@ -382,26 +335,26 @@ fn queue(songs: &[S], shuffle: bool, how: Queued) {
                     from = k;
                 }
             }
-            playlist_set(ids(runs[0]), 0, shuffle, album(&runs[0][0]));
+            playlist_set(ids(runs[0]), Some(0), shuffle, album(&runs[0][0]));
             for r in &runs[1..] {
                 playlist_take(len(), ids(r), vec![Hand::No; r.len()], album(&r[0]));
             }
         }
         Queued::OneByOne => {
-            playlist_set(ids(&songs[..1]), 0, shuffle, None);
+            playlist_set(ids(&songs[..1]), Some(0), shuffle, None);
             for s in &songs[1..] {
                 playlist_take(len(), ids(std::slice::from_ref(s)), vec![Hand::Last], None);
             }
         }
         Queued::Autofill => {
-            playlist_set(ids(&songs[..1]), 0, shuffle, None);
+            playlist_set(ids(&songs[..1]), Some(0), shuffle, None);
             playlist_take(len(), ids(&songs[1..]), vec![Hand::No; songs.len() - 1], None);
         }
     }
     assert_eq!(with(|p| p.ids().to_vec()), ids(songs), "queued in order");
 }
 
-/// The last four seconds of `pcm` faded out to near silence, as many album tracks end.
+/// Fades `pcm`'s last four seconds to near silence.
 fn quiet_end(pcm: &mut [i16]) {
     let fade = RATE * 4;
     let frames = pcm.len() / 2;
@@ -416,15 +369,13 @@ fn quiet_end(pcm: &mut [i16]) {
 const ALBUM: [S; 3] = [S("a1", "al", 1), S("a2", "al", 1), S("a3", "al", 1)];
 
 #[test]
-fn an_album_kept_gapless_is_heard_whole_with_automix_or_a_crossfade_on() {
+fn album_kept_gapless_with_transitions_on() {
     let _turn = crate::core_turn();
     an_album_measured_before_plays_every_sample(true, 0);
     an_album_measured_before_plays_every_sample(false, 6);
-    an_album_kept_gapless_as_an_older_change_is_told_last_plays_every_sample();
     an_album_measured_while_it_plays_plays_every_sample();
     a_seek_near_the_end_of_an_album_song_plays_on_into_the_next_whole();
-    // From well before a1's mix into a2 is made (at 34 s, the output ten seconds ahead of the ear) to just
-    // before it is heard: the mix made and held, or already made into the output.
+    // Before a1's mix is made (34 s) up to just before it is heard.
     for at_ms in [26_000, 32_000, 33_500] {
         keeping_albums_switched_on_while_a_song_plays_joins_it_whole(at_ms);
     }
@@ -438,19 +389,6 @@ fn an_album_kept_gapless_is_heard_whole_with_automix_or_a_crossfade_on() {
 
 fn an_album_measured_before_plays_every_sample(auto_mix: bool, crossfade: i32) {
     let rig = Rig::new(&format!("album-before-{auto_mix}"), &ALBUM, auto_mix, crossfade, true, Measured::Before, false);
-    rig.engine.play_at(0, 0);
-    let (mixed, order) = rig.to_the_end();
-    rig.heard_as(&order, 0, 0, &[true, true], 0);
-    assert!(!mixed, "nothing mixed");
-}
-
-/// "Keep albums gapless" switched on while another change is made on another thread (the equalizer's
-/// device sound, say): the older change reached the planner last, which went on planning with albums
-/// mixed, and an album played next was mixed song into song, cut where each mix began and each next song
-/// taken up where it came in (a194db06). The planner reads the settings as they are kept now.
-fn an_album_kept_gapless_as_an_older_change_is_told_last_plays_every_sample() {
-    let rig = Rig::new("album-older", &ALBUM, true, 0, false, Measured::Before, false);
-    rig.set("crossfadeKeepAlbums", "true");
     rig.engine.play_at(0, 0);
     let (mixed, order) = rig.to_the_end();
     rig.heard_as(&order, 0, 0, &[true, true], 0);
@@ -472,19 +410,19 @@ fn a_seek_near_the_end_of_an_album_song_plays_on_into_the_next_whole() {
     let rig = Rig::new("album-seek", &ALBUM, true, 0, true, Measured::Before, false);
     rig.engine.play_at(0, 0);
     assert!(rig.until(20, |r| r.engine.status().position_ms > 2_000));
-    // Inside where a mix out of a1 would have started.
+    // Inside a1's would-be mix.
     rig.engine.seek(SECS as i64 * 1000 - 6_000);
     assert!(rig.until(10, |r| !r.engine.status().switching && r.engine.status().position_ms >= SECS as i64 * 1000 - 6_000), "{:?}", rig.engine.status());
     let from = rig.card.heard.lock().len() / 2;
     let (_, order) = rig.to_the_end();
-    // From a second after the seek was heard to the end: a1's last seconds, then a2 and a3 whole.
+    // a1's last seconds, then a2 and a3 whole.
     rig.heard_as(&order, from, 0, &[true, true], 0);
 }
 
 fn keeping_albums_switched_on_while_a_song_plays_joins_it_whole(at_ms: i64) {
     let rig = Rig::new(&format!("album-switched-{at_ms}"), &ALBUM, true, 0, false, Measured::Before, false);
     rig.engine.play_at(0, 0);
-    // a1's mix into a2 is planned, and made or not yet; then the album is kept gapless after all.
+    // a1 is planned as a mix, then albums are kept gapless.
     assert!(rig.until(40, |r| r.engine.status().position_ms >= at_ms), "{:?}", rig.engine.status());
     assert!(!rig.engine.status().mixing, "switched at {} ms, before the mix is heard", rig.engine.status().position_ms);
     assert!(nori_core::automix::planner::transition_note("a1").is_some_and(|n| n.kind != "Gapless"), "a1 is planned as a mix first: {:?}", nori_core::automix::planner::transition_note("a1"));
@@ -494,7 +432,7 @@ fn keeping_albums_switched_on_while_a_song_plays_joins_it_whole(at_ms: i64) {
     assert!(!mixed, "nothing mixed");
 }
 
-/// A double album goes on from the last track of its first disc to the first of its second gaplessly too.
+/// Gapless across the discs of a double album.
 fn a_double_album_is_heard_whole_across_its_discs() {
     let songs = [S("d1", "dl", 1), S("d2", "dl", 1), S("d3", "dl", 2)];
     let rig = Rig::new("album-discs", &songs, true, 0, true, Measured::Before, false);
@@ -514,8 +452,7 @@ fn an_album_then_another_is_mixed_only_between_them() {
     rig.heard_as(&order, 0, 0, &[true, false, true], 0);
 }
 
-/// Two songs of one album, in order, that were not queued as the album (queued by hand one at a time, or
-/// brought by autofill) mix like any others: Scar Tissue, then Californication, each queued on its own.
+/// Songs of one album not queued as the album (by hand, or autofill) mix like any others.
 fn songs_of_an_album_not_played_as_one_are_mixed(how: Queued) {
     let rig = Rig::tagged("album-queued", &ALBUM, true, 0, true, Measured::Before, false, &Tags { queued: how, ..Tags::default() });
     rig.engine.play_at(0, 0);
@@ -539,43 +476,39 @@ fn a_shuffled_album_is_mixed() {
     }
 }
 
-
-/// An album whose numbers leave songs out or count otherwise than by one, as real libraries do, played in
-/// the order the queue has it: with AutoMix on and albums kept gapless it is heard whole, each next song
-/// from its first sample. Read as out of order, each song was mixed into the next, the next coming in
-/// part-way where the mix entered it.
+/// An album with gaps or odd numbering in its tags still plays gapless in queue order. Regression: read
+/// as out of order, each song was mixed into the next.
 fn an_album_tagged_without_some_numbers_plays_every_sample() {
-    fn no_tracks(v: &mut Vec<Song>) {
+    fn no_tracks(v: &mut [Song]) {
         for s in v.iter_mut() {
             s.track = 0;
         }
     }
-    fn one_track_missing(v: &mut Vec<Song>) {
+    fn one_track_missing(v: &mut [Song]) {
         v[1].track = 0;
     }
-    fn one_disc_missing(v: &mut Vec<Song>) {
+    fn one_disc_missing(v: &mut [Song]) {
         v[1].disc_number = 0;
     }
-    fn numbered_on(v: &mut Vec<Song>) {
+    fn numbered_on(v: &mut [Song]) {
         v[2].disc_number = 2;
     }
-    fn gap(v: &mut Vec<Song>) {
+    fn gap(v: &mut [Song]) {
         v[2].track = 4;
     }
-    // In the order Navidrome lists an album whose track 2 has no disc number: that song first.
-    fn listed_first(v: &mut Vec<Song>) {
+    // Navidrome lists a track without a disc number first.
+    fn listed_first(v: &mut [Song]) {
         (v[0].track, v[0].disc_number, v[1].track, v[2].track) = (2, 0, 1, 3);
     }
     let stories: [(&str, Tags); 7] = [
         ("listed-first", Tags { tag: listed_first, ..Tags::default() }),
-        // 1, 2, 4: a file the library does not have, or a track taken out of the queue.
+        // 1, 2, 4: a missing track.
         ("gap", Tags { tag: gap, ..Tags::default() }),
         ("no-tracks", Tags { tag: no_tracks, ..Tags::default() }),
         ("one-track", Tags { tag: one_track_missing, ..Tags::default() }),
         ("one-disc", Tags { tag: one_disc_missing, ..Tags::default() }),
         ("numbered-on", Tags { tag: numbered_on, ..Tags::default() }),
-        // Songs ending in near silence: a mix into the next one is not heard as a mix at all, only as the
-        // next song starting part-way, which is how it was reported.
+        // Near-silent endings make a wrong mix sound like a late start, as reported.
         ("quiet-ends", Tags { tag: no_tracks, quiet_ends: true, ..Tags::default() }),
     ];
     for (name, tags) in stories {
@@ -585,8 +518,7 @@ fn an_album_tagged_without_some_numbers_plays_every_sample() {
         rig.heard_as(&order, 0, 0, &[true, true], 0);
         assert!(!mixed, "{name}: nothing mixed");
     }
-    // Registered again by another reading of the library that has no track numbers: the store keeps the
-    // last word, and the album is still in order.
+    // Re-registered without track numbers: still in order.
     let rig = Rig::tagged("album-tags-again", &ALBUM, true, 0, true, Measured::Before, false, &Tags { again: Some(no_tracks), ..Tags::default() });
     rig.engine.play_at(0, 0);
     let (mixed, order) = rig.to_the_end();

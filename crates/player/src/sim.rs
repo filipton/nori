@@ -1,13 +1,6 @@
-//! A whole player without a device, for tests here and in other crates: the shared player
-//! (`pipeline`) over a simulated AudioTrack whose playhead moves on a virtual clock. The decoder, the
-//! transition engine fed in bursts and the sound chain (equalizer, silence skipping, speed and pitch)
-//! inside media3's AudioSink are the real code, called the way the Android glue calls them, and what
-//! the ear would get comes out as samples: a ten-minute song and its crossfade take a fraction of a
-//! second, with no device and no sleeping.
-//!
-//! What is simulated is only what the platform does around the Rust: the songs (PCM, or compressed
-//! packets as the platform's extractor splits them), the AudioTrack playing its buffer out, and the
-//! transition planner the core would run.
+//! A simulated player for tests: the real `pipeline` (decoder, transition engine, sound chain) over a
+//! simulated AudioTrack on a virtual clock, with simulated songs and planner. Output is captured as
+//! samples; minutes of music run in milliseconds.
 
 use std::collections::VecDeque;
 use std::ops::{Deref, DerefMut, Range};
@@ -25,27 +18,25 @@ use crate::types::TrackAnalysis;
 
 pub use crate::pipeline::{Sound, BASE_OFFSET_US, READ_AHEAD_US, SHALLOW_US};
 
-/// How often the renderer runs: the virtual clock moves this far per step.
+/// Virtual clock step per render turn.
 pub const STEP_MS: i64 = 10;
-/// Frames in one decoded buffer of a PCM track.
+/// Frames per buffer of a PCM track.
 const PCM_BUFFER_FRAMES: u64 = 1024;
 
-/// 16-bit interleaved samples as little-endian bytes, the way decoded buffers carry them. On a
-/// little-endian machine that is the same memory, copied whole: sample by sample, a debug build spends
-/// longer converting a few minutes of audio than playing it.
+/// 16-bit samples as little-endian bytes (a plain copy on little-endian; per-sample is slow in debug).
 pub fn bytes(samples: &[i16]) -> Vec<u8> {
     if cfg!(target_endian = "little") {
-        // An i16 slice is valid as twice as many bytes.
+        // SAFETY: an i16 slice is valid as twice as many bytes.
         return unsafe { std::slice::from_raw_parts(samples.as_ptr().cast::<u8>(), samples.len() * 2) }.to_vec();
     }
     samples.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
 
-/// The other way round.
+/// Little-endian bytes as 16-bit samples.
 pub fn samples(bytes: &[u8]) -> Vec<i16> {
     let mut out = vec![0i16; bytes.len() / 2];
     if cfg!(target_endian = "little") {
-        // Whole samples only; the destination is exactly that many bytes.
+        // SAFETY: copies `out.len() * 2` bytes, within both buffers.
         unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out.as_mut_ptr().cast::<u8>(), out.len() * 2) };
         return out;
     }
@@ -55,8 +46,7 @@ pub fn samples(bytes: &[u8]) -> Vec<i16> {
     out
 }
 
-/// MPEG audio frames out of a file, the way the platform's extractor hands them in: tags skipped,
-/// and the LAME/Xing info frame (which carries the gapless numbers, not audio) left out.
+/// MPEG-1 layer III frames of a file, skipping ID3 and the Xing/Info frame.
 pub fn mp3_frames(file: &[u8]) -> Vec<&[u8]> {
     let mut i = 0;
     if file.starts_with(b"ID3") {
@@ -86,8 +76,7 @@ pub fn mp3_frames(file: &[u8]) -> Vec<&[u8]> {
     frames
 }
 
-/// Opus packets out of an Ogg file, and the setup media3 would hand over with them: the OpusHead,
-/// then the pre-skip and an 80 ms seek pre-roll in nanoseconds.
+/// Opus packets of an Ogg file and media3's setup (OpusHead, pre-skip ns, 80 ms pre-roll ns).
 pub fn ogg_opus(file: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
     let mut packets = Vec::new();
     let mut cur = Vec::new();
@@ -114,7 +103,7 @@ pub fn ogg_opus(file: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
     (setup, packets)
 }
 
-/// How many 48 kHz samples an Opus packet holds, from its table of contents (RFC 6716, 3.1).
+/// 48 kHz samples in an Opus packet, from its TOC (RFC 6716 3.1).
 fn opus_frames(packet: &[u8]) -> i64 {
     let Some(&toc) = packet.first() else { return 0 };
     let config = (toc >> 3) as i64;
@@ -131,14 +120,13 @@ fn opus_frames(packet: &[u8]) -> i64 {
     per_frame * count
 }
 
-/// What a song sounds like before it is decoded.
+/// A song's source audio.
 #[derive(Clone)]
 pub enum Audio {
-    /// 16-bit PCM, `frames` long, repeating `cycle` from the start: a ten-minute song costs one cycle.
+    /// PCM `frames` long, repeating `cycle` (so long songs are cheap).
     Pcm { rate: u32, channels: usize, cycle: Arc<Vec<u8>>, frames: u64, float: bool },
-    /// Compressed packets as the extractor splits them, the setup data that goes with them, where each
-    /// packet's first sample lands in the decoded song (before any the decoder drops), and the song's
-    /// length once decoded.
+    /// Compressed packets with setup, each packet's first sample position (before decoder drops), and
+    /// the decoded length.
     Coded { codec: Codec, rate: u32, channels: usize, setup: Option<Arc<Vec<u8>>>, packets: Arc<Vec<Vec<u8>>>, starts: Arc<Vec<i64>>, frames: u64 },
 }
 
@@ -153,22 +141,20 @@ impl Audio {
         Audio::Pcm { rate, channels, cycle: Arc::new(bytes(cycle)), frames, float: false }
     }
 
-    /// Float PCM, as a decoder hands it out when the player asks for floats (high quality output, or
-    /// ReplayGain turning songs up).
+    /// Float PCM.
     pub fn pcm_float(rate: u32, channels: usize, samples: &[f32]) -> Audio {
         let frames = (samples.len() / channels) as u64;
         Audio::Pcm { rate, channels, cycle: Arc::new(samples.iter().flat_map(|v| v.to_le_bytes()).collect()), frames, float: true }
     }
 
-    /// An MP3 file, decoded the way the core's decoder decodes one without a LAME header: the decoder drops
-    /// its own delay, so the first sample out is the first sample of the song.
+    /// An MP3 file, decoded without a LAME header (the decoder drops its own delay).
     pub fn mp3(file: &[u8]) -> Audio {
         let packets: Vec<Vec<u8>> = mp3_frames(file).into_iter().map(<[u8]>::to_vec).collect();
         let starts = (0..packets.len()).map(|k| k as i64 * 1152 - MP3_DECODER_DELAY as i64).collect();
         Self::coded(Codec::Mp3, 44_100, 2, None, packets, starts)
     }
 
-    /// An Ogg Opus file: its pre-skip is dropped at the start, its 80 ms pre-roll after a seek.
+    /// An Ogg Opus file.
     pub fn opus(file: &[u8]) -> Audio {
         let (setup, packets) = ogg_opus(file);
         let channels = setup[9] as usize;
@@ -208,7 +194,7 @@ impl Audio {
         (self.frames() as i128 * 1_000_000 / self.format().rate as i128) as i64
     }
 
-    /// The whole song decoded from its start, as the samples the renderer hands on.
+    /// The whole song decoded.
     pub fn decode_all(&self) -> Vec<i16> {
         let mut r = Reading::new(self, 0);
         let mut out = Vec::new();
@@ -226,8 +212,7 @@ pub struct Track {
     pub album: Option<String>,
     pub number: i32,
     pub audio: Audio,
-    /// The length the server gives, ms, when it is not the audio's own (a server rounds, an estimate is
-    /// off): what the planner plans with.
+    /// Server-listed length when it differs from the audio (what the planner uses).
     pub listed_ms: Option<i64>,
 }
 
@@ -242,7 +227,7 @@ impl Track {
         self
     }
 
-    /// Track `number` of `album`: two in a row of one album are an album played in order.
+    /// Track `number` of `album`.
     pub fn on_album(mut self, album: &str, number: i32) -> Track {
         self.album = Some(album.to_string());
         self.number = number;
@@ -268,12 +253,12 @@ impl Track {
     }
 }
 
-/// The renderer's decoder on one song: packets (or PCM) in, one buffer at a time out.
+/// Reads one song buffer by buffer.
 pub struct Reading {
     audio: Audio,
-    /// The next frame to come out, from the start of the song.
+    /// Next output frame from the song's start.
     frame: i64,
-    /// After a seek, buffers that end before this frame are decode-only and dropped, as media3 does.
+    /// After a seek, buffers ending before this are dropped (media3's decode-only).
     skip_to: i64,
     next_packet: usize,
     decoder: Option<Decoder>,
@@ -283,20 +268,18 @@ pub struct Reading {
 }
 
 impl Reading {
-    /// Reading `audio` from `from_frame`. Compressed audio starts from the packet a seek would land on.
+    /// Reads from `from_frame`; compressed audio starts at the packet a seek would land on.
     fn new(audio: &Audio, from_frame: i64) -> Reading {
         let mut r = Reading { audio: audio.clone(), frame: from_frame, skip_to: from_frame, next_packet: 0, decoder: None, out: Vec::new(), buf: Vec::new(), at_us: 0 };
         if let Audio::Coded { codec, rate, channels, setup, starts, .. } = audio {
             let mut d = Decoder::new(*codec, *rate, *channels, setup.as_deref().map(|s| s.as_slice()), false).expect("the codec opens");
-            // What the decoder drops after a reset: an MP3's filterbank warming up, an Opus stream's
-            // 80 ms pre-roll (as `ogg_opus` hands it over).
+            // Frames the decoder drops after a reset (MP3 delay, Opus 80 ms pre-roll).
             let dropped = match codec {
                 Codec::Mp3 => MP3_DECODER_DELAY as i64,
                 Codec::Opus => 3840,
                 _ => 0,
             };
-            // A seek lands on the last packet whose samples, after those, still come out at or before
-            // the place asked for; near the start it is the start itself.
+            // Start at the last packet whose output begins at or before `from_frame`.
             r.frame = 0;
             if let Some(k) = starts.iter().rposition(|&s| s + dropped <= from_frame).filter(|&k| k > 0) {
                 d.reset(false);
@@ -366,11 +349,11 @@ impl pipeline::Reading for Reading {
     }
 }
 
-/// The songs the simulated player can open, and those of them that will not play.
+/// The songs the simulated player can open.
 #[derive(Clone, Default)]
 pub struct Tracks {
     pub list: Vec<Track>,
-    /// Songs that will not play (their ids): opening one is a playback error.
+    /// Ids that fail to open.
     pub broken: Vec<String>,
 }
 
@@ -409,7 +392,7 @@ impl Songs for Tracks {
     }
 }
 
-/// The part of `data` (heard from frame `at` on) that falls inside `capture`, kept.
+/// Appends the part of `data` (starting at heard frame `at`) inside `capture`.
 fn keep(heard: &mut Vec<u8>, capture: &Range<u64>, at: u64, data: &[u8], fb: usize) {
     let n = (data.len() / fb) as u64;
     let from = capture.start.clamp(at, at + n);
@@ -417,7 +400,7 @@ fn keep(heard: &mut Vec<u8>, capture: &Range<u64>, at: u64, data: &[u8], fb: usi
     heard.extend_from_slice(&data[(from - at) as usize * fb..(to - at) as usize * fb]);
 }
 
-/// A piece of processed audio, and how much of the song (in frames at the sink's rate) it stands for.
+/// Written audio and the song frames it covers.
 struct Piece {
     data: Vec<u8>,
     pos: usize,
@@ -425,7 +408,7 @@ struct Piece {
 }
 
 impl Piece {
-    /// Takes `n` bytes off the front: the bytes, and the song time they stand for.
+    /// Takes `n` bytes off the front with their share of song time.
     fn take(&mut self, n: usize) -> (&[u8], f64) {
         let left = self.data.len() - self.pos;
         let media = if left == 0 { 0.0 } else { self.media * n as f64 / left as f64 };
@@ -436,7 +419,7 @@ impl Piece {
     }
 }
 
-/// An AudioTrack that plays on the virtual clock, and what the ear got from it.
+/// An AudioTrack on the virtual clock, recording what was played.
 pub struct AudioTrack {
     format: Option<Format>,
     pieces: VecDeque<Piece>,
@@ -446,12 +429,12 @@ pub struct AudioTrack {
     clock_us: i64,
     clock_frames: u64,
     started: bool,
-    /// What the ear got: every frame played, silence included where the AudioTrack ran dry.
+    /// Every frame played, including silence where it ran dry (limited to `capture`).
     pub heard: Vec<u8>,
-    /// Which frames of what is heard `heard` keeps (counted from the first); the rest are only counted.
+    /// Which played frames `heard` keeps.
     pub capture: Range<u64>,
     pub heard_frames: u64,
-    /// Where the AudioTrack ran dry mid-song (frame of `heard`, frames of silence).
+    /// Underruns mid-song: (frame, silent frames).
     pub gaps: Vec<(u64, u64)>,
 }
 
@@ -473,18 +456,17 @@ impl AudioTrack {
         }
     }
 
-    /// The heard audio as samples.
+    /// `heard` as 16-bit samples.
     pub fn heard_samples(&self) -> Vec<i16> {
         samples(&self.heard)
     }
 
-    /// The heard audio as float samples, for a track opened for floats.
+    /// `heard` as float samples.
     pub fn heard_floats(&self) -> Vec<f32> {
         self.heard.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()
     }
 
-    /// The AudioTrack plays `us` of the clock: its playhead moves over what it holds, and where it
-    /// holds too little the ear gets silence - a gap, unless the music is over (`quiet`).
+    /// Plays `us` of the clock; running dry records a gap unless `quiet` (the music is over).
     fn advance(&mut self, us: i64, quiet: bool) {
         let Some(f) = self.format.filter(|_| self.playing) else { return };
         let fb = f.frame_bytes();
@@ -528,7 +510,7 @@ impl pipeline::Track for AudioTrack {
         self.format = Some(format);
     }
 
-    /// An AudioTrack plays one format: another is a new track, once this one has played out.
+    /// An AudioTrack has one format.
     fn must_reopen(&mut self, format: Format) -> bool {
         self.format.is_some_and(|f| f != format)
     }
@@ -574,7 +556,7 @@ impl Sink<AudioTrack> {
     }
 }
 
-/// What the ear got is the track's; the tests read it off the sink as they would off media3's.
+/// Tests read the track's recording through the sink.
 impl Deref for Sink<AudioTrack> {
     type Target = AudioTrack;
     fn deref(&self) -> &AudioTrack {
@@ -588,8 +570,7 @@ impl DerefMut for Sink<AudioTrack> {
     }
 }
 
-/// The app around the engine: the transition planner over the window of songs coming up, the store of
-/// measurements, and the log - as `crates/automix/src/planner.rs` does it.
+/// The simulated app: planner (as `crates/automix/src/planner.rs`), analysis store and log.
 pub struct App {
     pub prefs: TransitionPrefs,
     pub transitions_off: bool,
@@ -598,13 +579,13 @@ pub struct App {
     pub analyses: std::collections::HashMap<String, TrackAnalysis>,
     pub log: Vec<String>,
     pub now_ms: i64,
-    /// The last "no transition" answer, so it is logged once.
+    /// The last "no transition" answer, logged once.
     none: Option<(String, Option<Skip>)>,
-    /// Whether the streaming tap measures the song playing (a measurement is slow in a debug build).
+    /// Analyse the playing song (slow in debug builds).
     pub measure_playing: bool,
-    /// Each song's ReplayGain volume, as the core would work it out; 1 for a song not listed.
+    /// Per-song ReplayGain; 1 if absent.
     pub gains: std::collections::HashMap<String, f32>,
-    /// Output devices the music went to, and the sound each is given (none: leave the sound).
+    /// Output devices seen, and per-device sounds.
     pub outputs: Vec<String>,
     pub device_sounds: std::collections::HashMap<String, Sound>,
 }
@@ -651,7 +632,7 @@ impl App {
         self.log.iter().any(|l| l.contains(what))
     }
 
-    /// Stores a finished measurement of a whole song, as the analysis thread does.
+    /// Stores a finished analysis if it covers the whole song.
     fn store(&mut self, id: &str, a: Analyzer, frames: u64, rate: u32, how: &str) {
         let expected = self.window.iter().find(|s| s.id == id).map_or(0, |s| s.duration_ms);
         let heard_ms = (frames * 1000 / rate.max(1) as u64) as i64;
@@ -736,7 +717,7 @@ impl pipeline::App for App {
         self.shuffling = shuffling;
     }
 
-    /// Measures the songs coming up that have not been measured, whole, as the engine's measurer does.
+    /// Analyses the unmeasured `ids` whole.
     fn measure_ahead<S: Songs>(&mut self, songs: &mut S, ids: &[String]) {
         let missing: Vec<&String> = ids.iter().filter(|id| !self.analyses.contains_key(*id)).collect();
         self.log.push(format!("measuring ahead: {} of {} unmeasured, 0 not on the device yet", missing.len(), ids.len()));
@@ -770,27 +751,25 @@ impl pipeline::App for App {
     }
 }
 
-/// ExoPlayer over the simulated AudioTrack, as far as the audio cares; see `pipeline::Player`.
+/// The pipeline player over the simulated track.
 pub type Player = pipeline::Player<Tracks, AudioTrack, App, Playlist>;
 
 impl Player {
-    /// A queue of `tracks` in list order, nothing playing yet.
+    /// A queue of `tracks`, idle.
     pub fn new(tracks: Vec<Track>) -> Player {
         let mut queue = Playlist::default();
         queue.set(tracks.iter().map(|t| t.id.clone()).collect(), Some(0), false, 0);
         Player::build(Tracks { list: tracks, broken: Vec::new() }, queue, App::new(), AudioTrack::new())
     }
 
-    /// The same with transitions set up as `prefs`.
+    /// [`Player::new`] with `prefs`.
     pub fn with_prefs(tracks: Vec<Track>, prefs: TransitionPrefs) -> Player {
         let mut p = Player::new(tracks);
         p.app.prefs = prefs;
         p
     }
 
-    /// The same, the queue played as an album is (from its page): one album run, so its songs of one album
-    /// in order stay gapless with "keep albums gapless" on. A queue from [`Player::new`] is songs queued
-    /// any other way, and they mix.
+    /// Marks the whole queue as one album run (queued from the album page).
     pub fn as_album(mut self) -> Player {
         let n = self.queue.len();
         self.queue.as_album(0, n);
@@ -798,8 +777,7 @@ impl Player {
         self
     }
 
-    /// The same played shuffled: the order is the playlist's for `seed`, and it starts wherever that
-    /// order does.
+    /// Shuffled with `seed`, starting where that order starts.
     pub fn shuffled(tracks: Vec<Track>, seed: u64) -> Player {
         let mut p = Player::new(tracks);
         let ids = p.tracks.iter().map(|t| t.id.clone()).collect();
@@ -808,13 +786,12 @@ impl Player {
         p
     }
 
-    /// The track at queue (list) index `i`.
+    /// The track at list index `i`.
     pub fn track(&self, i: usize) -> &Track {
         self.tracks.get(&self.queue.ids()[i])
     }
 
-    /// New transition settings: the planner takes them, the engine asks again, and with AutoMix on the
-    /// songs coming up are measured.
+    /// New transition settings: replan, and measure ahead with AutoMix on.
     pub fn set_prefs(&mut self, prefs: TransitionPrefs) {
         self.app.prefs = prefs;
         self.engine.replan();
@@ -823,8 +800,7 @@ impl Player {
         }
     }
 
-    /// One turn of the renderer: the clock moves on, the output plays, the position is read, and the
-    /// output is offered audio until it refuses.
+    /// Advances the clock one step and runs a render turn.
     pub fn step(&mut self) {
         let now = self.now_ms + STEP_MS;
         self.sink.advance(STEP_MS * 1000);
@@ -839,7 +815,7 @@ impl Player {
         }
     }
 
-    /// Runs until `done` says so, for at most `max_ms`; whether it did.
+    /// Runs until `done` or `max_ms`; returns whether `done` fired.
     pub fn run_until(&mut self, max_ms: i64, mut done: impl FnMut(&mut Player) -> bool) -> bool {
         let until = self.now_ms + max_ms;
         while self.now_ms < until {
