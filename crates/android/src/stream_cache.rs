@@ -1,4 +1,4 @@
-//! The stream cache's order (`nori_core::stream_cache`) as media3's cache reports to it and asks it.
+//! `nori_core::stream_cache` (eviction order of media3's stream cache) for Kotlin.
 
 use jni::objects::{JClass, JObject, JObjectArray, JString};
 use jni::sys::{jobjectArray, jstring};
@@ -18,13 +18,12 @@ pub(crate) static CLASS: Class = Class {
     ],
 };
 
-/// A cache span was read or written. Called from the cache's own callbacks, a few times a song; a key
-/// already known is found without allocating.
+/// A cache span was read or written. Allocation-free for a known key.
 extern "system" fn touch(env: JNIEnv, _: JClass, key: JString) {
     with_str(&env, &key, stream_cache::touch);
 }
 
-/// The keys the cache held when this process first looked. Called once.
+/// The keys in the cache at startup. Called once.
 extern "system" fn seed(mut env: JNIEnv, _: JClass, keys: JObjectArray) {
     let n = env.get_array_length(&keys).unwrap_or(0);
     let mut held = Vec::with_capacity(n.max(0) as usize);
@@ -33,18 +32,18 @@ extern "system" fn seed(mut env: JNIEnv, _: JClass, keys: JObjectArray) {
         let s = JString::from(o);
         let Some(v) = crate::string(&env, &s) else { return };
         held.push(v);
-        // One local reference a key, and a cache can hold thousands: each is let go as it is read.
+        // Thousands of keys would overflow the local reference table.
         let _ = env.delete_local_ref(s);
     }
     stream_cache::seed(held.iter().map(String::as_str));
 }
 
-/// The next key to drop, or null when there is none.
+/// The next key to evict, or null.
 extern "system" fn next(env: JNIEnv, _: JClass) -> jstring {
     stream_cache::next().map_or(std::ptr::null_mut(), |k| java_string(&env, &k))
 }
 
-/// `id`'s streamed copies, to drop.
+/// Cache keys of song `id`'s streamed copies.
 extern "system" fn copies(mut env: JNIEnv, _: JClass, id: JString) -> jobjectArray {
     let keys = with_str(&env, &id, stream_cache::copies).unwrap_or_default();
     let Ok(out) = env.new_object_array(keys.len() as i32, "java/lang/String", JObject::null()) else { return std::ptr::null_mut() };

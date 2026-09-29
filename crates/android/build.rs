@@ -1,12 +1,11 @@
 use std::path::PathBuf;
 
 fn main() {
-    // The uniffi scaffolding as JNI functions (`Java_uniffi_Scaffolding_*`), from the core's exports.
+    // The uniffi scaffolding as `Java_uniffi_Scaffolding_*` JNI functions.
     uniffi_bindgen_kotlin_jni::generate_scaffolding();
 
-    // A library has one `JNI_OnLoad`, and ours registers the doors, so the generated one (which only
-    // keeps the JavaVM) is renamed and ours calls it. A uniffi revision that writes it differently fails
-    // the build here rather than linking two.
+    // A library has one `JNI_OnLoad` and ours registers the natives, so the generated one is renamed and
+    // called from ours. A uniffi revision that generates it differently fails the build here.
     let path = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("uniffi_bindgen_kotlin_jni.uniffi.rs");
     let scaffolding = std::fs::read_to_string(&path).expect("the scaffolding was generated");
     let mut lines: Vec<&str> = scaffolding.lines().collect();
@@ -19,8 +18,7 @@ fn main() {
     assert!(!scaffolding.contains("JNI_OnLoad"), "the generated scaffolding has a second JNI_OnLoad");
     std::fs::write(&path, scaffolding).expect("the scaffolding is writable");
 
-    // The scaffolding is read out of the sources of every crate that exports something, which cargo does
-    // not watch for this crate.
+    // The scaffolding is generated from these crates' sources, which cargo does not watch for us.
     println!("cargo:rerun-if-changed=build.rs");
     for krate in ["core", "model", "db", "net", "library", "automix", "settings", "lyrics", "devices", "queue", "transfers", "perf"] {
         for input in ["src", "Cargo.toml", "uniffi.toml"] {
