@@ -1,40 +1,20 @@
-//! Audio offload: a song's packets handed as they are to an output that decodes them itself (a phone's
-//! audio chip), instead of being decoded here. Only while nothing would change a sample
-//! (`nori_player::policy::audio_policy`: no equalizer, speed, silence skipping or transitions, an output
-//! the chip reaches) and the output says it takes the song's compression; the engine decides that, and
-//! plays everything else on the CPU.
+//! Audio offload: song packets handed undecoded to an output that decodes them itself (a phone's DSP),
+//! only while nothing touches the samples (`nori_player::policy::audio_policy`) and the output takes
+//! the song's compression. Done as media3's sink does it: songs of one format join gaplessly on one track
+//! (encoder delay and padding told per song, [`OffloadOutput::end_of_stream`] between them), another
+//! format gets its own track, volume is ReplayGain and fades (never the samples), Opus goes in Ogg pages.
 //!
-//! What media3's sink does in offload, done the same way: songs of one format join without a gap on one
-//! track, each told its encoder delay and padding before its first packet
-//! ([`OffloadOutput::delay_padding`]) and the one before closed with [`OffloadOutput::end_of_stream`];
-//! a song in another format waits for the track to play out and gets a track of its own; the volume is
-//! the song's ReplayGain (and the controls' fades), never the samples. An Opus stream goes in Ogg pages,
-//! as media3's `OggOpusAudioPacketizer` hands it to the chip.
+//! The track is asked to hold [`TRACK_US`] and topped up below [`LOW_US`]. Phones grant far less (32 KB on
+//! a Galaxy S21 FE) and buffer more on the DSP, so once the platform has asked for more
+//! (`onDataRequest`) a full track waits for its next ask instead of estimating from bytes.
+//! [`Offload::lets_cpu_sleep`] says when nothing but that ask is due (Android drops its wake lock then).
 //!
-//! The track is asked to hold minutes of music ([`TRACK_US`]), and the next song is written once less than
-//! half a minute is left ([`LOW_US`]). Each write gives the track as much as it takes. Many phones grant
-//! far less than asked (32 KB on a Galaxy S21 FE, 64 KB on an S22: under two seconds of a song), and their
-//! chip buffers seconds more of its own behind that. So the engine does not work out from the bytes when
-//! to top up: once the platform has asked for more (`onDataRequest`, Android 10's
-//! `StreamEventCallback`, as media3's sink sleeps for), a full track waits for its next word. The thread
-//! then wakes about as often as the platform asks, and no more. Until the platform has asked once, the
-//! top-up's time is worked out from what was written and what the track has played.
-//!
-//! Otherwise the thread wakes only for the ear reaching the next song (to say so, and to set its volume),
-//! a fade's steps, the end of what was written, the output tearing the track down (which the platform
-//! says at once), and the watchdog. [`Offload::lets_cpu_sleep`] says when nothing but the platform's word
-//! is due: on Android the CPU's wake lock is let go then, as media3 lets its own go while it sleeps for
-//! offload.
-//!
-//! The watchdog: a count of what the chip presented that stands still is no stall by itself. With the
-//! screen off a phone may not move its timestamp (nor its play head) for seconds while the chip plays from
-//! its own buffer, asking for nothing. The CPU takes over only when neither count has moved, and the
-//! platform has asked for nothing, for longer than the music written past the count and a slack that
-//! grows with how long the platform's counts were seen to stand still ([`STUCK_SLACK_MS`] at least). It
-//! then plays on from where the chip's count last put the ear, never from where the clock would put it.
-//! A count that stands while the platform keeps asking for more is one it does not keep: the other count
-//! is followed, or, with neither moving, the CPU takes over where the clock puts the ear, the platform
-//! having played what it asked for.
+//! Watchdog: with the screen off a phone's timestamp and play head may stand still for seconds while the
+//! DSP plays from its own buffer. The CPU takes over only when neither count moved and the platform asked
+//! for nothing for longer than the music written past the count plus a slack that grows with the longest
+//! standstill seen ([`STUCK_SLACK_MS`] minimum); it resumes where the count last was. A count that stands
+//! while the platform keeps asking is not kept by the platform: the other count is used, or with neither
+//! moving the CPU resumes where the clock says.
 
 use std::collections::VecDeque;
 
@@ -45,7 +25,7 @@ pub use crate::demux::{Coded, CodedSong, Coding};
 use crate::demux::Demuxed;
 use crate::library::{Library, Sources};
 
-/// Whether an output decodes a compression itself, and whether it joins songs without a gap.
+/// Whether an output decodes a compression, and whether it joins songs gaplessly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Support {
     No,
@@ -53,93 +33,79 @@ pub enum Support {
     Gapless,
 }
 
-/// An output that decodes compressed songs itself: on Android, an AudioTrack opened for offload.
-/// Called only from the engine's thread. The platform wakes that thread (it is the one that opened the
-/// track) whenever the track wants more or was torn down.
+/// An output that decodes compressed songs (Android: an offload AudioTrack). Called only on the engine's
+/// thread; the platform wakes that thread when the track wants more or was torn down.
 pub trait OffloadOutput: Send {
-    /// Whether the output decodes `coded` itself, where the music goes now.
+    /// Whether the output decodes `coded` where the music goes now.
     fn supports(&mut self, coded: Coded) -> Support;
-    /// A track for `coded` holding about `bytes`, paused; replaces one that is open. The bytes it holds.
+    /// Opens a paused track for `coded` of about `bytes`, replacing any open one. Returns its size.
     fn open(&mut self, coded: Coded, bytes: usize) -> Result<usize, String>;
-    /// Takes what it has room for of `data` without waiting: the bytes taken, or the error the track
-    /// answered with. `data` stands for `frames` frames of music (what a simulated track plays).
+    /// Writes what fits of `data` without blocking: bytes taken, or the track's error. `data` is
+    /// `frames` frames of music (for a simulated track).
     fn write(&mut self, data: &[u8], frames: u64) -> Result<usize, i32>;
-    /// The encoder's delay and padding of the song whose packets come next.
+    /// Encoder delay and padding of the song whose packets come next.
     fn delay_padding(&mut self, delay: u32, padding: u32);
-    /// The last packet written was the last of its song: the next one follows without a gap. False when
-    /// the platform would not take it (Android's `setOffloadEndOfStream` throws unless the track plays).
-    /// Android stops the track with it (`native_stop`, `PLAYSTATE_STOPPING`) until the platform has
-    /// presented everything written, so a track told it is let go rather than flushed.
+    /// The last packet written ended its song; the next joins gaplessly. False when refused (Android
+    /// throws unless the track plays). Android stops the track until it has presented everything, so a
+    /// track told this is closed rather than flushed.
     fn end_of_stream(&mut self) -> bool;
     fn play(&mut self);
     fn pause(&mut self);
-    /// Drops what was written and not played. Only paused.
+    /// Drops what was written and not played. Only while paused.
     fn flush(&mut self);
     fn set_volume(&mut self, volume: f32);
-    /// Frames of music presented since the track was opened or flushed; none when the platform could not
-    /// be asked (a failed call is no reading, never nought). A platform may start counting again from
-    /// nought at a song joined without a gap.
+    /// Frames presented since open or flush; None when the call failed (never 0 for a failure). May
+    /// restart from 0 at a gapless join.
     fn head(&mut self) -> Option<u64>;
-    /// Frames presented now by the platform's timestamp of the track (Android's `getTimestamp`: a frame
-    /// and when it was presented), moved on by the time since it was taken while the track plays, as
-    /// media3's `AudioTrackPositionTracker` does; counted as [`OffloadOutput::head`] is. None while the
-    /// platform has given none since the track was opened or flushed. Preferred to the play head: on
-    /// some phones an offloaded track's play head never moves (its `getRenderPosition` fails).
+    /// Frames presented now by the platform's timestamp (Android's `getTimestamp`), extrapolated while
+    /// playing as media3 does; counted like [`OffloadOutput::head`]. Preferred to the play head, which
+    /// never moves on some phones.
     fn timestamp(&mut self) -> Option<u64> {
         None
     }
-    /// The platform asked for more since this was last asked (Android's `onDataRequest`): the track has
-    /// room, whatever the play head says.
+    /// The platform asked for more since last asked (`onDataRequest`): the track has room.
     fn data_requested(&mut self) -> bool {
         false
     }
-    /// Whether the track has played everything written up to the last end of stream.
+    /// Everything written up to the last end of stream was played.
     fn presented(&mut self) -> bool;
-    /// The track was torn down since this was last asked (the output went where the chip cannot follow):
-    /// it plays nothing more.
+    /// The track was torn down since last asked (the output moved where offload cannot follow).
     fn torn_down(&mut self) -> bool;
     fn close(&mut self);
-    /// What the platform said when it was last asked whether it decodes `coded`, in its own words (the
-    /// call and its answer), for a report of why a song plays on the CPU.
+    /// The platform's own answer to the last `supports(coded)`, for a report.
     fn said(&mut self, _coded: Coded) -> Option<String> {
         None
     }
-    /// Something the offload path did that a perf report should say (why a song ended, a play head
-    /// that made no sense), in words.
+    /// A note for the perf report (why a song ended, a bad play head).
     fn note(&mut self, _what: &str) {}
-    /// How many times faster than the music's own pace the track may present it: 1 for a real device,
-    /// whose play head cannot run ahead of the clock; a simulated one may run faster.
+    /// How much faster than real time the track may present: 1 for a real device, more for a simulation.
     fn pace(&self) -> f64 {
         1.0
     }
 }
 
-/// Why the CPU plays a song although the settings let the output decode songs itself.
+/// Why a song plays on the CPU although offload is allowed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OnCpu {
     /// It would not open as packets.
     Unread,
-    /// Its compression is not one an output decodes itself here (FLAC, Vorbis, ALAC, HE-AAC, PCM).
+    /// A compression no output decodes here (FLAC, Vorbis, ALAC, HE-AAC, PCM).
     Compression(&'static str),
-    /// The output does not decode it where the music goes now; what the platform said.
+    /// The output does not decode it where the music goes now; the platform's answer.
     Unsupported(Coded, Option<String>),
-    /// It has an encoder delay or padding to cut, it joins a song of its album without a gap (the one
-    /// before it or the one after it follows it on the album, as "keep albums gapless" has it), and the
-    /// output joins songs of its compression only with a gap: offloaded, that join would not be gapless.
+    /// Encoder delay or padding, a gapless album join, and an output without gapless offload.
     NotGapless { coded: Coded, delay: u32, padding: u32, said: Option<String> },
-    /// The offloaded track would not open.
     WouldNotOpen(Coded),
-    /// The offloaded track was torn down, or refused a write.
+    /// The track was torn down or refused a write.
     Failed,
-    /// The platform's count of what the track played made no sense (it could not be read, or ran ahead of
-    /// the clock), or it would not take a song's end of stream: in words.
+    /// The play head made no sense, or an end of stream was refused.
     Head(String),
-    /// ReplayGain turns it up: a volume cannot, so its samples are turned up, the limiter behind them.
+    /// ReplayGain turns it up, which needs the samples and the limiter.
     TurnedUp,
 }
 
 impl OnCpu {
-    /// In words, for the perf report and the log.
+    /// For the perf report and the log.
     pub fn words(&self) -> String {
         let said = |s: &Option<String>| s.as_ref().map(|s| format!(" ({s})")).unwrap_or_default();
         match self {
@@ -159,142 +125,117 @@ impl OnCpu {
     }
 }
 
-/// How much music a track is asked to hold.
+/// Music a track is asked to hold.
 pub const TRACK_US: i64 = 240_000_000;
-/// The track is topped up, and the next song written, when it holds less than this.
+/// Topped up, and the next song written, below this.
 pub const LOW_US: i64 = 30_000_000;
-/// The least and the most bytes a track is asked for.
+/// Bounds of the track size asked for.
 const MIN_BYTES: usize = 512 * 1024;
 const MAX_BYTES: usize = 8 * 1024 * 1024;
-/// A song's bitrate when its bytes do not say: the most a song usually has, so the track is not too small.
+/// Bitrate assumed when unknown: high, so the track is not too small.
 const GUESS_BPS: u32 = 320_000;
-/// Bytes put together for one write.
+/// Bytes gathered for one write.
 const STAGE_BYTES: usize = 256 * 1024;
-/// The last of what was written is taken as played this close to its end: a chip's count of what it
-/// presented can stop a decoder's delay short of what was written.
+/// Written music counts as played this close to its end: a DSP's count can stop a decoder delay short.
 const END_SLACK_US: i64 = 100_000;
-/// How long to look again while the end of the music is due and the track has not said it got there.
+/// How often to look while the end is due and not yet reached.
 const END_LOOK_MS: i64 = 100;
-/// The track saying it played everything is taken as the end only this close to it by its own count.
+/// The platform's "presented everything" counts as the end only this close to it by the count.
 const PRESENTED_NEAR_US: i64 = 3_000_000;
-/// How far the play head may be ahead of the clock since the track began playing (a start's latency, the
-/// thread's own lateness), ms.
+/// How far the play head may run ahead of the clock since playing began (start latency), ms.
 const CLOCK_SLACK_MS: i64 = 500;
-/// How far a reading of the count may step back without meaning anything, ms: Android's timestamp,
-/// moved on by the clock from one anchor and then taken again from the next, reads a few frames (up to a
-/// couple of milliseconds) back every few seconds, and a few frames back and forth as the track starts.
-/// Such a step leaves the ear where it was. A count started again at a join or after an end of stream
-/// drops a whole song, far more than this.
+/// A reading may step back this far without meaning anything, ms: Android's extrapolated timestamp
+/// jitters by a few frames between anchors. A restart at a join drops a whole song, far more.
 const JITTER_MS: i64 = 100;
-/// How far the count may be ahead of the clock in the first moments after the track began playing,
-/// ms: the platform's first timestamps of an offloaded track can read a start's worth (160 ms on a Galaxy
-/// S22) ahead of what it presented, which it corrects itself a moment later. The ear is held to the clock
-/// until then.
+/// For [`START_MS`] after playing begins the count is held within this of the clock, ms: the first
+/// timestamps can read ~160 ms ahead (Galaxy S22) before correcting.
 const START_SLACK_MS: i64 = 10;
-/// How long after the track began playing the ear is held to the clock that closely, ms.
 const START_MS: i64 = 1_000;
-/// Notes of a count that made no sense (a step back away from a join, a reading ahead of the clock) come
-/// a few at once at most ([`NOTES_AT_ONCE`]), and one more each this long, ms: a phone whose count
-/// misbehaves steadily would cost a string and a log write each time, for the battery. The next note says
-/// how many were left out.
+/// Notes of a misbehaving count: [`NOTES_AT_ONCE`] at most, then one per this long, ms (each costs a
+/// string and a log write).
 const NOTE_GAP_MS: i64 = 10_000;
 const NOTES_AT_ONCE: i64 = 4;
-/// Readings of the play head in a row that made no sense (none, or ahead of the clock), or ends of
-/// stream refused while playing, before the CPU takes over.
+/// Bad play head readings (or refused ends of stream) in a row before the CPU takes over.
 const STRIKES: u32 = 3;
-/// How soon to look again at a play head that made no sense, or an end of stream still to say, ms.
+/// How soon to look again after a bad reading or a pending end of stream, ms.
 const LOOK_AGAIN_MS: i64 = 300;
-/// The least slack of the watchdog, ms: a playing track whose count has not moved, and whose platform
-/// has asked for nothing, for longer than the music written past the count and this, is taken for
-/// stalled. A count that stands this long while the platform asks for more is taken for dead. The tester's
-/// S21 FE stood 2.8 s with the screen off while it played.
+/// The watchdog's least slack, ms (an S21 FE's count stood 2.8 s with the screen off while playing).
 const STUCK_SLACK_MS: i64 = 10_000;
-/// The slack grows to twice the longest a count was seen standing still before it moved on, up to this.
+/// The slack grows to twice the longest standstill seen, up to this.
 const STUCK_SLACK_MAX_MS: i64 = 60_000;
-/// Requests for more, since the count last moved, that make a count standing still one the platform does
-/// not keep: it plays, and says so.
+/// Asks for more since the count last moved that mark the count as one the platform does not keep.
 const DEAD_ASKS: u32 = 2;
-/// A full track whose platform says when it has room is looked at on the engine's own no sooner than
-/// this, ms, in case its word never comes: once what was written could have played.
+/// A full track waiting for the platform's ask is still looked at after this, ms, in case it never comes.
 const BACKSTOP_MS: i64 = 500;
-/// The CPU is kept awake from this long before the ear reaches a song placed after the one heard, or the
-/// end of what was written, ms, at least: the song's volume and its event come on time. More on a
-/// platform that asks for more seldom ([`Offload::awake_before_ms`]).
+/// The CPU is kept awake from this long before a song boundary or the end of what was written, so the
+/// song's volume and event come on time; more on a platform that asks seldom ([`Offload::awake_before_ms`]).
 const AWAKE_BEFORE_MS: i64 = 3_000;
 const AWAKE_BEFORE_MAX_MS: i64 = 60_000;
 
-/// One song handed to the track: where it starts in the track's frames, and how long it is once all of it
-/// is written.
+/// A song written to the track: its first frame in the track, and its length once fully written.
 #[derive(Debug, Clone)]
 struct Placed {
     index: usize,
     id: String,
     start: u64,
     frames: Option<u64>,
-    /// Where in the song its first frame is (a seek lands in a packet).
+    /// Song time of its first frame (a seek lands in a packet).
     from_ms: i64,
     level: f32,
-    /// Counts songs placed, so a song placed again (repeat one) is another.
+    /// Placement count, so repeat-one placing it again is distinguishable.
     seq: u64,
 }
 
 /// What comes after the last song written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tail {
-    /// The end of the queue, or of the song the sleep timer stops at.
+    /// End of the queue, or of the sleep timer's song.
     End,
-    /// Queue index `i` from its start, which this track cannot play: another format (another track), or a
-    /// song for the CPU.
+    /// This queue index from its start, which needs another track or the CPU.
     Then(usize),
 }
 
-/// What a turn found that the engine has to act on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step {
     Fine,
-    /// Queue index `i` from `ms` is for the CPU: its compression is not offloaded, or the track failed
-    /// (`refused`: torn down, or a write refused with an error).
+    /// Hand this song and place to the CPU (`refused`: the track failed).
     ToPcm { index: usize, ms: i64, refused: bool },
 }
 
-/// The track's count of frames presented, made one that only grows: a platform that starts counting
-/// again at a gapless join counts on from the song that begins there.
+/// The platform's frame count made monotonic: a count that restarts at a gapless join continues from
+/// the song that starts there.
 #[derive(Debug, Clone, Copy, Default)]
 struct Head {
     base: u64,
     last: u64,
-    /// A reading below the last one, not yet taken for a count started again (the next reading says).
+    /// A reading below the last, pending: the next reading says whether the count restarted.
     lower: Option<u64>,
 }
 
-/// What a reading of the play head was.
+/// How a reading was taken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Seen {
     Fine,
-    /// Lower than the last by no more than a moment's jitter (a timestamp moved on by the clock from one
-    /// anchor, then taken again from the next): the count holds where it was. How far back it read.
+    /// Back by no more than jitter (this many frames): the count holds.
     Jitter(u64),
-    /// Lower than the last, where the ear may have reached the next song: the count started again there.
+    /// Back where the next song may have started: the count restarted at the join.
     Joined,
-    /// Lower than the last, and not at a join: kept aside until the next reading says what it was.
+    /// Back, away from a join: set aside until the next reading.
     Dip,
-    /// Lower than the last twice, both well towards nought, the second no lower than the first, where a
-    /// count started again is plausible (`restart`): the platform counts again from nought (after an end
-    /// of stream, or a standby while paused), and the count goes on from where the ear was.
+    /// Back twice near zero where a restart is plausible (after an end of stream or a pause): counted on
+    /// from where it was.
     Restarted,
 }
 
 impl Head {
-    /// `raw` read now; `join`, where the song after the one the count is in starts, only when the clock
-    /// says the ear may have got there; `restart`, whether the platform may have started counting again
-    /// from nought away from a join; `jitter`, the frames a reading may step back by without meaning
-    /// anything; `most`, the furthest the ear can be by the clock. A reading that would put the ear past
-    /// `most` changes nothing, and is Err with where it would have put it.
+    /// Takes `raw`. `join`: where the next song starts, if the clock allows reaching it; `restart`: the
+    /// platform may have restarted its count away from a join; `jitter`: frames a reading may step back;
+    /// `most`: the furthest the clock allows. A reading past `most` changes nothing: Err with where it
+    /// would have put the count.
     fn read(&mut self, raw: u64, join: Option<u64>, restart: bool, jitter: u64, most: u64) -> Result<(u64, Seen), u64> {
         let (base, last, seen) = if raw >= self.last {
             (self.base, raw, Seen::Fine)
         } else if self.last - raw <= jitter {
-            // Never a join nor a count started again: those drop far more than a moment.
             self.lower = None;
             return Ok((self.base + self.last, Seen::Jitter(self.last - raw)));
         } else if let Some(start) = join {
@@ -302,7 +243,7 @@ impl Head {
         } else if restart && raw < self.last / 2 && self.lower.is_some_and(|l| raw >= l) {
             (self.base + self.last, raw, Seen::Restarted)
         } else {
-            // Only a drop well towards nought may be the start of a count started again.
+            // Only a drop towards zero may be a restart.
             self.lower = (raw < self.last / 2).then_some(raw);
             return Ok((self.base + self.last, Seen::Dip));
         };
@@ -314,7 +255,7 @@ impl Head {
     }
 }
 
-/// A volume fade at the track: from, to, when it began (ms), how long.
+/// A volume fade on the track: from, to, start (ms), length.
 #[derive(Debug, Clone, Copy)]
 struct Fade {
     from: f32,
@@ -326,22 +267,22 @@ struct Fade {
 /// The song being written.
 struct Writing {
     r: Demuxed,
-    /// Frames of music written of it.
+    /// Frames written of it.
     frames: u64,
     ogg: Option<Ogg>,
 }
 
-/// The engine's offload path: the track, the songs handed to it, and the song being written.
+/// The engine's offload path: the track, the songs written to it, and the one being written.
 pub(crate) struct Offload {
     out: Box<dyn OffloadOutput>,
-    /// The format the track is open for, whether it joins songs without a gap, and the bytes it holds.
+    /// The track's format, whether it joins gaplessly, and its size in bytes.
     open: Option<(Coded, bool, usize)>,
     supported: Vec<(Coded, Support)>,
     placed: VecDeque<Placed>,
     writing: Option<Writing>,
-    /// The song to start with: opened, waiting to be ready, then placed or handed to the CPU.
+    /// The first song, opening; placed or handed to the CPU once ready.
     starting: Option<(usize, i64, Result<Demuxed, String>)>,
-    /// The song after the one written last, opened once that one was read to its end.
+    /// The song after the last written, opened once that one was read to its end.
     next: Option<(usize, Result<Demuxed, String>)>,
     tail: Option<Tail>,
     stage: Vec<u8>,
@@ -350,88 +291,76 @@ pub(crate) struct Offload {
     written_bytes: u64,
     written_frames: u64,
     head: Head,
-    /// The platform's timestamp, counted the same way.
+    /// The platform's timestamp, counted like `head`.
     stamp: Head,
-    /// The last reading came from the timestamp (not the play head).
+    /// The last reading came from the timestamp.
     by_stamp: bool,
-    /// Counts found not to move while the track played: not read any more on this track.
+    /// Counts found not to move while playing: ignored for the rest of this track.
     stamp_dead: bool,
     head_dead: bool,
-    /// When the ear last moved on, or the track began playing: none until the next turn says.
+    /// When the count last moved (or playing began); None until the next turn.
     moved_ms: Option<i64>,
-    /// Times the platform asked for more since the ear last moved on, and when it last did.
+    /// Platform asks since the count last moved, and when it last asked.
     asks: u32,
     asked_ms: Option<i64>,
-    /// The longest the count stood still before it moved on, ms: how the platform keeps its count, which
-    /// the watchdog's slack grows with.
+    /// Longest standstill of the count before it moved, ms (the watchdog's slack grows with it).
     quiet_ms: i64,
-    /// The platform has asked for more on this track: it says when a full track has room.
+    /// The platform has asked for more on this track, so it says when a full track has room.
     called_back: bool,
-    /// When the platform last asked while the track played, and the longest it went between two asks.
+    /// When the platform last asked while playing, and the longest gap between asks.
     last_ask_ms: Option<i64>,
     ask_gap_ms: i64,
-    /// The bytes asked for when the track was opened, until what the platform granted is noted.
+    /// Bytes asked for at open, until the grant is noted.
     granted: Option<usize>,
-    /// The frames presented as last read.
+    /// Frames presented, as last read.
     heard_at: u64,
     playing: bool,
-    /// The song the music stops at the end of (the sleep timer's "end of this song").
+    /// The song playback stops after (the sleep timer).
     pub stop_after: Option<usize>,
     gain: f32,
     level: f32,
     fade: Option<Fade>,
     seq: u64,
-    /// The last turn found the next packet's bytes still on their way.
+    /// The next packet's bytes were still on their way.
     waiting: bool,
-    /// A write since the last end of stream, so the next song's join has one to close.
+    /// Written since the last end of stream, so the next join has one to close.
     pending_eos: bool,
-    /// The last write was refused in part: the track is full.
+    /// The last write was partly refused: the track is full.
     full: bool,
-    /// Why the last song this path gave up went to the CPU.
+    /// Why the last song left for the CPU.
     pub(crate) on_cpu: Option<OnCpu>,
-    /// The song placed last has an encoder delay or padding the output cannot cut (it does not do
-    /// gapless offload), so it is heard with a few milliseconds of near silence at its ends: in words,
-    /// for the report.
+    /// The last song placed keeps an encoder gap the output cannot cut (no gapless offload), for the report.
     pub(crate) gapped: Option<String>,
-    /// The time of the turn under way, ms.
+    /// This turn's time, ms.
     now_ms: i64,
-    /// When the play head was last read and made sense (or the track began playing), and the frames heard
-    /// then: the head cannot be further on than the clock has run since. None before the track plays.
+    /// When the count last moved sensibly (or playing began) and its frames then: the count cannot be
+    /// further on than the clock since. None before playing.
     clock: Option<(i64, u64)>,
-    /// How much less the count moved than the clock ran between the last two readings that moved it, ms:
-    /// the reading that set `clock` may be one from that long before it was read (a platform whose count
-    /// stood still for seconds with the screen off while the chip played, read long after it stopped), and
-    /// the bound from it is loosened by as much. Nought when the count kept up.
+    /// How far the count lagged the clock between the last two moving readings, ms: that reading may be
+    /// stale by as much (a count stood still with the screen off), so the bound is loosened by it.
     clock_lag_ms: i64,
-    /// When the track last began playing, and the frames heard then: the furthest bound of all, which a
-    /// count taken over from one found standing still is held to.
+    /// When playing last began and the frames then: the widest bound.
     play_clock: Option<(i64, u64)>,
-    /// The play head's raw reading, as last read.
+    /// The raw count last read.
     raw: Option<u64>,
-    /// Readings of the play head in a row that made no sense, or ends of stream refused, and the last
-    /// one's words.
+    /// Bad readings (or refused ends of stream) in a row, and why the last was bad.
     strikes: u32,
     strike_why: String,
-    /// An end of stream is due and was not said: the track was not playing, or refused it.
+    /// An end of stream is pending (the track was not playing, or refused it).
     eos_due: bool,
-    /// Ends of stream the platform refused in a row while its track played.
     eos_refusals: u32,
-    /// The track was told to play since it was opened or last paused: Android takes an end of stream
-    /// only then.
+    /// Told to play since opened or paused: Android takes an end of stream only then.
     started: bool,
-    /// The frames written when the platform last took an end of stream on this track: its word that it
-    /// presented everything is about that one only while nothing was written since.
+    /// Frames written when the last end of stream was taken: `presented` refers to it only while
+    /// nothing was written since.
     eos_at: Option<u64>,
-    /// How what was written ended is noted, once.
+    /// How the written music ended was noted.
     end_noted: bool,
-    /// The track was paused and played again since the count last moved on: a platform may have gone
-    /// to standby meanwhile, and count again from nought.
+    /// Paused and played since the count last moved: the platform may restart its count after standby.
     resumed: bool,
-    /// Readings that stepped back a moment ([`Seen::Jitter`]) since the track was emptied, and the most
-    /// frames one stepped back by: said once, with how what was written ended.
+    /// Jitter readings since the track was emptied, and the largest step back, noted once at the end.
     jitter: (u32, u64),
-    /// Notes of a count that made no sense may be made again once the time is past this, ms, one each
-    /// [`NOTE_GAP_MS`] ([`NOTES_AT_ONCE`] at once at most), and how many were left out since the last.
+    /// Rate limiting of notes ([`NOTE_GAP_MS`]), and how many were dropped since the last.
     notes_from_ms: i64,
     quieted: u32,
 }
@@ -496,7 +425,7 @@ impl Offload {
         }
     }
 
-    /// The offload path holds a song: it is the one playing (or paused).
+    /// The offload path holds the current song (playing or paused).
     pub(crate) fn active(&self) -> bool {
         self.starting.is_some() || !self.placed.is_empty()
     }
@@ -505,17 +434,17 @@ impl Offload {
         self.playing && self.active()
     }
 
-    /// A track plays songs placed on it, and the watchdog here judges whether it stalled ([`Offload::stuck`]).
+    /// A track is playing, so this path's watchdog judges stalls ([`Offload::stuck`]).
     pub(crate) fn watching(&self) -> bool {
         self.playing && self.started && self.open.is_some() && !self.placed.is_empty()
     }
 
-    /// Whether the track is open, and for what: for the perf report and the screen.
+    /// The open track's format.
     pub(crate) fn track(&self) -> Option<Coded> {
         self.open.map(|o| o.0)
     }
 
-    /// Whether the output decodes `coded`, asked once per format until the output moves.
+    /// Whether the output decodes `coded`, asked once per format per output device.
     fn support(&mut self, coded: Coded) -> Support {
         if let Some((_, s)) = self.supported.iter().find(|(c, _)| *c == coded) {
             return *s;
@@ -525,18 +454,14 @@ impl Offload {
         s
     }
 
-    /// The music goes to another device: what the output decodes there is asked again.
+    /// The output device changed: support is asked again.
     pub(crate) fn output_moved(&mut self) {
         self.supported.clear();
     }
 
-    /// Why this output would not play song `r` (none: it would): it would not open, its compression is
-    /// not one an output decodes, the output does not decode it, or it has a gap to cut at a join that
-    /// must be gapless (`album`: [`Offload::in_album`]) and the output joins songs only with one. media3
-    /// requires gapless support for every song with a delay or padding; here only an album's songs in
-    /// order need it, and between unrelated songs the encoder's few milliseconds (576 samples of delay
-    /// and about a thousand of padding in an MP3) are near silence where a gap is expected anyway.
-    /// A song ReplayGain turns up (`level` over 1) needs its samples: it is not the output's either.
+    /// Why this output would not play `r`, or None. Unlike media3, gapless support is required only for
+    /// a gapless album join (`album`, [`Offload::in_album`]): elsewhere an MP3's few ms of encoder gap
+    /// are inaudible. A song turned up by ReplayGain (`level` > 1) needs its samples.
     pub(crate) fn refuses(&mut self, r: &Demuxed, album: bool, level: f32) -> Option<OnCpu> {
         if r.error().is_some() {
             return Some(OnCpu::Unread);
@@ -553,9 +478,7 @@ impl Offload {
         }
     }
 
-    /// Whether song `i` joins a song of its album without a gap in the order they play: the song before it
-    /// or the one after it follows it on the same album, the rule that keeps albums gapless
-    /// (`nori_player::transitions::in_album_run`; never while shuffling).
+    /// Whether song `i` joins a neighbour of its album gaplessly (`nori_player::transitions::in_album_run`).
     pub(crate) fn in_album<L: Library, Q: Queue>(&self, i: usize, tracks: &Sources<L>, queue: &Q) -> bool {
         let (ids, runs, before, after, shuffling) = queue.read(|q| {
             let repeat = q.repeat();
@@ -567,12 +490,12 @@ impl Offload {
         in_album_run(before.and_then(about).as_ref(), &song, after.and_then(about).as_ref(), shuffling)
     }
 
-    /// Queue index `i` from `from_ms`: the track is emptied, and the song opened as packets. Whether it
-    /// plays here is known once it is open ([`Offload::turn`] says so).
+    /// Starts queue index `i` at `from_ms`: empties the track and opens the song as packets. Whether it
+    /// plays here is known once open ([`Offload::turn`]).
     pub(crate) fn start<L: Library, Q: Queue>(&mut self, i: usize, from_ms: i64, tracks: &mut Sources<L>, queue: &Q) -> usize {
         self.empty();
         self.stop_after = None;
-        // A song that arriving on skips (an explicit one) gives way to the first after it that does not.
+        // A skipped song (explicit) gives way to the next that is not.
         let i = if queue.skips(i) { self.next_of(i, queue).unwrap_or(i) } else { i };
         let id = queue.read(|q| q.ids()[i].clone());
         let opened = tracks.open_packets(&id, from_ms, false);
@@ -580,14 +503,11 @@ impl Offload {
         i
     }
 
-    /// Everything handed to the track goes, and what was being written; the track stays open.
+    /// Drops everything written and being written; the track stays open.
     fn empty(&mut self) {
         if self.eos_at.is_some() && !self.out.presented() && self.open.take().is_some() {
-            // Told an end of stream, Android's track was stopped until it presents it (then it starts
-            // itself again): paused and flushed before that, it starts again as stopping, refuses every
-            // write that does not wait (`blockUntilOffloadDrain`), and may say later that it presented
-            // the flushed song's end. media3 never flushes an offloaded track; a new one is opened for
-            // what comes.
+            // After an end of stream Android's track is stopping until it presents it; flushed then, it
+            // refuses non-blocking writes. Like media3, open a new track instead.
             self.out.close();
             self.started = false;
         } else if self.open.is_some() {
@@ -631,10 +551,8 @@ impl Offload {
         self.jitter = (0, 0);
     }
 
-    /// The CPU takes the music over at `now_ms` (the settings or the output no longer let the chip play
-    /// it): the count is read once more, so the CPU starts where the chip really is and not where the
-    /// last turn (up to a top-up's time ago) saw it, and the track is let go. Where the ear was, as
-    /// (queue index, ms), with a note of it for the perf report.
+    /// The CPU takes over at `now_ms`: reads the count once more (the last turn may be a top-up ago),
+    /// notes it and releases the track. Returns the place (queue index, ms).
     pub(crate) fn leave(&mut self, now_ms: i64) -> Option<(usize, i64)> {
         self.now_ms = now_ms;
         if self.playing && self.started && !self.placed.is_empty() {
@@ -644,8 +562,7 @@ impl Offload {
         self.release()
     }
 
-    /// Where the CPU takes over, for the perf report: the place in the song, the chip's own count and
-    /// what was written to it, all in ms.
+    /// Notes where the CPU takes over, the platform's count and what was written, in ms.
     fn note_left(&mut self) {
         let Some((_, ms, _)) = self.heard() else { return };
         let rate = self.rate() as u64;
@@ -659,7 +576,7 @@ impl Offload {
         self.note(what);
     }
 
-    /// Lets the track go (a long pause, or the CPU takes over): where the ear was, as (queue index, ms).
+    /// Releases the track; returns the place (queue index, ms).
     pub(crate) fn release(&mut self) -> Option<(usize, i64)> {
         let at = self.heard().map(|(i, ms, _)| (i, ms)).or(self.starting.as_ref().map(|s| (s.0, s.1)));
         self.empty();
@@ -695,7 +612,7 @@ impl Offload {
         self.moved_ms = None;
         self.last_ask_ms = None;
         if let Some(f) = self.fade.take() {
-            // The fade the pause waited for ends at its target, not a step short of it.
+            // The pause's fade ends at its target, not a tick short.
             self.gain = f.to;
             self.volume();
         }
@@ -705,13 +622,13 @@ impl Offload {
         }
     }
 
-    /// A fade of the track's volume from `from` (or where it is) to `to` over `ms`, from `now_ms`.
+    /// Fades the track from `from` (or where it is) to `to` over `ms`, starting `now_ms`.
     pub(crate) fn ramp(&mut self, from: Option<f32>, to: f32, ms: i64, now_ms: i64) {
         self.fade = Some(Fade { from: from.unwrap_or(self.gain), to, start_ms: now_ms, ms: ms.clamp(0, i32::MAX as i64) as i32 });
         self.follow_fade(now_ms);
     }
 
-    /// The ReplayGain volume of the song heard, set now (the settings changed).
+    /// Sets the current song's ReplayGain level (the settings changed).
     pub(crate) fn set_level(&mut self, level: f32) {
         self.level = level;
         if let Some(p) = self.placed.front_mut() {
@@ -740,8 +657,7 @@ impl Offload {
         self.open.map_or(48_000, |o| o.0.rate).max(1)
     }
 
-    /// The furthest the ear can be by the clock: where it was at the last reading that made sense (or
-    /// when the track began playing), moved on by the time since at the output's pace, and a little.
+    /// The furthest the count can be by the clock: the last sensible reading moved on by the time since.
     fn most(&self) -> u64 {
         let rate = self.rate() as f64 * self.out.pace();
         let run = |ms: i64| (ms.max(0) as f64 * rate / 1000.0) as u64;
@@ -751,9 +667,8 @@ impl Offload {
         }
     }
 
-    /// Frames presented now, as a count that only grows and never runs ahead of the clock: by the
-    /// platform's timestamp where it has one, by the play head otherwise. A reading that makes no sense
-    /// leaves the ear where it was, and is a strike.
+    /// Frames presented now, monotonic and never ahead of the clock: by timestamp where available, else
+    /// by play head. A bad reading changes nothing and is a strike.
     fn read_head(&mut self) -> u64 {
         if self.open.is_none() {
             return self.heard_at;
@@ -761,7 +676,7 @@ impl Offload {
         let stamp = if self.stamp_dead { None } else { self.out.timestamp() };
         let (raw, by_stamp) = match stamp {
             Some(s) => (s, true),
-            // A play head that never moved is not asked again: the watchdog decides.
+            // A dead play head is left to the watchdog.
             None if self.head_dead => return self.heard_at,
             None => match self.out.head() {
                 Some(h) => (h, false),
@@ -778,10 +693,9 @@ impl Offload {
         let jitter = (JITTER_MS * rate / 1000) as u64;
         let mut count = if by_stamp { self.stamp } else { self.head };
         let counted = count.base + count.last;
-        // A count started again at a join, only where the clock says the ear may be by now.
+        // A join the clock says may have been reached.
         let join = self.placed.iter().map(|p| p.start).find(|&s| s > counted).filter(|&s| s <= most);
-        // Away from a join, a count starts again from nought only after an end of stream (Android stops
-        // the track until it presented it) or a pause (a standby meanwhile).
+        // Away from a join, a restart is plausible only after an end of stream or a pause.
         let restart = self.eos_at.is_some() || self.resumed;
         let was = self.heard_at;
         let last = count.last;
@@ -800,16 +714,14 @@ impl Offload {
                     Seen::Restarted => self.note_now_and_then(|| format!("the {what} counts again from nought ({raw}): the count goes on from {counted} frames")),
                     Seen::Fine | Seen::Joined => {}
                 }
-                // In the first moments after the track began playing, no further than the clock says:
-                // the platform's first timestamps may read ahead of what it presented.
+                // Held to the clock just after playing began (early timestamps read ahead).
                 let start = self.play_clock.filter(|&(t, _)| self.now_ms - t < START_MS);
                 let pace = self.out.pace();
                 let at = start.map_or(at, |(t, from)| at.min(from + ((self.now_ms - t + START_SLACK_MS).max(0) as f64 * rate as f64 * pace / 1000.0) as u64));
                 self.heard_at = at.min(self.written_frames).max(self.heard_at);
                 if seen != Seen::Dip {
                     self.strikes = 0;
-                    // Only a count that moved says where the ear is by the clock: one that stands still
-                    // may be one the platform does not keep (a play head stuck at nought).
+                    // Only a moving count anchors the clock: a still one may be dead.
                     if self.heard_at > was || self.clock.is_none() {
                         self.clock_lag_ms = self.clock.map_or(0, |(t, at)| ((self.now_ms - t) - (self.heard_at.saturating_sub(at) as i64 * 1000 / rate)).max(0));
                         self.clock = Some((self.now_ms, self.heard_at));
@@ -835,7 +747,7 @@ impl Offload {
         self.heard_at
     }
 
-    /// Music the track can hold, µs, as its bytes and the songs' bitrate so far make it.
+    /// Music the track can hold, µs, from its size and the bitrate so far.
     fn holds_us(&self) -> i64 {
         let Some((_, _, bytes)) = self.open else { return TRACK_US };
         if self.written_bytes == 0 || self.written_frames == 0 {
@@ -844,16 +756,13 @@ impl Offload {
         (bytes as i128 * self.written_frames as i128 / self.written_bytes as i128 * 1_000_000 / self.rate() as i128) as i64
     }
 
-    /// The watchdog's slack, ms: [`STUCK_SLACK_MS`], or twice the longest the platform's count was seen
-    /// standing still before it moved on, up to [`STUCK_SLACK_MAX_MS`]. Scaled to how the platform keeps
-    /// its count, not to what the track holds.
+    /// The watchdog's slack: twice the longest standstill seen, within [`STUCK_SLACK_MS`]..[`STUCK_SLACK_MAX_MS`].
     fn slack_ms(&self) -> i64 {
         self.quiet_ms.saturating_mul(2).clamp(STUCK_SLACK_MS, STUCK_SLACK_MAX_MS)
     }
 
-    /// When the watchdog is due to look, ms (engine time): the count standing still while the platform
-    /// asks for more ([`DEAD_ASKS`] times) for the slack; or the count standing and the platform silent
-    /// for as long as the music written past the count, and the slack.
+    /// When the watchdog fires (engine ms): the slack after [`DEAD_ASKS`] asks with no movement, else the
+    /// music written past the count plus the slack after the platform last spoke.
     fn watch_at(&self, since: i64) -> i64 {
         let slack = self.slack_ms();
         let heard_from = self.asked_ms.map_or(since, |a| a.max(since));
@@ -861,13 +770,9 @@ impl Offload {
         if self.asks >= DEAD_ASKS { stall.min(since + slack) } else { stall }
     }
 
-    /// The watchdog: a playing track with music still to present whose count has not moved, and whose
-    /// platform has said nothing, for longer than the music written past the count and the slack, has
-    /// stalled; one whose count stands while the platform keeps asking for more has a count the platform
-    /// does not keep. The play head is tried when the timestamp stood still; when neither moves, the words
-    /// of why the CPU takes over, and whether the ear was put where the clock says (a platform that asked
-    /// for more played what it asked for) or left where the chip's count last put it (a stall: never
-    /// further than the chip got). Never a playing engine over a track starved in silence.
+    /// The watchdog (see the module docs). A stalled timestamp falls back to the play head; with neither
+    /// moving, returns why the CPU takes over and whether the place follows the clock (the platform kept
+    /// asking, so it played) rather than the last count (a real stall).
     fn stuck(&mut self) -> Option<(String, bool)> {
         if !self.playing || !self.started || self.placed.is_empty() || self.open.is_none() {
             return None;
@@ -875,7 +780,7 @@ impl Offload {
         let now = self.now_ms;
         let since = *self.moved_ms.get_or_insert(now);
         if self.in_track_us() <= END_SLACK_US {
-            // Everything written was heard: nothing to present, nothing to stand still for.
+            // Everything written was played.
             self.moved_ms = Some(now);
             return None;
         }
@@ -894,8 +799,7 @@ impl Offload {
         if self.by_stamp && !self.head_dead {
             self.stamp_dead = true;
             self.note(format!("{why}: the play head is followed instead"));
-            // Where the timestamp put the ear by the clock was its word: the play head is held only to
-            // what the clock allows since the track began playing.
+            // The timestamp's clock anchor is discarded: bound the play head by the play start.
             self.clock = self.play_clock.or(self.clock);
             self.clock_lag_ms = 0;
             let was = self.heard_at;
@@ -907,15 +811,14 @@ impl Offload {
         self.stamp_dead = true;
         self.head_dead = true;
         if dead {
-            // The platform played what it asked for: where the clock says the ear is by now, no further
-            // than what was written.
+            // The platform played what it asked for: follow the clock, within what was written.
             let by_clock = self.heard_at + (still.max(0) as u128 * self.rate() as u128 / 1000) as u64;
             self.heard_at = by_clock.min(self.written_frames);
         }
         Some((why, dead))
     }
 
-    /// A reading that made no sense, or an end of stream refused.
+    /// A bad reading or a refused end of stream.
     fn strike(&mut self, why: String) {
         self.strikes += 1;
         let n = self.strikes;
@@ -927,8 +830,7 @@ impl Offload {
         self.out.note(&what);
     }
 
-    /// A note of a count that made no sense, a few at once and one each [`NOTE_GAP_MS`] at most: its
-    /// words are put together only when it is made, and say how many were left out since the last.
+    /// A rate-limited note ([`NOTE_GAP_MS`]); `what` is built only when kept.
     fn note_now_and_then(&mut self, what: impl FnOnce() -> String) {
         let from = self.notes_from_ms.max(self.now_ms - NOTES_AT_ONCE * NOTE_GAP_MS);
         if from + NOTE_GAP_MS > self.now_ms {
@@ -943,7 +845,7 @@ impl Offload {
         self.note(what);
     }
 
-    /// The song the ear is on, where in it (ms), and which placing of it: the songs before it are gone.
+    /// The song being played, its position (ms) and placement seq; drops the songs before it.
     pub(crate) fn heard(&mut self) -> Option<(usize, i64, u64)> {
         let at = self.heard_at;
         while self.placed.len() > 1 && self.placed[1].start <= at {
@@ -957,17 +859,17 @@ impl Offload {
         Some((p.index, p.from_ms + (at.saturating_sub(p.start) as i64) * 1000 / rate, p.seq))
     }
 
-    /// The song the ear is on, without reading anything.
+    /// The song being played, without reading the count.
     pub(crate) fn current(&self) -> Option<usize> {
         self.placed.front().map(|p| p.index).or(self.starting.as_ref().map(|s| s.0))
     }
 
-    /// Music of what was written still to be heard, µs.
+    /// Written music not yet played, µs.
     pub(crate) fn in_track_us(&self) -> i64 {
         (self.written_frames.saturating_sub(self.heard_at) as i128 * 1_000_000 / self.rate() as i128) as i64
     }
 
-    /// Everything written has been heard and nothing more comes: what follows, if anything was set.
+    /// Everything written was played and nothing more comes: what follows.
     pub(crate) fn done(&mut self) -> Option<Tail> {
         let tail = self.tail?;
         if self.writing.is_some() || self.staged < self.stage.len() {
@@ -976,9 +878,8 @@ impl Offload {
         let end = self.written_frames;
         let us = |us: i64| (us * self.rate() as i64 / 1_000_000) as u64;
         let by_head = self.heard_at + us(END_SLACK_US) >= end;
-        // The platform's word that it played to the end of stream counts only near the end (it says so
-        // at every join as well, for the song before it), and only for the end of stream said last with
-        // nothing written since.
+        // "Presented" also fires at every join, so it counts only near the end and for the last end of
+        // stream with nothing written since.
         let by_word = !by_head && self.eos_at == Some(end) && self.heard_at + us(PRESENTED_NEAR_US) >= end && self.out.presented();
         if !by_head && !by_word {
             return None;
@@ -1003,8 +904,7 @@ impl Offload {
         Some(tail)
     }
 
-    /// The next song in play order after `i`, the one arriving on would not skip; none after the song the
-    /// music stops at.
+    /// The next song after `i` that is not skipped; None after the sleep timer's song.
     fn next_of<Q: Queue>(&self, i: usize, queue: &Q) -> Option<usize> {
         if self.stop_after == Some(i) {
             return None;
@@ -1023,8 +923,8 @@ impl Offload {
         Some(at)
     }
 
-    /// One turn: the song starting is placed once it is open, the track topped up when it is due, the
-    /// fade moved on. `gain` says each song's ReplayGain volume.
+    /// One turn: place the starting song once open, top up the track, step the fade. `gain` gives each
+    /// song's ReplayGain.
     pub(crate) fn turn<L: Library, Q: Queue>(&mut self, now_ms: i64, tracks: &mut Sources<L>, queue: &Q, gain: &mut dyn FnMut(usize, &str) -> f32) -> Step {
         self.now_ms = now_ms;
         self.follow_fade(now_ms);
@@ -1034,7 +934,7 @@ impl Offload {
         if let Some(step) = self.begin(tracks, queue, gain) {
             return step;
         }
-        // The platform's word that it wants more: the track is topped up whatever the count says.
+        // Asked for more: top up whatever the count says.
         let asked = self.open.is_some() && self.out.data_requested();
         if self.play_clock.is_none() && self.playing && self.started {
             self.play_clock = Some((now_ms, self.heard_at));
@@ -1061,8 +961,7 @@ impl Offload {
             self.on_cpu = Some(OnCpu::Head(why));
             return step;
         }
-        // A turn after the bytes it waited for came (the loader woke the thread) writes them, and so
-        // stops waiting.
+        // Also runs when awaited bytes arrived (the loader woke the thread).
         if self.placed.is_empty() || (!asked && !self.waiting && !self.top_up_due()) {
             return Step::Fine;
         }
@@ -1072,8 +971,7 @@ impl Offload {
         }
     }
 
-    /// The platform asked for more (at `now_ms`): its word that it plays, and that it says when the track
-    /// has room.
+    /// The platform asked for more at `now_ms`: it plays, and says when the track has room.
     fn asked_for_more(&mut self, now_ms: i64) {
         self.called_back = true;
         self.asks = self.asks.saturating_add(1);
@@ -1085,14 +983,13 @@ impl Offload {
         }
     }
 
-    /// Something is left to write: the song being written, what is staged of it, or the next one.
+    /// Something is left to write.
     fn more(&self) -> bool {
         self.writing.is_some() || self.next.is_some() || self.staged < self.stage.len()
     }
 
-    /// Whether the track is to be written to now without the platform asking: a full one only while the
-    /// platform has not shown it says when there is room (then at [`Offload::low_us`], as the bytes make
-    /// it), one that took everything it was given once the next song's mark ([`LOW_US`]) is reached.
+    /// Whether to write without an ask: a full track only if the platform never asks (at
+    /// [`Offload::low_us`]), otherwise below [`LOW_US`].
     fn top_up_due(&self) -> bool {
         if !self.more() {
             return false;
@@ -1104,18 +1001,14 @@ impl Offload {
         }
     }
 
-    /// How long before a boundary (the ear reaching a song placed after the one heard, or the end of what
-    /// was written) the CPU is kept awake, ms: the longest the platform went between two asks and half
-    /// again and a second, [`AWAKE_BEFORE_MS`] to [`AWAKE_BEFORE_MAX_MS`]. A thread asleep on a phone
-    /// asleep wakes only when the platform wakes it, so this is how late it could otherwise be.
+    /// How long before a boundary the CPU is kept awake, ms: 1.5 times the longest gap between asks plus
+    /// a second, within [`AWAKE_BEFORE_MS`]..[`AWAKE_BEFORE_MAX_MS`]. Asleep, the thread wakes only on an ask.
     fn awake_before_ms(&self) -> i64 {
         (self.ask_gap_ms * 3 / 2 + 1_000).clamp(AWAKE_BEFORE_MS, AWAKE_BEFORE_MAX_MS)
     }
 
-    /// Whether the offload path needs nothing of the CPU until the platform wakes the thread: the track
-    /// plays, fed, and says when it wants more; no song starts, no bytes are awaited, no fade runs, no
-    /// reading of the count is to be looked at again, and no boundary comes within
-    /// [`Offload::awake_before_ms`]. The CPU may sleep then (Android lets the wake lock go).
+    /// Whether nothing is due before the platform's next ask: playing and fed, nothing opening, fading
+    /// or pending, and no boundary within [`Offload::awake_before_ms`].
     pub(crate) fn lets_cpu_sleep(&self) -> bool {
         if !self.playing || !self.started || self.placed.is_empty() || self.open.is_none() || self.starting.is_some() || self.waiting || self.fade.is_some() {
             return false;
@@ -1123,7 +1016,7 @@ impl Offload {
         if self.strikes > 0 || self.eos_due || self.head.lower.is_some() || self.stamp.lower.is_some() {
             return false;
         }
-        // A platform that has not said it asks for more is topped up on the engine's own time.
+        // A platform that never asked is topped up on the engine's time.
         if self.more() && !self.called_back {
             return false;
         }
@@ -1139,9 +1032,7 @@ impl Offload {
         true
     }
 
-    /// The track is topped up when it holds less than this, µs, while the platform has not shown that it
-    /// asks for more: [`LOW_US`], or half of a track too small for that (as its bytes and the songs'
-    /// bitrate make it), so it is never looked at for nothing.
+    /// Top-up mark without asks, µs: [`LOW_US`], or half a track too small for it.
     fn low_us(&self) -> i64 {
         if self.open.is_none() || self.written_bytes == 0 || self.written_frames == 0 {
             return LOW_US;
@@ -1149,7 +1040,7 @@ impl Offload {
         LOW_US.min(self.holds_us() / 2)
     }
 
-    /// The CPU takes over where the ear is.
+    /// Hands the song to the CPU at the playback position.
     fn fallback(&mut self, refused: bool) -> Step {
         if refused {
             self.on_cpu = Some(OnCpu::Failed);
@@ -1163,7 +1054,7 @@ impl Offload {
         }
     }
 
-    /// The song starting, once it is open: placed on a track for its format, or handed to the CPU.
+    /// Places the starting song once open on a track for its format, or hands it to the CPU.
     fn begin<L: Library, Q: Queue>(&mut self, tracks: &mut Sources<L>, queue: &Q, gain: &mut dyn FnMut(usize, &str) -> f32) -> Option<Step> {
         let (i, ms) = self.starting.as_ref().map(|s| (s.0, s.1))?;
         let ready = match &mut self.starting.as_mut().expect("checked").2 {
@@ -1214,7 +1105,7 @@ impl Offload {
             let said = self.out.said(coded).map(|s| format!(" ({s})")).unwrap_or_default();
             format!("its encoder delay of {} and padding of {} heard as a moment of near silence at its ends: no song of its album joins it, and the output does not do gapless offload{said}", song.delay, song.padding)
         });
-        // A song started part way in has no delay left to cut.
+        // Started part way in: no delay to cut.
         let delay = if song.from_frame > 0 { 0 } else { song.delay };
         self.out.delay_padding(delay, song.padding);
         let from_ms = song.from_frame * 1000 / coded.rate.max(1) as i64;
@@ -1228,8 +1119,6 @@ impl Offload {
             return Some(self.fallback(true));
         }
         if let Some(asked) = self.granted.take() {
-            // What the track holds: said, for the battery. The platform's asks set how often the thread
-            // wakes to top it up, once it has asked; before that, the bytes do.
             let held = self.open.map_or(0, |o| o.2);
             let (holds, low) = (self.holds_us() / 1000, self.low_us() / 1000);
             self.note(format!(
@@ -1251,14 +1140,11 @@ impl Offload {
         Some(Step::Fine)
     }
 
-    /// Writes into the track what it has room for: the rest of the song being written, and the songs
-    /// after it that join it without a gap. Err when the track refused a write with an error. `asked`:
-    /// the platform asked for more, and the next song is written even while the count says the track
-    /// holds more than it can (the count lags what the track played).
+    /// Writes what fits: the rest of the song being written, then the songs that join it gaplessly. Err
+    /// when the track refused a write. `asked`: the platform asked, so the next song is written even when
+    /// the (lagging) count says the track is full.
     fn fill<L: Library, Q: Queue>(&mut self, asked: bool, tracks: &mut Sources<L>, queue: &Q, gain: &mut dyn FnMut(usize, &str) -> f32) -> Result<(), i32> {
         loop {
-            // The track holds minutes at most, whatever the platform would take: the rest waits for a
-            // top-up.
             if self.in_track_us() >= TRACK_US {
                 return Ok(());
             }
@@ -1295,7 +1181,7 @@ impl Offload {
                 if !w.r.ready() {
                     continue;
                 }
-                // Read to its end: its length is known, and what follows is looked at.
+                // Read to its end: its length is known.
                 let frames = w.frames;
                 if let Some((_, why)) = w.r.error() {
                     let id = self.placed.back().map(|p| p.id.clone()).unwrap_or_default();
@@ -1316,10 +1202,8 @@ impl Offload {
                 }
                 continue;
             }
-            // The next song is written once less than half a minute is left, however small the track
-            // (a chip that buffers on its own may not present the last of a song until more comes), so an
-            // edit of the queue before then costs nothing; the whole of it is here by then (fetched as the
-            // song before began).
+            // The next song is written below LOW_US (a queue edit before then costs nothing), or at an ask
+            // while the count lags (a DSP may hold a song's end until more comes).
             let lagging = asked && self.in_track_us() > self.holds_us() * 3 / 2;
             if self.next.is_none() || (self.in_track_us() >= LOW_US && !lagging) {
                 return Ok(());
@@ -1338,16 +1222,15 @@ impl Offload {
             };
             let id = queue.read(|q| q.ids()[n].clone());
             let level = gain(n, &id);
-            // A song turned up is not for this output either (`refuses` says so once the track is out).
             let joins = nori_player::gain::offload_allows(level) && self.open.is_some_and(|(c, gapless, _)| gapless && song.as_ref().is_some_and(|s| s.coded == c));
             let Some(song) = song.filter(|_| joins) else {
-                // Another format, or not for this output: the track plays out, and then it is decided.
+                // Another format or not offloadable: decided once the track plays out.
                 self.next = None;
                 self.close(Tail::Then(n));
                 return Ok(());
             };
             if self.pending_eos {
-                // The song before is closed first: the platform takes that only while the track plays.
+                // Close the song before first (only accepted while playing).
                 self.end_stream();
                 if self.pending_eos {
                     return Ok(());
@@ -1365,14 +1248,14 @@ impl Offload {
         }
     }
 
-    /// Nothing more is written after what is: `tail` follows once it has played.
+    /// Nothing more is written; `tail` follows once it played.
     fn close(&mut self, tail: Tail) {
         self.end_stream();
         self.tail = Some(tail);
     }
 
-    /// The last packet written closes its song: said to the platform while the track plays, or once it
-    /// does (Android refuses it otherwise). A refusal while playing is a strike.
+    /// Tells the platform the last packet ended its song, now if playing or once it plays (Android
+    /// refuses it otherwise). A refusal while playing is a strike.
     fn end_stream(&mut self) {
         if !self.pending_eos {
             self.eos_due = false;
@@ -1396,13 +1279,13 @@ impl Offload {
         }
     }
 
-    /// Writes what is staged. False when the track would not take all of it (it is full).
+    /// Writes the stage. False when the track is full.
     fn write_staged(&mut self) -> Result<bool, i32> {
         let left = self.stage.len() - self.staged;
         let frames = self.stage_frames;
         let taken = self.out.write(&self.stage[self.staged..], frames)?.min(left);
         self.full = taken < left;
-        // The frames go with the bytes in proportion; they are exact once the whole stage is taken.
+        // Frames in proportion to bytes; exact once the whole stage is taken.
         let part = if taken == left { frames } else { (frames as u128 * taken as u128 / left as u128) as u64 };
         self.stage_frames -= part;
         self.written_frames += part;
@@ -1414,12 +1297,12 @@ impl Offload {
         Ok(taken == left)
     }
 
-    /// The song starting, or the next packet, waits for its bytes.
+    /// The starting song or the next packet waits for bytes.
     pub(crate) fn waiting_for_bytes(&self) -> bool {
         self.starting.is_some() || self.waiting
     }
 
-    /// How long the thread may sleep before this path needs it, ms; none when nothing is due.
+    /// How long until this path needs the thread, ms; None when nothing is due.
     pub(crate) fn wake_in(&self) -> Option<i64> {
         let mut d: Option<i64> = None;
         let mut at = |ms: i64| d = Some(d.map_or(ms, |x| x.min(ms)));
@@ -1427,7 +1310,7 @@ impl Offload {
             at(nori_player::transport::FADE_TICK_MS);
         }
         if self.starting.is_some() || self.waiting {
-            // The loader wakes the thread when the bytes are there; this is in case it never does.
+            // The loader wakes the thread; this is a fallback.
             at(1_000);
         }
         if !self.playing || self.placed.is_empty() {
@@ -1438,19 +1321,17 @@ impl Offload {
         }
         let rate = self.rate() as i64;
         let ms = |frames: u64| frames as i64 * 1000 / rate;
-        // The ear reaching the next song.
+        // The next song becoming audible.
         if let Some(p) = self.placed.get(1) {
             at(ms(p.start.saturating_sub(self.heard_at)) + 5);
         }
         if self.more() {
             if self.full && self.called_back {
-                // The platform's ask wakes the thread; this only in case it never comes, once what was
-                // written could have played.
+                // The ask wakes the thread; this is a fallback.
                 at((self.in_track_us() / 1000).max(BACKSTOP_MS));
             } else if self.full {
-                // A track that refused a write while it seemed low holds more than its bytes say: a second,
-                // or half the time to the low mark in a track too small for that (64 KB on some phones), so
-                // it never runs dry waiting.
+                // Full while it seemed low: the DSP buffers more than the bytes say. Look again within a
+                // second (or half the low mark for a tiny track) so it never runs dry.
                 let floor = (self.low_us() / 2000).clamp(1, 1_000);
                 at(((self.in_track_us() - self.low_us()) / 1000).max(0) + floor);
             } else {
@@ -1467,9 +1348,8 @@ impl Offload {
         d
     }
 
-    /// The music stops at the end of the song heard (the sleep timer's "end of this song"), or goes on
-    /// again (`false`). True when a song after it is written already, which cannot be taken back: the
-    /// track then starts again where the ear is, and the stop is set again on it.
+    /// Stops after the current song (the sleep timer), or not (`false`). True when a later song is
+    /// already written: the caller restarts the track at the playback position and sets the stop again.
     pub(crate) fn pause_at_end<L: Library, Q: Queue>(&mut self, on: bool, tracks: &mut Sources<L>, queue: &Q) -> bool {
         let Some(c) = self.current() else { return false };
         self.stop_after = on.then_some(c);
@@ -1483,7 +1363,7 @@ impl Offload {
             self.next = None;
             self.close(Tail::End);
         } else if self.tail == Some(Tail::End) {
-            // Taken back before the end: what follows is written after all.
+            // Cancelled before the end: write what follows after all.
             self.tail = None;
             match self.next_of(c, queue) {
                 Some(n) => {
@@ -1496,9 +1376,8 @@ impl Offload {
         false
     }
 
-    /// The queue changed (an edit, shuffle, repeat): what the track holds is found again by id, and the
-    /// song after the last one written is looked at again. A song already written after the one heard
-    /// that no longer follows it cannot be taken back: the track starts again where the ear is (true).
+    /// The queue changed: re-finds the written songs by id and re-picks the song after the last. True
+    /// when a written song no longer follows: the caller restarts at the playback position.
     pub(crate) fn queue_changed<L: Library, Q: Queue>(&mut self, old: &[String], tracks: &mut Sources<L>, queue: &Q) -> bool {
         let new: Vec<String> = queue.read(|q| q.ids().to_vec());
         for p in self.placed.iter_mut() {
@@ -1531,7 +1410,6 @@ impl Offload {
         if was == after {
             return false;
         }
-        // Another song follows now (or none): it is opened, and written at the join as any other.
         self.next = None;
         self.tail = None;
         match after {
@@ -1545,7 +1423,7 @@ impl Offload {
     }
 }
 
-/// Where the song at index `i` of `old` (`id`) is in `new`: the same id, nearest to where it was.
+/// The index in `new` of the song at `i` in `old` (`id`): the same id, nearest to `i`.
 fn moved(old: &[String], new: &[String], i: usize, id: &str) -> Option<usize> {
     let id = old.get(i).map_or(id, String::as_str);
     new.iter().enumerate().filter(|(_, n)| *n == id).map(|(j, _)| j).min_by_key(|&j| j.abs_diff(i))
@@ -1559,22 +1437,20 @@ impl Drop for Offload {
     }
 }
 
-/// Opus packets put in Ogg pages for the chip, as media3's `OggOpusAudioPacketizer` does: the stream's
-/// header (`OpusHead`) and an empty comment header first, then each packet in a page of its own, stamped
-/// with the samples decoded up to its end.
+/// Opus packets in Ogg pages, as media3's `OggOpusAudioPacketizer` does: `OpusHead` and an empty
+/// comment header, then one page per packet, stamped with the samples decoded up to its end.
 pub(crate) struct Ogg {
     head: Option<Vec<u8>>,
     sequence: u32,
     granule: u64,
 }
 
-/// The stream every page belongs to.
 const OGG_SERIAL: u32 = 0;
 
 impl Ogg {
     pub(crate) fn new(opus_head: Option<&[u8]>) -> Ogg {
         let head = opus_head.filter(|h| h.starts_with(b"OpusHead")).map(<[u8]>::to_vec).unwrap_or_else(|| {
-            // A plain stereo header: what media3 writes when the stream brought none.
+            // media3's default stereo header.
             let mut h = b"OpusHead".to_vec();
             h.extend_from_slice(&[1, 2, 0x38, 0x01, 0x80, 0xbb, 0, 0, 0, 0, 0]);
             h
@@ -1582,7 +1458,7 @@ impl Ogg {
         Ogg { head: Some(head), sequence: 0, granule: 0 }
     }
 
-    /// `packet` as a page (after the two header pages, before the first one) onto `out`.
+    /// Appends `packet` as a page to `out`, preceded by the header pages the first time.
     pub(crate) fn page(&mut self, packet: &[u8], out: &mut Vec<u8>) {
         if let Some(head) = self.head.take() {
             self.write(&head, 0x02, 0, out);
@@ -1617,7 +1493,7 @@ impl Ogg {
     }
 }
 
-/// Samples (at 48 kHz) an Opus packet decodes to, from its table of contents (RFC 6716, 3.1).
+/// Samples (48 kHz) an Opus packet decodes to, from its TOC byte (RFC 6716, 3.1).
 pub(crate) fn opus_samples(packet: &[u8]) -> u64 {
     let Some(&toc) = packet.first() else { return 0 };
     let config = toc >> 3;
@@ -1634,7 +1510,7 @@ pub(crate) fn opus_samples(packet: &[u8]) -> u64 {
     frame * frames
 }
 
-/// Ogg's page checksum: CRC-32 with the polynomial 0x04c11db7, unreflected, from nought.
+/// Ogg's page CRC-32: polynomial 0x04c11db7, unreflected, initial 0.
 fn ogg_crc(page: &[u8]) -> u32 {
     let mut crc = 0u32;
     for &b in page {
@@ -1651,18 +1527,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn opus_packets_go_in_ogg_pages_with_their_samples_counted() {
+    fn opus_packets_become_ogg_pages() {
         let mut ogg = Ogg::new(Some(b"OpusHead\x01\x02\x38\x01\x80\xbb\0\0\0\0\0"));
         let mut out = Vec::new();
         // A 20 ms packet (config 1: SILK 20 ms), one frame.
         ogg.page(&[0x08, 1, 2, 3], &mut out);
-        // Three pages: the header, the comment header, the packet.
+        // Header, comment header, packet.
         let pages: Vec<usize> = out.windows(4).enumerate().filter(|(_, w)| *w == b"OggS").map(|(i, _)| i).collect();
         assert_eq!(pages.len(), 3);
         assert_eq!(out[pages[0] + 5], 0x02, "the first page begins the stream");
         let granule = u64::from_le_bytes(out[pages[2] + 6..pages[2] + 14].try_into().unwrap());
         assert_eq!(granule, 960, "20 ms at 48 kHz");
-        // Each page's checksum is Ogg's own: computed with its checksum field zeroed.
+        // CRC computed with its field zeroed.
         for (k, &p) in pages.iter().enumerate() {
             let end = pages.get(k + 1).copied().unwrap_or(out.len());
             let mut page = out[p..end].to_vec();
@@ -1670,7 +1546,7 @@ mod tests {
             page[22..26].fill(0);
             assert_eq!(ogg_crc(&page), said);
         }
-        // A packet of 255 bytes or more takes more than one lacing value.
+        // 255 bytes or more take several lacing values.
         let mut out = Vec::new();
         ogg.page(&vec![0x08; 300], &mut out);
         assert_eq!(out[26], 2, "two lacing values");
@@ -1678,7 +1554,7 @@ mod tests {
     }
 
     #[test]
-    fn the_samples_of_an_opus_packet_come_from_its_table_of_contents() {
+    fn opus_samples_from_toc() {
         assert_eq!(opus_samples(&[0x08]), 960, "SILK 20 ms");
         assert_eq!(opus_samples(&[0xfc]), 960, "CELT 20 ms");
         assert_eq!(opus_samples(&[0xf9]), 1920, "two CELT 20 ms frames");
@@ -1689,52 +1565,49 @@ mod tests {
     const JITTER: u64 = 4_410;
 
     #[test]
-    fn the_head_counts_on_through_a_join_that_starts_it_again() {
+    fn head_continues_through_join_restart() {
         let mut h = Head::default();
         let far = u64::MAX;
         assert_eq!(h.read(1_000, None, false, JITTER, far), Ok((1_000, Seen::Fine)));
         assert_eq!(h.read(10_990, None, false, JITTER, far), Ok((10_990, Seen::Fine)));
-        // The platform started counting again at the join: the next song began at 11 000.
+        // Restarted at the join at 11 000.
         assert_eq!(h.read(20, Some(11_000), false, JITTER, far), Ok((11_020, Seen::Joined)));
         assert_eq!(h.read(500, None, false, JITTER, far), Ok((11_500, Seen::Fine)));
     }
 
     #[test]
-    fn a_lower_reading_away_from_a_join_does_not_move_the_ear() {
+    fn head_dip_away_from_join_holds() {
         let mut h = Head::default();
         let far = u64::MAX;
         assert_eq!(h.read(44_100, None, true, JITTER, far), Ok((44_100, Seen::Fine)));
-        // Nought once (a failed call read as nought, a moment's reset): the ear stays, and the count goes
-        // on as it was when the next reading is back.
+        // One zero reading: held, and the count continues when the next is back.
         assert_eq!(h.read(0, None, true, JITTER, far), Ok((44_100, Seen::Dip)));
         assert_eq!(h.read(46_000, None, true, JITTER, far), Ok((46_000, Seen::Fine)));
-        // Counting again from nought for good (a standby, or after an end of stream): taken at the second
-        // reading, from where the ear was.
+        // A real restart (standby, end of stream): taken at the second low reading.
         assert_eq!(h.read(10, None, true, JITTER, far), Ok((46_000, Seen::Dip)));
         assert_eq!(h.read(900, None, true, JITTER, far), Ok((46_900, Seen::Restarted)));
         assert_eq!(h.read(1_900, None, true, JITTER, far), Ok((47_900, Seen::Fine)));
     }
 
     #[test]
-    fn a_count_started_again_away_from_a_join_is_taken_only_where_one_is_plausible() {
+    fn head_restart_only_where_plausible() {
         let mut h = Head::default();
         let far = u64::MAX;
         assert_eq!(h.read(441_000, None, false, JITTER, far), Ok((441_000, Seen::Fine)));
-        // No end of stream said, no pause: two low readings in a row leave the ear where it was.
+        // No end of stream or pause: low readings hold.
         assert_eq!(h.read(10, None, false, JITTER, far), Ok((441_000, Seen::Dip)));
         assert_eq!(h.read(900, None, false, JITTER, far), Ok((441_000, Seen::Dip)));
-        // A drop to half way is no count from nought, whatever may be.
+        // A drop to half way is never a restart.
         assert_eq!(h.read(300_000, None, true, JITTER, far), Ok((441_000, Seen::Dip)));
         assert_eq!(h.read(300_100, None, true, JITTER, far), Ok((441_000, Seen::Dip)));
         assert_eq!(h.read(441_500, None, true, JITTER, far), Ok((441_500, Seen::Fine)));
     }
 
     #[test]
-    fn a_moment_back_holds_the_count_and_is_never_a_count_started_again() {
+    fn head_jitter_holds_count() {
         let mut h = Head::default();
         let far = u64::MAX;
-        // A Galaxy S22's timestamp as its track starts: 10, 6, 5, 4, 6 (each once taken for a count
-        // started again, the ear put 10 and then 16 frames on).
+        // A Galaxy S22's timestamp as its track starts (once misread as restarts).
         assert_eq!(h.read(10, None, true, JITTER, far), Ok((10, Seen::Fine)));
         for (raw, back) in [(6, 4), (5, 5), (4, 6), (4, 6), (6, 4)] {
             assert_eq!(h.read(raw, None, true, JITTER, far), Ok((10, Seen::Jitter(back))));
@@ -1743,8 +1616,7 @@ mod tests {
         for raw in [7_066, 7_065, 7_067, 7_065, 7_066, 7_064] {
             assert_eq!(h.read(raw, None, true, JITTER, far).map(|r| r.0), Ok(7_074), "{raw}");
         }
-        // Steps back of a few frames to 80 ms as it plays on, even where the next song's start is in
-        // reach: never a join.
+        // Steps back up to 80 ms are never a join, even with one in reach.
         assert_eq!(h.read(3_021_762, None, true, JITTER, far), Ok((3_021_762, Seen::Fine)));
         assert_eq!(h.read(3_021_759, Some(3_022_000), true, JITTER, far), Ok((3_021_762, Seen::Jitter(3))));
         assert_eq!(h.read(3_018_234, Some(3_022_000), true, JITTER, far), Ok((3_021_762, Seen::Jitter(3_528))));
@@ -1752,12 +1624,12 @@ mod tests {
     }
 
     #[test]
-    fn a_reading_ahead_of_the_clock_changes_nothing() {
+    fn head_ahead_of_clock_rejected() {
         let mut h = Head::default();
         assert_eq!(h.read(1_000, None, false, JITTER, 50_000), Ok((1_000, Seen::Fine)));
         assert_eq!(h.read(4_000_000, None, false, JITTER, 50_000), Err(4_000_000));
         assert_eq!(h.read(12_000, None, false, JITTER, 50_000), Ok((12_000, Seen::Fine)), "the count as it was");
-        // A join the clock says the ear cannot have reached is not one.
+        // A join the clock says cannot be reached is not one.
         assert_eq!(h.read(10, None, false, JITTER, 50_000), Ok((12_000, Seen::Dip)));
     }
 }
