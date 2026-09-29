@@ -287,31 +287,20 @@ fun HeroPage(
         }) {
             if (wide) androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
                 // On its side the page stands in two halves, as Apple's does on a wide screen: the cover,
-                // the name and the buttons on the left, still, and the songs scrolling down the right.
-                // Upright, the cover alone was the whole screen and the songs began a screen further down.
-                // The half is wide enough for the buttons; the cover in it is as large as the height left once
-                // the status bar, the now playing bar and the name, caption and buttons (about 170 dp) are
-                // counted out, so all of it fits without scrolling.
-                // At least room for the three round buttons and a Play pill that still fits "Pause".
-                // The player's own share (PlayerHalves), so a cover here is the same band, cropped above and below,
-                // its soft edge where the page's words begin.
-                val half = maxOf(maxWidth * 0.55f, 360.dp)
+                // the name and the buttons beside it, and the songs scrolling down the right. Upright, the cover alone
+                // was the whole screen and the songs began a screen further down.
                 // Where the words begin: the player's controls' place, so the cover's soft edge runs on under them.
                 val textAt = minOf(maxOf(maxWidth * 0.45f, 360.dp), maxWidth * 0.5f)
-                // Inside the half's gutters, and short enough to leave the top margin, the name, caption and
-                // buttons (about 190 dp) and the now playing bar their room.
-                val top = with(androidx.compose.ui.platform.LocalDensity.current) {
-                    androidx.compose.foundation.layout.WindowInsets.statusBars.getTop(this).toDp()
-                }
-                val side = minOf(half - Space.gutter * 2, maxHeight - top - WIDE_TOP - LocalChromeInset.current - 190.dp).coerceAtLeast(88.dp)
                 Row(Modifier.fillMaxSize()) {
                     // A cover fills its half as the player's sleeve fills its own: from the screen's very left
                     // edge - under the camera's punch hole, which the app otherwise keeps pages clear of - and top,
                     // going soft at its right edge, blurred as the sleeve does, into the page. The name, caption and
                     // buttons stand on the right above the songs, as the player's controls stand beside its sleeve,
-                    // so nothing is written over the picture. A page with no cover of its own (a mix) keeps its
-                    // artwork as a tile beside its buttons.
-                    if (picture != null) {
+                    // so nothing is written over the picture. A page with no picture at all - an artist without a
+                    // photo, or one whose details have not come (offline) - keeps the same layout with the plain plate a
+                    // missing cover shows, rather than falling back to another layout that appeared only then.
+                    val band: @Composable (Modifier) -> Unit = picture ?: { m -> Cover(null, 0.dp, m, radius = 0.dp) }
+                    run {
                         val cutout = LocalPageStart.current
                         // The cover reaches [UNDER_TEXT] in under the name, the buttons and the songs, which keep their
                         // place: wider than tall, as the player's sleeve on its side.
@@ -326,7 +315,7 @@ fun HeroPage(
                                 layout(constraints.maxWidth, placeable.height) { placeable.place(-extra, 0) }
                             },
                         ) {
-                            SoftSleeve(Modifier.fillMaxSize()) { picture(Modifier.fillMaxSize()) }
+                            SoftSleeve(Modifier.fillMaxSize()) { band(Modifier.fillMaxSize()) }
                             // The shade under the status bar, faded out with the soft right edge so it does not end on a line.
                             Box(
                                 Modifier.fillMaxSize().graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }.drawWithCache {
@@ -339,9 +328,6 @@ fun HeroPage(
                                 },
                             )
                         }
-                                        } else Column(Modifier.width(half).fillMaxHeight().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
-                        hero(side, true)
-                        Spacer(Modifier.height(LocalChromeInset.current))
                     }
                     // Beside a cover, not the camera's strip: a shelf here (an artist's albums) has nothing to run out
                     // under on this side, and its fade would lay the page's colour over the picture.
@@ -349,7 +335,7 @@ fun HeroPage(
                     LazyColumn(Modifier.weight(1f).fillMaxHeight(), state = list) {
                         // The first song level with the top of the cover beside it.
                         item(key = "hero-wide-top") { Spacer(Modifier.statusBarsPadding().height(WIDE_TOP)) }
-                        if (picture != null) item(key = "hero-wide-head", contentType = "hero") { Column(Modifier.padding(bottom = 8.dp)) { hero(null, false) } }
+                        item(key = "hero-wide-head", contentType = "hero") { Column(Modifier.padding(bottom = 8.dp)) { hero(null, false) } }
                         content()
                         item(key = "tail") { Spacer(Modifier.height(Space.section + LocalChromeInset.current)) }
                     }
