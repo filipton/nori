@@ -1,8 +1,6 @@
-//! The engine never says it plays while nothing can be heard (the S22's classical playlist, 2026-09-26:
-//! the player said it played, no output was open, no song was being fetched, and nothing was said; every
-//! song after it was silent until the app was started again). Whatever leaves it so - a panic on its own
-//! thread, a song's loader that died, an output that stopped taking music - the music is made again from
-//! scratch, said as an error, and a song that does it twice is skipped as one that would not play.
+//! The engine never claims to play while silent: after a panic on its thread, a dead loader, or an
+//! output that stops taking music, the song restarts from scratch with an error, and a song that fails
+//! twice is skipped. (Regression: a phone once stayed silent while "playing" until restarted.)
 //!
 //! On the clock the test moves (`common::Virtual`); the songs are tones, each its own pitch, so what the
 //! card hears says which song it is.
@@ -160,7 +158,7 @@ fn rig(songs: usize) -> Rig {
 }
 
 impl Rig {
-    /// Song `k` is what the card hears now: a second of it, at its pitch.
+    /// The card heard a second of song `k` (by its pitch).
     fn hears(&self, k: usize) -> bool {
         self.card.secs() >= 1.0 && (self.card.last_second_hz() - hz(k)).abs() < 3.0
     }
@@ -179,9 +177,6 @@ impl Rig {
     }
 }
 
-/// The engine's own thread panics as a song is opened: it is said (an error naming the song and the
-/// panic), the song is let go of from scratch - its bytes and what the disk keeps of it - and opened
-/// again, and it plays. The engine goes on taking commands after.
 #[test]
 fn panic_restarts_song() {
     let r = rig(3);
@@ -197,8 +192,6 @@ fn panic_restarts_song() {
     assert!(r.wait_to_hear(2, Duration::from_secs(5)), "the engine still takes commands: {}", r.state());
 }
 
-/// A song the engine panics on every time it is opened is skipped as one that would not play, and the
-/// song after it plays: never a player that says it plays and makes no sound.
 #[test]
 fn repeated_panic_skips_song() {
     let r = rig(3);
@@ -210,8 +203,6 @@ fn repeated_panic_skips_song() {
     assert!(r.events.lock().iter().any(|e| matches!(e, Event::Song { id, .. } if id == &r.ids[2])), "and is said: {}", r.state());
 }
 
-/// The loader's thread panics with the song half fetched: the song fails, as one whose bytes stopped
-/// coming (said, skipped), rather than waiting for bytes for ever.
 #[test]
 fn loader_panic_fails_song() {
     let r = rig(3);
@@ -222,9 +213,6 @@ fn loader_panic_fails_song() {
     assert!(errors.iter().any(|(id, _)| id == &r.ids[1]), "the song's failure is said: {errors:?}");
 }
 
-/// The output stops taking music while the engine plays (a device gone quiet): after a while standing
-/// still with nothing on its way, the music is made again from scratch where the ear was, on a new output,
-/// and the song plays on from there. Said as an error.
 #[test]
 fn silent_output_restarts_song() {
     let r = rig(2);
@@ -232,7 +220,6 @@ fn silent_output_restarts_song() {
     assert!(r.wait_to_hear(0, Duration::from_secs(5)), "the song plays: {}", r.state());
     r.time.run(Duration::from_secs(3));
     let opened = r.card.opened.lock().len();
-    // The device stops pulling, as a dead track would.
     r.card.pull.lock().pause_pulling();
     r.time.run(Duration::from_secs(8));
     assert_eq!(r.card.opened.lock().len(), opened, "not before it has stood still a while: {}", r.state());
@@ -242,7 +229,6 @@ fn silent_output_restarts_song() {
     assert!(errors.iter().any(|(id, m)| id == &r.ids[0] && m.contains("no music")), "said: {errors:?}");
 }
 
-/// Paused, the music standing still is no fault: nothing is made again, nothing said.
 #[test]
 fn paused_is_not_a_stall() {
     let r = rig(2);

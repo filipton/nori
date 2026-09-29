@@ -1,12 +1,7 @@
-//! A server where some songs never come: octo-fiesta asked for a provider's song it cannot fetch (its
-//! token gone) answers nothing, or its headers and then nothing. The user skips through such an album
-//! and goes on to songs that play: they must play. The platform's HTTP client has only so many requests
-//! to one server at once (OkHttp's dispatcher, a connection's HTTP/2 streams), modelled here as slots: a
-//! request that hangs holds its slot until it is called off, so a player that leaves its hung requests
-//! running runs out of them and nothing plays after that - what a phone did.
-//!
-//! The engine runs on a clock the test moves (`common::Virtual`); a request that hangs lets that time
-//! move (`Virtual::hang_while`), as a server waiting on the clock does.
+//! Songs whose server never answers (octo-fiesta without a provider token): skipping through them must
+//! leave later songs playable. The HTTP client's per-host request limit is modelled as slots; a hung
+//! request holds its slot until cancelled, so an engine that leaks hung requests starves later songs
+//! (what a phone did). Hung requests let the virtual clock move (`Virtual::hang_while`).
 
 use crate::common;
 
@@ -25,9 +20,9 @@ use parking_lot::Mutex;
 const RATE: u32 = 44_100;
 /// Seconds of each song.
 const SECS: u32 = 6;
-/// Requests the platform lets run to the server at once.
+/// Concurrent requests the client allows per host.
 const SLOTS: usize = 6;
-/// Longest a hung request waits, in real time, for anyone to call it off: far past any test.
+/// Real time a hung request waits for cancellation: far past any test.
 const FOREVER: Duration = Duration::from_secs(300);
 
 fn wav(hz: f64) -> Arc<Vec<u8>> {
@@ -37,20 +32,20 @@ fn wav(hz: f64) -> Arc<Vec<u8>> {
 /// How a song's request hangs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Hang {
-    /// No answer at all: the headers never come.
+    /// No headers ever.
     Headers,
-    /// The headers, a length, and then not a byte.
+    /// Headers, then no body bytes.
     Body,
 }
 
-/// The server: the songs that play, the ones that hang and how, and the slots its requests take.
+/// The server: songs, how the `ext-` ones hang, and the request slots.
 struct Server {
     clock: Virtual,
     files: Vec<(String, Arc<Vec<u8>>)>,
     hang: Hang,
-    /// Requests running now: each holds a slot until its answer is let go or it is called off.
+    /// Requests holding a slot.
     running: Mutex<usize>,
-    /// Requests that hung, and the ones called off.
+    /// Requests that hung, and those cancelled.
     hung: AtomicU64,
     called_off: AtomicU64,
 }
@@ -64,8 +59,7 @@ impl Server {
         *self.running.lock()
     }
 
-    /// Waits for a slot, as the platform queues a request behind the ones running: false when none came
-    /// before the request was called off.
+    /// Waits for a free slot; false if cancelled first.
     fn slot(self: &Arc<Self>, call: &Call) -> bool {
         let me = self.clone();
         let c = call.clone();
@@ -78,7 +72,7 @@ impl Server {
         true
     }
 
-    /// Hangs until the request is called off: as OkHttp's call, cancelled, fails its wait at once.
+    /// Hangs until the request is cancelled.
     fn hang(&self, call: &Call) {
         self.hung.fetch_add(1, Ordering::Relaxed);
         let c = call.clone();
@@ -89,7 +83,7 @@ impl Server {
     }
 }
 
-/// A request as the platform's HTTP client runs it: cancelled when the player calls it off.
+/// A client request's cancelled flag.
 #[derive(Clone, Default)]
 struct Call(Arc<std::sync::atomic::AtomicBool>);
 
@@ -99,7 +93,7 @@ impl Call {
     }
 }
 
-/// A slot, given back when the answer is let go.
+/// A held slot, freed on drop.
 struct Slot(Arc<Server>);
 
 impl Drop for Slot {
@@ -108,7 +102,7 @@ impl Drop for Slot {
     }
 }
 
-/// A song's bytes, or none ever.
+/// A body: the song's bytes, or none ever.
 struct Answer {
     bytes: Option<Cursor<Arc<Vec<u8>>>>,
     call: Call,
@@ -178,7 +172,6 @@ impl Library for Songs {
         WindowSong { id: id.into(), title: id.into(), duration_ms: SECS as i64 * 1000, ..Default::default() }
     }
 
-    /// A provider's song is never fetched before it is asked for, as the core's rule says.
     fn fetch_ahead(&self, id: &str) -> bool {
         !Server::hangs(id)
     }
@@ -195,7 +188,7 @@ struct Rig {
     playlist: Vec<String>,
 }
 
-/// A provider's album of `hung` songs that never come, queued, and a playlist of `fine` songs that play.
+/// An album of `hung` songs that never come, queued, and a playlist of `fine` songs.
 fn rig(hang: Hang, hung: usize, fine: usize) -> Rig {
     let clock = Virtual::default();
     let album: Vec<String> = (0..hung).map(|k| format!("ext-{k}")).collect();
@@ -220,7 +213,7 @@ impl Rig {
         self.events.lock().iter().skip(from).any(|e| matches!(e, Event::Song { id: i, .. } if i == id))
     }
 
-    /// Plays the album from its start and presses next through it, a moment on each song.
+    /// Plays the album and presses next through it.
     fn skip_through_the_album(&self) {
         self.engine.play_at(0, 0);
         self.time.run(Duration::from_millis(300));
@@ -242,7 +235,7 @@ impl Rig {
         )
     }
 
-    /// Goes to the playlist, as a user taps its song `index`: it is heard, and a second of it.
+    /// Switches to the playlist at `index` and asserts a second of it is heard.
     fn playlist_plays(&self, index: usize) {
         let id = self.playlist[index].clone();
         let seen = self.events.lock().len();
@@ -254,15 +247,13 @@ impl Rig {
         assert!(heard, "{id} plays after the hung songs: {}", self.state());
     }
 
-    /// Nothing the album asked for still holds a request.
+    /// Asserts every hung request was cancelled.
     fn album_let_go(&self) {
         assert!(self.time.until(Duration::from_secs(1), || self.server.running() <= 2), "the hung requests were called off: {}", self.state());
         assert_eq!(self.server.hung.load(Ordering::Relaxed), self.server.called_off.load(Ordering::Relaxed), "every hung request called off: {}", self.state());
     }
 }
 
-/// Twelve songs whose server never answers, skipped through, then a playlist that plays: every hung
-/// request is called off as its song is left, so none holds a slot the playlist's songs need.
 #[test]
 fn hung_requests_skipped_leave_playlist_playing() {
     let r = rig(Hang::Headers, 12, 3);
@@ -274,7 +265,6 @@ fn hung_requests_skipped_leave_playlist_playing() {
     r.album_let_go();
 }
 
-/// The same with songs whose server answers and then never sends a byte.
 #[test]
 fn stalled_bodies_skipped_leave_playlist_playing() {
     let r = rig(Hang::Body, 12, 3);
@@ -283,9 +273,7 @@ fn stalled_bodies_skipped_leave_playlist_playing() {
     r.album_let_go();
 }
 
-/// The queue is where the user put it, whether or not a song there was ever heard: a skip onto songs that
-/// never come, and a jump made while paused (held until play), move it at once, so a queue saved then (a
-/// program closed and started again) comes back on that song and not where the music last sounded.
+/// The queue follows skips and held jumps at once, so a saved queue restores that song.
 #[test]
 fn jump_moves_queue_even_unheard() {
     let r = rig(Hang::Headers, 6, 0);

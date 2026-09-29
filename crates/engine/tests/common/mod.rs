@@ -257,6 +257,24 @@ pub fn ffmpeg() -> bool {
     std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success())
 }
 
+/// A core transport that answers every API call with a 500: resolving songs needs none.
+#[cfg(feature = "core")]
+pub struct NoApi;
+
+#[cfg(feature = "core")]
+#[async_trait::async_trait]
+impl nori_core::transport::Transport for NoApi {
+    async fn get(&self, _url: String, _timeout_ms: u32) -> Result<nori_core::transport::TransportResponse, nori_core::transport::TransportError> {
+        Ok(nori_core::transport::TransportResponse { status: 500, body: Vec::new() })
+    }
+
+    async fn send(&self, _request: nori_core::transport::Exchange) -> Result<nori_core::transport::TransportResponse, nori_core::transport::TransportError> {
+        Ok(nori_core::transport::TransportResponse { status: 500, body: Vec::new() })
+    }
+
+    fn address_changed(&self) {}
+}
+
 /// Drives a [`Virtual`] clock through engine timers and device pulls.
 pub struct Stepper<D: Device> {
     pub clock: Virtual,

@@ -16,27 +16,13 @@ use common::card::{Card, Pull};
 use common::{Stepper, Virtual};
 use nori_core::client::{Client, NetProfile};
 use nori_core::settings_store::{edit_by_name, APPLY_AUDIO, REPLAN};
-use nori_core::transport::{Exchange, Transport, TransportError, TransportResponse};
 use nori_core::{Core, ServerConfig, Song};
 use nori_engine::core::{settings, CoreApp, CoreLibrary, CoreOrder, CoreQueue, Measurer};
 use nori_engine::{Body, ByteSource, Config, Engine, State, Store};
 
 use crate::common;
 
-struct NoApi;
-
-#[async_trait::async_trait]
-impl Transport for NoApi {
-    async fn get(&self, _url: String, _timeout_ms: u32) -> Result<TransportResponse, TransportError> {
-        Ok(TransportResponse { status: 500, body: Vec::new() })
-    }
-
-    async fn send(&self, _request: Exchange) -> Result<TransportResponse, TransportError> {
-        Ok(TransportResponse { status: 500, body: Vec::new() })
-    }
-
-    fn address_changed(&self) {}
-}
+use common::NoApi;
 
 const RATE: usize = 44_100;
 const SECS: usize = 40;

@@ -12,25 +12,12 @@ use std::sync::Arc;
 use nori_engine::core::{CoreLibrary, CoreOrder, Downloader, Measurer, Shelf, Whole};
 use nori_engine::{Body, ByteSource, Library, Source, Store};
 use nori_core::client::{Client, NetProfile};
+#[cfg(feature = "neural-beats")]
 use nori_core::transport::{Exchange, Transport, TransportError, TransportResponse};
 use nori_core::{Core, ServerConfig, Song};
 use parking_lot::Mutex;
 
-/// No API calls are made here; resolving a song's address needs none.
-struct NoApi;
-
-#[async_trait::async_trait]
-impl Transport for NoApi {
-    async fn get(&self, _url: String, _timeout_ms: u32) -> Result<TransportResponse, TransportError> {
-        Ok(TransportResponse { status: 500, body: Vec::new() })
-    }
-
-    async fn send(&self, _request: Exchange) -> Result<TransportResponse, TransportError> {
-        Ok(TransportResponse { status: 500, body: Vec::new() })
-    }
-
-    fn address_changed(&self) {}
-}
+use common::NoApi;
 
 /// Audio: each song's bytes made up from its id, every request counted, and a connection that breaks
 /// half way through the first time it is asked for a song.
