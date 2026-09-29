@@ -368,7 +368,7 @@ impl Session {
             return;
         }
         let index = q.index as usize;
-        playlist::playlist_set(q.songs.iter().map(|s| s.id.clone()).collect(), index as i32, false, q.origin);
+        playlist::playlist_set(q.songs.iter().map(|s| s.id.clone()).collect(), Some(index as u32), false, q.origin);
         self.engine.queue_changed();
         self.engine.go_to(index, q.position_ms as i64);
     }
@@ -757,8 +757,8 @@ impl Handle {
 
     fn apply(&self, e: &QueueEdit) {
         self.edited();
-        if e.seek >= 0 {
-            self.engine.play_at(e.seek as usize, 0);
+        if let Some(seek) = e.seek {
+            self.engine.play_at(seek as usize, 0);
         }
     }
 
@@ -770,9 +770,9 @@ impl Handle {
         }
         let start = picked.and_then(|id| songs.iter().position(|s| s.id == id)).unwrap_or(0);
         nori_core::queue::queue_register(songs.clone());
-        let change = playlist::playlist_set(songs.iter().map(|s| s.id.clone()).collect(), if shuffle { -1 } else { start as i32 }, shuffle, from);
+        let change = playlist::playlist_set(songs.iter().map(|s| s.id.clone()).collect(), (!shuffle).then_some(start as u32), shuffle, from);
         self.edited();
-        self.engine.play_at(change.at.max(0) as usize, 0);
+        self.engine.play_at(change.at.unwrap_or(0) as usize, 0);
     }
 
     fn enqueue(&self, songs: Vec<Song>, next: bool, from: Option<PageOrigin>) {

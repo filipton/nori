@@ -162,7 +162,7 @@ impl Rig {
         }
         let net = Arc::new(net);
         nori_core::queue::queue_register(songs);
-        nori_core::playlist::playlist_set(ids.iter().map(|s| s.to_string()).collect(), 0, false, None);
+        nori_core::playlist::playlist_set(ids.iter().map(|s| s.to_string()).collect(), Some(0), false, None);
         let measurer = Measurer::new(core.clone(), client.clone(), store.clone());
         let library = CoreLibrary { client: client.clone(), bytes: net.clone(), metered: false, store: Some(store.clone()) };
         let app = CoreApp::new().measuring(measurer.clone());

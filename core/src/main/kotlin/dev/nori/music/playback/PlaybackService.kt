@@ -455,10 +455,10 @@ class PlaybackService : MediaLibraryService() {
             // is the core's; each item says how it came.
             val at = index.coerceIn(0, wrappedPlayer.mediaItemCount).toUInt()
             // An undo puts the song back where it was, if the core still has it as the one taken out.
-            val back = mediaItems.singleOrNull()?.takeIf { it.isRestored() }?.let { dev.nori.music.ffi.queue.playlistRestore(it.mediaId) }?.takeIf { it.at >= 0 }
+            val back = mediaItems.singleOrNull()?.takeIf { it.isRestored() }?.let { dev.nori.music.ffi.queue.playlistRestore(it.mediaId) }?.takeIf { it.at != null }
             // The page they are all the songs of, if any (an album added whole: MediaItems.origin).
             val c = back ?: dev.nori.music.ffi.queue.playlistTake(at, ids(mediaItems), mediaItems.map { it.queuedAs() ?: Hand.NO }, mediaItems.first().origin())
-            super.addMediaItems(c.at, mediaItems)
+            super.addMediaItems(c.at?.toInt() ?: at.toInt(), mediaItems)
         }
 
         // A fresh evening: the parked online queue from a bridge is not part of this request.
@@ -476,14 +476,14 @@ class PlaybackService : MediaLibraryService() {
             // The page it was started from, if any (MediaItems.origin): a new queue replaces the last one's.
             val origin = mediaItems.firstOrNull()?.origin()
             val c = if (ordered) dev.nori.music.ffi.queue.playlistSetOrdered(ids(mediaItems), origin)
-            else dev.nori.music.ffi.queue.playlistSet(ids(mediaItems), startIndex.coerceAtMost(mediaItems.size - 1), wrappedPlayer.shuffleModeEnabled, origin)
+            else dev.nori.music.ffi.queue.playlistSet(ids(mediaItems), startIndex.coerceAtMost(mediaItems.size - 1).takeIf { it >= 0 }?.toUInt(), wrappedPlayer.shuffleModeEnabled, origin)
             if (ordered && wrappedPlayer.shuffleModeEnabled) super.setShuffleModeEnabled(false)
-            super.setMediaItems(mediaItems, c.at.coerceAtLeast(0), if (startIndex == C.INDEX_UNSET) C.TIME_UNSET else startPositionMs)
+            super.setMediaItems(mediaItems, c.at?.toInt() ?: 0, if (startIndex == C.INDEX_UNSET) C.TIME_UNSET else startPositionMs)
             onQueueSet?.invoke()
         }
         override fun clearMediaItems() {
             offlineBridge?.abandon()
-            dev.nori.music.ffi.queue.playlistSet(emptyList(), -1, false, null)
+            dev.nori.music.ffi.queue.playlistSet(emptyList(), null, false, null)
             super.clearMediaItems()
             onQueueSet?.invoke()
         }
@@ -530,7 +530,7 @@ class PlaybackService : MediaLibraryService() {
     private fun applyEdit(e: dev.nori.music.ffi.queue.QueueEdit) {
         for (k in e.remove.indices step 2) player.removeMediaItems(e.remove[k].toInt(), e.remove[k + 1].toInt())
         if (e.songs.isNotEmpty()) player.addMediaItems(e.at.toInt(), held(e.songs))
-        if (e.seek >= 0) { player.seekTo(e.seek, C.TIME_UNSET); player.prepare(); player.play() }
+        e.seek?.let { player.seekTo(it.toInt(), C.TIME_UNSET); player.prepare(); player.play() }
     }
 
     /**
