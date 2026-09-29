@@ -75,8 +75,8 @@ fn read(c: &Connection) -> rusqlite::Result<HashMap<String, PrefValue>> {
 fn profiles_parametric(c: &Connection) -> bool {
     let Ok(mut st) = c.prepare("SELECT json FROM profiles") else { return false };
     let Ok(rows) = st.query_map([], |r| r.get::<_, String>(0)) else { return false };
-    let parametric = rows.filter_map(|r| r.ok()).any(|json| crate::settings::profile_parametric(&json));
-    parametric
+    let jsons: Vec<String> = rows.filter_map(|r| r.ok()).collect();
+    jsons.iter().any(|json| crate::settings::profile_parametric(json))
 }
 
 /// Replaces every stored setting in one transaction.
