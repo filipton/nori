@@ -35,8 +35,9 @@ fn span_us(frames: usize, pace: f64, out: Format) -> i64 {
     (frames as f64 * pace * 1_000_000.0 / out.rate as f64).round() as i64
 }
 
-/// A transition from one track into the next, from the planner.
-#[derive(Debug, Clone, PartialEq)]
+/// A transition from one track into the next, from the planner. Equal when it sounds the same, so a
+/// new plan that only changes log text does not rebuild the ending.
+#[derive(Debug, Clone)]
 pub struct Plan {
     pub incoming_id: String,
     pub out_start_us: i64,
@@ -49,6 +50,15 @@ pub struct Plan {
     pub ramp_us: i64,
     /// Capture this much outgoing audio and loop it for `duration_us`; 0 captures the full duration.
     pub out_loop_us: i64,
+}
+
+impl PartialEq for Plan {
+    fn eq(&self, o: &Plan) -> bool {
+        let Plan { incoming_id, out_start_us, duration_us, in_skip_us, mixer, tempo_ratio, keep_pitch, ramp_us, out_loop_us } = self;
+        (incoming_id, *out_start_us, *duration_us, *in_skip_us, *ramp_us, *out_loop_us) == (&o.incoming_id, o.out_start_us, o.duration_us, o.in_skip_us, o.ramp_us, o.out_loop_us)
+            && (*tempo_ratio, *keep_pitch) == (o.tempo_ratio, o.keep_pitch)
+            && mixer.sounds_same(&o.mixer)
+    }
 }
 
 impl Plan {
@@ -1612,6 +1622,17 @@ mod tests {
             ramp_us: 0,
             out_loop_us: 0,
         }
+    }
+
+    #[test]
+    fn plans_equal_when_they_sound_the_same() {
+        // The engine rebuilds an ending when its plan is not equal to the new one.
+        let a = fade("b", 1_000_000);
+        let mut b = a.clone();
+        (b.mixer.reason, b.mixer.tempo_ramp_beats) = ("beat matching off".into(), 8);
+        assert_eq!(a, b, "only the log text differs");
+        b.mixer.in_fade_end_ms -= 1;
+        assert_ne!(a, b);
     }
 
     #[test]
