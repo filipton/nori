@@ -669,7 +669,9 @@ impl Offload {
         }
         self.playing = false;
         self.stop_after = None;
+        // A new track starts at full volume, as a new CPU device does: no fade carries over.
         self.fade = None;
+        self.gain = 1.0;
         at
     }
 
