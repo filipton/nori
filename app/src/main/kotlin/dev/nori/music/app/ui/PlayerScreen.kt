@@ -731,6 +731,14 @@ private fun barRoom(): androidx.compose.ui.unit.Dp {
     return with(d) { maxOf(top, bottom).toDp() }
 }
 
+/**
+ * On its side: how far a cover reaches in under the words and controls beside it (the player's, a page's), and
+ * how much wider its soft edge is than upright, so it goes soft over that stretch rather than ending at the
+ * controls' start.
+ */
+internal val UNDER_TEXT = 160.dp
+internal const val ACROSS_MELT = 1.5f
+
 /** How much of the sleeve's panel lies under the controls on its side ([PlayerHalves]): the lyrics and queue keep off it. */
 private val LocalUnderControls = androidx.compose.runtime.compositionLocalOf { 0.dp }
 
@@ -748,8 +756,9 @@ private fun PlayerHalves(wide: Boolean, controlsDrag: Modifier, panel: @Composab
         // Wider than it is tall: the sleeve is a band across the cover, cropped above and below rather than at
         // the sides. The controls keep their place (the square's edge) and stand over the sleeve's soft edge,
         // which runs on under them towards the middle; the lyrics and the queue stop where the controls start.
-        val side = maxWidth * 0.55f
         val controlsAt = minOf(maxHeight, maxWidth * 0.5f)
+        // Clearly wider than tall, reaching [UNDER_TEXT] in under the controls, which keep their place.
+        val side = minOf(controlsAt + UNDER_TEXT, maxWidth * 0.7f)
         Box(Modifier.fillMaxSize()) {
             androidx.compose.runtime.CompositionLocalProvider(LocalUnderControls provides (side - controlsAt).coerceAtLeast(0.dp)) {
                 Column(Modifier.width(side).fillMaxHeight()) { panel() }
@@ -910,7 +919,7 @@ private fun Artwork(
             Box(
                 Modifier.fillMaxWidth().fillMaxHeight(stage.statusShadeTo)
                     .then(if (across) Modifier.graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
-                        .rubOutBottom(across = true) { (size.width - size.width * MELT) to size.width } else Modifier)
+                        .rubOutBottom(across = true) { (size.width - size.width * MELT * ACROSS_MELT) to size.width } else Modifier)
                     .background(remember { Brush.verticalGradient(0f to Color.Black.copy(alpha = stage.statusShade), 1f to Color.Transparent) }),
             )
             // Nothing is drawn here to soften the sleeve's bottom. There is one blurred copy of the
@@ -1090,7 +1099,7 @@ internal fun SoftSleeve(
     Box(
         modifier
             .graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
-            .rubOutBottom(across) { val (bottom, height) = edge(); (bottom - height * MELT) to bottom },
+            .rubOutBottom(across) { val (bottom, height) = edge(); (bottom - height * MELT * (if (across) ACROSS_MELT else 1f)) to bottom },
     ) {
         content(false)
         if (soft && band != null) Box(

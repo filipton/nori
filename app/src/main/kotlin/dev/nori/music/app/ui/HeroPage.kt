@@ -313,7 +313,9 @@ fun HeroPage(
                     // artwork as a tile beside its buttons.
                     if (picture != null) {
                         val cutout = LocalPageStart.current
-                        val under = (half - textAt).coerceAtLeast(0.dp)
+                        // The cover reaches [UNDER_TEXT] in under the name, the buttons and the songs, which keep their
+                        // place: wider than tall, as the player's sleeve on its side.
+                        val under = UNDER_TEXT
                         Box(
                             // Takes up the room up to the words and draws on past it, under them, to [half]; and out
                             // over the strip the page is kept off (the camera's, or the rail's), to the screen's edge.
@@ -329,7 +331,7 @@ fun HeroPage(
                             Box(
                                 Modifier.fillMaxSize().graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }.drawWithCache {
                                     val shade = Brush.verticalGradient(0f to Color.Black.copy(alpha = stage.statusShade), stage.statusShadeTo to Color.Transparent)
-                                    val right = alphaGradient(stage.rubOut, Color.Black, size.width * (1f - MELT), size.width, across = true)
+                                    val right = alphaGradient(stage.rubOut, Color.Black, size.width * (1f - MELT * ACROSS_MELT), size.width, across = true)
                                     onDrawBehind {
                                         drawRect(shade)
                                         drawRect(right, blendMode = androidx.compose.ui.graphics.BlendMode.DstOut)
@@ -341,12 +343,16 @@ fun HeroPage(
                         hero(side, true)
                         Spacer(Modifier.height(LocalChromeInset.current))
                     }
+                    // Beside a cover, not the camera's strip: a shelf here (an artist's albums) has nothing to run out
+                    // under on this side, and its fade would lay the page's colour over the picture.
+                    androidx.compose.runtime.CompositionLocalProvider(LocalPageStart provides 0.dp) {
                     LazyColumn(Modifier.weight(1f).fillMaxHeight(), state = list) {
                         // The first song level with the top of the cover beside it.
                         item(key = "hero-wide-top") { Spacer(Modifier.statusBarsPadding().height(WIDE_TOP)) }
                         if (picture != null) item(key = "hero-wide-head", contentType = "hero") { Column(Modifier.padding(bottom = 8.dp)) { hero(null, false) } }
                         content()
                         item(key = "tail") { Spacer(Modifier.height(Space.section + LocalChromeInset.current)) }
+                    }
                     }
                 }
             } else LazyColumn(state = list) {
