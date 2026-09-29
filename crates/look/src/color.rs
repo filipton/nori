@@ -1,5 +1,5 @@
-//! Colour arithmetic, ported exactly from what the Android app used before (AndroidX `ColorUtils`, and
-//! Compose's `Color.luminance`), so thresholds that were tuned against those land on the same side.
+//! Bit-exact ports of AndroidX `ColorUtils` and Compose's `Color.luminance`, which the tuned thresholds
+//! depend on.
 
 pub fn alpha(c: u32) -> i32 {
     (c >> 24) as i32
@@ -136,8 +136,7 @@ pub fn blend_argb(a: u32, b: u32, ratio: f32) -> u32 {
     argb(al as i32, r as i32, g as i32, bl as i32)
 }
 
-/// Compose's `Color.luminance()` for an sRGB colour: the same relative luminance as
-/// [`calculate_luminance`], computed the way Compose computes it (its transfer function, its float).
+/// Compose's `Color.luminance()`: like [`calculate_luminance`] but with Compose's float rounding.
 pub fn luminance(c: u32) -> f32 {
     fn eotf(x: f64) -> f64 {
         let (a, b, cc, d, g) = (1.0 / 1.055, 0.055 / 1.055, 1.0 / 12.92, 0.04045, 2.4);
@@ -151,10 +150,9 @@ pub fn luminance(c: u32) -> f32 {
     ((0.2126 * ch(red(c))) + (0.7152 * ch(green(c))) + (0.0722 * ch(blue(c)))).clamp(0.0, 1.0) as f32
 }
 
-/// Compose's `Color(red, green, blue)` in sRGB, from 0..1 floats to 8 bits a channel.
+/// Compose's opaque `Color(red, green, blue)`.
 pub fn from_floats(r: f32, g: f32, b: f32) -> u32 {
-    let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as i32;
-    rgb(q(r), q(g), q(b))
+    crate::compose::from_floats_a(r, g, b, 1.0)
 }
 
 #[cfg(test)]
@@ -169,14 +167,14 @@ mod tests {
     }
 
     #[test]
-    fn contrast_is_wcag() {
+    fn contrast_and_luminance_extremes() {
         assert!((calculate_contrast(WHITE, BLACK) - 21.0).abs() < 1e-9);
         assert!((calculate_contrast(0xFF77_7777, 0xFF77_7777) - 1.0).abs() < 1e-9);
         assert!((luminance(WHITE) - 1.0).abs() < 1e-6 && luminance(BLACK) == 0.0);
     }
 
     #[test]
-    fn rounding_is_javas() {
+    fn round_matches_java() {
         assert_eq!((round(0.5), round(1.5), round(-0.5), round(2.4999998)), (1, 2, 0, 2));
     }
 }

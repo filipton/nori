@@ -1,6 +1,5 @@
-//! nori-look's twins held to their Kotlin originals: testdata/twins/look_twins.tsv is what the Kotlin
-//! (copied into testdata/twins/LookTwins.kt) answered on the JVM, written by tools/twins.sh. The floats
-//! go in as their bits, so every answer must match exactly.
+//! Bit-exact checks against the Kotlin originals: testdata/twins/look_twins.tsv is JVM output of
+//! LookTwins.kt (tools/twins.sh), floats as hex bits.
 
 use nori_look::{cover, sleeve};
 

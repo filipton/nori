@@ -1,5 +1,4 @@
-//! `java.util.Random`, exactly: the wash's dither was seeded with it, and the same cover has to give
-//! the same texture it always did.
+//! Bit-exact `java.util.Random`, so the wash dither matches the original Kotlin output.
 
 const MULTIPLIER: u64 = 0x5_DEEC_E66D;
 const ADDEND: u64 = 0xB;
@@ -29,8 +28,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn matches_java() {
-        // What a JVM prints for new java.util.Random(seed).nextFloat(), called repeatedly.
+    fn matches_java_random() {
+        // JVM output of `new java.util.Random(seed).nextFloat()`.
         let mut r = JavaRandom::new(42);
         assert_eq!((0..3).map(|_| r.next_float()).collect::<Vec<_>>(), vec![0.7275637, 0.054665208, 0.6832234]);
         let mut r = JavaRandom::new(0x5EED);
