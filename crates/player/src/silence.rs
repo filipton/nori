@@ -1,13 +1,7 @@
-//! Skipping silence, ported line for line from media3's `SilenceSkippingAudioProcessor` (Apache-2.0,
-//! Copyright The Android Open Source Project), so it sounds exactly as it did through media3: a quiet
-//! stretch longer than [`MIN_SILENCE_US`] is shortened to a fifth of its length (and never more than
-//! [`MAX_SILENCE_TO_KEEP_US`]), faded down to a tenth of its volume and back up rather than cut, so it
-//! reads as a studio's hush and not as playback stopping. What was dropped is counted, so a player
-//! keeps its position honest. media3's took 16-bit PCM only; this one takes float too (the high quality
-//! chain), judged against the same level on the 16-bit scale, so a song is skipped through alike either way.
-//!
-//! media3's processor stops after each piece of output and takes the rest of its input on the next
-//! call; this one takes all of it and appends every piece in the same order, which is the same bytes.
+//! Silence skipping, a port of media3's `SilenceSkippingAudioProcessor` (Apache-2.0, Copyright The
+//! Android Open Source Project): silences over [`MIN_SILENCE_US`] shrink to a fifth (at most
+//! [`MAX_SILENCE_TO_KEEP_US`]), faded to 10 % and back rather than cut. Dropped frames are counted.
+//! Unlike media3 it also takes float (judged on the 16-bit scale) and consumes all input per call.
 
 /// Below this absolute 16-bit level a sample is silent.
 pub const THRESHOLD: i32 = 1024;
@@ -50,13 +44,8 @@ pub struct SilenceSkipper {
 }
 
 impl SilenceSkipper {
-    /// For 16-bit samples.
-    pub fn new(rate: u32, channels: usize) -> SilenceSkipper {
-        SilenceSkipper::of(rate, channels, false)
-    }
-
-    /// For 16-bit samples, or float ones.
-    pub fn of(rate: u32, channels: usize, float: bool) -> SilenceSkipper {
+    /// A skipper for 16-bit or `float` samples.
+    pub fn new(rate: u32, channels: usize, float: bool) -> SilenceSkipper {
         let width = if float { 4 } else { 2 };
         let bytes_per_frame = channels.clamp(1, 8) * width;
         let mut s = SilenceSkipper {
@@ -137,7 +126,7 @@ impl SilenceSkipper {
         from
     }
 
-    /// Little-endian input in, 16-bit or float as made; what survives is appended to `out`.
+    /// Processes little-endian input, appending what survives to `out`.
     pub fn process(&mut self, input: &[u8], out: &mut Vec<u8>) {
         let mut pos = 0;
         while pos < input.len() {
@@ -296,7 +285,7 @@ impl SilenceSkipper {
         MIN_VOLUME_PERCENT + ((100 - MIN_VOLUME_PERCENT) * (AVOID_TRUNCATION_FACTOR * value) / max) / AVOID_TRUNCATION_FACTOR
     }
 
-    /// The input has ended: a silence still held goes out as the end of a pause.
+    /// End of input: flushes a held silence as the end of a pause.
     pub fn end_of_stream(&mut self, out: &mut Vec<u8>) {
         if self.maybe_size > 0 {
             self.output_shortened(true, out);
@@ -325,36 +314,35 @@ mod tests {
     }
 
     #[test]
-    fn a_long_pause_is_shortened_and_counted() {
-        let mut s = SilenceSkipper::new(RATE, 2);
+    fn long_pause_is_shortened_and_counted() {
+        let mut s = SilenceSkipper::new(RATE, 2, false);
         let x = [frames(8000, 1.0), frames(0, 3.0), frames(8000, 1.0)].concat();
         let y = run(&mut s, &x);
         let secs = y.len() as f64 / 4.0 / RATE as f64;
-        // Two seconds of music, and the pause cut to about a fifth of itself.
+        // 2 s of music plus a fifth of the pause.
         assert!(secs > 2.4 && secs < 2.8, "{secs}");
         assert_eq!(s.skipped_frames() as usize + y.len() / 4, x.len() / 4, "every frame is either played or counted as skipped");
     }
 
     #[test]
-    fn a_short_rest_is_music() {
-        let mut s = SilenceSkipper::new(RATE, 2);
+    fn short_rest_is_untouched() {
+        let mut s = SilenceSkipper::new(RATE, 2, false);
         let x = [frames(8000, 1.0), frames(0, 0.05), frames(8000, 1.0)].concat();
         assert_eq!(run(&mut s, &x), x, "50 ms of quiet is left exactly as it was");
     }
 
     #[test]
     fn quiet_music_is_not_silence() {
-        let mut s = SilenceSkipper::new(RATE, 2);
+        let mut s = SilenceSkipper::new(RATE, 2, false);
         let x = frames(1500, 2.0);
         assert_eq!(run(&mut s, &x), x);
     }
 
-    /// The same music in float is skipped through exactly as in 16 bits: the same frames kept, faded alike.
     #[test]
-    fn float_is_skipped_as_16_bit_is() {
+    fn float_matches_16_bit() {
         let x = [frames(8000, 1.0), frames(300, 3.0), frames(-8000, 0.5), frames(0, 0.05), frames(8000, 1.0)].concat();
         let f: Vec<u8> = x.chunks_exact(2).flat_map(|c| (i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0).to_le_bytes()).collect();
-        let (mut a, mut b) = (SilenceSkipper::new(RATE, 2), SilenceSkipper::of(RATE, 2, true));
+        let (mut a, mut b) = (SilenceSkipper::new(RATE, 2, false), SilenceSkipper::new(RATE, 2, true));
         let (y16, yf) = (run(&mut a, &x), run(&mut b, &f));
         assert_eq!(a.skipped_frames(), b.skipped_frames());
         assert!(a.skipped_frames() > RATE as u64, "the pause was shortened");

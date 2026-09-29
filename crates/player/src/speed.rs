@@ -1,28 +1,25 @@
-//! Playback speed and pitch as a streaming processor: [`crate::sonic::Sonic`] (media3's algorithm,
-//! ported exactly) plus the books media3's `SonicAudioProcessor` keeps, so a player can tell how much
-//! of the song the output it has played stands for. At speed 1 and pitch 1 it is not in the path.
+//! Speed and pitch processor: [`crate::sonic::Sonic`] plus media3 `SonicAudioProcessor`'s byte
+//! counts, which map played output back to media time.
 
 use crate::pcm::Encoding;
 use crate::sonic::Sonic;
 
-/// Below this much output the processed ratio is too noisy to trust; the nominal speed is used.
+/// Below this much output the measured ratio is too noisy; the nominal speed is used.
 #[cfg(any(test, feature = "synth"))]
 const MIN_BYTES_FOR_DURATION_SCALING: u64 = 1024;
 const CLOSE_THRESHOLD: f32 = 0.0001;
 
-/// Whether speed and pitch change the sound at all: at 1x and pitch 1 (within float noise) the stage
-/// stays out of the chain, as media3's own does.
+/// Whether speed or pitch differs from 1 beyond float noise (otherwise the stage is bypassed).
 pub fn speed_active(speed: f32, pitch: f32) -> bool {
     (speed - 1.0).abs() >= CLOSE_THRESHOLD || (pitch - 1.0).abs() >= CLOSE_THRESHOLD
 }
 
-/// The media time `playout_us` of output stands for at the nominal `speed`, before any output has been
-/// counted (or with no stage at all).
+/// Media time covered by `playout_us` of output at the nominal `speed`.
 pub fn nominal_media_us(speed: f32, playout_us: i64) -> i64 {
     (speed as f64 * playout_us as f64) as i64
 }
 
-/// How long `media_us` of the song takes to play at the nominal `speed`.
+/// Output time `media_us` of the song takes at the nominal `speed`.
 #[cfg(any(test, feature = "synth"))]
 pub fn nominal_playout_us(speed: f32, media_us: i64) -> i64 {
     (media_us as f64 / speed as f64) as i64
@@ -65,7 +62,7 @@ impl SpeedPitch {
         p
     }
 
-    /// Takes effect at the next [`SpeedPitch::flush`], when a player applies new parameters.
+    /// Takes effect at the next [`SpeedPitch::flush`]. Invalid values mean 1.
     pub fn set(&mut self, speed: f32, pitch: f32) {
         self.speed = if speed > 0.0 && speed.is_finite() { speed } else { 1.0 };
         self.pitch = if pitch > 0.0 && pitch.is_finite() { pitch } else { 1.0 };
@@ -75,7 +72,7 @@ impl SpeedPitch {
         speed_active(self.speed, self.pitch)
     }
 
-    /// A new stream (a seek, or new parameters): a fresh engine at the current settings.
+    /// Starts a new stream (seek or new parameters) at the current settings.
     pub fn flush(&mut self) {
         self.engine = match self.enc {
             Encoding::Pcm16 => Engine::Short(Sonic::new(self.rate, self.ch, self.speed, self.pitch, self.rate)),
@@ -85,7 +82,7 @@ impl SpeedPitch {
         self.output_bytes = 0;
     }
 
-    /// Interleaved bytes in (the configured encoding); whatever output is ready is appended to `out`.
+    /// Takes interleaved bytes in the configured encoding; appends ready output to `out`.
     pub fn process(&mut self, input: &[u8], out: &mut Vec<u8>) {
         self.input_bytes += input.len() as u64;
         match &mut self.engine {
@@ -126,7 +123,7 @@ impl SpeedPitch {
         self.output_bytes += (out.len() - before) as u64;
     }
 
-    /// The input has ended: whatever is still inside comes out.
+    /// Flushes the remaining output at end of input.
     pub fn end_of_stream(&mut self, out: &mut Vec<u8>) {
         match &mut self.engine {
             Engine::Short(s) => s.queue_end_of_stream(),
@@ -144,7 +141,7 @@ impl SpeedPitch {
         self.input_bytes.saturating_sub(pending)
     }
 
-    /// The media time `playout_us` of played output stands for, as media3 works it out.
+    /// Media time covered by `playout_us` of played output, computed as media3 does.
     #[cfg(any(test, feature = "synth"))]
     pub fn media_duration_us(&self, playout_us: i64) -> i64 {
         if self.output_bytes >= MIN_BYTES_FOR_DURATION_SCALING {
@@ -160,7 +157,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_stage_is_in_the_chain_only_when_it_changes_the_sound() {
+    fn active_only_off_unity() {
+
         assert!(!speed_active(1.0, 1.0));
         assert!(!speed_active(1.00005, 0.99995), "float noise");
         assert!(speed_active(1.25, 1.0));
@@ -204,22 +202,5 @@ mod tests {
         p.process(&sine(3.0, 220.0), &mut out);
         let m = p.media_duration_us(1_000_000);
         assert!((m - 1_500_000).abs() < 20_000, "{m}");
-    }
-}
-
-#[cfg(test)]
-mod cost {
-    #[test]
-    #[ignore]
-    fn sonic_cost() {
-        let x: Vec<u8> = (0..44100usize * 60 * 2).flat_map(|i| ((((i as f32) * 0.01).sin() * 9000.0) as i16).to_le_bytes()).collect();
-        let mut p = super::SpeedPitch::new(44100, 2, crate::pcm::Encoding::Pcm16);
-        p.set(1.25, 1.0);
-        p.flush();
-        let mut out = Vec::new();
-        let t = std::time::Instant::now();
-        for c in x.chunks(8192) { p.process(c, &mut out); out.clear(); }
-        let el = t.elapsed().as_secs_f64();
-        println!("sonic: 60 s at 1.25x in {:.0} ms = {:.3} % of one core", el * 1000.0, el / 60.0 * 100.0);
     }
 }

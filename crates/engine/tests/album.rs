@@ -382,19 +382,19 @@ fn queue(songs: &[S], shuffle: bool, how: Queued) {
                     from = k;
                 }
             }
-            playlist_set(ids(runs[0]), 0, shuffle, album(&runs[0][0]));
+            playlist_set(ids(runs[0]), Some(0), shuffle, album(&runs[0][0]));
             for r in &runs[1..] {
                 playlist_take(len(), ids(r), vec![Hand::No; r.len()], album(&r[0]));
             }
         }
         Queued::OneByOne => {
-            playlist_set(ids(&songs[..1]), 0, shuffle, None);
+            playlist_set(ids(&songs[..1]), Some(0), shuffle, None);
             for s in &songs[1..] {
                 playlist_take(len(), ids(std::slice::from_ref(s)), vec![Hand::Last], None);
             }
         }
         Queued::Autofill => {
-            playlist_set(ids(&songs[..1]), 0, shuffle, None);
+            playlist_set(ids(&songs[..1]), Some(0), shuffle, None);
             playlist_take(len(), ids(&songs[1..]), vec![Hand::No; songs.len() - 1], None);
         }
     }

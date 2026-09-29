@@ -1,14 +1,11 @@
-//! The planner runs on the engine's thread, over analyses read from the database: whatever a row holds
-//! (a measurement gone wrong, a grid of absurd tempo, places past the song, a length of nought) must never
-//! panic there. A panic on that thread was a player that said it played and made no sound, every song
-//! after it, until the app was started again. Hundreds of thousands of rows, from sensible to absurd,
-//! each planned both ways round.
+//! The planner runs on the engine thread over rows read from the database: no row, however corrupt, may make it
+//! panic (that silenced playback until restart). Seeded random rows, sensible to absurd.
 
 use crate::automix::plan::plan;
 use crate::transitions::engine_plan;
 use crate::types::{AutoMixSettings, TrackAnalysis};
 
-/// A small, fixed random walk: the same rows every run.
+/// Seeded xorshift: the same rows every run.
 struct R(u64);
 
 impl R {
@@ -24,14 +21,13 @@ impl R {
     }
 }
 
-/// How the numbers of a row are drawn.
 #[derive(Clone, Copy, PartialEq)]
 enum Rows {
-    /// From a few values a measurement gives, and their edges.
+    /// Plausible values and their edges.
     Sensible,
     /// Anywhere in a song and any tempo up to 5000 bpm.
     Anywhere,
-    /// What a measurement gone wrong could store: NaN, infinities, negatives, absurd tempos.
+    /// NaN, infinities, negatives, absurd tempos.
     Absurd,
 }
 
@@ -98,7 +94,7 @@ fn row(r: &mut R, dur: i64, how: Rows) -> TrackAnalysis {
     }
 }
 
-/// `n` pairs of rows drawn `how`, planned: none may panic. Says which did, with the first pair each time.
+/// Plans `n` pairs of rows drawn `how` and reports each distinct panic with its first pair.
 fn planned(how: Rows, seed: u64, n: usize) {
     let mut r = R(seed);
     let mut panics = std::collections::BTreeMap::new();
@@ -121,16 +117,8 @@ fn planned(how: Rows, seed: u64, n: usize) {
 }
 
 #[test]
-fn the_planner_never_panics_over_sensible_rows() {
-    planned(Rows::Sensible, 0x9E37_79B9_7F4A_7C15, 50_000);
-}
-
-#[test]
-fn the_planner_never_panics_over_rows_anywhere_in_a_song() {
-    planned(Rows::Anywhere, 0xABCD_EF12_345, 100_000);
-}
-
-#[test]
-fn the_planner_never_panics_over_absurd_rows() {
-    planned(Rows::Absurd, 0x123_4567, 50_000);
+fn planner_never_panics() {
+    for (how, seed, n) in [(Rows::Sensible, 0x9E37_79B9_7F4A_7C15, 50_000), (Rows::Anywhere, 0xABCD_EF12_345, 100_000), (Rows::Absurd, 0x123_4567, 50_000)] {
+        planned(how, seed, n);
+    }
 }

@@ -1,26 +1,20 @@
-//! How the queue moves: where songs added by hand go, what shuffle does to the order, what is fetched
-//! and measured ahead, and what happens when a song will not play. The platform's player holds the
-//! list; this works on its indexes and play order and says what to do.
+//! Queue movement rules: placing hand-added songs, shuffle, prefetch and measure-ahead ranges, error
+//! handling, refilling past the end, and previous/repeat. Works on indexes; the platform holds the list.
 
-/// Where songs added by hand go, and the play order afterwards when shuffling.
+/// Where added songs go and, when shuffling, the new play order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placement {
-    /// The list index the new songs are inserted at.
+    /// List index to insert at.
     pub at: usize,
-    /// The shuffled play order afterwards (list indexes, new songs included), when shuffling.
+    /// The play order afterwards (list indexes, new songs included), when shuffling.
     pub order: Option<Vec<usize>>,
 }
 
-/// Play next and Add to queue, the way Apple does them: the songs go right after the playing one ("next",
-/// `last` false), or after the songs added by hand before them ("last"), in the order given, and then the
-/// queue carries on as it was. In the list itself they sit there too, so turning shuffle off keeps them
-/// next. Under shuffle the player would drop each at a random place in the play order, so the order is
-/// rebuilt with them where they belong and everything else where it was.
-///
-/// `n` songs are queued, `cur` is playing, `hand[i]` says song i was added by hand, `order` is the
-/// current play order (when shuffling), and `count` songs are being added.
+/// Play next (`last` false: right after `cur`) and Add to queue (`last`: after the run of hand-added
+/// songs following `cur`), as Apple does. Under shuffle the new songs are placed in the play order the
+/// same way. `hand[i]`: song i was added by hand; `count`: songs being added.
 pub fn place(n: usize, cur: usize, hand: &[bool], order: Option<&[usize]>, last: bool, count: usize) -> Placement {
-    // The end of the run of hand-added songs after the current one, walking the given order.
+    // Last hand-added song after `cur` along `walk` (or `cur` for play next).
     let run_end = |walk: &dyn Fn(usize) -> Option<usize>| {
         let mut end = cur;
         if !last {
@@ -49,9 +43,8 @@ pub fn place(n: usize, cur: usize, hand: &[bool], order: Option<&[usize]>, last:
     Placement { at, order: Some(next) }
 }
 
-/// Shuffle turned on: the playing song goes first, the songs added by hand right after it keep their
-/// order, and only the rest is shuffled. The player's own order would leave the playing song somewhere in
-/// the middle, so the songs before it in that order were never played, and it scatters the hand-added ones.
+/// The play order when shuffle is turned on: the current song first, the hand-added run after it in
+/// order, the rest shuffled.
 pub fn shuffle_around(n: usize, cur: usize, hand: &[bool], seed: u64) -> Vec<usize> {
     let mut kept = vec![cur];
     let mut i = cur + 1;
@@ -65,7 +58,7 @@ pub fn shuffle_around(n: usize, cur: usize, hand: &[bool], seed: u64) -> Vec<usi
     kept
 }
 
-/// Fisher-Yates over a small xorshift: an even shuffle, and the same one for the same seed.
+/// Deterministic Fisher-Yates over xorshift.
 pub fn shuffle<T>(items: &mut [T], seed: u64) {
     let mut s = seed | 1;
     for i in (1..items.len()).rev() {
@@ -76,34 +69,28 @@ pub fn shuffle<T>(items: &mut [T], seed: u64) {
     }
 }
 
-/// Which of the songs coming up (0 = the one playing) are fetched ahead, as a range: `count` from the
-/// user's setting for this network. The player itself buffers the very next song, so this normally covers
-/// the ones after it - except with a transition on: a mix needs that next song decodable a whole
-/// crossfade before the player would otherwise want it, and audio that arrives too late to be mixed into
-/// leaves a hole where the end of the song should be. Nothing extra is fetched, only earlier. Shuffle moves
-/// the goalposts, so nothing is fetched deep into a queue about to be reordered - but the next song is the
-/// next song whatever the order. `None`: nothing to fetch.
+/// The upcoming songs to prefetch (0 = playing), inclusive. The player buffers the next song itself,
+/// except that a mix needs it early. Under shuffle only the next song. `None`: nothing.
 pub fn precache_range(count: usize, mixing: bool, shuffling: bool) -> Option<(usize, usize)> {
     let first = if mixing { 1 } else { 2 };
     let last = (if shuffling { 0 } else { count }).max(if mixing { 1 } else { 0 });
     (last >= first).then_some((first, last))
 }
 
-/// Whether songs meet in a mix, for [`precache_range`]: a crossfade or AutoMix is on and the output
-/// allows touching the samples at all.
+/// Whether transitions will mix songs, for [`precache_range`].
 pub fn mixing(transitions_off: bool, crossfade_s: i32, auto_mix: bool) -> bool {
     !transitions_off && (crossfade_s > 0 || auto_mix)
 }
 
-/// How many songs are fetched ahead: the user's setting for the network the phone is on.
+/// Prefetch count for the current network.
 pub fn precache_count(metered: bool, wifi: i32, mobile: i32) -> usize {
     (if metered { mobile } else { wifi }).max(0) as usize
 }
 
-/// How many of the songs coming up (0 = the one playing) are measured ahead for AutoMix.
+/// Upcoming songs (0 = playing) measured ahead for AutoMix.
 pub const MEASURE_AHEAD: usize = 3;
 
-/// How many songs coming up are measured ahead: none while AutoMix is off (nothing plans from them).
+/// Songs to measure ahead: none with AutoMix off.
 pub fn measure_ahead(auto_mix: bool) -> usize {
     if auto_mix {
         MEASURE_AHEAD
@@ -115,7 +102,7 @@ pub fn measure_ahead(auto_mix: bool) -> usize {
 /// A song would not play.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaybackError {
-    /// The audio output refused the stream (typically an offloaded one).
+    /// The output refused the stream (typically offloaded).
     Output,
     /// The server could not be reached.
     Network,
@@ -124,20 +111,16 @@ pub enum PlaybackError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnError {
-    /// Stop handing the audio chip compressed audio for good, rebuild on the CPU path, play the same song.
+    /// Disable offload, rebuild on the CPU path and retry the song.
     GiveUpOffload,
-    /// Hand it to the offline bridge (a downloaded song still queued, or downloads until the server is back).
+    /// Hand over to the offline bridge.
     Bridge,
-    /// Skip to the next song and play.
     Skip,
-    /// Leave it stopped.
     Stop,
 }
 
-/// What to do when a song will not play. An output that refuses an offloaded stream would refuse the next
-/// song the same way, so the chain goes back to the CPU instead. One unplayable or unreachable song should
-/// not end the evening: a network failure goes to the offline bridge when it is on, anything else skips -
-/// at most three in a row, then it stops.
+/// What to do when a song will not play: an offload refusal drops offload, a network error goes to the
+/// bridge if enabled, anything else skips (at most three in a row), else stop.
 pub fn on_error(kind: PlaybackError, offload_refused: bool, bridge: bool, skip_on_error: bool, has_next: bool, errors_in_a_row: u32) -> OnError {
     match kind {
         PlaybackError::Output if !offload_refused => OnError::GiveUpOffload,
@@ -147,8 +130,7 @@ pub fn on_error(kind: PlaybackError, offload_refused: bool, bridge: bool, skip_o
     }
 }
 
-/// The run of songs that would not play. Only [`on_error`] and a failed bridge skip, and they count; a
-/// song that starts, or a bridge that took over, breaks the run.
+/// Consecutive skips for errors; reset when a song plays or the bridge takes over.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ErrorRun {
     in_a_row: u32,
@@ -159,7 +141,7 @@ impl ErrorRun {
         ErrorRun { in_a_row: 0 }
     }
 
-    /// A song would not play: [`on_error`] with the run so far, counted when it skips.
+    /// [`on_error`] with the run so far; skips are counted.
     pub fn failed(&mut self, kind: PlaybackError, offload_refused: bool, bridge: bool, skip_on_error: bool, has_next: bool) -> OnError {
         let d = on_error(kind, offload_refused, bridge, skip_on_error, has_next, self.in_a_row);
         if d == OnError::Skip {
@@ -168,7 +150,7 @@ impl ErrorRun {
         d
     }
 
-    /// The offline bridge could not take a network failure over: skipped like any other, same limit.
+    /// The bridge could not take over: skip under the same limit.
     pub fn bridge_failed(&mut self, skip_on_error: bool, has_next: bool) -> bool {
         let skip = on_error(PlaybackError::Other, true, false, skip_on_error, has_next, self.in_a_row) == OnError::Skip;
         if skip {
@@ -177,7 +159,7 @@ impl ErrorRun {
         skip
     }
 
-    /// A song started, or the bridge took over: the run is broken.
+    /// A song played or the bridge took over.
     pub fn played(&mut self) {
         self.in_a_row = 0;
     }
@@ -187,35 +169,27 @@ impl ErrorRun {
     }
 }
 
-/// Keeping the music going past the end of the queue. A fetch starts when the queue's end is near - the
-/// last song, or up to [`FILL_AHEAD`] still following - so that a fast run of nexts does not hit a wall
-/// while similar songs are still on the wire (a server asking Last.fm for them takes seconds), and only
-/// one is on the wire at a time. What comes back goes in after the song that was last when the fetch
-/// started, and only while it still is: a queue given songs from elsewhere meanwhile is left alone.
+/// Refilling past the end of the queue. One fetch at a time starts once at most [`FILL_AHEAD`] songs
+/// remain; the results go in only if the queue's end is unchanged.
 ///
-/// A next pressed with nothing after is remembered, and taken when the songs land - unless the user has
-/// moved on since, or the press is older than [`NEXT_KEPT_MS`]: by then the user has settled on the song
-/// and a skip out of nowhere would be a surprise (a phone's refill took 4.6 s once, and the song the user
-/// had been listening to for four seconds was skipped). The songs still go in; only the skip is dropped.
-/// Many presses at the end are one skip, timed from the last of them.
+/// A next pressed with nothing after is taken when the songs land, unless the user moved on or the last
+/// press is older than [`NEXT_KEPT_MS`] (a late skip would surprise).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Refill {
     in_flight: bool,
-    /// The queue's last song (in play order) when the fetch started.
+    /// The queue's last song (play order) when the fetch started.
     end: Option<String>,
-    /// The song a next was pressed on with nothing after it, and when (the latest press, in ms of the
-    /// caller's monotonic clock).
+    /// The song a next was pressed on with nothing after, and the latest press time.
     pending_from: Option<String>,
     pending_at_ms: i64,
 }
 
-/// How many songs may still follow the current one when the refill starts.
+/// Songs remaining after the current one when refilling starts.
 pub const FILL_AHEAD: usize = 2;
-/// How long a next pressed at the end waits for the songs to land. Past this, the press is forgotten.
+/// How long a next pressed at the end waits for songs.
 pub const NEXT_KEPT_MS: i64 = 2_000;
 
-/// Whether a queue may be refilled at all: a song is playing and not a radio stream, repeat is off (a
-/// repeating queue has no end) and the user has the setting on.
+/// A queue can be refilled: a non-radio song playing, repeat off, setting on.
 pub fn refillable(song: bool, radio: bool, repeat: u8, setting: bool) -> bool {
     song && !radio && repeat == crate::playlist::REPEAT_OFF && setting
 }
@@ -225,9 +199,7 @@ impl Refill {
         Refill { in_flight: false, end: None, pending_from: None, pending_at_ms: 0 }
     }
 
-    /// The queue moved (or a next was pressed): whether to start fetching now, `after` songs still
-    /// following the current one and `end` last. A true answer means a fetch is on the wire until
-    /// [`Refill::arrived`].
+    /// Whether to start a fetch now (`after` songs follow, `end` is last); true until [`Refill::arrived`].
     pub fn start(&mut self, refillable: bool, after: usize, end: Option<&str>) -> bool {
         if !refillable || after > FILL_AHEAD || self.in_flight {
             return false;
@@ -237,9 +209,7 @@ impl Refill {
         true
     }
 
-    /// Next pressed on `current` at `now_ms`: true to skip at once. With nothing after, the press is
-    /// remembered - only while the queue can be refilled at all (repeat off, setting on) - and the caller
-    /// starts a fetch unless one is out.
+    /// Next pressed: true to skip now; with nothing after, remembers the press if refillable.
     pub fn next(&mut self, has_next: bool, can_refill: bool, current: Option<&str>, now_ms: i64) -> bool {
         if has_next {
             self.pending_from = None;
@@ -252,9 +222,8 @@ impl Refill {
         false
     }
 
-    /// The fetch came back with `count` songs while `end` is the queue's last song: whether they go in.
-    /// They do not when there are none, or when the queue's end is no longer the one they were fetched
-    /// for (songs added, a new queue); the fetch is then over, and so is a waiting next.
+    /// The fetch returned `count` songs: whether to insert them (the end is unchanged). Otherwise the
+    /// fetch and any waiting next are dropped.
     pub fn arrived(&mut self, count: usize, end: Option<&str>) -> bool {
         let keep = count > 0 && end.is_some() && self.end.as_deref() == end;
         if !keep {
@@ -265,9 +234,7 @@ impl Refill {
         keep
     }
 
-    /// The songs that arrived are in the queue: whether to take the waiting next now, which it is only
-    /// if the user is still on the song it was pressed on, the press is recent, and there is somewhere
-    /// to go.
+    /// The songs are in: whether to take the waiting next now.
     pub fn landed(&mut self, current: Option<&str>, has_next: bool, now_ms: i64) -> bool {
         let waiting = self.skip_waiting(current, now_ms);
         self.in_flight = false;
@@ -276,9 +243,7 @@ impl Refill {
         waiting && has_next
     }
 
-    /// Whether a next pressed at the end is waiting for songs on the wire and will be taken if they come
-    /// now: what a screen may show as a skip on its way (the next button busy). It turns false by itself
-    /// [`NEXT_KEPT_MS`] after the last press.
+    /// A next is waiting and would be taken now (shown as a busy next button).
     pub fn skip_waiting(&self, current: Option<&str>, now_ms: i64) -> bool {
         self.in_flight && self.pending_from.as_deref().is_some_and(|p| Some(p) == current) && now_ms - self.pending_at_ms <= NEXT_KEPT_MS
     }
@@ -288,18 +253,17 @@ impl Refill {
     }
 }
 
-/// What a song the player has just arrived on means.
+/// What arriving on a song means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Onto {
-    /// An explicit song with the user's setting to skip them, and somewhere to go: straight on.
+    /// Explicit with the skip setting on and somewhere to go.
     Skip,
-    /// The same song again under repeat: counted as a play again, nothing else changes.
+    /// The same song again under repeat.
     Loop,
-    /// A new song: its gain, its place saved, what comes after it fetched and refilled.
     Song,
 }
 
-/// The player moved onto a song (`song` false: onto nothing). `looped` is the player's own repeat.
+/// Classifies an arrival (`song` false: onto nothing; `looped`: the player's repeat).
 pub fn arrival(song: bool, skip_explicit: bool, explicit: bool, has_next: bool, looped: bool) -> Onto {
     if song && skip_explicit && explicit && has_next {
         Onto::Skip
@@ -310,21 +274,21 @@ pub fn arrival(song: bool, skip_explicit: bool, explicit: bool, has_next: bool, 
     }
 }
 
-/// Previous goes back to the start of the song rather than to the one before once this far in (media3's
-/// own rule), unless the user asked for it always to skip.
+/// Past this, previous restarts the song (media3's rule) unless set to always skip.
 pub const PREVIOUS_REWINDS_AFTER_MS: i64 = 3_000;
 
-/// Whether previous restarts the song playing here (else the player's own previous decides).
+/// Whether previous restarts the current song.
 pub fn previous_restarts(position_ms: i64, has_previous: bool, always_skips: bool) -> bool {
     !(always_skips && has_previous) && position_ms > PREVIOUS_REWINDS_AFTER_MS
 }
 
-/// Repeat off, all, one, then off again.
+/// Cycles repeat off -> all -> one -> off.
 pub fn next_repeat(mode: u8) -> u8 {
+    use crate::playlist::{REPEAT_ALL, REPEAT_OFF, REPEAT_ONE};
     match mode {
-        0 => 2, // off -> all (media3: REPEAT_MODE_ALL = 2)
-        2 => 1, // all -> one (REPEAT_MODE_ONE = 1)
-        _ => 0,
+        REPEAT_OFF => REPEAT_ALL,
+        REPEAT_ALL => REPEAT_ONE,
+        _ => REPEAT_OFF,
     }
 }
 
@@ -333,21 +297,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn play_next_goes_right_after_the_playing_song() {
+    fn play_next_after_current() {
         let hand = [false, false, true, false, false];
         assert_eq!(place(5, 1, &hand, None, false, 2), Placement { at: 2, order: None });
     }
 
     #[test]
-    fn add_to_queue_goes_after_the_songs_added_by_hand_before() {
+    fn add_to_queue_after_hand_added_run() {
         let hand = [false, false, true, true, false];
         assert_eq!(place(5, 1, &hand, None, true, 1).at, 4);
     }
 
     #[test]
-    fn under_shuffle_the_new_songs_follow_the_current_one_in_play_order() {
-        // Playing 3; play order 3, 0, 4, 1, 2. Two songs added "next": inserted in the list after 3 (at 4),
-        // everything at or past 4 shifts by two, and they come right after 3 in the order.
+    fn shuffled_placement_follows_current() {
+        // Order 3, 0, 4, 1, 2; two songs inserted at 4 shift the rest and follow 3 in the order.
         let order = [3, 0, 4, 1, 2];
         let p = place(5, 3, &[false; 5], Some(&order), false, 2);
         assert_eq!(p.at, 4);
@@ -355,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn shuffle_keeps_the_playing_song_first_and_the_hand_added_after_it() {
+    fn shuffle_keeps_current_and_hand_added_first() {
         let hand = [false, false, true, true, false, false, false];
         let o = shuffle_around(7, 1, &hand, 42);
         assert_eq!(&o[..3], &[1, 2, 3]);
@@ -365,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn precache_covers_the_songs_after_the_next_unless_mixing() {
+    fn precache_range_cases() {
         assert_eq!(precache_range(3, false, false), Some((2, 3)));
         assert_eq!(precache_range(3, true, false), Some((1, 3)), "a mix needs the next song early");
         assert_eq!(precache_range(3, false, true), None, "shuffle: nothing deep");
@@ -373,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn errors_skip_three_then_stop_and_output_refusals_leave_offload() {
+    fn on_error_decisions() {
         assert_eq!(on_error(PlaybackError::Output, false, false, true, true, 0), OnError::GiveUpOffload);
         assert_eq!(on_error(PlaybackError::Output, true, false, true, true, 0), OnError::Skip, "already off offload");
         assert_eq!(on_error(PlaybackError::Network, false, true, true, true, 0), OnError::Bridge);
@@ -383,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn the_error_run_counts_skips_and_breaks_on_a_song() {
+    fn error_run_counts_skips() {
         let mut r = ErrorRun::new();
         for _ in 0..3 {
             assert_eq!(r.failed(PlaybackError::Other, false, false, true, true), OnError::Skip);
@@ -403,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn what_is_fetched_and_measured_follows_the_settings() {
+    fn fetch_and_measure_counts() {
         assert!(mixing(false, 4, false) && mixing(false, 0, true));
         assert!(!mixing(false, 0, false), "no transition");
         assert!(!mixing(true, 4, true), "the output forbids it");
@@ -412,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn an_explicit_song_is_skipped_only_with_somewhere_to_go() {
+    fn explicit_skipped_only_with_next() {
         assert_eq!(arrival(true, true, true, true, false), Onto::Skip);
         assert_eq!(arrival(true, true, true, true, true), Onto::Skip, "even looping: the setting wins");
         assert_eq!(arrival(true, true, true, false, false), Onto::Song, "the last song plays");
@@ -423,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn refilling_starts_ahead_and_once() {
+    fn refill_starts_once_near_end() {
         assert!(refillable(true, false, 0, true));
         assert!(!refillable(false, false, 0, true), "nothing playing");
         assert!(!refillable(true, true, 0, true), "a radio stream");
@@ -447,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn a_next_at_the_end_is_taken_when_the_songs_land() {
+    fn waiting_next_taken_on_landing() {
         let mut f = Refill::new();
         assert!(!f.next(false, true, Some("last"), 0));
         assert!(f.start(true, 0, Some("last")));
@@ -488,8 +451,8 @@ mod tests {
     }
 
     #[test]
-    fn a_next_at_the_end_expires_and_counts_once() {
-        // The phone's case: the songs took 4.6 s, the user had settled on the song. They go in; no skip.
+    fn waiting_next_expires_and_counts_once() {
+        // Songs took 4.6 s: they go in, no skip.
         let mut f = Refill::new();
         assert!(!f.next(false, true, Some("fpt"), 10_000));
         assert!(f.start(true, 0, Some("fpt")));

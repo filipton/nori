@@ -165,7 +165,7 @@ fn downloads_the_disk_and_measuring_ahead_over_the_core() {
     core.download_settle(vec!["m-1".into()], vec![true]).unwrap();
     std::fs::write(store.download_path("m-1"), beat_wav()).unwrap();
     nori_core::queue::queue_register(vec![on_disk, elsewhere]);
-    nori_core::playlist::playlist_set(vec!["m-1".into(), "m-2".into(), "ext-3".into()], 0, false, None);
+    nori_core::playlist::playlist_set(vec!["m-1".into(), "m-2".into(), "ext-3".into()], Some(0), false, None);
     let ahead = nori_core::rules::queue_measure();
     assert!(!ahead.contains(&"ext-3".to_string()), "a provider's song is never measured: {ahead:?}");
     let measurer = Measurer::new(core.clone(), client.clone(), store.clone());
@@ -209,7 +209,7 @@ fn downloads_the_disk_and_measuring_ahead_over_the_core() {
     disk.whole.lock().insert("m-5".into(), broken);
     let songs: Vec<Song> = ["m-3", "m-4", "m-5"].iter().map(|id| Song { id: id.to_string(), title: id.to_string(), duration: 40, suffix: "wav".into(), ..Default::default() }).collect();
     nori_core::queue::queue_register(songs);
-    nori_core::playlist::playlist_set(vec!["m-3".into(), "m-4".into(), "m-5".into()], 0, false, None);
+    nori_core::playlist::playlist_set(vec!["m-3".into(), "m-4".into(), "m-5".into()], Some(0), false, None);
     let told = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let heard = told.clone();
     let active = core.clone();
@@ -322,7 +322,7 @@ fn metered_and_ahead(client: &Arc<Client>, store: &Arc<Store>, dir: &std::path::
     let songs: Vec<Song> = (1..=5).map(|i| Song { id: format!("p-{i}"), title: format!("P{i}"), duration: 3, suffix: "mp3".into(), ..Default::default() }).collect();
     nori_core::queue::queue_register(songs);
     let ids: Vec<String> = (1..=5).map(|i| format!("p-{i}")).collect();
-    nori_core::playlist::playlist_set(ids, 0, false, None);
+    nori_core::playlist::playlist_set(ids, Some(0), false, None);
     let _ = nori_core::settings_store::settings_open(dir.join("app.db").to_string_lossy().into_owned()).unwrap();
 
     let net = Arc::new(Plain::default());

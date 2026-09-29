@@ -1,5 +1,4 @@
-//! The browsing screens' reads of the core's index and history. The shelves, pages and windows are
-//! nori-library's.
+//! Browse-screen reads of the index and history. Layouts are nori-library's.
 
 use crate::{db, history, Core, ListeningStats, Result};
 
@@ -7,27 +6,26 @@ pub use nori_library::browse::*;
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Core {
-    /// The page of the "all songs" list at `offset`: sorted by the [song_sorts] entry called `sort` (an
-    /// unknown name keeps index order), only starred songs when `starred_only`, only the years
-    /// `year_from..=year_to` when `year_to` is not 0. Nothing here touches the network.
+    /// A page of the local song list at `offset`, sorted by the [song_sorts] entry `sort` (unknown: index
+    /// order), optionally starred only and within `year_from..=year_to` (when `year_to` > 0).
     pub fn songs_page(&self, sort: String, starred_only: bool, year_from: u32, year_to: u32, offset: u32) -> Result<SongsPage> {
         let (key, descending) = SONG_SORTS.iter().find(|s| s.0 == sort).map_or(("", false), |s| (s.1, s.2));
         let songs = self.browse_songs(key.into(), descending, starred_only, year_from, year_to, offset, SONG_PAGE)?;
         Ok(SongsPage { exhausted: (songs.len() as u32) < SONG_PAGE, songs })
     }
 
-    /// The listening history's page at `offset`, newest first, skips left out.
+    /// A page of the listening history at `offset`, newest first, without skips.
     pub fn history_page(&self, offset: u32) -> Result<HistoryPage> {
         let entries = self.history_recent(HISTORY_PAGE, offset, false)?;
         Ok(HistoryPage { exhausted: (entries.len() as u32) < HISTORY_PAGE, entries })
     }
 
-    /// [`Core::stats_days`] with what the listening page reads out of them.
+    /// The listening stats page for the last `days` days (0: all).
     pub fn stats_page(&self, days: u32) -> Result<StatsPage> {
         Ok(StatsPage::new(self.stats_days(days)?))
     }
 
-    /// Decades that have songs in the index, newest first, with how many: what "browse by decade" lists.
+    /// Decades with indexed songs, newest first, with song counts.
     pub fn browse_decades(&self) -> Result<Vec<Decade>> {
         let c = self.db.lock();
         let mut st = c.prepare_cached("SELECT (json_extract(json, '$.year') / 10) * 10 AS d, count(*) FROM items WHERE server=sid() AND kind=?1 AND json_extract(json, '$.year') > 0 GROUP BY d ORDER BY d DESC")?;
@@ -39,9 +37,8 @@ impl Core {
     }
 }
 
-/// Asked only in Rust, so not exported to Kotlin.
 impl Core {
-    /// The listening stats of the last `days` days up to now; 0 means everything.
+    /// Listening stats of the last `days` days (0: all).
     pub fn stats_days(&self, days: u32) -> Result<ListeningStats> {
         let now = db::now_ms();
         let from = if days == 0 { 0 } else { now - days as i64 * DAY_MS };
@@ -56,7 +53,7 @@ pub(crate) mod tests {
     use crate::Song;
 
     #[test]
-    fn songs_page_sorts_and_knows_the_end() {
+    fn songs_page_sorts_filters_and_pages() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         let all: Vec<Song> = (0..250).map(|i| song(&format!("s{i:03}"), &format!("T{:03}", 249 - i), "A", "B", "", 1990 + (i % 20) as u32)).collect();
         db::index(&mut core.db.lock(), &[], &[], &all).unwrap();
