@@ -1,12 +1,11 @@
-//! Interleaved PCM as a platform hands it over: bytes in one of two encodings. The mixer, stretcher
-//! and analyser work on samples; these are the byte-level doors into them, so no caller has to know
-//! how 16-bit audio is staged through float.
+//! Interleaved PCM bytes (16-bit or float) and byte-level adapters for the sample-based mixer and
+//! stretcher.
 
 use crate::automix::mixer::Mixer;
 use crate::dither::Dither;
 use crate::automix::stretch::{Stretcher, BLOCK};
 
-/// Sample encodings, numbered as media3 numbers them (`C.ENCODING_PCM_16BIT`, `C.ENCODING_PCM_FLOAT`).
+/// Sample encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Encoding {
     Pcm16,
@@ -14,6 +13,7 @@ pub enum Encoding {
 }
 
 impl Encoding {
+    /// media3's `C.ENCODING_PCM_16BIT` / `C.ENCODING_PCM_FLOAT`.
     pub const PCM_16: i32 = 2;
     pub const FLOAT: i32 = 4;
 
@@ -32,7 +32,7 @@ impl Encoding {
     }
 }
 
-/// A stream's shape: rate, channel count and encoding.
+/// Rate, channel count and encoding of a stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Format {
     pub rate: u32,
@@ -88,8 +88,7 @@ pub fn from_f32(samples: &[f32], enc: Encoding, out: &mut [u8]) {
     }
 }
 
-/// Scales interleaved samples in place by `gain` (0..1: nothing clips), rounding 16-bit ones to the
-/// nearest step.
+/// Scales samples in place by `gain` (0..1, so nothing clips), 16-bit rounded to nearest.
 pub fn scale(bytes: &mut [u8], enc: Encoding, gain: f32) {
     match enc {
         Encoding::Pcm16 => {
@@ -107,8 +106,7 @@ pub fn scale(bytes: &mut [u8], enc: Encoding, gain: f32) {
     }
 }
 
-/// [`scale`], with 16-bit samples rounded back through TPDF dither ([`crate::dither`]) rather than to the
-/// nearest step: ReplayGain on the 16-bit path. `channels` keeps each channel's noise its own.
+/// [`scale`] with 16-bit samples dithered instead of rounded (ReplayGain on the 16-bit path).
 pub fn scale_dithered(bytes: &mut [u8], enc: Encoding, gain: f32, channels: usize, dither: &mut Dither) {
     match enc {
         Encoding::Pcm16 => {
@@ -122,8 +120,8 @@ pub fn scale_dithered(bytes: &mut [u8], enc: Encoding, gain: f32, channels: usiz
     }
 }
 
-/// Mixes `frames` frames of `outgoing` and `incoming` into `dest` (all the mixer's channel count and
-/// `enc`). `dest` may be the same memory as `outgoing`: the mix is written in place over what was held.
+/// Mixes `frames` frames of `outgoing` and `incoming` into `dest`, all in the mixer's channel count
+/// and `enc`. `dest` may alias `outgoing`.
 ///
 /// # Safety
 /// Each pointer must be valid for `frames * channels` samples of `enc`.
@@ -136,8 +134,7 @@ pub unsafe fn mix_raw(m: &mut Mixer, outgoing: *const u8, incoming: *const u8, d
     }
 }
 
-/// A stretcher that takes and gives bytes. 16-bit audio is staged through float in fixed blocks, so
-/// the steady state allocates nothing.
+/// A [`Stretcher`] over bytes, staged through fixed float blocks so it never allocates after creation.
 pub struct ByteStretcher {
     s: Stretcher,
     ch: usize,
@@ -151,7 +148,7 @@ impl ByteStretcher {
         ByteStretcher { s: Stretcher::new(rate.max(1), ch, keep_pitch), ch, fin: vec![0f32; BLOCK * 4 * ch], fout: vec![0f32; BLOCK * 8 * ch] }
     }
 
-    /// `ratio` playback speed (>1 faster), held for `hold_frames` output frames, then ramped to 1 over `ramp_frames`.
+    /// Speed `ratio` (>1 faster) for `hold_frames` output frames, then ramped to 1 over `ramp_frames`.
     pub fn configure(&mut self, ratio: f64, hold_frames: u64, ramp_frames: u64) {
         self.s.configure(ratio, hold_frames, ramp_frames);
     }
@@ -164,13 +161,12 @@ impl ByteStretcher {
         self.s.latency_frames()
     }
 
-    /// The song time handed out since this was last asked, in input frames ([`Stretcher::take_content`]).
+    /// Input frames consumed since the last call ([`Stretcher::take_content`]).
     pub fn take_content(&mut self) -> f64 {
         self.s.take_content()
     }
 
-    /// Runs `input` through into `output`; returns (bytes consumed, bytes produced). Staged through
-    /// float in the blocks reserved at creation, for either encoding: nothing is allocated here.
+    /// Returns (bytes consumed, bytes produced).
     pub fn process(&mut self, input: &[u8], output: &mut [u8], enc: Encoding) -> (usize, usize) {
         let ch = self.ch;
         let w = enc.width();
@@ -210,9 +206,8 @@ impl ByteStretcher {
         (used * w, made * w)
     }
 
-    /// Writes what is still inside the stretcher to `output`, as much as fits; returns bytes written.
-    /// The stretcher hands it over a block at a time: taking only the first block dropped the rest of
-    /// its delay line, and the song jumped ahead by that much where the stretch handed back to it.
+    /// Drains the stretcher's delay line into `output` block by block, as much as fits; returns bytes
+    /// written.
     pub fn drain(&mut self, output: &mut [u8], enc: Encoding) -> usize {
         let (ch, w) = (self.ch, enc.width());
         let cap = output.len() / w / ch * ch;

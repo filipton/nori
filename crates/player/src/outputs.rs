@@ -1,37 +1,28 @@
-//! Which output the music is going to, as a stable key a sound profile can be bound to: the speaker,
-//! wired headphones, each Bluetooth device by name, each USB DAC by name. The platform lists what is
-//! attached (what kind each device is, and what it calls itself); this names each one, picks the one
-//! media goes to, and keeps the list of every output ever seen, so a device can be given its own sound
-//! while it is unplugged.
+//! Output device keys ("USB: <name>", "Bluetooth: <name>", ...) that sound profiles bind to, which
+//! attached output media is routed to, and the list of every output seen.
 
-/// The phone's own speaker's key. Always in the list of outputs, and never forgotten.
-///
-/// The keys are identifiers, stored with the settings (the known outputs, the profiles bound to them) and
-/// kept as they always were; a client shows an output by its [`parts`], in its own words.
+/// The speaker's key; always in the known list. Keys are stored in settings, so they never change.
 pub const SPEAKER: &str = "Phone speaker";
 const WIRED: &str = "Wired headphones";
 const USB: &str = "USB: ";
 const BLUETOOTH: &str = "Bluetooth: ";
-/// What a nameless USB device, a nameless Bluetooth one and a nameless other output are keyed by.
+/// Names used when a device reports none.
 const NAMELESS_USB: &str = "DAC";
 const NAMELESS_BLUETOOTH: &str = "device";
 const OTHER: &str = "Other output";
 
-/// Where an output is plugged in, as a client names it ("USB", "Bluetooth"; the speaker and wired
-/// headphones by that alone).
+/// How an output is connected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
 pub enum OutputPort {
     Speaker,
     Wired,
     Usb,
     Bluetooth,
-    /// A dock, HDMI, a line out or anything else, known by its own name when it has one.
+    /// Dock, HDMI, line out or anything else.
     Other,
 }
 
-/// An output key read back: where it is plugged in, and the name the device gives itself (none when it
-/// gave none, or for the speaker and wired headphones).
+/// Splits a key into its port and the device's own name (`None` for placeholders, speaker, wired).
 pub fn parts(key: &str) -> (OutputPort, Option<&str>) {
     fn named_or<'a>(nameless: &str, name: &'a str) -> Option<&'a str> {
         (name != nameless).then_some(name)
@@ -49,13 +40,12 @@ pub fn parts(key: &str) -> (OutputPort, Option<&str>) {
     }
 }
 
-/// What an attached output is, as far as routing and naming go. The platform maps its own device
-/// types onto these.
+/// An attached output's type, mapped from the platform's device types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputKind {
     /// A USB DAC or USB headset.
     Usb,
-    /// A USB accessory: USB, so offload has no path to it, but not where media is routed.
+    /// USB, so it blocks offload, but media is not routed to it.
     UsbAccessory,
     /// Wired headphones or a wired headset.
     Wired,
@@ -64,15 +54,13 @@ pub enum OutputKind {
     /// A dock, HDMI or an aux line out.
     Line,
     Speaker,
-    /// Everything else the platform lists: telephony, a virtual sink, the earpiece.
+    /// Telephony, virtual sinks, the earpiece.
     Other,
 }
 
-// Lowest wins. Everything the framework lists that is not one of these - telephony, HDMI, a
-// virtual sink - ranks *below* the built-in speaker rather than above it. It used to rank above,
-// so a phone with a telephony output (which is every phone) reported that as where the music was
-// going, and anything keyed on the current output believed it.
-pub fn rank(kind: OutputKind) -> u8 {
+/// Routing precedence, lowest wins. `Other` ranks below the speaker: every phone lists a telephony
+/// output, which must not count as current.
+fn rank(kind: OutputKind) -> u8 {
     match kind {
         OutputKind::Usb => 0,
         OutputKind::Wired => 1,
@@ -83,7 +71,7 @@ pub fn rank(kind: OutputKind) -> u8 {
     }
 }
 
-/// The key a device is remembered by: "USB: <name>", "Bluetooth: <name>", "Wired headphones".
+/// The key a device is stored by.
 pub fn key(kind: OutputKind, name: &str) -> String {
     let name = name.trim();
     let or = |fallback: &str| if name.is_empty() { fallback.to_string() } else { name.to_string() };
@@ -96,35 +84,25 @@ pub fn key(kind: OutputKind, name: &str) -> String {
     }
 }
 
-/// What the attached devices say, after a device was plugged in or removed.
+/// Output state after a device was attached or removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Seen {
     /// Where media goes now.
     pub current: String,
-    /// The list of every output seen, when it changed; `None` when it is the same as before.
+    /// Every output seen, if it changed.
     pub known: Option<Vec<String>>,
-    /// Something USB is attached. Audio offload targets the phone's own DSP: with the stream handed to
-    /// the chip, a track routed to USB opens without complaint and then plays nothing, which is the
-    /// "silent DAC" this flag exists to prevent. The platform decodes on the CPU while it is true.
+    /// Something USB is attached: offload must be off (an offloaded track routed to USB plays silence).
     pub usb: bool,
 }
 
-/// The outputs the platform lists now, as (kind, the name the device gives itself). `fake_usb`
-/// pretends a USB device of that name is attached, so everything that hangs off it can be checked
-/// without the hardware.
+/// Recomputes outputs from the attached (kind, name) list. `fake_usb` simulates an attached USB device.
 pub fn refresh(attached: &[(OutputKind, &str)], known: &[String], fake_usb: Option<&str>) -> Seen {
-    // Android routes media to the most recently attached of these, in this order of precedence.
     let fake = fake_usb.map(|n| format!("{USB}{n}"));
-    let mut best: Option<&(OutputKind, &str)> = None;
-    for d in attached {
-        // The first of the lowest rank, like minByOrNull.
-        if best.is_none_or(|b| rank(d.0) < rank(b.0)) {
-            best = Some(d);
-        }
-    }
+    // First of the lowest rank, as Android routes.
+    let best = attached.iter().reduce(|b, d| if rank(d.0) < rank(b.0) { d } else { b });
     let current = fake.clone().or_else(|| best.map(|d| key(d.0, d.1))).unwrap_or_else(|| SPEAKER.to_string());
     let mut next: Vec<String> = known.to_vec();
-    next.extend(attached.iter().filter(|d| rank(d.0) < 8).map(|d| key(d.0, d.1)));
+    next.extend(attached.iter().filter(|d| rank(d.0) < rank(OutputKind::Speaker)).map(|d| key(d.0, d.1)));
     next.push(SPEAKER.to_string());
     next.extend(fake.clone());
     let next = sorted_distinct(next);
@@ -132,15 +110,15 @@ pub fn refresh(attached: &[(OutputKind, &str)], known: &[String], fake_usb: Opti
     Seen { current, known: (next != known).then_some(next), usb }
 }
 
-/// The list as it is read back from storage: the speaker is always in it.
+/// The stored known list, with the speaker added.
 pub fn initial_known(stored: &[String]) -> Vec<String> {
     let mut all = stored.to_vec();
     all.push(SPEAKER.to_string());
     sorted_distinct(all)
 }
 
-/// Drops a device from the list; it comes back by itself the next time it is connected. The speaker
-/// and the device playing now stay. `None` when nothing changes.
+/// Removes a device from the known list (it returns when next connected). The speaker and the current
+/// output stay. `None` when nothing changes.
 pub fn forget(known: &[String], current: &str, output: &str) -> Option<Vec<String>> {
     if output == SPEAKER || output == current {
         return None;
@@ -164,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn devices_are_named_by_kind_and_their_own_name() {
+    fn key_by_kind_and_name() {
         assert_eq!(key(OutputKind::Usb, "  FiiO K3 "), "USB: FiiO K3");
         assert_eq!(key(OutputKind::Usb, " "), "USB: DAC");
         assert_eq!(key(OutputKind::Bluetooth, "WH-1000XM5"), "Bluetooth: WH-1000XM5");
@@ -176,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn a_key_reads_back_as_its_parts() {
+    fn parts_invert_key() {
         assert_eq!(parts("USB: FiiO K3"), (OutputPort::Usb, Some("FiiO K3")));
         assert_eq!(parts("USB: DAC"), (OutputPort::Usb, None));
         assert_eq!(parts("Bluetooth: device"), (OutputPort::Bluetooth, None));
@@ -193,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn media_goes_to_the_best_ranked_device() {
+    fn current_is_best_ranked() {
         let attached = [(OutputKind::Other, "Telephony"), (OutputKind::Speaker, ""), (OutputKind::Bluetooth, "Buds"), (OutputKind::Wired, "")];
         let seen = refresh(&attached, &[], None);
         assert_eq!(seen.current, "Wired headphones");
@@ -205,7 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn the_known_list_only_changes_when_something_new_is_seen() {
+    fn known_changes_only_for_new_devices() {
         let known = s(&["Bluetooth: Buds", SPEAKER]);
         assert_eq!(refresh(&[(OutputKind::Bluetooth, "Buds")], &known, None).known, None);
         let seen = refresh(&[(OutputKind::Usb, "K3")], &known, None);
@@ -215,7 +193,7 @@ mod tests {
     }
 
     #[test]
-    fn a_usb_accessory_stops_offload_but_is_not_where_music_goes() {
+    fn usb_accessory_sets_usb_but_is_not_current() {
         let seen = refresh(&[(OutputKind::UsbAccessory, "Hub"), (OutputKind::Speaker, "")], &s(&[SPEAKER]), None);
         assert_eq!(seen.current, SPEAKER);
         assert!(seen.usb);
@@ -223,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pretend_dac_is_current_and_remembered() {
+    fn fake_usb_is_current_and_known() {
         let seen = refresh(&[(OutputKind::Speaker, "")], &s(&[SPEAKER]), Some("Mock DAC"));
         assert_eq!(seen.current, "USB: Mock DAC");
         assert!(seen.usb);
@@ -231,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn forgetting_keeps_the_speaker_and_what_is_playing() {
+    fn forget_keeps_speaker_and_current() {
         let known = s(&["Bluetooth: Buds", SPEAKER, "USB: K3"]);
         assert_eq!(forget(&known, "USB: K3", SPEAKER), None);
         assert_eq!(forget(&known, "USB: K3", "USB: K3"), None);

@@ -1023,7 +1023,7 @@ pub enum Rebuild {
     AtBoundary,
 }
 
-pub use nori_player::dac::{DacBlock, DacChoice, DacMode};
+pub use nori_player::dac::{DacBlock, DacMode};
 
 #[cfg(feature = "ffi")]
 #[uniffi::remote(Record)]
@@ -1031,13 +1031,6 @@ pub struct DacMode {
     pub rate: u32,
     pub bits: u32,
     pub float: bool,
-}
-
-#[cfg(feature = "ffi")]
-#[uniffi::remote(Record)]
-pub struct DacChoice {
-    pub use_index: i32,
-    pub blocked_by: Option<DacBlock>,
 }
 
 #[cfg(feature = "ffi")]
