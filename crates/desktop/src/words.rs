@@ -1,5 +1,4 @@
-//! What this window says, in plain English: the core hands over kinds and numbers, and each client words
-//! them its own way (as the terminal's text.rs does, whose sentences these follow).
+//! User-facing wording for numbers and errors (mirrors the terminal's text.rs).
 
 use nori_core::transport::{FailureKind, NetError};
 use nori_core::Song;
@@ -10,7 +9,8 @@ pub fn duration(seconds: i64) -> String {
     if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
 }
 
-fn count(n: u64, one: &str, many: &str) -> String {
+pub fn count(n: impl Into<u64>, one: &str, many: &str) -> String {
+    let n = n.into();
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
@@ -19,15 +19,15 @@ pub fn songs(n: usize) -> String {
 }
 
 pub fn albums(n: u32) -> String {
-    count(n as u64, "album", "albums")
+    count(n, "album", "albums")
 }
 
-/// A list's caption: "12 songs · 48:10".
+/// "12 songs · 48:10".
 pub fn songs_caption(n: usize, seconds: u64) -> String {
     format!("{} · {}", songs(n), duration(seconds as i64))
 }
 
-/// A record's format from one of its songs: "FLAC 24/96.0", "MP3 320 kbps".
+/// "FLAC 24/96.0", "MP3 320 kbps".
 pub fn quality(s: &Song) -> Option<String> {
     let suffix = s.suffix.to_lowercase();
     let lossless = matches!(suffix.as_str(), "flac" | "alac" | "wav" | "aiff" | "ape" | "wv" | "dsf" | "dff");
@@ -40,7 +40,6 @@ pub fn quality(s: &Song) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(" "))
 }
 
-/// A failure of the server or the network, in words a person can act on.
 pub fn net_error(e: &NetError) -> String {
     let said = match e {
         NetError::Transport { kind, .. } => match kind {
@@ -72,7 +71,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn numbers_as_the_window_writes_them() {
+    fn formats_durations_counts_and_quality() {
         assert_eq!((duration(0), duration(187), duration(3723)), ("0:00".into(), "3:07".into(), "1:02:03".into()));
         assert_eq!((songs(1), songs_caption(2, 200)), ("1 song".into(), "2 songs · 3:20".into()));
         let s = Song { suffix: "flac".into(), bit_depth: 24, sampling_rate: 96000, ..Default::default() };
