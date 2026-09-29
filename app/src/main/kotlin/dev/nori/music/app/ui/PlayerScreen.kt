@@ -736,7 +736,7 @@ private fun barRoom(): androidx.compose.ui.unit.Dp {
  * how much wider its soft edge is than upright, so it goes soft over that stretch rather than ending at the
  * controls' start.
  */
-internal val UNDER_TEXT = 160.dp
+internal val UNDER_TEXT = 96.dp
 internal const val ACROSS_MELT = 1.5f
 
 /** How much of the sleeve's panel lies under the controls on its side ([PlayerHalves]): the lyrics and queue keep off it. */
