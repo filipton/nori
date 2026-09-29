@@ -42,8 +42,7 @@ pub fn noise(amp: f64, secs: f64, seed: u64) -> Vec<i16> {
     (0..frames(secs) * 2).map(|_| (r.next() * amp * 32767.0).round() as i16).collect()
 }
 
-/// A sine by rotation, so a minute of partials costs a few multiplications a sample (a debug build
-/// makes `sin` slow enough to dominate a test).
+/// A sine by rotation (`sin` per sample is slow in debug builds).
 struct Osc {
     c: f64,
     s: f64,
@@ -64,19 +63,23 @@ impl Osc {
     }
 }
 
-/// Something like music: a few partials, a slow swell and a little noise, left and right apart, and
-/// never the same twice for different seeds. Made once per length and seed for the whole run.
-pub fn music(secs: f64, seed: u64) -> Vec<i16> {
-    type Made = Vec<((u64, u64), Arc<Vec<i16>>)>;
+/// `make()`'s signal, generated once per `key` for the whole test binary (a process-wide cache: tests
+/// run on separate threads with nothing else shared).
+pub fn cached(key: (u8, u64, u64, u64), make: impl FnOnce() -> Vec<i16>) -> Vec<i16> {
+    type Made = Vec<((u8, u64, u64, u64), Arc<Vec<i16>>)>;
     static MADE: Mutex<Made> = Mutex::new(Vec::new());
-    let key = (secs.to_bits(), seed);
     let made = MADE.lock().unwrap().iter().find(|(k, _)| *k == key).map(|(_, m)| m.clone());
     let m = made.unwrap_or_else(|| {
-        let m = Arc::new(make_music(secs, seed));
+        let m = Arc::new(make());
         MADE.lock().unwrap().push((key, m.clone()));
         m
     });
     m.to_vec()
+}
+
+/// Music-like stereo: partials, a slow swell and a little noise, different per seed.
+pub fn music(secs: f64, seed: u64) -> Vec<i16> {
+    cached((0, secs.to_bits(), seed, 0), || make_music(secs, seed))
 }
 
 fn make_music(secs: f64, seed: u64) -> Vec<i16> {

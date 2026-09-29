@@ -1,6 +1,4 @@
-//! Crossfades between songs, from the setting to the samples: planned for the right boundary, the
-//! ending held until the next song arrives, the mix exactly the mixer's and starting on the planned
-//! sample, equal power through the overlap, and the player and the seek bar following the ear.
+//! Crossfades end to end: planned boundary, hold, exact mix, equal power, and the seek bar.
 
 use nori_player::automix::mixer::{self, Mixer};
 use nori_player::playlist::Hand;
@@ -28,7 +26,7 @@ fn shown(p: &mut Player) -> (usize, i64) {
 }
 
 #[test]
-fn a_seek_just_before_a_crossfade_keeps_the_bar_with_the_ear() {
+fn seek_before_crossfade_bar_follows_audio() {
     // Seeking to nine seconds before a four-second mix: the ending is held at once, the next song
     // arrives at once, and the mix goes to the output seconds before it is heard. The output's clock
     // jumps to the next song's time as the mix is offered; the bar must not jump with it.
@@ -46,7 +44,7 @@ fn a_seek_just_before_a_crossfade_keeps_the_bar_with_the_ear() {
 }
 
 #[test]
-fn a_seek_just_before_a_crossfade_keeps_the_bar_with_the_ear_while_tuning() {
+fn seek_before_crossfade_bar_follows_audio_tuning() {
     // The same, with the equalizer screen open (bursting is off from the next boundary). The simulated
     // output reads its clock fresh on every call, so the Android-only case - a clock read cached from
     // before the mix was offered, fixed in burst.rs's `after_offer` - does not show here; this keeps the
@@ -67,7 +65,7 @@ fn a_seek_just_before_a_crossfade_keeps_the_bar_with_the_ear_while_tuning() {
 }
 
 #[test]
-fn a_crossfade_is_planned_for_the_next_boundary_and_heard_exactly_there() {
+fn crossfade_at_planned_boundary() {
     let (mut p, a, b, _) = player(12);
     p.play_from(0);
     assert!(p.run_until(10_000, |p| p.app.logged("transition a -> b: EqualPowerFade 12000 ms at 33000")), "{:?}", p.app.log);
@@ -86,7 +84,7 @@ fn a_crossfade_is_planned_for_the_next_boundary_and_heard_exactly_there() {
 }
 
 #[test]
-fn switched_on_mid_song_it_is_planned_for_the_song_already_playing() {
+fn enabling_mid_song_plans_current() {
     let (a, b, _) = three();
     let mut p = Player::new(vec![track("a", &a), track("b", &b)]);
     p.play_from(0);
@@ -101,7 +99,7 @@ fn switched_on_mid_song_it_is_planned_for_the_song_already_playing() {
 }
 
 #[test]
-fn a_song_put_next_is_planned_into_at_once() {
+fn play_next_is_planned_at_once() {
     // "Play next" on a song already under way: the plan out of it was made for the song that followed
     // before, and it is made again for the new one without waiting for anything else to change.
     let (mut p, ..) = player(4);
@@ -115,7 +113,7 @@ fn a_song_put_next_is_planned_into_at_once() {
 }
 
 #[test]
-fn the_bar_walks_steadily_through_the_held_ending() {
+fn bar_steady_through_held_ending() {
     let (mut p, ..) = player(12);
     p.play_from(0);
     p.run_for(3_000);
@@ -163,7 +161,7 @@ fn the_bar_walks_steadily_through_the_held_ending() {
 }
 
 #[test]
-fn a_scrub_into_the_mix_stays_to_hear_the_ending_and_the_mix_still_fires() {
+fn scrub_into_mix_still_mixes() {
     let (mut p, _, b, c) = player(12);
     p.play_from(1);
     p.run_for(3_000);
@@ -192,7 +190,7 @@ fn a_scrub_into_the_mix_stays_to_hear_the_ending_and_the_mix_still_fires() {
 }
 
 #[test]
-fn pausing_anywhere_changes_nothing_that_is_heard() {
+fn pausing_changes_nothing_heard() {
     let (a, b, _) = three();
     let whole = {
         let mut p = Player::with_prefs(vec![track("a", &a), track("b", &b)], crossfade(12));
@@ -215,7 +213,7 @@ fn pausing_anywhere_changes_nothing_that_is_heard() {
 }
 
 #[test]
-fn a_seek_back_out_of_the_held_ending_plays_the_song_on_and_mixes_again() {
+fn seek_back_out_of_hold_mixes_again() {
     let (a, b, _) = three();
     let mut p = Player::with_prefs(vec![track("a", &a), track("b", &b)], crossfade(12));
     p.play_from(0);
@@ -234,7 +232,7 @@ fn a_seek_back_out_of_the_held_ending_plays_the_song_on_and_mixes_again() {
 }
 
 #[test]
-fn an_ending_held_for_a_song_that_will_not_play_is_let_go_whole() {
+fn hold_released_when_next_song_fails() {
     let (a, b, c) = three();
     let mut p = Player::with_prefs(vec![track("a", &a), track("b", &b), track("c", &c)], crossfade(12));
     p.tracks.broken = vec!["b".into()];
@@ -248,7 +246,7 @@ fn an_ending_held_for_a_song_that_will_not_play_is_let_go_whole() {
 }
 
 #[test]
-fn a_crossfade_at_one_and_a_half_times_still_meets_the_next_song() {
+fn crossfade_at_1_5x_speed() {
     let (a, b, _) = three();
     let mut p = Player::with_prefs(vec![track("a", &a), track("b", &b)], crossfade(12));
     p.set_speed(1.5, 1.0);
@@ -263,7 +261,7 @@ fn a_crossfade_at_one_and_a_half_times_still_meets_the_next_song() {
 }
 
 #[test]
-fn with_it_off_the_planner_says_so_rather_than_going_quiet() {
+fn off_planner_logs_reason() {
     let (mut p, ..) = player(12);
     p.play_from(0);
     p.run_for(2_000);
@@ -275,7 +273,7 @@ fn with_it_off_the_planner_says_so_rather_than_going_quiet() {
 }
 
 #[test]
-fn an_equal_power_fade_keeps_the_level_of_uncorrelated_songs() {
+fn equal_power_fade_keeps_level() {
     // Two independent noises at the same level: through an equal-power fade their sum keeps that level.
     let (a, b) = (noise(0.3, 40.0, 11), noise(0.3, 40.0, 12));
     let mut p = Player::with_prefs(vec![track("a", &a), track("b", &b)], crossfade(10));
@@ -291,7 +289,7 @@ fn an_equal_power_fade_keeps_the_level_of_uncorrelated_songs() {
 }
 
 #[test]
-fn a_crossfade_plays_the_curve_and_the_fade_in_asked_for() {
+fn crossfade_curve_and_fade_in() {
     use nori_player::transitions::TransitionPrefs;
     use nori_player::types::FadeCurve;
     // The outgoing song at 440 Hz, the incoming one at 1 kHz: each side's gain read by its own tone.
