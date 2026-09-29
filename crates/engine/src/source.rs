@@ -57,9 +57,9 @@ pub enum OpenError {
     Status(u16),
     /// The bytes could not be had now (no network, the server out of reach): asked for again.
     Failed(String),
-    /// No answer within [`stall_ms`] of asking, or no byte within it of the last: called off. A song
-    /// whose first bytes never come fails of it at once, as the network's failure; a body that stalls
-    /// half way is asked for again from where it stopped.
+    /// No answer, or no next byte, within [`Waits::stall_ms`]: called off. A song whose first bytes
+    /// never come fails at once, as the network's failure; a body that stalls half way is asked for
+    /// again from where it stopped.
     TimedOut,
 }
 
@@ -82,47 +82,42 @@ impl std::fmt::Display for OpenError {
             OpenError::PastEnd { len: None } => f.write_str("past the end"),
             OpenError::Status(status) => write!(f, "HTTP {status}"),
             OpenError::Failed(why) => f.write_str(why),
-            OpenError::TimedOut => write!(f, "no answer within {} ms", stall_ms()),
+            OpenError::TimedOut => f.write_str("no answer in time"),
         }
     }
 }
 
 // ---- requests called off ----
 
-/// Longest a request may wait for its answer, or for its next byte, before it is called off
-/// ([`OpenError::TimedOut`]): well under the reader's own [`READ_TIMEOUT`], so a song whose server never
-/// answers fails of the network, not of a reader that gave up. A song on octo-fiesta that it must
-/// download first answers within this, or fails as it did at the reader's timeout before.
-const STALL_MS: u64 = 20_000;
-static STALL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(STALL_MS);
-
-/// How long a request may stall before it is called off, ms.
-pub fn stall_ms() -> u64 {
-    STALL.load(Ordering::Relaxed)
+/// Real-time limits of a song's fetch. A test on a clock it moves by hand changes them
+/// ([`crate::Clock::waits`]): that clock cannot see real time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Waits {
+    /// A request with no answer, or no next byte, for this long is called off ([`OpenError::TimedOut`]).
+    /// Well under [`READ_TIMEOUT`], so a server that never answers fails as the network's failure.
+    pub stall_ms: u64,
+    /// A dropped connection is tried again after twice this, doubled for each retry after it.
+    pub retry_ms: u64,
 }
 
-/// For tests on a virtual clock only: requests stall this long, in real time, before they are called
-/// off. Such a clock stands still while bytes are awaited, so a server paced on it can take longer in
-/// real time than any stall on a phone.
-#[doc(hidden)]
-pub fn set_stall_ms(ms: u64) {
-    STALL.store(ms, Ordering::Relaxed);
+impl Default for Waits {
+    fn default() -> Self {
+        Waits { stall_ms: 20_000, retry_ms: 500 }
+    }
 }
 
-/// A request that may be called off from another thread: a song let go while its bytes had not come,
-/// its answer or next byte taking longer than [`stall_ms`], or crowded out by newer ones ([`MAX_ASKING`]).
+/// A request that may be called off from another thread: its song let go, its answer or next byte
+/// later than its stall, or crowded out by newer ones ([`MAX_ASKING`]).
 /// Handed to [`ByteSource::open_cancellable`]; the client's HTTP stack calls its own request off when
 /// told ([`Cancel::on_cancel`]), or looks at [`Cancel::cancelled`] while it waits. One per loader (and
 /// per song fetched ahead), made anew for each request ([`Cancel::begin`]).
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Cancel(Arc<Called>);
 
-#[derive(Default)]
 struct Called {
     s: Mutex<CallState>,
 }
 
-#[derive(Default)]
 struct CallState {
     /// The song is let go: every request of it, now and to come, is off.
     closed: bool,
@@ -134,13 +129,25 @@ struct CallState {
     /// Called off at this moment unless it moves on first.
     deadline: Option<std::time::Instant>,
     watched: bool,
-    /// Its own stall, in place of [`stall_ms`] (a test's).
-    stall_ms: Option<u64>,
+    /// Called off after this long without moving, ms.
+    stall_ms: u64,
+}
+
+impl Default for Cancel {
+    fn default() -> Self {
+        Cancel::stalling_after(Waits::default().stall_ms)
+    }
 }
 
 impl Cancel {
     pub fn new() -> Cancel {
         Cancel::default()
+    }
+
+    /// A request called off after `ms` without an answer or a byte.
+    pub(crate) fn stalling_after(ms: u64) -> Cancel {
+        let s = CallState { closed: false, off: false, timed_out: false, hook: None, deadline: None, watched: false, stall_ms: ms };
+        Cancel(Arc::new(Called { s: Mutex::new(s) }))
     }
 
     /// Whether the request is called off: an HTTP stack that cannot be told looks at this as it waits.
@@ -167,22 +174,14 @@ impl Cancel {
     }
 
     /// A new request begins: whatever called the last one off is forgotten (not a song let go), and it
-    /// is called off unless it answers within [`stall_ms`].
+    /// is called off unless it answers within its stall.
     pub(crate) fn begin(&self) {
         self.stalls(true);
     }
 
-    /// The request moved on (its answer, a byte): called off unless the next comes within [`stall_ms`].
+    /// The request moved on (its answer, a byte): called off unless the next comes within its stall.
     pub(crate) fn moved(&self) {
         self.stalls(false);
-    }
-
-    /// A request that stalls after `ms` rather than [`stall_ms`]: for a test on the wall clock.
-    #[cfg(test)]
-    fn stalling_after(ms: u64) -> Cancel {
-        let c = Cancel::new();
-        c.0.s.lock().stall_ms = Some(ms);
-        c
     }
 
     /// Watched from now on: called off unless it moves within its stall. `anew`: a new request, which
@@ -195,8 +194,7 @@ impl Cancel {
             s.timed_out = false;
             s.hook = None;
         }
-        let ms = s.stall_ms.unwrap_or_else(stall_ms);
-        s.deadline = Some(std::time::Instant::now() + Duration::from_millis(ms));
+        s.deadline = Some(std::time::Instant::now() + Duration::from_millis(s.stall_ms));
         if !s.watched {
             s.watched = true;
             drop(s);
@@ -307,40 +305,27 @@ fn watching() {
     }
 }
 
-/// Requests the player and the fetching ahead have waiting for an answer at once. A server that never
-/// answers must not take every request the platform lets run to it (OkHttp's per-host cap, a
-/// connection's HTTP/2 streams): past this many the oldest still waiting is called off, the newest
-/// asked being the one wanted.
+/// Requests to one [`ByteSource`] waiting for an answer at once. A server that never answers must not
+/// take every request the client's HTTP stack lets run to it (OkHttp's per-host cap): past this many the
+/// oldest still waiting is called off, the newest being the one wanted.
 pub const MAX_ASKING: usize = 4;
 
+/// Process-wide: the player's loaders and the fetching ahead share one HTTP client, and so one cap.
 static ASKING: Asking = Asking(Mutex::new(Vec::new()));
-/// On in the app; off in this crate's own unit tests, which run side by side and would otherwise call
-/// each other's requests off (the one about crowding keeps an [`Asking`] of its own).
-static CROWDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(!cfg!(test));
 
-/// For tests that run many engines in one process only: their requests are not counted together. The
-/// most waiting at once is one player's (and one fetching ahead's), not every engine's in a test binary.
-#[doc(hidden)]
-pub fn set_crowding(on: bool) {
-    CROWDING.store(on, Ordering::Relaxed);
-}
-
-/// The requests waiting for an answer, oldest first.
-struct Asking(Mutex<Vec<Cancel>>);
+/// The requests waiting for an answer, oldest first, by the source they go to.
+struct Asking(Mutex<Vec<(usize, Cancel)>>);
 
 impl Asking {
-    /// `cancel`'s request is about to be made: it counts among the ones waiting for an answer until
-    /// [`Asking::answered`], and the oldest waiting is called off when there are too many.
-    fn asking(&self, cancel: &Cancel) {
+    /// `cancel`'s request to `source` is about to be made: it counts until [`Asking::answered`], and the
+    /// oldest waiting on the same source is called off when there are too many.
+    fn asking(&self, source: usize, cancel: &Cancel) {
         let crowded = {
             let mut a = self.0.lock();
-            a.retain(|c| !c.cancelled());
-            a.push(cancel.clone());
-            if a.len() > MAX_ASKING {
-                Some(a.remove(0))
-            } else {
-                None
-            }
+            a.retain(|(_, c)| !c.cancelled());
+            a.push((source, cancel.clone()));
+            let same = a.iter().filter(|(s, _)| *s == source).count();
+            (same > MAX_ASKING).then(|| a.iter().position(|(s, _)| *s == source).map(|k| a.remove(k).1)).flatten()
         };
         if let Some(c) = crowded {
             c.call_off(false);
@@ -348,7 +333,7 @@ impl Asking {
     }
 
     fn answered(&self, cancel: &Cancel) {
-        self.0.lock().retain(|c| !Arc::ptr_eq(&c.0, &cancel.0));
+        self.0.lock().retain(|(_, c)| !Arc::ptr_eq(&c.0, &cancel.0));
     }
 }
 
@@ -360,9 +345,7 @@ pub(crate) fn open_watched(source: &dyn ByteSource, url: &str, key: Option<&str>
         return Err("the song is no longer wanted".into());
     }
     cancel.begin();
-    if CROWDING.load(Ordering::Relaxed) {
-        ASKING.asking(cancel);
-    }
+    ASKING.asking(source as *const dyn ByteSource as *const () as usize, cancel);
     let opened = source.open_cancellable(url, key, from, cancel);
     ASKING.answered(cancel);
     let stalled = cancel.timed_out();
@@ -424,7 +407,7 @@ pub trait ByteSource: Send + Sync {
 
     /// [`ByteSource::open`] (or [`ByteSource::open_keyed`] with a cache `key`) as a request that may be
     /// called off from another thread while it waits for its answer or its body's bytes: the song let go,
-    /// its answer or a byte later than [`stall_ms`], newer requests crowding it out. The client tells its
+    /// its answer or a byte later than its stall, newer requests crowding it out. The client tells its
     /// HTTP stack through [`Cancel::on_cancel`] (cancelling the call, which makes the open or the body's
     /// read fail at once), or looks at [`Cancel::cancelled`] while it waits. A request left running holds
     /// what the platform has only so much of (a connection, a slot of its dispatcher, a cache entry's
@@ -485,19 +468,6 @@ const FAR: u64 = 1024 * 1024;
 pub(crate) const READY: u64 = 256 * 1024;
 /// A dropped connection is tried again this many times before the song counts as failed.
 const RETRIES: u32 = 3;
-/// Half the wait before the first try again, doubled for each after it: 1, 2 and 4 s.
-static RETRY_WAIT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(500);
-
-/// For tests on a virtual clock only: the tries again wait `ms` (doubled each time) of real time rather
-/// than seconds, which such a clock could not account for anyway.
-#[doc(hidden)]
-pub fn set_retry_wait_ms(ms: u64) {
-    RETRY_WAIT_MS.store(ms, Ordering::Relaxed);
-}
-
-fn retry_wait(failures: u32) -> Duration {
-    Duration::from_millis(RETRY_WAIT_MS.load(Ordering::Relaxed) << failures)
-}
 /// How long the demuxer waits for bytes before it gives up on the song.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// A live stream is ready to be read when this much is there: two seconds at 128 kbps, and the
@@ -632,6 +602,7 @@ struct Loaded {
     cv: Condvar,
     /// The request running for it: called off when the song is let go.
     cancel: Cancel,
+    retry_ms: u64,
 }
 
 /// A song being loaded. The library and the song's readers share it; when the last of them lets go
@@ -642,15 +613,16 @@ impl Loader {
     /// Starts loading `url` through `source` on a thread of its own, sized by `load` and the song's
     /// tagged length, writing what it fetches into `keep` when given one.
     pub fn start(source: Arc<dyn ByteSource>, url: String, load: [i64; 5], duration_ms: Option<i64>, keep: Option<Writer>) -> Arc<Loader> {
-        Loader::start_within(source, url, load, duration_ms, keep.map(|w| Box::new(move || Some(w)) as Keep), None, None)
+        Loader::start_within(source, url, load, duration_ms, keep.map(|w| Box::new(move || Some(w)) as Keep), None, None, Waits::default())
     }
 
     /// [`Loader::start`], holding no more than `budget` bytes from its first burst on (`Loader::limit`),
     /// its entry made as [`Keep`] says, and `taker` hearing the song's bytes as they come, from its first
     /// (AutoMix's measuring, `crate::arriving`): told the song was whole only when every byte of it came
     /// in order, and given up at a jump.
-    pub fn start_within(source: Arc<dyn ByteSource>, url: String, load: [i64; 5], duration_ms: Option<i64>, keep: Option<Keep>, budget: Option<u64>, taker: Option<Listening>) -> Arc<Loader> {
-        let loaded = Arc::new(Loaded { state: Mutex::new(State { budget, ..State::default() }), cv: Condvar::new(), cancel: Cancel::new() });
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_within(source: Arc<dyn ByteSource>, url: String, load: [i64; 5], duration_ms: Option<i64>, keep: Option<Keep>, budget: Option<u64>, taker: Option<Listening>, waits: Waits) -> Arc<Loader> {
+        let loaded = Arc::new(Loaded::new(State { budget, ..State::default() }, waits));
         alive(&loaded);
         let l = loaded.clone();
         std::thread::Builder::new()
@@ -674,8 +646,8 @@ impl Loader {
     }
 
     /// A live stream (internet radio) at `url`, played for as long as it is held: see the module's words.
-    pub fn live(source: Arc<dyn ByteSource>, url: String) -> Arc<Loader> {
-        let loaded = Arc::new(Loaded { state: Mutex::new(State { live: true, ..State::default() }), cv: Condvar::new(), cancel: Cancel::new() });
+    pub fn live(source: Arc<dyn ByteSource>, url: String, waits: Waits) -> Arc<Loader> {
+        let loaded = Arc::new(Loaded::new(State { live: true, ..State::default() }, waits));
         alive(&loaded);
         let l = loaded.clone();
         std::thread::Builder::new().name("nori-live".into()).spawn(move || l.run_live(&*source, &url)).expect("a thread for loading");
@@ -849,6 +821,15 @@ impl Drop for Loader {
 }
 
 impl Loaded {
+    fn new(state: State, waits: Waits) -> Loaded {
+        Loaded { state: Mutex::new(state), cv: Condvar::new(), cancel: Cancel::stalling_after(waits.stall_ms), retry_ms: waits.retry_ms }
+    }
+
+    /// The wait before the retry after `failures` failures in a row: 2, 4, 8 times `retry_ms`.
+    fn retry_wait(&self, failures: u32) -> Duration {
+        Duration::from_millis(self.retry_ms << failures)
+    }
+
     fn run(&self, source: &dyn ByteSource, url: &str, load: [i64; 5], duration_ms: Option<i64>, keep: Option<Keep>, mut taker: Option<Listening>) {
         let mut body: Option<Box<dyn Read + Send>> = None;
         let mut chunk = vec![0u8; CHUNK];
@@ -991,7 +972,7 @@ impl Loaded {
                             self.wake(&mut s);
                             continue;
                         }
-                        std::thread::sleep(retry_wait(failures));
+                        std::thread::sleep(self.retry_wait(failures));
                         continue;
                     }
                 }
@@ -1085,7 +1066,7 @@ impl Loaded {
                             self.wake(&mut s);
                             return;
                         }
-                        std::thread::sleep(retry_wait(failures));
+                        std::thread::sleep(self.retry_wait(failures));
                         continue;
                     }
                 }
@@ -1451,7 +1432,7 @@ mod tests {
     #[test]
     fn a_song_fetched_ahead_holds_its_budget_and_the_rest_once_it_plays() {
         let s = server(600_000);
-        let l = Loader::start_within(s.clone(), "song".into(), LOAD, Some(6_000), None, Some(200_000), None);
+        let l = Loader::start_within(s.clone(), "song".into(), LOAD, Some(6_000), None, Some(200_000), None, Waits::default());
         let ahead = settled(&s);
         assert!(ahead <= 200_000 + CHUNK as u64, "no more than its budget while it waits: {ahead}");
         assert!(l.held() >= 100_000, "but its start is at hand: {}", l.held());
@@ -1840,27 +1821,25 @@ mod tests {
         assert_eq!(*s.0.lock(), 1, "asked once");
     }
 
-    /// However many songs hang, no more than [`MAX_ASKING`] of their requests wait at once: the newest
-    /// asked is the one wanted, the oldest waiting is called off.
     #[test]
-    fn past_the_most_waiting_at_once_the_oldest_request_is_called_off() {
+    fn past_max_asking_the_oldest_request_to_the_same_source_is_called_off() {
         let asking = Asking(Mutex::new(Vec::new()));
         let off = Arc::new(Mutex::new(Vec::new()));
-        let calls: Vec<Cancel> = (0..MAX_ASKING + 2)
-            .map(|k| {
-                let c = Cancel::new();
-                let o = off.clone();
-                c.on_cancel(move || o.lock().push(k));
-                asking.asking(&c);
-                c
-            })
-            .collect();
+        let ask = |source: usize, k: usize| {
+            let c = Cancel::new();
+            let o = off.clone();
+            c.on_cancel(move || o.lock().push(k));
+            asking.asking(source, &c);
+            c
+        };
+        let calls: Vec<Cancel> = (0..MAX_ASKING + 2).map(|k| ask(1, k)).collect();
         assert_eq!(*off.lock(), [0, 1], "the two oldest called off");
         assert!(calls[2..].iter().all(|c| !c.cancelled()), "the newest go on");
+        let other = ask(2, 99);
+        assert!(!other.cancelled() && off.lock().len() == 2, "another source has its own cap");
         // One answered makes room: the next asked calls nobody off.
         asking.answered(&calls[5]);
-        let c = Cancel::new();
-        asking.asking(&c);
+        ask(1, 100);
         assert_eq!(off.lock().len(), 2);
     }
 }

@@ -13,7 +13,7 @@ use nori_player::transitions::WindowSong;
 
 use crate::arriving::Listening;
 use crate::demux::Demuxed;
-use crate::source::{ByteSource, Keep, Loader};
+use crate::source::{ByteSource, Keep, Loader, Waits};
 use crate::store::Store;
 
 /// Where one song's bytes are.
@@ -84,6 +84,7 @@ pub struct Sources<L: Library> {
     /// What songs are decoded to: float for high quality output, 16-bit otherwise.
     pub encoding: Encoding,
     load: [i64; 5],
+    waits: Waits,
     engine: Thread,
     loaders: Vec<(String, Arc<Loader>)>,
 }
@@ -91,8 +92,8 @@ pub struct Sources<L: Library> {
 impl<L: Library> Sources<L> {
     /// `load` is `nori_player::transport::load_control`'s answer; `engine` the thread woken when
     /// bytes a song was waiting for arrive.
-    pub fn new(library: L, load: [i64; 5], engine: Thread) -> Sources<L> {
-        Sources { library, encoding: Encoding::Pcm16, load, engine, loaders: Vec::new() }
+    pub fn new(library: L, load: [i64; 5], waits: Waits, engine: Thread) -> Sources<L> {
+        Sources { library, encoding: Encoding::Pcm16, load, waits, engine, loaders: Vec::new() }
     }
 
     /// The loader of `id`, started if it is not running (writing into `keep`'s cache entry, `taker`
@@ -114,7 +115,7 @@ impl<L: Library> Sources<L> {
             let (store, key) = (store.clone(), key.to_string());
             Box::new(move || store.writer_for_player(&key)) as Keep
         });
-        let loader = Loader::start_within(bytes.clone(), url.to_string(), self.load, duration_ms, keep, budget, taker());
+        let loader = Loader::start_within(bytes.clone(), url.to_string(), self.load, duration_ms, keep, budget, taker(), self.waits);
         self.loaders.push((id.to_string(), loader.clone()));
         if self.loaders.len() > KEPT {
             self.loaders.remove(0);
@@ -126,7 +127,7 @@ impl<L: Library> Sources<L> {
     /// now, and what an earlier connection held of it is past.
     fn live(&mut self, id: &str, url: &str, bytes: &Arc<dyn ByteSource>) -> Arc<Loader> {
         self.loaders.retain(|(i, _)| i != id);
-        let loader = Loader::live(bytes.clone(), url.to_string());
+        let loader = Loader::live(bytes.clone(), url.to_string(), self.waits);
         self.loaders.push((id.to_string(), loader.clone()));
         if self.loaders.len() > KEPT {
             self.loaders.remove(0);

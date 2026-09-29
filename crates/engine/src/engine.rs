@@ -403,7 +403,7 @@ impl Engine {
                         own.wake(&wake);
                     }
                 }));
-                let songs = Sources::new(library, load_control(config.memory_mb), me);
+                let songs = Sources::new(library, load_control(config.memory_mb), clock.waits(), me);
                 let mut player = Player::build(songs, queue, app, RingTrack::new(output));
                 player.shallow_us = SHALLOW_US;
                 Worker::new(player, offload.map(Offload::new), rx, events, shared, config.settings, config.idle_release_ms, config.watch, clock).run();

@@ -24,6 +24,11 @@ pub trait Clock: Clone + Send + 'static {
     fn wake(&self, engine: &Thread) {
         engine.unpark();
     }
+    /// The real-time limits of the songs' fetches. A clock moved by hand cannot see real time, so it
+    /// may lift the stall and shorten the retries.
+    fn waits(&self) -> crate::source::Waits {
+        crate::source::Waits::default()
+    }
 }
 
 /// The machine's monotonic clock, and the thread's own parking.

@@ -57,21 +57,18 @@ struct Shared {
 pub struct Virtual(Arc<Shared>);
 
 impl Default for Virtual {
-    /// A new clock at nought. The loader's tries again after a dropped connection wait seconds of real
-    /// time, which this clock cannot see (it would move on, or not, by how the threads fall): on it they
-    /// take a few milliseconds instead, and so none of the test's time.
-    /// A request's stall is real time too, which a server paced on this clock can take far more of than
-    /// a phone ever waits: it is not timed on it. And the engines of a binary's tests, side by side, do
-    /// not crowd each other's requests out, as the one engine of an app would its own.
     fn default() -> Virtual {
-        nori_engine::source::set_retry_wait_ms(2);
-        nori_engine::source::set_stall_ms(600_000);
-        nori_engine::source::set_crowding(false);
         Virtual(Arc::default())
     }
 }
 
 impl Clock for Virtual {
+    /// Retries take milliseconds, and a request never stalls: this clock cannot see real time, and a
+    /// server paced on it takes far longer in real time than any stall on a phone.
+    fn waits(&self) -> nori_engine::Waits {
+        nori_engine::Waits { stall_ms: 600_000, retry_ms: 2 }
+    }
+
     fn now_ms(&self) -> i64 {
         self.0.s.lock().now_ns / 1_000_000
     }
