@@ -856,7 +856,7 @@ fn after_last_open(calls: &[Call]) -> Vec<&Call> {
 // ---- offload ----
 
 #[test]
-fn songs_of_one_format_join_on_one_offloaded_track_each_with_its_delay_and_padding() {
+fn offload_joins_songs_on_one_track() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -902,7 +902,7 @@ fn songs_of_one_format_join_on_one_offloaded_track_each_with_its_delay_and_paddi
 }
 
 #[test]
-fn a_track_that_is_torn_down_hands_the_music_to_the_cpu_where_the_ear_is() {
+fn torn_down_track_hands_to_cpu() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -927,7 +927,7 @@ fn a_track_that_is_torn_down_hands_the_music_to_the_cpu_where_the_ear_is() {
 }
 
 #[test]
-fn offload_is_taken_up_where_the_ear_is_once_nothing_touches_the_samples_and_given_up_at_once() {
+fn offload_follows_settings_both_ways() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -973,7 +973,7 @@ fn offload_is_taken_up_where_the_ear_is_once_nothing_touches_the_samples_and_giv
 }
 
 #[test]
-fn a_song_the_chip_does_not_decode_plays_on_the_cpu_between_songs_it_does() {
+fn undecodable_song_plays_on_cpu_between() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -1001,7 +1001,7 @@ fn a_song_the_chip_does_not_decode_plays_on_the_cpu_between_songs_it_does() {
 }
 
 #[test]
-fn a_song_replay_gain_turns_up_plays_on_the_cpu_between_songs_the_chip_plays_at_their_volume() {
+fn boosted_song_plays_on_cpu_between() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -1041,7 +1041,7 @@ fn a_song_replay_gain_turns_up_plays_on_the_cpu_between_songs_the_chip_plays_at_
 /// back up went to the CPU's output only, and the chip, left at the pause's silence, played the next song
 /// it took without a sound until a seek faded it up again (0.4.6: "muted in the middle of a track").
 #[test]
-fn a_song_back_on_the_chip_after_a_pause_and_the_cpu_is_heard() {
+fn offload_volume_restored_after_pause_and_cpu_song() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -1080,7 +1080,7 @@ fn a_song_back_on_the_chip_after_a_pause_and_the_cpu_is_heard() {
 /// Paused on the chip long enough for its track to be let go (the pause's fade left its volume at silence),
 /// then played: the song goes back on a new track, heard, not left at the pause's silence.
 #[test]
-fn played_again_after_the_chip_s_track_was_let_go_the_song_is_heard() {
+fn offload_volume_restored_after_release() {
     let d = dir();
     let Some((rig, fake)) = two_on_the_chip(&d, 20) else { return };
     rig.engine.set_settings(Settings { fade_ms: 300, ..offload() });
@@ -1102,7 +1102,7 @@ fn played_again_after_the_chip_s_track_was_let_go_the_song_is_heard() {
 /// The equalizer on while the chip played (the CPU takes the song over, the chip silenced first), and off
 /// again: the song goes back on the chip heard, not at the silence the CPU's take-over left the chip at.
 #[test]
-fn back_on_the_chip_after_the_cpu_took_a_song_over_it_is_heard() {
+fn offload_volume_restored_after_cpu_takeover() {
     let d = dir();
     let Some((rig, fake)) = two_on_the_chip(&d, 20) else { return };
     let eq = Sound { bands: vec![Band { kind: 0, freq: 1000.0, gain_db: 3.0, q: 1.0, channel: 0 }], ..Sound::default() };
@@ -1121,7 +1121,7 @@ fn back_on_the_chip_after_the_cpu_took_a_song_over_it_is_heard() {
 }
 
 #[test]
-fn a_song_on_the_chip_turned_up_by_a_settings_change_goes_to_the_cpu_where_the_ear_is() {
+fn offloaded_song_boosted_moves_to_cpu() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -1148,7 +1148,7 @@ fn a_song_on_the_chip_turned_up_by_a_settings_change_goes_to_the_cpu_where_the_e
 }
 
 #[test]
-fn a_seek_on_the_chip_empties_its_track_and_starts_again_at_a_packet() {
+fn offload_seek_restarts_at_packet() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -1180,7 +1180,7 @@ fn a_seek_on_the_chip_empties_its_track_and_starts_again_at_a_packet() {
 }
 
 #[test]
-fn repeat_one_on_the_chip_joins_the_song_to_itself_and_says_each_loop() {
+fn offload_repeat_one_reports_loops() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -1203,7 +1203,7 @@ fn repeat_one_on_the_chip_joins_the_song_to_itself_and_says_each_loop() {
 }
 
 #[test]
-fn the_sleep_timer_s_end_of_song_on_the_chip_takes_back_the_song_written_after_it() {
+fn offload_sleep_timer_takes_back_next_song() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -1236,7 +1236,7 @@ fn the_sleep_timer_s_end_of_song_on_the_chip_takes_back_the_song_written_after_i
 }
 
 #[test]
-fn opus_goes_to_the_chip_in_ogg_pages_its_header_first() {
+fn offload_opus_in_ogg_pages() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -1275,7 +1275,7 @@ fn opus_goes_to_the_chip_in_ogg_pages_its_header_first() {
 }
 
 #[test]
-fn aac_in_mp4_goes_to_the_chip_with_its_edit_list_as_delay_and_padding() {
+fn offload_mp4_edit_list_as_delay_padding() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -1301,7 +1301,7 @@ fn aac_in_mp4_goes_to_the_chip_with_its_edit_list_as_delay_and_padding() {
 // ---- bit-perfect ----
 
 #[test]
-fn bit_perfect_hands_every_sample_over_as_the_file_stores_it_at_its_own_rate_and_depth() {
+fn bit_perfect_is_exact() {
     let a = ramp(44_100, 24, 1);
     let b = ramp(48_000, 16, 2);
     let server = Arc::new(Server::default());
@@ -1406,7 +1406,7 @@ impl Library for Radio {
 }
 
 #[test]
-fn a_live_stream_plays_as_it_comes_with_its_announcements_taken_out() {
+fn live_stream_strips_titles() {
     let queue = SharedQueue::default();
     queue.0.lock().set(vec!["radio:1".into()], Some(0), false, 0);
     let card = Card::new();
@@ -1435,7 +1435,7 @@ fn a_live_stream_plays_as_it_comes_with_its_announcements_taken_out() {
 }
 
 #[test]
-fn an_announcement_reads_its_title() {
+fn stream_title_parsing() {
     assert_eq!(nori_engine::source::stream_title(b"StreamTitle='Muse - Uprising';StreamUrl='';\0\0"), Some("Muse - Uprising".into()));
     assert_eq!(nori_engine::source::stream_title(b"StreamTitle='';\0"), None);
     assert_eq!(nori_engine::source::stream_title(b"StreamTitle='Sigur R\xf3s - Hopp\xedpolla';"), Some("Sigur Rós - Hoppípolla".into()), "Latin-1");
@@ -1479,7 +1479,7 @@ impl App for Bridging {
 }
 
 #[test]
-fn a_song_the_network_will_not_bring_is_handed_to_the_offline_bridge() {
+fn unreachable_song_goes_to_bridge() {
     let a = ramp(44_100, 16, 3);
     let server = Arc::new(Server::default());
     serve(&server, &[("a", &wav(44_100, 16, &a))]);
@@ -1502,7 +1502,7 @@ fn a_song_the_network_will_not_bring_is_handed_to_the_offline_bridge() {
 /// A server that answers with an error status was reached: the song fails for its own reasons, and is
 /// skipped rather than handed to the offline bridge as the network's failure.
 #[test]
-fn a_song_the_server_refuses_is_not_the_network_s_failure() {
+fn refused_song_is_not_network_failure() {
     let a = ramp(44_100, 16, 3);
     let server = Arc::new(Server::default());
     serve(&server, &[("a", &wav(44_100, 16, &a)), ("c", &wav(44_100, 16, &a))]);
@@ -1520,7 +1520,7 @@ fn a_song_the_server_refuses_is_not_the_network_s_failure() {
 // ---- repeat one on the CPU ----
 
 #[test]
-fn repeat_one_on_the_cpu_says_each_loop() {
+fn repeat_one_reports_loops() {
     let a = ramp(22_050, 16, 4);
     let server = Arc::new(Server::default());
     serve(&server, &[("a", &wav(44_100, 16, &a))]);
@@ -1536,7 +1536,7 @@ fn repeat_one_on_the_cpu_says_each_loop() {
 // ---- why the CPU plays ----
 
 #[test]
-fn a_song_on_the_cpu_says_why_the_chip_did_not_take_it() {
+fn cpu_song_reports_why_not_offloaded() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -1562,7 +1562,7 @@ fn a_song_on_the_cpu_says_why_the_chip_did_not_take_it() {
 }
 
 #[test]
-fn plain_offload_takes_a_song_with_no_gap_to_cut_as_media3_does() {
+fn plain_offload_takes_gapless_song() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -1600,7 +1600,7 @@ fn on(albums: &[(&str, &str, i32)]) -> Vec<(String, String, i32)> {
 }
 
 #[test]
-fn without_gapless_offload_songs_of_different_albums_are_offloaded_their_delay_left_in() {
+fn plain_offload_takes_unrelated_songs() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -1629,7 +1629,7 @@ fn without_gapless_offload_songs_of_different_albums_are_offloaded_their_delay_l
 }
 
 #[test]
-fn without_gapless_offload_an_album_in_order_stays_on_the_cpu() {
+fn plain_offload_keeps_album_on_cpu() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -1649,7 +1649,7 @@ fn without_gapless_offload_an_album_in_order_stays_on_the_cpu() {
 }
 
 #[test]
-fn without_gapless_offload_the_cpu_takes_an_album_over_at_its_first_song_and_hands_back_after_its_last() {
+fn plain_offload_album_handover_both_ways() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -1738,7 +1738,7 @@ fn read_all(rig: &Rig, fake: &Fake) {
 }
 
 #[test]
-fn a_play_head_that_could_not_be_read_or_read_nought_skips_no_song() {
+fn unreadable_head_skips_no_song() {
     let d = dir();
     let Some((rig, fake)) = two_on_the_chip(&d, 20) else { return };
     // A call that failed, nought (what a failed call was read as, and what a gapless join starts the
@@ -1761,7 +1761,7 @@ fn a_play_head_that_could_not_be_read_or_read_nought_skips_no_song() {
 }
 
 #[test]
-fn a_play_head_counting_again_from_nought_after_a_pause_skips_no_song() {
+fn head_restart_after_pause_skips_no_song() {
     let d = dir();
     let Some((rig, fake)) = two_on_the_chip(&d, 20) else { return };
     rig.engine.pause();
@@ -1789,7 +1789,7 @@ fn a_play_head_counting_again_from_nought_after_a_pause_skips_no_song() {
 }
 
 #[test]
-fn a_play_head_ahead_of_the_clock_hands_the_song_to_the_cpu_where_the_ear_is() {
+fn head_ahead_of_clock_hands_to_cpu() {
     let d = dir();
     let app = Logged::new();
     let Some((rig, fake)) = two_on_the_chip_with(&d, 20, app.clone()) else { return };
@@ -1808,7 +1808,7 @@ fn a_play_head_ahead_of_the_clock_hands_the_song_to_the_cpu_where_the_ear_is() {
 }
 
 #[test]
-fn a_late_word_that_everything_was_presented_ends_no_song() {
+fn late_presented_ends_no_song() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -1845,7 +1845,7 @@ fn a_late_word_that_everything_was_presented_ends_no_song() {
 }
 
 #[test]
-fn an_end_of_stream_the_platform_keeps_refusing_hands_the_song_to_the_cpu() {
+fn refused_end_of_stream_hands_to_cpu() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -1866,7 +1866,7 @@ fn an_end_of_stream_the_platform_keeps_refusing_hands_the_song_to_the_cpu() {
 }
 
 #[test]
-fn the_track_holds_four_minutes_at_most_whatever_the_platform_would_take() {
+fn track_holds_at_most_four_minutes() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -1897,7 +1897,7 @@ fn the_track_holds_four_minutes_at_most_whatever_the_platform_would_take() {
 /// place at its last wake. A look - the screen coming back, or a seek bar whose reading is old - reads the
 /// chip at once, and the status is the ear's place.
 #[test]
-fn a_look_reads_the_place_the_chip_played_to_while_the_engine_slept() {
+fn look_reads_offload_place() {
     let d = dir();
     let Some((rig, fake)) = two_on_the_chip(&d, 20) else { return };
     // Ten seconds go by with the chip playing them, and the engine is not told.
@@ -1915,7 +1915,7 @@ fn a_look_reads_the_place_the_chip_played_to_while_the_engine_slept() {
 }
 
 #[test]
-fn a_pause_after_the_engine_slept_through_the_music_keeps_the_ear_where_it_is() {
+fn pause_after_sleep_keeps_place() {
     let d = dir();
     let Some((rig, fake)) = two_on_the_chip(&d, 20) else { return };
     // The engine sleeps while the chip plays on; the pause comes before it looked again.
@@ -1977,7 +1977,7 @@ fn plays_through_on_the_phone(rig: &Rig, fake: &Fake, secs: u32) {
 }
 
 #[test]
-fn a_phone_that_grants_64_kb_and_whose_play_head_never_moves_plays_by_its_timestamps() {
+fn small_track_dead_head_uses_timestamps() {
     let d = dir();
     let secs = 30;
     let Some((rig, fake)) = two_on_a_phone(&d, secs, true, true) else { return };
@@ -1992,7 +1992,7 @@ fn a_phone_that_grants_64_kb_and_whose_play_head_never_moves_plays_by_its_timest
 }
 
 #[test]
-fn a_phone_that_grants_64_kb_without_timestamps_plays_by_its_play_head() {
+fn small_track_without_timestamps_uses_head() {
     let d = dir();
     let secs = 30;
     let Some((rig, fake)) = two_on_a_phone(&d, secs, false, false) else { return };
@@ -2004,7 +2004,7 @@ fn a_phone_that_grants_64_kb_without_timestamps_plays_by_its_play_head() {
 /// chip plays (it asks for what it played), so once the slack has run out the CPU takes over where the
 /// clock puts the ear.
 #[test]
-fn a_track_whose_play_head_and_timestamp_never_move_hands_the_song_to_the_cpu_where_the_clock_puts_the_ear() {
+fn dead_counts_hand_to_cpu_at_clock() {
     let d = dir();
     let Some((rig, fake)) = two_on_a_phone(&d, 30, false, true) else { return };
     // Its count stands at nought for the watchdog's ten seconds while the platform asks for more, and the
@@ -2024,7 +2024,7 @@ fn a_track_whose_play_head_and_timestamp_never_move_hands_the_song_to_the_cpu_wh
 }
 
 #[test]
-fn a_timestamp_that_stands_still_gives_way_to_a_play_head_that_moves() {
+fn still_timestamp_gives_way_to_head() {
     let d = dir();
     let secs = 30;
     let Some((rig, fake)) = two_on_a_phone(&d, secs, true, false) else { return };
@@ -2038,7 +2038,7 @@ fn a_timestamp_that_stands_still_gives_way_to_a_play_head_that_moves() {
 }
 
 #[test]
-fn a_phone_whose_timestamp_jitters_keeps_the_ear_where_the_chip_is() {
+fn jittery_timestamp_keeps_place() {
     let d = dir();
     let secs = 20;
     let Some((rig, fake)) = two_on_a_phone_with(&d, secs, true, true, true) else { return };
@@ -2094,7 +2094,7 @@ fn a_phone_whose_timestamp_jitters_keeps_the_ear_where_the_chip_is() {
 }
 
 #[test]
-fn next_pressed_quickly_on_the_chip_moves_one_song_per_press() {
+fn offload_fast_next_moves_one_song_per_press() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -2192,7 +2192,7 @@ fn automix() -> Settings {
 }
 
 #[test]
-fn automix_switched_on_while_the_chip_plays_takes_the_music_to_the_cpu_at_once_and_mixes() {
+fn automix_on_moves_offload_to_cpu() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -2229,7 +2229,7 @@ fn automix_switched_on_while_the_chip_plays_takes_the_music_to_the_cpu_at_once_a
 /// As a phone had it: the chip plays with AutoMix off, the equalizer is switched on (the CPU takes the song
 /// over), and AutoMix a few seconds later, the planner's own settings flipping only then.
 #[test]
-fn automix_switched_on_after_the_equalizer_took_the_song_off_the_chip_mixes() {
+fn automix_on_after_equalizer_mixes() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -2263,7 +2263,7 @@ fn automix_switched_on_after_the_equalizer_took_the_song_off_the_chip_mixes() {
 }
 
 #[test]
-fn automix_switched_off_hands_the_song_back_to_the_chip_where_the_ear_is() {
+fn automix_off_returns_to_offload() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -2290,7 +2290,7 @@ fn automix_switched_off_hands_the_song_back_to_the_chip_where_the_ear_is() {
 }
 
 #[test]
-fn automix_switched_off_leaves_an_album_in_order_on_the_cpu_without_gapless_offload() {
+fn automix_off_keeps_album_on_cpu() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -2315,7 +2315,7 @@ fn automix_switched_off_leaves_an_album_in_order_on_the_cpu_without_gapless_offl
 }
 
 #[test]
-fn offload_switched_off_and_on_while_playing_moves_the_song_at_once_both_ways() {
+fn offload_setting_moves_song_both_ways() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -2434,23 +2434,23 @@ fn equalizer_on_a_phone(jittery: bool, before: Before) {
 }
 
 #[test]
-fn the_equalizer_switched_on_while_a_phone_s_chip_plays_hands_the_song_to_the_cpu_where_the_chip_was() {
+fn equalizer_on_hands_offload_to_cpu() {
     equalizer_on_a_phone(false, Before::Played);
 }
 
 #[test]
-fn the_equalizer_switched_on_while_a_jittery_phone_s_chip_plays_hands_the_song_to_the_cpu_where_the_chip_was() {
+fn equalizer_on_hands_jittery_offload_to_cpu() {
     equalizer_on_a_phone(true, Before::Played);
 }
 
 #[test]
-fn the_equalizer_switched_on_after_a_pause_on_a_phone_s_chip_hands_the_song_to_the_cpu_where_the_chip_was() {
+fn equalizer_on_after_pause_hands_to_cpu() {
     equalizer_on_a_phone(true, Before::PausedAndResumed);
     equalizer_on_a_phone(false, Before::PausedAndResumed);
 }
 
 #[test]
-fn the_equalizer_switched_on_right_after_a_skip_on_a_phone_s_chip_hands_the_song_to_the_cpu_where_the_chip_was() {
+fn equalizer_on_after_skip_hands_to_cpu() {
     equalizer_on_a_phone(true, Before::Skipped);
     equalizer_on_a_phone(false, Before::Skipped);
 }
@@ -2460,7 +2460,7 @@ fn the_equalizer_switched_on_right_after_a_skip_on_a_phone_s_chip_hands_the_song
 /// the CPU comes in from silence where it stopped. Between the two the music never stops for longer
 /// than the platform takes to start a track, and the place runs on.
 #[test]
-fn offload_given_up_on_a_phone_hands_the_song_to_the_cpu_behind_a_dip_with_no_gap() {
+fn leaving_offload_has_no_gap() {
     let d = dir();
     let Some((rig, fake)) = two_on_a_phone(&d, 30, true, true) else { return };
     rig.engine.position_updates(Some(Duration::from_millis(100)));
@@ -2580,7 +2580,7 @@ fn unsized_rig(d: &Path, secs: u32, fake: Option<Fake>, settings: Settings) -> O
 /// equalizer goes on: the CPU takes it over where the chip was (a song of the library is seeked, not
 /// taken for a station that cannot be), and it plays on from there.
 #[test]
-fn the_equalizer_switched_on_over_a_song_of_no_known_length_still_coming_hands_it_to_the_cpu_where_the_chip_was() {
+fn equalizer_on_over_unsized_offload_hands_to_cpu() {
     let d = dir();
     let secs = 60;
     let fake = Fake::new(MP3_ONLY);
@@ -2611,7 +2611,7 @@ fn the_equalizer_switched_on_over_a_song_of_no_known_length_still_coming_hands_i
 /// the song goes to the CPU and back without an error, a moment of silence on either path or a jump of
 /// its place, and ends where the last switch left it.
 #[test]
-fn the_equalizer_switched_on_and_off_quickly_on_a_phone_plays_on_without_a_glitch() {
+fn equalizer_toggle_on_offload_without_glitch() {
     let d = dir();
     let secs = 30;
     let Some((rig, fake)) = two_on_a_phone_with(&d, secs, true, true, true) else { return };
@@ -2652,7 +2652,7 @@ fn the_equalizer_switched_on_and_off_quickly_on_a_phone_plays_on_without_a_glitc
 /// As a phone had it with AutoMix on (the CPU plays): the equalizer switched on puts the sound chain in
 /// the path within a moment, and switched on and off quickly again and again never runs the output dry.
 #[test]
-fn the_equalizer_switched_on_and_off_quickly_on_the_cpu_is_heard_at_once_without_an_underrun() {
+fn equalizer_toggle_on_cpu_without_underrun() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed");
         return;
@@ -2687,7 +2687,7 @@ fn the_equalizer_switched_on_and_off_quickly_on_the_cpu_is_heard_at_once_without
 /// On the CPU, a song whose length the server does not say, still on its way: the equalizer switched on
 /// makes the music again from where the ear is (a seek), which plays on, the chain in the path at once.
 #[test]
-fn the_equalizer_switched_on_over_a_song_of_no_known_length_on_the_cpu_is_heard_at_once_where_the_ear_is() {
+fn equalizer_on_over_unsized_cpu_song() {
     let d = dir();
     let Some((rig, gate)) = unsized_rig(&d, 60, None, Settings::default()) else { return };
     rig.engine.position_updates(Some(Duration::from_millis(100)));
@@ -2712,7 +2712,7 @@ fn the_equalizer_switched_on_over_a_song_of_no_known_length_on_the_cpu_is_heard_
 /// none is said (a client counts a loop as a play of its own, and moves its place to the song's end
 /// and back).
 #[test]
-fn a_seek_on_a_phone_s_chip_says_no_loop() {
+fn offload_seek_is_not_a_loop() {
     let d = dir();
     let Some((rig, fake)) = two_on_a_phone(&d, 30, true, true) else { return };
     rig.engine.position_updates(Some(Duration::from_millis(100)));
@@ -2731,7 +2731,7 @@ fn a_seek_on_a_phone_s_chip_says_no_loop() {
 /// place it gets belongs to the song it is told is heard: a's place while a is, b's from the moment b is,
 /// never a's place under b or b's under a.
 #[test]
-fn through_a_mix_the_place_read_belongs_to_the_song_read_with_it() {
+fn place_matches_song_through_mix() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed");
         return;
@@ -2792,14 +2792,14 @@ fn through_a_mix_the_place_read_belongs_to_the_song_read_with_it() {
 /// mix entered it: a pause (which says the place again) finds it where the running on had it, and what is
 /// left of the song to its end is exactly what the card then plays.
 #[test]
-fn after_a_mix_the_new_song_s_place_is_what_was_played_of_it() {
+fn place_after_mix() {
     mixed_into_b_its_place_is_what_was_played(0);
 }
 
-/// [`after_a_mix_the_new_song_s_place_is_what_was_played_of_it`], b opening on 5 s of silence the mix
+/// [`place_after_mix`], b opening on 5 s of silence the mix
 /// may enter past.
 #[test]
-fn after_a_mix_into_a_song_entered_past_its_start_its_place_is_what_was_played_of_it() {
+fn place_after_mix_entered_late() {
     mixed_into_b_its_place_is_what_was_played(5);
 }
 
@@ -2911,7 +2911,7 @@ fn wakes_on_a_small_grant(grant: usize, dsp: usize) -> Option<(f64, f64)> {
 /// from the bytes the track holds: on a track of 32 or 64 KB it wakes as often as the platform asks, and
 /// with a DSP that buffers seconds on its own, as rarely as that lets it.
 #[test]
-fn on_a_small_grant_the_engine_wakes_only_when_the_platform_asks() {
+fn small_track_wakes_only_on_asks() {
     let mut measured = Vec::new();
     for (grant, dsp) in [(KB32, 0), (KB32, DSP), (KB64, 0), (KB64, DSP)] {
         let Some((wakes, requests)) = wakes_on_a_small_grant(grant, dsp) else { return };
@@ -2958,12 +2958,12 @@ fn screen_off_on_a_32_kb_track(head_too: bool) {
 }
 
 #[test]
-fn a_timestamp_standing_for_seconds_with_the_screen_off_on_a_32_kb_track_is_no_stall() {
+fn standing_timestamp_is_no_stall() {
     screen_off_on_a_32_kb_track(false);
 }
 
 #[test]
-fn a_timestamp_and_play_head_standing_for_seconds_with_the_screen_off_on_a_32_kb_track_is_no_stall() {
+fn standing_counts_are_no_stall() {
     screen_off_on_a_32_kb_track(true);
 }
 
@@ -2983,7 +2983,7 @@ fn plays_through_on_a_small_grant(rig: &Rig, fake: &Fake, secs: u32) {
 /// A chip that really stops (it plays nothing and asks for nothing) is given up, and the CPU takes the
 /// song over where the chip's count last put the ear: never ahead of it, whatever the clock says.
 #[test]
-fn a_chip_that_really_stalls_hands_the_song_to_the_cpu_where_the_chip_stopped() {
+fn real_stall_hands_to_cpu() {
     let d = dir();
     let Some((rig, fake)) = two_on_a_small_grant(&d, 60, KB32, DSP) else { return };
     assert!(rig.time.until(Duration::from_secs(40), || fake.0.lock().head >= 20 * 44_100), "on the chip: {:?}", fake.notes());
@@ -3009,7 +3009,7 @@ fn a_chip_that_really_stalls_hands_the_song_to_the_cpu_where_the_chip_stopped() 
 /// said after them), as the tester's S21 FE seemed to at the end of a song: the next song is written
 /// long before the one playing runs out, so the chip is never left waiting for it.
 #[test]
-fn a_chip_that_holds_back_the_last_moments_gets_the_next_song_before_it_needs_it() {
+fn next_song_written_before_needed() {
     let d = dir();
     let secs = 30;
     let Some((rig, fake)) = two_on_a_small_grant(&d, secs, KB32, DSP) else { return };
@@ -3022,7 +3022,7 @@ fn a_chip_that_holds_back_the_last_moments_gets_the_next_song_before_it_needs_it
 /// and keeps it awake where its own work is: the start, the few seconds before the ear reaches the next
 /// song (its event comes on time, with the chip asleep in between), and the end of the music.
 #[test]
-fn the_engine_lets_the_cpu_sleep_while_the_chip_plays_and_keeps_it_awake_for_its_own_work() {
+fn cpu_sleeps_while_offloaded() {
     let d = dir();
     let secs = 60;
     let Some((rig, fake)) = two_on_a_small_grant(&d, secs, KB32, DSP) else { return };
@@ -3065,7 +3065,7 @@ fn the_engine_lets_the_cpu_sleep_while_the_chip_plays_and_keeps_it_awake_for_its
 
 /// On the CPU the engine never lets it sleep: its own bursts feed the output.
 #[test]
-fn on_the_cpu_the_engine_keeps_the_cpu_awake() {
+fn cpu_awake_while_on_cpu() {
     let d = dir();
     let Some((rig, _fake)) = two_on_a_small_grant(&d, 20, KB32, DSP) else { return };
     rig.engine.set_settings(Settings::default());
@@ -3083,7 +3083,7 @@ fn on_the_cpu_the_engine_keeps_the_cpu_awake() {
 /// `keepPlaying`): the song goes on, and nothing says the music stopped or ended - the song after it in
 /// the old queue, read ahead already, is no longer there.
 #[test]
-fn a_new_queue_made_around_the_song_playing_plays_on_without_a_stop() {
+fn new_queue_around_current_song_plays_on() {
     let tone = ramp(3 * 44_100, 16, 5);
     let server = Arc::new(Server::default());
     let file = wav(44_100, 16, &tone);
@@ -3109,10 +3109,10 @@ fn a_new_queue_made_around_the_song_playing_plays_on_without_a_stop() {
     rig.engine.stop();
 }
 
-/// [`a_new_queue_made_around_the_song_playing_plays_on_without_a_stop`], the old queue's next song
+/// [`new_queue_around_current_song_plays_on`], the old queue's next song
 /// failing as it is read ahead: its failure is not the new queue's, and stops nothing.
 #[test]
-fn a_new_queue_made_around_the_song_playing_is_not_stopped_by_the_old_next_song_failing() {
+fn new_queue_ignores_old_next_failing() {
     let tone = ramp(3 * 44_100, 16, 5);
     let server = Arc::new(Server::default());
     let file = wav(44_100, 16, &tone);

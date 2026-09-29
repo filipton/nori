@@ -350,7 +350,7 @@ impl Rig {
 /// past the real end; the server says the real length in its 416. The song plays whole, and the 416 is
 /// asked for once, not tried again and again until the song counts as failed.
 #[test]
-fn an_ogg_song_promised_longer_than_it_is_plays_whole_when_the_server_says_the_real_length() {
+fn estimated_ogg_plays_whole_with_real_length() {
     let Some(rig) = rig(200_000, true, Ends::Broken, None) else { return };
     let real = rig.server.files[0].1.len() as u64;
     let heard = rig.play_a_to_its_end(0);
@@ -364,7 +364,7 @@ fn an_ogg_song_promised_longer_than_it_is_plays_whole_when_the_server_says_the_r
 /// The same without the server saying the real length: each look past the end learns only that it is
 /// sooner, and the reader looks again until it finds the last page.
 #[test]
-fn an_ogg_song_promised_longer_than_it_is_plays_whole_when_the_server_does_not_say_the_real_length() {
+fn estimated_ogg_plays_whole_without_real_length() {
     let Some(rig) = rig(200_000, false, Ends::Clean, None) else { return };
     let heard = rig.play_a_to_its_end(0);
     assert!(heard >= A_SECS as f64 - 0.1, "all of a heard: {heard} s");
@@ -374,7 +374,7 @@ fn an_ogg_song_promised_longer_than_it_is_plays_whole_when_the_server_does_not_s
 /// Played from near its end: the seek finds its place with the real length, and the song ends there
 /// rather than failing (a seek bar that took the estimate would put the place past the real end).
 #[test]
-fn a_seek_near_the_end_of_a_song_promised_longer_than_it_is_plays_its_last_seconds() {
+fn estimated_song_seek_near_end_plays() {
     for says in [true, false] {
         let Some(rig) = rig(200_000, says, Ends::Broken, None) else { return };
         let from_ms = A_SECS as i64 * 1000 - 1_500;
@@ -388,7 +388,7 @@ fn a_seek_near_the_end_of_a_song_promised_longer_than_it_is_plays_its_last_secon
 /// look for its last page waits for the bytes to come rather than asking past the end, so it is the clean
 /// end that tells the real length; the song plays whole into the next.
 #[test]
-fn a_clean_end_short_of_the_promised_length_is_the_end_of_the_song() {
+fn clean_early_end_ends_song() {
     let Some(rig) = rig(200_000, false, Ends::Clean, None) else { return };
     let heard = rig.play_to_its_end(1, 0);
     assert!(heard >= B_SECS as f64 - 0.1, "all of b heard: {heard} s");
@@ -400,7 +400,7 @@ fn a_clean_end_short_of_the_promised_length_is_the_end_of_the_song() {
 /// A network that drops in the middle of the song is not taken for its end: the bytes are asked for
 /// again from where they stopped, and the song plays whole.
 #[test]
-fn a_network_that_drops_mid_song_is_asked_again_and_the_song_plays_whole() {
+fn dropped_network_resumes_song() {
     // b: short enough that nothing jumps ahead of the break, so it is the break that is asked again.
     let Some(rig) = rig(200_000, true, Ends::Broken, Some(("b", 32_000))) else { return };
     let heard = rig.play_to_its_end(1, 0);
@@ -414,7 +414,7 @@ fn a_network_that_drops_mid_song_is_asked_again_and_the_song_plays_whole() {
 /// Ogg reader looking for the last page, for the song's length, made the server transcode the whole song
 /// before it answered), so it is heard at once. It plays whole, ended by the real end of its bytes.
 #[test]
-fn an_uncached_transcode_is_heard_at_once_and_nothing_past_its_start_is_asked_for() {
+fn uncached_transcode_starts_at_once() {
     let Some(rig) = rig_making(200_000, true, Ends::Broken, None, uncached(A_SECS as i64 * 1000 + 400)) else { return };
     let first = rig.first_sound();
     eprintln!("the first sound of an uncached transcode after {first:?}");
@@ -429,7 +429,7 @@ fn an_uncached_transcode_is_heard_at_once_and_nothing_past_its_start_is_asked_fo
 /// read on to in the bytes coming rather than asked of the server as a range it would transcode the
 /// whole song for, and plays from its place to the song's end.
 #[test]
-fn seeks_in_an_uncached_transcode_read_on_to_their_place_without_asking_for_a_range() {
+fn uncached_transcode_seeks_read_on() {
     let Some(rig) = rig_making(200_000, true, Ends::Broken, None, uncached(A_SECS as i64 * 1000 + 400)) else { return };
     rig.engine.position_updates(Some(Duration::from_millis(500)));
     rig.first_sound();
@@ -459,7 +459,7 @@ fn seeks_in_an_uncached_transcode_read_on_to_their_place_without_asking_for_a_ra
 /// The server's length is a little longer, or shorter, than the audio: the song ends where its bytes do,
 /// neither cut short nor followed by silence, and the next one starts right there.
 #[test]
-fn the_real_end_of_the_bytes_ends_the_song_whatever_length_the_server_gives_it() {
+fn bytes_end_ends_song() {
     for off_ms in [2_500, -2_500] {
         let Some(rig) = rig_making(200_000, true, Ends::Broken, None, uncached(A_SECS as i64 * 1000 + off_ms)) else { return };
         let first = rig.first_sound();
@@ -485,7 +485,7 @@ fn the_real_end_of_the_bytes_ends_the_song_whatever_length_the_server_gives_it()
 /// is of no known length until its bytes end. It is heard at once and plays whole, and a seek still
 /// reads on to its place.
 #[test]
-fn a_song_the_server_gives_no_length_is_heard_at_once_plays_whole_and_seeks() {
+fn unsized_song_plays_and_seeks() {
     let Some(rig) = rig_making(200_000, true, Ends::Broken, None, uncached(0)) else { return };
     let first = rig.first_sound();
     assert!(first < Duration::from_millis(500), "heard at once: {first:?}");
@@ -501,7 +501,7 @@ fn a_song_the_server_gives_no_length_is_heard_at_once_plays_whole_and_seeks() {
 /// empty, and on through the songs after it: each plays in turn, the next one's bytes coming as they
 /// should, rather than the player standing at the end of the song.
 #[test]
-fn a_seek_near_the_end_of_an_uncached_transcode_plays_on_through_the_songs_after_it() {
+fn uncached_transcode_seek_near_end_plays_on() {
     let making = Making { cache: true, ..uncached(A_SECS as i64 * 1000 + 400) };
     let Some(rig) = rig_making(200_000, true, Ends::Broken, None, making) else { return };
     rig.first_sound();

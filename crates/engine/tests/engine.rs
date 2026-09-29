@@ -498,7 +498,7 @@ fn crossfade(secs: i32) -> TransitionPrefs {
 }
 
 #[test]
-fn a_jump_or_a_seek_while_paused_stays_paused_and_fetches_nothing_until_play() {
+fn jump_or_seek_while_paused_fetches_nothing_until_play() {
     let (a, b, c) = (music(20.0, 91), music(20.0, 92), music(20.0, 93));
     let rig = Rig::new(&[("a", &a), ("b", &b), ("c", &c)], prefs_off(), Settings::default());
     rig.engine.play_at(0, 0);
@@ -526,7 +526,7 @@ fn a_jump_or_a_seek_while_paused_stays_paused_and_fetches_nothing_until_play() {
 }
 
 #[test]
-fn paused_at_the_end_of_a_song_it_waits_on_the_next_one() {
+fn pause_at_end_waits_on_next_song() {
     let (a, b) = (music(30.0, 95), music(4.0, 96));
     let rig = Rig::new(&[("a", &a), ("b", &b)], crossfade(2), Settings::default());
     rig.engine.play_at(0, 0);
@@ -543,7 +543,7 @@ fn paused_at_the_end_of_a_song_it_waits_on_the_next_one() {
 }
 
 #[test]
-fn a_song_slow_to_come_is_said_to_be_buffering_until_it_plays() {
+fn slow_song_reports_buffering() {
     let a = music(10.0, 81);
     let songs: [(&str, &[i16]); 1] = [("a", &a)];
     let extra = Extra::default();
@@ -559,7 +559,7 @@ fn a_song_slow_to_come_is_said_to_be_buffering_until_it_plays() {
 }
 
 #[test]
-fn a_device_that_dies_stops_the_engine_and_play_opens_another() {
+fn dead_device_stops_and_play_reopens() {
     let a = music(90.0, 71);
     let rig = Rig::new(&[("a", &a)], prefs_off(), Settings::default());
     rig.engine.play_at(0, 0);
@@ -577,7 +577,7 @@ fn a_device_that_dies_stops_the_engine_and_play_opens_another() {
 }
 
 #[test]
-fn two_songs_join_sample_for_sample_and_each_is_fetched_once() {
+fn gapless_join_and_one_fetch_each() {
     let whole = music(50.0, 1);
     let cut = RATE as usize * 2 * 23 + 2 * 317;
     let songs: [(&str, &[i16]); 2] = [("a", &whole[..cut]), ("b", &whole[cut..])];
@@ -596,7 +596,7 @@ fn two_songs_join_sample_for_sample_and_each_is_fetched_once() {
 }
 
 #[test]
-fn a_crossfade_is_heard_as_the_simulated_player_hears_it() {
+fn crossfade_matches_simulation() {
     let (a, b) = (music(40.0, 2), music(40.0, 3));
     let songs: [(&str, &[i16]); 2] = [("a", &a), ("b", &b)];
     let expected = reference(&songs, crossfade(6));
@@ -611,7 +611,7 @@ fn a_crossfade_is_heard_as_the_simulated_player_hears_it() {
 }
 
 #[test]
-fn a_seek_lands_on_the_sample_asked_for() {
+fn seek_is_sample_exact() {
     let a = music(30.0, 4);
     let songs: [(&str, &[i16]); 1] = [("a", &a)];
     let rig = Rig::new(&songs, prefs_off(), Settings::default());
@@ -622,7 +622,7 @@ fn a_seek_lands_on_the_sample_asked_for() {
 }
 
 #[test]
-fn a_seek_says_it_is_on_its_way_while_the_music_dips_before_it() {
+fn seek_reports_switching_during_dip() {
     let a = music(30.0, 22);
     let songs: [(&str, &[i16]); 1] = [("a", &a)];
     let rig = Rig::new(&songs, prefs_off(), Settings { fade_ms: 400, ..Settings::default() });
@@ -635,7 +635,7 @@ fn a_seek_says_it_is_on_its_way_while_the_music_dips_before_it() {
 }
 
 #[test]
-fn pausing_stops_the_music_and_playing_takes_it_up_where_it_was() {
+fn pause_and_resume_keep_place() {
     let a = music(30.0, 5);
     let songs: [(&str, &[i16]); 1] = [("a", &a)];
     let rig = Rig::new(&songs, prefs_off(), Settings::default());
@@ -662,7 +662,7 @@ fn pausing_stops_the_music_and_playing_takes_it_up_where_it_was() {
 /// the output again at once, so a screen coming back after the app was hidden starts from where the ear is
 /// rather than from a reading seconds old (the seek bar asks for one whenever its reading is a second old).
 #[test]
-fn a_look_says_the_place_again_between_two_bursts() {
+fn look_refreshes_place_between_bursts() {
     let a = vec![8000i16; RATE as usize * 2 * 90];
     let rig = Rig::new(&[("a", &a)], prefs_off(), Settings::default());
     rig.engine.play_at(0, 0);
@@ -685,7 +685,7 @@ fn a_look_says_the_place_again_between_two_bursts() {
 }
 
 #[test]
-fn a_pause_fades_out_and_play_fades_back_in() {
+fn pause_and_play_fade() {
     let a = vec![8000i16; RATE as usize * 2 * 20];
     let songs: [(&str, &[i16]); 1] = [("a", &a)];
     let rig = Rig::new(&songs, prefs_off(), Settings { fade_ms: 400, ..Settings::default() });
@@ -711,7 +711,7 @@ fn a_pause_fades_out_and_play_fades_back_in() {
 /// ear is on another song, and it is said, as a screen that went there needs to hear it. Playing, and
 /// paused on a place held.
 #[test]
-fn a_new_queue_started_at_the_same_index_says_the_song_it_went_to() {
+fn new_queue_at_same_index_says_song() {
     for paused in [false, true] {
         let (a, b, c) = (music(30.0, 61), music(20.0, 62), music(20.0, 63));
         let rig = Rig::new(&[("a", &a), ("b", &b), ("c", &c)], prefs_off(), Settings::default());
@@ -741,7 +741,7 @@ fn a_new_queue_started_at_the_same_index_says_the_song_it_went_to() {
 /// A new queue started while a pause fades out (paused and a song tapped at once): play goes to the new
 /// song, not back to the one the fade was taking away.
 #[test]
-fn a_song_asked_for_inside_a_pause_fade_is_the_one_play_brings() {
+fn song_chosen_during_pause_fade_plays() {
     let a = vec![8000i16; RATE as usize * 2 * 20];
     let b = vec![-8000i16; RATE as usize * 2 * 20];
     let rig = Rig::new(&[("a", &a), ("b", &b)], prefs_off(), Settings { fade_ms: 400, ..Settings::default() });
@@ -761,7 +761,7 @@ fn a_song_asked_for_inside_a_pause_fade_is_the_one_play_brings() {
 /// A wait for a song's bytes said on the CPU path is said to be over when the music stops waiting some
 /// other way: the song held paused elsewhere, the output let go.
 #[test]
-fn a_wait_said_is_said_over_when_the_music_goes_elsewhere() {
+fn buffering_ends_when_music_moves_elsewhere() {
     let (a, b) = (music(20.0, 71), music(20.0, 72));
     let songs: [(&str, &[i16]); 2] = [("a", &a), ("b", &b)];
     let extra = Extra::default();
@@ -778,7 +778,7 @@ fn a_wait_said_is_said_over_when_the_music_goes_elsewhere() {
 /// Headphones pulled out stop the music at once whatever the fade on pause is: a fade would only
 /// play on out of the speaker.
 #[test]
-fn headphones_pulled_out_cut_at_once() {
+fn pause_now_cuts_at_once() {
     let a = vec![8000i16; RATE as usize * 2 * 20];
     let songs: [(&str, &[i16]); 1] = [("a", &a)];
     let rig = Rig::new(&songs, prefs_off(), Settings { fade_ms: 1_000, ..Settings::default() });
@@ -794,7 +794,7 @@ fn headphones_pulled_out_cut_at_once() {
 
 /// Headphones pulled out inside the user's own fade out stop the music there.
 #[test]
-fn a_pause_now_cuts_a_fade_out_short() {
+fn pause_now_cuts_fade_short() {
     let a = vec![8000i16; RATE as usize * 2 * 20];
     let songs: [(&str, &[i16]); 1] = [("a", &a)];
     let rig = Rig::new(&songs, prefs_off(), Settings { fade_ms: 3_000, ..Settings::default() });
@@ -810,7 +810,7 @@ fn a_pause_now_cuts_a_fade_out_short() {
 }
 
 #[test]
-fn each_song_plays_at_its_replay_gain_volume() {
+fn replay_gain_per_song() {
     let (a, b) = (music(12.0, 7), music(12.0, 8));
     let songs: [(&str, &[i16]); 2] = [("a", &a), ("b", &b)];
     let mut app = sim::App::new();
@@ -832,7 +832,7 @@ fn rms(s: &[i16]) -> f64 {
 }
 
 #[test]
-fn a_song_turned_up_is_read_as_floats_and_held_under_the_ceiling_and_one_turned_down_plays_as_before() {
+fn replay_gain_boost_uses_floats_and_limiter() {
     // Music peaking near 0.4 of full scale, the first song turned up 9 dB (peaks at 1.1), the second
     // down 6 dB.
     let (a, b) = (music(12.0, 51), music(12.0, 52));
@@ -876,7 +876,7 @@ fn loud_eq() -> Settings {
 }
 
 #[test]
-fn high_quality_output_carries_a_24_bit_song_to_a_float_device_untouched() {
+fn hi_res_keeps_24_bits() {
     let a = music24(8.0, 9);
     let files = vec![("a".to_string(), wav24(&a), 8_000)];
     // Nothing in the chain is on: it hands the samples on as they are.
@@ -893,7 +893,7 @@ fn high_quality_output_carries_a_24_bit_song_to_a_float_device_untouched() {
 /// the device gets is what the chain makes of them to the 24-bit step. Through the 16-bit chain the same song
 /// lost its low byte before the equalizer saw it.
 #[test]
-fn high_quality_output_runs_the_equalizer_on_all_24_bits() {
+fn hi_res_equalizer_on_24_bits() {
     let a = music24(8.0, 9);
     let files = vec![("a".to_string(), wav24(&a), 8_000)];
     let rig = Rig::build(files, sim::App::new(), Settings { hi_res: true, ..loud_eq() }, Extra { float: true, ..Extra::default() });
@@ -928,7 +928,7 @@ fn wav_at(samples: &[i16], rate: u32) -> Vec<u8> {
 /// Gapless into a song at another rate: the device plays out the first song, opens again at the second's
 /// rate, and plays it sample for sample - not resampled to the rate the first song opened it at.
 #[test]
-fn a_song_at_another_rate_with_nothing_overlapping_opens_the_device_again_at_its_rate() {
+fn gapless_rate_change_reopens_device() {
     let (a, b) = (music(6.0, 51), music(6.0, 52));
     let files = vec![("a".to_string(), wav(&a), 6_000), ("b".to_string(), wav_at(&b, 48_000), (b.len() / 2) as i64 * 1000 / 48_000)];
     let rig = Rig::build(files, sim::App::new(), Settings::default(), Extra::default());
@@ -944,7 +944,7 @@ fn a_song_at_another_rate_with_nothing_overlapping_opens_the_device_again_at_its
 /// A maximum rate of 48 kHz: a 96 kHz song is heard at 48 kHz, converted by two, at its own pitch and
 /// level; a 44.1 kHz one under the maximum as it is.
 #[test]
-fn a_song_above_the_maximum_rate_is_converted_down_within_its_family() {
+fn max_rate_converts_within_family() {
     let secs = 3.0;
     let tone: Vec<i16> = (0..(96_000.0 * secs) as usize).flat_map(|i| [((i as f64 * 1000.0 * std::f64::consts::TAU / 96_000.0).sin() * 16000.0).round() as i16; 2]).collect();
     let files = vec![("hi".to_string(), wav_at(&tone, 96_000), 3_000)];
@@ -976,7 +976,7 @@ fn a_song_above_the_maximum_rate_is_converted_down_within_its_family() {
 }
 
 #[test]
-fn a_device_that_takes_16_bit_only_gets_the_16_bit_chain() {
+fn device_16_bit_gets_16_bit_chain() {
     let a = music24(8.0, 10);
     let files = vec![("a".to_string(), wav24(&a), 8_000)];
     let rig = Rig::build(files, sim::App::new(), Settings { hi_res: true, ..Settings::default() }, Extra::default());
@@ -993,7 +993,7 @@ fn files(songs: &[(&str, &[i16])]) -> Vec<(String, Vec<u8>, i64)> {
 }
 
 #[test]
-fn a_song_whose_connection_fails_for_good_is_reported_and_skipped() {
+fn failed_connection_reported_and_skipped() {
     let (a, b) = (music(10.0, 11), music(6.0, 12));
     let songs: [(&str, &[i16]); 2] = [("a", &a), ("b", &b)];
     let extra = Extra::default();
@@ -1012,7 +1012,7 @@ fn a_song_whose_connection_fails_for_good_is_reported_and_skipped() {
 }
 
 #[test]
-fn a_song_still_on_its_way_does_not_hold_the_engine_up() {
+fn loading_song_does_not_block_engine() {
     let (slow, a) = (music(6.0, 13), music(6.0, 14));
     let songs: [(&str, &[i16]); 2] = [("slow", &slow), ("a", &a)];
     let extra = Extra::default();
@@ -1026,7 +1026,7 @@ fn a_song_still_on_its_way_does_not_hold_the_engine_up() {
 }
 
 #[test]
-fn an_explicit_song_the_settings_skip_is_never_heard() {
+fn skipped_explicit_song_never_heard() {
     let (a, x, b) = (music(5.0, 15), music(5.0, 16), music(5.0, 17));
     let songs: [(&str, &[i16]); 3] = [("a", &a), ("x", &x), ("b", &b)];
     let extra = Extra { skip: vec!["x".into()], ..Extra::default() };
@@ -1039,7 +1039,7 @@ fn an_explicit_song_the_settings_skip_is_never_heard() {
 }
 
 #[test]
-fn a_song_heard_again_plays_from_the_cache_without_asking_the_network() {
+fn cached_song_replays_without_network() {
     let a = music(8.0, 18);
     let songs: [(&str, &[i16]); 1] = [("a", &a)];
     let dir = nori_testdir::TempDir::new("cache");
@@ -1060,7 +1060,7 @@ fn a_song_heard_again_plays_from_the_cache_without_asking_the_network() {
 }
 
 #[test]
-fn a_long_pause_lets_the_output_go_and_play_opens_it_again_where_it_was() {
+fn idle_release_and_reopen() {
     let a = music(12.0, 19);
     let songs: [(&str, &[i16]); 1] = [("a", &a)];
     let extra = Extra { idle_release_ms: Some(300), ..Extra::default() };
@@ -1083,7 +1083,7 @@ fn a_long_pause_lets_the_output_go_and_play_opens_it_again_where_it_was() {
 }
 
 #[test]
-fn a_new_output_device_gets_its_own_sound() {
+fn device_gets_own_sound() {
     let a = vec![8000i16; RATE as usize * 2 * 16];
     let songs: [(&str, &[i16]); 1] = [("a", &a)];
     let mut app = sim::App::new();
@@ -1111,7 +1111,7 @@ fn a_new_output_device_gets_its_own_sound() {
 }
 
 #[test]
-fn a_song_is_read_from_after_its_id3_tag_whatever_the_tag_holds() {
+fn id3_tag_is_skipped() {
     // A tag of a cover's size whose bytes read as MPEG layer I frames, one after another: 32 kbps at
     // 44.1 kHz, 32 bytes a frame. Searched for music, it would be taken for that.
     let frames: Vec<u8> = (0..40_000).flat_map(|_| [[0xff, 0xff, 0x10, 0x00].as_slice(), &[0; 28]].concat()).collect();
@@ -1135,7 +1135,7 @@ fn a_song_is_read_from_after_its_id3_tag_whatever_the_tag_holds() {
 /// is superseded: a client that let its "wants to play" go on it said paused over the music, the
 /// session's position standing at 0:00, until pause and play were pressed.
 #[test]
-fn a_stop_from_before_a_play_asked_for_since_is_superseded_and_the_music_plays() {
+fn stop_before_later_play_is_superseded() {
     let (a, b) = (music(20.0, 23), music(6.0, 24));
     let songs: [(&str, &[i16]); 2] = [("a", &a), ("b", &b)];
     let extra = Extra::default();
@@ -1170,7 +1170,7 @@ fn a_stop_from_before_a_play_asked_for_since_is_superseded_and_the_music_plays()
 }
 
 #[test]
-fn play_after_a_song_would_not_play_tries_it_again() {
+fn play_retries_failed_song() {
     let a = music(3.0, 21);
     let songs: [(&str, &[i16]); 1] = [("a", &a)];
     let extra = Extra::default();
@@ -1200,7 +1200,7 @@ fn beyond_dither(heard: &[i16], ideal: &[i16]) -> Option<usize> {
 }
 
 #[test]
-fn each_song_s_replay_gain_is_on_its_own_samples_through_a_crossfade() {
+fn replay_gain_per_song_through_crossfade() {
     let (a, b) = (music(40.0, 2), music(40.0, 3));
     // The songs turned to their volumes first and mixed after. One volume for the whole output put a's
     // on b through the whole mix, and the music jumped up to b's own where the mix ended.
@@ -1284,7 +1284,7 @@ fn playing(songs: &[(&str, &[i16])], app: impl App + Send + 'static, settings: S
 }
 
 #[test]
-fn a_fade_set_while_playing_is_the_next_pause_s() {
+fn fade_setting_applies_to_next_pause() {
     let a = vec![8000i16; RATE as usize * 2 * 20];
     let rig = playing(&[("a", &a)], sim::App::new(), Settings::default());
     // Changed in the settings with the music playing: nothing else happens to the player until the pause.
@@ -1298,7 +1298,7 @@ fn a_fade_set_while_playing_is_the_next_pause_s() {
 }
 
 #[test]
-fn replay_gain_changed_while_playing_reaches_the_music_already_on_its_way() {
+fn replay_gain_change_reaches_buffered_music() {
     let a = music(30.0, 31);
     let live = Live::new(prefs_off());
     let rig = playing(&[("a", &a)], live.clone(), Settings::default());
@@ -1328,7 +1328,7 @@ fn replay_gain_changed_while_playing_reaches_the_music_already_on_its_way() {
 }
 
 #[test]
-fn bit_perfect_switched_on_while_playing_takes_replay_gain_off_the_next_song() {
+fn bit_perfect_drops_replay_gain_from_next_song() {
     let (a, b) = (music(20.0, 32), music(10.0, 33));
     let mut app = sim::App::new();
     app.gains.insert("a".into(), 0.5);
@@ -1341,7 +1341,7 @@ fn bit_perfect_switched_on_while_playing_takes_replay_gain_off_the_next_song() {
 }
 
 #[test]
-fn a_longer_crossfade_set_while_playing_is_the_next_mix_s() {
+fn longer_crossfade_applies_to_next_mix() {
     let (a, b) = (music(30.0, 34), music(20.0, 35));
     let live = Live::new(crossfade(2));
     let rig = playing(&[("a", &a), ("b", &b)], live.clone(), Settings::default());
@@ -1352,7 +1352,7 @@ fn a_longer_crossfade_set_while_playing_is_the_next_mix_s() {
 }
 
 #[test]
-fn a_crossfade_switched_off_while_playing_leaves_the_songs_to_join_gaplessly() {
+fn crossfade_off_joins_gaplessly() {
     let (a, b) = (music(30.0, 36), music(10.0, 37));
     let live = Live::new(crossfade(6));
     let rig = playing(&[("a", &a), ("b", &b)], live.clone(), Settings::default());
@@ -1392,7 +1392,7 @@ fn measured(id: &str, bpm: f64, ms: i64) -> TrackAnalysis {
 }
 
 #[test]
-fn automix_switched_on_while_playing_mixes_out_of_the_song_playing() {
+fn automix_on_mixes_current_song() {
     let (a, b) = (music(40.0, 38), music(40.0, 39));
     let live = Live::new(prefs_off());
     let rig = playing(&[("a", &a), ("b", &b)], live.clone(), Settings::default());
@@ -1411,7 +1411,7 @@ fn automix_switched_on_while_playing_mixes_out_of_the_song_playing() {
 }
 
 #[test]
-fn each_song_s_replay_gain_is_on_its_own_samples_through_an_automix() {
+fn replay_gain_per_song_through_automix() {
     // A beat-matched, tempo-stretched AutoMix between a song at half its level and one at 0.8 of it: every
     // sample as the two turned to their volumes first and mixed after, the stretch and its hand-back included.
     let (a, b) = (music(40.0, 44), music(40.0, 45));
@@ -1449,7 +1449,7 @@ fn each_song_s_replay_gain_is_on_its_own_samples_through_an_automix() {
 }
 
 #[test]
-fn a_speed_set_while_playing_is_heard() {
+fn speed_change_is_heard() {
     let a = music(30.0, 40);
     let rig = playing(&[("a", &a)], sim::App::new(), Settings::default());
     rig.engine.set_settings(Settings { speed: 2.0, ..Settings::default() });
@@ -1461,7 +1461,7 @@ fn a_speed_set_while_playing_is_heard() {
 }
 
 #[test]
-fn silence_skipping_switched_on_while_playing_skips_the_silence_ahead() {
+fn silence_skipping_on_skips_ahead() {
     let mut a = music(40.0, 41);
     let (from, to) = (RATE as usize * 2 * 24, RATE as usize * 2 * 34);
     a[from..to].fill(0);
@@ -1473,7 +1473,7 @@ fn silence_skipping_switched_on_while_playing_skips_the_silence_ahead() {
 }
 
 #[test]
-fn an_equalizer_switched_on_while_playing_is_heard() {
+fn equalizer_on_is_heard() {
     let a = music(30.0, 42);
     let rig = playing(&[("a", &a)], sim::App::new(), Settings::default());
     rig.engine.set_settings(loud_eq());
@@ -1514,7 +1514,7 @@ fn as_the_song(heard: &[i16], song: &[i16], from: usize) -> Option<(usize, isize
 /// while the limiter and mono are switched on and off under it, and each is heard. At its -1 dB
 /// default the limiter leaves music with headroom alone (the phone's check read its gain reduction).
 #[test]
-fn the_limiter_and_mono_switched_while_playing_keep_the_music_going_and_are_heard() {
+fn limiter_and_mono_switch_without_gaps() {
     let a = music(60.0, 46);
     let files = vec![("a".to_string(), wav(&a), 60_000)];
     let rig = Rig::build(files, sim::App::new(), Settings::default(), Extra { pace: Some(1.0), ..Extra::default() });
@@ -1552,7 +1552,7 @@ fn the_limiter_and_mono_switched_while_playing_keep_the_music_going_and_are_hear
 }
 
 #[test]
-fn an_equalizer_switched_off_while_playing_is_heard_at_once_where_the_ear_is() {
+fn equalizer_off_heard_at_once() {
     let a = music(20.0, 45);
     // Limits in the music's own seconds: what is heard when is what a phone would play then.
     let files = vec![("a".to_string(), wav(&a), 20_000)];
@@ -1578,7 +1578,7 @@ fn an_equalizer_switched_off_while_playing_is_heard_at_once_where_the_ear_is() {
 }
 
 #[test]
-fn a_slider_dragged_while_playing_is_made_heard_once_per_moment() {
+fn slider_drag_remakes_at_most_every_150_ms() {
     let a = music(20.0, 46);
     let files = vec![("a".to_string(), wav(&a), 20_000)];
     let rig = Rig::build(files, sim::App::new(), quieter(-3.0), Extra { pace: Some(1.0), ..Extra::default() });
@@ -1643,7 +1643,7 @@ fn places_run_on(rig: &Rig, from: usize, heard_ms: i64) {
 /// swapped in behind the dip once it is open, where the ear has got to. No gap, and the equalizer heard
 /// once the song is open. It was a silence as long as the opening, and longer.
 #[test]
-fn the_equalizer_switched_on_over_a_song_slow_to_open_again_plays_on_without_a_gap() {
+fn equalizer_on_over_slow_reopen_has_no_gap() {
     let (rig, a) = slow_to_open_again(Settings::default(), 300);
     let asked = rig.server.requests.lock().len();
     let (at, waits, t0, seen) = (rig.heard.lock().len(), rig.waits(), rig.now_ms(), rig.events.lock().len());
@@ -1668,7 +1668,7 @@ fn the_equalizer_switched_on_over_a_song_slow_to_open_again_plays_on_without_a_g
 /// The equalizer taken out over a song slow to open again: after the dip, the song itself from exactly
 /// where the ear was, with no gap.
 #[test]
-fn the_equalizer_switched_off_over_a_song_slow_to_open_again_goes_on_where_the_ear_was() {
+fn equalizer_off_over_slow_reopen_keeps_place() {
     let (rig, a) = slow_to_open_again(quieter(-12.0), 300);
     let (at, waits, t0) = (rig.heard.lock().len(), rig.waits(), rig.now_ms());
     rig.engine.set_settings(Settings::default());
@@ -1686,7 +1686,7 @@ fn the_equalizer_switched_off_over_a_song_slow_to_open_again_goes_on_where_the_e
 /// Every switch of the sound, and AutoMix, while the song plays, over a song slow to open again: each
 /// is heard behind its dip, the music never stops, and the place runs on with what was heard.
 #[test]
-fn the_sound_switched_again_and_again_over_a_song_slow_to_open_again_never_stops_the_music() {
+fn repeated_sound_changes_over_slow_reopen_never_stop() {
     let (rig, _) = slow_to_open_again(Settings::default(), 200);
     let limiter = |on: bool| Settings { sound: nori_engine::Sound { limiter: on, threshold_db: -1.0, ..Default::default() }, ..Settings::default() };
     let steps = [loud_eq(), Settings::default(), limiter(true), limiter(false), Settings { auto_mix: true, ..Settings::default() }, Settings::default(), quieter(-6.0)];
@@ -1703,7 +1703,7 @@ fn the_sound_switched_again_and_again_over_a_song_slow_to_open_again_never_stops
 }
 
 #[test]
-fn high_quality_output_switched_on_while_playing_takes_the_next_song_untouched() {
+fn hi_res_on_takes_next_song_untouched() {
     // a long enough that b is opened well after the change.
     let (a, b) = (music24(30.0, 43), music24(8.0, 44));
     let files = vec![("a".to_string(), wav24(&a), 30_000), ("b".to_string(), wav24(&b), 8_000)];
@@ -1720,7 +1720,7 @@ fn high_quality_output_switched_on_while_playing_takes_the_next_song_untouched()
 }
 
 #[test]
-fn the_equalizer_screen_makes_the_output_shallow_at_once_and_deep_again_as_it_closes() {
+fn tuning_makes_output_shallow_then_deep() {
     let a = music(30.0, 47);
     let files = vec![("a".to_string(), wav(&a), 30_000)];
     let rig = Rig::build(files, sim::App::new(), loud_eq(), Extra { pace: Some(1.0), ..Extra::default() });
@@ -1757,7 +1757,7 @@ fn tuned_in_place(rounds: usize) -> Rig {
 }
 
 #[test]
-fn over_a_device_that_resizes_the_equalizer_screen_opening_and_closing_is_not_heard() {
+fn tuning_on_resizing_device_is_inaudible() {
     let tuned = tuned_in_place(4);
     let heard = tuned.heard.lock().clone();
     let (flushes, waits) = (tuned.flushes.load(Ordering::Relaxed), tuned.waits());
@@ -1776,7 +1776,7 @@ fn over_a_device_that_resizes_the_equalizer_screen_opening_and_closing_is_not_he
 }
 
 #[test]
-fn tuned_in_place_a_band_moved_is_made_again_while_the_deep_seconds_remain_and_heard_as_it_is_after() {
+fn tuned_in_place_remakes_until_deep_audio_plays_out() {
     let rig = tuned_in_place(0);
     rig.engine.set_tuning(true);
     assert!(rig.wait_for(2, |r| r.shallow.load(Ordering::Relaxed)));
@@ -1797,7 +1797,7 @@ fn tuned_in_place_a_band_moved_is_made_again_while_the_deep_seconds_remain_and_h
 }
 
 #[test]
-fn tuned_in_place_by_a_change_that_came_first_the_change_lands_in_the_shallow_buffer_too() {
+fn tuned_in_place_first_change_lands_shallow() {
     let rig = tuned_in_place(0);
     // The equalizer screen's first change reaches the engine a moment before the tuning it turns on:
     // made again at once, into the deep buffer.
@@ -1851,7 +1851,7 @@ fn tuned_ring_ms(depth: Option<ShallowDepth>) -> u64 {
 }
 
 #[test]
-fn tuned_over_a_device_that_needs_more_the_ring_is_as_deep_as_one_of_its_top_ups() {
+fn tuned_ring_follows_device_depth() {
     let speaker = tuned_ring_ms(None);
     assert!(speaker <= nori_engine::output::SHALLOW_US as u64 / 1000 + 5, "the speaker's ring as it was: {speaker} ms");
     let bluetooth = tuned_ring_ms(Some(ShallowDepth { device_us: 550_000, ring_us: 200_000 }));
@@ -1926,7 +1926,7 @@ fn heard_in(rig: &Rig, song: &[i16]) -> Option<i64> {
 }
 
 #[test]
-fn next_pressed_quickly_moves_one_song_per_press_however_late_the_events_are_taken() {
+fn fast_next_moves_one_song_per_press() {
     let songs = many(6, 60.0, 400);
     for gap in [0u64, 30, 130, 200] {
         let rig = at_pace(&listed(&songs), sim::App::new(), 0);
@@ -1957,7 +1957,7 @@ fn next_pressed_quickly_moves_one_song_per_press_however_late_the_events_are_tak
 }
 
 #[test]
-fn the_engine_s_own_next_pressed_quickly_moves_one_song_per_press() {
+fn engine_next_moves_one_song_per_press() {
     let songs = many(6, 60.0, 410);
     let rig = at_pace(&listed(&songs), sim::App::new(), 0);
     assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2));
@@ -2026,17 +2026,17 @@ fn next_before_the_end(prefs: TransitionPrefs, measured_songs: bool, name: &str)
 }
 
 #[test]
-fn next_pressed_just_before_a_gapless_end_changes_song_once() {
+fn next_before_gapless_end_changes_once() {
     next_before_the_end(prefs_off(), false, "gapless");
 }
 
 #[test]
-fn next_pressed_just_before_a_crossfade_changes_song_once() {
+fn next_before_crossfade_changes_once() {
     next_before_the_end(crossfade(6), false, "crossfade");
 }
 
 #[test]
-fn next_pressed_just_before_an_automix_transition_changes_song_once() {
+fn next_before_automix_changes_once() {
     let prefs = TransitionPrefs { auto_mix: true, auto_mix_max_s: 12, echo_out: false, ..prefs_off() };
     next_before_the_end(prefs, true, "automix");
 }
@@ -2054,7 +2054,7 @@ fn playing_until(songs: &[(&str, &[i16])], app: impl App + Send + 'static, setti
 }
 
 #[test]
-fn a_crossfade_switched_on_with_the_song_s_ending_already_made_still_mixes_it() {
+fn crossfade_on_after_ending_made_still_mixes() {
     let (a, b) = (music(30.0, 50), music(20.0, 51));
     let live = Live::new(prefs_off());
     // Twenty seconds in: the ring holds a's last ten seconds, gapless into b, and some of b.
@@ -2070,7 +2070,7 @@ fn a_crossfade_switched_on_with_the_song_s_ending_already_made_still_mixes_it() 
 }
 
 #[test]
-fn a_crossfade_switched_off_with_the_mix_already_made_leaves_the_songs_to_join_gaplessly() {
+fn crossfade_off_after_mix_made_joins_gaplessly() {
     let (a, b) = (music(30.0, 52), music(20.0, 53));
     let live = Live::new(crossfade(6));
     // Twenty seconds in: a's ending from 24 s is held for the mix, or mixed into the ring already.
@@ -2089,7 +2089,7 @@ fn a_crossfade_switched_off_with_the_mix_already_made_leaves_the_songs_to_join_g
 }
 
 #[test]
-fn automix_switched_on_near_the_end_of_a_song_mixes_out_of_it() {
+fn automix_on_near_end_mixes() {
     let (a, b) = (music(40.0, 54), music(40.0, 55));
     let live = Live::new(prefs_off());
     // Twenty-six seconds in: the mix would start at 28 s, and the ring holds a to its end and b after.
@@ -2261,7 +2261,7 @@ fn made_again(app: &Measuring) -> bool {
 }
 
 #[test]
-fn a_song_queued_early_in_a_song_is_mixed_into() {
+fn song_queued_early_is_mixed_into() {
     // Nothing of a's ending is made yet at 30 %: planned again, and nothing made again.
     for how in [Queued::PlayNext, Queued::AddToQueue] {
         for with_c in [false, true] {
@@ -2277,7 +2277,7 @@ fn a_song_queued_early_in_a_song_is_mixed_into() {
 }
 
 #[test]
-fn a_song_queued_late_in_the_last_song_is_mixed_into_its_ending_made_again() {
+fn song_queued_late_remakes_ending() {
     // At 80 % the output holds a's ending already, made to end the music: made again, into b.
     for how in [Queued::PlayNext, Queued::AddToQueue] {
         let (_rig, app, order) = queued_while_playing(0.8, false, how);
@@ -2288,7 +2288,7 @@ fn a_song_queued_late_in_the_last_song_is_mixed_into_its_ending_made_again() {
 }
 
 #[test]
-fn a_song_queued_late_ahead_of_the_next_one_is_mixed_into() {
+fn song_queued_ahead_of_next_is_mixed_into() {
     // Before a's mix into c is made (a four-minute song's 80 %): b takes c's place.
     for how in [Queued::PlayNext, Queued::AddToQueue] {
         let (_rig, app, order) = queued_while_playing(0.65, true, how);
@@ -2299,7 +2299,7 @@ fn a_song_queued_late_ahead_of_the_next_one_is_mixed_into() {
 }
 
 #[test]
-fn a_song_queued_behind_the_next_one_leaves_the_ending_made_for_it_alone() {
+fn song_queued_behind_next_keeps_ending() {
     // a's mix into c is made and held; b goes in after c, and nothing is made again.
     let (_rig, app, order) = queued_while_playing(0.72, true, Queued::AtTheEnd);
     mixed(&app, "a", "c");
@@ -2310,7 +2310,7 @@ fn a_song_queued_behind_the_next_one_leaves_the_ending_made_for_it_alone() {
 }
 
 #[test]
-fn a_song_played_next_after_the_player_read_on_gaplessly_into_the_old_next_one_is_played() {
+fn play_next_after_read_on_is_played() {
     // Gapless, 55 s into a minute: the output holds a's end and c's start after it. b is played next:
     // c's start is made again as b's, where the ear is, and c follows b.
     let (rig, app, order) = queued_while_playing_with(prefs_off(), 55.0 / 60.0, true, Queued::PlayNext);
@@ -2333,7 +2333,7 @@ fn a_song_played_next_after_the_player_read_on_gaplessly_into_the_old_next_one_i
 /// still come out of the last song pressed to, and the place move on in it. (The phone's silence was its
 /// output's, crates/android track.rs; this holds the engine to its part.)
 #[test]
-fn next_pressed_fast_and_long_with_the_equalizer_and_automix_on_leaves_the_music_playing() {
+fn next_spam_with_equalizer_and_automix_keeps_playing() {
     const SECS: f64 = 40.0;
     let songs = many(16, SECS, 900);
     let ms = (SECS * 1000.0) as i64;
@@ -2393,7 +2393,7 @@ fn next_pressed_fast_and_long_with_the_equalizer_and_automix_on_leaves_the_music
 }
 
 #[test]
-fn a_seek_near_the_end_goes_on_through_the_fade_while_songs_opened_for_nothing_give_up() {
+fn seek_near_end_plays_through_fade() {
     // Which reader wakes last decides it: a few rounds, side by side (source.rs's
     // `readers_that_give_up_leave_the_one_still_waiting_to_be_woken_by_the_bytes` pins the order down).
     std::thread::scope(|s| {
@@ -2428,7 +2428,7 @@ fn seek_near_the_end_through_the_fade() {
 }
 
 #[test]
-fn a_seek_into_a_mix_further_from_the_end_than_the_player_reads_ahead_plays_on_into_it() {
+fn seek_into_distant_mix_plays_on() {
     let (a, b) = (music(40.0, 60), music(40.0, 61));
     let live = Live::new(TransitionPrefs { auto_mix: true, auto_mix_max_s: 12, echo_out: false, ..prefs_off() });
     {
@@ -2448,7 +2448,7 @@ fn a_seek_into_a_mix_further_from_the_end_than_the_player_reads_ahead_plays_on_i
 }
 
 #[test]
-fn the_same_plan_asked_again_near_the_end_leaves_the_music_alone() {
+fn same_plan_again_changes_nothing() {
     let (a, b) = (music(30.0, 56), music(20.0, 57));
     let live = Live::new(crossfade(6));
     let rig = playing_until(&[("a", &a), ("b", &b)], live.clone(), Settings { crossfade_s: 6, ..Settings::default() }, 20.0);
@@ -2462,7 +2462,7 @@ fn the_same_plan_asked_again_near_the_end_leaves_the_music_alone() {
 }
 
 #[test]
-fn a_crossfade_switched_on_while_paused_near_the_end_mixes_when_the_music_comes_back() {
+fn crossfade_on_while_paused_mixes_on_resume() {
     let (a, b) = (music(30.0, 58), music(20.0, 59));
     let live = Live::new(prefs_off());
     let rig = playing_until(&[("a", &a), ("b", &b)], live.clone(), Settings::default(), 16.0);
@@ -2497,7 +2497,7 @@ impl nori_engine::watch::Watch for Watching {
 }
 
 #[test]
-fn a_client_keeping_watch_is_told_what_each_wake_saw_and_nothing_while_it_does_not_want_it() {
+fn watch_reports_only_when_wanted() {
     let a = music(90.0, 71);
     let files = vec![("a".to_string(), wav(&a), 90_000)];
     let watching = Arc::new(Watching::default());
@@ -2527,7 +2527,7 @@ fn a_client_keeping_watch_is_told_what_each_wake_saw_and_nothing_while_it_does_n
 /// CPU plays - AutoMix and its limits, high quality output on and off again, the equalizer's bands - the sound
 /// chain is in the samples' path a second later, and says so.
 #[test]
-fn with_the_equalizer_on_the_chain_stays_in_the_path_whatever_else_the_settings_change() {
+fn equalizer_chain_stays_through_other_changes() {
     let a = music(60.0, 71);
     let files = vec![("a".to_string(), wav(&a), 60_000)];
     let rig = Rig::build(files, sim::App::new(), loud_eq(), Extra { float: true, ..Extra::default() });
@@ -2556,7 +2556,7 @@ fn with_the_equalizer_on_the_chain_stays_in_the_path_whatever_else_the_settings_
 /// Each event finds the status already saying it, and a seek landing says its place: a client reading the
 /// status on an event needs no re-read.
 #[test]
-fn status_is_current_on_each_event_and_a_seek_says_its_place() {
+fn status_current_on_events() {
     let (a, b) = (music(4.0, 90), music(4.0, 91));
     let server = Arc::new(Server::default());
     for (id, s) in [("a", &a), ("b", &b)] {
@@ -2627,7 +2627,7 @@ fn place(rig: &Rig) -> (Option<usize>, i64) {
 }
 
 #[test]
-fn same_song_twice_mixes_at_the_planned_point_and_plays_the_second_copy_on() {
+fn same_song_twice_mixes_at_plan() {
     let (rig, live) = twice(60.0, 30_000);
     assert!(rig.wait_for(10, |_| planned_into_itself(&live).is_some()), "a mix is planned: {:?}", live.0.lock().log);
     let at = planned_into_itself(&live).expect("checked");
@@ -2647,7 +2647,7 @@ fn same_song_twice_mixes_at_the_planned_point_and_plays_the_second_copy_on() {
 }
 
 #[test]
-fn same_song_twice_a_seek_before_the_mix_stays_in_the_first_copy() {
+fn same_song_twice_seek_stays_in_first_copy() {
     let (rig, live) = twice(90.0, 20_000);
     assert!(rig.wait_for(10, |_| planned_into_itself(&live).is_some()), "a mix is planned: {:?}", live.0.lock().log);
     // 50 s before the end, as a seek bar at -0:50.
@@ -2666,7 +2666,7 @@ fn same_song_twice_a_seek_before_the_mix_stays_in_the_first_copy() {
 }
 
 #[test]
-fn repeat_one_with_automix_loops_and_plays_on() {
+fn repeat_one_with_automix_plays_on() {
     let a = music(60.0, 78);
     let live = Live::new(TransitionPrefs { auto_mix: true, auto_mix_max_s: 12, echo_out: false, ..prefs_off() });
     live.0.lock().analyses.insert("a".into(), measured("a", 120.0, 60_000));

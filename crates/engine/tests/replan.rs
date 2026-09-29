@@ -169,7 +169,7 @@ impl Drop for Rig {
 }
 
 #[test]
-fn transition_settings_changed_are_planned_with_at_once() {
+fn transition_settings_replan_at_once() {
     let _turn = crate::core_turn();
     keeping_albums_gapless_switched_off_while_an_album_plays_mixes_its_next_boundary();
     switched_off_near_the_end_with_the_ending_made_gapless_it_still_mixes();

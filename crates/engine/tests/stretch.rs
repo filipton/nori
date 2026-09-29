@@ -328,18 +328,18 @@ fn walk(from_ms: i64, speed: f32, seek_to: Option<i64>) {
 }
 
 #[test]
-fn through_a_stretched_mix_the_place_said_is_the_place_heard() {
+fn place_through_stretched_mix() {
     walk(MIX_AT_MS - 5_000, 1.0, None);
 }
 
 #[test]
-fn a_seek_into_a_stretched_mix_says_the_place_heard_through_it_and_after() {
+fn place_after_seek_into_stretched_mix() {
     // The report's: a seek 9.3 s into a 22 s mix, the hold begun late with no sound left in the output.
     walk(MIX_AT_MS - 5_000, 1.0, Some(MIX_AT_MS + 9_345));
 }
 
 #[test]
-fn at_a_speed_of_its_own_the_place_said_through_a_stretched_mix_is_the_place_heard() {
+fn place_through_stretched_mix_at_speed() {
     walk(MIX_AT_MS - 5_000, 1.25, None);
 }
 
@@ -352,7 +352,7 @@ fn at_a_speed_of_its_own_the_place_said_through_a_stretched_mix_is_the_place_hea
 /// to land in it, and the screen's place ran on from there and was pulled back to it every few seconds -
 /// the first line filling in word by word, going back and filling again, until the song got there.
 #[test]
-fn a_clock_read_back_a_little_in_a_stretched_mix_puts_neither_the_song_nor_its_lyrics_back() {
+fn lagging_clock_does_not_step_back() {
     use nori_look::lyrics::{Line, LyricClock, LyricTiming, Word};
     use nori_player::heard::{screen_place, HeardTracker, Playhead, Seen};
 

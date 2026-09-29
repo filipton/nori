@@ -416,7 +416,7 @@ fn quiet_end(pcm: &mut [i16]) {
 const ALBUM: [S; 3] = [S("a1", "al", 1), S("a2", "al", 1), S("a3", "al", 1)];
 
 #[test]
-fn an_album_kept_gapless_is_heard_whole_with_automix_or_a_crossfade_on() {
+fn album_kept_gapless_with_transitions_on() {
     let _turn = crate::core_turn();
     an_album_measured_before_plays_every_sample(true, 0);
     an_album_measured_before_plays_every_sample(false, 6);

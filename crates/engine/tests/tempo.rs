@@ -184,7 +184,7 @@ impl Drop for Rig {
 }
 
 #[test]
-fn during_a_beat_matched_mix_the_incoming_song_is_played_at_the_mix_s_tempo() {
+fn mix_plays_incoming_at_mix_tempo() {
     // The measure itself: in the middle of the mix, the incoming song is heard 4 % fast (with the
     // ending of the outgoing one at its own pitch beneath it, fading).
     let rig = Rig::in_the_mix();
@@ -195,7 +195,7 @@ fn during_a_beat_matched_mix_the_incoming_song_is_played_at_the_mix_s_tempo() {
 }
 
 #[test]
-fn after_a_beat_matched_mix_the_song_plays_at_its_own_tempo() {
+fn tempo_returns_after_mix() {
     let rig = Rig::in_the_mix();
     rig.run(8_000);
     assert!(!rig.engine.status().mixing);
@@ -203,7 +203,7 @@ fn after_a_beat_matched_mix_the_song_plays_at_its_own_tempo() {
 }
 
 #[test]
-fn a_seek_during_a_beat_matched_mix_leaves_the_song_at_its_own_tempo() {
+fn seek_in_mix_restores_tempo() {
     let rig = Rig::in_the_mix();
     rig.run(1_000);
     // Tapped near the end of the song's time.
@@ -213,7 +213,7 @@ fn a_seek_during_a_beat_matched_mix_leaves_the_song_at_its_own_tempo() {
 }
 
 #[test]
-fn a_seek_during_the_tempo_ramp_after_a_mix_leaves_the_song_at_its_own_tempo() {
+fn seek_in_tempo_ramp_restores_tempo() {
     let rig = Rig::in_the_mix();
     assert!(rig.until(30, |r| !r.engine.status().mixing), "the mix ends");
     // The ramp back to the song's own tempo runs for a second after the mix.
@@ -227,7 +227,7 @@ fn a_seek_during_the_tempo_ramp_after_a_mix_leaves_the_song_at_its_own_tempo() {
 }
 
 #[test]
-fn a_skip_during_a_beat_matched_mix_plays_the_next_song_at_its_own_tempo() {
+fn skip_in_mix_restores_tempo() {
     let rig = Rig::in_the_mix();
     rig.run(1_000);
     rig.engine.next();
@@ -239,7 +239,7 @@ fn a_skip_during_a_beat_matched_mix_plays_the_next_song_at_its_own_tempo() {
 }
 
 #[test]
-fn a_pause_during_a_beat_matched_mix_leaves_the_song_at_its_own_tempo() {
+fn pause_in_mix_keeps_tempo() {
     let rig = Rig::in_the_mix();
     rig.run(1_000);
     rig.engine.pause();

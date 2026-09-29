@@ -285,7 +285,7 @@ impl Rig {
 /// Twelve songs whose server never answers, skipped through, then a playlist that plays: every hung
 /// request is called off as its song is left, so none holds a slot the playlist's songs need.
 #[test]
-fn songs_that_never_answer_skipped_through_leave_the_next_playlist_playing() {
+fn hung_requests_skipped_leave_playlist_playing() {
     let r = rig(Hang::Headers, 12, 3);
     r.skip_through_the_album();
     r.playlist_plays(1);
@@ -297,7 +297,7 @@ fn songs_that_never_answer_skipped_through_leave_the_next_playlist_playing() {
 
 /// The same with songs whose server answers and then never sends a byte.
 #[test]
-fn songs_whose_bytes_never_come_skipped_through_leave_the_next_playlist_playing() {
+fn stalled_bodies_skipped_leave_playlist_playing() {
     let r = rig(Hang::Body, 12, 3);
     r.skip_through_the_album();
     r.playlist_plays(0);
@@ -308,7 +308,7 @@ fn songs_whose_bytes_never_come_skipped_through_leave_the_next_playlist_playing(
 /// never come, and a jump made while paused (held until play), move it at once, so a queue saved then (a
 /// program closed and started again) comes back on that song and not where the music last sounded.
 #[test]
-fn a_jump_moves_the_queue_where_nothing_is_heard_and_while_paused() {
+fn jump_moves_queue_even_unheard() {
     let r = rig(Hang::Headers, 6, 0);
     let at = || r.queue.0.lock().current();
     r.engine.play_at(0, 0);

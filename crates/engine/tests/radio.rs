@@ -261,7 +261,7 @@ fn likeness(ours: &[f32], theirs: &[f32], max_lag: usize) -> f64 {
 // ---- the tests ----
 
 #[test]
-fn a_station_plays_at_its_own_pitch_whatever_its_rate_and_channels() {
+fn station_pitch_at_any_format() {
     if !ffmpeg() {
         eprintln!("no ffmpeg: skipped");
         return;
@@ -296,7 +296,7 @@ fn a_station_plays_at_its_own_pitch_whatever_its_rate_and_channels() {
 }
 
 #[test]
-fn a_station_joined_in_the_middle_of_a_frame_plays_at_its_own_pitch() {
+fn station_joined_mid_frame() {
     if !ffmpeg() {
         eprintln!("no ffmpeg: skipped");
         return;
@@ -309,7 +309,7 @@ fn a_station_joined_in_the_middle_of_a_frame_plays_at_its_own_pitch() {
 }
 
 #[test]
-fn a_chained_ogg_station_plays_on_into_its_next_song_at_its_own_pitch() {
+fn chained_ogg_station_plays_on() {
     if !ffmpeg() || !encodes("libvorbis") {
         eprintln!("no ffmpeg with libvorbis: skipped");
         return;
@@ -329,7 +329,7 @@ fn a_chained_ogg_station_plays_on_into_its_next_song_at_its_own_pitch() {
 }
 
 #[test]
-fn the_next_station_at_another_rate_plays_at_its_own_pitch() {
+fn next_station_at_other_rate() {
     if !ffmpeg() {
         eprintln!("no ffmpeg: skipped");
         return;
@@ -417,7 +417,7 @@ fn energy_above(x: &[f32], rate: u32, hz: f64) -> f64 {
 }
 
 #[test]
-fn an_he_aac_station_plays_its_core_here_and_whole_through_the_platforms_decoder() {
+fn he_aac_station_decoding() {
     // SomaFM's Groove Salad at 32 kbps: ADTS saying AAC-LC at 22.05 kHz, stereo, SBR inside. symphonia
     // has no SBR, so on its own (a desktop client that lends no decoder) the core plays at the rate the
     // stream states: the right pitch, nothing above 11 kHz.
@@ -484,7 +484,7 @@ fn longest_silence(heard: &[f32], f: OutputFormat) -> f64 {
 }
 
 #[test]
-fn an_mp3_station_that_changes_its_rate_and_channels_plays_on_at_its_own_pitch() {
+fn mp3_station_format_change() {
     if !ffmpeg() {
         eprintln!("no ffmpeg: skipped");
         return;
@@ -515,7 +515,7 @@ fn an_mp3_station_that_changes_its_rate_and_channels_plays_on_at_its_own_pitch()
 }
 
 #[test]
-fn an_mp3_station_of_noise_and_broken_frames_never_hangs_the_engine() {
+fn noisy_mp3_station_never_hangs() {
     if !ffmpeg() {
         eprintln!("no ffmpeg: skipped");
         return;

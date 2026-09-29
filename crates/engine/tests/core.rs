@@ -118,7 +118,7 @@ fn beat_wav() -> Vec<u8> {
 }
 
 #[test]
-fn downloads_the_disk_and_measuring_ahead_over_the_core() {
+fn downloads_disk_and_measuring_over_core() {
     let dir = nori_testdir::TempDir::new("core");
     let core = Core::new(dir.join("nori.db").to_string_lossy().into_owned(), "test".into()).unwrap();
     let config = ServerConfig { url: "http://music.test".into(), user: "u".into(), password: "p".into(), api_key: None, legacy_auth: false };

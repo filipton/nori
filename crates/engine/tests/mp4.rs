@@ -46,7 +46,7 @@ fn decode(path: &Path, from_ms: i64) -> Vec<i16> {
 }
 
 #[test]
-fn an_aac_song_in_mp4_is_exactly_as_long_as_it_was_before_it_was_encoded() {
+fn mp4_aac_keeps_exact_length() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: the MP4 gapless test has nothing to test with");
         return;

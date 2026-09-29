@@ -203,7 +203,7 @@ impl Rig {
 /// panic), the song is let go of from scratch - its bytes and what the disk keeps of it - and opened
 /// again, and it plays. The engine goes on taking commands after.
 #[test]
-fn a_panic_on_the_engines_thread_is_said_and_the_song_plays_from_scratch() {
+fn panic_restarts_song() {
     let r = rig(3);
     r.engine.play_at(0, 0);
     assert!(r.wait_to_hear(0, Duration::from_secs(5)), "the first song plays: {}", r.state());
@@ -220,7 +220,7 @@ fn a_panic_on_the_engines_thread_is_said_and_the_song_plays_from_scratch() {
 /// A song the engine panics on every time it is opened is skipped as one that would not play, and the
 /// song after it plays: never a player that says it plays and makes no sound.
 #[test]
-fn a_song_the_engine_panics_on_again_is_skipped_and_the_next_plays() {
+fn repeated_panic_skips_song() {
     let r = rig(3);
     r.engine.play_at(0, 0);
     assert!(r.wait_to_hear(0, Duration::from_secs(5)), "the first song plays: {}", r.state());
@@ -233,7 +233,7 @@ fn a_song_the_engine_panics_on_again_is_skipped_and_the_next_plays() {
 /// The loader's thread panics with the song half fetched: the song fails, as one whose bytes stopped
 /// coming (said, skipped), rather than waiting for bytes for ever.
 #[test]
-fn a_loader_that_panics_fails_its_song_and_the_next_plays() {
+fn loader_panic_fails_song() {
     let r = rig(3);
     r.trouble.lock().panics_on_read.insert(r.ids[1].clone(), 10);
     r.engine.play_at(1, 0);
@@ -246,7 +246,7 @@ fn a_loader_that_panics_fails_its_song_and_the_next_plays() {
 /// still with nothing on its way, the music is made again from scratch where the ear was, on a new output,
 /// and the song plays on from there. Said as an error.
 #[test]
-fn an_output_that_stops_taking_music_is_opened_again_and_the_song_plays_on() {
+fn silent_output_restarts_song() {
     let r = rig(2);
     r.engine.play_at(0, 0);
     assert!(r.wait_to_hear(0, Duration::from_secs(5)), "the song plays: {}", r.state());
@@ -264,7 +264,7 @@ fn an_output_that_stops_taking_music_is_opened_again_and_the_song_plays_on() {
 
 /// Paused, the music standing still is no fault: nothing is made again, nothing said.
 #[test]
-fn paused_nothing_is_made_again() {
+fn paused_is_not_a_stall() {
     let r = rig(2);
     r.engine.play_at(0, 0);
     assert!(r.wait_to_hear(0, Duration::from_secs(5)), "the song plays: {}", r.state());
