@@ -43,6 +43,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -720,6 +722,15 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
     }
 }
 
+/** The larger of the status bar's and the gesture bar's heights, for room kept alike above and below. */
+@Composable
+private fun barRoom(): androidx.compose.ui.unit.Dp {
+    val d = androidx.compose.ui.platform.LocalDensity.current
+    val top = androidx.compose.foundation.layout.WindowInsets.statusBars.getTop(d)
+    val bottom = androidx.compose.foundation.layout.WindowInsets.navigationBars.getBottom(d)
+    return with(d) { maxOf(top, bottom).toDp() }
+}
+
 /** How much of the sleeve's panel lies under the controls on its side ([PlayerHalves]): the lyrics and queue keep off it. */
 private val LocalUnderControls = androidx.compose.runtime.compositionLocalOf { 0.dp }
 
@@ -746,7 +757,9 @@ private fun PlayerHalves(wide: Boolean, controlsDrag: Modifier, panel: @Composab
             Column(
                 // Clear of the camera's punch hole too, which is on this side when the phone is turned the other way.
                 // The whole half, edge to edge, takes the pull down ([controlsDrag]) before the insets are kept off.
-                Modifier.padding(start = controlsAt).fillMaxSize().then(controlsDrag).statusBarsPadding().navigationBarsPadding()
+                // The same room kept above as below (the gesture bar's, or the status bar's if it is shown), so the
+                // controls stand in the middle of the screen's height rather than of what is above the gesture bar.
+                Modifier.padding(start = controlsAt).fillMaxSize().then(controlsDrag).padding(vertical = barRoom())
                     .windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.displayCutout.only(androidx.compose.foundation.layout.WindowInsetsSides.End))
                     .padding(start = 8.dp),
                 verticalArrangement = Arrangement.Center,
