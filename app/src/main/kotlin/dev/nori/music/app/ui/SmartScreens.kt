@@ -171,6 +171,8 @@ fun MixScreen(id: String, actions: ActionsViewModel, vm: MixViewModel = viewMode
             queue = m.queue,
             // Its covers as the page's picture, as a cover heads an album's; a mix with none yet keeps its tile.
             mosaic = m.covers,
+            // A mix is a playlist made for you: with a black background it follows the albums & playlists choice.
+            keepsColours = { it.albumColours },
             art = { MixArt(MixCard(m.id, m.title, m.covers, m.favourites), 236.dp, large = true) },
             actions = {
                 if (m.refreshable) CircleButton(Icons.Filled.Refresh, say.newMix) { vm.refresh() }

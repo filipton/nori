@@ -51,7 +51,7 @@ pub const FLOOR_STOPS: [f32; 4] = [0.0, 0.45, 0.80, 1.0];
 /// painted over them), gone by the source label at the bottom so the two never sit on each other.
 pub const LYRICS_MASK: [Stop; 4] = [s(0.0, 0.0), s(0.05, 1.0), s(0.66, 1.0), s(0.92, 0.0)];
 
-/// Whether a page that can wear its cover (the player, an album's or a playlist's, an artist's) goes black: with AMOLED
+/// Whether a page that can wear its cover (the player, an album's, a playlist's or a mix's, an artist's) goes black: with AMOLED
 /// black, unless that page is set to keep the cover's colours. The player keeps them out of the box - in
 /// black, the page under the sleeve was pure black and the picture looked cut off, where Apple's carries
 /// the record's colour down the whole screen; album, playlist and artist pages go black with the rest.
