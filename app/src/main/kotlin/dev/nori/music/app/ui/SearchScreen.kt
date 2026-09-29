@@ -56,7 +56,7 @@ fun SearchScreen(actions: ActionsViewModel, vm: SearchViewModel = viewModel()) {
         }
         val r = ui.shown
         if (r == null) {
-            LazyColumn(contentPadding = PaddingValues(bottom = LocalChromeInset.current)) {
+            LazyColumn(Modifier.pageToEdges(), contentPadding = pagePadding(LocalChromeInset.current)) {
                 if (ui.history.isNotEmpty()) item {
                     Row(Modifier.fillMaxWidth().padding(start = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(say.recentSearches, Modifier.weight(1f).padding(start = 4.dp), style = MaterialTheme.typography.titleLarge)
@@ -67,7 +67,7 @@ fun SearchScreen(actions: ActionsViewModel, vm: SearchViewModel = viewModel()) {
             }
             return@Column
         }
-        LazyColumn(contentPadding = PaddingValues(bottom = LocalChromeInset.current)) {
+        LazyColumn(Modifier.pageToEdges(), contentPadding = pagePadding(LocalChromeInset.current)) {
             if (r.artists.isNotEmpty()) item(key = "artists") {
                 SectionTitle(say.artists)
                 LazyRow(Modifier.bleedsToEdges(), contentPadding = edgePadding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {

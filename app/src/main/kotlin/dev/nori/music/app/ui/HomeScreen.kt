@@ -72,7 +72,7 @@ fun HomeScreen(actions: ActionsViewModel, vm: HomeViewModel = viewModel()) {
             state = pull,
             indicator = { RefreshMark(pull, refreshing) },
         ) {
-        LazyColumn(contentPadding = PaddingValues(bottom = LocalChromeInset.current)) {
+        LazyColumn(Modifier.pageToEdges(), contentPadding = pagePadding(LocalChromeInset.current)) {
             // Shuffling the whole library and picking the server's queue back up are things you do
             // occasionally, so they live behind the title's menu rather than as two buttons across the
             // top of the page: what belongs at the top of this screen is music.

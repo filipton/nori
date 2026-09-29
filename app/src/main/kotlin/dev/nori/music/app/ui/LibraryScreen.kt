@@ -300,7 +300,7 @@ private fun Favourites(actions: ActionsViewModel, vm: StarredViewModel = viewMod
     val nav = LocalNav.current
     val menu = LocalSongMenu.current
     LoadBox(load) { s ->
-        LazyColumn(contentPadding = PaddingValues(bottom = LocalChromeInset.current)) {
+        LazyColumn(Modifier.pageToEdges(), contentPadding = pagePadding(LocalChromeInset.current)) {
             // The songs as one list to play, the page the "Favourites" tile on Home opens too.
             item(key = "all") {
                 NavRow(

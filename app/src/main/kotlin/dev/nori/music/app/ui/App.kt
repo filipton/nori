@@ -38,6 +38,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.drawWithCache
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.calculateEndPadding
 import androidx.compose.foundation.layout.calculateStartPadding

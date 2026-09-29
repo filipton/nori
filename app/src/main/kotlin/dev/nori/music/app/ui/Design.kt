@@ -315,23 +315,64 @@ fun Modifier.bleedsToEdges(): Modifier {
     val start = LocalPageStart.current
     val end = LocalPageEnd.current
     if (start == 0.dp && end == 0.dp) return this
+    // The page's own colour laid over the row's ends, not a mask on a layer of the row's own: it reads the same
+    // on the plain page the rows stand on, and there is no offscreen layer per row to flicker as it scrolls.
+    val page = MaterialTheme.colorScheme.background
     return layout { measurable, constraints ->
         val w = constraints.maxWidth + start.roundToPx() + end.roundToPx()
         val placeable = measurable.measure(constraints.copy(minWidth = w, maxWidth = w))
         layout(constraints.maxWidth, placeable.height) { placeable.place(-start.roundToPx(), 0) }
-    }.graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
-        .drawWithCache {
-            val l = start.toPx()
-            val r = end.toPx()
-            val inFade = Brush.horizontalGradient(0f to Color.Transparent, 1f to Color.Black, startX = 0f, endX = l)
-            val outFade = Brush.horizontalGradient(0f to Color.Black, 1f to Color.Transparent, startX = size.width - r, endX = size.width)
-            onDrawWithContent {
-                drawContent()
-                if (l > 0f) drawRect(inFade, size = Size(l, size.height), blendMode = androidx.compose.ui.graphics.BlendMode.DstIn)
-                if (r > 0f) drawRect(outFade, topLeft = Offset(size.width - r, 0f), size = Size(r, size.height), blendMode = androidx.compose.ui.graphics.BlendMode.DstIn)
-            }
+    }.drawWithCache {
+        val reach = EDGE_REACH.toPx()
+        // [strip] wide at the screen's edge, faded over it and [reach] of the page beside it: how visible a cover
+        // is (1 - the cover of page colour) from the page to the screen's edge. The same on both sides, camera or
+        // rail: half gone where the strip begins, thinning out across it, nothing left at the screen's edge.
+        fun ramp(strip: Float): Array<Pair<Float, Color>> {
+            val at = (reach / (strip + reach)).coerceIn(0f, 1f)
+            fun c(visible: Float) = page.copy(alpha = 1f - visible)
+            val across = listOf(0.2f to 0.35f, 0.55f to 0.14f, 0.8f to 0.04f)
+            val into = 0.5f
+            return (listOf(0f to c(1f), at * 0.5f to c(1f - (1f - into) * 0.35f), at to c(into)) +
+                across.map { (x, v) -> at + (1f - at) * x to c(v) } + listOf(1f to c(0f))).toTypedArray()
         }
+        val l = start.toPx()
+        val r = end.toPx()
+        val inStart = if (l > 0f) l + reach else 0f
+        val inFade = Brush.horizontalGradient(*ramp(l), startX = inStart, endX = 0f)
+        val outStart = if (r > 0f) size.width - r - reach else size.width
+        val outFade = Brush.horizontalGradient(*ramp(r), startX = outStart, endX = size.width)
+        onDrawWithContent {
+            drawContent()
+            if (l > 0f) drawRect(inFade, size = Size(inStart, size.height))
+            if (r > 0f) drawRect(outFade, topLeft = Offset(outStart, 0f), size = Size(size.width - outStart, size.height))
+        }
+    }
 }
+
+/**
+ * A page's scrolling list that holds sideways rows, run out to the screen's edge over the strip the page is
+ * kept off on its side (the camera's): a scrolling list lets its content spill only a little past its sides,
+ * so rows inside one that ran out under the strip were cut where the list began. Its content is kept off the
+ * strip by [pagePadding] instead. Upright there is no strip and this is nothing.
+ */
+@Composable
+fun Modifier.pageToEdges(): Modifier {
+    val start = LocalPageStart.current
+    val end = LocalPageEnd.current
+    if (start == 0.dp && end == 0.dp) return this
+    return layout { measurable, constraints ->
+        val w = constraints.maxWidth + start.roundToPx() + end.roundToPx()
+        val placeable = measurable.measure(constraints.copy(minWidth = w, maxWidth = w))
+        layout(constraints.maxWidth, placeable.height) { placeable.place(-start.roundToPx(), 0) }
+    }
+}
+
+/** A [pageToEdges] list's padding: the strips it runs over at its sides (the camera's, the rail's), and [bottom]. */
+@Composable
+fun pagePadding(bottom: Dp): PaddingValues = PaddingValues(start = LocalPageStart.current, end = LocalPageEnd.current, bottom = bottom)
+
+/** How far into the page a sideways row's edge fade reaches past the strip beside it ([bleedsToEdges]). */
+private val EDGE_REACH = 56.dp
 
 /** A sideways row's padding: [horizontal] and [vertical], and at each end the strip it runs out under ([bleedsToEdges]). */
 @Composable
