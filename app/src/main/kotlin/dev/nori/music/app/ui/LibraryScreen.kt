@@ -150,13 +150,13 @@ private fun Albums(vm: AlbumsViewModel = viewModel()) {
         // is the only reason to show covers instead of a list of names.
         // On its side the same two would each be half a wide screen; there the cards keep about the size
         // they have upright and the row takes as many as fit.
-        // On its side the cards are the size of Home's shelves (150 dp), as many to a row as fit, the row's spare
-        // width shared out between them rather than left at its end.
+        // On its side the cards keep about the size they have upright (a little larger than Home's shelves,
+        // which is the point of a grid of covers) and the row takes as many as fit.
         val wide = LocalWide.current
-        LazyVerticalGrid(if (wide) GridCells.FixedSize(HOME_CARD) else GridCells.Fixed(2), state = list, contentPadding = PaddingValues(start = Space.gutter, end = Space.gutter, top = Space.gutter, bottom = Space.gutter + LocalChromeInset.current), horizontalArrangement = if (wide) Arrangement.SpaceBetween else Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        LazyVerticalGrid(if (wide) GridCells.Adaptive(170.dp) else GridCells.Fixed(2), state = list, contentPadding = PaddingValues(start = Space.gutter, end = Space.gutter, top = Space.gutter, bottom = Space.gutter + LocalChromeInset.current), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             itemsIndexed(albums, key = { _, a -> a.id }, contentType = { _, _ -> "album" }) { i, a ->
                 if (i >= albums.size - 12) vm.loadMore()
-                AlbumCard(a, vm.cover(a.coverArt, CoverSize.CARD), if (wide) HOME_CARD else 132.dp, { nav.album(a.id, a) }, if (wide) Modifier else Modifier.fillMaxWidth(), fill = !wide)
+                AlbumCard(a, vm.cover(a.coverArt, CoverSize.CARD), 132.dp, { nav.album(a.id, a) }, Modifier.fillMaxWidth(), fill = true)
             }
         }
     }
@@ -398,6 +398,3 @@ private fun Downloads(actions: ActionsViewModel) {
         songRows(songs.orEmpty(), actions, null, d.doneIds, emptySet(), menu, cover = { vm.cover(it.coverArt, CoverSize.ROW) }, from = DOWNLOADED_SONGS)
     }
 }
-
-/** A cover card on Home's shelves, and in the library's grid on its side, so the two match. */
-private val HOME_CARD = 150.dp
