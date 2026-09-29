@@ -2553,6 +2553,49 @@ fn with_the_equalizer_on_the_chain_stays_in_the_path_whatever_else_the_settings_
     rig.engine.stop();
 }
 
+/// Each event finds the status already saying it, and a seek landing says its place: a client reading the
+/// status on an event needs no re-read.
+#[test]
+fn status_is_current_on_each_event_and_a_seek_says_its_place() {
+    let (a, b) = (music(4.0, 90), music(4.0, 91));
+    let server = Arc::new(Server::default());
+    for (id, s) in [("a", &a), ("b", &b)] {
+        server.files.lock().push((id.into(), Arc::new(wav(s))));
+    }
+    let mut list = Playlist::default();
+    list.set(vec!["a".into(), "b".into()], Some(0), false, 0);
+    let queue = TestQueue { list: Arc::new(Mutex::new(list)), skip: Vec::new() };
+    let library = Songs { server, lengths: vec![("a".into(), 4_000), ("b".into(), 4_000)], store: None };
+    let card = common::card::Card::new();
+    let clock = Virtual::default();
+    let cell: Arc<std::sync::OnceLock<Arc<Engine>>> = Arc::default();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (engine_of, said) = (cell.clone(), seen.clone());
+    let engine = Arc::new(Engine::start_on(library, sim::App::new(), queue, Box::new(card.clone()), None, Config::default(), clock.clone(), move |e| {
+        if let Some(engine) = engine_of.get() {
+            let (state, index) = engine.status_with(|s| (s.state, s.index));
+            said.lock().push((e, state, index));
+        }
+    }));
+    let _ = cell.set(engine.clone());
+    let time = Stepper::new(clock, card.pull.clone());
+    engine.play_at(0, 0);
+    assert!(time.until(Duration::from_secs(10), || engine.status().index == Some(0) && card.secs() > 1.0));
+    engine.seek(2_000);
+    assert!(time.until(Duration::from_secs(20), || engine.status().state == State::Ended), "{:?}", seen.lock());
+    engine.stop();
+    let seen = seen.lock();
+    for (e, state, index) in seen.iter() {
+        match e {
+            Event::State(s) => assert_eq!(s, state, "{seen:?}"),
+            Event::Song { index: i, .. } => assert_eq!(Some(*i), *index, "{seen:?}"),
+            _ => {}
+        }
+    }
+    assert!(seen.iter().any(|(e, ..)| matches!(e, Event::Position { index: 0, ms: 2_000 })), "the seek said its place: {seen:?}");
+    assert!(seen.iter().any(|(e, ..)| matches!(e, Event::Song { index: 1, .. })), "{seen:?}");
+}
+
 // ---- the same song twice in a row (issue #19) ----
 
 /// `a` twice in the queue with AutoMix on, played from `from_ms` into the first copy at the music's pace.
