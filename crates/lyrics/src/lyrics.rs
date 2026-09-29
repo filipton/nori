@@ -1,7 +1,6 @@
-//! Lyrics in one shape, whatever the server had: word cues (OpenSubsonic enhanced lyrics), inline
-//! `<mm:ss.xx>` word tags (enhanced LRC), or plain line timing, in which case the words of a line get
-//! estimated times so the player can sweep through them all the same. Text offsets are UTF-16, which
-//! is what a Kotlin `String` indexes by.
+//! The server's lyrics (OpenSubsonic structured lyrics with word cues) and LRC (with enhanced `<mm:ss.xx>`
+//! word tags) in the app's shape. Plain line timing gets estimated word times so the player can sweep.
+//! Text offsets are UTF-16, as Kotlin strings index.
 
 use nori_model::model::{LyricLine, LyricWord, Lyrics};
 use serde::Deserialize;
@@ -59,21 +58,14 @@ pub(crate) fn utf16_at(text: &str, byte: usize) -> u32 {
     text[..b].encode_utf16().count() as u32
 }
 
-/// `<01:02.50>` -> 62500
-fn tag_ms(tag: &str) -> Option<i64> {
-    let (m, rest) = tag.split_once(':')?;
-    let secs: f64 = rest.parse().ok()?;
-    Some(m.parse::<i64>().ok()? * 60_000 + (secs * 1000.0).round() as i64)
-}
-
-/// Splits enhanced-LRC word tags out of a line: returns the clean text and the timed words found.
+/// Splits enhanced-LRC word tags out of a line: the clean text and each tag's (ms, byte offset).
 fn inline_words(raw: &str) -> (String, Vec<(i64, usize)>) {
     let mut text = String::with_capacity(raw.len());
     let mut marks = Vec::new();
     let mut rest = raw;
     while let Some(open) = rest.find('<') {
         let Some(close) = rest[open..].find('>') else { break };
-        match tag_ms(&rest[open + 1..open + close]) {
+        match stamp(&rest[open + 1..open + close]) {
             Some(ms) => {
                 text.push_str(&rest[..open]);
                 marks.push((ms, text.len()));
@@ -86,8 +78,7 @@ fn inline_words(raw: &str) -> (String, Vec<(i64, usize)>) {
     (text, marks)
 }
 
-/// No word timing from anywhere: spread the line's duration over its words by length, leaving the last
-/// tenth as breath, which is how a sung line usually sits inside its slot.
+/// Word times estimated by length over the line, the last tenth left as breath.
 fn estimate(text: &str, start: i64, end: i64) -> Vec<LyricWord> {
     let spans: Vec<(usize, usize)> = {
         let mut v = Vec::new();
@@ -124,7 +115,7 @@ fn estimate(text: &str, start: i64, end: i64) -> Vec<LyricWord> {
         .collect()
 }
 
-/// `[mm:ss.xx]` -> ms. Also accepts `[mm:ss]` and `[mm:ss:xx]`.
+/// `mm:ss.xx`, `mm:ss` or `mm:ss:xx` in ms.
 fn stamp(tag: &str) -> Option<i64> {
     let (m, rest) = tag.split_once(':')?;
     let rest = rest.replacen(':', ".", 1);
@@ -132,9 +123,8 @@ fn stamp(tag: &str) -> Option<i64> {
     Some(m.trim().parse::<i64>().ok()? * 60_000 + (secs * 1000.0).round() as i64)
 }
 
-/// Plain LRC text (what LRCLIB, sidecar files and most providers return) in the same shape as the server's
-/// structured lyrics, so the same line and word timing applies. Lines with several timestamps repeat;
-/// `[offset:+n]` is honoured; `[ar:]`-style tags are skipped.
+/// LRC, or plain text when it has no timestamps. A line with several timestamps repeats; `[offset:]` is
+/// applied; other tags are skipped.
 pub fn from_lrc(text: &str) -> Lyrics {
     let mut lines: Vec<Line> = Vec::new();
     let mut offset = 0i64;
@@ -156,17 +146,17 @@ pub fn from_lrc(text: &str) -> Lyrics {
         }
     }
     if lines.is_empty() {
-        // Not LRC at all: plain text lyrics.
         let plain: Vec<Line> = text.lines().map(|l| Line { start: None, value: l.trim().to_string() }).collect();
         return build(vec![Structured { synced: false, line: plain, ..Default::default() }]);
     }
     lines.sort_by_key(|l| l.start);
-    // LRC offset is positive = lyrics come sooner, the same convention as OpenSubsonic's field.
+    // A positive offset is sooner, in LRC as in OpenSubsonic.
     build(vec![Structured { synced: true, offset, line: lines, ..Default::default() }])
 }
 
+/// The server's lyrics layers as one: the main layer (synced over unsynced, never a translation or
+/// pronunciation) with a translation matched in.
 pub fn build(mut all: Vec<Structured>) -> Lyrics {
-    // The main layer: synced beats unsynced, and a translation is never the main text.
     all.sort_by_key(|l| (l.kind.as_deref() == Some("translation") || l.kind.as_deref() == Some("pronunciation"), !l.synced));
     let mut layers = all.into_iter();
     let Some(main) = layers.next().filter(|m| !m.line.is_empty()) else { return Lyrics::default() };
@@ -190,9 +180,8 @@ pub fn build(mut all: Vec<Structured>) -> Lyrics {
             let (text, marks) = inline_words(&l.value);
             if synced && !marks.is_empty() {
                 word_timed = true;
-                // A word runs to the next word's mark; the last one, unless a closing mark ends it, for
-                // as long as a word that long is sung - not to the next line, which after a pause is
-                // seconds away.
+                // A word runs to the next mark; the last one for as long as such a word is sung, not to
+                // the next line.
                 let words = marks.iter().enumerate().filter_map(|(k, (ms, at))| {
                     let to = marks.get(k + 1).map(|m| m.1).unwrap_or(text.len());
                     let (start, end) = (utf16_at(&text, *at), utf16_at(&text, to));
