@@ -1,29 +1,21 @@
-//! The AutoEQ headphone database, kept on the device. Its `results/INDEX.md` is one 850 KB request
-//! listing every measurement; it is parsed here into a table so searching 8000+ headphones is a local
-//! FTS query rather than a network call per keystroke. Only the index and the chosen preset are ever
-//! fetched: the index once on an unmetered network when it is missing or a month old (`index_due`) or
-//! when the user asks, a preset when one is chosen or offered.
-//!
-//! Every measurement has a parametric preset and a graphic curve beside it. A preset is read from
-//! "ParametricEQ.txt"; where that is missing or has no filter in it the graphic curve is fitted instead
-//! (`nori_player::eqfit`, through `parse_eq_preset`); an entry with neither is remembered as having no
-//! curve (`mark_missing`) and is left out of every list from then on.
+//! The AutoEQ headphone index kept on the device: `results/INDEX.md` (one ~850 KB request) parsed into a
+//! table so searches are local. Only the index (`index_due`) and chosen curves are fetched. A curve is
+//! "ParametricEQ.txt", or else the fitted "GraphicEQ.txt"; entries with neither are hidden
+//! (`mark_missing`).
 
 use nori_model::model::AutoEqEntry;
 use rusqlite::{params, Connection};
 
 pub const INDEX_URL: &str = "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results/INDEX.md";
 const RAW: &str = "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results";
-/// The index is fetched again when it is this old (and the network is unmetered): AutoEQ adds headphones
-/// every few weeks.
+/// Age after which the index is refetched on an unmetered network.
 pub const INDEX_STALE_MS: i64 = 30 * 24 * 3_600_000;
-/// Where the index's time and fingerprint are kept, in the app's own values (`app_kv`).
+/// `app_kv` keys for the index's fetch time and fingerprint.
 const FETCHED_KEY: &str = "autoeq.fetched";
 const DIGEST_KEY: &str = "autoeq.digest";
 
-/// `- [Name](./source/form/Name) by source on target`. The path's own parentheses are not escaped
-/// ("Sony WH-1000XM6%20(analog%20cable)"), so the link ends at the parenthesis that balances its opening
-/// one, not at the first one.
+/// Parses `- [Name](./source/form/Name) by source on target`. Paths contain unescaped parentheses, so
+/// the link ends at the balancing `)`.
 fn entry(line: &str) -> Option<AutoEqEntry> {
     let rest = line.strip_prefix("- [")?;
     let (name, rest) = rest.split_once("](")?;
@@ -43,19 +35,19 @@ fn entry(line: &str) -> Option<AutoEqEntry> {
     let (path, tail) = (&rest[..end], &rest[end + 1..]);
     let path = path.trim_start_matches("./");
     let mut parts = path.split('/');
-    // The path is percent-encoded; the labels a person reads are not.
+    // The path is percent-encoded; the labels are decoded.
     let source = decode(parts.next()?);
     let form = decode(parts.next().unwrap_or_default());
     let target = tail.split_once(" on ").map(|(_, t)| t.trim().to_string()).unwrap_or_default();
     Some(AutoEqEntry { name: name.trim().to_string(), source, form, target, path: path.to_string() })
 }
 
-/// Where the parametric preset of an entry lives. The file repeats the folder name, percent-encoded.
+/// An entry's parametric preset URL (the file name repeats the folder name).
 pub fn preset_url(e: &AutoEqEntry) -> String {
     file_url(e, "ParametricEQ")
 }
 
-/// Where the graphic curve of an entry lives, beside its parametric preset.
+/// An entry's graphic curve URL.
 pub fn graphic_url(e: &AutoEqEntry) -> String {
     file_url(e, "GraphicEQ")
 }
@@ -65,13 +57,12 @@ fn file_url(e: &AutoEqEntry, kind: &str) -> String {
     format!("{RAW}/{}/{} {kind}.txt", e.path, decode(leaf)).replace(' ', "%20")
 }
 
-/// The index stores paths already percent-encoded; the file name inside needs the decoded form.
+/// Percent-decodes `s` (lossy UTF-8).
 fn decode(s: &str) -> String {
     if !s.contains('%') {
         return s.to_string();
     }
     let b = s.as_bytes();
-    // Decoded bytes are collected so multi-byte UTF-8 (e.g. %C3%A9) survives.
     let mut bytes: Vec<u8> = Vec::with_capacity(s.len());
     let mut i = 0;
     while i < b.len() {
@@ -88,9 +79,9 @@ fn decode(s: &str) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// The index in `markdown` as the local table, fetched at `now_ms`; how many headphones it lists that have
-/// a curve. An index the same as the one kept only has its time moved on. Entries known to have no curve
-/// stay known while the index lists them. Text with no entry in it at all (an error page) changes nothing.
+/// Stores the index fetched at `now_ms` and returns the count of entries with a curve. An unchanged
+/// index only updates its time; missing marks stay while their entry is listed; text without entries
+/// (an error page) changes nothing.
 pub fn store(c: &mut Connection, markdown: &str, now_ms: i64) -> rusqlite::Result<u32> {
     if !markdown.lines().any(|l| entry(l).is_some()) {
         return count(c);
@@ -113,7 +104,7 @@ pub fn store(c: &mut Connection, markdown: &str, now_ms: i64) -> rusqlite::Resul
     count(c)
 }
 
-/// FNV-1a over the index, to tell an unchanged one from a new one without keeping it.
+/// FNV-1a, to detect an unchanged index.
 fn fingerprint(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x0100_0000_01b3))
 }
@@ -127,43 +118,38 @@ fn set_kv(c: &Connection, key: &str, value: &str) -> rusqlite::Result<()> {
     c.execute("INSERT OR REPLACE INTO app_kv(key, value) VALUES(?1, ?2)", [key, value]).map(|_| ())
 }
 
-/// When the index kept on the device was fetched; none when it never was (or was kept before this was
-/// noted, which is as good as never).
+/// When the stored index was fetched; None if unknown.
 pub fn fetched_ms(c: &Connection) -> rusqlite::Result<Option<i64>> {
     Ok(kv(c, FETCHED_KEY)?.and_then(|v| v.parse().ok()))
 }
 
-/// Whether the index should be fetched now without the user asking: the automatic download is on, the
-/// network is unmetered, and the index is missing or at least `INDEX_STALE_MS` old. A clock that went
-/// backwards counts as old.
+/// Whether to fetch the index automatically: download on, unmetered, and the index missing or
+/// [`INDEX_STALE_MS`] old (a clock that went backwards counts as old).
 pub fn index_due(auto: bool, metered: bool, stored: u32, fetched_ms: Option<i64>, now_ms: i64) -> bool {
     auto && !metered && (stored == 0 || fetched_ms.is_none_or(|t| now_ms < t || now_ms - t >= INDEX_STALE_MS))
 }
 
-/// The entry at `path` has no curve in either format: it is left out of every list from now on.
+/// Hides the entry at `path`, which has no usable curve.
 pub fn mark_missing(c: &Connection, path: &str) -> rusqlite::Result<()> {
     c.execute("INSERT OR IGNORE INTO autoeq_missing(path) VALUES(?1)", [path]).map(|_| ())
 }
 
-/// A curve in text the preset reader takes: a parametric preset, or a graphic curve it fits.
+/// Whether the preset reader gets filters from the text (directly or by fitting a graphic curve).
 fn usable(text: &str) -> bool {
     !nori_settings::settings::parse_eq_preset(text.to_string()).bands.is_empty()
 }
 
-/// What asking AutoEQ for an entry's curve came to.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Curve {
-    /// The text of a preset with filters in it, or of a graphic curve (fitted when it is read).
+    /// A preset or graphic curve's text.
     Found(String),
-    /// Neither file is there with a usable filter in it.
+    /// Neither file exists with usable filters.
     Missing,
 }
 
-/// An entry's curve through the platform's transport: its "ParametricEQ.txt", or where that is missing
-/// or has no filter, its "GraphicEQ.txt". A network failure or a server error is an error, never
-/// "missing": only an answer that the file is not there (404, 410) or has nothing usable in it is.
+/// Fetches an entry's curve: one file, then the other when the first is 404/410 or unusable
+/// (`graphic_first` for the graphic equalizer). Network and server errors are errors, never `Missing`.
 pub async fn fetch_curve(transport: &dyn nori_net::transport::Transport, e: &AutoEqEntry, graphic_first: bool) -> Result<Curve, nori_net::transport::NetError> {
-    // The graphic equalizer is fitted to AutoEQ's own dense curve; the parametric one takes its filters.
     let urls = if graphic_first { [graphic_url(e), preset_url(e)] } else { [preset_url(e), graphic_url(e)] };
     for url in urls {
         let r = transport.get(url, 0).await?;
@@ -184,7 +170,7 @@ pub async fn fetch_curve(transport: &dyn nori_net::transport::Transport, e: &Aut
 pub fn search(c: &Connection, query: &str, limit: u32) -> rusqlite::Result<Vec<AutoEqEntry>> {
     let like = format!("%{}%", query.trim().replace(' ', "%"));
     let mut st = c.prepare_cached(
-        // Shortest name first, so "HD 600" beats "HD 600 (with pads)" when both match.
+        // Shortest name first.
         "SELECT name, source, form, target, path FROM autoeq WHERE name LIKE ?1 ESCAPE '\\' AND path NOT IN (SELECT path FROM autoeq_missing) ORDER BY length(name), name LIMIT ?2",
     )?;
     let rows = st.query_map(params![like, limit], |r| {
@@ -193,22 +179,20 @@ pub fn search(c: &Connection, query: &str, limit: u32) -> rusqlite::Result<Vec<A
     rows.collect()
 }
 
-/// Letters and digits only, lowercased: "WH-1000XM5", "wh1000xm5" and "WH 1000 XM5" are one name.
+/// Lowercase letters and digits only ("WH-1000XM5" is "wh1000xm5").
 fn compact(s: &str) -> String {
     s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
 
-/// Words that say what kind of thing a device is, not which one. A name made only of these ("USB Audio",
-/// "USB-C to 3.5mm Headphone Jack Adapter", "Headset") cannot be looked up.
+/// Words naming a kind of device, not a model; a name of only these is not looked up.
 const GENERIC: &[&str] = &[
     "usb", "usbc", "c", "type", "typec", "audio", "device", "dac", "digital", "analog", "analogue", "headset", "headsets",
     "headphone", "headphones", "earphone", "earphones", "earbuds", "speaker", "speakers", "adapter", "adaptor", "jack",
     "to", "35mm", "3", "5mm", "the", "stereo", "wireless", "bluetooth", "le", "bt", "hifi", "hi", "fi", "out", "output",
 ];
 
-/// The part of a device's own name that can be looked up: "LE_WH-1000XM5" -> "WH-1000XM5", "Filip's
-/// AirPods Pro" -> "AirPods Pro", "Galaxy Buds2 Pro (1A2B)" -> "Galaxy Buds2 Pro". None when nothing is
-/// left that names a model.
+/// The model part of a device name: "LE_WH-1000XM5" -> "WH-1000XM5", "Filip's AirPods Pro" -> "AirPods
+/// Pro", "Galaxy Buds2 Pro (1A2B)" -> "Galaxy Buds2 Pro". None when no model is left.
 pub fn device_query(device: &str) -> Option<String> {
     let mut name = device.trim().replace('_', " ");
     for prefix in ["LE ", "LE-", "BT ", "BT-"] {
@@ -216,13 +200,13 @@ pub fn device_query(device: &str) -> Option<String> {
             name = name[prefix.len()..].to_string();
         }
     }
-    // "Filip's AirPods Pro": the owner is not part of the model.
+    // Drop an owner's name.
     for mark in ["'s ", "\u{2019}s "] {
         if let Some(i) = name.find(mark) {
             name = name[i + mark.len()..].to_string();
         }
     }
-    // A pairing suffix: "(1A2B)", "[LE]".
+    // Drop pairing suffixes: "(1A2B)", "[LE]".
     while let Some(open) = name.rfind(['(', '[']) {
         if open == 0 {
             break;
@@ -238,7 +222,7 @@ pub fn device_query(device: &str) -> Option<String> {
     (meaningful >= 3 && compact(&name).len() >= 3).then_some(name)
 }
 
-/// Measurements from these rigs are the ones AutoEQ itself recommends first.
+/// AutoEQ's own preference among measurement sources.
 fn source_rank(source: &str) -> u8 {
     match source {
         "oratory1990" => 0,
@@ -248,10 +232,8 @@ fn source_rank(source: &str) -> u8 {
     }
 }
 
-/// The curves that are this device, best first. Unlike [search] this ignores spacing and punctuation
-/// ("WH1000XM5" finds "Sony WH-1000XM5") and prefers the exact model over a longer one that contains it.
-/// A short name must be a whole model name (with or without its brand): "Buds" alone matches nothing
-/// rather than every Galaxy, Pixel and Nothing earbud.
+/// The curves for a device name, best first. Ignores spacing and punctuation, prefers the exact model,
+/// and requires names under 5 characters to match a whole model ("Buds" matches nothing).
 pub fn matching(c: &Connection, device: &str, limit: u32) -> rusqlite::Result<Vec<AutoEqEntry>> {
     let Some(query) = device_query(device) else { return Ok(Vec::new()) };
     let q = compact(&query);
@@ -277,24 +259,18 @@ pub fn matching(c: &Connection, device: &str, limit: u32) -> rusqlite::Result<Ve
     Ok(hits.into_iter().take(limit as usize).map(|h| h.3).collect())
 }
 
-/// How many headphones the list offers: those known to have no curve are not counted.
+/// The number of entries with a curve.
 pub fn count(c: &Connection) -> rusqlite::Result<u32> {
     c.query_row("SELECT count(*) FROM autoeq WHERE path NOT IN (SELECT path FROM autoeq_missing)", [], |r| r.get(0))
 }
 
-/// The AutoEQ index or one of its presets, read from `url` (`Core::autoeq_index_url`,
-/// `Core::autoeq_preset_url`) through the platform's transport: an error status with nothing in it
-/// fails, and the body is read as UTF-8 with anything malformed replaced, the way the JVM reads it
-/// (`text`). `Client::autoeq_update` keeps the index with it; a preset comes through [fetch_curve].
-///
-/// Twin of `Http.get(..).decodeToString()`, as the app fetched both before the core did.
+/// GETs `url` and decodes the body with [`text`].
 pub async fn fetch_text(transport: &dyn nori_net::transport::Transport, url: String) -> Result<String, nori_net::transport::NetError> {
     Ok(text(&nori_net::transport::get(transport, url, 0).await?))
 }
 
-/// A body as text, the way Kotlin's `decodeToString` reads it on the JVM: UTF-8, each bad stretch one
-/// U+FFFD by UTF-8's own rule, except a surrogate written out (ED A0..BF, with its last byte when that is
-/// a continuation byte), which the JVM takes as one bad character where the rule makes two or three.
+/// UTF-8 decoding as the JVM's `decodeToString` does it: lossy, except an encoded surrogate (ED A0..BF
+/// plus a continuation byte) becomes one U+FFFD rather than several.
 pub fn text(body: &[u8]) -> String {
     let surrogate = |b: &[u8]| b.len() >= 2 && b[0] == 0xED && (0xA0..=0xBF).contains(&b[1]);
     let mut out = String::with_capacity(body.len());
@@ -336,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn device_names_are_cleaned_before_lookup() {
+    fn device_query_strips_noise() {
         assert_eq!(device_query("LE_WH-1000XM5").as_deref(), Some("WH-1000XM5"));
         assert_eq!(device_query("Filip's AirPods Pro").as_deref(), Some("AirPods Pro"));
         assert_eq!(device_query("Filip\u{2019}s AirPods Pro").as_deref(), Some("AirPods Pro"));
@@ -347,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn devices_find_their_curve() {
+    fn matching_ranks_models() {
         let mut c = nori_db::open("", "t").unwrap();
         let md = "- [Sony WH-1000XM5](./Rtings/over-ear/Sony%20WH-1000XM5) by Rtings\n\
 - [Sony WH-1000XM5](./oratory1990/over-ear/Sony%20WH-1000XM5) by oratory1990\n\
@@ -366,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn preset_url_repeats_the_decoded_leaf() {
+    fn preset_url_repeats_leaf() {
         let e = entry("- [64 Audio U12t](./crinacle/711%20in-ear/64%20Audio%20U12t) by crinacle on 711").unwrap();
         assert_eq!(preset_url(&e), "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results/crinacle/711%20in-ear/64%20Audio%20U12t/64%20Audio%20U12t%20ParametricEQ.txt");
     }
@@ -379,7 +355,7 @@ mod tests {
 - [Apple AirPods Pro 2 (51dB + ANC)](./crinacle/711%20in-ear/Apple%20AirPods%20Pro%202%20(51dB%20+%20ANC)) by crinacle on 711\n";
 
     #[test]
-    fn a_path_with_parentheses_is_read_whole() {
+    fn entry_keeps_parenthesised_paths() {
         let e: Vec<AutoEqEntry> = REAL.lines().filter_map(entry).collect();
         assert_eq!(e.len(), 5);
         assert_eq!(e[2].name, "Sony WH-1000XM6 (analog cable)");
@@ -398,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn the_index_is_due_when_missing_or_a_month_old_on_an_unmetered_network() {
+    fn index_due_rules() {
         let day = 24 * 3_600_000;
         let now = 100 * day;
         assert!(index_due(true, false, 0, None, now), "never fetched");
@@ -412,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn entries_without_a_curve_are_left_out_until_the_index_drops_them() {
+    fn missing_marks_follow_index() {
         let mut c = nori_db::open("", "t").unwrap();
         assert_eq!(fetched_ms(&c).unwrap(), None);
         assert_eq!(store(&mut c, REAL, 10).unwrap(), 5);
@@ -488,7 +464,7 @@ mod tests {
         }
 
         #[test]
-        fn the_graphic_equalizer_takes_the_graphic_curve_first() {
+        fn graphic_first_order() {
             let web = Web { pages: vec![("ParametricEQ.txt", 200, PARAMETRIC), ("GraphicEQ.txt", 200, GRAPHIC)], asked: Mutex::new(Vec::new()) };
             let e = entry(REAL.lines().nth(2).unwrap()).unwrap();
             assert_eq!(block(fetch_curve(&web, &e, true)).unwrap(), Curve::Found(GRAPHIC.into()));
@@ -497,14 +473,14 @@ mod tests {
         }
 
         #[test]
-        fn the_parametric_preset_is_taken_first() {
+        fn parametric_first() {
             let (got, asked) = curve(vec![("ParametricEQ.txt", 200, PARAMETRIC), ("GraphicEQ.txt", 200, GRAPHIC)]);
             assert_eq!(got.unwrap(), Curve::Found(PARAMETRIC.into()));
             assert_eq!(asked, 1);
         }
 
         #[test]
-        fn a_graphic_curve_stands_in_for_a_missing_or_empty_preset() {
+        fn graphic_fallback() {
             for parametric in [(404, "404: Not Found"), (200, "Preamp: -3 dB\n")] {
                 let (got, asked) = curve(vec![("ParametricEQ.txt", parametric.0, parametric.1), ("GraphicEQ.txt", 200, GRAPHIC)]);
                 assert_eq!(got.unwrap(), Curve::Found(GRAPHIC.into()), "{parametric:?}");
@@ -517,7 +493,7 @@ mod tests {
         }
 
         #[test]
-        fn neither_file_means_missing_but_a_failure_never_does() {
+        fn missing_vs_error() {
             let (got, _) = curve(vec![("ParametricEQ.txt", 404, "404: Not Found"), ("GraphicEQ.txt", 404, "404: Not Found")]);
             assert_eq!(got.unwrap(), Curve::Missing);
             let (got, _) = curve(vec![("ParametricEQ.txt", 200, "nothing"), ("GraphicEQ.txt", 200, "GraphicEQ: 20 1")]);

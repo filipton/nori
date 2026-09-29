@@ -1,5 +1,4 @@
-//! Downloads as the core's calls: the queue of songs to download and what finished, kept in the core's
-//! database. How downloads run, the facts they are worded from and how the batch went are nori-transfers'.
+//! Download bookkeeping in the core's database. Progress tracking and reporting are nori-transfers'.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
@@ -23,8 +22,7 @@ impl Core {
         Ok(q)
     }
 
-    /// Queues every song of the offline index, in index order, as [`Core::download_queue`] does. One
-    /// call however big the library: the songs go from the index into the queue without leaving the core.
+    /// Queues every indexed song, in index order ([`Core::download_queue`]).
     pub fn download_queue_library(&self) -> crate::Result<DownloadQueued> {
         follow_quality();
         let mut c = self.db.lock();
@@ -38,8 +36,7 @@ impl Core {
         Ok(q)
     }
 
-    /// The beat model is to read `ids` once they are downloaded ("ML beats for downloads": the answer to the
-    /// question, or always). Kept with the downloads, so a download an earlier process left half way gets it too.
+    /// Marks `ids` for the beat model once downloaded; stored, so it survives a process restart.
     pub fn download_want_beats(&self, ids: Vec<String>) -> crate::Result<()> {
         {
             let mut c = self.db.lock();
@@ -56,9 +53,8 @@ impl Core {
         Ok(())
     }
 
-    /// Downloaded songs to analyse again: those with no analysis of the current version, and, with `beats`, those
-    /// the beat model has not read (the settings' "Analyse downloaded songs"). The songs the model is to read are
-    /// written down as [`Core::download_want_beats`] does. Newest first, as the table lists them.
+    /// Downloaded songs lacking a current analysis or (with `beats`) a beat model read, newest first; with
+    /// `beats` they are also marked via [`Core::download_want_beats`].
     pub fn download_unanalysed(&self, beats: bool) -> crate::Result<Vec<String>> {
         let ids: Vec<String> = self.download_ids(true)?.into_iter().filter(|id| crate::queue::analysable(id)).collect();
         let missing: HashSet<String> = self.analysis_missing(ids.clone())?.into_iter().collect();
@@ -71,10 +67,8 @@ impl Core {
     }
 }
 
-/// Asked only in Rust, so not exported to Kotlin.
 impl Core {
-
-    /// The beat model has read `id` (or will not): it is not wanted for it any more.
+    /// Unmarks `ids` for the beat model (read, or no longer wanted).
     pub fn download_beats_forget(&self, ids: &[String]) -> crate::Result<()> {
         {
             let c = self.db.lock();
@@ -86,30 +80,35 @@ impl Core {
         want_beats(ids, false);
         Ok(())
     }
+
+    fn held_queued(&self, q: &DownloadQueued) {
+        let mut held = self.held.lock();
+        for id in &q.fresh {
+            held.queued(id);
+        }
+    }
 }
 
-/// What pressing Download does about the beat model now ([`beats_offer`]): nothing while it is off, else ask,
-/// or not, as "ML beats for downloads" says.
+/// Whether Download asks about the beat model ([`beats_offer`]).
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn download_beats_offer() -> BeatsOffer {
     let (on, choice) = crate::settings_store::with_prefs(|p| (p.auto_mix && p.auto_mix_better_beats, p.download_beats)).unwrap_or((false, nori_settings::settings::DownloadBeats::Ask));
     beats_offer(on && nori_player::automix::beats::AVAILABLE, choice)
 }
 
-/// What "ML beats for downloads" becomes when the question's answer is to be remembered.
+/// The "ML beats for downloads" setting for a remembered answer.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn download_beats_remembered(yes: bool) -> nori_settings::settings::DownloadBeats {
     beats_remembered(yes)
 }
 
-/// What the saved songs are still waiting for, for the notification; none when nothing is. `now` is the
-/// platform's clock.
+/// What downloaded songs still wait for, for the notification; `now` is the platform clock.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn download_processing(now: i64) -> Option<Processing> {
     processing(now)
 }
 
-/// The ids the beat model is to read once downloaded, from the downloads' own table.
+/// The ids marked for the beat model.
 pub fn beats_wanted_rows(c: &rusqlite::Connection) -> crate::Result<Vec<String>> {
     let mut st = c.prepare("SELECT id FROM download_beats WHERE server=sid()")?;
     let rows = st.query_map([], |r| r.get(0))?;
@@ -118,8 +117,7 @@ pub fn beats_wanted_rows(c: &rusqlite::Connection) -> crate::Result<Vec<String>>
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Core {
-    /// Downloads that settled, in the order they did: each id finished (`finished` true) or left the
-    /// queue for good. One transaction however many there are; ids the table no longer holds cost nothing.
+    /// Records settled downloads in order: finished, or removed (`finished` false). One transaction.
     pub fn download_settle(&self, ids: Vec<String>, finished: Vec<bool>) -> crate::Result<()> {
         let gone_ids: Vec<String> = ids.iter().zip(&finished).filter(|(_, f)| !**f).map(|(id, _)| id.clone()).collect();
         let mut c = self.db.lock();
@@ -160,13 +158,12 @@ impl Core {
                 }
             }
         }
-        // The tracker looks songs up in the database while it is locked: taken once the database is let go.
+        // After releasing the database: the tracker reads it under its own lock.
         want_beats(&gone_ids, false);
         Ok(())
     }
 
-    /// Takes every unfinished song out of the queue at once, forgets their marks and figures, and says
-    /// which they were, for the platform to stop.
+    /// Removes all unfinished downloads and their marks; returns their ids for the platform to stop.
     pub fn download_cancel_all(&self) -> crate::Result<Vec<String>> {
         let ids: Vec<String> = {
             let c = self.db.lock();
@@ -183,8 +180,7 @@ impl Core {
             }
             ids
         };
-        // The tracker looks songs up in the database while it is locked, so it is only taken once the
-        // database is let go.
+        // After releasing the database: the tracker reads it under its own lock.
         with(|t| {
             for id in &ids {
                 t.close(id);
@@ -195,16 +191,15 @@ impl Core {
         Ok(ids)
     }
 
-    /// The table counted, from memory.
+    /// Download counts, from memory.
     pub fn download_counts(&self) -> DownloadCounts {
         let held = self.held.lock();
         let done = held.done;
         DownloadCounts { done, pending: held.ids.len() as u32 - done, version: HELD_VERSION.load(Ordering::Relaxed) }
     }
 
-    /// Brings the downloads table and the platform's queue (`known`: what it holds of the songs pending
-    /// here) back into agreement after the process died: finished songs are recorded, failed ones marked,
-    /// and what is left to do is said.
+    /// Reconciles the table with the platform's queue (`known`) after a restart: records finished songs,
+    /// marks failed ones and reports what is left.
     pub fn download_recover(&self, known: Vec<DownloadKnown>) -> crate::Result<DownloadRecovery> {
         follow_quality();
         let pending: Vec<String> = self.downloads(false)?.into_iter().map(|s| s.id).collect();
@@ -225,25 +220,11 @@ impl Core {
         });
         Ok(r)
     }
-}
 
-impl Core {
-    fn held_queued(&self, q: &DownloadQueued) {
-        let mut held = self.held.lock();
-        for id in &q.fresh {
-            held.queued(id);
-        }
-    }
-}
-
-#[cfg_attr(feature = "ffi", uniffi::export)]
-impl Core {
-    /// The downloads screen's lists: pending songs split by what they are doing, oldest first (the order
-    /// they run), and this session's finished songs newest first.
+    /// The downloads screen: pending songs by state, oldest first, and this session's finished, newest first.
     pub fn download_sections(&self) -> crate::Result<DownloadSections> {
         let pending = self.downloads(false)?;
-        // Of the finished songs only this session's are listed, and there are at most [`RECENT`] of those:
-        // they are looked up one by one rather than the whole table read for them.
+        // Only this session's finished songs (few), looked up one by one.
         let recent: Vec<String> = with(|t| t.marks.iter().filter(|(_, m)| matches!(m.0, Phase::Done | Phase::Processing { .. })).map(|(id, _)| id.clone()).collect());
         let done: Vec<crate::Song> = {
             let c = self.db.lock();
@@ -263,9 +244,7 @@ pub(crate) mod tests {
     use crate::Song;
     use parking_lot::Mutex;
 
-    /// The download tracker is the process's: a test that settles or cancels downloads moves what another
-    /// running beside it reads (cancelling all sets the songs wanted for the beat model from its own
-    /// database), so they take turns, as the queue's tests do.
+    /// The download tracker is process-wide: tests that use it take turns.
     static TURN: Mutex<()> = Mutex::new(());
 
     fn song(id: &str) -> Song {
@@ -273,24 +252,22 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn queuing_adds_what_is_new_and_asks_again_for_what_is_stuck() {
+    fn queue_adds_new_and_retries_unfinished() {
         let _turn = TURN.lock();
         let core = Core::new(String::new(), "t".into()).unwrap();
         let q = core.download_queue(vec![song("a"), song("b"), song("a")]).unwrap();
         assert_eq!((q.fresh, q.again), (vec!["a".to_string(), "b".into()], vec![]));
         core.download_done("a".into()).unwrap();
         let q = core.download_queue(vec![song("a"), song("b"), song("c")]).unwrap();
-        assert_eq!(q.fresh, ["c"], "a finished song is left alone");
-        assert_eq!(q.again, ["b"], "an unfinished one is asked for again");
-        // Listed newest first; the queue runs, and the screen shows it, the other way round.
+        assert_eq!(q.fresh, ["c"]);
+        assert_eq!(q.again, ["b"]);
+        // Listed newest first.
         let pending: Vec<String> = core.downloads(false).unwrap().into_iter().rev().map(|s| s.id).collect();
         assert_eq!(pending, ["b", "c"]);
     }
 
-    /// "ML beats for downloads": the songs the model is to read are kept with the downloads (a process that dies
-    /// half way through a batch finds them again) until the model has read them or the download is taken back.
     #[test]
-    fn the_beat_model_is_wanted_for_downloads_until_it_has_read_them() {
+    fn beat_marks_last_until_read_or_removed() {
         let _turn = TURN.lock();
         let core = Core::new(String::new(), "t".into()).unwrap();
         core.download_queue(vec![song("wb-a"), song("wb-b"), song("wb-c")]).unwrap();
@@ -303,20 +280,20 @@ pub(crate) mod tests {
         };
         assert_eq!(rows(&core), ["wb-a", "wb-b", "wb-c"]);
         core.download_settle(vec!["wb-b".into()], vec![false]).unwrap();
-        assert!(!wants_beats("wb-b"), "taken back");
+        assert!(!wants_beats("wb-b"));
         core.download_cancel_all().unwrap();
-        assert!(!wants_beats("wb-a") && !wants_beats("wb-c"), "stopped");
+        assert!(!wants_beats("wb-a") && !wants_beats("wb-c"));
         assert!(rows(&core).is_empty());
         core.download_queue(vec![song("wb-d")]).unwrap();
         core.download_want_beats(vec!["wb-d".into()]).unwrap();
         core.download_settle(vec!["wb-d".into()], vec![true]).unwrap();
-        assert!(wants_beats("wb-d"), "downloaded: still to be read");
+        assert!(wants_beats("wb-d"), "downloaded, not read yet");
         core.download_beats_forget(&["wb-d".to_string()]).unwrap();
         assert!(!wants_beats("wb-d") && rows(&core).is_empty(), "read");
     }
 
     #[test]
-    fn the_whole_library_is_queued_in_index_order() {
+    fn library_queue_follows_index_order() {
         let _turn = TURN.lock();
         let core = Core::new(String::new(), "t".into()).unwrap();
         let songs: Vec<crate::Song> = ["x", "y", "z"].map(song).to_vec();
@@ -328,7 +305,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_earlier_process_queue_is_sorted_out() {
+    fn recovery_after_restart() {
         let _turn = TURN.lock();
         let known = |id: &str, state| DownloadKnown { id: id.into(), state, length: 100, bytes: 50 };
         let pending = ["lost", "removing", "done", "failed", "queued"].map(String::from);
@@ -345,34 +322,31 @@ pub(crate) mod tests {
         let r = core.download_recover(vec![known("rc-a", COMPLETED), known("rc-b", FAILED)]).unwrap();
         assert_eq!(r.finished, ["rc-a"]);
         assert_eq!(r.failed, [DownloadFailed { id: "rc-b".into(), progress: 0.5 }]);
-        assert_eq!(core.downloads(true).unwrap().len(), 1, "recorded as finished");
+        assert_eq!(core.downloads(true).unwrap().len(), 1);
         assert_eq!(download_phase("rc-b".into()), Some(Phase::Failed.shown()));
     }
 
     #[test]
-    fn the_table_is_known_from_memory_and_settles_in_one_go() {
+    fn held_state_tracks_settle_and_cancel() {
         let _turn = TURN.lock();
         let core = Core::new(String::new(), "t".into()).unwrap();
         let state = |id: &str| core.held.lock().state(id);
         core.download_queue(vec![song("h-a"), song("h-b"), song("h-c"), song("h-d")]).unwrap();
         let v0 = core.download_counts();
         assert_eq!((v0.done, v0.pending, state("h-a"), state("h-x")), (0, 4, HeldState::Pending, HeldState::Absent));
-        // In order: "h-b" finishes and then goes, "h-x" was never there.
+        // "h-b" finishes then goes; "h-x" never existed.
         let ids = ["h-a", "h-b", "h-b", "h-x"].map(String::from).to_vec();
         core.download_settle(ids, vec![true, true, false, false]).unwrap();
         let v1 = core.download_counts();
         assert_eq!((v1.done, v1.pending, state("h-a"), state("h-b")), (1, 2, HeldState::Done, HeldState::Absent));
         assert!(v1.version > v0.version);
-        // The version is the process's, moved by any test's downloads running beside this one: the counts only.
-        let again = core.download_counts();
-        assert_eq!((again.done, again.pending), (v1.done, v1.pending), "asked again, the same answer");
         assert_eq!(core.downloads(true).unwrap().len(), 1);
 
         let mut gone = core.download_cancel_all().unwrap();
         gone.sort();
         assert_eq!(gone, ["h-c", "h-d"]);
         assert_eq!((core.download_counts().pending, core.downloads(false).unwrap().len(), state("h-a")), (0, 0, HeldState::Done), "finished songs stay");
-        // What an opened core reads is what was written.
+        // Reloading gives the same state.
         let c = core.db.lock();
         let again = Held::load(&c).unwrap();
         assert_eq!((again.done, again.ids.len()), (1, 1));

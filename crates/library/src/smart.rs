@@ -794,7 +794,9 @@ pub fn run(c: &Connection, def: &Def, downloaded: &[String], offset: usize, limi
     Ok((page, position))
 }
 
-fn default_definitions() -> Vec<SmartPlaylist> {
+/// The built-in definitions the UI offers as starting points; not stored until saved.
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn smart_defaults() -> Vec<SmartPlaylist> {
     let one = |field: &str, op: &str, value: Value| json!({ "all": true, "rules": [{ "field": field, "op": op, "value": value }] });
     let sorted = |field: &str, descending: bool| json!({ "field": field, "descending": descending });
     let defs = [
@@ -817,13 +819,6 @@ fn default_definitions() -> Vec<SmartPlaylist> {
 /// Checks a definition without running it; the error says where and what (`match.rules[1].op: ...`).
 pub fn smart_validate(json: String) -> Result<()> {
     parse(&json).map(|_| ())
-}
-
-/// Definitions the UI can offer as a starting point. They are not stored: save one with `smart_save` to keep
-/// or edit it. "Never played" is a random draw; change `sort.seed` to draw again.
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn smart_defaults() -> Vec<SmartPlaylist> {
-    default_definitions()
 }
 
 /// A smart playlist as its page shows it.

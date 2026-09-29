@@ -3,9 +3,8 @@ name = "nori-core"
 version.workspace = true
 edition.workspace = true
 
-# The top of the core: the Core and Client objects a platform holds, their calls into each domain crate,
-# and every domain crate re-exported under the paths a client uses (nori_core::playlist, ::settings_store,
-# ...). What the core does lives in the crates below it; see AGENTS.md for which crate holds what.
+# The Core and Client objects, their calls into each domain crate, and the domain crates re-exported
+# (nori_core::playlist, ::settings_store, ...). See AGENTS.md.
 
 [lib]
 crate-type = ["lib"]
@@ -13,11 +12,9 @@ name = "nori_core"
 
 [features]
 default = ["ffi"]
-# The uniffi scaffolding the Android app's Kotlin bindings are generated from. A Rust client links the
-# core without it.
-# The optional neural beat tracker (nori-player's `neural-beats`) and the download of its model. nori-engine's
-# feature of the same name turns it on; without it nothing of tract is built.
+# The optional neural beat tracker and its model download (enabled by nori-engine's `neural-beats`).
 neural-beats = ["nori-player/neural-beats", "dep:sha2"]
+# uniffi exports for the Kotlin bindings.
 ffi = ["dep:uniffi", "nori-model/ffi", "nori-db/ffi", "nori-net/ffi", "nori-library/ffi", "nori-automix/ffi", "nori-settings/ffi", "nori-lyrics/ffi", "nori-devices/ffi", "nori-queue/ffi", "nori-transfers/ffi", "nori-perf/ffi"]
 
 [dependencies]

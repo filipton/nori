@@ -1,6 +1,5 @@
-//! nori music core: Subsonic request signing, response parsing and the local
-//! SQLite index. No sockets and no threads of its own; every call is coarse
-//! (one response, one page) so the FFI crossing stays off the hot path.
+//! nori music core: the `Core` a platform opens per server profile (database, server address, response
+//! parsing into the index) and the domain calls over it. Re-exports the domain crates.
 
 pub mod automix;
 pub mod transfers;
@@ -41,7 +40,6 @@ pub use nori_model::{alog, heap, lines, model, CoreError};
 pub use nori_automix::beat_model;
 pub use nori_devices::{autoeq, outputs};
 pub use nori_library::{menus, pages, rows, stars};
-pub use nori_lyrics::lyrics::lyrics_from_lrc;
 pub use nori_lyrics::{formats, look, lrclib, lyrics, services};
 pub use nori_net::{api, transport};
 pub use nori_perf::perf_log;
@@ -79,8 +77,6 @@ pub struct Param {
     pub key: String,
     pub value: String,
 }
-
-// ---- wire shapes -----------------------------------------------------------
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
@@ -183,7 +179,6 @@ struct LyricsList {
     structured_lyrics: Vec<lyrics::Structured>,
 }
 
-
 #[derive(Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
 struct Folders {
@@ -269,59 +264,53 @@ fn parse(body: &[u8]) -> Result<Response> {
     Ok(r)
 }
 
-// ---- the object Kotlin holds -----------------------------------------------
-
-/// The core the app is using now, for a player's measurer that reads the core's queue and analyses
-/// (nori-engine's `Measurer::on_shelf`). The crates below find its database and downloads through
-/// `nori_db::active` and `transfers::held`.
+/// The newest core, for nori-engine and Android code that runs without a handle (the measurer).
+// Global: reached from JNI/engine callbacks with no core handle.
 static ACTIVE: Mutex<std::sync::Weak<Core>> = Mutex::new(std::sync::Weak::new());
 
-/// The core the app is using now, if there is one.
+/// The newest core, if alive.
 pub fn active() -> Option<Arc<Core>> {
     ACTIVE.lock().upgrade()
 }
 
 #[cfg_attr(feature = "ffi", derive(uniffi::Object))]
 pub struct Core {
-    /// Shared with nori-db's active database while this is the newest core ([`nori_db::active`]).
+    /// Also [`nori_db::active`] while this is the newest core.
     db: Arc<Mutex<Connection>>,
     server: RwLock<api::Server>,
-    /// The downloads table's ids, for asking about one song without the database (transfers.rs); shared
-    /// with nori-transfers' active downloads while this is the newest core.
+    /// Download ids in memory (transfers.rs); also the active one while this is the newest core.
     held: Arc<Mutex<transfers::Held>>,
-    /// This core's "For you" row (mixes/board.rs).
+    /// The "For you" row (mixes/board.rs).
     board: Mutex<mixes::board::Board>,
-    /// This session's star changes on this server (library.rs `star`), laid over its favourites.
+    /// This session's star changes, overlaid on the server's favourites.
     stars: Mutex<stars::StarMarks>,
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Core {
-    /// The app's database at `db_path` (empty: in memory), for `server`'s rows (a server profile's id).
+    /// Opens the database at `db_path` (empty: in memory) for server profile `server`, and makes this the
+    /// active core.
     #[cfg_attr(feature = "ffi", uniffi::constructor)]
     pub fn new(db_path: String, server: String) -> Result<Arc<Self>> {
         let db = db::open(&db_path, &server)?;
         nori_automix::beat_model::set_home(&db_path);
         let held = transfers::Held::load(&db)?;
         transfers::set_beats_wanted(transfers::beats_wanted_rows(&db)?);
-        let core =Arc::new(Core {
+        let core = Arc::new(Core {
             db: Arc::new(Mutex::new(db)),
             server: RwLock::new(api::Server::default()),
             held: Arc::new(Mutex::new(held)),
             board: Mutex::new(mixes::board::Board::default()),
             stars: Mutex::new(stars::StarMarks::default()),
         });
-        // The newest core is the one the app is using: the parts of the core that run without Kotlin (the
-        // transition planner on the audio thread, analyses finished in the background, a song asked
-        // about by a list row) find its database and its downloads through these.
         *ACTIVE.lock() = Arc::downgrade(&core);
         nori_db::set_active(&core.db);
         transfers::set_active_held(&core.held);
         Ok(core)
     }
 
-    /// Returns the normalised base url. Each server profile has its own rows, so the index is only
-    /// dropped when the same profile is pointed at a different server or user.
+    /// Sets the server; returns the normalised base url. Clears the library when the profile now points
+    /// at another server or user.
     pub fn configure(&self, config: ServerConfig) -> Result<String> {
         let auth = match (&config.api_key, config.legacy_auth) {
             (Some(k), _) if !k.is_empty() => api::Auth::ApiKey(k),
@@ -345,15 +334,13 @@ impl Core {
         self.server.read().url(&endpoint, &p)
     }
 
-    /// Signed url of `endpoint` with no parameters; callers that build many urls (cover art, per list row)
-    /// append `&id=..` themselves instead of crossing the FFI for each one.
+    /// Signed url of `endpoint` without parameters, for callers appending `&id=..` per row.
     pub fn url_prefix(&self, endpoint: String) -> String {
         self.server.read().url(&endpoint, &[])
     }
 
-    /// `max_bit_rate` 0 and empty `format` mean the original file. A transcode is an ffmpeg pipe
-    /// with no byte length, which the player reads as unseekable (dead scrub, frozen notification
-    /// progress); `estimateContentLength` makes the server declare duration x bitrate so seeks work.
+    /// `max_bit_rate` 0 and empty `format` mean the original file. Transcodes ask for
+    /// `estimateContentLength`: without a length the player cannot seek.
     pub fn stream_url(&self, id: String, max_bit_rate: u32, format: String) -> String {
         let transcode = max_bit_rate > 0 || !format.is_empty();
         let mut p = vec![("id".to_string(), id)];
@@ -377,10 +364,6 @@ impl Core {
         self.server.read().url("getCoverArt", &p)
     }
 
-    // ---- parsing; library items seen on the way are indexed ----
-
-    // ---- local index ----
-
     pub fn local_search(&self, query: String, limit: u32) -> Result<SearchResult> {
         Ok(db::search(&self.db.lock(), &query, limit)?)
     }
@@ -389,10 +372,6 @@ impl Core {
         let c = self.db.lock();
         Ok(IngestStats { artists: db::count(&c, db::ARTIST)?, albums: db::count(&c, db::ALBUM)?, songs: db::count(&c, db::SONG)? })
     }
-
-    // ---- response cache (stale-while-revalidate is driven from Kotlin) ----
-
-    // ---- play queue, survives process death ----
 
     pub fn save_queue(&self, queue: PlayQueue) -> Result<()> {
         self.save_queue_with_runs(queue, Vec::new())
@@ -405,27 +384,22 @@ impl Core {
             songs: Vec<Song>,
             index: u32,
             position: u64,
-            /// Read on its own, so an origin this version does not know loses only itself, not the queue.
+            /// Parsed separately so an unknown origin kind loses only the origin.
             origin: serde_json::Value,
-            /// Each song's album run (nori-player `Playlist::album_runs`); none in a queue saved before them.
+            /// Album run per song (`Playlist::album_runs`).
             runs: serde_json::Value,
         }
         let q: Q = db::kv_get(&self.db.lock(), "queue")?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
-        // A saved queue that points past its end plays its last song.
         let index = q.index.min(q.songs.len().saturating_sub(1) as u32);
-        // Kept for the queue it is about to become, so the platform does not hand the songs straight back.
         crate::queue::queue_register(q.songs.clone());
         let origin = serde_json::from_value::<Option<crate::PageOrigin>>(q.origin).ok().flatten();
-        // Its album runs, for the queue it is about to become (nori-queue `playlist_set` takes them).
         let runs = serde_json::from_value::<Vec<u32>>(q.runs).unwrap_or_default();
         crate::playlist::playlist_put_back_runs(q.songs.iter().map(|s| s.id.clone()).collect(), runs);
         Ok(PlayQueue { songs: q.songs, index, position_ms: q.position, origin })
     }
 
-    // ---- writes made while offline (stars, ratings, playlist edits, scrobbles), replayed in order ----
-
-    /// The "all songs" list: a sorted, optionally filtered page of the index. `sort` is one of
-    /// title, artist, album, year, duration, created, playCount, userRating; anything else means index order.
+    /// A sorted, filtered page of indexed songs. `sort`: title, artist, album, year, duration, created,
+    /// playCount or userRating; anything else is index order.
     pub fn browse_songs(&self, sort: String, descending: bool, starred_only: bool, year_from: u32, year_to: u32, offset: u32, limit: u32) -> Result<Vec<Song>> {
         let key = match sort.as_str() {
             "title" | "artist" | "album" => format!("json_extract(json, '$.{sort}') COLLATE NOCASE"),
@@ -451,9 +425,7 @@ impl Core {
         Ok(rows.iter().filter_map(|j| serde_json::from_str(j).ok()).collect())
     }
 
-    // ---- downloads: the metadata side; media3 owns the bytes. Songs are queued by transfers.rs ----
-
-    /// The ids alone of [`Self::downloads`], in the same order: for walking them without the songs.
+    /// The ids of [`Self::downloads`], same order.
     pub fn download_ids(&self, done: bool) -> Result<Vec<String>> {
         let c = self.db.lock();
         let mut st = c.prepare_cached("SELECT id FROM downloads WHERE server=sid() AND done=?1 ORDER BY ts DESC")?;
@@ -468,8 +440,6 @@ impl Core {
         Ok(rows.filter_map(|j| serde_json::from_str(&j.ok()?).ok()).collect())
     }
 
-    // ---- AutoEQ headphone database (kept by `Client::autoeq_update`, see profiles.rs) ----
-
     pub fn autoeq_search(&self, query: String, limit: u32) -> Result<Vec<AutoEqEntry>> {
         Ok(autoeq::search(&self.db.lock(), &query, limit)?)
     }
@@ -477,8 +447,6 @@ impl Core {
     pub fn autoeq_count(&self) -> Result<u32> {
         Ok(autoeq::count(&self.db.lock())?)
     }
-
-    // ---- saved sound profiles ----
 
     pub fn profiles(&self) -> Result<Vec<SoundProfile>> {
         let c = self.db.lock();
@@ -498,8 +466,6 @@ impl Core {
         Ok(())
     }
 
-    // ---- search history ----
-
     pub fn search_history(&self) -> Result<Vec<String>> {
         let c = self.db.lock();
         let mut st = c.prepare_cached("SELECT query FROM searches WHERE server=sid() ORDER BY ts DESC")?;
@@ -513,12 +479,10 @@ impl Core {
     }
 }
 
-/// Asked only in Rust, so not exported to Kotlin.
 impl Core {
-    /// [`Core::save_queue`], with each song's album run (nori-player `Playlist::album_runs`, one per song),
-    /// so a queue put back keeps which of its songs are an album played as one.
+    /// [`Core::save_queue`] with each song's album run (dropped unless one per song).
     pub(crate) fn save_queue_with_runs(&self, queue: PlayQueue, runs: Vec<u32>) -> Result<()> {
-        let runs = (runs.len() == queue.songs.len()).then_some(runs).unwrap_or_default();
+        let runs = if runs.len() == queue.songs.len() { runs } else { Vec::new() };
         let json = serde_json::json!({ "songs": queue.songs, "index": queue.index, "position": queue.position_ms, "origin": queue.origin, "runs": runs });
         Ok(db::kv_put(&self.db.lock(), "queue", &json.to_string())?)
     }
@@ -529,7 +493,7 @@ impl Core {
         *self.server.write() = next;
     }
 
-    /// getIndexes: the top of the folder tree.
+    /// getIndexes: the folder tree's top level.
     pub fn parse_indexes(&self, body: Vec<u8>) -> Result<Vec<Artist>> {
         Ok(parse(&body)?.indexes.unwrap_or_default().index.into_iter().flat_map(|i| i.artist).collect())
     }
@@ -568,11 +532,11 @@ impl Core {
         Ok(SearchResult { artists: f.artist, albums: f.album, songs: f.song })
     }
 
-    /// Library sync: index a search3 page without sending it back over the FFI.
+    /// Library sync: indexes a search3 page and returns its counts, not its items.
     pub fn ingest_search(&self, body: Vec<u8>) -> Result<IngestStats> {
         let f = parse(&body)?.search_result3.unwrap_or_default();
         let mut st = db::index(&mut self.db.lock(), &f.artist, &f.album, &f.song)?;
-        // Callers page until a page comes back empty, so report what was seen, not what changed.
+        // Counts seen, not changed: callers page until an empty page.
         st.artists = f.artist.len() as u32;
         st.albums = f.album.len() as u32;
         st.songs = f.song.len() as u32;
@@ -647,7 +611,7 @@ impl Core {
 
     pub fn parse_genres(&self, body: Vec<u8>) -> Result<Vec<Genre>> {
         let mut g = parse(&body)?.genres.unwrap_or_default().genre;
-        g.sort_by(|a, b| b.song_count.cmp(&a.song_count));
+        g.sort_by_key(|g| std::cmp::Reverse(g.song_count));
         Ok(g)
     }
 
@@ -655,7 +619,7 @@ impl Core {
         Ok(parse(&body)?.internet_radio_stations.unwrap_or_default().station)
     }
 
-    /// Synced lyrics win over plain ones; words are timed from the server's cues or estimated (see lyrics.rs).
+    /// Synced lyrics win over plain; word times from the server's cues or estimated (lyrics.rs).
     pub fn parse_lyrics(&self, body: Vec<u8>) -> Result<Lyrics> {
         Ok(lyrics::build(parse(&body)?.lyrics_list.unwrap_or_default().structured_lyrics))
     }
@@ -677,7 +641,7 @@ impl Core {
         Ok(st.query_row([key], |r| r.get(0)).optional()?)
     }
 
-    /// True when `key` was stored less than `max_age_ms` ago: the caller can skip asking the server again.
+    /// Whether `key` was stored less than `max_age_ms` ago.
     pub fn cache_fresh(&self, key: String, max_age_ms: i64) -> Result<bool> {
         let c = self.db.lock();
         let ts: Option<i64> = c.prepare_cached("SELECT ts FROM cache WHERE server=sid() AND key=?1")?.query_row([key], |r| r.get(0)).optional()?;
@@ -690,7 +654,7 @@ impl Core {
         Ok(())
     }
 
-    /// Drops cached responses whose key starts with `prefix` (after a write to the server).
+    /// Drops cached responses whose key starts with `prefix`.
     pub fn cache_evict(&self, prefix: String) -> Result<()> {
         let c = self.db.lock();
         c.execute("DELETE FROM cache WHERE server=sid() AND key >= ?1 AND key < ?1 || x'ff'", [prefix])?;
@@ -725,8 +689,7 @@ impl Core {
         self.download_settle(vec![id], vec![false])
     }
 
-    /// The curves measured for the headphones behind an output device's own name (a Bluetooth name, a USB
-    /// product name), best first; empty when the name says nothing or the index is not downloaded.
+    /// AutoEQ curves matching an output device name, best first.
     pub fn autoeq_for_device(&self, device: String, limit: u32) -> Result<Vec<AutoEqEntry>> {
         Ok(autoeq::matching(&self.db.lock(), &device, limit)?)
     }
@@ -738,8 +701,7 @@ impl Core {
         Ok(())
     }
 
-    /// Binds [output] to the profile [name] and to no other; None leaves it bound to nothing. One device has
-    /// one sound, whichever side of the settings it was chosen from.
+    /// Binds `output` to profile `name` only (None: unbinds it).
     pub fn profile_bind(&self, output: String, name: Option<String>) -> Result<()> {
         let mut c = self.db.lock();
         let tx = c.transaction()?;
@@ -762,9 +724,9 @@ impl Core {
         Ok(())
     }
 
-    /// The profile bound to [output], if any: what to apply when that device becomes the active one.
+    /// The profile bound to `output`, if any.
     pub fn profile_for_output(&self, output: String) -> Result<Option<SoundProfile>> {
-        Ok(self.profiles()?.into_iter().find(|p| p.outputs.iter().any(|o| *o == output)))
+        Ok(self.profiles()?.into_iter().find(|p| p.outputs.contains(&output)))
     }
 
     pub fn search_remember(&self, query: String) -> Result<()> {
@@ -775,10 +737,9 @@ impl Core {
     }
 }
 
-/// Only the tests settle one download this way; the app settles them in batches (`download_settle`).
 #[cfg(test)]
 impl Core {
-    /// A queued song finished; [downloads] with `done` lists it from now on.
+    /// Marks one queued download finished.
     pub fn download_done(&self, id: String) -> Result<()> {
         self.download_settle(vec![id], vec![true])
     }

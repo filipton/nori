@@ -1,13 +1,10 @@
-//! Lyrics that arrive as JSON: LyricsPlus, the answers of PaxSenix and BetterLyrics (whose Spotify and
-//! Musixmatch routes pass those services' own shapes through), Musixmatch's rich sync and subtitles,
-//! and the YouTube pages the YouTube-matched services need: a song search, the lyrics tab, the captions.
-//! As everywhere in these files, words are timed only where the source times them; a line a source
-//! timed as a whole stays a whole line.
+//! Lyrics that arrive as JSON: LyricsPlus, PaxSenix and BetterLyrics (passing Apple's, Spotify's and
+//! Musixmatch's shapes through), and YouTube Music's search, lyrics tab and captions.
 
 use nori_model::Lyrics;
 use serde_json::{Map, Value};
 
-use crate::formats::{append, decode_html, finish, from_netease, from_qrc, from_ttml, keep_backing, plain, timing, voices, Timed};
+use crate::formats::{append, decode_html, finish, from_netease, from_qrc, from_ttml, keep_backing, plain, timing, voices, Timed, Timing};
 
 /// A number written as a number or as a string of one; negative and non-finite ones are not times.
 fn number(v: &Value) -> Option<f64> {
@@ -44,9 +41,9 @@ fn text_of(v: &Value) -> Option<String> {
     }
 }
 
-/// Every object held under the key `name`, anywhere below `v`, in the order arrays list them.
+/// Every object held under the key `name`, anywhere below `v`, in order.
 fn objects<'a>(v: &'a Value, name: &str, out: &mut Vec<&'a Map<String, Value>>, depth: usize) {
-    // serde_json already refuses deeper nesting than 128 when parsing; this keeps the walk honest too.
+    // As deep as serde_json parses.
     if depth > 128 {
         return;
     }
@@ -73,7 +70,7 @@ fn all<'a>(v: &'a Value, name: &str) -> Vec<&'a Map<String, Value>> {
 }
 
 fn parse(json: &str) -> Option<Value> {
-    // Lyrics documents are kilobytes and a search page a megabyte or so; anything far beyond is not one.
+    // A search page is about a megabyte; far beyond is not an answer.
     if json.len() > 16 << 20 {
         return None;
     }
@@ -82,19 +79,18 @@ fn parse(json: &str) -> Option<Value> {
 
 // ---- syllables --------------------------------------------------------------------------------------
 
-/// A syllable or word as the JSON formats give one, before it is laid into its line.
+/// A syllable as the JSON formats give one.
 struct Syl<'a> {
     text: &'a str,
     start: Option<i64>,
     end: Option<i64>,
-    /// `part: true` runs on into the next syllable; `false` ends a word. Absent: the text's own spaces say.
+    /// `true` runs on into the next syllable, `false` ends a word; absent, the text's spaces say.
     part: Option<bool>,
     backing: bool,
 }
 
-/// Lays syllables into a line, backing vocals into `backing`, each timed when `timed`. A word ends where a
-/// syllable's text ends in a space; a source that writes no spaces but marks syllables that run on
-/// (`part`) has one put in after every syllable that does not.
+/// Lays syllables into a line (backing vocals into `backing`), timed when `timed`. A space goes after
+/// a word-ending (`part: false`) syllable when the text has none.
 fn lay(line: &mut Timed, backing: &mut Timed, syls: &[Syl], timed: bool) {
     for (k, s) in syls.iter().enumerate() {
         let target = if s.backing { &mut *backing } else { &mut *line };
@@ -109,10 +105,9 @@ fn lay(line: &mut Timed, backing: &mut Timed, syls: &[Syl], timed: bool) {
 
 // ---- LyricsPlus -------------------------------------------------------------------------------------
 
-/// LyricsPlus (the backend of the YouLy+ extension), `/v2/lyrics/get`: `{type, lyrics: [{time, duration,
-/// text, syllabus: [{time, duration, text, isBackground}]}]}`, in milliseconds. `type` says what the
-/// timing is: "Line" times lines only, whatever the syllabus holds. A line whose only syllable has no
-/// length is a line timed as a whole, not a one-word line. Backing vocals go at the end of their line.
+/// LyricsPlus' `/v2/lyrics/get`: `{type, lyrics: [{time, duration, text, syllabus: [{time, duration,
+/// text, isBackground}]}]}` in ms. `type` "Line" times lines only; a lone zero-length syllable is the
+/// line's own time.
 pub fn from_lyricsplus(json: &str) -> Lyrics {
     parse(json).and_then(|v| lyricsplus(&v)).unwrap_or_default()
 }
@@ -154,7 +149,7 @@ fn lyricsplus(v: &Value) -> Option<Lyrics> {
         line.agent = r.get("element").and_then(|e| e.get("singer")).and_then(Value::as_str).map(str::to_string);
         lines.push(line);
     }
-    // The singers LyricsPlus declares, `metadata.agents: {v1: {type: "person"}}`, for the duet sides.
+    // `metadata.agents: {v1: {type: "person"}}`, for the duet sides.
     let kinds: std::collections::HashMap<String, String> = v
         .get("metadata")
         .and_then(|m| m.get("agents"))
@@ -167,9 +162,8 @@ fn lyricsplus(v: &Value) -> Option<Lyrics> {
 
 // ---- PaxSenix's Apple Music JSON --------------------------------------------------------------------
 
-/// PaxSenix's own JSON for Apple Music lyrics: `{type, content: [{timestamp, endtime, text: [{text, part,
-/// timestamp, endtime}], backgroundText: [...]}]}`, in milliseconds. "Syllable" timing gives words, "Line"
-/// does not; a document whose lines all start at nought is not timed at all.
+/// PaxSenix's Apple Music JSON: `{type, content: [{timestamp, endtime, text: [{text, part, timestamp,
+/// endtime}], backgroundText}]}` in ms. "Line" gives no words; all lines at 0 is untimed.
 fn apple_json(v: &Value) -> Option<Lyrics> {
     let rows = v.get("content")?.as_array()?;
     if !rows.iter().any(|r| r.get("timestamp").is_some() && r.get("text").is_some_and(Value::is_array)) {
@@ -202,11 +196,11 @@ fn apple_json(v: &Value) -> Option<Lyrics> {
         let (mut line, mut backing) = (Timed::default(), Timed::default());
         let start = r.get("timestamp").and_then(ms).unwrap_or(0);
         let end = r.get("endtime").and_then(ms);
-        // One piece spanning the whole line is the line's own time, not a word's.
+        // One piece spanning the line is the line's time, not a word's.
         let whole = all.len() == 1 && all[0].start == Some(start) && (all[0].end == end || end.is_none());
         lay(&mut line, &mut backing, &all, !by_line && !untimed && !whole);
         keep_backing(&mut line, backing);
-        // PaxSenix says the side itself: a line sung from the other side of a duet is its "opposite turn".
+        // PaxSenix gives the duet side itself.
         line.voice = u8::from(r.get("oppositeTurn").and_then(Value::as_bool).unwrap_or(false));
         if untimed {
             text_only.push(line.text);
@@ -221,45 +215,57 @@ fn apple_json(v: &Value) -> Option<Lyrics> {
 
 // ---- Spotify, and PaxSenix's line format -------------------------------------------------------------
 
-/// Spotify's lyrics as its web player receives them (and as PaxSenix passes them on): `{lyrics: {syncType,
-/// lines: [{startTimeMs, words, endTimeMs}]}}`, the times as strings. Timed by line; a "♪" line is the
-/// gap between two, and ends the line before it.
+/// A line-timed line from `start`, or, for a blank or "♪" line, the end of the line before it.
+fn push_line(lines: &mut Vec<Timed>, start: i64, end: Option<i64>, text: &str) {
+    if text.chars().all(|c| c == '♪' || c.is_whitespace()) {
+        if let Some(prev) = lines.last_mut().filter(|p| p.end.is_none() && start > p.start) {
+            prev.end = Some(start);
+        }
+        return;
+    }
+    let mut line = Timed { start, end: end.filter(|e| *e > start), ..Default::default() };
+    append(&mut line, text.trim(), None);
+    lines.push(line);
+}
+
+/// The `words` of every row, untimed, when `syncType` says so.
+fn unsynced(o: &Value, rows: &[Value]) -> Option<Lyrics> {
+    let unsynced = o.get("syncType").and_then(Value::as_str).is_some_and(|s| s.eq_ignore_ascii_case("unsynced"));
+    unsynced.then(|| plain(&rows.iter().map(words).collect::<Vec<_>>().join("\n")))
+}
+
+fn words(r: &Value) -> &str {
+    r.get("words").and_then(Value::as_str).unwrap_or("").trim()
+}
+
+/// Spotify's lyrics (as PaxSenix passes them on): `{lyrics: {syncType, lines: [{startTimeMs, words,
+/// endTimeMs}]}}`, times as strings, timed by line.
 fn spotify(v: &Value) -> Option<Lyrics> {
     let o = v.get("lyrics").filter(|l| l.is_object()).unwrap_or(v);
     let rows = o.get("lines")?.as_array()?;
     if !rows.iter().any(|r| r.get("startTimeMs").is_some()) {
         return None;
     }
-    let words = |r: &Value| r.get("words").and_then(Value::as_str).unwrap_or("").trim().to_string();
-    if o.get("syncType").and_then(Value::as_str).is_some_and(|s| s.eq_ignore_ascii_case("unsynced")) {
-        return Some(plain(&rows.iter().map(words).collect::<Vec<_>>().join("\n")));
+    if let Some(l) = unsynced(o, rows) {
+        return Some(l);
     }
     let mut lines: Vec<Timed> = Vec::new();
     for r in rows {
-        let Some(start) = r.get("startTimeMs").and_then(ms) else { continue };
-        let text = words(r);
-        if text.is_empty() || text.chars().all(|c| c == '♪' || c.is_whitespace()) {
-            if let Some(prev) = lines.last_mut().filter(|p| p.end.is_none() && start > p.start) {
-                prev.end = Some(start);
-            }
-            continue;
+        if let Some(start) = r.get("startTimeMs").and_then(ms) {
+            push_line(&mut lines, start, r.get("endTimeMs").and_then(ms), words(r));
         }
-        let mut line = Timed { start, end: r.get("endTimeMs").and_then(ms).filter(|e| *e > start), ..Default::default() };
-        append(&mut line, &text, None);
-        lines.push(line);
     }
     Some(finish(lines))
 }
 
-/// PaxSenix's own line format for Musixmatch: `{syncType, lines: [{timeTag: "00:12.34", words}]}`.
+/// PaxSenix's line format for Musixmatch: `{syncType, lines: [{timeTag: "00:12.34", words}]}`.
 fn time_tags(v: &Value) -> Option<Lyrics> {
     let rows = v.get("lines")?.as_array()?;
     if !rows.iter().any(|r| r.get("timeTag").is_some()) {
         return None;
     }
-    let words = |r: &Value| r.get("words").and_then(Value::as_str).unwrap_or("").trim().to_string();
-    if v.get("syncType").and_then(Value::as_str).is_some_and(|s| s.eq_ignore_ascii_case("unsynced")) {
-        return Some(plain(&rows.iter().map(words).collect::<Vec<_>>().join("\n")));
+    if let Some(l) = unsynced(v, rows) {
+        return Some(l);
     }
     let lrc: String = rows
         .iter()
@@ -270,8 +276,8 @@ fn time_tags(v: &Value) -> Option<Lyrics> {
 
 // ---- Musixmatch -------------------------------------------------------------------------------------
 
-/// Musixmatch's rich sync body: `[{ts, te, l: [{c, o}], x}]`, a line from `ts` to `te` seconds and each
-/// of its pieces `o` seconds into it. Spaces are pieces of their own; a word runs until the next piece.
+/// Musixmatch's rich sync: `[{ts, te, l: [{c, o}], x}]`, a line from `ts` to `te` seconds, each piece
+/// (spaces included) `o` seconds in and running to the next.
 fn richsync(v: &Value) -> Option<Lyrics> {
     let rows = v.as_array()?;
     if !rows.iter().any(|r| r.get("ts").is_some() && r.get("l").is_some_and(Value::is_array)) {
@@ -299,32 +305,23 @@ fn richsync(v: &Value) -> Option<Lyrics> {
     Some(finish(lines))
 }
 
-/// Musixmatch's subtitle body in its own `mxm` format: `[{text, time: {total}}]`, a line from `total`
-/// seconds. An empty line is a gap and ends the one before it.
+/// Musixmatch's `mxm` subtitle body: `[{text, time: {total}}]`, a line from `total` seconds.
 fn subtitle(v: &Value) -> Option<Lyrics> {
     let rows = v.as_array()?;
+    let total = |r: &Value| r.get("time").and_then(|t| t.get("total")).and_then(secs);
     if !rows.iter().any(|r| r.get("time").and_then(|t| t.get("total")).is_some()) {
         return None;
     }
     let mut lines: Vec<Timed> = Vec::new();
     for r in rows {
-        let Some(start) = r.get("time").and_then(|t| t.get("total")).and_then(secs) else { continue };
-        let text = r.get("text").and_then(Value::as_str).unwrap_or("").trim();
-        if text.is_empty() || text.chars().all(|c| c == '♪' || c.is_whitespace()) {
-            if let Some(prev) = lines.last_mut().filter(|p| p.end.is_none() && start > p.start) {
-                prev.end = Some(start);
-            }
-            continue;
+        if let Some(start) = total(r) {
+            push_line(&mut lines, start, None, r.get("text").and_then(Value::as_str).unwrap_or(""));
         }
-        let mut line = Timed { start, ..Default::default() };
-        append(&mut line, text, None);
-        lines.push(line);
     }
     Some(finish(lines))
 }
 
-/// Musixmatch's plain lyrics without the notice it closes them with ("******* This Lyrics is NOT for
-/// Commercial use *******") and the number after it.
+/// Musixmatch's plain lyrics without its closing "******* This Lyrics is NOT for Commercial use" notice.
 fn without_notice(text: &str) -> String {
     let kept: Vec<&str> = text.lines().take_while(|l| !l.trim_start().starts_with("*******")).collect();
     kept.join("\n").trim_end().to_string()
@@ -332,8 +329,7 @@ fn without_notice(text: &str) -> String {
 
 // ---- any provider -----------------------------------------------------------------------------------
 
-/// Text that is not JSON: Apple-style TTML (escaped or not), QQ's QRC (bare or in its XML), NetEase-style
-/// karaoke lines, or LRC in any of its forms, plain text included.
+/// Text that is not JSON: TTML (escaped or not), QRC, YRC, or LRC (plain text included).
 fn from_text(raw: &str, title: &str) -> Lyrics {
     let unescaped;
     let mut t = raw.trim();
@@ -344,8 +340,7 @@ fn from_text(raw: &str, title: &str) -> Lyrics {
     if t.starts_with('<') {
         return if t.contains("LyricContent=") { from_qrc(t, title) } else { from_ttml(t) };
     }
-    // `[start,length]` lines: QRC puts each word's `(start,length)` after it, NetEase's YRC puts
-    // `(start,length,0)` before it.
+    // `[start,length]` lines: YRC leads each word with `(start,length,0)`, QRC follows it with `(start,length)`.
     let karaoke = t.lines().map(str::trim).find(|l| {
         l.strip_prefix('[').and_then(|r| r.split_once(']')).is_some_and(|(head, _)| {
             let nums: Vec<&str> = head.split(',').collect();
@@ -386,7 +381,7 @@ fn from_value(v: &Value, title: &str, depth: usize) -> Option<Lyrics> {
     }
     let mut best: Option<Lyrics> = None;
     let mut offer = |l: Lyrics| {
-        if timing(&l) > best.as_ref().map_or(0, timing) {
+        if timing(&l) > best.as_ref().map_or(Timing::Empty, timing) {
             best = Some(l);
         }
     };
@@ -427,11 +422,8 @@ fn from_value(v: &Value, title: &str, depth: usize) -> Option<Lyrics> {
     best
 }
 
-/// Whatever a lyrics service answered, read the best way it can be: the services that relay other
-/// catalogues (PaxSenix, BetterLyrics) pass their shapes through, sometimes wrapped in one or two JSON
-/// envelopes, and do not say which. Known shapes are read by their structure (LyricsPlus, PaxSenix's
-/// Apple JSON, Spotify's, Musixmatch's); otherwise the fields that carry lyrics are tried, TTML and
-/// QRC and LRC recognised by their text. Of everything found, the best timed wins.
+/// Any service's answer, whose shape relays (PaxSenix, BetterLyrics) do not name: known shapes by their
+/// structure, then the [`FIELDS`] (through JSON envelopes), text formats by their look. The best timed wins.
 pub fn from_provider(body: &str, title: &str) -> Lyrics {
     let t = body.trim_start_matches('\u{feff}').trim();
     if t.is_empty() || t.len() > 8 << 20 {
@@ -492,10 +484,9 @@ fn collect_tracks(v: &Value, out: &mut Vec<FoundTrack>, depth: usize) {
                     .or_else(|| details.get("artist").and_then(names))
                     .unwrap_or_default();
                 let key = ["durationInMillis", "durationMs", "duration_ms", "duration"].iter().find_map(|k| details.get(*k).and_then(ms)).unwrap_or(0);
-                // Seconds when small: nobody's song is ten seconds long in milliseconds.
+                // Under 10 000 is seconds.
                 let duration_ms = if key > 0 && key < 10_000 { key * 1000 } else { key };
                 out.push(FoundTrack { id, title, artist, duration_ms });
-                // A track's own album and artists are not more tracks.
                 return;
             }
             o.values().for_each(|x| collect_tracks(x, out, depth + 1));
@@ -505,9 +496,8 @@ fn collect_tracks(v: &Value, out: &mut Vec<FoundTrack>, depth: usize) {
     }
 }
 
-/// The tracks in a search answer whose shape is not fixed (PaxSenix's searches pass on the catalogue's
-/// own): any object with an id and a name, its artist and length where it has them, Apple's
-/// `attributes` included. A track's album and artists inside it are not listed as tracks.
+/// The tracks of a search answer of any shape: every object with an id and a name (Apple's `attributes`
+/// included), not descending into a track's own album and artists.
 pub fn found_tracks(json: &str) -> Vec<FoundTrack> {
     let mut out = Vec::new();
     if let Some(v) = parse(json) {
@@ -530,9 +520,8 @@ fn clock_ms(s: &str) -> Option<i64> {
 /// Words YouTube Music puts in a result's second line that are not an artist.
 const ROW_TYPES: &[&str] = &["song", "video", "single", "ep", "album", "episode", "podcast"];
 
-/// The songs in a YouTube Music search answer (the `search` endpoint with the songs filter), in its
-/// order: each row's video id, title, artists (the runs that link to an artist, or the first part of
-/// the second line) and length (the part of the second line that reads as one).
+/// The songs of a YouTube Music search, in order: video id, title, artists (runs linking to an artist,
+/// else the first part of the second line) and length.
 pub fn youtube_songs(json: &str) -> Vec<FoundTrack> {
     let Some(v) = parse(json) else { return Vec::new() };
     let mut out: Vec<FoundTrack> = Vec::new();
@@ -587,9 +576,7 @@ pub struct YoutubePage {
     pub params: Option<String>,
 }
 
-/// The lyrics tab of a `next` answer (what YouTube Music's player asks when a song starts): the tab
-/// titled "Lyrics", or failing that a page whose id is a lyrics page's (`MPLYt…`). None when the song
-/// has none, which YouTube shows as a tab that cannot be opened.
+/// The lyrics tab of a `next` answer: the tab titled "Lyrics", else a `MPLYt…` page; none without lyrics.
 pub fn youtube_lyrics_page(json: &str) -> Option<YoutubePage> {
     let v = parse(json)?;
     let page = |e: &Map<String, Value>| {
@@ -648,11 +635,8 @@ fn caption(text: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// A YouTube video's captions as lyrics, timed line by line: the transcript `get_transcript` answers
-/// (`transcriptCueRenderer` with `startOffsetMs` and `durationMs`, or the newer `transcriptSegmentRenderer`
-/// with `startMs` and `endMs`), or timed text in YouTube's `json3` (`events` with `tStartMs`,
-/// `dDurationMs` and `segs`). Captions that time each word of speech are still read a line at a time:
-/// they time the speech recogniser, not the singing.
+/// A YouTube video's captions, line-timed: `get_transcript`'s cues or segments, or `json3` events. Word
+/// offsets in captions time speech recognition, not singing, so they are not used.
 pub fn from_youtube_captions(json: &str) -> Lyrics {
     let Some(v) = parse(json) else { return Lyrics::default() };
     let mut cues: Vec<(i64, Option<i64>, String)> = Vec::new();

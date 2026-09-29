@@ -1,23 +1,18 @@
-//! A directory of a test's own, under the system's temp directory (`TMPDIR`), removed when the guard goes:
-//! at the end of the test, and when it panics too, as the unwinding drops it. For the crates' tests only
-//! (a dev-dependency). Left to themselves, the tests' directories filled a small `/tmp` until unrelated
-//! tests failed to write.
-//!
-//! The name is the test's prefix, the process, a count within the process and the time, so two tests of
-//! one binary, or two binaries run at once, never share one.
+//! `TempDir`: a unique test directory under the system temp directory, removed on drop (also on panic).
 
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// A directory that exists while this lives, and is removed with everything in it when it is dropped.
+/// A directory removed with its contents when dropped.
 #[derive(Debug)]
 pub struct TempDir(PathBuf);
 
 impl TempDir {
-    /// A new, empty directory named `nori-<prefix>-...`.
+    /// A new, empty directory named `nori-<prefix>-<pid>-<count>-<nanos>`.
     pub fn new(prefix: &str) -> TempDir {
+        // Global: a per-process counter keeps names unique across threads.
         static COUNT: AtomicU64 = AtomicU64::new(0);
         let n = COUNT.fetch_add(1, Ordering::Relaxed);
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
@@ -56,7 +51,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn each_is_its_own_and_goes_with_its_guard_even_through_a_panic() {
+    fn unique_and_removed_on_drop_and_panic() {
         let (a, b) = (TempDir::new("testdir"), TempDir::new("testdir"));
         assert_ne!(a.path(), b.path());
         std::fs::write(a.join("f"), b"x").unwrap();

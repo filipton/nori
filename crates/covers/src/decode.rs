@@ -1,17 +1,9 @@
-//! A cover's file (JPEG, PNG, WebP or GIF, told apart by its first bytes) decoded straight into the
-//! caller's pixels at the size they are drawn at, turned the way its EXIF says. A picture already that
-//! size is decoded into the caller's buffer with no copy in between; a JPEG at least twice the size is
-//! decoded at 1/2, 1/4 or 1/8 of it by the IDCT itself, which skips most of the work; anything else is
-//! decoded whole into a buffer the decoder keeps and filtered into place (scale.rs).
+//! Decodes JPEG, PNG, WebP and a GIF's first frame straight into the caller's pixels at the drawn size,
+//! applying EXIF orientation. Same-size pictures decode with no copy; JPEGs at least twice the size use
+//! the scaled IDCT (1/2, 1/4, 1/8); anything else is decoded whole and filtered (scale.rs).
 //!
-//! A GIF is its first frame: a cover is a still picture, and one that moved would be a timer on every
-//! screen that shows it. HEIF and AVIF are not decoded. The one pure-Rust HEVC decoder (the `heic`
-//! crate, 0.1.6) is AGPL-3.0 or a paid licence, which an MIT app cannot take; it also decodes a cover
-//! about 22 times slower than a JPEG of the same picture, gets alpha planes and 4:4:4 pictures wrong
-//! against libheif, and adds 313 KB to the arm64 library. AV1's (rav1d, without its assembly) adds about
-//! 1.5 MB and decodes a cover six times slower than a JPEG. Both for a format a Subsonic server does not
-//! send when it is asked for a size (it resizes to JPEG or PNG). Either is an [`Error::Unknown`], a cover
-//! with no picture.
+//! HEIF/AVIF are [`Error::Unknown`]: the only pure-Rust HEVC decoder is AGPL, AV1 (rav1d) adds ~1.5 MB
+//! and is 6x slower than JPEG, and a Subsonic server resizes covers to JPEG or PNG anyway.
 
 use std::fmt;
 use std::io::Cursor;
@@ -22,16 +14,12 @@ use zune_core::options::DecoderOptions;
 
 use crate::scale::{premultiply, Alpha, Scaler, Source, Target};
 
-/// The largest picture decoded, in pixels a side and in all: a cover is a few thousand pixels at most, and
-/// a file claiming more is broken or hostile. 4096² is 64 MB of RGBA on the worker decoding it, and each
-/// of a loader's workers may be decoding one.
+/// Size limits; larger files are broken or hostile. 4096² is 64 MB of RGBA per decoding worker.
 const MAX_SIDE: usize = 16384;
 const MAX_PIXELS: usize = 4096 * 4096;
-/// The longest side a picture asked for at its own size (0 x 0) is decoded to: past a phone's screen,
-/// and a large file shrunk to it is kept in a fraction of the memory it would take whole.
+/// Longest side for a picture requested at its own size (0 x 0).
 pub const WHOLE_SIDE: usize = 2048;
-/// A decoded picture's buffer above this many bytes (1448² RGBA) is given back after use rather than kept
-/// for the next: one huge cover should not hold its memory for the life of the decoder.
+/// Scratch buffers larger than this (1448² RGBA) are freed after use instead of kept.
 const KEEP: usize = 8 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,7 +30,7 @@ pub enum Format {
     Gif,
 }
 
-/// What a file is, from its first bytes.
+/// Sniffs the format from the magic bytes.
 pub fn format(bytes: &[u8]) -> Option<Format> {
     if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
         Some(Format::Jpeg)
@@ -57,28 +45,26 @@ pub fn format(bytes: &[u8]) -> Option<Format> {
     }
 }
 
-/// What a file's headers say before any of it is decoded: enough for a client to make the picture it
-/// decodes into at the right size first (an Android Bitmap).
+/// Header info, read without decoding, so a client can allocate the target (an Android Bitmap) first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Header {
     pub format: Format,
-    /// The picture's size as it is shown: turned, when its EXIF turns it a quarter.
+    /// Displayed size (swapped when EXIF rotates by 90°).
     pub width: usize,
     pub height: usize,
-    /// The EXIF orientation, 1 to 8 (1 as stored), which the decoder applies.
+    /// EXIF orientation 1..=8 (1: as stored); the decoder applies it.
     pub orientation: u8,
 }
 
 impl Header {
-    /// Whether the picture has no transparency, from its format alone: a JPEG. A client can keep it in
-    /// fewer bytes a pixel (Android's RGB_565) and draw it without blending.
+    /// True for JPEG (no alpha), so a client can use RGB_565 and skip blending.
     pub fn opaque(&self) -> bool {
         self.format == Format::Jpeg
     }
 
-    /// The size to decode to for a view `width` x `height`: that size, or the same shape smaller when the
-    /// picture has fewer pixels than it would fill (it is grown on screen, not in memory), or for 0 x 0
-    /// the picture's own size, shrunk in its shape to at most [`WHOLE_SIDE`] a side.
+    /// Decode size for a `width` x `height` view: that size, scaled down in the same aspect when the
+    /// picture is smaller (never upscaled in memory). For 0 x 0: the picture's own size capped at
+    /// [`WHOLE_SIDE`].
     pub fn fill(&self, width: usize, height: usize) -> (usize, usize) {
         if width == 0 || height == 0 {
             let k = (WHOLE_SIDE as f64 / self.width.max(self.height) as f64).min(1.0);
@@ -92,7 +78,7 @@ impl Header {
     }
 }
 
-/// A file's format, size and orientation from its headers: only the headers are read.
+/// Reads format, size and orientation from the headers only.
 pub fn header(bytes: &[u8]) -> Result<Header, Error> {
     let format = format(bytes).ok_or(Error::Unknown)?;
     let (width, height) = match format {
@@ -102,7 +88,7 @@ pub fn header(bytes: &[u8]) -> Result<Header, Error> {
             let info = z.info().ok_or_else(|| Error::Corrupt("no header".into()))?;
             (info.width as usize, info.height as usize)
         }
-        // IHDR is always the first chunk: width and height, big-endian, at 16 and 20.
+        // IHDR is always first: big-endian width and height at 16 and 20.
         Format::Png => {
             let be = |at: usize| bytes.get(at..at + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize);
             if bytes.get(12..16) != Some(b"IHDR") {
@@ -115,7 +101,7 @@ pub fn header(bytes: &[u8]) -> Result<Header, Error> {
             let (w, h) = d.dimensions();
             (w as usize, h as usize)
         }
-        // The logical screen: width and height, little-endian, at 6 and 8.
+        // Logical screen: little-endian width and height at 6 and 8.
         Format::Gif => {
             let le = |at: usize| bytes.get(at..at + 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]]) as usize);
             (le(6), le(8))
@@ -127,9 +113,7 @@ pub fn header(bytes: &[u8]) -> Result<Header, Error> {
     Ok(Header { format, width, height, orientation })
 }
 
-/// A file's EXIF orientation (1, as stored, when it says none), found by walking its container to the
-/// EXIF block: a JPEG's APP1 segments before the picture, a PNG's eXIf chunk before its data, a WebP's
-/// EXIF chunk. Nothing is decoded or copied. A GIF has none.
+/// EXIF orientation found by walking the container (JPEG APP1, PNG eXIf, WebP EXIF); 1 when absent.
 fn orientation_of(bytes: &[u8], format: Format) -> u8 {
     let tiff = match format {
         Format::Jpeg => jpeg_exif(bytes),
@@ -143,10 +127,8 @@ fn orientation_of(bytes: &[u8], format: Format) -> u8 {
     }
 }
 
-// The walkers below add lengths the file gives (up to 4 GB) to offsets into it with checked sums: on a
-// 32-bit phone a plain sum could wrap around to an offset back inside the file.
+// The walkers use checked adds: on 32-bit targets a 4 GB length could wrap back inside the file.
 
-/// `len` bytes of `bytes` from `at`, if the file holds them.
 fn span(bytes: &[u8], at: usize, len: usize) -> Option<&[u8]> {
     bytes.get(at..at.checked_add(len)?)
 }
@@ -154,17 +136,17 @@ fn span(bytes: &[u8], at: usize, len: usize) -> Option<&[u8]> {
 fn jpeg_exif(bytes: &[u8]) -> Option<&[u8]> {
     let mut at = 2usize;
     loop {
-        // A marker may be preceded by fill bytes.
+        // Skip fill bytes before a marker.
         while bytes.get(at.checked_add(1)?) == Some(&0xFF) {
             at += 1;
         }
         let [0xFF, marker] = *span(bytes, at, 2)? else { return None };
-        // The picture itself, or its end: no EXIF comes after.
+        // SOS or EOI: no EXIF after this.
         if marker == 0xDA || marker == 0xD9 {
             return None;
         }
         let len = u16::from_be_bytes(span(bytes, at + 2, 2)?.try_into().ok()?) as usize;
-        // The length counts its own two bytes.
+        // The length includes its own two bytes.
         let data = span(bytes, at + 4, len.saturating_sub(2))?;
         if marker == 0xE1 {
             if let Some(tiff) = data.strip_prefix(b"Exif\0\0") {
@@ -186,7 +168,6 @@ fn png_exif(bytes: &[u8]) -> Option<&[u8]> {
         if kind == b"eXIf" {
             return span(bytes, at + 8, len);
         }
-        // Length, kind, data and CRC.
         at = at.checked_add(len)?.checked_add(12)?;
     }
 }
@@ -200,13 +181,12 @@ fn webp_exif(bytes: &[u8]) -> Option<&[u8]> {
             let data = span(bytes, at + 8, len)?;
             return Some(data.strip_prefix(b"Exif\0\0").unwrap_or(data));
         }
-        // Chunks are padded to an even length.
+        // Chunks are padded to even length.
         at = at.checked_add(len)?.checked_add(8 + (len & 1))?;
     }
 }
 
-/// The EXIF orientation (1 to 8, 1 as stored) in a TIFF block, or 0 when there is none or it cannot be
-/// read: the Orientation tag (0x0112) of the first directory.
+/// Orientation tag (0x0112) of a TIFF block's first IFD, or 0 when missing or unreadable.
 fn orientation(tiff: &[u8]) -> u16 {
     let little = match tiff.get(..4) {
         Some(b"II*\0") => true,
@@ -222,8 +202,7 @@ fn orientation(tiff: &[u8]) -> u16 {
     };
     let Some(dir) = u32_at(4) else { return 0 };
     let Some(entries) = u16_at(dir) else { return 0 };
-    // A directory must lie in the block, so an entry's offset is below its length and the sums below
-    // cannot wrap.
+    // The whole IFD must lie in the block, so the offsets below cannot wrap.
     if dir.checked_add(2 + entries as usize * 12).is_none_or(|end| end > tiff.len()) {
         return 0;
     }
@@ -236,13 +215,13 @@ fn orientation(tiff: &[u8]) -> u16 {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
-    /// Not a JPEG, PNG, WebP or GIF file (a HEIF or AVIF one, say).
+    /// Not JPEG, PNG, WebP or GIF (e.g. HEIF, AVIF).
     Unknown,
-    /// Larger than any cover (`MAX_SIDE`, `MAX_PIXELS`).
+    /// Over `MAX_SIDE` or `MAX_PIXELS`.
     TooLarge,
-    /// The pixels given do not hold the size asked for.
+    /// The target buffer does not hold its stated size.
     Target,
-    /// The decoder's own words for what is wrong with the file.
+    /// Decoder error message.
     Corrupt(String),
 }
 
@@ -273,15 +252,13 @@ fn check(width: usize, height: usize) -> Result<(), Error> {
     }
 }
 
-/// How far a JPEG's IDCT may shrink a `width` x `height` picture that is to fill `tw` x `th`: 8, 4, 2 or
-/// 1 (not at all), the most that still leaves at least the pixels drawn.
+/// Largest IDCT reduction (8, 4, 2 or 1) that still leaves at least `tw` x `th` pixels to fill.
 fn reduction(width: usize, height: usize, tw: usize, th: usize) -> usize {
     let s = (width as f64 / tw as f64).min(height as f64 / th as f64);
     [8, 4, 2].into_iter().find(|&k| s >= k as f64).unwrap_or(1)
 }
 
-/// `len` bytes of a kept buffer, grown to hold exactly them: grown by doubling, it would be kept at up to
-/// twice the largest picture decoded.
+/// Grows `v` to exactly `len` (no doubling, so it is not kept at twice the largest picture).
 fn grow(v: &mut Vec<u8>, len: usize) -> &mut [u8] {
     if v.len() < len {
         v.reserve_exact(len - v.len());
@@ -290,10 +267,10 @@ fn grow(v: &mut Vec<u8>, len: usize) -> &mut [u8] {
     &mut v[..len]
 }
 
-/// A decoder with the buffers it keeps between pictures: one per thread that decodes.
+/// Decoder with reusable scratch buffers; one per decoding thread.
 pub struct Decoder {
     src: Vec<u8>,
-    /// A turned picture as it is stored, before it is turned into the caller's pixels.
+    /// Unrotated pixels of an EXIF-oriented picture.
     unturned: Vec<u8>,
     scaler: Scaler,
     idct_scaling: bool,
@@ -310,17 +287,14 @@ impl Decoder {
         Decoder::default()
     }
 
-    /// Whether a JPEG at least twice the size drawn is shrunk by jpeg-decoder's IDCT (the default) or
-    /// decoded whole by zune-jpeg and averaged. The IDCT is a third faster on a desktop and its pictures
-    /// differ from the exact average about as much as libjpeg-turbo's scaled decode (Android's
-    /// `inSampleSize`) does, with sharper errors at strong colour edges; decoded whole, the average is
-    /// exact. Android's `coverbench` measures both on the phone.
+    /// Whether large JPEGs are shrunk by jpeg-decoder's scaled IDCT (default: about a third faster,
+    /// accuracy like libjpeg-turbo's `inSampleSize`) or decoded whole by zune-jpeg and averaged (exact).
+    /// Android's `coverbench` compares both.
     pub fn set_idct_scaling(&mut self, on: bool) {
         self.idct_scaling = on;
     }
 
-    /// Decodes the file `bytes` into `t`, filling it (the middle kept when the shapes differ), turned
-    /// the way its EXIF says.
+    /// Decodes `bytes` into `t`, center-cropped and EXIF-oriented.
     pub fn decode_into(&mut self, bytes: &[u8], mut t: Target, alpha: Alpha) -> Result<(), Error> {
         if !t.fits() {
             return Err(Error::Target);
@@ -337,7 +311,7 @@ impl Decoder {
         r
     }
 
-    /// The picture as it is stored, into `t`.
+    /// Decodes without applying orientation.
     fn stored(&mut self, bytes: &[u8], format: Format, t: &mut Target, alpha: Alpha) -> Result<(), Error> {
         match format {
             Format::Jpeg => self.jpeg(bytes, t),
@@ -347,8 +321,7 @@ impl Decoder {
         }
     }
 
-    /// A picture its EXIF turns or mirrors: decoded as it is stored, filling `t`'s size turned back
-    /// (the middle of the stored picture is the middle of the turned one), then turned into `t`.
+    /// Decodes at `t`'s size un-rotated, then orients into `t`.
     fn turned(&mut self, bytes: &[u8], format: Format, turn: u8, t: &mut Target, alpha: Alpha) -> Result<(), Error> {
         let (w, h) = if turn >= 5 { (t.height, t.width) } else { (t.width, t.height) };
         let mut stored = std::mem::take(&mut self.unturned);
@@ -383,8 +356,8 @@ impl Decoder {
             return Ok(());
         }
         if t.takes(w, h) {
-            // RGBA straight into the target. The output colour space is fixed once headers are read, so
-            // this is a second decoder; its headers are a few hundred bytes to parse again.
+            // Decode RGBA straight into the target. The colour space is fixed after headers are read,
+            // so this needs a second decoder (cheap: headers only).
             let mut z = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(bytes), options.jpeg_set_out_colorspace(ColorSpace::RGBA));
             return z.decode_into(&mut t.px[..w * h * 4]).map_err(corrupt);
         }
@@ -394,9 +367,8 @@ impl Decoder {
         Ok(())
     }
 
-    /// A JPEG decoded at a fraction of its size by jpeg-decoder's scaled IDCT, then filtered the rest of
-    /// the way. False (and nothing written) for a JPEG it does not decode to grey or RGB, CMYK: zune-jpeg
-    /// takes those whole.
+    /// Decodes at reduced size via the scaled IDCT, then filters into `t`. Returns false (nothing
+    /// written) for pixel formats other than grey or RGB (e.g. CMYK), which zune-jpeg handles.
     fn jpeg_reduced(&mut self, bytes: &[u8], w: usize, h: usize, t: &mut Target) -> Result<bool, Error> {
         let mut d = jpeg_decoder::Decoder::new(bytes);
         let (w, h) = d.scale(w as u16, h as u16).map_err(corrupt)?;
@@ -417,7 +389,7 @@ impl Decoder {
 
     fn png(&mut self, bytes: &[u8], t: &mut Target, alpha: Alpha) -> Result<(), Error> {
         let mut d = png::Decoder::new(Cursor::new(bytes));
-        // Palettes, low bit depths and tRNS to 8-bit grey, grey and alpha, RGB or RGBA.
+        // Expand palettes, low bit depths and tRNS to 8-bit grey, grey+alpha, RGB or RGBA.
         d.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
         let mut r = d.read_info().map_err(corrupt)?;
         let (w, h) = (r.info().width as usize, r.info().height as usize);
@@ -437,14 +409,12 @@ impl Decoder {
         Ok(())
     }
 
-    /// The first frame as it is shown on the screen the file describes: at its place, with whatever of
-    /// the screen it leaves uncovered transparent.
+    /// First frame composited onto the logical screen (uncovered area transparent).
     fn gif(&mut self, bytes: &[u8], t: &mut Target, alpha: Alpha) -> Result<(), Error> {
         let mut o = gif::DecodeOptions::new();
         o.set_color_output(gif::ColorOutput::RGBA);
         o.set_memory_limit(gif::MemoryLimit::Bytes(std::num::NonZeroU64::new((MAX_PIXELS * 4) as u64).expect("not zero")));
-        // A frame that does not lie on the screen is refused while its descriptor is read, before any of
-        // it is decoded or anything is made for it.
+        // Rejects off-screen frames while reading the descriptor, before allocating.
         o.check_frame_consistency(true);
         let mut d = o.read_info(bytes).map_err(corrupt)?;
         let (w, h) = (d.width() as usize, d.height() as usize);
@@ -453,8 +423,7 @@ impl Decoder {
             let f = d.next_frame_info().map_err(corrupt)?.ok_or_else(|| Error::Corrupt("no frame".into()))?;
             (f.left as usize, f.top as usize, f.width as usize, f.height as usize)
         };
-        // The frame is sized on its own, before anything is made for it: a 1x1 screen may carry a
-        // 65535x65535 frame, 17 GB of RGBA.
+        // Check the frame on its own: a 1x1 screen may carry a 65535x65535 frame.
         check(fw, fh)?;
         if left + fw > w || top + fh > h {
             return Err(Error::Corrupt("frame off the screen".into()));
@@ -464,7 +433,7 @@ impl Decoder {
             return Err(Error::Corrupt("frame size".into()));
         }
         let whole = (left, top, fw, fh) == (0, 0, w, h);
-        // The screen, and after it (for a frame smaller than the screen) the frame.
+        // Screen buffer, followed by the frame buffer when the frame is smaller.
         let src = grow(&mut self.src, w * h * 4 + if whole { 0 } else { len });
         let (screen, frame) = src.split_at_mut(w * h * 4);
         if whole {
@@ -472,7 +441,6 @@ impl Decoder {
         } else {
             screen.fill(0);
             d.read_into_buffer(frame).map_err(corrupt)?;
-            // The frame lies wholly on the screen (checked above).
             for y in 0..fh {
                 screen[((top + y) * w + left) * 4..][..fw * 4].copy_from_slice(&frame[y * fw * 4..][..fw * 4]);
             }
@@ -502,9 +470,8 @@ impl Decoder {
     }
 }
 
-/// `src`, `w` x `h` tight RGBA rows as stored, into `t` as EXIF orientation `turn` (2 to 8) shows them: 2
-/// mirrored, 3 turned half way, 4 flipped, 5 mirrored across the diagonal, 6 turned a quarter clockwise,
-/// 7 mirrored across the other diagonal, 8 turned a quarter anticlockwise. `t` is `h` x `w` for 5 to 8.
+/// Writes tight `w` x `h` RGBA `src` into `t` with EXIF orientation `turn` (2..=8) applied; `t` is
+/// `h` x `w` for 5..=8.
 fn orient(src: &[u8], w: usize, h: usize, turn: u8, t: &mut Target) {
     let px = |x: usize, y: usize| -> [u8; 4] { src[(y * w + x) * 4..][..4].try_into().expect("four bytes") };
     for y in 0..t.height {
@@ -529,7 +496,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn files_are_told_apart_by_their_first_bytes() {
+    fn format_from_magic_bytes() {
         assert_eq!(format(&[0xFF, 0xD8, 0xFF, 0xE0]), Some(Format::Jpeg));
         assert_eq!(format(b"\x89PNG\r\n\x1a\n...."), Some(Format::Png));
         assert_eq!(format(b"RIFF\0\0\0\0WEBPVP8 "), Some(Format::WebP));
@@ -539,7 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn a_header_is_read_without_decoding_the_picture() {
+    fn header_reads_size_and_limits() {
         let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
         png.extend_from_slice(&600u32.to_be_bytes());
         png.extend_from_slice(&400u32.to_be_bytes());
@@ -559,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn a_view_is_filled_at_its_size_or_smaller_in_its_shape_never_grown() {
+    fn fill_size_never_upscales() {
         let h = Header { format: Format::Jpeg, width: 320, height: 320, orientation: 1 };
         assert_eq!(h.fill(138, 138), (138, 138));
         assert_eq!(h.fill(900, 900), (320, 320));
@@ -574,23 +541,23 @@ mod tests {
     }
 
     #[test]
-    fn the_exif_orientation_is_read_in_either_byte_order() {
-        // One directory at 8 with one entry: tag 0x0112, type SHORT, count 1, value 6 (turned right).
+    fn exif_orientation_both_byte_orders() {
+        // IFD at 8 with one entry: tag 0x0112, SHORT, count 1, value 6.
         let le = b"II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0";
         let be = b"MM\0*\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01\0\x06\0\0";
         assert_eq!(orientation(le), 6);
         assert_eq!(orientation(be), 6);
         assert_eq!(orientation(&le[..16]), 0, "cut short");
         assert_eq!(orientation(b"nope"), 0);
-        // A directory claimed at the end of the address space, and one claiming more entries than fit.
+        // IFD offset near u32::MAX, and an entry count that overruns.
         assert_eq!(orientation(b"II*\0\xF0\xFF\xFF\xFF\x01\0"), 0);
         assert_eq!(orientation(b"II*\0\x08\0\0\0\xFF\xFF\x12\x01\x03\0\x01\0\0\0\x06\0\0\0"), 0);
     }
 
     #[test]
-    fn lengths_that_run_past_the_file_or_the_address_space_end_the_walk() {
+    fn exif_walk_stops_on_overflowing_lengths() {
         let huge = u32::MAX.to_be_bytes();
-        // A PNG chunk 4 GB long before an eXIf one, and an eXIf chunk that long.
+        // 4 GB PNG chunk before an eXIf one, and a 4 GB eXIf chunk.
         let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
         png.extend_from_slice(&huge);
         png.extend_from_slice(b"tEXt\0\0\0\0eXIf");
@@ -599,7 +566,7 @@ mod tests {
         png.extend_from_slice(&huge);
         png.extend_from_slice(b"eXIfII*\0");
         assert_eq!(png_exif(&png), None);
-        // The same in a WebP, little-endian.
+        // Same for WebP.
         let mut webp = b"RIFF\0\0\0\0WEBPVP8X".to_vec();
         webp.extend_from_slice(&u32::MAX.to_le_bytes());
         webp.extend_from_slice(b"EXIF\x04\0\0\0II*\0");
@@ -607,12 +574,12 @@ mod tests {
         let mut webp = b"RIFF\0\0\0\0WEBPEXIF".to_vec();
         webp.extend_from_slice(&u32::MAX.to_le_bytes());
         assert_eq!(webp_exif(&webp), None);
-        // A JPEG segment whose length runs past the end, and one too short to count itself.
+        // JPEG segment running past the end, and one shorter than its length field.
         assert_eq!(jpeg_exif(b"\xFF\xD8\xFF\xE1\xFF\xFFExif\0\0"), None);
         assert_eq!(jpeg_exif(b"\xFF\xD8\xFF\xE1\0\0\xFF\xD9"), None);
-        // Fill bytes up to the end of the file.
+        // Fill bytes up to EOF.
         assert_eq!(jpeg_exif(b"\xFF\xD8\xFF\xFF\xFF"), None);
-        // What they should find, they still find.
+        // Valid blocks are still found.
         let mut jpeg = b"\xFF\xD8\xFF\xE1\0\x0cExif\0\0II*\0".to_vec();
         jpeg.extend_from_slice(b"\xFF\xDA");
         assert_eq!(jpeg_exif(&jpeg), Some(&b"II*\0"[..]));
@@ -622,19 +589,18 @@ mod tests {
     }
 
     #[test]
-    fn the_idct_shrinks_as_far_as_still_leaves_every_pixel_drawn() {
+    fn idct_reduction_keeps_enough_pixels() {
         assert_eq!(reduction(800, 800, 300, 300), 2);
         assert_eq!(reduction(800, 800, 400, 400), 2);
         assert_eq!(reduction(800, 800, 401, 401), 1);
         assert_eq!(reduction(3000, 3000, 300, 300), 8);
         assert_eq!(reduction(1600, 1600, 300, 300), 4);
-        // A wide picture fills by its height.
         assert_eq!(reduction(2400, 600, 300, 300), 2);
         assert_eq!(reduction(320, 320, 1080, 1080), 1);
     }
 
     #[test]
-    fn a_target_that_does_not_hold_its_size_is_refused() {
+    fn undersized_target_is_refused() {
         let mut px = [0u8; 15];
         let t = Target { px: &mut px, width: 2, height: 2, stride: 8 };
         assert_eq!(Decoder::new().decode_into(&[0xFF, 0xD8, 0xFF], t, Alpha::Straight), Err(Error::Target));

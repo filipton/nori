@@ -1,6 +1,4 @@
-//! What the client asks of the server, as plain values: the parts of a server profile it acts on, the
-//! endpoints that take the music folder, every change the app sends and the stored answers each one makes
-//! stale, and a library walk's step. The client itself, which holds the core, is the core's (client.rs).
+//! Client request values: the server profile, writes and the cached answers each makes stale.
 
 use nori_model::IngestStats;
 
@@ -11,15 +9,14 @@ pub type NetResult<T> = std::result::Result<T, NetError>;
 /// The endpoints that take `musicFolderId`.
 pub const FOLDERED: [&str; 7] = ["getAlbumList2", "getArtists", "search3", "getRandomSongs", "getStarred2", "getSongsByGenre", "getIndexes"];
 
-/// The parts of a server profile the client acts on. The rest (headers, certificates, Wi-Fi only) are the
-/// platform's HTTP client's business.
+/// The parts of a server profile the client uses; headers, certificates and Wi-Fi only are the platform's.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct NetProfile {
     pub url: String,
-    /// A second address of the same server (typically the public one); tried when `url` does not answer.
+    /// A second address of the same server, tried when `url` does not answer.
     pub alt_url: String,
-    /// Browsing and search are restricted to this music folder; empty means all.
+    /// Restricts browsing and search to this music folder; empty means all.
     pub music_folder_id: String,
     /// Bitrate ceiling while connected through `alt_url`; 0 means none.
     pub alt_max_bit_rate: u32,
@@ -76,12 +73,11 @@ pub enum Write {
     SaveQueue { ids: Vec<String>, current: Option<String>, position_ms: i64 },
 }
 
-/// What a star change makes stale. The favourite albums shelf on the home page is an album list like any
-/// other, so the stored answer for that one list has to go as well; the prefix stops short of the size
-/// and the offset, and leaves the newest, recent and frequent lists alone.
+/// Cached answers a star change makes stale, as key prefixes. The starred album list prefix leaves the
+/// other album lists cached.
 const STAR_STALE: [&str; 5] = ["getStarred2", "getAlbum", "getArtist", "getPlaylist", "getAlbumList2&type=starred"];
 
-/// The endpoint, parameters and stale stored answers of one change.
+/// The endpoint, parameters and stale cache prefixes of a write.
 pub fn request(w: Write) -> (&'static str, Vec<(String, String)>, &'static [&'static str]) {
     let one = |k: &str, v: String| vec![(k.to_string(), v)];
     let many = |k: &str, ids: Vec<String>| ids.into_iter().map(|v| (k.to_string(), v)).collect::<Vec<_>>();
@@ -128,7 +124,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn write_parameters_keep_their_order() {
+    fn write_requests() {
         let (_, p, s) = request(Write::SaveQueue { ids: vec!["a".into(), "b".into()], current: None, position_ms: 7 });
         assert_eq!(p, pairs(&[("id", "a".into()), ("id", "b".into()), ("position", "7".into())]));
         assert!(s.is_empty());

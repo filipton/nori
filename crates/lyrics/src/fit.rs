@@ -1,29 +1,25 @@
-//! Whether an answer can be this song's lyrics at all, and whether a second answer is the same song's
-//! words as the one shown. The services match on title, artist and length, some of them loosely on their
-//! own side, and a service that fell back to another song answers with that song's words as if they were
-//! these: a few lines of something else, repeated, took the place of the right lyrics while they were
-//! being read. These are the checks every answer passes before it is shown or kept.
+//! Whether an answer can be this song's lyrics at all, and whether two answers are the same words:
+//! a loose service answers with another song's words as if they were these.
 
 use std::collections::HashSet;
 
 use nori_model::{Lyrics, Song};
 
-/// Timed lyrics may run this far past the song's end (a longer cut, a late last line) and still be its.
+/// Timed lyrics may run this far past the song's end and still be its.
 const PAST_END_MS: i64 = 10_000;
 /// Fewer distinct lines than this is a fragment, not a song's lyrics...
 const FEWEST_LINES: usize = 4;
-/// ...unless they are timed across at least this share of the song: a song that is one line sung over
-/// and over (a chant, a dance track) is still sung all the way through.
+/// ...unless timed across at least this share of the song (a chant repeating one line).
 const SPREAD_SHARE: f64 = 0.5;
 /// Two sets of lyrics are the same song's when each has at least this share of its words in the other.
 const SHARED_WORDS: f64 = 0.5;
 
-/// A line's text as it is compared: lower case, letters and digits only, one space between words.
+/// Text as it is compared: lower case, letters, digits and the marks on them, one space between words.
 pub(crate) fn norm(v: &str) -> String {
     let mut out = String::with_capacity(v.len());
     let mut gap = false;
     for c in v.chars().flat_map(char::to_lowercase) {
-        if c.is_alphanumeric() {
+        if c.is_alphanumeric() || matches!(c, '\u{300}'..='\u{36f}' | '\u{3099}'..='\u{309a}') {
             if gap && !out.is_empty() {
                 out.push(' ');
             }
@@ -56,8 +52,8 @@ fn words(l: &Lyrics) -> HashSet<String> {
     out
 }
 
-/// Whether `l` can be `song`'s lyrics: some words, timed lines that do not run on past the song's end,
-/// and more than a fragment of a few lines (repeated or not) unless they are sung across the song.
+/// Whether `l` can be `song`'s lyrics: some words, no line past the song's end, and more than a
+/// fragment unless sung across the song.
 pub fn plausible(l: &Lyrics, song: &Song) -> bool {
     let texts: HashSet<String> = l.lines.iter().map(|x| norm(&x.text)).filter(|t| !t.is_empty()).collect();
     if texts.is_empty() {
@@ -75,9 +71,7 @@ pub fn plausible(l: &Lyrics, song: &Song) -> bool {
     song_ms > 0 && (last - first) as f64 >= song_ms as f64 * SPREAD_SHARE
 }
 
-/// Whether `a` and `b` are the same song's words: each has at least half its words in the other. The
-/// same song from two services is written a little differently (a backing vocal, a spelling), never
-/// half different.
+/// Whether `a` and `b` are the same song's words: each has at least half its words in the other.
 pub fn agree(a: &Lyrics, b: &Lyrics) -> bool {
     let (x, y) = (words(a), words(b));
     if x.is_empty() || y.is_empty() {
@@ -116,7 +110,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn three_lines_repeated_are_not_a_songs_lyrics() {
+    fn repeated_fragment_is_implausible() {
         let junk: Vec<(i64, &str)> = (0..6).map(|i| (5_000 + i * 4_000, ["Pour another glass", "The whisky's on the table", "Drink until the morning"][i as usize % 3])).collect();
         assert!(!plausible(&timed(&junk, true), &song()), "three lines over thirty seconds of a three-minute song");
         assert!(plausible(&song_words(false), &song()));
@@ -127,7 +121,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn lines_timed_past_the_songs_end_are_another_songs() {
+    fn lines_past_end_are_implausible() {
         let mut long = song_words(true);
         long.lines.push(LyricLine { start_ms: 260_000, text: "a longer song".into(), ..Default::default() });
         assert!(!plausible(&long, &song()));
@@ -135,7 +129,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_same_song_from_two_services_agrees_and_another_does_not() {
+    fn agree_same_song_only() {
         let lines = song_words(false);
         let mut words = song_words(true);
         words.lines[0].text = "Paper boats drift down the harbor (ooh)".into();

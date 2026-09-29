@@ -1,26 +1,10 @@
-//! Neural beat and downbeat tracking, optional: Beat This! (Foscarin, Schlüter and Widmer, ISMIR 2024; code and
-//! weights MIT) run through tract, a pure-Rust ONNX runtime. Only built with the `neural-beats` cargo feature;
-//! nori-engine's measurer runs it through `beats`, and docs/research/analysis.md says what it costs.
+//! Beat This! (Foscarin, Schlüter and Widmer, ISMIR 2024; MIT) through tract, behind `neural-beats`: the model's
+//! log-mel input as trained (torchaudio settings), one pass over a 30 s window padded by its border, the paper's
+//! minimal peak picking, and a grid fitted to the result.
 //!
-//! What is here: the model's input exactly as it was trained on (torchaudio's log-mel: 22.05 kHz, 1024-point
-//! periodic Hann, hop 441 = 50 frames/s, 128 Slaney mel bands 30 Hz-11 kHz, magnitudes over sqrt(1024),
-//! log(1 + 1000 x)); the model run over one 30 s window (`WINDOW` frames, the length it was trained on) in one pass,
-//! with the 6 frames at each edge it was not trained to answer for padded with silence, as the authors' own
-//! inference splits a song (`chunk_starts`); the paper's "minimal" peak picking; and a beat grid for AutoMix fitted
-//! to what it finds. AutoMix only mixes over the first and last half minute of a song, so two windows per song are
-//! the whole cost.
-//!
-//! Memory: the model's attention compares every frame with every other, for 32 frequency rows at once. Spelled out
-//! as the ONNX exporter writes it (MatMul, Softmax, MatMul), tract holds each of those score matrices whole, 288 MB
-//! apiece at 30 s, and a window peaked at 700 MB. The app's graph has each attention as one ONNX `Attention` node
-//! instead (tools/beat-this/export.py; weights.rs fills it), which tract runs as flash attention, a block at a time:
-//! the same logits (within 1e-5) with about 100 MB held. Shorter chunks would also have cut the memory, but cost
-//! the model its context: its beats agreed less with the full model's (docs/research/analysis.md, section 7).
-//! Flash attention is kept on the calling thread (`TRACT_FLASH_SDPA_ST`), so the model never spreads over a pool.
-//! Measured on the host (tests/neural_memory.rs): the model holds 7.4 MB loaded, a song's two windows 65 MB more
-//! while they run whatever the song's length, and the song's decode 7-9 MB (its ends and the classical analyser; the
-//! song is never whole in memory). All of the run's memory is free again after it; nori-engine's measurer then hands
-//! it back to the system and runs one song's windows at a time in the whole process.
+//! The app's graph expresses attention as ONNX `Attention` nodes (tools/beat-this/export.py), which tract runs as
+//! flash attention: about 100 MB held instead of 700 MB for MatMul/Softmax/MatMul. It runs on the calling thread
+//! (`TRACT_FLASH_SDPA_ST`). Costs: docs/research/analysis.md, tests/neural_memory.rs.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -33,18 +17,18 @@ use super::tempo;
 
 pub const MELS: usize = 128;
 pub const FPS: f64 = 50.0;
-/// The stretch of a song's end read at once: 30 s, the length the model was trained on and a mix plays over.
+/// Frames read at once: 30 s, the model's training length.
 pub const WINDOW: usize = 1500;
 /// Frames at each edge of a chunk the model was not trained to answer for.
 pub const BORDER: usize = 6;
-/// Frames the model sees at a time: a whole window and a border of silence either side, so a window is one pass.
+/// Frames per model run: a window plus a border of silence either side.
 pub const CHUNK: usize = WINDOW + 2 * BORDER;
 const MODEL_RATE: f64 = 22050.0;
 const F_MIN: f64 = 30.0;
 const F_MAX: f64 = 11000.0;
 
 fn hz_to_mel(f: f64) -> f64 {
-    // Slaney: linear below 1 kHz, logarithmic above.
+    // Slaney mel.
     let f_sp = 200.0 / 3.0;
     if f >= 1000.0 {
         1000.0 / f_sp + (f / 1000.0).ln() / (6.4f64.ln() / 27.0)
@@ -63,9 +47,8 @@ fn mel_to_hz(m: f64) -> f64 {
     }
 }
 
-/// torchaudio's `MelSpectrogram` with Beat This!'s settings, at the model's rate or near it: the FFT length and hop
-/// scale with the rate so a frame still covers 46 ms and the frames still come 50 a second. (The analyser halves
-/// 48 kHz to 24 kHz, not to 22.05; the filters are placed in hertz, so the model sees the same bands.)
+/// torchaudio's `MelSpectrogram` with Beat This!'s settings; FFT length and hop scale with the rate (near 22 kHz)
+/// so frames stay 46 ms long, 50 a second.
 pub struct LogMel {
     n_fft: usize,
     hop: usize,
@@ -104,8 +87,7 @@ impl LogMel {
         LogMel { n_fft, hop, fft, window, filters, norm: 1.0 / (n_fft as f32).sqrt() }
     }
 
-    /// Frames of mono `x`, centred as torch.stft(center=True) does: frame `k` at sample `k * hop`, the signal
-    /// mirrored at both ends.
+    /// Frames of mono `x`, centred as torch.stft(center=True): frame `k` at sample `k * hop`, ends mirrored.
     pub fn frames(&self, x: &[f32]) -> Vec<[f32; MELS]> {
         let pad = self.n_fft / 2;
         if x.len() <= pad + 1 {
@@ -141,8 +123,7 @@ impl LogMel {
     }
 }
 
-/// Mono samples at `rate` brought to about 22 kHz by averaging whole groups of samples, as the analyser does:
-/// 44.1 kHz to 22.05, 48 to 24. Returns the samples and their rate.
+/// Mono samples decimated by averaging to about 22 kHz; returns the samples and their rate.
 pub fn decimate(x: &[f32], rate: u32) -> (Vec<f32>, f64) {
     let k = ((rate as f64 / MODEL_RATE).round() as usize).max(1);
     (x.chunks_exact(k).map(|c| c.iter().sum::<f32>() / k as f32).collect(), rate as f64 / k as f64)
@@ -154,9 +135,8 @@ pub struct BeatThis {
     chunk: usize,
 }
 
-/// Where the chunks of a stretch of `n` frames start, as beat_this's `split_piece` places them: each overlaps the
-/// last by twice the border, the first starts a border before the stretch (so its first frame is answered for),
-/// and the last ends a border after it.
+/// Chunk starts over `n` frames, as beat_this's `split_piece`: overlapping by twice the border, from a border
+/// before the stretch to a border after it.
 fn chunk_starts(n: usize, chunk: usize) -> Vec<isize> {
     let (n, c, b) = (n as isize, chunk as isize, BORDER as isize);
     let mut starts: Vec<isize> = (-b..(n - b).max(-b + 1)).step_by((c - 2 * b) as usize).collect();
@@ -173,8 +153,7 @@ pub struct Tracked {
     pub downbeats: Vec<f64>,
 }
 
-/// Frames that are the maximum of the 7 around them (±70 ms) with a positive logit (probability over a half);
-/// neighbouring frames that tie become one, at their mean.
+/// Frames with a positive logit that are the maximum of the 7 around them; adjacent ties merge at their mean.
 fn peaks(logits: &[f32]) -> Vec<f64> {
     let n = logits.len();
     let mut frames: Vec<usize> = (0..n)
@@ -200,25 +179,24 @@ impl BeatThis {
         Self::load_chunked(path, CHUNK)
     }
 
-    /// With chunks of `chunk` frames (more than twice the border), for measuring what the chunk length changes.
+    /// With chunks of `chunk` frames (more than twice the border), for evaluation.
     pub fn load_chunked(path: &Path, chunk: usize) -> TractResult<Self> {
         Self::prepare(tract_onnx::onnx().model_for_path(path)?, chunk)
     }
 
-    /// From a whole ONNX file's bytes (the export with its weights in it; the evaluation reads such files).
+    /// From an ONNX file with its weights.
     pub fn from_bytes(bytes: &[u8]) -> TractResult<Self> {
         Self::prepare(tract_onnx::onnx().model_for_read(&mut std::io::Cursor::new(bytes))?, CHUNK)
     }
 
-    /// The app's own graph filled with the weights file made from the authors' checkpoint (`weights::convert`).
+    /// The app's graph filled with the weights file (`weights::convert`).
     pub fn from_weights(weights: &[u8]) -> TractResult<Self> {
         let proto = super::weights::assemble(weights).map_err(|e| tract_onnx::prelude::TractError::msg(e))?;
         Self::prepare(tract_onnx::onnx().model_for_proto_model(&proto)?, CHUNK)
     }
 
     fn prepare(model: InferenceModel, chunk: usize) -> TractResult<Self> {
-        // Flash attention one head after another on this thread, rather than across rayon's pool of one thread per
-        // core at normal priority: the caller's low priority has to hold for all the work.
+        // Flash attention on this thread, not rayon's pool, so the caller's low priority holds.
         let _ = tract_onnx::prelude::tract_data::knobs::set_str("TRACT_FLASH_SDPA_ST", "true");
         let model = model
             .with_input_fact(0, f32::fact([1, chunk, MELS]).into())?
@@ -227,8 +205,7 @@ impl BeatThis {
         Ok(BeatThis { model, chunk })
     }
 
-    /// Beat and downbeat logits for every frame of `mel`, chunk by chunk: a chunk's frames outside the stretch are
-    /// silence (zeros, as log(1 + 0)), and each frame is taken from the first chunk that answers for it.
+    /// Beat and downbeat logits per frame of `mel`, from the first chunk answering for each; outside is silence.
     pub fn logits(&self, mel: &[[f32; MELS]]) -> TractResult<(Vec<f32>, Vec<f32>)> {
         let (n, c) = (mel.len(), self.chunk);
         let mut beat = vec![f32::NAN; n];
@@ -252,7 +229,6 @@ impl BeatThis {
                 }
             }
         }
-        // Only a stretch shorter than a chunk's middle leaves frames unanswered, at its very edges.
         for v in beat.iter_mut().chain(down.iter_mut()) {
             if v.is_nan() {
                 *v = -1000.0;
@@ -261,9 +237,8 @@ impl BeatThis {
         Ok((beat, down))
     }
 
-    /// Beats and downbeats of one window. The frames at the window's edges that the model was not trained to
-    /// answer for are dropped, unless the window is the edge of the song (`song_start`, `song_end`). Every
-    /// downbeat is moved onto the nearest beat, as the paper's post-processing does.
+    /// Beats and downbeats of one window; border frames are dropped unless at the song's edge. Downbeats snap to
+    /// the nearest beat.
     pub fn track(&self, mel: &[[f32; MELS]], song_start: bool, song_end: bool) -> TractResult<Tracked> {
         let (mut beat, mut down) = self.logits(mel)?;
         let n = beat.len();
@@ -282,9 +257,8 @@ impl BeatThis {
         Ok(Tracked { beats, downbeats })
     }
 
-    /// Beats and downbeats of one end of a song: `x`, mono at `rate`, cut where the music starts (`intro`) or ends,
-    /// seconds from its first sample. The model reads the first `WINDOW` frames of an intro and the last of an
-    /// outro; the cut edge counts as the song's edge (silence lies beyond it), the other does not.
+    /// Beats and downbeats of one end of a song (`x` mono at `rate`), seconds from its first sample: the first
+    /// `WINDOW` frames of an intro or the last of an outro; the cut edge counts as the song's edge.
     pub fn track_window(&self, x: &[f32], rate: u32, intro: bool) -> TractResult<Tracked> {
         let (y, sr) = decimate(x, rate);
         let mel = LogMel::new(sr).frames(&y);
@@ -298,8 +272,7 @@ impl BeatThis {
     }
 }
 
-/// A constant grid through tracked beats, as AutoMix stores one: tempo, first beat, how well one grid holds, and
-/// the bar.
+/// A constant grid through tracked beats, as AutoMix stores one.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NeuralGrid {
     pub bpm: f64,
@@ -308,17 +281,15 @@ pub struct NeuralGrid {
     pub confidence: f32,
     pub downbeat_phase: i32,
     pub beats_per_bar: i32,
-    /// A second bar start the downbeats point at almost as often as `downbeat_phase` (-1 when there is none). Where
-    /// the bar is not in the sound - a drum-only intro, four kicks to the bar and nothing else - the model marks
-    /// every other beat, and which of the two is the bar is a coin toss.
-    pub other_phase: i32,
-    /// A beat in the middle of the window, seconds: where two grids are compared.
+    /// A second bar start the downbeats point at almost as often (the model marks every other beat where only
+    /// drums play).
+    pub other_phase: Option<i32>,
+    /// A beat mid-window, seconds, where two grids are compared.
     pub anchor_s: f64,
 }
 
-/// The grid of beats and downbeats in track time. The metre is the usual count of beats between downbeats (3 or 4);
-/// the phase, the one most downbeats fall on, and `other_phase` the runner-up when it has more than half the
-/// winner's votes. `None` for fewer than 8 beats.
+/// The grid through beats and downbeats: metre from the usual downbeat gap (3 or 4), phase by vote, `other_phase`
+/// when the runner-up has over half the votes. `None` for fewer than 8 beats.
 pub fn grid(tracked: &Tracked) -> Option<NeuralGrid> {
     let beats = &tracked.beats;
     if beats.len() < 8 {
@@ -345,7 +316,7 @@ pub fn grid(tracked: &Tracked) -> Option<NeuralGrid> {
     order.sort_by_key(|p| std::cmp::Reverse(votes[*p]));
     let phase = order[0];
     let other = order.get(1).copied().filter(|p| votes[*p] > 0 && 2 * votes[*p] > votes[phase]);
-    // How regular the beats are: the share of beat gaps within 15 % of the usual one.
+    // Share of beat gaps within 15 % of the median.
     let regular = ibi.iter().filter(|g| (*g / median - 1.0).abs() < 0.15).count() as f64 / ibi.len() as f64;
     Some(NeuralGrid {
         bpm: 60.0 / period,
@@ -354,7 +325,7 @@ pub fn grid(tracked: &Tracked) -> Option<NeuralGrid> {
         confidence: ((regular - 0.5) / 0.4).clamp(0.0, 1.0) as f32,
         downbeat_phase: phase as i32,
         beats_per_bar: meter as i32,
-        other_phase: other.map_or(-1, |p| p as i32),
+        other_phase: other.map(|p| p as i32),
         anchor_s: beats[beats.len() / 2],
     })
 }
@@ -365,7 +336,7 @@ mod tests {
 
     /// A 1 kHz tone lights the mel band around 1 kHz and no band far from it; silence is log(1) = 0.
     #[test]
-    fn the_front_end_puts_a_tone_in_its_band() {
+    fn log_mel_puts_tone_in_its_band() {
         let rate = 22050.0;
         let tone: Vec<f32> = (0..22050).map(|i| (0.5 * (2.0 * std::f64::consts::PI * 1000.0 * i as f64 / rate).sin()) as f32).collect();
         let mel = LogMel::new(rate);
@@ -380,12 +351,10 @@ mod tests {
         assert!((centre(top) / 1000.0 - 1.0).abs() < 0.05, "loudest band centred at {} Hz", centre(top));
         assert!(mid[10] < 0.1 * mid[top], "a band far below stays quiet");
         assert!(mel.frames(&vec![0.0; 22050]).iter().all(|f| f.iter().all(|v| *v == 0.0)));
-        // 48 kHz halves to 24: still 50 frames a second.
         assert_eq!(LogMel::new(24000.0).frames(&vec![0.0; 24000]).len(), 51);
     }
 
-    /// What a song costs the measurer besides the model itself: keeping its ends while four minutes of 44.1 kHz
-    /// stereo are decoded, and the front end over both 30 s windows.
+    /// Cost of keeping a song's ends and the front end over both windows.
     /// `cargo test --release -p nori-player --features neural-beats neural_front_end_cost -- --ignored --nocapture`
     #[test]
     #[ignore]
@@ -406,9 +375,7 @@ mod tests {
         println!("ends kept in {:.1} ms, front end over both windows ({} frames) in {:.1} ms", kept.as_secs_f64() * 1e3, head + tail, t1.elapsed().as_secs_f64() * 1e3);
     }
 
-    /// What one song costs with the model, as the measurer runs it: loading the model from its bytes, then its first
-    /// and last 30 s (mono 16-bit PCM in `NORI_SONG` at `NORI_SONG_RATE`, default 44.1 kHz), on this one thread. Peak
-    /// RSS is the process's, read before the model is loaded and after both windows.
+    /// Time and peak RSS of loading the model and running a song's two windows.
     /// `NORI_BEAT_THIS=<model.onnx> NORI_SONG=<x.s16> cargo test --release -p nori-player --features neural-beats
     /// neural_song_cost -- --ignored --nocapture`
     #[test]
@@ -443,7 +410,7 @@ mod tests {
         );
     }
 
-    /// Writes the log-mel of a raw mono 16-bit file at 22.05 kHz as f32 frames, to compare with torchaudio:
+    /// Dumps the log-mel of a raw mono 16-bit 22.05 kHz file, to compare with torchaudio:
     /// `NORI_MEL_IN=x.s16 NORI_MEL_OUT=x.mel cargo test --features neural-beats mel_dump -- --ignored`
     #[test]
     #[ignore]
@@ -455,10 +422,9 @@ mod tests {
         std::fs::write(output, frames.iter().flatten().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>()).unwrap();
     }
 
-    /// As beat_this's split_piece: one chunk of `CHUNK` answers for a whole window, three of 512 do with nothing to
-    /// spare, and the middle of the chunks (a border in from each edge) answers for every frame of any stretch.
+    /// As beat_this's split_piece; every frame of any stretch is answered for.
     #[test]
-    fn chunks_cover_the_window() {
+    fn chunks_cover_window() {
         assert_eq!(chunk_starts(WINDOW, CHUNK), vec![-6]);
         assert_eq!(chunk_starts(1500, 512), vec![-6, 494, 994]);
         assert_eq!(chunk_starts(1500, 1500), vec![-6, 6]);
@@ -473,7 +439,7 @@ mod tests {
     }
 
     #[test]
-    fn peaks_are_local_maxima_over_a_half() {
+    fn peaks_are_positive_local_maxima() {
         let mut l = vec![-5.0f32; 200];
         for (i, v) in [(20, 3.0), (21, 3.0), (60, 1.0), (62, 2.0), (100, -0.5)] {
             l[i] = v;
@@ -483,23 +449,22 @@ mod tests {
     }
 
     #[test]
-    fn a_grid_from_beats_and_downbeats() {
+    fn grid_from_beats_and_downbeats() {
         let beats: Vec<f64> = (0..40).map(|i| 0.3 + i as f64 * 0.5).collect();
         let t = Tracked { downbeats: beats.iter().skip(2).step_by(3).copied().collect(), beats };
         let g = grid(&t).unwrap();
         assert!((g.bpm - 120.0).abs() < 1e-6 && (g.offset_s - 0.3).abs() < 1e-6);
-        assert_eq!((g.beats_per_bar, g.downbeat_phase, g.other_phase), (3, 2, -1));
+        assert_eq!((g.beats_per_bar, g.downbeat_phase, g.other_phase), (3, 2, None));
         assert!(g.stability > 0.9 && g.confidence > 0.9);
     }
 
-    /// Downbeats on every other beat leave two bar starts open, and the grid says so.
     #[test]
-    fn every_other_beat_marked_is_two_candidate_bars() {
+    fn every_other_beat_marked_gives_two_candidate_bars() {
         let beats: Vec<f64> = (0..40).map(|i| 0.3 + i as f64 * 0.5).collect();
         let t = Tracked { downbeats: beats.iter().skip(1).step_by(2).copied().collect(), beats };
         let g = grid(&t).unwrap();
         assert_eq!(g.beats_per_bar, 4);
-        let mut both = [g.downbeat_phase, g.other_phase];
+        let mut both = [g.downbeat_phase, g.other_phase.unwrap()];
         both.sort();
         assert_eq!(both, [1, 3]);
     }

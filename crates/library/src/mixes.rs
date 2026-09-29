@@ -1,13 +1,6 @@
-//! Mixes built from the local index and the taste model in `history.rs`; no server round trip.
-//!
-//! The index can hold 100k songs, so no mix reads it whole. SQL narrows to a candidate pool of a
-//! few times `limit` (through `song_stats`, or through the expression indexes on genre, artist,
-//! year, starred and rating), and only that pool is parsed, scored and sampled in Rust.
-//!
-//! Everything random derives from the caller's `seed`: the same seed over the same data gives the
-//! same mix, so a screen can be rebuilt without its content changing, and a "refresh" is a new seed.
-//! SQLite's `random()` cannot be seeded, so pools are drawn in the order of a seeded linear
-//! congruence over `rowid` (`shuffled_order`), which needs no JSON parsing and no temp table.
+//! Mixes from the local index and the taste model. SQL narrows the index to a pool of a few times
+//! `limit`, which alone is parsed, scored and sampled. Everything random derives from `seed`; SQLite's
+//! `random()` cannot be seeded, so pools are ordered by a seeded permutation of `rowid`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -60,8 +53,7 @@ pub(crate) fn shuffled_params(seed: u64) -> [Value; 2] {
     [Value::Integer(1 + (r.next() % (LCG_P as u64 - 1)) as i64), Value::Integer((r.next() % LCG_P as u64) as i64)]
 }
 
-/// This server's songs. Most rows of `items` are songs: saying so keeps the planner from treating
-/// `kind=2` as the selective term and ignoring the expression indexes (there is no ANALYZE data on a phone).
+/// This server's songs; `likelihood` keeps the planner (without ANALYZE data) on the expression indexes.
 pub const SONGS: &str = "i.server=sid() AND likelihood(i.kind=2, 0.9)";
 
 struct Cand {
@@ -144,12 +136,9 @@ fn sample(cands: Vec<(Song, f64)>, limit: usize, per_artist: usize, rng: &mut Rn
     out
 }
 
-/// A seeded shuffle that keeps songs of one artist apart, and when it can also songs of one album and an
-/// artist heard two songs ago. `after` is what plays right before the result.
-///
-/// Two songs of an artist end up adjacent only when that cannot be avoided, that is when the artist has
-/// more than half of what is left: the artist with the most songs left is forced as soon as postponing
-/// it would make a collision certain; every other position takes the next song of the plain shuffle that fits.
+/// A seeded shuffle keeping one artist's songs apart, and when it can one album's and the artist of two
+/// songs back; `after` plays just before. The artist with most songs left is forced once postponing it
+/// would make a collision certain; otherwise the next fitting song of a plain shuffle is taken.
 pub(crate) fn spread(songs: Vec<Song>, rng: &mut Rng, after: Option<&Song>) -> Vec<Song> {
     let order = spread_order(&songs, rng, after);
     let mut slots: Vec<Option<Song>> = songs.into_iter().map(Some).collect();
@@ -480,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn a_long_queue_shuffles_quickly_and_keeps_its_artists_apart() {
+    fn long_queue_shuffles_fast() {
         // Five thousand songs: a shuffle that compared every song with every other would take seconds here.
         let l: Vec<Song> = (0..5_000).map(|i| song(&i.to_string(), "t", &format!("artist {}", i % 1500), "", "", 0)).collect();
         let started = std::time::Instant::now();

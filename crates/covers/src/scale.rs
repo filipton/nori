@@ -1,14 +1,10 @@
-//! A decoded picture brought to the size it is drawn at, filling it the way a cover is drawn (the middle of
-//! the picture kept, the overhang cut off). Shrinking averages every source pixel under an output pixel
-//! (an area filter), so detail turns into its average colour instead of shimmering; growing is bilinear.
-//! Both run in two passes on fixed-point weights planned once per picture: down the columns into one row
-//! of sums, then along that row. Nothing is allocated once the scaler's buffers have grown.
+//! Center-crop resize of a decoded picture into an RGBA target: area filter when shrinking, bilinear when
+//! growing, two separable fixed-point passes. No allocation once the scaler's buffers have grown.
 
-/// The sum of an output pixel's weights, in fixed point.
+/// Fixed-point 1.0: the sum of an output pixel's weights.
 const ONE: u32 = 1 << 14;
 
-/// A picture as a decoder leaves it: `channels` bytes a pixel (grey, grey and alpha, RGB or RGBA), rows
-/// `stride` bytes apart.
+/// Decoder output: `channels` bytes per pixel (grey, grey+alpha, RGB or RGBA), rows `stride` bytes apart.
 pub struct Source<'a> {
     pub px: &'a mut [u8],
     pub width: usize,
@@ -17,8 +13,7 @@ pub struct Source<'a> {
     pub channels: usize,
 }
 
-/// Where the picture goes: RGBA, four bytes a pixel, rows `stride` bytes apart (a Bitmap's rows may be
-/// padded).
+/// RGBA destination, rows `stride` bytes apart (Bitmap rows may be padded).
 pub struct Target<'a> {
     pub px: &'a mut [u8],
     pub width: usize,
@@ -27,7 +22,7 @@ pub struct Target<'a> {
 }
 
 impl Target<'_> {
-    /// Whether the rows lie in the buffer and the sizes add up.
+    /// Whether the dimensions are non-zero and every row fits in the buffer.
     pub fn fits(&self) -> bool {
         self.width > 0
             && self.height > 0
@@ -35,8 +30,7 @@ impl Target<'_> {
             && (self.height - 1).checked_mul(self.stride).and_then(|n| n.checked_add(self.width * 4)).is_some_and(|n| n <= self.px.len())
     }
 
-    /// Whether a decoder may write into it as it writes a picture of its own: tight rows of `width`
-    /// by `height` RGBA pixels.
+    /// Whether a decoder can write a tight `width` x `height` RGBA picture straight into it.
     pub fn takes(&self, width: usize, height: usize) -> bool {
         (width, height) == (self.width, self.height) && self.stride == width * 4
     }
@@ -46,30 +40,29 @@ impl Target<'_> {
     }
 }
 
-/// How a picture with transparency is written. Covers are almost always opaque, and then both are the
-/// same bytes.
+/// Alpha encoding of the output (identical for opaque pictures).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Alpha {
-    /// Colours as they are (RGBA8, as most GUI toolkits take them).
+    /// Straight RGBA8, as most GUI toolkits take it.
     Straight,
-    /// Colours multiplied by their alpha (what an Android Bitmap holds).
+    /// Premultiplied, as an Android Bitmap holds it.
     Premultiplied,
 }
 
-/// Which source pixels each output pixel is made of, along one axis: output `i` takes `taps` pixels from
-/// `first[i]` on, weighted by `weights[i * taps..][..taps]`. Every output has the same number of taps
-/// (unused ones weigh nothing), so the loops over them have one length and no pixel reads past a line.
+/// Resampling plan for one axis: output `i` reads `taps` pixels from `first[i]`, weighted by
+/// `weights[i * taps..][..taps]`. Every output has the same tap count (unused taps weigh zero) so loops
+/// have one length and never read past the line.
 #[derive(Default)]
 struct Axis {
     first: Vec<u32>,
     weights: Vec<u16>,
     taps: usize,
-    /// One output pixel's weights before they are made fixed point.
+    /// Scratch: one output pixel's float weights.
     exact: Vec<f64>,
 }
 
 impl Axis {
-    /// `out` pixels from the span `from..from + len` of a line of `n` source pixels.
+    /// Plans `out` pixels from the span `from..from + len` of a line of `n` source pixels.
     fn plan(&mut self, from: f64, len: f64, n: usize, out: usize) {
         let s = len / out as f64;
         let shrink = s >= 1.0;
@@ -82,7 +75,7 @@ impl Axis {
         let w = &mut self.exact;
         for i in 0..out {
             let (first, count) = if shrink {
-                // The source pixels under this one, each weighted by how much of it is covered.
+                // Area filter: each source pixel weighted by its covered fraction.
                 let (a, b) = (from + i as f64 * s, from + (i + 1) as f64 * s);
                 let first = (a.floor() as usize).min(n - 1);
                 let last = ((b.ceil() as usize).max(first + 1) - 1).min(n - 1).min(first + taps - 1);
@@ -91,7 +84,7 @@ impl Axis {
                 }
                 (first, last - first + 1)
             } else {
-                // The two source pixels around this one's centre, nearer weighing more.
+                // Bilinear between the two nearest source pixels.
                 let c = (from + (i as f64 + 0.5) * s - 0.5).clamp(0.0, (n - 1) as f64);
                 let first = c.floor() as usize;
                 let f = c - first as f64;
@@ -103,10 +96,9 @@ impl Axis {
                     (first, 1)
                 }
             };
-            // Near the end of the line the taps start earlier, the pixels before this one's weighing
-            // nothing.
+            // Near the line's end the taps start earlier, the extra leading taps weighing zero.
             let shift = (first + taps).saturating_sub(n);
-            // In fixed point, rounded so the weights still add up to exactly one.
+            // To fixed point; the rounding error goes to the largest weight so they sum to ONE.
             let total: f64 = w[..count].iter().sum();
             let out = &mut self.weights[i * taps + shift..][..count];
             let mut sum = 0;
@@ -124,26 +116,25 @@ impl Axis {
     }
 }
 
-/// A pixel of an opaque picture's alpha, times 64.
+/// Opaque alpha in the x64 intermediate format.
 const OPAQUE: u16 = 255 * 64;
 
-/// A scaler's plans and rows, kept from picture to picture.
+/// Plans and scratch rows, reused across pictures.
 #[derive(Default)]
 pub struct Scaler {
     h: Axis,
     v: Axis,
     sums: Vec<u32>,
-    /// Pixels part way, as RGBA times 64: four lanes whatever the source had, so every later step is the
-    /// same four multiply-adds a tap (one vector operation), inside 32 bits.
+    /// Intermediate pixels as RGBA x64: always four lanes so the second pass is one vector op per tap
+    /// and stays within 32 bits.
     mid: Vec<[u16; 4]>,
-    /// Which source row each of `mid`'s rows holds, when rows are resampled first.
+    /// Source row held in each `mid` slot (rows-first pass).
     held: Vec<usize>,
 }
 
 impl Scaler {
-    /// Draws `src` into `t`, filling it. A picture with transparency is filtered with its colours
-    /// premultiplied (so a transparent pixel's colour does not bleed into its neighbours) and written as
-    /// `alpha` asks; `src` is used as scratch for that.
+    /// Center-crops and scales `src` into `t`. Pictures with alpha are filtered premultiplied (no colour
+    /// bleed from transparent pixels; `src` is premultiplied in place) and written as `alpha` asks.
     pub fn fill(&mut self, src: Source, t: &mut Target, alpha: Alpha) {
         let has_alpha = src.channels.is_multiple_of(2);
         if (src.width, src.height) == (t.width, t.height) {
@@ -167,7 +158,7 @@ impl Scaler {
                 premultiply(&mut src.px[y * src.stride..][..src.width * src.channels], src.channels);
             }
         }
-        // The part of the source that fills the target: all of one side, the middle of the other.
+        // Center crop to the target's aspect ratio.
         let (sw, sh, tw, th) = (src.width as f64, src.height as f64, t.width as f64, t.height as f64);
         let (mut x, mut y, mut w, mut h) = (0.0, 0.0, sw, sh);
         if sw * th > sh * tw {
@@ -179,8 +170,8 @@ impl Scaler {
         }
         self.h.plan(x, w, src.width, t.width);
         self.v.plan(y, h, src.height, t.height);
-        // Growing, each source row goes into several output rows: it is resampled along once and kept
-        // for them. Shrinking, columns first leaves fewer rows to resample along.
+        // Growing vertically: resample each source row once and reuse it. Shrinking: columns first
+        // leaves fewer rows to resample.
         if h < th {
             self.rows_first(&src, t);
         } else {
@@ -195,7 +186,7 @@ impl Scaler {
 
     fn columns_first(&mut self, src: &Source, t: &mut Target) {
         let c = src.channels;
-        // Only the columns the pass along the rows reads are summed.
+        // Sum only the columns the horizontal pass reads.
         let c0 = self.h.first[0] as usize;
         let pixels = self.h.first[t.width - 1] as usize + self.h.taps - c0;
         let len = pixels * c;
@@ -209,7 +200,7 @@ impl Scaler {
             let first = self.v.first[oy] as usize;
             let sums = &mut self.sums[..len];
             let row = |k: usize| &src.px[(first + k) * src.stride + c0 * c..][..len];
-            // The first tap that weighs anything sets the sums, the rest add to them.
+            // The first non-zero tap initialises the sums, the rest accumulate.
             let mut taps = self.v.weights[oy * vt..][..vt].iter().enumerate().filter(|(_, &w)| w != 0);
             let (k, &w) = taps.next().expect("a pixel's weights add up to one");
             for (s, &p) in sums.iter_mut().zip(row(k)) {
@@ -239,7 +230,7 @@ impl Scaler {
         self.sums.resize(w * 4, 0);
         for oy in 0..t.height {
             let first = self.v.first[oy] as usize;
-            // Rows are asked for in order, so each is resampled once, into the slot of its row number.
+            // Rows advance monotonically: each is resampled once into ring slot `j % vt`.
             for j in first..first + vt {
                 if self.held[j % vt] != j {
                     let row = &src.px[j * src.stride..][..src.width * src.channels];
@@ -277,7 +268,7 @@ impl Scaler {
     }
 }
 
-/// One source row of `C`-byte pixels resampled along, as RGBA pixels times 64.
+/// Horizontal pass over one source row of `C`-byte pixels, into RGBA x64.
 fn along<const C: usize>(row: &[u8], h: &Axis, out: &mut [[u16; 4]]) {
     let taps = h.taps;
     for ((o, &first), ws) in out.iter_mut().zip(&h.first).zip(h.weights.chunks_exact(taps)) {
@@ -298,8 +289,8 @@ fn along<const C: usize>(row: &[u8], h: &Axis, out: &mut [[u16; 4]]) {
     }
 }
 
-/// One output row from a row of column sums, RGBA pixels times 64: those (14 bits) times the weights
-/// (`ONE`, 14 bits) stay inside 32 bits. The usual tap counts get a loop of their own, unrolled.
+/// Horizontal pass from RGBA x64 (14 bits) with 14-bit weights, within 32 bits. Common tap counts get
+/// an unrolled loop.
 fn across(mid: &[[u16; 4]], h: &Axis, out: &mut [u8]) {
     match h.taps {
         1 => across_n::<1>(mid, h, out),
@@ -310,7 +301,7 @@ fn across(mid: &[[u16; 4]], h: &Axis, out: &mut [u8]) {
     }
 }
 
-/// [`across`] for `T` taps (0: as many as the plan has).
+/// [`across`] for `T` taps (0: the plan's count).
 fn across_n<const T: usize>(mid: &[[u16; 4]], h: &Axis, out: &mut [u8]) {
     let taps = if T == 0 { h.taps } else { T };
     for ((px, &first), ws) in out.as_chunks_mut::<4>().0.iter_mut().zip(&h.first).zip(h.weights.chunks_exact(taps)) {
@@ -325,7 +316,7 @@ fn across_n<const T: usize>(mid: &[[u16; 4]], h: &Axis, out: &mut [u8]) {
     }
 }
 
-/// A row of `C`-byte pixels as RGBA.
+/// Converts a row of `C`-byte pixels to RGBA.
 fn expand<const C: usize>(row: &[u8], out: &mut [u8]) {
     if C == 4 {
         out.copy_from_slice(row);
@@ -340,8 +331,7 @@ fn expand<const C: usize>(row: &[u8], out: &mut [u8]) {
     }
 }
 
-/// Colours multiplied by their alpha, rounded as Android's `Bitmap.setPixels` rounds them. `c` is 2 (grey
-/// and alpha) or 4 (RGBA).
+/// Premultiplies in place, rounding like Android's `Bitmap.setPixels`. `c` is 2 (grey+alpha) or 4.
 pub fn premultiply(px: &mut [u8], c: usize) {
     for p in px.chunks_exact_mut(c) {
         let a = p[c - 1] as u32;
@@ -353,7 +343,7 @@ pub fn premultiply(px: &mut [u8], c: usize) {
     }
 }
 
-/// RGBA premultiplied back to straight colours.
+/// Converts premultiplied RGBA back to straight.
 pub fn unpremultiply(px: &mut [u8]) {
     for p in px.chunks_exact_mut(4) {
         let a = p[3] as u32;
@@ -369,7 +359,7 @@ pub fn unpremultiply(px: &mut [u8]) {
 mod tests {
     use super::*;
 
-    /// Output `i`'s first source pixel and its weights, the taps that weigh nothing left out.
+    /// Output `i`'s first source pixel and its non-zero weights.
     fn weights(a: &Axis, i: usize) -> (u32, Vec<u16>) {
         let w = &a.weights[i * a.taps..][..a.taps];
         let skip = w.iter().take_while(|&&w| w == 0).count();
@@ -378,19 +368,19 @@ mod tests {
     }
 
     #[test]
-    fn shrinking_weighs_each_pixel_by_how_much_of_it_is_covered() {
+    fn shrink_weights_by_coverage() {
         let mut a = Axis::default();
-        // Three pixels into two: each output takes one and a half.
+        // 3 -> 2: each output covers 1.5 pixels.
         a.plan(0.0, 3.0, 3, 2);
         assert_eq!(weights(&a, 0), (0, vec![10923, 5461]));
         assert_eq!(weights(&a, 1), (1, vec![5461, 10923]));
-        // Halving: pairs, evenly.
+        // Halving: even pairs.
         a.plan(0.0, 8.0, 8, 4);
         assert_eq!(weights(&a, 3), (6, vec![8192, 8192]));
     }
 
     #[test]
-    fn growing_is_bilinear_between_the_nearest_two() {
+    fn grow_is_bilinear() {
         let mut a = Axis::default();
         a.plan(0.0, 2.0, 2, 4);
         assert_eq!(weights(&a, 0), (0, vec![16384]));
@@ -400,8 +390,8 @@ mod tests {
     }
 
     #[test]
-    fn a_wide_picture_keeps_its_middle() {
-        // 4x2, a red column on each side and white in the middle, into 1x1: only the middle square.
+    fn wide_picture_is_center_cropped() {
+        // 4x2 with red edge columns and white middle, into 1x1: only the middle counts.
         let mut px = Vec::new();
         for _ in 0..2 {
             for x in 0..4 {
@@ -415,8 +405,8 @@ mod tests {
     }
 
     #[test]
-    fn transparency_is_filtered_premultiplied_and_written_as_asked() {
-        // An opaque red pixel next to a transparent green one: the half has no green in it.
+    fn alpha_filtered_premultiplied_and_written_as_asked() {
+        // Opaque red next to transparent green: no green bleeds in.
         let mk = || vec![255u8, 0, 0, 255, 0, 255, 0, 0];
         let mut out = [0u8; 4];
         let mut px = mk();
@@ -430,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn a_padded_target_is_written_row_by_row_and_the_padding_left_alone() {
+    fn padded_target_leaves_padding_untouched() {
         let mut px = vec![10u8, 20, 30];
         let mut out = [7u8; 2 * 12];
         let src = Source { px: &mut px, width: 1, height: 1, stride: 3, channels: 3 };

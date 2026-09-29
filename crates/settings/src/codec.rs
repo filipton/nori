@@ -1,15 +1,12 @@
-//! How each setting is stored, changed by name and read back by name: one [`Codec`] per kind of value,
-//! and the [`Row`] each setting becomes. `StoredPrefs` (settings.rs) says, on each field in one
-//! `#[setting(...)]` line, its key, codec, default, name, the row a client offers for it and what a change
-//! of it asks of the player; `#[derive(Settings)]` (crates/settings-derive) makes its `Default` and the
-//! table `ROWS` from them. Everything that walks the settings (`load`, `save`, `set_by_name`, `value_of`,
-//! `specs`, `effects`) walks that table.
+//! How each kind of setting value is stored, parsed and shown ([`Codec`]), and the [`Row`] per setting
+//! that `#[derive(Settings)]` builds into `ROWS`, the table `load`, `save`, `set_by_name`, `value_of`,
+//! `specs` and `effects` walk.
 
 use std::collections::HashMap;
 
 use crate::settings::{PrefValue, SavedQuality, Span, StoredPrefs};
 
-/// What was stored, as it is: a value of the wrong kind is as good as missing.
+/// The stored values; a value of the wrong kind reads as missing.
 pub(crate) struct Raw<'a>(pub(crate) &'a HashMap<String, PrefValue>);
 
 impl Raw<'_> {
@@ -21,8 +18,7 @@ impl Raw<'_> {
 /// Everything to write.
 pub(crate) type Put = HashMap<String, PrefValue>;
 
-/// A value stored as one [`PrefValue`] of its own kind, and read from a change by name: `None` for a
-/// value that does not read (a number that is not one).
+/// A value stored as one [`PrefValue`]; `parse` is None for unreadable text.
 pub(crate) trait Scalar: Sized + Clone + PartialOrd + ToString {
     fn read(v: &PrefValue) -> Option<Self>;
     fn write(&self) -> PrefValue;
@@ -44,7 +40,6 @@ macro_rules! scalar {
         }
     )*};
 }
-// A switch reads "true" (any case) or "1" as on, anything else as off; text is trimmed.
 scalar!(
     bool => Flag, |v: &str| Some(v.eq_ignore_ascii_case("true") || v == "1"),
     i32 => Number, |v: &str| v.trim().parse().ok(),
@@ -53,9 +48,8 @@ scalar!(
     String => Text, |v: &str| Some(v.trim().to_string())
 );
 
-/// One kind of stored value. `set` is a change by name: `None` refuses the value (the change fails, so a
-/// typo in a script fails loudly), and a number that does not read keeps `now`. `show` is the value in
-/// the form a client's options are in.
+/// One kind of stored value. `set` parses a change by name (None refuses it); `show` formats the value
+/// as the client's options are.
 pub(crate) trait Codec<T> {
     fn load(&self, r: &Raw, key: &str, default: T) -> T;
     fn save(&self, v: &T, key: &str, out: &mut Put);
@@ -76,13 +70,13 @@ pub(crate) fn on(value: &str) -> bool {
     bool::parse(value) == Some(true)
 }
 
-/// Comma-separated names, each trimmed, the empty ones left out.
+/// Comma-separated names, trimmed, empty ones dropped.
 pub(crate) fn names(value: &str) -> Vec<String> {
     value.split(',').map(str::trim).filter(|n| !n.is_empty()).map(str::to_string).collect()
 }
 
-/// A switch, a number or a text, as it was stored. A change by name is held in `range`; with `held`, what
-/// is loaded is too, otherwise it is taken as it was stored.
+/// A scalar stored as is. Changes by name are held in `range`; with `held`, loaded values are too. An
+/// unreadable change keeps the value.
 pub(crate) struct Plain<T> {
     range: Option<(T, T)>,
     held: bool,
@@ -99,7 +93,7 @@ pub(crate) const fn within<T>(lo: T, hi: T) -> Plain<T> {
     Plain { range: Some((lo, hi)), held: false }
 }
 
-/// A number held in `lo..=hi` both when it is loaded and when it is changed.
+/// A number held in `lo..=hi` when loaded and when changed.
 pub(crate) const fn clamped<T>(lo: T, hi: T) -> Plain<T> {
     Plain { range: Some((lo, hi)), held: true }
 }
@@ -130,13 +124,13 @@ impl<T: Scalar> Codec<T> for Plain<T> {
     }
 }
 
-/// An enum setting (`#[derive(Choice)]`, crates/settings-derive): every value in order, and each one's
-/// name, the same as the Kotlin bindings give it.
+/// An enum setting (`#[derive(Choice)]`): its values in order and their names as Kotlin's bindings
+/// spell them.
 pub(crate) trait Choice: Copy + PartialEq + 'static {
     const ALL: &'static [Self];
     const NAMES: &'static [&'static str];
 
-    /// Its place in [`Self::ALL`]: what it is stored as.
+    /// Its index in [`Self::ALL`], the stored value.
     fn ordinal(self) -> i32 {
         Self::ALL.iter().position(|c| *c == self).unwrap_or(0) as i32
     }
@@ -151,8 +145,8 @@ pub(crate) trait Choice: Copy + PartialEq + 'static {
     }
 }
 
-/// An enum stored as its ordinal and changed by its name (any case) or its ordinal. One stored out of
-/// range (a value from a newer version) is the default, or with `nearest` the nearest.
+/// An enum stored as its ordinal, changed by name (any case) or ordinal. A stored ordinal out of range
+/// loads as the default, or with `nearest` the nearest.
 pub(crate) struct Pick {
     nearest: bool,
 }
@@ -180,7 +174,7 @@ impl<T: Choice> Codec<T> for Pick {
     }
 }
 
-/// A list of an enum's values, stored by name, comma-separated; a name that is not one is dropped.
+/// A list of enum values stored as comma-separated names; unknown names are dropped.
 pub(crate) struct Picks;
 
 impl<T: Choice> Codec<Vec<T>> for Picks {
@@ -192,8 +186,8 @@ impl<T: Choice> Codec<Vec<T>> for Picks {
     }
 }
 
-/// Stream quality, under `<key>BitRate` and `<key>Format`; by name "0:" is the original file, "320:mp3" a
-/// bitrate and a format.
+/// Stream quality, stored under `<key>BitRate` and `<key>Format`; by name "320:mp3" ("0:" is the
+/// original file).
 pub(crate) struct Quality;
 
 impl Codec<SavedQuality> for Quality {
@@ -213,8 +207,8 @@ impl Codec<SavedQuality> for Quality {
     }
 }
 
-/// The equalizer's own pre-amp: a decimal stored only when it is set, none (automatic) otherwise. By name
-/// a number is held in its span, "auto" is automatic, anything else keeps it.
+/// The equalizer pre-amp: stored only when manual (None is automatic). By name a number is held in the
+/// span, "auto" is automatic, anything else keeps the value.
 pub(crate) struct Preamp(pub(crate) Span);
 
 impl Codec<Option<f32>> for Preamp {
@@ -238,8 +232,7 @@ impl Codec<Option<f32>> for Preamp {
     }
 }
 
-/// A value kept as one text in a format of its own: `load` reads the stored text (none when there is
-/// none) against the default, `save` writes it; `set` and `show` when it is changed and read by name.
+/// A value stored as text in its own format; `set` and `show` only when it is changed and read by name.
 pub(crate) struct Custom<T: 'static> {
     pub(crate) load: fn(Option<&str>, T) -> T,
     pub(crate) save: fn(&T) -> String,
@@ -262,7 +255,7 @@ impl<T> Codec<T> for Custom<T> {
     }
 }
 
-/// What a client's settings screen offers for a setting (`settings_model::SettingSpec`).
+/// What a client offers for a setting (`settings_model::SettingSpec`).
 pub(crate) enum K {
     Switch,
     Choice(&'static [&'static str]),
@@ -273,19 +266,18 @@ pub(crate) enum K {
     Colour,
 }
 
-/// One setting, as the table declares it.
+/// One setting in the table.
 pub(crate) struct Row {
-    /// Where it is stored (read by the tests: the table's own keys are the store's).
+    /// The stored key (only the tests read it).
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) key: &'static str,
-    /// The name it is changed and read by (`set_by_name`, `value_of`); none for one that is not.
+    /// The name for `set_by_name` / `value_of`; None when not changeable by name.
     pub(crate) name: Option<&'static str>,
-    /// What a client offers for it; none for one that is not offered.
+    /// None when not offered to clients.
     pub(crate) spec: Option<K>,
-    /// What a change of it asks of the player (`settings_store`'s bits).
+    /// `settings_store` effect bits.
     pub(crate) effect: u32,
-    /// A switch over something looked up online: it reads off while the lookups are off, and switching
-    /// it on switches them on.
+    /// An online lookup switch: reads off while lookups are off; switching it on enables lookups.
     pub(crate) lookups: bool,
     pub(crate) load: fn(&mut StoredPrefs, &Raw),
     pub(crate) save: fn(&StoredPrefs, &mut Put),

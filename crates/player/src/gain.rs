@@ -1,95 +1,78 @@
-//! Loudness normalisation: how loud each song plays so that songs of every mastering sound alike, from
-//! its ReplayGain or R128 tags, the server's fallback, or its own measured loudness.
+//! Loudness normalisation from ReplayGain/R128 tags, the server's fallback gain, or measured loudness.
 //!
-//! The references the numbers are relative to:
-//! - ReplayGain 2.0 tags (`REPLAYGAIN_TRACK_GAIN` and the OpenSubsonic `replayGain` a server sends) bring a
-//!   song to -18 LUFS ([`RG2_REFERENCE_LUFS`]). ReplayGain 1.0's 89 dB SPL was set to the same level, so
-//!   old tags read the same way.
-//! - R128 tags (`R128_TRACK_GAIN`, `R128_ALBUM_GAIN`, in Opus files) are Q7.8 fixed point dB bringing a song
-//!   to -23 LUFS, EBU R128's level ([`R128_REFERENCE_LUFS`]): as ReplayGain they are 5 dB more
-//!   ([`r128_as_replay_gain_db`]). Navidrome converts them so itself when a file has no ReplayGain tags.
-//! - A measured integrated loudness (LUFS) needs `target - lufs`.
+//! ReplayGain 2.0 (and 1.0) tags target -18 LUFS, R128 tags -23 LUFS (Q7.8 dB, 5 dB less as
+//! ReplayGain); a measured loudness needs `target - lufs`. The target shifts every gain by
+//! `target - (-18)`.
 //!
-//! The target moves every gain by `target - (-18)`: -14 LUFS plays everything 4 dB louder than
-//! ReplayGain's own level, -23 LUFS 5 dB quieter.
-//!
-//! A gain at or under 0 dB is a volume: applied as the player's (the output's own, under audio offload,
-//! where the samples are never seen) it cannot clip, and the peak guard holds a song whose peak would
-//! go over full scale. A gain over 0 dB cannot be a volume: it is put on the samples before the mix, as
-//! floats, with the sound chain's look-ahead limiter behind it, and the song plays on the CPU
-//! ([`offload_allows`]). How far it may go is the user's cap (0 dB: attenuation only, as before).
+//! Gains up to 0 dB act as a volume, held under the peak. Gains above 0 dB are applied to float samples
+//! with the limiter behind them, so the song cannot be offloaded ([`offload_allows`]); the user's cap
+//! bounds them (0: attenuation only).
 
 pub use crate::policy::{GainMode, GainTags};
 
-/// The level ReplayGain 2.0 tags bring a song to, LUFS.
+/// ReplayGain 2.0 reference, LUFS.
 pub const RG2_REFERENCE_LUFS: f32 = -18.0;
-/// The level R128 tags bring a song to (EBU R128), LUFS.
+/// EBU R128 reference, LUFS.
 pub const R128_REFERENCE_LUFS: f32 = -23.0;
-/// The loudness targets offered: streaming services' -14, Apple Music's -16, ReplayGain's own -18 (the
-/// default) and broadcast's -23.
+/// Offered targets: streaming -14, Apple Music -16, ReplayGain -18 (default), broadcast -23.
 pub const TARGETS_LUFS: [f32; 4] = [-14.0, -16.0, -18.0, R128_REFERENCE_LUFS];
-/// The furthest a target may be from -18, either way: a stored value outside is held to it.
+/// Targets are clamped to within this of -18.
 const TARGET_RANGE_DB: f32 = 12.0;
-/// The most positive gain any cap allows, dB.
+/// Largest boost any cap allows, dB.
 pub const BOOST_MAX_DB: f32 = 12.0;
 
-/// An R128 tag's value (Q7.8 fixed point: dB times 256, relative to -23 LUFS) as ReplayGain 2.0 dB
-/// (relative to -18 LUFS). `R128_TRACK_GAIN=-1280` (-5 dB to -23 LUFS) is 0 dB of ReplayGain.
+/// An R128 tag (Q7.8 dB relative to -23 LUFS) as ReplayGain 2.0 dB (relative to -18 LUFS).
 pub fn r128_as_replay_gain_db(q78: i32) -> f32 {
     q78 as f32 / 256.0 + (RG2_REFERENCE_LUFS - R128_REFERENCE_LUFS)
 }
 
-/// How the user wants songs levelled.
+/// ReplayGain settings.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GainPrefs {
     pub mode: GainMode,
     /// Added to every tagged gain, dB.
     pub preamp_db: f32,
-    /// The gain of a song with no tags and nothing measured, in ReplayGain terms (dB at -18 LUFS).
+    /// Gain for songs with no tags and no measurement, ReplayGain dB.
     pub untagged_db: f32,
-    /// The loudness songs are brought to, LUFS.
     pub target_lufs: f32,
-    /// The most a song is turned up, dB; 0 turns nothing up.
+    /// Maximum boost, dB; 0 only attenuates.
     pub boost_max_db: f32,
-    /// A song without tags plays at its measured loudness, when it has been measured.
+    /// Use measured loudness for untagged songs.
     pub measured: bool,
 }
 
 impl GainPrefs {
-    /// ReplayGain as it was before targets and positive gain: -18 LUFS, attenuation only.
+    /// -18 LUFS, attenuation only, no measurement.
     pub fn attenuating(mode: GainMode, preamp_db: f32, untagged_db: f32) -> GainPrefs {
         GainPrefs { mode, preamp_db, untagged_db, target_lufs: RG2_REFERENCE_LUFS, boost_max_db: 0.0, measured: false }
     }
 
-    /// What the target adds to a ReplayGain 2.0 gain, dB.
+    /// dB the target adds to a ReplayGain 2.0 gain.
     pub fn target_offset_db(&self) -> f32 {
         let t = if self.target_lufs.is_finite() { self.target_lufs } else { RG2_REFERENCE_LUFS };
         (t - RG2_REFERENCE_LUFS).clamp(-TARGET_RANGE_DB, TARGET_RANGE_DB)
     }
 
-    /// Whether a song may be turned up at all: the chain's limiter must then run behind it.
+    /// Songs may be boosted (the limiter must then run).
     pub fn boosts(&self) -> bool {
         self.mode != GainMode::Off && self.boost_max_db > 0.0
     }
 }
 
-/// What is known of one song's loudness.
+/// Loudness facts about one song.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct SongLoudness {
-    /// Its tags in ReplayGain 2.0 terms (R128 ones converted with [`r128_as_replay_gain_db`]); none when
-    /// it has none at all.
+    /// Tags in ReplayGain 2.0 terms (R128 converted); `None` when it has no tags.
     pub tags: Option<GainTags>,
-    /// The server's `fallbackGain` (OpenSubsonic), dB in ReplayGain terms: for a song whose tags lack
-    /// the gain asked for.
+    /// The server's OpenSubsonic `fallbackGain`, ReplayGain dB.
     pub fallback_db: Option<f32>,
-    /// Its measured integrated loudness, LUFS (BS.1770), when it has been measured.
+    /// Measured integrated loudness (BS.1770), LUFS.
     pub measured_lufs: Option<f32>,
 }
 
-/// The gain a song plays at, linear: ReplayGain's (track or album, `in_album_run` for auto), then the
-/// server's fallback, then the measured loudness, then the untagged level; moved to the target. At or
-/// under 1 it is a volume, held under the peak guard; over 1 (only with a cap over 0 dB) it is for the
-/// samples, held to the cap, the limiter doing what the peak guard did.
+/// Linear gain for a song: tag (track or album; `in_album_run` for auto), else the server's fallback,
+/// else measured loudness, else the untagged level, shifted to the target. Up to 1 it is held under the
+/// peak; above 1 (only with a cap) it is held to the cap and the limiter guards the peaks.
 pub fn song_gain(p: &GainPrefs, song: &SongLoudness, in_album_run: bool) -> f32 {
     if p.mode == GainMode::Off {
         return 1.0;
@@ -106,8 +89,7 @@ pub fn song_gain(p: &GainPrefs, song: &SongLoudness, in_album_run: bool) -> f32 
     let db = match (tagged.or(song.fallback_db), measured) {
         (Some(g), _) => g + offset + p.preamp_db,
         (None, Some(lufs)) => p.target_lufs.clamp(RG2_REFERENCE_LUFS - TARGET_RANGE_DB, RG2_REFERENCE_LUFS + TARGET_RANGE_DB) - lufs + p.preamp_db,
-        // Tags without a gain: the untagged level, with the pre-amp. No tags at all: the untagged level as
-        // it is, the level a user picked for such songs.
+        // Tags without a gain get the pre-amp; no tags at all do not.
         (None, None) if song.tags.is_some() => p.untagged_db + offset + p.preamp_db,
         (None, None) => p.untagged_db + offset,
     };
@@ -123,19 +105,13 @@ pub fn song_gain(p: &GainPrefs, song: &SongLoudness, in_album_run: bool) -> f32 
     v.clamp(0.0, 1.0)
 }
 
-/// Whether a song at `gain` may go to the output's own decoder (audio offload), where the only gain
-/// is the output's volume: only while it is turned down or left as it is. A song turned up needs its
-/// samples, and the limiter behind them, so it plays on the CPU.
+/// Whether a song at `gain` may be offloaded (only a volume is available there, so no boost).
 pub fn offload_allows(gain: f32) -> bool {
     gain <= 1.0
 }
 
-/// The measure AutoMix's analysis stores (`TrackAnalysis::lufs`: BS.1770 integrated loudness of the
-/// mid signal `(L + R) / 2`) as BS.1770's loudness of the song's own channels, LUFS. BS.1770 sums the
-/// channels' powers, and `L² + R² = 2 (M² + S²)`, so a stereo song reads 3 dB more than its mid plus
-/// what its side adds: nothing for a song centred in the middle, 0.4 dB for a side 10 dB under the mid
-/// (usual for music), up to 3 dB for two unrelated channels. The side is not measured, so this reads a
-/// wide song that much quiet, and levels it that much loud. A mono song (1 channel) reads as it is.
+/// Converts the analysis' mid-signal loudness (`TrackAnalysis::lufs`, of `(L + R) / 2`) to BS.1770
+/// stereo loudness: +3 dB for stereo (`L² + R² = 2 (M² + S²)`, ignoring the unmeasured side).
 pub fn stereo_loudness_of_mid(mid_lufs: f32, channels: u32) -> f32 {
     if channels == 1 {
         mid_lufs
@@ -165,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn r128_tags_read_as_replay_gain_five_db_up() {
+    fn r128_is_replay_gain_plus_5_db() {
         assert_eq!(r128_as_replay_gain_db(0), 5.0, "a song at -23 LUFS is 5 dB under ReplayGain's level");
         assert_eq!(r128_as_replay_gain_db(-1280), 0.0, "-5 dB to -23 LUFS: already at -18");
         assert_eq!(r128_as_replay_gain_db(-2432), -4.5, "Q7.8: -9.5 dB");
@@ -177,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn each_mode_picks_its_tag() {
+    fn mode_picks_tag() {
         let s = tagged(-6.0, -3.0);
         assert!(close(db(song_gain(&prefs(GainMode::Track), &s, true)), -6.0));
         assert!(close(db(song_gain(&prefs(GainMode::Album), &s, false)), -3.0));
@@ -190,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn the_target_moves_every_gain_by_its_distance_from_replay_gain_s_level() {
+    fn target_shifts_gain() {
         let s = tagged(-8.0, -8.0);
         for (target, want) in [(-18.0, -8.0), (-14.0, -4.0), (-16.0, -6.0), (-23.0, -13.0)] {
             let p = GainPrefs { target_lufs: target, ..prefs(GainMode::Track) };
@@ -210,7 +186,7 @@ mod tests {
     }
 
     #[test]
-    fn positive_gain_is_capped_and_the_limiter_not_the_peak_holds_it() {
+    fn boost_is_capped_not_peak_limited() {
         let quiet = SongLoudness { tags: Some(GainTags { track_gain: Some(4.0), track_peak: Some(0.9), ..Default::default() }), ..Default::default() };
         // Allowed: +4 dB, whatever the peak says (+4 dB on a 0.9 peak goes over full scale: the limiter's).
         assert!(close(db(song_gain(&prefs(GainMode::Track), &quiet, false)), 4.0));
@@ -229,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn a_song_without_tags_takes_the_server_s_fallback_then_its_measure_then_the_untagged_level() {
+    fn untagged_fallback_order() {
         let p = prefs(GainMode::Track);
         let nothing = SongLoudness::default();
         assert!(close(db(song_gain(&p, &nothing, false)), -6.0), "the untagged level");
@@ -250,8 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn as_before_by_default() {
-        // Targets and positive gain left out: ReplayGain as it always was, at -18 LUFS and attenuation only.
+    fn attenuating_prefs() {
         let p = GainPrefs::attenuating(GainMode::Track, -3.0, -6.0);
         assert!(close(song_gain(&p, &SongLoudness::default(), false), 10f32.powf(-6.0 / 20.0)), "no tags: no pre-amp");
         let empty = SongLoudness { tags: Some(GainTags::default()), ..Default::default() };
@@ -266,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_song_turned_up_keeps_off_the_audio_chip() {
+    fn only_boost_blocks_offload() {
         assert!(offload_allows(1.0) && offload_allows(0.5) && offload_allows(0.0));
         assert!(!offload_allows(1.0001) && !offload_allows(2.0));
         let quiet = tagged(3.0, 3.0);
@@ -276,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stereo_measure_of_the_mid_reads_3_db_up() {
+    fn stereo_loudness_is_mid_plus_3_db() {
         assert!(close(stereo_loudness_of_mid(-17.0, 2), -13.99));
         assert!(close(stereo_loudness_of_mid(-17.0, 0), -13.99), "unknown: stereo");
         assert_eq!(stereo_loudness_of_mid(-17.0, 1), -17.0);

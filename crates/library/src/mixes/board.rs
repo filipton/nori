@@ -1,13 +1,6 @@
-//! The "For you" row: which mixes it offers, today's (or this week's) draw of each, and the favourites.
-//!
-//! The Home tiles and the mix pages read the same draw, so the covers on a tile, the list on its page and
-//! what plays are one list. A mix is drawn once per period (a day, or seven days for Discover Weekly) or
-//! when the page asks for another, and never written to the server. The draws are held in memory, one
-//! board per core (so per server profile): after a restart the same seed over the same index draws the
-//! same mix again, so there is nothing worth storing.
-//!
-//! The app only says what day it is, which mix a screen wants, and what the server gave when a mix came
-//! out empty (the one step here that needs the network).
+//! The "For you" row: its mixes, each drawn once per day (or week) or on request, and the favourites.
+//! Tiles, pages and playback read the same draw, held in memory per core; the same seed over the same
+//! index draws the same mix after a restart, so nothing is stored.
 
 use std::collections::{HashMap, HashSet};
 
@@ -44,14 +37,13 @@ pub enum MixName {
     Top,
 }
 
-/// One "For you" mix: `id` is the route, `kind` is what the index draws, `name` is which tile it is.
-/// Discover Daily and Discover Weekly both call the same taste-based draw; only the seed period differs.
+/// One "For you" mix: `id` is the route, `kind` the draw, `name` the tile.
 pub struct Spec {
     pub id: &'static str,
     pub kind: Kind,
     pub name: MixName,
     pub weekly: bool,
-    /// The tile's own colour: what it wears before its covers arrive, and the band its name sits on.
+    /// The tile's colour, under its covers and name.
     colour: u32,
 }
 
@@ -80,8 +72,7 @@ pub fn spec_of(id: &str) -> Option<&'static Spec> {
 const FAVOURITES_COLOUR: u32 = 0xFFE0_335A;
 const OTHER_COLOUR: u32 = 0xFF5C_6BC0;
 
-/// A mix tile's colours: its own, the deeper one its gradient runs to (45 % of the way to black), and
-/// that deeper colour at 0, 72 and 94 % for the band rising under the tile's name.
+/// A mix tile's colours: its own, a deeper one (45 % to black), and the deeper at 0, 72 and 94 % alpha.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn mix_tile_colours(id: String) -> Vec<u32> {
     use nori_look::compose::{blend, with_alpha};
@@ -90,9 +81,9 @@ pub fn mix_tile_colours(id: String) -> Vec<u32> {
     vec![seed, deep, with_alpha(deep, 0.0), with_alpha(deep, 0.72), with_alpha(deep, 0.94)]
 }
 
-/// Provider tracks are never queued unasked: a stream request makes octo-fiesta download them.
+/// Provider songs are never queued unasked: a stream request makes octo-fiesta download them.
 pub fn playable(s: &Song) -> bool {
-    !s.is_external && !s.id.starts_with("ext-") && !s.id.starts_with("pl-")
+    !s.is_provider()
 }
 
 /// Four different covers, for a tile's collage.
@@ -170,8 +161,7 @@ pub enum MixDraw {
     /// This period's draw was already there.
     Kept,
     Drawn,
-    /// The index gave nothing (no listening history yet): call again with what the server thinks is
-    /// random (`getRandomSongs`, 50), which then stands in for the mix. Nothing was stored.
+    /// The index gave nothing: call again with the server's random songs, which stand in for the mix.
     NeedsFallback,
 }
 
@@ -212,8 +202,7 @@ pub fn draw(c: &Connection, kind: Kind, seed: u64, now_ms: i64) -> Vec<Song> {
     .unwrap_or_default()
 }
 
-/// Every tile that can be named without the index: favourites first, then the mixes when the taste model
-/// is on (switched off, it draws nothing and offers only favourites). No covers yet.
+/// The tiles before any draw: favourites, then the mixes when the taste model is on.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn mix_tiles(taste: bool) -> Vec<MixTile> {
     let mut out = vec![MixTile { id: FAVOURITES_MIX.into(), name: MixName::Favourites, covers: vec![], favourites: true }];
@@ -234,7 +223,7 @@ mod tests {
     use crate::history::tests::song;
 
     #[test]
-    fn tiles_wear_their_own_colour_deepened_towards_black() {
+    fn tile_colours() {
         let c = mix_tile_colours("top".into());
         // Compose's blend(Color(0xFFE0662B), Color.Black, 0.45f), and the band's alphas in 8 bits.
         assert_eq!(c, [0xFFE0_662B, 0xFF7B_3818, 0x007B_3818, 0xB87B_3818, 0xF07B_3818]);

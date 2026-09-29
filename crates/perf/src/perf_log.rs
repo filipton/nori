@@ -1,22 +1,10 @@
-//! What the perf build measured, stretch by stretch: one row per stretch of the app's life (screen off
-//! and playing, the player open, charging, ...), kept in the app's database for a couple of weeks so
-//! a battery test of several days can be read back and shared. The platform reads its own counters
-//! (CPU time, context switches, the battery, the frames it drew); which state a stretch is filed under,
-//! what two readings make, how the stretches add up and how the page and the shared report say it are
-//! here, so a desktop client's recorder files, sums and reports the same way.
+//! Perf build recorder: one row per "stretch" (a period in one state: screen off playing, charging, ...),
+//! kept for two weeks in the app database. The platform supplies counter readings at each stretch's
+//! ends; this module computes the differences, the busiest threads, the audio output, network and
+//! memory, collects a per-stretch event timeline ([`perf_note`]), and renders the Performance page and
+//! the shared plain-text report (whose format tools and testers read).
 //!
-//! Each stretch also keeps why it cost what it did: the threads that woke most, with their names and CPU
-//! time, the audio output as it stood at the end (the track's format, the buffer asked for and given,
-//! the performance mode asked for and applied, offload, the route, underruns), and the bytes the app
-//! moved over the network. Read at the stretch's two ends only, as everything else is.
-//!
-//! And what happened during it, its timeline: songs with their format and where they came from, settings
-//! changed, the output opened and offload entered or left, underruns as they grew, errors. The platform
-//! tells each as it happens ([`perf_note`]); the words and the bookkeeping are here. The report ends with
-//! the app's own log and the last crash, which the platform reads from logcat only when it is shared.
-//!
-//! Only the perf build calls these. The table is made by the first row, so the database of every
-//! other build never has it.
+//! Only the perf build calls this; tables are created lazily, so other builds never have them.
 
 use std::collections::HashMap;
 
@@ -27,14 +15,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::memory::{memory_line, PerfMemory};
 
-/// How long a stretch is kept after it ended.
-pub const KEEP_MS: i64 = 14 * 24 * 3600 * 1000;
+/// Retention of stretches after they end.
+const KEEP_MS: i64 = 14 * 24 * 3600 * 1000;
 
-/// Stretches shorter than this are the blinks between two states (the screen going off stops the
-/// activity too): they are not kept.
-pub const SHORTEST_MS: i64 = 3_000;
+/// Shorter stretches are transitions between states and are not kept.
+const SHORTEST_MS: i64 = 3_000;
 
-/// Every state a stretch is filed under, in the order the page lists them, with its name.
+/// State keys and display names, in page order.
 const STATES: [(&str, &str); 7] = [
     ("off-playing", "Screen off, playing"),
     ("off-paused", "Screen off, paused"),
@@ -45,12 +32,12 @@ const STATES: [(&str, &str); 7] = [
     (CHARGING, "Charging"),
 ];
 
-/// Charging runs the battery the other way, so it is left out of every battery figure.
+/// Excluded from battery figures.
 const CHARGING: &str = "charging";
 
-/// One stretch as it is kept: the state it was in, how long, and what it cost. `uah` is the charge used
-/// by the battery's own counter, none where the phone does not keep one; `pct` is the drop in the battery
-/// level, which every phone reports. Kept as JSON under the short names the rows have always had.
+/// One recorded stretch, stored as JSON with the historical short keys. `uah`: charge used per the
+/// battery counter (None if the phone has none); `pct`: battery level drop. Optional fields are None
+/// (or empty) in rows recorded before they existed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct PerfStretch {
@@ -85,53 +72,48 @@ pub struct PerfStretch {
     #[serde(rename = "worst")]
     pub worst_ms: f64,
     pub cfg: String,
-    /// The threads that woke most over the stretch, the most first ([`TOP_THREADS`] of them); none in
-    /// rows from before they were kept.
+    /// The [`TOP_THREADS`] threads with most wakeups, most first.
     #[serde(rename = "th", default, skip_serializing_if = "Vec::is_empty")]
     pub threads: Vec<PerfThreadUse>,
-    /// The audio output as the stretch ended; none with no player, or in rows from before.
+    /// The audio output at the end; None without a player.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub out: Option<PerfOutput>,
-    /// Bytes the app received and sent over the network during the stretch, where the platform counts them.
+    /// Network bytes received and sent, where the platform counts them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rx: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tx: Option<i64>,
-    /// What happened during the stretch, oldest first ([`MOST_EVENTS`] at most); none in rows from before.
+    /// Timeline events, oldest first (at most [`MOST_EVENTS`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ev: Vec<PerfEvent>,
-    /// Events that happened past [`MOST_EVENTS`], the oldest, and were not kept.
+    /// Number of oldest events dropped past [`MOST_EVENTS`].
     #[serde(default, skip_serializing_if = "is_zero")]
     pub evx: i64,
-    /// How long an offloaded output was open during the stretch, ms: the fact behind "offload wanted".
-    /// None in rows from before it was counted.
+    /// Time an offloaded output was open, ms.
     #[serde(rename = "om", default, skip_serializing_if = "Option::is_none")]
     pub offloaded_ms: Option<i64>,
-    /// Where the memory was as the stretch ended; none in rows from before it was read.
+    /// Memory breakdown at the end.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mem: Option<PerfMemory>,
-    /// How long the player held its CPU wake lock during the stretch, ms (the one it lets go while the
-    /// songs are offloaded and nothing but the platform's word is due). None in rows from before.
+    /// Time the player's CPU wake lock was held, ms.
     #[serde(rename = "wl", default, skip_serializing_if = "Option::is_none")]
     pub wake_lock_ms: Option<i64>,
-    /// The player engine's thread's wakeups over the stretch (`nori-engine`), none without one alive at
-    /// both ends or in rows from before.
+    /// Wakeups of the [`ENGINE_THREAD`], if alive at both ends.
     #[serde(rename = "ew", default, skip_serializing_if = "Option::is_none")]
     pub engine_wakeups: Option<i64>,
-    /// Times an offloaded track asked for more (`onDataRequest`) during the stretch: the platform's own
-    /// pace, which the engine's wakes follow. None in rows from before.
+    /// Offloaded track `onDataRequest` callbacks (the platform's pace, which engine wakes follow).
     #[serde(rename = "dr", default, skip_serializing_if = "Option::is_none")]
     pub data_requests: Option<i64>,
 }
 
-/// The name of the player engine's thread, whose wakeups a stretch keeps apart.
-pub const ENGINE_THREAD: &str = "nori-engine";
+/// The player engine's thread name.
+const ENGINE_THREAD: &str = "nori-engine";
 
-/// Every time an offloaded track asked for more since the process started: the platform tells it
-/// ([`count_data_request`]), and a stretch takes the difference.
+/// `onDataRequest` count since process start; a static atomic because it is bumped from the audio
+/// callback, which must not take the timeline lock.
 static DATA_REQUESTS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
-/// An offloaded track asked for more (`onDataRequest`): counted for the perf report, one atomic add.
+/// Counts one offloaded `onDataRequest`.
 pub fn count_data_request() {
     DATA_REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
@@ -140,11 +122,10 @@ fn is_zero(n: &i64) -> bool {
     *n == 0
 }
 
-/// How many of the threads that woke most a stretch keeps.
-pub const TOP_THREADS: usize = 6;
+/// Threads kept per stretch.
+const TOP_THREADS: usize = 6;
 
-/// One thread of the app at one reading: its name as the system has it, and what it has done since it
-/// started.
+/// One app thread's cumulative counters at a reading.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct PerfThread {
@@ -152,12 +133,11 @@ pub struct PerfThread {
     pub name: String,
     /// CPU time, user and system.
     pub cpu_ms: i64,
-    /// Voluntary context switches: each is the thread going to sleep and being woken again.
+    /// Voluntary context switches (wakeups).
     pub switches: i64,
 }
 
-/// What one thread did over a stretch. `born` is a thread that started during it, whose whole count
-/// is the stretch's; one that ended during it is not seen at all.
+/// One thread's use over a stretch. `born`: started during it (its whole count is the stretch's).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct PerfThreadUse {
@@ -171,14 +151,12 @@ pub struct PerfThreadUse {
     pub born: bool,
 }
 
-/// The audio output as the platform describes it, read when a stretch ends. What was asked of the track
-/// against what the platform made of it: a buffer smaller than asked, or a power-saving mode not
-/// applied, is what makes a writer wake more than the design says. -1 for a figure the platform does
-/// not give.
+/// The audio output as the platform reports it: requested vs granted buffer and performance mode,
+/// offload, route, underruns. -1 for figures the platform does not give.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct PerfOutput {
-    /// The player that opened the track, "rust" or "exoplayer".
+    /// The player that opened the track ("rust" or "exoplayer").
     #[serde(rename = "e")]
     pub engine: String,
     pub rate: i32,
@@ -187,70 +165,66 @@ pub struct PerfOutput {
     /// `AudioFormat.ENCODING_*`.
     #[serde(rename = "enc")]
     pub encoding: i32,
-    /// The buffer asked for, bytes.
+    /// Requested buffer, bytes.
     #[serde(rename = "ask")]
     pub asked_bytes: i64,
-    /// The buffer the track uses (`getBufferSizeInFrames`) and the most it could (`getBufferCapacityInFrames`).
+    /// `getBufferSizeInFrames` and `getBufferCapacityInFrames`.
     #[serde(rename = "size")]
     pub size_frames: i64,
     #[serde(rename = "cap")]
     pub capacity_frames: i64,
-    /// `AudioTrack.PERFORMANCE_MODE_*`: asked for, and what the track got.
+    /// `AudioTrack.PERFORMANCE_MODE_*`, requested and applied.
     #[serde(rename = "pma")]
     pub mode_asked: i32,
     #[serde(rename = "pm")]
     pub mode: i32,
-    /// Played by the audio chip rather than mixed on the CPU (`isOffloadedPlayback`).
+    /// `isOffloadedPlayback`.
     #[serde(rename = "off")]
     pub offloaded: bool,
-    /// Where the track is routed: `AudioDeviceInfo.TYPE_*` (0 unknown) and the device's own name.
+    /// Route: `AudioDeviceInfo.TYPE_*` (0 unknown) and device name.
     #[serde(rename = "dt")]
     pub device_type: i32,
     #[serde(rename = "dn", default, skip_serializing_if = "String::is_empty")]
     pub device_name: String,
-    /// `getUnderrunCount`: times the track ran dry since it was made.
+    /// `getUnderrunCount`.
     #[serde(rename = "ur")]
     pub underruns: i32,
     /// `getPlayState`: 1 stopped, 2 paused, 3 playing.
     #[serde(rename = "st")]
     pub play_state: i32,
-    /// Why the player plays on the CPU (PCM) rather than handing the song to the output's decoder, as it
-    /// says itself: the setting that keeps offload off, or what came of offering the song (its
-    /// compression, the platform's answer). Offloaded, what the chip leaves in (a song's encoder delay and
-    /// padding, on an output without gapless offload). Empty when the player does not say.
+    /// The player's reason for PCM instead of offload, or, when offloaded, what the chip leaves in
+    /// (encoder delay/padding without gapless offload). Empty if not given.
     #[serde(rename = "wp", default, skip_serializing_if = "String::is_empty")]
     pub pcm_why: String,
 }
 
-/// One reading of every counter the platform keeps.
+/// One reading of the platform's counters.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct PerfCounters {
-    /// A clock that counts deep sleep (Android's elapsedRealtime).
+    /// Clock including deep sleep (`elapsedRealtime`).
     pub elapsed_ms: i64,
     pub wall_ms: i64,
-    /// The process's CPU time, user and system.
+    /// Process CPU time, user + system.
     pub cpu_ms: i64,
-    /// Every thread of the app: its name, CPU time and voluntary context switches.
     pub threads: Vec<PerfThread>,
     pub alloc_bytes: i64,
     pub gcs: i64,
     pub pss_kb: i64,
-    /// What is left in the battery, where the phone counts it (µAh).
+    /// Remaining battery charge, µAh.
     pub charge_uah: Option<i64>,
     pub capacity_pct: i32,
-    /// The fuel gauge's current, its own average where it keeps one (µA, either sign by maker).
+    /// Fuel gauge current (average if available), µA, sign varies by maker.
     pub gauge_ua: Option<i64>,
-    /// Battery temperature in tenths of a degree.
+    /// Battery temperature, tenths of a degree.
     pub temp_deci: i32,
-    /// Bytes the app has received and sent over the network since boot, where the platform counts them.
+    /// Network bytes since boot.
     pub rx_bytes: Option<i64>,
     pub tx_bytes: Option<i64>,
-    /// Where the memory is, where the platform reads it.
     pub memory: Option<PerfMemory>,
 }
 
-/// What the frames drawn over a stretch came to, counted by the platform as they were drawn.
+/// Frames drawn over a stretch.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct PerfFrames {
@@ -259,13 +233,13 @@ pub struct PerfFrames {
     pub worst_ns: i64,
 }
 
-/// One row of the Performance page: what it is, and its figures on the line under it.
+/// One row of the Performance page.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct PerfFigures {
     pub title: String,
     pub detail: String,
-    /// A stretch's timeline, one timestamped line per event, for the page to fold away; empty elsewhere.
+    /// A stretch's timeline lines (foldable); empty for other rows.
     pub events: Vec<String>,
 }
 
@@ -273,17 +247,17 @@ pub struct PerfFigures {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct PerfPage {
-    /// Each state's stretches added up ("By state"); empty when nothing is recorded yet.
+    /// Per-state totals.
     pub totals: Vec<PerfFigures>,
-    /// Every frame counted; none before the app has been on screen.
+    /// Frame totals; None before any frame.
     pub frames: Option<PerfFigures>,
-    /// The stretch under way.
+    /// The current stretch.
     pub live: Option<PerfFigures>,
-    /// The stretches kept, newest first.
+    /// Kept stretches, newest first.
     pub stretches: Vec<PerfFigures>,
 }
 
-/// The phone and the build, for the report's head.
+/// Device and build, for the report header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct PerfDevice {
@@ -297,7 +271,7 @@ pub struct PerfDevice {
     pub build_type: String,
 }
 
-// ---- keeping them ----
+// Storage.
 
 fn table(c: &Connection) -> rusqlite::Result<()> {
     c.execute_batch("CREATE TABLE IF NOT EXISTS perf_stretches(ended_ms INTEGER NOT NULL, row TEXT NOT NULL)")
@@ -317,8 +291,8 @@ fn rows(c: &Connection, since_ms: i64) -> rusqlite::Result<Vec<String>> {
     out
 }
 
-/// A stretch that ended at `ended_ms` (wall clock). Stretches older than [`KEEP_MS`] go at the same
-/// time. Written on the calling thread; nothing before the settings are open.
+/// Stores a stretch that ended at `ended_ms` and prunes rows older than [`KEEP_MS`]. No-op before the
+/// app database is open.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_log_add(ended_ms: i64, stretch: PerfStretch) {
     let Some(db) = settings_store::app_db() else { return };
@@ -329,8 +303,8 @@ pub fn perf_log_add(ended_ms: i64, stretch: PerfStretch) {
     }
 }
 
-/// The stretches that ended at or after `since_ms`, oldest first; a row that does not read is passed over.
-pub fn perf_log_rows(since_ms: i64) -> Vec<PerfStretch> {
+/// Stretches that ended at or after `since_ms`, oldest first; unreadable rows are skipped.
+fn perf_log_rows(since_ms: i64) -> Vec<PerfStretch> {
     let Some(db) = settings_store::app_db() else { return Vec::new() };
     let read = rows(&db.lock(), since_ms);
     parsed(read.unwrap_or_default())
@@ -340,7 +314,7 @@ fn parsed(rows: Vec<String>) -> Vec<PerfStretch> {
     rows.iter().filter_map(|r| serde_json::from_str(r).ok()).collect()
 }
 
-/// Every stretch forgotten: "Start fresh".
+/// "Start fresh": deletes all stretches, crashes, the self test and break logs, and resets the timeline.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_log_clear() {
     let Some(db) = settings_store::app_db() else { return };
@@ -348,7 +322,6 @@ pub fn perf_log_clear() {
     if table(&c).is_ok() {
         let _ = c.execute("DELETE FROM perf_stretches", []);
     }
-    // A crash from before the series would read as one of it, and the stretch under way starts again.
     if crash_table(&c).is_ok() {
         let _ = c.execute("DELETE FROM perf_crashes", []);
     }
@@ -361,10 +334,9 @@ pub fn perf_log_clear() {
     timeline().forget();
 }
 
-// ---- measuring them ----
+// Measuring.
 
-/// The state a stretch is filed under: charging first, then the screen, then the music, then where
-/// the app is.
+/// The state key: charging, then screen, then playback, then app position.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_state(charging: bool, screen_on: bool, playing: bool, foreground: bool, player_open: bool) -> String {
     let key = if charging {
@@ -383,12 +355,11 @@ pub fn perf_state(charging: bool, screen_on: bool, playing: bool, foreground: bo
     key.into()
 }
 
-/// The settings that change what playing costs, in one line, the playback path first: `engine` is the
-/// player the running service built ("rust"; with no service yet, the one it will start). A change of
-/// this line ends a stretch as a change of state does.
+/// One-line summary of cost-relevant settings; a change ends the stretch. `engine`: the running
+/// service's player (default "rust").
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_config(engine: Option<String>) -> String {
-    let p = settings_store::current().unwrap_or_default();
+    let p = settings_store::settings_current().unwrap_or_default();
     config(engine, &p)
 }
 
@@ -406,10 +377,9 @@ fn config(engine: Option<String>, p: &nori_settings::settings::StoredPrefs) -> S
     )
 }
 
-/// The difference between two readings, filed under `state` with the settings line `cfg` it began
-/// with and the frames drawn meanwhile; `offloaded` is whether the music went to the audio chip when it
-/// ended, `output` the audio output as it stood then. None for a blink shorter than [`SHORTEST_MS`],
-/// unless it is the `live` one, which is shown however short.
+/// Builds the stretch between readings `a` and `b`. `offloaded`: offload was wanted at the end;
+/// `output`: the output then. None when shorter than [`SHORTEST_MS`], unless `live` (the current one,
+/// which only peeks at the timeline).
 #[cfg_attr(feature = "ffi", uniffi::export)]
 #[allow(clippy::too_many_arguments)]
 pub fn perf_stretch(
@@ -425,7 +395,7 @@ pub fn perf_stretch(
     let ms = b.elapsed_ms - a.elapsed_ms;
     if ms < if live { 0 } else { SHORTEST_MS } {
         if !live {
-            // The next stretch starts where this blink ends; its events wait for it.
+            // A dropped short stretch: its events carry over to the next one.
             let mut t = timeline();
             t.close(a.wall_ms, b.wall_ms, false);
             t.kept(a.wall_ms, b.wall_ms, true);
@@ -434,14 +404,12 @@ pub fn perf_stretch(
         return None;
     }
     let before: HashMap<i32, &PerfThread> = a.threads.iter().map(|t| (t.tid, t)).collect();
-    // Only threads alive at both ends: one that ended in between would take its whole count with it.
+    // Only threads alive at both ends (an exited thread's count is gone).
     let wakeups = b.threads.iter().filter_map(|t| before.get(&t.tid).map(|m| t.switches - m.switches)).sum();
     let engine: Vec<i64> = b.threads.iter().filter(|t| t.name == ENGINE_THREAD).filter_map(|t| before.get(&t.tid).filter(|m| m.name == t.name).map(|m| t.switches - m.switches)).collect();
     let engine_wakeups = (!engine.is_empty()).then(|| engine.iter().sum());
     let gauge: Vec<i64> = [a.gauge_ua, b.gauge_ua].into_iter().flatten().collect();
     let gauge_ma = (!gauge.is_empty()).then(|| (gauge.iter().map(|g| g.abs()).sum::<i64>() / gauge.len() as i64) as f64 / 1000.0);
-    // What happened meanwhile, and how long the output was really offloaded. A blink's events go on to
-    // the stretch after it; the one under way only looks.
     let mut t = timeline();
     let settings_why = offload_reason();
     let (wake_lock_ms, data_requests) = t.kept(a.wall_ms, b.wall_ms, !live);
@@ -485,9 +453,8 @@ pub fn perf_stretch(
     })
 }
 
-/// The threads that woke most between two readings, the most first, then by CPU time. A thread only in
-/// the second reading started in between, and all it did is the stretch's; a thread id taken again by
-/// another thread (the name says so) counts as that other thread's start.
+/// Top threads by wakeups, then CPU. A thread only in `after` (or a reused tid with another name) is
+/// `born` and counted whole.
 fn busiest(before: &HashMap<i32, &PerfThread>, after: &[PerfThread]) -> Vec<PerfThreadUse> {
     let mut used: Vec<PerfThreadUse> = after
         .iter()
@@ -502,9 +469,9 @@ fn busiest(before: &HashMap<i32, &PerfThread>, after: &[PerfThread]) -> Vec<Perf
     used
 }
 
-// ---- adding them up ----
+// Totals.
 
-/// Every stretch of one state added up. Battery figures leave charging out: it runs the other way.
+/// Sums of one state's stretches.
 #[derive(Debug, Default)]
 struct Totals {
     state: String,
@@ -514,20 +481,19 @@ struct Totals {
     wakeups: i64,
     alloc_bytes: i64,
     gcs: i64,
-    /// The last stretch's: memory is a level, not something spent.
+    /// Last value (a level, not a sum).
     pss_kb: i64,
-    /// Charge used, over the stretches the counter measured, and how long those were.
+    /// Charge used and the duration of stretches that measured it.
     uah: i64,
     uah_ms: i64,
     pct: i64,
     frames: i64,
     janky: i64,
-    /// Time an offloaded output was open, over the stretches that had an output and counted it, and
-    /// how long those were.
+    /// Offloaded time and the duration of stretches with an output that counted it.
     off_ms: i64,
     off_of_ms: i64,
-    /// The wake lock held, the engine's wakeups and the platform's asks for more, over the stretches that
-    /// counted them and an offloaded output was open in, and how long those were.
+    /// Wake lock, engine wakeups and data requests over offloaded stretches that counted them, and their
+    /// duration.
     lock_ms: i64,
     engine_wakeups: i64,
     requests: i64,
@@ -562,8 +528,7 @@ impl Totals {
         }
     }
 
-    /// "offloaded 45 min of 1 h 00 min (75 %)": how much of the time the audio chip really played, where
-    /// it was counted.
+    /// "offloaded 45 min 00 s of 1 h 00 min (75 %)[; awake figures]", where counted.
     fn offloaded(&self) -> Option<String> {
         (self.off_of_ms > 0).then(|| {
             let mut out = offloaded_words(self.off_ms, self.off_of_ms);
@@ -594,7 +559,7 @@ impl Totals {
         (self.frames > 0).then(|| self.janky as f64 * 100.0 / self.frames as f64)
     }
 
-    /// One state's figures on one line, as the page and the report show them.
+    /// The state's summary line (page and report).
     fn line(&self) -> String {
         let mut out = duration(self.ms);
         out.push_str(&format!(
@@ -621,8 +586,7 @@ impl Totals {
     }
 }
 
-/// The stretches added up by state, in [`STATES`]' order, then any state not listed there in the order
-/// it came; states never seen left out.
+/// Totals by state: [`STATES`] order, then unknown states in order of appearance; empty states omitted.
 fn totals(stretches: &[PerfStretch]) -> Vec<Totals> {
     let mut by: Vec<Totals> = STATES.iter().map(|(k, _)| Totals { state: k.to_string(), ..Totals::default() }).collect();
     for s in stretches {
@@ -643,10 +607,10 @@ fn state_name(key: &str) -> &str {
     STATES.iter().find(|(k, _)| *k == key).map_or(key, |(_, name)| name)
 }
 
-// ---- saying them ----
+// Formatting.
 
-/// Java's `"%.{places}f"` as `Locale.ROOT` writes it: the report reads the same on every phone. Halves
-/// round up on the number's shortest decimal form (0.15 is "0.2"), as Java's do and Rust's `{:.1}` does not.
+/// Java's `String.format("%.{places}f")` in `Locale.ROOT`: rounds half up on the shortest decimal form
+/// (0.15 -> "0.2"), unlike Rust's `{:.1}`.
 fn fixed(v: f64, places: i32) -> String {
     let v = if v.is_finite() { v } else { 0.0 };
     let places = places.max(0) as usize;
@@ -685,14 +649,14 @@ fn duration(ms: i64) -> String {
     }
 }
 
-/// "09-24 21:05": when a stretch began, by the phone's own clock.
+/// "09-24 21:05" in local time.
 fn when(wall_ms: i64) -> String {
     let local = wall_ms + nori_library::library::local_offset_s(wall_ms.div_euclid(1000)) * 1000;
     let (_, m, d, secs) = nori_library::smart::civil_from_ms(local);
     format!("{m:02}-{d:02} {:02}:{:02}", secs / 3600, secs / 60 % 60)
 }
 
-/// "12.3 MB", "840 KB": bytes moved over the network.
+/// "12.3 MB", "840 KB".
 fn bytes(n: i64) -> String {
     if n.abs() >= 1024 * 1024 {
         format!("{} MB", fixed(n as f64 / 1024.0 / 1024.0, 1))
@@ -701,8 +665,7 @@ fn bytes(n: i64) -> String {
     }
 }
 
-/// The threads that woke most, on one line: "nori-track 2.1/s 40 ms, ...". A thread that started
-/// during the stretch is marked so.
+/// "threads by wakeups: nori-track 2.1/s 40 ms, ..."; new threads marked "(new)".
 fn threads_line(s: &PerfStretch) -> Option<String> {
     if s.threads.is_empty() {
         return None;
@@ -715,8 +678,7 @@ fn threads_line(s: &PerfStretch) -> Option<String> {
     Some(format!("threads by wakeups: {}", each.join(", ")))
 }
 
-/// `AudioFormat.ENCODING_*` as a person says it, and the bytes one sample of it takes (none when it is
-/// not PCM).
+/// `AudioFormat.ENCODING_*` name and PCM sample size in bytes (None if not PCM).
 fn encoding(e: i32) -> (String, Option<i64>) {
     match e {
         2 => ("16-bit".into(), Some(2)),
@@ -733,7 +695,7 @@ fn encoding(e: i32) -> (String, Option<i64>) {
     }
 }
 
-/// `AudioTrack.PERFORMANCE_MODE_*` as a person says it.
+/// `AudioTrack.PERFORMANCE_MODE_*` name.
 fn mode(m: i32) -> &'static str {
     match m {
         0 => "none",
@@ -743,7 +705,7 @@ fn mode(m: i32) -> &'static str {
     }
 }
 
-/// The audio output on one line: what was asked of the track against what the platform made of it.
+/// The "output: ..." line.
 fn output_line(o: &PerfOutput) -> String {
     let (enc, width) = encoding(o.encoding);
     let channels = match o.channels {
@@ -766,10 +728,7 @@ fn output_line(o: &PerfOutput) -> String {
         }
     }
     out.push_str(&format!(", mode {} asked, {} given", mode(o.mode_asked), mode(o.mode)));
-    // Whether the audio chip took the stream, as the track says of itself: the answer that matters for
-    // a stretch's battery.
     out.push_str(if o.offloaded { ", offload given" } else { ", PCM" });
-    // Offloaded, the player may still say what the chip leaves in (an encoder's delay and padding).
     if !o.pcm_why.is_empty() {
         out.push_str(&format!(" ({})", o.pcm_why));
     }
@@ -786,12 +745,12 @@ fn output_line(o: &PerfOutput) -> String {
     out
 }
 
-/// The lines that say why a stretch cost what it did, under its figures: the threads, the output.
+/// Detail lines under a stretch: threads, output, memory.
 fn why_lines(s: &PerfStretch) -> Vec<String> {
     threads_line(s).into_iter().chain(s.out.as_ref().map(output_line)).chain(s.mem.as_ref().map(memory_line)).collect()
 }
 
-/// One stretch's figures on one line.
+/// A stretch's summary line.
 fn stretch_line(s: &PerfStretch) -> String {
     let mut out = format!("{}  {}", when(s.start_wall), duration(s.ms));
     out.push_str(&format!(
@@ -831,20 +790,20 @@ fn stretch_line(s: &PerfStretch) -> String {
     out
 }
 
-/// The kept stretches and the one under way, oldest first.
+/// Kept stretches plus the current one, oldest first.
 fn all(kept: Vec<PerfStretch>, live: Option<PerfStretch>) -> Vec<PerfStretch> {
     let mut all = kept;
     all.extend(live);
     all
 }
 
-/// The Performance page for the stretches kept and `live`, the one under way.
+/// The Performance page, with `live` as the current stretch.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_page(live: Option<PerfStretch>) -> PerfPage {
     page(perf_log_rows(0), live)
 }
 
-/// A stretch's figures and, on the lines under them, why it cost that.
+/// Summary line plus detail lines.
 fn stretch_detail(s: &PerfStretch) -> String {
     std::iter::once(stretch_line(s)).chain(why_lines(s)).collect::<Vec<_>>().join("\n")
 }
@@ -876,9 +835,8 @@ fn page(kept: Vec<PerfStretch>, live: Option<PerfStretch>) -> PerfPage {
     PerfPage { totals, frames, live: now, stretches }
 }
 
-/// The report the Share button sends: plain text, so it reads the same in a chat, a mail or an issue.
-/// `calls` and `covers` are the benchmarks' results, empty when they were not run; `logs` what logcat
-/// had when it was shared, which goes at the end with any crash kept.
+/// The shared plain-text report. `calls`/`covers`: benchmark results (empty if not run); `logs`: logcat
+/// at share time, appended with kept crashes.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_report(live: Option<PerfStretch>, device: PerfDevice, calls: String, covers: String, logs: PerfLogs) -> String {
     let test = perf_selftest_kept();
@@ -933,7 +891,7 @@ fn report(all: Vec<PerfStretch>, d: &PerfDevice, calls: &str, covers: &str, self
     out
 }
 
-/// The states side by side in padded columns, for a monospaced reader; "-" where a figure does not apply.
+/// Per-state totals as padded columns; "-" where not applicable.
 fn columns(totals: &[Totals]) -> String {
     let head = ["state", "time", "CPU %", "wakeups/s", "KB/min", "GCs", "PSS MB", "mAh", "mAh/h", "%/h", "frames", "janky %"];
     let dash = || "-".to_string();
@@ -965,7 +923,7 @@ fn columns(totals: &[Totals]) -> String {
     out
 }
 
-/// The report's first section: every invariant break the stretches recorded, newest first, or that none did.
+/// The report's first section: invariant breaks, newest first.
 fn invariant_section(all: &[PerfStretch]) -> String {
     let breaks: Vec<&PerfEvent> = all.iter().flat_map(|s| s.ev.iter()).filter(|e| e.kind == "invariant").collect();
     if breaks.is_empty() {
@@ -985,7 +943,7 @@ fn selftest_table(c: &Connection) -> rusqlite::Result<()> {
     c.execute_batch("CREATE TABLE IF NOT EXISTS perf_selftest(id INTEGER PRIMARY KEY CHECK (id = 1), at_ms INTEGER NOT NULL, text TEXT NOT NULL)")
 }
 
-/// The self test's result, kept in place of the last one: the report carries it near the top.
+/// Stores the self test result (replacing the previous one), shown near the report's top.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_selftest_keep(at_ms: i64, text: String) {
     let Some(db) = settings_store::app_db() else { return };
@@ -996,26 +954,24 @@ pub fn perf_selftest_keep(at_ms: i64, text: String) {
     }
 }
 
-/// The last self test's result, as kept; none before the first.
-pub fn perf_selftest_kept() -> Option<String> {
+/// The stored self test result.
+fn perf_selftest_kept() -> Option<String> {
     let db = settings_store::app_db()?;
     let c = db.lock();
     selftest_table(&c).ok()?;
     c.query_row("SELECT text FROM perf_selftest WHERE id = 1", [], |r| r.get(0)).ok()
 }
 
-// ---- what happened in them ----
+// Timeline.
 
-/// The most events a stretch keeps; past it the oldest go, and the stretch says how many.
-pub const MOST_EVENTS: usize = 150;
+/// Events kept per stretch; older ones are dropped and counted.
+const MOST_EVENTS: usize = 150;
 
-/// Formats read ahead of their song (the decoder takes the next song's first bytes before the ear gets
-/// there) that are kept until it arrives.
+/// Formats of upcoming songs (decoded ahead) kept until the song starts.
 const FORMATS_AHEAD: usize = 4;
 
-/// One thing that happened during a stretch, in words, as the page and the report print it under the
-/// stretch: when (wall clock), what kind ("song", "settings", "engine", "output", "offload",
-/// "underruns", "error", "tuning", "format") and what.
+/// A timeline event: wall time, kind ("song", "settings", "engine", "output", "offload", "underruns",
+/// "error", "tuning", "format", "invariant", ...) and text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct PerfEvent {
@@ -1027,107 +983,102 @@ pub struct PerfEvent {
     pub detail: String,
 }
 
-/// The song the ear arrived on: what the server says of the file, and where its bytes come from.
-/// Figures the platform does not know are 0 or empty.
+/// A song that started playing: server file info and data source. Unknown figures are 0 or empty.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct PerfSong {
     pub id: String,
     pub title: String,
     pub artist: String,
-    /// The file's suffix and bit rate (kbps), sample rate, bit depth and channels, as the server has them.
+    /// Server-reported suffix, bit rate (kbps), sample rate, bit depth, channels.
     pub suffix: String,
     pub bit_rate: i32,
     pub sampling_rate: i32,
     pub bit_depth: i32,
     pub channels: i32,
-    /// A finished download plays it.
+    /// Played from a finished download.
     pub downloaded: bool,
-    /// The stream cache's copy of it, by its key (`<id>:<quality>`), empty with none; and whether that
-    /// copy is whole.
+    /// Stream cache key (`<id>:<quality>`, empty if none) and whether the entry is complete.
     pub cache_key: String,
     pub cached_whole: bool,
 }
 
-/// What the decoder was handed for a song, as the player's demuxer read it. -1 for a figure it does not give.
+/// Decoder input format from the demuxer; -1 for unknown figures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct PerfFormat {
-    /// The codec's and the container's MIME types.
+    /// Codec and container MIME types.
     pub codec: String,
     pub container: String,
     pub rate: i32,
     pub channels: i32,
-    /// Bits a second.
+    /// Bits per second.
     pub bitrate: i32,
-    /// Frames cut from the start and from the end (gapless).
+    /// Gapless trim frames at start and end.
     pub delay: i32,
     pub padding: i32,
 }
 
-/// Something the platform saw happen, for the stretch under way's timeline. Told as it happens, never
-/// polled for.
+/// A platform event for the current stretch's timeline.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 pub enum PerfNote {
-    /// The ear arrived on a song.
+    /// A song started playing.
     Song { song: PerfSong },
-    /// The decoder was handed a song's format (`id`, the queue's), perhaps ahead of the song.
+    /// Decoder format for song `id`, possibly ahead of it playing.
     Format { id: String, format: PerfFormat },
-    /// The player service started with this engine ("rust", "exoplayer"), or ended (none).
+    /// The player service started with `engine`, or ended (None).
     Engine { engine: Option<String> },
-    /// The player opened an output (`key` tells one track from another), or let it go (none).
+    /// Output `key` opened, or released (None).
     Output { key: i64, output: Option<PerfOutput> },
-    /// The output `key` has run dry `count` times since it was made.
+    /// Output `key`'s underrun count.
     Underruns { key: i64, count: i32 },
-    /// Playback failed, in the player's words.
+    /// Playback error.
     Error { message: String },
-    /// The equalizer screen's tuning mode (a shallow buffer, so a band is heard at once) came on or off.
+    /// Equalizer tuning mode (shallow buffer) on or off.
     Tuning { on: bool },
-    /// The offload path's own account of something that matters to it: why a song ended, a play head
-    /// that made no sense, offload given up.
+    /// A message from the offload path.
     Offload { detail: String },
-    /// The player took its CPU wake lock (`held`), or let it go: counted, not listed.
+    /// Wake lock acquired or released (timed, not listed).
     WakeLock { held: bool },
 }
 
-/// What happened since the stretch under way began, and what it takes to say it: the settings as last
-/// seen, the song playing, the output and its underruns. The platform tells it as things happen; a
-/// stretch takes its events when it ends.
+/// The current stretch's events plus the state needed to describe them.
 #[derive(Default)]
 struct Timeline {
     events: Vec<PerfEvent>,
     dropped: i64,
-    /// The settings as last seen, from which a change is told; none before the first look.
+    /// Last seen settings; None before the first read.
     settings: Option<HashMap<String, PrefValue>>,
-    /// The settings the last event changed and their values before it: more changes to the same ones
-    /// (a band dragged) make that one event say more rather than many events.
+    /// Keys changed by the last settings event and their prior values, so a slider drag updates one
+    /// event instead of adding many.
     run: Option<(Vec<String>, HashMap<String, PrefValue>)>,
     song: Option<String>,
     ahead: Vec<(String, PerfFormat)>,
-    /// The output open, by its key, and whether it is offloaded.
+    /// Open output key and whether it is offloaded.
     track: Option<(i64, bool)>,
-    /// The underruns last read: the output's key, the count and when.
+    /// Last underrun reading: output key, count, time.
     underruns: Option<(i64, i32, i64)>,
-    /// Since when an offloaded output has been open, and how long one was before that in this stretch.
+    /// Start of the current offloaded period, and offloaded time accumulated this stretch.
     offloaded_from: Option<i64>,
     offloaded_ms: i64,
-    /// Why the settings kept offload off when the stretch under way began (none: they did not).
+    /// Settings' offload block reason at the stretch start (outer None: not yet recorded).
     why_at_start: Option<Option<&'static str>>,
-    /// Since when the player's wake lock has been held, and how long it was before that in this stretch.
+    /// Start of the current wake lock hold, and hold time accumulated this stretch.
     lock_from: Option<i64>,
     lock_ms: i64,
-    /// [`DATA_REQUESTS`] as the stretch under way began.
+    /// [`DATA_REQUESTS`] at the stretch start.
     requests_at_start: i64,
 }
 
+/// Global because the FFI entry points that feed it carry no handle.
 static TIMELINE: std::sync::LazyLock<std::sync::Mutex<Timeline>> = std::sync::LazyLock::new(Default::default);
 
 fn timeline() -> std::sync::MutexGuard<'static, Timeline> {
     TIMELINE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Settings whose values stay out of a report: the servers and their keys. Only that they changed is said.
+/// Settings whose values never appear in a report (only "changed").
 const PRIVATE: [&str; 4] = ["servers", "activeServerId", "paxSenixKey", "betterLyricsKey"];
 
 impl Timeline {
@@ -1139,7 +1090,7 @@ impl Timeline {
         self.events.push(PerfEvent { wall_ms, kind: kind.into(), detail });
     }
 
-    /// `settings_why` is why the settings keep offload off now, for an output that left it without saying.
+    /// `settings_why`: the settings' offload block reason, used when leaving offload without a reason.
     fn note(&mut self, t: i64, note: PerfNote, settings_why: Option<&str>) {
         match note {
             PerfNote::Song { song } => {
@@ -1219,8 +1170,7 @@ impl Timeline {
         }
     }
 
-    /// The output's underrun count as read now: an increase is an event, said with the reading before,
-    /// between which and now it first happened.
+    /// Records an underrun reading; an increase is an event citing the previous reading's time.
     fn underruns(&mut self, t: i64, key: i64, count: i32) {
         let (before, since) = match self.underruns {
             Some((k, n, at)) if k == key => (n, Some(at)),
@@ -1233,7 +1183,7 @@ impl Timeline {
         }
     }
 
-    /// A change of the settings, told against the ones seen before; the first look only sets them.
+    /// Records a settings change against the last seen settings (the first call only stores them).
     fn settings(&mut self, t: i64, now: HashMap<String, PrefValue>) {
         let Some(before) = self.settings.replace(now.clone()) else { return };
         let mut keys: Vec<String> = now.keys().chain(before.keys()).filter(|k| before.get(*k) != now.get(*k)).cloned().collect();
@@ -1258,8 +1208,8 @@ impl Timeline {
         self.run = Some((keys, old));
     }
 
-    /// The stretch from `start` to `end` ends: its events (none for a blink, whose events go on to the
-    /// next stretch), how many were not kept, and how long an offloaded output was open in it.
+    /// Ends the stretch `start..end`: returns its events and dropped count (empty unless `kept`; dropped
+    /// stretches pass events on) and its offloaded time.
     fn close(&mut self, start: i64, end: i64, kept: bool) -> (Vec<PerfEvent>, i64, i64) {
         let off = self.offloaded_ms + self.offloaded_from.map_or(0, |f| (end - f.max(start)).max(0));
         self.offloaded_ms = 0;
@@ -1273,8 +1223,8 @@ impl Timeline {
         (std::mem::take(&mut self.events), std::mem::take(&mut self.dropped), off)
     }
 
-    /// How long the wake lock was held from `start` to `end`, and the platform's asks for more since the
-    /// stretch began; `close`: the stretch ends there, and the next one counts from `end`.
+    /// Wake lock time in `start..end` and data requests since the stretch start; `close` resets both for
+    /// the next stretch.
     fn kept(&mut self, start: i64, end: i64, close: bool) -> (i64, i64) {
         let held = self.lock_ms + self.lock_from.map_or(0, |f| (end - f.max(start)).max(0));
         let total = DATA_REQUESTS.load(std::sync::atomic::Ordering::Relaxed);
@@ -1289,13 +1239,13 @@ impl Timeline {
         (held, requests)
     }
 
-    /// The same for the stretch under way, left as it is.
+    /// Like `close` without modifying anything (for the live stretch).
     fn so_far(&self, start: i64, now: i64) -> (Vec<PerfEvent>, i64, i64) {
         let off = self.offloaded_ms + self.offloaded_from.map_or(0, |f| (now - f.max(start)).max(0));
         (self.events.clone(), self.dropped, off)
     }
 
-    /// "Start fresh": the stretch under way begins again with nothing in it.
+    /// Clears the current stretch.
     fn forget(&mut self) {
         self.events.clear();
         self.dropped = 0;
@@ -1306,7 +1256,7 @@ impl Timeline {
     }
 }
 
-/// Something happened, at `wall_ms`: it goes on the timeline of the stretch under way.
+/// Adds a platform event to the current timeline.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_note(wall_ms: i64, note: PerfNote) {
     if matches!(note, PerfNote::Engine { .. }) {
@@ -1316,49 +1266,31 @@ pub fn perf_note(wall_ms: i64, note: PerfNote) {
     timeline().note(wall_ms, note, why);
 }
 
-/// The settings changed (or are read for the first time): which ones, and to what, go on the timeline.
+/// Records the current settings (a change becomes an event).
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_note_settings(wall_ms: i64) {
-    let Some(p) = settings_store::current() else { return };
+    let Some(p) = settings_store::settings_current() else { return };
     timeline().settings(wall_ms, nori_settings::settings::save(&p));
 }
 
-/// Something the core decided that a report should show (the lyrics chosen for a song, with their
-/// score), on the timeline of the stretch under way. Only while the perf build's watch is on: every other
-/// build keeps nothing.
+/// Adds a core decision (e.g. chosen lyrics and score) to the timeline, when the watch is on.
 pub fn note_core(kind: &str, line: &str) {
-    if !crate::invariants::on() {
-        return;
+    if crate::invariants::on() {
+        timeline().push(crate::invariants::wall_ms(), kind, line.chars().take(600).collect());
     }
-    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
-    timeline().push(t, kind, line.chars().take(600).collect());
 }
 
-/// An invariant that did not hold (invariants.rs), on the timeline of the stretch under way: longer than
-/// other events, since a stall quotes the engine's whole account of where it stood.
+/// Adds an invariant break (allowed to be long: it quotes the engine state).
 pub(crate) fn note_invariant(wall_ms: i64, line: &str) {
     timeline().push(wall_ms, "invariant", line.chars().take(2_000).collect());
 }
 
-/// Something the output said of itself (the equalizer screen's shallow track: how deep, and why), on the
-/// timeline of the stretch under way under `kind`.
+/// Adds an output self-report under `kind`.
 pub(crate) fn note_output(wall_ms: i64, kind: &str, line: &str) {
     timeline().push(wall_ms, kind, line.chars().take(400).collect());
 }
 
-/// "21:05:12", for the invariants' own list.
-pub(crate) fn clock_words(wall_ms: i64) -> String {
-    clock(wall_ms)
-}
-
-/// Why the settings keep offload off, for the invariants' look at the engine.
-pub(crate) fn offload_blocked() -> Option<&'static str> {
-    offload_reason()
-}
-
-/// The timeline since `since_ms` (wall clock), one line per event as the report prints them: the
-/// stretches that ended since and the one under way. For the self test, which quotes what happened
-/// while a check ran.
+/// Event lines since `since_ms` across stored stretches and the current one (for the self test).
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_events_since(since_ms: i64) -> Vec<String> {
     let mut events: Vec<PerfEvent> = perf_log_rows(since_ms).into_iter().flat_map(|s| s.ev).collect();
@@ -1369,10 +1301,9 @@ pub fn perf_events_since(since_ms: i64) -> Vec<String> {
     events.iter().map(|e| format!("{} {}: {}", clock(e.wall_ms), e.kind, e.detail)).collect()
 }
 
-/// Why the settings keep the audio chip from decoding (`nori_player::policy::offload_blocked`, over the
-/// settings as the output policy reads them); none when they allow it, or before they are open.
-fn offload_reason() -> Option<&'static str> {
-    let s = settings_store::current()?;
+/// Why the settings block offload (`nori_player::policy::offload_blocked`); None if allowed or unknown.
+pub(crate) fn offload_reason() -> Option<&'static str> {
+    let s = settings_store::settings_current()?;
     let prefs = nori_model::AudioPrefs {
         dsp: s.sound_chain_on(),
         skip_silence: s.skip_silence,
@@ -1386,8 +1317,7 @@ fn offload_reason() -> Option<&'static str> {
     nori_player::policy::offload_blocked(&prefs, &output)
 }
 
-/// What the stretch's tag says of offload: whether the settings and the output asked for it, which is
-/// not whether the output took it (the output line and the offloaded time say that).
+/// The cfg tag's offload part: whether offload was wanted (not whether it was granted).
 fn offload_tag(wanted: bool, settings_why: Option<&str>) -> String {
     match settings_why {
         Some(why) => format!("offload not wanted: {why}"),
@@ -1396,8 +1326,7 @@ fn offload_tag(wanted: bool, settings_why: Option<&str>) -> String {
     }
 }
 
-/// A stretch's settings tag, with the words older rows had for offload said as they are now: their bare
-/// "offloaded" was only ever the settings asking for it.
+/// A stored cfg tag with legacy offload wording translated.
 fn cfg_words(cfg: &str) -> String {
     if let Some(head) = cfg.strip_suffix(", offloaded") {
         format!("{head}, offload wanted")
@@ -1408,8 +1337,8 @@ fn cfg_words(cfg: &str) -> String {
     }
 }
 
-/// "wake lock held 12 s of 10 min 00 s (2 %), nori-engine 0.3 wakeups/s, the chip asked for more 0.3
-/// times/s": what an offloaded stretch cost the CPU, beside the platform's own pace.
+/// "wake lock held 12 s of 10 min 00 s (2 %), nori-engine 0.30 wakeups/s, the chip asked for more 0.25
+/// times/s".
 fn awake_words(lock_ms: i64, engine_wakeups: i64, requests: i64, of_ms: i64) -> String {
     let pct = if of_ms > 0 { lock_ms as f64 * 100.0 / of_ms as f64 } else { 0.0 };
     format!(
@@ -1491,7 +1420,7 @@ fn format_words(f: &PerfFormat) -> String {
     out
 }
 
-/// One setting's change: "eqEnabled off → on"; a private or long value only as changed.
+/// "eqEnabled off → on", or "key changed" for private or long values.
 fn setting_change(key: &str, before: Option<&PrefValue>, after: Option<&PrefValue>) -> String {
     let said = |v: Option<&PrefValue>| -> Option<String> {
         match v {
@@ -1510,24 +1439,23 @@ fn setting_change(key: &str, before: Option<&PrefValue>, after: Option<&PrefValu
     }
 }
 
-/// "21:05:12": when something happened, by the phone's own clock.
-fn clock(wall_ms: i64) -> String {
+/// "21:05:12" in local time.
+pub(crate) fn clock(wall_ms: i64) -> String {
     let local = wall_ms + nori_library::library::local_offset_s(wall_ms.div_euclid(1000)) * 1000;
     let secs = local.div_euclid(1000).rem_euclid(86_400);
     format!("{:02}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
 }
 
-/// A stretch's timeline, one line per event: "21:05:12 song: ...".
+/// Timeline lines: "21:05:12 song: ...".
 fn event_lines(s: &PerfStretch) -> Vec<String> {
     let dropped = (s.evx > 0).then(|| format!("({} earlier events not kept)", s.evx));
     dropped.into_iter().chain(s.ev.iter().map(|e| format!("{} {}: {}", clock(e.wall_ms), e.kind, e.detail))).collect()
 }
 
-// ---- the app's own log and crashes ----
+// Logs and crashes.
 
-/// What logcat had for the app when it was asked (the platform reads it only when the report is shared
-/// or the page's log is opened): the process's own recent lines, and the crash buffer, which holds the
-/// app's earlier processes too. Either may be empty, or say why it could not be read.
+/// Logcat text read on demand: this process's lines and the crash buffer (all runs). Either may be empty
+/// or an error message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct PerfLogs {
@@ -1535,12 +1463,12 @@ pub struct PerfLogs {
     pub crash: String,
 }
 
-/// How much of each a report carries, in characters: the log's last lines, a crash's first.
-pub const LOG_CHARS: usize = 60_000;
-pub const CRASH_CHARS: usize = 16_000;
+/// Report size limits in characters: the log's tail and a crash's head.
+const LOG_CHARS: usize = 60_000;
+const CRASH_CHARS: usize = 16_000;
 
-/// A crash kept in the app's database, so it outlives logcat's buffer: `kind` "exception" is the one the
-/// uncaught exception handler wrote as the process died, "buffer" the crash buffer as last seen.
+/// A crash stored in the database to outlive logcat: `kind` "exception" (uncaught exception handler)
+/// or "buffer" (crash buffer as last seen).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct KeptCrash {
     kind: String,
@@ -1552,7 +1480,7 @@ fn crash_table(c: &Connection) -> rusqlite::Result<()> {
     c.execute_batch("CREATE TABLE IF NOT EXISTS perf_crashes(kind TEXT PRIMARY KEY, at_ms INTEGER NOT NULL, text TEXT NOT NULL)")
 }
 
-/// Keeps `text` as the last crash of its kind; the same text again keeps the time it was first seen.
+/// Stores the last crash of `kind`; identical text keeps its first-seen time.
 fn keep_crash(c: &Connection, kind: &str, at_ms: i64, text: &str) -> rusqlite::Result<()> {
     crash_table(c)?;
     let text: String = text.chars().take(CRASH_CHARS).collect();
@@ -1571,9 +1499,8 @@ fn crashes(c: &Connection) -> rusqlite::Result<Vec<KeptCrash>> {
     out
 }
 
-/// A crash, kept at once on the calling thread (the process may be about to die): the uncaught exception
-/// handler's trace ("exception"), or the crash buffer as read at start ("buffer"). Nothing before the
-/// settings are open, or with empty `text`.
+/// Stores a crash synchronously (the process may be dying). Ignored for empty `text` or before the
+/// database is open.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_crash_keep(kind: String, at_ms: i64, text: String) {
     if text.trim().is_empty() {
@@ -1592,32 +1519,29 @@ fn perf_crashes_kept() -> Vec<KeptCrash> {
     read.unwrap_or_default()
 }
 
-/// The page's log section, as the report ends with it.
+/// The log section, as at the end of the report.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_log_text(logs: PerfLogs) -> String {
     log_section(&logs, &perf_crashes_kept())
 }
 
-// ---- the app's own lines as an invariant broke ----
+// App log lines at invariant breaks.
 
-/// How many breaks keep the app's own lines with them: the latest.
-pub const BREAK_LOGS: usize = 3;
+/// Number of latest breaks that keep their log lines.
+const BREAK_LOGS: usize = 3;
 
 fn break_log_table(c: &Connection) -> rusqlite::Result<()> {
     c.execute_batch("CREATE TABLE IF NOT EXISTS perf_break_logs(at_ms INTEGER NOT NULL, line TEXT NOT NULL, text TEXT NOT NULL)")
 }
 
-/// "21:05:12.345", for a line of the app's own log.
+/// "21:05:12.345".
 fn clock_ms(wall_ms: i64) -> String {
     format!("{}.{:03}", clock(wall_ms), wall_ms.rem_euclid(1000))
 }
 
-/// The app's latest lines (nori_model::alog keeps them, the core's and the Kotlin's under the `nori` tag)
-/// as the break `line` happened at `at_ms`, kept in the app's database with it: logcat's buffer is the
-/// whole system's and turns over in minutes, and the app may be started again before the report is
-/// shared. Only the latest [`BREAK_LOGS`] are kept.
-/// The lines are copied on the calling thread, as they stand at the break; the database is written on a
-/// thread of its own, since a break may be seen on the audio threads.
+/// Stores the app's recent log lines (`nori_model::alog`) with break `line`, since logcat turns over in
+/// minutes. Lines are copied now; the database write runs on its own thread because breaks can be seen
+/// on audio threads. Only the latest [`BREAK_LOGS`] are kept.
 pub(crate) fn keep_break_log(at_ms: i64, line: &str) {
     let lines = nori_model::alog::recent();
     let line = line.to_string();
@@ -1655,7 +1579,7 @@ fn break_logs_kept() -> Vec<(i64, String, String)> {
     read.unwrap_or_default()
 }
 
-/// The app's own lines as each of the latest breaks happened, newest first; nothing when none was kept.
+/// The break log section, newest first; empty when none kept.
 fn break_log_section(kept: &[(i64, String, String)]) -> String {
     let mut out = String::new();
     for (at, line, text) in kept {
@@ -1666,7 +1590,7 @@ fn break_log_section(kept: &[(i64, String, String)]) -> String {
     out
 }
 
-/// The last `chars` characters of `text`, from the start of a line.
+/// The last `chars` characters of `text`, starting at a line boundary.
 fn tail(text: &str, chars: usize) -> &str {
     let n = text.chars().count();
     if n <= chars {
@@ -1677,7 +1601,7 @@ fn tail(text: &str, chars: usize) -> &str {
     cut.find('\n').map_or(cut, |i| &cut[i + 1..])
 }
 
-/// The crashes and the log, the report's last part: a crash first, since it is what a log is read for.
+/// The report's last part: crashes first, then the log.
 fn log_section(logs: &PerfLogs, kept: &[KeptCrash]) -> String {
     let mut out = String::new();
     let buffer = logs.crash.trim();
@@ -1687,7 +1611,7 @@ fn log_section(logs: &PerfLogs, kept: &[KeptCrash]) -> String {
     for k in kept {
         match k.kind.as_str() {
             "exception" => out.push_str(&format!("Last uncaught exception, {}\n{}\n\n", when(k.at_ms), k.text.trim_end())),
-            // The crash buffer as it was kept, once logcat no longer has it.
+            // The stored buffer, only when logcat no longer has it.
             "buffer" if buffer.is_empty() => out.push_str(&format!("Crash buffer as kept at {}\n{}\n\n", when(k.at_ms), k.text.trim_end())),
             _ => {}
         }
@@ -1779,11 +1703,11 @@ mod tests {
         }
     }
 
-    /// Printed by Java's `String.format` (OpenJDK 21, root locale): value bits (f64), places, plus, result.
+    /// Java `String.format` output (OpenJDK 21, root locale): value bits, places, plus sign, result.
     const JAVA_FIXED: &[(u64, i32, bool, &str)] = include!("../testdata/java_fixed.in");
 
     #[test]
-    fn figures_round_as_java_does() {
+    fn fixed_matches_java() {
         for &(bits, places, plus, want) in JAVA_FIXED {
             let v = f64::from_bits(bits);
             let got = fixed(v, places);
@@ -1795,34 +1719,29 @@ mod tests {
     }
 
     #[test]
-    fn keeps_rows_in_order_and_forgets_old_ones() {
+    fn rows_ordered_and_pruned() {
         let c = Connection::open_in_memory().unwrap();
+        assert!(rows(&c, 0).unwrap().is_empty(), "no table yet");
         add(&c, 1_000, "a").unwrap();
         add(&c, 2_000, "b").unwrap();
         assert_eq!(rows(&c, 0).unwrap(), vec!["a", "b"]);
         assert_eq!(rows(&c, 1_500).unwrap(), vec!["b"]);
-        // A row two weeks and a bit later takes the first two with it.
+        // A row past KEEP_MS prunes the older ones.
         add(&c, 2_001 + KEEP_MS, "c").unwrap();
         assert_eq!(rows(&c, 0).unwrap(), vec!["c"]);
     }
 
     #[test]
-    fn reads_nothing_from_a_database_without_the_table() {
-        let c = Connection::open_in_memory().unwrap();
-        assert!(rows(&c, 0).unwrap().is_empty());
-    }
-
-    #[test]
-    fn a_row_reads_back_as_the_platform_wrote_it_before() {
-        // The shape the Kotlin recorder wrote, keys and all: the rows already on phones read as they are.
+    fn legacy_row_round_trips() {
+        // A row as the former Kotlin recorder wrote it.
         let old = r#"{"s":"off-playing","t0":1700000000000,"ms":600000,"cpu":1200,"wk":3000,"al":2048,"gc":1,"pss":150000,"uah":42000,"pct":1,"gma":152.5,"tmin":301,"tmax":305,"fr":0,"jk":0,"worst":41.5,"cfg":"engine exoplayer, on the CPU"}"#;
         let s = &parsed(vec![old.into(), "not a stretch".into()])[..];
-        assert_eq!(s.len(), 1, "a row that does not read is passed over");
+        assert_eq!(s.len(), 1, "unreadable row skipped");
         assert_eq!((s[0].state.as_str(), s[0].uah, s[0].gauge_ma, s[0].worst_ms), ("off-playing", Some(42_000), Some(152.5), 41.5));
         let back: serde_json::Value = serde_json::from_str(&serde_json::to_string(&s[0]).unwrap()).unwrap();
-        assert_eq!(back, serde_json::from_str::<serde_json::Value>(old).unwrap(), "and is written the same way");
+        assert_eq!(back, serde_json::from_str::<serde_json::Value>(old).unwrap());
         let none = PerfStretch { uah: None, gauge_ma: None, ..s[0].clone() };
-        assert!(!serde_json::to_string(&none).unwrap().contains("uah"), "a figure the phone has not is left out");
+        assert!(!serde_json::to_string(&none).unwrap().contains("uah"));
         let why = PerfStretch {
             threads: vec![PerfThreadUse { name: "nori-track".into(), cpu_ms: 3, wakeups: 90, born: true }],
             out: Some(output()),
@@ -1830,11 +1749,11 @@ mod tests {
             tx: Some(0),
             ..s[0].clone()
         };
-        assert_eq!(parsed(vec![serde_json::to_string(&why).unwrap()]), [why], "the threads, the output and the network are kept too");
+        assert_eq!(parsed(vec![serde_json::to_string(&why).unwrap()]), [why]);
     }
 
     #[test]
-    fn a_stretch_is_filed_by_charging_then_the_screen_then_the_music_then_the_app() {
+    fn state_priority() {
         assert_eq!(perf_state(true, false, true, false, false), "charging");
         assert_eq!(perf_state(false, false, true, true, true), "off-playing");
         assert_eq!(perf_state(false, false, false, true, false), "off-paused");
@@ -1843,11 +1762,11 @@ mod tests {
         assert_eq!(perf_state(false, true, true, true, true), "on-playing-player");
         assert_eq!(perf_state(false, true, true, true, false), "on-playing-app");
         assert_eq!(state_name("on-playing-away"), "Screen on, playing, another app");
-        assert_eq!(state_name("new"), "new", "a state this build does not know keeps its key");
+        assert_eq!(state_name("new"), "new", "unknown key shown as is");
     }
 
     #[test]
-    fn the_settings_line_names_the_path_that_plays() {
+    fn config_line() {
         let p = nori_settings::settings::StoredPrefs {
             eq_enabled: true,
             auto_mix: false,
@@ -1858,32 +1777,32 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(config(None, &p), "engine rust, eq on, automix off, crossfade 6 s, offload on, hi-res off, bit-perfect off");
-        assert!(config(Some("other".into()), &p).starts_with("engine other, "), "the running service's own path wins");
+        assert!(config(Some("other".into()), &p).starts_with("engine other, "));
     }
 
     #[test]
-    fn two_readings_make_a_stretch() {
+    fn stretch_from_two_readings() {
         let a = counters(10_000, &[(1, 100), (2, 50), (3, 7)]);
         let b = counters(610_000, &[(1, 400), (2, 60), (4, 9)]);
         let drawn = PerfFrames { frames: 120, janky: 3, worst_ns: 41_500_000 };
         let s = perf_stretch("off-playing".into(), "engine rust".into(), a.clone(), b.clone(), drawn, true, Some(output()), false).unwrap();
         assert_eq!((s.ms, s.start_wall, s.cpu_ms), (600_000, 11_000, 12_000));
-        assert_eq!(s.wakeups, 310, "only the threads alive at both ends");
+        assert_eq!(s.wakeups, 310, "threads alive at both ends only");
         assert_eq!((s.uah, s.pct, s.pss_kb), (Some(60_000), 1, 106_100));
-        // The gauge's two readings averaged in whole µA before becoming mA, as the recorder did.
+        // Gauge readings averaged in whole µA, then mA.
         assert_eq!(s.gauge_ma, Some(((150_010 + 150_610) / 2) as f64 / 1000.0));
         assert_eq!((s.temp_min, s.temp_max, s.frames, s.janky, s.worst_ms), (300, 310, 120, 3, 41.5));
-        assert_eq!(s.cfg, "engine rust, offload wanted", "the settings asking for offload, not the output taking it");
-        assert_eq!(s.offloaded_ms, Some(0), "no output was opened offloaded");
+        assert_eq!(s.cfg, "engine rust, offload wanted");
+        assert_eq!(s.offloaded_ms, Some(0));
         assert_eq!((s.rx, s.tx), (Some(60_000_000), Some(600_000)));
         assert_eq!(s.out, Some(output()));
         let blink = counters(12_000, &[]);
-        assert_eq!(perf_stretch("x".into(), String::new(), a.clone(), blink.clone(), drawn, false, None, false), None, "a blink is not kept");
-        assert!(perf_stretch("x".into(), String::new(), a, blink, drawn, false, None, true).is_some(), "but the one under way is shown");
+        assert_eq!(perf_stretch("x".into(), String::new(), a.clone(), blink.clone(), drawn, false, None, false), None, "too short");
+        assert!(perf_stretch("x".into(), String::new(), a, blink, drawn, false, None, true).is_some(), "live is always shown");
     }
 
     #[test]
-    fn a_stretch_keeps_the_threads_that_woke_most() {
+    fn busiest_threads() {
         let mut a = counters(0, &[]);
         a.threads = vec![thread(1, "main", 500, 1_000), thread(2, "nori-track", 10, 100), thread(3, "Thread-3", 0, 5), thread(9, "gone", 0, 0)];
         let mut b = counters(60_000, &[]);
@@ -1898,12 +1817,12 @@ mod tests {
             thread(8, "c", 2, 1),
         ];
         let s = perf_stretch("off-playing".into(), String::new(), a, b, PerfFrames { frames: 0, janky: 0, worst_ns: 0 }, false, None, false).unwrap();
-        assert_eq!(s.wakeups, 60 + 1_200 + 35, "the total is still the threads alive at both ends");
+        assert_eq!(s.wakeups, 60 + 1_200 + 35);
         let names: Vec<(&str, i64, i64, bool)> = s.threads.iter().map(|t| (t.name.as_str(), t.wakeups, t.cpu_ms, t.born)).collect();
         assert_eq!(
             names,
             [("nori-track", 1_200, 30, false), ("nori-load", 600, 90, true), ("main", 60, 20, false), ("binder:1_3", 40, 3, true), ("c", 1, 2, true), ("a", 1, 1, true)],
-            "the most woken first, a new thread with all it did, a thread id taken again as a new thread, none that did nothing"
+            "sorted; new and reused-tid threads counted whole; idle threads omitted"
         );
         assert_eq!(
             threads_line(&s).unwrap(),
@@ -1912,7 +1831,7 @@ mod tests {
     }
 
     #[test]
-    fn the_output_says_what_was_asked_and_what_was_given() {
+    fn output_line_format() {
         assert_eq!(
             output_line(&output()),
             "output: rust, 44100 Hz stereo 16-bit, buffer 500 ms of 11500 ms asked, mode power saving asked, none given, PCM, to Phone speaker, 3 underruns, playing"
@@ -1936,7 +1855,6 @@ mod tests {
             output_line(&exo),
             "output: exoplayer, 44100 Hz stereo MP3, buffer 10000 ms (300 KB asked), up to 20000 ms, mode none asked, none given, offload given, to Bluetooth: Buds, 0 underruns, paused"
         );
-        // Offload wanted and the music on the CPU all the same: the player says why.
         let why = PerfOutput { pcm_why: "MP3 with an encoder delay of 576 and padding of 1000 needs gapless offload, which the output does not do".into(), ..output() };
         assert!(
             output_line(&why).contains(", PCM (MP3 with an encoder delay of 576 and padding of 1000 needs gapless offload, which the output does not do), to Phone speaker"),
@@ -1946,7 +1864,7 @@ mod tests {
     }
 
     #[test]
-    fn stretches_add_up_by_state_in_the_page_order() {
+    fn totals_by_state_in_page_order() {
         let mut playing = stretch("off-playing", 3_600_000);
         playing.uah = Some(40_000);
         let t = totals(&[stretch("on-paused", 60_000), playing.clone(), stretch("new-state", 5_000), playing, stretch("charging", 90_000)]);
@@ -1954,11 +1872,11 @@ mod tests {
         assert_eq!(states, ["off-playing", "on-paused", "charging", "new-state"]);
         assert_eq!(t[0].line(), "2 h 00 min, CPU 1.00 %, 10.0 wakeups/s, 60 KB/min allocated, 4 GCs, PSS 150 MB, 80.0 mAh (40.0 mAh/h)");
         assert_eq!(t[1].line(), "1 min 00 s, CPU 1.00 %, 10.0 wakeups/s, 60 KB/min allocated, 2 GCs, PSS 150 MB, 3 % (180.00 %/h)");
-        assert_eq!(t[2].line(), "1 min 30 s, CPU 1.00 %, 10.0 wakeups/s, 60 KB/min allocated, 2 GCs, PSS 150 MB", "charging has no battery figures");
+        assert_eq!(t[2].line(), "1 min 30 s, CPU 1.00 %, 10.0 wakeups/s, 60 KB/min allocated, 2 GCs, PSS 150 MB", "no battery figures while charging");
     }
 
     #[test]
-    fn a_stretch_reads_on_one_line() {
+    fn stretch_line_format() {
         let mut s = stretch("on-playing-player", 187_000);
         s.frames = 900;
         s.janky = 12;
@@ -1971,11 +1889,10 @@ mod tests {
         assert!(stretch_line(&s).contains(", 9.4 mAh (180.0 mAh/h)"));
         assert_eq!(duration(42_999), "42 s");
         assert_eq!(duration(3_900_000), "1 h 05 min");
-        assert_eq!(fixed(0.125, 2), "0.13", "Java's rounding, not the float's");
     }
 
     #[test]
-    fn the_page_counts_the_frames_and_lists_the_newest_first() {
+    fn page_frames_and_order() {
         let mut a = stretch("on-playing-app", 60_000);
         a.frames = 1_000;
         a.janky = 25;
@@ -1995,27 +1912,26 @@ mod tests {
         why.threads = vec![PerfThreadUse { name: "nori-track".into(), cpu_ms: 12, wakeups: 1_440, born: false }];
         why.out = Some(output());
         let lines: Vec<String> = page(vec![why], None).stretches[0].detail.lines().map(String::from).collect();
-        assert_eq!(lines.len(), 3, "the figures, then the threads and the output under them: {lines:?}");
+        assert_eq!(lines.len(), 3, "{lines:?}");
         assert_eq!(lines[1], "threads by wakeups: nori-track 24.0/s 12 ms");
         assert!(lines[2].starts_with("output: rust, 44100 Hz"));
     }
 
     #[test]
-    fn a_stretch_says_where_its_memory_was_as_it_ended() {
+    fn stretch_keeps_end_memory() {
         let a = counters(0, &[]);
         let mut b = counters(60_000, &[]);
         b.memory = Some(PerfMemory { java_kb: 20 * 1024, native_kb: 80 * 1024, covers: 3, ..Default::default() });
         let s = perf_stretch("off-playing".into(), "engine rust".into(), a, b, PerfFrames { frames: 0, janky: 0, worst_ns: 0 }, false, None, true).unwrap();
-        assert_eq!(s.mem.as_ref().map(|m| m.native_kb), Some(80 * 1024), "the end reading's");
+        assert_eq!(s.mem.as_ref().map(|m| m.native_kb), Some(80 * 1024));
         let lines: Vec<String> = page(vec![s.clone()], None).stretches[0].detail.lines().map(String::from).collect();
         assert!(lines.last().unwrap().starts_with("memory: PSS 100 MB = Java 20, native 80,"), "{lines:?}");
-        // Kept and read back, as rows are.
         let back: PerfStretch = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back.mem, s.mem);
     }
 
     #[test]
-    fn the_report_is_plain_text_in_columns() {
+    fn report_layout() {
         let mut playing = stretch("off-playing", 3_600_000);
         playing.uah = Some(40_000);
         let d = PerfDevice {
@@ -2039,20 +1955,20 @@ mod tests {
         assert_eq!(lines[2], "Build: 0.3.4 (abc1234, perf)");
         assert!(lines[3].starts_with("Recorded: ") && lines[3].ends_with(", 2 stretches"));
         assert_eq!(lines[4], "Battery counter: yes (mAh)");
-        assert_eq!(lines[6], "Invariant breaks: none recorded", "the breaks come first, even when there are none");
+        assert_eq!(lines[6], "Invariant breaks: none recorded");
         assert_eq!(lines[8], "By state");
         assert_eq!(lines[9], "state                      time  CPU %  wakeups/s  KB/min  GCs  PSS MB   mAh  mAh/h   %/h  frames  janky %");
         assert_eq!(lines[10], "Screen off, playing  1 h 00 min   1.00       10.0      60    2     150  40.0   40.0  3.00       -        -");
         assert_eq!(lines[11], "Charging             1 min 30 s   1.00       10.0      60    2     150     -      -     -       -        -");
         assert_eq!(lines[13], "Stretches, newest first");
         assert!(lines[14].starts_with("Charging: ") && lines[14].contains(", network 3.3 MB in, 20 KB out"), "{}", lines[14]);
-        assert!(lines[15].starts_with("    output: rust, "), "the output under its stretch: {}", lines[15]);
+        assert!(lines[15].starts_with("    output: rust, "), "{}", lines[15]);
         assert!(lines[16].starts_with("Screen off, playing: "));
-        assert_eq!(&lines[17..], ["", "Cover benchmark: 12 ns"], "a benchmark not run is left out");
+        assert_eq!(&lines[17..], ["", "Cover benchmark: 12 ns"], "benchmarks not run are omitted");
     }
 
     #[test]
-    fn the_report_opens_with_the_invariant_breaks_and_the_self_test() {
+    fn report_starts_with_breaks_and_self_test() {
         let d = PerfDevice {
             manufacturer: "Samsung".into(),
             model: "SM-S901B".into(),
@@ -2081,13 +1997,13 @@ mod tests {
     }
 
     #[test]
-    fn a_start_is_written_by_the_phone_clock() {
+    fn when_uses_local_time() {
         let offset = nori_library::library::local_offset_s(0) * 1000;
         assert_eq!(when(-offset), "01-01 00:00");
         assert_eq!(when(-offset + 86_400_000 * 31 + 3_600_000 * 13 + 60_000 * 7), "02-01 13:07");
     }
 
-    /// A wall-clock time that reads as `h:m:s` on the phone's clock, on the first day of 1970.
+    /// Wall ms reading as local `h:m:s` on 1970-01-01.
     fn at(h: i64, m: i64, s: i64) -> i64 {
         -nori_library::library::local_offset_s(0) * 1000 + (h * 3600 + m * 60 + s) * 1000
     }
@@ -2117,13 +2033,13 @@ mod tests {
     }
 
     #[test]
-    fn a_song_says_what_it_is_and_where_it_comes_from() {
+    fn song_events_describe_file_and_source() {
         let mut t = Timeline::default();
-        // The decoder reads the next song's format before the ear gets there: it waits for the song.
+        // A format read ahead waits for its song.
         t.note(at(21, 0, 0), PerfNote::Format { id: "b".into(), format: mp3() }, None);
         t.note(at(21, 0, 1), PerfNote::Song { song: PerfSong { downloaded: true, ..song("a") } }, None);
         t.note(at(21, 3, 0), PerfNote::Song { song: PerfSong { cache_key: "b:320mp3".into(), cached_whole: true, ..song("b") } }, None);
-        // A format for the song playing (the first one after a start, or the output rebuilt) is said by itself.
+        // A format for the current song is its own event.
         let bare = PerfFormat { container: String::new(), bitrate: -1, delay: -1, padding: -1, ..mp3() };
         t.note(at(21, 3, 1), PerfNote::Format { id: "b".into(), format: bare }, None);
         t.note(at(21, 6, 0), PerfNote::Song { song: PerfSong { cache_key: "c:128opus".into(), ..song("c") } }, None);
@@ -2144,57 +2060,56 @@ mod tests {
     }
 
     #[test]
-    fn offload_is_timed_from_the_outputs_opened() {
+    fn offload_time_from_output_events() {
         let mut t = Timeline::default();
         let offloaded = PerfOutput { offloaded: true, encoding: 9, ..output() };
         t.note(at(10, 0, 0), PerfNote::Engine { engine: Some("exoplayer".into()) }, None);
         t.note(at(10, 0, 1), PerfNote::Output { key: 1, output: Some(offloaded.clone()) }, None);
-        // Another offloaded track (a new song's format) is not offload entered again.
+        // Another offloaded output is not a new offload entry.
         t.note(at(10, 5, 0), PerfNote::Output { key: 2, output: Some(offloaded) }, None);
         t.note(at(10, 10, 1), PerfNote::Output { key: 3, output: Some(output()) }, Some("a crossfade is set"));
         let (ev, dropped, off) = t.close(at(10, 0, 0), at(10, 20, 0), true);
-        assert_eq!((dropped, off), (0, 10 * 60_000), "offloaded from the first track to the PCM one");
+        assert_eq!((dropped, off), (0, 10 * 60_000));
         let said: Vec<String> = ev.iter().map(|e| format!("{} {}: {}", clock(e.wall_ms), e.kind, e.detail)).collect();
         assert_eq!(said[0], "10:00:00 engine: the player service started with the exoplayer engine");
         assert!(said[1].starts_with("10:00:01 output: opened: rust, 44100 Hz stereo MP3,") && said[1].contains(", offload given,"), "{}", said[1]);
         assert_eq!(said[2], "10:00:01 offload: entered: the audio chip decodes");
         assert!(said[3].starts_with("10:05:00 output: reopened: "));
         assert!(said[4].starts_with("10:10:01 output: reopened: rust, 44100 Hz stereo 16-bit") && said[4].contains(", PCM,"), "{}", said[4]);
-        assert_eq!(said[5], "10:10:01 offload: left: a crossfade is set", "the settings say why when the player does not");
+        assert_eq!(said[5], "10:10:01 offload: left: a crossfade is set", "settings reason as fallback");
         assert_eq!(ev.len(), 6);
-        assert!(t.events.is_empty(), "a stretch takes its events with it");
+        assert!(t.events.is_empty());
 
-        // Offloaded across a stretch's end: each stretch counts its own part, and the one under way so far.
+        // Offload spanning stretch ends: each counts its own part.
         t.note(at(11, 0, 0), PerfNote::Output { key: 4, output: Some(PerfOutput { offloaded: true, ..output() }) }, None);
         assert_eq!(t.close(at(10, 50, 0), at(11, 30, 0), true).2, 30 * 60_000);
         assert_eq!(t.so_far(at(11, 30, 0), at(11, 45, 0)).2, 15 * 60_000);
-        // A blink keeps its events for the next stretch, but not its time.
+        // A dropped stretch passes its events on, not its time.
         t.note(at(11, 50, 0), PerfNote::Tuning { on: true }, None);
         assert_eq!(t.close(at(11, 30, 0), at(11, 50, 1), false), (Vec::new(), 0, 20 * 60_000 + 1_000));
         t.note(at(11, 51, 0), PerfNote::Output { key: 4, output: None }, None);
         let (ev, _, off) = t.close(at(11, 50, 1), at(12, 0, 0), true);
         assert_eq!(off, 59_000);
         assert_eq!(ev.iter().map(|e| e.detail.as_str()).collect::<Vec<_>>(), ["on: the equalizer screen is open, the output takes a shallow buffer", "let go"]);
-        // The player's own reason wins over the settings'.
+        // The player's reason wins over the settings'.
         let mut t = Timeline::default();
         t.note(0, PerfNote::Output { key: 1, output: Some(PerfOutput { offloaded: true, ..output() }) }, None);
         let flac = PerfOutput { pcm_why: "FLAC is not decoded by this output".into(), ..output() };
         t.note(1, PerfNote::Output { key: 2, output: Some(flac) }, Some("AutoMix is on"));
         assert_eq!(t.events.last().unwrap().detail, "left: FLAC is not decoded by this output");
-        // The offload path's own words go on the timeline as they are.
         t.note(2, PerfNote::Offload { detail: "a ended by the play head".into() }, None);
         let e = t.events.last().unwrap();
         assert_eq!((e.kind.as_str(), e.detail.as_str()), ("offload", "a ended by the play head"));
     }
 
     #[test]
-    fn underruns_are_noted_when_they_grow_with_when_they_first_appeared() {
+    fn underrun_increases_are_events() {
         let mut t = Timeline::default();
         t.underruns(at(8, 0, 0), 7, 0);
         t.underruns(at(8, 4, 0), 7, 0);
         t.underruns(at(8, 7, 30), 7, 3);
         t.underruns(at(8, 9, 0), 7, 3);
-        // A new output counts from its own start.
+        // A new output counts from zero.
         t.underruns(at(8, 12, 0), 8, 1);
         assert_eq!(
             lines(&t),
@@ -2203,12 +2118,12 @@ mod tests {
     }
 
     #[test]
-    fn a_settings_change_says_which_and_a_drag_is_one_event() {
+    fn settings_changes_and_drag_merging() {
         use nori_settings::settings::{save, StoredPrefs};
         let mut t = Timeline::default();
         let p = StoredPrefs::default();
         t.settings(at(9, 0, 0), save(&p));
-        assert!(t.events.is_empty(), "the first look is where changes count from");
+        assert!(t.events.is_empty(), "first read is the baseline");
         let eq = StoredPrefs { eq_enabled: !p.eq_enabled, crossfade_sec: p.crossfade_sec + 6, ..p.clone() };
         t.settings(at(9, 1, 0), save(&eq));
         let on = |b: bool| if b { "on" } else { "off" };
@@ -2216,39 +2131,38 @@ mod tests {
             lines(&t),
             [format!("09:01:00 settings: crossfadeSec {} → {}, eqEnabled {} → {}", p.crossfade_sec, eq.crossfade_sec, on(p.eq_enabled), on(!p.eq_enabled))]
         );
-        // A slider dragged: one event, from where it was to where it ended.
+        // A slider drag is one event.
         for (i, v) in [0.1f32, 0.2, 0.3].into_iter().enumerate() {
             t.settings(at(9, 2, i as i64), save(&StoredPrefs { balance: v, ..eq.clone() }));
         }
         assert_eq!(t.events.len(), 2);
         assert_eq!(t.events[1].detail, format!("balance {} → 0.30 (last at 09:02:02)", fixed(p.balance as f64, 2)));
         t.settings(at(9, 3, 0), save(&StoredPrefs { paxsenix_key: "secret".into(), balance: 0.3, ..eq }));
-        assert_eq!(t.events[2].detail, "paxSenixKey changed", "a key is never in a report");
+        assert_eq!(t.events[2].detail, "paxSenixKey changed", "private value hidden");
     }
 
     #[test]
-    fn a_stretch_keeps_its_timeline_bounded_and_prints_it_under_itself() {
+    fn timeline_bounded_and_printed() {
         let mut t = Timeline::default();
         for i in 0..MOST_EVENTS as i64 + 5 {
             t.note(at(7, 0, i), PerfNote::Error { message: format!("e{i}") }, None);
         }
         let (ev, dropped, _) = t.close(at(7, 0, 0), at(8, 0, 0), true);
-        assert_eq!((ev.len(), dropped, ev[0].detail.as_str()), (MOST_EVENTS, 5, "e5"), "the oldest go");
+        assert_eq!((ev.len(), dropped, ev[0].detail.as_str()), (MOST_EVENTS, 5, "e5"));
         let mut s = stretch("off-playing", 3_600_000);
         s.ev = ev;
         s.evx = dropped;
         s.out = Some(PerfOutput { offloaded: true, ..output() });
         s.offloaded_ms = Some(2_700_000);
         let back: PerfStretch = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
-        assert_eq!(back, s, "kept with the stretch");
+        assert_eq!(back, s);
         let printed = event_lines(&s);
         assert_eq!(printed[0], "(5 earlier events not kept)");
         assert_eq!(printed[1], "07:00:05 error: e5");
         assert!(stretch_line(&s).contains(", offloaded 45 min 00 s of 1 h 00 min (75 %) [engine exoplayer, offload not wanted]"), "{}", stretch_line(&s));
         let p = page(vec![s.clone()], None);
-        assert_eq!(p.stretches[0].events.len(), MOST_EVENTS + 1, "the page folds them under the stretch");
+        assert_eq!(p.stretches[0].events.len(), MOST_EVENTS + 1);
         assert!(p.totals[0].detail.ends_with(", offloaded 45 min 00 s of 1 h 00 min (75 %)"), "{}", p.totals[0].detail);
-        // The report: the summary with the time really offloaded, then the stretch, its output and its events.
         let d = PerfDevice {
             manufacturer: "samsung".into(),
             model: "SM-S901B".into(),
@@ -2269,10 +2183,8 @@ mod tests {
         assert_eq!(lines[head + 3], "      07:00:05 error: e5");
     }
 
-    /// An offloaded stretch says how long the wake lock was held, how often the engine's thread woke and
-    /// how often the platform asked for more, so a tester's report shows what offload cost the CPU.
     #[test]
-    fn an_offloaded_stretch_says_the_wake_lock_held_and_the_engine_s_wakeups() {
+    fn offloaded_stretch_reports_wake_lock_and_engine_wakeups() {
         let mut t = Timeline { requests_at_start: DATA_REQUESTS.load(std::sync::atomic::Ordering::Relaxed), ..Timeline::default() };
         t.note(at(9, 0, 0), PerfNote::WakeLock { held: true }, None);
         t.note(at(9, 0, 5), PerfNote::WakeLock { held: false }, None);
@@ -2280,9 +2192,9 @@ mod tests {
         for _ in 0..3 {
             count_data_request();
         }
-        assert_eq!(t.kept(at(9, 0, 0), at(9, 0, 30), false), (5_000, 3), "the stretch under way only looks");
-        assert_eq!(t.kept(at(9, 0, 0), at(9, 1, 10), true), (15_000, 3), "held from 9:01:00 on, still held");
-        assert_eq!(t.kept(at(9, 1, 10), at(9, 1, 20), true), (10_000, 0), "the next stretch counts from where it began");
+        assert_eq!(t.kept(at(9, 0, 0), at(9, 0, 30), false), (5_000, 3), "peek");
+        assert_eq!(t.kept(at(9, 0, 0), at(9, 1, 10), true), (15_000, 3), "still held");
+        assert_eq!(t.kept(at(9, 1, 10), at(9, 1, 20), true), (10_000, 0), "next stretch starts fresh");
         let mut s = stretch("off-playing", 600_000);
         s.out = Some(PerfOutput { offloaded: true, ..output() });
         s.offloaded_ms = Some(600_000);
@@ -2290,7 +2202,7 @@ mod tests {
         s.engine_wakeups = Some(180);
         s.data_requests = Some(150);
         let back: PerfStretch = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
-        assert_eq!(back, s, "kept with the stretch");
+        assert_eq!(back, s);
         let line = stretch_line(&s);
         assert!(
             line.contains("offloaded 10 min 00 s of 10 min 00 s (100 %) (wake lock held 12 s of 10 min 00 s (2 %), nori-engine 0.30 wakeups/s, the chip asked for more 0.25 times/s)"),
@@ -2306,37 +2218,37 @@ mod tests {
         assert_eq!(
             by_state[0].offloaded().unwrap(),
             "offloaded 10 min 00 s of 15 min 00 s (67 %); wake lock held 12 s of 10 min 00 s (2 %), nori-engine 0.30 wakeups/s, the chip asked for more 0.25 times/s",
-            "the wake lock and wakeups of the offloaded stretches only"
+            "awake figures from offloaded stretches only"
         );
     }
 
     #[test]
-    fn the_offload_tag_says_wanted_not_given() {
+    fn offload_tag_and_legacy_cfg() {
         assert_eq!(offload_tag(true, None), "offload wanted");
         assert_eq!(offload_tag(false, Some("AutoMix is on")), "offload not wanted: AutoMix is on");
-        assert_eq!(offload_tag(true, Some("a crossfade is set")), "offload not wanted: a crossfade is set", "the settings as they were win");
+        assert_eq!(offload_tag(true, Some("a crossfade is set")), "offload not wanted: a crossfade is set");
         assert!(offload_tag(false, None).starts_with("offload not wanted: the output"));
-        assert_eq!(cfg_words("engine rust, eq off, offloaded"), "engine rust, eq off, offload wanted", "an older row's words");
+        assert_eq!(cfg_words("engine rust, eq off, offloaded"), "engine rust, eq off, offload wanted");
         assert_eq!(cfg_words("engine rust, offload wanted"), "engine rust, offload wanted");
     }
 
     #[test]
-    fn the_apps_own_lines_are_kept_with_the_latest_breaks_newest_first() {
+    fn break_logs_keep_latest() {
         let c = Connection::open_in_memory().unwrap();
         for k in 0..BREAK_LOGS as i64 + 2 {
             keep_break(&c, 1_000 * k, &format!("silent: break {k}"), &format!("10:00:0{k}.000 nori: said {k}\n10:00:0{k}.500 nori: then {k}")).unwrap();
         }
         let kept = break_logs(&c).unwrap();
-        assert_eq!(kept.iter().map(|k| k.0).collect::<Vec<_>>(), [4_000, 3_000, 2_000], "the latest, newest first");
+        assert_eq!(kept.iter().map(|k| k.0).collect::<Vec<_>>(), [4_000, 3_000, 2_000]);
         let s = break_log_section(&kept);
         let lines: Vec<&str> = s.lines().collect();
         assert!(lines[0].starts_with("The app's own lines as an invariant broke, ") && lines[0].ends_with("(2 lines): silent: break 4"), "{}", lines[0]);
         assert_eq!(lines[1..3], ["10:00:04.000 nori: said 4", "10:00:04.500 nori: then 4"]);
-        assert!(break_log_section(&[]).is_empty(), "nothing when no break kept any");
+        assert!(break_log_section(&[]).is_empty());
     }
 
     #[test]
-    fn the_report_ends_with_the_crashes_and_the_log() {
+    fn log_section_crashes_then_log() {
         let c = Connection::open_in_memory().unwrap();
         keep_crash(&c, "exception", 5_000, "java.lang.IllegalStateException: boom\n\tat A.b(A.kt:1)\n").unwrap();
         keep_crash(&c, "buffer", 1_000, "F DEBUG: signal 11").unwrap();
@@ -2345,21 +2257,21 @@ mod tests {
         assert_eq!(
             kept.iter().map(|k| (k.kind.as_str(), k.at_ms)).collect::<Vec<_>>(),
             [("exception", 5_000), ("buffer", 1_000)],
-            "the same crash keeps when it was first seen"
+            "identical crash keeps first-seen time"
         );
         let log: String = (0..5_000).map(|i| format!("09-24 21:00:00.000 1 2 I nori: line {i}\n")).collect();
         let s = log_section(&PerfLogs { app: log, crash: String::new() }, &kept);
         let lines: Vec<&str> = s.lines().collect();
         assert!(lines[0].starts_with("Last uncaught exception, "), "{}", lines[0]);
         assert_eq!(lines[1], "java.lang.IllegalStateException: boom");
-        assert!(lines[4].starts_with("Crash buffer as kept at "), "logcat has it no more: {}", lines[4]);
+        assert!(lines[4].starts_with("Crash buffer as kept at "), "{}", lines[4]);
         let head = lines.iter().position(|l| l.starts_with("Log (this process")).unwrap();
-        assert!(s.len() < LOG_CHARS + 1_000, "bounded");
-        assert!(lines[head + 1].starts_with("09-24 21:00:00.000"), "from a line's start: {}", lines[head + 1]);
-        assert_eq!(*lines.last().unwrap(), "09-24 21:00:00.000 1 2 I nori: line 4999", "the newest kept");
+        assert!(s.len() < LOG_CHARS + 1_000);
+        assert!(lines[head + 1].starts_with("09-24 21:00:00.000"), "{}", lines[head + 1]);
+        assert_eq!(*lines.last().unwrap(), "09-24 21:00:00.000 1 2 I nori: line 4999");
         let now = log_section(&PerfLogs { app: String::new(), crash: "F libc: Fatal signal 6\n".into() }, &kept);
         assert!(now.starts_with("Crash buffer (this and earlier runs of the app)\nF libc: Fatal signal 6\n"));
-        assert!(!now.contains("as kept at"), "logcat's own copy is the one shown");
+        assert!(!now.contains("as kept at"), "logcat copy preferred");
         assert!(now.ends_with("Log (this process, the last 0 lines)\n(empty)\n"));
         assert_eq!(tail("ab\ncd\nef", 4), "ef");
     }

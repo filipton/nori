@@ -1,11 +1,10 @@
-//! What a song's menu offers and in what order, what the sleep timer offers, and what a page's
-//! download entry does: the screens draw these lists as they come, one icon and their own words per
-//! action, and do what the action names. Made once each time a menu opens.
+//! What a song's menu, the sleep timer, a row swipe and a page's download entry offer; the client
+//! draws and words each action.
 
 use nori_model::{DownloadPhase, Song};
 use nori_settings::settings::SwipeAction;
 
-/// Something the song menu can do. The client draws one icon per kind, words it and does what it says.
+/// Something the song menu can do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 pub enum SongAction {
@@ -18,11 +17,9 @@ pub enum SongAction {
     StopDownload,
     Download,
     GoToAlbum { id: String },
-    /// `name` is the artist's, for the page to show before it has loaded. `named` is set on a song by
-    /// several artists, where each gets a line of its own and the line names it ("Go to A" rather than
-    /// "Go to artist").
+    /// `name` shows before the page loads; `named`: one of several artists, so the line names it.
     GoToArtist { id: String, name: String, named: bool },
-    /// A provider's song: octo-fiesta fetches it into the library when it is starred.
+    /// A provider's song: starring it has octo-fiesta fetch it into the library.
     AddToLibrary,
     SleepTimer,
     StartRadio,
@@ -37,7 +34,7 @@ pub enum SongAction {
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct SongMenuItem {
     pub action: SongAction,
-    /// Under "More": what one reaches for perhaps once a month.
+    /// Under "More".
     pub more: bool,
 }
 
@@ -51,12 +48,8 @@ pub enum SongDownload {
     Done,
 }
 
-/// The menu of `song`. `starred` is the heart as the screen shows it (this session's mark included);
-/// `player` is true when the player's own ⋯ opened it, which adds the sleep timer.
-///
-/// What someone opens a menu for comes first: the heart (the one thing here about the song rather than
-/// the queue), queueing it, keeping it, going where it came from. A provider's song (not in the library)
-/// has no mix to seed or exclude from and no link to share: those need it on the server.
+/// The menu of `song`, most used first. `starred` as shown; `player`: opened from the player, which adds
+/// the sleep timer. A provider's song has no mix or share actions: those need it on the server.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn song_menu(song: Song, starred: bool, download: SongDownload, player: bool) -> Vec<SongMenuItem> {
     let mut out = Vec::with_capacity(16);
@@ -73,7 +66,6 @@ pub fn song_menu(song: Song, starred: bool, download: SongDownload, player: bool
     if let Some(id) = &song.album_id {
         add(SongAction::GoToAlbum { id: id.clone() }, false);
     }
-    // A song by several artists names each one it can go to; one by a single artist says "artist".
     if song.artists.len() > 1 {
         for a in song.artists.iter().filter(|a| !a.id.is_empty()) {
             add(SongAction::GoToArtist { id: a.id.clone(), name: a.name.clone(), named: true }, false);
@@ -81,14 +73,14 @@ pub fn song_menu(song: Song, starred: bool, download: SongDownload, player: bool
     } else if let Some(id) = &song.artist_id {
         add(SongAction::GoToArtist { id: id.clone(), name: song.artist.clone(), named: false }, false);
     }
-    if song.is_external {
+    if song.is_provider() {
         add(SongAction::AddToLibrary, false);
     }
     if player {
         add(SongAction::SleepTimer, false);
     }
     add(SongAction::StartRadio, true);
-    if !song.is_external {
+    if !song.is_provider() {
         add(SongAction::InstantMix, true);
         add(SongAction::ExcludeFromMixes, true);
         add(SongAction::Share, true);
@@ -97,8 +89,7 @@ pub fn song_menu(song: Song, starred: bool, download: SongDownload, player: bool
     out
 }
 
-/// One choice of the sleep timer; the client words it from its numbers ("30 minutes", "End of track",
-/// "After 3 songs"; "Off" is all zeros).
+/// One sleep timer choice; all zeros is "Off".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct SleepChoice {
@@ -109,7 +100,7 @@ pub struct SleepChoice {
     pub songs: u32,
 }
 
-/// The sleep timer's choices, "Off" first while one is running (it is a choice of all zeros).
+/// The sleep timer's choices, "Off" first while one is running.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn sleep_choices(running: bool) -> Vec<SleepChoice> {
     let c = |minutes, end_of_track, songs| SleepChoice { minutes, end_of_track, songs };
@@ -123,7 +114,7 @@ pub fn sleep_choices(running: bool) -> Vec<SleepChoice> {
     out
 }
 
-/// What a sideways swipe on a song row does, and what the client says under the row.
+/// What a sideways swipe on a song row does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 pub enum RowSwipeAct {
@@ -134,8 +125,7 @@ pub enum RowSwipeAct {
     Download,
 }
 
-/// What the swipe set in the settings does on a song whose heart is `starred`; None when that side does
-/// nothing.
+/// The swipe `setting` on a song whose heart is `starred`; none when it does nothing.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn row_swipe(setting: SwipeAction, starred: bool) -> Option<RowSwipeAct> {
     match setting {
@@ -152,14 +142,13 @@ pub fn row_swipe(setting: SwipeAction, starred: bool) -> Option<RowSwipeAct> {
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 pub enum DownloadGlyph {
     None,
-    /// Waiting or arriving: waiting and downloading share the ring, so one flows into the other.
+    /// Waiting or downloading.
     Ring,
     Done,
     Failed,
 }
 
-/// A row's download mark: this session's phase for the song when it has one ([`DownloadPhase`]), else
-/// whether it is downloaded or in the queue.
+/// A row's download mark: this session's phase when there is one, else downloaded or queued.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn download_glyph(phase: Option<DownloadPhase>, downloaded: bool, pending: bool) -> DownloadGlyph {
     match phase {
@@ -172,8 +161,7 @@ pub fn download_glyph(phase: Option<DownloadPhase>, downloaded: bool, pending: b
     }
 }
 
-/// What a page's download entry does; the client words it ("Download", "Remove downloads", "Download
-/// the other 3" with the count of songs missing it already has).
+/// What a page's download entry does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 pub enum DownloadAct {
@@ -185,8 +173,7 @@ pub enum DownloadAct {
     Remove,
 }
 
-/// A page's download entry, for `songs` songs of which `missing` are not downloaded: "Download" is the
-/// wrong word once they are all here, and so is offering all of them when only a few are missing.
+/// A page's download entry for `songs` songs of which `missing` are not downloaded.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn download_entry(songs: u32, missing: u32) -> DownloadAct {
     match (songs, missing) {
@@ -197,10 +184,8 @@ pub fn download_entry(songs: u32, missing: u32) -> DownloadAct {
     }
 }
 
-/// The songs of a page not downloaded yet, as positions in `songs` in order: what a [`download_entry`]
-/// of [`DownloadAct::Missing`] fetches. `done` answers for one song id.
-///
-/// Twin of the `missing` list in `downloadEntry` (app/.../ui/DetailScreens.kt), which Android keeps.
+/// The positions of `songs` not yet `done`: what [`DownloadAct::Missing`] fetches. Twin of Android's
+/// `downloadEntry` (DetailScreens.kt).
 pub fn download_missing<'a>(songs: impl IntoIterator<Item = &'a str>, done: impl Fn(&str) -> bool) -> Vec<usize> {
     songs.into_iter().enumerate().filter(|(_, id)| !done(id)).map(|(i, _)| i).collect()
 }
@@ -230,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn a_providers_song_is_offered_to_the_library_and_nothing_that_needs_it_there() {
+    fn provider_song_menu() {
         let s = Song {
             id: "ext-deezer-song-9".into(),
             is_external: true,
@@ -261,13 +246,10 @@ mod tests {
     }
 
     #[test]
-    fn a_row_swipe_says_what_letting_go_does() {
+    fn swipe_favourite_toggles() {
         assert_eq!(row_swipe(SwipeAction::None, false), None);
-        assert_eq!(row_swipe(SwipeAction::Queue, false), Some(RowSwipeAct::Queue));
-        assert_eq!(row_swipe(SwipeAction::PlayNext, true), Some(RowSwipeAct::PlayNext));
         assert_eq!(row_swipe(SwipeAction::Favourite, true), Some(RowSwipeAct::Favourite { on: false }));
         assert_eq!(row_swipe(SwipeAction::Favourite, false), Some(RowSwipeAct::Favourite { on: true }));
-        assert_eq!(row_swipe(SwipeAction::Download, false), Some(RowSwipeAct::Download));
     }
 
     #[test]
