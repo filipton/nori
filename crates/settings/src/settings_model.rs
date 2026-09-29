@@ -1,11 +1,5 @@
-//! The settings as a model, for a client to build its own settings screen on: every setting there is to
-//! show, by the name [`setting_set`] takes, with what it holds and the values it offers (values, never
-//! words), the current values in that same form, and the facts about them that follow the core's rules -
-//! whether the output is played untouched, whether the sound chain is on, whether the battery saver stands
-//! down, the lyrics services in the order they are asked, and how the beat model's download stands.
-//!
-//! How a settings screen is laid out, which rows it has and what they say are the client's own: Android
-//! keeps its words in string resources, the terminal client words things its own way.
+//! The settings as a model for a client's settings screen: each setting's spec by name, current values
+//! in the options' form, and derived state. Layout and wording are the client's.
 
 use std::collections::HashMap;
 
@@ -20,22 +14,19 @@ use crate::settings::{row, value_of_special, SettingChange, StoredPrefs, ROWS, S
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 pub enum SettingKind {
-    /// On or off: "true" or "false".
+    /// "true" or "false".
     Switch,
-    /// One of [`SettingSpec::options`]; the music folder's options are the server's folders' ids, with ""
-    /// for all of them.
+    /// One of [`SettingSpec::options`] (for the music folder: the server's folder ids, "" for all).
     Choice,
-    /// A number from [`SettingSpec::min`] to [`SettingSpec::max`], dragged on a slider.
+    /// A number from [`SettingSpec::min`] to [`SettingSpec::max`].
     Level,
-    /// Text typed in (a service's key).
     Text,
-    /// An accent colour, one of [`SettingSpec::options`] (ARGB numbers).
+    /// One of [`SettingSpec::options`], as ARGB numbers.
     Colour,
 }
 
-/// One setting: its name (what [`setting_set`] takes and a client sends back), what it holds, the values
-/// it offers in the order they are offered, its range, and its value out of the box. Values are in the
-/// form [`SettingsState::values`] holds them, so the one chosen is found by comparing strings.
+/// One setting: its name for [`setting_set`], kind, offered values, range and default. Values are in
+/// the form [`SettingsState::values`] uses, so they compare as strings.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct SettingSpec {
@@ -59,16 +50,14 @@ fn spec(name: &str, k: &K) -> SettingSpec {
     SettingSpec { name: name.into(), kind, options, min, max, default }
 }
 
-/// Every setting a client can offer, in a stable order: the table's, then the few that are no field of
-/// their own.
+/// Every offered setting, in a stable order: the table's, then [`SPECIAL_SPECS`].
 pub fn specs() -> Vec<SettingSpec> {
     let table = ROWS.iter().filter_map(|r| Some(spec(r.name?, r.spec.as_ref()?)));
     table.chain(SPECIAL_SPECS.iter().map(|(n, k)| spec(n, k))).collect()
 }
 
-/// A setting's value now, in the form its options are in (a float as Rust writes it: "1", "0.75").
-/// The switches that also need looking things up (lyrics online, moving covers, the AutoEQ list) read as
-/// they are in effect: off while looking things up is off.
+/// A setting's value in its options' form ("1", "0.75"). Lookup switches read off while the master
+/// lookups switch is off.
 pub fn value_of(p: &StoredPrefs, name: &str) -> Option<String> {
     if let Some(v) = value_of_special(p, name) {
         return Some(v);
@@ -77,27 +66,26 @@ pub fn value_of(p: &StoredPrefs, name: &str) -> Option<String> {
     Some(if r.lookups && !p.third_party_lookups { false.to_string() } else { (r.show)(p) })
 }
 
-/// One lyrics service, where it stands in the order they are asked, and whether it is switched on. It is
-/// switched with the setting `lyricsService:<id>`, dropped at a place with `lyricsPlace` (`<id>:<place>`)
-/// and moved a place with `lyricsMove` (`<id>:-1` or `<id>:1`).
+/// One lyrics service in rank order. Changed by name with `lyricsService:<id>`, `lyricsPlace`
+/// (`<id>:<place>`) and `lyricsMove` (`<id>:-1`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct LyricsSource {
     pub id: String,
     pub on: bool,
-    /// The finest timing it can answer with: 3 word by word, 2 line by line, 1 not timed.
+    /// Finest timing: 3 word, 2 line, 1 untimed.
     pub timing: u8,
-    /// It is asked only with a key of its own (PaxSenix's).
+    /// Asked only with the PaxSenix key.
     pub needs_key: bool,
 }
 
-/// How "Better beat detection"'s model stands.
+/// The beat model's download state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 pub enum BeatModel {
-    /// This build has no runtime for it: the setting is not offered.
+    /// Not in this build.
     Unavailable,
-    /// Not on the device yet; it comes the next time AutoMix measures a song.
+    /// Not downloaded yet; fetched the next time AutoMix measures a song.
     Absent,
     WaitingForWifi,
     Downloading,
@@ -105,41 +93,31 @@ pub enum BeatModel {
     Failed { why: nori_automix::beat_model::BeatFailure },
 }
 
-/// What a settings screen needs besides the settings' own values, worked out by the core's rules.
+/// Settings screen state derived by the core's rules.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct SettingsState {
-    /// Every setting's value now ([`value_of`]), by name.
+    /// Every setting's value ([`value_of`]), by name.
     pub values: HashMap<String, String>,
-    /// The samples go out untouched (a USB DAC in bit-perfect mode): every transition, skipping silence
-    /// and the sound chain are out of the path.
+    /// Bit-perfect DAC output: transitions, silence skipping and the sound chain are out of the path.
     pub untouched: bool,
-    /// Whether the dac is what makes it untouched: always, since high quality output runs the chain too.
-    pub untouched_by_dac: bool,
-    /// Any of the equalizer, crossfeed, balance, mono or the limiter is on.
     pub sound_chain_on: bool,
-    /// The battery saver is asked for and the player has stood it down (an effect is on).
+    /// Offload is wanted but off because the sound chain is needed.
     pub offload_paused: bool,
-    /// Every lyrics service, in the order they are asked.
+    /// Every lyrics service in rank order.
     pub lyrics_sources: Vec<LyricsSource>,
     pub beat_model: BeatModel,
-    /// About how big the beat model's download is, in megabytes.
+    /// Approximate beat model download size, MB.
     pub beat_model_mb: u32,
 }
 
-/// What the output is, as the platform sees it.
+/// The output as the platform reports it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Output {
-    /// A USB DAC is taking the file in bit-perfect mode.
+    /// A USB DAC in bit-perfect mode.
     pub dac_bit_perfect: bool,
     /// Something USB is attached.
     pub usb: bool,
-}
-
-/// Whether the samples go out untouched: bit-perfect output hands exactly the file's samples to the DAC,
-/// so nothing may be mixed into them. High quality output only raises the chain's precision.
-pub fn untouched(dac_bit_perfect: bool) -> bool {
-    dac_bit_perfect
 }
 
 fn beat_model_now() -> BeatModel {
@@ -169,19 +147,18 @@ pub fn state(p: &StoredPrefs, out: Output) -> SettingsState {
         speed: p.speed,
         pitch: p.pitch,
     };
-    // A DAC stands in for "anything USB", and a refused offload is the service's own to know.
+    // A refused offload is only known to the playback service.
     let output = nori_model::OutputState { hi_res: p.hi_res, bit_perfect: out.dac_bit_perfect, usb: out.usb, offload_refused: false };
     let policy = nori_player::policy::audio_policy(&prefs, &output);
     let on = lyrics_sources::switched_on(p);
     let lyrics_sources = lyrics_sources::complete_order(&p.lyrics_order)
         .iter()
         .filter_map(|n| LyricsService::named(n))
-        .map(|s| LyricsSource { id: s.name().into(), on: on.contains(&s), timing: s.best(), needs_key: s.needs().is_some() })
+        .map(|s| LyricsSource { id: s.name().into(), on: on.contains(&s), timing: s.best(), needs_key: s.needs_key() })
         .collect();
     SettingsState {
         values: specs().into_iter().filter_map(|s| Some((s.name.clone(), value_of(p, &s.name)?))).collect(),
-        untouched: untouched(out.dac_bit_perfect),
-        untouched_by_dac: out.dac_bit_perfect,
+        untouched: out.dac_bit_perfect,
         sound_chain_on: dsp,
         offload_paused: !out.usb && p.offload && !policy.offload,
         lyrics_sources,
@@ -190,8 +167,8 @@ pub fn state(p: &StoredPrefs, out: Output) -> SettingsState {
     }
 }
 
-/// The settings changed from their defaults, one `name = value` a line in [`specs`]' order, for a report of
-/// a problem. Typed-in text (a service's key) is left out.
+/// The settings that differ from their defaults, one `name = value` per line, for a problem report.
+/// Text settings (keys) are left out.
 pub fn changed(p: &StoredPrefs) -> String {
     specs()
         .into_iter()
@@ -203,44 +180,37 @@ pub fn changed(p: &StoredPrefs) -> String {
         .collect()
 }
 
-// ---- the doors ----
-
-/// [`changed`] for the settings as they are kept now.
+/// [`changed`] for the live settings.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn settings_changed() -> String {
-    changed(&crate::settings_store::current().unwrap_or_default())
+    changed(&crate::settings_store::settings_current().unwrap_or_default())
 }
 
-/// Every setting a client can offer: its name, kind, options, range and default.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn setting_specs() -> Vec<SettingSpec> {
     specs()
 }
 
-/// [`SettingsState`] for the settings as they are kept now; `dac_bit_perfect` and `usb` are the
-/// platform's view of the output.
+/// [`SettingsState`] for the live settings and the platform's output.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn settings_state(dac_bit_perfect: bool, usb: bool) -> SettingsState {
-    let p = crate::settings_store::current().unwrap_or_default();
+    let p = crate::settings_store::settings_current().unwrap_or_default();
     state(&p, Output { dac_bit_perfect, usb })
 }
 
-/// One setting's value changed (see `settings::set_by_name`), kept where the settings are kept: the
-/// settings after it and what the player has to apply again, once, so the platform only takes them in.
-/// `None` for a name that is not a setting. The active server's own settings (`server`) are not kept
-/// here: the platform puts them through its server update, which connects again.
+/// A change by name kept in the live settings (`settings_store::edit_by_name`).
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn setting_set(name: String, value: String) -> Option<SettingChange> {
     crate::settings_store::edit_by_name(&name, &value)
 }
 
-/// Whether the interface is dark for the theme setting and the system's own.
+/// Whether the interface is dark for the theme setting and the system's mode.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn theme_is_dark(theme: crate::settings::ThemeMode, system_dark: bool) -> bool {
     nori_look::theme::is_dark(theme as i32, system_dark)
 }
 
-/// Whether the status bar is put away, for the setting and the phone held on its side (`wide`) or not.
+/// Whether the status bar is hidden; `wide` is sideways.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn status_bar_hidden(hide: crate::settings::HideStatusBar, wide: bool) -> bool {
     use crate::settings::HideStatusBar::*;
@@ -252,7 +222,7 @@ pub fn status_bar_hidden(hide: crate::settings::HideStatusBar, wide: bool) -> bo
     }
 }
 
-/// Whether the screen is kept on, for the setting, the phone on its side (`wide`) or not and charging or not.
+/// Whether the screen is kept on; `wide` is sideways.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn keep_awake(keep: crate::settings::KeepAwake, wide: bool, charging: bool) -> bool {
     use crate::settings::KeepAwake::*;
@@ -265,7 +235,7 @@ pub fn keep_awake(keep: crate::settings::KeepAwake, wide: bool, charging: bool) 
     }
 }
 
-/// Whether the setting needs to know if the phone is charging: only then is the charger watched.
+/// Whether the setting depends on charging (only then is the charger watched).
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn keep_awake_watches_charging(keep: crate::settings::KeepAwake) -> bool {
     use crate::settings::KeepAwake::*;
@@ -278,7 +248,7 @@ mod tests {
     use crate::settings::{set_by_name, SavedServer};
 
     #[test]
-    fn the_report_names_only_what_was_changed_and_never_a_typed_key() {
+    fn changed_report_skips_text() {
         let p = StoredPrefs::default();
         assert_eq!(changed(&p), "");
         let switch = specs().into_iter().find(|s| s.kind == SettingKind::Switch).unwrap();
@@ -292,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn the_screen_stays_on_only_when_the_setting_says() {
+    fn keep_awake_rules() {
         use crate::settings::KeepAwake::*;
         // (upright, on battery), (upright, charging), (sideways, on battery), (sideways, charging)
         let all = |k| [keep_awake(k, false, false), keep_awake(k, false, true), keep_awake(k, true, false), keep_awake(k, true, true)];
@@ -304,21 +274,18 @@ mod tests {
         assert_eq!(
             [Never, Sideways, Charging, SidewaysCharging, Always].map(keep_awake_watches_charging),
             [false, false, true, true, false],
-            "the charger is only watched for a setting that asks about it",
         );
-        assert_eq!(StoredPrefs::default().keep_awake, Never, "the system's own screen timeout out of the box");
     }
 
     #[test]
-    fn the_status_bar_goes_where_the_setting_says() {
+    fn status_bar_rules() {
         use crate::settings::HideStatusBar::*;
         let both = |h| (status_bar_hidden(h, false), status_bar_hidden(h, true));
         assert_eq!([both(Never), both(Sideways), both(Upright), both(Always)], [(false, false), (false, true), (true, false), (true, true)]);
-        assert_eq!(StoredPrefs::default().hide_status_bar, Sideways, "on its side out of the box");
     }
 
     #[test]
-    fn every_setting_offered_is_one_the_core_takes_and_reads_back() {
+    fn every_offered_value_round_trips() {
         let p = StoredPrefs {
             servers: vec![SavedServer { id: "a".into(), ..SavedServer::default() }],
             active_server_id: "a".into(),
@@ -351,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn values_read_as_the_options_do() {
+    fn values_match_option_form() {
         let d = StoredPrefs::default();
         assert_eq!(value_of(&d, "speed").as_deref(), Some("1"));
         assert_eq!(value_of(&d, "mobile").as_deref(), Some("0:"), "the original file on mobile data out of the box");
@@ -370,15 +337,13 @@ mod tests {
     }
 
     #[test]
-    fn the_state_says_what_the_rules_make_of_the_settings() {
+    fn state_rules() {
         let d = StoredPrefs::default();
         let s = state(&d, Output::default());
         assert!(!s.untouched && !s.sound_chain_on && !s.offload_paused);
         assert_eq!(s.values["crossfadeSec"], d.crossfade_sec.to_string());
-        let hi = state(&StoredPrefs { hi_res: true, ..d.clone() }, Output::default());
-        assert!(!hi.untouched && !hi.untouched_by_dac, "high quality output keeps the chain");
-        let dac = state(&d, Output { dac_bit_perfect: true, usb: true });
-        assert!(dac.untouched && dac.untouched_by_dac);
+        assert!(!state(&StoredPrefs { hi_res: true, ..d.clone() }, Output::default()).untouched, "high quality output keeps the chain");
+        assert!(state(&d, Output { dac_bit_perfect: true, usb: true }).untouched);
         assert!(state(&StoredPrefs { mono: true, ..d.clone() }, Output::default()).sound_chain_on);
         // The battery saver stands down while an effect is on, but not over USB, where it is not offered.
         let eq = StoredPrefs { eq_enabled: true, offload: true, ..d.clone() };

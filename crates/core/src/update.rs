@@ -1,7 +1,5 @@
-//! The app's own updates: GitHub's latest release of filipton/nori read, its tag compared with this build's
-//! version (semver), the APK for this phone's ABIs picked from its assets, whether to say so, and the daily
-//! throttle. Asked when the app starts (at most once a day, "Check for updates" on) and from its button; never
-//! on a timer. Downloading and installing the APK is the platform's: this only says which file and how big.
+//! App update check: GitHub's latest release compared by semver, the APK picked for the device ABIs, and
+//! a daily throttle. Downloading and installing is the platform's.
 
 use serde::Deserialize;
 use std::cmp::Ordering;
@@ -9,19 +7,18 @@ use std::cmp::Ordering;
 use crate::client::{Client, NetResult};
 use crate::transport::{Exchange, NetError};
 
-/// The latest published release: GitHub leaves drafts and prereleases out of it.
+/// Latest published release (excludes drafts and prereleases).
 pub const LATEST_URL: &str = "https://api.github.com/repos/filipton/nori/releases/latest";
-/// Looked at no more often than this unless asked.
+/// Minimum interval between automatic checks.
 pub const CHECK_EVERY_MS: i64 = 24 * 60 * 60 * 1000;
-/// When the last check was asked for (`app_kv`, milliseconds since the epoch).
+/// `app_kv` key: last check time (ms).
 const CHECKED_KEY: &str = "update.checkedMs";
-/// The version the user said "Later" to: not offered again by itself (`app_kv`).
+/// `app_kv` key: the version the user postponed.
 const SKIPPED_KEY: &str = "update.skipped";
-/// The whole request's limit.
+/// Request timeout.
 const TIMEOUT_MS: u32 = 20_000;
 
-/// A version as semver orders it: the three numbers, then a prerelease (`-rc.1`) before the release itself.
-/// Build metadata (`+abc`) is read and ignored.
+/// A semver version; build metadata is ignored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Version {
     pub major: u64,
@@ -31,7 +28,7 @@ pub struct Version {
 }
 
 impl Version {
-    /// "0.4.1", "v0.4.1", "0.5.0-rc.1", "1.2" (the missing number is 0). None for anything else.
+    /// Parses "0.4.1", "v0.4.1", "0.5.0-rc.1" or "1.2" (patch 0).
     pub fn parse(s: &str) -> Option<Version> {
         let s = s.trim();
         let s = s.strip_prefix(['v', 'V']).unwrap_or(s);
@@ -93,14 +90,13 @@ impl PartialOrd for Version {
     }
 }
 
-/// Whether `latest` is a later version than `current`. False when either cannot be read: an odd tag is
-/// never offered.
+/// Whether `latest` is newer than `current`; false if either does not parse.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn version_newer(current: String, latest: String) -> bool {
     matches!((Version::parse(&current), Version::parse(&latest)), (Some(c), Some(l)) if l > c)
 }
 
-/// One file of a release, as GitHub lists it.
+/// A release file.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Asset {
     pub name: String,
@@ -110,7 +106,7 @@ pub struct Asset {
     pub browser_download_url: String,
 }
 
-/// The parts of GitHub's release answer read here.
+/// The fields read from GitHub's release JSON.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Release {
     pub tag_name: String,
@@ -126,12 +122,10 @@ pub struct Release {
     pub assets: Vec<Asset>,
 }
 
-/// Every ABI Android names; an APK named after one carries only it.
+/// Android ABIs; an APK suffixed with one targets only it.
 const ABIS: [&str; 4] = ["arm64-v8a", "armeabi-v7a", "x86_64", "x86"];
 
-/// The APK for a phone whose ABIs are `abis`, most preferred first (Android's `SUPPORTED_ABIS`): one named
-/// for the first of them that has one (`nori-music-<version>-<abi>.apk`), else one named for no ABI (the
-/// release that carries both 64-bit ones, `nori-music-<version>.apk`). An empty file is never picked.
+/// The non-empty APK for the first of `abis` (preference order) that has one, else the ABI-less APK.
 pub fn pick_apk<'a>(assets: &'a [Asset], abis: &[String]) -> Option<&'a Asset> {
     let apks: Vec<&Asset> = assets.iter().filter(|a| a.name.to_ascii_lowercase().ends_with(".apk") && a.size > 0 && !a.browser_download_url.is_empty()).collect();
     let abi_of = |a: &Asset| {
@@ -144,47 +138,43 @@ pub fn pick_apk<'a>(assets: &'a [Asset], abis: &[String]) -> Option<&'a Asset> {
         .copied()
 }
 
-/// A release newer than this build, and the file to install it from.
+/// A newer release and its APK.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct AppUpdate {
-    /// The version, as it reads without its tag's "v": "0.5.0".
+    /// The tag without its "v".
     pub version: String,
-    /// The release notes as plain text (see [`plain_notes`]).
+    /// Plain-text notes ([`plain_notes`]).
     pub notes: String,
-    /// The release's page on GitHub.
     pub page: String,
     pub apk_name: String,
     pub apk_url: String,
-    /// The APK's size in bytes as GitHub states it: the download has to come to exactly this.
+    /// Expected APK size in bytes.
     pub apk_bytes: u64,
 }
 
-/// What a check found.
+/// An update check's outcome.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 pub enum UpdateCheck {
-    /// Nothing was asked: the check is switched off, or the last one was less than a day ago.
+    /// Disabled or checked within the last day.
     NotDue,
-    /// This build is the latest release, or later.
+    /// This build is at least the latest release.
     UpToDate { latest: String },
-    /// A newer release with an APK for this phone. `skipped`: the user said "Later" to this version, so it
-    /// is not brought up by itself (a check that was asked for still shows it).
+    /// A newer release with a matching APK; `skipped` when the user postponed this version.
     Available { update: AppUpdate, skipped: bool },
-    /// A newer release, but none of its files is an APK this phone can run.
+    /// A newer release without an APK for this device.
     NoApk { version: String, page: String },
 }
 
-/// What a release means for a build at `current` on a phone with `abis`; `skipped` is the version the user
-/// put off. An error for a release that should not have been listed (a draft, a prerelease) or whose tag is
-/// no version.
+/// The check outcome for `release` against build `current`; an error for drafts, prereleases and
+/// unparseable tags.
 pub fn decide(release: &Release, current: &str, abis: &[String], skipped: Option<&str>) -> Result<UpdateCheck, String> {
     if release.draft || release.prerelease {
         return Err(format!("{} is a draft or a prerelease", release.tag_name));
     }
     let latest = Version::parse(&release.tag_name).ok_or_else(|| format!("tag {:?} is no version", release.tag_name))?;
     let shown = release.tag_name.trim().trim_start_matches(['v', 'V']).to_string();
-    // A build whose own version cannot be read is offered nothing, as [`version_newer`] says.
     let newer = Version::parse(current).is_some_and(|c| latest > c);
     if !newer {
         return Ok(UpdateCheck::UpToDate { latest: shown });
@@ -206,18 +196,17 @@ pub fn decide(release: &Release, current: &str, abis: &[String], skipped: Option
     })
 }
 
-/// Whether the daily check is due: switched on, and never done, a day ago or more, or stamped in the future
-/// (the clock was set back).
+/// Whether the automatic check is due: enabled, and never checked, a day ago, or in the future (clock
+/// set back).
 pub fn due(on: bool, checked_ms: Option<i64>, now_ms: i64) -> bool {
     on && checked_ms.is_none_or(|t| t > now_ms || now_ms - t >= CHECK_EVERY_MS)
 }
 
-/// Release notes written in Markdown as plain text for a small card: headings without their marks, list
-/// items as bullets, each paragraph or item one line (the notes are wrapped at 100 columns), `**`, `__` and
-/// backticks dropped, and a link as its text. At most one blank line in a row, none at the ends.
+/// Markdown notes as plain text: headings unmarked, list items as bullets, wrapped paragraphs joined,
+/// emphasis and code marks dropped, links as their text, single blank lines between blocks.
 pub fn plain_notes(md: &str) -> String {
     let mut out: Vec<String> = Vec::new();
-    // Whether the last line out may take the next source line on (a paragraph or a list item going on).
+    // Whether the next source line continues the last output line.
     let mut open = false;
     for raw in md.lines() {
         let line = raw.trim();
@@ -260,7 +249,7 @@ pub fn plain_notes(md: &str) -> String {
     out.join("\n")
 }
 
-/// A line's inline Markdown taken out: emphasis marks, code ticks, `[text](url)` as its text.
+/// Strips inline Markdown: emphasis, code ticks, `[text](url)` to text.
 fn inline(s: &str) -> String {
     let s = s.replace("**", "").replace("__", "").replace('`', "");
     let mut out = String::with_capacity(s.len());
@@ -283,7 +272,7 @@ fn inline(s: &str) -> String {
     out
 }
 
-/// The version the user said "Later" to is not brought up by itself again; a newer one is.
+/// Postpones `version`: automatic checks mark it `skipped`.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn update_skip(version: String) {
     crate::settings_store::keep_app_value(SKIPPED_KEY, version);
@@ -291,11 +280,8 @@ pub fn update_skip(version: String) {
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Client {
-    /// Asks GitHub for the latest release and says what it means for this build (`version`, the app's own
-    /// version name) on a phone with `abis` (most preferred first). Unless `asked` (the button), only when
-    /// "Check for updates" is on and the last check was a day ago or more; the time is kept before the
-    /// request goes, so a failed one is not tried again the same day. Called when the app starts, never on a
-    /// timer.
+    /// Checks GitHub's latest release against `version` for `abis`. Unless `asked`, only when [`due`]; the
+    /// check time is stored before the request so failures are not retried the same day.
     pub async fn update_check(&self, asked: bool, version: String, abis: Vec<String>) -> NetResult<UpdateCheck> {
         let now = crate::db::now_ms();
         if !asked {
@@ -333,14 +319,14 @@ mod tests {
     }
 
     #[test]
-    fn versions_read_and_order_as_semver() {
+    fn versions_parse_and_order_as_semver() {
         assert_eq!(v("v0.4.1"), Version { major: 0, minor: 4, patch: 1, pre: vec![] });
         assert_eq!(v("1.2"), v("1.2.0"));
         assert_eq!(v("0.4.0+abc123"), v("0.4.0"));
         for bad in ["", "v", "x1.0.0", "1..0", "1.0.0.0", "1.0.0-", "1.0.0-a..b", "1.a.0", "-1.0.0"] {
             assert_eq!(Version::parse(bad), None, "{bad:?}");
         }
-        // semver.org's own chain.
+        // semver.org's example chain.
         let chain = ["1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-alpha.beta", "1.0.0-beta", "1.0.0-beta.2", "1.0.0-beta.11", "1.0.0-rc.1", "1.0.0"];
         for w in chain.windows(2) {
             assert!(v(w[0]) < v(w[1]), "{} < {}", w[0], w[1]);
@@ -351,7 +337,7 @@ mod tests {
         assert!(!version_newer("0.4.1".into(), "v0.4.1".into()));
         assert!(!version_newer("0.5.0".into(), "v0.4.1".into()));
         assert!(version_newer("0.5.0-rc.1".into(), "v0.5.0".into()));
-        assert!(!version_newer("0.4.0".into(), "nightly".into()), "an odd tag is never offered");
+        assert!(!version_newer("0.4.0".into(), "nightly".into()), "unparseable tag");
     }
 
     fn asset(name: &str) -> Asset {
@@ -363,16 +349,15 @@ mod tests {
     }
 
     #[test]
-    fn the_apk_for_this_phone_is_picked() {
+    fn apk_is_picked_by_abi_preference() {
         let both = [asset("nori-music-0.5.0.apk"), asset("SHA256SUMS")];
         assert_eq!(pick_apk(&both, &abis(&["arm64-v8a", "armeabi-v7a"])).unwrap().name, "nori-music-0.5.0.apk");
         let split = [asset("SHA256SUMS"), asset("nori-music-0.5.0-x86_64.apk"), asset("nori-music-0.5.0-arm64-v8a.apk"), asset("nori-music-0.5.0-armeabi-v7a.apk")];
         assert_eq!(pick_apk(&split, &abis(&["arm64-v8a", "armeabi-v7a", "armeabi"])).unwrap().name, "nori-music-0.5.0-arm64-v8a.apk");
-        assert_eq!(pick_apk(&split, &abis(&["x86_64", "arm64-v8a"])).unwrap().name, "nori-music-0.5.0-x86_64.apk", "the phone's order wins");
+        assert_eq!(pick_apk(&split, &abis(&["x86_64", "arm64-v8a"])).unwrap().name, "nori-music-0.5.0-x86_64.apk", "device order wins");
         assert_eq!(pick_apk(&split, &abis(&["armeabi-v7a"])).unwrap().name, "nori-music-0.5.0-armeabi-v7a.apk");
-        // "x86" is not "x86_64", and a phone with neither gets nothing.
         assert_eq!(pick_apk(&[asset("nori-music-0.5.0-x86_64.apk")], &abis(&["x86"])), None);
-        // One for this phone beats the one for every phone; one for another phone is never picked.
+        // ABI-specific beats universal; another ABI's never.
         let mixed = [asset("nori-music-0.5.0.apk"), asset("nori-music-0.5.0-arm64-v8a.apk")];
         assert_eq!(pick_apk(&mixed, &abis(&["arm64-v8a"])).unwrap().name, "nori-music-0.5.0-arm64-v8a.apk");
         assert_eq!(pick_apk(&mixed, &abis(&["x86_64"])).unwrap().name, "nori-music-0.5.0.apk");
@@ -381,7 +366,7 @@ mod tests {
         assert_eq!(pick_apk(&[asset("SHA256SUMS")], &abis(&["arm64-v8a"])), None);
     }
 
-    /// GitHub's answer, cut down to what is read, with the rest of its fields left in.
+    /// A trimmed GitHub answer, with extra fields.
     const LATEST: &str = r#"{"url":"https://api.github.com/repos/filipton/nori/releases/1","html_url":"https://github.com/filipton/nori/releases/tag/v0.5.0",
       "id":1,"author":{"login":"filipton"},"tag_name":"v0.5.0","name":"nori 0.5.0","draft":false,"prerelease":false,
       "assets":[{"name":"nori-music-0.5.0.apk","size":63901760,"content_type":"application/vnd.android.package-archive",
@@ -394,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn a_newer_release_is_offered_once_unless_asked() {
+    fn decide_offers_newer_releases() {
         let phone = abis(&["arm64-v8a"]);
         let UpdateCheck::Available { update, skipped } = decide(&latest(), "0.4.0", &phone, None).unwrap() else { panic!("offered") };
         assert!(!skipped);
@@ -403,10 +388,9 @@ mod tests {
         assert_eq!(update.apk_bytes, 63_901_760);
         assert_eq!(update.page, "https://github.com/filipton/nori/releases/tag/v0.5.0");
         assert_eq!(update.notes, "The player is faster.\n\nFixed\n\n• A song that was cut off\n• Undo works");
-        // Put off: still found, but marked so the app does not bring it up by itself.
+        // Postponed: still found, marked skipped.
         assert!(matches!(decide(&latest(), "0.4.0", &phone, Some("0.5.0")).unwrap(), UpdateCheck::Available { skipped: true, .. }));
         assert!(matches!(decide(&latest(), "0.4.0", &phone, Some("v0.5.0")).unwrap(), UpdateCheck::Available { skipped: true, .. }));
-        // An older version put off does not hide a newer one.
         assert!(matches!(decide(&latest(), "0.4.0", &phone, Some("0.4.9")).unwrap(), UpdateCheck::Available { skipped: false, .. }));
         assert_eq!(decide(&latest(), "0.5.0", &phone, None).unwrap(), UpdateCheck::UpToDate { latest: "0.5.0".into() });
         assert_eq!(decide(&latest(), "0.6.0-dev", &phone, None).unwrap(), UpdateCheck::UpToDate { latest: "0.5.0".into() });
@@ -422,19 +406,19 @@ mod tests {
     }
 
     #[test]
-    fn checked_at_most_once_a_day() {
+    fn due_at_most_daily() {
         let day = CHECK_EVERY_MS;
         let now = 1_800_000_000_000;
-        assert!(due(true, None, now), "never checked");
-        assert!(!due(false, None, now), "switched off");
+        assert!(due(true, None, now));
+        assert!(!due(false, None, now));
         assert!(!due(true, Some(now - 1000), now));
         assert!(!due(true, Some(now - day + 1), now));
         assert!(due(true, Some(now - day), now));
-        assert!(due(true, Some(now + 5 * day), now), "the clock was set back");
+        assert!(due(true, Some(now + 5 * day), now), "clock set back");
     }
 
     #[test]
-    fn notes_read_as_plain_text() {
+    fn plain_notes_strip_markdown() {
         assert_eq!(plain_notes(""), "");
         assert_eq!(plain_notes("\n\n## Added\n\n\n* `nori-cli` gains __bold__\n\n"), "Added\n\n• nori-cli gains bold");
         assert_eq!(plain_notes("one\ntwo\n\nthree"), "one two\n\nthree");

@@ -1,7 +1,5 @@
-//! Level measurements at the native rate: BS.1770 K-weighted loudness (integrated, gated), plain RMS for silence
-//! trimming, and the MixRamp points. The `ebur128` crate K-weights the audio and measures each 100 ms block of it
-//! while the audio streams past; the gating and the MixRamp windows are read from those blocks once the whole
-//! track is in, so the track costs one filter per sample and one float per block.
+//! Level measurements: BS.1770 loudness, silence trims, hidden-track gaps and MixRamp points, all read from
+//! 100 ms blocks measured while the audio streams.
 
 use ebur128::{EbuR128, Mode};
 
@@ -14,12 +12,10 @@ pub const MIXRAMP_DB: f64 = -17.0;
 
 /// Streaming 100 ms block meter: each block's mean square, K-weighted (by ebur128) and plain.
 ///
-/// ebur128's own integrated loudness (its `Mode::I`) is not asked for: it sums the last 400 ms again at every
-/// 100 ms step, which made the meter 75 % dearer; [`integrated`] gates the same windows from the blocks and
-/// reads what it does (`integrated_reads_what_ebur128_does`).
+/// ebur128's `Mode::I` is not used (75 % dearer); [`integrated`] gates the blocks to the same result.
 pub struct Meter {
     r128: EbuR128,
-    /// Samples per block: ebur128's own 100 ms step.
+    /// Samples per block (100 ms).
     block: usize,
     n: usize,
     acc_raw: f64,
@@ -42,11 +38,11 @@ impl Meter {
         }
     }
 
-    /// Mono samples in [-1, 1]; a sample that is not a number counts as silence.
+    /// Mono samples in [-1, 1]; non-finite samples count as silence.
     pub fn feed(&mut self, mut x: &[f32]) {
         while !x.is_empty() {
             let (part, rest) = x.split_at((self.block - self.n).min(x.len()));
-            // A NaN or an infinity makes the sum one too: only then are the samples looked at one by one.
+            // Non-finite samples make the sum non-finite; only then are they cleaned one by one.
             let raw = sum_of_squares(part);
             if raw.is_finite() {
                 self.add(part, raw);
@@ -68,7 +64,7 @@ impl Meter {
     }
 
     fn add(&mut self, x: &[f32], raw: f64) {
-        // Only an empty slice or a count of samples ebur128 cannot take fails: neither happens here.
+        // Fails only for an empty slice.
         let _ = self.r128.add_frames_f32(x);
         self.acc_raw += raw;
         self.n += x.len();
@@ -78,7 +74,6 @@ impl Meter {
         if self.n == 0 {
             return;
         }
-        // The K-weighted mean square of the last `n` samples, which ebur128 keeps filtered.
         let window_ms = (self.n as u64 * 1000 / self.r128.rate() as u64).max(1) as u32;
         let lufs = self.r128.loudness_window(window_ms).unwrap_or(f64::NEG_INFINITY);
         let ms = if lufs.is_finite() { 10f64.powf((lufs + 0.691) / 10.0) } else { 0.0 };
@@ -87,7 +82,7 @@ impl Meter {
         (self.acc_raw, self.n) = (0.0, 0);
     }
 
-    /// Closes a partial last block when it is at least a quarter full; a shorter one would read as a false fade.
+    /// Closes a partial last block when at least a quarter full (a shorter one would read as a fade).
     pub fn finish(&mut self) {
         if self.n * 4 >= self.block {
             self.flush_block();
@@ -95,7 +90,7 @@ impl Meter {
         (self.acc_raw, self.n) = (0.0, 0);
     }
 
-    /// Ready for the next song, keeping what it has allocated.
+    /// Ready for the next song, keeping allocations.
     pub fn reset(&mut self) {
         self.r128.reset();
         (self.acc_raw, self.n) = (0.0, 0);
@@ -148,8 +143,7 @@ pub fn integrated(blocks_k: &[f32]) -> f64 {
     }
 }
 
-/// First and last audible moment, ms: the start of the first block above `SILENCE_DB` and the end of the last one.
-/// `(0, 0)` when the whole track is silent.
+/// First and last audible moment, ms; `(0, 0)` for silence.
 pub fn silence_trim(blocks_raw: &[f32]) -> (i64, i64) {
     let loud = |v: &f32| db(*v as f64) > SILENCE_DB;
     match (blocks_raw.iter().position(loud), blocks_raw.iter().rposition(loud)) {
@@ -158,8 +152,7 @@ pub fn silence_trim(blocks_raw: &[f32]) -> (i64, i64) {
     }
 }
 
-/// The last silence of at least `min_ms` inside the music - after its first audible block and before its last one -
-/// as (start, end) ms: the gap before a hidden track. `None` when there is none.
+/// The last silence of at least `min_ms` inside the music, (start, end) ms: the gap before a hidden track.
 pub fn last_gap(blocks_raw: &[f32], min_ms: i64) -> Option<(i64, i64)> {
     let loud = |v: &f32| db(*v as f64) > SILENCE_DB;
     let (first, last) = (blocks_raw.iter().position(loud)?, blocks_raw.iter().rposition(loud)?);
@@ -181,8 +174,7 @@ pub fn last_gap(blocks_raw: &[f32], min_ms: i64) -> Option<(i64, i64)> {
     None
 }
 
-/// MixRamp points, ms: the centre of the first 400 ms window at or above `lufs + MIXRAMP_DB`, and the centre of the
-/// last one. `None` for silence.
+/// MixRamp points, ms: centres of the first and last 400 ms windows at or above `lufs + MIXRAMP_DB`.
 pub fn mixramp(blocks_k: &[f32], lufs: f64) -> Option<(i64, i64)> {
     let thresh = lufs + MIXRAMP_DB;
     let (mut first, mut last) = (None, None);
@@ -212,8 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_scale_1k_sine_reads_about_minus_3_lufs() {
-        // BS.1770: a 0 dBFS 997 Hz sine in one channel reads -3.01 LUFS.
+    fn full_scale_sine_reads_minus_3_lufs() {
         for rate in [44100.0, 48000.0] {
             let m = meter(&sine(997.0, 1.0, 5.0, rate), rate);
             let l = integrated(&m.blocks_k);
@@ -224,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn integrated_reads_what_ebur128_does() {
+    fn integrated_matches_ebur128() {
         let rate = 44100.0;
         let mut steps = sine(440.0, 0.5, 10.0, rate);
         steps.extend(sine(440.0, 0.02, 10.0, rate)); // below the relative gate
@@ -247,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    fn slices_of_any_length_and_samples_that_are_not_numbers() {
+    fn chunking_and_non_finite_samples_do_not_matter() {
         let rate = 44100.0;
         let x = sine(440.0, 0.5, 3.0, rate);
         let whole = meter(&x, rate);
@@ -275,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn the_last_long_gap_is_found() {
+    fn finds_last_long_gap() {
         let rate = 8000.0;
         let mut x = sine(440.0, 0.5, 10.0, rate);
         x.extend(vec![0f32; (rate * 2.0) as usize]); // a 2 s rest
@@ -300,12 +291,12 @@ mod tests {
         x.extend(vec![0f32; (rate * 3.0) as usize]);
         let m = meter(&x, rate);
         let (start, end) = silence_trim(&m.blocks_raw);
-        // A linear ramp of a -9 dBFS RMS tone crosses -55 dB after 4 s * 10^(-46/20) = 20 ms.
+        // The ramp crosses -55 dB after 4 s * 10^(-46/20) = 20 ms.
         assert!((2000..=2100).contains(&start), "start {start}");
         assert_eq!(end, 26000);
         let lufs = integrated(&m.blocks_k);
         let (r_in, r_out) = mixramp(&m.blocks_k, lufs).unwrap();
-        // -17 dB is 0.14 in amplitude: 0.56 s into the ramp, the window centre lands a little after.
+        // -17 dB is 0.56 s into the ramp.
         assert!((2400..=3000).contains(&r_in), "ramp in {r_in}");
         assert!((25700..=26100).contains(&r_out), "ramp out {r_out}");
     }

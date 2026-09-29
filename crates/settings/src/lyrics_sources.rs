@@ -1,12 +1,9 @@
-//! The lyrics services the settings can switch on and rank: what each is stored as, the finest
-//! timing it can answer with, whether it needs a key, and whether it is on out of the box. How each is
-//! asked and read is nori-lyrics'; which to ask, in what order, is the settings' (`StoredPrefs`'s
-//! `lyrics_order`, `lyrics_on`, and [`lyrics_lookup`]).
+//! The lyrics services the settings switch and rank, and which ones a lookup asks ([`lyrics_lookup`]).
+//! Querying them is nori-lyrics'.
 
 use crate::settings::StoredPrefs;
 
-/// Where lyrics came from, for the credit line under them: the server, or the lyrics service that
-/// answered ([`LyricsService`], one for one). The client names each ("your server", "LRCLIB").
+/// Where lyrics came from, for the credit line: the server or a [`LyricsService`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 pub enum LyricsOrigin {
@@ -29,21 +26,9 @@ pub enum LyricsOrigin {
     Genius,
 }
 
-/// A key some lyrics services need, entered in Settings, Lyrics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LyricsKey {
-    PaxSenix,
-    BetterLyrics,
-}
-
-/// Somewhere lyrics the server does not have may be looked for. Each is somebody else's service and is
-/// sent the artist, title, album and length. The server's own lyrics (OpenSubsonic's structured lyrics)
-/// always come before all of these. Declared in the order they rank out of the box, best first (see
-/// docs/features.md, "Lyrics sources", for why each is where it is and whether it is on): Apple Music's
-/// lyrics timed syllable by syllable, matched through Apple's own catalogue; the open database that times
-/// words; the other services that time words; LRCLIB, the open one that times lines; the others that time
-/// lines; untimed words. The user's own ranking and switches are stored by [`name`](Self::name), so this
-/// list can be reordered without disturbing either.
+/// A third-party lyrics service, asked after the server's own lyrics. Declared in default rank order,
+/// best first: word-timed, then line-timed from LRCLIB on, untimed last (docs/features.md, "Lyrics
+/// sources"). Rankings and switches are stored by [`name`](Self::name), so this order can change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LyricsService {
     Paxsenix,
@@ -84,7 +69,7 @@ impl LyricsService {
         LyricsService::Genius,
     ];
 
-    /// What it is stored and cached under, and what the test bridge calls it.
+    /// Its stored and cache name.
     pub fn name(self) -> &'static str {
         match self {
             LyricsService::Binilyrics => "BINILYRICS",
@@ -106,12 +91,12 @@ impl LyricsService {
         }
     }
 
-    /// The service stored under `name`, in any case; none for a name no service has any more.
+    /// The service stored under `name`, in any case.
     pub fn named(name: &str) -> Option<LyricsService> {
         LyricsService::ALL.into_iter().find(|s| s.name().eq_ignore_ascii_case(name.trim()))
     }
 
-    /// What it is called in the core's own log lines. A client names it in its own words.
+    /// Its name in log lines.
     pub fn title(self) -> &'static str {
         match self {
             LyricsService::Binilyrics => "BiniLyrics",
@@ -133,8 +118,7 @@ impl LyricsService {
         }
     }
 
-    /// The finest timing it can answer with: 3 word by word, 2 line by line, 1 not timed. A lookup does
-    /// not wait on a service that cannot beat what it has, and one with untimed words only is asked last.
+    /// The finest timing it can answer with: 3 word, 2 line, 1 untimed.
     pub fn best(self) -> u8 {
         match self {
             LyricsService::YoutubeCaptions | LyricsService::Megalobiz => 2,
@@ -143,48 +127,21 @@ impl LyricsService {
         }
     }
 
-    /// A key it cannot be asked without; with none given it is skipped quietly.
-    pub fn needs(self) -> Option<LyricsKey> {
-        match self {
-            LyricsService::PaxsenixMusixmatch | LyricsService::PaxsenixSpotify => Some(LyricsKey::PaxSenix),
-            _ => None,
-        }
+    /// Needs the PaxSenix key; skipped without it.
+    pub fn needs_key(self) -> bool {
+        matches!(self, LyricsService::PaxsenixMusixmatch | LyricsService::PaxsenixSpotify)
     }
 
-    /// Switched on out of the box, under "Find missing lyrics online": the ones that answer with one or
-    /// two quick requests and check the song they found against this one's title, artist and length
-    /// before answering. Apple Music's lyrics through PaxSenix (the song found in Apple's own catalogue
-    /// first), BiniLyrics and BetterLyrics, the open Unison database and LRCLIB; and, asked only when
-    /// those miss or answer poorly ([`first_wave`](Self::first_wave)), KuGou, NetEase, LyricsPlus and
-    /// SimpMusic, each of which names the song it found, so another song's words score too low to be
-    /// shown (nori-lyrics' trust.rs). Off: the ones that need a key, QQ Music through BetterLyrics (a
-    /// key for most songs), and the ones that read web pages or YouTube never meant for an app
-    /// (YouTube's captions and lyrics tab, Megalobiz, Genius).
-    pub fn on_by_default(self) -> bool {
-        // Every service, the owner's call (2026-09-26): with the nine above alone most songs had no
-        // word timing, and word-timed lyrics came from the rest. The waves keep the cost down: the others
-        // are asked only when the first wave misses, scores low, or has no word timing
-        // (nori-lyrics' race.rs `wants_words`); the ones needing a key stay silent until it is given.
-        let _ = self;
-        true
-    }
-
-    /// Asked in the first wave of a lookup: cheap (one or two requests), quick and good. The others that
-    /// are on are asked only when the first wave misses or its best answer scores low, so a song that
-    /// PaxSenix, BiniLyrics, Unison or LRCLIB have costs no more than those few requests.
+    /// Asked in a lookup's first wave: cheap and good. The rest are asked only when the first wave misses,
+    /// scores low or lacks word timing (nori-lyrics' race.rs).
     pub fn first_wave(self) -> bool {
-        // KuGou and SimpMusic too: in the owner's library they, PaxSenix and BiniLyrics gave most of the
-        // word-timed lyrics shown (2026-09-26), so waiting for a first wave without them only delayed them.
         matches!(
             self,
             LyricsService::Paxsenix | LyricsService::Binilyrics | LyricsService::Unison | LyricsService::Kugou | LyricsService::Simpmusic | LyricsService::Lrclib
         )
     }
 
-    /// How far its answers are trusted before anything else is known, 0 to 1: the services that match
-    /// the song in a catalogue by its exact length and answer with that catalogue's own lyrics highest,
-    /// the open databases next, the unofficial catalogues after them, and captions and scraped pages
-    /// lowest. One part of an answer's score (nori-lyrics' trust.rs).
+    /// Prior trust in its answers, 0 to 1 (part of nori-lyrics' trust.rs score).
     pub fn prior(self) -> f64 {
         match self {
             LyricsService::Paxsenix => 0.95,
@@ -222,18 +179,13 @@ impl LyricsService {
     }
 }
 
-/// Every service's name in the order they rank out of the box.
+/// Every service's name in default rank order. Also the default set switched on.
 pub fn default_order() -> Vec<String> {
     LyricsService::ALL.iter().map(|s| s.name().to_string()).collect()
 }
 
-/// The names of the services on out of the box.
-pub fn default_on() -> Vec<String> {
-    LyricsService::ALL.iter().filter(|s| s.on_by_default()).map(|s| s.name().to_string()).collect()
-}
-
-/// A stored ranking, read: names no service has any more left out, each service once, and any service
-/// added since it was saved put in where it ranks out of the box (after the one above it there).
+/// A stored ranking completed: unknown names dropped, duplicates removed, and services added since
+/// inserted after their default predecessor.
 pub fn complete_order(stored: &[String]) -> Vec<String> {
     let mut order: Vec<LyricsService> = Vec::new();
     for s in stored.iter().filter_map(|n| LyricsService::named(n)) {
@@ -250,7 +202,7 @@ pub fn complete_order(stored: &[String]) -> Vec<String> {
     order.into_iter().map(|s| s.name().to_string()).collect()
 }
 
-/// A stored set of names, read: known services only, each once, in their stored order.
+/// Known service names only, each once, in stored order.
 pub fn known(stored: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for s in stored.iter().filter_map(|n| LyricsService::named(n)) {
@@ -261,20 +213,18 @@ pub fn known(stored: &[String]) -> Vec<String> {
     out
 }
 
-/// The services switched on, in the order they rank.
+/// The services switched on, in rank order.
 pub fn switched_on(p: &StoredPrefs) -> Vec<LyricsService> {
     p.lyrics_order.iter().filter(|n| p.lyrics_on.contains(n)).filter_map(|n| LyricsService::named(n)).collect()
 }
 
-/// `service` moved `by` places (-1 up, 1 down) in the ranking, past its neighbours whether they are
-/// switched on or not: the list is one, and a switch never moves a service in it.
+/// The ranking with `service` moved `by` places (-1 up), past switched-off neighbours too.
 pub fn moved(p: &StoredPrefs, service: LyricsService, by: i32) -> Vec<String> {
     let Some(at) = p.lyrics_order.iter().position(|n| n == service.name()) else { return p.lyrics_order.clone() };
     placed(p, service, (at as i64 + by as i64).max(0) as usize)
 }
 
-/// `service` taken out of the ranking and put back at place `to` (0 is first; past the end is last):
-/// a service held by its handle and dropped somewhere else.
+/// The ranking with `service` moved to place `to` (past the end is last).
 pub fn placed(p: &StoredPrefs, service: LyricsService, to: usize) -> Vec<String> {
     let mut order = complete_order(&p.lyrics_order);
     let Some(at) = order.iter().position(|n| n == service.name()) else { return order };
@@ -283,9 +233,7 @@ pub fn placed(p: &StoredPrefs, service: LyricsService, to: usize) -> Vec<String>
     order
 }
 
-/// One lookup, as the settings have it: the services to ask in the order they rank (switched on, and
-/// with the key they need), whether a lyric timed by line is held back while a service ranked lower may
-/// still time the words, and the keys.
+/// What one lookup asks: the services in rank order, and the options and keys.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LyricsLookup {
     pub services: Vec<LyricsService>,
@@ -294,16 +242,12 @@ pub struct LyricsLookup {
     pub better_lyrics_key: String,
 }
 
-/// The lookup to make now: no service unless both switches over them are on (looking things up at all,
-/// and lyrics online), and none that needs a key nobody has given.
+/// The lookup the settings allow: none unless both the lookups and online lyrics switches are on, and
+/// no service whose key is missing.
 pub fn lyrics_lookup(p: &StoredPrefs) -> LyricsLookup {
     let paxsenix_key = p.paxsenix_key.trim().to_string();
     let better_lyrics_key = p.better_lyrics_key.trim().to_string();
-    let has = |k: LyricsKey| match k {
-        LyricsKey::PaxSenix => !paxsenix_key.is_empty(),
-        LyricsKey::BetterLyrics => !better_lyrics_key.is_empty(),
-    };
-    let services = if p.third_party_lookups && p.lyrics_online { switched_on(p).into_iter().filter(|s| s.needs().is_none_or(has)).collect() } else { Vec::new() };
+    let services = if p.third_party_lookups && p.lyrics_online { switched_on(p).into_iter().filter(|s| !s.needs_key() || !paxsenix_key.is_empty()).collect() } else { Vec::new() };
     LyricsLookup { services, prefer_words: p.lyrics_prefer_words, paxsenix_key, better_lyrics_key }
 }
 
@@ -316,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn every_service_has_a_name_that_reads_back() {
+    fn names_round_trip() {
         for s in LyricsService::ALL {
             assert_eq!(LyricsService::named(s.name()), Some(s));
             assert_eq!(LyricsService::named(&s.name().to_lowercase()), Some(s));
@@ -326,22 +270,20 @@ mod tests {
     }
 
     #[test]
-    fn the_reputable_services_are_on_out_of_the_box_best_first() {
-        assert_eq!(default_on(), default_order(), "every service is on out of the box, in its order");
+    fn default_lookup() {
         let on = StoredPrefs::default();
-        assert!(on.third_party_lookups && on.lyrics_online, "looking lyrics up is on out of the box");
-        assert!(lyrics_lookup(&StoredPrefs { third_party_lookups: false, ..on.clone() }).services.is_empty(), "and off under the lookups switch");
+        assert!(lyrics_lookup(&StoredPrefs { third_party_lookups: false, ..on.clone() }).services.is_empty(), "off under the lookups switch");
         let first: Vec<LyricsService> = lyrics_lookup(&on).services.into_iter().filter(|s| s.first_wave()).collect();
         let mut want = vec![LyricsService::Paxsenix, LyricsService::Binilyrics, LyricsService::Unison, LyricsService::Kugou, LyricsService::Simpmusic, LyricsService::Lrclib];
         want.sort_by_key(|s| default_order().iter().position(|n| n == s.name()));
         assert_eq!(first, want, "the cheap and good ones first");
-        assert!(lyrics_lookup(&on).services.iter().all(|s| s.needs().is_none()), "the ones that need a key are skipped until it is given");
+        assert!(lyrics_lookup(&on).services.iter().all(|s| !s.needs_key()), "keyed services wait for a key");
         let off = StoredPrefs { lyrics_online: false, ..on };
         assert!(lyrics_lookup(&off).services.is_empty());
     }
 
     #[test]
-    fn the_default_order_goes_from_word_timing_to_line_timing_to_none() {
+    fn default_order_by_timing() {
         let order: Vec<LyricsService> = default_order().iter().filter_map(|n| LyricsService::named(n)).collect();
         assert_eq!(order.len(), 16);
         let rank = |s: LyricsService| order.iter().position(|o| *o == s).unwrap();
@@ -350,13 +292,12 @@ mod tests {
         assert!(order[..lrclib].iter().all(|s| s.best() == 3), "only services that time words rank above LRCLIB");
         assert!(order[lrclib..].windows(2).all(|w| w[0].best() >= w[1].best() || w[0] == LyricsService::Lrclib), "then by line, then untimed");
         assert_eq!(order[14..], [LyricsService::YoutubeMusic, LyricsService::Genius]);
-        assert!(LyricsService::ALL.into_iter().all(|s| s.on_by_default()), "every service on out of the box");
-        assert!(LyricsService::ALL.into_iter().filter(|s| s.first_wave()).all(|s| s.on_by_default() && s.best() == 3 || s == LyricsService::Lrclib));
+        assert!(LyricsService::ALL.into_iter().filter(|s| s.first_wave()).all(|s| s.best() == 3 || s == LyricsService::Lrclib));
         assert!(LyricsService::ALL.into_iter().all(|s| (0.0..=1.0).contains(&s.prior())));
     }
 
     #[test]
-    fn a_service_that_needs_a_key_waits_for_one() {
+    fn keyed_service_waits_for_key() {
         let p = StoredPrefs { third_party_lookups: true, lyrics_on: names(&["PAXSENIX_SPOTIFY", "LRCLIB"]), ..StoredPrefs::default() };
         assert_eq!(lyrics_lookup(&p).services, [LyricsService::Lrclib]);
         let keyed = StoredPrefs { paxsenix_key: " abc ".into(), ..p };
@@ -366,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stored_ranking_gains_new_services_where_they_rank() {
+    fn complete_order_inserts_new_services() {
         let order = complete_order(&names(&["LRCLIB", "UNISON", "MUSIXMATCH", "LRCLIB"]));
         assert_eq!(order.len(), 16);
         assert_eq!(order[..2], names(&["PAXSENIX", "BINILYRICS"]), "the ones ranked above everything stored come first");
@@ -377,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn a_move_passes_the_next_service_whether_it_is_on_or_not() {
+    fn move_passes_switched_off_services() {
         let p = StoredPrefs { lyrics_on: names(&["NETEASE", "LRCLIB", "GENIUS"]), ..StoredPrefs::default() };
         let at = |o: &[String], n: &str| o.iter().position(|x| x == n).unwrap();
         let order = moved(&p, LyricsService::Lrclib, -1);
@@ -393,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn a_service_dropped_anywhere_takes_that_place_and_the_rest_close_up() {
+    fn place_moves_one_service() {
         let p = StoredPrefs::default();
         let last = placed(&p, LyricsService::Paxsenix, 99);
         assert_eq!(last.len(), 16);
