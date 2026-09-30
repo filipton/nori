@@ -283,9 +283,10 @@ fn watching() {
 /// Requests to one [`ByteSource`] waiting for an answer at once. A server that never answers must not
 /// take every request the client's HTTP stack lets run to it (OkHttp's per-host cap): past this many the
 /// oldest still waiting is called off, the newest being the one wanted.
-pub const MAX_ASKING: usize = 4;
+const MAX_ASKING: usize = 4;
 
-/// Process-wide: the player's loaders and the fetching ahead share one HTTP client, and so one cap.
+/// Process-wide, as the sources share one HTTP client; each source keeps under its own cap (the one
+/// fetching ahead asks once at a time, so the player's and its stay within OkHttp's five per host).
 static ASKING: Asking = Asking(Mutex::new(Vec::new()));
 
 /// The requests waiting for an answer, oldest first, by the source they go to.
