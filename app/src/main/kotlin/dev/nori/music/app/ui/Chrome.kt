@@ -156,14 +156,16 @@ fun TabBar(route: String?, tabs: List<Tab>, onTab: (String) -> Unit, look: Look,
 }
 
 /**
- * A window wider than it is tall and short with it - a phone on its side - where the app lays itself out
- * across rather than down: the tabs on a rail, the player and the cover pages in two halves. Decided by
- * the window's size, not by which way the phone is held, so a tablet or an unfolded phone gets what fits.
+ * A window wider than it is tall - a phone on its side, a tablet held across, a car's screen - where the
+ * app lays itself out across rather than down: the tabs on a rail, the player and the cover pages in two
+ * halves. Decided by the window's size, not by which way the device is held. Laid out down, a cover as
+ * wide as the window is taller than any such window, and the controls sit a screen's scroll below it: a
+ * car's 1024 x 600 dp screen, taller than a phone's side but still wider than tall, showed only the cover.
  */
 val LocalWide = androidx.compose.runtime.compositionLocalOf { false }
 
 /** Whether a window of this size is laid out across ([LocalWide]). */
-fun isWide(widthDp: Int, heightDp: Int): Boolean = widthDp > heightDp && heightDp < 600
+fun isWide(widthDp: Int, heightDp: Int): Boolean = widthDp > heightDp
 
 /** Search, on its own round slab beside the tabs (or under them, on the rail): the same in both. */
 @Composable
