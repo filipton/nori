@@ -1,12 +1,10 @@
 //! The session behind the screen: core and client for one server profile, the engine on cpal, store,
 //! downloader, cover loader and MPRIS. Network calls run on their own threads and answer with a [`Msg`].
 
-use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
-use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use nori_core::bridge::BridgeTake;
@@ -33,17 +31,7 @@ use nori_look::cover::CoverColours;
 use nori_output_cpal::{CpalOutput, Volume};
 use ratatui::crossterm::event::{KeyEvent, MouseEvent};
 
-/// Runs a core future on this thread. The transport is blocking, so it is ready on its first poll.
-pub fn block_on<F: Future>(f: F) -> F::Output {
-    let mut f = std::pin::pin!(f);
-    let mut cx = Context::from_waker(Waker::noop());
-    loop {
-        if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
-            return v;
-        }
-        std::thread::yield_now();
-    }
-}
+pub use nori_core::transport::block_on;
 
 /// Everything that wakes the event loop.
 pub enum Msg {

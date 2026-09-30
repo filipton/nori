@@ -2,11 +2,9 @@
 //! A trimmed copy of the terminal's backend.rs. Network calls run on their own threads and answer with a
 //! [`Msg`] through [`Tx`].
 
-use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use nori_core::bridge::BridgeTake;
@@ -31,17 +29,7 @@ use nori_output_cpal::{CpalOutput, Volume};
 use crate::settings::Chore;
 use crate::AppWindow;
 
-/// Runs a core future on this thread. The core's transport is blocking, so the future completes as it is polled.
-pub fn block_on<F: Future>(f: F) -> F::Output {
-    let mut f = std::pin::pin!(f);
-    let mut cx = Context::from_waker(Waker::noop());
-    loop {
-        if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
-            return v;
-        }
-        std::thread::yield_now();
-    }
-}
+pub use nori_core::transport::block_on;
 
 /// Cover draw size. Large and hero covers also get their page colours derived.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
