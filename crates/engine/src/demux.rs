@@ -559,7 +559,7 @@ impl Stream {
                 Err(SymphoniaError::ResetRequired) if self.chain_on() => continue,
                 Ok(None) | Err(_) => {
                     self.ended = true;
-                    return false;
+                    return self.drained();
                 }
             };
             if packet.track_id != self.track {
@@ -637,6 +637,28 @@ impl Stream {
 }
 
 impl Stream {
+    /// At the end of the packets: what the decoder still held back, into `buf` (its end trimmed as a
+    /// packet's). False when nothing was.
+    fn drained(&mut self) -> bool {
+        let (Inner::Coded(dec), Some(at)) = (&mut self.inner, self.frame) else { return false };
+        let Ok(lent) = dec.drain_lent() else { return false };
+        let ch = lent.channels.max(1);
+        let n = lent.samples.len() / ch;
+        let to = match self.mp4 {
+            Some((delay, end)) => (end - delay - at).clamp(0, n as i64) as usize,
+            None => n,
+        };
+        let from = (self.skip_to - at).clamp(0, to as i64) as usize;
+        if from >= to {
+            return false;
+        }
+        self.buf.clear();
+        put(&lent.samples[from * ch..to * ch], self.format.encoding, &mut self.buf);
+        self.frame = Some(at + to as i64);
+        self.at_us = (at + from as i64) * 1_000_000 / self.format.rate as i64;
+        true
+    }
+
     /// Follows a chained Ogg stream into its next logical stream (a station's next song) with a new
     /// decoder, keeping the output format. False when it cannot.
     fn chain_on(&mut self) -> bool {

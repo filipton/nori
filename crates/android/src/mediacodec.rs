@@ -58,6 +58,7 @@ mod ndk {
     }
 
     const OK: i32 = 0;
+    const BUFFER_FLAG_END_OF_STREAM: u32 = 4;
     const TRY_AGAIN_LATER: isize = -1;
     const OUTPUT_FORMAT_CHANGED: isize = -2;
     const OUTPUT_BUFFERS_CHANGED: isize = -3;
@@ -234,6 +235,21 @@ mod ndk {
                 // Nothing within the wait: it holds this many back, and is not waited on for them again.
                 self.lag = self.pending;
             }
+            Ok((self.channels, self.rate))
+        }
+
+        fn drain(&mut self, out: &mut Vec<f32>) -> Result<(usize, u32), Fault> {
+            // An empty input marked as the end: the decoder hands out all it holds.
+            // SAFETY: plain calls on the started codec; the input buffer is its own, queued empty.
+            unsafe {
+                let idx = AMediaCodec_dequeueInputBuffer(self.codec, WAIT_US);
+                if idx >= 0 && AMediaCodec_queueInputBuffer(self.codec, idx as usize, 0, 0, self.time_us, BUFFER_FLAG_END_OF_STREAM) != OK {
+                    return Err(Fault::Broken);
+                }
+            }
+            while self.pending > 0 && self.take(WAIT_US, out)? {}
+            // Past its end it takes nothing more until flushed.
+            self.reset();
             Ok((self.channels, self.rate))
         }
 

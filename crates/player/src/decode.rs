@@ -117,8 +117,10 @@ enum Engine {
 /// A platform decoder for HE-AAC, driven packet by packet on the caller's thread.
 pub trait PlatformDecoder: Send {
     /// Decodes one access unit, appending interleaved float to `out`; returns (channels, rate). Output
-    /// may lag input by a packet.
+    /// may lag input by a packet or more.
     fn decode(&mut self, unit: &[u8], out: &mut Vec<f32>) -> Result<(usize, u32), Fault>;
+    /// The end of the stream: appends what the decoder still holds.
+    fn drain(&mut self, out: &mut Vec<f32>) -> Result<(usize, u32), Fault>;
     /// Discontinuity (seek): drop held state.
     fn reset(&mut self);
 }
@@ -356,6 +358,19 @@ impl Decoder {
         let n = std::mem::take(&mut self.held) * self.channels;
         let from = self.from * self.channels;
         Ok(Lent { samples: &self.scratch[from..from + n], channels: self.channels, rate: self.rate })
+    }
+
+    /// The end of the stream: borrows what the decoder still held back (only a platform decoder does).
+    pub fn drain_lent(&mut self) -> Result<Lent<'_>, Fault> {
+        self.held = 0;
+        if let Engine::Platform(dec) = &mut self.inner {
+            self.scratch.clear();
+            let (channels, rate) = dec.drain(&mut self.scratch)?;
+            (self.channels, self.rate) = (channels.max(1), rate);
+            self.held = self.scratch.len() / self.channels;
+        }
+        let n = std::mem::take(&mut self.held) * self.channels;
+        Ok(Lent { samples: &self.scratch[..n], channels: self.channels, rate: self.rate })
     }
 
     fn decode(&mut self, packet: &[u8]) -> Result<(), Fault> {
@@ -663,6 +678,9 @@ mod tests {
     impl PlatformDecoder for Echo {
         fn decode(&mut self, unit: &[u8], out: &mut Vec<f32>) -> Result<(usize, u32), Fault> {
             out.extend(std::iter::repeat_n(unit[0] as f32, 2048 * 2));
+            Ok((2, 44_100))
+        }
+        fn drain(&mut self, _: &mut Vec<f32>) -> Result<(usize, u32), Fault> {
             Ok((2, 44_100))
         }
         fn reset(&mut self) {}
