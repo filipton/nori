@@ -101,7 +101,7 @@ pub fn sync(client: &Client) -> Result<IngestStats, NetError> {
 
 /// Saves the queue and playback position.
 pub fn save(core: &Core, engine: &Engine) {
-    let _ = core.playlist_save(engine.status().position_now().max(0) as u64);
+    let _ = core.playlist_save(engine.status_with(|s| s.position_now()).max(0) as u64);
 }
 
 /// Debounced queue saves (`rules::queue_keep`) on a thread that sleeps until a save is due.

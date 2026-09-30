@@ -1374,7 +1374,7 @@ impl App {
             self.tick.start(TimerMode::Repeated, Duration::from_millis(step), move || {
                 me.with(|a| {
                     let ui = a.ui();
-                    a.on_session(|s| ui.set_position_ms(s.engine.status().position_now() as i32));
+                    a.on_session(|s| ui.set_position_ms(s.engine.status_with(|st| st.position_now()) as i32));
                     if let Some(p) = &a.player {
                         p.set_position_ms(ui.get_position_ms());
                     }

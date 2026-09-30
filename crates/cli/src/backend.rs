@@ -466,8 +466,7 @@ impl Session {
 
     /// Removes the song at list index `index`; if it was playing, the next one takes its place.
     pub fn remove(&self, index: usize) {
-        let current = self.engine.status().index;
-        let playing = self.engine.status().state == State::Playing;
+        let (current, playing) = self.engine.status_with(|s| (s.index, s.state == State::Playing));
         let change = playlist::playlist_remove(index as u32, index as u32 + 1);
         self.edited();
         if let (true, Some(at)) = (current == Some(index), change.at) {
