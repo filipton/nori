@@ -91,7 +91,7 @@ fn followed(id: Option<String>, why: TrackChange) -> Option<String> {
 /// and returns what to scrobble when scrobbling is on.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn scrobble_track(id: Option<String>, why: TrackChange, playing: bool, now_ms: i64, wall_ms: i64, tz_offset_ms: i32) -> ScrobbleSend {
-    let (taste_model, scrobble, percent) = nori_settings::settings_store::with_prefs(|p| (p.taste_model, p.scrobble, p.scrobble_percent)).unwrap_or((true, true, 50));
+    let (taste_model, scrobble, percent) = nori_settings::settings_store::prefs(|p| (p.taste_model, p.scrobble, p.scrobble_percent));
     let next = followed(id, why);
     let (done, heard, at) = SCROBBLER.lock().switch(next.clone().and_then(queue::queue_song), playing, now_ms, wall_ms);
     // The profile playing now, not the one open when the write runs.

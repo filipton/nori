@@ -3,7 +3,7 @@
 /// Whether a heart press shows a confirmation (the favourite-notice setting).
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn favourite_notice() -> bool {
-    crate::settings_store::with_prefs(|p| p.favourite_notice).unwrap_or(true)
+    crate::settings_store::prefs(|p| p.favourite_notice)
 }
 
 /// The media session's extra buttons: a heart and a shuffle toggle.

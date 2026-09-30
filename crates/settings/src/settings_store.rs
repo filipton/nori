@@ -318,6 +318,14 @@ pub fn with_prefs<R>(f: impl FnOnce(&StoredPrefs) -> R) -> Option<R> {
     KEPT.read().as_ref().map(|k| f(&k.prefs))
 }
 
+/// `f` applied to the live settings, or to the defaults before they are open.
+pub fn prefs<R>(f: impl FnOnce(&StoredPrefs) -> R) -> R {
+    match KEPT.read().as_ref() {
+        Some(k) => f(&k.prefs),
+        None => f(&StoredPrefs::default()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

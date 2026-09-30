@@ -285,7 +285,7 @@ impl Client {
     pub async fn update_check(&self, asked: bool, version: String, abis: Vec<String>) -> NetResult<UpdateCheck> {
         let now = crate::db::now_ms();
         if !asked {
-            let on = crate::settings_store::with_prefs(|p| p.update_check).unwrap_or(false);
+            let on = crate::settings_store::prefs(|p| p.update_check);
             let checked = crate::settings_store::app_value(CHECKED_KEY).and_then(|v| v.parse::<i64>().ok());
             if !due(on, checked, now) {
                 return Ok(UpdateCheck::NotDue);

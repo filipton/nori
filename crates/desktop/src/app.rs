@@ -876,7 +876,7 @@ impl App {
         let view = s.search_typed(text);
         let query = view.query.clone();
         self.show_search(view);
-        let delay = settings_store::with_prefs(|p| p.live_search_delay_ms).unwrap_or(400).max(100) as u64;
+        let delay = settings_store::prefs(|p| p.live_search_delay_ms).max(100) as u64;
         let me = self.me.clone();
         self.search.start(TimerMode::SingleShot, Duration::from_millis(delay), move || {
             me.with(|a| a.on_session(|s| s.search_server(query.clone())));

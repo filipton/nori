@@ -93,7 +93,7 @@ impl Core {
 /// Whether Download asks about the beat model ([`beats_offer`]).
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn download_beats_offer() -> BeatsOffer {
-    let (on, choice) = crate::settings_store::with_prefs(|p| (p.auto_mix && p.auto_mix_better_beats, p.download_beats)).unwrap_or((false, nori_settings::settings::DownloadBeats::Ask));
+    let (on, choice) = crate::settings_store::prefs(|p| (p.auto_mix && p.auto_mix_better_beats, p.download_beats));
     beats_offer(on && nori_player::automix::beats::AVAILABLE, choice)
 }
 

@@ -596,7 +596,7 @@ impl Session {
                     Ok(q) => self.tx.note(format!("Downloading {} songs", q.fresh.len() + q.again.len()), false),
                     Err(e) => self.tx.note(format!("Could not download the library: {e}"), true),
                 }
-                let n = settings_store::with_prefs(|p| p.parallel_downloads).unwrap_or(2);
+                let n = settings_store::prefs(|p| p.parallel_downloads);
                 self.downloader.start(n.max(1) as usize);
             }
             Chore::MeasureAgain => {

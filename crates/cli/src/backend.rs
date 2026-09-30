@@ -1026,7 +1026,7 @@ fn note(tx: &Sender<Msg>, text: String, error: bool) {
 }
 
 fn start_downloads(downloader: &Arc<Downloader>) {
-    let n = settings_store::with_prefs(|p| p.parallel_downloads).unwrap_or(2);
+    let n = settings_store::prefs(|p| p.parallel_downloads);
     downloader.start(n.max(1) as usize);
 }
 

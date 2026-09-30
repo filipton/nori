@@ -335,7 +335,7 @@ impl Client {
     /// The HLS URL of `song`'s album motion video, if enabled (and allowed on `metered`) and found. Videos
     /// are cached, "none" for [`NONE_KEPT_MS`], failures not at all.
     pub async fn motion_video(&self, song: Song, metered: bool) -> Option<String> {
-        let (on, wifi_only) = crate::settings_store::with_prefs(|p| (p.motion_artwork && p.third_party_lookups, p.motion_artwork_wifi_only)).unwrap_or((false, true));
+        let (on, wifi_only) = crate::settings_store::prefs(|p| (p.motion_artwork && p.third_party_lookups, p.motion_artwork_wifi_only));
         if !on || (wifi_only && metered) {
             return None;
         }

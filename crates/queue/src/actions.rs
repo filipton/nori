@@ -41,7 +41,7 @@ fn tap(selecting: bool, tap_action: TapAction) -> TapPlan {
 /// The tap action per settings; selecting while a selection is active.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn tap_plan(selecting: bool) -> TapPlan {
-    tap(selecting, nori_settings::settings_store::with_prefs(|p| p.tap_action).unwrap_or(TapAction::PlayList))
+    tap(selecting, nori_settings::settings_store::prefs(|p| p.tap_action))
 }
 
 /// How to shuffle a list.

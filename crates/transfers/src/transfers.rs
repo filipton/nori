@@ -687,7 +687,7 @@ impl Tracker {
 
 /// Reads the download bitrate setting for size estimates; a change drops the cached estimates.
 pub fn follow_quality() {
-    let kbps = nori_settings::settings_store::with_prefs(|p| p.download.bit_rate).unwrap_or(0);
+    let kbps = nori_settings::settings_store::prefs(|p| p.download.bit_rate);
     with(|t| {
         if t.download_kbps != kbps {
             t.download_kbps = kbps;
