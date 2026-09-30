@@ -1315,6 +1315,7 @@ impl Offload {
     pub(crate) fn queue_changed<L: Library, Q: Queue>(&mut self, old: &[u64], tracks: &mut Sources<L>, queue: &Q) -> bool {
         let new: Vec<u64> = queue.read(|q| q.seqs().to_vec());
         let moved = |i: usize| old.get(i).and_then(|s| new.iter().position(|n| n == s));
+        self.stop_after = self.stop_after.and_then(moved);
         for i in self.t.placed.iter_mut().map(|p| &mut p.index).chain(self.t.starting.as_mut().map(|s| &mut s.0)) {
             match moved(*i) {
                 Some(k) => *i = k,

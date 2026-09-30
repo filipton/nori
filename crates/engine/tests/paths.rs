@@ -1214,6 +1214,33 @@ fn offload_sleep_timer_takes_back_next_song() {
 }
 
 #[test]
+fn offload_sleep_timer_follows_its_song_through_an_edit() {
+    if !ffmpeg() {
+        eprintln!("ffmpeg is not installed: nothing to offload");
+        return;
+    }
+    let d = dir();
+    let (a, b) = (mp3(&d, "a", 10, 440), mp3(&d, "b", 10, 660));
+    let server = Arc::new(Server::default());
+    serve(&server, &[("a", &a), ("b", &b)]);
+    let fake = Fake::new(MP3_ONLY);
+    let songs = vec![("a".into(), "mp3".into(), 10_000), ("b".into(), "mp3".into(), 10_000)];
+    let rig = Rig::new(server, songs, app(), Some(fake.clone()), offload());
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait(10, |_| fake.written() == 20 * 44_100), "both written: {}", fake.written());
+    rig.engine.pause_at_end(true);
+    assert!(rig.wait(5, |_| after_last_open(&fake.calls()).contains(&&Call::EndOfStream)), "a alone: {:?}", fake.calls());
+    rig.queue.0.lock().insert(0, vec!["b".into()], nori_player::playlist::Hand::No);
+    rig.engine.queue_changed();
+    rig.run(100);
+    let written = fake.written();
+    fake.advance(written as u64);
+    assert!(rig.wait(5, |r| r.events.lock().iter().any(|e| matches!(e, Event::Stopped { .. }))), "{:?}", rig.events.lock());
+    assert_eq!(fake.written(), written, "nothing after a: {:?}", fake.calls());
+    rig.engine.stop();
+}
+
+#[test]
 fn offload_opus_in_ogg_pages() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
