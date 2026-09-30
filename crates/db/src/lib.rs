@@ -142,13 +142,9 @@ pub fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
-/// Provider items are not library rows ([`nori_model::model::is_provider_id`]).
-pub fn external(id: &str) -> bool {
-    nori_model::model::is_provider_id(id)
-}
-
 fn upsert<T: Serialize>(c: &Connection, kind: i64, id: &str, text: &str, item: &T) -> rusqlite::Result<bool> {
-    if id.is_empty() || external(id) {
+    // Provider items are not library rows.
+    if id.is_empty() || nori_model::is_provider_id(id) {
         return Ok(false);
     }
     let json = serde_json::to_string(item).unwrap_or_default();

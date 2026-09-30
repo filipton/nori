@@ -539,7 +539,7 @@ impl Session {
     /// are the list of (`playlist_set`).
     pub fn play(&self, songs: Vec<Song>, start: usize, shuffle: bool, from: Option<PageOrigin>) {
         let picked = songs.get(start).map(|s| s.id.clone());
-        let songs: Vec<Song> = songs.into_iter().filter(|s| !is_provider(s) || Some(&s.id) == picked.as_ref()).collect();
+        let songs: Vec<Song> = songs.into_iter().filter(|s| !s.is_provider() || Some(&s.id) == picked.as_ref()).collect();
         let start = picked.and_then(|id| songs.iter().position(|s| s.id == id)).unwrap_or(0);
         self.handle().play(songs, start, shuffle, from);
     }
@@ -549,7 +549,7 @@ impl Session {
         let (client, me) = (self.client.clone(), self.handle());
         let origin = what.origin();
         spawn("nori-play", move || match fetch_songs(&client, what) {
-            Ok(songs) if !songs.is_empty() => me.play(songs.into_iter().filter(|s| !is_provider(s)).collect(), 0, shuffle, Some(origin)),
+            Ok(songs) if !songs.is_empty() => me.play(songs.into_iter().filter(|s| !s.is_provider()).collect(), 0, shuffle, Some(origin)),
             Ok(_) => note(&me.tx, "Nothing to play".into(), false),
             Err(e) => note(&me.tx, format!("Could not load the songs: {e}"), true),
         });
@@ -624,7 +624,7 @@ impl Session {
 
     /// Queues `songs` for download and starts the downloader.
     pub fn download(&self, songs: Vec<Song>) {
-        let songs: Vec<Song> = songs.into_iter().filter(|s| !is_provider(s)).collect();
+        let songs: Vec<Song> = songs.into_iter().filter(|s| !s.is_provider()).collect();
         warm_covers(&self.core, self.covers.as_ref(), &songs);
         match self.core.download_queue(songs) {
             Ok(q) => note(&self.tx, format!("Downloading {} songs", q.fresh.len() + q.again.len()), false),
@@ -638,7 +638,7 @@ impl Session {
         let covers = self.covers.clone();
         spawn("nori-download-ask", move || match fetch_songs(&client, what) {
             Ok(songs) => {
-                let songs: Vec<Song> = songs.into_iter().filter(|s| !is_provider(s)).collect();
+                let songs: Vec<Song> = songs.into_iter().filter(|s| !s.is_provider()).collect();
                 warm_covers(&core, covers.as_ref(), &songs);
                 let n = songs.len();
                 let _ = core.download_queue(songs);
@@ -962,7 +962,7 @@ impl Handle {
     /// `from`: the page these are all the songs of.
     fn enqueue(&self, songs: Vec<Song>, next: bool, from: Option<PageOrigin>) {
         // A single picked song may be a provider's; lists never include them.
-        let songs: Vec<Song> = if songs.len() == 1 { songs } else { songs.into_iter().filter(|s| !is_provider(s)).collect() };
+        let songs: Vec<Song> = if songs.len() == 1 { songs } else { songs.into_iter().filter(|s| !s.is_provider()).collect() };
         if songs.is_empty() {
             return;
         }
@@ -1029,10 +1029,6 @@ fn warm_covers(core: &Core, covers: Option<&Arc<Loader>>, songs: &[Song]) {
 }
 
 /// A provider (octo-fiesta) song: the server downloads it as soon as it is requested.
-pub fn is_provider(s: &Song) -> bool {
-    s.is_external || s.id.starts_with("ext-")
-}
-
 fn spawn(name: &str, f: impl FnOnce() + Send + 'static) {
     let _ = std::thread::Builder::new().name(name.into()).spawn(f);
 }

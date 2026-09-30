@@ -358,7 +358,7 @@ impl Client {
 impl Client {
     async fn motion_lookup(&self, song: &Song) -> Option<String> {
         // Never ask the server about a provider album.
-        let album_id = song.album_id.clone().filter(|id| !song.is_external && !crate::db::external(id));
+        let album_id = song.album_id.clone().filter(|id| !song.is_external && !crate::is_provider_id(id));
         // Trailing bar: evicting "album 12" by prefix must not hit "album 123".
         let key = format!("motion1|{}|", album_id.clone().unwrap_or_else(|| format!("{}|{}", song.artist, song.album)));
         if let Some(stored) = self.core.cache_get(key.clone()).ok().flatten() {

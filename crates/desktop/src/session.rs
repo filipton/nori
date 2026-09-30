@@ -765,7 +765,7 @@ impl Handle {
 
     fn play(&self, songs: Vec<Song>, start: usize, shuffle: bool, from: Option<PageOrigin>) {
         let picked = songs.get(start).map(|s| s.id.clone());
-        let songs: Vec<Song> = songs.into_iter().filter(|s| !is_provider(s) || Some(&s.id) == picked.as_ref()).collect();
+        let songs: Vec<Song> = songs.into_iter().filter(|s| !s.is_provider() || Some(&s.id) == picked.as_ref()).collect();
         if songs.is_empty() {
             return;
         }
@@ -778,7 +778,7 @@ impl Handle {
 
     fn enqueue(&self, songs: Vec<Song>, next: bool, from: Option<PageOrigin>) {
         // A provider song goes in only when picked alone.
-        let songs: Vec<Song> = if songs.len() == 1 { songs } else { songs.into_iter().filter(|s| !is_provider(s)).collect() };
+        let songs: Vec<Song> = if songs.len() == 1 { songs } else { songs.into_iter().filter(|s| !s.is_provider()).collect() };
         if songs.is_empty() {
             return;
         }
@@ -818,10 +818,6 @@ fn fetch_songs(client: &Arc<Client>, what: Fetch) -> Result<Vec<Song>, String> {
 }
 
 /// An octo-fiesta provider item; the server downloads it when requested.
-fn is_provider(s: &Song) -> bool {
-    s.is_external || s.id.starts_with("ext-")
-}
-
 fn volume_db(v: f32) -> f64 {
     if v > 0.0 {
         20.0 * (v as f64).log10()

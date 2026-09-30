@@ -12,7 +12,7 @@ const SIZES: [u32; 2] = [ROW, FULL];
 
 /// Whether cover id `id` (up to the next `&`) is an octo-fiesta provider's: `ext-...` or
 /// `pl-<provider>-<id>`. Navidrome's own playlist covers (`pl-<id>_<timestamp>`) are not.
-pub fn is_provider_id(id: &str) -> bool {
+fn provider_cover_id(id: &str) -> bool {
     let id = id.split('&').next().unwrap_or(id);
     if id.starts_with("ext-") {
         return true;
@@ -71,7 +71,7 @@ pub struct CoverWant {
 pub fn cover_wants(arts: Vec<String>, cap: u32) -> Vec<CoverWant> {
     let mut seen: Vec<&str> = Vec::new();
     let mut out = Vec::new();
-    for art in arts.iter().filter(|a| !is_provider_id(a)) {
+    for art in arts.iter().filter(|a| !provider_cover_id(a)) {
         if seen.len() == cap as usize {
             break;
         }
@@ -207,10 +207,10 @@ pub fn cover_key_parts(url: &str, mut part: impl FnMut(&[u8])) {
     }
 }
 
-/// Whether cover URL `url` is a provider's ([`is_provider_id`]); such covers are not cached since they
+/// Whether cover URL `url` is a provider's ([`provider_cover_id`]); such covers are not cached since they
 /// change once the item is downloaded. Allocation-free (Android calls it per cover via `@FastNative`).
 pub fn is_provider_cover(url: &str) -> bool {
-    url.match_indices("&id=").any(|(at, mark)| is_provider_id(&url[at + mark.len()..]))
+    url.match_indices("&id=").any(|(at, mark)| provider_cover_id(&url[at + mark.len()..]))
 }
 
 /// The platform transport for the cover loader (nori-covers), which fetches already-signed URLs.

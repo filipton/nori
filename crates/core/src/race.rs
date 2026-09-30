@@ -176,7 +176,7 @@ impl Client {
     /// Looks up lyrics for downloaded songs one by one so they work offline, marking each song's lyrics
     /// work done when its lookup ends. Provider songs are skipped.
     pub async fn lyrics_for_downloads(&self, ids: Vec<String>) {
-        for id in ids.into_iter().filter(|id| !id.starts_with("ext-")) {
+        for id in ids.into_iter().filter(|id| !crate::is_provider_id(id)) {
             crate::transfers::working(&id, crate::transfers::Work::Lyrics);
             let _ = self.lyrics_for(id.clone(), Arc::new(Unseen)).await;
             crate::transfers::work_done(&id, crate::transfers::Work::Lyrics);

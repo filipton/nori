@@ -157,16 +157,16 @@ pub fn queue_albums(ids: Vec<String>) -> Vec<String> {
     })
 }
 
-/// Whether AutoMix can analyse `id`: not a provider song (`ext-`), playlist entry (`pl-`) or radio stream.
+/// Whether AutoMix can analyse `id`: not a provider song or radio stream.
 pub fn analysable(id: &str) -> bool {
-    !id.starts_with("ext-") && !id.starts_with("pl-") && !id.starts_with(RADIO_PREFIX)
+    !nori_model::is_provider_id(id) && !id.starts_with(RADIO_PREFIX)
 }
 
 /// The ids that may be prefetched: no radio, no provider songs (fetching one makes the server download it).
 pub fn queue_fetchable(ids: Vec<String>) -> Vec<String> {
     with(|s| {
         ids.into_iter()
-            .filter(|id| !id.starts_with(RADIO_PREFIX) && !id.starts_with("ext-") && !s.songs.get(id).is_some_and(|(song, _)| song.is_external))
+            .filter(|id| analysable(id) && !s.songs.get(id).is_some_and(|(song, _)| song.is_provider()))
             .collect()
     })
 }

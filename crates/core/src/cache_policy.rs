@@ -232,14 +232,12 @@ fn digest(bytes: &[u8]) -> u64 {
 /// Whether `page` lists a provider item. Such answers change as provider songs get downloaded, so they
 /// are never fresh.
 fn lists_provider_items(page: &Page) -> bool {
-    let song = |s: &Song| s.is_external || crate::db::external(&s.id);
-    let album = |a: &Album| a.is_external || crate::db::external(&a.id);
     match page {
-        Page::AlbumPage { v } => album(&v.album) || v.songs.iter().any(song),
-        Page::ArtistPage { v } => v.albums.iter().any(album),
-        Page::PlaylistPage { v } => v.songs.iter().any(song),
-        Page::Songs { v } => v.iter().any(song),
-        Page::Albums { v } => v.iter().any(album),
+        Page::AlbumPage { v } => v.album.is_provider() || v.songs.iter().any(Song::is_provider),
+        Page::ArtistPage { v } => v.albums.iter().any(Album::is_provider),
+        Page::PlaylistPage { v } => v.songs.iter().any(Song::is_provider),
+        Page::Songs { v } => v.iter().any(Song::is_provider),
+        Page::Albums { v } => v.iter().any(Album::is_provider),
         _ => false,
     }
 }

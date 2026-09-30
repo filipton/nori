@@ -87,7 +87,7 @@ impl Client {
 
     /// Candidate album ids for `basis`.
     async fn album_candidates(&self, seed: &Song, basis: AutoFillBasis, remote: bool) -> Got<Vec<String>> {
-        let ids = |v: Vec<crate::Album>| v.into_iter().filter(|a| remote || (!a.is_external && !crate::db::external(&a.id))).map(|a| a.id).collect::<Vec<_>>();
+        let ids = |v: Vec<crate::Album>| v.into_iter().filter(|a| remote || !a.is_provider()).map(|a| a.id).collect::<Vec<_>>();
         let albums = |p: Page| match p {
             Page::Albums { v } => v,
             _ => Vec::new(),
@@ -203,7 +203,7 @@ impl Client {
 
 /// Whether `s` is a library song, not a provider's (playing one makes the server download it).
 fn in_library(s: &Song) -> bool {
-    !s.is_external && !crate::db::external(&s.id)
+    !s.is_provider()
 }
 
 /// Whether autofill may queue `s`.

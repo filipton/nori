@@ -738,8 +738,8 @@ impl Tracker {
         }
         let phase = match state {
             DOWNLOADING => Some(Phase::Downloading),
-            // Provider songs ("ext-") get no lyrics lookup; other needs come later through `plan`.
-            COMPLETED => Some(Phase::processing(t.analysing.contains(&id), !id.starts_with("ext-"), false)),
+            // Provider songs get no lyrics lookup; other needs come later through `plan`.
+            COMPLETED => Some(Phase::processing(t.analysing.contains(&id), !nori_model::is_provider_id(&id), false)),
             FAILED => Some(Phase::Failed),
             _ => None,
         };
@@ -1234,7 +1234,7 @@ impl Tracker {
         let mut analysing = false;
         for id in &t.batch.open {
             // Provider songs get no lyrics lookup or beat model.
-            if !id.starts_with("ext-") {
+            if !nori_model::is_provider_id(id) {
                 lyrics_to_come += 1;
                 beats_to_come += t.beats_wanted.contains(id) as i32;
             }

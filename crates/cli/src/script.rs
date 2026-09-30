@@ -148,7 +148,7 @@ impl Cli {
         let r = block_on(self.http.get(url, 0)).map_err(|e| e.to_string())?;
         let found = self.core.parse_search(r.body).map_err(|e| e.to_string())?;
         // Provider songs (octo-fiesta) are downloaded by the server when requested: never queued from a search.
-        Ok(found.songs.into_iter().filter(|s| !crate::backend::is_provider(s)).collect())
+        Ok(found.songs.into_iter().filter(|s| !s.is_provider()).collect())
     }
 
     fn queue(&mut self, songs: Vec<Song>, start_ms: i64) {
