@@ -625,6 +625,13 @@ impl Tracker {
         }
     }
 
+    /// An earlier process left `id` failed: marked so, unless this one already marked it.
+    pub fn failed_before(&mut self, id: &str) {
+        if !self.marks.contains_key(id) {
+            self.mark(id, Some(Phase::Failed), 0);
+        }
+    }
+
     /// Takes `id`'s mark away; true when it had one.
     pub fn unmark(&mut self, id: &str) -> bool {
         let had = self.marks.remove(id).is_some();

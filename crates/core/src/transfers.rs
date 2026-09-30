@@ -216,10 +216,7 @@ impl Core {
                 .into_iter()
                 .map(|(id, length, bytes)| {
                     let estimate = t.info(&id).map_or(0, |i| i.estimate);
-                    if !t.marks.contains_key(&id) {
-                        t.marks.insert(id.clone(), (Phase::Failed, 0));
-                        t.changed.insert(id.clone());
-                    }
+                    t.failed_before(&id);
                     DownloadFailed { progress: fraction(length, bytes, estimate), id }
                 })
                 .collect()
@@ -347,6 +344,29 @@ pub(crate) mod tests {
         assert_eq!(r.failed, [DownloadFailed { id: "rc-b".into(), progress: 0.5 }]);
         assert_eq!(core.downloads(true).unwrap().len(), 1);
         assert_eq!(download_phase("rc-b".into()), Some(Phase::Failed.shown()));
+    }
+
+    #[test]
+    fn restart_failure_wakes_downloads() {
+        use std::future::Future;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        struct Woke(AtomicBool);
+        impl std::task::Wake for Woke {
+            fn wake(self: Arc<Self>) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let _turn = TURN.lock();
+        let core = Core::new(String::new(), "t".into()).unwrap();
+        core.download_queue(vec![song("rw-a")]).unwrap();
+        download_marks_changed();
+        let woke = Arc::new(Woke(AtomicBool::new(false)));
+        let waker = std::task::Waker::from(woke.clone());
+        let mut moved = std::pin::pin!(download_marks_moved());
+        assert!(moved.as_mut().poll(&mut std::task::Context::from_waker(&waker)).is_pending());
+        core.download_recover(vec![DownloadKnown { id: "rw-a".into(), state: FAILED, length: 100, bytes: 50 }]).unwrap();
+        assert!(woke.0.load(Ordering::SeqCst));
     }
 
     #[test]
