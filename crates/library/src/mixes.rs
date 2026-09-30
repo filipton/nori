@@ -302,11 +302,6 @@ fn affinity(taste: f64, skips: u32) -> f64 {
     }
 }
 
-/// The SQL condition of a decade mix: the songs of one decade.
-pub fn decade_cond() -> &'static str {
-    "json_extract(i.json,'$.year') BETWEEN ?1 AND ?2"
-}
-
 /// The seed song, then its neighbourhood: same genre first, then same artist and same decade.
 pub fn instant(c: &Connection, seed_song_id: &str, limit: usize, seed: u64, now_ms: i64) -> rusqlite::Result<Vec<Song>> {
     let first: Option<Song> = c.prepare_cached("SELECT json FROM items WHERE server=sid() AND kind=2 AND id=?1")?.query_row([seed_song_id], |r| r.get::<_, String>(0)).optional()?.and_then(|j| serde_json::from_str(&j).ok());
@@ -324,7 +319,7 @@ pub fn instant(c: &Connection, seed_song_id: &str, limit: usize, seed: u64, now_
         cands.extend(pool(c, false, "json_extract(i.json,'$.artistId')=?1", vec![text(a)], Order::Shuffled(rng.next()), limit, now_ms)?);
     }
     if first.year > 0 {
-        cands.extend(pool(c, false, decade_cond(), vec![Value::Integer(decade), Value::Integer(decade + 9)], Order::Shuffled(rng.next()), limit * 2, now_ms)?);
+        cands.extend(pool(c, false, "json_extract(i.json,'$.year') BETWEEN ?1 AND ?2", vec![Value::Integer(decade), Value::Integer(decade + 9)], Order::Shuffled(rng.next()), limit * 2, now_ms)?);
     }
     let genre = first.genre.as_ref().map(|g| g.to_lowercase());
     let weighted = cands

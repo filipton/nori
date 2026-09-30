@@ -138,19 +138,15 @@ fn contains_ignoring_case(hay: &str, needle: &[char]) -> bool {
 
 /// Java's `Character.toUpperCase`: single-character case mapping only ('ß' stays).
 fn upper(c: char) -> char {
-    let mut u = c.to_uppercase();
-    match (u.next(), u.next()) {
-        (Some(x), None) => x,
-        _ => c,
-    }
+    single(c.to_uppercase()).unwrap_or(c)
 }
 
 fn lower(c: char) -> char {
-    let mut u = c.to_lowercase();
-    match (u.next(), u.next()) {
-        (Some(x), None) => x,
-        _ => c,
-    }
+    single(c.to_lowercase()).unwrap_or(c)
+}
+
+fn single(mut mapped: impl Iterator<Item = char>) -> Option<char> {
+    mapped.next().filter(|_| mapped.next().is_none())
 }
 
 /// A letter down the side of a long list and the first row that starts with it.
@@ -234,12 +230,6 @@ pub struct PageQueue {
     origin: PageOrigin,
 }
 
-impl PageQueue {
-    pub(crate) fn of(kind: OriginKind, id: &str) -> std::sync::Arc<Self> {
-        std::sync::Arc::new(PageQueue { origin: PageOrigin::new(kind, id) })
-    }
-}
-
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl PageQueue {
     #[cfg_attr(feature = "ffi", uniffi::constructor)]
@@ -253,6 +243,10 @@ impl PageQueue {
 }
 
 impl PageQueue {
+    pub(crate) fn of(kind: OriginKind, id: &str) -> std::sync::Arc<Self> {
+        PageQueue::new(PageOrigin::new(kind, id))
+    }
+
     pub fn origin_ref(&self) -> &PageOrigin {
         &self.origin
     }
@@ -307,16 +301,6 @@ pub fn hero_buttons(here: bool, shuffle: bool, playing: bool, buffering: bool, c
     }
 }
 
-impl HeroPress {
-    fn bits(self) -> i32 {
-        match self {
-            HeroPress::Start => 0,
-            HeroPress::Toggle => 1,
-            HeroPress::ShuffleOff => 2,
-        }
-    }
-}
-
 impl HeroButtons {
     /// The buttons packed for JNI (`CoverLook.heroButtons`): bit 0 Shuffle lit, 1 Shuffle enabled, 2
     /// pausing, 3 Play enabled, bits 4-5 Shuffle's press and 6-7 Play's (0 start, 1 toggle, 2 shuffle off).
@@ -325,8 +309,8 @@ impl HeroButtons {
             | (self.shuffle_enabled as i32) << 1
             | (self.pausing as i32) << 2
             | (self.play_enabled as i32) << 3
-            | self.shuffle_press.bits() << 4
-            | self.play_press.bits() << 6
+            | (self.shuffle_press as i32) << 4
+            | (self.play_press as i32) << 6
     }
 }
 
