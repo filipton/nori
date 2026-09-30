@@ -325,9 +325,10 @@ impl Stream {
         let Spec { hint, from_ms, duration_ms, encoding, mode, whole, sized } = spec;
         let packets = mode == Mode::Packets;
         let gapless = if whole { crate::mp4::gapless(&mut source).ok().flatten() } else { None };
-        let byte_len = source.byte_len();
         source.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
         let source = past_id3(source).map_err(|e| e.to_string())?;
+        // Asked once the first bytes are read: a song still arriving learns its length with them.
+        let byte_len = source.byte_len();
         let source: Box<dyn MediaSource> = if sized { source } else { Box::new(Unsized(source)) };
         let mss = MediaSourceStream::new(source, MediaSourceStreamOptions::default());
         let mut h = Hint::new();
@@ -1091,5 +1092,63 @@ impl Reading for Demuxed {
             State::Open(s) => s.skip_ahead(ms),
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::source::{Body, ByteSource, OpenError};
+    use parking_lot::Condvar;
+    use std::time::Duration;
+
+    const MP3: &[u8] = include_bytes!("../../player/testdata/tone440.mp3");
+
+    /// Answers only once the gate opens.
+    #[derive(Default)]
+    struct Gated(Mutex<bool>, Condvar);
+
+    impl ByteSource for Gated {
+        fn open(&self, _: &str, from: u64) -> Result<Body, OpenError> {
+            let mut open = self.0.lock();
+            while !*open {
+                self.1.wait(&mut open);
+            }
+            Ok(Body { start: from, len: Some(MP3.len() as u64), reader: Box::new(io::Cursor::new(&MP3[from as usize..])) })
+        }
+    }
+
+    fn opened(d: &mut Demuxed) {
+        while !d.ready() {
+            std::thread::park_timeout(Duration::from_millis(10));
+        }
+    }
+
+    /// Everything `d` decodes.
+    fn decoded(mut d: Demuxed) -> Vec<u8> {
+        opened(&mut d);
+        let mut out = Vec::new();
+        while d.fill() {
+            out.extend_from_slice(d.buffer());
+        }
+        out
+    }
+
+    #[test]
+    fn opened_before_its_bytes_reads_as_a_file() {
+        let gate = Arc::new(Gated::default());
+        let loader = Loader::start(gate.clone(), "tone".into(), [1_000, 4_000, 0, 0, 1 << 30], None, None);
+        let arriving = Demuxed::load(loader.clone(), std::thread::current(), Some("mp3"), 0, None, false, Encoding::Pcm16);
+        let mut packets = Demuxed::load_packets(loader.clone(), std::thread::current(), Some("mp3"), 0, None, false);
+        // The bytes come once both openings wait for them.
+        while !loader.words().contains("2 readers blocked") {
+            std::thread::yield_now();
+        }
+        *gate.0.lock() = true;
+        gate.1.notify_all();
+        let file = Demuxed::open(Box::new(io::Cursor::new(MP3)), Some("mp3"), 0, None, Encoding::Pcm16).unwrap();
+        assert!(decoded(arriving) == decoded(file), "the same samples, its encoder delay and padding cut");
+        opened(&mut packets);
+        assert!(packets.coded().is_some_and(|c| c.bitrate > 0), "its bitrate sizes an offload track: {:?}", packets.coded());
     }
 }
