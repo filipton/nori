@@ -85,6 +85,28 @@ pub enum Page {
     Queue { v: PlayQueue },
 }
 
+impl Page {
+    /// Its songs; none for a page without.
+    pub fn songs(self) -> Vec<Song> {
+        match self {
+            Page::Songs { v } => v,
+            Page::AlbumPage { v } => v.songs,
+            Page::PlaylistPage { v } => v.songs,
+            Page::StarredPage { v } => v.songs,
+            _ => Vec::new(),
+        }
+    }
+
+    /// Its albums; none for a page without.
+    pub fn albums(self) -> Vec<Album> {
+        match self {
+            Page::Albums { v } => v,
+            Page::ArtistPage { v } => v.albums,
+            _ => Vec::new(),
+        }
+    }
+}
+
 /// The cached answer for a read. `digest` (None: nothing cached) is passed back to [`Client::read_fetch`].
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
@@ -132,17 +154,8 @@ struct Spec {
 
 /// The current local year.
 fn this_year() -> i32 {
-    #[cfg(unix)]
-    // SAFETY: `time` with a null pointer and `localtime_r` into a zeroed local `tm` are sound.
-    unsafe {
-        let now = libc::time(std::ptr::null_mut());
-        let mut tm: libc::tm = std::mem::zeroed();
-        if !libc::localtime_r(&now, &mut tm).is_null() {
-            return tm.tm_year + 1900;
-        }
-    }
-    // UTC approximation: off only within hours of New Year.
-    (1970.0 + (crate::db::now_ms() as f64 / 86_400_000.0) / 365.2425) as i32
+    let now = crate::db::now_ms();
+    nori_library::smart::civil_from_ms(now + nori_library::library::local_offset_s(now / 1000) * 1000).0 as i32
 }
 
 fn by_year(from: i32, to: i32, size: i32, offset: i32) -> Spec {
@@ -247,41 +260,47 @@ const NOT_FOUND: i32 = 70;
 
 impl Client {
     fn parse(&self, parser: Parser, body: Vec<u8>) -> NetResult<Page> {
-        let c = &self.core;
+        let r = crate::parse(&body)?;
+        let stars = || self.core.stars.lock();
         Ok(match parser {
-            Parser::AlbumList => Page::Albums { v: c.parse_album_list(body)? },
-            Parser::FavouriteAlbums => Page::Albums { v: c.stars.lock().overlay_albums(c.parse_album_list(body)?) },
-            Parser::Artists => Page::Artists { v: c.parse_artists(body)? },
-            Parser::Album => Page::AlbumPage { v: c.parse_album(body)? },
-            Parser::AlbumSongs => Page::Songs { v: c.parse_album(body)?.songs },
-            Parser::Artist => Page::ArtistPage { v: c.parse_artist(body)? },
-            Parser::ArtistInfo => Page::About { v: c.parse_artist_info(body)? },
-            Parser::Songs => Page::Songs { v: c.parse_songs(body)? },
-            Parser::OneSong => Page::OneSong { v: c.parse_songs(body)?.into_iter().next() },
-            Parser::Playlists => Page::Playlists { v: c.parse_playlists(body)? },
-            Parser::Playlist => Page::PlaylistPage { v: c.parse_playlist(body)? },
-            Parser::PlaylistSongs => Page::Songs { v: c.parse_playlist(body)?.songs },
+            Parser::AlbumList => Page::Albums { v: r.album_list2.unwrap_or_default().album },
+            Parser::FavouriteAlbums => Page::Albums { v: stars().overlay_albums(r.album_list2.unwrap_or_default().album) },
+            Parser::Artists => Page::Artists { v: r.artists.unwrap_or_default().artists() },
+            Parser::Indexes => Page::Artists { v: r.indexes.unwrap_or_default().artists() },
+            Parser::Album => Page::AlbumPage { v: r.album.unwrap_or_default().into() },
+            Parser::AlbumSongs => Page::Songs { v: r.album.unwrap_or_default().song },
+            Parser::Artist => Page::ArtistPage { v: r.artist.unwrap_or_default().into() },
+            Parser::ArtistInfo => Page::About { v: r.artist_info2.unwrap_or_default().into() },
+            Parser::Songs => Page::Songs { v: r.songs() },
+            Parser::OneSong => Page::OneSong { v: r.songs().into_iter().next() },
+            Parser::Playlists => Page::Playlists { v: r.playlists.unwrap_or_default().playlist },
+            Parser::Playlist => Page::PlaylistPage { v: r.playlist.unwrap_or_default().into() },
+            Parser::PlaylistSongs => Page::Songs { v: r.playlist.unwrap_or_default().entry },
             // This session's star changes apply to cached and fresh answers alike.
-            Parser::Starred => Page::StarredPage { v: c.stars.lock().overlay(c.parse_starred(body)?) },
-            Parser::Genres => Page::Genres { v: c.parse_genres(body)? },
-            Parser::Radio => Page::Stations { v: c.parse_radio(body)? },
+            Parser::Starred => Page::StarredPage { v: stars().overlay(r.starred2.unwrap_or_default().into()) },
+            Parser::Genres => {
+                let mut v = r.genres.unwrap_or_default().genre;
+                v.sort_by_key(|g| std::cmp::Reverse(g.song_count));
+                Page::Genres { v }
+            }
+            Parser::Radio => Page::Stations { v: r.internet_radio_stations.unwrap_or_default().station },
             Parser::Lyrics => {
-                let mut v = c.parse_lyrics(body)?;
+                let mut v = crate::lyrics::build(r.lyrics_list.unwrap_or_default().structured_lyrics);
                 crate::look::keep(&mut v);
                 Page::LyricsPage { v }
             }
-            Parser::Indexes => Page::Artists { v: c.parse_indexes(body)? },
-            Parser::Directory => Page::DirectoryPage { v: c.parse_directory(body)? },
-            Parser::Search => Page::Found { v: c.parse_search(body)? },
-            Parser::Folders => Page::Folders { v: c.parse_music_folders(body)? },
-            Parser::Status => Page::Status { v: c.parse_status(body)? },
-            Parser::Share => Page::ShareUrl { v: c.parse_share(body)? },
-            Parser::Queue => Page::Queue { v: c.parse_play_queue(body)? },
+            Parser::Directory => Page::DirectoryPage { v: r.directory.unwrap_or_default().into() },
+            Parser::Search => Page::Found { v: r.search_result3.unwrap_or_default().into() },
+            Parser::Folders => Page::Folders { v: r.music_folders.unwrap_or_default().music_folder },
+            Parser::Status => Page::Status { v: r.into() },
+            Parser::Share => {
+                let url = r.shares.and_then(|s| s.share.into_iter().next()).map(|s| s.url).filter(|u| !u.is_empty());
+                Page::ShareUrl { v: url.ok_or(crate::CoreError::Parse { reason: "no share in response".into() })? }
+            }
+            Parser::Queue => Page::Queue { v: r.play_queue.unwrap_or_default().into() },
         })
     }
-}
 
-impl Client {
     /// Parses a server answer and keeps its library items in the index. Cached answers are only parsed:
     /// they were indexed when they came.
     fn parse_fresh(&self, parser: Parser, body: Vec<u8>) -> NetResult<Page> {
@@ -321,20 +340,16 @@ impl Client {
 impl Client {
     /// The cached page for `read` (None if absent or unparseable) and whether it is fresh.
     pub(crate) fn read_stored(&self, read: Read) -> NetResult<Stored> {
-        let sp = spec(read);
-        let fresh_ms = sp.fresh_ms;
-        self.stored_for(sp, fresh_ms)
+        self.stored_for(spec(read), None)
     }
 
     /// [`Client::read_stored`] with a custom freshness window (for cached reads only).
     pub(crate) fn read_stored_within(&self, read: Read, fresh_ms: i64) -> NetResult<Stored> {
-        let sp = spec(read);
-        let fresh_ms = sp.fresh_ms.map(|_| fresh_ms);
-        self.stored_for(sp, fresh_ms)
+        self.stored_for(spec(read), Some(fresh_ms))
     }
 
-    fn stored_for(&self, sp: Spec, fresh_ms: Option<i64>) -> NetResult<Stored> {
-        let Some(fresh_ms) = fresh_ms else { return Ok(Stored { page: None, digest: None, fresh: false }) };
+    fn stored_for(&self, sp: Spec, within_ms: Option<i64>) -> NetResult<Stored> {
+        let Some(fresh_ms) = sp.fresh_ms.map(|ms| within_ms.unwrap_or(ms)) else { return Ok(Stored { page: None, digest: None, fresh: false }) };
         let k = key(sp.endpoint, &self.scoped(sp.endpoint, sp.params));
         let row: Option<(Vec<u8>, i64)> = {
             let c = self.core.db.lock();

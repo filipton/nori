@@ -38,18 +38,12 @@ impl Client {
     }
 
     pub(crate) async fn songs(&self, read: Read) -> Got<Vec<Song>> {
-        match self.read_now(read).await? {
-            Page::Songs { v } => Ok(v),
-            _ => Ok(Vec::new()),
-        }
+        Ok(self.read_now(read).await?.songs())
     }
 
     async fn artist_albums(&self, seed: &Song) -> Got<Vec<crate::Album>> {
         let Some(id) = seed.artist_id.clone() else { return Ok(Vec::new()) };
-        match self.first(Read::ArtistById { id }).await? {
-            Page::ArtistPage { v } => Ok(v.albums),
-            _ => Ok(Vec::new()),
-        }
+        Ok(self.first(Read::ArtistById { id }).await?.albums())
     }
 
     /// Loose songs following `seed` by `basis`, in the source's order.
@@ -57,10 +51,7 @@ impl Client {
         Ok(match basis {
             // Top songs, else songs of the artist's first three albums.
             AutoFillBasis::Artist => {
-                let top = match self.first(Read::TopSongs { artist: seed.artist.clone() }).await? {
-                    Page::Songs { v } => v,
-                    _ => Vec::new(),
-                };
+                let top = self.first(Read::TopSongs { artist: seed.artist.clone() }).await?.songs();
                 if !top.is_empty() {
                     return Ok(top);
                 }
@@ -88,20 +79,14 @@ impl Client {
     /// Candidate album ids for `basis`.
     async fn album_candidates(&self, seed: &Song, basis: AutoFillBasis, remote: bool) -> Got<Vec<String>> {
         let ids = |v: Vec<crate::Album>| v.into_iter().filter(|a| remote || !a.is_provider()).map(|a| a.id).collect::<Vec<_>>();
-        let albums = |p: Page| match p {
-            Page::Albums { v } => v,
-            _ => Vec::new(),
-        };
         Ok(match basis {
             AutoFillBasis::Artist => ids(self.artist_albums(seed).await?),
             AutoFillBasis::Genre => match &seed.genre {
-                Some(g) => shuffled(ids(albums(
-                    self.first(Read::AlbumList { kind: "byGenre".into(), size: 30, offset: 0, genre: Some(g.clone()) }).await?,
-                ))),
+                Some(g) => shuffled(ids(self.first(Read::AlbumList { kind: "byGenre".into(), size: 30, offset: 0, genre: Some(g.clone()) }).await?.albums())),
                 None => Vec::new(),
             },
             AutoFillBasis::Era => match era(seed) {
-                Some((from, to)) => shuffled(ids(albums(self.first(Read::AlbumsByYear { from: from as i32, to: to as i32, size: 30, offset: 0 }).await?))),
+                Some((from, to)) => shuffled(ids(self.first(Read::AlbumsByYear { from: from as i32, to: to as i32, size: 30, offset: 0 }).await?.albums())),
                 None => Vec::new(),
             },
             // Albums of the similar songs.
@@ -183,10 +168,8 @@ impl Client {
     /// Whole random library albums not already queued ("shuffle albums" refill).
     async fn random_albums(&self, ids: &[String]) -> Vec<Song> {
         let queued: HashSet<String> = queue::queue_albums(ids.to_vec()).into_iter().collect();
-        let albums = match self.read_now(Read::AlbumList { kind: "random".into(), size: crate::actions::SHUFFLE_ALBUMS, offset: 0, genre: None }).await {
-            Ok(Page::Albums { v }) => v.into_iter().filter(|a| !queued.contains(&a.id)).collect(),
-            _ => Vec::new(),
-        };
+        let read = Read::AlbumList { kind: "random".into(), size: crate::actions::SHUFFLE_ALBUMS, offset: 0, genre: None };
+        let albums = self.read_now(read).await.map(Page::albums).unwrap_or_default().into_iter().filter(|a| !queued.contains(&a.id)).collect();
         let fresh = self.library_albums(albums, RANDOM_ALBUMS as usize).await;
         queue::queue_register(fresh.clone());
         fresh

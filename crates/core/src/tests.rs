@@ -54,11 +54,8 @@ fn queue_and_cache_round_trip() {
 
 #[test]
 fn synced_lyrics_preferred() {
-    let core = Core::new(String::new(), "t".into()).unwrap();
-    let l = core
-        .parse_lyrics(r#"{"subsonic-response":{"status":"ok","lyricsList":{"structuredLyrics":[
-          {"synced":false,"line":[{"value":"plain"}]},{"synced":true,"line":[{"start":1500,"value":"timed"}]}]}}}"#.into())
-        .unwrap();
+    let l = crate::lyrics::build(crate::parse(r#"{"subsonic-response":{"status":"ok","lyricsList":{"structuredLyrics":[
+          {"synced":false,"line":[{"value":"plain"}]},{"synced":true,"line":[{"start":1500,"value":"timed"}]}]}}}"#.as_bytes()).unwrap().lyrics_list.unwrap_or_default().structured_lyrics);
     assert!(l.synced);
     assert_eq!((l.lines[0].start_ms, l.lines[0].text.as_str(), l.lines[0].words.len()), (1500, "timed", 1));
 }

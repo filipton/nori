@@ -106,7 +106,9 @@ impl Client {
         let has_lines = server.as_ref().is_some_and(|l| !l.lines.is_empty());
         let synced = server.as_ref().is_some_and(|l| l.synced);
         let song = self.song_of(id.clone()).await?;
-        self.lookup_with(&song, has_lines, synced, asked, &Keeping(screen.clone())).await;
+        if let Some(line) = lookup(&*self.transport, &*self.core, &song, has_lines, synced, asked, &Keeping(screen.clone()), &self.lyrics).await {
+            nori_perf::perf_log::note_core("lyrics", line.trim_start_matches("lyrics: "));
+        }
         if refresh_after {
             // Newly timed server lyrics win; anything else is used next time.
             if let Ok(Some(Page::LyricsPage { v })) = self.read_refresh(read(), digest).await {
@@ -121,24 +123,6 @@ impl Client {
 
 /// Freshness of a downloaded song's cached server lyrics.
 pub(crate) const DOWNLOADED_SERVER_KEPT_MS: i64 = MISS_KEPT_MS;
-
-impl Client {
-    /// Asks the enabled services given what the server had (`server_has_lines`, `server_synced`), each
-    /// better pick to `shown`; synced server lyrics skip the lookup. Empty server lyrics are shown last,
-    /// only if nothing was found.
-    pub async fn lyrics_lookup(&self, id: String, server_has_lines: bool, server_synced: bool, shown: Arc<dyn LyricsShown>) -> NetResult<()> {
-        let asked = asked_now();
-        let song = self.song_of(id).await?;
-        self.lookup_with(&song, server_has_lines, server_synced, &asked, &Keeping(shown)).await;
-        Ok(())
-    }
-
-    async fn lookup_with(&self, song: &Song, server_has_lines: bool, server_synced: bool, asked: &LyricsLookup, shown: &dyn LyricsShown) {
-        if let Some(line) = lookup(&*self.transport, &*self.core, song, server_has_lines, server_synced, asked, shown, &self.lyrics).await {
-            nori_perf::perf_log::note_core("lyrics", line.trim_start_matches("lyrics: "));
-        }
-    }
-}
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Core {
@@ -219,7 +203,7 @@ pub(crate) mod tests {
 
     fn run(c: &Client, s: &Song, has_lines: bool, synced: bool, asked: &LyricsLookup) -> Vec<LyricsPick> {
         let screen = Screen::default();
-        block(c.lookup_with(s, has_lines, synced, asked, &screen));
+        block(lookup(&*c.transport, &*c.core, s, has_lines, synced, asked, &screen, &c.lyrics));
         screen.0.into_inner()
     }
 

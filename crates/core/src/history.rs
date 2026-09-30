@@ -3,7 +3,7 @@
 use rusqlite::params;
 
 use crate::browse::HistoryAfter;
-use crate::{db, model::*, Core, Result};
+use crate::{model::*, Core, Result};
 
 pub use nori_library::history::*;
 
@@ -34,25 +34,12 @@ impl Core {
         Ok((rows.into_iter().filter_map(|(e, _)| e).collect(), next))
     }
 
-    /// Stats of the played songs among `ids`.
-    pub fn song_stats(&self, ids: Vec<String>) -> Result<Vec<SongStat>> {
-        let now = db::now_ms();
-        let c = self.db.lock();
-        let mut st = c.prepare_cached(
-            "SELECT s.song_id, s.plays, s.skips, s.last_played_ms, s.heard_ms_total, s.taste, i.json FROM song_stats s
-             LEFT JOIN items i ON i.server=sid() AND i.kind=2 AND i.id=s.song_id WHERE s.server=sid() AND s.song_id IN (SELECT value FROM json_each(?1))",
-        )?;
-        let rows = st.query_map([serde_json::to_string(&ids).unwrap_or_default()], |r| {
-            let song: Song = r.get::<_, Option<String>>(6)?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
-            Ok(SongStat { song_id: r.get(0)?, plays: r.get(1)?, skips: r.get(2)?, last_played_ms: r.get(3)?, heard_ms_total: r.get(4)?, taste: taste(&song, r.get(5)?, now) })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::db;
 
     pub(crate) const NOW: i64 = 1_788_000_000_000; // 2026-08-29
 
@@ -90,6 +77,13 @@ pub(crate) mod tests {
         record(&mut core.db.lock(), &s, started_ms, heard_ms, 0, NOW).unwrap()
     }
 
+    /// (plays, skips, last played, heard ms, stored taste) of song `id`, if played.
+    fn stat(core: &Core, id: &str) -> Option<(u32, u32, i64, i64, f64)> {
+        let c = core.db.lock();
+        let row = c.query_row("SELECT plays, skips, last_played_ms, heard_ms_total, taste FROM song_stats WHERE server=sid() AND song_id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get::<_, f64>(4)?)));
+        row.ok()
+    }
+
     fn stats(core: &Core, from_ms: i64, to_ms: i64, top: u32) -> ListeningStats {
         summary(&core.db.lock(), from_ms, to_ms, top).unwrap()
     }
@@ -105,10 +99,9 @@ pub(crate) mod tests {
         assert_eq!(core.index_size().unwrap().songs, 1);
         assert_eq!(core.local_search("dogs".into(), 5).unwrap().songs, vec![s.clone()]);
 
-        let st = core.song_stats(vec!["s1".into(), "missing".into()]).unwrap();
-        assert_eq!(st.len(), 1);
-        assert_eq!((st[0].plays, st[0].skips, st[0].last_played_ms, st[0].heard_ms_total), (1, 1, NOW - DAY, 205_000));
-        assert!(core.song_stats(vec![]).unwrap().is_empty());
+        let (plays, skips, last, heard, _) = stat(&core, "s1").unwrap();
+        assert_eq!((plays, skips, last, heard), (1, 1, NOW - DAY, 205_000));
+        assert!(stat(&core, "missing").is_none());
 
         let h = core.history_recent(10, None, true).unwrap().0;
         assert_eq!(h.len(), 2);
@@ -122,7 +115,7 @@ pub(crate) mod tests {
 
         core.history_clear().unwrap();
         assert!(core.history_recent(10, None, true).unwrap().0.is_empty());
-        assert!(core.song_stats(vec!["s1".into()]).unwrap().is_empty());
+        assert!(stat(&core, "s1").is_none());
     }
 
     #[test]
@@ -154,7 +147,7 @@ pub(crate) mod tests {
         listen(&core, &fresh, NOW);
         listen(&core, &old, NOW - 30 * DAY);
         skip(&core, &skipped, NOW);
-        let stored = |id: &str| -> f64 { core.db.lock().query_row("SELECT taste FROM song_stats WHERE server=sid() AND song_id=?1", [id], |r| r.get(0)).unwrap() };
+        let stored = |id: &str| stat(&core, id).unwrap().4;
         assert!((decayed(stored("a"), NOW) - 1.0).abs() < 1e-9);
         assert!((decayed(stored("b"), NOW) - 0.5).abs() < 1e-9);
         assert!((decayed(stored("c"), NOW) + 0.6).abs() < 1e-9);
@@ -176,7 +169,7 @@ pub(crate) mod tests {
         let s = song("a", "A", "X", "", "", 0);
         assert!(record(&mut core.db.lock(), &s, i64::MAX / 2, 200_000, 0, NOW).unwrap());
         assert!(record(&mut core.db.lock(), &s, -5, 200_000, 0, NOW).unwrap());
-        let t = core.song_stats(vec!["a".into()]).unwrap()[0].taste;
+        let t = taste(&s, stat(&core, "a").unwrap().4, NOW);
         assert!(t.is_finite() && t < 3.0, "{t}");
     }
 
@@ -241,6 +234,6 @@ pub(crate) mod tests {
         assert!(core.history_recent(10, None, true).unwrap().0.is_empty());
         let s = stats(&core, 0, i64::MAX, 5);
         assert_eq!((s.plays, s.distinct_songs, s.top_songs.len()), (1, 1, 0));
-        assert_eq!(core.song_stats(vec!["s1".into()]).unwrap()[0].plays, 1);
+        assert_eq!(stat(&core, "s1").unwrap().0, 1);
     }
 }
