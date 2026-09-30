@@ -2015,6 +2015,40 @@ mod tests {
         assert_eq!(t.speed_eta_at(60_000), (0, -1), "and it stays so");
     }
 
+    #[test]
+    fn beats_offer_answers() {
+        use BeatsOffer::*;
+        for (offer, asked, wants) in [(Off, true, false), (No, true, false), (Yes, false, true), (Ask, true, true), (Ask, false, false)] {
+            assert_eq!(offer.wants(asked), wants, "{offer:?} {asked}");
+        }
+    }
+
+    /// The notification's title, the last song settling the batch, and the finished marks kept.
+    #[test]
+    fn notice_kinds_drain_and_recent_marks() {
+        let mut t = tracker(&["ext-a", "ext-b"], 1_000_000);
+        t.info.get_mut("ext-a").unwrap().title = "Song".into();
+        assert_eq!((t.start_fraction("ext-a"), t.start_fraction("ext-x")), (0.0, -1.0));
+        assert_eq!(t.followed("ext-a", QUEUED, 0), NEW_BATCH);
+        t.open("ext-a", 0);
+        t.notice(1, false, 0);
+        assert_eq!(t.notice.kind, NoticeKind::OneNamed);
+        t.notice(1, true, 500);
+        assert_eq!(t.notice.kind, NoticeKind::Waiting);
+        t.followed("ext-b", QUEUED, 0);
+        t.notice(2, false, 1_000);
+        assert_eq!((t.notice.kind, t.notice.total), (NoticeKind::Many, 2));
+        assert_eq!(t.removed("ext-b"), 0, "one still open");
+        t.followed("ext-a", DOWNLOADING, 0);
+        assert_eq!(t.removed("ext-a"), MARKS | DRAINED);
+        assert_eq!(t.forget("ext-a"), 0);
+        for i in 0..RECENT as i64 + 2 {
+            t.followed(&format!("ext-d{i}"), COMPLETED, i);
+        }
+        assert_eq!(t.marks.len(), RECENT, "only the latest finished marks stay");
+        assert!(!t.marks.contains_key("ext-d0") && t.marks.contains_key("ext-d2"));
+    }
+
     /// A server switch wakes the platform's waiter, so it waits on the new core's marks.
     #[test]
     fn switch_wakes_mark_waiter() {
