@@ -695,7 +695,7 @@ impl Loader {
                 return false;
             }
             s.blocked += 1;
-            l.cv.wait_for(&mut s, Duration::from_millis(200));
+            l.cv.wait(&mut s);
             s.blocked -= 1;
         }
     }
@@ -761,9 +761,13 @@ impl Loaded {
         Loaded { state: Mutex::new(state), cv: Condvar::new(), cancel: Cancel::stalling_after(waits.stall_ms), retry_ms: waits.retry_ms }
     }
 
-    /// The wait before the retry after `failures` failures in a row: 2, 4, 8 times `retry_ms`.
-    fn retry_wait(&self, failures: u32) -> Duration {
-        Duration::from_millis(self.retry_ms << failures)
+    /// Waits before the retry after `failures` failures in a row (2, 4, 8 times `retry_ms`); false once
+    /// the song is let go.
+    fn rest(&self, failures: u32) -> bool {
+        let until = std::time::Instant::now() + Duration::from_millis(self.retry_ms << failures);
+        let mut s = self.state.lock();
+        while !s.closed && !self.cv.wait_until(&mut s, until).timed_out() {}
+        !s.closed
     }
 
     fn run(&self, source: &dyn ByteSource, url: &str, load: [i64; 5], duration_ms: Option<i64>, keep: Option<Keep>, mut taker: Option<Listening>) {
@@ -892,7 +896,9 @@ impl Loaded {
                             self.wake(&mut s);
                             continue;
                         }
-                        std::thread::sleep(self.retry_wait(failures));
+                        if !self.rest(failures) {
+                            return;
+                        }
                         continue;
                     }
                 }
@@ -984,7 +990,9 @@ impl Loaded {
                             self.wake(&mut s);
                             return;
                         }
-                        std::thread::sleep(self.retry_wait(failures));
+                        if !self.rest(failures) {
+                            return;
+                        }
                         continue;
                     }
                 }
@@ -1243,17 +1251,60 @@ mod tests {
     use std::sync::atomic::AtomicU64;
     use std::time::Instant;
 
+    /// A count a test waits on.
+    #[derive(Default)]
+    struct Signal(Mutex<u64>, Condvar);
+
+    impl Signal {
+        fn bump(&self) {
+            *self.0.lock() += 1;
+            self.1.notify_all();
+        }
+
+        fn reach(&self, n: u64) {
+            let until = Instant::now() + Duration::from_secs(10);
+            let mut c = self.0.lock();
+            while *c < n {
+                assert!(!self.1.wait_until(&mut c, until).timed_out() || *c >= n, "{} of {n}", *c);
+            }
+        }
+    }
+
+    /// Waits as a blocked reader (counted in `blocked`) until `f` holds of the loader.
+    fn until(l: &Loader, what: &str, f: impl Fn(&State) -> bool) {
+        let until = Instant::now() + Duration::from_secs(10);
+        let mut s = l.0.state.lock();
+        s.blocked += 1;
+        while !f(&s) {
+            assert!(!l.0.cv.wait_until(&mut s, until).timed_out() || f(&s), "{what}");
+        }
+        s.blocked -= 1;
+    }
+
+    /// Bytes served and connections closed.
+    #[derive(Default)]
+    struct Served {
+        bytes: AtomicU64,
+        closed: Signal,
+    }
+
     /// Serves `len` made-up bytes (byte `i` is `i as u8`) and counts requests.
     struct Counting {
         len: u64,
         opens: Mutex<Vec<u64>>,
-        served: Arc<AtomicU64>,
+        served: Arc<Served>,
     }
 
     struct Made {
         at: u64,
         len: u64,
-        served: Arc<AtomicU64>,
+        served: Arc<Served>,
+    }
+
+    impl Drop for Made {
+        fn drop(&mut self) {
+            self.served.closed.bump();
+        }
     }
 
     impl Read for Made {
@@ -1263,7 +1314,7 @@ mod tests {
                 *b = (self.at + k as u64) as u8;
             }
             self.at += n as u64;
-            self.served.fetch_add(n as u64, Ordering::Relaxed);
+            self.served.bytes.fetch_add(n as u64, Ordering::Relaxed);
             Ok(n)
         }
     }
@@ -1276,22 +1327,13 @@ mod tests {
     }
 
     fn server(len: u64) -> Arc<Counting> {
-        Arc::new(Counting { len, opens: Mutex::new(Vec::new()), served: Arc::new(AtomicU64::new(0)) })
+        Arc::new(Counting { len, opens: Mutex::new(Vec::new()), served: Arc::default() })
     }
 
-    /// Waits until nothing is served for a while.
-    fn settled(s: &Counting) -> u64 {
-        let until = Instant::now() + Duration::from_secs(10);
-        let mut last = u64::MAX;
-        while Instant::now() < until {
-            let now = s.served.load(Ordering::Relaxed);
-            if now == last {
-                return now;
-            }
-            last = now;
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        panic!("the loader never rested");
+    /// Bytes served once `bursts` connections are closed.
+    fn settled(s: &Counting, bursts: u64) -> u64 {
+        s.served.closed.reach(bursts);
+        s.served.bytes.load(Ordering::Relaxed)
     }
 
     fn read(r: &mut LoadedReader, n: usize) -> Vec<u8> {
@@ -1308,20 +1350,17 @@ mod tests {
         let s = server(1_000_000);
         let l = Loader::start(s.clone(), "song".into(), LOAD, Some(10_000), None);
         let mut r = l.reader();
-        let first = settled(&s);
+        let first = settled(&s, 1);
         assert!((400_000..400_000 + CHUNK as u64).contains(&first), "one burst to the high mark: {first}");
         assert_eq!(*s.opens.lock(), vec![0]);
         // More than the low mark ahead: nothing fetched.
         let got = read(&mut r, 250_000);
         assert!(got.iter().enumerate().all(|(i, &b)| b == i as u8), "the bytes are the song's");
-        std::thread::sleep(Duration::from_millis(200));
-        assert_eq!(s.served.load(Ordering::Relaxed), first, "the network sleeps between bursts");
-        assert_eq!(s.opens.lock().len(), 1);
         // Within the low mark: the next burst, from where the last stopped.
         let at = first as usize - 90_000;
         read(&mut r, at - 250_000);
-        let second = settled(&s);
-        assert_eq!(s.opens.lock().clone(), vec![0, first], "a second request, picking up where the first stopped");
+        let second = settled(&s, 2);
+        assert_eq!(s.opens.lock().clone(), vec![0, first], "one more request, picking up where the first stopped");
         assert!(second - first >= 300_000, "a whole burst, not a top-up: {}", second - first);
         let rest = read(&mut r, 1_000_000 - at);
         assert!(rest.iter().enumerate().all(|(i, &b)| b == (at + i) as u8));
@@ -1333,7 +1372,7 @@ mod tests {
     fn small_song_fetched_in_one_request() {
         let s = server(300_000);
         let l = Loader::start(s.clone(), "song".into(), LOAD, Some(3_000), None);
-        assert_eq!(settled(&s), 300_000);
+        assert_eq!(settled(&s, 1), 300_000);
         let mut r = l.reader();
         let all = read(&mut r, 300_000);
         assert!(all.iter().enumerate().all(|(i, &b)| b == i as u8));
@@ -1344,7 +1383,7 @@ mod tests {
     fn fetched_ahead_holds_budget_then_rest() {
         let s = server(600_000);
         let l = Loader::start_within(s.clone(), "song".into(), LOAD, Some(6_000), None, Some(200_000), None, Waits::default());
-        let ahead = settled(&s);
+        let ahead = settled(&s, 1);
         assert!(ahead <= 200_000 + CHUNK as u64, "no more than its budget while it waits: {ahead}");
         assert!(l.held() >= 100_000, "but its start is at hand: {}", l.held());
         assert_eq!(l.holding(), 200_000);
@@ -1367,11 +1406,7 @@ mod tests {
         assert!(all.iter().enumerate().all(|(i, &b)| b == i as u8));
         assert_eq!(r.read(&mut [0u8; 16]).unwrap(), 0, "the end");
         // Dropped on the loader thread, a moment after the last bytes.
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while !l.on_disk() && std::time::Instant::now() < deadline {
-            std::thread::yield_now();
-        }
-        assert!(l.on_disk(), "{}", l.words());
+        until(&l, "read from the disk", |s| s.disk.is_some());
         assert_eq!((l.held(), l.holding()), (0, 0), "nothing kept in memory");
         assert!(l.complete());
         // Readable from anywhere.
@@ -1387,7 +1422,7 @@ mod tests {
     fn bytes_reserved_once() {
         let s = server(300_000);
         let l = Loader::start(s.clone(), "song".into(), LOAD, Some(3_000), None);
-        settled(&s);
+        settled(&s, 1);
         assert_eq!(l.0.state.lock().data.capacity(), 300_000, "made once, not grown by doubling");
     }
 
@@ -1395,7 +1430,7 @@ mod tests {
     fn seek_past_loaded_fetches_from_there() {
         let s = server(5_000_000);
         let l = Loader::start(s.clone(), "song".into(), LOAD, Some(50_000), None);
-        settled(&s);
+        settled(&s, 1);
         let mut r = l.reader();
         r.seek(SeekFrom::Start(4_000_000)).unwrap();
         let got = read(&mut r, 1000);
@@ -1413,7 +1448,6 @@ mod tests {
         /// The body ends with an error, as OkHttp reads one shorter than its Content-Length.
         breaks_at_end: bool,
         opens: Mutex<Vec<u64>>,
-        served: Arc<AtomicU64>,
     }
 
     struct Cut {
@@ -1439,14 +1473,14 @@ mod tests {
             if from >= self.real {
                 return Err(OpenError::PastEnd { len: self.says.then_some(self.real) });
             }
-            let made = Made { at: from, len: self.real, served: self.served.clone() };
+            let made = Made { at: from, len: self.real, served: Arc::default() };
             let reader = Cut { made, cut: self.cut.lock().take(), breaks_at_end: self.breaks_at_end };
             Ok(Body { start: from, len: Some(self.promised), reader: Box::new(reader) })
         }
     }
 
     fn estimating(real: u64, promised: u64, says: bool) -> Estimating {
-        Estimating { real, promised, says, cut: Mutex::new(None), breaks_at_end: false, opens: Mutex::new(Vec::new()), served: Arc::new(AtomicU64::new(0)) }
+        Estimating { real, promised, says, cut: Mutex::new(None), breaks_at_end: false, opens: Mutex::new(Vec::new()) }
     }
 
     #[test]
@@ -1522,24 +1556,15 @@ mod tests {
     #[test]
     fn abandoned_readers_leave_waiter_woken() {
         /// Answers only when let, so all readers are waiting.
-        struct Late(Arc<Counting>, Arc<AtomicBool>);
+        struct Late(Arc<Counting>, Arc<Signal>);
         impl ByteSource for Late {
             fn open(&self, url: &str, from: u64) -> Result<Body, OpenError> {
-                while !self.1.load(Ordering::Acquire) {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
+                self.1.reach(1);
                 self.0.open(url, from)
             }
         }
         let blocked = |l: &Loader| l.0.state.lock().blocked;
-        let until = |l: &Loader, n: u32, what: &str| {
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while blocked(l) != n {
-                assert!(Instant::now() < deadline, "{what}: {} readers blocked, not {n}", blocked(l));
-                std::thread::sleep(Duration::from_millis(1));
-            }
-        };
-        let answer = Arc::new(AtomicBool::new(false));
+        let answer = Arc::new(Signal::default());
         let l = Loader::start(Arc::new(Late(server(2_000_000), answer.clone())), "song".into(), LOAD, Some(20_000), None);
         let mut wanted = l.reader();
         let player = std::thread::spawn(move || {
@@ -1554,14 +1579,15 @@ mod tests {
                 std::thread::spawn(move || r.read(&mut [0u8; 16]).is_err())
             })
             .collect();
-        until(&l, 9, "the player's reader and eight opened for nothing all wait on the bytes");
+        // Ten with this wait.
+        until(&l, "the player's reader and eight opened for nothing all wait on the bytes", |s| s.blocked == 10);
         stop.store(true, Ordering::Release);
         l.nudge();
         let gave_up = others.into_iter().map(|o| o.join().unwrap()).filter(|&e| e).count();
         assert_eq!(gave_up, 8, "the readers nobody wants give up");
         assert_eq!(blocked(&l), 1, "the player's reader still waits, and is counted as waiting");
         let answered = Instant::now();
-        answer.store(true, Ordering::Release);
+        answer.bump();
         let (n, at) = player.join().unwrap();
         assert_eq!(n.expect("the bytes"), 16);
         let took = at - answered;
@@ -1570,32 +1596,32 @@ mod tests {
 
     #[test]
     fn unwanted_reader_stops_waiting() {
-        /// Slow except from the start.
-        struct Slow(Arc<Counting>);
+        /// Answers from past the start only when let.
+        struct Slow(Arc<Counting>, Arc<Signal>);
         impl ByteSource for Slow {
             fn open(&self, url: &str, from: u64) -> Result<Body, OpenError> {
                 if from > 0 {
-                    std::thread::sleep(Duration::from_millis(1500));
+                    self.1.reach(1);
                 }
                 self.0.open(url, from)
             }
         }
-        let s = server(5_000_000);
-        let l = Loader::start(Arc::new(Slow(s.clone())), "song".into(), LOAD, Some(50_000), None);
+        let answer = Arc::new(Signal::default());
+        let l = Loader::start(Arc::new(Slow(server(5_000_000), answer.clone())), "song".into(), LOAD, Some(50_000), None);
         let stop = Arc::new(AtomicBool::new(false));
         let mut r = l.reader_until(stop.clone());
         read(&mut r, 1000);
         r.seek(SeekFrom::Start(4_000_000)).unwrap();
         let (l2, stop2) = (l.clone(), stop.clone());
         std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(100));
+            until(&l2, "the reader waits", |s| s.blocked == 2);
             stop2.store(true, Ordering::Release);
             l2.nudge();
         });
-        let t = Instant::now();
         assert!(r.read(&mut [0u8; 16]).is_err(), "given up");
-        assert!(t.elapsed() < Duration::from_millis(1000), "at once, not once the bytes came: {:?}", t.elapsed());
         assert!(r.read(&mut [0u8; 16]).is_err(), "and for good");
+        assert_eq!(l.0.state.lock().bursts, 1, "given up before the bytes came");
+        answer.bump();
     }
 
     #[test]
@@ -1623,20 +1649,16 @@ mod tests {
     #[derive(Default)]
     struct Silent {
         headers: bool,
-        asked: AtomicU64,
-        called_off: Arc<AtomicU64>,
+        asked: Signal,
+        called_off: Arc<Signal>,
     }
 
-    struct Nothing(Arc<AtomicBool>, Arc<AtomicU64>);
+    struct Nothing(Arc<Signal>, Arc<Signal>);
 
     impl Nothing {
         fn wait(&self) {
-            let until = Instant::now() + Duration::from_secs(30);
-            while !self.0.load(Ordering::Acquire) {
-                assert!(Instant::now() < until, "never called off");
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            self.1.fetch_add(1, Ordering::Relaxed);
+            self.0.reach(1);
+            self.1.bump();
         }
     }
 
@@ -1653,10 +1675,10 @@ mod tests {
         }
 
         fn open_cancellable(&self, _: &str, _: Option<&str>, from: u64, cancel: &Cancel) -> Result<Body, OpenError> {
-            self.asked.fetch_add(1, Ordering::Relaxed);
-            let off = Arc::new(AtomicBool::new(false));
+            self.asked.bump();
+            let off = Arc::new(Signal::default());
             let o = off.clone();
-            cancel.on_cancel(move || o.store(true, Ordering::Release));
+            cancel.on_cancel(move || o.bump());
             let nothing = Nothing(off, self.called_off.clone());
             if self.headers {
                 nothing.wait();
@@ -1666,27 +1688,15 @@ mod tests {
         }
     }
 
-    fn called_off(s: &Silent, n: u64) {
-        let until = Instant::now() + Duration::from_secs(10);
-        while s.called_off.load(Ordering::Relaxed) < n {
-            assert!(Instant::now() < until, "{} of {n} called off", s.called_off.load(Ordering::Relaxed));
-            std::thread::sleep(Duration::from_millis(1));
-        }
-    }
-
     #[test]
     fn dropped_song_cancels_hung_request() {
         for headers in [true, false] {
             let s = Arc::new(Silent { headers, ..Silent::default() });
             let l = Loader::start(s.clone(), "ext-1".into(), LOAD, Some(3_000), None);
-            let until = Instant::now() + Duration::from_secs(10);
-            while s.asked.load(Ordering::Relaxed) == 0 {
-                assert!(Instant::now() < until);
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            s.asked.reach(1);
             drop(l);
-            called_off(&s, 1);
-            assert_eq!(s.asked.load(Ordering::Relaxed), 1, "and not asked again (headers {headers})");
+            s.called_off.reach(1);
+            assert_eq!(*s.asked.0.lock(), 1, "and not asked again (headers {headers})");
         }
     }
 
@@ -1722,6 +1732,28 @@ mod tests {
         assert_eq!(l.error(), Some(OpenError::TimedOut.to_string()));
         assert_eq!(l.answered(), None, "the network's failure, not the server's");
         assert_eq!(*s.0.lock(), 1, "asked once");
+    }
+
+    #[test]
+    fn let_go_song_stops_retrying_at_once() {
+        struct Down(Signal, Arc<Signal>);
+        impl ByteSource for Down {
+            fn open(&self, _: &str, _: u64) -> Result<Body, OpenError> {
+                self.0.bump();
+                Err("down".into())
+            }
+        }
+        impl Drop for Down {
+            fn drop(&mut self) {
+                self.1.bump();
+            }
+        }
+        let gone = Arc::new(Signal::default());
+        let s = Arc::new(Down(Signal::default(), gone.clone()));
+        let l = Loader::start_within(s.clone(), "song".into(), LOAD, Some(3_000), None, None, None, Waits { stall_ms: 20_000, retry_ms: 60_000 });
+        s.0.reach(1);
+        drop((s, l));
+        gone.reach(1);
     }
 
     #[test]
