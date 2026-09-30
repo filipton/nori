@@ -1,0 +1,51 @@
+0 State(Playing)
+0 Song { index: 0, id: "a", jumps: 1 }
+0 Position { index: 0, ms: 0 }
+250 Position { index: 0, ms: 0 }
+500 Position { index: 0, ms: 498 }
+750 Position { index: 0, ms: 749 }
+1000 Position { index: 0, ms: 999 }
+1250 Position { index: 0, ms: 1248 }
+1500 Position { index: 0, ms: 1500 }
+1750 Position { index: 0, ms: 1748 }
+2000 Position { index: 0, ms: 2000 }
+2054 Awake(false)
+2250 Position { index: 0, ms: 2250 }
+2500 Position { index: 0, ms: 2500 }
+2750 Position { index: 0, ms: 2750 }
+3000 Position { index: 0, ms: 3000 }
+3250 Position { index: 0, ms: 3250 }
+3500 Position { index: 0, ms: 3500 }
+3750 Position { index: 0, ms: 3750 }
+4000 Position { index: 0, ms: 4000 }
+4250 Position { index: 0, ms: 4250 }
+4500 Position { index: 0, ms: 4500 }
+4750 Position { index: 0, ms: 4750 }
+5000 Position { index: 0, ms: 5000 }
+5000 Awake(true)
+5120 Song { index: 1, id: "b", jumps: 2 }
+5248 Awake(false)
+5250 Position { index: 1, ms: 140 }
+5500 Position { index: 1, ms: 380 }
+5630 Awake(true)
+5750 Placed { index: 1, ms: 629 }
+5750 Position { index: 1, ms: 629 }
+6000 Position { index: 1, ms: 872 }
+6250 Position { index: 1, ms: 1128 }
+6500 Position { index: 1, ms: 1372 }
+6750 Position { index: 1, ms: 1627 }
+7000 Position { index: 1, ms: 1882 }
+7250 Position { index: 1, ms: 2126 }
+7500 Position { index: 1, ms: 2382 }
+7750 Position { index: 1, ms: 2625 }
+8000 Position { index: 1, ms: 2881 }
+8250 Position { index: 1, ms: 3125 }
+8500 Position { index: 1, ms: 3380 }
+8750 Position { index: 1, ms: 3624 }
+9000 Position { index: 1, ms: 3879 }
+9250 Position { index: 1, ms: 4123 }
+heard: 310272 samples c70c393662c363e4 384450f0e88dd3c5 f75b59cc2f2263c5 715ef3fb74ca3945
+opened [OutputFormat { rate: 44100, channels: 2, bits: 0 }]
+chip calls [Open(Coded { coding: Mp3, rate: 44100, channels: 2 }), DelayPadding(576, 1224), Volume(1.0), Write(65536, 180357), Play, Write(32913, 90578), Write(32946, 90669), Volume(1.0), Volume(1.0), Volume(0.8666667), Volume(0.73333335), Volume(0.6), Volume(0.46666664), Volume(0.3333333), Volume(0.19999999), Volume(0.06666666), Pause, Flush, Volume(0.06666666), Volume(0.06666666), DelayPadding(576, 1224), Volume(0.06666666), Write(65536, 180357), Play, Volume(0.19111112), Volume(0.31555557), Volume(0.44), Volume(0.5644445), Volume(0.6888889), Volume(0.81333333), Volume(0.93777776), Volume(1.0), Volume(1.0), Volume(1.0), Volume(0.46666664), Volume(0.0), Pause, Flush, Close]
+chip notes ["the platform granted a track of 64 KB of the 8192 KB asked: 4089 ms of this song, topped up when the platform asks for more (about every 2044 ms if its chip buffers nothing of its own)", "the timestamp read 225833 frames, 5120 ms in, ahead of the clock's 515 ms (1 of 3)", "the timestamp read 225833 frames, 5120 ms in, ahead of the clock's 531 ms (2 of 3)", "offload: left at 629 ms (chip said 629 ms by its timestamp, heard 629 ms, written 4089 ms)"]
+chip bytes: 196931 samples 8d27154a490e2015 e8d9a64d2a25f10b 2be1d0f33e477a60 a882eb61f7643e07

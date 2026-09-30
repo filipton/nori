@@ -1,0 +1,11 @@
+0 State(Playing)
+0 Buffering(true)
+0 Song { index: 0, id: "a", jumps: 1 }
+0 Buffering(false)
+1000 Buffering(true)
+1000 Position { index: 0, ms: 45000 }
+6000 Buffering(false)
+20995 Song { index: 1, id: "b", jumps: 1 }
+25988 Song { index: 2, id: "c", jumps: 1 }
+heard: 2011136 samples 79f62a5bef0cc3c5 61626245ec98e3c5 c46d0d0ad13263c5 9ba49cc9ec4203c5 84c0de29322cc3c5 be8a05204257c3c5 d87ebfeb748c63c5 f3de4b12425903c5 a33c0b10fbabe3c5 1bbb464cdf7d23c5 2e2a5f6d815523c5 91c3724ff7cc23c5 bc1924da9ecae3c5 ee6190df118ce3c5 0ba33e2dfc8ca3c5 750e3d1601d523c5 2281ab01351ee3c5 f0056dfb7af953c5 32ca2c1f83dde3c5 63905570be9a23c5 eaa2fd8d222b83c5 96a0a3202b9823c5 a5d147fedc916965
+opened [OutputFormat { rate: 48000, channels: 2, bits: 0 }]

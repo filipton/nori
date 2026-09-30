@@ -122,7 +122,7 @@ impl Rig {
         let app = CoreApp::new().measuring(measurer.clone());
         let card = Card::new();
         let clock = Virtual::default();
-        let engine = Engine::start_on(library, app, CoreQueue, Box::new(card.clone()), None, Config { memory_mb: 256, settings: settings(&prefs, 0.0), ..Config::default() }, clock.clone(), |_| {});
+        let engine = Engine::start_on(library, app, CoreQueue, Box::new(card.clone()), None, Config { memory_mb: 256, settings: settings(&prefs, 0.0), ..Config::default() }, clock.clone(), { let mut t = common::golden::Trace::new(&clock); let h = card.heard.clone(); t.watch(move || common::golden::floats("heard", &h.lock())); let o = card.opened.clone(); t.watch(move || format!("opened {:?}", o.lock())); t.around(|_| {}) });
         engine.queue_changed();
         Rig { engine, time: Stepper::new(clock, card.pull.clone()), core, store, net, measurer, ids: ids.iter().map(|s| s.to_string()).collect(), _dir: dir }
     }

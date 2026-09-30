@@ -1,0 +1,24 @@
+0 State(Playing)
+0 Song { index: 0, id: "a", jumps: 1 }
+1999 Position { index: 0, ms: 22000 }
+2653 Song { index: 1, id: "b", jumps: 2 }
+2816 Buffering(true)
+2816 Song { index: 2, id: "c", jumps: 3 }
+2816 Buffering(false)
+2941 Song { index: 3, id: "d", jumps: 4 }
+3095 Song { index: 4, id: "e", jumps: 5 }
+3280 Buffering(true)
+3280 Song { index: 5, id: "f", jumps: 6 }
+3280 Buffering(false)
+3469 Buffering(true)
+3469 Song { index: 8, id: "i", jumps: 9 }
+3469 Buffering(false)
+3594 Song { index: 10, id: "k", jumps: 11 }
+3736 Song { index: 12, id: "m", jumps: 13 }
+3856 Buffering(true)
+3856 Song { index: 14, id: "o", jumps: 15 }
+3856 Buffering(false)
+heard: 1068032 samples 8274f803c8fc4595 5d15db470795ea8d ad2100fe36d9b97f 04d5ec00e05e6706 96fb2680aa971669 293a89013c7ce9fa d84ae3617e9c0165 75be0070c056f86b db4f278267295732 9b2c05fc441ca4fb 74c523eb83ae57c6 711346f205abe0a0 bdc3a25b28871377
+heard_f: 0 samples
+opened 1 shut 1 flushes 10
+requests [("b", 2352014), ("c", 0), ("e", 2352014), ("f", 0), ("h", 2352014), ("i", 0), ("k", 2352014), ("l", 0), ("n", 2352014), ("o", 0)]

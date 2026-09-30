@@ -1,0 +1,9 @@
+0 State(Playing)
+0 Song { index: 0, id: "a", jumps: 1 }
+120 Song { index: 3, id: "d", jumps: 4 }
+248 Awake(false)
+heard: 0 samples
+opened []
+chip calls [Open(Coded { coding: Mp3, rate: 44100, channels: 2 }), DelayPadding(576, 792), Volume(1.0), Write(160496, 441000), Play, EndOfStream, DelayPadding(576, 792), Write(160496, 441000), EndOfStream, DelayPadding(576, 792), Write(160496, 441000), EndOfStream, DelayPadding(576, 792), Write(160496, 441000), Volume(1.0), Volume(1.0), Volume(1.0), Volume(1.0), Volume(0.8666667), Volume(0.73333335), Volume(0.6), Volume(0.46666664), Volume(0.3333333), Volume(0.19999999), Volume(0.06666666), Close, Open(Coded { coding: Mp3, rate: 44100, channels: 2 }), DelayPadding(576, 792), Volume(0.06666666), Write(160496, 441000), Play, Volume(0.06666666), EndOfStream, DelayPadding(576, 792), Write(160496, 441000), EndOfStream, Volume(0.06666666), Volume(0.19111112), Volume(0.31555557), Volume(0.44), Volume(0.5644445), Volume(0.6888889), Volume(0.81333333), Volume(0.93777776), Volume(1.0), Close]
+chip notes ["the platform granted a track of 3772 KB of the 3772 KB asked: 240688 ms of this song, topped up when the platform asks for more (about every 30000 ms if its chip buffers nothing of its own)", "the platform granted a track of 8192 KB of the 8192 KB asked: 522667 ms of this song, topped up when the platform asks for more (about every 30000 ms if its chip buffers nothing of its own)"]
+chip bytes: 962976 samples 8d27154a490e2015 e8d9a64d2a25f10b fac8a278fb6f4624 308c57822788ae9f 7dfeb1364ea7fff1 b699ce9de96c1abc 59061b36956cd824 0fd190cbd4841ff1 1f17ec0bbc464d63 78525d54d807059c 7405c41bc5a1fe03 c5e96afcc7886e49 4d19d18cc95c7580 b22b51798b5da4da 4ee26b9552ffc40c

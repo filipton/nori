@@ -1,0 +1,8 @@
+58 State(Playing)
+58 Buffering(true)
+58 Song { index: 0, id: "a", jumps: 1 }
+58 Buffering(false)
+1068 Song { index: 1, id: "b", jumps: 1 }
+2071 State(Ended)
+heard: 184200 samples 83eb9c92420acab3 5393ae7c1b8017c5 6aad1310d8839c85
+opened [OutputFormat { rate: 44100, channels: 2, bits: 24 }, OutputFormat { rate: 48000, channels: 2, bits: 16 }]

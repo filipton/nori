@@ -1,0 +1,11 @@
+0 State(Playing)
+0 Song { index: 0, id: "a", jumps: 1 }
+1000 Song { index: 1, id: "b", jumps: 1 }
+1000 Placed { index: 1, ms: 0 }
+32196 Song { index: 2, id: "c", jumps: 1 }
+32196 Awake(false)
+heard: 2646000 samples ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5 ef8d6ae13b9fe3c5
+opened [OutputFormat { rate: 44100, channels: 2, bits: 0 }]
+chip calls [Open(Coded { coding: Mp3, rate: 44100, channels: 2 }), DelayPadding(576, 792), Volume(1.0), Write(160496, 441000), Play, EndOfStream, Pause, Flush, Pause, Flush, Close, Open(Coded { coding: Mp3, rate: 44100, channels: 2 }), DelayPadding(576, 792), Volume(1.0), Write(160496, 441000), Play, EndOfStream, Close]
+chip notes ["the platform granted a track of 8192 KB of the 8192 KB asked: 522667 ms of this song, topped up when the platform asks for more (about every 30000 ms if its chip buffers nothing of its own)", "a ended by the play head: the play head read 441000, 10000 ms heard of 10000 ms written for it, its end of stream said", "the platform granted a track of 3772 KB of the 3772 KB asked: 240688 ms of this song, topped up when the platform asks for more (about every 30000 ms if its chip buffers nothing of its own)"]
+chip bytes: 320992 samples 8d27154a490e2015 e8d9a64d2a25f10b cc81c10dd5bb23f8 eeee523a9c5dbd20 1dfe318489f4a956

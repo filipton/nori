@@ -129,7 +129,7 @@ impl Rig {
         let clock = Virtual::default();
         let mut app = sim::App::new();
         app.prefs = sim::prefs_off();
-        let engine = Engine::start_on(Songs::new(), Planned(app), queue, Box::new(card.clone()), None, Config::default(), clock.clone(), |_| {});
+        let engine = Engine::start_on(Songs::new(), Planned(app), queue, Box::new(card.clone()), None, Config::default(), clock.clone(), { let mut t = common::golden::Trace::new(&clock); let h = card.heard.clone(); t.watch(move || common::golden::floats("heard", &h.lock())); let o = card.opened.clone(); t.watch(move || format!("opened {:?}", o.lock())); t.around(|_| {}) });
         engine.queue_changed();
         engine.play_at(0, 0);
         let rig = Rig { engine, time: Stepper::new(clock, card.pull.clone()), card };

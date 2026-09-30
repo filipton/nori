@@ -1,0 +1,70 @@
+0 State(Playing)
+0 Song { index: 0, id: "a", jumps: 1 }
+0 Position { index: 0, ms: 0 }
+250 Position { index: 0, ms: 0 }
+500 Position { index: 0, ms: 498 }
+750 Position { index: 0, ms: 749 }
+1000 Position { index: 0, ms: 999 }
+1250 Position { index: 0, ms: 1248 }
+1500 Position { index: 0, ms: 1500 }
+1750 Position { index: 0, ms: 1748 }
+2000 Position { index: 0, ms: 2000 }
+2054 Awake(false)
+2250 Position { index: 0, ms: 2250 }
+2500 Position { index: 0, ms: 2500 }
+2750 Position { index: 0, ms: 2750 }
+3000 Position { index: 0, ms: 3000 }
+3250 Position { index: 0, ms: 3250 }
+3500 Position { index: 0, ms: 3500 }
+3750 Position { index: 0, ms: 3750 }
+4000 Position { index: 0, ms: 4000 }
+4250 Position { index: 0, ms: 4250 }
+4500 Position { index: 0, ms: 4500 }
+4750 Position { index: 0, ms: 4750 }
+5000 Position { index: 0, ms: 5000 }
+5000 Awake(true)
+5000 State(Paused)
+7012 State(Playing)
+7012 Position { index: 0, ms: 5000 }
+7012 Awake(false)
+7262 Position { index: 0, ms: 5250 }
+7512 Position { index: 0, ms: 5499 }
+7762 Position { index: 0, ms: 5750 }
+8012 Position { index: 0, ms: 6000 }
+8262 Position { index: 0, ms: 6250 }
+8512 Position { index: 0, ms: 6500 }
+8762 Position { index: 0, ms: 6750 }
+9012 Position { index: 0, ms: 7000 }
+9262 Position { index: 0, ms: 7250 }
+9512 Position { index: 0, ms: 7500 }
+9762 Position { index: 0, ms: 7750 }
+10012 Position { index: 0, ms: 8000 }
+10262 Position { index: 0, ms: 8249 }
+10512 Position { index: 0, ms: 8500 }
+10762 Position { index: 0, ms: 8750 }
+11012 Position { index: 0, ms: 9000 }
+11262 Position { index: 0, ms: 9250 }
+11512 Position { index: 0, ms: 9500 }
+11762 Position { index: 0, ms: 9750 }
+12012 Position { index: 0, ms: 9999 }
+12012 Awake(true)
+12132 Placed { index: 0, ms: 10119 }
+12262 Position { index: 0, ms: 10258 }
+12512 Position { index: 0, ms: 10502 }
+12762 Position { index: 0, ms: 10757 }
+13012 Position { index: 0, ms: 11001 }
+13262 Position { index: 0, ms: 11256 }
+13512 Position { index: 0, ms: 11500 }
+13762 Position { index: 0, ms: 11755 }
+14012 Position { index: 0, ms: 11999 }
+14262 Position { index: 0, ms: 12255 }
+14512 Position { index: 0, ms: 12499 }
+14762 Position { index: 0, ms: 12754 }
+15012 Position { index: 0, ms: 13009 }
+15262 Position { index: 0, ms: 13253 }
+15512 Position { index: 0, ms: 13509 }
+heard: 310272 samples 9f44d7f5b6820f3e 77b7b599aff973c5 d5f776f01b20f3c5 2fb10633a79e6945
+opened [OutputFormat { rate: 44100, channels: 2, bits: 0 }]
+chip calls [Open(Coded { coding: Mp3, rate: 44100, channels: 2 }), DelayPadding(576, 1224), Volume(1.0), Write(65536, 180357), Play, Write(32913, 90578), Write(32946, 90669), Pause, Play, Volume(1.0), Write(32882, 90492), Write(32930, 90625), Volume(1.0), Volume(1.0), Volume(0.46666664), Volume(0.0), Pause, Flush, Close]
+chip notes ["the platform granted a track of 64 KB of the 8192 KB asked: 4089 ms of this song, topped up when the platform asks for more (about every 2044 ms if its chip buffers nothing of its own)", "offload: left at 10106 ms (chip said 10106 ms by its timestamp, heard 10106 ms, written 12306 ms)"]
+chip bytes: 197207 samples 8d27154a490e2015 e8d9a64d2a25f10b c8e5834b0e1d5383 fa40564ed8d678ae

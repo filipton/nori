@@ -1,0 +1,13 @@
+0 State(Playing)
+0 Song { index: 0, id: "a", jumps: 1 }
+0 Awake(false)
+36896 Awake(true)
+40004 Song { index: 1, id: "b", jumps: 1 }
+40004 Awake(false)
+73769 Awake(true)
+80004 State(Ended)
+heard: 0 samples
+opened []
+chip calls [Open(Coded { coding: Mp3, rate: 44100, channels: 2 }), DelayPadding(576, 1440), Volume(1.0), Write(1044, 47), Play, Write(262270, 289152), Write(31598, 34836), Write(147624, 162756), Write(83047, 91560), Write(64759, 71396), Write(147678, 162815), Write(49833, 54941), Write(97847, 107876), Write(147679, 162816), Write(16743, 18460), Write(130936, 144357), Write(131333, 144795), Write(16346, 18021), Write(147678, 162814), Write(98246, 108317), Write(27167, 29041), EndOfStream, DelayPadding(576, 1440), Write(22266, 24454), Write(147680, 162195), Volume(1.0), Write(92323, 101398), Write(55339, 61011), Write(147779, 162926), Write(59151, 65215), Write(88414, 97476), Write(147679, 162815), Write(26177, 28861), Write(121502, 133956), Write(140767, 155196), Write(6913, 7621), Write(147678, 162814), Write(107679, 118717), Write(40000, 44100), Write(147680, 162817), Write(74589, 82235), Write(28212, 30193), EndOfStream, Pause, Close]
+chip notes ["the platform granted a track of 32 KB of the 8192 KB asked: 33 ms of this song, topped up when the platform asks for more (about every 16 ms if its chip buffers nothing of its own)", "b ended by the play head: the timestamp read 3528000, 40000 ms heard of 40000 ms written for it, its end of stream said"]
+chip bytes: 3203656 samples 384529e6e56b9983 35d183b7e3e8c9d0 ad9e4139af5dd813 59e408046570d437 c7c0b91c6c814cd8 f529eb996c6e5683 cdffe74bcb99c881 930217a078338667 29f5da2725939be5 9f0edf7c23d75037 702df1d5be65defa ffab049451452ac1 6399f2602d5d8112 ba40b7864b4bb7aa 1ad28f498f4ccecd bd6975b8319e6bf3 aa4cecc0f466bef5 13a80e90fb45c2dc 016a917413ede016 9b5eb486f0be6c63 bf32c5fd8fd26945 fc4ff676a40a92e5 d48b6b2961624141 c4690f4aafb6205c e47b7b3d1e9810b1 41dff7d783eadda4 98c6e7177aff11d5 f38d62f7dba2b9ef 42c63204c947fba7 052fdc587ae16fbe 28f578654e34df01 fde6c7c771730b2e 8aa4122f90d37e70 f031b748ab6fef7d b5406461475278dd ddcf6f358bf25248 74ef71ab00bccd83 2abb1b1e8cf447b1 1d76de47a7b73961 6116c0b6a1befaf6 83e0bf67fa6db766 42a5a35ca3bed5a2 4f6e3252455eb71a 406895a8b951fe29 9a192d63536a789e 8182dd870049597b dbd0a9e0d54ee382 430b3e2788a3696c b4baa59959c85b79

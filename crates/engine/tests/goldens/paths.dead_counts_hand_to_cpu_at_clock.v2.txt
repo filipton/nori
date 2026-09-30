@@ -1,0 +1,10 @@
+0 State(Playing)
+0 Song { index: 0, id: "a", jumps: 1 }
+0 Awake(false)
+10001 Placed { index: 0, ms: 10000 }
+10001 Awake(true)
+heard: 89088 samples 24f02eeb6daf63c5 0e79c40df5f8a685
+opened [OutputFormat { rate: 44100, channels: 2, bits: 0 }]
+chip calls [Open(Coded { coding: Mp3, rate: 44100, channels: 2 }), DelayPadding(576, 1224), Volume(1.0), Write(417, 47), Play, Write(65119, 179483), Write(32865, 90584), Write(32921, 90738), Write(32880, 90625), Write(32879, 90622), Pause, Flush, Close]
+chip notes ["the platform granted a track of 64 KB of the 8192 KB asked: 167 ms of this song, topped up when the platform asks for more (about every 83 ms if its chip buffers nothing of its own)", "offload given up, the CPU plays on from 10000 ms, where the clock puts the ear, the platform having played what it asked for: the play head stood at 0 for 10001 ms while the track played, 12292 ms written past it, though the platform asked for more 5 times (slack 10000 ms)", "offload: left at 10000 ms (chip said 0 ms by its play head, heard 10000 ms, written 12292 ms)"]
+chip bytes: 197081 samples 8d27154a490e2015 e8d9a64d2a25f10b c8e5834b0e1d5383 e26bccd0894292cc

@@ -697,8 +697,15 @@ impl Rig {
             f.0.lock().clock = Some(clock.clone());
             card.pull.lock().chip = Some(f.clone());
         }
+        let mut t = common::golden::Trace::new(&clock);
+        let (h, o) = (card.heard.clone(), card.opened.clone());
+        t.watch(move || format!("{}\nopened {:?}", common::golden::floats("heard", &h.lock()), o.lock()));
+        if let Some(f) = &fake {
+            let f = f.clone();
+            t.watch(move || { let c = f.0.lock(); format!("chip calls {:?}\nchip notes {:?}\n{}", c.calls, c.notes, common::golden::hashes("chip bytes", &c.bytes, 65_536, |b| b as u64)) });
+        }
         let offload = fake.map(|f| Box::new(f) as Box<dyn OffloadOutput>);
-        let engine = Engine::start_on(Songs(server, songs, albums), app, queue.clone(), Box::new(card.clone()), offload, config, clock.clone(), move |e| seen.lock().push(e));
+        let engine = Engine::start_on(Songs(server, songs, albums), app, queue.clone(), Box::new(card.clone()), offload, config, clock.clone(), t.around(move |e| seen.lock().push(e)));
         engine.queue_changed();
         Rig { engine, time: Stepper::new(clock, card.pull.clone()), card, queue, events }
     }
@@ -1350,7 +1357,10 @@ fn live_stream_strips_titles() {
     let events = Arc::new(Mutex::new(Vec::new()));
     let seen = events.clone();
     let clock = Virtual::default();
-    let engine = Engine::start_on(Radio, app(), queue, Box::new(card.clone()), None, Config::default(), clock.clone(), move |e| seen.lock().push(e));
+    let mut t = common::golden::Trace::new(&clock);
+    let h = card.heard.clone();
+    t.watch(move || common::golden::floats("heard", &h.lock()));
+    let engine = Engine::start_on(Radio, app(), queue, Box::new(card.clone()), None, Config::default(), clock.clone(), t.around(move |e| seen.lock().push(e)));
     let time = Stepper::new(clock, card.pull.clone());
     engine.queue_changed();
     engine.play_at(0, 0);
@@ -2472,7 +2482,10 @@ fn unsized_rig(d: &Path, secs: u32, fake: Option<Fake>, settings: Settings) -> O
     }
     let config = Config { memory_mb: 256, settings, ..Config::default() };
     let offload = fake.map(|f| Box::new(f) as Box<dyn OffloadOutput>);
-    let engine = Engine::start_on(UnsizedSongs(server, songs), app(), queue.clone(), Box::new(card.clone()), offload, config, clock.clone(), move |e| seen.lock().push(e));
+    let mut t = common::golden::Trace::new(&clock);
+    let h = card.heard.clone();
+    t.watch(move || common::golden::floats("heard", &h.lock()));
+    let engine = Engine::start_on(UnsizedSongs(server, songs), app(), queue.clone(), Box::new(card.clone()), offload, config, clock.clone(), t.around(move |e| seen.lock().push(e)));
     engine.queue_changed();
     Some((Rig { engine, time: Stepper::new(clock, card.pull.clone()), card, queue, events }, gate))
 }

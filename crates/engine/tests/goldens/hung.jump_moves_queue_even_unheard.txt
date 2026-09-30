@@ -1,0 +1,9 @@
+0 State(Playing)
+0 Buffering(true)
+0 Song { index: 0, id: "ext-0", jumps: 1 }
+301 Song { index: 2, id: "ext-2", jumps: 3 }
+603 State(Paused)
+603 Buffering(false)
+905 Song { index: 4, id: "ext-4", jumps: 4 }
+heard: 0 samples
+opened []

@@ -1,0 +1,7 @@
+0 State(Playing)
+0 Buffering(true)
+0 Song { index: 0, id: "s0", jumps: 1 }
+0 Buffering(false)
+998 State(Paused)
+heard: 89088 samples 96888678ca3f03c5 26d133581174be85
+opened [OutputFormat { rate: 44100, channels: 2, bits: 0 }]

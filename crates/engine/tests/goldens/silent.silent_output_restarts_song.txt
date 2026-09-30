@@ -1,0 +1,7 @@
+0 State(Playing)
+0 Buffering(true)
+0 Song { index: 0, id: "s0", jumps: 1 }
+0 Buffering(false)
+18500 Error { id: "s0", message: "no music for 10 s while playing: the song is opened again from scratch" }
+heard: 89088 samples c887ec742778bbc5 2f2d92c8c716be85
+opened [OutputFormat { rate: 44100, channels: 2, bits: 0 }, OutputFormat { rate: 44100, channels: 2, bits: 0 }]

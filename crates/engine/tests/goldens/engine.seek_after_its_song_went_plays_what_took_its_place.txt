@@ -1,0 +1,8 @@
+0 State(Playing)
+0 Song { index: 0, id: "a", jumps: 1 }
+998 Song { index: 0, id: "b", jumps: 1 }
+1148 Position { index: 0, ms: 8000 }
+heard: 278272 samples d1f8f7d91ca56ba7 d44c310cc12038bd b63874b460fc2e41 c52dc46519465dd3
+heard_f: 0 samples
+opened 1 shut 1 flushes 1
+requests [("a", 0), ("b", 0)]

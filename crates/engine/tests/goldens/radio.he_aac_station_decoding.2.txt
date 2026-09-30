@@ -1,0 +1,6 @@
+0 State(Playing)
+0 Buffering(true)
+0 Song { index: 0, id: "radio:1", jumps: 1 }
+0 Buffering(false)
+heard: 353280 samples b8d2ec8bef2e7fc5 76ccfe3fcf648fc5 6fb587ecb9219bc5 6279d4abf9b88fc5 ab6dd46a0c210ca5
+opened [OutputFormat { rate: 44100, channels: 2, bits: 0 }]

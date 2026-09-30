@@ -1,0 +1,9 @@
+0 State(Playing)
+0 Buffering(true)
+0 Song { index: 0, id: "a", jumps: 1 }
+0 Buffering(false)
+19098 State(Ended)
+heard: 1684736 samples c8598f617780b4e4 14a8dfaa8682e669 e96dcb45491fec4e 5df7c348af51c185 6b9149caa3957eb7 10e67d7c7c116530 0b5e442fe361ac7e 7d9480473035ad5b c940efa19d193615 272c9415c945177c 28324516c778311a 22b6c2e176af4390 d4c444ff0c57f020 5e20cb1435ad4df0 6c744241046e6bc0 b98446d8a3d94ef8 b44da95d251456d6 0bca51f492eceb16 8c1fd7a0cdf9e96a 52fcf265b0c7430f
+heard_f: 0 samples
+opened 1 shut 1 flushes 0
+requests [("a", 0)]

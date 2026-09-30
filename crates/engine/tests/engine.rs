@@ -438,7 +438,10 @@ impl Rig {
         let library = Songs { server: server.clone(), lengths, store };
         let mut config = Config { memory_mb: memory_mb.unwrap_or(256), settings, watch: watching.map(nori_engine::watch::Watcher), ..Config::default() };
         config.idle_release_ms = idle_release_ms.unwrap_or(config.idle_release_ms);
-        let engine = Engine::start_on(library, app, queue, Box::new(out), None, config, clock.clone(), move |e| seen.lock().push(e));
+        let mut t = common::golden::Trace::new(&clock);
+        let (h, hf, o, sh, fl, rq) = (heard.clone(), heard_f.clone(), opened.clone(), shut.clone(), flushes.clone(), server.clone());
+        t.watch(move || format!("{}\n{}\nopened {:?} shut {:?} flushes {:?}\nrequests {:?}", common::golden::shorts("heard", &h.lock()), common::golden::floats("heard_f", &hf.lock()), o, sh, fl, { let mut r = rq.requests.lock().clone(); r.sort(); r }));
+        let engine = Engine::start_on(library, app, queue, Box::new(out), None, config, clock.clone(), t.around(move |e| seen.lock().push(e)));
         let time = Stepper::new(clock, card.clone());
         Rig { engine, time, pace: pace.unwrap_or(20.0), opened, shut, watch, heard, heard_f, underruns, server, events, die, flushes, shallow, card, queue: list }
     }
@@ -2390,12 +2393,15 @@ fn status_current_on_events() {
     let cell: Arc<std::sync::OnceLock<Arc<Engine>>> = Arc::default();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let (engine_of, said) = (cell.clone(), seen.clone());
-    let engine = Arc::new(Engine::start_on(library, sim::App::new(), queue, Box::new(card.clone()), None, Config::default(), clock.clone(), move |e| {
+    let mut t = common::golden::Trace::new(&clock);
+    let h = card.heard.clone();
+    t.watch(move || common::golden::floats("heard", &h.lock()));
+    let engine = Arc::new(Engine::start_on(library, sim::App::new(), queue, Box::new(card.clone()), None, Config::default(), clock.clone(), t.around(move |e| {
         if let Some(engine) = engine_of.get() {
             let (state, index) = engine.status_with(|s| (s.state, s.index));
             said.lock().push((e, state, index));
         }
-    }));
+    })));
     let _ = cell.set(engine.clone());
     let time = Stepper::new(clock, card.pull.clone());
     engine.play_at(0, 0);
@@ -2502,6 +2508,99 @@ fn repeat_one_with_automix_plays_on() {
     assert_eq!(rig.events.lock().iter().filter(|e| matches!(e, Event::Looped { .. })).count(), 1, "one loop: {:?}", rig.events.lock());
     assert!(!rig.ended());
     rig.engine.stop();
+}
+
+// ---- seeks at the edges ----
+
+/// The heard samples from `from` on are `song` from `ms` on, sample exact for `frames` frames.
+fn heard_from(rig: &Rig, from: usize, song: &[i16], ms: i64, frames: usize) -> Result<(), String> {
+    let heard = rig.heard.lock();
+    let at = (ms * RATE as i64 / 1000) as usize * 2;
+    let got = heard.get(from..from + frames * 2).ok_or_else(|| format!("{} samples heard after the seek", heard.len() - from))?;
+    let want = &song[at..at + frames * 2];
+    match reference::first_difference(got, want, 0) {
+        None => Ok(()),
+        Some(k) => Err(reference::describe(got, want, k, RATE)),
+    }
+}
+
+#[test]
+fn seek_after_the_end_plays_there() {
+    let (a, b) = (music(4.0, 70), music(6.0, 71));
+    let rig = Rig::new(&[("a", &a), ("b", &b)], prefs_off(), Settings::default());
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(20, Rig::ended), "{:?}", rig.events.lock());
+    let heard = rig.heard.lock().len();
+    rig.engine.seek(2_000);
+    assert!(rig.wait_for(10, |r| r.engine.status().state == State::Playing), "a seek after the end plays: {:?} {:?}", rig.engine.status(), rig.events.lock());
+    assert!(rig.wait_for(10, |r| r.heard.lock().len() >= heard + 3 * RATE as usize * 2), "and is heard: {:?}", rig.engine.status());
+    heard_from(&rig, heard, &b, 2_000, 3 * RATE as usize).unwrap();
+    assert!(rig.wait_for(10, |r| r.events.lock().iter().filter(|e| **e == Event::State(State::Ended)).count() == 2), "and ends again: {:?}", rig.events.lock());
+    assert_eq!(rig.engine.status().index, Some(1));
+}
+
+#[test]
+fn seek_in_a_mix_plays_the_shown_song() {
+    let (a, b) = (music(20.0, 72), music(20.0, 73));
+    let rig = Rig::new(&[("a", &a), ("b", &b)], crossfade(6), Settings::default());
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(20, |r| r.engine.status().mixing), "{:?}", rig.events.lock());
+    rig.run(1_000);
+    let (shown, _) = place(&rig);
+    let song = if shown == Some(0) { &a } else { &b };
+    let heard = rig.heard.lock().len();
+    rig.engine.seek(3_000);
+    assert!(rig.wait_for(10, |r| r.heard.lock().len() >= heard + 2 * RATE as usize * 2), "{:?}", rig.engine.status());
+    heard_from(&rig, heard, song, 3_000, 2 * RATE as usize).unwrap();
+    let (index, ms) = place(&rig);
+    assert_eq!(index, shown, "the seek bar stays on the song it showed: {:?}", rig.events.lock());
+    let at = heard_in(&rig, song).expect("the shown song plays on");
+    assert!((ms - at).abs() < 150, "the seek bar at {ms}, the ear at {at}");
+    assert!(!rig.engine.status().mixing, "the mix is gone");
+}
+
+#[test]
+fn seek_after_its_song_moved_follows_it() {
+    let (a, b, c) = (music(20.0, 74), music(20.0, 75), music(20.0, 76));
+    let rig = Rig::new(&[("a", &a), ("b", &b)], prefs_off(), Settings { fade_ms: 400, ..Settings::default() });
+    rig.engine.play_at(1, 0);
+    assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2), "b plays");
+    rig.engine.seek(8_000);
+    assert!(rig.wait_for(5, |r| r.engine.status().switching), "the dip is on");
+    // A song put before b while the seek waits in its dip.
+    rig.server.files.lock().push(("c".into(), Arc::new(wav(&c))));
+    rig.queue.lock().insert(0, vec!["c".into()], nori_player::playlist::Hand::No);
+    rig.engine.queue_changed();
+    assert!(rig.wait_for(5, |r| !r.engine.status().switching), "the seek lands");
+    let heard = rig.heard.lock().len();
+    rig.run(2_000);
+    assert!(rig.heard.lock().len() > heard + RATE as usize * 2);
+    let at = heard_in(&rig, &b).expect("b plays on");
+    assert!((9_800..10_500).contains(&at), "b from the seek on: {at}");
+    let (index, ms) = place(&rig);
+    assert_eq!(index, Some(2), "b is at 2 now: {:?}", rig.events.lock());
+    assert!((ms - at).abs() < 150, "the seek bar at {ms}, the ear at {at}");
+}
+
+#[test]
+fn seek_after_its_song_went_plays_what_took_its_place() {
+    let (a, b) = (music(20.0, 77), music(20.0, 78));
+    let rig = Rig::new(&[("a", &a), ("b", &b)], prefs_off(), Settings { fade_ms: 400, ..Settings::default() });
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2), "a plays");
+    rig.engine.seek(8_000);
+    assert!(rig.wait_for(5, |r| r.engine.status().switching), "the dip is on");
+    rig.queue.lock().remove(0, 1);
+    rig.engine.queue_changed();
+    assert!(rig.wait_for(5, |r| !r.engine.status().switching), "the dip ends");
+    rig.run(2_000);
+    let (index, ms) = place(&rig);
+    // What is heard and what is shown agree on one song and place.
+    match (index, heard_in(&rig, &a), heard_in(&rig, &b)) {
+        (Some(0), None, Some(at)) => assert!((ms - at).abs() < 150, "b at {at}, shown {ms}"),
+        (Some(0), Some(at), None) => panic!("a, gone from the queue, plays on at {at} while b is shown at {ms}"),
+        other => panic!("heard and shown disagree: {other:?} {:?}", rig.events.lock()),
+    }
 }
 
 include!("perf_bench.rs");

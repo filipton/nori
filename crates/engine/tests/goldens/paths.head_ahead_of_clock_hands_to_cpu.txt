@@ -1,0 +1,10 @@
+0 State(Playing)
+0 Song { index: 0, id: "a", jumps: 1 }
+0 Awake(false)
+1207 Awake(true)
+1807 Placed { index: 0, ms: 1000 }
+heard: 45056 samples 7cb705371fde4325
+opened [OutputFormat { rate: 44100, channels: 2, bits: 0 }]
+chip calls [Open(Coded { coding: Mp3, rate: 44100, channels: 2 }), DelayPadding(576, 1008), Volume(1.0), Write(262478, 722351), Write(58096, 159649), Play, EndOfStream, DelayPadding(576, 1008), Write(262478, 722351), Write(58096, 159649), EndOfStream, Close]
+chip notes ["the platform granted a track of 3762 KB of the 3762 KB asked: 240345 ms of this song, topped up when the platform asks for more (about every 30000 ms if its chip buffers nothing of its own)", "the play head read 485100 frames, 11000 ms in, ahead of the clock's 1706 ms (1 of 3)", "the platform's play head could not be read (2 of 3)", "the play head read 485100 frames, 11000 ms in, ahead of the clock's 2306 ms (3 of 3)", "offload given up, the CPU plays on: the play head read 485100 frames, 11000 ms in, ahead of the clock's 2306 ms", "offload: left at 1000 ms (chip said 1000 ms by its play head, heard 1000 ms, written 40000 ms)"]
+chip bytes: 641148 samples 8d27154a490e2015 e8d9a64d2a25f10b c8e5834b0e1d5383 12ee785a4eef644a 197b5fe46edfc8e6 876ae025c71ae9c2 0eede9c05f620d87 b43c9061644f4939 7297f5dd70f3e239 59c1134d42a15a0f

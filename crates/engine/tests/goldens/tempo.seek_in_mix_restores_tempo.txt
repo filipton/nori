@@ -1,0 +1,8 @@
+0 State(Playing)
+0 Song { index: 0, id: "a", jumps: 1 }
+7998 Mixing(true)
+9009 Song { index: 1, id: "b", jumps: 1 }
+9009 Mixing(false)
+9009 Position { index: 1, ms: 25000 }
+heard: 1060864 samples db92261c1d71b3c5 db92261c1d71b3c5 db92261c1d71b3c5 db92261c1d71b3c5 db92261c1d71b3c5 db92261c1d71b3c5 db92261c1d71b3c5 db92261c1d71b3c5 08c6042343c31fc5 4759b1d2e293f3c5 d86217a45e2a4bc5 5e6b8b827ce24bc5 ad55ae9aa2ea03a5
+opened [OutputFormat { rate: 44100, channels: 2, bits: 0 }]

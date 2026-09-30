@@ -1,0 +1,10 @@
+0 State(Playing)
+0 Buffering(true)
+0 Song { index: 0, id: "a", jumps: 1 }
+0 Buffering(false)
+30001 Song { index: 1, id: "b", jumps: 1 }
+39999 State(Ended)
+heard: 3528000 samples 41c57ca67d7ebed7 7b0eb2e1e7e1fdb9 23b31563e5f03ff1 3eb591daedce15fe 568629835a2924cb 1b3e9de37e6f38c8 8b925562972d7b4d 5e2ab931727f5fc0 4463da742006b9d7 c049dea4b8b8b280 86fd99b0280a4aa3 36b7c89b4bc455b0 509a0e99c1ead29c d32f68cea4f75836 8b29e330117edac9 e6ad1e54e2d0318f 881bdfa4d54f4951 6bd8ca6cf7cabdf9 f5944b457ef11cf0 6d9e73ceaa05758e 8e9deb7491f835ec 2dcede4463e2e531 3acbb5a47b817a4f bf83644eed9f22ad c418a25a567e18bc a9f0b8343b78e7b2 4fa7aff4388dcc00 f0e755b389926afb 60934ec169b8dbc3 a593306237c91562 a6019faf95db8300 e9dc8e006eb817be f4dc2e15150d7eaa 3e6e2349ea85f153 4fbe764f34ace1ca dde4fe9750572422 62d0e177041fa810 fff9bc332830f0d3 8970c6ea30711ec4 6ad6fd9632aae0c2
+heard_f: 0 samples
+opened 1 shut 1 flushes 0
+requests [("a", 0), ("b", 0)]
