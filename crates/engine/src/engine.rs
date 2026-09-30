@@ -581,8 +581,8 @@ struct Worker<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> {
     heard_seq: u64,
     /// A live stream's title, and when playback reaches it.
     title: Option<(String, i64)>,
-    /// The queue's ids as last seen, for the offload path to find its songs again.
-    ids: Vec<String>,
+    /// The queue's entries as last seen, to find the held place and the offloaded songs again.
+    seqs: Vec<u64>,
     /// Chain settings waiting for [`CHAIN_EVERY_MS`] since the last change at `chain_at`.
     chain_wanted: Option<ChainSettings>,
     chain_at: i64,
@@ -601,7 +601,7 @@ struct Worker<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> {
 
 impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E, C> {
     fn new(p: Player<Sources<L>, RingTrack, A, Q>, off: Option<Offload>, rx: Receiver<Command>, events: E, status: Arc<Mutex<Status>>, config: Config, clock: C) -> Self {
-        let ids = p.queue.read(|q| q.ids().to_vec());
+        let seqs = p.queue.read(|q| q.seqs().to_vec());
         let mut w = Worker {
             p,
             off,
@@ -641,7 +641,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             loops: 0,
             heard_seq: 0,
             title: None,
-            ids,
+            seqs,
             chain_wanted: None,
             chain_at: i64::MIN / 2,
             placed_due: false,
@@ -1221,7 +1221,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     /// The queue changed: the offload path finds its songs again, and restarts where the ear is when
     /// a song it already wrote no longer follows.
     fn follow_queue(&mut self) {
-        let old = std::mem::replace(&mut self.ids, self.p.queue.read(|q| q.ids().to_vec()));
+        let old = std::mem::replace(&mut self.seqs, self.p.queue.read(|q| q.seqs().to_vec()));
         self.probe = None;
         let Worker { p, off, .. } = self;
         let Some(off) = off.as_mut().filter(|o| o.active()) else { return };
@@ -1506,10 +1506,10 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         }
     }
 
-    /// The queue was edited: a held place follows its song.
+    /// The queue was edited: a held place follows its entry, or goes with it.
     fn follow_held(&mut self) {
-        let Some((i, _, id)) = self.held.as_mut() else { return };
-        match self.p.queue.read(|q| q.ids().iter().enumerate().filter(|(_, s)| **s == *id).map(|(k, _)| k).min_by_key(|k| k.abs_diff(*i))) {
+        let Some((i, ..)) = self.held.as_mut() else { return };
+        match self.seqs.get(*i).and_then(|&s| self.p.queue.read(|q| q.index_of(s))) {
             Some(k) => *i = k,
             None => self.held = None,
         }

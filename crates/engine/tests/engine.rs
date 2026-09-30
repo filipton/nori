@@ -2502,6 +2502,22 @@ fn repeat_one_with_automix_plays_on() {
     rig.engine.stop();
 }
 
+#[test]
+fn same_song_put_before_keeps_the_playing_entry() {
+    let (a, b) = (music(4.0, 79), music(4.0, 80));
+    let rig = Rig::new(&[("a", &a), ("b", &b)], prefs_off(), Settings::default());
+    rig.queue.lock().set(vec!["a".into(), "b".into(), "a".into()], Some(0), false, 0);
+    rig.engine.queue_changed();
+    rig.engine.play_at(2, 0);
+    assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2), "the second a plays");
+    // Another a, before everything: the one playing is now the fourth entry, the last.
+    rig.queue.lock().insert(0, vec!["a".into()], nori_player::playlist::Hand::No);
+    rig.engine.queue_changed();
+    assert!(rig.wait_for(20, Rig::ended), "{:?}", rig.events.lock());
+    assert_eq!(rig.engine.status().index, Some(3));
+    assert!(!rig.events.lock().iter().any(|e| matches!(e, Event::Song { id, .. } if id == "b")), "nothing after the last entry: {:?}", rig.events.lock());
+}
+
 // ---- seeks at the edges ----
 
 /// The heard samples from `from` on are `song` from `ms` on, sample exact for `frames` frames.

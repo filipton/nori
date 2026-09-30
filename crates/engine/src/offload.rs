@@ -1310,20 +1310,14 @@ impl Offload {
         false
     }
 
-    /// The queue changed: re-finds the written songs by id and re-picks the song after the last. True
-    /// when a written song no longer follows: the caller restarts at the playback position.
-    pub(crate) fn queue_changed<L: Library, Q: Queue>(&mut self, old: &[String], tracks: &mut Sources<L>, queue: &Q) -> bool {
-        let new: Vec<String> = queue.read(|q| q.ids().to_vec());
-        for p in self.t.placed.iter_mut() {
-            match moved(old, &new, p.index, &p.id) {
-                Some(k) => p.index = k,
-                None => return true,
-            }
-        }
-        if let Some(s) = self.t.starting.as_mut() {
-            let id = old.get(s.0).cloned().unwrap_or_default();
-            match moved(old, &new, s.0, &id) {
-                Some(k) => s.0 = k,
+    /// The queue changed from the entries `old`: re-finds the written songs and re-picks the song after
+    /// the last. True when a written song no longer follows: the caller restarts where the ear is.
+    pub(crate) fn queue_changed<L: Library, Q: Queue>(&mut self, old: &[u64], tracks: &mut Sources<L>, queue: &Q) -> bool {
+        let new: Vec<u64> = queue.read(|q| q.seqs().to_vec());
+        let moved = |i: usize| old.get(i).and_then(|s| new.iter().position(|n| n == s));
+        for i in self.t.placed.iter_mut().map(|p| &mut p.index).chain(self.t.starting.as_mut().map(|s| &mut s.0)) {
+            match moved(*i) {
+                Some(k) => *i = k,
                 None => return true,
             }
         }
@@ -1341,26 +1335,27 @@ impl Offload {
             Some(Tail::Then(n)) => Some(n),
             _ => None,
         });
-        if was == after {
+        // The same entry follows (its index may have moved).
+        if was.map(|w| old.get(w)) == after.map(|a| new.get(a)) {
+            if let (Some(n), Some(a)) = (self.t.next.as_mut(), after) {
+                n.0 = a;
+            }
+            if let (Some(Tail::Then(n)), Some(a)) = (self.t.tail.as_mut(), after) {
+                *n = a;
+            }
             return false;
         }
         self.t.next = None;
         self.t.tail = None;
         match after {
             Some(n) => {
-                let id = new[n].clone();
+                let id = queue.read(|q| q.ids()[n].clone());
                 self.t.next = Some((n, tracks.open_packets(&id, 0, false)));
             }
             None => self.close(Tail::End),
         }
         false
     }
-}
-
-/// The index in `new` of the song at `i` in `old` (`id`): the same id, nearest to `i`.
-fn moved(old: &[String], new: &[String], i: usize, id: &str) -> Option<usize> {
-    let id = old.get(i).map_or(id, String::as_str);
-    new.iter().enumerate().filter(|(_, n)| *n == id).map(|(j, _)| j).min_by_key(|&j| j.abs_diff(i))
 }
 
 impl Drop for Offload {

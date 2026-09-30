@@ -37,18 +37,27 @@ fn mono_ms() -> i64 {
     ORIGIN.get_or_init(std::time::Instant::now).elapsed().as_millis() as i64
 }
 
-/// The queue's last song in play order.
-fn end_of(p: &nori_player::playlist::Playlist) -> Option<String> {
-    let last = match p.shuffle_order() {
+/// The queue's last entry in play order.
+fn end_of(p: &nori_player::playlist::Playlist) -> Option<usize> {
+    match p.shuffle_order() {
         Some(order) => order.last().copied(),
         None => p.len().checked_sub(1),
-    };
-    last.and_then(|i| p.ids().get(i).cloned())
+    }
 }
 
 /// The refill seed: the queue's last song in play order.
 pub fn autofill_seed() -> Option<String> {
-    crate::playlist::with(end_of)
+    crate::playlist::with(|p| end_of(p).map(|i| p.ids()[i].clone()))
+}
+
+/// The queue's last entry in play order, as [`nori_player::queue::Refill`] follows it.
+fn end_entry() -> Option<u64> {
+    crate::playlist::with(|p| end_of(p).map(|i| p.seqs()[i]))
+}
+
+/// The current entry, as [`nori_player::queue::Refill`] follows it.
+fn current_entry(p: &nori_player::playlist::Playlist) -> Option<u64> {
+    p.current().and_then(|c| p.seqs().get(c).copied())
 }
 
 /// Whether refilling is on: the autoplay setting, or always for a shuffle-started queue.
@@ -61,11 +70,11 @@ fn refills(origin: Option<nori_model::OriginKind>, auto_fill: bool) -> bool {
 }
 
 /// (may refill now, songs after the current one, last song).
-fn refill_facts() -> (bool, usize, Option<String>) {
+fn refill_facts() -> (bool, usize, Option<u64>) {
     let setting = refill_on();
     crate::playlist::with(|p| {
         let cur = p.current_id();
-        (refillable(cur.is_some(), cur.is_some_and(|c| c.starts_with(queue::RADIO_PREFIX)), p.repeat(), setting), p.songs_after(), end_of(p))
+        (refillable(cur.is_some(), cur.is_some_and(|c| c.starts_with(queue::RADIO_PREFIX)), p.repeat(), setting), p.songs_after(), end_of(p).map(|i| p.seqs()[i]))
     })
 }
 
@@ -73,7 +82,7 @@ fn refill_facts() -> (bool, usize, Option<String>) {
 /// [`autofill_arrived`].
 pub(crate) fn autofill_start() -> bool {
     let (ok, after, end) = refill_facts();
-    REFILL.lock().start(ok, after, end.as_deref())
+    REFILL.lock().start(ok, after, end)
 }
 
 /// What a next press does now.
@@ -96,8 +105,8 @@ pub fn autofill_next() -> FillNext {
 fn autofill_next_at(now_ms: i64) -> FillNext {
     let setting = refill_on();
     let (has_next, repeat_off, current) =
-        crate::playlist::with(|p| (p.next().is_some(), p.repeat() == nori_player::playlist::REPEAT_OFF, p.current_id().map(str::to_string)));
-    if REFILL.lock().next(has_next, setting && repeat_off, current.as_deref(), now_ms) {
+        crate::playlist::with(|p| (p.next().is_some(), p.repeat() == nori_player::playlist::REPEAT_OFF, current_entry(p)));
+    if REFILL.lock().next(has_next, setting && repeat_off, current, now_ms) {
         return FillNext::Skip;
     }
     if !(setting && repeat_off) {
@@ -113,8 +122,7 @@ fn autofill_next_at(now_ms: i64) -> FillNext {
 /// The fetch returned `count` songs: whether to append them (`Refill::arrived`).
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn autofill_arrived(count: u32) -> bool {
-    let end = autofill_seed();
-    REFILL.lock().arrived(count as usize, end.as_deref())
+    REFILL.lock().arrived(count as usize, end_entry())
 }
 
 /// The fetched songs are appended: whether to perform a next pressed meanwhile (only on the same song,
@@ -125,8 +133,8 @@ pub fn autofill_landed() -> bool {
 }
 
 fn autofill_landed_at(now_ms: i64) -> bool {
-    let (current, has_next) = crate::playlist::with(|p| (p.current_id().map(str::to_string), p.next().is_some()));
-    REFILL.lock().landed(current.as_deref(), has_next, now_ms)
+    let (current, has_next) = crate::playlist::with(|p| (current_entry(p), p.next().is_some()));
+    REFILL.lock().landed(current, has_next, now_ms)
 }
 
 /// A random seed from the clock.
@@ -374,6 +382,18 @@ mod tests {
         assert!(end_of_queue("ec", &mash, 12_700, None));
         assert!(!end_of_queue("ed", &mash, 14_600, None));
         assert!(!end_of_queue("ee", &[10_000], 10_500, Some(0)), "moved elsewhere meanwhile");
+    }
+
+    #[test]
+    fn waiting_next_follows_its_entry_not_its_song() {
+        let _g = crate::playlist::tests::hold(&["se0", "se1", "se0"], 2);
+        *REFILL.lock() = Refill::new();
+        assert_eq!(autofill_next_at(10_000), FillNext::Fetch);
+        // The same song, another entry of it.
+        crate::playlist::playlist_moved_to(0);
+        assert!(autofill_arrived(15));
+        crate::playlist::playlist_take(3, vec!["se2".into()], vec![nori_player::playlist::Hand::No], None);
+        assert!(!autofill_landed_at(10_300), "the press was made on the last entry, not here");
     }
 
     #[test]

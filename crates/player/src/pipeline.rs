@@ -228,8 +228,8 @@ pub struct Player<S: Songs, T: Track, A: App, Q: Queue> {
     pub loops: u32,
     /// A song failed for lack of network and the offline bridge takes over.
     pub bridge: bool,
-    /// Queue ids as last seen, to map indexes across edits.
-    ids: Vec<String>,
+    /// Queue entries as last seen, to map indexes across edits.
+    seqs: Vec<u64>,
 }
 
 impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
@@ -272,10 +272,10 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
             serials: 0,
             loops: 0,
             bridge: false,
-            ids: Vec::new(),
+            seqs: Vec::new(),
         };
         p.engine.follow_rate = true;
-        p.ids = p.queue.read(|q| q.ids().to_vec());
+        p.seqs = p.queue.read(|q| q.seqs().to_vec());
         p.sync_queue();
         p
     }
@@ -709,15 +709,16 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         }
     }
 
-    /// The queue was edited. Indexes the player holds are remapped by id (nearest match); a song
-    /// opened ahead that is no longer next is dropped.
+    /// The queue was edited. Indexes the player holds follow their entries; a song opened ahead that is
+    /// no longer next is dropped.
     pub fn queue_changed(&mut self) {
-        let ids = self.queue.read(|q| q.ids().to_vec());
-        let old = std::mem::replace(&mut self.ids, ids);
-        let edited = old != self.ids;
-        if !old.is_empty() && old != self.ids {
-            let new = &self.ids;
-            let at = |i: usize| moved(&old, new, i).unwrap_or_else(|| i.min(new.len().saturating_sub(1)));
+        let seqs = self.queue.read(|q| q.seqs().to_vec());
+        let old = std::mem::replace(&mut self.seqs, seqs);
+        let edited = old != self.seqs;
+        if !old.is_empty() && edited {
+            let new = &self.seqs;
+            let moved = |i: usize| old.get(i).and_then(|s| new.iter().position(|n| n == s));
+            let at = |i: usize| moved(i).unwrap_or_else(|| i.min(new.len().saturating_sub(1)));
             self.current = self.current.map(at);
             if let Some(r) = self.reading.as_mut() {
                 r.index = at(r.index);
@@ -734,10 +735,10 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
             // not by position).
             let reading = self.reading.as_ref().map(|r| r.index);
             self.failed = self.failed.take().and_then(|(i, kind, why)| {
-                moved(&old, new, i).filter(|k| Some(*k) == reading || Some(*k) == after).map(|k| (k, kind, why))
+                moved(i).filter(|k| Some(*k) == reading || Some(*k) == after).map(|k| (k, kind, why))
             });
             match self.next.as_mut() {
-                Some(n) if moved(&old, &self.ids, n.0).is_some_and(|i| Some(i) == after) => n.0 = after.expect("checked"),
+                Some(n) if moved(n.0).is_some_and(|i| Some(i) == after) => n.0 = after.expect("checked"),
                 _ => self.next = None,
             }
         }
@@ -1145,10 +1146,4 @@ fn taken_from<R: Reading>(mut r: R, at: i64, from_ms: i64) -> Option<(R, i64)> {
         return Some((r, at));
     }
     r.skip_to_ms(from_ms).then_some((r, from_ms))
-}
-
-/// Index in `new` of `old[i]`'s id, nearest to `i`; `None` if removed.
-fn moved(old: &[String], new: &[String], i: usize) -> Option<usize> {
-    let id = old.get(i)?;
-    new.iter().enumerate().filter(|(_, n)| *n == id).map(|(j, _)| j).min_by_key(|&j| j.abs_diff(i))
 }
