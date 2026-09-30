@@ -328,11 +328,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs a D-Bus session bus"]
     fn controls_and_properties_over_dbus() {
-        let Ok(client) = Connection::new_session() else {
-            eprintln!("no session bus: skipped");
-            return;
-        };
+        let client = Connection::new_session().unwrap();
         let name = format!("nori_test_{}", std::process::id());
         let asked = Arc::new(Asked::default());
         let m = Mpris::start(&name).unwrap();
