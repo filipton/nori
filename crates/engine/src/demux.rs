@@ -523,8 +523,8 @@ impl Stream {
                     (pts + trim_start, (dur - trim_start - trim_end).max(0))
                 }
             };
-            self.buf.clear();
-            self.buf.extend_from_slice(&packet.data);
+            // The packet's own memory, not a copy.
+            self.buf = packet.data.into_vec();
             self.packet_frames = frames as u64;
             if std::mem::take(&mut self.first_packet) {
                 if let Some(c) = self.coded.as_mut() {
