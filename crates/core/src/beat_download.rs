@@ -31,7 +31,9 @@ pub fn ensure() -> Option<PathBuf> {
         return None;
     }
     let client = crate::client::active_client()?;
-    beat_model::set_state(State::Downloading);
+    if !beat_model::begin_download() {
+        return None;
+    }
     let t0 = std::time::Instant::now();
     let got = block_on(nori_net::transport::get(&*client.transport, CHECKPOINT_URL.to_string(), TIMEOUT_MS))
         .map_err(|e| (BeatFailure::Network, e.to_string()))
