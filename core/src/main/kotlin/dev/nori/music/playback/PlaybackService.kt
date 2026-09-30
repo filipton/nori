@@ -29,6 +29,7 @@ import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import dev.nori.music.Nori
+import dev.nori.music.settings.loggedIn
 import dev.nori.music.data.StarKind
 import dev.nori.music.ffi.model.Song
 import dev.nori.music.ffi.settings.StoredPrefs
@@ -61,6 +62,9 @@ class PlaybackService : MediaLibraryService() {
          * songs: remember the skip and take it when they land, instead of the press dying as a no-op.
          */
         const val CMD_FILL_NEXT = "nori.fillNext"
+        /** The car's own now-playing buttons: repeat, turned on round (off, all, one), and a radio from the song playing. */
+        const val CMD_REPEAT = "nori.repeat"
+        const val CMD_RADIO = "nori.radio"
         /** Broadcast inside the package on every track or play-state change; what a home-screen widget listens to. */
         const val ACTION_STATE = "dev.nori.music.STATE"
         const val EXTRA_TITLE = "title"
@@ -132,6 +136,10 @@ class PlaybackService : MediaLibraryService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val main = Handler(Looper.getMainLooper())
     private val served = LruCache<String, MediaItem>(500)
+    /** The car's tree as media3 items. */
+    private val car by lazy { CarTree(this) }
+    /** How many tabs the car shows at its root, as it last said (Android Auto: four). */
+    @Volatile private var rootLimit = 4
     private val saveQueue = Runnable { persistQueue(push = false) }
     /**
      * Paused for a long while: the player stops. The output goes, so the phone sleeps; the session goes
@@ -232,6 +240,8 @@ class PlaybackService : MediaLibraryService() {
             .setBitmapLoader(CacheBitmapLoader(DataSourceBitmapLoader.Builder(this).setDataSourceFactory(nori.sources.network).setMaximumOutputDimension(512).build()))
             // Controllers extrapolate the playhead themselves; a broadcast every few seconds is a wake-up for nothing.
             .setPeriodicPositionUpdateEnabled(false)
+            // What a long press on a row offers in the car (CarTree).
+            .setCommandButtonsForMediaItems(car.itemButtons())
             .apply { open?.let(::setSessionActivity) }.build()
         // The notification and the lock screen carry the app's own mark, not media3's stock play circle.
         // Its id stays media3's default (1001): the download notification lives on 2001 so the two never replace each other.
@@ -337,6 +347,8 @@ class PlaybackService : MediaLibraryService() {
 
         override fun onShuffleModeEnabledChanged(on: Boolean) = refreshButtons()
 
+        override fun onRepeatModeChanged(repeatMode: Int) = refreshCarButtons()
+
         override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
             if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) {
                 keepQueue(dev.nori.music.ffi.queue.QueueMoment.EDITED)
@@ -405,6 +417,41 @@ class PlaybackService : MediaLibraryService() {
             .setSessionCommand(SessionCommand(CMD_SHUFFLE, Bundle.EMPTY))
             .setSlots(CommandButton.SLOT_FORWARD_SECONDARY, CommandButton.SLOT_OVERFLOW).build()
         session.setMediaButtonPreferences(buttons)
+        refreshCarButtons()
+    }
+
+    private fun isCar(c: MediaSession.ControllerInfo) = session.isAutoCompanionController(c) || session.isAutomotiveController(c)
+
+    /**
+     * The car's now-playing buttons: the heart and shuffle, then repeat and a radio from the song, which
+     * the phone's notification has no room for. Only the car's controllers get them.
+     */
+    private fun refreshCarButtons() {
+        if (!::session.isInitialized) return
+        val cars = session.connectedControllers.filter(::isCar)
+        if (cars.isEmpty()) return
+        val buttons = carButtons()
+        cars.forEach { session.setMediaButtonPreferences(it, buttons) }
+    }
+
+    private fun carButtons(): List<CommandButton> {
+        val b = buttonsShown ?: dev.nori.music.ffi.sessionButtonsNow(false, player.shuffleModeEnabled)
+        val out = ArrayList<CommandButton>(4)
+        if (b.heart) out += CommandButton.Builder(if (b.starred) CommandButton.ICON_HEART_FILLED else CommandButton.ICON_HEART_UNFILLED)
+            .setDisplayName(getString(if (b.starred) R.string.session_remove_favourite else R.string.session_add_favourite))
+            .setSessionCommand(SessionCommand(CMD_FAVOURITE, Bundle.EMPTY)).build()
+        out += CommandButton.Builder(if (b.shuffling) CommandButton.ICON_SHUFFLE_ON else CommandButton.ICON_SHUFFLE_OFF)
+            .setDisplayName(getString(if (b.shuffling) R.string.session_shuffle_off else R.string.session_shuffle_on))
+            .setSessionCommand(SessionCommand(CMD_SHUFFLE, Bundle.EMPTY)).build()
+        val (icon, said) = when (player.repeatMode) {
+            Player.REPEAT_MODE_ALL -> CommandButton.ICON_REPEAT_ALL to R.string.car_repeat_all
+            Player.REPEAT_MODE_ONE -> CommandButton.ICON_REPEAT_ONE to R.string.car_repeat_one
+            else -> CommandButton.ICON_REPEAT_OFF to R.string.car_repeat_off
+        }
+        out += CommandButton.Builder(icon).setDisplayName(getString(said)).setSessionCommand(SessionCommand(CMD_REPEAT, Bundle.EMPTY)).build()
+        // A radio from a song of the library, as the heart shows for one.
+        if (b.heart) out += CommandButton.Builder(CommandButton.ICON_RADIO).setDisplayName(getString(R.string.car_start_radio)).setSessionCommand(SessionCommand(CMD_RADIO, Bundle.EMPTY)).build()
+        return out
     }
 
     /** Pause once the song playing ends (the sleep timer's "end of this song"). */
@@ -652,8 +699,14 @@ class PlaybackService : MediaLibraryService() {
         override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
             val commands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon().add(SessionCommand(CMD_SLEEP, Bundle.EMPTY)).add(SessionCommand(CMD_TUNING, Bundle.EMPTY))
                 .add(SessionCommand(CMD_FAVOURITE, Bundle.EMPTY)).add(SessionCommand(CMD_SHUFFLE, Bundle.EMPTY))
-                .add(SessionCommand(CMD_FILL_NEXT, Bundle.EMPTY)).build()
+                .add(SessionCommand(CMD_FILL_NEXT, Bundle.EMPTY)).add(SessionCommand(CMD_REPEAT, Bundle.EMPTY)).add(SessionCommand(CMD_RADIO, Bundle.EMPTY))
+                .add(SessionCommand(CarTree.CMD_ITEM_NEXT, Bundle.EMPTY)).add(SessionCommand(CarTree.CMD_ITEM_QUEUE, Bundle.EMPTY))
+                .add(SessionCommand(CarTree.CMD_ITEM_FAVOURITE, Bundle.EMPTY)).add(SessionCommand(CarTree.CMD_ITEM_DOWNLOAD, Bundle.EMPTY)).build()
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session).setAvailableSessionCommands(commands).build()
+        }
+
+        override fun onPostConnect(session: MediaSession, controller: MediaSession.ControllerInfo) {
+            if (isCar(controller)) session.setMediaButtonPreferences(controller, carButtons())
         }
 
         override fun onCustomCommand(session: MediaSession, controller: MediaSession.ControllerInfo, command: SessionCommand, args: Bundle): ListenableFuture<SessionResult> {
@@ -681,6 +734,13 @@ class PlaybackService : MediaLibraryService() {
             if (command.customAction == CMD_SHUFFLE) controls.shuffleModeEnabled = !player.shuffleModeEnabled
             if (command.customAction == CMD_FILL_NEXT) fillThenNext()
             if (command.customAction == CMD_TUNING) tune(args.getBoolean(ARG_ON), controller)
+            if (command.customAction == CMD_REPEAT) controls.repeatMode = when (player.repeatMode) {
+                Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                else -> Player.REPEAT_MODE_OFF
+            }
+            if (command.customAction == CMD_RADIO) player.currentMediaItem?.mediaId?.let(::radioFrom)
+            args.getString(androidx.media3.session.MediaConstants.EXTRA_KEY_MEDIA_ID)?.let { id -> carItemCommand(command.customAction, id) }
             return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
         }
 
@@ -697,7 +757,11 @@ class PlaybackService : MediaLibraryService() {
             // Our own UI sends complete items. Android Auto sends bare ids of things it was shown earlier.
             if (items.all { it.mediaMetadata.title != null }) return Futures.immediateFuture(items.map { it.playable() }.toMutableList())
             return scope.future {
-                items.mapNotNull { i -> served.get(i.mediaId) ?: withContext(Dispatchers.IO) { runCatching { nori.library.song(i.mediaId) }.getOrNull() }?.let(::item) }.toMutableList()
+                items.mapNotNull { i ->
+                    // A row of the car's tree carries its folder with the song's id (crates/library/src/car.rs).
+                    val id = dev.nori.music.ffi.library.carRow(i.mediaId)?.song ?: i.mediaId
+                    served.get(id) ?: withContext(Dispatchers.IO) { runCatching { nori.library.song(id) }.getOrNull() }?.let(::item)
+                }.toMutableList()
             }
         }
 
@@ -706,56 +770,159 @@ class PlaybackService : MediaLibraryService() {
             MediaSession.MediaItemsWithStartPosition(startedFrom(held(q.songs), q.origin), q.index.toInt(), q.positionMs.toLong())
         }
 
-        override fun onGetLibraryRoot(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, params: LibraryParams?) =
-            Futures.immediateFuture(LibraryResult.ofItem(folder(nori.client.browseRoot()), params))
+        override fun onGetLibraryRoot(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, params: LibraryParams?): ListenableFuture<LibraryResult<MediaItem>> {
+            params?.extras?.getInt(androidx.media3.session.MediaConstants.EXTRAS_KEY_ROOT_CHILDREN_LIMIT, 0)?.takeIf { it > 0 }?.let { rootLimit = it }
+            // Signed out, the car says so and offers to open the app on the phone, rather than an empty tree.
+            if (!nori.settings.value.loggedIn) return Futures.immediateFuture(failure(signedOut(), params))
+            return Futures.immediateFuture(LibraryResult.ofItem(car.folder(nori.client.browseRoot()), params))
+        }
 
         override fun onGetChildren(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, parentId: String, page: Int, pageSize: Int, params: LibraryParams?): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> =
             scope.future {
-                val children = runCatching { children(parentId) }.getOrDefault(emptyList())
-                children.forEach { if (it.mediaMetadata.isPlayable == true) served.put(it.mediaId, it) }
-                LibraryResult.ofItemList(children.drop(page * pageSize).take(pageSize), params)
+                val found = runCatching {
+                    if (parentId == nori.client.browseRoot().id) nori.client.carRoot(rootLimit.toUInt(), offline()) else nori.client.browseChildren(parentId)
+                }.getOrNull()
+                if (found == null || found.failed) return@future failure(unreachable(), params)
+                listed(parentId, found, page, pageSize, params)
             }
 
         override fun onSearch(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, query: String, params: LibraryParams?): ListenableFuture<LibraryResult<Void>> {
             scope.launch {
-                val n = runCatching { nori.library.search(query).songs.size }.getOrDefault(0)
-                session.notifySearchResultChanged(browser, query, n, params)
+                val found = runCatching { nori.client.carSearch(query) }.getOrNull()
+                session.notifySearchResultChanged(browser, query, found?.let { it.folders.size + it.songs.size } ?: 0, params)
             }
             return Futures.immediateFuture(LibraryResult.ofVoid())
         }
 
         override fun onGetSearchResult(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, query: String, page: Int, pageSize: Int, params: LibraryParams?): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> =
             scope.future {
-                val songs = runCatching { items(nori.library.search(query).songs) }.getOrDefault(emptyList())
-                songs.forEach { served.put(it.mediaId, it) }
-                LibraryResult.ofItemList(songs.drop(page * pageSize).take(pageSize), params)
+                val found = runCatching { nori.client.carSearch(query) }.getOrNull()
+                if (found == null || found.failed) return@future failure(unreachable(), params)
+                listed("search:$query", found, page, pageSize, params)
             }
+
+        /**
+         * The car's picks: a row of the tree plays its folder from it (or the whole folder, for Play and
+         * Shuffle and a folder played as it is listed), a spoken request what it names. Anything else is
+         * media3's own way, through [onAddMediaItems].
+         */
+        override fun onSetMediaItems(session: MediaSession, controller: MediaSession.ControllerInfo, items: MutableList<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+            val one = items.singleOrNull()
+            val query = one?.requestMetadata?.searchQuery
+            if (query != null) return scope.future { spoken(query, one.requestMetadata.extras) }
+            val row = one?.mediaId?.let(::rowOf)
+            if (row != null) return scope.future { queued(runCatching { nori.client.carQueue(row) }.getOrNull()) }
+            return super.onSetMediaItems(session, controller, items, startIndex, startPositionMs)
+        }
     }
 
-    /** A folder of the car's tree: the tree's own folders named from the resources, an album's or a playlist's by its own name. */
-    private fun folder(f: dev.nori.music.ffi.library.BrowseFolder): MediaItem = MediaItem.Builder().setMediaId(f.id).setMediaMetadata(
-        MediaMetadata.Builder().setTitle(f.kind?.let { getString(carFolderName(it)) } ?: f.title)
-            .setArtist(f.subtitle ?: f.songs?.let { getString(dev.nori.music.core.R.string.car_playlist_songs, it.toInt()) })
-            .setArtworkUri(f.art?.let(android.net.Uri::parse))
-            .setIsBrowsable(true).setIsPlayable(false).setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_MIXED).build()
-    ).build()
-
-    private fun carFolderName(k: dev.nori.music.ffi.library.CarFolder): Int = when (k) {
-        dev.nori.music.ffi.library.CarFolder.ROOT -> dev.nori.music.core.R.string.car_root
-        dev.nori.music.ffi.library.CarFolder.RECENTLY_PLAYED -> dev.nori.music.core.R.string.car_recently_played
-        dev.nori.music.ffi.library.CarFolder.RECENTLY_ADDED -> dev.nori.music.core.R.string.car_recently_added
-        dev.nori.music.ffi.library.CarFolder.MOST_PLAYED -> dev.nori.music.core.R.string.car_most_played
-        dev.nori.music.ffi.library.CarFolder.PLAYLISTS -> dev.nori.music.core.R.string.car_playlists
-        dev.nori.music.ffi.library.CarFolder.FAVOURITES -> dev.nori.music.core.R.string.car_favourites
-        dev.nori.music.ffi.library.CarFolder.RANDOM -> dev.nori.music.core.R.string.car_random
-        dev.nori.music.ffi.library.CarFolder.DOWNLOADS -> dev.nori.music.core.R.string.car_downloads
+    /** Row [id] of the car's tree, or a folder played as it is listed as its Play row; null for anything else. */
+    private fun rowOf(id: String): String? = when {
+        dev.nori.music.ffi.library.carRow(id) != null -> id
+        dev.nori.music.ffi.library.carPlaysWhole(id) -> dev.nori.music.ffi.library.carActionRow(id, dev.nori.music.ffi.library.CarAction.PLAY)
+        else -> null
     }
 
-    /** What a folder of the car's tree holds is the core's (crates/library/src/car.rs); this makes the items. */
-    private suspend fun children(parent: String): List<MediaItem> {
-        val page = nori.client.browseChildren(parent)
-        return page.folders.map(::folder) + items(page.songs)
+    /** Page [page] of [found], folder [parent]'s, as the car's rows; the songs kept for a later pick by bare id. */
+    private fun listed(parent: String, found: dev.nori.music.ffi.library.BrowsePage, page: Int, pageSize: Int, params: LibraryParams?): LibraryResult<ImmutableList<MediaItem>> {
+        found.songs.forEach { served.put(it.id, item(it)) }
+        val rows = car.items(parent, found) { s -> served.get(s.id) ?: item(s) }
+        return LibraryResult.ofItemList(rows.drop(page * pageSize).take(pageSize), params)
     }
+
+    /** A queue for the car: [q]'s songs as the player's items, from its song, shuffled when it asks. */
+    private fun queued(q: dev.nori.music.ffi.library.CarQueue?): MediaSession.MediaItemsWithStartPosition {
+        // Nothing to play fails the request: the car says so, rather than holding an empty item as the queue.
+        check(q != null && q.songs.isNotEmpty()) { "nothing to play" }
+        // As the app's Play and Shuffle do (PlayerConnection.play): the shuffle light said to the core first.
+        dev.nori.music.ffi.queue.playlistShowShuffle(q.shuffle)
+        controls.shuffleModeEnabled = q.shuffle
+        return MediaSession.MediaItemsWithStartPosition(startedFrom(items(q.songs), q.origin), if (q.shuffle) C.INDEX_UNSET else q.index.toInt(), C.TIME_UNSET)
+    }
+
+    /**
+     * What a spoken request plays ("play ... on nori"): nothing named, the queue as it was left, or else
+     * Quick picks; a mix by its name, which only the app words; anything else the core's `car_voice`.
+     */
+    private suspend fun spoken(query: String, extras: Bundle?): MediaSession.MediaItemsWithStartPosition {
+        if (query.isBlank()) {
+            val q = withContext(Dispatchers.IO) { runCatching { nori.core.loadQueue() }.getOrNull() }
+            if (q != null && q.songs.isNotEmpty()) return MediaSession.MediaItemsWithStartPosition(startedFrom(held(q.songs), q.origin), q.index.toInt(), q.positionMs.toLong())
+        }
+        val tiles = withContext(Dispatchers.IO) { runCatching { nori.core.mixCards(nori.settings.value.tasteModel) }.getOrDefault(emptyList()) }
+        val mix = if (query.isBlank()) tiles.firstOrNull { it.name == dev.nori.music.ffi.library.MixName.QUICK_PICKS } ?: tiles.firstOrNull()
+        else tiles.firstOrNull { CarWords.mix(it.name).equals(query.trim(), ignoreCase = true) }
+        if (mix != null) return queued(runCatching { nori.client.carQueue(dev.nori.music.ffi.library.carActionRow("mix:${mix.id}", dev.nori.music.ffi.library.CarAction.PLAY)) }.getOrNull())
+        val focus = when (extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_FOCUS)) {
+            android.provider.MediaStore.Audio.Artists.ENTRY_CONTENT_TYPE -> dev.nori.music.ffi.library.VoiceFocus.ARTIST
+            android.provider.MediaStore.Audio.Albums.ENTRY_CONTENT_TYPE -> dev.nori.music.ffi.library.VoiceFocus.ALBUM
+            android.provider.MediaStore.Audio.Playlists.ENTRY_CONTENT_TYPE -> dev.nori.music.ffi.library.VoiceFocus.PLAYLIST
+            android.provider.MediaStore.Audio.Genres.ENTRY_CONTENT_TYPE -> dev.nori.music.ffi.library.VoiceFocus.GENRE
+            android.provider.MediaStore.Audio.Media.ENTRY_CONTENT_TYPE -> dev.nori.music.ffi.library.VoiceFocus.SONG
+            else -> dev.nori.music.ffi.library.VoiceFocus.ANY
+        }
+        val ask = dev.nori.music.ffi.library.VoiceAsk(
+            query, focus, extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_ARTIST), extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_ALBUM),
+            extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_TITLE), extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_GENRE),
+            extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_PLAYLIST),
+        )
+        return queued(runCatching { nori.client.carVoice(ask) }.getOrNull())
+    }
+
+    /** The car's long press on row or folder [id]: queue it next or last, heart it, download it. */
+    private fun carItemCommand(action: String, id: String) = scope.launch {
+        val song = dev.nori.music.ffi.library.carRow(id)?.song
+        val whole = rowOf(id)
+        val songs: List<Song> = runCatching {
+            when {
+                // A song's row is that song alone; Play, Shuffle or a folder, the whole of it.
+                song != null -> listOfNotNull(withContext(Dispatchers.IO) { nori.library.song(song) })
+                whole != null -> nori.client.carQueue(whole)?.songs.orEmpty()
+                else -> listOfNotNull(withContext(Dispatchers.IO) { nori.library.song(id) })
+            }
+        }.getOrDefault(emptyList())
+        if (songs.isEmpty()) return@launch
+        when (action) {
+            CarTree.CMD_ITEM_NEXT, CarTree.CMD_ITEM_QUEUE -> {
+                val how = if (action == CarTree.CMD_ITEM_NEXT) Hand.NEXT else Hand.LAST
+                controls.addMediaItems(items(songs).map { it.queued(how) })
+                if (player.playbackState == Player.STATE_IDLE) controls.prepare()
+            }
+            CarTree.CMD_ITEM_FAVOURITE -> songs.first().let { s ->
+                runCatching { nori.library.star(StarKind.SONG, s.id, !nori.library.isStarred(StarKind.SONG, s.id, s.starred)) }
+            }
+            CarTree.CMD_ITEM_DOWNLOAD -> nori.downloads.download(songs)
+        }
+    }
+
+    /** The songs after the one playing become a radio from it (the server's similar songs, as the app's "Start radio"). */
+    private fun radioFrom(id: String) = scope.launch {
+        val songs = runCatching { withContext(Dispatchers.IO) { dev.nori.music.net.lifted { nori.client.radio(id) } } }.getOrNull()?.filter { it.id != id }
+        if (songs.isNullOrEmpty()) return@launch
+        dev.nori.music.ffi.queue.playlistShowShuffle(false)
+        controls.shuffleModeEnabled = false
+        val at = controls.currentMediaItemIndex
+        if (at + 1 < controls.mediaItemCount) controls.removeMediaItems(at + 1, controls.mediaItemCount)
+        controls.addMediaItems(items(songs))
+    }
+
+    private fun offline(): Boolean = getSystemService(android.net.ConnectivityManager::class.java)?.activeNetwork == null
+
+    /** Signed out: the car's message, and a button that opens the app on the phone. */
+    private fun signedOut(): androidx.media3.session.SessionError {
+        val open = packageManager.getLaunchIntentForPackage(packageName)?.let { PendingIntent.getActivity(this, 0, it, PendingIntent.FLAG_IMMUTABLE) }
+        val extras = Bundle().apply {
+            putString(androidx.media3.session.MediaConstants.EXTRAS_KEY_ERROR_RESOLUTION_ACTION_LABEL_COMPAT, getString(R.string.car_open_nori))
+            open?.let { putParcelable(androidx.media3.session.MediaConstants.EXTRAS_KEY_ERROR_RESOLUTION_ACTION_INTENT_COMPAT, it) }
+        }
+        return androidx.media3.session.SessionError(androidx.media3.session.SessionError.ERROR_SESSION_AUTHENTICATION_EXPIRED, getString(R.string.car_signed_out), extras)
+    }
+
+    private fun <T : Any> failure(e: androidx.media3.session.SessionError, params: LibraryParams?): LibraryResult<T> =
+        if (params != null) LibraryResult.ofError<T>(e, params) else LibraryResult.ofError<T>(e)
+
+    private fun unreachable() = androidx.media3.session.SessionError(androidx.media3.session.SessionError.ERROR_IO, getString(R.string.car_unreachable))
+
 }
 
 /**

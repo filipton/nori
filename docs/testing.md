@@ -160,6 +160,12 @@ is Android glue and stays on the device. 50 moved, 60 stay.
   release newer and shows the banner; a debug build never installs, its button opens the release's page). An
   install in place needs a release build that is older: `./gradlew :app:assembleRelease -PpretendVersion=0.3.9
   -PrustTargets=x86_64`, signed with the release key, installed, then About, Check for updates, Update.
+- The car: the tree, the rows a pick plays, search and spoken requests are nori-core's (car.rs, tested there);
+  media3's session, the items Android Auto reads and the pictures the car opens through CarArtProvider are
+  Android's. A debug build walks it as a car connects, through a media browser: `app.sh do "car tree home"`,
+  `"car search <words>"`, `"car play <row id>"`, `"car voice <words>[|artist|album|playlist|genre|song]"`, each
+  row logged under the tag noricar; `adb shell content read --uri content://dev.nori.music.carart/c/<cover id>`
+  reads a picture. Android Auto itself (the head unit) is checked on a phone with the Desktop Head Unit.
 
 
 ## cargo test

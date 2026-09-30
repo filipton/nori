@@ -111,6 +111,9 @@ object TestActions {
             "beats" -> { actions.answerBeats(ref.startsWith("yes"), ref.endsWith(",remember")); return@attempt }
             // Settings' "Analyse downloaded songs" (asks first, as Download does).
             "analysedownloads" -> { actions.analyseDownloads(); return@attempt }
+            // "car root|tree <id>|search <q>|play <id>|voice <query>[|artist|album|playlist|genre|song]": the car's
+            // side of the session, through a media browser as Android Auto connects, each row logged (tag noricar).
+            "car" -> { carCheck(context, ref); return@attempt }
             // "widgetfaces": the song's widget faces at the sizes a launcher gives them, drawn off screen into
             // the cache (widget-<face>-<w>x<h>.png), to look at every size without resizing one on the home screen.
             "widgetfaces" -> {
@@ -253,5 +256,61 @@ object TestActions {
         emit(FoundLyrics(dev.nori.music.ffi.model.Lyrics(true, false, lines(false), 0uL), dev.nori.music.ffi.settings.LyricsOrigin.LRCLIB))
         kotlinx.coroutines.delay(slowMs)
         emit(FoundLyrics(dev.nori.music.ffi.model.Lyrics(true, true, lines(true), 0uL), dev.nori.music.ffi.settings.LyricsOrigin.BETTER_LYRICS))
+    }
+
+    /** See "car" in [act]. */
+    private suspend fun carCheck(context: Context, what: String) {
+        val log = { line: String -> android.util.Log.i("noricar", line) }
+        val token = androidx.media3.session.SessionToken(context, android.content.ComponentName(context, dev.nori.music.playback.PlaybackService::class.java))
+        val browser = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { androidx.media3.session.MediaBrowser.Builder(context, token).buildAsync().get() }
+        suspend fun <T> wait(f: com.google.common.util.concurrent.ListenableFuture<T>): T = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { f.get() }
+        val params = androidx.media3.session.MediaLibraryService.LibraryParams.Builder()
+            .setExtras(android.os.Bundle().apply { putInt(androidx.media3.session.MediaConstants.EXTRAS_KEY_ROOT_CHILDREN_LIMIT, 4) }).build()
+        fun row(i: androidx.media3.common.MediaItem) {
+            val m = i.mediaMetadata
+            val e = m.extras
+            log("${i.mediaId} | ${m.title} | ${m.artist} | art=${m.artworkUri} | browse=${m.isBrowsable} play=${m.isPlayable}" +
+                " | style=${e?.getInt(androidx.media3.session.MediaConstants.EXTRAS_KEY_CONTENT_STYLE_BROWSABLE)} group=${e?.getString(androidx.media3.session.MediaConstants.EXTRAS_KEY_CONTENT_STYLE_GROUP_TITLE)}" +
+                " | dl=${e?.getLong(androidx.media3.session.MediaConstants.EXTRAS_KEY_DOWNLOAD_STATUS)} commands=${m.supportedCommands}")
+        }
+        val verb = what.substringBefore(' ')
+        val arg = what.substringAfter(' ', "")
+        try {
+            when (verb) {
+                "root" -> wait(browser.getLibraryRoot(params)).let { r -> log("root: code=${r.resultCode} error=${r.sessionError?.message}"); r.value?.let(::row) }
+                "tree" -> wait(browser.getChildren(arg, 0, 500, params)).let { r -> log("tree $arg: code=${r.resultCode} error=${r.sessionError?.message} rows=${r.value?.size}"); r.value?.forEach(::row) }
+                "search" -> {
+                    wait(browser.search(arg, params))
+                    wait(browser.getSearchResult(arg, 0, 100, params)).value?.forEach(::row)
+                }
+                "play" -> kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    browser.setMediaItem(androidx.media3.common.MediaItem.Builder().setMediaId(arg).build()); browser.prepare(); browser.play()
+                }
+                "voice" -> kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    val (query, focus) = arg.split('|').let { it[0] to it.getOrNull(1) }
+                    val extras = android.os.Bundle().apply {
+                        when (focus) {
+                            "artist" -> { putString(android.provider.MediaStore.EXTRA_MEDIA_FOCUS, android.provider.MediaStore.Audio.Artists.ENTRY_CONTENT_TYPE); putString(android.provider.MediaStore.EXTRA_MEDIA_ARTIST, query) }
+                            "album" -> { putString(android.provider.MediaStore.EXTRA_MEDIA_FOCUS, android.provider.MediaStore.Audio.Albums.ENTRY_CONTENT_TYPE); putString(android.provider.MediaStore.EXTRA_MEDIA_ALBUM, query) }
+                            "playlist" -> { putString(android.provider.MediaStore.EXTRA_MEDIA_FOCUS, android.provider.MediaStore.Audio.Playlists.ENTRY_CONTENT_TYPE); putString(android.provider.MediaStore.EXTRA_MEDIA_PLAYLIST, query) }
+                            "genre" -> { putString(android.provider.MediaStore.EXTRA_MEDIA_FOCUS, android.provider.MediaStore.Audio.Genres.ENTRY_CONTENT_TYPE); putString(android.provider.MediaStore.EXTRA_MEDIA_GENRE, query) }
+                            "song" -> { putString(android.provider.MediaStore.EXTRA_MEDIA_FOCUS, android.provider.MediaStore.Audio.Media.ENTRY_CONTENT_TYPE); putString(android.provider.MediaStore.EXTRA_MEDIA_TITLE, query) }
+                        }
+                    }
+                    browser.setMediaItem(androidx.media3.common.MediaItem.Builder().setRequestMetadata(
+                        androidx.media3.common.MediaItem.RequestMetadata.Builder().setSearchQuery(query).setExtras(extras).build()).build())
+                    browser.prepare(); browser.play()
+                }
+            }
+            // Give a play its moment before the browser lets go, then say what is queued.
+            if (verb == "play" || verb == "voice") {
+                kotlinx.coroutines.delay(4000)
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    log("queued ${browser.mediaItemCount} at ${browser.currentMediaItemIndex}: ${browser.currentMediaItem?.mediaMetadata?.title} / ${browser.currentMediaItem?.mediaMetadata?.artist} shuffle=${browser.shuffleModeEnabled}")
+                }
+            }
+        } finally {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { browser.release() }
+        }
     }
 }
