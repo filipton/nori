@@ -155,7 +155,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
         val now = android.os.SystemClock.elapsedRealtime()
         val on = c.currentMediaItemIndex
         val engine = engine()?.takeIf { _pendingSeek.value == null && now - seekAsked > SEEK_GRACE_MS }?.shownMs(on) ?: -1L
-        val out = read(PlayheadJni.position(clock, now, c.isPlaying, on, raw, shown, engine))
+        val out = read(PlayheadJni.position(clock, now, c.isPlaying, on, c.nextMediaItemIndex, raw, shown, engine))
         if (c === controller && c.isPlaying && PlayheadJni.drifted(raw, engine) && now - reanchored > REANCHOR_GAP_MS) {
             reanchored = now
             dev.nori.music.NoriLog.i("seek bar: the controller ran on to $raw ms, the engine is at $engine ms: the session says its place again")
@@ -600,7 +600,7 @@ internal object PlayheadJni {
      * [positionMs] is the player's word, [engineMs] the engine's own place in song [on] (-1: none), which the
      * bar goes by when there is one.
      */
-    @JvmStatic @CriticalNative external fun position(h: Long, nowMs: Long, playing: Boolean, on: Int, positionMs: Long, shown: Int, engineMs: Long): Long
+    @JvmStatic @CriticalNative external fun position(h: Long, nowMs: Long, playing: Boolean, on: Int, next: Int, positionMs: Long, shown: Int, engineMs: Long): Long
     /** A controller's place [wordMs] has drifted from the engine's own [engineMs] (-1: none): nori_player::heard::drifted. */
     @JvmStatic @CriticalNative external fun drifted(wordMs: Long, engineMs: Long): Boolean
     /** The last place shown, run on from then if [playing]: for while the controller cannot be asked. */
