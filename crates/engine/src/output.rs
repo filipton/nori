@@ -306,6 +306,14 @@ impl Feed {
         r.read.store(back, Ordering::Release);
     }
 
+    /// Frames pulled since the first frame of the last flush's new music: more than a pull since the
+    /// flush took when the music was made again from before where the device got to (a sound change)
+    /// rather than jumped. What [`Feed::rewind`] can give back.
+    pub fn behind(&self) -> u64 {
+        let r = &*self.ring;
+        r.read.load(Ordering::Acquire).saturating_sub(r.discard.load(Ordering::Acquire))
+    }
+
     /// Wakes the engine, e.g. for [`AudioOutput::failed`].
     pub fn wake_engine(&self) {
         self.ring.engine.unpark();
@@ -917,6 +925,7 @@ mod tests {
         t.write(&pcm(&[-1000; 100]), 100.0);
         assert_eq!(f.pull(&mut out), 10);
         assert!(f.flushed(), "the pull after a flush says so");
+        assert_eq!(f.behind(), 10, "a jump: nothing before what that pull took");
         assert!(out.iter().all(|&v| v < 0.0), "and holds only the new music");
         f.pull(&mut out);
         assert!(!f.flushed(), "once");
@@ -958,6 +967,7 @@ mod tests {
         let mut out = vec![0f32; 100];
         assert_eq!(f.pull(&mut out), 100);
         assert!(f.flushed(), "the device is told to drop what it holds");
+        assert_eq!(f.behind(), 700 - at, "and can go back to the first frame made again");
         // 700 taken, 300 played.
         f.rewind(400);
         assert_eq!(f.pull(&mut out), 100);

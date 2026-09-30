@@ -121,6 +121,7 @@ struct TrackMethods {
     set_start_threshold: Option<JMethodID>,
     underruns: JMethodID,
     capacity_frames: JMethodID,
+    session: JMethodID,
     routed_device: JMethodID,
     min_buffer_size: JStaticMethodID,
     /// Hidden `getLatency()` (on the greylist, as ExoPlayer uses it); None where refused.
@@ -153,7 +154,7 @@ fn look_up(env: &mut JNIEnv) -> jni::errors::Result<Java> {
     let offload = delay_padding.zip(end_of_stream).map(|(delay_padding, end_of_stream)| OffloadMethods { delay_padding, end_of_stream });
     Ok(Java {
         vm: env.get_java_vm()?,
-        open_track: env.get_static_method_id(&bridge, "openTrack", "(IIII)Landroid/media/AudioTrack;")?,
+        open_track: env.get_static_method_id(&bridge, "openTrack", "(IIIII)Landroid/media/AudioTrack;")?,
         open: env.get_static_method_id(&bridge, "open", "(Ljava/lang/String;Ljava/lang/String;JJ)Ldev/nori/music/playback/RustBody;")?,
         cancel: env.get_static_method_id(&bridge, "cancel", "(J)V")?,
         open_live: env.get_static_method_id(&bridge, "openLive", "(Ljava/lang/String;)Ldev/nori/music/playback/RustBody;")?,
@@ -190,6 +191,7 @@ fn look_up(env: &mut JNIEnv) -> jni::errors::Result<Java> {
             set_start_threshold: start_threshold,
             underruns: env.get_method_id(&track, "getUnderrunCount", "()I")?,
             capacity_frames: env.get_method_id(&track, "getBufferCapacityInFrames", "()I")?,
+            session: env.get_method_id(&track, "getAudioSessionId", "()I")?,
             routed_device: env.get_method_id(&track, "getRoutedDevice", "()Landroid/media/AudioDeviceInfo;")?,
             min_buffer_size: env.get_static_method_id(&track, "getMinBufferSize", "(III)I")?,
             latency,
@@ -357,14 +359,25 @@ impl Sink for JavaTrack {
 
     /// Playing: the device's timestamp when it has a fresh one; otherwise the play head, now.
     fn heard(&mut self, playing: bool) -> Option<(u64, i64)> {
-        let (java, mut env) = env()?;
         if playing {
-            if let Some((frames, ns)) = read_timestamp(&mut env, java, &self.track, &self.timestamp).filter(|&(_, ns)| ns >= self.since_ns) {
-                return Some((frames.max(0) as u64, ns));
+            if let Some(stamp) = self.stamp() {
+                return Some(stamp);
             }
         }
+        let (java, mut env) = env()?;
         let head = call_int(&mut env, &self.track, java.track.head, &[])?;
         Some((self.head.read(head as u32), mono_ns()))
+    }
+
+    /// A timestamp from before the last flush or start describes music that is gone.
+    fn stamp(&mut self) -> Option<(u64, i64)> {
+        let (java, mut env) = env()?;
+        let (frames, ns) = read_timestamp(&mut env, java, &self.track, &self.timestamp).filter(|&(_, ns)| ns >= self.since_ns)?;
+        Some((frames.max(0) as u64, ns))
+    }
+
+    fn session(&mut self) -> i32 {
+        self.int(|t| t.session).unwrap_or(0)
     }
 
     /// `setBufferSizeInFrames`, then the start threshold (Android 12+) set to a quarter second or the
@@ -758,6 +771,20 @@ struct JavaOpener {
 
 impl Opener for JavaOpener {
     fn open(&mut self, format: OutputFormat, float: bool, frames: u64) -> Result<Opened, String> {
+        self.track(format, float, frames, 0)
+    }
+
+    fn beside(&mut self, format: OutputFormat, float: bool, frames: u64, session: i32) -> Result<Opened, String> {
+        if session == 0 {
+            return Err("the track has no audio session".into());
+        }
+        self.track(format, float, frames, session)
+    }
+}
+
+impl JavaOpener {
+    /// `beside`: the audio session of the track a second one is opened beside; 0 for the first.
+    fn track(&mut self, format: OutputFormat, float: bool, frames: u64, beside: i32) -> Result<Opened, String> {
         let (java, mut env) = env().ok_or("no JVM")?;
         let encoding = if float {
             ENCODING_PCM_FLOAT
@@ -772,6 +799,7 @@ impl Opener for JavaOpener {
                 JValue::Int(format.channels as i32).as_jni(),
                 JValue::Int(encoding).as_jni(),
                 JValue::Int(frames.min(i32::MAX as u64) as i32).as_jni(),
+                JValue::Int(beside).as_jni(),
             ];
             let track = call_static(env, bridge(java), java.open_track, ReturnType::Object, &args).and_then(|v| v.l().ok());
             let Some(track) = track.filter(|t| !t.is_null()) else { return Ok(Err("the AudioTrack would not open".into())) };

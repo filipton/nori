@@ -172,8 +172,10 @@ opens them again where it was. A change to the sound while music plays (the equa
 silence skipping, ReplayGain) is heard at once and seamlessly: the sink keeps what the chain was given and
 the chain's state every 8192 frames (`nori_player::chain`), goes back to the first frame the output can
 still replace, runs the chain again up to it (the same music) and on with the new settings, blended over
-5 ms. Nothing is decoded again and no position guessed; a device holding seconds drops them and plays on
-from exactly where it was (`Feed::rewind`). Changes that come quickly are taken together, one every 100 ms
+5 ms. Nothing is decoded again and no position guessed. Android's deep track, holding seconds, hands the
+music to a second track from the frame it plays when that one's silence ends, read off both tracks'
+timestamps, crossfaded, and takes it back the same way (crates/android/src/track.rs); a device that can't
+drops what it holds and plays on, after a gap, from exactly where it was (`Feed::rewind`). Changes that come quickly are taken together, one every 100 ms
 at most. An ending made under an old plan (the queue or the transition settings changed) is made again the
 same way from where the old and new endings part. It is `nori-player::pipeline`, the code the simulated player
 runs, on one thread that sleeps between bursts (its wakeups are listed in `crates/engine/src/engine.rs`).

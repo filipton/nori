@@ -107,7 +107,7 @@ internal object RustBridge {
     @Volatile var player: EnginePlayer? = null
 
     /** [encoding] is `AudioFormat.ENCODING_*`: 16-bit, 24-bit packed (a song played as it is) or float. */
-    @JvmStatic fun openTrack(rate: Int, channels: Int, encoding: Int, frames: Int): AudioTrack? = player?.openTrack(rate, channels, encoding, frames)
+    @JvmStatic fun openTrack(rate: Int, channels: Int, encoding: Int, frames: Int, beside: Int): AudioTrack? = player?.openTrack(rate, channels, encoding, frames, beside)
     /** [ticket]: the request's number, by which [cancel] calls it off (see [Tickets]). */
     @JvmStatic fun open(url: String, key: String, from: Long, ticket: Long): RustBody? =
         player?.open(url, key, from, ticket) ?: null.also { Tickets.end(ticket) }
@@ -837,11 +837,14 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
      * when bit-perfect is on, and the route told to the engine whenever it changes. Called on the engine's
      * thread.
      */
-    internal fun openTrack(rate: Int, channels: Int, encoding: Int, frames: Int): AudioTrack? = runCatching {
+    internal fun openTrack(rate: Int, channels: Int, encoding: Int, frames: Int, beside: Int): AudioTrack? = runCatching {
         val width = when (encoding) { AudioFormat.ENCODING_PCM_FLOAT -> 4; AudioFormat.ENCODING_PCM_24BIT_PACKED -> 3; else -> 2 }
         // The DAC's mixer attributes are read by the framework when the track is built: set for this format first.
-        nori.dac.onFormat(rate, encoding)
+        if (beside == 0) nori.dac.onFormat(rate, encoding)
         val bitPerfect = nori.dac.state.value.bitPerfect
+        // [beside]: the audio session of the track a second one is opened beside, for a sound change
+        // (crates/android/src/track.rs `Handover`); a bit-perfect output plays one track only.
+        if (beside != 0 && bitPerfect) return@runCatching null
         // Always opened deep, in power saving mode: the equalizer screen's shallow buffer is the same track
         // made smaller in place (setBufferSizeInFrames, crates/android/src/track.rs), not another one.
         val mode = if (bitPerfect) AudioTrack.PERFORMANCE_MODE_NONE else AudioTrack.PERFORMANCE_MODE_POWER_SAVING
@@ -851,11 +854,14 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
             .setTransferMode(AudioTrack.MODE_STREAM)
             .setBufferSizeInBytes(frames * channels * width)
             .setPerformanceMode(mode)
+            .apply { if (beside != 0) setSessionId(beside) }
             .build()
         // Started with a quarter of a second in it rather than once full: a seek is heard as soon as its
         // first burst is decoded. Before Android 12 a track waits to be full, and the engine fills it.
         if (Build.VERSION.SDK_INT >= 31) runCatching { track.setStartThresholdInFrames(minOf(rate / 4, track.bufferSizeInFrames)) }
         nori.dac.preferredDevice()?.let { runCatching { track.setPreferredDevice(it) } }
+        // The second track lives a second or so; the app knows only the first.
+        if (beside != 0) return@runCatching track
         nori.dac.onTrack(rate, encoding, false)
         track.addOnRoutingChangedListener(AudioRouting.OnRoutingChangedListener { r ->
             r.routedDevice?.let { d -> RustPlayerJni.device(h, d.type, d.productName?.toString()) }
