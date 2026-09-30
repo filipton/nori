@@ -1214,10 +1214,15 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         }
     }
 
-    /// The queue changed: the offload path finds its songs again, and restarts where the ear is when
-    /// a song it already wrote no longer follows.
+    /// The queue changed: the song heard follows its entry, and the offload path finds its songs again,
+    /// restarting where the ear is when a song it already wrote no longer follows.
     fn follow_queue(&mut self) {
         let old = std::mem::replace(&mut self.seqs, self.p.queue.read(|q| q.seqs().to_vec()));
+        if let Some((i, _)) = self.told.heard.as_mut() {
+            if let Some(k) = old.get(*i).and_then(|s| self.seqs.iter().position(|n| n == s)) {
+                *i = k;
+            }
+        }
         self.h.probe = None;
         let Worker { p, off, .. } = self;
         let Some(off) = off.as_mut().filter(|o| o.active()) else { return };

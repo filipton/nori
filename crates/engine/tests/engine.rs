@@ -2512,6 +2512,22 @@ fn same_song_put_before_keeps_the_playing_entry() {
     assert!(!rig.events.lock().iter().any(|e| matches!(e, Event::Song { id, .. } if id == "b")), "nothing after the last entry: {:?}", rig.events.lock());
 }
 
+#[test]
+fn new_list_around_the_playing_song_plays_on_from_it() {
+    let (a, b, c) = (music(4.0, 81), music(4.0, 82), music(4.0, 83));
+    let rig = Rig::new(&[("a", &a), ("b", &b), ("c", &c)], prefs_off(), Settings::default());
+    rig.queue.lock().set(vec!["a".into(), "b".into()], Some(0), false, 0);
+    rig.engine.queue_changed();
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2), "a plays");
+    // Its album's list, tapped on a: a goes on as the second of [c, a, b].
+    rig.queue.lock().set(vec!["c".into(), "a".into(), "b".into()], Some(1), false, 0);
+    rig.engine.queue_changed();
+    assert!(rig.wait_for(20, Rig::ended), "{:?}", rig.events.lock());
+    let songs: Vec<(usize, String)> = rig.events.lock().iter().filter_map(|e| match e { Event::Song { index, id, .. } => Some((*index, id.clone())), _ => None }).collect();
+    assert_eq!(songs, [(0, "a".to_string()), (2, "b".to_string())]);
+}
+
 // ---- seeks at the edges ----
 
 /// The heard samples from `from` on are `song` from `ms` on, sample exact for `frames` frames.

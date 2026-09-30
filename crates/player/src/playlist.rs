@@ -269,11 +269,15 @@ impl Playlist {
     }
 
     /// Replaces the queue, starting at `start` (`None`: a random song when shuffling, else 0). Returns
-    /// the start.
+    /// the start. A start on the current song keeps its entry: the list is made around it.
     pub fn set(&mut self, ids: Vec<String>, start: Option<usize>, shuffling: bool, seed: u64) -> Option<usize> {
         let n = ids.len();
+        let kept = start.zip(self.cur).filter(|&(s, c)| ids.get(s).is_some_and(|id| *id == self.ids[c])).map(|(s, c)| (s, self.seqs[c]));
         self.ids = ids;
         self.seqs = self.fresh(n).collect();
+        if let Some((s, seq)) = kept {
+            self.seqs[s] = seq;
+        }
         self.list_rev += 1;
         self.taken = None;
         self.hand = vec![Hand::No; n];
