@@ -181,28 +181,28 @@ fn latest(used: &mut HashMap<String, i64>, id: String, at: i64) {
     *t = (*t).max(at);
 }
 
-/// Adds recent picks of `kind` to `used`.
-fn picked(c: &Connection, kind: Picked, now_ms: i64, used: &mut HashMap<String, i64>) -> rusqlite::Result<()> {
-    let mut st = c.prepare_cached("SELECT id, picked_ms FROM autofill_picks WHERE server=sid() AND kind=?1 AND picked_ms>=?2")?;
-    for row in st.query_map(params![kind as i64, now_ms - LATELY_MS], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+/// Adds the (id, time) rows `sql` reads to `used`.
+fn add_uses(c: &Connection, sql: &str, args: impl rusqlite::Params, used: &mut HashMap<String, i64>) -> rusqlite::Result<()> {
+    let mut st = c.prepare_cached(sql)?;
+    for row in st.query_map(args, |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
         let (id, at) = row?;
         latest(used, id, at);
     }
     Ok(())
 }
 
+/// Adds recent picks of `kind` to `used`.
+fn picked(c: &Connection, kind: Picked, now_ms: i64, used: &mut HashMap<String, i64>) -> rusqlite::Result<()> {
+    add_uses(c, "SELECT id, picked_ms FROM autofill_picks WHERE server=sid() AND kind=?1 AND picked_ms>=?2", params![kind as i64, now_ms - LATELY_MS], used)
+}
+
 /// Recent use of each album: picked, or one of its songs played.
 pub fn album_use(c: &Connection, now_ms: i64) -> rusqlite::Result<HashMap<String, i64>> {
     let mut used = HashMap::new();
     picked(c, Picked::Album, now_ms, &mut used)?;
-    let mut st = c.prepare_cached(
-        "SELECT json_extract(i.json,'$.albumId'), max(p.started_ms) FROM plays p JOIN items i ON i.server=sid() AND i.kind=2 AND i.id=p.song_id
-         WHERE p.server=sid() AND p.started_ms>=?1 AND json_extract(i.json,'$.albumId') IS NOT NULL GROUP BY 1",
-    )?;
-    for row in st.query_map(params![now_ms - LATELY_MS], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
-        let (id, at) = row?;
-        latest(&mut used, id, at);
-    }
+    let plays = "SELECT json_extract(i.json,'$.albumId'), max(p.started_ms) FROM plays p JOIN items i ON i.server=sid() AND i.kind=2 AND i.id=p.song_id
+         WHERE p.server=sid() AND p.started_ms>=?1 AND json_extract(i.json,'$.albumId') IS NOT NULL GROUP BY 1";
+    add_uses(c, plays, params![now_ms - LATELY_MS], &mut used)?;
     Ok(used)
 }
 
@@ -210,11 +210,7 @@ pub fn album_use(c: &Connection, now_ms: i64) -> rusqlite::Result<HashMap<String
 pub fn song_use(c: &Connection, now_ms: i64) -> rusqlite::Result<HashMap<String, i64>> {
     let mut used = HashMap::new();
     picked(c, Picked::Songs, now_ms, &mut used)?;
-    let mut st = c.prepare_cached("SELECT song_id, max(started_ms) FROM plays WHERE server=sid() AND started_ms>=?1 GROUP BY song_id")?;
-    for row in st.query_map(params![now_ms - LATELY_MS], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
-        let (id, at) = row?;
-        latest(&mut used, id, at);
-    }
+    add_uses(c, "SELECT song_id, max(started_ms) FROM plays WHERE server=sid() AND started_ms>=?1 GROUP BY song_id", params![now_ms - LATELY_MS], &mut used)?;
     Ok(used)
 }
 
