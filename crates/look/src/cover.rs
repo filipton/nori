@@ -41,22 +41,13 @@ const PAGE_MAX_LUMA: f32 = 0.081;
 
 fn dark_page(hsl: [f32; 3], max_luma: f32) -> u32 {
     let sat = (hsl[1] * 0.95).min(0.62);
-    let mut lo = 0.04f32;
-    let mut hi = hsl[2].clamp(0.04, PAGE_LIGHTEST);
+    let hi = hsl[2].clamp(0.04, PAGE_LIGHTEST);
     let at = |l: f32| hsl_to_color([hsl[0], sat, l]);
     if luminance(at(hi)) <= max_luma {
         return at(hi);
     }
-    // Binary search for the lightest allowed lightness (12 steps, ~0.001).
-    for _ in 0..12 {
-        let mid = (lo + hi) / 2.0;
-        if luminance(at(mid)) <= max_luma {
-            lo = mid
-        } else {
-            hi = mid
-        }
-    }
-    at(lo)
+    // The lightest allowed lightness.
+    at(bisect(0.04, hi, |l| luminance(at(l)) <= max_luma))
 }
 
 /// Over a solid dark foot, the page's max luminance is this far from the foot's up to its natural one,
@@ -73,21 +64,25 @@ const PAGE_MIN_LUMA: f32 = 0.42;
 fn paper_page(hsl: [f32; 3]) -> u32 {
     let sat = hsl[1].min(0.75);
     let at = |l: f32| hsl_to_color([hsl[0], sat, l]);
-    let mut lo = hsl[2].clamp(0.5, 0.96);
+    let lo = hsl[2].clamp(0.5, 0.96);
     if luminance(at(lo)) >= PAGE_MIN_LUMA {
         return at(lo);
     }
-    let mut hi = 0.96f32;
-    // Binary search for the darkest allowed lightness.
+    // The darkest allowed lightness.
+    at(bisect(0.96, lo, |l| luminance(at(l)) >= PAGE_MIN_LUMA))
+}
+
+/// Binary search between a lightness that is `ok` and one that is not (12 steps, ~0.001): the last `ok`.
+fn bisect(mut good: f32, mut bad: f32, ok: impl Fn(f32) -> bool) -> f32 {
     for _ in 0..12 {
-        let mid = (lo + hi) / 2.0;
-        if luminance(at(mid)) >= PAGE_MIN_LUMA {
-            hi = mid
+        let mid = (good + bad) / 2.0;
+        if ok(mid) {
+            good = mid
         } else {
-            lo = mid
+            bad = mid
         }
     }
-    at(hi)
+    good
 }
 
 /// Black page keeping the sleeve's hue.
@@ -307,25 +302,19 @@ fn smooth(px: &[u32]) -> Vec<u32> {
 /// Separable radius-2 box blur of an n x n channel, in place.
 fn box_blur(c: &mut [f32], n: usize) {
     let mut tmp = vec![0f32; c.len()];
-    let at = |v: isize| v.clamp(0, n as isize - 1) as usize;
-    for y in 0..n {
-        for x in 0..n {
-            let mut s = 0f32;
-            for d in -2..=2isize {
-                s += c[y * n + at(x as isize + d)];
+    let pass = |src: &[f32], dst: &mut [f32], across: bool| {
+        for y in 0..n {
+            for x in 0..n {
+                let at = |d: isize| {
+                    let v = ((if across { x } else { y }) as isize + d).clamp(0, n as isize - 1) as usize;
+                    src[if across { y * n + v } else { v * n + x }]
+                };
+                dst[y * n + x] = (-2..=2).map(at).sum::<f32>() / 5.0;
             }
-            tmp[y * n + x] = s / 5.0;
         }
-    }
-    for y in 0..n {
-        for x in 0..n {
-            let mut s = 0f32;
-            for d in -2..=2isize {
-                s += tmp[at(y as isize + d) * n + x];
-            }
-            c[y * n + x] = s / 5.0;
-        }
-    }
+    };
+    pass(c, &mut tmp, true);
+    pass(&tmp, c, false);
 }
 
 /// Separable 3-tap box blur of the [`WASH`] grid: horizontally into a buffer, vertically back.
@@ -442,12 +431,7 @@ fn dominant(pixels: &[u32], w: usize, h: usize, fallback: u32) -> u32 {
     }
     score[NEUTRAL] = weight[NEUTRAL];
     score[DARK] = weight[DARK];
-    let mut best = 0;
-    for i in 0..score.len() {
-        if score[i] > score[best] {
-            best = i;
-        }
-    }
+    let mut best = (0..score.len()).fold(0, |best, i| if score[i] > score[best] { i } else { best });
     // Majority paper or ink wins unless a colour family is the subject: >= 30 % of the cover and mostly
     // solid blocks (Amnesiac: 48 % black, 52 % red book).
     if total > 0.0 {
@@ -470,15 +454,8 @@ fn dominant(pixels: &[u32], w: usize, h: usize, fallback: u32) -> u32 {
                 if !in_family(grid[gy * cols + gx]) {
                     continue;
                 }
-                let mut all = true;
-                for dy in -1..=1isize {
-                    for dx in -1..=1isize {
-                        if !in_family(grid[(gy as isize + dy) as usize * cols + (gx as isize + dx) as usize]) {
-                            all = false;
-                        }
-                    }
-                }
-                if all {
+                let mut around = (gy - 1..=gy + 1).flat_map(|y| (gx - 1..=gx + 1).map(move |x| y * cols + x));
+                if around.all(|at| in_family(grid[at])) {
                     solid += 1;
                 }
             }
@@ -516,46 +493,31 @@ struct Foot {
 
 fn bottom_average(pixels: &[u32], w: usize, h: usize) -> Foot {
     let rows = (h / 12).clamp(1, 12);
-    let (mut r, mut g, mut b) = (0i64, 0i64, 0i64);
-    for y in h - rows..h {
-        for &px in &pixels[y * w..(y + 1) * w] {
-            r += red(px) as i64;
-            g += green(px) as i64;
-            b += blue(px) as i64;
-        }
-    }
-    let n = (w * rows).max(1) as i64;
-    let colour = rgb((r / n) as i32, (g / n) as i32, (b / n) as i32);
+    let foot = &pixels[(h - rows) * w..h * w];
+    let colour = mean_rgb(foot.iter().copied()).expect("covers are at least 1 x 1");
     let near = |a: u32, b: u32| {
         let (dr, dg, db) = (red(a) - red(b), green(a) - green(b), blue(a) - blue(b));
         dr * dr + dg * dg + db * db < 48 * 48
     };
-    let close = pixels[(h - rows) * w..h * w].iter().filter(|&&px| near(px, colour)).count();
-    let row_mean = |y: usize| {
-        let (mut rr, mut gg, mut bb) = (0i64, 0i64, 0i64);
-        for &px in &pixels[y * w..(y + 1) * w] {
-            rr += red(px) as i64;
-            gg += green(px) as i64;
-            bb += blue(px) as i64;
-        }
-        rgb((rr / w as i64) as i32, (gg / w as i64) as i32, (bb / w as i64) as i32)
-    };
+    let close = foot.iter().filter(|&&px| near(px, colour)).count();
+    let row_mean = |y: usize| mean_rgb(pixels[y * w..(y + 1) * w].iter().copied()).expect("covers are at least 1 x 1");
     // Walk up while rows still match the strip.
     let mut top = h;
     while top > h / 2 && near(row_mean(top - 1), colour) {
         top -= 1;
     }
     let melt_top = (h as f32 * (1.0 - MELT)) as usize;
-    let (mut ar, mut ag, mut ab, mut an) = (0i64, 0i64, 0i64, 0i64);
-    for y in melt_top..top {
-        let m = row_mean(y);
-        ar += red(m) as i64;
-        ag += green(m) as i64;
-        ab += blue(m) as i64;
-        an += 1;
+    let above = mean_rgb((melt_top..top).map(row_mean)).unwrap_or(colour);
+    Foot { colour, solid: close as f32 >= foot.len() as f32 * 0.85, strip: (h - top) as f32 / h as f32, above }
+}
+
+/// The mean colour of `px`, each channel's sum divided down; None for no pixels.
+fn mean_rgb(px: impl Iterator<Item = u32>) -> Option<u32> {
+    let (mut r, mut g, mut b, mut n) = (0i64, 0i64, 0i64, 0i64);
+    for p in px {
+        (r, g, b, n) = (r + red(p) as i64, g + green(p) as i64, b + blue(p) as i64, n + 1);
     }
-    let above = if an == 0 { colour } else { rgb((ar / an) as i32, (ag / an) as i32, (ab / an) as i32) };
-    Foot { colour, solid: close as f32 >= n as f32 * 0.85, strip: (h - top) as f32 / h as f32, above }
+    (n > 0).then(|| rgb((r / n) as i32, (g / n) as i32, (b / n) as i32))
 }
 
 /// Steps `color`'s lightness (away from the background's) until it reaches 3.2:1 contrast, else
