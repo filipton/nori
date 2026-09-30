@@ -93,7 +93,7 @@ impl CompressorSettings {
 }
 
 /// Compressor state. Retuning while playing is smooth except for make-up gain.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Compressor {
     s: CompressorSettings,
     /// Linear level at the bottom of the knee (below it the reduction is 0).
@@ -203,7 +203,7 @@ impl ExpanderSettings {
 
 /// Expander state: a peak follower (instant up, release down); the reduction follows it closing and
 /// opens over the attack.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Expander {
     s: ExpanderSettings,
     /// Linear level at the top of the knee (above it the reduction is 0).

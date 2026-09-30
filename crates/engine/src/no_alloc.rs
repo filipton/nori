@@ -8,7 +8,7 @@ use std::sync::Arc;
 use nori_player::dsp::{Band, PEAKING};
 use nori_player::engine::Downstream;
 use nori_player::pcm::{Encoding, Format};
-use nori_player::pipeline::{Sink, Sound};
+use nori_player::pipeline::{ChainSettings, Sink, Sound};
 
 use crate::output::{AudioOutput, Feed, OutputFormat, RingTrack};
 
@@ -85,8 +85,8 @@ fn steady(device_rate: u32, sound: Sound, speed: f32, skip_silence: bool) -> u64
 fn steady_in(encoding: Encoding, device_rate: u32, sound: Sound, speed: f32, skip_silence: bool) -> u64 {
     let fmt = Format { rate: 44_100, channels: 2, encoding };
     let feed = Arc::new(parking_lot::Mutex::new(None));
-    let mut sink = Sink::new(nori_player::burst::BUFFER_US, sound.on(), sound, RingTrack::new(Box::new(Hand(feed.clone(), device_rate))));
-    sink.set_stages(speed, 1.0, skip_silence);
+    let settings = ChainSettings { sound, speed, skip_silence, ..ChainSettings::default() };
+    let mut sink = Sink::new(nori_player::burst::BUFFER_US, settings, RingTrack::new(Box::new(Hand(feed.clone(), device_rate))));
     sink.configure(&1, Some(fmt));
     sink.play();
     let data = tone(1152, encoding);

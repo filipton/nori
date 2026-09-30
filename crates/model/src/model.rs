@@ -837,7 +837,7 @@ pub struct TransitionPrefs {
     pub fade_out_ms: i32,
 }
 
-pub use nori_player::transport::{ChainChange, Dip, Rebuild, Switch};
+pub use nori_player::transport::{Dip, Switch};
 
 #[cfg(feature = "ffi")]
 #[uniffi::remote(Enum)]
@@ -852,26 +852,6 @@ pub enum Switch {
 pub struct Dip {
     pub down_ms: i32,
     pub up_ms: i32,
-}
-
-#[cfg(feature = "ffi")]
-#[uniffi::remote(Record)]
-pub struct ChainChange {
-    pub offloaded: bool,
-    pub offload: bool,
-    pub offload_changed: bool,
-    pub usb: bool,
-    pub offload_refused: bool,
-    pub tempo_changed: bool,
-    pub processor_changed: bool,
-}
-
-#[cfg(feature = "ffi")]
-#[uniffi::remote(Enum)]
-pub enum Rebuild {
-    None,
-    Now,
-    AtBoundary,
 }
 
 pub use nori_player::dac::{DacBlock, DacMode};

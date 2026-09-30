@@ -44,27 +44,6 @@ fn seek_before_crossfade_bar_follows_audio() {
 }
 
 #[test]
-fn seek_before_crossfade_bar_follows_audio_tuning() {
-    // The same, with the equalizer screen open (bursting is off from the next boundary). The simulated
-    // output reads its clock fresh on every call, so the Android-only case - a clock read cached from
-    // before the mix was offered, fixed in burst.rs's `after_offer` - does not show here; this keeps the
-    // tuning path itself covered.
-    let (z, a, b) = (music(12.0, 5), music(43.0, 6), music(60.0, 7));
-    let mut p = Player::with_prefs(vec![track("z", &z), track("a", &a), track("b", &b)], crossfade(4));
-    p.set_tuning(true);
-    p.play_from(0);
-    p.run_for(14_000);
-    assert_eq!(shown(&mut p).0, 1, "past the first boundary, into a, with bursting off");
-    p.seek(30_000);
-    for k in 1..=12 {
-        p.run_for(250);
-        let (song, ms) = shown(&mut p);
-        assert_eq!(song, 1, "still a");
-        assert!((ms - (30_000 + k * 250)).abs() < 100, "{} ms after the seek the bar is at {ms}", k * 250);
-    }
-}
-
-#[test]
 fn crossfade_at_planned_boundary() {
     let (mut p, a, b, _) = player(12);
     p.play_from(0);

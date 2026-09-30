@@ -242,7 +242,6 @@ impl Crossfeed {
 
 /// Look-ahead peak limiter: the gain follows the incoming frame while output comes from the delay line.
 /// Below the knee the gain is exactly 1, so samples pass bit-exact (only delayed).
-#[derive(Clone)]
 struct Limiter {
     /// Ring of `frames * channels`.
     delay: Vec<f64>,
@@ -262,6 +261,19 @@ struct Limiter {
     gain: f64,
     /// Smallest gain in the last buffer (UI meter).
     meter: f64,
+}
+
+/// `clone_from` keeps the delay line's memory (the sink copies the chain's state without allocating).
+impl Clone for Limiter {
+    fn clone(&self) -> Self {
+        Limiter { delay: self.delay.clone(), ..*self }
+    }
+
+    fn clone_from(&mut self, o: &Self) {
+        let mut delay = std::mem::take(&mut self.delay);
+        delay.clone_from(&o.delay);
+        *self = Limiter { delay, ..*o };
+    }
 }
 
 impl Limiter {
@@ -375,7 +387,6 @@ impl Loud {
 const CHANGE_FADE_MS: f64 = 10.0;
 
 /// One configuration of the chain with its state; two run side by side during a change fade.
-#[derive(Clone)]
 struct Stages {
     channels: usize,
     /// Only bands that change something.
@@ -397,6 +408,22 @@ struct Stages {
     /// Volume boost, linear.
     boost: f64,
     limiter: Option<Limiter>,
+}
+
+/// `clone_from` keeps the memory of every buffer.
+impl Clone for Stages {
+    fn clone(&self) -> Self {
+        Stages { filters: self.filters.clone(), state: self.state.clone(), virtualizer: self.virtualizer.clone(), limiter: self.limiter.clone(), ..*self }
+    }
+
+    fn clone_from(&mut self, o: &Self) {
+        let (mut filters, mut state, mut virtualizer, mut limiter) = (std::mem::take(&mut self.filters), std::mem::take(&mut self.state), self.virtualizer.take(), self.limiter.take());
+        filters.clone_from(&o.filters);
+        state.clone_from(&o.state);
+        virtualizer.clone_from(&o.virtualizer);
+        limiter.clone_from(&o.limiter);
+        *self = Stages { filters, state, virtualizer, limiter, ..*o };
+    }
 }
 
 impl Stages {
@@ -542,6 +569,20 @@ pub struct Equalizer {
     dither: Dither,
 }
 
+/// `clone_from` keeps the memory of both chains.
+impl Clone for Equalizer {
+    fn clone(&self) -> Self {
+        Equalizer { now: self.now.clone(), was: self.was.clone(), ..*self }
+    }
+
+    fn clone_from(&mut self, o: &Self) {
+        self.now.clone_from(&o.now);
+        self.was.clone_from(&o.was);
+        let Equalizer { rate, channels, now: _, was: _, fade, fade_len, live, dither } = *o;
+        (self.rate, self.channels, self.fade, self.fade_len, self.live, self.dither) = (rate, channels, fade, fade_len, live, dither);
+    }
+}
+
 /// Left and right gain for a balance in -1 (hard left) to 1 (hard right).
 fn balance_gains(balance: f64) -> (f64, f64) {
     let b = finite(balance, 0.0).clamp(-1.0, 1.0);
@@ -601,6 +642,11 @@ impl Equalizer {
         if delay as usize != lookahead.unwrap_or(0) && delay > 0 || self.fade.is_none() && !self.now.sounds_like(&self.was) {
             self.fade = Some(-delay);
         }
+    }
+
+    /// Samples have passed through the chain this replaces: changes fade from the first.
+    pub fn continuing(&mut self) {
+        self.live = true;
     }
 
     /// `crossfeed_db` 0 turns crossfeed off; typical values are 3 to 6.

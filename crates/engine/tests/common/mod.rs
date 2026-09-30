@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 
 pub mod card;
+pub mod reference;
 
 use std::sync::Arc;
 use std::thread::Thread;

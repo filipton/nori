@@ -1,7 +1,6 @@
 //! Feeding the output in bursts: [`Fed`] lets the deep output buffer ([`BUFFER_US`]) drain to
 //! [`LOW_US`], then fills it to the top, so the audio path sleeps between bursts instead of waking for
-//! every decoder buffer. Refused offers never reach the output. With bursting off (offload, tuning)
-//! offers pass straight through.
+//! every decoder buffer. Refused offers never reach the output.
 
 use crate::engine::Downstream;
 use crate::pcm::Format;
@@ -16,8 +15,6 @@ const JUMP_US: i64 = 250_000;
 /// Burst state kept between calls.
 #[derive(Debug, Clone)]
 pub struct Burst {
-    /// Off: every offer goes straight through (offload, or low latency while tuning the equalizer).
-    pub enabled: bool,
     filling: bool,
     /// Audio in the output = written - played, counted from bytes written and clock movement, never from
     /// timestamps (a mix's timestamps jump ahead by the mix length).
@@ -32,7 +29,7 @@ pub struct Burst {
 
 impl Default for Burst {
     fn default() -> Self {
-        Burst { enabled: true, filling: true, written_us: 0, played_us: 0, last_position: None, last_read_ms: 0, format: None, bytes_written: 0 }
+        Burst { filling: true, written_us: 0, played_us: 0, last_position: None, last_read_ms: 0, format: None, bytes_written: 0 }
     }
 }
 
@@ -108,12 +105,6 @@ impl<D: Downstream> Downstream for Fed<'_, D> {
     }
 
     fn handle_buffer(&mut self, data: &[u8], from: usize, pts_us: i64) -> (bool, usize) {
-        if !self.burst.enabled {
-            let r = self.down.handle_buffer(data, from, pts_us);
-            self.after_offer(r.1);
-            self.burst.bytes_written += r.1 as u64;
-            return r;
-        }
         if !self.burst.filling {
             // No clock (stopped, never played, restarted): feed rather than wait forever.
             let (position, now) = (self.clock(), self.now_ms);
@@ -230,15 +221,5 @@ mod tests {
         let before = t.offers;
         assert!(!offer(&mut t, &mut b, 110));
         assert_eq!(t.offers, before);
-    }
-
-    #[test]
-    fn disabled_passes_through_and_counts() {
-        let (mut t, mut b) = (Track { cap_us: 3_600_000_000, written_us: 0, played_us: 0, offers: 0 }, Burst { enabled: false, ..Burst::default() });
-        for i in 0..50 {
-            assert!(offer(&mut t, &mut b, i));
-        }
-        assert_eq!(t.offers, 50);
-        assert_eq!(b.bytes_written as usize, 50 * FMT.bytes(26_000));
     }
 }

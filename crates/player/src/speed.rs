@@ -25,6 +25,7 @@ pub fn nominal_playout_us(speed: f32, media_us: i64) -> i64 {
     (media_us as f64 / speed as f64) as i64
 }
 
+#[derive(Clone)]
 enum Engine {
     Short(Sonic<i16>),
     Float(Sonic<f32>),
@@ -41,6 +42,23 @@ pub struct SpeedPitch {
     output_bytes: u64,
     staged_i16: Vec<i16>,
     staged_f32: Vec<f32>,
+}
+
+/// `clone_from` keeps the buffers' memory (the sink copies the chain's state without allocating).
+impl Clone for SpeedPitch {
+    fn clone(&self) -> Self {
+        SpeedPitch { engine: self.engine.clone(), staged_i16: Vec::new(), staged_f32: Vec::new(), ..*self }
+    }
+
+    fn clone_from(&mut self, o: &Self) {
+        match (&mut self.engine, &o.engine) {
+            (Engine::Short(a), Engine::Short(b)) => a.clone_from(b),
+            (Engine::Float(a), Engine::Float(b)) => a.clone_from(b),
+            (a, b) => *a = b.clone(),
+        }
+        let SpeedPitch { rate, ch, enc, speed, pitch, engine: _, input_bytes, output_bytes, staged_i16: _, staged_f32: _ } = *o;
+        (self.rate, self.ch, self.enc, self.speed, self.pitch, self.input_bytes, self.output_bytes) = (rate, ch, enc, speed, pitch, input_bytes, output_bytes);
+    }
 }
 
 impl SpeedPitch {
@@ -62,10 +80,14 @@ impl SpeedPitch {
         p
     }
 
-    /// Takes effect at the next [`SpeedPitch::flush`]. Invalid values mean 1.
+    /// From the next input on; what is queued plays on. Invalid values mean 1.
     pub fn set(&mut self, speed: f32, pitch: f32) {
         self.speed = if speed > 0.0 && speed.is_finite() { speed } else { 1.0 };
         self.pitch = if pitch > 0.0 && pitch.is_finite() { pitch } else { 1.0 };
+        match &mut self.engine {
+            Engine::Short(s) => s.set(self.speed, self.pitch),
+            Engine::Float(s) => s.set(self.speed, self.pitch),
+        }
     }
 
     pub fn active(&self) -> bool {

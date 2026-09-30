@@ -10,12 +10,12 @@
 //! With an [`OffloadOutput`] and nothing that touches samples, songs go to the output's decoder as
 //! packets and the thread sleeps minutes between top-ups. Offload starts at the playback position behind a dip,
 //! or at the next song when the current one is not decodable there, and stops at once when something
-//! needs the samples.
+//! needs the samples: the song is opened [`REMAKE_LEAD_MS`] ahead of the output's decoder first, so the
+//! handover behind its dip is never a gap.
 //!
-//! A change to the sound while the CPU plays (equalizer, limiter, speed, silence skipping, high quality
-//! output, tuning's shallow buffer) remakes what the ring and device hold from the playback position, behind
-//! a 30 ms dip, at most every 150 ms. The song is opened [`REMAKE_LEAD_MS`] ahead of playback first,
-//! while the output plays on, so reopening it is never heard as a gap; leaving offload works the same way.
+//! A change to the sound while the CPU plays (equalizer, limiter, speed, silence skipping, ReplayGain)
+//! is heard from the first frame the output can still replace (`nori_player::sink`), at most every
+//! [`CHAIN_EVERY_MS`].
 
 use std::collections::VecDeque;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
@@ -25,7 +25,7 @@ use std::thread::{JoinHandle, Thread};
 use std::time::{Duration, Instant};
 
 use nori_player::pcm::Encoding;
-use nori_player::pipeline::{App, Player, Queue, Reading, Songs, Sound, Track};
+use nori_player::pipeline::{App, ChainSettings, Player, Queue, Reading, Songs, Sound};
 use nori_player::playlist::Playlist;
 use nori_player::policy::{audio_policy, offload_blocked, AudioPrefs, OutputState};
 use nori_player::queue::previous_restarts;
@@ -36,7 +36,7 @@ use crate::clock::{Clock, Monotonic};
 use crate::demux::Demuxed;
 use crate::library::{Library, Sources};
 use crate::offload::{Offload, OffloadOutput, OnCpu, Step, Tail};
-use crate::output::{AudioOutput, Device, RingTrack, SHALLOW_US, WAKE_LOW_US};
+use crate::output::{AudioOutput, Device, RingTrack, WAKE_LOW_US};
 use crate::panic_words;
 
 /// The sound and controls the settings ask for.
@@ -248,8 +248,8 @@ enum Switched {
     Next,
     Previous,
     Seek(i64),
-    /// Remake the music from the playback position ([`Worker::resound_soon`]), or hand it to the output's decoder.
-    Resound,
+    /// Hand the song between the CPU and the output's decoder.
+    Hand,
 }
 
 /// A fade down to silence, the switches made at its bottom, and the fade back up.
@@ -266,8 +266,8 @@ impl Dip {
         self.then.iter().filter(|s| matches!(s, Switched::To(..) | Switched::Next | Switched::Previous)).count()
     }
 
-    fn resounds(&self) -> bool {
-        self.then.iter().any(|s| matches!(s, Switched::Resound))
+    fn hands(&self) -> bool {
+        self.then.iter().any(|s| matches!(s, Switched::Hand))
     }
 }
 
@@ -361,8 +361,7 @@ impl Engine {
                     }
                 }));
                 let songs = Sources::new(library, load_control(config.memory_mb), clock.waits(), me);
-                let mut player = Player::build(songs, queue, app, RingTrack::new(output));
-                player.shallow_us = SHALLOW_US;
+                let player = Player::build(songs, queue, app, RingTrack::new(output));
                 Worker::new(player, offload.map(Offload::new), rx, events, shared, config.settings, config.idle_release_ms, config.watch, clock).run();
             })
             .expect("a thread for the engine");
@@ -479,8 +478,8 @@ impl Engine {
         self.send(Command::Gain);
     }
 
-    /// The equalizer screen opened (`true`) or closed: the output is kept shallow while it is open, so a
-    /// band moved is heard at once (`nori_player::transport::Chain::tuning`).
+    /// The equalizer screen opened (`true`) or closed: the device is kept shallow while it is open, so a
+    /// band moved is heard without it dropping what it holds.
     pub fn set_tuning(&self, on: bool) {
         self.send(Command::Tuning(on));
     }
@@ -578,21 +577,20 @@ struct Worker<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> {
     ids: Vec<String>,
     /// Music was heard since the offload path started (ends a run of failing songs).
     offload_heard: bool,
-    /// The current CPU song opened as packets now that offload is wanted (queue index, the opening,
-    /// whether the settings change also changed the sound).
-    entering: Option<(usize, Result<Demuxed, String>, bool)>,
-    /// The output decodes the current song: the next `Switched::Resound` hands it over.
+    /// The current CPU song opened as packets now that offload is wanted (queue index, the opening).
+    entering: Option<(usize, Result<Demuxed, String>)>,
+    /// The output decodes the current song: the next `Switched::Hand` hands it over.
     offload_now: bool,
-    /// When the music is to be remade ([`Worker::resound_soon`]), and when it last was.
-    resound_due: Option<i64>,
-    resounded_at: i64,
+    /// Chain settings waiting for [`CHAIN_EVERY_MS`] since the last change, and when that was.
+    chain_wanted: Option<ChainSettings>,
+    chain_at: i64,
     /// Say [`Event::Placed`] at the next report.
     placed_due: bool,
     /// Say [`Event::Position`] at the next report.
     seek_landed: bool,
     /// The song plays at a mix's tempo: [`Event::Placed`] is said when it is back at its own.
     stretched: bool,
-    remake: Option<Remake>,
+    takeover: Option<Takeover>,
     /// Panicked turns within the last [`PANICS_WITHIN_MS`].
     panics: VecDeque<i64>,
     /// Where the position stands still while music should move ([`Worker::restart_if_stalled`]).
@@ -605,11 +603,10 @@ struct Worker<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> {
     awake: bool,
 }
 
-/// The current song opened ahead of playback, to remake the music from there ([`Worker::remake`]) while
-/// the output plays what it holds.
-struct Remake {
-    /// The song's queue index and id.
-    index: usize,
+/// The offloaded song opened on the CPU ahead of the output's decoder, to take it over from there
+/// ([`Worker::follow_takeover`]) while the output plays on.
+struct Takeover {
+    /// The song's id.
     id: String,
     from_ms: i64,
     r: Demuxed,
@@ -617,8 +614,6 @@ struct Remake {
     ready: bool,
     /// When the dip starts, so playback is at `from_ms` at its bottom (engine ms).
     dip_at: i64,
-    /// Takes the song over from the output's decoder.
-    leaving: bool,
 }
 
 enum Turn {
@@ -655,26 +650,13 @@ struct Stall {
 const STALL_US: i64 = 200_000;
 /// A track torn down this many times gives offload up for the engine's life.
 const TEAR_DOWNS: u32 = 2;
-/// The dip the music is remade behind, down and up, ms: no click, and too short to notice.
-const RESOUND_DIP_MS: i64 = 30;
-/// Sound changes closer together than this (a slider dragged) are remade together.
-const RESOUND_EVERY_MS: i64 = 150;
-/// Most music the ring and device may hold while tuned for a band moved to be heard as it is; more is
-/// left from the deep buffer and is remade.
-const TUNED_HELD_US: i64 = 400_000;
-/// Room for the device's own latency beyond the shallow ring and shallow device.
-const TUNED_SLACK_US: i64 = 160_000;
-/// The equalizer screen turns tuning on with its first change, which may reach the engine first and be
-/// remade into the deep buffer: tuning within this of a remake remakes once more, into the shallow one.
-const TUNED_AFTER_RESOUND_MS: i64 = 1_000;
-/// A device holding more than this keeps enough of the old ReplayGain level to hear: remade.
-const HELD_US: i64 = 250_000;
-/// How far ahead of playback the song is opened for a remake. The output plays on meanwhile and is
-/// emptied behind the dip once playback gets there, so reopening the song is never a gap.
+/// The dip a song is handed between the CPU and the output's decoder behind, down and up, ms.
+const HAND_DIP_MS: i64 = 30;
+/// Chain changes closer together than this (a slider dragged) are made together: each makes up to the
+/// whole buffer again.
+const CHAIN_EVERY_MS: i64 = 100;
+/// How far ahead of the output's decoder the CPU opens an offloaded song it takes over.
 pub const REMAKE_LEAD_MS: i64 = 120;
-/// While a song is opened ahead, the current one is not read on while the output holds this much: the
-/// two would pull the same song's fetch back and forth.
-const REMAKE_HOLD_US: i64 = 1_000_000;
 
 impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E, C> {
     #[allow(clippy::too_many_arguments)]
@@ -720,12 +702,12 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             offload_heard: false,
             entering: None,
             offload_now: false,
-            resound_due: None,
+            chain_wanted: None,
+            chain_at: i64::MIN / 2,
             placed_due: false,
             seek_landed: false,
             stretched: false,
-            resounded_at: i64::MIN / 2,
-            remake: None,
+            takeover: None,
             panics: VecDeque::new(),
             stall: None,
             restarted: None,
@@ -803,7 +785,6 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         let now = self.now();
         self.due(now);
         self.follow_gain();
-        self.follow_depth();
         if self.p.app.measured() {
             self.replan();
         }
@@ -815,8 +796,6 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             if self.p.playing() && !self.p.source_ended() && self.p.sink.track.filled_us() <= WAKE_LOW_US {
                 self.p.burst.restart();
             }
-            // A song opened ahead for a remake reads alone while the output holds enough.
-            self.p.read_held = self.remake.as_ref().is_some_and(|m| !m.leaving) && self.held_us() > REMAKE_HOLD_US;
             self.p.turn(now);
             self.follow_offload_now();
             self.follow_offload_ahead();
@@ -838,7 +817,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         let sleeps = self.state == State::Playing
             && self.pause_at.is_none()
             && self.dip.is_none()
-            && self.remake.is_none()
+            && self.takeover.is_none()
             && self.entering.is_none()
             && self.probe.is_none()
             && self.handing_over.is_none()
@@ -862,7 +841,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
 
     /// Some song's bytes are awaited (for a test clock, which stands still meanwhile).
     fn waiting_for_bytes(&self) -> bool {
-        self.p.waiting_for_bytes() || self.entering.is_some() || self.remake.as_ref().is_some_and(|m| !m.ready) || self.probe.as_ref().is_some_and(|p| p.2.is_none()) || self.off.as_ref().is_some_and(Offload::waiting_for_bytes)
+        self.p.waiting_for_bytes() || self.entering.is_some() || self.takeover.as_ref().is_some_and(|m| !m.ready) || self.probe.as_ref().is_some_and(|p| p.2.is_none()) || self.off.as_ref().is_some_and(Offload::waiting_for_bytes)
     }
 
     // ---- the CPU and offload paths as one player ----
@@ -905,7 +884,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     fn jump_now(&mut self, i: usize, ms: i64) {
         self.probe = None;
         self.handing_over = None;
-        self.remake = None;
+        self.takeover = None;
         if self.offload && self.off.is_some() {
             if !self.offloading() {
                 // Never both outputs open at once.
@@ -962,7 +941,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
 
     /// Releases the CPU's device, keeping the place for the next play.
     fn park(&mut self) {
-        self.remake = None;
+        self.takeover = None;
         if self.released.is_none() {
             self.released = self.p.release();
             self.p.sink.track.release();
@@ -1097,7 +1076,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     /// Drops everything held for the music (openings, pending switches, readers, outputs), keeping the
     /// place in the queue.
     fn let_go_of_everything(&mut self) {
-        self.remake = None;
+        self.takeover = None;
         self.probe = None;
         self.entering = None;
         self.offload_now = false;
@@ -1105,7 +1084,6 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             self.p.pause_at_end(false);
         }
         self.dip = None;
-        self.resound_due = None;
         self.pause_at = None;
         self.held = None;
         self.stall = None;
@@ -1143,7 +1121,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         }
         if playing && self.p.stopped_at().is_none() && self.current().is_some() {
             self.go_on();
-            self.ramp(Some(0.0), 1.0, RESOUND_DIP_MS);
+            self.ramp(Some(0.0), 1.0, HAND_DIP_MS);
             self.set_state(State::Playing);
         }
     }
@@ -1298,23 +1276,9 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         }
     }
 
-    /// The equalizer screen opened or closed: the output goes shallow (or deep) now, behind a dip,
-    /// rather than at the next song. An output that [`AudioOutput::resizes`] changes depth in place and
-    /// nothing is remade.
+    /// The equalizer screen opened or closed: the device holds a fraction of a second while it is open.
     fn tune(&mut self, on: bool) {
-        self.p.set_tuning(on);
-        if self.p.sink.track.resizes() {
-            self.follow_depth();
-            // The change that turned tuning on was just remade into the deep buffer: again, shallow.
-            if self.p.chain.tuning && self.now() - self.resounded_at <= TUNED_AFTER_RESOUND_MS && self.held_us() > self.tuned_held_us() {
-                self.resound_soon();
-            }
-            return;
-        }
-        let wanted = if self.p.chain.tuning { self.p.shallow_us } else { nori_player::burst::BUFFER_US };
-        if self.p.sink.capacity_us != wanted {
-            self.resound_soon();
-        }
+        self.p.sink.track.shallow(on);
     }
 
     /// The queue changed: the offload path finds its songs again, and restarts at the playback position when a
@@ -1382,125 +1346,87 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             self.p.tracks.encoding = encoding;
             self.p.sink.track.exact = policy.untouched;
             self.p.gain_off = bit_perfect;
-            // The chain stays in (skipped while flat) so switching it on is heard at once.
-            self.p.keep_chain(!policy.untouched);
             self.p.engine.lock_rate = policy.lock_rate;
             self.p.app.transitions_off(policy.transitions_off);
             if was.bit_perfect != now.bit_perfect {
                 self.gain_changed = true;
             }
         }
-        if was.sound != now.sound {
-            self.p.set_sound(now.sound.clone());
-        }
-        if was.speed != now.speed {
-            self.p.set_speed(s.speed, s.pitch);
-        }
-        if was.skip_silence != now.skip_silence {
-            self.p.set_skip_silence(now.skip_silence);
-        }
-        // What the output holds was made under the old settings.
-        let heard_differently = !first && was != now;
-        let sound_only = was.sound != now.sound && Applied { sound: now.sound.clone(), ..was.clone() } == now;
+        // The equalizer stays in (flat) but for bit-perfect output, so switching it on is a change of settings.
+        self.chain_wanted = Some(ChainSettings { sound: now.sound.clone(), speed: s.speed, pitch: s.pitch, skip_silence: now.skip_silence, keep_eq: !policy.untouched });
         // The plan out of the current song was made under the old transition settings.
         let replan = first || was.untouched != now.untouched || (self.settings.crossfade_s, self.settings.auto_mix) != (s.crossfade_s, s.auto_mix);
         self.applied = Some(now);
         self.settings = s;
-        let restarted = self.follow_offload(policy.offload, heard_differently);
+        self.follow_chain(self.now());
+        self.follow_offload(policy.offload);
         if replan {
             self.replan();
         }
-        if heard_differently && !restarted {
-            // Tuned, the output is shallow and a band moved is heard as it is, unless it still holds
-            // seconds from before it was made shallow in place.
-            let tuned = self.p.chain.tuning && self.p.sink.capacity_us == self.p.shallow_us && self.held_us() <= self.tuned_held_us();
-            match self.entering.as_mut() {
-                // Offloaded at the playback position, or remade there if it stays on the CPU.
-                Some(e) => e.2 = true,
-                None if sound_only && tuned => {}
-                None => self.resound_soon(),
-            }
+    }
+
+    /// Applies the chain settings asked for, while music plays at most every [`CHAIN_EVERY_MS`].
+    fn follow_chain(&mut self, now: i64) {
+        if self.chain_wanted.is_none() || (self.p.playing() && now < self.chain_at + CHAIN_EVERY_MS) {
+            return;
+        }
+        let c = self.chain_wanted.take().expect("checked");
+        if *self.p.sink.settings() != c {
+            self.p.set_chain(c);
+            self.chain_at = now;
         }
     }
 
-    /// Asks for the transition plan out of the current song again. The output runs seconds ahead, so
-    /// when the song's ending is already made under the old plan it is remade from the playback position. A
-    /// mix already audible plays out as it began.
+    /// Asks for the transition plan out of the current song again; on the CPU an ending already made
+    /// otherwise is made again ([`Player::replan_ending`]).
     fn replan(&mut self) {
-        self.p.engine.replan();
-        if self.offloading() || self.p.mixing() {
-            return;
-        }
-        let Some((cur, ear_ms)) = self.p.ear() else { return };
-        let id = self.p.id_at(cur);
-        if self.p.read_astray(cur) {
-            // Read on gaplessly into a song that no longer follows.
-            self.p.app.log(&format!("the ending of {id} is made again: another song follows it now"));
-            self.resound_soon();
+        if self.offloading() {
+            self.p.engine.replan();
             return;
         }
         let now = self.now();
-        self.p.app.clock(now);
-        let plan = self.p.app.plan_for(&id);
-        let Some(made) = self.p.ending_made(cur, plan.as_ref().map(|p| p.out_start_us)) else { return };
-        if made == plan {
-            return;
-        }
-        // Gapless so far, and playback past where the new mix would have ended: nothing to remake.
-        let ear_us = ear_ms * 1000;
-        if made.is_none() && plan.as_ref().is_some_and(|p| ear_us >= p.out_start_us + p.duration_us) {
-            return;
-        }
-        self.p.app.log(&format!(
-            "the ending of {id} is made again: {} now, {} as it was made",
-            plan.as_ref().map_or("gapless".to_string(), |p| format!("a mix from {} ms", p.out_start_us / 1000)),
-            made.as_ref().map_or("gapless".to_string(), |p| format!("a mix from {} ms", p.out_start_us / 1000)),
-        ));
-        self.resound_soon();
+        self.p.now_ms = now;
+        self.p.replan_ending();
     }
 
-    /// Offload became allowed or not. Leaving is immediate, at the playback position. Entering happens where the
-    /// ear is behind a dip once the current song is known to be decodable (else at the next song that
-    /// is). `resound`: the sound changed too, so a song staying on the CPU is remade. Returns whether the
-    /// CPU took the song over (already made with the new settings).
-    fn follow_offload(&mut self, wanted: bool, resound: bool) -> bool {
+    /// Offload became allowed or not. Leaving is at the playback position. Entering happens where the ear
+    /// is behind a dip once the current song is known to be decodable (else at the next song that is).
+    fn follow_offload(&mut self, wanted: bool) {
         let was = std::mem::replace(&mut self.offload, wanted);
         self.status.lock().offload_wanted = wanted;
         if was == wanted {
-            return false;
+            return;
         }
         self.probe = None;
         self.entering = None;
-        self.remake = None;
+        self.takeover = None;
         if !wanted {
             if self.handing_over.take().is_some() {
                 self.p.pause_at_end(false);
             }
             if self.offloading() {
-                return self.leave_chip();
+                self.leave_chip();
             }
         } else if !self.p.playing() && self.p.current().is_some() && self.held.is_none() {
             self.park();
         } else if let Some(i) = self.p.current().filter(|_| self.p.playing() && !self.offloading()) {
             // Opened as packets to see whether the output decodes it.
             let id = self.p.id_at(i);
-            self.entering = Some((i, self.p.tracks.open_packets(&id, 0, true), resound));
+            self.entering = Some((i, self.p.tracks.open_packets(&id, 0, true)));
         }
-        false
     }
 
     /// Hands the offloaded song to the CPU. While the offload track can play on (playing, no USB, track not
     /// refused), the CPU opens the song ahead first so the handover is a dip, not a gap.
-    fn leave_chip(&mut self) -> bool {
+    fn leave_chip(&mut self) {
         let playing = self.state == State::Playing && self.pause_at.is_none();
-        if playing && !self.facts.usb && !self.offload_refused && self.leave_ahead() {
-            return true;
+        if !(playing && !self.facts.usb && !self.offload_refused && self.leave_ahead()) {
+            self.leave_now();
         }
-        self.leave_now()
     }
 
-    /// Opens the offloaded song on the CPU [`REMAKE_LEAD_MS`] ahead of the offload track; the CPU takes over there
-    /// once it is open ([`Worker::remake`]).
+    /// Opens the offloaded song on the CPU [`REMAKE_LEAD_MS`] ahead of the offload track; the CPU takes
+    /// over there once it is open ([`Worker::follow_takeover`]).
     fn leave_ahead(&mut self) -> bool {
         let Some((i, ms, _)) = self.off.as_mut().and_then(Offload::heard) else { return false };
         let id = self.p.id_at(i);
@@ -1509,10 +1435,9 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         if length <= 0 || from_ms + REMAKE_LEAD_MS >= length {
             return false;
         }
-        let now = self.now();
-        if !self.open_remake(i, id, from_ms, now + REMAKE_LEAD_MS - RESOUND_DIP_MS, true) {
-            return false;
-        }
+        let Ok(r) = self.p.tracks.open(&id, from_ms) else { return false };
+        let dip_at = self.now() + REMAKE_LEAD_MS - HAND_DIP_MS;
+        self.takeover = Some(Takeover { id, from_ms, r, ready: false, dip_at });
         self.p.app.log("offload given up: the CPU takes over once the song is open");
         true
     }
@@ -1528,7 +1453,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         if self.entering.as_mut().is_some_and(|e| e.1.as_mut().is_ok_and(|r| !r.ready())) {
             return;
         }
-        let (i, opened, resound) = self.entering.take().expect("checked");
+        let (i, opened) = self.entering.take().expect("checked");
         let level = self.gain_of(i);
         let Worker { p, off, .. } = self;
         let Some(off) = off.as_mut() else { return };
@@ -1539,96 +1464,15 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             }
             Err(_) => Some(OnCpu::Unread),
         };
-        let taken = why.is_none();
-        if let Some(why) = why {
-            off.on_cpu = Some(why);
+        match why {
+            Some(why) => off.on_cpu = Some(why),
+            None => {
+                self.p.app.log("offload takes over where the ear is");
+                self.offload_now = true;
+                let now = self.now();
+                self.dip_down(now, HAND_DIP_MS, HAND_DIP_MS).then.push(Switched::Hand);
+            }
         }
-        if taken {
-            self.p.app.log("offload takes over where the ear is");
-            self.offload_now = true;
-            self.resound_due = Some(self.now());
-        } else if resound {
-            self.resound_soon();
-        }
-    }
-
-    /// Most the ring and device may hold while tuned for a band moved to be heard as it is: the shallow
-    /// ring, the shallow device as it reports its needs (a Bluetooth latency) and slack.
-    fn tuned_held_us(&self) -> i64 {
-        let device = self.p.sink.track.shallow_depth().map_or(0, |d| d.device_us);
-        TUNED_HELD_US.max(device + self.p.shallow_us + TUNED_SLACK_US)
-    }
-
-    /// While tuned over a device that resizes in place, keeps the ring as deep as the device reports it
-    /// needs ([`AudioOutput::shallow_depth`]), never under [`SHALLOW_US`].
-    fn follow_depth(&mut self) {
-        if !self.p.chain.tuning || !self.p.sink.track.resizes() {
-            return;
-        }
-        let ring = self.p.sink.track.shallow_depth().map_or(SHALLOW_US, |d| d.ring_us.max(SHALLOW_US));
-        if ring != self.p.shallow_us {
-            self.p.app.log(&format!("the shallow ring follows the device: {} ms", ring / 1000));
-            self.p.set_shallow_us(ring);
-        }
-    }
-
-    /// Music made and not yet heard (ring and device), µs.
-    fn held_us(&self) -> i64 {
-        let track = &self.p.sink.track;
-        track.filled_us() + track.latency_us()
-    }
-
-    /// The sound changed while the CPU plays: what the output holds is remade from the playback position,
-    /// behind a short dip, at most every [`RESOUND_EVERY_MS`]. Paused, it is remade on resume.
-    fn resound_soon(&mut self) {
-        if self.offloading() || self.p.current().is_none() {
-            return;
-        }
-        if !self.p.playing() {
-            self.p.resound();
-            return;
-        }
-        if self.dip.as_ref().is_some_and(Dip::resounds) {
-            // The remake at the dip's bottom includes this change.
-            return;
-        }
-        let at = self.now().max(self.resounded_at + RESOUND_EVERY_MS);
-        self.resound_due = Some(self.resound_due.map_or(at, |t| t.min(at)));
-    }
-
-    /// Starts a remake now: the song opened ahead, or the dip going down (`Switched::Resound`).
-    fn resound(&mut self, now: i64) {
-        if let Some(t) = self.pause_at {
-            // Paused at the fade's end, then remade on resume.
-            self.resound_due = Some(t);
-            return;
-        }
-        self.resound_due = None;
-        if self.offloading() || self.p.current().is_none() {
-            return;
-        }
-        if !self.p.playing() {
-            self.p.resound();
-            return;
-        }
-        if self.p.mixing() {
-            // Not cutting an audible mix off: after it.
-            self.resound_due = Some(now + 250);
-            return;
-        }
-        if self.dip.as_ref().is_some_and(Dip::resounds) || self.remake.is_some() {
-            // A remake under way includes this change.
-            return;
-        }
-        if self.dip.is_none() && !self.offload_now && self.open_ahead(now) {
-            return;
-        }
-        self.dip_for_resound(now);
-    }
-
-    /// Fades down now and remakes the music at the bottom ([`Worker::resounded`]).
-    fn dip_for_resound(&mut self, now: i64) {
-        self.dip_down(now, RESOUND_DIP_MS, RESOUND_DIP_MS).then.push(Switched::Resound);
     }
 
     /// The dip under way, or a new one fading down now over `down_ms`.
@@ -1640,117 +1484,39 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         self.dip.as_mut().expect("set above")
     }
 
-    /// Opens the current song [`REMAKE_LEAD_MS`] ahead of playback to remake from there
-    /// ([`Worker::remake`]). False for a song of unknown length (a live stream) or at its very end.
-    fn open_ahead(&mut self, now: i64) -> bool {
-        let Some((i, ms)) = self.p.ear_now() else { return false };
-        let speed = self.p.speed().0.clamp(0.1, 8.0) as f64;
-        let from_ms = ms + (REMAKE_LEAD_MS as f64 * speed) as i64;
-        let id = self.p.id_at(i);
-        let length = self.p.tracks.about(&id).duration_ms;
-        if length <= 0 || from_ms + REMAKE_LEAD_MS >= length {
-            return false;
-        }
-        self.open_remake(i, id, from_ms, now + REMAKE_LEAD_MS - RESOUND_DIP_MS, false)
-    }
-
-    fn open_remake(&mut self, index: usize, id: String, from_ms: i64, dip_at: i64, leaving: bool) -> bool {
-        match self.p.tracks.open(&id, from_ms) {
-            Ok(r) => {
-                self.remake = Some(Remake { index, id, from_ms, r, ready: false, dip_at, leaving });
-                true
-            }
-            Err(_) => false,
-        }
-    }
-
-    /// Follows the song opened ahead: once open and playback is a dip away from its start, the dip goes
-    /// down and the output is refilled from it ([`Worker::resounded`]). Dropped when playback moved to
-    /// another song or it would not open; paused, the music is remade on resume.
-    fn remake(&mut self, now: i64) {
-        let Some(m) = self.remake.as_ref() else { return };
-        if self.dip.as_ref().is_some_and(Dip::resounds) {
+    /// Follows the offloaded song opened ahead on the CPU: once open and the output's decoder is a dip
+    /// away from its start, the dip goes down and the CPU takes over at its bottom
+    /// ([`Worker::take_over`]). Paused, the handover is made at once.
+    fn follow_takeover(&mut self, now: i64) {
+        if self.takeover.is_none() || self.dip.as_ref().is_some_and(Dip::hands) || self.pause_at.is_some() {
             return;
         }
-        if m.leaving {
-            if !self.offloading() {
-                self.remake = None;
-                return;
-            }
-            if self.pause_at.is_some() {
-                return;
-            }
-            if !self.playing() {
-                // Paused offloaded: nothing to hear of the handover.
-                self.remake = None;
-                self.leave_now();
-                return;
-            }
-        } else if self.offloading() || self.pause_at.is_some() {
-            if self.pause_at.is_none() {
-                self.remake = None;
-            }
-            return;
-        } else if !self.p.playing() {
-            self.remake = None;
-            self.p.resound();
+        if !self.offloading() {
+            self.takeover = None;
             return;
         }
-        let m = self.remake.as_mut().expect("checked");
-        if !m.ready {
-            m.ready = m.r.ready();
-            if !m.ready {
+        if !self.playing() {
+            // Paused offloaded: nothing to hear of the handover.
+            self.takeover = None;
+            self.leave_now();
+            return;
+        }
+        let t = self.takeover.as_mut().expect("checked");
+        if !t.ready {
+            t.ready = t.r.ready();
+            if !t.ready {
                 // Its loader wakes the thread.
                 return;
             }
-            if m.r.error().is_some() {
-                // Remade at the playback position instead.
-                let leaving = m.leaving;
-                self.remake = None;
-                if leaving {
-                    self.leave_now();
-                } else {
-                    self.dip_for_resound(now);
-                }
+            if t.r.error().is_some() {
+                self.takeover = None;
+                self.leave_now();
                 return;
             }
         }
-        if self.dip.is_some() || now < m.dip_at {
-            return;
+        if self.dip.is_none() && now >= t.dip_at {
+            self.dip_down(now, HAND_DIP_MS, HAND_DIP_MS).then.push(Switched::Hand);
         }
-        if !m.leaving {
-            let (from_ms, index) = (m.from_ms, m.index);
-            match self.p.ear_now() {
-                Some((i, _)) if i != index => {
-                    // Playback moved into the next song: open again there.
-                    self.remake = None;
-                    self.resound_soon();
-                    return;
-                }
-                Some((_, ms)) => {
-                    let speed = self.p.speed().0.clamp(0.1, 8.0) as f64;
-                    let short = ((from_ms - ms) as f64 / speed) as i64 - RESOUND_DIP_MS;
-                    if short > 1 {
-                        // Playback is behind the estimate (the output's clock settling): wait a moment.
-                        if let Some(m) = self.remake.as_mut() {
-                            m.dip_at = now + short;
-                        }
-                        return;
-                    }
-                }
-                None => {
-                    self.remake = None;
-                    return;
-                }
-            }
-            if self.p.mixing() {
-                // Not cutting an audible mix off: after it.
-                self.remake = None;
-                self.resound_due = Some(now + 250);
-                return;
-            }
-        }
-        self.dip_for_resound(now);
     }
 
     /// Plays from where the player is, fading in if the settings say so.
@@ -1871,7 +1637,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
                 }
             }
             // Paused, the music is remade on resume.
-            Switched::Resound => return,
+            Switched::Hand => return,
         };
         self.held = Some((i, ms, self.p.id_at(i)));
         self.seek_landed |= matches!(s, Switched::Seek(_));
@@ -1929,7 +1695,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     /// left it (a new output, silent).
     fn run_switch(&mut self, s: Switched) -> Option<f32> {
         // Only a play_at comes here paused (a skip or a go_to is held instead): music is wanted.
-        let wants_music = !matches!(s, Switched::Seek(_) | Switched::Resound);
+        let wants_music = !matches!(s, Switched::Seek(_) | Switched::Hand);
         let mut from = None;
         match s {
             Switched::To(i, ms) => {
@@ -1955,7 +1721,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
                 self.seek(ms);
                 self.seek_landed = true;
             }
-            Switched::Resound => from = self.resounded(),
+            Switched::Hand => from = self.handed(),
         }
         if wants_music && !self.playing() && self.current().is_some() {
             self.resume();
@@ -1963,20 +1729,13 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         from
     }
 
-    /// At the dip's bottom: the output's decoder takes the song over at the playback position, or the CPU remakes
-    /// the music from there. Returns the level to come back up from, if not the fade's.
-    fn resounded(&mut self) -> Option<f32> {
-        self.resounded_at = self.now();
-        // This remake includes every change so far.
-        self.resound_due = None;
-        let mut remake = self.remake.take();
-        if remake.as_ref().is_some_and(|m| m.leaving) {
-            return self.take_over(remake.take().expect("checked"));
+    /// At the dip's bottom: the CPU takes the song over from the output's decoder, or that takes it over
+    /// at the playback position. Returns the level to come back up from, if not the fade's.
+    fn handed(&mut self) -> Option<f32> {
+        if let Some(t) = self.takeover.take() {
+            return self.take_over(t);
         }
-        if self.offloading() {
-            return None;
-        }
-        let i = self.p.current()?;
+        let i = self.p.current().filter(|_| !self.offloading())?;
         if std::mem::take(&mut self.offload_now) && self.offload && self.off.is_some() && self.p.playing() {
             // The playback position, read as the CPU stops.
             self.p.pause();
@@ -1985,24 +1744,20 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             self.placed_due = true;
             return Some(0.0);
         }
-        match remake {
-            Some(m) if m.ready => self.p.resound_from(m.id, m.r, m.from_ms),
-            _ => self.p.resound(),
-        }
         None
     }
 
     /// The CPU takes the song over from the offload track where it got to, with the song opened ahead
     /// ([`Worker::leave_ahead`]); the music comes up from silence.
-    fn take_over(&mut self, m: Remake) -> Option<f32> {
+    fn take_over(&mut self, t: Takeover) -> Option<f32> {
         let playing = self.state == State::Playing && self.pause_at.is_none();
         let now = self.now();
         // The offload track's fade ends at silence, whatever tick it last took.
         self.ramp(None, 0.0, 0);
         let (i, ms) = self.off.as_mut().and_then(|o| o.leave(now))?;
         self.p.app.log("offload given up: the CPU plays on from here");
-        if m.ready {
-            self.p.jump_from(i, ms, (m.id, m.r, m.from_ms));
+        if t.ready {
+            self.p.jump_from(i, ms, (t.id, t.r, t.from_ms));
         } else {
             self.p.jump(i, ms);
         }
@@ -2030,7 +1785,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
 
     /// A seek in the current song; offloaded, the track restarts at the packet it lands in.
     fn seek(&mut self, ms: i64) {
-        self.remake = None;
+        self.takeover = None;
         match self.off.as_ref().filter(|o| o.active()).and_then(Offload::current) {
             Some(i) => self.jump(i, ms),
             None => self.p.seek(ms),
@@ -2048,14 +1803,12 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         if self.dip.as_ref().is_some_and(|d| now >= d.at) {
             self.end_dip();
         }
-        if self.resound_due.is_some_and(|t| now >= t) {
-            self.resound(now);
-        }
-        self.remake(now);
+        self.follow_chain(now);
+        self.follow_takeover(now);
     }
 
-    /// Applies a ReplayGain settings change: to the ring and what is read next on the CPU (the player
-    /// applies each song's gain before any mix), or to the offloaded track's volume.
+    /// Applies a ReplayGain settings change: to what the output can still replace and what is read next
+    /// on the CPU (the player applies each song's gain before any mix), or to the offloaded track's volume.
     fn follow_gain(&mut self) {
         if !std::mem::take(&mut self.gain_changed) {
             return;
@@ -2075,14 +1828,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
                     o.set_level(level);
                 }
             }
-            _ => {
-                self.p.gain_changed();
-                // The ring was rescaled in place; what the device holds, or music already limited,
-                // cannot be: remade.
-                if self.p.sink.track.latency_us() > HELD_US || self.p.gain_max > 1.0 {
-                    self.resound_soon();
-                }
-            }
+            _ => self.p.gain_changed(),
         }
     }
 
@@ -2386,7 +2132,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             s.switching = self.dip.is_some();
             s.chain = self.p.sink.chain_in();
             s.on_cpu = self.state == State::Playing && !stalled && !s.switching;
-            s.gain_reduction_db = self.p.sink.meter_db;
+            s.gain_reduction_db = self.p.sink.meter_db();
             s.compression_db = self.p.sink.compression_db();
             s.offloaded = false;
             was
@@ -2515,14 +2261,14 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         if let Some((_, t)) = &self.title {
             at(t - now);
         }
-        if let Some(t) = self.resound_due {
-            at(t - now);
+        if self.chain_wanted.is_some() {
+            at(self.chain_at + CHAIN_EVERY_MS - now);
         }
         if self.entering.is_some() {
             // Its loader wakes the thread; this is a fallback.
             at(1_000);
         }
-        if let Some(m) = self.remake.as_ref().filter(|_| self.dip.is_none() && self.pause_at.is_none()) {
+        if let Some(m) = self.takeover.as_ref().filter(|_| self.dip.is_none() && self.pause_at.is_none()) {
             // The dip is due when playback gets near; still opening, its loader wakes the thread.
             at(if m.ready { m.dip_at - now } else { 1_000 });
         }

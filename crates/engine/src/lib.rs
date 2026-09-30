@@ -32,7 +32,7 @@ pub use engine::{Config, Engine, Event, OutputFacts, Settings, State, Status, RE
 pub use offload::{Coded, Coding, OffloadOutput, OnCpu, Support};
 pub use library::{Library, Located, Source, Sources};
 pub use nori_player::pipeline::{App, Queue, Sound};
-pub use output::{AudioOutput, Device, DeviceWatch, Feed, OutputFormat, OutputKind, ShallowDepth};
+pub use output::{AudioOutput, Device, DeviceWatch, Feed, OutputFormat, OutputKind};
 pub use source::{Body, ByteSource, Cancel, Loader, OpenError, Waits, Window};
 pub use store::{Order, Recent, Store};
 pub use wav::WavOutput;

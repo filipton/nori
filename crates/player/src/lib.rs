@@ -3,6 +3,7 @@
 
 pub mod automix;
 pub mod burst;
+pub mod chain;
 pub mod compressor;
 pub mod contour;
 pub mod dac;
@@ -23,6 +24,7 @@ pub mod playlist;
 pub mod policy;
 pub mod queue;
 pub mod silence;
+pub mod sink;
 #[cfg(any(test, feature = "synth"))]
 pub mod sim;
 pub mod sound;

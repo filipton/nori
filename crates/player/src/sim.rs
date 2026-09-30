@@ -16,7 +16,7 @@ use crate::playlist::Playlist;
 use crate::transitions::{engine_plan, pick, whole_song, Skip, TransitionPrefs, WindowSong};
 use crate::types::TrackAnalysis;
 
-pub use crate::pipeline::{Sound, BASE_OFFSET_US, READ_AHEAD_US, SHALLOW_US};
+pub use crate::pipeline::{Sound, BASE_OFFSET_US, READ_AHEAD_US};
 
 /// Virtual clock step per render turn.
 pub const STEP_MS: i64 = 10;
@@ -419,12 +419,17 @@ impl Piece {
     }
 }
 
-/// An AudioTrack on the virtual clock, recording what was played.
+/// An AudioTrack on the virtual clock, recording what was played. Its play head moves only between
+/// turns, so everything unplayed can be replaced.
 pub struct AudioTrack {
     format: Option<Format>,
     pieces: VecDeque<Piece>,
     queued_bytes: usize,
     played_media: f64,
+    /// Frames played since the flush.
+    played: u64,
+    /// What a cut dropped, blended into what is written next, and how much of it was blended.
+    blend: Option<(Vec<u8>, usize)>,
     playing: bool,
     clock_us: i64,
     clock_frames: u64,
@@ -445,6 +450,8 @@ impl AudioTrack {
             pieces: VecDeque::new(),
             queued_bytes: 0,
             played_media: 0.0,
+            played: 0,
+            blend: None,
             playing: false,
             clock_us: 0,
             clock_frames: 0,
@@ -481,6 +488,7 @@ impl AudioTrack {
             keep(&mut self.heard, &self.capture, self.heard_frames, data, fb);
             let done = p.pos == p.data.len();
             self.played_media += media;
+            self.played += n as u64;
             self.queued_bytes -= n * fb;
             self.heard_frames += n as u64;
             due -= n as u64;
@@ -521,11 +529,73 @@ impl pipeline::Track for AudioTrack {
 
     fn write(&mut self, data: &[u8], media: f64) {
         self.queued_bytes += data.len();
-        self.pieces.push_back(Piece { data: data.to_vec(), pos: 0, media });
+        let mut data = data.to_vec();
+        if let (Some((old, done)), Some(f)) = (self.blend.as_mut(), self.format) {
+            let w = f.encoding.width();
+            let total = old.len() / w;
+            let n = (data.len() / w).min(total - *done);
+            for (k, new) in data.chunks_exact_mut(w).take(n).enumerate() {
+                let k = *done + k;
+                let frame = k / f.channels;
+                let frames = total / f.channels;
+                let o = &old[k * w..k * w + w];
+                if w == 2 {
+                    let v = pipeline::blended(i16::from_le_bytes([o[0], o[1]]) as f32, i16::from_le_bytes([new[0], new[1]]) as f32, frame, frames);
+                    new.copy_from_slice(&(v.round() as i16).to_le_bytes());
+                } else {
+                    let v = pipeline::blended(f32::from_le_bytes([o[0], o[1], o[2], o[3]]), f32::from_le_bytes([new[0], new[1], new[2], new[3]]), frame, frames);
+                    new.copy_from_slice(&v.to_le_bytes());
+                }
+            }
+            *done += n;
+            if *done == total {
+                self.blend = None;
+            }
+        }
+        self.pieces.push_back(Piece { data, pos: 0, media });
     }
 
     fn played_media(&mut self) -> f64 {
         self.played_media
+    }
+
+    fn played(&mut self) -> u64 {
+        self.played
+    }
+
+    fn freeze(&mut self) -> u64 {
+        self.played
+    }
+
+    fn cut(&mut self, at: u64) -> f64 {
+        let Some(f) = self.format else { return self.played_media };
+        let fb = f.frame_bytes();
+        let blend = (f.rate as i64 * pipeline::BLEND_US / 1_000_000) as usize * fb;
+        let mut dropped = Vec::new();
+        let (mut frame, mut media) = (self.played, self.played_media);
+        for p in self.pieces.iter_mut() {
+            let left = ((p.data.len() - p.pos) / fb) as u64;
+            if frame + left <= at {
+                frame += left;
+                media += p.media;
+                continue;
+            }
+            let keep = (at.max(frame) - frame) as usize * fb;
+            let cut_from = p.pos + keep;
+            if dropped.len() < blend {
+                let n = (blend - dropped.len()).min(p.data.len() - cut_from);
+                dropped.extend_from_slice(&p.data[cut_from..cut_from + n]);
+            }
+            let share = if left == 0 { 0.0 } else { p.media * (keep / fb) as f64 / left as f64 };
+            self.queued_bytes -= p.data.len() - cut_from;
+            p.data.truncate(cut_from);
+            p.media = share;
+            media += share;
+            frame = frame.max(at);
+        }
+        self.pieces.retain(|p| p.pos < p.data.len());
+        self.blend = (!dropped.is_empty()).then_some((dropped, 0));
+        media
     }
 
     fn is_empty(&self) -> bool {
@@ -536,6 +606,8 @@ impl pipeline::Track for AudioTrack {
         self.pieces.clear();
         self.queued_bytes = 0;
         self.played_media = 0.0;
+        self.played = 0;
+        self.blend = None;
         self.started = false;
     }
 
@@ -798,6 +870,22 @@ impl Player {
         if prefs.auto_mix && self.measure_on_move {
             self.measure_ahead();
         }
+    }
+
+    /// New equalizer and effects, the rest of the chain as it is.
+    pub fn set_sound(&mut self, sound: Sound) {
+        let c = pipeline::ChainSettings { sound, ..self.sink.settings().clone() };
+        self.set_chain(c);
+    }
+
+    pub fn set_speed(&mut self, speed: f32, pitch: f32) {
+        let c = pipeline::ChainSettings { speed, pitch, ..self.sink.settings().clone() };
+        self.set_chain(c);
+    }
+
+    pub fn set_skip_silence(&mut self, on: bool) {
+        let c = pipeline::ChainSettings { skip_silence: on, ..self.sink.settings().clone() };
+        self.set_chain(c);
     }
 
     /// Advances the clock one step and runs a render turn.

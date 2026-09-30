@@ -43,6 +43,20 @@ pub struct SilenceSkipper {
     contiguous: Vec<u8>,
 }
 
+/// `clone_from` keeps the buffers' memory (the sink copies the chain's state without allocating).
+impl Clone for SilenceSkipper {
+    fn clone(&self) -> Self {
+        SilenceSkipper { maybe: self.maybe.clone(), contiguous: self.contiguous.clone(), ..*self }
+    }
+
+    fn clone_from(&mut self, o: &Self) {
+        let (mut maybe, contiguous) = (std::mem::take(&mut self.maybe), std::mem::take(&mut self.contiguous));
+        maybe.clone_from(&o.maybe);
+        // Scratch: only its size matters.
+        *self = SilenceSkipper { maybe, contiguous, ..*o };
+    }
+}
+
 impl SilenceSkipper {
     /// A skipper for 16-bit or `float` samples.
     pub fn new(rate: u32, channels: usize, float: bool) -> SilenceSkipper {

@@ -1,10 +1,9 @@
-//! The sound chain end to end: limiter, equalizer, live setting changes and boundary rebuilds.
+//! The sound chain end to end: limiter, equalizer, live setting changes.
 
 use nori_player::automix::synth::Rng;
-use nori_player::burst::BUFFER_US;
 use nori_player::compressor::CompressorPreset;
 use nori_player::dsp::{Band, Effects, Equalizer, HIGH_SHELF, LOW_SHELF, PEAKING};
-use nori_player::sim::{Player, Sound, SHALLOW_US};
+use nori_player::sim::{Player, Sound};
 
 use crate::common::*;
 
@@ -33,7 +32,7 @@ fn limiter_only_catches_peaks() {
     p.play_from(0);
     // The meter a screen reads shows the limiter at work while it is.
     p.run_for(5_000);
-    assert!(p.sink.chain_in() && p.sink.meter_db > 0.0, "the meter reads {} dB", p.sink.meter_db);
+    assert!(p.sink.chain_in() && p.sink.meter_db() > 0.0, "the meter reads {} dB", p.sink.meter_db());
     assert!(p.run_to_end(40_000));
     let reduction = p.sink.gain_reduction_db;
     assert!(reduction > 0.0 && reduction < 6.0, "the limiter took {reduction} dB off mastered music");
@@ -181,15 +180,11 @@ fn compressor_narrows_dynamics() {
     assert!(apart < 24.0 - 6.0, "24 dB apart went in, {apart:.1} came out");
 }
 
-/// Plays a steady tone, changes the sound to `change` for a while and back to `base`, and returns the
-/// largest step heard against the largest step of the tone itself.
-fn step_through(base: Sound, change: Sound, tone: &[i16]) -> (f64, f64) {
+/// Plays a 220 Hz tone, changes the sound to `change` for a while and back to `base`, and returns the
+/// largest step heard against what a sine at the level heard around it steps.
+fn step_through(base: Sound, change: Sound, tone: &[i16]) -> f64 {
     let mut p = Player::new(vec![track("a", tone)]);
     p.set_sound(base.clone());
-    // As the equalizer screen plays it, where settings are moved while listening: a shallow buffer
-    // topped up as it goes, so each change goes through the chain within the moment.
-    p.sink.capacity_us = SHALLOW_US;
-    p.burst.enabled = false;
     p.play_from(0);
     p.run_for(1_000);
     p.set_sound(change);
@@ -198,12 +193,17 @@ fn step_through(base: Sound, change: Sound, tone: &[i16]) -> (f64, f64) {
     assert!(p.run_to_end(10_000));
     assert!(p.sink.gaps.is_empty(), "the audio kept flowing");
     let heard = p.sink.heard_samples();
-    let side = |c: usize| -> Vec<f64> { heard.iter().skip(c).step_by(2).map(|&v| v as f64 / 32768.0).collect() };
-    let own = |c: usize| -> Vec<f64> { tone.iter().skip(c).step_by(2).map(|&v| v as f64 / 32768.0).collect() };
-    let edge = frames(0.5);
-    let worst = (0..2).map(|c| max_step(&side(c)[edge..heard.len() / 2 - edge])).fold(0.0, f64::max);
-    let steady = (0..2).map(|c| max_step(&own(c))).fold(0.0, f64::max);
-    (worst, steady)
+    let turn = std::f64::consts::TAU * 220.0 / RATE as f64;
+    let around = frames(0.01);
+    let mut worst = 0.0f64;
+    for c in 0..2 {
+        let x: Vec<f64> = heard.iter().skip(c).step_by(2).map(|&v| v as f64 / 32768.0).collect();
+        for k in frames(0.5)..x.len() - frames(0.5) {
+            let peak = x[k - around..k + around].iter().fold(0.0f64, |m, v| m.max(v.abs()));
+            worst = worst.max((x[k] - x[k - 1]).abs() / (peak * turn).max(1e-4));
+        }
+    }
+    worst
 }
 
 #[test]
@@ -226,80 +226,7 @@ fn live_settings_changes_do_not_click() {
         ("the virtualizer", limiter(), Sound { effects: Effects { virtualizer: 1.0, ..Effects::default() }, ..limiter() }),
         ("the volume boost", limiter(), Sound { effects: Effects { boost_db: 6.0, ..Effects::default() }, ..limiter() }),
     ] {
-        let (worst, steady) = step_through(base, change, &tone);
-        assert!(worst <= 2.0 * steady, "{what} on and off: a step of {worst:.4} against the tone's own {steady:.4}");
+        let worst = step_through(base, change, &tone);
+        assert!(worst <= 1.5, "{what} on and off: a step {worst:.2} times a sine's at that level");
     }
-}
-
-#[test]
-fn removing_equalizer_waits_for_boundary() {
-    let (a, b) = (music(20.0, 8), music(20.0, 9));
-    let mut p = Player::new(vec![track("a", &a), track("b", &b)]);
-    p.set_sound(Sound { bands: curve(), ..Sound::default() });
-    p.play_from(0);
-    p.run_for(3_000);
-    // Off: the processor leaves the chain, which rebuilds the output - not mid-song.
-    p.set_sound(Sound::default());
-    assert!(p.app.logged("chain swap deferred to the next track"), "{:?}", p.app.log);
-    assert!(p.sink.dsp, "the processor stays until the boundary");
-    assert!(p.run_until(30_000, |p| p.current() == Some(1)));
-    assert!(p.app.logged("chain swap at the boundary"), "{:?}", p.app.log);
-    assert!(!p.sink.dsp, "and leaves there");
-    let before = p.sink.heard_frames;
-    p.run_for(3_000);
-    assert!(p.sink.heard_frames - before >= frames(2.9) as u64, "still playing after the swap");
-    assert!(p.sink.gaps.is_empty(), "{:?}", p.sink.gaps);
-}
-
-#[test]
-fn tuning_shallow_buffer_until_boundary() {
-    let songs: Vec<Vec<i16>> = (0..3).map(|k| music(15.0, 20 + k)).collect();
-    let mut p = Player::new(songs.iter().enumerate().map(|(k, s)| track(&format!("s{k}"), s)).collect());
-    p.set_sound(Sound { bands: curve(), ..Sound::default() });
-    p.play_from(0);
-    p.run_for(2_000);
-    let deep = p.sink.buffer_bytes();
-    assert_eq!(p.sink.capacity_us, BUFFER_US);
-    p.set_tuning(true);
-    assert!(!p.burst.enabled, "no bursts while tuning, at once");
-    assert_eq!(p.sink.capacity_us, BUFFER_US, "the buffer waits for the boundary");
-    assert!(p.run_until(30_000, |p| p.current() == Some(1)));
-    assert_eq!(p.sink.capacity_us, SHALLOW_US, "tuning takes the shallow buffer at the boundary");
-    let shallow = p.sink.buffer_bytes();
-    assert!(shallow > 0 && shallow < deep);
-    p.run_for(2_000);
-    p.set_tuning(false);
-    assert_eq!(p.sink.capacity_us, SHALLOW_US);
-    assert!(p.run_until(30_000, |p| p.current() == Some(2)));
-    assert_eq!(p.sink.capacity_us, BUFFER_US, "the deep buffer is back after the next boundary");
-    assert!(p.burst.enabled);
-    let before = p.sink.heard_frames;
-    p.run_for(3_000);
-    assert!(p.sink.heard_frames - before >= frames(2.9) as u64, "still playing after the deep swap");
-    assert_eq!(p.app.log.iter().filter(|l| l.contains("chain swap at the boundary")).count(), 2, "{:?}", p.app.log);
-}
-
-#[test]
-fn pending_swap_done_at_jump_keeps_next_mix() {
-    // The limiter leaves the chain while a song plays: the rebuild waits. Then the same song is played
-    // again from near its end, with a crossfade into the next: the jump empties the output anyway, so
-    // the rebuild is made there - not at the next song's start, in the middle of the mix it would cut.
-    let (a, b) = (music(40.0, 51), music(40.0, 52));
-    let mut p = Player::with_prefs(vec![track("a", &a), track("b", &b)], crossfade(4));
-    p.set_sound(limiter());
-    p.play_from(0);
-    p.run_for(3_000);
-    p.set_sound(Sound::default());
-    assert!(p.app.logged("chain swap deferred"), "{:?}", p.app.log);
-    p.jump(0, 30_000);
-    assert!(p.app.logged("chain swap at the boundary"), "made at the jump: {:?}", p.app.log);
-    assert!(p.run_until(12_000, |p| p.mixing()), "{:?}", p.app.log);
-    let mut heard_mixing = 0;
-    while p.mixing() {
-        p.run_for(100);
-        heard_mixing += 100;
-    }
-    assert!(heard_mixing >= 3_800, "the whole four-second mix is heard: {heard_mixing} ms");
-    assert_eq!(p.app.log.iter().filter(|l| l.contains("chain swap at the boundary")).count(), 1, "{:?}", p.app.log);
-    assert!(p.sink.gaps.is_empty(), "{:?}", p.sink.gaps);
 }

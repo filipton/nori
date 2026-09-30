@@ -160,7 +160,30 @@ pub struct Sonic<T: Sample> {
     prev_min_diff: f64,
 }
 
+/// `clone_from` keeps the buffers' memory (the sink copies the chain's state without allocating).
+impl<T: Sample> Clone for Sonic<T> {
+    fn clone(&self) -> Self {
+        let mut s = Sonic { input: Vec::new(), output: Vec::new(), pitch_buf: Vec::new(), down: Vec::new(), ..*self };
+        s.clone_from(self);
+        s
+    }
+
+    fn clone_from(&mut self, o: &Self) {
+        let mut bufs = [std::mem::take(&mut self.input), std::mem::take(&mut self.output), std::mem::take(&mut self.pitch_buf), std::mem::take(&mut self.down)];
+        for (b, from) in bufs.iter_mut().zip([&o.input, &o.output, &o.pitch_buf, &o.down]) {
+            b.clone_from(from);
+        }
+        let [input, output, pitch_buf, down] = bufs;
+        *self = Sonic { input, output, pitch_buf, down, ..*o };
+    }
+}
+
 impl<T: Sample> Sonic<T> {
+    /// New speed and pitch from the next input on; what is queued plays on.
+    pub fn set(&mut self, speed: f32, pitch: f32) {
+        (self.speed, self.pitch) = (speed, pitch);
+    }
+
     pub fn new(input_rate: u32, channels: usize, speed: f32, pitch: f32, output_rate: u32) -> Sonic<T> {
         let input_rate = input_rate as i32;
         let ch = channels.max(1);

@@ -2,650 +2,22 @@
 //! bursts, and outputs through [`Sink`] (media3's AudioSink with nori's processors) into a [`Track`].
 //! `sim` and `nori-engine` both run this with their own [`Songs`], [`Track`], [`App`] and clock.
 
-use std::collections::VecDeque;
-
 use crate::burst::{Burst, Fed, BUFFER_US};
-use crate::dsp::{Band, Effects, Equalizer};
-use crate::engine::{Downstream, Heard, Host, StreamFormat, StreamId, TransitionEngine};
+use crate::engine::{Heard, Host, StreamFormat, StreamId, TransitionEngine};
 use crate::heard::{HeardTracker, PlayerNow, Seen, StreamAt};
-use crate::pcm::{Encoding, Format};
+use crate::pcm::Format;
 use crate::playlist::Playlist;
 use crate::queue::{measure_ahead, ErrorRun, OnError, PlaybackError};
-use crate::silence::SilenceSkipper;
-use crate::sound::sound_on;
-use crate::speed::{speed_active, SpeedPitch};
 use crate::transitions::WindowSong;
-use crate::transport::{rebuild, Chain, ChainAct, ChainChange, Rebuild};
+
+pub use crate::sink::{blended, ChainSettings, Sink, Sound, Track, BLEND_US};
 
 /// Start of the renderer's timeline, as in media3.
 pub const BASE_OFFSET_US: i64 = 1_000_000_000_000;
 /// The next song is read once the current one's end is this close.
 pub const READ_AHEAD_US: i64 = 10_000_000;
-/// Output buffer depth while the equalizer screen is open.
-pub const SHALLOW_US: i64 = 500_000;
-/// A buffer this far from its expected timestamp resyncs the clock (media3).
-const PTS_TOLERANCE_US: i64 = 200_000;
-const LIMITER_RELEASE_MS: f64 = 120.0;
-const LIMITER_LOOKAHEAD_MS: f64 = 5.0;
 /// Most buffers offered per turn.
 const BUFFERS_PER_TURN: usize = 256;
-/// Pace changes tracked in flight (a post-mix ramp changes pace every buffer).
-const PACES: usize = 512;
-
-/// Sound settings for the chain.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Sound {
-    /// Parametric bands; empty is off.
-    pub bands: Vec<Band>,
-    /// Graphic equalizer sliders (dB, one per band of a `graphic::LAYOUTS` layout), used instead of
-    /// `bands`; empty is off.
-    pub graphic: Vec<f64>,
-    pub effects: Effects,
-    pub preamp_db: f64,
-    pub crossfeed_db: f64,
-    /// Crossfeed cutoff, Hz.
-    pub crossfeed_hz: f64,
-    pub balance: f64,
-    pub mono: bool,
-    pub limiter: bool,
-    pub threshold_db: f64,
-}
-
-impl Default for Sound {
-    fn default() -> Self {
-        Sound {
-            bands: Vec::new(),
-            graphic: Vec::new(),
-            effects: Effects::default(),
-            preamp_db: 0.0,
-            crossfeed_db: 0.0,
-            crossfeed_hz: crate::dsp::CROSSFEED_DEFAULT_HZ,
-            balance: 0.0,
-            mono: false,
-            limiter: false,
-            threshold_db: -1.0,
-        }
-    }
-}
-
-impl Sound {
-    /// Whether anything here touches the samples.
-    pub fn on(&self) -> bool {
-        let eq = !self.bands.is_empty() || !self.graphic.is_empty() || self.preamp_db != 0.0;
-        sound_on(eq, self.crossfeed_db as f32, self.balance as f32, self.mono, self.limiter, self.effects.on())
-    }
-
-    /// Configures `eq`. Anything that boosts the level also enables the limiter.
-    pub fn apply(&self, eq: &mut Equalizer) {
-        eq.set_crossfeed_cut(self.crossfeed_hz);
-        if self.graphic.is_empty() {
-            eq.configure(&self.bands, self.preamp_db, self.crossfeed_db);
-        } else {
-            eq.configure_graphic(&self.graphic, self.preamp_db, self.crossfeed_db);
-        }
-        eq.configure_effects(&self.effects);
-        let lookahead = if self.limiter || self.effects.guard() { LIMITER_LOOKAHEAD_MS } else { 0.0 };
-        eq.configure_output(self.balance, self.mono, self.threshold_db, LIMITER_RELEASE_MS, lookahead);
-    }
-}
-
-/// The device buffer the sink writes into (an AudioTrack, a desktop ring, a simulated track). Data is
-/// in the sink's format; the track converts if its device needs another.
-pub trait Track {
-    /// The sink's format from now on.
-    fn open(&mut self, format: Format);
-    /// Bytes written and not played yet.
-    fn queued_bytes(&self) -> usize;
-    /// Takes `data` whole (the sink never exceeds the room), covering `media` song frames (speed and
-    /// silence skipping make them differ).
-    fn write(&mut self, data: &[u8], media: f64);
-    /// Song frames played since the last flush.
-    fn played_media(&mut self) -> f64;
-    /// Nothing written is left to play.
-    fn is_empty(&self) -> bool;
-    /// Drops everything written; the playhead restarts at 0.
-    fn flush(&mut self);
-    fn play(&mut self);
-    fn pause(&mut self);
-    /// Scales unplayed audio between `from` and `to` song frames past the last flush by `ratio`
-    /// (ReplayGain settings changed). Optional for tracks with short buffers.
-    fn rescale(&mut self, _from: f64, _to: f64, _ratio: f32) {}
-    /// Bits per sample of the next configured stream's file (0 unknown).
-    fn source_bits(&mut self, _bits: u32) {}
-    /// Whether the track must reopen for `format` (and the last bits), after everything written has
-    /// played: for tracks that play each song in its own format (bit-perfect).
-    fn must_reopen(&mut self, _format: Format) -> bool {
-        false
-    }
-    /// The sink's buffer depth from now on, told on (re)build before the flush; a track with its own
-    /// buffer behind this one can follow it.
-    fn depth(&mut self, _capacity_us: i64) {}
-    /// Whether [`Track::depth`] applies in place without rebuilding ([`Player::set_tuning`]).
-    fn resizes(&self) -> bool {
-        false
-    }
-}
-
-/// media3's AudioSink with nori's processors, over a [`Track`]. Its clock is media3's: the first
-/// buffer's timestamp after a flush, shifted when a buffer arrives more than [`PTS_TOLERANCE_US`] off
-/// (or after a discontinuity), plus the song time the track has played. The transition engine relies
-/// on this: a mix is stamped in the next song's time and the clock jumps when it is offered.
-///
-/// Allocation-free once its buffers have grown.
-pub struct Sink<T: Track> {
-    pub format: Option<Format>,
-    /// Every config token received, in order.
-    pub configs: Vec<u32>,
-    /// Format changes after the first open.
-    pub rebuilds: usize,
-    /// Buffer depth.
-    pub capacity_us: i64,
-    /// Whether the equalizer processor is in the chain.
-    pub dsp: bool,
-    eq: Option<Equalizer>,
-    sound: Sound,
-    sound_dirty: bool,
-    skip_silence: bool,
-    silence: Option<SilenceSkipper>,
-    speed_pitch: (f32, f32),
-    speed: Option<SpeedPitch>,
-    start_media_us: i64,
-    needs_init: bool,
-    needs_sync: bool,
-    /// Song frames submitted since the clock's reference ([`Downstream::media_pace`] weighted).
-    submitted_frames: f64,
-    /// Current song frames per frame.
-    pace: f64,
-    /// (submitted song frame, pace) where each pace began, for [`Sink::pace_heard`].
-    paces: VecDeque<(f64, f64)>,
-    /// Buffers more than [`PTS_TOLERANCE_US`] off (each a stutter on a phone).
-    pub timestamp_jumps: usize,
-    /// (address, length) of a partly taken buffer's rest, which must be offered next (media3 throws otherwise).
-    owed: Option<(usize, usize)>,
-    /// Format to reopen the track with once it has drained.
-    reopen: Option<Format>,
-    /// Processed audio waiting for room (from `pending_pos`), its song time, and song time not yet
-    /// attached to output.
-    pending: Vec<u8>,
-    pending_pos: usize,
-    pending_media: f64,
-    carry: f64,
-    samples_in: Vec<i16>,
-    samples_out: Vec<i16>,
-    floats_in: Vec<f32>,
-    floats_out: Vec<f32>,
-    stage: Vec<u8>,
-    stage2: Vec<u8>,
-    /// The source ended: running dry is the end, not a gap.
-    pub source_ended: bool,
-    /// Largest limiter reduction seen, dB.
-    pub gain_reduction_db: f32,
-    /// Limiter reduction on the last buffer, dB.
-    pub meter_db: f32,
-    pub track: T,
-}
-
-impl<T: Track> Sink<T> {
-    pub fn new(capacity_us: i64, dsp: bool, sound: Sound, track: T) -> Sink<T> {
-        Sink {
-            format: None,
-            configs: Vec::new(),
-            rebuilds: 0,
-            capacity_us,
-            dsp,
-            eq: None,
-            sound,
-            sound_dirty: true,
-            skip_silence: false,
-            silence: None,
-            speed_pitch: (1.0, 1.0),
-            speed: None,
-            start_media_us: 0,
-            needs_init: true,
-            needs_sync: false,
-            submitted_frames: 0.0,
-            pace: 1.0,
-            paces: VecDeque::with_capacity(PACES),
-            timestamp_jumps: 0,
-            owed: None,
-            reopen: None,
-            pending: Vec::new(),
-            pending_pos: 0,
-            pending_media: 0.0,
-            carry: 0.0,
-            samples_in: Vec::new(),
-            samples_out: Vec::new(),
-            floats_in: Vec::new(),
-            floats_out: Vec::new(),
-            stage: Vec::new(),
-            stage2: Vec::new(),
-            source_ended: false,
-            gain_reduction_db: 0.0,
-            meter_db: 0.0,
-            track,
-        }
-    }
-
-    /// Rebuilds over the same track (as stop + prepare): new chain, everything in flight dropped,
-    /// stage settings kept.
-    pub fn rebuild(&mut self, capacity_us: i64, dsp: bool, sound: Sound) {
-        self.format = None;
-        self.configs.clear();
-        self.rebuilds = 0;
-        self.capacity_us = capacity_us;
-        self.dsp = dsp;
-        self.eq = None;
-        self.sound = sound;
-        self.sound_dirty = true;
-        self.silence = None;
-        self.speed = None;
-        self.start_media_us = 0;
-        self.needs_init = true;
-        self.needs_sync = false;
-        self.submitted_frames = 0.0;
-        self.paces.clear();
-        self.timestamp_jumps = 0;
-        self.owed = None;
-        self.reopen = None;
-        self.pending.clear();
-        self.pending_pos = 0;
-        self.pending_media = 0.0;
-        self.carry = 0.0;
-        self.source_ended = false;
-        self.gain_reduction_db = 0.0;
-        self.meter_db = 0.0;
-        self.track.depth(capacity_us);
-        self.track.flush();
-    }
-
-    /// Song frames per frame at the playhead ([`Downstream::media_pace`]).
-    pub fn pace_heard(&mut self) -> f64 {
-        if self.paces.len() < 2 {
-            return self.paces.front().map_or(1.0, |p| p.1);
-        }
-        let played = self.track.played_media();
-        while self.paces.len() >= 2 && self.paces[1].0 <= played {
-            self.paces.pop_front();
-        }
-        self.paces[0].1
-    }
-
-    fn note_pace(&mut self) {
-        if self.paces.back().is_some_and(|p| p.1 == self.pace) {
-            return;
-        }
-        if self.paces.len() == PACES {
-            self.paces.pop_front();
-        }
-        self.paces.push_back((self.submitted_frames, self.pace));
-    }
-
-    /// Song frames since the last flush at clock time `pts_us` (as [`Track::played_media`] counts);
-    /// `None` before the first buffer.
-    pub fn media_frames(&self, pts_us: i64) -> Option<f64> {
-        let f = self.format.filter(|_| !self.needs_init)?;
-        Some((pts_us - self.start_media_us) as f64 * f.rate as f64 / 1_000_000.0)
-    }
-
-    pub fn queued_us(&self) -> i64 {
-        self.format.map_or(0, |f| f.us(self.track.queued_bytes()))
-    }
-
-    /// Track buffer size, bytes.
-    #[cfg(any(test, feature = "synth"))]
-    pub fn buffer_bytes(&self) -> usize {
-        self.format.map_or(0, |f| f.bytes(self.capacity_us))
-    }
-
-    fn build_processors(&mut self) {
-        let Some(f) = self.format else { return };
-        self.eq = self.dsp.then(|| Equalizer::new(f.rate, f.channels));
-        self.sound_dirty = true;
-        self.build_stages();
-    }
-
-    fn build_stages(&mut self) {
-        let Some(f) = self.format else { return };
-        self.silence = self.skip_silence.then(|| SilenceSkipper::new(f.rate, f.channels, f.encoding == Encoding::Float));
-        self.speed = speed_active(self.speed_pitch.0, self.speed_pitch.1).then(|| {
-            let mut s = SpeedPitch::new(f.rate, f.channels, f.encoding);
-            s.set(self.speed_pitch.0, self.speed_pitch.1);
-            s.flush();
-            s
-        });
-    }
-
-    /// Whether the equalizer processor is in the path.
-    pub fn chain_in(&self) -> bool {
-        self.eq.is_some()
-    }
-
-    /// The compressor's largest gain reduction in the last buffer, dB; 0 without one.
-    pub fn compression_db(&self) -> f32 {
-        self.eq.as_ref().map_or(0.0, |e| e.compression_db())
-    }
-
-    /// The silence skipper's format while it is active.
-    pub fn skipping_silence(&self) -> Option<Format> {
-        self.format.filter(|_| self.silence.is_some())
-    }
-
-    /// Applied on the next buffer.
-    pub fn set_sound(&mut self, sound: Sound) {
-        self.sound = sound;
-        self.sound_dirty = true;
-    }
-
-    /// Drains the speed and silence stages, then rebuilds them with new settings (as media3 does).
-    pub fn set_stages(&mut self, speed: f32, pitch: f32, skip_silence: bool) {
-        self.drain_stages();
-        self.speed_pitch = (speed, pitch);
-        self.skip_silence = skip_silence;
-        self.build_stages();
-    }
-
-    /// Flushes what the stages hold into the track.
-    fn drain_stages(&mut self) {
-        let mut out = std::mem::take(&mut self.stage);
-        out.clear();
-        if let Some(s) = self.silence.as_mut() {
-            s.end_of_stream(&mut out);
-        }
-        if let Some(sp) = self.speed.as_mut() {
-            let mut sped = std::mem::take(&mut self.stage2);
-            sped.clear();
-            if !out.is_empty() {
-                sp.process(&out, &mut sped);
-            }
-            sp.end_of_stream(&mut sped);
-            std::mem::swap(&mut out, &mut sped);
-            self.stage2 = sped;
-        }
-        if !out.is_empty() {
-            self.push_pending(&out);
-        }
-        self.stage = out;
-        self.write_pending();
-    }
-
-    fn pending_left(&self) -> bool {
-        self.pending_pos < self.pending.len()
-    }
-
-    fn push_pending(&mut self, data: &[u8]) {
-        let media = std::mem::take(&mut self.carry);
-        if self.pending_left() {
-            self.pending.drain(..self.pending_pos);
-            self.pending_pos = 0;
-            self.pending.extend_from_slice(data);
-            self.pending_media += media;
-        } else {
-            self.pending.clear();
-            self.pending_pos = 0;
-            self.pending.extend_from_slice(data);
-            self.pending_media = media;
-        }
-    }
-
-    fn room_bytes(&self) -> usize {
-        let Some(f) = self.format else { return 0 };
-        f.bytes(self.capacity_us).saturating_sub(self.track.queued_bytes()) / f.frame_bytes() * f.frame_bytes()
-    }
-
-    /// Writes pending audio as far as there is room; true when none is left.
-    fn write_pending(&mut self) -> bool {
-        if !self.pending_left() {
-            return true;
-        }
-        let room = self.room_bytes();
-        let left = self.pending.len() - self.pending_pos;
-        let n = room.min(left);
-        if n > 0 {
-            let media = self.pending_media * n as f64 / left as f64;
-            self.pending_media -= media;
-            self.track.write(&self.pending[self.pending_pos..self.pending_pos + n], media);
-            self.pending_pos += n;
-        }
-        let done = !self.pending_left();
-        if done {
-            self.pending.clear();
-            self.pending_pos = 0;
-        }
-        done
-    }
-
-    /// Runs `input` through equalizer, silence skipping and speed (media3's order) into pending output.
-    fn process(&mut self, input: &[u8], media: f64) {
-        self.carry += media;
-        let mut data = std::mem::take(&mut self.stage);
-        data.clear();
-        let float = self.format.is_some_and(|f| f.encoding == Encoding::Float);
-        match self.eq.as_mut().filter(|e| !e.is_identity()) {
-            Some(eq) if float => {
-                self.floats_in.clear();
-                self.floats_in.extend(input.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])));
-                self.floats_out.resize(self.floats_in.len(), 0.0);
-                eq.process_f32(&self.floats_in, &mut self.floats_out);
-                self.meter_db = eq.gain_reduction_db();
-                self.gain_reduction_db = self.gain_reduction_db.max(self.meter_db);
-                data.extend(self.floats_out.iter().flat_map(|v| v.to_le_bytes()));
-            }
-            Some(eq) => {
-                self.samples_in.clear();
-                self.samples_in.extend(input.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])));
-                self.samples_out.resize(self.samples_in.len(), 0);
-                eq.process_i16(&self.samples_in, &mut self.samples_out);
-                self.meter_db = eq.gain_reduction_db();
-                self.gain_reduction_db = self.gain_reduction_db.max(self.meter_db);
-                data.extend(self.samples_out.iter().flat_map(|v| v.to_le_bytes()));
-            }
-            None => {
-                self.meter_db = 0.0;
-                data.extend_from_slice(input);
-            }
-        }
-        if let Some(s) = self.silence.as_mut() {
-            let mut next = std::mem::take(&mut self.stage2);
-            next.clear();
-            s.process(&data, &mut next);
-            std::mem::swap(&mut data, &mut next);
-            self.stage2 = next;
-        }
-        if let Some(sp) = self.speed.as_mut() {
-            let mut next = std::mem::take(&mut self.stage2);
-            next.clear();
-            sp.process(&data, &mut next);
-            std::mem::swap(&mut data, &mut next);
-            self.stage2 = next;
-        }
-        if !data.is_empty() {
-            self.push_pending(&data);
-        }
-        self.stage = data;
-    }
-
-    fn processing(&self) -> bool {
-        self.eq.as_ref().is_some_and(|e| !e.is_identity()) || self.silence.is_some() || self.speed.is_some()
-    }
-
-    /// Applies changed sound settings to the equalizer.
-    fn follow_sound(&mut self) {
-        if self.sound_dirty {
-            if let Some(eq) = self.eq.as_mut() {
-                self.sound.apply(eq);
-            }
-            self.sound_dirty = false;
-        }
-    }
-
-    pub fn play(&mut self) {
-        self.track.play();
-    }
-
-    pub fn pause(&mut self) {
-        self.track.pause();
-    }
-
-    /// Drops everything queued and processed; the clock restarts at the next buffer.
-    pub fn flush(&mut self) {
-        self.track.flush();
-        self.reopen = None;
-        self.pending.clear();
-        self.pending_pos = 0;
-        self.pending_media = 0.0;
-        self.carry = 0.0;
-        self.owed = None;
-        self.needs_init = true;
-        self.needs_sync = false;
-        self.submitted_frames = 0.0;
-        self.paces.clear();
-        self.source_ended = false;
-        if let Some(eq) = self.eq.as_mut() {
-            eq.reset();
-        }
-        if let Some(s) = self.silence.as_mut() {
-            s.flush();
-        }
-        if let Some(s) = self.speed.as_mut() {
-            s.flush();
-        }
-    }
-
-    /// End of the queue: drains the chain. The limiter's look-ahead is pushed out with silence.
-    pub fn end_of_stream(&mut self) {
-        let Some(f) = self.format else { return };
-        let held = self.eq.as_ref().filter(|e| !e.is_identity()).map_or(0, Equalizer::delay_frames);
-        if held > 0 {
-            self.process(&vec![0u8; held * f.frame_bytes()], 0.0);
-        }
-        self.drain_stages();
-    }
-
-    /// Processed audio is waiting for room in the track.
-    pub fn pending(&self) -> bool {
-        self.pending_left()
-    }
-
-    /// Everything written has played.
-    pub fn drained(&self) -> bool {
-        self.track.is_empty() && !self.pending_left()
-    }
-
-    /// Waiting for the track to drain before reopening for the next stream.
-    pub fn reopening(&self) -> bool {
-        self.reopen.is_some()
-    }
-
-    /// Reopens the track for a waiting stream once the previous one has played out (the clock restarts,
-    /// as with a new AudioTrack). False while it still plays.
-    fn reopened(&mut self) -> bool {
-        let Some(f) = self.reopen else { return true };
-        self.write_pending();
-        if !self.drained() {
-            return false;
-        }
-        self.reopen = None;
-        self.rebuilds += 1;
-        self.format = Some(f);
-        self.track.open(f);
-        self.build_processors();
-        self.needs_init = true;
-        self.needs_sync = false;
-        self.submitted_frames = 0.0;
-        self.paces.clear();
-        true
-    }
-}
-
-impl<T: Track> Downstream for Sink<T> {
-    type Config = u32;
-
-    fn configure(&mut self, config: &u32, format: Option<Format>) {
-        self.configs.push(*config);
-        let f = format.expect("the player plays PCM");
-        if self.format.is_some() && self.track.must_reopen(f) {
-            self.reopen = Some(f);
-            return;
-        }
-        if self.format != Some(f) {
-            if self.format.is_some() {
-                self.rebuilds += 1;
-            }
-            self.format = Some(f);
-            self.track.open(f);
-            self.build_processors();
-        }
-    }
-
-    fn handle_buffer(&mut self, data: &[u8], from: usize, pts_us: i64) -> (bool, usize) {
-        if !self.reopened() {
-            return (false, 0);
-        }
-        let f = self.format.expect("configured before the first buffer");
-        let fb = f.frame_bytes();
-        let key = (data.as_ptr() as usize + from, data.len() - from);
-        let continuing = self.owed.take();
-        if let Some(owed) = continuing {
-            assert_eq!(owed, key, "offered another buffer while one was only partly taken (media3 throws here)");
-        }
-        if continuing.is_none() {
-            if self.needs_init {
-                self.start_media_us = pts_us.max(0);
-                self.needs_init = false;
-                self.needs_sync = false;
-            } else {
-                let expected = self.start_media_us + (self.submitted_frames * 1_000_000.0 / f.rate as f64) as i64;
-                if !self.needs_sync && (expected - pts_us).abs() > PTS_TOLERANCE_US {
-                    self.timestamp_jumps += 1;
-                    self.needs_sync = true;
-                }
-                if self.needs_sync {
-                    self.start_media_us += pts_us - expected;
-                    self.needs_sync = false;
-                }
-            }
-        }
-        if !self.write_pending() {
-            self.owed = Some(key);
-            return (false, 0);
-        }
-        let input = &data[from..];
-        self.follow_sound();
-        if self.processing() {
-            self.note_pace();
-            let media = (input.len() / fb) as f64 * self.pace;
-            self.submitted_frames += media;
-            self.process(input, media);
-            self.write_pending();
-            return (true, input.len());
-        }
-        let n = self.room_bytes().min(input.len()) / fb * fb;
-        if n > 0 {
-            self.note_pace();
-            let media = (n / fb) as f64 * self.pace;
-            self.track.write(&input[..n], media);
-            self.submitted_frames += media;
-        }
-        if n < input.len() {
-            self.owed = Some((key.0 + n, key.1 - n));
-            return (false, n);
-        }
-        (true, n)
-    }
-
-    fn handle_discontinuity(&mut self) {
-        self.needs_sync = true;
-    }
-
-    fn media_pace(&mut self, pace: f64) {
-        self.pace = if pace.is_finite() && pace > 0.0 { pace } else { 1.0 };
-    }
-
-    fn position_us(&mut self, _source_ended: bool) -> Option<i64> {
-        let f = self.format.filter(|_| !self.needs_init)?;
-        Some(self.start_media_us + (self.track.played_media() * 1_000_000.0 / f.rate as f64) as i64)
-    }
-}
 
 /// One song opened for reading, as decoded interleaved buffers (16-bit, or float for high quality).
 pub trait Reading {
@@ -808,9 +180,6 @@ pub struct Player<S: Songs, T: Track, A: App, Q: Queue> {
     pub app: A,
     pub queue: Q,
     pub tracks: S,
-    /// Sound chain transport state: deferred rebuilds, the tuning buffer.
-    pub chain: Chain,
-    pub sound: Sound,
     pub tracker: HeardTracker,
     /// Measure upcoming songs whenever the queue moves (with AutoMix on).
     pub measure_on_move: bool,
@@ -818,17 +187,13 @@ pub struct Player<S: Songs, T: Track, A: App, Q: Queue> {
     pub gain_off: bool,
     /// Maximum gain: 1 unless float output with the limiter allows boosting (`nori_player::gain`).
     pub gain_max: f32,
-    /// Keep the equalizer processor in the chain regardless of the sound ([`Player::keep_chain`]).
-    chain_kept: bool,
-    /// Sink depth while tuning: [`SHALLOW_US`], or less for an output with its own buffer behind.
-    pub shallow_us: i64,
-    /// The sound changed while paused: rebuild what the output holds on resume.
-    resound: bool,
     reading: Option<Reader<S::Reading>>,
     /// The next song last prefetched ([`Songs::upcoming`]).
     upcoming: Option<String>,
-    /// A song to read after a jump, seek or rebuild, still opening.
+    /// A song to read after a jump or seek, still opening.
     opening: Option<Opening<S::Reading>>,
+    /// The audible song opened again to make its ending anew ([`Player::replan_ending`]).
+    remaking: Option<Opening<S::Reading>>,
     /// Where the song being read started; cleared once the clock passes it (audio is audible).
     heard_from: Option<i64>,
     /// The song after the one being read, opened when that one is read to its end.
@@ -840,8 +205,6 @@ pub struct Player<S: Songs, T: Track, A: App, Q: Queue> {
     current: Option<usize>,
     source_ended: bool,
     token: u32,
-    speed: (f32, f32),
-    skip_silence: bool,
     /// Song changes with their time; the platform drains them.
     pub changes: Vec<(i64, usize)>,
     /// Failed songs (id, reason); the platform drains them.
@@ -856,9 +219,6 @@ pub struct Player<S: Songs, T: Track, A: App, Q: Queue> {
     stop_after: Option<usize>,
     /// The last turn hit [`BUFFERS_PER_TURN`] with the output still taking.
     hungry: bool,
-    /// Pause reading: the same song is being opened elsewhere (for a rebuild) and two readers would
-    /// fight over its fetch. The output plays what it holds.
-    pub read_held: bool,
     /// Start of the stream the clock is in; a new stream of the same song is a repeat-one loop.
     heard_period: Option<i64>,
     /// The serial of the stream the clock is in, and the last serial given.
@@ -879,22 +239,18 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
             now_ms: 1_000,
             engine: TransitionEngine::new(),
             burst: Burst::default(),
-            sink: Sink::new(BUFFER_US, false, Sound::default(), track),
+            sink: Sink::new(BUFFER_US, ChainSettings::default(), track),
             app,
             queue,
             tracks,
-            chain: Chain::default(),
-            sound: Sound::default(),
             tracker: HeardTracker::new(),
             measure_on_move: true,
             gain_off: false,
             gain_max: 1.0,
-            chain_kept: false,
-            shallow_us: SHALLOW_US,
-            resound: false,
             reading: None,
             upcoming: None,
             opening: None,
+            remaking: None,
             heard_from: None,
             next: None,
             periods: Vec::new(),
@@ -903,8 +259,6 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
             current: None,
             source_ended: false,
             token: 0,
-            speed: (1.0, 1.0),
-            skip_silence: false,
             changes: Vec::new(),
             failures: Vec::new(),
             errors: ErrorRun::new(),
@@ -913,7 +267,6 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
             stopped: None,
             stop_after: None,
             hungry: false,
-            read_held: false,
             heard_period: None,
             on_serial: None,
             serials: 0,
@@ -1011,7 +364,8 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         self.reading = None;
         self.next = None;
         self.opening = None;
-        // A seek or rebuild within the same song keeps its stream's identity.
+        self.remaking = None;
+        // A seek within the same song keeps its stream's identity.
         let serial = self.serial_for(i);
         self.periods = vec![Period { index: i, offset_us, duration_us: 0, gain: 1.0, serial }];
         self.on_serial = Some(serial);
@@ -1033,6 +387,77 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         }
         let o = self.opening.take().expect("checked");
         self.start_reading(o.index, o.from_ms, o.offset_us, o.r);
+    }
+
+    /// The plan out of the audible song is asked for again (settings, an analysis or the queue changed).
+    /// If its ending was made otherwise and can still change, it is made again from where the old and
+    /// new endings part. A mix already audible plays out as it began.
+    pub fn replan_ending(&mut self) {
+        self.engine.replan();
+        if self.mixing() {
+            return;
+        }
+        let Some((cur, _)) = self.ear() else { return };
+        let Some(period) = self.periods.iter().rev().find(|p| p.index == cur).copied() else { return };
+        let id = self.id_at(cur);
+        // Read on gaplessly into a song that no longer follows.
+        let astray = self.read_astray(cur);
+        self.app.clock(self.now_ms);
+        let plan = self.app.plan_for(&id);
+        let made = match self.ending_made(cur, plan.as_ref().map(|p| p.out_start_us)) {
+            Some(made) => made,
+            None if astray => None,
+            None => return,
+        };
+        if made == plan && !astray {
+            return;
+        }
+        let starts = [&made, &plan].map(|p| p.as_ref().map(|p| p.out_start_us));
+        let part_us = starts.into_iter().flatten().min().unwrap_or(period.duration_us).min(period.duration_us);
+        let said = |p: &Option<crate::engine::Plan>| p.as_ref().map_or("gapless".to_string(), |p| format!("a mix from {} ms", p.out_start_us / 1000));
+        let why = if astray { "another song follows it now".to_string() } else { format!("{} now, {} as it was made", said(&plan), said(&made)) };
+        self.app.log(&format!("the ending of {id} is made again from {} ms: {why}", part_us / 1000));
+        self.remake_from(cur, part_us / 1000);
+    }
+
+    /// Opens song `i` again at `ms`, to read on from there once it is open ([`Player::remade`]).
+    fn remake_from(&mut self, i: usize, ms: i64) {
+        let Some(offset_us) = self.periods.iter().rev().find(|p| p.index == i).map(|p| p.offset_us) else { return };
+        match self.tracks.open(&self.id_at(i), ms) {
+            Ok(r) => self.remaking = Some(Opening { index: i, from_ms: ms, offset_us, r }),
+            Err(why) => self.app.log(&format!("{} would not open again ({why}): its ending plays as it was made", self.id_at(i))),
+        }
+        self.remade();
+    }
+
+    /// The song opened again is open: the output from there on is dropped, if the output can still
+    /// replace it, and the song read on from there for the transition engine to make what follows.
+    fn remade(&mut self) {
+        let Some(o) = self.remaking.as_mut() else { return };
+        if !o.r.ready() {
+            return;
+        }
+        let o = self.remaking.take().expect("checked");
+        let Some(period) = self.periods.iter().rev().find(|p| p.offset_us == o.offset_us).copied() else { return };
+        let format = o.r.format();
+        let frame = o.from_ms * format.rate as i64 / 1000;
+        let pts = o.offset_us + frame * 1_000_000 / format.rate as i64;
+        if o.r.error().is_some() || self.sink.format != Some(format) || !self.sink.cut_at(pts) {
+            self.app.log(&format!("{} is not made again from {} ms: it plays as it was made", self.id_at(o.index), o.from_ms));
+            return;
+        }
+        self.call(|e, _, a| e.flush(a));
+        self.burst.restart();
+        self.periods.retain(|p| p.offset_us <= o.offset_us);
+        self.opening = None;
+        self.next = None;
+        self.failed = None;
+        self.source_ended = false;
+        self.sink.track.source_bits(o.r.bits());
+        self.reading = Some(Reader::new(o.index, o.offset_us, o.r));
+        self.configure(o.index, period.serial, format);
+        self.engine.set_output_stream_offset_us(o.offset_us);
+        self.engine.set_gain(period.gain);
     }
 
     /// Starts reading ready song `i`; false when it reports an error.
@@ -1066,21 +491,26 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         self.app.gain(i, &id).min(self.gain_max)
     }
 
-    /// ReplayGain settings changed: rescales unplayed audio in the track and the engine, and the song
-    /// being read from its next buffer.
+    /// ReplayGain settings changed: the output is made again at the new levels from the first frame the
+    /// track can still replace, and the song being read from its next buffer.
     pub fn gain_changed(&mut self) {
+        let mut ranges = Vec::new();
         for k in 0..self.periods.len() {
             let p = self.periods[k];
             let gain = self.song_gain(p.index);
-            if gain == p.gain || p.gain <= 0.0 {
-                self.periods[k].gain = gain;
-                continue;
+            if gain != p.gain && p.gain > 0.0 {
+                let to = self.periods.get(k + 1).map_or(i64::MAX, |n| n.offset_us);
+                ranges.push((p.offset_us..to, gain / p.gain));
+                self.engine.rescale(p.offset_us, gain / p.gain);
             }
-            let from = self.sink.media_frames(p.offset_us).unwrap_or(0.0);
-            let to = self.periods.get(k + 1).and_then(|n| self.sink.media_frames(n.offset_us)).unwrap_or(f64::MAX);
-            self.sink.track.rescale(from, to, gain / p.gain);
-            self.engine.rescale(p.offset_us, gain / p.gain);
             self.periods[k].gain = gain;
+        }
+        if !ranges.is_empty() {
+            if let Some((input, output)) = self.sink.rescale(&ranges) {
+                self.app.log(&format!("the gain changes from output frame {output} (input frame {input})"));
+            }
+            self.burst.restart();
+            self.sink.fill();
         }
         if let Some(i) = self.reading.as_ref().map(|r| r.index) {
             let gain = match self.periods.iter().rev().find(|p| p.index == i) {
@@ -1116,7 +546,6 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
 
     fn jump_opened(&mut self, i: usize, from_ms: i64, opened: Option<(String, S::Reading, i64)>) {
         self.stopped = None;
-        self.resound = false;
         self.stop_after = None;
         let i = self.playable(i);
         let id = self.id_at(i);
@@ -1129,34 +558,16 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
             Err(why) => return self.fail(i, PlaybackError::Other, why),
         };
         let offset = self.fresh_offset();
-        // A jump empties the output anyway: do a pending chain swap or depth change now (at the next
-        // boundary it would cut a crossfade).
-        let capacity = self.depth();
-        let swap = self.chain.boundary(false) == ChainAct::Rebuild || self.sink.capacity_us != capacity;
-        if swap {
-            self.app.log("chain swap at the boundary");
-            self.call(|e, _, a| e.reset(a));
-            self.burst.restart();
-            self.sink.rebuild(capacity, self.chain_in(), self.sound.clone());
-            self.sink.set_stages(self.speed.0, self.speed.1, self.skip_silence);
-        } else {
-            self.call(|e, _, a| e.flush(a));
-            self.burst.restart();
-            self.sink.flush();
-        }
+        self.call(|e, _, a| e.flush(a));
+        self.burst.restart();
+        self.sink.flush();
         self.queue.moved_to(i);
         if self.begin(i, from_ms, offset, r) {
             self.set_current(i);
         }
-        if let Some(f) = self.reading.as_ref().filter(|_| swap).map(|r| r.r.format()) {
-            self.app.log(&format!("AudioTrack {} Hz buffer={}", f.rate, f.bytes(capacity)));
-        }
     }
 
     pub fn resume(&mut self) {
-        if std::mem::take(&mut self.resound) {
-            self.rebuild_sink();
-        }
         self.burst.restart();
         self.sink.play();
         self.playing = true;
@@ -1170,9 +581,6 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         self.burst.restart();
         self.sink.pause();
         self.playing = false;
-        if self.chain.paused() == ChainAct::Rebuild {
-            self.rebuild_sink();
-        }
     }
 
     pub fn playing(&self) -> bool {
@@ -1182,7 +590,6 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
     /// Frees everything a long pause does not need and returns (queue index, ms) to [`Player::jump`]
     /// back to.
     pub fn release(&mut self) -> Option<(usize, i64)> {
-        self.resound = false;
         let ended = self.source_ended;
         if let Some(now) = self.call(|e, d, a| e.position_us(d, a, ended)) {
             self.position_us = Some(now);
@@ -1190,11 +597,10 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         let at = self.current.map(|i| (i, self.position_ms()));
         self.call(|e, _, a| e.reset(a));
         self.burst.restart();
-        let (capacity, dsp) = (self.sink.capacity_us, self.sink.dsp);
-        self.sink.rebuild(capacity, dsp, self.sound.clone());
-        self.sink.set_stages(self.speed.0, self.speed.1, self.skip_silence);
+        self.sink.reset();
         self.reading = None;
         self.opening = None;
+        self.remaking = None;
         self.next = None;
         self.failed = None;
         self.source_ended = false;
@@ -1226,7 +632,6 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
     /// Seeks in the current song: flushes and rereads on the same timeline (announcing the song again).
     pub fn seek(&mut self, ms: i64) {
         let Some(i) = self.current else { return };
-        self.resound = false;
         let offset = self.periods.iter().find(|p| p.index == i).map_or_else(|| self.fresh_offset(), |p| p.offset_us);
         let r = match self.tracks.open(&self.id_at(i), ms) {
             Ok(r) => r,
@@ -1238,179 +643,22 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         self.begin(i, ms, offset, r);
     }
 
-    /// New sound settings, applied live; a processor joining or leaving the chain needs a rebuild,
-    /// deferred to the next song while playing.
-    pub fn set_sound(&mut self, sound: Sound) {
-        let was = self.chain_in();
-        let changed = sound != self.sound;
-        self.sound = sound.clone();
-        self.sink.set_sound(sound);
-        // Paused: rebuild the output's old-sound audio on resume.
-        self.resound |= changed && was && !self.playing && self.current.is_some();
-        self.follow_chain(was);
-    }
-
-    /// Keeps the equalizer processor in the chain (bypassed when flat), so turning the sound on or off
-    /// needs no rebuild.
-    pub fn keep_chain(&mut self, on: bool) {
-        let was = self.chain_in();
-        self.chain_kept = on;
-        self.follow_chain(was);
-    }
-
-    fn chain_in(&self) -> bool {
-        self.chain_kept || self.sound.on()
-    }
-
-    /// Rebuilds the output if the processor joined or left the chain (`was`: it was in), at the next
-    /// song while playing.
-    fn follow_chain(&mut self, was: bool) {
-        let change = ChainChange { processor_changed: was != self.chain_in(), ..Default::default() };
-        match rebuild(change) {
-            Rebuild::None => {}
-            Rebuild::Now => self.rebuild_sink(),
-            Rebuild::AtBoundary => {
-                if !self.playing {
-                    self.rebuild_sink();
-                } else if self.chain.defer() {
-                    self.app.log("chain swap deferred to the next track");
-                }
-            }
-        }
-    }
-
-    /// The equalizer screen opened or closed: switches to or from the shallow buffer at the next
-    /// boundary, or in place over a track that [`Track::resizes`].
-    pub fn set_tuning(&mut self, on: bool) {
-        let was = self.chain;
-        let act = self.chain.tuning(on, self.sound.on(), self.current.is_none(), self.playing);
-        self.burst.enabled = self.chain.bursting(false);
-        if self.sink.track.resizes() {
-            self.chain.swap_pending = was.swap_pending;
-            self.chain.deep_at_next_pause = was.deep_at_next_pause;
-            self.resize_sink();
+    /// New chain settings, heard from the first frame the output can still replace.
+    pub fn set_chain(&mut self, settings: ChainSettings) {
+        if *self.sink.settings() == settings {
             return;
         }
-        if act == ChainAct::Rebuild {
-            self.rebuild_sink();
+        if let Some((input, output)) = self.sink.change(settings) {
+            self.app.log(&format!("the chain changes from output frame {output} (input frame {input})"));
         }
-    }
-
-    /// Sets the shallow buffer depth; applied in place if tuning over a resizable track, else the next
-    /// time the sink goes shallow.
-    pub fn set_shallow_us(&mut self, us: i64) {
-        if us == self.shallow_us {
-            return;
-        }
-        self.shallow_us = us;
-        if self.chain.tuning && self.sink.track.resizes() {
-            self.resize_sink();
-        }
-    }
-
-    /// Applies [`Player::depth`] in place (for a track that [`Track::resizes`]).
-    fn resize_sink(&mut self) {
-        let capacity = self.depth();
-        if self.sink.capacity_us != capacity {
-            self.sink.capacity_us = capacity;
-            self.sink.track.depth(capacity);
-            self.app.log(&format!("output depth in place: {} ms", capacity / 1000));
-        }
-    }
-
-    /// Sink depth: shallow while tuning, deep otherwise.
-    fn depth(&self) -> i64 {
-        if self.chain.tuning {
-            self.shallow_us
-        } else {
-            BUFFER_US
-        }
-    }
-
-    /// Rebuilds what the output holds from the audible position with the current sound, stages and
-    /// depth, so a change is heard at once (for outputs that can drop audio without an audible gap).
-    /// Includes any pending boundary or pause rebuild. Paused: done on resume.
-    pub fn resound(&mut self) {
-        self.resound_with(None);
-    }
-
-    /// [`Player::resound`] reusing song `id` opened ahead from `from_ms` as `r` (see [`Player::jump_from`]).
-    pub fn resound_from(&mut self, id: String, r: S::Reading, from_ms: i64) {
-        self.resound_with(Some((id, r, from_ms)));
-    }
-
-    fn resound_with(&mut self, opened: Option<(String, S::Reading, i64)>) {
-        if self.current.is_none() {
-            return;
-        }
-        if !self.playing {
-            self.resound = true;
-            return;
-        }
-        self.follow_clock();
-        self.chain.swap_pending = false;
-        self.chain.deep_at_next_pause = false;
-        self.rebuild_sink_from(opened);
-    }
-
-    /// Speed and pitch, applied after the stages drain.
-    pub fn set_speed(&mut self, speed: f32, pitch: f32) {
-        self.speed = (speed, pitch);
-        self.sink.set_stages(speed, pitch, self.skip_silence);
-        self.app.log(&format!("speed in chain: x{speed} pitch x{pitch}"));
-    }
-
-    pub fn set_skip_silence(&mut self, on: bool) {
-        self.skip_silence = on;
-        self.sink.set_stages(self.speed.0, self.speed.1, on);
-        if let Some(f) = self.sink.skipping_silence() {
-            self.app.log(&format!("silence skipping in chain: {} Hz x{}", f.rate, f.channels));
-        }
+        self.burst.restart();
+        self.sink.fill();
     }
 
     /// Speed and pitch as set.
     pub fn speed(&self) -> (f32, f32) {
-        self.speed
-    }
-
-    /// Resets the engine, rebuilds the sink for current settings and rereads the audible song from the
-    /// audible position.
-    fn rebuild_sink(&mut self) {
-        self.rebuild_sink_from(None);
-    }
-
-    /// [`Player::rebuild_sink`], reusing `opened` if it fits ([`taken_from`]).
-    fn rebuild_sink_from(&mut self, opened: Option<(String, S::Reading, i64)>) {
-        self.resound = false;
-        // Inside a held ending, the audible song is the one before `current`.
-        let ear = self.ear();
-        self.call(|e, _, a| e.reset(a));
-        self.burst.restart();
-        let capacity = self.depth();
-        self.sink.rebuild(capacity, self.chain_in(), self.sound.clone());
-        self.sink.set_stages(self.speed.0, self.speed.1, self.skip_silence);
-        if let Some((i, at_ms)) = ear {
-            if self.current != Some(i) {
-                self.current = Some(i);
-                self.queue.moved_to(i);
-                self.sync_queue();
-            }
-            let offset = self.fresh_offset();
-            let id = self.id_at(i);
-            let ready = opened.filter(|o| o.0 == id).and_then(|(_, r, from)| taken_from(r, from, at_ms.max(0)));
-            let r = match ready {
-                Some(r) => Ok(r),
-                None => self.tracks.open(&id, at_ms.max(0)).map(|r| (r, at_ms.max(0))),
-            };
-            let (r, at_ms) = match r {
-                Ok(r) => r,
-                Err(why) => return self.fail(i, PlaybackError::Other, why),
-            };
-            self.begin(i, at_ms, offset, r);
-            if let Some(f) = self.reading.as_ref().map(|r| r.r.format()) {
-                self.app.log(&format!("AudioTrack {} Hz buffer={}", f.rate, f.bytes(capacity)));
-            }
-        }
+        let s = self.sink.settings();
+        (s.speed, s.pitch)
     }
 
     /// Has the app measure upcoming songs, then replans.
@@ -1452,6 +700,7 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
                 self.playing = false;
                 self.reading = None;
                 self.opening = None;
+                self.remaking = None;
                 self.next = None;
             }
         }
@@ -1548,7 +797,6 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         if self.current == Some(i) {
             return;
         }
-        let first = self.current.is_none();
         self.current = Some(i);
         self.queue.moved_to(i);
         self.changes.push((self.now_ms, i));
@@ -1556,10 +804,6 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         self.upcoming = self.next_of(i).map(|n| self.id_at(n));
         if let Some(id) = &self.upcoming {
             self.tracks.upcoming(id);
-        }
-        if !first && self.chain.boundary(false) == ChainAct::Rebuild {
-            self.app.log("chain swap at the boundary");
-            self.rebuild_sink();
         }
         if self.app.auto_mix() && self.measure_on_move {
             self.measure_ahead();
@@ -1729,15 +973,16 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         self.opening.is_some() || self.reading.as_ref().is_some_and(|r| !r.left() && !r.ended && r.waiting)
     }
 
-    /// Reading is blocked on bytes: [`Player::starved`], or the next song's first bytes.
+    /// Reading is blocked on bytes: [`Player::starved`], a song opened again for its ending, or the next song's first bytes.
     pub fn waiting_for_bytes(&self) -> bool {
-        self.starved() || (self.failed.is_none() && self.next.as_ref().is_some_and(|(_, n)| n.is_ok()) && self.reading.as_ref().is_some_and(|r| r.ended && r.waiting && !r.left()))
+        self.starved() || self.remaking.is_some() || (self.failed.is_none() && self.next.as_ref().is_some_and(|(_, n)| n.is_ok()) && self.reading.as_ref().is_some_and(|r| r.ended && r.waiting && !r.left()))
     }
 
     /// One render turn at `now_ms`: reads the clock and offers audio until the output refuses.
     pub fn turn(&mut self, now_ms: i64) {
         self.now_ms = now_ms;
         self.opened();
+        self.remade();
         if !self.playing {
             return;
         }
@@ -1776,7 +1021,8 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
 
     fn render(&mut self) {
         self.hungry = false;
-        if self.read_held {
+        // What a splice left to run again goes first.
+        if !self.sink.fill() {
             return;
         }
         for k in 0..BUFFERS_PER_TURN {
@@ -1804,7 +1050,7 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
             }
         } else if self.source_ended {
             self.call(|e, d, _| e.queue_empty(d));
-            self.sink.write_pending();
+            self.sink.fill();
         }
     }
 

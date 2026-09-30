@@ -17,7 +17,7 @@ const SIDE_LIFT: f64 = 0.5;
 const CROSS: f64 = 0.25;
 const REFLECT: f64 = 0.12;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Virtualizer {
     strength: f64,
     /// One-pole low-pass coefficients: `y += a (x - y)`.
@@ -33,6 +33,19 @@ pub struct Virtualizer {
     pos: usize,
     lp: f64,
     side_lp: f64,
+}
+
+/// `clone_from` keeps the ring's memory (the sink copies the chain's state without allocating).
+impl Clone for Virtualizer {
+    fn clone(&self) -> Self {
+        Virtualizer { ring: self.ring.clone(), ..*self }
+    }
+
+    fn clone_from(&mut self, o: &Self) {
+        let mut ring = std::mem::take(&mut self.ring);
+        ring.clone_from(&o.ring);
+        *self = Virtualizer { ring, ..*o };
+    }
 }
 
 fn one_pole(rate: f64, hz: f64) -> f64 {
