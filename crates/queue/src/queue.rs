@@ -57,11 +57,13 @@ pub fn queue_songs(ids: Vec<String>) -> Vec<Song> {
 }
 
 fn songs_at(ids: Vec<String>, now: i64) -> Vec<Song> {
-    let queued: std::collections::HashSet<String> = crate::playlist::with(|p| p.ids().iter().cloned().collect());
-    with(|s| {
-        let listed: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
-        s.songs.retain(|id, (_, at)| listed.contains(id.as_str()) || queued.contains(id) || now - *at < KEEP_MS);
-        ids.iter().map(|id| s.songs.get(id).map_or_else(|| Song::only_id(id.clone()), |(song, _)| song.clone())).collect()
+    // The queue's ids are looked at in place (the playlist's lock, then the store's, as elsewhere).
+    crate::playlist::with(|p| {
+        let kept: std::collections::HashSet<&str> = ids.iter().chain(p.ids()).map(String::as_str).collect();
+        with(|s| {
+            s.songs.retain(|id, (_, at)| kept.contains(id.as_str()) || now - *at < KEEP_MS);
+            ids.iter().map(|id| s.songs.get(id).map_or_else(|| Song::only_id(id.clone()), |(song, _)| song.clone())).collect()
+        })
     })
 }
 
