@@ -8,6 +8,8 @@ import dev.nori.music.ffi.library.SmartPage
 import dev.nori.music.ffi.library.StatsPage
 import dev.nori.music.ffi.library.SmartEdit
 import dev.nori.music.ffi.model.SmartPlaylist
+import dev.nori.music.ffi.model.SmartProblem
+import dev.nori.music.app.R
 import dev.nori.music.ffi.library.smartEditPrepare
 import dev.nori.music.app.ui.Note
 import dev.nori.music.app.ui.say
@@ -42,12 +44,25 @@ class SmartViewModel(app: Application) : NoriViewModel(app) {
     /** Null when saved; otherwise what is wrong with the definition. */
     fun save(draft: SmartEdit, onSaved: (String) -> Unit): String? {
         val ready = smartEditPrepare(draft)
-        ready.error?.let { return say.smartProblem(it) }
+        ready.error?.let { return problem(it) }
         viewModelScope.launch { val id = nori.library.smartSave(ready.id, ready.name.ifEmpty { say.smartPlaylist }, ready.json); refresh(); onSaved(id) }
         return null
     }
 
     fun delete(id: String) = viewModelScope.launch { nori.library.smartDelete(id); refresh() }
+
+    /** What is wrong with the rules, in words. */
+    private fun problem(p: SmartProblem): String = getApplication<Application>().getString(
+        when (p) {
+            SmartProblem.NO_VALUE -> R.string.smart_problem_no_value
+            SmartProblem.NOT_NUMBER -> R.string.smart_problem_not_number
+            SmartProblem.NOT_DATE -> R.string.smart_problem_not_date
+            SmartProblem.DAYS_OUT_OF_RANGE -> R.string.smart_problem_days
+            SmartProblem.BACKWARDS -> R.string.smart_problem_backwards
+            SmartProblem.NEGATIVE -> R.string.smart_problem_negative
+            else -> R.string.smart_problem_other
+        },
+    )
 }
 
 class HistoryViewModel(app: Application) : NoriViewModel(app) {
