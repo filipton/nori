@@ -7,8 +7,12 @@ use parking_lot::Mutex;
 /// A clock on `lyrics` at `position_ms`, as a handle the platform frees with `LyricsJni.destroy`.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn lyrics_clock(lyrics: nori_model::Lyrics, position_ms: i64) -> i64 {
-    let lines = lyrics.lines.iter().map(timed);
-    new_clock(LyricTiming::new(lyrics.synced, lyrics.word_timed, lines), position_ms, lyrics.offset_ms)
+    Box::into_raw(Box::new(clock_on(&lyrics, position_ms))) as i64
+}
+
+/// A clock on `lyrics` at `position_ms`.
+pub fn clock_on(lyrics: &nori_model::Lyrics, position_ms: i64) -> LyricClock {
+    LyricClock::with_offset(LyricTiming::new(lyrics.synced, lyrics.word_timed, lyrics.lines.iter().map(timed)), position_ms, lyrics.offset_ms)
 }
 
 fn new_clock(timing: LyricTiming, position_ms: i64, offset_ms: i64) -> i64 {
