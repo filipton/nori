@@ -7,7 +7,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 use crate::transport::{self, FailureKind, NetError, Transport};
-use crate::{Core, CoreError, IngestStats, ServerConfig};
+use crate::{api, Core, CoreError, IngestStats, ServerConfig};
 
 pub use nori_net::requests::{NetProfile, NetResult, Starrable, SyncStep, Write};
 pub(crate) use nori_net::requests::{blank, pairs, request, FOLDERED};
@@ -39,10 +39,34 @@ pub(crate) fn active_client() -> Option<Arc<Client>> {
     ACTIVE_CLIENT.lock().upgrade()
 }
 
-async fn ping(core: &Core, transport: &dyn Transport, timeout_ms: u32) -> NetResult<()> {
-    let url = core.server.read().url("ping", &[]);
-    core.parse_status(transport::get(transport, url, timeout_ms).await?)?;
+async fn ping(transport: &dyn Transport, server: &api::Server, timeout_ms: u32) -> NetResult<()> {
+    crate::parse(&transport::get(transport, server.url("ping", &[]), timeout_ms).await?)?;
     Ok(())
+}
+
+/// Verifies a profile before it is kept, opening nothing: pings its address, else `alt_url`. On error 41
+/// (no token auth) tries legacy auth and returns true if that worked.
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub async fn login_check(transport: Arc<dyn Transport>, config: ServerConfig, alt_url: String) -> NetResult<bool> {
+    let legacy_possible = !config.legacy_auth && config.api_key.as_deref().unwrap_or("").is_empty();
+    match login_attempt(&*transport, &config, &alt_url).await {
+        Ok(()) => Ok(false),
+        Err(NetError::Api { code: 41, .. }) if legacy_possible => {
+            login_attempt(&*transport, &ServerConfig { legacy_auth: true, ..config }, &alt_url).await?;
+            Ok(true)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+async fn login_attempt(transport: &dyn Transport, config: &ServerConfig, alt_url: &str) -> NetResult<()> {
+    let server = config.server();
+    let first = ping(transport, &server, 0).await;
+    if first.is_err() && !blank(alt_url) {
+        ping(transport, &server.rebased(alt_url), 0).await
+    } else {
+        first
+    }
 }
 
 impl Client {
@@ -109,30 +133,14 @@ impl Client {
         if blank(&alt) {
             return false;
         }
-        self.core.use_address(url);
-        let first_answers = ping(&self.core, &*self.transport, ADDRESS_PROBE_MS).await.is_ok();
-        if !first_answers {
-            self.core.use_address(alt);
-        }
+        let probe = self.core.server.read().rebased(&url);
+        let first_answers = ping(&*self.transport, &probe, ADDRESS_PROBE_MS).await.is_ok();
+        self.core.use_address(if first_answers { url } else { alt });
         let changed = self.second.swap(!first_answers, Ordering::Relaxed) == first_answers;
         if changed {
             self.transport.address_changed();
         }
         changed
-    }
-
-    /// Verifies a profile (trying `alt_url` if the first address fails). On error 41 (no token auth)
-    /// retries with legacy auth and returns true if that worked.
-    pub async fn login(&self, config: ServerConfig, alt_url: String) -> NetResult<bool> {
-        let legacy_possible = !config.legacy_auth && config.api_key.as_deref().unwrap_or("").is_empty();
-        match self.attempt(config.clone(), &alt_url).await {
-            Ok(()) => Ok(false),
-            Err(NetError::Api { code: 41, .. }) if legacy_possible => {
-                self.attempt(ServerConfig { legacy_auth: true, ..config }, &alt_url).await?;
-                Ok(true)
-            }
-            Err(e) => Err(e),
-        }
     }
 
     /// Replays queued writes in order until none are left, stopping at the first network failure or an
@@ -191,19 +199,6 @@ impl Client {
             self.core.cache_evict(p)?;
         }
         Ok(())
-    }
-}
-
-impl Client {
-    async fn attempt(&self, config: ServerConfig, alt_url: &str) -> NetResult<()> {
-        self.core.configure(config)?;
-        let first = ping(&self.core, &*self.transport, 0).await;
-        if first.is_err() && !blank(alt_url) {
-            self.core.use_address(alt_url.to_string());
-            ping(&self.core, &*self.transport, 0).await
-        } else {
-            first
-        }
     }
 }
 
@@ -503,22 +498,33 @@ pub(crate) mod tests {
 
     #[test]
     fn login_falls_back_to_other_address_and_legacy_auth() {
-        let (c, fake) = client(NetProfile::default());
+        let fake = Arc::new(Fake::default());
         let config = ServerConfig { url: "http://lan".into(), user: "u".into(), password: "p".into(), ..Default::default() };
         fake.fail(FailureKind::Connect);
         fake.answer(OK);
-        assert!(!block(c.login(config.clone(), "https://wan".into())).unwrap());
+        assert!(!block(login_check(fake.clone(), config.clone(), "https://wan".into())).unwrap());
         assert!(fake.asked()[1].starts_with("https://wan/rest/ping"));
 
         let no_token = r#"{"subsonic-response":{"status":"failed","error":{"code":41,"message":"no token"}}}"#;
         fake.answer(no_token);
         fake.answer(OK);
-        assert!(block(c.login(config.clone(), String::new())).unwrap());
+        assert!(block(login_check(fake.clone(), config.clone(), String::new())).unwrap());
         assert!(fake.asked()[3].contains("&p=enc:70&"));
 
         fake.answer(no_token);
         let keyed = ServerConfig { api_key: Some("k".into()), ..config };
-        assert!(matches!(block(c.login(keyed, String::new())), Err(NetError::Api { code: 41, .. })));
+        assert!(matches!(block(login_check(fake.clone(), keyed, String::new())), Err(NetError::Api { code: 41, .. })));
+    }
+
+    #[test]
+    fn probing_the_first_address_keeps_the_second_in_use() {
+        let (c, fake) = client(two_addresses());
+        fake.fail(FailureKind::Timeout);
+        assert!(block(c.choose_address()));
+        *fake.pends.lock() = true;
+        fake.fail(FailureKind::Timeout);
+        let (_, during) = block(futures_util::future::join(c.choose_address(), async { c.core.url_prefix("stream".into()) }));
+        assert!(during.starts_with("https://wan.example/"), "{during}");
     }
 
     #[test]

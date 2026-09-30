@@ -327,10 +327,8 @@ fn net(p: &SavedServer) -> NetProfile {
 
 /// Logs `draft` in (blocking). The core tries the second address and falls back to legacy auth, which
 /// is then kept on the profile.
-pub fn check_login(data: &Path, http: Arc<Http>, draft: SavedServer) -> Result<SavedServer, String> {
-    let probe = Core::new(db_path(data), nori_core::settings::server_db_id(&draft.id)).map_err(|e| e.to_string())?;
-    let client = Client::new(probe, http);
-    let legacy = block_on(client.login(config(&draft), draft.alt_url.clone())).map_err(|e| match net_error(&e) {
+pub fn check_login(http: Arc<Http>, draft: SavedServer) -> Result<SavedServer, String> {
+    let legacy = block_on(nori_core::client::login_check(http, config(&draft), draft.alt_url.clone())).map_err(|e| match net_error(&e) {
         e if e.is_empty() => "the server did not answer".to_string(),
         e => e,
     })?;

@@ -212,7 +212,7 @@ pub fn main(argv: Vec<String>) {
     let client = Client::new(core.clone(), http.clone());
     client.set_profile(NetProfile { url: a.url.clone(), ..Default::default() });
     if !a.offline {
-        if let Err(e) = block_on(client.login(config, String::new())) {
+        if let Err(e) = block_on(nori_core::client::login_check(http.clone(), config, String::new())) {
             eprintln!("login failed: {e}");
             std::process::exit(1);
         }

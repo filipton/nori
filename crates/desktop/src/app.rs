@@ -587,8 +587,8 @@ impl App {
         let draft = SavedServer { id: nori_core::settings::new_server_id(), url, user, password: ui.get_login_password().to_string(), ..Default::default() };
         ui.set_login_busy(true);
         ui.set_login_error("".into());
-        let (data, http, tx) = (self.data.clone(), self.http.clone(), self.tx.clone());
-        std::thread::spawn(move || tx.send(Msg::LoggedIn(session::check_login(&data, http, draft))));
+        let (http, tx) = (self.http.clone(), self.tx.clone());
+        std::thread::spawn(move || tx.send(Msg::LoggedIn(session::check_login(http, draft))));
     }
 
     fn go(&mut self, view: i32) {

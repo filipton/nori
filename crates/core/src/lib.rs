@@ -63,6 +63,18 @@ pub struct ServerConfig {
     pub legacy_auth: bool,
 }
 
+impl ServerConfig {
+    /// The server these settings sign requests for.
+    fn server(&self) -> api::Server {
+        let auth = match (&self.api_key, self.legacy_auth) {
+            (Some(k), _) if !k.is_empty() => api::Auth::ApiKey(k),
+            (_, true) => api::Auth::Legacy { user: &self.user, password: &self.password },
+            _ => api::Auth::Token { user: &self.user, password: &self.password },
+        };
+        api::Server::with(&self.url, auth)
+    }
+}
+
 /// A write queued while the server was unreachable.
 pub(crate) struct PendingCall {
     pub row_id: i64,
@@ -311,12 +323,7 @@ impl Core {
     /// Sets the server; returns the normalised base url. Clears the library when the profile now points
     /// at another server or user.
     pub fn configure(&self, config: ServerConfig) -> Result<String> {
-        let auth = match (&config.api_key, config.legacy_auth) {
-            (Some(k), _) if !k.is_empty() => api::Auth::ApiKey(k),
-            (_, true) => api::Auth::Legacy { user: &config.user, password: &config.password },
-            _ => api::Auth::Token { user: &config.user, password: &config.password },
-        };
-        let s = api::Server::with(&config.url, auth);
+        let s = config.server();
         let ident = format!("{}|{}", s.base, config.user);
         let db = self.db.lock();
         if db::kv_get(&db, "server")?.as_deref() != Some(&ident) {
