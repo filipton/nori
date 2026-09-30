@@ -584,7 +584,7 @@ impl Session {
         let (client, me) = (self.client.clone(), self.handle());
         spawn("nori-autofill", move || {
             let fresh = block_on(client.autofill());
-            if nori_core::autofill::autofill_arrived(fresh.songs.len() as u32) && !fresh.songs.is_empty() {
+            if client.autofill_arrived(fresh.songs.len() as u32) && !fresh.songs.is_empty() {
                 let len = playlist::with(|p| p.len());
                 let n = fresh.songs.len();
                 playlist::playlist_take(len as u32, fresh.songs.iter().map(|s| s.id.clone()).collect(), vec![Hand::No; n], fresh.from);

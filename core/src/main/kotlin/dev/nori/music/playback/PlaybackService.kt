@@ -572,7 +572,7 @@ class PlaybackService : MediaLibraryService() {
         val fresh = runCatching { nori.library.autofill() }.getOrNull()
         val songs = fresh?.songs.orEmpty()
         // Player work stays on this scope's main dispatcher.
-        if (dev.nori.music.ffi.queue.autofillArrived(songs.size.toUInt())) {
+        if (nori.library.autofillArrived(songs.size.toUInt())) {
             // Where they come from, as the core says: an album from its page (played as an album, as its Add
             // to queue does), a shuffle's albums from the shuffle.
             controls.addMediaItems(startedFrom(held(songs), fresh?.from))

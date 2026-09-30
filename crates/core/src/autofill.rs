@@ -161,9 +161,9 @@ impl Client {
         }
     }
 
-    /// Stores `ids` as just picked.
+    /// Keeps `ids` as this fetch's picks, recorded by [`Client::autofill_arrived`] once appended.
     fn picked(&self, kind: Picked, ids: &[String]) {
-        let _ = note(&self.core.db.lock(), kind, ids, crate::db::now_ms());
+        *self.autofill_picks.lock() = Some((kind, ids.to_vec()));
     }
 
     /// A library seed for `last`: itself if in the library, else a library song by the same artist, else
@@ -219,11 +219,22 @@ impl Client {
             crate::settings_store::prefs(|p| (p.auto_fill_kind, p.auto_fill_basis, p.auto_fill_remote));
         self.autofill_as(kind, basis, remote).await
     }
+
+    /// The fetch returned `count` songs: whether to append them. When so, what it picked counts as used
+    /// for the rotation; a fetch whose songs are dropped leaves no trace.
+    pub fn autofill_arrived(&self, count: u32) -> bool {
+        let take = nori_queue::autofill::autofill_arrived(count);
+        if let (true, Some((kind, ids))) = (take, self.autofill_picks.lock().take()) {
+            let _ = note(&self.core.db.lock(), kind, &ids, crate::db::now_ms());
+        }
+        take
+    }
 }
 
 impl Client {
     async fn autofill_as(&self, kind: AutoFillKind, basis: AutoFillBasis, remote: bool) -> Refill {
         let began = std::time::Instant::now();
+        *self.autofill_picks.lock() = None;
         let fresh = self.autofill_from(kind, basis, remote).await;
         crate::alog::info(&format!("autofill: {} songs in {} ms (kind {kind:?}, basis {basis:?})", fresh.songs.len(), began.elapsed().as_millis()));
         fresh
@@ -305,8 +316,20 @@ pub(crate) mod tests {
         let got = block(c.autofill_as(AutoFillKind::Songs, AutoFillBasis::Similar, false)).songs;
         assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["s2", "s1"]);
         assert!(fake.asked.lock()[0].0.contains("getSimilarSongs2"));
-        let used = song_use(&c.core.db.lock(), crate::db::now_ms()).unwrap();
-        assert!(used.contains_key("s1") && used.contains_key("s2"));
+        assert_eq!(c.autofill_picks.lock().as_ref().map(|p| p.1.clone()), Some(vec!["s2".to_string(), "s1".into()]));
+    }
+
+    #[test]
+    fn dropped_refill_is_not_counted_as_picked() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        queue::queue_register(vec![song("dr-seed", "al0")]);
+        fake.answer(&songs_json(&[("dr-1", "x")]));
+        let _g = crate::playlist::tests::hold(&["dr-seed"], 0);
+        let got = block(c.autofill_as(AutoFillKind::Songs, AutoFillBasis::Similar, false)).songs;
+        assert_eq!(got.len(), 1);
+        // No fetch was waited for at this end: the songs are not appended.
+        assert!(!c.autofill_arrived(1));
+        assert!(!song_use(&c.core.db.lock(), crate::db::now_ms()).unwrap().contains_key("dr-1"));
     }
 
     fn random_json(ids: &[&str]) -> String {

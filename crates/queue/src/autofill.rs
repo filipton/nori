@@ -110,8 +110,8 @@ fn autofill_next_at(now_ms: i64) -> FillNext {
     }
 }
 
-/// The fetch returned `count` songs: whether to append them (`Refill::arrived`).
-#[cfg_attr(feature = "ffi", uniffi::export)]
+/// The fetch returned `count` songs: whether to append them (`Refill::arrived`). Clients ask through
+/// `Client::autofill_arrived`, which also records the picks.
 pub fn autofill_arrived(count: u32) -> bool {
     let end = autofill_seed();
     REFILL.lock().arrived(count as usize, end.as_deref())
