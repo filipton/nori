@@ -1008,7 +1008,8 @@ impl<R: Ring> Writer<R> {
     fn on_flush(&mut self, now_ns: i64, pulled: usize) -> bool {
         let remade = self.ring.behind() > pulled as u64;
         match &self.handover {
-            None if remade && self.playing && !self.drained && self.format.bits == 0 => {
+            // Not bit-perfect: such an output plays one track.
+            None if remade && self.playing && !self.drained && !self.priming && self.format.bits == 0 => {
                 if self.hand_over(now_ns) {
                     return false;
                 }
@@ -1071,8 +1072,8 @@ impl<R: Ring> Writer<R> {
         let b = &mut h.beside;
         let stamp = b.sink.stamp();
         if !*grown && stamp.is_some_and(|(f, _)| f > 0) {
-            // Playing: room for more silence and, later, the music.
-            b.sink.resize(b.allocated);
+            // Playing: its own size again, room for more silence and, later, the music.
+            b.sink.resize(b.capacity);
             *grown = true;
         }
         let taken = b.sink.consumed().unwrap_or(0);
@@ -1147,9 +1148,8 @@ impl<R: Ring> Writer<R> {
         if by_data {
             self.shape = Some(Shape { start: from, len: cross as u64, rising: false });
             self.top_up(now_ns, Some(from + cross as u64));
-            if self.handover.is_none() {
-                return None;
-            }
+            // A jump found by the pull ended the handover.
+            self.handover.as_ref()?;
             if self.staged.1 > 0 || self.clock.ahead() < from + cross as u64 {
                 log("the track would not take its fade: emptying it");
                 self.restart(now_ns);
@@ -1174,6 +1174,7 @@ impl<R: Ring> Writer<R> {
             self.shape = Some(Shape { start: silence, len: cross as u64, rising: true });
             None
         } else {
+            self.shape = None;
             self.sink.set_volume(0.0);
             Some(ByVolume { stamp: (fc, tc), gain: 1.0 })
         };
