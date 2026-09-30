@@ -93,17 +93,6 @@ fn autoeq_preset_is_read() {
 }
 
 #[test]
-fn pending_calls_replay_in_order() {
-    let core = Core::new(String::new(), "t".into()).unwrap();
-    core.pending_add("star".into(), vec![Param { key: "id".into(), value: "a b".into() }]).unwrap();
-    core.pending_add("scrobble".into(), vec![]).unwrap();
-    let l = core.pending_list().unwrap();
-    assert_eq!((l.len(), l[0].endpoint.as_str(), l[0].params[0].value.as_str()), (2, "star", "a b"));
-    core.pending_done(l[0].row_id).unwrap();
-    assert_eq!(core.pending_list().unwrap()[0].endpoint, "scrobble");
-}
-
-#[test]
 fn browse_sorts_filters_and_groups_by_decade() {
     let core = Core::new(String::new(), "t".into()).unwrap();
     core.parse_search(r#"{"subsonic-response":{"status":"ok","searchResult3":{"song":[

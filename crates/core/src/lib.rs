@@ -63,12 +63,11 @@ pub struct ServerConfig {
     pub legacy_auth: bool,
 }
 
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
-pub struct PendingCall {
+/// A write queued while the server was unreachable.
+pub(crate) struct PendingCall {
     pub row_id: i64,
     pub endpoint: String,
-    pub params: Vec<Param>,
+    pub params: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -661,13 +660,13 @@ impl Core {
         Ok(())
     }
 
-    pub fn pending_add(&self, endpoint: String, params: Vec<Param>) -> Result<()> {
-        let json = serde_json::to_string(&params.iter().map(|p| (&p.key, &p.value)).collect::<Vec<_>>()).unwrap_or_default();
+    pub(crate) fn pending_add(&self, endpoint: &str, params: &[(String, String)]) -> Result<()> {
+        let json = serde_json::to_string(params).unwrap_or_default();
         self.db.lock().execute("INSERT INTO pending(server, endpoint, params) VALUES(sid(), ?1, ?2)", params![endpoint, json])?;
         Ok(())
     }
 
-    pub fn pending_list(&self) -> Result<Vec<PendingCall>> {
+    pub(crate) fn pending_list(&self) -> Result<Vec<PendingCall>> {
         let c = self.db.lock();
         let mut st = c.prepare_cached("SELECT rowid, endpoint, params FROM pending WHERE server=sid() ORDER BY rowid LIMIT 200")?;
         let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
@@ -675,12 +674,12 @@ impl Core {
             .filter_map(|r| r.ok())
             .map(|(row_id, endpoint, json)| {
                 let pairs: Vec<(String, String)> = serde_json::from_str(&json).unwrap_or_default();
-                PendingCall { row_id, endpoint, params: pairs.into_iter().map(|(key, value)| Param { key, value }).collect() }
+                PendingCall { row_id, endpoint, params: pairs }
             })
             .collect())
     }
 
-    pub fn pending_done(&self, row_id: i64) -> Result<()> {
+    pub(crate) fn pending_done(&self, row_id: i64) -> Result<()> {
         self.db.lock().execute("DELETE FROM pending WHERE server=sid() AND rowid=?1", [row_id])?;
         Ok(())
     }

@@ -27,6 +27,8 @@ pub struct Client {
     pub(crate) lyrics: nori_lyrics::services::LyricsMemory,
     /// Motion cover token and cached videos (motion.rs).
     pub(crate) motion: parking_lot::Mutex<crate::motion::Motion>,
+    /// A replay of the queued writes is running; a second one would send them twice.
+    replaying: AtomicBool,
 }
 
 /// The newest client, for code without a handle (`stream::resolve_now`, the beat model download).
@@ -81,10 +83,7 @@ impl Client {
                 self.core.parse_status(body)?;
                 self.flush_pending().await?;
             }
-            Err(e) if e.is_io() => {
-                let p = params.into_iter().map(|(key, value)| crate::Param { key, value }).collect();
-                self.core.pending_add(endpoint.to_string(), p)?;
-            }
+            Err(e) if e.is_io() => self.core.pending_add(endpoint, &params)?,
             Err(e) => return Err(e),
         }
         for s in stale {
@@ -98,7 +97,7 @@ impl Client {
 impl Client {
     #[cfg_attr(feature = "ffi", uniffi::constructor)]
     pub fn new(core: Arc<Core>, transport: Arc<dyn Transport>) -> Arc<Self> {
-        let client = Arc::new(Client { core, transport, profile: RwLock::new(NetProfile::default()), second: AtomicBool::new(false), lyrics: Default::default(), motion: Default::default() });
+        let client = Arc::new(Client { core, transport, profile: RwLock::new(NetProfile::default()), second: AtomicBool::new(false), lyrics: Default::default(), motion: Default::default(), replaying: AtomicBool::new(false) });
         *ACTIVE_CLIENT.lock() = Arc::downgrade(&client);
         client
     }
@@ -152,20 +151,36 @@ impl Client {
         }
     }
 
-    /// Replays queued writes in order, stopping at the first network failure; rejected writes are dropped.
+    /// Replays queued writes in order until none are left, stopping at the first network failure; rejected
+    /// writes are dropped. While one replay runs, another returns at once: the running one sends what was
+    /// queued meanwhile too.
     pub async fn flush_pending(&self) -> NetResult<()> {
-        for p in self.core.pending_list()? {
-            let params: Vec<(String, String)> = p.params.into_iter().map(|p| (p.key, p.value)).collect();
-            match self.get(&p.endpoint, &params).await {
-                Err(e) if e.is_io() => return Ok(()),
-                Ok(body) => {
-                    let _ = self.core.parse_status(body);
-                }
-                Err(_) => {}
-            }
-            self.core.pending_done(p.row_id)?;
+        if self.replaying.swap(true, Ordering::Acquire) {
+            return Ok(());
         }
-        Ok(())
+        struct Done<'a>(&'a AtomicBool);
+        impl Drop for Done<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Release);
+            }
+        }
+        let _done = Done(&self.replaying);
+        loop {
+            let queued = self.core.pending_list()?;
+            if queued.is_empty() {
+                return Ok(());
+            }
+            for p in queued {
+                match self.get(&p.endpoint, &p.params).await {
+                    Err(e) if e.is_io() => return Ok(()),
+                    Ok(body) => {
+                        let _ = self.core.parse_status(body);
+                    }
+                    Err(_) => {}
+                }
+                self.core.pending_done(p.row_id)?;
+            }
+        }
     }
 
     /// Indexes one search3 page of the library; returns running totals and the next offset (None after
@@ -244,6 +259,8 @@ pub(crate) mod tests {
         pub asked: Mutex<Vec<(String, u32)>>,
         pub sent: Mutex<Vec<Exchange>>,
         pub switched: Mutex<u32>,
+        /// Each request pends once before answering, as a real one would.
+        pub pends: Mutex<bool>,
     }
 
     impl Fake {
@@ -262,6 +279,17 @@ pub(crate) mod tests {
     impl Transport for Fake {
         async fn get(&self, url: String, timeout_ms: u32) -> Result<TransportResponse, TransportError> {
             self.asked.lock().push((url, timeout_ms));
+            if *self.pends.lock() {
+                let mut pended = false;
+                std::future::poll_fn(|cx| {
+                    if std::mem::replace(&mut pended, true) {
+                        return Poll::Ready(());
+                    }
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                })
+                .await;
+            }
             match self.answers.lock().pop_front().unwrap_or(Err(FailureKind::Connect)) {
                 Ok((status, body)) => Ok(TransportResponse { status, body }),
                 Err(kind) => Err(TransportError::Failed { kind, detail: Some(format!("{kind:?}")) }),
@@ -386,12 +414,25 @@ pub(crate) mod tests {
     #[test]
     fn replay_stops_at_network_failure() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
-        c.core.pending_add("star".into(), vec![]).unwrap();
-        c.core.pending_add("unstar".into(), vec![]).unwrap();
+        c.core.pending_add("star", &[]).unwrap();
+        c.core.pending_add("unstar", &[]).unwrap();
         fake.fail(FailureKind::Timeout);
         block(c.flush_pending()).unwrap();
         assert_eq!(c.core.pending_list().unwrap().len(), 2);
         assert_eq!(fake.asked().len(), 1);
+    }
+
+    #[test]
+    fn replays_at_once_send_each_write_once() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        c.core.pending_add("scrobble", &[]).unwrap();
+        *fake.pends.lock() = true;
+        fake.answer(OK);
+        fake.answer(OK);
+        let (a, b) = block(futures_util::future::join(c.flush_pending(), c.flush_pending()));
+        assert!(a.is_ok() && b.is_ok());
+        assert_eq!(fake.asked().len(), 1);
+        assert!(c.core.pending_list().unwrap().is_empty());
     }
 
     #[test]
