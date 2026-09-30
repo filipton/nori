@@ -64,7 +64,6 @@ struct Air {
     wires: Arc<Mutex<Vec<Arc<Mutex<Wire>>>>>,
     /// What the ear hears, by device frame from `origin`.
     heard: Vec<[f32; 2]>,
-    underruns: u32,
 }
 
 impl Air {
@@ -88,9 +87,6 @@ impl Air {
                 continue;
             }
             let n = p.min(w.queue.len());
-            if n < p {
-                self.underruns += 1;
-            }
             let (from, to) = (w.applied, w.volume);
             for j in 0..n {
                 let g = from + (to - from) * (j + 1) as f32 / p as f32;
@@ -378,7 +374,7 @@ impl Rig {
         let reopen = Reopen { opener: Arc::new(Mutex::new(Box::new(opener))), frames, failure: Arc::new(Mutex::new(None)) };
         let writer = Writer::new(tape.clone(), opened, reopen, format, true, clock.clone(), Arc::new(AtomicU64::new(0)));
         let period = frames_of(out.period_ms * MS);
-        let air = Air { period, delay: out.delay_ms * MS, next_mix: start + ns_of(period), origin: start, wires, heard: Vec::new(), underruns: 0 };
+        let air = Air { period, delay: out.delay_ms * MS, next_mix: start + ns_of(period), origin: start, wires, heard: Vec::new() };
         Rig { writer, tape, air, control: Control::default(), clock, now, next: Some(start), wakes: 0, beside_opens, head_error: None }
     }
 

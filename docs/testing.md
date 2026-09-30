@@ -179,7 +179,7 @@ as its slowest test or its total over the cores, whichever is more. The binaries
 | crates/engine `--test engine` (engine.rs, paths.rs, radio.rs, tempo.rs, stretch.rs, estimated.rs, hung.rs, silent.rs) | 141 | 10 s | offload tests of a few ffmpeg songs, 4-7 s each, and next pressed fast through four queues, 6 s |
 | crates/player `--test pipeline` | 67 | 4.6 s | levels.rs, 3-4 s each: every kind of transition through two 60 s songs |
 | crates/player lib | 262 | 3.6 s | automix/tests.rs, the synthetic songs analysed side by side |
-| crates/android lib | 31 | 6 s | track.rs's two tests of the real engine thread on the wall clock, the rapid skips over a phone-like track 6 s |
+| crates/android lib | 40 | 8 s | track.rs's two tests of the real engine thread on the wall clock, the rapid skips over a phone-like track 6 s |
 | crates/engine `--test one_fetch`, `--test core` | 1 each | 1-2 s | one core and one queue per process, so a binary each |
 | everything else | about 600 | under 1.3 s a binary | |
 
@@ -193,6 +193,13 @@ each change, spliced in where it logged it and blended as the ring blends. engin
 skipping, in a crossfade, in a stretched AutoMix, right after a seek, paused, on a device holding seconds),
 so a repeated, lost or clicking stretch fails them; `reference::clicks` finds jumps where no exact
 rendering exists.
+
+On Android the handover between two AudioTracks is heard the same way in `crates/android/src/track/air.rs`:
+tracks mixed a period at a time with the mixer's volume ramps, presented after the output's latency,
+their timestamps read as the output reports its periods, fed by a ring whose frames carry their numbers.
+It checks that every frame is heard once, with no silence, level or click, and the tracks' alignment,
+for outputs from 5 to 40 ms periods and Bluetooth's latency, a slider drag, a pause or a jump at any
+moment of a handover, and a second track that won't open.
 
 ### The host perf report
 

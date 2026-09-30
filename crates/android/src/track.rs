@@ -6,7 +6,8 @@
 //! next burst: about one wake each every ten seconds, and no engine timer (`AudioOutput::bursts`). Other
 //! wakes: engine commands (unpark), filling after start/flush (every [`FILL_TICK_MS`], backing off while
 //! starved), fades (every `FADE_TICK_MS`; fades run at the track volume since seconds sit in the track),
-//! two clock readings after a start ([`SETTLE_MS`]), and the end of the music.
+//! two clock readings after a start ([`SETTLE_MS`]), the end of the music, and a sound change's handover
+//! (a few dozen over a second).
 //!
 //! A track that fails a write is dead: it is reopened and refilled; if that fails the engine is told
 //! ([`AudioOutput::failed`]).
@@ -21,11 +22,12 @@
 //! second track takes the music over with no gap ([`Handover`]): opened beside it (same format and
 //! audio session), it plays silence until both tracks' timestamps are steady; from them the frame the
 //! old track plays when the new one's silence ends is known. The ring goes back to that frame
-//! ([`Ring::rewind`]) and the new track plays the remade music from there, fading in within its data
-//! while the old one fades out (by volume when it holds more, else within its data). The second track is
-//! small, so the deep one is emptied at volume 0 and takes the music back the same way. Anything else
-//! that empties the track (a jump, a pause during a handover, a second track that won't open) flushes
-//! it and gives back what it had not played.
+//! ([`Ring::rewind`]) and the new track plays the remade music from there, crossfaded: in both tracks'
+//! data when the old one's can end there, else by both volumes set together, which the mixer ramps alike
+//! whatever its period, so they always sum to one. The second track is small (the sound server gives an
+//! app a few MB: two deep tracks don't fit), so the deep one is emptied once silent and takes the music
+//! back the same way. Anything else that empties the track (a jump, a pause during a handover, a second
+//! track that won't open) flushes it and gives back what it had not played.
 //!
 //! A track that takes less than it claims is re-sized to what it held when it refused a write
 //! ([`Writer::refused`]); writes are timed by what the track holds, not by what was pulled.
