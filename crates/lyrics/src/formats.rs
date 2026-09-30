@@ -5,7 +5,7 @@
 use nori_model::{LyricLine, LyricWord, Lyrics};
 use yaml_rust2::{Yaml, YamlLoader};
 
-use crate::lyrics::utf16_at;
+use crate::lyrics::{offset_ms, time_ms, utf16_at, LONGEST_MS};
 
 /// One line as a source gives it, offsets still in bytes.
 #[derive(Default)]
@@ -200,7 +200,7 @@ fn clock(s: &str) -> Option<i64> {
             _ => return None,
         }
     };
-    Some(ms.round() as i64)
+    time_ms(ms)
 }
 
 /// An attribute by its local name, whatever its namespace prefix (`ttm:role`).
@@ -363,7 +363,7 @@ pub fn from_ttml(text: &str) -> Lyrics {
 fn tag(s: &str, open: char, close: char) -> Option<(Vec<i64>, usize)> {
     let body = s.strip_prefix(open)?;
     let end = body.find(close)?;
-    let nums = body[..end].split(',').map(|n| n.trim().parse::<i64>().ok()).collect::<Option<Vec<_>>>()?;
+    let nums = body[..end].split(',').map(|n| n.trim().parse::<i64>().ok().filter(|n| (-LONGEST_MS..=LONGEST_MS).contains(n))).collect::<Option<Vec<_>>>()?;
     (2..=3).contains(&nums.len()).then_some((nums, open.len_utf8() + end + close.len_utf8()))
 }
 
@@ -394,7 +394,7 @@ fn karaoke(text: &str, line: impl Fn(&str) -> Option<Timed>) -> Vec<Timed> {
     for raw in text.lines() {
         let raw = raw.trim_start_matches('\u{feff}').trim();
         if let Some(v) = raw.strip_prefix("[offset:").and_then(|r| r.strip_suffix(']')) {
-            offset = v.trim().parse().unwrap_or(0);
+            offset = offset_ms(v);
         } else if let Some(l) = line(raw) {
             lines.push(l);
         }

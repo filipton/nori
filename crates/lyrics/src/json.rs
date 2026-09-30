@@ -4,26 +4,26 @@
 use nori_model::Lyrics;
 use serde_json::{Map, Value};
 
+use crate::lyrics::time_ms;
 use crate::formats::{append, decode_html, finish, from_netease, from_qrc, from_ttml, keep_backing, plain, timing, voices, Timed, Timing};
 
-/// A number written as a number or as a string of one; negative and non-finite ones are not times.
+/// A number written as a number or as a string of one.
 fn number(v: &Value) -> Option<f64> {
-    let f = match v {
+    match v {
         Value::Number(n) => n.as_f64(),
         Value::String(s) => s.trim().parse::<f64>().ok(),
         _ => None,
-    }?;
-    (f.is_finite() && f >= 0.0).then_some(f)
+    }
 }
 
 /// Milliseconds.
 fn ms(v: &Value) -> Option<i64> {
-    number(v).map(|f| f.round() as i64)
+    number(v).and_then(time_ms)
 }
 
 /// Seconds, fractional or not, as milliseconds.
 fn secs(v: &Value) -> Option<i64> {
-    number(v).map(|f| (f * 1000.0).round() as i64)
+    number(v).and_then(|f| time_ms(f * 1000.0))
 }
 
 /// A text field as YouTube and others write one: a string, `{simpleText}`, or `{runs: [{text}]}`.
@@ -514,7 +514,7 @@ fn clock_ms(s: &str) -> Option<i64> {
     if !(2..=3).contains(&parts.len()) || parts.iter().any(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit())) {
         return None;
     }
-    Some(parts.iter().try_fold(0i64, |acc, p| p.parse::<i64>().ok().map(|n| acc * 60 + n))? * 1000)
+    time_ms(parts.iter().try_fold(0.0, |acc, p| p.parse::<f64>().ok().map(|n| acc * 60.0 + n))? * 1000.0)
 }
 
 /// Words YouTube Music puts in a result's second line that are not an artist.
