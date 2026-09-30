@@ -46,7 +46,6 @@ fn to_json(v: &PrefValue) -> String {
         PrefValue::Big { v } => json!({ "l": v }),
         PrefValue::Decimal { v } => json!({ "f": v }),
         PrefValue::Text { v } => json!({ "s": v }),
-        PrefValue::Texts { v } => json!({ "ss": v }),
     }
     .to_string()
 }
@@ -60,7 +59,6 @@ fn from_json(text: &str) -> Option<PrefValue> {
         ("l", Value::Number(n)) => PrefValue::Big { v: n.as_i64()? },
         ("f", Value::Number(n)) => PrefValue::Decimal { v: n.as_f64()? as f32 },
         ("s", Value::String(v)) => PrefValue::Text { v },
-        ("ss", Value::Array(a)) => PrefValue::Texts { v: a.into_iter().filter_map(|x| x.as_str().map(str::to_string)).collect() },
         _ => return None,
     })
 }
@@ -343,7 +341,6 @@ mod tests {
             PrefValue::Big { v: 1 << 40 },
             PrefValue::Decimal { v: 0.1 },
             PrefValue::Text { v: "x\"y".into() },
-            PrefValue::Texts { v: vec!["1".into(), "2".into()] },
         ] {
             assert_eq!(from_json(&to_json(&v)), Some(v));
         }

@@ -10,7 +10,9 @@
 //! - `CODEC`: a `codec::Codec` for the field's type;
 //! - `show`: what a client offers (`codec::K`); omitted when not offered;
 //! - `effect`: `settings_store` effect bits;
-//! - `lookups`: an online lookup switch (see `codec::Row::lookups`).
+//! - `lookups`: an online lookup switch (see `codec::Row::lookups`);
+//! - `sound` (`sound = other_name`): part of `SoundSettings`, `effects`: of its `SoundEffects`, for the
+//!   generated `sound`, `with_sound` and `effects`.
 //!
 //! The struct stays written out because uniffi's bindgen reads it from source.
 
@@ -28,6 +30,9 @@ struct Setting {
     show: Option<Expr>,
     effect: Option<Expr>,
     lookups: bool,
+    /// Part of `SoundSettings`, under another name if given.
+    sound: Option<Option<Ident>>,
+    effects: bool,
 }
 
 impl Parse for Setting {
@@ -35,7 +40,7 @@ impl Parse for Setting {
         let key: LitStr = input.parse()?;
         input.parse::<Token![,]>()?;
         let codec: Expr = input.parse()?;
-        let mut s = Setting { key, codec, default: None, name: None, hidden: false, show: None, effect: None, lookups: false };
+        let mut s = Setting { key, codec, default: None, name: None, hidden: false, show: None, effect: None, lookups: false, sound: None, effects: false };
         while !input.is_empty() {
             input.parse::<Token![,]>()?;
             if input.is_empty() {
@@ -45,6 +50,12 @@ impl Parse for Setting {
             match word.to_string().as_str() {
                 "hidden" => s.hidden = true,
                 "lookups" => s.lookups = true,
+                "effects" => s.effects = true,
+                "sound" if input.peek(Token![=]) => {
+                    input.parse::<Token![=]>()?;
+                    s.sound = Some(Some(input.parse()?));
+                }
+                "sound" => s.sound = Some(None),
                 "default" | "name" | "show" | "effect" => {
                     input.parse::<Token![=]>()?;
                     match word.to_string().as_str() {
@@ -101,8 +112,8 @@ fn expand(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let ty = &input.ident;
     let Data::Struct(data) = &input.data else { return Err(syn::Error::new_spanned(ty, "settings are a struct")) };
     let Fields::Named(fields) = &data.fields else { return Err(syn::Error::new_spanned(ty, "settings have named fields")) };
-    let mut defaults = Vec::new();
-    let mut rows = Vec::new();
+    let (mut defaults, mut rows) = (Vec::new(), Vec::new());
+    let (mut sound, mut to_sound, mut effects, mut to_effects) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for f in &fields.named {
         let field = f.ident.as_ref().unwrap();
         let fty = &f.ty;
@@ -114,6 +125,15 @@ fn expand(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         let s: Setting = attr.parse_args()?;
         let default = s.default.as_ref().ok_or_else(|| syn::Error::new_spanned(attr, "a setting needs its `default`"))?;
         defaults.push(quote! { #field: #default });
+        if let Some(named) = &s.sound {
+            let part = named.as_ref().unwrap_or(field);
+            sound.push(quote! { #part: self.#field.clone() });
+            to_sound.push(quote! { #field: s.#part });
+        }
+        if s.effects {
+            effects.push(quote! { #field: self.#field.clone() });
+            to_effects.push(quote! { #field: s.effects.#field });
+        }
         let Setting { key, codec, show, effect, lookups, .. } = &s;
         let name = match (&s.name, s.hidden) {
             (_, true) => quote! { None },
@@ -149,5 +169,22 @@ fn expand(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 
         /// Every setting, in declaration order.
         pub(crate) static ROWS: &[crate::codec::Row] = &[#(#rows,)*];
+
+        #[allow(clippy::clone_on_copy)]
+        impl #ty {
+            /// The part of the settings a sound profile remembers.
+            pub fn sound(&self) -> crate::settings::SoundSettings {
+                crate::settings::SoundSettings { #(#sound,)* effects: self.effects() }
+            }
+
+            /// These settings with the sound profile part replaced by `s`.
+            pub fn with_sound(self, s: crate::settings::SoundSettings) -> Self {
+                #ty { #(#to_sound,)* #(#to_effects,)* ..self }
+            }
+
+            pub fn effects(&self) -> crate::settings::SoundEffects {
+                crate::settings::SoundEffects { #(#effects,)* }
+            }
+        }
     })
 }

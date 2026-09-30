@@ -168,7 +168,6 @@ fn stored(v: &PrefValue) -> String {
         PrefValue::Big { v } => format!("long {v}"),
         PrefValue::Decimal { v } => format!("float {v:?}"),
         PrefValue::Text { v } => format!("text {v:?}"),
-        PrefValue::Texts { v } => format!("texts {v:?}"),
     }
 }
 

@@ -94,7 +94,7 @@ fn transcribe() {
             let _ = writeln!(log);
         }
         let _ = writeln!(log, "  lookup {:?}", lyrics_sources::lyrics_lookup(p));
-        for s in LyricsService::ALL {
+        for &s in LyricsService::ALL {
             let _ = writeln!(log, "  moved {s:?} {:?} {:?} placed {:?}", lyrics_sources::moved(p, s, -1), lyrics_sources::moved(p, s, 2), lyrics_sources::placed(p, s, 3));
         }
     }
@@ -115,7 +115,7 @@ fn transcribe() {
         let s = sound_from(j);
         let _ = writeln!(log, "json {j} {s:?} {:?}", s.as_ref().map(sound_json));
     }
-    for s in LyricsService::ALL {
+    for &s in LyricsService::ALL {
         let _ = writeln!(log, "service {s:?} {} {} {:?} {} {} {} {:?}", s.name(), s.title(), s.best(), s.needs_key(), s.first_wave(), s.prior(), s.origin());
     }
     for n in ["lrclib", " GENIUS ", "Genius", "nope", ""] {
