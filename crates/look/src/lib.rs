@@ -13,3 +13,5 @@ pub mod palette;
 pub mod sleeve;
 mod random;
 pub mod theme;
+#[cfg(test)]
+mod diff_harness;
