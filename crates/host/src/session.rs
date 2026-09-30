@@ -372,6 +372,8 @@ impl Session {
     }
 
     pub fn repeat(&self, mode: u8) {
+        // Set on the queue first so the screen shows it at once.
+        playlist::playlist_repeat(mode);
         self.engine.set_repeat(mode);
     }
 

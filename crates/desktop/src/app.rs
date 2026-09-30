@@ -164,8 +164,6 @@ pub struct App {
     compositor: Compositor,
     tx: Tx,
     inbox: mpsc::Receiver<Msg>,
-    /// Monotonic clock origin handed to every session.
-    epoch: Instant,
     /// Media controls for the process; each session drives them while open.
     mpris: Option<Arc<nori_mpris::Mpris>>,
     data: PathBuf,
@@ -295,7 +293,6 @@ pub fn start(ui: &AppWindow, data: PathBuf, compositor: Compositor) -> Rc<RefCel
             compositor,
             tx,
             inbox,
-            epoch: Instant::now(),
             mpris: nori_mpris::Mpris::start(&format!("nori.desktop{}", std::process::id())).ok().map(Arc::new),
             data,
             http: Http::new(),
@@ -506,7 +503,12 @@ impl App {
 
     fn drain_inbox(&mut self) {
         while let Ok(m) = self.inbox.try_recv() {
-            self.take(m);
+            match m {
+                Msg::From(id, m) if self.session.as_ref().is_some_and(|s| s.id == id) => self.take(*m),
+                // Left in flight by an earlier session.
+                Msg::From(..) => {}
+                m => self.take(m),
+            }
         }
     }
 
@@ -553,7 +555,7 @@ impl App {
         ui.set_server(nori_core::settings::label(&profile.name, &profile.url).into());
         ui.set_account(profile.user.as_str().into());
         ui.set_account_initial(profile.user.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default().into());
-        match Session::open(&self.data, self.http.clone(), profile, self.tx.clone(), self.epoch, self.mpris.clone()) {
+        match Session::open(&self.data, self.http.clone(), profile, self.tx.clone(), self.mpris.clone()) {
             Ok(s) => {
                 s.check();
                 ui.set_volume(s.volume.get());
@@ -603,7 +605,7 @@ impl App {
         }
         if self.tuning && view != EQUALIZER {
             self.tuning = false;
-            self.on_session(|s| s.tuning(false));
+            self.on_session(|s| s.engine.set_tuning(false));
         }
         let ui = self.ui();
         ui.set_failed("".into());
@@ -961,7 +963,7 @@ impl App {
                 }
                 if let Some(s) = &self.session {
                     s.mpris_changed();
-                    s.on_engine_event(&e);
+                    s.followed(&e);
                 }
                 self.follow();
             }
@@ -993,7 +995,7 @@ impl App {
             }
             Msg::Note { text, error } => self.say(&text, error),
             Msg::Reachable(Err(e)) => self.say(&e, true),
-            Msg::Reachable(Ok(())) => {}
+            Msg::Reachable(Ok(())) | Msg::From(..) => {}
             Msg::LoggedIn(r) => {
                 let ui = self.ui();
                 ui.set_login_busy(false);
@@ -1035,7 +1037,7 @@ impl App {
         });
         // The loader serves newest first; reversed so the top left of a frame comes first.
         for k in wanted.into_iter().rev() {
-            let t = s.cover(k.clone(), cover_px(k.size));
+            let Some(t) = s.cover(k.clone(), cover_px(k.size)) else { continue };
             self.tickets.push_back((k, t));
         }
         // Dropping a ticket cancels it; the cover may be requested again.
@@ -1227,7 +1229,7 @@ impl App {
     fn tune(&mut self) {
         if !self.tuning && self.ui().get_view() == EQUALIZER {
             self.tuning = true;
-            self.on_session(|s| s.tuning(true));
+            self.on_session(|s| s.engine.set_tuning(true));
         }
     }
 

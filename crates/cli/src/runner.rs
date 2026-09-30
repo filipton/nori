@@ -475,11 +475,7 @@ impl Runner {
             Cmd::Restore(id) => s.put_back(&id),
             Cmd::Move(from, to) => s.move_song(from, to),
             Cmd::Shuffle(on) => s.shuffle(on),
-            Cmd::Repeat(m) => {
-                // Set on the queue first so the screen shows it at once.
-                nori_core::playlist::playlist_repeat(m);
-                s.repeat(m);
-            }
+            Cmd::Repeat(m) => s.repeat(m),
             Cmd::Download(songs) => s.download(songs),
             Cmd::DownloadFetch(what) => s.download_later(what),
             Cmd::DownloadRemove(id) => {
