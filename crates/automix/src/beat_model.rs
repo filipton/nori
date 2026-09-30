@@ -127,12 +127,7 @@ mod tests {
         switched(true);
         assert!(dir.join("models").join(FILE_NAME).is_file());
         switched(false);
-        for _ in 0..200 {
-            if !dir.join("models").exists() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        nori_db::background::flush();
         assert!(!dir.join("models").exists());
         assert_eq!((state(), ready()), (State::Absent, None));
 

@@ -263,10 +263,7 @@ mod tests {
         assert_eq!(outputs_known(), std::slice::from_ref(&speaker), "the speaker the first time");
         let seen = outputs_refresh(vec![8], vec!["Buds".into()], vec![speaker.clone()], None);
         assert_eq!(seen.known.unwrap(), ["Bluetooth: Buds", speaker.as_str()]);
-        // Wait for the background write.
-        let (tx, rx) = std::sync::mpsc::channel();
-        background::run(move || tx.send(()).unwrap());
-        rx.recv().unwrap();
+        background::flush();
         settings_open(path).unwrap();
         assert_eq!(outputs_known(), ["Bluetooth: Buds", speaker.as_str()]);
     }
