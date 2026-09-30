@@ -124,3 +124,44 @@ fn float_buffer_path_allocates_nothing() {
     assert_eq!(steady_in(Encoding::Float, 44_100, eq, 1.25, true), 0, "equalizer, limiter and speed in float");
     assert_eq!(steady_in(Encoding::Float, 48_000, Sound::default(), 1.0, false), 0, "resampled from float");
 }
+
+/// Allocations per buffer read from `file` after the first 16, in `encoding`.
+fn per_read(file: Vec<u8>, hint: &str, encoding: Encoding) -> f64 {
+    use nori_player::pipeline::Reading;
+    let mut d = crate::demux::Demuxed::open(Box::new(std::io::Cursor::new(file)), Some(hint), 0, None, encoding).expect("opens");
+    for _ in 0..16 {
+        assert!(d.fill(), "longer than the warm-up");
+    }
+    let mut reads = 0;
+    let made = allocations(|| {
+        while d.fill() {
+            reads += 1;
+        }
+    });
+    made as f64 / reads as f64
+}
+
+/// A stereo 16-bit WAV of `frames` frames of a tone.
+fn wav(frames: usize) -> Vec<u8> {
+    let data = tone(frames, Encoding::Pcm16);
+    let mut w = b"RIFF".to_vec();
+    w.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+    w.extend_from_slice(b"WAVEfmt ");
+    for v in [16u32, 1 | 2 << 16, 44_100, 44_100 * 4, 4 | 16 << 16] {
+        w.extend_from_slice(&v.to_le_bytes());
+    }
+    w.extend_from_slice(b"data");
+    w.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    w.extend_from_slice(&data);
+    w
+}
+
+/// Reading a song allocates what symphonia's reader does, one packet each, and nothing of its own: its
+/// `FormatReader::next_packet` hands out an owned packet and takes no buffer to read into.
+#[test]
+fn reading_allocates_only_the_readers_packets() {
+    let mp3 = include_bytes!("../../player/testdata/tone440.mp3").to_vec();
+    for (file, hint, encoding) in [(wav(441_000), "wav", Encoding::Pcm16), (wav(441_000), "wav", Encoding::Float), (mp3.clone(), "mp3", Encoding::Pcm16), (mp3, "mp3", Encoding::Float)] {
+        assert_eq!(per_read(file, hint, encoding), 1.0, "{hint} into {encoding:?}");
+    }
+}
