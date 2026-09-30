@@ -196,6 +196,24 @@ impl Virtual {
     }
 }
 
+/// A server's answer held until the test opens the gate.
+#[derive(Default)]
+pub struct Gate(Mutex<bool>, Condvar);
+
+impl Gate {
+    pub fn open(&self) {
+        *self.0.lock() = true;
+        self.1.notify_all();
+    }
+
+    pub fn wait(&self) {
+        let mut open = self.0.lock();
+        while !*open {
+            self.1.wait(&mut open);
+        }
+    }
+}
+
 /// A device on the clock.
 pub trait Device: Send {
     /// When it next pulls, ns.

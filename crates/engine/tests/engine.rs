@@ -79,12 +79,11 @@ impl AsRef<[u8]> for Bytes {
 struct Server {
     files: Mutex<Vec<(String, Arc<Vec<u8>>)>>,
     requests: Mutex<Vec<(String, u64)>>,
-    /// Songs whose answer is delayed this long.
+    /// Songs whose answer is delayed this long on the rig's clock.
     slow: Mutex<Vec<(String, Duration)>>,
+    clock: Mutex<Option<Virtual>>,
     /// Songs whose connection breaks at this byte, for good.
     cut: Mutex<Vec<(String, u64)>>,
-    /// Each request after a song's first takes this long on the clock.
-    lag: Mutex<Option<(Virtual, Duration)>>,
 }
 
 /// A body that errors at the cut.
@@ -103,18 +102,10 @@ impl std::io::Read for Broken {
 
 impl ByteSource for Server {
     fn open(&self, url: &str, from: u64) -> Result<Body, nori_engine::OpenError> {
-        let again = {
-            let mut asked = self.requests.lock();
-            asked.push((url.to_string(), from));
-            asked.iter().filter(|(u, _)| u == url).count() > 1
-        };
-        let lag = self.lag.lock().clone();
-        if let Some((clock, d)) = lag.filter(|_| again) {
-            clock.wait_until(clock.now_ns() + d.as_nanos() as i64);
-        }
+        self.requests.lock().push((url.to_string(), from));
         let slow = self.slow.lock().iter().find(|(u, _)| u == url).map(|s| s.1);
-        if let Some(d) = slow {
-            std::thread::sleep(d);
+        if let (Some(d), Some(clock)) = (slow, self.clock.lock().clone()) {
+            clock.wait_until(clock.now_ns() + d.as_nanos() as i64);
         }
         let file = self.files.lock().iter().find(|(u, _)| u == url).map(|(_, f)| f.clone()).ok_or("404")?;
         let len = file.len() as u64;
@@ -433,6 +424,7 @@ impl Rig {
         let out = Recorder { card: card.clone(), opened: Arc::default(), shut: Arc::default(), watch: Arc::default(), flushes: Arc::default(), shallow: Arc::default() };
         let (opened, shut, watch, flushes, shallow) = (out.opened.clone(), out.shut.clone(), out.watch.clone(), out.flushes.clone(), out.shallow.clone());
         let clock = Virtual::default();
+        *server.clock.lock() = Some(clock.clone());
         let events = Arc::new(Mutex::new(Vec::new()));
         let seen = events.clone();
         let library = Songs { server: server.clone(), lengths, store };

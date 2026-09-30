@@ -1318,7 +1318,6 @@ impl Read for Live {
         }
         self.at += n as u64;
         self.since += n;
-        std::thread::sleep(Duration::from_micros(200));
         Ok(n)
     }
 }
@@ -2416,20 +2415,20 @@ fn leaving_offload_has_no_gap() {
 struct Unsized {
     files: Vec<(String, Arc<Vec<u8>>)>,
     hold: usize,
-    gate: Arc<std::sync::atomic::AtomicBool>,
+    gate: Arc<common::Gate>,
 }
 
 struct Trickle {
     file: Arc<Vec<u8>>,
     at: usize,
     hold: usize,
-    gate: Arc<std::sync::atomic::AtomicBool>,
+    gate: Arc<common::Gate>,
 }
 
 impl Read for Trickle {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        while self.at >= self.hold && !self.gate.load(std::sync::atomic::Ordering::Acquire) {
-            std::thread::sleep(Duration::from_millis(1));
+        if self.at >= self.hold {
+            self.gate.wait();
         }
         let n = buf.len().min(self.file.len() - self.at);
         buf[..n].copy_from_slice(&self.file[self.at..self.at + n]);
@@ -2460,13 +2459,13 @@ impl Library for UnsizedSongs {
 }
 
 /// Two songs of `secs` from [`Unsized`], nine tenths sent before the gate. None without ffmpeg.
-fn unsized_rig(d: &Path, secs: u32, fake: Option<Fake>, settings: Settings) -> Option<(Rig, Arc<std::sync::atomic::AtomicBool>)> {
+fn unsized_rig(d: &Path, secs: u32, fake: Option<Fake>, settings: Settings) -> Option<(Rig, Arc<common::Gate>)> {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed");
         return None;
     }
     let (a, b) = (mp3(d, "a", secs, 440), mp3(d, "b", secs, 660));
-    let gate = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let gate = Arc::new(common::Gate::default());
     let hold = a.len() * 9 / 10;
     let server = Arc::new(Unsized { files: vec![("a".into(), Arc::new(a)), ("b".into(), Arc::new(b))], hold, gate: gate.clone() });
     let songs = vec![("a".to_string(), "mp3".to_string(), secs as i64 * 1000), ("b".to_string(), "mp3".to_string(), secs as i64 * 1000)];
@@ -2516,7 +2515,7 @@ fn equalizer_on_over_unsized_offload_hands_to_cpu() {
     assert!(s.index == Some(0) && s.state == State::Playing, "a plays on: {s:?} {:?}", rig.events.lock());
     let lead = { let h = rig.card.heard.lock(); h.iter().position(|x| x.abs() > 1e-3).unwrap_or(h.len()) / 2 };
     assert!((s.position_ms - chip_ms - cpu_ms).abs() <= 150, "from where the chip was ({chip_ms} ms), {cpu_ms} ms played, {lead} silent: {s:?} {:?}", fake.notes());
-    gate.store(true, std::sync::atomic::Ordering::Release);
+    gate.open();
     rig.engine.stop();
 }
 
@@ -2613,7 +2612,7 @@ fn equalizer_on_over_unsized_cpu_song() {
     let events = rig.events.lock().clone();
     assert!(!events.iter().any(|e| matches!(e, Event::Error { .. }) || matches!(e, Event::Song { index, .. } if *index != 0)), "{events:?}");
     assert!(s.index == Some(0) && s.state == State::Playing && (s.position_ms - before - 2_000).abs() <= 400, "a plays on from {before} ms: {s:?}");
-    gate.store(true, std::sync::atomic::Ordering::Release);
+    gate.open();
     rig.engine.stop();
 }
 

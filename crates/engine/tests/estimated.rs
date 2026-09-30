@@ -10,7 +10,7 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use common::card::{Card, Pull};
 use common::{Stepper, Virtual};
@@ -92,6 +92,7 @@ struct Sent {
     arrives: Option<(usize, u64, i64, Virtual)>,
     /// Set once the whole transcode was sent.
     made: Arc<AtomicBool>,
+    clock: Virtual,
 }
 
 /// Real time a held body waits for the reader to look past it.
@@ -101,10 +102,8 @@ impl Read for Sent {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.hold.is_some_and(|h| self.at >= h) {
             // Hold until the reader looks further on, or HOLD passes.
-            let held = Instant::now();
-            while !self.probed.load(Ordering::Acquire) && held.elapsed() < HOLD {
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            let probed = self.probed.clone();
+            self.clock.hang_while(|| !probed.load(Ordering::Acquire), HOLD);
             self.hold = None;
         }
         // Wait until the transcode has come this far.
@@ -154,7 +153,7 @@ impl ByteSource for Transcoder {
         let arrives = self.arrives.filter(|_| from == 0 && !made.load(Ordering::Acquire)).map(|(first, rate)| (first, rate, self.clock.now_ns(), self.clock.clone()));
         let mut cut = self.cut.lock();
         let cut = if from == 0 && cut.as_ref().is_some_and(|c| c.0 == url) { cut.take().map(|c| c.1) } else { None };
-        let sent = Sent { file, at: from as usize, hold, probed, cut, ends: self.ends, arrives, made };
+        let sent = Sent { file, at: from as usize, hold, probed, cut, ends: self.ends, arrives, made, clock: self.clock.clone() };
         Ok(Body { start: from, len: Some(real + self.extra), reader: Box::new(sent) })
     }
 }
