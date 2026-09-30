@@ -17,8 +17,15 @@
 //! writer sees more latency or underruns ([`Needs`]). The writer runs at audio priority so a shallow track
 //! does not run dry.
 //!
-//! When the engine makes music again from before what the track holds (a sound change while deep), the
-//! ring's flush says so: the track is emptied and what it had not played is given back ([`Ring::rewind`]).
+//! When the engine makes music again from before what the track holds (a sound change while deep), a
+//! second track takes the music over with no gap ([`Handover`]): opened beside it (same format and
+//! audio session), it plays silence until both tracks' timestamps are steady; from them the frame the
+//! old track plays when the new one's silence ends is known. The ring goes back to that frame
+//! ([`Ring::rewind`]) and the new track plays the remade music from there, fading in within its data
+//! while the old one fades out (by volume when it holds more, else within its data). The second track is
+//! small, so the deep one is emptied at volume 0 and takes the music back the same way. Anything else
+//! that empties the track (a jump, a pause during a handover, a second track that won't open) flushes
+//! it and gives back what it had not played.
 //!
 //! A track that takes less than it claims is re-sized to what it held when it refused a write
 //! ([`Writer::refused`]); writes are timed by what the track holds, not by what was pulled.
@@ -64,6 +71,25 @@ const START_US: i64 = 250_000;
 /// Size a starts-when-full track (pre-Android 12) gets after a flush until it starts, so it starts as
 /// soon as a 12+ track would instead of after filling eleven seconds.
 const PRIMING_US: i64 = 250_000;
+/// The second track of a handover: opened this big, filled to this much while it carries the music.
+const BRIDGE_US: i64 = 600_000;
+const BRIDGE_FILL_US: i64 = 300_000;
+/// Silence a joining track starts with and keeps ahead of its play head until its clock is steady.
+const JOIN_US: i64 = 100_000;
+const JOIN_TICK_MS: u64 = 20;
+/// Two readings of a steady clock: presented frames agree with the time between them to within this.
+const STEADY_NS: i64 = 200_000;
+const STEADY_READINGS: u32 = 2;
+/// A clock not steady by then: the handover is given up for a flush.
+const JOIN_MOST_NS: i64 = 2_000_000_000;
+/// The crossfade.
+const CROSS_US: i64 = 50_000;
+/// Time kept past the output's latency to act before the handover (a late wake).
+const ACT_US: i64 = 40_000;
+/// A volume set is heard as a ramp over the mixer's next period: this long, as far as the writer knows.
+const PERIOD_GUESS_NS: i64 = 20_000_000;
+/// Volume steps of a fade by volume.
+const STEP_MS: u64 = 5;
 
 /// The AudioTrack as the writer uses it.
 pub(crate) trait Sink: Send {
@@ -96,6 +122,15 @@ pub(crate) trait Sink: Send {
     /// latency).
     fn consumed(&mut self) -> Option<u64> {
         None
+    }
+    /// `getTimestamp` alone (frames presented since the last flush or start, and when); none until the
+    /// device has one.
+    fn stamp(&mut self) -> Option<(u64, i64)> {
+        None
+    }
+    /// `getAudioSessionId`, for a track opened beside it.
+    fn session(&mut self) -> i32 {
+        0
     }
     fn release(&mut self);
 }
@@ -148,6 +183,11 @@ pub(crate) struct Opened {
 /// Opens a track with a buffer of `frames`.
 pub(crate) trait Opener: Send {
     fn open(&mut self, format: OutputFormat, float: bool, frames: u64) -> Result<Opened, String>;
+    /// A second track for a handover: as `open`, in audio session `session`, left out of the app's
+    /// bookkeeping of its track.
+    fn beside(&mut self, _format: OutputFormat, _float: bool, _frames: u64, _session: i32) -> Result<Opened, String> {
+        Err("no second track here".into())
+    }
 }
 
 /// Smallest track [`open_fitting`] tries.
@@ -180,6 +220,8 @@ pub(crate) trait Ring: Send {
     fn wake_engine(&self);
     /// Gives back `frames` pulled and not played.
     fn rewind(&mut self, frames: u64);
+    /// Frames it can give back ([`Feed::behind`]).
+    fn behind(&self) -> u64;
 }
 
 impl Ring for Feed {
@@ -203,6 +245,9 @@ impl Ring for Feed {
     }
     fn rewind(&mut self, frames: u64) {
         Feed::rewind(self, frames)
+    }
+    fn behind(&self) -> u64 {
+        Feed::behind(self)
     }
 }
 
@@ -291,6 +336,15 @@ impl Clock {
         self.0.lock().given
     }
 
+    fn ahead(&self) -> u64 {
+        self.0.lock().ahead
+    }
+
+    /// Counts of a playing track given `given` frames, `heard` of them presented at `at_ns`.
+    fn rebase(&self, given: u64, heard: u64, at_ns: i64) {
+        self.update(|c| *c = Counts { rate: c.rate, ahead: given, given, heard, at_ns, running: true });
+    }
+
     /// Resets all counts to zero at `now_ns`, stopped (after a flush or reopen).
     fn reset(&self, now_ns: i64) {
         self.update(|c| *c = Counts { rate: c.rate, at_ns: now_ns, ..Counts::default() });
@@ -349,6 +403,54 @@ struct Fade {
     ms: i32,
 }
 
+/// A track beside the writer's own during a handover.
+struct Beside {
+    sink: Box<dyn Sink>,
+    /// Frames it was opened with, filled to while it carries the music, and topped up at.
+    allocated: u64,
+    capacity: u64,
+    low: u64,
+    starts_full: bool,
+    /// The deep track (the writer's own outside a handover).
+    home: bool,
+}
+
+/// Two tracks at once: the one carrying the music and [`Handover::beside`].
+struct Handover {
+    beside: Beside,
+    phase: Phase,
+    since_ns: i64,
+}
+
+enum Phase {
+    /// Plays `silence` frames of silence until two readings in a row of its clock are steady.
+    Joining { silence: u64, last: Option<(u64, i64)>, steady: u32, grown: bool },
+    /// The track the music left, fading out from `at_ns` (presented time): by volume, stepped from its
+    /// `stamp` and play head, or in its data; paused at `done_ns`. `capacity`: the carrying track's own,
+    /// grown until then by the silence it started with.
+    Leaving { at_ns: i64, stamp: (u64, i64), by_volume: bool, gain: f32, done_ns: i64, capacity: u64 },
+}
+
+/// A fade written into the data: over `len` frames from the carrier's frame `start`.
+#[derive(Clone, Copy)]
+struct Shape {
+    start: u64,
+    len: u64,
+    rising: bool,
+}
+
+impl Shape {
+    fn gain(&self, frame: u64) -> f32 {
+        let t = (frame.saturating_sub(self.start) + 1).min(self.len + 1) as f32 / (self.len + 1) as f32;
+        let t = if frame < self.start { 0.0 } else { t };
+        if self.rising {
+            t
+        } else {
+            1.0 - t
+        }
+    }
+}
+
 /// The writer thread's state; [`Writer::step`] runs once per wake.
 pub(crate) struct Writer<R: Ring> {
     ring: R,
@@ -404,6 +506,12 @@ pub(crate) struct Writer<R: Ring> {
     deep_underruns: Option<u64>,
     /// Deep: "engine is late" already logged, until full again.
     late_logged: bool,
+    /// A second track during a sound change.
+    handover: Option<Handover>,
+    /// A fade written into what is pulled next.
+    shape: Option<Shape>,
+    /// Music made again while a handover back to the deep track ends: another follows it.
+    again: bool,
 }
 
 impl<R: Ring> Writer<R> {
@@ -447,6 +555,9 @@ impl<R: Ring> Writer<R> {
             priming: false,
             deep_underruns: None,
             late_logged: false,
+            handover: None,
+            shape: None,
+            again: false,
         }
     }
 
@@ -572,7 +683,8 @@ impl<R: Ring> Writer<R> {
         }
         let now_ms = now_ns / 1_000_000;
         self.wants_shallow = c.shallow;
-        if self.shallow != self.wants_shallow {
+        // Resized once a handover is over: it may be the other track that is the deep one.
+        if self.shallow != self.wants_shallow && self.handover.is_none() {
             self.resize();
         }
         let mut wake: Option<u64> = None;
@@ -582,8 +694,7 @@ impl<R: Ring> Writer<R> {
         }
         if let Some(f) = self.fade {
             let (v, done) = fade_step(f.from, f.to, f.start_ms, now_ms, f.ms);
-            self.sink.set_volume(v);
-            self.volume = v;
+            self.set_volume(v);
             if done {
                 self.fade = None;
             } else {
@@ -599,13 +710,18 @@ impl<R: Ring> Writer<R> {
                 // The engine pauses when its clock ends the fade; this thread may be a step behind. Finish
                 // the fade so the track pauses at its target, not a step short.
                 if let Some(f) = self.fade.take() {
-                    self.sink.set_volume(f.to);
-                    self.volume = f.to;
+                    self.set_volume(f.to);
                 }
-                self.sink.pause();
-                self.clock.freeze(now_ns);
-                if let Some((frames, ns)) = self.sink.heard(false) {
-                    self.clock.anchor(frames, ns, false);
+                if self.handover.is_some() {
+                    // Two tracks don't pause and resume together: the deep one is emptied to play on from
+                    // what was heard.
+                    self.restart(now_ns);
+                } else {
+                    self.sink.pause();
+                    self.clock.freeze(now_ns);
+                    if let Some((frames, ns)) = self.sink.heard(false) {
+                        self.clock.anchor(frames, ns, false);
+                    }
                 }
             }
         } else if self.playing && !self.clock.running() {
@@ -617,10 +733,13 @@ impl<R: Ring> Writer<R> {
         // An empty pull surfaces a pending ring flush.
         self.ring.pull(&mut []);
         if self.ring.flushed() {
-            self.restart(now_ns);
+            self.on_flush(now_ns, 0);
         }
         if !self.playing {
             return wake;
+        }
+        if let Some(ms) = self.cross(now_ns) {
+            at(ms);
         }
         if self.settled < SETTLE_MS.len() {
             let due = self.started_ns + SETTLE_MS[self.settled] * 1_000_000;
@@ -669,8 +788,12 @@ impl<R: Ring> Writer<R> {
             self.clock.anchor(frames, ns, false);
         }
         self.ring.rewind(self.clock.latency_frames(now_ns));
-        self.sink.flush();
         self.flushed_full |= self.clock.given() > 0;
+        if self.go_home() {
+            self.sink.pause();
+            self.flushed_full = true;
+        }
+        self.sink.flush();
         if self.starts_full && !self.shallow && !self.priming {
             let got = self.sink.resize(self.frames(PRIMING_US).min(self.allocated));
             self.holds(got);
@@ -730,17 +853,19 @@ impl<R: Ring> Writer<R> {
             self.priming = false;
             self.filling = true;
         }
-        if self.shallow && self.playing {
+        // Not while the second track of a handover carries the music.
+        let watched = self.playing && self.handover.is_none();
+        if self.shallow && watched {
             if self.filling {
                 // Underruns while filling from empty don't count.
                 self.needs.underruns = self.sink.underruns();
             } else {
                 self.watch_output(now_ns);
             }
-        } else if self.playing {
+        } else if watched {
             self.watch_deep(now_ns);
         }
-        let full = self.top_up(now_ns);
+        let full = self.top_up(now_ns, None);
         if self.dead {
             return None;
         }
@@ -760,7 +885,7 @@ impl<R: Ring> Writer<R> {
         if self.ring.ending() && self.ring.available() == 0 {
             // All music is in the track: a starts-when-full track is told to play out; look again when done.
             self.filling = false;
-            if self.starts_full && !self.drained {
+            if self.starts_full && !self.drained && self.handover.is_none() {
                 self.sink.stop();
                 self.drained = true;
             }
@@ -786,8 +911,9 @@ impl<R: Ring> Writer<R> {
         Some(wait)
     }
 
-    /// Moves as much of the ring into the track as fits. True when the track is full.
-    fn top_up(&mut self, now_ns: i64) -> bool {
+    /// Moves as much of the ring into the track as fits, or up to frame `until` of it. True when the
+    /// track is full (or there).
+    fn top_up(&mut self, now_ns: i64, until: Option<u64>) -> bool {
         let fb = self.frame_bytes();
         // 24-bit samples are pulled as floats and packed in place: a chunk is as many frames as floats fit.
         let chunk_frames = CHUNK_BYTES / if self.packed { self.channels * 4 } else { fb };
@@ -795,7 +921,10 @@ impl<R: Ring> Writer<R> {
             if self.staged.1 > 0 && !self.write_staged(now_ns) {
                 return true;
             }
-            let room = self.capacity.saturating_sub(self.clock.latency_frames(now_ns));
+            let room = match until {
+                Some(end) => end.saturating_sub(self.clock.ahead()),
+                None => self.capacity.saturating_sub(self.clock.latency_frames(now_ns)),
+            };
             if room == 0 {
                 return true;
             }
@@ -803,30 +932,10 @@ impl<R: Ring> Writer<R> {
             if n == 0 {
                 return false;
             }
-            // Counted before the pull so the engine never sees the position ahead of the truth.
-            self.clock.update(|c| c.ahead += n as u64);
-            let samples = n * self.channels;
-            let got = if self.float {
-                self.ring.pull(&mut self.sink.staging()[..samples])
-            } else if self.packed {
-                let staging = self.sink.staging();
-                let got = self.ring.pull(&mut staging[..samples]);
-                pack24(staging, got * self.channels);
-                got
-            } else {
-                let staging = self.sink.staging();
-                // SAFETY: f32 memory is aligned for i16 and holds twice as many; the slice lives within the borrow.
-                let halves = unsafe { std::slice::from_raw_parts_mut(staging.as_mut_ptr() as *mut i16, staging.len() * 2) };
-                self.ring.pull_i16(&mut halves[..samples])
-            };
-            if self.ring.flushed() {
-                // This pull started the new music: the old goes, and the pull is given back with what
-                // was not played, to be pulled again.
-                self.clock.update(|c| c.ahead -= (n - got) as u64);
-                self.restart(now_ns);
+            let got = self.pull(n);
+            // A pull that found a flush and emptied the track was given back, to be pulled again.
+            if self.ring.flushed() && self.on_flush(now_ns, got) {
                 continue;
-            } else if got < n {
-                self.clock.update(|c| c.ahead -= (n - got) as u64);
             }
             if got == 0 {
                 return false;
@@ -836,6 +945,300 @@ impl<R: Ring> Writer<R> {
                 return true;
             }
         }
+    }
+
+    /// Pulls up to `n` frames into staging, through [`Writer::shape`]; returns the frames pulled.
+    fn pull(&mut self, n: usize) -> usize {
+        let first = self.clock.ahead();
+        // Counted before the pull so the engine never sees the position ahead of the truth.
+        self.clock.update(|c| c.ahead += n as u64);
+        let (ch, shape) = (self.channels, self.shape);
+        let staging = self.sink.staging();
+        let got = if self.float || self.packed {
+            let got = self.ring.pull(&mut staging[..n * ch]);
+            if let Some(s) = shape {
+                for (k, frame) in staging[..got * ch].chunks_exact_mut(ch).enumerate() {
+                    let g = s.gain(first + k as u64);
+                    frame.iter_mut().for_each(|v| *v *= g);
+                }
+            }
+            if self.packed {
+                pack24(staging, got * ch);
+            }
+            got
+        } else {
+            // SAFETY: f32 memory is aligned for i16 and holds twice as many; the slice lives within the borrow.
+            let halves = unsafe { std::slice::from_raw_parts_mut(staging.as_mut_ptr() as *mut i16, staging.len() * 2) };
+            let got = self.ring.pull_i16(&mut halves[..n * ch]);
+            if let Some(s) = shape {
+                for (k, frame) in halves[..got * ch].chunks_exact_mut(ch).enumerate() {
+                    let g = s.gain(first + k as u64);
+                    frame.iter_mut().for_each(|v| *v = (*v as f32 * g).round() as i16);
+                }
+            }
+            got
+        };
+        if got < n {
+            self.clock.update(|c| c.ahead -= (n - got) as u64);
+        }
+        if shape.is_some_and(|s| s.rising && first + got as u64 >= s.start + s.len) {
+            self.shape = None;
+        }
+        got
+    }
+
+    /// The ring was flushed (found by a pull that took `pulled` frames). Music made again for a sound
+    /// change is handed over to a second track; anything else empties the track, and the pull is given
+    /// back with what it had not played. True when it was emptied.
+    fn on_flush(&mut self, now_ns: i64, pulled: usize) -> bool {
+        let remade = self.ring.behind() > pulled as u64;
+        match &self.handover {
+            None if remade && self.playing && !self.drained && self.format.bits == 0 => {
+                if self.hand_over(now_ns) {
+                    return false;
+                }
+            }
+            // A handover's own rewind takes the change, but for one back to the deep track that has
+            // begun: the deep track takes seconds before the change is heard, so another follows.
+            Some(h) if remade => {
+                if matches!(h.phase, Phase::Leaving { .. }) && !h.beside.home {
+                    self.again = true;
+                }
+                return false;
+            }
+            _ => {}
+        }
+        self.restart(now_ns);
+        true
+    }
+
+    /// Opens a second track to take the music over. False when none opens.
+    fn hand_over(&mut self, now_ns: i64) -> bool {
+        let session = self.sink.session();
+        let opened = self.opener.lock().beside(self.format, self.float, self.frames(BRIDGE_US), session);
+        match opened {
+            Ok(o) => {
+                let capacity = self.frames(BRIDGE_FILL_US).min(o.frames);
+                let low = low_mark(capacity, self.rate);
+                self.join(Beside { sink: o.sink, allocated: o.frames, capacity, low, starts_full: o.starts_full, home: false }, now_ns);
+                true
+            }
+            Err(e) => {
+                log(&format!("no second track for the sound change ({e}): emptying this one"));
+                false
+            }
+        }
+    }
+
+    /// Starts `beside` playing silence; the handover waits for its clock ([`Writer::joining`]).
+    fn join(&mut self, mut beside: Beside, now_ns: i64) {
+        // Small until it plays, so it starts at once (before Android 12 a track starts only when full).
+        let join = self.frames(JOIN_US);
+        beside.sink.resize(join);
+        beside.sink.set_volume(self.volume);
+        let silence = write_silence(&mut *beside.sink, self.frame_bytes(), join);
+        beside.sink.play();
+        self.handover = Some(Handover { beside, phase: Phase::Joining { silence, last: None, steady: 0, grown: false }, since_ns: now_ns });
+    }
+
+    /// Moves a handover on; ms until its next step.
+    fn cross(&mut self, now_ns: i64) -> Option<u64> {
+        match self.handover.as_ref()?.phase {
+            Phase::Joining { .. } => self.joining(now_ns),
+            Phase::Leaving { .. } => self.leaving(now_ns),
+        }
+    }
+
+    /// Keeps the joining track's silence ahead of its play head and reads its clock; once steady, decides.
+    fn joining(&mut self, now_ns: i64) -> Option<u64> {
+        let (join, fb, rate) = (self.frames(JOIN_US), self.frame_bytes(), self.rate as i128);
+        let h = self.handover.as_mut()?;
+        let Phase::Joining { silence, last, steady, grown } = &mut h.phase else { return None };
+        let b = &mut h.beside;
+        let stamp = b.sink.stamp();
+        if !*grown && stamp.is_some_and(|(f, _)| f > 0) {
+            // Playing: room for more silence and, later, the music.
+            b.sink.resize(b.allocated);
+            *grown = true;
+        }
+        let taken = b.sink.consumed().unwrap_or(0);
+        if *silence < taken + join {
+            *silence += write_silence(&mut *b.sink, fb, taken + join - *silence);
+        }
+        if let Some((f, t)) = stamp {
+            match *last {
+                Some((f0, t0)) if t - t0 >= 1_000_000 => {
+                    let drift = (f as i128 - f0 as i128) * 1_000_000_000 / rate - (t - t0) as i128;
+                    *steady = if f0 > 0 && drift.abs() <= STEADY_NS as i128 { *steady + 1 } else { 0 };
+                    *last = stamp;
+                }
+                Some(_) => {}
+                None => *last = stamp,
+            }
+        }
+        if *steady >= STEADY_READINGS {
+            return self.decide(now_ns);
+        }
+        if now_ns - h.since_ns > JOIN_MOST_NS {
+            log("the second track's clock never settled: emptying the track");
+            self.restart(now_ns);
+            return None;
+        }
+        Some(JOIN_TICK_MS)
+    }
+
+    /// Both clocks steady: the handover is when the joining track's silence ends. The ring goes back to
+    /// the frame the carrying track plays then, the carrying track fades out from it, and the joining
+    /// track takes the music on from there.
+    fn decide(&mut self, now_ns: i64) -> Option<u64> {
+        let rate = self.rate as i128;
+        let Some((fc, tc)) = self.sink.stamp() else { return Some(JOIN_TICK_MS) };
+        // Frames presented at `when` by a track that presented `f` at `t`.
+        let at = |f: u64, t: i64, when: i64| f as i64 + ((when - t) as i128 * rate / 1_000_000_000) as i64;
+        let heard = at(fc, tc, now_ns);
+        let lag = (self.sink.consumed().map_or(heard, |c| c as i64) - heard).max(0);
+        let (cross, act) = (self.frames(CROSS_US) as i64, self.frames(ACT_US) as i64);
+        let lead = self.clock.given() as i64 - heard;
+        let fb = self.frame_bytes();
+        let h = self.handover.as_mut()?;
+        let Phase::Joining { silence, last: Some((fj, tj)), .. } = &mut h.phase else { return None };
+        let (fj, tj) = (*fj, *tj);
+        let left = *silence as i64 - at(fj, tj, now_ns);
+        // Acted on before the output takes the joining track's music or the carrier's fade.
+        let soonest = left.max(lag + act);
+        // A carrier holding music past the crossfade fades by volume; else its data runs to it.
+        let by_volume = lead >= soonest + cross;
+        let target = if by_volume { soonest } else { soonest.max(lead) };
+        if target > left {
+            let want = (target - left) as u64;
+            let got = write_silence(&mut *h.beside.sink, fb, want);
+            *silence += got;
+            if got < want {
+                return Some(JOIN_TICK_MS);
+            }
+        }
+        let silence = *silence;
+        let at_ns = tj + ((silence as i64 - fj as i64) as i128 * 1_000_000_000 / rate) as i64;
+        let from = at(fc, tc, at_ns).max(0) as u64;
+        if !by_volume {
+            self.shape = Some(Shape { start: from, len: cross as u64, rising: false });
+            self.top_up(now_ns, Some(from + cross as u64));
+            if self.handover.is_none() {
+                return None;
+            }
+            if self.staged.1 > 0 || self.clock.ahead() < from + cross as u64 {
+                log("the track would not take its fade: emptying it");
+                self.restart(now_ns);
+                return None;
+            }
+        }
+        self.ring.rewind(self.clock.ahead().saturating_sub(from));
+        self.staged = (0, 0);
+        let mut h = self.handover.take()?;
+        self.swap(&mut h.beside);
+        let capacity = self.capacity;
+        // Room for the music besides the silence still ahead.
+        self.capacity = (capacity + target as u64).min(self.allocated);
+        self.clock.rebase(silence, fj, tj);
+        self.shape = Some(Shape { start: silence, len: cross as u64, rising: true });
+        self.filling = true;
+        self.starved_ms = FILL_TICK_MS;
+        self.flushed_full = false;
+        self.deep_underruns = None;
+        let done_ns = at_ns + CROSS_US * 1_000 + 2 * PERIOD_GUESS_NS + ACT_US * 1_000;
+        let how = if by_volume { "by volume" } else { "in its data" };
+        log(&format!("handed over {} ms from now to the {} track, the other fading {how}", (at_ns - now_ns) / 1_000_000, if h.beside.home { "second" } else { "deep" }));
+        h.phase = Phase::Leaving { at_ns, stamp: (fc, tc), by_volume, gain: 1.0, done_ns, capacity };
+        self.handover = Some(h);
+        self.leaving(now_ns)
+    }
+
+    /// Fades the track the music left by volume, if so, then pauses it: the deep one is emptied and
+    /// joins again, the second one is released.
+    fn leaving(&mut self, now_ns: i64) -> Option<u64> {
+        let (rate, volume) = (self.rate as i128, self.volume);
+        let h = self.handover.as_mut()?;
+        let Phase::Leaving { at_ns, stamp: (f, t), by_volume, gain, done_ns, capacity } = &mut h.phase else { return None };
+        if now_ns >= *done_ns {
+            let capacity = *capacity;
+            let mut h = self.handover.take()?;
+            h.beside.sink.pause();
+            if h.beside.home {
+                h.beside.sink.flush();
+                self.join(h.beside, now_ns);
+                return Some(JOIN_TICK_MS);
+            }
+            h.beside.sink.release();
+            self.capacity = capacity;
+            if std::mem::take(&mut self.again) && !self.hand_over(now_ns) {
+                self.restart(now_ns);
+            }
+            return self.handover.is_some().then_some(JOIN_TICK_MS);
+        }
+        let wait = |ns: i64| (ns / 1_000_000).max(1) as u64;
+        if !*by_volume {
+            return Some(wait(*done_ns - now_ns));
+        }
+        // A volume is heard as a ramp over the mixer's next period, the output's latency later.
+        let heard = *f as i64 + ((now_ns - *t) as i128 * rate / 1_000_000_000) as i64;
+        let lag = (h.beside.sink.consumed().map_or(heard, |c| c as i64) - heard).max(0);
+        let heard_ns = now_ns + (lag as i128 * 1_000_000_000 / rate) as i64 + PERIOD_GUESS_NS / 2;
+        let g = 1.0 - ((heard_ns - *at_ns) as f32 / (CROSS_US * 1_000) as f32).clamp(0.0, 1.0);
+        if g != *gain {
+            *gain = g;
+            h.beside.sink.set_volume(volume * g);
+        }
+        Some(if g == 0.0 {
+            wait(*done_ns - now_ns)
+        } else if heard_ns < *at_ns {
+            wait(*at_ns - heard_ns).max(STEP_MS)
+        } else {
+            STEP_MS
+        })
+    }
+
+    /// The writer's track becomes `b`, and `b` the writer's.
+    fn swap(&mut self, b: &mut Beside) {
+        std::mem::swap(&mut self.sink, &mut b.sink);
+        std::mem::swap(&mut self.allocated, &mut b.allocated);
+        std::mem::swap(&mut self.starts_full, &mut b.starts_full);
+        std::mem::swap(&mut self.capacity, &mut b.capacity);
+        std::mem::swap(&mut self.low, &mut b.low);
+        b.home = !b.home;
+    }
+
+    /// Ends a handover: the deep track is the writer's again, at its volume, and the other is released.
+    /// Whether there was one.
+    fn go_home(&mut self) -> bool {
+        let Some(mut h) = self.handover.take() else { return false };
+        if h.beside.home {
+            self.swap(&mut h.beside);
+        }
+        h.beside.sink.pause();
+        h.beside.sink.release();
+        self.sink.set_volume(self.volume);
+        self.shape = None;
+        self.again = false;
+        true
+    }
+
+    /// Sets the volume of the track, and of the one beside it (by its fade, if it fades by volume).
+    fn set_volume(&mut self, v: f32) {
+        self.volume = v;
+        self.sink.set_volume(v);
+        if let Some(h) = self.handover.as_mut() {
+            let g = match h.phase {
+                Phase::Leaving { by_volume: true, gain, .. } => gain,
+                _ => 1.0,
+            };
+            h.beside.sink.set_volume(v * g);
+        }
+    }
+
+    /// Releases the tracks.
+    fn release(&mut self) {
+        self.go_home();
+        self.sink.release();
     }
 
     /// Writes what is staged. False when the track is full or died.
@@ -881,7 +1284,7 @@ impl<R: Ring> Writer<R> {
     /// the old one held is lost); if that fails, tells the engine.
     fn reopen(&mut self, now_ns: i64, code: i32) {
         log(&format!("the AudioTrack failed a write ({code}): opening another"));
-        self.sink.release();
+        self.release();
         let opened = open_fitting(&mut **self.opener.lock(), self.format, self.float, self.asked);
         match opened {
             Ok(o) => {
@@ -1088,6 +1491,24 @@ fn pack24(staging: &mut [f32], samples: usize) {
     }
 }
 
+/// Writes `frames` of silence to `sink` (`fb` bytes a frame); returns the frames it took.
+fn write_silence(sink: &mut dyn Sink, fb: usize, frames: u64) -> u64 {
+    let staging = sink.staging();
+    staging.fill(0.0);
+    let most = staging.len() * 4 / fb * fb;
+    let (mut left, mut taken) = (frames as usize * fb, 0);
+    while left > 0 {
+        let len = left.min(most);
+        let n = sink.write(0, len).map_or(0, |n| n.min(len) / fb * fb);
+        taken += n;
+        left -= n;
+        if n < len {
+            break;
+        }
+    }
+    (taken / fb) as u64
+}
+
 /// [`LOW_US`], or half of a smaller track.
 fn low_mark(frames: u64, rate: u32) -> u64 {
     ((rate as i64 * LOW_US / 1_000_000) as u64).min(frames / 2)
@@ -1125,7 +1546,7 @@ fn run<R: Ring>(mut w: Writer<R>, shared: Arc<Shared>) {
         };
         if c.stop {
             log("released");
-            w.sink.release();
+            w.release();
             return;
         }
         match w.step(mono_ns(), &mut c) {
@@ -1520,6 +1941,9 @@ mod tests {
             let back = frames.min(r.pulled);
             r.pulled -= back;
             r.available += back as usize;
+        }
+        fn behind(&self) -> u64 {
+            self.lock().pulled
         }
     }
 
