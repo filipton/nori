@@ -169,11 +169,19 @@ impl Store {
         self.dir.join(DOWNLOADS).join(file_name(id))
     }
 
-    /// A download's path while in progress.
-    pub fn download_part(&self, id: &str) -> PathBuf {
-        let mut p = self.download_path(id).into_os_string();
-        p.push(PART);
-        p.into()
+    /// Where a download at `quality` is written while in progress. Its parts at another quality go, so a
+    /// download taken up never joins two encodings.
+    pub fn download_part(&self, id: &str, quality: &str) -> PathBuf {
+        let name = file_name(id);
+        let part = format!("{name}.{}{PART}", file_name(quality));
+        // Another quality's: `<name>.<quality>.part`, or `<name>.part` from before qualities were kept apart.
+        let other = |n: &str| n != part && n.strip_suffix(PART).and_then(|n| n.strip_prefix(name.as_str())).is_some_and(|q| q.is_empty() || q.strip_prefix('.').is_some_and(|q| !q.contains('.')));
+        for e in fs::read_dir(self.dir.join(DOWNLOADS)).into_iter().flatten().flatten() {
+            if e.file_name().to_str().is_some_and(other) {
+                let _ = fs::remove_file(e.path());
+            }
+        }
+        self.dir.join(DOWNLOADS).join(part)
     }
 
     /// The finished download of `id`, if present.

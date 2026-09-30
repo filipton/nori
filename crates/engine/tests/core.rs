@@ -219,6 +219,121 @@ fn downloads_disk_and_measuring_over_core() {
     }
     #[cfg(feature = "neural-beats")]
     listens_with_a_real_model(&core, &dir, &measurer, &settle);
+    downloads_take_up_rightly(&core, &client, &store);
+}
+
+/// What a [`Flaky`] request gets: the song breaking at a byte, or a refusal.
+#[derive(Clone, Copy)]
+enum Answer {
+    BreaksAt(u64),
+    Refused,
+}
+
+/// Songs made up from their URLs, each request answered as planned (the whole song once the plan is
+/// through); while shut, requests wait at the gate.
+#[derive(Default)]
+struct Flaky {
+    requests: Mutex<Vec<(String, u64)>>,
+    plan: Mutex<std::collections::VecDeque<Answer>>,
+    shut: Mutex<bool>,
+    opened: parking_lot::Condvar,
+    waiting: std::sync::atomic::AtomicU32,
+}
+
+impl ByteSource for Flaky {
+    fn open(&self, url: &str, from: u64) -> Result<Body, nori_engine::OpenError> {
+        let mut shut = self.shut.lock();
+        self.waiting.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        while *shut {
+            self.opened.wait(&mut shut);
+        }
+        drop(shut);
+        self.requests.lock().push((url.to_string(), from));
+        let mut c = Cursor::new(bytes_of(url));
+        c.set_position(from);
+        match self.plan.lock().pop_front() {
+            Some(Answer::Refused) => Err("the network is gone".into()),
+            Some(Answer::BreaksAt(at)) => Ok(Body { start: from, len: Some(LEN as u64), reader: Box::new(Breaks(c, at)) }),
+            None => Ok(Body { start: from, len: Some(LEN as u64), reader: Box::new(c) }),
+        }
+    }
+}
+
+impl Flaky {
+    fn gate(&self, shut: bool) {
+        *self.shut.lock() = shut;
+        self.opened.notify_all();
+    }
+
+    fn answer(&self, plan: &[Answer]) {
+        *self.plan.lock() = plan.iter().copied().collect();
+        self.requests.lock().clear();
+    }
+}
+
+fn download_quality(bit_rate: i32, format: &str) {
+    let mut prefs = nori_core::settings_store::settings_current().unwrap();
+    prefs.download = nori_core::settings::SavedQuality { bit_rate, format: format.into() };
+    nori_core::settings_store::settings_put(prefs);
+}
+
+/// A download taken up keeps to its quality, a connection that keeps bringing bytes is taken up however
+/// often it breaks, and a song being fetched stays "downloading" when the queue is started again.
+fn downloads_take_up_rightly(core: &Arc<Core>, client: &Arc<Client>, store: &Arc<Store>) {
+    use nori_core::transfers::download_phase;
+    use nori_core::DownloadPhase;
+    let net = Arc::new(Flaky::default());
+    let d = Downloader::new(core.clone(), client.clone(), net.clone(), store.clone());
+    let queue = |id: &str| core.download_queue(vec![Song { id: id.into(), title: id.into(), duration: 3, suffix: "mp3".into(), ..Default::default() }]).unwrap();
+    let url = |id: &str| client.resolve(id.into(), true, false).url;
+
+    // Half of it at 320 kbps MP3, then the network gone.
+    download_quality(320, "mp3");
+    queue("q-1");
+    net.answer(&[Answer::BreaksAt(LEN as u64 / 2), Answer::Refused, Answer::Refused, Answer::Refused, Answer::Refused]);
+    d.start(1);
+    d.wait();
+    assert_eq!(download_phase("q-1".into()), Some(DownloadPhase::Failed), "{:?}", net.requests.lock());
+    // Taken up at 128 kbps Opus: from its start, not after the MP3's half.
+    download_quality(128, "opus");
+    let opus = url("q-1");
+    net.answer(&[]);
+    d.start(1);
+    d.wait();
+    assert_eq!(*net.requests.lock(), [(opus.clone(), 0)], "another quality starts over");
+    assert!(std::fs::read(store.downloaded("q-1").expect("downloaded")).unwrap() == bytes_of(&opus), "one encoding, whole");
+
+    // Breaking every fifth of the song, and brought whole.
+    queue("r-1");
+    let fifth = LEN as u64 / 5;
+    net.answer(&[Answer::BreaksAt(fifth), Answer::BreaksAt(2 * fifth), Answer::BreaksAt(3 * fifth), Answer::BreaksAt(4 * fifth)]);
+    d.start(1);
+    d.wait();
+    let asked: Vec<u64> = net.requests.lock().iter().map(|r| r.1).collect();
+    assert_eq!(asked, [0, fifth, 2 * fifth, 3 * fifth, 4 * fifth], "taken up where each break left it");
+    assert!(std::fs::read(store.downloaded("r-1").expect("downloaded")).unwrap() == bytes_of(&url("r-1")));
+    // Started again while fetching.
+    queue("b-1");
+    net.answer(&[]);
+    net.gate(true);
+    let waiting = net.waiting.load(std::sync::atomic::Ordering::Acquire);
+    d.start(1);
+    while net.waiting.load(std::sync::atomic::Ordering::Acquire) == waiting {
+        std::thread::yield_now();
+    }
+    d.start(1);
+    assert_eq!(download_phase("b-1".into()), Some(DownloadPhase::Downloading), "not queued again");
+    net.gate(false);
+    d.wait();
+    assert_eq!(download_phase("b-1".into()), Some(DownloadPhase::Done));
+
+    // Three connections in a row that bring nothing fail it.
+    queue("n-1");
+    net.answer(&[Answer::BreaksAt(0), Answer::BreaksAt(0), Answer::BreaksAt(0)]);
+    d.start(1);
+    d.wait();
+    assert_eq!(download_phase("n-1".into()), Some(DownloadPhase::Failed));
+    assert_eq!(net.requests.lock().len(), 3);
 }
 
 /// Unmeasured downloads are read back from disk once saved, one at a time; "Analyse downloaded songs"

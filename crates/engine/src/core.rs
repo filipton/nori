@@ -7,7 +7,6 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::Duration;
 
 use nori_player::automix::analysis::Analyzer;
 use nori_player::automix::beats::{self, Ends, MixEnd};
@@ -368,7 +367,8 @@ pub fn fetch_ahead(id: &str) -> bool {
 }
 
 /// Runs the core's download queue: fetches pending songs whole into the store, a few at a time, oldest
-/// first. Progress is the core's (`transfers`). Threads live only while there is work.
+/// first, each taking up what an earlier run left of it at the same quality. Progress is the core's
+/// (`transfers`). Threads live only while there is work.
 pub struct Downloader {
     core: Arc<Core>,
     client: Arc<Client>,
@@ -380,13 +380,13 @@ pub struct Downloader {
 #[derive(Default)]
 struct Work {
     running: usize,
-    /// Being fetched, and failed this run (retried only when asked again).
+    /// Being fetched, and failed this run (tried again only when asked again).
     busy: HashSet<String>,
     failed: HashSet<String>,
     threads: Vec<JoinHandle<()>>,
 }
 
-/// Interruptions in a row before a download fails.
+/// Connections in a row that bring no bytes before a download fails.
 const DOWNLOAD_TRIES: u32 = 3;
 const DOWNLOAD_CHUNK: usize = 64 * 1024;
 
@@ -402,8 +402,9 @@ impl Downloader {
         w.failed.clear();
         w.threads.retain(|t| !t.is_finished());
         let pending = self.pending();
-        for id in &pending {
-            transfers::followed(id, transfers::QUEUED, nori_core::db::now_ms());
+        let now = nori_core::db::now_ms();
+        for id in pending.iter().filter(|id| !w.busy.contains(*id)) {
+            transfers::followed(id, transfers::QUEUED, now);
         }
         let want = slots.max(1).min(pending.len());
         while w.running < want {
@@ -451,59 +452,55 @@ impl Downloader {
             let now = nori_core::db::now_ms();
             let mut w = self.work.lock();
             w.busy.remove(&id);
-            if ok {
-                drop(w);
-                transfers::followed(&id, transfers::COMPLETED, now);
-                // No lyrics lookup here (Android does it, `lyrics_for_downloads`).
-                transfers::work_done(&id, transfers::Work::Lyrics);
-                let _ = self.core.download_settle(vec![id.clone()], vec![true]);
-                self.store.drop_cached(&nori_core::stream_cache::copies(&id));
-                crate::processing::saved(vec![id.clone()]);
-            } else {
+            if !ok {
                 w.failed.insert(id.clone());
                 drop(w);
                 transfers::followed(&id, transfers::FAILED, now);
+                continue;
             }
+            drop(w);
+            transfers::followed(&id, transfers::COMPLETED, now);
+            // No lyrics lookup here (Android does it, `lyrics_for_downloads`).
+            transfers::work_done(&id, transfers::Work::Lyrics);
+            let _ = self.core.download_settle(vec![id.clone()], vec![true]);
+            self.store.drop_cached(&nori_core::stream_cache::copies(&id));
+            crate::processing::saved(vec![id]);
         }
     }
 
-    /// Fetches `id` whole into the store, resuming a partial download.
+    /// Fetches `id` whole into the store at the download quality. A broken connection is taken up at
+    /// once where it broke, until [`DOWNLOAD_TRIES`] in a row bring nothing; a refused one fails the
+    /// download until the next [`Downloader::start`].
     fn fetch(&self, id: &str) -> bool {
         let now = nori_core::db::now_ms();
         transfers::followed(id, transfers::DOWNLOADING, now);
         let slot = transfers::open(id, now);
-        let url = self.client.resolve(id.to_string(), true, false).url;
-        let part = self.store.download_part(id);
+        let quality = nori_core::rules::prefs(|p| nori_core::stream::StreamQuality { bit_rate: p.download.bit_rate.max(0) as u32, format: p.download.format.clone() });
+        let part = self.store.download_part(id, &format!("{}{}", quality.bit_rate, quality.format));
+        let url = self.client.download_target(id.to_string(), quality).url;
         let mut chunk = vec![0u8; DOWNLOAD_CHUNK];
-        let mut tries = 0;
-        // Measured as it downloads from the first byte; a resumed one is measured from disk later.
+        let size = || std::fs::metadata(&part).map_or(0, |m| m.len());
+        // Measured as it downloads from the first byte; one taken up is measured from the disk later.
         let hint = nori_core::queue::queue_song(id.to_string()).or_else(|| self.core.download_song(id)).map(|s| s.suffix).filter(|s| !s.is_empty());
-        let mut taker = if std::fs::metadata(&part).map_or(0, |m| m.len()) == 0 { measure_download_as_it_comes(id, hint.as_deref()) } else { None };
+        let mut taker = if size() == 0 { measure_download_as_it_comes(id, hint.as_deref()) } else { None };
+        let mut idle = 0;
         loop {
-            let have = std::fs::metadata(&part).map_or(0, |m| m.len());
+            let have = size();
             let body = match self.bytes.open(&url, have) {
                 Ok(b) => b,
                 // Nothing past what is on disk: complete (a transcode's length was an estimate).
-                Err(OpenError::PastEnd { len }) if have > 0 && len.is_none_or(|l| l == have) => {
-                    return std::fs::rename(&part, self.store.download_path(id)).is_ok();
-                }
-                Err(_) => {
-                    tries += 1;
-                    if tries >= DOWNLOAD_TRIES {
-                        return false;
-                    }
-                    std::thread::sleep(Duration::from_millis(500 << tries));
-                    continue;
-                }
+                Err(OpenError::PastEnd { len }) if have > 0 && len.is_none_or(|l| l == have) => return std::fs::rename(&part, self.store.download_path(id)).is_ok(),
+                Err(_) => return false,
             };
-            // A rangeless server resends everything: start the file over.
-            let (mut at, append) = if body.start == have { (have, true) } else { (0, false) };
+            // A rangeless server sends everything again: the file starts over.
+            let append = body.start == have;
             if !append && have > 0 {
                 taker = None;
             }
             let file = std::fs::OpenOptions::new().create(true).write(true).append(append).truncate(!append).open(&part);
             let Ok(mut file) = file else { return false };
-            let mut reader = body.reader;
+            let (mut at, mut reader) = (if append { have } else { 0 }, body.reader);
+            let from = at;
             let broke = loop {
                 match reader.read(&mut chunk) {
                     Ok(0) => break false,
@@ -528,8 +525,8 @@ impl Downloader {
                 }
                 return kept;
             }
-            tries += 1;
-            if tries >= DOWNLOAD_TRIES {
+            idle = if at > from { 0 } else { idle + 1 };
+            if idle >= DOWNLOAD_TRIES {
                 return false;
             }
         }
