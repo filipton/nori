@@ -92,10 +92,11 @@ pub enum State {
 pub enum Event {
     State(State),
     /// The audible song changed. `jumps`: the jumps asked for by then ([`Engine::play_at`] and the
-    /// like), so a client that asked for a later one knows this predates it.
-    Song { index: usize, id: String, jumps: u64 },
+    /// like), so a client that asked for a later one knows this predates it. `seq`: the entry
+    /// (`Playlist::seqs`), for a client whose queue was edited since `index`.
+    Song { index: usize, seq: Option<u64>, id: String, jumps: u64 },
     /// The song restarted by itself (repeat one).
-    Looped { index: usize, id: String, jumps: u64 },
+    Looped { index: usize, seq: Option<u64>, id: String, jumps: u64 },
     /// The position: at the pace of [`Engine::position_updates`], and once when a seek lands.
     Position { index: usize, ms: i64 },
     /// A song would not play, or the output would not open (`id` empty).
@@ -1967,8 +1968,8 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     }
 
     fn say_song(&mut self, i: usize, looped: bool) {
-        let (id, jumps) = (self.told.heard.as_ref().map(|h| h.1.clone()).unwrap_or_default(), self.made());
-        (self.events)(if looped { Event::Looped { index: i, id, jumps } } else { Event::Song { index: i, id, jumps } });
+        let (id, jumps, seq) = (self.told.heard.as_ref().map(|h| h.1.clone()).unwrap_or_default(), self.made(), self.seqs.get(i).copied());
+        (self.events)(if looped { Event::Looped { index: i, seq, id, jumps } } else { Event::Song { index: i, seq, id, jumps } });
     }
 
     #[allow(clippy::too_many_arguments)]

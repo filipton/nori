@@ -711,7 +711,7 @@ fn new_queue_at_same_index_says_song() {
         rig.queue.lock().set(vec!["b".into(), "c".into()], Some(0), false, 0);
         rig.engine.queue_changed();
         let jump = rig.engine.go_to(0, 0);
-        let said = |r: &Rig| r.events.lock()[from..].iter().any(|e| matches!(e, Event::Song { index: 0, id, jumps } if id == "b" && *jumps >= jump));
+        let said = |r: &Rig| r.events.lock()[from..].iter().any(|e| matches!(e, Event::Song { index: 0, id, jumps, .. } if id == "b" && *jumps >= jump));
         assert!(rig.wait_for(5, said), "paused {paused}: {:?}", &rig.events.lock()[from..]);
         assert_eq!(rig.engine.status().id.as_deref(), Some("b"), "paused {paused}");
         rig.engine.play();
@@ -2509,6 +2509,9 @@ fn same_song_put_before_keeps_the_playing_entry() {
     rig.engine.queue_changed();
     assert!(rig.wait_for(20, Rig::ended), "{:?}", rig.events.lock());
     assert_eq!(rig.engine.status().index, Some(3));
+    // Its event, said before the edit, names the entry now last.
+    let seq = rig.events.lock().iter().find_map(|e| match e { Event::Song { index: 2, seq, .. } => *seq, _ => None });
+    assert_eq!(seq.and_then(|s| rig.queue.lock().index_of(s)), Some(3));
     assert!(!rig.events.lock().iter().any(|e| matches!(e, Event::Song { id, .. } if id == "b")), "nothing after the last entry: {:?}", rig.events.lock());
 }
 

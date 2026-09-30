@@ -71,7 +71,7 @@ internal object RustPlayerJni {
     /** The next event, `kind shl 32 or index` (kind: state 0, song 1, error 2, output 3); -1 when there are no more. */
     @JvmStatic @CriticalNative external fun event(h: Long): Long
     /**
-     * The words of the event [event] last gave: the song's id, the error, the output's name. Short and
+     * The words of the event [event] last gave: the error, the stream's title, the output's name. Short and
      * calling nothing back (the words sit behind a lock only the main thread takes, and one string is
      * made of them), so a fast door.
      */
@@ -593,11 +593,11 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
             val arg = e.toInt()
             when ((e ushr 32).toInt()) {
                 EVENT_STATE -> onState(arg)
-                EVENT_SONG -> onSong(arg, RustPlayerJni.eventText(h), RustPlayerJni.eventJumps(h))
+                EVENT_SONG -> onSong(arg, RustPlayerJni.eventJumps(h))
                 EVENT_ERROR -> RustPlayerJni.eventText(h).let { lastError = it; "rust player error: $it".let { t -> dev.nori.music.NoriLog.w(t); PlaybackService.observer?.error(t) } }
                 EVENT_STOPPED -> stoppedByItself()
                 EVENT_BUFFERING -> buffering = arg != 0
-                EVENT_LOOPED -> onLoop(arg, RustPlayerJni.eventText(h), RustPlayerJni.eventJumps(h))
+                EVENT_LOOPED -> onLoop(arg, RustPlayerJni.eventJumps(h))
                 EVENT_TITLE -> announced = RustPlayerJni.eventText(h)
                 // A mix began or ended being heard: the page is nudged, and reads [mixing] then. Nothing
                 // else changes, so nothing else is said.
@@ -696,12 +696,10 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
         whyPlayWhenReady = Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM
     }
 
-    private fun onSong(index: Int, id: String?, jumps: Long) {
+    /** [i]: where the song's entry is in the queue now (see `event`); -1 when an edit took it out. */
+    private fun onSong(i: Int, jumps: Long) {
         // Said before the engine made the last jump sent: the page is already where that jump goes.
-        if (jumps < sent) return
-        // The engine's index is into the queue it last read; the id says which song, should an edit have
-        // moved it since.
-        val i = if (items.getOrNull(index)?.mediaId == id) index else items.indices.filter { items[it].mediaId == id }.minByOrNull { kotlin.math.abs(it - index) } ?: return
+        if (jumps < sent || i !in items.indices) return
         val asked = i == expecting
         expecting = -1
         if (i != current) announced = null
@@ -712,8 +710,8 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
     }
 
     /** The song playing started again by itself (repeat one): a transition media3 reports as a repeat. */
-    private fun onLoop(index: Int, id: String?, jumps: Long) {
-        if (jumps < sent || items.getOrNull(index)?.mediaId != id) return
+    private fun onLoop(index: Int, jumps: Long) {
+        if (jumps < sent || index !in items.indices) return
         current = index
         loops++
         moved = true

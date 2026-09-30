@@ -1120,8 +1120,8 @@ impl Library for AndroidLibrary {
 /// Engine events queued for Kotlin, which is signalled once per batch.
 #[derive(Default)]
 struct Events {
-    /// (kind, index, text, jumps): jumps is `Song`/`Looped`'s `jumps`, or `Stopped`/`Bridge`'s `plays`.
-    queue: Mutex<VecDeque<(i32, i32, String, u64)>>,
+    /// (kind, index, entry, text, jumps): jumps is `Song`/`Looped`'s `jumps`, or `Stopped`/`Bridge`'s `plays`.
+    queue: Mutex<VecDeque<(i32, i32, Option<u64>, String, u64)>>,
     signalled: AtomicBool,
     /// Text and jumps of the event [`event`] last returned.
     text: Mutex<String>,
@@ -1149,7 +1149,7 @@ impl Events {
         }
         match &e {
             Event::State(s) => log(&format!("{s:?}")),
-            Event::Song { index, id, jumps } => log(&format!("song {index} ({id}) is heard, after jump {jumps}")),
+            Event::Song { index, id, jumps, .. } => log(&format!("song {index} ({id}) is heard, after jump {jumps}")),
             Event::Output { name } => log(&format!("playing to {name}")),
             Event::Stopped { plays } => log(&format!("stopped by itself, after play {plays}")),
             Event::Buffering(on) => log(if *on { "waits for the song's bytes" } else { "the song's bytes came" }),
@@ -1162,6 +1162,10 @@ impl Events {
             Event::Song { jumps, .. } | Event::Looped { jumps, .. } => *jumps,
             Event::Stopped { plays } | Event::Bridge { plays } => *plays,
             _ => 0,
+        };
+        let seq = match &e {
+            Event::Song { seq, .. } | Event::Looped { seq, .. } => *seq,
+            _ => None,
         };
         let (kind, index, text) = match e {
             Event::State(s) => (EVENT_STATE, state_code(s), String::new()),
@@ -1180,7 +1184,7 @@ impl Events {
         };
         let first = {
             let mut q = self.queue.lock();
-            q.push_back((kind, index, text, jumps));
+            q.push_back((kind, index, seq, text, jumps));
             !self.signalled.swap(true, Ordering::AcqRel)
         };
         // No player registered yet to take the signal (the engine's first events): signal again with the
@@ -1469,7 +1473,7 @@ extern "system" fn event(h: jlong) -> jlong {
     let mut q = p.events.queue.lock();
     // Drop stops from before a play Kotlin has since asked for (`Engine::superseded`): Kotlin would show
     // paused over music playing.
-    while let Some(&(kind, _, _, plays)) = q.front() {
+    while let Some(&(kind, _, _, _, plays)) = q.front() {
         let stop = match kind {
             EVENT_STOPPED => Event::Stopped { plays },
             EVENT_BRIDGE => Event::Bridge { plays },
@@ -1482,7 +1486,12 @@ extern "system" fn event(h: jlong) -> jlong {
         q.pop_front();
     }
     match q.pop_front() {
-        Some((kind, index, text, jumps)) => {
+        Some((kind, index, seq, text, jumps)) => {
+            // Kotlin's queue is the core's as it is now: a song is where its entry is now (-1: gone).
+            let index = match seq {
+                Some(s) => nori_queue::playlist::with(|q| q.index_of(s)).map_or(-1, |i| i as i32),
+                None => index,
+            };
             *p.events.text.lock() = text;
             p.events.jumps.store(jumps as i64, Ordering::Relaxed);
             ((kind as i64) << 32) | (index as u32 as i64)
