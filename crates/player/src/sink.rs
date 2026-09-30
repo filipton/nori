@@ -415,15 +415,14 @@ impl<T: Track> Sink<T> {
         let live = self.made > 0;
         let chain = &mut self.runner.chain;
         match chain.eq.as_mut() {
-            // A flat equalizer stays until the next flush.
-            Some(eq) if to.sound != self.settings.sound => {
-                // Flat, it may not have run yet: the change fades in all the same.
+            // A flat equalizer stays until the next flush. The same sound again changes nothing.
+            Some(eq) => {
+                // Flat, it may not have run yet: a change fades in all the same.
                 if live {
                     eq.continuing();
                 }
                 to.sound.apply(eq)
             }
-            Some(_) => {}
             None if to.eq_in() => {
                 let mut eq = Equalizer::new(f.rate, f.channels);
                 if live {
@@ -481,23 +480,28 @@ impl<T: Track> Sink<T> {
     pub fn cut_at(&mut self, pts: i64) -> bool {
         let (Some(f), Some(written)) = (self.format, self.written()) else { return false };
         let Some(at) = self.kept.frame_at(pts, f.rate) else { return false };
-        let Some(k) = self.kept.mark_where(|m| m.frame <= at) else { return false };
-        let from = self.track.freeze().min(written);
-        let keep = self.runner.chain.clone();
-        let back = self.run_again(k, at, u64::MAX);
-        if back.1 < from {
-            // Already played, or about to be.
-            self.runner.chain = keep;
-            self.track.cut(written);
-            return false;
+        // In input still to be run (after a splice) nothing was made of it yet.
+        if at < self.run {
+            let Some(k) = self.kept.mark_where(|m| m.frame <= at) else { return false };
+            let from = self.track.freeze().min(written);
+            let keep = self.runner.chain.clone();
+            // No further than what was written: input before the cut not written yet is run by `fill`.
+            let back = self.run_again(k, at, written);
+            if back.1 < from {
+                // Already played, or about to be.
+                self.runner.chain = keep;
+                self.track.cut(written);
+                return false;
+            }
+            self.back_at(back, written);
+            // The kept state may be from before the settings last changed: they are applied from here.
+            self.apply(self.settings.clone());
         }
-        let dropped = self.kept.media_from(back.0);
-        self.submitted_frames -= dropped;
+        self.submitted_frames -= self.kept.media_from(at);
         while self.paces.back().is_some_and(|p| p.0 > self.submitted_frames) {
             self.paces.pop_back();
         }
-        self.kept.forget_from(back.0);
-        self.back_at(back, written);
+        self.kept.forget_from(at);
         // The offer partly taken is dropped with the input after the cut, and the clock is as `pts` is
         // stamped there (a mix dropped here had moved it to the next song's time).
         self.owed = None;
@@ -860,5 +864,35 @@ impl<T: Track> Downstream for Sink<T> {
     fn position_us(&mut self, _source_ended: bool) -> Option<i64> {
         let f = self.format.filter(|_| !self.needs_init)?;
         Some(self.start_media_us + (self.track.played_media() * 1_000_000.0 / f.rate as f64) as i64)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sim::AudioTrack;
+
+    const F: Format = Format { rate: 1000, channels: 1, encoding: Encoding::Pcm16 };
+
+    fn ramp(from: i16, n: i16) -> Vec<u8> {
+        (from..from + n).flat_map(|v| v.to_le_bytes()).collect()
+    }
+
+    /// Made again from where the output held music of an earlier change still to be run: the part
+    /// before the cut is run and written, the rest dropped.
+    #[test]
+    fn cut_within_input_still_to_run_again() {
+        let mut sink = Sink::new(10_000_000, ChainSettings { keep_eq: true, ..ChainSettings::default() }, AudioTrack::new());
+        sink.configure(&1, Some(F));
+        let (a, b, c) = (ramp(0, 3000), ramp(3000, 3000), ramp(6000, 3000));
+        for (k, buf) in [&a, &b, &c].into_iter().enumerate() {
+            assert!(sink.handle_buffer(buf, 0, k as i64 * 3_000_000).0);
+        }
+        // All of it is to be run again, then all after 4.5 s dropped for other music.
+        sink.change(ChainSettings { speed: 2.0, keep_eq: true, ..ChainSettings::default() });
+        assert!(sink.cut_at(4_500_000));
+        assert!(sink.fill());
+        let written = sink.track.queued_bytes() / 2;
+        assert!((2_200..=2_300).contains(&written), "4.5 s at twice the speed: {written} frames");
     }
 }
