@@ -534,7 +534,6 @@ impl Core {
 
     pub fn parse_search(&self, body: Vec<u8>) -> Result<SearchResult> {
         let f = parse(&body)?.search_result3.unwrap_or_default();
-        db::index(&mut self.db.lock(), &f.artist, &f.album, &f.song)?;
         Ok(SearchResult { artists: f.artist, albums: f.album, songs: f.song })
     }
 
@@ -551,19 +550,16 @@ impl Core {
 
     pub fn parse_starred(&self, body: Vec<u8>) -> Result<Starred> {
         let f = parse(&body)?.starred2.unwrap_or_default();
-        db::index(&mut self.db.lock(), &f.artist, &f.album, &f.song)?;
         Ok(Starred::new(f.artist, f.album, f.song))
     }
 
     pub fn parse_album(&self, body: Vec<u8>) -> Result<AlbumDetail> {
         let a = parse(&body)?.album.unwrap_or_default();
-        db::index(&mut self.db.lock(), &[], std::slice::from_ref(&a.album), &a.song)?;
         Ok(AlbumDetail::new(a.album, a.song, a.disc_titles))
     }
 
     pub fn parse_artist(&self, body: Vec<u8>) -> Result<ArtistDetail> {
         let a = parse(&body)?.artist.unwrap_or_default();
-        db::index(&mut self.db.lock(), std::slice::from_ref(&a.artist), &a.album, &[])?;
         Ok(ArtistDetail::new(a.artist, a.album))
     }
 
@@ -579,30 +575,17 @@ impl Core {
     }
 
     pub fn parse_album_list(&self, body: Vec<u8>) -> Result<Vec<Album>> {
-        let l = parse(&body)?.album_list2.unwrap_or_default().album;
-        db::index(&mut self.db.lock(), &[], &l, &[])?;
-        Ok(l)
+        Ok(parse(&body)?.album_list2.unwrap_or_default().album)
     }
 
     pub fn parse_artists(&self, body: Vec<u8>) -> Result<Vec<Artist>> {
-        let l: Vec<Artist> = parse(&body)?.artists.unwrap_or_default().index.into_iter().flat_map(|i| i.artist).collect();
-        db::index(&mut self.db.lock(), &l, &[], &[])?;
-        Ok(l)
+        Ok(parse(&body)?.artists.unwrap_or_default().index.into_iter().flat_map(|i| i.artist).collect())
     }
 
     /// randomSongs, songsByGenre, similarSongs2, topSongs and getSong all land here.
     pub fn parse_songs(&self, body: Vec<u8>) -> Result<Vec<Song>> {
         let r = parse(&body)?;
-        let l = r
-            .random_songs
-            .or(r.songs_by_genre)
-            .or(r.similar_songs2)
-            .or(r.top_songs)
-            .map(|s| s.song)
-            .or(r.song.map(|s| vec![s]))
-            .unwrap_or_default();
-        db::index(&mut self.db.lock(), &[], &[], &l)?;
-        Ok(l)
+        Ok(r.random_songs.or(r.songs_by_genre).or(r.similar_songs2).or(r.top_songs).map(|s| s.song).or(r.song.map(|s| vec![s])).unwrap_or_default())
     }
 
     pub fn parse_playlists(&self, body: Vec<u8>) -> Result<Vec<Playlist>> {
@@ -611,7 +594,6 @@ impl Core {
 
     pub fn parse_playlist(&self, body: Vec<u8>) -> Result<PlaylistDetail> {
         let p = parse(&body)?.playlist.unwrap_or_default();
-        db::index(&mut self.db.lock(), &[], &[], &p.entry)?;
         Ok(PlaylistDetail::new(p.playlist, p.entry))
     }
 

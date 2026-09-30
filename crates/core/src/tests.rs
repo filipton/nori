@@ -11,6 +11,7 @@ const SEARCH: &str = r#"{"subsonic-response":{"status":"ok","version":"1.16.1","
 fn search_parses_indexes_and_skips_external() {
     let core = Core::new(String::new(), "t".into()).unwrap();
     let r = core.parse_search(SEARCH.into()).unwrap();
+    core.ingest_search(SEARCH.into()).unwrap();
     assert_eq!(r.songs.len(), 3);
     assert!(r.artists[0].starred);
     assert!(r.songs[1].is_external);
@@ -95,7 +96,7 @@ fn autoeq_preset_is_read() {
 #[test]
 fn browse_sorts_filters_and_groups_by_decade() {
     let core = Core::new(String::new(), "t".into()).unwrap();
-    core.parse_search(r#"{"subsonic-response":{"status":"ok","searchResult3":{"song":[
+    core.ingest_search(r#"{"subsonic-response":{"status":"ok","searchResult3":{"song":[
       {"id":"a","title":"beta","year":1994,"starred":"2020-01-01"},{"id":"b","title":"Alpha","year":2003},{"id":"c","title":"gamma","year":1999}]}}}"#.into()).unwrap();
     let by_title: Vec<String> = core.browse_songs("title".into(), false, false, 0, 0, 0, 10).unwrap().into_iter().map(|s| s.title).collect();
     assert_eq!(by_title, ["Alpha", "beta", "gamma"]);

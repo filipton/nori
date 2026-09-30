@@ -281,13 +281,40 @@ impl Client {
     }
 }
 
+impl Client {
+    /// Parses a server answer and keeps its library items in the index. Cached answers are only parsed:
+    /// they were indexed when they came.
+    fn parse_fresh(&self, parser: Parser, body: Vec<u8>) -> NetResult<Page> {
+        let page = self.parse(parser, body)?;
+        let none: (&[Artist], &[Album], &[Song]) = (&[], &[], &[]);
+        let (artists, albums, songs) = match (parser, &page) {
+            // getIndexes lists folders, not artists.
+            (Parser::Indexes, _) => none,
+            (_, Page::Albums { v }) => (&[][..], v.as_slice(), &[][..]),
+            (_, Page::Artists { v }) => (v.as_slice(), &[][..], &[][..]),
+            (_, Page::Songs { v }) => (&[][..], &[][..], v.as_slice()),
+            (_, Page::OneSong { v }) => (&[][..], &[][..], v.as_slice()),
+            (_, Page::AlbumPage { v }) => (&[][..], std::slice::from_ref(&v.album), v.songs.as_slice()),
+            (_, Page::ArtistPage { v }) => (std::slice::from_ref(&v.artist), v.albums.as_slice(), &[][..]),
+            (_, Page::PlaylistPage { v }) => (&[][..], &[][..], v.songs.as_slice()),
+            (_, Page::StarredPage { v }) => (v.artists.as_slice(), v.albums.as_slice(), v.songs.as_slice()),
+            (_, Page::Found { v }) => (v.artists.as_slice(), v.albums.as_slice(), v.songs.as_slice()),
+            _ => none,
+        };
+        if !(artists.is_empty() && albums.is_empty() && songs.is_empty()) {
+            crate::db::index(&mut self.core.db.lock(), artists, albums, songs)?;
+        }
+        Ok(page)
+    }
+}
+
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Client {
     /// Asks the server, bypassing the cache.
     pub async fn read_now(&self, read: Read) -> NetResult<Page> {
         let sp = spec(read);
         let body = self.fetch(sp.endpoint, sp.params).await?;
-        self.parse(sp.parser, body)
+        self.parse_fresh(sp.parser, body)
     }
 }
 
@@ -327,12 +354,12 @@ impl Client {
         let sp = spec(read);
         if sp.fresh_ms.is_none() {
             let body = self.fetch(sp.endpoint, sp.params).await?;
-            return Ok(Some(self.parse(sp.parser, body)?));
+            return Ok(Some(self.parse_fresh(sp.parser, body)?));
         }
         let k = key(sp.endpoint, &self.scoped(sp.endpoint, sp.params.clone()));
         let body = self.fetch(sp.endpoint, sp.params).await?;
         let page = if stored_digest != Some(digest(&body)) {
-            match self.parse(sp.parser, body.clone()) {
+            match self.parse_fresh(sp.parser, body.clone()) {
                 Err(e @ crate::transport::NetError::Api { code: NOT_FOUND, .. }) => {
                     self.core.cache_drop(&k)?;
                     return Err(e);
