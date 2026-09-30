@@ -1128,6 +1128,44 @@ fn offload_seek_restarts_at_packet() {
 }
 
 #[test]
+fn offload_follows_queue_edits() {
+    if !ffmpeg() {
+        eprintln!("ffmpeg is not installed: nothing to offload");
+        return;
+    }
+    let d = dir();
+    let (a, b, c, x) = (mp3(&d, "a", 5, 440), mp3(&d, "b", 5, 550), mp3(&d, "c", 5, 660), mp3(&d, "x", 5, 770));
+    let server = Arc::new(Server::default());
+    serve(&server, &[("a", &a), ("b", &b), ("c", &c), ("x", &x)]);
+    let fake = Fake::new(MP3_ONLY);
+    let songs = ["a", "b", "c"].map(|id| (id.to_string(), "mp3".to_string(), 5_000)).to_vec();
+    let rig = Rig::new(server, songs, app(), Some(fake.clone()), offload());
+    rig.engine.play_at(0, 0);
+    let delays = |f: &Fake| f.calls().iter().filter(|c| matches!(c, Call::DelayPadding(..))).count();
+    assert!(rig.wait(10, |_| delays(&fake) == 3), "all three on the track: {:?}", fake.calls());
+    fake.advance(44_100);
+    rig.run(100);
+    // A song put before them: what is written stays.
+    let opened = opens(&fake);
+    rig.queue.0.lock().insert(0, vec!["x".into()], nori_player::playlist::Hand::No);
+    rig.engine.queue_changed();
+    rig.run(100);
+    assert_eq!(opens(&fake), opened, "no track opened again: {:?}", fake.calls());
+    assert!(rig.wait(5, |r| r.engine.status().index == Some(1)), "a is at 1 now: {:?}", rig.engine.status());
+    // The song written after a taken out: the track starts again where the ear is, without it.
+    rig.queue.0.lock().remove(2, 3);
+    rig.engine.queue_changed();
+    assert!(rig.wait(5, |_| fake.calls().iter().rposition(|c| matches!(c, Call::Flush | Call::Open(_))).is_some_and(|k| k + 1 < fake.calls().len())), "{:?}", fake.calls());
+    for _ in 0..3 {
+        fake.advance(5 * 44_100);
+        rig.run(100);
+    }
+    let songs: Vec<String> = rig.events.lock().iter().filter_map(|e| if let Event::Song { id, .. } = e { Some(id.clone()) } else { None }).collect();
+    assert!(!songs.contains(&"b".to_string()) && songs.contains(&"c".to_string()), "b went, c followed a: {songs:?}");
+    rig.engine.stop();
+}
+
+#[test]
 fn offload_repeat_one_reports_loops() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
