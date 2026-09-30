@@ -18,7 +18,7 @@ pub(crate) mod tests {
     use crate::db;
     use crate::history::tests::song;
 
-    fn entry(duration_s: i32, artist: &str, title: &str) -> M3uEntry {
+    fn entry(duration_s: Option<u32>, artist: &str, title: &str) -> M3uEntry {
         M3uEntry { duration_s, artist: artist.into(), title: title.into(), path: String::new() }
     }
 
@@ -42,17 +42,17 @@ pub(crate) mod tests {
 
         assert_eq!(
             ids(vec![
-                entry(1020, "Pink Floyd", "Dogs"),     // exact, duration picks the studio cut
-                entry(-1, "pink floyd", "DOGS"),       // exact without a duration: the first
-                entry(-1, "BJÖRK", "jóga"),            // unicode case folding
-                entry(-1, "Bjork", "Joga"),            // diacritics via the full-text index
-                entry(-1, "Miles Davis", "So What"),   // not exact, every word matches
-                entry(2000, "", "Dogs"),               // title only
-                entry(-1, "Pink Floid", "Dogs"),       // misspelt artist: exact title
-                entry(-1, "Miles Davis", "So"),        // a shortened title whose words all match
-                entry(-1, "Nobody", "Nothing"),
-                entry(-1, "", ""),
-                entry(-1, "", "\"' OR * NEAR("),
+                entry(Some(1020), "Pink Floyd", "Dogs"),     // exact, duration picks the studio cut
+                entry(None, "pink floyd", "DOGS"),       // exact without a duration: the first
+                entry(None, "BJÖRK", "jóga"),            // unicode case folding
+                entry(None, "Bjork", "Joga"),            // diacritics via the full-text index
+                entry(None, "Miles Davis", "So What"),   // not exact, every word matches
+                entry(Some(2000), "", "Dogs"),               // title only
+                entry(None, "Pink Floid", "Dogs"),       // misspelt artist: exact title
+                entry(None, "Miles Davis", "So"),        // a shortened title whose words all match
+                entry(None, "Nobody", "Nothing"),
+                entry(None, "", ""),
+                entry(None, "", "\"' OR * NEAR("),
             ]),
             [some("studio"), some("live"), some("joga"), some("joga"), some("remaster"), some("studio"), some("live"), some("remaster"), None, None, None]
         );

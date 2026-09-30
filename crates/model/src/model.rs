@@ -611,8 +611,8 @@ pub struct SmartPlaylist {
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct M3uEntry {
-    /// -1 when the playlist does not say.
-    pub duration_s: i32,
+    /// None when the playlist does not say.
+    pub duration_s: Option<u32>,
     pub artist: String,
     pub title: String,
     pub path: String,

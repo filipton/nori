@@ -4,7 +4,7 @@
 use crate::cache_policy::{Page, Read};
 use crate::client::{Client, NetResult, Starrable, Write};
 use crate::mixes::board::MixDraw;
-use crate::{PlayQueue, Song};
+use crate::Song;
 use std::sync::Arc;
 
 pub use nori_library::library::*;
@@ -57,10 +57,10 @@ impl Client {
     pub async fn artist_songs_of(&self, artist_id: String) -> NetResult<Vec<Song>> {
         let read = || Read::ArtistById { id: artist_id.clone() };
         let page = match self.read_stored(read())?.page {
-            Some(p) => p,
-            None => self.read_fetch(read(), None).await?.unwrap_or(Page::Albums { v: Vec::new() }),
+            Some(p) => Some(p),
+            None => self.read_fetch(read(), None).await?,
         };
-        let Page::ArtistPage { v } = page else { return Ok(Vec::new()) };
+        let Some(Page::ArtistPage { v }) = page else { return Ok(Vec::new()) };
         Ok(self.artist_songs(v.albums).await)
     }
 
@@ -90,7 +90,7 @@ impl Client {
     pub async fn resume_from_server(&self) -> NetResult<ResumePlan> {
         match self.read_now(Read::PullQueue).await? {
             Page::Queue { v } => Ok(resume_plan(v)),
-            _ => Ok(resume_plan(PlayQueue { songs: vec![], index: 0, position_ms: 0, origin: None })),
+            _ => Ok(ResumePlan::Nothing),
         }
     }
 }
