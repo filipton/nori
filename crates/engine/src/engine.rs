@@ -632,6 +632,8 @@ const PANICS_KEPT_ON: usize = 3;
 const STALL_RESTART_MS: i64 = 10_000;
 /// A standing position is looked at once more at this point, so a watching client sees it.
 const STALL_SAY_MS: i64 = 5_000;
+/// A place unmoved for this long while music plays is standing.
+const STANDING_MS: i64 = 250;
 /// Playing on the CPU with nothing else due, the thread still wakes this often to check the position.
 /// Longer than any burst cycle, so it never fires while music plays.
 const STALL_GUARD_MS: i64 = 30_000;
@@ -1151,7 +1153,9 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         }
         let place = (self.current(), self.position_ms());
         let mut q = match self.stall.take() {
-            Some(q) if q.place == place => Stall { standing: true, ..q },
+            // Turns close together (a turn that ran out of its buffer budget and the next) see a moving
+            // place unmoved.
+            Some(q) if q.place == place => Stall { standing: now - q.since >= STANDING_MS, ..q },
             Some(_) => {
                 // Moving: a restarted song plays.
                 self.restarted = None;

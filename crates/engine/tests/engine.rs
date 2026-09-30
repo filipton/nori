@@ -642,6 +642,19 @@ fn pause_and_resume_keep_place() {
     assert!(heard == a, "every sample once, in order");
 }
 
+/// Playing, the engine wakes once per burst: the ring drained to its low mark.
+#[test]
+fn plain_playback_wakes_once_per_burst() {
+    let a = vec![8000i16; RATE as usize * 2 * 90];
+    let rig = Rig::new(&[("a", &a)], prefs_off(), Settings::default());
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2 * 10));
+    let sleeps = rig.time.clock.sleeps();
+    rig.run(60_000);
+    let bursts = 60_000_000 / (nori_player::burst::BUFFER_US - nori_engine::output::WAKE_LOW_US) as u64 + 1;
+    assert!(rig.time.clock.sleeps() - sleeps <= bursts, "{} wakes in a minute", rig.time.clock.sleeps() - sleeps);
+}
+
 /// The status is as old as the last wake; `look` refreshes it at once.
 #[test]
 fn look_refreshes_place_between_bursts() {

@@ -155,7 +155,11 @@ fn switched_off_near_the_end_with_the_ending_made_gapless_it_still_mixes() {
     assert!(rig.until(20, |r| r.engine.status().index == Some(0) && r.engine.status().position_ms > 1_000));
     rig.engine.seek(SECS as i64 * 1000 - 15_000);
     // The ending is already made gapless.
-    assert!(rig.until(20, |r| r.engine.status().position_ms > SECS as i64 * 1000 - 13_000), "{:?}", rig.engine.status());
+    // Looked at: the status is otherwise as old as the last burst.
+    assert!(rig.until(20, |r| {
+        r.engine.look();
+        r.engine.status().position_ms > SECS as i64 * 1000 - 13_000
+    }), "{:?}", rig.engine.status());
     rig.set("crossfadeKeepAlbums", "false");
     assert!(rig.mixes_into(1), "the ending is made again as a mix");
 }
