@@ -28,9 +28,9 @@ impl Client {
     pub(crate) async fn library_albums(&self, albums: Vec<Album>, wanted: usize) -> Vec<Song> {
         let mut out = Vec::new();
         let mut found = 0;
-        for a in albums.into_iter().filter(|a| !a.is_external && !crate::db::external(&a.id)) {
-            let songs: Vec<Song> = self.songs(Read::AlbumSongs { id: a.id }).await.unwrap_or_default();
-            let songs: Vec<Song> = songs.into_iter().filter(|s| !s.is_external && !crate::db::external(&s.id)).collect();
+        for a in albums.into_iter().filter(|a| !a.is_provider()) {
+            let mut songs: Vec<Song> = self.songs(Read::AlbumSongs { id: a.id }).await.unwrap_or_default();
+            songs.retain(|s| !s.is_provider());
             if songs.is_empty() {
                 continue;
             }
@@ -56,7 +56,7 @@ impl Core {
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Client {
-    /// A radio from song `id`: similar songs ([radio_queue]), else random songs of its genre ([radio_fallback]).
+    /// A radio from song `id`: similar songs, else random songs of its genre ([radio_queue]).
     pub async fn radio(&self, id: String) -> NetResult<Vec<Song>> {
         let similar = self.songs(Read::SimilarSongs { id: id.clone(), count: RADIO }).await?;
         let seed = self.song_of(id).await?;
@@ -64,7 +64,7 @@ impl Client {
             return Ok(queue);
         }
         let random = self.songs(Read::RandomSongs { size: RADIO, genre: seed.genre.clone() }).await?;
-        Ok(radio_fallback(seed, random))
+        Ok(radio_queue(seed.clone(), random).unwrap_or_else(|| vec![seed]))
     }
 
     /// A mix around song `id` from the index and history; the radio when that yields only the song.
@@ -76,17 +76,16 @@ impl Client {
         self.radio(id).await
     }
 
-    /// The songs of `albums` in order, skipping provider and unreadable albums.
+    /// The library songs of `albums` in order, skipping provider and unreadable albums.
     pub async fn artist_songs(&self, albums: Vec<Album>) -> Vec<Song> {
-        let mut out = Vec::new();
-        for a in albums.into_iter().filter(|a| !a.is_external) {
-            out.extend(self.songs(Read::AlbumSongs { id: a.id }).await.unwrap_or_default());
-        }
-        out
+        self.library_albums(albums, usize::MAX).await
     }
 
+    /// Random library songs.
     pub async fn shuffle_all(&self) -> NetResult<Vec<Song>> {
-        self.songs(Read::RandomSongs { size: SHUFFLE_ALL, genre: None }).await
+        let mut songs = self.songs(Read::RandomSongs { size: SHUFFLE_ALL, genre: None }).await?;
+        songs.retain(|s| !s.is_provider());
+        Ok(songs)
     }
 
     /// One random library album, whole; refills add more ([`crate::OriginKind::ShuffleAlbums`]).
@@ -127,7 +126,7 @@ pub(crate) mod tests {
         let seed = Song { id: "r".into(), genre: Some("Jazz".into()), ..Default::default() };
         crate::queue::queue_register(vec![seed.clone()]);
         fake.answer(&songs_json("similarSongs2", &["r"]));
-        fake.answer(&songs_json("randomSongs", &["x", "y"]));
+        fake.answer(&songs_json("randomSongs", &["x", "r", "ext-deezer-song-1", "y"]));
         let got = block(c.radio(seed.id.clone())).unwrap();
         assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["r", "x", "y"]);
         let asked = fake.asked();
@@ -147,13 +146,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn artist_songs_skip_provider_albums() {
+    fn artist_and_shuffle_skip_providers() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         let album = |id: &str, is_external| Album { id: id.into(), is_external, ..Default::default() };
-        fake.answer(r#"{"subsonic-response":{"status":"ok","album":{"id":"a1","name":"a1","song":[{"id":"1","title":"1","isDir":false}]}}}"#);
-        let got = block(c.artist_songs(vec![album("a1", false), album("ext-2", true)]));
-        assert_eq!(got.len(), 1);
+        fake.answer(r#"{"subsonic-response":{"status":"ok","album":{"id":"a1","name":"a1","song":[{"id":"1","title":"1","isDir":false},{"id":"ext-deezer-song-2","title":"2","isDir":false}]}}}"#);
+        let got = block(c.artist_songs(vec![album("a1", false), album("ext-2", true), album("pl-deezer-3", false)]));
+        assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["1"]);
         assert_eq!(fake.asked().len(), 1);
+        fake.answer(&songs_json("randomSongs", &["x", "ext-deezer-song-1"]));
+        assert_eq!(block(c.shuffle_all()).unwrap().iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["x"]);
     }
 
     #[test]
