@@ -741,8 +741,8 @@ fn sync(client: &Client, out: &Out) {
 
 /// Runs `Client::read_each` (the stored copy, then the server's if different; an error only when
 /// nothing is stored), handing each page to `each`.
-pub fn read_pages(client: &Client, read: Read, mut each: impl FnMut(Page)) -> Result<(), NetError> {
-    block_on(client.read_each(read, |p| each(p)))
+pub fn read_pages(client: &Client, read: Read, each: impl FnMut(Page)) -> Result<(), NetError> {
+    block_on(client.read_each(read, each))
 }
 
 /// Monotonic ms for the scrobbler. A process-wide epoch: the core's scrobble state outlives sessions.
