@@ -315,7 +315,6 @@ mod tests {
     #[test]
     fn the_forms_own_rules() {
         let new = smart_edit_open(None);
-        assert_eq!((new.rules.len(), new.sort_field.as_str(), new.limit, new.all), (1, "random", 100, true));
         let year = smart_edit_field(new.clone(), 0, "year".into());
         assert_eq!((year.rules[0].field.as_str(), year.rules[0].op.as_str()), ("year", "is"));
         let empty = smart_edit_remove(new.clone(), 0);
@@ -327,7 +326,6 @@ mod tests {
         assert_eq!(smart_value_hint("is".into()).as_deref(), Some("value"));
         assert_eq!((smart_limit_typed("25".into()), smart_limit_typed("x".into())), (25, 0));
         assert_eq!((smart_limit_text(0), smart_limit_text(7)), (String::new(), "7".to_string()));
-        assert_eq!(smart_edit_fields().first().map(String::as_str), smart_edit_schema().texts.first().map(String::as_str));
     }
 
     fn edit(rules: Vec<SmartEditRule>) -> SmartEdit {

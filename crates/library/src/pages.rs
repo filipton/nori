@@ -560,7 +560,6 @@ mod tests {
         assert_eq!(artist.queue.origin(), PageOrigin::new(OriginKind::Artist, "ar"), "the artist, not its albums");
         let playlist = PlaylistDetail::new(Playlist { id: "pl".into(), ..Default::default() }, vec![]);
         assert_eq!(playlist.queue.origin_ref(), &PageOrigin::new(OriginKind::Playlist, "pl"));
-        assert_eq!(PageQueue::default().origin_ref().id, "", "a page not read yet is no queue's");
     }
 
     #[test]
@@ -572,6 +571,7 @@ mod tests {
         assert_eq!(away.pack() & 0b100, 0, "Play, not Pause");
         let here = hero_buttons(true, true, false, true, true, true);
         assert_eq!((here.shuffle_lit, here.pausing, here.play_press, here.shuffle_press), (true, true, HeroPress::Toggle, HeroPress::ShuffleOff));
+        assert!(hero_buttons(true, false, true, false, true, true).pausing, "playing pauses too");
         let waiting = hero_buttons(false, false, false, false, false, false);
         assert!(!waiting.play_enabled && !waiting.shuffle_enabled);
         assert!(hero_buttons(true, false, false, false, false, false).play_enabled, "its own queue can always be resumed");

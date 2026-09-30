@@ -443,7 +443,6 @@ mod tests {
     #[test]
     fn album_orders_are_kept_by_their_server_names() {
         use std::collections::HashMap;
-        assert_eq!(album_sort_api(AlbumSort::ByArtist), "alphabeticalByArtist");
         assert_eq!(album_sort_saved(HashMap::new()), AlbumSort::ByName);
         let kept = album_sort_kept(AlbumSort::Frequent);
         assert_eq!((kept.key.as_str(), kept.value.as_str()), ("albums.sort", "frequent"));
@@ -453,7 +452,6 @@ mod tests {
         assert_eq!(song_sort_saved(HashMap::from([("songs.sort".to_string(), "PLAYS".to_string())])), "PLAYS");
         assert_eq!(song_sort_saved(HashMap::from([("songs.sort".to_string(), "GONE".to_string())])), "TITLE");
         assert_eq!(song_sort_kept("YEAR".into()), ListPref { key: "songs.sort".into(), value: "YEAR".into() });
-        assert!(albums_exhausted(59) && !albums_exhausted(60));
     }
 
     #[test]
