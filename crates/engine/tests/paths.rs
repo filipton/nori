@@ -1241,6 +1241,31 @@ fn offload_sleep_timer_follows_its_song_through_an_edit() {
 }
 
 #[test]
+fn offload_heard_song_taken_out() {
+    if !ffmpeg() {
+        eprintln!("ffmpeg is not installed: nothing to offload");
+        return;
+    }
+    let d = dir();
+    let (a, b) = (mp3(&d, "a", 5, 440), mp3(&d, "b", 5, 660));
+    let server = Arc::new(Server::default());
+    serve(&server, &[("a", &a), ("b", &b)]);
+    let fake = Fake::new(MP3_ONLY);
+    let songs = vec![("a".into(), "mp3".into(), 5_000), ("b".into(), "mp3".into(), 5_000)];
+    let rig = Rig::new(server, songs, app(), Some(fake.clone()), offload());
+    rig.engine.play_at(1, 0);
+    assert!(rig.wait(10, |_| fake.calls().contains(&Call::EndOfStream)), "{:?}", fake.calls());
+    fake.advance(44_100);
+    assert!(rig.wait(5, |r| r.engine.status().position_ms >= 900), "{:?}", rig.engine.status());
+    rig.queue.0.lock().remove(1, 2);
+    rig.engine.queue_changed();
+    // The song now in its place plays, from its start.
+    assert!(rig.wait(5, |r| r.engine.status().index == Some(0) && r.engine.status().id.as_deref() == Some("a")), "{:?}", rig.engine.status());
+    assert!(!rig.events.lock().iter().any(|e| matches!(e, Event::Stopped { .. } | Event::Error { .. })), "{:?}", rig.events.lock());
+    rig.engine.stop();
+}
+
+#[test]
 fn offload_opus_in_ogg_pages() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
