@@ -1263,7 +1263,7 @@ mod tests {
         let mut y = vec![0f32; x.len()];
         eq.reset();
         eq.process_f32(&x, &mut y);
-        assert!(y.chunks_exact(2).all(|f| f[0] == f[1]), "both-channel band kept the centre centred");
+        assert!(y.as_chunks::<2>().0.iter().all(|f| f[0] == f[1]), "both-channel band kept the centre centred");
 
         let mut mono = Equalizer::new(48000, 1);
         mono.configure(&[Band { channel: CH_RIGHT, ..b(PEAKING, 1000.0, 12.0, 1.0) }], 0.0, 0.0);
@@ -1297,7 +1297,7 @@ mod tests {
         let db = 20.0 * (rms(&y[19200..]) / rms(&x[19200..])).log10();
         assert!(db.abs() < 0.3, "mono sum moved the level by {db} dB");
         // After the 10 ms fade-in.
-        assert!(y[960..].chunks_exact(2).all(|f| f[0] == f[1]), "both channels carry the same mono signal");
+        assert!(y[960..].as_chunks::<2>().0.iter().all(|f| f[0] == f[1]), "both channels carry the same mono signal");
     }
 
     #[test]
@@ -1534,7 +1534,7 @@ mod tests {
     fn flat_16_bit_chain_is_bit_exact() {
         let mut eq = Equalizer::new(48000, 2);
         eq.configure(&[], 0.0, 0.0);
-        let x: Vec<i16> = (0..9600).map(|i| ((i * 7919) % 65536) as i32 as i16).collect();
+        let x: Vec<i16> = (0..9600).map(|i| ((i * 7919) % 65536) as i16).collect();
         let mut y = vec![0i16; x.len()];
         eq.process_i16(&x, &mut y);
         assert_eq!(x, y);

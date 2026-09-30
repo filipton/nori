@@ -1588,7 +1588,7 @@ mod tests {
 
     impl Down {
         fn samples(&self) -> Vec<i16> {
-            self.taken.iter().flat_map(|(d, _)| d.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]]))).collect()
+            self.taken.iter().flat_map(|(d, _)| d.as_chunks::<2>().0.iter().map(|&c| i16::from_le_bytes(c))).collect()
         }
     }
 
@@ -2052,7 +2052,7 @@ mod tests {
         feed_in(&mut e, &mut d, &mut h, &sine(HZ, 48_000, 1.0, 48_000 * 4), F48, 7_000_000);
         assert_eq!(d.configured, vec![1], "no opening again between b and c");
         assert_eq!(h.log.iter().filter(|l| l.contains("converting 48000")).count(), 1, "one converter, b's: {:?}", h.log);
-        let left: Vec<f64> = d.samples().chunks_exact(2).map(|c| c[0] as f64).collect();
+        let left: Vec<f64> = d.samples().as_chunks::<2>().0.iter().map(|c| c[0] as f64).collect();
         let own = 8000.0 * std::f64::consts::TAU * HZ / RATE as f64;
         let near = &left[from - 2_000..from + 2_000];
         let step = near.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f64::max);
@@ -2081,7 +2081,7 @@ mod tests {
     /// Pitch of the last second taken, from zero crossings.
     fn last_second_hz(d: &Down, f: Format) -> f64 {
         let s = d.samples();
-        let left: Vec<i16> = s.chunks_exact(2).map(|c| c[0]).collect();
+        let left: Vec<i16> = s.as_chunks::<2>().0.iter().map(|c| c[0]).collect();
         let w = &left[left.len() - f.rate as usize..];
         w.windows(2).filter(|p| (p[0] < 0) != (p[1] < 0)).count() as f64 / 2.0
     }
