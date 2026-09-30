@@ -183,6 +183,17 @@ as its slowest test or its total over the cores, whichever is more. The binaries
 | crates/engine `--test one_fetch`, `--test core` | 1 each | 1-2 s | one core and one queue per process, so a binary each |
 | everything else | about 600 | under 1.3 s a binary | |
 
+### What the output should have played
+
+`crates/engine/tests/common/reference.rs` renders offline what a card should hear when the sound changes
+mid-play: the chain's input (a song, or the transition engine's output as a plain run hears it) through
+the equalizer, silence skipping and speed as first set, switched at the input frame the engine logged for
+each change, spliced in where it logged it and blended as the ring blends. engine.rs's
+`*_changes_seamlessly*` tests compare the card with it sample for sample (EQ, compressor, speed, silence
+skipping, in a crossfade, in a stretched AutoMix, right after a seek, paused, on a device holding seconds),
+so a repeated, lost or clicking stretch fails them; `reference::clicks` finds jumps where no exact
+rendering exists.
+
 ### The host perf report
 
 `tools/perf-host.sh [rev] [runs]` plays minutes of music through the engine on the test's clock, for this
