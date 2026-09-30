@@ -1146,7 +1146,7 @@ mod tests {
         assert_eq!(eq_rows(&five).iter().filter(|r| matches!(r, EqRow::Slider(_))).count(), 5);
         assert_eq!(EqRow::Slider(0).words(&five).0, "63");
         assert!(matches!(EqRow::Mode.open(&p), Some(Cmd::Setting(n, v)) if n == "eqMode" && v == "PARAMETRIC"));
-        assert!(eq_rows(&StoredPrefs::default()).contains(&EqRow::Layout), "a new install opens on the graphic equalizer");
+        assert!(rows.contains(&EqRow::Layout));
         let parametric = eq_rows(&StoredPrefs { eq_mode: EqMode::Parametric, ..StoredPrefs::default() });
         assert!(parametric.contains(&EqRow::Mode) && !parametric.contains(&EqRow::Layout));
         let fx = effects(&Build { p: &StoredPrefs { compressor: true, ..StoredPrefs::default() }, s: &settings_model::state(&StoredPrefs::default(), settings_model::Output::default()) });
