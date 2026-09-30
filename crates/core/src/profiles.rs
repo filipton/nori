@@ -56,7 +56,7 @@ impl Client {
     /// `entry`'s preset text (parametric, else graphic). None when AutoEQ has neither, which hides the
     /// entry from now on; a failed request is an error.
     pub async fn autoeq_curve(&self, entry: AutoEqEntry) -> NetResult<Option<String>> {
-        let graphic = crate::settings_store::settings_current().is_some_and(|p| p.eq_mode == crate::settings::EqMode::Graphic);
+        let graphic = crate::settings_store::prefs(|p| p.eq_mode == crate::settings::EqMode::Graphic);
         match autoeq::fetch_curve(&*self.transport, &entry, graphic).await? {
             autoeq::Curve::Found(text) => Ok(Some(text)),
             autoeq::Curve::Missing => {
