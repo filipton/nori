@@ -1,9 +1,0 @@
-0 State(Playing)
-0 Buffering(true)
-0 Song { index: 0, id: "c1", jumps: 1 }
-0 Buffering(false)
-32104 Mixing(true)
-35991 Song { index: 1, id: "c2", jumps: 1 }
-40008 Mixing(false)
-heard: 4256768 samples 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 437cc28adef9f3c5 ed62152fcf3203c5 972e07428ce75bc5 77423c629172dbc5 7bbbfea1ce9e7bc5 433986ffb2735bc5 ff443465c49aebc5 df5d7fcdccc483c5 f1efd7f48f0b93c5 a752242b1df183c5 a752242b1df183c5 a752242b1df183c5 a752242b1df183c5 a752242b1df183c5 a752242b1df183c5 a752242b1df183c5 a752242b1df183c5 fec60a93c922f525
-opened [OutputFormat { rate: 44100, channels: 2, bits: 0 }]

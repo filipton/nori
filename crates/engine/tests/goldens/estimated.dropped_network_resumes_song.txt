@@ -1,8 +1,0 @@
-0 State(Playing)
-0 Buffering(true)
-0 Song { index: 1, id: "b", jumps: 1 }
-0 Buffering(false)
-5002 Buffering(true)
-5002 Song { index: 2, id: "c", jumps: 1 }
-heard: 480256 samples b1ff5f0f7b5c13c5 cd70f7eaaa1a83c5 1172f9feeb9763c5 e61700e46dbdc3c5 3caf719dc14c83c5 857abbc73ecd8c05
-opened [OutputFormat { rate: 48000, channels: 2, bits: 0 }]

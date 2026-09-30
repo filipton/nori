@@ -1,9 +1,0 @@
-0 State(Playing)
-0 Song { index: 0, id: "a", jumps: 1 }
-1 Looped { index: 0, id: "a", jumps: 1 }
-101 Looped { index: 0, id: "a", jumps: 1 }
-heard: 0 samples
-opened []
-chip calls [Open(Coded { coding: Mp3, rate: 44100, channels: 2 }), DelayPadding(576, 1260), Volume(1.0), Write(80666, 220500), Play, EndOfStream, DelayPadding(576, 1260), Write(80666, 220500), EndOfStream, DelayPadding(576, 1260), Write(80666, 220500), EndOfStream, DelayPadding(576, 1260), Write(80666, 220500), EndOfStream, DelayPadding(576, 1260), Write(80666, 220500), EndOfStream, DelayPadding(576, 1260), Write(80666, 220500), EndOfStream, DelayPadding(576, 1260), Write(80666, 220500), Volume(1.0), EndOfStream, DelayPadding(576, 1260), Write(80666, 220500), Volume(1.0), Close]
-chip notes ["the platform granted a track of 3800 KB of the 3800 KB asked: 241239 ms of this song, topped up when the platform asks for more (about every 30000 ms if its chip buffers nothing of its own)"]
-chip bytes: 645328 samples 8d27154a490e2015 ff31572524ebc773 1958453a826c0a85 ab56db46322bf859 5c47ad2600ad035e f37e2be59ef1331a 9c4eb47341e7722b c9f63cfc65ed12f5 bd3bb18cb4ee9248 0c1b1089ec6c9048

@@ -1,8 +1,0 @@
-0 State(Playing)
-0 Buffering(true)
-0 Song { index: 1, id: "s1", jumps: 1 }
-0 Error { id: "s1", message: "the song's loader failed" }
-0 Buffering(false)
-0 Song { index: 2, id: "s2", jumps: 1 }
-heard: 89088 samples 295943f7d6689bc5 de1e919f8e337e85
-opened [OutputFormat { rate: 44100, channels: 2, bits: 0 }]

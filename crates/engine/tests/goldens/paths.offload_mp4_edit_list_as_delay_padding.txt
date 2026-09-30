@@ -1,7 +1,0 @@
-0 State(Playing)
-0 Song { index: 0, id: "a", jumps: 1 }
-heard: 0 samples
-opened []
-chip calls [Open(Coded { coding: Aac, rate: 44100, channels: 2 }), DelayPadding(1024, 0), Volume(1.0), Write(48321, 132300), Play, EndOfStream, Close]
-chip notes ["the platform granted a track of 3878 KB of the 3878 KB asked: 246604 ms of this song, topped up when the platform asks for more (about every 30000 ms if its chip buffers nothing of its own)"]
-chip bytes: 48321 samples cc0d771ba409b365

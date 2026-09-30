@@ -165,7 +165,7 @@ impl Rig {
         let settings = Settings { speed, pitch: speed, ..Settings::default() };
         let events: Arc<Mutex<Vec<Event>>> = Arc::default();
         let told = events.clone();
-        let engine = Engine::start_on(Songs::new(), Planned(app), queue, Box::new(card.clone()), None, Config { settings, ..Config::default() }, clock.clone(), { let mut t = common::golden::Trace::new(&clock); let h = card.heard.clone(); t.watch(move || common::golden::floats("heard", &h.lock())); let o = card.opened.clone(); t.watch(move || format!("opened {:?}", o.lock())); t.around(move |e| told.lock().push(e)) });
+        let engine = Engine::start_on(Songs::new(), Planned(app), queue, Box::new(card.clone()), None, Config { settings, ..Config::default() }, clock.clone(), move |e| told.lock().push(e));
         engine.queue_changed();
         engine.play_at(0, from_ms);
         Rig { engine, events, time: Stepper::new(clock, card.pull.clone()), card }

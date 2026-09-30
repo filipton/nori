@@ -430,10 +430,7 @@ impl Rig {
         let library = Songs { server: server.clone(), lengths, store };
         let mut config = Config { memory_mb: memory_mb.unwrap_or(256), settings, watch: watching.map(nori_engine::watch::Watcher), ..Config::default() };
         config.idle_release_ms = idle_release_ms.unwrap_or(config.idle_release_ms);
-        let mut t = common::golden::Trace::new(&clock);
-        let (h, hf, o, sh, fl, rq) = (heard.clone(), heard_f.clone(), opened.clone(), shut.clone(), flushes.clone(), server.clone());
-        t.watch(move || format!("{}\n{}\nopened {:?} shut {:?} flushes {:?}\nrequests {:?}", common::golden::shorts("heard", &h.lock()), common::golden::floats("heard_f", &hf.lock()), o, sh, fl, { let mut r = rq.requests.lock().clone(); r.sort(); r }));
-        let engine = Engine::start_on(library, app, queue, Box::new(out), None, config, clock.clone(), t.around(move |e| seen.lock().push(e)));
+        let engine = Engine::start_on(library, app, queue, Box::new(out), None, config, clock.clone(), move |e| seen.lock().push(e));
         let time = Stepper::new(clock, card.clone());
         Rig { engine, time, pace: pace.unwrap_or(20.0), opened, shut, watch, heard, heard_f, underruns, server, events, die, flushes, shallow, card, queue: list }
     }
@@ -2385,15 +2382,12 @@ fn status_current_on_events() {
     let cell: Arc<std::sync::OnceLock<Arc<Engine>>> = Arc::default();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let (engine_of, said) = (cell.clone(), seen.clone());
-    let mut t = common::golden::Trace::new(&clock);
-    let h = card.heard.clone();
-    t.watch(move || common::golden::floats("heard", &h.lock()));
-    let engine = Arc::new(Engine::start_on(library, sim::App::new(), queue, Box::new(card.clone()), None, Config::default(), clock.clone(), t.around(move |e| {
+    let engine = Arc::new(Engine::start_on(library, sim::App::new(), queue, Box::new(card.clone()), None, Config::default(), clock.clone(), move |e| {
         if let Some(engine) = engine_of.get() {
             let (state, index) = engine.status_with(|s| (s.state, s.index));
             said.lock().push((e, state, index));
         }
-    })));
+    }));
     let _ = cell.set(engine.clone());
     let time = Stepper::new(clock, card.pull.clone());
     engine.play_at(0, 0);

@@ -1,8 +1,0 @@
-0 State(Playing)
-0 Song { index: 0, id: "a", jumps: 1 }
-7998 Mixing(true)
-9009 Mixing(false)
-9009 Position { index: 0, ms: 25000 }
-9044 Song { index: 1, id: "b", jumps: 1 }
-heard: 284672 samples 1f94732f74c233c5 4a20ea64d0c883c5 4e6e03b6fe76b3c5 12e721e25e8ee945
-opened [OutputFormat { rate: 44100, channels: 2, bits: 0 }, OutputFormat { rate: 48000, channels: 2, bits: 0 }]

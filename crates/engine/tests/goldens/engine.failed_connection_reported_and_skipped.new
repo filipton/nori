@@ -1,0 +1,11 @@
+0 State(Playing)
+0 Buffering(true)
+0 Song { index: 0, id: "a", jumps: 1 }
+0 Buffering(false)
+3993 Error { id: "a", message: "connection refused" }
+3993 Song { index: 1, id: "b", jumps: 1 }
+9996 State(Ended)
+heard: 881712 samples 975019a18d77a13f 29fb18aaf71b7e11 ea8b9746ebc7ed0e d375b2b86c788c36 c6cea624ad6ec76f 82dd6a2653710de3 ab6d61abd774e4f9 b3188377e077b358 9f4524ddfafc9132 25f171a5b61e3c9d
+heard_f: 0 samples
+opened 1 shut 1 flushes 1
+requests [("a", 0), ("a", 705644), ("a", 705644), ("a", 705644), ("a", 705644), ("b", 0)]

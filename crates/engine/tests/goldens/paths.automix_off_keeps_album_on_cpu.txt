@@ -1,9 +1,0 @@
-0 State(Playing)
-0 Buffering(true)
-0 Song { index: 0, id: "a1", jumps: 1 }
-0 Buffering(false)
-heard: 89088 samples bf0d9cfdec5d63c5 969de1104fcf0685
-opened [OutputFormat { rate: 44100, channels: 2, bits: 0 }]
-chip calls []
-chip notes []
-chip bytes: 0 samples

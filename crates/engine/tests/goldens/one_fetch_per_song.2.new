@@ -1,0 +1,7 @@
+0 State(Playing)
+0 Song { index: 0, id: "k1", jumps: 1 }
+120 Buffering(true)
+120 Song { index: 2, id: "k3", jumps: 2 }
+120 Buffering(false)
+heard: 739328 samples cb56777cbd86d785 c11a4e579acd53c5 d16758221f346bc5 d8044abedd8587c5 323bdaa6ae454bc5 9fa8b037adad4fc5 36211556e3ed97c5 9fcc5ccbfb36ebc5 0e5a57203d358225
+opened [OutputFormat { rate: 44100, channels: 2, bits: 0 }]
