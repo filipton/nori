@@ -29,6 +29,8 @@ pub struct CpalOutput {
     shallow: bool,
     /// When what the device took has been heard.
     heard: Arc<Heard>,
+    /// Why the stream stopped for good (its device went away), for [`AudioOutput::failed`].
+    failed: Arc<Mutex<Option<String>>>,
     watch: Option<Arc<DeviceWatch>>,
     volume: Volume,
 }
@@ -190,6 +192,16 @@ fn build_stream<T: SizedSample + Default + Send + 'static>(
     Ok(stream)
 }
 
+/// A stream error other than a device change: one whose device is gone stops the stream for good, so the
+/// engine is told ([`AudioOutput::failed`]) and woken to hear it; others are only logged.
+fn stream_failed(kind: ErrorKind, detail: String, failed: &Mutex<Option<String>>, wake: impl FnOnce()) {
+    eprintln!("nori: the output stream failed: {detail}");
+    if matches!(kind, ErrorKind::DeviceNotAvailable | ErrorKind::HostUnavailable) {
+        *failed.lock().unwrap_or_else(|p| p.into_inner()) = Some(detail);
+        wake();
+    }
+}
+
 impl CpalOutput {
     fn period_ms(&self) -> u32 {
         if self.shallow {
@@ -206,14 +218,14 @@ impl CpalOutput {
         let (Some(device), Some((config, format)), Some(feed)) = (&self.device, &self.config, &self.feed) else { return Err("not open".into()) };
         // Only follows the default device; a named device stays put.
         let watch = self.watch.clone().filter(|_| self.wanted.is_none());
-        let on_error = move |e: cpal::Error| {
-            if e.kind() == ErrorKind::DeviceChanged {
+        let (failed, stopped) = (self.failed.clone(), feed.clone());
+        let on_error = move |e: cpal::Error| match e.kind() {
+            ErrorKind::DeviceChanged => {
                 if let (Some(w), Some(d)) = (&watch, cpal::default_host().default_output_device().as_ref().and_then(describe)) {
                     w(d);
                 }
-                return;
             }
-            eprintln!("nori: the output stream failed: {e}");
+            kind => stream_failed(kind, e.to_string(), &failed, || stopped.lock().unwrap_or_else(|p| p.into_inner()).wake_engine()),
         };
         let (feed, volume, heard) = (feed.clone(), self.volume.clone(), self.heard.clone());
         let stream = match format {
@@ -293,6 +305,10 @@ impl AudioOutput for CpalOutput {
         self.latency_us() > 0
     }
 
+    fn failed(&mut self) -> Option<String> {
+        self.failed.lock().unwrap_or_else(|p| p.into_inner()).take()
+    }
+
     fn takes_float(&mut self) -> bool {
         let Ok(device) = self.pick() else { return false };
         device.supported_output_configs().is_ok_and(|mut c| c.any(|r| r.sample_format() == SampleFormat::F32))
@@ -336,5 +352,15 @@ mod tests {
         assert_eq!(heard.left_us(t), 120_000, "the device's delay and the period it took");
         assert_eq!(heard.left_us(t + Duration::from_millis(70)), 50_000);
         assert_eq!(heard.left_us(t + Duration::from_millis(130)), 0, "all heard");
+    }
+
+    #[test]
+    fn a_device_gone_stops_the_engine() {
+        let failed = Mutex::new(None);
+        for (kind, stops) in [(ErrorKind::DeviceNotAvailable, true), (ErrorKind::HostUnavailable, true), (ErrorKind::DeviceBusy, false)] {
+            let mut woke = false;
+            stream_failed(kind, "gone".into(), &failed, || woke = true);
+            assert_eq!((failed.lock().unwrap().take().is_some(), woke), (stops, stops), "{kind:?}");
+        }
     }
 }
