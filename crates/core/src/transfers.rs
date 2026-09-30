@@ -121,19 +121,22 @@ impl Core {
     /// Records settled downloads in order: finished, or removed (`finished` false). One transaction.
     pub fn download_settle(&self, ids: Vec<String>, finished: Vec<bool>) -> crate::Result<()> {
         let gone_ids: Vec<String> = ids.iter().zip(&finished).filter(|(_, f)| !**f).map(|(id, _)| id.clone()).collect();
+        // Read first: the in-memory ids are asked per list row and must not wait for the statements.
+        let mut state: HashMap<&str, HeldState> = {
+            let held = self.held.lock();
+            ids.iter().map(|id| (id.as_str(), held.state(id))).collect()
+        };
         let mut c = self.db.lock();
         let tx = c.transaction()?;
         {
-            let held = self.held.lock();
             let mut done = tx.prepare_cached("UPDATE downloads SET done=1 WHERE server=sid() AND id=?1")?;
             let mut gone = tx.prepare_cached("DELETE FROM downloads WHERE server=sid() AND id=?1")?;
             let mut unwanted = tx.prepare_cached("DELETE FROM download_beats WHERE server=sid() AND id=?1")?;
             for id in &gone_ids {
                 unwanted.execute([id])?;
             }
-            let mut state: HashMap<&str, HeldState> = HashMap::new();
             for (id, f) in ids.iter().zip(&finished) {
-                let now = state.entry(id.as_str()).or_insert_with(|| held.state(id));
+                let now = state.get_mut(id.as_str()).expect("read above");
                 match (*now, *f) {
                     (HeldState::Absent, _) | (HeldState::Done, true) => {}
                     (_, true) => {
