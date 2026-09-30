@@ -6,15 +6,16 @@
 //! together with the index update so the two never disagree; writing and reading file contents happen
 //! outside it.
 
-use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use md5::{Digest, Md5};
 use parking_lot::Mutex;
+
+use crate::lru::Lru;
 
 /// MD5 of a cover's key; the hex form is the file name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -34,95 +35,31 @@ impl Key {
         Key(Md5::digest(url.as_bytes()).into())
     }
 
-    fn name(&self) -> [u8; 32] {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let mut s = [0u8; 32];
-        for (i, b) in self.0.iter().enumerate() {
-            s[2 * i] = HEX[(b >> 4) as usize];
-            s[2 * i + 1] = HEX[(b & 15) as usize];
-        }
-        s
+    fn name(&self) -> String {
+        format!("{:032x}", u128::from_be_bytes(self.0))
     }
 
     fn parse(name: &str) -> Option<Key> {
-        let b = name.as_bytes();
-        if b.len() != 32 {
-            return None;
-        }
-        let mut k = [0u8; 16];
-        for (i, pair) in b.chunks_exact(2).enumerate() {
-            let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
-            k[i] = hex(pair[0])? << 4 | hex(pair[1])?;
-        }
-        Some(Key(k))
+        let hex = name.len() == 32 && name.bytes().all(|c| c.is_ascii_hexdigit());
+        hex.then(|| Key(u128::from_str_radix(name, 16).expect("32 hex digits").to_be_bytes()))
     }
 }
 
 struct Entry {
-    bytes: u64,
-    used: u64,
-    /// Clock value of the put that wrote the file; a failed read only forgets the entry if it matches.
+    /// The put that wrote the file (its temp file's number; `u64::MAX` for a file found at open). A failed
+    /// read only forgets the entry if it matches.
     written: u64,
     /// The file's mtime was set in this process.
     stamped: bool,
 }
 
-#[derive(Default)]
-struct Index {
-    files: HashMap<Key, Entry>,
-    /// Last-use clock -> key, oldest first.
-    order: BTreeMap<u64, Key>,
-    bytes: u64,
-    clock: u64,
-}
-
-impl Index {
-    /// Marks `key` used; returns its `written` clock and whether its mtime is still to be set, or None if
-    /// not indexed.
-    fn touch(&mut self, key: Key) -> Option<(u64, bool)> {
-        let e = self.files.get_mut(&key)?;
-        self.order.remove(&e.used);
-        self.clock += 1;
-        e.used = self.clock;
-        self.order.insert(self.clock, key);
-        Some((e.written, !std::mem::replace(&mut e.stamped, true)))
-    }
-
-    /// `stamped`: the file was just written.
-    fn insert(&mut self, key: Key, bytes: u64, stamped: bool) {
-        self.remove(key);
-        self.clock += 1;
-        self.files.insert(key, Entry { bytes, used: self.clock, written: self.clock, stamped });
-        self.order.insert(self.clock, key);
-        self.bytes += bytes;
-    }
-
-    fn remove(&mut self, key: Key) -> bool {
-        let Some(e) = self.files.remove(&key) else { return false };
-        self.order.remove(&e.used);
-        self.bytes -= e.bytes;
-        true
-    }
-
-    /// Pops least recently used entries into `out` until the rest fits `limit`.
-    fn over(&mut self, limit: u64, out: &mut Vec<Key>) {
-        while self.bytes > limit {
-            let Some((_, key)) = self.order.pop_first() else { break };
-            let e = self.files.remove(&key).expect("every file in the order is indexed");
-            self.bytes -= e.bytes;
-            out.push(key);
-        }
-    }
-}
-
 pub struct DiskCache {
     dir: PathBuf,
     limit: u64,
-    index: Mutex<Index>,
-    /// Numbers temp files so concurrent writers never share one.
+    index: Mutex<Lru<Key, Entry>>,
+    /// Numbers puts, so concurrent writers never share a temp file.
     writes: AtomicU64,
 }
-
 impl DiskCache {
     /// Opens (creating) the cache in `dir` with a `limit` in bytes, deleting leftover temp files and
     /// anything over the limit.
@@ -144,11 +81,11 @@ impl DiskCache {
             }
         }
         found.sort_unstable();
-        let mut index = Index::default();
+        let mut index = Lru::default();
         for (_, key, bytes) in found {
-            index.insert(key, bytes, false);
+            index.insert(key, Entry { written: u64::MAX, stamped: false }, bytes);
         }
-        let cache = DiskCache { dir, limit, index: Mutex::new(Index::default()), writes: AtomicU64::new(0) };
+        let cache = DiskCache { dir, limit, index: Mutex::new(Lru::default()), writes: AtomicU64::new(0) };
         cache.trim(&mut index);
         *cache.index.lock() = index;
         Ok(cache)
@@ -156,17 +93,16 @@ impl DiskCache {
 
     /// File path for `key`, whether or not it exists.
     pub fn path(&self, key: Key) -> PathBuf {
-        let name = key.name();
-        self.dir.join(std::str::from_utf8(&name).expect("hex is ASCII"))
+        self.dir.join(key.name())
     }
 
     pub fn contains(&self, key: Key) -> bool {
-        self.index.lock().files.contains_key(&key)
+        self.index.lock().get(key).is_some()
     }
 
     /// Reads `key` into `buf` (cleared first) and marks it used; false on a miss.
     pub fn read(&self, key: Key, buf: &mut Vec<u8>) -> bool {
-        let Some((written, stamp)) = self.index.lock().touch(key) else { return false };
+        let Some((written, stamp)) = self.index.lock().touch(key).map(|e| (e.written, !std::mem::replace(&mut e.stamped, true))) else { return false };
         buf.clear();
         let path = self.path(key);
         let read = File::open(&path).and_then(|mut f| {
@@ -180,7 +116,7 @@ impl DiskCache {
         if read.is_err() {
             // Deleted externally: forget it, unless a newer put replaced it meanwhile.
             let mut index = self.index.lock();
-            if index.files.get(&key).is_some_and(|e| e.written == written) {
+            if index.get(key).is_some_and(|e| e.written == written) {
                 index.remove(key);
             }
             return false;
@@ -194,11 +130,12 @@ impl DiskCache {
             return Ok(());
         }
         let path = self.path(key);
-        let tmp = path.with_extension(format!("{}-{}.tmp", std::process::id(), self.writes.fetch_add(1, Ordering::Relaxed)));
+        let n = self.writes.fetch_add(1, Ordering::Relaxed);
+        let tmp = path.with_extension(format!("{}-{n}.tmp", std::process::id()));
         let written = File::create(&tmp).and_then(|mut f| f.write_all(bytes)).and_then(|_| {
             let mut index = self.index.lock();
             fs::rename(&tmp, &path)?;
-            index.insert(key, bytes.len() as u64, true);
+            index.insert(key, Entry { written: n, stamped: true }, bytes.len() as u64);
             self.trim(&mut index);
             Ok(())
         });
@@ -210,7 +147,7 @@ impl DiskCache {
 
     pub fn remove(&self, key: Key) {
         let mut index = self.index.lock();
-        if index.remove(key) {
+        if index.remove(key).is_some() {
             let _ = fs::remove_file(self.path(key));
         }
     }
@@ -218,8 +155,8 @@ impl DiskCache {
     /// Deletes every cover.
     pub fn clear(&self) {
         let mut index = self.index.lock();
-        for key in std::mem::take(&mut *index).files.into_keys() {
-            let _ = fs::remove_file(self.path(key));
+        for (key, _) in std::mem::take(&mut *index).sizes() {
+            let _ = fs::remove_file(self.path(*key));
         }
     }
 
@@ -227,17 +164,11 @@ impl DiskCache {
         self.index.lock().bytes
     }
 
-    pub fn dir(&self) -> &Path {
-        &self.dir
-    }
-
     /// Evicts over the limit; the caller holds the index lock.
-    fn trim(&self, index: &mut Index) {
-        let mut gone = Vec::new();
-        index.over(self.limit, &mut gone);
-        for key in gone {
+    fn trim(&self, index: &mut Lru<Key, Entry>) {
+        index.fit(self.limit, |key| {
             let _ = fs::remove_file(self.path(key));
-        }
+        });
     }
 }
 
@@ -252,7 +183,7 @@ mod tests {
     #[test]
     fn key_file_name_round_trips() {
         let k = Key::of("http://x/rest/getCoverArt?id=1&size=320");
-        assert_eq!(Key::parse(std::str::from_utf8(&k.name()).unwrap()), Some(k));
+        assert_eq!(Key::parse(&k.name()), Some(k));
         assert_eq!(Key::parse("nope"), None);
         assert_eq!(Key::parse("zz000000000000000000000000000000"), None);
     }
@@ -329,20 +260,20 @@ mod tests {
     /// Checks the index matches the directory: same files, same sizes, same total.
     fn agree(c: &DiskCache) -> Result<(), String> {
         let index = c.index.lock();
-        let mut on_disk = HashMap::new();
+        let mut on_disk = std::collections::HashMap::new();
         for e in fs::read_dir(&c.dir).unwrap() {
             let e = e.unwrap();
             if let Some(key) = e.file_name().to_str().and_then(Key::parse) {
                 on_disk.insert(key, e.metadata().unwrap().len());
             }
         }
-        for (key, e) in &index.files {
-            if on_disk.get(key) != Some(&e.bytes) {
-                return Err(format!("{key:?} indexed at {} bytes, on disk {:?}", e.bytes, on_disk.get(key)));
+        for (key, bytes) in index.sizes() {
+            if on_disk.get(key) != Some(&bytes) {
+                return Err(format!("{key:?} indexed at {bytes} bytes, on disk {:?}", on_disk.get(key)));
             }
         }
-        if on_disk.len() != index.files.len() {
-            return Err(format!("{} files on disk, {} indexed", on_disk.len(), index.files.len()));
+        if on_disk.len() != index.sizes().count() {
+            return Err(format!("{} files on disk, {} indexed", on_disk.len(), index.sizes().count()));
         }
         if index.bytes != on_disk.values().sum::<u64>() {
             return Err(format!("{} bytes indexed, {} on disk", index.bytes, on_disk.values().sum::<u64>()));
