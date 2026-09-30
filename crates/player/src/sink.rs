@@ -462,9 +462,14 @@ impl<T: Track> Sink<T> {
     /// there; [`Sink::fill`] runs the kept input after it again.
     fn splice(&mut self) -> Option<(u64, u64)> {
         let written = self.written()?;
+        // Nothing kept of this stream yet (its first buffer is still to come): nothing to make again,
+        // and the track is left as it is.
+        if !self.kept.has_marks() {
+            return None;
+        }
         let from = self.track.freeze().min(written);
         // Kept input starts later than that only if the track reaches back further than it said.
-        let k = self.kept.mark_where(|m| m.out <= from).or(self.kept.has_marks().then_some(0))?;
+        let k = self.kept.mark_where(|m| m.out <= from).unwrap_or(0);
         let back = self.run_again(k, u64::MAX, from);
         self.back_at(back, written);
         Some((self.run, self.made))
@@ -476,8 +481,8 @@ impl<T: Track> Sink<T> {
     pub fn cut_at(&mut self, pts: i64) -> bool {
         let (Some(f), Some(written)) = (self.format, self.written()) else { return false };
         let Some(at) = self.kept.frame_at(pts, f.rate) else { return false };
-        let from = self.track.freeze().min(written);
         let Some(k) = self.kept.mark_where(|m| m.frame <= at) else { return false };
+        let from = self.track.freeze().min(written);
         let keep = self.runner.chain.clone();
         let back = self.run_again(k, at, u64::MAX);
         if back.1 < from {

@@ -964,6 +964,27 @@ mod tests {
         assert_eq!((out[0] * 32768.0).round() as u64, 300 - at, "and plays on from where it got to, in the new music");
     }
 
+    /// A sound change between a new stream's announcement and its first buffer (the ring full) has
+    /// nothing of that stream to make again: what the ring holds of the one before plays on, whole.
+    #[test]
+    fn change_before_a_new_streams_music_keeps_the_ring() {
+        use nori_player::engine::Downstream;
+        use nori_player::pipeline::{ChainSettings, Sink, Sound};
+        let (feed, held) = (Arc::new(parking_lot::Mutex::new(None)), Arc::new(AtomicU64::new(0)));
+        let mut track = RingTrack::new(Box::new(Hand(feed.clone(), held)));
+        // Both streams on a device at 1 kHz: the second converts, the device stays.
+        track.max_rate = 1000;
+        let mut sink = Sink::new(nori_player::burst::BUFFER_US, ChainSettings::default(), track);
+        sink.configure(&1, Some(Format { rate: 2000, ..F }));
+        assert_eq!(sink.handle_buffer(&pcm(&[1000; 2000]), 0, 0), (true, 4000));
+        sink.configure(&2, Some(F));
+        let f = feed.lock().take().expect("started");
+        let held = f.available();
+        assert!(held > 900, "the first stream, resampled to the device: {held}");
+        sink.change(ChainSettings { sound: Sound { preamp_db: -6.0, ..Sound::default() }, ..ChainSettings::default() });
+        assert_eq!(f.available(), held, "all of it still there");
+    }
+
     #[test]
     fn fade_runs_in_pulls() {
         let (mut t, mut f, _) = by_hand();
