@@ -733,6 +733,29 @@ mod tests {
     }
 
     #[test]
+    fn ends_of_the_queue_by_repeat() {
+        let mut p = Playlist::default();
+        p.set(ids(&["a", "b", "c"]), Some(0), false, 0);
+        // (repeat, from, next_of, previous_of, next, previous) at each end.
+        let cases = [
+            (REPEAT_OFF, 0, Some(1), None, Some(1), None),
+            (REPEAT_OFF, 2, None, Some(1), None, Some(1)),
+            (REPEAT_ALL, 0, Some(1), Some(2), Some(1), Some(2)),
+            (REPEAT_ALL, 2, Some(0), Some(1), Some(0), Some(1)),
+            (REPEAT_ONE, 0, Some(0), Some(0), Some(1), Some(2)),
+            (REPEAT_ONE, 2, Some(2), Some(2), Some(0), Some(1)),
+        ];
+        for (repeat, at, next_of, previous_of, next, previous) in cases {
+            p.set_repeat(repeat);
+            p.moved_to(at);
+            assert_eq!(p.repeat(), repeat);
+            let got = (p.next_of(at, repeat), p.previous_of(at, repeat), p.next(), p.previous());
+            assert_eq!(got, (next_of, previous_of, next, previous), "repeat {repeat} at {at}");
+        }
+        assert_eq!(p.next_of(3, REPEAT_ALL), None, "past the end is no song");
+    }
+
+    #[test]
     fn shuffle_keeps_current_first() {
         let mut p = Playlist::default();
         p.set(ids(&["a", "b", "c", "d", "e"]), Some(2), false, 0);
