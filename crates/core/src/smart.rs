@@ -57,7 +57,7 @@ impl Core {
         if !def.root.asks(IsDownloaded) {
             return Ok(Vec::new());
         }
-        Ok(self.downloads(true)?.into_iter().map(|s| s.id).collect())
+        self.download_ids(true)
     }
 }
 
