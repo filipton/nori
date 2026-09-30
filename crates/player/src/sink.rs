@@ -264,8 +264,9 @@ pub struct Sink<T: Track> {
     paces: VecDeque<(f64, f64)>,
     /// Buffers more than [`PTS_TOLERANCE_US`] off (each a stutter on a phone).
     pub timestamp_jumps: usize,
-    /// (address, length) of a partly taken buffer's rest, which must be offered next (media3 throws otherwise).
-    owed: Option<(usize, usize)>,
+    /// Bytes left of a partly taken buffer, whose rest must be offered next (media3 throws otherwise).
+    /// The rest may come from other memory (the transition engine copies what was not taken).
+    owed: Option<usize>,
     /// Format to reopen the track with once it has drained.
     reopen: Option<Format>,
     /// Processed audio waiting for room (from `pending_pos`), its song time, and song time not yet
@@ -808,7 +809,7 @@ impl<T: Track> Downstream for Sink<T> {
         }
         let f = self.format.expect("configured before the first buffer");
         let fb = f.frame_bytes();
-        let key = (data.as_ptr() as usize + from, data.len() - from);
+        let key = data.len() - from;
         let continuing = self.owed.take();
         if let Some(owed) = continuing {
             assert_eq!(owed, key, "offered another buffer while one was only partly taken (media3 throws here)");
@@ -847,7 +848,6 @@ impl<T: Track> Downstream for Sink<T> {
             self.run += (input.len() / fb) as u64;
             self.run_media += media;
             self.made_output(media);
-            self.write_pending();
             return (true, input.len());
         }
         let n = self.room_bytes().min(input.len()) / fb * fb;
@@ -863,7 +863,7 @@ impl<T: Track> Downstream for Sink<T> {
             self.made += (n / fb) as u64;
         }
         if n < input.len() {
-            self.owed = Some((key.0 + n, key.1 - n));
+            self.owed = Some(key - n);
             return (false, n);
         }
         (true, n)

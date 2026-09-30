@@ -766,12 +766,28 @@ impl<C: Clone> TransitionEngine<C> {
         None
     }
 
-    /// Queues a copy of `buffer` and drains; reports `whole` bytes taken. Copied so a later partial take
-    /// and [`TransitionEngine::rescale`] work on the engine's own memory.
+    /// Passes `buffer` on and reports `whole` bytes taken. Offered as it is when nothing waits before it;
+    /// what the output does not take is copied and queued, so [`TransitionEngine::rescale`] and the next
+    /// offer work on the engine's own memory.
     fn pass<D: Downstream<Config = C>>(&mut self, down: &mut D, buffer: &[u8], whole: usize, pts_us: i64) -> (bool, usize) {
-        let c = self.copy_of(buffer);
-        self.enqueue(c, pts_us, Some(self.offset_us));
-        self.drain(down);
+        let direct = self.queue.is_empty() && !self.resync_next && !self.measure_next;
+        let (taken, used) = if direct {
+            down.media_pace(1.0);
+            down.handle_buffer(buffer, 0, pts_us)
+        } else {
+            (false, 0)
+        };
+        if !taken {
+            let c = self.copy_of(buffer);
+            self.enqueue(c, pts_us, Some(self.offset_us));
+            match self.queue.back_mut() {
+                // The output just said it is full.
+                Some(c) if direct => c.pos = used,
+                _ => {
+                    self.drain(down);
+                }
+            }
+        }
         (true, whole)
     }
 
@@ -1542,8 +1558,8 @@ mod tests {
         position: Option<i64>,
         /// Take at most this many bytes of the next offer.
         take_only: Option<usize>,
-        /// (address, length) of a partly taken buffer's rest, which must be offered next (as `pipeline::Sink` requires).
-        owed: Option<(usize, usize)>,
+        /// Bytes left of a partly taken buffer, which must be offered next (as `pipeline::Sink` requires).
+        owed: Option<usize>,
     }
 
     impl Downstream for Down {
@@ -1552,14 +1568,14 @@ mod tests {
             self.configured.push(*config);
         }
         fn handle_buffer(&mut self, data: &[u8], from: usize, pts_us: i64) -> (bool, usize) {
-            let key = (data.as_ptr() as usize + from, data.len() - from);
+            let key = data.len() - from;
             if let Some(owed) = self.owed {
                 assert_eq!(owed, key, "offered another buffer while one was only partly taken (pipeline::Sink panics here)");
             }
             let n = self.take_only.take().unwrap_or(usize::MAX).min(data.len() - from);
             self.taken.push((data[from..from + n].to_vec(), pts_us));
             let all = from + n == data.len();
-            self.owed = if all { None } else { Some((key.0 + n, key.1 - n)) };
+            self.owed = if all { None } else { Some(key - n) };
             (all, n)
         }
         fn handle_discontinuity(&mut self) {
