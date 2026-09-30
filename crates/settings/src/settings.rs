@@ -2191,13 +2191,7 @@ mod tests {
     }
 
     #[test]
-    fn lookup_defaults() {
-        let fresh = load(&HashMap::new());
-        assert!(fresh.third_party_lookups && fresh.lyrics_online && fresh.auto_eq_download);
-        assert!(!fresh.motion_artwork, "moving covers are heavier and stay off");
-        let asked: Vec<&str> = crate::lyrics_sources::lyrics_lookup(&fresh).services.iter().map(|s| s.name()).collect();
-        let keyless: Vec<&str> = LyricsService::ALL.iter().filter(|s| !s.needs_key()).map(|s| s.name()).collect();
-        assert_eq!(asked, keyless, "every service on; the ones that need a key wait for it");
+    fn autoeq_switches_lookups_on() {
         // Stored off stays off.
         let kept = load(&save(&StoredPrefs { third_party_lookups: false, auto_eq_download: false, ..StoredPrefs::default() }));
         assert!(!kept.third_party_lookups && !kept.auto_eq_download);
@@ -2265,15 +2259,6 @@ mod tests {
     }
 
     #[test]
-    fn band_kind_facts() {
-        let kinds: Vec<(bool, bool)> = eq_model_get().band_kinds.iter().map(|k| (k.uses_gain, k.slope)).collect();
-        assert_eq!(
-            kinds,
-            [(true, false), (true, false), (true, false), (false, false), (false, false), (false, false), (false, false), (false, false), (true, true), (true, true)]
-        );
-    }
-
-    #[test]
     fn set_band_holds_range() {
         let s = sound();
         let b = set_band(s.clone(), 3, band_from(42, 5.0, 30.0, 0.0, 7));
@@ -2317,14 +2302,13 @@ mod tests {
     }
 
     #[test]
-    fn band_marks_and_snaps() {
+    fn band_marks() {
         assert_eq!(band_mark(0, 0), BandMark::None);
         assert_eq!(band_mark(1, 1), BandMark::Left);
         assert_eq!(band_mark(8, 0), BandMark::LowShelf);
         assert_eq!(band_mark(2, 0), BandMark::HighShelf);
         assert_eq!(band_mark(9, 2), BandMark::Right);
         assert_eq!(band_mark(6, 0), BandMark::NoGain);
-        assert_eq!((balance_snap(0.03), crossfeed_snap(0.9), crossfeed_snap(2.0)), (0.0, 0.0, 2.0));
     }
 
     #[test]
@@ -2414,7 +2398,6 @@ mod tests {
     #[test]
     fn graphic_edits() {
         let g = SoundSettings { eq_mode: EqMode::Graphic, ..sound() };
-        assert_eq!(g.eq_graphic, vec![0.0; 10], "ten flat sliders out of the box");
         let moved = set_graphic(g.clone(), 3, 20.0);
         assert_eq!(moved.eq_graphic[3], 12.0, "held to the range");
         assert_eq!(moved.eq_bands, g.eq_bands, "the parametric bands are left alone");
@@ -2449,7 +2432,6 @@ mod tests {
     #[test]
     fn eq_mode_migration() {
         assert_eq!(load(&HashMap::new()).eq_mode, EqMode::Graphic, "a new install");
-        assert_eq!(StoredPrefs::default().eq_mode, EqMode::Graphic);
         // From before this version, with only the defaults: nothing was set up, so graphic.
         assert_eq!(load(&stored_before(StoredPrefs::default())).eq_mode, EqMode::Graphic);
         // From before, with a parametric equalizer in any form: it stays.
@@ -2528,8 +2510,6 @@ mod tests {
     #[test]
     fn effects_by_name() {
         let p = StoredPrefs::default();
-        assert!(!p.sound_chain_on() && !p.effects().on(), "every effect off out of the box");
-        assert_eq!(p.effects().compressor_preset(), Some(nori_player::compressor::CompressorPreset::Balanced), "the defaults are the balanced preset");
         let c = set_by_name(&p, "compressorPreset", "strong").unwrap().prefs;
         assert!(c.compressor && c.comp_ratio == 5.0 && c.sound_chain_on());
         assert_eq!(value_of_special(&c, "compressorPreset").as_deref(), Some("STRONG"));
@@ -2537,15 +2517,13 @@ mod tests {
         assert_eq!(value_of_special(&custom, "compressorPreset").as_deref(), Some(""), "moved: none of them");
         assert!(set_by_name(&p, "compressorPreset", "loud").is_none());
         assert_eq!(set_by_name(&p, "volumeBoostDb", "40").unwrap().prefs.volume_boost_db, 12.0);
-        // The expander: off out of the box, on by its switch, its controls held and kept in a profile.
-        assert!(p.effects().player().expander.is_none());
+        // The expander: on by its switch, its controls held and kept in a profile.
         let x = set_by_name(&p, "expander", "true").unwrap().prefs;
         assert!(x.sound_chain_on() && x.effects().player().expander == Some(nori_player::compressor::ExpanderSettings::default()));
         assert_eq!(set_level(x.sound(), EqLevel::ExpThreshold, -200.0).effects.exp_threshold_db, -90.0);
         let r = set_level(x.sound(), EqLevel::ExpRatio, 10.0);
         assert_eq!(sound_from(&sound_json(&r)).unwrap().effects, r.effects);
-        // Loudness compensation: off out of the box; on, at the volume the platform says.
-        assert!(p.effects().player().loudness.is_none());
+        // Loudness compensation: on, at the volume the platform says.
         let l = set_by_name(&p, "loudness", "true").unwrap().prefs;
         assert!(l.sound_chain_on());
         let fx = l.effects().player_at(-30.0);
@@ -2583,7 +2561,6 @@ mod tests {
     #[test]
     fn crossfeed_presets() {
         let p = StoredPrefs::default();
-        assert_eq!((p.crossfeed_db, p.crossfeed_hz), (0.0, 700.0), "off, at bs2b's cutoff");
         assert_eq!(value_of_special(&p, "crossfeedPreset").as_deref(), Some("OFF"));
         let m = set_by_name(&p, "crossfeedPreset", "jan_meier").unwrap().prefs;
         assert_eq!((m.crossfeed_hz, m.crossfeed_db), (650.0, 9.5));

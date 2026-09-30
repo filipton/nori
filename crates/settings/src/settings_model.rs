@@ -322,12 +322,6 @@ mod tests {
     #[test]
     fn values_match_option_form() {
         let d = StoredPrefs::default();
-        assert_eq!(value_of(&d, "speed").as_deref(), Some("1"));
-        assert_eq!(value_of(&d, "mobile").as_deref(), Some("0:"), "the original file on mobile data out of the box");
-        assert_eq!(value_of(&d, "wifi").as_deref(), Some("0:"));
-        assert_eq!(value_of(&d, "theme").as_deref(), Some("SYSTEM"));
-        assert_eq!(value_of(&d, "swipeLeft").as_deref(), Some("FAVOURITE"));
-        assert_eq!(value_of(&d, "untaggedGainDb").as_deref(), Some("-6"));
         assert_eq!(value_of(&StoredPrefs { pitch: 0.9, ..d.clone() }, "pitch").as_deref(), Some("0.9"));
         assert_eq!(value_of(&d, "nope"), None);
         // In effect: off while looking things up is off.

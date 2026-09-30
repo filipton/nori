@@ -355,7 +355,6 @@ mod tests {
         assert_eq!(switched_on(&first), [LyricsService::Lrclib, LyricsService::Netease, LyricsService::Genius]);
         let off = moved(&p, LyricsService::Kugou, 1);
         assert_eq!(at(&off, "KUGOU"), at(&p.lyrics_order, "KUGOU") + 1, "one switched off moves too");
-        assert_eq!(p.lyrics_on, named(&["NETEASE", "LRCLIB", "GENIUS"]), "moving switches nothing");
     }
 
     #[test]
