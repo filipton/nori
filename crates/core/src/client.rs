@@ -410,7 +410,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_change_that_may_have_arrived_is_not_queued_twice() {
+    fn timed_out_edit_not_queued() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         fake.fail(FailureKind::Timeout);
         assert!(block(c.write(Write::AddToPlaylist { id: "1".into(), song_ids: vec!["a".into()] })).is_err());
@@ -499,7 +499,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn login_falls_back_to_other_address_and_legacy_auth() {
+    fn login_fallbacks() {
         let fake = Arc::new(Fake::default());
         let config = ServerConfig { url: "http://lan".into(), user: "u".into(), password: "p".into(), ..Default::default() };
         fake.fail(FailureKind::Connect);
@@ -519,7 +519,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn probing_the_first_address_keeps_the_second_in_use() {
+    fn probe_keeps_second_address() {
         let (c, fake) = client(two_addresses());
         fake.fail(FailureKind::Timeout);
         assert!(block(c.choose_address()));

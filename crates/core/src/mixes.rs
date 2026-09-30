@@ -42,25 +42,6 @@ impl Core {
 }
 
 #[cfg(test)]
-impl Core {
-    pub fn mix_quick_picks(&self, limit: u32, seed: u64) -> Result<Vec<Song>> {
-        Ok(quick_picks(&self.db.lock(), limit as usize, seed, db::now_ms())?)
-    }
-
-    pub fn mix_discover(&self, limit: u32, seed: u64) -> Result<Vec<Song>> {
-        Ok(discover(&self.db.lock(), limit as usize, seed, db::now_ms())?)
-    }
-
-    pub fn mix_listen_again(&self, limit: u32, seed: u64) -> Result<Vec<Song>> {
-        Ok(listen_again(&self.db.lock(), limit as usize, seed, db::now_ms())?)
-    }
-
-    pub fn mix_top(&self, limit: u32) -> Result<Vec<Song>> {
-        Ok(top(&self.db.lock(), limit as usize, db::now_ms())?)
-    }
-}
-
-#[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use std::collections::HashSet;
@@ -94,10 +75,13 @@ pub(crate) mod tests {
     #[test]
     fn mixes_are_empty_without_index() {
         let core = Core::new(String::new(), "t".into()).unwrap();
-        assert!(core.mix_quick_picks(20, 1).unwrap().is_empty());
-        assert!(core.mix_discover(20, 1).unwrap().is_empty());
-        assert!(core.mix_listen_again(20, 1).unwrap().is_empty());
-        assert!(core.mix_top(20).unwrap().is_empty());
+        {
+            let c = core.db.lock();
+            assert!(quick_picks(&c, 20, 1, NOW).unwrap().is_empty());
+            assert!(discover(&c, 20, 1, NOW).unwrap().is_empty());
+            assert!(listen_again(&c, 20, 1, NOW).unwrap().is_empty());
+            assert!(top(&c, 20, NOW).unwrap().is_empty());
+        }
         assert!(core.mix_instant("nope".into(), 20, 1).unwrap().is_empty());
         assert!(core.mix_excluded_list().unwrap().is_empty());
     }
@@ -178,7 +162,7 @@ pub(crate) mod tests {
     fn discover_without_history_spans_genres() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         library(&core);
-        let mix = core.mix_discover(30, 1).unwrap();
+        let mix = discover(&core.db.lock(), 30, 1, NOW).unwrap();
         assert_eq!(mix.len(), 30);
         assert!(mix.iter().map(|s| s.genre.clone()).collect::<HashSet<_>>().len() > 1);
     }

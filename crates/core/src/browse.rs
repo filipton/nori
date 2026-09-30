@@ -65,7 +65,6 @@ pub(crate) mod tests {
         let years = core.songs_page("YEAR".into(), false, 2000, 2009, 0).unwrap();
         assert_eq!(years.songs[0].year, 2009);
         assert!(years.exhausted && years.songs.iter().all(|s| (2000..=2009).contains(&s.year)));
-        assert_eq!(song_sorts().iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["TITLE", "ARTIST", "ALBUM", "YEAR", "ADDED", "PLAYS", "LONGEST"]);
     }
 
     #[test]

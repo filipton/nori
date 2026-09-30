@@ -447,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn a_page_gone_from_the_server_is_not_shown_again() {
+    fn deleted_page_is_dropped() {
         let (c, fake) = setup();
         let read = || Read::AlbumById { id: "al-1".into() };
         fake.answer(r#"{"subsonic-response":{"status":"ok","album":{"id":"al-1","name":"A","song":[{"id":"s1","title":"t"}]}}}"#);
@@ -467,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn unparseable_stored_answer_is_not_shown_and_not_fresh() {
+    fn unreadable_cache_is_stale() {
         let (c, _) = setup();
         c.core.cache_put("getGenres".into(), b"garbage".to_vec()).unwrap();
         let s = c.read_stored(Read::GenreList).unwrap();

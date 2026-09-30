@@ -7,7 +7,7 @@ use nori_core::scrobble::{scrobble_track, TrackChange};
 use nori_core::{background, Core, Song};
 
 #[test]
-fn a_listen_is_kept_by_the_profile_it_was_heard_on() {
+fn listen_kept_by_its_profile() {
     let first = Core::new(String::new(), "first".into()).unwrap();
     let song = Song { id: "s".into(), title: "Dogs".into(), duration: 600, ..Default::default() };
     nori_core::queue::queue_register(vec![song]);

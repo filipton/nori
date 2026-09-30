@@ -86,7 +86,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn save_drops_radio_and_unknown_songs_and_remaps_index() {
+    fn save_drops_unsaveable_songs() {
         let core = crate::Core::new(String::new(), "t".into()).unwrap();
         crate::queue::queue_register(vec![crate::Song { id: "rk1".into(), ..Default::default() }, crate::Song { id: "rk2".into(), ..Default::default() }]);
         let _g = hold(&["radio:1", "rk-unknown", "rk1", "rk2"], 2);

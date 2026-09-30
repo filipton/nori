@@ -111,7 +111,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_folder_is_read_once_for_all_its_pages() {
+    fn folder_read_once_per_paging() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         fake.answer(r#"{"subsonic-response":{"status":"ok","randomSongs":{"song":[{"id":"x","isDir":false},{"id":"y","isDir":false},{"id":"z","isDir":false}]}}}"#);
         let ids = |p: BrowsePage| p.songs.into_iter().map(|s| s.id).collect::<Vec<_>>();

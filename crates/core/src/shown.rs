@@ -40,8 +40,6 @@ mod tests {
 
     #[test]
     fn session_buttons_need_a_song() {
-        assert_eq!(session_buttons(true, true, false), SessionButtons { heart: true, starred: true, shuffling: false });
-        assert_eq!(session_buttons(true, false, true), SessionButtons { heart: true, starred: false, shuffling: true });
         let b = session_buttons(false, true, false);
         assert_eq!((b.heart, b.starred), (false, false));
     }

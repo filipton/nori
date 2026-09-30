@@ -255,7 +255,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_busy_database_does_not_hold_up_download_reports() {
+    fn reports_skip_busy_database() {
         let _turn = TURN.lock();
         let core = Core::new(String::new(), "t".into()).unwrap();
         core.download_queue(vec![Song { id: "busy".into(), size: 4_000_000, ..Default::default() }]).unwrap();

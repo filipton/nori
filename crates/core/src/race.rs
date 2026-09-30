@@ -409,7 +409,8 @@ pub(crate) mod tests {
         age(8 * DAY);
         let late = open(&c, &fake, &s.id, &asked);
         assert!(kept(&late) && late[0].0 == before, "{late:?}");
-        assert!(fake.asked().len() - before <= 2, "{:?}", &fake.asked()[before..]);
+        let asked_after = &fake.asked()[before..];
+        assert!(matches!(asked_after, [u] if u.contains("getLyricsBySongId")), "{asked_after:?}");
     }
 
     #[test]

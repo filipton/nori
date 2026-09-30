@@ -23,7 +23,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn match_prefers_exact_then_falls_back_to_full_text() {
+    fn match_exact_then_full_text() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         let mut live = song("live", "Dogs", "Pink Floyd", "Live", "", 1977);
         live.duration = 900;

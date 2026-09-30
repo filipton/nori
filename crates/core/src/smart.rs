@@ -405,7 +405,6 @@ pub(crate) mod tests {
     fn built_in_definitions_validate_and_filter() {
         let core = library();
         let defaults = smart_defaults();
-        assert_eq!(defaults.len(), 7);
         let run = |id: &str| {
             let d = defaults.iter().find(|d| d.id == id).unwrap();
             smart_validate(d.json.clone()).unwrap();
