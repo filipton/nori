@@ -55,6 +55,9 @@ pub const REPEAT_ALL: u8 = 2;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Playlist {
     ids: Vec<String>,
+    /// Each entry's sequence number: who it is across edits, whatever song it holds.
+    seqs: Vec<u64>,
+    last_seq: u64,
     hand: Vec<Hand>,
     /// Per-song album run ([`Playlist::album_run`]), 0 for none.
     runs: Vec<u32>,
@@ -80,6 +83,8 @@ impl Playlist {
     pub const fn new() -> Self {
         Playlist {
             ids: Vec::new(),
+            seqs: Vec::new(),
+            last_seq: 0,
             hand: Vec::new(),
             runs: Vec::new(),
             last_run: 0,
@@ -97,6 +102,19 @@ impl Playlist {
 
     pub fn ids(&self) -> &[String] {
         &self.ids
+    }
+    /// The entries' sequence numbers, in list order.
+    pub fn seqs(&self) -> &[u64] {
+        &self.seqs
+    }
+    /// Where the entry numbered `seq` is now.
+    pub fn index_of(&self, seq: u64) -> Option<usize> {
+        self.seqs.iter().position(|&s| s == seq)
+    }
+    /// `n` new sequence numbers.
+    fn fresh(&mut self, n: usize) -> std::ops::Range<u64> {
+        self.last_seq += n as u64;
+        self.last_seq - n as u64 + 1..self.last_seq + 1
     }
     pub fn len(&self) -> usize {
         self.ids.len()
@@ -246,6 +264,7 @@ impl Playlist {
     pub fn set(&mut self, ids: Vec<String>, start: Option<usize>, shuffling: bool, seed: u64) -> Option<usize> {
         let n = ids.len();
         self.ids = ids;
+        self.seqs = self.fresh(n).collect();
         self.list_rev += 1;
         self.taken = None;
         self.hand = vec![Hand::No; n];
@@ -334,6 +353,8 @@ impl Playlist {
     fn splice(&mut self, at: usize, ids: Vec<String>, hand: Hand) {
         let count = ids.len();
         self.ids.splice(at..at, ids);
+        let seqs = self.fresh(count);
+        self.seqs.splice(at..at, seqs);
         self.list_rev += 1;
         self.hand.splice(at..at, std::iter::repeat_n(hand, count));
         self.runs.splice(at..at, std::iter::repeat_n(0, count));
@@ -363,8 +384,10 @@ impl Playlist {
                 self.cur = Some(shift(c));
             }
         }
-        self.parked = self.parked.filter(|&h| !gone(h)).map(shift);
+        // A parked song removed: the queue resumes at the one after it.
+        self.parked = self.parked.map(|h| if gone(h) { from } else { shift(h) });
         self.ids.drain(from..to);
+        self.seqs.drain(from..to);
         self.list_rev += 1;
         self.hand.drain(from..to);
         self.runs.drain(from..to);
@@ -372,6 +395,7 @@ impl Playlist {
         for o in self.order.iter_mut() {
             *o = shift(*o);
         }
+        self.parked = self.parked.filter(|&h| h < self.ids.len());
         if self.ids.is_empty() {
             self.cur = None;
             self.shuffling = false;
@@ -442,12 +466,14 @@ impl Playlist {
         let ids = std::mem::take(&mut self.ids);
         let hand = std::mem::take(&mut self.hand);
         let runs = std::mem::take(&mut self.runs);
-        let mut slots: Vec<Option<((String, Hand), u32)>> = ids.into_iter().zip(hand).zip(runs).map(Some).collect();
+        let seqs = std::mem::take(&mut self.seqs);
+        let mut slots: Vec<Option<(((String, Hand), u32), u64)>> = ids.into_iter().zip(hand).zip(runs).zip(seqs).map(Some).collect();
         for &old in &list {
-            let ((id, h), r) = slots[old].take().expect("each index moves once");
+            let (((id, h), r), s) = slots[old].take().expect("each index moves once");
             self.ids.push(id);
             self.hand.push(h);
             self.runs.push(r);
+            self.seqs.push(s);
         }
         self.list_rev += 1;
         self.cur = self.cur.map(|c| map[c]);
@@ -542,7 +568,7 @@ impl Playlist {
         for &(from, to) in &runs {
             self.remove(from, to);
         }
-        let seek = self.parked.take().or(if self.ids.is_empty() { None } else { Some(0) });
+        let seek = self.parked.take().or(self.cur);
         self.cur = seek;
         self.rev += 1;
         Some(Splice { remove: runs, at: 0, count: 0, seek })
@@ -828,6 +854,33 @@ mod tests {
         assert_eq!(p.unbridge(), Some(Splice { remove: vec![(1, 4)], at: 0, count: 0, seek: Some(1) }));
         assert_eq!((list(&p), p.current_id(), p.bridging()), (vec!["a", "b", "c", "d"], Some("b"), false));
         assert_eq!(p.unbridge(), None);
+    }
+
+    #[test]
+    fn removed_parked_song_resumes_at_the_next() {
+        let mut p = Playlist::default();
+        p.set(ids(&["a", "b", "c", "d"]), Some(1), false, 0);
+        p.bridge(ids(&["x"]));
+        p.remove(2, 3);
+        assert_eq!(p.unbridge().and_then(|s| s.seek), Some(1));
+        assert_eq!((list(&p), p.current_id()), (vec!["a", "c", "d"], Some("c")), "not back to the start");
+    }
+
+    #[test]
+    fn entries_keep_their_seq() {
+        let mut p = Playlist::default();
+        p.set(ids(&["a", "b", "a"]), Some(0), false, 0);
+        let s = p.seqs().to_vec();
+        assert!(s[0] != s[1] && s[0] != s[2] && s[1] != s[2], "the same song twice is two entries");
+        p.remove(0, 1);
+        assert_eq!((p.index_of(s[0]), p.index_of(s[2])), (None, Some(1)), "the removed a is gone, the other stays");
+        p.insert(0, ids(&["b"]), Hand::No);
+        assert_eq!(p.index_of(s[1]), Some(1));
+        assert!(!s.contains(&p.seqs()[0]), "a new entry gets a new number");
+        p.move_range(2, 3, 0);
+        assert_eq!(p.index_of(s[2]), Some(0));
+        p.set(ids(&["a", "b", "a"]), Some(0), false, 0);
+        assert!(s.iter().all(|&q| p.index_of(q).is_none()), "a new queue is new entries");
     }
 
     #[test]
