@@ -926,14 +926,16 @@ impl Equalizer {
         if self.fade.is_none() {
             let frames = len / n;
             let mut planar = std::mem::take(&mut self.planar);
-            planar.clear();
-            planar.resize(frames * n, 0.0);
-            for (k, x) in input.chunks_exact(n).enumerate() {
-                for (c, v) in x.iter().enumerate() {
-                    planar[c * frames + k] = load(*v);
+            // Every sample is written over: only a longer buffer grows it.
+            if planar.len() < frames * n {
+                planar.resize(frames * n, 0.0);
+            }
+            if frames > 0 {
+                for (c, lane) in planar[..frames * n].chunks_exact_mut(frames).enumerate() {
+                    lane.iter_mut().zip(input[c..].iter().step_by(n)).for_each(|(p, &v)| *p = load(v));
                 }
             }
-            self.now.block(&mut planar, frames);
+            self.now.block(&mut planar[..frames * n], frames);
             for (k, y) in output.chunks_exact_mut(n).enumerate() {
                 for (c, v) in y.iter_mut().enumerate() {
                     *v = store(planar[c * frames + k], c);
@@ -1261,7 +1263,7 @@ mod tests {
         let mut y = vec![0f32; x.len()];
         eq.reset();
         eq.process_f32(&x, &mut y);
-        assert!(y.chunks_exact(2).all(|f| f[0] == f[1]), "both-channel band kept the centre centred");
+        assert!(y.as_chunks::<2>().0.iter().all(|f| f[0] == f[1]), "both-channel band kept the centre centred");
 
         let mut mono = Equalizer::new(48000, 1);
         mono.configure(&[Band { channel: CH_RIGHT, ..b(PEAKING, 1000.0, 12.0, 1.0) }], 0.0, 0.0);
@@ -1295,7 +1297,7 @@ mod tests {
         let db = 20.0 * (rms(&y[19200..]) / rms(&x[19200..])).log10();
         assert!(db.abs() < 0.3, "mono sum moved the level by {db} dB");
         // After the 10 ms fade-in.
-        assert!(y[960..].chunks_exact(2).all(|f| f[0] == f[1]), "both channels carry the same mono signal");
+        assert!(y[960..].as_chunks::<2>().0.iter().all(|f| f[0] == f[1]), "both channels carry the same mono signal");
     }
 
     #[test]
@@ -1532,7 +1534,7 @@ mod tests {
     fn flat_16_bit_chain_is_bit_exact() {
         let mut eq = Equalizer::new(48000, 2);
         eq.configure(&[], 0.0, 0.0);
-        let x: Vec<i16> = (0..9600).map(|i| ((i * 7919) % 65536) as i32 as i16).collect();
+        let x: Vec<i16> = (0..9600).map(|i| ((i * 7919) % 65536) as i16).collect();
         let mut y = vec![0i16; x.len()];
         eq.process_i16(&x, &mut y);
         assert_eq!(x, y);

@@ -61,6 +61,13 @@ impl Clone for SpeedPitch {
     }
 }
 
+/// Appends `samples` to `out` as little-endian bytes, in one pass.
+fn append<const W: usize, T: Copy>(out: &mut Vec<u8>, samples: &[T], bytes: impl Fn(T) -> [u8; W]) {
+    let at = out.len();
+    out.resize(at + samples.len() * W, 0);
+    out[at..].as_chunks_mut::<W>().0.iter_mut().zip(samples).for_each(|(o, &v)| *o = bytes(v));
+}
+
 impl SpeedPitch {
     pub fn new(rate: u32, channels: usize, enc: Encoding) -> SpeedPitch {
         let ch = channels.clamp(1, 8);
@@ -110,12 +117,12 @@ impl SpeedPitch {
         match &mut self.engine {
             Engine::Short(s) => {
                 self.staged_i16.clear();
-                self.staged_i16.extend(input.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])));
+                self.staged_i16.extend(input.as_chunks::<2>().0.iter().map(|&c| i16::from_le_bytes(c)));
                 s.queue_input(&self.staged_i16);
             }
             Engine::Float(s) => {
                 self.staged_f32.clear();
-                self.staged_f32.extend(input.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])));
+                self.staged_f32.extend(input.as_chunks::<4>().0.iter().map(|&c| f32::from_le_bytes(c)));
                 s.queue_input(&self.staged_f32);
             }
         }
@@ -129,17 +136,13 @@ impl SpeedPitch {
                 let n = s.output_frames() * self.ch;
                 self.staged_i16.resize(n, 0);
                 let got = s.get_output(&mut self.staged_i16) * self.ch;
-                for v in &self.staged_i16[..got] {
-                    out.extend_from_slice(&v.to_le_bytes());
-                }
+                append(out, &self.staged_i16[..got], i16::to_le_bytes);
             }
             Engine::Float(s) => {
                 let n = s.output_frames() * self.ch;
                 self.staged_f32.resize(n, 0.0);
                 let got = s.get_output(&mut self.staged_f32) * self.ch;
-                for v in &self.staged_f32[..got] {
-                    out.extend_from_slice(&v.to_le_bytes());
-                }
+                append(out, &self.staged_f32[..got], f32::to_le_bytes);
             }
         }
         self.output_bytes += (out.len() - before) as u64;

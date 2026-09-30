@@ -223,7 +223,7 @@ fn reference(bytes: &[u8], rate: u32, channels: usize) -> Vec<f32> {
         .output()
         .unwrap();
     assert!(out.status.success(), "ffmpeg decodes it");
-    out.stdout.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()
+    out.stdout.as_chunks::<4>().0.iter().map(|&b| f32::from_le_bytes(b)).collect()
 }
 
 /// Best normalised correlation of a third of a second within `max_lag` frames: 1 for the same waveform,

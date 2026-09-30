@@ -1386,7 +1386,7 @@ extern "system" fn position_ms(h: jlong) -> jlong {
 
 /// [`position_ms`] for the seek bar of queue index `index`; -1 when the engine is on another song. Asks
 /// the engine to re-read its output when the reading is stale (`Status::screen_now`).
-extern "system" fn shown_ms(h: jlong, index: jint) -> jlong {
+pub(crate) extern "system" fn shown_ms(h: jlong, index: jint) -> jlong {
     let Some(p) = player(h) else { return -1 };
     let (song, at, switching, (now, stale)) = p.engine.status_with(|s| (s.index, s.at, s.switching, s.screen_now()));
     if song.is_none_or(|i| i as jint != index) {

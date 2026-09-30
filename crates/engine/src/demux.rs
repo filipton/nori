@@ -73,26 +73,47 @@ impl Pcm {
         }
     }
 
-    /// Appends one stored sample to `out` in `to` (16-bit rounded as the decoder rounds, or float).
-    fn put(self, b: &[u8], to: Encoding, out: &mut Vec<u8>) {
-        let v = match (self, to) {
-            (Pcm::U8, Encoding::Pcm16) => return out.extend_from_slice(&(((b[0] as i16) - 128) << 8).to_le_bytes()),
-            (Pcm::S16, Encoding::Pcm16) => return out.extend_from_slice(&b[..2]),
-            (Pcm::U8, _) => (b[0] as f32 - 128.0) / 128.0,
-            (Pcm::S16, _) => i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0,
-            (Pcm::S24, _) => i32::from_le_bytes([0, b[0], b[1], b[2]]) as f32 / 2_147_483_648.0,
-            (Pcm::S32, _) => i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32 / 2_147_483_648.0,
-            (Pcm::F32, _) => f32::from_le_bytes([b[0], b[1], b[2], b[3]]),
-        };
-        put(v, to, out);
+    /// A stored sample as float.
+    fn value(self, b: &[u8]) -> f32 {
+        match self {
+            Pcm::U8 => (b[0] as f32 - 128.0) / 128.0,
+            Pcm::S16 => i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0,
+            Pcm::S24 => i32::from_le_bytes([0, b[0], b[1], b[2]]) as f32 / 2_147_483_648.0,
+            Pcm::S32 => i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32 / 2_147_483_648.0,
+            Pcm::F32 => f32::from_le_bytes([b[0], b[1], b[2], b[3]]),
+        }
+    }
+
+    /// Appends stored samples to `out` in `to` (16-bit rounded as the decoder rounds, or float).
+    fn put(self, stored: &[u8], to: Encoding, out: &mut Vec<u8>) {
+        if (self, to) == (Pcm::S16, Encoding::Pcm16) {
+            return out.extend_from_slice(stored);
+        }
+        let at = out.len();
+        out.resize(at + stored.len() / self.width() * to.width(), 0);
+        let made = out[at..].chunks_exact_mut(to.width());
+        for (o, b) in made.zip(stored.chunks_exact(self.width())) {
+            match (self, to) {
+                (Pcm::U8, Encoding::Pcm16) => o.copy_from_slice(&(((b[0] as i16) - 128) << 8).to_le_bytes()),
+                (_, Encoding::Pcm16) => o.copy_from_slice(&rounded(self.value(b)).to_le_bytes()),
+                (_, Encoding::Float) => o.copy_from_slice(&self.value(b).to_le_bytes()),
+            }
+        }
     }
 }
 
-/// Appends a sample to `out` in `to` (16-bit rounded as `Decoder::take_i16` rounds, or float).
-fn put(v: f32, to: Encoding, out: &mut Vec<u8>) {
+/// A float sample as 16-bit, rounded as `Decoder::take_i16` rounds.
+fn rounded(v: f32) -> i16 {
+    (v * 32768.0).round_ties_even().clamp(-32768.0, 32767.0) as i16
+}
+
+/// Appends `samples` to `out` in `to`, in one pass.
+fn put(samples: &[f32], to: Encoding, out: &mut Vec<u8>) {
+    let at = out.len();
+    out.resize(at + samples.len() * to.width(), 0);
     match to {
-        Encoding::Pcm16 => out.extend_from_slice(&((v * 32768.0).round_ties_even().clamp(-32768.0, 32767.0) as i16).to_le_bytes()),
-        Encoding::Float => out.extend_from_slice(&v.to_le_bytes()),
+        Encoding::Pcm16 => out[at..].as_chunks_mut::<2>().0.iter_mut().zip(samples).for_each(|(o, &v)| *o = rounded(v).to_le_bytes()),
+        Encoding::Float => out[at..].as_chunks_mut::<4>().0.iter_mut().zip(samples).for_each(|(o, v)| *o = v.to_le_bytes()),
     }
 }
 
@@ -282,12 +303,14 @@ fn reshaped(reshape: &mut Option<Reshape>, from: (u32, usize), to: Format, sampl
     }
     let r = reshape.as_mut().expect("made above");
     r.input.clear();
-    r.input.extend(samples.iter().flat_map(|v| v.to_le_bytes()));
+    put(samples, Encoding::Float, &mut r.input);
     let frames = samples.len() / from.1.max(1);
     r.output.resize((frames * to.rate as usize / from.0.max(1) as usize + 4) * to.channels * 4, 0);
     let Some((_, made)) = r.resampler.process(&r.input, PCM_FLOAT, &mut r.output, PCM_FLOAT) else { return 0 };
-    for b in r.output[..made].chunks_exact(4) {
-        put(f32::from_le_bytes([b[0], b[1], b[2], b[3]]), to.encoding, out);
+    let made_floats = r.output[..made].as_chunks::<4>().0;
+    match to.encoding {
+        Encoding::Float => out.extend_from_slice(&r.output[..made]),
+        Encoding::Pcm16 => out.extend(made_floats.iter().flat_map(|b| rounded(f32::from_le_bytes(*b)).to_le_bytes())),
     }
     made / 4 / to.channels
 }
@@ -500,8 +523,8 @@ impl Stream {
                     (pts + trim_start, (dur - trim_start - trim_end).max(0))
                 }
             };
-            self.buf.clear();
-            self.buf.extend_from_slice(&packet.data);
+            // The packet's own memory, not a copy.
+            self.buf = packet.data.into_vec();
             self.packet_frames = frames as u64;
             if std::mem::take(&mut self.first_packet) {
                 if let Some(c) = self.coded.as_mut() {
@@ -591,11 +614,7 @@ impl Stream {
             }
             self.buf.clear();
             match pcm {
-                Some((p, w)) => {
-                    for b in packet.data[from * ch * w..to * ch * w].chunks_exact(w) {
-                        p.put(b, enc, &mut self.buf);
-                    }
-                }
+                Some((p, w)) => p.put(&packet.data[from * ch * w..to * ch * w], enc, &mut self.buf),
                 // A format change mid-stream (a station's next song): converted, or it would play at the
                 // wrong speed.
                 None if self.settled && (rate, ch) != (self.format.rate, self.format.channels) => {
@@ -607,9 +626,7 @@ impl Stream {
                 }
                 None => {
                     self.reshape = None;
-                    for &v in &samples[from * ch..to * ch] {
-                        put(v, enc, &mut self.buf);
-                    }
+                    put(&samples[from * ch..to * ch], enc, &mut self.buf);
                 }
             }
             self.at_us = first * 1_000_000 / self.format.rate as i64;
@@ -722,7 +739,7 @@ fn decode_from_start(source: Box<dyn MediaSource>, hint: Option<&str>, whole: bo
             continue;
         }
         floats.clear();
-        floats.extend(s.buffer().chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])));
+        floats.extend(s.buffer().as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)));
         if !each(s.format.rate, s.format.channels, &floats) {
             return Ok(false);
         }

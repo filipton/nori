@@ -624,12 +624,11 @@ impl RingTrack {
     }
 }
 
-/// Writes `samples` (whole frames) into `r` from frame `at`, the first frames of a `blend` (done, of)
-/// blended into what the slots held; returns the frames written.
-fn put(r: &Ring, at: u64, blend: Option<(u64, u64)>, samples: impl ExactSizeIterator<Item = f32>) -> u64 {
+/// Writes `samples` (whole frames, each sample's float by `value`) into `r` from frame `at`, the first
+/// frames of a `blend` (done, of) blended into what the slots held; returns the frames written.
+fn put<const W: usize>(r: &Ring, at: u64, blend: Option<(u64, u64)>, samples: &[[u8; W]], value: impl Fn([u8; W]) -> f32) -> u64 {
     let ch = r.channels;
     let frames = (samples.len() / ch) as u64;
-    let mut samples = samples.take(frames as usize * ch);
     let slot = |f: u64| (f % r.frames) as usize * ch;
     let mut done = 0;
     if let Some((from, of)) = blend {
@@ -638,7 +637,7 @@ fn put(r: &Ring, at: u64, blend: Option<(u64, u64)>, samples: impl ExactSizeIter
             let s = slot(at + done);
             for c in 0..ch {
                 let old = f32::from_bits(r.slots[s + c].load(Ordering::Relaxed));
-                let v = nori_player::pipeline::blended(old, samples.next().unwrap_or(0.0), (from + done) as usize, of as usize);
+                let v = nori_player::pipeline::blended(old, value(samples[done as usize * ch + c]), (from + done) as usize, of as usize);
                 r.slots[s + c].store(v.to_bits(), Ordering::Relaxed);
             }
             done += 1;
@@ -648,8 +647,9 @@ fn put(r: &Ring, at: u64, blend: Option<(u64, u64)>, samples: impl ExactSizeIter
     while done < frames {
         let s = slot(at + done);
         let run = (frames - done).min(r.frames - (at + done) % r.frames) as usize * ch;
-        for (slot, v) in r.slots[s..s + run].iter().zip(&mut samples) {
-            slot.store(v.to_bits(), Ordering::Relaxed);
+        let from = done as usize * ch;
+        for (slot, &b) in r.slots[s..s + run].iter().zip(&samples[from..from + run]) {
+            slot.store(value(b).to_bits(), Ordering::Relaxed);
         }
         done += (run / ch) as u64;
     }
@@ -700,10 +700,9 @@ impl Track for RingTrack {
         let (Some(r), Some(d), Some(f)) = (self.ring.clone(), self.device, self.format) else { return };
         let w = r.write.load(Ordering::Relaxed);
         let ch = d.channels;
-        let floats = |b: &[u8; 4]| f32::from_le_bytes(*b);
         let frames = match (self.resampler.as_mut(), f.encoding) {
-            (None, Encoding::Pcm16) => put(&r, w, self.blend, data.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b) as f32 / 32768.0)),
-            (None, Encoding::Float) => put(&r, w, self.blend, data.as_chunks::<4>().0.iter().map(floats)),
+            (None, Encoding::Pcm16) => put(&r, w, self.blend, data.as_chunks::<2>().0, |b| i16::from_le_bytes(b) as f32 / 32768.0),
+            (None, Encoding::Float) => put(&r, w, self.blend, data.as_chunks::<4>().0, f32::from_le_bytes),
             (Some(rs), _) => {
                 let in_frames = data.len() / f.frame_bytes();
                 let need = ((in_frames as u64 * d.rate as u64 / f.rate as u64) as usize + 4) * ch * 4;
@@ -711,7 +710,7 @@ impl Track for RingTrack {
                     self.converted.resize(need, 0);
                 }
                 let Some((_, made)) = rs.process(data, f.encoding.media3(), &mut self.converted, Encoding::FLOAT) else { return };
-                put(&r, w, self.blend, self.converted[..made].as_chunks::<4>().0.iter().map(floats))
+                put(&r, w, self.blend, self.converted[..made].as_chunks::<4>().0, f32::from_le_bytes)
             }
         };
         self.blend = self.blend.and_then(|(done, of)| (done + frames < of).then_some((done + frames, of)));

@@ -56,11 +56,11 @@ impl Format {
 }
 
 fn i16s(b: &[u8]) -> impl Iterator<Item = f32> + '_ {
-    b.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
+    b.as_chunks::<2>().0.iter().map(|&c| i16::from_le_bytes(c) as f32 / 32768.0)
 }
 
 fn f32s(b: &[u8]) -> impl Iterator<Item = f32> + '_ {
-    b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+    b.as_chunks::<4>().0.iter().map(|&c| f32::from_le_bytes(c))
 }
 
 /// Decodes interleaved bytes into float samples, appending to `out`.
@@ -75,13 +75,13 @@ pub fn to_f32(bytes: &[u8], enc: Encoding, out: &mut Vec<f32>) {
 pub fn from_f32(samples: &[f32], enc: Encoding, out: &mut [u8]) {
     match enc {
         Encoding::Pcm16 => {
-            for (d, v) in out.chunks_exact_mut(2).zip(samples) {
-                d.copy_from_slice(&((v * 32768.0).round().clamp(-32768.0, 32767.0) as i16).to_le_bytes());
+            for (d, v) in out.as_chunks_mut::<2>().0.iter_mut().zip(samples) {
+                *d = ((v * 32768.0).round().clamp(-32768.0, 32767.0) as i16).to_le_bytes();
             }
         }
         Encoding::Float => {
-            for (d, v) in out.chunks_exact_mut(4).zip(samples) {
-                d.copy_from_slice(&v.to_le_bytes());
+            for (d, v) in out.as_chunks_mut::<4>().0.iter_mut().zip(samples) {
+                *d = v.to_le_bytes();
             }
         }
     }
@@ -91,15 +91,14 @@ pub fn from_f32(samples: &[f32], enc: Encoding, out: &mut [u8]) {
 pub fn scale(bytes: &mut [u8], enc: Encoding, gain: f32) {
     match enc {
         Encoding::Pcm16 => {
-            for d in bytes.chunks_exact_mut(2) {
-                let v = i16::from_le_bytes([d[0], d[1]]) as f32 * gain;
-                d.copy_from_slice(&(v.round().clamp(-32768.0, 32767.0) as i16).to_le_bytes());
+            for d in bytes.as_chunks_mut::<2>().0 {
+                let v = i16::from_le_bytes(*d) as f32 * gain;
+                *d = (v.round().clamp(-32768.0, 32767.0) as i16).to_le_bytes();
             }
         }
         Encoding::Float => {
-            for d in bytes.chunks_exact_mut(4) {
-                let v = f32::from_le_bytes([d[0], d[1], d[2], d[3]]) * gain;
-                d.copy_from_slice(&v.to_le_bytes());
+            for d in bytes.as_chunks_mut::<4>().0 {
+                *d = (f32::from_le_bytes(*d) * gain).to_le_bytes();
             }
         }
     }
@@ -110,9 +109,9 @@ pub fn scale_dithered(bytes: &mut [u8], enc: Encoding, gain: f32, channels: usiz
     match enc {
         Encoding::Pcm16 => {
             let ch = channels.max(1);
-            for (i, d) in bytes.chunks_exact_mut(2).enumerate() {
-                let v = i16::from_le_bytes([d[0], d[1]]) as f64 * gain as f64 / 32768.0;
-                d.copy_from_slice(&dither.to_i16(i % ch, v).to_le_bytes());
+            for (i, d) in bytes.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+                let v = i16::from_le_bytes(*d) as f64 * gain as f64 / 32768.0;
+                *d = dither.to_i16(i % ch, v).to_le_bytes();
             }
         }
         Encoding::Float => scale(bytes, enc, gain),
@@ -166,16 +165,8 @@ impl ByteStretcher {
             }
             let src = &input[used * w..(used + n_in) * w];
             match enc {
-                Encoding::Pcm16 => {
-                    for (d, c) in self.fin[..n_in].iter_mut().zip(src.chunks_exact(2)) {
-                        *d = i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0;
-                    }
-                }
-                Encoding::Float => {
-                    for (d, c) in self.fin[..n_in].iter_mut().zip(src.chunks_exact(4)) {
-                        *d = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
-                    }
-                }
+                Encoding::Pcm16 => self.fin[..n_in].iter_mut().zip(i16s(src)).for_each(|(d, v)| *d = v),
+                Encoding::Float => self.fin[..n_in].iter_mut().zip(f32s(src)).for_each(|(d, v)| *d = v),
             }
             let (u, m) = self.s.process(&self.fin[..n_in], &mut self.fout[..n_out]);
             from_f32(&self.fout[..m * ch], enc, &mut output[made * w..(made + m * ch) * w]);

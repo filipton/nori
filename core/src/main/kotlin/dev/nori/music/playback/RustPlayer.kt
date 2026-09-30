@@ -317,6 +317,10 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
      * its output again whenever that reading is a second old (nori_player::heard::screen_place).
      */
     fun shownMs(index: Int): Long = RustPlayerJni.shownMs(h, index)
+
+    /** The engine for a door that reads it itself (PlayheadJni.position); 0 once released. */
+    internal val handle: Long get() = h
+
     /** The engine reads its output once, now: the screen is coming back (its last wake may be minutes old). */
     fun look() = RustPlayerJni.look(h)
     /**

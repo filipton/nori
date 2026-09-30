@@ -111,16 +111,13 @@ object CoverLook {
 
     @JvmStatic @CriticalNative external fun seekStep(bar: Float, target: Float, dtS: Float, widthPx: Float, speed: Float): Long
 
-    // The seek bar's pace (nori_look::motion::SeekPace), through [SeekPace]: a handle and primitives.
-    @JvmStatic @CriticalNative external fun seekPaceNew(): Long
+    // The seek bar's pace (nori_look::motion::SeekPace), through [SeekPace]: a handle and primitives in,
+    // what it shows left in [SeekPace]'s view.
+    @JvmStatic @CriticalNative external fun seekPaceNew(view: Long): Long
     @JvmStatic @CriticalNative external fun seekPaceFree(h: Long)
     @JvmStatic @CriticalNative external fun seekPaceSync(h: Long, positionMs: Long, durationMs: Long)
     @JvmStatic @CriticalNative external fun seekPaceHold(h: Long, bar: Float, positionMs: Long, durationMs: Long)
     @JvmStatic @CriticalNative external fun seekPaceStep(h: Long, positionMs: Long, durationMs: Long, dtS: Float, widthPx: Float, rate: Float): Int
-    @JvmStatic @CriticalNative external fun seekPaceBar(h: Long): Float
-    @JvmStatic @CriticalNative external fun seekPaceTimes(h: Long): Long
-    @JvmStatic @CriticalNative external fun seekPaceFrom(h: Long): Long
-    @JvmStatic @CriticalNative external fun seekPaceFade(h: Long): Float
 
     /**
      * [color] moved lighter or darker in its own hue until it reads on [background], trying the other way

@@ -299,9 +299,9 @@ private fun LyricsBody(vm: PlayerViewModel, found: dev.nori.music.data.FoundLyri
         var step = clock.at(vm.positionIn(song) ?: return@LaunchedEffect, sweep, lively, force = true)
         if (dev.nori.music.app.traceLyrics) android.util.Log.d("norilyrics", "${android.os.SystemClock.uptimeMillis()} start shown=${clock.shownMs()} lit=${LyricsClock.active(step)} words=${lyrics.wordTimed}")
         show(LyricsClock.frame(step))
-        shownMs = clock.shownMs()
+        shownMs = clock.atShownMs
         lastMs[0] = shownMs
-        if (hasBacking) backingSung = clock.backingSung()
+        if (hasBacking) backingSung = clock.atBackingSung
         var drawnAt = 0L
         while (playing && live && isActive) {
             val wait = LyricsClock.wait(step)
@@ -321,9 +321,9 @@ private fun LyricsBody(vm: PlayerViewModel, found: dev.nori.music.data.FoundLyri
             if (dev.nori.music.app.traceLyrics) android.util.Log.d("norilyrics", "${android.os.SystemClock.uptimeMillis()} read=$read shown=${clock.shownMs()} mixing=${vm.mixing.value} player=${vm.playerPositionMs} lit=${LyricsClock.active(step)} words=${lyrics.wordTimed}")
             if (LyricsClock.redraw(step)) {
                 show(LyricsClock.frame(step))
-                shownMs = clock.shownMs()
+                shownMs = clock.atShownMs
                 lastMs[0] = shownMs
-                if (hasBacking) backingSung = clock.backingSung()
+                if (hasBacking) backingSung = clock.atBackingSung
             }
         }
     }
