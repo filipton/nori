@@ -120,7 +120,7 @@ impl Client {
 }
 
 /// Freshness of a downloaded song's cached server lyrics.
-pub const DOWNLOADED_SERVER_KEPT_MS: i64 = MISS_KEPT_MS;
+pub(crate) const DOWNLOADED_SERVER_KEPT_MS: i64 = MISS_KEPT_MS;
 
 impl Client {
     /// Asks the enabled services given what the server had (`server_has_lines`, `server_synced`), each

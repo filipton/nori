@@ -60,7 +60,7 @@ impl Core {
     }
 
     /// The song's vocal activity curve (checked against synced lyrics).
-    pub fn analysis_voice(&self, song_id: &str) -> Result<Option<nori_player::automix::vocal::VocalCurve>> {
+    pub(crate) fn analysis_voice(&self, song_id: &str) -> Result<Option<nori_player::automix::vocal::VocalCurve>> {
         Ok(get_voice(&self.db.lock(), song_id)?)
     }
 

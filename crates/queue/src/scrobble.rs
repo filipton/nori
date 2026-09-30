@@ -63,7 +63,7 @@ pub fn scrobble_playing(playing: bool, now_ms: i64) {
 }
 
 /// Listening needed for a play to count: `percent` (clamped to 10..100) of `duration_s`, within 10 s..4 min.
-pub fn needed_ms(duration_s: i64, percent: i32) -> i64 {
+pub(crate) fn needed_ms(duration_s: i64, percent: i32) -> i64 {
     (duration_s * 10 * percent.clamp(10, 100) as i64).clamp(10_000, 240_000)
 }
 

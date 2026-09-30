@@ -3,7 +3,7 @@
 use md5::{Digest, Md5};
 
 pub const CLIENT: &str = "nori";
-pub const API_VERSION: &str = "1.16.1";
+pub(crate) const API_VERSION: &str = "1.16.1";
 
 #[derive(Debug, Clone, Default)]
 pub struct Server {

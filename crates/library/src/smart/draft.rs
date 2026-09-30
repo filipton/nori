@@ -187,7 +187,7 @@ fn read(p: &SmartPlaylist) -> Option<SmartEdit> {
 }
 
 /// A new, empty draft: one rule waiting for a genre, a random order and 100 songs.
-pub fn smart_edit_new() -> SmartEdit {
+pub(crate) fn smart_edit_new() -> SmartEdit {
     SmartEdit { id: String::new(), name: String::new(), all: true, rules: vec![default_rule()], sort_field: "random".into(), descending: false, limit: 100 }
 }
 

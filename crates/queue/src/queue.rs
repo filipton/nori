@@ -89,7 +89,7 @@ pub(crate) fn durations(ids: &[String]) -> Vec<(String, i64)> {
 }
 
 /// Hands the planner its window: (id, album run) for the previous, current and next songs in play order.
-pub fn queue_window(songs: &[(String, u32)], shuffling: bool) {
+pub(crate) fn queue_window(songs: &[(String, u32)], shuffling: bool) {
     let window = with(|s| songs.iter().map(|(id, run)| window_song(s, id, *run)).collect());
     nori_automix::planner::transition_window(window, shuffling);
 }
@@ -97,7 +97,7 @@ pub fn queue_window(songs: &[(String, u32)], shuffling: bool) {
 /// The ReplayGain volume for `current` given its neighbours (each with its album run; album gain applies
 /// only inside a run). 1.0 for nothing, radio or bit-perfect output. Untagged songs fall back to
 /// AutoMix's measured loudness.
-pub fn queue_gain(before: Option<(String, u32)>, current: Option<(String, u32)>, after: Option<(String, u32)>, prefs: &GainPrefs, bit_perfect: bool, shuffling: bool) -> f32 {
+pub(crate) fn queue_gain(before: Option<(String, u32)>, current: Option<(String, u32)>, after: Option<(String, u32)>, prefs: &GainPrefs, bit_perfect: bool, shuffling: bool) -> f32 {
     let Some((current, current_run)) = current.filter(|(id, _)| !id.starts_with(RADIO_PREFIX)) else { return 1.0 };
     if bit_perfect {
         return 1.0;
@@ -133,7 +133,7 @@ fn measured_lufs(id: &str) -> Option<f32> {
 }
 
 /// [`queue_flags`] bits.
-pub const EXPLICIT: u32 = 1;
+pub(crate) const EXPLICIT: u32 = 1;
 pub const STARRED: u32 = 2;
 pub const EXTERNAL: u32 = 4;
 

@@ -8,7 +8,7 @@ use crate::{formats, lyrics};
 
 const BASE: &str = "https://lrclib.net/api";
 /// A reported length further than this from the song's is another recording.
-pub const DURATION_SLACK_S: f64 = 4.0;
+pub(crate) const DURATION_SLACK_S: f64 = 4.0;
 
 // ---- cleaning titles ------------------------------------------------------------------------------------
 // A port of the regular expressions the Kotlin app used, kept to the same matches.
@@ -132,7 +132,7 @@ pub fn form_encode(out: &mut String, v: &str) {
 }
 
 /// LRCLIB's exact lookup of `song` by its cleaned `title`.
-pub fn get_url(song: &Song, title: &str) -> String {
+pub(crate) fn get_url(song: &Song, title: &str) -> String {
     let mut u = format!("{BASE}/get?artist_name=");
     form_encode(&mut u, &song.artist);
     u.push_str("&track_name=");
@@ -144,7 +144,7 @@ pub fn get_url(song: &Song, title: &str) -> String {
 }
 
 /// LRCLIB's search for `song` by its cleaned `title`.
-pub fn search_url(song: &Song, title: &str) -> String {
+pub(crate) fn search_url(song: &Song, title: &str) -> String {
     let mut u = format!("{BASE}/search?track_name=");
     form_encode(&mut u, title);
     u.push_str("&artist_name=");

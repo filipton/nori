@@ -123,7 +123,7 @@ fn furniture(line: &str) -> bool {
 
 /// A Genius song page's words: every `data-lyrics-container` element without what the page excludes
 /// from selection. Section headings ("[Chorus]") become gaps between verses.
-pub fn from_genius(html: &str) -> Lyrics {
+pub(crate) fn from_genius(html: &str) -> Lyrics {
     const MARK: &str = "data-lyrics-container=\"true\"";
     let mut text = String::new();
     let mut pos = 0;
@@ -162,7 +162,7 @@ pub fn from_genius(html: &str) -> Lyrics {
 
 /// The `/lrc/maker/…` links of a Megalobiz search that name `title` as whole words, those also naming
 /// `artist` first, otherwise in page order.
-pub fn megalobiz_links(html: &str, title: &str, artist: &str) -> Vec<String> {
+pub(crate) fn megalobiz_links(html: &str, title: &str, artist: &str) -> Vec<String> {
     let want = norm(title);
     let by = norm(artist);
     let mut out: Vec<(String, bool)> = Vec::new();
@@ -189,7 +189,7 @@ pub fn megalobiz_links(html: &str, title: &str, artist: &str) -> Vec<String> {
 }
 
 /// The LRC in a Megalobiz page's `lrc_<number>_details` element; nothing without timed lines.
-pub fn from_megalobiz(html: &str) -> Lyrics {
+pub(crate) fn from_megalobiz(html: &str) -> Lyrics {
     let mut pos = 0;
     while let Some(i) = html[pos..].find("id=\"lrc_") {
         let at = pos + i;
@@ -211,7 +211,7 @@ pub fn from_megalobiz(html: &str) -> Lyrics {
 // ---- SimpMusic --------------------------------------------------------------------------------------
 
 /// HTML-escaped LRC (SimpMusic's, word tags as `&lt;00:12.34&gt;` on some entries).
-pub fn from_escaped_lrc(text: &str) -> Lyrics {
+pub(crate) fn from_escaped_lrc(text: &str) -> Lyrics {
     crate::lyrics::from_lrc(&decode_html(text))
 }
 

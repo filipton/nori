@@ -97,7 +97,7 @@ impl Core {
 
 impl Core {
     /// Index search, split like the server's.
-    pub fn local_search_split(&self, query: String, limit: u32) -> Result<SearchSplit> {
+    pub(crate) fn local_search_split(&self, query: String, limit: u32) -> Result<SearchSplit> {
         Ok(split(self.local_search(query, limit)?))
     }
 }

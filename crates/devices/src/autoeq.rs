@@ -9,7 +9,7 @@ use rusqlite::{params, Connection};
 pub const INDEX_URL: &str = "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results/INDEX.md";
 const RAW: &str = "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results";
 /// Age after which the index is refetched on an unmetered network.
-pub const INDEX_STALE_MS: i64 = 30 * 24 * 3_600_000;
+pub(crate) const INDEX_STALE_MS: i64 = 30 * 24 * 3_600_000;
 /// `app_kv` keys for the index's fetch time and fingerprint.
 const FETCHED_KEY: &str = "autoeq.fetched";
 const DIGEST_KEY: &str = "autoeq.digest";
@@ -48,7 +48,7 @@ pub fn preset_url(e: &AutoEqEntry) -> String {
 }
 
 /// An entry's graphic curve URL.
-pub fn graphic_url(e: &AutoEqEntry) -> String {
+pub(crate) fn graphic_url(e: &AutoEqEntry) -> String {
     file_url(e, "GraphicEQ")
 }
 
@@ -193,7 +193,7 @@ const GENERIC: &[&str] = &[
 
 /// The model part of a device name: "LE_WH-1000XM5" -> "WH-1000XM5", "Filip's AirPods Pro" -> "AirPods
 /// Pro", "Galaxy Buds2 Pro (1A2B)" -> "Galaxy Buds2 Pro". None when no model is left.
-pub fn device_query(device: &str) -> Option<String> {
+pub(crate) fn device_query(device: &str) -> Option<String> {
     let mut name = device.trim().replace('_', " ");
     for prefix in ["LE ", "LE-", "BT ", "BT-"] {
         if name.len() > prefix.len() && name.is_char_boundary(prefix.len()) && name[..prefix.len()].eq_ignore_ascii_case(prefix) {

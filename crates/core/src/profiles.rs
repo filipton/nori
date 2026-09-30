@@ -138,7 +138,7 @@ impl Core {
 
 impl Core {
     /// Up to 40 AutoEQ hits; none for queries under two characters.
-    pub fn autoeq_find(&self, query: String) -> Vec<AutoEqEntry> {
+    pub(crate) fn autoeq_find(&self, query: String) -> Vec<AutoEqEntry> {
         if autoeq_too_short(&query) {
             return Vec::new();
         }

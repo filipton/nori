@@ -17,22 +17,22 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 /// An output presenting nothing new for longer than this has stalled.
-pub const STILL_MS: i64 = 2_000;
+pub(crate) const STILL_MS: i64 = 2_000;
 /// An output neither presenting nor fed for longer than this is starved (longer than [`STILL_MS`] so
 /// slightly late first bytes do not count).
-pub const STARVED_MS: i64 = 5_000;
+pub(crate) const STARVED_MS: i64 = 5_000;
 /// Position standing still this long with no output open and nothing downloading is "silent".
-pub const SILENT_MS: i64 = 5_000;
+pub(crate) const SILENT_MS: i64 = 5_000;
 /// Allowed lag of the screen behind playback.
-pub const DIFFER_MS: i64 = 1_000;
+pub(crate) const DIFFER_MS: i64 = 1_000;
 /// Allowed seek bar / controller position error (for longer than [`DIFFER_MS`]).
-pub const PLACE_MS: i64 = 2_000;
+pub(crate) const PLACE_MS: i64 = 2_000;
 /// Skip presses closer than this form one run.
-pub const RUN_MS: i64 = 3_000;
+pub(crate) const RUN_MS: i64 = 3_000;
 /// Settings are not judged for this long after the player service starts or ends.
 pub const SETTLE_MS: i64 = 3_000;
 /// Maximum breaks kept for the self test.
-pub const MOST_BREAKS: usize = 50;
+pub(crate) const MOST_BREAKS: usize = 50;
 
 /// A violated invariant.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -346,13 +346,13 @@ impl Watch {
 
 /// Whether settings are judged now: playing through an open output and more than [`SETTLE_MS`] after
 /// the player service started or ended (`engine_since`).
-pub fn settings_judged(now: i64, playing: bool, output_open: bool, engine_since: Option<i64>) -> bool {
+pub(crate) fn settings_judged(now: i64, playing: bool, output_open: bool, engine_since: Option<i64>) -> bool {
     playing && output_open && engine_since.is_none_or(|t| now - t > SETTLE_MS)
 }
 
 /// (name, expected, actual) pairs to check: offload always; the sound chain (required with the
 /// equalizer on) only while CPU-decoded audio plays through the engine's output (`on_cpu`).
-pub fn settings_pairs(eq_enabled: bool, want_offload: bool, offload_wanted: bool, chain_in: bool, on_cpu: bool) -> Vec<(&'static str, bool, bool)> {
+pub(crate) fn settings_pairs(eq_enabled: bool, want_offload: bool, offload_wanted: bool, chain_in: bool, on_cpu: bool) -> Vec<(&'static str, bool, bool)> {
     let mut pairs = vec![("offload wanted", want_offload, offload_wanted)];
     if eq_enabled && on_cpu {
         pairs.push(("sound chain in the path", true, chain_in));
@@ -361,7 +361,7 @@ pub fn settings_pairs(eq_enabled: bool, want_offload: bool, offload_wanted: bool
 }
 
 /// "setting": a break listing each pair that disagrees.
-pub fn settings_held(expected: &[(&str, bool, bool)]) -> Option<Break> {
+pub(crate) fn settings_held(expected: &[(&str, bool, bool)]) -> Option<Break> {
     let off: Vec<String> = expected.iter().filter(|(_, want, got)| want != got).map(|(what, want, got)| format!("{what}: {got}, expected {want}")).collect();
     if off.is_empty() {
         return None;

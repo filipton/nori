@@ -494,13 +494,13 @@ impl Core {
     }
 
     /// Points requests at another address of the same server (LAN vs WAN) without touching the index.
-    pub fn use_address(&self, url: String) {
+    pub(crate) fn use_address(&self, url: String) {
         let next = self.server.read().rebased(&url);
         *self.server.write() = next;
     }
 
     /// getIndexes: the folder tree's top level.
-    pub fn parse_indexes(&self, body: Vec<u8>) -> Result<Vec<Artist>> {
+    pub(crate) fn parse_indexes(&self, body: Vec<u8>) -> Result<Vec<Artist>> {
         Ok(parse(&body)?.indexes.unwrap_or_default().index.into_iter().flat_map(|i| i.artist).collect())
     }
 
@@ -527,7 +527,7 @@ impl Core {
     }
 
     /// Validates any response; used for ping and for calls with no payload.
-    pub fn parse_status(&self, body: Vec<u8>) -> Result<ServerInfo> {
+    pub(crate) fn parse_status(&self, body: Vec<u8>) -> Result<ServerInfo> {
         let r = parse(&body)?;
         Ok(ServerInfo { version: r.version, server_type: r.kind, server_version: r.server_version, open_subsonic: r.open_subsonic })
     }
@@ -538,7 +538,7 @@ impl Core {
     }
 
     /// Library sync: indexes a search3 page and returns its counts, not its items.
-    pub fn ingest_search(&self, body: Vec<u8>) -> Result<IngestStats> {
+    pub(crate) fn ingest_search(&self, body: Vec<u8>) -> Result<IngestStats> {
         let f = parse(&body)?.search_result3.unwrap_or_default();
         let mut st = db::index(&mut self.db.lock(), &f.artist, &f.album, &f.song)?;
         // Counts seen, not changed: callers page until an empty page.
@@ -583,7 +583,7 @@ impl Core {
     }
 
     /// randomSongs, songsByGenre, similarSongs2, topSongs and getSong all land here.
-    pub fn parse_songs(&self, body: Vec<u8>) -> Result<Vec<Song>> {
+    pub(crate) fn parse_songs(&self, body: Vec<u8>) -> Result<Vec<Song>> {
         let r = parse(&body)?;
         Ok(r.random_songs.or(r.songs_by_genre).or(r.similar_songs2).or(r.top_songs).map(|s| s.song).or(r.song.map(|s| vec![s])).unwrap_or_default())
     }
@@ -608,7 +608,7 @@ impl Core {
     }
 
     /// Synced lyrics win over plain; word times from the server's cues or estimated (lyrics.rs).
-    pub fn parse_lyrics(&self, body: Vec<u8>) -> Result<Lyrics> {
+    pub(crate) fn parse_lyrics(&self, body: Vec<u8>) -> Result<Lyrics> {
         Ok(lyrics::build(parse(&body)?.lyrics_list.unwrap_or_default().structured_lyrics))
     }
 
@@ -630,7 +630,7 @@ impl Core {
     }
 
     /// Whether `key` was stored less than `max_age_ms` ago.
-    pub fn cache_fresh(&self, key: String, max_age_ms: i64) -> Result<bool> {
+    pub(crate) fn cache_fresh(&self, key: String, max_age_ms: i64) -> Result<bool> {
         let c = self.db.lock();
         let ts: Option<i64> = c.prepare_cached("SELECT ts FROM cache WHERE server=sid() AND key=?1")?.query_row([key], |r| r.get(0)).optional()?;
         Ok(ts.is_some_and(|t| db::now_ms() - t < max_age_ms))
@@ -643,7 +643,7 @@ impl Core {
     }
 
     /// Drops cached responses whose key starts with `prefix`.
-    pub fn cache_evict(&self, prefix: String) -> Result<()> {
+    pub(crate) fn cache_evict(&self, prefix: String) -> Result<()> {
         let c = self.db.lock();
         c.execute("DELETE FROM cache WHERE server=sid() AND key >= ?1 AND key < ?1 || x'ff'", [prefix])?;
         Ok(())
@@ -687,7 +687,7 @@ impl Core {
     }
 
     /// AutoEQ curves matching an output device name, best first.
-    pub fn autoeq_for_device(&self, device: String, limit: u32) -> Result<Vec<AutoEqEntry>> {
+    pub(crate) fn autoeq_for_device(&self, device: String, limit: u32) -> Result<Vec<AutoEqEntry>> {
         Ok(autoeq::matching(&self.db.lock(), &device, limit)?)
     }
 
@@ -699,7 +699,7 @@ impl Core {
     }
 
     /// Binds `output` to profile `name` only (None: unbinds it).
-    pub fn profile_bind(&self, output: String, name: Option<String>) -> Result<()> {
+    pub(crate) fn profile_bind(&self, output: String, name: Option<String>) -> Result<()> {
         let mut c = self.db.lock();
         let tx = c.transaction()?;
         let rows: Vec<(String, String)> = {
@@ -722,7 +722,7 @@ impl Core {
     }
 
     /// The profile bound to `output`, if any.
-    pub fn profile_for_output(&self, output: String) -> Result<Option<SoundProfile>> {
+    pub(crate) fn profile_for_output(&self, output: String) -> Result<Option<SoundProfile>> {
         Ok(self.profiles()?.into_iter().find(|p| p.outputs.contains(&output)))
     }
 
@@ -737,7 +737,7 @@ impl Core {
 #[cfg(test)]
 impl Core {
     /// Marks one queued download finished.
-    pub fn download_done(&self, id: String) -> Result<()> {
+    pub(crate) fn download_done(&self, id: String) -> Result<()> {
         self.download_settle(vec![id], vec![true])
     }
 }

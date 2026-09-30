@@ -110,7 +110,7 @@ pub fn download_processing(now: i64) -> Option<Processing> {
 }
 
 /// The ids marked for the beat model.
-pub fn beats_wanted_rows(c: &rusqlite::Connection) -> crate::Result<Vec<String>> {
+pub(crate) fn beats_wanted_rows(c: &rusqlite::Connection) -> crate::Result<Vec<String>> {
     let mut st = c.prepare("SELECT id FROM download_beats WHERE server=sid()")?;
     let rows = st.query_map([], |r| r.get(0))?;
     Ok(rows.filter_map(|r| r.ok()).collect())

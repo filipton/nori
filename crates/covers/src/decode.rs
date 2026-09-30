@@ -18,7 +18,7 @@ use crate::scale::{premultiply, Alpha, Scaler, Source, Target};
 const MAX_SIDE: usize = 16384;
 const MAX_PIXELS: usize = 4096 * 4096;
 /// Longest side for a picture requested at its own size (0 x 0).
-pub const WHOLE_SIDE: usize = 2048;
+pub(crate) const WHOLE_SIDE: usize = 2048;
 /// Scratch buffers larger than this (1448² RGBA) are freed after use instead of kept.
 const KEEP: usize = 8 << 20;
 

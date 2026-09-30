@@ -71,7 +71,7 @@ fn refill_facts() -> (bool, usize, Option<String>) {
 
 /// The queue moved: whether to fetch songs for its end now. True means a fetch is in flight until
 /// [`autofill_arrived`].
-pub fn autofill_start() -> bool {
+pub(crate) fn autofill_start() -> bool {
     let (ok, after, end) = refill_facts();
     REFILL.lock().start(ok, after, end.as_deref())
 }
@@ -153,11 +153,11 @@ pub enum Picked {
 }
 
 /// Used within this long counts as recent.
-pub const LATELY_MS: i64 = 14 * 86_400_000;
+pub(crate) const LATELY_MS: i64 = 14 * 86_400_000;
 /// The first pick is drawn from this many top fresh candidates.
 const TOP_DRAW: usize = 3;
 /// Picks older than this are deleted.
-pub const FORGET_MS: i64 = 90 * 86_400_000;
+pub(crate) const FORGET_MS: i64 = 90 * 86_400_000;
 
 /// Ranks `candidates` (best first, deduplicated); `used` is each one's last pick or play time.
 pub fn rank(candidates: Vec<String>, used: &HashMap<String, i64>, now_ms: i64, seed: u64) -> Vec<String> {

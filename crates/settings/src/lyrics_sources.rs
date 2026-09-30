@@ -150,7 +150,7 @@ impl LyricsService {
     }
 
     /// Needs the PaxSenix key; skipped without it.
-    pub fn needs_key(self) -> bool {
+    pub(crate) fn needs_key(self) -> bool {
         matches!(self, LyricsService::PaxsenixMusixmatch | LyricsService::PaxsenixSpotify)
     }
 
@@ -208,7 +208,7 @@ pub fn default_order() -> Vec<LyricsService> {
 
 /// A ranking completed: duplicates removed, and services missing from it inserted after their default
 /// predecessor.
-pub fn complete_order(stored: &[LyricsService]) -> Vec<LyricsService> {
+pub(crate) fn complete_order(stored: &[LyricsService]) -> Vec<LyricsService> {
     let mut order = distinct(stored.iter().copied());
     for (i, s) in LyricsService::ALL.into_iter().enumerate() {
         if !order.contains(&s) {
@@ -225,7 +225,7 @@ pub fn parse(names: &str) -> Vec<LyricsService> {
 }
 
 /// The stored form of a list: names joined by commas.
-pub fn to_names(services: &[LyricsService]) -> String {
+pub(crate) fn to_names(services: &[LyricsService]) -> String {
     services.iter().map(|s| s.name()).collect::<Vec<_>>().join(",")
 }
 
@@ -240,7 +240,7 @@ fn distinct(services: impl Iterator<Item = LyricsService>) -> Vec<LyricsService>
 }
 
 /// The services switched on, in rank order.
-pub fn switched_on(p: &StoredPrefs) -> Vec<LyricsService> {
+pub(crate) fn switched_on(p: &StoredPrefs) -> Vec<LyricsService> {
     p.lyrics_order.iter().copied().filter(|s| p.lyrics_on.contains(s)).collect()
 }
 

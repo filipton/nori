@@ -130,7 +130,7 @@ pub fn db_forget_server(db_path: String, server: String) -> nori_model::Result<(
 }
 
 /// Deletes all rows of `server`.
-pub fn forget_server(c: &Connection, server: &str) -> rusqlite::Result<()> {
+pub(crate) fn forget_server(c: &Connection, server: &str) -> rusqlite::Result<()> {
     c.execute("DELETE FROM fts WHERE rowid IN (SELECT rowid FROM items WHERE server=?1)", [server])?;
     for t in SERVER_TABLES {
         c.execute(&format!("DELETE FROM {t} WHERE server=?1"), [server])?;

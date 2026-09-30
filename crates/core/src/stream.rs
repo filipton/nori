@@ -88,7 +88,7 @@ impl Client {
 
 impl Client {
     /// The URL and cache key to stream `id`.
-    pub fn stream_target(&self, id: String, metered: bool, wifi: StreamQuality, mobile: StreamQuality) -> StreamTarget {
+    pub(crate) fn stream_target(&self, id: String, metered: bool, wifi: StreamQuality, mobile: StreamQuality) -> StreamTarget {
         let q = self.quality(metered, wifi, mobile);
         let key = stream_cache_key(&id, &q);
         StreamTarget { url: self.core.stream_url(id, q.bit_rate, q.format), key }

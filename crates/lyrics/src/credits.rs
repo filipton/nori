@@ -131,7 +131,7 @@ pub(crate) fn strip_lines<T>(lines: &mut Vec<T>, text: impl Fn(&T) -> &str, titl
 }
 
 /// `l` without the credits at either end; empty when nothing is left.
-pub fn strip_edges(l: &mut Lyrics, title: &str, artist: &str) {
+pub(crate) fn strip_edges(l: &mut Lyrics, title: &str, artist: &str) {
     strip_lines(&mut l.lines, |x| x.text.as_str(), title, artist);
     if l.lines.is_empty() {
         *l = Lyrics::default();
@@ -139,7 +139,7 @@ pub fn strip_edges(l: &mut Lyrics, title: &str, artist: &str) {
 }
 
 /// How many lines still look like credits or placeholders (the middle, which [`strip_edges`] keeps).
-pub fn credits_inside(l: &Lyrics) -> usize {
+pub(crate) fn credits_inside(l: &Lyrics) -> usize {
     l.lines.iter().filter(|x| !blank(&x.text) && (role_and_name(&x.text) || watermark(&x.text) || instrumental(&x.text))).count()
 }
 

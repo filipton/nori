@@ -38,11 +38,11 @@ const FROM_DISK_PRIOR: f64 = 1.0;
 
 // media3's `Download.STATE_*`.
 pub const QUEUED: i32 = 0;
-pub const STOPPED: i32 = 1;
+pub(crate) const STOPPED: i32 = 1;
 pub const DOWNLOADING: i32 = 2;
 pub const COMPLETED: i32 = 3;
 pub const FAILED: i32 = 4;
-pub const RESTARTING: i32 = 7;
+pub(crate) const RESTARTING: i32 = 7;
 
 /// Flags [`followed`] and [`removed`] return: a batch started, the batch drained, marks changed.
 pub const NEW_BATCH: i32 = 1;
@@ -51,11 +51,11 @@ pub const MARKS: i32 = 4;
 
 /// How long one song's step may run before it is given up. Generous: steps run at the lowest priority,
 /// so a limit only catches a stuck step.
-pub const LYRICS_STEP_MS: i64 = 30_000;
-pub const ANALYSIS_STEP_MS: i64 = 180_000;
-pub const BEATS_STEP_MS: i64 = 600_000;
+pub(crate) const LYRICS_STEP_MS: i64 = 30_000;
+pub(crate) const ANALYSIS_STEP_MS: i64 = 180_000;
+pub(crate) const BEATS_STEP_MS: i64 = 600_000;
 /// How long songs may wait in a lane with no step running (its worker gone) before they are let go.
-pub const LANE_IDLE_MS: i64 = 60_000;
+pub(crate) const LANE_IDLE_MS: i64 = 60_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
@@ -545,7 +545,7 @@ pub fn with<R>(f: impl FnOnce(&mut Tracker) -> R) -> R {
 }
 
 /// Expected download size: duration at the transcode bitrate, or the file size at original quality.
-pub fn expected_bytes(size_bytes: i64, duration_s: i64, bitrate_kbps: i32) -> i64 {
+pub(crate) fn expected_bytes(size_bytes: i64, duration_s: i64, bitrate_kbps: i32) -> i64 {
     if bitrate_kbps > 0 && duration_s > 0 {
         duration_s * bitrate_kbps as i64 * 125
     } else {

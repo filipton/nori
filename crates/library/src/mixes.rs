@@ -294,14 +294,6 @@ pub fn discover(c: &Connection, limit: usize, seed: u64, now_ms: i64) -> rusqlit
     Ok(spread(picked, &mut rng, None))
 }
 
-/// A draw from `cond`, liked songs more likely and skipped ones less. Shared by the genre, artist and decade mixes.
-pub fn themed(c: &Connection, cond: &str, args: Vec<Value>, limit: usize, per_artist: usize, seed: u64, now_ms: i64) -> rusqlite::Result<Vec<Song>> {
-    let mut rng = Rng::new(seed);
-    let cands = pool(c, false, cond, args, Order::Shuffled(rng.next()), limit * 3, now_ms)?;
-    let picked = sample(cands.into_iter().map(|c| (c.song, affinity(c.taste, c.skips))).collect(), limit, per_artist, &mut rng);
-    Ok(spread(picked, &mut rng, None))
-}
-
 fn affinity(taste: f64, skips: u32) -> f64 {
     if taste < 0.0 {
         0.2 / (1.0 + skips as f64)

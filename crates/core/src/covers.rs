@@ -68,7 +68,7 @@ pub struct CoverWant {
 }
 
 /// `arts` at both sizes, deduplicated, provider covers skipped, at most `cap` covers.
-pub fn cover_wants(arts: Vec<String>, cap: u32) -> Vec<CoverWant> {
+pub(crate) fn cover_wants(arts: Vec<String>, cap: u32) -> Vec<CoverWant> {
     let mut seen: Vec<&str> = Vec::new();
     let mut out = Vec::new();
     for art in arts.iter().filter(|a| !provider_cover_id(a)) {
@@ -115,7 +115,7 @@ impl Core {
 /// Queue positions to prefetch around `index`, nearest first: the skip targets `previous` and `next`
 /// (media3 indexes, -1 for none), then outwards both ways up to `ahead` steps (`ahead` 0: only
 /// `previous`). In range, excluding `index`, deduplicated.
-pub fn cover_neighbours(index: i32, previous: i32, next: i32, ahead: i32, len: u32) -> Vec<u32> {
+pub(crate) fn cover_neighbours(index: i32, previous: i32, next: i32, ahead: i32, len: u32) -> Vec<u32> {
     let ahead = ahead.max(0);
     let mut around = vec![previous, next];
     for d in 2..=ahead {

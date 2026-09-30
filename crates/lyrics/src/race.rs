@@ -26,23 +26,23 @@ use crate::sync::{self, SyncCheck, SyncKind};
 use crate::trust::{name_alike, score, with_sync, Named, Trust};
 
 /// How many services are asked at once.
-pub const AT_ONCE: usize = 6;
+pub(crate) const AT_ONCE: usize = 6;
 /// A miss is asked again after a week.
 pub const MISS_KEPT_MS: i64 = 7 * 24 * 3_600_000;
 /// An answer this sure is shown at once when evidenced (it names the song, or another agrees);
 /// otherwise it waits for the first wave.
-pub const SURE: f64 = 0.75;
+pub(crate) const SURE: f64 = 0.75;
 /// Below this, the first wave's best has the other services asked.
-pub const WIDEN_BELOW: f64 = 0.82;
+pub(crate) const WIDEN_BELOW: f64 = 0.82;
 /// Never shown below this.
-pub const FLOOR: f64 = 0.4;
+pub(crate) const FLOOR: f64 = 0.4;
 /// What is shown is replaced by an answer that agrees with it and scores this much more...
-pub const MARGIN: f64 = 0.03;
+pub(crate) const MARGIN: f64 = 0.03;
 /// ...or by one that does not agree and scores this much more.
-pub const OVERRULE: f64 = 0.2;
+pub(crate) const OVERRULE: f64 = 0.2;
 /// A choice scored below this is asked about again after [`LOW_RETRY_MS`].
-pub const LOW: f64 = 0.7;
-pub const LOW_RETRY_MS: i64 = 3 * 24 * 3_600_000;
+pub(crate) const LOW: f64 = 0.7;
+pub(crate) const LOW_RETRY_MS: i64 = 3 * 24 * 3_600_000;
 /// The user's ranking breaks near ties: the first service gets this much, the last nothing.
 const RANK_BONUS: f64 = 0.03;
 /// A service that failed for a song is not asked about it again for this long.
@@ -206,7 +206,7 @@ impl Race {
     }
 
     /// Lyrics already on screen as `rank`'s answer: last time's choice.
-    pub fn shown_already(&mut self, rank: usize, lyrics: Lyrics, named: Named) {
+    pub(crate) fn shown_already(&mut self, rank: usize, lyrics: Lyrics, named: Named) {
         self.answer(rank, Some((lyrics, named)));
         self.shown = Some(rank);
     }
@@ -253,7 +253,7 @@ impl Race {
 
     /// What to put on screen now. With nothing shown: the leader once sure, once the first wave is in, or
     /// at the `last`. Otherwise the leader only when strictly better and agreeing, or far better.
-    pub fn to_show(&mut self, last: bool) -> Option<(usize, Lyrics)> {
+    pub(crate) fn to_show(&mut self, last: bool) -> Option<(usize, Lyrics)> {
         let scores = self.scores();
         let (leader, best) = Self::leader_in(&scores)?;
         let take = match self.shown {
@@ -289,13 +289,13 @@ impl Race {
     }
 
     /// The best of the rest.
-    pub fn runner_up(&self) -> Option<(usize, f64)> {
+    pub(crate) fn runner_up(&self) -> Option<(usize, f64)> {
         Self::best_of(&self.scores(), |r| Some(r) != self.shown)
     }
 }
 
 /// A sync check in the log: "sync 0.93 shifted +500 ms (sure 0.80), drift +0 ms".
-pub fn sync_words(c: &SyncCheck) -> String {
+pub(crate) fn sync_words(c: &SyncCheck) -> String {
     let kind = match c.kind {
         SyncKind::Unsure => "unsure",
         SyncKind::Fits => "fits",

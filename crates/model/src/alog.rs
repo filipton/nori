@@ -17,7 +17,7 @@ mod sys {
     use std::ffi::{c_char, c_int};
     #[link(name = "log")]
     extern "C" {
-        pub fn __android_log_write(prio: c_int, tag: *const c_char, text: *const c_char) -> c_int;
+        pub(crate) fn __android_log_write(prio: c_int, tag: *const c_char, text: *const c_char) -> c_int;
     }
 }
 
@@ -28,7 +28,7 @@ pub const KEPT: usize = 500;
 static LINES: Mutex<VecDeque<(i64, String)>> = Mutex::new(VecDeque::new());
 
 /// Size at which `nori.log` is rotated to `nori.log.1`.
-pub const JOURNAL_BYTES: u64 = 1 << 20;
+pub(crate) const JOURNAL_BYTES: u64 = 1 << 20;
 
 /// The on-disk log file, once [`alog_persist`] has run.
 struct Journal {
@@ -46,7 +46,7 @@ fn wall_ms() -> i64 {
 }
 
 /// `ms` since the epoch, `offset_min` east of UTC, as `2026-09-28 13:22:05.123`.
-pub fn local_time(ms: i64, offset_min: i64) -> String {
+pub(crate) fn local_time(ms: i64, offset_min: i64) -> String {
     let ms = ms + offset_min * 60_000;
     let (days, of_day) = (ms.div_euclid(86_400_000), ms.rem_euclid(86_400_000));
     // Howard Hinnant's civil_from_days.

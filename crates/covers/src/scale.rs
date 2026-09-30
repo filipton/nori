@@ -332,7 +332,7 @@ fn expand<const C: usize>(row: &[u8], out: &mut [u8]) {
 }
 
 /// Premultiplies in place, rounding like Android's `Bitmap.setPixels`. `c` is 2 (grey+alpha) or 4.
-pub fn premultiply(px: &mut [u8], c: usize) {
+pub(crate) fn premultiply(px: &mut [u8], c: usize) {
     for p in px.chunks_exact_mut(c) {
         let a = p[c - 1] as u32;
         if a != 255 {
@@ -344,7 +344,7 @@ pub fn premultiply(px: &mut [u8], c: usize) {
 }
 
 /// Converts premultiplied RGBA back to straight.
-pub fn unpremultiply(px: &mut [u8]) {
+pub(crate) fn unpremultiply(px: &mut [u8]) {
     for p in px.chunks_exact_mut(4) {
         let a = p[3] as u32;
         if a != 255 {

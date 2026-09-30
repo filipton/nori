@@ -126,7 +126,7 @@ fn artist_match(want: &str, hit: &str) -> u8 {
 /// title; a title matching only without edition words also needs a close track count (or year if the
 /// count is unknown), since another edition may have a different cover. Ranked by track count and
 /// year. A non-search answer is an error, so a failed request is not cached as "none".
-pub fn motion_album_candidates(json: String, artist: String, album: String, tracks: u32, year: u32) -> Result<Vec<String>> {
+pub(crate) fn motion_album_candidates(json: String, artist: String, album: String, tracks: u32, year: u32) -> Result<Vec<String>> {
     let v: Value = serde_json::from_str(&json).map_err(|e| unreadable(&e.to_string()))?;
     let results = v.get("results").and_then(Value::as_array).ok_or_else(|| unreadable("no results list"))?;
     let (want_exact, want_base) = (norm(&album), base(&album));
@@ -191,7 +191,7 @@ pub fn motion_album_candidates(json: String, artist: String, album: String, trac
 
 /// The square motion video's HLS URL from a catalogue album answer; None if the album has none. Only the
 /// square one aligns with the still cover; the tall one is a different framing.
-pub fn motion_square_video(json: String) -> Result<Option<String>> {
+pub(crate) fn motion_square_video(json: String) -> Result<Option<String>> {
     let v: Value = serde_json::from_str(&json).map_err(|e| unreadable(&e.to_string()))?;
     let album = v.get("data").and_then(Value::as_array).and_then(|d| d.first()).ok_or_else(|| unreadable("no album in the answer"))?;
     let Some(video) = album.get("attributes").and_then(|a| a.get("editorialVideo")) else {
@@ -205,7 +205,7 @@ pub fn motion_square_video(json: String) -> Result<Option<String>> {
 }
 
 /// The `/assets/index…js` script paths in a web player page, in order, deduplicated.
-pub fn motion_bundle_paths(html: String) -> Vec<String> {
+pub(crate) fn motion_bundle_paths(html: String) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut rest = html.as_str();
     while let Some(at) = rest.find("/assets/") {
@@ -249,7 +249,7 @@ fn b64(s: &str) -> Option<Vec<u8>> {
 
 /// The web player's developer token in a script: a JWT unexpired for another minute at `now_s`, issued
 /// by `AMPWebPlay` if any (other JWTs are refused by the catalogue), else the first readable one.
-pub fn motion_token(js: Vec<u8>, now_s: i64) -> Option<String> {
+pub(crate) fn motion_token(js: Vec<u8>, now_s: i64) -> Option<String> {
     let mut fallback: Option<String> = None;
     let mut i = 0;
     while i + 3 <= js.len() {

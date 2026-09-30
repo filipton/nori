@@ -320,14 +320,14 @@ impl Client {
 
 impl Client {
     /// The cached page for `read` (None if absent or unparseable) and whether it is fresh.
-    pub fn read_stored(&self, read: Read) -> NetResult<Stored> {
+    pub(crate) fn read_stored(&self, read: Read) -> NetResult<Stored> {
         let sp = spec(read);
         let fresh_ms = sp.fresh_ms;
         self.stored_for(sp, fresh_ms)
     }
 
     /// [`Client::read_stored`] with a custom freshness window (for cached reads only).
-    pub fn read_stored_within(&self, read: Read, fresh_ms: i64) -> NetResult<Stored> {
+    pub(crate) fn read_stored_within(&self, read: Read, fresh_ms: i64) -> NetResult<Stored> {
         let sp = spec(read);
         let fresh_ms = sp.fresh_ms.map(|_| fresh_ms);
         self.stored_for(sp, fresh_ms)
@@ -350,7 +350,7 @@ impl Client {
 
     /// Asks the server; returns the page only if it differs from `stored_digest`, and re-caches it either
     /// way (restarting the window). Uncached reads always return their page.
-    pub async fn read_fetch(&self, read: Read, stored_digest: Option<u64>) -> NetResult<Option<Page>> {
+    pub(crate) async fn read_fetch(&self, read: Read, stored_digest: Option<u64>) -> NetResult<Option<Page>> {
         let sp = spec(read);
         if sp.fresh_ms.is_none() {
             let body = self.fetch(sp.endpoint, sp.params).await?;

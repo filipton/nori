@@ -31,7 +31,7 @@ pub fn round(x: f32) -> i32 {
 }
 
 /// `ColorUtils.RGBToHSL`: hue in degrees, saturation and lightness 0..1.
-pub fn rgb_to_hsl(r: i32, g: i32, b: i32) -> [f32; 3] {
+pub(crate) fn rgb_to_hsl(r: i32, g: i32, b: i32) -> [f32; 3] {
     let (rf, gf, bf) = (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
     let max = rf.max(gf.max(bf));
     let min = rf.min(gf.min(bf));
@@ -63,7 +63,7 @@ pub fn color_to_hsl(c: u32) -> [f32; 3] {
 }
 
 /// `ColorUtils.HSLToColor`.
-pub fn hsl_to_color(hsl: [f32; 3]) -> u32 {
+pub(crate) fn hsl_to_color(hsl: [f32; 3]) -> u32 {
     let [h, s, l] = hsl;
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
     let m = l - 0.5 * c;
@@ -82,7 +82,7 @@ pub fn hsl_to_color(hsl: [f32; 3]) -> u32 {
 }
 
 /// `ColorUtils.calculateLuminance`: relative luminance 0..1.
-pub fn calculate_luminance(c: u32) -> f64 {
+pub(crate) fn calculate_luminance(c: u32) -> f64 {
     fn lin(v: i32) -> f64 {
         let s = v as f64 / 255.0;
         if s < 0.04045 {
@@ -107,7 +107,7 @@ fn composite_component(fg_c: i32, fg_a: i32, bg_c: i32, bg_a: i32, a: i32) -> i3
 }
 
 /// `ColorUtils.compositeColors`: `fg` over `bg`.
-pub fn composite_colors(fg: u32, bg: u32) -> u32 {
+pub(crate) fn composite_colors(fg: u32, bg: u32) -> u32 {
     let (bga, fga) = (alpha(bg), alpha(fg));
     let a = composite_alpha(fga, bga);
     argb(
@@ -119,7 +119,7 @@ pub fn composite_colors(fg: u32, bg: u32) -> u32 {
 }
 
 /// `ColorUtils.calculateContrast`: the WCAG contrast ratio, 1..21. `bg` must be opaque.
-pub fn calculate_contrast(fg: u32, bg: u32) -> f64 {
+pub(crate) fn calculate_contrast(fg: u32, bg: u32) -> f64 {
     let fg = if alpha(fg) < 255 { composite_colors(fg, bg) } else { fg };
     let l1 = calculate_luminance(fg) + 0.05;
     let l2 = calculate_luminance(bg) + 0.05;
@@ -127,7 +127,7 @@ pub fn calculate_contrast(fg: u32, bg: u32) -> f64 {
 }
 
 /// `ColorUtils.blendARGB`: `ratio` 0 is `a`, 1 is `b`.
-pub fn blend_argb(a: u32, b: u32, ratio: f32) -> u32 {
+pub(crate) fn blend_argb(a: u32, b: u32, ratio: f32) -> u32 {
     let inv = 1.0 - ratio;
     let al = alpha(a) as f32 * inv + alpha(b) as f32 * ratio;
     let r = red(a) as f32 * inv + red(b) as f32 * ratio;
@@ -151,7 +151,7 @@ pub fn luminance(c: u32) -> f32 {
 }
 
 /// Compose's opaque `Color(red, green, blue)`.
-pub fn from_floats(r: f32, g: f32, b: f32) -> u32 {
+pub(crate) fn from_floats(r: f32, g: f32, b: f32) -> u32 {
     crate::compose::from_floats_a(r, g, b, 1.0)
 }
 

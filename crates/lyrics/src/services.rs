@@ -37,7 +37,7 @@ const PAXSENIX_REQUEST_MS: u32 = 15_000;
 const LEAST_MS: u64 = 250;
 
 /// How long one service may take over one song, all its requests together.
-pub fn deadline_ms(service: LyricsService) -> u64 {
+pub(crate) fn deadline_ms(service: LyricsService) -> u64 {
     match service {
         LyricsService::PaxsenixSpotify | LyricsService::PaxsenixMusixmatch => 2 * PAXSENIX_REQUEST_MS as u64,
         _ => 12_000,

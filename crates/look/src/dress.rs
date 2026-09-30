@@ -94,7 +94,7 @@ pub const FLOOR_75: usize = 51;
 pub const LEN: usize = 52;
 
 /// Entries that are not colours (mixed as numbers).
-pub const NOT_COLOURS: [usize; 6] = [PAPER, STATUS_LIGHT, BAND_TINT, BAND_KR, BAND_KG, BAND_KB];
+pub(crate) const NOT_COLOURS: [usize; 6] = [PAPER, STATUS_LIGHT, BAND_TINT, BAND_KR, BAND_KG, BAND_KB];
 
 /// Play pill on paper, and ink on a light accent.
 const PILL_ON_PAPER: u32 = 0xFF1A_1A1A;

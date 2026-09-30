@@ -108,7 +108,7 @@ fn lay(line: &mut Timed, backing: &mut Timed, syls: &[Syl], timed: bool) {
 /// LyricsPlus' `/v2/lyrics/get`: `{type, lyrics: [{time, duration, text, syllabus: [{time, duration,
 /// text, isBackground}]}]}` in ms. `type` "Line" times lines only; a lone zero-length syllable is the
 /// line's own time.
-pub fn from_lyricsplus(json: &str) -> Lyrics {
+pub(crate) fn from_lyricsplus(json: &str) -> Lyrics {
     parse(json).and_then(|v| lyricsplus(&v)).unwrap_or_default()
 }
 
@@ -424,7 +424,7 @@ fn from_value(v: &Value, title: &str, depth: usize) -> Option<Lyrics> {
 
 /// Any service's answer, whose shape relays (PaxSenix, BetterLyrics) do not name: known shapes by their
 /// structure, then the [`FIELDS`] (through JSON envelopes), text formats by their look. The best timed wins.
-pub fn from_provider(body: &str, title: &str) -> Lyrics {
+pub(crate) fn from_provider(body: &str, title: &str) -> Lyrics {
     let t = body.trim_start_matches('\u{feff}').trim();
     if t.is_empty() || t.len() > 8 << 20 {
         return Lyrics::default();
@@ -498,7 +498,7 @@ fn collect_tracks(v: &Value, out: &mut Vec<FoundTrack>, depth: usize) {
 
 /// The tracks of a search answer of any shape: every object with an id and a name (Apple's `attributes`
 /// included), not descending into a track's own album and artists.
-pub fn found_tracks(json: &str) -> Vec<FoundTrack> {
+pub(crate) fn found_tracks(json: &str) -> Vec<FoundTrack> {
     let mut out = Vec::new();
     if let Some(v) = parse(json) {
         collect_tracks(&v, &mut out, 0);
@@ -522,7 +522,7 @@ const ROW_TYPES: &[&str] = &["song", "video", "single", "ep", "album", "episode"
 
 /// The songs of a YouTube Music search, in order: video id, title, artists (runs linking to an artist,
 /// else the first part of the second line) and length.
-pub fn youtube_songs(json: &str) -> Vec<FoundTrack> {
+pub(crate) fn youtube_songs(json: &str) -> Vec<FoundTrack> {
     let Some(v) = parse(json) else { return Vec::new() };
     let mut out: Vec<FoundTrack> = Vec::new();
     for r in all(&v, "musicResponsiveListItemRenderer") {
@@ -577,7 +577,7 @@ pub struct YoutubePage {
 }
 
 /// The lyrics tab of a `next` answer: the tab titled "Lyrics", else a `MPLYt…` page; none without lyrics.
-pub fn youtube_lyrics_page(json: &str) -> Option<YoutubePage> {
+pub(crate) fn youtube_lyrics_page(json: &str) -> Option<YoutubePage> {
     let v = parse(json)?;
     let page = |e: &Map<String, Value>| {
         Some(YoutubePage { browse_id: e.get("browseId")?.as_str()?.to_string(), params: e.get("params").and_then(Value::as_str).map(str::to_string) })
@@ -593,7 +593,7 @@ pub fn youtube_lyrics_page(json: &str) -> Option<YoutubePage> {
 }
 
 /// The lyrics a YouTube Music lyrics page shows: the text of its description shelf, not timed.
-pub fn from_youtube_music(json: &str) -> Lyrics {
+pub(crate) fn from_youtube_music(json: &str) -> Lyrics {
     let Some(v) = parse(json) else { return Lyrics::default() };
     all(&v, "musicDescriptionShelfRenderer")
         .into_iter()
@@ -637,7 +637,7 @@ fn caption(text: &str) -> String {
 
 /// A YouTube video's captions, line-timed: `get_transcript`'s cues or segments, or `json3` events. Word
 /// offsets in captions time speech recognition, not singing, so they are not used.
-pub fn from_youtube_captions(json: &str) -> Lyrics {
+pub(crate) fn from_youtube_captions(json: &str) -> Lyrics {
     let Some(v) = parse(json) else { return Lyrics::default() };
     let mut cues: Vec<(i64, Option<i64>, String)> = Vec::new();
     for c in all(&v, "transcriptCueRenderer") {

@@ -35,7 +35,7 @@ pub fn seek_step(bar: f32, target: f32, dt_s: f32, width_px: f32, speed: f32) ->
 }
 
 /// Glide and cross-fade duration after a jump (new song, seek, crossfade handover).
-pub const GLIDE_S: f32 = 0.32;
+pub(crate) const GLIDE_S: f32 = 0.32;
 /// A move this many pixels beyond normal playback progress counts as a jump and glides.
 const JUMP_PX: f32 = 3.0;
 /// A position this far from the predicted one cross-fades the time labels.

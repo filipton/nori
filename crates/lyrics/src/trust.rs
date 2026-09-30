@@ -70,7 +70,7 @@ pub(crate) fn latin(v: &str) -> bool {
 
 /// How alike two names are, 0 to 1: equal once cleaned and normalised 1, one containing the other 0.85,
 /// else by shared words; names in two scripts are [`UNKNOWN`].
-pub fn name_alike(a: &str, b: &str) -> f64 {
+pub(crate) fn name_alike(a: &str, b: &str) -> f64 {
     let (x, y) = (norm(&clean(a)), norm(&clean(b)));
     let (x, y) = if x.is_empty() || y.is_empty() { (norm(a), norm(b)) } else { (x, y) };
     if x.is_empty() || y.is_empty() {
@@ -225,7 +225,7 @@ const POOR_FIT: f64 = 0.1;
 
 /// `t` with the sync check weighed in ([`W_SYNC`], less [`DRIFTS`] or [`POOR_FIT`]); no or an unsure
 /// check leaves it as it was.
-pub fn with_sync(mut t: Trust, check: Option<&SyncCheck>) -> Trust {
+pub(crate) fn with_sync(mut t: Trust, check: Option<&SyncCheck>) -> Trust {
     let Some(c) = check.filter(|c| c.kind != SyncKind::Unsure) else { return t };
     let off = match c.kind {
         SyncKind::Drifts => DRIFTS,

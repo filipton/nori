@@ -39,7 +39,7 @@ impl Core {
 
 impl Core {
     /// Listening stats of the last `days` days (0: all).
-    pub fn stats_days(&self, days: u32) -> Result<ListeningStats> {
+    pub(crate) fn stats_days(&self, days: u32) -> Result<ListeningStats> {
         let now = db::now_ms();
         let from = if days == 0 { 0 } else { now - days as i64 * DAY_MS };
         Ok(history::summary(&self.db.lock(), from, now, STATS_TOP)?)

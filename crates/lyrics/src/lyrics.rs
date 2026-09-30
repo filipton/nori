@@ -138,7 +138,7 @@ fn stamp(tag: &str) -> Option<i64> {
 
 /// LRC, or plain text when it has no timestamps. A line with several timestamps repeats; `[offset:]` is
 /// applied; other tags are skipped.
-pub fn from_lrc(text: &str) -> Lyrics {
+pub(crate) fn from_lrc(text: &str) -> Lyrics {
     let mut lines: Vec<Line> = Vec::new();
     let mut offset = 0i64;
     for raw in text.lines() {
