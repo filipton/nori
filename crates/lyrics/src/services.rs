@@ -935,7 +935,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn better_lyrics_401_is_a_miss_and_host_moves_when_unreachable() {
+    fn better_lyrics_host_fallback() {
         let web = Web::default();
         web.answer("https://api.betterlyrics.org/getLyrics", 401, "");
         assert_eq!(asking(&web, LyricsService::BetterLyrics), Lookup::Missing);

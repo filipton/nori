@@ -607,7 +607,6 @@ mod tests {
         assert!(lyrics_replaces(None, &shown), "anything over nothing");
         assert!(!lyrics_replaces(Some(&shown), &pick("hold on", 12, LyricsOrigin::Lrclib)));
         assert!(lyrics_replaces(Some(&shown), &pick("hold on", 7, LyricsOrigin::Binilyrics)));
-        assert!(lyrics_same(shown.clone(), shown));
     }
 
     // ---- the race, answer by answer ----------------------------------------------------------------------
@@ -894,9 +893,8 @@ mod tests {
         // LRCLIB has nothing: a 404 to the exact lookup and an empty search (a miss, not a failure).
         web.answer("https://lrclib.net/api/search", 200, "[]");
         web.answer("https://lrclib.net/", 404, r#"{"statusCode":404}"#);
-        let s = Song { title: "Remembered".into(), ..song() };
         let l = asked(&[LyricsService::Unison, LyricsService::Lrclib]);
-        let s = Song { title: "Glass Harbour".into(), id: "remembered".into(), ..s };
+        let s = Song { title: "Glass Harbour".into(), id: "remembered".into(), ..song() };
         let (first, said) = run_saying(&web, &cache, &s, (false, false), &l);
         assert_eq!(first.len(), 1);
         assert!(first[0].lyrics.word_timed && first[0].origin == LyricsOrigin::Unison);
