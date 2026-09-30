@@ -689,28 +689,4 @@ mod tests {
         assert_eq!(s.ratio0, MAX_RATIO);
     }
 
-    /// `cargo test --release -p nori-player stretch_cost -- --ignored --nocapture`
-    #[test]
-    #[ignore]
-    fn stretch_cost() {
-        let x: Vec<f32> = (0..44100 * 30).flat_map(|i| {
-            let v = (0.3 * (2.0 * std::f64::consts::PI * 220.0 * i as f64 / 44100.0).sin() + 0.05 * ((i * 7919 % 1000) as f64 / 1000.0 - 0.5)) as f32;
-            [v, v * 0.9]
-        }).collect();
-        for keep in [true, false] {
-            let mut s = Stretcher::new(44100, 2, keep);
-            s.configure(1.05, u64::MAX / 4, 0);
-            let mut buf = vec![0f32; 4096 * 2];
-            let t = std::time::Instant::now();
-            let mut pos = 0;
-            while pos < x.len() {
-                let end = (pos + 1024 * 2).min(x.len());
-                let (u, _) = s.process(&x[pos..end], &mut buf);
-                pos += u * 2;
-            }
-            let per_s = t.elapsed().as_secs_f64() / 30.0;
-            println!("{}: {:.2} ms CPU per second of audio ({:.2} % of one core), latency {} frames",
-                if keep { "signalsmith (cheaper preset)" } else { "varispeed" }, per_s * 1000.0, per_s * 100.0, s.latency_frames());
-        }
-    }
 }

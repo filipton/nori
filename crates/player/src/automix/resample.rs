@@ -501,25 +501,6 @@ mod tests {
         assert!((amp - 0.5).abs() < 1e-4 && (resid * amp / 2f64.sqrt() / floor - 1.0).abs() < 0.2, "{amp} {resid}");
     }
 
-    /// `cargo test --release -p nori-player --lib resample_cost -- --ignored --nocapture`
-    #[test]
-    #[ignore]
-    fn resample_cost() {
-        for (a, b) in [(44100u32, 48000u32), (48000, 44100), (96000, 48000), (192000, 44100), (44100, 47999)] {
-            let secs = 20usize;
-            let x: Vec<u8> = (0..a as usize * secs * 2).flat_map(|i| (((i as f64 * 0.001).sin() * 10000.0) as i16).to_le_bytes()).collect();
-            let mut r = Resampler::new(a as i32, 2, b as i32, 2).unwrap();
-            let mut out = vec![0u8; 1 << 16];
-            let t = std::time::Instant::now();
-            for c in x.chunks(16384) {
-                r.process(c, PCM_16, &mut out, PCM_16).unwrap();
-            }
-            let ms = t.elapsed().as_secs_f64() * 1000.0 / secs as f64;
-            eprintln!("{a} -> {b}: {ms:.2} ms per second of stereo ({} taps)", table(a, b).taps);
-            std::hint::black_box(&out);
-        }
-    }
-
     #[test]
     fn nonsense_is_refused() {
         assert!(Resampler::new(0, 2, 44100, 2).is_none());

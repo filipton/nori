@@ -698,25 +698,4 @@ mod tests {
         }
     }
 
-    /// Mixer cost, 44.1 kHz stereo, everything on. `cargo test --release -p nori-player mixer_cost -- --ignored --nocapture`
-    #[test]
-    #[ignore]
-    fn mixer_cost() {
-        let mut p = plan();
-        p.duration_ms = 30_000;
-        p.bass_swap = Some(crate::types::BassSwap { at_ms: 15_000, len_ms: 500, cut_hz: 180.0 });
-        p.low_pass = Some(Sweep { start_ms: 15_000, end_ms: 30_000, from_hz: 18_000.0, to_hz: 300.0 });
-        p.high_pass = Some(Sweep { start_ms: 15_000, end_ms: 22_000, from_hz: 200.0, to_hz: 2_000.0 });
-        p.vocal_duck = Some(VocalDuck { until_ms: 15_000, release_ms: 500, db: -18.0, hz: 1_000.0 });
-        let mut m = Mixer::new(44100, 2);
-        m.configure(&p);
-        let mut a: Vec<i16> = (0..44100 * 30 * 2).map(|i| ((i * 7919) % 20000) as i16 - 10000).collect();
-        let b = a.clone();
-        let t = std::time::Instant::now();
-        for (a, b) in a.chunks_mut(4096).zip(b.chunks(4096)) {
-            m.process(a, b);
-        }
-        let per_s = t.elapsed().as_secs_f64() / 30.0;
-        println!("mixer: {:.3} ms CPU per second of audio ({:.3} % of one core)", per_s * 1000.0, per_s * 100.0);
-    }
 }

@@ -427,76 +427,12 @@ mod tests {
         assert_ne!(st.voice, mono.voice, "a sound 6 dB to one side counts less");
     }
 
-    /// `cargo test --release -p nori-player vocal_cost -- --ignored --nocapture`: the curve's cost, best of five.
+    /// The curve tells sung from unsung over every corpus song with a voice.
     #[test]
-    #[ignore]
-    fn vocal_cost() {
-        use rustfft::FftPlanner;
-        let song = Song { sections: vec![(8, FULL), (48, SUNG), (32, FULL), (32, SUNG)], ..Song::new("cost", Style::Backbeat, 120.0, 2, false) };
-        let (x, _) = song.render();
-        let secs = x.len() as f64 / song.rate as f64;
-        let mono: Vec<f32> = x.as_chunks::<2>().0.iter().map(|p| (p[0] + p[1]) / 2.0).collect();
-        let (n, hop, sr) = (1024usize, 256usize, song.rate as f64 / 2.0);
-        let fft = FftPlanner::<f32>::new().plan_fft_forward(n);
-        let win: Vec<f32> = (0..n).map(|i| (0.5 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / n as f64).cos()) as f32).collect();
-        let mut buf = vec![Complex32::default(); n];
-        let mut scratch = vec![Complex32::default(); fft.get_inplace_scratch_len()];
-        let mut run = |with: bool| {
-            let mut t = Tracker::new(n, hop, sr, 2.0 / win.iter().sum::<f32>(), mono.len() / hop);
-            let start = std::time::Instant::now();
-            let mut k = n;
-            while k <= mono.len() {
-                for (o, (s, w)) in buf.iter_mut().zip(mono[k - n..k].iter().zip(&win)) {
-                    *o = Complex32::new(s * w, 0.0);
-                }
-                fft.process_with_scratch(&mut buf, &mut scratch);
-                if with {
-                    t.frame(&buf);
-                }
-                k += hop;
-            }
-            std::hint::black_box(t.take());
-            start.elapsed().as_secs_f64() * 1000.0
-        };
-        let best = |r: &mut dyn FnMut() -> f64| (0..5).map(|_| r()).fold(f64::MAX, f64::min);
-        let without = best(&mut || run(false));
-        let with = best(&mut || run(true));
-        let mut whole = || {
-            let t = std::time::Instant::now();
-            let mut a = Analyzer::new(song.rate, 0);
-            a.feed(&x);
-            std::hint::black_box(a.take_features());
-            t.elapsed().as_secs_f64() * 1000.0
-        };
-        let analysis = best(&mut whole);
-        println!(
-            "{secs:.0} s song: FFT loop {without:.1} ms, with the curve {with:.1} ms: the curve costs {:.1} ms ({:.2} ms a minute), the whole front end {analysis:.1} ms",
-            with - without,
-            (with - without) / secs * 60.0
-        );
-        // The stereo middle: channels alike (mono path) against panned.
-        let feed = |x: &[f32]| {
-            let t = std::time::Instant::now();
-            let mut a = Analyzer::new(song.rate, 0);
-            a.feed_interleaved(x, 2, |v| v);
-            std::hint::black_box(a.take_features());
-            t.elapsed().as_secs_f64() * 1000.0
-        };
-        let alike: Vec<f32> = x.iter().flat_map(|v| [*v, *v]).collect();
-        let panned: Vec<f32> = x.iter().flat_map(|v| [*v * 1.3, *v * 0.7]).collect();
-        let (m, s) = (best(&mut || feed(&alike)), best(&mut || feed(&panned)));
-        println!("front end fed stereo: channels alike {m:.1} ms, panned {s:.1} ms: the middle costs {:.1} ms ({:.0} %)", s - m, (s - m) / m * 100.0);
-    }
-
-    /// `cargo test --release -p nori-player vocal_curve_eval -- --ignored --nocapture`: AUC per corpus song.
-    #[test]
-    #[ignore]
-    fn vocal_curve_eval() {
+    fn vocal_curve_separates_voices() {
         let songs: Vec<Song> = corpus_all().into_iter().filter(|s| s.sections.iter().any(|x| x.1.voice)).collect();
         let got: Vec<f64> = std::thread::scope(|sc| songs.iter().map(|s| sc.spawn(move || separation(s))).collect::<Vec<_>>().into_iter().map(|h| h.join().unwrap()).collect());
-        for (s, a) in songs.iter().zip(&got) {
-            println!("{:<20} AUC {a:.3}", s.name);
-        }
-        println!("mean AUC {:.3}", got.iter().sum::<f64>() / got.len() as f64);
+        let mean = got.iter().sum::<f64>() / got.len() as f64;
+        assert!(mean >= 0.98 && got.iter().all(|&a| a >= 0.9), "AUC {got:?}");
     }
 }
