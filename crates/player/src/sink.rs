@@ -346,21 +346,8 @@ impl<T: Track> Sink<T> {
         self.paces.push_back((self.submitted_frames, self.pace));
     }
 
-    /// Song frames since the last flush at clock time `pts_us` (as [`Track::played_media`] counts);
-    /// `None` before the first buffer.
-    pub fn media_frames(&self, pts_us: i64) -> Option<f64> {
-        let f = self.format.filter(|_| !self.needs_init)?;
-        Some((pts_us - self.start_media_us) as f64 * f.rate as f64 / 1_000_000.0)
-    }
-
     pub fn queued_us(&self) -> i64 {
         self.format.map_or(0, |f| f.us(self.track.queued_bytes()))
-    }
-
-    /// Track buffer size, bytes.
-    #[cfg(any(test, feature = "synth"))]
-    pub fn buffer_bytes(&self) -> usize {
-        self.format.map_or(0, |f| f.bytes(self.capacity_us))
     }
 
     /// Builds the chain for the format and settings.
@@ -395,11 +382,6 @@ impl<T: Track> Sink<T> {
     /// The compressor's largest gain reduction in the last buffer, dB; 0 without one.
     pub fn compression_db(&self) -> f32 {
         self.runner.chain.eq.as_ref().map_or(0.0, |e| e.compression_db())
-    }
-
-    /// The silence skipper's format while it is active.
-    pub fn skipping_silence(&self) -> Option<Format> {
-        self.format.filter(|_| self.runner.chain.silence.is_some())
     }
 
     /// New settings, heard from the first frame the track can still replace. Returns where they start:

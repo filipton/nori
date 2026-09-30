@@ -758,7 +758,7 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
 
     /// The reader moved past `cur` into a song that no longer follows it (queue edited after the
     /// ending was made).
-    pub fn read_astray(&self, cur: usize) -> bool {
+    fn read_astray(&self, cur: usize) -> bool {
         let Some(r) = self.reading.as_ref().map(|r| r.index).or(self.opening.as_ref().map(|o| o.index)) else { return false };
         r != cur && Some(r) != self.next_of(cur)
     }
@@ -873,17 +873,9 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         self.engine.heard().mixing
     }
 
-    /// [`Player::ear`] with the clock read now (the last turn may have been a burst ago).
-    pub fn ear_now(&mut self) -> Option<(usize, i64)> {
-        if self.playing && self.current.is_some() {
-            self.follow_clock();
-        }
-        self.ear()
-    }
-
     /// The audible song and position, ms, as of the last turn. During a held ending that is the
     /// previous song, although `current` has moved on.
-    pub fn ear(&mut self) -> Option<(usize, i64)> {
+    fn ear(&mut self) -> Option<(usize, i64)> {
         let current = self.current?;
         if self.engine.heard().id.is_some() {
             if let Some(i) = self.bar().index {
@@ -899,7 +891,7 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
     /// How song `cur`'s ending was already made: `Some(plan)` once a hold began or its last buffer went
     /// out (`Some(None)`: gapless), also `Some(None)` while still reading it past `start_us`. `None`
     /// while a plan starting at `start_us` can still be taken up.
-    pub fn ending_made(&self, cur: usize, start_us: Option<i64>) -> Option<Option<crate::engine::Plan>> {
+    fn ending_made(&self, cur: usize, start_us: Option<i64>) -> Option<Option<crate::engine::Plan>> {
         let reading = self.reading.as_ref().filter(|r| r.index == cur);
         if let Some(made) = self.serial_at(cur).and_then(|s| self.engine.made(s)) {
             if self.engine.holding() || reading.is_none() {
