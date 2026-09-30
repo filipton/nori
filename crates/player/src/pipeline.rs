@@ -641,7 +641,9 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         self.call(|e, _, a| e.flush(a));
         self.burst.restart();
         self.sink.flush();
-        self.begin(i, ms, offset, r);
+        if self.begin(i, ms, offset, r) {
+            self.set_current(i);
+        }
     }
 
     /// New chain settings, heard from the first frame the output can still replace.
