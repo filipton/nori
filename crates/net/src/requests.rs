@@ -73,6 +73,13 @@ pub enum Write {
     SaveQueue { ids: Vec<String>, current: Option<String>, position_ms: i64 },
 }
 
+impl Write {
+    /// Whether the server getting it twice changes nothing more.
+    pub fn repeatable(&self) -> bool {
+        !matches!(self, Write::CreatePlaylist { .. } | Write::AddToPlaylist { .. } | Write::RemoveFromPlaylist { .. } | Write::CreateRadio { .. })
+    }
+}
+
 /// Cached answers a star change makes stale, as key prefixes (keys are the endpoint then `&k=v` each, so
 /// `getAlbum&` is an album page and not an album list).
 const STAR_STALE: [&str; 5] = ["getStarred2", "getAlbum&", "getArtist&", "getPlaylist&", "getAlbumList2&type=starred"];

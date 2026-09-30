@@ -7,7 +7,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 use crate::transport::{self, FailureKind, NetError, Transport};
-use crate::{Core, IngestStats, ServerConfig};
+use crate::{Core, CoreError, IngestStats, ServerConfig};
 
 pub use nori_net::requests::{NetProfile, NetResult, Starrable, SyncStep, Write};
 pub(crate) use nori_net::requests::{blank, pairs, request, FOLDERED};
@@ -75,22 +75,6 @@ impl Client {
         }
     }
 
-    /// Sends a write, or queues it for replay on an I/O failure (reported as success). Evicts the `stale`
-    /// cache prefixes either way.
-    pub(crate) async fn write_raw(&self, endpoint: &str, params: Vec<(String, String)>, stale: &[&str]) -> NetResult<()> {
-        match self.fetch(endpoint, params.clone()).await {
-            Ok(body) => {
-                self.core.parse_status(body)?;
-                self.flush_pending().await?;
-            }
-            Err(e) if e.is_io() => self.core.pending_add(endpoint, &params)?,
-            Err(e) => return Err(e),
-        }
-        for s in stale {
-            self.core.cache_evict(s.to_string())?;
-        }
-        Ok(())
-    }
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
@@ -151,8 +135,8 @@ impl Client {
         }
     }
 
-    /// Replays queued writes in order until none are left, stopping at the first network failure; rejected
-    /// writes are dropped. While one replay runs, another returns at once: the running one sends what was
+    /// Replays queued writes in order until none are left, stopping at the first network failure or an
+    /// answer that is not the server's (a captive portal's page); writes the server rejects are dropped. While one replay runs, another returns at once: the running one sends what was
     /// queued meanwhile too.
     pub async fn flush_pending(&self) -> NetResult<()> {
         if self.replaying.swap(true, Ordering::Acquire) {
@@ -171,12 +155,10 @@ impl Client {
                 return Ok(());
             }
             for p in queued {
-                match self.get(&p.endpoint, &p.params).await {
+                match self.get(&p.endpoint, &p.params).await.map(|body| self.core.parse_status(body)) {
                     Err(e) if e.is_io() => return Ok(()),
-                    Ok(body) => {
-                        let _ = self.core.parse_status(body);
-                    }
-                    Err(_) => {}
+                    Ok(Err(CoreError::Parse { .. })) => return Ok(()),
+                    _ => {}
                 }
                 self.core.pending_done(p.row_id)?;
             }
@@ -229,10 +211,29 @@ pub use nori_db::{db_file_name, db_forget_server, DB_FILE};
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Client {
-    /// Sends one change, or queues it while the server is unreachable.
+    /// Sends one change, or queues it (reported as success) while the server is unreachable. Behind
+    /// queued changes it is queued too, so the server gets them in order. A change that must not reach
+    /// the server twice is queued only when the failure shows nothing was sent. Evicts the change's stale
+    /// cache prefixes when sent or queued.
     pub async fn write(&self, w: Write) -> NetResult<()> {
+        let repeatable = w.repeatable();
         let (endpoint, params, stale) = request(w);
-        self.write_raw(endpoint, params, stale).await
+        if self.core.pending_any()? {
+            self.core.pending_add(endpoint, &params)?;
+            self.flush_pending().await?;
+        } else {
+            match self.fetch(endpoint, params.clone()).await {
+                Ok(body) => {
+                    self.core.parse_status(body)?;
+                }
+                Err(e) if e.nothing_sent() || (repeatable && e.is_io()) => self.core.pending_add(endpoint, &params)?,
+                Err(e) => return Err(e),
+            }
+        }
+        for s in stale {
+            self.core.cache_evict(s.to_string())?;
+        }
+        Ok(())
     }
 }
 
@@ -399,16 +400,36 @@ pub(crate) mod tests {
         assert_eq!(c.core.pending_list().unwrap().len(), 2);
         assert_eq!(c.core.cache_get("getPlaylist&id=1".into()).unwrap(), None, "evicted even when queued");
 
-        // Online: the new write, then the queue in order; the rejected one is dropped.
-        fake.answer(OK);
+        // Online: the queue in order, then the new write; the rejected one is dropped.
         fake.answer(r#"{"subsonic-response":{"status":"failed","error":{"code":70,"message":"gone"}}}"#);
+        fake.answer(OK);
         fake.answer(OK);
         block(c.write(Write::Star { kind: Starrable::Album, id: "al".into(), on: true })).unwrap();
         let asked = fake.asked();
-        assert!(asked[2].contains("/rest/star?") && asked[2].ends_with("&albumId=al"));
-        assert!(asked[3].contains("/rest/updatePlaylist?") && asked[3].ends_with("&playlistId=1&songIdToAdd=a&songIdToAdd=b"));
-        assert!(asked[4].contains("/rest/scrobble?") && asked[4].ends_with("&id=s&submission=true&time=5"));
+        assert!(asked[2].contains("/rest/updatePlaylist?") && asked[2].ends_with("&playlistId=1&songIdToAdd=a&songIdToAdd=b"));
+        assert!(asked[3].contains("/rest/scrobble?") && asked[3].ends_with("&id=s&submission=true&time=5"));
+        assert!(asked[4].contains("/rest/star?") && asked[4].ends_with("&albumId=al"));
         assert!(c.core.pending_list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_change_that_may_have_arrived_is_not_queued_twice() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        fake.fail(FailureKind::Timeout);
+        assert!(block(c.write(Write::AddToPlaylist { id: "1".into(), song_ids: vec!["a".into()] })).is_err());
+        fake.fail(FailureKind::Timeout);
+        block(c.write(Write::Star { kind: Starrable::Song, id: "s".into(), on: true })).unwrap();
+        let queued: Vec<String> = c.core.pending_list().unwrap().into_iter().map(|p| p.endpoint).collect();
+        assert_eq!(queued, ["star"]);
+    }
+
+    #[test]
+    fn a_portal_page_keeps_the_queue() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        c.core.pending_add("star", &[]).unwrap();
+        fake.answer("<html>sign in</html>");
+        block(c.flush_pending()).unwrap();
+        assert_eq!(c.core.pending_list().unwrap().len(), 1);
     }
 
     #[test]

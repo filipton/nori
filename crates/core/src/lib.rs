@@ -666,6 +666,10 @@ impl Core {
         Ok(())
     }
 
+    pub(crate) fn pending_any(&self) -> Result<bool> {
+        Ok(self.db.lock().query_row("SELECT EXISTS(SELECT 1 FROM pending WHERE server=sid())", [], |r| r.get(0))?)
+    }
+
     pub(crate) fn pending_list(&self) -> Result<Vec<PendingCall>> {
         let c = self.db.lock();
         let mut st = c.prepare_cached("SELECT rowid, endpoint, params FROM pending WHERE server=sid() ORDER BY rowid LIMIT 200")?;

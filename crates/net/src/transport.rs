@@ -143,6 +143,14 @@ impl NetError {
     }
 }
 
+impl NetError {
+    /// The request never left: the next try cannot be a repeat.
+    pub fn nothing_sent(&self) -> bool {
+        use FailureKind::*;
+        matches!(self, NetError::Transport { kind: UnknownHost | Connect | NoRoute | Metered | Cleartext | Tls, .. })
+    }
+}
+
 impl fmt::Display for NetError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
