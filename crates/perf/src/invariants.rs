@@ -426,6 +426,13 @@ fn with_watch<R>(f: impl FnOnce(&mut Watch) -> R) -> R {
 }
 
 /// Reports a break: log, perf timeline, recent log lines, and the self test's list.
+/// With the watch on, asks it `f` and reports any break.
+fn judge(wall_ms: i64, f: impl FnOnce(&mut Watch) -> Option<Break>) {
+    if on() {
+        said(wall_ms, with_watch(f));
+    }
+}
+
 fn said(t: i64, b: Option<Break>) {
     let Some(b) = b else { return };
     let line = b.line();
@@ -554,33 +561,25 @@ pub fn track_seen(now_ms: i64, playing: bool, written: u64, presented: u64, rate
 /// The player service arrived on song `id`.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_watch_heard(wall_ms: i64, id: String) {
-    if on() {
-        said(wall_ms, with_watch(|w| w.heard(wall_ms, &id)));
-    }
+    judge(wall_ms, |w| w.heard(wall_ms, &id));
 }
 
 /// The player screen shows song `id`.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_watch_shown(wall_ms: i64, id: Option<String>) {
-    if on() {
-        said(wall_ms, with_watch(|w| w.shown(wall_ms, id.as_deref())));
-    }
+    judge(wall_ms, |w| w.shown(wall_ms, id.as_deref()));
 }
 
 /// The screen became visible or hidden.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_watch_visible(wall_ms: i64, visible: bool) {
-    if on() {
-        said(wall_ms, with_watch(|w| w.visible(wall_ms, visible)));
-    }
+    judge(wall_ms, |w| w.visible(wall_ms, visible));
 }
 
 /// Any other platform wake: compares screen and playback now.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_watch_look(wall_ms: i64) {
-    if on() {
-        said(wall_ms, with_watch(|w| w.compare(wall_ms)));
-    }
+    judge(wall_ms, |w| w.compare(wall_ms));
 }
 
 /// A seek bar draw (the caller checks [`on`]); see [`Watch::place`]. `now_ms` is monotonic.
@@ -602,17 +601,13 @@ pub fn perf_watch_skip(wall_ms: i64, index: i64) {
 /// The player arrived on queue index `index`.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_watch_arrived(wall_ms: i64, index: i64, auto: bool, shuffled: bool) {
-    if on() {
-        said(wall_ms, with_watch(|w| w.arrived(wall_ms, index, auto, shuffled)));
-    }
+    judge(wall_ms, |w| w.arrived(wall_ms, index, auto, shuffled));
 }
 
 /// Lyrics of song `id` were shown.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_watch_lyrics(wall_ms: i64, id: String) {
-    if on() {
-        said(wall_ms, with_watch(|w| w.lyrics(wall_ms, &id)));
-    }
+    judge(wall_ms, |w| w.lyrics(wall_ms, &id));
 }
 
 /// The queue changed: ids of songs without a duration, of `total`.

@@ -319,17 +319,11 @@ fn parsed(rows: Vec<String>) -> Vec<PerfStretch> {
 pub fn perf_log_clear() {
     let Some(db) = settings_store::app_db() else { return };
     let c = db.lock();
-    if table(&c).is_ok() {
-        let _ = c.execute("DELETE FROM perf_stretches", []);
-    }
-    if crash_table(&c).is_ok() {
-        let _ = c.execute("DELETE FROM perf_crashes", []);
-    }
-    if selftest_table(&c).is_ok() {
-        let _ = c.execute("DELETE FROM perf_selftest", []);
-    }
-    if break_log_table(&c).is_ok() {
-        let _ = c.execute("DELETE FROM perf_break_logs", []);
+    let tables = [(table(&c), "perf_stretches"), (crash_table(&c), "perf_crashes"), (selftest_table(&c), "perf_selftest"), (break_log_table(&c), "perf_break_logs")];
+    for (made, name) in tables {
+        if made.is_ok() {
+            let _ = c.execute(&format!("DELETE FROM {name}"), []);
+        }
     }
     timeline().forget();
 }
@@ -708,11 +702,7 @@ fn mode(m: i32) -> &'static str {
 /// The "output: ..." line.
 fn output_line(o: &PerfOutput) -> String {
     let (enc, width) = encoding(o.encoding);
-    let channels = match o.channels {
-        1 => "mono".to_string(),
-        2 => "stereo".to_string(),
-        n => format!("{n} channels"),
-    };
+    let channels = channels(o.channels).unwrap_or_else(|| format!("{} channels", o.channels));
     let mut out = format!("output: {}, {} Hz {channels} {enc}", o.engine, o.rate);
     let frame_ms = |f: i64| if o.rate > 0 { f * 1000 / o.rate as i64 } else { 0 };
     let asked = width.filter(|_| o.asked_bytes > 0 && o.channels > 0).map(|w| frame_ms(o.asked_bytes / (w * o.channels as i64)));
@@ -1119,18 +1109,12 @@ impl Timeline {
             },
             PerfNote::Output { key, output } => self.output(t, key, output, settings_why),
             PerfNote::Underruns { key, count } => self.underruns(t, key, count),
-            PerfNote::Error { message } => {
-                let short: String = message.chars().take(400).collect();
-                self.push(t, "error", short);
-            }
+            PerfNote::Error { message } => self.push(t, "error", message.chars().take(400).collect()),
             PerfNote::Tuning { on } => {
                 let d = if on { "on: the equalizer screen is open, the output takes a shallow buffer" } else { "off: the deep buffer is back" };
                 self.push(t, "tuning", d.into());
             }
-            PerfNote::Offload { detail } => {
-                let short: String = detail.chars().take(400).collect();
-                self.push(t, "offload", short);
-            }
+            PerfNote::Offload { detail } => self.push(t, "offload", detail.chars().take(400).collect()),
             PerfNote::WakeLock { held } => {
                 if held {
                     self.lock_from.get_or_insert(t);
@@ -1370,12 +1354,7 @@ fn song_words(s: &PerfSong) -> String {
     if s.bit_depth > 0 {
         file.push(format!("{}-bit", s.bit_depth));
     }
-    match s.channels {
-        1 => file.push("mono".into()),
-        2 => file.push("stereo".into()),
-        n if n > 2 => file.push(format!("{n} channels")),
-        _ => {}
-    }
+    file.extend(channels(s.channels));
     if s.bit_rate > 0 {
         file.push(format!("{} kbps", s.bit_rate));
     }
@@ -1395,6 +1374,16 @@ fn song_words(s: &PerfSong) -> String {
     out
 }
 
+/// "mono", "stereo" or "6 channels"; none for a count not known.
+fn channels(n: i32) -> Option<String> {
+    match n {
+        1 => Some("mono".into()),
+        2 => Some("stereo".into()),
+        n if n > 2 => Some(format!("{n} channels")),
+        _ => None,
+    }
+}
+
 /// "audio/mpeg, 44100 Hz stereo, 320 kbps, encoder delay 576, padding 1152", the container named when it
 /// is not the codec's own.
 fn format_words(f: &PerfFormat) -> String {
@@ -1405,11 +1394,8 @@ fn format_words(f: &PerfFormat) -> String {
     if f.rate > 0 {
         out.push_str(&format!(", {} Hz", f.rate));
     }
-    match f.channels {
-        1 => out.push_str(" mono"),
-        2 => out.push_str(" stereo"),
-        n if n > 2 => out.push_str(&format!(" {n} channels")),
-        _ => {}
+    if let Some(c) = channels(f.channels) {
+        out.push_str(&format!(" {c}"));
     }
     if f.bitrate > 0 {
         out.push_str(&format!(", {} kbps", f.bitrate / 1000));
@@ -1683,6 +1669,11 @@ mod tests {
         }
     }
 
+    fn device() -> PerfDevice {
+        let s = |v: &str| v.to_string();
+        PerfDevice { manufacturer: s("Google"), model: s("Pixel 8"), device: s("shiba"), release: s("16"), sdk: 36, version: s("0.3.4"), sha: s("abc1234"), build_type: s("perf") }
+    }
+
     fn output() -> PerfOutput {
         PerfOutput {
             engine: "rust".into(),
@@ -1934,16 +1925,7 @@ mod tests {
     fn report_layout() {
         let mut playing = stretch("off-playing", 3_600_000);
         playing.uah = Some(40_000);
-        let d = PerfDevice {
-            manufacturer: "Google".into(),
-            model: "Pixel 8".into(),
-            device: "shiba".into(),
-            release: "16".into(),
-            sdk: 36,
-            version: "0.3.4".into(),
-            sha: "abc1234".into(),
-            build_type: "perf".into(),
-        };
+        let d = device();
         let mut charging = stretch("charging", 90_000);
         charging.out = Some(output());
         charging.rx = Some(3 * 1024 * 1024 + 300 * 1024);
@@ -1969,16 +1951,7 @@ mod tests {
 
     #[test]
     fn report_starts_with_breaks_and_self_test() {
-        let d = PerfDevice {
-            manufacturer: "Samsung".into(),
-            model: "SM-S901B".into(),
-            device: "r0s".into(),
-            release: "16".into(),
-            sdk: 36,
-            version: "0.3.4".into(),
-            sha: "abc1234".into(),
-            build_type: "perf".into(),
-        };
+        let d = device();
         let mut older = stretch("off-playing", 600_000);
         older.ev = vec![PerfEvent { wall_ms: at(21, 0, 0), kind: "invariant".into(), detail: "skip: 3 skip presses moved 4 songs, from queue place 0 to 4".into() }];
         let mut newer = stretch("on-playing-app", 600_000);
@@ -2163,16 +2136,7 @@ mod tests {
         let p = page(vec![s.clone()], None);
         assert_eq!(p.stretches[0].events.len(), MOST_EVENTS + 1);
         assert!(p.totals[0].detail.ends_with(", offloaded 45 min 00 s of 1 h 00 min (75 %)"), "{}", p.totals[0].detail);
-        let d = PerfDevice {
-            manufacturer: "samsung".into(),
-            model: "SM-S901B".into(),
-            device: "r0s".into(),
-            release: "15".into(),
-            sdk: 35,
-            version: "0.3.4".into(),
-            sha: "abc1234".into(),
-            build_type: "perf".into(),
-        };
+        let d = device();
         let r = report(vec![s], &d, "", "", None);
         let lines: Vec<&str> = r.lines().collect();
         let at = lines.iter().position(|l| *l == "Really offloaded (the output as it was opened, not the settings)").unwrap();

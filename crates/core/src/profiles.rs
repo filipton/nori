@@ -185,21 +185,14 @@ impl Core {
                 let effect = DeviceEffect { refresh: true, arrive: live, ..DeviceEffect::none() };
                 return Ok(Step { quiet: Some(choice == ChoiceKind::Quiet), loose: LooseChange::Keep, effect });
             }
-            ChoiceKind::Flat => {
-                // Created on first use: the current sound with the equalizer off.
-                if !self.profiles()?.iter().any(|p| p.name == FLAT) {
-                    let flat = SoundSettings { eq_enabled: false, ..now.sound.clone() };
-                    self.profile_save(SoundProfile { name: FLAT.to_string(), json: sound_json(&flat), outputs: Vec::new() })?;
+            // Created on first use: the current sound with the equalizer off, or the chain bypassed.
+            ChoiceKind::Flat | ChoiceKind::Bypass => {
+                let flat = choice == ChoiceKind::Flat;
+                let (name, sound) = if flat { (FLAT, SoundSettings { eq_enabled: false, ..now.sound.clone() }) } else { (BYPASS, SoundSettings { bypass: true, ..now.sound.clone() }) };
+                if !self.profiles()?.iter().any(|p| p.name == name) {
+                    self.profile_save(SoundProfile { name: name.to_string(), json: sound_json(&sound), outputs: Vec::new() })?;
                 }
-                FLAT.to_string()
-            }
-            ChoiceKind::Bypass => {
-                // Created on first use: the current sound with the chain bypassed.
-                if !self.profiles()?.iter().any(|p| p.name == BYPASS) {
-                    let none = SoundSettings { bypass: true, ..now.sound.clone() };
-                    self.profile_save(SoundProfile { name: BYPASS.to_string(), json: sound_json(&none), outputs: Vec::new() })?;
-                }
-                BYPASS.to_string()
+                name.to_string()
             }
             ChoiceKind::Profile => profile,
         };

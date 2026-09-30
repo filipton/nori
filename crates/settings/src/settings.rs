@@ -18,7 +18,6 @@ pub enum PrefValue {
     Big { v: i64 },
     Decimal { v: f32 },
     Text { v: String },
-    Texts { v: Vec<String> },
 }
 
 /// One equalizer filter. Kind and channel are stored as ordinals, so their order must not change.
@@ -257,7 +256,7 @@ pub struct StoredPrefs {
     #[setting("activeServerId", TEXT, default = String::new(), hidden)]
     pub active_server_id: String,
     // Between songs.
-    #[setting("crossfadeSec", INT, default = 0, show = K::Choice(&["0", "2", "4", "6", "8", "12"]), effect = APPLY_AUDIO | REPLAN)]
+    #[setting("crossfadeSec", INT, default = 0, show = K::Choice(&["0", "2", "4", "6", "8", "12"]), effect = APPLY_AUDIO | REPLAN, sound)]
     pub crossfade_sec: i32,
     #[setting("autoMix", FLAG, default = false, show = K::Switch, effect = APPLY_AUDIO | REPLAN)]
     pub auto_mix: bool,
@@ -319,75 +318,75 @@ pub struct StoredPrefs {
     #[setting("bridgeOffline", FLAG, default = false, show = K::Switch)]
     pub bridge_offline: bool,
     // Sound.
-    #[setting("eqEnabled", FLAG, default = false, name = "eq", show = K::Switch, effect = APPLY_AUDIO | SOUND)]
+    #[setting("eqEnabled", FLAG, default = false, name = "eq", show = K::Switch, effect = APPLY_AUDIO | SOUND, sound)]
     pub eq_enabled: bool,
-    #[setting("eqBands", BANDS, default = graphic(), hidden, effect = SOUND)]
+    #[setting("eqBands", BANDS, default = graphic(), hidden, effect = SOUND, sound)]
     pub eq_bands: Vec<SoundBand>,
     /// Graphic on a new install; older installs with a parametric setup keep it ([`load`]).
-    #[setting("eqMode", PICK, default = EqMode::Graphic, show = K::Named(EqMode::NAMES), effect = SOUND)]
+    #[setting("eqMode", PICK, default = EqMode::Graphic, show = K::Named(EqMode::NAMES), effect = SOUND, sound)]
     pub eq_mode: EqMode,
     /// Graphic sliders, dB, low to high: 5, 10, 15 or 31 (`nori_player::graphic`).
-    #[setting("eqGraphic", GRAPHIC, default = vec![0.0; 10], hidden, effect = SOUND)]
+    #[setting("eqGraphic", GRAPHIC, default = vec![0.0; 10], hidden, effect = SOUND, sound)]
     pub eq_graphic: Vec<f32>,
     /// The headphone correction the sliders were fitted to (dB on `graphic::target_grid`), refitted on a
     /// layout change; empty once a slider is moved by hand.
-    #[setting("eqGraphicTarget", TARGET, default = Vec::new(), hidden, effect = SOUND)]
+    #[setting("eqGraphicTarget", TARGET, default = Vec::new(), hidden, effect = SOUND, sound)]
     pub eq_graphic_target: Vec<f32>,
     /// Low shelf gain, dB; 0 is off.
-    #[setting("bassBoostDb", clamped(0.0, BASS_BOOST_MAX), default = 0.0, show = K::Level(0.0, BASS_BOOST_MAX), effect = SOUND)]
+    #[setting("bassBoostDb", clamped(0.0, BASS_BOOST_MAX), default = 0.0, show = K::Level(0.0, BASS_BOOST_MAX), effect = SOUND, effects)]
     pub bass_boost_db: f32,
     /// Virtualizer strength, 0 (off) to 1.
-    #[setting("virtualizer", clamped(0.0, 1.0), default = 0.0, show = K::Level(0.0, 1.0), effect = SOUND)]
+    #[setting("virtualizer", clamped(0.0, 1.0), default = 0.0, show = K::Level(0.0, 1.0), effect = SOUND, effects)]
     pub virtualizer: f32,
     /// Extra gain, dB, with the limiter behind it; 0 is off.
-    #[setting("volumeBoostDb", clamped(0.0, VOLUME_BOOST_MAX), default = 0.0, show = K::Level(0.0, VOLUME_BOOST_MAX), effect = SOUND)]
+    #[setting("volumeBoostDb", clamped(0.0, VOLUME_BOOST_MAX), default = 0.0, show = K::Level(0.0, VOLUME_BOOST_MAX), effect = SOUND, effects)]
     pub volume_boost_db: f32,
-    #[setting("compressor", FLAG, default = false, show = K::Switch, effect = SOUND)]
+    #[setting("compressor", FLAG, default = false, show = K::Switch, effect = SOUND, effects)]
     pub compressor: bool,
-    #[setting("compThresholdDb", clamped(-60.0, 0.0), default = -20.0, show = K::Level(-60.0, 0.0), effect = SOUND)]
+    #[setting("compThresholdDb", clamped(-60.0, 0.0), default = -20.0, show = K::Level(-60.0, 0.0), effect = SOUND, effects)]
     pub comp_threshold_db: f32,
-    #[setting("compRatio", clamped(1.0, 20.0), default = 3.0, show = K::Level(1.0, 20.0), effect = SOUND)]
+    #[setting("compRatio", clamped(1.0, 20.0), default = 3.0, show = K::Level(1.0, 20.0), effect = SOUND, effects)]
     pub comp_ratio: f32,
-    #[setting("compAttackMs", clamped(0.1, 200.0), default = 10.0, show = K::Level(0.1, 200.0), effect = SOUND)]
+    #[setting("compAttackMs", clamped(0.1, 200.0), default = 10.0, show = K::Level(0.1, 200.0), effect = SOUND, effects)]
     pub comp_attack_ms: f32,
-    #[setting("compReleaseMs", clamped(10.0, 2000.0), default = 180.0, show = K::Level(10.0, 2000.0), effect = SOUND)]
+    #[setting("compReleaseMs", clamped(10.0, 2000.0), default = 180.0, show = K::Level(10.0, 2000.0), effect = SOUND, effects)]
     pub comp_release_ms: f32,
-    #[setting("compMakeupDb", clamped(0.0, 24.0), default = 4.5, show = K::Level(0.0, 24.0), effect = SOUND)]
+    #[setting("compMakeupDb", clamped(0.0, 24.0), default = 4.5, show = K::Level(0.0, 24.0), effect = SOUND, effects)]
     pub comp_makeup_db: f32,
-    #[setting("compKneeDb", clamped(0.0, 24.0), default = 6.0, show = K::Level(0.0, 24.0), effect = SOUND)]
+    #[setting("compKneeDb", clamped(0.0, 24.0), default = 6.0, show = K::Level(0.0, 24.0), effect = SOUND, effects)]
     pub comp_knee_db: f32,
     /// Downward expander (a noise gate at high ratios), before the compressor.
-    #[setting("expander", FLAG, default = false, show = K::Switch, effect = SOUND)]
+    #[setting("expander", FLAG, default = false, show = K::Switch, effect = SOUND, effects)]
     pub expander: bool,
-    #[setting("expThresholdDb", clamped(-90.0, -10.0), default = -50.0, show = K::Level(-90.0, -10.0), effect = SOUND)]
+    #[setting("expThresholdDb", clamped(-90.0, -10.0), default = -50.0, show = K::Level(-90.0, -10.0), effect = SOUND, effects)]
     pub exp_threshold_db: f32,
-    #[setting("expRatio", clamped(1.0, 20.0), default = 2.0, show = K::Level(1.0, 20.0), effect = SOUND)]
+    #[setting("expRatio", clamped(1.0, 20.0), default = 2.0, show = K::Level(1.0, 20.0), effect = SOUND, effects)]
     pub exp_ratio: f32,
-    #[setting("expAttackMs", clamped(0.1, 100.0), default = 5.0, show = K::Level(0.1, 100.0), effect = SOUND)]
+    #[setting("expAttackMs", clamped(0.1, 100.0), default = 5.0, show = K::Level(0.1, 100.0), effect = SOUND, effects)]
     pub exp_attack_ms: f32,
-    #[setting("expReleaseMs", clamped(10.0, 2000.0), default = 150.0, show = K::Level(10.0, 2000.0), effect = SOUND)]
+    #[setting("expReleaseMs", clamped(10.0, 2000.0), default = 150.0, show = K::Level(10.0, 2000.0), effect = SOUND, effects)]
     pub exp_release_ms: f32,
     /// Volume-dependent loudness compensation (ISO 226, `nori_player::contour`). The platform reports
     /// its volume only while this is on.
-    #[setting("loudness", FLAG, default = false, show = K::Switch, effect = SOUND)]
+    #[setting("loudness", FLAG, default = false, show = K::Switch, effect = SOUND, effects)]
     pub loudness: bool,
     /// The reference level at full volume, phon.
-    #[setting("loudnessRefPhon", clamped(60, 90), default = 80, show = K::Choice(&["70", "75", "80", "85", "90"]), effect = SOUND)]
+    #[setting("loudnessRefPhon", clamped(60, 90), default = 80, show = K::Choice(&["70", "75", "80", "85", "90"]), effect = SOUND, effects)]
     pub loudness_ref_phon: i32,
-    #[setting("mono", FLAG, default = false, show = K::Switch, effect = APPLY_AUDIO | SOUND)]
+    #[setting("mono", FLAG, default = false, show = K::Switch, effect = APPLY_AUDIO | SOUND, sound)]
     pub mono: bool,
-    #[setting("limiter", FLAG, default = false, show = K::Switch, effect = APPLY_AUDIO | SOUND)]
+    #[setting("limiter", FLAG, default = false, show = K::Switch, effect = APPLY_AUDIO | SOUND, sound)]
     pub limiter: bool,
-    #[setting("eqPreampDb", Preamp(EQ_RANGES.preamp), default = None, show = K::Level(EQ_RANGES.preamp.min, EQ_RANGES.preamp.max), effect = SOUND)]
+    #[setting("eqPreampDb", Preamp(EQ_RANGES.preamp), default = None, show = K::Level(EQ_RANGES.preamp.min, EQ_RANGES.preamp.max), effect = SOUND, sound)]
     pub eq_preamp_db: Option<f32>,
-    #[setting("crossfeedDb", FLOAT, default = 0.0, show = K::Level(EQ_RANGES.crossfeed.min, EQ_RANGES.crossfeed.max), effect = SOUND)]
+    #[setting("crossfeedDb", FLOAT, default = 0.0, show = K::Level(EQ_RANGES.crossfeed.min, EQ_RANGES.crossfeed.max), effect = SOUND, sound)]
     pub crossfeed_db: f32,
     /// Crossfeed cutoff (bs2b's `fcut`), Hz.
-    #[setting("crossfeedHz", clamped(300.0, 2000.0), default = 700.0, show = K::Level(EQ_RANGES.crossfeed_cut.min, EQ_RANGES.crossfeed_cut.max), effect = SOUND)]
+    #[setting("crossfeedHz", clamped(300.0, 2000.0), default = 700.0, show = K::Level(EQ_RANGES.crossfeed_cut.min, EQ_RANGES.crossfeed_cut.max), effect = SOUND, sound)]
     pub crossfeed_hz: f32,
-    #[setting("balance", FLOAT, default = 0.0, hidden, effect = SOUND)]
+    #[setting("balance", FLOAT, default = 0.0, hidden, effect = SOUND, sound)]
     pub balance: f32,
-    #[setting("limiterThresholdDb", FLOAT, default = -1.0, show = K::Level(EQ_RANGES.limiter.min, EQ_RANGES.limiter.max), effect = SOUND)]
+    #[setting("limiterThresholdDb", FLOAT, default = -1.0, show = K::Level(EQ_RANGES.limiter.min, EQ_RANGES.limiter.max), effect = SOUND, sound)]
     pub limiter_threshold_db: f32,
     #[setting("autoEqAuto", FLAG, default = false, show = K::Switch)]
     pub auto_eq_auto: bool,
@@ -396,12 +395,12 @@ pub struct StoredPrefs {
     pub auto_eq_download: bool,
     /// "No processing on this output": the sound chain is left out. ReplayGain and transitions still
     /// apply. Part of a sound profile.
-    #[setting("soundBypass", FLAG, default = false, show = K::Switch, effect = APPLY_AUDIO | SOUND)]
+    #[setting("soundBypass", FLAG, default = false, show = K::Switch, effect = APPLY_AUDIO | SOUND, sound = bypass)]
     pub sound_bypass: bool,
     #[setting("profilePerOutput", FLAG, default = true, show = K::Switch)]
     pub profile_per_output: bool,
     /// Also decides whether songs may be turned up (`gain_boost_db`), hence the SOUND bit.
-    #[setting("replayGain", PICK_NEAREST, default = GainMode::Off, show = K::Named(GainMode::NAMES), effect = APPLY_GAIN | REPLAN | SOUND)]
+    #[setting("replayGain", PICK_NEAREST, default = GainMode::Off, show = K::Named(GainMode::NAMES), effect = APPLY_GAIN | REPLAN | SOUND, sound)]
     pub replay_gain: GainMode,
     /// Target loudness, LUFS (`nori_player::gain`).
     #[setting("loudnessTarget", FLOAT, default = -18.0, show = K::Choice(&["-14", "-16", "-18", "-23"]), effect = APPLY_GAIN)]
@@ -413,15 +412,15 @@ pub struct StoredPrefs {
     /// Untagged songs use the loudness measured by AutoMix's analysis, when there is one.
     #[setting("gainMeasured", FLAG, default = true, show = K::Switch, effect = APPLY_GAIN)]
     pub gain_measured: bool,
-    #[setting("preampDb", within(REPLAY_GAIN_PREAMP.0, REPLAY_GAIN_PREAMP.1), default = 0.0, show = K::Level(EQ_RANGES.replay_gain_preamp.min, EQ_RANGES.replay_gain_preamp.max), effect = APPLY_GAIN)]
+    #[setting("preampDb", within(REPLAY_GAIN_PREAMP.0, REPLAY_GAIN_PREAMP.1), default = 0.0, show = K::Level(EQ_RANGES.replay_gain_preamp.min, EQ_RANGES.replay_gain_preamp.max), effect = APPLY_GAIN, sound)]
     pub preamp_db: f32,
     #[setting("untaggedGainDb", FLOAT, default = -6.0, show = K::Choice(&["0", "-3", "-6", "-9", "-12"]), effect = APPLY_GAIN)]
     pub untagged_gain_db: f32,
-    #[setting("hiRes", FLAG, default = false, show = K::Switch, effect = PLAYER)]
+    #[setting("hiRes", FLAG, default = false, show = K::Switch, effect = PLAYER, sound)]
     pub hi_res: bool,
-    #[setting("maxRate", PICK, default = MaxRate::Auto, show = K::Named(MaxRate::NAMES), effect = PLAYER)]
+    #[setting("maxRate", PICK, default = MaxRate::Auto, show = K::Named(MaxRate::NAMES), effect = PLAYER, sound)]
     pub max_rate: MaxRate,
-    #[setting("bitPerfect", FLAG, default = false, show = K::Switch, effect = APPLY_AUDIO)]
+    #[setting("bitPerfect", FLAG, default = false, show = K::Switch, effect = APPLY_AUDIO, sound)]
     pub bit_perfect: bool,
     #[setting("offload", FLAG, default = true, show = K::Switch, effect = APPLY_AUDIO)]
     pub offload: bool,
@@ -560,8 +559,8 @@ pub(crate) const SPECIAL_SPECS: &[(&str, K)] = &[
     ("motionArtworkMobile", K::Switch),
     ("musicFolder", K::Choice(&[])),
     ("altMaxBitRate", K::Choice(&["0", "320", "192", "128", "96"])),
-    ("compressorPreset", K::Choice(&["GENTLE", "BALANCED", "STRONG"])),
-    ("crossfeedPreset", K::Choice(&["OFF", "DEFAULT", "CHU_MOY", "JAN_MEIER"])),
+    ("compressorPreset", K::Choice(&COMPRESSOR_PRESETS)),
+    ("crossfeedPreset", K::Choice(&CROSSFEED_PRESETS)),
     ("eqLayout", K::Choice(&["5", "10", "15", "31"])),
 ];
 
@@ -761,97 +760,6 @@ impl SoundEffects {
 }
 
 impl StoredPrefs {
-    /// The part of the settings a sound profile remembers.
-    pub fn sound(&self) -> SoundSettings {
-        SoundSettings {
-            eq_enabled: self.eq_enabled,
-            eq_bands: self.eq_bands.clone(),
-            eq_mode: self.eq_mode,
-            eq_graphic: self.eq_graphic.clone(),
-            eq_graphic_target: self.eq_graphic_target.clone(),
-            eq_preamp_db: self.eq_preamp_db,
-            crossfeed_db: self.crossfeed_db,
-            crossfeed_hz: self.crossfeed_hz,
-            balance: self.balance,
-            bypass: self.sound_bypass,
-            mono: self.mono,
-            limiter: self.limiter,
-            limiter_threshold_db: self.limiter_threshold_db,
-            effects: self.effects(),
-            replay_gain: self.replay_gain,
-            preamp_db: self.preamp_db,
-            crossfade_sec: self.crossfade_sec,
-            hi_res: self.hi_res,
-            max_rate: self.max_rate,
-            bit_perfect: self.bit_perfect,
-        }
-    }
-
-    /// These settings with the sound profile part replaced by `s`.
-    pub fn with_sound(self, s: SoundSettings) -> StoredPrefs {
-        StoredPrefs {
-            eq_enabled: s.eq_enabled,
-            eq_bands: s.eq_bands,
-            eq_mode: s.eq_mode,
-            eq_graphic: s.eq_graphic,
-            eq_graphic_target: s.eq_graphic_target,
-            eq_preamp_db: s.eq_preamp_db,
-            crossfeed_db: s.crossfeed_db,
-            crossfeed_hz: s.crossfeed_hz,
-            balance: s.balance,
-            sound_bypass: s.bypass,
-            mono: s.mono,
-            limiter: s.limiter,
-            limiter_threshold_db: s.limiter_threshold_db,
-            bass_boost_db: s.effects.bass_boost_db,
-            virtualizer: s.effects.virtualizer,
-            volume_boost_db: s.effects.volume_boost_db,
-            compressor: s.effects.compressor,
-            comp_threshold_db: s.effects.comp_threshold_db,
-            comp_ratio: s.effects.comp_ratio,
-            comp_attack_ms: s.effects.comp_attack_ms,
-            comp_release_ms: s.effects.comp_release_ms,
-            comp_makeup_db: s.effects.comp_makeup_db,
-            comp_knee_db: s.effects.comp_knee_db,
-            expander: s.effects.expander,
-            exp_threshold_db: s.effects.exp_threshold_db,
-            exp_ratio: s.effects.exp_ratio,
-            exp_attack_ms: s.effects.exp_attack_ms,
-            exp_release_ms: s.effects.exp_release_ms,
-            loudness: s.effects.loudness,
-            loudness_ref_phon: s.effects.loudness_ref_phon,
-            replay_gain: s.replay_gain,
-            preamp_db: s.preamp_db,
-            crossfade_sec: s.crossfade_sec,
-            hi_res: s.hi_res,
-            max_rate: s.max_rate,
-            bit_perfect: s.bit_perfect,
-            ..self
-        }
-    }
-
-    pub fn effects(&self) -> SoundEffects {
-        SoundEffects {
-            bass_boost_db: self.bass_boost_db,
-            virtualizer: self.virtualizer,
-            volume_boost_db: self.volume_boost_db,
-            compressor: self.compressor,
-            comp_threshold_db: self.comp_threshold_db,
-            comp_ratio: self.comp_ratio,
-            comp_attack_ms: self.comp_attack_ms,
-            comp_release_ms: self.comp_release_ms,
-            comp_makeup_db: self.comp_makeup_db,
-            comp_knee_db: self.comp_knee_db,
-            expander: self.expander,
-            exp_threshold_db: self.exp_threshold_db,
-            exp_ratio: self.exp_ratio,
-            exp_attack_ms: self.exp_attack_ms,
-            exp_release_ms: self.exp_release_ms,
-            loudness: self.loudness,
-            loudness_ref_phon: self.loudness_ref_phon,
-        }
-    }
-
     /// Whether the sound chain is needed (anything that alters samples is on and the output is not
     /// bypassed). Audio offload is off while it is.
     pub fn sound_chain_on(&self) -> bool {
@@ -1252,14 +1160,14 @@ fn set_special(p: &StoredPrefs, n: &mut StoredPrefs, server: &mut bool, name: &s
                 n.lyrics_on.push(s);
             }
         }),
-        "compressorPreset" => compressor_preset_named(value).map(|c| {
+        "compressorPreset" => preset_named(&nori_player::compressor::CompressorPreset::ALL, &COMPRESSOR_PRESETS, value).map(|c| {
             let e = p.effects().with_compressor_preset(c);
             (n.compressor, n.comp_threshold_db, n.comp_ratio, n.comp_attack_ms, n.comp_release_ms, n.comp_makeup_db, n.comp_knee_db) =
                 (e.compressor, e.comp_threshold_db, e.comp_ratio, e.comp_attack_ms, e.comp_release_ms, e.comp_makeup_db, e.comp_knee_db);
         }),
         // A bs2b preset sets cutoff and level; OFF keeps the cutoff.
         "crossfeedPreset" if value.trim().eq_ignore_ascii_case("OFF") => Some(n.crossfeed_db = 0.0),
-        "crossfeedPreset" => crossfeed_preset_named(value).map(|c| {
+        "crossfeedPreset" => preset_named(&nori_player::dsp::CrossfeedPreset::ALL, &CROSSFEED_PRESETS[1..], value).map(|c| {
             let (cut, level) = c.settings();
             (n.crossfeed_hz, n.crossfeed_db) = (cut as f32, level as f32);
         }),
@@ -1288,11 +1196,11 @@ pub(crate) fn value_of_special(p: &StoredPrefs, name: &str) -> Option<String> {
     let server = || p.servers.iter().find(|s| s.id == p.active_server_id);
     Some(match name {
         "motionArtworkMobile" => (!p.motion_artwork_wifi_only).to_string(),
-        "compressorPreset" => p.effects().compressor_preset().map_or("", compressor_preset_name).to_string(),
+        "compressorPreset" => p.effects().compressor_preset().map_or("", |c| preset_name(&nori_player::compressor::CompressorPreset::ALL, &COMPRESSOR_PRESETS, c)).to_string(),
         "eqLayout" => p.eq_graphic.len().to_string(),
         // "" is a custom crossfeed.
         "crossfeedPreset" if p.crossfeed_db <= 0.0 => "OFF".to_string(),
-        "crossfeedPreset" => crossfeed_preset(p.crossfeed_hz, p.crossfeed_db).map_or("", crossfeed_preset_name).to_string(),
+        "crossfeedPreset" => crossfeed_preset(p.crossfeed_hz, p.crossfeed_db).map_or("", |c| preset_name(&nori_player::dsp::CrossfeedPreset::ALL, &CROSSFEED_PRESETS[1..], c)).to_string(),
         "musicFolder" => server().map(|s| s.music_folder_id.clone()).unwrap_or_default(),
         "altMaxBitRate" => server().map_or(0, |s| s.alt_max_bit_rate).to_string(),
         _ => return None,
@@ -1316,26 +1224,19 @@ fn band_of(b: &nori_model::EqBand) -> SoundBand {
     SoundBand { kind: b.kind, freq: b.freq, gain_db: b.gain_db, q: b.q, channel: BandChannel::Both }
 }
 
-fn compressor_preset_name(p: nori_player::compressor::CompressorPreset) -> &'static str {
-    use nori_player::compressor::CompressorPreset as C;
-    match p {
-        C::Gentle => "GENTLE",
-        C::Balanced => "BALANCED",
-        C::Strong => "STRONG",
-    }
+/// `CompressorPreset::ALL`'s names, in its order.
+const COMPRESSOR_PRESETS: [&str; 3] = ["GENTLE", "BALANCED", "STRONG"];
+/// Off, then `CrossfeedPreset::ALL`'s names in its order.
+const CROSSFEED_PRESETS: [&str; 4] = ["OFF", "DEFAULT", "CHU_MOY", "JAN_MEIER"];
+
+/// `p`'s name, `names` being those of `all` in order.
+fn preset_name<P: PartialEq>(all: &[P], names: &[&'static str], p: P) -> &'static str {
+    names[all.iter().position(|x| *x == p).unwrap_or(0)]
 }
 
-fn crossfeed_preset_name(p: nori_player::dsp::CrossfeedPreset) -> &'static str {
-    use nori_player::dsp::CrossfeedPreset as C;
-    match p {
-        C::Default => "DEFAULT",
-        C::ChuMoy => "CHU_MOY",
-        C::JanMeier => "JAN_MEIER",
-    }
-}
-
-fn crossfeed_preset_named(name: &str) -> Option<nori_player::dsp::CrossfeedPreset> {
-    nori_player::dsp::CrossfeedPreset::ALL.into_iter().find(|p| crossfeed_preset_name(*p).eq_ignore_ascii_case(name.trim()))
+/// The preset named `name` (any case), `names` being those of `all` in order.
+fn preset_named<P: Copy>(all: &[P], names: &[&str], name: &str) -> Option<P> {
+    names.iter().position(|n| n.eq_ignore_ascii_case(name.trim())).map(|i| all[i])
 }
 
 /// Which of bs2b's settings the crossfeed is on, if any: none with it off (0 dB) or moved by hand.
@@ -1344,10 +1245,6 @@ pub fn crossfeed_preset(cut_hz: f32, level_db: f32) -> Option<nori_player::dsp::
         return None;
     }
     nori_player::dsp::CrossfeedPreset::of(cut_hz as f64, level_db as f64)
-}
-
-fn compressor_preset_named(name: &str) -> Option<nori_player::compressor::CompressorPreset> {
-    nori_player::compressor::CompressorPreset::ALL.into_iter().find(|p| compressor_preset_name(*p).eq_ignore_ascii_case(name.trim()))
 }
 
 /// The graphic layout in use; 10 when the sliders are not a valid layout.
@@ -2001,30 +1898,6 @@ mod tests {
     #[test]
     fn load_empty_is_default() {
         assert_eq!(load(&HashMap::new()), StoredPrefs::default());
-    }
-
-    #[test]
-    fn save_load_round_trip() {
-        let mut p = StoredPrefs::default();
-        p.servers = vec![SavedServer {
-            id: "a1".into(),
-            name: "Home".into(),
-            url: "https://music.example.com".into(),
-            headers: [("X-Auth".to_string(), "t".to_string())].into(),
-            alt_max_bit_rate: 320,
-            legacy_auth: true,
-            ..SavedServer::default()
-        }];
-        p.active_server_id = "a1".into();
-        p.eq_preamp_db = Some(-3.5);
-        p.eq_bands = vec![band_from(2, 1234.5, -2.25, 0.7, 1)];
-        p.home_rows = vec![HomeRow::TopSongs, HomeRow::Pinned];
-        p.pinned_playlists = vec!["p1".into(), "p2".into()];
-        p.list_prefs = [("albums".to_string(), "grid".to_string())].into();
-        p.accent = 0xFF112233;
-        p.theme = ThemeMode::Dark;
-        assert_eq!(load(&save(&p)), p);
-        assert!(!save(&StoredPrefs { eq_preamp_db: None, ..p }).contains_key("eqPreampDb"));
     }
 
     #[test]

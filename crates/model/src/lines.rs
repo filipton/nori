@@ -2,20 +2,12 @@
 
 /// Album subtitle: "Artist · 2019", omitting empty parts.
 pub fn album_subtitle(artist: &str, year: u32) -> String {
-    let mut out = String::new();
-    let mut add = |s: &str| {
-        if !out.is_empty() {
-            out.push_str(" · ");
-        }
-        out.push_str(s);
-    };
-    if !artist.is_empty() {
-        add(artist);
+    match (artist.is_empty(), year > 0) {
+        (false, true) => format!("{artist} · {year}"),
+        (false, false) => artist.to_string(),
+        (true, true) => year.to_string(),
+        (true, false) => String::new(),
     }
-    if year > 0 {
-        add(&year.to_string());
-    }
-    out
 }
 
 /// Song row subtitle: explicit mark, then the artist unless it matches `page_artist` (case-insensitive).

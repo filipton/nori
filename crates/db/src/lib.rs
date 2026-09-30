@@ -63,8 +63,7 @@ const SERVER_TABLES: [&str; 14] = [
 
 /// Opens the database for `server`'s rows (in memory for an empty `path`).
 pub fn open(path: &str, server: &str) -> rusqlite::Result<Connection> {
-    let c = if path.is_empty() { Connection::open_in_memory()? } else { Connection::open(path)? };
-    c.execute_batch(PRAGMAS)?;
+    let c = connect(path)?;
     let sid = server.to_string();
     c.create_scalar_function("sid", 0, rusqlite::functions::FunctionFlags::SQLITE_UTF8 | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC, move |_| {
         Ok(sid.clone())
@@ -72,6 +71,13 @@ pub fn open(path: &str, server: &str) -> rusqlite::Result<Connection> {
     drop_old_analysis(&c)?;
     c.execute_batch(SCHEMA)?;
     drop_old_lyrics(&c)?;
+    Ok(c)
+}
+
+/// The database at `path` (in memory for an empty one), set up.
+fn connect(path: &str) -> rusqlite::Result<Connection> {
+    let c = if path.is_empty() { Connection::open_in_memory()? } else { Connection::open(path)? };
+    c.execute_batch(PRAGMAS)?;
     Ok(c)
 }
 
@@ -93,8 +99,7 @@ fn drop_old_analysis(c: &Connection) -> rusqlite::Result<()> {
 
 /// Opens the database for app-wide tables only (settings, app_kv).
 pub fn open_app(path: &str) -> rusqlite::Result<Connection> {
-    let c = if path.is_empty() { Connection::open_in_memory()? } else { Connection::open(path)? };
-    c.execute_batch(PRAGMAS)?;
+    let c = connect(path)?;
     c.execute_batch(
         "CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
          CREATE TABLE IF NOT EXISTS app_kv(key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;",
@@ -177,16 +182,10 @@ pub fn index(c: &mut Connection, artists: &[Artist], albums: &[Album], songs: &[
     for a in artists {
         st.artists += upsert(&tx, ARTIST, &a.id, &a.name, a)? as u32;
     }
-    for a in albums {
-        if a.is_external {
-            continue;
-        }
+    for a in albums.iter().filter(|a| !a.is_external) {
         st.albums += upsert(&tx, ALBUM, &a.id, &format!("{} {}", a.name, a.artist), a)? as u32;
     }
-    for s in songs {
-        if s.is_external {
-            continue;
-        }
+    for s in songs.iter().filter(|s| !s.is_external) {
         st.songs += upsert(&tx, SONG, &s.id, &format!("{} {} {}", s.title, s.artist, s.album), s)? as u32;
     }
     tx.commit()?;

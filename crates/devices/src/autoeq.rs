@@ -343,12 +343,6 @@ mod tests {
         assert_eq!(hit("USB Audio"), None);
     }
 
-    #[test]
-    fn preset_url_repeats_leaf() {
-        let e = entry("- [64 Audio U12t](./crinacle/711%20in-ear/64%20Audio%20U12t) by crinacle on 711").unwrap();
-        assert_eq!(preset_url(&e), "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results/crinacle/711%20in-ear/64%20Audio%20U12t/64%20Audio%20U12t%20ParametricEQ.txt");
-    }
-
     /// Lines as they are in AutoEQ's INDEX.md (2026-09-25), parentheses and all.
     const REAL: &str = "- [Sony WH-1000XM6](./Kuulokenurkka/over-ear/Sony%20WH-1000XM6) by Kuulokenurkka\n\
 - [Sony WH-1000XM6](./Super%20Review/over-ear/Sony%20WH-1000XM6) by Super Review\n\
@@ -417,11 +411,8 @@ mod tests {
 
     mod fetching {
         use super::*;
-        use nori_net::transport::{Exchange, FailureKind, Transport, TransportError, TransportResponse};
-        use std::future::Future;
-        use std::pin::pin;
+        use nori_net::transport::{block_on, Exchange, FailureKind, Transport, TransportError, TransportResponse};
         use std::sync::Mutex;
-        use std::task::{Context, Poll, Waker};
 
         const PARAMETRIC: &str = "Preamp: -6.3 dB\nFilter 1: ON LSC Fc 105 Hz Gain 6.5 dB Q 0.70\nFilter 2: ON PK Fc 125 Hz Gain -2.7 dB Q 0.55\n";
         const GRAPHIC: &str = include_str!("../../player/testdata/graphiceq/sony-wh-1000xm6-analog-cable.txt");
@@ -447,31 +438,23 @@ mod tests {
             fn address_changed(&self) {}
         }
 
-        fn block<F: Future>(f: F) -> F::Output {
-            let mut f = pin!(f);
-            let mut cx = Context::from_waker(Waker::noop());
-            loop {
-                if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
-                    return v;
-                }
-            }
-        }
-
-        fn curve(pages: Vec<(&'static str, u16, &'static str)>) -> (Result<Curve, nori_net::transport::NetError>, usize) {
+        fn curve_first(graphic: bool, pages: Vec<(&'static str, u16, &'static str)>) -> (Result<Curve, nori_net::transport::NetError>, usize) {
             let web = Web { pages, asked: Mutex::new(Vec::new()) };
             let e = entry(REAL.lines().nth(2).unwrap()).unwrap();
-            let got = block(fetch_curve(&web, &e, false));
+            let got = block_on(fetch_curve(&web, &e, graphic));
             let asked = web.asked.lock().unwrap().len();
             (got, asked)
         }
 
+        fn curve(pages: Vec<(&'static str, u16, &'static str)>) -> (Result<Curve, nori_net::transport::NetError>, usize) {
+            curve_first(false, pages)
+        }
+
         #[test]
         fn graphic_first_order() {
-            let web = Web { pages: vec![("ParametricEQ.txt", 200, PARAMETRIC), ("GraphicEQ.txt", 200, GRAPHIC)], asked: Mutex::new(Vec::new()) };
-            let e = entry(REAL.lines().nth(2).unwrap()).unwrap();
-            assert_eq!(block(fetch_curve(&web, &e, true)).unwrap(), Curve::Found(GRAPHIC.into()));
-            let web = Web { pages: vec![("ParametricEQ.txt", 200, PARAMETRIC), ("GraphicEQ.txt", 404, "")], asked: Mutex::new(Vec::new()) };
-            assert_eq!(block(fetch_curve(&web, &e, true)).unwrap(), Curve::Found(PARAMETRIC.into()), "and the filters where there is none");
+            assert_eq!(curve_first(true, vec![("ParametricEQ.txt", 200, PARAMETRIC), ("GraphicEQ.txt", 200, GRAPHIC)]).0.unwrap(), Curve::Found(GRAPHIC.into()));
+            let (got, _) = curve_first(true, vec![("ParametricEQ.txt", 200, PARAMETRIC), ("GraphicEQ.txt", 404, "")]);
+            assert_eq!(got.unwrap(), Curve::Found(PARAMETRIC.into()), "and the filters where there is none");
         }
 
         #[test]

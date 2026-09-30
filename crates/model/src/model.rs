@@ -527,20 +527,6 @@ pub struct HistoryEntry {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
-pub struct SongStat {
-    pub song_id: String,
-    /// Listens that were not skips.
-    pub plays: u32,
-    pub skips: u32,
-    /// 0 when the song was only ever skipped.
-    pub last_played_ms: i64,
-    pub heard_ms_total: i64,
-    /// Current taste score (`history.rs`), about 1 per recent full listen.
-    pub taste: f64,
-}
-
-#[derive(Debug, Clone, Default, PartialEq)]
-#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct TopSong {
     pub song: Song,
     pub plays: u32,

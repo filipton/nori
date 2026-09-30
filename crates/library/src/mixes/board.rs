@@ -2,7 +2,7 @@
 //! Tiles, pages and playback read the same draw, held in memory per core; the same seed over the same
 //! index draws the same mix after a restart, so nothing is stored.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use nori_model::Song;
 use rusqlite::Connection;
@@ -81,11 +81,6 @@ pub fn mix_tile_colours(id: String) -> Vec<u32> {
     vec![seed, deep, with_alpha(deep, 0.0), with_alpha(deep, 0.72), with_alpha(deep, 0.94)]
 }
 
-/// Provider songs are never queued unasked: a stream request makes octo-fiesta download them.
-pub fn playable(s: &Song) -> bool {
-    !s.is_provider()
-}
-
 /// Four different covers, for a tile's collage.
 pub fn cover_ids(songs: &[Song]) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(4);
@@ -100,23 +95,7 @@ pub fn cover_ids(songs: &[Song]) -> Vec<String> {
     out
 }
 
-/// Keeps the first of each id: lists are keyed by id.
-pub fn distinct(songs: impl IntoIterator<Item = Song>) -> Vec<Song> {
-    let mut seen = HashSet::new();
-    songs.into_iter().filter(|s| seen.insert(s.id.clone())).collect()
-}
-
 // ---- what crosses to the app -----------------------------------------------
-
-/// One entry of the catalogue, for a player that lists the mixes itself.
-#[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
-pub struct MixSpec {
-    pub id: String,
-    pub name: MixName,
-    pub weekly: bool,
-    pub refreshable: bool,
-}
 
 /// A "For you" tile: which it is and up to four cover ids of what is in it.
 #[derive(Debug, Clone, PartialEq)]
@@ -212,11 +191,6 @@ pub fn mix_tiles(taste: bool) -> Vec<MixTile> {
     out
 }
 
-/// The mixes "For you" offers, in order.
-pub fn mix_catalogue() -> Vec<MixSpec> {
-    MIXES.iter().map(|s| MixSpec { id: s.id.into(), name: s.name, weekly: s.weekly, refreshable: s.refreshable() }).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,16 +206,6 @@ mod tests {
     }
 
     #[test]
-    fn playable_leaves_out_provider_items() {
-        let mut s = song("1", "a", "b", "c", "", 0);
-        assert!(playable(&s));
-        s.is_external = true;
-        assert!(!playable(&s));
-        assert!(!playable(&song("ext-deezer-1", "a", "b", "c", "", 0)));
-        assert!(!playable(&song("pl-1", "a", "b", "c", "", 0)));
-    }
-
-    #[test]
     fn covers_are_four_distinct() {
         let mut l: Vec<Song> = (0..8).map(|i| song(&i.to_string(), "t", "a", "b", "", 0)).collect();
         l[1].cover_art = l[0].cover_art.clone();
@@ -251,9 +215,9 @@ mod tests {
 
     #[test]
     fn catalogue_and_tiles() {
-        assert!(mix_catalogue().iter().all(|m| m.refreshable == (m.id != "top")));
+        assert!(MIXES.iter().all(|m| m.refreshable() == (m.id != "top")));
         let ids = |tiles: Vec<MixTile>| tiles.into_iter().map(|t| t.id).collect::<Vec<_>>();
-        let every: Vec<String> = std::iter::once(FAVOURITES_MIX.to_string()).chain(mix_catalogue().into_iter().map(|m| m.id)).collect();
+        let every: Vec<String> = std::iter::once(FAVOURITES_MIX.to_string()).chain(MIXES.iter().map(|m| m.id.to_string())).collect();
         assert_eq!(ids(mix_tiles(true)), every);
         assert_eq!(ids(mix_tiles(false)), [FAVOURITES_MIX], "no taste yet: only favourites");
     }

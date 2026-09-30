@@ -275,6 +275,95 @@ fn parse(body: &[u8]) -> Result<Response> {
     Ok(r)
 }
 
+impl Response {
+    /// randomSongs, songsByGenre, similarSongs2, topSongs and getSong all land here.
+    fn songs(self) -> Vec<Song> {
+        let lists = self.random_songs.or(self.songs_by_genre).or(self.similar_songs2).or(self.top_songs);
+        lists.map(|s| s.song).or(self.song.map(|s| vec![s])).unwrap_or_default()
+    }
+}
+
+impl Artists {
+    fn artists(self) -> Vec<Artist> {
+        self.index.into_iter().flat_map(|i| i.artist).collect()
+    }
+}
+
+impl From<Response> for ServerInfo {
+    fn from(r: Response) -> Self {
+        ServerInfo { version: r.version, server_type: r.kind, server_version: r.server_version, open_subsonic: r.open_subsonic }
+    }
+}
+
+impl From<Found> for SearchResult {
+    fn from(f: Found) -> Self {
+        SearchResult { artists: f.artist, albums: f.album, songs: f.song }
+    }
+}
+
+impl From<Found> for Starred {
+    fn from(f: Found) -> Self {
+        Starred::new(f.artist, f.album, f.song)
+    }
+}
+
+impl From<AlbumWire> for AlbumDetail {
+    fn from(a: AlbumWire) -> Self {
+        AlbumDetail::new(a.album, a.song, a.disc_titles)
+    }
+}
+
+impl From<ArtistWire> for ArtistDetail {
+    fn from(a: ArtistWire) -> Self {
+        ArtistDetail::new(a.artist, a.album)
+    }
+}
+
+impl From<PlaylistWire> for PlaylistDetail {
+    fn from(p: PlaylistWire) -> Self {
+        PlaylistDetail::new(p.playlist, p.entry)
+    }
+}
+
+impl From<ArtistInfoWire> for ArtistInfo {
+    fn from(i: ArtistInfoWire) -> Self {
+        ArtistInfo {
+            biography: i.biography.filter(|b| !b.trim().is_empty()),
+            image_url: i.large_image_url.or(i.medium_image_url).filter(|u| !u.is_empty()),
+            similar: i.similar_artist,
+            last_fm_url: i.last_fm_url.filter(|u| u.starts_with("http")),
+            music_brainz_id: i.music_brainz_id.filter(|m| !m.is_empty()),
+        }
+    }
+}
+
+impl From<DirectoryWire> for Directory {
+    fn from(d: DirectoryWire) -> Self {
+        let mut out = Directory { id: d.id, name: d.name, ..Default::default() };
+        for c in d.child {
+            if c.get("isDir").and_then(|v| v.as_bool()).unwrap_or(false) {
+                if let Ok(mut a) = serde_json::from_value::<Artist>(c.clone()) {
+                    if a.name.is_empty() {
+                        a.name = c.get("title").and_then(|t| t.as_str()).unwrap_or_default().to_string();
+                    }
+                    out.folders.push(a);
+                }
+            } else if let Ok(s) = serde_json::from_value::<Song>(c) {
+                out.songs.push(s);
+            }
+        }
+        out
+    }
+}
+
+impl From<QueueWire> for PlayQueue {
+    fn from(q: QueueWire) -> Self {
+        let current = q.current.map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()));
+        let index = current.and_then(|c| q.entry.iter().position(|s| s.id == c)).unwrap_or(0) as u32;
+        PlayQueue { songs: q.entry, index, position_ms: q.position, origin: None }
+    }
+}
+
 /// The newest core, for nori-engine and Android code that runs without a handle (the measurer).
 // Global: reached from JNI/engine callbacks with no core handle.
 static ACTIVE: Mutex<std::sync::Weak<Core>> = Mutex::new(std::sync::Weak::new());
@@ -499,42 +588,13 @@ impl Core {
         *self.server.write() = next;
     }
 
-    /// getIndexes: the folder tree's top level.
-    pub(crate) fn parse_indexes(&self, body: Vec<u8>) -> Result<Vec<Artist>> {
-        Ok(parse(&body)?.indexes.unwrap_or_default().index.into_iter().flat_map(|i| i.artist).collect())
-    }
-
-    pub fn parse_directory(&self, body: Vec<u8>) -> Result<Directory> {
-        let d = parse(&body)?.directory.unwrap_or_default();
-        let mut out = Directory { id: d.id, name: d.name, ..Default::default() };
-        for c in d.child {
-            if c.get("isDir").and_then(|v| v.as_bool()).unwrap_or(false) {
-                if let Ok(mut a) = serde_json::from_value::<Artist>(c.clone()) {
-                    if a.name.is_empty() {
-                        a.name = c.get("title").and_then(|t| t.as_str()).unwrap_or_default().to_string();
-                    }
-                    out.folders.push(a);
-                }
-            } else if let Ok(s) = serde_json::from_value::<Song>(c) {
-                out.songs.push(s);
-            }
-        }
-        Ok(out)
-    }
-
-    pub fn parse_music_folders(&self, body: Vec<u8>) -> Result<Vec<MusicFolder>> {
-        Ok(parse(&body)?.music_folders.unwrap_or_default().music_folder)
-    }
-
     /// Validates any response; used for ping and for calls with no payload.
     pub(crate) fn parse_status(&self, body: Vec<u8>) -> Result<ServerInfo> {
-        let r = parse(&body)?;
-        Ok(ServerInfo { version: r.version, server_type: r.kind, server_version: r.server_version, open_subsonic: r.open_subsonic })
+        Ok(parse(&body)?.into())
     }
 
     pub fn parse_search(&self, body: Vec<u8>) -> Result<SearchResult> {
-        let f = parse(&body)?.search_result3.unwrap_or_default();
-        Ok(SearchResult { artists: f.artist, albums: f.album, songs: f.song })
+        Ok(parse(&body)?.search_result3.unwrap_or_default().into())
     }
 
     /// Library sync: indexes a search3 page and returns its counts, not its items.
@@ -546,81 +606,6 @@ impl Core {
         st.albums = f.album.len() as u32;
         st.songs = f.song.len() as u32;
         Ok(st)
-    }
-
-    pub fn parse_starred(&self, body: Vec<u8>) -> Result<Starred> {
-        let f = parse(&body)?.starred2.unwrap_or_default();
-        Ok(Starred::new(f.artist, f.album, f.song))
-    }
-
-    pub fn parse_album(&self, body: Vec<u8>) -> Result<AlbumDetail> {
-        let a = parse(&body)?.album.unwrap_or_default();
-        Ok(AlbumDetail::new(a.album, a.song, a.disc_titles))
-    }
-
-    pub fn parse_artist(&self, body: Vec<u8>) -> Result<ArtistDetail> {
-        let a = parse(&body)?.artist.unwrap_or_default();
-        Ok(ArtistDetail::new(a.artist, a.album))
-    }
-
-    pub fn parse_artist_info(&self, body: Vec<u8>) -> Result<ArtistInfo> {
-        let i = parse(&body)?.artist_info2.unwrap_or_default();
-        Ok(ArtistInfo {
-            biography: i.biography.filter(|b| !b.trim().is_empty()),
-            image_url: i.large_image_url.or(i.medium_image_url).filter(|u| !u.is_empty()),
-            similar: i.similar_artist,
-            last_fm_url: i.last_fm_url.filter(|u| u.starts_with("http")),
-            music_brainz_id: i.music_brainz_id.filter(|m| !m.is_empty()),
-        })
-    }
-
-    pub fn parse_album_list(&self, body: Vec<u8>) -> Result<Vec<Album>> {
-        Ok(parse(&body)?.album_list2.unwrap_or_default().album)
-    }
-
-    pub fn parse_artists(&self, body: Vec<u8>) -> Result<Vec<Artist>> {
-        Ok(parse(&body)?.artists.unwrap_or_default().index.into_iter().flat_map(|i| i.artist).collect())
-    }
-
-    /// randomSongs, songsByGenre, similarSongs2, topSongs and getSong all land here.
-    pub(crate) fn parse_songs(&self, body: Vec<u8>) -> Result<Vec<Song>> {
-        let r = parse(&body)?;
-        Ok(r.random_songs.or(r.songs_by_genre).or(r.similar_songs2).or(r.top_songs).map(|s| s.song).or(r.song.map(|s| vec![s])).unwrap_or_default())
-    }
-
-    pub fn parse_playlists(&self, body: Vec<u8>) -> Result<Vec<Playlist>> {
-        Ok(parse(&body)?.playlists.unwrap_or_default().playlist)
-    }
-
-    pub fn parse_playlist(&self, body: Vec<u8>) -> Result<PlaylistDetail> {
-        let p = parse(&body)?.playlist.unwrap_or_default();
-        Ok(PlaylistDetail::new(p.playlist, p.entry))
-    }
-
-    pub fn parse_genres(&self, body: Vec<u8>) -> Result<Vec<Genre>> {
-        let mut g = parse(&body)?.genres.unwrap_or_default().genre;
-        g.sort_by_key(|g| std::cmp::Reverse(g.song_count));
-        Ok(g)
-    }
-
-    pub fn parse_radio(&self, body: Vec<u8>) -> Result<Vec<RadioStation>> {
-        Ok(parse(&body)?.internet_radio_stations.unwrap_or_default().station)
-    }
-
-    /// Synced lyrics win over plain; word times from the server's cues or estimated (lyrics.rs).
-    pub(crate) fn parse_lyrics(&self, body: Vec<u8>) -> Result<Lyrics> {
-        Ok(lyrics::build(parse(&body)?.lyrics_list.unwrap_or_default().structured_lyrics))
-    }
-
-    pub fn parse_share(&self, body: Vec<u8>) -> Result<String> {
-        parse(&body)?.shares.and_then(|s| s.share.into_iter().next()).map(|s| s.url).filter(|u| !u.is_empty()).ok_or(CoreError::Parse { reason: "no share in response".into() })
-    }
-
-    pub fn parse_play_queue(&self, body: Vec<u8>) -> Result<PlayQueue> {
-        let q = parse(&body)?.play_queue.unwrap_or_default();
-        let current = q.current.map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()));
-        let index = current.and_then(|c| q.entry.iter().position(|s| s.id == c)).unwrap_or(0) as u32;
-        Ok(PlayQueue { songs: q.entry, index, position_ms: q.position, origin: None })
     }
 
     pub fn cache_get(&self, key: String) -> Result<Option<Vec<u8>>> {

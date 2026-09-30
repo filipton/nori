@@ -1,12 +1,12 @@
 //! LRU cache of decoded covers keyed by URL and size, bounded in bytes. Generic over the picture type
 //! (RGBA [`Image`] or a platform handle whose byte size is given on insert).
 
-use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 
 use crate::disk::Key;
+use crate::lru::Lru;
 
 /// A decoded cover: tight rows of `width` x `height` RGBA pixels.
 #[derive(Debug, PartialEq, Eq)]
@@ -24,27 +24,14 @@ pub struct Sized {
     pub height: u32,
 }
 
-struct Kept<P> {
-    pictures: HashMap<Sized, (P, usize, u64)>,
-    order: BTreeMap<u64, Sized>,
-    bytes: usize,
-    clock: u64,
-}
-
-impl<P> Default for Kept<P> {
-    fn default() -> Kept<P> {
-        Kept { pictures: HashMap::new(), order: BTreeMap::new(), bytes: 0, clock: 0 }
-    }
-}
-
 pub struct MemoryCache<P = Arc<Image>> {
     limit: usize,
-    kept: Mutex<Kept<P>>,
+    kept: Mutex<Lru<Sized, P>>,
 }
 
 impl<P: Clone> MemoryCache<P> {
     pub fn new(limit: usize) -> MemoryCache<P> {
-        MemoryCache { limit, kept: Mutex::new(Kept::default()) }
+        MemoryCache { limit, kept: Mutex::new(Lru::default()) }
     }
 
     /// Looks up a cover; a hit marks it most recently used.
@@ -52,14 +39,7 @@ impl<P: Clone> MemoryCache<P> {
         if self.limit == 0 {
             return None;
         }
-        let mut k = self.kept.lock();
-        k.clock += 1;
-        let clock = k.clock;
-        let (picture, _, used) = k.pictures.get_mut(key)?;
-        let (picture, was) = (picture.clone(), std::mem::replace(used, clock));
-        k.order.remove(&was);
-        k.order.insert(clock, *key);
-        Some(picture)
+        self.kept.lock().touch(*key).cloned()
     }
 
     /// Inserts `picture` of `size` bytes, evicting least recently used entries until it fits. A picture
@@ -69,29 +49,17 @@ impl<P: Clone> MemoryCache<P> {
             return;
         }
         let mut k = self.kept.lock();
-        if let Some((_, old, used)) = k.pictures.remove(&key) {
-            k.order.remove(&used);
-            k.bytes -= old;
-        }
-        while k.bytes + size > self.limit {
-            let Some((_, gone)) = k.order.pop_first() else { break };
-            let (_, old, _) = k.pictures.remove(&gone).expect("every picture in the order is kept");
-            k.bytes -= old;
-        }
-        k.clock += 1;
-        let clock = k.clock;
-        k.pictures.insert(key, (picture, size, clock));
-        k.order.insert(clock, key);
-        k.bytes += size;
+        k.insert(key, picture, size as u64);
+        k.fit(self.limit as u64, |_| {});
     }
 
     /// Drops everything (low-memory signal).
     pub fn clear(&self) {
-        *self.kept.lock() = Kept::default();
+        *self.kept.lock() = Lru::default();
     }
 
     pub fn bytes(&self) -> usize {
-        self.kept.lock().bytes
+        self.kept.lock().bytes as usize
     }
 }
 

@@ -173,18 +173,13 @@ pub struct DeviceSpec {
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn device_spec(value: String) -> DeviceSpec {
     let (output, spec) = value.rsplit_once('=').unwrap_or((&value, &value));
-    let (kind, arg) = if spec == "flat" {
-        (SpecKind::Flat, "")
-    } else if spec == "quiet" {
-        (SpecKind::Quiet, "")
-    } else if spec == "bypass" {
-        (SpecKind::Bypass, "")
-    } else if let Some(name) = spec.strip_prefix("profile:") {
-        (SpecKind::Profile, name)
-    } else if let Some(search) = spec.strip_prefix("curve:") {
-        (SpecKind::Curve, search)
-    } else {
-        (SpecKind::Automatic, "")
+    let (kind, arg) = match (spec, spec.strip_prefix("profile:"), spec.strip_prefix("curve:")) {
+        ("flat", ..) => (SpecKind::Flat, ""),
+        ("quiet", ..) => (SpecKind::Quiet, ""),
+        ("bypass", ..) => (SpecKind::Bypass, ""),
+        (_, Some(name), _) => (SpecKind::Profile, name),
+        (_, _, Some(search)) => (SpecKind::Curve, search),
+        _ => (SpecKind::Automatic, ""),
     };
     DeviceSpec { output: output.to_string(), kind, arg: arg.to_string() }
 }

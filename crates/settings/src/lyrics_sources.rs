@@ -1,6 +1,7 @@
 //! The lyrics services the settings switch and rank, and which ones a lookup asks ([`lyrics_lookup`]).
 //! Querying them is nori-lyrics'.
 
+use crate::codec::Choice;
 use crate::settings::StoredPrefs;
 
 /// Where lyrics came from, for the credit line: the server or a [`LyricsService`].
@@ -50,7 +51,7 @@ impl Timing {
 /// A third-party lyrics service, asked after the server's own lyrics. Declared in default rank order,
 /// best first: word-timed, then line-timed from LRCLIB on, untimed last (docs/features.md, "Lyrics
 /// sources"). Rankings and switches are stored by [`name`](Self::name), so this order can change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, nori_settings_derive::Choice)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 pub enum LyricsService {
     Paxsenix,
@@ -71,82 +72,49 @@ pub enum LyricsService {
     Genius,
 }
 
+/// Per service, in declaration order: its name in log lines, the finest timing it can answer with,
+/// whether a lookup's first wave asks it (cheap and good; the rest are asked only when the first wave
+/// misses, scores low or lacks word timing, nori-lyrics' race.rs), and the prior trust in its answers,
+/// 0 to 1 (part of nori-lyrics' trust.rs score).
+const ABOUT: [(&str, Timing, bool, f64); 16] = [
+    ("PaxSenix", Timing::Words, true, 0.95),
+    ("BiniLyrics", Timing::Words, true, 0.9),
+    ("Unison", Timing::Words, true, 0.85),
+    ("BetterLyrics", Timing::Words, false, 0.9),
+    ("KuGou", Timing::Words, true, 0.75),
+    ("NetEase Cloud Music", Timing::Words, false, 0.75),
+    ("LyricsPlus", Timing::Words, false, 0.8),
+    ("SimpMusic", Timing::Words, true, 0.75),
+    ("BetterLyrics Portato", Timing::Words, false, 0.75),
+    ("PaxSenix: Musixmatch", Timing::Words, false, 0.85),
+    ("LRCLIB", Timing::Words, true, 0.85),
+    ("PaxSenix: Spotify", Timing::Words, false, 0.85),
+    ("YouTube captions", Timing::Lines, false, 0.45),
+    ("Megalobiz", Timing::Lines, false, 0.55),
+    ("YouTube Music", Timing::Untimed, false, 0.6),
+    ("Genius", Timing::Untimed, false, 0.7),
+];
+
 impl LyricsService {
-    pub const ALL: [LyricsService; 16] = [
-        LyricsService::Paxsenix,
-        LyricsService::Binilyrics,
-        LyricsService::Unison,
-        LyricsService::BetterLyrics,
-        LyricsService::Kugou,
-        LyricsService::Netease,
-        LyricsService::LyricsPlus,
-        LyricsService::Simpmusic,
-        LyricsService::Portato,
-        LyricsService::PaxsenixMusixmatch,
-        LyricsService::Lrclib,
-        LyricsService::PaxsenixSpotify,
-        LyricsService::YoutubeCaptions,
-        LyricsService::Megalobiz,
-        LyricsService::YoutubeMusic,
-        LyricsService::Genius,
-    ];
+    /// Every service, in declaration order.
+    pub const ALL: &'static [LyricsService] = <Self as Choice>::ALL;
 
     /// Its stored and cache name.
     pub fn name(self) -> &'static str {
-        match self {
-            LyricsService::Binilyrics => "BINILYRICS",
-            LyricsService::BetterLyrics => "BETTER_LYRICS",
-            LyricsService::Paxsenix => "PAXSENIX",
-            LyricsService::LyricsPlus => "LYRICS_PLUS",
-            LyricsService::Portato => "PORTATO",
-            LyricsService::PaxsenixMusixmatch => "PAXSENIX_MUSIXMATCH",
-            LyricsService::Simpmusic => "SIMPMUSIC",
-            LyricsService::Unison => "UNISON",
-            LyricsService::Netease => "NETEASE",
-            LyricsService::Kugou => "KUGOU",
-            LyricsService::Lrclib => "LRCLIB",
-            LyricsService::PaxsenixSpotify => "PAXSENIX_SPOTIFY",
-            LyricsService::YoutubeCaptions => "YOUTUBE_CAPTIONS",
-            LyricsService::Megalobiz => "MEGALOBIZ",
-            LyricsService::YoutubeMusic => "YOUTUBE_MUSIC",
-            LyricsService::Genius => "GENIUS",
-        }
+        <Self as Choice>::NAMES[self as usize]
     }
 
     /// The service stored under `name`, in any case.
     pub fn named(name: &str) -> Option<LyricsService> {
-        LyricsService::ALL.into_iter().find(|s| s.name().eq_ignore_ascii_case(name.trim()))
+        LyricsService::ALL.iter().copied().find(|s| s.name().eq_ignore_ascii_case(name.trim()))
     }
 
-    /// Its name in log lines.
     pub fn title(self) -> &'static str {
-        match self {
-            LyricsService::Binilyrics => "BiniLyrics",
-            LyricsService::BetterLyrics => "BetterLyrics",
-            LyricsService::Paxsenix => "PaxSenix",
-            LyricsService::LyricsPlus => "LyricsPlus",
-            LyricsService::Portato => "BetterLyrics Portato",
-            LyricsService::PaxsenixMusixmatch => "PaxSenix: Musixmatch",
-            LyricsService::Simpmusic => "SimpMusic",
-            LyricsService::Unison => "Unison",
-            LyricsService::Netease => "NetEase Cloud Music",
-            LyricsService::Kugou => "KuGou",
-            LyricsService::Lrclib => "LRCLIB",
-            LyricsService::PaxsenixSpotify => "PaxSenix: Spotify",
-            LyricsService::YoutubeCaptions => "YouTube captions",
-            LyricsService::Megalobiz => "Megalobiz",
-            LyricsService::YoutubeMusic => "YouTube Music",
-            LyricsService::Genius => "Genius",
-        }
+        ABOUT[self as usize].0
     }
 
-    /// The finest timing it can answer with.
     pub fn best(self) -> Timing {
-        match self {
-            LyricsService::YoutubeCaptions | LyricsService::Megalobiz => Timing::Lines,
-            LyricsService::YoutubeMusic | LyricsService::Genius => Timing::Untimed,
-            _ => Timing::Words,
-        }
+        ABOUT[self as usize].1
     }
 
     /// Needs the PaxSenix key; skipped without it.
@@ -154,28 +122,12 @@ impl LyricsService {
         matches!(self, LyricsService::PaxsenixMusixmatch | LyricsService::PaxsenixSpotify)
     }
 
-    /// Asked in a lookup's first wave: cheap and good. The rest are asked only when the first wave misses,
-    /// scores low or lacks word timing (nori-lyrics' race.rs).
     pub fn first_wave(self) -> bool {
-        matches!(
-            self,
-            LyricsService::Paxsenix | LyricsService::Binilyrics | LyricsService::Unison | LyricsService::Kugou | LyricsService::Simpmusic | LyricsService::Lrclib
-        )
+        ABOUT[self as usize].2
     }
 
-    /// Prior trust in its answers, 0 to 1 (part of nori-lyrics' trust.rs score).
     pub fn prior(self) -> f64 {
-        match self {
-            LyricsService::Paxsenix => 0.95,
-            LyricsService::Binilyrics | LyricsService::BetterLyrics => 0.9,
-            LyricsService::Unison | LyricsService::Lrclib | LyricsService::PaxsenixMusixmatch | LyricsService::PaxsenixSpotify => 0.85,
-            LyricsService::LyricsPlus => 0.8,
-            LyricsService::Kugou | LyricsService::Netease | LyricsService::Simpmusic | LyricsService::Portato => 0.75,
-            LyricsService::Genius => 0.7,
-            LyricsService::YoutubeMusic => 0.6,
-            LyricsService::Megalobiz => 0.55,
-            LyricsService::YoutubeCaptions => 0.45,
-        }
+        ABOUT[self as usize].3
     }
 
     /// The credit line's name for it.
@@ -210,7 +162,7 @@ pub fn default_order() -> Vec<LyricsService> {
 /// predecessor.
 pub(crate) fn complete_order(stored: &[LyricsService]) -> Vec<LyricsService> {
     let mut order = distinct(stored.iter().copied());
-    for (i, s) in LyricsService::ALL.into_iter().enumerate() {
+    for (i, &s) in LyricsService::ALL.iter().enumerate() {
         if !order.contains(&s) {
             let above = LyricsService::ALL[..i].iter().rev().find_map(|a| order.iter().position(|o| o == a));
             order.insert(above.map_or(0, |at| at + 1), s);
@@ -286,7 +238,7 @@ mod tests {
 
     #[test]
     fn names_round_trip() {
-        for s in LyricsService::ALL {
+        for &s in LyricsService::ALL {
             assert_eq!(LyricsService::named(s.name()), Some(s));
             assert_eq!(LyricsService::named(&s.name().to_lowercase()), Some(s));
             assert!(!s.title().is_empty());
@@ -317,8 +269,8 @@ mod tests {
         assert!(order[..lrclib].iter().all(|s| s.best() == Timing::Words), "only services that time words rank above LRCLIB");
         assert!(order[lrclib..].windows(2).all(|w| w[0].best() >= w[1].best() || w[0] == LyricsService::Lrclib), "then by line, then untimed");
         assert_eq!(order[14..], [LyricsService::YoutubeMusic, LyricsService::Genius]);
-        assert!(LyricsService::ALL.into_iter().filter(|s| s.first_wave()).all(|s| s.best() == Timing::Words || s == LyricsService::Lrclib));
-        assert!(LyricsService::ALL.into_iter().all(|s| (0.0..=1.0).contains(&s.prior())));
+        assert!(LyricsService::ALL.iter().copied().filter(|s| s.first_wave()).all(|s| s.best() == Timing::Words || s == LyricsService::Lrclib));
+        assert!(LyricsService::ALL.iter().all(|s| (0.0..=1.0).contains(&s.prior())));
     }
 
     #[test]

@@ -27,18 +27,6 @@ impl Core {
     pub(crate) fn mix_instant(&self, seed_song_id: String, limit: u32, seed: u64) -> Result<Vec<Song>> {
         Ok(instant(&self.db.lock(), &seed_song_id, limit as usize, seed, db::now_ms())?)
     }
-
-    pub fn mix_excluded_clear(&self) -> Result<()> {
-        self.db.lock().execute("DELETE FROM mix_excluded WHERE server=sid()", [])?;
-        Ok(())
-    }
-
-    pub fn mix_excluded_list(&self) -> Result<Vec<Song>> {
-        let c = self.db.lock();
-        let mut st = c.prepare_cached("SELECT i.json FROM mix_excluded e JOIN items i ON i.server=sid() AND i.kind=2 AND i.id=e.song_id WHERE e.server=sid() ORDER BY i.rowid")?;
-        let rows = st.query_map([], |r| r.get::<_, String>(0))?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?.iter().filter_map(|j| serde_json::from_str(j).ok()).collect())
-    }
 }
 
 #[cfg(test)]
@@ -50,6 +38,10 @@ pub(crate) mod tests {
 
     fn ids(l: &[Song]) -> Vec<&str> {
         l.iter().map(|s| s.id.as_str()).collect()
+    }
+
+    fn excluded(core: &Core) -> i64 {
+        core.db.lock().query_row("SELECT count(*) FROM mix_excluded", [], |r| r.get(0)).unwrap()
     }
 
     fn adjacent_artists(l: &[Song]) -> usize {
@@ -83,7 +75,7 @@ pub(crate) mod tests {
             assert!(top(&c, 20, NOW).unwrap().is_empty());
         }
         assert!(core.mix_instant("nope".into(), 20, 1).unwrap().is_empty());
-        assert!(core.mix_excluded_list().unwrap().is_empty());
+        assert_eq!(excluded(&core), 0);
     }
 
     #[test]
@@ -200,7 +192,7 @@ pub(crate) mod tests {
             core.mix_excluded_set(s.id.clone(), true).unwrap();
         }
         core.mix_excluded_set(out[0].id.clone(), true).unwrap();
-        assert_eq!(core.mix_excluded_list().unwrap().len(), 10);
+        assert_eq!(excluded(&core), 10);
         let c = core.db.lock();
         assert!(quick_picks(&c, 50, 1, NOW).unwrap().is_empty());
         assert!(listen_again(&c, 50, 1, NOW).unwrap().is_empty());
@@ -209,7 +201,7 @@ pub(crate) mod tests {
 
         core.mix_excluded_set(out[0].id.clone(), false).unwrap();
         assert_eq!(ids(&top(&core.db.lock(), 50, NOW).unwrap()), vec![out[0].id.as_str()]);
-        core.mix_excluded_clear().unwrap();
+        core.db.lock().execute("DELETE FROM mix_excluded", []).unwrap();
         assert_eq!(top(&core.db.lock(), 50, NOW).unwrap().len(), 10);
     }
 

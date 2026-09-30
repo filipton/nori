@@ -3677,7 +3677,6 @@ version = "0.4.8"
 dependencies = [
  "async-trait",
  "futures-util",
- "libc",
  "nori-automix",
  "nori-db",
  "nori-devices",

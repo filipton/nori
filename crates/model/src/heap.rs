@@ -15,33 +15,30 @@ static COUNTING: AtomicBool = AtomicBool::new(false);
 // SAFETY: forwards to `System`; only adds a counter.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
-        let p = unsafe { System.alloc(l) };
-        if !p.is_null() {
-            LIVE.fetch_add(l.size() as isize, Ordering::Relaxed);
-        }
-        p
+        counted(unsafe { System.alloc(l) }, l.size() as isize)
     }
 
     unsafe fn alloc_zeroed(&self, l: Layout) -> *mut u8 {
-        let p = unsafe { System.alloc_zeroed(l) };
-        if !p.is_null() {
-            LIVE.fetch_add(l.size() as isize, Ordering::Relaxed);
-        }
-        p
+        counted(unsafe { System.alloc_zeroed(l) }, l.size() as isize)
     }
 
     unsafe fn realloc(&self, p: *mut u8, l: Layout, size: usize) -> *mut u8 {
-        let q = unsafe { System.realloc(p, l, size) };
-        if !q.is_null() {
-            LIVE.fetch_add(size as isize - l.size() as isize, Ordering::Relaxed);
-        }
-        q
+        counted(unsafe { System.realloc(p, l, size) }, size as isize - l.size() as isize)
     }
 
     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
         unsafe { System.dealloc(p, l) };
         LIVE.fetch_sub(l.size() as isize, Ordering::Relaxed);
     }
+}
+
+/// `p`, with `grown` bytes counted if the allocation succeeded.
+#[inline(always)]
+fn counted(p: *mut u8, grown: isize) -> *mut u8 {
+    if !p.is_null() {
+        LIVE.fetch_add(grown, Ordering::Relaxed);
+    }
+    p
 }
 
 impl Counting {

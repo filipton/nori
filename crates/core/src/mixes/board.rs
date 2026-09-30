@@ -2,6 +2,7 @@
 
 use crate::{db, Core, Song};
 use nori_library::pages::total_seconds;
+use nori_library::search::distinct;
 
 pub use nori_library::mixes::board::*;
 
@@ -30,7 +31,7 @@ impl Core {
     /// dropped. True when it changed.
     pub fn mix_favourites(&self, starred_songs: Vec<Song>) -> bool {
         let marks = self.stars.lock().clone();
-        let kept = distinct(starred_songs.into_iter().filter(|s| playable(s) && marks.kept(crate::client::Starrable::Song, &s.id)));
+        let kept = distinct(starred_songs.into_iter().filter(|s| !s.is_provider() && marks.kept(crate::client::Starrable::Song, &s.id)), |s| &s.id);
         self.board(|b| {
             let changed = b.favourites.as_ref() != Some(&kept);
             b.favourites = Some(kept);
@@ -85,9 +86,9 @@ impl Core {
         // Offset so weekly seeds never equal a daily one.
         let seed = period * 1_000 + generation + if spec.weekly { 7_000_000 } else { 0 };
         let songs: Vec<Song> = match fallback {
-            Some(random) => random.into_iter().filter(playable).collect(),
+            Some(random) => random.into_iter().filter(|s| !s.is_provider()).collect(),
             None => {
-                let songs: Vec<Song> = draw(&self.db.lock(), spec.kind, seed as u64, db::now_ms()).into_iter().filter(playable).collect();
+                let songs: Vec<Song> = draw(&self.db.lock(), spec.kind, seed as u64, db::now_ms()).into_iter().filter(|s| !s.is_provider()).collect();
                 // Empty without history: fall back to random server songs.
                 if songs.is_empty() {
                     return MixDraw::NeedsFallback;
@@ -95,7 +96,7 @@ impl Core {
                 songs
             }
         };
-        let drawn = Drawn { songs: distinct(songs), period, generation };
+        let drawn = Drawn { songs: distinct(songs, |s| &s.id), period, generation };
         self.board(|b| b.drawn.insert(spec.id, drawn));
         MixDraw::Drawn
     }

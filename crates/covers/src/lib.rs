@@ -6,6 +6,7 @@
 pub mod decode;
 pub mod disk;
 pub mod loader;
+mod lru;
 pub mod memory;
 pub mod scale;
 

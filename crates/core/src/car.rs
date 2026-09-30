@@ -33,10 +33,6 @@ impl Client {
     async fn folder(&self, parent: &str) -> BrowsePage {
         let (kind, arg) = parent.split_once(':').unwrap_or((parent, ""));
         let art = |id: &Option<String>| id.as_ref().map(|c| self.core.cover_url(c.clone(), ART));
-        let songs = |p: Result<Page, _>| match p {
-            Ok(Page::Songs { v }) => v,
-            _ => Vec::new(),
-        };
         match kind {
             ROOT => BrowsePage { folders: root(), songs: Vec::new() },
             "albums" => match self.first(Read::AlbumList { kind: arg.to_lowercase(), size: 40, offset: 0, genre: None }).await {
@@ -49,11 +45,7 @@ impl Client {
                 },
                 _ => BrowsePage::default(),
             },
-            "album" => BrowsePage { folders: Vec::new(), songs: match self.first(Read::AlbumById { id: arg.into() }).await {
-                    Ok(Page::AlbumPage { v }) => v.songs,
-                    _ => Vec::new(),
-                },
-            },
+            "album" => BrowsePage { folders: Vec::new(), songs: self.first(Read::AlbumById { id: arg.into() }).await.map(Page::songs).unwrap_or_default() },
             "playlists" => match self.first(Read::PlaylistList).await {
                 Ok(Page::Playlists { v }) => BrowsePage {
                     folders: v
@@ -71,16 +63,9 @@ impl Client {
                 },
                 _ => BrowsePage::default(),
             },
-            "playlist" => BrowsePage { folders: Vec::new(), songs: match self.first(Read::PlaylistById { id: arg.into() }).await {
-                    Ok(Page::PlaylistPage { v }) => v.songs,
-                    _ => Vec::new(),
-                },
-            },
-            "starred" => match self.first(Read::StarredItems).await {
-                Ok(Page::StarredPage { v }) => BrowsePage { folders: Vec::new(), songs: v.songs },
-                _ => BrowsePage::default(),
-            },
-            "random" => BrowsePage { folders: Vec::new(), songs: songs(self.read_now(Read::RandomSongs { size: 50, genre: None }).await) },
+            "playlist" => BrowsePage { folders: Vec::new(), songs: self.first(Read::PlaylistById { id: arg.into() }).await.map(Page::songs).unwrap_or_default() },
+            "starred" => BrowsePage { folders: Vec::new(), songs: self.first(Read::StarredItems).await.map(Page::songs).unwrap_or_default() },
+            "random" => BrowsePage { folders: Vec::new(), songs: self.read_now(Read::RandomSongs { size: 50, genre: None }).await.map(Page::songs).unwrap_or_default() },
             "downloads" => BrowsePage { folders: Vec::new(), songs: self.core.downloads(true).unwrap_or_default() },
             _ => BrowsePage::default(),
         }

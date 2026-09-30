@@ -52,14 +52,15 @@ fn premultiplied_is_straight_times_alpha() {
 }
 
 #[test]
-fn shrink_matches_area_average() {
-    // 40x30 into 12x12: the middle 30x30 at 2.5:1.
-    close("area", &decode("photo.png", 12, 12, Alpha::Straight), &file("photo-12-area.rgba"), 0.1, 1);
-}
-
-#[test]
-fn grow_matches_pillow_bilinear() {
-    close("bilinear", &decode("photo.png", 50, 50, Alpha::Straight), &file("photo-50-bilinear.rgba"), 0.1, 1);
+fn scaling_matches_references() {
+    // 40x30 into 12x12 is the middle 30x30 at 2.5:1 (area average); 50x50 is Pillow's bilinear. The JPEG
+    // is a half-size IDCT then an area average, against libjpeg-turbo's half-size decode averaged the
+    // same way; loose, as this picture is small and busy (real covers differ by about one step).
+    for (name, picture, side, reference, mean, max) in
+        [("area", "photo.png", 12, "photo-12-area.rgba", 0.1, 1), ("bilinear", "photo.png", 50, "photo-50-bilinear.rgba", 0.1, 1), ("idct", "photo.jpg", 12, "photo.jpg-12-half.rgba", 4.5, 32)]
+    {
+        close(name, &decode(picture, side, side, Alpha::Straight), &file(reference), mean, max);
+    }
 }
 
 #[test]
@@ -68,13 +69,6 @@ fn jpeg_without_idct_scaling_is_exact_average() {
     d.set_idct_scaling(false);
     let d = d.decode(&file("photo.jpg"), 12, 12, Alpha::Straight).unwrap();
     close("whole", &d, &file("photo.jpg-12-area.rgba"), 0.5, 3);
-}
-
-#[test]
-fn jpeg_idct_scaling_is_near_libjpeg_turbo() {
-    // Half-size IDCT then area average, against libjpeg-turbo's half-size decode averaged the same way.
-    // Loose bounds: this picture is small and busy; real covers differ by about one step.
-    close("idct", &decode("photo.jpg", 12, 12, Alpha::Straight), &file("photo.jpg-12-half.rgba"), 4.5, 32);
 }
 
 #[test]
@@ -219,13 +213,11 @@ fn exif_orientation_is_applied() {
     let plain = decode("photo.jpg", 40, 30, Alpha::Straight);
     for o in [2u8, 3, 5, 6, 7, 8] {
         let (w, h) = if o >= 5 { (30, 40) } else { (40, 30) };
-        close(&format!("turned-{o}"), &decode(&format!("turned-{o}.jpg"), w, h, Alpha::Straight), &turn(&plain, 40, 30, o), 0.0, 0);
-    }
-    // And each matches Pillow's exif_transpose.
-    for o in [2u8, 3, 5, 6, 7, 8] {
-        let (w, h) = if o >= 5 { (30, 40) } else { (40, 30) };
         let name = format!("turned-{o}.jpg");
-        close(&name, &decode(&name, w, h, Alpha::Straight), &file(&format!("{name}.rgba")), 1.0, 12);
+        let turned = decode(&name, w, h, Alpha::Straight);
+        close(&name, &turned, &turn(&plain, 40, 30, o), 0.0, 0);
+        // And Pillow's exif_transpose.
+        close(&name, &turned, &file(&format!("{name}.rgba")), 1.0, 12);
     }
     // PNG eXIf and WebP EXIF chunks.
     close("png", &decode("turned-6.png", 30, 40, Alpha::Straight), &turn(&decode("photo.png", 40, 30, Alpha::Straight), 40, 30, 6), 0.0, 0);

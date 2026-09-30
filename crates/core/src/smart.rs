@@ -251,7 +251,7 @@ pub(crate) mod tests {
     #[test]
     fn validation_errors_name_path_and_problem() {
         use crate::SmartProblem::*;
-        smart_validate(r#"{"match":null,"sort":null,"limit":null,"limitMs":0}"#.into()).unwrap();
+        parse(r#"{"match":null,"sort":null,"limit":null,"limitMs":0}"#).unwrap();
         let rule = |r: &str| format!(r#"{{"match":{{"rules":[{r}]}}}}"#);
         let mut deep = r#"{"field":"year","op":"is","value":1}"#.to_string();
         for _ in 0..9 {
@@ -294,7 +294,7 @@ pub(crate) mod tests {
             (format!(r#"{{"match":{deep}}}"#), "match.rules[0].rules[0].rules[0].rules[0].rules[0].rules[0].rules[0]", TooDeep),
         ];
         for (json, path, problem) in cases {
-            match smart_validate(json.clone()) {
+            match parse(&json).map(|_| ()) {
                 Err(CoreError::Smart { path: p, problem: q }) => assert_eq!((p.as_str(), q), (path, problem), "{json}"),
                 other => panic!("{json}: {other:?}"),
             }
@@ -417,7 +417,7 @@ pub(crate) mod tests {
         let defaults = smart_defaults();
         let run = |id: &str| {
             let d = defaults.iter().find(|d| d.id == id).unwrap();
-            smart_validate(d.json.clone()).unwrap();
+            parse(&d.json).unwrap();
             eval(&core, &d.json, &[])
         };
         assert_eq!(run("default-most-played"), ["dogs", "so"]);

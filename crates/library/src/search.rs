@@ -6,20 +6,18 @@ use std::collections::HashSet;
 use nori_model::SearchResult;
 
 #[derive(Debug, Clone, Default)]
-#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct SearchSplit {
     pub everything: SearchResult,
     /// Only the library's items; None when that is everything (there are no provider items).
     pub library: Option<SearchResult>,
     /// Only the providers' items; None when there are none.
     pub providers: Option<SearchResult>,
-    pub has_providers: bool,
 }
 
 pub fn split(r: SearchResult) -> SearchSplit {
     let has_providers = r.songs.iter().any(|s| s.is_external) || r.albums.iter().any(|a| a.is_external) || r.artists.iter().any(|a| a.is_external);
     if !has_providers {
-        return SearchSplit { everything: r, library: None, providers: None, has_providers };
+        return SearchSplit { everything: r, library: None, providers: None };
     }
     let part = |external: bool| SearchResult {
         artists: r.artists.iter().filter(|a| a.is_external == external).cloned().collect(),
@@ -27,10 +25,11 @@ pub fn split(r: SearchResult) -> SearchSplit {
         songs: r.songs.iter().filter(|s| s.is_external == external).cloned().collect(),
     };
     let (library, providers) = (part(false), part(true));
-    SearchSplit { everything: r, library: Some(library), providers: Some(providers), has_providers }
+    SearchSplit { everything: r, library: Some(library), providers: Some(providers) }
 }
 
-fn distinct<T>(list: Vec<T>, id: impl Fn(&T) -> &str) -> Vec<T> {
+/// The first of each id.
+pub fn distinct<T>(list: impl IntoIterator<Item = T>, id: impl Fn(&T) -> &str) -> Vec<T> {
     let mut seen = HashSet::new();
     list.into_iter().filter(|x| seen.insert(id(x).to_string())).collect()
 }
@@ -123,7 +122,7 @@ impl Session {
     /// What the screen shows now.
     pub fn view(&self) -> SearchView {
         let shown = self.split.as_ref().map(|s| s.shown(self.scope));
-        let has_providers = self.split.as_ref().is_some_and(|s| s.has_providers);
+        let has_providers = self.split.as_ref().is_some_and(|s| s.providers.is_some());
         let empty = shown.as_ref().is_some_and(|r| r.songs.is_empty() && r.albums.is_empty() && r.artists.is_empty());
         SearchView {
             text: self.text.clone(),
@@ -178,7 +177,7 @@ mod tests {
     #[test]
     fn server_answers_are_deduplicated_and_split() {
         let r = search_split(result());
-        assert!(r.has_providers);
+        assert!(r.providers.is_some());
         assert_eq!(ids(&r.everything.songs, |s| &s.id), ["1", "ext-2", "3"]);
         assert_eq!(ids(&r.everything.albums, |a| &a.id), ["al", "ext-al"]);
         let (lib, prov) = (r.library.unwrap(), r.providers.unwrap());
@@ -195,6 +194,6 @@ mod tests {
         r.songs.retain(|s| !s.is_external);
         r.albums.retain(|a| !a.is_external);
         let s = search_split(r);
-        assert!(!s.has_providers && s.library.is_none() && s.providers.is_none());
+        assert!(s.library.is_none() && s.providers.is_none());
     }
 }

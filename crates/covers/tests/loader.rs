@@ -40,13 +40,9 @@ impl Server {
         self.calls.load(Ordering::SeqCst)
     }
 
-    /// Waits (10 s max) until `n` requests arrived.
+    /// Waits until `n` requests arrived.
     fn wait_calls(&self, n: usize) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while self.calls() < n {
-            assert!(std::time::Instant::now() < deadline, "{} requests reached the server, not {n}: {:?}", self.calls(), self.asked.lock());
-            std::thread::yield_now();
-        }
+        eventually(&format!("{n} requests at the server"), || self.calls() >= n);
     }
 }
 
@@ -374,11 +370,7 @@ fn warm_fetches_to_disk_once_without_decoding() {
     loader.warm("http://s/rest/getCoverArt.view?u=a&id=ext-deezer-1&size=320");
     let late = loader.request("http://s/late", 8, 8, |_| {});
     server.release();
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !loader.disk().unwrap().contains(Key::of(PHOTO)) {
-        assert!(std::time::Instant::now() < deadline, "warmed");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    eventually("warmed", || loader.disk().unwrap().contains(Key::of(PHOTO)));
     // The view went before the warm-up, the provider cover was skipped, nothing warmed was decoded.
     assert_eq!(*server.asked.lock(), ["http://s/busy", "http://s/late", PHOTO]);
     assert_eq!(painted.load(Ordering::SeqCst), 2);
@@ -387,11 +379,7 @@ fn warm_fetches_to_disk_once_without_decoding() {
     loader.warm(PHOTO);
     let then = "http://s/rest/getCoverArt.view?u=a&id=al-2&size=320";
     loader.warm(then);
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !loader.disk().unwrap().contains(Key::of(then)) {
-        assert!(std::time::Instant::now() < deadline, "the second warm-up came");
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    eventually("the second warm-up came", || loader.disk().unwrap().contains(Key::of(then)));
     assert_eq!(*server.asked.lock(), ["http://s/busy", "http://s/late", PHOTO, then], "the warmed cover not fetched again");
     // `read` serves the raw bytes from disk.
     let mut bytes = Vec::new();
@@ -481,13 +469,17 @@ impl Paint for Threads {
     }
 }
 
-/// Waits (10 s max) until `count` is `n`.
-fn until(count: &AtomicUsize, n: usize) {
+/// Waits (10 s max) until `done`, failing with `what`.
+fn eventually(what: &str, done: impl Fn() -> bool) {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while count.load(Ordering::SeqCst) != n {
-        assert!(std::time::Instant::now() < deadline, "{} rather than {n}", count.load(Ordering::SeqCst));
+    while !done() {
+        assert!(std::time::Instant::now() < deadline, "never: {what}");
         std::thread::sleep(Duration::from_millis(2));
     }
+}
+
+fn until(count: &AtomicUsize, n: usize) {
+    eventually(&format!("{n} alive"), || count.load(Ordering::SeqCst) == n);
 }
 
 /// Starts three workers by holding three requests at the server at once.

@@ -90,12 +90,6 @@ impl PartialOrd for Version {
     }
 }
 
-/// Whether `latest` is newer than `current`; false if either does not parse.
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn version_newer(current: String, latest: String) -> bool {
-    matches!((Version::parse(&current), Version::parse(&latest)), (Some(c), Some(l)) if l > c)
-}
-
 /// A release file.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Asset {
@@ -333,11 +327,6 @@ mod tests {
         }
         assert!(v("0.10.0") > v("0.9.9"), "numbers, not text");
         assert!(v("1.0.0") > v("0.99.99"));
-        assert!(version_newer("0.4.0".into(), "v0.4.1".into()));
-        assert!(!version_newer("0.4.1".into(), "v0.4.1".into()));
-        assert!(!version_newer("0.5.0".into(), "v0.4.1".into()));
-        assert!(version_newer("0.5.0-rc.1".into(), "v0.5.0".into()));
-        assert!(!version_newer("0.4.0".into(), "nightly".into()), "unparseable tag");
     }
 
     fn asset(name: &str) -> Asset {

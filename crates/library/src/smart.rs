@@ -810,11 +810,6 @@ pub fn smart_defaults() -> Vec<SmartPlaylist> {
     defs.into_iter().map(|(id, builtin, json)| SmartPlaylist { id: id.into(), name: String::new(), json: json.to_string(), builtin: Some(builtin) }).collect()
 }
 
-/// Checks a definition without running it; the error says where and what (`match.rules[1].op: ...`).
-pub fn smart_validate(json: String) -> Result<()> {
-    parse(&json).map(|_| ())
-}
-
 /// A smart playlist as its page shows it.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
