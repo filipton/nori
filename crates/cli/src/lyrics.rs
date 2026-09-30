@@ -3,7 +3,7 @@
 
 use nori_core::race::{lyrics_replaces, LyricsPick};
 use nori_core::lyrics_sources::LyricsOrigin;
-use nori_look::lyrics::{Line, LyricClock, LyricTiming, Step, Word};
+use nori_look::lyrics::{LyricClock, Step};
 
 /// Redraw interval while a word-timed line fills (the clock counts in frames then).
 pub const FRAME_MS: u64 = 50;
@@ -15,23 +15,11 @@ pub struct SongLyrics {
     pub offsets: Vec<Vec<u32>>,
 }
 
-fn word(w: &nori_core::LyricWord) -> Word {
-    Word { start_ms: w.start_ms, end_ms: w.end_ms, start: w.start, end: w.end }
-}
-
 impl SongLyrics {
     pub fn new(pick: LyricsPick, position_ms: i64) -> SongLyrics {
-        let lyrics = &pick.lyrics;
-        let lines = lyrics.lines.iter().map(|l| Line {
-            start_ms: l.start_ms,
-            end_ms: l.end_ms,
-            len: l.text.encode_utf16().count() as u32,
-            words: l.words.iter().map(word).collect(),
-            backing_len: l.backing.encode_utf16().count() as u32,
-            backing: l.backing_words.iter().map(word).collect(),
-        });
-        let clock = LyricClock::with_offset(LyricTiming::new(lyrics.synced, lyrics.word_timed, lines), position_ms, lyrics.offset_ms);
-        let offsets = lyrics
+        let clock = nori_core::look::clock_on(&pick.lyrics, position_ms);
+        let offsets = pick
+            .lyrics
             .lines
             .iter()
             .map(|l| {

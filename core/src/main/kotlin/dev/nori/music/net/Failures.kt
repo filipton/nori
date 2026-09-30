@@ -28,6 +28,7 @@ object Failures {
         is CoreException.Api -> e.reason
         is CoreException.Parse -> str(R.string.error_bad_response, e.reason)
         is CoreException.Db -> str(R.string.error_database, e.reason)
+        is CoreException.Smart -> str(R.string.error_smart_playlist)
         is SoundException.Db -> e.message
         is MeteredNetworkException -> str(R.string.error_metered)
         is HttpStatusException -> str(R.string.error_http, e.status)

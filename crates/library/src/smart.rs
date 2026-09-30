@@ -45,7 +45,7 @@
 use std::collections::HashSet;
 
 use nori_model::model::*;
-use nori_model::{CoreError, Result};
+use nori_model::{CoreError, Result, SmartProblem};
 use rusqlite::{types::Value as Sql, Connection, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -195,10 +195,6 @@ fn ops_of(kind: Kind) -> &'static [Op] {
     }
 }
 
-fn op_name(op: Op) -> &'static str {
-    OPS.iter().find(|(_, o)| *o == op).map(|(n, _)| *n).unwrap_or("")
-}
-
 #[derive(Debug, Clone, PartialEq)]
 enum Val {
     None,
@@ -276,22 +272,26 @@ pub struct Def {
     pub limit_ms: Option<i64>,
 }
 
-// ---- parsing, with errors a person can act on -------------------------------
+// ---- parsing, with errors saying where and what ------------------------------
 
-type Parsed<T> = std::result::Result<T, String>;
+type Parsed<T> = Result<T>;
+
+fn bad<T>(path: &str, problem: SmartProblem) -> Parsed<T> {
+    Err(CoreError::Smart { path: path.to_string(), problem })
+}
 
 fn only_keys(o: &Map<String, Value>, allowed: &[&str], path: &str) -> Parsed<()> {
     match o.keys().find(|k| !allowed.contains(&k.as_str())) {
-        Some(k) => Err(format!("{path}: unknown key \"{k}\" (expected {})", allowed.join(", "))),
+        Some(k) => bad(&format!("{path}.{k}"), SmartProblem::UnknownKey),
         None => Ok(()),
     }
 }
 
 fn integer(v: &Value, path: &str) -> Parsed<i64> {
-    v.as_i64()
-        .or_else(|| v.as_f64().filter(|f| f.is_finite()).map(|f| f.round() as i64))
-        .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
-        .ok_or_else(|| format!("{path}: expected a whole number, found {v}"))
+    match v.as_i64().or_else(|| v.as_f64().filter(|f| f.is_finite()).map(|f| f.round() as i64)).or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())) {
+        Some(n) => Ok(n),
+        None => bad(path, SmartProblem::NotNumber),
+    }
 }
 
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
@@ -322,142 +322,142 @@ fn iso_from_ms(ms: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}", rest / 3600, rest / 60 % 60, rest % 60)
 }
 
-/// `end` makes a bare date mean the last instant of its day.
+/// A date like "2024-05-31" or "2024-05-31T18:00:00"; `end` makes a bare date mean the last instant of
+/// its day.
 fn date(v: &Value, end: bool, path: &str) -> Parsed<(String, i64)> {
-    let bad = || format!("{path}: expected a date like \"2024-05-31\" or \"2024-05-31T18:00:00\", found {v}");
-    let s = v.as_str().map(str::trim).ok_or_else(bad)?;
+    let not_date = || bad(path, SmartProblem::NotDate);
+    let Some(s) = v.as_str().map(str::trim) else { return not_date() };
     let num = |r: std::ops::Range<usize>| s.get(r).and_then(|p| p.parse::<i64>().ok());
     let b = s.as_bytes();
-    let (Some(y), Some(m), Some(d)) = (num(0..4), num(5..7), num(8..10)) else { return Err(bad()) };
+    let (Some(y), Some(m), Some(d)) = (num(0..4), num(5..7), num(8..10)) else { return not_date() };
     if b.len() < 10 || b[4] != b'-' || b[7] != b'-' || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
-        return Err(bad());
+        return not_date();
     }
     let day = days_from_civil(y, m, d) * DAY_MS;
     if b.len() == 10 {
         // Second 60 sorts after every timestamp of the day whatever its precision ("...59Z", "...59.999Z").
         return Ok(if end { (format!("{s}T23:59:60"), day + DAY_MS - 1) } else { (s.to_string(), day) });
     }
-    let (Some(h), Some(mi), Some(sec)) = (num(11..13), num(14..16), num(17..19)) else { return Err(bad()) };
+    let (Some(h), Some(mi), Some(sec)) = (num(11..13), num(14..16), num(17..19)) else { return not_date() };
     if b[10] != b'T' || h > 23 || mi > 59 || sec > 60 {
-        return Err(bad());
+        return not_date();
     }
     Ok((s[..19].to_string(), day + ((h * 60 + mi) * 60 + sec) * 1000))
 }
 
 fn rule(o: &Map<String, Value>, path: &str) -> Parsed<Rule> {
     only_keys(o, &["field", "op", "value"], path)?;
-    let name = o.get("field").and_then(Value::as_str).ok_or_else(|| format!("{path}.field: expected a field name"))?;
-    let field = *FIELDS
-        .iter()
-        .find(|f| f.name() == name)
-        .ok_or_else(|| format!("{path}.field: unknown field \"{name}\" (known: {})", FIELDS.iter().map(|f| f.name()).collect::<Vec<_>>().join(", ")))?;
-    let op_text = o.get("op").and_then(Value::as_str).ok_or_else(|| format!("{path}.op: expected an operator"))?;
-    let allowed = ops_of(field.kind());
-    let op = OPS.iter().find(|(n, _)| *n == op_text).map(|(_, o)| *o).filter(|o| allowed.contains(o)).ok_or_else(|| {
-        let known = if OPS.iter().any(|(n, _)| *n == op_text) { "does not apply to" } else { "is not an operator for" };
-        format!("{path}.op: \"{op_text}\" {known} \"{name}\" (use one of: {})", allowed.iter().map(|o| op_name(*o)).collect::<Vec<_>>().join(", "))
-    })?;
-
+    let fpath = format!("{path}.field");
+    let Some(name) = o.get("field").and_then(Value::as_str) else { return bad(&fpath, SmartProblem::NoField) };
+    let Some(&field) = FIELDS.iter().find(|f| f.name() == name) else { return bad(&fpath, SmartProblem::UnknownField) };
+    let opath = format!("{path}.op");
+    let Some(op_text) = o.get("op").and_then(Value::as_str) else { return bad(&opath, SmartProblem::NoOperator) };
+    let Some(op) = OPS.iter().find(|(n, _)| *n == op_text).map(|(_, o)| *o).filter(|o| ops_of(field.kind()).contains(o)) else {
+        return bad(&opath, SmartProblem::WrongOperator);
+    };
     let vpath = format!("{path}.value");
     let v = o.get("value").filter(|v| !v.is_null());
-    let need = |what: &str| v.ok_or_else(|| format!("{vpath}: \"{op_text}\" needs {what}"));
-    let pair = |what: &str| -> Parsed<(&Value, &Value)> {
-        match need(what)?.as_array().map(Vec::as_slice) {
+    let need = || v.map_or_else(|| bad(&vpath, SmartProblem::NoValue), Ok);
+    let pair = || -> Parsed<(&Value, &Value)> {
+        match need()?.as_array().map(Vec::as_slice) {
             Some([a, b]) => Ok((a, b)),
-            _ => Err(format!("{vpath}: \"between\" needs {what}")),
+            _ => bad(&vpath, SmartProblem::NoValue),
         }
     };
+    let at = |i: usize| format!("{vpath}[{i}]");
     let is_date = matches!(field.kind(), Kind::DateMs | Kind::DateIso);
     let value = match op {
-        Op::IsTrue | Op::IsFalse => {
-            if v.is_some() {
-                return Err(format!("{vpath}: \"{op_text}\" takes no value"));
-            }
-            Val::None
-        }
-        Op::WithinDays | Op::NotWithinDays => {
-            let n = integer(need("a number of days")?, &vpath)?;
-            if !(0..=100_000).contains(&n) {
-                return Err(format!("{vpath}: days must be between 0 and 100000"));
-            }
-            Val::Num(n)
-        }
+        Op::IsTrue | Op::IsFalse if v.is_some() => return bad(&vpath, SmartProblem::TakesNoValue),
+        Op::IsTrue | Op::IsFalse => Val::None,
+        Op::WithinDays | Op::NotWithinDays => match integer(need()?, &vpath)? {
+            n if (0..=100_000).contains(&n) => Val::Num(n),
+            _ => return bad(&vpath, SmartProblem::DaysOutOfRange),
+        },
         Op::Between if is_date => {
-            let (a, b) = pair("two dates: [from, to]")?;
-            let (a, b) = (date(a, false, &format!("{vpath}[0]"))?, date(b, true, &format!("{vpath}[1]"))?);
+            let (a, b) = pair()?;
+            let (a, b) = (date(a, false, &at(0))?, date(b, true, &at(1))?);
             if a.1 > b.1 {
-                return Err(format!("{vpath}: the range is backwards"));
+                return bad(&vpath, SmartProblem::Backwards);
             }
             Val::DateRange(a, b)
         }
         Op::Between => {
-            let (a, b) = pair("two numbers: [low, high]")?;
-            let (a, b) = (integer(a, &format!("{vpath}[0]"))?, integer(b, &format!("{vpath}[1]"))?);
+            let (a, b) = pair()?;
+            let (a, b) = (integer(a, &at(0))?, integer(b, &at(1))?);
             if a > b {
-                return Err(format!("{vpath}: the range is backwards"));
+                return bad(&vpath, SmartProblem::Backwards);
             }
             Val::Range(a, b)
         }
         // "after" a bare date means after that day is over
         Op::Greater | Op::Less if is_date => {
-            let (text, ms) = date(need("a date")?, op == Op::Greater, &vpath)?;
+            let (text, ms) = date(need()?, op == Op::Greater, &vpath)?;
             Val::Date(text, ms)
         }
-        _ if field.kind() == Kind::Num => Val::Num(integer(need("a number")?, &vpath)?),
-        _ => Val::Text(need("a string")?.as_str().ok_or_else(|| format!("{vpath}: expected a string for \"{name}\""))?.to_string()),
+        _ if field.kind() == Kind::Num => Val::Num(integer(need()?, &vpath)?),
+        _ => match need()?.as_str() {
+            Some(s) => Val::Text(s.to_string()),
+            None => return bad(&vpath, SmartProblem::NotText),
+        },
     };
     Ok(Rule { field, op, value })
 }
 
 fn node(v: &Value, path: &str, depth: usize) -> Parsed<Node> {
-    let o = v.as_object().ok_or_else(|| format!("{path}: expected an object"))?;
+    let Some(o) = v.as_object() else { return bad(path, SmartProblem::NotObject) };
     if o.contains_key("field") {
         return rule(o, path).map(Node::Rule);
     }
     if !o.contains_key("rules") {
-        return Err(format!("{path}: expected a rule {{field, op, value}} or a group {{all, rules}}"));
+        return bad(path, SmartProblem::NotRuleOrGroup);
     }
     if depth >= MAX_DEPTH {
-        return Err(format!("{path}: groups are nested more than {MAX_DEPTH} deep"));
+        return bad(path, SmartProblem::TooDeep);
     }
     only_keys(o, &["all", "rules"], path)?;
-    let all = match o.get("all") {
+    let all = match o.get("all").map(Value::as_bool) {
         None => true,
-        Some(a) => a.as_bool().ok_or_else(|| format!("{path}.all: expected true (all rules) or false (any rule)"))?,
+        Some(Some(a)) => a,
+        Some(None) => return bad(&format!("{path}.all"), SmartProblem::NotFlag),
     };
-    let list = o["rules"].as_array().ok_or_else(|| format!("{path}.rules: expected a list"))?;
+    let Some(list) = o["rules"].as_array() else { return bad(&format!("{path}.rules"), SmartProblem::NotList) };
     let rules = list.iter().enumerate().map(|(i, r)| node(r, &format!("{path}.rules[{i}]"), depth + 1)).collect::<Parsed<_>>()?;
     Ok(Node::Group { all, rules })
 }
 
-fn definition(text: &str) -> Parsed<Def> {
-    let v: Value = serde_json::from_str(text).map_err(|e| format!("not JSON: {e}"))?;
-    let o = v.as_object().ok_or("the definition must be a JSON object")?;
-    only_keys(o, &["match", "sort", "limit", "limitMs"], "definition")?;
+/// A definition read from its JSON; an error says where and what is wrong with it.
+pub fn parse(text: &str) -> Parsed<Def> {
+    let Ok(v) = serde_json::from_str::<Value>(text) else { return bad("", SmartProblem::NotJson) };
+    let Some(o) = v.as_object() else { return bad("", SmartProblem::NotObject) };
+    only_keys(o, &["match", "sort", "limit", "limitMs"], "")?;
     let root = match o.get("match").filter(|m| !m.is_null()) {
         None => Node::Group { all: true, rules: vec![] },
-        Some(m) if m.get("field").is_some() => return Err("match: expected a group {all, rules}, found a single rule".into()),
+        Some(m) if m.get("field").is_some() => return bad("match", SmartProblem::SingleRule),
         Some(m) => node(m, "match", 1)?,
     };
     let sort = match o.get("sort").filter(|s| !s.is_null()) {
         None => Sort::Index,
         Some(s) => {
-            let so = s.as_object().ok_or("sort: expected an object")?;
+            let Some(so) = s.as_object() else { return bad("sort", SmartProblem::NotObject) };
             only_keys(so, &["field", "descending", "seed"], "sort")?;
-            let descending = match so.get("descending") {
+            let descending = match so.get("descending").map(Value::as_bool) {
                 None => false,
-                Some(d) => d.as_bool().ok_or("sort.descending: expected true or false")?,
+                Some(Some(d)) => d,
+                Some(None) => return bad("sort.descending", SmartProblem::NotFlag),
             };
             match so.get("field").and_then(Value::as_str) {
                 Some("random") => Sort::Random(match so.get("seed") {
                     None => 0,
-                    Some(s) => s.as_u64().or_else(|| s.as_i64().map(|i| i as u64)).ok_or("sort.seed: expected a whole number")?,
+                    Some(s) => match s.as_u64().or_else(|| s.as_i64().map(|i| i as u64)) {
+                        Some(seed) => seed,
+                        None => return bad("sort.seed", SmartProblem::NotNumber),
+                    },
                 }),
                 Some(name) => match FIELDS.iter().find(|f| f.name() == name && (f.kind() != Kind::Flag || **f == Starred)) {
                     Some(f) => Sort::By(*f, descending),
-                    None => return Err(format!("sort.field: cannot sort by \"{name}\"")),
+                    None => return bad("sort.field", SmartProblem::CannotSort),
                 },
-                None => return Err("sort.field: expected a field name or \"random\"".into()),
+                None => return bad("sort.field", SmartProblem::NoField),
             }
         }
     };
@@ -465,7 +465,7 @@ fn definition(text: &str) -> Parsed<Def> {
         match o.get(key).filter(|l| !l.is_null()) {
             None => Ok(None),
             Some(l) => match integer(l, key)? {
-                n if n < 0 => Err(format!("{key}: must not be negative")),
+                n if n < 0 => bad(key, SmartProblem::Negative),
                 0 => Ok(None),
                 n => Ok(Some(n)),
             },
@@ -473,12 +473,6 @@ fn definition(text: &str) -> Parsed<Def> {
     };
     Ok(Def { root, sort, limit: cap("limit")?.map(|n| n.min(u32::MAX as i64) as u32), limit_ms: cap("limitMs")? })
 }
-
-/// A definition read from its JSON; an error says what is wrong with it.
-pub fn parse(text: &str) -> Result<Def> {
-    definition(text).map_err(|reason| CoreError::Parse { reason: format!("smart playlist: {reason}") })
-}
-
 // ---- to SQL ----------------------------------------------------------------
 
 /// A definition on its way to SQL: the arguments bound so far and what the rules are evaluated against.

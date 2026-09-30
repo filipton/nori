@@ -973,6 +973,8 @@ impl App {
                 }
             }
             Msg::Reachable(r) => self.unreachable = r.err(),
+            // The runner opens these.
+            Msg::From(..) => {}
         }
     }
 

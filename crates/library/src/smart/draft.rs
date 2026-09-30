@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use nori_model::{CoreError, SmartPlaylist};
+use nori_model::{CoreError, SmartPlaylist, SmartProblem};
 use serde_json::{Map, Value};
 
 use super::{parse, FIELDS, Kind};
@@ -57,7 +57,7 @@ pub struct SmartPrepared {
     pub id: String,
     pub name: String,
     pub json: String,
-    pub error: Option<String>,
+    pub error: Option<SmartProblem>,
 }
 
 const TEXT_OPS: [&str; 6] = ["contains", "is", "isNot", "notContains", "startsWith", "endsWith"];
@@ -294,11 +294,10 @@ pub fn smart_limit_text(limit: i32) -> String {
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn smart_edit_prepare(edit: SmartEdit) -> SmartPrepared {
     let json = to_json(&edit);
-    // Worded exactly as the app has always shown it, which is the message of the error as it came across the FFI.
-    let error = parse(&json).err().map(|e| match e {
-        CoreError::Parse { reason } => format!("reason={reason}"),
-        other => other.to_string(),
-    });
+    let error = match parse(&json) {
+        Err(CoreError::Smart { problem, .. }) => Some(problem),
+        _ => None,
+    };
     let id = if edit.id.starts_with("default-") { String::new() } else { edit.id };
     let name = if edit.name.trim().is_empty() { String::new() } else { edit.name };
     SmartPrepared { id, name, json, error }
@@ -383,7 +382,7 @@ mod tests {
         assert_eq!((p.id.as_str(), p.name.as_str(), p.error), ("", "", None));
         let p = smart_edit_prepare(SmartEdit { id: "sp-2".into(), name: "Mine".into(), ..edit(vec![rule("year", "greater", "soon")]) });
         assert_eq!((p.id.as_str(), p.name.as_str()), ("sp-2", "Mine"));
-        assert!(p.error.unwrap().starts_with("reason=smart playlist: match.rules[0]"));
+        assert_eq!(p.error, Some(SmartProblem::NotNumber));
     }
 
     #[test]

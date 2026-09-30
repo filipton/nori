@@ -76,33 +76,24 @@ impl Act {
         match name {
             EQUALIZER => Some(Act::Equalizer),
             ADD_SERVER => Some(Act::AddServer),
-            _ => Chore::ALL.into_iter().find(|c| c.name() == name).map(Act::Chore),
+            _ => CHORES.into_iter().find(|c| chore_name(*c) == name).map(Act::Chore),
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Chore {
-    SyncLibrary,
-    DownloadLibrary,
-    MeasureAgain,
-    ClearStream,
-    ClearCovers,
-    ClearLyrics,
-}
+pub use nori_host::session::Chore;
 
-impl Chore {
-    const ALL: [Chore; 6] = [Chore::SyncLibrary, Chore::DownloadLibrary, Chore::MeasureAgain, Chore::ClearStream, Chore::ClearCovers, Chore::ClearLyrics];
+const CHORES: [Chore; 6] = [Chore::SyncLibrary, Chore::DownloadLibrary, Chore::MeasureAgain, Chore::ClearStream, Chore::ClearCovers, Chore::ClearLyrics];
 
-    fn name(self) -> &'static str {
-        match self {
-            Chore::SyncLibrary => "sync-library",
-            Chore::DownloadLibrary => "download-library",
-            Chore::MeasureAgain => "measure-again",
-            Chore::ClearStream => "clear-stream",
-            Chore::ClearCovers => "clear-covers",
-            Chore::ClearLyrics => "clear-lyrics",
-        }
+/// A chore's row name in the UI.
+fn chore_name(c: Chore) -> &'static str {
+    match c {
+        Chore::SyncLibrary => "sync-library",
+        Chore::DownloadLibrary => "download-library",
+        Chore::MeasureAgain => "measure-again",
+        Chore::ClearStream => "clear-stream",
+        Chore::ClearCovers => "clear-covers",
+        Chore::ClearLyrics => "clear-lyrics",
     }
 }
 
@@ -212,7 +203,7 @@ impl Build<'_> {
     }
 
     fn action(&self, title: &str, detail: String, button: &str, enabled: bool, chore: Chore) -> Row {
-        Row { kind: ACTION, name: chore.name().into(), title: title.into(), detail, button: button.into(), enabled, ..Default::default() }
+        Row { kind: ACTION, name: chore_name(chore).into(), title: title.into(), detail, button: button.into(), enabled, ..Default::default() }
     }
 
     fn info(&self, title: &str, detail: String) -> Row {
@@ -675,8 +666,8 @@ mod tests {
                 assert!(specs.contains(&r.name), "{} is not a core setting", r.name);
             }
         }
-        for c in Chore::ALL {
-            assert_eq!(Act::of(c.name()), Some(Act::Chore(c)));
+        for c in CHORES {
+            assert_eq!(Act::of(chore_name(c)), Some(Act::Chore(c)));
         }
         assert_eq!(Act::of(EQUALIZER), Some(Act::Equalizer));
         assert_eq!(Act::of(ADD_SERVER), Some(Act::AddServer));

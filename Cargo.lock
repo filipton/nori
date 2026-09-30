@@ -3789,11 +3789,14 @@ dependencies = [
 name = "nori-host"
 version = "0.4.8"
 dependencies = [
+ "async-trait",
  "nori-core",
  "nori-covers",
  "nori-engine",
+ "nori-http",
  "nori-look",
  "nori-mpris",
+ "nori-output-cpal",
  "parking_lot",
 ]
 

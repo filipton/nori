@@ -177,9 +177,10 @@ impl Client {
     /// work done when its lookup ends. Provider songs are skipped.
     pub async fn lyrics_for_downloads(&self, ids: Vec<String>) {
         for id in ids.into_iter().filter(|id| !crate::is_provider_id(id)) {
-            crate::transfers::working(&id, crate::transfers::Work::Lyrics);
+            let downloads = &self.core.downloads;
+            downloads.with(|t| t.working(&id, crate::transfers::Work::Lyrics));
             let _ = self.lyrics_for(id.clone(), Arc::new(Unseen)).await;
-            crate::transfers::work_done(&id, crate::transfers::Work::Lyrics);
+            downloads.with(|t| t.work_done(&id, crate::transfers::Work::Lyrics));
         }
     }
 

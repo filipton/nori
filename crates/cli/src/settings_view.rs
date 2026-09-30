@@ -60,16 +60,7 @@ pub enum Act {
     Chore(Chore),
 }
 
-/// Maintenance actions the backend runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Chore {
-    SyncLibrary,
-    DownloadLibrary,
-    MeasureAgain,
-    ClearStream,
-    ClearCovers,
-    ClearLyrics,
-}
+pub use nori_host::session::Chore;
 
 /// One row of a page.
 #[derive(Debug, Clone, PartialEq)]

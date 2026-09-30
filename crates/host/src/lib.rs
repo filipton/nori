@@ -2,6 +2,8 @@
 //! collection's songs, the offline index, cover colours, the output volume in dB and media controls
 //! over the engine. Each client words what happens itself.
 
+pub mod session;
+
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

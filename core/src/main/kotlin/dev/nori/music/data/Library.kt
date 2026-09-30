@@ -242,6 +242,9 @@ class Library(
     /** What carries the queue on past the song playing (see the core's autofill.rs); nothing on any failure. */
     suspend fun autofill(): dev.nori.music.ffi.Refill = withContext(Dispatchers.IO) { client.autofill() }
 
+    /** Whether the fetched [count] songs go in; if so the core records what it picked. */
+    suspend fun autofillArrived(count: UInt): Boolean = withContext(Dispatchers.IO) { client.autofillArrived(count) }
+
     /**
      * Draws mix [id] unless this period's draw is there already ([again]: a different one); the core
      * fetches the server's random songs when the index has nothing to draw from. True when it changed.
