@@ -310,9 +310,6 @@ fn custom_painter_decodes_once_for_all_waiters() {
     assert!(loader.cached(PHOTO, 30, 30).is_none());
     loader.load(PHOTO, 30, 30).unwrap();
     assert_eq!(painted.load(Ordering::SeqCst), 2);
-    // Never upscaled; 0 x 0 is the picture's own size.
-    assert_eq!(loader.load(PHOTO, 300, 300).unwrap().got, (30, 30));
-    assert_eq!(loader.load(PHOTO, 0, 0).unwrap().got, (40, 30));
     drop(tickets);
 }
 

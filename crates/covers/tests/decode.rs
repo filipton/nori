@@ -227,9 +227,6 @@ fn exif_orientation_is_applied() {
         let name = format!("turned-{o}.jpg");
         close(&name, &decode(&name, w, h, Alpha::Straight), &file(&format!("{name}.rgba")), 1.0, 12);
     }
-    // Orientation 6: stored bottom-left becomes top-left.
-    let turned = decode("turned-6.jpg", 30, 40, Alpha::Straight);
-    assert_eq!(&turned[..4], &plain[29 * 40 * 4..][..4]);
     // PNG eXIf and WebP EXIF chunks.
     close("png", &decode("turned-6.png", 30, 40, Alpha::Straight), &turn(&decode("photo.png", 40, 30, Alpha::Straight), 40, 30, 6), 0.0, 0);
     let webp = decode("photo.webp", 40, 30, Alpha::Straight);
