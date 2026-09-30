@@ -436,6 +436,19 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_star_leaves_other_lists_cached() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        let keys = ["getAlbum&id=1", "getAlbumList2&type=newest&size=20", "getArtistInfo2&id=1&count=10", "getArtists", "getPlaylists", "getPlaylist&id=2"];
+        for k in keys {
+            c.core.cache_put(k.into(), b"x".to_vec()).unwrap();
+        }
+        fake.fail(FailureKind::Connect);
+        block(c.write(Write::Star { kind: Starrable::Song, id: "s".into(), on: true })).unwrap();
+        let kept: Vec<&str> = keys.into_iter().filter(|k| c.core.cache_get(k.to_string()).unwrap().is_some()).collect();
+        assert_eq!(kept, ["getAlbumList2&type=newest&size=20", "getArtistInfo2&id=1&count=10", "getArtists", "getPlaylists"]);
+    }
+
+    #[test]
     fn rejected_write_errors_and_is_not_queued() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         c.core.cache_put("getStarred2".into(), b"x".to_vec()).unwrap();
@@ -449,7 +462,7 @@ pub(crate) mod tests {
     fn star_playlist_and_now_playing_requests() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         c.core.cache_put("getStarred2".into(), b"x".to_vec()).unwrap();
-        c.core.cache_put("getPlaylist&id=9".into(), b"x".to_vec()).unwrap();
+        c.core.cache_put("getPlaylists".into(), b"x".to_vec()).unwrap();
         for _ in 0..4 {
             fake.answer(OK);
         }
@@ -457,7 +470,7 @@ pub(crate) mod tests {
         assert_eq!(c.core.cache_get("getStarred2".into()).unwrap(), None);
         block(c.write(Write::Star { kind: Starrable::Song, id: "s1".into(), on: false })).unwrap();
         block(c.write(Write::CreatePlaylist { name: "nori check".into(), song_ids: vec!["s1".into(), "s2".into()] })).unwrap();
-        assert_eq!(c.core.cache_get("getPlaylist&id=9".into()).unwrap(), None);
+        assert_eq!(c.core.cache_get("getPlaylists".into()).unwrap(), None);
         block(c.read_now(crate::cache_policy::Read::NowPlaying { id: "s1".into() })).unwrap();
         let asked = fake.asked();
         assert!(asked[0].contains("/rest/star?") && asked[0].ends_with("&id=s1"), "{}", asked[0]);
