@@ -66,12 +66,11 @@ fn decode(s: &str) -> String {
     let mut bytes: Vec<u8> = Vec::with_capacity(s.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                bytes.push(v);
-                i += 3;
-                continue;
-            }
+        let hex = |at: usize| b.get(at).and_then(|&d| (d as char).to_digit(16));
+        if let (b'%', Some(high), Some(low)) = (b[i], hex(i + 1), hex(i + 2)) {
+            bytes.push((high * 16 + low) as u8);
+            i += 3;
+            continue;
         }
         bytes.push(b[i]);
         i += 1;
@@ -168,7 +167,8 @@ pub async fn fetch_curve(transport: &dyn nori_net::transport::Transport, e: &Aut
 }
 
 pub fn search(c: &Connection, query: &str, limit: u32) -> rusqlite::Result<Vec<AutoEqEntry>> {
-    let like = format!("%{}%", query.trim().replace(' ', "%"));
+    let typed = query.trim().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    let like = format!("%{}%", typed.replace(' ', "%"));
     let mut st = c.prepare_cached(
         // Shortest name first.
         "SELECT name, source, form, target, path FROM autoeq WHERE name LIKE ?1 ESCAPE '\\' AND path NOT IN (SELECT path FROM autoeq_missing) ORDER BY length(name), name LIMIT ?2",
@@ -306,6 +306,8 @@ mod tests {
         assert_eq!(encoded.form, "GRAS 43AG-7 over-ear");
         assert_eq!(search(&c, "u12t", 10).unwrap()[0].source, "crinacle");
         assert!(search(&c, "nothing here", 10).unwrap().is_empty());
+        assert!(search(&c, "hd_600", 10).unwrap().is_empty(), "wildcards typed are letters");
+        assert_eq!(entry("- [X](./crinacle/%a\u{e9}%zz%2/X) by crinacle").unwrap().form, "%a\u{e9}%zz%2", "not an escape");
         // Storing again replaces rather than duplicates.
         assert_eq!(store(&mut c, MD, 1).unwrap(), 3);
         assert_eq!(count(&c).unwrap(), 3);
