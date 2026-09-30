@@ -250,7 +250,7 @@ pub(crate) mod tests {
 
     #[test]
     fn validation_errors_name_path_and_problem() {
-        use SmartProblem::*;
+        use crate::SmartProblem::*;
         smart_validate(r#"{"match":null,"sort":null,"limit":null,"limitMs":0}"#.into()).unwrap();
         let rule = |r: &str| format!(r#"{{"match":{{"rules":[{r}]}}}}"#);
         let mut deep = r#"{"field":"year","op":"is","value":1}"#.to_string();

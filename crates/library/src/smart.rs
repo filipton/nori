@@ -45,7 +45,7 @@
 use std::collections::HashSet;
 
 use nori_model::model::*;
-use nori_model::{CoreError, Result};
+use nori_model::{CoreError, Result, SmartProblem};
 use rusqlite::{types::Value as Sql, Connection, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -193,10 +193,6 @@ fn ops_of(kind: Kind) -> &'static [Op] {
         Kind::DateMs | Kind::DateIso => &[Op::WithinDays, Op::NotWithinDays, Op::Greater, Op::Less, Op::Between],
         Kind::Flag => &[Op::IsTrue, Op::IsFalse],
     }
-}
-
-fn op_name(op: Op) -> &'static str {
-    OPS.iter().find(|(_, o)| *o == op).map(|(n, _)| *n).unwrap_or("")
 }
 
 #[derive(Debug, Clone, PartialEq)]

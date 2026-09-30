@@ -378,8 +378,7 @@ pub(crate) mod tests {
         let _g = crate::playlist::tests::hold(&["af3-seed"], 0);
         let got = block(c.autofill_as(AutoFillKind::Albums, AutoFillBasis::Similar, false)).songs;
         assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["b1", "b2", "b3"]);
-        let used = album_use(&c.core.db.lock(), crate::db::now_ms()).unwrap();
-        assert!(used["second"] >= used["first"]);
+        assert_eq!(*c.autofill_picks.lock(), Some((Picked::Album, vec!["second".to_string()])));
     }
 
     #[test]
