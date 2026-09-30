@@ -121,27 +121,37 @@ impl<L: Library> Sources<L> {
         loader
     }
 
-    /// Song `id` from `from_ms` as undecoded packets (`Demuxed::load_packets`); not for a live stream.
-    /// `ahead`: only probed while another song plays, so it gets what that one leaves of the cap.
+    /// Song `id` from `from_ms` as undecoded packets; not for a live stream. `ahead`: only probed while
+    /// another song plays, so it gets what that one leaves of the cap.
     pub fn open_packets(&mut self, id: &str, from_ms: i64, ahead: bool) -> Result<Demuxed, String> {
+        self.open_as(id, from_ms, Some(ahead))
+    }
+
+    /// Song `id` from `from_ms`, decoded, or as packets (`Some(ahead)`, see [`Sources::open_packets`]).
+    fn open_as(&mut self, id: &str, from_ms: i64, packets: Option<bool>) -> Result<Demuxed, String> {
         let at = self.library.locate(id)?;
-        let budget = ahead.then(|| self.left_for(id));
+        let (encoding, engine) = (self.encoding, self.engine.clone());
         let file = |path: &PathBuf| {
-            let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let file = Box::new(std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?);
             let hint = at.hint.clone().or_else(|| path.extension().map(|e| e.to_string_lossy().into_owned()));
-            Demuxed::open_packets(Box::new(file), hint.as_deref(), from_ms, at.duration_ms)
+            match packets {
+                Some(_) => Demuxed::open_packets(file, hint.as_deref(), from_ms, at.duration_ms),
+                None => Demuxed::open(file, hint.as_deref(), from_ms, at.duration_ms, encoding),
+            }
         };
+        let load = |loader: Arc<Loader>, from_ms: i64, duration_ms: Option<i64>, estimated: bool| match packets {
+            Some(_) => Demuxed::load_packets(loader, engine.clone(), at.hint.as_deref(), from_ms, duration_ms, estimated),
+            None => Demuxed::load(loader, engine.clone(), at.hint.as_deref(), from_ms, duration_ms, estimated, encoding),
+        };
+        // Opened to play: the whole cap, whatever its budget was.
+        let budget = packets.filter(|&ahead| ahead).map(|_| self.left_for(id));
         match &at.source {
             Source::File(path) => file(path),
             Source::Cached { store, key, .. } if self.loading(id).is_none() && store.cached(key).is_some() => file(&store.cached(key).expect("checked")),
-            Source::Url { url, bytes } => {
-                let loader = self.loader(id, url, bytes, at.duration_ms, None, budget, || None);
-                Ok(Demuxed::load_packets(loader, self.engine.clone(), at.hint.as_deref(), from_ms, at.duration_ms, at.estimated))
-            }
-            Source::Cached { url, bytes, store, key } => {
-                let loader = self.loader(id, url, bytes, at.duration_ms, Some((store, key)), budget, || None);
-                Ok(Demuxed::load_packets(loader, self.engine.clone(), at.hint.as_deref(), from_ms, at.duration_ms, at.estimated))
-            }
+            Source::Url { url, bytes } => Ok(load(self.loader(id, url, bytes, at.duration_ms, None, budget, || None), from_ms, at.duration_ms, at.estimated)),
+            Source::Cached { url, bytes, store, key } => Ok(load(self.loader(id, url, bytes, at.duration_ms, Some((store, key)), budget, || None), from_ms, at.duration_ms, at.estimated)),
+            // A live stream starts where the station is now.
+            Source::Live { url, bytes } if packets.is_none() => Ok(load(self.live(id, url, bytes), 0, None, false)),
             Source::Live { .. } => Err("a live stream is decoded here".into()),
         }
     }
@@ -188,33 +198,7 @@ impl<L: Library> Songs for Sources<L> {
     type Reading = Demuxed;
 
     fn open(&mut self, id: &str, from_ms: i64) -> Result<Demuxed, String> {
-        let at = self.library.locate(id)?;
-        let file = |path: &PathBuf, encoding| {
-            let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-            let hint = at.hint.clone().or_else(|| path.extension().map(|e| e.to_string_lossy().into_owned()));
-            Demuxed::open(Box::new(file), hint.as_deref(), from_ms, at.duration_ms, encoding)
-        };
-        match &at.source {
-            Source::File(path) => file(path, self.encoding),
-            Source::Cached { store, key, .. } if self.loading(id).is_none() && store.cached(key).is_some() => {
-                let path = store.cached(key).expect("checked");
-                file(&path, self.encoding)
-            }
-            // Opened to play: the whole cap, whatever its budget was.
-            Source::Url { url, bytes } => {
-                let loader = self.loader(id, url, bytes, at.duration_ms, None, None, || None);
-                Ok(Demuxed::load(loader, self.engine.clone(), at.hint.as_deref(), from_ms, at.duration_ms, at.estimated, self.encoding))
-            }
-            Source::Cached { url, bytes, store, key } => {
-                let loader = self.loader(id, url, bytes, at.duration_ms, Some((store, key)), None, || None);
-                Ok(Demuxed::load(loader, self.engine.clone(), at.hint.as_deref(), from_ms, at.duration_ms, at.estimated, self.encoding))
-            }
-            // A live stream starts where the station is now.
-            Source::Live { url, bytes } => {
-                let loader = self.live(id, url, bytes);
-                Ok(Demuxed::load(loader, self.engine.clone(), at.hint.as_deref(), 0, None, false, self.encoding))
-            }
-        }
+        self.open_as(id, from_ms, None)
     }
 
     fn about(&self, id: &str) -> WindowSong {
