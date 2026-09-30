@@ -991,7 +991,3 @@ mod tests {
         assert!(j.lines[0].words.is_empty(), "speech-recognition word offsets are not singing");
     }
 }
-
-#[cfg(test)]
-#[path = "json_diff.rs"]
-mod json_diff;
