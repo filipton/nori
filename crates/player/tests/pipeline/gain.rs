@@ -55,7 +55,7 @@ fn automix() -> TransitionPrefs {
 /// What the player hears of `songs` under `prefs`, each at the volume `gains` gives it (1 unlisted),
 /// with AutoMix's measurements of them known up front.
 fn heard(songs: &[(&str, &[i16], f64)], prefs: &TransitionPrefs, gains: &[(&str, f32)]) -> (Vec<i16>, Vec<String>) {
-    let mut p = Player::with_prefs(songs.iter().map(|(id, s, _)| track(id, s)).collect(), prefs.clone());
+    let mut p = Player::with_prefs(songs.iter().map(|(id, s, _)| track(id, s)).collect(), *prefs);
     p.measure_on_move = false;
     for (id, _, bpm) in songs {
         p.app.analyses.insert(id.to_string(), measured(id, *bpm));

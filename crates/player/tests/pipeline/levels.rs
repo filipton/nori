@@ -166,7 +166,7 @@ fn run(kind: &Kind, a: &[i16], b: &[i16], gains: &[(&str, f32)], replay_gain: bo
 }
 
 fn run_listed(kind: &Kind, a: nori_player::sim::Track, b: &[i16], gains: &[(&str, f32)], replay_gain: bool) -> Run {
-    let prefs = TransitionPrefs { replay_gain, ..kind.prefs.clone() };
+    let prefs = TransitionPrefs { replay_gain, ..kind.prefs };
     let mut p = Player::with_prefs(vec![a, track("b", b)], prefs);
     p.measure_on_move = false;
     for t in [&kind.a, &kind.b] {

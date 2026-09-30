@@ -28,7 +28,7 @@ fn made(dir: &Path) -> (PathBuf, Vec<i16>) {
     run(&["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-af", &format!("atrim=end_sample={len}"), "-ac", "2", "-c:a", "aac", "-b:a", "160k", m4a.to_str().unwrap()]);
     run(&["-i", m4a.to_str().unwrap(), "-f", "s16le", "-acodec", "pcm_s16le", raw.to_str().unwrap()]);
     let bytes = std::fs::read(&raw).unwrap();
-    (m4a, bytes.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect())
+    (m4a, bytes.as_chunks::<2>().0.iter().map(|&b| i16::from_le_bytes(b)).collect())
 }
 
 fn decode(path: &Path, from_ms: i64) -> Vec<i16> {
@@ -37,7 +37,7 @@ fn decode(path: &Path, from_ms: i64) -> Vec<i16> {
     assert!(d.ready());
     let mut out = Vec::new();
     while d.fill() {
-        out.extend(d.buffer().chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])));
+        out.extend(d.buffer().as_chunks::<2>().0.iter().map(|&b| i16::from_le_bytes(b)));
     }
     out
 }

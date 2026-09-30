@@ -931,7 +931,7 @@ fn max_rate_converts_within_family() {
     rig.engine.play_at(0, 0);
     assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
     assert_eq!(rig.card.lock().feed.as_ref().map(|f| f.format().rate), Some(48_000), "opened at 48 kHz");
-    let heard: Vec<f64> = rig.heard.lock().chunks_exact(2).map(|c| c[0] as f64).collect();
+    let heard: Vec<f64> = rig.heard.lock().as_chunks::<2>().0.iter().map(|c| c[0] as f64).collect();
     assert!((heard.len() as f64 - 48_000.0 * secs).abs() < 200.0, "three seconds at 48 kHz: {} frames", heard.len());
     // Fitted over 1500 cycles: level kept, only 16-bit rounding left.
     let mid = &heard[12_000..12_000 + 48 * 1_500];
@@ -1101,7 +1101,7 @@ fn id3_tag_is_skipped() {
     let mut d = nori_engine::demux::Demuxed::open(Box::new(Cursor::new(file)), None, 0, None, nori_player::pcm::Encoding::Pcm16).unwrap();
     let mut out = Vec::new();
     while nori_player::pipeline::Reading::fill(&mut d) {
-        out.extend(nori_player::pipeline::Reading::buffer(&d).chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])));
+        out.extend(nori_player::pipeline::Reading::buffer(&d).as_chunks::<2>().0.iter().map(|&b| i16::from_le_bytes(b)));
     }
     assert!(out == a, "the song after the tag, sample for sample: {} of {} samples", out.len(), a.len());
 }

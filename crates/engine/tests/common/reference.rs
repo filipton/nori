@@ -136,7 +136,7 @@ pub fn render(raw: &[i16], rate: u32, changes: &[(u64, ChainSettings)]) -> Vec<i
         }
     }
     out.extend(chain.end());
-    out.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect()
+    out.as_chunks::<2>().0.iter().map(|&b| i16::from_le_bytes(b)).collect()
 }
 
 /// What a card hears when the output held `old` and was replaced from output frame `at` on by `new`:

@@ -23,9 +23,9 @@ pub(crate) fn lc_config(rate: u32, channels: usize) -> Option<[u8; 2]> {
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub(crate) fn append_pcm(bytes: &[u8], float: bool, out: &mut Vec<f32>) {
     if float {
-        out.extend(bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])));
+        out.extend(bytes.as_chunks::<4>().0.iter().map(|&b| f32::from_le_bytes(b)));
     } else {
-        out.extend(bytes.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0));
+        out.extend(bytes.as_chunks::<2>().0.iter().map(|&b| i16::from_le_bytes(b) as f32 / 32768.0));
     }
 }
 

@@ -272,7 +272,7 @@ fn pack_565(rgba: &[u8], width: usize, height: usize, out: &mut [u8], stride: us
     for y in 0..height {
         let from = &rgba[y * width * 4..(y + 1) * width * 4];
         let to = &mut out[y * stride..y * stride + width * 2];
-        for (p, q) in from.chunks_exact(4).zip(to.chunks_exact_mut(2)) {
+        for (p, q) in from.as_chunks::<4>().0.iter().zip(to.chunks_exact_mut(2)) {
             let v = (u16::from(p[0]) >> 3) << 11 | (u16::from(p[1]) >> 2) << 5 | u16::from(p[2]) >> 3;
             q.copy_from_slice(&v.to_le_bytes());
         }
@@ -473,7 +473,7 @@ extern "system" fn colours(env: JNIEnv, _: JClass, h: jlong, url: JString, side:
         }
         c.argb.clear();
         c.argb.reserve_exact(w * h);
-        c.argb.extend(c.rgba.chunks_exact(4).map(|p| u32::from(p[3]) << 24 | u32::from(p[0]) << 16 | u32::from(p[1]) << 8 | u32::from(p[2])));
+        c.argb.extend(c.rgba.as_chunks::<4>().0.iter().map(|p| u32::from(p[3]) << 24 | u32::from(p[0]) << 16 | u32::from(p[1]) << 8 | u32::from(p[2])));
         let mut answer = 0;
         if !out.is_null() {
             answer |= match crate::look::page(&env, &c.argb, w, h, dark != 0, false, &out, &wash) {
