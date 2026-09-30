@@ -6,9 +6,9 @@
 //! lets the output and the song's bytes go.
 //!
 //! With an [`OffloadOutput`] and nothing that touches samples, songs go to the output's decoder as
-//! packets and the thread sleeps minutes between top-ups. The song moves between the CPU and that
-//! decoder behind a short dip, where the ear is; leaving it, the CPU opens the song [`REMAKE_LEAD_MS`]
-//! ahead first so the handover is never a gap.
+//! packets and the thread sleeps minutes between top-ups. A song moves between the CPU and that decoder
+//! behind a short dip where the ear is, or at a song boundary; leaving it, the CPU opens the song
+//! [`REMAKE_LEAD_MS`] ahead first so the handover is never a gap.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -49,7 +49,7 @@ pub struct Settings {
     pub offload: bool,
     pub crossfade_s: i32,
     pub auto_mix: bool,
-    /// Most ReplayGain may turn a song up, dB (`nori_player::gain`); above 0 songs are read as floats
+    /// Most ReplayGain may turn a song up, dB (`nori_player::gain`): above 0 songs are read as floats
     /// with the limiter behind them, and a song turned up stays off offload.
     pub gain_boost_db: f32,
 }
@@ -68,13 +68,12 @@ pub struct OutputFacts {
     pub bit_perfect: bool,
 }
 
-/// The settings as the audio policy lets them through.
+/// The settings as the audio policy let them through; `gain_max` linear.
 #[derive(Clone, PartialEq, Default)]
 struct Applied {
     untouched: bool,
     bit_perfect: bool,
     float: bool,
-    /// Most a song is turned up, linear (1: never).
     gain_max: f32,
 }
 
@@ -124,10 +123,9 @@ pub enum Event {
 #[derive(Debug, Clone)]
 pub struct Status {
     pub state: State,
-    /// The audible song: queue index and id.
+    /// The audible song: queue index and id, and the position in it at `at`, ms.
     pub index: Option<usize>,
     pub id: Option<String>,
-    /// Position in it at `at`, ms.
     pub position_ms: i64,
     pub at: Instant,
     pub speed: f32,
@@ -140,14 +138,12 @@ pub struct Status {
     pub releases: u64,
     /// A switch is waiting out its dip: the position is still the old one.
     pub switching: bool,
-    /// The sound chain is in the samples' path.
+    /// The sound chain is in the samples' path; means something only while `on_cpu`.
     pub chain: bool,
-    /// Audible music comes from the CPU path: the only time `chain` means anything.
     pub on_cpu: bool,
     /// What the limiter and the compressor took off the last buffer, dB.
     pub gain_reduction_db: f32,
     pub compression_db: f32,
-    /// Songs go to the output's decoder.
     pub offloaded: bool,
     /// The settings allow offload, as last applied.
     pub offload_wanted: bool,
@@ -219,7 +215,7 @@ enum Command {
     GoTo(usize, i64),
     PauseAtEnd(bool),
     Play,
-    /// Pause with this fade (`None`: the settings' fade).
+    /// With this fade (`None`: the settings').
     Pause(Option<i32>),
     Toggle,
     Next,
@@ -233,7 +229,6 @@ enum Command {
     Gain,
     Tuning(bool),
     Positions(Option<Duration>),
-    /// Only wake: the turn reads the output and writes the status.
     Look,
     Device(Device),
     Stop,
@@ -290,8 +285,7 @@ impl Engine {
         Engine::launch(library, app, queue, output, offload, config, Monotonic::new(), false, events)
     }
 
-    /// [`Engine::start`] on `clock`, a test's clock moved by hand: every command goes through
-    /// [`Clock::wake`].
+    /// [`Engine::start`] on a test's clock: every command goes through [`Clock::wake`].
     #[allow(clippy::too_many_arguments)]
     pub fn start_on<L, A, Q, E, C>(library: L, app: A, queue: Q, output: Box<dyn AudioOutput>, offload: Option<Box<dyn OffloadOutput>>, config: Config, clock: C, events: E) -> Engine
     where
@@ -373,7 +367,7 @@ impl Engine {
         self.send(Command::PauseAtEnd(on));
     }
 
-    /// Plays from the current place. Returns the play's number ([`Event::Stopped`]).
+    /// Returns the play's number ([`Event::Stopped`]).
     pub fn play(&self) -> u64 {
         let n = self.plays.fetch_add(1, Ordering::AcqRel) + 1;
         self.send(Command::Play);
@@ -401,12 +395,12 @@ impl Engine {
         self.send(Command::Toggle);
     }
 
-    /// The next song; paused, it also starts playback.
+    /// Paused, a skip also starts playback.
     pub fn next(&self) -> u64 {
         self.jump(Command::Next)
     }
 
-    /// Previous: restarts the song a few seconds in; paused, it also starts playback.
+    /// Restarts the song a few seconds in, else the previous one; paused, it also starts playback.
     pub fn previous(&self) -> u64 {
         self.jump(Command::Previous)
     }
@@ -428,7 +422,6 @@ impl Engine {
         self.send(Command::Replan);
     }
 
-    /// The queue was edited.
     pub fn queue_changed(&self) {
         self.send(Command::QueueChanged);
     }
@@ -483,14 +476,61 @@ impl Drop for Engine {
     }
 }
 
-/// The offloaded song opened on the CPU ahead of the output's decoder, to take it over at `from_ms`
-/// behind a dip starting at `dip_at` (engine ms) while the output plays on.
+/// A place nothing is loaded for, played from on play: one chosen while paused (`shown`: its id, the
+/// status shows it at once), or where the player was when the output was let go.
+struct Parked {
+    at: usize,
+    ms: i64,
+    shown: Option<String>,
+}
+
+/// The offloaded song opened on the CPU ahead of the output's decoder, taken over at `from_ms` behind a
+/// dip starting at `dip_at` (engine ms) while the output plays on.
 struct Takeover {
     id: String,
     from_ms: i64,
     r: Demuxed,
     ready: bool,
     dip_at: i64,
+}
+
+/// Moving songs between the CPU and the output's decoder.
+#[derive(Default)]
+struct Handover {
+    /// The next song opened as packets and, once known, whether the output decodes it: if so the CPU
+    /// plays the current song to its end (`at_end`) and the output takes the next.
+    probe: Option<(usize, Result<Demuxed, String>, Option<bool>)>,
+    at_end: Option<usize>,
+    /// The current song opened as packets, to hand it over where the ear is (`now` once it may).
+    entering: Option<(usize, Result<Demuxed, String>)>,
+    now: bool,
+    takeover: Option<Takeover>,
+    /// Torn tracks; at [`TEAR_DOWNS`] offload is given up (`refused`) for the engine's life.
+    tear_downs: u32,
+    refused: bool,
+    /// Music was heard since the offload path started (ends a run of failing songs).
+    heard: bool,
+    /// The offloaded song's placing last reported: another is a repeat-one loop.
+    seq: u64,
+}
+
+/// What the client was last told, and what it is still to be told.
+#[derive(Default)]
+struct Told {
+    /// The song, by index and id (a new queue can put another song at the same index).
+    heard: Option<(usize, String)>,
+    loops: u32,
+    stalled: bool,
+    placed: bool,
+    seek_landed: bool,
+    /// The song plays at a mix's tempo: [`Event::Placed`] once it is back at its own.
+    stretched: bool,
+    asleep: bool,
+    /// Position event interval and the next one due, ms.
+    positions: Option<i64>,
+    next_position: i64,
+    /// A live stream's title, and when playback reaches it.
+    title: Option<(String, i64)>,
 }
 
 /// Where the position stood still since `since` (engine ms), and whether it did at the last look.
@@ -509,14 +549,12 @@ const PANICS_KEPT_ON: usize = 3;
 const STALL_RESTART_MS: i64 = 10_000;
 /// A standing position is looked at once more at this point, so a watching client sees it.
 const STALL_SAY_MS: i64 = 5_000;
-/// A place unmoved this long while music plays is standing.
 const STANDING_MS: i64 = 250;
-/// Playing on the CPU with nothing else due, the thread still wakes this often to look at the position
-/// (longer than any burst, so it never fires while music plays).
+/// Playing on the CPU with nothing else due, the position is still looked at this often (longer than a
+/// burst, so never while music plays).
 const STALL_GUARD_MS: i64 = 30_000;
 /// Less than this to play while a song's bytes are on their way is [`Event::Buffering`].
 const STALL_US: i64 = 200_000;
-/// A track torn down this many times gives offload up for the engine's life.
 const TEAR_DOWNS: u32 = 2;
 /// The dip a song is handed between the CPU and the output's decoder behind, down and up, ms.
 const HAND_DIP_MS: i64 = 30;
@@ -541,67 +579,36 @@ struct Worker<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> {
     /// When a pause's fade ends.
     pause_at: Option<i64>,
     dip: Option<Dip>,
-    /// A place chosen while paused (queue index, ms, id), shown at once and fetched on play.
-    held: Option<(usize, i64, String)>,
-    /// Paused: when the output is let go; once it is, where the player was.
+    parked: Option<Parked>,
+    /// Paused: when the output is let go.
     idle_at: Option<i64>,
-    released: Option<(usize, i64)>,
     releases: u64,
-    /// The song last reported, by index and id (a new queue can put another song at the same index).
-    heard: Option<(usize, String)>,
     /// Jumps and plays taken off the channel.
     jumps: u64,
     plays: u64,
     gain_changed: bool,
-    /// Position event interval and the next one due, ms.
-    positions: Option<i64>,
-    next_position: i64,
-    /// [`Event::Buffering`] as last said.
-    stalled: bool,
     /// The settings and output allow offload; if not, why.
     offload: bool,
     blocked: Option<&'static str>,
-    /// Offload given up for the engine's life after [`TEAR_DOWNS`] torn tracks.
-    offload_refused: bool,
-    tear_downs: u32,
-    /// The next song opened as packets (queue index, the opening, whether the output decodes it once
-    /// known): if it does, the CPU plays the current song to its end and hands over.
-    probe: Option<(usize, Result<Demuxed, String>, Option<bool>)>,
-    /// The current song opened as packets now that offload is wanted, to hand it over where the ear is.
-    entering: Option<(usize, Result<Demuxed, String>)>,
-    /// The CPU plays this song to its end, then the output's decoder takes the next.
-    handing_over: Option<usize>,
-    /// The output decodes the current song: the next `Switched::Hand` hands it over.
-    offload_now: bool,
-    takeover: Option<Takeover>,
-    /// Music was heard since the offload path started (ends a run of failing songs).
-    offload_heard: bool,
-    /// Repeat-one loops and the offloaded song's placing, as last reported.
-    loops: u32,
-    heard_seq: u64,
-    /// A live stream's title, and when playback reaches it.
-    title: Option<(String, i64)>,
-    /// The queue's entries as last seen, to find the held place and the offloaded songs again.
+    h: Handover,
+    told: Told,
+    /// The queue's entries as last seen, to find the parked place and the offloaded songs again.
     seqs: Vec<u64>,
     /// Chain settings waiting for [`CHAIN_EVERY_MS`] since the last change at `chain_at`.
     chain_wanted: Option<ChainSettings>,
     chain_at: i64,
-    placed_due: bool,
-    seek_landed: bool,
-    /// The song plays at a mix's tempo: [`Event::Placed`] once it is back at its own.
-    stretched: bool,
     panics: VecDeque<i64>,
     stall: Option<Stall>,
     /// The song last opened again from scratch: the same with nothing heard since has failed.
     restarted: Option<String>,
     /// A jump under way: a panic during it restarts there.
     jumping: Option<(usize, i64)>,
-    awake: bool,
 }
 
 impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E, C> {
     fn new(p: Player<Sources<L>, RingTrack, A, Q>, off: Option<Offload>, rx: Receiver<Command>, events: E, status: Arc<Mutex<Status>>, config: Config, clock: C) -> Self {
         let seqs = p.queue.read(|q| q.seqs().to_vec());
+        let (idle_release_ms, watch) = (config.idle_release_ms, config.watch);
         let mut w = Worker {
             p,
             off,
@@ -612,46 +619,28 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             settings: Settings::default(),
             applied: None,
             facts: OutputFacts::default(),
-            idle_release_ms: config.idle_release_ms,
-            watch: config.watch,
+            idle_release_ms,
+            watch,
             state: State::Idle,
             pause_at: None,
             dip: None,
-            held: None,
+            parked: None,
             idle_at: None,
-            released: None,
             releases: 0,
-            heard: None,
             jumps: 0,
             plays: 0,
             gain_changed: false,
-            positions: None,
-            next_position: 0,
-            stalled: false,
             offload: false,
             blocked: None,
-            offload_refused: false,
-            tear_downs: 0,
-            probe: None,
-            entering: None,
-            handing_over: None,
-            offload_now: false,
-            takeover: None,
-            offload_heard: false,
-            loops: 0,
-            heard_seq: 0,
-            title: None,
+            h: Handover::default(),
+            told: Told::default(),
             seqs,
             chain_wanted: None,
             chain_at: i64::MIN / 2,
-            placed_due: false,
-            seek_landed: false,
-            stretched: false,
             panics: VecDeque::new(),
             stall: None,
             restarted: None,
             jumping: None,
-            awake: true,
         };
         w.apply(config.settings);
         w
@@ -698,8 +687,8 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         None
     }
 
-    /// One wake: the commands, the music, the status and events. Returns how long to sleep (`None`
-    /// inside: until woken), or `None` to stop.
+    /// One wake: the commands, the music, the status and events. Returns how long to sleep, or `None`
+    /// to stop.
     fn turn(&mut self) -> Option<Option<i64>> {
         self.clock.woke();
         loop {
@@ -742,16 +731,17 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         Some(self.wake_in(now))
     }
 
-    /// [`Event::Awake`]: the CPU may sleep only while offloaded, fed, and nothing else is under way.
+    /// The CPU may sleep only while offloaded, fed, and nothing else is under way.
     fn follow_awake(&mut self) {
-        let quiet = self.pause_at.is_none() && self.dip.is_none() && self.takeover.is_none() && self.entering.is_none() && self.probe.is_none() && self.handing_over.is_none() && self.held.is_none();
+        let h = &self.h;
+        let quiet = self.pause_at.is_none() && self.dip.is_none() && h.takeover.is_none() && h.entering.is_none() && h.probe.is_none() && h.at_end.is_none() && self.parked.is_none();
         let sleeps = self.state == State::Playing && quiet && self.chip().is_some_and(Offload::lets_cpu_sleep);
         self.say_awake(!sleeps);
     }
 
     fn say_awake(&mut self, awake: bool) {
-        if awake != self.awake {
-            self.awake = awake;
+        if awake == self.told.asleep {
+            self.told.asleep = !awake;
             self.status.lock().awake = awake;
             (self.events)(Event::Awake(awake));
         }
@@ -759,7 +749,8 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
 
     /// Some song's bytes are awaited (a test's clock stands still meanwhile).
     fn waiting_for_bytes(&self) -> bool {
-        self.p.waiting_for_bytes() || self.entering.is_some() || self.takeover.as_ref().is_some_and(|m| !m.ready) || self.probe.as_ref().is_some_and(|p| p.2.is_none()) || self.off.as_ref().is_some_and(Offload::waiting_for_bytes)
+        let h = &self.h;
+        self.p.waiting_for_bytes() || h.entering.is_some() || h.takeover.as_ref().is_some_and(|m| !m.ready) || h.probe.as_ref().is_some_and(|p| p.2.is_none()) || self.off.as_ref().is_some_and(Offload::waiting_for_bytes)
     }
 
     // ---- the CPU and offload paths as one player ----
@@ -835,9 +826,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     /// Queue index `i` from `ms`: offloaded when allowed (the song decides once open), else on the CPU.
     fn jump(&mut self, i: usize, ms: i64) {
         self.jumping = Some((i, ms));
-        self.probe = None;
-        self.handing_over = None;
-        self.takeover = None;
+        (self.h.probe, self.h.at_end, self.h.takeover) = (None, None, None);
         if self.offload && self.off.is_some() {
             if !self.offloading() {
                 // Never both outputs open at once.
@@ -852,9 +841,8 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             if playing {
                 off.play();
             }
-            self.offload_heard = false;
             // A song placed again for a jump is not a repeat-one loop.
-            self.heard_seq = 0;
+            (self.h.heard, self.h.seq) = (false, 0);
             self.p.queue.moved_to(i);
         } else {
             self.leave_offload();
@@ -877,7 +865,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             Some(o) => self.p.jump_from(i, ms, o),
             None => self.p.jump(i, ms),
         }
-        self.placed_due = true;
+        self.told.placed = true;
         playing.then(|| {
             self.p.resume();
             0.0
@@ -891,10 +879,10 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         let (app, max) = (&mut p.app, p.gain_max);
         let Step::ToPcm { index, ms, refused } = off.turn(now, &mut p.tracks, &p.queue, &mut |i, id| app.gain(i, id).min(max)) else { return };
         if refused {
-            self.tear_downs += 1;
-            self.p.app.log(&format!("the offloaded track failed ({} times): the CPU plays on", self.tear_downs));
-            if self.tear_downs >= TEAR_DOWNS && !self.offload_refused {
-                self.offload_refused = true;
+            self.h.tear_downs += 1;
+            self.p.app.log(&format!("the offloaded track failed ({} times): the CPU plays on", self.h.tear_downs));
+            if self.h.tear_downs >= TEAR_DOWNS && !self.h.refused {
+                self.h.refused = true;
                 self.apply(self.settings.clone());
             }
         }
@@ -904,15 +892,15 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     /// Offload wanted while the CPU plays: when the output decodes the next song, the CPU plays the
     /// current one to its end and hands over there (as media3 reconfigures its sink at a boundary).
     fn follow_offload_ahead(&mut self) {
-        if !self.offload || self.off.is_none() || self.handing_over.is_some() || !self.p.playing() {
+        if !self.offload || self.off.is_none() || self.h.at_end.is_some() || !self.p.playing() {
             return;
         }
         let Some(cur) = self.p.current() else { return };
         let Some(next) = self.p.queue.read(|q| q.next_of(cur, q.repeat())) else { return };
-        if self.probe.as_ref().is_none_or(|p| p.0 != next) {
-            self.probe = Some((next, self.p.tracks.open_packets(&self.p.id_at(next), 0, true), None));
+        if self.h.probe.as_ref().is_none_or(|p| p.0 != next) {
+            self.h.probe = Some((next, self.p.tracks.open_packets(&self.p.id_at(next), 0, true), None));
         }
-        let (_, opened, known) = self.probe.as_mut().expect("set above");
+        let (_, opened, known) = self.h.probe.as_mut().expect("set above");
         if known.is_none() {
             if opened.as_mut().is_ok_and(|r| !r.ready()) {
                 return;
@@ -920,37 +908,37 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             // The offload path opens the song anew.
             let opened = std::mem::replace(opened, Err(String::new()));
             let why = self.judge(next, opened);
-            self.probe.as_mut().expect("set above").2 = Some(why.is_none());
+            self.h.probe.as_mut().expect("set above").2 = Some(why.is_none());
         }
         // Only while the current song is still being read; past it, the handover waits a song.
-        if self.probe.as_ref().is_some_and(|p| p.2 == Some(true)) && self.p.reading_index() == Some(cur) && self.p.stopping_after().is_none() {
+        if self.h.probe.as_ref().is_some_and(|p| p.2 == Some(true)) && self.p.reading_index() == Some(cur) && self.p.stopping_after().is_none() {
             self.p.app.log("offload takes over at the next song");
             self.p.pause_at_end(true);
-            self.handing_over = Some(cur);
+            self.h.at_end = Some(cur);
         }
     }
 
     /// Offload wanted while the CPU plays: once the current song is known to be decodable there, the
     /// output takes it over where the ear is, behind a dip.
     fn follow_offload_now(&mut self) {
-        let Some(i) = self.entering.as_ref().map(|e| e.0) else { return };
+        let Some(i) = self.h.entering.as_ref().map(|e| e.0) else { return };
         if !self.offload || self.p.current() != Some(i) || !self.p.playing() || self.offloading() {
-            self.entering = None;
+            self.h.entering = None;
             return;
         }
-        if self.entering.as_mut().is_some_and(|e| e.1.as_mut().is_ok_and(|r| !r.ready())) {
+        if self.h.entering.as_mut().is_some_and(|e| e.1.as_mut().is_ok_and(|r| !r.ready())) {
             return;
         }
-        let (i, opened) = self.entering.take().expect("checked");
+        let (i, opened) = self.h.entering.take().expect("checked");
         if self.off.is_some() && self.judge(i, opened).is_none() {
             self.p.app.log("offload takes over where the ear is");
-            self.offload_now = true;
+            self.h.now = true;
             let now = self.now();
             self.dip_down(now, HAND_DIP_MS, HAND_DIP_MS).then.push(Switched::Hand);
         }
     }
 
-    /// Why the output would not decode song `i` as `opened` (noted as why it plays on the CPU).
+    /// Why the output would not decode song `i` as `opened`, noted as why it plays on the CPU.
     fn judge(&mut self, i: usize, opened: Result<Demuxed, String>) -> Option<OnCpu> {
         let level = self.gain_of(i);
         let Worker { p, off, .. } = self;
@@ -980,19 +968,34 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     /// Paused long enough: lets the device and the song's bytes go, keeping the place.
     fn release(&mut self) {
         self.idle_at = None;
-        if self.playing() || self.released.is_some() {
+        if self.playing() || self.parked.as_ref().is_some_and(|p| p.shown.is_none()) {
             return;
         }
-        self.released = self.leave_offload().or_else(|| self.p.release());
+        let at = self.leave_offload().or_else(|| self.p.release());
+        if self.parked.is_none() {
+            self.parked = at.map(|(at, ms)| Parked { at, ms, shown: None });
+        }
         self.p.sink.track.release();
         self.p.tracks.let_go();
         self.releases += 1;
     }
 
-    /// After a release, opens the song again where it was.
+    /// Lets the device go (it failed, or offload is wanted while paused), keeping the place.
+    fn let_go(&mut self) {
+        if self.parked.as_ref().is_some_and(|p| p.shown.is_none()) {
+            return;
+        }
+        let at = self.p.release();
+        if self.parked.is_none() {
+            self.parked = at.map(|(at, ms)| Parked { at, ms, shown: None });
+        }
+        self.p.sink.track.release();
+    }
+
+    /// After the output was let go, opens the song again where it was.
     fn reopen(&mut self) {
-        if let Some((i, ms)) = self.released.take() {
-            self.jump(i, ms);
+        if let Some(p) = self.parked.take_if(|p| p.shown.is_none()) {
+            self.jump(p.at, p.ms);
         }
     }
 
@@ -1023,25 +1026,18 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         true
     }
 
-    /// Drops everything held for the music (openings, switches, readers, outputs), keeping the place in
-    /// the queue.
+    /// Drops everything held for the music, keeping the place in the queue.
     fn let_go_of_everything(&mut self) {
-        self.takeover = None;
-        self.probe = None;
-        self.entering = None;
-        self.offload_now = false;
-        if self.handing_over.take().is_some() {
+        let h = std::mem::take(&mut self.h);
+        (self.h.tear_downs, self.h.refused, self.h.heard, self.h.seq) = (h.tear_downs, h.refused, h.heard, h.seq);
+        if h.at_end.is_some() {
             self.p.pause_at_end(false);
         }
-        self.dip = None;
-        self.pause_at = None;
-        self.held = None;
-        self.stall = None;
+        (self.dip, self.pause_at, self.parked, self.stall) = (None, None, None, None);
         self.unstall();
         self.leave_offload();
         self.p.release();
         self.p.sink.track.release();
-        self.released = None;
     }
 
     /// Opens the song again from scratch where the ear is, its bytes and cache entry dropped
@@ -1090,7 +1086,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     /// While music should move, opens the song again from scratch ([`Worker::start_again`]) once the
     /// position stood still [`STALL_RESTART_MS`] with no bytes on their way.
     fn restart_if_stalled(&mut self, now: i64) {
-        if !(self.going() && self.dip.is_none() && self.held.is_none() && self.p.queue.read(|q| !q.is_empty())) {
+        if !(self.going() && self.dip.is_none() && self.parked.is_none() && self.p.queue.read(|q| !q.is_empty())) {
             self.stall = None;
             return;
         }
@@ -1134,7 +1130,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         (self.events)(Event::Output { name });
     }
 
-    /// Jumps made or held, not counting those waiting in the dip ([`Event::Song`]'s `jumps`).
+    /// Jumps made or parked, not counting those waiting in the dip ([`Event::Song`]'s `jumps`).
     fn made(&self) -> u64 {
         self.jumps - self.dip.as_ref().map_or(0, |d| d.then.iter().filter(|s| s.jumps()).count()) as u64
     }
@@ -1144,7 +1140,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         match c {
             Command::PlayAt(i, ms) => {
                 self.jumps += 1;
-                self.held = None;
+                self.parked.take_if(|p| p.shown.is_some());
                 self.switch(Switched::To(i, ms), Switch::ToSong, now)
             }
             Command::GoTo(i, ms) => {
@@ -1179,7 +1175,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             Command::Replan => self.replan(),
             Command::QueueChanged => {
                 self.p.queue_changed();
-                self.follow_held();
+                self.follow_parked();
                 self.follow_queue();
                 // Another song may follow now.
                 self.replan();
@@ -1191,8 +1187,8 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             Command::Gain => self.gain_changed = true,
             Command::Tuning(on) => self.p.sink.track.shallow(on),
             Command::Positions(every) => {
-                self.positions = every.map(|d| d.as_millis().max(1) as i64);
-                self.next_position = now;
+                self.told.positions = every.map(|d| d.as_millis().max(1) as i64);
+                self.told.next_position = now;
             }
             Command::Device(d) => self.device(d),
             Command::Look | Command::Stop => {}
@@ -1202,7 +1198,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     /// The sleep timer's end of this song.
     fn pause_at_end(&mut self, on: bool) {
         // It replaces a handover waiting at the same end.
-        if self.handing_over.take().is_some() && !on {
+        if self.h.at_end.take().is_some() && !on {
             self.p.pause_at_end(false);
         }
         let Worker { p, off, .. } = self;
@@ -1222,7 +1218,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     /// a song it already wrote no longer follows.
     fn follow_queue(&mut self) {
         let old = std::mem::replace(&mut self.seqs, self.p.queue.read(|q| q.seqs().to_vec()));
-        self.probe = None;
+        self.h.probe = None;
         let Worker { p, off, .. } = self;
         let Some(off) = off.as_mut().filter(|o| o.active()) else { return };
         if off.queue_changed(&old, &mut p.tracks, &p.queue) {
@@ -1239,7 +1235,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         let hi_res = s.hi_res && self.p.sink.track.takes_float();
         let bit_perfect = self.facts.bit_perfect;
         let prefs = AudioPrefs { dsp: s.sound.on(), skip_silence: s.skip_silence, offload: s.offload && self.off.is_some(), crossfade_s: s.crossfade_s, auto_mix: s.auto_mix, speed: s.speed, pitch: s.pitch };
-        let state = OutputState { hi_res, bit_perfect, usb: self.facts.usb, offload_refused: self.offload_refused };
+        let state = OutputState { hi_res, bit_perfect, usb: self.facts.usb, offload_refused: self.h.refused };
         let policy = audio_policy(&prefs, &state);
         self.blocked = if self.off.is_some() { offload_blocked(&prefs, &state) } else { Some("the output does not decode songs itself") };
         // Turning up needs float samples and the limiter; the limiter alone does not block offload.
@@ -1310,33 +1306,26 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         if was == wanted {
             return;
         }
-        self.probe = None;
-        self.entering = None;
-        self.takeover = None;
+        (self.h.probe, self.h.entering, self.h.takeover) = (None, None, None);
         if !wanted {
-            if self.handing_over.take().is_some() {
+            if self.h.at_end.take().is_some() {
                 self.p.pause_at_end(false);
             }
             if self.offloading() {
                 self.leave_chip();
             }
-        } else if !self.p.playing() && self.p.current().is_some() && self.held.is_none() {
+        } else if !self.p.playing() && self.p.current().is_some() && self.parked.as_ref().is_none_or(|p| p.shown.is_none()) {
             // Paused on the CPU: let go, so play opens the song where the output decodes it.
-            self.takeover = None;
-            if self.released.is_none() {
-                self.released = self.p.release();
-                self.p.sink.track.release();
-            }
+            self.let_go();
         } else if let Some(i) = self.p.current().filter(|_| self.p.playing() && !self.offloading()) {
-            // Opened as packets to see whether the output decodes it.
-            self.entering = Some((i, self.p.tracks.open_packets(&self.p.id_at(i), 0, true)));
+            self.h.entering = Some((i, self.p.tracks.open_packets(&self.p.id_at(i), 0, true)));
         }
     }
 
     /// Hands the offloaded song to the CPU. While the track can play on (playing, no USB, not refused),
     /// the CPU opens the song ahead first so the handover is a dip, not a gap.
     fn leave_chip(&mut self) {
-        if !(self.going() && !self.facts.usb && !self.offload_refused && self.leave_ahead()) {
+        if !(self.going() && !self.facts.usb && !self.h.refused && self.leave_ahead()) {
             self.leave_now();
         }
     }
@@ -1353,7 +1342,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         }
         let Ok(r) = self.p.tracks.open(&id, from_ms) else { return false };
         let dip_at = self.now() + REMAKE_LEAD_MS - HAND_DIP_MS;
-        self.takeover = Some(Takeover { id, from_ms, r, ready: false, dip_at });
+        self.h.takeover = Some(Takeover { id, from_ms, r, ready: false, dip_at });
         self.p.app.log("offload given up: the CPU takes over once the song is open");
         true
     }
@@ -1370,15 +1359,15 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     /// Once the song opened ahead is open and the track a dip away from its start, the dip goes down and
     /// the CPU takes over at its bottom ([`Worker::handed`]). Paused, the handover is made at once.
     fn follow_takeover(&mut self, now: i64) {
-        if self.takeover.is_none() || self.dip.as_ref().is_some_and(|d| d.then.iter().any(|s| matches!(s, Switched::Hand))) || self.pause_at.is_some() {
+        if self.h.takeover.is_none() || self.dip.as_ref().is_some_and(|d| d.then.iter().any(|s| matches!(s, Switched::Hand))) || self.pause_at.is_some() {
             return;
         }
         if !self.offloading() {
-            self.takeover = None;
+            self.h.takeover = None;
             return;
         }
         let playing = self.playing();
-        let t = self.takeover.as_mut().expect("checked");
+        let t = self.h.takeover.as_mut().expect("checked");
         let failed = playing && !t.ready && {
             t.ready = t.r.ready();
             if !t.ready {
@@ -1388,8 +1377,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             t.r.error().is_some()
         };
         if failed || !playing {
-            // Paused offloaded, nothing of the handover is heard.
-            self.takeover = None;
+            self.h.takeover = None;
             self.leave_now();
         } else if self.dip.is_none() && now >= t.dip_at {
             self.dip_down(now, HAND_DIP_MS, HAND_DIP_MS).then.push(Switched::Hand);
@@ -1407,18 +1395,18 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     }
 
     fn play(&mut self) {
-        if self.pause_at.take().is_some() && self.held.is_none() {
+        let chosen = self.parked.as_ref().is_some_and(|p| p.shown.is_some());
+        if self.pause_at.take().is_some() && !chosen {
             // Play during the pause's fade: back up from where the fade got to.
             self.ramp(None, 1.0, self.settings.fade_ms.max(0) as i64);
             return self.set_state(State::Playing);
         }
-        // A place held during the fade (a skip, a new queue) is played below.
+        // A place chosen during the fade (a skip, a new queue) is played below.
         if self.playing() && self.state == State::Playing {
             return;
         }
-        if let Some((i, ms, _)) = self.held.take() {
-            self.released = None;
-            self.jump(i, ms);
+        if let Some(p) = self.parked.take_if(|p| p.shown.is_some()) {
+            self.jump(p.at, p.ms);
             return self.resume();
         }
         self.reopen();
@@ -1458,8 +1446,8 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         self.set_state(State::Paused);
     }
 
-    /// A jump or seek that keeps playing or paused: made behind its dip while playing, held while paused.
-    /// After the end of the queue it plays, as the music did before it ended.
+    /// A jump or seek that keeps playing or paused: made behind its dip while playing, parked while
+    /// paused. After the end of the queue it plays, as the music did before it ended.
     fn go(&mut self, s: Switched, kind: Switch, now: i64) {
         if self.playing() && self.pause_at.is_none() {
             self.switch(s, kind, now);
@@ -1471,14 +1459,14 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         }
     }
 
-    /// Holds the place `s` leads to, from the held place or the player's.
+    /// Parks the place `s` leads to, from the place chosen before or the player's.
     fn hold(&mut self, s: Switched) {
         let len = self.p.queue.read(|q| q.len());
         if len == 0 {
             return;
         }
-        let (at, ms) = match &self.held {
-            Some((i, ms, _)) => (*i, *ms),
+        let (at, ms) = match self.parked.as_ref().filter(|p| p.shown.is_some()) {
+            Some(p) => (p.at, p.ms),
             None => match self.shown() {
                 Some(place) => place,
                 None => (self.p.queue.read(|q| q.current()).unwrap_or(0), self.position_ms()),
@@ -1498,20 +1486,20 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             // Paused, the music is made again on play.
             Switched::Hand => return,
         };
-        self.held = Some((i, ms, self.p.id_at(i)));
-        self.seek_landed |= matches!(s, Switched::Seek(_));
+        self.parked = Some(Parked { at: i, ms, shown: Some(self.p.id_at(i)) });
+        self.told.seek_landed |= matches!(s, Switched::Seek(_));
         // The queue moves now, so a queue saved while paused restores this song.
         if !matches!(s, Switched::Seek(_)) {
             self.p.queue.moved_to(i);
         }
     }
 
-    /// The queue was edited: a held place follows its entry, or goes with it.
-    fn follow_held(&mut self) {
-        let Some((i, ..)) = self.held.as_mut() else { return };
-        match self.seqs.get(*i).and_then(|&s| self.p.queue.read(|q| q.index_of(s))) {
-            Some(k) => *i = k,
-            None => self.held = None,
+    /// The queue was edited: a parked place follows its entry, or goes with it.
+    fn follow_parked(&mut self) {
+        let Some(p) = self.parked.as_mut() else { return };
+        match self.seqs.get(p.at).and_then(|&s| self.p.queue.read(|q| q.index_of(s))) {
+            Some(k) => p.at = k,
+            None => self.parked = None,
         }
     }
 
@@ -1569,12 +1557,12 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             }
             Switched::Seek(ms) => {
                 self.seek(ms);
-                self.seek_landed = true;
+                self.told.seek_landed = true;
             }
             Switched::Hand => from = self.handed(),
             Switched::To(..) => {}
         }
-        // Only a play_at comes here paused (a skip or a go_to is held instead): music is wanted.
+        // Only a play_at comes here paused (a skip or a go_to is parked instead): music is wanted.
         if s.jumps() && !self.playing() && self.current().is_some() {
             self.resume();
         }
@@ -1584,7 +1572,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     /// At the dip's bottom: the CPU takes the song over from the output's decoder, or that takes it over
     /// where the ear is. Returns the level to come back up from, if not the fade's.
     fn handed(&mut self) -> Option<f32> {
-        if let Some(t) = self.takeover.take() {
+        if let Some(t) = self.h.takeover.take() {
             // The track's fade ends at silence, whatever tick it last took.
             self.ramp(None, 0.0, 0);
             let now = self.now();
@@ -1594,14 +1582,14 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             return self.onto_cpu(i, ms, opened);
         }
         let i = self.p.current().filter(|_| !self.offloading())?;
-        if !(std::mem::take(&mut self.offload_now) && self.offload && self.off.is_some() && self.p.playing()) {
+        if !(std::mem::take(&mut self.h.now) && self.offload && self.off.is_some() && self.p.playing()) {
             return None;
         }
         // Where the ear is, read as the CPU stops.
         self.p.pause();
         let ms = self.p.position_ms();
         self.jump(i, ms);
-        self.placed_due = true;
+        self.told.placed = true;
         Some(0.0)
     }
 
@@ -1616,7 +1604,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
 
     /// A seek in the current song; offloaded, the track restarts at the packet it lands in.
     fn seek(&mut self, ms: i64) {
-        self.takeover = None;
+        self.h.takeover = None;
         match self.chip().and_then(Offload::current) {
             Some(i) => self.jump(i, ms),
             None => self.p.seek(ms),
@@ -1671,11 +1659,8 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             (self.events)(Event::Error { id: String::new(), message });
             self.p.pause();
             self.set_state(State::Idle);
-            // Released as after a long pause: the next play opens a new device.
-            if self.released.is_none() {
-                self.released = self.p.release();
-                self.p.sink.track.release();
-            }
+            // Let go as after a long pause: the next play opens a new device.
+            self.let_go();
         }
         for (id, message) in std::mem::take(&mut self.p.failures) {
             (self.events)(Event::Error { id, message });
@@ -1685,9 +1670,9 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             self.p.sink.track.set_ended(true);
         }
         let ended = self.p.playing() && self.p.ended();
-        if ended && self.handing_over.is_some() && self.p.stopping_after() == self.handing_over {
+        if ended && self.h.at_end.is_some() && self.p.stopping_after() == self.h.at_end {
             // The output's decoder takes the next song from its start.
-            let i = self.handing_over.take().expect("checked");
+            let i = self.h.at_end.take().expect("checked");
             self.p.pause_at_end(false);
             match self.p.queue.read(|q| q.next_of(i, q.repeat())) {
                 Some(n) => self.jump(n, 0),
@@ -1719,7 +1704,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     fn stopped_after(&mut self, i: usize) {
         let next = self.p.queue.read(|q| q.next_of(i, q.repeat()));
         if let Some(n) = next {
-            self.held = Some((n, 0, self.p.id_at(n)));
+            self.parked = Some(Parked { at: n, ms: 0, shown: Some(self.p.id_at(n)) });
         }
         (self.events)(Event::Stopped { plays: self.plays });
         self.set_state(if next.is_some() { State::Paused } else { State::Ended });
@@ -1752,15 +1737,15 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
 
     /// Says a live stream's title once playback reaches it (after what the output holds).
     fn announce(&mut self, now: i64) {
-        if self.title.as_ref().is_some_and(|t| now >= t.1) {
-            let (t, _) = self.title.take().expect("checked");
+        if self.told.title.as_ref().is_some_and(|t| now >= t.1) {
+            let (t, _) = self.told.title.take().expect("checked");
             (self.events)(Event::Title(t));
         }
         let Some(i) = self.p.reading_index().filter(|_| !self.offloading()) else { return };
         let fresh = self.p.queue.read(|q| q.ids().get(i).and_then(|id| self.p.tracks.loading(id)).and_then(|l| l.announced()));
         if let Some(t) = fresh {
             let track = &self.p.sink.track;
-            self.title = Some((t, now + (track.filled_us() + track.latency_us()) / 1000));
+            self.told.title = Some((t, now + (track.filled_us() + track.latency_us()) / 1000));
         }
     }
 
@@ -1772,7 +1757,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
                 Some(o) => o.in_track_us() / 1000,
                 None => (self.p.sink.track.filled_us() + self.p.sink.track.latency_us()) / 1000,
             };
-            let waiting = self.stalled || self.waiting_for_bytes();
+            let waiting = self.told.stalled || self.waiting_for_bytes();
             let state = self.words(in_output_ms);
             let quiet_ms = self.stall.as_ref().filter(|q| q.standing).map_or(0, |q| now - q.since);
             let bytes_coming = self.bytes_coming();
@@ -1785,14 +1770,16 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
 
     /// The engine's state in words, for a stall report.
     fn words(&self, in_output_ms: i64) -> String {
-        let marks = [(self.dip.is_some(), ", switching"), (self.pause_at.is_some(), ", pausing"), (self.offloading(), ", offloaded"), (self.released.is_some(), ", output let go"), (self.held.is_some(), ", a place held")];
+        let parked = self.parked.as_ref().map(|p| if p.shown.is_some() { ", a place chosen" } else { ", output let go" });
+        let marks = [(self.dip.is_some(), ", switching"), (self.pause_at.is_some(), ", pausing"), (self.offloading(), ", offloaded")];
         let mut w = format!("{:?}", self.state);
         marks.iter().filter(|m| m.0).for_each(|m| w.push_str(m.1));
+        w.push_str(parked.unwrap_or_default());
         w.push_str(&format!("; {}; ring {} ms, output {in_output_ms} ms", self.p.words(), self.p.sink.track.filled_us() / 1000));
         if self.waiting_for_bytes() {
             w.push_str(", waiting for a song's bytes");
         }
-        if self.stalled {
+        if self.told.stalled {
             w.push_str(", said to be buffering");
         }
         w.push_str(&format!("; loaders: {}", self.p.tracks.words()));
@@ -1820,14 +1807,14 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     fn why_on_cpu(&self) -> String {
         match self.blocked {
             Some(b) if !self.offload => b.to_string(),
-            _ if self.handing_over.is_some() => "offload takes over at the next song".into(),
+            _ if self.h.at_end.is_some() => "offload takes over at the next song".into(),
             _ => self.off.as_ref().and_then(|o| o.on_cpu.as_ref()).map_or_else(|| "the song began on the CPU before offload was wanted".into(), OnCpu::words),
         }
     }
 
-    /// Ends a [`Event::Buffering`]: the CPU path no longer waits for bytes (released, held, offloaded).
+    /// Ends a [`Event::Buffering`]: the CPU path no longer waits for bytes.
     fn unstall(&mut self) {
-        if std::mem::take(&mut self.stalled) {
+        if std::mem::take(&mut self.told.stalled) {
             (self.events)(Event::Buffering(false));
         }
     }
@@ -1835,7 +1822,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     /// Whether song `i` (with `id`) is another than the one last reported. With no jump pending, a new
     /// queue can put another song at the same index.
     fn other(&self, i: usize, id: Option<&str>) -> bool {
-        match &self.heard {
+        match &self.told.heard {
             Some((h, heard_id)) if *h == i => match id {
                 Some(id) => id != heard_id,
                 None => self.dip.as_ref().is_none_or(|d| !d.then.iter().any(Switched::jumps)) && self.p.queue.read(|q| q.ids().get(i).is_none_or(|s| s != heard_id)),
@@ -1847,12 +1834,21 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     /// Writes the status, then says what changed: a client reading the status on an event finds the
     /// event's song and state there.
     fn report(&mut self, now: i64) {
-        if let Some((i, ms, id)) = self.held.clone() {
-            // A place held while paused is where the player is, to the screen.
+        if let Some(p) = self.parked.as_ref() {
             self.unstall();
+            let Some(id) = p.shown.clone() else {
+                // Let go: the place last reported stands.
+                let mut s = self.status.lock();
+                s.releases = self.releases;
+                s.offloaded = false;
+                s.on_cpu = false;
+                return;
+            };
+            // A place chosen while paused is where the player is, to the screen.
+            let (i, ms) = (p.at, p.ms);
             let other = self.other(i, Some(&id));
             if other {
-                self.heard = Some((i, id));
+                self.told.heard = Some((i, id));
             }
             self.write_status(i, ms, |s| {
                 s.switching = false;
@@ -1862,15 +1858,6 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
                 self.say_song(i, false);
             }
             return self.say_position(now, i, ms);
-        }
-        if self.released.is_some() {
-            // Let go: the place last reported stands.
-            self.unstall();
-            let mut s = self.status.lock();
-            s.releases = self.releases;
-            s.offloaded = false;
-            s.on_cpu = false;
-            return;
         }
         if self.offloading() {
             // The output's decoder says its own waits.
@@ -1884,22 +1871,22 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         }
         let track = &self.p.sink.track;
         let stalled = self.state == State::Playing && self.p.starved() && track.filled_us() < STALL_US && track.latency_us() < STALL_US;
-        let stall_changed = std::mem::replace(&mut self.stalled, stalled) != stalled;
+        let stall_changed = std::mem::replace(&mut self.told.stalled, stalled) != stalled;
         let seen = self.p.bar();
         let Some(i) = seen.index.or(self.p.current()) else { return };
         let ms = if seen.index.is_some() { seen.ms } else { self.p.position_ms() };
         let other = self.other(i, None);
         if other {
-            self.heard = Some((i, self.p.id_at(i)));
+            self.told.heard = Some((i, self.p.id_at(i)));
         }
-        let looped = !other && self.p.loops != self.loops;
-        self.loops = self.p.loops;
+        let looped = !other && self.p.loops != self.told.loops;
+        self.told.loops = self.p.loops;
         let mixing = self.p.mixing();
         // The place moves at the speed times the tempo a mix brings the song in at.
         let tempo = self.p.sink.pace_heard();
         let stretched = (tempo - 1.0).abs() > 1e-3;
-        self.placed_due |= self.stretched && !stretched;
-        self.stretched = stretched;
+        self.told.placed |= self.told.stretched && !stretched;
+        self.told.stretched = stretched;
         let (speed, underruns, switching) = (self.p.speed().0, self.p.sink.track.underruns(), self.dip.is_some());
         let (chain, meter, compression) = (self.p.sink.chain_in(), self.p.sink.meter_db(), self.p.sink.compression_db());
         let on_cpu = self.state == State::Playing && !stalled && !switching;
@@ -1926,19 +1913,19 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     fn report_offload(&mut self, now: i64) {
         let Some((i, ms, seq)) = self.off.as_mut().and_then(Offload::heard) else { return };
         let other = self.other(i, None);
-        let looped = !other && seq != self.heard_seq && self.heard_seq != 0;
-        self.heard_seq = seq;
+        let looped = !other && seq != self.h.seq && self.h.seq != 0;
+        self.h.seq = seq;
         if other {
-            self.heard = Some((i, self.p.id_at(i)));
+            self.told.heard = Some((i, self.p.id_at(i)));
             self.p.queue.moved_to(i);
             if let Some(n) = self.p.queue.read(|q| q.next_of(i, q.repeat())) {
                 let next = self.p.id_at(n);
                 self.p.tracks.upcoming(&next);
             }
         }
-        if !self.offload_heard && ms > 0 && self.state == State::Playing {
+        if !self.h.heard && ms > 0 && self.state == State::Playing {
             // Music is heard: a run of songs that would not play is broken.
-            self.offload_heard = true;
+            self.h.heard = true;
             self.p.errors.played();
             self.p.app.playing();
         }
@@ -1960,7 +1947,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     /// Writes the song, place, state and releases into the status, then `more`; returns whether a mix
     /// was audible before.
     fn write_status(&mut self, i: usize, ms: i64, more: impl FnOnce(&mut Status)) -> bool {
-        let id = self.heard.as_ref().map(|h| h.1.clone());
+        let id = self.told.heard.as_ref().map(|h| h.1.clone());
         let mut s = self.status.lock();
         let was = s.mixing;
         s.state = self.state;
@@ -1976,7 +1963,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     }
 
     fn say_song(&mut self, i: usize, looped: bool) {
-        let (id, jumps) = (self.heard.as_ref().map(|h| h.1.clone()).unwrap_or_default(), self.made());
+        let (id, jumps) = (self.told.heard.as_ref().map(|h| h.1.clone()).unwrap_or_default(), self.made());
         (self.events)(if looped { Event::Looped { index: i, id, jumps } } else { Event::Song { index: i, id, jumps } });
     }
 
@@ -1988,7 +1975,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         if mixing != mixing_was {
             (self.events)(Event::Mixing(mixing));
         }
-        if std::mem::take(&mut self.placed_due) {
+        if std::mem::take(&mut self.told.placed) {
             (self.events)(Event::Placed { index: i, ms });
         }
         self.say_position(now, i, ms);
@@ -1996,10 +1983,10 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
 
     /// [`Event::Position`]: at the pace asked for while playing, and once when a seek lands.
     fn say_position(&mut self, now: i64, index: usize, ms: i64) {
-        let landed = std::mem::take(&mut self.seek_landed);
-        let due = self.positions.is_some() && self.state == State::Playing && now >= self.next_position;
+        let landed = std::mem::take(&mut self.told.seek_landed);
+        let due = self.told.positions.is_some() && self.state == State::Playing && now >= self.told.next_position;
         if due {
-            self.next_position = now + self.positions.expect("checked");
+            self.told.next_position = now + self.told.positions.expect("checked");
         }
         if landed || due {
             (self.events)(Event::Position { index, ms });
@@ -2022,27 +2009,26 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     fn wake_for_music(&self, now: i64) -> Option<i64> {
         let mut d: Option<i64> = None;
         let mut at = |ms: i64| d = Some(d.map_or(ms, |x| x.min(ms)));
-        for t in [self.pause_at, self.dip.as_ref().map(|d| d.at), self.idle_at, self.title.as_ref().map(|t| t.1)].into_iter().flatten() {
+        for t in [self.pause_at, self.dip.as_ref().map(|d| d.at), self.idle_at, self.told.title.as_ref().map(|t| t.1)].into_iter().flatten() {
             at(t - now);
         }
         if self.chain_wanted.is_some() {
             at(self.chain_at + CHAIN_EVERY_MS - now);
         }
-        if self.entering.is_some() {
-            // Its loader wakes the thread; this is a fallback.
+        // Loaders wake the thread for openings; these are fallbacks.
+        if self.h.entering.is_some() {
             at(1_000);
         }
-        if let Some(m) = self.takeover.as_ref().filter(|_| self.dip.is_none() && self.pause_at.is_none()) {
-            // The dip is due when playback gets near; still opening, its loader wakes the thread.
+        if let Some(m) = self.h.takeover.as_ref().filter(|_| self.dip.is_none() && self.pause_at.is_none()) {
             at(if m.ready { m.dip_at - now } else { 1_000 });
         }
-        let positions = self.positions.is_some() && self.state == State::Playing;
+        let positions = self.told.positions.is_some() && self.state == State::Playing;
         if let Some(off) = self.chip() {
             if let Some(ms) = off.wake_in() {
                 at(ms);
             }
             if positions {
-                at(self.next_position - now);
+                at(self.told.next_position - now);
             }
             return d.map(|x| x.max(1));
         }
@@ -2079,12 +2065,11 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         for u in [self.p.until_next_song_us().map(|u| (u, 5)), self.p.until_heard_changes_us().map(|u| (u, 1))].into_iter().flatten() {
             at((u.0 as f64 / speed / 1000.0) as i64 + u.1);
         }
-        if self.probe.as_ref().is_some_and(|p| p.2.is_none()) {
-            // Its loader wakes the thread; this is a fallback.
+        if self.h.probe.as_ref().is_some_and(|p| p.2.is_none()) {
             at(1_000);
         }
         if positions {
-            at(self.next_position - now);
+            at(self.told.next_position - now);
         }
         d.map(|x| x.max(1))
     }
