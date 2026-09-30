@@ -154,14 +154,15 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
         val raw = c.currentPosition
         val now = android.os.SystemClock.elapsedRealtime()
         val on = c.currentMediaItemIndex
-        val engine = engine()?.takeIf { _pendingSeek.value == null && now - seekAsked > SEEK_GRACE_MS }?.shownMs(on) ?: -1L
-        val out = read(PlayheadJni.position(clock, now, c.isPlaying, on, c.nextMediaItemIndex, raw, shown, engine))
-        if (c === controller && c.isPlaying && PlayheadJni.drifted(raw, engine) && now - reanchored > REANCHOR_GAP_MS) {
+        val engine = engine()?.takeIf { _pendingSeek.value == null && now - seekAsked > SEEK_GRACE_MS }
+        val r = PlayheadJni.position(clock, now, c.isPlaying, on, c.nextMediaItemIndex, raw, shown, engine?.handle ?: 0L)
+        val out = read(r)
+        if (c === controller && c.isPlaying && r < 0 && now - reanchored > REANCHOR_GAP_MS) {
             reanchored = now
-            dev.nori.music.NoriLog.i("seek bar: the controller ran on to $raw ms, the engine is at $engine ms: the session says its place again")
-            engine()?.reanchor()
+            dev.nori.music.NoriLog.i("seek bar: the controller ran on to $raw ms, the engine is at ${engine?.shownMs(on)} ms: the session says its place again")
+            engine?.reanchor()
         }
-        if (tracePositions) android.util.Log.d("noripos", "raw=$raw engine=$engine out=$out on=$on shown=$shown heard=$heardIndex c=${c.javaClass.simpleName} t=${Thread.currentThread().name}")
+        if (tracePositions) android.util.Log.d("noripos", "raw=$raw engine=${engine?.shownMs(on)} out=$out on=$on shown=$shown heard=$heardIndex c=${c.javaClass.simpleName} t=${Thread.currentThread().name}")
         return out
     }
 
@@ -176,7 +177,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
 
     /** Unpacks an answer into [heardIndex]; returns the place in it. */
     private fun read(r: Long): Long {
-        heardIndex = (r ushr 44).toInt() - 1
+        heardIndex = ((r ushr 44) and 0x7FFFF).toInt() - 1
         // The ear changed song between two readings: the page changes with it now, not at the next one.
         if ((r ushr 43) and 1L != 0L) main.post { controller?.let { publish(it, queueChanged = false) } }
         return r and ((1L shl 43) - 1)
@@ -597,12 +598,11 @@ internal object PlayheadJni {
 
     /**
      * As [HeardJni.at], with the place the bar shows while the page shows queue index [shown] (-1: nothing).
-     * [positionMs] is the player's word, [engineMs] the engine's own place in song [on] (-1: none), which the
-     * bar goes by when there is one.
+     * [positionMs] is the player's word; [player] the engine ([EnginePlayer.handle], 0: not asked), whose own
+     * place in song [on] the bar goes by when it has one. Negative when the player's word has drifted from
+     * the engine's place (nori_player::heard::drifted): the session must say its place again.
      */
-    @JvmStatic @CriticalNative external fun position(h: Long, nowMs: Long, playing: Boolean, on: Int, next: Int, positionMs: Long, shown: Int, engineMs: Long): Long
-    /** A controller's place [wordMs] has drifted from the engine's own [engineMs] (-1: none): nori_player::heard::drifted. */
-    @JvmStatic @CriticalNative external fun drifted(wordMs: Long, engineMs: Long): Boolean
+    @JvmStatic @CriticalNative external fun position(h: Long, nowMs: Long, playing: Boolean, on: Int, next: Int, positionMs: Long, shown: Int, player: Long): Long
     /** The last place shown, run on from then if [playing]: for while the controller cannot be asked. */
     @JvmStatic @CriticalNative external fun runOn(h: Long, nowMs: Long, playing: Boolean): Long
     /** The listener asked for a place (a seek): the next reading is shown as it is, even a moment back in the song. */

@@ -19,15 +19,11 @@ pub(crate) static COVER: Class = Class {
         native!(c"mix", c"([I[IF[I)V", mix),
         native!(c"seekTimes", c"(ZFJJJ)J", seek_times),
         native!(c"seekStep", c"(FFFFF)J", seek_step),
-        native!(c"seekPaceNew", c"()J", seek_pace_new),
+        native!(c"seekPaceNew", c"(J)J", seek_pace_new),
         native!(c"seekPaceFree", c"(J)V", seek_pace_free),
         native!(c"seekPaceSync", c"(JJJ)V", seek_pace_sync),
         native!(c"seekPaceHold", c"(JFJJ)V", seek_pace_hold),
         native!(c"seekPaceStep", c"(JJJFFF)I", seek_pace_step),
-        native!(c"seekPaceBar", c"(J)F", seek_pace_bar),
-        native!(c"seekPaceTimes", c"(J)J", seek_pace_times),
-        native!(c"seekPaceFrom", c"(J)J", seek_pace_from),
-        native!(c"seekPaceFade", c"(J)F", seek_pace_fade),
         native!(c"transportGlyph", c"(ZZZ)I", transport_glyph),
         native!(c"readable", c"(III)I", readable),
         native!(c"heroButtons", c"(ZZZZZZ)I", hero_buttons),
@@ -42,10 +38,9 @@ pub(crate) static LYRICS: Class = Class {
     methods: &[
         native!(c"destroy", c"(J)V", lyrics_destroy),
         native!(c"sweeps", c"(J)Z", lyrics_sweeps),
-        native!(c"at", c"(JJZZZ)J", lyrics_at),
+        native!(c"at", c"(JJZZZJ)J", lyrics_at),
         native!(c"shown", c"(J)J", lyrics_shown),
         native!(c"shownMs", c"(J)J", lyrics_shown_ms),
-        native!(c"backingSung", c"(J)F", lyrics_backing_sung),
         native!(c"tap", c"(JI)J", lyrics_tap),
         native!(c"land", c"(JI)V", lyrics_land),
         native!(c"nudge", c"(JI)J", lyrics_nudge),
@@ -267,59 +262,74 @@ extern "system" fn seek_step(bar: jfloat, target: jfloat, dt_s: jfloat, width_px
 
 // ---- `nori_look::motion::SeekPace`, one per seek bar ----
 
-fn pace<'a>(h: jlong) -> Option<&'a mut SeekPace> {
+/// What a seek bar shows, left in SeekPace.kt's view after every change: the bar (0..1), the current
+/// times' opacity (0..1), the times (`at_s << 32 | left_s`) and those fading out (-1: none).
+#[repr(C)]
+struct PaceShown {
+    bar: f32,
+    fade: f32,
+    times: i64,
+    from: i64,
+}
+
+/// A seek pace and the view it shows into.
+struct Pace {
+    pace: SeekPace,
+    view: jlong,
+}
+
+impl Pace {
+    fn show(&self) {
+        let p = &self.pace;
+        let shown = PaceShown { bar: p.bar(), fade: p.fade(), times: pack_times(p.times()), from: p.fading().map_or(-1, |(t, _)| pack_times(t)) };
+        // SAFETY: `view` is SeekPace.kt's buffer, kept with the pace and written only here, on its thread.
+        unsafe { crate::view::put(self.view, shown) }
+    }
+}
+
+fn pace<'a>(h: jlong) -> Option<&'a mut Pace> {
     // SAFETY: 0 or a live `seek_pace_new` handle, used only from the main thread (SeekPace.kt).
-    (h != 0).then(|| unsafe { &mut *(h as *mut SeekPace) })
-}
-
-extern "system" fn seek_pace_new() -> jlong {
-    Box::into_raw(Box::new(SeekPace::new())) as jlong
-}
-
-extern "system" fn seek_pace_free(h: jlong) {
-    if h != 0 {
-        // SAFETY: made by `seek_pace_new`, freed once (Kotlin zeroes its handle).
-        drop(unsafe { Box::from_raw(h as *mut SeekPace) });
-    }
-}
-
-extern "system" fn seek_pace_sync(h: jlong, position_ms: jlong, duration_ms: jlong) {
-    if let Some(p) = pace(h) {
-        p.sync(position_ms, duration_ms);
-    }
-}
-
-extern "system" fn seek_pace_hold(h: jlong, bar: jfloat, position_ms: jlong, duration_ms: jlong) {
-    if let Some(p) = pace(h) {
-        p.hold(bar, position_ms, duration_ms);
-    }
-}
-
-extern "system" fn seek_pace_step(h: jlong, position_ms: jlong, duration_ms: jlong, dt_s: jfloat, width_px: jfloat, rate: jfloat) -> jint {
-    pace(h).map_or(-1, |p| p.step(position_ms, duration_ms, dt_s, width_px, rate))
-}
-
-extern "system" fn seek_pace_bar(h: jlong) -> jfloat {
-    pace(h).map_or(0.0, |p| p.bar())
+    (h != 0).then(|| unsafe { &mut *(h as *mut Pace) })
 }
 
 fn pack_times((at, left): (i64, i64)) -> jlong {
     (at << 32) | (left & 0xFFFF_FFFF)
 }
 
-/// The times shown, `at_s << 32 | left_s`.
-extern "system" fn seek_pace_times(h: jlong) -> jlong {
-    pace(h).map_or(0, |p| pack_times(p.times()))
+/// A pace showing into `view` (a `NativeView` address of 24 bytes).
+extern "system" fn seek_pace_new(view: jlong) -> jlong {
+    let p = Pace { pace: SeekPace::new(), view };
+    p.show();
+    Box::into_raw(Box::new(p)) as jlong
 }
 
-/// The fading-out times, packed as [`seek_pace_times`]; -1 if none.
-extern "system" fn seek_pace_from(h: jlong) -> jlong {
-    pace(h).and_then(|p| p.fading()).map_or(-1, |(t, _)| pack_times(t))
+extern "system" fn seek_pace_free(h: jlong) {
+    if h != 0 {
+        // SAFETY: made by `seek_pace_new`, freed once (Kotlin zeroes its handle).
+        drop(unsafe { Box::from_raw(h as *mut Pace) });
+    }
 }
 
-/// Opacity of the current times, 0..1.
-extern "system" fn seek_pace_fade(h: jlong) -> jfloat {
-    pace(h).map_or(1.0, |p| p.fade())
+extern "system" fn seek_pace_sync(h: jlong, position_ms: jlong, duration_ms: jlong) {
+    if let Some(p) = pace(h) {
+        p.pace.sync(position_ms, duration_ms);
+        p.show();
+    }
+}
+
+extern "system" fn seek_pace_hold(h: jlong, bar: jfloat, position_ms: jlong, duration_ms: jlong) {
+    if let Some(p) = pace(h) {
+        p.pace.hold(bar, position_ms, duration_ms);
+        p.show();
+    }
+}
+
+extern "system" fn seek_pace_step(h: jlong, position_ms: jlong, duration_ms: jlong, dt_s: jfloat, width_px: jfloat, rate: jfloat) -> jint {
+    pace(h).map_or(-1, |p| {
+        let wait = p.pace.step(position_ms, duration_ms, dt_s, width_px, rate);
+        p.show();
+        wait
+    })
 }
 
 // ---- lyrics ----
@@ -363,18 +373,27 @@ extern "system" fn lyrics_sweeps(h: jlong) -> jboolean {
 }
 
 /// `LyricClock::advance`, packed by `Step::pack`; 0 for a null handle.
-extern "system" fn lyrics_at(h: jlong, position_ms: jlong, sweep: jboolean, lively: jboolean, force: jboolean) -> jlong {
-    clock(h).map_or(0, |c| c.advance(position_ms, sweep != 0, lively != 0, force != 0).pack())
+/// The moment on screen and how far the lit line's backing vocals are sung there, left in
+/// LyricsClock.kt's view by [`lyrics_at`].
+#[repr(C)]
+struct LyricsShown {
+    ms: i64,
+    backing_sung: f32,
+}
+
+/// Also leaves [`LyricsShown`] in `view` (a `NativeView` address of 16 bytes).
+extern "system" fn lyrics_at(h: jlong, position_ms: jlong, sweep: jboolean, lively: jboolean, force: jboolean, view: jlong) -> jlong {
+    clock(h).map_or(0, |c| {
+        let step = c.advance(position_ms, sweep != 0, lively != 0, force != 0).pack();
+        // SAFETY: `view` is LyricsClock.kt's buffer, kept with the clock and written only here, on its thread.
+        unsafe { crate::view::put(view, LyricsShown { ms: c.shown_ms(), backing_sung: c.backing_sung() }) };
+        step
+    })
 }
 
 /// The displayed time, for Kotlin's word animations.
 extern "system" fn lyrics_shown_ms(h: jlong) -> jlong {
     clock(h).map_or(0, |c| c.shown_ms())
-}
-
-/// Progress through the active line's backing vocals at the displayed time.
-extern "system" fn lyrics_backing_sung(h: jlong) -> jfloat {
-    clock(h).map_or(0.0, |c| c.backing_sung())
 }
 
 /// The displayed frame, packed by `Frame::pack`.

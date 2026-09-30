@@ -17,6 +17,8 @@ import dev.nori.music.ffi.model.Lyrics
  * that one number; only lyrics it no longer keeps are handed over whole.
  */
 class LyricsClock(lyrics: Lyrics, positionMs: Long) : AutoCloseable {
+    /** The moment on screen and the backing vocals sung there, left by [at] (`LyricsShown` in crates/android/src/look.rs). */
+    private val view = dev.nori.music.NativeView(16)
     private var h = LyricsJni.kept(lyrics.key.toLong(), positionMs).takeIf { it != 0L } ?: dev.nori.music.ffi.lyrics.lyricsClock(lyrics, positionMs)
 
     /** Whether the lyrics carry per-word times, so the active line can fill in as it is sung. */
@@ -27,7 +29,13 @@ class LyricsClock(lyrics: Lyrics, positionMs: Long) : AutoCloseable {
      * are sung (not with movement reduced), which asks for every frame while they move; [force] draws
      * that moment whatever changed.
      */
-    fun at(positionMs: Long, sweep: Boolean, lively: Boolean, force: Boolean): Long = LyricsJni.at(h, positionMs, sweep, lively, force)
+    fun at(positionMs: Long, sweep: Boolean, lively: Boolean, force: Boolean): Long = LyricsJni.at(h, positionMs, sweep, lively, force, view.address)
+
+    /** [shownMs] as the last [at] left it: read with no call. */
+    val atShownMs: Long get() = view.buffer.getLong(0)
+
+    /** How far into the lit line's backing vocals the singing is, in UTF-16 units, at the moment the last [at] showed. */
+    val atBackingSung: Float get() = view.buffer.getFloat(8)
 
     /** What is on screen now, as a frame. */
     fun shown(): Long = LyricsJni.shown(h)
@@ -35,8 +43,6 @@ class LyricsClock(lyrics: Lyrics, positionMs: Long) : AutoCloseable {
     /** The moment on screen, the nudge in it: what a word's rise and glow are drawn for. */
     fun shownMs(): Long = LyricsJni.shownMs(h)
 
-    /** How far into the lit line's backing vocals the singing is, in UTF-16 units, at the moment on screen. */
-    fun backingSung(): Float = LyricsJni.backingSung(h)
 
     /** Shows [line] at once and returns where to seek the player to. */
     fun tap(line: Int): Long = LyricsJni.tap(h, line)
@@ -96,10 +102,9 @@ internal object LyricsJni {
     @JvmStatic @CriticalNative external fun destroy(h: Long)
     @JvmStatic @CriticalNative external fun sweeps(h: Long): Boolean
     /** `Step::pack`: sung (29 bits, 18 of them fraction), active + 1 (13), glide ms (10), wait (9), still (1), redraw (1). */
-    @JvmStatic @CriticalNative external fun at(h: Long, positionMs: Long, sweep: Boolean, lively: Boolean, force: Boolean): Long
+    @JvmStatic @CriticalNative external fun at(h: Long, positionMs: Long, sweep: Boolean, lively: Boolean, force: Boolean, view: Long): Long
     @JvmStatic @CriticalNative external fun shown(h: Long): Long
     @JvmStatic @CriticalNative external fun shownMs(h: Long): Long
-    @JvmStatic @CriticalNative external fun backingSung(h: Long): Float
     @JvmStatic @CriticalNative external fun tap(h: Long, line: Int): Long
     @JvmStatic @CriticalNative external fun land(h: Long, line: Int)
     @JvmStatic @CriticalNative external fun nudge(h: Long, dir: Int): Long

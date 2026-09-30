@@ -30,6 +30,7 @@ mod settings;
 mod stream_cache;
 mod track;
 mod transfers;
+mod view;
 
 /// A Kotlin class and its natives.
 pub(crate) struct Class {
@@ -55,7 +56,7 @@ macro_rules! native {
 }
 pub(crate) use native;
 
-static CLASSES: [&Class; 15] = [
+static CLASSES: [&Class; 16] = [
     &covers::CLASS,
     &dsp::CLASS,
     &heard::HEARD,
@@ -71,6 +72,7 @@ static CLASSES: [&Class; 15] = [
     &stream_cache::CLASS,
     &transfers::DOWNLOADS,
     &transfers::LINES,
+    &view::CLASS,
 ];
 
 /// Initialises the uniffi scaffolding and registers every native. A class or method R8 removed is
@@ -212,4 +214,80 @@ pub(crate) fn with_str<R>(env: &JNIEnv, s: &JString, f: impl FnOnce(&str) -> R) 
 
 pub(crate) fn string(env: &JNIEnv, s: &JString) -> Option<String> {
     with_str(env, s, str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    /// The JVM descriptor of a Kotlin parameter or return type.
+    fn descriptor(kotlin: &str) -> String {
+        let d = match kotlin.trim().trim_end_matches('?') {
+            "" | "Unit" => "V",
+            "Long" => "J",
+            "Int" => "I",
+            "Boolean" => "Z",
+            "Float" => "F",
+            "Double" => "D",
+            "String" => "Ljava/lang/String;",
+            "IntArray" => "[I",
+            "LongArray" => "[J",
+            "FloatArray" => "[F",
+            "ByteArray" => "[B",
+            "Array<String>" => "[Ljava/lang/String;",
+            "ByteBuffer" => "Ljava/nio/ByteBuffer;",
+            "Bitmap" => "Landroid/graphics/Bitmap;",
+            "Waiter" => "Ldev/nori/music/look/CoverPixels$Waiter;",
+            other => panic!("no descriptor for Kotlin type {other}: add it here"),
+        };
+        d.to_string()
+    }
+
+    /// Every `external fun` in the Kotlin sources under `dir`, as (class, name, signature).
+    fn declared(dir: &Path, found: &mut BTreeSet<(String, String, String)>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                declared(&path, found);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "kt") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let package = text.lines().find_map(|l| l.strip_prefix("package ")).unwrap_or_default().replace('.', "/");
+            let mut object = None;
+            for line in text.lines() {
+                // Natives live in top-level objects, whose class is the object's own name.
+                if !line.is_empty() && !line.starts_with([' ', '/', '@']) {
+                    object = line.split_whitespace().skip_while(|w| *w != "object").nth(1).map(|n| n.trim_end_matches('{').to_string());
+                }
+                let Some((_, rest)) = line.split_once("external fun ") else { continue };
+                let (name, rest) = rest.split_once('(').unwrap();
+                let (params, ret) = rest.rsplit_once(')').unwrap();
+                let params: String = params.split(',').filter(|p| !p.trim().is_empty()).map(|p| descriptor(p.split_once(':').unwrap().1)).collect();
+                let ret = descriptor(ret.trim().trim_start_matches(':'));
+                let object = object.clone().unwrap_or_else(|| panic!("{name} in {path:?} is not in a top-level object"));
+                found.insert((format!("{package}/{object}"), name.to_string(), format!("({params}){ret}")));
+            }
+        }
+    }
+
+    /// A native registered under another name or signature than Kotlin declares fails only on a phone,
+    /// when it is called: the two lists are the same.
+    #[test]
+    fn natives_match_kotlin() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut kotlin = BTreeSet::new();
+        for dir in ["core/src", "app/src"] {
+            declared(&root.join(dir), &mut kotlin);
+        }
+        let rust: BTreeSet<_> = super::CLASSES
+            .iter()
+            .flat_map(|c| c.methods.iter().map(|m| (c.name.to_str().unwrap().to_string(), m.name.to_str().unwrap().to_string(), m.sig.to_str().unwrap().to_string())))
+            .collect();
+        assert_eq!(rust.difference(&kotlin).collect::<Vec<_>>(), Vec::<&(String, String, String)>::new(), "registered, not declared so");
+        assert_eq!(kotlin.difference(&rust).collect::<Vec<_>>(), Vec::<&(String, String, String)>::new(), "declared, not registered so");
+    }
 }
