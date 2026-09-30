@@ -531,7 +531,10 @@ pub fn panicked(thread: &str, what: &str) {
     if !on() {
         return;
     }
-    said(wall_ms(), Some(Break::new("panic", format!("on {thread}: {what}"))));
+    let b = Break::new("panic", format!("on {thread}: {what}"));
+    // From another thread: the panicking one may hold the watch's locks until it has unwound.
+    let t = wall_ms();
+    let _ = std::thread::Builder::new().name("nori-perf-panic".into()).spawn(move || said(t, Some(b)));
 }
 
 /// The engine thread's last observation; None before its first wake with the watch on.
@@ -759,6 +762,25 @@ mod tests {
         });
         rx.recv_timeout(std::time::Duration::from_secs(5)).expect("engine_seen deadlocked on its own hook");
         assert!(perf_invariant_breaks().iter().any(|l| l.contains("hooked stood still") && l.contains("the stream cache: hooked: ")));
+    }
+
+    #[test]
+    fn a_panic_under_the_watch_lock_is_reported() {
+        let _g = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
+        let was = on();
+        perf_watch(true);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            with_state(|_| panicked("a test", "boom under the lock"));
+            tx.send(()).unwrap();
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5)).expect("the report waited for the panicking thread's own lock");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !perf_invariant_breaks().iter().any(|l| l.contains("boom under the lock")) {
+            assert!(std::time::Instant::now() < deadline, "the panic was reported");
+            std::thread::yield_now();
+        }
+        perf_watch(was);
     }
 
     #[test]
