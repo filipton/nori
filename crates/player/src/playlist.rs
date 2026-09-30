@@ -733,6 +733,42 @@ mod tests {
     }
 
     #[test]
+    fn every_edit_is_counted() {
+        let mut p = Playlist::default();
+        let edits: [(&str, bool, fn(&mut Playlist)); 7] = [
+            ("set", true, |p| _ = p.set(ids(&["a", "b", "c", "d"]), Some(1), false, 0)),
+            ("add", true, |p| _ = p.add(ids(&["e"]), Hand::Next)),
+            ("insert", true, |p| p.insert(0, ids(&["f"]), Hand::No)),
+            ("remove", true, |p| p.remove(0, 1)),
+            ("restore", true, |p| _ = p.restore(&Taken { id: "f".into(), at: 0, hand: Hand::No, turn: None, run: 0 })),
+            ("move", true, |p| p.move_range(0, 1, 2)),
+            ("shuffle", false, |p| p.set_shuffle(true, 3)),
+        ];
+        for (what, list, edit) in edits {
+            let (rev, list_rev) = (p.rev(), p.list_rev());
+            edit(&mut p);
+            assert!(p.rev() > rev, "{what} changes the queue");
+            assert_eq!(p.list_rev() > list_rev, list, "{what} changes the list");
+        }
+    }
+
+    #[test]
+    fn one_song_removed_by_hand_comes_back() {
+        let mut p = Playlist::default();
+        p.set_ordered(ids(&["a", "b", "c"]));
+        assert!(p.lit() && !p.shuffling(), "shown shuffled, played in order");
+        p.moved_to(2);
+        p.remove_undoably(1, 2);
+        assert_eq!((list(&p), p.current()), (vec!["a", "c"], Some(1)));
+        assert_eq!(p.restore_taken("x"), None, "only the song removed");
+        assert_eq!(p.restore_taken("b"), Some(1));
+        assert_eq!((list(&p), p.current()), (vec!["a", "b", "c"], Some(2)));
+        assert_eq!(p.restore_taken("b"), None, "once");
+        p.remove_undoably(0, 2);
+        assert_eq!(p.restore_taken("a"), None, "two songs at once are not remembered");
+    }
+
+    #[test]
     fn ends_of_the_queue_by_repeat() {
         let mut p = Playlist::default();
         p.set(ids(&["a", "b", "c"]), Some(0), false, 0);
