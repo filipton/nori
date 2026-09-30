@@ -180,21 +180,11 @@ impl Resampler {
         if made > cap {
             return None;
         }
-        let sample = |i: usize| -> f32 {
-            if wi == 4 {
-                f32::from_le_bytes([input[i * 4], input[i * 4 + 1], input[i * 4 + 2], input[i * 4 + 3]])
-            } else {
-                i16::from_le_bytes([input[i * 2], input[i * 2 + 1]]) as f32 / 32768.0
-            }
-        };
-        for f in 0..n {
-            if self.in_ch == 2 && self.ch == 1 {
-                self.hist.push((sample(2 * f) + sample(2 * f + 1)) * 0.5);
-            } else {
-                for c in 0..self.ch {
-                    self.hist.push(sample(f * self.in_ch + c));
-                }
-            }
+        let samples = n * self.in_ch;
+        if wi == 4 {
+            keep(&mut self.hist, &input.as_chunks::<4>().0[..samples], self.in_ch, self.ch, f32::from_le_bytes);
+        } else {
+            keep(&mut self.hist, &input.as_chunks::<2>().0[..samples], self.in_ch, self.ch, |b| i16::from_le_bytes(b) as f32 / 32768.0);
         }
         let mut out = [0f32; 2];
         for k in 0..made {
@@ -275,12 +265,24 @@ impl Resampler {
     }
 }
 
+/// Appends `input` (`in_ch` channels, each sample's float by `load`) to `hist` as `ch` channels: a stereo
+/// pair averaged for mono, else the first `ch` of each frame.
+fn keep<const W: usize>(hist: &mut Vec<f32>, input: &[[u8; W]], in_ch: usize, ch: usize, load: impl Fn([u8; W]) -> f32) {
+    if in_ch == 2 && ch == 1 {
+        hist.extend(input.as_chunks::<2>().0.iter().map(|f| (load(f[0]) + load(f[1])) * 0.5));
+    } else if in_ch == ch {
+        hist.extend(input.iter().map(|&b| load(b)));
+    } else {
+        hist.extend(input.chunks_exact(in_ch).flat_map(|f| f[..ch].iter().map(|&b| load(b))));
+    }
+}
+
 /// One row of coefficients over `ch`-channel interleaved samples, four taps at a time.
 #[inline]
 fn dot(h: &[f32], x: &[f32], ch: usize, out: &mut [f32; 2]) {
     if ch == 2 {
         let (mut l, mut r) = ([0f32; 4], [0f32; 4]);
-        for (hc, xc) in h.chunks_exact(4).zip(x.chunks_exact(8)) {
+        for (hc, xc) in h.as_chunks::<4>().0.iter().zip(x.as_chunks::<8>().0) {
             for j in 0..4 {
                 l[j] += hc[j] * xc[2 * j];
                 r[j] += hc[j] * xc[2 * j + 1];
@@ -290,7 +292,7 @@ fn dot(h: &[f32], x: &[f32], ch: usize, out: &mut [f32; 2]) {
         out[1] = (r[0] + r[1]) + (r[2] + r[3]);
     } else {
         let mut m = [0f32; 4];
-        for (hc, xc) in h.chunks_exact(4).zip(x.chunks_exact(4)) {
+        for (hc, xc) in h.as_chunks::<4>().0.iter().zip(x.as_chunks::<4>().0) {
             for j in 0..4 {
                 m[j] += hc[j] * xc[j];
             }
@@ -312,11 +314,11 @@ mod tests {
     }
 
     fn shorts_of(b: &[u8]) -> Vec<i16> {
-        b.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect()
+        b.as_chunks::<2>().0.iter().map(|&c| i16::from_le_bytes(c)).collect()
     }
 
     fn floats(b: &[u8]) -> Vec<f64> {
-        b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f64).collect()
+        b.as_chunks::<4>().0.iter().map(|&c| f32::from_le_bytes(c) as f64).collect()
     }
 
     /// `x` (mono float) through a converter from `a` to `b` Hz, in float, in buffers of `chunk` frames.
@@ -409,7 +411,7 @@ mod tests {
         let (_, made) = r.process(&input, PCM_16, &mut out, PCM_16).unwrap();
         assert_eq!(made, 500 * 2 * 2);
         let back = shorts_of(&out[..made]);
-        assert!(back.chunks_exact(2).all(|c| c[0] == c[1]));
+        assert!(back.as_chunks::<2>().0.iter().all(|c| c[0] == c[1]));
         let mut r = Resampler::new(44100, 2, 44100, 1).unwrap();
         let mut mono = vec![0u8; 20000];
         let (_, made) = r.process(&out[..made], PCM_16, &mut mono, PCM_16).unwrap();
@@ -472,7 +474,7 @@ mod tests {
         for (a, b) in [(48000u32, 44100u32), (44100, 48000), (88200, 44100)] {
             let low = a.min(b) as f64;
             let (f0, f1, secs) = (20.0, low * 0.42, 2.0);
-            let k = (f1 / f0 as f64).ln() / secs;
+            let k = (f1 / f0).ln() / secs;
             let at = |t: f64| 0.5 * (std::f64::consts::TAU * f0 * ((k * t).exp() - 1.0) / k).sin();
             let x: Vec<f64> = (0..(a as f64 * secs) as usize).map(|i| at(i as f64 / a as f64)).collect();
             let y = convert(&x, a, b, 1000);
