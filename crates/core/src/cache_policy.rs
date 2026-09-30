@@ -444,21 +444,26 @@ mod tests {
     #[test]
     fn provider_pages_are_never_fresh() {
         let (c, fake) = setup();
-        let album = |ext: bool| {
-            format!(
-                r#"{{"subsonic-response":{{"status":"ok","album":{{"id":"ext-deezer-album-1","name":"A","song":[{{"id":"ext-deezer-song-1","title":"t","isExternal":{ext}}},{{"id":"s2","title":"u"}}]}}}}}}"#
-            )
-        };
-        let read = || Read::AlbumById { id: "ext-deezer-album-1".into() };
-        fake.answer(&album(true));
-        block(c.read_fetch(read(), None)).unwrap();
-        let s = c.read_stored(read()).unwrap();
-        assert!(s.page.is_some() && !s.fresh);
-
-        let library = r#"{"subsonic-response":{"status":"ok","album":{"id":"al-1","name":"A","song":[{"id":"s1","title":"t"}]}}}"#;
-        fake.answer(library);
-        block(c.read_fetch(Read::AlbumById { id: "al-1".into() }, None)).unwrap();
-        assert!(c.read_stored(Read::AlbumById { id: "al-1".into() }).unwrap().fresh);
+        let song = |ext: bool| format!(r#"{{"id":"s{ext}","title":"t","isExternal":{ext}}}"#);
+        let album = |ext: bool| format!(r#"{{"id":"a{ext}","name":"A","isExternal":{ext}}}"#);
+        // Each read, its answer around ITEM, and whether the item is a song.
+        let pages = [
+            (Read::AlbumById { id: "x".into() }, r#""album":{"id":"al","name":"A","song":[ITEM]}"#, true),
+            (Read::AlbumById { id: "y".into() }, r#""album":ITEM"#, false),
+            (Read::ArtistById { id: "x".into() }, r#""artist":{"id":"ar","name":"A","album":[ITEM]}"#, false),
+            (Read::PlaylistById { id: "x".into() }, r#""playlist":{"id":"p","name":"P","entry":[ITEM]}"#, true),
+            (Read::TopSongs { artist: "x".into() }, r#""topSongs":{"song":[ITEM]}"#, true),
+            (Read::AlbumList { kind: "newest".into(), size: 5, offset: 0, genre: None }, r#""albumList2":{"album":[ITEM]}"#, false),
+        ];
+        for (read, answer, songs) in pages {
+            for provider in [true, false] {
+                let item = if songs { song(provider) } else { album(provider) };
+                fake.answer(&format!(r#"{{"subsonic-response":{{"status":"ok",{}}}}}"#, answer.replace("ITEM", &item)));
+                block(c.read_fetch(read.clone(), None)).unwrap();
+                let s = c.read_stored(read.clone()).unwrap();
+                assert!(s.page.is_some() && s.fresh != provider, "{read:?}, a provider item: {provider}");
+            }
+        }
     }
 
     #[test]
