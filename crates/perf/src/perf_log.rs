@@ -319,10 +319,9 @@ fn parsed(rows: Vec<String>) -> Vec<PerfStretch> {
 pub fn perf_log_clear() {
     let Some(db) = settings_store::app_db() else { return };
     let c = db.lock();
-    let tables: [(&str, fn(&Connection) -> rusqlite::Result<()>); 4] =
-        [("perf_stretches", table), ("perf_crashes", crash_table), ("perf_selftest", selftest_table), ("perf_break_logs", break_log_table)];
-    for (name, made) in tables {
-        if made(&c).is_ok() {
+    let tables = [(table(&c), "perf_stretches"), (crash_table(&c), "perf_crashes"), (selftest_table(&c), "perf_selftest"), (break_log_table(&c), "perf_break_logs")];
+    for (made, name) in tables {
+        if made.is_ok() {
             let _ = c.execute(&format!("DELETE FROM {name}"), []);
         }
     }
