@@ -164,9 +164,7 @@ impl NetError {
     pub fn is_io(&self) -> bool {
         matches!(self, NetError::Http { .. }) || matches!(self, NetError::Transport { kind, .. } if kind.is_io())
     }
-}
 
-impl NetError {
     /// The request never left: the next try cannot be a repeat.
     pub fn nothing_sent(&self) -> bool {
         use FailureKind::*;
