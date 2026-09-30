@@ -926,14 +926,16 @@ impl Equalizer {
         if self.fade.is_none() {
             let frames = len / n;
             let mut planar = std::mem::take(&mut self.planar);
-            planar.clear();
-            planar.resize(frames * n, 0.0);
-            for (k, x) in input.chunks_exact(n).enumerate() {
-                for (c, v) in x.iter().enumerate() {
-                    planar[c * frames + k] = load(*v);
+            // Every sample is written over: only a longer buffer grows it.
+            if planar.len() < frames * n {
+                planar.resize(frames * n, 0.0);
+            }
+            if frames > 0 {
+                for (c, lane) in planar[..frames * n].chunks_exact_mut(frames).enumerate() {
+                    lane.iter_mut().zip(input[c..].iter().step_by(n)).for_each(|(p, &v)| *p = load(v));
                 }
             }
-            self.now.block(&mut planar, frames);
+            self.now.block(&mut planar[..frames * n], frames);
             for (k, y) in output.chunks_exact_mut(n).enumerate() {
                 for (c, v) in y.iter_mut().enumerate() {
                     *v = store(planar[c * frames + k], c);
