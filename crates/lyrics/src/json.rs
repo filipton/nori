@@ -2,53 +2,12 @@
 //! Musixmatch's shapes through), and YouTube Music's search, lyrics tab and captions.
 
 use nori_model::Lyrics;
-use serde::de::{DeserializeOwned, Deserializer};
-use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::formats::{append, decode_html, finish, from_netease, from_qrc, from_ttml, keep_backing, plain, timing, voices, Timed, Timing};
 use crate::lyrics::time_ms;
-
-/// A field read as `T`, or `T::default()` when it holds something else: answers are loose, and one stray
-/// field must not lose the rest.
-#[derive(Default)]
-struct Loose<T>(T);
-
-impl<'de, T: DeserializeOwned + Default> Deserialize<'de> for Loose<T> {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        Ok(Loose(T::deserialize(&Value::deserialize(d)?).unwrap_or_default()))
-    }
-}
-
-type Text = Loose<Option<String>>;
-type Flag = Loose<Option<bool>>;
-/// A list, `None` when the field is not one; entries of another shape read as their default.
-type List<T> = Loose<Option<Vec<Loose<T>>>>;
-
-fn list<T>(l: &List<T>) -> impl Iterator<Item = &T> {
-    l.0.iter().flatten().map(|x| &x.0)
-}
+use crate::formats::{append, decode_html, finish, from_netease, from_qrc, from_ttml, keep_backing, plain, timing, voices, Timed, Timing};
 
 /// A number written as a number or as a string of one.
-#[derive(Default, Clone, Copy)]
-struct Num(Option<f64>);
-
-impl<'de> Deserialize<'de> for Num {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        Ok(Num(number(&Value::deserialize(d)?)))
-    }
-}
-
-impl Num {
-    fn ms(self) -> Option<i64> {
-        self.0.and_then(time_ms)
-    }
-
-    fn secs(self) -> Option<i64> {
-        self.0.and_then(|f| time_ms(f * 1000.0))
-    }
-}
-
 fn number(v: &Value) -> Option<f64> {
     match v {
         Value::Number(n) => n.as_f64(),
@@ -57,17 +16,14 @@ fn number(v: &Value) -> Option<f64> {
     }
 }
 
+/// Milliseconds.
 fn ms(v: &Value) -> Option<i64> {
     number(v).and_then(time_ms)
 }
 
-/// Reads `v` as `T` when it has that shape.
-fn read<T: DeserializeOwned>(v: &Value) -> Option<T> {
-    T::deserialize(v).ok()
-}
-
-fn by_line(kind: &Text) -> bool {
-    kind.0.as_deref().is_some_and(|t| t.eq_ignore_ascii_case("line"))
+/// Seconds, fractional or not, as milliseconds.
+fn secs(v: &Value) -> Option<i64> {
+    number(v).and_then(|f| time_ms(f * 1000.0))
 }
 
 /// A text field as YouTube and others write one: a string, `{simpleText}`, or `{runs: [{text}]}`.
@@ -86,27 +42,30 @@ fn text_of(v: &Value) -> Option<String> {
 }
 
 /// Every object held under the key `name`, anywhere below `v`, in order.
-fn all<'a>(v: &'a Value, name: &str) -> Vec<&'a Map<String, Value>> {
-    fn walk<'a>(v: &'a Value, name: &str, out: &mut Vec<&'a Map<String, Value>>, depth: usize) {
-        // As deep as serde_json parses.
-        if depth > 128 {
-            return;
-        }
-        match v {
-            Value::Object(o) => {
-                for (k, x) in o {
-                    if let (true, Value::Object(inner)) = (k == name, x) {
+fn objects<'a>(v: &'a Value, name: &str, out: &mut Vec<&'a Map<String, Value>>, depth: usize) {
+    // As deep as serde_json parses.
+    if depth > 128 {
+        return;
+    }
+    match v {
+        Value::Object(o) => {
+            for (k, x) in o {
+                if k == name {
+                    if let Value::Object(inner) = x {
                         out.push(inner);
                     }
-                    walk(x, name, out, depth + 1);
                 }
+                objects(x, name, out, depth + 1);
             }
-            Value::Array(a) => a.iter().for_each(|x| walk(x, name, out, depth + 1)),
-            _ => {}
         }
+        Value::Array(a) => a.iter().for_each(|x| objects(x, name, out, depth + 1)),
+        _ => {}
     }
+}
+
+fn all<'a>(v: &'a Value, name: &str) -> Vec<&'a Map<String, Value>> {
     let mut out = Vec::new();
-    walk(v, name, &mut out, 0);
+    objects(v, name, &mut out, 0);
     out
 }
 
@@ -117,6 +76,8 @@ fn parse(json: &str) -> Option<Value> {
     }
     serde_json::from_str(json.trim_start_matches('\u{feff}')).ok()
 }
+
+// ---- syllables --------------------------------------------------------------------------------------
 
 /// A syllable as the JSON formats give one.
 struct Syl<'a> {
@@ -142,89 +103,42 @@ fn lay(line: &mut Timed, backing: &mut Timed, syls: &[Syl], timed: bool) {
     }
 }
 
-/// LyricsPlus' `/v2/lyrics/get`, in ms. `type` "Line" times lines only; a lone zero-length syllable is
-/// the line's own time.
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct Plus {
-    #[serde(rename = "type")]
-    kind: Text,
-    lyrics: List<PlusRow>,
-    data: Loose<Option<PlusData>>,
-    metadata: Loose<Option<PlusMeta>>,
-}
+// ---- LyricsPlus -------------------------------------------------------------------------------------
 
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct PlusData {
-    lyrics: List<PlusRow>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct PlusMeta {
-    /// `{v1: {type: "person"}}`, for the duet sides.
-    agents: Loose<Option<std::collections::HashMap<String, Loose<Agent>>>>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct Agent {
-    #[serde(rename = "type")]
-    kind: Text,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default, rename_all = "camelCase")]
-struct PlusRow {
-    time: Num,
-    end_time: Num,
-    duration: Num,
-    text: Text,
-    syllabus: List<PlusSyl>,
-    element: Loose<Option<Element>>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct Element {
-    singer: Text,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default, rename_all = "camelCase")]
-struct PlusSyl {
-    time: Num,
-    duration: Num,
-    text: Text,
-    part: Flag,
-    is_background: Flag,
-}
-
+/// LyricsPlus' `/v2/lyrics/get`: `{type, lyrics: [{time, duration, text, syllabus: [{time, duration,
+/// text, isBackground}]}]}` in ms. `type` "Line" times lines only; a lone zero-length syllable is the
+/// line's own time.
 pub(crate) fn from_lyricsplus(json: &str) -> Lyrics {
     parse(json).and_then(|v| lyricsplus(&v)).unwrap_or_default()
 }
 
 fn lyricsplus(v: &Value) -> Option<Lyrics> {
-    let p: Plus = read(v)?;
-    let rows = p.lyrics.0.as_ref().or(p.data.0.as_ref().and_then(|d| d.lyrics.0.as_ref()))?;
-    if !rows.iter().any(|r| r.0.time.0.is_some()) {
+    let rows = v.get("lyrics").and_then(Value::as_array).or_else(|| v.get("data")?.get("lyrics")?.as_array())?;
+    if !rows.iter().any(|r| r.get("time").is_some()) {
         return None;
     }
-    let by_line = by_line(&p.kind);
+    let by_line = v.get("type").and_then(Value::as_str).is_some_and(|t| t.eq_ignore_ascii_case("line"));
     let mut lines = Vec::new();
-    for Loose(r) in rows {
-        let Some(start) = r.time.ms() else { continue };
-        let end = r.end_time.ms().or_else(|| r.duration.ms().map(|d| start + d));
+    for r in rows {
+        let text = r.get("text").and_then(Value::as_str).unwrap_or("");
+        let Some(start) = r.get("time").and_then(ms) else { continue };
+        let end = r.get("endTime").and_then(ms).or_else(|| r.get("duration").and_then(ms).map(|d| start + d));
         let mut line = Timed { start, end: end.filter(|e| *e > start), ..Default::default() };
         let mut backing = Timed::default();
-        let syls: Vec<Syl> = list(&r.syllabus)
+        let list = r.get("syllabus").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+        let syls: Vec<Syl> = list
+            .iter()
             .filter_map(|s| {
-                let time = s.time.ms();
-                Some(Syl { text: s.text.0.as_deref()?, start: time, end: time.zip(s.duration.ms()).map(|(t, d)| t + d), part: s.part.0, backing: s.is_background.0.unwrap_or(false) })
+                let time = s.get("time").and_then(ms);
+                Some(Syl {
+                    text: s.get("text")?.as_str()?,
+                    start: time,
+                    end: time.zip(s.get("duration").and_then(ms)).map(|(t, d)| t + d),
+                    part: s.get("part").and_then(Value::as_bool),
+                    backing: s.get("isBackground").and_then(Value::as_bool).unwrap_or(false),
+                })
             })
             .collect();
-        let text = r.text.0.as_deref().unwrap_or("");
         let whole = syls.len() == 1 && syls[0].end.zip(syls[0].start).is_none_or(|(e, s)| e <= s);
         if syls.is_empty() || ((by_line || whole) && !text.trim().is_empty()) {
             append(&mut line, text, None);
@@ -232,112 +146,74 @@ fn lyricsplus(v: &Value) -> Option<Lyrics> {
             lay(&mut line, &mut backing, &syls, !by_line && !whole);
         }
         keep_backing(&mut line, backing);
-        line.agent = r.element.0.as_ref().and_then(|e| e.singer.0.clone());
+        line.agent = r.get("element").and_then(|e| e.get("singer")).and_then(Value::as_str).map(str::to_string);
         lines.push(line);
     }
-    let agents = p.metadata.0.and_then(|m| m.agents.0).unwrap_or_default();
-    let kinds = agents.into_iter().map(|(id, a)| (id, a.0.kind.0.unwrap_or_else(|| "person".into()))).collect();
+    // `metadata.agents: {v1: {type: "person"}}`, for the duet sides.
+    let kinds: std::collections::HashMap<String, String> = v
+        .get("metadata")
+        .and_then(|m| m.get("agents"))
+        .and_then(Value::as_object)
+        .map(|a| a.iter().map(|(id, o)| (id.clone(), o.get("type").and_then(Value::as_str).unwrap_or("person").to_string())).collect())
+        .unwrap_or_default();
     voices(&mut lines, &kinds);
     Some(finish(lines))
 }
 
-/// PaxSenix's Apple Music JSON, in ms. "Line" gives no words; all lines at 0 is untimed.
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct Apple {
-    #[serde(rename = "type")]
-    kind: Text,
-    content: List<AppleRow>,
-}
+// ---- PaxSenix's Apple Music JSON --------------------------------------------------------------------
 
-#[derive(Deserialize, Default)]
-#[serde(default, rename_all = "camelCase")]
-struct AppleRow {
-    timestamp: Num,
-    endtime: Num,
-    text: List<AppleSyl>,
-    background_text: List<AppleSyl>,
-    opposite_turn: Flag,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct AppleSyl {
-    text: Text,
-    timestamp: Num,
-    endtime: Num,
-    part: Flag,
-}
-
+/// PaxSenix's Apple Music JSON: `{type, content: [{timestamp, endtime, text: [{text, part, timestamp,
+/// endtime}], backgroundText}]}` in ms. "Line" gives no words; all lines at 0 is untimed.
 fn apple_json(v: &Value) -> Option<Lyrics> {
-    let a: Apple = read(v)?;
-    let rows = a.content.0.as_ref()?;
-    if !rows.iter().any(|r| r.0.timestamp.0.is_some() && r.0.text.0.is_some()) {
+    let rows = v.get("content")?.as_array()?;
+    if !rows.iter().any(|r| r.get("timestamp").is_some() && r.get("text").is_some_and(Value::is_array)) {
         return None;
     }
-    fn syls(l: &List<AppleSyl>, backing: bool) -> Vec<Syl<'_>> {
-        list(l).filter_map(|s| Some(Syl { text: s.text.0.as_deref()?, start: s.timestamp.ms(), end: s.endtime.ms(), part: s.part.0, backing })).collect()
+    let by_line = v.get("type").and_then(Value::as_str).is_some_and(|t| t.eq_ignore_ascii_case("line"));
+    fn syls(list: Option<&Value>, backing: bool) -> Vec<Syl<'_>> {
+        list.and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| {
+                        Some(Syl {
+                            text: s.get("text")?.as_str()?,
+                            start: s.get("timestamp").and_then(ms),
+                            end: s.get("endtime").and_then(ms),
+                            part: s.get("part").and_then(Value::as_bool),
+                            backing,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
-    let untimed = rows.iter().all(|r| r.0.timestamp.ms().unwrap_or(0) == 0 && r.0.endtime.ms().unwrap_or(0) == 0);
-    let by_line = by_line(&a.kind);
-    let (mut lines, mut text_only) = (Vec::new(), Vec::new());
-    for Loose(r) in rows {
-        let mut all = syls(&r.text, false);
-        all.extend(syls(&r.background_text, true));
+    let untimed = rows.iter().all(|r| r.get("timestamp").and_then(ms).unwrap_or(0) == 0 && r.get("endtime").and_then(ms).unwrap_or(0) == 0);
+    let mut lines = Vec::new();
+    let mut text_only = Vec::new();
+    for r in rows {
+        let mut all = syls(r.get("text"), false);
+        all.extend(syls(r.get("backgroundText"), true));
         let (mut line, mut backing) = (Timed::default(), Timed::default());
-        let (start, end) = (r.timestamp.ms().unwrap_or(0), r.endtime.ms());
+        let start = r.get("timestamp").and_then(ms).unwrap_or(0);
+        let end = r.get("endtime").and_then(ms);
         // One piece spanning the line is the line's time, not a word's.
         let whole = all.len() == 1 && all[0].start == Some(start) && (all[0].end == end || end.is_none());
         lay(&mut line, &mut backing, &all, !by_line && !untimed && !whole);
         keep_backing(&mut line, backing);
         // PaxSenix gives the duet side itself.
-        line.voice = u8::from(r.opposite_turn.0.unwrap_or(false));
+        line.voice = u8::from(r.get("oppositeTurn").and_then(Value::as_bool).unwrap_or(false));
         if untimed {
             text_only.push(line.text);
         } else {
-            (line.start, line.end) = (start, end.filter(|e| *e > start));
+            line.start = start;
+            line.end = end.filter(|e| *e > start);
             lines.push(line);
         }
     }
     Some(if untimed { plain(&text_only.join("\n")) } else { finish(lines) })
 }
 
-/// Spotify's lyrics as PaxSenix passes them on (`{lyrics: {syncType, lines: [{startTimeMs, words,
-/// endTimeMs}]}}`, times as strings), and PaxSenix's line format for Musixmatch (`{syncType, lines:
-/// [{timeTag: "00:12.34", words}]}`).
-#[derive(Deserialize, Default)]
-#[serde(default, rename_all = "camelCase")]
-struct Lines {
-    sync_type: Text,
-    lines: List<LineRow>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default, rename_all = "camelCase")]
-struct LineRow {
-    start_time_ms: Num,
-    end_time_ms: Num,
-    time_tag: Text,
-    words: Text,
-}
-
-impl LineRow {
-    fn words(&self) -> &str {
-        self.words.0.as_deref().unwrap_or("").trim()
-    }
-}
-
-impl Lines {
-    /// The rows, when some has `has`; the words untimed when `syncType` says so.
-    fn rows(&self, has: impl Fn(&LineRow) -> bool) -> Option<Result<Lyrics, impl Iterator<Item = &LineRow>>> {
-        let rows = self.lines.0.as_ref()?;
-        if !rows.iter().any(|r| has(&r.0)) {
-            return None;
-        }
-        let unsynced = self.sync_type.0.as_deref().is_some_and(|s| s.eq_ignore_ascii_case("unsynced"));
-        Some(if unsynced { Ok(plain(&list(&self.lines).map(LineRow::words).collect::<Vec<_>>().join("\n"))) } else { Err(list(&self.lines)) })
-    }
-}
+// ---- Spotify, and PaxSenix's line format -------------------------------------------------------------
 
 /// A line-timed line from `start`, or, for a blank or "♪" line, the end of the line before it.
 fn push_line(lines: &mut Vec<Timed>, start: i64, end: Option<i64>, text: &str) {
@@ -352,63 +228,73 @@ fn push_line(lines: &mut Vec<Timed>, start: i64, end: Option<i64>, text: &str) {
     lines.push(line);
 }
 
+/// The `words` of every row, untimed, when `syncType` says so.
+fn unsynced(o: &Value, rows: &[Value]) -> Option<Lyrics> {
+    let unsynced = o.get("syncType").and_then(Value::as_str).is_some_and(|s| s.eq_ignore_ascii_case("unsynced"));
+    unsynced.then(|| plain(&rows.iter().map(words).collect::<Vec<_>>().join("\n")))
+}
+
+fn words(r: &Value) -> &str {
+    r.get("words").and_then(Value::as_str).unwrap_or("").trim()
+}
+
+/// Spotify's lyrics (as PaxSenix passes them on): `{lyrics: {syncType, lines: [{startTimeMs, words,
+/// endTimeMs}]}}`, times as strings, timed by line.
 fn spotify(v: &Value) -> Option<Lyrics> {
-    let l: Lines = read(v.get("lyrics").filter(|l| l.is_object()).unwrap_or(v))?;
-    let found = match l.rows(|r| r.start_time_ms.0.is_some())? {
-        Ok(plain) => plain,
-        Err(rows) => {
-            let mut lines = Vec::new();
-            for r in rows {
-                if let Some(start) = r.start_time_ms.ms() {
-                    push_line(&mut lines, start, r.end_time_ms.ms(), r.words());
-                }
-            }
-            finish(lines)
+    let o = v.get("lyrics").filter(|l| l.is_object()).unwrap_or(v);
+    let rows = o.get("lines")?.as_array()?;
+    if !rows.iter().any(|r| r.get("startTimeMs").is_some()) {
+        return None;
+    }
+    if let Some(l) = unsynced(o, rows) {
+        return Some(l);
+    }
+    let mut lines: Vec<Timed> = Vec::new();
+    for r in rows {
+        if let Some(start) = r.get("startTimeMs").and_then(ms) {
+            push_line(&mut lines, start, r.get("endTimeMs").and_then(ms), words(r));
         }
-    };
-    Some(found)
+    }
+    Some(finish(lines))
 }
 
+/// PaxSenix's line format for Musixmatch: `{syncType, lines: [{timeTag: "00:12.34", words}]}`.
 fn time_tags(v: &Value) -> Option<Lyrics> {
-    let l: Lines = read(v)?;
-    let found = match l.rows(|r| r.time_tag.0.is_some())? {
-        Ok(plain) => plain,
-        Err(rows) => crate::lyrics::from_lrc(&rows.filter_map(|r| Some(format!("[{}]{}\n", r.time_tag.0.as_deref()?.trim(), r.words()))).collect::<String>()),
-    };
-    Some(found)
+    let rows = v.get("lines")?.as_array()?;
+    if !rows.iter().any(|r| r.get("timeTag").is_some()) {
+        return None;
+    }
+    if let Some(l) = unsynced(v, rows) {
+        return Some(l);
+    }
+    let lrc: String = rows
+        .iter()
+        .filter_map(|r| Some(format!("[{}]{}\n", r.get("timeTag")?.as_str()?.trim(), words(r))))
+        .collect();
+    Some(crate::lyrics::from_lrc(&lrc))
 }
 
-/// Musixmatch's rich sync: a line from `ts` to `te` seconds, each piece (spaces included) `o` seconds in
-/// and running to the next.
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct RichRow {
-    ts: Num,
-    te: Num,
-    l: List<Piece>,
-    x: Text,
-}
+// ---- Musixmatch -------------------------------------------------------------------------------------
 
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct Piece {
-    c: Text,
-    o: Num,
-}
-
+/// Musixmatch's rich sync: `[{ts, te, l: [{c, o}], x}]`, a line from `ts` to `te` seconds, each piece
+/// (spaces included) `o` seconds in and running to the next.
 fn richsync(v: &Value) -> Option<Lyrics> {
-    let rows: Vec<Loose<RichRow>> = read(v)?;
-    if !rows.iter().any(|r| r.0.ts.0.is_some() && r.0.l.0.is_some()) {
+    let rows = v.as_array()?;
+    if !rows.iter().any(|r| r.get("ts").is_some() && r.get("l").is_some_and(Value::is_array)) {
         return None;
     }
     let mut lines = Vec::new();
-    for Loose(r) in &rows {
-        let Some(start) = r.ts.secs() else { continue };
-        let end = r.te.secs().filter(|e| *e > start);
+    for r in rows {
+        let Some(start) = r.get("ts").and_then(secs) else { continue };
+        let end = r.get("te").and_then(secs).filter(|e| *e > start);
         let mut line = Timed { start, end, ..Default::default() };
-        let pieces: Vec<(&str, Option<i64>)> = list(&r.l).filter_map(|p| Some((p.c.0.as_deref()?, p.o.secs().map(|o| start + o)))).collect();
+        let pieces: Vec<(&str, Option<i64>)> = r
+            .get("l")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|p| Some((p.get("c")?.as_str()?, p.get("o").and_then(secs).map(|o| start + o)))).collect())
+            .unwrap_or_default();
         if pieces.is_empty() {
-            append(&mut line, r.x.0.as_deref().unwrap_or(""), None);
+            append(&mut line, r.get("x").and_then(Value::as_str).unwrap_or(""), None);
         }
         for (k, (c, at)) in pieces.iter().enumerate() {
             let until = pieces[k + 1..].iter().find_map(|(_, t)| *t).or(end);
@@ -420,34 +306,20 @@ fn richsync(v: &Value) -> Option<Lyrics> {
 }
 
 /// Musixmatch's `mxm` subtitle body: `[{text, time: {total}}]`, a line from `total` seconds.
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct SubRow {
-    text: Text,
-    time: Loose<Option<Total>>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct Total {
-    total: Num,
-}
-
 fn subtitle(v: &Value) -> Option<Lyrics> {
-    let rows: Vec<Loose<SubRow>> = read(v)?;
-    let total = |r: &SubRow| r.time.0.as_ref().and_then(|t| t.total.secs());
-    if !rows.iter().any(|r| r.0.time.0.as_ref().is_some_and(|t| t.total.0.is_some())) {
+    let rows = v.as_array()?;
+    let total = |r: &Value| r.get("time").and_then(|t| t.get("total")).and_then(secs);
+    if !rows.iter().any(|r| r.get("time").and_then(|t| t.get("total")).is_some()) {
         return None;
     }
-    let mut lines = Vec::new();
-    for Loose(r) in &rows {
+    let mut lines: Vec<Timed> = Vec::new();
+    for r in rows {
         if let Some(start) = total(r) {
-            push_line(&mut lines, start, None, r.text.0.as_deref().unwrap_or(""));
+            push_line(&mut lines, start, None, r.get("text").and_then(Value::as_str).unwrap_or(""));
         }
     }
     Some(finish(lines))
 }
-
 
 /// Musixmatch's plain lyrics without its closing "******* This Lyrics is NOT for Commercial use" notice.
 fn without_notice(text: &str) -> String {
