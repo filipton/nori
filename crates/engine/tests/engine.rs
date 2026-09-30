@@ -1863,12 +1863,12 @@ fn next_before_automix_changes_once() {
 
 // ---- settings changed with the song's ending already made ----
 
-/// Plays `songs` until a wake finds playback `secs` into the first (the ring holding ten seconds more).
+/// Plays `songs` until `secs` of the first were heard (the ring holding ten seconds more).
 fn playing_until(songs: &[(&str, &[i16])], app: impl App + Send + 'static, settings: Settings, secs: f64) -> Rig {
     let files = songs.iter().map(|(id, s)| (id.to_string(), wav(s), (s.len() / 2) as i64 * 1000 / RATE as i64)).collect();
     let rig = Rig::build(files, app, settings, Extra { pace: Some(5.0), ..Extra::default() });
     rig.engine.play_at(0, 0);
-    assert!(rig.wait_for(20, |r| r.engine.status().position_ms >= (secs * 1000.0) as i64), "{:?}", rig.engine.status());
+    assert!(rig.wait_for(20, |r| r.heard.lock().len() >= (secs * RATE as f64) as usize * 2), "{:?}", rig.engine.status());
     rig
 }
 

@@ -220,6 +220,8 @@ pub struct TransitionEngine<C: Clone> {
     held_us: i64,
     /// The last position reported; never goes backwards. `i64::MIN` before any.
     reported: i64,
+    /// The output's clock at the last [`TransitionEngine::position_us`].
+    clock_us: Option<i64>,
     /// The output's clock jumps to the incoming song's time when the first mixed chunk is offered. Until
     /// the clock reaches `shift_until_us`, audible = clock - `shift_us`.
     shift_us: i64,
@@ -320,6 +322,7 @@ impl<C: Clone> TransitionEngine<C> {
             takeover_us: 0,
             held_us: 0,
             reported: i64::MIN,
+            clock_us: None,
             shift_us: 0,
             shift_until_us: None,
             mixed_end_us: None,
@@ -1342,6 +1345,7 @@ impl<C: Clone> TransitionEngine<C> {
     /// held ending about to starve the output (the next track is late) and lets it go unmixed.
     pub fn position_us<D: Downstream<Config = C>, H: Host>(&mut self, down: &mut D, host: &mut H, source_ended: bool) -> Option<i64> {
         let Some(at) = down.position_us(source_ended) else { return self.held_from_nothing(host) };
+        self.clock_us = Some(at);
         if let (Phase::Hold, Some(from)) = (self.phase, self.held_from_us) {
             if from - at < DRY_US && host.now_ms() - self.held_at > HOLD_GRACE_MS {
                 host.log(&format!("transition: nothing to mix in yet with {} ms of sound left, letting the ending play", (from - at) / 1000));
@@ -1398,6 +1402,16 @@ impl<C: Clone> TransitionEngine<C> {
             host.heard_changed();
         }
         Some(self.reported)
+    }
+
+    /// Output time from the last [`TransitionEngine::position_us`] until what is heard changes: a mix
+    /// becoming audible, its takeover, the end of it or of the clock's shift, a held ending caught up.
+    pub fn until_heard_changes_us(&self) -> Option<i64> {
+        let at = self.clock_us?;
+        let pace = self.heard.next_rate.max(0.01) as f64;
+        let takeover = self.mix_from_us.map(|from| from + (self.takeover_us as f64 * pace) as i64);
+        let caught_up = self.heard.id.map(|_| self.reported - 20_000 + self.shift_us);
+        [self.mix_from_us, takeover, self.mixed_end_us, self.shift_until_us, caught_up].into_iter().flatten().filter(|&t| t > at).min().map(|t| t - at)
     }
 
     /// The output has no position because it was given nothing: everything since a seek into a
@@ -1459,6 +1473,7 @@ impl<C: Clone> TransitionEngine<C> {
         self.held_from_us = None;
         self.held_us = 0;
         self.reported = i64::MIN;
+        self.clock_us = None;
         self.held_id = None;
         self.late_us = 0;
         self.takeover_us = 0;

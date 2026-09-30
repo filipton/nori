@@ -2314,9 +2314,8 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         if let Some(u) = self.p.until_next_song_us() {
             at((u as f64 / speed / 1000.0) as i64 + 5);
         }
-        let h = self.p.heard();
-        if h.id.is_some() || h.mixing || h.from.is_some() {
-            at(250);
+        if let Some(u) = self.p.until_heard_changes_us() {
+            at((u as f64 / speed / 1000.0) as i64 + 1);
         }
         if self.probe.as_ref().is_some_and(|p| p.2.is_none()) {
             // Its loader wakes the thread; this is a fallback.

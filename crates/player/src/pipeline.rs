@@ -837,6 +837,17 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         self.periods.iter().map(|p| p.offset_us).filter(|&o| o > pos).min().map(|o| o - pos)
     }
 
+    /// Time until what is heard changes within a mix or held ending, µs of song time: the takeover as
+    /// the seek bar reckons it ([`crate::heard`]), or the transition engine's next change.
+    pub fn until_heard_changes_us(&self) -> Option<i64> {
+        let h = self.engine.heard();
+        let takeover = match h.id {
+            Some(_) => Some(h.until_us - h.us - (self.now_ms - h.at_ms) * 1000),
+            None => h.from.map(|_| h.audible_us - self.position_ms() * 1000),
+        };
+        [self.engine.until_heard_changes_us(), takeover.filter(|&u| u > 0)].into_iter().flatten().min()
+    }
+
     /// The seek bar's song and position.
     pub fn bar(&mut self) -> Seen {
         let pos = self.position_ms();
