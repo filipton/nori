@@ -290,7 +290,9 @@ pub fn main(argv: Vec<String>) {
     let mpris = a.mpris.then(|| {
         let songs = cli.songs.clone();
         let controls = Arc::new(crate::backend::Desktop { engine: cli.engine.clone(), song: Box::new(move |s| s.index.and_then(|i| songs.lock().unwrap().get(i).cloned())) });
-        nori_mpris::Mpris::start("nori", controls).map_err(|e| println!("no media controls: {e}")).ok()
+        let m = nori_mpris::Mpris::start("nori").map_err(|e| println!("no media controls: {e}")).ok()?;
+        m.serve(Some(controls));
+        Some(m)
     });
     let mpris = mpris.flatten();
     let shown = title_at.clone();

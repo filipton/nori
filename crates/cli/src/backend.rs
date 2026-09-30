@@ -305,7 +305,7 @@ pub struct Session {
     loudness: Arc<OutputVolume>,
     pub search: Arc<SearchSession>,
     pub offline: bool,
-    mpris: Option<nori_mpris::Mpris>,
+    mpris: Option<Arc<nori_mpris::Mpris>>,
     keeper: Arc<Keeper>,
     tx: Sender<Msg>,
     /// Database file, for its size on the settings page.
@@ -371,7 +371,8 @@ pub struct Open<'a> {
     pub device: Option<String>,
     pub images: bool,
     pub offline: bool,
-    pub mpris: bool,
+    /// The process's media controls, driven by this session while it is open.
+    pub mpris: Option<Arc<nori_mpris::Mpris>>,
     pub tx: Sender<Msg>,
 }
 
@@ -409,12 +410,10 @@ impl Session {
         });
         let engine = Arc::new(engine);
         let covers = o.images.then(|| Arc::new(Loader::new(CoverConfig::new(o.data.join("covers")), o.http.clone())));
-        let mpris = if o.mpris {
-            let name = format!("nori.instance{}", std::process::id());
-            nori_mpris::Mpris::start(&name, Arc::new(Desktop { engine: engine.clone(), song: Box::new(|s| s.id.clone().and_then(nori_core::queue::queue_song)) })).ok()
-        } else {
-            None
-        };
+        let mpris = o.mpris;
+        if let Some(m) = &mpris {
+            m.serve(Some(Arc::new(Desktop { engine: engine.clone(), song: Box::new(|s| s.id.clone().and_then(nori_core::queue::queue_song)) })));
+        }
         let keeper = Keeper::start(core.clone(), engine.clone());
         let s = Session { core, client, engine, store, downloader, covers, volume, loudness, search: SearchSession::new(), offline: o.offline, mpris, keeper, tx: o.tx, db: PathBuf::from(db) };
         s.restore();
@@ -920,6 +919,9 @@ impl Session {
 
     /// Saves the queue and stops the engine.
     pub fn close(&self) {
+        if let Some(m) = &self.mpris {
+            m.serve(None);
+        }
         self.keep(QueueMoment::Closing);
         self.keeper.stop();
         self.engine.stop();

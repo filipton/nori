@@ -166,6 +166,8 @@ pub struct App {
     inbox: mpsc::Receiver<Msg>,
     /// Monotonic clock origin handed to every session.
     epoch: Instant,
+    /// Media controls for the process; each session drives them while open.
+    mpris: Option<Arc<nori_mpris::Mpris>>,
     data: PathBuf,
     http: Arc<Http>,
     session: Option<Session>,
@@ -294,6 +296,7 @@ pub fn start(ui: &AppWindow, data: PathBuf, compositor: Compositor) -> Rc<RefCel
             tx,
             inbox,
             epoch: Instant::now(),
+            mpris: nori_mpris::Mpris::start(&format!("nori.desktop{}", std::process::id())).ok().map(Arc::new),
             data,
             http: Http::new(),
             session: None,
@@ -550,7 +553,7 @@ impl App {
         ui.set_server(nori_core::settings::label(&profile.name, &profile.url).into());
         ui.set_account(profile.user.as_str().into());
         ui.set_account_initial(profile.user.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default().into());
-        match Session::open(&self.data, self.http.clone(), profile, self.tx.clone(), self.epoch) {
+        match Session::open(&self.data, self.http.clone(), profile, self.tx.clone(), self.epoch, self.mpris.clone()) {
             Ok(s) => {
                 s.check();
                 ui.set_volume(s.volume.get());

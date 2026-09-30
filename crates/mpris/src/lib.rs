@@ -1,7 +1,7 @@
 //! MPRIS (`org.mpris.MediaPlayer2`) media controls on the Linux session bus, served on one thread.
 //! Position is read on request, so nothing ticks. Elsewhere [`Mpris::start`] returns an error.
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 /// Client callbacks, called on the bus thread.
 pub trait Controls: Send + Sync + 'static {
@@ -182,28 +182,112 @@ mod linux {
     }
 }
 
-/// Served as `org.mpris.MediaPlayer2.<name>` while kept alive.
+/// The controls of the session open now; nothing while none is.
+#[derive(Default)]
+struct Current(RwLock<Option<Arc<dyn Controls>>>);
+
+impl Current {
+    fn with(&self, f: impl FnOnce(&dyn Controls)) {
+        if let Some(c) = self.0.read().unwrap_or_else(|p| p.into_inner()).as_deref() {
+            f(c);
+        }
+    }
+}
+
+impl Controls for Current {
+    fn play(&self) {
+        self.with(|c| c.play());
+    }
+    fn pause(&self) {
+        self.with(|c| c.pause());
+    }
+    fn toggle(&self) {
+        self.with(|c| c.toggle());
+    }
+    fn next(&self) {
+        self.with(|c| c.next());
+    }
+    fn previous(&self) {
+        self.with(|c| c.previous());
+    }
+    fn seek(&self, ms: i64) {
+        self.with(|c| c.seek(ms));
+    }
+    fn now(&self) -> Now {
+        let mut now = Now::default();
+        self.with(|c| now = c.now());
+        now
+    }
+}
+
+/// Served as `org.mpris.MediaPlayer2.<name>` for the process: one bus name, whichever session is open.
 pub struct Mpris {
+    current: Arc<Current>,
     #[cfg(target_os = "linux")]
     served: linux::Served,
 }
 
 impl Mpris {
     /// Errors without a session bus, or off Linux.
-    pub fn start(name: &str, controls: Arc<dyn Controls>) -> Result<Mpris, String> {
+    pub fn start(name: &str) -> Result<Mpris, String> {
+        let current = Arc::new(Current::default());
         #[cfg(target_os = "linux")]
-        return Ok(Mpris { served: linux::Served::start(name, controls)? });
+        return Ok(Mpris { served: linux::Served::start(name, current.clone())?, current });
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = (name, controls);
+            let _ = (name, current);
             Err("MPRIS is Linux's".into())
         }
+    }
+
+    /// Media keys drive `controls` from now on; None while no session is open.
+    pub fn serve(&self, controls: Option<Arc<dyn Controls>>) {
+        *self.current.0.write().unwrap_or_else(|p| p.into_inner()) = controls;
+        self.changed();
     }
 
     /// Emits PropertiesChanged for status and metadata.
     pub fn changed(&self) {
         #[cfg(target_os = "linux")]
         self.served.changed();
+    }
+}
+
+#[cfg(test)]
+mod current_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Presses(Mutex<u32>);
+
+    impl Controls for Presses {
+        fn play(&self) {
+            *self.0.lock().unwrap() += 1;
+        }
+        fn pause(&self) {}
+        fn toggle(&self) {}
+        fn next(&self) {}
+        fn previous(&self) {}
+        fn seek(&self, _: i64) {}
+        fn now(&self) -> Now {
+            Now { playing: true, ..Now::default() }
+        }
+    }
+
+    #[test]
+    fn keys_reach_the_session_open_now() {
+        let current = Current::default();
+        current.play();
+        assert!(!current.now().playing, "no session");
+        let (old, new) = (Arc::new(Presses::default()), Arc::new(Presses::default()));
+        *current.0.write().unwrap() = Some(old.clone());
+        current.play();
+        *current.0.write().unwrap() = Some(new.clone());
+        current.play();
+        current.play();
+        assert_eq!((*old.0.lock().unwrap(), *new.0.lock().unwrap()), (1, 2));
+        assert!(current.now().playing);
     }
 }
 
@@ -251,7 +335,8 @@ mod tests {
         };
         let name = format!("nori_test_{}", std::process::id());
         let asked = Arc::new(Asked::default());
-        let m = Mpris::start(&name, asked.clone()).unwrap();
+        let m = Mpris::start(&name).unwrap();
+        m.serve(Some(asked.clone()));
         let p = client.with_proxy(format!("org.mpris.MediaPlayer2.{name}"), "/org/mpris/MediaPlayer2", Duration::from_secs(5));
         let status: String = p.get("org.mpris.MediaPlayer2.Player", "PlaybackStatus").unwrap();
         assert_eq!(status, "Playing");

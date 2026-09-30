@@ -118,6 +118,8 @@ struct Runner {
     http: Arc<Http>,
     tx: Sender<Msg>,
     session: Option<Session>,
+    /// Media controls for the process; each session drives them while open.
+    mpris: Option<Arc<nori_mpris::Mpris>>,
     art: Option<Art>,
     picker: Option<Picker>,
     /// Pending cover requests; dropping a ticket cancels the fetch.
@@ -177,7 +179,8 @@ pub fn run(o: Options) -> Result<(), String> {
     app.settings.own.data = o.data.display().to_string();
     app.settings.own.device = own::text(own::DEVICE).unwrap_or_default();
     let art = picker.clone().map(Art::new);
-    let mut r = Runner { http: Http::new(), tx, session: None, art, picker, tickets: Vec::new(), thumb_tickets: Vec::new(), heard: None, repaint: false, focused: true, unseen_cover: false, o };
+    let mpris = o.mpris.then(|| nori_mpris::Mpris::start(&format!("nori.instance{}", std::process::id())).ok().map(Arc::new)).flatten();
+    let mut r = Runner { http: Http::new(), tx, session: None, mpris, art, picker, tickets: Vec::new(), thumb_tickets: Vec::new(), heard: None, repaint: false, focused: true, unseen_cover: false, o };
     match prefs.servers.iter().find(|s| s.id == prefs.active_server_id).cloned() {
         Some(p) => r.open(&mut app, p),
         None => app.view = View::Login,
@@ -207,7 +210,7 @@ impl Runner {
             device: self.o.device.clone(),
             images: app.images,
             offline: self.o.offline,
-            mpris: self.o.mpris,
+            mpris: self.mpris.clone(),
             tx: self.tx.clone(),
         };
         match Session::open(o) {

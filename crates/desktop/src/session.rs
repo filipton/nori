@@ -302,7 +302,7 @@ pub struct Session {
     /// [`Session::volume`] in dB, for loudness compensation.
     loudness: Arc<OutputVolume>,
     search: Arc<SearchSession>,
-    mpris: Option<nori_mpris::Mpris>,
+    mpris: Option<Arc<nori_mpris::Mpris>>,
     keeper: Arc<Keeper>,
     db: PathBuf,
     tx: Tx,
@@ -312,7 +312,8 @@ pub struct Session {
 
 impl Session {
     /// Opens the profile without touching the network, so an unreachable server still opens.
-    pub fn open(data: &Path, http: Arc<Http>, profile: SavedServer, tx: Tx, epoch: Instant) -> Result<Session, String> {
+    /// `mpris`: the process's media controls, driven by this session while it is open.
+    pub fn open(data: &Path, http: Arc<Http>, profile: SavedServer, tx: Tx, epoch: Instant, mpris: Option<Arc<nori_mpris::Mpris>>) -> Result<Session, String> {
         let db = db_path(data);
         let core = Core::new(db.clone(), nori_core::settings::server_db_id(&profile.id)).map_err(|e| format!("The database: {e}"))?;
         core.configure(config(&profile)).map_err(|e| format!("The server: {e}"))?;
@@ -336,7 +337,9 @@ impl Session {
         let events = tx.clone();
         let engine = Arc::new(Engine::start(library, app, CoreQueue, output, None, Config { memory_mb: 256, settings: settings(&prefs, loudness.db()), ..Config::default() }, move |e| events.send(Msg::Engine(e))));
         let covers = Arc::new(Loader::new(CoverConfig::new(data.join("covers")), http));
-        let mpris = nori_mpris::Mpris::start(&format!("nori.desktop{}", std::process::id()), Arc::new(Desktop { engine: engine.clone() })).ok();
+        if let Some(m) = &mpris {
+            m.serve(Some(Arc::new(Desktop { engine: engine.clone() })));
+        }
         let keeper = Keeper::start(core.clone(), engine.clone());
         let downloader = Downloader::new(core.clone(), client.clone(), audio.clone(), store.clone());
         let s = Session { core, client, engine, covers, store, downloader, volume, loudness, search: SearchSession::new(), mpris, keeper, db: PathBuf::from(db), tx, epoch };
@@ -734,6 +737,9 @@ impl Session {
 
     /// Saves the queue and stops the engine.
     pub fn close(&self) {
+        if let Some(m) = &self.mpris {
+            m.serve(None);
+        }
         self.keep(QueueMoment::Closing);
         self.keeper.stop();
         self.engine.stop();
