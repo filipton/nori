@@ -70,10 +70,7 @@ impl Client {
         let day = local_epoch_day();
         match self.core.mix_draw(id.clone(), day, again, None) {
             MixDraw::Drawn => true,
-            MixDraw::NeedsFallback => {
-                self.mix_fallback(id, day, again).await;
-                true
-            }
+            MixDraw::NeedsFallback => self.mix_fallback(id, day, again).await,
             MixDraw::Kept | MixDraw::Unknown => false,
         }
     }
@@ -82,10 +79,11 @@ impl Client {
     pub async fn mix_warm_all(&self) -> bool {
         let day = local_epoch_day();
         let warm = self.core.mix_warm(day);
-        for id in &warm.needs_fallback {
-            self.mix_fallback(id.clone(), day, false).await;
+        let mut changed = warm.changed;
+        for id in warm.needs_fallback {
+            changed |= self.mix_fallback(id, day, false).await;
         }
-        warm.changed || !warm.needs_fallback.is_empty()
+        changed
     }
 
     /// The play queue another device saved on the server.
@@ -134,9 +132,12 @@ impl Client {
         Ok(())
     }
 
-    async fn mix_fallback(&self, id: String, day: i64, again: bool) {
-        let random = self.songs(Read::RandomSongs { size: MIX_FALLBACK_SONGS, genre: None }).await.unwrap_or_default();
+    /// Draws mix `id` from random server songs; false when they could not be read, so it is drawn again
+    /// next time.
+    async fn mix_fallback(&self, id: String, day: i64, again: bool) -> bool {
+        let Ok(random) = self.songs(Read::RandomSongs { size: MIX_FALLBACK_SONGS, genre: None }).await else { return false };
         self.core.mix_draw(id, day, again, Some(random));
+        true
     }
 }
 
@@ -153,6 +154,16 @@ pub(crate) mod tests {
         fn marks(&self, m: crate::stars::StarMarks) {
             self.0.lock().push(m.songs.get("lib-refused").copied());
         }
+    }
+
+    #[test]
+    fn a_mix_unread_offline_is_drawn_again() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        fake.fail(crate::transport::FailureKind::Connect);
+        assert!(!block(c.mix_ensure("top".into(), false)));
+        fake.answer(r#"{"subsonic-response":{"status":"ok","randomSongs":{"song":[{"id":"x","title":"x","isDir":false}]}}}"#);
+        assert!(block(c.mix_ensure("top".into(), false)));
+        assert!(fake.asked()[1].contains("getRandomSongs"));
     }
 
     #[test]
