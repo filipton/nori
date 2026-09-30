@@ -569,28 +569,27 @@ fn download_song(c: &rusqlite::Connection, id: &str) -> Option<Song> {
     serde_json::from_str::<Song>(&json).ok()
 }
 
-impl Tracker {
-    pub fn info(&mut self, id: &str) -> &Info {
-        if !self.info.contains_key(id) {
-            let found = nori_db::active().and_then(|db| download_song(&db.lock(), id));
-            self.keep_info(id, found);
-        }
-        &self.info[id]
-    }
+/// The queued `songs`' titles and sizes, so reports about them never wait for the database.
+pub fn know(songs: &[Song]) {
+    with(|t| songs.iter().for_each(|s| t.keep_info(&s.id, Some(s))));
+}
 
-    /// [`Self::info`] without blocking on the database: None while it is busy (nothing cached then).
-    fn info_now(&mut self, id: &str) -> Option<&Info> {
+impl Tracker {
+    /// What [`know`] was told about `id`, else what the database says when it is free: the tracker's
+    /// callers include the main thread and `@CriticalNative` doors, which must not wait for it. None while
+    /// it is busy (nothing cached then).
+    pub fn info(&mut self, id: &str) -> Option<&Info> {
         if !self.info.contains_key(id) {
             let db = nori_db::active()?;
             let c = db.try_lock()?;
             let found = download_song(&c, id);
             drop(c);
-            self.keep_info(id, found);
+            self.keep_info(id, found.as_ref());
         }
         self.info.get(id)
     }
 
-    fn keep_info(&mut self, id: &str, found: Option<Song>) {
+    fn keep_info(&mut self, id: &str, found: Option<&Song>) {
         let info = found.map_or_else(Info::default, |s| Info {
             estimate: expected_bytes(s.size as i64, s.duration as i64, self.download_kbps),
             title: s.title.replace('\n', " "),
@@ -712,7 +711,7 @@ impl Tracker {
         let mut flags = 0;
         match state {
             QUEUED | DOWNLOADING | RESTARTING | STOPPED => {
-                let label = t.info(&id).album.clone();
+                let label = t.info(&id).map(|i| i.album.clone()).unwrap_or_default();
                 if t.batch.queued(&id, &label) {
                     flags |= NEW_BATCH;
                 }
@@ -1028,6 +1027,7 @@ pub fn removed(id: &str) -> i32 {
         let was_open = t.batch.open.contains(id);
         t.batch.removed(id);
         t.close(id);
+        t.info.remove(id);
         let mut flags = if t.unmark(id) { MARKS } else { 0 };
         if was_open && t.batch.open.is_empty() {
             flags |= DRAINED;
@@ -1051,7 +1051,7 @@ pub fn unmark(id: &str) -> i32 {
 
 /// Initial progress: 0, or -1 when the size is unknown.
 pub fn start_fraction(id: &str) -> f32 {
-    with(|t| if t.info(id).estimate > 0 { 0.0 } else { -1.0 })
+    with(|t| if t.info(id).is_some_and(|i| i.estimate > 0) { 0.0 } else { -1.0 })
 }
 
 /// A download starts transferring; returns the slot for [`note`].
@@ -1068,7 +1068,7 @@ impl Tracker {
         if !t.slots.iter().any(|s| s.live) && t.received == t.rate.bytes {
             t.rate.restart(now, t.received);
         }
-        let estimate = t.info(id).estimate;
+        let estimate = t.info(id).map_or(0, |i| i.estimate);
         let slot = Slot {
             id: id.to_string(),
             estimate,
@@ -1625,7 +1625,7 @@ pub fn row<R>(id: &str, f: impl FnOnce(&str, Option<RowFacts>) -> R) -> R {
     let mut guard = TRACKER.lock();
     let t = guard.get_or_insert_with(Tracker::default);
     let facts = row_facts(&t.slots, id);
-    let artist = t.info_now(id).map(|i| i.artist.as_str()).unwrap_or("");
+    let artist = t.info(id).map(|i| i.artist.as_str()).unwrap_or("");
     f(artist, facts)
 }
 

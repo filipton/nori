@@ -12,6 +12,7 @@ impl Core {
     /// Queues `songs` for download; see [`DownloadQueued`].
     pub fn download_queue(&self, songs: Vec<crate::Song>) -> crate::Result<DownloadQueued> {
         follow_quality();
+        know(&songs);
         let rows = songs.into_iter().map(|s| {
             let json = serde_json::to_string(&s).unwrap_or_default();
             (s.id, json)
@@ -202,14 +203,16 @@ impl Core {
     /// marks failed ones and reports what is left.
     pub fn download_recover(&self, known: Vec<DownloadKnown>) -> crate::Result<DownloadRecovery> {
         follow_quality();
-        let pending: Vec<String> = self.downloads(false)?.into_iter().map(|s| s.id).collect();
+        let pending = self.downloads(false)?;
+        know(&pending);
+        let pending: Vec<String> = pending.into_iter().map(|s| s.id).collect();
         let (mut r, failed) = recovery(&pending, &known);
         self.download_settle(r.finished.clone(), vec![true; r.finished.len()])?;
         r.failed = with(|t| {
             failed
                 .into_iter()
                 .map(|(id, length, bytes)| {
-                    let estimate = t.info(&id).estimate;
+                    let estimate = t.info(&id).map_or(0, |i| i.estimate);
                     if !t.marks.contains_key(&id) {
                         t.marks.insert(id.clone(), (Phase::Failed, 0));
                         t.changed.insert(id.clone());
@@ -249,6 +252,23 @@ pub(crate) mod tests {
 
     fn song(id: &str) -> Song {
         Song { id: id.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn a_busy_database_does_not_hold_up_download_reports() {
+        let _turn = TURN.lock();
+        let core = Core::new(String::new(), "t".into()).unwrap();
+        core.download_queue(vec![Song { id: "busy".into(), size: 4_000_000, ..Default::default() }]).unwrap();
+        let busy = core.db.lock();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            followed("busy", QUEUED, 0);
+            tx.send(start_fraction("busy")).unwrap();
+        });
+        let fraction = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("answered while the database was busy");
+        drop(busy);
+        assert_eq!(fraction, 0.0, "its size known from the queue");
+        removed("busy");
     }
 
     #[test]
