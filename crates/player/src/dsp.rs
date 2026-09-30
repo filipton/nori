@@ -991,6 +991,24 @@ impl Equalizer {
         self.run(input, output, |x| x as f64, |y, _| y as f32);
     }
 
+    /// [`Equalizer::process_i16`] or, with `float`, [`Equalizer::process_f32`] over little-endian samples
+    /// as the player carries them.
+    pub fn process_bytes(&mut self, input: &[u8], output: &mut [u8], float: bool) {
+        if float {
+            self.run(input.as_chunks::<4>().0, output.as_chunks_mut::<4>().0, |x| f32::from_le_bytes(x) as f64, |y, _| (y as f32).to_le_bytes());
+            return;
+        }
+        let mut d = self.dither;
+        let (input, output) = (input.as_chunks::<2>().0, output.as_chunks_mut::<2>().0);
+        let load = |x: [u8; 2]| i16::from_le_bytes(x) as f64 / I16_SCALE;
+        if self.now.mono {
+            self.run(input, output, load, |y, c| d.to_i16_linked(c, y).to_le_bytes());
+        } else {
+            self.run(input, output, load, |y, c| d.to_i16(c, y).to_le_bytes());
+        }
+        self.dither = d;
+    }
+
     /// New stream (seek, flush): clears state and any fade.
     pub fn reset(&mut self) {
         self.now.reset();
