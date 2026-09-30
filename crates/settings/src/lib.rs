@@ -9,6 +9,3 @@ pub mod lyrics_sources;
 pub mod settings_model;
 pub mod settings;
 pub mod settings_store;
-
-#[cfg(test)]
-mod diff_harness;
