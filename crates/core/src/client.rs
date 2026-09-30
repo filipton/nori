@@ -29,8 +29,8 @@ pub struct Client {
     pub(crate) motion: parking_lot::Mutex<crate::motion::Motion>,
     /// A replay of the queued writes is running; a second one would send them twice.
     replaying: AtomicBool,
-    /// The car's last folder read, by id, for its later pages (car.rs).
-    pub(crate) car_folder: parking_lot::Mutex<Option<(String, crate::car::BrowsePage)>>,
+    /// The car's folders last listed, for their later pages and the list a picked row plays (car.rs).
+    pub(crate) car: parking_lot::Mutex<crate::car::Shown>,
     /// What the last autofill fetch picked, recorded once its songs are appended (autofill.rs).
     pub(crate) autofill_picks: parking_lot::Mutex<Option<(crate::autofill::Picked, Vec<String>)>>,
 }
@@ -109,7 +109,7 @@ impl Client {
 impl Client {
     #[cfg_attr(feature = "ffi", uniffi::constructor)]
     pub fn new(core: Arc<Core>, transport: Arc<dyn Transport>) -> Arc<Self> {
-        let client = Arc::new(Client { core, transport, profile: RwLock::new(NetProfile::default()), second: AtomicBool::new(false), lyrics: Default::default(), motion: Default::default(), replaying: AtomicBool::new(false), car_folder: Default::default(), autofill_picks: Default::default() });
+        let client = Arc::new(Client { core, transport, profile: RwLock::new(NetProfile::default()), second: AtomicBool::new(false), lyrics: Default::default(), motion: Default::default(), replaying: AtomicBool::new(false), car: Default::default(), autofill_picks: Default::default() });
         *ACTIVE_CLIENT.lock() = Arc::downgrade(&client);
         client
     }

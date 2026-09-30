@@ -428,7 +428,7 @@ translations still are.
 | Feature | S | M | N | nori | Plan |
 |---|---|---|---|---|---|
 | Android Auto browse tree + voice search | x | x | session only | yes | |
-| Android Auto: configurable tabs, more nodes (artists, genres, mixes) | x | x | | fixed | add |
+| Android Auto: tabs (Home, Library, Favorites, Downloads), mixes, artists, genres, Play/Shuffle rows, a picked song plays its folder, voice by artist/album/playlist/genre/mix, long-press actions, repeat and radio buttons, covers through a provider | x | x | | done | configurable tabs: add |
 | Widget 4x1 | x | | x | yes | |
 | More widgets (2x2 with cover, resizable) | x | | x | | add, still event-driven |
 | Launcher shortcuts (search, shuffle all, playlists) | x | | | | add |
