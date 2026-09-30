@@ -94,11 +94,10 @@ pub fn scrobble_track(id: Option<String>, why: TrackChange, playing: bool, now_m
     let (taste_model, scrobble, percent) = nori_settings::settings_store::with_prefs(|p| (p.taste_model, p.scrobble, p.scrobble_percent)).unwrap_or((true, true, 50));
     let next = followed(id, why);
     let (done, heard, at) = SCROBBLER.lock().switch(next.clone().and_then(queue::queue_song), playing, now_ms, wall_ms);
-    if let (Some(song), true) = (done.clone(), taste_model) {
+    // The profile playing now, not the one open when the write runs.
+    if let (Some(song), true, Some(db)) = (done.clone(), taste_model, nori_db::active()) {
         background::run(move || {
-            if let Some(db) = nori_db::active() {
-                let _ = nori_library::history::record(&mut db.lock(), &song, at, heard, tz_offset_ms, db::now_ms());
-            }
+            let _ = nori_library::history::record(&mut db.lock(), &song, at, heard, tz_offset_ms, db::now_ms());
         });
     }
     if !scrobble {
