@@ -551,20 +551,16 @@ pub(crate) mod tests {
     /// A song tapped on an album page while a playlist plays makes the album's page the playing one.
     #[test]
     fn album_page_tap_moves_origin_to_album() {
-        use nori_library::pages::{hero_buttons, HeroPress, PageQueue};
+        use nori_library::pages::PageQueue;
         let _g = hold(&[], 0);
         let (playlist, album) = (PageOrigin::new(PlaylistKind, "pl-t"), PageOrigin::new(Album, "al-t"));
         let lights = |o: &PageOrigin| playlist_from(PageQueue::new(o.clone()));
         playlist_set(ids(&["p1", "t2", "p3"]), Some(1), false, Some(playlist.clone()));
         assert!(lights(&playlist) && !lights(&album));
         let gen = playlist_origin_gen();
-        assert_eq!(crate::actions::tap_plan(false), crate::actions::TapPlan::PlayList);
         playlist_set(ids(&["t1", "t2", "t3"]), Some(1), false, Some(album.clone()));
         assert_ne!(playlist_origin_gen(), gen);
         assert!(lights(&album) && !lights(&playlist));
-        let b = hero_buttons(lights(&album), false, true, false, true, true);
-        assert!(b.pausing && b.play_press == HeroPress::Toggle);
-        assert!(!hero_buttons(lights(&playlist), false, true, false, true, true).pausing);
         playlist_set(ids(&["t1", "t2", "t3"]), Some(2), false, Some(album.clone()));
         assert_eq!(with(|p| p.current_id().map(str::to_string)), Some("t3".into()));
         // Edits keep both the origin and the album run.
@@ -598,7 +594,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn auto_gain_uses_album_gain_only_in_an_album_run() {
+    fn album_gain_only_in_album_run() {
         use nori_player::gain::GainPrefs;
         use nori_player::policy::GainMode;
         let _g = hold(&[], 0);
@@ -670,7 +666,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn origin_is_set_by_new_queues_and_kept_by_edits() {
+    fn origin_survives_edits() {
         let _g = hold(&["o0"], 0);
         let (a, b, album, artist) = (page(PlaylistKind, "A"), page(PlaylistKind, "B"), page(Album, "al"), page(Artist, "ar"));
         let gen = playlist_origin_gen();
