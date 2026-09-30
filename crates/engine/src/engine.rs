@@ -1834,9 +1834,9 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     /// Writes the status, then says what changed: a client reading the status on an event finds the
     /// event's song and state there.
     fn report(&mut self, now: i64) {
-        if let Some(p) = self.parked.as_ref() {
+        if let Some(p) = self.parked.as_ref().map(|p| (p.at, p.ms, p.shown.clone())) {
             self.unstall();
-            let Some(id) = p.shown.clone() else {
+            let (i, ms, Some(id)) = p else {
                 // Let go: the place last reported stands.
                 let mut s = self.status.lock();
                 s.releases = self.releases;
@@ -1845,7 +1845,6 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
                 return;
             };
             // A place chosen while paused is where the player is, to the screen.
-            let (i, ms) = (p.at, p.ms);
             let other = self.other(i, Some(&id));
             if other {
                 self.told.heard = Some((i, id));

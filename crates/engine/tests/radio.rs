@@ -353,6 +353,10 @@ impl PlatformDecoder for Reference {
         Ok((2, 44_100))
     }
 
+    fn drain(&mut self, _: &mut Vec<f32>) -> Result<(usize, u32), Fault> {
+        Ok((2, 44_100))
+    }
+
     fn reset(&mut self) {
         self.next = None;
     }
