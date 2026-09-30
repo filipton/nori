@@ -39,9 +39,9 @@ pub fn queue_register(songs: Vec<Song>) {
     });
 }
 
-/// Each id's cover art id, if known.
-pub fn cover_arts(ids: &[String]) -> Vec<Option<String>> {
-    with(|s| ids.iter().map(|id| s.songs.get(id).and_then(|(song, _)| song.cover_art.clone())).collect())
+/// The cover art id of queued song `id`, if known.
+pub fn cover_art(id: &str) -> Option<String> {
+    with(|s| s.songs.get(id).and_then(|(song, _)| song.cover_art.clone()))
 }
 
 /// A registered song.
