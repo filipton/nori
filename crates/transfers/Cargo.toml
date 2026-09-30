@@ -20,6 +20,6 @@ parking_lot = "0.12"
 nori-model = { path = "../model" }
 nori-db = { path = "../db" }
 nori-net = { path = "../net" }
-# A download's size is estimated at the download quality the settings ask for.
+# The beat model setting Download asks about.
 nori-settings = { path = "../settings" }
 

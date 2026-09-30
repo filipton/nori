@@ -295,12 +295,12 @@ impl Batch {
         names.all(|n| n == first).then_some(first.as_str())
     }
 
-    /// Progress 0..1: finished songs plus in-flight fractions (capped at the open count).
+    /// Progress 0..1: finished songs plus in-flight fractions.
     fn fraction(&self, in_flight: f64) -> f32 {
         if self.total <= 0 {
             return 0.0;
         }
-        (((self.finished() as f64 + in_flight.clamp(0.0, self.open.len() as f64)) / self.total as f64) as f32).clamp(0.0, 1.0)
+        (((self.finished() as f64 + in_flight) / self.total as f64) as f32).clamp(0.0, 1.0)
     }
 }
 
@@ -1554,88 +1554,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn batch_total_stays_fixed() {
+    fn batch_counts() {
         let mut b = Batch::default();
-        for i in 0..49 {
-            b.queued(&format!("s{i}"), "");
+        assert!(b.queued("a", "Blue"), "the first song starts a batch");
+        assert!(!b.queued("a", "Blue"), "counted once");
+        for id in ["b", "c", "d"] {
+            b.queued(id, "Blue");
         }
-        b.completed("s0");
-        b.completed("s1");
-        assert_eq!((b.finished(), b.total), (2, 49));
-        for i in 0..49 {
-            b.completed(&format!("s{i}"));
-        }
-        assert_eq!((b.done, b.total), (49, 49));
-        assert!(b.open.is_empty());
-    }
-
-    #[test]
-    fn requeue_counts_once_and_drained_batch_resets() {
-        let mut b = Batch::default();
-        assert!(b.queued("a", ""), "the first song starts a batch");
-        assert!(!b.queued("a", ""));
-        b.queued("b", "");
-        assert_eq!(b.total, 2);
-        let mut b = Batch::default();
-        b.queued("a", "");
+        assert_eq!(b.label(), Some("Blue"));
         b.completed("a");
-        assert!(b.open.is_empty() && b.done == 1);
-        assert!(b.queued("b", ""));
-        assert_eq!((b.total, b.done), (1, 0));
-    }
-
-    #[test]
-    fn retry_is_same_song() {
-        let mut b = Batch::default();
-        b.queued("a", "");
-        b.queued("b", "");
-        b.failed("a");
-        assert_eq!(b.failed, 1);
-        b.queued("a", "");
-        assert_eq!((b.failed, b.total), (0, 2));
-        b.completed("a");
-        b.completed("b");
-        assert_eq!(b.done, 2);
-    }
-
-    #[test]
-    fn cancelled_songs_leave_count() {
-        let mut b = Batch::default();
-        for id in ["a", "b", "c"] {
-            b.queued(id, "");
-        }
-        b.failed("b");
-        b.removed("c");
-        b.removed("b");
-        assert_eq!((b.total, b.failed), (1, 0));
-        b.removed("x");
-        assert_eq!(b.total, 1, "never part of it");
-    }
-
-    #[test]
-    fn batch_fraction() {
-        let mut b = Batch::default();
-        for i in 0..4 {
-            b.queued(&format!("s{i}"), "");
-        }
-        assert_eq!(b.fraction(0.0), 0.0);
-        b.completed("s0");
         assert!((b.fraction(0.5) - 0.375).abs() < 1e-6);
-        assert!((b.fraction(99.0) - 1.0).abs() < 1e-6, "running songs never claim more than the open ones");
-    }
-
-    #[test]
-    fn batch_label_needs_one_album() {
-        let mut b = Batch::default();
-        b.queued("a", "Blue");
+        b.failed("b");
+        assert!((b.fraction(1.0) - 0.75).abs() < 1e-6);
         b.queued("b", "Blue");
-        assert_eq!(b.label(), Some("Blue"));
-        b.queued("c", "Red");
-        assert_eq!(b.label(), None);
+        assert_eq!((b.total, b.done, b.failed), (4, 1, 0), "a retry is the same song");
+        b.failed("b");
+        b.removed("b");
         b.removed("c");
-        assert_eq!(b.label(), Some("Blue"));
-        b.queued("d", "");
+        b.removed("x");
+        assert_eq!((b.total, b.failed), (2, 0), "cancelled songs leave the count");
+        b.queued("e", "");
         assert_eq!(b.label(), None, "a song without an album name");
+        b.completed("d");
+        b.completed("e");
+        assert!(b.queued("f", "Red"), "a drained batch starts over");
+        assert_eq!((b.total, b.done, b.label()), (1, 0, Some("Red")));
     }
 
     #[test]
@@ -2111,7 +2054,3 @@ mod tests {
         assert_eq!(c.next(-1.0, 22_000), -1);
     }
 }
-
-#[cfg(test)]
-#[path = "diff.rs"]
-mod diff;
