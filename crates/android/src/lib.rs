@@ -318,4 +318,27 @@ mod tests {
         }
         assert!(wrong.is_empty(), "{wrong:#?}");
     }
+
+    /// A Kotlin `external fun` nothing registers throws when called, on a phone only.
+    #[test]
+    fn every_kotlin_door_is_registered() {
+        let mut missing = Vec::new();
+        for (path, text) in kotlin() {
+            let package = text.lines().find_map(|l| l.strip_prefix("package ")).unwrap_or_default().replace('.', "/");
+            let mut object = None;
+            for line in text.lines() {
+                // Natives live in top-level objects, whose class is the object's own name.
+                if !line.is_empty() && !line.starts_with([' ', '/', '@', '*']) {
+                    object = line.split_whitespace().skip_while(|w| *w != "object").nth(1).map(|n| format!("{package}/{}", n.trim_end_matches('{')));
+                }
+                let Some((_, rest)) = line.split_once("external fun ") else { continue };
+                let method = rest.split_once('(').unwrap().0;
+                let registered = object.as_deref().is_some_and(|o| CLASSES.iter().any(|c| c.name.to_str() == Ok(o) && c.methods.iter().any(|m| m.name.to_str() == Ok(method))));
+                if !registered {
+                    missing.push(format!("{}: {method}", path.display()));
+                }
+            }
+        }
+        assert!(missing.is_empty(), "{missing:#?}");
+    }
 }
