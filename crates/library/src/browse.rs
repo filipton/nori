@@ -330,7 +330,17 @@ pub struct SongsPage {
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct HistoryPage {
     pub entries: Vec<HistoryEntry>,
-    pub exhausted: bool,
+    /// Where the next page starts; None after the last.
+    pub next: Option<HistoryAfter>,
+}
+
+/// A place in the history, newest first: listens after it are older. Listens recorded meanwhile come
+/// before it, so later pages neither repeat nor skip any.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct HistoryAfter {
+    pub started_ms: i64,
+    pub row: i64,
 }
 
 /// The listening stats page.
