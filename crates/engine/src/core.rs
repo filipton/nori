@@ -681,9 +681,7 @@ impl Measurer {
     /// Measures songs `shelf` has whole, storing into `core()`; `told` hears of each stored song.
     pub fn on_shelf(core: impl Fn() -> Option<Arc<Core>> + Send + Sync + 'static, shelf: Box<dyn Shelf>, told: Option<Box<dyn Fn() + Send + Sync>>) -> Arc<Measurer> {
         let m = Arc::new(Measurer { core: Box::new(core), shelf, plan: Mutex::new(Schedule::default()), asked: AtomicU64::new(0), measured: AtomicBool::new(false), told, decoded: AtomicU64::new(0) });
-        let mut all = MEASURERS.lock();
-        all.retain(|w| w.strong_count() > 0);
-        all.push(Arc::downgrade(&m));
+        ARRIVALS.lock().watch(&m);
         m
     }
 
@@ -754,7 +752,7 @@ impl Measurer {
             let mut waiting = 0;
             for id in todo {
                 // Measured as it arrives: that decode's end is news here.
-                if ARRIVING.lock().contains(id) {
+                if ARRIVALS.lock().has(id) {
                     waiting += 1;
                     continue;
                 }
@@ -879,23 +877,55 @@ pub(crate) fn decode(id: &str, what: &str, pieces: crate::pieces::Pieces, hint: 
 
 // ---- measured as it comes ----
 
-// Process-wide: songs are measured as they arrive from loaders, fetching ahead and downloads, none of
-// which holds the measurers; these let them skip each other's work and tell each other.
+/// The songs being measured as they arrive, and the measurers told when one is stored (or not).
+#[derive(Default)]
+pub(crate) struct Arrivals {
+    songs: Vec<String>,
+    measurers: Vec<std::sync::Weak<Measurer>>,
+    /// Songs measured as they arrived and stored.
+    stored: u64,
+}
 
-/// Songs being measured as they arrive.
-pub(crate) static ARRIVING: Mutex<Vec<String>> = Mutex::new(Vec::new());
-/// Every measurer, told when a song measured as it arrived was stored (or not).
-pub(crate) static MEASURERS: Mutex<Vec<std::sync::Weak<Measurer>>> = Mutex::new(Vec::new());
-static CAME: AtomicU64 = AtomicU64::new(0);
+impl Arrivals {
+    pub(crate) fn has(&self, id: &str) -> bool {
+        self.songs.iter().any(|i| i == id)
+    }
+
+    /// Takes `id` on; false when it is being measured already.
+    fn begin(&mut self, id: &str) -> bool {
+        if self.has(id) {
+            return false;
+        }
+        self.songs.push(id.to_string());
+        true
+    }
+
+    fn end(&mut self, id: &str) {
+        self.songs.retain(|i| i != id);
+    }
+
+    fn watch(&mut self, m: &Arc<Measurer>) {
+        self.measurers.retain(|w| w.strong_count() > 0);
+        self.measurers.push(Arc::downgrade(m));
+    }
+
+    pub(crate) fn measurers(&self) -> Vec<Arc<Measurer>> {
+        self.measurers.iter().filter_map(|w| w.upgrade()).collect()
+    }
+}
+
+/// Process-wide: songs arrive from loaders, fetching ahead and downloads (a JNI entry point), none of
+/// which holds the measurers.
+pub(crate) static ARRIVALS: Mutex<Arrivals> = Mutex::new(Arrivals { songs: Vec::new(), measurers: Vec::new(), stored: 0 });
 
 /// Songs measured as they arrived and stored, in this process (perf report, tests).
 pub fn measured_as_they_came() -> u64 {
-    CAME.load(Ordering::Relaxed)
+    ARRIVALS.lock().stored
 }
 
 /// Whether any song is being measured as it arrives.
 pub fn measuring_as_they_come() -> bool {
-    !ARRIVING.lock().is_empty()
+    !ARRIVALS.lock().songs.is_empty()
 }
 
 /// Measures `id` as its bytes arrive (`crate::arriving`), if AutoMix is on, it is unanalysed, its
@@ -922,12 +952,8 @@ fn listen_as_it_comes(id: &str, hint: Option<&str>, wait: bool) -> Option<Listen
     if core.analysis_missing(vec![id.to_string()]).ok()?.is_empty() {
         return None;
     }
-    {
-        let mut a = ARRIVING.lock();
-        if a.iter().any(|i| i == id) {
-            return None;
-        }
-        a.push(id.to_string());
+    if !ARRIVALS.lock().begin(id) {
+        return None;
     }
     let expected_ms = nori_core::queue::queue_song(id.to_string()).map_or(0, |s| s.duration as i64 * 1000);
     let heard = Measuring { id: id.to_string(), core, expected_ms, stream: None, cpu_from: None };
@@ -937,7 +963,7 @@ fn listen_as_it_comes(id: &str, hint: Option<&str>, wait: bool) -> Option<Listen
             Some(l)
         }
         None => {
-            ARRIVING.lock().retain(|i| i != id);
+            ARRIVALS.lock().end(id);
             None
         }
     }
@@ -983,13 +1009,14 @@ impl Heard for Measuring {
             }
             None => false,
         };
-        if stored {
-            CAME.fetch_add(1, Ordering::Relaxed);
-        }
-        ARRIVING.lock().retain(|i| *i != id);
+        let measurers = {
+            let mut a = ARRIVALS.lock();
+            a.stored += stored as u64;
+            a.end(&id);
+            a.measurers()
+        };
         nori_core::transfers::analysing_ended(&id, stored);
         crate::processing::kick();
-        let measurers: Vec<Arc<Measurer>> = MEASURERS.lock().iter().filter_map(|w| w.upgrade()).collect();
         for m in measurers {
             if stored {
                 m.stored_elsewhere();

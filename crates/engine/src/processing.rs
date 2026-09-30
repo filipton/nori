@@ -13,7 +13,7 @@ use nori_core::transfers::{self, Needs, Saved, Work};
 use nori_core::Core;
 use parking_lot::{Condvar, Mutex};
 
-use crate::core::{decode, listen, Decoded, Model, Shelf, ARRIVING, MEASURERS};
+use crate::core::{decode, listen, Decoded, Model, Shelf, ARRIVALS};
 
 /// Saved songs waiting to be read back, and whether a thread works through them.
 #[derive(Debug, Default)]
@@ -92,7 +92,7 @@ fn needs_of(core: &Core, id: &str) -> (Needs, Saved) {
     let analysable = nori_core::queue::analysable(id);
     let saved = Saved {
         analysable,
-        measuring: ARRIVING.lock().iter().any(|i| i == id),
+        measuring: ARRIVALS.lock().has(id),
         analysed: analysable && core.analysis_missing(one.clone()).is_ok_and(|m| m.is_empty()),
         model_on: model_on(),
         beats_wanted: transfers::wants_beats(id) && nori_core::settings_store::with_prefs(|p| p.download_beats != nori_core::settings::DownloadBeats::Never).unwrap_or(false),
@@ -170,7 +170,7 @@ impl Processor {
         // Loaded by the first song that needs it, dropped with the thread.
         let mut model = Model::default();
         loop {
-            let next = self.line.lock().next(|id| ARRIVING.lock().iter().any(|i| i == id));
+            let next = self.line.lock().next(|id| ARRIVALS.lock().has(id));
             let Some(id) = next else { break };
             let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.process(&mut model, &id)));
             if let Err(p) = done {
@@ -252,7 +252,7 @@ impl Processor {
         }
         if stored {
             // Replan what was planned without it.
-            let measurers: Vec<_> = MEASURERS.lock().iter().filter_map(|w| w.upgrade()).collect();
+            let measurers = ARRIVALS.lock().measurers();
             for m in measurers {
                 m.stored_elsewhere();
             }
