@@ -74,8 +74,7 @@ struct Sink {
 }
 
 impl Downstream for Sink {
-    type Config = u32;
-    fn configure(&mut self, _: &u32, _: Option<Format>) {}
+    fn configure(&mut self, _: Format) {}
     fn handle_buffer(&mut self, data: &[u8], from: usize, _: i64) -> (bool, usize) {
         self.bytes += data.len() - from;
         (true, data.len() - from)
@@ -105,23 +104,22 @@ impl Host for App {
 }
 
 fn stream(id: &str, f: Format) -> StreamFormat {
-    StreamFormat { id: Some(crate::engine::StreamId { song: id.into(), serial: id.as_bytes()[0] as u64 }), format: Some(f) }
+    StreamFormat { id: crate::engine::StreamId { song: id.into(), serial: id.as_bytes()[0] as u64 }, format: f }
 }
 
 /// Feeds `data` from `from_us`; total allocations after the first `warm` buffers.
-fn feed(e: &mut TransitionEngine<u32>, d: &mut Sink, h: &mut App, data: &[u8], from_us: i64, warm: usize) -> u64 {
+fn feed(e: &mut TransitionEngine, d: &mut Sink, h: &mut App, data: &[u8], from_us: i64, warm: usize) -> u64 {
     allocating(e, d, h, data, from_us, warm).iter().map(|&(_, a)| a).sum()
 }
 
 /// (buffer index, allocations) of the buffers after the first `warm` that allocated.
-fn allocating(e: &mut TransitionEngine<u32>, d: &mut Sink, h: &mut App, data: &[u8], from_us: i64, warm: usize) -> Vec<(usize, u64)> {
+fn allocating(e: &mut TransitionEngine, d: &mut Sink, h: &mut App, data: &[u8], from_us: i64, warm: usize) -> Vec<(usize, u64)> {
     let mut found = Vec::new();
     for (i, c) in data.chunks(CHUNK).enumerate() {
         let pts = from_us + FMT.us(i * CHUNK);
         let a = allocations(|| {
             e.handle_buffer(d, h, c, pts);
             e.position_us(d, h, false);
-            e.has_pending_data();
         });
         if i >= warm && a > 0 {
             found.push((i, a));
@@ -134,8 +132,8 @@ fn allocating(e: &mut TransitionEngine<u32>, d: &mut Sink, h: &mut App, data: &[
 fn pass_through() {
     // With a gain the buffer is scaled in a pooled copy.
     for (analyse, gain) in [(false, 1.0), (true, 1.0), (false, 0.5), (true, 0.5)] {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Sink { bytes: 0 }, App { plan: None, analyse });
-        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Sink { bytes: 0 }, App { plan: None, analyse });
+        e.configure(&mut d, &mut h, stream("a", FMT));
         e.set_gain(gain);
         assert_eq!(feed(&mut e, &mut d, &mut h, &tone(20.0, 440.0), 0, 8), 0, "analysing: {analyse}, at {gain}");
     }
@@ -143,10 +141,10 @@ fn pass_through() {
 
 #[test]
 fn rate_conversion() {
-    let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Sink { bytes: 0 }, App { plan: None, analyse: false });
-    e.configure(&mut d, &mut h, stream("a", FMT), 1);
+    let (mut e, mut d, mut h) = (TransitionEngine::new(), Sink { bytes: 0 }, App { plan: None, analyse: false });
+    e.configure(&mut d, &mut h, stream("a", FMT));
     feed(&mut e, &mut d, &mut h, &tone(0.5, 440.0), 0, 0);
-    e.configure(&mut d, &mut h, stream("b", Format { rate: 48_000, ..FMT }), 2);
+    e.configure(&mut d, &mut h, stream("b", Format { rate: 48_000, ..FMT }));
     e.handle_discontinuity(&mut d, &mut h);
     assert_eq!(feed(&mut e, &mut d, &mut h, &tone(10.0, 300.0), 1_000_000, 8), 0);
 }
@@ -168,12 +166,12 @@ fn holding_and_mixing() {
             ramp_us: 0,
             out_loop_us: 0,
         };
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Sink { bytes: 0 }, App { plan: Some(p), analyse: false });
-        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Sink { bytes: 0 }, App { plan: Some(p), analyse: false });
+        e.configure(&mut d, &mut h, stream("a", FMT));
         e.set_gain(a);
         feed(&mut e, &mut d, &mut h, &tone(4.0, 440.0), 0, 0);
         let held = feed(&mut e, &mut d, &mut h, &tone(6.0, 440.0), 4_000_000, 16);
-        e.configure(&mut d, &mut h, stream("b", FMT), 2);
+        e.configure(&mut d, &mut h, stream("b", FMT));
         e.handle_discontinuity(&mut d, &mut h);
         e.set_gain(b);
         let mixed = allocating(&mut e, &mut d, &mut h, &tone(12.0, 330.0), 10_000_000, 16);

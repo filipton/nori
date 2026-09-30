@@ -174,7 +174,7 @@ impl<R: Reading> Reader<R> {
 /// Every engine call goes through [`Fed`] with the player's clock.
 pub struct Player<S: Songs, T: Track, A: App, Q: Queue> {
     pub now_ms: i64,
-    pub engine: TransitionEngine<u32>,
+    pub engine: TransitionEngine,
     pub burst: Burst,
     pub sink: Sink<T>,
     pub app: A,
@@ -204,7 +204,6 @@ pub struct Player<S: Songs, T: Track, A: App, Q: Queue> {
     position_us: Option<i64>,
     current: Option<usize>,
     source_ended: bool,
-    token: u32,
     /// Song changes with their time; the platform drains them.
     pub changes: Vec<(i64, usize)>,
     /// Failed songs (id, reason); the platform drains them.
@@ -258,7 +257,6 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
             position_us: None,
             current: None,
             source_ended: false,
-            token: 0,
             changes: Vec::new(),
             failures: Vec::new(),
             errors: ErrorRun::new(),
@@ -328,16 +326,15 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
     }
 
     /// Calls into the engine with the output fed in bursts, on the player's clock.
-    fn call<R>(&mut self, f: impl FnOnce(&mut TransitionEngine<u32>, &mut Fed<'_, Sink<T>>, &mut A) -> R) -> R {
+    fn call<R>(&mut self, f: impl FnOnce(&mut TransitionEngine, &mut Fed<'_, Sink<T>>, &mut A) -> R) -> R {
         self.app.clock(self.now_ms);
         let mut fed = Fed::new(&mut self.sink, &mut self.burst, self.now_ms);
         f(&mut self.engine, &mut fed, &mut self.app)
     }
 
     fn configure(&mut self, i: usize, serial: u64, format: Format) {
-        self.token += 1;
-        let (s, t) = (StreamFormat { id: Some(StreamId { song: self.id_at(i), serial }), format: Some(format) }, self.token);
-        self.call(|e, d, a| e.configure(d, a, s, t));
+        let s = StreamFormat { id: StreamId { song: self.id_at(i), serial }, format };
+        self.call(|e, d, a| e.configure(d, a, s));
     }
 
     fn new_serial(&mut self) -> u64 {

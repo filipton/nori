@@ -984,9 +984,9 @@ mod tests {
         // Both streams on a device at 1 kHz: the second converts, the device stays.
         track.max_rate = 1000;
         let mut sink = Sink::new(nori_player::burst::BUFFER_US, ChainSettings::default(), track);
-        sink.configure(&1, Some(Format { rate: 2000, ..F }));
+        sink.configure(Format { rate: 2000, ..F });
         assert_eq!(sink.handle_buffer(&pcm(&[1000; 2000]), 0, 0), (true, 4000));
-        sink.configure(&2, Some(F));
+        sink.configure(F);
         let f = feed.lock().take().expect("started");
         let held = f.available();
         assert!(held > 900, "the first stream, resampled to the device: {held}");

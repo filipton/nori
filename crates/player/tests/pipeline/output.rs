@@ -40,7 +40,7 @@ fn gapless_rate_change_reopens_output() {
     p.play_from(0);
     assert!(p.run_to_end(20_000));
     // Once a has played out, the output opens again at 48 kHz: b is heard as it is, not resampled.
-    assert_eq!((p.sink.configs.len(), p.sink.rebuilds), (2, 1), "opened again for b");
+    assert_eq!((p.sink.opens, p.sink.rebuilds), (2, 1), "opened again for b");
     assert_eq!(p.sink.format.map(|f| f.rate), Some(48_000));
     assert!(!p.app.logged("converting"), "{:?}", p.app.log);
     assert!(p.app.logged("sink follows 48000 Hz x2"), "{:?}", p.app.log);

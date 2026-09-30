@@ -80,8 +80,8 @@ pub struct StreamId {
 /// passthrough), which cannot be mixed or converted.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StreamFormat {
-    pub id: Option<StreamId>,
-    pub format: Option<Format>,
+    pub id: StreamId,
+    pub format: Format,
 }
 
 /// A stream's song for logs.
@@ -91,10 +91,8 @@ fn song(id: &Option<StreamId>) -> &str {
 
 /// The real output below. Called only from the engine's thread.
 pub trait Downstream {
-    /// A platform token for a format, handed back to [`Downstream::configure`].
-    type Config: Clone;
-    /// Opens the output for `config`; `format` is `None` for non-PCM.
-    fn configure(&mut self, config: &Self::Config, format: Option<Format>);
+    /// Opens the output at `format`.
+    fn configure(&mut self, format: Format);
     /// Offers `data[from..]` at `pts_us`; returns (all taken, bytes taken). A partly taken buffer is
     /// offered again as the same memory with `from` advanced, so an output can check it.
     fn handle_buffer(&mut self, data: &[u8], from: usize, pts_us: i64) -> (bool, usize);
@@ -165,17 +163,16 @@ struct Chunk {
 }
 
 /// A format announced by decode-ahead, armed once its buffers flow.
-struct Staged<C> {
+struct Staged {
     id: Option<StreamId>,
-    format: Option<Format>,
-    config: C,
+    format: Format,
 }
 
-pub struct TransitionEngine<C: Clone> {
-    /// The output format; `None` before the first stream or while it is not PCM.
+pub struct TransitionEngine {
+    /// The output format; `None` before the first stream.
     out: Option<Format>,
     /// Applied to the output once what is queued has drained.
-    pending_config: Option<(Option<Format>, C)>,
+    pending_format: Option<Format>,
 
     /// The stream of the last configure (may be decode-ahead).
     current_id: Option<StreamId>,
@@ -186,9 +183,6 @@ pub struct TransitionEngine<C: Clone> {
     /// A discontinuity without a mix and nothing flowed since: the next new stream is the one about to
     /// flow (media3 announces a stream with its first buffer, after the discontinuity).
     awaiting_stream: bool,
-    /// A mix began before its incoming stream was announced (media3's order): (plan, late µs), entered
-    /// once the incoming format is known.
-    awaiting_incoming: Option<(Plan, i64)>,
     offset_us: i64,
 
     phase: Phase,
@@ -267,7 +261,7 @@ pub struct TransitionEngine<C: Clone> {
     /// The stream the converter is armed for.
     conv_id: Option<StreamId>,
     resampler: Option<Resampler>,
-    staged: VecDeque<Staged<C>>,
+    staged: VecDeque<Staged>,
     /// The stream the mix is consuming.
     mix_source_id: Option<StreamId>,
     /// Keep the latched output format. False while the output is bit-perfect: streams pass native.
@@ -286,22 +280,15 @@ pub struct TransitionEngine<C: Clone> {
     heard: Heard,
 }
 
-impl<C: Clone> Default for TransitionEngine<C> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<C: Clone> TransitionEngine<C> {
+impl TransitionEngine {
     pub fn new() -> Self {
         TransitionEngine {
             out: None,
-            pending_config: None,
+            pending_format: None,
             current_id: None,
             playing_id: None,
             fresh: false,
             awaiting_stream: false,
-            awaiting_incoming: None,
             offset_us: 0,
             phase: Phase::Pass,
             plan: None,
@@ -399,9 +386,6 @@ impl<C: Clone> TransitionEngine<C> {
         if self.holding() {
             w.push_str(&format!(", held {} of {} of {} ({} ms)", self.tail_len, self.tail_limit, song(&self.held_id), self.held_us / 1000));
         }
-        if let Some((p, _)) = &self.awaiting_incoming {
-            w.push_str(&format!(", awaiting {}", p.incoming_id));
-        }
         if self.fresh {
             w.push_str(", fresh");
         }
@@ -412,100 +396,53 @@ impl<C: Clone> TransitionEngine<C> {
 
     // ---- configuration ----
 
-    /// The decoder announces a stream. `config` goes to [`Downstream::configure`] if this format is
-    /// applied to the output.
-    pub fn configure<D: Downstream<Config = C>, H: Host>(&mut self, down: &mut D, host: &mut H, stream: StreamFormat, config: C) {
-        let id = stream.id.clone();
-        let f = stream.format;
-        match f {
-            Some(f) => host.log(&format!("sink: {} {} Hz x{} enc={}", song(&id), f.rate, f.channels, f.encoding.media3())),
-            None => host.log(&format!("sink: {} - not PCM, no transitions", song(&id))),
-        }
+    /// The player announces the stream whose buffers come next.
+    pub fn configure<D: Downstream, H: Host>(&mut self, down: &mut D, host: &mut H, stream: StreamFormat) {
+        let StreamFormat { id: sid, format: f } = stream;
+        let id = Some(sid.clone());
+        host.log(&format!("sink: {} {} Hz x{} enc={}", song(&id), f.rate, f.channels, f.encoding.media3()));
         // After a flush, or after a boundary nothing has flowed across yet, the announced stream is the
-        // one about to flow, not decode-ahead: it must be armed now (staged, it would never be armed and
-        // play unconverted at the wrong rate).
-        let new_stream = id.is_some() && id != self.current_id;
+        // one about to flow: it must be armed now (staged, it would never be armed and play unconverted at
+        // the wrong rate).
+        let new_stream = id != self.current_id;
         let awaited = self.awaiting_stream && new_stream;
-        let for_current = id.is_none() || id == self.current_id || self.fresh || awaited;
+        let for_current = !new_stream || self.fresh || awaited;
         if self.fresh || awaited {
             self.fresh = false;
             self.awaiting_stream = false;
-            if id.is_some() {
-                self.playing_id = id.clone();
-            }
+            self.playing_id = id.clone();
         }
-        if let Some(new) = id.as_ref().filter(|i| Some(*i) != self.current_id.as_ref()) {
-            let new = new.clone();
-            self.on_new_stream(host, new);
+        if new_stream {
+            self.on_new_stream(host, sid);
         }
-        let Some(f) = f else {
-            // Not PCM: the output must follow, after anything held has played out.
-            self.drop_converter();
-            if self.queue.is_empty() && self.phase == Phase::Pass {
-                self.apply(down, None, &config);
-                return;
-            }
-            self.abandon_transition(host);
-            self.pending_config = Some((None, config));
-            return;
-        };
         if !self.lock_rate {
             // Bit-perfect: the output follows the native format.
             self.drop_converter();
-            if self.out == Some(f) {
-                return;
+            if self.out != Some(f) {
+                self.abandon_transition(host);
+                self.pending_format = Some(f);
             }
-            self.abandon_transition(host);
-            self.pending_config = Some((Some(f), config));
             return;
         }
         let Some(out) = self.out else {
-            self.apply(down, Some(f), &config);
+            self.apply(down, f);
             host.log(&format!("sink pins {} Hz x{} for the queue", f.rate, f.channels));
             return;
         };
-        if self.phase == Phase::Mix && new_stream {
-            if let Some((p, late)) = self.awaiting_incoming.take() {
-                // The incoming side of a mix that began before it was announced.
-                if f == out {
-                    self.drop_converter();
-                } else if !self.arm_conversion(host, id.clone(), f) {
-                    self.abandon_transition(host);
-                    self.pending_config = Some((Some(f), config));
-                    return;
-                }
-                self.mix_source_id = id.clone();
-                self.playing_id = id;
-                self.enter_incoming(&p, late);
-                return;
-            }
-        }
-        if f == out {
+        if self.phase != Phase::Pass || !for_current {
+            // Decode-ahead: never interrupts a mix; armed once its buffers flow.
+            self.staged.push_back(Staged { id, format: f });
+        } else if f == out {
             // Already the output's format: never reconfigure the output for it.
-            if self.phase == Phase::Pass && for_current {
-                self.drop_converter();
-                return;
-            }
-            self.staged.push_back(Staged { id, format: Some(f), config });
-            return;
+            self.drop_converter();
+        } else if self.carries_on(f) {
+            self.conv_id = id;
+        } else if self.follow_rate {
+            self.follow(host, f);
+        } else if !self.arm_conversion(host, id, f) {
+            self.abandon_transition(host);
+            self.pending_format = Some(f);
         }
-        if self.phase == Phase::Pass && for_current {
-            if self.carries_on(f) {
-                self.conv_id = id;
-                return;
-            }
-            if self.follow_rate {
-                self.follow(host, f, config);
-                return;
-            }
-            if !self.arm_conversion(host, id, f) {
-                self.abandon_transition(host);
-                self.pending_config = Some((Some(f), config));
-            }
-            return;
-        }
-        // Decode-ahead: never interrupts a mix; armed once its buffers flow.
-        self.staged.push_back(Staged { id, format: Some(f), config });
     }
 
     /// Converts stream `id` (format `src`) to the output format. Drops a stretcher built in `prepare`,
@@ -551,16 +488,16 @@ impl<C: Clone> TransitionEngine<C> {
     }
 
     /// Reopens the output at `f` once the queue has drained, instead of converting.
-    fn follow<H: Host>(&mut self, host: &mut H, f: Format, config: C) {
+    fn follow<H: Host>(&mut self, host: &mut H, f: Format) {
         self.drop_converter();
-        self.pending_config = Some((Some(f), config));
+        self.pending_format = Some(f);
         host.log(&format!("sink follows {} Hz x{}: nothing overlaps, so the output opens again rather than convert", f.rate, f.channels));
     }
 
     /// Arms the staged format of `id` now that its buffers flow; other staged formats wait. `gapless`:
     /// nothing is mixed into it, so the output may follow its rate.
     fn arm_staged_for<H: Host>(&mut self, host: &mut H, id: Option<StreamId>, gapless: bool) {
-        let mut found: Option<Staged<C>> = None;
+        let mut found: Option<Staged> = None;
         let mut keep = VecDeque::new();
         while let Some(s) = self.staged.pop_front() {
             if s.id == id || (id.is_none() && found.is_none()) {
@@ -570,11 +507,7 @@ impl<C: Clone> TransitionEngine<C> {
             }
         }
         self.staged = keep;
-        let Some(s) = found else { return };
-        let Some(f) = s.format else {
-            self.drop_converter();
-            return;
-        };
+        let Some(Staged { format: f, .. }) = found else { return };
         if Some(f) == self.out {
             if self.conv_id.is_some() {
                 self.drop_converter();
@@ -587,18 +520,18 @@ impl<C: Clone> TransitionEngine<C> {
             return;
         }
         if gapless && self.follow_rate {
-            self.follow(host, f, s.config);
+            self.follow(host, f);
             return;
         }
         if !self.arm_conversion(host, id, f) {
             self.abandon_transition(host);
-            self.pending_config = Some((Some(f), s.config));
+            self.pending_format = Some(f);
         }
     }
 
-    fn apply<D: Downstream<Config = C>>(&mut self, down: &mut D, f: Option<Format>, config: &C) {
-        self.out = f;
-        down.configure(config, f);
+    fn apply<D: Downstream>(&mut self, down: &mut D, f: Format) {
+        self.out = Some(f);
+        down.configure(f);
     }
 
     pub fn set_output_stream_offset_us(&mut self, offset_us: i64) {
@@ -632,23 +565,15 @@ impl<C: Clone> TransitionEngine<C> {
     // ---- the audio path ----
 
     /// One decoded buffer at `pts_us`. Returns (all taken, bytes taken); the rest is offered again.
-    pub fn handle_buffer<D: Downstream<Config = C>, H: Host>(&mut self, down: &mut D, host: &mut H, buffer: &[u8], pts_us: i64) -> (bool, usize) {
+    pub fn handle_buffer<D: Downstream, H: Host>(&mut self, down: &mut D, host: &mut H, buffer: &[u8], pts_us: i64) -> (bool, usize) {
         self.fresh = false;
         self.awaiting_stream = false;
-        if let Some((p, late)) = self.awaiting_incoming.take() {
-            // The incoming side flows without a new format: it is the current stream.
-            if self.phase == Phase::Mix {
-                self.mix_source_id = self.current_id.clone();
-                self.playing_id = self.current_id.clone();
-                self.enter_incoming(&p, late);
-            }
-        }
-        if let Some((f, config)) = self.pending_config.take() {
+        if let Some(f) = self.pending_format.take() {
             if !self.drain(down) {
-                self.pending_config = Some((f, config));
+                self.pending_format = Some(f);
                 return (false, 0);
             }
-            self.apply(down, f, &config);
+            self.apply(down, f);
         }
         let Some(out) = self.out else { return down.handle_buffer(buffer, 0, pts_us) };
         if !self.drain(down) {
@@ -670,7 +595,7 @@ impl<C: Clone> TransitionEngine<C> {
 
     /// Routes a buffer by phase. `raw` is unscaled (for the analyser), `buffer` is at the song's gain.
     #[allow(clippy::too_many_arguments)]
-    fn route<D: Downstream<Config = C>, H: Host>(&mut self, down: &mut D, host: &mut H, raw: &[u8], buffer: &[u8], pts_us: i64, out: Format, native: Format) -> (bool, usize) {
+    fn route<D: Downstream, H: Host>(&mut self, down: &mut D, host: &mut H, raw: &[u8], buffer: &[u8], pts_us: i64, out: Format, native: Format) -> (bool, usize) {
         self.feed_analysis(host, raw, native);
         match self.phase {
             Phase::Pass => {
@@ -716,7 +641,7 @@ impl<C: Clone> TransitionEngine<C> {
 
     /// Passes `buf` (already converted) through, or at the plan's start passes the head and holds the
     /// rest. `Some` is the result to return now; `None` means it was taken whole.
-    fn pass_or_hold<D: Downstream<Config = C>, H: Host>(&mut self, down: &mut D, host: &mut H, buf: &[u8], whole: usize, pts_us: i64, out: Format) -> Option<(bool, usize)> {
+    fn pass_or_hold<D: Downstream, H: Host>(&mut self, down: &mut D, host: &mut H, buf: &[u8], whole: usize, pts_us: i64, out: Format) -> Option<(bool, usize)> {
         if self.playing_id.is_none() {
             self.playing_id = self.current_id.clone();
         }
@@ -769,7 +694,7 @@ impl<C: Clone> TransitionEngine<C> {
     /// Passes `buffer` on and reports `whole` bytes taken. Offered as it is when nothing waits before it;
     /// what the output does not take is copied and queued, so [`TransitionEngine::rescale`] and the next
     /// offer work on the engine's own memory.
-    fn pass<D: Downstream<Config = C>>(&mut self, down: &mut D, buffer: &[u8], whole: usize, pts_us: i64) -> (bool, usize) {
+    fn pass<D: Downstream>(&mut self, down: &mut D, buffer: &[u8], whole: usize, pts_us: i64) -> (bool, usize) {
         let direct = self.queue.is_empty() && !self.resync_next && !self.measure_next;
         let (taken, used) = if direct {
             down.media_pace(1.0);
@@ -877,23 +802,18 @@ impl<C: Clone> TransitionEngine<C> {
     }
 
     /// The next track begins (or a seek landed): start mixing into the hold, or let the hold go unmixed.
-    pub fn handle_discontinuity<D: Downstream<Config = C>, H: Host>(&mut self, down: &mut D, host: &mut H) {
+    pub fn handle_discontinuity<D: Downstream, H: Host>(&mut self, down: &mut D, host: &mut H) {
         let p = self.plan.clone();
         let ending = self.plan_for.clone().or_else(|| self.playing_id.clone());
-        // Our pipeline announces the next stream before this; media3 announces it with its first buffer.
-        let announced = self.current_id.is_some() && self.current_id != ending;
         let mixed = self.holding() && self.tail_len > 0 && self.out.is_some();
         self.made = ending.map(|id| (id.serial, if mixed { p.clone() } else { None }));
         match (self.phase, p, self.out) {
             (Phase::Hold, Some(p), Some(out)) if self.tail_len > 0 => {
-                // Arm the incoming format so stretch and skip are measured in its own domain.
-                if announced {
-                    self.arm_staged_for(host, self.current_id.clone(), false);
-                    self.mix_source_id = self.current_id.clone();
-                }
-                // The incoming stream is the one announced after the outgoing; unannounced, it is set
-                // when it is.
-                self.playing_id = if announced { self.current_id.clone() } else { None };
+                // The incoming stream, announced before this: its format is armed so stretch and skip are
+                // measured in its own domain.
+                self.arm_staged_for(host, self.current_id.clone(), false);
+                self.mix_source_id = self.current_id.clone();
+                self.playing_id = self.current_id.clone();
                 let late = self.late_us.clamp(0, p.duration_us);
                 let m = self.ensure_mixer(out);
                 m.configure(&p.mixer);
@@ -902,11 +822,7 @@ impl<C: Clone> TransitionEngine<C> {
                     m.seek((late * out.rate as i64 / 1_000_000) as u64);
                 }
                 self.skip_left = 0;
-                if announced {
-                    self.enter_incoming(&p, late);
-                } else {
-                    self.awaiting_incoming = Some((p.clone(), late));
-                }
+                self.enter_incoming(&p, late);
                 let left = self.held_from_us.zip(down.position_us(false)).map(|(from, at)| from - at);
                 host.log(&format!(
                     "mixing: the next track arrived {} ms into the hold with {} of sound left",
@@ -1236,7 +1152,6 @@ impl<C: Clone> TransitionEngine<C> {
         }
         self.heard.from = None;
         self.phase = Phase::Pass;
-        self.awaiting_incoming = None;
         self.tail_len = 0;
         self.held_from_us = None;
         self.held_us = 0;
@@ -1326,7 +1241,7 @@ impl<C: Clone> TransitionEngine<C> {
     }
 
     /// Sends queued chunks. False when the output would not take everything yet.
-    fn drain<D: Downstream<Config = C>>(&mut self, down: &mut D) -> bool {
+    fn drain<D: Downstream>(&mut self, down: &mut D) -> bool {
         loop {
             let Some(c) = self.queue.front_mut() else { return true };
             if c.resync && c.pos == 0 {
@@ -1359,7 +1274,7 @@ impl<C: Clone> TransitionEngine<C> {
 
     /// The position to report to the player, called every few ms. Also the one place that notices a
     /// held ending about to starve the output (the next track is late) and lets it go unmixed.
-    pub fn position_us<D: Downstream<Config = C>, H: Host>(&mut self, down: &mut D, host: &mut H, source_ended: bool) -> Option<i64> {
+    pub fn position_us<D: Downstream, H: Host>(&mut self, down: &mut D, host: &mut H, source_ended: bool) -> Option<i64> {
         let Some(at) = down.position_us(source_ended) else { return self.held_from_nothing(host) };
         self.clock_us = Some(at);
         if let (Phase::Hold, Some(from)) = (self.phase, self.held_from_us) {
@@ -1451,19 +1366,14 @@ impl<C: Clone> TransitionEngine<C> {
 
     /// The source ended: flush the hold and finish the last analysis. Returns whether everything
     /// queued went to the output.
-    pub fn play_to_end_of_stream<D: Downstream<Config = C>, H: Host>(&mut self, down: &mut D, host: &mut H) -> bool {
+    pub fn play_to_end_of_stream<D: Downstream, H: Host>(&mut self, down: &mut D, host: &mut H) -> bool {
         self.abandon_transition(host);
         self.finish_analysis(host);
         self.drain(down)
     }
 
-    #[cfg(any(test, feature = "synth"))]
-    pub fn has_pending_data(&self) -> bool {
-        !self.queue.is_empty()
-    }
-
     /// Drains, then whether the queue is empty.
-    pub fn queue_empty<D: Downstream<Config = C>>(&mut self, down: &mut D) -> bool {
+    pub fn queue_empty<D: Downstream>(&mut self, down: &mut D) -> bool {
         if !self.queue.is_empty() {
             self.drain(down);
         }
@@ -1476,7 +1386,6 @@ impl<C: Clone> TransitionEngine<C> {
         }
         self.phase = Phase::Pass;
         self.awaiting_stream = false;
-        self.awaiting_incoming = None;
         self.tail_len = 0;
         self.tail_read = 0;
         self.skip_left = 0;
@@ -1515,7 +1424,7 @@ impl<C: Clone> TransitionEngine<C> {
         // The output and formats stay; the converter restarts and staged formats are stale.
         self.reset_converter();
         self.staged.clear();
-        self.pending_config = None;
+        self.pending_format = None;
         // The analyser no longer hears the track continuously.
         self.analyzer = None;
         self.analysis_tainted = true;
@@ -1553,7 +1462,7 @@ mod tests {
     #[derive(Default)]
     struct Down {
         taken: Vec<(Vec<u8>, i64)>,
-        configured: Vec<u32>,
+        configured: Vec<Format>,
         discontinuities: usize,
         position: Option<i64>,
         /// Take at most this many bytes of the next offer.
@@ -1563,9 +1472,8 @@ mod tests {
     }
 
     impl Downstream for Down {
-        type Config = u32;
-        fn configure(&mut self, config: &u32, _: Option<Format>) {
-            self.configured.push(*config);
+        fn configure(&mut self, f: Format) {
+            self.configured.push(f);
         }
         fn handle_buffer(&mut self, data: &[u8], from: usize, pts_us: i64) -> (bool, usize) {
             let key = data.len() - from;
@@ -1620,7 +1528,7 @@ mod tests {
 
     /// Song `id`'s stream; its serial is the id's first byte, so each song here is one stream.
     fn stream(id: &str, f: Format) -> StreamFormat {
-        StreamFormat { id: Some(StreamId { song: id.into(), serial: id.as_bytes()[0] as u64 }), format: Some(f) }
+        StreamFormat { id: StreamId { song: id.into(), serial: id.as_bytes()[0] as u64 }, format: f }
     }
 
     /// `secs` of a constant stereo 16-bit value at 44.1 kHz.
@@ -1635,12 +1543,12 @@ mod tests {
     }
 
     /// Feeds 44.1 kHz `data` in 4096-byte buffers stamped from `from_us`.
-    fn feed(e: &mut TransitionEngine<u32>, d: &mut Down, h: &mut Host_, data: &[u8], from_us: i64) {
+    fn feed(e: &mut TransitionEngine, d: &mut Down, h: &mut Host_, data: &[u8], from_us: i64) {
         feed_in(e, d, h, data, FMT, from_us);
     }
 
     /// Feeds `data` (at `f`) in 4096-byte buffers stamped from `from_us`.
-    fn feed_in(e: &mut TransitionEngine<u32>, d: &mut Down, h: &mut Host_, data: &[u8], f: Format, from_us: i64) {
+    fn feed_in(e: &mut TransitionEngine, d: &mut Down, h: &mut Host_, data: &[u8], f: Format, from_us: i64) {
         let mut at = 0;
         while at < data.len() {
             let n = 4096.min(data.len() - at);
@@ -1681,11 +1589,11 @@ mod tests {
 
     #[test]
     fn passes_through_without_plan() {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
-        e.configure(&mut d, &mut h, stream("a", FMT), 7);
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
+        e.configure(&mut d, &mut h, stream("a", FMT));
         let a = tone(1000, 1.0);
         feed(&mut e, &mut d, &mut h, &a, 0);
-        assert_eq!(d.configured, vec![7], "the first PCM stream pins the output");
+        assert_eq!(d.configured.len(), 1, "the first PCM stream pins the output");
         assert_eq!(d.taken.iter().map(|(b, _)| b.len()).sum::<usize>(), a.len());
         assert!(d.samples().iter().all(|&v| v == 1000));
         assert_eq!(d.taken[1].1, FMT.us(4096), "timestamps are the decoder's");
@@ -1693,39 +1601,39 @@ mod tests {
 
     #[test]
     fn other_rate_is_converted() {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
-        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
+        e.configure(&mut d, &mut h, stream("a", FMT));
         feed(&mut e, &mut d, &mut h, &tone(1000, 0.5), 0);
         // Our pipeline's order: announce, then the boundary.
-        e.configure(&mut d, &mut h, stream("b", F48), 2);
+        e.configure(&mut d, &mut h, stream("b", F48));
         e.handle_discontinuity(&mut d, &mut h);
         let before = taken(&d);
         feed_in(&mut e, &mut d, &mut h, &tone_at(500, 48_000, 1.0), F48, 1_000_000);
-        assert_eq!(d.configured, vec![1], "the output stays as it was opened");
+        assert_eq!(d.configured.len(), 1, "the output stays as it was opened");
         let secs = secs_after(&d, before, FMT);
         assert!((secs - 1.0).abs() < 0.01, "one second of 48 kHz comes out as one second at 44.1: {secs}");
     }
 
     #[test]
     fn first_format_after_flush_is_armed() {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
-        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
+        e.configure(&mut d, &mut h, stream("a", FMT));
         feed(&mut e, &mut d, &mut h, &tone(1000, 0.3), 0);
         e.flush(&mut h);
-        e.configure(&mut d, &mut h, stream("b", F48), 2);
+        e.configure(&mut d, &mut h, stream("b", F48));
         assert!(h.log.iter().any(|l| l.starts_with("converting 48000 Hz")), "{:?}", h.log);
     }
 
     #[test]
     fn fade_mixes_next_track_into_hold() {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         h.plans.insert("a".into(), fade("b", 1_000_000));
-        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        e.configure(&mut d, &mut h, stream("a", FMT));
         feed(&mut e, &mut d, &mut h, &tone(8000, 3.0), 0);
         assert!(h.log.iter().any(|l| l.starts_with("holding the ending")), "{:?}", h.log);
         let passed = d.samples().len();
         assert_eq!(passed, FMT.bytes(1_000_000) / 2, "only the part before the transition went out");
-        e.configure(&mut d, &mut h, stream("b", FMT), 2);
+        e.configure(&mut d, &mut h, stream("b", FMT));
         e.handle_discontinuity(&mut d, &mut h);
         feed(&mut e, &mut d, &mut h, &tone(-8000, 3.0), 3_000_000);
         let s = d.samples();
@@ -1744,12 +1652,12 @@ mod tests {
     /// still to come after the first copy's was made.
     #[test]
     fn same_song_twice_is_two_streams() {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         h.plans.insert("a".into(), fade("a", 2_500_000));
-        let copy = |serial| StreamFormat { id: Some(StreamId { song: "a".into(), serial }), format: Some(FMT) };
-        e.configure(&mut d, &mut h, copy(1), 1);
+        let copy = |serial| StreamFormat { id: StreamId { song: "a".into(), serial }, format: FMT };
+        e.configure(&mut d, &mut h, copy(1));
         feed(&mut e, &mut d, &mut h, &tone(8000, 3.0), 0);
-        e.configure(&mut d, &mut h, copy(2), 2);
+        e.configure(&mut d, &mut h, copy(2));
         e.handle_discontinuity(&mut d, &mut h);
         e.set_output_stream_offset_us(3_000_000);
         feed(&mut e, &mut d, &mut h, &tone(-8000, 0.5), 3_000_000);
@@ -1761,7 +1669,7 @@ mod tests {
 
     /// Feeds `data` in 4096-byte buffers, re-offering the rest of partly taken ones. Buffer `at_buffer`
     /// is only partly taken (1024 bytes); `between` runs between re-offers and after that buffer.
-    fn offer(e: &mut TransitionEngine<u32>, d: &mut Down, h: &mut Host_, data: &[u8], at_buffer: usize, mut between: impl FnMut(&mut TransitionEngine<u32>)) {
+    fn offer(e: &mut TransitionEngine, d: &mut Down, h: &mut Host_, data: &[u8], at_buffer: usize, mut between: impl FnMut(&mut TransitionEngine)) {
         for (i, slice) in data.chunks(4096).enumerate() {
             if i == at_buffer {
                 d.take_only = Some(1024);
@@ -1783,8 +1691,8 @@ mod tests {
 
     #[test]
     fn rescale_reaches_rest_of_partly_taken_buffer() {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
-        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
+        e.configure(&mut d, &mut h, stream("a", FMT));
         e.set_gain(0.5);
         let mut changed = false;
         offer(&mut e, &mut d, &mut h, &tone(1000, 1.0), 10, |e| {
@@ -1802,10 +1710,10 @@ mod tests {
 
     #[test]
     fn rescale_reaches_held_ending() {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         d.position = Some(0);
         h.plans.insert("a".into(), fade("b", 2_000_000));
-        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        e.configure(&mut d, &mut h, stream("a", FMT));
         e.set_gain(0.5);
         feed(&mut e, &mut d, &mut h, &tone(1000, 3.0), 0);
         assert!(e.holding(), "the ending is held");
@@ -1819,23 +1727,23 @@ mod tests {
 
     #[test]
     fn no_plan_is_gapless() {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
-        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
+        e.configure(&mut d, &mut h, stream("a", FMT));
         feed(&mut e, &mut d, &mut h, &tone(100, 1.0), 0);
-        e.configure(&mut d, &mut h, stream("b", FMT), 2);
+        e.configure(&mut d, &mut h, stream("b", FMT));
         e.handle_discontinuity(&mut d, &mut h);
         feed(&mut e, &mut d, &mut h, &tone(200, 1.0), 1_000_000);
         let s = d.samples();
         assert_eq!(s.len(), (RATE as usize * 2) * 2);
         assert_eq!(d.discontinuities, 1);
-        assert_eq!(d.configured, vec![1], "same format: the output stays open");
+        assert_eq!(d.configured.len(), 1, "same format: the output stays open");
     }
 
     #[test]
     fn unmixed_ending_is_released_before_output_runs_dry() {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         h.plans.insert("a".into(), fade("b", 1_000_000));
-        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        e.configure(&mut d, &mut h, stream("a", FMT));
         feed(&mut e, &mut d, &mut h, &tone(1000, 3.0), 0);
         let before = d.samples().len();
         h.now += HOLD_GRACE_MS + 1;
@@ -1847,10 +1755,10 @@ mod tests {
 
     #[test]
     fn no_runway_means_no_hold() {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         h.plans.insert("a".into(), fade("b", 1_000_000));
         d.position = Some(999_000);
-        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        e.configure(&mut d, &mut h, stream("a", FMT));
         feed(&mut e, &mut d, &mut h, &tone(1000, 3.0), 0);
         assert!(h.log.iter().any(|l| l.contains("no runway")), "{:?}", h.log);
         assert_eq!(d.samples().len(), (RATE as usize * 3) * 2, "everything played straight through");
@@ -1858,13 +1766,13 @@ mod tests {
 
     #[test]
     fn seek_into_transition_mixes_from_there() {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         h.plans.insert("a".into(), fade("b", 1_000_000));
-        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        e.configure(&mut d, &mut h, stream("a", FMT));
         // From 1.5 s: half a second into the fade.
         feed(&mut e, &mut d, &mut h, &tone(1000, 1.5), 1_500_000);
         assert!(h.log.iter().any(|l| l.contains("late hold, 500 ms in")), "{:?}", h.log);
-        e.configure(&mut d, &mut h, stream("b", FMT), 2);
+        e.configure(&mut d, &mut h, stream("b", FMT));
         e.handle_discontinuity(&mut d, &mut h);
         // Takeover is 1 s into the fade, so 1 s into b.
         assert_eq!(e.heard().next_from_us, 1_000_000, "the next song is entered where the fade hands it over");
@@ -1872,9 +1780,9 @@ mod tests {
 
     #[test]
     fn heard_lags_reported_position_while_holding() {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         h.plans.insert("a".into(), fade("b", 1_000_000));
-        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        e.configure(&mut d, &mut h, stream("a", FMT));
         feed(&mut e, &mut d, &mut h, &tone(1000, 3.0), 0);
         d.position = Some(500_000);
         let reported = e.position_us(&mut d, &mut h, false).unwrap();
@@ -1888,14 +1796,14 @@ mod tests {
 
     #[test]
     fn stretched_mix_returns_to_track_clock() {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         let mut p = fade("b", 1_000_000);
         p.tempo_ratio = 1.03;
         p.ramp_us = 500_000;
         h.plans.insert("a".into(), p);
-        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        e.configure(&mut d, &mut h, stream("a", FMT));
         feed(&mut e, &mut d, &mut h, &tone(4000, 3.0), 0);
-        e.configure(&mut d, &mut h, stream("b", FMT), 2);
+        e.configure(&mut d, &mut h, stream("b", FMT));
         e.handle_discontinuity(&mut d, &mut h);
         feed(&mut e, &mut d, &mut h, &tone(-4000, 6.0), 3_000_000);
         assert!(d.discontinuities >= 2, "a resync into the mix and one back onto real timestamps: {}", d.discontinuities);
@@ -1909,10 +1817,10 @@ mod tests {
 
     #[test]
     fn analysis_handed_over_on_next_stream() {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
-        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
+        e.configure(&mut d, &mut h, stream("a", FMT));
         feed(&mut e, &mut d, &mut h, &tone(1000, 1.0), 0);
-        e.configure(&mut d, &mut h, stream("b", FMT), 2);
+        e.configure(&mut d, &mut h, stream("b", FMT));
         assert_eq!(h.analysed, vec!["a".to_string()]);
     }
 
@@ -1929,14 +1837,14 @@ mod tests {
     #[test]
     fn stream_announced_after_boundary_is_converted() {
         // media3's order: discontinuity first, then the next format with its first buffer.
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
-        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
+        e.configure(&mut d, &mut h, stream("a", FMT));
         feed(&mut e, &mut d, &mut h, &tone(1000, 0.5), 0);
         e.handle_discontinuity(&mut d, &mut h);
-        e.configure(&mut d, &mut h, stream("b", F48), 2);
+        e.configure(&mut d, &mut h, stream("b", F48));
         let before = taken(&d);
         feed_in(&mut e, &mut d, &mut h, &tone_at(500, 48_000, 1.0), F48, 1_000_000);
-        assert_eq!(d.configured, vec![1], "the output stays as it was opened");
+        assert_eq!(d.configured.len(), 1, "the output stays as it was opened");
         let secs = secs_after(&d, before, FMT);
         assert!((secs - 1.0).abs() < 0.01, "one second of 48 kHz comes out as one second at 44.1: {secs}");
         assert!(h.log.iter().any(|l| l.starts_with("converting 48000 Hz")), "{:?}", h.log);
@@ -1944,17 +1852,17 @@ mod tests {
 
     #[test]
     fn pinned_format_after_converted_stream_is_not_converted() {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
-        e.configure(&mut d, &mut h, stream("a", F48), 1);
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
+        e.configure(&mut d, &mut h, stream("a", F48));
         feed_in(&mut e, &mut d, &mut h, &tone_at(1000, 48_000, 0.5), F48, 0);
         e.handle_discontinuity(&mut d, &mut h);
-        e.configure(&mut d, &mut h, stream("b", FMT), 2);
+        e.configure(&mut d, &mut h, stream("b", FMT));
         let before = taken(&d);
         feed(&mut e, &mut d, &mut h, &tone(700, 1.0), 1_000_000);
         let secs = secs_after(&d, before, F48);
         assert!((secs - 1.0).abs() < 0.01, "the 44.1 kHz song is converted: {secs}");
         e.handle_discontinuity(&mut d, &mut h);
-        e.configure(&mut d, &mut h, stream("c", F48), 3);
+        e.configure(&mut d, &mut h, stream("c", F48));
         let before = taken(&d);
         let c = tone_at(300, 48_000, 1.0);
         feed_in(&mut e, &mut d, &mut h, &c, F48, 2_000_000);
@@ -1963,17 +1871,17 @@ mod tests {
         assert!(got <= c.len() + 64 && got + 64 >= c.len(), "c goes down sample for sample: {got} of {} bytes", c.len());
         let s = d.samples();
         assert!(s[s.len() - 1000..].iter().all(|&v| v == 300));
-        assert_eq!(d.configured, vec![1]);
+        assert_eq!(d.configured.len(), 1);
     }
 
     #[test]
-    fn mix_into_late_announced_stream_converts_it() {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
+    fn mix_into_other_rate_converts_it() {
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         h.plans.insert("a".into(), fade("b", 1_000_000));
-        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        e.configure(&mut d, &mut h, stream("a", FMT));
         feed(&mut e, &mut d, &mut h, &tone(8000, 3.0), 0);
+        e.configure(&mut d, &mut h, stream("b", F48));
         e.handle_discontinuity(&mut d, &mut h);
-        e.configure(&mut d, &mut h, stream("b", F48), 2);
         feed_in(&mut e, &mut d, &mut h, &tone_at(-8000, 48_000, 3.0), F48, 3_000_000);
         let frames = d.samples().len() / 2;
         // 1 s alone + b's 3 s, less the converter's lookahead (< 2 ms).
@@ -1982,20 +1890,20 @@ mod tests {
         let s = d.samples();
         // Dithered after conversion: within a step.
         assert!(s[s.len() - 1000..].iter().all(|&v| (v + 8000).abs() <= 1), "b plays alone after the fade");
-        assert_eq!(d.configured, vec![1]);
+        assert_eq!(d.configured.len(), 1);
     }
 
     #[test]
-    fn stretched_mix_into_late_announced_stream() {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
+    fn stretched_mix_into_other_rate() {
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         let mut p = fade("b", 1_000_000);
         p.tempo_ratio = 1.03;
         p.ramp_us = 500_000;
         h.plans.insert("a".into(), p);
-        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        e.configure(&mut d, &mut h, stream("a", FMT));
         feed(&mut e, &mut d, &mut h, &tone(4000, 3.0), 0);
+        e.configure(&mut d, &mut h, stream("b", F48));
         e.handle_discontinuity(&mut d, &mut h);
-        e.configure(&mut d, &mut h, stream("b", F48), 2);
         feed_in(&mut e, &mut d, &mut h, &tone_at(-4000, 48_000, 6.0), F48, 3_000_000);
         let frames = d.samples().len() / 2;
         // 1 s alone, then 6 s of b with the first 2.5 s up to 3 % fast.
@@ -2007,29 +1915,29 @@ mod tests {
 
     #[test]
     fn gapless_follows_next_rate() {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         e.follow_rate = true;
-        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        e.configure(&mut d, &mut h, stream("a", FMT));
         feed(&mut e, &mut d, &mut h, &tone(1000, 1.0), 0);
-        e.configure(&mut d, &mut h, stream("b", F48), 2);
+        e.configure(&mut d, &mut h, stream("b", F48));
         e.handle_discontinuity(&mut d, &mut h);
         let before = taken(&d);
         let b = sine(HZ, 48_000, 1.0, 0);
         feed_in(&mut e, &mut d, &mut h, &b, F48, 1_000_000);
-        assert_eq!(d.configured, vec![1, 2], "opened again for b");
+        assert_eq!(d.configured.len(), 2, "opened again for b");
         let got: Vec<u8> = d.taken.iter().flat_map(|t| t.0.iter().copied()).skip(before).collect();
         assert!(got == b, "b sample for sample");
         assert!(!h.log.iter().any(|l| l.contains("converting")), "{:?}", h.log);
         // Mixed into, it is still converted.
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         e.follow_rate = true;
         h.plans.insert("a".into(), fade("b", 1_000_000));
-        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        e.configure(&mut d, &mut h, stream("a", FMT));
         feed(&mut e, &mut d, &mut h, &tone(8000, 3.0), 0);
         e.handle_discontinuity(&mut d, &mut h);
-        e.configure(&mut d, &mut h, stream("b", F48), 2);
+        e.configure(&mut d, &mut h, stream("b", F48));
         feed_in(&mut e, &mut d, &mut h, &tone_at(-8000, 48_000, 3.0), F48, 3_000_000);
-        assert_eq!(d.configured, vec![1], "the mix at a's rate");
+        assert_eq!(d.configured.len(), 1, "the mix at a's rate");
         assert!(h.log.iter().any(|l| l.contains("converting 48000 Hz x2 -> 44100 Hz x2")), "{:?}", h.log);
     }
 
@@ -2037,20 +1945,20 @@ mod tests {
     fn converter_carries_on_across_gapless_join() {
         // a (44.1) mixes into b (48, converted); c (48) follows b gaplessly. The converter must carry
         // on (no reopen, no reset click): a tone through b into c stays one tone.
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         e.follow_rate = true;
         h.plans.insert("a".into(), fade("b", 1_000_000));
-        e.configure(&mut d, &mut h, stream("a", FMT), 1);
+        e.configure(&mut d, &mut h, stream("a", FMT));
         feed(&mut e, &mut d, &mut h, &tone(0, 3.0), 0);
         e.handle_discontinuity(&mut d, &mut h);
-        e.configure(&mut d, &mut h, stream("b", F48), 2);
+        e.configure(&mut d, &mut h, stream("b", F48));
         let b = sine(HZ, 48_000, 4.0, 0);
         feed_in(&mut e, &mut d, &mut h, &b, F48, 3_000_000);
-        e.configure(&mut d, &mut h, stream("c", F48), 3);
+        e.configure(&mut d, &mut h, stream("c", F48));
         e.handle_discontinuity(&mut d, &mut h);
         let from = d.samples().len() / 2;
         feed_in(&mut e, &mut d, &mut h, &sine(HZ, 48_000, 1.0, 48_000 * 4), F48, 7_000_000);
-        assert_eq!(d.configured, vec![1], "no opening again between b and c");
+        assert_eq!(d.configured.len(), 1, "no opening again between b and c");
         assert_eq!(h.log.iter().filter(|l| l.contains("converting 48000")).count(), 1, "one converter, b's: {:?}", h.log);
         let left: Vec<f64> = d.samples().as_chunks::<2>().0.iter().map(|c| c[0] as f64).collect();
         let own = 8000.0 * std::f64::consts::TAU * HZ / RATE as f64;
@@ -2091,19 +1999,19 @@ mod tests {
         Plan { tempo_ratio: 1.04, keep_pitch: false, ramp_us: 1_000_000, ..fade("c", 1_000_000) }
     }
 
-    /// In media3's order: `a` (48 kHz) pins the output, `b` (44.1) is converted, `b` mixes into `c` (48);
-    /// returns with `secs` of `c` fed.
-    fn into_the_mix(e: &mut TransitionEngine<u32>, d: &mut Down, h: &mut Host_, secs: f64) {
+    /// `a` (48 kHz) pins the output, `b` (44.1) is converted, `b` mixes into `c` (48); returns with
+    /// `secs` of `c` fed.
+    fn into_the_mix(e: &mut TransitionEngine, d: &mut Down, h: &mut Host_, secs: f64) {
         h.plans.insert("b".into(), beat_matched());
-        e.configure(d, h, stream("a", F48), 1);
+        e.configure(d, h, stream("a", F48));
         feed_in(e, d, h, &sine(HZ, 48_000, 1.0, 0), F48, 0);
+        e.configure(d, h, stream("b", FMT));
         e.handle_discontinuity(d, h);
-        e.configure(d, h, stream("b", FMT), 2);
         e.set_output_stream_offset_us(1_000_000);
         feed_in(e, d, h, &sine(HZ, RATE, 3.0, 0), FMT, 1_000_000);
         assert!(h.log.iter().any(|l| l.starts_with("holding the ending")), "{:?}", h.log);
+        e.configure(d, h, stream("c", F48));
         e.handle_discontinuity(d, h);
-        e.configure(d, h, stream("c", F48), 3);
         e.set_output_stream_offset_us(4_000_000);
         feed_in(e, d, h, &sine(HZ, 48_000, secs, 0), F48, 4_000_000);
     }
@@ -2115,14 +2023,14 @@ mod tests {
 
     #[test]
     fn tempo_restored_after_beat_matched_mix() {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         into_the_mix(&mut e, &mut d, &mut h, 6.0);
         assert_own_pitch(&d, "after the mix and the ramp");
     }
 
     #[test]
     fn tempo_restored_after_seek_in_mix() {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         into_the_mix(&mut e, &mut d, &mut h, 0.5);
         e.flush(&mut h);
         feed_in(&mut e, &mut d, &mut h, &sine(HZ, 48_000, 3.0, 48_000 * 20), F48, 24_000_000);
@@ -2131,7 +2039,7 @@ mod tests {
 
     #[test]
     fn tempo_restored_after_seek_in_ramp() {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         // 0.5 s after the 2 s mix: inside the ramp.
         into_the_mix(&mut e, &mut d, &mut h, 2.5);
         e.flush(&mut h);
@@ -2141,21 +2049,21 @@ mod tests {
 
     #[test]
     fn tempo_restored_after_skip_in_mix() {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         into_the_mix(&mut e, &mut d, &mut h, 0.5);
         e.flush(&mut h);
-        e.configure(&mut d, &mut h, stream("d", F48), 4);
+        e.configure(&mut d, &mut h, stream("d", F48));
         feed_in(&mut e, &mut d, &mut h, &sine(HZ, 48_000, 3.0, 0), F48, 30_000_000);
         assert_own_pitch(&d, "the song skipped to");
         e.flush(&mut h);
-        e.configure(&mut d, &mut h, stream("c", F48), 5);
+        e.configure(&mut d, &mut h, stream("c", F48));
         feed_in(&mut e, &mut d, &mut h, &sine(HZ, 48_000, 3.0, 0), F48, 40_000_000);
         assert_own_pitch(&d, "the song skipped back to");
     }
 
     #[test]
     fn tempo_restored_after_pause_in_mix() {
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         into_the_mix(&mut e, &mut d, &mut h, 0.5);
         // Paused: only position queries, nothing flowing.
         for _ in 0..50 {
@@ -2164,25 +2072,5 @@ mod tests {
         }
         feed_in(&mut e, &mut d, &mut h, &sine(HZ, 48_000, 5.0, 24_000), F48, 4_500_000);
         assert_own_pitch(&d, "after a pause in the mix");
-    }
-
-    #[test]
-    fn tempo_restored_after_seek_in_mix_announced_first() {
-        // Our pipeline's order: the next song announced before the boundary.
-        let (mut e, mut d, mut h) = (TransitionEngine::<u32>::new(), Down::default(), Host_::default());
-        h.plans.insert("b".into(), beat_matched());
-        e.configure(&mut d, &mut h, stream("a", F48), 1);
-        feed_in(&mut e, &mut d, &mut h, &sine(HZ, 48_000, 1.0, 0), F48, 0);
-        e.configure(&mut d, &mut h, stream("b", FMT), 2);
-        e.handle_discontinuity(&mut d, &mut h);
-        e.set_output_stream_offset_us(1_000_000);
-        feed_in(&mut e, &mut d, &mut h, &sine(HZ, RATE, 3.0, 0), FMT, 1_000_000);
-        e.configure(&mut d, &mut h, stream("c", F48), 3);
-        e.handle_discontinuity(&mut d, &mut h);
-        e.set_output_stream_offset_us(4_000_000);
-        feed_in(&mut e, &mut d, &mut h, &sine(HZ, 48_000, 0.5, 0), F48, 4_000_000);
-        e.flush(&mut h);
-        feed_in(&mut e, &mut d, &mut h, &sine(HZ, 48_000, 3.0, 48_000 * 20), F48, 24_000_000);
-        assert_own_pitch(&d, "after a seek in the mix");
     }
 }

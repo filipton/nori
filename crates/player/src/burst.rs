@@ -95,13 +95,11 @@ impl<'a, D: Downstream> Fed<'a, D> {
 }
 
 impl<D: Downstream> Downstream for Fed<'_, D> {
-    type Config = D::Config;
-
-    fn configure(&mut self, config: &D::Config, format: Option<Format>) {
+    fn configure(&mut self, format: Format) {
         self.burst.restart();
-        self.burst.format = format;
+        self.burst.format = Some(format);
         self.position = None;
-        self.down.configure(config, format);
+        self.down.configure(format);
     }
 
     fn handle_buffer(&mut self, data: &[u8], from: usize, pts_us: i64) -> (bool, usize) {
@@ -163,8 +161,7 @@ mod tests {
     }
 
     impl Downstream for Track {
-        type Config = ();
-        fn configure(&mut self, _: &(), _: Option<Format>) {}
+        fn configure(&mut self, _: Format) {}
         fn handle_buffer(&mut self, data: &[u8], from: usize, _: i64) -> (bool, usize) {
             self.offers += 1;
             let room = FMT.bytes(self.cap_us - (self.written_us - self.played_us)).min(data.len() - from);
@@ -187,7 +184,7 @@ mod tests {
     #[test]
     fn fills_then_waits_for_low_mark() {
         let (mut t, mut b) = (Track { cap_us: BUFFER_US, written_us: 0, played_us: 0, offers: 0 }, Burst::default());
-        Fed::new(&mut t, &mut b, 0).configure(&(), Some(FMT));
+        Fed::new(&mut t, &mut b, 0).configure(FMT);
         let mut now = 0;
         while offer(&mut t, &mut b, now) {}
         assert!(t.written_us >= BUFFER_US - 30_000, "filled: {}", t.written_us);
@@ -213,7 +210,7 @@ mod tests {
     #[test]
     fn clock_jump_is_not_counted_as_played() {
         let (mut t, mut b) = (Track { cap_us: BUFFER_US, written_us: 0, played_us: 0, offers: 0 }, Burst::default());
-        Fed::new(&mut t, &mut b, 0).configure(&(), Some(FMT));
+        Fed::new(&mut t, &mut b, 0).configure(FMT);
         while offer(&mut t, &mut b, 0) {}
         offer(&mut t, &mut b, 10);
         // The clock leaps 20 s in 100 ms (a mix in the next song's time): only 100 ms counts as played.

@@ -87,7 +87,7 @@ fn steady_in(encoding: Encoding, device_rate: u32, sound: Sound, speed: f32, ski
     let feed = Arc::new(parking_lot::Mutex::new(None));
     let settings = ChainSettings { sound, speed, skip_silence, ..ChainSettings::default() };
     let mut sink = Sink::new(nori_player::burst::BUFFER_US, settings, RingTrack::new(Box::new(Hand(feed.clone(), device_rate))));
-    sink.configure(&1, Some(fmt));
+    sink.configure(fmt);
     sink.play();
     let data = tone(1152, encoding);
     let mut out = vec![0f32; 2048 * 2];

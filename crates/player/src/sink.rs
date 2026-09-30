@@ -234,8 +234,8 @@ impl Runner {
 /// Allocation-free once its buffers have grown.
 pub struct Sink<T: Track> {
     pub format: Option<Format>,
-    /// Every config token received, in order.
-    pub configs: Vec<u32>,
+    /// Outputs opened.
+    pub opens: u32,
     /// Format changes after the first open.
     pub rebuilds: usize,
     /// Buffer depth.
@@ -286,7 +286,7 @@ impl<T: Track> Sink<T> {
     pub fn new(capacity_us: i64, settings: ChainSettings, track: T) -> Sink<T> {
         Sink {
             format: None,
-            configs: Vec::new(),
+            opens: 0,
             rebuilds: 0,
             capacity_us,
             settings,
@@ -319,7 +319,7 @@ impl<T: Track> Sink<T> {
     /// Back to no format over the same track: the next configure opens it and builds the chain.
     pub fn reset(&mut self) {
         self.format = None;
-        self.configs.clear();
+        self.opens = 0;
         self.rebuilds = 0;
         self.runner.chain = Processors::default();
         self.flush();
@@ -782,11 +782,8 @@ impl<T: Track> Sink<T> {
 }
 
 impl<T: Track> Downstream for Sink<T> {
-    type Config = u32;
-
-    fn configure(&mut self, config: &u32, format: Option<Format>) {
-        self.configs.push(*config);
-        let f = format.expect("the player plays PCM");
+    fn configure(&mut self, f: Format) {
+        self.opens += 1;
         if self.format.is_some() && self.track.must_reopen(f) {
             self.reopen = Some(f);
             return;
@@ -899,7 +896,7 @@ mod tests {
     #[test]
     fn cut_within_input_still_to_run_again() {
         let mut sink = Sink::new(10_000_000, ChainSettings { keep_eq: true, ..ChainSettings::default() }, AudioTrack::new());
-        sink.configure(&1, Some(F));
+        sink.configure(F);
         let (a, b, c) = (ramp(0, 3000), ramp(3000, 3000), ramp(6000, 3000));
         for (k, buf) in [&a, &b, &c].into_iter().enumerate() {
             assert!(sink.handle_buffer(buf, 0, k as i64 * 3_000_000).0);
