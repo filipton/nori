@@ -29,6 +29,8 @@ pub struct Client {
     pub(crate) motion: parking_lot::Mutex<crate::motion::Motion>,
     /// A replay of the queued writes is running; a second one would send them twice.
     replaying: AtomicBool,
+    /// The car's last folder read, by id, for its later pages (car.rs).
+    pub(crate) car_folder: parking_lot::Mutex<Option<(String, crate::car::BrowsePage)>>,
 }
 
 /// The newest client, for code without a handle (`stream::resolve_now`, the beat model download).
@@ -105,7 +107,7 @@ impl Client {
 impl Client {
     #[cfg_attr(feature = "ffi", uniffi::constructor)]
     pub fn new(core: Arc<Core>, transport: Arc<dyn Transport>) -> Arc<Self> {
-        let client = Arc::new(Client { core, transport, profile: RwLock::new(NetProfile::default()), second: AtomicBool::new(false), lyrics: Default::default(), motion: Default::default(), replaying: AtomicBool::new(false) });
+        let client = Arc::new(Client { core, transport, profile: RwLock::new(NetProfile::default()), second: AtomicBool::new(false), lyrics: Default::default(), motion: Default::default(), replaying: AtomicBool::new(false), car_folder: Default::default() });
         *ACTIVE_CLIENT.lock() = Arc::downgrade(&client);
         client
     }
