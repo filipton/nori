@@ -237,7 +237,9 @@ class PlaybackService : MediaLibraryService() {
         sessionPlayer = controls
         session = MediaLibrarySession.Builder(this, controls, Callback())
             // Notification and lock-screen art: same connection pool as everything else, last bitmap kept, decoded no larger than needed.
-            .setBitmapLoader(CacheBitmapLoader(DataSourceBitmapLoader.Builder(this).setDataSourceFactory(nori.sources.network).setMaximumOutputDimension(512).build()))
+            // The queue's covers are the app's own content addresses (CarArt), which a car can open too; the
+            // server's are fetched by the provider through the same pool.
+            .setBitmapLoader(CacheBitmapLoader(DataSourceBitmapLoader.Builder(this).setDataSourceFactory(androidx.media3.datasource.DefaultDataSource.Factory(this, nori.sources.network)).setMaximumOutputDimension(512).build()))
             // Controllers extrapolate the playhead themselves; a broadcast every few seconds is a wake-up for nothing.
             .setPeriodicPositionUpdateEnabled(false)
             // What a long press on a row offers in the car (CarTree).
@@ -347,7 +349,7 @@ class PlaybackService : MediaLibraryService() {
 
         override fun onShuffleModeEnabledChanged(on: Boolean) = refreshButtons()
 
-        override fun onRepeatModeChanged(repeatMode: Int) = refreshCarButtons()
+        override fun onRepeatModeChanged(repeatMode: Int) = refreshButtons()
 
         override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
             if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) {
@@ -388,8 +390,9 @@ class PlaybackService : MediaLibraryService() {
         player.play()
     }
 
-    /** What the heart and shuffle buttons last showed, so an unrelated change does not rebuild the notification. */
+    /** What the heart, shuffle and repeat buttons last showed, so an unrelated change does not rebuild the notification. */
     private var buttonsShown: dev.nori.music.ffi.SessionButtons? = null
+    private var repeatShown = -1
 
     private fun currentStarred(item: MediaItem): Boolean =
         nori.library.isStarred(StarKind.SONG, item.mediaId, dev.nori.music.ffi.queue.queueFlags(item.mediaId) and 2u != 0u)
@@ -403,9 +406,10 @@ class PlaybackService : MediaLibraryService() {
         if (!::session.isInitialized) return
         val item = player.currentMediaItem
         val b = dev.nori.music.ffi.sessionButtonsNow(item != null && currentStarred(item), player.shuffleModeEnabled)
-        if (b == buttonsShown) return
+        if (b == buttonsShown && player.repeatMode == repeatShown) return
         buttonsShown = b
-        val buttons = ArrayList<CommandButton>(2)
+        repeatShown = player.repeatMode
+        val buttons = ArrayList<CommandButton>(4)
         if (b.heart) {
             buttons += CommandButton.Builder(if (b.starred) CommandButton.ICON_HEART_FILLED else CommandButton.ICON_HEART_UNFILLED)
                 .setDisplayName(getString(if (b.starred) R.string.session_remove_favourite else R.string.session_add_favourite))
@@ -416,42 +420,18 @@ class PlaybackService : MediaLibraryService() {
             .setDisplayName(getString(if (b.shuffling) R.string.session_shuffle_off else R.string.session_shuffle_on))
             .setSessionCommand(SessionCommand(CMD_SHUFFLE, Bundle.EMPTY))
             .setSlots(CommandButton.SLOT_FORWARD_SECONDARY, CommandButton.SLOT_OVERFLOW).build()
-        session.setMediaButtonPreferences(buttons)
-        refreshCarButtons()
-    }
-
-    private fun isCar(c: MediaSession.ControllerInfo) = session.isAutoCompanionController(c) || session.isAutomotiveController(c)
-
-    /**
-     * The car's now-playing buttons: the heart and shuffle, then repeat and a radio from the song, which
-     * the phone's notification has no room for. Only the car's controllers get them.
-     */
-    private fun refreshCarButtons() {
-        if (!::session.isInitialized) return
-        val cars = session.connectedControllers.filter(::isCar)
-        if (cars.isEmpty()) return
-        val buttons = carButtons()
-        cars.forEach { session.setMediaButtonPreferences(it, buttons) }
-    }
-
-    private fun carButtons(): List<CommandButton> {
-        val b = buttonsShown ?: dev.nori.music.ffi.sessionButtonsNow(false, player.shuffleModeEnabled)
-        val out = ArrayList<CommandButton>(4)
-        if (b.heart) out += CommandButton.Builder(if (b.starred) CommandButton.ICON_HEART_FILLED else CommandButton.ICON_HEART_UNFILLED)
-            .setDisplayName(getString(if (b.starred) R.string.session_remove_favourite else R.string.session_add_favourite))
-            .setSessionCommand(SessionCommand(CMD_FAVOURITE, Bundle.EMPTY)).build()
-        out += CommandButton.Builder(if (b.shuffling) CommandButton.ICON_SHUFFLE_ON else CommandButton.ICON_SHUFFLE_OFF)
-            .setDisplayName(getString(if (b.shuffling) R.string.session_shuffle_off else R.string.session_shuffle_on))
-            .setSessionCommand(SessionCommand(CMD_SHUFFLE, Bundle.EMPTY)).build()
+        // Then repeat and a radio from a song of the library, in the overflow: a car's now playing lists them
+        // after the heart and shuffle; the phone's media controls, which show two, keep those.
         val (icon, said) = when (player.repeatMode) {
             Player.REPEAT_MODE_ALL -> CommandButton.ICON_REPEAT_ALL to R.string.car_repeat_all
             Player.REPEAT_MODE_ONE -> CommandButton.ICON_REPEAT_ONE to R.string.car_repeat_one
             else -> CommandButton.ICON_REPEAT_OFF to R.string.car_repeat_off
         }
-        out += CommandButton.Builder(icon).setDisplayName(getString(said)).setSessionCommand(SessionCommand(CMD_REPEAT, Bundle.EMPTY)).build()
-        // A radio from a song of the library, as the heart shows for one.
-        if (b.heart) out += CommandButton.Builder(CommandButton.ICON_RADIO).setDisplayName(getString(R.string.car_start_radio)).setSessionCommand(SessionCommand(CMD_RADIO, Bundle.EMPTY)).build()
-        return out
+        buttons += CommandButton.Builder(icon).setDisplayName(getString(said)).setSessionCommand(SessionCommand(CMD_REPEAT, Bundle.EMPTY))
+            .setSlots(CommandButton.SLOT_OVERFLOW).build()
+        if (b.heart) buttons += CommandButton.Builder(CommandButton.ICON_RADIO).setDisplayName(getString(R.string.car_start_radio))
+            .setSessionCommand(SessionCommand(CMD_RADIO, Bundle.EMPTY)).setSlots(CommandButton.SLOT_OVERFLOW).build()
+        session.setMediaButtonPreferences(buttons)
     }
 
     /** Pause once the song playing ends (the sleep timer's "end of this song"). */
@@ -463,7 +443,7 @@ class PlaybackService : MediaLibraryService() {
         val m = player.currentMediaItem?.mediaMetadata
         sendBroadcast(android.content.Intent(ACTION_STATE).setPackage(packageName)
             .putExtra(EXTRA_TITLE, m?.title?.toString()).putExtra(EXTRA_ARTIST, m?.artist?.toString()).putExtra(EXTRA_PLAYING, player.isPlaying)
-            .putExtra(EXTRA_ID, player.currentMediaItem?.mediaId).putExtra(EXTRA_COVER, m?.artworkUri?.toString())
+            .putExtra(EXTRA_ID, player.currentMediaItem?.mediaId).putExtra(EXTRA_COVER, m?.artworkUri?.let { a -> CarArt.coverOf(a)?.let { (id, size) -> nori.library.coverUrl(id, size) } ?: a.toString() })
             .putExtra(EXTRA_POSITION, player.currentPosition).putExtra(EXTRA_AT, android.os.SystemClock.elapsedRealtime())
             .putExtra(EXTRA_SPEED, player.playbackParameters.speed))
     }
@@ -675,10 +655,10 @@ class PlaybackService : MediaLibraryService() {
     }
 
     /** Songs as the player's items, handed to the core in one call (see MediaItems.toMediaItems). */
-    private fun items(songs: List<Song>): List<MediaItem> = songs.toMediaItems { nori.library.coverUrl(it.coverArt, NOTIFICATION_ART) }
+    private fun items(songs: List<Song>): List<MediaItem> = songs.toMediaItems { CarArt.cover(this, it.coverArt, NOTIFICATION_ART)?.toString() }
     private fun item(s: Song): MediaItem = items(listOf(s)).first()
     /** Songs the core made for the queue and already keeps (MediaItems.heldMediaItems): nothing handed back. */
-    private fun held(songs: List<Song>): List<MediaItem> = songs.heldMediaItems { nori.library.coverUrl(it.coverArt, NOTIFICATION_ART) }
+    private fun held(songs: List<Song>): List<MediaItem> = songs.heldMediaItems { CarArt.cover(this, it.coverArt, NOTIFICATION_ART)?.toString() }
 
     // ---- session: custom commands, Android Auto browsing, voice search ----
 
@@ -703,10 +683,6 @@ class PlaybackService : MediaLibraryService() {
                 .add(SessionCommand(CarTree.CMD_ITEM_NEXT, Bundle.EMPTY)).add(SessionCommand(CarTree.CMD_ITEM_QUEUE, Bundle.EMPTY))
                 .add(SessionCommand(CarTree.CMD_ITEM_FAVOURITE, Bundle.EMPTY)).add(SessionCommand(CarTree.CMD_ITEM_DOWNLOAD, Bundle.EMPTY)).build()
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session).setAvailableSessionCommands(commands).build()
-        }
-
-        override fun onPostConnect(session: MediaSession, controller: MediaSession.ControllerInfo) {
-            if (isCar(controller)) session.setMediaButtonPreferences(controller, carButtons())
         }
 
         override fun onCustomCommand(session: MediaSession, controller: MediaSession.ControllerInfo, command: SessionCommand, args: Bundle): ListenableFuture<SessionResult> {
