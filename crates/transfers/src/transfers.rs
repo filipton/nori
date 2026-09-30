@@ -2202,3 +2202,7 @@ mod tests {
         assert_eq!(c.next(-1.0, 22_000), -1);
     }
 }
+
+#[cfg(test)]
+#[path = "diff.rs"]
+mod diff;
