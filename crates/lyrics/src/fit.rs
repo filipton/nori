@@ -38,7 +38,7 @@ fn unspaced(c: char) -> bool {
 }
 
 /// The distinct words of a set of lyrics.
-fn words(l: &Lyrics) -> HashSet<String> {
+pub(crate) fn words(l: &Lyrics) -> HashSet<String> {
     let mut out = HashSet::new();
     for line in &l.lines {
         for w in norm(&line.text).split(' ').filter(|w| !w.is_empty()) {
@@ -73,11 +73,15 @@ pub fn plausible(l: &Lyrics, song: &Song) -> bool {
 
 /// Whether `a` and `b` are the same song's words: each has at least half its words in the other.
 pub fn agree(a: &Lyrics, b: &Lyrics) -> bool {
-    let (x, y) = (words(a), words(b));
+    same_words(&words(a), &words(b))
+}
+
+/// [`agree`] over the [`words`] of each.
+pub(crate) fn same_words(x: &HashSet<String>, y: &HashSet<String>) -> bool {
     if x.is_empty() || y.is_empty() {
         return false;
     }
-    let shared = x.intersection(&y).count() as f64;
+    let shared = x.intersection(y).count() as f64;
     shared >= x.len() as f64 * SHARED_WORDS && shared >= y.len() as f64 * SHARED_WORDS
 }
 
