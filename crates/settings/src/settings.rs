@@ -2156,6 +2156,11 @@ mod tests {
         assert!(!set_by_name(&StoredPrefs { mono: true, ..p.clone() }, "mono", "yes").unwrap().prefs.mono);
         assert_eq!(set_by_name(&p, "parallelDownloads", "99").unwrap().prefs.parallel_downloads, 10);
         assert_eq!(set_by_name(&p, "coversAhead", "x").unwrap().prefs.covers_ahead, 3, "unreadable keeps the value");
+        for not_a_number in ["NaN", "inf", "-infinity"] {
+            let held = set_by_name(&p, "compThresholdDb", not_a_number).unwrap().prefs;
+            assert_eq!(held.comp_threshold_db, p.comp_threshold_db, "{not_a_number}");
+            assert_eq!(set_by_name(&p, "crossfeedDb", not_a_number).unwrap().prefs.crossfeed_db, p.crossfeed_db, "{not_a_number}");
+        }
         assert_eq!(set_by_name(&p, "cacheMb", "10").unwrap().prefs.cache_mb, 256);
         assert_eq!(set_by_name(&p, "speed", "9").unwrap().prefs.speed, 4.0);
         assert_eq!(set_by_name(&p, "fadeMs", "-5").unwrap().prefs.fade_ms, 0);

@@ -44,7 +44,7 @@ scalar!(
     bool => Flag, |v: &str| Some(v.eq_ignore_ascii_case("true") || v == "1"),
     i32 => Number, |v: &str| v.trim().parse().ok(),
     i64 => Big, |v: &str| v.trim().parse().ok(),
-    f32 => Decimal, |v: &str| v.trim().parse().ok(),
+    f32 => Decimal, |v: &str| v.trim().parse().ok().filter(|f: &f32| f.is_finite()),
     String => Text, |v: &str| Some(v.trim().to_string())
 );
 
