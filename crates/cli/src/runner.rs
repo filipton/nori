@@ -281,10 +281,11 @@ impl Runner {
 
     fn take(&mut self, app: &mut App, m: Msg) {
         crate::term::debug!("took {}", m.brief());
+        let Some(m) = current(self.session.as_ref().map(|s| s.id), m) else { return };
         match &m {
             Msg::Engine(e @ (Event::Song { .. } | Event::State(_) | Event::Looped { .. } | Event::Bridge { .. })) => {
                 if let Some(s) = &self.session {
-                    s.desktop_changed();
+                    s.mpris_changed();
                     s.followed(e);
                 }
             }
@@ -445,7 +446,7 @@ impl Runner {
             Cmd::Load(req) => s.load(req),
             Cmd::Play { songs, start, shuffle, from } => s.play(songs, start, shuffle, from),
             Cmd::PlayFetch(what, shuffle) => s.play_later(what, shuffle),
-            Cmd::Enqueue(songs, next) => s.enqueue(songs, next),
+            Cmd::Enqueue(songs, next) => s.enqueue(songs, next, None),
             Cmd::EnqueueFetch(what, next) => s.enqueue_later(what, next),
             Cmd::Toggle => {
                 // Idle with a restored queue: start it where it was.
@@ -462,8 +463,7 @@ impl Runner {
             }
             Cmd::Seek(ms) => s.engine.seek(ms),
             Cmd::Volume(v) => {
-                s.volume.set(v);
-                s.volume_changed(v);
+                s.set_volume(v);
                 own::keep(own::VOLUME, v.to_string());
                 app.volume = v;
                 app.settings.invalidate();
@@ -514,7 +514,6 @@ impl Runner {
                 app.search.view = Some(v);
             }
             Cmd::SearchServer(q) => {
-                let _ = s.core.search_remember_recent(q.clone());
                 s.search_server(q);
             }
             Cmd::Lyrics(id) => s.lyrics(id),
@@ -558,5 +557,28 @@ fn sound_edited(s: &Session, app: &mut App, effect: Option<u32>) {
 fn prefs_changed(app: &mut App) {
     if let Some(p) = settings_store::settings_current() {
         app.prefs_changed(p);
+    }
+}
+
+/// `m` as the open session (`open`) sent it; None for what an earlier session left in flight.
+fn current(open: Option<u64>, m: Msg) -> Option<Msg> {
+    match m {
+        Msg::From(id, m) if Some(id) == open => Some(*m),
+        Msg::From(..) => None,
+        m => Some(m),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn earlier_session_messages_are_dropped() {
+        let note = |id| Msg::From(id, Box::new(Msg::Note { text: "x".into(), error: false }));
+        assert!(matches!(current(Some(2), note(2)), Some(Msg::Note { .. })));
+        assert!(current(Some(2), note(1)).is_none());
+        assert!(current(None, note(1)).is_none());
+        assert!(matches!(current(Some(2), Msg::Resize), Some(Msg::Resize)));
     }
 }

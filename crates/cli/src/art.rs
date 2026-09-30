@@ -145,7 +145,7 @@ mod tests {
             p.copy_from_slice(&[180, 20, 30, 255]);
         }
         let image = Image { width: 32, height: 32, pixels: px.into_boxed_slice() };
-        let c = crate::backend::derive(&image);
+        let c = nori_host::derive(&image);
         let t = Theme::from_cover(&c);
         let Some(Color::Rgb(r, g, b)) = t.page else { panic!("a page colour") };
         assert!(r > g && r > b, "the page is the record's red, darkened: {r} {g} {b}");
