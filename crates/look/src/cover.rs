@@ -95,15 +95,6 @@ fn ink_page(hsl: [f32; 3]) -> u32 {
     hsl_to_color([hsl[0], hsl[1].min(0.35), hsl[2].clamp(0.03, 0.06)])
 }
 
-/// Writes the cache key for [`derive`]'s result into `out`: `"<url>|<dark>|<amoled>"`. Twin of
-/// `paletteKey` in CoverColors.kt.
-pub fn palette_key(out: &mut String, url: &str, dark: bool, amoled: bool) {
-    out.clear();
-    out.push_str(url);
-    out.push_str(if dark { "|true" } else { "|false" });
-    out.push_str(if amoled { "|true" } else { "|false" });
-}
-
 /// Derives page colours from `w` x `h` ARGB pixels for the given theme.
 pub fn derive(pixels: &[u32], w: usize, h: usize, dark: bool, amoled: bool) -> CoverColours {
     let foot = bottom_average(pixels, w, h);

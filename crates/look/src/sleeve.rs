@@ -62,17 +62,6 @@ pub fn band_matrix(strength: f32, kr: f32, kg: f32, kb: f32) -> [f32; 20] {
     m
 }
 
-/// Cache key for a [`band_matrix`]: each input quantised to 1/256 and packed in 10 bits. -1 means no
-/// tint (`strength` <= 0). Called per frame; must not allocate. Twin of `BandEffect.of` in
-/// PlayerScreen.kt (kept in Kotlin: draw-phase JNI calls cost more than the key).
-pub fn band_key(strength: f32, kr: f32, kg: f32, kb: f32) -> i64 {
-    if strength <= 0.0 {
-        return -1;
-    }
-    let q = |x: f32| ((x * 256.0) as i64).clamp(0, 1023);
-    (q(strength) << 30) | (q(kr) << 20) | (q(kg) << 10) | q(kb)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
