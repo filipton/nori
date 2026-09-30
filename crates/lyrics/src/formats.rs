@@ -93,26 +93,7 @@ pub(crate) fn finish(mut lines: Vec<Timed>) -> Lyrics {
     Lyrics { synced: !out.is_empty(), word_timed, lines: out, ..Default::default() }
 }
 
-/// How finely lyrics are timed, worst to best.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Timing {
-    Empty,
-    Untimed,
-    Lines,
-    Words,
-}
-
-impl Timing {
-    /// The words for it in the log.
-    pub fn words(self) -> &'static str {
-        match self {
-            Timing::Words => "word-timed",
-            Timing::Lines => "line-timed",
-            Timing::Untimed => "not timed",
-            Timing::Empty => "empty",
-        }
-    }
-}
+pub use nori_settings::lyrics_sources::Timing;
 
 pub fn timing(l: &Lyrics) -> Timing {
     match (l.lines.is_empty(), l.synced, l.word_timed) {

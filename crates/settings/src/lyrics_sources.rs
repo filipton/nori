@@ -26,6 +26,27 @@ pub enum LyricsOrigin {
     Genius,
 }
 
+/// How finely lyrics are timed, worst to best.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Timing {
+    Empty,
+    Untimed,
+    Lines,
+    Words,
+}
+
+impl Timing {
+    /// The words for it in the log.
+    pub fn words(self) -> &'static str {
+        match self {
+            Timing::Words => "word-timed",
+            Timing::Lines => "line-timed",
+            Timing::Untimed => "not timed",
+            Timing::Empty => "empty",
+        }
+    }
+}
+
 /// A third-party lyrics service, asked after the server's own lyrics. Declared in default rank order,
 /// best first: word-timed, then line-timed from LRCLIB on, untimed last (docs/features.md, "Lyrics
 /// sources"). Rankings and switches are stored by [`name`](Self::name), so this order can change.
@@ -119,12 +140,12 @@ impl LyricsService {
         }
     }
 
-    /// The finest timing it can answer with: 3 word, 2 line, 1 untimed.
-    pub fn best(self) -> u8 {
+    /// The finest timing it can answer with.
+    pub fn best(self) -> Timing {
         match self {
-            LyricsService::YoutubeCaptions | LyricsService::Megalobiz => 2,
-            LyricsService::YoutubeMusic | LyricsService::Genius => 1,
-            _ => 3,
+            LyricsService::YoutubeCaptions | LyricsService::Megalobiz => Timing::Lines,
+            LyricsService::YoutubeMusic | LyricsService::Genius => Timing::Untimed,
+            _ => Timing::Words,
         }
     }
 
@@ -293,10 +314,10 @@ mod tests {
         let rank = |s: LyricsService| order.iter().position(|o| *o == s).unwrap();
         // Word timing first, LRCLIB the first of those that time lines, untimed words last.
         let lrclib = rank(LyricsService::Lrclib);
-        assert!(order[..lrclib].iter().all(|s| s.best() == 3), "only services that time words rank above LRCLIB");
+        assert!(order[..lrclib].iter().all(|s| s.best() == Timing::Words), "only services that time words rank above LRCLIB");
         assert!(order[lrclib..].windows(2).all(|w| w[0].best() >= w[1].best() || w[0] == LyricsService::Lrclib), "then by line, then untimed");
         assert_eq!(order[14..], [LyricsService::YoutubeMusic, LyricsService::Genius]);
-        assert!(LyricsService::ALL.into_iter().filter(|s| s.first_wave()).all(|s| s.best() == 3 || s == LyricsService::Lrclib));
+        assert!(LyricsService::ALL.into_iter().filter(|s| s.first_wave()).all(|s| s.best() == Timing::Words || s == LyricsService::Lrclib));
         assert!(LyricsService::ALL.into_iter().all(|s| (0.0..=1.0).contains(&s.prior())));
     }
 

@@ -73,8 +73,6 @@ pub fn value_of(p: &StoredPrefs, name: &str) -> Option<String> {
 pub struct LyricsSource {
     pub id: String,
     pub on: bool,
-    /// Finest timing: 3 word, 2 line, 1 untimed.
-    pub timing: u8,
     /// Asked only with the PaxSenix key.
     pub needs_key: bool,
 }
@@ -153,7 +151,7 @@ pub fn state(p: &StoredPrefs, out: Output) -> SettingsState {
     let on = lyrics_sources::switched_on(p);
     let lyrics_sources = lyrics_sources::complete_order(&p.lyrics_order)
         .into_iter()
-        .map(|s| LyricsSource { id: s.name().into(), on: on.contains(&s), timing: s.best(), needs_key: s.needs_key() })
+        .map(|s| LyricsSource { id: s.name().into(), on: on.contains(&s), needs_key: s.needs_key() })
         .collect();
     SettingsState {
         values: specs().into_iter().filter_map(|s| Some((s.name.clone(), value_of(p, &s.name)?))).collect(),
@@ -206,7 +204,12 @@ pub fn setting_set(name: String, value: String) -> Option<SettingChange> {
 /// Whether the interface is dark for the theme setting and the system's mode.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn theme_is_dark(theme: crate::settings::ThemeMode, system_dark: bool) -> bool {
-    nori_look::theme::is_dark(theme as i32, system_dark)
+    use crate::settings::ThemeMode;
+    match theme {
+        ThemeMode::System => system_dark,
+        ThemeMode::Light => false,
+        ThemeMode::Dark => true,
+    }
 }
 
 /// Whether the status bar is hidden; `wide` is sideways.
@@ -358,7 +361,7 @@ mod tests {
         assert_eq!(on, order, "every service on");
         let off = set_by_name(&d, "lyricsService:BINILYRICS", "false").unwrap().prefs;
         let s2 = state(&off, Output::default());
-        assert_eq!(s2.lyrics_sources[1], LyricsSource { id: "BINILYRICS".into(), on: false, timing: 3, needs_key: false }, "switched off where it stands");
+        assert_eq!(s2.lyrics_sources[1], LyricsSource { id: "BINILYRICS".into(), on: false, needs_key: false }, "switched off where it stands");
         assert!(s.lyrics_sources.iter().any(|l| l.needs_key));
         assert_eq!(s.beat_model == BeatModel::Unavailable, !beats::AVAILABLE);
         assert_eq!(s.beat_model_mb, beat_model::SIZE_MB);

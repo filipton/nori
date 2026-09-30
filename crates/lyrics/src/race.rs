@@ -109,12 +109,7 @@ pub struct Entry {
 
 impl Entry {
     pub fn of(s: LyricsService) -> Self {
-        let best = match s.best() {
-            3 => Timing::Words,
-            2 => Timing::Lines,
-            _ => Timing::Untimed,
-        };
-        Entry { best, prior: s.prior(), first_wave: s.first_wave() }
+        Entry { best: s.best(), prior: s.prior(), first_wave: s.first_wave() }
     }
 }
 

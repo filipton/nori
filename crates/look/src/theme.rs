@@ -42,20 +42,6 @@ pub fn seeded(seed: u32, dark: bool) -> [u32; 11] {
 /// Accent choices when not using wallpaper colours, in display order; the first is the default.
 pub const ACCENTS: [u32; 8] = [0xFF67_50A4, 0xFF1E_88E5, 0xFF00_897B, 0xFF43_A047, 0xFFF4_511E, 0xFFE5_3935, 0xFFD8_1B60, 0xFF8E_24AA];
 
-/// Stored theme setting values.
-pub const THEME_SYSTEM: i32 = 0;
-pub const THEME_LIGHT: i32 = 1;
-pub const THEME_DARK: i32 = 2;
-
-/// Whether the UI is dark; unknown values follow the system.
-pub fn is_dark(theme: i32, system_dark: bool) -> bool {
-    match theme {
-        THEME_DARK => true,
-        THEME_LIGHT => false,
-        _ => system_dark,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,12 +54,5 @@ mod tests {
             assert!(calculate_contrast(t[0], t[1]) >= 4.5, "primary / on primary, dark={dark}");
             assert!(calculate_contrast(t[10], t[9]) >= 3.0, "on surface variant, dark={dark}");
         }
-    }
-
-    #[test]
-    fn is_dark_follows_setting_or_system() {
-        assert!(is_dark(THEME_SYSTEM, true) && !is_dark(THEME_SYSTEM, false));
-        assert!(is_dark(THEME_DARK, false) && !is_dark(THEME_LIGHT, true));
-        assert!(is_dark(9, true) && !is_dark(9, false));
     }
 }
