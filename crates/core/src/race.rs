@@ -183,10 +183,6 @@ impl Client {
         }
     }
 
-    /// Resolves once none of `ids` is still processing (or its time is up).
-    pub async fn downloads_processed(&self, ids: Vec<String>) {
-        crate::transfers::processed(&ids).await
-    }
 }
 
 #[cfg(test)]

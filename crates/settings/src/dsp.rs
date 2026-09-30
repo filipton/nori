@@ -47,12 +47,6 @@ pub fn graphic_follow(sliders: Vec<f32>, target: Vec<f32>) -> Option<GraphicFoll
     Some(GraphicFollow { rms_db: rms as f32, max_db: max as f32 })
 }
 
-/// The correction target's frequency grid, Hz.
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn graphic_target_grid() -> Vec<f32> {
-    nori_player::graphic::target_grid().into_iter().map(|f| f as f32).collect()
-}
-
 /// One band of the graphic equalizer.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]

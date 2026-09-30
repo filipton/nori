@@ -365,7 +365,7 @@ pub struct Tracker {
     info: HashMap<String, Info>,
     /// Songs being analysed as their bytes arrive.
     analysing: HashSet<String>,
-    /// Waiters on mark changes ([`processed`], [`download_marks_moved`]), woken when `wake` is set.
+    /// Waiters on mark changes ([`download_marks_moved`]), woken when `wake` is set.
     wakers: Vec<Waker>,
     wake: bool,
     download_kbps: i32,
@@ -1020,21 +1020,6 @@ pub fn want_beats(ids: &[String], on: bool) {
 /// Whether the beat model reads download `id` once saved.
 pub fn wants_beats(id: &str) -> bool {
     with(|t| t.beats_wanted.contains(id))
-}
-
-/// Resolves once none of `ids` is processing.
-pub async fn processed(ids: &[String]) {
-    std::future::poll_fn(|cx| {
-        with(|t| {
-            if ids.iter().any(|id| matches!(t.marks.get(id), Some((Phase::Processing { .. }, _)))) {
-                t.wakers.push(cx.waker().clone());
-                Poll::Pending
-            } else {
-                Poll::Ready(())
-            }
-        })
-    })
-    .await
 }
 
 /// `id` left the queue for good. Returns flags as [`followed`].
@@ -1864,17 +1849,6 @@ mod tests {
         assert_eq!(phase(&t, "e"), None);
     }
 
-    #[test]
-    fn processed_wakes_when_processing_ends() {
-        use std::future::Future;
-        followed("pw-a", COMPLETED, 0);
-        let ids = vec!["pw-a".to_string()];
-        let mut waiting = std::pin::pin!(processed(&ids));
-        let mut cx = std::task::Context::from_waker(Waker::noop());
-        assert!(waiting.as_mut().poll(&mut cx).is_pending());
-        assert!(work_done("pw-a", Work::Lyrics));
-        assert!(waiting.as_mut().poll(&mut cx).is_ready());
-    }
     #[test]
     fn needs_rules() {
         let base = Saved { analysable: true, ..Saved::default() };

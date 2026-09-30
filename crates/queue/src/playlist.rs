@@ -295,11 +295,6 @@ pub fn playlist_skips(index: usize) -> bool {
     nori_player::queue::arrival(true, skip_explicit, explicit, has_next, false) == Onto::Skip
 }
 
-/// Songs after the current one in play order, ignoring repeat.
-pub fn playlist_after() -> u32 {
-    with(|p| p.songs_after() as u32)
-}
-
 /// Up to `n` upcoming ids in play order, the current one first.
 pub fn playlist_upcoming(n: u32) -> Vec<String> {
     with(|p| p.upcoming().take(n as usize).map(|i| p.ids()[i].clone()).collect())
