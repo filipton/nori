@@ -79,6 +79,15 @@ pub struct Playlist {
     taken: Option<Taken>,
 }
 
+/// Moves `v[from..to]` to start at `at` (an index once they are taken out).
+fn move_within<T>(v: &mut [T], from: usize, to: usize, at: usize) {
+    if at < from {
+        v[at..to].rotate_right(to - from);
+    } else {
+        v[from..at + to - from].rotate_left(to - from);
+    }
+}
+
 impl Playlist {
     pub const fn new() -> Self {
         Playlist {
@@ -453,27 +462,17 @@ impl Playlist {
         if from >= to || from == new_index {
             return;
         }
-        let count = to - from;
-        let new_index = new_index.min(n - count);
-        // Old index -> new index.
-        let mut map: Vec<usize> = (0..n).collect();
+        let new_index = new_index.min(n - (to - from));
         let mut list: Vec<usize> = (0..n).collect();
-        let moved: Vec<usize> = list.drain(from..to).collect();
-        list.splice(new_index..new_index, moved);
+        move_within(&mut list, from, to, new_index);
+        move_within(&mut self.ids, from, to, new_index);
+        move_within(&mut self.hand, from, to, new_index);
+        move_within(&mut self.runs, from, to, new_index);
+        move_within(&mut self.seqs, from, to, new_index);
+        // Old index -> new index.
+        let mut map = vec![0; n];
         for (new, &old) in list.iter().enumerate() {
             map[old] = new;
-        }
-        let ids = std::mem::take(&mut self.ids);
-        let hand = std::mem::take(&mut self.hand);
-        let runs = std::mem::take(&mut self.runs);
-        let seqs = std::mem::take(&mut self.seqs);
-        let mut slots: Vec<Option<(((String, Hand), u32), u64)>> = ids.into_iter().zip(hand).zip(runs).zip(seqs).map(Some).collect();
-        for &old in &list {
-            let (((id, h), r), s) = slots[old].take().expect("each index moves once");
-            self.ids.push(id);
-            self.hand.push(h);
-            self.runs.push(r);
-            self.seqs.push(s);
         }
         self.list_rev += 1;
         self.cur = self.cur.map(|c| map[c]);
@@ -829,6 +828,10 @@ mod tests {
         p.move_range(3, 4, 0);
         assert_eq!(list(&p), ["d", "b", "c", "a"]);
         assert_eq!(p.current(), Some(3));
+        p.move_range(0, 2, 1);
+        assert_eq!((list(&p), p.current()), (vec!["c", "d", "b", "a"], Some(3)));
+        p.move_range(2, 4, 0);
+        assert_eq!((list(&p), p.current()), (vec!["b", "a", "c", "d"], Some(1)));
     }
 
     #[test]

@@ -280,6 +280,12 @@ pub struct TransitionEngine {
     heard: Heard,
 }
 
+impl Default for TransitionEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TransitionEngine {
     pub fn new() -> Self {
         TransitionEngine {
