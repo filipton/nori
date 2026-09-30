@@ -292,7 +292,7 @@ impl Feed {
             r.underruns.fetch_add(1, Ordering::Relaxed);
         }
         // At the low mark: wake the engine for the next burst, once.
-        if w - (at + n) <= r.low.load(Ordering::Relaxed) && r.waiting.load(Ordering::Relaxed) && r.waiting.swap(false, Ordering::AcqRel) {
+        if w.saturating_sub(at + n) <= r.low.load(Ordering::Relaxed) && r.waiting.load(Ordering::Relaxed) && r.waiting.swap(false, Ordering::AcqRel) {
             r.engine.unpark();
         }
         n as usize
@@ -971,6 +971,18 @@ mod tests {
         f.rewind(400);
         assert_eq!(f.pull(&mut out), 100);
         assert_eq!((out[0] * 32768.0).round() as u64, 300 - at, "and plays on from where it got to, in the new music");
+    }
+
+    #[test]
+    fn pull_after_a_cut_behind_waits_for_music() {
+        let (mut t, mut f, held) = by_hand();
+        t.write(&pcm(&[16384; 1000]), 1000.0);
+        let mut out = vec![0f32; 600];
+        f.pull(&mut out);
+        held.store(300_000, Ordering::Relaxed);
+        let at = t.freeze();
+        t.cut(at);
+        assert_eq!(f.pull(&mut out), 0);
     }
 
     /// A sound change between a new stream's announcement and its first buffer (the ring full) has
