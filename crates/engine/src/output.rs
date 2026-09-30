@@ -951,7 +951,7 @@ mod tests {
         // It played 300 of the 600 it took.
         held.store(300_000, Ordering::Relaxed);
         let at = t.freeze();
-        assert!(at <= 300 && at >= 150, "from a little before what it played: {at}");
+        assert!((150..=300).contains(&at), "from a little before what it played: {at}");
         t.cut(at);
         let new: Vec<i16> = (0..700).map(|k| k as i16).collect();
         t.write(&pcm(&new), 700.0);
