@@ -6,10 +6,10 @@ import dalvik.annotation.optimization.CriticalNative
 internal object HeardJni {
     init { System.loadLibrary("norimusic") }
 
+    /** The process's clock, never freed. */
     @JvmStatic @CriticalNative external fun create(): Long
-    @JvmStatic @CriticalNative external fun destroy(h: Long)
     /** `(index + 1) << 44 | changed << 43 | ms`; index -1 means the player's own word stands. */
-    @JvmStatic @CriticalNative external fun at(h: Long, nowMs: Long, playing: Boolean, on: Int, next: Int, positionMs: Long): Long
+    @JvmStatic @CriticalNative external fun at(h: Long, nowMs: Long, playing: Boolean, positionMs: Long): Long
 }
 
 /** Making a seek stick; see crates/android/src/seek.rs. */

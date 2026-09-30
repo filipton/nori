@@ -9,13 +9,13 @@ use crate::{native, Class};
 
 pub(crate) static HEARD: Class = Class {
     name: c"dev/nori/music/playback/HeardJni",
-    methods: &[native!(c"create", c"()J", create), native!(c"destroy", c"(J)V", destroy), native!(c"at", c"(JJZIIJ)J", at)],
+    methods: &[native!(c"create", c"()J", create), native!(c"at", c"(JJZJ)J", at)],
 };
 
 pub(crate) static PLAYHEAD: Class = Class {
     name: c"dev/nori/music/playback/PlayheadJni",
     methods: &[
-        native!(c"position", c"(JJZIIJIJ)J", position),
+        native!(c"position", c"(JJZIJIJ)J", position),
         native!(c"drifted", c"(JJ)Z", drifted),
         native!(c"runOn", c"(JJZ)J", run_on),
         native!(c"jumped", c"(J)V", jumped),
@@ -24,33 +24,26 @@ pub(crate) static PLAYHEAD: Class = Class {
 };
 
 fn clock<'a>(h: jlong) -> Option<&'a Mutex<HeardClock>> {
-    // SAFETY: a non-zero `h` is a pointer `create` made, and Kotlin never passes one on after `destroy`.
+    // SAFETY: a non-zero `h` is a pointer `create` made, which lives as long as the process.
     (h != 0).then(|| unsafe { &*(h as *const Mutex<HeardClock>) })
 }
 
+/// The process's clock (Kotlin keeps one for the app's life), never freed.
 extern "system" fn create() -> jlong {
     Box::into_raw(Box::new(Mutex::new(HeardClock::new()))) as jlong
 }
 
-extern "system" fn destroy(h: jlong) {
-    if h != 0 {
-        // SAFETY: `h` came from `create` and Kotlin destroys it once.
-        drop(unsafe { Box::from_raw(h as *mut Mutex<HeardClock>) });
-    }
+/// Returns `HeardAt::pack`.
+extern "system" fn at(h: jlong, now_ms: jlong, playing: jboolean, position_ms: jlong) -> jlong {
+    let Some(c) = clock(h) else { return position_ms.max(0) };
+    c.lock().at(now_ms, playing != 0, position_ms).pack()
 }
 
-/// `on`/`next`: the player's current and next index (-1: none). Returns `HeardAt::pack`.
-extern "system" fn at(h: jlong, now_ms: jlong, playing: jboolean, on: jint, next: jint, position_ms: jlong) -> jlong {
+/// [`at`] for the seek bar of queue index `shown` (-1: none). `position_ms` is the controller's position
+/// in its song `on`, `engine_ms` the engine's (-1: none); the perf build checks the two agree.
+extern "system" fn position(h: jlong, now_ms: jlong, playing: jboolean, on: jint, position_ms: jlong, shown: jint, engine_ms: jlong) -> jlong {
     let Some(c) = clock(h) else { return position_ms.max(0) };
-    c.lock().at(now_ms, playing != 0, usize::try_from(on).ok(), usize::try_from(next).ok(), position_ms).pack()
-}
-
-/// [`at`] for the seek bar of queue index `shown` (-1: none). `position_ms` is the controller's position,
-/// `engine_ms` the engine's in song `on` (-1: none); the perf build checks the two agree.
-#[allow(clippy::too_many_arguments)]
-extern "system" fn position(h: jlong, now_ms: jlong, playing: jboolean, on: jint, next: jint, position_ms: jlong, shown: jint, engine_ms: jlong) -> jlong {
-    let Some(c) = clock(h) else { return position_ms.max(0) };
-    let at = c.lock().position(now_ms, playing != 0, usize::try_from(on).ok(), usize::try_from(next).ok(), position_ms, usize::try_from(shown).ok(), engine_ms);
+    let at = c.lock().position(now_ms, playing != 0, usize::try_from(on).ok(), position_ms, usize::try_from(shown).ok(), engine_ms);
     if nori_perf::invariants::on() {
         // Only on the player's own song: a page one song behind lags by design.
         let same = on >= 0 && on == shown && at.index.is_none();

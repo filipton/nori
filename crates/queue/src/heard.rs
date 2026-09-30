@@ -83,9 +83,8 @@ impl HeardClock {
         Self::default()
     }
 
-    /// The audible song at `position_ms`. `_on` and `_next` (the player's current and next index) are
-    /// unused: nothing is held on this path, so the player's position is what is audible.
-    pub fn at(&mut self, now_ms: i64, playing: bool, _on: Option<usize>, _next: Option<usize>, position_ms: i64) -> HeardAt {
+    /// The audible song at the player's `position_ms`.
+    pub fn at(&mut self, now_ms: i64, playing: bool, position_ms: i64) -> HeardAt {
         let s = self.seen(now_ms, playing, position_ms);
         at(s, s.ms)
     }
@@ -93,8 +92,7 @@ impl HeardClock {
     /// [`HeardClock::at`] for the seek bar of a page showing index `shown`: the position is held while the
     /// page has not followed the audible song yet (`Playhead`). `engine_ms` (negative: none) is preferred
     /// to `position_ms`, which through a media controller is only extrapolated from the last event.
-    #[allow(clippy::too_many_arguments)]
-    pub fn position(&mut self, now_ms: i64, playing: bool, on: Option<usize>, _next: Option<usize>, position_ms: i64, shown: Option<usize>, engine_ms: i64) -> HeardAt {
+    pub fn position(&mut self, now_ms: i64, playing: bool, on: Option<usize>, position_ms: i64, shown: Option<usize>, engine_ms: i64) -> HeardAt {
         let position_ms = if engine_ms >= 0 { engine_ms } else { position_ms };
         let s = self.seen(now_ms, playing, position_ms);
         let ms = self.head.show_for(&self.t, s, shown, now_ms, on, position_ms, playing);

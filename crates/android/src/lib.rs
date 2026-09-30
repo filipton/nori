@@ -213,3 +213,107 @@ pub(crate) fn with_str<R>(env: &JNIEnv, s: &JString, f: impl FnOnce(&str) -> R) 
 pub(crate) fn string(env: &JNIEnv, s: &JString) -> Option<String> {
     with_str(env, s, str::to_string)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::CLASSES;
+
+    /// Every Kotlin file of the app, by path.
+    fn kotlin() -> Vec<(std::path::PathBuf, String)> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut out = Vec::new();
+        let mut dirs = vec![root.join("core/src/main/kotlin"), root.join("app/src/main/kotlin")];
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(&d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    dirs.push(p);
+                } else if p.extension().is_some_and(|x| x == "kt") {
+                    out.push((p.clone(), std::fs::read_to_string(&p).unwrap()));
+                }
+            }
+        }
+        out
+    }
+
+    /// The JVM descriptor of a Kotlin parameter or return type, as far as a door's shape shows: the
+    /// letter of a primitive or array, or `L<simple name>;` for a class.
+    fn descriptor(kotlin: &str) -> String {
+        match kotlin.trim().trim_end_matches('?') {
+            "Long" => "J".into(),
+            "Int" => "I".into(),
+            "Boolean" => "Z".into(),
+            "Float" => "F".into(),
+            "Double" => "D".into(),
+            "Short" => "S".into(),
+            "Byte" => "B".into(),
+            "Unit" | "" => "V".into(),
+            "LongArray" => "[J".into(),
+            "IntArray" => "[I".into(),
+            "FloatArray" => "[F".into(),
+            "ByteArray" => "[B".into(),
+            "ShortArray" => "[S".into(),
+            "Array<String>" => "[LString;".into(),
+            class => format!("L{};", class.rsplit('.').next().unwrap()),
+        }
+    }
+
+    /// A registered JVM signature with each class shortened to its simple name.
+    fn simple(sig: &str) -> String {
+        let mut out = String::new();
+        let mut rest = sig;
+        while let Some(c) = rest.chars().next() {
+            if c == 'L' {
+                let end = rest.find(';').unwrap();
+                let name = &rest[1..end];
+                out.push('L');
+                out.push_str(name.rsplit(['/', '$']).next().unwrap());
+                out.push(';');
+                rest = &rest[end + 1..];
+            } else {
+                out.push(c);
+                rest = &rest[1..];
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn every_door_matches_its_kotlin_declaration() {
+        let files = kotlin();
+        let mut wrong = Vec::new();
+        for class in CLASSES {
+            let name = class.name.to_str().unwrap();
+            let (package, object) = name.rsplit_once('/').unwrap();
+            let package = package.replace('/', ".");
+            let object = object.rsplit('$').next().unwrap();
+            let Some((_, text)) = files.iter().find(|(_, t)| {
+                t.contains(&format!("package {package}\n")) && (t.contains(&format!("object {object} ")) || t.contains(&format!("class {object}")) || t.contains(&format!("object {object}\n")))
+            }) else {
+                wrong.push(format!("{name}: no Kotlin class"));
+                continue;
+            };
+            for m in class.methods {
+                let method = m.name.to_str().unwrap();
+                let decl = text.lines().find(|l| l.contains(&format!("external fun {method}(")));
+                let Some(decl) = decl else {
+                    wrong.push(format!("{name}.{method}: not declared"));
+                    continue;
+                };
+                let args = &decl[decl.find('(').unwrap() + 1..decl.rfind(')').unwrap()];
+                let params: String = args.split(',').filter(|a| !a.trim().is_empty()).map(|a| descriptor(a.split_once(':').unwrap().1)).collect();
+                let ret = decl[decl.rfind(')').unwrap() + 1..].trim().trim_start_matches(':').split("//").next().unwrap().to_string();
+                let kotlin = format!("({params}){}", descriptor(&ret));
+                let registered = simple(m.sig.to_str().unwrap());
+                if kotlin != registered {
+                    wrong.push(format!("{name}.{method}: Kotlin {kotlin}, registered {registered}"));
+                }
+                let critical = decl.contains("@CriticalNative");
+                if critical && (registered.contains('L') || registered.contains('[')) {
+                    wrong.push(format!("{name}.{method}: @CriticalNative with a reference"));
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+}
