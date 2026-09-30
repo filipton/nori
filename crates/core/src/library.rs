@@ -108,10 +108,11 @@ pub trait StarsShown: Send + Sync {
 }
 
 impl Client {
-    /// [`Client::read_fetch`] where a failure is not an error when something was cached (`stored_digest`).
+    /// [`Client::read_fetch`] where failing to reach the server is not an error when something was cached
+    /// (`stored_digest`); the server's own refusal is.
     pub async fn read_refresh(&self, read: Read, stored_digest: Option<u64>) -> NetResult<Option<Page>> {
         match self.read_fetch(read, stored_digest).await {
-            Err(_) if stored_digest.is_some() => Ok(None),
+            Err(e) if stored_digest.is_some() && !matches!(e, crate::transport::NetError::Api { .. }) => Ok(None),
             other => other,
         }
     }

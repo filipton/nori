@@ -666,6 +666,11 @@ impl Core {
         Ok(())
     }
 
+    pub(crate) fn cache_drop(&self, key: &str) -> Result<()> {
+        self.db.lock().execute("DELETE FROM cache WHERE server=sid() AND key=?1", [key])?;
+        Ok(())
+    }
+
     pub(crate) fn pending_any(&self) -> Result<bool> {
         Ok(self.db.lock().query_row("SELECT EXISTS(SELECT 1 FROM pending WHERE server=sid())", [], |r| r.get(0))?)
     }

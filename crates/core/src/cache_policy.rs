@@ -242,6 +242,9 @@ fn lists_provider_items(page: &Page) -> bool {
     }
 }
 
+/// The Subsonic error for an item the server does not have.
+const NOT_FOUND: i32 = 70;
+
 impl Client {
     fn parse(&self, parser: Parser, body: Vec<u8>) -> NetResult<Page> {
         let c = &self.core;
@@ -328,7 +331,17 @@ impl Client {
         }
         let k = key(sp.endpoint, &self.scoped(sp.endpoint, sp.params.clone()));
         let body = self.fetch(sp.endpoint, sp.params).await?;
-        let page = if stored_digest != Some(digest(&body)) { Some(self.parse(sp.parser, body.clone())?) } else { None };
+        let page = if stored_digest != Some(digest(&body)) {
+            match self.parse(sp.parser, body.clone()) {
+                Err(e @ crate::transport::NetError::Api { code: NOT_FOUND, .. }) => {
+                    self.core.cache_drop(&k)?;
+                    return Err(e);
+                }
+                page => Some(page?),
+            }
+        } else {
+            None
+        };
         self.core.cache_put(k, body)?;
         Ok(page)
     }
@@ -404,6 +417,26 @@ mod tests {
         fake.answer(library);
         block(c.read_fetch(Read::AlbumById { id: "al-1".into() }, None)).unwrap();
         assert!(c.read_stored(Read::AlbumById { id: "al-1".into() }).unwrap().fresh);
+    }
+
+    #[test]
+    fn a_page_gone_from_the_server_is_not_shown_again() {
+        let (c, fake) = setup();
+        let read = || Read::AlbumById { id: "al-1".into() };
+        fake.answer(r#"{"subsonic-response":{"status":"ok","album":{"id":"al-1","name":"A","song":[{"id":"s1","title":"t"}]}}}"#);
+        block(c.read_fetch(read(), None)).unwrap();
+        c.core.db.lock().execute("UPDATE cache SET ts = 0", []).unwrap();
+        fake.answer(r#"{"subsonic-response":{"status":"failed","error":{"code":70,"message":"not found"}}}"#);
+        let mut shown = 0;
+        assert!(matches!(block(c.read_each(read(), |_| shown += 1)), Err(crate::transport::NetError::Api { code: 70, .. })));
+        assert_eq!(shown, 1, "the cached page, before the server said");
+        assert!(c.read_stored(read()).unwrap().page.is_none());
+        // Offline, the cached page stands.
+        fake.answer(r#"{"subsonic-response":{"status":"ok","album":{"id":"al-1","name":"A","song":[]}}}"#);
+        block(c.read_fetch(read(), None)).unwrap();
+        c.core.db.lock().execute("UPDATE cache SET ts = 0", []).unwrap();
+        fake.fail(FailureKind::Connect);
+        assert!(block(c.read_each(read(), |_| {})).is_ok());
     }
 
     #[test]
