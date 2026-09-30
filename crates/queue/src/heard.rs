@@ -83,9 +83,8 @@ impl HeardClock {
         Self::default()
     }
 
-    /// The audible song at `position_ms`. `_on` and `_next` (the player's current and next index) are
-    /// unused: nothing is held on this path, so the player's position is what is audible.
-    pub fn at(&mut self, now_ms: i64, playing: bool, _on: Option<usize>, _next: Option<usize>, position_ms: i64) -> HeardAt {
+    /// The audible song at the player's `position_ms`.
+    pub fn at(&mut self, now_ms: i64, playing: bool, position_ms: i64) -> HeardAt {
         let s = self.seen(now_ms, playing, position_ms);
         at(s, s.ms)
     }
@@ -129,31 +128,26 @@ fn at(s: Seen, ms: i64) -> HeardAt {
 mod tests {
     use super::shown_row;
 
-    const Q: [&str; 5] = ["a", "b", "c", "b", "d"];
+    const Q: &[&str] = &["a", "b", "c", "b", "d"];
+    /// Q with an "x" the core inserted at 0 that the page does not show yet.
+    const INSERTED: &[&str] = &["x", "a", "b", "c", "b", "d"];
 
     #[test]
-    fn shown_row_is_tracker_row() {
-        assert_eq!(shown_row(Some(3), &Q, &Q, Some("d")), Some(3));
-        assert_eq!(shown_row(Some(1), &Q, &Q, Some("c")), Some(1));
-    }
-
-    #[test]
-    fn shown_row_none_cases() {
-        assert_eq!(shown_row(None, &Q, &Q, Some("a")), None);
-        assert_eq!(shown_row(Some(2), &Q, &Q, Some("c")), None, "the player's own song");
-        assert_eq!(shown_row(Some(9), &Q, &Q, None), None, "past the end");
-        assert_eq!(shown_row(Some(4), &Q, &["a", "b", "c"][..], None), None, "page lacks the song");
-        assert_eq!(shown_row::<&str, &str>(Some(0), &Q, &[], None), None);
-    }
-
-    #[test]
-    fn trailing_page_uses_nearest_copy() {
-        // The page lacks the "x" the core inserted at 0.
-        let page = ["a", "b", "c", "b", "d"];
-        let queue = ["x", "a", "b", "c", "b", "d"];
-        assert_eq!(shown_row(Some(4), &queue, &page, Some("d")), Some(3));
-        assert_eq!(shown_row(Some(2), &queue, &page, Some("c")), Some(1));
-        // A tie: the earlier.
-        assert_eq!(shown_row(Some(2), &["b", "a", "b"][..], &["b", "a", "c", "a", "b"][..], None), Some(0));
+    fn shown_rows() {
+        let cases: [(&str, Option<usize>, &[&str], &[&str], Option<&str>, Option<usize>); 10] = [
+            ("the tracker's row", Some(3), Q, Q, Some("d"), Some(3)),
+            ("the tracker's row, another song playing", Some(1), Q, Q, Some("c"), Some(1)),
+            ("nothing heard", None, Q, Q, Some("a"), None),
+            ("the player's own song", Some(2), Q, Q, Some("c"), None),
+            ("past the end", Some(9), Q, Q, None, None),
+            ("page lacks the song", Some(4), Q, &["a", "b", "c"], None, None),
+            ("empty page", Some(0), Q, &[], None, None),
+            ("trailing page", Some(4), INSERTED, Q, Some("d"), Some(3)),
+            ("trailing page, nearest copy", Some(2), INSERTED, Q, Some("c"), Some(1)),
+            ("a tie: the earlier", Some(2), &["b", "a", "b"], &["b", "a", "c", "a", "b"], None, Some(0)),
+        ];
+        for (what, heard, queue, page, playing, want) in cases {
+            assert_eq!(shown_row(heard, queue, page, playing), want, "{what}");
+        }
     }
 }

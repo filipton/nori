@@ -120,7 +120,7 @@ impl Client {
 }
 
 /// Freshness of a downloaded song's cached server lyrics.
-pub const DOWNLOADED_SERVER_KEPT_MS: i64 = MISS_KEPT_MS;
+pub(crate) const DOWNLOADED_SERVER_KEPT_MS: i64 = MISS_KEPT_MS;
 
 impl Client {
     /// Asks the enabled services given what the server had (`server_has_lines`, `server_synced`), each
@@ -176,17 +176,13 @@ impl Client {
     /// Looks up lyrics for downloaded songs one by one so they work offline, marking each song's lyrics
     /// work done when its lookup ends. Provider songs are skipped.
     pub async fn lyrics_for_downloads(&self, ids: Vec<String>) {
-        for id in ids.into_iter().filter(|id| !id.starts_with("ext-")) {
+        for id in ids.into_iter().filter(|id| !crate::is_provider_id(id)) {
             crate::transfers::working(&id, crate::transfers::Work::Lyrics);
             let _ = self.lyrics_for(id.clone(), Arc::new(Unseen)).await;
             crate::transfers::work_done(&id, crate::transfers::Work::Lyrics);
         }
     }
 
-    /// Resolves once none of `ids` is still processing (or its time is up).
-    pub async fn downloads_processed(&self, ids: Vec<String>) {
-        crate::transfers::processed(&ids).await
-    }
 }
 
 #[cfg(test)]
@@ -413,7 +409,8 @@ pub(crate) mod tests {
         age(8 * DAY);
         let late = open(&c, &fake, &s.id, &asked);
         assert!(kept(&late) && late[0].0 == before, "{late:?}");
-        assert!(fake.asked().len() - before <= 2, "{:?}", &fake.asked()[before..]);
+        let asked_after = &fake.asked()[before..];
+        assert!(matches!(asked_after, [u] if u.contains("getLyricsBySongId")), "{asked_after:?}");
     }
 
     #[test]

@@ -121,6 +121,29 @@ pub trait Transport: Send + Sync {
     fn address_changed(&self);
 }
 
+/// Wakes the parked thread.
+struct Unpark(std::thread::Thread);
+
+impl std::task::Wake for Unpark {
+    fn wake(self: std::sync::Arc<Self>) {
+        self.0.unpark();
+    }
+}
+
+/// Runs `f` to completion on this thread, parking while it waits (a platform transport answers from its
+/// own threads; a blocking one is ready at the first poll).
+pub fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    let waker = std::task::Waker::from(std::sync::Arc::new(Unpark(std::thread::current())));
+    let mut cx = std::task::Context::from_waker(&waker);
+    let mut f = std::pin::pin!(f);
+    loop {
+        if let std::task::Poll::Ready(v) = f.as_mut().poll(&mut cx) {
+            return v;
+        }
+        std::thread::park();
+    }
+}
+
 /// A failed client request. Display is for logs and is Kotlin's `toString` (uniffi gives no message).
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Error), uniffi::export(Display))]
@@ -140,6 +163,14 @@ impl NetError {
     /// The network failed, not the request: writes are kept for later and the other address is tried.
     pub fn is_io(&self) -> bool {
         matches!(self, NetError::Http { .. }) || matches!(self, NetError::Transport { kind, .. } if kind.is_io())
+    }
+}
+
+impl NetError {
+    /// The request never left: the next try cannot be a repeat.
+    pub fn nothing_sent(&self) -> bool {
+        use FailureKind::*;
+        matches!(self, NetError::Transport { kind: UnknownHost | Connect | NoRoute | Metered | Cleartext | Tls, .. })
     }
 }
 

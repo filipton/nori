@@ -3,6 +3,7 @@ package dev.nori.music.app.vm
 import android.app.Application
 import androidx.lifecycle.viewModelScope
 import dev.nori.music.ffi.model.HistoryEntry
+import dev.nori.music.ffi.library.HistoryAfter
 import dev.nori.music.ffi.library.SmartPage
 import dev.nori.music.ffi.library.StatsPage
 import dev.nori.music.ffi.library.SmartEdit
@@ -56,16 +57,18 @@ class HistoryViewModel(app: Application) : NoriViewModel(app) {
     /** The stats with their words and tiles, all the core's. */
     val stats: StateFlow<StatsPage?> = _stats
     private var exhausted = false
+    /** Where the next page starts. */
+    private var after: HistoryAfter? = null
 
     init { loadMore() }
 
     fun loadMore() {
         if (exhausted) return
-        val offset = _entries.value.size.toUInt()
         viewModelScope.launch {
             // A page that could not be read ends the list, as an empty one would.
-            val next = runCatching { withContext(Dispatchers.IO) { nori.core.historyPage(offset) } }.getOrNull()
-            exhausted = next?.exhausted ?: true
+            val next = runCatching { withContext(Dispatchers.IO) { nori.core.historyPage(after) } }.getOrNull()
+            after = next?.next
+            exhausted = after == null
             _entries.value = _entries.value.plus(next?.entries.orEmpty())
         }
     }

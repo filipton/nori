@@ -9,7 +9,7 @@ use crate::{native, Class};
 
 pub(crate) static HEARD: Class = Class {
     name: c"dev/nori/music/playback/HeardJni",
-    methods: &[native!(c"create", c"()J", create), native!(c"destroy", c"(J)V", destroy), native!(c"at", c"(JJZIIJ)J", at)],
+    methods: &[native!(c"create", c"()J", create), native!(c"at", c"(JJZJ)J", at)],
 };
 
 pub(crate) static PLAYHEAD: Class = Class {
@@ -23,25 +23,19 @@ pub(crate) static PLAYHEAD: Class = Class {
 };
 
 fn clock<'a>(h: jlong) -> Option<&'a Mutex<HeardClock>> {
-    // SAFETY: a non-zero `h` is a pointer `create` made, and Kotlin never passes one on after `destroy`.
+    // SAFETY: a non-zero `h` is a pointer `create` made, which lives as long as the process.
     (h != 0).then(|| unsafe { &*(h as *const Mutex<HeardClock>) })
 }
 
+/// The process's clock (Kotlin keeps one for the app's life), never freed.
 extern "system" fn create() -> jlong {
     Box::into_raw(Box::new(Mutex::new(HeardClock::new()))) as jlong
 }
 
-extern "system" fn destroy(h: jlong) {
-    if h != 0 {
-        // SAFETY: `h` came from `create` and Kotlin destroys it once.
-        drop(unsafe { Box::from_raw(h as *mut Mutex<HeardClock>) });
-    }
-}
-
-/// `on`/`next`: the player's current and next index (-1: none). Returns `HeardAt::pack`.
-extern "system" fn at(h: jlong, now_ms: jlong, playing: jboolean, on: jint, next: jint, position_ms: jlong) -> jlong {
+/// Returns `HeardAt::pack`.
+extern "system" fn at(h: jlong, now_ms: jlong, playing: jboolean, position_ms: jlong) -> jlong {
     let Some(c) = clock(h) else { return position_ms.max(0) };
-    c.lock().at(now_ms, playing != 0, usize::try_from(on).ok(), usize::try_from(next).ok(), position_ms).pack()
+    c.lock().at(now_ms, playing != 0, position_ms).pack()
 }
 
 /// [`at`] for the seek bar of queue index `shown` (-1: none). `position_ms` is the controller's position;

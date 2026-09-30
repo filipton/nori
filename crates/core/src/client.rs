@@ -7,7 +7,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 use crate::transport::{self, FailureKind, NetError, Transport};
-use crate::{Core, IngestStats, ServerConfig};
+use crate::{api, Core, CoreError, IngestStats, ServerConfig};
 
 pub use nori_net::requests::{NetProfile, NetResult, Starrable, SyncStep, Write};
 pub(crate) use nori_net::requests::{blank, pairs, request, FOLDERED};
@@ -27,6 +27,10 @@ pub struct Client {
     pub(crate) lyrics: nori_lyrics::services::LyricsMemory,
     /// Motion cover token and cached videos (motion.rs).
     pub(crate) motion: parking_lot::Mutex<crate::motion::Motion>,
+    /// A replay of the queued writes is running; a second one would send them twice.
+    replaying: AtomicBool,
+    /// The car's last folder read, by id, for its later pages (car.rs).
+    pub(crate) car_folder: parking_lot::Mutex<Option<(String, crate::car::BrowsePage)>>,
 }
 
 /// The newest client, for code without a handle (`stream::resolve_now`, the beat model download).
@@ -37,10 +41,34 @@ pub(crate) fn active_client() -> Option<Arc<Client>> {
     ACTIVE_CLIENT.lock().upgrade()
 }
 
-async fn ping(core: &Core, transport: &dyn Transport, timeout_ms: u32) -> NetResult<()> {
-    let url = core.server.read().url("ping", &[]);
-    core.parse_status(transport::get(transport, url, timeout_ms).await?)?;
+async fn ping(transport: &dyn Transport, server: &api::Server, timeout_ms: u32) -> NetResult<()> {
+    crate::parse(&transport::get(transport, server.url("ping", &[]), timeout_ms).await?)?;
     Ok(())
+}
+
+/// Verifies a profile before it is kept, opening nothing: pings its address, else `alt_url`. On error 41
+/// (no token auth) tries legacy auth and returns true if that worked.
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub async fn login_check(transport: Arc<dyn Transport>, config: ServerConfig, alt_url: String) -> NetResult<bool> {
+    let legacy_possible = !config.legacy_auth && config.api_key.as_deref().unwrap_or("").is_empty();
+    match login_attempt(&*transport, &config, &alt_url).await {
+        Ok(()) => Ok(false),
+        Err(NetError::Api { code: 41, .. }) if legacy_possible => {
+            login_attempt(&*transport, &ServerConfig { legacy_auth: true, ..config }, &alt_url).await?;
+            Ok(true)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+async fn login_attempt(transport: &dyn Transport, config: &ServerConfig, alt_url: &str) -> NetResult<()> {
+    let server = config.server();
+    let first = ping(transport, &server, 0).await;
+    if first.is_err() && !blank(alt_url) {
+        ping(transport, &server.rebased(alt_url), 0).await
+    } else {
+        first
+    }
 }
 
 impl Client {
@@ -73,32 +101,13 @@ impl Client {
         }
     }
 
-    /// Sends a write, or queues it for replay on an I/O failure (reported as success). Evicts the `stale`
-    /// cache prefixes either way.
-    pub(crate) async fn write_raw(&self, endpoint: &str, params: Vec<(String, String)>, stale: &[&str]) -> NetResult<()> {
-        match self.fetch(endpoint, params.clone()).await {
-            Ok(body) => {
-                self.core.parse_status(body)?;
-                self.flush_pending().await?;
-            }
-            Err(e) if e.is_io() => {
-                let p = params.into_iter().map(|(key, value)| crate::Param { key, value }).collect();
-                self.core.pending_add(endpoint.to_string(), p)?;
-            }
-            Err(e) => return Err(e),
-        }
-        for s in stale {
-            self.core.cache_evict(s.to_string())?;
-        }
-        Ok(())
-    }
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Client {
     #[cfg_attr(feature = "ffi", uniffi::constructor)]
     pub fn new(core: Arc<Core>, transport: Arc<dyn Transport>) -> Arc<Self> {
-        let client = Arc::new(Client { core, transport, profile: RwLock::new(NetProfile::default()), second: AtomicBool::new(false), lyrics: Default::default(), motion: Default::default() });
+        let client = Arc::new(Client { core, transport, profile: RwLock::new(NetProfile::default()), second: AtomicBool::new(false), lyrics: Default::default(), motion: Default::default(), replaying: AtomicBool::new(false), car_folder: Default::default() });
         *ACTIVE_CLIENT.lock() = Arc::downgrade(&client);
         client
     }
@@ -126,11 +135,9 @@ impl Client {
         if blank(&alt) {
             return false;
         }
-        self.core.use_address(url);
-        let first_answers = ping(&self.core, &*self.transport, ADDRESS_PROBE_MS).await.is_ok();
-        if !first_answers {
-            self.core.use_address(alt);
-        }
+        let probe = self.core.server.read().rebased(&url);
+        let first_answers = ping(&*self.transport, &probe, ADDRESS_PROBE_MS).await.is_ok();
+        self.core.use_address(if first_answers { url } else { alt });
         let changed = self.second.swap(!first_answers, Ordering::Relaxed) == first_answers;
         if changed {
             self.transport.address_changed();
@@ -138,34 +145,34 @@ impl Client {
         changed
     }
 
-    /// Verifies a profile (trying `alt_url` if the first address fails). On error 41 (no token auth)
-    /// retries with legacy auth and returns true if that worked.
-    pub async fn login(&self, config: ServerConfig, alt_url: String) -> NetResult<bool> {
-        let legacy_possible = !config.legacy_auth && config.api_key.as_deref().unwrap_or("").is_empty();
-        match self.attempt(config.clone(), &alt_url).await {
-            Ok(()) => Ok(false),
-            Err(NetError::Api { code: 41, .. }) if legacy_possible => {
-                self.attempt(ServerConfig { legacy_auth: true, ..config }, &alt_url).await?;
-                Ok(true)
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Replays queued writes in order, stopping at the first network failure; rejected writes are dropped.
+    /// Replays queued writes in order until none are left, stopping at the first network failure or an
+    /// answer that is not the server's (a captive portal's page); writes the server rejects are dropped. While one replay runs, another returns at once: the running one sends what was
+    /// queued meanwhile too.
     pub async fn flush_pending(&self) -> NetResult<()> {
-        for p in self.core.pending_list()? {
-            let params: Vec<(String, String)> = p.params.into_iter().map(|p| (p.key, p.value)).collect();
-            match self.get(&p.endpoint, &params).await {
-                Err(e) if e.is_io() => return Ok(()),
-                Ok(body) => {
-                    let _ = self.core.parse_status(body);
-                }
-                Err(_) => {}
-            }
-            self.core.pending_done(p.row_id)?;
+        if self.replaying.swap(true, Ordering::Acquire) {
+            return Ok(());
         }
-        Ok(())
+        struct Done<'a>(&'a AtomicBool);
+        impl Drop for Done<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Release);
+            }
+        }
+        let _done = Done(&self.replaying);
+        loop {
+            let queued = self.core.pending_list()?;
+            if queued.is_empty() {
+                return Ok(());
+            }
+            for p in queued {
+                match self.get(&p.endpoint, &p.params).await.map(|body| self.core.parse_status(body)) {
+                    Err(e) if e.is_io() => return Ok(()),
+                    Ok(Err(CoreError::Parse { .. })) => return Ok(()),
+                    _ => {}
+                }
+                self.core.pending_done(p.row_id)?;
+            }
+        }
     }
 
     /// Indexes one search3 page of the library; returns running totals and the next offset (None after
@@ -197,27 +204,33 @@ impl Client {
     }
 }
 
-impl Client {
-    async fn attempt(&self, config: ServerConfig, alt_url: &str) -> NetResult<()> {
-        self.core.configure(config)?;
-        let first = ping(&self.core, &*self.transport, 0).await;
-        if first.is_err() && !blank(alt_url) {
-            self.core.use_address(alt_url.to_string());
-            ping(&self.core, &*self.transport, 0).await
-        } else {
-            first
-        }
-    }
-}
-
 pub use nori_db::{db_file_name, db_forget_server, DB_FILE};
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Client {
-    /// Sends one change, or queues it while the server is unreachable.
+    /// Sends one change, or queues it (reported as success) while the server is unreachable. Behind
+    /// queued changes it is queued too, so the server gets them in order. A change that must not reach
+    /// the server twice is queued only when the failure shows nothing was sent. Evicts the change's stale
+    /// cache prefixes when sent or queued.
     pub async fn write(&self, w: Write) -> NetResult<()> {
+        let repeatable = w.repeatable();
         let (endpoint, params, stale) = request(w);
-        self.write_raw(endpoint, params, stale).await
+        if self.core.pending_any()? {
+            self.core.pending_add(endpoint, &params)?;
+            self.flush_pending().await?;
+        } else {
+            match self.fetch(endpoint, params.clone()).await {
+                Ok(body) => {
+                    self.core.parse_status(body)?;
+                }
+                Err(e) if e.nothing_sent() || (repeatable && e.is_io()) => self.core.pending_add(endpoint, &params)?,
+                Err(e) => return Err(e),
+            }
+        }
+        for s in stale {
+            self.core.cache_evict(s.to_string())?;
+        }
+        Ok(())
     }
 }
 
@@ -244,6 +257,8 @@ pub(crate) mod tests {
         pub asked: Mutex<Vec<(String, u32)>>,
         pub sent: Mutex<Vec<Exchange>>,
         pub switched: Mutex<u32>,
+        /// Each request pends once before answering, as a real one would.
+        pub pends: Mutex<bool>,
     }
 
     impl Fake {
@@ -262,6 +277,17 @@ pub(crate) mod tests {
     impl Transport for Fake {
         async fn get(&self, url: String, timeout_ms: u32) -> Result<TransportResponse, TransportError> {
             self.asked.lock().push((url, timeout_ms));
+            if *self.pends.lock() {
+                let mut pended = false;
+                std::future::poll_fn(|cx| {
+                    if std::mem::replace(&mut pended, true) {
+                        return Poll::Ready(());
+                    }
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                })
+                .await;
+            }
             match self.answers.lock().pop_front().unwrap_or(Err(FailureKind::Connect)) {
                 Ok((status, body)) => Ok(TransportResponse { status, body }),
                 Err(kind) => Err(TransportError::Failed { kind, detail: Some(format!("{kind:?}")) }),
@@ -371,27 +397,73 @@ pub(crate) mod tests {
         assert_eq!(c.core.pending_list().unwrap().len(), 2);
         assert_eq!(c.core.cache_get("getPlaylist&id=1".into()).unwrap(), None, "evicted even when queued");
 
-        // Online: the new write, then the queue in order; the rejected one is dropped.
-        fake.answer(OK);
+        // Online: the queue in order, then the new write; the rejected one is dropped.
         fake.answer(r#"{"subsonic-response":{"status":"failed","error":{"code":70,"message":"gone"}}}"#);
+        fake.answer(OK);
         fake.answer(OK);
         block(c.write(Write::Star { kind: Starrable::Album, id: "al".into(), on: true })).unwrap();
         let asked = fake.asked();
-        assert!(asked[2].contains("/rest/star?") && asked[2].ends_with("&albumId=al"));
-        assert!(asked[3].contains("/rest/updatePlaylist?") && asked[3].ends_with("&playlistId=1&songIdToAdd=a&songIdToAdd=b"));
-        assert!(asked[4].contains("/rest/scrobble?") && asked[4].ends_with("&id=s&submission=true&time=5"));
+        assert!(asked[2].contains("/rest/updatePlaylist?") && asked[2].ends_with("&playlistId=1&songIdToAdd=a&songIdToAdd=b"));
+        assert!(asked[3].contains("/rest/scrobble?") && asked[3].ends_with("&id=s&submission=true&time=5"));
+        assert!(asked[4].contains("/rest/star?") && asked[4].ends_with("&albumId=al"));
         assert!(c.core.pending_list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn timed_out_edit_not_queued() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        fake.fail(FailureKind::Timeout);
+        assert!(block(c.write(Write::AddToPlaylist { id: "1".into(), song_ids: vec!["a".into()] })).is_err());
+        fake.fail(FailureKind::Timeout);
+        block(c.write(Write::Star { kind: Starrable::Song, id: "s".into(), on: true })).unwrap();
+        let queued: Vec<String> = c.core.pending_list().unwrap().into_iter().map(|p| p.endpoint).collect();
+        assert_eq!(queued, ["star"]);
+    }
+
+    #[test]
+    fn a_portal_page_keeps_the_queue() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        c.core.pending_add("star", &[]).unwrap();
+        fake.answer("<html>sign in</html>");
+        block(c.flush_pending()).unwrap();
+        assert_eq!(c.core.pending_list().unwrap().len(), 1);
     }
 
     #[test]
     fn replay_stops_at_network_failure() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
-        c.core.pending_add("star".into(), vec![]).unwrap();
-        c.core.pending_add("unstar".into(), vec![]).unwrap();
+        c.core.pending_add("star", &[]).unwrap();
+        c.core.pending_add("unstar", &[]).unwrap();
         fake.fail(FailureKind::Timeout);
         block(c.flush_pending()).unwrap();
         assert_eq!(c.core.pending_list().unwrap().len(), 2);
         assert_eq!(fake.asked().len(), 1);
+    }
+
+    #[test]
+    fn replays_at_once_send_each_write_once() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        c.core.pending_add("scrobble", &[]).unwrap();
+        *fake.pends.lock() = true;
+        fake.answer(OK);
+        fake.answer(OK);
+        let (a, b) = block(futures_util::future::join(c.flush_pending(), c.flush_pending()));
+        assert!(a.is_ok() && b.is_ok());
+        assert_eq!(fake.asked().len(), 1);
+        assert!(c.core.pending_list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_star_leaves_other_lists_cached() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        let keys = ["getAlbum&id=1", "getAlbumList2&type=newest&size=20", "getArtistInfo2&id=1&count=10", "getArtists", "getPlaylists", "getPlaylist&id=2"];
+        for k in keys {
+            c.core.cache_put(k.into(), b"x".to_vec()).unwrap();
+        }
+        fake.fail(FailureKind::Connect);
+        block(c.write(Write::Star { kind: Starrable::Song, id: "s".into(), on: true })).unwrap();
+        let kept: Vec<&str> = keys.into_iter().filter(|k| c.core.cache_get(k.to_string()).unwrap().is_some()).collect();
+        assert_eq!(kept, ["getAlbumList2&type=newest&size=20", "getArtistInfo2&id=1&count=10", "getArtists", "getPlaylists"]);
     }
 
     #[test]
@@ -408,7 +480,7 @@ pub(crate) mod tests {
     fn star_playlist_and_now_playing_requests() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         c.core.cache_put("getStarred2".into(), b"x".to_vec()).unwrap();
-        c.core.cache_put("getPlaylist&id=9".into(), b"x".to_vec()).unwrap();
+        c.core.cache_put("getPlaylists".into(), b"x".to_vec()).unwrap();
         for _ in 0..4 {
             fake.answer(OK);
         }
@@ -416,7 +488,7 @@ pub(crate) mod tests {
         assert_eq!(c.core.cache_get("getStarred2".into()).unwrap(), None);
         block(c.write(Write::Star { kind: Starrable::Song, id: "s1".into(), on: false })).unwrap();
         block(c.write(Write::CreatePlaylist { name: "nori check".into(), song_ids: vec!["s1".into(), "s2".into()] })).unwrap();
-        assert_eq!(c.core.cache_get("getPlaylist&id=9".into()).unwrap(), None);
+        assert_eq!(c.core.cache_get("getPlaylists".into()).unwrap(), None);
         block(c.read_now(crate::cache_policy::Read::NowPlaying { id: "s1".into() })).unwrap();
         let asked = fake.asked();
         assert!(asked[0].contains("/rest/star?") && asked[0].ends_with("&id=s1"), "{}", asked[0]);
@@ -427,23 +499,34 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn login_falls_back_to_other_address_and_legacy_auth() {
-        let (c, fake) = client(NetProfile::default());
+    fn login_fallbacks() {
+        let fake = Arc::new(Fake::default());
         let config = ServerConfig { url: "http://lan".into(), user: "u".into(), password: "p".into(), ..Default::default() };
         fake.fail(FailureKind::Connect);
         fake.answer(OK);
-        assert!(!block(c.login(config.clone(), "https://wan".into())).unwrap());
+        assert!(!block(login_check(fake.clone(), config.clone(), "https://wan".into())).unwrap());
         assert!(fake.asked()[1].starts_with("https://wan/rest/ping"));
 
         let no_token = r#"{"subsonic-response":{"status":"failed","error":{"code":41,"message":"no token"}}}"#;
         fake.answer(no_token);
         fake.answer(OK);
-        assert!(block(c.login(config.clone(), String::new())).unwrap());
+        assert!(block(login_check(fake.clone(), config.clone(), String::new())).unwrap());
         assert!(fake.asked()[3].contains("&p=enc:70&"));
 
         fake.answer(no_token);
         let keyed = ServerConfig { api_key: Some("k".into()), ..config };
-        assert!(matches!(block(c.login(keyed, String::new())), Err(NetError::Api { code: 41, .. })));
+        assert!(matches!(block(login_check(fake.clone(), keyed, String::new())), Err(NetError::Api { code: 41, .. })));
+    }
+
+    #[test]
+    fn probe_keeps_second_address() {
+        let (c, fake) = client(two_addresses());
+        fake.fail(FailureKind::Timeout);
+        assert!(block(c.choose_address()));
+        *fake.pends.lock() = true;
+        fake.fail(FailureKind::Timeout);
+        let (_, during) = block(futures_util::future::join(c.choose_address(), async { c.core.url_prefix("stream".into()) }));
+        assert!(during.starts_with("https://wan.example/"), "{during}");
     }
 
     #[test]

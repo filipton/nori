@@ -2,6 +2,7 @@
 
 use rusqlite::params;
 
+use crate::browse::HistoryAfter;
 use crate::{db, model::*, Core, Result};
 
 pub use nori_library::history::*;
@@ -16,15 +17,21 @@ impl Core {
 }
 
 impl Core {
-    /// Listens newest first, omitting songs no longer indexed.
-    pub fn history_recent(&self, limit: u32, offset: u32, include_skipped: bool) -> Result<Vec<HistoryEntry>> {
+    /// Up to `limit` listens older than `after` (None: the newest), newest first, omitting songs no longer
+    /// indexed, and where the next page starts (None after the last).
+    pub fn history_recent(&self, limit: u32, after: Option<HistoryAfter>, include_skipped: bool) -> Result<(Vec<HistoryEntry>, Option<HistoryAfter>)> {
+        let after = after.unwrap_or(HistoryAfter { started_ms: i64::MAX, row: i64::MAX });
         let c = self.db.lock();
         let mut st = c.prepare_cached(
-            "SELECT i.json, p.started_ms, p.heard_ms, p.completed, p.skipped FROM plays p JOIN items i ON i.server=sid() AND i.kind=2 AND i.id=p.song_id
-             WHERE p.server=sid() AND p.skipped<=?1 ORDER BY p.started_ms DESC, p.rowid DESC LIMIT ?2 OFFSET ?3",
+            "SELECT i.json, p.started_ms, p.heard_ms, p.completed, p.skipped, p.rowid FROM plays p JOIN items i ON i.server=sid() AND i.kind=2 AND i.id=p.song_id
+             WHERE p.server=sid() AND p.skipped<=?1 AND (p.started_ms, p.rowid) < (?3, ?4) ORDER BY p.started_ms DESC, p.rowid DESC LIMIT ?2",
         )?;
-        let rows = st.query_map(params![include_skipped, limit, offset], |r| Ok(entry(r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?.into_iter().flatten().collect())
+        let rows = st.query_map(params![include_skipped, limit, after.started_ms, after.row], |r| {
+            Ok((entry(r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?), HistoryAfter { started_ms: r.get(1)?, row: r.get(5)? }))
+        })?;
+        let rows = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        let next = rows.last().filter(|_| rows.len() == limit as usize).map(|(_, at)| *at);
+        Ok((rows.into_iter().filter_map(|(e, _)| e).collect(), next))
     }
 
     /// Stats of the played songs among `ids`.
@@ -103,16 +110,18 @@ pub(crate) mod tests {
         assert_eq!((st[0].plays, st[0].skips, st[0].last_played_ms, st[0].heard_ms_total), (1, 1, NOW - DAY, 205_000));
         assert!(core.song_stats(vec![]).unwrap().is_empty());
 
-        let h = core.history_recent(10, 0, true).unwrap();
+        let h = core.history_recent(10, None, true).unwrap().0;
         assert_eq!(h.len(), 2);
         assert!(h[0].skipped && !h[0].completed && h[1].completed);
         assert_eq!(h[1].song, s);
-        assert_eq!(core.history_recent(10, 0, false).unwrap().len(), 1);
-        assert_eq!(core.history_recent(10, 1, true).unwrap().len(), 1);
-        assert!(core.history_recent(0, 0, true).unwrap().is_empty());
+        assert_eq!(core.history_recent(10, None, false).unwrap().0.len(), 1);
+        let (first, next) = core.history_recent(1, None, true).unwrap();
+        assert!(first[0].skipped);
+        assert!(!core.history_recent(1, next, true).unwrap().0[0].skipped);
+        assert!(core.history_recent(0, None, true).unwrap().0.is_empty());
 
         core.history_clear().unwrap();
-        assert!(core.history_recent(10, 0, true).unwrap().is_empty());
+        assert!(core.history_recent(10, None, true).unwrap().0.is_empty());
         assert!(core.song_stats(vec!["s1".into()]).unwrap().is_empty());
     }
 
@@ -124,7 +133,7 @@ pub(crate) mod tests {
         db::index(&mut core.db.lock(), &[], &[], std::slice::from_ref(&s)).unwrap();
         let stale = Song { starred: false, ..s.clone() };
         rec(&core, stale, NOW, 200_000);
-        assert!(core.history_recent(1, 0, true).unwrap()[0].song.starred);
+        assert!(core.history_recent(1, None, true).unwrap().0[0].song.starred);
     }
 
     #[test]
@@ -135,7 +144,7 @@ pub(crate) mod tests {
         }
         assert!(!rec(&core, Song { id: "x".into(), is_external: true, ..Default::default() }, NOW, 100_000));
         assert_eq!(core.index_size().unwrap().songs, 0);
-        assert!(core.history_recent(10, 0, true).unwrap().is_empty());
+        assert!(core.history_recent(10, None, true).unwrap().0.is_empty());
     }
 
     #[test]
@@ -229,7 +238,7 @@ pub(crate) mod tests {
         let core = Core::new(String::new(), "t".into()).unwrap();
         listen(&core, &song("s1", "A", "X", "", "", 0), NOW);
         db::clear_library(&core.db.lock()).unwrap();
-        assert!(core.history_recent(10, 0, true).unwrap().is_empty());
+        assert!(core.history_recent(10, None, true).unwrap().0.is_empty());
         let s = stats(&core, 0, i64::MAX, 5);
         assert_eq!((s.plays, s.distinct_songs, s.top_songs.len()), (1, 1, 0));
         assert_eq!(core.song_stats(vec!["s1".into()]).unwrap()[0].plays, 1);

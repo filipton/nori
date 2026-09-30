@@ -251,10 +251,10 @@ mod tests {
 
     #[test]
     fn catalogue_and_tiles() {
-        assert_eq!(mix_catalogue().iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["quick-picks", "discover", "discover-weekly", "listen-again", "top"]);
         assert!(mix_catalogue().iter().all(|m| m.refreshable == (m.id != "top")));
-        assert_eq!(mix_tiles(false).len(), 1);
-        assert_eq!(mix_tiles(true).len(), 6);
-        assert!(mix_tiles(true)[0].favourites);
+        let ids = |tiles: Vec<MixTile>| tiles.into_iter().map(|t| t.id).collect::<Vec<_>>();
+        let every: Vec<String> = std::iter::once(FAVOURITES_MIX.to_string()).chain(mix_catalogue().into_iter().map(|m| m.id)).collect();
+        assert_eq!(ids(mix_tiles(true)), every);
+        assert_eq!(ids(mix_tiles(false)), [FAVOURITES_MIX], "no taste yet: only favourites");
     }
 }

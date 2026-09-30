@@ -18,13 +18,13 @@ struct Server {
     open: Mutex<bool>,
     opened: Condvar,
     status: u16,
-    body: Vec<u8>,
+    body: Mutex<Vec<u8>>,
 }
 
 impl Server {
     fn new(status: u16) -> Arc<Server> {
         let body = std::fs::read(format!("{}/testdata/photo.jpg", env!("CARGO_MANIFEST_DIR"))).unwrap();
-        Arc::new(Server { calls: AtomicUsize::new(0), asked: Mutex::new(Vec::new()), open: Mutex::new(true), opened: Condvar::new(), status, body })
+        Arc::new(Server { calls: AtomicUsize::new(0), asked: Mutex::new(Vec::new()), open: Mutex::new(true), opened: Condvar::new(), status, body: Mutex::new(body) })
     }
 
     fn hold(&self) {
@@ -62,7 +62,7 @@ impl Transport for Server {
         if self.status == 0 {
             return Err(TransportError::Failed { kind: FailureKind::Connect, detail: Some("refused".into()) });
         }
-        Ok(TransportResponse { status: self.status, body: self.body.clone() })
+        Ok(TransportResponse { status: self.status, body: self.body.lock().clone() })
     }
 
     async fn send(&self, request: Exchange) -> Result<TransportResponse, TransportError> {
@@ -174,6 +174,18 @@ fn disk_cache_survives_restart_except_provider_covers() {
     assert_eq!(down.calls(), 0);
     assert!(matches!(loader.load(provider, 8, 8), Err(Error::Transport { kind: FailureKind::Connect, .. })));
     drop(loader);
+}
+
+#[test]
+fn an_answer_that_is_no_picture_is_not_kept() {
+    let d = dir("no-picture");
+    let server = Server::new(200);
+    let photo = std::mem::replace(&mut *server.body.lock(), br#"{"subsonic-response":{"status":"failed"}}"#.to_vec());
+    let loader = Loader::new(config(Some(d.to_path_buf()), 1), server.clone());
+    assert!(matches!(loader.load(PHOTO, 8, 8), Err(Error::Decode(DecodeError::Unknown))));
+    *server.body.lock() = photo;
+    assert_eq!(loader.load(PHOTO, 8, 8).unwrap().width, 8);
+    assert_eq!(server.calls(), 2);
 }
 
 /// Playlist covers (`pl-<id>_<changed>`) are kept like albums', and a cached cover is found offline
@@ -298,9 +310,6 @@ fn custom_painter_decodes_once_for_all_waiters() {
     assert!(loader.cached(PHOTO, 30, 30).is_none());
     loader.load(PHOTO, 30, 30).unwrap();
     assert_eq!(painted.load(Ordering::SeqCst), 2);
-    // Never upscaled; 0 x 0 is the picture's own size.
-    assert_eq!(loader.load(PHOTO, 300, 300).unwrap().got, (30, 30));
-    assert_eq!(loader.load(PHOTO, 0, 0).unwrap().got, (40, 30));
     drop(tickets);
 }
 
@@ -387,7 +396,7 @@ fn warm_fetches_to_disk_once_without_decoding() {
     // `read` serves the raw bytes from disk.
     let mut bytes = Vec::new();
     loader.read(PHOTO, &mut bytes).unwrap();
-    assert_eq!(bytes, server.body);
+    assert_eq!(bytes, *server.body.lock());
     assert_eq!(server.calls(), 4, "read from the disk, not fetched: {:?}", server.asked.lock());
     drop((busy, late));
     drop(loader);

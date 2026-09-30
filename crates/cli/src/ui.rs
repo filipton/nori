@@ -313,7 +313,7 @@ fn song_line(s: &Song, number: usize, w: usize, t: &Theme, playing: bool, album:
         Span::styled(pad(&format!("{number:>3}"), c[0]), dim(t))
     };
     let mut title = s.title.clone();
-    if crate::backend::is_provider(s) {
+    if s.is_provider() {
         title.push_str(" ☁");
     }
     let mark = if s.starred { " ♥" } else { "" };

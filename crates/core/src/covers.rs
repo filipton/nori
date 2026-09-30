@@ -12,7 +12,7 @@ const SIZES: [u32; 2] = [ROW, FULL];
 
 /// Whether cover id `id` (up to the next `&`) is an octo-fiesta provider's: `ext-...` or
 /// `pl-<provider>-<id>`. Navidrome's own playlist covers (`pl-<id>_<timestamp>`) are not.
-pub fn is_provider_id(id: &str) -> bool {
+fn provider_cover_id(id: &str) -> bool {
     let id = id.split('&').next().unwrap_or(id);
     if id.starts_with("ext-") {
         return true;
@@ -68,18 +68,16 @@ pub struct CoverWant {
 }
 
 /// `arts` at both sizes, deduplicated, provider covers skipped, at most `cap` covers.
-pub fn cover_wants(arts: Vec<String>, cap: u32) -> Vec<CoverWant> {
-    let mut seen: Vec<&str> = Vec::new();
+pub(crate) fn cover_wants(arts: Vec<String>, cap: u32) -> Vec<CoverWant> {
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut out = Vec::new();
-    for art in arts.iter().filter(|a| !is_provider_id(a)) {
+    for art in arts.iter().filter(|a| !provider_cover_id(a)) {
         if seen.len() == cap as usize {
             break;
         }
-        if seen.contains(&art.as_str()) {
-            continue;
+        if seen.insert(art.as_str()) {
+            out.extend(SIZES.iter().map(|&size| CoverWant { id: art.clone(), size }));
         }
-        seen.push(art);
-        out.extend(SIZES.iter().map(|&size| CoverWant { id: art.clone(), size }));
     }
     out
 }
@@ -115,7 +113,7 @@ impl Core {
 /// Queue positions to prefetch around `index`, nearest first: the skip targets `previous` and `next`
 /// (media3 indexes, -1 for none), then outwards both ways up to `ahead` steps (`ahead` 0: only
 /// `previous`). In range, excluding `index`, deduplicated.
-pub fn cover_neighbours(index: i32, previous: i32, next: i32, ahead: i32, len: u32) -> Vec<u32> {
+pub(crate) fn cover_neighbours(index: i32, previous: i32, next: i32, ahead: i32, len: u32) -> Vec<u32> {
     let ahead = ahead.max(0);
     let mut around = vec![previous, next];
     for d in 2..=ahead {
@@ -145,14 +143,16 @@ pub struct CoversAround {
 /// [`CoversAround`] over the core's queue; positions are media3 indexes, -1 for none.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn covers_around(index: i32, previous: i32, next: i32, ahead: i32) -> CoversAround {
-    let ids: Vec<String> = crate::playlist::with(|p| p.ids().to_vec());
-    let arts = crate::queue::cover_arts(&ids);
-    around(&arts, index, previous, next, ahead)
+    // Only the ids asked about are looked at, not the whole queue.
+    crate::playlist::with(|p| {
+        let ids = p.ids();
+        around(ids.len() as u32, |i| crate::queue::cover_art(&ids[i as usize]), index, previous, next, ahead)
+    })
 }
 
-fn around(arts: &[Option<String>], index: i32, previous: i32, next: i32, ahead: i32) -> CoversAround {
-    let len = arts.len() as u32;
-    let at = |i: u32| arts.get(i as usize).cloned().flatten();
+/// [`CoversAround`] for a queue of `len`, `art` giving position `i`'s cover.
+fn around(len: u32, art: impl Fn(u32) -> Option<String>, index: i32, previous: i32, next: i32, ahead: i32) -> CoversAround {
+    let at = |i: u32| (i < len).then(|| art(i)).flatten();
     let current = u32::try_from(index).ok().and_then(at);
     let near = current.into_iter().chain(cover_neighbours(index, previous, next, 1, len).into_iter().filter_map(at)).collect();
     let wants = cover_wants(cover_neighbours(index, previous, next, ahead, len).into_iter().filter_map(at).collect(), u32::MAX);
@@ -207,10 +207,10 @@ pub fn cover_key_parts(url: &str, mut part: impl FnMut(&[u8])) {
     }
 }
 
-/// Whether cover URL `url` is a provider's ([`is_provider_id`]); such covers are not cached since they
+/// Whether cover URL `url` is a provider's ([`provider_cover_id`]); such covers are not cached since they
 /// change once the item is downloaded. Allocation-free (Android calls it per cover via `@FastNative`).
 pub fn is_provider_cover(url: &str) -> bool {
-    url.match_indices("&id=").any(|(at, mark)| is_provider_id(&url[at + mark.len()..]))
+    url.match_indices("&id=").any(|(at, mark)| provider_cover_id(&url[at + mark.len()..]))
 }
 
 /// The platform transport for the cover loader (nori-covers), which fetches already-signed URLs.
@@ -342,9 +342,9 @@ mod tests {
     #[test]
     fn around_lists_near_and_wants() {
         let arts: Vec<Option<String>> = ["a", "b", "c", "ext-d", "b"].iter().map(|s| Some(s.to_string())).chain([None]).collect();
-        let r = around(&arts, 1, 0, 2, 3);
+        let r = around(arts.len() as u32, |i| arts[i as usize].clone(), 1, 0, 2, 3);
         assert_eq!(r.near, ["b", "a", "c"]);
         assert_eq!(r.wants.iter().map(|w| (w.id.as_str(), w.size)).collect::<Vec<_>>(), [("a", 320), ("a", 800), ("c", 320), ("c", 800), ("b", 320), ("b", 800)]);
-        assert_eq!(around(&[], -1, -1, -1, 2), CoversAround { near: vec![], wants: vec![] });
+        assert_eq!(around(0, |_| unreachable!(), -1, -1, -1, 2), CoversAround { near: vec![], wants: vec![] });
     }
 }

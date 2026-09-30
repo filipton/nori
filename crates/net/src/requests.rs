@@ -73,9 +73,18 @@ pub enum Write {
     SaveQueue { ids: Vec<String>, current: Option<String>, position_ms: i64 },
 }
 
-/// Cached answers a star change makes stale, as key prefixes. The starred album list prefix leaves the
-/// other album lists cached.
-const STAR_STALE: [&str; 5] = ["getStarred2", "getAlbum", "getArtist", "getPlaylist", "getAlbumList2&type=starred"];
+impl Write {
+    /// Whether the server getting it twice changes nothing more.
+    pub fn repeatable(&self) -> bool {
+        !matches!(self, Write::CreatePlaylist { .. } | Write::AddToPlaylist { .. } | Write::RemoveFromPlaylist { .. } | Write::CreateRadio { .. })
+    }
+}
+
+/// Cached answers a star change makes stale, as key prefixes (keys are the endpoint then `&k=v` each, so
+/// `getAlbum&` is an album page and not an album list).
+const STAR_STALE: [&str; 5] = ["getStarred2", "getAlbum&", "getArtist&", "getPlaylist&", "getAlbumList2&type=starred"];
+/// Cached answers a playlist change makes stale.
+const PLAYLIST_STALE: [&str; 2] = ["getPlaylist&", "getPlaylists"];
 
 /// The endpoint, parameters and stale cache prefixes of a write.
 pub fn request(w: Write) -> (&'static str, Vec<(String, String)>, &'static [&'static str]) {
@@ -86,17 +95,17 @@ pub fn request(w: Write) -> (&'static str, Vec<(String, String)>, &'static [&'st
         Write::CreatePlaylist { name, song_ids } => {
             let mut p = one("name", name);
             p.extend(many("songId", song_ids));
-            ("createPlaylist", p, &["getPlaylist"])
+            ("createPlaylist", p, &["getPlaylists"])
         }
         Write::AddToPlaylist { id, song_ids } => {
             let mut p = one("playlistId", id);
             p.extend(many("songIdToAdd", song_ids));
-            ("updatePlaylist", p, &["getPlaylist"])
+            ("updatePlaylist", p, &PLAYLIST_STALE)
         }
         Write::RemoveFromPlaylist { id, index } => {
-            ("updatePlaylist", pairs(&[("playlistId", id), ("songIndexToRemove", index.to_string())]), &["getPlaylist"])
+            ("updatePlaylist", pairs(&[("playlistId", id), ("songIndexToRemove", index.to_string())]), &PLAYLIST_STALE)
         }
-        Write::DeletePlaylist { id } => ("deletePlaylist", one("id", id), &["getPlaylist"]),
+        Write::DeletePlaylist { id } => ("deletePlaylist", one("id", id), &PLAYLIST_STALE),
         Write::CreateRadio { name, stream_url } => {
             ("createInternetRadioStation", pairs(&[("name", name), ("streamUrl", stream_url)]), &["getInternetRadioStations"])
         }

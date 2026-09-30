@@ -63,7 +63,7 @@ pub fn scrobble_playing(playing: bool, now_ms: i64) {
 }
 
 /// Listening needed for a play to count: `percent` (clamped to 10..100) of `duration_s`, within 10 s..4 min.
-pub fn needed_ms(duration_s: i64, percent: i32) -> i64 {
+pub(crate) fn needed_ms(duration_s: i64, percent: i32) -> i64 {
     (duration_s * 10 * percent.clamp(10, 100) as i64).clamp(10_000, 240_000)
 }
 
@@ -91,14 +91,13 @@ fn followed(id: Option<String>, why: TrackChange) -> Option<String> {
 /// and returns what to scrobble when scrobbling is on.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn scrobble_track(id: Option<String>, why: TrackChange, playing: bool, now_ms: i64, wall_ms: i64, tz_offset_ms: i32) -> ScrobbleSend {
-    let (taste_model, scrobble, percent) = nori_settings::settings_store::with_prefs(|p| (p.taste_model, p.scrobble, p.scrobble_percent)).unwrap_or((true, true, 50));
+    let (taste_model, scrobble, percent) = nori_settings::settings_store::prefs(|p| (p.taste_model, p.scrobble, p.scrobble_percent));
     let next = followed(id, why);
     let (done, heard, at) = SCROBBLER.lock().switch(next.clone().and_then(queue::queue_song), playing, now_ms, wall_ms);
-    if let (Some(song), true) = (done.clone(), taste_model) {
+    // The profile playing now, not the one open when the write runs.
+    if let (Some(song), true, Some(db)) = (done.clone(), taste_model, nori_db::active()) {
         background::run(move || {
-            if let Some(db) = nori_db::active() {
-                let _ = nori_library::history::record(&mut db.lock(), &song, at, heard, tz_offset_ms, db::now_ms());
-            }
+            let _ = nori_library::history::record(&mut db.lock(), &song, at, heard, tz_offset_ms, db::now_ms());
         });
     }
     if !scrobble {

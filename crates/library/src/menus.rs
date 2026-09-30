@@ -239,10 +239,11 @@ mod tests {
 
     #[test]
     fn sleep_offers_off_only_while_running() {
-        let idle = sleep_choices(false);
-        let c = |minutes, end_of_track, songs| SleepChoice { minutes, end_of_track, songs };
-        assert_eq!(idle, [c(15, false, 0), c(30, false, 0), c(45, false, 0), c(60, false, 0), c(0, true, 0), c(0, false, 2), c(0, false, 3), c(0, false, 5), c(0, false, 10)]);
-        assert_eq!(sleep_choices(true)[0], c(0, false, 0));
+        let off = SleepChoice { minutes: 0, end_of_track: false, songs: 0 };
+        let (running, idle) = (sleep_choices(true), sleep_choices(false));
+        assert_eq!(running[0], off);
+        assert_eq!(running[1..], idle);
+        assert!(!idle.contains(&off));
     }
 
     #[test]

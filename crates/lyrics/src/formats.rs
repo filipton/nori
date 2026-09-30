@@ -5,7 +5,7 @@
 use nori_model::{LyricLine, LyricWord, Lyrics};
 use yaml_rust2::{Yaml, YamlLoader};
 
-use crate::lyrics::utf16_at;
+use crate::lyrics::{offset_ms, time_ms, utf16_at, LONGEST_MS};
 
 /// One line as a source gives it, offsets still in bytes.
 #[derive(Default)]
@@ -93,26 +93,7 @@ pub(crate) fn finish(mut lines: Vec<Timed>) -> Lyrics {
     Lyrics { synced: !out.is_empty(), word_timed, lines: out, ..Default::default() }
 }
 
-/// How finely lyrics are timed, worst to best.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Timing {
-    Empty,
-    Untimed,
-    Lines,
-    Words,
-}
-
-impl Timing {
-    /// The words for it in the log.
-    pub fn words(self) -> &'static str {
-        match self {
-            Timing::Words => "word-timed",
-            Timing::Lines => "line-timed",
-            Timing::Untimed => "not timed",
-            Timing::Empty => "empty",
-        }
-    }
-}
+pub use nori_settings::lyrics_sources::Timing;
 
 pub fn timing(l: &Lyrics) -> Timing {
     match (l.lines.is_empty(), l.synced, l.word_timed) {
@@ -136,7 +117,7 @@ pub(crate) fn plain(text: &str) -> Lyrics {
 
 /// A lyricsfile (LRCLIB's and LRCGET's YAML, version 1.0). A file with only `plain` text is untimed; an
 /// unknown version, an instrumental or anything that does not parse is empty.
-pub fn from_lyricsfile(text: &str) -> Lyrics {
+pub(crate) fn from_lyricsfile(text: &str) -> Lyrics {
     // Lyrics are kilobytes; the cap stops a hostile file nesting the parser deep.
     if text.len() > 256 * 1024 {
         return Lyrics::default();
@@ -200,7 +181,7 @@ fn clock(s: &str) -> Option<i64> {
             _ => return None,
         }
     };
-    Some(ms.round() as i64)
+    time_ms(ms)
 }
 
 /// An attribute by its local name, whatever its namespace prefix (`ttm:role`).
@@ -321,7 +302,7 @@ pub(crate) fn voices(lines: &mut [Timed], kinds: &std::collections::HashMap<Stri
 
 /// Apple-style TTML (Unison, BiniLyrics): a `<p begin end>` per line, a `<span begin end>` per syllable.
 /// Untimed lines make untimed lyrics; line times alone give no words.
-pub fn from_ttml(text: &str) -> Lyrics {
+pub(crate) fn from_ttml(text: &str) -> Lyrics {
     if text.len() > 2 * 1024 * 1024 {
         return Lyrics::default();
     }
@@ -363,7 +344,7 @@ pub fn from_ttml(text: &str) -> Lyrics {
 fn tag(s: &str, open: char, close: char) -> Option<(Vec<i64>, usize)> {
     let body = s.strip_prefix(open)?;
     let end = body.find(close)?;
-    let nums = body[..end].split(',').map(|n| n.trim().parse::<i64>().ok()).collect::<Option<Vec<_>>>()?;
+    let nums = body[..end].split(',').map(|n| n.trim().parse::<i64>().ok().filter(|n| (-LONGEST_MS..=LONGEST_MS).contains(n))).collect::<Option<Vec<_>>>()?;
     (2..=3).contains(&nums.len()).then_some((nums, open.len_utf8() + end + close.len_utf8()))
 }
 
@@ -394,7 +375,7 @@ fn karaoke(text: &str, line: impl Fn(&str) -> Option<Timed>) -> Vec<Timed> {
     for raw in text.lines() {
         let raw = raw.trim_start_matches('\u{feff}').trim();
         if let Some(v) = raw.strip_prefix("[offset:").and_then(|r| r.strip_suffix(']')) {
-            offset = v.trim().parse().unwrap_or(0);
+            offset = offset_ms(v);
         } else if let Some(l) = line(raw) {
             lines.push(l);
         }
@@ -430,7 +411,7 @@ fn lrc_without_credits(text: &str, title: &str) -> Lyrics {
 
 /// NetEase's lyrics: its YRC (word-timed, from the song's start) when it times words, else its LRC
 /// without the JSON credit lines (`{"t":0,"c":[…]}`).
-pub fn from_netease(yrc: &str, lrc: &str, title: &str) -> Lyrics {
+pub(crate) fn from_netease(yrc: &str, lrc: &str, title: &str) -> Lyrics {
     let yrc = finish_karaoke(karaoke(yrc, |l| karaoke_line(l, '(', ')', false)), title);
     if yrc.word_timed {
         return yrc;
@@ -470,7 +451,7 @@ fn base64(s: &str) -> Option<Vec<u8>> {
 
 /// KuGou's KRC as its download API sends it: base64 of `krc1` and a zlib stream XORed with [KRC_KEY].
 /// Translations are not used. An error means the content is not KRC.
-pub fn from_krc(content: &str, title: &str) -> Result<Lyrics, String> {
+pub(crate) fn from_krc(content: &str, title: &str) -> Result<Lyrics, String> {
     let bytes = base64(content.trim()).ok_or("not base64")?;
     let body = bytes.strip_prefix(b"krc1".as_slice()).ok_or("not a KRC file")?;
     let packed: Vec<u8> = body.iter().enumerate().map(|(i, b)| b ^ KRC_KEY[i % KRC_KEY.len()]).collect();
@@ -571,7 +552,7 @@ fn qrc_line(raw: &str) -> Option<Timed> {
 }
 
 /// QQ Music's QRC as Portato sends it (decrypted, bare or wrapped); a song without QRC comes as LRC.
-pub fn from_qrc(text: &str, title: &str) -> Lyrics {
+pub(crate) fn from_qrc(text: &str, title: &str) -> Lyrics {
     if text.len() > 4 << 20 {
         return Lyrics::default();
     }

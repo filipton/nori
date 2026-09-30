@@ -8,9 +8,9 @@ use crate::client::{Client, NetResult};
 use crate::transport::{Exchange, NetError};
 
 /// Latest published release (excludes drafts and prereleases).
-pub const LATEST_URL: &str = "https://api.github.com/repos/filipton/nori/releases/latest";
+pub(crate) const LATEST_URL: &str = "https://api.github.com/repos/filipton/nori/releases/latest";
 /// Minimum interval between automatic checks.
-pub const CHECK_EVERY_MS: i64 = 24 * 60 * 60 * 1000;
+pub(crate) const CHECK_EVERY_MS: i64 = 24 * 60 * 60 * 1000;
 /// `app_kv` key: last check time (ms).
 const CHECKED_KEY: &str = "update.checkedMs";
 /// `app_kv` key: the version the user postponed.
@@ -126,7 +126,7 @@ pub struct Release {
 const ABIS: [&str; 4] = ["arm64-v8a", "armeabi-v7a", "x86_64", "x86"];
 
 /// The non-empty APK for the first of `abis` (preference order) that has one, else the ABI-less APK.
-pub fn pick_apk<'a>(assets: &'a [Asset], abis: &[String]) -> Option<&'a Asset> {
+pub(crate) fn pick_apk<'a>(assets: &'a [Asset], abis: &[String]) -> Option<&'a Asset> {
     let apks: Vec<&Asset> = assets.iter().filter(|a| a.name.to_ascii_lowercase().ends_with(".apk") && a.size > 0 && !a.browser_download_url.is_empty()).collect();
     let abi_of = |a: &Asset| {
         let stem = a.name[..a.name.len() - 4].to_string();
@@ -204,7 +204,7 @@ pub fn due(on: bool, checked_ms: Option<i64>, now_ms: i64) -> bool {
 
 /// Markdown notes as plain text: headings unmarked, list items as bullets, wrapped paragraphs joined,
 /// emphasis and code marks dropped, links as their text, single blank lines between blocks.
-pub fn plain_notes(md: &str) -> String {
+pub(crate) fn plain_notes(md: &str) -> String {
     let mut out: Vec<String> = Vec::new();
     // Whether the next source line continues the last output line.
     let mut open = false;
@@ -285,7 +285,7 @@ impl Client {
     pub async fn update_check(&self, asked: bool, version: String, abis: Vec<String>) -> NetResult<UpdateCheck> {
         let now = crate::db::now_ms();
         if !asked {
-            let on = crate::settings_store::with_prefs(|p| p.update_check).unwrap_or(false);
+            let on = crate::settings_store::prefs(|p| p.update_check);
             let checked = crate::settings_store::app_value(CHECKED_KEY).and_then(|v| v.parse::<i64>().ok());
             if !due(on, checked, now) {
                 return Ok(UpdateCheck::NotDue);

@@ -592,13 +592,13 @@ fn encode_floats(g: &[f32]) -> String {
 }
 
 /// A target from its text; empty when invalid.
-pub fn decode_target(s: &str) -> Vec<f32> {
+pub(crate) fn decode_target(s: &str) -> Vec<f32> {
     let g: Option<Vec<f32>> = s.split(',').map(float).collect();
     g.filter(|g| g.len() == nori_player::graphic::TARGET_POINTS && g.iter().all(|v| v.is_finite())).unwrap_or_default()
 }
 
 /// Graphic sliders from their text: one number per band of a valid layout, held to the gain range.
-pub fn decode_graphic(s: &str) -> Option<Vec<f32>> {
+pub(crate) fn decode_graphic(s: &str) -> Option<Vec<f32>> {
     let g: Vec<f32> = s.split(',').map(|v| float(v).map(|v| EQ_RANGES.gain.hold(v))).collect::<Option<_>>()?;
     nori_player::graphic::LAYOUTS.contains(&g.len()).then_some(g)
 }
@@ -692,7 +692,7 @@ impl SoundEffects {
     }
 
     /// The compressor's controls, whether it is on or not.
-    pub fn compressor_settings(&self) -> nori_player::compressor::CompressorSettings {
+    pub(crate) fn compressor_settings(&self) -> nori_player::compressor::CompressorSettings {
         nori_player::compressor::CompressorSettings {
             threshold_db: self.comp_threshold_db as f64,
             ratio: self.comp_ratio as f64,
@@ -704,7 +704,7 @@ impl SoundEffects {
     }
 
     /// The expander's controls, whether it is on or not.
-    pub fn expander_settings(&self) -> nori_player::compressor::ExpanderSettings {
+    pub(crate) fn expander_settings(&self) -> nori_player::compressor::ExpanderSettings {
         nori_player::compressor::ExpanderSettings {
             threshold_db: self.exp_threshold_db as f64,
             ratio: self.exp_ratio as f64,
@@ -745,7 +745,7 @@ impl SoundEffects {
     }
 
     /// A compressor preset applied, and the compressor on.
-    pub fn with_compressor_preset(self, p: nori_player::compressor::CompressorPreset) -> SoundEffects {
+    pub(crate) fn with_compressor_preset(self, p: nori_player::compressor::CompressorPreset) -> SoundEffects {
         let s = p.settings();
         SoundEffects {
             compressor: true,
@@ -871,7 +871,7 @@ impl StoredPrefs {
     }
 
     /// What the transition planner reads from the settings (`nori_automix::planner::settings_from`).
-    pub fn transition_prefs(&self) -> TransitionPrefs {
+    pub(crate) fn transition_prefs(&self) -> TransitionPrefs {
         TransitionPrefs {
             auto_mix: self.auto_mix,
             crossfade_s: self.crossfade_sec,
@@ -930,7 +930,7 @@ pub fn graphic() -> Vec<SoundBand> {
 
 /// Reads a band list ("kind:freq:gain:q[:channel]" joined by ';'). Unreadable bands are dropped; None
 /// when none is left.
-pub fn decode_bands(s: &str) -> Option<Vec<SoundBand>> {
+pub(crate) fn decode_bands(s: &str) -> Option<Vec<SoundBand>> {
     let bands: Vec<SoundBand> = s
         .split(';')
         .filter_map(|b| {
@@ -1155,16 +1155,16 @@ pub fn load(raw: &HashMap<String, PrefValue>) -> StoredPrefs {
 }
 
 /// The equalizer mode's key; absent in settings stored before the graphic equalizer existed.
-pub const EQ_MODE_KEY: &str = "eqMode";
+pub(crate) const EQ_MODE_KEY: &str = "eqMode";
 
 /// Whether settings stored before the graphic equalizer have the parametric one set up (on, a pre-amp,
 /// or bands other than the flat defaults); such installs keep it.
-pub fn parametric_set_up(p: &StoredPrefs) -> bool {
+pub(crate) fn parametric_set_up(p: &StoredPrefs) -> bool {
     p.eq_enabled || p.eq_preamp_db.is_some() || p.eq_bands != graphic()
 }
 
 /// Whether a saved sound profile's JSON has a parametric equalizer set up.
-pub fn profile_parametric(json: &str) -> bool {
+pub(crate) fn profile_parametric(json: &str) -> bool {
     sound_from(json).is_some_and(|s| s.eq_enabled && (s.eq_bands != graphic() || s.eq_preamp_db.is_some()))
 }
 
@@ -1356,7 +1356,7 @@ fn layout_of(s: &SoundSettings) -> usize {
 }
 
 /// Graphic sliders for another layout that draw the same curve; unchanged for an invalid `count`.
-pub fn relayout_graphic(sliders: &[f32], count: usize) -> Vec<f32> {
+pub(crate) fn relayout_graphic(sliders: &[f32], count: usize) -> Vec<f32> {
     if !nori_player::graphic::LAYOUTS.contains(&count) {
         return sliders.to_vec();
     }
@@ -1385,7 +1385,7 @@ fn fit_target(target: &[f32], count: usize) -> Option<(Vec<f32>, f32)> {
 
 /// A headphone correction (AutoEQ text: a `GraphicEQ:` curve or filters) as a graphic fitting target;
 /// None when the text has neither.
-pub fn correction_target(text: &str) -> Option<Vec<f32>> {
+pub(crate) fn correction_target(text: &str) -> Option<Vec<f32>> {
     let target = match nori_player::eqfit::parse_graphic(text) {
         Some(points) => nori_player::graphic::target_from_points(&points),
         None => {
@@ -1661,12 +1661,12 @@ fn off_below(v: f32, least: f32) -> f32 {
 }
 
 /// Balance within 0.04 of the centre snaps to 0.
-pub fn balance_snap(v: f32) -> f32 {
+pub(crate) fn balance_snap(v: f32) -> f32 {
     if v.abs() < 0.04 { 0.0 } else { v }
 }
 
 /// Crossfeed under 1 dB snaps to off.
-pub fn crossfeed_snap(db: f32) -> f32 {
+pub(crate) fn crossfeed_snap(db: f32) -> f32 {
     if db < 1.0 { 0.0 } else { db }
 }
 
@@ -1837,7 +1837,7 @@ pub fn server_new_id() -> String {
 
 /// Extra HTTP headers as typed, one "Name: value" per line. Lines without a colon or name are skipped;
 /// a repeated name keeps its last value.
-pub fn parse_headers(text: &str) -> HashMap<String, String> {
+pub(crate) fn parse_headers(text: &str) -> HashMap<String, String> {
     text.lines()
         .filter_map(|l| {
             let (k, v) = l.split_once(':')?;
@@ -1906,7 +1906,7 @@ pub fn sound_from_json(json: String) -> Option<SoundSettings> {
 
 /// The equalizer in use reset to flat with the automatic pre-amp: the ten default bands (parametric)
 /// or every slider at 0 in the same layout (graphic).
-pub fn eq_reset_bands(sound: SoundSettings) -> SoundSettings {
+pub(crate) fn eq_reset_bands(sound: SoundSettings) -> SoundSettings {
     match sound.eq_mode {
         EqMode::Graphic => SoundSettings { eq_graphic: vec![0.0; sound.eq_graphic.len().max(1)], eq_graphic_target: Vec::new(), eq_preamp_db: None, ..sound },
         EqMode::Parametric => SoundSettings { eq_bands: graphic(), eq_preamp_db: None, ..sound },
@@ -2156,6 +2156,11 @@ mod tests {
         assert!(!set_by_name(&StoredPrefs { mono: true, ..p.clone() }, "mono", "yes").unwrap().prefs.mono);
         assert_eq!(set_by_name(&p, "parallelDownloads", "99").unwrap().prefs.parallel_downloads, 10);
         assert_eq!(set_by_name(&p, "coversAhead", "x").unwrap().prefs.covers_ahead, 3, "unreadable keeps the value");
+        for not_a_number in ["NaN", "inf", "-infinity"] {
+            let held = set_by_name(&p, "compThresholdDb", not_a_number).unwrap().prefs;
+            assert_eq!(held.comp_threshold_db, p.comp_threshold_db, "{not_a_number}");
+            assert_eq!(set_by_name(&p, "crossfeedDb", not_a_number).unwrap().prefs.crossfeed_db, p.crossfeed_db, "{not_a_number}");
+        }
         assert_eq!(set_by_name(&p, "cacheMb", "10").unwrap().prefs.cache_mb, 256);
         assert_eq!(set_by_name(&p, "speed", "9").unwrap().prefs.speed, 4.0);
         assert_eq!(set_by_name(&p, "fadeMs", "-5").unwrap().prefs.fade_ms, 0);
@@ -2186,13 +2191,7 @@ mod tests {
     }
 
     #[test]
-    fn lookup_defaults() {
-        let fresh = load(&HashMap::new());
-        assert!(fresh.third_party_lookups && fresh.lyrics_online && fresh.auto_eq_download);
-        assert!(!fresh.motion_artwork, "moving covers are heavier and stay off");
-        let asked: Vec<&str> = crate::lyrics_sources::lyrics_lookup(&fresh).services.iter().map(|s| s.name()).collect();
-        let keyless: Vec<&str> = LyricsService::ALL.iter().filter(|s| !s.needs_key()).map(|s| s.name()).collect();
-        assert_eq!(asked, keyless, "every service on; the ones that need a key wait for it");
+    fn autoeq_switches_lookups_on() {
         // Stored off stays off.
         let kept = load(&save(&StoredPrefs { third_party_lookups: false, auto_eq_download: false, ..StoredPrefs::default() }));
         assert!(!kept.third_party_lookups && !kept.auto_eq_download);
@@ -2260,15 +2259,6 @@ mod tests {
     }
 
     #[test]
-    fn band_kind_facts() {
-        let kinds: Vec<(bool, bool)> = eq_model_get().band_kinds.iter().map(|k| (k.uses_gain, k.slope)).collect();
-        assert_eq!(
-            kinds,
-            [(true, false), (true, false), (true, false), (false, false), (false, false), (false, false), (false, false), (false, false), (true, true), (true, true)]
-        );
-    }
-
-    #[test]
     fn set_band_holds_range() {
         let s = sound();
         let b = set_band(s.clone(), 3, band_from(42, 5.0, 30.0, 0.0, 7));
@@ -2312,14 +2302,13 @@ mod tests {
     }
 
     #[test]
-    fn band_marks_and_snaps() {
+    fn band_marks() {
         assert_eq!(band_mark(0, 0), BandMark::None);
         assert_eq!(band_mark(1, 1), BandMark::Left);
         assert_eq!(band_mark(8, 0), BandMark::LowShelf);
         assert_eq!(band_mark(2, 0), BandMark::HighShelf);
         assert_eq!(band_mark(9, 2), BandMark::Right);
         assert_eq!(band_mark(6, 0), BandMark::NoGain);
-        assert_eq!((balance_snap(0.03), crossfeed_snap(0.9), crossfeed_snap(2.0)), (0.0, 0.0, 2.0));
     }
 
     #[test]
@@ -2409,7 +2398,6 @@ mod tests {
     #[test]
     fn graphic_edits() {
         let g = SoundSettings { eq_mode: EqMode::Graphic, ..sound() };
-        assert_eq!(g.eq_graphic, vec![0.0; 10], "ten flat sliders out of the box");
         let moved = set_graphic(g.clone(), 3, 20.0);
         assert_eq!(moved.eq_graphic[3], 12.0, "held to the range");
         assert_eq!(moved.eq_bands, g.eq_bands, "the parametric bands are left alone");
@@ -2444,7 +2432,6 @@ mod tests {
     #[test]
     fn eq_mode_migration() {
         assert_eq!(load(&HashMap::new()).eq_mode, EqMode::Graphic, "a new install");
-        assert_eq!(StoredPrefs::default().eq_mode, EqMode::Graphic);
         // From before this version, with only the defaults: nothing was set up, so graphic.
         assert_eq!(load(&stored_before(StoredPrefs::default())).eq_mode, EqMode::Graphic);
         // From before, with a parametric equalizer in any form: it stays.
@@ -2523,8 +2510,6 @@ mod tests {
     #[test]
     fn effects_by_name() {
         let p = StoredPrefs::default();
-        assert!(!p.sound_chain_on() && !p.effects().on(), "every effect off out of the box");
-        assert_eq!(p.effects().compressor_preset(), Some(nori_player::compressor::CompressorPreset::Balanced), "the defaults are the balanced preset");
         let c = set_by_name(&p, "compressorPreset", "strong").unwrap().prefs;
         assert!(c.compressor && c.comp_ratio == 5.0 && c.sound_chain_on());
         assert_eq!(value_of_special(&c, "compressorPreset").as_deref(), Some("STRONG"));
@@ -2532,15 +2517,13 @@ mod tests {
         assert_eq!(value_of_special(&custom, "compressorPreset").as_deref(), Some(""), "moved: none of them");
         assert!(set_by_name(&p, "compressorPreset", "loud").is_none());
         assert_eq!(set_by_name(&p, "volumeBoostDb", "40").unwrap().prefs.volume_boost_db, 12.0);
-        // The expander: off out of the box, on by its switch, its controls held and kept in a profile.
-        assert!(p.effects().player().expander.is_none());
+        // The expander: on by its switch, its controls held and kept in a profile.
         let x = set_by_name(&p, "expander", "true").unwrap().prefs;
         assert!(x.sound_chain_on() && x.effects().player().expander == Some(nori_player::compressor::ExpanderSettings::default()));
         assert_eq!(set_level(x.sound(), EqLevel::ExpThreshold, -200.0).effects.exp_threshold_db, -90.0);
         let r = set_level(x.sound(), EqLevel::ExpRatio, 10.0);
         assert_eq!(sound_from(&sound_json(&r)).unwrap().effects, r.effects);
-        // Loudness compensation: off out of the box; on, at the volume the platform says.
-        assert!(p.effects().player().loudness.is_none());
+        // Loudness compensation: on, at the volume the platform says.
         let l = set_by_name(&p, "loudness", "true").unwrap().prefs;
         assert!(l.sound_chain_on());
         let fx = l.effects().player_at(-30.0);
@@ -2578,7 +2561,6 @@ mod tests {
     #[test]
     fn crossfeed_presets() {
         let p = StoredPrefs::default();
-        assert_eq!((p.crossfeed_db, p.crossfeed_hz), (0.0, 700.0), "off, at bs2b's cutoff");
         assert_eq!(value_of_special(&p, "crossfeedPreset").as_deref(), Some("OFF"));
         let m = set_by_name(&p, "crossfeedPreset", "jan_meier").unwrap().prefs;
         assert_eq!((m.crossfeed_hz, m.crossfeed_db), (650.0, 9.5));

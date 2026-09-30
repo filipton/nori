@@ -1,6 +1,5 @@
 //! Mix calls over the index and history. The mixes themselves are nori-library's.
 
-use rusqlite::types::Value;
 
 use crate::{db, model::Song, Core, Result};
 
@@ -24,24 +23,8 @@ impl Core {
 
 /// `seed` picks the draw: the same seed gives the same mix.
 impl Core {
-    /// `genre` matches ASCII case-insensitively.
-    pub fn mix_genre(&self, genre: String, limit: u32, seed: u64) -> Result<Vec<Song>> {
-        let limit = limit as usize;
-        Ok(themed(&self.db.lock(), "json_extract(i.json,'$.genre')=?1 COLLATE NOCASE", vec![Value::Text(genre)], limit, (limit / 5).max(2), seed, db::now_ms())?)
-    }
-
-    pub fn mix_artist(&self, artist_id: String, limit: u32, seed: u64) -> Result<Vec<Song>> {
-        Ok(themed(&self.db.lock(), "json_extract(i.json,'$.artistId')=?1", vec![Value::Text(artist_id)], limit as usize, usize::MAX, seed, db::now_ms())?)
-    }
-
-    /// `decade_start_year` 1990 means 1990..=1999.
-    pub fn mix_decade(&self, decade_start_year: u32, limit: u32, seed: u64) -> Result<Vec<Song>> {
-        let (limit, from) = (limit as usize, decade_start_year as i64);
-        Ok(themed(&self.db.lock(), decade_cond(), vec![Value::Integer(from), Value::Integer(from + 9)], limit, (limit / 5).max(2), seed, db::now_ms())?)
-    }
-
     /// Empty when the seed song is not indexed.
-    pub fn mix_instant(&self, seed_song_id: String, limit: u32, seed: u64) -> Result<Vec<Song>> {
+    pub(crate) fn mix_instant(&self, seed_song_id: String, limit: u32, seed: u64) -> Result<Vec<Song>> {
         Ok(instant(&self.db.lock(), &seed_song_id, limit as usize, seed, db::now_ms())?)
     }
 
@@ -55,25 +38,6 @@ impl Core {
         let mut st = c.prepare_cached("SELECT i.json FROM mix_excluded e JOIN items i ON i.server=sid() AND i.kind=2 AND i.id=e.song_id WHERE e.server=sid() ORDER BY i.rowid")?;
         let rows = st.query_map([], |r| r.get::<_, String>(0))?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?.iter().filter_map(|j| serde_json::from_str(j).ok()).collect())
-    }
-}
-
-#[cfg(test)]
-impl Core {
-    pub fn mix_quick_picks(&self, limit: u32, seed: u64) -> Result<Vec<Song>> {
-        Ok(quick_picks(&self.db.lock(), limit as usize, seed, db::now_ms())?)
-    }
-
-    pub fn mix_discover(&self, limit: u32, seed: u64) -> Result<Vec<Song>> {
-        Ok(discover(&self.db.lock(), limit as usize, seed, db::now_ms())?)
-    }
-
-    pub fn mix_listen_again(&self, limit: u32, seed: u64) -> Result<Vec<Song>> {
-        Ok(listen_again(&self.db.lock(), limit as usize, seed, db::now_ms())?)
-    }
-
-    pub fn mix_top(&self, limit: u32) -> Result<Vec<Song>> {
-        Ok(top(&self.db.lock(), limit as usize, db::now_ms())?)
     }
 }
 
@@ -111,13 +75,13 @@ pub(crate) mod tests {
     #[test]
     fn mixes_are_empty_without_index() {
         let core = Core::new(String::new(), "t".into()).unwrap();
-        assert!(core.mix_quick_picks(20, 1).unwrap().is_empty());
-        assert!(core.mix_discover(20, 1).unwrap().is_empty());
-        assert!(core.mix_listen_again(20, 1).unwrap().is_empty());
-        assert!(core.mix_top(20).unwrap().is_empty());
-        assert!(core.mix_genre("Rock".into(), 20, 1).unwrap().is_empty());
-        assert!(core.mix_artist("ar1".into(), 20, 1).unwrap().is_empty());
-        assert!(core.mix_decade(1990, 20, 1).unwrap().is_empty());
+        {
+            let c = core.db.lock();
+            assert!(quick_picks(&c, 20, 1, NOW).unwrap().is_empty());
+            assert!(discover(&c, 20, 1, NOW).unwrap().is_empty());
+            assert!(listen_again(&c, 20, 1, NOW).unwrap().is_empty());
+            assert!(top(&c, 20, NOW).unwrap().is_empty());
+        }
         assert!(core.mix_instant("nope".into(), 20, 1).unwrap().is_empty());
         assert!(core.mix_excluded_list().unwrap().is_empty());
     }
@@ -198,29 +162,9 @@ pub(crate) mod tests {
     fn discover_without_history_spans_genres() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         library(&core);
-        let mix = core.mix_discover(30, 1).unwrap();
+        let mix = discover(&core.db.lock(), 30, 1, NOW).unwrap();
         assert_eq!(mix.len(), 30);
         assert!(mix.iter().map(|s| s.genre.clone()).collect::<HashSet<_>>().len() > 1);
-    }
-
-    #[test]
-    fn genre_artist_and_decade_mixes_filter() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
-        library(&core);
-        let rock = core.mix_genre("rock".into(), 15, 1).unwrap();
-        assert_eq!(rock.len(), 15);
-        assert!(rock.iter().all(|s| s.genre.as_deref() == Some("Rock")));
-        assert_eq!(ids(&rock), ids(&core.mix_genre("rock".into(), 15, 1).unwrap()));
-        assert_ne!(ids(&rock), ids(&core.mix_genre("rock".into(), 15, 2).unwrap()));
-        assert!(core.mix_genre("Polka".into(), 15, 1).unwrap().is_empty());
-
-        let artist = core.mix_artist("ar-jazz artist 3".into(), 50, 1).unwrap();
-        assert_eq!(artist.len(), 10, "no per-artist cap");
-        assert!(artist.iter().all(|s| s.artist == "Jazz Artist 3"));
-
-        let eighties = core.mix_decade(1980, 50, 1).unwrap();
-        assert!(!eighties.is_empty() && eighties.iter().all(|s| (1980..1990).contains(&s.year)));
-        assert!(core.mix_decade(1900, 50, 1).unwrap().is_empty());
     }
 
     #[test]
@@ -262,13 +206,11 @@ pub(crate) mod tests {
         assert!(listen_again(&c, 50, 1, NOW).unwrap().is_empty());
         assert!(top(&c, 50, NOW).unwrap().is_empty());
         drop(c);
-        assert_eq!(core.mix_genre("Rock".into(), 100, 1).unwrap().len(), 40);
-        assert!(core.mix_artist("ar-rock artist 0".into(), 100, 1).unwrap().is_empty());
 
         core.mix_excluded_set(out[0].id.clone(), false).unwrap();
-        assert_eq!(ids(&core.mix_artist("ar-rock artist 0".into(), 100, 1).unwrap()), vec![out[0].id.as_str()]);
+        assert_eq!(ids(&top(&core.db.lock(), 50, NOW).unwrap()), vec![out[0].id.as_str()]);
         core.mix_excluded_clear().unwrap();
-        assert_eq!(core.mix_artist("ar-rock artist 0".into(), 100, 1).unwrap().len(), 10);
+        assert_eq!(top(&core.db.lock(), 50, NOW).unwrap().len(), 10);
     }
 
     #[test]

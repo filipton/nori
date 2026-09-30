@@ -9,7 +9,7 @@ use nori_model::{Lyrics, Song};
 use serde::{Deserialize, Serialize};
 
 use crate::credits::credits_inside;
-use crate::fit::{agree, norm};
+use crate::fit::norm;
 use crate::formats::{timing, Timing};
 use crate::lrclib::clean;
 use crate::sync::{SyncCheck, SyncKind};
@@ -70,7 +70,7 @@ pub(crate) fn latin(v: &str) -> bool {
 
 /// How alike two names are, 0 to 1: equal once cleaned and normalised 1, one containing the other 0.85,
 /// else by shared words; names in two scripts are [`UNKNOWN`].
-pub fn name_alike(a: &str, b: &str) -> f64 {
+pub(crate) fn name_alike(a: &str, b: &str) -> f64 {
     let (x, y) = (norm(&clean(a)), norm(&clean(b)));
     let (x, y) = if x.is_empty() || y.is_empty() { (norm(a), norm(b)) } else { (x, y) };
     if x.is_empty() || y.is_empty() {
@@ -189,27 +189,34 @@ const OTHER_SCRIPT: f64 = 0.2;
 /// Taken off an answer agreeing with none of the others while two of them agree.
 const OUTVOTED: f64 = 0.2;
 
-/// The score of `l` from a service trusted `prior` that named `named`, beside the `others` answers.
-pub fn score(song: &Song, l: &Lyrics, named: &Named, prior: f64, others: &[(&Lyrics, &Named)], prefer_words: bool) -> Trust {
+/// Another answer beside the one scored: its lyrics, what its service named, and whether it has the
+/// same words as the scored one.
+pub struct Other<'a> {
+    pub lyrics: &'a Lyrics,
+    pub named: &'a Named,
+    pub agrees: bool,
+}
+
+/// The score of `l` from a service trusted `prior` that named `named`, beside the `others` answers, of
+/// which two agree with each other when `others_agree`.
+pub fn score(song: &Song, l: &Lyrics, named: &Named, prior: f64, others: &[Other], others_agree: bool, prefer_words: bool) -> Trust {
     // An answer borrows most of the metadata match of one it agrees with.
-    let backing = others.iter().filter(|(o, _)| agree(l, o)).map(|(_, n)| meta(song, n) * 0.95).fold(0.0, f64::max);
+    let backing = others.iter().filter(|o| o.agrees).map(|o| meta(song, o.named) * 0.95).fold(0.0, f64::max);
     let meta = meta(song, named).max(backing);
-    let others: Vec<&Lyrics> = others.iter().map(|(o, _)| *o).collect();
     let timing = timing_part(l, prefer_words);
     let shape = shape(l, song);
-    let agreeing = others.iter().filter(|o| agree(l, o)).count();
+    let agreeing = others.iter().filter(|o| o.agrees).count();
     let agreement = (agreeing as f64 + 0.5) / (others.len() as f64 + 1.0);
     let mut penalty = junk(l);
     if named.title.as_deref().is_some_and(|t| latin(t) == latin(&song.title) && name_alike(t, &song.title) < 0.5) {
         penalty += OTHER_TITLE;
     }
     let mine = script(l);
-    let theirs: Vec<Option<u8>> = others.iter().map(|o| script(o)).collect();
+    let theirs: Vec<Option<u8>> = others.iter().map(|o| script(o.lyrics)).collect();
     if !theirs.is_empty() && theirs.iter().all(|s| s.is_some() && *s != mine && *s == theirs[0]) && agreeing == 0 {
         penalty += OTHER_SCRIPT;
     }
-    let outvoted = agreeing == 0 && others.iter().enumerate().any(|(i, a)| others[i + 1..].iter().any(|b| agree(a, b)));
-    if outvoted {
+    if agreeing == 0 && others_agree {
         penalty += OUTVOTED;
     }
     let raw = W_META * meta + W_TIMING * timing + W_AGREE * agreement + W_PRIOR * prior + W_SHAPE * shape - penalty;
@@ -225,7 +232,7 @@ const POOR_FIT: f64 = 0.1;
 
 /// `t` with the sync check weighed in ([`W_SYNC`], less [`DRIFTS`] or [`POOR_FIT`]); no or an unsure
 /// check leaves it as it was.
-pub fn with_sync(mut t: Trust, check: Option<&SyncCheck>) -> Trust {
+pub(crate) fn with_sync(mut t: Trust, check: Option<&SyncCheck>) -> Trust {
     let Some(c) = check.filter(|c| c.kind != SyncKind::Unsure) else { return t };
     let off = match c.kind {
         SyncKind::Drifts => DRIFTS,
@@ -264,22 +271,22 @@ mod tests {
     fn timing_ranks_words_lines_plain() {
         let s = song();
         let n = named("Glass Harbour", 180.0);
-        let words = score(&s, &song_words(true), &n, 0.85, &[], true).score;
-        let lines = score(&s, &song_words(false), &n, 0.85, &[], true).score;
+        let words = score(&s, &song_words(true), &n, 0.85, &[], false, true).score;
+        let lines = score(&s, &song_words(false), &n, 0.85, &[], false, true).score;
         let mut plain = song_words(false);
         plain.synced = false;
-        let untimed = score(&s, &plain, &n, 0.85, &[], true).score;
+        let untimed = score(&s, &plain, &n, 0.85, &[], false, true).score;
         assert!(words > lines && lines > untimed, "{words} {lines} {untimed}");
-        let even = score(&s, &song_words(false), &n, 0.85, &[], false).score;
+        let even = score(&s, &song_words(false), &n, 0.85, &[], false, false).score;
         assert!(words - even < 0.02, "without preferring words, lines are nearly as good");
     }
 
     #[test]
     fn wrong_length_or_title_costs() {
         let s = song();
-        let right = score(&s, &song_words(true), &named("Glass Harbour", 180.0), 0.8, &[], true).score;
-        let long = score(&s, &song_words(true), &named("Glass Harbour", 188.0), 0.8, &[], true).score;
-        let other = score(&s, &song_words(true), &named("Whisky on the Table", 180.0), 0.8, &[], true).score;
+        let right = score(&s, &song_words(true), &named("Glass Harbour", 180.0), 0.8, &[], false, true).score;
+        let long = score(&s, &song_words(true), &named("Glass Harbour", 188.0), 0.8, &[], false, true).score;
+        let other = score(&s, &song_words(true), &named("Whisky on the Table", 180.0), 0.8, &[], false, true).score;
         assert!(right > long && long > other, "{right} {long} {other}");
         assert!(right - other > 0.2);
     }
@@ -287,12 +294,12 @@ mod tests {
     #[test]
     fn implausible_times_cost() {
         let s = song();
-        let good = score(&s, &song_words(true), &Named::default(), 0.8, &[], true).score;
+        let good = score(&s, &song_words(true), &Named::default(), 0.8, &[], false, true).score;
         let early: Vec<(i64, &str)> = (0..18).map(|i| (5_000 + i * 4_000, ["line one here", "line two here", "a third line", "line four", "the fifth one", "and a sixth"][i as usize % 6])).collect();
-        let short = score(&s, &timed(&early, true), &Named::default(), 0.8, &[], true).score;
+        let short = score(&s, &timed(&early, true), &Named::default(), 0.8, &[], false, true).score;
         let mut shuffled = song_words(true);
         shuffled.lines.reverse();
-        let jumbled = score(&s, &shuffled, &Named::default(), 0.8, &[], true).score;
+        let jumbled = score(&s, &shuffled, &Named::default(), 0.8, &[], false, true).score;
         assert!(good > short && good > jumbled, "{good} {short} {jumbled}");
     }
 
@@ -302,9 +309,11 @@ mod tests {
         let (a, b) = (song_words(true), song_words(false));
         let other: Vec<(i64, &str)> = (0..18).map(|i| (10_000 + i * 9_000, ["something else entirely", "nothing alike at all", "words of another tune"][i as usize % 3])).collect();
         let other = timed(&other, true);
-        let alone = score(&s, &a, &Named::default(), 0.8, &[], true).score;
-        let backed = score(&s, &a, &Named::default(), 0.8, &[(&b, &Named::default())], true).score;
-        let doubted = score(&s, &a, &Named::default(), 0.8, &[(&other, &Named::default())], true).score;
+        let n = Named::default();
+        let beside = |o| [Other { lyrics: o, named: &n, agrees: crate::fit::agree(&a, o) }];
+        let alone = score(&s, &a, &n, 0.8, &[], false, true).score;
+        let backed = score(&s, &a, &n, 0.8, &beside(&b), false, true).score;
+        let doubted = score(&s, &a, &n, 0.8, &beside(&other), false, true).score;
         assert!(backed > alone && alone > doubted, "{backed} {alone} {doubted}");
     }
 
@@ -314,9 +323,10 @@ mod tests {
         let lines: Vec<(i64, &str)> = (0..18).map(|i| (10_000 + i * 9_000, ["紙の舟が行く", "港の灯り", "波が遠く", "朝が来る", "水をつかむ", "光をつかむ"][i as usize % 6])).collect();
         let japanese = timed(&lines, true);
         let (a, b) = (song_words(true), song_words(false));
-        let odd = score(&s, &japanese, &Named::default(), 0.8, &[(&a, &Named::default()), (&b, &Named::default())], true);
+        let n = Named::default();
+        let odd = score(&s, &japanese, &n, 0.8, &[Other { lyrics: &a, named: &n, agrees: false }, Other { lyrics: &b, named: &n, agrees: false }], true, true);
         assert!(odd.penalty >= OTHER_SCRIPT);
-        let alone = score(&s, &japanese, &Named::default(), 0.8, &[], true);
+        let alone = score(&s, &japanese, &n, 0.8, &[], false, true);
         assert!(alone.penalty < OTHER_SCRIPT, "alone, a script is no evidence");
     }
 }

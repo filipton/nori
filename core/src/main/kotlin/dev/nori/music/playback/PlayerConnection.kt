@@ -136,7 +136,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
      */
     private fun heard(c: MediaController): Boolean {
         // One call, primitives only. The queue is the core's own.
-        read(HeardJni.at(clock, android.os.SystemClock.elapsedRealtime(), c.isPlaying, c.currentMediaItemIndex, c.nextMediaItemIndex, c.currentPosition))
+        read(HeardJni.at(clock, android.os.SystemClock.elapsedRealtime(), c.isPlaying, c.currentPosition))
         return heardIndex >= 0
     }
 

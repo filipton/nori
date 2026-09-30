@@ -39,9 +39,9 @@ pub fn queue_register(songs: Vec<Song>) {
     });
 }
 
-/// Each id's cover art id, if known.
-pub fn cover_arts(ids: &[String]) -> Vec<Option<String>> {
-    with(|s| ids.iter().map(|id| s.songs.get(id).and_then(|(song, _)| song.cover_art.clone())).collect())
+/// The cover art id of queued song `id`, if known.
+pub fn cover_art(id: &str) -> Option<String> {
+    with(|s| s.songs.get(id).and_then(|(song, _)| song.cover_art.clone()))
 }
 
 /// A registered song.
@@ -57,11 +57,13 @@ pub fn queue_songs(ids: Vec<String>) -> Vec<Song> {
 }
 
 fn songs_at(ids: Vec<String>, now: i64) -> Vec<Song> {
-    let queued: std::collections::HashSet<String> = crate::playlist::with(|p| p.ids().iter().cloned().collect());
-    with(|s| {
-        let listed: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
-        s.songs.retain(|id, (_, at)| listed.contains(id.as_str()) || queued.contains(id) || now - *at < KEEP_MS);
-        ids.iter().map(|id| s.songs.get(id).map_or_else(|| Song::only_id(id.clone()), |(song, _)| song.clone())).collect()
+    // The queue's ids are looked at in place (the playlist's lock, then the store's, as elsewhere).
+    crate::playlist::with(|p| {
+        let kept: std::collections::HashSet<&str> = ids.iter().chain(p.ids()).map(String::as_str).collect();
+        with(|s| {
+            s.songs.retain(|id, (_, at)| kept.contains(id.as_str()) || now - *at < KEEP_MS);
+            ids.iter().map(|id| s.songs.get(id).map_or_else(|| Song::only_id(id.clone()), |(song, _)| song.clone())).collect()
+        })
     })
 }
 
@@ -89,7 +91,7 @@ pub(crate) fn durations(ids: &[String]) -> Vec<(String, i64)> {
 }
 
 /// Hands the planner its window: (id, album run) for the previous, current and next songs in play order.
-pub fn queue_window(songs: &[(String, u32)], shuffling: bool) {
+pub(crate) fn queue_window(songs: &[(String, u32)], shuffling: bool) {
     let window = with(|s| songs.iter().map(|(id, run)| window_song(s, id, *run)).collect());
     nori_automix::planner::transition_window(window, shuffling);
 }
@@ -97,7 +99,7 @@ pub fn queue_window(songs: &[(String, u32)], shuffling: bool) {
 /// The ReplayGain volume for `current` given its neighbours (each with its album run; album gain applies
 /// only inside a run). 1.0 for nothing, radio or bit-perfect output. Untagged songs fall back to
 /// AutoMix's measured loudness.
-pub fn queue_gain(before: Option<(String, u32)>, current: Option<(String, u32)>, after: Option<(String, u32)>, prefs: &GainPrefs, bit_perfect: bool, shuffling: bool) -> f32 {
+pub(crate) fn queue_gain(before: Option<(String, u32)>, current: Option<(String, u32)>, after: Option<(String, u32)>, prefs: &GainPrefs, bit_perfect: bool, shuffling: bool) -> f32 {
     let Some((current, current_run)) = current.filter(|(id, _)| !id.starts_with(RADIO_PREFIX)) else { return 1.0 };
     if bit_perfect {
         return 1.0;
@@ -133,7 +135,7 @@ fn measured_lufs(id: &str) -> Option<f32> {
 }
 
 /// [`queue_flags`] bits.
-pub const EXPLICIT: u32 = 1;
+pub(crate) const EXPLICIT: u32 = 1;
 pub const STARRED: u32 = 2;
 pub const EXTERNAL: u32 = 4;
 
@@ -157,16 +159,16 @@ pub fn queue_albums(ids: Vec<String>) -> Vec<String> {
     })
 }
 
-/// Whether AutoMix can analyse `id`: not a provider song (`ext-`), playlist entry (`pl-`) or radio stream.
+/// Whether AutoMix can analyse `id`: not a provider song or radio stream.
 pub fn analysable(id: &str) -> bool {
-    !id.starts_with("ext-") && !id.starts_with("pl-") && !id.starts_with(RADIO_PREFIX)
+    !nori_model::is_provider_id(id) && !id.starts_with(RADIO_PREFIX)
 }
 
 /// The ids that may be prefetched: no radio, no provider songs (fetching one makes the server download it).
 pub fn queue_fetchable(ids: Vec<String>) -> Vec<String> {
     with(|s| {
         ids.into_iter()
-            .filter(|id| !id.starts_with(RADIO_PREFIX) && !id.starts_with("ext-") && !s.songs.get(id).is_some_and(|(song, _)| song.is_external))
+            .filter(|id| analysable(id) && !s.songs.get(id).is_some_and(|(song, _)| song.is_provider()))
             .collect()
     })
 }

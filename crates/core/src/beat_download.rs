@@ -2,11 +2,7 @@
 //! weights file (`nori_player::automix::weights`). Runs on the calling thread (nori-engine's measuring
 //! thread) when a song is about to be read; a skipped or failed download is retried at the next song.
 
-use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::pin::pin;
-use std::sync::Arc;
-use std::task::{Context, Poll, Wake, Waker};
 
 use nori_automix::beat_model::{self, BeatFailure, State, BYTES, CHECKPOINT_BYTES, CHECKPOINT_SHA256, CHECKPOINT_URL, SHA256};
 use sha2::{Digest, Sha256};
@@ -17,7 +13,7 @@ const TIMEOUT_MS: u32 = 120_000;
 /// The weights file, downloading and converting it first if needed. None when disabled or unavailable now
 /// (metered network not allowed, no client, failure).
 pub fn ensure() -> Option<PathBuf> {
-    let wanted = || crate::settings_store::with_prefs(|p| p.auto_mix && p.auto_mix_better_beats).unwrap_or(false);
+    let wanted = || crate::settings_store::prefs(|p| p.auto_mix && p.auto_mix_better_beats);
     if !wanted() {
         return None;
     }
@@ -25,15 +21,17 @@ pub fn ensure() -> Option<PathBuf> {
         return Some(f);
     }
     let file = beat_model::file()?;
-    let mobile = crate::settings_store::with_prefs(|p| p.auto_mix_beats_mobile_data).unwrap_or(false);
+    let mobile = crate::settings_store::prefs(|p| p.auto_mix_beats_mobile_data);
     if nori_net::stream::metered() && !mobile {
         beat_model::set_state(State::WaitingForWifi);
         return None;
     }
     let client = crate::client::active_client()?;
-    beat_model::set_state(State::Downloading);
+    if !beat_model::begin_download() {
+        return None;
+    }
     let t0 = std::time::Instant::now();
-    let got = block_on(nori_net::transport::get(&*client.transport, CHECKPOINT_URL.to_string(), TIMEOUT_MS))
+    let got = nori_net::transport::block_on(nori_net::transport::get(&*client.transport, CHECKPOINT_URL.to_string(), TIMEOUT_MS))
         .map_err(|e| (BeatFailure::Network, e.to_string()))
         .and_then(|ckpt| {
             let fetched = t0.elapsed();
@@ -96,28 +94,6 @@ pub fn read(file: &Path) -> Result<Vec<u8>, String> {
 /// Whether `bytes` has length `len` and SHA-256 `sha` (lowercase hex).
 fn pinned(bytes: &[u8], len: u64, sha: &str) -> bool {
     bytes.len() as u64 == len && Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect::<String>() == sha
-}
-
-/// Wakes the parked thread.
-struct Unpark(std::thread::Thread);
-
-impl Wake for Unpark {
-    fn wake(self: Arc<Self>) {
-        self.0.unpark();
-    }
-}
-
-/// Runs `f` to completion on this thread, parking until woken (Android's transport answers from OkHttp threads).
-fn block_on<F: Future>(f: F) -> F::Output {
-    let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
-    let mut cx = Context::from_waker(&waker);
-    let mut f = pin!(f);
-    loop {
-        if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
-            return v;
-        }
-        std::thread::park();
-    }
 }
 
 #[cfg(test)]

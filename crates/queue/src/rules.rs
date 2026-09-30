@@ -11,12 +11,8 @@ pub use nori_model::model::PlaybackError;
 pub use nori_player::queue::OnError;
 pub use nori_player::transport::NextAction;
 
-use nori_settings::settings::StoredPrefs;
 
-/// Reads the current settings (defaults before they are loaded).
-pub fn prefs<R>(f: impl Fn(&StoredPrefs) -> R) -> R {
-    nori_settings::settings_store::with_prefs(&f).unwrap_or_else(|| f(&StoredPrefs::default()))
-}
+pub use nori_settings::settings_store::prefs;
 
 #[cfg(feature = "ffi")]
 #[uniffi::remote(Enum)]
@@ -333,27 +329,22 @@ mod tests {
 
     /// Regression: the skip an error makes used to count as success, so unplayable queues never stopped.
     #[test]
-    fn error_skips_do_not_break_the_run() {
-        let _g = hold(&["sk1", "sk2", "sk3", "sk4", "sk5"], 0);
-        queue_playing();
-        for i in 1..=3 {
-            assert_eq!(queue_error(PlaybackError::Other, false, true), OnError::Skip);
-            crate::playlist::playlist_moved_to(i);
+    fn error_run_ends_only_when_playing() {
+        for skips_move in [true, false] {
+            let _g = hold(&["er1", "er2", "er3", "er4", "er5"], 0);
+            queue_playing();
+            for i in 1..=3 {
+                assert_eq!(queue_error(PlaybackError::Other, false, true), OnError::Skip, "skips move: {skips_move}");
+                if skips_move {
+                    crate::playlist::playlist_moved_to(i);
+                }
+            }
+            assert_eq!(queue_error(PlaybackError::Other, false, true), OnError::Stop, "skips move: {skips_move}");
+            assert_eq!(queue_last_error(), Some(PlaybackError::Other));
+            queue_playing();
+            assert_eq!(queue_last_error(), None);
         }
-        assert_eq!(queue_error(PlaybackError::Other, false, true), OnError::Stop);
-        assert_eq!(queue_last_error(), Some(PlaybackError::Other));
-        queue_playing();
-        assert_eq!(queue_last_error(), None);
-    }
-
-    #[test]
-    fn playing_breaks_the_error_run() {
         let _g = hold(&["er1", "er2"], 0);
-        queue_playing();
-        for _ in 0..3 {
-            assert_eq!(queue_error(PlaybackError::Other, false, true), OnError::Skip);
-        }
-        assert_eq!(queue_error(PlaybackError::Other, false, true), OnError::Stop);
         queue_playing();
         assert_eq!(queue_error(PlaybackError::Network, false, true), OnError::Skip, "bridge off by default");
         crate::playlist::playlist_moved_to(1);
@@ -374,20 +365,4 @@ mod tests {
         assert!(!sleep_song_changed(), "end of track counts nothing");
     }
 
-    #[test]
-    fn queue_keep_per_moment() {
-        assert_eq!(queue_keep(QueueMoment::Paused), QueueKeep { save_after_ms: 0, push: true });
-        assert_eq!(queue_keep(QueueMoment::Closing), QueueKeep { save_after_ms: 0, push: false });
-        for m in [QueueMoment::Song, QueueMoment::Edited] {
-            assert_eq!(queue_keep(m), QueueKeep { save_after_ms: t::SAVE_AFTER_MS, push: false });
-        }
-    }
-
-    #[test]
-    fn bridge_step_table() {
-        assert_eq!(bridge_step(false, true, true), BridgeStep::Off);
-        assert_eq!(bridge_step(true, false, true), BridgeStep::Idle);
-        assert_eq!(bridge_step(true, true, false), BridgeStep::Bridging);
-        assert_eq!(bridge_step(true, true, true), BridgeStep::Parked);
-    }
 }

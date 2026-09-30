@@ -36,7 +36,7 @@ impl CacheOrder {
     }
 
     /// The next key to drop, forgotten as it is returned (a later use makes it known again).
-    pub fn pop_oldest(&mut self) -> Option<String> {
+    pub(crate) fn pop_oldest(&mut self) -> Option<String> {
         let key = self.used.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone())?;
         self.used.remove(&key);
         Some(key)

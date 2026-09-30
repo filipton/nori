@@ -73,7 +73,7 @@ impl Core {
 impl Core {
     /// Draws mix `id` unless this period's draw exists (`again`: redraw). `today_epoch_day` is the local
     /// date. `fallback` carries random server songs after [MixDraw::NeedsFallback].
-    pub fn mix_draw(&self, id: String, today_epoch_day: i64, again: bool, fallback: Option<Vec<Song>>) -> MixDraw {
+    pub(crate) fn mix_draw(&self, id: String, today_epoch_day: i64, again: bool, fallback: Option<Vec<Song>>) -> MixDraw {
         let Some(spec) = spec_of(&id) else { return MixDraw::Unknown };
         // Weekly mixes keep one seed for seven days.
         let period = if spec.weekly { today_epoch_day / 7 } else { today_epoch_day };

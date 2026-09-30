@@ -50,6 +50,7 @@ via nori-core):
 | android | Android only: the `norimusic` cdylib, uniffi scaffolding, JNI doors, AudioTrack writer (track.rs), playback path (player.rs) |
 | http, output-cpal, mpris | desktop: ureq transport, cpal output, Linux media controls |
 | cli, desktop | terminal (ratatui) and desktop (Slint) clients |
+| host | what the terminal and desktop clients share: session, config, index sync, media controls |
 | uniffi-jni-runtime, uniffi-bindgen | upstream uniffi JNI runtime with changes marked `NORI`; Kotlin binding generator |
 | testdir | `TempDir` for tests; every test that writes files uses it |
 

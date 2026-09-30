@@ -12,9 +12,26 @@ impl Client {
         folder(ROOT, CarFolder::Root)
     }
 
-    /// The contents of folder `parent`; empty if unknown or unreadable.
-    pub async fn browse_children(&self, parent: String) -> BrowsePage {
-        let (kind, arg) = parent.split_once(':').unwrap_or((parent.as_str(), ""));
+    /// Page `page` of `page_size` entries of folder `parent`, its folders first; empty if unknown or
+    /// unreadable. Later pages come from the folder read for the first, so they neither ask again nor
+    /// differ (a random folder draws once).
+    pub async fn browse_children(&self, parent: String, page: u32, page_size: u32) -> BrowsePage {
+        let kept = self.car_folder.lock().clone().filter(|(p, _)| page > 0 && *p == parent);
+        let all = match kept {
+            Some((_, all)) => all,
+            None => {
+                let all = self.folder(&parent).await;
+                *self.car_folder.lock() = Some((parent, all.clone()));
+                all
+            }
+        };
+        page_of(&all, page, page_size)
+    }
+}
+
+impl Client {
+    async fn folder(&self, parent: &str) -> BrowsePage {
+        let (kind, arg) = parent.split_once(':').unwrap_or((parent, ""));
         let art = |id: &Option<String>| id.as_ref().map(|c| self.core.cover_url(c.clone(), ART));
         let songs = |p: Result<Page, _>| match p {
             Ok(Page::Songs { v }) => v,
@@ -32,7 +49,11 @@ impl Client {
                 },
                 _ => BrowsePage::default(),
             },
-            "album" => BrowsePage { folders: Vec::new(), songs: songs(self.read_now(Read::AlbumSongs { id: arg.into() }).await) },
+            "album" => BrowsePage { folders: Vec::new(), songs: match self.first(Read::AlbumById { id: arg.into() }).await {
+                    Ok(Page::AlbumPage { v }) => v.songs,
+                    _ => Vec::new(),
+                },
+            },
             "playlists" => match self.first(Read::PlaylistList).await {
                 Ok(Page::Playlists { v }) => BrowsePage {
                     folders: v
@@ -50,7 +71,11 @@ impl Client {
                 },
                 _ => BrowsePage::default(),
             },
-            "playlist" => BrowsePage { folders: Vec::new(), songs: songs(self.read_now(Read::PlaylistSongs { id: arg.into() }).await) },
+            "playlist" => BrowsePage { folders: Vec::new(), songs: match self.first(Read::PlaylistById { id: arg.into() }).await {
+                    Ok(Page::PlaylistPage { v }) => v.songs,
+                    _ => Vec::new(),
+                },
+            },
             "starred" => match self.first(Read::StarredItems).await {
                 Ok(Page::StarredPage { v }) => BrowsePage { folders: Vec::new(), songs: v.songs },
                 _ => BrowsePage::default(),
@@ -71,7 +96,7 @@ pub(crate) mod tests {
     #[test]
     fn root_lists_folders_without_network() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
-        let p = block(c.browse_children(ROOT.into()));
+        let p = block(c.browse_children(ROOT.into(), 0, 100));
         assert_eq!(p.folders.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), ["albums:recent", "albums:newest", "albums:frequent", "playlists", "starred", "random", "downloads"]);
         assert!(fake.asked.lock().is_empty());
     }
@@ -80,8 +105,28 @@ pub(crate) mod tests {
     fn playlists_folder_lists_song_counts() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         fake.answer(r#"{"subsonic-response":{"status":"ok","playlists":{"playlist":[{"id":"p1","name":"Evening","songCount":12}]}}}"#);
-        let p = block(c.browse_children("playlists".into()));
+        let p = block(c.browse_children("playlists".into(), 0, 100));
         assert_eq!(p.folders, vec![BrowseFolder { id: "playlist:p1".into(), kind: None, title: "Evening".into(), subtitle: None, songs: Some(12), art: None }]);
-        assert!(block(c.browse_children("nonsense".into())).folders.is_empty());
+        assert!(block(c.browse_children("nonsense".into(), 0, 100)).folders.is_empty());
+    }
+
+    #[test]
+    fn folder_read_once_per_paging() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        fake.answer(r#"{"subsonic-response":{"status":"ok","randomSongs":{"song":[{"id":"x","isDir":false},{"id":"y","isDir":false},{"id":"z","isDir":false}]}}}"#);
+        let ids = |p: BrowsePage| p.songs.into_iter().map(|s| s.id).collect::<Vec<_>>();
+        assert_eq!(ids(block(c.browse_children("random".into(), 0, 2))), ["x", "y"]);
+        assert_eq!(ids(block(c.browse_children("random".into(), 1, 2))), ["z"]);
+        assert_eq!(fake.asked().len(), 1, "the second page is of the same draw");
+        let root = block(c.browse_children(ROOT.into(), 1, 4));
+        assert_eq!(root.folders.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), ["starred", "random", "downloads"]);
+    }
+
+    #[test]
+    fn an_album_opens_offline_from_the_cache() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        c.core.cache_put("getAlbum&id=a".into(), br#"{"subsonic-response":{"status":"ok","album":{"id":"a","name":"A","song":[{"id":"s","isDir":false}]}}}"#.to_vec()).unwrap();
+        fake.fail(crate::transport::FailureKind::Connect);
+        assert_eq!(block(c.browse_children("album:a".into(), 0, 10)).songs.len(), 1);
     }
 }

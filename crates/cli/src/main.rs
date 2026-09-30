@@ -98,7 +98,9 @@ fn main() {
         eprintln!("nori: {}: {e}", o.data.display());
         std::process::exit(1);
     }
-    if let Err(e) = runner::run(o) {
+    let ran = runner::run(o);
+    nori_core::background::flush();
+    if let Err(e) = ran {
         eprintln!("nori: {e}");
         std::process::exit(1);
     }

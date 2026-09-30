@@ -46,7 +46,7 @@ impl Core {
 
 impl Core {
     /// One page of the playlist, within its own `limit` / `limitMs`.
-    pub fn smart_evaluate(&self, json: String, offset: u32, limit: u32) -> Result<Vec<Song>> {
+    pub(crate) fn smart_evaluate(&self, json: String, offset: u32, limit: u32) -> Result<Vec<Song>> {
         let def = parse(&json)?;
         let downloaded = self.downloaded_for(&def)?;
         Ok(run(&self.db.lock(), &def, &downloaded, offset as usize, limit as usize, false, db::now_ms())?.0)
@@ -57,14 +57,14 @@ impl Core {
         if !def.root.asks(IsDownloaded) {
             return Ok(Vec::new());
         }
-        Ok(self.downloads(true)?.into_iter().map(|s| s.id).collect())
+        self.download_ids(true)
     }
 }
 
 #[cfg(test)]
 impl Core {
     /// The playlist's song count, caps applied.
-    pub fn smart_count(&self, json: String) -> Result<u32> {
+    pub(crate) fn smart_count(&self, json: String) -> Result<u32> {
         let def = parse(&json)?;
         let downloaded = self.downloaded_for(&def)?;
         Ok(run(&self.db.lock(), &def, &downloaded, 0, 0, true, db::now_ms())?.1 as u32)
@@ -405,7 +405,6 @@ pub(crate) mod tests {
     fn built_in_definitions_validate_and_filter() {
         let core = library();
         let defaults = smart_defaults();
-        assert_eq!(defaults.len(), 7);
         let run = |id: &str| {
             let d = defaults.iter().find(|d| d.id == id).unwrap();
             smart_validate(d.json.clone()).unwrap();

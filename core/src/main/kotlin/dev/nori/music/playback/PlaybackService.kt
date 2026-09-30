@@ -711,9 +711,9 @@ class PlaybackService : MediaLibraryService() {
 
         override fun onGetChildren(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, parentId: String, page: Int, pageSize: Int, params: LibraryParams?): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> =
             scope.future {
-                val children = runCatching { children(parentId) }.getOrDefault(emptyList())
+                val children = runCatching { children(parentId, page, pageSize) }.getOrDefault(emptyList())
                 children.forEach { if (it.mediaMetadata.isPlayable == true) served.put(it.mediaId, it) }
-                LibraryResult.ofItemList(children.drop(page * pageSize).take(pageSize), params)
+                LibraryResult.ofItemList(children, params)
             }
 
         override fun onSearch(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, query: String, params: LibraryParams?): ListenableFuture<LibraryResult<Void>> {
@@ -752,9 +752,9 @@ class PlaybackService : MediaLibraryService() {
     }
 
     /** What a folder of the car's tree holds is the core's (crates/library/src/car.rs); this makes the items. */
-    private suspend fun children(parent: String): List<MediaItem> {
-        val page = nori.client.browseChildren(parent)
-        return page.folders.map(::folder) + items(page.songs)
+    private suspend fun children(parent: String, page: Int, pageSize: Int): List<MediaItem> {
+        val got = nori.client.browseChildren(parent, page.toUInt(), pageSize.toUInt())
+        return got.folders.map(::folder) + items(got.songs)
     }
 }
 

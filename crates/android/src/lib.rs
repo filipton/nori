@@ -218,76 +218,104 @@ pub(crate) fn string(env: &JNIEnv, s: &JString) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-    use std::path::Path;
+    use super::CLASSES;
 
-    /// The JVM descriptor of a Kotlin parameter or return type.
-    fn descriptor(kotlin: &str) -> String {
-        let d = match kotlin.trim().trim_end_matches('?') {
-            "" | "Unit" => "V",
-            "Long" => "J",
-            "Int" => "I",
-            "Boolean" => "Z",
-            "Float" => "F",
-            "Double" => "D",
-            "String" => "Ljava/lang/String;",
-            "IntArray" => "[I",
-            "LongArray" => "[J",
-            "FloatArray" => "[F",
-            "ByteArray" => "[B",
-            "Array<String>" => "[Ljava/lang/String;",
-            "ByteBuffer" => "Ljava/nio/ByteBuffer;",
-            "Bitmap" => "Landroid/graphics/Bitmap;",
-            "Waiter" => "Ldev/nori/music/look/CoverPixels$Waiter;",
-            other => panic!("no descriptor for Kotlin type {other}: add it here"),
-        };
-        d.to_string()
-    }
-
-    /// Every `external fun` in the Kotlin sources under `dir`, as (class, name, signature).
-    fn declared(dir: &Path, found: &mut BTreeSet<(String, String, String)>) {
-        for entry in std::fs::read_dir(dir).unwrap().flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                declared(&path, found);
-                continue;
-            }
-            if path.extension().is_none_or(|e| e != "kt") {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).unwrap();
-            let package = text.lines().find_map(|l| l.strip_prefix("package ")).unwrap_or_default().replace('.', "/");
-            let mut object = None;
-            for line in text.lines() {
-                // Natives live in top-level objects, whose class is the object's own name.
-                if !line.is_empty() && !line.starts_with([' ', '/', '@']) {
-                    object = line.split_whitespace().skip_while(|w| *w != "object").nth(1).map(|n| n.trim_end_matches('{').to_string());
+    /// Every Kotlin file of the app, by path.
+    fn kotlin() -> Vec<(std::path::PathBuf, String)> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut out = Vec::new();
+        let mut dirs = vec![root.join("core/src/main/kotlin"), root.join("app/src/main/kotlin")];
+        while let Some(d) = dirs.pop() {
+            for e in std::fs::read_dir(&d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    dirs.push(p);
+                } else if p.extension().is_some_and(|x| x == "kt") {
+                    out.push((p.clone(), std::fs::read_to_string(&p).unwrap()));
                 }
-                let Some((_, rest)) = line.split_once("external fun ") else { continue };
-                let (name, rest) = rest.split_once('(').unwrap();
-                let (params, ret) = rest.rsplit_once(')').unwrap();
-                let params: String = params.split(',').filter(|p| !p.trim().is_empty()).map(|p| descriptor(p.split_once(':').unwrap().1)).collect();
-                let ret = descriptor(ret.trim().trim_start_matches(':'));
-                let object = object.clone().unwrap_or_else(|| panic!("{name} in {path:?} is not in a top-level object"));
-                found.insert((format!("{package}/{object}"), name.to_string(), format!("({params}){ret}")));
             }
+        }
+        out
+    }
+
+    /// The JVM descriptor of a Kotlin parameter or return type, as far as a door's shape shows: the
+    /// letter of a primitive or array, or `L<simple name>;` for a class.
+    fn descriptor(kotlin: &str) -> String {
+        match kotlin.trim().trim_end_matches('?') {
+            "Long" => "J".into(),
+            "Int" => "I".into(),
+            "Boolean" => "Z".into(),
+            "Float" => "F".into(),
+            "Double" => "D".into(),
+            "Short" => "S".into(),
+            "Byte" => "B".into(),
+            "Unit" | "" => "V".into(),
+            "LongArray" => "[J".into(),
+            "IntArray" => "[I".into(),
+            "FloatArray" => "[F".into(),
+            "ByteArray" => "[B".into(),
+            "ShortArray" => "[S".into(),
+            "Array<String>" => "[LString;".into(),
+            class => format!("L{};", class.rsplit('.').next().unwrap()),
         }
     }
 
-    /// A native registered under another name or signature than Kotlin declares fails only on a phone,
-    /// when it is called: the two lists are the same.
-    #[test]
-    fn natives_match_kotlin() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let mut kotlin = BTreeSet::new();
-        for dir in ["core/src", "app/src"] {
-            declared(&root.join(dir), &mut kotlin);
+    /// A registered JVM signature with each class shortened to its simple name.
+    fn simple(sig: &str) -> String {
+        let mut out = String::new();
+        let mut rest = sig;
+        while let Some(c) = rest.chars().next() {
+            if c == 'L' {
+                let end = rest.find(';').unwrap();
+                let name = &rest[1..end];
+                out.push('L');
+                out.push_str(name.rsplit(['/', '$']).next().unwrap());
+                out.push(';');
+                rest = &rest[end + 1..];
+            } else {
+                out.push(c);
+                rest = &rest[1..];
+            }
         }
-        let rust: BTreeSet<_> = super::CLASSES
-            .iter()
-            .flat_map(|c| c.methods.iter().map(|m| (c.name.to_str().unwrap().to_string(), m.name.to_str().unwrap().to_string(), m.sig.to_str().unwrap().to_string())))
-            .collect();
-        assert_eq!(rust.difference(&kotlin).collect::<Vec<_>>(), Vec::<&(String, String, String)>::new(), "registered, not declared so");
-        assert_eq!(kotlin.difference(&rust).collect::<Vec<_>>(), Vec::<&(String, String, String)>::new(), "declared, not registered so");
+        out
+    }
+
+    #[test]
+    fn every_door_matches_its_kotlin_declaration() {
+        let files = kotlin();
+        let mut wrong = Vec::new();
+        for class in CLASSES {
+            let name = class.name.to_str().unwrap();
+            let (package, object) = name.rsplit_once('/').unwrap();
+            let package = package.replace('/', ".");
+            let object = object.rsplit('$').next().unwrap();
+            let Some((_, text)) = files.iter().find(|(_, t)| {
+                t.contains(&format!("package {package}\n")) && (t.contains(&format!("object {object} ")) || t.contains(&format!("class {object}")) || t.contains(&format!("object {object}\n")))
+            }) else {
+                wrong.push(format!("{name}: no Kotlin class"));
+                continue;
+            };
+            for m in class.methods {
+                let method = m.name.to_str().unwrap();
+                let decl = text.lines().find(|l| l.contains(&format!("external fun {method}(")));
+                let Some(decl) = decl else {
+                    wrong.push(format!("{name}.{method}: not declared"));
+                    continue;
+                };
+                let args = &decl[decl.find('(').unwrap() + 1..decl.rfind(')').unwrap()];
+                let params: String = args.split(',').filter(|a| !a.trim().is_empty()).map(|a| descriptor(a.split_once(':').unwrap().1)).collect();
+                let ret = decl[decl.rfind(')').unwrap() + 1..].trim().trim_start_matches(':').split("//").next().unwrap().to_string();
+                let kotlin = format!("({params}){}", descriptor(&ret));
+                let registered = simple(m.sig.to_str().unwrap());
+                if kotlin != registered {
+                    wrong.push(format!("{name}.{method}: Kotlin {kotlin}, registered {registered}"));
+                }
+                let critical = decl.contains("@CriticalNative");
+                if critical && (registered.contains('L') || registered.contains('[')) {
+                    wrong.push(format!("{name}.{method}: @CriticalNative with a reference"));
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
     }
 }

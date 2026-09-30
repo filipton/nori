@@ -166,6 +166,8 @@ pub struct App {
     inbox: mpsc::Receiver<Msg>,
     /// Monotonic clock origin handed to every session.
     epoch: Instant,
+    /// Media controls for the process; each session drives them while open.
+    mpris: Option<Arc<nori_mpris::Mpris>>,
     data: PathBuf,
     http: Arc<Http>,
     session: Option<Session>,
@@ -294,6 +296,7 @@ pub fn start(ui: &AppWindow, data: PathBuf, compositor: Compositor) -> Rc<RefCel
             tx,
             inbox,
             epoch: Instant::now(),
+            mpris: nori_mpris::Mpris::start(&format!("nori.desktop{}", std::process::id())).ok().map(Arc::new),
             data,
             http: Http::new(),
             session: None,
@@ -550,7 +553,7 @@ impl App {
         ui.set_server(nori_core::settings::label(&profile.name, &profile.url).into());
         ui.set_account(profile.user.as_str().into());
         ui.set_account_initial(profile.user.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default().into());
-        match Session::open(&self.data, self.http.clone(), profile, self.tx.clone(), self.epoch) {
+        match Session::open(&self.data, self.http.clone(), profile, self.tx.clone(), self.epoch, self.mpris.clone()) {
             Ok(s) => {
                 s.check();
                 ui.set_volume(s.volume.get());
@@ -587,8 +590,8 @@ impl App {
         let draft = SavedServer { id: nori_core::settings::new_server_id(), url, user, password: ui.get_login_password().to_string(), ..Default::default() };
         ui.set_login_busy(true);
         ui.set_login_error("".into());
-        let (data, http, tx) = (self.data.clone(), self.http.clone(), self.tx.clone());
-        std::thread::spawn(move || tx.send(Msg::LoggedIn(session::check_login(&data, http, draft))));
+        let (http, tx) = (self.http.clone(), self.tx.clone());
+        std::thread::spawn(move || tx.send(Msg::LoggedIn(session::check_login(http, draft))));
     }
 
     fn go(&mut self, view: i32) {
@@ -873,7 +876,7 @@ impl App {
         let view = s.search_typed(text);
         let query = view.query.clone();
         self.show_search(view);
-        let delay = settings_store::with_prefs(|p| p.live_search_delay_ms).unwrap_or(400).max(100) as u64;
+        let delay = settings_store::prefs(|p| p.live_search_delay_ms).max(100) as u64;
         let me = self.me.clone();
         self.search.start(TimerMode::SingleShot, Duration::from_millis(delay), move || {
             me.with(|a| a.on_session(|s| s.search_server(query.clone())));
@@ -1371,7 +1374,7 @@ impl App {
             self.tick.start(TimerMode::Repeated, Duration::from_millis(step), move || {
                 me.with(|a| {
                     let ui = a.ui();
-                    a.on_session(|s| ui.set_position_ms(s.engine.status().position_now() as i32));
+                    a.on_session(|s| ui.set_position_ms(s.engine.status_with(|st| st.position_now()) as i32));
                     if let Some(p) = &a.player {
                         p.set_position_ms(ui.get_position_ms());
                     }

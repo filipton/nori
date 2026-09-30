@@ -38,11 +38,11 @@ const FROM_DISK_PRIOR: f64 = 1.0;
 
 // media3's `Download.STATE_*`.
 pub const QUEUED: i32 = 0;
-pub const STOPPED: i32 = 1;
+pub(crate) const STOPPED: i32 = 1;
 pub const DOWNLOADING: i32 = 2;
 pub const COMPLETED: i32 = 3;
 pub const FAILED: i32 = 4;
-pub const RESTARTING: i32 = 7;
+pub(crate) const RESTARTING: i32 = 7;
 
 /// Flags [`followed`] and [`removed`] return: a batch started, the batch drained, marks changed.
 pub const NEW_BATCH: i32 = 1;
@@ -51,11 +51,11 @@ pub const MARKS: i32 = 4;
 
 /// How long one song's step may run before it is given up. Generous: steps run at the lowest priority,
 /// so a limit only catches a stuck step.
-pub const LYRICS_STEP_MS: i64 = 30_000;
-pub const ANALYSIS_STEP_MS: i64 = 180_000;
-pub const BEATS_STEP_MS: i64 = 600_000;
+pub(crate) const LYRICS_STEP_MS: i64 = 30_000;
+pub(crate) const ANALYSIS_STEP_MS: i64 = 180_000;
+pub(crate) const BEATS_STEP_MS: i64 = 600_000;
 /// How long songs may wait in a lane with no step running (its worker gone) before they are let go.
-pub const LANE_IDLE_MS: i64 = 60_000;
+pub(crate) const LANE_IDLE_MS: i64 = 60_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
@@ -365,7 +365,7 @@ pub struct Tracker {
     info: HashMap<String, Info>,
     /// Songs being analysed as their bytes arrive.
     analysing: HashSet<String>,
-    /// Waiters on mark changes ([`processed`], [`download_marks_moved`]), woken when `wake` is set.
+    /// Waiters on mark changes ([`download_marks_moved`]), woken when `wake` is set.
     wakers: Vec<Waker>,
     wake: bool,
     download_kbps: i32,
@@ -545,7 +545,7 @@ pub fn with<R>(f: impl FnOnce(&mut Tracker) -> R) -> R {
 }
 
 /// Expected download size: duration at the transcode bitrate, or the file size at original quality.
-pub fn expected_bytes(size_bytes: i64, duration_s: i64, bitrate_kbps: i32) -> i64 {
+pub(crate) fn expected_bytes(size_bytes: i64, duration_s: i64, bitrate_kbps: i32) -> i64 {
     if bitrate_kbps > 0 && duration_s > 0 {
         duration_s * bitrate_kbps as i64 * 125
     } else {
@@ -569,28 +569,27 @@ fn download_song(c: &rusqlite::Connection, id: &str) -> Option<Song> {
     serde_json::from_str::<Song>(&json).ok()
 }
 
-impl Tracker {
-    pub fn info(&mut self, id: &str) -> &Info {
-        if !self.info.contains_key(id) {
-            let found = nori_db::active().and_then(|db| download_song(&db.lock(), id));
-            self.keep_info(id, found);
-        }
-        &self.info[id]
-    }
+/// The queued `songs`' titles and sizes, so reports about them never wait for the database.
+pub fn know(songs: &[Song]) {
+    with(|t| songs.iter().for_each(|s| t.keep_info(&s.id, Some(s))));
+}
 
-    /// [`Self::info`] without blocking on the database: None while it is busy (nothing cached then).
-    fn info_now(&mut self, id: &str) -> Option<&Info> {
+impl Tracker {
+    /// What [`know`] was told about `id`, else what the database says when it is free: the tracker's
+    /// callers include the main thread and `@CriticalNative` doors, which must not wait for it. None while
+    /// it is busy (nothing cached then).
+    pub fn info(&mut self, id: &str) -> Option<&Info> {
         if !self.info.contains_key(id) {
             let db = nori_db::active()?;
             let c = db.try_lock()?;
             let found = download_song(&c, id);
             drop(c);
-            self.keep_info(id, found);
+            self.keep_info(id, found.as_ref());
         }
         self.info.get(id)
     }
 
-    fn keep_info(&mut self, id: &str, found: Option<Song>) {
+    fn keep_info(&mut self, id: &str, found: Option<&Song>) {
         let info = found.map_or_else(Info::default, |s| Info {
             estimate: expected_bytes(s.size as i64, s.duration as i64, self.download_kbps),
             title: s.title.replace('\n', " "),
@@ -623,6 +622,13 @@ impl Tracker {
                 true
             }
             None => self.unmark(id),
+        }
+    }
+
+    /// An earlier process left `id` failed: marked so, unless this one already marked it.
+    pub fn failed_before(&mut self, id: &str) {
+        if !self.marks.contains_key(id) {
+            self.mark(id, Some(Phase::Failed), 0);
         }
     }
 
@@ -688,7 +694,7 @@ impl Tracker {
 
 /// Reads the download bitrate setting for size estimates; a change drops the cached estimates.
 pub fn follow_quality() {
-    let kbps = nori_settings::settings_store::with_prefs(|p| p.download.bit_rate).unwrap_or(0);
+    let kbps = nori_settings::settings_store::prefs(|p| p.download.bit_rate);
     with(|t| {
         if t.download_kbps != kbps {
             t.download_kbps = kbps;
@@ -712,7 +718,7 @@ impl Tracker {
         let mut flags = 0;
         match state {
             QUEUED | DOWNLOADING | RESTARTING | STOPPED => {
-                let label = t.info(&id).album.clone();
+                let label = t.info(&id).map(|i| i.album.clone()).unwrap_or_default();
                 if t.batch.queued(&id, &label) {
                     flags |= NEW_BATCH;
                 }
@@ -738,8 +744,8 @@ impl Tracker {
         }
         let phase = match state {
             DOWNLOADING => Some(Phase::Downloading),
-            // Provider songs ("ext-") get no lyrics lookup; other needs come later through `plan`.
-            COMPLETED => Some(Phase::processing(t.analysing.contains(&id), !id.starts_with("ext-"), false)),
+            // Provider songs get no lyrics lookup; other needs come later through `plan`.
+            COMPLETED => Some(Phase::processing(t.analysing.contains(&id), !nori_model::is_provider_id(&id), false)),
             FAILED => Some(Phase::Failed),
             _ => None,
         };
@@ -1022,27 +1028,13 @@ pub fn wants_beats(id: &str) -> bool {
     with(|t| t.beats_wanted.contains(id))
 }
 
-/// Resolves once none of `ids` is processing.
-pub async fn processed(ids: &[String]) {
-    std::future::poll_fn(|cx| {
-        with(|t| {
-            if ids.iter().any(|id| matches!(t.marks.get(id), Some((Phase::Processing { .. }, _)))) {
-                t.wakers.push(cx.waker().clone());
-                Poll::Pending
-            } else {
-                Poll::Ready(())
-            }
-        })
-    })
-    .await
-}
-
 /// `id` left the queue for good. Returns flags as [`followed`].
 pub fn removed(id: &str) -> i32 {
     with(|t| {
         let was_open = t.batch.open.contains(id);
         t.batch.removed(id);
         t.close(id);
+        t.info.remove(id);
         let mut flags = if t.unmark(id) { MARKS } else { 0 };
         if was_open && t.batch.open.is_empty() {
             flags |= DRAINED;
@@ -1066,7 +1058,7 @@ pub fn unmark(id: &str) -> i32 {
 
 /// Initial progress: 0, or -1 when the size is unknown.
 pub fn start_fraction(id: &str) -> f32 {
-    with(|t| if t.info(id).estimate > 0 { 0.0 } else { -1.0 })
+    with(|t| if t.info(id).is_some_and(|i| i.estimate > 0) { 0.0 } else { -1.0 })
 }
 
 /// A download starts transferring; returns the slot for [`note`].
@@ -1083,7 +1075,7 @@ impl Tracker {
         if !t.slots.iter().any(|s| s.live) && t.received == t.rate.bytes {
             t.rate.restart(now, t.received);
         }
-        let estimate = t.info(id).estimate;
+        let estimate = t.info(id).map_or(0, |i| i.estimate);
         let slot = Slot {
             id: id.to_string(),
             estimate,
@@ -1249,7 +1241,7 @@ impl Tracker {
         let mut analysing = false;
         for id in &t.batch.open {
             // Provider songs get no lyrics lookup or beat model.
-            if !id.starts_with("ext-") {
+            if !nori_model::is_provider_id(id) {
                 lyrics_to_come += 1;
                 beats_to_come += t.beats_wanted.contains(id) as i32;
             }
@@ -1640,7 +1632,7 @@ pub fn row<R>(id: &str, f: impl FnOnce(&str, Option<RowFacts>) -> R) -> R {
     let mut guard = TRACKER.lock();
     let t = guard.get_or_insert_with(Tracker::default);
     let facts = row_facts(&t.slots, id);
-    let artist = t.info_now(id).map(|i| i.artist.as_str()).unwrap_or("");
+    let artist = t.info(id).map(|i| i.artist.as_str()).unwrap_or("");
     f(artist, facts)
 }
 
@@ -1865,17 +1857,6 @@ mod tests {
     }
 
     #[test]
-    fn processed_wakes_when_processing_ends() {
-        use std::future::Future;
-        followed("pw-a", COMPLETED, 0);
-        let ids = vec!["pw-a".to_string()];
-        let mut waiting = std::pin::pin!(processed(&ids));
-        let mut cx = std::task::Context::from_waker(Waker::noop());
-        assert!(waiting.as_mut().poll(&mut cx).is_pending());
-        assert!(work_done("pw-a", Work::Lyrics));
-        assert!(waiting.as_mut().poll(&mut cx).is_ready());
-    }
-    #[test]
     fn needs_rules() {
         let base = Saved { analysable: true, ..Saved::default() };
         let needs_of = |s: Saved| (needs(s).analysis, needs(s).beats);
@@ -1890,22 +1871,6 @@ mod tests {
         assert_eq!(needs_of(Saved { beats_wanted: false, ..ml }), (true, false), "not wanted for this download");
         assert_eq!(needs_of(Saved { model_on: false, ..ml }), (true, false), "the model is off");
         assert_eq!(needs_of(Saved { analysable: false, ..ml }), (false, false), "provider song or stream");
-    }
-
-    #[test]
-    fn beats_offer_rules() {
-        use nori_settings::settings::DownloadBeats;
-        for choice in [DownloadBeats::Ask, DownloadBeats::Always, DownloadBeats::Never] {
-            assert_eq!(beats_offer(false, choice), BeatsOffer::Off, "the model off: nothing appears");
-        }
-        assert_eq!(beats_offer(true, DownloadBeats::Ask), BeatsOffer::Ask);
-        assert_eq!(beats_offer(true, DownloadBeats::Always), BeatsOffer::Yes);
-        assert_eq!(beats_offer(true, DownloadBeats::Never), BeatsOffer::No);
-        assert!(BeatsOffer::Ask.wants(true) && !BeatsOffer::Ask.wants(false), "asked: the answer");
-        assert!(BeatsOffer::Yes.wants(false), "always: no question asked");
-        assert!(!BeatsOffer::No.wants(true) && !BeatsOffer::Off.wants(true));
-        assert_eq!(beats_remembered(true), DownloadBeats::Always);
-        assert_eq!(beats_remembered(false), DownloadBeats::Never);
     }
 
     /// A timed-out step is given up; an idle lane is released; a slow live step finishes and is timed.

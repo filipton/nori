@@ -37,7 +37,7 @@ const PAXSENIX_REQUEST_MS: u32 = 15_000;
 const LEAST_MS: u64 = 250;
 
 /// How long one service may take over one song, all its requests together.
-pub fn deadline_ms(service: LyricsService) -> u64 {
+pub(crate) fn deadline_ms(service: LyricsService) -> u64 {
     match service {
         LyricsService::PaxsenixSpotify | LyricsService::PaxsenixMusixmatch => 2 * PAXSENIX_REQUEST_MS as u64,
         _ => 12_000,
@@ -935,7 +935,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn better_lyrics_401_is_a_miss_and_host_moves_when_unreachable() {
+    fn better_lyrics_host_fallback() {
         let web = Web::default();
         web.answer("https://api.betterlyrics.org/getLyrics", 401, "");
         assert_eq!(asking(&web, LyricsService::BetterLyrics), Lookup::Missing);

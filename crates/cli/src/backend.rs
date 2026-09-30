@@ -1,17 +1,14 @@
 //! The session behind the screen: core and client for one server profile, the engine on cpal, store,
 //! downloader, cover loader and MPRIS. Network calls run on their own threads and answer with a [`Msg`].
 
-use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
-use std::task::{Context, Poll, Waker};
-use std::time::{Duration, Instant};
 
 use nori_core::bridge::BridgeTake;
 use nori_core::cache_policy::{Page, Read};
-use nori_core::client::{Client, NetProfile};
+use nori_core::client::Client;
 use nori_core::covers::set_cover_transport;
 use nori_core::library::StarsShown;
 use nori_core::race::{LyricsPick, LyricsShown};
@@ -23,27 +20,19 @@ use nori_core::settings::{SavedServer, SettingChange, StoredPrefs};
 use crate::settings_view::{Chore, Facts, Storage};
 use crate::text::net_error;
 use nori_core::settings_store::{self, APPLY_AUDIO, APPLY_GAIN, CACHE_LIMIT, PLAYER, REPLAN, SOUND};
-use nori_core::{AlbumDetail, ArtistDetail, Core, OriginKind, PageOrigin, PlaylistDetail, ServerConfig, Song};
+use nori_core::{AlbumDetail, ArtistDetail, Core, PageOrigin, PlaylistDetail, Song};
+pub use nori_host::{db_path, derive, Controls, Fetch};
+use nori_host::{config, net, save, spawn, volume_db, Keeper};
 use nori_covers::loader::{Config as CoverConfig, Loader};
 use nori_covers::memory::Image;
 use nori_engine::core::{settings, CoreApp, CoreLibrary, CoreOrder, CoreQueue, Downloader, Measurer, OutputVolume};
-use nori_engine::{AudioOutput, Body, ByteSource, Config, Engine, Event, OpenError, State, Status, Store};
+use nori_engine::{AudioOutput, Body, ByteSource, Config, Engine, Event, OpenError, State, Store};
 use nori_http::Http;
 use nori_look::cover::CoverColours;
 use nori_output_cpal::{CpalOutput, Volume};
 use ratatui::crossterm::event::{KeyEvent, MouseEvent};
 
-/// Runs a core future on this thread. The transport is blocking, so it is ready on its first poll.
-pub fn block_on<F: Future>(f: F) -> F::Output {
-    let mut f = std::pin::pin!(f);
-    let mut cx = Context::from_waker(Waker::noop());
-    loop {
-        if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
-            return v;
-        }
-        std::thread::yield_now();
-    }
-}
+pub use nori_core::transport::block_on;
 
 /// Everything that wakes the event loop.
 pub enum Msg {
@@ -164,47 +153,6 @@ impl ByteSource for Audio {
     }
 }
 
-/// MPRIS controls over the engine; `song` resolves the playing song from a status.
-pub struct Desktop {
-    pub engine: Arc<Engine>,
-    pub song: Box<dyn Fn(&Status) -> Option<Song> + Send + Sync>,
-}
-
-impl nori_mpris::Controls for Desktop {
-    fn play(&self) {
-        self.engine.play();
-    }
-    fn pause(&self) {
-        self.engine.pause();
-    }
-    fn toggle(&self) {
-        self.engine.toggle();
-    }
-    fn next(&self) {
-        self.engine.next();
-    }
-    fn previous(&self) {
-        self.engine.previous();
-    }
-    fn seek(&self, ms: i64) {
-        self.engine.seek(ms);
-    }
-    fn now(&self) -> nori_mpris::Now {
-        let s = self.engine.status();
-        let song = (self.song)(&s).unwrap_or_default();
-        nori_mpris::Now {
-            playing: s.state == State::Playing,
-            loaded: s.state == State::Paused,
-            index: s.index,
-            title: song.title,
-            artist: song.artist,
-            album: song.album,
-            length_ms: song.duration as i64 * 1000,
-            position_ms: s.position_now(),
-        }
-    }
-}
-
 /// Forwards each lyrics answer to the event loop.
 struct LyricsSink {
     song: String,
@@ -245,53 +193,6 @@ impl Transport for Offline {
     fn address_changed(&self) {}
 }
 
-/// Debounced queue saves (`rules::queue_keep`) on a thread that sleeps until a save is due.
-struct Keeper {
-    /// Next save time, and whether the session closed.
-    due: parking_lot::Mutex<(Option<Instant>, bool)>,
-    wake: parking_lot::Condvar,
-}
-
-impl Keeper {
-    fn start(core: Arc<Core>, engine: Arc<Engine>) -> Arc<Keeper> {
-        let k = Arc::new(Keeper { due: parking_lot::Mutex::new((None, false)), wake: parking_lot::Condvar::new() });
-        let me = k.clone();
-        spawn("nori-keep", move || {
-            let mut due = me.due.lock();
-            while !due.1 {
-                match due.0 {
-                    None => me.wake.wait(&mut due),
-                    Some(at) if Instant::now() < at => {
-                        me.wake.wait_until(&mut due, at);
-                    }
-                    Some(_) => {
-                        due.0 = None;
-                        parking_lot::MutexGuard::unlocked(&mut due, || save(&core, &engine));
-                    }
-                }
-            }
-        });
-        k
-    }
-
-    /// Schedules a save `ms` from now, replacing any pending one.
-    fn later(&self, ms: i64) {
-        let mut due = self.due.lock();
-        due.0 = Some(Instant::now() + Duration::from_millis(ms.max(0) as u64));
-        self.wake.notify_one();
-    }
-
-    fn stop(&self) {
-        self.due.lock().1 = true;
-        self.wake.notify_one();
-    }
-}
-
-/// Saves the queue and playback position.
-fn save(core: &Core, engine: &Engine) {
-    let _ = core.playlist_save(engine.status().position_now().max(0) as u64);
-}
-
 /// One open server profile: core, client and player.
 pub struct Session {
     pub core: Arc<Core>,
@@ -305,32 +206,17 @@ pub struct Session {
     loudness: Arc<OutputVolume>,
     pub search: Arc<SearchSession>,
     pub offline: bool,
-    mpris: Option<nori_mpris::Mpris>,
+    mpris: Option<Arc<nori_mpris::Mpris>>,
     keeper: Arc<Keeper>,
     tx: Sender<Msg>,
     /// Database file, for its size on the settings page.
     db: PathBuf,
 }
 
-/// The database shared by all profiles and the settings.
-pub fn db_path(data: &Path) -> String {
-    data.join(nori_core::db::DB_FILE).to_string_lossy().into_owned()
-}
-
-fn config(p: &SavedServer) -> ServerConfig {
-    ServerConfig { url: p.url.clone(), user: p.user.clone(), password: p.password.clone(), api_key: (!p.api_key.is_empty()).then(|| p.api_key.clone()), legacy_auth: p.legacy_auth }
-}
-
-fn net(p: &SavedServer) -> NetProfile {
-    NetProfile { url: p.url.clone(), alt_url: p.alt_url.clone(), music_folder_id: p.music_folder_id.clone(), alt_max_bit_rate: p.alt_max_bit_rate.max(0) as u32 }
-}
-
 /// Logs `draft` in (blocking). The core tries the second address and falls back to legacy auth, which
 /// is then kept on the profile.
-pub fn check_login(data: &Path, http: Arc<Http>, draft: SavedServer) -> Result<SavedServer, String> {
-    let probe = Core::new(db_path(data), nori_core::settings::server_db_id(&draft.id)).map_err(|e| e.to_string())?;
-    let client = Client::new(probe, http);
-    let legacy = block_on(client.login(config(&draft), draft.alt_url.clone())).map_err(|e| match net_error(&e) {
+pub fn check_login(http: Arc<Http>, draft: SavedServer) -> Result<SavedServer, String> {
+    let legacy = block_on(nori_core::client::login_check(http, config(&draft), draft.alt_url.clone())).map_err(|e| match net_error(&e) {
         e if e.is_empty() => "the server did not answer".to_string(),
         e => e,
     })?;
@@ -373,7 +259,8 @@ pub struct Open<'a> {
     pub device: Option<String>,
     pub images: bool,
     pub offline: bool,
-    pub mpris: bool,
+    /// The process's media controls, driven by this session while it is open.
+    pub mpris: Option<Arc<nori_mpris::Mpris>>,
     pub tx: Sender<Msg>,
 }
 
@@ -411,12 +298,10 @@ impl Session {
         });
         let engine = Arc::new(engine);
         let covers = o.images.then(|| Arc::new(Loader::new(CoverConfig::new(o.data.join("covers")), o.http.clone())));
-        let mpris = if o.mpris {
-            let name = format!("nori.instance{}", std::process::id());
-            nori_mpris::Mpris::start(&name, Arc::new(Desktop { engine: engine.clone(), song: Box::new(|s| s.id.clone().and_then(nori_core::queue::queue_song)) })).ok()
-        } else {
-            None
-        };
+        let mpris = o.mpris;
+        if let Some(m) = &mpris {
+            m.serve(Some(Arc::new(Controls::over_queue(engine.clone()))));
+        }
         let keeper = Keeper::start(core.clone(), engine.clone());
         let s = Session { core, client, engine, store, downloader, covers, volume, loudness, search: SearchSession::new(), offline: o.offline, mpris, keeper, tx: o.tx, db: PathBuf::from(db) };
         s.restore();
@@ -539,7 +424,7 @@ impl Session {
     /// are the list of (`playlist_set`).
     pub fn play(&self, songs: Vec<Song>, start: usize, shuffle: bool, from: Option<PageOrigin>) {
         let picked = songs.get(start).map(|s| s.id.clone());
-        let songs: Vec<Song> = songs.into_iter().filter(|s| !is_provider(s) || Some(&s.id) == picked.as_ref()).collect();
+        let songs: Vec<Song> = songs.into_iter().filter(|s| !s.is_provider() || Some(&s.id) == picked.as_ref()).collect();
         let start = picked.and_then(|id| songs.iter().position(|s| s.id == id)).unwrap_or(0);
         self.handle().play(songs, start, shuffle, from);
     }
@@ -548,8 +433,8 @@ impl Session {
     pub fn play_later(&self, what: Fetch, shuffle: bool) {
         let (client, me) = (self.client.clone(), self.handle());
         let origin = what.origin();
-        spawn("nori-play", move || match fetch_songs(&client, what) {
-            Ok(songs) if !songs.is_empty() => me.play(songs.into_iter().filter(|s| !is_provider(s)).collect(), 0, shuffle, Some(origin)),
+        spawn("nori-play", move || match what.songs(&client).map_err(|e| net_error(&e)) {
+            Ok(songs) if !songs.is_empty() => me.play(songs.into_iter().filter(|s| !s.is_provider()).collect(), 0, shuffle, Some(origin)),
             Ok(_) => note(&me.tx, "Nothing to play".into(), false),
             Err(e) => note(&me.tx, format!("Could not load the songs: {e}"), true),
         });
@@ -564,7 +449,7 @@ impl Session {
     pub fn enqueue_later(&self, what: Fetch, next: bool) {
         let (client, me) = (self.client.clone(), self.handle());
         let from = what.origin();
-        spawn("nori-enqueue", move || match fetch_songs(&client, what) {
+        spawn("nori-enqueue", move || match what.songs(&client).map_err(|e| net_error(&e)) {
             Ok(songs) => me.enqueue(songs, next, Some(from)),
             Err(e) => note(&me.tx, format!("Could not load the songs: {e}"), true),
         });
@@ -581,8 +466,7 @@ impl Session {
 
     /// Removes the song at list index `index`; if it was playing, the next one takes its place.
     pub fn remove(&self, index: usize) {
-        let current = self.engine.status().index;
-        let playing = self.engine.status().state == State::Playing;
+        let (current, playing) = self.engine.status_with(|s| (s.index, s.state == State::Playing));
         let change = playlist::playlist_remove(index as u32, index as u32 + 1);
         self.edited();
         if let (true, Some(at)) = (current == Some(index), change.at) {
@@ -624,7 +508,7 @@ impl Session {
 
     /// Queues `songs` for download and starts the downloader.
     pub fn download(&self, songs: Vec<Song>) {
-        let songs: Vec<Song> = songs.into_iter().filter(|s| !is_provider(s)).collect();
+        let songs: Vec<Song> = songs.into_iter().filter(|s| !s.is_provider()).collect();
         warm_covers(&self.core, self.covers.as_ref(), &songs);
         match self.core.download_queue(songs) {
             Ok(q) => note(&self.tx, format!("Downloading {} songs", q.fresh.len() + q.again.len()), false),
@@ -636,9 +520,9 @@ impl Session {
     pub fn download_later(&self, what: Fetch) {
         let (client, core, downloader, tx) = (self.client.clone(), self.core.clone(), self.downloader.clone(), self.tx.clone());
         let covers = self.covers.clone();
-        spawn("nori-download-ask", move || match fetch_songs(&client, what) {
+        spawn("nori-download-ask", move || match what.songs(&client).map_err(|e| net_error(&e)) {
             Ok(songs) => {
-                let songs: Vec<Song> = songs.into_iter().filter(|s| !is_provider(s)).collect();
+                let songs: Vec<Song> = songs.into_iter().filter(|s| !s.is_provider()).collect();
                 warm_covers(&core, covers.as_ref(), &songs);
                 let n = songs.len();
                 let _ = core.download_queue(songs);
@@ -922,6 +806,9 @@ impl Session {
 
     /// Saves the queue and stops the engine.
     pub fn close(&self) {
+        if let Some(m) = &self.mpris {
+            m.serve(None);
+        }
         self.keep(QueueMoment::Closing);
         self.keeper.stop();
         self.engine.stop();
@@ -962,7 +849,7 @@ impl Handle {
     /// `from`: the page these are all the songs of.
     fn enqueue(&self, songs: Vec<Song>, next: bool, from: Option<PageOrigin>) {
         // A single picked song may be a provider's; lists never include them.
-        let songs: Vec<Song> = if songs.len() == 1 { songs } else { songs.into_iter().filter(|s| !is_provider(s)).collect() };
+        let songs: Vec<Song> = if songs.len() == 1 { songs } else { songs.into_iter().filter(|s| !s.is_provider()).collect() };
         if songs.is_empty() {
             return;
         }
@@ -981,45 +868,6 @@ impl Handle {
     }
 }
 
-/// A collection whose songs are still to be fetched.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Fetch {
-    Album(String),
-    Playlist(String),
-    Artist(String),
-}
-
-impl Fetch {
-    /// The page these songs are the list of.
-    pub fn origin(&self) -> PageOrigin {
-        match self {
-            Fetch::Album(id) => PageOrigin::new(OriginKind::Album, id.as_str()),
-            Fetch::Playlist(id) => PageOrigin::new(OriginKind::Playlist, id.as_str()),
-            Fetch::Artist(id) => PageOrigin::new(OriginKind::Artist, id.as_str()),
-        }
-    }
-}
-
-fn fetch_songs(client: &Arc<Client>, what: Fetch) -> Result<Vec<Song>, String> {
-    let now = |r: Read| block_on(client.read_now(r)).map_err(|e| net_error(&e));
-    match what {
-        Fetch::Album(id) => match now(Read::AlbumSongs { id })? {
-            Page::Songs { v } => Ok(v),
-            Page::AlbumPage { v } => Ok(v.songs),
-            _ => Ok(Vec::new()),
-        },
-        Fetch::Playlist(id) => match now(Read::PlaylistSongs { id })? {
-            Page::Songs { v } => Ok(v),
-            Page::PlaylistPage { v } => Ok(v.songs),
-            _ => Ok(Vec::new()),
-        },
-        Fetch::Artist(id) => match now(Read::ArtistById { id })? {
-            Page::ArtistPage { v } => Ok(block_on(client.artist_songs(v.albums))),
-            _ => Ok(Vec::new()),
-        },
-    }
-}
-
 /// Fetches covers of downloaded songs to disk (not decoded) so they exist offline.
 fn warm_covers(core: &Core, covers: Option<&Arc<Loader>>, songs: &[Song]) {
     let Some(loader) = covers else { return };
@@ -1028,27 +876,13 @@ fn warm_covers(core: &Core, covers: Option<&Arc<Loader>>, songs: &[Song]) {
     }
 }
 
-/// A provider (octo-fiesta) song: the server downloads it as soon as it is requested.
-pub fn is_provider(s: &Song) -> bool {
-    s.is_external || s.id.starts_with("ext-")
-}
-
-fn spawn(name: &str, f: impl FnOnce() + Send + 'static) {
-    let _ = std::thread::Builder::new().name(name.into()).spawn(f);
-}
-
 fn note(tx: &Sender<Msg>, text: String, error: bool) {
     let _ = tx.send(Msg::Note { text, error });
 }
 
 fn start_downloads(downloader: &Arc<Downloader>) {
-    let n = settings_store::with_prefs(|p| p.parallel_downloads).unwrap_or(2);
+    let n = settings_store::prefs(|p| p.parallel_downloads);
     downloader.start(n.max(1) as usize);
-}
-
-/// Volume (0 to 1) in dB, floored at -96.
-fn volume_db(v: f32) -> f64 {
-    if v > 0.0 { 20.0 * (v as f64).log10() } else { -96.0 }
 }
 
 /// An unreachable server in words.
@@ -1085,27 +919,12 @@ fn report(client: &Arc<Client>, read: Read, send: impl Fn(Result<Data, String>),
     }
 }
 
-fn sync(client: &Arc<Client>, tx: &Sender<Msg>) {
-    let _ = tx.send(Msg::Note { text: "Filling the offline index…".into(), error: false });
-    let mut total = nori_core::IngestStats::default();
-    let mut offset = 0;
-    let page = nori_core::browse::library_sizes().sync_page;
-    loop {
-        match block_on(client.sync_page(offset, page, total.clone())) {
-            Ok(step) => {
-                total = step.total;
-                match step.next_offset {
-                    Some(next) => offset = next,
-                    None => break,
-                }
-            }
-            Err(e) => {
-                let _ = tx.send(Msg::Note { text: format!("The offline index stopped: {e}"), error: true });
-                return;
-            }
-        }
+fn sync(client: &Client, tx: &Sender<Msg>) {
+    note(tx, "Filling the offline index…".into(), false);
+    match nori_host::sync(client) {
+        Ok(total) => note(tx, format!("Offline index: {} songs, {} albums, {} artists", total.songs, total.albums, total.artists), false),
+        Err(e) => note(tx, format!("The offline index stopped: {e}"), true),
     }
-    let _ = tx.send(Msg::Note { text: format!("Offline index: {} songs, {} albums, {} artists", total.songs, total.albums, total.artists), error: false });
 }
 
 /// Library, storage and device facts for the settings page.
@@ -1146,10 +965,4 @@ fn monotonic_ms() -> i64 {
 /// Local UTC offset in ms at `wall_ms`.
 fn tz_offset_ms(wall_ms: i64) -> i32 {
     (nori_core::library::local_offset_s(wall_ms / 1000) * 1000) as i32
-}
-
-/// Dark-theme colours from a cover's RGBA pixels, as Android's `CoverLoader.colours`.
-pub fn derive(image: &Image) -> CoverColours {
-    let px: Vec<u32> = image.pixels.chunks_exact(4).map(|p| u32::from_be_bytes([p[3], p[0], p[1], p[2]])).collect();
-    nori_look::cover::derive(&px, image.width as usize, image.height as usize, true, false)
 }

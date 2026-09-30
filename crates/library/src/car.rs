@@ -43,6 +43,16 @@ pub struct BrowsePage {
     pub songs: Vec<Song>,
 }
 
+/// Page `page` of `size` entries of `all`, its folders first.
+pub fn page_of(all: &BrowsePage, page: u32, size: u32) -> BrowsePage {
+    let start = page as usize * size as usize;
+    let end = start + size as usize;
+    let part = |len: usize, skip: usize| start.saturating_sub(skip).min(len)..end.saturating_sub(skip).min(len);
+    let folders = all.folders[part(all.folders.len(), 0)].to_vec();
+    let songs = all.songs[part(all.songs.len(), all.folders.len())].to_vec();
+    BrowsePage { folders, songs }
+}
+
 /// The tree's root, as the platform names it.
 pub const ROOT: &str = "root";
 /// How large a cover a car draws a folder with.

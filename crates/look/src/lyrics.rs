@@ -10,7 +10,7 @@ use core::sync::atomic::{AtomicI64, Ordering::Relaxed};
 /// Maximum line change duration (scroll and colour).
 pub const GLIDE_MS: i32 = 620;
 /// Minimum line change duration.
-pub const MIN_GLIDE_MS: i32 = 160;
+pub(crate) const MIN_GLIDE_MS: i32 = 160;
 /// A change lasts this share of the gap to the next line.
 const GLIDE_SHARE: f64 = 0.85;
 /// Gap cap for the glide computation.
@@ -20,7 +20,7 @@ const LONGEST_GAP_MS: i64 = 10_000;
 const WAKE_MIN_MS: i64 = 8;
 const WAKE_MAX_MS: i64 = 500;
 /// With the sweep, redraw every this many display frames.
-pub const SWEEP_FRAMES: u32 = 2;
+pub(crate) const SWEEP_FRAMES: u32 = 2;
 /// Minimum fill movement (characters) that triggers a redraw.
 const SWEEP_STEP: f32 = 0.04;
 
@@ -33,7 +33,7 @@ pub const HELD_MS: i64 = 900;
 /// Glow fade-out after a held word ends.
 pub const GLOW_FADE_MS: i64 = 500;
 /// How long after its end a word still animates; the platform draws every frame meanwhile.
-pub const MOTION_TAIL_MS: i64 = if SETTLE_MS > GLOW_FADE_MS { SETTLE_MS } else { GLOW_FADE_MS };
+pub(crate) const MOTION_TAIL_MS: i64 = if SETTLE_MS > GLOW_FADE_MS { SETTLE_MS } else { GLOW_FADE_MS };
 
 /// Estimated duration of a word of `units` UTF-16 units, for words whose end is unknown (an LRC line's
 /// last word otherwise runs until the next line, possibly many seconds later).
@@ -46,18 +46,18 @@ const WORD_MS_MIN: i64 = 400;
 const WORD_MS_MAX: i64 = 2_000;
 
 /// Assumed duration of the last line when its end is unknown (matches nori-lyrics `build`).
-pub const LAST_LINE_MS: i64 = 5_000;
+pub(crate) const LAST_LINE_MS: i64 = 5_000;
 
 /// One "Sooner"/"Later" nudge step.
-pub const NUDGE_STEP_MS: i64 = 250;
+pub(crate) const NUDGE_STEP_MS: i64 = 250;
 
 /// After a tap, seeks land imprecisely (a frame or keyframe early, or the playhead is set back).
 /// Positions up to this far before the tapped line still count as on it,
-pub const LAND_EARLY_MS: i64 = 1_000;
+pub(crate) const LAND_EARLY_MS: i64 = 1_000;
 /// the display never moves back by up to this much,
-pub const LAND_HOLD_MS: i64 = 1_500;
+pub(crate) const LAND_HOLD_MS: i64 = 1_500;
 /// for this long into the tapped line.
-pub const LANDING_MS: i64 = 3_000;
+pub(crate) const LANDING_MS: i64 = 3_000;
 /// `landing` value when no tap is being landed (an atomic, so no `Option`).
 const NOT_LANDING: i64 = i64::MIN;
 
@@ -65,9 +65,9 @@ const NOT_LANDING: i64 = i64::MIN;
 pub const READING_MS: i64 = 4_000;
 
 /// Strength of upcoming lines.
-pub const NEXT_LINE: f32 = 0.35;
+pub(crate) const NEXT_LINE: f32 = 0.35;
 /// Strength of sung lines.
-pub const PAST_LINE: f32 = NEXT_LINE * 0.55;
+pub(crate) const PAST_LINE: f32 = NEXT_LINE * 0.55;
 /// Strength of the active line's unsung words when filling word by word. During a fade, unsung words
 /// use the lower of this and the line's strength so there is no step.
 pub const UNSUNG: f32 = 0.55;
@@ -107,7 +107,7 @@ pub fn keeps_screen_on(asked: bool, shown: bool, playing: bool) -> bool {
 }
 
 /// Maximum lines, so `active` (up to one past the last) fits its [`Step::pack`] field.
-pub const MAX_LINES: usize = (1 << ACTIVE_BITS) - 2;
+pub(crate) const MAX_LINES: usize = (1 << ACTIVE_BITS) - 2;
 
 /// A timed word or syllable; `start`/`end` index the line's text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,7 +243,7 @@ impl LyricTiming {
     }
 
     /// The line whose change has begun by `t`, or -1.
-    pub fn line_at(&self, t: i64) -> i32 {
+    pub(crate) fn line_at(&self, t: i64) -> i32 {
         self.switch_at.partition_point(|&s| s <= t) as i32 - 1
     }
 
@@ -253,7 +253,7 @@ impl LyricTiming {
     }
 
     /// [`LyricTiming::line_at`], or the line count once the last line is over.
-    pub fn line_lit(&self, t: i64) -> i32 {
+    pub(crate) fn line_lit(&self, t: i64) -> i32 {
         if self.over(t) {
             self.starts.len() as i32
         } else {
@@ -262,7 +262,7 @@ impl LyricTiming {
     }
 
     /// The next switch after `t` (including the last line ending).
-    pub fn next_switch_after(&self, t: i64) -> Option<i64> {
+    pub(crate) fn next_switch_after(&self, t: i64) -> Option<i64> {
         let next = (self.line_at(t) + 1) as usize;
         self.switch_at.get(next).copied().or_else(|| self.over_at.filter(|&at| next == self.starts.len() && t < at))
     }
@@ -273,7 +273,7 @@ impl LyricTiming {
     }
 
     /// The line whose start was last reached by `t` (the lit line switches half a glide earlier).
-    pub fn sung_line(&self, t: i64) -> Option<usize> {
+    pub(crate) fn sung_line(&self, t: i64) -> Option<usize> {
         if self.sorted {
             self.starts.partition_point(|&s| s <= t).checked_sub(1)
         } else {
@@ -283,7 +283,7 @@ impl LyricTiming {
 
     /// Fill position in `line` at `ms`: linear within a word, resting between words; all or nothing
     /// without words. `f32` maths matches the former Kotlin exactly.
-    pub fn sung_offset(&self, line: usize, ms: i64) -> f32 {
+    pub(crate) fn sung_offset(&self, line: usize, ms: i64) -> f32 {
         let (Some(&span), Some(&len), Some(&start)) = (self.spans.get(line), self.lens.get(line), self.starts.get(line)) else {
             return 0.0;
         };
@@ -508,7 +508,7 @@ impl LyricClock {
 
 const SUNG_BITS: u32 = 29;
 /// Fraction bits of `sung` (lines up to 2047 units).
-pub const SUNG_FRAC: u32 = 18;
+pub(crate) const SUNG_FRAC: u32 = 18;
 const ACTIVE_BITS: u32 = 13;
 const GLIDE_BITS: u32 = 10;
 const WAIT_BITS: u32 = 9;
@@ -518,7 +518,8 @@ const WAIT_AT: u32 = GLIDE_AT + GLIDE_BITS;
 const STILL_AT: u32 = WAIT_AT + WAIT_BITS;
 const REDRAW_AT: u32 = STILL_AT + 1;
 /// Low bits of a packed [`Step`] holding the [`Frame`].
-pub const FRAME_BITS: u32 = WAIT_AT;
+#[cfg(test)]
+pub(crate) const FRAME_BITS: u32 = WAIT_AT;
 
 fn field(v: i64, bits: u32) -> i64 {
     v.clamp(0, (1 << bits) - 1)

@@ -69,9 +69,8 @@ fn role_and_name(t: &str) -> bool {
 /// "Written by Someone": only credit words before " by ", and a name after it (a capital, a digit or
 /// another script), so "stand by the water" is not one.
 fn by_line(t: &str) -> bool {
-    let lower = t.to_lowercase();
-    let Some(at) = lower.find(" by ") else { return false };
-    let (head, tail) = (&lower[..at], t[at + 4..].trim());
+    let Some(at) = t.to_ascii_lowercase().find(" by ") else { return false };
+    let (head, tail) = (t[..at].to_lowercase(), t[at + 4..].trim());
     let words: Vec<&str> = head.split(|c: char| !c.is_alphabetic()).filter(|w| !w.is_empty()).collect();
     let credits = !words.is_empty() && words.iter().all(|w| CREDIT_WORDS.contains(w) || BY_WORDS.contains(w)) && words.iter().any(|w| CREDIT_WORDS.contains(w));
     let name = tail.chars().next().is_some_and(|c| c.is_uppercase() || c.is_ascii_digit() || (c.is_alphabetic() && !c.is_ascii()));
@@ -132,7 +131,7 @@ pub(crate) fn strip_lines<T>(lines: &mut Vec<T>, text: impl Fn(&T) -> &str, titl
 }
 
 /// `l` without the credits at either end; empty when nothing is left.
-pub fn strip_edges(l: &mut Lyrics, title: &str, artist: &str) {
+pub(crate) fn strip_edges(l: &mut Lyrics, title: &str, artist: &str) {
     strip_lines(&mut l.lines, |x| x.text.as_str(), title, artist);
     if l.lines.is_empty() {
         *l = Lyrics::default();
@@ -140,7 +139,7 @@ pub fn strip_edges(l: &mut Lyrics, title: &str, artist: &str) {
 }
 
 /// How many lines still look like credits or placeholders (the middle, which [`strip_edges`] keeps).
-pub fn credits_inside(l: &Lyrics) -> usize {
+pub(crate) fn credits_inside(l: &Lyrics) -> usize {
     l.lines.iter().filter(|x| !blank(&x.text) && (role_and_name(&x.text) || watermark(&x.text) || instrumental(&x.text))).count()
 }
 
@@ -211,7 +210,7 @@ mod tests {
 
     #[test]
     fn sung_lines_and_middle_stay() {
-        let edges = ["Stand by the water", "Music by the river tonight", "She said: stay a while", "Written in the stars above"];
+        let edges = ["Stand by the water", "Music by the river tonight", "She said: stay a while", "Written in the stars above", "İzmir by Çağrı"];
         let mut l = lyrics(&edges, true);
         strip_edges(&mut l, "Glass Harbour", "The Lanterns");
         assert_eq!(texts(&l), edges, "sung lines holding 'by', a colon or a credit word are not credits");

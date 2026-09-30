@@ -134,6 +134,13 @@ pub fn put_measured(c: &Connection, mut a: TrackAnalysis) -> rusqlite::Result<Tr
     Ok(a)
 }
 
+/// Stores a whole song's measurement: its analysis (keeping the beat model's grids) and vocal curve.
+pub fn put_finished(c: &Connection, song_id: &str, features: &crate::analysis::Features) -> rusqlite::Result<TrackAnalysis> {
+    let stored = put_measured(c, crate::finish(song_id, features).track)?;
+    put_voice(c, song_id, &features.voice_curve())?;
+    Ok(stored)
+}
+
 /// Stores a song's vocal activity curve (`vocal.rs`), used to check synced lyrics against the audio.
 pub fn put_voice(c: &Connection, song_id: &str, curve: &VocalCurve) -> rusqlite::Result<()> {
     c.prepare_cached("INSERT OR REPLACE INTO vocal_curve(server, song_id, curve) VALUES(sid(), ?1, ?2)")?.execute(params![song_id, curve.encode()]).map(|_| ())

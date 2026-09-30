@@ -34,7 +34,7 @@ impl Client {
     pub async fn autoeq_update(&self, asked: bool, metered: bool) -> NetResult<Option<u32>> {
         let now = crate::db::now_ms();
         if !asked {
-            let auto = crate::settings_store::with_prefs(|p| p.auto_eq_download && p.third_party_lookups).unwrap_or(false);
+            let auto = crate::settings_store::prefs(|p| p.auto_eq_download && p.third_party_lookups);
             let (stored, fetched) = {
                 let c = self.core.db.lock();
                 (autoeq::count(&c)?, autoeq::fetched_ms(&c)?)
@@ -56,7 +56,7 @@ impl Client {
     /// `entry`'s preset text (parametric, else graphic). None when AutoEQ has neither, which hides the
     /// entry from now on; a failed request is an error.
     pub async fn autoeq_curve(&self, entry: AutoEqEntry) -> NetResult<Option<String>> {
-        let graphic = crate::settings_store::settings_current().is_some_and(|p| p.eq_mode == crate::settings::EqMode::Graphic);
+        let graphic = crate::settings_store::prefs(|p| p.eq_mode == crate::settings::EqMode::Graphic);
         match autoeq::fetch_curve(&*self.transport, &entry, graphic).await? {
             autoeq::Curve::Found(text) => Ok(Some(text)),
             autoeq::Curve::Missing => {
@@ -138,7 +138,7 @@ impl Core {
 
 impl Core {
     /// Up to 40 AutoEQ hits; none for queries under two characters.
-    pub fn autoeq_find(&self, query: String) -> Vec<AutoEqEntry> {
+    pub(crate) fn autoeq_find(&self, query: String) -> Vec<AutoEqEntry> {
         if autoeq_too_short(&query) {
             return Vec::new();
         }

@@ -598,8 +598,9 @@ impl<P: Paint> Inner<P> {
             return Err(Error::Status(r.status));
         }
         *out = r.body;
-        // Provider artwork changes under the same URL once the item is in the library.
-        if !is_provider_cover(url) {
+        // Provider artwork changes under the same URL once the item is in the library; an answer that is
+        // no picture (a Subsonic error sent with 200) is not kept either.
+        if !is_provider_cover(url) && decode::format(out).is_some() {
             if let Some(d) = self.disk() {
                 let _ = d.put(key, out);
             }

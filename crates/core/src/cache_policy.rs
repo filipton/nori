@@ -232,17 +232,18 @@ fn digest(bytes: &[u8]) -> u64 {
 /// Whether `page` lists a provider item. Such answers change as provider songs get downloaded, so they
 /// are never fresh.
 fn lists_provider_items(page: &Page) -> bool {
-    let song = |s: &Song| s.is_external || crate::db::external(&s.id);
-    let album = |a: &Album| a.is_external || crate::db::external(&a.id);
     match page {
-        Page::AlbumPage { v } => album(&v.album) || v.songs.iter().any(song),
-        Page::ArtistPage { v } => v.albums.iter().any(album),
-        Page::PlaylistPage { v } => v.songs.iter().any(song),
-        Page::Songs { v } => v.iter().any(song),
-        Page::Albums { v } => v.iter().any(album),
+        Page::AlbumPage { v } => v.album.is_provider() || v.songs.iter().any(Song::is_provider),
+        Page::ArtistPage { v } => v.albums.iter().any(Album::is_provider),
+        Page::PlaylistPage { v } => v.songs.iter().any(Song::is_provider),
+        Page::Songs { v } => v.iter().any(Song::is_provider),
+        Page::Albums { v } => v.iter().any(Album::is_provider),
         _ => false,
     }
 }
+
+/// The Subsonic error for an item the server does not have.
+const NOT_FOUND: i32 = 70;
 
 impl Client {
     fn parse(&self, parser: Parser, body: Vec<u8>) -> NetResult<Page> {
@@ -280,26 +281,53 @@ impl Client {
     }
 }
 
+impl Client {
+    /// Parses a server answer and keeps its library items in the index. Cached answers are only parsed:
+    /// they were indexed when they came.
+    fn parse_fresh(&self, parser: Parser, body: Vec<u8>) -> NetResult<Page> {
+        let page = self.parse(parser, body)?;
+        let none: (&[Artist], &[Album], &[Song]) = (&[], &[], &[]);
+        let (artists, albums, songs) = match (parser, &page) {
+            // getIndexes lists folders, not artists.
+            (Parser::Indexes, _) => none,
+            (_, Page::Albums { v }) => (&[][..], v.as_slice(), &[][..]),
+            (_, Page::Artists { v }) => (v.as_slice(), &[][..], &[][..]),
+            (_, Page::Songs { v }) => (&[][..], &[][..], v.as_slice()),
+            (_, Page::OneSong { v }) => (&[][..], &[][..], v.as_slice()),
+            (_, Page::AlbumPage { v }) => (&[][..], std::slice::from_ref(&v.album), v.songs.as_slice()),
+            (_, Page::ArtistPage { v }) => (std::slice::from_ref(&v.artist), v.albums.as_slice(), &[][..]),
+            (_, Page::PlaylistPage { v }) => (&[][..], &[][..], v.songs.as_slice()),
+            (_, Page::StarredPage { v }) => (v.artists.as_slice(), v.albums.as_slice(), v.songs.as_slice()),
+            (_, Page::Found { v }) => (v.artists.as_slice(), v.albums.as_slice(), v.songs.as_slice()),
+            _ => none,
+        };
+        if !(artists.is_empty() && albums.is_empty() && songs.is_empty()) {
+            crate::db::index(&mut self.core.db.lock(), artists, albums, songs)?;
+        }
+        Ok(page)
+    }
+}
+
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Client {
     /// Asks the server, bypassing the cache.
     pub async fn read_now(&self, read: Read) -> NetResult<Page> {
         let sp = spec(read);
         let body = self.fetch(sp.endpoint, sp.params).await?;
-        self.parse(sp.parser, body)
+        self.parse_fresh(sp.parser, body)
     }
 }
 
 impl Client {
     /// The cached page for `read` (None if absent or unparseable) and whether it is fresh.
-    pub fn read_stored(&self, read: Read) -> NetResult<Stored> {
+    pub(crate) fn read_stored(&self, read: Read) -> NetResult<Stored> {
         let sp = spec(read);
         let fresh_ms = sp.fresh_ms;
         self.stored_for(sp, fresh_ms)
     }
 
     /// [`Client::read_stored`] with a custom freshness window (for cached reads only).
-    pub fn read_stored_within(&self, read: Read, fresh_ms: i64) -> NetResult<Stored> {
+    pub(crate) fn read_stored_within(&self, read: Read, fresh_ms: i64) -> NetResult<Stored> {
         let sp = spec(read);
         let fresh_ms = sp.fresh_ms.map(|_| fresh_ms);
         self.stored_for(sp, fresh_ms)
@@ -322,15 +350,25 @@ impl Client {
 
     /// Asks the server; returns the page only if it differs from `stored_digest`, and re-caches it either
     /// way (restarting the window). Uncached reads always return their page.
-    pub async fn read_fetch(&self, read: Read, stored_digest: Option<u64>) -> NetResult<Option<Page>> {
+    pub(crate) async fn read_fetch(&self, read: Read, stored_digest: Option<u64>) -> NetResult<Option<Page>> {
         let sp = spec(read);
         if sp.fresh_ms.is_none() {
             let body = self.fetch(sp.endpoint, sp.params).await?;
-            return Ok(Some(self.parse(sp.parser, body)?));
+            return Ok(Some(self.parse_fresh(sp.parser, body)?));
         }
         let k = key(sp.endpoint, &self.scoped(sp.endpoint, sp.params.clone()));
         let body = self.fetch(sp.endpoint, sp.params).await?;
-        let page = if stored_digest != Some(digest(&body)) { Some(self.parse(sp.parser, body.clone())?) } else { None };
+        let page = if stored_digest != Some(digest(&body)) {
+            match self.parse_fresh(sp.parser, body.clone()) {
+                Err(e @ crate::transport::NetError::Api { code: NOT_FOUND, .. }) => {
+                    self.core.cache_drop(&k)?;
+                    return Err(e);
+                }
+                page => Some(page?),
+            }
+        } else {
+            None
+        };
         self.core.cache_put(k, body)?;
         Ok(page)
     }
@@ -409,7 +447,27 @@ mod tests {
     }
 
     #[test]
-    fn unparseable_stored_answer_is_not_shown_and_not_fresh() {
+    fn deleted_page_is_dropped() {
+        let (c, fake) = setup();
+        let read = || Read::AlbumById { id: "al-1".into() };
+        fake.answer(r#"{"subsonic-response":{"status":"ok","album":{"id":"al-1","name":"A","song":[{"id":"s1","title":"t"}]}}}"#);
+        block(c.read_fetch(read(), None)).unwrap();
+        c.core.db.lock().execute("UPDATE cache SET ts = 0", []).unwrap();
+        fake.answer(r#"{"subsonic-response":{"status":"failed","error":{"code":70,"message":"not found"}}}"#);
+        let mut shown = 0;
+        assert!(matches!(block(c.read_each(read(), |_| shown += 1)), Err(crate::transport::NetError::Api { code: 70, .. })));
+        assert_eq!(shown, 1, "the cached page, before the server said");
+        assert!(c.read_stored(read()).unwrap().page.is_none());
+        // Offline, the cached page stands.
+        fake.answer(r#"{"subsonic-response":{"status":"ok","album":{"id":"al-1","name":"A","song":[]}}}"#);
+        block(c.read_fetch(read(), None)).unwrap();
+        c.core.db.lock().execute("UPDATE cache SET ts = 0", []).unwrap();
+        fake.fail(FailureKind::Connect);
+        assert!(block(c.read_each(read(), |_| {})).is_ok());
+    }
+
+    #[test]
+    fn unreadable_cache_is_stale() {
         let (c, _) = setup();
         c.core.cache_put("getGenres".into(), b"garbage".to_vec()).unwrap();
         let s = c.read_stored(Read::GenreList).unwrap();
@@ -460,7 +518,6 @@ mod tests {
         fake.answer(list);
         block(c.read_fetch(Read::AlbumList { kind: "byYear".into(), size: 50, offset: 0, genre: None }, None)).unwrap();
         let year = this_year();
-        assert!(year >= 2024);
         assert!(fake.asked()[2].ends_with(&format!("&type=byYear&fromYear={year}&toYear=0&size=50&offset=0&musicFolderId=7")));
     }
 

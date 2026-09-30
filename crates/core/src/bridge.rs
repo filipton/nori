@@ -54,7 +54,7 @@ impl Core {
     }
 
     /// The first downloaded song after the current one in play order.
-    pub fn bridge_next_downloaded(&self) -> Result<Option<u32>> {
+    pub(crate) fn bridge_next_downloaded(&self) -> Result<Option<u32>> {
         let after: Vec<(usize, String)> = playlist::with(|p| p.upcoming().skip(1).map(|i| (i, p.ids()[i].clone())).collect());
         let c = self.db.lock();
         let mut st = c.prepare_cached("SELECT 1 FROM downloads WHERE server=sid() AND id=?1 AND done=1")?;

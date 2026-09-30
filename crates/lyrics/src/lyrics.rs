@@ -5,6 +5,19 @@
 use nori_model::model::{LyricLine, LyricWord, Lyrics};
 use serde::Deserialize;
 
+/// The latest time a lyric is taken at; later or garbled times are not times.
+pub(crate) const LONGEST_MS: i64 = 24 * 3_600_000;
+
+/// `ms` as a lyric time, if it is one.
+pub(crate) fn time_ms(ms: f64) -> Option<i64> {
+    (ms.is_finite() && (0.0..=LONGEST_MS as f64).contains(&ms)).then(|| ms.round() as i64)
+}
+
+/// A file's `[offset:]`; out of range is none.
+pub(crate) fn offset_ms(v: &str) -> i64 {
+    v.trim().parse::<i64>().ok().filter(|o| (-LONGEST_MS..=LONGEST_MS).contains(o)).unwrap_or(0)
+}
+
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct Line {
@@ -120,12 +133,12 @@ fn stamp(tag: &str) -> Option<i64> {
     let (m, rest) = tag.split_once(':')?;
     let rest = rest.replacen(':', ".", 1);
     let secs: f64 = rest.parse().ok()?;
-    Some(m.trim().parse::<i64>().ok()? * 60_000 + (secs * 1000.0).round() as i64)
+    time_ms(m.trim().parse::<u32>().ok()? as f64 * 60_000.0 + secs * 1000.0)
 }
 
 /// LRC, or plain text when it has no timestamps. A line with several timestamps repeats; `[offset:]` is
 /// applied; other tags are skipped.
-pub fn from_lrc(text: &str) -> Lyrics {
+pub(crate) fn from_lrc(text: &str) -> Lyrics {
     let mut lines: Vec<Line> = Vec::new();
     let mut offset = 0i64;
     for raw in text.lines() {
@@ -135,7 +148,7 @@ pub fn from_lrc(text: &str) -> Lyrics {
             let Some(close) = body.find(']') else { break };
             let tag = &body[..close];
             if let Some(v) = tag.strip_prefix("offset:") {
-                offset = v.trim().parse().unwrap_or(0);
+                offset = offset_ms(v);
             } else if let Some(ms) = stamp(tag) {
                 starts.push(ms);
             }
@@ -166,28 +179,30 @@ pub fn build(mut all: Vec<Structured>) -> Lyrics {
     let background: Vec<&str> = main.agents.iter().filter(|a| a.role == "bg").map(|a| a.id.as_str()).collect();
     let mut word_timed = false;
 
-    let starts: Vec<i64> = main.line.iter().map(|l| l.start.unwrap_or(0) - offset).collect();
+    // The server's times are taken as sent, within the day a lyric can run.
+    let at = |ms: i64| ms.saturating_sub(offset).clamp(0, LONGEST_MS);
+    let starts: Vec<i64> = main.line.iter().map(|l| at(l.start.unwrap_or(0))).collect();
     let mut lines: Vec<LyricLine> = Vec::with_capacity(main.line.len());
     for (i, l) in main.line.iter().enumerate() {
         let start = if synced { starts[i] } else { -1 };
-        let next = starts.get(i + 1).copied().filter(|n| *n > starts[i]).unwrap_or(starts[i] + 5_000);
+        let next = starts[i + 1..].iter().copied().find(|n| *n > starts[i]).unwrap_or(starts[i] + 5_000);
         let cues = main.cue_line.iter().find(|c| c.index == i && !c.cue.is_empty());
         let (text, end, words, bg) = if let Some(c) = cues {
             word_timed = true;
-            let words = c.cue.iter().map(|w| LyricWord { start_ms: w.start - offset, end_ms: w.end - offset, start: utf16_at(&c.value, w.byte_start), end: utf16_at(&c.value, w.byte_end + 1) }).collect();
-            (c.value.clone(), if c.end > c.start { c.end - offset } else { next }, words, c.agent_id.as_deref().is_some_and(|a| background.contains(&a)))
+            let words = c.cue.iter().map(|w| LyricWord { start_ms: at(w.start), end_ms: at(w.end), start: utf16_at(&c.value, w.byte_start), end: utf16_at(&c.value, w.byte_end + 1) }).collect();
+            (c.value.clone(), if c.end > c.start { at(c.end) } else { next }, words, c.agent_id.as_deref().is_some_and(|a| background.contains(&a)))
         } else {
             let (text, marks) = inline_words(&l.value);
             if synced && !marks.is_empty() {
                 word_timed = true;
                 // A word runs to the next mark; the last one for as long as such a word is sung, not to
                 // the next line.
-                let words = marks.iter().enumerate().filter_map(|(k, (ms, at))| {
+                let words = marks.iter().enumerate().filter_map(|(k, (ms, byte))| {
                     let to = marks.get(k + 1).map(|m| m.1).unwrap_or(text.len());
-                    let (start, end) = (utf16_at(&text, *at), utf16_at(&text, to));
-                    let guessed = || (ms - offset + nori_look::lyrics::word_ms_estimate(end - start)).min(next.max(ms - offset));
-                    let end_ms = marks.get(k + 1).map(|m| m.0 - offset).unwrap_or_else(guessed);
-                    (to > *at).then(|| LyricWord { start_ms: ms - offset, end_ms, start, end })
+                    let (start, end) = (utf16_at(&text, *byte), utf16_at(&text, to));
+                    let guessed = || (at(*ms) + nori_look::lyrics::word_ms_estimate(end - start)).min(next.max(at(*ms)));
+                    let end_ms = marks.get(k + 1).map(|m| at(m.0)).unwrap_or_else(guessed);
+                    (to > *byte).then(|| LyricWord { start_ms: at(*ms), end_ms, start, end })
                 }).collect();
                 (text, next, words, false)
             } else {
@@ -270,5 +285,21 @@ mod tests {
         let plain = from_lrc("just\nwords");
         assert!(!plain.synced);
         assert_eq!(plain.lines.len(), 2);
+    }
+
+    #[test]
+    fn garbled_times_are_not_times() {
+        for lrc in ["[01:inf]x", "[00:inf]x", "[99999999999999:00.00]x", "[offset:-9223372036854775808]\n[00:00.00]x", "[-5:00.00]x"] {
+            let l = from_lrc(lrc);
+            assert!(!l.synced || l.lines.iter().all(|x| (0..=LONGEST_MS).contains(&x.start_ms) && x.end_ms >= x.start_ms), "{lrc}");
+        }
+        for json in [r#"{"lyrics":[{"time":1e300,"duration":5,"text":"x"}]}"#, r#"{"lyrics":[{"time":5,"duration":1e300,"text":"x"}]}"#] {
+            let l = crate::json::from_lyricsplus(json);
+            assert!(l.lines.iter().all(|x| x.start_ms <= LONGEST_MS), "{json}");
+        }
+        let early = from_lrc("[offset:1]\n[00:00.00]Title\n[00:05.00]x");
+        assert_eq!(early.lines[0].start_ms, 0, "an offset before the start is the start, not untimed");
+        let shared = from_lrc("[00:01.00]line\n[00:01.00]translated\n[00:02.00]next");
+        assert_eq!(shared.lines[0].end_ms, 2_000, "a line sharing its time runs to the next later one");
     }
 }

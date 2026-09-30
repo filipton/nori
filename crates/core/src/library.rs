@@ -4,7 +4,7 @@
 use crate::cache_policy::{Page, Read};
 use crate::client::{Client, NetResult, Starrable, Write};
 use crate::mixes::board::MixDraw;
-use crate::{PlayQueue, Song};
+use crate::Song;
 use std::sync::Arc;
 
 pub use nori_library::library::*;
@@ -24,7 +24,7 @@ impl Client {
         marked.marks(m.marks);
         let sent = self.write(Write::Star { kind, id: id.clone(), on }).await;
         if sent.is_err() {
-            marked.marks(self.core.stars.lock().restore(kind, id, m.previous));
+            marked.marks(self.core.stars.lock().restore(kind, id, on, m.previous));
         }
         sent
     }
@@ -57,10 +57,10 @@ impl Client {
     pub async fn artist_songs_of(&self, artist_id: String) -> NetResult<Vec<Song>> {
         let read = || Read::ArtistById { id: artist_id.clone() };
         let page = match self.read_stored(read())?.page {
-            Some(p) => p,
-            None => self.read_fetch(read(), None).await?.unwrap_or(Page::Albums { v: Vec::new() }),
+            Some(p) => Some(p),
+            None => self.read_fetch(read(), None).await?,
         };
-        let Page::ArtistPage { v } = page else { return Ok(Vec::new()) };
+        let Some(Page::ArtistPage { v }) = page else { return Ok(Vec::new()) };
         Ok(self.artist_songs(v.albums).await)
     }
 
@@ -70,10 +70,7 @@ impl Client {
         let day = local_epoch_day();
         match self.core.mix_draw(id.clone(), day, again, None) {
             MixDraw::Drawn => true,
-            MixDraw::NeedsFallback => {
-                self.mix_fallback(id, day, again).await;
-                true
-            }
+            MixDraw::NeedsFallback => self.mix_fallback(id, day, again).await,
             MixDraw::Kept | MixDraw::Unknown => false,
         }
     }
@@ -82,17 +79,18 @@ impl Client {
     pub async fn mix_warm_all(&self) -> bool {
         let day = local_epoch_day();
         let warm = self.core.mix_warm(day);
-        for id in &warm.needs_fallback {
-            self.mix_fallback(id.clone(), day, false).await;
+        let mut changed = warm.changed;
+        for id in warm.needs_fallback {
+            changed |= self.mix_fallback(id, day, false).await;
         }
-        warm.changed || !warm.needs_fallback.is_empty()
+        changed
     }
 
     /// The play queue another device saved on the server.
     pub async fn resume_from_server(&self) -> NetResult<ResumePlan> {
         match self.read_now(Read::PullQueue).await? {
             Page::Queue { v } => Ok(resume_plan(v)),
-            _ => Ok(resume_plan(PlayQueue { songs: vec![], index: 0, position_ms: 0, origin: None })),
+            _ => Ok(ResumePlan::Nothing),
         }
     }
 }
@@ -110,10 +108,11 @@ pub trait StarsShown: Send + Sync {
 }
 
 impl Client {
-    /// [`Client::read_fetch`] where a failure is not an error when something was cached (`stored_digest`).
-    pub async fn read_refresh(&self, read: Read, stored_digest: Option<u64>) -> NetResult<Option<Page>> {
+    /// [`Client::read_fetch`] where failing to reach the server is not an error when something was cached
+    /// (`stored_digest`); the server's own refusal is.
+    pub(crate) async fn read_refresh(&self, read: Read, stored_digest: Option<u64>) -> NetResult<Option<Page>> {
         match self.read_fetch(read, stored_digest).await {
-            Err(_) if stored_digest.is_some() => Ok(None),
+            Err(e) if stored_digest.is_some() && !matches!(e, crate::transport::NetError::Api { .. }) => Ok(None),
             other => other,
         }
     }
@@ -134,9 +133,12 @@ impl Client {
         Ok(())
     }
 
-    async fn mix_fallback(&self, id: String, day: i64, again: bool) {
-        let random = self.songs(Read::RandomSongs { size: MIX_FALLBACK_SONGS, genre: None }).await.unwrap_or_default();
+    /// Draws mix `id` from random server songs; false when they could not be read, so it is drawn again
+    /// next time.
+    async fn mix_fallback(&self, id: String, day: i64, again: bool) -> bool {
+        let Ok(random) = self.songs(Read::RandomSongs { size: MIX_FALLBACK_SONGS, genre: None }).await else { return false };
         self.core.mix_draw(id, day, again, Some(random));
+        true
     }
 }
 
@@ -153,6 +155,16 @@ pub(crate) mod tests {
         fn marks(&self, m: crate::stars::StarMarks) {
             self.0.lock().push(m.songs.get("lib-refused").copied());
         }
+    }
+
+    #[test]
+    fn a_mix_unread_offline_is_drawn_again() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        fake.fail(crate::transport::FailureKind::Connect);
+        assert!(!block(c.mix_ensure("top".into(), false)));
+        fake.answer(r#"{"subsonic-response":{"status":"ok","randomSongs":{"song":[{"id":"x","title":"x","isDir":false}]}}}"#);
+        assert!(block(c.mix_ensure("top".into(), false)));
+        assert!(fake.asked()[1].contains("getRandomSongs"));
     }
 
     #[test]

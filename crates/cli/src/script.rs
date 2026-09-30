@@ -148,7 +148,7 @@ impl Cli {
         let r = block_on(self.http.get(url, 0)).map_err(|e| e.to_string())?;
         let found = self.core.parse_search(r.body).map_err(|e| e.to_string())?;
         // Provider songs (octo-fiesta) are downloaded by the server when requested: never queued from a search.
-        Ok(found.songs.into_iter().filter(|s| !crate::backend::is_provider(s)).collect())
+        Ok(found.songs.into_iter().filter(|s| !s.is_provider()).collect())
     }
 
     fn queue(&mut self, songs: Vec<Song>, start_ms: i64) {
@@ -212,7 +212,7 @@ pub fn main(argv: Vec<String>) {
     let client = Client::new(core.clone(), http.clone());
     client.set_profile(NetProfile { url: a.url.clone(), ..Default::default() });
     if !a.offline {
-        if let Err(e) = block_on(client.login(config, String::new())) {
+        if let Err(e) = block_on(nori_core::client::login_check(http.clone(), config, String::new())) {
             eprintln!("login failed: {e}");
             std::process::exit(1);
         }
@@ -289,8 +289,10 @@ pub fn main(argv: Vec<String>) {
 
     let mpris = a.mpris.then(|| {
         let songs = cli.songs.clone();
-        let controls = Arc::new(crate::backend::Desktop { engine: cli.engine.clone(), song: Box::new(move |s| s.index.and_then(|i| songs.lock().unwrap().get(i).cloned())) });
-        nori_mpris::Mpris::start("nori", controls).map_err(|e| println!("no media controls: {e}")).ok()
+        let controls = Arc::new(crate::backend::Controls { engine: cli.engine.clone(), song: Box::new(move |s| s.index.and_then(|i| songs.lock().unwrap().get(i).cloned())) });
+        let m = nori_mpris::Mpris::start("nori").map_err(|e| println!("no media controls: {e}")).ok()?;
+        m.serve(Some(controls));
+        Some(m)
     });
     let mpris = mpris.flatten();
     let shown = title_at.clone();

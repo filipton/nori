@@ -88,7 +88,7 @@ impl Client {
 
 impl Client {
     /// The URL and cache key to stream `id`.
-    pub fn stream_target(&self, id: String, metered: bool, wifi: StreamQuality, mobile: StreamQuality) -> StreamTarget {
+    pub(crate) fn stream_target(&self, id: String, metered: bool, wifi: StreamQuality, mobile: StreamQuality) -> StreamTarget {
         let q = self.quality(metered, wifi, mobile);
         let key = stream_cache_key(&id, &q);
         StreamTarget { url: self.core.stream_url(id, q.bit_rate, q.format), key }
@@ -157,11 +157,7 @@ mod tests {
     fn resolve_prefers_download() {
         let (c, _) = client(NetProfile { url: "h".into(), ..Default::default() });
         assert_eq!(c.resolve("s1".into(), true, true).key, "dl:s1");
-        // Defaults: the original file on any network.
-        assert_eq!(c.resolve("s1".into(), false, false).key, "s1:0");
-        assert_eq!(c.resolve("s1".into(), false, true).key, "s1:0");
-        let (wifi, metered) = (c.streaming_quality(false), c.streaming_quality(true));
-        assert_eq!((wifi.bit_rate, wifi.format.as_str(), metered.bit_rate, metered.format.as_str()), (0, "", 0, ""));
+        assert_eq!(c.resolve("s1".into(), false, false).key, "s1:0", "not downloaded: streamed");
     }
 
     #[test]

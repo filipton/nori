@@ -8,23 +8,23 @@ use nori_model::Lyrics;
 use nori_player::automix::vocal::VocalCurve;
 
 /// How far the lines are slid each way for the best fit.
-pub const REACH_MS: i64 = 3_000;
+pub(crate) const REACH_MS: i64 = 3_000;
 /// Each part is slid further: a version's timing can be off by more than the whole's.
 const PART_REACH_MS: i64 = 5_000;
 /// Fewer timed lines than this say too little.
 const MIN_LINES: usize = 4;
 // The thresholds were tuned on 59 songs of a real library (340 service answers), not demoting good ones.
 /// A smaller offset is left alone.
-pub const OFFSET_MIN_MS: i64 = 250;
+pub(crate) const OFFSET_MIN_MS: i64 = 250;
 /// An offset is applied only this sure; lower lets another song's lines slide to where they fit.
-pub const OFFSET_SURE: f64 = 0.4;
+pub(crate) const OFFSET_SURE: f64 = 0.4;
 /// Parts whose offsets are this far apart drift, when each is [`PART_SURE`] of its own...
 pub const DRIFT_MS: i64 = 700;
 const PART_SURE: f64 = 0.3;
 /// ...and they fit this much better apart, per line, than together.
 const PART_GAIN: f64 = 0.1;
 /// Below this score the lines do not fit the voice...
-pub const POOR: f64 = 0.35;
+pub(crate) const POOR: f64 = 0.35;
 /// ...nor when they fit less than this better than slid far off: with a band as busy as the voice,
 /// any timing scores well.
 const LIFT: f64 = 0.06;
@@ -85,7 +85,7 @@ pub struct SyncCheck {
 
 impl SyncCheck {
     /// The offset to show the lyrics with.
-    pub fn applied_ms(&self) -> i64 {
+    pub(crate) fn applied_ms(&self) -> i64 {
         if self.kind == SyncKind::Shifted {
             self.offset_ms
         } else {

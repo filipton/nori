@@ -68,5 +68,6 @@ fn main() -> Result<(), String> {
     let app = app::start(&ui, data, compositor);
     let r = ui.run().map_err(|e| e.to_string());
     app::stop(&app);
+    nori_core::background::flush();
     r
 }

@@ -9,7 +9,7 @@ fn ch(v: i32) -> f32 {
 }
 
 /// Compose's `Color(red, green, blue, alpha)`: clamped, rounded half up.
-pub fn from_floats_a(r: f32, g: f32, b: f32, a: f32) -> u32 {
+pub(crate) fn from_floats_a(r: f32, g: f32, b: f32, a: f32) -> u32 {
     let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as i32;
     argb(q(a), q(r), q(g), q(b))
 }
@@ -31,7 +31,7 @@ pub fn over(fg: u32, bg: u32) -> u32 {
 }
 
 /// `on.copy(alpha = a).over(bg)`: a tinted surface.
-pub fn veil(on: u32, a: f32, bg: u32) -> u32 {
+pub(crate) fn veil(on: u32, a: f32, bg: u32) -> u32 {
     over(with_alpha(on, a), bg)
 }
 

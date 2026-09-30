@@ -119,15 +119,21 @@ pub fn release_groups(albums: &[Album]) -> Vec<ReleaseGroup> {
     groups
 }
 
-/// Kotlin's `contains(needle, ignoreCase = true)`.
-fn contains_ignoring_case(hay: &str, needle: &str) -> bool {
-    let n: Vec<char> = needle.chars().collect();
-    if n.is_empty() {
-        return true;
-    }
-    let h: Vec<char> = hay.chars().collect();
+/// Kotlin's `contains(needle, ignoreCase = true)`, `needle` as chars; allocates nothing.
+fn contains_ignoring_case(hay: &str, needle: &[char]) -> bool {
     let same = |a: char, b: char| a == b || upper(a) == upper(b) || lower(a) == lower(b);
-    h.windows(n.len()).any(|w| w.iter().zip(&n).all(|(&a, &b)| same(a, b)))
+    let mut rest = hay;
+    loop {
+        let mut h = rest.chars();
+        if needle.iter().all(|&b| h.next().is_some_and(|a| same(a, b))) {
+            return true;
+        }
+        let mut next = rest.chars();
+        if next.next().is_none() {
+            return false;
+        }
+        rest = next.as_str();
+    }
 }
 
 /// Java's `Character.toUpperCase`: single-character case mapping only ('ß' stays).
@@ -188,6 +194,7 @@ impl TextIndex {
         if query.trim().is_empty() {
             return Vec::new();
         }
+        let query: Vec<char> = query.chars().collect();
         let hit = |i: usize, first: bool| {
             let f = &self.rows[i];
             let head = f.first().is_some_and(|h| contains_ignoring_case(h, &query));
@@ -200,6 +207,7 @@ impl TextIndex {
     /// The rows `filter` keeps (all of them for a blank one), and the letters of the first field.
     pub fn view(&self, filter: String) -> IndexView {
         let blank = filter.trim().is_empty();
+        let filter: Vec<char> = filter.chars().collect();
         let rows: Vec<u32> = (0..self.rows.len())
             .filter(|&i| blank || self.rows[i].iter().any(|f| contains_ignoring_case(f, &filter)))
             .map(|i| i as u32)
@@ -552,7 +560,6 @@ mod tests {
         assert_eq!(artist.queue.origin(), PageOrigin::new(OriginKind::Artist, "ar"), "the artist, not its albums");
         let playlist = PlaylistDetail::new(Playlist { id: "pl".into(), ..Default::default() }, vec![]);
         assert_eq!(playlist.queue.origin_ref(), &PageOrigin::new(OriginKind::Playlist, "pl"));
-        assert_eq!(PageQueue::default().origin_ref().id, "", "a page not read yet is no queue's");
     }
 
     #[test]
@@ -564,6 +571,7 @@ mod tests {
         assert_eq!(away.pack() & 0b100, 0, "Play, not Pause");
         let here = hero_buttons(true, true, false, true, true, true);
         assert_eq!((here.shuffle_lit, here.pausing, here.play_press, here.shuffle_press), (true, true, HeroPress::Toggle, HeroPress::ShuffleOff));
+        assert!(hero_buttons(true, false, true, false, true, true).pausing, "playing pauses too");
         let waiting = hero_buttons(false, false, false, false, false, false);
         assert!(!waiting.play_enabled && !waiting.shuffle_enabled);
         assert!(hero_buttons(true, false, false, false, false, false).play_enabled, "its own queue can always be resumed");

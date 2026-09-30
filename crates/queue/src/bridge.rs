@@ -34,7 +34,7 @@ fn score(seed: Option<&Song>, s: &Song) -> i32 {
 pub fn pick(seed: Option<&Song>, pool: &[Song], exclude: &[String], n: usize, rng_seed: u64) -> Vec<Song> {
     let mut scored: Vec<(i32, &Song)> = pool
         .iter()
-        .filter(|s| !exclude.contains(&s.id) && !s.is_external && !s.id.starts_with("ext-"))
+        .filter(|s| !exclude.contains(&s.id) && !s.is_provider())
         .map(|s| (score(seed, s), s))
         .collect();
     // Shuffle, then stable sort: equal scores stay shuffled.

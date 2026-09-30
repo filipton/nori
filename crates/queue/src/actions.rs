@@ -41,7 +41,7 @@ fn tap(selecting: bool, tap_action: TapAction) -> TapPlan {
 /// The tap action per settings; selecting while a selection is active.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn tap_plan(selecting: bool) -> TapPlan {
-    tap(selecting, nori_settings::settings_store::with_prefs(|p| p.tap_action).unwrap_or(TapAction::PlayList))
+    tap(selecting, nori_settings::settings_store::prefs(|p| p.tap_action))
 }
 
 /// How to shuffle a list.
@@ -72,18 +72,13 @@ fn plan_shuffle(songs: Vec<Song>, seed: u64) -> ShufflePlan {
     }
 }
 
-/// A radio: `seed`, then the similar songs. None when there are none besides `seed` (use [radio_fallback]).
-pub fn radio_queue(seed: Song, similar: Vec<Song>) -> Option<Vec<Song>> {
-    let rest: Vec<Song> = similar.into_iter().filter(|s| s.id != seed.id).collect();
+/// A radio: `seed`, then the library songs of `more` besides it. None when there are none.
+pub fn radio_queue(seed: Song, more: Vec<Song>) -> Option<Vec<Song>> {
+    let rest: Vec<Song> = more.into_iter().filter(|s| s.id != seed.id && !s.is_provider()).collect();
     if rest.is_empty() {
         return None;
     }
     Some(std::iter::once(seed).chain(rest).collect())
-}
-
-/// A radio of `seed` followed by random songs.
-pub fn radio_fallback(seed: Song, random: Vec<Song>) -> Vec<Song> {
-    std::iter::once(seed).chain(random).collect()
 }
 
 /// A debug test-bridge reference: `album:<id>`, `song:<id>`, `search:<text>`, `downloaded:<n>` (n-th newest
@@ -165,9 +160,9 @@ mod tests {
     #[test]
     fn radio_starts_with_seed_once() {
         let (a, b, c) = (song("a", "t", "x", "y", "", 0), song("b", "t", "x", "y", "", 0), song("c", "t", "x", "y", "", 0));
-        assert_eq!(radio_queue(a.clone(), vec![a.clone()]), None);
-        assert_eq!(radio_queue(a.clone(), vec![b.clone(), a.clone(), c.clone()]).unwrap(), [a.clone(), b.clone(), c.clone()]);
-        assert_eq!(radio_fallback(a.clone(), vec![a.clone(), b.clone()]), [a.clone(), a, b]);
+        let provider = song("ext-deezer-song-1", "t", "x", "y", "", 0);
+        assert_eq!(radio_queue(a.clone(), vec![a.clone(), provider.clone()]), None);
+        assert_eq!(radio_queue(a.clone(), vec![b.clone(), a.clone(), provider, c.clone()]).unwrap(), [a, b, c]);
     }
 
     #[test]

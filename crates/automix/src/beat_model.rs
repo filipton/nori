@@ -84,6 +84,17 @@ pub fn set_state(s: State) {
     KEPT.lock().state = s;
 }
 
+/// Claims the download: false while one runs, and after a wrong file until the switch is turned off
+/// and on again (the same address would serve it again).
+pub fn begin_download() -> bool {
+    let mut k = KEPT.lock();
+    if matches!(k.state, State::Downloading | State::Failed(BeatFailure::WrongFile)) {
+        return false;
+    }
+    k.state = State::Downloading;
+    true
+}
+
 /// The switch changed. Turning it off deletes the model directory.
 pub fn switched(on: bool) {
     let mut k = KEPT.lock();
@@ -105,7 +116,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn model_is_deleted_when_switched_off() {
+    fn model_downloads_once_and_goes_when_switched_off() {
         let dir = nori_testdir::TempDir::new("model");
         std::fs::create_dir_all(dir.join("models")).unwrap();
         std::fs::write(dir.join("models").join(FILE_NAME), b"model").unwrap();
@@ -116,13 +127,18 @@ mod tests {
         switched(true);
         assert!(dir.join("models").join(FILE_NAME).is_file());
         switched(false);
-        for _ in 0..200 {
-            if !dir.join("models").exists() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        nori_db::background::flush();
         assert!(!dir.join("models").exists());
         assert_eq!((state(), ready()), (State::Absent, None));
+
+        assert!(begin_download());
+        assert!(!begin_download(), "one download at a time");
+        set_state(State::Failed(BeatFailure::Network));
+        assert!(begin_download(), "a network failure is tried again");
+        set_state(State::Failed(BeatFailure::WrongFile));
+        assert!(!begin_download(), "a wrong file is not fetched again");
+        switched(true);
+        switched(false);
+        assert!(begin_download());
     }
 }

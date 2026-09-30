@@ -48,6 +48,9 @@ CREATE INDEX IF NOT EXISTS items_artist ON items(server, json_extract(json,'$.ar
 CREATE INDEX IF NOT EXISTS items_year ON items(server, json_extract(json,'$.year')) WHERE kind=2;
 CREATE INDEX IF NOT EXISTS items_starred ON items(server, json_extract(json,'$.starred')) WHERE kind=2 AND json_extract(json,'$.starred')=1;
 CREATE INDEX IF NOT EXISTS items_rated ON items(server, json_extract(json,'$.userRating')) WHERE kind=2 AND json_extract(json,'$.userRating')>=4;
+CREATE INDEX IF NOT EXISTS items_title ON items(server, json_extract(json,'$.title') COLLATE NOCASE) WHERE kind=2;
+CREATE INDEX IF NOT EXISTS items_by_artist ON items(server, json_extract(json,'$.artist') COLLATE NOCASE) WHERE kind=2;
+CREATE INDEX IF NOT EXISTS items_album ON items(server, json_extract(json,'$.album') COLLATE NOCASE) WHERE kind=2;
 CREATE TABLE IF NOT EXISTS track_analysis(server TEXT NOT NULL, song_id TEXT NOT NULL, analysis_version INTEGER NOT NULL, duration_ms INTEGER NOT NULL, bpm REAL NOT NULL, bpm_confidence REAL NOT NULL, beat_offset_ms REAL NOT NULL, stability REAL NOT NULL, downbeat_phase INTEGER NOT NULL, downbeat_confidence REAL NOT NULL, lufs REAL NOT NULL, key INTEGER NOT NULL, key_confidence REAL NOT NULL, silence_start_ms INTEGER NOT NULL, silence_end_ms INTEGER NOT NULL, mixramp_start_ms INTEGER NOT NULL, mixramp_end_ms INTEGER NOT NULL, intro_end_ms INTEGER NOT NULL, outro_start_ms INTEGER NOT NULL, outro_vocal REAL NOT NULL, intro_vocal REAL NOT NULL, outro_centroid REAL NOT NULL, intro_centroid REAL NOT NULL, outro_bpm REAL NOT NULL, outro_bpm_confidence REAL NOT NULL, outro_beat_offset_ms REAL NOT NULL, outro_stability REAL NOT NULL, outro_downbeat_phase INTEGER NOT NULL, intro_bpm REAL NOT NULL, intro_bpm_confidence REAL NOT NULL, intro_beat_offset_ms REAL NOT NULL, intro_stability REAL NOT NULL, intro_downbeat_phase INTEGER NOT NULL, beats_per_bar INTEGER NOT NULL DEFAULT 0, drop_ms INTEGER NOT NULL DEFAULT 0, drop_runup_vocal REAL NOT NULL DEFAULT 0, drop_vocal REAL NOT NULL DEFAULT 0, exit_ms INTEGER NOT NULL DEFAULT 0, gap_ms INTEGER NOT NULL DEFAULT 0, gap_end_ms INTEGER NOT NULL DEFAULT 0, exit_vocal REAL NOT NULL DEFAULT 0, drop_runup_tonal_db REAL NOT NULL DEFAULT 0, intro_beats_per_bar INTEGER NOT NULL DEFAULT 0, outro_beats_per_bar INTEGER NOT NULL DEFAULT 0, intro_grid_source INTEGER NOT NULL DEFAULT 0, outro_grid_source INTEGER NOT NULL DEFAULT 0, analysed_ms INTEGER NOT NULL, PRIMARY KEY(server, song_id)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS vocal_curve(server TEXT NOT NULL, song_id TEXT NOT NULL, curve BLOB NOT NULL, PRIMARY KEY(server, song_id)) WITHOUT ROWID;
 ";
@@ -130,7 +133,7 @@ pub fn db_forget_server(db_path: String, server: String) -> nori_model::Result<(
 }
 
 /// Deletes all rows of `server`.
-pub fn forget_server(c: &Connection, server: &str) -> rusqlite::Result<()> {
+pub(crate) fn forget_server(c: &Connection, server: &str) -> rusqlite::Result<()> {
     c.execute("DELETE FROM fts WHERE rowid IN (SELECT rowid FROM items WHERE server=?1)", [server])?;
     for t in SERVER_TABLES {
         c.execute(&format!("DELETE FROM {t} WHERE server=?1"), [server])?;
@@ -142,13 +145,9 @@ pub fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
-/// Provider items are not library rows ([`nori_model::model::is_provider_id`]).
-pub fn external(id: &str) -> bool {
-    nori_model::model::is_provider_id(id)
-}
-
 fn upsert<T: Serialize>(c: &Connection, kind: i64, id: &str, text: &str, item: &T) -> rusqlite::Result<bool> {
-    if id.is_empty() || external(id) {
+    // Provider items are not library rows.
+    if id.is_empty() || nori_model::is_provider_id(id) {
         return Ok(false);
     }
     let json = serde_json::to_string(item).unwrap_or_default();

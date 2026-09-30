@@ -12,6 +12,7 @@ impl Core {
     /// Queues `songs` for download; see [`DownloadQueued`].
     pub fn download_queue(&self, songs: Vec<crate::Song>) -> crate::Result<DownloadQueued> {
         follow_quality();
+        know(&songs);
         let rows = songs.into_iter().map(|s| {
             let json = serde_json::to_string(&s).unwrap_or_default();
             (s.id, json)
@@ -92,7 +93,7 @@ impl Core {
 /// Whether Download asks about the beat model ([`beats_offer`]).
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn download_beats_offer() -> BeatsOffer {
-    let (on, choice) = crate::settings_store::with_prefs(|p| (p.auto_mix && p.auto_mix_better_beats, p.download_beats)).unwrap_or((false, nori_settings::settings::DownloadBeats::Ask));
+    let (on, choice) = crate::settings_store::prefs(|p| (p.auto_mix && p.auto_mix_better_beats, p.download_beats));
     beats_offer(on && nori_player::automix::beats::AVAILABLE, choice)
 }
 
@@ -109,7 +110,7 @@ pub fn download_processing(now: i64) -> Option<Processing> {
 }
 
 /// The ids marked for the beat model.
-pub fn beats_wanted_rows(c: &rusqlite::Connection) -> crate::Result<Vec<String>> {
+pub(crate) fn beats_wanted_rows(c: &rusqlite::Connection) -> crate::Result<Vec<String>> {
     let mut st = c.prepare("SELECT id FROM download_beats WHERE server=sid()")?;
     let rows = st.query_map([], |r| r.get(0))?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -120,19 +121,22 @@ impl Core {
     /// Records settled downloads in order: finished, or removed (`finished` false). One transaction.
     pub fn download_settle(&self, ids: Vec<String>, finished: Vec<bool>) -> crate::Result<()> {
         let gone_ids: Vec<String> = ids.iter().zip(&finished).filter(|(_, f)| !**f).map(|(id, _)| id.clone()).collect();
+        // Read first: the in-memory ids are asked per list row and must not wait for the statements.
+        let mut state: HashMap<&str, HeldState> = {
+            let held = self.held.lock();
+            ids.iter().map(|id| (id.as_str(), held.state(id))).collect()
+        };
         let mut c = self.db.lock();
         let tx = c.transaction()?;
         {
-            let held = self.held.lock();
             let mut done = tx.prepare_cached("UPDATE downloads SET done=1 WHERE server=sid() AND id=?1")?;
             let mut gone = tx.prepare_cached("DELETE FROM downloads WHERE server=sid() AND id=?1")?;
             let mut unwanted = tx.prepare_cached("DELETE FROM download_beats WHERE server=sid() AND id=?1")?;
             for id in &gone_ids {
                 unwanted.execute([id])?;
             }
-            let mut state: HashMap<&str, HeldState> = HashMap::new();
             for (id, f) in ids.iter().zip(&finished) {
-                let now = state.entry(id.as_str()).or_insert_with(|| held.state(id));
+                let now = state.get_mut(id.as_str()).expect("read above");
                 match (*now, *f) {
                     (HeldState::Absent, _) | (HeldState::Done, true) => {}
                     (_, true) => {
@@ -202,18 +206,17 @@ impl Core {
     /// marks failed ones and reports what is left.
     pub fn download_recover(&self, known: Vec<DownloadKnown>) -> crate::Result<DownloadRecovery> {
         follow_quality();
-        let pending: Vec<String> = self.downloads(false)?.into_iter().map(|s| s.id).collect();
+        let pending = self.downloads(false)?;
+        know(&pending);
+        let pending: Vec<String> = pending.into_iter().map(|s| s.id).collect();
         let (mut r, failed) = recovery(&pending, &known);
         self.download_settle(r.finished.clone(), vec![true; r.finished.len()])?;
         r.failed = with(|t| {
             failed
                 .into_iter()
                 .map(|(id, length, bytes)| {
-                    let estimate = t.info(&id).estimate;
-                    if !t.marks.contains_key(&id) {
-                        t.marks.insert(id.clone(), (Phase::Failed, 0));
-                        t.changed.insert(id.clone());
-                    }
+                    let estimate = t.info(&id).map_or(0, |i| i.estimate);
+                    t.failed_before(&id);
                     DownloadFailed { progress: fraction(length, bytes, estimate), id }
                 })
                 .collect()
@@ -249,6 +252,23 @@ pub(crate) mod tests {
 
     fn song(id: &str) -> Song {
         Song { id: id.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn reports_skip_busy_database() {
+        let _turn = TURN.lock();
+        let core = Core::new(String::new(), "t".into()).unwrap();
+        core.download_queue(vec![Song { id: "busy".into(), size: 4_000_000, ..Default::default() }]).unwrap();
+        let busy = core.db.lock();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            followed("busy", QUEUED, 0);
+            tx.send(start_fraction("busy")).unwrap();
+        });
+        let fraction = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("answered while the database was busy");
+        drop(busy);
+        assert_eq!(fraction, 0.0, "its size known from the queue");
+        removed("busy");
     }
 
     #[test]
@@ -324,6 +344,29 @@ pub(crate) mod tests {
         assert_eq!(r.failed, [DownloadFailed { id: "rc-b".into(), progress: 0.5 }]);
         assert_eq!(core.downloads(true).unwrap().len(), 1);
         assert_eq!(download_phase("rc-b".into()), Some(Phase::Failed.shown()));
+    }
+
+    #[test]
+    fn restart_failure_wakes_downloads() {
+        use std::future::Future;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        struct Woke(AtomicBool);
+        impl std::task::Wake for Woke {
+            fn wake(self: Arc<Self>) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let _turn = TURN.lock();
+        let core = Core::new(String::new(), "t".into()).unwrap();
+        core.download_queue(vec![song("rw-a")]).unwrap();
+        download_marks_changed();
+        let woke = Arc::new(Woke(AtomicBool::new(false)));
+        let waker = std::task::Waker::from(woke.clone());
+        let mut moved = std::pin::pin!(download_marks_moved());
+        assert!(moved.as_mut().poll(&mut std::task::Context::from_waker(&waker)).is_pending());
+        core.download_recover(vec![DownloadKnown { id: "rw-a".into(), state: FAILED, length: 100, bytes: 50 }]).unwrap();
+        assert!(woke.0.load(Ordering::SeqCst));
     }
 
     #[test]

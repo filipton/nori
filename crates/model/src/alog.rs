@@ -17,7 +17,7 @@ mod sys {
     use std::ffi::{c_char, c_int};
     #[link(name = "log")]
     extern "C" {
-        pub fn __android_log_write(prio: c_int, tag: *const c_char, text: *const c_char) -> c_int;
+        pub(crate) fn __android_log_write(prio: c_int, tag: *const c_char, text: *const c_char) -> c_int;
     }
 }
 
@@ -28,7 +28,7 @@ pub const KEPT: usize = 500;
 static LINES: Mutex<VecDeque<(i64, String)>> = Mutex::new(VecDeque::new());
 
 /// Size at which `nori.log` is rotated to `nori.log.1`.
-pub const JOURNAL_BYTES: u64 = 1 << 20;
+pub(crate) const JOURNAL_BYTES: u64 = 1 << 20;
 
 /// The on-disk log file, once [`alog_persist`] has run.
 struct Journal {
@@ -46,7 +46,7 @@ fn wall_ms() -> i64 {
 }
 
 /// `ms` since the epoch, `offset_min` east of UTC, as `2026-09-28 13:22:05.123`.
-pub fn local_time(ms: i64, offset_min: i64) -> String {
+pub(crate) fn local_time(ms: i64, offset_min: i64) -> String {
     let ms = ms + offset_min * 60_000;
     let (days, of_day) = (ms.div_euclid(86_400_000), ms.rem_euclid(86_400_000));
     // Howard Hinnant's civil_from_days.
@@ -69,14 +69,14 @@ fn open_journal(dir: &std::path::Path) -> Option<(File, u64)> {
     Some((file, bytes))
 }
 
-/// Appends to the journal if any, rotating when full.
+/// Appends to the journal if any, rotating when full; a journal that cannot rotate stops.
 fn journal(ms: i64, message: &str) {
     let mut j = JOURNAL.lock().unwrap_or_else(|e| e.into_inner());
     let Some(journal) = j.as_mut() else { return };
     let line = format!("{} {message}\n", local_time(ms, journal.offset_min));
     if journal.bytes + line.len() as u64 > JOURNAL_BYTES {
-        let _ = std::fs::rename(journal.dir.join("nori.log"), journal.dir.join("nori.log.1"));
-        match open_journal(&journal.dir) {
+        let rotated = std::fs::rename(journal.dir.join("nori.log"), journal.dir.join("nori.log.1"));
+        match rotated.ok().and_then(|()| open_journal(&journal.dir)) {
             Some((file, bytes)) => (journal.file, journal.bytes) = (file, bytes),
             None => {
                 *j = None;
@@ -111,10 +111,12 @@ pub fn alog_persist(dir: String, utc_offset_min: i32) -> bool {
     true
 }
 
-/// Both journal files' contents, oldest first; empty without a journal.
+/// Both journal files' contents, oldest first; empty without a journal. Read under the lock, so no
+/// rotation comes between the two.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn alog_journal() -> String {
-    let Some(dir) = JOURNAL.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|j| j.dir.clone()) else { return String::new() };
+    let j = JOURNAL.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(dir) = j.as_ref().map(|j| &j.dir) else { return String::new() };
     let read = |name: &str| std::fs::read(dir.join(name)).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
     read("nori.log.1") + &read("nori.log")
 }
@@ -172,6 +174,15 @@ mod tests {
         assert!(mine.len() > 1000 && !mine.contains(&0), "a full file's worth and more, the oldest gone: {}", mine.len());
         assert!(std::fs::metadata(dir.join("nori.log")).unwrap().len() <= JOURNAL_BYTES);
         assert!(all.lines().all(|l| l.as_bytes().get(4) == Some(&b'-') && l.as_bytes().get(10) == Some(&b' ')), "each with its time");
+
+        // A rotation that cannot rename does not let the file grow.
+        let stuck = nori_testdir::TempDir::new("alog-stuck");
+        std::fs::create_dir_all(stuck.join("nori.log.1").join("in the way")).unwrap();
+        assert!(alog_persist(stuck.to_string_lossy().into_owned(), 0));
+        for k in 0..2500 {
+            keep(&format!("journal-test {k} {long}"));
+        }
+        assert!(std::fs::metadata(stuck.join("nori.log")).unwrap().len() <= JOURNAL_BYTES);
         *JOURNAL.lock().unwrap() = None;
     }
 
