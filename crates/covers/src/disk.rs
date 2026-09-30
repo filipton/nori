@@ -1,7 +1,8 @@
 //! LRU cache of raw cover files in a directory, bounded in bytes, one file per MD5 of the cover key.
 //!
-//! The index lives in memory and is rebuilt from the directory on open; a file's mtime is its last use
-//! (reset on every read), so the order survives restarts. Renames and deletes happen under the index lock
+//! The index lives in memory and is rebuilt from the directory on open; a file's mtime is its first use
+//! in a process (set at its first read, or its write), so the order survives restarts without a metadata
+//! write on every read. Renames and deletes happen under the index lock
 //! together with the index update so the two never disagree; writing and reading file contents happen
 //! outside it.
 
@@ -62,6 +63,8 @@ struct Entry {
     used: u64,
     /// Clock value of the put that wrote the file; a failed read only forgets the entry if it matches.
     written: u64,
+    /// The file's mtime was set in this process.
+    stamped: bool,
 }
 
 #[derive(Default)]
@@ -74,20 +77,22 @@ struct Index {
 }
 
 impl Index {
-    /// Marks `key` used; returns its `written` clock, or None if not indexed.
-    fn touch(&mut self, key: Key) -> Option<u64> {
+    /// Marks `key` used; returns its `written` clock and whether its mtime is still to be set, or None if
+    /// not indexed.
+    fn touch(&mut self, key: Key) -> Option<(u64, bool)> {
         let e = self.files.get_mut(&key)?;
         self.order.remove(&e.used);
         self.clock += 1;
         e.used = self.clock;
         self.order.insert(self.clock, key);
-        Some(e.written)
+        Some((e.written, !std::mem::replace(&mut e.stamped, true)))
     }
 
-    fn insert(&mut self, key: Key, bytes: u64) {
+    /// `stamped`: the file was just written.
+    fn insert(&mut self, key: Key, bytes: u64, stamped: bool) {
         self.remove(key);
         self.clock += 1;
-        self.files.insert(key, Entry { bytes, used: self.clock, written: self.clock });
+        self.files.insert(key, Entry { bytes, used: self.clock, written: self.clock, stamped });
         self.order.insert(self.clock, key);
         self.bytes += bytes;
     }
@@ -141,7 +146,7 @@ impl DiskCache {
         found.sort_unstable();
         let mut index = Index::default();
         for (_, key, bytes) in found {
-            index.insert(key, bytes);
+            index.insert(key, bytes, false);
         }
         let cache = DiskCache { dir, limit, index: Mutex::new(Index::default()), writes: AtomicU64::new(0) };
         cache.trim(&mut index);
@@ -161,13 +166,15 @@ impl DiskCache {
 
     /// Reads `key` into `buf` (cleared first) and marks it used; false on a miss.
     pub fn read(&self, key: Key, buf: &mut Vec<u8>) -> bool {
-        let Some(written) = self.index.lock().touch(key) else { return false };
+        let Some((written, stamp)) = self.index.lock().touch(key) else { return false };
         buf.clear();
         let path = self.path(key);
         let read = File::open(&path).and_then(|mut f| {
             f.read_to_end(buf)?;
             // Persists the LRU order across restarts.
-            let _ = f.set_modified(SystemTime::now());
+            if stamp {
+                let _ = f.set_modified(SystemTime::now());
+            }
             Ok(())
         });
         if read.is_err() {
@@ -191,7 +198,7 @@ impl DiskCache {
         let written = File::create(&tmp).and_then(|mut f| f.write_all(bytes)).and_then(|_| {
             let mut index = self.index.lock();
             fs::rename(&tmp, &path)?;
-            index.insert(key, bytes.len() as u64);
+            index.insert(key, bytes.len() as u64, true);
             self.trim(&mut index);
             Ok(())
         });
@@ -287,6 +294,26 @@ mod tests {
         assert!(!c.contains(Key::of("a")) && c.contains(Key::of("b")) && c.contains(Key::of("c")));
         assert!(!d.join("0123.5-1.tmp").exists());
         assert_eq!(c.bytes(), 20);
+    }
+
+    #[test]
+    fn a_file_is_stamped_once_per_process() {
+        let d = dir("stamp");
+        let old = UNIX_EPOCH + std::time::Duration::from_secs(1000);
+        let age = |c: &DiskCache| File::options().write(true).open(c.path(Key::of("a"))).unwrap().set_modified(old).unwrap();
+        {
+            let c = DiskCache::open(d.path(), 100).unwrap();
+            c.put(Key::of("a"), &[1; 10]).unwrap();
+            age(&c);
+        }
+        let c = DiskCache::open(d.path(), 100).unwrap();
+        let mtime = || fs::metadata(c.path(Key::of("a"))).unwrap().modified().unwrap();
+        let mut buf = Vec::new();
+        assert!(c.read(Key::of("a"), &mut buf));
+        assert!(mtime() > old, "the first read marks the use");
+        age(&c);
+        assert!(c.read(Key::of("a"), &mut buf));
+        assert_eq!(mtime(), old, "later reads write nothing");
     }
 
     #[test]
