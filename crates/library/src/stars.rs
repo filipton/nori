@@ -48,12 +48,16 @@ impl StarMarks {
         StarMarked { previous, marks: self.clone() }
     }
 
-    /// The server refused a star change: the mark from before comes back. Returns the marks now.
-    pub fn restore(&mut self, kind: Starrable, id: String, previous: Option<bool>) -> StarMarks {
-        match previous {
-            Some(on) => self.of_mut(kind).insert(id, on),
-            None => self.of_mut(kind).remove(&id),
-        };
+    /// The server refused the press that marked `pressed`: the mark from before comes back, unless a
+    /// later press changed it. Returns the marks now.
+    pub fn restore(&mut self, kind: Starrable, id: String, pressed: bool, previous: Option<bool>) -> StarMarks {
+        let marks = self.of_mut(kind);
+        if marks.get(&id) == Some(&pressed) {
+            match previous {
+                Some(on) => marks.insert(id, on),
+                None => marks.remove(&id),
+            };
+        }
         self.clone()
     }
 
@@ -108,8 +112,9 @@ mod tests {
         assert_eq!(first.marks.albums.get("1"), Some(&true));
         let second = m.mark(Starrable::Album, "1".into(), false);
         assert_eq!(second.previous, Some(true));
-        assert_eq!(m.restore(Starrable::Album, "1".into(), second.previous).albums.get("1"), Some(&true));
-        assert_eq!(m.restore(Starrable::Album, "1".into(), first.previous).albums.get("1"), None);
+        assert_eq!(m.restore(Starrable::Album, "1".into(), true, first.previous).albums.get("1"), Some(&false), "a later press stays");
+        assert_eq!(m.restore(Starrable::Album, "1".into(), false, second.previous).albums.get("1"), Some(&true));
+        assert_eq!(m.restore(Starrable::Album, "1".into(), true, first.previous).albums.get("1"), None);
         // Split by kind, keyed by the id alone: a song and an album may share an id.
         let m2 = m.mark(Starrable::Song, "1".into(), true).marks;
         assert_eq!((m2.songs.get("1"), m2.albums.get("1"), m2.artists.get("1")), (Some(&true), None, None));

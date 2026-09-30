@@ -24,7 +24,7 @@ impl Client {
         marked.marks(m.marks);
         let sent = self.write(Write::Star { kind, id: id.clone(), on }).await;
         if sent.is_err() {
-            marked.marks(self.core.stars.lock().restore(kind, id, m.previous));
+            marked.marks(self.core.stars.lock().restore(kind, id, on, m.previous));
         }
         sent
     }
