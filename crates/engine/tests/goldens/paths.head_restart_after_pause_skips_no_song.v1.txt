@@ -8,6 +8,6 @@
 2124 Song { index: 1, id: "b", jumps: 1 }
 heard: 0 samples
 opened []
-chip calls [Open(Coded { coding: Mp3, rate: 44100, channels: 2 }), DelayPadding(576, 1008), Volume(1.0), Write(417, 47), Play, Write(262479, 723456), Write(57678, 158497), EndOfStream, DelayPadding(576, 1008), Write(262478, 722351), Write(58096, 159649), EndOfStream, Pause, Play, Volume(1.0), Volume(1.0), Close]
-chip notes ["the platform granted a track of 3761 KB of the 3761 KB asked: 9844 ms of this song, topped up when the platform asks for more (about every 4922 ms if its chip buffers nothing of its own)", "the play head read 0 after 44100, not at a join: looked at again", "the play head counts again from nought (0): the count goes on from 44100 frames"]
+chip calls [Open(Coded { coding: Mp3, rate: 44100, channels: 2 }), DelayPadding(576, 1008), Volume(1.0), Write(262478, 722351), Write(58096, 159649), Play, EndOfStream, DelayPadding(576, 1008), Write(417, 47), Write(262479, 723456), Write(57678, 158497), EndOfStream, Pause, Play, Volume(1.0), Volume(1.0), Close]
+chip notes ["the platform granted a track of 3761 KB of the 3761 KB asked: 240311 ms of this song, topped up when the platform asks for more (about every 30000 ms if its chip buffers nothing of its own)", "the play head read 0 after 44100, not at a join: looked at again", "the play head counts again from nought (0): the count goes on from 44100 frames"]
 chip bytes: 641148 samples 8d27154a490e2015 e8d9a64d2a25f10b c8e5834b0e1d5383 12ee785a4eef644a 197b5fe46edfc8e6 876ae025c71ae9c2 0eede9c05f620d87 b43c9061644f4939 7297f5dd70f3e239 59c1134d42a15a0f

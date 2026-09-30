@@ -6,4 +6,4 @@
 heard: 1852416 samples 2d5b4b9a5ada4a95 61dbdabdf81e6796 38a6f2ea2ad18c6c 4183c8436fce9bae c7c66aa516483412 ac14c7bd8c3569be c5cec078ba03f323 27a18f4366228183 a88e38f4279d27f9 6bb32e343a38ed9a fc8315e245e08c21 33471e2b0f7fd636 d3416eb335211030 294f4d6168d9d2ef 69eee132baa67c3a 5420c90f6c867ac9 0669684a87d90817 caa5ebd54f854b98 35fa935d4efdcdf3 0a0ae86d6c5de985 7ff7219a79fe8ef2 9fb5929e46cd3b94
 heard_f: 0 samples
 opened 1 shut 1 flushes 1
-requests [("a", 0), ("a", 3879980), ("b", 0), ("c", 0)]
+requests [("a", 0), ("b", 0), ("c", 0)]

@@ -1,13 +1,13 @@
 0 State(Playing)
 0 Song { index: 0, id: "a", jumps: 1 }
-0 Awake(false)
+2054 Awake(false)
 5003 Awake(true)
 5123 Song { index: 1, id: "b", jumps: 2 }
 5247 Awake(false)
 21559 Awake(true)
-25031 State(Ended)
+25042 State(Ended)
 heard: 0 samples
 opened []
-chip calls [Open(Coded { coding: Mp3, rate: 44100, channels: 2 }), DelayPadding(576, 1008), Volume(1.0), Write(417, 47), Play, Write(65119, 179483), Write(32865, 90584), Write(32921, 90738), Volume(1.0), Volume(1.0), Volume(1.0), Volume(0.9), Volume(0.8), Volume(0.7083334), Volume(0.60833335), Volume(0.51666665), Volume(0.4166667), Volume(0.31666666), Volume(0.22500002), Volume(0.125), Volume(0.03333336), Pause, Flush, Volume(0.03333336), Volume(0.03333336), DelayPadding(576, 1008), Volume(0.03333336), Write(65536, 180357), Play, Volume(0.03333336), Volume(0.097777806), Volume(0.19444448), Volume(0.28305557), Volume(0.37972224), Volume(0.4763889), Volume(0.565), Volume(0.66166663), Volume(0.7502778), Volume(0.84694445), Volume(0.9436111), Volume(1.0), Write(32857, 90424), Write(32938, 90646), Write(32930, 90625), Write(32930, 90625), Write(32929, 90622), Write(32358, 89052), Write(572, 1571), Write(32930, 90492), Write(24594, 67586), EndOfStream, Pause, Close]
-chip notes ["the platform granted a track of 64 KB of the 3761 KB asked: 167 ms of this song, topped up when the platform asks for more (about every 83 ms if its chip buffers nothing of its own)", "the timestamp read 225968 frames, 5123 ms in, ahead of the clock's 500 ms (1 of 3)", "the timestamp read 225968 frames, 5123 ms in, ahead of the clock's 507 ms (2 of 3)", "b ended by the play head: the timestamp read 877903, 19907 ms heard of 20000 ms written for it, its end of stream said, its timestamp a moment back 430 times (by 115 frames at most), held where it was"]
-chip bytes: 451896 samples 8d27154a490e2015 e8d9a64d2a25f10b 7f8379db5ec090d8 a1f5c30512d8fd45 0a23de5a7fa1c0cc e736a9d04969fa10 b7dff9a33e9fa4f2
+chip calls [Open(Coded { coding: Mp3, rate: 44100, channels: 2 }), DelayPadding(576, 1008), Volume(1.0), Write(65536, 180357), Play, Write(32921, 90600), Write(32938, 90647), Volume(1.0), Volume(1.0), Volume(1.0), Volume(0.9), Volume(0.8), Volume(0.7083334), Volume(0.60833335), Volume(0.51666665), Volume(0.4166667), Volume(0.31666666), Volume(0.22500002), Volume(0.125), Volume(0.03333336), Pause, Flush, Volume(0.03333336), Volume(0.03333336), DelayPadding(576, 1008), Volume(0.03333336), Write(65536, 180357), Play, Volume(0.03333336), Volume(0.097777806), Volume(0.19444448), Volume(0.28305557), Volume(0.37972224), Volume(0.4763889), Volume(0.565), Volume(0.66166663), Volume(0.7502778), Volume(0.84694445), Volume(0.9436111), Volume(1.0), Write(32857, 90424), Write(32938, 90646), Write(32930, 90625), Write(32930, 90625), Write(32929, 90622), Write(32358, 89052), Write(572, 1571), Write(32930, 90492), Write(24594, 67586), EndOfStream, Pause, Close]
+chip notes ["the platform granted a track of 64 KB of the 3761 KB asked: 4089 ms of this song, topped up when the platform asks for more (about every 2044 ms if its chip buffers nothing of its own)", "the timestamp read 225968 frames, 5123 ms in, ahead of the clock's 500 ms (1 of 3)", "the timestamp read 225968 frames, 5123 ms in, ahead of the clock's 507 ms (2 of 3)", "b ended by the play head: the timestamp read 878415, 19918 ms heard of 20000 ms written for it, its end of stream said, its timestamp a moment back 430 times (by 118 frames at most), held where it was"]
+chip bytes: 451969 samples 8d27154a490e2015 e8d9a64d2a25f10b 2be1d0f33e477a60 f680818d02f06409 ddd6ae59a2c7f20e 6476a9d54746c3c3 7792bff5fc929538

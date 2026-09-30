@@ -1,5 +1,7 @@
 0 State(Playing)
+0 Buffering(true)
 0 Song { index: 0, id: "k1", jumps: 1 }
+0 Buffering(false)
 120 Buffering(true)
 120 Song { index: 2, id: "k3", jumps: 2 }
 120 Buffering(false)

@@ -13,9 +13,9 @@
 2500 Position { index: 0, ms: 10641 }
 3000 Position { index: 0, ms: 11142 }
 3500 Position { index: 0, ms: 11644 }
-3500 Buffering(true)
-3500 Position { index: 0, ms: 50000 }
-6503 Buffering(false)
-16445 Song { index: 1, id: "b", jumps: 1 }
-heard: 1292288 samples 79f62a5bef0cc3c5 5778fc7e07d283c5 ba1390971fae83c5 b001b23df8b223c5 fd2d14142e9983c5 5e3ff86dccc523c5 5a550a0a77a343c5 a7c5307e790183c5 6d5d5a893f78a3c5 d0c98b2843b923c5 0e604b66047883c5 60ff1dc35277c3c5 bf58f4fa3cdbe3c5 89108a061d4ac3c5 883636f560861e65
+3509 Buffering(true)
+3509 Position { index: 0, ms: 50000 }
+6514 Buffering(false)
+16456 Song { index: 1, id: "b", jumps: 1 }
+heard: 1293312 samples 79f62a5bef0cc3c5 5778fc7e07d283c5 ba1390971fae83c5 f8210dfa7e8463c5 ac6775923d4043c5 9c818374937ac3c5 47a2b46eaf2663c5 004cd1c0b6c083c5 3ba80db2609b03c5 b40a09979ddcc3c5 e2bccc46de9fe3c5 0d6955a737bd23c5 ad86139a8652c3c5 071f23f746f383c5 a49c308cf801ae65
 opened [OutputFormat { rate: 48000, channels: 2, bits: 0 }]

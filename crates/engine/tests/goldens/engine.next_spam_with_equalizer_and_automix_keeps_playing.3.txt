@@ -2,20 +2,20 @@
 0 Song { index: 0, id: "a", jumps: 1 }
 2119 Buffering(true)
 2119 Song { index: 2, id: "c", jumps: 3 }
-2119 Buffering(false)
-2250 Buffering(true)
 2250 Song { index: 4, id: "e", jumps: 5 }
 2250 Buffering(false)
 2497 Buffering(true)
 2497 Song { index: 5, id: "f", jumps: 6 }
-2497 Buffering(false)
+2674 Buffering(false)
 2674 Song { index: 6, id: "g", jumps: 7 }
 2862 Buffering(true)
 2862 Song { index: 8, id: "i", jumps: 9 }
-2862 Buffering(false)
+3016 Buffering(false)
 3016 Song { index: 9, id: "j", jumps: 10 }
+3211 Buffering(true)
 3211 Song { index: 10, id: "k", jumps: 11 }
-heard: 1011200 samples 8274f803c8fc4595 5d15db470795ea8d 65f10baaf04a5824 42bbcd82b6d0eb4f 57e61e3ffc933a0b 8d8e417f54a0813d 0cfe40531e3f6856 27ffe9c15f82feb1 23fd78c7cfc7e7cd e98b9f847f6c290d ee751a3f12133e5a 0273c70644915000
+3211 Buffering(false)
+heard: 970496 samples 8274f803c8fc4595 5d15db470795ea8d 42954c2868a9668a 15dc189d6825fe04 a3cee8190daf50d7 b6f2adf971ab2450 3172721be1c88185 be7225ecadea4dbb 20ee22baabfdd059 a9f193cfb0803cf9 3dbb0a5322359486 0d3e26fa4db437a7
 heard_f: 0 samples
 opened 1 shut 1 flushes 7
 requests [("b", 2352014), ("c", 0), ("e", 2352014), ("f", 0), ("h", 2352014), ("i", 0), ("k", 2352014), ("l", 0)]

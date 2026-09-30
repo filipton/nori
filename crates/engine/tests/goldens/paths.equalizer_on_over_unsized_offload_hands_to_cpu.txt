@@ -1,6 +1,7 @@
 0 State(Playing)
 0 Song { index: 0, id: "a", jumps: 1 }
 0 Position { index: 0, ms: 0 }
+0 Awake(false)
 100 Position { index: 0, ms: 100 }
 200 Position { index: 0, ms: 200 }
 300 Position { index: 0, ms: 300 }
@@ -21,7 +22,6 @@
 1800 Position { index: 0, ms: 1800 }
 1900 Position { index: 0, ms: 1900 }
 2000 Position { index: 0, ms: 2000 }
-2054 Awake(false)
 2100 Position { index: 0, ms: 2100 }
 2200 Position { index: 0, ms: 2200 }
 2300 Position { index: 0, ms: 2300 }
@@ -91,7 +91,7 @@
 8500 Position { index: 0, ms: 8503 }
 8600 Position { index: 0, ms: 8596 }
 8700 Position { index: 0, ms: 8700 }
-8800 Position { index: 0, ms: 8793 }
+8800 Position { index: 0, ms: 8804 }
 8900 Position { index: 0, ms: 8897 }
 9000 Position { index: 0, ms: 9002 }
 9100 Position { index: 0, ms: 9095 }

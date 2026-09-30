@@ -1,7 +1,5 @@
 0 State(Playing)
-0 Buffering(true)
 0 Song { index: 0, id: "a", jumps: 1 }
-0 Buffering(false)
 15998 State(Paused)
 16500 State(Playing)
 24504 Mixing(true)

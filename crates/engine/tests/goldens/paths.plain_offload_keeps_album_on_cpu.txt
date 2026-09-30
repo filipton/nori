@@ -1,9 +1,7 @@
 0 State(Playing)
-0 Buffering(true)
 0 Song { index: 0, id: "a1", jumps: 1 }
 0 Placed { index: 0, ms: 0 }
-0 Buffering(false)
-29992 Song { index: 1, id: "a2", jumps: 1 }
+30201 Song { index: 1, id: "a2", jumps: 1 }
 heard: 2646016 samples bf0d9cfdec5d63c5 f4a3a6d7756903c5 87529b8051ac63c5 1fb0899a2b8623c5 0398bc051ae3a3c5 dc83557c55a183c5 5e315672f49e03c5 992a5f45a69923c5 f91ca564820363c5 55697b7815ac43c5 24f02eeb6daf63c5 a6df9ee09b4343c5 334842a3986963c5 b2c3e9fbec4b23c5 f6db73b692b3e3c5 8ce83cbf847fc3c5 4ac45d699f5743c5 7e49c510e681c3c5 b37f3b4574d623c5 31c511464f9b23c5 c1153deedc71c3c5 758bceee201323c5 ef384ab60a2543c5 7e691bcba8de23c5 3abb428efe09c3c5 249bc108036323c5 69c82032b2ed63c5 1619e1954048e3c5 bd4c27ce5142a3c5 4fe660dadb88e3c5 112ae24206a1a465
 opened [OutputFormat { rate: 44100, channels: 2, bits: 0 }]
 chip calls []
