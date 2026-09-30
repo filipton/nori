@@ -96,6 +96,25 @@ impl Biquad {
         *s = [s0, s1];
     }
 
+    /// [`Biquad::run`] over two channels at once: two chains that do not wait on each other.
+    #[inline]
+    fn run2(&self, s: &mut [[f64; 2]], left: &mut [f64], right: &mut [f64]) {
+        let (b0, b1, b2, a1, a2) = (self.b0, self.b1, self.b2, self.a1, self.a2);
+        let ([mut l0, mut l1], [mut r0, mut r1]) = (s[0], s[1]);
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let (i, j) = (*l, *r);
+            let y = b0 * i + l0;
+            let z = b0 * j + r0;
+            l0 = b1 * i - a1 * y + l1;
+            r0 = b1 * j - a1 * z + r1;
+            l1 = b2 * i - a2 * y;
+            r1 = b2 * j - a2 * z;
+            *l = y;
+            *r = z;
+        }
+        (s[0], s[1]) = ([l0, l1], [r0, r1]);
+    }
+
     /// RBJ cookbook filters.
     fn new(rate: f64, band: &Band) -> Self {
         let a = 10f64.powf(band.gain_db / 40.0);
@@ -543,6 +562,40 @@ impl Stages {
     /// [`Stages::frame`] over `frames` frames held channel after channel: each filter runs over a
     /// channel at a time, the same arithmetic in the same order per sample.
     fn block(&mut self, planar: &mut [f64], frames: usize) {
+        if self.channels == 2 {
+            self.block2(planar, frames);
+        } else {
+            self.block_each(planar, frames);
+        }
+        self.block_output(planar, frames);
+    }
+
+    /// Stereo: filters on both sides run both at once.
+    fn block2(&mut self, planar: &mut [f64], frames: usize) {
+        let (left, right) = planar.split_at_mut(frames);
+        if self.preamp != 1.0 {
+            left.iter_mut().chain(right.iter_mut()).for_each(|v| *v *= self.preamp);
+        }
+        for (f, st) in self.filters.iter().zip(self.state.iter_mut()) {
+            match f.chans & 3 {
+                3 => f.run2(&mut st[..2], left, right),
+                1 => f.run(&mut st[0], left),
+                2 => f.run(&mut st[1], right),
+                _ => {}
+            }
+        }
+        if let Some((f, st)) = self.bass.as_mut() {
+            f.run2(&mut st[..2], left, right);
+        }
+        if let Some(l) = self.loud.as_mut() {
+            left.iter_mut().chain(right.iter_mut()).for_each(|v| *v *= l.pre);
+            for (f, st) in l.filters[..l.count].iter().zip(l.state.iter_mut()) {
+                f.run2(&mut st[..2], left, right);
+            }
+        }
+    }
+
+    fn block_each(&mut self, planar: &mut [f64], frames: usize) {
         for c in 0..self.channels {
             let x = &mut planar[c * frames..(c + 1) * frames];
             if self.preamp != 1.0 {
@@ -564,6 +617,10 @@ impl Stages {
                 }
             }
         }
+    }
+
+    /// The output stage over the block, frame by frame, when it does anything.
+    fn block_output(&mut self, planar: &mut [f64], frames: usize) {
         let stereo = self.channels == 2 && (self.mono || self.virtualizer.is_some() || self.crossfeed.is_some() || self.balance != (1.0, 1.0));
         if !(stereo || self.expander.is_some() || self.compressor.is_some() || self.boost != 1.0 || self.limiter.is_some()) {
             return;
