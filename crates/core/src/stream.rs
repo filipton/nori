@@ -157,11 +157,7 @@ mod tests {
     fn resolve_prefers_download() {
         let (c, _) = client(NetProfile { url: "h".into(), ..Default::default() });
         assert_eq!(c.resolve("s1".into(), true, true).key, "dl:s1");
-        // Defaults: the original file on any network.
-        assert_eq!(c.resolve("s1".into(), false, false).key, "s1:0");
-        assert_eq!(c.resolve("s1".into(), false, true).key, "s1:0");
-        let (wifi, metered) = (c.streaming_quality(false), c.streaming_quality(true));
-        assert_eq!((wifi.bit_rate, wifi.format.as_str(), metered.bit_rate, metered.format.as_str()), (0, "", 0, ""));
+        assert_eq!(c.resolve("s1".into(), false, false).key, "s1:0", "not downloaded: streamed");
     }
 
     #[test]

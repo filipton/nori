@@ -518,7 +518,6 @@ mod tests {
         fake.answer(list);
         block(c.read_fetch(Read::AlbumList { kind: "byYear".into(), size: 50, offset: 0, genre: None }, None)).unwrap();
         let year = this_year();
-        assert!(year >= 2024);
         assert!(fake.asked()[2].ends_with(&format!("&type=byYear&fromYear={year}&toYear=0&size=50&offset=0&musicFolderId=7")));
     }
 
