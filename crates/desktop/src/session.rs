@@ -1,15 +1,15 @@
-//! One opened server profile: core, client, engine (cpal), store, downloader, cover loader and MPRIS.
-//! A trimmed copy of the terminal's backend.rs. Network calls run on their own threads and answer with a
+//! One opened server profile: core, client, engine (cpal), store, downloader, cover loader and MPRIS,
+//! with what the terminal client shares in nori-host. Network calls run on their own threads and answer with a
 //! [`Msg`] through [`Tx`].
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use nori_core::bridge::BridgeTake;
 use nori_core::cache_policy::{Page, Read};
-use nori_core::client::{Client, NetProfile};
+use nori_core::client::Client;
 use nori_core::covers::set_cover_transport;
 use nori_core::playlist::{self, Hand, QueueEdit};
 use nori_core::rules::{queue_keep, song_arrived, BridgeStep, QueueMoment};
@@ -17,11 +17,13 @@ use nori_core::race::{LyricsPick, LyricsShown};
 use nori_core::search::{SearchSession, SearchView};
 use nori_core::settings::{SavedServer, SettingChange, StoredPrefs};
 use nori_core::settings_store::{self, APPLY_AUDIO, APPLY_GAIN, CACHE_LIMIT, PLAYER, REPLAN, SOUND};
-use nori_core::{AlbumDetail, ArtistDetail, Core, OriginKind, PageOrigin, PlaylistDetail, ServerConfig, Song};
+use nori_core::{AlbumDetail, ArtistDetail, Core, PageOrigin, PlaylistDetail, Song};
 use nori_covers::loader::{Config as CoverConfig, Loader, Ticket};
 use nori_covers::memory::Image;
 use nori_engine::core::{settings, CoreApp, CoreLibrary, CoreOrder, CoreQueue, Downloader, Measurer, OutputVolume};
-use nori_engine::{AudioOutput, Body, ByteSource, Config, Engine, Event, OpenError, State, Status, Store};
+use nori_engine::{AudioOutput, Body, ByteSource, Config, Engine, Event, OpenError, State, Store};
+pub use nori_host::{db_path, Fetch};
+use nori_host::{config, derive, net, save, spawn, volume_db, Keeper};
 use nori_http::Http;
 use nori_look::cover::CoverColours;
 use nori_output_cpal::{CpalOutput, Volume};
@@ -113,24 +115,6 @@ pub const HOME_ROWS: [(&str, &str); 5] =
 
 const ALBUM_PAGE: i32 = 500;
 
-/// A collection whose songs are fetched on demand.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Fetch {
-    Album(String),
-    Playlist(String),
-    Artist(String),
-}
-
-impl Fetch {
-    pub fn origin(&self) -> PageOrigin {
-        match self {
-            Fetch::Album(id) => PageOrigin::new(OriginKind::Album, id.as_str()),
-            Fetch::Playlist(id) => PageOrigin::new(OriginKind::Playlist, id.as_str()),
-            Fetch::Artist(id) => PageOrigin::new(OriginKind::Artist, id.as_str()),
-        }
-    }
-}
-
 struct Audio {
     http: Arc<Http>,
 }
@@ -157,90 +141,6 @@ impl LyricsShown for Shown {
     }
 }
 
-/// MPRIS controls over the engine.
-struct Desktop {
-    engine: Arc<Engine>,
-}
-
-impl nori_mpris::Controls for Desktop {
-    fn play(&self) {
-        self.engine.play();
-    }
-    fn pause(&self) {
-        self.engine.pause();
-    }
-    fn toggle(&self) {
-        self.engine.toggle();
-    }
-    fn next(&self) {
-        self.engine.next();
-    }
-    fn previous(&self) {
-        self.engine.previous();
-    }
-    fn seek(&self, ms: i64) {
-        self.engine.seek(ms);
-    }
-    fn now(&self) -> nori_mpris::Now {
-        let s: Status = self.engine.status();
-        let song = s.id.clone().and_then(nori_core::queue::queue_song).unwrap_or_default();
-        nori_mpris::Now {
-            playing: s.state == State::Playing,
-            loaded: s.state == State::Paused,
-            index: s.index,
-            title: song.title,
-            artist: song.artist,
-            album: song.album,
-            length_ms: song.duration as i64 * 1000,
-            position_ms: s.position_now(),
-        }
-    }
-}
-
-/// Saves the queue after a delay (`queue_keep`) on a thread that sleeps until a save is due.
-struct Keeper {
-    due: parking_lot::Mutex<(Option<Instant>, bool)>,
-    wake: parking_lot::Condvar,
-}
-
-impl Keeper {
-    fn start(core: Arc<Core>, engine: Arc<Engine>) -> Arc<Keeper> {
-        let k = Arc::new(Keeper { due: parking_lot::Mutex::new((None, false)), wake: parking_lot::Condvar::new() });
-        let me = k.clone();
-        spawn("nori-keep", move || {
-            let mut due = me.due.lock();
-            while !due.1 {
-                match due.0 {
-                    None => me.wake.wait(&mut due),
-                    Some(at) if Instant::now() < at => {
-                        me.wake.wait_until(&mut due, at);
-                    }
-                    Some(_) => {
-                        due.0 = None;
-                        parking_lot::MutexGuard::unlocked(&mut due, || save(&core, &engine));
-                    }
-                }
-            }
-        });
-        k
-    }
-
-    fn later(&self, ms: i64) {
-        let mut due = self.due.lock();
-        due.0 = Some(Instant::now() + Duration::from_millis(ms.max(0) as u64));
-        self.wake.notify_one();
-    }
-
-    fn stop(&self) {
-        self.due.lock().1 = true;
-        self.wake.notify_one();
-    }
-}
-
-fn save(core: &Core, engine: &Engine) {
-    let _ = core.playlist_save(engine.status().position_now().max(0) as u64);
-}
-
 /// Desktop-only settings, stored as app values in the database.
 pub mod own {
     pub const VOLUME: &str = "desktop.volume";
@@ -258,18 +158,6 @@ pub mod own {
     pub fn keep(key: &'static str, value: String) {
         nori_core::settings_store::keep_app_value(key, value);
     }
-}
-
-pub fn db_path(data: &Path) -> String {
-    data.join(nori_core::db::DB_FILE).to_string_lossy().into_owned()
-}
-
-fn config(p: &SavedServer) -> ServerConfig {
-    ServerConfig { url: p.url.clone(), user: p.user.clone(), password: p.password.clone(), api_key: (!p.api_key.is_empty()).then(|| p.api_key.clone()), legacy_auth: p.legacy_auth }
-}
-
-fn net(p: &SavedServer) -> NetProfile {
-    NetProfile { url: p.url.clone(), alt_url: p.alt_url.clone(), music_folder_id: p.music_folder_id.clone(), alt_max_bit_rate: p.alt_max_bit_rate.max(0) as u32 }
 }
 
 /// Logs `draft` in against its server (blocking).
@@ -326,7 +214,7 @@ impl Session {
         let engine = Arc::new(Engine::start(library, app, CoreQueue, output, None, Config { memory_mb: 256, settings: settings(&prefs, loudness.db()), ..Config::default() }, move |e| events.send(Msg::Engine(e))));
         let covers = Arc::new(Loader::new(CoverConfig::new(data.join("covers")), http));
         if let Some(m) = &mpris {
-            m.serve(Some(Arc::new(Desktop { engine: engine.clone() })));
+            m.serve(Some(Arc::new(nori_host::Controls::over_queue(engine.clone()))));
         }
         let keeper = Keeper::start(core.clone(), engine.clone());
         let downloader = Downloader::new(core.clone(), client.clone(), audio.clone(), store.clone());
@@ -426,7 +314,7 @@ impl Session {
     pub fn play_later(&self, what: Fetch, shuffle: bool) {
         let (client, me) = (self.client.clone(), self.handle());
         let origin = what.origin();
-        spawn("nori-play", move || match fetch_songs(&client, what) {
+        spawn("nori-play", move || match what.songs(&client).map_err(|e| crate::words::net_error(&e)) {
             Ok(songs) if !songs.is_empty() => me.play(songs, 0, shuffle, Some(origin)),
             Ok(_) => me.tx.note("Nothing to play", false),
             Err(e) => me.tx.note(format!("Could not load the songs: {e}"), true),
@@ -789,39 +677,6 @@ impl Handle {
     }
 }
 
-fn fetch_songs(client: &Arc<Client>, what: Fetch) -> Result<Vec<Song>, String> {
-    let now = |r: Read| block_on(client.read_now(r)).map_err(|e| crate::words::net_error(&e));
-    match what {
-        Fetch::Album(id) => match now(Read::AlbumSongs { id })? {
-            Page::Songs { v } => Ok(v),
-            Page::AlbumPage { v } => Ok(v.songs),
-            _ => Ok(Vec::new()),
-        },
-        Fetch::Playlist(id) => match now(Read::PlaylistSongs { id })? {
-            Page::Songs { v } => Ok(v),
-            Page::PlaylistPage { v } => Ok(v.songs),
-            _ => Ok(Vec::new()),
-        },
-        Fetch::Artist(id) => match now(Read::ArtistById { id })? {
-            Page::ArtistPage { v } => Ok(block_on(client.artist_songs(v.albums))),
-            _ => Ok(Vec::new()),
-        },
-    }
-}
-
-/// An octo-fiesta provider item; the server downloads it when requested.
-fn volume_db(v: f32) -> f64 {
-    if v > 0.0 {
-        20.0 * (v as f64).log10()
-    } else {
-        -96.0
-    }
-}
-
-fn spawn(name: &str, f: impl FnOnce() + Send + 'static) {
-    let _ = std::thread::Builder::new().name(name.into()).spawn(f);
-}
-
 fn read_into(client: &Arc<Client>, read: Read, send: &impl Fn(Result<Data, String>), make: impl Fn(Page) -> Option<Data>) -> Result<bool, String> {
     let mut any = false;
     block_on(client.read_each(read, |p| {
@@ -842,32 +697,11 @@ fn report(client: &Arc<Client>, read: Read, send: impl Fn(Result<Data, String>),
     }
 }
 
-/// Fills the offline index from the server, page by page.
-fn sync(client: &Arc<Client>, tx: &Tx) {
+/// Fills the offline index from the server.
+fn sync(client: &Client, tx: &Tx) {
     tx.note("Filling the offline index…", false);
-    let mut total = nori_core::IngestStats::default();
-    let mut offset = 0;
-    let page = nori_core::browse::library_sizes().sync_page;
-    loop {
-        match block_on(client.sync_page(offset, page, total.clone())) {
-            Ok(step) => {
-                total = step.total;
-                match step.next_offset {
-                    Some(next) => offset = next,
-                    None => break,
-                }
-            }
-            Err(e) => {
-                tx.note(format!("The offline index stopped: {e}"), true);
-                return;
-            }
-        }
+    match nori_host::sync(client) {
+        Ok(total) => tx.note(format!("Offline index: {} songs", total.songs), false),
+        Err(e) => tx.note(format!("The offline index stopped: {e}"), true),
     }
-    tx.note(format!("Offline index: {} songs", total.songs), false);
-}
-
-/// Page colours from a cover (dark theme), as Android's `CoverLoader.colours`: RGBA converted to ARGB.
-fn derive(image: &Image) -> CoverColours {
-    let px: Vec<u32> = image.pixels.as_chunks::<4>().0.iter().map(|p| u32::from_be_bytes([p[3], p[0], p[1], p[2]])).collect();
-    nori_look::cover::derive(&px, image.width as usize, image.height as usize, true, false)
 }

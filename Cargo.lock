@@ -3658,6 +3658,7 @@ dependencies = [
  "nori-core",
  "nori-covers",
  "nori-engine",
+ "nori-host",
  "nori-http",
  "nori-look",
  "nori-mpris",
@@ -3738,6 +3739,7 @@ dependencies = [
  "nori-core",
  "nori-covers",
  "nori-engine",
+ "nori-host",
  "nori-http",
  "nori-look",
  "nori-mpris",
@@ -3781,6 +3783,18 @@ dependencies = [
  "nori-testdir",
  "parking_lot",
  "symphonia",
+]
+
+[[package]]
+name = "nori-host"
+version = "0.4.8"
+dependencies = [
+ "nori-core",
+ "nori-covers",
+ "nori-engine",
+ "nori-look",
+ "nori-mpris",
+ "parking_lot",
 ]
 
 [[package]]

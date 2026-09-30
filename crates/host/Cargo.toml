@@ -1,0 +1,17 @@
+[package]
+name = "nori-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "What the terminal and desktop clients share around an open session: queue saves, a collection's songs, the offline index, cover colours, media controls"
+
+[lib]
+name = "nori_host"
+
+[dependencies]
+nori-core = { path = "../core", default-features = false }
+nori-engine = { path = "../engine", features = ["core"] }
+nori-covers = { path = "../covers" }
+nori-look = { path = "../look" }
+nori-mpris = { path = "../mpris" }
+parking_lot = "0.12"
