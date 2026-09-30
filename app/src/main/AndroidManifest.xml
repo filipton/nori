@@ -60,6 +60,8 @@
             </intent-filter>
         </receiver>
         <meta-data android:name="com.google.android.gms.car.application" android:resource="@xml/automotive_app_desc" />
+        <!-- The car's pictures (CarArtProvider): Android Auto draws a browse item's picture only from a content address. -->
+        <provider android:name=".car.CarArtProvider" android:authorities="${applicationId}.carart" android:exported="true" />
         <!-- A report of a problem, shared as a file (Settings > About). -->
         <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.reports" android:exported="false" android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/reports" />

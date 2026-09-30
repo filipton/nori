@@ -73,10 +73,6 @@ fun volumeFraction(step: Int, max: Int): Float {
     return step / m.toFloat()
 }
 
-// ---- core/.../playback/PlaybackService.kt: a browser's page of a list ----
-
-fun page(len: Int, page: Int, pageSize: Int): List<Int> = List(len) { it }.drop(page * pageSize).take(pageSize)
-
 // ---- app/.../ui/DetailScreens.kt downloadEntry: the songs still to download ----
 
 fun missing(songs: List<String>, done: Set<String>): List<Int> =
@@ -157,11 +153,6 @@ fun main() {
             row("volume_step", "%08x".format(f.toRawBits()), max, volumeStep(f, max) ?: "-")
         }
         for (step in listOf(0, 1, 3, 7, 15)) row("volume_fraction", step, max, "%08x".format(volumeFraction(step, max).toRawBits()))
-    }
-
-    for (len in listOf(0, 1, 7, 20, 101)) for (p in listOf(0, 1, 2, 5)) for (size in listOf(1, 10, 20)) {
-        val got = page(len, p, size)
-        row("page", len, p, size, got.firstOrNull() ?: len.coerceAtMost(p * size), (got.lastOrNull()?.plus(1)) ?: len.coerceAtMost(p * size))
     }
 
     for ((songs, done) in listOf(

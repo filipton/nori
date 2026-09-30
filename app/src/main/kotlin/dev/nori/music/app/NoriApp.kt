@@ -8,6 +8,8 @@ class NoriApp : Application() {
         super.onCreate()
         dev.nori.music.app.ui.Say.use(resources)
         dev.nori.music.net.Failures.use(resources)
+        // The car's tree names the mixes as the app does.
+        dev.nori.music.playback.CarWords.mix = { dev.nori.music.app.ui.Say.current.mixName(it) }
         // Loading the native core and opening SQLite overlaps with the activity being created instead of preceding it.
         val nori = Nori.get(this)
         // Only a release build installs a release over itself: a debug build is the same app signed and

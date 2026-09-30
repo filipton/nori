@@ -103,6 +103,11 @@ tools/apk.sh --install # build and push to whatever is connected
 Lands in `build/nori-music-<version>-<abi>.apk`. Signed with the Android
 debug key — fine on your own devices, not for Play Store.
 
+Android Auto hides apps that were not installed from the Play Store. To see
+nori in the car, open the Android Auto settings on the phone, tap Version
+ten times to unlock developer settings, then in the ⋮ menu open Developer
+settings and turn on Unknown sources.
+
 ## Build
 
 ```sh
