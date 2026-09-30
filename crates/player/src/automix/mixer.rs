@@ -387,7 +387,8 @@ impl Mixer {
         }
         let g_out = fade(self.curve, self.out_fade.progress(p), true) * self.out_gain;
         let trim = self.in_gain_db * (1.0 - self.trim_glide.progress(p));
-        let g_in = fade(self.curve, self.in_fade.progress(p), false) * db_to_gain(trim);
+        // No trim (none asked, or its glide done) is exactly unity: no power per frame.
+        let g_in = fade(self.curve, self.in_fade.progress(p), false) * if trim == 0.0 { 1.0 } else { db_to_gain(trim) };
         let (rate, entry) = (self.rate, self.sweep_entry);
         for f in [&mut self.high_pass, &mut self.low_pass].into_iter().flatten() {
             let wet = f.wet(rate, entry, p);
