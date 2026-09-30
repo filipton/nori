@@ -146,10 +146,9 @@ only what touches the hardware:
   songs ahead for AutoMix, and `per_device(core)` gives each output device its own sound. Edit the queue
   through the core's `playlist_*` calls and tell the engine (`queue_changed`); the controls are
   `play_at`, `play`, `pause`, `next`, `previous`, `seek`, `go_to`, `set_settings`, `replan`,
-  `set_repeat`, `gain_changed`, `set_tuning` (the equalizer screen's shallow buffer, at once, the device
-  told through `AudioOutput::shallow`; a device that says it `resizes` is changed in place and nothing is
-  heard, and the ring kept as deep as it says it needs, `AudioOutput::shallow_depth`; otherwise the music
-  is made again behind a dip) and `pause_at_end`
+  `set_repeat`, `gain_changed`, `set_tuning` (the equalizer screen: the device told through
+  `AudioOutput::shallow` to hold only a fraction of a second, so a band moved is heard without it
+  dropping what it holds) and `pause_at_end`
   (the sleep timer's "end of this song"). The player's own rules come with them: a seek or a `go_to`
   while paused is held until play and fetches nothing, and a skip button while paused is a request for
   music (`nori_player::transport::skip_plays`). A screen follows `Event`s (state, the song heard -
@@ -170,9 +169,13 @@ float, 24-bit songs whole, with the sound chain run on the floats; without it th
 samples and dithers what it changes back to 16 bits. A song still on its way is opened off the
 engine's thread, and a long pause lets the output and the song's bytes go (the core's idle release) and
 opens them again where it was. A change to the sound while music plays (the equalizer, the limiter, speed,
-silence skipping, ReplayGain on a device that holds seconds, high quality output) is heard at once: what the
-ring and the device hold is made again from where the ear is behind a 30 ms dip, changes that come quickly
-taken together, one every 150 ms at most. It is `nori-player::pipeline`, the code the simulated player
+silence skipping, ReplayGain) is heard at once and seamlessly: the sink keeps what the chain was given and
+the chain's state every 8192 frames (`nori_player::chain`), goes back to the first frame the output can
+still replace, runs the chain again up to it (the same music) and on with the new settings, blended over
+5 ms. Nothing is decoded again and no position guessed; a device holding seconds drops them and plays on
+from exactly where it was (`Feed::rewind`). Changes that come quickly are taken together, one every 100 ms
+at most. An ending made under an old plan (the queue or the transition settings changed) is made again the
+same way from where the old and new endings part. It is `nori-player::pipeline`, the code the simulated player
 runs, on one thread that sleeps between bursts (its wakeups are listed in `crates/engine/src/engine.rs`).
 
 The engine also plays what the Android player plays around the sound chain, each off unless asked for:

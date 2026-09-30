@@ -24,7 +24,7 @@ pub struct CpalOutput {
     feed: Option<Arc<Mutex<Feed>>>,
     stream: Option<Stream>,
     playing: bool,
-    /// Equalizer tuning: the ring is only 80 ms deep, so the period is [`SHALLOW_PERIOD_MS`].
+    /// Equalizer tuning: the period is [`SHALLOW_PERIOD_MS`].
     shallow: bool,
     /// Device-reported time from the last callback to playback, µs.
     latency_us: Arc<AtomicU64>,
@@ -112,8 +112,7 @@ fn rank(f: SampleFormat) -> Option<u8> {
 /// Default period. The sound server's own default is a few ms, which wakes the callback hundreds of
 /// times a second for music buffered seconds ahead.
 const PERIOD_MS: u32 = 100;
-/// Period while the equalizer is tuned: a small fraction of the 80 ms ring the engine refills at half.
-/// A 100 ms period there underran on every pull.
+/// Period while the equalizer is tuned: a band moved is heard this much sooner.
 const SHALLOW_PERIOD_MS: u32 = 10;
 
 fn buffer_size(rate: u32, ms: u32, periods: Option<(u32, u32)>) -> BufferSize {
@@ -265,8 +264,7 @@ impl AudioOutput for CpalOutput {
         device.supported_output_configs().is_ok_and(|mut c| c.any(|r| r.sample_format() == SampleFormat::F32))
     }
 
-    /// Rebuilds the stream with the period for the new ring depth. The engine flushes the ring right
-    /// after, behind a dip, so the gap is not heard.
+    /// Rebuilds the stream with the shorter period, so a sound change is heard sooner.
     fn shallow(&mut self, on: bool) {
         if on == self.shallow {
             return;

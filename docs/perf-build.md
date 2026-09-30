@@ -229,12 +229,12 @@ emulator counted no underruns: the gap on the phone was the output reopened, not
 
 The shallow buffer's switches on the Rust engine are now in place, both ways: the AudioTrack is opened
 deep once, in power saving mode, and the equalizer screen only moves the part of it that may be filled
-(`AudioTrack.setBufferSizeInFrames`, crates/android track.rs `Writer::resize`); the engine changes its ring's
-depth with it (`AudioOutput::resizes`), with no flush, no dip and nothing made again. The trade-off:
-- **Made shallow**, the track and the ring still hold the seconds made before (up to the 11.5 s buffer and a
-  10 s burst). They play out as they are; a band moved before they have is made again behind the 30 ms dip
-  every change of the sound takes outside the screen (`Worker::apply`, `TUNED_HELD_US`), and every band
-  moved after it is heard as it is. Opening the screen and closing it without moving anything is silent.
+(`AudioTrack.setBufferSizeInFrames`, crates/android track.rs `Writer::resize`); the engine's ring stays deep
+(a band moved replaces the ring's music ahead of the track, `nori_player::sink`). The trade-off:
+- **Made shallow**, the track still holds the seconds taken before (up to the 11.5 s buffer). A band moved
+  before they have played has the track drop them and play on from where it was, in the new sound (a track
+  restart's gap); after that every band moved is heard ahead of the track's fraction of a second, with no
+  gap. Opening the screen and closing it without moving anything is silent.
 - **Made deep**, the track is filled up from the engine's next burst: the same buffer, mode and ten-second
   wakes as before the screen opened, so the battery is what it was.
 - **Latency while tuned**: the track stays on the output power saving chose when it was built (the deep

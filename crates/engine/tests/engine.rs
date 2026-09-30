@@ -170,6 +170,9 @@ struct Extra {
     /// Memory class, MB (default 256).
     memory_mb: Option<u32>,
     watch: Option<Arc<dyn nori_engine::watch::Watch>>,
+    /// The device holds this much music taken from the ring before it plays it, ms, as a phone's
+    /// AudioTrack does.
+    hold_ms: Option<usize>,
 }
 
 struct Songs {
@@ -213,6 +216,9 @@ struct Card {
     failure: Arc<Mutex<Option<String>>>,
     block: Vec<i16>,
     floats: Vec<f32>,
+    /// Frames it holds before playing them ([`Extra::hold_ms`]), and those it holds.
+    hold: usize,
+    held: std::collections::VecDeque<i16>,
 }
 
 /// Frames the card pulls at a time.
@@ -242,8 +248,11 @@ impl common::Device for Card {
             self.underruns.fetch_add(1, Ordering::Relaxed);
             return false;
         }
-        let waits = feed.engine_waits();
         let ch = feed.format().channels;
+        if self.hold > 0 {
+            return self.held_tick();
+        }
+        let waits = feed.engine_waits();
         if self.float {
             self.floats.resize(BLOCK * ch, 0.0);
             let got = feed.pull(&mut self.floats);
@@ -256,6 +265,35 @@ impl common::Device for Card {
             self.heard.lock().extend_from_slice(&self.block[..n * ch]);
         }
         waits && !feed.engine_waits()
+    }
+}
+
+impl Card {
+    /// A device holding music: keeps [`Card::hold`] frames taken ahead, plays a block of them. On a
+    /// flush it drops what it holds and gives back what it did not play.
+    fn held_tick(&mut self) -> bool {
+        let Some(feed) = self.feed.as_mut() else { return false };
+        let ch = feed.format().channels;
+        let mut woke = false;
+        while self.held.len() / ch < self.hold && feed.available() > 0 {
+            let waits = feed.engine_waits();
+            self.block.resize(BLOCK * ch, 0);
+            let got = feed.pull_i16(&mut self.block);
+            woke |= waits && !feed.engine_waits();
+            if feed.flushed() {
+                let back = self.held.len() / ch + got;
+                self.held.clear();
+                feed.rewind(back as u64);
+                continue;
+            }
+            self.held.extend(&self.block[..got * ch]);
+        }
+        let n = (BLOCK * ch).min(self.held.len());
+        if n < BLOCK * ch && !feed.ending() {
+            self.underruns.fetch_add(1, Ordering::Relaxed);
+        }
+        self.heard.lock().extend(self.held.drain(..n));
+        woke
     }
 }
 
@@ -299,7 +337,12 @@ impl AudioOutput for Recorder {
     }
 
     fn latency_us(&self) -> u64 {
-        0
+        let c = self.card.lock();
+        (c.held.len() / 2) as u64 * 1_000_000 / RATE as u64
+    }
+
+    fn holding(&self) -> bool {
+        !self.card.lock().held.is_empty()
     }
 
     fn takes_float(&mut self) -> bool {
@@ -358,7 +401,7 @@ impl Rig {
 
     /// Songs as (id, file, length ms).
     fn build(files: Vec<(String, Vec<u8>, i64)>, app: impl App + Send + 'static, settings: Settings, extra: Extra) -> Rig {
-        let Extra { float, skip, server, store, idle_release_ms, pace, memory_mb, watch: watching } = extra;
+        let Extra { float, skip, server, store, idle_release_ms, pace, memory_mb, watch: watching, hold_ms } = extra;
         for (id, f, _) in &files {
             server.files.lock().push((id.clone(), Arc::new(f.clone())));
         }
@@ -384,6 +427,8 @@ impl Rig {
             failure: Arc::default(),
             block: Vec::new(),
             floats: Vec::new(),
+            hold: hold_ms.unwrap_or(0) * RATE as usize / 1000,
+            held: Default::default(),
         }));
         let out = Recorder { card: card.clone(), opened: Arc::default(), shut: Arc::default(), watch: Arc::default(), flushes: Arc::default(), shallow: Arc::default() };
         let (opened, shut, watch, flushes, shallow) = (out.opened.clone(), out.shut.clone(), out.watch.clone(), out.flushes.clone(), out.shallow.clone());
@@ -1205,32 +1250,6 @@ fn fade_setting_applies_to_next_pause() {
 }
 
 #[test]
-fn replay_gain_change_reaches_buffered_music() {
-    let a = music(30.0, 31);
-    let live = Live::new(prefs_off());
-    let rig = playing(&[("a", &a)], live.clone(), Settings::default());
-    live.0.lock().gains.insert("a".into(), 0.5);
-    let asked = rig.heard.lock().len();
-    rig.engine.gain_changed();
-    assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
-    let heard = rig.heard.lock().clone();
-    assert_eq!(heard.len(), a.len());
-    let quiet = at(&a, 0.5);
-    // Buffered music is rescaled in place, not played out at the old level.
-    let k = heard.iter().zip(&a).position(|(h, s)| h != s).expect("the level changed");
-    // New level to the end, including the partly taken buffer (`TransitionEngine::rescale`); at most a
-    // few ms of ramp.
-    let off: Vec<usize> = (k..heard.len()).filter(|&i| (heard[i] as i32 - quiet[i] as i32).abs() > 1).collect();
-    if let (Some(&first), Some(&last)) = (off.first(), off.last()) {
-        let secs = |i: usize| i as f64 / 2.0 / RATE as f64;
-        assert!(last - first < 2 * RATE as usize * 5 / 1000, "at the new level from there to the end: {:.4} s to {:.4} s is not", secs(first), secs(last));
-        let between = |i: usize| (heard[i] as i32 - quiet[i] as i32).signum() * (heard[i] as i32 - a[i] as i32).signum() <= 0;
-        assert!(off.iter().all(|&i| between(i) && heard[i] != a[i]), "and what is not is a ramp between the two, not the old level");
-    }
-    assert!(k < asked + RATE as usize * 2 * 2, "heard within two seconds of the change, not ten: {} s after", (k as f64 - asked as f64) / 2.0 / RATE as f64);
-}
-
-#[test]
 fn bit_perfect_drops_replay_gain_from_next_song() {
     let (a, b) = (music(20.0, 32), music(10.0, 33));
     let mut app = sim::App::new();
@@ -1519,6 +1538,67 @@ fn replay_gain_change_heard_at_once() {
     // Read after the change, a song is turned down with dither.
     let heard = rig.heard.lock().clone();
     if let Some(at) = reference::first_difference(&heard, &want, 1) {
+        panic!("{}", reference::describe(&heard, &want, at, RATE));
+    }
+}
+
+#[test]
+fn equalizer_changes_seamlessly_in_a_stretched_automix() {
+    let (a, b) = (music(40.0, 44), music(40.0, 45));
+    let songs: [(&str, &[i16]); 2] = [("a", &a), ("b", &b)];
+    let prefs = TransitionPrefs { auto_mix: true, auto_mix_max_s: 12, echo_out: false, ..prefs_off() };
+    let run = |steps: &[(i64, Settings)]| {
+        let live = Live::new(prefs);
+        for t in [measured("a", 120.0, 40_000), measured("b", 123.0, 40_000)] {
+            live.0.lock().analyses.insert(t.song_id.clone(), t);
+        }
+        let rig = Rig::with_app(&songs, live.clone(), Settings::default());
+        rig.engine.play_at(0, 0);
+        let mut asked = Vec::new();
+        for (ms, s) in steps {
+            let frames = (*ms * RATE as i64 / 1000) as usize;
+            assert!(rig.wait_for(60, |r| r.heard.lock().len() >= frames * 2));
+            asked.push(rig.heard.lock().len() / 2);
+            assert!(rig.engine.status().mixing, "changed in the mix");
+            rig.engine.set_settings(s.clone());
+        }
+        assert!(rig.wait_for(120, Rig::ended));
+        let log = live.0.lock().log.clone();
+        assert!(log.iter().any(|l| l.contains("transition a -> b: BeatMatched") && l.contains("tempo x0.976")), "{log:?}");
+        (rig, live, asked)
+    };
+    // What the chain is given, as a run without a change hears it.
+    let (plain, _, _) = run(&[]);
+    let raw = plain.heard.lock().clone();
+    // In the middle of the mix, the incoming song stretched.
+    let steps = [(33_000, loud_eq())];
+    let (rig, live, asked) = run(&steps);
+    heard_as_rendered(&rig, &live, &raw, &Settings::default(), &steps, &asked, 6);
+}
+
+/// On a device holding seconds (a phone's AudioTrack) the change is heard at once too: the device drops
+/// what it holds and plays on from where it was, in the new sound.
+#[test]
+fn equalizer_changes_seamlessly_on_a_device_holding_seconds() {
+    let a = music(12.0, 51);
+    let live = Live::new(prefs_off());
+    let files = vec![("a".to_string(), wav(&a), 12_000)];
+    let rig = Rig::build(files, live.clone(), Settings::default(), Extra { hold_ms: Some(2_000), ..Extra::default() });
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(20, |r| r.heard.lock().len() > RATE as usize * 2 * 4));
+    let asked = rig.heard.lock().len() / 2;
+    rig.engine.set_settings(loud_eq());
+    assert!(rig.wait_for(30, Rig::ended));
+    let splices = reference::splices(&live.0.lock().log);
+    assert_eq!(splices.len(), 1, "{splices:?}");
+    let s = splices[0];
+    assert!(s.output as usize <= asked && s.output as usize + RATE as usize / 5 >= asked, "made again from a little before the ear ({asked}): {s:?}");
+    let old = reference::render(&a, RATE, &[(0, chain_of(&Settings::default()))]);
+    let new = reference::render(&a, RATE, &[(0, chain_of(&Settings::default())), (s.input, chain_of(&loud_eq()))]);
+    let mut want = old[..asked * 2].to_vec();
+    want.extend_from_slice(&new[asked * 2..]);
+    let heard = rig.heard.lock().clone();
+    if let Some(at) = reference::first_difference(&heard, &want, 0) {
         panic!("{}", reference::describe(&heard, &want, at, RATE));
     }
 }
