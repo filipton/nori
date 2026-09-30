@@ -2560,6 +2560,24 @@ fn seek_in_a_mix_plays_the_shown_song() {
 }
 
 #[test]
+fn seek_paused_in_a_mix_plays_the_shown_song() {
+    let (a, b) = (music(20.0, 72), music(20.0, 73));
+    let rig = Rig::new(&[("a", &a), ("b", &b)], crossfade(6), Settings::default());
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(20, |r| r.engine.status().mixing), "{:?}", rig.events.lock());
+    rig.run(1_000);
+    let (shown, _) = place(&rig);
+    rig.engine.pause();
+    rig.engine.seek(3_000);
+    assert!(rig.wait_for(5, |r| r.engine.status().position_ms == 3_000), "{:?}", rig.engine.status());
+    assert_eq!(rig.engine.status().index, shown, "the seek bar stays on the song it showed");
+    let heard = rig.heard.lock().len();
+    rig.engine.play();
+    assert!(rig.wait_for(10, |r| r.heard.lock().len() >= heard + 2 * RATE as usize * 2), "{:?}", rig.engine.status());
+    heard_from(&rig, heard, if shown == Some(0) { &a } else { &b }, 3_000, 2 * RATE as usize).unwrap();
+}
+
+#[test]
 fn seek_after_its_song_moved_follows_it() {
     let (a, b, c) = (music(20.0, 74), music(20.0, 75), music(20.0, 76));
     let rig = Rig::new(&[("a", &a), ("b", &b)], prefs_off(), Settings { fade_ms: 400, ..Settings::default() });

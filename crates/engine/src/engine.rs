@@ -790,6 +790,18 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         self.chip().map_or(self.p.current(), Offload::current)
     }
 
+    /// The song and place the seek bar shows: in a mix, the outgoing song until the takeover.
+    fn shown(&mut self) -> Option<(usize, i64)> {
+        if !self.offloading() {
+            let seen = self.p.bar();
+            if let Some(i) = seen.index {
+                return Some((i, seen.ms));
+            }
+        }
+        let i = self.current()?;
+        Some((i, self.position_ms()))
+    }
+
     fn position_ms(&mut self) -> i64 {
         match self.chip_mut() {
             Some(o) => o.heard().map_or(0, |h| h.1),
@@ -1447,11 +1459,15 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     }
 
     /// A jump or seek that keeps playing or paused: made behind its dip while playing, held while paused.
+    /// After the end of the queue it plays, as the music did before it ended.
     fn go(&mut self, s: Switched, kind: Switch, now: i64) {
         if self.playing() && self.pause_at.is_none() {
             self.switch(s, kind, now);
         } else {
             self.hold(s);
+            if self.state == State::Ended {
+                self.play();
+            }
         }
     }
 
@@ -1463,10 +1479,10 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         }
         let (at, ms) = match &self.held {
             Some((i, ms, _)) => (*i, *ms),
-            None => {
-                let ms = self.position_ms();
-                (self.current().or(self.p.queue.read(|q| q.current())).unwrap_or(0), ms)
-            }
+            None => match self.shown() {
+                Some(place) => place,
+                None => (self.p.queue.read(|q| q.current()).unwrap_or(0), self.position_ms()),
+            },
         };
         let (i, ms) = match s {
             Switched::To(i, ms) => (i.min(len - 1), ms.max(0)),

@@ -631,7 +631,8 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
 
     /// Seeks in the current song: flushes and rereads on the same timeline (announcing the song again).
     pub fn seek(&mut self, ms: i64) {
-        let Some(i) = self.current else { return };
+        // The song the seek bar shows: in a mix, the outgoing one until the takeover.
+        let Some(i) = self.bar().index.or(self.current) else { return };
         let offset = self.periods.iter().find(|p| p.index == i).map_or_else(|| self.fresh_offset(), |p| p.offset_us);
         let r = match self.tracks.open(&self.id_at(i), ms) {
             Ok(r) => r,
