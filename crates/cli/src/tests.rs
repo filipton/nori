@@ -100,6 +100,15 @@ fn window_layout() {
 }
 
 #[test]
+fn long_note_in_narrow_page() {
+    let mut a = app();
+    a.go(View::Settings);
+    a.say("A note far longer than the page is wide, so it takes the whole width", false);
+    let s = draw(&mut a, 40, 14);
+    assert!(s.contains("│ A note far"), "{s}");
+}
+
+#[test]
 fn tiny_terminal_no_panic() {
     let mut a = app();
     a.song = Some(song("1", "One", 200));

@@ -381,7 +381,7 @@ fn toast(f: &mut Frame, area: Rect, app: &App) {
     if w < 8 || area.height < 4 {
         return;
     }
-    let r = Rect { x: area.x + area.width - w - area.width.min(1), y: area.y + area.height - 3, width: w, height: 3 };
+    let r = Rect { x: area.x + area.width.saturating_sub(w + 1), y: area.y + area.height - 3, width: w, height: 3 };
     let colour = if *error { Color::LightRed } else { crate::art::argb(app.prefs.accent as u32) };
     let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(Style::default().fg(colour));
     let inner = block.inner(r);
