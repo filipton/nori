@@ -4,7 +4,9 @@
 0 Buffering(false)
 998 Song { index: 1, id: "b", jumps: 2 }
 1039 Song { index: 2, id: "c", jumps: 3 }
+1079 Buffering(true)
 1079 Song { index: 3, id: "d", jumps: 4 }
+1079 Buffering(false)
 heard: 187392 samples 6fb867b7be403fee d01ee60eed68a7fe 599b290d537a2cd8
 heard_f: 0 samples
 opened 1 shut 1 flushes 3

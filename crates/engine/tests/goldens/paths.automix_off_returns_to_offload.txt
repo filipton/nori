@@ -6,5 +6,5 @@
 heard: 91136 samples bf0d9cfdec5d63c5 4919f690906abbc3
 opened [OutputFormat { rate: 44100, channels: 2, bits: 0 }]
 chip calls [Open(Coded { coding: Mp3, rate: 44100, channels: 2 }), DelayPadding(0, 720), Volume(0.0), Write(262478, 723456), Write(262479, 723456), Write(262478, 723456), Write(157153, 432961), Play, Close]
-chip notes ["the platform granted a track of 3753 KB of the 3753 KB asked: 240214 ms of this song, topped up when the platform asks for more (about every 30000 ms if its chip buffers nothing of its own)"]
+chip notes ["the platform granted a track of 3753 KB of the 3753 KB asked: 240203 ms of this song, topped up when the platform asks for more (about every 30000 ms if its chip buffers nothing of its own)"]
 chip bytes: 944588 samples 8ca841aa908e7935 d2bb3d2953e1141a 56f1cd0cf8306e53 3c05b1c9e327e5e1 73cabb6218006884 8263c3073d4a2521 216821fa62ba29b4 25880e51b0cd97c3 f3844483f6b4aa0b 501035433227458c a4da16338cdc849c d32b73465ecfee24 794cfba0eba089e7 3668acbd277c27e4 14a68493252e2c95

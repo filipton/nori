@@ -5,8 +5,6 @@
 2998 State(Paused)
 2998 Song { index: 0, id: "b", jumps: 2 }
 2998 State(Playing)
-2998 Buffering(true)
-2998 Buffering(false)
 heard: 441344 samples a5ab2e67abdd5d37 3491d9ad8dbe5ba0 10ce33605acadcff b159623fdca5baaf d2b2e473cac4cb74 5d4f3bd43f42602c
 heard_f: 0 samples
 opened 1 shut 1 flushes 1

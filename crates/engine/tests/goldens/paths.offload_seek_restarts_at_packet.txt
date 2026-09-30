@@ -6,6 +6,6 @@
 0 Awake(false)
 heard: 0 samples
 opened []
-chip calls [Open(Coded { coding: Mp3, rate: 44100, channels: 2 }), DelayPadding(576, 1224), Volume(1.0), Write(417, 47), Play, Write(262479, 723456), Write(217757, 599497), EndOfStream, Close, Open(Coded { coding: Mp3, rate: 44100, channels: 2 }), DelayPadding(0, 1224), Volume(1.0), Write(262478, 723456), Write(26750, 73033), Play, EndOfStream, Close]
-chip notes ["the platform granted a track of 8192 KB of the 8192 KB asked: 21439 ms of this song, topped up when the platform asks for more (about every 10719 ms if its chip buffers nothing of its own)", "the platform granted a track of 3758 KB of the 3758 KB asked: 240346 ms of this song, topped up when the platform asks for more (about every 30000 ms if its chip buffers nothing of its own)"]
+chip calls [Open(Coded { coding: Mp3, rate: 44100, channels: 2 }), DelayPadding(576, 1224), Volume(1.0), Write(262478, 722351), Write(218175, 600649), Play, EndOfStream, Close, Open(Coded { coding: Mp3, rate: 44100, channels: 2 }), DelayPadding(0, 1224), Volume(1.0), Write(262478, 723456), Write(26750, 73033), Play, EndOfStream, Close]
+chip notes ["the platform granted a track of 3758 KB of the 3758 KB asked: 240207 ms of this song, topped up when the platform asks for more (about every 30000 ms if its chip buffers nothing of its own)", "the platform granted a track of 3758 KB of the 3758 KB asked: 240324 ms of this song, topped up when the platform asks for more (about every 30000 ms if its chip buffers nothing of its own)"]
 chip bytes: 769881 samples 8d27154a490e2015 e8d9a64d2a25f10b c8e5834b0e1d5383 12ee785a4eef644a afe3fea8be091b0b 0e476cd2e2e712bb a5a0bac88d4ab8e3 42ff83257dff340e 5b2ca5efb330ddee 4d8e58d748800a3c 080aa92dc75c22ce 48aa5c838b4a0558

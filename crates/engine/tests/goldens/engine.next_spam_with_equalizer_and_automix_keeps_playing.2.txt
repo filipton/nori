@@ -13,7 +13,9 @@
 3469 Buffering(true)
 3469 Song { index: 8, id: "i", jumps: 9 }
 3469 Buffering(false)
+3594 Buffering(true)
 3594 Song { index: 10, id: "k", jumps: 11 }
+3594 Buffering(false)
 3736 Song { index: 12, id: "m", jumps: 13 }
 3856 Buffering(true)
 3856 Song { index: 14, id: "o", jumps: 15 }

@@ -8,4 +8,4 @@
 heard: 143104 samples c26646ce7b5257a2 cca6b2d212f9738b
 heard_f: 0 samples
 opened 1 shut 1 flushes 1
-requests [("a", 0), ("b", 0), ("c", 0), ("d", 0), ("e", 0)]
+requests [("a", 0), ("b", 0), ("d", 0), ("e", 0)]

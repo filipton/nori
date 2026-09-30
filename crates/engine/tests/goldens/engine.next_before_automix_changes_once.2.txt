@@ -6,4 +6,4 @@
 heard: 639488 samples 2d5b4b9a5ada4a95 61dbdabdf81e6796 38a6f2ea2ad18c6c bced307a4b49f494 9a89781f0b860659 d270b3e996a9d978 780fda437bf66f1e 4ab21e9f02443cc1
 heard_f: 0 samples
 opened 1 shut 1 flushes 1
-requests [("a", 0), ("a", 3879980), ("b", 0), ("c", 0)]
+requests [("a", 0), ("b", 0), ("c", 0)]

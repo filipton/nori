@@ -1,0 +1,13 @@
+0 State(Playing)
+0 Buffering(true)
+0 Song { index: 0, id: "a", jumps: 1 }
+0 Buffering(false)
+1001 Error { id: "", message: "the output stopped: the sound server died" }
+1001 State(Idle)
+1001 State(Playing)
+1001 Buffering(true)
+1001 Buffering(false)
+heard: 132608 samples 293832c2d3b64783 6a7c185d0e4af2ca
+heard_f: 0 samples
+opened 2 shut 2 flushes 0
+requests [("a", 0)]

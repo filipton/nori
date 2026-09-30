@@ -5,8 +5,6 @@
 1118 Error { id: "s1", message: "the player panicked (the library panicked locating s1): the song is opened again from scratch" }
 1118 Error { id: "s1", message: "the player panicked (the library panicked locating s1): the song is opened again from scratch" }
 1118 Error { id: "s1", message: "no music came of it (a panic: the library panicked locating s1)" }
-1118 Buffering(true)
 1118 Song { index: 2, id: "s2", jumps: 2 }
-1118 Buffering(false)
 heard: 89088 samples 295943f7d6689bc5 de1e919f8e337e85
 opened [OutputFormat { rate: 44100, channels: 2, bits: 0 }, OutputFormat { rate: 44100, channels: 2, bits: 0 }]

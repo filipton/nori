@@ -1,6 +1,8 @@
 0 State(Playing)
 0 Song { index: 0, id: "a", jumps: 1 }
 3680 Awake(false)
+33204 Awake(true)
+33204 Awake(false)
 36896 Awake(true)
 40004 Song { index: 1, id: "b", jumps: 1 }
 40004 Awake(false)
