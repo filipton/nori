@@ -82,18 +82,7 @@ fn script(seed: u64) -> String {
                 }
             }
             12 => format!("expire {}", t.expire()),
-            13 => format!("removed {id} {}", {
-                let was_open = t.batch.open.contains(id);
-                t.batch.removed(id);
-                t.close(id);
-                t.info.remove(id);
-                let mut flags = if t.unmark(id) { MARKS } else { 0 };
-                if was_open && t.batch.open.is_empty() {
-                    flags |= DRAINED;
-                    t.drained();
-                }
-                flags
-            }),
+            13 => format!("removed {id} {}", t.removed(id)),
             14 => {
                 let on = r.below(2) == 0;
                 if on {
@@ -113,7 +102,7 @@ fn script(seed: u64) -> String {
             }
             17 => format!("row {id} {:?} waits {:?}", row_facts(&t.slots, id), WORKS.map(|w| t.waits(id, w))),
             18 => {
-                t.failed_before(id);
+                t.failed_before(id, 0, 0);
                 format!("failed_before {id}")
             }
             _ => {

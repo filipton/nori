@@ -289,8 +289,8 @@ pub struct Core {
     /// Also [`nori_db::active`] while this is the newest core.
     db: Arc<Mutex<Connection>>,
     server: RwLock<api::Server>,
-    /// Download ids in memory (transfers.rs); also the active one while this is the newest core.
-    held: Arc<Mutex<transfers::Held>>,
+    /// The downloads table in memory and the platform's download reports (transfers.rs).
+    downloads: Arc<transfers::Downloads>,
     /// The "For you" row (mixes/board.rs).
     board: Mutex<mixes::board::Board>,
     /// This session's star changes, overlaid on the server's favourites.
@@ -305,18 +305,17 @@ impl Core {
     pub fn new(db_path: String, server: String) -> Result<Arc<Self>> {
         let db = db::open(&db_path, &server)?;
         nori_automix::beat_model::set_home(&db_path);
-        let held = transfers::Held::load(&db)?;
-        transfers::set_beats_wanted(transfers::beats_wanted_rows(&db)?);
+        let db = Arc::new(Mutex::new(db));
         let core = Arc::new(Core {
-            db: Arc::new(Mutex::new(db)),
+            downloads: Arc::new(transfers::Downloads::load(&db)?),
+            db,
             server: RwLock::new(api::Server::default()),
-            held: Arc::new(Mutex::new(held)),
             board: Mutex::new(mixes::board::Board::default()),
             stars: Mutex::new(stars::StarMarks::default()),
         });
         *ACTIVE.lock() = Arc::downgrade(&core);
         nori_db::set_active(&core.db);
-        transfers::set_active_held(&core.held);
+        core.downloads.activate();
         Ok(core)
     }
 
