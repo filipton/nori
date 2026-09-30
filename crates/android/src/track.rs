@@ -58,8 +58,8 @@ const SHALLOW_LATE_US: i64 = 40_000;
 const SHALLOW_MOST_US: i64 = 1_500_000;
 /// Observed latency this far above plan makes the shallow track deeper.
 const LAG_STEP_US: i64 = 20_000;
-/// Bytes per write.
-pub(crate) const CHUNK_BYTES: usize = 128 * 1024;
+/// Bytes per write (three JNI calls): ten seconds of float stereo in eight.
+pub(crate) const CHUNK_BYTES: usize = 512 * 1024;
 /// Fill interval after a start or flush.
 const FILL_TICK_MS: u64 = 20;
 /// Longest fill back-off while the ring is empty.
