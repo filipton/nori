@@ -261,18 +261,29 @@ impl Feed {
             let frames = r.ramp_frames.load(Ordering::Relaxed);
             self.step = if frames == 0 { self.target - self.gain } else { (self.target - self.gain) / frames as f32 };
         }
-        for i in 0..n {
-            if self.gain != self.target {
-                self.gain += self.step;
-                if (self.step > 0.0 && self.gain > self.target) || (self.step < 0.0 && self.gain < self.target) || self.step == 0.0 {
-                    self.gain = self.target;
-                }
+        let slot = |f: u64| (f % r.frames) as usize * ch;
+        let mut i = 0;
+        // A fade, frame by frame.
+        while i < n && self.gain != self.target {
+            self.gain += self.step;
+            if (self.step > 0.0 && self.gain > self.target) || (self.step < 0.0 && self.gain < self.target) || self.step == 0.0 {
+                self.gain = self.target;
             }
-            let slot = ((at + i) % r.frames) as usize * ch;
-            let o = i as usize * ch;
+            let (s, o) = (slot(at + i), i as usize * ch);
             for c in 0..ch {
-                out[o + c] = conv(f32::from_bits(r.slots[slot + c].load(Ordering::Relaxed)) * self.gain);
+                out[o + c] = conv(f32::from_bits(r.slots[s + c].load(Ordering::Relaxed)) * self.gain);
             }
+            i += 1;
+        }
+        // Then at one level, up to the ring's end and from its start.
+        let g = self.gain;
+        while i < n {
+            let (s, o) = (slot(at + i), i as usize * ch);
+            let run = (n - i).min(r.frames - (at + i) % r.frames) as usize * ch;
+            for (v, slot) in out[o..o + run].iter_mut().zip(&r.slots[s..s + run]) {
+                *v = conv(f32::from_bits(slot.load(Ordering::Relaxed)) * g);
+            }
+            i += (run / ch) as u64;
         }
         out[n as usize * ch..].fill(S::default());
         r.read.store(at + n, Ordering::Release);
@@ -605,6 +616,38 @@ impl RingTrack {
     }
 }
 
+/// Writes `samples` (whole frames) into `r` from frame `at`, the first frames of a `blend` (done, of)
+/// blended into what the slots held; returns the frames written.
+fn put(r: &Ring, at: u64, blend: Option<(u64, u64)>, samples: impl ExactSizeIterator<Item = f32>) -> u64 {
+    let ch = r.channels;
+    let frames = (samples.len() / ch) as u64;
+    let mut samples = samples.take(frames as usize * ch);
+    let slot = |f: u64| (f % r.frames) as usize * ch;
+    let mut done = 0;
+    if let Some((from, of)) = blend {
+        // What the device would have played there, blended into what replaces it.
+        while done < frames && from + done < of {
+            let s = slot(at + done);
+            for c in 0..ch {
+                let old = f32::from_bits(r.slots[s + c].load(Ordering::Relaxed));
+                let v = nori_player::pipeline::blended(old, samples.next().unwrap_or(0.0), (from + done) as usize, of as usize);
+                r.slots[s + c].store(v.to_bits(), Ordering::Relaxed);
+            }
+            done += 1;
+        }
+    }
+    // Up to the ring's end, then from its start.
+    while done < frames {
+        let s = slot(at + done);
+        let run = (frames - done).min(r.frames - (at + done) % r.frames) as usize * ch;
+        for (slot, v) in r.slots[s..s + run].iter().zip(&mut samples) {
+            slot.store(v.to_bits(), Ordering::Relaxed);
+        }
+        done += (run / ch) as u64;
+    }
+    frames
+}
+
 impl Track for RingTrack {
     fn open(&mut self, format: Format) {
         self.format = Some(format);
@@ -649,31 +692,10 @@ impl Track for RingTrack {
         let (Some(r), Some(d), Some(f)) = (self.ring.clone(), self.device, self.format) else { return };
         let w = r.write.load(Ordering::Relaxed);
         let ch = d.channels;
-        let blend = self.blend;
-        let put = |at: u64, samples: &mut dyn Iterator<Item = f32>| {
-            let mut n = 0u64;
-            let mut c = 0;
-            let mut slot = ((at % r.frames) as usize) * ch;
-            for v in samples {
-                // What the device would have played there, blended into what replaces it.
-                let v = match blend {
-                    Some((done, of)) if done + n < of => nori_player::pipeline::blended(f32::from_bits(r.slots[slot + c].load(Ordering::Relaxed)), v, (done + n) as usize, of as usize),
-                    _ => v,
-                };
-                r.slots[slot + c].store(v.to_bits(), Ordering::Relaxed);
-                c += 1;
-                if c == ch {
-                    c = 0;
-                    n += 1;
-                    slot = (((at + n) % r.frames) as usize) * ch;
-                }
-            }
-            n
-        };
-        let floats = |b: &[u8]| f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+        let floats = |b: &[u8; 4]| f32::from_le_bytes(*b);
         let frames = match (self.resampler.as_mut(), f.encoding) {
-            (None, Encoding::Pcm16) => put(w, &mut data.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)),
-            (None, Encoding::Float) => put(w, &mut data.chunks_exact(4).map(floats)),
+            (None, Encoding::Pcm16) => put(&r, w, self.blend, data.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b) as f32 / 32768.0)),
+            (None, Encoding::Float) => put(&r, w, self.blend, data.as_chunks::<4>().0.iter().map(floats)),
             (Some(rs), _) => {
                 let in_frames = data.len() / f.frame_bytes();
                 let need = ((in_frames as u64 * d.rate as u64 / f.rate as u64) as usize + 4) * ch * 4;
@@ -681,7 +703,7 @@ impl Track for RingTrack {
                     self.converted.resize(need, 0);
                 }
                 let Some((_, made)) = rs.process(data, f.encoding.media3(), &mut self.converted, Encoding::FLOAT) else { return };
-                put(w, &mut self.converted[..made].chunks_exact(4).map(floats))
+                put(&r, w, self.blend, self.converted[..made].as_chunks::<4>().0.iter().map(floats))
             }
         };
         self.blend = self.blend.and_then(|(done, of)| (done + frames < of).then_some((done + frames, of)));

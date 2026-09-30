@@ -179,19 +179,25 @@ impl Runner {
         match self.chain.eq.as_mut().filter(|e| !e.is_identity()) {
             Some(eq) if float => {
                 self.floats_in.clear();
-                self.floats_in.extend(input.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])));
+                self.floats_in.extend(input.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)));
                 self.floats_out.resize(self.floats_in.len(), 0.0);
                 eq.process_f32(&self.floats_in, &mut self.floats_out);
                 self.meter_db = eq.gain_reduction_db();
-                data.extend(self.floats_out.iter().flat_map(|v| v.to_le_bytes()));
+                data.resize(self.floats_out.len() * 4, 0);
+                for (d, v) in data.as_chunks_mut::<4>().0.iter_mut().zip(&self.floats_out) {
+                    *d = v.to_le_bytes();
+                }
             }
             Some(eq) => {
                 self.samples_in.clear();
-                self.samples_in.extend(input.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])));
+                self.samples_in.extend(input.as_chunks::<2>().0.iter().map(|c| i16::from_le_bytes(*c)));
                 self.samples_out.resize(self.samples_in.len(), 0);
                 eq.process_i16(&self.samples_in, &mut self.samples_out);
                 self.meter_db = eq.gain_reduction_db();
-                data.extend(self.samples_out.iter().flat_map(|v| v.to_le_bytes()));
+                data.resize(self.samples_out.len() * 2, 0);
+                for (d, v) in data.as_chunks_mut::<2>().0.iter_mut().zip(&self.samples_out) {
+                    *d = v.to_le_bytes();
+                }
             }
             None => {
                 self.meter_db = 0.0;

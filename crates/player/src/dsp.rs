@@ -81,6 +81,21 @@ impl Biquad {
         y
     }
 
+    /// [`Biquad::tick`] over a channel's samples in place, the state kept in registers.
+    #[inline]
+    fn run(&self, s: &mut [f64; 2], x: &mut [f64]) {
+        let (b0, b1, b2, a1, a2) = (self.b0, self.b1, self.b2, self.a1, self.a2);
+        let [mut s0, mut s1] = *s;
+        for v in x.iter_mut() {
+            let i = *v;
+            let y = b0 * i + s0;
+            s0 = b1 * i - a1 * y + s1;
+            s1 = b2 * i - a2 * y;
+            *v = y;
+        }
+        *s = [s0, s1];
+    }
+
     /// RBJ cookbook filters.
     fn new(rate: f64, band: &Band) -> Self {
         let a = 10f64.powf(band.gain_db / 40.0);
@@ -525,6 +540,47 @@ impl Stages {
         self.output_stage(f);
     }
 
+    /// [`Stages::frame`] over `frames` frames held channel after channel: each filter runs over a
+    /// channel at a time, the same arithmetic in the same order per sample.
+    fn block(&mut self, planar: &mut [f64], frames: usize) {
+        for c in 0..self.channels {
+            let x = &mut planar[c * frames..(c + 1) * frames];
+            if self.preamp != 1.0 {
+                x.iter_mut().for_each(|v| *v *= self.preamp);
+            }
+            let bit = 1u8 << c;
+            for (f, st) in self.filters.iter().zip(self.state.iter_mut()) {
+                if f.chans & bit != 0 {
+                    f.run(&mut st[c], x);
+                }
+            }
+            if let Some((f, st)) = self.bass.as_mut() {
+                f.run(&mut st[c], x);
+            }
+            if let Some(l) = self.loud.as_mut() {
+                x.iter_mut().for_each(|v| *v *= l.pre);
+                for (f, st) in l.filters[..l.count].iter().zip(l.state.iter_mut()) {
+                    f.run(&mut st[c], x);
+                }
+            }
+        }
+        let stereo = self.channels == 2 && (self.mono || self.virtualizer.is_some() || self.crossfeed.is_some() || self.balance != (1.0, 1.0));
+        if !(stereo || self.expander.is_some() || self.compressor.is_some() || self.boost != 1.0 || self.limiter.is_some()) {
+            return;
+        }
+        let mut frame = [0f64; MAX_CHANNELS];
+        let n = self.channels;
+        for k in 0..frames {
+            for (c, v) in frame[..n].iter_mut().enumerate() {
+                *v = planar[c * frames + k];
+            }
+            self.output_stage(&mut frame[..n]);
+            for (c, v) in frame[..n].iter().enumerate() {
+                planar[c * frames + k] = *v;
+            }
+        }
+    }
+
     fn reset(&mut self) {
         self.state.iter_mut().for_each(|s| *s = [[0.0; 2]; MAX_CHANNELS]);
         if let Some((_, st)) = self.bass.as_mut() {
@@ -567,18 +623,20 @@ pub struct Equalizer {
     live: bool,
     /// For 16-bit output ([`Equalizer::process_i16`]).
     dither: Dither,
+    /// The samples being run, channel after channel (scratch).
+    planar: Vec<f64>,
 }
 
 /// `clone_from` keeps the memory of both chains.
 impl Clone for Equalizer {
     fn clone(&self) -> Self {
-        Equalizer { now: self.now.clone(), was: self.was.clone(), ..*self }
+        Equalizer { now: self.now.clone(), was: self.was.clone(), planar: Vec::new(), ..*self }
     }
 
     fn clone_from(&mut self, o: &Self) {
         self.now.clone_from(&o.now);
         self.was.clone_from(&o.was);
-        let Equalizer { rate, channels, now: _, was: _, fade, fade_len, live, dither } = *o;
+        let Equalizer { rate, channels, now: _, was: _, fade, fade_len, live, dither, planar: _ } = *o;
         (self.rate, self.channels, self.fade, self.fade_len, self.live, self.dither) = (rate, channels, fade, fade_len, live, dither);
     }
 }
@@ -623,6 +681,7 @@ impl Equalizer {
             fade_len: ((rate as f64 * CHANGE_FADE_MS / 1000.0).round() as i64).max(1),
             live: false,
             dither: Dither::new(),
+            planar: Vec::new(),
         }
     }
 
@@ -806,6 +865,27 @@ impl Equalizer {
         }
         if let Some(c) = self.now.compressor.as_mut() {
             c.meter_db = 0.0;
+        }
+        if self.fade.is_none() {
+            let frames = len / n;
+            let mut planar = std::mem::take(&mut self.planar);
+            planar.clear();
+            planar.resize(frames * n, 0.0);
+            for (k, x) in input.chunks_exact(n).enumerate() {
+                for (c, v) in x.iter().enumerate() {
+                    planar[c * frames + k] = load(*v);
+                }
+            }
+            self.now.block(&mut planar, frames);
+            for (k, y) in output.chunks_exact_mut(n).enumerate() {
+                for (c, v) in y.iter_mut().enumerate() {
+                    *v = store(planar[c * frames + k], c);
+                }
+            }
+            self.planar = planar;
+            let tail = len - len % n;
+            output[tail..].copy_from_slice(&input[tail..]);
+            return;
         }
         let mut frame = [0f64; MAX_CHANNELS];
         let mut old = [0f64; MAX_CHANNELS];
