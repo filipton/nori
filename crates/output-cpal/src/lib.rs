@@ -7,6 +7,7 @@
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, Device, DeviceType, ErrorKind, InterfaceType, SampleFormat, SizedSample, Stream, StreamConfig};
@@ -26,10 +27,37 @@ pub struct CpalOutput {
     playing: bool,
     /// Equalizer tuning: the period is [`SHALLOW_PERIOD_MS`].
     shallow: bool,
-    /// Device-reported time from the last callback to playback, µs.
-    latency_us: Arc<AtomicU64>,
+    /// When what the device took has been heard.
+    heard: Arc<Heard>,
     watch: Option<Arc<DeviceWatch>>,
     volume: Volume,
+}
+
+/// When the last frame the device pulled will have been heard: the device's own delay from its last
+/// callback, plus that callback's frames. Written by the callback, read by the engine.
+struct Heard {
+    base: Instant,
+    /// µs after `base`.
+    until_us: AtomicU64,
+}
+
+impl Default for Heard {
+    fn default() -> Self {
+        Heard { base: Instant::now(), until_us: AtomicU64::new(0) }
+    }
+}
+
+impl Heard {
+    /// A callback at `now` took `frames` at `rate`, heard `delay_us` after it starts.
+    fn pulled(&self, now: Instant, delay_us: u64, frames: usize, rate: u32) {
+        let at = now.saturating_duration_since(self.base).as_micros() as u64;
+        self.until_us.store(at + delay_us + frames as u64 * 1_000_000 / rate.max(1) as u64, Ordering::Relaxed);
+    }
+
+    /// How long until what was pulled has been heard.
+    fn left_us(&self, now: Instant) -> u64 {
+        self.until_us.load(Ordering::Relaxed).saturating_sub(now.saturating_duration_since(self.base).as_micros() as u64)
+    }
 }
 
 /// Listener volume, 0 to 1, applied after the engine's chain so ReplayGain, limiter and fades see full
@@ -122,19 +150,20 @@ fn buffer_size(rate: u32, ms: u32, periods: Option<(u32, u32)>) -> BufferSize {
     }
 }
 
-/// Builds a paused stream that pulls `feed`, scales by `volume` and records latency. A contended feed
-/// lock (only possible while a replaced stream is still stopping) plays silence.
+/// Builds a paused stream that pulls `feed`, scales by `volume` and records when it is heard. A contended
+/// feed lock (only possible while a replaced stream is still stopping) plays silence.
 #[allow(clippy::too_many_arguments)]
 fn build_stream<T: SizedSample + Default + Send + 'static>(
     device: &Device,
     config: StreamConfig,
     feed: Arc<Mutex<Feed>>,
     volume: Volume,
-    latency: Arc<AtomicU64>,
+    heard: Arc<Heard>,
     on_error: impl FnMut(cpal::Error) + Send + 'static,
     pull: fn(&mut Feed, &mut [T]) -> usize,
     scale: fn(T, f32) -> T,
 ) -> Result<Stream, String> {
+    let (channels, rate) = (config.channels.max(1) as usize, config.sample_rate);
     let stream = device
         .build_output_stream(
             config,
@@ -150,7 +179,8 @@ fn build_stream<T: SizedSample + Default + Send + 'static>(
                     data.iter_mut().for_each(|s| *s = scale(*s, v));
                 }
                 let t = info.timestamp();
-                latency.store(t.playback.saturating_duration_since(t.callback).as_micros() as u64, Ordering::Relaxed);
+                let delay = t.playback.saturating_duration_since(t.callback).as_micros() as u64;
+                heard.pulled(Instant::now(), delay, data.len() / channels, rate);
             },
             on_error,
             None,
@@ -185,10 +215,10 @@ impl CpalOutput {
             }
             eprintln!("nori: the output stream failed: {e}");
         };
-        let (feed, volume, latency) = (feed.clone(), self.volume.clone(), self.latency_us.clone());
+        let (feed, volume, heard) = (feed.clone(), self.volume.clone(), self.heard.clone());
         let stream = match format {
-            SampleFormat::F32 => build_stream(device, *config, feed, volume, latency, on_error, Feed::pull, |s, v| s * v),
-            _ => build_stream(device, *config, feed, volume, latency, on_error, Feed::pull_i16, |s, v| (s as f32 * v) as i16),
+            SampleFormat::F32 => build_stream(device, *config, feed, volume, heard, on_error, Feed::pull, |s, v| s * v),
+            _ => build_stream(device, *config, feed, volume, heard, on_error, Feed::pull_i16, |s, v| (s as f32 * v) as i16),
         }?;
         if self.playing {
             let _ = stream.play();
@@ -256,7 +286,11 @@ impl AudioOutput for CpalOutput {
     }
 
     fn latency_us(&self) -> u64 {
-        self.latency_us.load(Ordering::Relaxed)
+        self.heard.left_us(Instant::now())
+    }
+
+    fn holding(&self) -> bool {
+        self.latency_us() > 0
     }
 
     fn takes_float(&mut self) -> bool {
@@ -285,5 +319,22 @@ impl AudioOutput for CpalOutput {
         self.stream = None;
         self.feed = None;
         self.device = None;
+        self.playing = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn the_period_pulled_counts_until_heard() {
+        let heard = Heard::default();
+        let t = heard.base + Duration::from_secs(1);
+        heard.pulled(t, 20_000, 4_410, 44_100);
+        assert_eq!(heard.left_us(t), 120_000, "the device's delay and the period it took");
+        assert_eq!(heard.left_us(t + Duration::from_millis(70)), 50_000);
+        assert_eq!(heard.left_us(t + Duration::from_millis(130)), 0, "all heard");
     }
 }
