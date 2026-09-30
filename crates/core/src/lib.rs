@@ -412,21 +412,22 @@ impl Core {
             "year" | "duration" | "created" | "playCount" | "userRating" => format!("json_extract(json, '$.{sort}')"),
             _ => "rowid".to_string(),
         };
-        let mut sql = String::from("SELECT json FROM items WHERE server=sid() AND kind=?1");
+        // The song kind written out, so the songs' sort indexes (db.rs) serve the order a page at a time.
+        let mut sql = format!("SELECT json FROM items WHERE server=sid() AND kind={}", db::SONG);
         if starred_only {
             sql.push_str(" AND json_extract(json, '$.starred') = 1");
         }
         if year_to > 0 {
-            sql.push_str(" AND json_extract(json, '$.year') BETWEEN ?4 AND ?5");
+            sql.push_str(" AND json_extract(json, '$.year') BETWEEN ?3 AND ?4");
         }
-        sql.push_str(&format!(" ORDER BY {key} {} LIMIT ?3 OFFSET ?2", if descending { "DESC" } else { "ASC" }));
+        sql.push_str(&format!(" ORDER BY {key} {} LIMIT ?2 OFFSET ?1", if descending { "DESC" } else { "ASC" }));
         let c = self.db.lock();
         let mut st = c.prepare_cached(&sql)?;
         let map = |r: &rusqlite::Row| r.get::<_, String>(0);
         let rows: Vec<String> = if year_to > 0 {
-            st.query_map(params![db::SONG, offset, limit, year_from, year_to], map)?.filter_map(|r| r.ok()).collect()
+            st.query_map(params![offset, limit, year_from, year_to], map)?.filter_map(|r| r.ok()).collect()
         } else {
-            st.query_map(params![db::SONG, offset, limit], map)?.filter_map(|r| r.ok()).collect()
+            st.query_map(params![offset, limit], map)?.filter_map(|r| r.ok()).collect()
         };
         Ok(rows.iter().filter_map(|j| serde_json::from_str(j).ok()).collect())
     }

@@ -69,6 +69,17 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn text_sorts_read_an_index_not_the_library() {
+        let core = Core::new(String::new(), "t".into()).unwrap();
+        let c = core.db.lock();
+        for key in ["title", "artist", "album"] {
+            let sql = format!("EXPLAIN QUERY PLAN SELECT json FROM items WHERE server=sid() AND kind={} ORDER BY json_extract(json, '$.{key}') COLLATE NOCASE ASC LIMIT 200 OFFSET 400", db::SONG);
+            let plan: Vec<String> = c.prepare(&sql).unwrap().query_map([], |r| r.get::<_, String>(3)).unwrap().map(|r| r.unwrap()).collect();
+            assert!(!plan.iter().any(|p| p.contains("TEMP B-TREE")), "{key}: {plan:?}");
+        }
+    }
+
+    #[test]
     fn history_pages_and_stats_windows() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         let s = song("1", "t", "a", "b", "", 0);
