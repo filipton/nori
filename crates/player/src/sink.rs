@@ -168,30 +168,36 @@ impl Runner {
         self.chain.eq.as_ref().is_some_and(|e| !e.is_identity()) || self.chain.silence.is_some() || self.chain.speed.is_some()
     }
 
-    /// Runs `input` through equalizer, silence skipping and speed (media3's order) into `self.out`.
+    /// Runs `input` through equalizer, silence skipping and speed (media3's order) into `self.out`, each
+    /// stage reading the last one's output (or `input`) and writing its own.
     fn run(&mut self, input: &[u8], float: bool) {
-        let mut data = std::mem::take(&mut self.out);
-        data.clear();
-        match self.chain.eq.as_mut().filter(|e| !e.is_identity()) {
-            Some(eq) => {
-                data.resize(input.len(), 0);
-                eq.process_bytes(input, &mut data, float);
-                self.meter_db = eq.gain_reduction_db();
-            }
-            None => {
-                self.meter_db = 0.0;
-                data.extend_from_slice(input);
-            }
+        let (mut out, mut spare) = (std::mem::take(&mut self.out), std::mem::take(&mut self.scratch));
+        let mut made = false;
+        self.meter_db = 0.0;
+        if let Some(eq) = self.chain.eq.as_mut().filter(|e| !e.is_identity()) {
+            // Every byte is written over: only a longer input grows it.
+            out.resize(input.len(), 0);
+            eq.process_bytes(input, &mut out, float);
+            self.meter_db = eq.gain_reduction_db();
+            made = true;
         }
+        let mut stage = |process: &mut dyn FnMut(&[u8], &mut Vec<u8>)| {
+            spare.clear();
+            process(if made { &out } else { input }, &mut spare);
+            std::mem::swap(&mut out, &mut spare);
+            made = true;
+        };
         if let Some(s) = self.chain.silence.as_mut() {
-            let mut next = std::mem::take(&mut self.scratch);
-            next.clear();
-            s.process(&data, &mut next);
-            std::mem::swap(&mut data, &mut next);
-            self.scratch = next;
+            stage(&mut |i, o| s.process(i, o));
         }
-        self.speed_up(&mut data);
-        self.out = data;
+        if let Some(s) = self.chain.speed.as_mut() {
+            stage(&mut |i, o| s.process(i, o));
+        }
+        if !made {
+            out.clear();
+            out.extend_from_slice(input);
+        }
+        (self.out, self.scratch) = (out, spare);
     }
 
     /// Runs `data` through speed, if it is in the chain.
@@ -598,14 +604,24 @@ impl<T: Track> Sink<T> {
         }
     }
 
-    /// Counts the chain's last output and queues it with `media` more song frames.
+    /// Counts the chain's last output and writes it with `media` more song frames: straight from the
+    /// chain as far as the track has room, the rest queued.
     fn made_output(&mut self, media: f64) {
         let fb = self.format.map_or(1, |f| f.frame_bytes());
         self.carry += media;
         let out = std::mem::take(&mut self.runner.out);
         self.made += (out.len() / fb) as u64;
-        if !out.is_empty() {
-            self.push_pending(&out);
+        let mut from = 0;
+        if !self.pending_left() && !out.is_empty() {
+            from = self.room_bytes().min(out.len());
+            if from > 0 {
+                let media = self.carry * from as f64 / out.len() as f64;
+                self.carry -= media;
+                self.track.write(&out[..from], media);
+            }
+        }
+        if from < out.len() {
+            self.push_pending(&out[from..]);
         }
         self.runner.out = out;
         self.gain_reduction_db = self.gain_reduction_db.max(self.runner.meter_db);
