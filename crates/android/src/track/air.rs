@@ -443,14 +443,16 @@ impl Rig {
     }
 }
 
+
 /// What was heard, measured.
 #[derive(Debug)]
 struct Heard {
-    /// Frames skipped (+) or played twice (-) between `from` and the end, by the frame numbers heard.
+    /// Frames skipped (+) or played twice (-) between the first and the last frame heard alone, by their
+    /// numbers, silence left out.
     slip: i64,
-    /// Silence, frames, where music was due.
+    /// The longest silence, frames.
     gap: u64,
-    /// The level of each 10 ms against the music's, lowest and highest, dB.
+    /// The level of each 10 ms against the music's lowest and highest, dB.
     level_db: (f64, f64),
     /// The largest jump in the music's slope (second difference), full scale.
     click: f32,
@@ -458,71 +460,54 @@ struct Heard {
 
 /// Measures the heard music from device frame `from` to `to` against the levels `amps` it may have.
 fn measure(heard: &[[f32; 2]], from: usize, to: usize, amps: (f32, f32)) -> Heard {
-    let clean = |d: usize| heard[d][1] >= 1.0 && heard[d][1].fract() == 0.0;
-    let offset = |d: usize| heard[d][1] as i64 - 1 - d as i64;
-    let first = (from..to).find(|&d| clean(d)).expect("music at the start");
-    let last = (from..to).rev().find(|&d| clean(d)).expect("music at the end");
-    let slip = offset(last) - offset(first);
+    let heard = &heard[from..to];
+    let silent = |h: &[f32; 2]| h[0] == 0.0 && h[1] == 0.0;
+    // Frame numbers heard alone (a whole number), less their place among the frames not silent.
+    let offsets: Vec<i64> = heard.iter().filter(|h| !silent(h)).enumerate().filter(|(_, h)| h[1] >= 1.0 && h[1].fract() == 0.0).map(|(k, h)| h[1] as i64 - k as i64).collect();
+    let slip = offsets.last().expect("music") - offsets.first().expect("music");
     let (mut gap, mut run) = (0, 0);
-    for h in &heard[from..to] {
-        run = if h[0] == 0.0 && h[1] == 0.0 { run + 1 } else { 0 };
+    for h in heard {
+        run = if silent(h) { run + 1 } else { 0 };
         gap = gap.max(run);
     }
     // 10 ms is a whole period of the tone: its RMS is amp / √2.
     let w = RATE as usize / 100;
     let (mut low, mut high) = (f64::MAX, f64::MIN);
-    for k in (from..to - w).step_by(w / 4) {
+    for k in (0..heard.len() - w).step_by(w / 4) {
         let rms = (heard[k..k + w].iter().map(|h| (h[0] as f64).powi(2)).sum::<f64>() / w as f64).sqrt() * std::f64::consts::SQRT_2;
-        let below = 20.0 * (rms / amps.0 as f64).log10();
-        let above = 20.0 * (rms / amps.1 as f64).log10();
-        low = low.min(below);
-        high = high.max(above);
+        low = low.min(20.0 * (rms / amps.0 as f64).log10());
+        high = high.max(20.0 * (rms / amps.1 as f64).log10());
     }
-    if std::env::var("AIR_DUMP").is_ok() {
-        for k in (from..to - w).step_by(w / 4) {
-            let rms = (heard[k..k + w].iter().map(|h| (h[0] as f64).powi(2)).sum::<f64>() / w as f64).sqrt() * std::f64::consts::SQRT_2;
-            if (rms - amps.0 as f64).abs() > 0.001 && (rms - amps.1 as f64).abs() > 0.001 {
-                eprintln!("{} ms: {:.4}", k * 1000 / RATE as usize, rms);
-            }
-        }
-    }
-    if std::env::var("AIR_DUMP").is_ok() {
-        for (k, v) in heard[from..to].windows(3).enumerate() {
-            let d2 = (v[2][0] - 2.0 * v[1][0] + v[0][0]).abs();
-            if d2 > 1e-3 {
-                eprintln!("click {} ms: {d2} {:?}", (from + k) * 1000 / RATE as usize, v);
-            }
-        }
-    }
-    let click = heard[from..to].windows(3).map(|v| (v[2][0] - 2.0 * v[1][0] + v[0][0]).abs()).fold(0.0, f32::max);
+    let click = heard.windows(3).map(|v| (v[2][0] - 2.0 * v[1][0] + v[0][0]).abs()).fold(0.0, f32::max);
     Heard { slip, gap, level_db: (low, high), click }
 }
 
-/// The alignment of each handover: the frame numbers the leaving and the joining track presented at the
-/// same device frame, differing by this many frames (their unfaded frames, extrapolated).
+/// Each handover's alignment: the frame numbers the track the music left and the one that took it
+/// presented at the same device frame differ by this many frames (from the frames each played at full
+/// level, as the mixer took them).
 fn alignments(air: &Air) -> Vec<i64> {
     let wires = air.wires.lock();
-    // Each track's frame number less its device frame, where its frames run on unshaped.
-    let offsets: Vec<Vec<(u64, i64)>> = wires
+    // Each run of a track's frames (one per flush): device frame, and frame number less device frame.
+    let runs: Vec<Vec<(u64, i64)>> = wires
         .iter()
         .flat_map(|w| w.lock().traces.clone())
         .map(|trace| trace.windows(2).filter(|p| p[0].1 >= 1.0 && p[0].1.fract() == 0.0 && p[1].1 == p[0].1 + 1.0 && p[1].0 == p[0].0 + 1).map(|p| (p[0].0, p[0].1 as i64 - p[0].0 as i64)).collect())
-        .filter(|runs: &Vec<(u64, i64)>| !runs.is_empty())
+        .filter(|run: &Vec<(u64, i64)>| !run.is_empty())
         .collect();
     let mut out = Vec::new();
-    for (k, joiner) in offsets.iter().enumerate() {
-        let Some(&(start, joined)) = joiner.first() else { continue };
-        for (j, leaver) in offsets.iter().enumerate() {
-            // The last run of another track's frames before this one's: the one it took over from.
-            if let Some(&(_, left)) = leaver.iter().rev().find(|(d, _)| *d < start).filter(|_| j != k).filter(|(d, _)| start - d < frames_of(500 * MS)) {
-                out.push(joined - left);
+    for (k, joined) in runs.iter().enumerate() {
+        let (start, offset) = joined[0];
+        // Another run heard in the half second before this one began: the one it took over from.
+        for left in runs.iter().enumerate().filter(|(j, _)| *j != k).map(|(_, run)| run) {
+            if let Some(&(_, was)) = left.iter().rev().find(|(d, _)| *d < start && start - d < frames_of(500 * MS)) {
+                out.push(offset - was);
             }
         }
     }
     out
 }
 
-/// Plays 10 s, runs `script` (changes and the like, from then), then 8 s; measures from 1 s before.
+/// Plays 10 s, runs `script` (changes and the like), then 8 s more; measures from 1 s before the script.
 fn heard_after(out: Output, script: impl FnOnce(&mut Rig)) -> (Rig, Heard) {
     let mut r = Rig::new(out);
     r.play();
@@ -535,22 +520,34 @@ fn heard_after(out: Output, script: impl FnOnce(&mut Rig)) -> (Rig, Heard) {
     let amps = {
         let t = r.tape.lock();
         let levels = t.sounds.iter().map(|s| s.1);
-        (levels.clone().fold(f32::MAX, f32::min).min(0.5), levels.fold(0.5, f32::max))
+        (levels.clone().fold(0.5, f32::min), levels.fold(0.5, f32::max))
     };
     let h = measure(&r.air.heard, from, to, amps);
     (r, h)
 }
 
-fn assert_seamless(what: &str, r: &Rig, h: &Heard) {
-    assert_eq!(h.slip, 0, "{what}: every frame heard once, in order: {h:?}");
-    assert_eq!(h.gap, 0, "{what}: no silence: {h:?}");
-    assert!(h.level_db.0 > -1.0 && h.level_db.1 < 1.0, "{what}: no dip or bump past a decibel: {h:?}");
-    assert!(h.click < 1e-3, "{what}: no click: {h:?}");
+/// One track left, the deep one, playing at full volume, no handover under way.
+fn assert_home(what: &str, r: &Rig) {
     assert_eq!(r.open_tracks(), 1, "{what}: one track left");
     assert!(r.writer.handover.is_none(), "{what}: the handover is over");
     let wires = r.air.wires.lock();
     let w = wires.iter().find(|w| !w.lock().released).expect("one").lock();
     assert!(w.started && w.opened == track_frames(RATE, false) && w.volume == 1.0, "{what}: the deep track, playing");
+}
+
+fn assert_seamless(what: &str, r: &Rig, h: &Heard) {
+    assert_eq!(h.slip, 0, "{what}: every frame heard once, in order: {h:?}");
+    assert_eq!(h.gap, 0, "{what}: no silence: {h:?}");
+    assert!(h.level_db.0 > -0.5 && h.level_db.1 < 0.5, "{what}: no dip or bump: {h:?}");
+    assert!(h.click < 1e-3, "{what}: no click: {h:?}");
+    assert!(r.head_error.is_some_and(|e| e <= frames_of(MS / 10)), "{what}: the engine's play head is where the ear is: {:?} frames off", r.head_error);
+    assert_home(what, r);
+}
+
+/// The sound the ear hears now.
+fn heard_amp(r: &Rig) -> f32 {
+    let t = r.tape.lock();
+    t.amp(t.read - r.clock.latency_frames(r.now()))
 }
 
 #[test]
@@ -563,28 +560,101 @@ fn sound_change_is_seamless() {
         Output { period_ms: 20, delay_ms: 250, stamp_after_ms: 300, jitter_us: 100 },
     ];
     for out in outputs {
-        let (r, h) = heard_after(out, |r| {
+        let mut wakes = 0;
+        let (mut r, h) = heard_after(out, |r| {
             r.change(0.6);
+            wakes = r.wakes;
         });
         let what = format!("{out:?}");
-        if std::env::var("AIR_DUMP").is_ok() {
-            let d0 = frames_of(11_078 * MS) as u64;
-            for (n, w) in r.air.wires.lock().iter().enumerate() {
-                for (s, t) in w.lock().traces.iter().enumerate() {
-                    for (d, v) in t.iter().filter(|(d, _)| (d0..d0 + 150).contains(d)).step_by(10) {
-                        eprintln!("wire {n} run {s}: {d} {v}");
-                    }
-                }
-            }
-        }
         assert_seamless(&what, &r, &h);
         let aligned = alignments(&r.air);
-        eprintln!("{what}: {h:?} {aligned:?} head {:?}", r.head_error);
         assert!(aligned.len() >= 2, "{what}: over to the second track and back: {aligned:?}");
-        assert!(aligned.iter().all(|a| a.abs() <= 8), "{what}: the tracks agree within 8 frames: {aligned:?}");
-        assert!(r.head_error.is_some_and(|e| e <= frames_of(2 * MS)), "{what}: the engine's play head is where the ear is: {:?} frames off", r.head_error);
-        let t = r.tape.lock();
-        let end = t.read - r.clock.latency_frames(r.now());
-        assert_eq!(t.amp(end), 0.6, "{what}: the change is heard");
+        assert!(aligned.iter().all(|a| a.abs() <= 1), "{what}: the tracks agree to a frame: {aligned:?}");
+        assert_eq!(heard_amp(&r), 0.6, "{what}: the change is heard");
+        let handover = r.wakes - wakes;
+        assert!(handover <= 60, "{what}: {handover} wakes for the handover");
+        let wakes = r.wakes;
+        r.run(60_000);
+        assert!(r.wakes - wakes <= 8, "{what}: then a wake every ten seconds or so: {}", r.wakes - wakes);
     }
+}
+
+#[test]
+fn slider_drag_is_seamless() {
+    let (r, h) = heard_after(SPEAKER, |r| {
+        for k in 1..=25 {
+            r.change(0.5 + 0.01 * k as f32);
+            r.run(40);
+        }
+    });
+    assert_seamless("dragged", &r, &h);
+    assert_eq!(heard_amp(&r), 0.75, "the last change is heard");
+}
+
+/// Paused (the engine fading out first) and resumed at moments through a handover.
+#[test]
+fn pause_during_handover_plays_on_from_there() {
+    for after_ms in [20, 120, 200, 260, 400, 700] {
+        let (r, h) = heard_after(SPEAKER, |r| {
+            r.change(0.6);
+            r.run(after_ms);
+            r.control.ramp = Some((None, 0.0, 100));
+            r.wake();
+            r.run(100);
+            // `TrackOutput::pause`.
+            r.clock.freeze(r.now());
+            r.control.playing = false;
+            r.wake();
+            r.run(2_000);
+            assert_eq!(r.open_tracks(), 1, "after {after_ms} ms: one track left");
+            r.control.playing = true;
+            r.control.ramp = Some((Some(0.0), 1.0, 100));
+            r.wake();
+        });
+        let what = format!("paused {after_ms} ms into it");
+        assert_eq!(h.slip, 0, "{what}: on from the frame it paused at: {h:?}");
+        assert!(h.click < 1e-3, "{what}: no click: {h:?}");
+        assert_home(&what, &r);
+        assert_eq!(heard_amp(&r), 0.6, "{what}: the change is heard");
+    }
+}
+
+/// A jump at moments through a handover: the new music, from its start, on the deep track.
+#[test]
+fn jump_during_handover_plays_the_new_music() {
+    for after_ms in [20, 120, 200, 260, 400, 700] {
+        let mut jumped = 0;
+        let (r, _) = heard_after(SPEAKER, |r| {
+            r.change(0.6);
+            r.run(after_ms);
+            let mut t = r.tape.lock();
+            t.jump();
+            jumped = t.read;
+            drop(t);
+            r.wake();
+        });
+        let what = format!("jumped {after_ms} ms into it");
+        assert_home(&what, &r);
+        // What the deep track played since it was emptied for the jump.
+        let wires = r.air.wires.lock();
+        let home = wires[0].lock();
+        let numbers: Vec<u64> = home.traces.last().expect("a run").iter().map(|t| t.1 as u64 - 1).collect();
+        assert_eq!(numbers[0], jumped, "{what}: from its first frame");
+        assert!(numbers.windows(2).all(|p| p[1] == p[0] + 1), "{what}: and on, every frame once");
+    }
+}
+
+/// No second track: the deep one is emptied and refilled as before, nothing lost or heard twice.
+#[test]
+fn no_second_track_empties_the_track() {
+    let (r, h) = heard_after(SPEAKER, |r| {
+        r.beside_opens.store(false, Ordering::Relaxed);
+        r.change(0.6);
+    });
+    assert_eq!(h.slip, 0, "on from where it was: {h:?}");
+    assert_home("no second track", &r);
+    let wires = r.air.wires.lock();
+    assert_eq!((wires.len(), wires[0].lock().traces.len()), (1, 2), "the one track, emptied once");
+    drop(wires);
+    assert_eq!(heard_amp(&r), 0.6, "the change is heard");
 }
