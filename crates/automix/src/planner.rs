@@ -11,7 +11,7 @@ use nori_player::engine::Plan;
 use nori_player::transitions::{engine_plan, pick, whole_song, Skip, TransitionPrefs, WindowSong};
 use parking_lot::Mutex;
 
-use super::store::{get, missing, put};
+use super::store::{get, missing};
 
 /// Ids of radio streams and of files from outside the library, which are never analysed.
 const RADIO_PREFIX: &str = "radio:";
@@ -252,14 +252,21 @@ fn finish(mut f: Finished) {
         return;
     }
     let features = f.analyzer.take_features();
-    let a = super::finish(&f.song_id, &features).track;
-    let stored = nori_db::active().is_some_and(|db| {
-        let c = db.lock();
-        put(&c, &a).is_ok() && super::store::put_voice(&c, &f.song_id, &features.voice_curve()).is_ok()
-    });
+    let Some(db) = nori_db::active() else {
+        alog::info(&format!("analysed {}: not stored: no database", f.song_id));
+        return;
+    };
+    let stored = super::store::put_finished(&db.lock(), &f.song_id, &features);
+    let a = match stored {
+        Ok(a) => a,
+        Err(e) => {
+            alog::info(&format!("analysed {}: not stored: {e}", f.song_id));
+            return;
+        }
+    };
     PLANNER.lock().generation += 1;
     alog::info(&format!(
-        "analysed {}: {:.2} bpm (conf {:.2}, stab {:.2}), key {}, heard {} ms of {} ms, {} frames at {} Hz{}",
+        "analysed {}: {:.2} bpm (conf {:.2}, stab {:.2}), key {}, heard {} ms of {} ms, {} frames at {} Hz",
         f.song_id,
         a.bpm,
         a.bpm_confidence,
@@ -269,7 +276,6 @@ fn finish(mut f: Finished) {
         expected_ms,
         f.frames,
         f.rate,
-        if stored { "" } else { " (not stored: no database)" }
     ));
 }
 
@@ -279,6 +285,24 @@ mod tests {
 
     fn n(out: &str, inc: &str) -> TransitionNote {
         TransitionNote { outgoing_id: out.into(), incoming_id: inc.into(), kind: "BeatMatched".into(), start_ms: 1, duration_ms: 8000, tempo_ratio: 1.0, reason: String::new() }
+    }
+
+    #[test]
+    fn a_song_measured_as_heard_keeps_the_beat_models_grid() {
+        use nori_player::automix::beats::GRID_NEURAL;
+        use nori_player::automix::synth::Synth;
+        let db = std::sync::Arc::new(Mutex::new(nori_db::open("", "t").unwrap()));
+        nori_db::set_active(&db);
+        let s = Synth::new(120.0);
+        let modelled = nori_model::TrackAnalysis { song_id: "s".into(), analysis_version: crate::ANALYSIS_VERSION, duration_ms: (s.secs * 1000.0) as i64, intro_bpm: 90.0, intro_grid_source: GRID_NEURAL, ..Default::default() };
+        super::super::store::put(&db.lock(), &modelled).unwrap();
+        let mut analyzer = Analyzer::new(s.rate, 60_000);
+        let pcm = s.render();
+        analyzer.feed(&pcm);
+        finish(Finished { song_id: "s".into(), analyzer, frames: pcm.len() as u64, rate: s.rate });
+        let kept = get(&db.lock(), "s").unwrap().unwrap();
+        assert_eq!((kept.intro_grid_source, kept.intro_bpm), (GRID_NEURAL, 90.0));
+        assert!(super::super::store::get_voice(&db.lock(), "s").unwrap().is_some());
     }
 
     #[test]

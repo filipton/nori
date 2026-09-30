@@ -21,3 +21,5 @@ nori-player = { path = "../player" }
 
 [dev-dependencies]
 nori-testdir = { path = "../testdir" }
+# Test songs to measure.
+nori-player = { path = "../player", features = ["synth"] }
