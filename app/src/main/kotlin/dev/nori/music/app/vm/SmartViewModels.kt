@@ -42,7 +42,7 @@ class SmartViewModel(app: Application) : NoriViewModel(app) {
     /** Null when saved; otherwise what is wrong with the definition. */
     fun save(draft: SmartEdit, onSaved: (String) -> Unit): String? {
         val ready = smartEditPrepare(draft)
-        ready.error?.let { return it }
+        ready.error?.let { return say.smartProblem(it) }
         viewModelScope.launch { val id = nori.library.smartSave(ready.id, ready.name.ifEmpty { say.smartPlaylist }, ready.json); refresh(); onSaved(id) }
         return null
     }

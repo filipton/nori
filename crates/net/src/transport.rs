@@ -194,6 +194,7 @@ impl From<nori_model::CoreError> for NetError {
             nori_model::CoreError::Api { code, reason } => NetError::Api { code, reason },
             nori_model::CoreError::Parse { reason } => NetError::Parse { reason },
             nori_model::CoreError::Db { reason } => NetError::Db { reason },
+            e @ nori_model::CoreError::Smart { .. } => NetError::Parse { reason: e.to_string() },
         }
     }
 }

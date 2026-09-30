@@ -18,6 +18,39 @@ pub enum CoreError {
     Parse { reason: String },
     #[error("database: {reason}")]
     Db { reason: String },
+    /// A smart playlist definition that does not read: where in its JSON (`match.rules[0].value`), and what.
+    #[error("smart playlist {path}: {problem:?}")]
+    Smart { path: String, problem: SmartProblem },
+}
+
+/// What is wrong with a smart playlist definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
+pub enum SmartProblem {
+    NotJson,
+    NotObject,
+    UnknownKey,
+    /// Neither a rule `{field, op, value}` nor a group `{all, rules}`.
+    NotRuleOrGroup,
+    /// A single rule where a group belongs.
+    SingleRule,
+    TooDeep,
+    NotFlag,
+    NotList,
+    NoField,
+    UnknownField,
+    NoOperator,
+    /// An operator that is unknown or does not apply to the field.
+    WrongOperator,
+    NoValue,
+    TakesNoValue,
+    NotNumber,
+    NotDate,
+    NotText,
+    DaysOutOfRange,
+    Backwards,
+    CannotSort,
+    Negative,
 }
 
 impl From<rusqlite::Error> for CoreError {

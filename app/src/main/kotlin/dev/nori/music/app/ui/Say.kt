@@ -534,6 +534,19 @@ class Say(private val r: Resources) {
         },
     )
 
+    /** What is wrong with a smart playlist's rules. */
+    fun smartProblem(p: dev.nori.music.ffi.model.SmartProblem): String = r.getString(
+        when (p) {
+            dev.nori.music.ffi.model.SmartProblem.NO_VALUE -> R.string.smart_problem_no_value
+            dev.nori.music.ffi.model.SmartProblem.NOT_NUMBER -> R.string.smart_problem_not_number
+            dev.nori.music.ffi.model.SmartProblem.NOT_DATE -> R.string.smart_problem_not_date
+            dev.nori.music.ffi.model.SmartProblem.DAYS_OUT_OF_RANGE -> R.string.smart_problem_days
+            dev.nori.music.ffi.model.SmartProblem.BACKWARDS -> R.string.smart_problem_backwards
+            dev.nori.music.ffi.model.SmartProblem.NEGATIVE -> R.string.smart_problem_negative
+            else -> R.string.smart_problem_other
+        },
+    )
+
     /** A smart playlist's name: the one the user gave it, a ready-made one's, or "Smart playlist" for one left blank. */
     fun smartName(p: dev.nori.music.ffi.model.SmartPlaylist): String = p.builtin?.let(::smartBuiltin) ?: p.name.ifEmpty { smartPlaylist }
 

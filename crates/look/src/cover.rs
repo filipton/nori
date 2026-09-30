@@ -95,7 +95,7 @@ fn ink_page(hsl: [f32; 3]) -> u32 {
     hsl_to_color([hsl[0], hsl[1].min(0.35), hsl[2].clamp(0.03, 0.06)])
 }
 
-/// Derives page colours from `w` x `h` ARGB pixels for the given theme.
+/// Derives page colours from `w` x `h` ARGB pixels (at least 1 x 1: every decoder rejects empty images).
 pub fn derive(pixels: &[u32], w: usize, h: usize, dark: bool, amoled: bool) -> CoverColours {
     let foot = bottom_average(pixels, w, h);
     let edge_raw = foot.colour;

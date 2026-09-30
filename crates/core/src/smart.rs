@@ -86,13 +86,6 @@ pub(crate) mod tests {
         l.iter().map(|s| s.id.as_str()).collect()
     }
 
-    fn error(json: &str) -> String {
-        match smart_validate(json.into()) {
-            Err(CoreError::Parse { reason }) => reason,
-            other => panic!("expected a parse error, got {other:?}"),
-        }
-    }
-
     /// Evaluates with SQL and with the Rust matcher and asserts they agree.
     fn eval(core: &Core, json: &str, downloaded: &[&str]) -> Vec<String> {
         let def = parse(json).unwrap();
@@ -257,43 +250,60 @@ pub(crate) mod tests {
 
     #[test]
     fn validation_errors_name_path_and_problem() {
+        use SmartProblem::*;
         smart_validate(r#"{"match":null,"sort":null,"limit":null,"limitMs":0}"#.into()).unwrap();
-        assert!(error("nope").contains("not JSON"));
-        assert!(error("[]").contains("must be a JSON object"));
-        assert!(error(r#"{"macth":{}}"#).contains("unknown key \"macth\""));
-        assert!(error(r#"{"match":{"field":"year","op":"is","value":1}}"#).contains("expected a group"));
-        assert!(error(r#"{"match":{"rules":[{"op":"is"}]}}"#).starts_with("smart playlist: match.rules[0]: expected a rule"));
-        let e = error(r#"{"match":{"rules":[{"field":"year","op":"is","value":1},{"all":false,"rules":[{"field":"yeer","op":"is","value":1}]}]}}"#);
-        assert!(e.contains("match.rules[1].rules[0].field: unknown field \"yeer\"") && e.contains("sampleRate"), "{e}");
-        let e = error(r#"{"match":{"rules":[{"field":"year","op":"contains","value":"19"}]}}"#);
-        assert!(e.contains("\"contains\" does not apply to \"year\"") && e.contains("between"), "{e}");
-        assert!(error(r#"{"match":{"rules":[{"field":"year","op":"roughly","value":1}]}}"#).contains("is not an operator"));
-        assert!(error(r#"{"match":{"rules":[{"field":"year","op":"is","value":"soon"}]}}"#).contains("match.rules[0].value: expected a whole number"));
-        assert!(error(r#"{"match":{"rules":[{"field":"year","op":"is"}]}}"#).contains("needs a number"));
-        assert!(error(r#"{"match":{"rules":[{"field":"year","op":"between","value":[1]}]}}"#).contains("two numbers"));
-        assert!(error(r#"{"match":{"rules":[{"field":"year","op":"between","value":[2000,1990]}]}}"#).contains("backwards"));
-        assert!(error(r#"{"match":{"rules":[{"field":"title","op":"is","value":5}]}}"#).contains("expected a string"));
-        assert!(error(r#"{"match":{"rules":[{"field":"starred","op":"isTrue","value":true}]}}"#).contains("takes no value"));
-        assert!(error(r#"{"match":{"rules":[{"field":"starred","op":"is","value":true}]}}"#).contains("isTrue, isFalse"));
-        assert!(error(r#"{"match":{"rules":[{"field":"added","op":"greater","value":"last week"}]}}"#).contains("expected a date"));
-        assert!(error(r#"{"match":{"rules":[{"field":"added","op":"greater","value":"2024-13-01"}]}}"#).contains("expected a date"));
-        assert!(error(r#"{"match":{"rules":[{"field":"lastPlayed","op":"withinDays","value":-1}]}}"#).contains("days must be"));
-        assert!(error(r#"{"match":{"rules":[{"field":"year","op":"is","value":1,"extra":1}]}}"#).contains("unknown key \"extra\""));
-        assert!(error(r#"{"match":{"all":"yes","rules":[]}}"#).contains("match.all"));
-        assert!(error(r#"{"match":{"rules":{}}}"#).contains("match.rules: expected a list"));
-        assert!(error(r#"{"sort":{"field":"isDownloaded"}}"#).contains("cannot sort by"));
-        assert!(error(r#"{"sort":{}}"#).contains("sort.field"));
-        assert!(error(r#"{"limit":-1}"#).contains("limit: must not be negative"));
+        let rule = |r: &str| format!(r#"{{"match":{{"rules":[{r}]}}}}"#);
         let mut deep = r#"{"field":"year","op":"is","value":1}"#.to_string();
         for _ in 0..9 {
             deep = format!(r#"{{"rules":[{deep}]}}"#);
         }
-        assert!(error(&format!(r#"{{"match":{deep}}}"#)).contains("nested more than 8"));
+        let cases = [
+            ("nope".to_string(), "", NotJson),
+            ("[]".into(), "", NotObject),
+            (r#"{"macth":{}}"#.into(), ".macth", UnknownKey),
+            (r#"{"match":{"field":"year","op":"is","value":1}}"#.into(), "match", SingleRule),
+            (rule(r#"{"op":"is"}"#), "match.rules[0]", NotRuleOrGroup),
+            (rule(r#"{"field":"year","op":"is","value":1},{"all":false,"rules":[{"field":"yeer","op":"is","value":1}]}"#), "match.rules[1].rules[0].field", UnknownField),
+            (rule(r#"{"op":"is","value":1,"field":5}"#), "match.rules[0].field", NoField),
+            (rule(r#"{"field":"year","value":1}"#), "match.rules[0].op", NoOperator),
+            (rule(r#"{"field":"year","op":"contains","value":"19"}"#), "match.rules[0].op", WrongOperator),
+            (rule(r#"{"field":"year","op":"roughly","value":1}"#), "match.rules[0].op", WrongOperator),
+            (rule(r#"{"field":"starred","op":"is","value":true}"#), "match.rules[0].op", WrongOperator),
+            (rule(r#"{"field":"year","op":"is","value":"soon"}"#), "match.rules[0].value", NotNumber),
+            (rule(r#"{"field":"year","op":"is"}"#), "match.rules[0].value", NoValue),
+            (rule(r#"{"field":"year","op":"between","value":[1]}"#), "match.rules[0].value", NoValue),
+            (rule(r#"{"field":"year","op":"between","value":[1,"x"]}"#), "match.rules[0].value[1]", NotNumber),
+            (rule(r#"{"field":"year","op":"between","value":[2000,1990]}"#), "match.rules[0].value", Backwards),
+            (rule(r#"{"field":"added","op":"between","value":["2024-02-01","2024-01-01"]}"#), "match.rules[0].value", Backwards),
+            (rule(r#"{"field":"title","op":"is","value":5}"#), "match.rules[0].value", NotText),
+            (rule(r#"{"field":"starred","op":"isTrue","value":true}"#), "match.rules[0].value", TakesNoValue),
+            (rule(r#"{"field":"added","op":"greater","value":"last week"}"#), "match.rules[0].value", NotDate),
+            (rule(r#"{"field":"added","op":"greater","value":"2024-13-01"}"#), "match.rules[0].value", NotDate),
+            (rule(r#"{"field":"added","op":"greater","value":"2024-12-01T25:00:00"}"#), "match.rules[0].value", NotDate),
+            (rule(r#"{"field":"lastPlayed","op":"withinDays","value":-1}"#), "match.rules[0].value", DaysOutOfRange),
+            (rule(r#"{"field":"year","op":"is","value":1,"extra":1}"#), "match.rules[0].extra", UnknownKey),
+            (rule("5"), "match.rules[0]", NotObject),
+            (r#"{"match":{"all":"yes","rules":[]}}"#.into(), "match.all", NotFlag),
+            (r#"{"match":{"rules":{}}}"#.into(), "match.rules", NotList),
+            (r#"{"sort":{"field":"isDownloaded"}}"#.into(), "sort.field", CannotSort),
+            (r#"{"sort":{}}"#.into(), "sort.field", NoField),
+            (r#"{"sort":[]}"#.into(), "sort", NotObject),
+            (r#"{"sort":{"field":"year","descending":1}}"#.into(), "sort.descending", NotFlag),
+            (r#"{"sort":{"field":"random","seed":"x"}}"#.into(), "sort.seed", NotNumber),
+            (r#"{"limit":-1}"#.into(), "limit", Negative),
+            (format!(r#"{{"match":{deep}}}"#), "match.rules[0].rules[0].rules[0].rules[0].rules[0].rules[0].rules[0]", TooDeep),
+        ];
+        for (json, path, problem) in cases {
+            match smart_validate(json.clone()) {
+                Err(CoreError::Smart { path: p, problem: q }) => assert_eq!((p.as_str(), q), (path, problem), "{json}"),
+                other => panic!("{json}: {other:?}"),
+            }
+        }
         // Invalid definitions are refused by every entry point.
         let core = Core::new(String::new(), "t".into()).unwrap();
-        assert!(matches!(core.smart_evaluate("{".into(), 0, 1), Err(CoreError::Parse { .. })));
-        assert!(matches!(core.smart_count("{".into()), Err(CoreError::Parse { .. })));
-        assert!(matches!(core.smart_save(String::new(), "x".into(), "{".into()), Err(CoreError::Parse { .. })));
+        assert!(matches!(core.smart_evaluate("{".into(), 0, 1), Err(CoreError::Smart { .. })));
+        assert!(matches!(core.smart_count("{".into()), Err(CoreError::Smart { .. })));
+        assert!(matches!(core.smart_save(String::new(), "x".into(), "{".into()), Err(CoreError::Smart { .. })));
         assert!(core.smart_list().unwrap().is_empty());
     }
 
