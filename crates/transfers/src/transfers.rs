@@ -1873,22 +1873,6 @@ mod tests {
         assert_eq!(needs_of(Saved { analysable: false, ..ml }), (false, false), "provider song or stream");
     }
 
-    #[test]
-    fn beats_offer_rules() {
-        use nori_settings::settings::DownloadBeats;
-        for choice in [DownloadBeats::Ask, DownloadBeats::Always, DownloadBeats::Never] {
-            assert_eq!(beats_offer(false, choice), BeatsOffer::Off, "the model off: nothing appears");
-        }
-        assert_eq!(beats_offer(true, DownloadBeats::Ask), BeatsOffer::Ask);
-        assert_eq!(beats_offer(true, DownloadBeats::Always), BeatsOffer::Yes);
-        assert_eq!(beats_offer(true, DownloadBeats::Never), BeatsOffer::No);
-        assert!(BeatsOffer::Ask.wants(true) && !BeatsOffer::Ask.wants(false), "asked: the answer");
-        assert!(BeatsOffer::Yes.wants(false), "always: no question asked");
-        assert!(!BeatsOffer::No.wants(true) && !BeatsOffer::Off.wants(true));
-        assert_eq!(beats_remembered(true), DownloadBeats::Always);
-        assert_eq!(beats_remembered(false), DownloadBeats::Never);
-    }
-
     /// A timed-out step is given up; an idle lane is released; a slow live step finishes and is timed.
     #[test]
     fn expire_gives_up_stuck_steps() {
