@@ -2403,7 +2403,7 @@ fn status_current_on_events() {
             _ => {}
         }
     }
-    assert!(seen.iter().any(|(e, ..)| matches!(e, Event::Position { index: 0, ms: 2_000 })), "the seek said its place: {seen:?}");
+    assert!(seen.iter().any(|(e, ..)| matches!(e, Event::Position { index: 0, ms: 2_000, .. })), "the seek said its place: {seen:?}");
     assert!(seen.iter().any(|(e, ..)| matches!(e, Event::Song { index: 1, .. })), "{seen:?}");
 }
 
@@ -2639,6 +2639,65 @@ fn seek_after_its_song_went_plays_what_took_its_place() {
         (Some(0), None, Some(at)) => assert!((ms - at).abs() < 150, "b at {at}, shown {ms}"),
         (Some(0), Some(at), None) => panic!("a, gone from the queue, plays on at {at} while b is shown at {ms}"),
         other => panic!("heard and shown disagree: {other:?} {:?}", rig.events.lock()),
+    }
+}
+
+/// Every seek lands, however the engine is busy when it is asked: `ask` runs once the rig plays (or
+/// not, per case) and returns the song and place asked for; the ear must be there.
+#[test]
+fn seek_always_lands() {
+    let (a, b, c) = (music(30.0, 61), music(30.0, 62), music(30.0, 63));
+    type Ask = fn(&Rig) -> (usize, i64);
+    let fade = Settings { fade_ms: 400, ..Settings::default() };
+    let cases: [(&str, TransitionPrefs, Settings, bool, Ask); 9] = [
+        ("while opening", prefs_off(), Settings::default(), false, |r| { r.engine.play_at(0, 0); r.engine.go_to(0, 12_000); (0, 12_000) }),
+        ("before the first bytes", prefs_off(), Settings::default(), false, |r| {
+            r.server.slow.lock().push(("a".into(), Duration::from_millis(1_500)));
+            r.engine.play_at(0, 0);
+            r.run(300);
+            r.engine.go_to(0, 12_000);
+            (0, 12_000)
+        }),
+        ("by seek while opening", prefs_off(), Settings::default(), false, |r| { r.engine.play_at(0, 0); r.engine.seek(12_000); (0, 12_000) }),
+        ("playing", prefs_off(), Settings::default(), true, |r| { r.engine.go_to(0, 12_000); (0, 12_000) }),
+        ("in a dip", prefs_off(), fade.clone(), true, |r| { r.engine.go_to(0, 5_000); r.run(100); r.engine.go_to(0, 12_000); (0, 12_000) }),
+        ("after a skip in its dip", prefs_off(), fade.clone(), true, |r| { r.engine.next(); r.engine.go_to(1, 7_000); (1, 7_000) }),
+        ("paused", prefs_off(), Settings::default(), true, |r| {
+            r.engine.pause();
+            r.run(100);
+            r.engine.go_to(0, 12_000);
+            r.run(500);
+            r.engine.play();
+            (0, 12_000)
+        }),
+        ("in a mix", crossfade(6), Settings::default(), true, |r| {
+            assert!(r.wait_for(20, |r| r.engine.status().mixing));
+            let shown = place(r).0.expect("a song shown");
+            r.engine.go_to(shown, 3_000);
+            (shown, 3_000)
+        }),
+        ("with the queue edited in its dip", prefs_off(), fade.clone(), true, |r| {
+            r.engine.go_to(0, 8_000);
+            r.run(50);
+            r.queue.lock().insert(0, vec!["c".into()], nori_player::playlist::Hand::No);
+            r.engine.queue_changed();
+            (1, 8_000)
+        }),
+    ];
+    for (name, prefs, settings, play_first, ask) in cases {
+        let rig = Rig::new(&[("a", &a), ("b", &b), ("c", &c)], prefs, settings);
+        if play_first {
+            rig.engine.play_at(0, 0);
+            assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2), "{name}: plays");
+        }
+        let (index, ms) = ask(&rig);
+        let id = rig.queue.lock().ids()[index].clone();
+        let song = match id.as_str() { "a" => &a, "b" => &b, _ => &c };
+        let heard = rig.heard.lock().len();
+        assert!(rig.wait_for(10, |r| r.heard.lock().len() > heard + 3 * RATE as usize * 2), "{name}: music after the seek");
+        let at = heard_in(&rig, song).unwrap_or_else(|| panic!("{name}: {id} is not what plays: {:?}", rig.events.lock()));
+        assert!((ms + 1_000..ms + 4_000).contains(&at), "{name}: {id} plays at {at} ms, the seek asked for {ms}");
+        assert_eq!(place(&rig).0, Some(index), "{name}: shown on its song");
     }
 }
 

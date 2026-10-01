@@ -1506,10 +1506,19 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         }
     }
 
-    /// The queue was edited: a parked place follows its entry, or goes with it.
+    /// The queue was edited: a parked place follows its entry, or goes with it; a jump waiting in the
+    /// dip follows its entry, or goes to what took its place.
     fn follow_parked(&mut self) {
+        let now_at = |seqs: &[u64], q: &Q, i: usize| seqs.get(i).and_then(|&s| q.read(|q| q.index_of(s)));
+        if let Some(d) = self.dip.as_mut() {
+            for s in &mut d.then {
+                if let Switched::To(i, _) = s {
+                    *i = now_at(&self.seqs, &self.p.queue, *i).unwrap_or(*i);
+                }
+            }
+        }
         let Some(p) = self.parked.as_mut() else { return };
-        match self.seqs.get(p.at).and_then(|&s| self.p.queue.read(|q| q.index_of(s))) {
+        match now_at(&self.seqs, &self.p.queue, p.at) {
             Some(k) => p.at = k,
             None => self.parked = None,
         }
