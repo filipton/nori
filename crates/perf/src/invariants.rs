@@ -369,17 +369,23 @@ pub(crate) fn settings_held(expected: &[(&str, bool, bool)]) -> Option<Break> {
     Some(Break::new("setting", format!("a second after the settings changed the engine still shows {}", off.join("; "))))
 }
 
-// Process-wide watch: its entry points are FFI calls and engine hooks with no handle to carry state.
+// Process-wide, as a logger is: the watch's entry points are FFI calls, panic hooks and audio threads
+// with no handle to carry it.
 
 /// Whether the watch is on; every caller checks it first (one atomic read outside the perf build).
 static ON: AtomicBool = AtomicBool::new(false);
 /// Self-test volume factor for every output, as f32 bits.
 static QUIET: AtomicU32 = AtomicU32::new(0x3F80_0000);
-/// Platform hook describing what the stream cache holds for a song id.
-static DISK: OnceLock<fn(&str) -> String> = OnceLock::new();
-static STATE: Mutex<Option<State>> = Mutex::new(None);
+static RECORDER: Recorder = Recorder { state: Mutex::new(None), disk: OnceLock::new() };
 
-/// The process watch's state.
+/// The watch: what it saw and the breaks it said, and the platform's hook describing what the stream
+/// cache holds for a song id.
+struct Recorder {
+    state: Mutex<Option<State>>,
+    disk: OnceLock<fn(&str) -> String>,
+}
+
+/// The watch's state.
 #[derive(Default)]
 struct State {
     watch: Watch,
@@ -416,36 +422,93 @@ pub(crate) fn wall_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
 }
 
-/// Runs `f` on the process state, ignoring poisoning: the watch must never stop the app.
-fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
-    f(STATE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(State::default))
-}
-
-fn with_watch<R>(f: impl FnOnce(&mut Watch) -> R) -> R {
-    with_state(|s| f(&mut s.watch))
-}
-
-/// Reports a break: log, perf timeline, recent log lines, and the self test's list.
-/// With the watch on, asks it `f` and reports any break.
-fn judge(wall_ms: i64, f: impl FnOnce(&mut Watch) -> Option<Break>) {
-    if on() {
-        said(wall_ms, with_watch(f));
+impl Recorder {
+    /// Runs `f` on the state, ignoring poisoning: the watch must never stop the app.
+    fn with_state<R>(&self, f: impl FnOnce(&mut State) -> R) -> R {
+        f(self.state.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(State::default))
     }
-}
 
-fn said(t: i64, b: Option<Break>) {
-    let Some(b) = b else { return };
-    let line = b.line();
-    nori_model::alog::info(&format!("invariant: {line}"));
-    crate::perf_log::note_invariant(t, &line);
-    crate::perf_log::keep_break_log(t, &line);
-    let kept = format!("{} invariant: {line}", crate::perf_log::clock(t));
-    with_state(|s| {
-        if s.breaks.len() >= MOST_BREAKS {
-            s.breaks.remove(0);
+    fn with_watch<R>(&self, f: impl FnOnce(&mut Watch) -> R) -> R {
+        self.with_state(|s| f(&mut s.watch))
+    }
+
+    /// With the watch on, asks it `f` and reports any break.
+    fn judge(&self, wall_ms: i64, f: impl FnOnce(&mut Watch) -> Option<Break>) {
+        if on() {
+            self.said(wall_ms, self.with_watch(f));
         }
-        s.breaks.push(kept);
-    });
+    }
+
+    /// Reports a break: log, perf timeline, recent log lines, and the self test's list.
+    fn said(&self, t: i64, b: Option<Break>) {
+        let Some(b) = b else { return };
+        let line = b.line();
+        nori_model::alog::info(&format!("invariant: {line}"));
+        crate::perf_log::note_invariant(t, &line);
+        crate::perf_log::keep_break_log(t, &line);
+        let kept = format!("{} invariant: {line}", crate::perf_log::clock(t));
+        self.with_state(|s| {
+            if s.breaks.len() >= MOST_BREAKS {
+                s.breaks.remove(0);
+            }
+            s.breaks.push(kept);
+        });
+    }
+
+    fn disk_of(&self, id: Option<&str>) -> String {
+        match (id, self.disk.get()) {
+            (Some(id), Some(describe)) => describe(id),
+            (None, _) => "no song".into(),
+            (_, None) => "not known here".into(),
+        }
+    }
+
+    fn engine_seen(&self, l: &EngineLook) {
+        let EngineLook { now_ms, playing, offloaded, index, position_ms, in_output_ms, state, .. } = *l;
+        let t = wall_ms();
+        let (silent, output) = self.with_state(|s| {
+            s.engine = Some(PerfEngineSeen { wall_ms: t, playing, offloaded, index: index.map_or(-1, |i| i as i64), position_ms, in_output_ms });
+            s.watch.engine(playing);
+            s.engine_state.0 = t;
+            s.engine_state.1.clear();
+            s.engine_state.1.push_str(state);
+            let silent = s.watch.silent(l.quiet_ms, l.output_open, l.id, state);
+            let output = if offloaded {
+                let pos = position_ms.max(0) as u64;
+                let m = Moving { now_ms, playing, offloaded, song: index, written: pos + in_output_ms.max(0) as u64, presented: pos, rate: 1000 };
+                s.watch.output("engine", &m).map(|b| s.quote_engine(b, t))
+            } else {
+                None
+            };
+            (silent, output)
+        });
+        // The platform hook calls into Kotlin, so it runs with the state unlocked.
+        let silent = silent.map(|mut b| {
+            b.detail = format!("{}; the stream cache: {}", b.detail, self.disk_of(l.id));
+            b
+        });
+        self.said(t, silent);
+        self.said(t, output);
+    }
+
+    /// Reports a panic as a break from a thread of its own: the panicking one may hold the watch's
+    /// locks until it has unwound.
+    fn panicked(&'static self, thread: &str, what: &str) -> Option<std::thread::JoinHandle<()>> {
+        let b = Break::new("panic", format!("on {thread}: {what}"));
+        let t = wall_ms();
+        std::thread::Builder::new().name("nori-perf-panic".into()).spawn(move || self.said(t, Some(b))).ok()
+    }
+
+    fn track_seen(&self, now_ms: i64, playing: bool, written: u64, presented: u64, rate: u32) {
+        let m = Moving { now_ms, playing, offloaded: false, song: None, written, presented, rate };
+        let t = wall_ms();
+        let b = self.with_state(|s| s.watch.track(&m).map(|b| s.quote_engine(b, t)));
+        self.said(t, b);
+    }
+
+    fn breaks(&self) -> Vec<String> {
+        self.with_state(|s| s.breaks.clone())
+    }
 }
 
 /// Records the track's account of the equalizer screen's shallow buffer as a "tuning" timeline event.
@@ -476,15 +539,7 @@ pub struct PerfEngineSeen {
 
 /// Installs the platform's stream cache description hook, quoted by "silent" breaks.
 pub fn describe_disk(describe: fn(&str) -> String) {
-    let _ = DISK.set(describe);
-}
-
-fn disk_of(id: Option<&str>) -> String {
-    match (id, DISK.get()) {
-        (Some(id), Some(describe)) => describe(id),
-        (None, _) => "no song".into(),
-        (_, None) => "not known here".into(),
-    }
+    let _ = RECORDER.disk.set(describe);
 }
 
 /// One engine wake (nori-engine's `watch::Seen`, forwarded by the Android library). `quiet_ms`: how
@@ -506,87 +561,56 @@ pub struct EngineLook<'a> {
 /// An engine wake: keeps its state for quoting, checks [`Watch::silent`], and watches the offloaded
 /// output (the CPU track is watched by its writer, [`track_seen`]).
 pub fn engine_seen(l: &EngineLook) {
-    let EngineLook { now_ms, playing, offloaded, index, position_ms, in_output_ms, state, .. } = *l;
-    let t = wall_ms();
-    let (silent, output) = with_state(|s| {
-        s.engine = Some(PerfEngineSeen { wall_ms: t, playing, offloaded, index: index.map_or(-1, |i| i as i64), position_ms, in_output_ms });
-        s.watch.engine(playing);
-        s.engine_state.0 = t;
-        s.engine_state.1.clear();
-        s.engine_state.1.push_str(state);
-        let silent = s.watch.silent(l.quiet_ms, l.output_open, l.id, state);
-        let output = if offloaded {
-            let pos = position_ms.max(0) as u64;
-            let m = Moving { now_ms, playing, offloaded, song: index, written: pos + in_output_ms.max(0) as u64, presented: pos, rate: 1000 };
-            s.watch.output("engine", &m).map(|b| s.quote_engine(b, t))
-        } else {
-            None
-        };
-        (silent, output)
-    });
-    // The platform hook calls into Kotlin, so it runs with the state unlocked.
-    let silent = silent.map(|mut b| {
-        b.detail = format!("{}; the stream cache: {}", b.detail, disk_of(l.id));
-        b
-    });
-    said(t, silent);
-    said(t, output);
+    RECORDER.engine_seen(l);
 }
 
 /// Reports a panic (from the platform's panic hook) as a break, when the watch is on.
 pub fn panicked(thread: &str, what: &str) {
-    if !on() {
-        return;
+    if on() {
+        RECORDER.panicked(thread, what);
     }
-    let b = Break::new("panic", format!("on {thread}: {what}"));
-    // From another thread: the panicking one may hold the watch's locks until it has unwound.
-    let t = wall_ms();
-    let _ = std::thread::Builder::new().name("nori-perf-panic".into()).spawn(move || said(t, Some(b)));
 }
 
 /// The engine thread's last observation; None before its first wake with the watch on.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_engine_seen() -> Option<PerfEngineSeen> {
-    with_state(|s| s.engine)
+    RECORDER.with_state(|s| s.engine)
 }
 
 /// The AudioTrack writer's device reading: `written` and `presented` frames at `rate`, monotonic `now_ms`.
 pub fn track_seen(now_ms: i64, playing: bool, written: u64, presented: u64, rate: u32) {
-    let m = Moving { now_ms, playing, offloaded: false, song: None, written, presented, rate };
-    let t = wall_ms();
-    let b = with_state(|s| s.watch.track(&m).map(|b| s.quote_engine(b, t)));
-    said(t, b);
+    RECORDER.track_seen(now_ms, playing, written, presented, rate);
 }
 
 /// The player service arrived on song `id`.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_watch_heard(wall_ms: i64, id: String) {
-    judge(wall_ms, |w| w.heard(wall_ms, &id));
+    RECORDER.judge(wall_ms, |w| w.heard(wall_ms, &id));
 }
 
 /// The player screen shows song `id`.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_watch_shown(wall_ms: i64, id: Option<String>) {
-    judge(wall_ms, |w| w.shown(wall_ms, id.as_deref()));
+    RECORDER.judge(wall_ms, |w| w.shown(wall_ms, id.as_deref()));
 }
 
 /// The screen became visible or hidden.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_watch_visible(wall_ms: i64, visible: bool) {
-    judge(wall_ms, |w| w.visible(wall_ms, visible));
+    RECORDER.judge(wall_ms, |w| w.visible(wall_ms, visible));
 }
 
 /// Any other platform wake: compares screen and playback now.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_watch_look(wall_ms: i64) {
-    judge(wall_ms, |w| w.compare(wall_ms));
+    RECORDER.judge(wall_ms, |w| w.compare(wall_ms));
 }
 
 /// A seek bar draw (the caller checks [`on`]); see [`Watch::place`]. `now_ms` is monotonic.
 pub fn place_seen(now_ms: i64, playing: bool, shown_ms: i64, engine_ms: i64, word_ms: i64) {
-    let b = with_watch(|w| w.place(now_ms, playing, shown_ms, engine_ms, word_ms));
+    let b = RECORDER.with_watch(|w| w.place(now_ms, playing, shown_ms, engine_ms, word_ms));
     if b.is_some() {
-        said(wall_ms(), b);
+        RECORDER.said(wall_ms(), b);
     }
 }
 
@@ -594,20 +618,20 @@ pub fn place_seen(now_ms: i64, playing: bool, shown_ms: i64, engine_ms: i64, wor
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_watch_skip(wall_ms: i64, index: i64) {
     if on() {
-        with_watch(|w| w.skip(wall_ms, index));
+        RECORDER.with_watch(|w| w.skip(wall_ms, index));
     }
 }
 
 /// The player arrived on queue index `index`.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_watch_arrived(wall_ms: i64, index: i64, auto: bool, shuffled: bool) {
-    judge(wall_ms, |w| w.arrived(wall_ms, index, auto, shuffled));
+    RECORDER.judge(wall_ms, |w| w.arrived(wall_ms, index, auto, shuffled));
 }
 
 /// Lyrics of song `id` were shown.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_watch_lyrics(wall_ms: i64, id: String) {
-    judge(wall_ms, |w| w.lyrics(wall_ms, &id));
+    RECORDER.judge(wall_ms, |w| w.lyrics(wall_ms, &id));
 }
 
 /// The queue changed: ids of songs without a duration, of `total`.
@@ -617,7 +641,7 @@ pub fn perf_watch_queue(wall_ms: i64, missing: Vec<String>, total: u32) {
         return;
     }
     let auto_mix = nori_settings::settings_store::shared().current().is_some_and(|p| p.auto_mix);
-    said(wall_ms, with_watch(|w| w.queue(auto_mix, &missing, total)));
+    RECORDER.said(wall_ms, RECORDER.with_watch(|w| w.queue(auto_mix, &missing, total)));
 }
 
 /// A second after a settings change: checks the engine's offload request and sound chain against the
@@ -627,24 +651,24 @@ pub fn perf_watch_settings(wall_ms: i64, offload_wanted: bool, chain_in: bool, o
     if !on() {
         return;
     }
-    let since = with_state(|s| s.engine_since);
+    let since = RECORDER.with_state(|s| s.engine_since);
     if !settings_judged(wall_ms, playing, output_open, since) {
         return;
     }
     let Some(s) = nori_settings::settings_store::shared().current() else { return };
     let want_offload = s.offload && !usb && crate::perf_log::offload_reason().is_none();
-    said(wall_ms, settings_held(&settings_pairs(s.eq_enabled, want_offload, offload_wanted, chain_in, on_cpu)));
+    RECORDER.said(wall_ms, settings_held(&settings_pairs(s.eq_enabled, want_offload, offload_wanted, chain_in, on_cpu)));
 }
 
 /// The player service started or ended at `wall_ms`.
 pub(crate) fn engine_changed(wall_ms: i64) {
-    with_state(|s| s.engine_since = Some(wall_ms));
+    RECORDER.with_state(|s| s.engine_since = Some(wall_ms));
 }
 
 /// Breaks said so far, oldest first, as "21:05:12 invariant: kind: detail".
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_invariant_breaks() -> Vec<String> {
-    with_state(|s| s.breaks.clone())
+    RECORDER.breaks()
 }
 
 /// Sets the self test's player volume factor (0..1) on every output; the system volume is untouched.
@@ -742,50 +766,44 @@ mod tests {
         assert!(w.silent(6_000, false, Some("s2"), "Playing").is_some());
     }
 
-    /// The tests that go through the global watch state.
-    static GLOBAL: Mutex<()> = Mutex::new(());
+    /// A watch of the test's own, for as long as the test runs.
+    fn recorder() -> &'static Recorder {
+        Box::leak(Box::new(Recorder { state: Mutex::new(None), disk: OnceLock::new() }))
+    }
 
     #[test]
     fn disk_hook_runs_outside_state_lock() {
-        let _g = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
+        static HOOKED: Recorder = Recorder { state: Mutex::new(None), disk: OnceLock::new() };
         // The Android hook calls into Kotlin, which may read the watch.
-        describe_disk(|id| format!("{id}: {} breaks", perf_invariant_breaks().len()));
+        let _ = HOOKED.disk.set(|id| format!("{id}: {} breaks", HOOKED.breaks().len()));
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            engine_seen(&EngineLook { playing: true, id: Some("hooked"), quiet_ms: SILENT_MS, state: "Playing", ..EngineLook::default() });
+            HOOKED.engine_seen(&EngineLook { playing: true, id: Some("hooked"), quiet_ms: SILENT_MS, state: "Playing", ..EngineLook::default() });
             tx.send(()).unwrap();
         });
         rx.recv_timeout(std::time::Duration::from_secs(5)).expect("engine_seen deadlocked on its own hook");
-        assert!(perf_invariant_breaks().iter().any(|l| l.contains("hooked stood still") && l.contains("the stream cache: hooked: ")));
+        assert!(HOOKED.breaks().iter().any(|l| l.contains("hooked stood still") && l.contains("the stream cache: hooked: ")));
     }
 
     #[test]
     fn a_panic_under_the_watch_lock_is_reported() {
-        let _g = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
-        let was = on();
-        perf_watch(true);
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            with_state(|_| panicked("a test", "boom under the lock"));
-            tx.send(()).unwrap();
-        });
-        rx.recv_timeout(std::time::Duration::from_secs(5)).expect("the report waited for the panicking thread's own lock");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !perf_invariant_breaks().iter().any(|l| l.contains("boom under the lock")) {
-            assert!(std::time::Instant::now() < deadline, "the panic was reported");
-            std::thread::yield_now();
-        }
-        perf_watch(was);
+        let r = recorder();
+        let reporting = std::thread::spawn(move || r.with_state(|_| r.panicked("a test", "boom under the lock")))
+            .join()
+            .expect("the report waited for the panicking thread's own lock")
+            .expect("a thread reports it");
+        reporting.join().unwrap();
+        assert!(r.breaks().iter().any(|l| l.contains("boom under the lock")), "{:?}", r.breaks());
     }
 
     #[test]
     fn track_break_quotes_engine_state() {
-        let _g = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
+        let r = recorder();
         let state = "Playing; playing on 16 (s16) at 51 ms; reading 16 (s16) at 11000 ms; transition engine passing; loaders: s16: 0..90 of 90 bytes";
-        engine_seen(&EngineLook { playing: true, index: Some(16), position_ms: 51, in_output_ms: 100, state, ..EngineLook::default() });
-        track_seen(0, true, 4410, 90_000, 44_100);
-        track_seen(6_000, true, 4410, 90_000, 44_100);
-        let breaks = perf_invariant_breaks();
+        r.engine_seen(&EngineLook { playing: true, index: Some(16), position_ms: 51, in_output_ms: 100, state, ..EngineLook::default() });
+        r.track_seen(0, true, 4410, 90_000, 44_100);
+        r.track_seen(6_000, true, 4410, 90_000, 44_100);
+        let breaks = r.breaks();
         let line = breaks.iter().find(|l| l.contains("starved: track:")).unwrap_or_else(|| panic!("a starved track: {breaks:?}"));
         assert!(line.contains("; the engine at its last wake, ") && line.ends_with(state), "{line}");
     }
