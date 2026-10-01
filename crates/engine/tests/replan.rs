@@ -123,15 +123,7 @@ impl Drop for Rig {
 }
 
 #[test]
-fn transition_settings_replan_at_once() {
-    keeping_albums_gapless_switched_off_while_an_album_plays_mixes_its_next_boundary();
-    switched_off_near_the_end_with_the_ending_made_gapless_it_still_mixes();
-    every_transition_setting_changed_while_playing_is_planned_with();
-    a_play_right_after_a_change_is_planned_with_it();
-    automix_and_mixing_albums_switched_on_right_before_an_album_is_played_mix_it();
-}
-
-fn keeping_albums_gapless_switched_off_while_an_album_plays_mixes_its_next_boundary() {
+fn keep_albums_off_mixes_next_boundary() {
     let rig = Rig::new("replan-keep", &["a1", "a2", "a3"], true);
     rig.engine.play_at(0, 0);
     assert!(!rig.mixes_into(1), "kept gapless while the setting says so");
@@ -142,7 +134,8 @@ fn keeping_albums_gapless_switched_off_while_an_album_plays_mixes_its_next_bound
     assert_ne!(note.kind, "Gapless", "{note:?}");
 }
 
-fn switched_off_near_the_end_with_the_ending_made_gapless_it_still_mixes() {
+#[test]
+fn keep_albums_off_remakes_gapless_ending() {
     let rig = Rig::new("replan-late", &["d1", "d2"], true);
     rig.engine.play_at(0, 0);
     assert!(rig.until(20, |r| r.engine.status().index == Some(0) && r.engine.status().position_ms > 1_000));
@@ -157,7 +150,8 @@ fn switched_off_near_the_end_with_the_ending_made_gapless_it_still_mixes() {
     assert!(rig.mixes_into(1), "the ending is made again as a mix");
 }
 
-fn every_transition_setting_changed_while_playing_is_planned_with() {
+#[test]
+fn each_setting_change_is_planned_with() {
     let rig = Rig::new("replan-each", &["b1", "b2", "b3", "b4", "b5"], false);
     rig.engine.play_at(0, 0);
     assert!(rig.until(20, |r| r.engine.status().index == Some(0) && r.engine.status().position_ms > 2_000));
@@ -176,7 +170,8 @@ fn every_transition_setting_changed_while_playing_is_planned_with() {
     }
 }
 
-fn a_play_right_after_a_change_is_planned_with_it() {
+#[test]
+fn play_after_change_uses_it() {
     let rig = Rig::new("replan-play", &["c1", "c2"], true);
     rig.set("crossfadeKeepAlbums", "false");
     rig.engine.play_at(0, 0);
@@ -185,7 +180,8 @@ fn a_play_right_after_a_change_is_planned_with_it() {
 
 /// smoke.sh's AutoMix check: AutoMix and album mixing switched on right before an album is played; the
 /// engine hears of the settings only after the play.
-fn automix_and_mixing_albums_switched_on_right_before_an_album_is_played_mix_it() {
+#[test]
+fn automix_switched_on_before_play_mixes() {
     let rig = Rig::new("replan-smoke", &["e1", "e2", "e3"], true);
     let mut prefs = rig.core.session.settings.current().unwrap();
     prefs.auto_mix = false;

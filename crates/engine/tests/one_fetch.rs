@@ -169,13 +169,9 @@ impl Drop for Rig {
     }
 }
 
+/// Every song crosses the network once, and those fetched ahead are measured as they come.
 #[test]
 fn one_fetch_per_song() {
-    every_song_crosses_the_network_once_and_the_songs_fetched_ahead_are_measured_as_they_come();
-    a_song_skipped_to_while_it_is_fetched_ahead_goes_on_from_where_the_fetch_got_to();
-}
-
-fn every_song_crosses_the_network_once_and_the_songs_fetched_ahead_are_measured_as_they_come() {
     let rig = Rig::new("one-fetch", &["s1", "s2", "s3", "s4", "s5"]);
     rig.engine.play_at(0, 0);
     // Into the third song: each start fetches the next (loader) and the one after (fetching ahead).
@@ -199,7 +195,9 @@ fn every_song_crosses_the_network_once_and_the_songs_fetched_ahead_are_measured_
     }
 }
 
-fn a_song_skipped_to_while_it_is_fetched_ahead_goes_on_from_where_the_fetch_got_to() {
+/// A song skipped to while it is fetched ahead goes on from where the fetch got to.
+#[test]
+fn skip_resumes_fetch_ahead() {
     let rig = Rig::new("one-fetch-skip", &["k1", "k2", "k3", "k4"]);
     // k3 is fetched ahead and held part way; the listener skips to it.
     *rig.net.slow.lock() = Some("k3".into());
