@@ -327,7 +327,7 @@ mod tests {
         assert_eq!(precache_list(ids(&["1", "2"]), |_| false), ["1", "2"]);
     }
 
-    /// Regression: the skip an error makes used to count as success, so unplayable queues never stopped.
+    /// The skip an error makes is no success: an unplayable queue stops.
     #[test]
     fn error_run_ends_only_when_playing() {
         for skips_move in [true, false] {

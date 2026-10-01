@@ -136,8 +136,8 @@ fn measured_lufs(id: &str) -> Option<f32> {
 
 /// [`queue_flags`] bits.
 pub(crate) const EXPLICIT: u32 = 1;
-pub const STARRED: u32 = 2;
-pub const EXTERNAL: u32 = 4;
+pub(crate) const STARRED: u32 = 2;
+pub(crate) const EXTERNAL: u32 = 4;
 
 /// A registered song's flags ([`EXPLICIT`], [`STARRED`], [`EXTERNAL`]); 0 if unknown.
 #[cfg_attr(feature = "ffi", uniffi::export)]
@@ -190,7 +190,7 @@ mod tests {
         let _g = crate::playlist::tests::hold(&["keep1", "keep2", "keep3"], 0);
         let song = |id: &str| Song { duration: 200, ..Song::only_id(id.to_string()) };
         queue_register(vec![song("keep1"), song("keep2"), song("keep3"), song("gone")]);
-        // Regression: asking for one song used to prune the rest of the queue after a minute.
+        // Asking for one song keeps the rest of the queue.
         let later = db::now_ms() + 2 * KEEP_MS;
         assert_eq!(songs_at(vec!["keep1".into()], later)[0].duration, 200);
         for id in ["keep2", "keep3"] {

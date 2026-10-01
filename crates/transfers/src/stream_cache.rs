@@ -8,7 +8,7 @@ use parking_lot::Mutex;
 /// Key use times: positive touch counts for this process, negative (counting down) for keys an earlier
 /// run left, so those are always older.
 #[derive(Default)]
-pub struct CacheOrder {
+struct CacheOrder {
     used: HashMap<String, i64>,
     clock: i64,
     left: i64,
