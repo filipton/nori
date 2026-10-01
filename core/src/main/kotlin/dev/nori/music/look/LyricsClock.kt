@@ -43,7 +43,6 @@ class LyricsClock(lyrics: Lyrics, positionMs: Long) : AutoCloseable {
     /** The moment on screen, the nudge in it: what a word's rise and glow are drawn for. */
     fun shownMs(): Long = LyricsJni.shownMs(h)
 
-
     /** Shows [line] at once and returns where to seek the player to. */
     fun tap(line: Int): Long = LyricsJni.tap(h, line)
 
