@@ -9,7 +9,7 @@
 //! Every rule here was in the Compose UI before and is ported exactly (see `compose`), so a page looks
 //! the same to the pixel as it did when the app worked these out itself.
 
-use crate::color::{color_to_hsl, luminance, BLACK, WHITE};
+use crate::color::{calculate_contrast, color_to_hsl, luminance, BLACK, WHITE};
 use crate::compose::{blend, lerp, veil, with_alpha};
 
 // The page (the cover's colours as `cover::derive` gives them).
@@ -107,6 +107,13 @@ pub const NOT_COLOURS: [usize; 6] = [PAPER, STATUS_LIGHT, BAND_TINT, BAND_KR, BA
 const PILL_ON_PAPER: u32 = 0xFF1A_1A1A;
 const INK_ON_LIGHT: u32 = 0xFF0D_0D0D;
 
+/// The words on a fill of `fill`: white while it reads at 3:1 there (the large, bold words of a pill or a
+/// button; WCAG's floor for them), else near-black. A pale accent - a grey or green taken from a quiet
+/// cover - had white on it at about 2:1, which was asked for whenever its luminance was under a half.
+pub fn ink_on(fill: u32) -> u32 {
+    if calculate_contrast(WHITE, fill) >= 3.0 { WHITE } else { INK_ON_LIGHT }
+}
+
 /// A theme's own roles, for a page with no cover: what the platform's colour scheme says.
 #[derive(Debug, Clone, Copy)]
 pub struct Scheme {
@@ -132,7 +139,7 @@ pub fn page(edge: u32, background: u32, on: u32, accent: u32, melt: u32) -> [u32
         on,
         on_variant: with_alpha(on, 0.66),
         primary: accent,
-        on_primary: if luminance(accent) < 0.5 { WHITE } else { INK_ON_LIGHT },
+        on_primary: ink_on(accent),
         surface_variant: veil(on, 0.10, background),
         surface_container: veil(on, 0.07, background),
         surface_container_high: veil(on, 0.11, background),
@@ -169,7 +176,9 @@ fn dress(s: &Scheme, edge: Option<u32>, out: &mut [u32; LEN]) {
     let paper = ((luminance(bg) - 0.40) / 0.40).clamp(0.0, 1.0);
     out[PAPER] = paper.to_bits();
     out[PILL] = lerp(primary, PILL_ON_PAPER, paper);
-    out[PILL_INK] = lerp(s.on_primary, WHITE, paper);
+    // Chosen against the pill as it is drawn, which leans to near-black on a light page: mixed from two
+    // inks instead, it could land on a grey on a grey.
+    out[PILL_INK] = ink_on(out[PILL]);
     out[PILL_PLATE] = veil(on, 0.12 + 0.05 * paper, bg);
     out[TINT_INK] = lerp(primary, on, paper);
     out[CIRCLE_SELECTED] = lerp(veil(primary, 0.28, bg), veil(on, 0.14, bg), paper);
@@ -281,6 +290,21 @@ mod tests {
             ];
             assert_eq!(got, want, "page {bg:08x} on {on:08x}, accent {accent:08x}");
         }
+    }
+
+    #[test]
+    fn the_words_on_a_pill_read_on_it_whatever_the_cover() {
+        // Every accent and page lightness a cover can give: the pill's words at 3:1 at least, and white
+        // on a saturated accent as before.
+        for accent in [0xFFA0_A0A0u32, 0xFFA8_B8A0, 0xFF60_6060, 0xFFE0_4040, 0xFF30_40C0, 0xFFF0_E080, 0xFF2C_8885, 0xFFFF_FFFF] {
+            for bg in [0xFF10_1010u32, 0xFF55_5555, 0xFF3A_4060, 0xFF90_9090, 0xFFB0_A080, WHITE] {
+                let t = page(bg, bg, if luminance(bg) < 0.5 { WHITE } else { 0xFF11_1111 }, accent, bg);
+                let c = calculate_contrast(t[PILL_INK], t[PILL]);
+                assert!(c >= 3.0, "pill {:08x} with {:08x} reads at {c:.2} on page {bg:08x}", t[PILL], t[PILL_INK]);
+            }
+        }
+        assert_eq!(ink_on(0xFFE0_4040), WHITE, "white on a red accent");
+        assert_eq!(ink_on(0xFFA0_A0A0), INK_ON_LIGHT, "near-black on a pale grey one");
     }
 
     #[test]
