@@ -294,6 +294,41 @@ impl nori_core::transport::Transport for NoApi {
     fn address_changed(&self) {}
 }
 
+/// A count of events a test waits on.
+#[derive(Default)]
+pub struct Signal(Mutex<u64>, Condvar);
+
+impl Signal {
+    pub fn bump(&self) {
+        *self.0.lock() += 1;
+        self.1.notify_all();
+    }
+
+    /// Waits until `n` events came.
+    pub fn reach(&self, n: u64) {
+        self.until(|seen| seen >= n);
+    }
+
+    /// Waits until `done` holds, looked at again after each event; `done` gets the count.
+    pub fn until(&self, mut done: impl FnMut(u64) -> bool) {
+        let mut c = self.0.lock();
+        while !done(*c) {
+            self.1.wait(&mut c);
+        }
+    }
+}
+
+/// Blocks until `store` fetches nothing ahead and `analyses` and `measurer` measure nothing: on a device
+/// that work finishes long before the next song, but a test's clock would overtake it.
+#[cfg(feature = "core")]
+pub fn settle(store: &nori_engine::Store, analyses: &nori_engine::core::Analyses, measurer: &nori_engine::core::Measurer) {
+    while store.fetching_ahead() || analyses.measuring_as_they_come() || measurer.busy() {
+        store.wait_ahead();
+        analyses.wait_arrivals();
+        measurer.wait();
+    }
+}
+
 /// A core of the test's own in `dir`: its settings opened (and changed by `prefs`), its queue, and a
 /// client for it that answers no API call.
 #[cfg(feature = "core")]

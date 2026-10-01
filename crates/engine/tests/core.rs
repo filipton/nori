@@ -136,12 +136,8 @@ fn downloads_disk_and_measuring_over_core() {
     assert!(!ahead.contains(&"ext-3".to_string()), "a provider's song is never measured: {ahead:?}");
     let measurer = Measurer::new(analyses.clone(), store.clone());
     measurer.update(ahead, std::thread::current());
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
-    while core.analysis_get("m-1".into()).unwrap().is_none() {
-        assert!(std::time::Instant::now() < until, "m-1 was measured");
-        std::thread::park_timeout(std::time::Duration::from_millis(200));
-    }
-    let a = core.analysis_get("m-1".into()).unwrap().unwrap();
+    measurer.wait();
+    let a = core.analysis_get("m-1".into()).unwrap().expect("m-1 was measured");
     assert!((a.bpm - 120.0).abs() < 2.0 || (a.bpm - 60.0).abs() < 1.0 || (a.bpm - 240.0).abs() < 4.0, "the beat heard: {}", a.bpm);
     assert!(core.analysis_get("m-2".into()).unwrap().is_none(), "not on the disk: left for later");
     assert!(audio.requests.lock().iter().all(|(u, _)| !u.contains("m-2")), "and never fetched for it");
@@ -151,11 +147,8 @@ fn downloads_disk_and_measuring_over_core() {
     let mut w = store.writer(&key).unwrap();
     assert!(w.write(0, &beat));
     assert!(w.finish(beat.len() as u64));
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
-    while core.analysis_get("m-2".into()).unwrap().is_none() {
-        assert!(std::time::Instant::now() < until, "m-2 was measured once it was whole in the cache");
-        std::thread::park_timeout(std::time::Duration::from_millis(200));
-    }
+    measurer.wait();
+    assert!(core.analysis_get("m-2".into()).unwrap().is_some(), "m-2 was measured once it was whole in the cache");
     drop(measurer);
 
     // From a client's disk in pieces: decoded once when whole; a failure is not retried per look.
@@ -180,13 +173,7 @@ fn downloads_disk_and_measuring_over_core() {
     let measurer = Measurer::on_shelf(analyses.clone(), Box::new(OnDisk(disk.clone())), Some(Box::new(move || {
         heard.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     })));
-    let settle = |m: &Measurer| {
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(120);
-        while m.busy() {
-            assert!(std::time::Instant::now() < until, "the measuring thread ends");
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-    };
+    let settle = |m: &Measurer| m.wait();
     measurer.ask(core.session.measure());
     settle(&measurer);
     assert!(core.analysis_get("m-3".into()).unwrap().is_some(), "a song whole in two pieces is measured");
@@ -250,6 +237,7 @@ impl ByteSource for Flaky {
     fn open(&self, url: &str, from: u64) -> Result<Body, nori_engine::OpenError> {
         let mut shut = self.shut.lock();
         self.waiting.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.opened.notify_all();
         while *shut {
             self.opened.wait(&mut shut);
         }
@@ -325,9 +313,11 @@ fn downloads_take_up_rightly(core: &Arc<Core>, client: &Arc<Client>, store: &Arc
     net.gate(true);
     let waiting = net.waiting.load(std::sync::atomic::Ordering::Acquire);
     d.start(1);
+    let mut shut = net.shut.lock();
     while net.waiting.load(std::sync::atomic::Ordering::Acquire) == waiting {
-        std::thread::yield_now();
+        net.opened.wait(&mut shut);
     }
+    drop(shut);
     d.start(1);
     assert_eq!(download_phase("b-1".into()), Some(DownloadPhase::Downloading), "not queued again");
     net.gate(false);
@@ -381,13 +371,14 @@ fn downloads_read_back(core: &Arc<Core>, store: &Arc<Store>, analyses: &Arc<Anal
     assert!(core.transfers().with(|t| t.processing_at(0)).is_none_or(|p| p.analysing == 0 && p.beats == 0), "nothing left waiting");
 }
 
-/// Whole songs, requests counted.
+/// Whole songs, requests counted and signalled.
 #[derive(Default)]
-struct Plain(Mutex<Vec<String>>);
+struct Plain(Mutex<Vec<String>>, parking_lot::Condvar);
 
 impl ByteSource for Plain {
     fn open(&self, url: &str, from: u64) -> Result<Body, nori_engine::OpenError> {
         self.0.lock().push(url.to_string());
+        self.1.notify_all();
         let mut c = Cursor::new(bytes_of(url));
         c.set_position(from);
         Ok(Body { start: from, len: Some(LEN as u64), reader: Box::new(c) })
@@ -411,14 +402,7 @@ fn metered_and_ahead(client: &Arc<Client>, store: &Arc<Store>, analyses: &Arc<An
     assert_eq!((q.bit_rate, q.format.as_str()), (0, ""), "the original file on Wi-Fi");
     let _playing = sources.open("p-1", 0).unwrap();
     sources.upcoming("p-2");
-    let settle = || {
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while store.fetching_ahead() {
-            assert!(std::time::Instant::now() < until, "the fetching ahead ends");
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-    };
-    settle();
+    store.wait_ahead();
     assert!(store.peek("p-3:0").is_some(), "the song after the next, fetched whole ahead");
     assert!(store.peek("p-4:0").is_none(), "two ahead on Wi-Fi by default: the next (the engine's own) and this one");
     assert_eq!(net.0.lock().iter().filter(|u| u.ends_with("&id=p-3")).count(), 1, "in one request");
@@ -433,13 +417,13 @@ fn metered_and_ahead(client: &Arc<Client>, store: &Arc<Store>, analyses: &Arc<An
     assert!(net.0.lock()[asked..].iter().all(|u| !u.contains("format=opus")), "the song playing and the one on its way keep theirs: {:?}", &net.0.lock()[asked..]);
     client.session().moved_to(1);
     sources.upcoming("p-3");
-    settle();
+    store.wait_ahead();
     let _after = sources.open("p-4", 0).unwrap();
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while !net.0.lock().iter().any(|u| u.contains("&id=p-4")) {
-        assert!(std::time::Instant::now() < until, "p-4 is asked for");
-        std::thread::sleep(std::time::Duration::from_millis(5));
+    let mut asked_for = net.0.lock();
+    while !asked_for.iter().any(|u| u.contains("&id=p-4")) {
+        net.1.wait(&mut asked_for);
     }
+    drop(asked_for);
     let opened: Vec<String> = net.0.lock()[asked..].to_vec();
     assert!(opened.iter().any(|u| u.ends_with("&id=p-4&maxBitRate=192&format=opus&estimateContentLength=true")), "the next song fetched streams at the metered quality: {opened:?}");
     assert!(store.peek("p-5:0").is_none() && store.peek("p-5:192opus").is_none(), "one ahead on mobile data by default: the engine's own next song, none more");

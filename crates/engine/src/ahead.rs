@@ -62,7 +62,7 @@ pub type Takers = Arc<dyn Fn(&AheadSong) -> Option<Listening> + Send + Sync>;
 #[derive(Default)]
 pub struct Ahead {
     plan: Mutex<Plan>,
-    /// Signalled when a fetch stops, for [`Ahead::take_over`].
+    /// Signalled when a fetch stops ([`Ahead::take_over`]) and when the thread ends ([`Ahead::wait`]).
     cv: Condvar,
     /// Bumped when the list changes or a song is taken over; read per chunk without the lock.
     asked: AtomicU64,
@@ -133,12 +133,21 @@ impl Ahead {
         let me = self.clone();
         if std::thread::Builder::new().name("nori-precache".into()).spawn(move || me.run()).is_err() {
             self.plan.lock().running = false;
+            self.cv.notify_all();
         }
     }
 
     /// Whether a fetch thread runs.
     pub fn busy(&self) -> bool {
         self.plan.lock().running
+    }
+
+    /// Blocks until no fetch thread runs.
+    pub fn wait(&self) {
+        let mut plan = self.plan.lock();
+        while plan.running {
+            self.cv.wait(&mut plan);
+        }
     }
 
     /// Whether the player took `key` over.
@@ -189,6 +198,7 @@ impl Ahead {
                 plan.keeping = None;
                 plan.bytes = None;
                 plan.takers = None;
+                self.cv.notify_all();
                 None
             }
         }
@@ -296,7 +306,6 @@ impl Ahead {
 mod tests {
     use std::io::Cursor;
     use std::sync::mpsc::{channel, Receiver, Sender};
-    use std::time::{Duration, Instant};
 
     use super::*;
     use crate::source::Body;
@@ -304,23 +313,44 @@ mod tests {
 
     const LEN: usize = 600_000;
 
+    /// A count a test waits on.
+    #[derive(Default)]
+    struct Signal(Mutex<u64>, Condvar);
+
+    impl Signal {
+        fn bump(&self) {
+            *self.0.lock() += 1;
+            self.1.notify_all();
+        }
+
+        /// Waits for the next bump, and takes it.
+        fn take(&self) {
+            let mut n = self.0.lock();
+            while *n == 0 {
+                self.1.wait(&mut n);
+            }
+            *n -= 1;
+        }
+    }
+
     /// Songs of `LEN` bytes; records each request's URL and offset. The `held` song pauses after its
-    /// first chunk until released; `stopped` counts such pauses.
+    /// first chunk until released, bumping `stopped`; a request called off bumps `called_off`.
     #[derive(Default)]
     struct Net {
         asked: Mutex<Vec<String>>,
         from: Mutex<Vec<u64>>,
         held: Mutex<Option<(String, Receiver<()>)>>,
-        stopped: Arc<AtomicU64>,
+        stopped: Arc<Signal>,
+        called_off: Arc<Signal>,
     }
 
-    struct Held(Cursor<Vec<u8>>, Option<Receiver<()>>, Arc<AtomicU64>);
+    struct Held(Cursor<Vec<u8>>, Option<Receiver<()>>, Arc<Signal>);
 
     impl Read for Held {
         fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
             if self.0.position() > 0 {
                 if let Some(go) = self.1.take() {
-                    self.2.fetch_add(1, Ordering::Release);
+                    self.2.bump();
                     let _ = go.recv();
                 }
             }
@@ -338,6 +368,12 @@ mod tests {
             c.set_position(from);
             Ok(Body { start: from, len: Some(LEN as u64), reader: Box::new(Held(c, gate, self.stopped.clone())) })
         }
+
+        fn open_cancellable(&self, url: &str, _key: Option<&str>, from: u64, cancel: &Cancel) -> Result<Body, crate::source::OpenError> {
+            let off = self.called_off.clone();
+            cancel.on_cancel(move || off.bump());
+            self.open(url, from)
+        }
     }
 
     /// A store in a temporary directory.
@@ -347,13 +383,6 @@ mod tests {
         (d, s)
     }
 
-    fn settle(s: &Store) {
-        let until = Instant::now() + Duration::from_secs(30);
-        while s.fetching_ahead() {
-            assert!(Instant::now() < until, "the fetching ends");
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    }
 
     fn songs(ids: &[&str]) -> Vec<AheadSong> {
         ids.iter().map(|id| AheadSong { id: id.to_string(), url: format!("http://m/{id}"), key: format!("{id}:0") }).collect()
@@ -361,11 +390,7 @@ mod tests {
 
     /// Waits until the held song paused after its first chunk.
     fn wait_held(net: &Net) {
-        let until = Instant::now() + Duration::from_secs(30);
-        while net.stopped.swap(0, Ordering::AcqRel) == 0 {
-            assert!(Instant::now() < until, "the held song stops after its first chunk");
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        net.stopped.take();
     }
 
     #[test]
@@ -375,7 +400,7 @@ mod tests {
         let mut w = s.writer("c:0").unwrap();
         assert!(w.write(0, &[1; 10]));
         s.fetch_ahead(net.clone(), songs(&["a", "b", "c"]), None);
-        settle(&s);
+        s.wait_ahead();
         assert_eq!(std::fs::metadata(s.peek("a:0").unwrap()).unwrap().len(), LEN as u64, "whole");
         assert!(s.peek("b:0").is_some());
         assert!(s.peek("c:0").is_none(), "the player loading c keeps it");
@@ -383,11 +408,11 @@ mod tests {
         drop(w);
         // The same list again: nothing more.
         s.fetch_ahead(net.clone(), songs(&["a", "b", "c"]), None);
-        settle(&s);
+        s.wait_ahead();
         assert_eq!(net.asked.lock().len(), 2);
         // What is on disk is not fetched again.
         s.fetch_ahead(net.clone(), songs(&["b", "c", "d"]), None);
-        settle(&s);
+        s.wait_ahead();
         assert_eq!(net.asked.lock()[2..], ["http://m/c", "http://m/d"]);
     }
 
@@ -402,12 +427,12 @@ mod tests {
         // a is no longer wanted.
         s.fetch_ahead(net.clone(), songs(&["b", "x"]), None);
         go.send(()).unwrap();
-        settle(&s);
+        s.wait_ahead();
         assert!(s.peek("a:0").is_none() && !s.writing("a:0"), "left half way");
         assert!(s.peek("b:0").is_some() && s.peek("x:0").is_some());
         // Wanted again: resumes from what came.
         s.fetch_ahead(net.clone(), songs(&["a"]), None);
-        settle(&s);
+        s.wait_ahead();
         assert_eq!(std::fs::metadata(s.peek("a:0").unwrap()).unwrap().len(), LEN as u64);
         let from: Vec<u64> = net.asked.lock().iter().zip(net.from.lock().iter()).filter(|(u, _)| u.ends_with("/a")).map(|(_, f)| *f).collect();
         assert!(from.len() == 2 && from[0] == 0 && from[1] > 0, "{from:?}");
@@ -419,7 +444,7 @@ mod tests {
         wait_held(&net);
         s.fetch_ahead(net.clone(), songs(&["y"]), None);
         go.send(()).unwrap();
-        settle(&s);
+        s.wait_ahead();
         assert!(s.peek("y:0").is_some() && s.peek("z:0").is_none());
         assert_eq!(net.asked.lock().iter().filter(|u| u.ends_with("/y")).count(), 1);
 
@@ -440,11 +465,9 @@ mod tests {
             let s = s.clone();
             move || s.writer_for_player("a:0")
         }));
-        let until = Instant::now() + Duration::from_secs(10);
-        while !s.taken_over("a:0") {
-            assert!(Instant::now() < until, "the player asked to take a over");
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        // Taking it over calls the fetch's request off.
+        net.called_off.take();
+        assert!(s.taken_over("a:0"));
         go.send(()).unwrap();
         let mut w = taking.join().unwrap().expect("the player's entry, where the fetch left it");
         let got = w.written() as usize;
@@ -452,12 +475,12 @@ mod tests {
         assert_eq!(w.read_back().unwrap().len(), got);
         assert!(w.write(got as u64, &vec![3u8; LEN - got]));
         assert!(w.finish(LEN as u64));
-        settle(&s2);
+        s2.wait_ahead();
         assert!(s.peek("a:0").is_some() && s.peek("b:0").is_some());
         assert_eq!(net.asked.lock().iter().filter(|u| u.ends_with("/a")).count(), 1, "a was asked of the network once here; the player asks for the rest only");
         // Taken over: left alone from now on.
         s.fetch_ahead(net.clone(), songs(&["b"]), None);
-        settle(&s);
+        s.wait_ahead();
         assert_eq!(net.asked.lock().len(), 2);
     }
 
@@ -494,7 +517,7 @@ mod tests {
         let (_dir, s) = store("estimated");
         let net = Arc::new(Transcoder(Mutex::new(Vec::new())));
         s.fetch_ahead(net.clone(), songs(&["a"]), None);
-        settle(&s);
+        s.wait_ahead();
         let kept = s.peek("a:0").expect("kept");
         assert_eq!(std::fs::metadata(kept).unwrap().len(), REAL as u64, "the real length");
         assert_eq!(*net.0.lock(), [0, REAL as u64], "asked again where it broke, and told that is the end");

@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use common::card::{Card, Pull};
 use common::{Stepper, Virtual};
@@ -162,11 +162,8 @@ impl Rig {
 
     /// Blocks until background measuring is done (on a device it finishes long before the boundary).
     fn settle(&self) {
-        let Some(m) = &self.measurer else { return };
-        let until = Instant::now() + Duration::from_secs(120);
-        while self.store.fetching_ahead() || self.analyses.measuring_as_they_come() || m.busy() {
-            assert!(Instant::now() < until, "the measuring ends");
-            std::thread::park_timeout(Duration::from_millis(5));
+        if let Some(m) = &self.measurer {
+            common::settle(&self.store, &self.analyses, m);
         }
     }
 

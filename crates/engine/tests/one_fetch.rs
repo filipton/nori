@@ -8,7 +8,7 @@ mod common;
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use common::card::{Card, Pull};
 use common::{Stepper, Virtual};
@@ -23,14 +23,15 @@ fn beat_wav(seed: u32) -> Vec<u8> {
 }
 
 /// Serves songs by the id in the URL and counts bytes sent. The `slow` song comes 256 KB per read and
-/// its first body stops at [`HELD_AT`] until the player takes it over from the fetching ahead.
+/// its first body stops at [`HELD_AT`] (saying so in `held`) until its request is called off: the player
+/// took it over from the fetching ahead.
 #[derive(Default)]
 struct Net {
     files: HashMap<String, Arc<Vec<u8>>>,
     sent: Arc<Mutex<HashMap<String, u64>>>,
     requests: Mutex<Vec<(String, u64)>>,
     slow: Mutex<Option<String>>,
-    store: Option<Arc<Store>>,
+    held: Arc<common::Signal>,
 }
 
 /// Where a slow song's first body waits for the player.
@@ -45,19 +46,15 @@ struct Counted {
     inner: Cursor<Arc<Vec<u8>>>,
     sent: Arc<Mutex<HashMap<String, u64>>>,
     slow: bool,
-    /// Stops at [`HELD_AT`] until this store's player takes the song over.
-    held: Option<Arc<Store>>,
+    /// Stops at [`HELD_AT`], says so, and goes on once its request is called off.
+    held: Option<(Arc<common::Signal>, Arc<common::Signal>)>,
 }
 
 impl Read for Counted {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if let Some(store) = self.held.as_ref().filter(|_| self.inner.position() >= HELD_AT) {
-            let until = Instant::now() + Duration::from_secs(60);
-            while !store.taken_over(&format!("{}:0", self.id)) {
-                assert!(Instant::now() < until, "the player never took {} over from the fetching ahead", self.id);
-                std::thread::park_timeout(Duration::from_millis(2));
-            }
-            self.held = None;
+        if let Some((held, off)) = self.held.take_if(|_| self.inner.position() >= HELD_AT) {
+            held.bump();
+            off.reach(1);
         }
         let want = if self.slow { buf.len().min(256 << 10) } else { buf.len() };
         let data = self.inner.get_ref().clone();
@@ -71,7 +68,11 @@ impl Read for Counted {
 }
 
 impl ByteSource for Net {
-    fn open(&self, url: &str, from: u64) -> Result<Body, nori_engine::OpenError> {
+    fn open(&self, _url: &str, _from: u64) -> Result<Body, nori_engine::OpenError> {
+        unreachable!("asked as a request that may be called off")
+    }
+
+    fn open_cancellable(&self, url: &str, _key: Option<&str>, from: u64, cancel: &nori_engine::Cancel) -> Result<Body, nori_engine::OpenError> {
         let id = id_of(url);
         let file = self.files.get(&id).cloned().ok_or("no such song")?;
         self.requests.lock().push((id.clone(), from));
@@ -79,7 +80,12 @@ impl ByteSource for Net {
         let mut inner = Cursor::new(file);
         inner.set_position(from);
         let slow = self.slow.lock().as_deref() == Some(id.as_str());
-        let held = self.store.clone().filter(|_| slow && from == 0);
+        let held = (slow && from == 0).then(|| {
+            let off = Arc::new(common::Signal::default());
+            let o = off.clone();
+            cancel.on_cancel(move || o.bump());
+            (self.held.clone(), off)
+        });
         Ok(Body { start: from, len: Some(len), reader: Box::new(Counted { id, inner, sent: self.sent.clone(), slow, held }) })
     }
 }
@@ -90,6 +96,8 @@ struct Rig {
     core: Arc<Core>,
     store: Arc<Store>,
     net: Arc<Net>,
+    /// Bumped as each song becomes whole in the store.
+    whole: Arc<common::Signal>,
     analyses: Arc<Analyses>,
     measurer: Arc<Measurer>,
     ids: Vec<String>,
@@ -102,7 +110,10 @@ impl Rig {
         let (core, client) = common::own_core(&dir, |p| (p.auto_mix, p.precache_wifi) = (true, 2));
         let prefs = core.session.settings.current().unwrap();
         let store = Store::open(dir.join("music"), 512 << 20, Box::new(Recent::default())).unwrap();
-        let mut net = Net { store: Some(store.clone()), ..Net::default() };
+        let whole = Arc::new(common::Signal::default());
+        let w = whole.clone();
+        store.on_whole(Box::new(move || w.bump()));
+        let mut net = Net::default();
         let songs: Vec<Song> = ids.iter().map(|id| Song { id: id.to_string(), title: id.to_string(), duration: 40, suffix: "wav".into(), ..Default::default() }).collect();
         for (k, id) in ids.iter().enumerate() {
             net.files.insert(id.to_string(), Arc::new(beat_wav(k as u32 * 17)));
@@ -118,7 +129,7 @@ impl Rig {
         let clock = Virtual::default();
         let engine = Engine::start_on(library, app, CoreQueue(core.session.clone()), Box::new(card.clone()), None, Config { memory_mb: 256, settings: settings(&prefs, 0.0), ..Config::default() }, clock.clone(), |_| {});
         engine.queue_changed();
-        Rig { engine, time: Stepper::new(clock, card.pull.clone()), core, store, net, analyses, measurer, ids: ids.iter().map(|s| s.to_string()).collect(), _dir: dir }
+        Rig { engine, time: Stepper::new(clock, card.pull.clone()), core, store, net, whole, analyses, measurer, ids: ids.iter().map(|s| s.to_string()).collect(), _dir: dir }
     }
 
     fn until(&self, secs: u64, mut done: impl FnMut(&Rig) -> bool) -> bool {
@@ -136,11 +147,7 @@ impl Rig {
 
     /// Blocks until background fetching and measuring are done.
     fn settle(&self) {
-        let until = Instant::now() + Duration::from_secs(120);
-        while self.store.fetching_ahead() || self.analyses.measuring_as_they_come() || self.measurer.busy() {
-            assert!(Instant::now() < until, "the fetching and measuring end");
-            std::thread::park_timeout(Duration::from_millis(20));
-        }
+        common::settle(&self.store, &self.analyses, &self.measurer);
     }
 
     fn sent(&self, id: &str) -> u64 {
@@ -198,20 +205,12 @@ fn a_song_skipped_to_while_it_is_fetched_ahead_goes_on_from_where_the_fetch_got_
     *rig.net.slow.lock() = Some("k3".into());
     rig.engine.play_at(0, 0);
     assert!(rig.until(30, |r| r.engine.status().index == Some(0)), "{:?}", rig.engine.status());
-    let until = Instant::now() + Duration::from_secs(60);
-    while rig.sent("k3") < HELD_AT {
-        assert!(Instant::now() < until, "k3 is being fetched ahead");
-        std::thread::park_timeout(Duration::from_millis(5));
-    }
+    rig.net.held.reach(1);
     rig.engine.play_at(2, 0);
     assert!(rig.until(120, |r| r.engine.status().index == Some(2) && r.engine.status().position_ms > 5_000), "k3 plays: {:?}", rig.engine.status());
     rig.settle();
     // The rest comes at once, in the same burst.
-    let until = Instant::now() + Duration::from_secs(60);
-    while rig.store.cached("k3:0").is_none() {
-        assert!(Instant::now() < until, "the rest of k3 comes: {:?}", rig.net.requests.lock());
-        std::thread::park_timeout(Duration::from_millis(20));
-    }
+    rig.whole.until(|_| rig.store.cached("k3:0").is_some());
     assert_eq!(rig.sent("k3"), rig.len("k3"), "k3 crossed the network once: {:?}", rig.net.requests.lock());
     let k3: Vec<u64> = rig.net.requests.lock().iter().filter(|(id, _)| id == "k3").map(|(_, from)| *from).collect();
     assert!(k3.len() == 2 && k3[0] == 0 && k3[1] > 0, "the player asked only for the rest: {k3:?}");

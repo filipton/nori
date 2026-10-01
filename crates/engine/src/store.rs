@@ -250,6 +250,11 @@ impl Store {
         self.ahead.busy()
     }
 
+    /// Blocks until no song is being fetched ahead.
+    pub fn wait_ahead(&self) {
+        self.ahead.wait()
+    }
+
     /// Whether the player took `key` over from the fetching ahead.
     pub fn taken_over(&self, key: &str) -> bool {
         self.ahead.taken(key)

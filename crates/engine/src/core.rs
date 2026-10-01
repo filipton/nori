@@ -23,7 +23,7 @@ use nori_core::settings::StoredPrefs;
 
 use nori_core::transfers;
 use nori_core::Core;
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 
 use crate::ahead::{AheadSong, Takers};
 use crate::arriving::{Heard, Listening};
@@ -575,6 +575,8 @@ pub struct Measurer {
     analyses: Arc<Analyses>,
     shelf: Box<dyn Shelf>,
     plan: Mutex<Schedule>,
+    /// Signalled when the measuring thread ends, for [`Measurer::wait`].
+    idle: Condvar,
     /// Bumped when the list changes; read per buffer so an unwanted decode stops.
     asked: AtomicU64,
     /// Something was stored since the engine last asked.
@@ -670,7 +672,7 @@ impl Measurer {
     /// Measures songs `shelf` has whole, storing into the profile `analyses` work for; `told` hears of
     /// each stored song.
     pub fn on_shelf(analyses: Arc<Analyses>, shelf: Box<dyn Shelf>, told: Option<Box<dyn Fn() + Send + Sync>>) -> Arc<Measurer> {
-        let m = Arc::new(Measurer { analyses, shelf, plan: Mutex::new(Schedule::default()), asked: AtomicU64::new(0), measured: AtomicBool::new(false), told, decoded: AtomicU64::new(0) });
+        let m = Arc::new(Measurer { analyses, shelf, plan: Mutex::new(Schedule::default()), idle: Condvar::new(), asked: AtomicU64::new(0), measured: AtomicBool::new(false), told, decoded: AtomicU64::new(0) });
         m.analyses.arrivals.lock().watch(&m);
         m
     }
@@ -718,6 +720,14 @@ impl Measurer {
         self.plan.lock().running
     }
 
+    /// Blocks until the measuring thread ends.
+    pub fn wait(&self) {
+        let mut plan = self.plan.lock();
+        while plan.running {
+            self.idle.wait(&mut plan);
+        }
+    }
+
     /// Songs decoded so far.
     pub fn decoded(&self) -> u64 {
         self.decoded.load(Ordering::Relaxed)
@@ -727,6 +737,7 @@ impl Measurer {
         let me = self.clone();
         if std::thread::Builder::new().name("nori-measure".into()).spawn(move || me.run()).is_err() {
             self.plan.lock().running = false;
+            self.idle.notify_all();
         }
     }
 
@@ -734,7 +745,10 @@ impl Measurer {
         crate::arriving::lower_priority();
         let mut model = Model::default();
         loop {
-            let Some(ids) = self.plan.lock().next() else { return };
+            let Some(ids) = self.plan.lock().next() else {
+                self.idle.notify_all();
+                return;
+            };
             let Some(client) = self.analyses.client() else { continue };
             let core = client.core();
             let missing = core.analysis_missing(ids.clone()).unwrap_or_default();
@@ -910,13 +924,15 @@ impl Arrivals {
 pub struct Analyses {
     client: Box<dyn Fn() -> Option<Arc<Client>> + Send + Sync>,
     pub(crate) arrivals: Mutex<Arrivals>,
+    /// Signalled when a song's measuring as it arrives ends, for [`Analyses::wait_arrivals`].
+    arrived: Condvar,
     pub(crate) read_back: crate::processing::ReadBack,
 }
 
 impl Analyses {
     /// Over the profile `client` gives at each use (a profile switch replaces it).
     pub fn new(client: impl Fn() -> Option<Arc<Client>> + Send + Sync + 'static) -> Arc<Analyses> {
-        Arc::new(Analyses { client: Box::new(client), arrivals: Mutex::default(), read_back: Default::default() })
+        Arc::new(Analyses { client: Box::new(client), arrivals: Mutex::default(), arrived: Condvar::new(), read_back: Default::default() })
     }
 
     /// Over `client` for good.
@@ -936,6 +952,14 @@ impl Analyses {
     /// Whether any song is being measured as it arrives.
     pub fn measuring_as_they_come(&self) -> bool {
         !self.arrivals.lock().songs.is_empty()
+    }
+
+    /// Blocks until no song is being measured as it arrives.
+    pub fn wait_arrivals(&self) {
+        let mut a = self.arrivals.lock();
+        while !a.songs.is_empty() {
+            self.arrived.wait(&mut a);
+        }
     }
 
     /// Measures `id` as its bytes arrive (`crate::arriving`), if AutoMix is on, it is unanalysed, its
@@ -974,6 +998,7 @@ impl Analyses {
             }
             None => {
                 self.arrivals.lock().end(id);
+                self.arrived.notify_all();
                 None
             }
         }
@@ -1025,6 +1050,7 @@ impl Heard for AsItComes {
             let mut a = analyses.arrivals.lock();
             a.stored += stored as u64;
             a.end(&id);
+            analyses.arrived.notify_all();
             a.measurers()
         };
         core.transfers().with(|t| t.analysing_ended(&id, stored));
