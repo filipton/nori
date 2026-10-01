@@ -2,8 +2,8 @@
 //! checks of what it did play against that: sample for sample, and free of clicks.
 //!
 //! The rendering runs the sound chain's parts (equalizer, silence skipping, speed) directly, switching
-//! settings at the input frame the engine logged for each change, as a chain that was never spliced
-//! would; what the output held from before the change blends into it over `BLEND_US`, as the card
+//! settings at the input frame the engine said for each change (`App::spliced`), as a chain that was
+//! never spliced would; what the output held from before the change blends into it over `BLEND_US`, as the card
 //! hears it. Nothing of the sink, the kept input or the ring is used.
 
 use nori_player::dsp::Equalizer;
@@ -14,22 +14,6 @@ use nori_player::speed::{speed_active, SpeedPitch};
 
 /// Frames the rendering runs at a time.
 const CHUNK: usize = 1000;
-
-/// Where a change started: frames since the last flush, of the chain's input and of the output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Splice {
-    pub input: u64,
-    pub output: u64,
-}
-
-/// The splices the engine logged, in order.
-pub fn splices(log: &[String]) -> Vec<Splice> {
-    let number = |l: &str, after: &str| l.split(after).nth(1).and_then(|r| r.split(|c: char| !c.is_ascii_digit()).next()).and_then(|n| n.parse().ok());
-    log.iter()
-        .filter(|l| l.contains("changes from output frame"))
-        .filter_map(|l| Some(Splice { output: number(l, "output frame ")?, input: number(l, "input frame ")? }))
-        .collect()
-}
 
 /// The chain's parts as the sink builds them for `s`.
 struct Chain {

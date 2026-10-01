@@ -650,6 +650,8 @@ pub struct App {
     pub shuffling: bool,
     pub analyses: std::collections::HashMap<String, TrackAnalysis>,
     pub log: Vec<String>,
+    /// Every sound change, as [`pipeline::App::spliced`] said it.
+    pub splices: Vec<pipeline::Splice>,
     pub now_ms: i64,
     /// The last "no transition" answer, logged once.
     none: Option<(String, Option<Skip>)>,
@@ -691,6 +693,7 @@ impl App {
             shuffling: false,
             analyses: Default::default(),
             log: Vec::new(),
+            splices: Vec::new(),
             now_ms: 0,
             none: None,
             measure_playing: false,
@@ -820,6 +823,11 @@ impl pipeline::App for App {
 
     fn gain(&mut self, _index: usize, id: &str) -> f32 {
         self.gains.get(id).copied().unwrap_or(1.0)
+    }
+
+    fn spliced(&mut self, what: &str, at: pipeline::Splice) {
+        self.splices.push(at);
+        self.log.push(format!("the {what} changes from output frame {} (input frame {})", at.output, at.input));
     }
 }
 

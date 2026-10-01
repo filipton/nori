@@ -1230,6 +1230,10 @@ impl App for Live {
     fn gain(&mut self, index: usize, id: &str) -> f32 {
         self.0.lock().gain(index, id)
     }
+
+    fn spliced(&mut self, what: &str, at: nori_player::pipeline::Splice) {
+        self.0.lock().spliced(what, at);
+    }
 }
 
 /// Plays `songs` until two seconds were heard.
@@ -1403,7 +1407,7 @@ fn stepped(songs: &[(&str, &[i16])], prefs: TransitionPrefs, first: Settings, st
 /// engine said the step started, spliced in there; each started within `late_ms` of the ear (the chain
 /// is run again in steps, and a stage holding input makes output in bursts).
 fn heard_as_rendered(rig: &Rig, live: &Live, raw: &[i16], first: &Settings, steps: &[(i64, Settings)], asked: &[usize], late_ms: usize) {
-    let splices = reference::splices(&live.0.lock().log);
+    let splices = live.0.lock().splices.clone();
     assert_eq!(splices.len(), steps.len(), "one splice per change: {splices:?}");
     let mut changes = vec![(0, chain_of(first))];
     let mut want = reference::render(raw, RATE, &changes);
@@ -1491,7 +1495,7 @@ fn equalizer_changes_seamlessly_right_after_a_seek() {
     let raw = &a[RATE as usize * 2 * 10..];
     let heard = rig.heard.lock().windows(256).position(|w| *w == raw[..256]).expect("the seek landed");
     let played: Vec<i16> = rig.heard.lock()[heard..].to_vec();
-    let splices = reference::splices(&live.0.lock().log);
+    let splices = live.0.lock().splices.clone();
     assert_eq!(splices.len(), 1, "{splices:?}");
     let s = splices[0];
     assert!((s.output as usize) * 2 + heard >= asked && (s.output as usize) * 2 + heard <= asked + 4 * BLOCK, "{s:?}");
@@ -1530,7 +1534,7 @@ fn replay_gain_change_heard_at_once() {
     let asked = rig.heard.lock().len() / 2;
     rig.engine.gain_changed();
     assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
-    let splices = reference::splices(&live.0.lock().log);
+    let splices = live.0.lock().splices.clone();
     assert_eq!(splices.len(), 1, "{splices:?}");
     let s = splices[0];
     assert!(s.output as usize >= asked && s.output as usize <= asked + 2 * BLOCK, "{s:?}");
@@ -1594,7 +1598,7 @@ fn equalizer_changes_seamlessly_on_a_device_holding_seconds() {
     let asked = rig.heard.lock().len() / 2;
     rig.engine.set_settings(loud_eq());
     assert!(rig.wait_for(30, Rig::ended));
-    let splices = reference::splices(&live.0.lock().log);
+    let splices = live.0.lock().splices.clone();
     assert_eq!(splices.len(), 1, "{splices:?}");
     let s = splices[0];
     assert!(s.output as usize <= asked && s.output as usize + RATE as usize / 5 >= asked, "made again from a little before the ear ({asked}): {s:?}");
@@ -1625,7 +1629,7 @@ fn slider_drag_changes_seamlessly() {
     }
     let took = rig.now_ms() - started;
     assert!(rig.wait_for(30, Rig::ended));
-    let splices = reference::splices(&live.0.lock().log).len() as i64;
+    let splices = live.0.lock().splices.clone().len() as i64;
     assert!(splices >= 2 && splices <= took / 100 + 2, "{splices} changes made for {took} ms of dragging");
     let heard = rig.heard.lock().clone();
     assert_eq!(heard.len(), a.len(), "not a sample more or less");

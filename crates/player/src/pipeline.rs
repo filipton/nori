@@ -95,6 +95,18 @@ pub trait App: Host {
     fn gain(&mut self, _index: usize, _id: &str) -> f32 {
         1.0
     }
+    /// The sound changed (`what`: the chain or the gain) from output frame `at.output`, made from input
+    /// frame `at.input` (frames since the last flush).
+    fn spliced(&mut self, what: &str, at: Splice) {
+        self.log(&format!("the {what} changes from output frame {} (input frame {})", at.output, at.input));
+    }
+}
+
+/// Where a sound change starts: frames since the last flush, of the chain's input and of the output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Splice {
+    pub input: u64,
+    pub output: u64,
 }
 
 /// Where the playlist is kept: the player's own, or the core's.
@@ -504,7 +516,7 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         }
         if !ranges.is_empty() {
             if let Some((input, output)) = self.sink.rescale(&ranges) {
-                self.app.log(&format!("the gain changes from output frame {output} (input frame {input})"));
+                self.app.spliced("gain", Splice { input, output });
             }
             self.burst.restart();
             self.sink.fill();
@@ -649,7 +661,7 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
             return;
         }
         if let Some((input, output)) = self.sink.change(settings) {
-            self.app.log(&format!("the chain changes from output frame {output} (input frame {input})"));
+            self.app.spliced("chain", Splice { input, output });
         }
         self.burst.restart();
         self.sink.fill();
