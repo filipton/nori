@@ -18,6 +18,9 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
             <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
+            <!-- A car's own screen (Android Automotive) shows the app while it moves only when it says it is made for
+              that: playing and choosing music is what a driver comes to it for. -->
+            <meta-data android:name="distractionOptimized" android:value="true" />
         </activity>
         <receiver android:name=".PlayerWidget" android:exported="false" android:label="@string/widget_player">
             <intent-filter>
