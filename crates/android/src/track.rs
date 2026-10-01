@@ -1035,11 +1035,8 @@ impl<R: Ring> Writer<R> {
         let session = self.sink.session();
         let opened = self.opener.lock().beside(self.format, self.float, self.frames(BRIDGE_US), session);
         match opened {
-            Ok(o) => {
-                // Sized when it takes the music over ([`Writer::decide`]).
-                self.join(Beside { sink: o.sink, allocated: o.frames, capacity: o.frames, low: o.frames / 2, starts_full: o.starts_full, home: false }, now_ns);
-                true
-            }
+            // Sized when it takes the music over ([`Writer::decide`]).
+            Ok(o) => self.join(Beside { sink: o.sink, allocated: o.frames, capacity: o.frames, low: o.frames / 2, starts_full: o.starts_full, home: false }, now_ns),
             Err(e) => {
                 log(&format!("no second track for the sound change ({e}): emptying this one"));
                 false
@@ -1047,15 +1044,34 @@ impl<R: Ring> Writer<R> {
         }
     }
 
-    /// Starts `beside` playing silence; the handover waits for its clock ([`Writer::joining`]).
-    fn join(&mut self, mut beside: Beside, now_ns: i64) {
+    /// Starts `beside` playing silence; the handover waits for its clock ([`Writer::joining`]). False, the
+    /// track let go, when it would not take the silence.
+    fn join(&mut self, mut beside: Beside, now_ns: i64) -> bool {
         // Small until it plays, so it starts at once (before Android 12 a track starts only when full).
         let join = self.frames(JOIN_US);
         beside.sink.resize(join);
         beside.sink.set_volume(self.volume);
-        let silence = write_silence(&mut *beside.sink, self.frame_bytes(), join);
+        let silence = match write_silence(&mut *beside.sink, self.frame_bytes(), join) {
+            Ok(n) => n,
+            Err(code) => {
+                log(&format!("the second track died ({code}) as it joined: emptying this one"));
+                beside.sink.release();
+                return false;
+            }
+        };
         beside.sink.play();
         self.handover = Some(Handover { beside, phase: Phase::Joining { silence, last: None, steady: 0, grown: false }, since_ns: now_ns });
+        true
+    }
+
+    /// The track joining a handover died: it goes, and this one is emptied for the music that follows.
+    fn second_died(&mut self, now_ns: i64, code: i32) -> Option<u64> {
+        log(&format!("the second track died ({code}) while joining: emptying this one"));
+        if let Some(mut h) = self.handover.take() {
+            h.beside.sink.release();
+        }
+        self.restart(now_ns);
+        None
     }
 
     /// Moves a handover on; ms until its next step.
@@ -1080,7 +1096,10 @@ impl<R: Ring> Writer<R> {
         }
         let taken = b.sink.consumed().unwrap_or(0);
         if *silence < taken + join {
-            *silence += write_silence(&mut *b.sink, fb, taken + join - *silence);
+            match write_silence(&mut *b.sink, fb, taken + join - *silence) {
+                Ok(n) => *silence += n,
+                Err(code) => return self.second_died(now_ns, code),
+            }
         }
         if let Some((f, t)) = stamp {
             match *last {
@@ -1135,7 +1154,10 @@ impl<R: Ring> Writer<R> {
         let target = if by_data { soonest.max(pulled) } else { soonest };
         if target > left {
             let want = (target - left) as u64;
-            let got = write_silence(&mut *h.beside.sink, fb, want);
+            let got = match write_silence(&mut *h.beside.sink, fb, want) {
+                Ok(n) => n,
+                Err(code) => return self.second_died(now_ns, code),
+            };
             *silence += got;
             if got < want {
                 return Some(JOIN_TICK_MS);
@@ -1204,8 +1226,11 @@ impl<R: Ring> Writer<R> {
             h.beside.sink.pause();
             if h.beside.home {
                 h.beside.sink.flush();
-                self.join(h.beside, now_ns);
-                return Some(JOIN_TICK_MS);
+                if self.join(h.beside, now_ns) {
+                    return Some(JOIN_TICK_MS);
+                }
+                self.restart(now_ns);
+                return None;
             }
             h.beside.sink.release();
             (self.capacity, self.low) = own;
@@ -1528,22 +1553,22 @@ fn pack24(staging: &mut [f32], samples: usize) {
     }
 }
 
-/// Writes `frames` of silence to `sink` (`fb` bytes a frame); returns the frames it took.
-fn write_silence(sink: &mut dyn Sink, fb: usize, frames: u64) -> u64 {
-    let staging = sink.staging();
-    staging.fill(0.0);
-    let most = staging.len() * 4 / fb * fb;
+/// Writes `frames` of silence to `sink` (`fb` bytes a frame); returns the frames it took, or the error of
+/// a track that died.
+fn write_silence(sink: &mut dyn Sink, fb: usize, frames: u64) -> Result<u64, i32> {
     let (mut left, mut taken) = (frames as usize * fb, 0);
+    let chunk = left.min(sink.staging().len() * 4 / fb * fb);
+    sink.staging()[..chunk.div_ceil(4)].fill(0.0);
     while left > 0 {
-        let len = left.min(most);
-        let n = sink.write(0, len).map_or(0, |n| n.min(len) / fb * fb);
+        let len = left.min(chunk);
+        let n = sink.write(0, len)?.min(len) / fb * fb;
         taken += n;
         left -= n;
         if n < len {
             break;
         }
     }
-    (taken / fb) as u64
+    Ok((taken / fb) as u64)
 }
 
 /// [`LOW_US`], or half of a smaller track.

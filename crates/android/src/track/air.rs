@@ -43,6 +43,8 @@ struct Wire {
     mixes: VecDeque<(i64, u64, u64)>,
     started_ns: i64,
     released: bool,
+    /// Every write fails, as on a track the platform tore down.
+    dead: bool,
     session: i32,
     /// Each frame's number as the device presented it, by device frame; one run per flush.
     traces: Vec<Vec<(u64, f32)>>,
@@ -131,6 +133,9 @@ impl Sink for WireSink {
     }
     fn write(&mut self, from: usize, len: usize) -> Result<usize, i32> {
         let mut w = self.wire.lock();
+        if w.dead {
+            return Err(-6);
+        }
         let frames = (w.size as usize).saturating_sub(w.queue.len()).min(len / 8);
         for k in 0..frames {
             let i = from / 4 + k * 2;
@@ -200,13 +205,14 @@ impl Sink for WireSink {
     }
 }
 
-/// Opens [`Wire`]s on the [`Air`]; the second track only while `beside_opens`.
+/// Opens [`Wire`]s on the [`Air`]; the second track only while `beside_opens`, dead while `beside_dies`.
 struct AirOpener {
     wires: Arc<Mutex<Vec<Arc<Mutex<Wire>>>>>,
     now: Arc<AtomicI64>,
     stamp_after: i64,
     jitter: i64,
     beside_opens: Arc<std::sync::atomic::AtomicBool>,
+    beside_dies: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl AirOpener {
@@ -228,7 +234,9 @@ impl Opener for AirOpener {
         if !self.beside_opens.load(Ordering::Relaxed) {
             return Err("no room for another track".into());
         }
-        Ok(self.wire(frames, session))
+        let opened = self.wire(frames, session);
+        self.wires.lock().last().expect("just opened").lock().dead = self.beside_dies.load(Ordering::Relaxed);
+        Ok(opened)
     }
 }
 
@@ -355,6 +363,7 @@ struct Rig {
     next: Option<i64>,
     wakes: u32,
     beside_opens: Arc<std::sync::atomic::AtomicBool>,
+    beside_dies: Arc<std::sync::atomic::AtomicBool>,
     /// Once checked: the worst difference, frames, between the engine's play head and what was presented.
     head_error: Option<u64>,
 }
@@ -367,7 +376,8 @@ impl Rig {
         let tape = Arc::new(Mutex::new(Tape { read: 0, discard: 0, written: frames_of(10_200 * MS), sounds: vec![(0, 0.5, None)], untold: false, flushed: false, now: now.clone(), clock: clock.clone() }));
         let wires = Arc::new(Mutex::new(Vec::new()));
         let beside_opens = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let mut opener = AirOpener { wires: wires.clone(), now: now.clone(), stamp_after: out.stamp_after_ms * MS, jitter: out.jitter_us * 1_000, beside_opens: beside_opens.clone() };
+        let beside_dies = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut opener = AirOpener { wires: wires.clone(), now: now.clone(), stamp_after: out.stamp_after_ms * MS, jitter: out.jitter_us * 1_000, beside_opens: beside_opens.clone(), beside_dies: beside_dies.clone() };
         let format = OutputFormat { rate: RATE, channels: 2, bits: 0 };
         let frames = track_frames(RATE, false);
         let opened = opener.open(format, true, frames).expect("opens");
@@ -375,7 +385,7 @@ impl Rig {
         let writer = Writer::new(tape.clone(), opened, reopen, format, true, clock.clone(), Arc::new(AtomicU64::new(0)));
         let period = frames_of(out.period_ms * MS);
         let air = Air { period, delay: out.delay_ms * MS, next_mix: start + ns_of(period), origin: start, wires, heard: Vec::new() };
-        Rig { writer, tape, air, control: Control::default(), clock, now, next: Some(start), wakes: 0, beside_opens, head_error: None }
+        Rig { writer, tape, air, control: Control::default(), clock, now, next: Some(start), wakes: 0, beside_opens, beside_dies, head_error: None }
     }
 
     fn now(&self) -> i64 {
@@ -652,5 +662,20 @@ fn no_second_track_empties_the_track() {
     let wires = r.air.wires.lock();
     assert_eq!((wires.len(), wires[0].lock().traces.len()), (1, 2), "the one track, emptied once");
     drop(wires);
+    assert_eq!(heard_amp(&r), 0.6, "the change is heard");
+}
+
+/// A second track that dies as it joins: it goes at once, and the deep one is emptied and refilled as
+/// with no second track.
+#[test]
+fn dead_second_track_empties_the_track_at_once() {
+    let (r, h) = heard_after(SPEAKER, |r| {
+        r.beside_dies.store(true, Ordering::Relaxed);
+        r.change(0.6);
+        r.run(100);
+        assert!(r.writer.handover.is_none() && r.open_tracks() == 1, "the dead track let go at once");
+    });
+    assert_eq!(h.slip, 0, "on from where it was: {h:?}");
+    assert_home("a dead second track", &r);
     assert_eq!(heard_amp(&r), 0.6, "the change is heard");
 }
