@@ -1728,26 +1728,9 @@ fn two_on_the_chip_with(d: &Path, secs: u32, app: impl App + Send + 'static) -> 
     Some((rig, fake))
 }
 
-/// Waits until `frames` were written to the offload track, giving the loader real time first (the
-/// clock's byte wait is capped, so on a busy machine it would otherwise run on).
+/// Runs the clock until `frames` were written to the offload track, within its first minute.
 fn written_up_to(rig: &Rig, fake: &Fake, frames: u64) -> bool {
-    let started = std::time::Instant::now();
-    let mut last = (fake.written(), std::time::Instant::now());
-    while fake.written() < frames {
-        if started.elapsed() > Duration::from_secs(120) || rig.now_ms() > 60_000 {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(2));
-        rig.time.clock.settle();
-        let now = fake.written();
-        if now != last.0 {
-            last = (now, std::time::Instant::now());
-        } else if last.1.elapsed() > Duration::from_millis(50) {
-            rig.run(10);
-        }
-    }
-    rig.time.clock.settle();
-    true
+    rig.time.until(Duration::from_secs(60).saturating_sub(Duration::from_millis(rig.now_ms() as u64)), || fake.written() >= frames)
 }
 
 /// Waits until the engine read the queued head values.

@@ -12,7 +12,7 @@ use parking_lot::{Condvar, Mutex};
 const PHOTO: &str = "http://s/rest/getCoverArt.view?u=a&t=b&s=c&id=al-1&size=320";
 
 struct Server {
-    calls: AtomicUsize,
+    calls: Count,
     /// Requested URLs, in order.
     asked: Mutex<Vec<String>>,
     open: Mutex<bool>,
@@ -24,7 +24,7 @@ struct Server {
 impl Server {
     fn new(status: u16) -> Arc<Server> {
         let body = std::fs::read(format!("{}/testdata/photo.jpg", env!("CARGO_MANIFEST_DIR"))).unwrap();
-        Arc::new(Server { calls: AtomicUsize::new(0), asked: Mutex::new(Vec::new()), open: Mutex::new(true), opened: Condvar::new(), status, body: Mutex::new(body) })
+        Arc::new(Server { calls: Count::default(), asked: Mutex::new(Vec::new()), open: Mutex::new(true), opened: Condvar::new(), status, body: Mutex::new(body) })
     }
 
     fn hold(&self) {
@@ -37,12 +37,12 @@ impl Server {
     }
 
     fn calls(&self) -> usize {
-        self.calls.load(Ordering::SeqCst)
+        self.calls.get()
     }
 
     /// Waits until `n` requests arrived.
     fn wait_calls(&self, n: usize) {
-        eventually(&format!("{n} requests at the server"), || self.calls() >= n);
+        self.calls.until(|c| c >= n);
     }
 }
 
@@ -50,7 +50,7 @@ impl Server {
 impl Transport for Server {
     async fn get(&self, url: String, _timeout_ms: u32) -> Result<TransportResponse, TransportError> {
         self.asked.lock().push(url);
-        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.calls.add(1);
         let mut open = self.open.lock();
         while !*open {
             self.opened.wait(&mut open);
@@ -369,23 +369,26 @@ fn warm_fetches_to_disk_once_without_decoding() {
     loader.warm(PHOTO);
     loader.warm("http://s/rest/getCoverArt.view?u=a&id=ext-deezer-1&size=320");
     let late = loader.request("http://s/late", 8, 8, |_| {});
+    // Warm-ups run in order on the one worker: once `next` is asked for, the photo is on the disk.
+    let next = "http://s/rest/getCoverArt.view?u=a&id=al-2&size=320";
+    loader.warm(next);
     server.release();
-    eventually("warmed", || loader.disk().unwrap().contains(Key::of(PHOTO)));
-    // The view went before the warm-up, the provider cover was skipped, nothing warmed was decoded.
-    assert_eq!(*server.asked.lock(), ["http://s/busy", "http://s/late", PHOTO]);
+    server.wait_calls(4);
+    assert!(loader.disk().unwrap().contains(Key::of(PHOTO)), "warmed");
+    // The view went before the warm-ups, the provider cover was skipped, nothing warmed was decoded.
+    assert_eq!(*server.asked.lock(), ["http://s/busy", "http://s/late", PHOTO, next]);
     assert_eq!(painted.load(Ordering::SeqCst), 2);
-    // Warming a cached cover does not refetch; warm-ups run in order, so once `then` is on disk the
-    // repeated warm has been processed.
+    // Warming a cached cover does not refetch: once `then` is asked for, the repeated warm was processed.
     loader.warm(PHOTO);
-    let then = "http://s/rest/getCoverArt.view?u=a&id=al-2&size=320";
+    let then = "http://s/rest/getCoverArt.view?u=a&id=al-3&size=320";
     loader.warm(then);
-    eventually("the second warm-up came", || loader.disk().unwrap().contains(Key::of(then)));
-    assert_eq!(*server.asked.lock(), ["http://s/busy", "http://s/late", PHOTO, then], "the warmed cover not fetched again");
+    server.wait_calls(5);
+    assert_eq!(*server.asked.lock(), ["http://s/busy", "http://s/late", PHOTO, next, then], "the warmed cover not fetched again");
     // `read` serves the raw bytes from disk.
     let mut bytes = Vec::new();
     loader.read(PHOTO, &mut bytes).unwrap();
     assert_eq!(bytes, *server.body.lock());
-    assert_eq!(server.calls(), 4, "read from the disk, not fetched: {:?}", server.asked.lock());
+    assert_eq!(server.calls(), 5, "read from the disk, not fetched: {:?}", server.asked.lock());
     drop((busy, late));
     drop(loader);
 }
@@ -431,15 +434,15 @@ fn panic_fails_only_that_cover() {
 
 /// Painter counting live worker threads (via a thread-local guard) and `rest` calls.
 struct Threads {
-    alive: Arc<AtomicUsize>,
+    alive: Arc<Count>,
     rests: Arc<AtomicUsize>,
 }
 
-struct Alive(Arc<AtomicUsize>);
+struct Alive(Arc<Count>);
 
 impl Drop for Alive {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
+        self.0.add(-1);
     }
 }
 
@@ -453,7 +456,7 @@ impl Paint for Threads {
     fn paint(&self, _: &mut Decoder, _: &[u8], _: u32, _: u32) -> Result<(), DecodeError> {
         ALIVE.with_borrow_mut(|a| {
             if a.is_none() {
-                self.alive.fetch_add(1, Ordering::SeqCst);
+                self.alive.add(1);
                 *a = Some(Alive(self.alive.clone()));
             }
         });
@@ -469,17 +472,32 @@ impl Paint for Threads {
     }
 }
 
-/// Waits (10 s max) until `done`, failing with `what`.
-fn eventually(what: &str, done: impl Fn() -> bool) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !done() {
-        assert!(std::time::Instant::now() < deadline, "never: {what}");
-        std::thread::sleep(Duration::from_millis(2));
+/// A count tests wait on.
+#[derive(Default)]
+struct Count(Mutex<usize>, Condvar);
+
+impl Count {
+    fn add(&self, n: isize) {
+        let mut c = self.0.lock();
+        *c = c.checked_add_signed(n).expect("a count stays positive");
+        self.1.notify_all();
+    }
+
+    fn get(&self) -> usize {
+        *self.0.lock()
+    }
+
+    /// Waits until `done` holds of the count.
+    fn until(&self, done: impl Fn(usize) -> bool) {
+        let mut c = self.0.lock();
+        while !done(*c) {
+            self.1.wait(&mut c);
+        }
     }
 }
 
-fn until(count: &AtomicUsize, n: usize) {
-    eventually(&format!("{n} alive"), || count.load(Ordering::SeqCst) == n);
+fn until(count: &Count, n: usize) {
+    count.until(|c| c == n);
 }
 
 /// Starts three workers by holding three requests at the server at once.
@@ -504,43 +522,42 @@ fn three_at_once(loader: &Loader<Threads>, server: &Server) {
 #[test]
 fn rest_ends_workers_and_next_request_restarts_one() {
     let server = Server::new(200);
-    let (alive, rests) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let (alive, rests) = (Arc::new(Count::default()), Arc::new(AtomicUsize::new(0)));
     let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(None, 3) }, server.clone(), Threads { alive: alive.clone(), rests: rests.clone() });
     three_at_once(&loader, &server);
-    assert_eq!(alive.load(Ordering::SeqCst), 3);
+    assert_eq!(alive.get(), 3);
     loader.rest();
     until(&alive, 0);
     assert_eq!(rests.load(Ordering::SeqCst), 1);
     loader.load("http://s/after", 8, 8).unwrap();
-    assert_eq!(alive.load(Ordering::SeqCst), 1);
+    assert_eq!(alive.get(), 1);
     // Shorter than `idle`: the thread stays.
     loader.load("http://s/again", 8, 8).unwrap();
-    assert_eq!((alive.load(Ordering::SeqCst), rests.load(Ordering::SeqCst)), (1, 1));
+    assert_eq!((alive.get(), rests.load(Ordering::SeqCst)), (1, 1));
 }
 
 #[test]
 fn idle_loader_rests() {
     let server = Server::new(200);
-    let (alive, rests) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let (alive, rests) = (Arc::new(Count::default()), Arc::new(AtomicUsize::new(0)));
     let config = Config { memory_bytes: 0, idle: Duration::from_millis(500), ..config(None, 3) };
     let loader = Loader::with_paint(config, server.clone(), Threads { alive: alive.clone(), rests: rests.clone() });
     three_at_once(&loader, &server);
     // Requests closer together than `idle` keep the threads.
     for i in 0..5 {
-        std::thread::sleep(Duration::from_millis(50));
         loader.load(&format!("http://s/soon-{i}"), 8, 8).unwrap();
     }
-    assert_eq!((alive.load(Ordering::SeqCst), rests.load(Ordering::SeqCst)), (3, 0));
+    assert_eq!((alive.get(), rests.load(Ordering::SeqCst)), (3, 0));
     until(&alive, 0);
     assert_eq!(rests.load(Ordering::SeqCst), 1);
     loader.load("http://s/after", 8, 8).unwrap();
-    assert_eq!(alive.load(Ordering::SeqCst), 1);
+    assert_eq!(alive.get(), 1);
 }
 
 #[test]
 fn hidden_loader_rests_and_keeps_no_idle_thread() {
     let server = Server::new(200);
-    let (alive, rests) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let (alive, rests) = (Arc::new(Count::default()), Arc::new(AtomicUsize::new(0)));
     let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(None, 3) }, server.clone(), Threads { alive: alive.clone(), rests: rests.clone() });
     three_at_once(&loader, &server);
     loader.show(false);
@@ -551,6 +568,7 @@ fn hidden_loader_rests_and_keeps_no_idle_thread() {
     until(&alive, 0);
     loader.show(true);
     loader.load("http://s/shown", 8, 8).unwrap();
-    std::thread::sleep(Duration::from_millis(50));
-    assert_eq!((alive.load(Ordering::SeqCst), rests.load(Ordering::SeqCst)), (1, 1));
+    // Shown, the worker stays for the next: that one takes the same thread.
+    loader.load("http://s/shown-again", 8, 8).unwrap();
+    assert_eq!((alive.get(), rests.load(Ordering::SeqCst)), (1, 1));
 }
