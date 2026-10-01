@@ -525,11 +525,10 @@ private fun LyricsBody(vm: PlayerViewModel, found: dev.nori.music.data.FoundLyri
         // Whose words these are and whether they are timed, in the core's words; None: no corner at all.
         val credit = remember(found.source, lyrics.synced) { say.lyricsCredit(found.source, lyrics.synced) }
         val open = tuning || nudgeMs != 0L
-        // With the timing button turned off (Settings, Lyrics) the corner does not open, and the server's own
-        // timed words - whose corner only ever said "Timing" - have none; a service's name stays, as words.
-        // A nudge already made keeps it, so it can still be put back.
+        // With the corner turned off (Settings, Lyrics: "Source and timing") there is none at all, neither
+        // where the words came from nor the nudges. A nudge already made keeps it, so it can still be put back.
         val nudges = prefs.lyricsTimingButton || nudgeMs != 0L
-        val shown = if (nudges || found.source != dev.nori.music.ffi.settings.LyricsOrigin.SERVER) credit else null
+        val shown = if (nudges) credit else null
         if (shown != null) androidx.compose.material3.Surface(
             onClick = { if (lyrics.synced && nudges) tuning = !tuning },
             enabled = lyrics.synced && nudges,

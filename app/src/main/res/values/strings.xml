@@ -293,8 +293,8 @@
     <string name="settings_lyrics_size_large">Large</string>
     <string name="settings_lyrics_translation">Show translations</string>
     <string name="settings_lyrics_translation_detail">When your server has them.</string>
-    <string name="settings_lyrics_timing_button">Timing button</string>
-    <string name="settings_lyrics_timing_button_detail">The corner under the lyrics that nudges them sooner or later when they drift.</string>
+    <string name="settings_lyrics_timing_button">Source and timing</string>
+    <string name="settings_lyrics_timing_button_detail">The corner under the lyrics that says where they came from, and nudges them sooner or later when they drift.</string>
     <string name="settings_lyrics_screen_on">Keep the screen on</string>
     <string name="settings_lyrics_screen_on_detail">While lyrics are shown and music plays.</string>
     <string name="settings_lyrics_online">Find missing lyrics online</string>
@@ -521,7 +521,7 @@
     <string name="settings_hint_animate_anyway">Keeps animations on even when the system\'s are off</string>
     <string name="settings_hint_lyrics_sweep">For lyrics timed word by word</string>
     <string name="settings_hint_lyrics_translation">When your server has them</string>
-    <string name="settings_hint_lyrics_timing_button">Sync offset. Show or hide the button that nudges lyrics sooner or later</string>
+    <string name="settings_hint_lyrics_timing_button">Lyrics provider, credit, sync offset, timing button. Show or hide where lyrics came from and the nudges</string>
     <string name="settings_hint_lyrics_screen_on">While lyrics are shown and music plays</string>
     <string name="settings_hint_lyrics_online">Asks the lyrics sources. Sends the artist, song and album name</string>
     <string name="settings_hint_lyrics_words">Keeps looking past lyrics timed line by line</string>
