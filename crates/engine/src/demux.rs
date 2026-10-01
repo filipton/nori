@@ -1122,7 +1122,6 @@ mod tests {
     use super::*;
     use crate::source::{Body, ByteSource, OpenError};
     use parking_lot::Condvar;
-    use std::time::Duration;
 
     const MP3: &[u8] = include_bytes!("../../player/testdata/tone440.mp3");
 
@@ -1140,9 +1139,10 @@ mod tests {
         }
     }
 
+    /// Waits for `d`'s opening, which wakes this thread.
     fn opened(d: &mut Demuxed) {
         while !d.ready() {
-            std::thread::park_timeout(Duration::from_millis(10));
+            std::thread::park();
         }
     }
 
@@ -1163,9 +1163,7 @@ mod tests {
         let arriving = Demuxed::load(loader.clone(), std::thread::current(), Some("mp3"), 0, None, false, Encoding::Pcm16);
         let mut packets = Demuxed::load_packets(loader.clone(), std::thread::current(), Some("mp3"), 0, None, false);
         // The bytes come once both openings wait for them.
-        while !loader.words().contains("2 readers blocked") {
-            std::thread::yield_now();
-        }
+        loader.wait_blocked(2);
         *gate.0.lock() = true;
         gate.1.notify_all();
         let file = Demuxed::open(Box::new(io::Cursor::new(MP3)), Some("mp3"), 0, None, Encoding::Pcm16).unwrap();

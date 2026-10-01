@@ -746,6 +746,15 @@ impl Loader {
     pub(crate) fn nudge(&self) {
         self.0.cv.notify_all();
     }
+
+    /// Blocks until `n` readers wait for bytes (a reader that blocks signals the loader's condvar).
+    #[cfg(test)]
+    pub(crate) fn wait_blocked(&self, n: u32) {
+        let mut s = self.0.state.lock();
+        while s.blocked < n {
+            self.0.cv.wait(&mut s);
+        }
+    }
 }
 
 impl Drop for Loader {
