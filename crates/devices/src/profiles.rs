@@ -102,8 +102,8 @@ impl Now {
         Now { sound: p.sound(), per_output: p.profile_per_output, auto_apply: p.auto_eq_auto }
     }
 
-    pub fn read() -> Self {
-        nori_settings::settings_store::with_prefs(Now::of).unwrap_or_else(|| Now::of(&StoredPrefs::default()))
+    pub fn read(settings: &nori_settings::settings_store::Settings) -> Self {
+        settings.prefs(Now::of)
     }
 }
 

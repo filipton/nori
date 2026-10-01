@@ -11,7 +11,7 @@ impl Core {
     /// Queues `songs` for download; see [`DownloadQueued`].
     pub fn download_queue(&self, songs: Vec<crate::Song>) -> crate::Result<DownloadQueued> {
         self.downloads.with(|t| {
-            t.follow_quality(download_kbps());
+            t.follow_quality(self.download_kbps());
             t.know(&songs);
         });
         let rows = songs.into_iter().map(|s| {
@@ -23,7 +23,7 @@ impl Core {
 
     /// Queues every indexed song, in index order ([`Core::download_queue`]).
     pub fn download_queue_library(&self) -> crate::Result<DownloadQueued> {
-        self.downloads.with(|t| t.follow_quality(download_kbps()));
+        self.downloads.with(|t| t.follow_quality(self.download_kbps()));
         let rows: Vec<(String, String)> = {
             let c = self.db.lock();
             let mut st = c.prepare("SELECT id, json FROM items WHERE server=sid() AND kind=?1 ORDER BY rowid")?;
@@ -128,6 +128,10 @@ impl Core {
         Ok(())
     }
 
+    fn download_kbps(&self) -> i32 {
+        self.session.settings.prefs(|p| p.download.bit_rate)
+    }
+
     fn queue_downloads(&self, rows: impl IntoIterator<Item = (String, String)>) -> crate::Result<DownloadQueued> {
         let q = queue_rows(&mut self.db.lock(), rows)?;
         let mut held = self.downloads.held();
@@ -136,14 +140,10 @@ impl Core {
     }
 }
 
-fn download_kbps() -> i32 {
-    crate::settings_store::prefs(|p| p.download.bit_rate)
-}
-
 /// Whether Download asks about the beat model ([`beats_offer`]).
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn download_beats_offer() -> BeatsOffer {
-    let (on, choice) = crate::settings_store::prefs(|p| (p.auto_mix && p.auto_mix_better_beats, p.download_beats));
+    let (on, choice) = crate::settings_store::shared().prefs(|p| (p.auto_mix && p.auto_mix_better_beats, p.download_beats));
     beats_offer(on && nori_player::automix::beats::AVAILABLE, choice)
 }
 
@@ -194,7 +194,7 @@ impl Core {
     pub fn download_recover(&self, known: Vec<DownloadKnown>) -> crate::Result<DownloadRecovery> {
         let pending = self.downloads(false)?;
         self.downloads.with(|t| {
-            t.follow_quality(download_kbps());
+            t.follow_quality(self.download_kbps());
             t.know(&pending);
         });
         let pending: Vec<String> = pending.into_iter().map(|s| s.id).collect();

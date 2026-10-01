@@ -185,7 +185,7 @@ impl Session {
         let client = Client::new(core.clone(), transport);
         client.set_profile(net(&o.profile));
         nori_core::covers::set_cover_transport(o.http.clone());
-        let prefs = settings_store::settings_current().unwrap_or_default();
+        let prefs = settings_store::shared().current().unwrap_or_default();
         let output = match &o.device {
             Some(name) => CpalOutput::with_device(name),
             None => CpalOutput::new(),
@@ -378,7 +378,7 @@ impl Session {
     }
 
     fn start_downloads(&self) {
-        self.downloader.start(settings_store::prefs(|p| p.parallel_downloads).max(1) as usize);
+        self.downloader.start(settings_store::shared().prefs(|p| p.parallel_downloads).max(1) as usize);
     }
 
     /// Queues `songs` for download (their covers fetched to disk too) and starts the downloader.
@@ -400,7 +400,7 @@ impl Session {
                 warm_covers(&core, covers.as_ref(), &songs);
                 let n = songs.len();
                 let _ = core.download_queue(songs);
-                downloader.start(settings_store::prefs(|p| p.parallel_downloads).max(1) as usize);
+                downloader.start(settings_store::shared().prefs(|p| p.parallel_downloads).max(1) as usize);
                 out(Said::Note(Note::Downloading(n)));
             }
             Err(e) => out(Said::Note(Note::SongsFailed(e))),
@@ -433,7 +433,7 @@ impl Session {
     pub fn set_volume(&self, v: f32) {
         self.volume.set(v);
         if self.loudness.set(volume_db(v)) {
-            if let Some(p) = settings_store::settings_current().filter(|p| p.loudness) {
+            if let Some(p) = settings_store::shared().current().filter(|p| p.loudness) {
                 self.engine.set_settings(settings(&p, self.loudness.db()));
             }
         }
@@ -454,7 +454,7 @@ impl Session {
 
     /// Applies `effect` with the stored settings (after an in-place edit such as an equalizer band).
     pub fn applied(&self, effect: u32) {
-        if let Some(p) = settings_store::settings_current() {
+        if let Some(p) = settings_store::shared().current() {
             self.apply(effect, &p);
         }
     }
@@ -540,7 +540,7 @@ impl Session {
             }
             Chore::MeasureAgain => {
                 let n = self.core.analysis_clear().unwrap_or(0);
-                nori_core::automix::planner::analyses_changed();
+                self.core.session.planner.analyses_changed();
                 self.engine.replan();
                 return self.note(Note::Forgot(n));
             }

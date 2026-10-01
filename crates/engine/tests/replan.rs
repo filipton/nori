@@ -11,7 +11,7 @@ use std::time::Duration;
 use common::card::{Card, Pull};
 use common::{Stepper, Virtual};
 use nori_core::client::{Client, NetProfile};
-use nori_core::settings_store::{edit_by_name, APPLY_AUDIO, REPLAN};
+use nori_core::settings_store::{APPLY_AUDIO, REPLAN};
 use nori_core::{Core, ServerConfig, Song};
 use nori_engine::core::{settings, CoreApp, CoreLibrary, CoreOrder, CoreQueue};
 use nori_engine::{Body, ByteSource, Config, Engine, Store};
@@ -94,7 +94,7 @@ impl Rig {
 
     /// Sets a setting by name without telling the engine; returns its effects.
     fn set_only(&self, name: &str, value: &str) -> u32 {
-        let effect = edit_by_name(name, value).unwrap_or_else(|| panic!("{name} is a setting")).effect;
+        let effect = nori_core::settings_store::shared().edit_by_name(name, value).unwrap_or_else(|| panic!("{name} is a setting")).effect;
         assert_ne!(effect & REPLAN, 0, "{name} asks for the transition to be planned again");
         effect
     }
@@ -102,7 +102,7 @@ impl Rig {
     /// Relays a change's effects to the engine, as PlaybackService does.
     fn relay(&self, effect: u32) {
         if effect & APPLY_AUDIO != 0 {
-            self.engine.set_settings(settings(&nori_core::settings_store::settings_current().unwrap(), 0.0));
+            self.engine.set_settings(settings(&nori_core::settings_store::shared().current().unwrap(), 0.0));
         }
         if effect & REPLAN != 0 {
             self.engine.replan();
@@ -145,7 +145,7 @@ fn keeping_albums_gapless_switched_off_while_an_album_plays_mixes_its_next_bound
     // Early in the second song, before its ending is made.
     rig.set("crossfadeKeepAlbums", "false");
     assert!(rig.mixes_into(2), "mixed into the third song once the album is no longer kept gapless");
-    let note = nori_core::automix::planner::transition_note("a2").expect("a2's ending was planned");
+    let note = nori_core::queue::shared().planner.transition_note("a2").expect("a2's ending was planned");
     assert_ne!(note.kind, "Gapless", "{note:?}");
 }
 
@@ -178,7 +178,7 @@ fn every_transition_setting_changed_while_playing_is_planned_with() {
         rig.set(name, value);
         let id = format!("b{}", k + 1);
         let _ = rig.mixes_into(k + 1);
-        let note = nori_core::automix::planner::transition_note(&id).unwrap_or_else(|| panic!("{id}'s ending was planned"));
+        let note = nori_core::queue::shared().planner.transition_note(&id).unwrap_or_else(|| panic!("{id}'s ending was planned"));
         assert!(ok(&note), "{name}={value}: {note:?}");
     }
 }
@@ -194,7 +194,7 @@ fn a_play_right_after_a_change_is_planned_with_it() {
 /// engine hears of the settings only after the play.
 fn automix_and_mixing_albums_switched_on_right_before_an_album_is_played_mix_it() {
     let rig = Rig::new("replan-smoke", &["e1", "e2", "e3"], true);
-    let mut prefs = nori_core::settings_store::settings_current().unwrap();
+    let mut prefs = nori_core::settings_store::shared().current().unwrap();
     prefs.auto_mix = false;
     nori_core::settings_store::settings_put(prefs.clone());
     rig.engine.set_settings(settings(&prefs, 0.0));

@@ -79,6 +79,11 @@ impl Client {
         &self.core.session
     }
 
+    /// The settings of this client's core.
+    pub(crate) fn settings(&self) -> &crate::settings_store::Settings {
+        &self.core.session.settings
+    }
+
     /// `params` plus the music folder, for endpoints that take one.
     pub(crate) fn scoped(&self, endpoint: &str, mut params: Vec<(String, String)>) -> Vec<(String, String)> {
         let p = self.profile.read();

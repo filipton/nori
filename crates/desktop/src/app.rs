@@ -347,7 +347,7 @@ pub fn start(ui: &AppWindow, data: PathBuf, compositor: Compositor) -> Rc<RefCel
             Some(Focus { region: [x, 48.0, size.width - x - 100.0, size.height - 48.0 - 56.0], band_top: size.height * 0.36 - 8.0, band_h: ui.get_full_lyric_h() + 16.0 })
         });
         a.settings_shown();
-        let prefs = settings_store::settings_current().unwrap_or_default();
+        let prefs = settings_store::shared().current().unwrap_or_default();
         match prefs.servers.iter().find(|s| s.id == prefs.active_server_id).cloned() {
             Some(p) => a.open(p),
             None => ui.set_view(LOGIN),
@@ -484,7 +484,7 @@ fn wire(ui: &AppWindow, h: &AppHandle) {
         let ui = a.ui();
         ui.set_eq_curve_w(w);
         ui.set_eq_curve_h(hh);
-        if let Some(p) = settings_store::settings_current() {
+        if let Some(p) = settings_store::shared().current() {
             crate::eq::curve_only(&ui, &p);
         }
     });
@@ -878,7 +878,7 @@ impl App {
         let view = s.search_typed(text);
         let query = view.query.clone();
         self.show_search(view);
-        let delay = settings_store::prefs(|p| p.live_search_delay_ms).max(100) as u64;
+        let delay = settings_store::shared().prefs(|p| p.live_search_delay_ms).max(100) as u64;
         let me = self.me.clone();
         self.search.start(TimerMode::SingleShot, Duration::from_millis(delay), move || {
             me.with(|a| a.on_session(|s| s.search_server(query.clone())));
@@ -1001,7 +1001,7 @@ impl App {
                 ui.set_login_busy(false);
                 match r {
                     Ok(p) => {
-                        let mut prefs = settings_store::settings_current().unwrap_or_default();
+                        let mut prefs = settings_store::shared().current().unwrap_or_default();
                         prefs.servers.retain(|s| !(s.url == p.url && s.user == p.user));
                         prefs.servers.push(p.clone());
                         prefs.active_server_id = p.id.clone();
@@ -1204,7 +1204,7 @@ impl App {
     /// Redraws the settings or equalizer page from the current settings.
     fn settings_shown(&self) {
         let ui = self.ui();
-        let prefs = settings_store::settings_current().unwrap_or_default();
+        let prefs = settings_store::shared().current().unwrap_or_default();
         ui.set_autoplay(prefs.auto_fill);
         ui.set_automix(prefs.auto_mix);
         ui.global::<crate::Theme>().set_accent(slint::Color::from_argb_encoded(crate::settings::accent_shown(prefs.accent as u32)));
@@ -1236,7 +1236,7 @@ impl App {
     /// Edits a level in place; redraws the page when the slider is released.
     fn slid(&mut self, name: &str, v: f32, last: bool) {
         let Some(level) = crate::settings::level_of(name) else { return };
-        if let Some((effect, _)) = settings_store::edit_level(level, v) {
+        if let Some((effect, _)) = settings_store::shared().edit_level(level, v) {
             self.on_session(|s| s.applied(effect));
             self.tune();
         }
@@ -1247,11 +1247,11 @@ impl App {
 
     /// Edits an EQ band; the curve updates at once, the page on release.
     fn eq_gain(&mut self, i: usize, v: f32, last: bool) {
-        let Some(p) = settings_store::settings_current() else { return };
+        let Some(p) = settings_store::shared().current() else { return };
         let effect = if p.eq_mode == nori_core::settings::EqMode::Graphic {
-            settings_store::edit_graphic(i as u32, v).map(|e| e.0)
+            settings_store::shared().edit_graphic(i as u32, v).map(|e| e.0)
         } else {
-            p.eq_bands.get(i).and_then(|b| settings_store::edit_band(i as u32, nori_core::settings::SoundBand { gain_db: v, ..*b }).map(|e| e.0))
+            p.eq_bands.get(i).and_then(|b| settings_store::shared().edit_band(i as u32, nori_core::settings::SoundBand { gain_db: v, ..*b }).map(|e| e.0))
         };
         if let Some(effect) = effect {
             self.on_session(|s| s.applied(effect));
@@ -1259,7 +1259,7 @@ impl App {
         }
         if last {
             self.settings_shown();
-        } else if let Some(p) = settings_store::settings_current() {
+        } else if let Some(p) = settings_store::shared().current() {
             crate::eq::curve_only(&self.ui(), &p);
         }
     }
@@ -1288,7 +1288,7 @@ impl App {
     }
 
     fn source_moved(&mut self, id: &str, up: bool) {
-        let Some(p) = settings_store::settings_current() else { return };
+        let Some(p) = settings_store::shared().current() else { return };
         let s = nori_core::settings_model::state(&p, nori_core::settings_model::Output::default());
         let Some(at) = s.lyrics_sources.iter().position(|x| x.id == id) else { return };
         let to = if up { at.saturating_sub(1) } else { (at + 1).min(s.lyrics_sources.len() - 1) };
@@ -1302,7 +1302,7 @@ impl App {
             Some(Act::Equalizer) => self.go(EQUALIZER),
             Some(Act::AddServer) => self.go(LOGIN),
             Some(Act::Server(id)) => {
-                let mut prefs = settings_store::settings_current().unwrap_or_default();
+                let mut prefs = settings_store::shared().current().unwrap_or_default();
                 let Some(p) = prefs.servers.iter().find(|s| s.id == id).cloned() else { return };
                 prefs.active_server_id = id;
                 settings_store::settings_put(prefs);

@@ -140,19 +140,19 @@ pub mod own {
     pub const DEVICE: &str = "tui.device";
 
     pub fn text(key: &str) -> Option<String> {
-        nori_core::settings_store::app_value(key).filter(|v| !v.is_empty())
+        nori_core::settings_store::shared().app_value(key).filter(|v| !v.is_empty())
     }
 
     pub fn flag(key: &str, default: bool) -> bool {
-        nori_core::settings_store::app_value(key).map_or(default, |v| v == "true")
+        nori_core::settings_store::shared().app_value(key).map_or(default, |v| v == "true")
     }
 
     pub fn number(key: &str, default: f32) -> f32 {
-        nori_core::settings_store::app_value(key).and_then(|v| v.parse().ok()).unwrap_or(default)
+        nori_core::settings_store::shared().app_value(key).and_then(|v| v.parse().ok()).unwrap_or(default)
     }
 
     pub fn keep(key: &'static str, value: String) {
-        nori_core::settings_store::keep_app_value(key, value);
+        nori_core::settings_store::shared().keep_app_value(key, value);
     }
 }
 

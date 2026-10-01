@@ -303,7 +303,7 @@ impl Runner {
                 }
             }
             Msg::LoggedIn(Ok(p)) => {
-                let mut prefs = settings_store::settings_current().unwrap_or_default();
+                let mut prefs = settings_store::shared().current().unwrap_or_default();
                 prefs.servers.retain(|s| !(s.url == p.url && s.user == p.user));
                 prefs.servers.push(p.clone());
                 prefs.active_server_id = p.id.clone();
@@ -344,11 +344,11 @@ impl Runner {
         }
         if app.transition_shown() {
             if let Some(id) = &self.heard {
-                let note = nori_core::automix::planner::transition_note(id);
+                let note = nori_core::queue::shared().planner.transition_note(id);
                 if note != app.transition {
                     app.transition = note;
                 }
-                app.mixed_in = if app.now.mixing { nori_core::automix::planner::transition_into(id) } else { None };
+                app.mixed_in = if app.now.mixing { nori_core::queue::shared().planner.transition_into(id) } else { None };
             }
         }
         if app.lyrics_shown() {
@@ -430,7 +430,7 @@ impl Runner {
                 return;
             }
             Cmd::SwitchServer(id) => {
-                let mut prefs = settings_store::settings_current().unwrap_or_default();
+                let mut prefs = settings_store::shared().current().unwrap_or_default();
                 let Some(p) = prefs.servers.iter().find(|s| s.id == id).cloned() else { return };
                 prefs.active_server_id = id;
                 settings_store::settings_put(prefs.clone());
@@ -489,9 +489,9 @@ impl Runner {
                 }
                 prefs_changed(app);
             }
-            Cmd::Level(level, v) => sound_edited(s, app, settings_store::edit_level(level, v).map(|(e, _)| e)),
-            Cmd::Graphic(i, gain) => sound_edited(s, app, settings_store::edit_graphic(i, gain).map(|(e, _)| e)),
-            Cmd::Band(i, band) => sound_edited(s, app, settings_store::edit_band(i, band).map(|(e, _)| e)),
+            Cmd::Level(level, v) => sound_edited(s, app, settings_store::shared().edit_level(level, v).map(|(e, _)| e)),
+            Cmd::Graphic(i, gain) => sound_edited(s, app, settings_store::shared().edit_graphic(i, gain).map(|(e, _)| e)),
+            Cmd::Band(i, band) => sound_edited(s, app, settings_store::shared().edit_band(i, band).map(|(e, _)| e)),
             Cmd::Sound(tool) => {
                 let effect = match tool.tool().map(settings_store::settings_sound_tool) {
                     Some(Ok(change)) => change.map(|c| c.effect),
@@ -551,7 +551,7 @@ fn sound_edited(s: &Session, app: &mut App, effect: Option<u32>) {
 }
 
 fn prefs_changed(app: &mut App) {
-    if let Some(p) = settings_store::settings_current() {
+    if let Some(p) = settings_store::shared().current() {
         app.prefs_changed(p);
     }
 }

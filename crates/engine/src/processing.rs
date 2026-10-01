@@ -82,8 +82,8 @@ pub fn install(shelf: Box<dyn Shelf>) {
 }
 
 /// The build has the beat model and AutoMix with "Better beat detection" is on.
-fn model_on() -> bool {
-    nori_player::automix::beats::AVAILABLE && nori_core::settings_store::with_prefs(|p| p.auto_mix && p.auto_mix_better_beats).unwrap_or(false)
+fn model_on(core: &Core) -> bool {
+    nori_player::automix::beats::AVAILABLE && core.session.settings.with_prefs(|p| p.auto_mix && p.auto_mix_better_beats).unwrap_or(false)
 }
 
 /// What `id` needs once saved.
@@ -94,8 +94,8 @@ fn needs_of(core: &Core, id: &str) -> (Needs, Saved) {
         analysable,
         measuring: ARRIVALS.lock().has(id),
         analysed: analysable && core.analysis_missing(one.clone()).is_ok_and(|m| m.is_empty()),
-        model_on: model_on(),
-        beats_wanted: transfers::wants_beats(id) && nori_core::settings_store::with_prefs(|p| p.download_beats != nori_core::settings::DownloadBeats::Never).unwrap_or(false),
+        model_on: model_on(core),
+        beats_wanted: transfers::wants_beats(id) && core.session.settings.with_prefs(|p| p.download_beats != nori_core::settings::DownloadBeats::Never).unwrap_or(false),
         beats_done: analysable && core.analysis_neural_missing(one).is_ok_and(|m| m.is_empty()),
     };
     (transfers::needs(saved), saved)

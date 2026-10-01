@@ -76,8 +76,8 @@ impl CoreApp {
     pub fn new(session: Arc<Session>) -> CoreApp {
         fn nothing() {}
         CoreApp {
+            host: CoreHost { planner: session.planner.clone(), now_ms: 0, heard_changed: nothing },
             session,
-            host: CoreHost { now_ms: 0, heard_changed: nothing },
             measurer: None,
             devices: None,
             known: Vec::new(),
@@ -170,8 +170,8 @@ impl App for CoreApp {
         // A step may ask to arrive again once done.
         for _ in 0..2 {
             if let Some(s) = effect.apply.take() {
-                let prefs = nori_core::settings_store::settings_current()?.with_sound(s);
-                nori_core::settings_store::settings_put(prefs.clone());
+                let prefs = self.session.settings.current()?.with_sound(s);
+                self.session.settings.put(prefs.clone());
                 sound = Some(settings(&prefs, self.volume.db()).sound);
             }
             if !effect.arrive {
@@ -201,7 +201,7 @@ impl App for CoreApp {
     }
 
     fn transitions_off(&mut self, off: bool) {
-        nori_core::automix::planner::transition_setup(off);
+        self.session.planner.transition_setup(off);
     }
 
     /// The core's ReplayGain for the queue's song.
@@ -471,7 +471,7 @@ impl Downloader {
         let now = nori_core::db::now_ms();
         transfers::followed(id, transfers::DOWNLOADING, now);
         let slot = transfers::open(id, now);
-        let quality = nori_core::rules::prefs(|p| nori_core::stream::StreamQuality { bit_rate: p.download.bit_rate.max(0) as u32, format: p.download.format.clone() });
+        let quality = self.core.session.settings.prefs(|p| nori_core::stream::StreamQuality { bit_rate: p.download.bit_rate.max(0) as u32, format: p.download.format.clone() });
         let part = self.store.download_part(id, &format!("{}{}", quality.bit_rate, quality.format));
         let url = self.client.download_target(id.to_string(), quality).url;
         let mut chunk = vec![0u8; DOWNLOAD_CHUNK];
@@ -925,23 +925,23 @@ pub fn measuring_as_they_come() -> bool {
 /// container allows it (`hint`: not MP4) and it is not already being measured. `wait`: the fetch may
 /// block on the decoder (not for a loader the player reads).
 pub fn measure_as_it_comes(id: &str, hint: Option<&str>, wait: bool) -> Option<Listening> {
-    if !nori_core::rules::prefs(|p| p.auto_mix) {
+    let core = nori_core::active()?;
+    if !core.session.settings.prefs(|p| p.auto_mix) {
         return None;
     }
-    listen_as_it_comes(id, hint, wait)
+    listen_as_it_comes(core, id, hint, wait)
 }
 
 /// [`measure_as_it_comes`] for a download, whatever AutoMix says: every download is analysed once
 /// (`nori_core::transfers::needs`).
 pub fn measure_download_as_it_comes(id: &str, hint: Option<&str>) -> Option<Listening> {
-    listen_as_it_comes(id, hint, true)
+    listen_as_it_comes(nori_core::active()?, id, hint, true)
 }
 
-fn listen_as_it_comes(id: &str, hint: Option<&str>, wait: bool) -> Option<Listening> {
+fn listen_as_it_comes(core: Arc<Core>, id: &str, hint: Option<&str>, wait: bool) -> Option<Listening> {
     if !nori_core::queue::analysable(id) || !crate::demux::decodes_as_it_comes(hint) {
         return None;
     }
-    let core = nori_core::active()?;
     if core.analysis_missing(vec![id.to_string()]).ok()?.is_empty() {
         return None;
     }
@@ -1026,7 +1026,7 @@ const LISTEN_AHEAD: usize = 2;
 
 /// The songs of `ids` for the beat model; none when it is off or not built.
 fn listen_to(core: &Core, ids: &[String], missing: &[String]) -> Vec<String> {
-    let wanted = beats::AVAILABLE && nori_core::settings_store::with_prefs(|p| p.auto_mix && p.auto_mix_better_beats).unwrap_or(false);
+    let wanted = beats::AVAILABLE && core.session.settings.with_prefs(|p| p.auto_mix && p.auto_mix_better_beats).unwrap_or(false);
     if !wanted {
         return Vec::new();
     }

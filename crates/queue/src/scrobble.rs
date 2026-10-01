@@ -86,12 +86,12 @@ impl Session {
     /// The player's song changed to `id`. Records the song left in the history when the taste model is
     /// on, and returns what to scrobble when scrobbling is on.
     pub fn scrobble_track(&self, id: Option<String>, why: TrackChange, playing: bool, now_ms: i64, wall_ms: i64, tz_offset_ms: i32) -> ScrobbleSend {
-        let (taste_model, scrobble, percent) = nori_settings::settings_store::prefs(|p| (p.taste_model, p.scrobble, p.scrobble_percent));
+        let (taste_model, scrobble, percent) = self.settings.prefs(|p| (p.taste_model, p.scrobble, p.scrobble_percent));
         let next = followed(id, why);
         let song = next.as_deref().and_then(|id| self.song(id));
         let (done, heard, at) = self.scrobbler.lock().switch(song, playing, now_ms, wall_ms);
         // The profile playing now, not the one open when the write runs.
-        if let (Some(song), true, Some(db)) = (done.clone(), taste_model, nori_db::active()) {
+        if let (Some(song), true, Some(db)) = (done.clone(), taste_model, self.db.get()) {
             background::run(move || {
                 let _ = nori_library::history::record(&mut db.lock(), &song, at, heard, tz_offset_ms, db::now_ms());
             });

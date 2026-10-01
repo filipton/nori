@@ -61,14 +61,9 @@ impl Client {
     /// when those are not timed, and an empty server answer last if nobody had any. No pick is shown
     /// twice. Dropping the future cancels its requests.
     pub async fn lyrics_for(&self, id: String, shown: Arc<dyn LyricsShown>) -> NetResult<()> {
-        let asked = asked_now();
+        let asked = self.settings().with_prefs(lyrics_lookup).unwrap_or_else(|| lyrics_lookup(&StoredPrefs::default()));
         self.lyrics_for_with(id, &asked, shown).await
     }
-}
-
-/// The lyrics services enabled in the settings.
-fn asked_now() -> LyricsLookup {
-    crate::settings_store::with_prefs(lyrics_lookup).unwrap_or_else(|| lyrics_lookup(&StoredPrefs::default()))
 }
 
 impl Client {

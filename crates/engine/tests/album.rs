@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use common::card::{Card, Pull};
 use common::{Stepper, Virtual};
 use nori_core::client::{Client, NetProfile};
-use nori_core::settings_store::{edit_by_name, APPLY_AUDIO, REPLAN};
+use nori_core::settings_store::{APPLY_AUDIO, REPLAN};
 use nori_core::{Core, ServerConfig, Song};
 use nori_engine::core::{settings, CoreApp, CoreLibrary, CoreOrder, CoreQueue, Measurer};
 use nori_engine::{Body, ByteSource, Config, Engine, State, Store};
@@ -177,9 +177,9 @@ impl Rig {
 
     /// Sets a setting by name and relays its effects.
     fn set(&self, name: &str, value: &str) {
-        let effect = edit_by_name(name, value).unwrap_or_else(|| panic!("{name} is a setting")).effect;
+        let effect = nori_core::settings_store::shared().edit_by_name(name, value).unwrap_or_else(|| panic!("{name} is a setting")).effect;
         if effect & APPLY_AUDIO != 0 {
-            self.engine.set_settings(settings(&nori_core::settings_store::settings_current().unwrap(), 0.0));
+            self.engine.set_settings(settings(&nori_core::settings_store::shared().current().unwrap(), 0.0));
         }
         if effect & REPLAN != 0 {
             self.engine.replan();
@@ -252,7 +252,7 @@ impl Rig {
                             ms(sf),
                             ms(len),
                             ms(hf),
-                            nori_core::automix::planner::transition_note(id)
+                            nori_core::queue::shared().planner.transition_note(id)
                         )
                     };
                     let (back, expect) = (hf + DIP_MAX, sf + DIP_MAX);
@@ -425,7 +425,7 @@ fn keeping_albums_switched_on_while_a_song_plays_joins_it_whole(at_ms: i64) {
     // a1 is planned as a mix, then albums are kept gapless.
     assert!(rig.until(40, |r| r.engine.status().position_ms >= at_ms), "{:?}", rig.engine.status());
     assert!(!rig.engine.status().mixing, "switched at {} ms, before the mix is heard", rig.engine.status().position_ms);
-    assert!(nori_core::automix::planner::transition_note("a1").is_some_and(|n| n.kind != "Gapless"), "a1 is planned as a mix first: {:?}", nori_core::automix::planner::transition_note("a1"));
+    assert!(nori_core::queue::shared().planner.transition_note("a1").is_some_and(|n| n.kind != "Gapless"), "a1 is planned as a mix first: {:?}", nori_core::queue::shared().planner.transition_note("a1"));
     rig.set("crossfadeKeepAlbums", "true");
     let (mixed, order) = rig.to_the_end();
     rig.heard_as(&order, 0, 0, &[true, true], 1);
@@ -448,7 +448,7 @@ fn an_album_then_another_is_mixed_only_between_them() {
     rig.engine.play_at(0, 0);
     let (mixed, order) = rig.to_the_end();
     assert!(mixed, "the albums are mixed into each other");
-    assert_ne!(nori_core::automix::planner::transition_note("m2").map(|n| n.kind), Some("Gapless".into()));
+    assert_ne!(nori_core::queue::shared().planner.transition_note("m2").map(|n| n.kind), Some("Gapless".into()));
     rig.heard_as(&order, 0, 0, &[true, false, true], 0);
 }
 
@@ -459,7 +459,7 @@ fn songs_of_an_album_not_played_as_one_are_mixed(how: Queued) {
     let (mixed, order) = rig.to_the_end();
     assert!(mixed, "mixed song into song");
     for id in &order[..order.len() - 1] {
-        let note = nori_core::automix::planner::transition_note(id);
+        let note = nori_core::queue::shared().planner.transition_note(id);
         assert!(note.as_ref().is_some_and(|n| n.kind != "Gapless"), "{id} mixes into the next: {note:?}");
     }
     rig.heard_as(&order, 0, 0, &[false, false], 0);
@@ -471,7 +471,7 @@ fn a_shuffled_album_is_mixed() {
     let (mixed, order) = rig.to_the_end();
     assert!(mixed, "a shuffled album is mixed");
     for id in &order[..order.len() - 1] {
-        let note = nori_core::automix::planner::transition_note(id);
+        let note = nori_core::queue::shared().planner.transition_note(id);
         assert!(note.as_ref().is_some_and(|n| n.kind != "Gapless"), "{id} mixes into the next: {note:?}");
     }
 }

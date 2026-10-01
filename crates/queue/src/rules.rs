@@ -13,7 +13,6 @@ pub use nori_player::queue::OnError;
 pub use nori_player::transport::NextAction;
 
 
-pub use nori_settings::settings_store::prefs;
 
 #[cfg(feature = "ffi")]
 #[uniffi::remote(Enum)]
@@ -54,8 +53,8 @@ const UPCOMING: usize = 8;
 impl Session {
     /// The upcoming ids to prefetch on this network (`nori_player::queue::precache_range`).
     pub fn precache(&self, metered: bool) -> Vec<String> {
-        let (count, mixing) = prefs(|p| {
-            (q::precache_count(metered, p.precache_wifi, p.precache_mobile), q::mixing(nori_automix::planner::transitions_off(), p.crossfade_sec, p.auto_mix))
+        let (count, mixing) = self.settings.prefs(|p| {
+            (q::precache_count(metered, p.precache_wifi, p.precache_mobile), q::mixing(self.planner.transitions_off(), p.crossfade_sec, p.auto_mix))
         });
         self.playlist(|p| {
             let Some((first, last)) = q::precache_range(count, mixing, p.shuffling()) else { return Vec::new() };
@@ -73,14 +72,14 @@ impl Session {
 
     /// The upcoming analysable ids to analyse for AutoMix; empty while AutoMix is off.
     pub fn measure(&self) -> Vec<String> {
-        let n = prefs(|p| q::measure_ahead(p.auto_mix));
+        let n = self.settings.prefs(|p| q::measure_ahead(p.auto_mix));
         self.playlist(|p| p.upcoming().take(UPCOMING).take(n).map(|i| &p.ids()[i]).filter(|id| crate::queue::analysable(id)).cloned().collect())
     }
 
     /// A song failed to play: what to do (`nori_player::queue::on_error`). `bridge_ready`: the platform
     /// can hand a network failure to the offline bridge.
     pub fn error(&self, kind: PlaybackError, offload_refused: bool, bridge_ready: bool) -> OnError {
-        let (skip, bridge) = prefs(|p| (p.skip_on_error, p.bridge_offline));
+        let (skip, bridge) = self.settings.prefs(|p| (p.skip_on_error, p.bridge_offline));
         let has_next = self.playlist(|p| p.next().is_some());
         let mut c = self.controls.lock();
         c.last_error = Some(kind);
@@ -100,7 +99,7 @@ impl Session {
 
     /// The offline bridge could not take a network failure: whether to skip it.
     pub fn bridge_failed(&self) -> bool {
-        let skip = prefs(|p| p.skip_on_error);
+        let skip = self.settings.prefs(|p| p.skip_on_error);
         let has_next = self.playlist(|p| p.next().is_some());
         self.controls.lock().errors.bridge_failed(skip, has_next)
     }
@@ -129,7 +128,7 @@ impl Session {
     /// Everything a new song asks of the platform. Stateful steps (refill fetch, sleep countdown) are
     /// taken here, so ask once per song and never on a repeat-one loop.
     pub fn song_arrived(&self) -> SongSteps {
-        let on = prefs(|p| p.bridge_offline);
+        let on = self.settings.prefs(|p| p.bridge_offline);
         let (bridging, parked) = self.playlist(|p| (p.bridging(), p.next_is_parked()));
         SongSteps {
             save_after_ms: queue_keep(QueueMoment::Song).save_after_ms,
@@ -176,7 +175,7 @@ pub fn song_arrived() -> SongSteps {
 /// Whether previous restarts the current song (per "previous always skips").
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn queue_previous_restarts(position_ms: i64, has_previous: bool) -> bool {
-    q::previous_restarts(position_ms, has_previous, prefs(|p| p.previous_always_skips))
+    q::previous_restarts(position_ms, has_previous, shared().settings.prefs(|p| p.previous_always_skips))
 }
 
 /// The repeat mode after a press of the button (media3 numbering: off 0, one 1, all 2).

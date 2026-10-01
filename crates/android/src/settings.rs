@@ -37,7 +37,7 @@ extern "system" fn set_band(env: JNIEnv, _: JClass, index: jint, band: JFloatArr
         return -1;
     }
     let asked = nori_core::settings::band_from(b[0] as i32, b[1], b[2], b[3], b[4] as i32);
-    let Some((effect, kept)) = nori_core::settings_store::edit_band(index as u32, asked) else { return -1 };
+    let Some((effect, kept)) = nori_core::settings_store::shared().edit_band(index as u32, asked) else { return -1 };
     let out = [kept.kind as i32 as f32, kept.freq, kept.gain_db, kept.q, kept.channel as i32 as f32];
     if env.set_float_array_region(&band, 0, &out).is_err() {
         return -1;
@@ -53,11 +53,11 @@ fn pack_edit(edit: Option<(u32, f32)>) -> jlong {
 /// `settings_store::edit_level`; `level` is an [`EqLevel`] ordinal.
 extern "system" fn set_level(level: jint, value: jfloat) -> jlong {
     let Some(level) = usize::try_from(level).ok().and_then(|l| EqLevel::ALL.get(l)) else { return -1 };
-    pack_edit(nori_core::settings_store::edit_level(*level, value))
+    pack_edit(nori_core::settings_store::shared().edit_level(*level, value))
 }
 
 /// `settings_store::edit_graphic`.
 extern "system" fn set_graphic(index: jint, value: jfloat) -> jlong {
     let Ok(index) = u32::try_from(index) else { return -1 };
-    pack_edit(nori_core::settings_store::edit_graphic(index, value))
+    pack_edit(nori_core::settings_store::shared().edit_graphic(index, value))
 }

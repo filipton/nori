@@ -55,7 +55,7 @@ impl Core {
             return Ok(None);
         }
         let stored = put_finished(&self.db.lock(), song_id, &a.take_features())?;
-        nori_automix::planner::analyses_changed();
+        self.session.planner.analyses_changed();
         Ok(Some(stored))
     }
 
@@ -78,7 +78,7 @@ impl Core {
         let adopted = nori_automix::beats::merge(&mut row, end, grid);
         put(&c, &row)?;
         if adopted {
-            nori_automix::planner::analyses_changed();
+            self.session.planner.analyses_changed();
         }
         Ok(adopted)
     }

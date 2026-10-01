@@ -1280,7 +1280,7 @@ extern "system" fn create(mut env: JNIEnv, _: JClass, sdk: jint, float: jboolean
     let library = AndroidLibrary { queue: nori_core::queue::shared().clone(), stations: stations.clone(), ahead: ahead.clone() };
     // Full volume until Kotlin reports one (only while loudness compensation is on).
     let volume = Arc::new(OutputVolume::default());
-    let sound = nori_core::settings_store::settings_current().map(|p| settings(&p, volume.db())).unwrap_or_default();
+    let sound = nori_core::settings_store::shared().current().map(|p| settings(&p, volume.db())).unwrap_or_default();
     let watch = Some(nori_engine::watch::Watcher(Arc::new(crate::PerfWatch)));
     let config = Config { memory_mb: memory_mb.max(16) as u32, settings: sound, watch, ..Config::default() };
     let events = Arc::new(Events::default());
@@ -1380,7 +1380,7 @@ extern "system" fn set_tuning(h: jlong, on: jboolean) {
 }
 
 extern "system" fn apply_settings(h: jlong) {
-    if let (Some(p), Some(prefs)) = (player(h), nori_core::settings_store::settings_current()) {
+    if let (Some(p), Some(prefs)) = (player(h), nori_core::settings_store::shared().current()) {
         p.engine.set_settings(settings(&prefs, p.volume.db()));
     }
 }
@@ -1450,7 +1450,7 @@ extern "system" fn set_volume(h: jlong, index: jint, max: jint, db: jfloat) {
     if !p.volume.set(db) {
         return;
     }
-    let Some(prefs) = nori_core::settings_store::settings_current().filter(|p| p.loudness) else { return };
+    let Some(prefs) = nori_core::settings_store::shared().current().filter(|p| p.loudness) else { return };
     let s = nori_player::contour::design(prefs.loudness_ref_phon as f64, db);
     nori_core::alog::info(&format!(
         "loudness: volume {index}/{max} at {db:.1} dB, bass {:+.1} dB at {} Hz, treble {:+.1} dB, pre-gain {:.1} dB",

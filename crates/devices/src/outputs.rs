@@ -115,7 +115,7 @@ fn modes(rates: &[u32], encodings: &[i32]) -> Vec<DacMode> {
 const KNOWN: &str = "knownOutputs";
 
 fn keep(known: &[String]) {
-    settings_store::keep_app_value(KNOWN, serde_json::to_string(known).unwrap_or_default());
+    settings_store::shared().keep_app_value(KNOWN, serde_json::to_string(known).unwrap_or_default());
 }
 
 /// The attached devices (parallel `AudioDeviceInfo` types and product names) against the known list; a
@@ -143,7 +143,7 @@ pub fn device_flat() -> String {
 /// Every output seen, as stored.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn outputs_known() -> Vec<String> {
-    let stored: Vec<String> = settings_store::app_value(KNOWN).and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
+    let stored: Vec<String> = settings_store::shared().app_value(KNOWN).and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
     outputs::initial_known(&stored)
 }
 

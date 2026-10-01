@@ -778,8 +778,8 @@ impl StoredPrefs {
         }
     }
 
-    /// What the transition planner reads from the settings (`nori_automix::planner::settings_from`).
-    pub(crate) fn transition_prefs(&self) -> TransitionPrefs {
+    /// What the transition planner reads from the settings (`nori_automix::planner::Planner`).
+    pub fn transition_prefs(&self) -> TransitionPrefs {
         TransitionPrefs {
             auto_mix: self.auto_mix,
             crossfade_s: self.crossfade_sec,

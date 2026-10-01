@@ -208,7 +208,7 @@ fn downloads_disk_and_measuring_over_core() {
     assert!(!measurer.busy(), "AutoMix off: nothing to measure");
 
     // "Better beat detection" without a model decodes nothing more and says why.
-    let mut prefs = nori_core::settings_store::settings_current().unwrap();
+    let mut prefs = nori_core::settings_store::shared().current().unwrap();
     (prefs.auto_mix_better_beats, prefs.auto_mix_beats_mobile_data) = (true, true);
     nori_core::settings_store::settings_put(prefs);
     measurer.ask(core.session.measure());
@@ -272,7 +272,7 @@ impl Flaky {
 }
 
 fn download_quality(bit_rate: i32, format: &str) {
-    let mut prefs = nori_core::settings_store::settings_current().unwrap();
+    let mut prefs = nori_core::settings_store::shared().current().unwrap();
     prefs.download = nori_core::settings::SavedQuality { bit_rate, format: format.into() };
     nori_core::settings_store::settings_put(prefs);
 }
@@ -340,7 +340,7 @@ fn downloads_take_up_rightly(core: &Arc<Core>, client: &Arc<Client>, store: &Arc
 /// does the same for existing ones.
 fn downloads_read_back(core: &Arc<Core>, store: &Arc<Store>) {
     use nori_core::transfers::{download_phase, followed, work_done, Work, COMPLETED};
-    assert!(!nori_core::settings_store::with_prefs(|p| p.auto_mix).unwrap_or(false), "AutoMix is off");
+    assert!(!nori_core::settings_store::shared().with_prefs(|p| p.auto_mix).unwrap_or(false), "AutoMix is off");
     let songs: Vec<Song> = ["rb-1", "rb-2"].iter().map(|id| Song { id: id.to_string(), title: id.to_string(), duration: 40, suffix: "wav".into(), ..Default::default() }).collect();
     core.download_queue(songs).unwrap();
     for id in ["rb-1", "rb-2"] {
@@ -415,7 +415,7 @@ fn metered_and_ahead(client: &Arc<Client>, store: &Arc<Store>, dir: &std::path::
     assert_eq!(net.0.lock().iter().filter(|u| u.ends_with("&id=p-3")).count(), 1, "in one request");
 
     // A lower metered quality makes the switch visible.
-    nori_core::settings_store::edit_by_name("mobile", "192:opus");
+    nori_core::settings_store::shared().edit_by_name("mobile", "192:opus");
     let q = nori_engine::core::network_metered(client, true);
     assert_eq!((q.bit_rate, q.format.as_str()), (192, "opus"), "the settings' quality for mobile data");
     let asked = net.0.lock().len();

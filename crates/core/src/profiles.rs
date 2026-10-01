@@ -34,7 +34,7 @@ impl Client {
     pub async fn autoeq_update(&self, asked: bool, metered: bool) -> NetResult<Option<u32>> {
         let now = crate::db::now_ms();
         if !asked {
-            let auto = crate::settings_store::prefs(|p| p.auto_eq_download && p.third_party_lookups);
+            let auto = self.settings().prefs(|p| p.auto_eq_download && p.third_party_lookups);
             let (stored, fetched) = {
                 let c = self.core.db.lock();
                 (autoeq::count(&c)?, autoeq::fetched_ms(&c)?)
@@ -56,7 +56,7 @@ impl Client {
     /// `entry`'s preset text (parametric, else graphic). None when AutoEQ has neither, which hides the
     /// entry from now on; a failed request is an error.
     pub async fn autoeq_curve(&self, entry: AutoEqEntry) -> NetResult<Option<String>> {
-        let graphic = crate::settings_store::prefs(|p| p.eq_mode == crate::settings::EqMode::Graphic);
+        let graphic = self.settings().prefs(|p| p.eq_mode == crate::settings::EqMode::Graphic);
         match autoeq::fetch_curve(&*self.transport, &entry, graphic).await? {
             autoeq::Curve::Found(text) => Ok(Some(text)),
             autoeq::Curve::Missing => {
@@ -72,13 +72,13 @@ impl Client {
 impl Core {
     /// Music now plays to `output`.
     pub fn device_arrive(&self, output: String) -> DeviceArrival {
-        self.arrive_as(output, &Now::read())
+        self.arrive_as(output, &Now::read(&self.session.settings))
     }
 
     /// Applies AutoEQ curve `name` (`preset` text) over the current sound, saves it as profile `name`
     /// bound to `output` and, if `live`, loads it. Errors when the preset has no filters.
     pub fn device_adopt(&self, output: String, name: String, preset: String, live: bool) -> Result<DeviceEffect, SoundError> {
-        let step = self.adopt_as(&output, &name, &preset, live, &Now::read())?;
+        let step = self.adopt_as(&output, &name, &preset, live, &Now::read(&self.session.settings))?;
         Ok(self.settle(&output, step))
     }
 
@@ -99,7 +99,7 @@ impl Core {
 
     /// A device list choice (curves go through `device_adopt`); `live` loads it now.
     pub fn device_assign(&self, output: String, choice: ChoiceKind, profile: String, live: bool) -> Result<DeviceEffect, SoundError> {
-        let step = self.assign_as(&output, choice, profile, live, &Now::read())?;
+        let step = self.assign_as(&output, choice, profile, live, &Now::read(&self.session.settings))?;
         Ok(self.settle(&output, step))
     }
 

@@ -74,7 +74,7 @@ impl Session {
 
     /// Whether refilling is on: the autoplay setting, or always for a shuffle-started queue.
     fn refill_on(&self) -> bool {
-        refills(self.origin().map(|o| o.kind), crate::rules::prefs(|p| p.auto_fill))
+        refills(self.origin().map(|o| o.kind), self.settings.prefs(|p| p.auto_fill))
     }
 
     /// (may refill now, songs after the current one, last song).

@@ -199,7 +199,7 @@ impl Client {
     /// What to append after the queue's end, per the autofill settings. Empty on failure or an unknown seed.
     pub async fn autofill(&self) -> Refill {
         let (kind, basis, remote) =
-            crate::settings_store::prefs(|p| (p.auto_fill_kind, p.auto_fill_basis, p.auto_fill_remote));
+            self.settings().prefs(|p| (p.auto_fill_kind, p.auto_fill_basis, p.auto_fill_remote));
         self.autofill_as(kind, basis, remote).await
     }
 

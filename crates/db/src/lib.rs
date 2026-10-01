@@ -107,20 +107,20 @@ pub fn open_app(path: &str) -> rusqlite::Result<Connection> {
     Ok(c)
 }
 
-/// The active core's database, for code with no core handle (the planner on the audio thread, background
-/// analyses, platform download callbacks). Weak: the core owns it.
-// Global: those callers are reached from other crates and threads without a handle; passing one would
-// change the planner's, transfers' and scrobbler's public APIs.
-static ACTIVE: Mutex<Weak<Mutex<Connection>>> = Mutex::new(Weak::new());
+/// The profile's database in use, for the planner and the queue; replaced when another core opens.
+/// Weak: the core owns it.
+#[derive(Default)]
+pub struct Profile(Mutex<Weak<Mutex<Connection>>>);
 
-/// Makes `db` the active database.
-pub fn set_active(db: &Arc<Mutex<Connection>>) {
-    *ACTIVE.lock() = Arc::downgrade(db);
-}
+impl Profile {
+    pub fn set(&self, db: &Arc<Mutex<Connection>>) {
+        *self.0.lock() = Arc::downgrade(db);
+    }
 
-/// The active database, if its core is alive.
-pub fn active() -> Option<Arc<Mutex<Connection>>> {
-    ACTIVE.lock().upgrade()
+    /// The database, if its core is alive.
+    pub fn get(&self) -> Option<Arc<Mutex<Connection>>> {
+        self.0.lock().upgrade()
+    }
 }
 
 /// The database file name.

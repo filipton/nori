@@ -78,7 +78,7 @@ fn trace() {
             }
             22 => format!("flags {}", queue_flags(format!("s{}", r.below(16)))),
             23 => format!("songs {:?}", queue_songs(ids(&mut r, 2)).iter().map(|s| (s.id.clone(), s.duration)).collect::<Vec<_>>()),
-            24 => format!("plan {:?}", q.upcoming(1).first().and_then(|id| nori_core::automix::planner::plan_for(id)).map(|p| format!("{p:?}"))),
+            24 => format!("plan {:?}", q.upcoming(1).first().and_then(|id| nori_core::queue::shared().planner.plan_for(id)).map(|p| format!("{p:?}"))),
             _ => format!("unbridge {:?} {:?}", playlist_unbridge().map(|e| e.seek), playlist_bridge_state().bridging),
         };
         out.push(format!("{step} {line}"));

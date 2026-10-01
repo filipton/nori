@@ -375,7 +375,7 @@ pub fn active() -> Option<Arc<Core>> {
 
 #[cfg_attr(feature = "ffi", derive(uniffi::Object))]
 pub struct Core {
-    /// Also [`nori_db::active`] while this is the newest core.
+    /// Also its session's profile database while this is the newest core.
     db: Arc<Mutex<Connection>>,
     server: RwLock<api::Server>,
     /// The downloads table in memory and the platform's download reports (transfers.rs).
@@ -403,7 +403,7 @@ impl Core {
             session,
         });
         *ACTIVE.lock() = Arc::downgrade(&core);
-        nori_db::set_active(&core.db);
+        core.session.db.set(&core.db);
         core.downloads.activate();
         Ok(core)
     }

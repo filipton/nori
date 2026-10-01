@@ -23,10 +23,12 @@ pub fn precache_now() -> Vec<Fetch> {
     crate::client::active_client().map(|c| c.precache_targets(metered())).unwrap_or_default()
 }
 
-/// The user's (wifi, mobile, download) qualities.
-fn saved_qualities() -> (StreamQuality, StreamQuality, StreamQuality) {
-    let q = |s: &crate::settings::SavedQuality| StreamQuality { bit_rate: s.bit_rate.max(0) as u32, format: s.format.clone() };
-    crate::rules::prefs(|p| (q(&p.wifi), q(&p.mobile), q(&p.download)))
+impl Client {
+    /// The user's (wifi, mobile, download) qualities.
+    fn saved_qualities(&self) -> (StreamQuality, StreamQuality, StreamQuality) {
+        let q = |s: &crate::settings::SavedQuality| StreamQuality { bit_rate: s.bit_rate.max(0) as u32, format: s.format.clone() };
+        self.settings().prefs(|p| (q(&p.wifi), q(&p.mobile), q(&p.download)))
+    }
 }
 
 fn stream_cache_key(id: &str, q: &StreamQuality) -> String {
@@ -57,7 +59,7 @@ impl Client {
 
     /// The quality [`Self::resolve`] streams at on this network.
     pub fn streaming_quality(&self, metered: bool) -> StreamQuality {
-        let (wifi, mobile, _) = saved_qualities();
+        let (wifi, mobile, _) = self.saved_qualities();
         self.quality(metered, wifi, mobile)
     }
 }
@@ -71,7 +73,7 @@ impl Client {
 
     /// Where `id` opens: the download (`downloaded`) at download quality, else a stream for the network.
     pub fn resolve(&self, id: String, downloaded: bool, metered: bool) -> StreamTarget {
-        let (wifi, mobile, download) = saved_qualities();
+        let (wifi, mobile, download) = self.saved_qualities();
         if downloaded {
             self.download_target(id, download)
         } else {
@@ -97,7 +99,7 @@ impl Client {
     /// The songs to prefetch now ([`nori_queue::Session::precache`], minus downloaded or queued downloads),
     /// with URL and key.
     pub fn precache_targets(&self, metered: bool) -> Vec<Fetch> {
-        let (wifi, mobile, _) = saved_qualities();
+        let (wifi, mobile, _) = self.saved_qualities();
         self.fetches(self.core.session.precache(metered), metered, &wifi, &mobile, crate::transfers::held)
     }
 }

@@ -298,7 +298,7 @@ impl Session {
 
     /// Whether arriving on `index` would skip it ("skip explicit songs"); asked before the song is read.
     pub fn skips(&self, index: usize) -> bool {
-        let skip_explicit = crate::rules::prefs(|p| p.skip_explicit);
+        let skip_explicit = self.settings.prefs(|p| p.skip_explicit);
         if !skip_explicit {
             return false;
         }
@@ -347,7 +347,7 @@ impl Session {
     }
 
     fn gain_at(&self, index: Option<usize>, bit_perfect: bool) -> f32 {
-        let Some(s) = nori_settings::settings_store::settings_current() else { return 1.0 };
+        let Some(s) = self.settings.current() else { return 1.0 };
         let prefs = s.gain_prefs();
         let (before, current, after, shuffling) = self.playlist(|p| {
             let id = |i: Option<usize>| i.map(|i| (p.ids()[i].clone(), p.album_run(i)));
@@ -412,7 +412,7 @@ impl Session {
 
     /// The ids to save as the server's play queue: radio streams left out, empty unless scrobbling is on.
     pub fn to_push(&self) -> Vec<String> {
-        if !crate::rules::prefs(|p| p.scrobble) {
+        if !self.settings.prefs(|p| p.scrobble) {
             return Vec::new();
         }
         self.playlist(|p| p.ids().iter().filter(|id| !id.starts_with(queue::RADIO_PREFIX)).cloned().collect())

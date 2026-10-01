@@ -40,9 +40,9 @@ fn window_song(s: &Store, id: &str, run: u32) -> WindowSong {
     }
 }
 
-/// AutoMix's measured mid-signal loudness of `id`, if analysed.
-fn measured_lufs(id: &str) -> Option<f32> {
-    let db = db::active()?;
+/// AutoMix's measured mid-signal loudness of `id` in `db`, if analysed.
+fn measured_lufs(db: &nori_db::Profile, id: &str) -> Option<f32> {
+    let db = db.get()?;
     let a = nori_automix::store::get(&db.lock(), id).ok().flatten()?;
     Some(a.lufs)
 }
@@ -108,7 +108,7 @@ impl Session {
     /// Hands the planner its window: (id, album run) for the previous, current and next songs in play order.
     pub(crate) fn hand_window(&self, songs: &[(String, u32)], shuffling: bool) {
         let window = self.store(|s| songs.iter().map(|(id, run)| window_song(s, id, *run)).collect());
-        nori_automix::planner::transition_window(window, shuffling);
+        self.planner.transition_window(window, shuffling);
     }
 
     /// The ReplayGain volume for `current` given its neighbours (each with its album run; album gain
@@ -137,7 +137,7 @@ impl Session {
         let untagged = song.tags.is_none_or(|g| g.track_gain.is_none() && g.album_gain.is_none()) && song.fallback_db.is_none();
         if untagged && prefs.measured && prefs.mode != PlayerGainMode::Off {
             // Outside the store's lock: the database's is never taken inside it.
-            song.measured_lufs = measured_lufs(&current).map(|mid| stereo_loudness_of_mid(mid, channels));
+            song.measured_lufs = measured_lufs(&self.db, &current).map(|mid| stereo_loudness_of_mid(mid, channels));
         }
         song_gain(prefs, &song, run)
     }

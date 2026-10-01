@@ -200,7 +200,7 @@ impl Client {
 
     /// Home: favourites and today's mixes as on the phone's Home, then what was played and added lately.
     async fn car_home(&self) -> BrowsePage {
-        let taste = crate::settings_store::prefs(|p| p.taste_model);
+        let taste = self.settings().prefs(|p| p.taste_model);
         // The starred songs handed to the mixes, as the Home row hands them before it is drawn.
         if let Ok(h) = self.mix_favourites_stored() {
             if !h.fresh {

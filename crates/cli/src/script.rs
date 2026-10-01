@@ -169,7 +169,7 @@ impl Cli {
 
     /// The stored settings; a device's own sound may have been loaded since the last put.
     fn kept(&self) -> StoredPrefs {
-        nori_core::settings_store::settings_current().unwrap_or_else(|| self.prefs.clone())
+        nori_core::settings_store::shared().current().unwrap_or_else(|| self.prefs.clone())
     }
 
     fn put(&mut self, prefs: StoredPrefs) {
@@ -384,7 +384,7 @@ pub fn main(argv: Vec<String>) {
                     println!("no band {i}");
                     continue;
                 };
-                if let Some((effect, _)) = nori_core::settings_store::edit_band(i, nori_core::settings::SoundBand { gain_db: db, ..b }) {
+                if let Some((effect, _)) = nori_core::settings_store::shared().edit_band(i, nori_core::settings::SoundBand { gain_db: db, ..b }) {
                     cli.apply(effect);
                 }
             }

@@ -180,7 +180,7 @@ pub fn changed(p: &StoredPrefs) -> String {
 /// [`changed`] for the live settings.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn settings_changed() -> String {
-    changed(&crate::settings_store::settings_current().unwrap_or_default())
+    changed(&crate::settings_store::shared().current().unwrap_or_default())
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
@@ -191,14 +191,14 @@ pub fn setting_specs() -> Vec<SettingSpec> {
 /// [`SettingsState`] for the live settings and the platform's output.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn settings_state(dac_bit_perfect: bool, usb: bool) -> SettingsState {
-    let p = crate::settings_store::settings_current().unwrap_or_default();
+    let p = crate::settings_store::shared().current().unwrap_or_default();
     state(&p, Output { dac_bit_perfect, usb })
 }
 
 /// A change by name kept in the live settings (`settings_store::edit_by_name`).
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn setting_set(name: String, value: String) -> Option<SettingChange> {
-    crate::settings_store::edit_by_name(&name, &value)
+    crate::settings_store::shared().edit_by_name(&name, &value)
 }
 
 /// Whether the interface is dark for the theme setting and the system's mode.

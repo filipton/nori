@@ -13,7 +13,7 @@ const TIMEOUT_MS: u32 = 120_000;
 /// The weights file, downloading and converting it first if needed. None when disabled or unavailable now
 /// (metered network not allowed, no client, failure).
 pub fn ensure() -> Option<PathBuf> {
-    let wanted = || crate::settings_store::prefs(|p| p.auto_mix && p.auto_mix_better_beats);
+    let wanted = || crate::settings_store::shared().prefs(|p| p.auto_mix && p.auto_mix_better_beats);
     if !wanted() {
         return None;
     }
@@ -21,7 +21,7 @@ pub fn ensure() -> Option<PathBuf> {
         return Some(f);
     }
     let file = beat_model::file()?;
-    let mobile = crate::settings_store::prefs(|p| p.auto_mix_beats_mobile_data);
+    let mobile = crate::settings_store::shared().prefs(|p| p.auto_mix_beats_mobile_data);
     if nori_net::stream::metered() && !mobile {
         beat_model::set_state(State::WaitingForWifi);
         return None;

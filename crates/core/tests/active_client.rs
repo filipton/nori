@@ -32,7 +32,7 @@ fn resolve_now_follows_active_client_and_network() {
     // A distinct mobile quality shows which network was used.
     let dir = nori_testdir::TempDir::new("active-client");
     nori_core::settings_store::settings_open(dir.join("app.db").to_string_lossy().into_owned()).unwrap();
-    nori_core::settings_store::edit_by_name("mobile", "192:opus");
+    nori_core::settings_store::shared().edit_by_name("mobile", "192:opus");
     network_metered(true);
     let metered = resolve_now("s1").expect("the client just made");
     network_metered(false);

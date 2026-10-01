@@ -36,9 +36,6 @@ struct SettingsStore {
     writes: Arc<AtomicU64>,
 }
 
-/// Global: the platform and every crate reach the open settings through the free functions below.
-static KEPT: RwLock<Option<SettingsStore>> = RwLock::new(None);
-
 fn to_json(v: &PrefValue) -> String {
     match v {
         PrefValue::Flag { v } => json!({ "b": v }),
@@ -98,8 +95,7 @@ fn effects(a: &StoredPrefs, b: &StoredPrefs) -> u32 {
     crate::settings::ROWS.iter().filter(|r| r.effect != 0 && (r.changed)(a, b)).fold(chain, |e, r| e | r.effect)
 }
 
-/// Core state that follows the settings directly. The transition planner reads them itself
-/// (`planner::settings_from`).
+/// Core state that follows the settings directly. The transition planner reads them itself.
 fn changed(prefs: &StoredPrefs) {
     nori_automix::beat_model::switched(prefs.auto_mix_better_beats);
 }
@@ -123,7 +119,7 @@ impl SettingsStore {
     }
 
     /// Replaces the settings with what `make` makes of them and queues the write. Returns the effect
-    /// bits, or None when nothing changed. Called under [`KEPT`]'s write lock, so concurrent edits reach
+    /// bits, or None when nothing changed. Called under [`Settings`]' write lock, so concurrent edits reach
     /// [`changed`] in the order they were kept.
     fn edit(&mut self, make: impl FnOnce(&StoredPrefs) -> StoredPrefs) -> Option<u32> {
         let prefs = make(&self.prefs);
@@ -194,77 +190,110 @@ impl SettingsStore {
     }
 }
 
-fn with_store<R>(f: impl FnOnce(&mut SettingsStore) -> Option<R>) -> Option<R> {
-    KEPT.write().as_mut().and_then(f)
+/// The live settings of one app, empty (the defaults) until opened.
+#[derive(Default)]
+pub struct Settings {
+    kept: RwLock<Option<SettingsStore>>,
 }
 
-/// Opens the settings kept in the app database at `db_path` and makes them the live ones.
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn settings_open(db_path: String) -> nori_model::Result<StoredPrefs> {
-    let store = SettingsStore::open(&db_path)?;
-    let prefs = store.prefs.clone();
-    {
-        let mut k = KEPT.write();
+/// The settings behind the platform's free entry points (uniffi, JNI). Global: those calls carry no handle.
+pub fn shared() -> &'static Arc<Settings> {
+    static SHARED: std::sync::LazyLock<Arc<Settings>> = std::sync::LazyLock::new(Arc::default);
+    &SHARED
+}
+
+impl Settings {
+    fn with_store<R>(&self, f: impl FnOnce(&mut SettingsStore) -> Option<R>) -> Option<R> {
+        self.kept.write().as_mut().and_then(f)
+    }
+
+    /// Opens the settings kept in the app database at `db_path` and makes them the live ones.
+    pub fn open(&self, db_path: &str) -> nori_model::Result<StoredPrefs> {
+        let store = SettingsStore::open(db_path)?;
+        let prefs = store.prefs.clone();
+        let mut k = self.kept.write();
         changed(&prefs);
         *k = Some(store);
+        Ok(prefs)
     }
-    nori_automix::planner::settings_from(|| with_prefs(StoredPrefs::transition_prefs));
-    Ok(prefs)
-}
 
-/// A value from the app database's `app_kv` table; None before the settings are open.
-pub fn app_value(key: &str) -> Option<String> {
-    KEPT.read().as_ref()?.app_value(key)
-}
+    /// A value from the app database's `app_kv` table; None before the settings are open.
+    pub fn app_value(&self, key: &str) -> Option<String> {
+        self.kept.read().as_ref()?.app_value(key)
+    }
 
-/// The app database the settings were opened from, for other app-wide tables; None before it is open.
-pub fn app_db() -> Option<Arc<Mutex<Connection>>> {
-    KEPT.read().as_ref().map(|k| k.db.clone())
-}
+    /// The app database the settings were opened from, for other app-wide tables; None before it is open.
+    pub fn app_db(&self) -> Option<Arc<Mutex<Connection>>> {
+        self.kept.read().as_ref().map(|k| k.db.clone())
+    }
 
-/// Stores an `app_kv` value on the background thread.
-pub fn keep_app_value(key: &'static str, value: String) {
-    let Some(db) = app_db() else { return };
-    background::run(move || {
-        if let Err(e) = db.lock().execute("INSERT OR REPLACE INTO app_kv(key, value) VALUES(?1, ?2)", params![key, value]) {
-            alog::info(&format!("{key}: could not write: {e}"));
+    /// Stores an `app_kv` value on the background thread.
+    pub fn keep_app_value(&self, key: &'static str, value: String) {
+        let Some(db) = self.app_db() else { return };
+        background::run(move || {
+            if let Err(e) = db.lock().execute("INSERT OR REPLACE INTO app_kv(key, value) VALUES(?1, ?2)", params![key, value]) {
+                alog::info(&format!("{key}: could not write: {e}"));
+            }
+        });
+    }
+
+    /// Replaces the settings. Returns the effect bits; 0 when nothing changed or the settings are not open.
+    pub fn put(&self, prefs: StoredPrefs) -> u32 {
+        self.with_store(|s| s.edit(|_| prefs)).unwrap_or(0)
+    }
+
+    /// One parametric band changed (`settings::set_band`): the effect bits and the band as kept (held in
+    /// range); None when nothing changed.
+    pub fn edit_band(&self, index: u32, asked: SoundBand) -> Option<(u32, SoundBand)> {
+        self.with_store(|s| s.edit_band(index, asked))
+    }
+
+    /// One graphic slider changed (`settings::set_graphic`): the effect bits and the value as kept.
+    pub fn edit_graphic(&self, index: u32, gain_db: f32) -> Option<(u32, f32)> {
+        self.with_store(|s| s.edit_graphic(index, gain_db))
+    }
+
+    /// A level slider changed (`settings::set_level`): the effect bits and the value as kept (held in
+    /// range and snapped).
+    pub fn edit_level(&self, level: EqLevel, value: f32) -> Option<(u32, f32)> {
+        self.with_store(|s| s.edit_level(level, value))
+    }
+
+    /// A change by name (`settings::set_by_name`), kept, with the settings after it and the effect bits.
+    /// None for an unknown name. Before the settings are open it is applied to the defaults and not kept.
+    pub fn edit_by_name(&self, name: &str, value: &str) -> Option<SettingChange> {
+        match self.kept.write().as_mut() {
+            Some(s) => s.edit_by_name(name, value),
+            None => set_by_name(&StoredPrefs::default(), name, value),
         }
-    });
-}
+    }
 
-/// Replaces the settings. Returns the effect bits; 0 when nothing changed or the settings are not open.
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn settings_put(prefs: StoredPrefs) -> u32 {
-    with_store(|s| s.edit(|_| prefs)).unwrap_or(0)
-}
+    /// Applies an equalizer tool to the live settings. None when nothing changed or the settings are not
+    /// open; an import without filters is an error.
+    pub fn sound_tool(&self, tool: SoundTool) -> Result<Option<SoundChange>, SoundError> {
+        self.kept.write().as_mut().map_or(Ok(None), |s| s.sound_tool(tool))
+    }
 
-/// One parametric band changed (`settings::set_band`): the effect bits and the band as kept (held in
-/// range); None when nothing changed.
-pub fn edit_band(index: u32, asked: SoundBand) -> Option<(u32, SoundBand)> {
-    with_store(|s| s.edit_band(index, asked))
-}
+    /// A copy of the live settings; None before they are open.
+    pub fn current(&self) -> Option<StoredPrefs> {
+        self.with_prefs(StoredPrefs::clone)
+    }
 
-/// One graphic slider changed (`settings::set_graphic`): the effect bits and the value as kept.
-pub fn edit_graphic(index: u32, gain_db: f32) -> Option<(u32, f32)> {
-    with_store(|s| s.edit_graphic(index, gain_db))
-}
+    /// `f` applied to the live settings without copying them; None before they are open.
+    pub fn with_prefs<R>(&self, f: impl FnOnce(&StoredPrefs) -> R) -> Option<R> {
+        self.kept.read().as_ref().map(|k| f(&k.prefs))
+    }
 
-/// A level slider changed (`settings::set_level`): the effect bits and the value as kept (held in range
-/// and snapped).
-pub fn edit_level(level: EqLevel, value: f32) -> Option<(u32, f32)> {
-    with_store(|s| s.edit_level(level, value))
-}
-
-/// A change by name (`settings::set_by_name`), kept, with the settings after it and the effect bits.
-/// None for an unknown name. Before the settings are open it is applied to the defaults and not kept.
-pub fn edit_by_name(name: &str, value: &str) -> Option<SettingChange> {
-    match KEPT.write().as_mut() {
-        Some(s) => s.edit_by_name(name, value),
-        None => set_by_name(&StoredPrefs::default(), name, value),
+    /// `f` applied to the live settings, or to the defaults before they are open.
+    pub fn prefs<R>(&self, f: impl FnOnce(&StoredPrefs) -> R) -> R {
+        match self.kept.read().as_ref() {
+            Some(k) => f(&k.prefs),
+            None => f(&StoredPrefs::default()),
+        }
     }
 }
 
-/// An equalizer screen tool (sliders are [`edit_band`] and [`edit_level`]).
+/// An equalizer screen tool (sliders are [`Settings::edit_band`] and [`Settings::edit_level`]).
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 pub enum SoundTool {
@@ -299,29 +328,24 @@ impl SoundTool {
     }
 }
 
-/// Applies an equalizer tool to the live settings. None when nothing changed or the settings are not
-/// open; an import without filters is an error.
+// ---- the platform's entry points, over the shared settings ----
+
+/// [`Settings::open`].
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn settings_open(db_path: String) -> nori_model::Result<StoredPrefs> {
+    shared().open(&db_path)
+}
+
+/// [`Settings::put`].
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn settings_put(prefs: StoredPrefs) -> u32 {
+    shared().put(prefs)
+}
+
+/// [`Settings::sound_tool`].
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn settings_sound_tool(tool: SoundTool) -> Result<Option<SoundChange>, SoundError> {
-    KEPT.write().as_mut().map_or(Ok(None), |s| s.sound_tool(tool))
-}
-
-/// A copy of the live settings; None before they are open.
-pub fn settings_current() -> Option<StoredPrefs> {
-    with_prefs(StoredPrefs::clone)
-}
-
-/// `f` applied to the live settings without copying them; None before they are open.
-pub fn with_prefs<R>(f: impl FnOnce(&StoredPrefs) -> R) -> Option<R> {
-    KEPT.read().as_ref().map(|k| f(&k.prefs))
-}
-
-/// `f` applied to the live settings, or to the defaults before they are open.
-pub fn prefs<R>(f: impl FnOnce(&StoredPrefs) -> R) -> R {
-    match KEPT.read().as_ref() {
-        Some(k) => f(&k.prefs),
-        None => f(&StoredPrefs::default()),
-    }
+    shared().sound_tool(tool)
 }
 
 #[cfg(test)]

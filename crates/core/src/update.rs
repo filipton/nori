@@ -269,7 +269,7 @@ fn inline(s: &str) -> String {
 /// Postpones `version`: automatic checks mark it `skipped`.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn update_skip(version: String) {
-    crate::settings_store::keep_app_value(SKIPPED_KEY, version);
+    crate::settings_store::shared().keep_app_value(SKIPPED_KEY, version);
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
@@ -279,13 +279,13 @@ impl Client {
     pub async fn update_check(&self, asked: bool, version: String, abis: Vec<String>) -> NetResult<UpdateCheck> {
         let now = crate::db::now_ms();
         if !asked {
-            let on = crate::settings_store::prefs(|p| p.update_check);
-            let checked = crate::settings_store::app_value(CHECKED_KEY).and_then(|v| v.parse::<i64>().ok());
+            let on = self.settings().prefs(|p| p.update_check);
+            let checked = self.settings().app_value(CHECKED_KEY).and_then(|v| v.parse::<i64>().ok());
             if !due(on, checked, now) {
                 return Ok(UpdateCheck::NotDue);
             }
         }
-        crate::settings_store::keep_app_value(CHECKED_KEY, now.to_string());
+        self.settings().keep_app_value(CHECKED_KEY, now.to_string());
         let request = Exchange {
             url: LATEST_URL.to_string(),
             headers: [("Accept".to_string(), "application/vnd.github+json".to_string()), ("X-GitHub-Api-Version".to_string(), "2022-11-28".to_string())].into(),
@@ -297,7 +297,7 @@ impl Client {
             return Err(NetError::Http { status: r.status });
         }
         let release: Release = serde_json::from_slice(&r.body).map_err(|e| NetError::Parse { reason: format!("latest release: {e}") })?;
-        let skipped = if asked { None } else { crate::settings_store::app_value(SKIPPED_KEY) };
+        let skipped = if asked { None } else { self.settings().app_value(SKIPPED_KEY) };
         let found = decide(&release, &version, &abis, skipped.as_deref()).map_err(|reason| NetError::Parse { reason })?;
         crate::alog::info(&format!("update check: {version} here, {} latest", release.tag_name));
         Ok(found)
