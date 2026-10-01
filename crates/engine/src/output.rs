@@ -1007,6 +1007,28 @@ mod tests {
     }
 
     #[test]
+    fn new_format_after_a_change_plays_the_input_made_again() {
+        use nori_player::engine::Downstream;
+        use nori_player::pipeline::{ChainSettings, Sink};
+        let (feed, held) = (Arc::new(parking_lot::Mutex::new(None)), Arc::new(AtomicU64::new(0)));
+        let mut track = RingTrack::new(Box::new(Hand(feed.clone(), held)));
+        track.max_rate = 1000;
+        let mut sink = Sink::new(nori_player::burst::BUFFER_US, ChainSettings::default(), track);
+        sink.configure(F);
+        assert_eq!(sink.handle_buffer(&pcm(&[1000; 3000]), 0, 0), (true, 6000));
+        let mut f = feed.lock().take().expect("started");
+        let mut out = vec![0f32; 1000];
+        assert_eq!(f.pull(&mut out), 1000);
+        sink.change(ChainSettings { speed: 2.0, ..ChainSettings::default() });
+        // The next song, in another format the device converts.
+        sink.configure(Format { rate: 2000, ..F });
+        sink.fill();
+        let mut out = vec![0f32; 3000];
+        let rest = f.pull(&mut out);
+        assert!((900..=1100).contains(&rest), "the last 2000 frames at twice the speed: {rest}");
+    }
+
+    #[test]
     fn fade_runs_in_pulls() {
         let (mut t, mut f, _) = by_hand();
         t.write(&pcm(&[16384; 200]), 200.0);

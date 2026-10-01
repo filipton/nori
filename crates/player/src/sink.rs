@@ -788,7 +788,8 @@ impl<T: Track> Sink<T> {
 impl<T: Track> Downstream for Sink<T> {
     fn configure(&mut self, f: Format) {
         self.opens += 1;
-        if self.format.is_some() && self.track.must_reopen(f) {
+        // Input of the last format still to be run again (after a sound change) is run first.
+        if self.format.is_some() && (self.run < self.kept.end() || self.track.must_reopen(f)) {
             self.reopen = Some(f);
             return;
         }
