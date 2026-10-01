@@ -1013,7 +1013,7 @@ impl Tracker {
     /// A chunk arrived on `slot`: `bytes` so far of `length` (0 unknown). Returns the progress to show, or
     /// NaN when not worth redrawing. Called per chunk: allocates nothing.
     pub fn note(&mut self, slot: i32, length: i64, bytes: i64, now: i64) -> f32 {
-        let Some(s) = self.slots.get_mut(slot.max(0) as usize).filter(|s| s.live) else { return f32::NAN };
+        let Some(s) = usize::try_from(slot).ok().and_then(|i| self.slots.get_mut(i)).filter(|s| s.live) else { return f32::NAN };
         // A resumed download's first report is its existing bytes, not new ones.
         if s.gate_value.is_nan() && s.bytes == 0 {
             s.speed_bytes = bytes;
@@ -1750,6 +1750,14 @@ mod tests {
         t.unmark("a");
         let m = t.marks_changed();
         assert_eq!((mine(&m, "a"), mine(&m, "b")), (Some(None), None), "removed, and b did not move");
+    }
+
+    #[test]
+    fn no_slot_notes_nothing() {
+        let mut t = Tracker::default();
+        let slot = t.open("a", 0);
+        assert!(t.note(-1, 1000, 500, 10).is_nan());
+        assert_eq!(t.slots[slot as usize].bytes, 0);
     }
 
     #[test]
