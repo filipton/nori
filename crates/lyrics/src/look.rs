@@ -41,7 +41,7 @@ struct Kept {
 }
 
 /// The last few sets of lyrics read, so the page starts a clock from a key instead of every line.
-pub struct KeptLyrics {
+struct KeptLyrics {
     kept: Mutex<(u64, Vec<Kept>)>,
 }
 
@@ -49,12 +49,12 @@ pub struct KeptLyrics {
 const KEEP: usize = 4;
 
 impl KeptLyrics {
-    pub const fn new() -> Self {
+    const fn new() -> Self {
         KeptLyrics { kept: Mutex::new((0, Vec::new())) }
     }
 
     /// Keeps the timing of `lyrics` and sets their `key`; lyrics with no lines keep key 0.
-    pub fn keep(&self, lyrics: &mut nori_model::Lyrics) {
+    fn keep(&self, lyrics: &mut nori_model::Lyrics) {
         if lyrics.lines.is_empty() {
             return;
         }
@@ -69,16 +69,10 @@ impl KeptLyrics {
     }
 
     /// A clock on the lyrics kept under `key`, as [`lyrics_clock`] makes one; 0 when no longer kept.
-    pub fn clock(&self, key: u64, position_ms: i64) -> i64 {
+    fn clock(&self, key: u64, position_ms: i64) -> i64 {
         let kept = self.kept.lock();
         let Some(k) = kept.1.iter().find(|k| k.key == key) else { return 0 };
         new_clock(LyricTiming::new(k.synced, k.word_timed, k.lines.iter().cloned()), position_ms, k.offset_ms)
-    }
-}
-
-impl Default for KeptLyrics {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

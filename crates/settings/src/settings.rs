@@ -1231,7 +1231,7 @@ const CROSSFEED_PRESETS: [&str; 4] = ["OFF", "DEFAULT", "CHU_MOY", "JAN_MEIER"];
 
 /// `p`'s name, `names` being those of `all` in order.
 fn preset_name<P: PartialEq>(all: &[P], names: &[&'static str], p: P) -> &'static str {
-    names[all.iter().position(|x| *x == p).unwrap_or(0)]
+    names[all.iter().position(|x| *x == p).expect("every preset is in ALL")]
 }
 
 /// The preset named `name` (any case), `names` being those of `all` in order.
