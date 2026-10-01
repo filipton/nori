@@ -66,7 +66,6 @@ impl Client {
             "artist" if row.song.is_none() => self.artist_songs_of(arg.into()).await.unwrap_or_default(),
             "genre" if row.song.is_none() => self.songs(Read::SongsByGenre { genre: arg.into(), count: 100 }).await.unwrap_or_default(),
             _ => {
-                // Out of the lock before any wait: it is not held across one.
                 let shown = self.car.lock().get(&row.parent).map(|p| p.songs);
                 match shown {
                     Some(s) => s,

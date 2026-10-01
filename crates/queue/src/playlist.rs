@@ -134,7 +134,6 @@ pub struct BridgeState {
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn playlist_set(ids: Vec<String>, start: Option<u32>, shuffle: bool, origin: Option<PageOrigin>) -> QueueChange {
     let kind = origin.as_ref().map(|o| o.kind);
-    // Read before taking the queue's lock: the song store's lock is never taken inside it.
     let spans = (kind == Some(OriginKind::ShuffleAlbums)).then(|| album_spans(&ids));
     let mut q = QUEUE.lock();
     let saved = q.put_back.take().filter(|(put, _)| *put == ids).map(|(_, runs)| runs);

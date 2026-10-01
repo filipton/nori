@@ -17,7 +17,7 @@ pub struct Store {
     pub songs: HashMap<String, (Song, i64)>,
 }
 
-// Global: the uniffi entry points have no handle. Never locked while holding the queue's lock.
+// Global: the uniffi entry points have no handle. Taken inside the queue's lock, never around it.
 static STORE: Mutex<Option<Store>> = Mutex::new(None);
 
 /// Lends the store to `f`.
