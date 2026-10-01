@@ -291,7 +291,7 @@ impl Rig {
     fn seek_heard(&self, ms: i64) -> f64 {
         let (t0, seen) = (self.time.clock.now_ns(), self.events.lock().len());
         self.engine.seek(ms);
-        let past = |e: &Event| matches!(e, Event::Position { index: 0, ms: at } if (ms + 50..ms + 1_500).contains(at));
+        let past = |e: &Event| matches!(e, Event::Position { index: 0, ms: at, .. } if (ms + 50..ms + 1_500).contains(at));
         assert!(self.time.until(Duration::from_secs(30), || self.events.lock().iter().skip(seen).any(past)), "heard from {ms} ms: {:?}", self.events.lock());
         (self.time.clock.now_ns() - t0) as f64 / 1e9
     }

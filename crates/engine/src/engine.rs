@@ -97,8 +97,9 @@ pub enum Event {
     Song { index: usize, seq: Option<u64>, id: String, jumps: u64 },
     /// The song restarted by itself (repeat one).
     Looped { index: usize, seq: Option<u64>, id: String, jumps: u64 },
-    /// The position: at the pace of [`Engine::position_updates`], and once when a seek lands.
-    Position { index: usize, ms: i64 },
+    /// The position: at the pace of [`Engine::position_updates`], and once when a seek or jump lands.
+    /// `jumps`: as [`Event::Song`]'s, so a client knows which of its jumps landed.
+    Position { index: usize, ms: i64, jumps: u64 },
     /// A song would not play, or the output would not open (`id` empty).
     Error { id: String, message: String },
     /// The music goes to another output device, by the core's device name.
@@ -524,6 +525,8 @@ struct Told {
     stalled: bool,
     placed: bool,
     seek_landed: bool,
+    /// The jumps made by the last [`Event::Position`].
+    landed_jumps: u64,
     /// The song plays at a mix's tempo: [`Event::Placed`] once it is back at its own.
     stretched: bool,
     asleep: bool,
@@ -2001,15 +2004,17 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         self.say_position(now, i, ms);
     }
 
-    /// [`Event::Position`]: at the pace asked for while playing, and once when a seek lands.
+    /// [`Event::Position`]: at the pace asked for while playing, and once when a seek or jump lands.
     fn say_position(&mut self, now: i64, index: usize, ms: i64) {
-        let landed = std::mem::take(&mut self.told.seek_landed);
+        let jumps = self.made();
+        let landed = std::mem::take(&mut self.told.seek_landed) || jumps != self.told.landed_jumps;
         let due = self.told.positions.is_some() && self.state == State::Playing && now >= self.told.next_position;
         if due {
             self.told.next_position = now + self.told.positions.expect("checked");
         }
         if landed || due {
-            (self.events)(Event::Position { index, ms });
+            self.told.landed_jumps = jumps;
+            (self.events)(Event::Position { index, ms, jumps });
         }
     }
 

@@ -25,7 +25,6 @@ mod measure;
 mod mediacodec;
 mod player;
 mod playlist;
-mod seek;
 mod settings;
 mod stream_cache;
 mod track;
@@ -56,7 +55,7 @@ macro_rules! native {
 }
 pub(crate) use native;
 
-static CLASSES: [&Class; 16] = [
+static CLASSES: [&Class; 15] = [
     &covers::CLASS,
     &dsp::CLASS,
     &heard::HEARD,
@@ -66,7 +65,6 @@ static CLASSES: [&Class; 16] = [
     &measure::CLASS,
     &player::CLASS,
     &playlist::CLASS,
-    &seek::CLASS,
     &settings::EQ_BANDS,
     &settings::SOUND_EDIT,
     &stream_cache::CLASS,

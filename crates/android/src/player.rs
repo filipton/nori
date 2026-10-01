@@ -1120,7 +1120,7 @@ impl Library for AndroidLibrary {
 /// Engine events queued for Kotlin, which is signalled once per batch.
 #[derive(Default)]
 struct Events {
-    /// (kind, index, entry, text, jumps): jumps is `Song`/`Looped`'s `jumps`, or `Stopped`/`Bridge`'s `plays`.
+    /// (kind, index, entry, text, jumps): jumps is `Song`/`Looped`/`Position`'s `jumps`, or `Stopped`/`Bridge`'s `plays`.
     queue: Mutex<VecDeque<(i32, i32, Option<u64>, String, u64)>>,
     signalled: AtomicBool,
     /// Text and jumps of the event [`event`] last returned.
@@ -1140,6 +1140,7 @@ const EVENT_TITLE: i32 = 7;
 const EVENT_BRIDGE: i32 = 8;
 const EVENT_MIXING: i32 = 9;
 const EVENT_PLACED: i32 = 10;
+const EVENT_LANDED: i32 = 11;
 
 impl Events {
     fn push(&self, e: Event) {
@@ -1159,7 +1160,7 @@ impl Events {
             _ => {}
         }
         let jumps = match &e {
-            Event::Song { jumps, .. } | Event::Looped { jumps, .. } => *jumps,
+            Event::Song { jumps, .. } | Event::Looped { jumps, .. } | Event::Position { jumps, .. } => *jumps,
             Event::Stopped { plays } | Event::Bridge { plays } => *plays,
             _ => 0,
         };
@@ -1180,7 +1181,9 @@ impl Events {
             Event::Output { name } => (EVENT_OUTPUT, -1, name),
             Event::Stopped { .. } => (EVENT_STOPPED, -1, String::new()),
             Event::Buffering(on) => (EVENT_BUFFERING, on as i32, String::new()),
-            Event::Position { .. } | Event::Awake(_) => return,
+            // A seek or jump landed (Android asks for no periodic positions).
+            Event::Position { index, .. } => (EVENT_LANDED, index as i32, String::new()),
+            Event::Awake(_) => return,
         };
         let first = {
             let mut q = self.queue.lock();

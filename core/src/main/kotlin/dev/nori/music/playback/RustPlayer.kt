@@ -240,6 +240,8 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
      * again as a song ending by itself - two changes more than were asked for.
      */
     private var sent = 0L
+    /** The number of the last jump the engine said it landed (its position event). */
+    private var landed = 0L
     private var prepared = false
     private var playWhenReady = false
     private var whyPlayWhenReady = Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST
@@ -317,6 +319,11 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
      * its output again whenever that reading is a second old (nori_player::heard::screen_place).
      */
     fun shownMs(index: Int): Long = RustPlayerJni.shownMs(h, index)
+
+    /** Jumps sent to the engine so far: a seek asked after this reading is sent as a later one. */
+    val jumpsSent: Long get() = sent
+    /** Whether the engine has landed every jump sent to it. */
+    val landedAll: Boolean get() = landed >= sent
 
     /** The engine for a door that reads it itself (PlayheadJni.position); 0 once released. */
     internal val handle: Long get() = h
@@ -603,6 +610,8 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
                 // else changes, so nothing else is said.
                 EVENT_MIXING -> PlaybackService.onMixingChanged?.invoke()
                 EVENT_PLACED -> placed = true
+                // The engine is where a jump or seek asked: the session says that place, not its own guess.
+                EVENT_LANDED -> { landed = RustPlayerJni.eventJumps(h); placed = true }
                 // Handed on after the batch: the bridge edits and seeks this player itself.
                 EVENT_BRIDGE -> main.post { if (onBridge?.invoke() != true) { stoppedByItself(); follow(); invalidateState() } }
                 // The output device's own sound is DeviceSound's, from Outputs: its name is not asked for,
@@ -999,6 +1008,7 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
         const val EVENT_BRIDGE = 8
         const val EVENT_MIXING = 9
         const val EVENT_PLACED = 10
+        const val EVENT_LANDED = 11
 
         val ATTRIBUTES: AudioAttributes = AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build()
         val PLATFORM_ATTRIBUTES: android.media.AudioAttributes = android.media.AudioAttributes.Builder()

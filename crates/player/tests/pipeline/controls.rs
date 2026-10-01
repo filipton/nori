@@ -1,7 +1,6 @@
 //! Controls and queue: next/previous, seeks, failing songs, repeat and shuffle.
 
 use nori_player::playlist::{Hand, REPEAT_ALL, REPEAT_ONE};
-use nori_player::seek::{SeekKeeper, Verdict};
 use nori_player::sim::{Audio, Player, Track};
 
 use crate::common::*;
@@ -152,37 +151,6 @@ fn seek_while_paused_sticks() {
     let target = frames(20.0);
     assert!(heard == song[target * 2..target * 2 + heard.len()], "play resumes from the seek");
     assert!((p.position_ms() - 21_000).abs() <= STEP, "{}", p.position_ms());
-}
-
-#[test]
-fn seek_dropped_while_opening_is_retried() {
-    // After a restart the player comes back paused at 10 s, and the seek to 30 s is asked while it is
-    // still opening: the player drops it. The keeper notices and asks again.
-    let song = music(40.0, 9);
-    let mut p = Player::new(vec![track("a", &song)]);
-    p.play_from(0);
-    p.seek(10_000);
-    p.pause();
-    let mut keeper = SeekKeeper::new();
-    keeper.ask(30_000, p.now_ms, false, 0);
-    let mut verdicts = Vec::new();
-    for _ in 0..10 {
-        p.run_for(300);
-        let v = keeper.look(p.now_ms, true, true, p.position_ms(), p.playing());
-        verdicts.push(v);
-        match v {
-            Verdict::SeekAgain(ms) => p.seek(ms),
-            Verdict::Forget => break,
-            Verdict::Watch => {}
-        }
-    }
-    assert_eq!(verdicts, vec![Verdict::Watch, Verdict::SeekAgain(30_000), Verdict::Forget], "anchored, asked again once, kept");
-    assert_eq!(p.position_ms(), 30_000);
-    let at = p.sink.heard_frames;
-    p.resume();
-    p.run_for(1_000);
-    let heard = heard_from(&p, at);
-    assert!(heard == song[frames(30.0) * 2..frames(30.0) * 2 + heard.len()], "play resumes from the seek, not the restored place");
 }
 
 #[test]

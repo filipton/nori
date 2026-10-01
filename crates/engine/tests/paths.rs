@@ -2421,7 +2421,7 @@ fn equalizer_on_a_phone(jittery: bool, before: Before) {
     // The takeover position is said once, so clients running their own clock re-anchor.
     let placed: Vec<(usize, i64)> = events.iter().filter_map(|e| if let Event::Placed { index, ms } = e { Some((*index, *ms)) } else { None }).collect();
     assert!(placed.len() == 1 && placed[0].0 == song && (placed[0].1 - left_ms).abs() <= 50, "placed at {left_ms} ms: {placed:?}");
-    let positions: Vec<i64> = events.iter().filter_map(|e| if let Event::Position { index, ms } = e { assert_eq!(*index, song); Some(*ms) } else { None }).collect();
+    let positions: Vec<i64> = events.iter().filter_map(|e| if let Event::Position { index, ms, .. } = e { assert_eq!(*index, song); Some(*ms) } else { None }).collect();
     assert!(positions.len() >= 8, "{events:?}");
     assert!(positions.windows(2).all(|w| w[1] >= w[0] - 20), "onwards: {positions:?}");
     assert!(positions.iter().all(|&ms| ms >= chip_ms - 300 && ms <= later.position_ms + 50), "from where the chip was ({chip_ms} ms): {positions:?}");
@@ -2710,6 +2710,28 @@ fn offload_seek_is_not_a_loop() {
     rig.engine.stop();
 }
 
+/// A seek sent as a jump (as Android sends it) lands offloaded, while the song opens and while it plays,
+/// and says so with its jump's number.
+#[test]
+fn offload_jump_seek_lands() {
+    let d = dir();
+    let Some((rig, fake)) = two_on_a_phone(&d, 30, true, true) else { return };
+    let first = rig.engine.go_to(0, 9_000);
+    assert!(rig.time.until(Duration::from_secs(40), || fake.0.lock().head >= 3 * 44_100));
+    let s = rig.engine.status();
+    assert!(s.offloaded && (9_000..13_000).contains(&s.position_ms), "asked while opening: {s:?}");
+    let second = rig.engine.go_to(0, 20_000);
+    assert!(rig.time.until(Duration::from_secs(10), || rig.events.lock().iter().any(|e| matches!(e, Event::Position { jumps, .. } if *jumps == second))));
+    rig.run(1_000);
+    rig.engine.look();
+    rig.run(1);
+    let s = rig.engine.status();
+    assert!(s.offloaded && s.index == Some(0) && (20_500..21_500).contains(&s.position_ms), "{s:?}");
+    let landed: Vec<u64> = rig.events.lock().iter().filter_map(|e| if let Event::Position { jumps, .. } = e { Some(*jumps) } else { None }).collect();
+    assert!(landed.contains(&first), "{landed:?}");
+    rig.engine.stop();
+}
+
 /// Through a mix, every read gives the position of the song reported, never the other song's.
 #[test]
 fn place_matches_song_through_mix() {
@@ -2759,7 +2781,7 @@ fn place_matches_song_through_mix() {
     for e in &events {
         match e {
             Event::Song { index, .. } => song = Some(*index),
-            Event::Position { index, ms } => {
+            Event::Position { index, ms, .. } => {
                 assert_eq!(Some(*index), song, "a position said for the song said heard: {events:?}");
                 assert!(*index != 0 || *ms <= 40_100, "{events:?}");
             }
@@ -2803,7 +2825,7 @@ fn mixed_into_b_its_place_is_what_was_played(silent_s: u32) {
     // Along b the position follows the clock.
     let (t0, p0) = (rig.now_ms(), rig.engine.status().position_ms);
     rig.run(4_000);
-    let said = |r: &Rig| r.events.lock().iter().rev().find_map(|e| match e { Event::Position { index: 1, ms } => Some(*ms), _ => None });
+    let said = |r: &Rig| r.events.lock().iter().rev().find_map(|e| match e { Event::Position { index: 1, ms, .. } => Some(*ms), _ => None });
     let before = said(&rig).expect("b's place said");
     assert!((before - p0 - (rig.now_ms() - t0)).abs() <= 300, "b ran on from {p0} to {before} in {} ms", rig.now_ms() - t0);
     rig.engine.pause();

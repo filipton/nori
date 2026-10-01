@@ -306,7 +306,7 @@ pub fn main(argv: Vec<String>) {
             match e {
                 Event::Song { index, .. } => println!("now: {}", shown(index)),
                 Event::State(s) => println!("{s:?}"),
-                Event::Position { index, ms } => println!("  {} at {}", shown(index), clock(ms)),
+                Event::Position { index, ms, .. } => println!("  {} at {}", shown(index), clock(ms)),
                 Event::Error { id, message } => println!("error: {id} {message}"),
                 Event::Output { name } => println!("output: {name}"),
                 Event::Stopped { .. } => println!("stopped"),

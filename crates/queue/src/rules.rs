@@ -176,8 +176,6 @@ pub struct PlaybackTimings {
     /// Paused this long, the output is released.
     pub idle_release_ms: i64,
     pub fade_tick_ms: i64,
-    /// Poll interval while making a seek stick.
-    pub seek_look_ms: i64,
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
@@ -189,7 +187,6 @@ pub fn playback_timings() -> PlaybackTimings {
         save_after_ms: t::SAVE_AFTER_MS,
         idle_release_ms: t::IDLE_RELEASE_MS,
         fade_tick_ms: t::FADE_TICK_MS,
-        seek_look_ms: nori_player::seek::LOOK_EVERY_MS,
     }
 }
 

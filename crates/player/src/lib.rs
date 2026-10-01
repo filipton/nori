@@ -18,7 +18,6 @@ pub mod graphic;
 pub mod outputs;
 pub mod heard;
 pub mod pcm;
-pub mod seek;
 pub mod pipeline;
 pub mod playlist;
 pub mod policy;
