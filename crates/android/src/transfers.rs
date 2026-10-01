@@ -70,7 +70,8 @@ extern "system" fn notice(listed: jint, waiting: jint, now: jlong) -> jint {
 /// The notification's facts: `out` gets `[kind, position, total, permille, speed_bps, eta_s]` (kind: the
 /// `NoticeKind` ordinal); returns "title\nalbum".
 extern "system" fn notice_facts(env: JNIEnv, _: JClass, out: JLongArray) -> jstring {
-    transfers::notice_facts(|n| {
+    // Copied out first: JNI calls under the tracker's lock can stall a collection that waits on `note`.
+    let (facts, names) = transfers::notice_facts(|n| {
         let kind = match n.kind {
             NoticeKind::Waiting => 0,
             NoticeKind::OneNamed => 1,
@@ -78,15 +79,12 @@ extern "system" fn notice_facts(env: JNIEnv, _: JClass, out: JLongArray) -> jstr
             NoticeKind::Many => 3,
         };
         let facts = [kind, n.position as jlong, n.total as jlong, n.permille as jlong, n.speed_bps, n.eta_s];
-        if env.set_long_array_region(&out, 0, &facts).is_err() {
-            return std::ptr::null_mut();
-        }
-        let mut names = String::with_capacity(n.current.len() + 1 + n.label.len());
-        names.push_str(&n.current);
-        names.push('\n');
-        names.push_str(&n.label);
-        java_string(&env, &names)
-    })
+        (facts, format!("{}\n{}", n.current, n.label))
+    });
+    if env.set_long_array_region(&out, 0, &facts).is_err() {
+        return std::ptr::null_mut();
+    }
+    java_string(&env, &names)
 }
 
 /// The finished batch: `out` gets `[title, text, done, failed]` (`SummaryTitle`/`SummaryText` ordinals);
@@ -111,16 +109,15 @@ extern "system" fn summary(env: JNIEnv, _: JClass, out: JIntArray) -> jstring {
 
 /// A song's row: returns its artist; `out` gets `[running, percent, speed_bps, eta_s]`.
 extern "system" fn row(env: JNIEnv, _: JClass, id: JString, out: JLongArray) -> jstring {
-    with_str(&env, &id, |id| {
-        transfers::row(id, |artist, facts| {
-            let f = facts.map_or([0, 0, 0, 0], |f| [1, f.percent as jlong, f.speed_bps, f.eta_s]);
-            if env.set_long_array_region(&out, 0, &f).is_err() {
-                return std::ptr::null_mut();
-            }
-            java_string(&env, artist)
-        })
-    })
-    .unwrap_or(std::ptr::null_mut())
+    // Copied out first, as in `notice_facts`.
+    let Some((facts, artist)) = with_str(&env, &id, |id| transfers::row(id, |artist, facts| (facts, artist.to_string()))) else {
+        return std::ptr::null_mut();
+    };
+    let f = facts.map_or([0, 0, 0, 0], |f| [1, f.percent as jlong, f.speed_bps, f.eta_s]);
+    if env.set_long_array_region(&out, 0, &f).is_err() {
+        return std::ptr::null_mut();
+    }
+    java_string(&env, &artist)
 }
 
 /// The batch's speed (bytes/s) and seconds left, into `out`.
