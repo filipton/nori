@@ -91,9 +91,14 @@ impl Client {
     /// One request, retried once through the other address on an I/O failure (not a metered refusal:
     /// the other address is the same server under the same rule).
     pub(crate) async fn fetch(&self, endpoint: &str, params: Vec<(String, String)>) -> NetResult<Vec<u8>> {
+        self.send(endpoint, params, true).await
+    }
+
+    /// [`Client::fetch`]; one not `repeatable` is retried only when nothing of it was sent.
+    async fn send(&self, endpoint: &str, params: Vec<(String, String)>, repeatable: bool) -> NetResult<Vec<u8>> {
         let p = self.scoped(endpoint, params);
         match self.get(endpoint, &p).await {
-            Err(e) if e.is_io() && !matches!(e, NetError::Transport { kind: FailureKind::Metered, .. }) => {
+            Err(e) if e.is_io() && (repeatable || e.nothing_sent()) && !matches!(e, NetError::Transport { kind: FailureKind::Metered, .. }) => {
                 if !self.choose_address().await {
                     return Err(e);
                 }
@@ -221,7 +226,7 @@ impl Client {
             self.core.pending_add(endpoint, &params)?;
             self.flush_pending().await?;
         } else {
-            match self.fetch(endpoint, params.clone()).await {
+            match self.send(endpoint, params.clone(), repeatable).await {
                 Ok(body) => {
                     self.core.parse_status(body)?;
                 }
@@ -420,6 +425,16 @@ pub(crate) mod tests {
         block(c.write(Write::Star { kind: Starrable::Song, id: "s".into(), on: true })).unwrap();
         let queued: Vec<String> = c.core.pending_list().unwrap().into_iter().map(|p| p.endpoint).collect();
         assert_eq!(queued, ["star"]);
+    }
+
+    #[test]
+    fn unsure_edit_not_sent_again_elsewhere() {
+        let (c, fake) = client(two_addresses());
+        fake.fail(FailureKind::Timeout);
+        fake.fail(FailureKind::Timeout);
+        fake.answer(OK);
+        assert!(block(c.write(Write::AddToPlaylist { id: "1".into(), song_ids: vec!["a".into()] })).is_err());
+        assert_eq!(fake.asked().len(), 1, "{:?}", fake.asked());
     }
 
     #[test]
