@@ -63,6 +63,11 @@
             </intent-filter>
         </receiver>
         <meta-data android:name="com.google.android.gms.car.application" android:resource="@xml/automotive_app_desc" />
+        <!-- A car's own screen (Android Automotive) opens a media app's own activity from its dock and its media
+          card when the service names it, rather than the car's generic media screen over the browse tree. -->
+        <service android:name="dev.nori.music.playback.PlaybackService">
+            <meta-data android:name="androidx.car.app.media.CalMediaActivityComponent" android:value="${applicationId}/dev.nori.music.app.MainActivity" />
+        </service>
         <!-- On a car's own screen, where its driver sits (ui/DriverSide.kt); absent on a phone. -->
         <uses-library android:name="android.car" android:required="false" />
         <!-- The car's pictures (CarArtProvider): Android Auto draws a browse item's picture only from a content address. -->
