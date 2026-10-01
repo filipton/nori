@@ -137,6 +137,16 @@ pub enum HideStatusBar {
     Always,
 }
 
+/// On a car's own screen, which side the controls and the tabs go on, the cover going on the other: the
+/// driver's (the car says which), or always the left or the right ([`crate::settings_model::controls_on_left`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, nori_settings_derive::Choice)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
+pub enum ControlsSide {
+    Driver,
+    Left,
+    Right,
+}
+
 /// When the screen is kept on while the app is on it: never, with the phone on its side (propped up on a
 /// desk or in a car), while it charges (on a stand), when both are true at once, or always.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, nori_settings_derive::Choice)]
@@ -463,6 +473,8 @@ pub struct StoredPrefs {
     pub hide_status_bar: HideStatusBar,
     #[setting("keepAwake", PICK, default = KeepAwake::Never, show = K::Named(KeepAwake::NAMES))]
     pub keep_awake: KeepAwake,
+    #[setting("controlsSide", PICK, default = ControlsSide::Driver, show = K::Named(ControlsSide::NAMES))]
+    pub controls_side: ControlsSide,
     #[setting("amoled", FLAG, default = false, show = K::Switch)]
     pub amoled: bool,
     /// With a black background, which pages keep their cover's colours rather than going black

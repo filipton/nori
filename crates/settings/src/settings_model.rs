@@ -265,6 +265,18 @@ pub fn keep_awake(keep: crate::settings::KeepAwake, wide: bool, charging: bool) 
     }
 }
 
+/// On a car's own screen, whether the controls and the tabs go on the left (and the cover on the right):
+/// for the setting, and where the car says its driver sits (`driver_on_left`).
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn controls_on_left(side: crate::settings::ControlsSide, driver_on_left: bool) -> bool {
+    use crate::settings::ControlsSide::*;
+    match side {
+        Driver => driver_on_left,
+        Left => true,
+        Right => false,
+    }
+}
+
 /// Whether the setting needs to know if the phone is charging: only then is the charger watched.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn keep_awake_watches_charging(keep: crate::settings::KeepAwake) -> bool {
@@ -289,6 +301,14 @@ mod tests {
         let said = changed(&p);
         assert!(said.lines().any(|l| l == format!("{} = {other}", switch.name)), "{said}");
         assert!(!said.contains("secret-key"), "{said}");
+    }
+
+    #[test]
+    fn the_controls_go_beside_the_driver_unless_a_side_is_chosen() {
+        use crate::settings::ControlsSide::*;
+        assert_eq!([controls_on_left(Driver, true), controls_on_left(Driver, false)], [true, false]);
+        assert_eq!([controls_on_left(Left, false), controls_on_left(Right, true)], [true, false]);
+        assert_eq!(StoredPrefs::default().controls_side, Driver);
     }
 
     #[test]

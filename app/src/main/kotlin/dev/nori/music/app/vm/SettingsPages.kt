@@ -231,6 +231,7 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("look", R.string.settings_less_movement, R.string.settings_hint_less_movement),
     Triple("look", R.string.settings_hide_status_bar, R.string.settings_hint_hide_status_bar),
     Triple("look", R.string.settings_keep_awake, R.string.settings_hint_keep_awake),
+    Triple("look", R.string.settings_controls_side, R.string.settings_hint_controls_side),
     Triple("look", R.string.settings_animate_anyway, R.string.settings_hint_animate_anyway),
     Triple("lyrics", R.string.settings_lyrics_sweep, R.string.settings_hint_lyrics_sweep),
     Triple("lyrics", R.string.settings_lyrics_size, 0),
@@ -717,6 +718,12 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
                 R.string.settings_keep_awake_never, R.string.settings_keep_awake_sideways, R.string.settings_keep_awake_charging,
                 R.string.settings_keep_awake_sideways_charging, R.string.settings_keep_awake_always,
             ),
+        ) + listOfNotNull(
+            // Only on a car's own screen, the only place it changes anything.
+            chips(
+                "controlsSide", R.string.settings_controls_side, R.string.settings_controls_side_detail,
+                R.string.settings_controls_side_driver, R.string.settings_controls_side_left, R.string.settings_controls_side_right,
+            ).takeIf { res.configuration.uiMode and android.content.res.Configuration.UI_MODE_TYPE_MASK == android.content.res.Configuration.UI_MODE_TYPE_CAR },
         )
         return listOf(
             section(R.string.settings_section_theme, theme), section(R.string.settings_section_cover, cover),

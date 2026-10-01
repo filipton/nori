@@ -243,6 +243,11 @@
     <string name="settings_keep_awake_charging">Charging</string>
     <string name="settings_keep_awake_sideways_charging">Sideways and charging</string>
     <string name="settings_keep_awake_always">Always</string>
+    <string name="settings_controls_side">Car screen controls side</string>
+    <string name="settings_controls_side_detail">On a car’s built-in screen, where the controls and tabs sit. The cover goes on the other side.</string>
+    <string name="settings_controls_side_driver">Driver’s side</string>
+    <string name="settings_controls_side_left">Left</string>
+    <string name="settings_controls_side_right">Right</string>
     <string name="settings_theme">Theme</string>
     <string name="settings_theme_system">Same as the system</string>
     <string name="settings_theme_light">Light</string>
@@ -511,6 +516,7 @@
     <string name="settings_hint_confirm_favourites">A short message when you favorite or unfavorite something</string>
     <string name="settings_hint_less_movement">Shorter, simpler animations</string>
     <string name="settings_hint_keep_awake">Screen timeout. Stay awake while sideways or charging</string>
+    <string name="settings_hint_controls_side">Car. Left or right hand drive, steering wheel</string>
     <string name="settings_hint_hide_status_bar">Full screen. Hides the clock and battery bar at the top</string>
     <string name="settings_hint_animate_anyway">Keeps animations on even when the system\'s are off</string>
     <string name="settings_hint_lyrics_sweep">For lyrics timed word by word</string>

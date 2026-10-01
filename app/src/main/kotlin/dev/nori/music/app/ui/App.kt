@@ -324,8 +324,11 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             // (TabRail), and the camera on the opposite side.
             val view = androidx.compose.ui.platform.LocalView.current
             val rotation = remember(config) { view.display?.rotation ?: android.view.Surface.ROTATION_0 }
-            // In a car whose driver sits on the left the controls and the tabs go on the left (DriverSide).
-            val coverAtEnd = wide && remember(context) { DriverSide.onLeft(context) }
+            // On a car's own screen the controls and the tabs go beside the driver (DriverSide), or on the side
+            // chosen in Settings (the core's `controls_on_left`). A phone keeps its layout.
+            val car = remember(context) { DriverSide.isCar(context) }
+            val driverLeft = remember(context) { DriverSide.onLeft(context) }
+            val coverAtEnd = wide && car && dev.nori.music.ffi.settings.controlsOnLeft(prefs.controlsSide, driverLeft)
             val railLeft = wide && (rotation == android.view.Surface.ROTATION_270 || coverAtEnd)
             val railInset = if (wide) tabRailWidth() else 0.dp
             val cutout = androidx.compose.foundation.layout.WindowInsets.displayCutout.asPaddingValues()

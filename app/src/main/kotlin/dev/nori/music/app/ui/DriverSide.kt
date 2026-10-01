@@ -18,8 +18,11 @@ object DriverSide {
 
     fun onLeft(context: Context): Boolean = known ?: ask(context.applicationContext).also { known = it }
 
+    /** A car's own screen: where the side the controls go on is a setting (Settings, Appearance). */
+    fun isCar(context: Context): Boolean = context.packageManager.hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE)
+
     private fun ask(context: Context): Boolean {
-        if (!context.packageManager.hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE)) return false
+        if (!isCar(context)) return false
         return runCatching {
             val car = android.car.Car.createCar(context) ?: return false
             try {
