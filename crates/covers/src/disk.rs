@@ -46,9 +46,9 @@ impl Key {
 }
 
 struct Entry {
-    /// The put that wrote the file (its temp file's number; `u64::MAX` for a file found at open). A failed
-    /// read only forgets the entry if it matches.
-    written: u64,
+    /// The put that wrote the file (its temp file's number; none for a file found at open). A failed read
+    /// only forgets the entry if it matches.
+    written: Option<u64>,
     /// The file's mtime was set in this process.
     stamped: bool,
 }
@@ -83,7 +83,7 @@ impl DiskCache {
         found.sort_unstable();
         let mut index = Lru::default();
         for (_, key, bytes) in found {
-            index.insert(key, Entry { written: u64::MAX, stamped: false }, bytes);
+            index.insert(key, Entry { written: None, stamped: false }, bytes);
         }
         let cache = DiskCache { dir, limit, index: Mutex::new(Lru::default()), writes: AtomicU64::new(0) };
         cache.trim(&mut index);
@@ -135,7 +135,7 @@ impl DiskCache {
         let written = File::create(&tmp).and_then(|mut f| f.write_all(bytes)).and_then(|_| {
             let mut index = self.index.lock();
             fs::rename(&tmp, &path)?;
-            index.insert(key, Entry { written: n, stamped: true }, bytes.len() as u64);
+            index.insert(key, Entry { written: Some(n), stamped: true }, bytes.len() as u64);
             self.trim(&mut index);
             Ok(())
         });
