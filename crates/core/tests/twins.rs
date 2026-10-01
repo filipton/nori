@@ -72,6 +72,8 @@ fn heard_at_pack_round_trips() {
         heard::HeardAt { index: Some(4_000), changed: false, ms: (1 << 43) - 1 },
     ] {
         assert_eq!(heard::HeardAt::unpack(at.pack()), at);
+        // The sign bit the door adds for a drifted word.
+        assert_eq!(heard::HeardAt::unpack(at.pack() | 1 << 63), at);
     }
 }
 

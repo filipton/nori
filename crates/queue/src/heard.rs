@@ -37,7 +37,7 @@ impl HeardAt {
 
     /// Inverse of [`pack`](Self::pack). Twin of `PlayerConnection.read` (PlayerConnection.kt).
     pub fn unpack(r: i64) -> HeardAt {
-        let index = (r as u64 >> (MS_BITS + 1)) as i64 - 1;
+        let index = ((r as u64 >> (MS_BITS + 1)) & 0x7FFFF) as i64 - 1;
         HeardAt { index: (index >= 0).then_some(index as usize), changed: (r >> MS_BITS) & 1 != 0, ms: r & ((1 << MS_BITS) - 1) }
     }
 }
