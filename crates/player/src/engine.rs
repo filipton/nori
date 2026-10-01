@@ -76,8 +76,7 @@ pub struct StreamId {
     pub serial: u64,
 }
 
-/// A stream's format as the decoder announces it. `format` is `None` for non-PCM (offload,
-/// passthrough), which cannot be mixed or converted.
+/// A stream's format as the decoder announces it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StreamFormat {
     pub id: StreamId,

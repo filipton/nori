@@ -170,7 +170,6 @@ fn sample_rate_independent() {
         let t = analyse("t", &s.render(), rate).track;
         (rate, t.bpm, t.beat_offset_ms, t.key)
     });
-    println!("{got:?}");
     for (rate, bpm, offset, key) in &got {
         assert!((bpm - 126.0).abs() < 0.1, "{rate}: {bpm}");
         assert!((offset - got[2].2).abs() < 6.0, "{rate}: offset {offset} vs {}", got[2].2);

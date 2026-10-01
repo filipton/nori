@@ -3,7 +3,7 @@
 
 pub mod automix;
 pub mod burst;
-pub mod chain;
+mod chain;
 pub mod compressor;
 pub mod contour;
 pub mod dac;

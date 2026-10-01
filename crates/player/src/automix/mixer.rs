@@ -604,7 +604,7 @@ mod tests {
 
     #[test]
     fn echo_decays_after_outgoing_fader_is_down() {
-        // Regression: the delay was fed the pre-fader deck, so repeats of a song still playing never decayed.
+        // The delay is fed after the fader: its repeats decay with the song.
         let mut p = plan();
         p.duration_ms = 2000;
         (p.out_fade_start_ms, p.out_fade_end_ms, p.in_fade_start_ms, p.in_fade_end_ms) = (0, 500, 2000, 2000);

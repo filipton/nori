@@ -3,8 +3,6 @@
 //! through untouched, so a flat chain stays bit-exact.
 //!
 //! One xorshift32 generator per channel, seeded apart so the channels' noise is uncorrelated.
-//! Noise shaping was measured (-6.7 dB at 1-5 kHz, +5.2 dB in the top octave) and left out: the
-//! floor is already below the outputs the 16-bit path serves.
 
 /// Channels with their own generator; more share them (the chain takes eight at most).
 const CHANNELS: usize = 8;
