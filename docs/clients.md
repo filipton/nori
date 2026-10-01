@@ -72,8 +72,7 @@ builds:
 - **Plays and the queue's end**: `scrobble_playing` and `scrobble_track` on the engine's events (the
   history and the scrobbles are the core's), and `autofill_start`/`autofill_next` with
   `Client::autofill` when the queue runs out. A next pressed at the end is taken when the songs land
-  (`autofill_landed`) only within 2 s of the last press; `autofill_skip_waiting` says whether one is
-  waiting, for a client that shows it (Android does not yet).
+  (`autofill_landed`) only within 2 s of the last press.
 - **Pictures**: nori-covers decodes the cover (fetched through the same `Transport`), nori-look's
   `cover::derive` gives the page, text and accent colours, and ratatui-image draws the picture in
   whichever protocol the terminal answers to (kitty graphics, sixel, iTerm2) or in half blocks. ratatui
@@ -532,7 +531,7 @@ answers; the rule itself is never written again in a client. Android and nori-cl
   plain rlib with no JNI in it, and its uniffi exports sit behind the default `ffi` feature: depend on it
   with `default-features = false` and nothing of uniffi is built. Each domain crate has an `ffi` feature
   of its own, off by default, so linking one of them alone builds no uniffi either. Everything the
-  Android doors call is ordinary Rust there - `dsp::SoundChain` over sample slices, `heard::HeardClock`,
+  Android doors call is ordinary Rust there - `heard::HeardClock`,
   `automix::store::AnalysisStream`, `automix::host::CoreHost` for the transition engine, the download
   tracker's functions in `transfers`, their facts lent to a closure.
 - Other languages go through uniffi bindings for calls made on user actions. For anything called per
@@ -636,11 +635,9 @@ Compose transition state, the JNI door's own packing); two lines kept in Kotlin 
 | `ResizableEvictor.trimLocked` (playback/MediaSources.kt) | `stream_cache::trim` |
 | `PlayerConnection.read` | `heard::HeardAt::unpack` |
 | `PlayerViewModel.setVolumeFraction`, `volumeFraction` | `rules::volume_step`, `rules::volume_fraction` |
-| The car browser's paging (`PlaybackService.onGetChildren`, `onGetSearchResult`) | `car::page` |
+| The car browser's paging (`PlaybackService.onGetChildren`, `onGetSearchResult`) | `car::page_of` |
 | `downloadEntry`'s missing songs (ui/DetailScreens.kt) | `menus::download_missing` |
 | `AnimatedRows` (ui/DevicesSection.kt): rows kept, new, leaving in place | `rows::merge_rows` |
-| `paletteKey` (ui/CoverColors.kt) | `nori_look::cover::palette_key` (into a kept buffer) |
-| `BandEffect.of`'s key (ui/PlayerScreen.kt) | `nori_look::sleeve::band_key` |
 
 No longer twins, Android calling the core instead: `Covers.isProvider` (`covers::is_provider_cover`, through
 `CoverPixels.isProvider`) and the precacher's list (`rules::precache_list`, through `Client::precache_targets`).

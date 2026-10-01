@@ -1,8 +1,8 @@
 //! The vocal activity curve synced lyrics are checked against (nori-lyrics sync.rs), measured from the analysis's
 //! own FFT. A voice is a pitched sound in 300 Hz-3 kHz that never holds still, so each frame sums how far the log
 //! level moved around the band's clear spectral peaks (drums have no peaks, pads do not move). On real songs it
-//! is weak on level (AUC about 0.7, 0.5 in metal) but good on timing; band and peak test were tuned there
-//! (sync_tune.rs). A stereo song is measured on the middle of its image only, gating out panned guitars
+//! is weak on level (AUC about 0.7, 0.5 in metal) but good on timing; band and peak test were tuned there.
+//! A stereo song is measured on the middle of its image only, gating out panned guitars
 //! ([`centre`]). One byte per [`CURVE_EVERY`] frames, about a kilobyte a minute.
 
 use rustfft::num_complex::Complex32;

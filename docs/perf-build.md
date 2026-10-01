@@ -253,21 +253,16 @@ deep once, in power saving mode, and the equalizer screen only moves the part of
   topped up while it still holds the output's latency (`getLatency` less the buffer), the least a new track
   there is given and a wake's lateness, with a quarter of that again on top (`shallow_marks`; the speaker
   keeps its 80/160 ms). While shallow the writer also watches the latency it sees (play head against what
-  was presented) and `getUnderrunCount`, and grows for either, never shrinking again on that output. The
-  engine keeps its ring as deep as one of those top-ups (`AudioOutput::shallow_depth`). On Bluetooth a band
+  was presented) and `getUnderrunCount`, and grows for either, never shrinking again on that output. On Bluetooth a band
   moved is heard about half a second later, most of it the headphones' own latency.
 - **The change that turns tuning on** reaches the engine a moment before the tuning does (the settings go
   straight to the core; the tuning goes through the screen, the session and the service), so it was made
   again into the deep buffer, and only the next change landed in the shallow one: which of the two a profile
-  picked on the device list met was down to timing. Tuning that comes within a second of the music made
-  again now makes it again once more, into the shallow buffer (`TUNED_AFTER_RESOUND_MS`).
-- Tested on the simulated track (crates/android `the_equalizer_screen_opening_and_closing_is_not_heard_either_way`:
-  six rounds each way over a jittery mixer and a late writer, every frame heard in order, no silence over
-  5 ms, never reopened or flushed) and in the engine (crates/engine `over_a_device_that_resizes_...`: the
-  music sample for sample what an untouched player played). Over a Bluetooth-like output (bursts of 100-200 ms
+  picked on the device list met was down to timing.
+- Tested on the simulated track (crates/android track.rs, air.rs: every frame heard in order over a jittery
+  mixer and a late writer, never reopened or flushed). Over a Bluetooth-like output (bursts of 100-200 ms
   taken at once, 200 ms of latency) the track never runs dry when the output says what it is
-  (`tuned_over_bluetooth_...`), and stops within a few underruns when it says nothing
-  (`tuned_over_an_output_that_says_nothing_...`).
+  (`tuned_over_bluetooth_...`), and stops within a few underruns when it says nothing.
 
 `tools/cost.sh LABEL [SECONDS]` measures a state as it is on screen: CPU of a core and wakeups from
 `/proc/<pid>/task/*` (context switches), frames from `dumpsys gfxinfo`, GCs from the test bridge's `gc`.

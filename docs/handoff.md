@@ -162,9 +162,8 @@ Apple's own App Store screenshots and the differences closed. What is left is li
   a synthetic metal band sung/unsung AUC went from 0.56 (downmix) to 0.95; about 6 % more analysis CPU. Mono
   songs, and stereo ones with the same channels, give the same curve to the bit; the rest of the analysis reads
   the downmix as before. `ANALYSIS_VERSION` is 12, so songs are measured again as they come; their old curves
-  are read until then. **Not measured on real songs**: `sync_tune.rs` needs the library it was tuned on
-  (`~/.music.pass`); run `sync_gather` then `sync_real` in a fresh `NORI_TUNE_DIR` and compare with the numbers
-  in vocal.rs's header (metal about 0.5, pop/rock/rap about 0.7).
+  are read until then. **Not measured on real songs**: the tuning tool (`sync_tune.rs`) was removed; the
+  numbers in vocal.rs's header (metal about 0.5, pop/rock/rap about 0.7) are from before the centre gate.
 
 - **Ported onto the Rust core: the lyrics, moving-cover and player work of `claude/lyrics-motion-artwork`.**
   That branch was written on master before the rewrite, with the lyrics services and Apple's catalogue
