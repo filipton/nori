@@ -9,7 +9,7 @@ use jni::objects::{GlobalRef, JByteArray, JClass, JObjectArray, JStaticMethodID,
 use jni::sys::{jboolean, jint, jlong};
 use jni::signature::{Primitive, ReturnType};
 use jni::{JNIEnv, JavaVM};
-use nori_engine::core::{key_format, Measurer, Shelf, Whole};
+use nori_engine::core::{key_format, Analyses, Measurer, Shelf, Whole};
 use parking_lot::Mutex;
 
 use crate::{cleared, native, Class};
@@ -43,6 +43,12 @@ static JAVA: OnceLock<Java> = OnceLock::new();
 
 /// The measurer while the playback service runs.
 static MEASURER: Mutex<Option<Arc<Measurer>>> = Mutex::new(None);
+
+/// AutoMix analysis over the newest profile. Global: the player's and `MeasureJni`'s doors carry no handle.
+pub(crate) fn analyses() -> &'static Arc<Analyses> {
+    static ANALYSES: std::sync::LazyLock<Arc<Analyses>> = std::sync::LazyLock::new(|| Analyses::new(nori_core::client::active_client));
+    &ANALYSES
+}
 
 fn look_up(env: &mut JNIEnv) -> jni::errors::Result<Java> {
     let bridge = env.find_class("dev/nori/music/playback/MeasureBridge")?;
@@ -140,7 +146,7 @@ extern "system" fn start(mut env: JNIEnv, _: JClass) {
     }
     let mut m = MEASURER.lock();
     if m.is_none() {
-        *m = Some(Measurer::on_shelf(nori_core::active, Box::new(Media3), Some(Box::new(notify_measured))));
+        *m = Some(Measurer::on_shelf(analyses().clone(), Box::new(Media3), Some(Box::new(notify_measured))));
     }
 }
 
@@ -173,7 +179,7 @@ extern "system" fn download_open(env: JNIEnv, _: JClass, key: JString) -> jlong 
     let Some(key) = crate::string(&env, &key) else { return 0 };
     let Some(id) = key.strip_prefix("dl:") else { return 0 };
     let hint = nori_core::queue::shared().song(id).map(|s| s.suffix).filter(|s| !s.is_empty());
-    match nori_engine::core::measure_download_as_it_comes(id, hint.as_deref()) {
+    match analyses().measure_download_as_it_comes(id, hint.as_deref()) {
         Some(listening) => Box::into_raw(Box::new(Taking { listening, buf: Vec::new() })) as jlong,
         None => 0,
     }
@@ -217,7 +223,7 @@ extern "system" fn download_end(_: JNIEnv, _: JClass, h: jlong, whole: jboolean)
 /// Installs the download cache reader for processing (works without the playback service).
 extern "system" fn process_start(mut env: JNIEnv, _: JClass) {
     if ensure_java(&mut env) {
-        nori_engine::processing::install(Box::new(Media3));
+        analyses().install(Box::new(Media3));
     }
 }
 
@@ -239,11 +245,11 @@ fn ids(env: &mut JNIEnv, array: &JObjectArray) -> Vec<String> {
 /// Newly saved downloads: queues the processing each needs. Off the main thread.
 extern "system" fn process_saved(mut env: JNIEnv, _: JClass, array: JObjectArray) {
     let ids = ids(&mut env, &array);
-    nori_engine::processing::saved(ids);
+    analyses().saved(ids);
 }
 
 /// "Analyse downloaded songs": queues `ids`, returns how many were queued.
 extern "system" fn process_analyse(mut env: JNIEnv, _: JClass, array: JObjectArray) -> jint {
     let ids = ids(&mut env, &array);
-    nori_engine::processing::analyse(ids) as jint
+    analyses().analyse(ids) as jint
 }

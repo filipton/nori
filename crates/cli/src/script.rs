@@ -21,8 +21,8 @@ use nori_core::settings::{GainMode, StoredPrefs};
 use nori_core::transport::Transport;
 use nori_core::settings_store::{settings_open, settings_put, APPLY_AUDIO, APPLY_GAIN, REPLAN, SOUND};
 use nori_core::{Core, Param, ServerConfig, Song};
-use nori_engine::core::{settings, CoreApp, CoreLibrary, CoreOrder, CoreQueue, Downloader, Measurer};
-use nori_engine::{AudioOutput, Config, Engine, Event, State, Store, WavOutput};
+use nori_engine::core::{settings, Analyses, CoreApp, CoreLibrary, CoreQueue, Downloader, Measurer};
+use nori_engine::{AudioOutput, Config, Engine, Event, State, Recent, Store, WavOutput};
 use nori_http::Http;
 use nori_output_cpal::CpalOutput;
 
@@ -232,11 +232,12 @@ pub fn main(argv: Vec<String>) {
         (None, None) => Box::new(CpalOutput::new()),
     };
     let (tx, events): (_, Receiver<Event>) = channel();
-    let store = Store::open(a.data.join("music"), prefs.cache_mb.max(0) as u64 * 1024 * 1024, Box::new(CoreOrder)).unwrap_or_else(|e| panic!("the music directory: {e}"));
+    let store = Store::open(a.data.join("music"), prefs.cache_mb.max(0) as u64 * 1024 * 1024, Box::new(Recent::default())).unwrap_or_else(|e| panic!("the music directory: {e}"));
     let audio = Arc::new(Audio::new(http.clone(), a.offline));
-    let downloader = Downloader::new(core.clone(), client.clone(), audio.clone(), store.clone());
-    let app = CoreApp::new(core.session.clone()).measuring(Measurer::new(core.clone(), client.clone(), store.clone())).per_device(core.clone());
-    let library = CoreLibrary { client: client.clone(), bytes: audio.clone(), metered: false, store: Some(store) };
+    let analyses = Analyses::of(client.clone());
+    let downloader = Downloader::new(client.clone(), audio.clone(), store.clone(), analyses.clone());
+    let app = CoreApp::new(core.session.clone()).measuring(Measurer::new(analyses.clone(), store.clone())).per_device(core.clone());
+    let library = CoreLibrary { client: client.clone(), bytes: audio.clone(), metered: false, store: Some(store), analyses };
     let engine = Engine::start(library, app, CoreQueue(core.session.clone()), output, None, Config { memory_mb: 256, settings: settings(&prefs, 0.0), ..Config::default() }, move |e| {
         let _ = tx.send(e);
     });

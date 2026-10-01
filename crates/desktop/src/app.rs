@@ -1289,7 +1289,7 @@ impl App {
 
     fn source_moved(&mut self, id: &str, up: bool) {
         let Some(p) = settings_store::shared().current() else { return };
-        let s = nori_core::settings_model::state(&p, nori_core::settings_model::Output::default());
+        let s = nori_core::settings_model::state(&p, nori_core::settings_model::Output::default(), &nori_core::settings_store::shared().model);
         let Some(at) = s.lyrics_sources.iter().position(|x| x.id == id) else { return };
         let to = if up { at.saturating_sub(1) } else { (at + 1).min(s.lyrics_sources.len() - 1) };
         if to != at {

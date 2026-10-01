@@ -16,16 +16,16 @@ fn the_weights_come_from_the_authors() {
     let mut prefs = nori_core::settings_store::settings_open(dir.join("app.db").to_string_lossy().into_owned()).unwrap();
     (prefs.auto_mix, prefs.auto_mix_better_beats, prefs.auto_mix_beats_mobile_data) = (true, true, true);
     nori_core::settings_store::settings_put(prefs);
-    let _client = Client::new(core, nori_http::Http::new());
+    let client = Client::new(core.clone(), nori_http::Http::new());
     let rss = || {
         let s = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
         s.lines().find_map(|l| l.strip_prefix("VmHWM:").map(|v| v.trim().to_string())).unwrap_or_default()
     };
     let before = rss();
     let t0 = std::time::Instant::now();
-    let file = nori_core::beat_download::ensure();
+    let file = nori_core::beat_download::ensure(&client);
     println!("fetched, checked, converted and kept in {:.2} s; peak RSS {before} before, {} after", t0.elapsed().as_secs_f64(), rss());
-    assert_eq!(beat_model::state(), State::Ready);
+    assert_eq!(core.session.settings.model.state(), State::Ready);
     let file = file.expect("the weights file");
     assert_eq!(file, dir.join("models").join(beat_model::FILE_NAME));
     let t1 = std::time::Instant::now();

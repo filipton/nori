@@ -165,7 +165,7 @@ impl SettingsView {
     /// Every group's page, built if not cached.
     pub fn pages(&mut self, prefs: &StoredPrefs) -> &[Page] {
         if self.pages.is_none() {
-            let state = settings_model::state(prefs, settings_model::Output::default());
+            let state = settings_model::state(prefs, settings_model::Output::default(), &nori_core::settings_store::shared().model);
             self.pages = Some(GROUPS.iter().map(|g| page(g.id, prefs, &state, &self.facts, &self.own)).collect());
         }
         self.pages.as_deref().expect("made above")
@@ -1007,7 +1007,7 @@ mod tests {
     use super::*;
 
     fn every_row(prefs: &StoredPrefs) -> Vec<(&'static str, Row)> {
-        let state = settings_model::state(prefs, settings_model::Output::default());
+        let state = settings_model::state(prefs, settings_model::Output::default(), &nori_core::settings_store::shared().model);
         let facts = Facts { folders: vec![MusicFolder { id: "1".into(), name: "A".into() }, MusicFolder { id: "2".into(), name: "B".into() }], ..Facts::default() };
         GROUPS
             .iter()
@@ -1140,7 +1140,7 @@ mod tests {
         assert!(rows.contains(&EqRow::Layout));
         let parametric = eq_rows(&StoredPrefs { eq_mode: EqMode::Parametric, ..StoredPrefs::default() });
         assert!(parametric.contains(&EqRow::Mode) && !parametric.contains(&EqRow::Layout));
-        let fx = effects(&Build { p: &StoredPrefs { compressor: true, ..StoredPrefs::default() }, s: &settings_model::state(&StoredPrefs::default(), settings_model::Output::default()) });
+        let fx = effects(&Build { p: &StoredPrefs { compressor: true, ..StoredPrefs::default() }, s: &settings_model::state(&StoredPrefs::default(), settings_model::Output::default(), &nori_core::settings_store::shared().model) });
         assert!(fx.iter().any(|r| matches!(r, Row::Slider { level: Some(EqLevel::CompRatio), .. })));
     }
 

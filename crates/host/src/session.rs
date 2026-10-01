@@ -20,8 +20,8 @@ use nori_core::transport::{block_on, Exchange, FailureKind, NetError, Transport,
 use nori_core::{Core, CoreError, IngestStats, PageOrigin, Song};
 use nori_covers::loader::{Config as CoverConfig, Loader, Ticket};
 use nori_covers::memory::Image;
-use nori_engine::core::{settings, CoreApp, CoreLibrary, CoreOrder, CoreQueue, Downloader, Measurer, OutputVolume};
-use nori_engine::{AudioOutput, Body, ByteSource, Config, Engine, Event, OpenError, State, Store};
+use nori_engine::core::{settings, Analyses, CoreApp, CoreLibrary, CoreQueue, Downloader, Measurer, OutputVolume};
+use nori_engine::{AudioOutput, Body, ByteSource, Config, Engine, Event, OpenError, State, Recent, Store};
 use nori_http::Http;
 use nori_look::cover::CoverColours;
 use nori_output_cpal::{CpalOutput, Volume};
@@ -196,12 +196,13 @@ impl Session {
         let loudness = Arc::new(OutputVolume::default());
         loudness.set(volume_db(o.volume));
         let output: Box<dyn AudioOutput> = Box::new(output);
-        let store = Store::open(o.data.join("music"), prefs.cache_mb.max(0) as u64 * 1024 * 1024, Box::new(CoreOrder)).map_err(|e| format!("the music directory: {e}"))?;
+        let store = Store::open(o.data.join("music"), prefs.cache_mb.max(0) as u64 * 1024 * 1024, Box::new(Recent::default())).map_err(|e| format!("the music directory: {e}"))?;
         let audio = Arc::new(Audio::new(o.http.clone(), o.offline));
-        let downloader = Downloader::new(core.clone(), client.clone(), audio.clone(), store.clone());
+        let analyses = Analyses::of(client.clone());
+        let downloader = Downloader::new(client.clone(), audio.clone(), store.clone(), analyses.clone());
         // `bridging`: a song the network cannot bring raises `Event::Bridge` (see `Session::bridge`).
-        let app = CoreApp::new(core.session.clone()).measuring(Measurer::new(core.clone(), client.clone(), store.clone())).per_device(core.clone()).bridging().volume(loudness.clone());
-        let library = CoreLibrary { client: client.clone(), bytes: audio, metered: false, store: Some(store.clone()) };
+        let app = CoreApp::new(core.session.clone()).measuring(Measurer::new(analyses.clone(), store.clone())).per_device(core.clone()).bridging().volume(loudness.clone());
+        let library = CoreLibrary { client: client.clone(), bytes: audio, metered: false, store: Some(store.clone()), analyses };
         let events = o.out.clone();
         let config = Config { memory_mb: 256, settings: settings(&prefs, loudness.db()), ..Config::default() };
         let engine = Arc::new(Engine::start(library, app, CoreQueue(core.session.clone()), output, None, config, move |e| events(Said::Engine(e))));

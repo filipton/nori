@@ -556,7 +556,7 @@ fn service(id: &str) -> Option<(&'static str, &'static str)> {
 
 /// Rows of settings tab `tab`: each group's heading, then its rows with first and last marked.
 pub fn rows(p: &StoredPrefs, f: &Facts, tab: i32) -> ModelRc<SettingRow> {
-    let s = settings_model::state(p, settings_model::Output::default());
+    let s = settings_model::state(p, settings_model::Output::default(), &nori_core::settings_store::shared().model);
     let b = Build { p, s: &s, f };
     let groups = match tab {
         1 => b.playing(),
@@ -658,7 +658,7 @@ mod tests {
     fn row_names_resolve() {
         let p = StoredPrefs { auto_mix: true, auto_fill: true, compressor: true, expander: true, loudness: true, scrobble: true, ..StoredPrefs::default() };
         let f = Facts::default();
-        let s = settings_model::state(&p, settings_model::Output::default());
+        let s = settings_model::state(&p, settings_model::Output::default(), &nori_core::settings_store::shared().model);
         let b = Build { p: &p, s: &s, f: &f };
         let specs: Vec<String> = settings_model::specs().into_iter().map(|s| s.name).collect();
         for (_, rows) in [b.general(), b.playing(), b.sound(), b.lyrics(), b.library(), b.data(), b.servers()].into_iter().flatten() {

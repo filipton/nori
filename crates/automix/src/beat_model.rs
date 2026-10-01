@@ -50,63 +50,72 @@ struct Kept {
     on: bool,
 }
 
-/// Process-wide: set by the core at open, read by the settings store and the measurer.
-static KEPT: Mutex<Kept> = Mutex::new(Kept { dir: None, state: State::Absent, on: false });
+/// The model's file and its download, for one app: placed by the core at open, followed by the settings'
+/// switch, read by the measurer.
+pub struct ModelFile(Mutex<Kept>);
 
-/// The model is kept in `models/` beside the database at `db_path` (nowhere for an in-memory database).
-pub fn set_home(db_path: &str) {
-    let dir = Path::new(db_path).parent().filter(|_| !db_path.is_empty()).map(|p| p.join("models"));
-    let mut k = KEPT.lock();
-    // Only a checked file is ever renamed into place, so a file there is ready.
-    if k.state != State::Downloading && dir.as_ref().is_some_and(|d| d.join(FILE_NAME).is_file()) {
-        k.state = State::Ready;
+impl Default for ModelFile {
+    fn default() -> Self {
+        ModelFile(Mutex::new(Kept { dir: None, state: State::Absent, on: false }))
     }
-    k.dir = dir;
 }
 
-/// Where the weights file is or goes.
-pub fn file() -> Option<PathBuf> {
-    KEPT.lock().dir.as_ref().map(|d| d.join(FILE_NAME))
-}
-
-/// The weights file, when it is on the device and checked.
-pub fn ready() -> Option<PathBuf> {
-    let k = KEPT.lock();
-    let f = k.dir.as_ref()?.join(FILE_NAME);
-    (k.state == State::Ready && f.is_file()).then_some(f)
-}
-
-pub fn state() -> State {
-    KEPT.lock().state.clone()
-}
-
-pub fn set_state(s: State) {
-    KEPT.lock().state = s;
-}
-
-/// Claims the download: false while one runs, and after a wrong file until the switch is turned off
-/// and on again (the same address would serve it again).
-pub fn begin_download() -> bool {
-    let mut k = KEPT.lock();
-    if matches!(k.state, State::Downloading | State::Failed(BeatFailure::WrongFile)) {
-        return false;
+impl ModelFile {
+    /// The model is kept in `models/` beside the database at `db_path` (nowhere for an in-memory database).
+    pub fn set_home(&self, db_path: &str) {
+        let dir = Path::new(db_path).parent().filter(|_| !db_path.is_empty()).map(|p| p.join("models"));
+        let mut k = self.0.lock();
+        // Only a checked file is ever renamed into place, so a file there is ready.
+        if k.state != State::Downloading && dir.as_ref().is_some_and(|d| d.join(FILE_NAME).is_file()) {
+            k.state = State::Ready;
+        }
+        k.dir = dir;
     }
-    k.state = State::Downloading;
-    true
-}
 
-/// The switch changed. Turning it off deletes the model directory.
-pub fn switched(on: bool) {
-    let mut k = KEPT.lock();
-    let was = std::mem::replace(&mut k.on, on);
-    if was && !on {
-        k.state = State::Absent;
-        if let Some(dir) = k.dir.clone() {
-            drop(k);
-            // Off the caller's thread: settings changes come from the UI.
-            nori_db::background::run(move || {
-                let _ = std::fs::remove_dir_all(dir);
-            });
+    /// Where the weights file is or goes.
+    pub fn file(&self) -> Option<PathBuf> {
+        self.0.lock().dir.as_ref().map(|d| d.join(FILE_NAME))
+    }
+
+    /// The weights file, when it is on the device and checked.
+    pub fn ready(&self) -> Option<PathBuf> {
+        let k = self.0.lock();
+        let f = k.dir.as_ref()?.join(FILE_NAME);
+        (k.state == State::Ready && f.is_file()).then_some(f)
+    }
+
+    pub fn state(&self) -> State {
+        self.0.lock().state.clone()
+    }
+
+    pub fn set_state(&self, s: State) {
+        self.0.lock().state = s;
+    }
+
+    /// Claims the download: false while one runs, and after a wrong file until the switch is turned off
+    /// and on again (the same address would serve it again).
+    pub fn begin_download(&self) -> bool {
+        let mut k = self.0.lock();
+        if matches!(k.state, State::Downloading | State::Failed(BeatFailure::WrongFile)) {
+            return false;
+        }
+        k.state = State::Downloading;
+        true
+    }
+
+    /// The switch changed. Turning it off deletes the model directory.
+    pub fn switched(&self, on: bool) {
+        let mut k = self.0.lock();
+        let was = std::mem::replace(&mut k.on, on);
+        if was && !on {
+            k.state = State::Absent;
+            if let Some(dir) = k.dir.clone() {
+                drop(k);
+                // Off the caller's thread: settings changes come from the UI.
+                nori_db::background::run(move || {
+                    let _ = std::fs::remove_dir_all(dir);
+                });
+            }
         }
     }
 }
@@ -120,25 +129,26 @@ mod tests {
         let dir = nori_testdir::TempDir::new("model");
         std::fs::create_dir_all(dir.join("models")).unwrap();
         std::fs::write(dir.join("models").join(FILE_NAME), b"model").unwrap();
-        set_home(&dir.join("nori.db").to_string_lossy());
-        assert_eq!(ready(), Some(dir.join("models").join(FILE_NAME)));
-        assert_eq!(state(), State::Ready);
-        switched(true);
-        switched(true);
+        let m = ModelFile::default();
+        m.set_home(&dir.join("nori.db").to_string_lossy());
+        assert_eq!(m.ready(), Some(dir.join("models").join(FILE_NAME)));
+        assert_eq!(m.state(), State::Ready);
+        m.switched(true);
+        m.switched(true);
         assert!(dir.join("models").join(FILE_NAME).is_file());
-        switched(false);
+        m.switched(false);
         nori_db::background::flush();
         assert!(!dir.join("models").exists());
-        assert_eq!((state(), ready()), (State::Absent, None));
+        assert_eq!((m.state(), m.ready()), (State::Absent, None));
 
-        assert!(begin_download());
-        assert!(!begin_download(), "one download at a time");
-        set_state(State::Failed(BeatFailure::Network));
-        assert!(begin_download(), "a network failure is tried again");
-        set_state(State::Failed(BeatFailure::WrongFile));
-        assert!(!begin_download(), "a wrong file is not fetched again");
-        switched(true);
-        switched(false);
-        assert!(begin_download());
+        assert!(m.begin_download());
+        assert!(!m.begin_download(), "one download at a time");
+        m.set_state(State::Failed(BeatFailure::Network));
+        assert!(m.begin_download(), "a network failure is tried again");
+        m.set_state(State::Failed(BeatFailure::WrongFile));
+        assert!(!m.begin_download(), "a wrong file is not fetched again");
+        m.switched(true);
+        m.switched(false);
+        assert!(m.begin_download());
     }
 }

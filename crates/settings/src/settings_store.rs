@@ -95,11 +95,6 @@ fn effects(a: &StoredPrefs, b: &StoredPrefs) -> u32 {
     crate::settings::ROWS.iter().filter(|r| r.effect != 0 && (r.changed)(a, b)).fold(chain, |e, r| e | r.effect)
 }
 
-/// Core state that follows the settings directly. The transition planner reads them itself.
-fn changed(prefs: &StoredPrefs) {
-    nori_automix::beat_model::switched(prefs.auto_mix_better_beats);
-}
-
 impl SettingsStore {
     /// The settings in the app database at `db_path`; the defaults are written the first time.
     fn open(db_path: &str) -> nori_model::Result<Self> {
@@ -119,15 +114,13 @@ impl SettingsStore {
     }
 
     /// Replaces the settings with what `make` makes of them and queues the write. Returns the effect
-    /// bits, or None when nothing changed. Called under [`Settings`]' write lock, so concurrent edits reach
-    /// [`changed`] in the order they were kept.
+    /// bits, or None when nothing changed.
     fn edit(&mut self, make: impl FnOnce(&StoredPrefs) -> StoredPrefs) -> Option<u32> {
         let prefs = make(&self.prefs);
         if prefs == self.prefs {
             return None;
         }
         let effect = effects(&self.prefs, &prefs);
-        changed(&prefs);
         self.prefs = prefs;
         let (db, writes, prefs) = (self.db.clone(), self.writes.clone(), self.prefs.clone());
         let n = writes.fetch_add(1, Ordering::SeqCst) + 1;
@@ -190,10 +183,12 @@ impl SettingsStore {
     }
 }
 
-/// The live settings of one app, empty (the defaults) until opened.
+/// The live settings of one app, empty (the defaults) until opened, and the beat model's file, which
+/// follows its switch.
 #[derive(Default)]
 pub struct Settings {
     kept: RwLock<Option<SettingsStore>>,
+    pub model: nori_automix::beat_model::ModelFile,
 }
 
 /// The settings behind the platform's free entry points (uniffi, JNI). Global: those calls carry no handle.
@@ -203,17 +198,26 @@ pub fn shared() -> &'static Arc<Settings> {
 }
 
 impl Settings {
+    /// `f` over the open settings, the model's file following the switch under the same lock, so
+    /// concurrent edits reach it in the order they were kept.
+    fn write<R>(&self, f: impl FnOnce(&mut Option<SettingsStore>) -> R) -> R {
+        let mut k = self.kept.write();
+        let r = f(&mut k);
+        if let Some(s) = k.as_ref() {
+            self.model.switched(s.prefs.auto_mix_better_beats);
+        }
+        r
+    }
+
     fn with_store<R>(&self, f: impl FnOnce(&mut SettingsStore) -> Option<R>) -> Option<R> {
-        self.kept.write().as_mut().and_then(f)
+        self.write(|k| k.as_mut().and_then(f))
     }
 
     /// Opens the settings kept in the app database at `db_path` and makes them the live ones.
     pub fn open(&self, db_path: &str) -> nori_model::Result<StoredPrefs> {
         let store = SettingsStore::open(db_path)?;
         let prefs = store.prefs.clone();
-        let mut k = self.kept.write();
-        changed(&prefs);
-        *k = Some(store);
+        self.write(|k| *k = Some(store));
         Ok(prefs)
     }
 
@@ -262,16 +266,16 @@ impl Settings {
     /// A change by name (`settings::set_by_name`), kept, with the settings after it and the effect bits.
     /// None for an unknown name. Before the settings are open it is applied to the defaults and not kept.
     pub fn edit_by_name(&self, name: &str, value: &str) -> Option<SettingChange> {
-        match self.kept.write().as_mut() {
+        self.write(|k| match k.as_mut() {
             Some(s) => s.edit_by_name(name, value),
             None => set_by_name(&StoredPrefs::default(), name, value),
-        }
+        })
     }
 
     /// Applies an equalizer tool to the live settings. None when nothing changed or the settings are not
     /// open; an import without filters is an error.
     pub fn sound_tool(&self, tool: SoundTool) -> Result<Option<SoundChange>, SoundError> {
-        self.kept.write().as_mut().map_or(Ok(None), |s| s.sound_tool(tool))
+        self.write(|k| k.as_mut().map_or(Ok(None), |s| s.sound_tool(tool)))
     }
 
     /// A copy of the live settings; None before they are open.

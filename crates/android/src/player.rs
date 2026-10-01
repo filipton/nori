@@ -20,7 +20,7 @@ use jni::sys::{jboolean, jfloat, jint, jlong, jstring, jvalue};
 use jni::{JNIEnv, JavaVM};
 use nori_engine::ahead::{Ahead, Entry, Keeping};
 use nori_engine::arriving::Listening;
-use nori_engine::core::{ahead_songs, is_radio, key_format, measure_as_it_comes, measuring_ahead, settings, CoreApp, CoreQueue, OutputVolume};
+use nori_engine::core::{ahead_songs, is_radio, key_format, measuring_ahead, settings, CoreApp, CoreQueue, OutputVolume};
 use nori_engine::{Body, ByteSource, Cancel, Coded, Coding, Config, Device, Engine, Event, Library, Located, OffloadOutput, OpenError, OutputFacts, OutputFormat, Source, State, Support};
 use nori_player::transitions::WindowSong;
 use parking_lot::Mutex;
@@ -1095,11 +1095,11 @@ impl Library for AndroidLibrary {
 
     /// Fetches the core's precache targets except `next` (the engine loads that) into media3's cache.
     fn ahead(&mut self, next: &str) {
-        self.ahead.ask(Arc::new(Media3Cache), Arc::new(AheadBytes), ahead_songs(nori_core::stream::precache_now(), next), Some(measuring_ahead(self.queue.clone())));
+        self.ahead.ask(Arc::new(Media3Cache), Arc::new(AheadBytes), ahead_songs(nori_core::stream::precache_now(), next), Some(measuring_ahead(crate::measure::analyses(), self.queue.clone())));
     }
 
     fn taker(&self, id: &str, hint: Option<&str>) -> Option<Listening> {
-        measure_as_it_comes(id, hint, false)
+        crate::measure::analyses().measure_as_it_comes(id, hint, false)
     }
 
     /// The song played nothing and will be refetched: drops its stream cache entry (never a download).

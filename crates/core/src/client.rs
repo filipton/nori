@@ -35,11 +35,11 @@ pub struct Client {
     pub(crate) autofill_picks: parking_lot::Mutex<Option<(crate::autofill::Picked, Vec<String>)>>,
 }
 
-/// The newest client, for code without a handle (`stream::resolve_now`, the beat model download).
-// Global: reached from the engine's threads with no client handle.
+/// The newest client, for Android's player and measuring doors (`stream::resolve_now`). Global: those
+/// JNI calls carry no client handle.
 static ACTIVE_CLIENT: parking_lot::Mutex<std::sync::Weak<Client>> = parking_lot::Mutex::new(std::sync::Weak::new());
 
-pub(crate) fn active_client() -> Option<Arc<Client>> {
+pub fn active_client() -> Option<Arc<Client>> {
     ACTIVE_CLIENT.lock().upgrade()
 }
 
@@ -74,6 +74,10 @@ async fn login_attempt(transport: &dyn Transport, config: &ServerConfig, alt_url
 }
 
 impl Client {
+    pub fn core(&self) -> &Arc<Core> {
+        &self.core
+    }
+
     /// The queue of this client's core.
     pub fn session(&self) -> &Arc<nori_queue::Session> {
         &self.core.session

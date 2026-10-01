@@ -25,7 +25,7 @@ pub trait Order: Send + Sync {
     fn clear(&self);
 }
 
-/// The core's rule without the core: an earlier run's leftovers first, then least recently used.
+/// An earlier run's leftovers first, then least recently used (as the core's `stream_cache` orders Android's cache).
 #[derive(Default)]
 pub struct Recent(Mutex<Stamps>);
 
@@ -265,6 +265,15 @@ impl Store {
     pub fn drop_cached(&self, keys: &[String]) {
         for k in keys {
             self.remove(k);
+        }
+    }
+
+    /// Drops every cached copy of song `id`, at any quality (`<id>:<quality>` keys).
+    pub fn drop_copies(&self, id: &str) {
+        for (k, _) in self.entries() {
+            if k.rsplit_once(':').is_some_and(|(of, _)| of == id) {
+                self.remove(&k);
+            }
         }
     }
 

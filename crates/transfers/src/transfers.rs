@@ -1281,7 +1281,8 @@ pub struct Downloads {
     held: Mutex<Held>,
 }
 
-/// The active core's downloads. Global: JNI doors and engine callbacks carry no core handle.
+/// The newest core's downloads, for the platform's download reports. Global: the JNI doors carry no core
+/// handle; Rust code goes through its core (`Core::transfers`).
 static ACTIVE: Mutex<Weak<Downloads>> = Mutex::new(Weak::new());
 
 impl Downloads {
@@ -1347,7 +1348,7 @@ pub fn held(id: &str) -> HeldState {
     active().map_or(HeldState::Absent, |d| d.held().state(id))
 }
 
-// Thin adapters over the active tracker for the engine's and Android's callers.
+// Thin adapters over the active tracker for Android's JNI doors.
 pub fn followed(id: &str, state: i32, now: i64) -> i32 {
     with(|t| t.followed(id, state, now)).unwrap_or(0)
 }

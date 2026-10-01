@@ -4,30 +4,31 @@
 
 use std::path::{Path, PathBuf};
 
-use nori_automix::beat_model::{self, BeatFailure, State, BYTES, CHECKPOINT_BYTES, CHECKPOINT_SHA256, CHECKPOINT_URL, SHA256};
+use nori_automix::beat_model::{BeatFailure, State, BYTES, CHECKPOINT_BYTES, CHECKPOINT_SHA256, CHECKPOINT_URL, SHA256};
 use sha2::{Digest, Sha256};
 
 /// Timeout for the checkpoint download.
 const TIMEOUT_MS: u32 = 120_000;
 
-/// The weights file, downloading and converting it first if needed. None when disabled or unavailable now
-/// (metered network not allowed, no client, failure).
-pub fn ensure() -> Option<PathBuf> {
-    let wanted = || crate::settings_store::shared().prefs(|p| p.auto_mix && p.auto_mix_better_beats);
+/// The weights file, downloading and converting it first through `client` if needed. None when disabled or
+/// unavailable now (metered network not allowed, failure).
+pub fn ensure(client: &crate::client::Client) -> Option<PathBuf> {
+    let settings = &client.session().settings;
+    let model = &settings.model;
+    let wanted = || settings.prefs(|p| p.auto_mix && p.auto_mix_better_beats);
     if !wanted() {
         return None;
     }
-    if let Some(f) = beat_model::ready() {
+    if let Some(f) = model.ready() {
         return Some(f);
     }
-    let file = beat_model::file()?;
-    let mobile = crate::settings_store::shared().prefs(|p| p.auto_mix_beats_mobile_data);
+    let file = model.file()?;
+    let mobile = settings.prefs(|p| p.auto_mix_beats_mobile_data);
     if nori_net::stream::metered() && !mobile {
-        beat_model::set_state(State::WaitingForWifi);
+        model.set_state(State::WaitingForWifi);
         return None;
     }
-    let client = crate::client::active_client()?;
-    if !beat_model::begin_download() {
+    if !model.begin_download() {
         return None;
     }
     let t0 = std::time::Instant::now();
@@ -44,17 +45,17 @@ pub fn ensure() -> Option<PathBuf> {
         // Disabled meanwhile: discard.
         Ok(_) if !wanted() => {
             let _ = std::fs::remove_file(&file);
-            beat_model::set_state(State::Absent);
+            model.set_state(State::Absent);
             None
         }
         Ok((fetched, all)) => {
             crate::alog::info(&format!("beat model: checkpoint fetched in {} ms, weights made and kept in {} ms", fetched.as_millis(), all.as_millis()));
-            beat_model::set_state(State::Ready);
+            model.set_state(State::Ready);
             Some(file)
         }
         Err((why, detail)) => {
             crate::alog::info(&format!("beat model not made: {detail}"));
-            beat_model::set_state(State::Failed(why));
+            model.set_state(State::Failed(why));
             None
         }
     }

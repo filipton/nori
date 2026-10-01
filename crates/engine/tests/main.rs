@@ -27,10 +27,3 @@ mod replan;
 #[cfg(feature = "core")]
 #[path = "album.rs"]
 mod album;
-
-/// The core's queue, planner, database and settings are per process: tests using it take turns.
-#[cfg(feature = "core")]
-fn core_turn() -> parking_lot::MutexGuard<'static, ()> {
-    static CORE: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-    CORE.lock()
-}

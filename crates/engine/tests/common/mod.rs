@@ -294,6 +294,22 @@ impl nori_core::transport::Transport for NoApi {
     fn address_changed(&self) {}
 }
 
+/// A core of the test's own in `dir`: its settings opened (and changed by `prefs`), its queue, and a
+/// client for it that answers no API call.
+#[cfg(feature = "core")]
+pub fn own_core(dir: &std::path::Path, prefs: impl FnOnce(&mut nori_core::settings::StoredPrefs)) -> (Arc<nori_core::Core>, Arc<nori_core::client::Client>) {
+    let settings = Arc::new(nori_core::settings_store::Settings::default());
+    let mut p = settings.open(&dir.join("app.db").to_string_lossy()).unwrap();
+    prefs(&mut p);
+    settings.put(p);
+    let session = Arc::new(nori_core::queue::Session::new(settings));
+    let core = nori_core::Core::open(dir.join("nori.db").to_string_lossy().into_owned(), "test".into(), session).unwrap();
+    core.configure(nori_core::ServerConfig { url: "http://music.test".into(), user: "u".into(), password: "p".into(), api_key: None, legacy_auth: false }).unwrap();
+    let client = nori_core::client::Client::new(core.clone(), Arc::new(NoApi));
+    client.set_profile(nori_core::client::NetProfile { url: "http://music.test".into(), ..Default::default() });
+    (core, client)
+}
+
 /// Drives a [`Virtual`] clock through engine timers and device pulls.
 pub struct Stepper<D: Device> {
     pub clock: Virtual,

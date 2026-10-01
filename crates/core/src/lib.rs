@@ -364,15 +364,6 @@ impl From<QueueWire> for PlayQueue {
     }
 }
 
-/// The newest core, for nori-engine and Android code that runs without a handle (the measurer).
-// Global: reached from JNI/engine callbacks with no core handle.
-static ACTIVE: Mutex<std::sync::Weak<Core>> = Mutex::new(std::sync::Weak::new());
-
-/// The newest core, if alive.
-pub fn active() -> Option<Arc<Core>> {
-    ACTIVE.lock().upgrade()
-}
-
 #[cfg_attr(feature = "ffi", derive(uniffi::Object))]
 pub struct Core {
     /// Also its session's profile database while this is the newest core.
@@ -392,7 +383,7 @@ impl Core {
     /// [`Core::new`] over `session`'s queue.
     pub fn open(db_path: String, server: String, session: Arc<nori_queue::Session>) -> Result<Arc<Self>> {
         let db = db::open(&db_path, &server)?;
-        nori_automix::beat_model::set_home(&db_path);
+        session.settings.model.set_home(&db_path);
         let db = Arc::new(Mutex::new(db));
         let core = Arc::new(Core {
             downloads: Arc::new(transfers::Downloads::load(&db)?),
@@ -402,10 +393,14 @@ impl Core {
             stars: Mutex::new(stars::StarMarks::default()),
             session,
         });
-        *ACTIVE.lock() = Arc::downgrade(&core);
         core.session.db.set(&core.db);
         core.downloads.activate();
         Ok(core)
+    }
+
+    /// The downloads table in memory and the progress of their work.
+    pub fn transfers(&self) -> &transfers::Downloads {
+        &self.downloads
     }
 }
 

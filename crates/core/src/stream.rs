@@ -8,7 +8,7 @@ pub use nori_net::stream::*;
 /// network's quality. None without a client.
 pub fn resolve_now(id: &str) -> Option<StreamTarget> {
     let client = crate::client::active_client()?;
-    let kept = crate::transfers::held(id) == crate::transfers::HeldState::Done;
+    let kept = client.core.transfers().held().state(id) == crate::transfers::HeldState::Done;
     Some(client.resolve(id.to_string(), kept, !kept && metered()))
 }
 
@@ -100,7 +100,7 @@ impl Client {
     /// with URL and key.
     pub fn precache_targets(&self, metered: bool) -> Vec<Fetch> {
         let (wifi, mobile, _) = self.saved_qualities();
-        self.fetches(self.core.session.precache(metered), metered, &wifi, &mobile, crate::transfers::held)
+        self.fetches(self.core.session.precache(metered), metered, &wifi, &mobile, |id| self.core.transfers().held().state(id))
     }
 }
 

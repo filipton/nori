@@ -1,6 +1,6 @@
 //! With AutoMix (or a crossfade) and "keep albums gapless" on, an album in order plays sample-exact
 //! gapless however its plans came about; other joins (another album, shuffle) still mix. Runs over the
-//! core, one case after another under `core_turn`.
+//! test's own core.
 
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -9,15 +9,13 @@ use std::time::{Duration, Instant};
 
 use common::card::{Card, Pull};
 use common::{Stepper, Virtual};
-use nori_core::client::{Client, NetProfile};
 use nori_core::settings_store::{APPLY_AUDIO, REPLAN};
-use nori_core::{Core, ServerConfig, Song};
-use nori_engine::core::{settings, CoreApp, CoreLibrary, CoreOrder, CoreQueue, Measurer};
-use nori_engine::{Body, ByteSource, Config, Engine, State, Store};
+use nori_core::{Core, Song};
+use nori_engine::core::{settings, Analyses, CoreApp, CoreLibrary, CoreQueue, Measurer};
+use nori_engine::{Body, ByteSource, Config, Engine, State, Recent, Store};
 
 use crate::common;
 
-use common::NoApi;
 
 const RATE: usize = 44_100;
 const SECS: usize = 40;
@@ -78,6 +76,7 @@ struct Rig {
     card: Card,
     core: Arc<Core>,
     store: Arc<Store>,
+    analyses: Arc<Analyses>,
     measurer: Option<Arc<Measurer>>,
     songs: Vec<(S, Vec<i16>)>,
     _dir: nori_testdir::TempDir,
@@ -94,14 +93,9 @@ impl Rig {
     #[allow(clippy::too_many_arguments)]
     fn tagged(name: &str, songs: &[S], auto_mix: bool, crossfade: i32, keep: bool, measured: Measured, shuffle: bool, tags: &Tags) -> Rig {
         let dir = nori_testdir::TempDir::new(name);
-        let core = Core::new(dir.join("nori.db").to_string_lossy().into_owned(), "test".into()).unwrap();
-        core.configure(ServerConfig { url: "http://music.test".into(), user: "u".into(), password: "p".into(), api_key: None, legacy_auth: false }).unwrap();
-        let client = Client::new(core.clone(), Arc::new(NoApi));
-        client.set_profile(NetProfile { url: "http://music.test".into(), ..Default::default() });
-        let mut prefs = nori_core::settings_store::settings_open(dir.join("app.db").to_string_lossy().into_owned()).unwrap();
-        (prefs.auto_mix, prefs.crossfade_sec, prefs.crossfade_keep_albums, prefs.auto_mix_max_s) = (auto_mix, crossfade, keep, 8);
-        nori_core::settings_store::settings_put(prefs.clone());
-        let store = Store::open(dir.join("music"), 512 << 20, Box::new(CoreOrder)).unwrap();
+        let (core, client) = common::own_core(&dir, |p| (p.auto_mix, p.crossfade_sec, p.crossfade_keep_albums, p.auto_mix_max_s) = (auto_mix, crossfade, keep, 8));
+        let prefs = core.session.settings.current().unwrap();
+        let store = Store::open(dir.join("music"), 512 << 20, Box::new(Recent::default())).unwrap();
         let mut tracks: HashMap<(&str, u32), u32> = HashMap::new();
         let made: Vec<(S, Vec<i16>)> = songs
             .iter()
@@ -145,8 +139,9 @@ impl Rig {
             core.session.register(twice);
         }
         queue(&core.session, &made.iter().map(|(s, _)| *s).collect::<Vec<_>>(), shuffle, tags.queued);
-        let measurer = (measured == Measured::WhilePlaying).then(|| Measurer::new(core.clone(), client.clone(), store.clone()));
-        let library = CoreLibrary { client, bytes: Arc::new(Net(files)), metered: false, store: Some(store.clone()) };
+        let analyses = Analyses::of(client.clone());
+        let measurer = (measured == Measured::WhilePlaying).then(|| Measurer::new(analyses.clone(), store.clone()));
+        let library = CoreLibrary { client, bytes: Arc::new(Net(files)), metered: false, store: Some(store.clone()), analyses: analyses.clone() };
         let app = match &measurer {
             Some(m) => CoreApp::new(core.session.clone()).measuring(m.clone()),
             None => CoreApp::new(core.session.clone()),
@@ -155,7 +150,7 @@ impl Rig {
         let clock = Virtual::default();
         let engine = Engine::start_on(library, app, CoreQueue(core.session.clone()), Box::new(card.clone()), None, Config { memory_mb: 256, settings: settings(&prefs, 0.0), ..Config::default() }, clock.clone(), |_| {});
         engine.queue_changed();
-        Rig { engine, time: Stepper::new(clock, card.pull.clone()), card, core, store, measurer, songs: made, _dir: dir }
+        Rig { engine, time: Stepper::new(clock, card.pull.clone()), card, core, store, analyses, measurer, songs: made, _dir: dir }
     }
 
     fn until(&self, secs: u64, mut done: impl FnMut(&Rig) -> bool) -> bool {
@@ -169,7 +164,7 @@ impl Rig {
     fn settle(&self) {
         let Some(m) = &self.measurer else { return };
         let until = Instant::now() + Duration::from_secs(120);
-        while self.store.fetching_ahead() || nori_engine::core::measuring_as_they_come() || m.busy() {
+        while self.store.fetching_ahead() || self.analyses.measuring_as_they_come() || m.busy() {
             assert!(Instant::now() < until, "the measuring ends");
             std::thread::park_timeout(Duration::from_millis(5));
         }
@@ -177,9 +172,9 @@ impl Rig {
 
     /// Sets a setting by name and relays its effects.
     fn set(&self, name: &str, value: &str) {
-        let effect = nori_core::settings_store::shared().edit_by_name(name, value).unwrap_or_else(|| panic!("{name} is a setting")).effect;
+        let effect = self.core.session.settings.edit_by_name(name, value).unwrap_or_else(|| panic!("{name} is a setting")).effect;
         if effect & APPLY_AUDIO != 0 {
-            self.engine.set_settings(settings(&nori_core::settings_store::shared().current().unwrap(), 0.0));
+            self.engine.set_settings(settings(&self.core.session.settings.current().unwrap(), 0.0));
         }
         if effect & REPLAN != 0 {
             self.engine.replan();
@@ -252,7 +247,7 @@ impl Rig {
                             ms(sf),
                             ms(len),
                             ms(hf),
-                            nori_core::queue::shared().planner.transition_note(id)
+                            self.core.session.planner.transition_note(id)
                         )
                     };
                     let (back, expect) = (hf + DIP_MAX, sf + DIP_MAX);
@@ -370,7 +365,6 @@ const ALBUM: [S; 3] = [S("a1", "al", 1), S("a2", "al", 1), S("a3", "al", 1)];
 
 #[test]
 fn album_kept_gapless_with_transitions_on() {
-    let _turn = crate::core_turn();
     an_album_measured_before_plays_every_sample(true, 0);
     an_album_measured_before_plays_every_sample(false, 6);
     an_album_measured_while_it_plays_plays_every_sample();
@@ -425,7 +419,7 @@ fn keeping_albums_switched_on_while_a_song_plays_joins_it_whole(at_ms: i64) {
     // a1 is planned as a mix, then albums are kept gapless.
     assert!(rig.until(40, |r| r.engine.status().position_ms >= at_ms), "{:?}", rig.engine.status());
     assert!(!rig.engine.status().mixing, "switched at {} ms, before the mix is heard", rig.engine.status().position_ms);
-    assert!(nori_core::queue::shared().planner.transition_note("a1").is_some_and(|n| n.kind != "Gapless"), "a1 is planned as a mix first: {:?}", nori_core::queue::shared().planner.transition_note("a1"));
+    assert!(rig.core.session.planner.transition_note("a1").is_some_and(|n| n.kind != "Gapless"), "a1 is planned as a mix first: {:?}", rig.core.session.planner.transition_note("a1"));
     rig.set("crossfadeKeepAlbums", "true");
     let (mixed, order) = rig.to_the_end();
     rig.heard_as(&order, 0, 0, &[true, true], 1);
@@ -448,7 +442,7 @@ fn an_album_then_another_is_mixed_only_between_them() {
     rig.engine.play_at(0, 0);
     let (mixed, order) = rig.to_the_end();
     assert!(mixed, "the albums are mixed into each other");
-    assert_ne!(nori_core::queue::shared().planner.transition_note("m2").map(|n| n.kind), Some("Gapless".into()));
+    assert_ne!(rig.core.session.planner.transition_note("m2").map(|n| n.kind), Some("Gapless".into()));
     rig.heard_as(&order, 0, 0, &[true, false, true], 0);
 }
 
@@ -459,7 +453,7 @@ fn songs_of_an_album_not_played_as_one_are_mixed(how: Queued) {
     let (mixed, order) = rig.to_the_end();
     assert!(mixed, "mixed song into song");
     for id in &order[..order.len() - 1] {
-        let note = nori_core::queue::shared().planner.transition_note(id);
+        let note = rig.core.session.planner.transition_note(id);
         assert!(note.as_ref().is_some_and(|n| n.kind != "Gapless"), "{id} mixes into the next: {note:?}");
     }
     rig.heard_as(&order, 0, 0, &[false, false], 0);
@@ -471,7 +465,7 @@ fn a_shuffled_album_is_mixed() {
     let (mixed, order) = rig.to_the_end();
     assert!(mixed, "a shuffled album is mixed");
     for id in &order[..order.len() - 1] {
-        let note = nori_core::queue::shared().planner.transition_note(id);
+        let note = rig.core.session.planner.transition_note(id);
         assert!(note.as_ref().is_some_and(|n| n.kind != "Gapless"), "{id} mixes into the next: {note:?}");
     }
 }

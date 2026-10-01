@@ -1,6 +1,6 @@
 //! Each song crosses the network once with AutoMix measuring ahead: songs fetched ahead
 //! ([`nori_engine::ahead`]) are measured as they arrive, and a song the player takes mid-fetch resumes
-//! where the fetch got to. The core is per process, so this is its own binary.
+//! where the fetch got to.
 #![cfg(feature = "core")]
 
 mod common;
@@ -12,13 +12,11 @@ use std::time::{Duration, Instant};
 
 use common::card::{Card, Pull};
 use common::{Stepper, Virtual};
-use nori_core::client::{Client, NetProfile};
-use nori_core::{Core, ServerConfig, Song};
-use nori_engine::core::{settings, CoreApp, CoreLibrary, CoreOrder, CoreQueue, Measurer};
-use nori_engine::{Body, ByteSource, Config, Engine, Store};
+use nori_core::{Core, Song};
+use nori_engine::core::{settings, Analyses, CoreApp, CoreLibrary, CoreQueue, Measurer};
+use nori_engine::{Body, ByteSource, Config, Engine, Recent, Store};
 use parking_lot::Mutex;
 
-use common::NoApi;
 
 fn beat_wav(seed: u32) -> Vec<u8> {
     common::wav(44_100, &common::beat(220.0 + seed as f64))
@@ -92,6 +90,7 @@ struct Rig {
     core: Arc<Core>,
     store: Arc<Store>,
     net: Arc<Net>,
+    analyses: Arc<Analyses>,
     measurer: Arc<Measurer>,
     ids: Vec<String>,
     _dir: nori_testdir::TempDir,
@@ -100,15 +99,9 @@ struct Rig {
 impl Rig {
     fn new(name: &str, ids: &[&str]) -> Rig {
         let dir = nori_testdir::TempDir::new(name);
-        let core = Core::new(dir.join("nori.db").to_string_lossy().into_owned(), "test".into()).unwrap();
-        core.configure(ServerConfig { url: "http://music.test".into(), user: "u".into(), password: "p".into(), api_key: None, legacy_auth: false }).unwrap();
-        let client = Client::new(core.clone(), Arc::new(NoApi));
-        client.set_profile(NetProfile { url: "http://music.test".into(), ..Default::default() });
-        let mut prefs = nori_core::settings_store::settings_open(dir.join("app.db").to_string_lossy().into_owned()).unwrap();
-        prefs.auto_mix = true;
-        prefs.precache_wifi = 2;
-        nori_core::settings_store::settings_put(prefs.clone());
-        let store = Store::open(dir.join("music"), 512 << 20, Box::new(CoreOrder)).unwrap();
+        let (core, client) = common::own_core(&dir, |p| (p.auto_mix, p.precache_wifi) = (true, 2));
+        let prefs = core.session.settings.current().unwrap();
+        let store = Store::open(dir.join("music"), 512 << 20, Box::new(Recent::default())).unwrap();
         let mut net = Net { store: Some(store.clone()), ..Net::default() };
         let songs: Vec<Song> = ids.iter().map(|id| Song { id: id.to_string(), title: id.to_string(), duration: 40, suffix: "wav".into(), ..Default::default() }).collect();
         for (k, id) in ids.iter().enumerate() {
@@ -117,14 +110,15 @@ impl Rig {
         let net = Arc::new(net);
         core.session.register(songs);
         core.session.set(ids.iter().map(|s| s.to_string()).collect(), Some(0), false, None);
-        let measurer = Measurer::new(core.clone(), client.clone(), store.clone());
-        let library = CoreLibrary { client: client.clone(), bytes: net.clone(), metered: false, store: Some(store.clone()) };
+        let analyses = Analyses::of(client.clone());
+        let measurer = Measurer::new(analyses.clone(), store.clone());
+        let library = CoreLibrary { client: client.clone(), bytes: net.clone(), metered: false, store: Some(store.clone()), analyses: analyses.clone() };
         let app = CoreApp::new(core.session.clone()).measuring(measurer.clone());
         let card = Card::new();
         let clock = Virtual::default();
         let engine = Engine::start_on(library, app, CoreQueue(core.session.clone()), Box::new(card.clone()), None, Config { memory_mb: 256, settings: settings(&prefs, 0.0), ..Config::default() }, clock.clone(), |_| {});
         engine.queue_changed();
-        Rig { engine, time: Stepper::new(clock, card.pull.clone()), core, store, net, measurer, ids: ids.iter().map(|s| s.to_string()).collect(), _dir: dir }
+        Rig { engine, time: Stepper::new(clock, card.pull.clone()), core, store, net, analyses, measurer, ids: ids.iter().map(|s| s.to_string()).collect(), _dir: dir }
     }
 
     fn until(&self, secs: u64, mut done: impl FnMut(&Rig) -> bool) -> bool {
@@ -143,7 +137,7 @@ impl Rig {
     /// Blocks until background fetching and measuring are done.
     fn settle(&self) {
         let until = Instant::now() + Duration::from_secs(120);
-        while self.store.fetching_ahead() || nori_engine::core::measuring_as_they_come() || self.measurer.busy() {
+        while self.store.fetching_ahead() || self.analyses.measuring_as_they_come() || self.measurer.busy() {
             assert!(Instant::now() < until, "the fetching and measuring end");
             std::thread::park_timeout(Duration::from_millis(20));
         }
@@ -190,7 +184,7 @@ fn every_song_crosses_the_network_once_and_the_songs_fetched_ahead_are_measured_
         assert!(rig.measured(id), "{id} is measured before its turn");
     }
     // s3-s5 were measured as they arrived; only s1 and s2 may have been read back from disk.
-    assert!(nori_engine::core::measured_as_they_came() >= 3, "{} measured as they came: {:?}", nori_engine::core::measured_as_they_came(), rig.net.requests.lock());
+    assert!(rig.analyses.measured_as_they_came() >= 3, "{} measured as they came: {:?}", rig.analyses.measured_as_they_came(), rig.net.requests.lock());
     assert!(rig.measurer.decoded() <= 2, "no song fetched ahead was decoded again from the disk: {}", rig.measurer.decoded());
     let asked: Vec<String> = rig.net.requests.lock().iter().map(|(id, _)| id.clone()).collect();
     for id in ["s3", "s4", "s5"] {
