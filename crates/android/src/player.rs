@@ -510,13 +510,26 @@ struct JavaOffload {
     playing: bool,
     /// Last open, flush or play: older timestamps are ignored.
     since_ns: i64,
+    /// The play head last read, past the platform's 32 bits ([`head_unwrapped`]).
+    head: u64,
     /// The platform's answer for each format asked about, for the log.
     said: Vec<(Coded, String)>,
 }
 
+/// `getPlaybackHeadPosition`'s 32 bits, read `raw`, past `last`: a wrap (a play head near the top
+/// coming round to near zero) carries, anything else that goes back is a new count (a gapless join).
+fn head_unwrapped(last: u64, raw: u32) -> u64 {
+    let (high, low) = (last & !0xFFFF_FFFF, last as u32);
+    match raw >= low {
+        true => high | raw as u64,
+        false if low >= 1 << 31 && raw < 1 << 30 => (high + (1 << 32)) | raw as u64,
+        false => raw as u64,
+    }
+}
+
 impl JavaOffload {
     fn new(events: Arc<OffloadEvents>) -> JavaOffload {
-        JavaOffload { events, track: None, buffer: None, staging: Vec::new(), held: 0, rate: 1, timestamp: None, stamp: None, playing: false, since_ns: 0, said: Vec::new() }
+        JavaOffload { events, track: None, buffer: None, staging: Vec::new(), held: 0, rate: 1, timestamp: None, stamp: None, playing: false, since_ns: 0, head: 0, said: Vec::new() }
     }
 
     /// The last timestamp, extrapolated by the clock while playing and fresh.
@@ -620,7 +633,7 @@ impl OffloadOutput for JavaOffload {
         self.track = Some(track);
         self.buffer = Some(buffer);
         self.rate = coded.rate.max(1);
-        self.stamp = None;
+        (self.stamp, self.head) = (None, 0);
         self.playing = false;
         self.since_ns = mono_ns();
         if self.timestamp.is_none() {
@@ -692,7 +705,7 @@ impl OffloadOutput for JavaOffload {
     fn flush(&mut self) {
         self.events.ended.store(false, Ordering::Release);
         self.void(|j| j.track.flush);
-        self.stamp = None;
+        (self.stamp, self.head) = (None, 0);
         self.since_ns = mono_ns();
     }
 
@@ -705,7 +718,9 @@ impl OffloadOutput for JavaOffload {
     /// the engine must not read as 0.
     fn head(&mut self) -> Option<u64> {
         let (Some(track), Some((java, mut env))) = (&self.track, env()) else { return None };
-        call_int(&mut env, track, java.track.head, &[]).map(|h| h as u32 as u64)
+        let raw = call_int(&mut env, track, java.track.head, &[])? as u32;
+        self.head = head_unwrapped(self.head, raw);
+        Some(self.head)
     }
 
     /// `getTimestamp`, which works where an offloaded play head does not (Galaxy S22), extrapolated by the
@@ -1605,6 +1620,22 @@ mod tests {
         ];
         for (answer, support, words) in cases {
             assert_eq!(offload_support(answer), (support, words.to_string()), "{answer:#x}");
+        }
+    }
+
+    #[test]
+    fn play_head_goes_past_32_bits() {
+        const W: u64 = 1 << 32;
+        let cases = [
+            ("counting", 1_000, 5_000, 5_000),
+            ("wrapped", W - 10, 20, W + 20),
+            ("after a wrap", W + 20, 30, W + 30),
+            ("wrapped twice", 2 * W - 1, 3, 2 * W + 3),
+            ("a gapless join counts anew", 1_000_000, 50, 50),
+            ("a join after a wrap", W + 1_000, 10, 10),
+        ];
+        for (what, last, raw, want) in cases {
+            assert_eq!(head_unwrapped(last, raw), want, "{what}");
         }
     }
 }
