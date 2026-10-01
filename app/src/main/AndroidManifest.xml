@@ -60,6 +60,8 @@
             </intent-filter>
         </receiver>
         <meta-data android:name="com.google.android.gms.car.application" android:resource="@xml/automotive_app_desc" />
+        <!-- On a car's own screen, where its driver sits (ui/DriverSide.kt); absent on a phone. -->
+        <uses-library android:name="android.car" android:required="false" />
         <!-- The car's pictures (CarArtProvider): Android Auto draws a browse item's picture only from a content address. -->
         <provider android:name=".car.CarArtProvider" android:authorities="${applicationId}.carart" android:exported="true" />
         <!-- A report of a problem, shared as a file (Settings > About). -->

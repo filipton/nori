@@ -164,6 +164,12 @@ fun TabBar(route: String?, tabs: List<Tab>, onTab: (String) -> Unit, look: Look,
  */
 val LocalWide = androidx.compose.runtime.compositionLocalOf { false }
 
+/**
+ * On its side, the cover on the right and the controls and words on the left, beside the driver of a car
+ * whose wheel is on the left ([DriverSide]). Off, the cover is on the left, as a phone on its side has it.
+ */
+val LocalCoverAtEnd = androidx.compose.runtime.compositionLocalOf { false }
+
 /** Whether a window of this size is laid out across ([LocalWide]). */
 fun isWide(widthDp: Int, heightDp: Int): Boolean = widthDp > heightDp
 
