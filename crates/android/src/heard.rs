@@ -15,7 +15,7 @@ pub(crate) static HEARD: Class = Class {
 pub(crate) static PLAYHEAD: Class = Class {
     name: c"dev/nori/music/playback/PlayheadJni",
     methods: &[
-        native!(c"position", c"(JJZIIJIJ)J", position),
+        native!(c"position", c"(JJZIJIJ)J", position),
         native!(c"runOn", c"(JJZ)J", run_on),
         native!(c"jumped", c"(J)V", jumped),
         native!(c"durationMs", c"(JJJ)J", duration_ms),
@@ -42,11 +42,10 @@ extern "system" fn at(h: jlong, now_ms: jlong, playing: jboolean, position_ms: j
 /// `player` the engine (0: its place is not to be asked), whose place in song `on` the bar goes by (the
 /// perf build checks the two agree). The sign bit: the controller's place has drifted from the engine's
 /// (`nori_player::heard::drifted`), and the session must say its place again.
-#[allow(clippy::too_many_arguments)]
-extern "system" fn position(h: jlong, now_ms: jlong, playing: jboolean, on: jint, next: jint, position_ms: jlong, shown: jint, player: jlong) -> jlong {
+extern "system" fn position(h: jlong, now_ms: jlong, playing: jboolean, on: jint, position_ms: jlong, shown: jint, player: jlong) -> jlong {
     let engine_ms = if player != 0 { crate::player::shown_ms(player, on) } else { -1 };
     let Some(c) = clock(h) else { return position_ms.max(0) };
-    let at = c.lock().position(now_ms, playing != 0, usize::try_from(on).ok(), usize::try_from(next).ok(), position_ms, usize::try_from(shown).ok(), engine_ms);
+    let at = c.lock().position(now_ms, playing != 0, usize::try_from(on).ok(), position_ms, usize::try_from(shown).ok(), (engine_ms >= 0).then_some(engine_ms));
     if nori_perf::invariants::on() {
         // Only on the player's own song: a page one song behind lags by design.
         let same = on >= 0 && on == shown && at.index.is_none();

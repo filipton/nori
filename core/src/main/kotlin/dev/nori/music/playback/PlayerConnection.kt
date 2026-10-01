@@ -155,7 +155,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
         val now = android.os.SystemClock.elapsedRealtime()
         val on = c.currentMediaItemIndex
         val engine = engine()?.takeIf { _pendingSeek.value == null && now - seekAsked > SEEK_GRACE_MS }
-        val r = PlayheadJni.position(clock, now, c.isPlaying, on, c.nextMediaItemIndex, raw, shown, engine?.handle ?: 0L)
+        val r = PlayheadJni.position(clock, now, c.isPlaying, on, raw, shown, engine?.handle ?: 0L)
         val out = read(r)
         if (c === controller && c.isPlaying && r < 0 && now - reanchored > REANCHOR_GAP_MS) {
             reanchored = now
@@ -602,7 +602,7 @@ internal object PlayheadJni {
      * place in song [on] the bar goes by when it has one. Negative when the player's word has drifted from
      * the engine's place (nori_player::heard::drifted): the session must say its place again.
      */
-    @JvmStatic @CriticalNative external fun position(h: Long, nowMs: Long, playing: Boolean, on: Int, next: Int, positionMs: Long, shown: Int, player: Long): Long
+    @JvmStatic @CriticalNative external fun position(h: Long, nowMs: Long, playing: Boolean, on: Int, positionMs: Long, shown: Int, player: Long): Long
     /** The last place shown, run on from then if [playing]: for while the controller cannot be asked. */
     @JvmStatic @CriticalNative external fun runOn(h: Long, nowMs: Long, playing: Boolean): Long
     /** The listener asked for a place (a seek): the next reading is shown as it is, even a moment back in the song. */
