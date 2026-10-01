@@ -173,7 +173,7 @@ pub struct QueueRows {
 /// it has the same length, else list order.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn queue_rows(len: u32, shuffle: bool, shown: i32) -> QueueRows {
-    let (order, current) = crate::playlist::with(|p| {
+    let (order, current) = nori_queue::shared().playlist(|p| {
         let here = p.len() == len as usize;
         (here.then(|| p.play_order().map(|i| i as u32).collect()), p.current().filter(|_| here))
     });

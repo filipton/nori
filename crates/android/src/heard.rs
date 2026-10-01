@@ -29,7 +29,7 @@ fn clock<'a>(h: jlong) -> Option<&'a Mutex<HeardClock>> {
 
 /// The process's clock (Kotlin keeps one for the app's life), never freed.
 extern "system" fn create() -> jlong {
-    Box::into_raw(Box::new(Mutex::new(HeardClock::new()))) as jlong
+    Box::into_raw(Box::new(Mutex::new(HeardClock::new(nori_core::queue::shared().clone())))) as jlong
 }
 
 /// Returns `HeardAt::pack`.

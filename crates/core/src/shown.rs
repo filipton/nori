@@ -24,7 +24,7 @@ pub fn session_buttons(song: bool, starred: bool, shuffle: bool) -> SessionButto
 /// [`session_buttons`] for the queue's current song.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn session_buttons_now(starred: bool, shuffle: bool) -> SessionButtons {
-    let song = crate::playlist::with(|p| p.current_id().is_some_and(|id| !id.starts_with(crate::queue::RADIO_PREFIX)));
+    let song = nori_queue::shared().playlist(|p| p.current_id().is_some_and(|id| !id.starts_with(crate::queue::RADIO_PREFIX)));
     session_buttons(song, starred, shuffle)
 }
 

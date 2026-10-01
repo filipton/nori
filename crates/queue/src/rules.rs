@@ -4,7 +4,8 @@
 
 use nori_player::queue::{self as q, ErrorRun};
 use nori_player::transport as t;
-use parking_lot::Mutex;
+
+use crate::{shared, Session};
 
 // Public so the uniffi scaffolding can name them.
 pub use nori_model::model::PlaybackError;
@@ -31,7 +32,8 @@ pub enum NextAction {
 }
 
 /// Playback state the rules keep between calls.
-struct Controls {
+#[derive(Default)]
+pub(crate) struct Controls {
     errors: ErrorRun,
     /// The last playback error, until music plays again.
     last_error: Option<PlaybackError>,
@@ -46,62 +48,129 @@ impl Controls {
     }
 }
 
-// Global: the uniffi entry points have no handle.
-static CONTROLS: Mutex<Controls> = Mutex::new(Controls { errors: ErrorRun::new(), last_error: None, sleep_left: 0 });
-
 /// Upcoming songs (current first) the prefetch and analysis look at.
 const UPCOMING: usize = 8;
 
-/// The upcoming ids to prefetch on this network (`nori_player::queue::precache_range`).
-pub fn queue_precache(metered: bool) -> Vec<String> {
-    let (count, mixing) = prefs(|p| {
-        (q::precache_count(metered, p.precache_wifi, p.precache_mobile), q::mixing(nori_automix::planner::transitions_off(), p.crossfade_sec, p.auto_mix))
-    });
-    crate::playlist::with(|p| {
-        let Some((first, last)) = q::precache_range(count, mixing, p.shuffling()) else { return Vec::new() };
-        p.upcoming().take(UPCOMING).skip(first).take(last + 1 - first).map(|i| p.ids()[i].clone()).collect()
-    })
+impl Session {
+    /// The upcoming ids to prefetch on this network (`nori_player::queue::precache_range`).
+    pub fn precache(&self, metered: bool) -> Vec<String> {
+        let (count, mixing) = prefs(|p| {
+            (q::precache_count(metered, p.precache_wifi, p.precache_mobile), q::mixing(nori_automix::planner::transitions_off(), p.crossfade_sec, p.auto_mix))
+        });
+        self.playlist(|p| {
+            let Some((first, last)) = q::precache_range(count, mixing, p.shuffling()) else { return Vec::new() };
+            p.upcoming().take(UPCOMING).skip(first).take(last + 1 - first).map(|i| p.ids()[i].clone()).collect()
+        })
+    }
+
+    /// The prefetchable ids of `ids` ([`Session::precache`]'s output) that are not already being
+    /// downloaded; a download would otherwise be cached twice.
+    pub fn precache_list(&self, ids: Vec<String>, downloading: impl Fn(&str) -> bool) -> Vec<String> {
+        let mut ids = self.fetchable(ids);
+        ids.retain(|id| !downloading(id));
+        ids
+    }
+
+    /// The upcoming analysable ids to analyse for AutoMix; empty while AutoMix is off.
+    pub fn measure(&self) -> Vec<String> {
+        let n = prefs(|p| q::measure_ahead(p.auto_mix));
+        self.playlist(|p| p.upcoming().take(UPCOMING).take(n).map(|i| &p.ids()[i]).filter(|id| crate::queue::analysable(id)).cloned().collect())
+    }
+
+    /// A song failed to play: what to do (`nori_player::queue::on_error`). `bridge_ready`: the platform
+    /// can hand a network failure to the offline bridge.
+    pub fn error(&self, kind: PlaybackError, offload_refused: bool, bridge_ready: bool) -> OnError {
+        let (skip, bridge) = prefs(|p| (p.skip_on_error, p.bridge_offline));
+        let has_next = self.playlist(|p| p.next().is_some());
+        let mut c = self.controls.lock();
+        c.last_error = Some(kind);
+        c.errors.failed(kind, offload_refused, bridge && bridge_ready, skip, has_next)
+    }
+
+    /// The offline bridge took a network failure over: ends the error run.
+    pub fn bridged(&self) {
+        self.controls.lock().played();
+    }
+
+    /// The last playback error until music plays again, so a player that stopped after an error run can
+    /// say why.
+    pub fn last_error(&self) -> Option<PlaybackError> {
+        self.controls.lock().last_error
+    }
+
+    /// The offline bridge could not take a network failure: whether to skip it.
+    pub fn bridge_failed(&self) -> bool {
+        let skip = prefs(|p| p.skip_on_error);
+        let has_next = self.playlist(|p| p.next().is_some());
+        self.controls.lock().errors.bridge_failed(skip, has_next)
+    }
+
+    /// Music is actually playing: ends the error run. A new song alone does not, since an error's skip is one.
+    pub fn playing(&self) {
+        self.controls.lock().played();
+    }
+
+    /// Sets the sleep timer to `songs` songs or the end of this one (0/false cancel). Returns whether to
+    /// pause at the end of the current song.
+    pub fn sleep_set(&self, songs: u32, end_of_track: bool) -> bool {
+        let (pause, left) = t::sleep_after(songs, end_of_track);
+        self.controls.lock().sleep_left = left;
+        pause
+    }
+
+    /// The song changed: whether the sleep timer now pauses at its end.
+    pub fn sleep_song_changed(&self) -> bool {
+        let mut c = self.controls.lock();
+        let (left, pause) = t::sleep_song_changed(c.sleep_left);
+        c.sleep_left = left;
+        pause
+    }
+
+    /// Everything a new song asks of the platform. Stateful steps (refill fetch, sleep countdown) are
+    /// taken here, so ask once per song and never on a repeat-one loop.
+    pub fn song_arrived(&self) -> SongSteps {
+        let on = prefs(|p| p.bridge_offline);
+        let (bridging, parked) = self.playlist(|p| (p.bridging(), p.next_is_parked()));
+        SongSteps {
+            save_after_ms: queue_keep(QueueMoment::Song).save_after_ms,
+            fill: self.autofill_start(),
+            bridge: bridge_step(on, bridging, parked),
+            precache_after_ms: t::PRECACHE_AFTER_MS,
+            pause_at_end: self.sleep_song_changed(),
+        }
+    }
 }
 
-/// The upcoming analysable ids to analyse for AutoMix; empty while AutoMix is off.
-pub fn queue_measure() -> Vec<String> {
-    let n = prefs(|p| q::measure_ahead(p.auto_mix));
-    crate::playlist::with(|p| p.upcoming().take(UPCOMING).take(n).map(|i| &p.ids()[i]).filter(|id| crate::queue::analysable(id)).cloned().collect())
-}
+// ---- the platform's entry points, over the shared session ----
 
-/// A song failed to play: what to do (`nori_player::queue::on_error`). `bridge_ready`: the platform can
-/// hand a network failure to the offline bridge.
-pub fn queue_error(kind: PlaybackError, offload_refused: bool, bridge_ready: bool) -> OnError {
-    let (skip, bridge) = prefs(|p| (p.skip_on_error, p.bridge_offline));
-    let has_next = crate::playlist::with(|p| p.next().is_some());
-    let mut c = CONTROLS.lock();
-    c.last_error = Some(kind);
-    c.errors.failed(kind, offload_refused, bridge && bridge_ready, skip, has_next)
-}
-
-/// The offline bridge took a network failure over: ends the error run.
-pub fn queue_bridged() {
-    CONTROLS.lock().played();
-}
-
-/// The last playback error until music plays again, so a player that stopped after an error run can say why.
+/// [`Session::last_error`].
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn queue_last_error() -> Option<PlaybackError> {
-    CONTROLS.lock().last_error
+    shared().last_error()
 }
 
-/// The offline bridge could not take a network failure: whether to skip it.
+/// [`Session::bridge_failed`].
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn queue_bridge_failed() -> bool {
-    let skip = prefs(|p| p.skip_on_error);
-    let has_next = crate::playlist::with(|p| p.next().is_some());
-    CONTROLS.lock().errors.bridge_failed(skip, has_next)
+    shared().bridge_failed()
 }
 
-/// Music is actually playing: ends the error run. A new song alone does not, since an error's skip is one.
+/// [`Session::playing`].
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn queue_playing() {
-    CONTROLS.lock().played();
+    shared().playing()
+}
+
+/// [`Session::sleep_set`].
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn sleep_set(songs: u32, end_of_track: bool) -> bool {
+    shared().sleep_set(songs, end_of_track)
+}
+
+/// [`Session::song_arrived`].
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn song_arrived() -> SongSteps {
+    shared().song_arrived()
 }
 
 /// Whether previous restarts the current song (per "previous always skips").
@@ -125,23 +194,6 @@ pub fn next_action(has_next: bool) -> NextAction {
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn skip_plays(play_when_ready: bool) -> bool {
     t::skip_plays(play_when_ready)
-}
-
-/// Sets the sleep timer to `songs` songs or the end of this one (0/false cancel). Returns whether to
-/// pause at the end of the current song.
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn sleep_set(songs: u32, end_of_track: bool) -> bool {
-    let (pause, left) = t::sleep_after(songs, end_of_track);
-    CONTROLS.lock().sleep_left = left;
-    pause
-}
-
-/// The song changed: whether the sleep timer now pauses at its end.
-pub fn sleep_song_changed() -> bool {
-    let mut c = CONTROLS.lock();
-    let (left, pause) = t::sleep_song_changed(c.sleep_left);
-    c.sleep_left = left;
-    pause
 }
 
 /// The sleep timer for `minutes` as [delay ms, slack ms].
@@ -193,14 +245,6 @@ pub fn playback_timings() -> PlaybackTimings {
 /// Player buffering: [min buffer ms, max ms, to start ms, to resume ms, target bytes].
 pub fn load_control(memory_class_mb: u32) -> Vec<i64> {
     t::load_control(memory_class_mb).to_vec()
-}
-
-/// The prefetchable ids of `ids` ([`queue_precache`]'s output) that are not already being downloaded;
-/// a download would otherwise be cached twice.
-pub fn precache_list(ids: Vec<String>, downloading: impl Fn(&str) -> bool) -> Vec<String> {
-    let mut ids = crate::queue::queue_fetchable(ids);
-    ids.retain(|id| !downloading(id));
-    ids
 }
 
 /// A moment at which the queue is saved or pushed to the server.
@@ -272,19 +316,6 @@ pub struct SongSteps {
     pub pause_at_end: bool,
 }
 
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn song_arrived() -> SongSteps {
-    let on = prefs(|p| p.bridge_offline);
-    let (bridging, parked) = crate::playlist::with(|p| (p.bridging(), p.next_is_parked()));
-    SongSteps {
-        save_after_ms: queue_keep(QueueMoment::Song).save_after_ms,
-        fill: crate::autofill::autofill_start(),
-        bridge: bridge_step(on, bridging, parked),
-        precache_after_ms: t::PRECACHE_AFTER_MS,
-        pause_at_end: sleep_song_changed(),
-    }
-}
-
 /// Whether the equalizer screen switches to the shallow buffer (`set_tuning`): screen visible, sound
 /// changed on it, equalizer on.
 #[cfg_attr(feature = "ffi", uniffi::export)]
@@ -306,60 +337,61 @@ pub fn volume_fraction(step: i32, max: i32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::playlist::tests::hold;
+    use crate::playlist::tests::session;
 
     #[test]
     fn precache_targets_come_from_queue() {
-        let _g = hold(&["pc1", "pc2", "pc3", "pc4", "ext-5"], 0);
+        let s = session(&["pc1", "pc2", "pc3", "pc4", "ext-5"], 0);
         // Defaults: two ahead on Wi-Fi, one on metered; the player buffers the next song itself.
-        assert_eq!(queue_precache(false), ["pc3"]);
-        assert!(queue_precache(true).is_empty());
-        assert!(queue_measure().is_empty(), "AutoMix off");
+        assert_eq!(s.precache(false), ["pc3"]);
+        assert!(s.precache(true).is_empty());
+        assert!(s.measure().is_empty(), "AutoMix off");
     }
 
     #[test]
     fn precache_list_skips_downloads_and_providers() {
         let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(precache_list(ids(&["1", "2", "ext-3", "4"]), |id| id == "2"), ["1", "4"]);
-        assert_eq!(precache_list(ids(&["1", "2"]), |_| false), ["1", "2"]);
+        let s = Session::default();
+        assert_eq!(s.precache_list(ids(&["1", "2", "ext-3", "4"]), |id| id == "2"), ["1", "4"]);
+        assert_eq!(s.precache_list(ids(&["1", "2"]), |_| false), ["1", "2"]);
     }
 
     /// The skip an error makes is no success: an unplayable queue stops.
     #[test]
     fn error_run_ends_only_when_playing() {
         for skips_move in [true, false] {
-            let _g = hold(&["er1", "er2", "er3", "er4", "er5"], 0);
-            queue_playing();
+            let s = session(&["er1", "er2", "er3", "er4", "er5"], 0);
+            s.playing();
             for i in 1..=3 {
-                assert_eq!(queue_error(PlaybackError::Other, false, true), OnError::Skip, "skips move: {skips_move}");
+                assert_eq!(s.error(PlaybackError::Other, false, true), OnError::Skip, "skips move: {skips_move}");
                 if skips_move {
-                    crate::playlist::playlist_moved_to(i);
+                    s.moved_to(i);
                 }
             }
-            assert_eq!(queue_error(PlaybackError::Other, false, true), OnError::Stop, "skips move: {skips_move}");
-            assert_eq!(queue_last_error(), Some(PlaybackError::Other));
-            queue_playing();
-            assert_eq!(queue_last_error(), None);
+            assert_eq!(s.error(PlaybackError::Other, false, true), OnError::Stop, "skips move: {skips_move}");
+            assert_eq!(s.last_error(), Some(PlaybackError::Other));
+            s.playing();
+            assert_eq!(s.last_error(), None);
         }
-        let _g = hold(&["er1", "er2"], 0);
-        queue_playing();
-        assert_eq!(queue_error(PlaybackError::Network, false, true), OnError::Skip, "bridge off by default");
-        crate::playlist::playlist_moved_to(1);
-        assert_eq!(queue_error(PlaybackError::Other, false, true), OnError::Stop, "nothing after the last song");
-        assert!(!queue_bridge_failed());
-        queue_playing();
+        let s = session(&["er1", "er2"], 0);
+        s.playing();
+        assert_eq!(s.error(PlaybackError::Network, false, true), OnError::Skip, "bridge off by default");
+        s.moved_to(1);
+        assert_eq!(s.error(PlaybackError::Other, false, true), OnError::Stop, "nothing after the last song");
+        assert!(!s.bridge_failed());
+        s.playing();
     }
 
     #[test]
     fn sleep_timer_counts_song_changes() {
-        let _g = hold(&["sa1", "sa2"], 0);
-        assert!(!sleep_set(3, false));
-        let s = song_arrived();
-        assert_eq!((s.save_after_ms, s.bridge, s.pause_at_end), (t::SAVE_AFTER_MS, BridgeStep::Off, false));
-        assert!(song_arrived().pause_at_end, "the third song is the last");
-        assert!(!song_arrived().pause_at_end);
-        assert!(sleep_set(0, true));
-        assert!(!sleep_song_changed(), "end of track counts nothing");
+        let s = session(&["sa1", "sa2"], 0);
+        assert!(!s.sleep_set(3, false));
+        let steps = s.song_arrived();
+        assert_eq!((steps.save_after_ms, steps.bridge, steps.pause_at_end), (t::SAVE_AFTER_MS, BridgeStep::Off, false));
+        assert!(s.song_arrived().pause_at_end, "the third song is the last");
+        assert!(!s.song_arrived().pause_at_end);
+        assert!(s.sleep_set(0, true));
+        assert!(!s.sleep_song_changed(), "end of track counts nothing");
     }
 
 }

@@ -18,6 +18,7 @@ use nori_player::queue::{OnError, PlaybackError};
 use nori_player::transitions::WindowSong;
 use nori_core::automix::host::CoreHost;
 use nori_core::client::Client;
+use nori_core::queue::Session;
 use nori_core::settings::StoredPrefs;
 
 use nori_core::transfers;
@@ -31,32 +32,32 @@ use crate::library::{Library, Located, Source};
 use crate::source::{ByteSource, OpenError};
 use crate::store::{Order, Store};
 
-/// The core's queue (`nori_core::playlist`). Edit it with `playlist_*`, then call
-/// [`crate::Engine::queue_changed`].
-#[derive(Debug, Default, Clone, Copy)]
-pub struct CoreQueue;
+/// A core session's queue. Edit it there, then call [`crate::Engine::queue_changed`].
+#[derive(Clone)]
+pub struct CoreQueue(pub Arc<Session>);
 
 impl Queue for CoreQueue {
     fn read<R>(&self, f: impl FnOnce(&Playlist) -> R) -> R {
-        nori_core::playlist::with(f)
+        self.0.playlist(f)
     }
 
     fn moved_to(&mut self, index: usize) {
-        nori_core::playlist::playlist_moved_to(index as i32);
+        self.0.moved_to(index as i32);
     }
 
     fn set_repeat(&mut self, mode: u8) {
-        nori_core::playlist::playlist_repeat(mode);
+        self.0.repeat(mode);
     }
 
     /// An explicit song with "skip explicit songs" on.
     fn skips(&self, index: usize) -> bool {
-        nori_core::playlist::playlist_skips(index)
+        self.0.skips(index)
     }
 }
 
-/// The core's planner, analysis store and log as the engine's [`App`].
+/// The core's planner, analysis store and log, and a session's queue rules, as the engine's [`App`].
 pub struct CoreApp {
+    session: Arc<Session>,
     host: CoreHost<fn()>,
     measurer: Option<Arc<Measurer>>,
     /// Per-device sound: the core holding the profiles, the outputs seen, and the current one.
@@ -72,9 +73,10 @@ pub struct CoreApp {
 }
 
 impl CoreApp {
-    pub fn new() -> CoreApp {
+    pub fn new(session: Arc<Session>) -> CoreApp {
         fn nothing() {}
         CoreApp {
+            session,
             host: CoreHost { now_ms: 0, heard_changed: nothing },
             measurer: None,
             devices: None,
@@ -113,12 +115,6 @@ impl CoreApp {
     }
 }
 
-impl Default for CoreApp {
-    fn default() -> Self {
-        CoreApp::new()
-    }
-}
-
 impl Host for CoreApp {
     fn plan_for(&mut self, outgoing_id: &str) -> Option<Plan> {
         self.host.plan_for(outgoing_id)
@@ -148,13 +144,13 @@ impl App for CoreApp {
 
     /// With a measurer, upcoming songs are measured too when AutoMix is on.
     fn auto_mix(&self) -> bool {
-        self.measurer.is_some() && !nori_core::rules::queue_measure().is_empty()
+        self.measurer.is_some() && !self.session.measure().is_empty()
     }
 
-    /// The core picks the songs (`queue_measure`); the measurer takes those on disk.
+    /// The session picks the songs (`Session::measure`); the measurer takes those on disk.
     fn measure_ahead<S: nori_player::pipeline::Songs>(&mut self, _songs: &mut S, _ids: &[String]) {
         if let Some(m) = &self.measurer {
-            m.update(nori_core::rules::queue_measure(), std::thread::current());
+            m.update(self.session.measure(), std::thread::current());
         }
     }
 
@@ -192,16 +188,16 @@ impl App for CoreApp {
 
     /// The core keeps the window itself.
     fn window(&mut self, _window: Vec<WindowSong>, _shuffling: bool) {
-        nori_core::playlist::playlist_window();
+        self.session.window();
     }
 
     /// The core counts failing songs and applies its settings.
     fn on_error(&mut self, kind: PlaybackError, _has_next: bool) -> Option<OnError> {
-        Some(nori_core::rules::queue_error(kind, false, self.bridge))
+        Some(self.session.error(kind, false, self.bridge))
     }
 
     fn playing(&mut self) {
-        nori_core::rules::queue_playing();
+        self.session.playing();
     }
 
     fn transitions_off(&mut self, off: bool) {
@@ -210,7 +206,7 @@ impl App for CoreApp {
 
     /// The core's ReplayGain for the queue's song.
     fn gain(&mut self, index: usize, id: &str) -> f32 {
-        let g = nori_core::playlist::playlist_gain_of(index, false);
+        let g = self.session.gain_of(index, false);
         // Logged once per song and level (device checks read it).
         if !self.gains_said.iter().any(|(i, v)| i == id && *v == g) {
             self.gains_said.retain(|(i, _)| i != id);
@@ -278,7 +274,7 @@ pub fn key_format(key: &str) -> Option<String> {
 
 impl Library for CoreLibrary {
     fn locate(&mut self, id: &str) -> Result<Located, String> {
-        let song = nori_core::queue::queue_song(id.to_string());
+        let song = self.client.session().song(id);
         let duration_ms = song.as_ref().map(|s| s.duration as i64 * 1000).filter(|&d| d > 0);
         // A download may be transcoded: the file says what it is.
         let kept = self.store.as_ref().filter(|_| transfers::held(id) == transfers::HeldState::Done).and_then(|s| s.downloaded(id));
@@ -297,17 +293,17 @@ impl Library for CoreLibrary {
     }
 
     fn about(&self, id: &str) -> WindowSong {
-        about(id)
+        about(self.client.session(), id)
     }
 
     fn fetch_ahead(&self, id: &str) -> bool {
-        fetch_ahead(id)
+        fetch_ahead(self.client.session(), id)
     }
 
     /// Fetches the core's precache targets except `next` into the store.
     fn ahead(&mut self, next: &str) {
         let Some(store) = &self.store else { return };
-        store.fetch_ahead(self.bytes.clone(), ahead_songs(self.client.precache_targets(self.metered()), next), Some(measuring_ahead()));
+        store.fetch_ahead(self.bytes.clone(), ahead_songs(self.client.precache_targets(self.metered()), next), Some(measuring_ahead(self.client.session().clone())));
     }
 
     fn taker(&self, id: &str, hint: Option<&str>) -> Option<Listening> {
@@ -330,13 +326,13 @@ pub fn ahead_songs(fetch: Vec<nori_core::stream::Fetch>, next: &str) -> Vec<Ahea
 }
 
 /// Measures each song fetched ahead as it arrives ([`measure_as_it_comes`]); the fetch may wait for it.
-pub fn measuring_ahead() -> Takers {
-    Arc::new(|song: &AheadSong| measure_as_it_comes(&song.id, key_format(&song.key).or_else(|| nori_core::queue::queue_song(song.id.clone()).map(|s| s.suffix)).as_deref(), true))
+pub fn measuring_ahead(session: Arc<Session>) -> Takers {
+    Arc::new(move |song: &AheadSong| measure_as_it_comes(&song.id, key_format(&song.key).or_else(|| session.song(&song.id).map(|s| s.suffix)).as_deref(), true))
 }
 
-/// What the planner and seek bar know of `id`, from the core's queue.
-pub fn about(id: &str) -> WindowSong {
-    match nori_core::queue::queue_song(id.to_string()) {
+/// What the planner and seek bar know of `id`, from `session`'s songs.
+pub fn about(session: &Session, id: &str) -> WindowSong {
+    match session.song(id) {
         Some(s) => WindowSong {
             id: s.id,
             title: s.title,
@@ -346,7 +342,7 @@ pub fn about(id: &str) -> WindowSong {
             track: s.track as i32,
             tag_bpm: s.bpm as f32,
             radio: false,
-            // Stamped by the window (`playlist_window`).
+            // Stamped by the window (`Session::window`).
             album_run: 0,
         },
         None => WindowSong { id: id.to_string(), title: id.to_string(), radio: id.starts_with(RADIO), ..Default::default() },
@@ -362,8 +358,8 @@ pub fn is_radio(id: &str) -> bool {
 }
 
 /// Whether `id` may be fetched unasked (never a provider's song).
-pub fn fetch_ahead(id: &str) -> bool {
-    !nori_core::queue::queue_fetchable(vec![id.to_string()]).is_empty()
+pub fn fetch_ahead(session: &Session, id: &str) -> bool {
+    !session.fetchable(vec![id.to_string()]).is_empty()
 }
 
 /// Runs the core's download queue: fetches pending songs whole into the store, a few at a time, oldest
@@ -481,7 +477,7 @@ impl Downloader {
         let mut chunk = vec![0u8; DOWNLOAD_CHUNK];
         let size = || std::fs::metadata(&part).map_or(0, |m| m.len());
         // Measured as it downloads from the first byte; one taken up is measured from the disk later.
-        let hint = nori_core::queue::queue_song(id.to_string()).or_else(|| self.core.download_song(id)).map(|s| s.suffix).filter(|s| !s.is_empty());
+        let hint = self.core.session.song(id).or_else(|| self.core.download_song(id)).map(|s| s.suffix).filter(|s| !s.is_empty());
         let mut taker = if size() == 0 { measure_download_as_it_comes(id, hint.as_deref()) } else { None };
         let mut idle = 0;
         loop {
@@ -565,7 +561,7 @@ impl Shelf for StoreShelf {
             let key = self.client.resolve(id.to_string(), false, m).key;
             self.store.peek(&key).map(|p| (key, p))
         })?;
-        let hint = key_format(&key).or_else(|| nori_core::queue::queue_song(id.to_string()).map(|s| s.suffix)).filter(|s| !s.is_empty());
+        let hint = key_format(&key).or_else(|| self.client.session().song(id).map(|s| s.suffix)).filter(|s| !s.is_empty());
         Some(Whole { files: vec![path], hint })
     }
 }
@@ -794,7 +790,7 @@ impl Measurer {
     /// Decodes `id` for the analyser and/or the beat model and stores the results. Returns whether
     /// anything was stored, or None if abandoned (no longer asked for).
     fn measure(&self, core: &Core, id: &str, pieces: crate::pieces::Pieces, hint: Option<&str>, job: Job) -> Option<bool> {
-        let expected_ms = nori_core::queue::queue_song(id.to_string()).map_or(0, |s| s.duration as i64 * 1000);
+        let expected_ms = core.session.song(id).map_or(0, |s| s.duration as i64 * 1000);
         let mut asked = self.asked.load(Ordering::Acquire);
         let Decoded { stream, ends } = decode(id, "measuring ahead", pieces, hint, expected_ms, job.classical, job.model.is_some(), || {
             let now = self.asked.load(Ordering::Acquire);
@@ -952,7 +948,7 @@ fn listen_as_it_comes(id: &str, hint: Option<&str>, wait: bool) -> Option<Listen
     if !ARRIVALS.lock().begin(id) {
         return None;
     }
-    let expected_ms = nori_core::queue::queue_song(id.to_string()).map_or(0, |s| s.duration as i64 * 1000);
+    let expected_ms = core.session.song(id).map_or(0, |s| s.duration as i64 * 1000);
     let heard = Measuring { id: id.to_string(), core, expected_ms, stream: None, cpu_from: None };
     match Listening::start(hint.map(str::to_string), wait, Box::new(heard)) {
         Some(l) => {

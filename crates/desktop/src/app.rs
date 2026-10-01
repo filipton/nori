@@ -1327,7 +1327,7 @@ impl App {
         let id = st.id.clone();
         if id != self.heard {
             self.heard = id.clone();
-            self.song = id.and_then(nori_core::queue::queue_song);
+            self.song = id.and_then(|id| nori_core::queue::shared().song(&id));
             let song = self.song.clone().unwrap_or_default();
             ui.set_has_song(self.song.is_some());
             ui.set_now_title(song.title.as_str().into());
@@ -1353,10 +1353,10 @@ impl App {
             }
         }
         // Copy the queue only when it changed.
-        let (rev, repeat, index) = nori_core::playlist::with(|p| (p.rev(), p.repeat(), p.current().map_or(-1, |c| c as i32)));
+        let (rev, repeat, index) = nori_core::queue::shared().playlist(|p| (p.rev(), p.repeat(), p.current().map_or(-1, |c| c as i32)));
         if self.queue.as_ref().is_none_or(|q| q.rev != rev || q.repeat != repeat || q.index != index) {
             let held = self.queue.as_ref().map_or(u64::MAX, |q| q.list_rev);
-            let mut v = nori_core::playlist::playlist_view(held);
+            let mut v = nori_core::queue::shared().view(held);
             if v.songs.is_empty() && v.len > 0 {
                 if let Some(q) = &self.queue {
                     v.songs = q.songs.clone();

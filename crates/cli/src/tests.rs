@@ -463,7 +463,7 @@ fn narrow_shows_focused_part() {
 fn now_playing_panel() {
     let mut a = app();
     let next = song("s2", "Second", 180);
-    nori_core::queue::queue_register(vec![next.clone()]);
+    nori_core::queue::shared().register(vec![next.clone()]);
     a.heard(Some(Song { year: 2020, suffix: "flac".into(), ..song("s1", "First", 200) }));
     a.now.state = State::Playing;
     a.now.mixing = true;

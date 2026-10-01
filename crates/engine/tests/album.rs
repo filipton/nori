@@ -137,23 +137,23 @@ impl Rig {
                 assert!(core.analysis_finish(s.0, a).unwrap().is_some(), "{} is measured", s.0);
             }
         }
-        nori_core::queue::queue_register(listed.clone());
+        core.session.register(listed.clone());
         if let Some(again) = tags.again {
             // Registered again with other tags.
             let mut twice = listed;
             again(&mut twice);
-            nori_core::queue::queue_register(twice);
+            core.session.register(twice);
         }
-        queue(&made.iter().map(|(s, _)| *s).collect::<Vec<_>>(), shuffle, tags.queued);
+        queue(&core.session, &made.iter().map(|(s, _)| *s).collect::<Vec<_>>(), shuffle, tags.queued);
         let measurer = (measured == Measured::WhilePlaying).then(|| Measurer::new(core.clone(), client.clone(), store.clone()));
         let library = CoreLibrary { client, bytes: Arc::new(Net(files)), metered: false, store: Some(store.clone()) };
         let app = match &measurer {
-            Some(m) => CoreApp::new().measuring(m.clone()),
-            None => CoreApp::new(),
+            Some(m) => CoreApp::new(core.session.clone()).measuring(m.clone()),
+            None => CoreApp::new(core.session.clone()),
         };
         let card = Card::new();
         let clock = Virtual::default();
-        let engine = Engine::start_on(library, app, CoreQueue, Box::new(card.clone()), None, Config { memory_mb: 256, settings: settings(&prefs, 0.0), ..Config::default() }, clock.clone(), |_| {});
+        let engine = Engine::start_on(library, app, CoreQueue(core.session.clone()), Box::new(card.clone()), None, Config { memory_mb: 256, settings: settings(&prefs, 0.0), ..Config::default() }, clock.clone(), |_| {});
         engine.queue_changed();
         Rig { engine, time: Stepper::new(clock, card.pull.clone()), card, core, store, measurer, songs: made, _dir: dir }
     }
@@ -320,11 +320,11 @@ enum Queued {
 }
 
 /// Queues `songs` (shuffled if `shuffle`) as `how` says.
-fn queue(songs: &[S], shuffle: bool, how: Queued) {
-    use nori_core::playlist::{playlist_set, playlist_take, with, Hand};
+fn queue(q: &nori_core::queue::Session, songs: &[S], shuffle: bool, how: Queued) {
+    use nori_core::playlist::Hand;
     let ids = |s: &[S]| s.iter().map(|s| s.0.to_string()).collect::<Vec<_>>();
     let album = |s: &S| Some(nori_core::PageOrigin::new(nori_core::OriginKind::Album, s.1));
-    let len = || with(|p| p.len()) as u32;
+    let len = || q.playlist(|p| p.len()) as u32;
     match how {
         Queued::AsAlbums => {
             let mut runs: Vec<&[S]> = Vec::new();
@@ -335,23 +335,23 @@ fn queue(songs: &[S], shuffle: bool, how: Queued) {
                     from = k;
                 }
             }
-            playlist_set(ids(runs[0]), Some(0), shuffle, album(&runs[0][0]));
+            q.set(ids(runs[0]), Some(0), shuffle, album(&runs[0][0]));
             for r in &runs[1..] {
-                playlist_take(len(), ids(r), vec![Hand::No; r.len()], album(&r[0]));
+                q.take(len(), ids(r), vec![Hand::No; r.len()], album(&r[0]));
             }
         }
         Queued::OneByOne => {
-            playlist_set(ids(&songs[..1]), Some(0), shuffle, None);
+            q.set(ids(&songs[..1]), Some(0), shuffle, None);
             for s in &songs[1..] {
-                playlist_take(len(), ids(std::slice::from_ref(s)), vec![Hand::Last], None);
+                q.take(len(), ids(std::slice::from_ref(s)), vec![Hand::Last], None);
             }
         }
         Queued::Autofill => {
-            playlist_set(ids(&songs[..1]), Some(0), shuffle, None);
-            playlist_take(len(), ids(&songs[1..]), vec![Hand::No; songs.len() - 1], None);
+            q.set(ids(&songs[..1]), Some(0), shuffle, None);
+            q.take(len(), ids(&songs[1..]), vec![Hand::No; songs.len() - 1], None);
         }
     }
-    assert_eq!(with(|p| p.ids().to_vec()), ids(songs), "queued in order");
+    assert_eq!(q.playlist(|p| p.ids().to_vec()), ids(songs), "queued in order");
 }
 
 /// Fades `pcm`'s last four seconds to near silence.

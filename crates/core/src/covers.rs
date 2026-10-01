@@ -144,9 +144,10 @@ pub struct CoversAround {
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn covers_around(index: i32, previous: i32, next: i32, ahead: i32) -> CoversAround {
     // Only the ids asked about are looked at, not the whole queue.
-    crate::playlist::with(|p| {
+    let session = nori_queue::shared();
+    session.playlist(|p| {
         let ids = p.ids();
-        around(ids.len() as u32, |i| crate::queue::cover_art(&ids[i as usize]), index, previous, next, ahead)
+        around(ids.len() as u32, |i| session.cover_art(&ids[i as usize]), index, previous, next, ahead)
     })
 }
 

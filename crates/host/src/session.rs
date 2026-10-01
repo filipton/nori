@@ -10,9 +10,9 @@ use nori_core::bridge::BridgeTake;
 use nori_core::cache_policy::{Page, Read};
 use nori_core::client::{Client, Starrable};
 use nori_core::library::StarsShown;
-use nori_core::playlist::{self, Hand, QueueEdit};
+use nori_core::playlist::{Hand, QueueEdit};
 use nori_core::race::{LyricsPick, LyricsShown};
-use nori_core::rules::{queue_keep, song_arrived, BridgeStep, QueueMoment};
+use nori_core::rules::{queue_keep, BridgeStep, QueueMoment};
 use nori_core::search::{SearchSession, SearchView};
 use nori_core::settings::{SavedServer, SettingChange, StoredPrefs};
 use nori_core::settings_store::{self, APPLY_AUDIO, APPLY_GAIN, CACHE_LIMIT, PLAYER, REPLAN, SOUND};
@@ -200,14 +200,14 @@ impl Session {
         let audio = Arc::new(Audio::new(o.http.clone(), o.offline));
         let downloader = Downloader::new(core.clone(), client.clone(), audio.clone(), store.clone());
         // `bridging`: a song the network cannot bring raises `Event::Bridge` (see `Session::bridge`).
-        let app = CoreApp::new().measuring(Measurer::new(core.clone(), client.clone(), store.clone())).per_device(core.clone()).bridging().volume(loudness.clone());
+        let app = CoreApp::new(core.session.clone()).measuring(Measurer::new(core.clone(), client.clone(), store.clone())).per_device(core.clone()).bridging().volume(loudness.clone());
         let library = CoreLibrary { client: client.clone(), bytes: audio, metered: false, store: Some(store.clone()) };
         let events = o.out.clone();
         let config = Config { memory_mb: 256, settings: settings(&prefs, loudness.db()), ..Config::default() };
-        let engine = Arc::new(Engine::start(library, app, CoreQueue, output, None, config, move |e| events(Said::Engine(e))));
+        let engine = Arc::new(Engine::start(library, app, CoreQueue(core.session.clone()), output, None, config, move |e| events(Said::Engine(e))));
         let covers = o.covers.then(|| Arc::new(Loader::new(CoverConfig::new(o.data.join("covers")), o.http.clone())));
         if let Some(m) = &o.mpris {
-            m.serve(Some(Arc::new(Controls::over_queue(engine.clone()))));
+            m.serve(Some(Arc::new(Controls::over_queue(engine.clone(), core.session.clone()))));
         }
         let keeper = Keeper::start(core.clone(), engine.clone());
         let s = Session { core, client, engine, store, downloader, covers, volume, loudness, search: SearchSession::new(), offline: o.offline, mpris: o.mpris, keeper, db: PathBuf::from(db), out: o.out };
@@ -260,7 +260,7 @@ impl Session {
             return;
         }
         let index = q.index as usize;
-        playlist::playlist_set(q.songs.iter().map(|s| s.id.clone()).collect(), Some(index as u32), false, q.origin);
+        self.core.session.set(q.songs.iter().map(|s| s.id.clone()).collect(), Some(index as u32), false, q.origin);
         self.engine.queue_changed();
         self.engine.go_to(index, q.position_ms as i64);
     }
@@ -316,7 +316,7 @@ impl Session {
     }
 
     fn handle(&self) -> Handle {
-        Handle { engine: self.engine.clone(), keeper: self.keeper.clone(), out: self.out.clone() }
+        Handle { engine: self.engine.clone(), queue: self.core.session.clone(), keeper: self.keeper.clone(), out: self.out.clone() }
     }
 
     fn edited(&self) {
@@ -326,7 +326,7 @@ impl Session {
     /// Removes the song at list index `index`; if it was playing, the next one takes its place.
     pub fn remove(&self, index: usize) {
         let (current, playing) = self.engine.status_with(|s| (s.index, s.state == State::Playing));
-        let change = playlist::playlist_remove(index as u32, index as u32 + 1);
+        let change = self.core.session.remove(index as u32, index as u32 + 1);
         self.edited();
         if let (true, Some(at)) = (current == Some(index), change.at) {
             if playing {
@@ -339,18 +339,18 @@ impl Session {
 
     /// Removes everything after the current song.
     pub fn clear_upcoming(&self) {
-        let mut upcoming: Vec<u32> = playlist::with(|p| p.upcoming().map(|i| i as u32).collect());
+        let mut upcoming: Vec<u32> = self.core.session.playlist(|p| p.upcoming().map(|i| i as u32).collect());
         upcoming.sort_unstable_by(|a, b| b.cmp(a));
         for i in upcoming {
-            playlist::playlist_remove(i, i + 1);
+            self.core.session.remove(i, i + 1);
         }
         self.edited();
     }
 
     /// Undoes the removal of `id`; the playing song is unchanged.
     pub fn put_back(&self, id: &str) {
-        let was_empty = playlist::with(|p| p.is_empty());
-        if playlist::playlist_restore(id.to_string()).at.is_none() {
+        let was_empty = self.core.session.playlist(|p| p.is_empty());
+        if self.core.session.restore(id.to_string()).at.is_none() {
             return self.note(Note::NothingToPutBack);
         }
         self.edited();
@@ -361,19 +361,19 @@ impl Session {
 
     /// Moves the song at list index `from` to `to`.
     pub fn move_song(&self, from: usize, to: usize) {
-        playlist::playlist_move(from as u32, from as u32 + 1, to as u32);
+        self.core.session.move_range(from as u32, from as u32 + 1, to as u32);
         self.edited();
     }
 
     pub fn shuffle(&self, on: bool) {
-        playlist::playlist_show_shuffle(on);
-        playlist::playlist_shuffle(on);
+        self.core.session.show_shuffle(on);
+        self.core.session.shuffle(on);
         self.edited();
     }
 
     pub fn repeat(&self, mode: u8) {
         // Set on the queue first so the screen shows it at once.
-        playlist::playlist_repeat(mode);
+        self.core.session.repeat(mode);
         self.engine.set_repeat(mode);
     }
 
@@ -550,16 +550,17 @@ impl Session {
 
     /// Feeds an engine event to the core: scrobbling, queue saves and refills, the offline bridge.
     pub fn followed(&self, e: &Event) {
-        use nori_core::scrobble::{scrobble_playing, scrobble_track, TrackChange};
+        use nori_core::scrobble::TrackChange;
+        let q = &self.core.session;
         let (now, wall) = (monotonic_ms(), nori_core::db::now_ms());
         let tz = (nori_core::library::local_offset_s(wall / 1000) * 1000) as i32;
         let playing = self.engine.status_with(|s| s.state == State::Playing);
         let send = match e {
-            Event::Song { id, .. } => Some(scrobble_track(Some(id.clone()), TrackChange::Moved, playing, now, wall, tz)),
-            Event::Looped { id, .. } => Some(scrobble_track(Some(id.clone()), TrackChange::Looped, playing, now, wall, tz)),
-            Event::State(State::Ended) => Some(scrobble_track(None, TrackChange::Ended, false, now, wall, tz)),
+            Event::Song { id, .. } => Some(q.scrobble_track(Some(id.clone()), TrackChange::Moved, playing, now, wall, tz)),
+            Event::Looped { id, .. } => Some(q.scrobble_track(Some(id.clone()), TrackChange::Looped, playing, now, wall, tz)),
+            Event::State(State::Ended) => Some(q.scrobble_track(None, TrackChange::Ended, false, now, wall, tz)),
             Event::State(s) => {
-                scrobble_playing(*s == State::Playing, now);
+                q.scrobble_playing(*s == State::Playing, now);
                 None
             }
             _ => None,
@@ -584,9 +585,9 @@ impl Session {
         }
     }
 
-    /// Runs the core's steps for a new song (`rules::song_arrived`).
+    /// Runs the core's steps for a new song (`nori_queue::Session::song_arrived`).
     fn arrived(&self) {
-        let steps = song_arrived();
+        let steps = self.core.session.song_arrived();
         self.keeper.later(steps.save_after_ms);
         if steps.fill {
             self.refill();
@@ -627,12 +628,12 @@ impl Session {
         spawn("nori-autofill", move || {
             let fresh = block_on(client.autofill());
             if client.autofill_arrived(fresh.songs.len() as u32) && !fresh.songs.is_empty() {
-                let len = playlist::with(|p| p.len());
+                let len = me.queue.playlist(|p| p.len());
                 let n = fresh.songs.len();
-                playlist::playlist_take(len as u32, fresh.songs.iter().map(|s| s.id.clone()).collect(), vec![Hand::No; n], fresh.from);
+                me.queue.take(len as u32, fresh.songs.iter().map(|s| s.id.clone()).collect(), vec![Hand::No; n], fresh.from);
                 me.edited();
             }
-            if nori_core::autofill::autofill_landed() {
+            if me.queue.autofill_landed() {
                 me.engine.next();
             }
         });
@@ -640,11 +641,11 @@ impl Session {
 
     /// Next; at the queue's end with autofill on, fetches songs first.
     pub fn next(&self) {
-        if playlist::with(|p| p.next().is_some()) {
+        if self.core.session.playlist(|p| p.next().is_some()) {
             self.engine.next();
             return;
         }
-        match nori_core::autofill::autofill_next() {
+        match self.core.session.autofill_next() {
             nori_core::autofill::FillNext::Skip => {
                 self.engine.next();
             }
@@ -667,6 +668,7 @@ impl Session {
 /// The parts of a session worker threads use.
 struct Handle {
     engine: Arc<Engine>,
+    queue: Arc<nori_core::queue::Session>,
     keeper: Arc<Keeper>,
     out: Out,
 }
@@ -697,8 +699,8 @@ impl Handle {
             return;
         }
         let start = picked.and_then(|id| songs.iter().position(|s| s.id == id)).unwrap_or(0);
-        nori_core::queue::queue_register(songs.clone());
-        let change = playlist::playlist_set(songs.iter().map(|s| s.id.clone()).collect(), (!shuffle).then_some(start as u32), shuffle, from);
+        self.queue.register(songs.clone());
+        let change = self.queue.set(songs.iter().map(|s| s.id.clone()).collect(), (!shuffle).then_some(start as u32), shuffle, from);
         self.edited();
         self.engine.play_at(change.at.unwrap_or(0) as usize, 0);
     }
@@ -710,11 +712,11 @@ impl Handle {
             return;
         }
         let n = songs.len();
-        nori_core::queue::queue_register(songs.clone());
-        let (len, current) = playlist::with(|p| (p.len(), p.current()));
+        self.queue.register(songs.clone());
+        let (len, current) = self.queue.playlist(|p| (p.len(), p.current()));
         let at = if next { current.map_or(len, |c| c + 1) } else { len };
         let hand = if next { Hand::Next } else { Hand::Last };
-        playlist::playlist_take(at as u32, songs.iter().map(|s| s.id.clone()).collect(), vec![hand; n], from);
+        self.queue.take(at as u32, songs.iter().map(|s| s.id.clone()).collect(), vec![hand; n], from);
         self.edited();
         if len == 0 {
             self.engine.go_to(0, 0);

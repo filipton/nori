@@ -992,7 +992,7 @@ impl App {
             }
             Event::Song { .. } | Event::Looped { .. } => {}
             Event::Error { id, message } => {
-                let what = nori_core::queue::queue_song(id).map_or_else(|| "The output".to_string(), |s| format!("“{}”", s.title));
+                let what = nori_core::queue::shared().song(&id).map_or_else(|| "The output".to_string(), |s| format!("“{}”", s.title));
                 self.say(format!("{what} would not play: {message}"), true);
             }
             Event::Buffering(on) => self.now.buffering = on,

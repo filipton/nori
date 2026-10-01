@@ -1058,6 +1058,7 @@ impl Drop for JavaBody {
 /// Songs open at the URL and cache key the core resolves; radio stations at the address Kotlin handed
 /// over with [`radio`].
 struct AndroidLibrary {
+    queue: Arc<nori_core::queue::Session>,
     stations: Arc<Mutex<Vec<(String, String)>>>,
     ahead: Arc<Ahead>,
 }
@@ -1069,7 +1070,7 @@ impl Library for AndroidLibrary {
             log(&format!("{id} is a station's stream"));
             return Ok(Located { source: Source::Live { url, bytes: Arc::new(JavaBytes { key: String::new(), ahead: self.ahead.clone() }) }, hint: None, duration_ms: None, estimated: false });
         }
-        let song = nori_core::queue::queue_song(id.to_string());
+        let song = self.queue.song(id);
         let duration_ms = song.as_ref().map(|s| s.duration as i64 * 1000).filter(|&d| d > 0);
         // Format hint from a transcoded stream's key; a download (`dl:<id>`) may be transcoded too, so its
         // file is sniffed instead.
@@ -1085,16 +1086,16 @@ impl Library for AndroidLibrary {
     }
 
     fn about(&self, id: &str) -> WindowSong {
-        nori_engine::core::about(id)
+        nori_engine::core::about(&self.queue, id)
     }
 
     fn fetch_ahead(&self, id: &str) -> bool {
-        nori_engine::core::fetch_ahead(id)
+        nori_engine::core::fetch_ahead(&self.queue, id)
     }
 
     /// Fetches the core's precache targets except `next` (the engine loads that) into media3's cache.
     fn ahead(&mut self, next: &str) {
-        self.ahead.ask(Arc::new(Media3Cache), Arc::new(AheadBytes), ahead_songs(nori_core::stream::precache_now(), next), Some(measuring_ahead()));
+        self.ahead.ask(Arc::new(Media3Cache), Arc::new(AheadBytes), ahead_songs(nori_core::stream::precache_now(), next), Some(measuring_ahead(self.queue.clone())));
     }
 
     fn taker(&self, id: &str, hint: Option<&str>) -> Option<Listening> {
@@ -1276,7 +1277,7 @@ extern "system" fn create(mut env: JNIEnv, _: JClass, sdk: jint, float: jboolean
     let output = TrackOutput::new(Box::new(JavaOpener { sdk }), float != 0, shared.clone());
     let stations = Arc::new(Mutex::new(Vec::new()));
     let ahead = Ahead::new();
-    let library = AndroidLibrary { stations: stations.clone(), ahead: ahead.clone() };
+    let library = AndroidLibrary { queue: nori_core::queue::shared().clone(), stations: stations.clone(), ahead: ahead.clone() };
     // Full volume until Kotlin reports one (only while loudness compensation is on).
     let volume = Arc::new(OutputVolume::default());
     let sound = nori_core::settings_store::settings_current().map(|p| settings(&p, volume.db())).unwrap_or_default();
@@ -1288,8 +1289,9 @@ extern "system" fn create(mut env: JNIEnv, _: JClass, sdk: jint, float: jboolean
     let can_offload = JAVA.get().is_some_and(|j| j.offload.is_some()) && sdk >= 29;
     let offloaded: Option<Box<dyn OffloadOutput>> = can_offload.then(|| Box::new(JavaOffload::new(offload.clone())) as Box<dyn OffloadOutput>);
     log(&format!("the engine starts: API {sdk}, {} output, {} MB of memory, offload {}", if float != 0 { "float" } else { "16-bit" }, config.memory_mb, if can_offload { "possible" } else { "not on this Android" }));
-    let app = CoreApp::new().bridging().volume(volume.clone());
-    let engine = Engine::start(library, app, CoreQueue, Box::new(output), offloaded, config, move |e| tell.push(e));
+    let queue = nori_core::queue::shared();
+    let app = CoreApp::new(queue.clone()).bridging().volume(volume.clone());
+    let engine = Engine::start(library, app, CoreQueue(queue.clone()), Box::new(output), offloaded, config, move |e| tell.push(e));
     let h = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
     PLAYERS.lock().push((h, Arc::new(Player { engine, shared, events, offload, stations, jumped: Mutex::new(None), looked_ms: AtomicI64::new(i64::MIN / 2), volume, ahead })));
     h
@@ -1492,7 +1494,7 @@ extern "system" fn event(h: jlong) -> jlong {
         Some((kind, index, seq, text, jumps)) => {
             // Kotlin's queue is the core's as it is now: a song is where its entry is now (-1: gone).
             let index = match seq {
-                Some(s) => nori_queue::playlist::with(|q| q.index_of(s)).map_or(-1, |i| i as i32),
+                Some(s) => nori_core::queue::shared().playlist(|q| q.index_of(s)).map_or(-1, |i| i as i32),
                 None => index,
             };
             *p.events.text.lock() = text;

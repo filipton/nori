@@ -95,7 +95,7 @@ impl Shelf for Media3 {
         let hint = if key == nori_core::stream::download_key(id.to_string()) {
             None
         } else {
-            key_format(&key).or_else(|| nori_core::queue::queue_song(id.to_string()).map(|s| s.suffix)).filter(|s| !s.is_empty())
+            key_format(&key).or_else(|| nori_core::queue::shared().song(id).map(|s| s.suffix)).filter(|s| !s.is_empty())
         };
         Some(Whole { files: parts.into_iter().map(PathBuf::from).collect(), hint })
     }
@@ -144,10 +144,10 @@ extern "system" fn start(mut env: JNIEnv, _: JClass) {
     }
 }
 
-/// The upcoming songs may have changed: asks for the core's `queue_measure` (empty with AutoMix off).
+/// The upcoming songs may have changed: asks for the queue's `measure` (empty with AutoMix off).
 extern "system" fn update() {
     if let Some(m) = measurer() {
-        m.ask(nori_core::rules::queue_measure());
+        m.ask(nori_core::queue::shared().measure());
     }
 }
 
@@ -172,7 +172,7 @@ extern "system" fn stop() {
 extern "system" fn download_open(env: JNIEnv, _: JClass, key: JString) -> jlong {
     let Some(key) = crate::string(&env, &key) else { return 0 };
     let Some(id) = key.strip_prefix("dl:") else { return 0 };
-    let hint = nori_core::queue::queue_song(id.to_string()).map(|s| s.suffix).filter(|s| !s.is_empty());
+    let hint = nori_core::queue::shared().song(id).map(|s| s.suffix).filter(|s| !s.is_empty());
     match nori_engine::core::measure_download_as_it_comes(id, hint.as_deref()) {
         Some(listening) => Box::into_raw(Box::new(Taking { listening, buf: Vec::new() })) as jlong,
         None => 0,

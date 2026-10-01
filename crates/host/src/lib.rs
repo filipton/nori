@@ -158,9 +158,9 @@ pub struct Controls {
 }
 
 impl Controls {
-    /// Controls whose song is the core queue's.
-    pub fn over_queue(engine: Arc<Engine>) -> Controls {
-        Controls { engine, song: Box::new(|s| s.id.clone().and_then(nori_core::queue::queue_song)) }
+    /// Controls whose song is `queue`'s.
+    pub fn over_queue(engine: Arc<Engine>, queue: Arc<nori_core::queue::Session>) -> Controls {
+        Controls { engine, song: Box::new(move |s| s.id.as_deref().and_then(|id| queue.song(id))) }
     }
 }
 

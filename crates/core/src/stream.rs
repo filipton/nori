@@ -36,7 +36,7 @@ fn stream_cache_key(id: &str, q: &StreamQuality) -> String {
 impl Client {
     /// [`Self::precache_targets`] over `ids`; `held` gives each id's download state.
     fn fetches(&self, ids: Vec<String>, metered: bool, wifi: &StreamQuality, mobile: &StreamQuality, held: impl Fn(&str) -> crate::transfers::HeldState) -> Vec<Fetch> {
-        crate::rules::precache_list(ids, |id| held(id) != crate::transfers::HeldState::Absent)
+        self.core.session.precache_list(ids, |id| held(id) != crate::transfers::HeldState::Absent)
             .into_iter()
             .map(|id| {
                 let t = self.stream_target(id.clone(), metered, wifi.clone(), mobile.clone());
@@ -94,11 +94,11 @@ impl Client {
         StreamTarget { url: self.core.stream_url(id, q.bit_rate, q.format), key }
     }
 
-    /// The songs to prefetch now ([`crate::rules::queue_precache`], minus downloaded or queued downloads),
+    /// The songs to prefetch now ([`nori_queue::Session::precache`], minus downloaded or queued downloads),
     /// with URL and key.
     pub fn precache_targets(&self, metered: bool) -> Vec<Fetch> {
         let (wifi, mobile, _) = saved_qualities();
-        self.fetches(crate::rules::queue_precache(metered), metered, &wifi, &mobile, crate::transfers::held)
+        self.fetches(self.core.session.precache(metered), metered, &wifi, &mobile, crate::transfers::held)
     }
 }
 

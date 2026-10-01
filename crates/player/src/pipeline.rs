@@ -772,7 +772,7 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
     }
 
     /// Sends the planner its window (previous song, then eight in play order, as the core's
-    /// `playlist_window`).
+    /// `Session::window`).
     fn sync_queue(&mut self) {
         let current = self.current;
         let (window, shuffling) = self.queue.read(|q| {

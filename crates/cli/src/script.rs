@@ -152,8 +152,8 @@ impl Cli {
     }
 
     fn queue(&mut self, songs: Vec<Song>, start_ms: i64) {
-        nori_core::queue::queue_register(songs.clone());
-        nori_core::playlist::playlist_set(songs.iter().map(|s| s.id.clone()).collect(), Some(0), false, None);
+        nori_core::queue::shared().register(songs.clone());
+        nori_core::queue::shared().set(songs.iter().map(|s| s.id.clone()).collect(), Some(0), false, None);
         *self.songs.lock().unwrap() = songs;
         self.engine.queue_changed();
         self.engine.play_at(0, start_ms);
@@ -235,9 +235,9 @@ pub fn main(argv: Vec<String>) {
     let store = Store::open(a.data.join("music"), prefs.cache_mb.max(0) as u64 * 1024 * 1024, Box::new(CoreOrder)).unwrap_or_else(|e| panic!("the music directory: {e}"));
     let audio = Arc::new(Audio::new(http.clone(), a.offline));
     let downloader = Downloader::new(core.clone(), client.clone(), audio.clone(), store.clone());
-    let app = CoreApp::new().measuring(Measurer::new(core.clone(), client.clone(), store.clone())).per_device(core.clone());
+    let app = CoreApp::new(core.session.clone()).measuring(Measurer::new(core.clone(), client.clone(), store.clone())).per_device(core.clone());
     let library = CoreLibrary { client: client.clone(), bytes: audio.clone(), metered: false, store: Some(store) };
-    let engine = Engine::start(library, app, CoreQueue, output, None, Config { memory_mb: 256, settings: settings(&prefs, 0.0), ..Config::default() }, move |e| {
+    let engine = Engine::start(library, app, CoreQueue(core.session.clone()), output, None, Config { memory_mb: 256, settings: settings(&prefs, 0.0), ..Config::default() }, move |e| {
         let _ = tx.send(e);
     });
     let mut cli = Cli { core, http, prefs, engine: Arc::new(engine), songs: Arc::default(), downloader };

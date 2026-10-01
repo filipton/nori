@@ -74,6 +74,11 @@ async fn login_attempt(transport: &dyn Transport, config: &ServerConfig, alt_url
 }
 
 impl Client {
+    /// The queue of this client's core.
+    pub fn session(&self) -> &Arc<nori_queue::Session> {
+        &self.core.session
+    }
+
     /// `params` plus the music folder, for endpoints that take one.
     pub(crate) fn scoped(&self, endpoint: &str, mut params: Vec<(String, String)>) -> Vec<(String, String)> {
         let p = self.profile.read();
@@ -321,7 +326,7 @@ pub(crate) mod tests {
     }
 
     pub fn client(profile: NetProfile) -> (Arc<Client>, Arc<Fake>) {
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::open(String::new(), "t".into(), Arc::default()).unwrap();
         core.configure(ServerConfig { url: profile.url.clone(), user: "u".into(), password: "p".into(), ..Default::default() }).unwrap();
         let fake = Arc::new(Fake::default());
         let c = Client::new(core, fake.clone());

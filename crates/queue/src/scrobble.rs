@@ -5,12 +5,11 @@
 use nori_db as db;
 use nori_db::background;
 use nori_model::Song;
-use parking_lot::Mutex;
 
-use crate::queue;
+use crate::{queue, shared, Session};
 
 #[derive(Default)]
-struct Scrobbler {
+pub(crate) struct Scrobbler {
     /// The current song, kept from its start: the queue may be replaced before it is left.
     song: Option<Song>,
     started_at: i64,
@@ -18,9 +17,6 @@ struct Scrobbler {
     /// Monotonic ms playback last started; None while paused.
     playing_since: Option<i64>,
 }
-
-// Global: the uniffi entry points have no handle.
-static SCROBBLER: Mutex<Scrobbler> = Mutex::new(Scrobbler { song: None, started_at: 0, heard_ms: 0, playing_since: None });
 
 impl Scrobbler {
     fn edge(&mut self, playing: bool, now: i64) {
@@ -56,12 +52,6 @@ pub struct ScrobbleSend {
     pub now_playing_id: Option<String>,
 }
 
-/// Playback started or stopped at `now_ms` (monotonic).
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn scrobble_playing(playing: bool, now_ms: i64) {
-    SCROBBLER.lock().edge(playing, now_ms);
-}
-
 /// Listening needed for a play to count: `percent` (clamped to 10..100) of `duration_s`, within 10 s..4 min.
 pub(crate) fn needed_ms(duration_s: i64, percent: i32) -> i64 {
     (duration_s * 10 * percent.clamp(10, 100) as i64).clamp(10_000, 240_000)
@@ -87,24 +77,45 @@ fn followed(id: Option<String>, why: TrackChange) -> Option<String> {
     }
 }
 
-/// The player's song changed to `id`. Records the song left in the history when the taste model is on,
-/// and returns what to scrobble when scrobbling is on.
+impl Session {
+    /// Playback started or stopped at `now_ms` (monotonic).
+    pub fn scrobble_playing(&self, playing: bool, now_ms: i64) {
+        self.scrobbler.lock().edge(playing, now_ms);
+    }
+
+    /// The player's song changed to `id`. Records the song left in the history when the taste model is
+    /// on, and returns what to scrobble when scrobbling is on.
+    pub fn scrobble_track(&self, id: Option<String>, why: TrackChange, playing: bool, now_ms: i64, wall_ms: i64, tz_offset_ms: i32) -> ScrobbleSend {
+        let (taste_model, scrobble, percent) = nori_settings::settings_store::prefs(|p| (p.taste_model, p.scrobble, p.scrobble_percent));
+        let next = followed(id, why);
+        let song = next.as_deref().and_then(|id| self.song(id));
+        let (done, heard, at) = self.scrobbler.lock().switch(song, playing, now_ms, wall_ms);
+        // The profile playing now, not the one open when the write runs.
+        if let (Some(song), true, Some(db)) = (done.clone(), taste_model, nori_db::active()) {
+            background::run(move || {
+                let _ = nori_library::history::record(&mut db.lock(), &song, at, heard, tz_offset_ms, db::now_ms());
+            });
+        }
+        if !scrobble {
+            return ScrobbleSend { submit_id: None, submit_at: 0, now_playing_id: None };
+        }
+        let submit_id = done.filter(|s| heard >= needed_ms(s.duration as i64, percent)).map(|s| s.id);
+        ScrobbleSend { submit_id, submit_at: at, now_playing_id: next }
+    }
+}
+
+// ---- the platform's entry points, over the shared session ----
+
+/// [`Session::scrobble_playing`].
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn scrobble_playing(playing: bool, now_ms: i64) {
+    shared().scrobble_playing(playing, now_ms)
+}
+
+/// [`Session::scrobble_track`].
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn scrobble_track(id: Option<String>, why: TrackChange, playing: bool, now_ms: i64, wall_ms: i64, tz_offset_ms: i32) -> ScrobbleSend {
-    let (taste_model, scrobble, percent) = nori_settings::settings_store::prefs(|p| (p.taste_model, p.scrobble, p.scrobble_percent));
-    let next = followed(id, why);
-    let (done, heard, at) = SCROBBLER.lock().switch(next.clone().and_then(queue::queue_song), playing, now_ms, wall_ms);
-    // The profile playing now, not the one open when the write runs.
-    if let (Some(song), true, Some(db)) = (done.clone(), taste_model, nori_db::active()) {
-        background::run(move || {
-            let _ = nori_library::history::record(&mut db.lock(), &song, at, heard, tz_offset_ms, db::now_ms());
-        });
-    }
-    if !scrobble {
-        return ScrobbleSend { submit_id: None, submit_at: 0, now_playing_id: None };
-    }
-    let submit_id = done.filter(|s| heard >= needed_ms(s.duration as i64, percent)).map(|s| s.id);
-    ScrobbleSend { submit_id, submit_at: at, now_playing_id: next }
+    shared().scrobble_track(id, why, playing, now_ms, wall_ms, tz_offset_ms)
 }
 
 #[cfg(test)]

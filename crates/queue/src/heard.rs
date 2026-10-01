@@ -60,11 +60,12 @@ pub fn shown_row<Q: AsRef<str>, P: AsRef<str>>(heard: Option<usize>, queue: &[Q]
 /// [`shown_row`] over the core's queue.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn heard_shown_row(heard: Option<u32>, page: Vec<String>, playing: Option<String>) -> Option<u32> {
-    crate::playlist::with(|p| shown_row(heard.map(|h| h as usize), p.ids(), &page, playing.as_deref())).map(|r| r as u32)
+    crate::shared().playlist(|p| shown_row(heard.map(|h| h as usize), p.ids(), &page, playing.as_deref())).map(|r| r as u32)
 }
 
-/// The heard tracker over the core's queue.
+/// The heard tracker over a session's queue.
 pub struct HeardClock {
+    session: std::sync::Arc<crate::Session>,
     t: HeardTracker,
     /// The queue revision the tracker last saw.
     rev: u64,
@@ -72,15 +73,9 @@ pub struct HeardClock {
     head: Playhead,
 }
 
-impl Default for HeardClock {
-    fn default() -> Self {
-        HeardClock { t: HeardTracker::new(), rev: u64::MAX, head: Playhead::new() }
-    }
-}
-
 impl HeardClock {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(session: std::sync::Arc<crate::Session>) -> Self {
+        HeardClock { session, t: HeardTracker::new(), rev: u64::MAX, head: Playhead::new() }
     }
 
     /// The audible song at the player's `position_ms`.
@@ -110,10 +105,10 @@ impl HeardClock {
     }
 
     fn seen(&mut self, now_ms: i64, playing: bool, position_ms: i64) -> Seen {
-        let rev = crate::playlist::playlist_rev();
+        let rev = self.session.rev();
         if self.rev != rev {
             self.rev = rev;
-            self.t.set_queue(crate::playlist::with(|p| crate::queue::durations(p.ids())));
+            self.t.set_queue(self.session.playlist(|p| self.session.durations(p.ids())));
         }
         self.t.at(&NOTHING, PlayerNow { now_ms, playing, on: None, position_ms }, &|_| None)
     }

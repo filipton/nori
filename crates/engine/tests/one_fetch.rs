@@ -115,14 +115,14 @@ impl Rig {
             net.files.insert(id.to_string(), Arc::new(beat_wav(k as u32 * 17)));
         }
         let net = Arc::new(net);
-        nori_core::queue::queue_register(songs);
-        nori_core::playlist::playlist_set(ids.iter().map(|s| s.to_string()).collect(), Some(0), false, None);
+        core.session.register(songs);
+        core.session.set(ids.iter().map(|s| s.to_string()).collect(), Some(0), false, None);
         let measurer = Measurer::new(core.clone(), client.clone(), store.clone());
         let library = CoreLibrary { client: client.clone(), bytes: net.clone(), metered: false, store: Some(store.clone()) };
-        let app = CoreApp::new().measuring(measurer.clone());
+        let app = CoreApp::new(core.session.clone()).measuring(measurer.clone());
         let card = Card::new();
         let clock = Virtual::default();
-        let engine = Engine::start_on(library, app, CoreQueue, Box::new(card.clone()), None, Config { memory_mb: 256, settings: settings(&prefs, 0.0), ..Config::default() }, clock.clone(), |_| {});
+        let engine = Engine::start_on(library, app, CoreQueue(core.session.clone()), Box::new(card.clone()), None, Config { memory_mb: 256, settings: settings(&prefs, 0.0), ..Config::default() }, clock.clone(), |_| {});
         engine.queue_changed();
         Rig { engine, time: Stepper::new(clock, card.pull.clone()), core, store, net, measurer, ids: ids.iter().map(|s| s.to_string()).collect(), _dir: dir }
     }

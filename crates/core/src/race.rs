@@ -214,7 +214,7 @@ pub(crate) mod tests {
     fn server_lyrics_first_and_never_twice() {
         let (c, fake) = setup();
         // Unique titles: a failing service rests per song across tests.
-        crate::queue::queue_register(vec![Song { id: "lf1".into(), title: "In Order One".into(), ..song() }, Song { id: "lf2".into(), title: "In Order Two".into(), ..song() }]);
+        c.core.session.register(vec![Song { id: "lf1".into(), title: "In Order One".into(), ..song() }, Song { id: "lf2".into(), title: "In Order Two".into(), ..song() }]);
         fake.answer(SYNCED);
         let page = Arc::new(Screen::default());
         block(c.lyrics_for("lf1".into(), page.clone())).unwrap();
@@ -367,7 +367,7 @@ pub(crate) mod tests {
         let (c, fake) = setup();
         let s = Song { id: "dl-open".into(), title: "Harbour Of Tin".into(), artist: "The Invented".into(), album: "Nowhere".into(), duration: 200, ..Default::default() };
         let asked = LyricsLookup { services: vec![LyricsService::Lrclib, LyricsService::LyricsPlus], ..lrclib() };
-        crate::queue::queue_register(vec![s.clone()]);
+        c.core.session.register(vec![s.clone()]);
         c.core.download_queue(vec![s.clone()]).unwrap();
         c.core.download_done(s.id.clone()).unwrap();
         // At download: none on the server, line-timed LRCLIB, LyricsPlus unreachable.

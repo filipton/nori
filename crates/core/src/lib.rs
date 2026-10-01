@@ -384,14 +384,13 @@ pub struct Core {
     board: Mutex<mixes::board::Board>,
     /// This session's star changes, overlaid on the server's favourites.
     stars: Mutex<stars::StarMarks>,
+    /// The queue this core saves and restores and its clients fill.
+    pub session: Arc<nori_queue::Session>,
 }
 
-#[cfg_attr(feature = "ffi", uniffi::export)]
 impl Core {
-    /// Opens the database at `db_path` (empty: in memory) for server profile `server`, and makes this the
-    /// active core.
-    #[cfg_attr(feature = "ffi", uniffi::constructor)]
-    pub fn new(db_path: String, server: String) -> Result<Arc<Self>> {
+    /// [`Core::new`] over `session`'s queue.
+    pub fn open(db_path: String, server: String, session: Arc<nori_queue::Session>) -> Result<Arc<Self>> {
         let db = db::open(&db_path, &server)?;
         nori_automix::beat_model::set_home(&db_path);
         let db = Arc::new(Mutex::new(db));
@@ -401,11 +400,22 @@ impl Core {
             server: RwLock::new(api::Server::default()),
             board: Mutex::new(mixes::board::Board::default()),
             stars: Mutex::new(stars::StarMarks::default()),
+            session,
         });
         *ACTIVE.lock() = Arc::downgrade(&core);
         nori_db::set_active(&core.db);
         core.downloads.activate();
         Ok(core)
+    }
+}
+
+#[cfg_attr(feature = "ffi", uniffi::export)]
+impl Core {
+    /// Opens the database at `db_path` (empty: in memory) for server profile `server`, and makes this the
+    /// active core.
+    #[cfg_attr(feature = "ffi", uniffi::constructor)]
+    pub fn new(db_path: String, server: String) -> Result<Arc<Self>> {
+        Core::open(db_path, server, nori_queue::shared().clone())
     }
 
     /// Sets the server; returns the normalised base url. Clears the library when the profile now points
@@ -485,10 +495,10 @@ impl Core {
         }
         let q: Q = db::kv_get(&self.db.lock(), "queue")?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
         let index = q.index.min(q.songs.len().saturating_sub(1) as u32);
-        crate::queue::queue_register(q.songs.clone());
+        self.session.register(q.songs.clone());
         let origin = serde_json::from_value::<Option<crate::PageOrigin>>(q.origin).ok().flatten();
         let runs = serde_json::from_value::<Vec<u32>>(q.runs).unwrap_or_default();
-        crate::playlist::playlist_put_back_runs(q.songs.iter().map(|s| s.id.clone()).collect(), runs);
+        self.session.put_back_runs(q.songs.iter().map(|s| s.id.clone()).collect(), runs);
         Ok(PlayQueue { songs: q.songs, index, position_ms: q.position, origin })
     }
 

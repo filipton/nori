@@ -71,13 +71,13 @@ impl Rig {
             })
             .collect();
         let net = Arc::new(Net(ids.iter().enumerate().map(|(k, id)| (id.to_string(), Arc::new(tone_wav(SECS, k as u32)))).collect()));
-        nori_core::queue::queue_register(songs);
+        core.session.register(songs);
         // Played from the album's page.
-        nori_core::playlist::playlist_set(ids.iter().map(|s| s.to_string()).collect(), Some(0), false, Some(nori_core::PageOrigin::new(nori_core::OriginKind::Album, "al")));
+        core.session.set(ids.iter().map(|s| s.to_string()).collect(), Some(0), false, Some(nori_core::PageOrigin::new(nori_core::OriginKind::Album, "al")));
         let library = CoreLibrary { client, bytes: net, metered: false, store: Some(store) };
         let card = Card::new();
         let clock = Virtual::default();
-        let engine = Engine::start_on(library, CoreApp::new(), CoreQueue, Box::new(card.clone()), None, Config { memory_mb: 128, settings: settings(&prefs, 0.0), ..Config::default() }, clock.clone(), |_| {});
+        let engine = Engine::start_on(library, CoreApp::new(core.session.clone()), CoreQueue(core.session.clone()), Box::new(card.clone()), None, Config { memory_mb: 128, settings: settings(&prefs, 0.0), ..Config::default() }, clock.clone(), |_| {});
         engine.queue_changed();
         Rig { engine, time: Stepper::new(clock, card.pull.clone()), _dir: dir }
     }

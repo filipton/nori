@@ -11,7 +11,7 @@ pub use nori_queue::actions::*;
 impl Client {
     /// Song `id` from the queue store, else the downloads, else the cache or server.
     pub(crate) async fn song_of(&self, id: String) -> NetResult<Song> {
-        if let Some(s) = crate::queue::queue_song(id.clone()) {
+        if let Some(s) = self.core.session.song(&id) {
             return Ok(s);
         }
         if let Some(s) = self.core.download_song(&id) {
@@ -121,7 +121,7 @@ pub(crate) mod tests {
     fn radio_falls_back_to_random_genre_songs() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         let seed = Song { id: "r".into(), genre: Some("Jazz".into()), ..Default::default() };
-        crate::queue::queue_register(vec![seed.clone()]);
+        c.core.session.register(vec![seed.clone()]);
         fake.answer(&songs_json("similarSongs2", &["r"]));
         fake.answer(&songs_json("randomSongs", &["x", "r", "ext-deezer-song-1", "y"]));
         let got = block(c.radio(seed.id.clone())).unwrap();

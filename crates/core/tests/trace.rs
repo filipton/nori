@@ -6,7 +6,7 @@
 use nori_core::autofill::{autofill_landed, autofill_next};
 use nori_core::playlist::*;
 use nori_core::queue::{queue_flags, queue_register, queue_songs};
-use nori_core::rules::{queue_bridge_failed, queue_error, queue_last_error, queue_measure, queue_playing, queue_precache, queue_previous_restarts, sleep_set, sleep_song_changed};
+use nori_core::rules::{queue_bridge_failed, queue_last_error, queue_playing, queue_previous_restarts, sleep_set};
 use nori_core::scrobble::{scrobble_playing, scrobble_track, TrackChange};
 use nori_core::settings::StoredPrefs;
 use nori_core::settings_store::{settings_open, settings_put};
@@ -44,6 +44,7 @@ fn trace() {
     settings_open(dir.join("app.db").display().to_string()).unwrap();
     let core = Core::new(dir.join("p.db").display().to_string(), "p".into()).unwrap();
     queue_register((0..16).map(song).collect());
+    let q = nori_core::queue::shared();
     let mut r = Rng(7);
     let mut out = Vec::new();
     let mut now = 0i64;
@@ -56,18 +57,18 @@ fn trace() {
             3 => format!("restore {:?}", playlist_restore(format!("s{}", r.below(16)))),
             4 => format!("move {:?}", playlist_move(r.below(4) as u32, 1 + r.below(4) as u32, r.below(6) as u32)),
             5 => { playlist_repeat(r.below(3) as u8); "repeat".into() }
-            6 => { playlist_moved_to(r.below(8) as i32 - 1); "moved".into() }
-            7 => format!("skips {}", playlist_skips(r.below(6) as usize)),
-            8 => format!("upcoming {:?}", playlist_upcoming(4)),
-            9 => format!("window {}", playlist_window()),
-            10 => format!("gain {:.4} {:.4}", playlist_gain(false), playlist_gain_of(r.below(5) as usize, r.below(2) == 0)),
-            11 => { let v = playlist_view(r.below(3)); format!("view {} {:?} {:?} {:?} {} {}", v.len, v.order, v.queued, v.songs.iter().map(|s| &s.id).collect::<Vec<_>>(), v.index, v.repeat) }
-            12 => format!("push {:?} {:?}", playlist_to_push(), snapshot()),
-            13 => format!("error {:?} {:?}", queue_error([PlaybackError::Network, PlaybackError::Other, PlaybackError::Output][r.below(3) as usize], r.below(2) == 0, r.below(2) == 0), queue_last_error()),
+            6 => { q.moved_to(r.below(8) as i32 - 1); "moved".into() }
+            7 => format!("skips {}", q.skips(r.below(6) as usize)),
+            8 => format!("upcoming {:?}", q.upcoming(4)),
+            9 => format!("window {}", q.window()),
+            10 => format!("gain {:.4} {:.4}", playlist_gain(false), q.gain_of(r.below(5) as usize, r.below(2) == 0)),
+            11 => { let v = q.view(r.below(3)); format!("view {} {:?} {:?} {:?} {} {}", v.len, v.order, v.queued, v.songs.iter().map(|s| &s.id).collect::<Vec<_>>(), v.index, v.repeat) }
+            12 => format!("push {:?} {:?}", q.to_push(), q.snapshot()),
+            13 => format!("error {:?} {:?}", q.error([PlaybackError::Network, PlaybackError::Other, PlaybackError::Output][r.below(3) as usize], r.below(2) == 0, r.below(2) == 0), queue_last_error()),
             14 => { queue_playing(); format!("bridge failed {}", queue_bridge_failed()) }
-            15 => format!("precache {:?} measure {:?}", queue_precache(r.below(2) == 0), queue_measure()),
+            15 => format!("precache {:?} measure {:?}", q.precache(r.below(2) == 0), q.measure()),
             16 => format!("previous {}", queue_previous_restarts(r.below(8_000) as i64, r.below(2) == 0)),
-            17 => format!("sleep {} {}", sleep_set(r.below(3) as u32, r.below(2) == 0), sleep_song_changed()),
+            17 => format!("sleep {} {}", sleep_set(r.below(3) as u32, r.below(2) == 0), q.sleep_song_changed()),
             18 => format!("fill {:?} {}", autofill_next(), autofill_landed()),
             19 => { scrobble_playing(r.below(2) == 0, now); "edge".into() }
             20 => format!("track {:?}", scrobble_track(Some(format!("s{}", r.below(16))), [TrackChange::Moved, TrackChange::Looped, TrackChange::Ended][r.below(3) as usize], r.below(2) == 0, now, now + 1_000_000, 0)),
@@ -77,7 +78,7 @@ fn trace() {
             }
             22 => format!("flags {}", queue_flags(format!("s{}", r.below(16)))),
             23 => format!("songs {:?}", queue_songs(ids(&mut r, 2)).iter().map(|s| (s.id.clone(), s.duration)).collect::<Vec<_>>()),
-            24 => format!("plan {:?}", playlist_upcoming(1).first().and_then(|id| nori_core::automix::planner::plan_for(id)).map(|p| format!("{p:?}"))),
+            24 => format!("plan {:?}", q.upcoming(1).first().and_then(|id| nori_core::automix::planner::plan_for(id)).map(|p| format!("{p:?}"))),
             _ => format!("unbridge {:?} {:?}", playlist_unbridge().map(|e| e.seek), playlist_bridge_state().bridging),
         };
         out.push(format!("{step} {line}"));

@@ -51,7 +51,7 @@ builds:
   (albums, artists, playlists from the stored reads; songs from the offline index), search
   (`SearchSession`: the index at every key, the server once typing pauses, `live_search_delay_ms`),
   album, artist and playlist pages (`AlbumDetail`, `ArtistDetail`, `PlaylistDetail` with their captions),
-  the queue (`playlist_view` in play order; `playlist_remove`, `playlist_move`, `playlist_shuffle`,
+  the queue (`Session::view` in play order; `playlist_remove`, `playlist_move`, `playlist_shuffle`,
   `set_repeat`), now playing (the song heard is the engine's `Event::Song`/`Status`; how the next comes in
   is the planner's `planner::transition_note`), lyrics (the server's, then `Client::lyrics_lookup`;
   timed by `nori_look::lyrics::LyricClock`, lit by `line_strength` and `UNSUNG`, filled a character at a

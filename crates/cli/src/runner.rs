@@ -328,13 +328,13 @@ impl Runner {
         app.follow_now(now);
         if let Some(id) = id_changed {
             self.heard = id.clone();
-            app.heard(id.and_then(nori_core::queue::queue_song));
+            app.heard(id.and_then(|id| nori_core::queue::shared().song(&id)));
         }
         // Refresh the queue copy on change; the engine advancing does not bump `rev`, so compare the index too.
-        let (rev, repeat, index) = nori_core::playlist::with(|p| (p.rev(), p.repeat(), p.current().map_or(-1, |c| c as i32)));
+        let (rev, repeat, index) = nori_core::queue::shared().playlist(|p| (p.rev(), p.repeat(), p.current().map_or(-1, |c| c as i32)));
         if app.queue.as_ref().is_none_or(|q| q.rev != rev || q.repeat != repeat || q.index != index) {
             let held = app.queue.as_ref().map_or(u64::MAX, |q| q.list_rev);
-            let mut v = nori_core::playlist::playlist_view(held);
+            let mut v = nori_core::queue::shared().view(held);
             if v.songs.is_empty() && v.len > 0 {
                 if let Some(q) = &app.queue {
                     v.songs = q.songs.clone();
