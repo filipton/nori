@@ -96,10 +96,23 @@ impl Kept {
         if self.marks.back().is_some_and(|m| frame < m.frame + MARK_FRAMES) {
             return false;
         }
+        self.push_mark(frame, out, media, chain);
+        true
+    }
+
+    /// Keeps `chain`'s state before `frame` as it changed there, in place of any mark from `frame` on.
+    pub fn mark_changed(&mut self, frame: u64, out: u64, media: f64, chain: &Processors) {
+        while self.marks.back().is_some_and(|m| m.frame >= frame) {
+            let m = self.marks.pop_back().expect("checked");
+            self.spare.push(m.chain);
+        }
+        self.push_mark(frame, out, media, chain);
+    }
+
+    fn push_mark(&mut self, frame: u64, out: u64, media: f64, chain: &Processors) {
         let mut kept = self.spare.pop().unwrap_or_default();
         kept.clone_from(chain);
         self.marks.push_back(Mark { frame, out, media, chain: kept });
-        true
     }
 
     /// Lets go of what comes before the last mark at or before output frame `out`.

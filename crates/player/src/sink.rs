@@ -399,6 +399,10 @@ impl<T: Track> Sink<T> {
         }
         let at = self.splice();
         self.apply(to);
+        // A later change made again from here runs the new settings, not those before.
+        if at.is_some() {
+            self.kept.mark_changed(self.run, self.made, self.run_media, &self.runner.chain);
+        }
         at
     }
 
@@ -907,5 +911,25 @@ mod tests {
         assert!(sink.fill());
         let written = sink.track.queued_bytes() / 2;
         assert!((2_200..=2_300).contains(&written), "4.5 s at twice the speed: {written} frames");
+    }
+
+    #[test]
+    fn second_change_goes_on_from_the_first() {
+        use crate::pipeline::Track;
+        let mut sink = Sink::new(10_000_000, ChainSettings { keep_eq: true, ..ChainSettings::default() }, AudioTrack::new());
+        sink.configure(F);
+        for k in 0..3 {
+            assert!(sink.handle_buffer(&ramp(k * 3000, 3000), 0, k as i64 * 3_000_000).0);
+        }
+        sink.track.play();
+        sink.advance(2_000_000);
+        sink.change(ChainSettings { speed: 2.0, keep_eq: true, ..ChainSettings::default() });
+        assert!(sink.fill());
+        // 1000 frames of input played in 500: 6000 left at 1x.
+        sink.advance(500_000);
+        sink.change(ChainSettings { keep_eq: true, ..ChainSettings::default() });
+        assert!(sink.fill());
+        let total = sink.track.played() + sink.track.queued_bytes() as u64 / 2;
+        assert!((8_400..=8_600).contains(&total), "{total} frames made");
     }
 }
