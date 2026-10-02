@@ -709,7 +709,7 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                     IconButton(
                         {
                             // The player's own rule (`queue_previous_restarts`), so the sleeve and the sound agree.
-                            val rewinds = dev.nori.music.ffi.queue.queuePreviousRestarts(vm.positionMs, state.previousIndex >= 0)
+                            val rewinds = vm.previousRestarts(vm.positionMs, state.previousIndex >= 0)
                             if (rewinds || !slide.ask(1)) vm.previous()
                         },
                         Modifier.size(72.dp),
@@ -2621,7 +2621,7 @@ private fun Queue(vm: PlayerViewModel) {
     // Which order, whether a drag may reorder it, which rows a swipe leaves and which have played are the
     // core's (`queue_rows`).
     val rows = remember(state.order, state.queue.size, state.shuffle, state.index) {
-        dev.nori.music.ffi.queueRows(state.queue.size.toUInt(), state.shuffle, state.index)
+        vm.queueRows(state.queue.size, state.shuffle, state.index)
     }
     val order = remember(rows) { rows.order.map { it.toInt() } }
     val kept = remember(rows) { rows.kept.map { it.toInt() }.toSet() }

@@ -30,10 +30,12 @@ object EqBands {
 internal object SoundEdit {
     init { System.loadLibrary("norimusic") }
 
+    // [settings] is the app's settings' handle (`Settings.handle`).
+
     /** [band] is `[kind, freq, gain, q, channel]` in, and the band as it was kept out; returns the effects. */
-    @JvmStatic @FastNative external fun setBand(index: Int, band: FloatArray): Int
+    @JvmStatic @FastNative external fun setBand(settings: Long, index: Int, band: FloatArray): Int
     /** [level] an `EqLevel` ordinal; the value as it was kept as float bits in the high 32, the effects in the low. */
-    @JvmStatic @CriticalNative external fun setLevel(level: Int, value: Float): Long
+    @JvmStatic @CriticalNative external fun setLevel(settings: Long, level: Int, value: Float): Long
     /** One graphic slider: the value as it was kept as float bits in the high 32, the effects in the low; -1 for no change. */
-    @JvmStatic @CriticalNative external fun setGraphic(index: Int, value: Float): Long
+    @JvmStatic @CriticalNative external fun setGraphic(settings: Long, index: Int, value: Float): Long
 }

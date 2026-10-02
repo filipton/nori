@@ -224,12 +224,11 @@ The engine also plays what the Android player plays around the sound chain, each
   what it answers (below, "What the core decides at each moment").
 - **Repeat one** says each time round as `Event::Looped`, for a scrobbler.
 
-- **The network's metered state**: `core::network_metered(client, metered)` tells the core (and through it
-  every `CoreLibrary`) whether the network is metered, whenever the platform says it changed, and answers
-  the quality songs stream at from then on (the user's setting for that network, transcoded by the
-  server). It applies to the next song fetched: the song playing and the one already on its way keep the
-  address they were fetched from. Android's `EnginePlayer` tells it from its network callback; a desktop
-  client that never does streams the unmetered quality. `CoreLibrary::metered` forces the metered quality.
+- **The network's metered state**: the platform's `Transport::network` answers whether the network is
+  metered now, and `Client::streaming_quality` the quality songs stream at on it (the user's setting for
+  that network, transcoded by the server). It applies to the next song fetched: the song playing and the
+  one already on its way keep the address they were fetched from. Android's transport asks the system; a
+  desktop client's is always unmetered.
 - **Fetching ahead**: as each song starts (and at a queue edit) the engine fetches the next one and the
   core's `Client::precache_targets` names the ones after it (how many for this network - none on a metered
   one by default - never a provider's song or a download), which nori-engine's one fetcher of the songs
@@ -260,7 +259,7 @@ woken in the same moment - both about every ten seconds while music plays; the e
 run at the track's volume and a flush empties the track, since seconds of music sit in it
 (`AudioOutput::ramp`, `flush`, `holding`); a track that dies is opened again, and one that will not
 open is the engine's to hear of (`AudioOutput::failed`). A song's address and cache key are the core's
-(`stream::resolve_now`, over the network state Kotlin tells it, `network_metered`), and its bytes come
+(`Client::resolve_now` of the client in use, `CurrentClient`, over the network the transport says), and its bytes come
 through media3's data sources on the app's OkHttp client (`RustBridge.open`), so the profile's TLS,
 certificates and headers apply and the downloads, the stream cache and the songs fetched ahead play from
 the disk; the queue is the core's (`CoreQueue`, `CoreApp`), and `EnginePlayer` (`RustPlayer.kt`) is a
@@ -372,9 +371,10 @@ draws them.
   that finished it, and `cancel(handle)` (`@FastNative`) drops the core's ticket, after which it is not
   called for a cover finished later (one finished as it is cancelled may still arrive, and Kotlin drops
   it: `cancel` does not wait for a call back under way, which would be a `@FastNative` door waiting on
-  Java). `warm` and `clear` are the loader's; `colours` is the page's colours, below. The transport is
-  the one the app hands the core (`set_cover_transport`, where `Nori` builds it on the warm-up thread);
-  a cover that reaches the network before that waits for it on its loader thread, never on the main one.
+  Java). `warm` and `clear` are the loader's; `colours` is the page's colours, below. The loader fetches
+  through `Nori.coverNet` (the core's `CoverNet`), which gets the app's transport once `Nori` builds it on
+  the warm-up thread; a cover that reaches the network before that waits for it on its loader thread,
+  never on the main one.
 - **`CoverLoader`** (core/.../data): the app's one loader, and the Bitmaps' memory cache. That cache
   has to be Kotlin's: a Bitmap is a Java object, and the core holding a reference to every one would keep
   it from the collector without knowing when a view has let it go. It is an LRU by bytes

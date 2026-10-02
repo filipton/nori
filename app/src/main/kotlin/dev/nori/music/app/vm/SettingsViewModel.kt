@@ -20,7 +20,6 @@ import dev.nori.music.ffi.settings.SoundTool
 import dev.nori.music.ffi.settings.EqLevel
 import dev.nori.music.ffi.settings.SettingChange
 import dev.nori.music.ffi.settings.serverNewId
-import dev.nori.music.ffi.settings.settingSet
 import dev.nori.music.ffi.settings.soundFromJson
 import dev.nori.music.ffi.settings.storageIndexFiles
 import dev.nori.music.ffi.model.NamedPreset
@@ -114,7 +113,7 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
     /** The rows whose title (first) or words (after) contain [query]; the index is built once per [res]. */
     fun searchSettings(query: String, res: android.content.res.Resources): List<SettingsHit> {
         val s = search?.takeIf { it.first === res }?.second
-            ?: SettingsSearch(res, dev.nori.music.ffi.settings.settingsState(false, false).beatModel !is dev.nori.music.ffi.settings.BeatModel.Unavailable).also { search = res to it }
+            ?: SettingsSearch(res, nori.settings.core.settingsState(false, false).beatModel !is dev.nori.music.ffi.settings.BeatModel.Unavailable).also { search = res to it }
         return s.find(query)
     }
 
@@ -123,7 +122,7 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
      * its rules make of the settings, asked only when they or [facts] change.
      */
     fun settingsPage(id: String, p: StoredPrefs, facts: SettingsFacts, res: android.content.res.Resources): SettingsPage? =
-        settingsPage(res, id, p, facts, dev.nori.music.ffi.settings.settingsState(facts.dac.bitPerfect, facts.dac.device != null))
+        settingsPage(res, id, p, facts, nori.settings.core.settingsState(facts.dac.bitPerfect, facts.dac.device != null))
 
     /** Whether the settings action [action] asks first, and what it says; null for one done at once. */
     fun actionAsks(action: String, res: android.content.res.Resources): ActionAsk? = settingsActionAsks(res, action, settingsFacts.value)
@@ -150,7 +149,7 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
 
     /** A row's setting changed: its name and the value picked, which the core reads and applies; false for a name or value it does not take. */
     fun set(name: String, value: String): Boolean {
-        apply(settingSet(name, value) ?: return false)
+        apply(nori.settings.core.settingSet(name, value) ?: return false)
         return true
     }
 
@@ -159,7 +158,7 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
      * whether the core took it. The ranking itself is the core's (`lyricsPlace`).
      */
     fun placeRanked(id: String, to: Int): Boolean {
-        val change = settingSet("lyricsPlace", "$id:$to") ?: return false
+        val change = nori.settings.core.settingSet("lyricsPlace", "$id:$to") ?: return false
         apply(change)
         return true
     }

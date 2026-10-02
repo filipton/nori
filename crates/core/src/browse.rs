@@ -54,7 +54,7 @@ pub(crate) mod tests {
 
     #[test]
     fn pages() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let all: Vec<Song> = (0..250).map(|i| song(&format!("s{i:03}"), &format!("T{:03}", 249 - i), "A", "B", "", 1990 + (i % 20) as u32)).collect();
         db::index(&mut core.db.lock(), &[], &[], &all).unwrap();
         let first = core.songs_page("TITLE".into(), false, 0, 0, 0).unwrap();
@@ -67,7 +67,7 @@ pub(crate) mod tests {
         assert!(years.exhausted && years.songs.iter().all(|s| (2000..=2009).contains(&s.year)));
 
         // Text sorts read an index not the library.
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let c = core.db.lock();
         for key in ["title", "artist", "album"] {
             let sql = format!("EXPLAIN QUERY PLAN SELECT json FROM items WHERE server=sid() AND kind={} ORDER BY json_extract(json, '$.{key}') COLLATE NOCASE ASC LIMIT 200 OFFSET 400", db::SONG);
@@ -78,7 +78,7 @@ pub(crate) mod tests {
 
     #[test]
     fn history_pages() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let s = song("1", "t", "a", "b", "", 0);
         db::index(&mut core.db.lock(), &[], &[], std::slice::from_ref(&s)).unwrap();
         let now = db::now_ms();
@@ -90,7 +90,7 @@ pub(crate) mod tests {
         assert_eq!(core.stats_days(0).unwrap().plays, 2);
 
         // A listen recorded while paging repeats nothing.
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let s = song("1", "t", "a", "b", "", 0);
         db::index(&mut core.db.lock(), &[], &[], std::slice::from_ref(&s)).unwrap();
         let now = db::now_ms();

@@ -366,9 +366,9 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
 
     /** The list with the core's play order under shuffle, built again only when either changed. */
     private fun timeline(): QueueTimeline {
-        val at = Pair(edits, if (shuffle) PlaylistJni.rev() else -1L)
+        val at = Pair(edits, if (shuffle) PlaylistJni.rev(nori.sessionHandle) else -1L)
         timeline?.takeIf { timelineAt == at }?.let { return it }
-        val order = if (shuffle && items.isNotEmpty()) IntArray(items.size).takeIf { PlaylistJni.order(it) == items.size } else null
+        val order = if (shuffle && items.isNotEmpty()) IntArray(items.size).takeIf { PlaylistJni.order(nori.sessionHandle, it) == items.size } else null
         return QueueTimeline(ArrayList(items), uids.toLongArray(), order).also { timeline = it; timelineAt = at }
     }
 
@@ -699,7 +699,7 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
         // After a run of songs that would not play (not the sleep timer's end of a song, which leaves no
         // failure behind): the player's error, as ExoPlayer's is, so the page says why the music stopped.
         // The words are the core's (PlayerConnection reads the kind from the code); play prepares again.
-        dev.nori.music.ffi.queue.queueLastError()?.let { kind ->
+        nori.session.queueLastError()?.let { kind ->
             val code = when (kind) {
                 dev.nori.music.ffi.model.PlaybackError.NETWORK -> PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED
                 dev.nori.music.ffi.model.PlaybackError.OUTPUT -> PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED

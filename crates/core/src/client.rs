@@ -376,7 +376,7 @@ pub(crate) mod tests {
     }
 
     pub fn client(profile: NetProfile) -> (Arc<Client>, Arc<Fake>) {
-        let core = Core::open(String::new(), "t".into(), Arc::default()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Arc::default()).unwrap();
         core.configure(ServerConfig { url: profile.url.clone(), user: "u".into(), password: "p".into(), ..Default::default() }).unwrap();
         let fake = Arc::new(Fake::default());
         let c = Client::new(core, fake.clone(), Default::default());

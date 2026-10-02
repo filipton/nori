@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use nori_core::settings::SavedServer;
-use nori_core::settings_store;
 use nori_engine::Event;
 use nori_http::Http;
 use ratatui::crossterm::event::{self, Event as TermEvent};
@@ -139,7 +138,7 @@ pub fn run(o: Options) -> Result<(), String> {
     crate::term::stderr_to(&o.data.join("nori.log"));
     crate::term::hook_panics();
     let db = crate::backend::db_path(&o.data);
-    let mut prefs = settings_store::settings_open(db).map_err(|e| format!("the settings: {e}"))?;
+    let mut prefs = crate::backend::app().settings.open(&db).map_err(|e| format!("the settings: {e}"))?;
     // A server given on the command line is added (or found) and made active.
     if let Some((url, user, password)) = o.login.clone() {
         let found = prefs.servers.iter().find(|s| s.url == url && s.user == user).map(|s| s.id.clone());
@@ -150,7 +149,7 @@ pub fn run(o: Options) -> Result<(), String> {
         });
         prefs.servers.iter_mut().filter(|s| s.id == id && !password.is_empty()).for_each(|s| s.password = password.clone());
         prefs.active_server_id = id;
-        settings_store::settings_put(prefs.clone());
+        crate::backend::app().settings.put(prefs.clone());
     }
     let mouse = o.mouse.unwrap_or_else(|| own::flag(own::MOUSE, true));
     let images = o.images.unwrap_or_else(|| own::flag(own::IMAGES, true));
@@ -303,11 +302,11 @@ impl Runner {
                 }
             }
             Msg::LoggedIn(Ok(p)) => {
-                let mut prefs = settings_store::shared().current().unwrap_or_default();
+                let mut prefs = crate::backend::app().settings.current().unwrap_or_default();
                 prefs.servers.retain(|s| !(s.url == p.url && s.user == p.user));
                 prefs.servers.push(p.clone());
                 prefs.active_server_id = p.id.clone();
-                settings_store::settings_put(prefs.clone());
+                crate::backend::app().settings.put(prefs.clone());
                 app.prefs_changed(prefs);
                 self.open(app, p.clone());
                 app.go(View::Home);
@@ -328,13 +327,13 @@ impl Runner {
         app.follow_now(now);
         if let Some(id) = id_changed {
             self.heard = id.clone();
-            app.heard(id.and_then(|id| nori_core::queue::shared().song(&id)));
+            app.heard(id.and_then(|id| crate::backend::app().song(&id)));
         }
         // Refresh the queue copy on change; the engine advancing does not bump `rev`, so compare the index too.
-        let (rev, repeat, index) = nori_core::queue::shared().playlist(|p| (p.rev(), p.repeat(), p.current().map_or(-1, |c| c as i32)));
+        let (rev, repeat, index) = crate::backend::app().playlist(|p| (p.rev(), p.repeat(), p.current().map_or(-1, |c| c as i32)));
         if app.queue.as_ref().is_none_or(|q| q.rev != rev || q.repeat != repeat || q.index != index) {
             let held = app.queue.as_ref().map_or(u64::MAX, |q| q.list_rev);
-            let mut v = nori_core::queue::shared().view(held);
+            let mut v = crate::backend::app().view(held);
             if v.songs.is_empty() && v.len > 0 {
                 if let Some(q) = &app.queue {
                     v.songs = q.songs.clone();
@@ -344,11 +343,11 @@ impl Runner {
         }
         if app.transition_shown() {
             if let Some(id) = &self.heard {
-                let note = nori_core::queue::shared().planner.transition_note(id);
+                let note = crate::backend::app().planner.transition_note(id);
                 if note != app.transition {
                     app.transition = note;
                 }
-                app.mixed_in = if app.now.mixing { nori_core::queue::shared().planner.transition_into(id) } else { None };
+                app.mixed_in = if app.now.mixing { crate::backend::app().planner.transition_into(id) } else { None };
             }
         }
         if app.lyrics_shown() {
@@ -430,10 +429,10 @@ impl Runner {
                 return;
             }
             Cmd::SwitchServer(id) => {
-                let mut prefs = settings_store::shared().current().unwrap_or_default();
+                let mut prefs = crate::backend::app().settings.current().unwrap_or_default();
                 let Some(p) = prefs.servers.iter().find(|s| s.id == id).cloned() else { return };
                 prefs.active_server_id = id;
-                settings_store::settings_put(prefs.clone());
+                crate::backend::app().settings.put(prefs.clone());
                 app.prefs_changed(prefs);
                 self.open(app, p);
                 app.go(View::Home);
@@ -489,11 +488,11 @@ impl Runner {
                 }
                 prefs_changed(app);
             }
-            Cmd::Level(level, v) => sound_edited(s, app, settings_store::shared().edit_level(level, v).map(|(e, _)| e)),
-            Cmd::Graphic(i, gain) => sound_edited(s, app, settings_store::shared().edit_graphic(i, gain).map(|(e, _)| e)),
-            Cmd::Band(i, band) => sound_edited(s, app, settings_store::shared().edit_band(i, band).map(|(e, _)| e)),
+            Cmd::Level(level, v) => sound_edited(s, app, crate::backend::app().settings.edit_level(level, v).map(|(e, _)| e)),
+            Cmd::Graphic(i, gain) => sound_edited(s, app, crate::backend::app().settings.edit_graphic(i, gain).map(|(e, _)| e)),
+            Cmd::Band(i, band) => sound_edited(s, app, crate::backend::app().settings.edit_band(i, band).map(|(e, _)| e)),
             Cmd::Sound(tool) => {
-                let effect = match tool.tool().map(settings_store::settings_sound_tool) {
+                let effect = match tool.tool().map(|t| crate::backend::app().settings.sound_tool(t)) {
                     Some(Ok(change)) => change.map(|c| c.effect),
                     Some(Err(e)) => {
                         app.say(format!("{e:?}"), true);
@@ -551,7 +550,7 @@ fn sound_edited(s: &Session, app: &mut App, effect: Option<u32>) {
 }
 
 fn prefs_changed(app: &mut App) {
-    if let Some(p) = settings_store::shared().current() {
+    if let Some(p) = crate::backend::app().settings.current() {
         app.prefs_changed(p);
     }
 }

@@ -2,7 +2,7 @@
 //! (rules.rs), refilling (autofill.rs), the offline bridge (bridge.rs), the audible song (heard.rs), play
 //! counting (scrobble.rs) and play actions (actions.rs).
 
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use nori_automix::planner::Planner;
 use nori_settings::settings_store::Settings;
@@ -19,7 +19,8 @@ pub mod scrobble;
 
 /// One app's queue: the list, the songs by id, what the transport rules remember, the refill and the
 /// play counting, with the settings, the open profile's database and the transition planner they use.
-/// The platform's client owns one; tests make their own.
+/// The platform holds one for the app and hands it to each profile's core; tests make their own.
+#[cfg_attr(feature = "ffi", derive(uniffi::Object))]
 pub struct Session {
     pub settings: Arc<Settings>,
     pub db: Arc<nori_db::Profile>,
@@ -32,7 +33,9 @@ pub struct Session {
     scrobbler: Mutex<scrobble::Scrobbler>,
 }
 
+#[cfg_attr(feature = "ffi", uniffi::export)]
 impl Session {
+    #[cfg_attr(feature = "ffi", uniffi::constructor)]
     pub fn new(settings: Arc<Settings>) -> Session {
         let db = Arc::new(nori_db::Profile::default());
         let read = settings.clone();
@@ -46,11 +49,4 @@ impl Default for Session {
     fn default() -> Session {
         Session::new(Arc::default())
     }
-}
-
-/// The session behind the platform's free entry points (uniffi, JNI), over the shared settings. Global:
-/// those calls carry no handle.
-pub fn shared() -> &'static Arc<Session> {
-    static SHARED: LazyLock<Arc<Session>> = LazyLock::new(|| Arc::new(Session::new(nori_settings::settings_store::shared().clone())));
-    &SHARED
 }

@@ -140,12 +140,6 @@ impl Core {
     }
 }
 
-/// Whether Download asks about the beat model ([`beats_offer`]).
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn download_beats_offer() -> BeatsOffer {
-    let (on, choice) = crate::settings_store::shared().prefs(|p| (p.auto_mix && p.auto_mix_better_beats, p.download_beats));
-    beats_offer(on && nori_player::automix::beats::AVAILABLE, choice)
-}
 
 /// The "ML beats for downloads" setting for a remembered answer.
 #[cfg_attr(feature = "ffi", uniffi::export)]
@@ -155,6 +149,12 @@ pub fn download_beats_remembered(yes: bool) -> nori_settings::settings::Download
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Core {
+    /// Whether Download asks about the beat model ([`beats_offer`]).
+    pub fn download_beats_offer(&self) -> BeatsOffer {
+        let (on, choice) = self.session.settings.prefs(|p| (p.auto_mix && p.auto_mix_better_beats, p.download_beats));
+        beats_offer(on && nori_player::automix::beats::AVAILABLE, choice)
+    }
+
     /// What downloaded songs still wait for, for the notification; `now` is the platform clock.
     pub fn download_processing(&self, now: i64) -> Option<Processing> {
         self.downloads.with(|t| t.processing_at(now))
@@ -251,7 +251,7 @@ mod tests {
     }
 
     fn core() -> std::sync::Arc<Core> {
-        Core::new(String::new(), "t".into()).unwrap()
+        Core::new(String::new(), "t".into(), Default::default()).unwrap()
     }
 
     #[test]

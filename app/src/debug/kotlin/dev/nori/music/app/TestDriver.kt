@@ -52,7 +52,7 @@ fun TestDriver(controller: NavHostController, nav: Nav, sheet: PlayerSheet, sett
                 st.order.drop(st.order.indexOf(st.index) + 1).take(8).let { up ->
                     """"upNext":"${up.joinToString(" ") { st.queue[it].id }}","upNextQueued":"${up.joinToString(" ") { if (it in st.queued) "1" else "0" }}","shuffle":${st.shuffle},"""
                 } +
-                """"error":"${st.error.orEmpty()}","bridging":${st.bridging},"parkedId":"${dev.nori.music.ffi.queue.playlistBridgeState().parked.orEmpty()}","songId":"${dev.nori.music.ffi.queue.playlistBridgeState().current.orEmpty()}","eq":${p.eqEnabled},"limiter":${p.limiter},"hiRes":${p.hiRes},""" +
+                """"error":"${st.error.orEmpty()}","bridging":${st.bridging},"parkedId":"${dev.nori.music.Nori.get(context).session.playlistBridgeState().parked.orEmpty()}","songId":"${dev.nori.music.Nori.get(context).session.playlistBridgeState().current.orEmpty()}","eq":${p.eqEnabled},"limiter":${p.limiter},"hiRes":${p.hiRes},""" +
                 """"dspActive":${dev.nori.music.playback.Equalizer.inChain},"gainReductionDb":${dev.nori.music.playback.Equalizer.meterDb},"compressionDb":${dev.nori.music.playback.Equalizer.compressionDb},"soundBypass":${p.soundBypass},"loudness":${p.loudness},""" +
                 """"output":"${settings.currentOutput.value}","offload":${p.offload},"offloadWanted":${dev.nori.music.playback.PlaybackService.offloadWanted},"autoMix":${p.autoMix},"amoled":${p.amoled},""" +
                 // The player answers from its own engine and output.

@@ -229,6 +229,16 @@ impl<T> Handles<T> {
     }
 }
 
+/// A core object Kotlin holds for the process's life (the app's queue session and settings), by the handle
+/// it took once with `uniffiCloneHandle()` and never gives back.
+pub(crate) fn kept<T>(h: jni::sys::jlong) -> std::sync::Arc<T> {
+    // SAFETY: `h` is an `Arc`'s raw pointer whose count Kotlin's handle keeps above zero for good.
+    unsafe {
+        std::sync::Arc::increment_strong_count(h as *const T);
+        std::sync::Arc::from_raw(h as *const T)
+    }
+}
+
 /// The core object behind a handle Kotlin took with `uniffiCloneHandle()`, taken over: uniffi's handle
 /// for a Rust object is its `Arc`'s raw pointer, and the cloned reference is this side's to drop.
 ///

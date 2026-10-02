@@ -8,6 +8,7 @@ use nori_player::automix::beats;
 
 use crate::lyrics_sources;
 use crate::codec::K;
+use crate::settings_store::Settings;
 use crate::settings::{row, value_of_special, SettingChange, StoredPrefs, ROWS, SPECIAL_SPECS};
 
 /// What a setting holds.
@@ -177,28 +178,28 @@ pub fn changed(p: &StoredPrefs) -> String {
         .collect()
 }
 
-/// [`changed`] for the live settings.
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn settings_changed() -> String {
-    changed(&crate::settings_store::shared().current().unwrap_or_default())
-}
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn setting_specs() -> Vec<SettingSpec> {
     specs()
 }
 
-/// [`SettingsState`] for the live settings and the platform's output.
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn settings_state(dac_bit_perfect: bool, usb: bool) -> SettingsState {
-    let p = crate::settings_store::shared().current().unwrap_or_default();
-    state(&p, Output { dac_bit_perfect, usb }, &crate::settings_store::shared().model)
-}
+impl Settings {
+    /// [`changed`] for the live settings.
+    pub fn settings_changed(&self) -> String {
+        changed(&self.current().unwrap_or_default())
+    }
 
-/// A change by name kept in the live settings (`settings_store::edit_by_name`).
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn setting_set(name: String, value: String) -> Option<SettingChange> {
-    crate::settings_store::shared().edit_by_name(&name, &value)
+    /// [`SettingsState`] for the live settings and the platform's output.
+    pub fn settings_state(&self, dac_bit_perfect: bool, usb: bool) -> SettingsState {
+        state(&self.current().unwrap_or_default(), Output { dac_bit_perfect, usb }, &self.model)
+    }
+
+    /// A change by name kept in the live settings (`Settings::edit_by_name`).
+    pub fn setting_set(&self, name: String, value: String) -> Option<SettingChange> {
+        self.edit_by_name(&name, &value)
+    }
 }
 
 /// Whether the interface is dark for the theme setting and the system's mode.

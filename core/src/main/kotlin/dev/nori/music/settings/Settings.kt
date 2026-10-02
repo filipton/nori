@@ -17,9 +17,6 @@ import dev.nori.music.ffi.settings.serverLabel
 import dev.nori.music.ffi.db.dbFileName
 import dev.nori.music.ffi.settings.prefsSound
 import dev.nori.music.ffi.settings.prefsWithSound
-import dev.nori.music.ffi.settings.settingsOpen
-import dev.nori.music.ffi.settings.settingsPut
-import dev.nori.music.ffi.settings.settingsSoundTool
 import dev.nori.music.ffi.settings.eqModelGet
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -94,6 +91,12 @@ fun StoredPrefs.withServers(list: ServerList) = copy(servers = list.servers, act
  * and this is a few rows read once.
  */
 class Settings(private val context: Context) {
+    /** The core's live settings, which the queue session and the player read. */
+    val core = dev.nori.music.ffi.settings.Settings()
+
+    /** [core] as the equalizer's doors take it ([SoundEdit]), for the process's life. */
+    internal val handle = core.uniffiCloneHandle()
+
     private val state = MutableStateFlow(load())
     val prefs: StateFlow<StoredPrefs> = state
     val value get() = state.value
@@ -120,7 +123,7 @@ class Settings(private val context: Context) {
         val kept: SoundBand
         synchronized(band) {
             band[0] = b.kind.ordinal.toFloat(); band[1] = b.freq; band[2] = b.gainDb; band[3] = b.q; band[4] = b.channel.ordinal.toFloat()
-            effect = SoundEdit.setBand(index, band)
+            effect = SoundEdit.setBand(handle, index, band)
             if (effect < 0) return
             kept = SoundBand(EqKind.entries[band[0].toInt()], band[1], band[2], band[3], BandChannel.entries[band[4].toInt()])
         }
@@ -130,7 +133,7 @@ class Settings(private val context: Context) {
 
     /** Pre-amp, balance, limiter ceiling or crossfeed moved; edited in the core like a band, which holds and snaps it. */
     fun setLevel(level: EqLevel, value: Float) {
-        val r = SoundEdit.setLevel(level.ordinal, value)
+        val r = SoundEdit.setLevel(handle, level.ordinal, value)
         if (r == -1L) return
         val kept = java.lang.Float.intBitsToFloat((r ushr 32).toInt())
         state.update { p ->
@@ -162,7 +165,7 @@ class Settings(private val context: Context) {
 
     /** One graphic equalizer slider moved; edited in the core like a band, which holds it in range. */
     fun setGraphic(index: Int, value: Float) {
-        val r = SoundEdit.setGraphic(index, value)
+        val r = SoundEdit.setGraphic(handle, index, value)
         if (r == -1L) return
         val kept = java.lang.Float.intBitsToFloat((r ushr 32).toInt())
         // Moved by hand, the sliders are no longer a headphone correction (the core forgets it too).
@@ -185,7 +188,7 @@ class Settings(private val context: Context) {
      * comes back. Returns how many bands there are now. Throws, saying why, for an import with no filters.
      */
     fun soundTool(tool: SoundTool): Int {
-        val c = settingsSoundTool(tool) ?: return state.value.eqBands.size
+        val c = core.soundTool(tool) ?: return state.value.eqBands.size
         state.update { it.withSound(c.sound) }
         if (c.effect != 0u) _effects.tryEmit(c.effect.toInt())
         return c.sound.eqBands.size
@@ -195,10 +198,10 @@ class Settings(private val context: Context) {
     fun put(next: StoredPrefs) {
         if (next == state.value) return
         // The core first: whatever reacts to the new value (on any thread) reads it from there.
-        val effect = settingsPut(next)
+        val effect = core.put(next)
         state.value = next
         if (effect != 0u) _effects.tryEmit(effect.toInt())
     }
 
-    private fun load(): StoredPrefs = settingsOpen(java.io.File(context.filesDir, dbFileName()).path)
+    private fun load(): StoredPrefs = core.open(java.io.File(context.filesDir, dbFileName()).path)
 }

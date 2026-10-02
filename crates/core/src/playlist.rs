@@ -33,7 +33,7 @@ pub(crate) mod tests {
 
     /// A core over its own queue, playing `ids` from `start`.
     pub(crate) fn core(ids: &[&str], start: u32) -> Arc<crate::Core> {
-        let core = crate::Core::open(String::new(), "t".into(), Arc::default()).unwrap();
+        let core = crate::Core::new(String::new(), "t".into(), Arc::default()).unwrap();
         core.session.set(ids.iter().map(|s| s.to_string()).collect(), Some(start), false, None);
         core
     }

@@ -6,7 +6,7 @@ use nori_db as db;
 use nori_db::background;
 use nori_model::Song;
 
-use crate::{queue, shared, Session};
+use crate::{queue, Session};
 
 #[derive(Default)]
 pub(crate) struct Scrobbler {
@@ -77,6 +77,7 @@ fn followed(id: Option<String>, why: TrackChange) -> Option<String> {
     }
 }
 
+#[cfg_attr(feature = "ffi", uniffi::export)]
 impl Session {
     /// Playback started or stopped at `now_ms` (monotonic).
     pub fn scrobble_playing(&self, playing: bool, now_ms: i64) {
@@ -102,20 +103,6 @@ impl Session {
         let submit_id = done.filter(|s| heard >= needed_ms(s.duration as i64, percent)).map(|s| s.id);
         ScrobbleSend { submit_id, submit_at: at, now_playing_id: next }
     }
-}
-
-// ---- the platform's entry points, over the shared session ----
-
-/// [`Session::scrobble_playing`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn scrobble_playing(playing: bool, now_ms: i64) {
-    shared().scrobble_playing(playing, now_ms)
-}
-
-/// [`Session::scrobble_track`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn scrobble_track(id: Option<String>, why: TrackChange, playing: bool, now_ms: i64, wall_ms: i64, tz_offset_ms: i32) -> ScrobbleSend {
-    shared().scrobble_track(id, why, playing, now_ms, wall_ms, tz_offset_ms)
 }
 
 #[cfg(test)]

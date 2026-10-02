@@ -12,10 +12,12 @@ use nori_core::Core;
 #[ignore = "downloads 8 MB from the authors' server"]
 fn the_weights_come_from_the_authors() {
     let dir = nori_testdir::TempDir::new("beat-model");
-    let core = Core::new(dir.join("nori.db").to_string_lossy().into_owned(), "test".into()).unwrap();
-    let mut prefs = nori_core::settings_store::settings_open(dir.join("app.db").to_string_lossy().into_owned()).unwrap();
+    let settings = nori_core::settings_store::Settings::new();
+    let mut prefs = settings.open(&dir.join("app.db").to_string_lossy()).unwrap();
     (prefs.auto_mix, prefs.auto_mix_better_beats, prefs.auto_mix_beats_mobile_data) = (true, true, true);
-    nori_core::settings_store::settings_put(prefs);
+    settings.put(prefs);
+    let session = std::sync::Arc::new(nori_core::queue::Session::new(settings));
+    let core = Core::new(dir.join("nori.db").to_string_lossy().into_owned(), "test".into(), session).unwrap();
     let client = Client::new(core.clone(), nori_http::Http::new(), Default::default());
     let rss = || {
         let s = std::fs::read_to_string("/proc/self/status").unwrap_or_default();

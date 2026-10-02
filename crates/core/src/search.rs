@@ -119,7 +119,7 @@ pub(crate) mod tests {
 
     #[test]
     fn search_session() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let s = SearchSession::new();
         let v = s.typed(" dogs ".into());
         assert_eq!((v.query.as_str(), v.searching, v.shown.is_none()), ("dogs", true, true));
@@ -144,7 +144,7 @@ pub(crate) mod tests {
         assert_eq!(s.scope(SearchScope::Library).shown.unwrap().songs.len(), 0);
 
         // Short queries are not remembered.
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         assert_eq!(core.search_remember_recent("a".into()).unwrap(), None);
         assert!(core.search_history().unwrap().is_empty());
         // One emoji is two UTF-16 units.

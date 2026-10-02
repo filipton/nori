@@ -80,7 +80,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
     private val pending = ArrayList<(MediaController) -> Unit>()
 
     /** Moves whenever a new queue is set (nori-queue `playlist_origin_gen`): when to ask again which page it came from. */
-    val queueOrigin: Int get() = PlaylistJni.origin()
+    val queueOrigin: Int get() = PlaylistJni.origin(nori.sessionHandle)
 
     /**
      * Where the seek bar is. Through a transition the player runs ahead of the ear (the held ending is
@@ -185,7 +185,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
     /** What [heard] last found: the queue index the ear is on (-1: the player's own). */
     private var heardIndex = -1
     /** nori-player's reading of the transition engine: see crates/player/src/heard.rs. */
-    private val clock = HeardJni.create()
+    private val clock = HeardJni.create(nori.sessionHandle)
 
     private val _mixing = MutableStateFlow(false)
     /**
@@ -293,8 +293,8 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
         // player's own list instead (playlist_view_of). A timeline change is not always a queue change (a
         // song's source opening is one too), so the core's revision is asked first and a queue the page
         // already holds is not copied over again; nor are its songs when only the order changed.
-        val same = look && viewRev >= 0 && PlaylistJni.rev() == viewRev && old.queue.size == p.mediaItemCount
-        val view = if (look && !same) dev.nori.music.ffi.queue.playlistViewFor(heldList, p.mediaItemCount.toUInt()) ?: playerView(p) else null
+        val same = look && viewRev >= 0 && PlaylistJni.rev(nori.sessionHandle) == viewRev && old.queue.size == p.mediaItemCount
+        val view = if (look && !same) nori.session.playlistViewFor(heldList, p.mediaItemCount.toUInt()) ?: playerView(p) else null
         if (view != null) { viewRev = view.rev.toLong(); heldList = view.listRev }
         val queue = view?.songs?.takeIf { it.size == view.len.toInt() } ?: old.queue
         val order = view?.order?.map { it.toInt() } ?: old.order
@@ -305,7 +305,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
         // the player is still on the old one. Which row of the page's list that is, the core decides
         // (crates/queue/src/heard.rs shown_row).
         val heardIndex = (p as? MediaController)?.takeIf(::heard)?.let {
-            dev.nori.music.ffi.queue.heardShownRow(this.heardIndex.takeIf { it >= 0 }?.toUInt(), queue.map { it.id }, item?.mediaId)?.toInt()
+            nori.session.heardShownRow(this.heardIndex.takeIf { it >= 0 }?.toUInt(), queue.map { it.id }, item?.mediaId)?.toInt()
         }
         _mixing.value = p.isPlaying && PlaybackService.rustPlayer?.mixing == true
         _state.value = old.copy(
@@ -319,14 +319,14 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
             playing = p.isPlaying, buffering = p.playbackState == Player.STATE_BUFFERING && p.playWhenReady,
             // A weighted shuffle plays a pre-spread list with the player's shuffle off so the order sticks;
             // the core keeps the control lit until the user turns it off or starts a plain Play.
-            shuffle = p.shuffleModeEnabled || PlaylistJni.shuffleShown(),
+            shuffle = p.shuffleModeEnabled || PlaylistJni.shuffleShown(nori.sessionHandle),
             repeat = when (p.repeatMode) { Player.REPEAT_MODE_ALL -> Repeat.ALL; Player.REPEAT_MODE_ONE -> Repeat.ONE; else -> Repeat.OFF },
             // The heard song's length while the ear is a song behind the player, else the player's, else
             // the tags' (nori_player::heard::shown_duration_ms).
             durationMs = PlayheadJni.durationMs(heardIndex?.let { queue[it].duration.toLong() } ?: -1, p.duration, item?.mediaMetadata?.durationMs ?: 0),
             error = if (p.playerError == null) null else old.error,
             bridging = view?.bridging ?: old.bridging,
-            origin = PlaylistJni.origin(),
+            origin = PlaylistJni.origin(nori.sessionHandle),
         )
     }
 
@@ -351,10 +351,10 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
         val order = ArrayList<UInt>(t.windowCount)
         var i = if (t.isEmpty) C.INDEX_UNSET else t.getFirstWindowIndex(p.shuffleModeEnabled)
         while (i != C.INDEX_UNSET) { order += i.toUInt(); i = t.getNextWindowIndex(i, Player.REPEAT_MODE_OFF, p.shuffleModeEnabled) }
-        return dev.nori.music.ffi.queue.playlistViewOf(items.map { it.mediaId }, items.map { it.queuedAs() ?: dev.nori.music.ffi.queue.Hand.NO }, order)
+        return nori.session.playlistViewOf(items.map { it.mediaId }, items.map { it.queuedAs() ?: dev.nori.music.ffi.queue.Hand.NO }, order)
     }
 
-    private fun items(songs: List<Song>): List<MediaItem> = songs.toMediaItems { CarArt.cover(context, it.coverArt, NOTIFICATION_ART)?.toString() }
+    private fun items(songs: List<Song>): List<MediaItem> = songs.toMediaItems(nori.session) { CarArt.cover(context, it.coverArt, NOTIFICATION_ART)?.toString() }
 
     // ---- queue ----
 
@@ -369,7 +369,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
         // control does not stay on after the row's Play starts some other queue. Pause and resume on
         // the page's own queue do not come through here, and leave the light as it was. Said to the
         // core at once, so the page does not flicker while the queue's own change is on its way.
-        dev.nori.music.ffi.queue.playlistShowShuffle(shuffle)
+        nori.session.playlistShowShuffle(shuffle)
         c.shuffleModeEnabled = shuffle
         c.setMediaItems(startedFrom(items(songs), from), if (shuffle) C.INDEX_UNSET else startIndex.coerceIn(0, songs.lastIndex), 0)
         c.prepare()
@@ -383,7 +383,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
      */
     fun keepPlaying(songs: List<Song>, at: Int, from: PageOrigin? = null) = with { c ->
         if (c.currentMediaItem?.mediaId != songs.getOrNull(at)?.id) return@with play(songs, at, from = from)
-        dev.nori.music.ffi.queue.playlistShowShuffle(false)
+        nori.session.playlistShowShuffle(false)
         c.shuffleModeEnabled = false
         val made = items(songs).toMutableList()
         made[at] = made[at].kept()
@@ -396,7 +396,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
      */
     fun playShuffledOrder(songs: List<Song>, order: List<UInt>, from: PageOrigin? = null) = with { c ->
         if (songs.isEmpty() || order.isEmpty()) return@with
-        dev.nori.music.ffi.queue.playlistShowShuffle(true)
+        nori.session.playlistShowShuffle(true)
         // Marked as already in order: the service takes it as it is and turns the player's own shuffle off.
         val made = items(songs)
         val items = order.map { made[it.toInt()] }
@@ -452,7 +452,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
     /** A rewind is a seek to the top, not a skip; the rule mirrors the service's (media3 rewinds past three seconds). */
     fun previous() = with { c ->
         // Restart here, or let the player's own previous decide: nori_player::queue::previous_restarts.
-        if (dev.nori.music.ffi.queue.queuePreviousRestarts(c.currentPosition, c.hasPreviousMediaItem())) { seekTo(0); if (!c.playWhenReady) c.play() }
+        if (nori.session.queuePreviousRestarts(c.currentPosition, c.hasPreviousMediaItem())) { seekTo(0); if (!c.playWhenReady) c.play() }
         else { _pendingSeek.value = null; c.seekToPrevious() }
     }
     /** The song before, even well into this one - a swipe is a request for the other record, not a restart. */
@@ -493,7 +493,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
     }
 
     fun setShuffle(on: Boolean) = with {
-        dev.nori.music.ffi.queue.playlistShowShuffle(on)
+        nori.session.playlistShowShuffle(on)
         it.shuffleModeEnabled = on
         _state.value = _state.value.copy(shuffle = on || it.shuffleModeEnabled)
     }
@@ -566,12 +566,14 @@ internal object PlayheadJni {
 internal object PlaylistJni {
     init { System.loadLibrary("norimusic") }
 
+    // [session] is the queue session's handle (`Nori.sessionHandle`).
+
     /** Changes whenever the list or its order does. */
-    @JvmStatic @CriticalNative external fun rev(): Long
+    @JvmStatic @CriticalNative external fun rev(session: Long): Long
     /** Moves whenever a new queue is set, and with it perhaps the page it came from. */
-    @JvmStatic @CriticalNative external fun origin(): Int
+    @JvmStatic @CriticalNative external fun origin(session: Long): Int
     /** Shuffle shown as on (the player's own, or a weighted shuffle's). */
-    @JvmStatic @CriticalNative external fun shuffleShown(): Boolean
+    @JvmStatic @CriticalNative external fun shuffleShown(session: Long): Boolean
     /** The play order while shuffling, written into [out] when it is exactly that long; its length, -1 when not shuffling. */
-    @JvmStatic @FastNative external fun order(out: IntArray): Int
+    @JvmStatic @FastNative external fun order(session: Long, out: IntArray): Int
 }

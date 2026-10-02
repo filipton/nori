@@ -7,9 +7,10 @@
 //! Only the perf build calls this; tables are created lazily, so other builds never have them.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use nori_settings::settings::PrefValue;
-use nori_settings::settings_store;
+use nori_settings::settings_store::Settings;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
@@ -295,7 +296,7 @@ fn rows(c: &Connection, since_ms: i64) -> rusqlite::Result<Vec<String>> {
 /// app database is open.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_log_add(ended_ms: i64, stretch: PerfStretch) {
-    let Some(db) = settings_store::shared().app_db() else { return };
+    let Some(db) = app().and_then(|a| a.app_db()) else { return };
     let Ok(row) = serde_json::to_string(&stretch) else { return };
     let written = add(&db.lock(), ended_ms, &row);
     if let Err(e) = written {
@@ -305,7 +306,7 @@ pub fn perf_log_add(ended_ms: i64, stretch: PerfStretch) {
 
 /// Stretches that ended at or after `since_ms`, oldest first; unreadable rows are skipped.
 fn perf_log_rows(since_ms: i64) -> Vec<PerfStretch> {
-    let Some(db) = settings_store::shared().app_db() else { return Vec::new() };
+    let Some(db) = app().and_then(|a| a.app_db()) else { return Vec::new() };
     let read = rows(&db.lock(), since_ms);
     parsed(read.unwrap_or_default())
 }
@@ -317,7 +318,7 @@ fn parsed(rows: Vec<String>) -> Vec<PerfStretch> {
 /// "Start fresh": deletes all stretches, crashes, the self test and break logs, and resets the timeline.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_log_clear() {
-    let Some(db) = settings_store::shared().app_db() else { return };
+    let Some(db) = app().and_then(|a| a.app_db()) else { return };
     let c = db.lock();
     let tables = [(table(&c), "perf_stretches"), (crash_table(&c), "perf_crashes"), (selftest_table(&c), "perf_selftest"), (break_log_table(&c), "perf_break_logs")];
     for (made, name) in tables {
@@ -353,7 +354,7 @@ pub fn perf_state(charging: bool, screen_on: bool, playing: bool, foreground: bo
 /// service's player (default "rust").
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_config(engine: Option<String>) -> String {
-    let p = settings_store::shared().current().unwrap_or_default();
+    let p = app().and_then(|a| a.current()).unwrap_or_default();
     config(engine, &p)
 }
 
@@ -390,10 +391,11 @@ pub fn perf_stretch(
     if ms < if live { 0 } else { SHORTEST_MS } {
         if !live {
             // A dropped short stretch: its events carry over to the next one.
+            let why = offload_reason();
             let mut t = timeline();
             t.close(a.wall_ms, b.wall_ms, false);
             t.kept(a.wall_ms, b.wall_ms, true);
-            t.why_at_start = Some(offload_reason());
+            t.why_at_start = Some(why);
         }
         return None;
     }
@@ -404,8 +406,8 @@ pub fn perf_stretch(
     let engine_wakeups = (!engine.is_empty()).then(|| engine.iter().sum());
     let gauge: Vec<i64> = [a.gauge_ua, b.gauge_ua].into_iter().flatten().collect();
     let gauge_ma = (!gauge.is_empty()).then(|| (gauge.iter().map(|g| g.abs()).sum::<i64>() / gauge.len() as i64) as f64 / 1000.0);
-    let mut t = timeline();
     let settings_why = offload_reason();
+    let mut t = timeline();
     let (wake_lock_ms, data_requests) = t.kept(a.wall_ms, b.wall_ms, !live);
     let (ev, evx, off_ms, why) = if live {
         let (ev, evx, off) = t.so_far(a.wall_ms, b.wall_ms);
@@ -945,7 +947,7 @@ fn selftest_table(c: &Connection) -> rusqlite::Result<()> {
 /// Stores the self test result (replacing the previous one), shown near the report's top.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_selftest_keep(at_ms: i64, text: String) {
-    let Some(db) = settings_store::shared().app_db() else { return };
+    let Some(db) = app().and_then(|a| a.app_db()) else { return };
     let c = db.lock();
     let kept = selftest_table(&c).and_then(|_| c.execute("INSERT OR REPLACE INTO perf_selftest(id, at_ms, text) VALUES(1, ?1, ?2)", params![at_ms, text]));
     if let Err(e) = kept {
@@ -955,7 +957,7 @@ pub fn perf_selftest_keep(at_ms: i64, text: String) {
 
 /// The stored self test result.
 fn perf_selftest_kept() -> Option<String> {
-    let db = settings_store::shared().app_db()?;
+    let db = app()?.app_db()?;
     let c = db.lock();
     selftest_table(&c).ok()?;
     c.query_row("SELECT text FROM perf_selftest WHERE id = 1", [], |r| r.get(0)).ok()
@@ -1045,6 +1047,8 @@ pub enum PerfNote {
 /// The current stretch's events plus the state needed to describe them.
 #[derive(Default)]
 struct Timeline {
+    /// The app's settings: their values, and the database the log is kept in ([`perf_keep_in`]).
+    app: Option<Arc<Settings>>,
     events: Vec<PerfEvent>,
     dropped: i64,
     /// Last seen settings; None before the first read.
@@ -1075,6 +1079,22 @@ static TIMELINE: std::sync::LazyLock<std::sync::Mutex<Timeline>> = std::sync::La
 
 fn timeline() -> std::sync::MutexGuard<'static, Timeline> {
     TIMELINE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Not with the timeline held: this takes it.
+fn app() -> Option<Arc<Settings>> {
+    timeline().app.clone()
+}
+
+/// The app's settings now; None before [`perf_keep_in`] or before they are open.
+pub(crate) fn settings_now() -> Option<nori_settings::settings::StoredPrefs> {
+    app()?.current()
+}
+
+/// The perf build starts: its log is kept in `app`'s database, and the settings it records are `app`'s.
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn perf_keep_in(app: Arc<Settings>) {
+    timeline().app = Some(app);
 }
 
 /// Settings whose values never appear in a report (only "changed").
@@ -1262,7 +1282,7 @@ pub fn perf_note(wall_ms: i64, note: PerfNote) {
 /// Records the current settings (a change becomes an event).
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_note_settings(wall_ms: i64) {
-    let Some(p) = settings_store::shared().current() else { return };
+    let Some(p) = app().and_then(|a| a.current()) else { return };
     timeline().settings(wall_ms, nori_settings::settings::save(&p));
 }
 
@@ -1296,7 +1316,7 @@ pub fn perf_events_since(since_ms: i64) -> Vec<String> {
 
 /// Why the settings block offload (`nori_player::policy::offload_blocked`); None if allowed or unknown.
 pub(crate) fn offload_reason() -> Option<&'static str> {
-    let s = settings_store::shared().current()?;
+    let s = app()?.current()?;
     let prefs = nori_model::AudioPrefs {
         dsp: s.sound_chain_on(),
         skip_silence: s.skip_silence,
@@ -1501,7 +1521,7 @@ pub fn perf_crash_keep(kind: String, at_ms: i64, text: String) {
     if text.trim().is_empty() {
         return;
     }
-    let Some(db) = settings_store::shared().app_db() else { return };
+    let Some(db) = app().and_then(|a| a.app_db()) else { return };
     let kept = keep_crash(&db.lock(), &kind, at_ms, &text);
     if let Err(e) = kept {
         nori_model::alog::info(&format!("perf log: could not keep a crash: {e}"));
@@ -1509,7 +1529,7 @@ pub fn perf_crash_keep(kind: String, at_ms: i64, text: String) {
 }
 
 fn perf_crashes_kept() -> Vec<KeptCrash> {
-    let Some(db) = settings_store::shared().app_db() else { return Vec::new() };
+    let Some(db) = app().and_then(|a| a.app_db()) else { return Vec::new() };
     let read = crashes(&db.lock());
     read.unwrap_or_default()
 }
@@ -1542,7 +1562,7 @@ pub(crate) fn keep_break_log(at_ms: i64, line: &str) {
     let line = line.to_string();
     let write = move || {
         let text = lines.iter().map(|(t, l)| format!("{} {l}", clock_ms(*t))).collect::<Vec<_>>().join("\n");
-        let Some(db) = settings_store::shared().app_db() else { return };
+        let Some(db) = app().and_then(|a| a.app_db()) else { return };
         let kept = keep_break(&db.lock(), at_ms, &line, &text);
         if let Err(e) = kept {
             nori_model::alog::info(&format!("perf log: could not keep the lines of a break: {e}"));
@@ -1569,7 +1589,7 @@ fn break_logs(c: &Connection) -> rusqlite::Result<Vec<(i64, String, String)>> {
 }
 
 fn break_logs_kept() -> Vec<(i64, String, String)> {
-    let Some(db) = settings_store::shared().app_db() else { return Vec::new() };
+    let Some(db) = app().and_then(|a| a.app_db()) else { return Vec::new() };
     let read = break_logs(&db.lock());
     read.unwrap_or_default()
 }

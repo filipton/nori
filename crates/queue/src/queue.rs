@@ -8,7 +8,7 @@ use nori_model::Song;
 use nori_player::gain::{song_gain, stereo_loudness_of_mid, GainMode as PlayerGainMode, GainPrefs, GainTags as PlayerGainTags, SongLoudness};
 use nori_player::transitions::{in_album_run, WindowSong};
 
-use crate::{shared, Session};
+use crate::Session;
 
 /// How long a song outside the queue is kept after it was last registered.
 const KEEP_MS: i64 = 60_000;
@@ -162,24 +162,22 @@ impl Session {
     }
 }
 
-// ---- the platform's entry points, over the shared session ----
-
-/// [`Session::register`].
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn queue_register(songs: Vec<Song>) {
-    shared().register(songs)
-}
+impl Session {
+    /// [`Session::register`].
+    pub fn queue_register(&self, songs: Vec<Song>) {
+        self.register(songs)
+    }
 
-/// [`Session::songs`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn queue_songs(ids: Vec<String>) -> Vec<Song> {
-    shared().songs(ids)
-}
+    /// [`Session::songs`].
+    pub fn queue_songs(&self, ids: Vec<String>) -> Vec<Song> {
+        self.songs(ids)
+    }
 
-/// [`Session::flags`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn queue_flags(id: String) -> u32 {
-    shared().flags(&id)
+    /// [`Session::flags`].
+    pub fn queue_flags(&self, id: String) -> u32 {
+        self.flags(&id)
+    }
 }
 
 #[cfg(test)]

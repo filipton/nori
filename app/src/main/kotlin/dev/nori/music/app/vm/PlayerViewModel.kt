@@ -36,7 +36,13 @@ class PlayerViewModel(app: Application) : NoriViewModel(app) {
      * Whether the queue is the one [page] started (nori-queue `playlist_from`): its Play or Shuffle, or a
      * row of its list, and any edit since. Asked when [PlayerState.origin] moves, not on every event.
      */
-    fun playsFrom(page: dev.nori.music.ffi.library.PageQueue): Boolean = dev.nori.music.ffi.queue.playlistFrom(page)
+    fun playsFrom(page: dev.nori.music.ffi.library.PageQueue): Boolean = nori.session.playlistFrom(page)
+
+    /** Whether previous restarts the song at [positionMs] (the player's own rule, `queue_previous_restarts`). */
+    fun previousRestarts(positionMs: Long, hasPrevious: Boolean): Boolean = nori.session.queuePreviousRestarts(positionMs, hasPrevious)
+
+    /** The queue's rows as the core orders them (`Core::queue_rows`). */
+    fun queueRows(len: Int, shuffle: Boolean, shown: Int): dev.nori.music.ffi.QueueRows = nori.core.queueRows(len.toUInt(), shuffle, shown)
 
     /** Just the play/pause flag, for the same reason: the marked row's bars move only while it sounds. */
     val sounding: StateFlow<Boolean> = state.map { it.playing }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
@@ -142,7 +148,7 @@ class PlayerViewModel(app: Application) : NoriViewModel(app) {
                 .distinctUntilChanged { (a, x), (b, y) ->
                     a.queue === b.queue && a.index == b.index && a.previousIndex == b.previousIndex && a.nextIndex == b.nextIndex && x == y
                 }
-                .map { (s, ahead) -> dev.nori.music.ffi.coversAround(s.index, s.previousIndex, s.nextIndex, ahead) }
+                .map { (s, ahead) -> nori.core.coversAround(s.index, s.previousIndex, s.nextIndex, ahead) }
                 .distinctUntilChanged()
                 .collect { around ->
                     _coversNear.value = around.near

@@ -19,7 +19,7 @@ import kotlinx.coroutines.flow.StateFlow
  * database with the settings; this lists what the audio system has. The callback only fires when something is plugged in or paired, so this costs
  * nothing while music plays.
  */
-class Outputs(context: Context) {
+class Outputs(context: Context, private val settings: dev.nori.music.ffi.settings.Settings) {
     private val audio = context.getSystemService(AudioManager::class.java)
     private val _current = MutableStateFlow(SPEAKER)
     val current: StateFlow<String> = _current
@@ -27,12 +27,12 @@ class Outputs(context: Context) {
      * Every output ever seen, so a device can be given its own sound while it is unplugged. Kept across
      * restarts by the core; read on first use, not at startup.
      */
-    private val _known by lazy { MutableStateFlow(outputsKnown()) }
+    private val _known by lazy { MutableStateFlow(outputsKnown(settings)) }
     val known: StateFlow<List<String>> get() = _known
 
     /** Drops a device from [known]; it comes back by itself the next time it is connected. */
     fun forget(output: String) {
-        outputsForget(_known.value, _current.value, output)?.let { _known.value = it }
+        outputsForget(settings, _known.value, _current.value, output)?.let { _known.value = it }
     }
 
     /**
@@ -74,7 +74,7 @@ class Outputs(context: Context) {
     /** Hands the core every output the audio system lists (type and product name) and keeps what it says. */
     private fun refresh() {
         val devices = audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-        val seen = outputsRefresh(devices.map { it.type }, devices.map { it.productName?.toString().orEmpty() }, _known.value, override)
+        val seen = outputsRefresh(settings, devices.map { it.type }, devices.map { it.productName?.toString().orEmpty() }, _known.value, override)
         _current.value = seen.current
         seen.known?.let { _known.value = it }
         _usb.value = seen.usb

@@ -9,7 +9,7 @@ const SEARCH: &str = r#"{"subsonic-response":{"status":"ok","version":"1.16.1","
 
 #[test]
 fn search_indexes_skip_external() {
-    let core = Core::new(String::new(), "t".into()).unwrap();
+    let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
     let r = core.parse_search(SEARCH.into()).unwrap();
     core.ingest_search(SEARCH.into()).unwrap();
     assert_eq!(r.songs.len(), 3);
@@ -34,7 +34,7 @@ fn search_indexes_skip_external() {
 
 #[test]
 fn queue_and_cache_round_trip() {
-    let core = Core::new(String::new(), "t".into()).unwrap();
+    let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
     let songs = core.parse_search(SEARCH.into()).unwrap().songs;
     core.save_queue(PlayQueue { songs: songs.clone(), index: 1, position_ms: 5000, origin: None }).unwrap();
     let q = core.load_queue().unwrap();
@@ -62,7 +62,7 @@ fn synced_lyrics_preferred() {
 
 #[test]
 fn a_device_is_bound_to_one_profile() {
-    let core = Core::new(String::new(), "t".into()).unwrap();
+    let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
     let p = |name: &str, outputs: &[&str]| SoundProfile { name: name.into(), json: "{}".into(), outputs: outputs.iter().map(|s| s.to_string()).collect() };
     core.profile_save(p("IEM", &["USB: DAC", "Wired headphones"])).unwrap();
     core.profile_save(p("Flat", &[])).unwrap();
@@ -92,7 +92,7 @@ fn autoeq_preset_is_read() {
 
 #[test]
 fn browse_sorts_filters_decades() {
-    let core = Core::new(String::new(), "t".into()).unwrap();
+    let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
     core.ingest_search(r#"{"subsonic-response":{"status":"ok","searchResult3":{"song":[
       {"id":"a","title":"beta","year":1994,"starred":"2020-01-01"},{"id":"b","title":"Alpha","year":2003},{"id":"c","title":"gamma","year":1999}]}}}"#.into()).unwrap();
     let by_title: Vec<String> = core.browse_songs("title".into(), false, false, 0, 0, 0, 10).unwrap().into_iter().map(|s| s.title).collect();

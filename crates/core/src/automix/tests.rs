@@ -6,7 +6,7 @@ use crate::Core;
 
 #[test]
 fn analysis_stored_or_missing() {
-    let core = Core::new(String::new(), "t".into()).unwrap();
+    let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
     assert_eq!(core.analysis_get("a".into()).unwrap(), None);
     assert_eq!(core.analysis_missing(vec!["a".into(), "b".into()]).unwrap(), vec!["a".to_string(), "b".to_string()]);
     let s = Synth::new(120.0);
@@ -22,7 +22,7 @@ fn analysis_stored_or_missing() {
 
 #[test]
 fn finish_stores_row_and_voice() {
-    let core = Core::new(String::new(), "t".into()).unwrap();
+    let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
     let s = Synth::new(128.0);
     let x = s.render();
     let mut a = analysis::Analyzer::new(s.rate, 60_000);
@@ -55,7 +55,7 @@ impl Core {
 #[test]
 fn beat_model_grid_survives_reanalysis() {
     use nori_player::automix::beats::{EndGrid, MixEnd, GRID_CHECKED, GRID_NEURAL};
-    let core = Core::new(String::new(), "t".into()).unwrap();
+    let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
     let row = TrackAnalysis {
         song_id: "s".into(),
         analysis_version: ANALYSIS_VERSION,

@@ -379,23 +379,6 @@ pub struct Core {
 }
 
 impl Core {
-    /// [`Core::new`] over `session`'s queue.
-    pub fn open(db_path: String, server: String, session: Arc<nori_queue::Session>) -> Result<Arc<Self>> {
-        let db = db::open(&db_path, &server)?;
-        session.settings.model.set_home(&db_path);
-        let db = Arc::new(Mutex::new(db));
-        let core = Arc::new(Core {
-            downloads: Arc::new(transfers::Downloads::load(&db)?),
-            db,
-            server: RwLock::new(api::Server::default()),
-            board: Mutex::new(mixes::board::Board::default()),
-            stars: Mutex::new(stars::StarMarks::default()),
-            session,
-        });
-        core.session.db.set(&core.db);
-        Ok(core)
-    }
-
     /// The downloads table in memory and the progress of their work.
     pub fn transfers(&self) -> &transfers::Downloads {
         &self.downloads
@@ -409,11 +392,23 @@ impl Core {
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Core {
-    /// Opens the database at `db_path` (empty: in memory) for server profile `server`, and makes this the
-    /// active core.
+    /// Opens the database at `db_path` (empty: in memory) for server profile `server`, over the app's
+    /// queue `session`.
     #[cfg_attr(feature = "ffi", uniffi::constructor)]
-    pub fn new(db_path: String, server: String) -> Result<Arc<Self>> {
-        Core::open(db_path, server, nori_queue::shared().clone())
+    pub fn new(db_path: String, server: String, session: Arc<nori_queue::Session>) -> Result<Arc<Self>> {
+        let db = db::open(&db_path, &server)?;
+        session.settings.model.set_home(&db_path);
+        let db = Arc::new(Mutex::new(db));
+        let core = Arc::new(Core {
+            downloads: Arc::new(transfers::Downloads::load(&db)?),
+            db,
+            server: RwLock::new(api::Server::default()),
+            board: Mutex::new(mixes::board::Board::default()),
+            stars: Mutex::new(stars::StarMarks::default()),
+            session,
+        });
+        core.session.db.set(&core.db);
+        Ok(core)
     }
 
     /// Sets the server; returns the normalised base url. Clears the library when the profile now points

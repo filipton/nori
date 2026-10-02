@@ -9,7 +9,7 @@ use crate::{native, Class};
 
 pub(crate) static HEARD: Class = Class {
     name: c"dev/nori/music/playback/HeardJni",
-    methods: &[native!(c"create", c"()J", create), native!(c"at", c"(JJZJ)J", at)],
+    methods: &[native!(c"create", c"(J)J", create), native!(c"at", c"(JJZJ)J", at)],
 };
 
 pub(crate) static PLAYHEAD: Class = Class {
@@ -27,9 +27,10 @@ fn clock<'a>(h: jlong) -> Option<&'a Mutex<HeardClock>> {
     (h != 0).then(|| unsafe { &*(h as *const Mutex<HeardClock>) })
 }
 
-/// The process's clock (Kotlin keeps one for the app's life), never freed.
-extern "system" fn create() -> jlong {
-    Box::into_raw(Box::new(Mutex::new(HeardClock::new(nori_core::queue::shared().clone())))) as jlong
+/// The process's clock over the queue session `s` (`crate::kept`); Kotlin keeps it for the app's life,
+/// never freed.
+extern "system" fn create(s: jlong) -> jlong {
+    Box::into_raw(Box::new(Mutex::new(HeardClock::new(crate::kept(s))))) as jlong
 }
 
 /// Returns `HeardAt::pack`.

@@ -5,7 +5,7 @@
 use nori_player::queue::{self as q, ErrorRun};
 use nori_player::transport as t;
 
-use crate::{shared, Session};
+use crate::Session;
 
 // Public so the uniffi scaffolding can name them.
 pub use nori_model::model::PlaybackError;
@@ -107,19 +107,39 @@ impl Session {
         self.controls.lock().played();
     }
 
-    /// Sets the sleep timer to `songs` songs or the end of this one (0/false cancel). Returns whether to
-    /// pause at the end of the current song.
-    pub fn sleep_set(&self, songs: u32, end_of_track: bool) -> bool {
-        let (pause, left) = t::sleep_after(songs, end_of_track);
-        self.controls.lock().sleep_left = left;
-        pause
-    }
 
     /// The song changed: whether the sleep timer now pauses at its end.
     pub fn sleep_song_changed(&self) -> bool {
         let mut c = self.controls.lock();
         let (left, pause) = t::sleep_song_changed(c.sleep_left);
         c.sleep_left = left;
+        pause
+    }
+
+}
+
+#[cfg_attr(feature = "ffi", uniffi::export)]
+impl Session {
+    /// [`Session::last_error`].
+    pub fn queue_last_error(&self) -> Option<PlaybackError> {
+        self.last_error()
+    }
+
+    /// [`Session::bridge_failed`].
+    pub fn queue_bridge_failed(&self) -> bool {
+        self.bridge_failed()
+    }
+
+    /// [`Session::playing`].
+    pub fn queue_playing(&self) {
+        self.playing()
+    }
+
+    /// Sets the sleep timer to `songs` songs or the end of this one (0/false cancel). Returns whether to
+    /// pause at the end of the current song.
+    pub fn sleep_set(&self, songs: u32, end_of_track: bool) -> bool {
+        let (pause, left) = t::sleep_after(songs, end_of_track);
+        self.controls.lock().sleep_left = left;
         pause
     }
 
@@ -136,44 +156,11 @@ impl Session {
             pause_at_end: self.sleep_song_changed(),
         }
     }
-}
 
-// ---- the platform's entry points, over the shared session ----
-
-/// [`Session::last_error`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn queue_last_error() -> Option<PlaybackError> {
-    shared().last_error()
-}
-
-/// [`Session::bridge_failed`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn queue_bridge_failed() -> bool {
-    shared().bridge_failed()
-}
-
-/// [`Session::playing`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn queue_playing() {
-    shared().playing()
-}
-
-/// [`Session::sleep_set`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn sleep_set(songs: u32, end_of_track: bool) -> bool {
-    shared().sleep_set(songs, end_of_track)
-}
-
-/// [`Session::song_arrived`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn song_arrived() -> SongSteps {
-    shared().song_arrived()
-}
-
-/// Whether previous restarts the current song (per "previous always skips").
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn queue_previous_restarts(position_ms: i64, has_previous: bool) -> bool {
-    q::previous_restarts(position_ms, has_previous, shared().settings.prefs(|p| p.previous_always_skips))
+    /// Whether previous restarts the current song (per "previous always skips").
+    pub fn queue_previous_restarts(&self, position_ms: i64, has_previous: bool) -> bool {
+        q::previous_restarts(position_ms, has_previous, self.settings.prefs(|p| p.previous_always_skips))
+    }
 }
 
 /// The repeat mode after a press of the button (media3 numbering: off 0, one 1, all 2).

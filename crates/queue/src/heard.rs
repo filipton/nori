@@ -1,6 +1,7 @@
 //! The audible song and position for the seek bar and now-playing page (`nori_player::heard` over the
 //! player's own report). Asked every frame, so answers are packed into an `i64` and nothing allocates.
 
+use crate::Session;
 use nori_player::engine::Heard;
 use nori_player::heard::{HeardTracker, PlayerNow, Playhead, Seen};
 
@@ -57,10 +58,12 @@ pub fn shown_row<Q: AsRef<str>, P: AsRef<str>>(heard: Option<usize>, queue: &[Q]
     (Some(id) != playing).then_some(row)
 }
 
-/// [`shown_row`] over the core's queue.
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn heard_shown_row(heard: Option<u32>, page: Vec<String>, playing: Option<String>) -> Option<u32> {
-    crate::shared().playlist(|p| shown_row(heard.map(|h| h as usize), p.ids(), &page, playing.as_deref())).map(|r| r as u32)
+impl Session {
+    /// [`shown_row`] over the core's queue.
+    pub fn heard_shown_row(&self, heard: Option<u32>, page: Vec<String>, playing: Option<String>) -> Option<u32> {
+        self.playlist(|p| shown_row(heard.map(|h| h as usize), p.ids(), &page, playing.as_deref())).map(|r| r as u32)
+    }
 }
 
 /// The heard tracker over a session's queue.

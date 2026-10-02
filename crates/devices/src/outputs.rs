@@ -8,7 +8,8 @@ use nori_model::DacBlock;
 use nori_player::dac;
 use crate::profiles::OutputPort;
 use nori_player::outputs::{self, OutputKind};
-use nori_settings::settings_store;
+use nori_settings::settings_store::Settings;
+use std::sync::Arc;
 
 // Public: the uniffi scaffolding in crates/android names them by path.
 pub use nori_player::dac::DacDecision;
@@ -114,18 +115,18 @@ fn modes(rates: &[u32], encodings: &[i32]) -> Vec<DacMode> {
 /// `app_kv` key: every output seen, as a JSON list, so unplugged devices can still get a sound.
 const KNOWN: &str = "knownOutputs";
 
-fn keep(known: &[String]) {
-    settings_store::shared().keep_app_value(KNOWN, serde_json::to_string(known).unwrap_or_default());
+fn keep(settings: &Settings, known: &[String]) {
+    settings.keep_app_value(KNOWN, serde_json::to_string(known).unwrap_or_default());
 }
 
 /// The attached devices (parallel `AudioDeviceInfo` types and product names) against the known list; a
-/// changed list is stored.
+/// changed list is stored in the app's `settings`.
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn outputs_refresh(types: Vec<i32>, names: Vec<String>, known: Vec<String>, fake_usb: Option<String>) -> Seen {
+pub fn outputs_refresh(settings: Arc<Settings>, types: Vec<i32>, names: Vec<String>, known: Vec<String>, fake_usb: Option<String>) -> Seen {
     let attached: Vec<(OutputKind, &str)> = types.iter().zip(&names).map(|(t, n)| (kind(*t), n.as_str())).collect();
     let seen = outputs::refresh(&attached, &known, fake_usb.as_deref());
     if let Some(k) = &seen.known {
-        keep(k);
+        keep(&settings, k);
     }
     seen
 }
@@ -140,19 +141,19 @@ pub fn device_flat() -> String {
     nori_player::device::FLAT.into()
 }
 
-/// Every output seen, as stored.
+/// Every output seen, as stored in the app's `settings`.
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn outputs_known() -> Vec<String> {
-    let stored: Vec<String> = settings_store::shared().app_value(KNOWN).and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
+pub fn outputs_known(settings: Arc<Settings>) -> Vec<String> {
+    let stored: Vec<String> = settings.app_value(KNOWN).and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
     outputs::initial_known(&stored)
 }
 
-/// The known list without `output`, stored; None when unchanged.
+/// The known list without `output`, stored in the app's `settings`; None when unchanged.
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn outputs_forget(known: Vec<String>, current: String, output: String) -> Option<Vec<String>> {
+pub fn outputs_forget(settings: Arc<Settings>, known: Vec<String>, current: String, output: String) -> Option<Vec<String>> {
     let next = outputs::forget(&known, &current, &output);
     if let Some(k) = &next {
-        keep(k);
+        keep(&settings, k);
     }
     next
 }
@@ -210,12 +211,12 @@ mod tests {
 
     #[test]
     fn android_codes() {
-        let seen = outputs_refresh(vec![18, 2, 8, 22], vec!["".into(), "".into(), "Buds".into(), " K3 ".into()], vec![], None);
+        let seen = outputs_refresh(Settings::new(), vec![18, 2, 8, 22], vec!["".into(), "".into(), "Buds".into(), " K3 ".into()], vec![], None);
         assert_eq!(seen.current, "USB: K3");
         assert!(seen.usb);
         assert_eq!(seen.known.unwrap(), ["Bluetooth: Buds", "Phone speaker", "USB: K3"]);
-        assert!(outputs_refresh(vec![12, 2], vec!["".into(), "".into()], vec![], None).usb, "a USB accessory");
-        assert_eq!(outputs_refresh(vec![4], vec!["".into()], vec![], None).current, "Wired headphones");
+        assert!(outputs_refresh(Settings::new(), vec![12, 2], vec!["".into(), "".into()], vec![], None).usb, "a USB accessory");
+        assert_eq!(outputs_refresh(Settings::new(), vec![4], vec!["".into()], vec![], None).current, "Wired headphones");
 
         // Dac encodings to bits.
         let d = dac_decide(true, true, "K3".into(), vec![44_100, 96_000], vec![2, 4], 96_000, 4, None, None, false);
@@ -248,17 +249,18 @@ mod tests {
     #[test]
     fn known_outputs_persist() {
         use nori_db::background;
-        use nori_settings::settings_store::settings_open;
 
         let dir = nori_testdir::TempDir::new("outputs");
         let path = dir.join("nori.db").display().to_string();
-        settings_open(path.clone()).unwrap();
+        let settings = Settings::new();
+        settings.open(&path).unwrap();
         let speaker = outputs_speaker();
-        assert_eq!(outputs_known(), std::slice::from_ref(&speaker), "the speaker the first time");
-        let seen = outputs_refresh(vec![8], vec!["Buds".into()], vec![speaker.clone()], None);
+        assert_eq!(outputs_known(settings.clone()), std::slice::from_ref(&speaker), "the speaker the first time");
+        let seen = outputs_refresh(settings.clone(), vec![8], vec!["Buds".into()], vec![speaker.clone()], None);
         assert_eq!(seen.known.unwrap(), ["Bluetooth: Buds", speaker.as_str()]);
         background::flush();
-        settings_open(path).unwrap();
-        assert_eq!(outputs_known(), ["Bluetooth: Buds", speaker.as_str()]);
+        let again = Settings::new();
+        again.open(&path).unwrap();
+        assert_eq!(outputs_known(again), ["Bluetooth: Buds", speaker.as_str()]);
     }
 }

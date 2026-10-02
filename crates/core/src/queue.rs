@@ -3,7 +3,7 @@
 use crate::Core;
 
 pub use nori_queue::queue::*;
-pub use nori_queue::{shared, Session};
+pub use nori_queue::Session;
 
 impl Core {
     /// Saves the known songs of `ids` (radio streams dropped) with their album `runs`, the current `index`

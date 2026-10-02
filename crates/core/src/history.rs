@@ -90,7 +90,7 @@ pub(crate) mod tests {
 
     #[test]
     fn records_listens() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let s = song("s1", "Dogs", "Pink Floyd", "Animals", "Rock", 1977);
         assert!(rec(&core, s.clone(), NOW - DAY, 200_000));
         assert!(rec(&core, s.clone(), NOW - DAY + 1, 5_000));
@@ -118,7 +118,7 @@ pub(crate) mod tests {
         assert!(stat(&core, "s1").is_none());
 
         // Record keeps newer index entry.
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let mut s = song("s1", "Dogs", "Pink Floyd", "Animals", "Rock", 1977);
         s.starred = true;
         db::index(&mut core.db.lock(), &[], &[], std::slice::from_ref(&s)).unwrap();
@@ -127,7 +127,7 @@ pub(crate) mod tests {
         assert!(core.history_recent(1, None, true).unwrap().0[0].song.starred);
 
         // Provider tracks are not recorded.
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         for id in ["ext-deezer-song-7", "pl-deezer-9", ""] {
             assert!(!rec(&core, Song { id: id.into(), duration: 100, ..Default::default() }, NOW, 100_000));
         }
@@ -138,7 +138,7 @@ pub(crate) mod tests {
 
     #[test]
     fn taste_stays_sane() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let (fresh, old, skipped) = (song("a", "A", "X", "", "", 0), song("b", "B", "X", "", "", 0), song("c", "C", "X", "", "", 0));
         listen(&core, &fresh, NOW);
         listen(&core, &old, NOW - 30 * DAY);
@@ -159,7 +159,7 @@ pub(crate) mod tests {
         assert_eq!(taste(&Song { user_rating: 3, ..plain }, 0.0, NOW), 0.0);
 
         // Absurd timestamps keep taste finite.
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let s = song("a", "A", "X", "", "", 0);
         assert!(record(&mut core.db.lock(), &s, i64::MAX / 2, 200_000, 0, NOW).unwrap());
         assert!(record(&mut core.db.lock(), &s, -5, 200_000, 0, NOW).unwrap());
@@ -169,14 +169,14 @@ pub(crate) mod tests {
 
     #[test]
     fn summaries() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let s = stats(&core, 0, i64::MAX, 10);
         assert_eq!((s.plays, s.listened_ms, s.longest_streak_days), (0, 0, 0));
         assert_eq!((s.plays_per_hour.len(), s.plays_per_weekday.len()), (24, 7));
         assert!(s.first_play.is_none() && s.top_songs.is_empty());
 
         // Summary counts tops and charts.
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let dogs = song("s1", "Dogs", "Pink Floyd", "Animals", "Rock", 1977);
         let pigs = song("s2", "Pigs", "Pink Floyd", "Animals", "Rock", 1977);
         let bjork = song("s3", "Jóga", "Björk", "Homogenic", "Electronic", 1997);
@@ -207,7 +207,7 @@ pub(crate) mod tests {
         assert_eq!(s.first_play.unwrap().song, dogs);
 
         // Charts use local time.
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let s = song("s1", "A", "X", "", "", 0);
         // Sunday 23:30 UTC is Monday 01:30 at UTC+2.
         let sunday_late = 1_780_272_000_000 - 30 * 60_000;
@@ -218,7 +218,7 @@ pub(crate) mod tests {
 
     #[test]
     fn listens_survive_cleared_index() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         listen(&core, &song("s1", "A", "X", "", "", 0), NOW);
         db::clear_library(&core.db.lock()).unwrap();
         assert!(core.history_recent(10, None, true).unwrap().0.is_empty());

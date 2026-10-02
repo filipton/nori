@@ -588,10 +588,10 @@ internal class SelfTest(private val app: Application, private val recorder: Reco
             try {
                 set { it.copy(replayGain = GainMode.OFF) }
                 delay(1_200)
-                val gOff = dev.nori.music.ffi.queue.playlistGain(false)
+                val gOff = nori.session.playlistGain(false)
                 set { it.copy(replayGain = GainMode.TRACK) }
                 delay(1_200)
-                val gTrack = dev.nori.music.ffi.queue.playlistGain(false)
+                val gTrack = nori.session.playlistGain(false)
                 val r = judgeProgress(sample(2_000), written = !(PlaybackService.rustPlayer?.offloaded ?: false))
                 val tags = if (queue[k].replayGain == null) " (the song has no ReplayGain tags)" else ""
                 return outcome(s, Judged("level off ${fmt(gOff)}, by track ${fmt(gTrack)}$tags; the player puts it on the samples, which cannot be read from here; ${r.measured}", r.problems))

@@ -114,7 +114,7 @@ pub(crate) mod tests {
     }
 
     fn library() -> std::sync::Arc<Core> {
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let mut songs = vec![
             song("dogs", "Dogs", "Pink Floyd", "Animals", "Progressive Rock", 1977),
             song("pigs", "Pigs (Three Different Ones)", "Pink Floyd", "Animals", "Progressive Rock", 1977),
@@ -197,7 +197,7 @@ pub(crate) mod tests {
 
     #[test]
     fn empty_index_yields_nothing() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         for d in smart_defaults() {
             assert!(core.smart_evaluate(d.json.clone(), 0, 50).unwrap().is_empty());
             assert_eq!(core.smart_count(d.json).unwrap(), 0);
@@ -257,7 +257,7 @@ pub(crate) mod tests {
             }
         }
         // Invalid definitions are refused by every entry point.
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         assert!(matches!(core.smart_evaluate("{".into(), 0, 1), Err(CoreError::Smart { .. })));
         assert!(matches!(core.smart_count("{".into()), Err(CoreError::Smart { .. })));
         assert!(matches!(core.smart_save(String::new(), "x".into(), "{".into()), Err(CoreError::Smart { .. })));
@@ -266,7 +266,7 @@ pub(crate) mod tests {
 
     #[test]
     fn save_list_delete() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let def = one("genre", "is", json!("Jazz"));
         let a = core.smart_save(String::new(), "Jazz".into(), def.clone()).unwrap();
         let b = core.smart_save(String::new(), "Ünïcödé ✓".into(), "{}".into()).unwrap();
@@ -283,7 +283,7 @@ pub(crate) mod tests {
 
     #[test]
     fn played_rules_scan_stats_first() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let c = core.db.lock();
         let plan = |json: &str| -> String {
             let def = parse(json).unwrap();
@@ -306,7 +306,7 @@ pub(crate) mod tests {
 
     #[test]
     fn large_library_pages_and_budget() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         {
             let mut c = core.db.lock();
             let tx = c.transaction().unwrap();

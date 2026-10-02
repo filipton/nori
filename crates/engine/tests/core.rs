@@ -82,7 +82,7 @@ fn downloads_and_measuring_over_core() {
     let settings = Arc::new(nori_core::settings_store::Settings::default());
     settings.open(&dir.join("app.db").to_string_lossy()).unwrap();
     let session = Arc::new(nori_core::queue::Session::new(settings.clone()));
-    let core = Core::open(dir.join("nori.db").to_string_lossy().into_owned(), "test".into(), session).unwrap();
+    let core = Core::new(dir.join("nori.db").to_string_lossy().into_owned(), "test".into(), session).unwrap();
     let config = ServerConfig { url: "http://music.test".into(), user: "u".into(), password: "p".into(), api_key: None, legacy_auth: false };
     core.configure(config).unwrap();
     let net = Arc::new(NoApi::default());

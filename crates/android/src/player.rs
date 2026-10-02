@@ -1231,6 +1231,8 @@ struct Player {
     volume: Arc<OutputVolume>,
     ahead: Arc<Ahead>,
     analyses: Arc<Analyses>,
+    /// The app's queue session, whose settings the engine plays by.
+    queue: Arc<nori_core::queue::Session>,
 }
 
 impl Player {
@@ -1256,7 +1258,8 @@ fn player(h: jlong) -> Option<Arc<Player>> {
 extern "system" fn create(mut env: JNIEnv, _: JClass, current: jlong, analyses: jlong, sdk: jint, float: jboolean, memory_mb: jint) -> jlong {
     // SAFETY: Kotlin passes `CurrentClient.uniffiCloneHandle()`, once.
     let current: Arc<CurrentClient> = unsafe { crate::uniffi_object(current) };
-    let Some(analyses) = crate::measure::analyses(analyses) else { return 0 };
+    let Some(measuring) = crate::measure::measuring(analyses) else { return 0 };
+    let (analyses, queue) = (measuring.analyses.clone(), measuring.session.clone());
     if JAVA.get().is_none() {
         match look_up(&mut env) {
             Ok(j) => {
@@ -1273,10 +1276,10 @@ extern "system" fn create(mut env: JNIEnv, _: JClass, current: jlong, analyses: 
     let output = TrackOutput::new(Box::new(JavaOpener { sdk }), float != 0, shared.clone());
     let stations = Arc::new(Mutex::new(Vec::new()));
     let ahead = Ahead::new();
-    let library = AndroidLibrary { queue: nori_core::queue::shared().clone(), current: current.clone(), analyses: analyses.clone(), stations: stations.clone(), ahead: ahead.clone() };
+    let library = AndroidLibrary { queue: queue.clone(), current: current.clone(), analyses: analyses.clone(), stations: stations.clone(), ahead: ahead.clone() };
     // Full volume until Kotlin reports one (only while loudness compensation is on).
     let volume = Arc::new(OutputVolume::default());
-    let sound = nori_core::settings_store::shared().current().map(|p| settings(&p, volume.db())).unwrap_or_default();
+    let sound = queue.settings.current().map(|p| settings(&p, volume.db())).unwrap_or_default();
     let watch = Some(nori_engine::watch::Watcher(Arc::new(crate::PerfWatch(current))));
     let config = Config { memory_mb: memory_mb.max(16) as u32, settings: sound, watch, ..Config::default() };
     let events = Arc::new(Events::default());
@@ -1285,10 +1288,9 @@ extern "system" fn create(mut env: JNIEnv, _: JClass, current: jlong, analyses: 
     let can_offload = JAVA.get().is_some_and(|j| j.offload.is_some()) && sdk >= 29;
     let offloaded: Option<Box<dyn OffloadOutput>> = can_offload.then(|| Box::new(JavaOffload::new(offload.clone())) as Box<dyn OffloadOutput>);
     log(&format!("the engine starts: API {sdk}, {} output, {} MB of memory, offload {}", if float != 0 { "float" } else { "16-bit" }, config.memory_mb, if can_offload { "possible" } else { "not on this Android" }));
-    let queue = nori_core::queue::shared();
     let app = CoreApp::new(queue.clone()).bridging().volume(volume.clone());
     let engine = Engine::start(library, app, CoreQueue(queue.clone()), Box::new(output), offloaded, config, move |e| tell.push(e));
-    PLAYERS.add(Arc::new(Player { engine, shared, events, offload, stations, jumped: Mutex::new(None), looked_ms: AtomicI64::new(i64::MIN / 2), volume, ahead, analyses }))
+    PLAYERS.add(Arc::new(Player { engine, shared, events, offload, stations, jumped: Mutex::new(None), looked_ms: AtomicI64::new(i64::MIN / 2), volume, ahead, analyses, queue }))
 }
 
 /// Unregisters the player and stops it on a thread of its own (stopping joins engine threads, and media3
@@ -1370,7 +1372,8 @@ extern "system" fn set_foreground(h: jlong, on: jboolean) {
 }
 
 extern "system" fn apply_settings(h: jlong) {
-    if let (Some(p), Some(prefs)) = (player(h), nori_core::settings_store::shared().current()) {
+    let Some(p) = player(h) else { return };
+    if let Some(prefs) = p.queue.settings.current() {
         p.engine.set_settings(settings(&prefs, p.volume.db()));
     }
 }
@@ -1440,7 +1443,7 @@ extern "system" fn set_volume(h: jlong, index: jint, max: jint, db: jfloat) {
     if !p.volume.set(db) {
         return;
     }
-    let Some(prefs) = nori_core::settings_store::shared().current().filter(|p| p.loudness) else { return };
+    let Some(prefs) = p.queue.settings.current().filter(|p| p.loudness) else { return };
     let s = nori_player::contour::design(prefs.loudness_ref_phon as f64, db);
     nori_core::alog::info(&format!(
         "loudness: volume {index}/{max} at {db:.1} dB, bass {:+.1} dB at {} Hz, treble {:+.1} dB, pre-gain {:.1} dB",
@@ -1484,7 +1487,7 @@ extern "system" fn event(h: jlong) -> jlong {
         Some((kind, index, seq, text, jumps)) => {
             // Kotlin's queue is the core's as it is now: a song is where its entry is now (-1: gone).
             let index = match seq {
-                Some(s) => nori_core::queue::shared().playlist(|q| q.index_of(s)).map_or(-1, |i| i as i32),
+                Some(s) => p.queue.playlist(|q| q.index_of(s)).map_or(-1, |i| i as i32),
                 None => index,
             };
             *p.events.text.lock() = text;

@@ -3,6 +3,8 @@
 
 use nori_look::sleeve;
 
+use crate::Core;
+
 /// A gradient stop: position (0..1) and opacity.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
@@ -169,15 +171,17 @@ pub struct QueueRows {
     pub now: i32,
 }
 
-/// Rows for the page's `len`-song queue with `shown` current (-1: none). Uses the core's play order when
-/// it has the same length, else list order.
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn queue_rows(len: u32, shuffle: bool, shown: i32) -> QueueRows {
-    let (order, current) = nori_queue::shared().playlist(|p| {
-        let here = p.len() == len as usize;
-        (here.then(|| p.play_order().map(|i| i as u32).collect()), p.current().filter(|_| here))
-    });
-    rows(order, len, shuffle, shown, current)
+impl Core {
+    /// Rows for the page's `len`-song queue with `shown` current (-1: none). Uses the queue's play order
+    /// when it has the same length, else list order.
+    pub fn queue_rows(&self, len: u32, shuffle: bool, shown: i32) -> QueueRows {
+        let (order, current) = self.session.playlist(|p| {
+            let here = p.len() == len as usize;
+            (here.then(|| p.play_order().map(|i| i as u32).collect()), p.current().filter(|_| here))
+        });
+        rows(order, len, shuffle, shown, current)
+    }
 }
 
 fn rows(order: Option<Vec<u32>>, len: u32, shuffle: bool, shown: i32, current: Option<usize>) -> QueueRows {

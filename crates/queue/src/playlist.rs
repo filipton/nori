@@ -8,7 +8,7 @@ use nori_player::playlist::{Playlist, Splice, REPEAT_ALL, REPEAT_ONE};
 pub use nori_player::playlist::Hand;
 pub use nori_player::queue::Onto;
 
-use crate::{queue, shared, Session};
+use crate::{queue, Session};
 
 /// The queue plus the state that follows it.
 #[derive(Default)]
@@ -430,96 +430,83 @@ impl Session {
     }
 }
 
-// ---- the platform's entry points, over the shared session ----
-
-/// [`Session::from_page`].
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn playlist_from(page: std::sync::Arc<nori_library::pages::PageQueue>) -> bool {
-    shared().from_page(&page)
-}
+impl Session {
+    /// [`Session::from_page`].
+    pub fn playlist_from(&self, page: std::sync::Arc<nori_library::pages::PageQueue>) -> bool {
+        self.from_page(&page)
+    }
 
-/// [`Session::unbridge`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn playlist_unbridge() -> Option<QueueEdit> {
-    shared().unbridge()
-}
+    /// [`Session::unbridge`].
+    pub fn playlist_unbridge(&self) -> Option<QueueEdit> {
+        self.unbridge()
+    }
 
-/// [`Session::bridge_state`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn playlist_bridge_state() -> BridgeState {
-    shared().bridge_state()
-}
+    /// [`Session::bridge_state`].
+    pub fn playlist_bridge_state(&self) -> BridgeState {
+        self.bridge_state()
+    }
 
-/// [`Session::set`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn playlist_set(ids: Vec<String>, start: Option<u32>, shuffle: bool, origin: Option<PageOrigin>) -> QueueChange {
-    shared().set(ids, start, shuffle, origin)
-}
+    /// [`Session::set`].
+    pub fn playlist_set(&self, ids: Vec<String>, start: Option<u32>, shuffle: bool, origin: Option<PageOrigin>) -> QueueChange {
+        self.set(ids, start, shuffle, origin)
+    }
 
-/// [`Session::set_ordered`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn playlist_set_ordered(ids: Vec<String>, origin: Option<PageOrigin>) -> QueueChange {
-    shared().set_ordered(ids, origin)
-}
+    /// [`Session::set_ordered`].
+    pub fn playlist_set_ordered(&self, ids: Vec<String>, origin: Option<PageOrigin>) -> QueueChange {
+        self.set_ordered(ids, origin)
+    }
 
-/// [`Session::take`].
-#[cfg_attr(feature = "ffi", uniffi::export(default(from = None)))]
-pub fn playlist_take(at: u32, ids: Vec<String>, hands: Vec<Hand>, from: Option<PageOrigin>) -> QueueChange {
-    shared().take(at, ids, hands, from)
-}
+    /// [`Session::take`].
+    #[cfg_attr(feature = "ffi", uniffi::method(default(from = None)))]
+    pub fn playlist_take(&self, at: u32, ids: Vec<String>, hands: Vec<Hand>, from: Option<PageOrigin>) -> QueueChange {
+        self.take(at, ids, hands, from)
+    }
 
-/// [`Session::remove`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn playlist_remove(from: u32, to: u32) -> QueueChange {
-    shared().remove(from, to)
-}
+    /// [`Session::remove`].
+    pub fn playlist_remove(&self, from: u32, to: u32) -> QueueChange {
+        self.remove(from, to)
+    }
 
-/// [`Session::restore`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn playlist_restore(id: String) -> QueueChange {
-    shared().restore(id)
-}
+    /// [`Session::restore`].
+    pub fn playlist_restore(&self, id: String) -> QueueChange {
+        self.restore(id)
+    }
 
-/// [`Session::move_range`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn playlist_move(from: u32, to: u32, new_index: u32) -> QueueChange {
-    shared().move_range(from, to, new_index)
-}
+    /// [`Session::move_range`].
+    pub fn playlist_move(&self, from: u32, to: u32, new_index: u32) -> QueueChange {
+        self.move_range(from, to, new_index)
+    }
 
-/// [`Session::shuffle`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn playlist_shuffle(on: bool) -> QueueChange {
-    shared().shuffle(on)
-}
+    /// [`Session::shuffle`].
+    pub fn playlist_shuffle(&self, on: bool) -> QueueChange {
+        self.shuffle(on)
+    }
 
-/// [`Session::show_shuffle`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn playlist_show_shuffle(on: bool) {
-    shared().show_shuffle(on)
-}
+    /// [`Session::show_shuffle`].
+    pub fn playlist_show_shuffle(&self, on: bool) {
+        self.show_shuffle(on)
+    }
 
-/// [`Session::repeat`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn playlist_repeat(mode: u8) {
-    shared().repeat(mode)
-}
+    /// [`Session::repeat`].
+    pub fn playlist_repeat(&self, mode: u8) {
+        self.repeat(mode)
+    }
 
-/// [`Session::gain`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn playlist_gain(bit_perfect: bool) -> f32 {
-    shared().gain(bit_perfect)
-}
+    /// [`Session::gain`].
+    pub fn playlist_gain(&self, bit_perfect: bool) -> f32 {
+        self.gain(bit_perfect)
+    }
 
-/// [`Session::view_for`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn playlist_view_for(held: u64, len: u32) -> Option<PlaylistView> {
-    shared().view_for(held, len)
-}
+    /// [`Session::view_for`].
+    pub fn playlist_view_for(&self, held: u64, len: u32) -> Option<PlaylistView> {
+        self.view_for(held, len)
+    }
 
-/// [`Session::view_of`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn playlist_view_of(ids: Vec<String>, hands: Vec<Hand>, order: Vec<u32>) -> PlaylistView {
-    shared().view_of(ids, hands, order)
+    /// [`Session::view_of`].
+    pub fn playlist_view_of(&self, ids: Vec<String>, hands: Vec<Hand>, order: Vec<u32>) -> PlaylistView {
+        self.view_of(ids, hands, order)
+    }
 }
 
 #[cfg(test)]

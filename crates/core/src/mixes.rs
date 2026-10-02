@@ -65,7 +65,7 @@ pub(crate) mod tests {
 
     #[test]
     fn mixes_are_empty_without_index() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         {
             let c = core.db.lock();
             assert!(quick_picks(&c, 20, 1, NOW).unwrap().is_empty());
@@ -79,7 +79,7 @@ pub(crate) mod tests {
 
     #[test]
     fn picks_and_again() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let all = library(&core);
         let (loved, today, hated) = (&all[0], &all[1], &all[2]);
         for d in 4..8 {
@@ -104,7 +104,7 @@ pub(crate) mod tests {
         assert!(quick_picks(&c, 0, 1, NOW).unwrap().is_empty());
 
         // Listen again is recent and top is by plays.
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let all = library(&core);
         for (i, s) in all.iter().step_by(10).take(5).enumerate() {
             for d in 0..=i as i64 {
@@ -122,7 +122,7 @@ pub(crate) mod tests {
 
     #[test]
     fn discover_mixes() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let all = library(&core);
         for s in all.iter().filter(|s| s.artist == "Jazz Artist 0").take(4) {
             for d in 0..3 {
@@ -147,7 +147,7 @@ pub(crate) mod tests {
         assert_ne!(ids(&discover(&c, 20, 5, NOW).unwrap()), ids(&discover(&c, 20, 6, NOW).unwrap()));
 
         // Discover without history spans genres.
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         library(&core);
         let mix = discover(&core.db.lock(), 30, 1, NOW).unwrap();
         assert_eq!(mix.len(), 30);
@@ -156,7 +156,7 @@ pub(crate) mod tests {
 
     #[test]
     fn instant_mix_stays_near_seed() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let all = library(&core);
         let seed_song = all.iter().find(|s| s.id == "2-1-3").unwrap();
         let mix = core.mix_instant(seed_song.id.clone(), 25, 1).unwrap();
@@ -179,7 +179,7 @@ pub(crate) mod tests {
 
     #[test]
     fn excluded_songs_stay_out_of_mixes() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let all = library(&core);
         let out: Vec<&Song> = all.iter().filter(|s| s.artist == "Rock Artist 0").collect();
         for s in &out {
@@ -202,7 +202,7 @@ pub(crate) mod tests {
 
     #[test]
     fn mix_queries_use_expression_indexes() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let c = core.db.lock();
         let plan = |cond: &str| -> String {
             let sql = format!("EXPLAIN QUERY PLAN SELECT i.json FROM items i LEFT JOIN song_stats s ON s.server=i.server AND s.song_id=i.id WHERE {SONGS} AND {cond}");

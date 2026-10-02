@@ -282,7 +282,7 @@ pub(crate) mod tests {
     const PRESET: &str = "Preamp: -6.2 dB\nFilter 1: ON PK Fc 105 Hz Gain -3.5 dB Q 0.70\n";
 
     fn core() -> std::sync::Arc<Core> {
-        Core::new(String::new(), "t".into()).unwrap()
+        Core::new(String::new(), "t".into(), Default::default()).unwrap()
     }
 
     #[test]

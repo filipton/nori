@@ -43,9 +43,9 @@ fun Song.toMediaItem(coverUrl: String?): MediaItem = MediaItem.Builder()
     )
     .build()
 
-/** Songs about to be queued: handed to the core in one call, and made into the player's items. */
-fun List<Song>.toMediaItems(coverUrl: (Song) -> String?): List<MediaItem> {
-    if (isNotEmpty()) dev.nori.music.ffi.queue.queueRegister(this)
+/** Songs about to be queued: handed to the queue [session] in one call, and made into the player's items. */
+fun List<Song>.toMediaItems(session: dev.nori.music.ffi.queue.Session, coverUrl: (Song) -> String?): List<MediaItem> {
+    if (isNotEmpty()) session.queueRegister(this)
     return heldMediaItems(coverUrl)
 }
 

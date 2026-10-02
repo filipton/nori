@@ -12,10 +12,11 @@ import dalvik.annotation.optimization.CriticalNative
 internal object MeasureJni {
     init { System.loadLibrary("norimusic") }
     /**
-     * AutoMix's analyses over [current]'s client (a `CurrentClient.uniffiCloneHandle()`, taken over): a
-     * handle for the process's life, which the doors below take.
+     * AutoMix's analyses over [current]'s client (a `CurrentClient.uniffiCloneHandle()`, taken over) and
+     * the queue session [session] (`Nori.sessionHandle`): a handle for the process's life, which the
+     * doors below take.
      */
-    @JvmStatic external fun analyses(current: Long): Long
+    @JvmStatic external fun analyses(current: Long, session: Long): Long
     /** Makes the measurer, idle until it is asked, as a handle [stop] takes back; 0 when it could not. */
     @JvmStatic external fun start(analyses: Long): Long
     /** The songs coming up may have changed: the core names them, and the same songs change nothing. */

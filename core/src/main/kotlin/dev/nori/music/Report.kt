@@ -52,7 +52,7 @@ object Report {
             appendLine("outputs: ${outputs(context)}")
             appendLine()
             appendLine("## Settings changed")
-            append(runCatching { dev.nori.music.ffi.settings.settingsChanged() }.getOrDefault("(could not be read)\n").ifEmpty { "none\n" })
+            append(runCatching { nori.settings.core.settingsChanged() }.getOrDefault("(could not be read)\n").ifEmpty { "none\n" })
             appendLine()
             appendLine("## Log")
             append(runCatching { dev.nori.music.ffi.model.alogJournal() }.getOrDefault("").ifEmpty { "(empty)\n" })

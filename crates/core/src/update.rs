@@ -266,14 +266,13 @@ fn inline(s: &str) -> String {
     out
 }
 
-/// Postpones `version`: automatic checks mark it `skipped`.
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn update_skip(version: String) {
-    crate::settings_store::shared().keep_app_value(SKIPPED_KEY, version);
-}
-
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Client {
+    /// Postpones `version`: automatic checks mark it `skipped`.
+    pub fn update_skip(&self, version: String) {
+        self.settings().keep_app_value(SKIPPED_KEY, version);
+    }
+
     /// Checks GitHub's latest release against `version` for `abis`. Unless `asked`, only when [`due`]; the
     /// check time is stored before the request so failures are not retried the same day.
     pub async fn update_check(&self, asked: bool, version: String, abis: Vec<String>) -> NetResult<UpdateCheck> {

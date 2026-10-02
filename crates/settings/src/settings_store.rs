@@ -184,17 +184,40 @@ impl SettingsStore {
 }
 
 /// The live settings of one app, empty (the defaults) until opened, and the beat model's file, which
-/// follows its switch.
+/// follows its switch. The platform holds one for the app and hands it to the queue's session.
 #[derive(Default)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Object))]
 pub struct Settings {
     kept: RwLock<Option<SettingsStore>>,
     pub model: nori_automix::beat_model::ModelFile,
 }
 
-/// The settings behind the platform's free entry points (uniffi, JNI). Global: those calls carry no handle.
-pub fn shared() -> &'static Arc<Settings> {
-    static SHARED: std::sync::LazyLock<Arc<Settings>> = std::sync::LazyLock::new(Arc::default);
-    &SHARED
+#[cfg_attr(feature = "ffi", uniffi::export)]
+impl Settings {
+    /// Empty (the defaults) until [`Settings::open`].
+    #[cfg_attr(feature = "ffi", uniffi::constructor)]
+    pub fn new() -> Arc<Settings> {
+        Arc::default()
+    }
+
+    /// Opens the settings kept in the app database at `db_path` and makes them the live ones.
+    pub fn open(&self, db_path: &str) -> nori_model::Result<StoredPrefs> {
+        let store = SettingsStore::open(db_path)?;
+        let prefs = store.prefs.clone();
+        self.write(|k| *k = Some(store));
+        Ok(prefs)
+    }
+
+    /// Replaces the settings. Returns the effect bits; 0 when nothing changed or the settings are not open.
+    pub fn put(&self, prefs: StoredPrefs) -> u32 {
+        self.with_store(|s| s.edit(|_| prefs)).unwrap_or(0)
+    }
+
+    /// Applies an equalizer tool to the live settings. None when nothing changed or the settings are not
+    /// open; an import without filters is an error.
+    pub fn sound_tool(&self, tool: SoundTool) -> Result<Option<SoundChange>, SoundError> {
+        self.write(|k| k.as_mut().map_or(Ok(None), |s| s.sound_tool(tool)))
+    }
 }
 
 impl Settings {
@@ -211,14 +234,6 @@ impl Settings {
 
     fn with_store<R>(&self, f: impl FnOnce(&mut SettingsStore) -> Option<R>) -> Option<R> {
         self.write(|k| k.as_mut().and_then(f))
-    }
-
-    /// Opens the settings kept in the app database at `db_path` and makes them the live ones.
-    pub fn open(&self, db_path: &str) -> nori_model::Result<StoredPrefs> {
-        let store = SettingsStore::open(db_path)?;
-        let prefs = store.prefs.clone();
-        self.write(|k| *k = Some(store));
-        Ok(prefs)
     }
 
     /// A value from the app database's `app_kv` table; None before the settings are open.
@@ -239,11 +254,6 @@ impl Settings {
                 alog::info(&format!("{key}: could not write: {e}"));
             }
         });
-    }
-
-    /// Replaces the settings. Returns the effect bits; 0 when nothing changed or the settings are not open.
-    pub fn put(&self, prefs: StoredPrefs) -> u32 {
-        self.with_store(|s| s.edit(|_| prefs)).unwrap_or(0)
     }
 
     /// One parametric band changed (`settings::set_band`): the effect bits and the band as kept (held in
@@ -270,12 +280,6 @@ impl Settings {
             Some(s) => s.edit_by_name(name, value),
             None => set_by_name(&StoredPrefs::default(), name, value),
         })
-    }
-
-    /// Applies an equalizer tool to the live settings. None when nothing changed or the settings are not
-    /// open; an import without filters is an error.
-    pub fn sound_tool(&self, tool: SoundTool) -> Result<Option<SoundChange>, SoundError> {
-        self.write(|k| k.as_mut().map_or(Ok(None), |s| s.sound_tool(tool)))
     }
 
     /// A copy of the live settings; None before they are open.
@@ -330,26 +334,6 @@ impl SoundTool {
             SoundTool::Import { text } => st::import(s, &text)?,
         })
     }
-}
-
-// ---- the platform's entry points, over the shared settings ----
-
-/// [`Settings::open`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn settings_open(db_path: String) -> nori_model::Result<StoredPrefs> {
-    shared().open(&db_path)
-}
-
-/// [`Settings::put`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn settings_put(prefs: StoredPrefs) -> u32 {
-    shared().put(prefs)
-}
-
-/// [`Settings::sound_tool`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn settings_sound_tool(tool: SoundTool) -> Result<Option<SoundChange>, SoundError> {
-    shared().sound_tool(tool)
 }
 
 #[cfg(test)]

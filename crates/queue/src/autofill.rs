@@ -13,7 +13,7 @@ use rusqlite::{params, Connection};
 use nori_net::transport::NetError;
 use nori_player::queue::{refillable, shuffle};
 
-use crate::{queue, shared, Session};
+use crate::{queue, Session};
 
 /// Songs per fill.
 pub const SONGS: usize = 15;
@@ -93,10 +93,6 @@ impl Session {
         self.refill.lock().start(ok, after, end)
     }
 
-    /// Next pressed near the queue's end.
-    pub fn autofill_next(&self) -> FillNext {
-        self.autofill_next_at(mono_ms())
-    }
 
     fn autofill_next_at(&self, now_ms: i64) -> FillNext {
         let setting = self.refill_on();
@@ -121,11 +117,6 @@ impl Session {
         self.refill.lock().arrived(count as usize, end)
     }
 
-    /// The fetched songs are appended: whether to perform a next pressed meanwhile (only on the same
-    /// song, within `NEXT_KEPT_MS`).
-    pub fn autofill_landed(&self) -> bool {
-        self.autofill_landed_at(mono_ms())
-    }
 
     fn autofill_landed_at(&self, now_ms: i64) -> bool {
         let (current, has_next) = self.playlist(|p| (current_entry(p), p.next().is_some()));
@@ -133,18 +124,18 @@ impl Session {
     }
 }
 
-// ---- the platform's entry points, over the shared session ----
-
-/// [`Session::autofill_next`].
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn autofill_next() -> FillNext {
-    shared().autofill_next()
-}
+impl Session {
+    /// Next pressed near the queue's end.
+    pub fn autofill_next(&self) -> FillNext {
+        self.autofill_next_at(mono_ms())
+    }
 
-/// [`Session::autofill_landed`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn autofill_landed() -> bool {
-    shared().autofill_landed()
+    /// The fetched songs are appended: whether to perform a next pressed meanwhile (only on the same
+    /// song, within `NEXT_KEPT_MS`).
+    pub fn autofill_landed(&self) -> bool {
+        self.autofill_landed_at(mono_ms())
+    }
 }
 
 /// A random seed from the clock.

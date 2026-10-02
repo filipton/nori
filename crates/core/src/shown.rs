@@ -1,9 +1,19 @@
 //! Display facts derived from settings and the queue; clients word them.
 
-/// Whether a heart press shows a confirmation (the favourite-notice setting).
+use crate::Core;
+
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn favourite_notice() -> bool {
-    crate::settings_store::shared().prefs(|p| p.favourite_notice)
+impl Core {
+    /// Whether a heart press shows a confirmation (the favourite-notice setting).
+    pub fn favourite_notice(&self) -> bool {
+        self.session.settings.prefs(|p| p.favourite_notice)
+    }
+
+    /// [`session_buttons`] for the queue's current song.
+    pub fn session_buttons_now(&self, starred: bool, shuffle: bool) -> SessionButtons {
+        let song = self.session.playlist(|p| p.current_id().is_some_and(|id| !id.starts_with(crate::queue::RADIO_PREFIX)));
+        session_buttons(song, starred, shuffle)
+    }
 }
 
 /// The media session's extra buttons: a heart and a shuffle toggle.
@@ -19,13 +29,6 @@ pub struct SessionButtons {
 
 pub fn session_buttons(song: bool, starred: bool, shuffle: bool) -> SessionButtons {
     SessionButtons { heart: song, starred: song && starred, shuffling: shuffle }
-}
-
-/// [`session_buttons`] for the queue's current song.
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn session_buttons_now(starred: bool, shuffle: bool) -> SessionButtons {
-    let song = nori_queue::shared().playlist(|p| p.current_id().is_some_and(|id| !id.starts_with(crate::queue::RADIO_PREFIX)));
-    session_buttons(song, starred, shuffle)
 }
 
 /// A radio stream's title: the announced ICY title, else the station name.

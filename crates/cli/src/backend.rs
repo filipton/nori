@@ -130,6 +130,13 @@ pub fn check_login(http: Arc<Http>, draft: SavedServer) -> Result<SavedServer, S
     Ok(SavedServer { legacy_auth: legacy || draft.legacy_auth, ..draft })
 }
 
+/// The app's queue session over its settings: the client's object graph root, which every screen reads.
+/// Global: the root of the terminal client's own object graph (as Kotlin's `Nori`), made once.
+pub fn app() -> &'static Arc<nori_core::queue::Session> {
+    static APP: std::sync::OnceLock<Arc<nori_core::queue::Session>> = std::sync::OnceLock::new();
+    APP.get_or_init(|| Arc::new(nori_core::queue::Session::new(nori_core::settings_store::Settings::new())))
+}
+
 /// The terminal client's own settings, stored in the core's `app_kv`.
 pub mod own {
     pub const MOUSE: &str = "tui.mouse";
@@ -140,19 +147,19 @@ pub mod own {
     pub const DEVICE: &str = "tui.device";
 
     pub fn text(key: &str) -> Option<String> {
-        nori_core::settings_store::shared().app_value(key).filter(|v| !v.is_empty())
+        crate::backend::app().settings.app_value(key).filter(|v| !v.is_empty())
     }
 
     pub fn flag(key: &str, default: bool) -> bool {
-        nori_core::settings_store::shared().app_value(key).map_or(default, |v| v == "true")
+        crate::backend::app().settings.app_value(key).map_or(default, |v| v == "true")
     }
 
     pub fn number(key: &str, default: f32) -> f32 {
-        nori_core::settings_store::shared().app_value(key).and_then(|v| v.parse().ok()).unwrap_or(default)
+        crate::backend::app().settings.app_value(key).and_then(|v| v.parse().ok()).unwrap_or(default)
     }
 
     pub fn keep(key: &'static str, value: String) {
-        nori_core::settings_store::shared().keep_app_value(key, value);
+        crate::backend::app().settings.keep_app_value(key, value);
     }
 }
 
@@ -192,6 +199,7 @@ impl Session {
             let _ = tx.send(Msg::From(id, Box::new(worded(s))));
         });
         let host = nori_host::session::Session::open(nori_host::session::Open {
+            queue: app().clone(),
             data: o.data,
             http: o.http,
             profile: o.profile,

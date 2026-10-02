@@ -187,6 +187,7 @@ internal class Recorder(private val app: Application) : PerfHooks.Recorder, Play
         }
         ContextCompat.registerReceiver(app, events, filter, null, handler, ContextCompat.RECEIVER_NOT_EXPORTED)
         // The invariant watch (the core's invariants.rs): from here on every event below is looked at too.
+        dev.nori.music.ffi.perf.perfKeepIn(Nori.get(app).settings.core)
         dev.nori.music.ffi.perf.perfWatch(true)
         handler.post {
             charging = batteryIntent()?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)?.let { it != 0 } ?: false
@@ -243,7 +244,7 @@ internal class Recorder(private val app: Application) : PerfHooks.Recorder, Play
             underruns(t)
             val nori = Nori.get(app)
             // A song the queue does not know comes back with its id only.
-            val s = dev.nori.music.ffi.queue.queueSongs(listOf(id)).firstOrNull()
+            val s = nori.session.queueSongs(listOf(id)).firstOrNull()
             val copy = if (s != null) runCatching { nori.sources.streamCopy(id) }.getOrNull() else null
             val song = PerfSong(
                 id = id, title = s?.title?.ifEmpty { null } ?: id, artist = s?.artist.orEmpty(), suffix = s?.suffix.orEmpty(),

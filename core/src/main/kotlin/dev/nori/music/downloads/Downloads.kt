@@ -413,7 +413,7 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
     /** Every song of the offline index, in one call to the core; sync the library first so the index is complete. */
     fun downloadLibrary() = io.execute {
         // No question for a whole library: the beat model reads it only when "ML beats for downloads" says always.
-        val beats = runCatching { dev.nori.music.ffi.downloadBeatsOffer() }.getOrNull() == dev.nori.music.ffi.transfers.BeatsOffer.YES
+        val beats = runCatching { core.downloadBeatsOffer() }.getOrNull() == dev.nori.music.ffi.transfers.BeatsOffer.YES
         queued(runCatching { core.downloadQueueLibrary() }, beats)
     }
 

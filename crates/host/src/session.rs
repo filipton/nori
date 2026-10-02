@@ -16,7 +16,7 @@ use nori_core::race::{LyricsPick, LyricsShown};
 use nori_core::rules::{queue_keep, BridgeStep, QueueMoment};
 use nori_core::search::{SearchSession, SearchView};
 use nori_core::settings::{SavedServer, SettingChange, StoredPrefs};
-use nori_core::settings_store::{self, APPLY_AUDIO, APPLY_GAIN, CACHE_LIMIT, PLAYER, REPLAN, SOUND};
+use nori_core::settings_store::{APPLY_AUDIO, APPLY_GAIN, CACHE_LIMIT, PLAYER, REPLAN, SOUND};
 use nori_core::transport::{block_on, Exchange, FailureKind, NetError, Transport, TransportError, TransportResponse};
 use nori_core::{Core, CoreError, IngestStats, PageOrigin, Song};
 use nori_covers::loader::{Config as CoverConfig, Loader, Ticket};
@@ -150,6 +150,8 @@ impl StarsShown for NoMarks {
 }
 
 pub struct Open<'a> {
+    /// The app's queue session, over its settings.
+    pub queue: Arc<nori_core::queue::Session>,
     pub data: &'a Path,
     pub http: Arc<Http>,
     pub profile: SavedServer,
@@ -188,13 +190,13 @@ impl Session {
     /// is stored; [`Session::check`] reports reachability.
     pub fn open(o: Open) -> Result<Session, String> {
         let db = db_path(o.data);
-        let core = Core::new(db.clone(), nori_core::settings::server_db_id(&o.profile.id)).map_err(|e| format!("the database: {e}"))?;
+        let core = Core::new(db.clone(), nori_core::settings::server_db_id(&o.profile.id), o.queue.clone()).map_err(|e| format!("the database: {e}"))?;
         core.configure(config(&o.profile)).map_err(|e| format!("the server: {e}"))?;
         let transport: Arc<dyn Transport> = if o.offline { Arc::new(Offline) } else { o.http.clone() };
         let cover_net = CoverNet::over(o.http.clone());
         let client = Client::new(core.clone(), transport, cover_net.clone());
         client.set_profile(net(&o.profile));
-        let prefs = settings_store::shared().current().unwrap_or_default();
+        let prefs = core.session.settings.current().unwrap_or_default();
         let output = match &o.device {
             Some(name) => CpalOutput::with_device(name),
             None => CpalOutput::new(),
@@ -388,7 +390,7 @@ impl Session {
     }
 
     fn start_downloads(&self) {
-        self.downloader.start(settings_store::shared().prefs(|p| p.parallel_downloads).max(1) as usize);
+        self.downloader.start(self.core.session.settings.prefs(|p| p.parallel_downloads).max(1) as usize);
     }
 
     /// Queues `songs` for download (their covers fetched to disk too) and starts the downloader.
@@ -403,7 +405,7 @@ impl Session {
         spawn("nori-download-ask", move || match what.songs(&client) {
             Ok(songs) => {
                 out(Said::Note(queue_downloads(&core, covers.as_ref(), songs)));
-                downloader.start(settings_store::shared().prefs(|p| p.parallel_downloads).max(1) as usize);
+                downloader.start(core.session.settings.prefs(|p| p.parallel_downloads).max(1) as usize);
             }
             Err(e) => out(Said::Note(Note::SongsFailed(e))),
         });
@@ -417,7 +419,7 @@ impl Session {
 
     /// Sets a setting by name and applies its effects, as Android's player does. None if no such setting.
     pub fn setting(&self, name: &str, value: &str) -> Option<SettingChange> {
-        let change = nori_core::settings_model::setting_set(name.to_string(), value.to_string())?;
+        let change = self.core.session.settings.edit_by_name(name, value)?;
         self.apply(change.effect, &change.prefs);
         if change.effect & CACHE_LIMIT != 0 {
             self.store.set_limit(change.prefs.cache_mb.max(0) as u64 * 1024 * 1024);
@@ -435,7 +437,7 @@ impl Session {
     pub fn set_volume(&self, v: f32) {
         self.volume.set(v);
         if self.loudness.set(volume_db(v)) {
-            if let Some(p) = settings_store::shared().current().filter(|p| p.loudness) {
+            if let Some(p) = self.core.session.settings.current().filter(|p| p.loudness) {
                 self.engine.set_settings(settings(&p, self.loudness.db()));
             }
         }
@@ -456,7 +458,7 @@ impl Session {
 
     /// Applies `effect` with the stored settings (after an in-place edit such as an equalizer band).
     pub fn applied(&self, effect: u32) {
-        if let Some(p) = settings_store::shared().current() {
+        if let Some(p) = self.core.session.settings.current() {
             self.apply(effect, &p);
         }
     }
@@ -777,7 +779,7 @@ mod tests {
 
     #[test]
     fn downloads_said_are_the_ones_queued() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let song = |id: &str| Song { id: id.into(), ..Default::default() };
         core.download_queue(vec![song("done")]).unwrap();
         core.download_settle(vec!["done".into()], vec![true]).unwrap();

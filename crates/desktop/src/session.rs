@@ -106,6 +106,13 @@ pub const HOME_ROWS: [(&str, &str); 5] =
 
 const ALBUM_PAGE: i32 = 500;
 
+/// The app's queue session over its settings: the client's object graph root, which every view reads.
+/// Global: the root of the desktop client's own object graph (as Kotlin's `Nori`), made once.
+pub fn app() -> &'static Arc<nori_core::queue::Session> {
+    static APP: std::sync::OnceLock<Arc<nori_core::queue::Session>> = std::sync::OnceLock::new();
+    APP.get_or_init(|| Arc::new(nori_core::queue::Session::new(nori_core::settings_store::Settings::new())))
+}
+
 /// Desktop-only settings, stored as app values in the database.
 pub mod own {
     pub const VOLUME: &str = "desktop.volume";
@@ -113,15 +120,15 @@ pub mod own {
     pub const DEVICE: &str = "desktop.device";
 
     pub fn text(key: &str) -> Option<String> {
-        nori_core::settings_store::shared().app_value(key).filter(|v| !v.is_empty())
+        crate::session::app().settings.app_value(key).filter(|v| !v.is_empty())
     }
 
     pub fn number(key: &str, default: f32) -> f32 {
-        nori_core::settings_store::shared().app_value(key).and_then(|v| v.parse().ok()).unwrap_or(default)
+        crate::session::app().settings.app_value(key).and_then(|v| v.parse().ok()).unwrap_or(default)
     }
 
     pub fn keep(key: &'static str, value: String) {
-        nori_core::settings_store::shared().keep_app_value(key, value);
+        crate::session::app().settings.keep_app_value(key, value);
     }
 }
 
@@ -154,7 +161,7 @@ impl Session {
         let id = IDS.fetch_add(1, Ordering::Relaxed);
         let to = tx.clone();
         let out = Arc::new(move |s: Said| to.send(Msg::From(id, Box::new(worded(s)))));
-        let o = nori_host::session::Open { data, http, profile, device: own::text(own::DEVICE), volume: own::number(own::VOLUME, 1.0), covers: true, offline: false, mpris, out };
+        let o = nori_host::session::Open { queue: app().clone(), data, http, profile, device: own::text(own::DEVICE), volume: own::number(own::VOLUME, 1.0), covers: true, offline: false, mpris, out };
         Ok(Session { id, host: nori_host::session::Session::open(o)?, tx })
     }
 

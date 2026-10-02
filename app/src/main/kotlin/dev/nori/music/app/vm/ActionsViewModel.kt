@@ -31,7 +31,6 @@ import kotlinx.coroutines.withContext
 import dev.nori.music.ffi.queue.ShufflePlan
 import dev.nori.music.ffi.queue.TapPlan
 import dev.nori.music.ffi.queue.shufflePlan
-import dev.nori.music.ffi.queue.tapPlan
 import dev.nori.music.app.ui.say
 
 /** Everything that can be done to a song, album or playlist from any screen. One instance per activity. */
@@ -69,7 +68,7 @@ class ActionsViewModel(app: Application) : NoriViewModel(app) {
      * open on it.
      */
     fun tap(songs: List<Song>, index: Int, from: PageOrigin? = null, playing: Boolean = false): Boolean {
-        val plan = tapPlan(picked.items.value.isNotEmpty())
+        val plan = nori.session.tapPlan(picked.items.value.isNotEmpty())
         when (plan) {
             TapPlan.SELECT -> toggleSelected(songs[index])
             TapPlan.PLAY_LIST -> if (playing) nori.player.keepPlaying(songs, index, from) else nori.player.play(songs, index, from = from)
@@ -154,7 +153,7 @@ class ActionsViewModel(app: Application) : NoriViewModel(app) {
      * says nothing then).
      */
     private fun favourite(on: Boolean, block: suspend () -> Unit) {
-        if (dev.nori.music.ffi.favouriteNotice()) _messages.trySend(say.favourite(on))
+        if (nori.core.favouriteNotice()) _messages.trySend(say.favourite(on))
         attempt(null, block)
     }
 
@@ -189,7 +188,7 @@ class ActionsViewModel(app: Application) : NoriViewModel(app) {
 
     /** Runs [go] with whether the beat model reads the songs: asked first when the settings say to (the core's `download_beats_offer`). */
     private fun askingBeats(go: (Boolean) -> Unit) {
-        val offer = runCatching { dev.nori.music.ffi.downloadBeatsOffer() }.getOrDefault(dev.nori.music.ffi.transfers.BeatsOffer.OFF)
+        val offer = runCatching { nori.core.downloadBeatsOffer() }.getOrDefault(dev.nori.music.ffi.transfers.BeatsOffer.OFF)
         if (offer == dev.nori.music.ffi.transfers.BeatsOffer.ASK) _beatsAsk.value = BeatsAsk(go)
         else go(offer == dev.nori.music.ffi.transfers.BeatsOffer.YES)
     }
@@ -199,7 +198,7 @@ class ActionsViewModel(app: Application) : NoriViewModel(app) {
         val ask = _beatsAsk.value ?: return
         _beatsAsk.value = null
         if (remember) {
-            dev.nori.music.ffi.settings.settingSet("downloadBeats", dev.nori.music.ffi.downloadBeatsRemembered(yes).name)?.let(nori.settings::took)
+            nori.settings.core.settingSet("downloadBeats", dev.nori.music.ffi.downloadBeatsRemembered(yes).name)?.let(nori.settings::took)
         }
         ask.go(yes)
     }

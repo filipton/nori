@@ -140,15 +140,17 @@ pub struct CoversAround {
     pub wants: Vec<CoverWant>,
 }
 
-/// [`CoversAround`] over the core's queue; positions are media3 indexes, -1 for none.
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn covers_around(index: i32, previous: i32, next: i32, ahead: i32) -> CoversAround {
-    // Only the ids asked about are looked at, not the whole queue.
-    let session = nori_queue::shared();
-    session.playlist(|p| {
-        let ids = p.ids();
-        around(ids.len() as u32, |i| session.cover_art(&ids[i as usize]), index, previous, next, ahead)
-    })
+impl Core {
+    /// [`CoversAround`] over the queue; positions are media3 indexes, -1 for none.
+    pub fn covers_around(&self, index: i32, previous: i32, next: i32, ahead: i32) -> CoversAround {
+        // Only the ids asked about are looked at, not the whole queue.
+        let session = &self.session;
+        session.playlist(|p| {
+            let ids = p.ids();
+            around(ids.len() as u32, |i| session.cover_art(&ids[i as usize]), index, previous, next, ahead)
+        })
+    }
 }
 
 /// [`CoversAround`] for a queue of `len`, `art` giving position `i`'s cover.
@@ -309,7 +311,7 @@ mod tests {
 
     #[test]
     fn cover_keys() {
-        let core = crate::Core::new(String::new(), "t".into()).unwrap();
+        let core = crate::Core::new(String::new(), "t".into(), Default::default()).unwrap();
         core.configure(crate::ServerConfig { url: "http://m".into(), user: "u".into(), password: "p".into(), ..Default::default() }).unwrap();
         let urls = core.download_cover_urls(["al 1", "ext-2", "al 1"].map(String::from).to_vec());
         let prefix = core.url_prefix("getCoverArt".into());
@@ -317,7 +319,7 @@ mod tests {
         assert_eq!(core.cover_address("al 1".into(), 320), urls[0]);
 
         // Cover key ignores signature and address.
-        let core = crate::Core::new(String::new(), "t".into()).unwrap();
+        let core = crate::Core::new(String::new(), "t".into(), Default::default()).unwrap();
         core.configure(crate::ServerConfig { url: "https://keys.example".into(), user: "u".into(), password: "one".into(), ..Default::default() }).unwrap();
         let before = core.cover_address("pl-6b2d_65f0".into(), 320);
         core.configure(crate::ServerConfig { url: "https://keys.example".into(), user: "u".into(), password: "two".into(), ..Default::default() }).unwrap();

@@ -181,7 +181,7 @@ object Widgets {
     private const val EXTRA_ID = "id"
 
     /** Whether the queue is the one page [origin] started (nori-queue `playlist_from`), playing or paused. */
-    fun playsFrom(origin: PageOrigin): Boolean = runCatching { dev.nori.music.ffi.queue.playlistFrom(PageQueue(origin)) }.getOrDefault(false)
+    fun playsFrom(context: Context, origin: PageOrigin): Boolean = runCatching { Nori.get(context).session.playlistFrom(PageQueue(origin)) }.getOrDefault(false)
 
     /**
      * A shelf tile's tap: the page's queue started from the home screen, or when it is the queue already, the
@@ -190,7 +190,7 @@ object Widgets {
      * drawn again when the queue changes ([queueMoved]).
      */
     fun playOrOpen(context: Context, provider: Class<*>, origin: PageOrigin): PendingIntent =
-        if (playsFrom(origin)) open(context, "player")
+        if (playsFrom(context, origin)) open(context, "player")
         else PendingIntent.getBroadcast(
             context, "${origin.kind}:${origin.id}".hashCode(),
             Intent(context, provider).setAction(ACTION_PLAY).putExtra(EXTRA_KIND, origin.kind.name).putExtra(EXTRA_ID, origin.id),
@@ -208,7 +208,7 @@ object Widgets {
      * when its queue is already the one playing. The player connects to the service for it if it has to.
      */
     suspend fun play(context: Context, origin: PageOrigin) {
-        if (playsFrom(origin)) return
+        if (playsFrom(context, origin)) return
         val nori = Nori.get(context)
         val songs = when (origin.kind) {
             OriginKind.ALBUM -> nori.library.album(origin.id).first().songs

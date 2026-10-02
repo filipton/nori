@@ -9,6 +9,7 @@ import dev.nori.music.ffi.Client
 import dev.nori.music.ffi.Core
 import dev.nori.music.ffi.CoverNet
 import dev.nori.music.ffi.CurrentClient
+import dev.nori.music.ffi.queue.Session
 import dev.nori.music.ffi.net.NetProfile
 import dev.nori.music.ffi.ServerConfig
 import dev.nori.music.net.Http
@@ -35,6 +36,12 @@ import dev.nori.music.settings.server
 class Nori private constructor(private val context: Context) {
     val settings = Settings(context)
 
+    /** The app's queue: the list, its songs, its rules. Every profile's core works over it. */
+    val session = Session(settings.core)
+
+    /** [session] as the JNI doors take it, for the process's life. */
+    val sessionHandle = session.uniffiCloneHandle()
+
     // Everything below is built on first use. The application warms it up from a background thread, so by the
     // time anything needs the core it is normally there; the UI thread itself only ever needs [settings] and
     // the cheap shells ([library], [downloads], [player]) to draw its first frame.
@@ -58,7 +65,7 @@ class Nori private constructor(private val context: Context) {
     val currentClient by lazy { CurrentClient() }
 
     /** AutoMix's analyses over [currentClient] (crates/android measure.rs), for the player, the measurer and the downloads. */
-    val analyses: Long by lazy { dev.nori.music.playback.MeasureJni.analyses(currentClient.uniffiCloneHandle()) }
+    val analyses: Long by lazy { dev.nori.music.playback.MeasureJni.analyses(currentClient.uniffiCloneHandle(), sessionHandle) }
 
     /** The core's one door to the network; built with [http]. */
     private val transport by lazy { http.transport { library.onServerChanged() }.also { coverNet.setTransport(it) } }
@@ -97,7 +104,7 @@ class Nori private constructor(private val context: Context) {
     val library = Library(::core, ::client)
     val downloads = Downloads(context, ::core, ::client, { analyses }, lazySources, settings)
     val dac = BitPerfect(context)
-    val outputs = Outputs(context)
+    val outputs = Outputs(context, settings.core)
     /** A player for the moving cover; the screen's view model makes one when it first shows one. */
     fun motionPlayer(onGone: (String) -> Unit) = dev.nori.music.playback.MotionPlayer(context, http, sources, onGone)
     /** Each output device's own sound; built when the playback service first sees a device. */
@@ -107,7 +114,7 @@ class Nori private constructor(private val context: Context) {
     val updates = dev.nori.music.update.Updates(context, { http }, { client })
 
     private fun open(id: String, profile: SavedServer?): Core =
-        Core(File(context.filesDir, dev.nori.music.ffi.db.dbFileName()).path, id).also { c -> profile?.let { c.configure(it.config()) } }
+        Core(File(context.filesDir, dev.nori.music.ffi.db.dbFileName()).path, id, session).also { c -> profile?.let { c.configure(it.config()) } }
 
     private fun SavedServer.config() = ServerConfig(url, user, password, apiKey.ifEmpty { null }, legacyAuth)
     private fun SavedServer.net() = NetProfile(url, altUrl, musicFolderId, altMaxBitRate.coerceAtLeast(0).toUInt())

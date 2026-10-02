@@ -5,6 +5,7 @@ use nori_model::Song;
 use nori_settings::settings::TapAction;
 
 use crate::autofill::seed_now;
+use crate::Session;
 
 /// Similar (or, as fallback, random) songs requested for a radio.
 pub const RADIO: i32 = 50;
@@ -38,10 +39,12 @@ fn tap(selecting: bool, tap_action: TapAction) -> TapPlan {
     }
 }
 
-/// The tap action per settings; selecting while a selection is active.
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn tap_plan(selecting: bool) -> TapPlan {
-    tap(selecting, nori_settings::settings_store::shared().prefs(|p| p.tap_action))
+impl Session {
+    /// The tap action per settings; selecting while a selection is active.
+    pub fn tap_plan(&self, selecting: bool) -> TapPlan {
+        tap(selecting, self.settings.prefs(|p| p.tap_action))
+    }
 }
 
 /// How to shuffle a list.

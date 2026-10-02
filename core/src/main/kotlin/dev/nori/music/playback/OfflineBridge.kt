@@ -29,6 +29,7 @@ class OfflineBridge(
     context: Context,
     private val player: Player,
     private val core: () -> dev.nori.music.ffi.Core,
+    private val session: dev.nori.music.ffi.queue.Session,
     private val main: Handler,
     private val apply: (QueueEdit) -> Unit,
     private val skip: () -> Unit,
@@ -77,7 +78,7 @@ class OfflineBridge(
 
     /** Network came back: the bridge's songs go and the parked song plays. */
     fun resume() {
-        dev.nori.music.ffi.queue.playlistUnbridge()?.let { apply(it); Log.i(TAG, "resumed the parked queue") }
+        session.playlistUnbridge()?.let { apply(it); Log.i(TAG, "resumed the parked queue") }
         stopWatching()
     }
 

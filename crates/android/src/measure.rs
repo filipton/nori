@@ -10,6 +10,7 @@ use jni::sys::{jboolean, jint, jlong};
 use jni::signature::{Primitive, ReturnType};
 use jni::{JNIEnv, JavaVM};
 use nori_core::client::CurrentClient;
+use nori_core::queue::Session;
 use nori_engine::core::{key_format, Analyses, Measurer, Shelf, Whole};
 
 use crate::{cleared, native, Class, Handles};
@@ -17,7 +18,7 @@ use crate::{cleared, native, Class, Handles};
 pub(crate) static CLASS: Class = Class {
     name: c"dev/nori/music/playback/MeasureJni",
     methods: &[
-        native!(c"analyses", c"(J)J", create_analyses),
+        native!(c"analyses", c"(JJ)J", create_analyses),
         native!(c"start", c"(J)J", start),
         native!(c"update", c"(J)V", update),
         native!(c"arrived", c"(J)V", arrived),
@@ -42,21 +43,25 @@ struct Java {
 /// Global: `MeasureBridge`'s classes and methods, looked up once for every caller.
 static JAVA: OnceLock<Java> = OnceLock::new();
 
-/// The analyses behind `h` (from [`create_analyses`], held by Kotlin for the process's life); None for 0.
-pub(crate) fn analyses(h: jlong) -> Option<Arc<Analyses>> {
-    // SAFETY: a non-zero `h` came from `create_analyses` and is never freed.
-    (h != 0).then(|| unsafe {
-        Arc::increment_strong_count(h as *const Analyses);
-        Arc::from_raw(h as *const Analyses)
-    })
+/// AutoMix's analyses over the client in use, and the app's queue session the songs come from.
+pub(crate) struct Measuring {
+    pub(crate) analyses: Arc<Analyses>,
+    pub(crate) session: Arc<Session>,
 }
 
-/// AutoMix's analyses over `current`'s client (a `CurrentClient.uniffiCloneHandle()`, taken over), for
-/// the player, the measurer and the downloads; Kotlin holds the handle for the process's life.
-extern "system" fn create_analyses(_: JNIEnv, _: JClass, current: jlong) -> jlong {
+/// What [`create_analyses`] made (held by Kotlin for the process's life); None for 0.
+pub(crate) fn measuring<'a>(h: jlong) -> Option<&'a Measuring> {
+    // SAFETY: a non-zero `h` came from `create_analyses` and is never freed.
+    (h != 0).then(|| unsafe { &*(h as *const Measuring) })
+}
+
+/// AutoMix's analyses over `current`'s client (a `CurrentClient.uniffiCloneHandle()`, taken over) and the
+/// queue session `session` (`crate::kept`), for the player, the measurer and the downloads; Kotlin holds
+/// the handle for the process's life.
+extern "system" fn create_analyses(_: JNIEnv, _: JClass, current: jlong, session: jlong) -> jlong {
     // SAFETY: Kotlin passes `CurrentClient.uniffiCloneHandle()`, once.
     let current: Arc<CurrentClient> = unsafe { crate::uniffi_object(current) };
-    Arc::into_raw(Analyses::new(move || current.get())) as jlong
+    Box::into_raw(Box::new(Measuring { analyses: Analyses::new(move || current.get()), session: crate::kept(session) })) as jlong
 }
 
 fn look_up(env: &mut JNIEnv) -> jni::errors::Result<Java> {
@@ -75,8 +80,10 @@ fn env() -> Option<(&'static Java, JNIEnv<'static>)> {
     Some((java, crate::attached(&java.vm)?))
 }
 
-/// Song locations in media3's caches, asked of Kotlin.
-struct Media3;
+/// Song locations in media3's caches, asked of Kotlin; the queue `session` knows the songs' formats.
+struct Media3 {
+    session: Arc<Session>,
+}
 
 impl Shelf for Media3 {
     fn whole(&self, id: &str) -> Option<Whole> {
@@ -110,7 +117,7 @@ impl Shelf for Media3 {
         let hint = if key == nori_core::stream::download_key(id.to_string()) {
             None
         } else {
-            key_format(&key).or_else(|| nori_core::queue::shared().song(id).map(|s| s.suffix)).filter(|s| !s.is_empty())
+            key_format(&key).or_else(|| self.session.song(id).map(|s| s.suffix)).filter(|s| !s.is_empty())
         };
         Some(Whole { files: parts.into_iter().map(PathBuf::from).collect(), hint })
     }
@@ -126,12 +133,14 @@ fn notify_measured() {
     }
 }
 
-/// Measurers by Kotlin handle: a cache writer's `arrived` racing `stop` finds nothing.
-static MEASURERS: Handles<Measurer> = Handles::new();
-
-fn measurer(h: jlong) -> Option<Arc<Measurer>> {
-    MEASURERS.get(h)
+/// A measurer while the playback service runs, and the queue session whose songs it measures.
+struct Running {
+    measurer: Arc<Measurer>,
+    session: Arc<Session>,
 }
+
+/// Measurers by Kotlin handle: a cache writer's `arrived` racing `stop` finds nothing.
+static MEASURERS: Handles<Running> = Handles::new();
 
 /// Looks `MeasureBridge` up on first use; false when it is missing.
 fn ensure_java(env: &mut JNIEnv) -> bool {
@@ -154,31 +163,32 @@ fn ensure_java(env: &mut JNIEnv) -> bool {
 /// Playback service started: the (idle) measurer over `analyses`, as a handle [`stop`] takes back; 0 when
 /// the Java side is missing.
 extern "system" fn start(mut env: JNIEnv, _: JClass, analyses: jlong) -> jlong {
-    let Some(analyses) = self::analyses(analyses) else { return 0 };
+    let Some(m) = measuring(analyses) else { return 0 };
     if !ensure_java(&mut env) {
         return 0;
     }
-    MEASURERS.add(Measurer::on_shelf(analyses, Box::new(Media3), Some(Box::new(notify_measured))))
+    let measurer = Measurer::on_shelf(m.analyses.clone(), Box::new(Media3 { session: m.session.clone() }), Some(Box::new(notify_measured)));
+    MEASURERS.add(Arc::new(Running { measurer, session: m.session.clone() }))
 }
 
 /// The upcoming songs may have changed: asks for the queue's `measure` (empty with AutoMix off).
 extern "system" fn update(h: jlong) {
-    if let Some(m) = measurer(h) {
-        m.ask(nori_core::queue::shared().measure());
+    if let Some(r) = MEASURERS.get(h) {
+        r.measurer.ask(r.session.measure());
     }
 }
 
 /// A song became complete in one of the caches.
 extern "system" fn arrived(h: jlong) {
-    if let Some(m) = measurer(h) {
-        m.arrived();
+    if let Some(r) = MEASURERS.get(h) {
+        r.measurer.arrived();
     }
 }
 
 /// Playback service stopped: abandons the current song and drops the measurer.
 extern "system" fn stop(h: jlong) {
-    if let Some(m) = MEASURERS.remove(h) {
-        m.ask(Vec::new());
+    if let Some(r) = MEASURERS.remove(h) {
+        r.measurer.ask(Vec::new());
     }
 }
 
@@ -187,11 +197,11 @@ extern "system" fn stop(h: jlong) {
 /// Starts measuring a download from its bytes as media3 writes them (Kotlin's `MeasuringSink`;
 /// `measure_download_as_it_comes`). Returns a handle, 0 when nothing is to be measured.
 extern "system" fn download_open(env: JNIEnv, _: JClass, analyses: jlong, key: JString) -> jlong {
-    let Some(analyses) = self::analyses(analyses) else { return 0 };
+    let Some(m) = measuring(analyses) else { return 0 };
     let Some(key) = crate::string(&env, &key) else { return 0 };
     let Some(id) = key.strip_prefix("dl:") else { return 0 };
-    let hint = nori_core::queue::shared().song(id).map(|s| s.suffix).filter(|s| !s.is_empty());
-    match analyses.measure_download_as_it_comes(id, hint.as_deref()) {
+    let hint = m.session.song(id).map(|s| s.suffix).filter(|s| !s.is_empty());
+    match m.analyses.measure_download_as_it_comes(id, hint.as_deref()) {
         Some(listening) => Box::into_raw(Box::new(Taking { listening, buf: Vec::new() })) as jlong,
         None => 0,
     }
@@ -234,8 +244,8 @@ extern "system" fn download_end(_: JNIEnv, _: JClass, h: jlong, whole: jboolean)
 
 /// Installs the download cache reader for processing (works without the playback service).
 extern "system" fn process_start(mut env: JNIEnv, _: JClass, analyses: jlong) {
-    if let Some(a) = self::analyses(analyses).filter(|_| ensure_java(&mut env)) {
-        a.install(Box::new(Media3));
+    if let Some(m) = measuring(analyses).filter(|_| ensure_java(&mut env)) {
+        m.analyses.install(Box::new(Media3 { session: m.session.clone() }));
     }
 }
 
@@ -257,13 +267,13 @@ fn ids(env: &mut JNIEnv, array: &JObjectArray) -> Vec<String> {
 /// Newly saved downloads: queues the processing each needs. Off the main thread.
 extern "system" fn process_saved(mut env: JNIEnv, _: JClass, analyses: jlong, array: JObjectArray) {
     let ids = ids(&mut env, &array);
-    if let Some(a) = self::analyses(analyses) {
-        a.saved(ids);
+    if let Some(m) = measuring(analyses) {
+        m.analyses.saved(ids);
     }
 }
 
 /// "Analyse downloaded songs": queues `ids`, returns how many were queued.
 extern "system" fn process_analyse(mut env: JNIEnv, _: JClass, analyses: jlong, array: JObjectArray) -> jint {
     let ids = ids(&mut env, &array);
-    self::analyses(analyses).map_or(0, |a| a.analyse(ids) as jint)
+    measuring(analyses).map_or(0, |m| m.analyses.analyse(ids) as jint)
 }

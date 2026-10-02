@@ -122,7 +122,7 @@ pub(crate) mod tests {
 
     #[test]
     fn empty_index_falls_back_once() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         assert_eq!(core.mix_draw("nope".into(), 100, false, None), MixDraw::Unknown);
         assert!(matches!(core.mix_page("nope".into()), MixLookup::Unknown));
         assert_eq!(core.mix_page("discover".into()), MixLookup::NotDrawn);
@@ -143,7 +143,7 @@ pub(crate) mod tests {
 
     #[test]
     fn draws_follow_period() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let all: Vec<Song> = (0..60).map(|i| song(&format!("s{i}"), "t", &format!("Artist {}", i % 12), &format!("LP {i}"), "Rock", 1990)).collect();
         db::index(&mut core.db.lock(), &[], &[], &all).unwrap();
         let today = 20_000;
@@ -172,8 +172,8 @@ pub(crate) mod tests {
 
     #[test]
     fn favourites_follow_marks_per_core() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
-        let other = Core::new(String::new(), "t".into()).unwrap();
+        let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
+        let other = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         assert_eq!(core.mix_page(FAVOURITES_MIX.into()), MixLookup::NotDrawn);
         let starred = vec![song("1", "t", "a", "b", "", 0), song("2", "t", "a", "b", "", 0), song("ext-3", "t", "a", "b", "", 0), song("1", "t", "a", "b", "", 0)];
         assert!(core.mix_favourites(starred.clone()));

@@ -11,7 +11,6 @@ import dev.nori.music.NoriLog
 import dev.nori.music.ffi.AppUpdate
 import dev.nori.music.ffi.Client
 import dev.nori.music.ffi.UpdateCheck
-import dev.nori.music.ffi.updateSkip
 import dev.nori.music.net.Http
 import dev.nori.music.net.lifted
 import kotlinx.coroutines.CoroutineScope
@@ -143,7 +142,7 @@ class Updates(private val context: Context, private val http: () -> Http, privat
             is State.Failed -> s.update
             else -> null
         } ?: return
-        scope.launch { updateSkip(update.version) }
+        scope.launch { client().updateSkip(update.version) }
         _state.value = State.Available(update, skipped = true)
     }
 

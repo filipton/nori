@@ -19,7 +19,7 @@ use std::time::Duration;
 use nori_core::client::{Client, NetProfile};
 use nori_core::settings::{GainMode, StoredPrefs};
 use nori_core::transport::Transport;
-use nori_core::settings_store::{settings_open, settings_put, APPLY_AUDIO, APPLY_GAIN, REPLAN, SOUND};
+use nori_core::settings_store::{APPLY_AUDIO, APPLY_GAIN, REPLAN, SOUND};
 use nori_core::{Core, Param, ServerConfig, Song};
 use nori_engine::core::{settings, Analyses, CoreApp, CoreLibrary, CoreQueue, Downloader, Measurer};
 use nori_engine::{AudioOutput, Config, Engine, Event, State, Store, WavOutput};
@@ -152,8 +152,8 @@ impl Cli {
     }
 
     fn queue(&mut self, songs: Vec<Song>, start_ms: i64) {
-        nori_core::queue::shared().register(songs.clone());
-        nori_core::queue::shared().set(songs.iter().map(|s| s.id.clone()).collect(), Some(0), false, None);
+        crate::backend::app().register(songs.clone());
+        crate::backend::app().set(songs.iter().map(|s| s.id.clone()).collect(), Some(0), false, None);
         *self.songs.lock().unwrap() = songs;
         self.engine.queue_changed();
         self.engine.play_at(0, start_ms);
@@ -169,11 +169,11 @@ impl Cli {
 
     /// The stored settings; a device's own sound may have been loaded since the last put.
     fn kept(&self) -> StoredPrefs {
-        nori_core::settings_store::shared().current().unwrap_or_else(|| self.prefs.clone())
+        crate::backend::app().settings.current().unwrap_or_else(|| self.prefs.clone())
     }
 
     fn put(&mut self, prefs: StoredPrefs) {
-        self.apply(settings_put(prefs));
+        self.apply(crate::backend::app().settings.put(prefs));
     }
 
     /// Reloads the stored settings and applies `effect` to the engine.
@@ -205,7 +205,7 @@ pub fn main(argv: Vec<String>) {
     let a = args(argv);
     std::fs::create_dir_all(&a.data).unwrap_or_else(|e| panic!("{}: {e}", a.data.display()));
     let db = a.data.join("nori.db").to_string_lossy().into_owned();
-    let core = Core::new(db.clone(), "cli".into()).unwrap_or_else(|e| panic!("the database: {e}"));
+    let core = Core::new(db.clone(), "cli".into(), crate::backend::app().clone()).unwrap_or_else(|e| panic!("the database: {e}"));
     let config = ServerConfig { url: a.url.clone(), user: a.user.clone(), password: a.password.clone(), api_key: None, legacy_auth: false };
     core.configure(config.clone()).unwrap_or_else(|e| panic!("the server: {e}"));
     let http = Http::new();
@@ -217,13 +217,13 @@ pub fn main(argv: Vec<String>) {
             std::process::exit(1);
         }
     }
-    let mut prefs = settings_open(db).unwrap_or_else(|e| panic!("the settings: {e}"));
+    let mut prefs = crate::backend::app().settings.open(&db).unwrap_or_else(|e| panic!("the settings: {e}"));
     prefs.crossfade_sec = a.crossfade.unwrap_or(prefs.crossfade_sec);
     prefs.auto_mix = a.automix;
     prefs.crossfade_keep_albums = !a.mix_albums;
     prefs.replay_gain = a.replay_gain.unwrap_or(prefs.replay_gain);
     prefs.hi_res = a.hi_res;
-    settings_put(prefs.clone());
+    crate::backend::app().settings.put(prefs.clone());
 
     let output: Box<dyn AudioOutput> = match (&a.wav, &a.device) {
         (Some(path), _) if a.hi_res => Box::new(WavOutput::new(path, a.pace).in_float()),
@@ -369,7 +369,7 @@ pub fn main(argv: Vec<String>) {
             // Any setting by name, as the settings screen sets it: `set eq true`.
             "set" => {
                 let (name, value) = rest.split_once(' ').unwrap_or((rest, ""));
-                match nori_core::settings_model::setting_set(name.to_string(), value.to_string()) {
+                match crate::backend::app().settings.edit_by_name(name, value) {
                     Some(c) => {
                         cli.apply(c.effect);
                         println!("{name} = {value}");
@@ -389,7 +389,7 @@ pub fn main(argv: Vec<String>) {
                     println!("no band {i}");
                     continue;
                 };
-                if let Some((effect, _)) = nori_core::settings_store::shared().edit_band(i, nori_core::settings::SoundBand { gain_db: db, ..b }) {
+                if let Some((effect, _)) = crate::backend::app().settings.edit_band(i, nori_core::settings::SoundBand { gain_db: db, ..b }) {
                     cli.apply(effect);
                 }
             }
