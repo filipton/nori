@@ -1359,6 +1359,8 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         let dip_at = self.now() + REMAKE_LEAD_MS - HAND_DIP_MS;
         self.h.takeover = Some(Takeover { id, from_ms, r, ready: false, dip_at });
         self.p.app.log("offload given up: the CPU takes over once the song is open");
+        // Looked at now: this turn may be past its own look.
+        self.follow_takeover(self.now());
         true
     }
 

@@ -13,7 +13,7 @@ use std::thread::Thread;
 use std::time::Duration;
 
 use common::{Stepper, Virtual};
-use nori_engine::{AudioOutput, Body, ByteSource, Coded, Coding, Config, Engine, Event, Feed, Library, Located, OffloadOutput, OutputFacts, OutputFormat, Settings, SharedQueue, Source, State, Support};
+use nori_engine::{AudioOutput, Body, ByteSource, Coded, Coding, Config, Engine, Event, Feed, Library, Located, OffloadOutput, OutputFacts, OutputFormat, Settings, SharedQueue, Source, State, Support, REMAKE_LEAD_MS};
 use nori_player::dsp::Band;
 use nori_player::engine::{Host, Plan};
 use nori_player::automix::analysis::Analyzer;
@@ -1081,7 +1081,11 @@ fn offloaded_song_boosted_moves_to_cpu() {
     // a now wants +6 dB.
     app.0.lock().gains.insert("a".into(), 2.0);
     rig.engine.gain_changed();
-    assert!(rig.wait(10, |r| !r.engine.status().offloaded && r.card.heard.lock().len() > 44_100), "the CPU took over: {:?}", rig.engine.status());
+    let asked = rig.now_ms();
+    assert!(rig.wait(10, |r| !r.engine.status().offloaded), "the CPU took over: {:?}", rig.engine.status());
+    // Regression: the song opened ahead was first looked at a second later.
+    assert!(rig.now_ms() - asked <= REMAKE_LEAD_MS as i64 + 50, "took over {} ms after", rig.now_ms() - asked);
+    assert!(rig.wait(10, |r| r.card.heard.lock().len() > 44_100));
     let s = rig.engine.status();
     assert!(s.position_ms >= 4_000 && s.position_ms < 20_000, "from where the ear was: {s:?}");
     let log = app.log();
