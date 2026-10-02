@@ -104,7 +104,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decision_reports_modes_and_playing() {
+    fn decision_and_applied_mode() {
         let d = decide(true, true, " K3 ", &MODES, m(48_000, 24), None, false);
         assert_eq!(d.step, DacStep::Prefer { index: 1 });
         assert_eq!(d.device.as_deref(), Some("K3"));
@@ -115,17 +115,38 @@ mod tests {
         assert_eq!(d.blocked_by, None);
         assert_eq!(decide(true, true, "  ", &MODES, m(0, 16), None, false).device, None, "a nameless DAC is the client's to name");
         assert_eq!(decide(true, true, "K3", &MODES, m(0, 16), None, false).playing, None);
-    }
 
-    #[test]
-    fn applied_mode_is_kept() {
+        // Applied mode is kept.
         assert_eq!(decide(true, true, "K3", &MODES, m(48_000, 24), Some(&MODES), true).step, DacStep::Keep);
         assert_eq!(decide(true, true, "K3", &MODES, m(48_000, 24), Some(&MODES), false).step, DacStep::Prefer { index: 1 }, "not bit-perfect yet");
         assert_eq!(decide(true, true, "K3", &MODES, m(48_000, 24), Some(&MODES[..1]), true).step, DacStep::Prefer { index: 1 }, "another mode applied");
     }
 
+    const fn m(rate: u32, bits: u32) -> DacMode {
+        DacMode { rate, bits, float: false }
+    }
+
+    const MODES: [DacMode; 3] = [m(44_100, 16), m(48_000, 24), m(96_000, 32)];
+
     #[test]
-    fn unusable_releases_with_reason() {
+    fn exact_mode_is_chosen() {
+        assert_eq!(choose(true, &MODES, m(44_100, 16)), Ok(0));
+        assert_eq!(choose(true, &MODES, m(96_000, 32)), Ok(2));
+        assert!(choose(true, &MODES, DacMode { float: true, ..m(96_000, 32) }).is_err(), "float is not 32-bit integer");
+
+        // Missing depth needs exclusive.
+        assert_eq!(choose(true, &MODES, m(48_000, 16)), Err(Some(DacBlock::NeedsExclusive { rate: 48_000, depths: DEPTH_24 })));
+        let two = [m(48_000, 24), m(48_000, 32)];
+        assert_eq!(choose(true, &two, m(48_000, 16)), Err(Some(DacBlock::NeedsExclusive { rate: 48_000, depths: DEPTH_24 | DEPTH_32 })));
+    }
+
+    #[test]
+    fn nothing_chosen_or_unusable() {
+        assert_eq!(choose(false, &MODES, m(44_100, 16)), Err(None));
+        assert_eq!(choose(true, &[], m(44_100, 16)), Err(None));
+        assert_eq!(choose(true, &MODES, m(0, 16)), Err(None));
+
+        // Unusable releases with reason.
         let d = decide(true, true, "K3", &MODES, m(88_200, 16), None, false);
         assert_eq!(d.step, DacStep::Release);
         assert!(d.supported);
@@ -140,30 +161,4 @@ mod tests {
         assert!(!none.supported && none.blocked_by.is_none());
     }
 
-    const fn m(rate: u32, bits: u32) -> DacMode {
-        DacMode { rate, bits, float: false }
-    }
-
-    const MODES: [DacMode; 3] = [m(44_100, 16), m(48_000, 24), m(96_000, 32)];
-
-    #[test]
-    fn exact_mode_is_chosen() {
-        assert_eq!(choose(true, &MODES, m(44_100, 16)), Ok(0));
-        assert_eq!(choose(true, &MODES, m(96_000, 32)), Ok(2));
-        assert!(choose(true, &MODES, DacMode { float: true, ..m(96_000, 32) }).is_err(), "float is not 32-bit integer");
-    }
-
-    #[test]
-    fn missing_depth_needs_exclusive() {
-        assert_eq!(choose(true, &MODES, m(48_000, 16)), Err(Some(DacBlock::NeedsExclusive { rate: 48_000, depths: DEPTH_24 })));
-        let two = [m(48_000, 24), m(48_000, 32)];
-        assert_eq!(choose(true, &two, m(48_000, 16)), Err(Some(DacBlock::NeedsExclusive { rate: 48_000, depths: DEPTH_24 | DEPTH_32 })));
-    }
-
-    #[test]
-    fn off_or_idle_chooses_nothing() {
-        assert_eq!(choose(false, &MODES, m(44_100, 16)), Err(None));
-        assert_eq!(choose(true, &[], m(44_100, 16)), Err(None));
-        assert_eq!(choose(true, &MODES, m(0, 16)), Err(None));
-    }
 }

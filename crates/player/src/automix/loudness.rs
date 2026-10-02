@@ -204,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn full_scale_sine_reads_minus_3_lufs() {
+    fn integrated_loudness() {
         for rate in [44100.0, 48000.0] {
             let m = meter(&sine(997.0, 1.0, 5.0, rate), rate);
             let l = integrated(&m.blocks_k);
@@ -212,10 +212,8 @@ mod tests {
         }
         let m = meter(&sine(997.0, 0.1, 5.0, 44100.0), 44100.0);
         assert!((integrated(&m.blocks_k) + 23.01).abs() < 0.1);
-    }
 
-    #[test]
-    fn integrated_matches_ebur128() {
+        // Integrated matches ebur128.
         let rate = 44100.0;
         let mut steps = sine(440.0, 0.5, 10.0, rate);
         steps.extend(sine(440.0, 0.02, 10.0, rate)); // below the relative gate
@@ -258,14 +256,6 @@ mod tests {
     }
 
     #[test]
-    fn silence_is_minus_70_and_has_no_ramp() {
-        let m = meter(&vec![0.0; 44100 * 3], 44100.0);
-        assert_eq!(integrated(&m.blocks_k), -70.0);
-        assert_eq!(silence_trim(&m.blocks_raw), (0, 0));
-        assert_eq!(mixramp(&m.blocks_k, -70.0), None);
-    }
-
-    #[test]
     fn finds_last_long_gap() {
         let rate = 8000.0;
         let mut x = sine(440.0, 0.5, 10.0, rate);
@@ -282,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn trims_and_ramps_find_the_edges() {
+    fn trims_and_ramps() {
         let rate = 44100.0;
         let mut x = vec![0f32; (rate * 2.0) as usize]; // 2 s of silence
         let fade_in: Vec<f32> = sine(440.0, 0.5, 4.0, rate).iter().enumerate().map(|(i, v)| v * (i as f32 / (rate as f32 * 4.0))).collect();
@@ -299,5 +289,12 @@ mod tests {
         // -17 dB is 0.56 s into the ramp.
         assert!((2400..=3000).contains(&r_in), "ramp in {r_in}");
         assert!((25700..=26100).contains(&r_out), "ramp out {r_out}");
+
+        // Silence is minus 70 and has no ramp.
+        let m = meter(&vec![0.0; 44100 * 3], 44100.0);
+        assert_eq!(integrated(&m.blocks_k), -70.0);
+        assert_eq!(silence_trim(&m.blocks_raw), (0, 0));
+        assert_eq!(mixramp(&m.blocks_k, -70.0), None);
     }
+
 }

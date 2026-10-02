@@ -168,10 +168,8 @@ mod tests {
         assert_eq!(play_fade(400, true), None);
         assert_eq!(pause_fade(400, true), Some(400));
         assert_eq!(pause_fade(0, true), None);
-    }
 
-    #[test]
-    fn fade_steps() {
+        // Fade steps.
         assert_eq!(fade_step(1.0, 0.0, 100, 100, 200), (1.0, false));
         assert_eq!(fade_step(1.0, 0.0, 100, 200, 200), (0.5, false));
         assert_eq!(fade_step(1.0, 0.0, 100, 300, 200), (0.0, true));

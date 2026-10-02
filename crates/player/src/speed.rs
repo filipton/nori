@@ -181,19 +181,6 @@ impl SpeedPitch {
 mod tests {
     use super::*;
 
-    #[test]
-    fn active_only_off_unity() {
-
-        assert!(!speed_active(1.0, 1.0));
-        assert!(!speed_active(1.00005, 0.99995), "float noise");
-        assert!(speed_active(1.25, 1.0));
-        assert!(speed_active(1.0, 0.9));
-        assert!(speed_active(1.0001, 1.0), "the threshold itself counts");
-        assert_eq!(nominal_media_us(1.5, 1_000_000), 1_500_000);
-        assert_eq!(nominal_playout_us(2.0, 1_000_000), 500_000);
-        assert_eq!(nominal_playout_us(1.0, 7), 7);
-    }
-
     fn sine(secs: f64, hz: f64) -> Vec<u8> {
         (0..(44100.0 * secs) as usize)
             .flat_map(|i| {
@@ -216,6 +203,17 @@ mod tests {
         p.end_of_stream(&mut out);
         let secs = out.len() as f64 / 4.0 / 44100.0;
         assert!((secs - 2.0).abs() < 0.01, "{secs}");
+
+        // Active only off unity.
+
+        assert!(!speed_active(1.0, 1.0));
+        assert!(!speed_active(1.00005, 0.99995), "float noise");
+        assert!(speed_active(1.25, 1.0));
+        assert!(speed_active(1.0, 0.9));
+        assert!(speed_active(1.0001, 1.0), "the threshold itself counts");
+        assert_eq!(nominal_media_us(1.5, 1_000_000), 1_500_000);
+        assert_eq!(nominal_playout_us(2.0, 1_000_000), 500_000);
+        assert_eq!(nominal_playout_us(1.0, 7), 7);
     }
 
     #[test]

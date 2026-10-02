@@ -412,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn graphic_lines_parse() {
+    fn parse_and_round_trip() {
         let p = parse_graphic("GraphicEQ: 20 -4.9; 21 -5.2;22 -5.6 ; 21 -1; nonsense; 0 3; 19000 2.5").unwrap();
         assert_eq!(p, vec![(20.0, -4.9), (21.0, -5.2), (22.0, -5.6), (19000.0, 2.5)], "sorted, repeats and nonsense dropped");
         assert!(parse_graphic("Preamp: -3 dB\nFilter 1: ON PK Fc 100 Hz Gain 2 dB Q 1").is_none());
@@ -420,11 +420,8 @@ mod tests {
         assert_eq!(curve_at(&p, 10.0), -4.9);
         assert_eq!(curve_at(&p, 30_000.0), 2.5);
         assert!((curve_at(&[(100.0, 0.0), (400.0, 6.0)], 200.0) - 3.0).abs() < 1e-9, "straight on a log axis");
-    }
 
-    /// A curve made of fittable filters comes back within a fraction of a dB.
-    #[test]
-    fn filter_curve_round_trips() {
+        // A curve made of fittable filters comes back within a fraction of a dB.
         let made = [
             EqBand { kind: EqKind::LowShelf, freq: 105.0, gain_db: 5.5, q: 0.7 },
             EqBand { kind: EqKind::Peaking, freq: 180.0, gain_db: -4.0, q: 0.9 },
@@ -442,9 +439,9 @@ mod tests {
         assert!(fit.preamp_db <= 0.0 && boost + fit.preamp_db as f64 <= 0.05, "boost {boost} preamp {}", fit.preamp_db);
     }
 
-    /// A smooth headphone-like curve that ten filters cannot make exactly.
     #[test]
-    fn smooth_curve_fits_closely() {
+    fn fits_closely() {
+        // A smooth headphone-like curve that ten filters cannot make exactly.
         let points: Vec<(f64, f64)> = (0..128)
             .map(|i| 20.0 * 1000f64.powf(i as f64 / 127.0))
             .map(|f: f64| {
@@ -455,10 +452,8 @@ mod tests {
         let fit = fit_graphic(&points);
         assert!(fit.rms_db < 0.5 && fit.max_db < 1.5, "rms {} max {}", fit.rms_db, fit.max_db);
         assert!(fit.bands.iter().all(|b| b.freq >= 20.0 && b.freq <= 18_000.0 && b.gain_db.abs() <= 20.0 && (0.18..=6.0).contains(&b.q)));
-    }
 
-    #[test]
-    fn flat_curve_needs_nothing() {
+        // Flat curve needs nothing.
         let fit = fit_graphic(&[(20.0, -3.0), (20_000.0, -3.0)]);
         assert!(fit.max_db < 0.05, "max {}", fit.max_db);
         assert!(fit.bands.iter().all(|b| b.gain_db.abs() < 0.15), "{:?}", fit.bands);

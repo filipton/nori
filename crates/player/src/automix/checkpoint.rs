@@ -507,16 +507,14 @@ mod tests {
     }
 
     #[test]
-    fn state_dict_is_read_through_strides() {
+    fn checkpoint_reading() {
         let sd = state_dict(&checkpoint()).unwrap();
         assert_eq!(sd.len(), 2, "the long tensor is left out: {:?}", sd.keys());
         assert_eq!(sd["w"], Tensor { shape: vec![2, 3], data: vec![0.5, 1.5, 2.5, 3.5, 4.5, 5.5] });
         // From offset 1, column by column: [[1.5, 4.5], [2.5, 5.5]].
         assert_eq!(sd["t"], Tensor { shape: vec![2, 2], data: vec![1.5, 4.5, 2.5, 5.5] });
-    }
 
-    #[test]
-    fn anything_but_values_is_refused() {
+        // Anything but values is refused.
         let ok = checkpoint();
         // os.system, and a known global called with arguments it does not take.
         for (from, to) in [(&b"collections\nOrderedDict"[..], &b"os\nsystem\nXXXXXXXXXXXXX"[..]), (b"ctorch\nLongStorage", b"ctorch\nHalfStorage")] {
@@ -552,4 +550,5 @@ mod tests {
         }
         assert!(state_dict(b"not a zip at all, not even close to one").is_err());
     }
+
 }

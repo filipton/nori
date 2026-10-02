@@ -142,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn key_by_kind_and_name() {
+    fn keys() {
         assert_eq!(key(OutputKind::Usb, "  FiiO K3 "), "USB: FiiO K3");
         assert_eq!(key(OutputKind::Usb, " "), "USB: DAC");
         assert_eq!(key(OutputKind::Bluetooth, "WH-1000XM5"), "Bluetooth: WH-1000XM5");
@@ -151,10 +151,8 @@ mod tests {
         assert_eq!(key(OutputKind::Speaker, "whatever"), SPEAKER);
         assert_eq!(key(OutputKind::Line, "TV"), "TV");
         assert_eq!(key(OutputKind::Other, ""), "Other output");
-    }
 
-    #[test]
-    fn parts_invert_key() {
+        // Parts invert key.
         assert_eq!(parts("USB: FiiO K3"), (OutputPort::Usb, Some("FiiO K3")));
         assert_eq!(parts("USB: DAC"), (OutputPort::Usb, None));
         assert_eq!(parts("Bluetooth: device"), (OutputPort::Bluetooth, None));
@@ -193,15 +191,13 @@ mod tests {
     }
 
     #[test]
-    fn usb_accessory_sets_usb_but_is_not_current() {
+    fn usb() {
         let seen = refresh(&[(OutputKind::UsbAccessory, "Hub"), (OutputKind::Speaker, "")], &s(&[SPEAKER]), None);
         assert_eq!(seen.current, SPEAKER);
         assert!(seen.usb);
         assert_eq!(seen.known, None);
-    }
 
-    #[test]
-    fn fake_usb_is_current_and_known() {
+        // Fake usb is current and known.
         let seen = refresh(&[(OutputKind::Speaker, "")], &s(&[SPEAKER]), Some("Mock DAC"));
         assert_eq!(seen.current, "USB: Mock DAC");
         assert!(seen.usb);

@@ -130,14 +130,14 @@ mod tests {
     use crate::outputs::SPEAKER;
 
     #[test]
-    fn rows_list_each_device_choice() {
+    fn device_rows() {
         use crate::outputs::OutputPort;
         let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
         let known = s(&["USB: K3", SPEAKER, "Bluetooth: buds", "Wired headphones", "USB: DAC"]);
         let flat = s(&["Wired headphones"]);
         let warm = s(&["USB: K3", "Bluetooth: Other"]);
         let profiles: [(&str, &[String]); 2] = [(FLAT, &flat), ("Warm", &warm)];
-        let rows = rows(&known, "Bluetooth: Other", &profiles, &s(&["Bluetooth: buds"]));
+        let rows = super::rows(&known, "Bluetooth: Other", &profiles, &s(&["Bluetooth: buds"]));
         let got: Vec<(&str, OutputPort, Option<&str>, bool, ChoiceKind, Option<&str>)> =
             rows.iter().map(|r| (r.output.as_str(), r.port, r.name.as_deref(), r.current, r.choice, r.profile.as_deref())).collect();
         assert_eq!(
@@ -151,21 +151,17 @@ mod tests {
                 ("Wired headphones", OutputPort::Wired, None, false, ChoiceKind::Flat, None),
             ]
         );
-    }
 
-    #[test]
-    fn bypass_profile_row() {
+        // Bypass profile row.
         let dac = vec!["USB: DAC".to_string()];
         let profiles: [(&str, &[String]); 1] = [(BYPASS, &dac)];
-        let rows = rows(&dac, SPEAKER, &profiles, &[]);
+        let rows = super::rows(&dac, SPEAKER, &profiles, &[]);
         let r = rows.iter().find(|r| r.output == "USB: DAC").unwrap();
         assert_eq!((r.choice, r.profile.as_deref()), (ChoiceKind::Bypass, None));
-    }
 
-    #[test]
-    fn current_device_listed_once() {
+        // Current device listed once.
         let known = vec![SPEAKER.to_string()];
-        assert_eq!(rows(&known, SPEAKER, &[], &[]).len(), 1);
+        assert_eq!(super::rows(&known, SPEAKER, &[], &[]).len(), 1);
     }
 
 
@@ -174,22 +170,19 @@ mod tests {
     }
 
     #[test]
-    fn bound_device_loads_its_profile() {
+    fn profiles_on_arrival() {
         assert_eq!(on_arrival(Arrival { bound: true, ..arrival() }), ArrivalPlan { load_bound: true, restore: false, curve: CurveStep::None });
         assert!(!on_arrival(Arrival { bound: true, per_output: false, ..arrival() }).load_bound, "per-device sound off");
-    }
 
-    #[test]
-    fn unbound_device_restores_and_offers_curve() {
+        // Unbound device restores and offers curve.
         assert_eq!(on_arrival(arrival()), ArrivalPlan { load_bound: false, restore: true, curve: CurveStep::Offer });
         assert_eq!(on_arrival(Arrival { auto_apply: true, ..arrival() }).curve, CurveStep::Apply);
         assert_eq!(on_arrival(Arrival { auto_apply: true, per_output: false, ..arrival() }).curve, CurveStep::Offer, "applying needs per-device sound");
-    }
 
-    #[test]
-    fn speaker_and_quiet_get_no_curve() {
+        // Speaker and quiet get no curve.
 
         assert_eq!(on_arrival(Arrival { speaker: true, ..arrival() }).curve, CurveStep::None);
         assert_eq!(on_arrival(Arrival { quiet: true, auto_apply: true, ..arrival() }).curve, CurveStep::None);
     }
+
 }

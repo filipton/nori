@@ -94,7 +94,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn noise_is_triangular_and_centred() {
+    fn noise_shape() {
         let mut d = Dither::new();
         let n = 1_000_000;
         let (mut sum, mut sq, mut lo, mut hi) = (0.0, 0.0, 0.0f64, 0.0f64);
@@ -113,10 +113,8 @@ mod tests {
         assert!((sq / n as f64 - 1.0 / 6.0).abs() < 2e-3, "variance {}", sq / n as f64);
         let q = |k: usize| hist[k] as f64 / n as f64;
         assert!((q(0) - 0.125).abs() < 5e-3 && (q(3) - 0.125).abs() < 5e-3 && (q(1) - 0.375).abs() < 5e-3, "{hist:?}");
-    }
 
-    #[test]
-    fn channels_are_uncorrelated() {
+        // Channels are uncorrelated.
         let mut d = Dither::new();
         let n = 200_000;
         let mut c = 0.0;
@@ -127,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn grid_samples_pass_and_others_stay_within_a_step() {
+    fn steps_and_linked_channels() {
         let mut d = Dither::new();
         for v in [-32768i32, -1, 0, 1, 1000, 32767] {
             for _ in 0..1000 {
@@ -136,14 +134,13 @@ mod tests {
                 assert!((q - v).abs() <= 1 || (v == 32767 && q == v), "{v}.3 -> {q}");
             }
         }
-    }
 
-    #[test]
-    fn linked_channels_match() {
+        // Linked channels match.
         let mut d = Dither::new();
         for i in 0..1000 {
             let y = (i as f64 * 0.37).sin() * 0.01;
             assert_eq!(d.to_i16_linked(0, y), d.to_i16_linked(1, y));
         }
     }
+
 }

@@ -141,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn r128_is_replay_gain_plus_5_db() {
+    fn gain_from_tags() {
         assert_eq!(r128_as_replay_gain_db(0), 5.0, "a song at -23 LUFS is 5 dB under ReplayGain's level");
         assert_eq!(r128_as_replay_gain_db(-1280), 0.0, "-5 dB to -23 LUFS: already at -18");
         assert_eq!(r128_as_replay_gain_db(-2432), -4.5, "Q7.8: -9.5 dB");
@@ -150,10 +150,8 @@ mod tests {
         let rg = -9.0;
         let r128 = (-14.0 * 256.0) as i32;
         assert_eq!(r128_as_replay_gain_db(r128), rg);
-    }
 
-    #[test]
-    fn mode_picks_tag() {
+        // Mode picks tag.
         let s = tagged(-6.0, -3.0);
         assert!(close(db(song_gain(&prefs(GainMode::Track), &s, true)), -6.0));
         assert!(close(db(song_gain(&prefs(GainMode::Album), &s, false)), -3.0));
@@ -163,10 +161,8 @@ mod tests {
         // One tag missing: the other.
         let only_track = SongLoudness { tags: Some(GainTags { track_gain: Some(-4.0), ..Default::default() }), ..Default::default() };
         assert!(close(db(song_gain(&prefs(GainMode::Album), &only_track, false)), -4.0));
-    }
 
-    #[test]
-    fn target_shifts_gain() {
+        // Target shifts gain.
         let s = tagged(-8.0, -8.0);
         for (target, want) in [(-18.0, -8.0), (-14.0, -4.0), (-16.0, -6.0), (-23.0, -13.0)] {
             let p = GainPrefs { target_lufs: target, ..prefs(GainMode::Track) };
@@ -183,29 +179,8 @@ mod tests {
         assert!(close(db(song_gain(&p, &tagged(-20.0, -20.0), false)), -8.0));
         let p = GainPrefs { target_lufs: f32::NAN, ..prefs(GainMode::Track) };
         assert!(close(db(song_gain(&p, &s, false)), -8.0));
-    }
 
-    #[test]
-    fn boost_is_capped_not_peak_limited() {
-        let quiet = SongLoudness { tags: Some(GainTags { track_gain: Some(4.0), track_peak: Some(0.9), ..Default::default() }), ..Default::default() };
-        // Allowed: +4 dB, whatever the peak says (+4 dB on a 0.9 peak goes over full scale: the limiter's).
-        assert!(close(db(song_gain(&prefs(GainMode::Track), &quiet, false)), 4.0));
-        // Not allowed (cap 0): attenuation only, as ReplayGain always was here, peak guard included.
-        let off = GainPrefs { boost_max_db: 0.0, ..prefs(GainMode::Track) };
-        assert_eq!(song_gain(&off, &quiet, false), 1.0);
-        let peaky = SongLoudness { tags: Some(GainTags { track_gain: Some(-1.0), track_peak: Some(1.25), ..Default::default() }), ..Default::default() };
-        assert!(close(song_gain(&prefs(GainMode::Track), &peaky, false), 0.8), "turned down: the peak guard still holds the volume under full scale");
-        // The pre-amp can turn a song up too.
-        let s = tagged(-2.0, -2.0);
-        let p = GainPrefs { preamp_db: 5.0, ..prefs(GainMode::Track) };
-        assert!(close(db(song_gain(&p, &s, false)), 3.0));
-        // A cap past the most there is is held to it.
-        let p = GainPrefs { boost_max_db: 40.0, ..prefs(GainMode::Track) };
-        assert!(close(db(song_gain(&p, &tagged(30.0, 30.0), false)), BOOST_MAX_DB));
-    }
-
-    #[test]
-    fn untagged_fallback_order() {
+        // Untagged fallback order.
         let p = prefs(GainMode::Track);
         let nothing = SongLoudness::default();
         assert!(close(db(song_gain(&p, &nothing, false)), -6.0), "the untagged level");
@@ -226,7 +201,24 @@ mod tests {
     }
 
     #[test]
-    fn attenuating_prefs() {
+    fn caps_and_cuts() {
+        let quiet = SongLoudness { tags: Some(GainTags { track_gain: Some(4.0), track_peak: Some(0.9), ..Default::default() }), ..Default::default() };
+        // Allowed: +4 dB, whatever the peak says (+4 dB on a 0.9 peak goes over full scale: the limiter's).
+        assert!(close(db(song_gain(&prefs(GainMode::Track), &quiet, false)), 4.0));
+        // Not allowed (cap 0): attenuation only, as ReplayGain always was here, peak guard included.
+        let off = GainPrefs { boost_max_db: 0.0, ..prefs(GainMode::Track) };
+        assert_eq!(song_gain(&off, &quiet, false), 1.0);
+        let peaky = SongLoudness { tags: Some(GainTags { track_gain: Some(-1.0), track_peak: Some(1.25), ..Default::default() }), ..Default::default() };
+        assert!(close(song_gain(&prefs(GainMode::Track), &peaky, false), 0.8), "turned down: the peak guard still holds the volume under full scale");
+        // The pre-amp can turn a song up too.
+        let s = tagged(-2.0, -2.0);
+        let p = GainPrefs { preamp_db: 5.0, ..prefs(GainMode::Track) };
+        assert!(close(db(song_gain(&p, &s, false)), 3.0));
+        // A cap past the most there is is held to it.
+        let p = GainPrefs { boost_max_db: 40.0, ..prefs(GainMode::Track) };
+        assert!(close(db(song_gain(&p, &tagged(30.0, 30.0), false)), BOOST_MAX_DB));
+
+        // Attenuating prefs.
         let p = GainPrefs::attenuating(GainMode::Track, -3.0, -6.0);
         assert!(close(song_gain(&p, &SongLoudness::default(), false), 10f32.powf(-6.0 / 20.0)), "no tags: no pre-amp");
         let empty = SongLoudness { tags: Some(GainTags::default()), ..Default::default() };

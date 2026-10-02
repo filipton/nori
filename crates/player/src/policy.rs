@@ -134,13 +134,11 @@ mod tests {
     }
 
     #[test]
-    fn offload_when_nothing_needs_samples() {
+    fn offload_decision() {
         let p = audio_policy(&prefs(), &OutputState::default());
         assert!(p.offload && !p.processor_in_chain && p.lock_rate && !p.transitions_off);
-    }
 
-    #[test]
-    fn sample_features_block_offload() {
+        // Sample features block offload.
         for p in [
             AudioPrefs { dsp: true, ..prefs() },
             AudioPrefs { skip_silence: true, ..prefs() },
@@ -152,41 +150,12 @@ mod tests {
             let a = audio_policy(&p, &OutputState::default());
             assert!(!a.offload && a.processor_in_chain, "{p:?}");
         }
-    }
 
-    #[test]
-    fn usb_or_refusal_blocks_offload() {
+        // Usb or refusal blocks offload.
         assert!(!audio_policy(&prefs(), &OutputState { usb: true, ..Default::default() }).offload);
         assert!(!audio_policy(&prefs(), &OutputState { offload_refused: true, ..Default::default() }).offload);
-    }
 
-    #[test]
-    fn bit_perfect_disables_processing() {
-        let p = AudioPrefs { dsp: true, skip_silence: true, auto_mix: true, ..prefs() };
-        let a = audio_policy(&p, &OutputState { bit_perfect: true, ..Default::default() });
-        assert!(a.untouched && a.float && !a.processing && a.transitions_off && !a.lock_rate && !a.skip_silence && !a.processor_in_chain);
-    }
-
-    #[test]
-    fn hi_res_runs_whole_chain_in_float() {
-        let p = AudioPrefs { dsp: true, skip_silence: true, auto_mix: true, ..prefs() };
-        let hi = OutputState { hi_res: true, ..Default::default() };
-        let a = audio_policy(&p, &hi);
-        assert!(!a.untouched && a.float && a.processing && !a.transitions_off && a.lock_rate && a.skip_silence && a.processor_in_chain, "{a:?}");
-        assert!(audio_policy(&prefs(), &hi).offload);
-        assert_eq!(offload_blocked(&p, &hi), Some("the equalizer or another sound setting is on"));
-    }
-
-    #[test]
-    fn without_hi_res_chain_is_16_bit() {
-        for p in [prefs(), AudioPrefs { dsp: true, ..prefs() }, AudioPrefs { dsp: true, auto_mix: true, skip_silence: true, ..prefs() }] {
-            let a = audio_policy(&p, &OutputState::default());
-            assert!(!a.float && !a.untouched && a.lock_rate, "{p:?}");
-        }
-    }
-
-    #[test]
-    fn offload_reasons() {
+        // Offload reasons.
         let o = OutputState::default();
         assert_eq!(offload_blocked(&prefs(), &o), None);
         assert!(audio_policy(&prefs(), &o).offload);
@@ -209,6 +178,29 @@ mod tests {
         let bit_perfect = OutputState { bit_perfect: true, ..o };
         assert_eq!(offload_blocked(&AudioPrefs { dsp: true, ..prefs() }, &bit_perfect), None);
         assert!(audio_policy(&AudioPrefs { dsp: true, ..prefs() }, &bit_perfect).offload);
+    }
+
+    #[test]
+    fn bit_perfect_disables_processing() {
+        let p = AudioPrefs { dsp: true, skip_silence: true, auto_mix: true, ..prefs() };
+        let a = audio_policy(&p, &OutputState { bit_perfect: true, ..Default::default() });
+        assert!(a.untouched && a.float && !a.processing && a.transitions_off && !a.lock_rate && !a.skip_silence && !a.processor_in_chain);
+    }
+
+    #[test]
+    fn chain_depth() {
+        let p = AudioPrefs { dsp: true, skip_silence: true, auto_mix: true, ..prefs() };
+        let hi = OutputState { hi_res: true, ..Default::default() };
+        let a = audio_policy(&p, &hi);
+        assert!(!a.untouched && a.float && a.processing && !a.transitions_off && a.lock_rate && a.skip_silence && a.processor_in_chain, "{a:?}");
+        assert!(audio_policy(&prefs(), &hi).offload);
+        assert_eq!(offload_blocked(&p, &hi), Some("the equalizer or another sound setting is on"));
+
+        // Without hi res chain is 16 bit.
+        for p in [prefs(), AudioPrefs { dsp: true, ..prefs() }, AudioPrefs { dsp: true, auto_mix: true, skip_silence: true, ..prefs() }] {
+            let a = audio_policy(&p, &OutputState::default());
+            assert!(!a.float && !a.untouched && a.lock_rate, "{p:?}");
+        }
     }
 
     #[test]

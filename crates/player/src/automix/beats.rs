@@ -273,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn confident_grid_replaces_classical_unsure_only_marks() {
+    fn grids_combined() {
         let mut r = row();
         let sure = EndGrid { bpm: 128.0, offset_ms: 120.0, confidence: 0.9, stability: 0.8, downbeat_phase: 2, beats_per_bar: 3, other_phase: None, anchor_ms: 0.0 };
         assert!(merge(&mut r, MixEnd::Intro, Some(sure)));
@@ -286,10 +286,8 @@ mod tests {
         // Looking again without an answer never demotes a model grid.
         assert!(!merge(&mut r, MixEnd::Intro, None));
         assert_eq!(r.intro_grid_source, GRID_NEURAL);
-    }
 
-    #[test]
-    fn unsettled_bar_is_settled_by_classical_grid_or_dropped() {
+        // Unsettled bar is settled by classical grid or dropped.
         // Classical: 120 BPM from 250 ms, bars on beat 1.
         let r = TrackAnalysis { intro_bpm: 120.0, intro_beat_offset_ms: 250.0, intro_downbeat_phase: 1, intro_bpm_confidence: 0.2, ..row() };
         // The model: the same beats counted from 250 ms, bar on beat 3 or beat 1.
@@ -324,17 +322,15 @@ mod tests {
     }
 
     #[test]
-    fn windows_are_first_and_last_half_minute_of_music() {
+    fn windows_and_ends() {
         let r = row();
         assert_eq!(window(&r, MixEnd::Intro, (0, 40_000)), Some((1_500, 31_500)));
         assert_eq!(window(&r, MixEnd::Outro, (160_000, 200_000)), Some((168_000, 198_000)));
         assert_eq!(window(&r, MixEnd::Intro, (0, 20_000)), Some((1_500, 20_000)));
         assert_eq!(window(&r, MixEnd::Outro, (0, 30_000)), None);
         assert_eq!(window(&TrackAnalysis { silence_end_ms: 0, ..r }, MixEnd::Intro, (0, 40_000)), None);
-    }
 
-    #[test]
-    fn ends_keep_head_and_tail_mono_decimated() {
+        // Ends keep head and tail mono decimated.
         let rate = 44_100u32;
         let mut e = Ends::new(rate);
         assert_eq!(e.rate(), 22_050);
@@ -367,4 +363,5 @@ mod tests {
         let (tail, start) = e.tail();
         assert_eq!((tail.len(), start, e.head().len()), (240_000, 0, 240_000));
     }
+
 }

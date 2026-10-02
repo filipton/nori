@@ -627,10 +627,8 @@ mod tests {
         assert_eq!(mp3_shape(&[0xff, 0xeb, 0x90, 0x00]), None);
         assert_eq!(mp3_shape(&[0xff, 0xfb, 0x9c, 0x00]), None);
         assert_eq!(mp3_shape(&[0xff, 0xfb]), None);
-    }
 
-    #[test]
-    fn mp3_follows_shape_change() {
+        // Mp3 follows shape change.
         let file = tone_mp3();
         let frames = mp3_frames(&file);
         let mut d = Decoder::new(Codec::Mp3, 44_100, 2, None, true).unwrap();
@@ -653,7 +651,7 @@ mod tests {
     }
 
     #[test]
-    fn he_aac_detection() {
+    fn he_aac_found() {
         // AudioSpecificConfigs: object type, rate index, channels, GASpecificConfig, extension.
         let lc_44 = [0x12, 0x10]; // AAC-LC, 44.1 kHz, stereo
         let lc_22 = [0x13, 0x90]; // AAC-LC, 22.05 kHz, stereo
@@ -670,6 +668,17 @@ mod tests {
         assert!(he_aac(None, 22_050) && !he_aac(None, 48_000), "ADTS: by its rate");
         assert!(!he_aac(None, 0), "unknown: as it says");
         assert!(!he_aac(Some(&[0x0a, 0x10]), 22_050), "AAC Main, whatever its rate");
+
+        // He aac uses platform decoder.
+        lend_platform_aac(|_| Some(Box::new(Echo)));
+        let mut d = Decoder::whole_aac(22_050, 2, None).unwrap();
+        assert!(d.on_platform(), "an ADTS stream at a core rate");
+        let l = d.decode_lent(&[7, 1, 2]).unwrap();
+        assert_eq!((l.samples.len(), l.channels, l.rate), (4096, 2, 44_100));
+        assert!(l.samples.iter().all(|&s| s == 7.0));
+        assert_eq!((d.rate(), d.channels()), (44_100, 2), "the platform's shape is the stream's");
+        assert!(!Decoder::whole_aac(44_100, 2, Some(&[0x12, 0x10])).unwrap().on_platform(), "AAC-LC is decoded here");
+        assert!(!Decoder::new(Codec::Aac, 22_050, 2, None, false).unwrap().on_platform(), "the core alone, when asked for");
     }
 
     /// Outputs each unit's first byte as 2048 stereo frames at 44.1 kHz.
@@ -684,19 +693,6 @@ mod tests {
             Ok((2, 44_100))
         }
         fn reset(&mut self) {}
-    }
-
-    #[test]
-    fn he_aac_uses_platform_decoder() {
-        lend_platform_aac(|_| Some(Box::new(Echo)));
-        let mut d = Decoder::whole_aac(22_050, 2, None).unwrap();
-        assert!(d.on_platform(), "an ADTS stream at a core rate");
-        let l = d.decode_lent(&[7, 1, 2]).unwrap();
-        assert_eq!((l.samples.len(), l.channels, l.rate), (4096, 2, 44_100));
-        assert!(l.samples.iter().all(|&s| s == 7.0));
-        assert_eq!((d.rate(), d.channels()), (44_100, 2), "the platform's shape is the stream's");
-        assert!(!Decoder::whole_aac(44_100, 2, Some(&[0x12, 0x10])).unwrap().on_platform(), "AAC-LC is decoded here");
-        assert!(!Decoder::new(Codec::Aac, 22_050, 2, None, false).unwrap().on_platform(), "the core alone, when asked for");
     }
 
     #[test]
@@ -720,7 +716,7 @@ mod tests {
     }
 
     #[test]
-    fn opus_decodes_tone_without_pre_skip() {
+    fn opus() {
         let file = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/tone440.opus")).unwrap();
         let (setup, packets) = ogg_opus(&file);
         let mut d = Decoder::new(Codec::Opus, 48_000, 2, Some(&setup), false).unwrap();
@@ -741,12 +737,11 @@ mod tests {
         assert!((438..=442).contains(&crossings), "{crossings} crossings");
         d.reset(false);
         assert_eq!(d.decode_i16(&packets[20], &mut out), Ok(0), "the first 20 ms go to the 80 ms pre-roll");
-    }
 
-    #[test]
-    fn surround_opus_rejected() {
+        // Surround opus rejected.
         let mut head = b"OpusHead\x01\x06\x38\x01\x80\xbb\x00\x00\x00\x00\x01".to_vec();
         head.extend_from_slice(&[4, 2, 0, 4, 1, 2, 3, 5]);
         assert!(Decoder::new(Codec::Opus, 48_000, 6, Some(&head), false).is_err());
     }
+
 }

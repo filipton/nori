@@ -383,9 +383,9 @@ mod tests {
         auc(&pos, &neg)
     }
 
-    /// Distorted guitars read as voice in the downmix; panned, they drop out of the middle.
     #[test]
-    fn stereo_middle_hears_voice_over_panned_guitars() {
+    fn stereo_middle() {
+        // Distorted guitars read as voice in the downmix; panned, they drop out of the middle.
         let (x, truth) = metal_band(40.0);
         let mid: Vec<f32> = x.as_chunks::<2>().0.iter().map(|p| (p[0] + p[1]) * 0.5).collect();
         let mut a = Analyzer::new(44_100, 40_000);
@@ -396,11 +396,8 @@ mod tests {
         println!("sung told from unsung: downmix AUC {mono:.3}, the middle {stereo:.3}");
         assert!(mono < 0.7, "the downmix already told them apart ({mono:.3}): the band is no test");
         assert!(stereo > 0.9 && stereo - mono > 0.25, "downmix {mono:.3}, middle {stereo:.3}");
-    }
 
-    /// Identical channels measure exactly as mono; real stereo changes only the vocal curve.
-    #[test]
-    fn stereo_changes_only_the_vocal_curve() {
+        // Identical channels measure exactly as mono; real stereo changes only the vocal curve.
         let song = Song { sections: vec![(4, FULL), (8, SUNG), (4, FULL)], ..Song::new("sung", Style::Backbeat, 110.0, 2, false) };
         let (x, _) = song.render();
         let mut a = Analyzer::new(song.rate, 0);

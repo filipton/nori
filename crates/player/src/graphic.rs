@@ -484,15 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_target_or_layout_is_no_fit() {
-        assert!(fit_target(&[1.0; 10], 10, 12.0).is_none());
-        assert!(fit_target(&vec![0.0; TARGET_POINTS], 12, 12.0).is_none());
-        let flat = fit_target(&vec![-3.0; TARGET_POINTS], 10, 12.0).unwrap();
-        assert!(flat.sliders.iter().all(|v| *v == 0.0) && flat.preamp_db == 0.0, "a flat curve at any level is no correction: {flat:?}");
-    }
-
-    #[test]
-    fn layouts_are_iso_bands() {
+    fn layouts() {
         // Two octaves apart, every other band of the ten: 63, 250, 1k, 4k, 16k.
         let n: Vec<f64> = centres(5).into_iter().map(nominal).collect();
         assert_eq!(n, [63.0, 250.0, 1000.0, 4000.0, 16000.0]);
@@ -507,14 +499,18 @@ mod tests {
         assert_eq!(n[17], 1000.0);
         assert_eq!(n.last(), Some(&20000.0));
         assert!(centres(12).is_empty() && design(48_000.0, &[3.0; 12]).is_empty(), "not a layout: no filters");
-    }
 
-    #[test]
-    fn flat_sliders_are_no_filters() {
+        // Flat sliders are no filters.
         for n in LAYOUTS {
             assert!(design(48_000.0, &vec![0.0; n]).is_empty());
             assert!(design(48_000.0, &vec![f64::NAN; n]).is_empty(), "a slider that is not a number is 0");
         }
+
+        // Invalid target or layout is no fit.
+        assert!(fit_target(&[1.0; 10], 10, 12.0).is_none());
+        assert!(fit_target(&vec![0.0; TARGET_POINTS], 12, 12.0).is_none());
+        let flat = fit_target(&vec![-3.0; TARGET_POINTS], 10, 12.0).unwrap();
+        assert!(flat.sliders.iter().all(|v| *v == 0.0) && flat.preamp_db == 0.0, "a flat curve at any level is no correction: {flat:?}");
     }
 
     #[test]

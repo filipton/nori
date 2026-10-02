@@ -297,28 +297,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn play_next_after_current() {
+    fn hand_added_placement() {
         let hand = [false, false, true, false, false];
         assert_eq!(place(5, 1, &hand, None, false, 2), Placement { at: 2, order: None });
-    }
 
-    #[test]
-    fn add_to_queue_after_hand_added_run() {
+        // Add to queue after hand added run.
         let hand = [false, false, true, true, false];
         assert_eq!(place(5, 1, &hand, None, true, 1).at, 4);
     }
 
     #[test]
-    fn shuffled_placement_follows_current() {
+    fn shuffled_placement() {
         // Order 3, 0, 4, 1, 2; two songs inserted at 4 shift the rest and follow 3 in the order.
         let order = [3, 0, 4, 1, 2];
         let p = place(5, 3, &[false; 5], Some(&order), false, 2);
         assert_eq!(p.at, 4);
         assert_eq!(p.order, Some(vec![3, 4, 5, 0, 6, 1, 2]));
-    }
 
-    #[test]
-    fn shuffle_keeps_current_and_hand_added_first() {
+        // Shuffle keeps current and hand added first.
         let hand = [false, false, true, true, false, false, false];
         let o = shuffle_around(7, 1, &hand, 42);
         assert_eq!(&o[..3], &[1, 2, 3]);
@@ -336,17 +332,15 @@ mod tests {
     }
 
     #[test]
-    fn on_error_decisions() {
+    fn error_handling() {
         assert_eq!(on_error(PlaybackError::Output, false, false, true, true, 0), OnError::GiveUpOffload);
         assert_eq!(on_error(PlaybackError::Output, true, false, true, true, 0), OnError::Skip, "already off offload");
         assert_eq!(on_error(PlaybackError::Network, false, true, true, true, 0), OnError::Bridge);
         assert_eq!(on_error(PlaybackError::Other, false, true, true, true, 2), OnError::Skip);
         assert_eq!(on_error(PlaybackError::Other, false, true, true, true, 3), OnError::Stop);
         assert_eq!(on_error(PlaybackError::Other, false, false, false, true, 0), OnError::Stop);
-    }
 
-    #[test]
-    fn error_run_counts_skips() {
+        // Error run counts skips.
         let mut r = ErrorRun::new();
         for _ in 0..3 {
             assert_eq!(r.failed(PlaybackError::Other, false, false, true, true), OnError::Skip);
@@ -410,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn waiting_next_taken_on_landing() {
+    fn waiting_next() {
         let mut f = Refill::new();
         assert!(!f.next(false, true, Some(4), 0));
         assert!(f.start(true, 0, Some(4)));
@@ -448,10 +442,8 @@ mod tests {
         assert!(f.start(true, 0, Some(9)));
         assert!(f.arrived(1, Some(9)));
         assert!(!f.landed(Some(9), false, 5_100));
-    }
 
-    #[test]
-    fn waiting_next_expires_and_counts_once() {
+        // Waiting next expires and counts once.
         // Songs took 4.6 s: they go in, no skip.
         let mut f = Refill::new();
         assert!(!f.next(false, true, Some(10), 10_000));

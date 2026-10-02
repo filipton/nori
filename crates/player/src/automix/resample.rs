@@ -428,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn passband_is_flat() {
+    fn filter_quality() {
         for (a, b) in [(44100u32, 48000u32), (48000, 44100), (96000, 44100), (44100, 96000), (192000, 48000), (44100, 47999)] {
             let low = a.min(b) as f64;
             let mut worst = 0.0f64;
@@ -442,11 +442,8 @@ mod tests {
             eprintln!("{a} -> {b}: passband within {worst:.4} dB");
             assert!(worst < 0.1, "{a} -> {b}: {worst:.3} dB");
         }
-    }
 
-    /// Past 0.5 of the lower rate: no aliasing on a downsample, no images on an upsample.
-    #[test]
-    fn stopband_is_100_db_down() {
+        // Past 0.5 of the lower rate: no aliasing on a downsample, no images on an upsample.
         for (a, b) in [(48000u32, 44100u32), (96000, 44100), (96000, 48000), (192000, 44100), (48000, 44099)] {
             let mut worst = f64::MIN;
             let top = a as f64 / 2.0;
@@ -467,10 +464,8 @@ mod tests {
             eprintln!("44100 -> {b}: all but the tone {:.1} dB", db(resid * amp / 0.5));
             assert!(db(resid * amp / 0.5) < -100.0, "44100 -> {b}: an image at {:.1} dB", db(resid * amp / 0.5));
         }
-    }
 
-    #[test]
-    fn sweep_matches_to_90_db() {
+        // Sweep matches to 90 db.
         for (a, b) in [(48000u32, 44100u32), (44100, 48000), (88200, 44100)] {
             let low = a.min(b) as f64;
             let (f0, f1, secs) = (20.0, low * 0.42, 2.0);

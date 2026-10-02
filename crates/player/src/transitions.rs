@@ -210,11 +210,19 @@ mod tests {
     }
 
     #[test]
-    fn off_plans_nothing() {
+    fn what_is_not_mixed() {
         let w = [song("a", None, 1), song("b", None, 2)];
         assert!(pick(&TransitionPrefs { auto_mix: false, ..prefs() }, false, &w, "a", false).is_err());
         assert!(pick(&prefs(), true, &w, "a", false).is_err(), "the output forbids touching samples");
         assert!(pick(&TransitionPrefs { auto_mix: false, crossfade_s: 4, ..prefs() }, false, &w, "a", false).is_ok());
+
+        // Radio and unknown lengths not mixed.
+        let mut w = [song("a", None, 1), song("b", None, 2)];
+        w[1].radio = true;
+        assert_eq!(pick(&prefs(), false, &w, "a", false).unwrap_err(), Skip::Radio);
+        w[1].radio = false;
+        w[0].duration_ms = 0;
+        assert_eq!(pick(&prefs(), false, &w, "a", false).unwrap_err(), Skip::Durations(0, 200_000));
     }
 
     #[test]
@@ -229,17 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn radio_and_unknown_lengths_not_mixed() {
-        let mut w = [song("a", None, 1), song("b", None, 2)];
-        w[1].radio = true;
-        assert_eq!(pick(&prefs(), false, &w, "a", false).unwrap_err(), Skip::Radio);
-        w[1].radio = false;
-        w[0].duration_ms = 0;
-        assert_eq!(pick(&prefs(), false, &w, "a", false).unwrap_err(), Skip::Durations(0, 200_000));
-    }
-
-    #[test]
-    fn album_order_despite_missing_numbers() {
+    fn album_order() {
         let w = [song("a", Some("x"), 3), song("b", Some("x"), 4)];
         assert!(!pick(&TransitionPrefs { keep_albums: false, ..prefs() }, false, &w, "a", false).unwrap().settings.same_album_in_order);
         assert!(in_album_run(None, &w[0], Some(&w[1]), false) && in_album_run(Some(&w[0]), &w[1], None, false));
@@ -268,10 +266,8 @@ mod tests {
         assert!(in_order(tagged("a", 1, 7), tagged("b", 1, 7)), "the same number twice is not going back");
         assert!(!in_order(tagged("a", 1, 0), WindowSong { album_id: Some("y".into()), ..tagged("b", 1, 0) }), "another album");
         assert!(!pick(&prefs(), false, &[tagged("a", 1, 0), tagged("b", 1, 0)], "a", true).unwrap().settings.same_album_in_order, "shuffled");
-    }
 
-    #[test]
-    fn only_album_runs_are_in_order() {
+        // Only album runs are in order.
         let in_order = |a: WindowSong, b: WindowSong| pick(&prefs(), false, &[a, b], "a", false).unwrap().settings.same_album_in_order;
         let run = |id: &str, track: i32, run: u32| WindowSong { album_run: run, ..song(id, Some("x"), track) };
         assert!(in_order(run("a", 1, 7), run("b", 2, 7)), "one run: the album played from its page, or added whole");
@@ -285,17 +281,15 @@ mod tests {
     }
 
     #[test]
-    fn plain_crossfade_has_no_automix_extras() {
+    fn plain_crossfade() {
         let w = [song("a", None, 1), song("b", None, 2)];
         let s = pick(&TransitionPrefs { auto_mix: false, crossfade_s: 5, ..prefs() }, false, &w, "a", false).unwrap().settings;
         assert_eq!(s.max_transition_s, 5.0);
         assert!(!s.beat_match && !s.bass_swap && !s.filter_effects && !s.echo_out && !s.match_loudness);
         let s = pick(&TransitionPrefs { replay_gain: true, ..prefs() }, false, &w, "a", false).unwrap().settings;
         assert!(!s.match_loudness, "replaygain already levels them");
-    }
 
-    #[test]
-    fn plain_crossfade_takes_curve_and_lengths() {
+        // Plain crossfade takes curve and lengths.
         let plain = TransitionPrefs { auto_mix: false, crossfade_s: 6, ..prefs() };
         let blind = |s: &AutoMixSettings| crate::automix::plan::plan(None, None, 200_000, 200_000, s);
         let w = [song("a", None, 1), song("b", None, 2)];

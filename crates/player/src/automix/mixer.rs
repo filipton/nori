@@ -490,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn equal_power_keeps_power_and_ends_on_incoming() {
+    fn fade_curves() {
         let (a, b) = (sine(440.0, 72000), sine(1234.5, 72000));
         let y = mix(&plan(), &a, &b);
         let r = rms(&a);
@@ -499,10 +499,8 @@ mod tests {
         }
         assert_eq!(&y[48000..], &b[48000..], "after the fade it is the incoming track, bit for bit");
         assert!(y[..10].iter().zip(&a).all(|(y, a)| (y - a).abs() < 1e-3), "starts on the outgoing track");
-    }
 
-    #[test]
-    fn sine_squared_sums_one_signal_to_itself() {
+        // Sine squared sums one signal to itself.
         let mut p = plan();
         p.fade_curve = FadeCurve::SineSquared;
         let mut m = Mixer::new(RATE as u32, 2);
@@ -511,6 +509,19 @@ mod tests {
         let mut y = a.clone();
         m.process(&mut y, &a);
         assert!(y.iter().zip(&a).all(|(u, v)| (u - v).abs() < 1e-5));
+
+        // Crossover is where incoming gets louder.
+        let mut p = plan();
+        assert_eq!(crossover_ms(&p), 500);
+        p.in_gain_db = -6.0;
+        let trimmed = crossover_ms(&p);
+        assert!(trimmed > 550 && trimmed < 1000, "{trimmed}");
+        p.in_gain_db = 0.0;
+        (p.in_fade_start_ms, p.in_fade_end_ms) = (500, 1000);
+        let late = crossover_ms(&p);
+        assert!(late > 600 && late < 1000, "{late}");
+        p.duration_ms = 0;
+        assert_eq!(crossover_ms(&p), 0);
     }
 
     #[test]
@@ -543,21 +554,6 @@ mod tests {
             assert!((l - w).abs() < 1e-5, "frame {n}: {l} vs {w}");
         }
         assert!(m.done());
-    }
-
-    #[test]
-    fn crossover_is_where_incoming_gets_louder() {
-        let mut p = plan();
-        assert_eq!(crossover_ms(&p), 500);
-        p.in_gain_db = -6.0;
-        let trimmed = crossover_ms(&p);
-        assert!(trimmed > 550 && trimmed < 1000, "{trimmed}");
-        p.in_gain_db = 0.0;
-        (p.in_fade_start_ms, p.in_fade_end_ms) = (500, 1000);
-        let late = crossover_ms(&p);
-        assert!(late > 600 && late < 1000, "{late}");
-        p.duration_ms = 0;
-        assert_eq!(crossover_ms(&p), 0);
     }
 
     #[test]
@@ -603,7 +599,7 @@ mod tests {
     }
 
     #[test]
-    fn echo_decays_after_outgoing_fader_is_down() {
+    fn echo_out() {
         // The delay is fed after the fader: its repeats decay with the song.
         let mut p = plan();
         p.duration_ms = 2000;
@@ -615,10 +611,8 @@ mod tests {
         let (first, third) = (ring(500), ring(1000));
         assert!(first > 0.05, "repeats ring after the dry deck is gone: {first:.3}");
         assert!(third < 0.3 * first, "and die away two delays on: {third:.3} against {first:.3}");
-    }
 
-    #[test]
-    fn echo_fades_out_by_end() {
+        // Echo fades out by end.
         let mut p = plan();
         (p.out_fade_start_ms, p.out_fade_end_ms, p.in_fade_start_ms, p.in_fade_end_ms) = (0, 500, 1000, 1000);
         p.echo = Some(Echo { delay_ms: 250, feedback: 0.45, wet_db: -7.0 });
@@ -628,10 +622,8 @@ mod tests {
         let (after, end) = (ring(26400, 33600), ring(47000, 48000));
         assert!(after > 0.05, "repeats ring after the dry deck is gone: {after:.3}");
         assert!(end < 0.05 * after, "and are faded out by the end, not cut off: {end:.4} against {after:.3}");
-    }
 
-    #[test]
-    fn echo_repeats_on_the_beat() {
+        // Echo repeats on the beat.
         let mut p = plan();
         (p.out_fade_start_ms, p.out_fade_end_ms, p.in_fade_start_ms, p.in_fade_end_ms) = (0, 480, 480, 960);
         p.echo = Some(Echo { delay_ms: 240, feedback: 0.5, wet_db: 0.0 });

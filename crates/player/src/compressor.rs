@@ -291,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn static_curve() {
+    fn follows_curve() {
         let s = hard(-20.0, 4.0);
         assert_eq!(s.reduction_db(-30.0), 0.0);
         assert_eq!(s.reduction_db(-20.0), 0.0);
@@ -307,10 +307,8 @@ mod tests {
             assert!(b >= a && b - a < 0.01, "at {x} dB");
         }
         assert_eq!(CompressorSettings { ratio: 1.0, ..s }.reduction_db(0.0), 0.0, "1:1 does nothing");
-    }
 
-    #[test]
-    fn steady_tones_follow_curve() {
+        // Steady tones follow curve.
         let s = CompressorSettings { knee_db: 6.0, ..hard(-20.0, 3.0) };
         for db in [-40.0, -22.0, -20.0, -12.0, -6.0, 0.0] {
             let mut c = Compressor::new(RATE, s);
@@ -410,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn expander_curve() {
+    fn expander_follows_curve() {
         let s = expander(-50.0, 3.0);
         assert_eq!(s.reduction_db(-40.0), 0.0, "above the threshold, nothing");
         assert_eq!(s.reduction_db(-47.0), 0.0, "the knee starts 3 dB over the threshold");
@@ -422,10 +420,8 @@ mod tests {
             assert!(b <= a && a - b < 0.03, "continuous, less as the level rises, at {x} dB");
         }
         assert_eq!(expander(-50.0, 1.0).reduction_db(-80.0), 0.0, "1:1 does nothing");
-    }
 
-    #[test]
-    fn expander_steady_tones_follow_curve() {
+        // Expander steady tones follow curve.
         let s = expander(-50.0, 2.0);
         for db in [-20.0, -45.0, -60.0, -70.0] {
             let mut e = Expander::new(RATE, s);

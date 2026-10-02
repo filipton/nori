@@ -371,17 +371,15 @@ mod tests {
     }
 
     #[test]
-    fn peaks_are_positive_local_maxima() {
+    fn peaks_and_grid() {
         let mut l = vec![-5.0f32; 200];
         for (i, v) in [(20, 3.0), (21, 3.0), (60, 1.0), (62, 2.0), (100, -0.5)] {
             l[i] = v;
         }
         let p = peaks(&l);
         assert_eq!(p, vec![20.5 / FPS, 62.0 / FPS]);
-    }
 
-    #[test]
-    fn grid_from_beats_and_downbeats() {
+        // Grid from beats and downbeats.
         let beats: Vec<f64> = (0..40).map(|i| 0.3 + i as f64 * 0.5).collect();
         let t = Tracked { downbeats: beats.iter().skip(2).step_by(3).copied().collect(), beats };
         let g = grid(&t).unwrap();

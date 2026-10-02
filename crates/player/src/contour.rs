@@ -185,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn compensation_grows_as_volume_drops() {
+    fn compensation_follows_volume() {
         assert!(compensation_db(80.0, 80.0, 50.0).abs() < 1e-9, "at the reference level nothing is missing");
         assert!(compensation_db(40.0, 80.0, 1000.0).abs() < 0.05, "and 1 kHz is where it is measured from");
         let bass = |l: f64| compensation_db(l, 80.0, 100.0);
@@ -196,10 +196,8 @@ mod tests {
         assert_eq!(listening_phon(80.0, -90.0), PHON.0, "never under the contours");
         assert_eq!(listening_phon(80.0, 6.0), 80.0, "no louder than all the way up");
         assert_eq!(listening_phon(80.0, f64::NAN), 80.0);
-    }
 
-    #[test]
-    fn volume_in_db() {
+        // Volume in db.
         assert_eq!(volume_db(7, 15, -12.5), -12.5, "the platform's own figure first");
         assert_eq!(volume_db(15, 15, f32::NAN), 0.0, "all the way up");
         assert!((volume_db(3, 15, f32::NAN) - (-40.0)).abs() < 1e-9, "a fifth of the way: the curve's 20 % point");

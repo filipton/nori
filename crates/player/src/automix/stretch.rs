@@ -545,28 +545,6 @@ mod tests {
         }
     }
 
-    /// At a constant ratio clicks come out at input / ratio from the first one, and the length follows.
-    #[test]
-    fn stretched_output_keeps_timeline_and_length() {
-        for keep in [true, false] {
-            for ratio in [1.04, 0.97] {
-                let mut s = Stretcher::new(44100, 2, keep);
-                s.configure(ratio, 10 * 44100, 0);
-                let every = 22050;
-                let x = clicks(44100 * 6, every);
-                let y = run_all(&mut s, &x, 1000);
-                let got = peaks(&y, (every as f64 / ratio) as usize);
-                let want: Vec<f64> = (every / 2..44100 * 6).step_by(every).map(|f| f as f64 / ratio).collect();
-                assert!(got.len() >= want.len() - 1, "{keep} {ratio}: {got:?}");
-                for (g, w) in got.iter().zip(&want) {
-                    assert!((*g as f64 - w).abs() < 0.003 * 44100.0, "keep_pitch {keep} ratio {ratio}: click at {g}, expected {w}");
-                }
-                let expect_len = x.len() as f64 / ratio;
-                assert!((y.len() as f64 - expect_len).abs() < 0.01 * expect_len, "{} vs {expect_len}", y.len());
-            }
-        }
-    }
-
     /// After hold + ramp the output joins the plain input without a jump, shorter by what the ramp gained.
     #[test]
     fn ramp_ends_in_seamless_bypass() {
@@ -644,9 +622,9 @@ mod tests {
         }
     }
 
-    /// Impulses come out within 12 frames of input / ratio (1.0015: the closest to 1 Signalsmith runs at).
     #[test]
     fn timeline_is_sample_accurate() {
+        // Impulses come out within 12 frames of input / ratio (1.0015: the closest to 1 Signalsmith runs at).
         for (keep, ratio) in [(true, 1.0015f64), (true, 1.03), (true, 1.06), (true, 0.95), (false, 1.02), (false, 0.98)] {
             let mut s = Stretcher::new(44100, 2, keep);
             s.configure(ratio, 1 << 40, 0);
@@ -677,6 +655,25 @@ mod tests {
             }
             assert!(errs.len() >= 12, "{keep} {ratio}: {errs:?}");
             assert!(errs.iter().all(|e| e.abs() <= 12.0), "keep_pitch {keep} ratio {ratio}: {errs:?}");
+        }
+
+        // At a constant ratio clicks come out at input / ratio from the first one, and the length follows.
+        for keep in [true, false] {
+            for ratio in [1.04, 0.97] {
+                let mut s = Stretcher::new(44100, 2, keep);
+                s.configure(ratio, 10 * 44100, 0);
+                let every = 22050;
+                let x = clicks(44100 * 6, every);
+                let y = run_all(&mut s, &x, 1000);
+                let got = peaks(&y, (every as f64 / ratio) as usize);
+                let want: Vec<f64> = (every / 2..44100 * 6).step_by(every).map(|f| f as f64 / ratio).collect();
+                assert!(got.len() >= want.len() - 1, "{keep} {ratio}: {got:?}");
+                for (g, w) in got.iter().zip(&want) {
+                    assert!((*g as f64 - w).abs() < 0.003 * 44100.0, "keep_pitch {keep} ratio {ratio}: click at {g}, expected {w}");
+                }
+                let expect_len = x.len() as f64 / ratio;
+                assert!((y.len() as f64 - expect_len).abs() < 0.01 * expect_len, "{} vs {expect_len}", y.len());
+            }
         }
     }
 

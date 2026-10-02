@@ -138,12 +138,21 @@ mod tests {
     }
 
     #[test]
-    fn centred_signal_is_bit_exact() {
+    fn centred_and_clamped() {
         let mut v = Virtualizer::new(RATE, 1.0);
         for i in 0..20_000 {
             let x = 0.3 * (i as f64 * 0.0371).sin() + 0.2 * (i as f64 * 0.51).sin();
             assert_eq!(v.frame(x, x), (x, x));
         }
+
+        // Strength is clamped.
+
+        let mut v = Virtualizer::new(RATE, f64::NAN);
+        assert_eq!(v.strength(), 0.0);
+        v.tune(5.0);
+        assert_eq!(v.strength(), 1.0);
+        let (l, r) = v.frame(0.5, -0.5);
+        assert!(l.is_finite() && r.is_finite());
     }
 
     #[test]
@@ -175,14 +184,4 @@ mod tests {
         assert!(hi > 2.5 && lo < 0.6, "side lifted {hi} dB at 3 kHz, {lo} dB at 60 Hz");
     }
 
-    #[test]
-    fn strength_is_clamped() {
-
-        let mut v = Virtualizer::new(RATE, f64::NAN);
-        assert_eq!(v.strength(), 0.0);
-        v.tune(5.0);
-        assert_eq!(v.strength(), 1.0);
-        let (l, r) = v.frame(0.5, -0.5);
-        assert!(l.is_finite() && r.is_finite());
-    }
 }

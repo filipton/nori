@@ -515,26 +515,23 @@ mod tests {
     }
 
     #[test]
-    fn speed_keeps_pitch_and_shortens() {
+    fn speed_and_pitch() {
         let x = sine(44100, 4.0, 220.0);
         let y = run(&mut Sonic::new(44100, 2, 1.25, 1.0, 44100), &x);
         let secs = y.len() as f64 / 2.0 / 44100.0;
         assert!((secs - 3.2).abs() < 0.01, "{secs}");
         assert!((hz(&y, 44100) - 220.0).abs() < 3.0, "{}", hz(&y, 44100));
-    }
 
-    #[test]
-    fn pitch_keeps_length_and_moves_up() {
+        // Pitch keeps length and moves up.
         let x = sine(44100, 4.0, 200.0);
         let y = run(&mut Sonic::new(44100, 2, 1.0, 1.1, 44100), &x);
         let secs = y.len() as f64 / 2.0 / 44100.0;
         assert!((secs - 4.0).abs() < 0.01, "{secs}");
         assert!((hz(&y, 44100) - 220.0).abs() < 3.0, "{}", hz(&y, 44100));
-    }
 
-    #[test]
-    fn unchanged_is_a_copy() {
+        // Unchanged is a copy.
         let x = sine(48000, 1.0, 330.0);
         assert_eq!(run(&mut Sonic::new(48000, 2, 1.0, 1.0, 48000), &x), x);
     }
+
 }

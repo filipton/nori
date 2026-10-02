@@ -339,14 +339,12 @@ mod tests {
     }
 
     #[test]
-    fn short_rest_is_untouched() {
+    fn music_untouched() {
         let mut s = SilenceSkipper::new(RATE, 2, false);
         let x = [frames(8000, 1.0), frames(0, 0.05), frames(8000, 1.0)].concat();
         assert_eq!(run(&mut s, &x), x, "50 ms of quiet is left exactly as it was");
-    }
 
-    #[test]
-    fn quiet_music_is_not_silence() {
+        // Quiet music is not silence.
         let mut s = SilenceSkipper::new(RATE, 2, false);
         let x = frames(1500, 2.0);
         assert_eq!(run(&mut s, &x), x);
