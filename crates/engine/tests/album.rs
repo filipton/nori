@@ -140,7 +140,7 @@ impl Rig {
         queue(&core.session, &made.iter().map(|(s, _)| *s).collect::<Vec<_>>(), shuffle, tags.queued);
         let analyses = Analyses::of(client.clone());
         let measurer = (measured == Measured::WhilePlaying).then(|| Measurer::new(analyses.clone(), store.clone()));
-        let library = CoreLibrary { client, bytes: Arc::new(Net(files)), metered: false, store: Some(store.clone()), analyses: analyses.clone() };
+        let library = CoreLibrary { client, bytes: Arc::new(Net(files)), store: Some(store.clone()), analyses: analyses.clone() };
         let app = match &measurer {
             Some(m) => CoreApp::new(core.session.clone()).measuring(m.clone()),
             None => CoreApp::new(core.session.clone()),

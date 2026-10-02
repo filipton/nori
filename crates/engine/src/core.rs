@@ -220,30 +220,14 @@ impl App for CoreApp {
     }
 }
 
-/// Songs from the logged-in server at the network's quality ([`network_metered`]). With a store,
+/// Songs from the logged-in server at the network's quality (`Client::metered`). With a store,
 /// downloads and whole cached copies play from disk, streams are cached, and later songs are fetched
 /// ahead as the core says (`Client::precache_targets`).
 pub struct CoreLibrary {
     pub client: Arc<Client>,
     pub bytes: Arc<dyn ByteSource>,
-    /// Always stream at the metered quality.
-    pub metered: bool,
     pub store: Option<Arc<Store>>,
     pub analyses: Arc<Analyses>,
-}
-
-impl CoreLibrary {
-    /// Whether songs stream at the metered quality now.
-    fn metered(&self) -> bool {
-        self.metered || nori_core::stream::metered()
-    }
-}
-
-/// The platform says whether the network is metered now; returns the streaming quality for it (0 and
-/// no format: the original file). Applies to songs fetched from now on, not ones already on their way.
-pub fn network_metered(client: &Client, metered: bool) -> nori_core::stream::StreamQuality {
-    nori_core::stream::network_metered(metered);
-    client.streaming_quality(metered)
 }
 
 /// The container a cache key names (`<id>:192opus` is Opus); None for the original file.
@@ -261,7 +245,7 @@ impl Library for CoreLibrary {
         if let Some(path) = kept {
             return Ok(Located { source: Source::File(path), hint: None, duration_ms, estimated: false });
         }
-        let target = self.client.resolve(id.to_string(), false, self.metered());
+        let target = self.client.resolve(id.to_string(), false, self.client.metered());
         let hint = key_format(&target.key).or_else(|| song.as_ref().map(|s| s.suffix.clone())).filter(|s| !s.is_empty());
         let (url, bytes) = (target.url, self.bytes.clone());
         let source = match &self.store {
@@ -282,7 +266,7 @@ impl Library for CoreLibrary {
     /// Fetches the core's precache targets except `next` into the store.
     fn ahead(&mut self, next: &str) {
         let Some(store) = &self.store else { return };
-        store.fetch_ahead(self.bytes.clone(), ahead_songs(self.client.precache_targets(self.metered()), next), Some(measuring_ahead(&self.analyses, self.client.session().clone())));
+        store.fetch_ahead(self.bytes.clone(), ahead_songs(self.client.precache_targets(self.client.metered()), next), Some(measuring_ahead(&self.analyses, self.client.session().clone())));
     }
 
     fn taker(&self, id: &str, hint: Option<&str>) -> Option<Listening> {
@@ -291,7 +275,7 @@ impl Library for CoreLibrary {
 
     fn forget(&mut self, id: &str) {
         let Some(store) = &self.store else { return };
-        let target = self.client.resolve(id.to_string(), false, self.metered());
+        let target = self.client.resolve(id.to_string(), false, self.client.metered());
         if store.peek(&target.key).is_some() {
             nori_core::alog::info(&format!("{id} is fetched anew: its stream cache entry {} goes", target.key));
             store.drop_cached(&[target.key]);
@@ -550,7 +534,7 @@ impl Shelf for StoreShelf {
             }
         }
         // The current network's quality first, then the other's.
-        let metered = nori_core::stream::metered();
+        let metered = client.metered();
         let (key, path) = [metered, !metered].into_iter().find_map(|m| {
             let key = client.resolve(id.to_string(), false, m).key;
             self.store.peek(&key).map(|p| (key, p))

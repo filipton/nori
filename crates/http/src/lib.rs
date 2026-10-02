@@ -134,6 +134,10 @@ impl Transport for Http {
     }
 
     fn address_changed(&self) {}
+
+    fn network(&self) -> nori_core::transport::Network {
+        nori_core::transport::Network::Unmetered
+    }
 }
 
 thread_local! {

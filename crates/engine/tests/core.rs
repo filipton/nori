@@ -85,7 +85,8 @@ fn downloads_and_measuring_over_core() {
     let core = Core::open(dir.join("nori.db").to_string_lossy().into_owned(), "test".into(), session).unwrap();
     let config = ServerConfig { url: "http://music.test".into(), user: "u".into(), password: "p".into(), api_key: None, legacy_auth: false };
     core.configure(config).unwrap();
-    let client = Client::new(core.clone(), Arc::new(NoApi));
+    let net = Arc::new(NoApi::default());
+    let client = Client::new(core.clone(), net.clone());
     client.set_profile(NetProfile { url: "http://music.test".into(), ..Default::default() });
     let store = Store::open(dir.join("music"), 64 << 20, Box::new(Recent::default())).unwrap();
     let audio = Arc::new(Audio::default());
@@ -109,7 +110,7 @@ fn downloads_and_measuring_over_core() {
     assert_eq!(core.transfers().with(|t| t.phase("dl-1")), Some(nori_core::DownloadPhase::Done));
 
     core.session.register(vec![song]);
-    let mut library = CoreLibrary { client: client.clone(), bytes: audio.clone(), metered: false, store: Some(store.clone()), analyses: analyses.clone() };
+    let mut library = CoreLibrary { client: client.clone(), bytes: audio.clone(), store: Some(store.clone()), analyses: analyses.clone() };
     match library.locate("dl-1").unwrap().source {
         Source::File(p) => assert_eq!(p, path, "the download, not the network"),
         _ => panic!("a downloaded song is read from the disk"),
@@ -118,7 +119,7 @@ fn downloads_and_measuring_over_core() {
         Source::Cached { key, .. } => assert_eq!(key, "other:0", "streamed, and kept in the cache"),
         _ => panic!("a song that is not downloaded streams"),
     }
-    metered_and_ahead(&client, &store, &analyses);
+    metered_and_ahead(&client, &net, &store, &analyses);
     downloads_read_back(&core, &store, &analyses);
 
     // AutoMix on: upcoming songs on disk are measured.
@@ -142,7 +143,7 @@ fn downloads_and_measuring_over_core() {
     assert!(core.analysis_get("m-2".into()).unwrap().is_none(), "not on the disk: left for later");
     assert!(audio.requests.lock().iter().all(|(u, _)| !u.contains("m-2")), "and never fetched for it");
     // Fetched by the player: measured once whole.
-    let key = client.resolve("m-2".into(), false, nori_core::stream::metered()).key;
+    let key = client.resolve("m-2".into(), false, client.metered()).key;
     let beat = beat_wav();
     let mut w = store.writer(&key).unwrap();
     assert!(w.write(0, &beat));
@@ -387,7 +388,7 @@ impl ByteSource for Plain {
 
 /// Turning metered mid-queue: songs already fetched keep their address, the next streams at the metered
 /// quality; fetching ahead follows the network's setting (none on metered by default).
-fn metered_and_ahead(client: &Arc<Client>, store: &Arc<Store>, analyses: &Arc<Analyses>) {
+fn metered_and_ahead(client: &Arc<Client>, network: &NoApi, store: &Arc<Store>, analyses: &Arc<Analyses>) {
     use nori_player::pipeline::Songs;
     let songs: Vec<Song> = (1..=5).map(|i| Song { id: format!("p-{i}"), title: format!("P{i}"), duration: 3, suffix: "mp3".into(), ..Default::default() }).collect();
     client.session().register(songs);
@@ -395,10 +396,10 @@ fn metered_and_ahead(client: &Arc<Client>, store: &Arc<Store>, analyses: &Arc<An
     client.session().set(ids, Some(0), false, None);
 
     let net = Arc::new(Plain::default());
-    let library = CoreLibrary { client: client.clone(), bytes: net.clone(), metered: false, store: Some(store.clone()), analyses: analyses.clone() };
+    let library = CoreLibrary { client: client.clone(), bytes: net.clone(), store: Some(store.clone()), analyses: analyses.clone() };
     let load: [i64; 5] = nori_core::rules::load_control(256).try_into().unwrap();
     let mut sources = nori_engine::Sources::new(library, load, Default::default(), std::thread::current());
-    let q = nori_engine::core::network_metered(client, false);
+    let q = client.streaming_quality(client.metered());
     assert_eq!((q.bit_rate, q.format.as_str()), (0, ""), "the original file on Wi-Fi");
     let _playing = sources.open("p-1", 0).unwrap();
     sources.upcoming("p-2");
@@ -409,7 +410,8 @@ fn metered_and_ahead(client: &Arc<Client>, store: &Arc<Store>, analyses: &Arc<An
 
     // A lower metered quality makes the switch visible.
     client.session().settings.edit_by_name("mobile", "192:opus");
-    let q = nori_engine::core::network_metered(client, true);
+    network.metered.store(true, std::sync::atomic::Ordering::Relaxed);
+    let q = client.streaming_quality(client.metered());
     assert_eq!((q.bit_rate, q.format.as_str()), (192, "opus"), "the settings' quality for mobile data");
     let asked = net.0.lock().len();
     let _seek = sources.open("p-1", 1_000).unwrap();
@@ -427,7 +429,7 @@ fn metered_and_ahead(client: &Arc<Client>, store: &Arc<Store>, analyses: &Arc<An
     let opened: Vec<String> = net.0.lock()[asked..].to_vec();
     assert!(opened.iter().any(|u| u.ends_with("&id=p-4&maxBitRate=192&format=opus")), "the next song fetched streams at the metered quality: {opened:?}");
     assert!(store.peek("p-5:0").is_none() && store.peek("p-5:192opus").is_none(), "one ahead on mobile data by default: the engine's own next song, none more");
-    nori_engine::core::network_metered(client, false);
+    network.metered.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Serves the Beat This! checkpoint at its URL; anything else is 404.
@@ -448,6 +450,10 @@ impl Transport for Authors {
     }
 
     fn address_changed(&self) {}
+
+    fn network(&self) -> nori_core::transport::Network {
+        nori_core::transport::Network::Unmetered
+    }
 }
 
 /// The measurer with the real model: fetched, checked, converted and stored, then earlier songs decoded

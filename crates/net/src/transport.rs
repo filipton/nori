@@ -119,6 +119,17 @@ pub trait Transport: Send + Sync {
 
     /// The server address changed (LAN / WAN switch); the platform rebuilds what it derived from it.
     fn address_changed(&self);
+
+    /// The network requests go out on now.
+    fn network(&self) -> Network;
+}
+
+/// What the network requests go out on costs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
+pub enum Network {
+    Unmetered,
+    Metered,
 }
 
 /// Wakes the parked thread.
@@ -283,14 +294,17 @@ fn server_host(address: String) -> Option<HostPort> {
     parse_host(&full)
 }
 
-/// The music server's hosts and its Wi-Fi-only setting.
+/// The music server's hosts and its Wi-Fi-only setting, for one server profile (none: no server).
 #[derive(Debug, Default)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Object))]
 pub struct ServerHosts {
     hosts: Vec<HostPort>,
     wifi_only: bool,
 }
 
+#[cfg_attr(feature = "ffi", uniffi::export)]
 impl ServerHosts {
+    #[cfg_attr(feature = "ffi", uniffi::constructor)]
     pub fn new(address: Option<String>, alt_address: Option<String>, wifi_only: bool) -> Self {
         ServerHosts { hosts: [address, alt_address].into_iter().flatten().filter_map(server_host).collect(), wifi_only }
     }
@@ -303,15 +317,6 @@ impl ServerHosts {
     }
 }
 
-/// Global: the platform sets and reads it through free FFI functions.
-static SERVER: parking_lot::RwLock<ServerHosts> = parking_lot::RwLock::new(ServerHosts { hosts: Vec::new(), wifi_only: false });
-
-/// The server profile changed (None: no server).
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn net_server(address: Option<String>, alt_address: Option<String>, wifi_only: bool) {
-    *SERVER.write() = ServerHosts::new(address, alt_address, wifi_only);
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct RequestPolicy {
@@ -319,12 +324,6 @@ pub struct RequestPolicy {
     pub server: bool,
     /// Must not use a metered network. The platform checks the network only for these.
     pub unmetered_only: bool,
-}
-
-/// [`ServerHosts::policy`] for the current server profile. Called once per request.
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn request_policy(url: String) -> RequestPolicy {
-    SERVER.read().policy(&url)
 }
 
 /// The authority of an http(s) URL, parsed as the platform's URL parser does: surrounding ASCII

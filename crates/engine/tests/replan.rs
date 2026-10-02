@@ -67,7 +67,7 @@ impl Rig {
         // Played from the album's page.
         core.session.set(ids.iter().map(|s| s.to_string()).collect(), Some(0), false, Some(nori_core::PageOrigin::new(nori_core::OriginKind::Album, "al")));
         let analyses = Analyses::of(client.clone());
-        let library = CoreLibrary { client, bytes: net, metered: false, store: Some(store), analyses };
+        let library = CoreLibrary { client, bytes: net, store: Some(store), analyses };
         let card = Card::new();
         let clock = Virtual::default();
         let engine = Engine::start_on(library, CoreApp::new(core.session.clone()), CoreQueue(core.session.clone()), Box::new(card.clone()), None, Config { memory_mb: 128, settings: settings(&prefs, 0.0), ..Config::default() }, clock.clone(), |_| {});

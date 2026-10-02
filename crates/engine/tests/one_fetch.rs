@@ -123,7 +123,7 @@ impl Rig {
         core.session.set(ids.iter().map(|s| s.to_string()).collect(), Some(0), false, None);
         let analyses = Analyses::of(client.clone());
         let measurer = Measurer::new(analyses.clone(), store.clone());
-        let library = CoreLibrary { client: client.clone(), bytes: net.clone(), metered: false, store: Some(store.clone()), analyses: analyses.clone() };
+        let library = CoreLibrary { client: client.clone(), bytes: net.clone(), store: Some(store.clone()), analyses: analyses.clone() };
         let app = CoreApp::new(core.session.clone()).measuring(measurer.clone());
         let card = Card::new();
         let clock = Virtual::default();

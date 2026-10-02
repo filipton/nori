@@ -120,6 +120,10 @@ impl Transport for Offline {
     }
 
     fn address_changed(&self) {}
+
+    fn network(&self) -> nori_core::transport::Network {
+        nori_core::transport::Network::Unmetered
+    }
 }
 
 struct Shown {
@@ -202,7 +206,7 @@ impl Session {
         let downloader = Downloader::new(client.clone(), audio.clone(), store.clone(), analyses.clone());
         // `bridging`: a song the network cannot bring raises `Event::Bridge` (see `Session::bridge`).
         let app = CoreApp::new(core.session.clone()).measuring(Measurer::new(analyses.clone(), store.clone())).per_device(core.clone()).bridging().volume(loudness.clone());
-        let library = CoreLibrary { client: client.clone(), bytes: audio, metered: false, store: Some(store.clone()), analyses };
+        let library = CoreLibrary { client: client.clone(), bytes: audio, store: Some(store.clone()), analyses };
         let events = o.out.clone();
         let config = Config { memory_mb: 256, settings: settings(&prefs, loudness.db()), ..Config::default() };
         let engine = Arc::new(Engine::start(library, app, CoreQueue(core.session.clone()), output, None, config, move |e| events(Said::Engine(e))));

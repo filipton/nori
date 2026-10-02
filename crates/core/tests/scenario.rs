@@ -134,6 +134,10 @@ impl Transport for Server {
     }
 
     fn address_changed(&self) {}
+
+    fn network(&self) -> nori_core::transport::Network {
+        nori_core::transport::Network::Unmetered
+    }
 }
 
 /// Polls `f` to completion; the server answers at once.

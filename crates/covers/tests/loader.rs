@@ -66,6 +66,10 @@ impl Transport for Server {
     }
 
     fn address_changed(&self) {}
+
+    fn network(&self) -> nori_core::transport::Network {
+        nori_core::transport::Network::Unmetered
+    }
 }
 
 fn dir(name: &str) -> nori_testdir::TempDir {

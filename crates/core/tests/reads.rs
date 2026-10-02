@@ -19,6 +19,10 @@ impl Transport for Answer {
         self.get(r.url, 0).await
     }
     fn address_changed(&self) {}
+
+    fn network(&self) -> nori_core::transport::Network {
+        nori_core::transport::Network::Unmetered
+    }
 }
 
 const SONG: &str = r#"{"id":"s1","title":"One","artist":"A","album":"Al","albumId":"al1","isDir":false}"#;

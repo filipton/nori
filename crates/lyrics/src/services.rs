@@ -807,6 +807,10 @@ pub(crate) mod tests {
             }
         }
         fn address_changed(&self) {}
+
+        fn network(&self) -> nori_net::transport::Network {
+            nori_net::transport::Network::Unmetered
+        }
     }
 
     /// The fake answers at once, so a future here never waits.

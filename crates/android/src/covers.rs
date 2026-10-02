@@ -345,6 +345,10 @@ impl Transport for Platform {
     }
 
     fn address_changed(&self) {}
+
+    fn network(&self) -> nori_net::transport::Network {
+        nori_net::transport::Network::Unmetered
+    }
 }
 
 type Covers = Loader<Bitmaps>;

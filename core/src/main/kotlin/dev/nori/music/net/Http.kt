@@ -7,14 +7,14 @@ import dev.nori.music.ffi.model.CoreException
 import dev.nori.music.ffi.net.FailureKind
 import dev.nori.music.ffi.net.getFailed
 import dev.nori.music.ffi.net.NetException
+import dev.nori.music.ffi.net.Network
 import dev.nori.music.ffi.net.Exchange
 import dev.nori.music.ffi.net.RequestPolicy
+import dev.nori.music.ffi.net.ServerHosts
 import dev.nori.music.ffi.net.Transport
 import dev.nori.music.ffi.net.TransportException
 import dev.nori.music.ffi.net.TransportResponse
 import dev.nori.music.ffi.net.netPolicy
-import dev.nori.music.ffi.net.netServer
-import dev.nori.music.ffi.net.requestPolicy
 import dev.nori.music.ffi.settings.SavedServer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -64,11 +64,15 @@ class Http(private val context: Context) {
     @Volatile private var profile: SavedServer? = null
 
     /**
-     * The core's [requestPolicy] answer per host, for this server profile: every request (each cover, each
-     * range of a stream) asks it, and the answer only depends on the host and port. Replaced whole, after
-     * the core has been told, when the profile changes, so an answer from the old one is never read.
+     * Which requests are this profile's server's, and its Wi-Fi-only rule: the core's (transport.rs
+     * `ServerHosts`), with its answer per host kept, since every request (each cover, each range of a
+     * stream) asks it and the answer only depends on the host and port. Replaced whole when the profile
+     * changes, so an answer from the old one is never read.
      */
-    @Volatile private var policies = java.util.concurrent.ConcurrentHashMap<String, Pair<Int, RequestPolicy>>()
+    private class Hosts(val server: ServerHosts) {
+        val policies = java.util.concurrent.ConcurrentHashMap<String, Pair<Int, RequestPolicy>>()
+    }
+    @Volatile private var hosts = Hosts(ServerHosts(null, null, false))
 
     /** The audio's stall timeout (see [Stalls]), shared by every stream client. Starts no thread until a song streams. */
     private val stalls = Stalls(policy.streamReadTimeoutMs.toLong())
@@ -88,11 +92,16 @@ class Http(private val context: Context) {
      */
     val metered: Boolean get() = connectivity.isActiveNetworkMetered
 
+    /**
+     * Whether the network is metered, as the playback service last heard it: what the core reads
+     * ([Transport.network]) to choose the quality a song streams at and whether a download may use
+     * mobile data, without a binder call each time.
+     */
+    @Volatile var networkMetered = false
+
     fun configure(next: SavedServer?) {
         val old = profile
-        // Which requests are the server's, and its Wi-Fi-only rule, are the core's (transport.rs request_policy).
-        netServer(next?.url, next?.altUrl, next?.wifiOnly == true)
-        policies = java.util.concurrent.ConcurrentHashMap()
+        hosts = Hosts(ServerHosts(next?.url, next?.altUrl, next?.wifiOnly == true))
         profile = next
         // Only TLS settings need new clients; headers and the Wi-Fi rule are read per request.
         if (old?.allowSelfSigned != next?.allowSelfSigned || old?.clientCert != next?.clientCert || old?.clientCertPassword != next?.clientCertPassword) {
@@ -132,11 +141,11 @@ class Http(private val context: Context) {
         return b.build()
     }
 
-    /** [requestPolicy] for [url], asked of the core once per host and port. */
+    /** The profile's policy for [url], asked of the core once per host and port. */
     private fun policyOf(url: okhttp3.HttpUrl): RequestPolicy {
-        val known = policies
-        known[url.host]?.let { (port, rule) -> if (port == url.port) return rule }
-        return requestPolicy(url.toString()).also { known[url.host] = url.port to it }
+        val h = hosts
+        h.policies[url.host]?.let { (port, rule) -> if (port == url.port) return rule }
+        return h.server.policy(url.toString()).also { h.policies[url.host] = url.port to it }
     }
 
     /** Self-signed servers and client certificates. Both are per profile and opt-in. */
@@ -225,6 +234,8 @@ class Http(private val context: Context) {
         }
 
         override fun addressChanged() = onAddressChanged()
+
+        override fun network() = if (networkMetered) Network.METERED else Network.UNMETERED
     }
 }
 

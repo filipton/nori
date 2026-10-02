@@ -162,9 +162,9 @@ class PlaybackService : MediaLibraryService() {
     }
     private val sleepAlarm = AlarmManager.OnAlarmListener { player.pause() }
     /**
-     * The network the phone is on, told to the core whenever it turns metered or not: the core resolves
-     * the quality a song streams at (`stream::resolve_now`) and whether a download may use mobile data from
-     * it, without asking here. One registration for the service's life; a change that leaves the answer as
+     * The network the phone is on, told to [dev.nori.music.net.Http.networkMetered] whenever it turns metered
+     * or not: the core reads it there to resolve the quality a song streams at and whether a download may
+     * use mobile data. One registration for the service's life; a change that leaves the answer as
      * it was is not passed on.
      */
     private val connectivity by lazy { getSystemService(android.net.ConnectivityManager::class.java) }
@@ -176,7 +176,7 @@ class PlaybackService : MediaLibraryService() {
     private fun tellMetered(now: Boolean) {
         if (now == metered) return
         metered = now
-        dev.nori.music.ffi.net.networkMetered(now)
+        nori.http.networkMetered = now
         // Onto Wi-Fi: the AutoEQ list is fetched if the core says it is due, and nothing happens otherwise.
         if (!now) scope.launch { nori.keepAutoEqList() }
     }

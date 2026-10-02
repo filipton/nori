@@ -24,7 +24,7 @@ pub fn ensure(client: &crate::client::Client) -> Option<PathBuf> {
     }
     let file = model.file()?;
     let mobile = settings.prefs(|p| p.auto_mix_beats_mobile_data);
-    if nori_net::stream::metered() && !mobile {
+    if client.metered() && !mobile {
         model.set_state(State::WaitingForWifi);
         return None;
     }

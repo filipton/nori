@@ -9,12 +9,12 @@ pub use nori_net::stream::*;
 pub fn resolve_now(id: &str) -> Option<StreamTarget> {
     let client = crate::client::active_client()?;
     let kept = client.core.transfers().held().state(id) == crate::transfers::HeldState::Done;
-    Some(client.resolve(id.to_string(), kept, !kept && metered()))
+    Some(client.resolve(id.to_string(), kept, !kept && client.metered()))
 }
 
 /// [`Client::precache_targets`] via the active client on the current network.
 pub fn precache_now() -> Vec<Fetch> {
-    crate::client::active_client().map(|c| c.precache_targets(metered())).unwrap_or_default()
+    crate::client::active_client().map(|c| c.precache_targets(c.metered())).unwrap_or_default()
 }
 
 impl Client {

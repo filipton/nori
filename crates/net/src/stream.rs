@@ -1,20 +1,5 @@
 //! Stream targets and cache keys. Caches are keyed by song id and quality, never by URL.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
-/// Whether the phone's network is metered. Global: the platform reports it through a free FFI function.
-static METERED: AtomicBool = AtomicBool::new(false);
-
-/// Called by the platform whenever the network changes between metered and not.
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn network_metered(metered: bool) {
-    METERED.store(metered, Ordering::Relaxed);
-}
-
-pub fn metered() -> bool {
-    METERED.load(Ordering::Relaxed)
-}
-
 /// A quality setting: `bit_rate` 0 and an empty `format` mean the original file.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]

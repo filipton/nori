@@ -89,6 +89,11 @@ impl Client {
         &self.core.session.settings
     }
 
+    /// Whether the network is metered now, as the platform says.
+    pub fn metered(&self) -> bool {
+        self.transport.network() == transport::Network::Metered
+    }
+
     /// `params` plus the music folder, for endpoints that take one.
     pub(crate) fn scoped(&self, endpoint: &str, mut params: Vec<(String, String)>) -> Vec<(String, String)> {
         let p = self.profile.read();
@@ -292,6 +297,7 @@ pub(crate) mod tests {
         pub switched: Mutex<u32>,
         /// Each request pends once before answering, as a real one would.
         pub pends: Mutex<bool>,
+        pub metered: Mutex<bool>,
     }
 
     impl Fake {
@@ -332,6 +338,9 @@ pub(crate) mod tests {
         }
         fn address_changed(&self) {
             *self.switched.lock() += 1;
+        }
+        fn network(&self) -> transport::Network {
+            if *self.metered.lock() { transport::Network::Metered } else { transport::Network::Unmetered }
         }
     }
 

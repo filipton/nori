@@ -430,6 +430,10 @@ mod tests {
                 self.get(request.url, request.timeout_ms).await
             }
             fn address_changed(&self) {}
+
+            fn network(&self) -> nori_net::transport::Network {
+                nori_net::transport::Network::Unmetered
+            }
         }
 
         fn curve_first(graphic: bool, pages: Vec<(&'static str, u16, &'static str)>) -> (Result<Curve, nori_net::transport::NetError>, usize) {

@@ -126,7 +126,7 @@ impl Rig {
         let store = store.then(|| Store::open(dir.join("music"), 256 << 20, Box::new(Recent::default())).unwrap());
         core.session.register(["a", "b"].map(|id| Song { id: id.into(), title: id.into(), duration: if id == "a" { A_SECS } else { 5 }, suffix: "mp3".into(), ..Default::default() }).to_vec());
         core.session.set(vec!["a".into(), "b".into()], Some(0), false, None);
-        let library = CoreLibrary { analyses: Analyses::of(client.clone()), client, bytes, metered: false, store: store.clone() };
+        let library = CoreLibrary { analyses: Analyses::of(client.clone()), client, bytes, store: store.clone() };
         let card = Card::new();
         let events = Arc::new(Mutex::new(Vec::new()));
         let seen = events.clone();

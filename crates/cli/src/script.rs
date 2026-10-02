@@ -237,7 +237,7 @@ pub fn main(argv: Vec<String>) {
     let analyses = Analyses::of(client.clone());
     let downloader = Downloader::new(client.clone(), audio.clone(), store.clone(), analyses.clone());
     let app = CoreApp::new(core.session.clone()).measuring(Measurer::new(analyses.clone(), store.clone())).per_device(core.clone());
-    let library = CoreLibrary { client: client.clone(), bytes: audio.clone(), metered: false, store: Some(store), analyses };
+    let library = CoreLibrary { client: client.clone(), bytes: audio.clone(), store: Some(store), analyses };
     let engine = Engine::start(library, app, CoreQueue(core.session.clone()), output, None, Config { memory_mb: 256, settings: settings(&prefs, 0.0), ..Config::default() }, move |e| {
         let _ = tx.send(e);
     });
