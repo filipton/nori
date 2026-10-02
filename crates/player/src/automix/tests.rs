@@ -2,6 +2,7 @@
 
 use super::structure::camelot;
 use super::*;
+use super::eval::{grid, precision, Song, Style, DRUMS, FULL, KEYS};
 use super::synth::*;
 
 fn octave_ok(got: f64, want: f64, tol: f64) -> bool {
@@ -43,7 +44,7 @@ fn tempo_accuracy() {
 }
 
 #[test]
-fn grid_bpm_is_precise() {
+fn grid_is_precise() {
     let bpms = [90.0, 123.0, 128.0, 140.5];
     let got = each(&bpms, |&bpm| {
         let s = Synth { secs: 90.0, ..Synth::new(bpm) };
@@ -52,11 +53,8 @@ fn grid_bpm_is_precise() {
     for (bpm, got) in bpms.iter().zip(got) {
         assert!((got - bpm).abs() < 0.05, "{bpm} BPM read as {got}");
     }
-}
 
-/// `offset + n * period` within a few ms of every true beat.
-#[test]
-fn grid_lands_on_clicks() {
+    // `offset + n * period` within a few ms of every true beat.
     let cases: Vec<(f64, f64)> = [90.0, 128.0, 174.0].into_iter().flat_map(|bpm| [(bpm, 0.1), (bpm, 0.33)]).collect();
     let synth = |&(bpm, first): &(f64, f64)| Synth { first_beat: first, lead_silence: 1.5, ..Synth::new(bpm) };
     let got = each(&cases, |c| {
@@ -101,7 +99,7 @@ fn downbeats_follow_the_kick() {
 }
 
 #[test]
-fn noise_is_unreliable() {
+fn non_music_is_measured() {
     let rate = 44100;
     let mut rng = Rng(12345);
     let x: Vec<f32> = (0..rate * 60).map(|_| (0.3 * rng.next()) as f32).collect();
@@ -122,17 +120,13 @@ fn noise_is_unreliable() {
         .collect();
     let t = analyse("n", &x, rate as u32).track;
     assert!(t.bpm_confidence < 0.3, "brown noise: {}", t.bpm_confidence);
-}
 
-#[test]
-fn beatless_tone_is_measured() {
+    // Beatless tone is measured.
     let x: Vec<f32> = (0..44100 * 5).map(|i| (2.0 * std::f64::consts::PI * 997.0 * i as f64 / 44100.0).sin() as f32).collect();
     let t = analyse("tone", &x, 44100).track;
     assert!((t.lufs + 3.01).abs() < 0.1, "lufs {}", t.lufs);
-}
 
-#[test]
-fn silence_and_trims() {
+    // Silence and trims.
     let t = analyse("s", &vec![0f32; 44100 * 20], 44100).track;
     assert_eq!((t.bpm, t.bpm_confidence, t.lufs, t.key), (0.0, 0.0, -70.0, 0));
     assert_eq!((t.silence_start_ms, t.silence_end_ms), (0, 0));
@@ -164,7 +158,7 @@ fn overlap_windows_measure_voice_and_brightness() {
 }
 
 #[test]
-fn sample_rate_independent() {
+fn input_form_changes_nothing() {
     let got = each(&[22050, 32000, 44100, 48000, 96000], |&rate| {
         let s = Synth { rate, chords: vec![(9, true), (2, true)], ..Synth::new(126.0) };
         let t = analyse("t", &s.render(), rate).track;
@@ -175,10 +169,8 @@ fn sample_rate_independent() {
         assert!((offset - got[2].2).abs() < 6.0, "{rate}: offset {offset} vs {}", got[2].2);
         assert_eq!(*key, got[2].3, "{rate}");
     }
-}
 
-#[test]
-fn streaming_matches_whole() {
+    // Streaming matches whole.
     let s = Synth { chords: vec![(0, false), (5, false)], ..Synth::new(128.0) };
     let x = s.render();
     let whole = analyse("t", &x, s.rate).track;
@@ -202,11 +194,8 @@ fn streaming_matches_whole() {
     a.feed_interleaved(&pcm, 2, |v| v as f32 / 32768.0);
     let t = finish("t", &a.take_features()).track;
     assert!((t.bpm - 128.0).abs() < 0.05);
-}
 
-/// Decoder bytes, 16-bit stereo or float mono, analyse like f32 samples.
-#[test]
-fn decoder_bytes_in_any_layout() {
+    // Decoder bytes, 16-bit stereo or float mono, analyse like f32 samples.
     let s = Synth { rate: 48000, chords: vec![(9, true), (4, false)], ..Synth::new(96.0) };
     let x = s.render();
     let reference = analyse("t", &x, s.rate).track;
@@ -227,7 +216,7 @@ fn decoder_bytes_in_any_layout() {
 }
 
 #[test]
-fn keys_of_simple_progressions() {
+fn keys_are_read() {
     let cases = [
         (vec![(0, false), (5, false), (7, false), (0, false)], Some(camelot(0, false))), // C F G C
         (vec![(9, true), (2, true), (4, false), (9, true)], Some(camelot(9, true))),     // Am Dm E Am
@@ -249,6 +238,21 @@ fn keys_of_simple_progressions() {
             None => assert!(t.key_confidence < 0.3, "drums got key confidence {}", t.key_confidence),
         }
     }
+
+    // A band tuned ±40 cents keeps its key: the tuning is measured and removed first.
+    for (cents, tonic, minor) in [(40.0, 7, true), (-40.0, 2, false), (0.0, 9, true)] {
+        let song = Song { cents, progression: 1, sections: vec![(4, KEYS), (16, FULL)], ..Song::new("detuned", Style::Backbeat, 120.0, tonic, minor) };
+        let (x, truth) = song.render();
+        let mut an = analysis::Analyzer::new(song.rate, 0);
+        an.feed(&x);
+        let f = an.take_features();
+        let tune = structure::tuning(&f) * 100.0;
+        let t = finish("t", &f).track;
+        println!("{cents:+} cents: measured {tune:+.1}, key {} (want {})", structure::camelot_name(t.key), structure::camelot_name(truth.key));
+        assert!((tune - cents).abs() < 8.0, "{cents}: tuning {tune}");
+        assert_eq!(t.key, truth.key, "{cents}: {}", structure::camelot_name(t.key));
+        assert!(t.key_confidence >= 0.4, "{cents}: confidence {}", t.key_confidence);
+    }
 }
 
 #[test]
@@ -260,7 +264,7 @@ fn drifting_tempo_is_unstable() {
 }
 
 #[test]
-fn phrase_cues_land_on_sections() {
+fn sections_are_found() {
     // 16 bars of hats, the full groove, 16 bars of hats.
     let s = Synth { secs: 150.0, intro_bars: 16, outro_bars: 16, chords: vec![(0, false), (5, false)], ..Synth::new(128.0) };
     let t = analyse("t", &s.render(), s.rate).track;
@@ -279,70 +283,9 @@ fn phrase_cues_land_on_sections() {
     let from_first = (t.outro_start_ms as f64 - s.first_beat * 1000.0) / bar;
     assert!((from_first / 8.0 - (from_first / 8.0).round()).abs() < 0.02, "on an 8-bar line: {from_first}");
     assert!(t.silence_end_ms as f64 - t.outro_start_ms as f64 >= 16.0 * bar - 100.0);
-}
 
-/// Grooves whose strongest lag is not the beat (drum and bass, dotted-eighth funk): autocorrelation alone read
-/// 116 and 139 BPM.
-#[test]
-fn syncopated_grooves_read_the_beat() {
-    use super::eval::{Song, Style, FULL};
-    for (song, want) in [
-        (Song { sections: vec![(28, FULL)], ..Song::new("dnb", Style::DnB, 174.0, 0, true) }, 174.0),
-        (Song { sections: vec![(20, FULL)], ..Song::new("funk", Style::Funk, 104.0, 10, false) }, 104.0),
-    ] {
-        let (x, _) = song.render();
-        let t = analyse("t", &x, song.rate).track;
-        println!("{}: {:.2} BPM (conf {:.2})", song.name, t.bpm, t.bpm_confidence);
-        assert!(octave_ok(t.bpm, want, 0.01), "{}: {}", song.name, t.bpm);
-    }
-}
-
-/// A steady syncopated groove is trusted at both ends. Regression: its five-sixteenths lag counted as a rival
-/// tempo and dropped confidence to 0.44.
-#[test]
-fn steady_syncopated_groove_is_trusted() {
-    use super::eval::{Song, Style, DRUMS, FULL};
-    use super::plan::{MIN_BPM_CONFIDENCE, MIN_STABILITY};
-    for (bpm, swing) in [(125.0, 0.66), (128.0, 0.5), (130.0, 0.58)] {
-        let song = Song { swing, sections: vec![(8, DRUMS), (24, FULL), (8, FULL)], ..Song::new("broken", Style::Broken, bpm, 4, false) };
-        let (x, _) = song.render();
-        let t = analyse("t", &x, song.rate).track;
-        for (end, got, conf, stab) in [
-            ("whole", t.bpm, t.bpm_confidence, t.stability),
-            ("intro", t.intro_bpm, t.intro_bpm_confidence, t.intro_stability),
-            ("outro", t.outro_bpm, t.outro_bpm_confidence, t.outro_stability),
-        ] {
-            println!("{bpm} swing {swing} {end}: {got:.2} BPM (conf {conf:.2}, stab {stab:.2})");
-            assert!(octave_ok(got, bpm, 0.01), "{bpm} {end}: {got}");
-            assert!(conf >= MIN_BPM_CONFIDENCE && stab >= MIN_STABILITY, "{bpm} {end}: conf {conf} stab {stab}");
-        }
-    }
-}
-
-/// A band tuned ±40 cents keeps its key: the tuning is measured and removed first.
-#[test]
-fn detuned_band_keeps_key() {
-    use super::eval::{Song, Style, FULL, KEYS};
-    for (cents, tonic, minor) in [(40.0, 7, true), (-40.0, 2, false), (0.0, 9, true)] {
-        let song = Song { cents, progression: 1, sections: vec![(4, KEYS), (16, FULL)], ..Song::new("detuned", Style::Backbeat, 120.0, tonic, minor) };
-        let (x, truth) = song.render();
-        let mut an = analysis::Analyzer::new(song.rate, 0);
-        an.feed(&x);
-        let f = an.take_features();
-        let tune = structure::tuning(&f) * 100.0;
-        let t = finish("t", &f).track;
-        println!("{cents:+} cents: measured {tune:+.1}, key {} (want {})", structure::camelot_name(t.key), structure::camelot_name(truth.key));
-        assert!((tune - cents).abs() < 8.0, "{cents}: tuning {tune}");
-        assert_eq!(t.key, truth.key, "{cents}: {}", structure::camelot_name(t.key));
-        assert!(t.key_confidence >= 0.4, "{cents}: confidence {}", t.key_confidence);
-    }
-}
-
-/// House with 16-bar drum intro and outro, marked by tonal energy, not level. A beatless pad intro ends where the
-/// beat starts.
-#[test]
-fn drum_intros_and_outros_are_sections() {
-    use super::eval::{Song, Style, DRUMS, FULL};
+    // House with 16-bar drum intro and outro, marked by tonal energy, not level. A beatless pad intro ends where the
+    // beat starts.
     let song = Song { sections: vec![(16, DRUMS), (32, FULL), (16, DRUMS)], ..Song::new("house", Style::House, 124.0, 9, true) };
     let (x, truth) = song.render();
     let t = analyse("t", &x, song.rate).track;
@@ -360,8 +303,40 @@ fn drum_intros_and_outros_are_sections() {
 }
 
 #[test]
+fn syncopation_reads_the_beat() {
+    // Grooves whose strongest lag is not the beat (drum and bass, dotted-eighth funk): autocorrelation alone read
+    // 116 and 139 BPM.
+    for (song, want) in [
+        (Song { sections: vec![(28, FULL)], ..Song::new("dnb", Style::DnB, 174.0, 0, true) }, 174.0),
+        (Song { sections: vec![(20, FULL)], ..Song::new("funk", Style::Funk, 104.0, 10, false) }, 104.0),
+    ] {
+        let (x, _) = song.render();
+        let t = analyse("t", &x, song.rate).track;
+        println!("{}: {:.2} BPM (conf {:.2})", song.name, t.bpm, t.bpm_confidence);
+        assert!(octave_ok(t.bpm, want, 0.01), "{}: {}", song.name, t.bpm);
+    }
+
+    // A steady syncopated groove is trusted at both ends. Regression: its five-sixteenths lag counted as a rival
+    // tempo and dropped confidence to 0.44.
+    use super::plan::{MIN_BPM_CONFIDENCE, MIN_STABILITY};
+    for (bpm, swing) in [(125.0, 0.66), (128.0, 0.5), (130.0, 0.58)] {
+        let song = Song { swing, sections: vec![(8, DRUMS), (24, FULL), (8, FULL)], ..Song::new("broken", Style::Broken, bpm, 4, false) };
+        let (x, _) = song.render();
+        let t = analyse("t", &x, song.rate).track;
+        for (end, got, conf, stab) in [
+            ("whole", t.bpm, t.bpm_confidence, t.stability),
+            ("intro", t.intro_bpm, t.intro_bpm_confidence, t.intro_stability),
+            ("outro", t.outro_bpm, t.outro_bpm_confidence, t.outro_stability),
+        ] {
+            println!("{bpm} swing {swing} {end}: {got:.2} BPM (conf {conf:.2}, stab {stab:.2})");
+            assert!(octave_ok(got, bpm, 0.01), "{bpm} {end}: {got}");
+            assert!(conf >= MIN_BPM_CONFIDENCE && stab >= MIN_STABILITY, "{bpm} {end}: conf {conf} stab {stab}");
+        }
+    }
+}
+
+#[test]
 fn waltz_has_three_beats() {
-    use super::eval::{grid, precision, Song, Style, FULL};
     let song = Song { sections: vec![(24, FULL)], ..Song::new("waltz", Style::Waltz, 150.0, 5, false) };
     let (x, truth) = song.render();
     let t = analyse("t", &x, song.rate).track;
@@ -375,7 +350,6 @@ fn waltz_has_three_beats() {
 /// Half-time: bars start on the kick, not on the snare's beat three.
 #[test]
 fn half_time_bars_start_on_the_kick() {
-    use super::eval::{grid, precision, Song, Style, FULL};
     let song = Song { sections: vec![(24, FULL)], ..Song::new("halftime", Style::HalfTime, 140.0, 5, true) };
     let (x, truth) = song.render();
     let t = analyse("t", &x, song.rate).track;
