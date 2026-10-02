@@ -784,6 +784,8 @@ impl Loaded {
         let mut body: Option<Box<dyn Read + Send>> = None;
         let mut chunk = vec![0u8; CHUNK];
         let mut failures = 0;
+        // The open body brought bytes.
+        let mut brought = false;
         let mut keep = keep.and_then(|k| k());
         // An entry the fetching ahead began: read its start from disk and fetch the rest at once.
         let mut go_on = false;
@@ -857,6 +859,7 @@ impl Loaded {
                     Ok(b) => {
                         let reader = b.reader;
                         go_on = false;
+                        brought = false;
                         let mut s = self.state.lock();
                         let promised = b.len.filter(|&l| s.before.is_none_or(|b| l < b));
                         match (s.len, promised) {
@@ -927,20 +930,29 @@ impl Loaded {
                 }
                 Ok(n) => {
                     failures = 0;
+                    brought = true;
                     if s.end() == from && s.restart.is_none() {
                         s.data.extend_from_slice(&chunk[..n]);
                         took = n;
                     }
                 }
-                // Broken: fetch again from there. Stalls count as failures, so a server that answers and
-                // never sends gives up after a few.
-                Err(_) => {
+                // Broken after bytes came: fetched again from there at once. Broken before any, or
+                // stalled, it is a failure, so a server that answers and then breaks or never sends
+                // gives up after a few.
+                Err(e) => {
                     body = None;
-                    if self.cancel.timed_out() {
+                    let stalled = self.cancel.timed_out();
+                    if stalled || !brought {
                         failures += 1;
                         if failures > RETRIES {
-                            s.error = Some(OpenError::TimedOut.to_string());
+                            s.error = Some(if stalled { OpenError::TimedOut.to_string() } else { e.to_string() });
                             s.done = true;
+                        } else if !stalled {
+                            drop(s);
+                            if !self.rest(failures) {
+                                return;
+                            }
+                            continue;
                         }
                     }
                 }
@@ -1764,6 +1776,30 @@ mod tests {
         s.0.reach(1);
         drop((s, l));
         gone.reach(1);
+    }
+
+    /// A server that answers and breaks every body before a byte fails the song after a few tries,
+    /// resting between them, rather than being asked again and again at once.
+    #[test]
+    fn body_broken_at_once_fails_after_retries() {
+        struct Resets(Mutex<u32>);
+        struct Reset;
+        impl Read for Reset {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::new(io::ErrorKind::ConnectionReset, "reset"))
+            }
+        }
+        impl ByteSource for Resets {
+            fn open(&self, _: &str, from: u64) -> Result<Body, OpenError> {
+                *self.0.lock() += 1;
+                Ok(Body { start: from, len: Some(1_000), reader: Box::new(Reset) })
+            }
+        }
+        let s = Arc::new(Resets(Mutex::new(0)));
+        let l = Loader::start_within(s.clone(), "song".into(), LOAD, Some(3_000), None, None, None, Waits { stall_ms: 20_000, retry_ms: 1 });
+        until(&l, "the song fails", |s| s.done);
+        assert!(l.error().is_some(), "failed");
+        assert_eq!(*s.0.lock(), RETRIES + 1, "asked once and again {RETRIES} times");
     }
 
     #[test]
