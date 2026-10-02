@@ -275,6 +275,28 @@ pub struct TransitionPlan {
 }
 
 impl TransitionPlan {
+    /// The same transition over `duration_ms`: every relative time scaled to it.
+    pub fn squeeze(&mut self, duration_ms: i64) {
+        let k = duration_ms as f64 / self.duration_ms.max(1) as f64;
+        let at = |ms: &mut i64| *ms = (*ms as f64 * k).round() as i64;
+        self.duration_ms = duration_ms;
+        for ms in [&mut self.out_fade_start_ms, &mut self.out_fade_end_ms, &mut self.in_fade_start_ms, &mut self.in_fade_end_ms] {
+            at(ms);
+        }
+        if let Some(s) = self.bass_swap.as_mut() {
+            at(&mut s.at_ms);
+            at(&mut s.len_ms);
+        }
+        for s in [self.low_pass.as_mut(), self.high_pass.as_mut()].into_iter().flatten() {
+            at(&mut s.start_ms);
+            at(&mut s.end_ms);
+        }
+        if let Some(d) = self.vocal_duck.as_mut() {
+            at(&mut d.until_ms);
+            at(&mut d.release_ms);
+        }
+    }
+
     /// Whether both plans mix the same audio: equal but for `kind`, `reason` and `tempo_ramp_beats`
     /// (`tempo_ramp_ms` is what runs).
     pub fn sounds_same(&self, o: &TransitionPlan) -> bool {

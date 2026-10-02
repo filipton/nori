@@ -2688,3 +2688,141 @@ fn analyses_mid_hold_still_mix() {
         assert!(heard < a.len() + b.len() - RATE as usize * 2 * 4, "{at_s} s: the songs overlap, {} s heard: {log:?}", heard / 2 / RATE as usize);
     }
 }
+
+// ---- a MixRamp fade out of a song with no beat grid, left before its end ----
+
+/// An analysis with no usable beat grid (as the phone's Go Slowly and Black Star): leaving at `exit_ms`
+/// (0: at the end), a quiet head of `head_ms`.
+fn gridless(id: &str, ms: i64, exit_ms: i64, head_ms: i64) -> TrackAnalysis {
+    TrackAnalysis { bpm_confidence: 0.3, stability: 0.2, outro_bpm_confidence: 0.3, outro_stability: 0.2, intro_bpm_confidence: 0.3, intro_stability: 0.2, exit_ms, mixramp_start_ms: head_ms, mixramp_end_ms: ms - 1_000, ..measured(id, 108.0, ms) }
+}
+
+/// The level of `hz` in each 20 ms of the left channel of `heard`.
+fn levels(heard: &[i16], hz: f64) -> Vec<f64> {
+    let w = RATE as usize / 50;
+    let tau = std::f64::consts::TAU;
+    heard.chunks_exact(2 * w).map(|c| {
+        let (mut re, mut im, mut sum) = (0.0, 0.0, 0.0);
+        for (i, v) in c.iter().step_by(2).enumerate() {
+            let h = 0.5 - 0.5 * (tau * i as f64 / w as f64).cos();
+            let t = tau * hz * i as f64 / RATE as f64;
+            sum += h;
+            re += *v as f64 / 32768.0 * h * t.cos();
+            im += *v as f64 / 32768.0 * h * t.sin();
+        }
+        2.0 * (re * re + im * im).sqrt() / sum
+    }).collect()
+}
+
+/// What the card heard from sample `from` on, the outgoing song a tone at `out_hz` mixing into the
+/// incoming one at `in_hz` over `dur_ms`: the outgoing steady, then falling smoothly to silence, never
+/// cut; the incoming rising and staying; the two heard together for most of the mix; no click.
+fn fades_through(heard: &[i16], from: usize, out_hz: f64, in_hz: f64, dur_ms: i64, what: &str) {
+    let heard = &heard[from & !1..];
+    let (a, b) = (levels(heard, out_hz), levels(heard, in_hz));
+    let full = a[..25].iter().copied().fold(0.0, f64::max);
+    assert!(full > 0.05, "{what}: the outgoing song heard after the seek: {:?}", &a[..25]);
+    let first_b = b.iter().position(|&v| v > 0.02 * full).unwrap_or_else(|| panic!("{what}: the incoming song is heard"));
+    let last_a = a.iter().rposition(|&v| v > 0.02 * full).expect("the outgoing song is heard");
+    for (w, pair) in a[..=last_a + 1].windows(2).enumerate() {
+        let near = &a[w.saturating_sub(10)..(w + 10).min(a.len())];
+        assert!(pair[1] >= pair[0] - 0.06 * full, "{what}: the outgoing song cut {:.2} s after the seek ({:.3} -> {:.3} of {full:.3}), the mix from {:.2} s: {near:?}", (w + 1) as f64 / 50.0, pair[0], pair[1], first_b as f64 / 50.0);
+    }
+    let overlap_ms = (last_a as i64 - first_b as i64) * 20;
+    assert!(overlap_ms >= dur_ms * 8 / 10, "{what}: heard together {overlap_ms} ms of a {dur_ms} ms mix (from {:.2} s)", first_b as f64 / 50.0);
+    let after = &b[last_a + 5..b.len() - 5];
+    let top = after.iter().copied().fold(0.0, f64::max);
+    assert!(after.iter().all(|&v| v > 0.9 * top), "{what}: the incoming song steady after the mix");
+    assert_eq!(reference::clicks(heard, RATE, 4.0), Vec::<usize>::new(), "{what}: no clicks");
+}
+
+/// What happens while a MixRamp fade is under way ([`mixramp_fades_out_after_seek`]), so many ms after
+/// the seek lands.
+#[derive(Debug, Clone, Copy)]
+enum Meanwhile {
+    Nothing,
+    /// The equalizer changed.
+    Eq(i64),
+    /// The incoming song turns out to start loud (a shorter fade), the ending planned again.
+    Analysis(i64),
+    /// The equalizer's screen opened: the output turns shallow.
+    Tuning(i64),
+}
+
+/// The phone's Go Slowly into Black Star: no reliable grid, an exit before the end, a MixRamp fade;
+/// the songs at 48 kHz into an output a 44.1 kHz song opened, a seek landing before or in the mix, a
+/// device holding music or not, and changes while the ending plays. The outgoing song fades out over
+/// the mix as the incoming one fades in.
+#[test]
+fn mixramp_fades_out_after_seek() {
+    let x = common::sine(RATE, 3_000.0, 12.0, 6_000.0);
+    let (a, b) = (common::sine(48_000, 200.0, 40.0, 6_000.0), common::sine(48_000, 900.0, 40.0, 6_000.0));
+    let gentler = || {
+        let bands = vec![nori_player::dsp::Band { kind: nori_player::dsp::PEAKING, freq: 1000.0, gain_db: 3.0, q: 1.0, channel: 0 }];
+        Settings { auto_mix: true, sound: nori_engine::Sound { bands, ..Default::default() }, ..Settings::default() }
+    };
+    use Meanwhile::*;
+    // (the incoming song's quiet head, where the seek lands before the mix, what the device holds, where
+    // the outgoing song's music really ends (it says 40 s), ms; what happens meanwhile)
+    let cases = [
+        (8_600, 6_600, 0, 40_000, Nothing),
+        (0, 6_600, 0, 40_000, Nothing),
+        (8_600, 2_000, 0, 40_000, Nothing),
+        (8_600, -3_000, 0, 40_000, Nothing),
+        (8_600, 6_600, 1_500, 40_000, Nothing),
+        (8_600, 6_600, 0, 26_000, Nothing),
+        (8_600, -2_000, 0, 26_000, Nothing),
+        (8_600, 6_600, 0, 40_000, Eq(3_000)),
+        (8_600, 6_600, 0, 40_000, Eq(9_000)),
+        (8_600, 6_600, 0, 40_000, Analysis(3_000)),
+        (8_600, 6_600, 0, 40_000, Analysis(9_000)),
+        (8_600, 6_600, 1_500, 40_000, Analysis(9_000)),
+        (8_600, 6_600, 0, 40_000, Tuning(3_000)),
+        (8_600, 6_600, 1_500, 40_000, Tuning(9_000)),
+    ];
+    for (head_ms, before_ms, hold_ms, end_ms, meanwhile) in cases {
+        let what = format!("head {head_ms} ms, seek {before_ms} ms before the mix, the device holding {hold_ms} ms, the music to {end_ms} ms, {meanwhile:?}");
+        let a = &a[..end_ms as usize * 48 * 2];
+        let live = Live::new(TransitionPrefs { auto_mix: true, auto_mix_max_s: 12, echo_out: false, keep_albums: false, ..prefs_off() });
+        {
+            let mut app = live.0.lock();
+            app.analyses.insert("a".into(), gridless("a", 40_000, 30_000, 0));
+            app.analyses.insert("b".into(), gridless("b", 40_000, 0, head_ms));
+        }
+        let files = vec![("x".to_string(), wav(&x), 12_000), ("a".to_string(), wav_at(a, 48_000), 40_000), ("b".to_string(), wav_at(&b, 48_000), 40_000)];
+        let rig = Rig::build(files, live.clone(), Settings { auto_mix: true, ..loud_eq() }, Extra { pace: Some(5.0), hold_ms: Some(hold_ms), ..Extra::default() });
+        rig.engine.play_at(0, 0);
+        assert!(rig.wait_for(30, |r| r.engine.status().index == Some(1) && r.engine.status().position_ms > 3_000), "{what}: {:?}", live.0.lock().log);
+        let plan = live.0.lock().log.iter().find(|l| l.contains("transition a -> b")).cloned().unwrap_or_else(|| panic!("{what}: {:?}", live.0.lock().log));
+        assert!(plan.contains("MixRampFade"), "{what}: {plan}");
+        let num = |after: &str| plan.split(after).nth(1).and_then(|s| s.split([' ', ',']).next()).and_then(|n| n.parse::<i64>().ok()).expect("a number");
+        let (dur, start) = (num("MixRampFade "), num(" ms at "));
+        assert_eq!(start + dur, 30_000, "{what}: leaves at the exit: {plan}");
+        rig.engine.go_to(1, start - before_ms);
+        assert!(rig.wait_for(10, |r| (start - before_ms..start - before_ms + 1_000).contains(&r.engine.status().position_ms)), "{what}: {:?}", rig.engine.status());
+        let landed = rig.heard.lock().len();
+        let from = landed + RATE as usize;
+        let at = |ms: i64| assert!(rig.wait_for(30, |r| r.heard.lock().len() >= landed + (ms * RATE as i64 / 1000) as usize * 2), "{what}");
+        match meanwhile {
+            Nothing => {}
+            Eq(ms) => {
+                at(ms);
+                rig.engine.set_settings(gentler());
+            }
+            Analysis(ms) => {
+                at(ms);
+                live.0.lock().analyses.insert("b".into(), gridless("b", 40_000, 0, 0));
+                rig.engine.replan();
+            }
+            Tuning(ms) => {
+                at(ms);
+                rig.engine.set_tuning(true);
+            }
+        }
+        assert!(rig.wait_for(60, Rig::ended), "{what}: {:?}", live.0.lock().log);
+        let log = live.0.lock().log.clone();
+        assert!(log.iter().any(|l| l.contains("mixing: the next track arrived")), "{what}: {log:?}");
+        let mixed_ms = if matches!(meanwhile, Analysis(_)) { 5_000 } else { (start + dur).min(end_ms) - start.max(start - before_ms + 500) };
+        fades_through(&rig.heard.lock(), from, 200.0, 900.0, mixed_ms, &what);
+    }
+}

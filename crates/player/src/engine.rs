@@ -210,8 +210,6 @@ pub struct TransitionEngine {
     /// Hold capacity for this transition, bytes.
     tail_limit: usize,
     tail_len: usize,
-    /// Bytes of the hold that are the song's own audio; the rest is silence padding a song that ended early.
-    tail_heard: usize,
     tail_read: usize,
     /// Output timestamp the hold began at.
     held_from_us: Option<i64>,
@@ -318,7 +316,6 @@ impl TransitionEngine {
             tail: Vec::new(),
             tail_limit: 0,
             tail_len: 0,
-            tail_heard: 0,
             tail_read: 0,
             held_from_us: None,
             held_at: 0,
@@ -804,10 +801,8 @@ impl TransitionEngine {
         self.held_id = self.playing_id.clone().or_else(|| self.current_id.clone());
         self.held_offset_us = self.offset_us;
         self.heard.next_rate = if p.stretching() { p.tempo_ratio } else { 1.0 };
-        // The next song takes over where it becomes the louder, not where the fade begins.
+        self.take_over(p);
         let late = self.late_us.clamp(0, p.duration_us);
-        self.takeover_us = (crate::automix::mixer::crossover_ms(&p.mixer) * 1000 - late).max(0);
-        self.heard.next_from_us = p.in_skip_us + ((late + self.takeover_us) as f64 * self.heard.next_rate as f64) as i64;
         self.heard.from = self.held_id.as_ref().map(|h| h.serial);
         self.heard.audible_us = i64::MAX;
         // Outro loop: only the loop slice is captured.
@@ -821,6 +816,14 @@ impl TransitionEngine {
         self.tail_limit = out.bytes((hold_us - late_hold).max(0));
         self.tail_len = 0;
         self.phase = Phase::Hold;
+    }
+
+    /// Where `p` hands over: the next song takes over where it becomes the louder, not where the fade
+    /// begins.
+    fn take_over(&mut self, p: &Plan) {
+        let late = self.late_us.clamp(0, p.duration_us);
+        self.takeover_us = (crate::automix::mixer::crossover_ms(&p.mixer) * 1000 - late).max(0);
+        self.heard.next_from_us = p.in_skip_us + ((late + self.takeover_us) as f64 * self.heard.next_rate as f64) as i64;
     }
 
     /// Appends outgoing audio to the hold; what does not fit is skipped by the plan.
@@ -840,13 +843,25 @@ impl TransitionEngine {
         let mixed = self.holding() && self.tail_len > 0 && self.out.is_some();
         self.made = ending.map(|id| (id.serial, if mixed { p.clone() } else { None }));
         match (self.phase, p, self.out) {
-            (Phase::Hold, Some(p), Some(out)) if self.tail_len > 0 => {
+            (Phase::Hold, Some(mut p), Some(out)) if self.tail_len > 0 => {
                 // The incoming stream, announced before this: its format is armed so stretch and skip are
                 // measured in its own domain.
                 self.arm_staged_for(host, self.current_id.clone(), false);
                 self.mix_source_id = self.current_id.clone();
                 self.playing_id = self.current_id.clone();
                 let late = self.late_us.clamp(0, p.duration_us);
+                if p.out_loop_us <= 0 && self.tail_len < self.tail_limit {
+                    // The song ended before the planned end: the mix runs over what was held, its fades with it.
+                    let ms = (late + out.us(self.tail_len) + 999) / 1000;
+                    host.log(&format!("mixing: {} ended {} ms into its {} ms ending: the mix is made to fit", song(&self.held_id), ms, p.duration_us / 1000));
+                    p.mixer.squeeze(ms);
+                    p.duration_us = ms * 1000;
+                    self.tail_limit = self.tail_len;
+                    self.take_over(&p);
+                    if let Some(from) = self.held_from_us {
+                        self.heard.audible_us = from - self.held_offset_us + self.takeover_us;
+                    }
+                }
                 let m = self.ensure_mixer(out);
                 m.configure(&p.mixer);
                 // A late hold starts the mix curves that far in.
@@ -863,12 +878,6 @@ impl TransitionEngine {
                 ));
                 // The hold goes out as the mix now; the position already reported stands.
                 self.held_us = 0;
-                // A song shorter than planned: pad the hold with silence so the mix curves run to the end.
-                self.tail_heard = self.tail_len;
-                if p.out_loop_us <= 0 && self.tail_len < self.tail_limit {
-                    self.tail[self.tail_len..self.tail_limit].fill(0);
-                    self.tail_len = self.tail_limit;
-                }
                 self.tail_read = 0;
                 self.mix_out_frame = 0;
                 self.mix_out_frames = ((p.duration_us - late) * out.rate as i64 / 1_000_000).max(0) as usize;
@@ -1165,8 +1174,7 @@ impl TransitionEngine {
     fn abandon_transition<H: Host>(&mut self, host: &mut H) {
         self.measure_next = false;
         if self.tail_len > 0 && matches!(self.phase, Phase::Hold | Phase::Mix) {
-            // In a mix, never the silence padding a short song's hold.
-            let end = if self.phase == Phase::Mix { self.tail_heard.min(self.tail_len) } else { self.tail_len };
+            let end = self.tail_len;
             let from = if self.phase == Phase::Mix { self.tail_read.min(end) } else { 0 };
             if from < end {
                 // At its own timestamps (the output keeps its clock from them), after any queued mix.
