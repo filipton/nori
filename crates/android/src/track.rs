@@ -2989,6 +2989,8 @@ mod tests {
         shared: Arc<Shared>,
         ticks: Arc<TestTicks>,
         next: i64,
+        /// The writer's turns.
+        turns: u64,
     }
 
     impl nori_engine::testing::Device for Phone {
@@ -3008,6 +3010,7 @@ mod tests {
                 return false;
             };
             let waits = w.ring.engine_waits();
+            self.turns += 1;
             self.next = match turn(w, &self.shared) {
                 Some(Some(ms)) => now_ns + ms as i64 * 1_000_000,
                 _ => i64::MAX / 2,
@@ -3025,7 +3028,7 @@ mod tests {
         let writer = Arc::new(Mutex::new(None));
         let mut output = TrackOutput::new(Box::new(LiveOpener(live.clone())), false, shared.clone());
         output.by_hand = Some(writer.clone());
-        let phone = Phone { writer, shared, ticks, next: i64::MAX / 2 };
+        let phone = Phone { writer, shared, ticks, next: i64::MAX / 2, turns: 0 };
         let engine = nori_engine::Engine::start_on(library, app, queue, Box::new(output), None, config, clock.clone(), |_| {});
         (engine, Stepper::new(clock, Arc::new(Mutex::new(phone))), live)
     }
@@ -3173,6 +3176,49 @@ mod tests {
         let at = status.position_ms;
         assert!(wait(5, &mut || engine.status().position_ms >= at + 1_000), "and the place moves on from {at} ms: {:?}", engine.status());
         engine.stop();
+    }
+
+    /// Host perf report for the phone's side: a long song on a phone-like track with the engine, per
+    /// minute of music the engine's wakes, the writer's turns and the process's CPU time. Not a check.
+    ///
+    ///   cargo test --release -p nori-android writer_perf_report -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn writer_perf_report() {
+        const SECS: u32 = 600;
+        let files = Arc::new(Files { dir: nori_testdir::TempDir::new("nori-android-perf"), ms: SECS as i64 * 1000 });
+        std::fs::write(files.dir.join("a.wav"), wav(&tone(SECS, 330.0))).expect("a song on the disk");
+        let cpu_ms = || {
+            let mut u: libc::rusage = unsafe { std::mem::zeroed() };
+            // SAFETY: getrusage fills the struct it is handed.
+            unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) };
+            let ms = |t: libc::timeval| t.tv_sec as f64 * 1000.0 + t.tv_usec as f64 / 1000.0;
+            ms(u.ru_utime) + ms(u.ru_stime)
+        };
+        let loud = nori_engine::Sound { bands: vec![nori_player::dsp::Band { kind: nori_player::dsp::PEAKING, freq: 1000.0, gain_db: 6.0, q: 1.0, channel: 0 }], ..Default::default() };
+        for (name, settings) in [("plain", nori_engine::Settings::default()), ("equalizer", nori_engine::Settings { sound: loud, ..Default::default() })] {
+            let queue = nori_engine::SharedQueue::default();
+            queue.0.lock().set(vec!["a".into()], Some(0), false, 0);
+            let mut app = nori_player::sim::App::new();
+            app.prefs = nori_player::sim::prefs_off();
+            let config = nori_engine::Config { settings, ..Default::default() };
+            let phone_like = |ticks| Live { bounded: true, threshold: RATE as u64 / 4, ..Live::new(ticks) };
+            let (engine, time, live) = on_a_phone(OnDisk(files.clone()), app, queue, config, phone_like);
+            engine.queue_changed();
+            engine.play_at(0, 0);
+            assert!(time.until(Duration::from_secs(10), || live.lock().played() > RATE as u64), "it plays");
+            let (wakes, turns, cpu, played) = (time.clock.sleeps(), time.device.lock().turns, cpu_ms(), live.lock().played());
+            time.run(Duration::from_secs(SECS as u64 - 30));
+            let minutes = (live.lock().played() - played) as f64 / RATE as f64 / 60.0;
+            let per = |v: f64| v / minutes.max(1e-9);
+            println!(
+                "perf: writer {name:<10} music {minutes:5.2} min | engine wakes/min {:6.1} | writer turns/min {:6.1} | cpu ms/min {:7.1}",
+                per((time.clock.sleeps() - wakes) as f64),
+                per((time.device.lock().turns - turns) as f64),
+                per(cpu_ms() - cpu),
+            );
+            engine.stop();
+        }
     }
 
     #[test]
