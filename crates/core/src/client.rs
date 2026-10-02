@@ -40,12 +40,30 @@ pub struct Client {
     covers: Arc<crate::covers::CoverNet>,
 }
 
-/// The newest client, for Android's player and measuring doors (`stream::resolve_now`). Global: those
-/// JNI calls carry no client handle.
-static ACTIVE_CLIENT: parking_lot::Mutex<std::sync::Weak<Client>> = parking_lot::Mutex::new(std::sync::Weak::new());
+/// The client of the server profile in use, as the platform switches profiles: where what outlives one
+/// profile (a player, AutoMix's measuring) finds the client it works through now.
+#[derive(Default)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Object))]
+pub struct CurrentClient(RwLock<Option<Arc<Client>>>);
 
-pub fn active_client() -> Option<Arc<Client>> {
-    ACTIVE_CLIENT.lock().upgrade()
+#[cfg_attr(feature = "ffi", uniffi::export)]
+impl CurrentClient {
+    #[cfg_attr(feature = "ffi", uniffi::constructor)]
+    pub fn new() -> Arc<CurrentClient> {
+        Arc::default()
+    }
+
+    /// `client` is the profile's in use from now on.
+    pub fn set(&self, client: Arc<Client>) {
+        *self.0.write() = Some(client);
+    }
+}
+
+impl CurrentClient {
+    /// The client in use; None before the first profile opens.
+    pub fn get(&self) -> Option<Arc<Client>> {
+        self.0.read().clone()
+    }
 }
 
 async fn ping(transport: &dyn Transport, server: &api::Server, timeout_ms: u32) -> NetResult<()> {
@@ -138,9 +156,7 @@ impl Client {
 impl Client {
     #[cfg_attr(feature = "ffi", uniffi::constructor)]
     pub fn new(core: Arc<Core>, transport: Arc<dyn Transport>, covers: Arc<crate::covers::CoverNet>) -> Arc<Self> {
-        let client = Arc::new(Client { core, transport, covers, profile: RwLock::new(NetProfile::default()), second: AtomicBool::new(false), lyrics: Default::default(), motion: Default::default(), replaying: Default::default(), car: Default::default(), autofill_picks: Default::default(), autoeq_fetching: AtomicBool::new(false) });
-        *ACTIVE_CLIENT.lock() = Arc::downgrade(&client);
-        client
+        Arc::new(Client { core, transport, covers, profile: RwLock::new(NetProfile::default()), second: AtomicBool::new(false), lyrics: Default::default(), motion: Default::default(), replaying: Default::default(), car: Default::default(), autofill_picks: Default::default(), autoeq_fetching: AtomicBool::new(false) })
     }
 
     /// Sets the profile's addresses, folder and bitrate cap.

@@ -14,7 +14,7 @@
 //! [`Watch`] is the testable bookkeeping; the functions below drive one process-wide instance.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 /// An output presenting nothing new for longer than this has stalled.
 pub(crate) const STILL_MS: i64 = 2_000;
@@ -376,13 +376,11 @@ pub(crate) fn settings_held(expected: &[(&str, bool, bool)]) -> Option<Break> {
 static ON: AtomicBool = AtomicBool::new(false);
 /// Self-test volume factor for every output, as f32 bits.
 static QUIET: AtomicU32 = AtomicU32::new(0x3F80_0000);
-static RECORDER: Recorder = Recorder { state: Mutex::new(None), disk: OnceLock::new() };
+static RECORDER: Recorder = Recorder { state: Mutex::new(None) };
 
-/// The watch: what it saw and the breaks it said, and the platform's hook describing what the stream
-/// cache holds for a song id.
+/// The watch: what it saw and the breaks it said.
 struct Recorder {
     state: Mutex<Option<State>>,
-    disk: OnceLock<fn(&str) -> String>,
 }
 
 /// The watch's state.
@@ -455,15 +453,8 @@ impl Recorder {
         });
     }
 
-    fn disk_of(&self, id: Option<&str>) -> String {
-        match (id, self.disk.get()) {
-            (Some(id), Some(describe)) => describe(id),
-            (None, _) => "no song".into(),
-            (_, None) => "not known here".into(),
-        }
-    }
-
-    fn engine_seen(&self, l: &EngineLook) {
+    /// `disk` describes what the stream cache holds of a song.
+    fn engine_seen(&self, l: &EngineLook, disk: &dyn Fn(&str) -> String) {
         let EngineLook { now_ms, playing, offloaded, index, position_ms, in_output_ms, state, .. } = *l;
         let t = wall_ms();
         let (silent, output) = self.with_state(|s| {
@@ -482,9 +473,9 @@ impl Recorder {
             };
             (silent, output)
         });
-        // The platform hook calls into Kotlin, so it runs with the state unlocked.
+        // The platform's description calls into Kotlin, so it runs with the state unlocked.
         let silent = silent.map(|mut b| {
-            b.detail = format!("{}; the stream cache: {}", b.detail, self.disk_of(l.id));
+            b.detail = format!("{}; the stream cache: {}", b.detail, l.id.map_or_else(|| "no song".into(), disk));
             b
         });
         self.said(t, silent);
@@ -537,11 +528,6 @@ pub struct PerfEngineSeen {
     pub in_output_ms: i64,
 }
 
-/// Installs the platform's stream cache description hook, quoted by "silent" breaks.
-pub fn describe_disk(describe: fn(&str) -> String) {
-    let _ = RECORDER.disk.set(describe);
-}
-
 /// One engine wake (nori-engine's `watch::Seen`, forwarded by the Android library). `quiet_ms`: how
 /// long the playback position has not moved while it should; `state`: the engine's self-description.
 #[derive(Debug, Clone, Default)]
@@ -558,10 +544,11 @@ pub struct EngineLook<'a> {
     pub state: &'a str,
 }
 
-/// An engine wake: keeps its state for quoting, checks [`Watch::silent`], and watches the offloaded
-/// output (the CPU track is watched by its writer, [`track_seen`]).
-pub fn engine_seen(l: &EngineLook) {
-    RECORDER.engine_seen(l);
+/// An engine wake: keeps its state for quoting, checks [`Watch::silent`] (its break quoting `disk`'s
+/// description of what the stream cache holds of the song), and watches the offloaded output (the CPU
+/// track is watched by its writer, [`track_seen`]).
+pub fn engine_seen(l: &EngineLook, disk: &dyn Fn(&str) -> String) {
+    RECORDER.engine_seen(l, disk);
 }
 
 /// Reports a panic (from the platform's panic hook) as a break, when the watch is on.
@@ -809,17 +796,17 @@ mod tests {
 
     /// A watch of the test's own, for as long as the test runs.
     fn recorder() -> &'static Recorder {
-        Box::leak(Box::new(Recorder { state: Mutex::new(None), disk: OnceLock::new() }))
+        Box::leak(Box::new(Recorder { state: Mutex::new(None) }))
     }
 
     #[test]
     fn lock_safety() {
-        static HOOKED: Recorder = Recorder { state: Mutex::new(None), disk: OnceLock::new() };
-        // The Android hook calls into Kotlin, which may read the watch.
-        let _ = HOOKED.disk.set(|id| format!("{id}: {} breaks", HOOKED.breaks().len()));
+        static HOOKED: Recorder = Recorder { state: Mutex::new(None) };
+        // The Android description calls into Kotlin, which may read the watch.
+        let disk = |id: &str| format!("{id}: {} breaks", HOOKED.breaks().len());
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            HOOKED.engine_seen(&EngineLook { playing: true, id: Some("hooked"), quiet_ms: SILENT_MS, state: "Playing", ..EngineLook::default() });
+            HOOKED.engine_seen(&EngineLook { playing: true, id: Some("hooked"), quiet_ms: SILENT_MS, state: "Playing", ..EngineLook::default() }, &disk);
             tx.send(()).unwrap();
         });
         rx.recv_timeout(std::time::Duration::from_secs(5)).expect("engine_seen deadlocked on its own hook");
@@ -839,7 +826,7 @@ mod tests {
     fn track_break_quotes_engine_state() {
         let r = recorder();
         let state = "Playing; playing on 16 (s16) at 51 ms; reading 16 (s16) at 11000 ms; transition engine passing; loaders: s16: 0..90 of 90 bytes";
-        r.engine_seen(&EngineLook { playing: true, index: Some(16), position_ms: 51, in_output_ms: 100, state, ..EngineLook::default() });
+        r.engine_seen(&EngineLook { playing: true, index: Some(16), position_ms: 51, in_output_ms: 100, state, ..EngineLook::default() }, &|id| id.to_string());
         r.track_seen(0, true, 4410, 90_000, 44_100);
         r.track_seen(6_000, true, 4410, 90_000, 44_100);
         let breaks = r.breaks();

@@ -91,7 +91,6 @@ pub extern "system" fn JNI_OnLoad(vm: jni::JavaVM, _: *mut c_void) -> jint {
         register(&mut env, class);
     }
     log_panics();
-    nori_perf::invariants::describe_disk(player::disk_words);
     nori_core::heap::Counting::installed();
     nori_perf::memory::install(engine_memory);
     JNI_VERSION_1_6
@@ -109,8 +108,9 @@ fn engine_memory() -> nori_perf::memory::EngineMemory {
     }
 }
 
-/// Forwards each engine wake's observations to the perf build's invariant checks, only while they run.
-pub(crate) struct PerfWatch;
+/// Forwards each engine wake's observations to the perf build's invariant checks, only while they run;
+/// songs resolve through the client in use for what the stream cache holds of them.
+pub(crate) struct PerfWatch(pub(crate) std::sync::Arc<nori_core::client::CurrentClient>);
 
 impl nori_engine::watch::Watch for PerfWatch {
     fn wanted(&self) -> bool {
@@ -129,7 +129,7 @@ impl nori_engine::watch::Watch for PerfWatch {
             quiet_ms: s.quiet_ms,
             output_open: s.output_open,
             state: &s.state,
-        })
+        }, &|id| player::disk_words(&self.0, id))
     }
 }
 

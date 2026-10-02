@@ -4,20 +4,18 @@ use crate::client::Client;
 
 pub use nori_net::stream::*;
 
-/// Where `id` opens now via the active client: the download if finished, else a stream at the current
-/// network's quality. None without a client.
-pub fn resolve_now(id: &str) -> Option<StreamTarget> {
-    let client = crate::client::active_client()?;
-    let kept = client.core.transfers().held().state(id) == crate::transfers::HeldState::Done;
-    Some(client.resolve(id.to_string(), kept, !kept && client.metered()))
-}
-
-/// [`Client::precache_targets`] via the active client on the current network.
-pub fn precache_now() -> Vec<Fetch> {
-    crate::client::active_client().map(|c| c.precache_targets(c.metered())).unwrap_or_default()
-}
-
 impl Client {
+    /// Where `id` opens now: the download if finished, else a stream at the network's quality now.
+    pub fn resolve_now(&self, id: &str) -> StreamTarget {
+        let kept = self.core.transfers().held().state(id) == crate::transfers::HeldState::Done;
+        self.resolve(id.to_string(), kept, !kept && self.metered())
+    }
+
+    /// [`Client::precache_targets`] on the network now.
+    pub fn precache_now(&self) -> Vec<Fetch> {
+        self.precache_targets(self.metered())
+    }
+
     /// The user's (wifi, mobile, download) qualities.
     fn saved_qualities(&self) -> (StreamQuality, StreamQuality, StreamQuality) {
         let q = |s: &crate::settings::SavedQuality| StreamQuality { bit_rate: s.bit_rate.max(0) as u32, format: s.format.clone() };
@@ -124,6 +122,22 @@ mod tests {
         assert!(t.url.starts_with("https://wan.example/rest/stream?") && t.url.ends_with("&id=s1&maxBitRate=128&format=opus"));
         assert_eq!(c.stream_key("s1".into(), false, q(96, "mp3"), q(0, "")), "s1:96mp3", "under the cap");
         assert_eq!(c.stream_key("s1".into(), false, q(320, "mp3"), q(0, "")), "s1:128mp3");
+    }
+
+    #[test]
+    fn resolve_now_follows_network_and_downloads() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        let dir = nori_testdir::TempDir::new("resolve-now");
+        c.session().settings.open(&dir.join("app.db").to_string_lossy()).unwrap();
+        c.session().settings.edit_by_name("mobile", "192:opus");
+        *fake.metered.lock() = true;
+        assert_eq!(c.resolve_now("s1").key, "s1:192opus");
+        *fake.metered.lock() = false;
+        assert_eq!(c.resolve_now("s1").key, "s1:0");
+        c.core.download_queue(vec![crate::Song { id: "s1".into(), ..Default::default() }]).unwrap();
+        c.core.download_settle(vec!["s1".into()], vec![true]).unwrap();
+        *fake.metered.lock() = true;
+        assert_eq!(c.resolve_now("s1").key, "dl:s1", "a download plays whatever the network");
     }
 
     #[test]

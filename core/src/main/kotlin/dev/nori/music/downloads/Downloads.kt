@@ -95,7 +95,7 @@ class DownloadState internal constructor(
  * index says something is unfinished (see [resume]).
  */
 @UnstableApi
-class Downloads(private val context: Context, private val coreOf: () -> Core, private val clientOf: () -> Client, lazySources: Lazy<MediaSources>, private val settings: Settings) {
+class Downloads(private val context: Context, private val coreOf: () -> Core, private val clientOf: () -> Client, private val analyses: () -> Long, lazySources: Lazy<MediaSources>, private val settings: Settings) {
     private val core get() = coreOf()
     /** Songs just downloaded get their lyrics looked up, one batch after another (`Client::lyrics_for_downloads`). */
     private val lyrics = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -136,7 +136,7 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
         // What comes from the network is analysed as it downloads (MeasuringSink): AutoMix, the lyrics' sync and
         // the loudness of an untagged song read it later, and a song so measured is not read back from the disk.
         val measured = androidx.media3.datasource.DataSource.Factory {
-            androidx.media3.datasource.TeeDataSource(sources.network.createDataSource(), dev.nori.music.playback.MeasuringSink())
+            androidx.media3.datasource.TeeDataSource(sources.network.createDataSource(), dev.nori.music.playback.MeasuringSink(analyses()))
         }
         val upstream = CacheDataSource.Factory().setCache(sources.downloadCache).setUpstreamDataSourceFactory(measured)
         DownloadManager(context, DefaultDownloadIndex(sources.database), TrackedDownloaders(DefaultDownloaderFactory(upstream, Runnable::run))).apply {
@@ -183,7 +183,7 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
             // Saved songs are read back from the download cache (their analysis, the beat model), whether or not
             // the playback service runs.
             dev.nori.music.playback.MeasureBridge.sources = sources
-            runCatching { dev.nori.music.playback.MeasureJni.processStart() }.onFailure { Log.w(TAG, "downloads will not be read back", it) }
+            runCatching { dev.nori.music.playback.MeasureJni.processStart(analyses()) }.onFailure { Log.w(TAG, "downloads will not be read back", it) }
             publish(); reconcile()
         }
     }
@@ -231,7 +231,7 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
         if (got.isEmpty()) return
         // What each needs besides its lyrics - its analysis read back from the disk, the beat model - is the
         // core's, decided and started here, one song at a time on a thread of its own.
-        runCatching { dev.nori.music.playback.MeasureJni.processSaved(got.toTypedArray()) }.onFailure { Log.w(TAG, "could not read ${got.size} downloads back", it) }
+        runCatching { dev.nori.music.playback.MeasureJni.processSaved(analyses(), got.toTypedArray()) }.onFailure { Log.w(TAG, "could not read ${got.size} downloads back", it) }
         watchMarks()
         // Each shows as processing until its lyrics, analysis and beats are over, or a step runs past its time.
         main.post { main.removeCallbacks(expire); expire.run() }
@@ -253,7 +253,7 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
      */
     fun analyse(beats: Boolean, done: (Int) -> Unit) = io.execute {
         val ids = runCatching { core.downloadUnanalysed(beats) }.getOrElse { Log.w(TAG, "could not list the downloads to analyse", it); emptyList() }
-        val n = if (ids.isEmpty()) 0 else runCatching { dev.nori.music.playback.MeasureJni.processAnalyse(ids.toTypedArray()) }.getOrDefault(0)
+        val n = if (ids.isEmpty()) 0 else runCatching { dev.nori.music.playback.MeasureJni.processAnalyse(analyses(), ids.toTypedArray()) }.getOrDefault(0)
         if (n > 0) {
             watchMarks()
             main.post {

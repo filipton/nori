@@ -20,18 +20,19 @@ use jni::sys::{jboolean, jfloat, jint, jlong, jstring, jvalue};
 use jni::{JNIEnv, JavaVM};
 use nori_engine::ahead::{Ahead, Entry, Keeping};
 use nori_engine::arriving::Listening;
-use nori_engine::core::{ahead_songs, is_radio, key_format, measuring_ahead, settings, CoreApp, CoreQueue, OutputVolume};
+use nori_core::client::CurrentClient;
+use nori_engine::core::{ahead_songs, is_radio, key_format, measuring_ahead, settings, Analyses, CoreApp, CoreQueue, OutputVolume};
 use nori_engine::{Body, ByteSource, Cancel, Coded, Coding, Config, Device, Engine, Event, Library, Located, OffloadOutput, OpenError, OutputFacts, OutputFormat, Source, State, Support};
 use nori_player::transitions::WindowSong;
 use parking_lot::Mutex;
 
 use crate::track::{mono_ns, packed24, sample_bytes, HeadCount, Opened, Opener, Route, Shared, Sink, TrackOutput, CHUNK_BYTES};
-use crate::{cleared, java_string, native, Class};
+use crate::{cleared, java_string, native, Class, Handles};
 
 pub(crate) static CLASS: Class = Class {
     name: c"dev/nori/music/playback/RustPlayerJni",
     methods: &[
-        native!(c"create", c"(IZI)J", create),
+        native!(c"create", c"(JJIZI)J", create),
         native!(c"destroy", c"(J)V", destroy),
         native!(c"goTo", c"(JIJ)J", go_to),
         native!(c"pauseAtEnd", c"(JZ)V", pause_at_end),
@@ -1002,8 +1003,8 @@ fn cache_words(key: &str, method: fn(&Java) -> JStaticMethodID) -> Option<String
 }
 
 /// What the stream cache holds of song `id`, for the perf build's silent-break report.
-pub(crate) fn disk_words(id: &str) -> String {
-    let Some(target) = nori_core::stream::resolve_now(id) else { return format!("{id}: no server to resolve it") };
+pub(crate) fn disk_words(current: &CurrentClient, id: &str) -> String {
+    let Some(target) = current.get().map(|c| c.resolve_now(id)) else { return format!("{id}: no server to resolve it") };
     if target.key == nori_core::stream::download_key(id.to_string()) {
         return format!("{id}: downloaded");
     }
@@ -1046,10 +1047,12 @@ impl Drop for JavaBody {
 
 // ---- library ----
 
-/// Songs open at the URL and cache key the core resolves; radio stations at the address Kotlin handed
-/// over with [`radio`].
+/// Songs open at the URL and cache key the client in use resolves; radio stations at the address Kotlin
+/// handed over with [`radio`].
 struct AndroidLibrary {
     queue: Arc<nori_core::queue::Session>,
+    current: Arc<CurrentClient>,
+    analyses: Arc<Analyses>,
     stations: Arc<Mutex<Vec<(String, String)>>>,
     ahead: Arc<Ahead>,
 }
@@ -1065,7 +1068,7 @@ impl Library for AndroidLibrary {
         let duration_ms = song.as_ref().map(|s| s.duration as i64 * 1000).filter(|&d| d > 0);
         // Format hint from a transcoded stream's key; a download (`dl:<id>`) may be transcoded too, so its
         // file is sniffed instead.
-        let target = nori_core::stream::resolve_now(id).ok_or("no server to play from")?;
+        let target = self.current.get().ok_or("no server to play from")?.resolve_now(id);
         let hint = if target.key == nori_core::stream::download_key(id.to_string()) {
             None
         } else {
@@ -1085,11 +1088,12 @@ impl Library for AndroidLibrary {
 
     /// Fetches the core's precache targets except `next` (the engine loads that) into media3's cache.
     fn ahead(&mut self, next: &str) {
-        self.ahead.ask(Arc::new(Media3Cache), Arc::new(AheadBytes), ahead_songs(nori_core::stream::precache_now(), next), Some(measuring_ahead(crate::measure::analyses(), self.queue.clone())));
+        let fetch = self.current.get().map(|c| c.precache_now()).unwrap_or_default();
+        self.ahead.ask(Arc::new(Media3Cache), Arc::new(AheadBytes), ahead_songs(fetch, next), Some(measuring_ahead(&self.analyses, self.queue.clone())));
     }
 
     fn taker(&self, id: &str, hint: Option<&str>) -> Option<Listening> {
-        crate::measure::analyses().measure_as_it_comes(id, hint, false)
+        self.analyses.measure_as_it_comes(id, hint, false)
     }
 
     /// The song played nothing and will be refetched: drops its stream cache entry (never a download).
@@ -1097,7 +1101,7 @@ impl Library for AndroidLibrary {
         if is_radio(id) {
             return;
         }
-        let Some(target) = nori_core::stream::resolve_now(id) else { return };
+        let Some(target) = self.current.get().map(|c| c.resolve_now(id)) else { return };
         if target.key == nori_core::stream::download_key(id.to_string()) {
             return;
         }
@@ -1236,21 +1240,21 @@ impl Player {
     }
 }
 
-/// Live players by Kotlin handle. Handles are numbers, not pointers, so a native called with a destroyed
-/// handle (a late callback) finds nothing, and one that found a player keeps it alive until it returns.
-static PLAYERS: Mutex<Vec<(jlong, Arc<Player>)>> = Mutex::new(Vec::new());
-static NEXT_HANDLE: AtomicI64 = AtomicI64::new(1);
+/// Live players by Kotlin handle: a native called with a destroyed one (a late callback) finds nothing.
+static PLAYERS: Handles<Player> = Handles::new();
 
 fn player(h: jlong) -> Option<Arc<Player>> {
-    if h == 0 {
-        return None;
-    }
-    PLAYERS.lock().iter().find(|(k, _)| *k == h).map(|(_, p)| p.clone())
+    PLAYERS.get(h)
 }
 
-/// Starts an engine over the core's queue and settings. `sdk`: API level; `float`: high quality output;
-/// `memory_mb`: the app's memory class. 0 when the Java side is missing.
-extern "system" fn create(mut env: JNIEnv, _: JClass, sdk: jint, float: jboolean, memory_mb: jint) -> jlong {
+/// Starts an engine over the core's queue and settings, playing through `current`'s client (a
+/// `CurrentClient.uniffiCloneHandle()`, taken over) and measuring with `analyses` (`MeasureJni.analyses`).
+/// `sdk`: API level; `float`: high quality output; `memory_mb`: the app's memory class. 0 when the Java
+/// side is missing.
+extern "system" fn create(mut env: JNIEnv, _: JClass, current: jlong, analyses: jlong, sdk: jint, float: jboolean, memory_mb: jint) -> jlong {
+    // SAFETY: Kotlin passes `CurrentClient.uniffiCloneHandle()`, once.
+    let current: Arc<CurrentClient> = unsafe { crate::uniffi_object(current) };
+    let Some(analyses) = crate::measure::analyses(analyses) else { return 0 };
     if JAVA.get().is_none() {
         match look_up(&mut env) {
             Ok(j) => {
@@ -1267,11 +1271,11 @@ extern "system" fn create(mut env: JNIEnv, _: JClass, sdk: jint, float: jboolean
     let output = TrackOutput::new(Box::new(JavaOpener { sdk }), float != 0, shared.clone());
     let stations = Arc::new(Mutex::new(Vec::new()));
     let ahead = Ahead::new();
-    let library = AndroidLibrary { queue: nori_core::queue::shared().clone(), stations: stations.clone(), ahead: ahead.clone() };
+    let library = AndroidLibrary { queue: nori_core::queue::shared().clone(), current: current.clone(), analyses, stations: stations.clone(), ahead: ahead.clone() };
     // Full volume until Kotlin reports one (only while loudness compensation is on).
     let volume = Arc::new(OutputVolume::default());
     let sound = nori_core::settings_store::shared().current().map(|p| settings(&p, volume.db())).unwrap_or_default();
-    let watch = Some(nori_engine::watch::Watcher(Arc::new(crate::PerfWatch)));
+    let watch = Some(nori_engine::watch::Watcher(Arc::new(crate::PerfWatch(current))));
     let config = Config { memory_mb: memory_mb.max(16) as u32, settings: sound, watch, ..Config::default() };
     let events = Arc::new(Events::default());
     let tell = events.clone();
@@ -1282,19 +1286,13 @@ extern "system" fn create(mut env: JNIEnv, _: JClass, sdk: jint, float: jboolean
     let queue = nori_core::queue::shared();
     let app = CoreApp::new(queue.clone()).bridging().volume(volume.clone());
     let engine = Engine::start(library, app, CoreQueue(queue.clone()), Box::new(output), offloaded, config, move |e| tell.push(e));
-    let h = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
-    PLAYERS.lock().push((h, Arc::new(Player { engine, shared, events, offload, stations, jumped: Mutex::new(None), looked_ms: AtomicI64::new(i64::MIN / 2), volume, ahead })));
-    h
+    PLAYERS.add(Arc::new(Player { engine, shared, events, offload, stations, jumped: Mutex::new(None), looked_ms: AtomicI64::new(i64::MIN / 2), volume, ahead }))
 }
 
 /// Unregisters the player and stops it on a thread of its own (stopping joins engine threads, and media3
 /// calls this on the main thread).
 extern "system" fn destroy(_: JNIEnv, _: JClass, h: jlong) {
-    let gone = {
-        let mut players = PLAYERS.lock();
-        players.iter().position(|(k, _)| *k == h).map(|i| players.remove(i).1)
-    };
-    if let Some(p) = gone {
+    if let Some(p) = PLAYERS.remove(h) {
         // Stop this player's own fetch-ahead (a newer player keeps its own).
         p.ahead.ask(Arc::new(Media3Cache), Arc::new(AheadBytes), Vec::new(), None);
         // If the thread fails to start, the closure drops `p` here instead.

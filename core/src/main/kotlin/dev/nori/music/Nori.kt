@@ -8,6 +8,7 @@ import dev.nori.music.downloads.Downloads
 import dev.nori.music.ffi.Client
 import dev.nori.music.ffi.Core
 import dev.nori.music.ffi.CoverNet
+import dev.nori.music.ffi.CurrentClient
 import dev.nori.music.ffi.net.NetProfile
 import dev.nori.music.ffi.ServerConfig
 import dev.nori.music.net.Http
@@ -53,6 +54,12 @@ class Nori private constructor(private val context: Context) {
      */
     val coverNet by lazy { CoverNet() }
 
+    /** The client of the profile in use, for what outlives a profile: the player and AutoMix's measuring. */
+    val currentClient by lazy { CurrentClient() }
+
+    /** AutoMix's analyses over [currentClient] (crates/android measure.rs), for the player, the measurer and the downloads. */
+    val analyses: Long by lazy { dev.nori.music.playback.MeasureJni.analyses(currentClient.uniffiCloneHandle()) }
+
     /** The core's one door to the network; built with [http]. */
     private val transport by lazy { http.transport { library.onServerChanged() }.also { coverNet.setTransport(it) } }
 
@@ -65,7 +72,7 @@ class Nori private constructor(private val context: Context) {
                 val id = dev.nori.music.ffi.settings.serverDb(key)
                 val core = open(id, p)
                 dev.nori.music.downloads.DownloadsJni.use(core)
-                Opened(key, id, core, Client(core, transport, coverNet).also { c -> p?.let { c.setProfile(it.net()) } })
+                Opened(key, id, core, Client(core, transport, coverNet).also { c -> p?.let { c.setProfile(it.net()) }; currentClient.set(c) })
             }.also { opened = it }
         }
     }
@@ -88,7 +95,7 @@ class Nori private constructor(private val context: Context) {
     }
 
     val library = Library(::core, ::client)
-    val downloads = Downloads(context, ::core, ::client, lazySources, settings)
+    val downloads = Downloads(context, ::core, ::client, { analyses }, lazySources, settings)
     val dac = BitPerfect(context)
     val outputs = Outputs(context)
     /** A player for the moving cover; the screen's view model makes one when it first shows one. */

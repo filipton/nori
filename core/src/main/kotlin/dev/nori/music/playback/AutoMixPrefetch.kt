@@ -11,23 +11,28 @@ import dalvik.annotation.optimization.CriticalNative
 /** The measurer's doors (crates/android/src/measure.rs, over nori-engine's `Measurer`). */
 internal object MeasureJni {
     init { System.loadLibrary("norimusic") }
-    /** Makes the measurer; idle until it is asked. */
-    @JvmStatic external fun start()
+    /**
+     * AutoMix's analyses over [current]'s client (a `CurrentClient.uniffiCloneHandle()`, taken over): a
+     * handle for the process's life, which the doors below take.
+     */
+    @JvmStatic external fun analyses(current: Long): Long
+    /** Makes the measurer, idle until it is asked, as a handle [stop] takes back; 0 when it could not. */
+    @JvmStatic external fun start(analyses: Long): Long
     /** The songs coming up may have changed: the core names them, and the same songs change nothing. */
-    @JvmStatic @CriticalNative external fun update()
+    @JvmStatic @CriticalNative external fun update(measurer: Long)
     /** A song has become whole in one of the caches. */
-    @JvmStatic @CriticalNative external fun arrived()
-    @JvmStatic @CriticalNative external fun stop()
+    @JvmStatic @CriticalNative external fun arrived(measurer: Long)
+    @JvmStatic @CriticalNative external fun stop(measurer: Long)
     /** A download measured as it comes: a handle, 0 when nothing measures it (measured already, an MP4). */
-    @JvmStatic external fun downloadOpen(key: String): Long
+    @JvmStatic external fun downloadOpen(analyses: Long, key: String): Long
     @JvmStatic external fun downloadTake(h: Long, bytes: ByteArray, len: Int)
     @JvmStatic external fun downloadEnd(h: Long, whole: Boolean)
     /** Downloads can be read back from the disk from now on (nori-engine's `processing`). */
-    @JvmStatic external fun processStart()
+    @JvmStatic external fun processStart(analyses: Long)
     /** Downloads just saved and settled: what each needs besides its lyrics is decided, marked and started. Off the main thread. */
-    @JvmStatic external fun processSaved(ids: Array<String>)
+    @JvmStatic external fun processSaved(analyses: Long, ids: Array<String>)
     /** Downloads asked for again ("Analyse downloaded songs"): how many are to be read back. Off the main thread. */
-    @JvmStatic external fun processAnalyse(ids: Array<String>): Int
+    @JvmStatic external fun processAnalyse(analyses: Long, ids: Array<String>): Int
 }
 
 /**
@@ -39,7 +44,7 @@ internal object MeasureJni {
  * measured from the disk once it is saved (the core's `processing`).
  */
 @UnstableApi
-internal class MeasuringSink : DataSink {
+internal class MeasuringSink(private val analyses: Long) : DataSink {
     private var h = 0L
     private var length = C.LENGTH_UNSET.toLong()
     private var written = 0L
@@ -51,7 +56,7 @@ internal class MeasuringSink : DataSink {
         length = dataSpec.length
         written = 0
         filled = 0
-        h = if (dataSpec.position == 0L) MeasureJni.downloadOpen(dataSpec.key ?: "") else 0L
+        h = if (dataSpec.position == 0L) MeasureJni.downloadOpen(analyses, dataSpec.key ?: "") else 0L
         if (h != 0L && buffer == null) buffer = ByteArray(PIECE)
     }
 
@@ -117,20 +122,26 @@ internal object MeasureBridge {
 @UnstableApi
 class AutoMixPrefetch(
     private val sources: MediaSources,
+    analyses: Long,
     /** A track has been measured: whatever was planned without it can be planned again. On the measuring thread. */
     internal val onMeasured: () -> Unit = {},
 ) {
+    /** The measurer's handle; 0 once released. */
+    @Volatile private var measurer = 0L
+
     init {
         MeasureBridge.prefetch = this
-        sources.onWhole = { MeasureJni.arrived() }
-        MeasureJni.start()
+        measurer = MeasureJni.start(analyses)
+        sources.onWhole = { MeasureJni.arrived(measurer) }
     }
 
     /** The queue moved or was edited: the measurer asks the core which songs come up now. */
-    fun update() = MeasureJni.update()
+    fun update() = MeasureJni.update(measurer)
 
     fun release() {
-        MeasureJni.stop()
+        val m = measurer
+        measurer = 0L
+        MeasureJni.stop(m)
         sources.onWhole = null
         if (MeasureBridge.prefetch === this) MeasureBridge.prefetch = null
     }

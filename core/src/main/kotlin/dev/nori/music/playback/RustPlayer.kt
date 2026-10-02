@@ -37,8 +37,12 @@ import dev.nori.music.Nori
  */
 internal object RustPlayerJni {
     init { System.loadLibrary("norimusic") }
-    /** [float] is the high quality output setting; [memoryMb] the app's memory class. 0 when it could not start. */
-    @JvmStatic external fun create(sdk: Int, float: Boolean, memoryMb: Int): Long
+    /**
+     * An engine playing through [current]'s client (a `CurrentClient.uniffiCloneHandle()`, which it takes
+     * over) and measuring with [analyses] (`MeasureJni.analyses`). [float] is the high quality output
+     * setting; [memoryMb] the app's memory class. 0 when it could not start.
+     */
+    @JvmStatic external fun create(current: Long, analyses: Long, sdk: Int, float: Boolean, memoryMb: Int): Long
     @JvmStatic external fun destroy(h: Long)
     /** Answers the jump's number, which the song events it leads to carry ([eventJumps]). */
     @JvmStatic @CriticalNative external fun goTo(h: Long, index: Int, ms: Long): Long
@@ -219,7 +223,7 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
      * posted settings change that arrives after the release does no harm.
      */
     @Volatile private var h: Long = RustPlayerJni.create(
-        Build.VERSION.SDK_INT, nori.settings.value.hiRes,
+        nori.currentClient.uniffiCloneHandle(), nori.analyses, Build.VERSION.SDK_INT, nori.settings.value.hiRes,
         context.getSystemService(android.app.ActivityManager::class.java).memoryClass,
     )
 

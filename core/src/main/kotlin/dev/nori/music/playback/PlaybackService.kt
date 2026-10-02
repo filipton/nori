@@ -192,7 +192,7 @@ class PlaybackService : MediaLibraryService() {
         engine = "rust"
         observer?.engine(engine)
         // A song that has become whole on the device is measured then, whoever fetched it (see AutoMixPrefetch).
-        analyser = AutoMixPrefetch(nori.sources) { player.replan() }
+        analyser = AutoMixPrefetch(nori.sources, nori.analyses) { player.replan() }
         // Nothing is watched until a bridge starts (see OfflineBridge). The player says itself when the
         // core handed a failure to the bridge.
         offlineBridge = OfflineBridge(this, player, { nori.core }, main, ::applyEdit, ::skipAfterError)
