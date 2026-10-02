@@ -1367,14 +1367,16 @@ impl TransitionEngine {
         Some(self.reported)
     }
 
-    /// Output time from the last [`TransitionEngine::position_us`] until what is heard changes: a mix
-    /// becoming audible, its takeover, the end of it or of the clock's shift, a held ending caught up.
-    pub fn until_heard_changes_us(&self) -> Option<i64> {
+    /// Output time from the last [`TransitionEngine::position_us`] until what is heard changes: a mix's
+    /// takeover and, unless `song_only`, a mix becoming audible, the end of it or of the clock's shift, a
+    /// held ending caught up.
+    pub fn until_heard_changes_us(&self, song_only: bool) -> Option<i64> {
         let at = self.clock_us?;
         let pace = self.heard.next_rate.max(0.01) as f64;
         let takeover = self.mix_from_us.map(|from| from + (self.takeover_us as f64 * pace) as i64);
         let caught_up = self.heard.id.map(|_| self.reported - 20_000 + self.shift_us);
-        [self.mix_from_us, takeover, self.mixed_end_us, self.shift_until_us, caught_up].into_iter().flatten().filter(|&t| t > at).min().map(|t| t - at)
+        let more = [self.mix_from_us, self.mixed_end_us, self.shift_until_us, caught_up].into_iter().filter(|_| !song_only);
+        std::iter::once(takeover).chain(more).flatten().filter(|&t| t > at).min().map(|t| t - at)
     }
 
     /// The output has no position because it was given nothing: everything since a seek into a

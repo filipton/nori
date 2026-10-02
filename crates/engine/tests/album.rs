@@ -411,6 +411,8 @@ fn keep_albums_switched_on_joins_whole() {
 
 fn keep_albums_switched_on_at(at_ms: i64) {
     let rig = Rig::new(&format!("album-switched-{at_ms}"), &ALBUM, true, 0, false, Measured::Before, false);
+    // The place read as a screen reads it, so the switch lands where asked.
+    rig.engine.position_updates(Some(std::time::Duration::from_millis(100)));
     rig.engine.play_at(0, 0);
     // a1 is planned as a mix, then albums are kept gapless.
     assert!(rig.until(40, |r| r.engine.status().position_ms >= at_ms), "{:?}", rig.engine.status());

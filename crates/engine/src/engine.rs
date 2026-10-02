@@ -2087,7 +2087,8 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             // The burst's own count (which includes the device) does not agree yet.
             at(200);
         }
-        for u in [self.p.until_next_song_us().map(|u| (u, 5)), self.p.until_heard_changes_us().map(|u| (u, 1))].into_iter().flatten() {
+        // With no screen watching, only a change of song needs saying on time (the notification, a car).
+        for u in [self.p.until_next_song_us().map(|u| (u, 5)), self.p.until_heard_changes_us(!positions).map(|u| (u, 1))].into_iter().flatten() {
             at((u.0 as f64 / speed / 1000.0) as i64 + u.1);
         }
         if self.h.probe.as_ref().is_some_and(|p| p.2.is_none()) {

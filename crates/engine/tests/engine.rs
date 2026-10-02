@@ -586,6 +586,33 @@ fn crossfade_matches_simulation() {
     assert_eq!(first, None, "the mix starts at the planned sample and sounds the same");
 }
 
+/// The next song is said when its mix takes over whether or not a screen asks for positions (the
+/// notification, a car's display and scrobbling follow it with the screen off). In a crossfade and in
+/// an AutoMix: milliseconds of the clock at which `b` was said.
+#[test]
+fn mixed_in_song_said_on_time_with_screen_off() {
+    let (a, b) = (music(30.0, 61), music(30.0, 62));
+    let said_at = |prefs: TransitionPrefs, settings: Settings, screen: bool| {
+        let mut app = sim::App::new();
+        app.prefs = prefs;
+        app.analyses.insert("a".into(), measured("a", 120.0, 30_000));
+        app.analyses.insert("b".into(), measured("b", 120.0, 30_000));
+        let rig = Rig::with_app(&[("a", &a), ("b", &b)], app, settings);
+        if screen {
+            rig.engine.position_updates(Some(Duration::from_millis(250)));
+        }
+        rig.engine.play_at(0, 0);
+        let said = |r: &Rig| r.events.lock().iter().any(|e| matches!(e, Event::Song { id, .. } if id == "b"));
+        assert!(rig.wait_for(60, said), "{:?}", rig.events.lock());
+        rig.now_ms()
+    };
+    let automix = TransitionPrefs { auto_mix: true, auto_mix_max_s: 12, echo_out: false, ..prefs_off() };
+    for (name, prefs, settings) in [("crossfade", crossfade(6), Settings { crossfade_s: 6, ..Settings::default() }), ("automix", automix, Settings { auto_mix: true, ..Settings::default() })] {
+        let (on, off) = (said_at(prefs, settings.clone(), true), said_at(prefs, settings, false));
+        assert!((on - off).abs() <= 10, "{name}: said at {on} ms with the screen on, {off} ms with it off");
+    }
+}
+
 #[test]
 fn seek_is_sample_exact() {
     let a = music(30.0, 4);
