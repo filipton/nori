@@ -4,6 +4,8 @@
 //!
 //! One xorshift32 generator per channel, seeded apart so the channels' noise is uncorrelated.
 
+use std::hint::select_unpredictable;
+
 /// Channels with their own generator; more share them (the chain takes eight at most).
 const CHANNELS: usize = 8;
 
@@ -36,15 +38,11 @@ impl Dither {
     }
 
     /// Triangular noise in (-1, 1) LSB, mean zero.
-    #[inline(always)]
+    #[cfg(test)]
     fn tpdf(&mut self, ch: usize) -> f64 {
         let r = &mut self.rng[ch % CHANNELS];
-        let mut x = *r;
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        *r = x;
-        ((x & 0xFFFF) + (x >> 16) + 1) as f64 * (1.0 / 65536.0) - 1.0
+        *r = xorshift(*r);
+        noise(*r)
     }
 
     /// `y` (full scale 1.0) as a dithered 16-bit sample.
@@ -60,18 +58,34 @@ impl Dither {
         self.quantize(ch, y, true)
     }
 
+    /// Branch-free (whether a sample is on the grid is as random as the music): the generator moves
+    /// on, and `last` changes, only off the grid.
     #[inline(always)]
     fn quantize(&mut self, ch: usize, y: f64, linked: bool) -> i16 {
         let want = y * 32768.0;
-        let on_grid = want.round();
-        if on_grid == want {
-            return on_grid.clamp(-32768.0, 32767.0) as i16;
-        }
+        let off_grid = want.round() != want;
         if !(linked && ch > 0) {
-            self.last = self.tpdf(ch);
+            let r = &mut self.rng[ch % CHANNELS];
+            let x = xorshift(*r);
+            *r = select_unpredictable(off_grid, x, *r);
+            self.last = select_unpredictable(off_grid, noise(x), self.last);
         }
-        (want + self.last).round().clamp(-32768.0, 32767.0) as i16
+        (want + select_unpredictable(off_grid, self.last, 0.0)).round().clamp(-32768.0, 32767.0) as i16
     }
+}
+
+#[inline(always)]
+fn xorshift(mut x: u32) -> u32 {
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    x
+}
+
+/// Triangular noise in (-1, 1) LSB from a generator state: the sum of its two halves.
+#[inline(always)]
+fn noise(x: u32) -> f64 {
+    ((x & 0xFFFF) + (x >> 16) + 1) as f64 * (1.0 / 65536.0) - 1.0
 }
 
 #[cfg(test)]

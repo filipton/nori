@@ -108,10 +108,11 @@ pub fn scale(bytes: &mut [u8], enc: Encoding, gain: f32) {
 pub fn scale_dithered(bytes: &mut [u8], enc: Encoding, gain: f32, channels: usize, dither: &mut Dither) {
     match enc {
         Encoding::Pcm16 => {
-            let ch = channels.max(1);
-            for (i, d) in bytes.as_chunks_mut::<2>().0.iter_mut().enumerate() {
-                let v = i16::from_le_bytes(*d) as f64 * gain as f64 / 32768.0;
-                *d = dither.to_i16(i % ch, v).to_le_bytes();
+            for frame in bytes.as_chunks_mut::<2>().0.chunks_mut(channels.max(1)) {
+                for (c, d) in frame.iter_mut().enumerate() {
+                    let v = i16::from_le_bytes(*d) as f64 * gain as f64 / 32768.0;
+                    *d = dither.to_i16(c, v).to_le_bytes();
+                }
             }
         }
         Encoding::Float => scale(bytes, enc, gain),
