@@ -1650,30 +1650,42 @@ fn replay_gain_change_heard_at_once() {
     }
 }
 
-/// On a device holding seconds (a phone's AudioTrack) the change is heard at once too: the device drops
-/// what it holds and plays on from where it was, in the new sound.
+/// On a device holding seconds (a phone's AudioTrack) a change is made in place, heard once what the
+/// device holds has played. Tuned (a sound screen open) the device drops what it holds as tuning starts
+/// and at the change, and plays on from where it was, in the new sound.
 #[test]
 fn eq_change_on_holding_device() {
-    let a = music(12.0, 51);
-    let live = Live::new(prefs_off());
-    let files = vec![("a".to_string(), wav(&a), 12_000)];
-    let rig = Rig::build(files, live.clone(), Settings::default(), Extra { hold_ms: Some(2_000), ..Extra::default() });
-    rig.engine.play_at(0, 0);
-    assert!(rig.wait_for(20, |r| r.heard.lock().len() > RATE as usize * 2 * 4));
-    let asked = rig.heard.lock().len() / 2;
-    rig.engine.set_settings(loud_eq());
-    assert!(rig.wait_for(30, Rig::ended));
-    let splices = live.0.lock().splices.clone();
-    assert_eq!(splices.len(), 1, "{splices:?}");
-    let s = splices[0];
-    assert!(s.output as usize <= asked && s.output as usize + RATE as usize / 5 >= asked, "made again from a little before the ear ({asked}): {s:?}");
-    let old = reference::render(&a, RATE, &[(0, chain_of(&Settings::default()))]);
-    let new = reference::render(&a, RATE, &[(0, chain_of(&Settings::default())), (s.input, chain_of(&loud_eq()))]);
-    let mut want = old[..asked * 2].to_vec();
-    want.extend_from_slice(&new[asked * 2..]);
-    let heard = rig.heard.lock().clone();
-    if let Some(at) = reference::first_difference(&heard, &want, 0) {
-        panic!("{}", reference::describe(&heard, &want, at, RATE));
+    for tuned in [false, true] {
+        let a = music(12.0, 51);
+        let live = Live::new(prefs_off());
+        let files = vec![("a".to_string(), wav(&a), 12_000)];
+        let rig = Rig::build(files, live.clone(), Settings::default(), Extra { hold_ms: Some(2_000), ..Extra::default() });
+        rig.engine.play_at(0, 0);
+        assert!(rig.wait_for(20, |r| r.heard.lock().len() > RATE as usize * 2 * 3));
+        rig.engine.set_tuning(tuned);
+        assert!(rig.wait_for(20, |r| r.heard.lock().len() > RATE as usize * 2 * 4));
+        let asked = rig.heard.lock().len() / 2;
+        rig.engine.set_settings(loud_eq());
+        assert!(rig.wait_for(30, Rig::ended));
+        let flushes = rig.flushes.load(Ordering::Relaxed);
+        if !tuned {
+            assert_eq!(flushes, 0, "nothing dropped");
+            heard_as_rendered(&rig, &live, &a, &Settings::default(), &[(0, loud_eq())], &[asked + 2 * RATE as usize - 2 * BLOCK], 10);
+            continue;
+        }
+        assert_eq!(flushes, 2, "dropped as tuning starts and at the change");
+        let splices = live.0.lock().splices.clone();
+        assert_eq!(splices.len(), 1, "{splices:?}");
+        let s = splices[0];
+        assert!(s.output as usize <= asked && s.output as usize + RATE as usize / 5 >= asked, "made again from a little before the ear ({asked}): {s:?}");
+        let old = reference::render(&a, RATE, &[(0, chain_of(&Settings::default()))]);
+        let new = reference::render(&a, RATE, &[(0, chain_of(&Settings::default())), (s.input, chain_of(&loud_eq()))]);
+        let mut want = old[..asked * 2].to_vec();
+        want.extend_from_slice(&new[asked * 2..]);
+        let heard = rig.heard.lock().clone();
+        if let Some(at) = reference::first_difference(&heard, &want, 0) {
+            panic!("{}", reference::describe(&heard, &want, at, RATE));
+        }
     }
 }
 

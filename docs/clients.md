@@ -145,9 +145,9 @@ only what touches the hardware:
   songs ahead for AutoMix, and `per_device(core)` gives each output device its own sound. Edit the queue
   through the core's `playlist_*` calls and tell the engine (`queue_changed`); the controls are
   `play_at`, `play`, `pause`, `next`, `previous`, `seek`, `go_to`, `set_settings`, `replan`,
-  `set_repeat`, `gain_changed`, `set_tuning` (the equalizer screen: the device told through
-  `AudioOutput::shallow` to hold only a fraction of a second, so a band moved is heard without it
-  dropping what it holds) and `pause_at_end`
+  `set_repeat`, `gain_changed`, `set_tuning` (a sound screen: a device holding seconds drops them, and is told through
+  `AudioOutput::shallow` to hold only a fraction of a second, so a band moved is heard at once, in
+  place) and `pause_at_end`
   (the sleep timer's "end of this song"). The player's own rules come with them: a seek or a `go_to`
   while paused is held until play and fetches nothing, and a skip button while paused is a request for
   music (`nori_player::transport::skip_plays`). A screen follows `Event`s (state, the song heard -
@@ -171,10 +171,15 @@ opens them again where it was. A change to the sound while music plays (the equa
 silence skipping, ReplayGain) is heard at once and seamlessly: the sink keeps what the chain was given and
 the chain's state every 8192 frames (`nori_player::chain`), goes back to the first frame the output can
 still replace, runs the chain again up to it (the same music) and on with the new settings, blended over
-5 ms. Nothing is decoded again and no position guessed. Android's deep track, holding seconds, hands the
-music to a second track from the frame it plays when that one's silence ends, read off both tracks'
-timestamps, crossfaded, and takes it back the same way (crates/android/src/track.rs); a device that can't
-drops what it holds and plays on, after a gap, from exactly where it was (`Feed::rewind`). Changes that come quickly are taken together, one every 100 ms
+5 ms. Nothing is decoded again and no position guessed. Android's deep track holds seconds: a change
+made outside the sound screens is made past them, heard once they have played (1 to 11.5 s), since
+handing them to a second track can't be checked to the frame on every output. With a sound screen open
+(`set_tuning`) the track holds a fraction of a second: as tuning starts the music is made again from the
+ear, the deep track hands it to a second track from the frame it plays when that one's silence ends, once
+both play heads keep one distance over a few mixes and both tracks' timestamps agree, crossfaded, and
+takes it back the same way, shallow (crates/android/src/track.rs); a device that can't, or tracks that
+don't line up, drop what it holds and play on, after a gap, from exactly where it was (`Feed::rewind`).
+A new ending (the queue changed) is taken the same way. Changes that come quickly are taken together, one every 100 ms
 at most. An ending made under an old plan (the queue or the transition settings changed) is made again the
 same way from where the old and new endings part. It is `nori-player::pipeline`, the code the simulated player
 runs, on one thread that sleeps between bursts (its wakeups are listed in `crates/engine/src/engine.rs`).
@@ -519,7 +524,8 @@ answers; the rule itself is never written again in a client. Android and nori-cl
   `Core::cover_address` builds any cover's address the same way.
 - **The equalizer screen's shallow buffer**: `rules::equalizer_tuning(in_sight, touched, eq_on)`; a
   change counts as touching it when that is true with `touched` true. Whether the screen is in sight is
-  the client's.
+  the client's. Android tunes while a sound screen (the equalizer, the sound page) is in sight, untouched:
+  its track holds seconds, and dropping them takes a moment best spent before the first touch.
 - **Sizes**: how much each read asks for is `browse::library_sizes` (the sync's page, local search).
 
 ## Calling the core cheaply

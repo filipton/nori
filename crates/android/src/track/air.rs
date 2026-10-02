@@ -38,8 +38,10 @@ struct Wire {
     ready: bool,
     volume: f32,
     applied: f32,
-    /// Frames the mixer took since the last flush, and each period's: (presented from, taken before, taken).
+    /// Frames the mixer took since the last flush, its first mix's, and each period's: (presented from,
+    /// taken before, taken).
     consumed: u64,
+    first_mix: u64,
     mixes: VecDeque<(i64, u64, u64)>,
     started_ns: i64,
     released: bool,
@@ -99,6 +101,9 @@ impl Air {
                 w.traces.last_mut().expect("one").push(((first + j) as u64, s[1]));
             }
             let before = w.consumed;
+            if before == 0 {
+                w.first_mix = n as u64;
+            }
             w.consumed += n as u64;
             w.mixes.push_back((at, before, n as u64));
             if w.mixes.len() > 64 {
@@ -124,6 +129,35 @@ struct WireSink {
     /// "device stall time corrected using current time").
     packet: i64,
     last_packet: i64,
+    heads: Heads,
+}
+
+/// How a track's play head counts what the mixer took from it.
+#[derive(Clone, Copy, Debug)]
+enum Heads {
+    /// Exactly.
+    Taken,
+    /// A frame short after every other mix (its own rounding of the period, as on the emulator).
+    Rounded,
+    /// Never its first mix (released a period late, the timestamps lagging it).
+    Late,
+    /// In steps of this many µs from its start (released per Bluetooth packet).
+    Steps(i64),
+    /// This many µs ahead (a resampler's look-ahead).
+    Ahead(i64),
+}
+
+impl Heads {
+    fn of(self, w: &Wire) -> u64 {
+        match self {
+            Heads::Taken => w.consumed,
+            Heads::Late => w.consumed - w.first_mix,
+            Heads::Rounded => w.consumed - (w.consumed / w.first_mix.max(1)) % 2,
+            Heads::Steps(us) => w.consumed / frames_of(us * 1_000) * frames_of(us * 1_000),
+            Heads::Ahead(us) if w.consumed > 0 => w.consumed + frames_of(us * 1_000),
+            Heads::Ahead(_) => 0,
+        }
+    }
 }
 
 impl WireSink {
@@ -164,7 +198,7 @@ impl Sink for WireSink {
         let mut w = self.wire.lock();
         assert!(!w.started, "a track is only flushed paused");
         w.queue.clear();
-        w.consumed = 0;
+        (w.consumed, w.first_mix) = (0, 0);
         w.mixes.clear();
         w.traces.push(Vec::new());
     }
@@ -180,7 +214,7 @@ impl Sink for WireSink {
                 return Some(s);
             }
         }
-        Some((self.wire.lock().consumed, now))
+        Some((self.heads.of(&self.wire.lock()), now))
     }
     fn resize(&mut self, frames: u64) -> u64 {
         let mut w = self.wire.lock();
@@ -189,7 +223,7 @@ impl Sink for WireSink {
         w.size
     }
     fn consumed(&mut self) -> Option<u64> {
-        Some(self.wire.lock().consumed)
+        Some(self.heads.of(&self.wire.lock()))
     }
     fn stamp(&mut self) -> Option<(u64, i64)> {
         let now = self.now();
@@ -227,29 +261,31 @@ struct AirOpener {
     jitter: i64,
     packet: i64,
     beside_opens: Arc<std::sync::atomic::AtomicBool>,
+    /// How a second track's play head counts.
+    heads: Heads,
     beside_dies: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl AirOpener {
-    fn wire(&mut self, frames: u64, session: i32) -> Opened {
+    fn wire(&mut self, frames: u64, session: i32, heads: Heads) -> Opened {
         let wire = Arc::new(Mutex::new(Wire::new(frames, session)));
         let mut wires = self.wires.lock();
         wires.push(wire.clone());
-        let sink = WireSink { wire, staging: vec![0.0; CHUNK_BYTES / 4], now: self.now.clone(), stamp_after: self.stamp_after, jitter: self.jitter, packet: self.packet, last_packet: -1 };
+        let sink = WireSink { wire, staging: vec![0.0; CHUNK_BYTES / 4], now: self.now.clone(), stamp_after: self.stamp_after, jitter: self.jitter, packet: self.packet, last_packet: -1, heads };
         Opened { sink: Box::new(sink), frames, starts_full: false }
     }
 }
 
 impl Opener for AirOpener {
     fn open(&mut self, _format: OutputFormat, _float: bool, frames: u64) -> Result<Opened, String> {
-        Ok(self.wire(frames, 7))
+        Ok(self.wire(frames, 7, Heads::Taken))
     }
     fn beside(&mut self, _format: OutputFormat, _float: bool, frames: u64, session: i32) -> Result<Opened, String> {
         assert_eq!(session, 7, "in the first track's audio session");
         if !self.beside_opens.load(Ordering::Relaxed) {
             return Err("no room for another track".into());
         }
-        let opened = self.wire(frames, session);
+        let opened = self.wire(frames, session, self.heads);
         self.wires.lock().last().expect("just opened").lock().dead = self.beside_dies.load(Ordering::Relaxed);
         Ok(opened)
     }
@@ -265,6 +301,8 @@ struct Tape {
     sounds: Vec<(u64, f32, Option<f32>)>,
     untold: bool,
     flushed: bool,
+    /// A sound screen is open (`Engine::set_tuning`).
+    tuned: bool,
     now: Arc<AtomicI64>,
     clock: Arc<Clock>,
 }
@@ -285,14 +323,14 @@ impl Tape {
         [self.amp(i) * v, (i + 1) as f32]
     }
 
-    /// A sound change as the engine makes it (`nori_engine` `RingTrack::freeze`/`cut`): a device holding
-    /// more than a quarter second not yet mixed drops what it holds, the music made again from a little before what it
-    /// played; otherwise the ring changes from the first frame no pull took, blended.
+    /// A sound change as the engine makes it (`nori_engine` `RingTrack::freeze`/`cut`): tuned, a device
+    /// holding more than a quarter second not yet mixed drops what it holds, the music made again from a
+    /// little before what it played; otherwise the ring changes from the first frame no pull took, blended.
     fn change(&mut self, amp: f32) {
         let now = self.now.load(Ordering::Relaxed);
         let held = self.clock.latency_frames(now).saturating_sub(self.clock.mixed_us() * RATE as u64 / 1_000_000);
         let old = self.amp(self.read);
-        if held > frames_of(250 * MS) {
+        if self.tuned && held > frames_of(250 * MS) {
             let cut = (self.read.saturating_sub(held + frames_of(100 * MS))).max(self.discard);
             self.sounds.retain(|s| s.0 < cut);
             self.sounds.push((cut, amp, None));
@@ -365,12 +403,14 @@ struct Output {
     stamp_after_ms: i64,
     jitter_us: i64,
     packet_us: i64,
+    /// How a second track's play head counts.
+    heads: Heads,
 }
 
-const SPEAKER: Output = Output { period_ms: 20, delay_ms: 40, stamp_after_ms: 60, jitter_us: 50, packet_us: 0 };
+const SPEAKER: Output = Output { period_ms: 20, delay_ms: 40, stamp_after_ms: 60, jitter_us: 50, packet_us: 0, heads: Heads::Taken };
 /// A2DP on a Galaxy S22: a long way to the ear, no timestamp for a while after a start, then one per
 /// packet with milliseconds of jitter, stall-corrected between packets.
-const BLUETOOTH: Output = Output { period_ms: 20, delay_ms: 250, stamp_after_ms: 400, jitter_us: 3_000, packet_us: 23_220 };
+const BLUETOOTH: Output = Output { period_ms: 20, delay_ms: 250, stamp_after_ms: 400, jitter_us: 3_000, packet_us: 23_220, heads: Heads::Taken };
 
 struct Rig {
     writer: Writer<Arc<Mutex<Tape>>>,
@@ -392,11 +432,11 @@ impl Rig {
         let start = 1_000 * MS;
         let now = Arc::new(AtomicI64::new(start));
         let clock = Arc::new(Clock::default());
-        let tape = Arc::new(Mutex::new(Tape { read: 0, discard: 0, written: frames_of(10_200 * MS), sounds: vec![(0, 0.5, None)], untold: false, flushed: false, now: now.clone(), clock: clock.clone() }));
+        let tape = Arc::new(Mutex::new(Tape { read: 0, discard: 0, written: frames_of(10_200 * MS), sounds: vec![(0, 0.5, None)], untold: false, flushed: false, tuned: false, now: now.clone(), clock: clock.clone() }));
         let wires = Arc::new(Mutex::new(Vec::new()));
         let beside_opens = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let beside_dies = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let mut opener = AirOpener { wires: wires.clone(), now: now.clone(), stamp_after: out.stamp_after_ms * MS, jitter: out.jitter_us * 1_000, packet: out.packet_us * 1_000, beside_opens: beside_opens.clone(), beside_dies: beside_dies.clone() };
+        let mut opener = AirOpener { wires: wires.clone(), now: now.clone(), stamp_after: out.stamp_after_ms * MS, jitter: out.jitter_us * 1_000, packet: out.packet_us * 1_000, beside_opens: beside_opens.clone(), heads: out.heads, beside_dies: beside_dies.clone() };
         let format = OutputFormat { rate: RATE, channels: 2, bits: 0 };
         let frames = track_frames(RATE, false);
         let opened = opener.open(format, true, frames).expect("opens");
@@ -463,6 +503,19 @@ impl Rig {
         self.wake();
     }
 
+    /// A sound screen opened or closed (`Engine::set_tuning`); opened, the music is made again as it is.
+    fn tune(&mut self, on: bool) {
+        self.control.shallow = on;
+        let mut t = self.tape.lock();
+        t.tuned = on;
+        if on {
+            let amp = t.sounds.last().expect("a sound").1;
+            t.change(amp);
+        }
+        drop(t);
+        self.wake();
+    }
+
     fn open_tracks(&self) -> usize {
         self.air.wires.lock().iter().filter(|w| !w.lock().released).count()
     }
@@ -471,8 +524,8 @@ impl Rig {
 /// What was heard, measured.
 #[derive(Debug)]
 struct Heard {
-    /// Frames skipped (+) or played twice (-) between the first and the last frame heard alone, by their
-    /// numbers, silence left out.
+    /// Frames skipped or played twice, all told, among the frames heard alone (by their numbers),
+    /// silence left out.
     slip: i64,
     /// The longest silence, frames.
     gap: u64,
@@ -486,9 +539,11 @@ struct Heard {
 fn measure(heard: &[[f32; 2]], from: usize, to: usize, amps: (f32, f32)) -> Heard {
     let heard = &heard[from..to];
     let silent = |h: &[f32; 2]| h[0] == 0.0 && h[1] == 0.0;
-    // Frame numbers heard alone (a whole number), less their place among the frames not silent.
-    let offsets: Vec<i64> = heard.iter().filter(|h| !silent(h)).enumerate().filter(|(_, h)| h[1] >= 1.0 && h[1].fract() == 0.0).map(|(k, h)| h[1] as i64 - k as i64).collect();
-    let slip = offsets.last().expect("music") - offsets.first().expect("music");
+    // Frame numbers heard alone at full level (whole, and the next one after them), less their place among
+    // the frames not silent.
+    let sounding: Vec<&[f32; 2]> = heard.iter().filter(|h| !silent(h)).collect();
+    let offsets: Vec<i64> = sounding.windows(2).enumerate().filter(|(_, p)| p[0][1] >= 1.0 && p[0][1].fract() == 0.0 && p[1][1] == p[0][1] + 1.0).map(|(k, p)| p[0][1] as i64 - k as i64).collect();
+    let slip = offsets.windows(2).map(|p| (p[1] - p[0]).abs()).sum();
     let (mut gap, mut run) = (0, 0);
     for h in heard {
         run = if silent(h) { run + 1 } else { 0 };
@@ -564,8 +619,14 @@ fn assert_seamless(what: &str, out: Output, r: &Rig, h: &Heard) {
     assert_eq!(h.gap, 0, "{what}: no silence: {h:?}");
     assert!(h.level_db.0 > -0.5 && h.level_db.1 < 0.5, "{what}: no dip or bump: {h:?}");
     assert!(h.click < 1e-3, "{what}: no click: {h:?}");
-    // As far off as the output's timestamps are.
-    let off = frames_of(MS / 10 + out.jitter_us * 1_000);
+    // As far off as the output's timestamps are (a packet, stall-corrected), and a second track's play head.
+    let head_us = match out.heads {
+        Heads::Taken => 0,
+        Heads::Late => out.period_ms * 1_000,
+        Heads::Rounded => 0,
+        Heads::Steps(us) | Heads::Ahead(us) => us,
+    };
+    let off = frames_of(MS / 10 + (out.jitter_us + out.packet_us + head_us) * 1_000);
     assert!(r.head_error.is_some_and(|e| e <= off), "{what}: the engine's play head is where the ear is: {:?} frames off", r.head_error);
     assert_home(what, r);
 }
@@ -591,42 +652,90 @@ fn heard_amp(r: &Rig) -> f32 {
 }
 
 #[test]
-fn changes_are_seamless() {
-    let outputs = [
-        SPEAKER,
-        Output { period_ms: 5, delay_ms: 10, ..SPEAKER },
-        Output { period_ms: 40, delay_ms: 80, ..SPEAKER },
-        Output { delay_ms: 150, ..BLUETOOTH },
-        BLUETOOTH,
-    ];
-    for out in outputs {
-        let (mut wakes, mut at) = (0, 0);
-        let (mut r, h) = heard_after(out, |r| {
+fn changes_wait_for_a_deep_track() {
+    // Untuned, a change is made in the ring past what the track holds: no second track, seamless, heard
+    // once the track has played what it held.
+    for out in [SPEAKER, BLUETOOTH] {
+        let mut at = 0;
+        let (r, h) = heard_after(out, |r| {
             at = r.now();
             r.change(0.6);
-            wakes = r.wakes;
+            r.run(5_000);
         });
         let what = format!("{out:?}");
         assert_seamless(&what, out, &r, &h);
-        // The output's own latency (its delay and a period), a period for the first mix of the new track,
-        // and a little more.
+        assert_eq!(r.air.wires.lock().len(), 1, "{what}: no second track");
         let ms = heard_in_ms(&r, at, 0.5, 0.6);
-        assert!(ms <= out.delay_ms + 2 * out.period_ms + 80, "{what}: the change is heard after {ms} ms");
-        let aligned = alignments(&r.air);
-        assert!(aligned.len() >= 2, "{what}: over to the second track and back: {aligned:?}");
-        assert!(aligned.iter().all(|a| a.abs() <= 1), "{what}: the tracks agree to a frame: {aligned:?}");
+        assert!(ms >= LOW_US / 1_000 && ms <= TRACK_US / 1_000 + out.delay_ms + out.period_ms, "{what}: heard after {ms} ms, once the track played what it held");
         assert_eq!(heard_amp(&r), 0.6, "{what}: the change is heard");
-        let handover = r.wakes - wakes;
-        assert!(handover <= 60, "{what}: {handover} wakes for the handover");
+    }
+}
+
+/// Outputs the second track meets, and whether it can be lined up with the first: periods, latency,
+/// Bluetooth's timestamps, and play heads that do not say what the mixer took (a new track's first mix
+/// never counted, counted per Bluetooth packet, a resampler's look-ahead).
+const OUTPUTS: [(Output, bool); 10] = [
+    (SPEAKER, true),
+    (Output { period_ms: 5, delay_ms: 10, ..SPEAKER }, true),
+    (Output { period_ms: 40, delay_ms: 80, ..SPEAKER }, true),
+    (Output { delay_ms: 150, ..BLUETOOTH }, true),
+    (BLUETOOTH, true),
+    (Output { heads: Heads::Rounded, ..SPEAKER }, true),
+    (Output { heads: Heads::Late, ..BLUETOOTH }, false),
+    (Output { heads: Heads::Steps(23_220), ..BLUETOOTH }, false),
+    (Output { heads: Heads::Ahead(1_000), ..BLUETOOTH }, true),
+    (Output { heads: Heads::Ahead(5_000), ..BLUETOOTH }, false),
+];
+
+#[test]
+fn tuning_drops_the_deep_buffer_at_once() {
+    // A sound screen opened: the deep track hands the music to a second track and takes it back shallow,
+    // a change made meanwhile riding along; where the two can't be lined up the track is emptied
+    // instead. Never a frame heard twice or lost; seamless where lined up; every change after in place.
+    for (out, lines_up) in OUTPUTS {
+        let (mut wakes, mut at, mut tracks) = (0, 0, 0);
+        let (mut r, h) = heard_after(out, |r| {
+            r.tune(true);
+            wakes = r.wakes;
+            r.run(50);
+            at = r.now();
+            r.change(0.6);
+            r.run(3_000);
+            wakes = r.wakes - wakes;
+            tracks = r.air.wires.lock().len();
+            r.change(0.7);
+        });
+        let what = format!("{out:?}");
+        assert_eq!(h.slip, 0, "{what}: every frame heard once, in order: {h:?}");
+        assert_eq!(heard_amp(&r), 0.7, "{what}: the last change is heard");
+        assert_eq!(r.air.wires.lock().len(), tracks, "{what}: the change once shallow made in place");
+        if lines_up {
+            assert_seamless(&what, out, &r, &h);
+            let aligned = alignments(&r.air);
+            assert!(aligned.len() >= 2 && aligned.iter().all(|a| a.abs() <= 1), "{what}: over to the second track and back, to a frame: {aligned:?}");
+            // The output's own latency, the second track's first timestamp, a few mixes, and a little more.
+            let ms = heard_in_ms(&r, at, 0.5, 0.6);
+            assert!(ms <= out.delay_ms + out.stamp_after_ms + 5 * out.period_ms + 100, "{what}: the change is heard after {ms} ms");
+        } else {
+            let wires = r.air.wires.lock();
+            assert!(wires[1..].iter().all(|w| w.lock().traces.iter().flatten().all(|t| t.1 == 0.0)), "{what}: no second track played music");
+            drop(wires);
+            assert!(h.gap < frames_of(out.delay_ms * MS + 400 * MS), "{what}: the gap of a track emptied: {h:?}");
+            assert_home(&what, &r);
+        }
+        assert!(wakes <= 300, "{what}: {wakes} wakes for it");
+        r.tune(false);
+        r.run(15_000);
         let wakes = r.wakes;
         r.run(60_000);
-        assert!(r.wakes - wakes <= 8, "{what}: then a wake every ten seconds or so: {}", r.wakes - wakes);
+        assert!(r.wakes - wakes <= 8, "{what}: closed, a wake every ten seconds or so: {}", r.wakes - wakes);
     }
 
-    // A slider dragged, its steps 40 or 100 ms apart: seamless, every step heard.
+    // A slider dragged as the screen opens, its steps 40 or 100 ms apart: every step heard.
     for (out, step_ms) in [(SPEAKER, 40), (BLUETOOTH, 40), (BLUETOOTH, 100)] {
         let what = format!("dragged in {step_ms} ms steps on {out:?}");
         let (r, h) = heard_after(out, |r| {
+            r.tune(true);
             for k in 1..=25 {
                 r.change(0.5 + 0.01 * k as f32);
                 r.run(step_ms);
@@ -642,6 +751,7 @@ fn handover() {
     // Paused (the engine fading out first) and resumed at moments through a handover.
     for after_ms in [20, 120, 200, 260, 400, 700] {
         let (r, h) = heard_after(SPEAKER, |r| {
+            r.tune(true);
             r.change(0.6);
             r.run(after_ms);
             r.control.ramp = Some((None, 0.0, 100));
@@ -659,7 +769,8 @@ fn handover() {
         });
         let what = format!("paused {after_ms} ms into it");
         assert_eq!(h.slip, 0, "{what}: on from the frame it paused at: {h:?}");
-        assert!(h.click < 1e-3, "{what}: no click: {h:?}");
+        // The first period after the pause ramps from the volume the last one before it was mixed at.
+        assert!(h.click < 2e-3, "{what}: no click: {h:?}");
         assert_home(&what, &r);
         assert_eq!(heard_amp(&r), 0.6, "{what}: the change is heard");
     }
@@ -668,7 +779,7 @@ fn handover() {
     for after_ms in [20, 120, 200, 260, 400, 700] {
         let mut jumped = 0;
         let (r, _) = heard_after(SPEAKER, |r| {
-            r.change(0.6);
+            r.tune(true);
             r.run(after_ms);
             let mut t = r.tape.lock();
             t.jump();
@@ -692,6 +803,7 @@ fn second_track() {
     // No second track: the deep one is emptied and refilled as before, nothing lost or heard twice.
     let (r, h) = heard_after(SPEAKER, |r| {
         r.beside_opens.store(false, Ordering::Relaxed);
+        r.tune(true);
         r.change(0.6);
     });
     assert_eq!(h.slip, 0, "on from where it was: {h:?}");
@@ -705,6 +817,7 @@ fn second_track() {
     // with no second track.
     let (r, h) = heard_after(SPEAKER, |r| {
         r.beside_dies.store(true, Ordering::Relaxed);
+        r.tune(true);
         r.change(0.6);
         r.run(100);
         assert!(r.writer.handover.is_none() && r.open_tracks() == 1, "the dead track let go at once");
@@ -714,26 +827,25 @@ fn second_track() {
     assert_eq!(heard_amp(&r), 0.6, "the change is heard");
 }
 
-
 #[test]
 fn tuned_changes_are_heard_soon() {
-    // The equalizer open (a shallow track), a change at moments through its top-up cycle: in place,
+    // A sound screen open (a shallow track), a change at moments through its top-up cycle: in place,
     // seamless, heard within the output's own latency and what the track holds besides (a top-up and a
     // late wake on the speaker, a quarter more of Bluetooth's long way).
     for out in [SPEAKER, BLUETOOTH] {
         let mut worst = 0;
         for k in 0..8 {
-            let mut at = 0;
+            let (mut at, mut tracks) = (0, 0);
             let (r, h) = heard_after(out, |r| {
-                r.control.shallow = true;
-                r.wake();
-                r.run(15_000 + k * 17);
+                r.tune(true);
+                r.run(3_000 + k * 17);
+                tracks = r.air.wires.lock().len();
                 at = r.now();
                 r.change(0.6);
             });
             let what = format!("tuning on {out:?}, {k}");
             assert_seamless(&what, out, &r, &h);
-            assert_eq!(r.air.wires.lock().len(), 1, "{what}: the one track");
+            assert_eq!(r.air.wires.lock().len(), tracks, "{what}: the one track");
             worst = worst.max(heard_in_ms(&r, at, 0.5, 0.6));
         }
         let late = worst - out.delay_ms - out.period_ms;

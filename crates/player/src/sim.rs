@@ -11,7 +11,7 @@ use crate::automix::plan;
 use crate::decode::{Codec, Decoder, MP3_DECODER_DELAY};
 use crate::engine::{Host, Plan};
 use crate::pcm::{Encoding, Format};
-use crate::pipeline::{self, Reading as _, Sink, Songs};
+use crate::pipeline::{self, Reading as _, Remake, Sink, Songs};
 use crate::playlist::Playlist;
 use crate::transitions::{engine_plan, pick, whole_song, Skip, TransitionPrefs, WindowSong};
 use crate::types::TrackAnalysis;
@@ -573,7 +573,7 @@ impl pipeline::Track for AudioTrack {
         self.played
     }
 
-    fn freeze(&mut self) -> u64 {
+    fn freeze(&mut self, _why: Remake) -> u64 {
         self.played
     }
 

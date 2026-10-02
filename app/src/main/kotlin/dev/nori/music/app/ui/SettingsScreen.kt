@@ -342,17 +342,7 @@ fun SettingsGroupScreen(vm: SettingsViewModel, id: String, highlight: String = "
     LaunchedEffect(id) { if (id == "data") vm.refreshStorage() }
     LaunchedEffect(id, p.activeServerId) { if (id == "servers") vm.loadMusicFolders() }
     // The effects and levels are heard at once while moved, as the equalizer's bands are.
-    if (id == "sound") {
-        TuningWhileTouched(
-            vm, !p.soundBypass,
-            listOf(
-                p.bassBoostDb, p.virtualizer, p.volumeBoostDb, p.compressor, p.compThresholdDb, p.compRatio,
-                p.compAttackMs, p.compReleaseMs, p.compMakeupDb, p.compKneeDb, p.loudness, p.loudnessRefPhon, p.expander,
-                p.expThresholdDb, p.expRatio, p.expAttackMs, p.expReleaseMs, p.replayGain, p.preampDb, p.loudnessTarget,
-                p.gainBoostDb, p.untaggedGainDb,
-            ),
-        )
-    }
+    if (id == "sound") TuningWhileOpen(vm)
     val res = LocalContext.current.resources
     val config = LocalConfiguration.current
     // Built once for the whole page, again only when the settings, its facts or the language change.
