@@ -191,6 +191,8 @@ pub struct TransitionEngine {
     playing_id: Option<StreamId>,
     /// Flushed and nothing has flowed since: the next configure is the stream about to play.
     fresh: bool,
+    /// Flushed and no buffer has passed since: the next one is where a seek or a remake landed.
+    landing: bool,
     /// A discontinuity without a mix and nothing flowed since: the next new stream is the one about to
     /// flow (media3 announces a stream with its first buffer, after the discontinuity).
     awaiting_stream: bool,
@@ -304,6 +306,7 @@ impl TransitionEngine {
             current_id: None,
             playing_id: None,
             fresh: false,
+            landing: false,
             awaiting_stream: false,
             offset_us: 0,
             phase: Phase::Pass,
@@ -670,6 +673,7 @@ impl TransitionEngine {
         if self.playing_id.is_none() {
             self.playing_id = self.current_id.clone();
         }
+        let landed = std::mem::take(&mut self.landing);
         let mut p = self.refresh_plan(host);
         if p.is_none() && self.playing_id != self.current_id {
             // A stale playing id (rapid skips): trust the decoder's id; costs one replan.
@@ -706,8 +710,9 @@ impl TransitionEngine {
             None => "holding the ending, no sound still in the sink".to_string(),
             Some(r) => format!("holding the ending, {} ms of sound still in the sink", r / 1000),
         });
-        if let Some(runway) = runway.filter(|&r| r < DRY_US && !late) {
-            // Decode never got ahead (a seek near the boundary, next track still fetching): don't hold.
+        // Landing in or at the transition, the sink holds only what was before the cut: the hold is meant.
+        if let Some(runway) = runway.filter(|&r| r < DRY_US && !late && !landed) {
+            // Decode never got ahead (the next track still fetching): don't hold.
             host.log(&format!("transition: no runway ({} ms), letting the ending play", runway / 1000));
             self.abandon_transition(host);
             return Some(self.pass(down, &buf[before..], whole, pts_us));
@@ -1459,6 +1464,7 @@ impl TransitionEngine {
     pub fn flush<H: Host>(&mut self, host: &mut H) {
         self.clear(host);
         self.fresh = true;
+        self.landing = true;
     }
 
     /// Stopped: also forgets the output format and frees buffers.
@@ -1801,6 +1807,20 @@ mod tests {
         assert!(h.log.iter().any(|l| l.contains("no runway")), "{:?}", h.log);
         assert!(!h.log.iter().any(|l| l.contains("late hold")), "{:?}", h.log);
         assert_eq!(d.samples().len(), (RATE as usize * 3) * 2, "everything played straight through");
+    }
+
+    /// A seek or remake landing at the plan's start holds there although the sink has little left.
+    #[test]
+    fn landing_at_the_start_holds() {
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
+        h.plans.insert("a".into(), fade("b", 1_000_000));
+        d.position = Some(999_000);
+        e.flush(&mut h);
+        e.configure(&mut d, &mut h, stream("a", FMT));
+        feed(&mut e, &mut d, &mut h, &tone(1000, 2.0), 1_000_000);
+        assert!(h.log.iter().any(|l| l.contains("holding the ending")), "{:?}", h.log);
+        assert!(!h.log.iter().any(|l| l.contains("no runway")), "{:?}", h.log);
+        assert!(d.samples().is_empty(), "the ending waits for the next song");
     }
 
     #[test]
