@@ -243,6 +243,11 @@
     <string name="settings_keep_awake_charging">Charging</string>
     <string name="settings_keep_awake_sideways_charging">Sideways and charging</string>
     <string name="settings_keep_awake_always">Always</string>
+    <string name="settings_controls_side">Car screen controls side</string>
+    <string name="settings_controls_side_detail">On a car’s built-in screen, where the controls and tabs sit. The cover goes on the other side.</string>
+    <string name="settings_controls_side_driver">Driver’s side</string>
+    <string name="settings_controls_side_left">Left</string>
+    <string name="settings_controls_side_right">Right</string>
     <string name="settings_theme">Theme</string>
     <string name="settings_theme_system">Same as the system</string>
     <string name="settings_theme_light">Light</string>
@@ -288,8 +293,8 @@
     <string name="settings_lyrics_size_large">Large</string>
     <string name="settings_lyrics_translation">Show translations</string>
     <string name="settings_lyrics_translation_detail">When your server has them.</string>
-    <string name="settings_lyrics_timing_button">Timing button</string>
-    <string name="settings_lyrics_timing_button_detail">The corner under the lyrics that nudges them sooner or later when they drift.</string>
+    <string name="settings_lyrics_timing_button">Source and timing</string>
+    <string name="settings_lyrics_timing_button_detail">The corner under the lyrics that says where they came from, and nudges them sooner or later when they drift.</string>
     <string name="settings_lyrics_screen_on">Keep the screen on</string>
     <string name="settings_lyrics_screen_on_detail">While lyrics are shown and music plays.</string>
     <string name="settings_lyrics_online">Find missing lyrics online</string>
@@ -511,11 +516,12 @@
     <string name="settings_hint_confirm_favourites">A short message when you favorite or unfavorite something</string>
     <string name="settings_hint_less_movement">Shorter, simpler animations</string>
     <string name="settings_hint_keep_awake">Screen timeout. Stay awake while sideways or charging</string>
+    <string name="settings_hint_controls_side">Car. Left or right hand drive, steering wheel</string>
     <string name="settings_hint_hide_status_bar">Full screen. Hides the clock and battery bar at the top</string>
     <string name="settings_hint_animate_anyway">Keeps animations on even when the system\'s are off</string>
     <string name="settings_hint_lyrics_sweep">For lyrics timed word by word</string>
     <string name="settings_hint_lyrics_translation">When your server has them</string>
-    <string name="settings_hint_lyrics_timing_button">Sync offset. Show or hide the button that nudges lyrics sooner or later</string>
+    <string name="settings_hint_lyrics_timing_button">Lyrics provider, credit, sync offset, timing button. Show or hide where lyrics came from and the nudges</string>
     <string name="settings_hint_lyrics_screen_on">While lyrics are shown and music plays</string>
     <string name="settings_hint_lyrics_online">Asks the lyrics sources. Sends the artist, song and album name</string>
     <string name="settings_hint_lyrics_words">Keeps looking past lyrics timed line by line</string>

@@ -420,7 +420,9 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
             val page = scheme.background
             // On its side (LocalWide): the sleeve is the left half, and its wash and soft edge run across.
             val across = LocalWide.current
-            fun Modifier.wash(p: PagePalette?): Modifier = drawWithCache {
+            // The cover at the end: the wash is drawn turned round, from the sleeve's edge measured from the right.
+            val washTurned = across && LocalCoverAtEnd.current
+            fun Modifier.wash(p: PagePalette?): Modifier = (if (washTurned) graphicsLayer { scaleX = -1f } else this).drawWithCache {
                 if (p == null) onDrawBehind { drawRect(page) } else {
                     // Lyrics and queue have no sleeve on screen, and a player opened straight into
                     // one of them has never measured it: use where it would be, so those panels get
@@ -543,7 +545,10 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                             // from there under the controls: its right edge and width stand in for the
                             // bottom and height.
                             if (across) {
-                                sleeveBottom = (player[0]?.takeIf { p -> p.isAttached }?.localPositionOf(it, Offset.Zero)?.x ?: 0f) + it.size.width
+                                val owner = player[0]?.takeIf { p -> p.isAttached }
+                                val left = owner?.localPositionOf(it, Offset.Zero)?.x ?: 0f
+                                // Turned round (the cover at the end), from the right: the wash is drawn turned too.
+                                sleeveBottom = if (washTurned) (owner?.size?.width ?: 0).toFloat() - left else left + it.size.width
                                 sleeveHeight = it.size.width.toFloat()
                                 return@onGloballyPositioned
                             }
@@ -580,7 +585,11 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                         Modifier.weight(1f).graphicsLayer { alpha = panelFade.read() }
                             // On its side the lyrics and the queue start clear of the camera's punch hole,
                             // as the pages do; only the cover runs under it.
-                            .then(if (across) Modifier.windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.displayCutout.only(androidx.compose.foundation.layout.WindowInsetsSides.Start)).padding(end = LocalUnderControls.current) else Modifier)
+                            .then(
+                                if (!across) Modifier
+                                else if (LocalCoverAtEnd.current) Modifier.windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.displayCutout.only(androidx.compose.foundation.layout.WindowInsetsSides.End)).padding(start = LocalUnderControls.current)
+                                else Modifier.windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.displayCutout.only(androidx.compose.foundation.layout.WindowInsetsSides.Start)).padding(end = LocalUnderControls.current),
+                            )
                             .then(if (page == Panel.QUEUE) Modifier.padding(horizontal = 26.dp) else Modifier),
                     ) {
                         if (page == Panel.QUEUE) Queue(vm) else LyricsView(vm, actions, state.playing)
@@ -768,18 +777,20 @@ private fun PlayerHalves(wide: Boolean, controlsDrag: Modifier, panel: @Composab
         val controlsAt = minOf(maxHeight, maxWidth * 0.5f)
         // Clearly wider than tall, reaching [UNDER_TEXT] in under the controls, which keep their place.
         val side = minOf(controlsAt + UNDER_TEXT, maxWidth * 0.7f)
+        // The cover at the end (LocalCoverAtEnd): the same two halves, the other way round.
+        val atEnd = LocalCoverAtEnd.current
         Box(Modifier.fillMaxSize()) {
             androidx.compose.runtime.CompositionLocalProvider(LocalUnderControls provides (side - controlsAt).coerceAtLeast(0.dp)) {
-                Column(Modifier.width(side).fillMaxHeight()) { panel() }
+                Column(Modifier.width(side).fillMaxHeight().align(if (atEnd) Alignment.TopEnd else Alignment.TopStart)) { panel() }
             }
             Column(
                 // Clear of the camera's punch hole too, which is on this side when the phone is turned the other way.
                 // The whole half, edge to edge, takes the pull down ([controlsDrag]) before the insets are kept off.
                 // The same room kept above as below (the gesture bar's, or the status bar's if it is shown), so the
                 // controls stand in the middle of the screen's height rather than of what is above the gesture bar.
-                Modifier.padding(start = controlsAt).fillMaxSize().then(controlsDrag).padding(vertical = barRoom())
-                    .windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.displayCutout.only(androidx.compose.foundation.layout.WindowInsetsSides.End))
-                    .padding(start = 8.dp),
+                Modifier.padding(start = if (atEnd) 0.dp else controlsAt, end = if (atEnd) controlsAt else 0.dp).fillMaxSize().then(controlsDrag).padding(vertical = barRoom())
+                    .windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.displayCutout.only(if (atEnd) androidx.compose.foundation.layout.WindowInsetsSides.Start else androidx.compose.foundation.layout.WindowInsetsSides.End))
+                    .padding(start = if (atEnd) 0.dp else 8.dp, end = if (atEnd) 8.dp else 0.dp),
                 verticalArrangement = Arrangement.Center,
             ) { controls() }
         }
@@ -925,9 +936,10 @@ private fun Artwork(
             // On its side the sleeve's right edge goes soft (SoftSleeve), and the shade goes with it: stopping
             // where the sleeve does, it was a darker block with a hard edge across the top of the soft band.
             val across = LocalWide.current
+            val turned = across && LocalCoverAtEnd.current
             Box(
                 Modifier.fillMaxWidth().fillMaxHeight(stage.statusShadeTo)
-                    .then(if (across) Modifier.graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
+                    .then(if (across) Modifier.graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen; if (turned) scaleX = -1f }
                         .rubOutBottom(across = true) { (size.width - size.width * MELT * ACROSS_MELT) to size.width } else Modifier)
                     .background(remember { Brush.verticalGradient(0f to Color.Black.copy(alpha = stage.statusShade), 1f to Color.Transparent) }),
             )
@@ -1105,12 +1117,15 @@ internal fun SoftSleeve(
     // turned. [sleeve] is then its right edge and width.
     val across = LocalWide.current
     val edge: androidx.compose.ui.draw.CacheDrawScope.() -> Pair<Float, Float> = if (across && sleeve === SLEEVE_ALL) { { size.width to size.width } } else sleeve
+    // With the cover at the end (a car's driver on the left) the sleeve is turned round whole, soft edge and
+    // blur with it, and the picture turned back inside it: the soft edge faces the controls, never the picture.
+    val mirror = across && LocalCoverAtEnd.current
     Box(
         modifier
-            .graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
+            .graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen; if (mirror) scaleX = -1f }
             .rubOutBottom(across) { val (bottom, height) = edge(); (bottom - height * MELT * (if (across) ACROSS_MELT else 1f)) to bottom },
     ) {
-        content(false)
+        Unturned(mirror) { content(false) }
         if (soft && band != null) Box(
             Modifier.fillMaxSize()
                 // At nought the layer is skipped whole, blur and all.
@@ -1131,9 +1146,16 @@ internal fun SoftSleeve(
                     }
                 },
         ) {
-            Box(Modifier.fillMaxSize().graphicsLayer { renderEffect = band.of(look) }) { content(true) }
+            Box(Modifier.fillMaxSize().graphicsLayer { renderEffect = band.of(look) }) { Unturned(mirror) { content(true) } }
         }
     }
+}
+
+/** [content] turned back the right way round inside something turned round ([turned]), or as it is. */
+@Composable
+private fun Unturned(turned: Boolean, content: @Composable androidx.compose.foundation.layout.BoxScope.() -> Unit) {
+    if (!turned) Box(Modifier.fillMaxSize(), content = content)
+    else Box(Modifier.fillMaxSize().graphicsLayer { scaleX = -1f }, content = content)
 }
 
 /**

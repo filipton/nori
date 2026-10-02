@@ -23,8 +23,10 @@ import java.util.concurrent.Executors
 /**
  * The car's pictures (dev.nori.music.playback.CarArt makes their addresses). Android Auto draws a browse
  * item's picture only from a `content://` address it opens itself, never from the server's signed one, so
- * this draws them, from the covers the app keeps: `c/<cover id>`, a cover; `m/<mix id>?c=..` a mix's tile
- * as Home draws it (the widgets' [Painter]); `g/play` and `g/shuffle`, the Play and Shuffle rows' glyphs.
+ * this draws them, from the covers the app keeps: `c/<cover id>[?s=<side>]`, a cover (the queue's songs
+ * carry these too, for the car's now playing and the lock screen); `m/<mix id>?c=..` a mix's tile
+ * as Home draws it (the widgets' [Painter]); `g/<name>`, the glyphs of the Play and Shuffle rows and of the
+ * long-press actions.
  * Only ever read, and only what the car asks for as it lists a folder.
  */
 class CarArtProvider : ContentProvider() {
@@ -55,7 +57,9 @@ class CarArtProvider : ContentProvider() {
                 "c" -> {
                     val id = parts.getOrNull(1) ?: return@withTimeoutOrNull null
                     val look = Widgets.theme(context).look
-                    Painter.cover(context, Widgets.picture(context, Nori.get(context).library.coverUrl(id, SIDE), SIDE), SIDE, SIDE, 0f, look)
+                    // The size asked for (the queue's covers are the lock screen's 800), else a car row's.
+                    val side = uri.getQueryParameter("s")?.toIntOrNull()?.coerceIn(64, 1024) ?: SIDE
+                    Painter.cover(context, Widgets.picture(context, Nori.get(context).library.coverUrl(id, side), side), side, side, 0f, look)
                 }
                 "m" -> {
                     val mix = parts.getOrNull(1) ?: return@withTimeoutOrNull null
@@ -63,7 +67,27 @@ class CarArtProvider : ContentProvider() {
                     val covers = coroutineScope { uri.getQueryParameters("c").map { id -> async { Widgets.picture(context, library.coverUrl(id, SIDE / 2), SIDE / 2) } }.awaitAll() }
                     Painter.mix(covers.filterNotNull(), dev.nori.music.ffi.library.mixTileColours(mix).map { it.toInt() }, SIDE, SIDE, 0f)
                 }
-                "g" -> glyph(context, if (parts.getOrNull(1) == "shuffle") R.drawable.widget_shuffle else R.drawable.widget_play)
+                "g" -> glyph(
+                    context,
+                    when (parts.getOrNull(1)) {
+                        "shuffle" -> R.drawable.widget_shuffle
+                        "next" -> dev.nori.music.core.R.drawable.car_play_next
+                        "queue" -> dev.nori.music.core.R.drawable.car_add_to_queue
+                        "heart" -> dev.nori.music.core.R.drawable.car_favourite
+                        "download" -> dev.nori.music.core.R.drawable.car_download
+                        "home" -> dev.nori.music.core.R.drawable.car_home
+                        "library" -> dev.nori.music.core.R.drawable.car_library
+                        "recent" -> dev.nori.music.core.R.drawable.car_recent
+                        "new" -> dev.nori.music.core.R.drawable.car_new
+                        "most" -> dev.nori.music.core.R.drawable.car_most
+                        "albums" -> dev.nori.music.core.R.drawable.car_albums
+                        "artists" -> dev.nori.music.core.R.drawable.car_artists
+                        "playlists" -> dev.nori.music.core.R.drawable.car_playlists
+                        "genres" -> dev.nori.music.core.R.drawable.car_genres
+                        "random" -> dev.nori.music.core.R.drawable.car_random
+                        else -> R.drawable.widget_play
+                    },
+                )
                 else -> null
             }
         }

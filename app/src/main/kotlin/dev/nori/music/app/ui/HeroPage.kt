@@ -291,6 +291,8 @@ fun HeroPage(
                 // was the whole screen and the songs began a screen further down.
                 // Where the words begin: the player's controls' place, so the cover's soft edge runs on under them.
                 val textAt = minOf(maxOf(maxWidth * 0.45f, 360.dp), maxWidth * 0.5f)
+                // The cover at the end (a car's driver on the left, LocalCoverAtEnd): the same halves the other way round.
+                val atEnd = LocalCoverAtEnd.current
                 Row(Modifier.fillMaxSize()) {
                     // A cover fills its half as the player's sleeve fills its own: from the screen's very left
                     // edge - under the camera's punch hole, which the app otherwise keeps pages clear of - and top,
@@ -300,8 +302,9 @@ fun HeroPage(
                     // photo, or one whose details have not come (offline) - keeps the same layout with the plain plate a
                     // missing cover shows, rather than falling back to another layout that appeared only then.
                     val band: @Composable (Modifier) -> Unit = picture ?: { m -> Cover(null, 0.dp, m, radius = 0.dp) }
-                    run {
-                        val cutout = LocalPageStart.current
+                    val cover: @Composable () -> Unit = {
+                        // The strip it runs out over: the camera's on the left, or on the right with the cover at the end.
+                        val cutout = if (atEnd) LocalPageEnd.current else LocalPageStart.current
                         // The cover reaches [UNDER_TEXT] in under the name, the buttons and the songs, which keep their
                         // place: wider than tall, as the player's sleeve on its side.
                         val under = UNDER_TEXT
@@ -312,13 +315,14 @@ fun HeroPage(
                                 val extra = cutout.roundToPx()
                                 val w = constraints.maxWidth + extra + under.roundToPx()
                                 val placeable = measurable.measure(constraints.copy(minWidth = w, maxWidth = w))
-                                layout(constraints.maxWidth, placeable.height) { placeable.place(-extra, 0) }
+                                layout(constraints.maxWidth, placeable.height) { placeable.place(if (atEnd) -under.roundToPx() else -extra, 0) }
                             },
                         ) {
+                            // SoftSleeve turns itself round with the cover at the end; the shade below goes with it.
                             SoftSleeve(Modifier.fillMaxSize()) { band(Modifier.fillMaxSize()) }
                             // The shade under the status bar, faded out with the soft right edge so it does not end on a line.
                             Box(
-                                Modifier.fillMaxSize().graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }.drawWithCache {
+                                Modifier.fillMaxSize().graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen; if (atEnd) scaleX = -1f }.drawWithCache {
                                     val shade = Brush.verticalGradient(0f to Color.Black.copy(alpha = stage.statusShade), stage.statusShadeTo to Color.Transparent)
                                     val right = alphaGradient(stage.rubOut, Color.Black, size.width * (1f - MELT * ACROSS_MELT), size.width, across = true)
                                     onDrawBehind {
@@ -331,15 +335,18 @@ fun HeroPage(
                     }
                     // Beside a cover, not the camera's strip: a shelf here (an artist's albums) has nothing to run out
                     // under on this side, and its fade would lay the page's colour over the picture.
-                    androidx.compose.runtime.CompositionLocalProvider(LocalPageStart provides 0.dp) {
-                    LazyColumn(Modifier.weight(1f).fillMaxHeight(), state = list) {
-                        // The first song level with the top of the cover beside it.
-                        item(key = "hero-wide-top") { Spacer(Modifier.statusBarsPadding().height(WIDE_TOP)) }
-                        item(key = "hero-wide-head", contentType = "hero") { Column(Modifier.padding(bottom = 8.dp)) { hero(null, false) } }
-                        content()
-                        item(key = "tail") { Spacer(Modifier.height(Space.section + LocalChromeInset.current)) }
+                    val words: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit = {
+                        androidx.compose.runtime.CompositionLocalProvider(if (atEnd) LocalPageEnd provides 0.dp else LocalPageStart provides 0.dp) {
+                        LazyColumn(Modifier.weight(1f).fillMaxHeight(), state = list) {
+                            // The first song level with the top of the cover beside it.
+                            item(key = "hero-wide-top") { Spacer(Modifier.statusBarsPadding().height(WIDE_TOP)) }
+                            item(key = "hero-wide-head", contentType = "hero") { Column(Modifier.padding(bottom = 8.dp)) { hero(null, false) } }
+                            content()
+                            item(key = "tail") { Spacer(Modifier.height(Space.section + LocalChromeInset.current)) }
+                        }
+                        }
                     }
-                    }
+                    if (atEnd) { words(); cover() } else { cover(); words() }
                 }
             } else LazyColumn(state = list) {
                 item(key = "hero", contentType = "hero") {

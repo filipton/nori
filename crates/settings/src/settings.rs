@@ -126,6 +126,15 @@ pub enum HideStatusBar {
     Always,
 }
 
+/// Which side a car screen puts the controls and tabs on; the cover goes on the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, nori_settings_derive::Choice)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
+pub enum ControlsSide {
+    Driver,
+    Left,
+    Right,
+}
+
 /// When the screen is kept on while the app is in front: by orientation and charging.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, nori_settings_derive::Choice)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
@@ -431,6 +440,8 @@ pub struct StoredPrefs {
     pub hide_status_bar: HideStatusBar,
     #[setting("keepAwake", PICK, default = KeepAwake::Never, show = K::Named(KeepAwake::NAMES))]
     pub keep_awake: KeepAwake,
+    #[setting("controlsSide", PICK, default = ControlsSide::Driver, show = K::Named(ControlsSide::NAMES))]
+    pub controls_side: ControlsSide,
     #[setting("amoled", FLAG, default = false, show = K::Switch)]
     pub amoled: bool,
     /// With AMOLED black, which pages keep their cover colours ([`nori_look::sleeve::page_black`]).

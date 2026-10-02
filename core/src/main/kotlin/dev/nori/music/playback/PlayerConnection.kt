@@ -344,7 +344,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
         return dev.nori.music.ffi.queue.playlistViewOf(items.map { it.mediaId }, items.map { it.queuedAs() ?: dev.nori.music.ffi.queue.Hand.NO }, order)
     }
 
-    private fun items(songs: List<Song>): List<MediaItem> = songs.toMediaItems { nori.library.coverUrl(it.coverArt, NOTIFICATION_ART) }
+    private fun items(songs: List<Song>): List<MediaItem> = songs.toMediaItems { CarArt.cover(context, it.coverArt, NOTIFICATION_ART)?.toString() }
 
     // ---- queue ----
 

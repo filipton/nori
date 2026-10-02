@@ -324,7 +324,12 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             // (TabRail), and the camera on the opposite side.
             val view = androidx.compose.ui.platform.LocalView.current
             val rotation = remember(config) { view.display?.rotation ?: android.view.Surface.ROTATION_0 }
-            val railLeft = wide && rotation == android.view.Surface.ROTATION_270
+            // On a car's own screen the controls and the tabs go beside the driver (DriverSide), or on the side
+            // chosen in Settings (the core's `controls_on_left`). A phone keeps its layout.
+            val car = remember(context) { DriverSide.isCar(context) }
+            val driverLeft = remember(context) { DriverSide.onLeft(context) }
+            val coverAtEnd = wide && car && dev.nori.music.ffi.settings.controlsOnLeft(prefs.controlsSide, driverLeft)
+            val railLeft = wide && (rotation == android.view.Surface.ROTATION_270 || coverAtEnd)
             val railInset = if (wide) tabRailWidth() else 0.dp
             val cutout = androidx.compose.foundation.layout.WindowInsets.displayCutout.asPaddingValues()
             val cutoutStart = if (wide && !railLeft) cutout.calculateStartPadding(androidx.compose.ui.unit.LayoutDirection.Ltr) else 0.dp
@@ -354,7 +359,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             Box(Modifier.fillMaxSize().onGloballyPositioned { sheet.rootHeight = it.size.height.toFloat() }) {
               // Everything under the player. Once the player covers it completely it is not drawn at all:
               // a layer at zero alpha is skipped, so a page left animating underneath costs nothing.
-              CompositionLocalProvider(LocalWide provides wide, LocalTabTurn provides { turn.value }, LocalPageStart provides pageStart, LocalPageEnd provides pageEnd) {
+              CompositionLocalProvider(LocalWide provides wide, LocalCoverAtEnd provides coverAtEnd, LocalTabTurn provides { turn.value }, LocalPageStart provides pageStart, LocalPageEnd provides pageEnd) {
               Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (sheet.progress.value >= 1f) 0f else 1f }) {
               // The strips the rail and the camera stand on are the app's own page; a tinted page paints them over
               // itself (HeroPage), so its colour comes and goes with the page. Painted here in the chrome's

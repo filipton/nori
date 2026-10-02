@@ -7,6 +7,8 @@ plugins {
 
 android {
     namespace = "dev.nori.music.app"
+    // The car's own API, for where its driver sits (ui/DriverSide.kt): present only on a car, and asked for there only.
+    useLibrary("android.car", false)
     compileSdk = 37
 
     defaultConfig {

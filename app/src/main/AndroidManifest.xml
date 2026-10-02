@@ -18,6 +18,9 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
             <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
+            <!-- A car's own screen (Android Automotive) shows the app while it moves only when it says it is made for
+              that: playing and choosing music is what a driver comes to it for. -->
+            <meta-data android:name="distractionOptimized" android:value="true" />
         </activity>
         <receiver android:name=".PlayerWidget" android:exported="false" android:label="@string/widget_player">
             <intent-filter>
@@ -60,6 +63,13 @@
             </intent-filter>
         </receiver>
         <meta-data android:name="com.google.android.gms.car.application" android:resource="@xml/automotive_app_desc" />
+        <!-- A car's own screen (Android Automotive) opens a media app's own activity from its dock and its media
+          card when the service names it, rather than the car's generic media screen over the browse tree. -->
+        <service android:name="dev.nori.music.playback.PlaybackService">
+            <meta-data android:name="androidx.car.app.media.CalMediaActivityComponent" android:value="${applicationId}/dev.nori.music.app.MainActivity" />
+        </service>
+        <!-- On a car's own screen, where its driver sits (ui/DriverSide.kt); absent on a phone. -->
+        <uses-library android:name="android.car" android:required="false" />
         <!-- The car's pictures (CarArtProvider): Android Auto draws a browse item's picture only from a content address. -->
         <provider android:name=".car.CarArtProvider" android:authorities="${applicationId}.carart" android:exported="true" />
         <!-- A report of a problem, shared as a file (Settings > About). -->
