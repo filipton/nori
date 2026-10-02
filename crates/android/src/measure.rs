@@ -12,7 +12,7 @@ use jni::{JNIEnv, JavaVM};
 use nori_core::client::CurrentClient;
 use nori_engine::core::{key_format, Analyses, Measurer, Shelf, Whole};
 
-use crate::{cleared, native, Class};
+use crate::{cleared, native, Class, Handles};
 
 pub(crate) static CLASS: Class = Class {
     name: c"dev/nori/music/playback/MeasureJni",
@@ -126,10 +126,11 @@ fn notify_measured() {
     }
 }
 
-/// The measurer behind `h` (from [`start`], until [`stop`]).
-fn measurer<'a>(h: jlong) -> Option<&'a Arc<Measurer>> {
-    // SAFETY: a non-zero `h` came from `start` and `stop` has not taken it back.
-    (h != 0).then(|| unsafe { &*(h as *const Arc<Measurer>) })
+/// Measurers by Kotlin handle: a cache writer's `arrived` racing `stop` finds nothing.
+static MEASURERS: Handles<Measurer> = Handles::new();
+
+fn measurer(h: jlong) -> Option<Arc<Measurer>> {
+    MEASURERS.get(h)
 }
 
 /// Looks `MeasureBridge` up on first use; false when it is missing.
@@ -157,7 +158,7 @@ extern "system" fn start(mut env: JNIEnv, _: JClass, analyses: jlong) -> jlong {
     if !ensure_java(&mut env) {
         return 0;
     }
-    Box::into_raw(Box::new(Measurer::on_shelf(analyses, Box::new(Media3), Some(Box::new(notify_measured))))) as jlong
+    MEASURERS.add(Measurer::on_shelf(analyses, Box::new(Media3), Some(Box::new(notify_measured))))
 }
 
 /// The upcoming songs may have changed: asks for the queue's `measure` (empty with AutoMix off).
@@ -176,9 +177,7 @@ extern "system" fn arrived(h: jlong) {
 
 /// Playback service stopped: abandons the current song and drops the measurer.
 extern "system" fn stop(h: jlong) {
-    if h != 0 {
-        // SAFETY: `h` came from `start`; Kotlin stops it once.
-        let m = unsafe { Box::from_raw(h as *mut Arc<Measurer>) };
+    if let Some(m) = MEASURERS.remove(h) {
         m.ask(Vec::new());
     }
 }
