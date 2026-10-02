@@ -1251,7 +1251,7 @@ fn offload_heard_song_taken_out() {
     let server = Arc::new(Server::default());
     serve(&server, &[("a", &a), ("b", &b)]);
     let fake = Fake::new(MP3_ONLY);
-    let songs = vec![("a".into(), "mp3".into(), 5_000), ("b".into(), "mp3".into(), 5_000)];
+    let songs = vec![("a".into(), "mp3".into(), 5_000), ("b".into(), "flac".into(), 5_000)];
     let rig = Rig::new(server, songs, app(), Some(fake.clone()), offload());
     rig.engine.play_at(1, 0);
     assert!(rig.wait(10, |_| fake.calls().contains(&Call::EndOfStream)), "{:?}", fake.calls());
@@ -2869,6 +2869,27 @@ fn two_on_a_small_grant(d: &Path, secs: u32, grant: usize, dsp: usize) -> Option
     let rig = Rig::new(server, vec![("a".into(), "mp3".into(), ms), ("b".into(), "mp3".into(), ms)], app(), Some(fake.clone()), offload());
     rig.engine.play_at(0, 0);
     Some((rig, fake))
+}
+
+/// Regression: a next song the chip cannot join, still opening at the first look, left the engine
+/// waiting for bytes: awake and waking every second until the song ended.
+#[test]
+fn sleeps_before_unjoinable_next() {
+    if !ffmpeg() {
+        return;
+    }
+    let d = dir();
+    let (a, b) = (mp3(&d, "a", 10, 440), flac(&d, "b", 5, 550));
+    let server = Arc::new(Server::default());
+    serve(&server, &[("a", &a), ("b", &b)]);
+    let songs = vec![("a".into(), "mp3".into(), 10_000), ("b".into(), "flac".into(), 5_000)];
+    let rig = Rig::new(server, songs, app(), Some(Fake::new(MP3_ONLY)), offload());
+    rig.engine.play_at(0, 0);
+    rig.run(1_000);
+    let sleeps = rig.time.clock.sleeps();
+    rig.run(3_000);
+    assert!(!rig.engine.status().awake, "{:?}", rig.engine.status());
+    assert_eq!(rig.time.clock.sleeps() - sleeps, 0, "no wakes while the chip plays");
 }
 
 /// Engine wakes/s and platform requests/s over 40 s of steady playing.

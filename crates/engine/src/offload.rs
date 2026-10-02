@@ -1082,6 +1082,7 @@ impl Offload {
     /// when the track refused a write. `asked`: the platform asked, so the next song is written even when
     /// the (lagging) count says the track is full.
     fn fill<L: Library, Q: Queue>(&mut self, asked: bool, tracks: &mut Sources<L>, queue: &Q, gain: &mut dyn FnMut(usize, &str) -> f32) -> Result<(), i32> {
+        self.t.waiting = false;
         loop {
             if self.in_track_us() >= TRACK_US {
                 return Ok(());
@@ -1097,7 +1098,6 @@ impl Offload {
                     self.t.waiting = true;
                     return Ok(());
                 }
-                self.t.waiting = false;
                 self.stage.clear();
                 self.t.staged = 0;
                 self.t.stage_frames = 0;
