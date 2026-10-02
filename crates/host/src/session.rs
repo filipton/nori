@@ -393,25 +393,17 @@ impl Session {
 
     /// Queues `songs` for download (their covers fetched to disk too) and starts the downloader.
     pub fn download(&self, songs: Vec<Song>) {
-        let songs: Vec<Song> = songs.into_iter().filter(|s| !s.is_provider()).collect();
-        warm_covers(&self.core, self.covers.as_ref(), &songs);
-        match self.core.download_queue(songs) {
-            Ok(q) => self.note(Note::Downloading(q.fresh.len() + q.again.len())),
-            Err(e) => self.note(Note::DownloadFailed(e)),
-        }
+        self.note(queue_downloads(&self.core, self.covers.as_ref(), songs));
         self.start_downloads();
     }
 
+    /// [`Session::download`] of what `what` names, asked of the server on a thread of its own.
     pub fn download_later(&self, what: Fetch) {
         let (client, core, downloader, out, covers) = (self.client.clone(), self.core.clone(), self.downloader.clone(), self.out.clone(), self.covers.clone());
         spawn("nori-download-ask", move || match what.songs(&client) {
             Ok(songs) => {
-                let songs: Vec<Song> = songs.into_iter().filter(|s| !s.is_provider()).collect();
-                warm_covers(&core, covers.as_ref(), &songs);
-                let n = songs.len();
-                let _ = core.download_queue(songs);
+                out(Said::Note(queue_downloads(&core, covers.as_ref(), songs)));
                 downloader.start(settings_store::shared().prefs(|p| p.parallel_downloads).max(1) as usize);
-                out(Said::Note(Note::Downloading(n)));
             }
             Err(e) => out(Said::Note(Note::SongsFailed(e))),
         });
@@ -736,6 +728,16 @@ impl Handle {
 }
 
 /// Fetches covers of downloaded songs to disk (not decoded) so they exist offline.
+/// Queues `songs` but providers' for download, their covers fetched to disk too; what to say of it.
+fn queue_downloads(core: &Core, covers: Option<&Arc<Loader>>, songs: Vec<Song>) -> Note {
+    let songs: Vec<Song> = songs.into_iter().filter(|s| !s.is_provider()).collect();
+    warm_covers(core, covers, &songs);
+    match core.download_queue(songs) {
+        Ok(q) => Note::Downloading(q.fresh.len() + q.again.len()),
+        Err(e) => Note::DownloadFailed(e),
+    }
+}
+
 fn warm_covers(core: &Core, covers: Option<&Arc<Loader>>, songs: &[Song]) {
     let Some(loader) = covers else { return };
     for url in core.download_cover_urls(songs.iter().filter_map(|s| s.cover_art.clone()).collect()) {
@@ -772,6 +774,16 @@ mod tests {
     use nori_engine::Loader;
 
     use super::*;
+
+    #[test]
+    fn downloads_said_are_the_ones_queued() {
+        let core = Core::new(String::new(), "t".into()).unwrap();
+        let song = |id: &str| Song { id: id.into(), ..Default::default() };
+        core.download_queue(vec![song("done")]).unwrap();
+        core.download_settle(vec!["done".into()], vec![true]).unwrap();
+        let said = queue_downloads(&core, None, vec![song("done"), song("new"), song("ext-1")]);
+        assert!(matches!(said, Note::Downloading(1)), "the finished and the provider's song are not downloaded");
+    }
 
     /// A song's request the server never answers is dropped with its song: the connection closes.
     #[test]
