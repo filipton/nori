@@ -134,12 +134,12 @@ impl Core {
 
     /// Clears cached service lyrics, keeping the picks of downloaded songs (and the server's lyrics).
     pub fn lyrics_cache_clear(&self) {
-        let keep: Vec<(String, Vec<u8>)> =
-            self.downloads(true).unwrap_or_default().iter().map(best_key).filter_map(|k| Some((k.clone(), self.cache_get(k).ok().flatten()?))).collect();
-        let _ = self.cache_evict(CACHE_PREFIX.to_string());
-        for (k, body) in keep {
-            let _ = self.cache_put(k, body);
-        }
+        let keep: Vec<String> = self.downloads(true).unwrap_or_default().iter().map(best_key).collect();
+        let keep = serde_json::to_string(&keep).unwrap_or_default();
+        let _ = self.db.lock().execute(
+            "DELETE FROM cache WHERE server=sid() AND key >= ?1 AND key < ?1 || x'ff' AND key NOT IN (SELECT value FROM json_each(?2))",
+            rusqlite::params![CACHE_PREFIX, keep],
+        );
     }
 }
 
@@ -322,7 +322,11 @@ pub(crate) mod tests {
             fake.answer(r#"[{"duration":200,"syncedLyrics":"[00:02.00]a line made up\n[01:00.00]another made up line\n[02:00.00]a third invented one\n[03:00.00]and the last of them"}]"#);
             assert_eq!(run(&c, s, false, false, &lrclib())[0].origin, LyricsOrigin::Lrclib);
         }
+        let kept_at = |c: &Client| c.core.db.lock().query_row("SELECT ts FROM cache WHERE key = ?1", [best_key(&kept)], |r| r.get::<_, i64>(0)).unwrap();
+        c.core.db.lock().execute("UPDATE cache SET ts = ts - 86400000", []).unwrap();
+        let aged = kept_at(&c);
         c.core.lyrics_cache_clear();
+        assert_eq!(kept_at(&c), aged, "a kept pick keeps its age, which times its lookup again");
         // Offline from here.
         let asked = fake.asked().len();
         let offline = run(&c, &kept, false, false, &lrclib());
