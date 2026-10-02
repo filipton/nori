@@ -179,9 +179,12 @@ fn boosted_song_under_ceiling() {
     // and its release after a peak left out.
     let knee = 10f32.powf(-3.0 / 20.0);
     let second = RATE as usize * 2;
+    // Peaks per block; a sample's surroundings are the whole blocks around it (a little wider).
+    const B: usize = 1000;
+    let peaks: Vec<f32> = x.chunks(B).map(|c| c.iter().fold(0f32, |m, s| m.max(s.abs()))).collect();
     let (mut same, mut quiet) = (0, 0);
     for (k, (&y, &v)) in heard[LOOKAHEAD * 2..].iter().zip(&x).enumerate() {
-        let near = x[k.saturating_sub(second)..(k + second / 10).min(x.len())].iter().fold(0f32, |m, s| m.max(s.abs())) * gain;
+        let near = peaks[k.saturating_sub(second) / B..=((k + second / 10) / B).min(peaks.len() - 1)].iter().fold(0f32, |m, s| m.max(*s)) * gain;
         if near < knee {
             quiet += 1;
             same += ((y - v * gain).abs() < 1e-6) as usize;
