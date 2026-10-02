@@ -732,7 +732,7 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
             if let Some(r) = self.reading.as_mut() {
                 r.index = at(r.index);
             }
-            if let Some(o) = self.opening.as_mut() {
+            for o in [self.opening.as_mut(), self.remaking.as_mut()].into_iter().flatten() {
                 o.index = at(o.index);
             }
             for p in self.periods.iter_mut() {

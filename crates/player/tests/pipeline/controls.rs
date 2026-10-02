@@ -213,6 +213,33 @@ fn shuffle_plays_each_song_once() {
     assert!(heard == joined, "each song once, whole, back to back");
 }
 
+/// An edit while the playing song is opened again to remake its ending: the remake follows the song.
+#[test]
+fn edit_while_ending_is_remade() {
+    let s = songs(4, 12.0);
+    let mut p = Player::new(queue(&s));
+    p.tracks.slow.push("s1".into());
+    p.play_from(1);
+    // The reader is into s2: s1's ending was made gapless into it.
+    assert!(p.run_until(10_000, |p| p.app.log.iter().any(|l| l.contains("sink: s2"))), "{:?}", p.app.log);
+    let extra = music(2.0, 200);
+    p.tracks.push(track("x", &extra));
+    p.tracks.push(track("y", &extra));
+    p.queue.add(vec!["x".into()], Hand::Next);
+    p.queue_changed();
+    p.replan_ending();
+    assert!(p.app.logged("the ending of s1 is made again"), "{:?}", p.app.log);
+    p.queue.insert(0, vec!["y".into()], Hand::No);
+    p.queue_changed();
+    assert!(p.run_to_end(60_000));
+    let heard = p.sink.heard_samples();
+    let joined: Vec<i16> = [&s[1], &extra, &s[2], &s[3]].iter().flat_map(|v| v.iter().copied()).collect();
+    // Where x replaces the s2 already written, it is blended in.
+    let (cut, blend) = (s[1].len(), frames(nori_player::pipeline::BLEND_US as f64 / 1e6) * 2);
+    assert_eq!(heard.len(), joined.len());
+    assert!(heard[..cut] == joined[..cut] && heard[cut + blend..] == joined[cut + blend..], "s1 whole, then the song added to play next, then the rest");
+}
+
 #[test]
 fn edit_before_current_keeps_player_on_it() {
     let s = songs(4, 12.0);

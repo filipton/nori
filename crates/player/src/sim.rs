@@ -265,12 +265,14 @@ pub struct Reading {
     out: Vec<i16>,
     buf: Vec<u8>,
     at_us: i64,
+    /// Not ready when first asked (still opening).
+    opening: bool,
 }
 
 impl Reading {
     /// Reads from `from_frame`; compressed audio starts at the packet a seek would land on.
     fn new(audio: &Audio, from_frame: i64) -> Reading {
-        let mut r = Reading { audio: audio.clone(), frame: from_frame, skip_to: from_frame, next_packet: 0, decoder: None, out: Vec::new(), buf: Vec::new(), at_us: 0 };
+        let mut r = Reading { audio: audio.clone(), frame: from_frame, skip_to: from_frame, next_packet: 0, decoder: None, out: Vec::new(), buf: Vec::new(), at_us: 0, opening: false };
         if let Audio::Coded { codec, rate, channels, setup, starts, .. } = audio {
             let mut d = Decoder::new(*codec, *rate, *channels, setup.as_deref().map(|s| s.as_slice()), false).expect("the codec opens");
             // Frames the decoder drops after a reset (MP3 delay, Opus 80 ms pre-roll).
@@ -300,6 +302,10 @@ impl pipeline::Reading for Reading {
 
     fn duration_us(&self) -> i64 {
         self.audio.duration_us()
+    }
+
+    fn ready(&mut self) -> bool {
+        !std::mem::take(&mut self.opening)
     }
 
     fn fill(&mut self) -> bool {
@@ -355,6 +361,8 @@ pub struct Tracks {
     pub list: Vec<Track>,
     /// Ids that fail to open.
     pub broken: Vec<String>,
+    /// Ids whose readings are ready a turn after they are opened.
+    pub slow: Vec<String>,
 }
 
 impl Tracks {
@@ -384,7 +392,9 @@ impl Songs for Tracks {
             return Err(format!("{id} is broken"));
         }
         let audio = &self.get(id).audio;
-        Ok(Reading::new(audio, from_ms * audio.format().rate as i64 / 1000))
+        let mut r = Reading::new(audio, from_ms * audio.format().rate as i64 / 1000);
+        r.opening = self.slow.iter().any(|s| s == id);
+        Ok(r)
     }
 
     fn about(&self, id: &str) -> WindowSong {
@@ -839,7 +849,7 @@ impl Player {
     pub fn new(tracks: Vec<Track>) -> Player {
         let mut queue = Playlist::default();
         queue.set(tracks.iter().map(|t| t.id.clone()).collect(), Some(0), false, 0);
-        Player::build(Tracks { list: tracks, broken: Vec::new() }, queue, App::new(), AudioTrack::new())
+        Player::build(Tracks { list: tracks, ..Tracks::default() }, queue, App::new(), AudioTrack::new())
     }
 
     /// [`Player::new`] with `prefs`.
