@@ -414,7 +414,7 @@ fn keep_albums_switched_on_at(at_ms: i64) {
     // a1 is planned as a mix, then albums are kept gapless.
     assert!(rig.until(40, |r| r.engine.status().position_ms >= at_ms), "{:?}", rig.engine.status());
     assert!(!rig.engine.status().mixing, "switched at {} ms, before the mix is heard", rig.engine.status().position_ms);
-    assert!(rig.core.session.planner.transition_note("a1").is_some_and(|n| n.kind != "Gapless"), "a1 is planned as a mix first: {:?}", rig.core.session.planner.transition_note("a1"));
+    assert!(rig.core.session.planner.transition_note("a1").is_some_and(|n| n.kind != nori_player::types::TransitionKind::Gapless), "a1 is planned as a mix first: {:?}", rig.core.session.planner.transition_note("a1"));
     rig.set("crossfadeKeepAlbums", "true");
     let (mixed, order) = rig.to_the_end();
     rig.heard_as(&order, 0, 0, &[true, true], 1);
@@ -446,7 +446,7 @@ fn album_apart_mixes() {
     assert!(mixed, "a shuffled album is mixed");
     for id in &order[..order.len() - 1] {
         let note = rig.core.session.planner.transition_note(id);
-        assert!(note.as_ref().is_some_and(|n| n.kind != "Gapless"), "{id} mixes into the next: {note:?}");
+        assert!(note.as_ref().is_some_and(|n| n.kind != nori_player::types::TransitionKind::Gapless), "{id} mixes into the next: {note:?}");
     }
 
     // Two albums mix between.
@@ -455,7 +455,7 @@ fn album_apart_mixes() {
     rig.engine.play_at(0, 0);
     let (mixed, order) = rig.to_the_end();
     assert!(mixed, "the albums are mixed into each other");
-    assert_ne!(rig.core.session.planner.transition_note("m2").map(|n| n.kind), Some("Gapless".into()));
+    assert_ne!(rig.core.session.planner.transition_note("m2").map(|n| n.kind), Some(nori_player::types::TransitionKind::Gapless));
     rig.heard_as(&order, 0, 0, &[true, false, true], 0);
 }
 
@@ -466,7 +466,7 @@ fn queued_singly(how: Queued) {
     assert!(mixed, "mixed song into song");
     for id in &order[..order.len() - 1] {
         let note = rig.core.session.planner.transition_note(id);
-        assert!(note.as_ref().is_some_and(|n| n.kind != "Gapless"), "{id} mixes into the next: {note:?}");
+        assert!(note.as_ref().is_some_and(|n| n.kind != nori_player::types::TransitionKind::Gapless), "{id} mixes into the next: {note:?}");
     }
     rig.heard_as(&order, 0, 0, &[false, false], 0);
 }

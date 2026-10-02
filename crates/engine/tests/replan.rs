@@ -130,7 +130,7 @@ fn keep_albums_off() {
     rig.set("crossfadeKeepAlbums", "false");
     assert!(rig.mixes_into(2), "mixed into the third song once the album is no longer kept gapless");
     let note = rig.core.session.planner.transition_note("a2").expect("a2's ending was planned");
-    assert_ne!(note.kind, "Gapless", "{note:?}");
+    assert_ne!(note.kind, nori_player::types::TransitionKind::Gapless, "{note:?}");
 
     // Keep albums off remakes gapless ending.
     let rig = Rig::new("replan-late", &["d1", "d2"], true);
@@ -155,8 +155,8 @@ fn each_setting_change_is_planned_with() {
     // Each early in a song: the plan out of it uses the new value.
     let cases: [(&str, &str, fn(&nori_core::automix::planner::TransitionNote) -> bool); 3] = [
         ("autoMixMaxS", "4", |n| n.duration_ms > 0 && n.duration_ms <= 4_000),
-        ("crossfadeKeepAlbums", "true", |n| n.kind == "Gapless"),
-        ("crossfadeKeepAlbums", "false", |n| n.kind != "Gapless"),
+        ("crossfadeKeepAlbums", "true", |n| n.kind == nori_player::types::TransitionKind::Gapless),
+        ("crossfadeKeepAlbums", "false", |n| n.kind != nori_player::types::TransitionKind::Gapless),
     ];
     for (k, (name, value, ok)) in cases.into_iter().enumerate() {
         rig.set(name, value);

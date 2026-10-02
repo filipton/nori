@@ -472,7 +472,7 @@ fn now_playing_panel() {
     a.transition = Some(nori_core::automix::planner::TransitionNote {
         outgoing_id: "s1".into(),
         incoming_id: "s2".into(),
-        kind: "BeatMatched".into(),
+        kind: nori_core::automix::planner::TransitionKind::BeatMatched,
         start_ms: 190_000,
         duration_ms: 8_000,
         tempo_ratio: 1.02,

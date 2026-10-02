@@ -9,6 +9,7 @@ use nori_model::alog;
 use nori_player::automix::analysis::Analyzer;
 use nori_player::engine::Plan;
 use nori_player::transitions::{engine_plan, pick, whole_song, Skip, TransitionPrefs, WindowSong};
+pub use nori_player::types::TransitionKind;
 use parking_lot::Mutex;
 
 use super::store::{get, missing};
@@ -140,7 +141,7 @@ impl Planner {
         let note = TransitionNote {
             outgoing_id: o.id.clone(),
             incoming_id: n.id.clone(),
-            kind: if plan.is_some() { format!("{:?}", t.kind) } else { "Gapless".into() },
+            kind: if plan.is_some() { t.kind } else { TransitionKind::Gapless },
             start_ms: t.out_start_ms,
             duration_ms: if plan.is_some() { t.duration_ms } else { 0 },
             tempo_ratio: t.tempo_ratio as f32,
@@ -244,13 +245,13 @@ impl Planner {
     }
 }
 
-/// A transition as planned, for screens: the kind as the planner names it (`BeatMatched`, `EchoOut`, `Gapless`,
-/// ...), where in the outgoing song it starts, its length (0 for gapless), the incoming speed, and the reason.
+/// A transition as planned, for screens: its kind, where in the outgoing song it starts, its length (0 for
+/// gapless), the incoming speed, and the reason.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TransitionNote {
     pub outgoing_id: String,
     pub incoming_id: String,
-    pub kind: String,
+    pub kind: TransitionKind,
     pub start_ms: i64,
     pub duration_ms: i64,
     pub tempo_ratio: f32,
@@ -281,7 +282,7 @@ mod tests {
     use super::*;
 
     fn n(out: &str, inc: &str) -> TransitionNote {
-        TransitionNote { outgoing_id: out.into(), incoming_id: inc.into(), kind: "BeatMatched".into(), start_ms: 1, duration_ms: 8000, tempo_ratio: 1.0, reason: String::new() }
+        TransitionNote { outgoing_id: out.into(), incoming_id: inc.into(), kind: TransitionKind::BeatMatched, start_ms: 1, duration_ms: 8000, tempo_ratio: 1.0, reason: String::new() }
     }
 
     #[test]
@@ -320,8 +321,8 @@ mod tests {
     fn notes() {
         let mut p = State::new();
         p.note(n("a", "b"));
-        p.note(TransitionNote { kind: "EchoOut".into(), ..n("a", "b") });
-        assert_eq!(p.notes.iter().map(|n| n.kind.as_str()).collect::<Vec<_>>(), ["EchoOut"], "a replan replaces the note");
+        p.note(TransitionNote { kind: TransitionKind::EchoOut, ..n("a", "b") });
+        assert_eq!(p.notes.iter().map(|n| n.kind).collect::<Vec<_>>(), [TransitionKind::EchoOut], "a replan replaces the note");
         for i in 0..8 {
             p.note(n(&format!("x{i}"), "y"));
         }

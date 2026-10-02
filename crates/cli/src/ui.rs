@@ -1296,17 +1296,18 @@ fn how_mixed(n: &nori_core::automix::planner::TransitionNote) -> String {
         return "Gapless".to_string();
     }
     let tempo = if (n.tempo_ratio - 1.0).abs() > 0.001 { format!(", tempo ×{:.3}", n.tempo_ratio) } else { String::new() };
-    format!("{}, {:.1} s from {}{tempo}", words_kind(&n.kind), n.duration_ms as f32 / 1000.0, clock(n.start_ms))
+    format!("{}, {:.1} s from {}{tempo}", words_kind(n.kind), n.duration_ms as f32 / 1000.0, clock(n.start_ms))
 }
 
 /// A planner transition kind in words.
-fn words_kind(kind: &str) -> &'static str {
+fn words_kind(kind: nori_core::automix::planner::TransitionKind) -> &'static str {
+    use nori_core::automix::planner::TransitionKind as K;
     match kind {
-        "BeatMatched" => "AutoMix: beat-matched mix",
-        "EchoOut" => "AutoMix: echo out",
-        "MixRampFade" => "AutoMix: fade",
-        "EqualPowerFade" => "Crossfade",
-        _ => "Transition",
+        K::BeatMatched => "AutoMix: beat-matched mix",
+        K::EchoOut => "AutoMix: echo out",
+        K::MixRampFade => "AutoMix: fade",
+        K::EqualPowerFade => "Crossfade",
+        K::Gapless => "Gapless",
     }
 }
 
