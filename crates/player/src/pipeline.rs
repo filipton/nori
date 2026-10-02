@@ -660,11 +660,12 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         if *self.sink.settings() == settings {
             return;
         }
+        let ear = self.sink.ear();
         if let Some((input, output)) = self.sink.change(settings) {
             self.app.spliced("chain", Splice { input, output });
             // In place; a device that drops what it holds says when its change is heard itself.
-            if let Some(ms) = self.sink.heard_in_ms(output) {
-                self.app.log(&format!("the change is heard after {ms} ms"));
+            if let Some((heard, rate)) = ear.filter(|&(heard, _)| output > heard) {
+                self.app.log(&format!("the change is heard after {} ms", (output - heard) * 1000 / rate.max(1) as u64));
             }
         }
         self.burst.restart();
