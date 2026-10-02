@@ -22,7 +22,7 @@ use parking_lot::Mutex;
 use common::ffmpeg;
 
 /// `a`, `b` and `c`, made once per binary; None without ffmpeg.
-fn songs() -> Option<&'static [Arc<Vec<u8>>; 3]> {
+pub(crate) fn songs() -> Option<&'static [Arc<Vec<u8>>; 3]> {
     static MADE: std::sync::OnceLock<Option<[Arc<Vec<u8>>; 3]>> = std::sync::OnceLock::new();
     MADE.get_or_init(|| {
         if !ffmpeg() {
@@ -199,7 +199,7 @@ struct Rig {
 
 /// Song lengths: `a` long enough that the last-page probe lands past what the loader reads on to (as a
 /// 6 MB transcode on a phone); `b` short enough that the probe waits for bytes.
-const A_SECS: u32 = 60;
+pub(crate) const A_SECS: u32 = 60;
 const B_SECS: u32 = 5;
 
 /// `a`, `b` and `c` from a [`Transcoder`] promising `extra` bytes too many (past one Ogg page). None

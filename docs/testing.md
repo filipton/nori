@@ -52,8 +52,9 @@ a range past the real end is answered 416, as a server answering `estimateConten
 the transcode comes out smaller than estimated. audio-e2e's `transcode` section plays such a song past its
 real end. The generated songs have no lyrics anywhere, so the `lyrics` section only runs against the real
 server. Other songs come through the proxy at about 4 MB/s, so a download can be seen running beside
-another. Navidrome itself states the estimate only on a transcode it has not cached yet (a cached one comes
-chunked, with no length), so the proxy makes every transcode overstated, every time. The real server stays the default; never play or stream an `ext-` item on it.
+another. Navidrome itself states the estimate only on a transcode it has not cached yet (a cached one comes with
+its exact length), and nori no longer asks for it (Navidrome cuts a transcode larger than its estimate), so
+the proxy makes every transcode overstated, every time. The real server stays the default; never play or stream an `ext-` item on it.
 
 The proxy also stands in for octo-fiesta asked for a provider's song it cannot fetch: `NORI_HANG=id1,id2`
 (`NORI_HANG_MODE=headers|body`) at its start, or `curl 'localhost:4534/_hang?ids=id1,id2&mode=body'` at any
@@ -182,7 +183,7 @@ as its slowest test or its total over the cores, whichever is more. The binaries
 
 | Binary | Tests | Time | Its slowest |
 | --- | --- | --- | --- |
-| crates/engine `--test engine` (engine.rs, paths.rs, radio.rs, tempo.rs, stretch.rs, estimated.rs, hung.rs, silent.rs) | 141 | 10 s | offload tests of a few ffmpeg songs, 4-7 s each, and next pressed fast through four queues, 6 s |
+| crates/engine `--test engine` (engine.rs, paths.rs, radio.rs, tempo.rs, stretch.rs, estimated.rs, hung.rs, silent.rs, transcode.rs) | 144 | 10 s | offload tests of a few ffmpeg songs, 4-7 s each, and next pressed fast through four queues, 6 s |
 | crates/player `--test pipeline` | 67 | 4.6 s | levels.rs, 3-4 s each: every kind of transition through two 60 s songs |
 | crates/player lib | 262 | 3.6 s | automix/tests.rs, the synthetic songs analysed side by side |
 | crates/android lib | 40 | 8 s | track.rs's two tests of the real engine thread on the wall clock, the rapid skips over a phone-like track 6 s |
@@ -227,7 +228,7 @@ battery and deep idle of a real phone stay the owner's `tools/bench.sh`.
 | Crate | What is checked |
 | --- | --- |
 | player | the sound chain sample by sample (decoders, ReplayGain, equalizer, limiter, speed, silence skipping), AutoMix's analysis on synthetic songs with a known tempo, key and structure, the planner (never panicking over any stored row: automix/plan_fuzz.rs), the mixer, and the whole player on a simulated output and virtual clock (`sim`, tests/pipeline): gapless joins, crossfades, levels through a mix, controls, the output |
-| engine | the player for platforms without one, on the virtual clock of tests/common: loading and the loader (source.rs), fetching ahead (ahead.rs), the stream cache, offload onto a simulated chip (paths.rs), radio, tempo, the place said through a tempo-stretched mix measured against the song heard (stretch.rs), a transcode's estimated length and its 416 (estimated.rs), a player that never plays silent (silent.rs: a panic on its thread, a loader that dies, an output that stops taking music), one fetch per song with AutoMix measuring (one_fetch.rs), transition settings changed while playing (replan.rs), an album kept gapless under AutoMix or a crossfade heard to every sample, the core's planner and measurer included (album.rs), downloads and the core (core.rs) |
+| engine | the player for platforms without one, on the virtual clock of tests/common: loading and the loader (source.rs), fetching ahead (ahead.rs), the stream cache, offload onto a simulated chip (paths.rs), radio, tempo, the place said through a tempo-stretched mix measured against the song heard (stretch.rs), a transcode's estimated length and its 416 (estimated.rs), Navidrome's transcodes played to their end and a cached copy cut short fetched anew (transcode.rs), a player that never plays silent (silent.rs: a panic on its thread, a loader that dies, an output that stops taking music), one fetch per song with AutoMix measuring (one_fetch.rs), transition settings changed while playing (replan.rs), an album kept gapless under AutoMix or a crossfade heard to every sample, the core's planner and measurer included (album.rs), downloads and the core (core.rs) |
 | core | the FFI surface over the real SQLite: the index and search, smart playlists, mixes, history, lyrics' race, covers, AutoEQ and device profiles, the Subsonic client against a fake transport (offline writes and their replay, the address in use, login), stream addresses, transfers, the car's tree, the Kotlin twins (tests/twins.rs), the active client (tests/active_client.rs), a listen kept by its profile (tests/scrobble.rs), whole flows against a Subsonic server kept in memory: log in, index, search, offline changes replayed in order, a radio (tests/scenario.rs) |
 | lyrics | every lyrics format, the services' answers, trust and fitting, the race between services, synced times checked against synthetic sung songs (sync.rs) |
 | covers | decoders against Pillow's references, the scaler, the disk and memory caches, the loader's workers |

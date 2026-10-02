@@ -390,6 +390,11 @@ pub trait ByteSource: Send + Sync {
     fn open_live(&self, url: &str) -> Result<(Body, Option<usize>), String> {
         self.open(url, 0).map(|b| (b, None)).map_err(|e| e.to_string())
     }
+
+    /// Drops the copy of `url` the client's own cache holds (media3's on Android); true if one went.
+    fn forget(&self, _url: &str) -> bool {
+        false
+    }
 }
 
 /// `url` from `from`: a rangeless answer is skipped forward to `from`; one ending before it is
@@ -566,8 +571,9 @@ struct Loaded {
     retry_ms: u64,
 }
 
-/// A song being loaded; dropping the last handle stops the loader and frees its memory.
-pub struct Loader(Arc<Loaded>);
+/// A song being loaded from `url` of a source; dropping the last handle stops the loader and frees its
+/// memory.
+pub struct Loader(Arc<Loaded>, Arc<dyn ByteSource>, String);
 
 impl Loader {
     /// Starts loading `url` on a thread of its own, writing into `keep` if given.
@@ -581,17 +587,17 @@ impl Loader {
     pub fn start_within(source: Arc<dyn ByteSource>, url: String, load: [i64; 5], duration_ms: Option<i64>, keep: Option<Keep>, budget: Option<u64>, taker: Option<Listening>, waits: Waits) -> Arc<Loader> {
         let loaded = Arc::new(Loaded::new(State { budget, ..State::default() }, waits));
         alive(&loaded);
-        let l = loaded.clone();
+        let (l, from, at) = (loaded.clone(), source.clone(), url.clone());
         std::thread::Builder::new()
             .name("nori-load".into())
             .spawn(move || {
                 // A panicking loader fails its song rather than leaving readers waiting.
-                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| l.run(&*source, &url, load, duration_ms, keep, taker))).is_err() {
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| l.run(&*from, &at, load, duration_ms, keep, taker))).is_err() {
                     l.gave_up("the song's loader failed");
                 }
             })
             .expect("a thread for loading");
-        Arc::new(Loader(loaded))
+        Arc::new(Loader(loaded, source, url))
     }
 
     /// Bytes are still on their way: wanted, not failed, not complete.
@@ -604,9 +610,9 @@ impl Loader {
     pub fn live(source: Arc<dyn ByteSource>, url: String, waits: Waits) -> Arc<Loader> {
         let loaded = Arc::new(Loaded::new(State { live: true, ..State::default() }, waits));
         alive(&loaded);
-        let l = loaded.clone();
-        std::thread::Builder::new().name("nori-live".into()).spawn(move || l.run_live(&*source, &url)).expect("a thread for loading");
-        Arc::new(Loader(loaded))
+        let (l, from, at) = (loaded.clone(), source.clone(), url.clone());
+        std::thread::Builder::new().name("nori-live".into()).spawn(move || l.run_live(&*from, &at)).expect("a thread for loading");
+        Arc::new(Loader(loaded, source, url))
     }
 
     /// The latest ICY title the reader reached, once.
@@ -709,6 +715,18 @@ impl Loader {
             l.cv.wait(&mut s);
             s.blocked -= 1;
         }
+    }
+
+    /// The source's cache held a copy cut short: it drops it ([`ByteSource::forget`]) and the song is
+    /// fetched again from its start. False when the source had no copy to drop.
+    pub(crate) fn refetch(&self) -> bool {
+        if !self.1.forget(&self.2) {
+            return false;
+        }
+        let mut s = self.0.state.lock();
+        (s.restart, s.len, s.disk, s.window, s.before) = (Some(0), None, None, None, None);
+        self.0.cv.notify_all();
+        true
     }
 
     /// Times the length turned out shorter than promised: a demuxer re-reads the end when this moves.

@@ -147,7 +147,15 @@ impl<L: Library> Sources<L> {
         let budget = packets.filter(|&ahead| ahead).map(|_| self.left_for(id));
         match &at.source {
             Source::File(path) => file(path),
-            Source::Cached { store, key, .. } if self.loading(id).is_none() && store.cached(key).is_some() => file(&store.cached(key).expect("checked")),
+            Source::Cached { store, key, .. } if self.loading(id).is_none() && store.cached(key).is_some() => {
+                let d = file(&store.cached(key).expect("checked"))?;
+                if !d.cut_short() {
+                    return Ok(d);
+                }
+                // Cut short: fetched anew in place of the cached copy.
+                self.forget(id);
+                self.open_as(id, from_ms, packets)
+            }
             Source::Url { url, bytes } => Ok(load(self.loader(id, url, bytes, at.duration_ms, None, budget, || None), from_ms, at.duration_ms, at.estimated)),
             Source::Cached { url, bytes, store, key } => Ok(load(self.loader(id, url, bytes, at.duration_ms, Some((store, key)), budget, || None), from_ms, at.duration_ms, at.estimated)),
             // A live stream starts where the station is now.

@@ -12,12 +12,6 @@ pub fn resolve_now(id: &str) -> Option<StreamTarget> {
     Some(client.resolve(id.to_string(), kept, !kept && metered()))
 }
 
-/// Whether the URL is a transcode with an estimated length ([`crate::Core::stream_url`]); ranges past the
-/// start are only served once transcoding catches up.
-pub fn length_estimated(url: &str) -> bool {
-    url.split(['?', '&']).any(|p| p == "estimateContentLength=true")
-}
-
 /// [`Client::precache_targets`] via the active client on the current network.
 pub fn precache_now() -> Vec<Fetch> {
     crate::client::active_client().map(|c| c.precache_targets(metered())).unwrap_or_default()
@@ -127,16 +121,9 @@ mod tests {
         assert!(block(c.choose_address()));
         let t = c.stream_target("s1".into(), false, q(0, ""), q(192, "opus"));
         assert_eq!(t.key, "s1:128opus");
-        assert!(t.url.starts_with("https://wan.example/rest/stream?") && t.url.ends_with("&id=s1&maxBitRate=128&format=opus&estimateContentLength=true"));
+        assert!(t.url.starts_with("https://wan.example/rest/stream?") && t.url.ends_with("&id=s1&maxBitRate=128&format=opus"));
         assert_eq!(c.stream_key("s1".into(), false, q(96, "mp3"), q(0, "")), "s1:96mp3", "under the cap");
         assert_eq!(c.stream_key("s1".into(), false, q(320, "mp3"), q(0, "")), "s1:128mp3");
-
-        // Only transcodes have estimated length.
-        let (c, _) = client(NetProfile { url: "h".into(), ..Default::default() });
-        assert!(!length_estimated(&c.resolve("s1".into(), false, false).url));
-        assert!(!length_estimated(&c.resolve("s1".into(), false, true).url));
-        assert!(length_estimated(&c.stream_target("s1".into(), false, q(192, "opus"), q(0, "")).url));
-        assert!(length_estimated(&c.stream_target("s1".into(), false, q(128, ""), q(0, "")).url), "bit rate alone");
     }
 
     #[test]
@@ -150,7 +137,7 @@ mod tests {
         };
         let f = c.fetches(ids, true, &q(0, ""), &q(192, "opus"), held);
         assert_eq!(f.iter().map(|f| (f.id.as_str(), f.key.as_str())).collect::<Vec<_>>(), [("a", "a:192opus"), ("b", "b:192opus")]);
-        assert!(f[0].url.ends_with("&id=a&maxBitRate=192&format=opus&estimateContentLength=true"), "{}", f[0].url);
+        assert!(f[0].url.ends_with("&id=a&maxBitRate=192&format=opus"), "{}", f[0].url);
     }
 
     #[test]

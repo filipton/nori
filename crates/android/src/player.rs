@@ -874,6 +874,16 @@ impl ByteSource for JavaBytes {
             _ => Err("the station's stream would not come".into()),
         }
     }
+
+    /// Drops media3's stream cache copy, one cut short; a station has none.
+    fn forget(&self, _url: &str) -> bool {
+        if self.key.is_empty() {
+            return false;
+        }
+        let said = cache_words(&self.key, |j| j.forget).unwrap_or_else(|| "Kotlin could not be asked".into());
+        log(&format!("{}: the copy is cut short and fetched anew ({said})", self.key));
+        true
+    }
 }
 
 /// Request ids for `RustBridge.open`/`cancel`. Global: Kotlin's request table is process-wide.
@@ -1083,8 +1093,7 @@ impl Library for AndroidLibrary {
             key_format(&target.key).or_else(|| song.map(|s| s.suffix)).filter(|s| !s.is_empty())
         };
         log(&format!("{id} opens from {} as {}", target.key, hint.as_deref().unwrap_or("whatever it is")));
-        let estimated = nori_core::stream::length_estimated(&target.url);
-        Ok(Located { source: Source::Url { url: target.url, bytes: Arc::new(JavaBytes { key: target.key, ahead: self.ahead.clone() }) }, hint, duration_ms, estimated })
+        Ok(Located { source: Source::Url { url: target.url, bytes: Arc::new(JavaBytes { key: target.key, ahead: self.ahead.clone() }) }, hint, duration_ms, estimated: false })
     }
 
     fn about(&self, id: &str) -> WindowSong {
