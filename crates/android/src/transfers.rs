@@ -7,7 +7,7 @@ use std::sync::Arc;
 use jni::objects::{JClass, JIntArray, JLongArray, JString};
 use jni::sys::{jfloat, jint, jlong, jstring};
 use jni::JNIEnv;
-use nori_core::transfers::{Downloads, Notice, NoticeKind, SummaryText, SummaryTitle, Tracker};
+use nori_core::transfers::{Downloads, Notice, NoticeChange, NoticeKind, SummaryText, SummaryTitle, Tracker};
 use nori_core::Core;
 
 use crate::{java_string, native, with_str, Class, Handles};
@@ -93,7 +93,7 @@ extern "system" fn note(h: jlong, slot: jint, length: jlong, bytes: jlong, now: 
 }
 
 extern "system" fn notice(h: jlong, listed: jint, waiting: jint, now: jlong) -> jint {
-    with(h, |t| t.notice(listed, waiting != 0, now)).unwrap_or(2)
+    with(h, |t| t.notice(listed, waiting != 0, now)).unwrap_or(NoticeChange::BatchOver) as jint
 }
 
 /// The notification's facts: `out` gets `[kind, position, total, permille, speed_bps, eta_s]` (kind: the

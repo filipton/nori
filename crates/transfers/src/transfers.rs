@@ -313,6 +313,15 @@ pub struct Notice {
     pub label: String,
 }
 
+/// What a second's [`Tracker::notice`] found; the discriminant is what Kotlin's `progressNotification` reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeChange {
+    Same = 0,
+    /// Read [`Tracker::notice_facts`].
+    Changed = 1,
+    BatchOver = 2,
+}
+
 /// Which running-batch notification title applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NoticeKind {
@@ -1040,12 +1049,11 @@ impl Tracker {
     }
 
     /// Updates the notification facts for `listed` downloads the platform knows (`waiting`: no network).
-    /// Returns 0 unchanged, 1 changed (read [`Tracker::notice_facts`]), 2 batch over. Called every
-    /// second; allocates only when the title or album changes.
-    pub fn notice(&mut self, listed: i32, waiting: bool, now: i64) -> i32 {
+    /// Called every second; allocates only when the title or album changes.
+    pub fn notice(&mut self, listed: i32, waiting: bool, now: i64) -> NoticeChange {
         let total = self.batch.total.max(self.batch.finished() + listed);
         if total == 0 {
-            return 2;
+            return NoticeChange::BatchOver;
         }
         let (mut in_flight, mut current) = (0f64, None::<usize>);
         for (i, s) in self.slots.iter().enumerate().filter(|(_, s)| s.live) {
@@ -1113,7 +1121,7 @@ impl Tracker {
         let n = &mut self.notice;
         let facts = (kind, position, total, permille, self.speed_bps, self.eta_s);
         if (n.kind, n.position, n.total, n.permille, n.speed_bps, n.eta_s) == facts && n.current == current && n.label == label {
-            return 0;
+            return NoticeChange::Same;
         }
         // Reuse the kept strings' buffers.
         if n.current != current {
@@ -1125,7 +1133,7 @@ impl Tracker {
             n.label.push_str(label);
         }
         (n.kind, n.position, n.total, n.permille, n.speed_bps, n.eta_s) = facts;
-        1
+        NoticeChange::Changed
     }
 
     /// The notification facts as [`Tracker::notice`] last computed them.
@@ -1810,7 +1818,9 @@ mod tests {
         t.followed("ext-b", QUEUED, 0);
         let slot = t.open("ext-a", 0);
         t.note(slot, 1_000_000, 0, 0);
-        t.notice(2, false, 0);
+        assert_eq!(Tracker::default().notice(0, false, 0), NoticeChange::BatchOver);
+        assert_eq!(t.notice(2, false, 0), NoticeChange::Changed);
+        assert_eq!(t.notice(2, false, 0), NoticeChange::Same);
         t.note(slot, 1_000_000, 500_000, 1_000);
         t.notice(2, false, 1_000);
         assert!(t.speed_bps > 0);
