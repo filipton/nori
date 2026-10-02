@@ -18,12 +18,14 @@
 //! writer sees more latency or underruns ([`Needs`]). The writer runs at audio priority so a shallow track
 //! does not run dry.
 //!
-//! When the engine makes music again from before what the track holds (a sound change while deep), a
-//! second track takes the music over with no gap ([`Handover`]): opened beside it (same format and
-//! audio session), it plays silence until the mixer takes it. The mixer takes a period from every track
-//! at once, so the two play heads read together say which frame of the old track is mixed with each of
-//! the new one's, exactly, whatever the output's timestamps do (Bluetooth's come late, per packet and
-//! jittery); from them the frame the old track plays when the new one's silence ends is known. The ring
+//! When the engine makes music again from before what the track holds (tuning starting, a sound change
+//! while tuned, a new ending), a second track takes the music over with no gap ([`Handover`]): opened
+//! beside it (same format and audio session), it plays silence until the mixer takes it. The two play
+//! heads read together say which frame of the old track is mixed with each of the new one's, if the
+//! mixer takes as much from both and each head counts what it took: so only once their distance holds
+//! over [`STEADY_MIXES`] mixes and both tracks' timestamps (Bluetooth's come late, per packet and
+//! jittery) put them as far apart to [`ALIGNED_US`]; otherwise the track is emptied, a gap rather than a
+//! jump. From them the frame the old track plays when the new one's silence ends is known. The ring
 //! goes back to that frame
 //! ([`Ring::rewind`]) and the new track plays the remade music from there, crossfaded: in both tracks'
 //! data when the old one's can end there, else by both volumes set together, which the mixer ramps alike
@@ -91,8 +93,13 @@ const BRIDGE_TOP_US: i64 = 80_000;
 /// Silence a joining track starts with and keeps ahead of its play head until the mixer takes it.
 const JOIN_US: i64 = 40_000;
 const JOIN_TICK_MS: u64 = 10;
-/// A joining track the mixer has not taken by then: the handover is given up for a flush.
-const JOIN_MOST_NS: i64 = 1_000_000_000;
+/// A joining track not taken by the mixer, or not lined up, by then: the handover is given up for a
+/// flush. Bluetooth gives a new track its first timestamp after half a second or so.
+const JOIN_MOST_NS: i64 = 2_000_000_000;
+/// Mixes the two play heads must keep the same distance over before the music changes track.
+const STEADY_MIXES: u32 = 3;
+/// How far the tracks' timestamps may disagree with their play heads on that distance.
+const ALIGNED_US: i64 = 2_000;
 /// The crossfade.
 const CROSS_US: i64 = 30_000;
 /// Silence still ahead of the joining track's play head when it takes the music: the mixer may take a
@@ -452,14 +459,15 @@ struct Handover {
 }
 
 enum Phase {
-    /// Plays `silence` frames of silence until two readings in a row of both play heads agree on how
-    /// far apart they are (`apart`: old less new).
-    Joining { silence: u64, apart: Option<i64>, grown: bool },
+    /// Plays `silence` frames of silence until both play heads keep one distance (`apart`: old less
+    /// new) over `steady` mixes (the old head last at `last`), and both timestamps say the same.
+    Joining { silence: u64, apart: Option<i64>, steady: u32, last: u64, grown: bool },
     /// The track the music left, crossfaded from the carrying track's frame `start` (where its music
     /// starts) by volume or else in both tracks' data; paused once the carrying track's play head is at
     /// `done`. `own`: the carrying track's capacity and low mark, grown until then for the silence it
-    /// started with or the output's latency.
-    Leaving { start: u64, done: u64, own: (u64, u64), volume: Option<ByVolume> },
+    /// started with or the output's latency. `apart`: the leaving track's frame less the carrying one's
+    /// heard with it, checked again at `done`.
+    Leaving { start: u64, done: u64, own: (u64, u64), volume: Option<ByVolume>, apart: i64 },
 }
 
 /// A crossfade by volume: the leaving track at `gain`, the carrying one at 1 - `gain`, set together, so
@@ -1093,7 +1101,7 @@ impl<R: Ring> Writer<R> {
             }
         };
         beside.sink.play();
-        self.handover = Some(Handover { beside, phase: Phase::Joining { silence, apart: None, grown: false }, since_ns: now_ns });
+        self.handover = Some(Handover { beside, phase: Phase::Joining { silence, apart: None, steady: 0, last: 0, grown: false }, since_ns: now_ns });
         true
     }
 
@@ -1116,16 +1124,19 @@ impl<R: Ring> Writer<R> {
     }
 
     /// Keeps the joining track's silence ahead of its play head and reads both heads; once the mixer
-    /// takes it and two readings agree, decides.
+    /// takes it, its head keeps one distance from the other's over [`STEADY_MIXES`] and the timestamps
+    /// agree to [`ALIGNED_US`], decides. Not by [`JOIN_MOST_NS`]: the track is emptied instead, a gap
+    /// rather than a jump.
     fn joining(&mut self, now_ns: i64) -> Option<u64> {
-        let (join, fb) = (self.frames(JOIN_US), self.frame_bytes());
+        let (join, fb, rate, aligned) = (self.frames(JOIN_US), self.frame_bytes(), self.rate, self.frames(ALIGNED_US) as i64);
         let h = self.handover.as_mut()?;
-        let Phase::Joining { silence, apart, grown } = &mut h.phase else { return None };
+        let Phase::Joining { silence, apart, steady, last, grown } = &mut h.phase else { return None };
         let b = &mut h.beside;
+        let late = now_ns - h.since_ns > JOIN_MOST_NS;
         let taken = b.sink.consumed().unwrap_or(0);
         if !*grown && taken > 0 {
-            // Playing: its own size again, room for more silence and, later, the music.
-            b.sink.resize(b.capacity);
+            // Playing: all the room it has, for the silence up to the music and the music.
+            b.sink.resize(b.allocated);
             *grown = true;
         }
         if *silence < taken + join {
@@ -1134,40 +1145,60 @@ impl<R: Ring> Writer<R> {
                 Err(code) => return self.second_died(now_ns, code),
             }
         }
+        let mut stamped = None;
         if let Some((old, new)) = heads(&mut *self.sink, &mut *b.sink).filter(|&(_, new)| new > 0) {
             let now = old as i64 - new as i64;
-            if apart.replace(now) == Some(now) {
-                return self.decide(now_ns, old, new);
+            if *apart != Some(now) {
+                (*apart, *steady) = (Some(now), 0);
+            } else if old != *last {
+                *steady += 1;
+            }
+            *last = old;
+            if *steady >= STEADY_MIXES {
+                stamped = stamps_apart(&mut *self.sink, &mut *b.sink, rate);
+                if let Some(s) = stamped.filter(|s| (s - now).abs() <= aligned && !late) {
+                    let steady = *steady;
+                    return self.decide(now_ns, old, new, s, steady);
+                }
             }
         }
-        if now_ns - h.since_ns > JOIN_MOST_NS {
-            log("the mixer never took the second track: emptying the track");
+        if late {
+            let seen = match (*apart, stamped) {
+                (None, _) => "the mixer never took it".to_string(),
+                (Some(a), Some(s)) => format!("their play heads are {a} frames apart, their timestamps say {s}"),
+                (Some(a), None) => format!("their play heads are {a} frames apart over {steady} mixes, with no timestamps to agree"),
+            };
+            log(&format!("the second track could not be lined up with this one ({seen}): emptying the track"));
             self.restart(now_ns);
             return None;
         }
         Some(JOIN_TICK_MS)
     }
 
-    /// The mixer took both tracks up to `old` and `new` together: the handover is when the joining
-    /// track's silence ends. The ring goes back to the frame the carrying track is mixed with then, the
-    /// carrying track fades out from it, and the joining track takes the music on from there.
-    fn decide(&mut self, now_ns: i64, old: u64, new: u64) -> Option<u64> {
+    /// The mixer took the tracks up to `old` and `new`, and the carrying track's frame `new + apart` is
+    /// heard with the joining track's `new`: the handover is when the joining track's silence ends. The
+    /// ring goes back to the frame the carrying track is heard with then (never before the music made
+    /// again), the carrying track fades out from it, and the joining track takes the music on from there.
+    fn decide(&mut self, now_ns: i64, old: u64, new: u64, apart: i64, steady: u32) -> Option<u64> {
         let (old, new, rate) = (old as i64, new as i64, self.rate as i64);
         // The output's own latency, past the mixer.
         let lag = (old - self.clock.ear(now_ns)).max(0);
-        let (cross, act) = (self.frames(CROSS_US) as i64, self.frames(ACT_US) as i64);
-        // Ahead of the mixer in the track, and pulled (with what is staged).
-        let (held, pulled) = (self.clock.given() as i64 - old, self.clock.ahead() as i64 - old);
+        let (cross, act, slack) = (self.frames(CROSS_US) as i64, self.frames(ACT_US) as i64, self.frames(ALIGNED_US) as i64);
+        // The carrier's frames ahead of the one heard with the joining track's head, in the track and
+        // pulled (with what is staged), and where the music made again starts.
+        let with = new + apart;
+        let (held, pulled) = (self.clock.given() as i64 - with, self.clock.ahead() as i64 - with);
+        let remade = pulled - self.ring.behind() as i64;
         let (fb, room, wait) = (self.frame_bytes(), self.allocated as i64, self.frames(BRIDGE_US) as i64);
         let [holds, least, top, period] = [BRIDGE_HOLDS_US, BRIDGE_LEAST_US, BRIDGE_TOP_US, PERIOD_GUESS_US].map(|us| self.frames(us));
         let h = self.handover.as_mut()?;
         let Phase::Joining { silence, .. } = &mut h.phase else { return None };
         let left = *silence as i64 - new;
-        let soonest = left.max(act);
+        let soonest = left.max(act).max(remade);
         // The carrier's data runs to the handover and fades out, exactly, unless that is long to wait
         // or does not fit: then it fades by volume, from music it holds past the crossfade.
         let by_data = pulled <= soonest + wait && soonest.max(pulled) + cross <= room;
-        if !by_data && held < soonest + cross {
+        if !by_data && held < soonest + slack + cross {
             return Some(JOIN_TICK_MS);
         }
         let target = if by_data { soonest.max(pulled) } else { soonest };
@@ -1183,8 +1214,8 @@ impl<R: Ring> Writer<R> {
             }
         }
         let silence = *silence;
-        // The carrier's frame mixed with the joining track's first frame of music.
-        let from = (old + target) as u64;
+        // The carrier's frame heard with the joining track's first frame of music.
+        let from = (with + target) as u64;
         if by_data {
             self.shape = Some(Shape { start: from, len: cross as u64, rising: false });
             self.top_up(now_ns, Some(from + cross as u64));
@@ -1195,6 +1226,8 @@ impl<R: Ring> Writer<R> {
                 self.restart(now_ns);
                 return None;
             }
+            // Silence after the fade, so its head moves on as the other's does until it is let go.
+            write_silence(&mut *self.sink, fb, 4 * period).ok();
         }
         self.ring.rewind(self.clock.ahead().saturating_sub(from));
         self.staged = (0, 0);
@@ -1205,8 +1238,8 @@ impl<R: Ring> Writer<R> {
         // the silence still ahead are in it too.
         self.capacity = holds.max(lag as u64 + least + top).max(target as u64 + least).min(self.allocated + lag as u64);
         self.low = self.capacity - top;
-        // The joining track's frame heard now: the old one's, as far apart as their heads.
-        let ear = new - lag;
+        // The joining track's frame heard now: the old one's, as far apart as their timestamps say.
+        let ear = old - lag - apart;
         self.clock.update(|c| c.mixed = lag as u64);
         self.clock.rebase(silence, ear.max(0) as u64, now_ns + (-ear).max(0) * 1_000_000_000 / rate);
         // Read again once the new track has a timestamp.
@@ -1225,26 +1258,31 @@ impl<R: Ring> Writer<R> {
         self.flushed_full = false;
         self.deep_underruns = None;
         let how = if by_data { "in their data" } else { "by volume" };
+        let lined = format!("lined up by their play heads over {steady} mixes, the timestamps {} frames off them", apart - (old - new));
         if h.beside.home {
             let heard_ms = (now_ns - h.since_ns) / 1_000_000 + (target + lag + cross / 2) * 1000 / rate;
-            log(&format!("handing over {} ms from now to the second track, crossfaded {how}: the change is heard after {heard_ms} ms", target * 1000 / rate));
+            log(&format!("handing over {} ms from now to the second track, crossfaded {how}, {lined}: the change is heard after {heard_ms} ms", target * 1000 / rate));
         } else {
-            log(&format!("handing back {} ms from now to the deep track, crossfaded {how}", target * 1000 / rate));
+            log(&format!("handing back {} ms from now to the deep track, crossfaded {how}, {lined}", target * 1000 / rate));
         }
-        h.phase = Phase::Leaving { start: silence, done: silence + cross as u64 + 3 * period, own, volume: gain };
+        h.phase = Phase::Leaving { start: silence, done: silence + cross as u64 + 3 * period, own, volume: gain, apart };
         self.handover = Some(h);
         self.leaving(now_ns)
     }
 
-    /// Crossfades by volume, if so, then pauses the track the music left: the deep one is emptied and
-    /// joins again, the second one is released.
+    /// Crossfades by volume, if so, then pauses the track the music left (logging whether both tracks
+    /// stayed lined up): the deep one is emptied and joins again, the second one is released.
     fn leaving(&mut self, now_ns: i64) -> Option<u64> {
-        let (volume, rate) = (self.volume, self.rate as u64);
+        let (volume, rate, slack) = (self.volume, self.rate as u64, self.frames(ALIGNED_US));
         let head = self.sink.consumed().unwrap_or(0);
         let wait = |frames: u64| frames * 1000 / rate + 1;
         let h = self.handover.as_mut()?;
-        let Phase::Leaving { start, done, own, volume: by_volume } = &mut h.phase else { return None };
+        let Phase::Leaving { start, done, own, volume: by_volume, apart } = &mut h.phase else { return None };
         if head >= *done {
+            let heads = heads(&mut *h.beside.sink, &mut *self.sink).map(|(l, c)| l as i64 - c as i64 - *apart);
+            let stamped = stamps_apart(&mut *h.beside.sink, &mut *self.sink, self.rate).map(|s| s - *apart);
+            let who = if h.beside.home { "the second track" } else { "the deep track" };
+            log(&format!("{who} carries the music: {}", lined_up(heads, stamped, self.rate)));
             let own = *own;
             let mut h = self.handover.take()?;
             h.beside.sink.pause();
@@ -1258,15 +1296,17 @@ impl<R: Ring> Writer<R> {
             }
             h.beside.sink.release();
             (self.capacity, self.low) = own;
+            self.sink.resize(own.0);
             if std::mem::take(&mut self.again) && !self.hand_over(now_ns) {
                 self.restart(now_ns);
             }
             return self.handover.is_some().then_some(JOIN_TICK_MS);
         }
         let Some(v) = by_volume else { return Some(wait(*done - head)) };
-        // What is set now is mixed from the next period on: once the carrying track's music is.
-        if head < *start {
-            return Some(wait(*start - head));
+        // What is set now is mixed from the next period on: once the carrying track's music is, even with
+        // its play head as far off as the timestamps may be.
+        if head < *start + slack {
+            return Some(wait(*start + slack - head));
         }
         let since = *v.since_ns.get_or_insert(now_ns);
         v.gain = 1.0 - ((now_ns - since) as f32 / (CROSS_US * 1_000) as f32).min(1.0);
@@ -1285,8 +1325,8 @@ impl<R: Ring> Writer<R> {
         b.home = !b.home;
     }
 
-    /// Ends a handover: the deep track is the writer's again, at its volume, and the other is released.
-    /// Whether there was one.
+    /// Ends a handover: the deep track is the writer's again, at its size and volume, and the other is
+    /// released. Whether there was one.
     fn go_home(&mut self) -> bool {
         let Some(mut h) = self.handover.take() else { return false };
         match h.phase {
@@ -1294,6 +1334,7 @@ impl<R: Ring> Writer<R> {
             Phase::Leaving { own, .. } => (self.capacity, self.low) = own,
             Phase::Joining { .. } => {}
         }
+        self.sink.resize(self.capacity);
         h.beside.sink.pause();
         h.beside.sink.release();
         self.sink.set_volume(self.volume);
@@ -1628,8 +1669,6 @@ fn pack24(staging: &mut [f32], samples: usize) {
     }
 }
 
-/// Writes `frames` of silence to `sink` (`fb` bytes a frame); returns the frames it took, or the error of
-/// a track that died.
 /// Both play heads, read so that no mix fell between them (each read twice, around the other).
 fn heads(a: &mut dyn Sink, b: &mut dyn Sink) -> Option<(u64, u64)> {
     let (a1, b1) = (a.consumed()?, b.consumed()?);
@@ -1637,6 +1676,26 @@ fn heads(a: &mut dyn Sink, b: &mut dyn Sink) -> Option<(u64, u64)> {
     (a1 == a2 && b1 == b2).then_some((a1, b1))
 }
 
+/// The frame `a` presents less the one `b` presents at the same moment, by their timestamps (`a` read
+/// twice around `b`, so both come from one report of the output).
+fn stamps_apart(a: &mut dyn Sink, b: &mut dyn Sink, rate: u32) -> Option<i64> {
+    let (a1, b1, a2) = (a.stamp()?, b.stamp()?, a.stamp()?);
+    (a1.0 == a2.0).then(|| a1.0 as i64 - b1.0 as i64 + ((b1.1 - a1.1) as i128 * rate as i128 / 1_000_000_000) as i64)
+}
+
+/// How far two tracks are from where they were lined up, by their play heads and their timestamps, for
+/// the log.
+fn lined_up(heads: Option<i64>, stamps: Option<i64>, rate: u32) -> String {
+    let off = |what: &str, frames: Option<i64>| match frames {
+        None => format!("no {what} to tell"),
+        Some(f) if f.abs() <= rate as i64 * ALIGNED_US / 1_000_000 => format!("{what} lined up within {} frames", f.abs()),
+        Some(f) => format!("{what} OFF by {f} frames ({} ms)", f * 1000 / rate as i64),
+    };
+    format!("{}, {}", off("play heads", heads), off("timestamps", stamps))
+}
+
+/// Writes `frames` of silence to `sink` (`fb` bytes a frame); returns the frames it took, or the error of
+/// a track that died.
 fn write_silence(sink: &mut dyn Sink, fb: usize, frames: u64) -> Result<u64, i32> {
     let (mut left, mut taken) = (frames as usize * fb, 0);
     let chunk = left.min(sink.staging().len() * 4 / fb * fb);

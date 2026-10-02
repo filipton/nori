@@ -205,8 +205,11 @@ tracks mixed a period at a time with the mixer's volume ramps, presented after t
 their timestamps read as the output reports its periods (Bluetooth's: none for 400 ms after a start, then
 one per packet with milliseconds of jitter, stall-corrected between), fed by a ring whose frames carry
 their numbers. It checks that every frame is heard once, with no silence, level or click, the tracks'
-alignment and how soon the change is heard, for outputs from 5 to 40 ms periods and Bluetooth, a slider
-drag, a pause or a jump at any moment of a handover, and a second track that won't open.
+alignment and how soon the change is heard, for outputs from 5 to 40 ms periods and Bluetooth, play heads
+that don't say what the mixer took (a new track's first mix never counted, counted per Bluetooth packet,
+a resampler's look-ahead: the second track is then not lined up, the track emptied instead, a gap and
+never a jump), a slider drag, a pause or a jump at any moment of a handover, and a second track that
+won't open.
 
 ### The host perf report
 
