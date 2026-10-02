@@ -269,7 +269,9 @@ pub(crate) fn mono_ns() -> i64 {
     t.tv_sec as i64 * 1_000_000_000 + t.tv_nsec as i64
 }
 
-/// Unwraps the 32-bit play head (wraps after 6 h at 192 kHz). Reset at every flush.
+/// Unwraps the 32-bit play head (wraps after 6 h at 192 kHz). Reset at every flush. A head near the top
+/// coming round to near zero wrapped; anything else that goes back is a new count (an offloaded track's
+/// gapless join).
 #[derive(Default, Clone, Copy)]
 pub(crate) struct HeadCount {
     last: u32,
@@ -279,7 +281,7 @@ pub(crate) struct HeadCount {
 impl HeadCount {
     pub(crate) fn read(&mut self, raw: u32) -> u64 {
         if raw < self.last {
-            self.wraps += 1;
+            self.wraps = if self.last >= 1 << 31 && raw < 1 << 30 { self.wraps + 1 } else { 0 };
         }
         self.last = raw;
         self.wraps << 32 | raw as u64
@@ -2324,6 +2326,8 @@ mod tests {
         assert_eq!(h.read(u32::MAX - 5), u32::MAX as u64 - 5);
         assert_eq!(h.read(20), (1u64 << 32) + 20, "the wrap is counted, not read as the start again");
         assert_eq!(h.read(30), (1u64 << 32) + 30);
+        assert_eq!(h.read(5), 5, "a head going back but not round counts anew (a gapless join)");
+        assert_eq!(h.read(1_000_000), 1_000_000);
     }
 
     #[test]
