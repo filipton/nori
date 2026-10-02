@@ -1690,7 +1690,9 @@ mod tests {
 
     // ---- requests called off ----
 
-    /// Never answers (or never sends a byte) until cancelled; counts requests and cancellations.
+    /// Never answers (or never sends a byte) until cancelled; counts requests and cancellations. A
+    /// cancellation is counted as the client's hook runs: a request called off before its body was
+    /// read is never read.
     #[derive(Default)]
     struct Silent {
         headers: bool,
@@ -1698,18 +1700,12 @@ mod tests {
         called_off: Arc<Signal>,
     }
 
-    struct Nothing(Arc<Signal>, Arc<Signal>);
-
-    impl Nothing {
-        fn wait(&self) {
-            self.0.reach(1);
-            self.1.bump();
-        }
-    }
+    /// A body that blocks until its request is called off.
+    struct Nothing(Arc<Signal>);
 
     impl Read for Nothing {
         fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
-            self.wait();
+            self.0.reach(1);
             Err(io::Error::other("Canceled"))
         }
     }
@@ -1722,14 +1718,16 @@ mod tests {
         fn open_cancellable(&self, _: &str, _: Option<&str>, from: u64, cancel: &Cancel) -> Result<Body, OpenError> {
             self.asked.bump();
             let off = Arc::new(Signal::default());
-            let o = off.clone();
-            cancel.on_cancel(move || o.bump());
-            let nothing = Nothing(off, self.called_off.clone());
+            let (o, counted) = (off.clone(), self.called_off.clone());
+            cancel.on_cancel(move || {
+                counted.bump();
+                o.bump();
+            });
             if self.headers {
-                nothing.wait();
+                off.reach(1);
                 return Err("Canceled".into());
             }
-            Ok(Body { start: from, len: Some(1_000_000), reader: Box::new(nothing) })
+            Ok(Body { start: from, len: Some(1_000_000), reader: Box::new(Nothing(off)) })
         }
     }
 
