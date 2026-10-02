@@ -140,6 +140,18 @@ pub struct Heard {
     pub audible_us: i64,
 }
 
+/// What a stream's ending is to be.
+#[derive(Debug, Clone)]
+enum Ending {
+    /// To be asked for: first, or again after the settings, the queue or an analysis changed.
+    Ask,
+    /// Gapless, as the planner said at this ms; asked again after [`NULL_PLAN_RETRY_MS`].
+    Gapless(i64),
+    Planned(Plan),
+    /// Let play as it is (no runway to hold it): not planned again.
+    LetGo,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Pass,
@@ -185,10 +197,9 @@ pub struct TransitionEngine {
     offset_us: i64,
 
     phase: Phase,
-    plan: Option<Plan>,
+    /// The ending of stream `plan_for`.
+    ending: Ending,
     plan_for: Option<StreamId>,
-    replan_wanted: bool,
-    last_null_at: i64,
     /// The serial of the last stream whose ending went out, and its plan (`None`: gapless).
     made: Option<(u64, Option<Plan>)>,
     tail: Vec<u8>,
@@ -296,10 +307,8 @@ impl TransitionEngine {
             awaiting_stream: false,
             offset_us: 0,
             phase: Phase::Pass,
-            plan: None,
+            ending: Ending::Ask,
             plan_for: None,
-            replan_wanted: false,
-            last_null_at: 0,
             made: None,
             tail: Vec::new(),
             tail_limit: 0,
@@ -358,16 +367,27 @@ impl TransitionEngine {
         &self.heard
     }
 
-    /// Asks for the playing track's plan again at the next buffer (e.g. a new analysis arrived).
+    /// Asks for the playing track's plan again at the next buffer (e.g. a new analysis arrived). A held
+    /// ending keeps its plan, and one let go stays let go.
     pub fn replan(&mut self) {
-        self.replan_wanted = true;
+        if self.phase == Phase::Pass && !matches!(self.ending, Ending::LetGo) {
+            self.ending = Ending::Ask;
+        }
+    }
+
+    /// The plan for the ending of stream `plan_for`.
+    fn plan(&self) -> Option<&Plan> {
+        match &self.ending {
+            Ending::Planned(p) => Some(p),
+            _ => None,
+        }
     }
 
     /// How the ending of stream `serial` was made: `Some(plan)` once its hold began or its last buffer
     /// went out (inner `None`: gapless); `None` while its ending is still to come.
     pub fn made(&self, serial: u64) -> Option<Option<&Plan>> {
         if self.holding() && self.plan_for.as_ref().is_some_and(|p| p.serial == serial) {
-            return Some(self.plan.as_ref());
+            return Some(self.plan());
         }
         self.made.as_ref().filter(|(m, _)| *m == serial).map(|(_, p)| p.as_ref())
     }
@@ -385,7 +405,7 @@ impl TransitionEngine {
             Phase::Mix => "mixing",
         };
         let mut w = format!("{phase}, flowing {}, arriving {}", song(&self.playing_id), song(&self.current_id));
-        if let Some(p) = &self.plan {
+        if let Some(p) = self.plan() {
             w.push_str(&format!(", plan {} -> {} from {} ms for {} ms", song(&self.plan_for), p.incoming_id, p.out_start_us / 1000, p.duration_us / 1000));
         }
         if self.holding() {
@@ -665,7 +685,7 @@ impl TransitionEngine {
         if start_frame >= frames || skip_transition {
             return Some(self.pass(down, buf, whole, pts_us));
         }
-        let p = self.plan.clone().expect("a plan exists past this point");
+        let p = self.plan().cloned().expect("a plan exists past this point");
         let late = start_frame < 0;
         let before = start_frame.max(0) as usize * fb;
         if before > 0 {
@@ -721,26 +741,26 @@ impl TransitionEngine {
         (true, whole)
     }
 
-    /// The playing song's plan as (start, duration) µs, asked for when unknown. A `None` answer is
-    /// often transient (queue edits, analyses landing), so it is re-asked after [`NULL_PLAN_RETRY_MS`].
+    /// The playing song's plan as (start, duration) µs, asked for when unknown. A gapless answer is
+    /// often transient (queue edits, analyses landing), so it is asked again after [`NULL_PLAN_RETRY_MS`].
     fn refresh_plan<H: Host>(&mut self, host: &mut H) -> Option<(i64, i64)> {
-        let span = |plan: &Option<Plan>| plan.as_ref().map(|p| (p.out_start_us, p.duration_us));
         let id = self.playing_id.as_ref()?;
         let now = host.now_ms();
-        if self.plan_for.as_ref() == Some(id) && !self.replan_wanted && (self.plan.is_some() || now - self.last_null_at <= NULL_PLAN_RETRY_MS) {
-            return span(&self.plan);
+        let known = self.plan_for.as_ref() == Some(id)
+            && match self.ending {
+                Ending::Ask => false,
+                Ending::Gapless(asked_at) => now - asked_at <= NULL_PLAN_RETRY_MS,
+                Ending::Planned(_) | Ending::LetGo => true,
+            };
+        if !known {
+            let id = id.clone();
+            self.ending = host.plan_for(&id.song).map_or(Ending::Gapless(now), Ending::Planned);
+            self.plan_for = Some(id);
+            if let Some(p) = self.plan().cloned() {
+                self.prepare(&p);
+            }
         }
-        let id = id.clone();
-        self.replan_wanted = false;
-        self.plan = host.plan_for(&id.song);
-        self.plan_for = Some(id);
-        if self.plan.is_none() {
-            self.last_null_at = now;
-        }
-        if let Some(p) = self.plan.clone() {
-            self.prepare(&p);
-        }
-        span(&self.plan)
+        self.plan().map(|p| (p.out_start_us, p.duration_us))
     }
 
     /// Allocates what the transition needs when the plan arrives, not when the mix starts (allocating
@@ -808,7 +828,7 @@ impl TransitionEngine {
 
     /// The next track begins (or a seek landed): start mixing into the hold, or let the hold go unmixed.
     pub fn handle_discontinuity<D: Downstream, H: Host>(&mut self, down: &mut D, host: &mut H) {
-        let p = self.plan.clone();
+        let p = self.plan().cloned();
         let ending = self.plan_for.clone().or_else(|| self.playing_id.clone());
         let mixed = self.holding() && self.tail_len > 0 && self.out.is_some();
         self.made = ending.map(|id| (id.serial, if mixed { p.clone() } else { None }));
@@ -861,7 +881,7 @@ impl TransitionEngine {
                 down.handle_discontinuity();
             }
         }
-        self.plan = None;
+        self.ending = Ending::Ask;
         self.plan_for = None;
     }
 
@@ -1161,9 +1181,9 @@ impl TransitionEngine {
         self.held_from_us = None;
         self.held_us = 0;
         self.mix_source_id = None;
-        // Mark the plan as used so the next buffer of the same track does not hold again.
-        self.plan = None;
-        self.plan_for = self.current_id.clone();
+        // The next buffer of the song flowing does not hold again.
+        self.ending = Ending::LetGo;
+        self.plan_for = self.playing_id.clone();
     }
 
     // ---- analysis tap ----
@@ -1413,7 +1433,7 @@ impl TransitionEngine {
         if self.heard.id.take().is_some() {
             host.heard_changed();
         }
-        self.plan = None;
+        self.ending = Ending::Ask;
         self.plan_for = None;
         self.made = None;
         self.mix_source_id = None;
@@ -1766,6 +1786,20 @@ mod tests {
         e.configure(&mut d, &mut h, stream("a", FMT));
         feed(&mut e, &mut d, &mut h, &tone(1000, 3.0), 0);
         assert!(h.log.iter().any(|l| l.contains("no runway")), "{:?}", h.log);
+        assert_eq!(d.samples().len(), (RATE as usize * 3) * 2, "everything played straight through");
+    }
+
+    /// An ending let play for want of runway stays let go: the next buffers of the song do not ask
+    /// for the plan again and hold it late.
+    #[test]
+    fn abandoned_ending_is_not_held_late() {
+        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_ { now: 60_000, ..Host_::default() });
+        h.plans.insert("a".into(), fade("b", 1_000_000));
+        d.position = Some(999_000);
+        e.configure(&mut d, &mut h, stream("a", FMT));
+        feed(&mut e, &mut d, &mut h, &tone(1000, 3.0), 0);
+        assert!(h.log.iter().any(|l| l.contains("no runway")), "{:?}", h.log);
+        assert!(!h.log.iter().any(|l| l.contains("late hold")), "{:?}", h.log);
         assert_eq!(d.samples().len(), (RATE as usize * 3) * 2, "everything played straight through");
     }
 
