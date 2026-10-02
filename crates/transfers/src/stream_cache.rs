@@ -3,12 +3,10 @@
 
 use std::collections::HashMap;
 
-use parking_lot::Mutex;
-
 /// Key use times: positive touch counts for this process, negative (counting down) for keys an earlier
 /// run left, so those are always older.
 #[derive(Default)]
-struct CacheOrder {
+pub struct CacheOrder {
     used: HashMap<String, i64>,
     clock: i64,
     left: i64,
@@ -36,7 +34,7 @@ impl CacheOrder {
     }
 
     /// The next key to drop, forgotten as it is returned (a later use makes it known again).
-    pub(crate) fn pop_oldest(&mut self) -> Option<String> {
+    pub fn pop_oldest(&mut self) -> Option<String> {
         let key = self.used.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone())?;
         self.used.remove(&key);
         Some(key)
@@ -54,41 +52,14 @@ impl CacheOrder {
     pub fn clear(&mut self) {
         self.used.clear();
     }
-}
 
-/// Global: the Android cache evictor reaches it through JNI entry points with no handle.
-static ORDER: Mutex<Option<CacheOrder>> = Mutex::new(None);
-
-fn with<R>(f: impl FnOnce(&mut CacheOrder) -> R) -> R {
-    f(ORDER.lock().get_or_insert_with(CacheOrder::default))
-}
-
-pub fn touch(key: &str) {
-    with(|o| o.touch(key))
-}
-
-pub fn seed<'a>(held: impl IntoIterator<Item = &'a str>) {
-    with(|o| o.seed(held))
-}
-
-pub fn next() -> Option<String> {
-    with(CacheOrder::pop_oldest)
-}
-
-pub fn copies(id: &str) -> Vec<String> {
-    with(|o| o.copies(id))
-}
-
-pub fn clear() {
-    with(CacheOrder::clear)
-}
-
-/// Evicts [`next`] keys through `remove` while `space()` exceeds `max_bytes`. Twin of
-/// `ResizableEvictor.trimLocked` (core/.../playback/MediaSources.kt).
-pub fn trim(max_bytes: i64, mut space: impl FnMut() -> i64, mut remove: impl FnMut(&str)) {
-    while space() > max_bytes {
-        let Some(key) = next() else { return };
-        remove(&key);
+    /// Evicts [`CacheOrder::pop_oldest`] keys through `remove` while `space()` exceeds `max_bytes`. Twin of
+    /// `ResizableEvictor.trimLocked` (core/.../playback/MediaSources.kt).
+    pub fn trim(&mut self, max_bytes: i64, mut space: impl FnMut() -> i64, mut remove: impl FnMut(&str)) {
+        while space() > max_bytes {
+            let Some(key) = self.pop_oldest() else { return };
+            remove(&key);
+        }
     }
 }
 

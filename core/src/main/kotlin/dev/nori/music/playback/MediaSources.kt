@@ -33,14 +33,16 @@ import java.io.IOException
 /** The stream cache's keys and their order of use, kept in the core (crates/transfers/src/stream_cache.rs). */
 internal object StreamCacheJni {
     init { System.loadLibrary("norimusic") }
-    @JvmStatic @FastNative external fun touch(key: String)
+    /** A new order, for one cache's evictor to hold for the cache's life. */
+    @JvmStatic external fun create(): Long
+    @JvmStatic @FastNative external fun touch(h: Long, key: String)
     /** What the cache held when this process first looked; told once. */
-    @JvmStatic external fun seed(keys: Array<String>)
+    @JvmStatic external fun seed(h: Long, keys: Array<String>)
     /** The next key to drop, forgotten by the core as it is handed out; null when there is none. */
-    @JvmStatic @FastNative external fun next(): String?
+    @JvmStatic @FastNative external fun next(h: Long): String?
     /** A song's streamed copies, forgotten by the core as they are handed out. */
-    @JvmStatic external fun copies(id: String): Array<String>
-    @JvmStatic @CriticalNative external fun clear()
+    @JvmStatic external fun copies(h: Long, id: String): Array<String>
+    @JvmStatic @CriticalNative external fun clear(h: Long)
 }
 
 /**
@@ -55,6 +57,9 @@ class ResizableEvictor(
     /** A piece of a song was written: [MediaSources] looks whether the song is whole now. */
     private val added: (Cache, String) -> Unit = { _, _ -> },
 ) : CacheEvictor {
+    /** The core's order of the cache's keys. */
+    private val order = StreamCacheJni.create()
+
     override fun onCacheInitialized() {}
     override fun onStartFile(cache: Cache, key: String, position: Long, length: Long) = touch(cache, key)
     override fun onSpanAdded(cache: Cache, span: CacheSpan) {
@@ -66,7 +71,7 @@ class ResizableEvictor(
     override fun requiresCacheSpanTouches() = true
 
     private fun touch(cache: Cache, key: String) = synchronized(this) {
-        StreamCacheJni.touch(key)
+        StreamCacheJni.touch(order, key)
         trimLocked(cache)
     }
 
@@ -77,7 +82,7 @@ class ResizableEvictor(
         if (cache.cacheSpace <= maxBytes) return
         seed(cache)
         while (cache.cacheSpace > maxBytes) {
-            val key = StreamCacheJni.next() ?: return
+            val key = StreamCacheJni.next(order) ?: return
             runCatching { cache.removeResource(key) }
         }
     }
@@ -93,12 +98,15 @@ class ResizableEvictor(
     fun seed(cache: Cache) {
         if (seeded) return
         seeded = true
-        StreamCacheJni.seed(cache.keys.toTypedArray())
+        StreamCacheJni.seed(order, cache.keys.toTypedArray())
     }
+
+    /** A song's streamed copies, forgotten as they are handed out. */
+    fun copies(id: String): Array<String> = StreamCacheJni.copies(order, id)
 
     /** The core forgets every key: the cache was emptied, and whatever it still holds is told again. */
     fun forget() {
-        StreamCacheJni.clear()
+        StreamCacheJni.clear(order)
         seeded = false
     }
 }
@@ -324,7 +332,7 @@ class MediaSources(context: Context, private val clientOf: () -> Client, private
     fun dropStreamCopies(id: String) {
         runCatching { streamEvictor.seed(streamCache) }
         // The key grammar is the core's, and so is the list of keys: it names this song's copies.
-        for (key in StreamCacheJni.copies(id)) runCatching { streamCache.removeResource(key) }
+        for (key in streamEvictor.copies(id)) runCatching { streamCache.removeResource(key) }
     }
 
     /** Empties the streamed-music cache; downloads, covers and the index stay. Call off the main thread. */

@@ -136,13 +136,13 @@ fn trimming_the_stream_cache() {
     for r in rows("trim") {
         let order: Vec<(&str, i64)> = list(r[0]).into_iter().map(|e| e.split_once(':').unwrap()).map(|(k, n)| (k, n.parse().unwrap())).collect();
         // Touched in listed order, so the first is least recently used.
-        stream_cache::clear();
+        let mut cache = stream_cache::CacheOrder::default();
         for (k, _) in &order {
-            stream_cache::touch(k);
+            cache.touch(k);
         }
         let space = std::cell::Cell::new(order.iter().map(|o| o.1).sum::<i64>());
         let mut removed = Vec::new();
-        stream_cache::trim(
+        cache.trim(
             r[1].parse().unwrap(),
             || space.get(),
             |k| {
