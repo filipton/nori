@@ -110,7 +110,7 @@ is Android glue and stays on the device. 50 moved, 60 stay.
 | Check | Kind | Now |
 | --- | --- | --- |
 | lyrics arrive for a well-known song | b | feature-e2e `lyrics` (real server only) |
-| sweeping only claimed for real word timing | a | crates/lyrics formats.rs, every format's test asserts `synced`/`word_timed` (`lyricsfile_edges`, `ttml_line_timed_plain_laid_out_and_broken`, ...) |
+| sweeping only claimed for real word timing | a | crates/lyrics formats.rs, every format's test asserts `synced`/`word_timed` (`lyricsfile`, `ttml_lines_and_voices`, ...) |
 | lookups off: only the server's lyrics | a | lyrics_sources.rs (no service under the lookups switch) |
 | each lyrics service answers (a report, no check) | - | feature-e2e `lyrics-services`, opt-in: 16 × up to 12 s, the services' health rather than the app's |
 | no video player while off; let go when put away (2) | b | feature-e2e `motion` (ExoPlayer, Kotlin) |
@@ -118,7 +118,7 @@ is Android glue and stays on the device. 50 moved, 60 stay.
 | the server is told what is playing | a | client.rs, scrobble.rs |
 | the notification has a heart and a shuffle; its heart stars the song; it redraws; its shuffle toggles (4) | b | feature-e2e `notification` |
 | the notification's star reaches the server | a | client.rs, shown.rs |
-| the second tap puts it back | a | stars.rs `only_an_unstarred_mark_removes`, shown.rs (the section still puts it back) |
+| the second tap puts it back | a | stars.rs `star_marks`, shown.rs (the section still puts it back) |
 | the pill reads Play / Pause; shuffle lights; stays Pause; a second press turns it off; pill pauses; reads Play; Play picks up (8) | b | feature-e2e `album-page` (taps on the real screen) |
 | without drawing a new queue; without restarting it (2) | a | pages.rs, controls.rs |
 | (new) only the page a queue was started from answers for it, through edits and a restore; another page sharing the song reads Play | a | queue playlist.rs, core playlist.rs, cli tests.rs |
