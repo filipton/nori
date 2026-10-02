@@ -1,8 +1,7 @@
 //! Memory breakdown read at a stretch's ends: Android's PSS summary, native heap, and the app's big
-//! holders (Rust heap, engine song buffers, ring, beat model, cover Bitmaps, moving cover player). The
-//! engine part comes through a hook ([`install`]) since this crate does not link the engine.
-
-use std::sync::OnceLock;
+//! holders (Rust heap, engine song buffers, beat model, cover Bitmaps, moving cover player). The engine
+//! part is read by the platform from its player ([`perf_rust_memory`]), since this crate does not link
+//! the engine.
 
 use serde::{Deserialize, Serialize};
 
@@ -21,9 +20,6 @@ pub struct PerfRust {
     /// Loaders reading from their stream cache file (memory released).
     #[serde(rename = "sd", default)]
     pub songs_on_disk: i32,
-    /// The engine's sample ring.
-    #[serde(rename = "r")]
-    pub ring_kb: i64,
     /// Beat model heap growth while loaded (1 when uncounted), 0 when not loaded.
     #[serde(rename = "m", default)]
     pub model_kb: i64,
@@ -63,35 +59,17 @@ pub struct PerfMemory {
     pub rust: Option<PerfRust>,
 }
 
-/// The engine's part of [`PerfRust`].
-pub struct EngineMemory {
-    pub songs: i32,
-    pub songs_kb: i64,
-    pub songs_on_disk: i32,
-    pub ring_kb: i64,
-    pub model_kb: i64,
-}
-
-/// Global because [`perf_rust_memory`] is an FFI entry point with no handle, and this crate cannot link
-/// the engine.
-static ENGINE: OnceLock<fn() -> EngineMemory> = OnceLock::new();
-
-/// Installs the engine memory hook (once, by the client that links the engine).
-pub fn install(engine: fn() -> EngineMemory) {
-    let _ = ENGINE.set(engine);
-}
-
-/// Current Rust-side memory (takes one lock per song loader).
+/// Rust-side memory: the heap, and what the platform's player read of its engine (`engine`: song
+/// loaders, their KB, those read from the disk, the beat model's KB; missing ones are 0).
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn perf_rust_memory() -> PerfRust {
-    let e = ENGINE.get().map(|f| f());
+pub fn perf_rust_memory(engine: Vec<i64>) -> PerfRust {
+    let at = |i: usize| engine.get(i).copied().unwrap_or(0);
     PerfRust {
         heap_kb: nori_model::heap::live_bytes().map_or(-1, |b| b / 1024),
-        songs: e.as_ref().map_or(0, |e| e.songs),
-        songs_kb: e.as_ref().map_or(0, |e| e.songs_kb),
-        songs_on_disk: e.as_ref().map_or(0, |e| e.songs_on_disk),
-        ring_kb: e.as_ref().map_or(0, |e| e.ring_kb),
-        model_kb: e.as_ref().map_or(0, |e| e.model_kb),
+        songs: at(0) as i32,
+        songs_kb: at(1),
+        songs_on_disk: at(2) as i32,
+        model_kb: at(3),
     }
 }
 
@@ -123,7 +101,6 @@ pub fn memory_line(m: &PerfMemory) -> String {
         if r.songs_on_disk > 0 {
             out.push_str(&format!(" ({} read from the disk)", r.songs_on_disk));
         }
-        out.push_str(&format!(", ring {}", mb(r.ring_kb)));
         if r.model_kb > 0 {
             out.push_str(&format!(", beat model {}", mb(r.model_kb)));
         }
@@ -153,12 +130,12 @@ mod tests {
             covers_kb: 12 * 1024,
             covers: 30,
             motion: 0,
-            rust: Some(PerfRust { heap_kb: 18 * 1024, songs: 2, songs_kb: 21 * 1024, songs_on_disk: 1, ring_kb: 4134, model_kb: 0 }),
+            rust: Some(PerfRust { heap_kb: 18 * 1024, songs: 2, songs_kb: 21 * 1024, songs_on_disk: 1, model_kb: 0 }),
         };
         assert_eq!(
             memory_line(&m),
             "memory: PSS 98 MB = Java 16, native 50, code 11, stack 2.5, graphics 0.0, other 8.0, system 10; native heap allocated 46, \
-             of it Rust 18; songs 21 in 2 loaders (1 read from the disk), ring 4.0; covers 12 in 30 Bitmaps"
+             of it Rust 18; songs 21 in 2 loaders (1 read from the disk); covers 12 in 30 Bitmaps"
         );
 
         // Memory line omits unknown parts.

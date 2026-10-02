@@ -31,6 +31,7 @@ use crate::library::{Library, Sources};
 use crate::offload::{Offload, OffloadOutput, OnCpu, Step, Tail};
 use crate::output::{AudioOutput, Device, RingTrack, WAKE_LOW_US};
 use crate::panic_words;
+use crate::source::{Fetching, Held};
 
 /// The sound and controls the settings ask for.
 #[derive(Debug, Clone, PartialEq)]
@@ -271,6 +272,8 @@ pub struct Engine {
     plays: AtomicU64,
     /// How a command wakes the thread on a test's clock ([`Engine::start_on`]).
     wake: Option<Box<dyn Fn() + Send + Sync>>,
+    /// Its songs' fetches.
+    fetching: Arc<Fetching>,
 }
 
 impl Engine {
@@ -311,6 +314,8 @@ impl Engine {
     {
         let (tx, rx) = channel();
         let status = Arc::new(Mutex::new(Status::default()));
+        let fetching = Arc::new(Fetching::default());
+        let loading = fetching.clone();
         let (shared, devices, hook, own) = (status.clone(), tx.clone(), clock.clone(), clock.clone());
         let join = std::thread::Builder::new()
             .name("nori-engine".into())
@@ -323,7 +328,7 @@ impl Engine {
                         own.wake(&wake);
                     }
                 }));
-                let songs = Sources::new(library, load_control(config.memory_mb), clock.waits(), me);
+                let songs = Sources::new(library, load_control(config.memory_mb), clock.waits(), me, loading);
                 let player = Player::build(songs, queue, app, RingTrack::new(output));
                 Worker::new(player, offload.map(Offload::new), rx, events, shared, config, clock).run();
             })
@@ -333,7 +338,7 @@ impl Engine {
             let t = thread.clone();
             Box::new(move || hook.wake(&t)) as Box<dyn Fn() + Send + Sync>
         });
-        Engine { tx, thread, join: Mutex::new(Some(join)), status, jumps: AtomicU64::new(0), plays: AtomicU64::new(0), wake }
+        Engine { tx, thread, join: Mutex::new(Some(join)), status, jumps: AtomicU64::new(0), plays: AtomicU64::new(0), wake, fetching }
     }
 
     fn send(&self, c: Command) {
@@ -471,6 +476,11 @@ impl Engine {
         if let Some(j) = join {
             let _ = j.join();
         }
+    }
+
+    /// What its songs' loaders hold now, for the memory report.
+    pub fn held(&self) -> Held {
+        self.fetching.held()
     }
 }
 

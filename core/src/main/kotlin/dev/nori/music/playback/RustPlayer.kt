@@ -99,6 +99,8 @@ internal object RustPlayerJni {
     @JvmStatic @FastNative external fun pcmWhy(h: Long): String?
     /** A radio station queued as [id], streaming at [url]. */
     @JvmStatic external fun radio(h: Long, id: String, url: String)
+    /** What the engine holds, for the perf report: `[song loaders, their KB, those read from the disk, the beat model's KB]` into [out]. */
+    @JvmStatic external fun memory(h: Long, out: LongArray)
 }
 
 /**
@@ -328,6 +330,9 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
     val jumpsSent: Long get() = sent
     /** Whether the engine has landed every jump sent to it. */
     val landedAll: Boolean get() = landed >= sent
+
+    /** What the engine holds, for the perf report (`perf_rust_memory`): see [RustPlayerJni.memory]. */
+    fun memory(): List<Long> = LongArray(4).also { RustPlayerJni.memory(h, it) }.toList()
 
     /** The engine for a door that reads it itself (PlayheadJni.position); 0 once released. */
     internal val handle: Long get() = h

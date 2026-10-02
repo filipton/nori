@@ -155,7 +155,6 @@ impl Ring {
     fn new(format: OutputFormat, engine: Thread) -> Ring {
         let frames = (format.rate as i64 * (BUFFER_US + SLACK_US) / 1_000_000) as u64;
         let slots: Box<[UnsafeCell<f32>]> = (0..frames as usize * format.channels).map(|_| UnsafeCell::new(0.0)).collect();
-        RING_BYTES.fetch_add(std::mem::size_of_val(&*slots) as u64, Ordering::Relaxed);
         Ring {
             slots,
             frames,
@@ -227,20 +226,6 @@ impl Ring {
         self.ramp_frames.store((ms.max(0) as u64 * self.rate as u64 / 1000) as u32, Ordering::Relaxed);
         self.ramp_gen.fetch_add(1, Ordering::Release);
     }
-}
-
-impl Drop for Ring {
-    fn drop(&mut self) {
-        RING_BYTES.fetch_sub(std::mem::size_of_val(&*self.slots) as u64, Ordering::Relaxed);
-    }
-}
-
-/// Bytes held by all rings, for the perf report. Process-wide: the report reads memory per process.
-static RING_BYTES: AtomicU64 = AtomicU64::new(0);
-
-/// Bytes held by all rings now.
-pub fn ring_bytes() -> u64 {
-    RING_BYTES.load(Ordering::Relaxed)
 }
 
 /// The device thread's end of the ring.

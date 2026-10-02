@@ -110,23 +110,35 @@ struct CallState {
     deadline: Option<std::time::Instant>,
     watched: bool,
     stall_ms: u64,
+    /// Whose watch calls it off when it stalls, and counts it among the requests asking; none for a
+    /// request only cancelled by hand.
+    fetching: Weak<Fetching>,
 }
 
 impl Default for Cancel {
     fn default() -> Self {
-        Cancel::stalling_after(Waits::default().stall_ms)
+        Cancel::of(Weak::new(), Waits::default().stall_ms)
     }
 }
 
 impl Cancel {
+    /// A request only cancelled by hand.
     pub fn new() -> Cancel {
         Cancel::default()
     }
 
-    /// A request called off after `ms` without an answer or a byte.
-    pub(crate) fn stalling_after(ms: u64) -> Cancel {
-        let s = CallState { closed: false, off: false, timed_out: false, hook: None, deadline: None, watched: false, stall_ms: ms };
+    /// A request of `fetching`'s, called off after `ms` without an answer or a byte.
+    pub(crate) fn stalling_after(fetching: &Arc<Fetching>, ms: u64) -> Cancel {
+        Cancel::of(Arc::downgrade(fetching), ms)
+    }
+
+    fn of(fetching: Weak<Fetching>, stall_ms: u64) -> Cancel {
+        let s = CallState { closed: false, off: false, timed_out: false, hook: None, deadline: None, watched: false, stall_ms, fetching };
         Cancel(Arc::new(Mutex::new(s)))
+    }
+
+    fn fetching(&self) -> Option<Arc<Fetching>> {
+        self.0.lock().fetching.upgrade()
     }
 
     /// Whether the request is off (for an HTTP stack that polls).
@@ -172,9 +184,10 @@ impl Cancel {
         }
         s.deadline = Some(std::time::Instant::now() + Duration::from_millis(s.stall_ms));
         if !s.watched {
+            let Some(fetching) = s.fetching.upgrade() else { return };
             s.watched = true;
             drop(s);
-            watch(Arc::downgrade(&self.0));
+            fetching.watch(Arc::downgrade(&self.0));
         }
     }
 
@@ -210,94 +223,108 @@ impl Cancel {
     }
 }
 
-/// Requests with a stall deadline, and whether the thread that cancels stalled ones runs. Process-wide:
-/// one sleeping timer thread for all loaders, alive only while there are requests.
+/// One owner's song fetches (an engine's loaders, a fetch-ahead): the watch that calls off stalled
+/// requests, on one sleeping thread alive only while a request has a deadline; the requests waiting for
+/// an answer, by source ([`MAX_ASKING`]); and the loaders alive, for the memory report ([`Fetching::held`]).
+#[derive(Default)]
+pub struct Fetching {
+    watch: Mutex<Watch>,
+    watch_cv: Condvar,
+    /// The requests waiting for an answer, oldest first, by the source they go to.
+    asking: Mutex<Vec<(usize, Cancel)>>,
+    alive: Mutex<Vec<Weak<Loaded>>>,
+}
+
+/// Requests with a stall deadline, and whether the thread that cancels stalled ones runs.
 #[derive(Default)]
 struct Watch {
     calls: Vec<Weak<Mutex<CallState>>>,
     running: bool,
 }
 
-static WATCH: Mutex<Watch> = Mutex::new(Watch { calls: Vec::new(), running: false });
-static WATCH_CV: Condvar = Condvar::new();
-
-fn watch(call: Weak<Mutex<CallState>>) {
-    let mut w = WATCH.lock();
-    w.calls.push(call);
-    if w.running {
-        WATCH_CV.notify_all();
-        return;
-    }
-    w.running = true;
-    drop(w);
-    if std::thread::Builder::new().name("nori-stall".into()).spawn(watching).is_err() {
-        WATCH.lock().running = false;
-    }
-}
-
-fn watching() {
-    let mut w = WATCH.lock();
-    loop {
-        let now = std::time::Instant::now();
-        let mut due = Vec::new();
-        let mut next: Option<std::time::Instant> = None;
-        w.calls.retain(|c| {
-            let Some(c) = c.upgrade() else { return false };
-            let mut s = c.lock();
-            match s.deadline {
-                Some(at) if at <= now => {
-                    due.push(c.clone());
-                    s.watched = false;
-                    false
-                }
-                Some(at) => {
-                    next = Some(next.map_or(at, |n| n.min(at)));
-                    true
-                }
-                None => {
-                    s.watched = false;
-                    false
-                }
-            }
-        });
-        if !due.is_empty() {
-            drop(w);
-            for c in due {
-                Cancel(c).call_off(true);
-            }
-            w = WATCH.lock();
-            continue;
-        }
-        match next {
-            Some(at) => {
-                WATCH_CV.wait_until(&mut w, at);
-            }
-            None => {
-                w.running = false;
-                return;
-            }
-        }
-    }
-}
-
 /// Requests to one [`ByteSource`] waiting for an answer at once. A server that never answers must not
 /// take every request the client's HTTP stack lets run to it (OkHttp's per-host cap): past this many the
-/// oldest still waiting is called off, the newest being the one wanted.
+/// oldest still waiting is called off, the newest being the one wanted. Each source keeps under its own
+/// cap (the fetch-ahead asks once at a time, so the player's and its stay within OkHttp's five per host).
 const MAX_ASKING: usize = 4;
 
-/// Process-wide, as the sources share one HTTP client; each source keeps under its own cap (the one
-/// fetching ahead asks once at a time, so the player's and its stay within OkHttp's five per host).
-static ASKING: Asking = Asking(Mutex::new(Vec::new()));
+/// What the loaders hold, for the perf report.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Held {
+    /// Loaders alive.
+    pub songs: u32,
+    /// Bytes allocated for them.
+    pub bytes: u64,
+    /// Of them, those reading from disk.
+    pub on_disk: u32,
+}
 
-/// The requests waiting for an answer, oldest first, by the source they go to.
-struct Asking(Mutex<Vec<(usize, Cancel)>>);
+impl Fetching {
+    fn watch(self: &Arc<Self>, call: Weak<Mutex<CallState>>) {
+        let mut w = self.watch.lock();
+        w.calls.push(call);
+        if w.running {
+            self.watch_cv.notify_all();
+            return;
+        }
+        w.running = true;
+        drop(w);
+        let fetching = self.clone();
+        if std::thread::Builder::new().name("nori-stall".into()).spawn(move || fetching.watching()).is_err() {
+            self.watch.lock().running = false;
+        }
+    }
 
-impl Asking {
-    /// `cancel`'s request to `source` is about to be made: it counts until [`Asking::answered`], and the
+    fn watching(&self) {
+        let mut w = self.watch.lock();
+        loop {
+            let now = std::time::Instant::now();
+            let mut due = Vec::new();
+            let mut next: Option<std::time::Instant> = None;
+            w.calls.retain(|c| {
+                let Some(c) = c.upgrade() else { return false };
+                let mut s = c.lock();
+                match s.deadline {
+                    Some(at) if at <= now => {
+                        due.push(c.clone());
+                        s.watched = false;
+                        false
+                    }
+                    Some(at) => {
+                        next = Some(next.map_or(at, |n| n.min(at)));
+                        true
+                    }
+                    None => {
+                        s.watched = false;
+                        false
+                    }
+                }
+            });
+            if !due.is_empty() {
+                drop(w);
+                for c in due {
+                    Cancel(c).call_off(true);
+                }
+                w = self.watch.lock();
+                continue;
+            }
+            match next {
+                Some(at) => {
+                    self.watch_cv.wait_until(&mut w, at);
+                }
+                None => {
+                    w.running = false;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// `cancel`'s request to `source` is about to be made: it counts until [`Fetching::answered`], and the
     /// oldest waiting on the same source is called off when there are too many.
     fn asking(&self, source: usize, cancel: &Cancel) {
         let crowded = {
-            let mut a = self.0.lock();
+            let mut a = self.asking.lock();
             a.retain(|(_, c)| !c.cancelled());
             a.push((source, cancel.clone()));
             let same = a.iter().filter(|(s, _)| *s == source).count();
@@ -309,7 +336,26 @@ impl Asking {
     }
 
     fn answered(&self, cancel: &Cancel) {
-        self.0.lock().retain(|(_, c)| !Arc::ptr_eq(&c.0, &cancel.0));
+        self.asking.lock().retain(|(_, c)| !Arc::ptr_eq(&c.0, &cancel.0));
+    }
+
+    fn alive(&self, loaded: &Arc<Loaded>) {
+        let mut all = self.alive.lock();
+        all.retain(|w| w.strong_count() > 0);
+        all.push(Arc::downgrade(loaded));
+    }
+
+    /// What every loader alive holds now.
+    pub fn held(&self) -> Held {
+        let all: Vec<Arc<Loaded>> = self.alive.lock().iter().filter_map(Weak::upgrade).collect();
+        let mut h = Held::default();
+        for l in all {
+            let s = l.state.lock();
+            h.songs += 1;
+            h.bytes += s.data.capacity() as u64;
+            h.on_disk += s.disk.is_some() as u32;
+        }
+        h
     }
 }
 
@@ -320,9 +366,14 @@ pub(crate) fn open_watched(source: &dyn ByteSource, url: &str, key: Option<&str>
         return Err("the song is no longer wanted".into());
     }
     cancel.begin();
-    ASKING.asking(source as *const dyn ByteSource as *const () as usize, cancel);
+    let fetching = cancel.fetching();
+    if let Some(f) = &fetching {
+        f.asking(source as *const dyn ByteSource as *const () as usize, cancel);
+    }
     let opened = source.open_cancellable(url, key, from, cancel);
-    ASKING.answered(cancel);
+    if let Some(f) = &fetching {
+        f.answered(cancel);
+    }
     let stalled = cancel.timed_out();
     match opened {
         Ok(mut b) if !cancel.cancelled() => {
@@ -569,6 +620,8 @@ struct Loaded {
     /// Its running request, cancelled when the song is let go.
     cancel: Cancel,
     retry_ms: u64,
+    /// Whose watch its requests are under.
+    _fetching: Arc<Fetching>,
 }
 
 /// A song being loaded from `url` of a source; dropping the last handle stops the loader and frees its
@@ -578,15 +631,16 @@ pub struct Loader(Arc<Loaded>, Arc<dyn ByteSource>, String);
 impl Loader {
     /// Starts loading `url` on a thread of its own, writing into `keep` if given.
     pub fn start(source: Arc<dyn ByteSource>, url: String, load: [i64; 5], duration_ms: Option<i64>, keep: Option<Writer>) -> Arc<Loader> {
-        Loader::start_within(source, url, load, duration_ms, keep.map(|w| Box::new(move || Some(w)) as Keep), None, None, Waits::default())
+        Loader::start_within(&Arc::default(), source, url, load, duration_ms, keep.map(|w| Box::new(move || Some(w)) as Keep), None, None, Waits::default())
     }
 
-    /// [`Loader::start`] with a `budget` (`Loader::limit`), a lazily made cache entry, and a `taker`
-    /// fed every byte in order from the first (AutoMix's measuring, `crate::arriving`); a seek drops it.
+    /// [`Loader::start`] among `fetching`'s, with a `budget` (`Loader::limit`), a lazily made cache entry,
+    /// and a `taker` fed every byte in order from the first (AutoMix's measuring, `crate::arriving`); a
+    /// seek drops it.
     #[allow(clippy::too_many_arguments)]
-    pub fn start_within(source: Arc<dyn ByteSource>, url: String, load: [i64; 5], duration_ms: Option<i64>, keep: Option<Keep>, budget: Option<u64>, taker: Option<Listening>, waits: Waits) -> Arc<Loader> {
-        let loaded = Arc::new(Loaded::new(State { budget, ..State::default() }, waits));
-        alive(&loaded);
+    pub fn start_within(fetching: &Arc<Fetching>, source: Arc<dyn ByteSource>, url: String, load: [i64; 5], duration_ms: Option<i64>, keep: Option<Keep>, budget: Option<u64>, taker: Option<Listening>, waits: Waits) -> Arc<Loader> {
+        let loaded = Arc::new(Loaded::new(fetching, State { budget, ..State::default() }, waits));
+        fetching.alive(&loaded);
         let (l, from, at) = (loaded.clone(), source.clone(), url.clone());
         std::thread::Builder::new()
             .name("nori-load".into())
@@ -606,10 +660,10 @@ impl Loader {
         !s.closed && s.error.is_none() && !s.at_end()
     }
 
-    /// A live stream at `url`, loaded while held.
-    pub fn live(source: Arc<dyn ByteSource>, url: String, waits: Waits) -> Arc<Loader> {
-        let loaded = Arc::new(Loaded::new(State { live: true, ..State::default() }, waits));
-        alive(&loaded);
+    /// A live stream at `url` among `fetching`'s, loaded while held.
+    pub fn live(fetching: &Arc<Fetching>, source: Arc<dyn ByteSource>, url: String, waits: Waits) -> Arc<Loader> {
+        let loaded = Arc::new(Loaded::new(fetching, State { live: true, ..State::default() }, waits));
+        fetching.alive(&loaded);
         let (l, from, at) = (loaded.clone(), source.clone(), url.clone());
         std::thread::Builder::new().name("nori-live".into()).spawn(move || l.run_live(&*from, &at)).expect("a thread for loading");
         Arc::new(Loader(loaded, source, url))
@@ -795,8 +849,8 @@ impl Drop for Loader {
 }
 
 impl Loaded {
-    fn new(state: State, waits: Waits) -> Loaded {
-        Loaded { state: Mutex::new(state), cv: Condvar::new(), cancel: Cancel::stalling_after(waits.stall_ms), retry_ms: waits.retry_ms }
+    fn new(fetching: &Arc<Fetching>, state: State, waits: Waits) -> Loaded {
+        Loaded { state: Mutex::new(state), cv: Condvar::new(), cancel: Cancel::stalling_after(fetching, waits.stall_ms), retry_ms: waits.retry_ms, _fetching: fetching.clone() }
     }
 
     /// Waits before the retry after `failures` failures in a row (2, 4, 8 times `retry_ms`); false once
@@ -1177,39 +1231,6 @@ fn read_at(file: &File, buf: &mut [u8], at: u64) -> io::Result<usize> {
     }
 }
 
-/// Every loader alive, for the perf report's memory line ([`held`]). Process-wide diagnostics.
-static ALIVE: Mutex<Vec<Weak<Loaded>>> = Mutex::new(Vec::new());
-
-fn alive(loaded: &Arc<Loaded>) {
-    let mut all = ALIVE.lock();
-    all.retain(|w| w.strong_count() > 0);
-    all.push(Arc::downgrade(loaded));
-}
-
-/// What the loaders hold, for the perf report.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Held {
-    /// Loaders alive.
-    pub songs: u32,
-    /// Bytes allocated for them.
-    pub bytes: u64,
-    /// Of them, those reading from disk.
-    pub on_disk: u32,
-}
-
-/// What every loader holds now.
-pub fn held() -> Held {
-    let all: Vec<Arc<Loaded>> = ALIVE.lock().iter().filter_map(Weak::upgrade).collect();
-    let mut h = Held::default();
-    for l in all {
-        let s = l.state.lock();
-        h.songs += 1;
-        h.bytes += s.data.capacity() as u64;
-        h.on_disk += s.disk.is_some() as u32;
-    }
-    h
-}
-
 /// A live stream body with ICY metadata stripped: every `every` bytes comes a length byte (in units
 /// of 16) and that much of `StreamTitle='...';`.
 struct Icy {
@@ -1432,7 +1453,7 @@ mod tests {
     #[test]
     fn ahead_holds_budget_then_rest() {
         let s = server(600_000);
-        let l = Loader::start_within(s.clone(), "song".into(), LOAD, Some(6_000), None, Some(200_000), None, Waits::default());
+        let l = Loader::start_within(&Arc::default(), s.clone(), "song".into(), LOAD, Some(6_000), None, Some(200_000), None, Waits::default());
         let ahead = settled(&s, 1);
         assert!(ahead <= 200_000 + CHUNK as u64, "no more than its budget while it waits: {ahead}");
         assert!(l.held() >= 100_000, "but its start is at hand: {}", l.held());
@@ -1450,7 +1471,9 @@ mod tests {
         let d = nori_testdir::TempDir::new("source-disk");
         let store = Arc::new(crate::store::Store::open(d.path(), 1 << 22, Box::new(crate::store::Recent::default())).unwrap());
         let s = server(300_000);
-        let l = Loader::start(s.clone(), "song".into(), LOAD, Some(3_000), store.writer("song:0"));
+        let fetching = Arc::new(Fetching::default());
+        let keep = store.writer("song:0").map(|w| Box::new(move || Some(w)) as Keep);
+        let l = Loader::start_within(&fetching, s.clone(), "song".into(), LOAD, Some(3_000), keep, None, None, Waits::default());
         let mut r = l.reader();
         let all = read(&mut r, 300_000);
         assert!(all.iter().enumerate().all(|(i, &b)| b == i as u8));
@@ -1464,8 +1487,7 @@ mod tests {
         again.seek(SeekFrom::Start(123_456)).unwrap();
         assert_eq!(read(&mut again, 10), (123_456..123_466).map(|i| i as u8).collect::<Vec<_>>());
         assert_eq!(*s.opens.lock(), vec![0], "and the network was asked once");
-        let h = held();
-        assert!(h.on_disk >= 1 && h.songs >= 1, "{h:?}");
+        assert_eq!(fetching.held(), Held { songs: 1, bytes: 0, on_disk: 1 });
     }
 
     #[test]
@@ -1741,15 +1763,16 @@ mod tests {
 
     #[test]
     fn timeouts() {
+        let fetching = Arc::new(Fetching::default());
         let s = Silent { headers: true, ..Silent::default() };
-        let cancel = Cancel::stalling_after(100);
+        let cancel = Cancel::stalling_after(&fetching, 100);
         let t = Instant::now();
         let got = open_watched(&s, "ext-1", None, 0, &cancel);
         assert_eq!(got.err(), Some(OpenError::TimedOut));
         assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
         // A body whose bytes stop fails its read as timed out.
         let s = Silent { headers: false, ..Silent::default() };
-        let cancel = Cancel::stalling_after(100);
+        let cancel = Cancel::stalling_after(&fetching, 100);
         let Ok(mut b) = open_watched(&s, "ext-1", None, 0, &cancel) else { panic!("the headers came") };
         let e = b.reader.read(&mut [0u8; 16]).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::TimedOut);
@@ -1787,7 +1810,7 @@ mod tests {
         }
         let gone = Arc::new(Signal::default());
         let s = Arc::new(Down(Signal::default(), gone.clone()));
-        let l = Loader::start_within(s.clone(), "song".into(), LOAD, Some(3_000), None, None, None, Waits { stall_ms: 20_000, retry_ms: 60_000 });
+        let l = Loader::start_within(&Arc::default(), s.clone(), "song".into(), LOAD, Some(3_000), None, None, None, Waits { stall_ms: 20_000, retry_ms: 60_000 });
         s.0.reach(1);
         drop((s, l));
         gone.reach(1);
@@ -1821,7 +1844,7 @@ mod tests {
             }
         }
         let s = Arc::new(Resets(Mutex::new(0)));
-        let l = Loader::start_within(s.clone(), "song".into(), LOAD, Some(3_000), None, None, None, Waits { stall_ms: 20_000, retry_ms: 1 });
+        let l = Loader::start_within(&Arc::default(), s.clone(), "song".into(), LOAD, Some(3_000), None, None, None, Waits { stall_ms: 20_000, retry_ms: 1 });
         until(&l, "the song fails", |s| s.done);
         assert!(l.error().is_some(), "failed");
         assert_eq!(*s.0.lock(), RETRIES + 1, "asked once and again {RETRIES} times");
@@ -1829,7 +1852,7 @@ mod tests {
 
     #[test]
     fn crowding_cancels_oldest_per_source() {
-        let asking = Asking(Mutex::new(Vec::new()));
+        let asking = Fetching::default();
         let off = Arc::new(Mutex::new(Vec::new()));
         let ask = |source: usize, k: usize| {
             let c = Cancel::new();

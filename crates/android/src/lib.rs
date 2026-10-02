@@ -92,20 +92,7 @@ pub extern "system" fn JNI_OnLoad(vm: jni::JavaVM, _: *mut c_void) -> jint {
     }
     log_panics();
     nori_core::heap::Counting::installed();
-    nori_perf::memory::install(engine_memory);
     JNI_VERSION_1_6
-}
-
-/// The engine's memory for the perf report.
-fn engine_memory() -> nori_perf::memory::EngineMemory {
-    let songs = nori_engine::source::held();
-    nori_perf::memory::EngineMemory {
-        songs: songs.songs as i32,
-        songs_kb: (songs.bytes / 1024) as i64,
-        songs_on_disk: songs.on_disk as i32,
-        ring_kb: (nori_engine::output::ring_bytes() / 1024) as i64,
-        model_kb: (nori_engine::core::beat_model_bytes() / 1024) as i64,
-    }
 }
 
 /// Forwards each engine wake's observations to the perf build's invariant checks, only while they run;

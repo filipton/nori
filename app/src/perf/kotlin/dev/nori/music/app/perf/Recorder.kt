@@ -531,7 +531,7 @@ internal class Recorder(private val app: Application) : PerfHooks.Recorder, Play
             nativeAllocKb = Debug.getNativeHeapAllocatedSize() / 1024,
             coversKb = covers.keptBytes() / 1024, covers = covers.keptCount(),
             motion = dev.nori.music.playback.MotionPlayer.live,
-            rust = runCatching { dev.nori.music.ffi.perf.perfRustMemory() }.getOrNull(),
+            rust = runCatching { dev.nori.music.ffi.perf.perfRustMemory(dev.nori.music.playback.PlaybackService.rustPlayer?.memory().orEmpty()) }.getOrNull(),
         )
     }
 

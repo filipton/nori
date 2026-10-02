@@ -14,7 +14,7 @@ use std::sync::{Arc, OnceLock};
 use std::thread::Thread;
 use std::time::Instant;
 
-use jni::objects::{GlobalRef, JByteArray, JClass, JFieldID, JMethodID, JObject, JStaticMethodID, JString, JValue, JValueOwned};
+use jni::objects::{GlobalRef, JByteArray, JClass, JFieldID, JLongArray, JMethodID, JObject, JStaticMethodID, JString, JValue, JValueOwned};
 use jni::signature::{Primitive, ReturnType};
 use jni::sys::{jboolean, jfloat, jint, jlong, jstring, jvalue};
 use jni::{JNIEnv, JavaVM};
@@ -65,6 +65,7 @@ pub(crate) static CLASS: Class = Class {
         native!(c"offloadWanted", c"(J)Z", offload_wanted),
         native!(c"pcmWhy", c"(J)Ljava/lang/String;", pcm_why),
         native!(c"radio", c"(JLjava/lang/String;Ljava/lang/String;)V", radio),
+        native!(c"memory", c"(J[J)V", memory),
     ],
 };
 
@@ -1229,6 +1230,7 @@ struct Player {
     /// Music volume for loudness compensation ([`set_volume`]).
     volume: Arc<OutputVolume>,
     ahead: Arc<Ahead>,
+    analyses: Arc<Analyses>,
 }
 
 impl Player {
@@ -1271,7 +1273,7 @@ extern "system" fn create(mut env: JNIEnv, _: JClass, current: jlong, analyses: 
     let output = TrackOutput::new(Box::new(JavaOpener { sdk }), float != 0, shared.clone());
     let stations = Arc::new(Mutex::new(Vec::new()));
     let ahead = Ahead::new();
-    let library = AndroidLibrary { queue: nori_core::queue::shared().clone(), current: current.clone(), analyses, stations: stations.clone(), ahead: ahead.clone() };
+    let library = AndroidLibrary { queue: nori_core::queue::shared().clone(), current: current.clone(), analyses: analyses.clone(), stations: stations.clone(), ahead: ahead.clone() };
     // Full volume until Kotlin reports one (only while loudness compensation is on).
     let volume = Arc::new(OutputVolume::default());
     let sound = nori_core::settings_store::shared().current().map(|p| settings(&p, volume.db())).unwrap_or_default();
@@ -1286,7 +1288,7 @@ extern "system" fn create(mut env: JNIEnv, _: JClass, current: jlong, analyses: 
     let queue = nori_core::queue::shared();
     let app = CoreApp::new(queue.clone()).bridging().volume(volume.clone());
     let engine = Engine::start(library, app, CoreQueue(queue.clone()), Box::new(output), offloaded, config, move |e| tell.push(e));
-    PLAYERS.add(Arc::new(Player { engine, shared, events, offload, stations, jumped: Mutex::new(None), looked_ms: AtomicI64::new(i64::MIN / 2), volume, ahead }))
+    PLAYERS.add(Arc::new(Player { engine, shared, events, offload, stations, jumped: Mutex::new(None), looked_ms: AtomicI64::new(i64::MIN / 2), volume, ahead, analyses }))
 }
 
 /// Unregisters the player and stops it on a thread of its own (stopping joins engine threads, and media3
@@ -1595,4 +1597,12 @@ mod tests {
             assert_eq!(offload_support(answer), (support, words.to_string()), "{answer:#x}");
         }
     }
+}
+
+/// What the engine holds in memory, for the perf report: `out` gets `[song loaders, their KB, those read
+/// from the disk, the beat model's KB]`.
+extern "system" fn memory(env: JNIEnv, _: JClass, h: jlong, out: JLongArray) {
+    let Some(p) = player(h) else { return };
+    let songs = p.engine.held();
+    let _ = env.set_long_array_region(&out, 0, &[songs.songs as jlong, (songs.bytes / 1024) as jlong, songs.on_disk as jlong, (p.analyses.model_bytes() / 1024) as jlong]);
 }

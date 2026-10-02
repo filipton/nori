@@ -726,7 +726,7 @@ impl Measurer {
 
     fn run(&self) {
         crate::arriving::lower_priority();
-        let mut model = Model::default();
+        let mut model = Model::new(&self.analyses.models);
         loop {
             let Some(ids) = self.plan.lock().next() else {
                 self.idle.notify_all();
@@ -762,7 +762,7 @@ impl Measurer {
                 }
                 self.decoded.fetch_add(1, Ordering::Relaxed);
                 let cpu = crate::arriving::thread_cpu_ms();
-                let job = Job { classical, model: if listen { model.get() } else { None } };
+                let job = Job { classical, model: listen.then_some(&model) };
                 let Some(stored) = self.measure(core, id, pieces, hint.as_deref(), job) else { continue };
                 if let (Some(a), Some(b)) = (cpu, crate::arriving::thread_cpu_ms()) {
                     nori_core::alog::info(&format!("measuring {id} ahead from the disk took {} ms of CPU", b.saturating_sub(a)));
@@ -784,7 +784,7 @@ impl Measurer {
 
     /// Decodes `id` for the analyser and/or the beat model and stores the results. Returns whether
     /// anything was stored, or None if abandoned (no longer asked for).
-    fn measure(&self, core: &Core, id: &str, pieces: crate::pieces::Pieces, hint: Option<&str>, job: Job) -> Option<bool> {
+    fn measure(&self, core: &Core, id: &str, pieces: crate::pieces::Pieces, hint: Option<&str>, job: Job<'_, '_>) -> Option<bool> {
         let expected_ms = core.session.song(id).map_or(0, |s| s.duration as i64 * 1000);
         let mut asked = self.asked.load(Ordering::Acquire);
         let Decoded { stream, ends } = decode(id, "measuring ahead", pieces, hint, expected_ms, job.classical, job.model.is_some(), || {
@@ -910,12 +910,13 @@ pub struct Analyses {
     /// Signalled when a song's measuring as it arrives ends, for [`Analyses::wait_arrivals`].
     arrived: Condvar,
     pub(crate) read_back: crate::processing::ReadBack,
+    pub(crate) models: Models,
 }
 
 impl Analyses {
     /// Over the profile `client` gives at each use (a profile switch replaces it).
     pub fn new(client: impl Fn() -> Option<Arc<Client>> + Send + Sync + 'static) -> Arc<Analyses> {
-        Arc::new(Analyses { client: Box::new(client), arrivals: Mutex::default(), arrived: Condvar::new(), read_back: Default::default() })
+        Arc::new(Analyses { client: Box::new(client), arrivals: Mutex::default(), arrived: Condvar::new(), read_back: Default::default(), models: Models::default() })
     }
 
     /// Over `client` for good.
@@ -925,6 +926,11 @@ impl Analyses {
 
     pub(crate) fn client(&self) -> Option<Arc<Client>> {
         (self.client)()
+    }
+
+    /// The heap the loaded beat model holds (1 where the heap is not counted); 0 when none is loaded.
+    pub fn model_bytes(&self) -> u64 {
+        self.models.held.load(Ordering::Relaxed)
     }
 
     /// Songs measured as they arrived and stored (perf report, tests).
@@ -1066,18 +1072,18 @@ fn listen_to(core: &Core, ids: &[String], missing: &[String]) -> Vec<String> {
 }
 
 /// What one decode is for.
-struct Job<'m> {
+struct Job<'m, 'a> {
     /// No current analysis.
     classical: bool,
     /// The beat model reads its ends.
-    model: Option<&'m BeatModel>,
+    model: Option<&'m Model<'a>>,
 }
 
 /// Runs Beat This! over each unread end of `id`; returns whether a grid was stored.
-pub(crate) fn listen(core: &Core, id: &str, model: &BeatModel, ends: &mut Ends) -> bool {
+pub(crate) fn listen(core: &Core, id: &str, model: &Model, ends: &mut Ends) -> bool {
+    let Some(beats_model) = &model.loaded else { return false };
     let Ok(Some(row)) = core.analysis_get(id.to_string()) else { return false };
-    // One run at a time per process: each holds tens of megabytes.
-    let _one = LISTENING.lock();
+    let _one = model.models.running.lock();
     let rate = ends.rate();
     let mut adopted = false;
     for end in [MixEnd::Intro, MixEnd::Outro] {
@@ -1093,7 +1099,7 @@ pub(crate) fn listen(core: &Core, id: &str, model: &BeatModel, ends: &mut Ends) 
         let grid = match beats::window(&row, end, have) {
             Some((from, to)) => {
                 let at = |ms: i64| ((ms - start_ms) * rate as i64 / 1000).clamp(0, x.len() as i64) as usize;
-                match model.read(&x[at(from)..at(to)], rate, end, from) {
+                match beats_model.read(&x[at(from)..at(to)], rate, end, from) {
                     Ok(g) => g,
                     Err(e) => {
                         nori_core::alog::info(&format!("beat model on the {end:?} of {id}: {e}"));
@@ -1121,47 +1127,52 @@ pub(crate) fn listen(core: &Core, id: &str, model: &BeatModel, ends: &mut Ends) 
     adopted
 }
 
-/// Held during a beat model run. Process-wide by design: it caps memory for the whole process.
-static LISTENING: Mutex<()> = Mutex::new(());
-
-/// The beat model for a thread's life: loaded on first need, tried once per thread.
+/// The beat model's runs for one [`Analyses`]: one at a time (each holds tens of megabytes), and the heap
+/// the loaded model holds, for the memory report.
 #[derive(Default)]
-pub(crate) struct Model {
-    tried: bool,
-    loaded: Option<BeatModel>,
+pub(crate) struct Models {
+    running: Mutex<()>,
+    /// The loaded model's heap growth (1 where the heap is not counted); 0 when none is loaded.
+    held: AtomicU64,
 }
 
-impl Model {
+/// The beat model for a thread's life: loaded on first need, tried once per thread.
+pub(crate) struct Model<'a> {
+    tried: bool,
+    loaded: Option<BeatModel>,
+    models: &'a Models,
+}
+
+impl Model<'_> {
+    pub(crate) fn new(models: &Models) -> Model<'_> {
+        Model { tried: false, loaded: None, models }
+    }
+
     /// Whether the model is loaded, loading it on first call.
     pub(crate) fn ready(&mut self, client: &Client) -> bool {
         if !self.tried {
             self.tried = true;
-            self.loaded = BeatModel::load(client);
+            self.loaded = BeatModel::load(client).map(|(model, bytes)| {
+                self.models.held.store(bytes, Ordering::Relaxed);
+                model
+            });
         }
         self.loaded.is_some()
     }
 
-    pub(crate) fn get(&self) -> Option<&BeatModel> {
-        self.loaded.as_ref()
+    pub(crate) fn loaded(&self) -> bool {
+        self.loaded.is_some()
     }
 }
 
-impl Drop for Model {
+impl Drop for Model<'_> {
     /// Frees the model and returns its pages.
     fn drop(&mut self) {
         if self.loaded.take().is_some() {
+            self.models.held.store(0, Ordering::Relaxed);
             crate::arriving::give_memory_back();
         }
     }
-}
-
-/// The loaded beat model's heap growth (1 where the heap is not counted), for the perf report.
-/// Process-wide, like the report.
-static MODEL_BYTES: AtomicU64 = AtomicU64::new(0);
-
-/// Bytes the beat model holds now; 0 when not loaded.
-pub fn beat_model_bytes() -> u64 {
-    MODEL_BYTES.load(Ordering::Relaxed)
 }
 
 /// Beat This! through tract (`neural-beats`).
@@ -1169,15 +1180,9 @@ pub fn beat_model_bytes() -> u64 {
 pub(crate) struct BeatModel(nori_player::automix::neural::BeatThis);
 
 #[cfg(feature = "neural-beats")]
-impl Drop for BeatModel {
-    fn drop(&mut self) {
-        MODEL_BYTES.store(0, Ordering::Relaxed);
-    }
-}
-
-#[cfg(feature = "neural-beats")]
 impl BeatModel {
-    fn load(client: &Client) -> Option<BeatModel> {
+    /// The model and the heap it took (1 where the heap is not counted).
+    fn load(client: &Client) -> Option<(BeatModel, u64)> {
         let file = nori_core::beat_download::ensure(client)?;
         let t0 = std::time::Instant::now();
         let before = nori_core::heap::live_bytes();
@@ -1185,9 +1190,8 @@ impl BeatModel {
         match loaded {
             Ok(m) => {
                 let bytes = before.zip(nori_core::heap::live_bytes()).map_or(1, |(a, b)| (b - a).max(1) as u64);
-                MODEL_BYTES.store(bytes, Ordering::Relaxed);
                 nori_core::alog::info(&format!("beat model loaded in {} ms, {} KB", t0.elapsed().as_millis(), bytes / 1024));
-                Some(BeatModel(m))
+                Some((BeatModel(m), bytes))
             }
             Err(e) => {
                 nori_core::alog::info(&format!("loading the beat model: {e}"));
@@ -1207,7 +1211,7 @@ pub(crate) struct BeatModel;
 
 #[cfg(not(feature = "neural-beats"))]
 impl BeatModel {
-    fn load(_: &Client) -> Option<BeatModel> {
+    fn load(_: &Client) -> Option<(BeatModel, u64)> {
         None
     }
 

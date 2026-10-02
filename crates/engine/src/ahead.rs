@@ -17,7 +17,7 @@ use std::sync::Arc;
 use parking_lot::{Condvar, Mutex};
 
 use crate::arriving::Listening;
-use crate::source::{open_watched, ByteSource, Cancel, OpenError};
+use crate::source::{open_watched, ByteSource, Cancel, Fetching, OpenError, Waits};
 
 /// Read size, as the loader's.
 const CHUNK: usize = 256 * 1024;
@@ -66,6 +66,8 @@ pub struct Ahead {
     cv: Condvar,
     /// Bumped when the list changes or a song is taken over; read per chunk without the lock.
     asked: AtomicU64,
+    /// Its requests' stall watch and crowding.
+    fetching: Arc<Fetching>,
 }
 
 #[derive(Default)]
@@ -185,7 +187,7 @@ impl Ahead {
         match (found, keeping, bytes) {
             (Some(song), Some(k), Some(b)) if plan.songs.contains(&song) && !plan.taken.contains(&song.key) => {
                 plan.current = Some(song.key.clone());
-                plan.request = Cancel::new();
+                plan.request = Cancel::stalling_after(&self.fetching, Waits::default().stall_ms);
                 Some((song, k, b, takers, plan.request.clone()))
             }
             // The list changed meanwhile.

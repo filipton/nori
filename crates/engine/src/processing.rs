@@ -154,7 +154,7 @@ impl Analyses {
     fn run(&self) {
         crate::arriving::lower_priority();
         // Loaded by the first song that needs it, dropped with the thread.
-        let mut model = Model::default();
+        let mut model = Model::new(&self.models);
         loop {
             let next = self.read_back.line.lock().next(|id| self.arrivals.lock().has(id));
             let Some(id) = next else { break };
@@ -225,11 +225,11 @@ impl Analyses {
             tracker.with(|t| t.work_done(id, Work::Analysis));
         }
         if listen_now {
-            if let (Some(model), Some(mut ends)) = (model.get(), ends) {
+            if let (true, Some(mut ends)) = (model.loaded(), ends) {
                 if classical {
                     tracker.with(|t| t.working(id, Work::Beats));
                 }
-                stored |= listen(core, id, model, &mut ends);
+                stored |= listen(core, id, &*model, &mut ends);
                 drop(ends);
                 crate::arriving::give_memory_back();
             }
