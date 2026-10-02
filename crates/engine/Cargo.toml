@@ -33,6 +33,8 @@ core = ["dep:nori-core"]
 # The optional neural beat tracker: the measurer runs Beat This! over the ends of the songs coming up when
 # "Better beat detection" is on. Without it nothing of tract is built or linked.
 neural-beats = ["core", "nori-core/neural-beats"]
+# The virtual clock tests run the engine on (`testing`), for this crate's tests and its clients'.
+testing = []
 
 [dependencies]
 nori-player = { path = "../player" }
@@ -42,6 +44,7 @@ symphonia = { version = "0.6.1", default-features = false, features = ["mp3", "f
 nori-core = { path = "../core", default-features = false, optional = true }
 
 [dev-dependencies]
+nori-engine = { path = ".", features = ["testing"] }
 nori-testdir = { path = "../testdir" }
 nori-player = { path = "../player", features = ["synth"] }
 # tests/stretch.rs: the lyrics page's clock, read through a stretched mix as a screen reads it.

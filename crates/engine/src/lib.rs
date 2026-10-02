@@ -26,6 +26,8 @@ pub mod processing;
 
 #[cfg(test)]
 mod no_alloc;
+#[cfg(feature = "testing")]
+pub mod testing;
 
 pub use clock::{Clock, Monotonic};
 pub use engine::{Config, Engine, Event, OutputFacts, Settings, State, Status, REMAKE_LEAD_MS};

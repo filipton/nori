@@ -3777,6 +3777,7 @@ dependencies = [
  "async-trait",
  "libc",
  "nori-core",
+ "nori-engine",
  "nori-look",
  "nori-player",
  "nori-testdir",
