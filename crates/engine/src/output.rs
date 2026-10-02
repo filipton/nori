@@ -15,7 +15,7 @@ pub use nori_player::outputs::OutputKind;
 use nori_player::automix::resample::Resampler;
 use nori_player::burst::{BUFFER_US, LOW_US};
 use nori_player::pcm::{Encoding, Format};
-use nori_player::pipeline::Track;
+use nori_player::pipeline::{Remake, Track};
 
 /// What a device plays: float samples, interleaved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,8 +96,8 @@ pub trait AudioOutput: Send {
 /// Ring fill at which the engine is woken: a little under the burst's low mark, so the burst's own
 /// count (which includes the device) agrees it is time.
 pub const WAKE_LOW_US: i64 = LOW_US - 250_000;
-/// A device holding more than this takes too long to play out for a sound change to wait: it drops
-/// what it holds and the change starts where it is.
+/// A device holding more than this takes too long to play out for a new ending (or a sound change
+/// while tuned) to wait: it drops what it holds and the change starts where it is.
 const HELD_US: i64 = 250_000;
 /// How far before the device's play head such a change starts: what its clock reading may be ahead
 /// of it. The device gives back exactly what it did not play ([`Feed::rewind`]).
@@ -796,13 +796,14 @@ impl Track for RingTrack {
     }
 
     /// A device holding little plays on: the first frame no pull can have taken, fenced so none takes
-    /// it before the cut. One holding more than [`HELD_US`] not yet mixed drops what it holds: a little
-    /// before what it has played.
-    fn freeze(&mut self) -> u64 {
+    /// it before the cut. One holding more than [`HELD_US`] not yet mixed drops what it holds for a new
+    /// ending, or for a sound change while tuned: a little before what it has played.
+    fn freeze(&mut self, why: Remake) -> u64 {
         let (Some(r), Some(d)) = (self.ring.clone(), self.device) else { return self.written.sink };
         let (heard, held) = self.heard();
         let mixed = self.output.mixed_us() * d.rate as u64 / 1_000_000;
-        if held.saturating_sub(mixed) as i64 * 1_000_000 > HELD_US * d.rate as i64 {
+        let drops = why == Remake::Ending || self.shallow;
+        if drops && held.saturating_sub(mixed) as i64 * 1_000_000 > HELD_US * d.rate as i64 {
             let early = (REWIND_EARLY_US * d.rate as i64 / 1_000_000) as u64;
             return self.at_ring(heard.saturating_sub(early)).sink;
         }
@@ -1002,7 +1003,7 @@ mod tests {
         t.write(&pcm(&[16384; 200]), 200.0);
         let mut out = vec![0f32; 200];
         assert_eq!(f.pull(&mut out[..40]), 40);
-        let at = t.freeze();
+        let at = t.freeze(Remake::Sound);
         assert_eq!(at, 40, "the first frame no pull took");
         assert_eq!(f.pull(&mut out[40..60]), 0, "and none takes it before the cut");
         assert_eq!(t.cut(at), 40.0, "the song time before it");
@@ -1022,7 +1023,7 @@ mod tests {
         assert_eq!(f.pull(&mut out), 600);
         // It played 300 of the 600 it took.
         held.store(300_000, Ordering::Relaxed);
-        let at = t.freeze();
+        let at = t.freeze(Remake::Ending);
         assert!((150..=300).contains(&at), "from a little before what it played: {at}");
         t.cut(at);
         let new: Vec<i16> = (0..700).map(|k| k as i16).collect();
@@ -1044,7 +1045,19 @@ mod tests {
         assert_eq!(f.pull(&mut out), 600);
         held.store(400_000, Ordering::Relaxed);
         mixed.store(300_000, Ordering::Relaxed);
-        assert_eq!(t.freeze(), 600, "the first frame no pull took");
+        assert_eq!(t.freeze(Remake::Ending), 600, "the first frame no pull took");
+
+        // A sound change on a device holding seconds plays them first, unless it is being tuned.
+        for tuned in [false, true] {
+            let (mut t, mut f, held) = by_hand();
+            t.shallow(tuned);
+            t.write(&pcm(&[16384; 1000]), 1000.0);
+            let mut out = vec![0f32; 600];
+            assert_eq!(f.pull(&mut out), 600);
+            held.store(300_000, Ordering::Relaxed);
+            let at = t.freeze(Remake::Sound);
+            assert_eq!(at < 600, tuned, "tuned {tuned}: dropped and made again from {at}");
+        }
 
         // Pull after a cut behind waits for music.
         let (mut t, mut f, held) = by_hand();
@@ -1052,7 +1065,7 @@ mod tests {
         let mut out = vec![0f32; 600];
         f.pull(&mut out);
         held.store(300_000, Ordering::Relaxed);
-        let at = t.freeze();
+        let at = t.freeze(Remake::Ending);
         t.cut(at);
         assert_eq!(f.pull(&mut out), 0);
     }
@@ -1123,7 +1136,7 @@ mod tests {
                 0 => t.flush(),
                 3 | 5 => {
                     held.store(if k % 7 == 3 { 400_000 } else { 0 }, Ordering::Relaxed);
-                    let at = t.freeze();
+                    let at = t.freeze(Remake::Ending);
                     t.cut(at);
                     // Made again at once, over what a pull may be taking.
                     t.write(&pcm(&[-(k as i16); 600]), 600.0);

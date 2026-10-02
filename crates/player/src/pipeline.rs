@@ -10,7 +10,7 @@ use crate::playlist::Playlist;
 use crate::queue::{measure_ahead, ErrorRun, OnError, PlaybackError};
 use crate::transitions::WindowSong;
 
-pub use crate::sink::{blended, ChainSettings, Sink, Sound, Track, BLEND_US};
+pub use crate::sink::{blended, ChainSettings, Remake, Sink, Sound, Track, BLEND_US};
 
 /// Start of the renderer's timeline, as in media3.
 pub const BASE_OFFSET_US: i64 = 1_000_000_000_000;
@@ -670,6 +670,15 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         }
         self.burst.restart();
         self.sink.fill();
+    }
+
+    /// Tuning started ([`Remake::Sound`]): the music made again as it is, so an output holding seconds
+    /// drops them now and the first change is made in place.
+    pub fn remake(&mut self) {
+        if self.sink.remake().is_some() {
+            self.burst.restart();
+            self.sink.fill();
+        }
     }
 
     /// Speed and pitch as set.

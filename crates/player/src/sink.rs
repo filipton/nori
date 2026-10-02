@@ -115,6 +115,17 @@ impl ChainSettings {
     }
 }
 
+/// Why music is made again from the first frame a track can still replace ([`Track::freeze`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Remake {
+    /// The sound changed. A device holding seconds plays them first, unless it is being tuned (the
+    /// equalizer screen): dropping them hands the music to a second track, and only there is the change
+    /// worth the gap it costs when the two can't be lined up.
+    Sound,
+    /// The ending changed: another song follows, or another mix.
+    Ending,
+}
+
 /// The device buffer the sink writes into (an AudioTrack, a desktop ring, a simulated track). Data is
 /// in the sink's format; the track converts if its device needs another. Frames count sink frames
 /// written since the last flush.
@@ -130,9 +141,9 @@ pub trait Track {
     fn played_media(&mut self) -> f64;
     /// Frames played since the last flush.
     fn played(&mut self) -> u64;
-    /// The first frame that can still be replaced; the device takes nothing past it until the next
-    /// [`Track::cut`].
-    fn freeze(&mut self) -> u64;
+    /// The first frame that can still be replaced for `why`; the device takes nothing past it until the
+    /// next [`Track::cut`].
+    fn freeze(&mut self, why: Remake) -> u64;
     /// Drops what was written from frame `at` (at least the frozen frame) on; returns the song frames
     /// written before it. What is written next replaces it: blended in over [`BLEND_US`] where the
     /// device plays on from what was dropped.
@@ -411,6 +422,12 @@ impl<T: Track> Sink<T> {
         at
     }
 
+    /// The same settings made again from the first frame the track can still replace: tuning started,
+    /// and a device holding seconds drops them now rather than at the first change.
+    pub fn remake(&mut self) -> Option<(u64, u64)> {
+        self.splice()
+    }
+
     /// Scales the input kept in each timeline range by its ratio (ReplayGain changed), heard from the
     /// first frame the track can still replace.
     pub fn rescale(&mut self, ranges: &[(Range<i64>, f32)]) -> Option<(u64, u64)> {
@@ -482,7 +499,7 @@ impl<T: Track> Sink<T> {
         if !self.kept.has_marks() {
             return None;
         }
-        let from = self.track.freeze().min(written);
+        let from = self.track.freeze(Remake::Sound).min(written);
         // Kept input starts later than that only if the track reaches back further than it said.
         let k = self.kept.mark_where(|m| m.out <= from).unwrap_or(0);
         let back = self.run_again(k, u64::MAX, from);
@@ -499,7 +516,7 @@ impl<T: Track> Sink<T> {
         // In input still to be run (after a splice) nothing was made of it yet.
         if at < self.run {
             let Some(k) = self.kept.mark_where(|m| m.frame <= at) else { return false };
-            let from = self.track.freeze().min(written);
+            let from = self.track.freeze(Remake::Ending).min(written);
             let keep = self.runner.chain.clone();
             // No further than what was written: input before the cut not written yet is run by `fill`.
             let back = self.run_again(k, at, written);

@@ -438,7 +438,8 @@ impl Engine {
         self.send(Command::Gain);
     }
 
-    /// The equalizer screen opened (`true`) or closed: the device is kept shallow while it is open.
+    /// A sound screen opened (`true`) or closed: the device drops what it holds at once and is kept
+    /// shallow while it is open, so every change there is heard soon and in place.
     pub fn set_tuning(&self, on: bool) {
         self.send(Command::Tuning(on));
     }
@@ -1189,7 +1190,12 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
                 self.follow_queue();
             }
             Command::Gain => self.gain_changed = true,
-            Command::Tuning(on) => self.p.sink.track.shallow(on),
+            Command::Tuning(on) => {
+                self.p.sink.track.shallow(on);
+                if on {
+                    self.p.remake();
+                }
+            }
             Command::Positions(every) => {
                 self.told.positions = every.map(|d| d.as_millis().max(1) as i64);
                 self.told.next_position = now;
