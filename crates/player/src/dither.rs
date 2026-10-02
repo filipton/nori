@@ -70,7 +70,8 @@ impl Dither {
             *r = select_unpredictable(off_grid, x, *r);
             self.last = select_unpredictable(off_grid, noise(x), self.last);
         }
-        (want + select_unpredictable(off_grid, self.last, 0.0)).round().clamp(-32768.0, 32767.0) as i16
+        // In range after the clamp: a plain cast, not a saturating one.
+        (want + select_unpredictable(off_grid, self.last, 0.0)).round().clamp(-32768.0, 32767.0) as i32 as i16
     }
 }
 

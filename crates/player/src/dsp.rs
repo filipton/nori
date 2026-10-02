@@ -930,15 +930,28 @@ impl Equalizer {
             if planar.len() < frames * n {
                 planar.resize(frames * n, 0.0);
             }
-            if frames > 0 {
+            // Stereo, with each side's channel known in the loop (the dither keeps both in registers).
+            if n == 2 {
+                let (left, right) = planar[..frames * 2].split_at_mut(frames);
+                for ((l, r), &[x, y]) in left.iter_mut().zip(right.iter_mut()).zip(input.as_chunks::<2>().0) {
+                    (*l, *r) = (load(x), load(y));
+                }
+            } else if frames > 0 {
                 for (c, lane) in planar[..frames * n].chunks_exact_mut(frames).enumerate() {
                     lane.iter_mut().zip(input[c..].iter().step_by(n)).for_each(|(p, &v)| *p = load(v));
                 }
             }
             self.now.block(&mut planar[..frames * n], frames);
-            for (k, y) in output.chunks_exact_mut(n).enumerate() {
-                for (c, v) in y.iter_mut().enumerate() {
-                    *v = store(planar[c * frames + k], c);
+            if n == 2 {
+                let (left, right) = planar[..frames * 2].split_at(frames);
+                for ((y, &l), &r) in output.as_chunks_mut::<2>().0.iter_mut().zip(left).zip(right) {
+                    *y = [store(l, 0), store(r, 1)];
+                }
+            } else {
+                for (k, y) in output.chunks_exact_mut(n).enumerate() {
+                    for (c, v) in y.iter_mut().enumerate() {
+                        *v = store(planar[c * frames + k], c);
+                    }
                 }
             }
             self.planar = planar;
