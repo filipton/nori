@@ -504,7 +504,7 @@ impl Runner {
                 sound_edited(s, app, effect);
             }
             Cmd::Action(c) => s.action(c),
-            Cmd::Tuning(on) => s.engine.set_tuning(on),
+            Cmd::Tuning(on) => s.engine.set_shallow(on),
             Cmd::SearchTyped(text) => {
                 let v = s.search_typed(&text);
                 app.search.view = Some(v);
@@ -544,7 +544,7 @@ fn sound_edited(s: &Session, app: &mut App, effect: Option<u32>) {
     if let Some(effect) = effect {
         s.applied(effect);
         if app.sound_edited() {
-            s.engine.set_tuning(true);
+            s.engine.set_shallow(true);
         }
     }
     prefs_changed(app);

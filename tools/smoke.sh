@@ -68,17 +68,18 @@ if want automix; then section "one AutoMix transition"
   plain
 fi
 
-if want eq; then section "the equalizer, on and off, tuned in place"
+if want eq; then section "the equalizer, on and off; the buffer deep out of sight, shallow in sight, in place"
   [ "$(field playing)" = True ] || { "$app" play "$SONG" >/dev/null; sounds 20; }
   watch_from_now
   "$app" set eq true >/dev/null
   check "the equalizer goes in" wait_for dspActive True 10
-  "$app" do "tuning on" >/dev/null
-  check "tuning takes the shallow buffer, in place" waitfor_log "shallow [0-9]+ ms.*topped up at" 15
-  check "still sounding while tuned" sounds 5
-  "$app" do "tuning off" >/dev/null
-  check "the deep buffer is back, in place" waitfor_log "deep again in place" 15
-  check "the track was not reopened for it" never "rust AudioTrack: .*(160|80) ms"
+  check "made in place in the ring" waitfor_log "the change is heard after [0-9]+ ms" 10
+  adb shell input keyevent KEYCODE_HOME
+  check "out of sight, the deep buffer is back, in place" waitfor_log "deep again in place" 15
+  check "still sounding out of sight" sounds 5
+  "$app" launch >/dev/null
+  check "in sight, the shallow buffer, in place" waitfor_log "shallow [0-9]+ ms.*topped up at" 15
+  check "the track was not reopened or emptied for it" never "rust AudioTrack: .*(160|80) ms|emptied for the music"
   "$app" set eq false >/dev/null
   check "still sounding with the equalizer off" sounds 5
 fi

@@ -52,7 +52,7 @@ import kotlinx.coroutines.withContext
 class PlaybackService : MediaLibraryService() {
     companion object {
         const val CMD_SLEEP = "nori.sleep"
-        const val CMD_TUNING = "nori.tuning"
+        const val CMD_IN_SIGHT = "nori.inSight"
         /** The notification's and lock screen's heart: favourite or unfavourite the current song. */
         const val CMD_FAVOURITE = "nori.favourite"
         /** The notification's and lock screen's shuffle toggle. */
@@ -668,26 +668,30 @@ class PlaybackService : MediaLibraryService() {
 
     // ---- session: custom commands, Android Auto browsing, voice search ----
 
-    /** The controller whose screen has the shallow buffer on, or null: one owner, so it cannot be left on. */
-    private var tuner: MediaSession.ControllerInfo? = null
+    /** Controllers whose screen is in sight: the app's while it is started, a car's while it is connected. */
+    private val inSight = mutableSetOf<MediaSession.ControllerInfo>()
 
-    /** The equalizer screen is being tuned ([on]) or no longer is. Only a change is passed on. */
-    private fun tune(on: Boolean, controller: MediaSession.ControllerInfo?) {
-        if (on == (tuner != null)) { if (on) tuner = controller; return }
-        tuner = if (on) controller else null
-        // The player's own pipeline keeps the rule (nori_player::transport::Chain::tuning): the track made
-        // shallow in place, so a band's move is heard within half a second, and deep again after.
-        player.setTuning(on)
-        observer?.tuning(on)
+    /**
+     * [controller]'s screen came in sight ([on]) or left it; the player hears only when whether any is
+     * changes. While one is, the track holds a fraction of a second, so a sound change is heard at once
+     * (crates/android/src/track.rs); with none, the deep buffer that lets the phone sleep.
+     */
+    private fun inSight(controller: MediaSession.ControllerInfo, on: Boolean) {
+        val was = inSight.isNotEmpty()
+        if (on) inSight += controller else inSight -= controller
+        if (inSight.isNotEmpty() == was) return
+        player.setForeground(!was)
+        observer?.shallow(!was)
     }
 
     private inner class Callback : MediaLibrarySession.Callback {
         override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
-            val commands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon().add(SessionCommand(CMD_SLEEP, Bundle.EMPTY)).add(SessionCommand(CMD_TUNING, Bundle.EMPTY))
+            val commands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon().add(SessionCommand(CMD_SLEEP, Bundle.EMPTY)).add(SessionCommand(CMD_IN_SIGHT, Bundle.EMPTY))
                 .add(SessionCommand(CMD_FAVOURITE, Bundle.EMPTY)).add(SessionCommand(CMD_SHUFFLE, Bundle.EMPTY))
                 .add(SessionCommand(CMD_FILL_NEXT, Bundle.EMPTY)).add(SessionCommand(CMD_REPEAT, Bundle.EMPTY)).add(SessionCommand(CMD_RADIO, Bundle.EMPTY))
                 .add(SessionCommand(CarTree.CMD_ITEM_NEXT, Bundle.EMPTY)).add(SessionCommand(CarTree.CMD_ITEM_QUEUE, Bundle.EMPTY))
                 .add(SessionCommand(CarTree.CMD_ITEM_FAVOURITE, Bundle.EMPTY)).add(SessionCommand(CarTree.CMD_ITEM_DOWNLOAD, Bundle.EMPTY)).build()
+            if (session.isAutoCompanionController(controller) || session.isAutomotiveController(controller)) inSight(controller, true)
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session).setAvailableSessionCommands(commands).build()
         }
 
@@ -715,7 +719,7 @@ class PlaybackService : MediaLibraryService() {
             }
             if (command.customAction == CMD_SHUFFLE) controls.shuffleModeEnabled = !player.shuffleModeEnabled
             if (command.customAction == CMD_FILL_NEXT) fillThenNext()
-            if (command.customAction == CMD_TUNING) tune(args.getBoolean(ARG_ON), controller)
+            if (command.customAction == CMD_IN_SIGHT) inSight(controller, args.getBoolean(ARG_ON))
             if (command.customAction == CMD_REPEAT) controls.repeatMode = when (player.repeatMode) {
                 Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
                 Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
@@ -726,11 +730,10 @@ class PlaybackService : MediaLibraryService() {
             return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
         }
 
-        // The screen that asked for the shallow buffer has gone with its controller (the app's process
-        // died, or it let go of the service): nobody is tuning any more, so the deep buffer comes back
-        // rather than staying shallow for as long as the service lives.
+        // A screen in sight goes with its controller: the app stopped (it lets go of the service), its
+        // process died, or the car disconnected.
         override fun onDisconnected(session: MediaSession, controller: MediaSession.ControllerInfo) {
-            if (tuner == controller) tune(false, null)
+            inSight(controller, false)
         }
 
         override fun onAddMediaItems(session: MediaSession, controller: MediaSession.ControllerInfo, items: MutableList<MediaItem>): ListenableFuture<MutableList<MediaItem>> {
@@ -933,8 +936,8 @@ interface PlaybackObserver {
     /** Playback failed, in the player's words. */
     fun error(message: String)
 
-    /** The equalizer screen's tuning mode came on or off. */
-    fun tuning(on: Boolean)
+    /** The output's shallow buffer (the app in sight) came on or off. */
+    fun shallow(on: Boolean)
 
     /** The user pressed next or previous (the session's buttons: the app, the notification, a headset) on queue place [index]. */
     fun skipped(index: Int) {}

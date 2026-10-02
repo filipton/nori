@@ -961,7 +961,7 @@ const MOST_EVENTS: usize = 150;
 const FORMATS_AHEAD: usize = 4;
 
 /// A timeline event: wall time, kind ("song", "settings", "engine", "output", "offload", "underruns",
-/// "error", "tuning", "format", "invariant", ...) and text.
+/// "error", "shallow", "format", "invariant", ...) and text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct PerfEvent {
@@ -1025,8 +1025,8 @@ pub enum PerfNote {
     Underruns { key: i64, count: i32 },
     /// Playback error.
     Error { message: String },
-    /// Equalizer tuning mode (shallow buffer) on or off.
-    Tuning { on: bool },
+    /// The output's shallow buffer (the app in sight) on or off.
+    Shallow { on: bool },
     /// A message from the offload path.
     Offload { detail: String },
     /// Wake lock acquired or released (timed, not listed).
@@ -1110,9 +1110,9 @@ impl Timeline {
             PerfNote::Output { key, output } => self.output(t, key, output, settings_why),
             PerfNote::Underruns { key, count } => self.underruns(t, key, count),
             PerfNote::Error { message } => self.push(t, "error", message.chars().take(400).collect()),
-            PerfNote::Tuning { on } => {
-                let d = if on { "on: the equalizer screen is open, the output takes a shallow buffer" } else { "off: the deep buffer is back" };
-                self.push(t, "tuning", d.into());
+            PerfNote::Shallow { on } => {
+                let d = if on { "on: the app is in sight, the output takes a shallow buffer" } else { "off: the deep buffer is back" };
+                self.push(t, "shallow", d.into());
             }
             PerfNote::Offload { detail } => self.push(t, "offload", detail.chars().take(400).collect()),
             PerfNote::WakeLock { held } => {
@@ -2162,12 +2162,12 @@ mod tests {
         assert_eq!(t.close(at(10, 50, 0), at(11, 30, 0), true).2, 30 * 60_000);
         assert_eq!(t.so_far(at(11, 30, 0), at(11, 45, 0)).2, 15 * 60_000);
         // A dropped stretch passes its events on, not its time.
-        t.note(at(11, 50, 0), PerfNote::Tuning { on: true }, None);
+        t.note(at(11, 50, 0), PerfNote::Shallow { on: true }, None);
         assert_eq!(t.close(at(11, 30, 0), at(11, 50, 1), false), (Vec::new(), 0, 20 * 60_000 + 1_000));
         t.note(at(11, 51, 0), PerfNote::Output { key: 4, output: None }, None);
         let (ev, _, off) = t.close(at(11, 50, 1), at(12, 0, 0), true);
         assert_eq!(off, 59_000);
-        assert_eq!(ev.iter().map(|e| e.detail.as_str()).collect::<Vec<_>>(), ["on: the equalizer screen is open, the output takes a shallow buffer", "let go"]);
+        assert_eq!(ev.iter().map(|e| e.detail.as_str()).collect::<Vec<_>>(), ["on: the app is in sight, the output takes a shallow buffer", "let go"]);
         // The player's reason wins over the settings'.
         let mut t = Timeline::default();
         t.note(0, PerfNote::Output { key: 1, output: Some(PerfOutput { offloaded: true, ..output() }) }, None);

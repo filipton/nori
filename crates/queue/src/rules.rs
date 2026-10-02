@@ -313,7 +313,7 @@ pub struct SongSteps {
     pub pause_at_end: bool,
 }
 
-/// Whether the equalizer screen switches to the shallow buffer (`set_tuning`): screen visible, sound
+/// Whether the equalizer screen switches to the shallow buffer (`set_shallow`): screen visible, sound
 /// changed on it, equalizer on.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn equalizer_tuning(in_sight: bool, touched: bool, eq_on: bool) -> bool {

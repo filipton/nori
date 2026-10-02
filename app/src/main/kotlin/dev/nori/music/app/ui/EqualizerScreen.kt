@@ -72,34 +72,12 @@ private fun bandLabel(b: SoundBand): String = say.band(b.freq, dev.nori.music.ff
 /** How far each control goes: the core's, the same ranges it holds every edit in. */
 private val ranges get() = EQ.eqRanges
 
-/**
- * Asks for the shallow buffer while the screen calling this is in sight, so every change to the sound
- * made there is made in place and heard at once. Asked as the screen opens: the engine drops the seconds
- * the track holds then (a second track carrying the music meanwhile), before the first touch.
- *
- * In sight, not merely composed: a page stays composed under the player opened over it. Covered, left
- * or with the app in the background, the deep buffer comes back. The view model counts the screens
- * asking, so one opening as another closes keeps it.
- */
-@Composable
-internal fun TuningWhileOpen(vm: SettingsViewModel) {
-    val sheet = LocalPlayerSheet.current
-    var resumed by remember { mutableStateOf(false) }
-    androidx.lifecycle.compose.LifecycleResumeEffect(Unit) { resumed = true; onPauseOrDispose { resumed = false } }
-    val covered by remember(sheet) { androidx.compose.runtime.derivedStateOf { sheet.isOpen || sheet.progress.value > 0f } }
-    val want = resumed && !covered
-    val sent = remember { booleanArrayOf(false) }
-    LaunchedEffect(want) { if (want != sent[0]) { sent[0] = want; vm.setTuning(want) } }
-    DisposableEffect(Unit) { onDispose { if (sent[0]) { sent[0] = false; vm.setTuning(false) } } }
-}
-
 @Composable
 fun EqualizerScreen(vm: SettingsViewModel) {
     val p by vm.prefs.collectAsStateWithLifecycle()
     val nav = LocalNav.current
     var importing by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf(-1) }
-    TuningWhileOpen(vm)
 
     NoriDialog(importing, { importing = false }) { ImportDialog(vm) { importing = false } }
     NoriDialog(p.eqBands.getOrNull(editing), { editing = -1 }) { band -> BandDialog(band, { b -> vm.setBand(editing, b) }, { vm.removeBand(editing); editing = -1 }) { editing = -1 } }

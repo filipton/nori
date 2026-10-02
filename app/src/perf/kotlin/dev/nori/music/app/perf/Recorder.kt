@@ -65,7 +65,7 @@ import java.io.File
  * the bytes the app moved over the network.
  *
  * What happened during a stretch is its timeline (the core's `perf_note`): the player service tells this
- * each song, output, error and tuning change as it happens ([PlaybackObserver]), and the settings flow
+ * each song, output, error and shallow buffer change as it happens ([PlaybackObserver]), and the settings flow
  * each change; the output's underrun count is read at a stretch's ends and at each song. The app's own
  * log is read from logcat only when the report is shared or the page's log is opened, and a crash is
  * kept in the app's database as the process dies, and the crash buffer at each start.
@@ -276,9 +276,9 @@ internal class Recorder(private val app: Application) : PerfHooks.Recorder, Play
         handler.post { note(t, PerfNote.WakeLock(held)) }
     }
 
-    override fun tuning(on: Boolean) {
+    override fun shallow(on: Boolean) {
         val t = System.currentTimeMillis()
-        handler.post { note(t, PerfNote.Tuning(on)) }
+        handler.post { note(t, PerfNote.Shallow(on)) }
     }
 
     override fun skipped(index: Int) {

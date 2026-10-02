@@ -82,8 +82,8 @@ pub trait AudioOutput: Send {
     fn bursts(&self) -> bool {
         false
     }
-    /// Hold only a fraction of a second (equalizer tuning), so a sound change is heard without the device
-    /// dropping what it holds, or the deep buffer again. Also told before starting.
+    /// Hold only a fraction of a second (the app in sight), so a sound change is heard soon without the
+    /// device dropping what it holds, or the deep buffer again. Also told before starting.
     fn shallow(&mut self, _on: bool) {}
     /// The device stopped and could not reopen (a dead sound server); the engine checks after
     /// [`Feed::wake_engine`], stops, reports it and releases the output.
@@ -96,8 +96,8 @@ pub trait AudioOutput: Send {
 /// Ring fill at which the engine is woken: a little under the burst's low mark, so the burst's own
 /// count (which includes the device) agrees it is time.
 pub const WAKE_LOW_US: i64 = LOW_US - 250_000;
-/// A device holding more than this takes too long to play out for a new ending (or a sound change
-/// while tuned) to wait: it drops what it holds and the change starts where it is.
+/// A device holding more than this takes too long to play out for a new ending to wait: it drops what
+/// it holds and the ending starts where it is.
 const HELD_US: i64 = 250_000;
 /// How far before the device's play head such a change starts: what its clock reading may be ahead
 /// of it. The device gives back exactly what it did not play ([`Feed::rewind`]).
@@ -359,14 +359,6 @@ impl Feed {
         r.read.store(back, Ordering::Release);
     }
 
-    /// Frames pulled since the first frame of the last flush's new music: more than a pull since the
-    /// flush took when the music was made again from before where the device got to (a sound change)
-    /// rather than jumped. What [`Feed::rewind`] can give back.
-    pub fn behind(&self) -> u64 {
-        let r = &*self.ring;
-        r.read.load(Ordering::Acquire).saturating_sub(r.discard.load(Ordering::Acquire))
-    }
-
     /// Wakes the engine, e.g. for [`AudioOutput::failed`].
     pub fn wake_engine(&self) {
         self.ring.engine.unpark();
@@ -555,7 +547,7 @@ impl RingTrack {
         self.output.float(on);
     }
 
-    /// The device holds a fraction of a second (equalizer tuning) or the deep buffer.
+    /// The device holds a fraction of a second or the deep buffer ([`AudioOutput::shallow`]).
     pub(crate) fn shallow(&mut self, on: bool) {
         if on != self.shallow {
             self.shallow = on;
@@ -821,13 +813,12 @@ impl Track for RingTrack {
 
     /// A device holding little plays on: the first frame no pull can have taken, fenced so none takes
     /// it before the cut. One holding more than [`HELD_US`] not yet mixed drops what it holds for a new
-    /// ending, or for a sound change while tuned: a little before what it has played.
+    /// ending: a little before what it has played.
     fn freeze(&mut self, why: Remake) -> u64 {
         let (Some(r), Some(d)) = (self.ring.clone(), self.device) else { return self.written.sink };
         let (heard, held) = self.heard();
         let mixed = self.output.mixed_us() * d.rate as u64 / 1_000_000;
-        let drops = why == Remake::Ending || self.shallow;
-        if drops && held.saturating_sub(mixed) as i64 * 1_000_000 > HELD_US * d.rate as i64 {
+        if why == Remake::Ending && held.saturating_sub(mixed) as i64 * 1_000_000 > HELD_US * d.rate as i64 {
             let early = (REWIND_EARLY_US * d.rate as i64 / 1_000_000) as u64;
             return self.at_ring(heard.saturating_sub(early)).sink;
         }
@@ -889,7 +880,6 @@ impl Track for RingTrack {
             self.blend_at = Some(p);
             self.blend = (n > 0).then_some((0, n));
         }
-
         self.restart_resampler();
         cut.media
     }
@@ -1023,7 +1013,6 @@ mod tests {
         t.write(&pcm(&[-1000; 100]), 100.0);
         assert_eq!(f.pull(&mut out), 10);
         assert!(f.flushed(), "the pull after a flush says so");
-        assert_eq!(f.behind(), 10, "a jump: nothing before what that pull took");
         assert!(out.iter().all(|&v| v < 0.0), "and holds only the new music");
         f.pull(&mut out);
         assert!(!f.flushed(), "once");
@@ -1063,7 +1052,6 @@ mod tests {
         let mut out = vec![0f32; 100];
         assert_eq!(f.pull(&mut out), 100);
         assert!(f.flushed(), "the device is told to drop what it holds");
-        assert_eq!(f.behind(), 700 - at, "and can go back to the first frame made again");
         // 700 taken, 300 played.
         f.rewind(400);
         assert_eq!(f.pull(&mut out), 100);
@@ -1079,16 +1067,15 @@ mod tests {
         mixed.store(300_000, Ordering::Relaxed);
         assert_eq!(t.freeze(Remake::Ending), 600, "the first frame no pull took");
 
-        // A sound change on a device holding seconds plays them first, unless it is being tuned.
-        for tuned in [false, true] {
+        // A sound change on a device holding seconds plays them first, shallow (draining) or not.
+        for shallow in [false, true] {
             let (mut t, mut f, held) = by_hand();
-            t.shallow(tuned);
+            t.shallow(shallow);
             t.write(&pcm(&[16384; 1000]), 1000.0);
             let mut out = vec![0f32; 600];
             assert_eq!(f.pull(&mut out), 600);
             held.store(300_000, Ordering::Relaxed);
-            let at = t.freeze(Remake::Sound);
-            assert_eq!(at < 600, tuned, "tuned {tuned}: dropped and made again from {at}");
+            assert_eq!(t.freeze(Remake::Sound), 600, "shallow {shallow}: the first frame no pull took");
         }
 
         // Pull after a cut behind waits for music.

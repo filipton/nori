@@ -605,7 +605,7 @@ impl App {
         }
         if self.tuning && view != EQUALIZER {
             self.tuning = false;
-            self.on_session(|s| s.engine.set_tuning(false));
+            self.on_session(|s| s.engine.set_shallow(false));
         }
         let ui = self.ui();
         ui.set_failed("".into());
@@ -1229,7 +1229,7 @@ impl App {
     fn tune(&mut self) {
         if !self.tuning && self.ui().get_view() == EQUALIZER {
             self.tuning = true;
-            self.on_session(|s| s.engine.set_tuning(true));
+            self.on_session(|s| s.engine.set_shallow(true));
         }
     }
 

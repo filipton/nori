@@ -162,7 +162,7 @@ struct Extra {
     memory_mb: Option<u32>,
     watch: Option<Arc<dyn nori_engine::watch::Watch>>,
     /// The device holds this much music taken from the ring before it plays it, ms, as a phone's
-    /// AudioTrack does.
+    /// AudioTrack does; [`SHALLOW_MS`] at most while shallow.
     hold_ms: Option<usize>,
 }
 
@@ -207,13 +207,16 @@ struct Card {
     failure: Arc<Mutex<Option<String>>>,
     block: Vec<i16>,
     floats: Vec<f32>,
-    /// Frames it holds before playing them ([`Extra::hold_ms`]), and those it holds.
+    /// Frames it holds before playing them deep ([`Extra::hold_ms`]) and now, and those it holds.
+    deep: usize,
     hold: usize,
     held: std::collections::VecDeque<i16>,
 }
 
 /// Frames the card pulls at a time.
 const BLOCK: usize = 128;
+/// What a holding card holds while shallow, ms: a phone's track over Bluetooth.
+const SHALLOW_MS: usize = 400;
 
 impl common::Device for Card {
     fn due_ns(&self) -> i64 {
@@ -240,7 +243,7 @@ impl common::Device for Card {
             return false;
         }
         let ch = feed.format().channels;
-        if self.hold > 0 {
+        if self.deep > 0 {
             return self.held_tick();
         }
         let waits = feed.engine_waits();
@@ -348,8 +351,11 @@ impl AudioOutput for Recorder {
         self.flushes.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Shallow, it takes no more until it has played down to [`SHALLOW_MS`].
     fn shallow(&mut self, on: bool) {
         self.shallow.store(on, Ordering::Relaxed);
+        let mut c = self.card.lock();
+        c.hold = if on { c.deep.min(SHALLOW_MS * RATE as usize / 1000) } else { c.deep };
     }
 
     fn close(&mut self) {
@@ -418,6 +424,7 @@ impl Rig {
             failure: Arc::default(),
             block: Vec::new(),
             floats: Vec::new(),
+            deep: hold_ms.unwrap_or(0) * RATE as usize / 1000,
             hold: hold_ms.unwrap_or(0) * RATE as usize / 1000,
             held: Default::default(),
         }));
@@ -1650,42 +1657,96 @@ fn replay_gain_change_heard_at_once() {
     }
 }
 
-/// On a device holding seconds (a phone's AudioTrack) a change is made in place, heard once what the
-/// device holds has played. Tuned (a sound screen open) the device drops what it holds as tuning starts
-/// and at the change, and plays on from where it was, in the new sound.
+/// What the app does while music plays on a device holding seconds.
+#[derive(Clone, Debug)]
+enum Step {
+    /// The app came in sight (the device shallow) or left it.
+    Shallow(bool),
+    Sound(Box<Settings>),
+}
+
+fn eq_at(db: f64) -> Settings {
+    let bands = vec![nori_player::dsp::Band { kind: nori_player::dsp::PEAKING, freq: 1000.0, gain_db: db, q: 1.0, channel: 0 }];
+    with_sound(nori_engine::Sound { bands, ..Default::default() })
+}
+
+/// On a device holding seconds (a phone's AudioTrack, 2 s deep and [`SHALLOW_MS`] shallow here) every
+/// sound change is made in place in the ring, from no sooner than the ear, and heard as the chain renders
+/// it offline, nothing dropped or heard twice: deep, shallow, while it drains from deep to shallow, deep
+/// again, one change after another (each landing in the blend of the one before while the device takes
+/// nothing), in a mix. Shallow, a change is heard within what the device holds.
 #[test]
-fn eq_change_on_holding_device() {
-    for tuned in [false, true] {
-        let a = music(12.0, 51);
-        let live = Live::new(prefs_off());
-        let files = vec![("a".to_string(), wav(&a), 12_000)];
+fn changes_on_a_holding_device() {
+    use Step::*;
+    let graphic = |s: Vec<f64>| with_sound(nori_engine::Sound { graphic: s, ..Default::default() });
+    let (a, b) = (music(20.0, 46), music(20.0, 47));
+    let one: Vec<(&str, &[i16])> = vec![("a", &a)];
+    let two: Vec<(&str, &[i16])> = vec![("a", &a), ("b", &b)];
+    // The crossfade runs from 14 s to 20 s of what is heard.
+    let mixed = simulated(&two, crossfade(6));
+    // (what, the songs, what the chain is given, transitions, steps at ms heard)
+    type Case<'a> = (&'static str, &'a [(&'a str, &'a [i16])], &'a [i16], TransitionPrefs, Vec<(i64, Step)>);
+    let cases: Vec<Case> = vec![
+        ("deep", &one, &a, prefs_off(), vec![(3_000, Sound(Box::new(loud_eq()))), (7_000, Sound(Box::default()))]),
+        ("shallow", &one, &a, prefs_off(), vec![(1_000, Shallow(true)), (4_000, Sound(Box::new(loud_eq()))), (6_000, Sound(Box::new(eq_at(-4.0)))), (8_000, Sound(Box::default()))]),
+        ("draining", &one, &a, prefs_off(), vec![(3_000, Shallow(true)), (3_100, Sound(Box::new(loud_eq()))), (7_000, Sound(Box::default()))]),
+        ("back to back while draining", &one, &a, prefs_off(), vec![(3_000, Shallow(true)), (3_100, Sound(Box::new(eq_at(3.0)))), (3_250, Sound(Box::new(eq_at(6.0)))), (3_400, Sound(Box::new(eq_at(-6.0))))]),
+        ("back to back shallow", &one, &a, prefs_off(), vec![(1_000, Shallow(true)), (4_000, Sound(Box::new(eq_at(3.0)))), (4_000, Sound(Box::new(eq_at(6.0)))), (4_000, Sound(Box::new(eq_at(-2.0)))), (4_000, Sound(Box::new(eq_at(9.0))))]),
+        ("toggled", &one, &a, prefs_off(), vec![(1_000, Shallow(true)), (4_000, Sound(Box::new(loud_eq()))), (5_000, Sound(Box::default())), (6_000, Sound(Box::new(loud_eq()))), (6_200, Sound(Box::default()))]),
+        ("preamp and mode", &one, &a, prefs_off(), vec![(1_000, Shallow(true)), (4_000, Sound(Box::new(quieter(-6.0)))), (5_000, Sound(Box::new(graphic(vec![6.0, -3.0, 0.0, 4.0, -6.0])))), (6_000, Sound(Box::new(eq_at(4.0)))), (7_000, Sound(Box::new(graphic(vec![0.0, 2.0, 0.0, 2.0, 0.0]))))]),
+        ("deep again", &one, &a, prefs_off(), vec![(1_000, Shallow(true)), (4_000, Shallow(false)), (4_100, Sound(Box::new(loud_eq()))), (9_000, Shallow(true)), (9_100, Sound(Box::default()))]),
+        ("in a mix, shallow", &two, &mixed, crossfade(6), vec![(1_000, Shallow(true)), (15_000, Sound(Box::new(loud_eq()))), (17_000, Sound(Box::new(eq_at(-3.0))))]),
+        ("in a mix, draining", &two, &mixed, crossfade(6), vec![(15_000, Shallow(true)), (15_200, Sound(Box::new(loud_eq()))), (18_500, Sound(Box::default()))]),
+    ];
+    for (what, songs, raw, prefs, steps) in cases {
+        let live = Live::new(prefs);
+        let files = songs.iter().map(|(id, s)| (id.to_string(), wav(s), (s.len() / 2) as i64 * 1000 / RATE as i64)).collect();
         let rig = Rig::build(files, live.clone(), Settings::default(), Extra { hold_ms: Some(2_000), ..Extra::default() });
         rig.engine.play_at(0, 0);
-        assert!(rig.wait_for(20, |r| r.heard.lock().len() > RATE as usize * 2 * 3));
-        rig.engine.set_tuning(tuned);
-        assert!(rig.wait_for(20, |r| r.heard.lock().len() > RATE as usize * 2 * 4));
-        let asked = rig.heard.lock().len() / 2;
-        rig.engine.set_settings(loud_eq());
-        assert!(rig.wait_for(30, Rig::ended));
-        let flushes = rig.flushes.load(Ordering::Relaxed);
-        if !tuned {
-            assert_eq!(flushes, 0, "nothing dropped");
-            heard_as_rendered(&rig, &live, &a, &Settings::default(), &[(0, loud_eq())], &[asked + 2 * RATE as usize - 2 * BLOCK], 10);
-            continue;
+        // Each change: the ear when it was asked, and what the device held then, frames.
+        let mut asked = Vec::new();
+        let mut sounds = Vec::new();
+        for (ms, step) in &steps {
+            let frames = (*ms * RATE as i64 / 1000) as usize;
+            assert!(rig.wait_for(60, |r| r.heard.lock().len() >= frames * 2), "{what}: {ms} ms heard");
+            match step {
+                Shallow(on) => rig.engine.set_shallow(*on),
+                Sound(s) => {
+                    let held = rig.card.lock().held.len() / 2;
+                    asked.push((rig.heard.lock().len() / 2, held));
+                    sounds.push(*s.clone());
+                    rig.engine.set_settings(*s.clone());
+                }
+            }
+            // Apart by more than the engine gathers changes.
+            rig.run(110);
         }
-        assert_eq!(flushes, 2, "dropped as tuning starts and at the change");
+        assert!(rig.wait_for(120, Rig::ended), "{what}: {:?}", rig.events.lock());
         let splices = live.0.lock().splices.clone();
-        assert_eq!(splices.len(), 1, "{splices:?}");
-        let s = splices[0];
-        assert!(s.output as usize <= asked && s.output as usize + RATE as usize / 5 >= asked, "made again from a little before the ear ({asked}): {s:?}");
-        let old = reference::render(&a, RATE, &[(0, chain_of(&Settings::default()))]);
-        let new = reference::render(&a, RATE, &[(0, chain_of(&Settings::default())), (s.input, chain_of(&loud_eq()))]);
-        let mut want = old[..asked * 2].to_vec();
-        want.extend_from_slice(&new[asked * 2..]);
+        assert_eq!(splices.len(), sounds.len(), "{what}: one splice per change: {splices:?}");
+        let mut changes = vec![(0, chain_of(&Settings::default()))];
+        let mut want = reference::render(raw, RATE, &changes);
+        // What was there before the last splice, and where it was: one made at the same place blends
+        // from that.
+        let mut before = (usize::MAX, want.clone());
+        let shallow = SHALLOW_MS * RATE as usize / 1000;
+        for ((splice, s), &(ear, held)) in splices.iter().zip(&sounds).zip(&asked) {
+            let at = splice.output as usize;
+            assert!(at >= ear && at <= ear + held + 2 * BLOCK, "{what}: made from the ear ({ear}) past what the device held ({held}): {splice:?}");
+            if held <= shallow {
+                assert!(at - ear <= shallow + 2 * BLOCK, "{what}: shallow, heard within what the device holds: {splice:?}");
+            }
+            changes.push((splice.input, chain_of(s)));
+            if before.0 != at {
+                before = (at, want);
+            }
+            want = reference::spliced(&before.1, &reference::render(raw, RATE, &changes), at, RATE);
+        }
         let heard = rig.heard.lock().clone();
         if let Some(at) = reference::first_difference(&heard, &want, 0) {
-            panic!("{}", reference::describe(&heard, &want, at, RATE));
+            panic!("{what}: heard is not what was rendered, {}", reference::describe(&heard, &want, at, RATE));
         }
+        assert_eq!((rig.waits(), rig.flushes.load(Ordering::Relaxed)), (0, 0), "{what}: never ran dry, nothing dropped");
     }
 }
 
@@ -1741,20 +1802,20 @@ fn hi_res_on_takes_next_song_untouched() {
 }
 
 #[test]
-fn tuning_shallow_changes_nothing() {
+fn shallow_changes_nothing() {
     let a = music(12.0, 47);
     let files = vec![("a".to_string(), wav(&a), 12_000)];
-    let rig = Rig::build(files, sim::App::new(), Settings::default(), Extra { pace: Some(1.0), ..Extra::default() });
+    let rig = Rig::build(files, sim::App::new(), Settings::default(), Extra { pace: Some(1.0), hold_ms: Some(2_000), ..Extra::default() });
     rig.engine.play_at(0, 0);
-    assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2));
-    rig.engine.set_tuning(true);
-    assert!(rig.wait_for(2, |r| r.shallow.load(Ordering::Relaxed)), "shallow at once");
-    rig.run(1_500);
-    rig.engine.set_tuning(false);
-    assert!(rig.wait_for(2, |r| !r.shallow.load(Ordering::Relaxed)), "deep again as the screen closes");
+    assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2 * 3));
+    for on in [true, false, true, false] {
+        rig.engine.set_shallow(on);
+        assert!(rig.wait_for(2, |r| r.shallow.load(Ordering::Relaxed) == on), "shallow {on} at once");
+        rig.run(1_500);
+    }
     assert!(rig.wait_for(30, Rig::ended));
     assert!(*rig.heard.lock() == a, "every sample once, in order");
-    assert_eq!(rig.flushes.load(Ordering::Relaxed), 0, "nothing dropped");
+    assert_eq!((rig.waits(), rig.flushes.load(Ordering::Relaxed)), (0, 0), "never ran dry, nothing dropped");
 }
 
 // ---- skips pressed in a hurry ----
@@ -2757,8 +2818,8 @@ enum Meanwhile {
     Eq(i64),
     /// The incoming song turns out to start loud (a shorter fade), the ending planned again.
     Analysis(i64),
-    /// The equalizer's screen opened: the output turns shallow.
-    Tuning(i64),
+    /// The app came in sight: the output turns shallow.
+    Shallow(i64),
 }
 
 /// The phone's Go Slowly into Black Star: no reliable grid, an exit before the end, a MixRamp fade;
@@ -2789,8 +2850,8 @@ fn mixramp_fades_out_after_seek() {
         (8_600, 6_600, 0, 40_000, Analysis(3_000)),
         (8_600, 6_600, 0, 40_000, Analysis(9_000)),
         (8_600, 6_600, 1_500, 40_000, Analysis(9_000)),
-        (8_600, 6_600, 0, 40_000, Tuning(3_000)),
-        (8_600, 6_600, 1_500, 40_000, Tuning(9_000)),
+        (8_600, 6_600, 0, 40_000, Shallow(3_000)),
+        (8_600, 6_600, 1_500, 40_000, Shallow(9_000)),
     ];
     for (head_ms, before_ms, hold_ms, end_ms, meanwhile) in cases {
         let what = format!("head {head_ms} ms, seek {before_ms} ms before the mix, the device holding {hold_ms} ms, the music to {end_ms} ms, {meanwhile:?}");
@@ -2826,9 +2887,9 @@ fn mixramp_fades_out_after_seek() {
                 live.0.lock().analyses.insert("b".into(), gridless("b", 40_000, 0, 0));
                 rig.engine.replan();
             }
-            Tuning(ms) => {
+            Shallow(ms) => {
                 at(ms);
-                rig.engine.set_tuning(true);
+                rig.engine.set_shallow(true);
             }
         }
         assert!(rig.wait_for(60, Rig::ended), "{what}: {:?}", live.0.lock().log);

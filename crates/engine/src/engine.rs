@@ -229,7 +229,7 @@ enum Command {
     QueueChanged,
     Repeat(u8),
     Gain,
-    Tuning(bool),
+    Shallow(bool),
     Positions(Option<Duration>),
     Look,
     Device(Device),
@@ -438,10 +438,11 @@ impl Engine {
         self.send(Command::Gain);
     }
 
-    /// A sound screen opened (`true`) or closed: the device drops what it holds at once and is kept
-    /// shallow while it is open, so every change there is heard soon and in place.
-    pub fn set_tuning(&self, on: bool) {
-        self.send(Command::Tuning(on));
+    /// The device holds only a fraction of a second (`true`: the app in sight on a phone, the
+    /// equalizer page on the desktop), so a sound change is heard soon, or its deep buffer again.
+    /// Nothing it holds is dropped: going shallow it plays out first.
+    pub fn set_shallow(&self, on: bool) {
+        self.send(Command::Shallow(on));
     }
 
     /// Position events this often while playing, or none (the default).
@@ -1190,12 +1191,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
                 self.follow_queue();
             }
             Command::Gain => self.gain_changed = true,
-            Command::Tuning(on) => {
-                self.p.sink.track.shallow(on);
-                if on {
-                    self.p.remake();
-                }
-            }
+            Command::Shallow(on) => self.p.sink.track.shallow(on),
             Command::Positions(every) => {
                 self.told.positions = every.map(|d| d.as_millis().max(1) as i64);
                 self.told.next_position = now;

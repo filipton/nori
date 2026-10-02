@@ -493,9 +493,9 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
         it.repeatMode = dev.nori.music.ffi.queue.queueNextRepeat(it.repeatMode.toUByte()).toInt()
     }
 
-    /** While true the service trades its deep audio buffer for immediate response; for the equalizer screen. */
-    fun setTuning(on: Boolean) = with { c ->
-        c.sendCustomCommand(SessionCommand(PlaybackService.CMD_TUNING, Bundle.EMPTY), Bundle().apply { putBoolean(PlaybackService.ARG_ON, on) })
+    /** The app is in sight until [disconnect]: the service trades its deep audio buffer for a sound change heard at once. */
+    fun inSight() = with { c ->
+        c.sendCustomCommand(SessionCommand(PlaybackService.CMD_IN_SIGHT, Bundle.EMPTY), Bundle().apply { putBoolean(PlaybackService.ARG_ON, true) })
     }
 
     /** Presses one of the session's own buttons (the notification's heart or shuffle) the way the notification does; for the test bridge. */

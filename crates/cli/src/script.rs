@@ -378,7 +378,7 @@ pub fn main(argv: Vec<String>) {
                 }
             }
             // The equalizer screen's low-latency buffer.
-            "tuning" => cli.engine.set_tuning(rest != "off"),
+            "tuning" => cli.engine.set_shallow(rest != "off"),
             "band" => {
                 let mut it = rest.split_whitespace();
                 let (Some(Ok(i)), Some(Ok(db))) = (it.next().map(str::parse::<u32>), it.next().map(str::parse::<f32>)) else {

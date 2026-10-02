@@ -341,8 +341,6 @@ fun SettingsGroupScreen(vm: SettingsViewModel, id: String, highlight: String = "
     LaunchedEffect(id, p.autoMix) { if (id == "playing" && p.autoMix) vm.refreshAnalysed() }
     LaunchedEffect(id) { if (id == "data") vm.refreshStorage() }
     LaunchedEffect(id, p.activeServerId) { if (id == "servers") vm.loadMusicFolders() }
-    // Pages that change the sound (effects, speed, pitch, skip silence) are heard at once while open.
-    if (id == "sound" || id == "playing") TuningWhileOpen(vm)
     val res = LocalContext.current.resources
     val config = LocalConfiguration.current
     // Built once for the whole page, again only when the settings, its facts or the language change.

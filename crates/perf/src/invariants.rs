@@ -511,10 +511,10 @@ impl Recorder {
     }
 }
 
-/// Records the track's account of the equalizer screen's shallow buffer as a "tuning" timeline event.
-pub fn tuning_said(detail: &str) {
+/// Records the track's account of its shallow buffer as a "shallow" timeline event.
+pub fn shallow_said(detail: &str) {
     if on() {
-        crate::perf_log::note_output(wall_ms(), "tuning", detail);
+        crate::perf_log::note_output(wall_ms(), "shallow", detail);
     }
 }
 

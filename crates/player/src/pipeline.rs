@@ -672,15 +672,6 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         self.sink.fill();
     }
 
-    /// Tuning started ([`Remake::Sound`]): the music made again as it is, so an output holding seconds
-    /// drops them now and the first change is made in place.
-    pub fn remake(&mut self) {
-        if self.sink.remake().is_some() {
-            self.burst.restart();
-            self.sink.fill();
-        }
-    }
-
     /// Speed and pitch as set.
     pub fn speed(&self) -> (f32, f32) {
         let s = self.sink.settings();

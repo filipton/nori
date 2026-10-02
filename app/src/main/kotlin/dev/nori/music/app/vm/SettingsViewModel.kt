@@ -312,16 +312,6 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
         p.copy(homeRows = dev.nori.music.ffi.library.homeRowsMoved(p.homeRows.map { it.name }, from.toUInt(), to.toUInt()).map { HomeRow.valueOf(it) })
     }
 
-    /** Sound screens in sight; the player is tuned while there is one. */
-    private var tuners = 0
-
-    /** A sound screen came into sight ([on]) or left it: the player answers a change at once while one is. */
-    fun setTuning(on: Boolean) {
-        val was = tuners > 0
-        tuners = maxOf(0, tuners + if (on) 1 else -1)
-        if (tuners > 0 != was) nori.player.setTuning(tuners > 0)
-    }
-
     /**
      * A report of a problem (core `Report`) under [header], written to a file of its own - a day of log is a
      * megabyte or two, more than a share's text or the clipboard carries - and handed to [share] as the

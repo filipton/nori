@@ -92,7 +92,7 @@ is Android glue and stays on the device. 50 moved, 60 stay.
 | taking the EQ out is heard at once, no swap deferred | a | engine.rs |
 | still playing after the EQ leaves | b | audio-e2e `eq`, smoke `eq` |
 | still playing across the boundary | a | engine.rs |
-| still playing after tuning cuts in; shallow buffer in place; deep buffer back in place; track not reopened; still playing after the deep swap (5) | b | audio-e2e `tuning`, smoke `eq` (crates/android track.rs resizes the real AudioTrack) |
+| out of sight, deep buffer back in place; in sight, shallow buffer in place; a change made in place; track never reopened or emptied; still playing (5) | b | audio-e2e `tuning`, smoke `eq` (crates/android track.rs resizes the real AudioTrack) |
 | the deep buffer came back without waiting for a boundary | a | engine.rs |
 | measuring starts when AutoMix is switched on; the songs coming up are measured (2) | b | audio-e2e `automix` (read out of the media3 cache through measure.rs's JNI) |
 | the mix is planned from what was measured | a | automix.rs, core.rs |
@@ -146,7 +146,7 @@ is Android glue and stays on the device. 50 moved, 60 stay.
 
 ### What could not move
 
-- The AudioTrack itself: whether it is started, its bursts, its in-place resize for tuning, offload onto
+- The AudioTrack itself: whether it is started, its bursts, its in-place resize in and out of sight, offload onto
   the chip, a DAC's format. The engine is tested against a simulated track (crates/android track.rs,
   crates/engine paths.rs), which is what the Rust side decides; the platform's answer only a device gives.
 - Media keys, the notification's buttons, the media session, the screen off, the background: Android's.

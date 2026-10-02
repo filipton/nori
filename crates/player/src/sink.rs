@@ -118,9 +118,7 @@ impl ChainSettings {
 /// Why music is made again from the first frame a track can still replace ([`Track::freeze`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Remake {
-    /// The sound changed. A device holding seconds plays them first, unless it is being tuned (the
-    /// equalizer screen): dropping them hands the music to a second track, and only there is the change
-    /// worth the gap it costs when the two can't be lined up.
+    /// The sound changed: a device holding seconds plays them first.
     Sound,
     /// The ending changed: another song follows, or another mix.
     Ending,
@@ -420,12 +418,6 @@ impl<T: Track> Sink<T> {
             self.kept.mark_changed(self.run, self.made, self.run_media, &self.runner.chain);
         }
         at
-    }
-
-    /// The same settings made again from the first frame the track can still replace: tuning started,
-    /// and a device holding seconds drops them now rather than at the first change.
-    pub fn remake(&mut self) -> Option<(u64, u64)> {
-        self.splice()
     }
 
     /// Scales the input kept in each timeline range by its ratio (ReplayGain changed), heard from the

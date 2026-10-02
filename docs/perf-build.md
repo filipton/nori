@@ -88,7 +88,7 @@ go, and the stretch says how many.
 | offload | entered, or left and why (the player's own reason, or the setting that keeps it off) |
 | underruns | the output's underrun count grew, with the reading before, between which and this one they first appeared |
 | error | a song or the output failed, in the player's words |
-| tuning | the equalizer screen's tuning mode (a shallow buffer) on or off; on the Rust engine also the size the track took for the output it plays on and why (`shallow 550 ms for Bluetooth: its latency is 200 ms, its pulls are 200 ms`), and any growth after it ran dry |
+| shallow | the output's shallow buffer (the app in sight) on or off; on the Rust engine also the size the track took for the output it plays on and why (`shallow 550 ms for Bluetooth: its latency is 200 ms, its pulls are 200 ms`), and any growth after it ran dry |
 
 **Invariant breaks** head the report (crates/perf/src/invariants.rs says what each one holds to). Two of
 them came of the S22's silent classical playlist (2026-09-26), where the player said it played, no output
@@ -227,19 +227,19 @@ varies by ±10 % from run to run; the phone decodes in hardware. With the player
 times on each engine, with AutoMix and the equalizer on (and with the shallow buffer forced on), the
 emulator counted no underruns: the gap on the phone was the output reopened, not a starved track.
 
-The shallow buffer's switches on the Rust engine are now in place, both ways: the AudioTrack is opened
-deep once, in power saving mode, and the equalizer screen only moves the part of it that may be filled
-(`AudioTrack.setBufferSizeInFrames`, crates/android track.rs `Writer::resize`); the engine's ring stays deep
-(a band moved replaces the ring's music ahead of the track, `nori_player::sink`). The trade-off:
-- **Made shallow** as a sound screen opens, the track still holds the seconds taken before (up to the
-  11.5 s buffer): the engine makes the music again from the ear at once, and a second track carries it
-  while the deep one drops them, lined up by both play heads and timestamps (where they don't line up, the
-  track is emptied instead: a gap, never a jump). After that every band moved is heard ahead of the
-  track's fraction of a second, in place. Outside the sound screens a change waits for what the deep track
-  holds to play.
+The shallow buffer's switches on the Rust engine are in place, both ways: the AudioTrack is opened deep
+once, in power saving mode, and the app coming in sight (or a car's screen connecting) only moves the part
+of it that may be filled (`AudioTrack.setBufferSizeInFrames`, crates/android track.rs `Writer::resize`); the
+engine's ring stays deep (a band moved replaces the ring's music ahead of the track, `nori_player::sink`).
+A second track carrying the music meanwhile was tried and dropped: lined up to the frame by play heads and
+timestamps, it was still heard as a cut on a Galaxy S22 over Bluetooth at every switch. The trade-off:
+- **Made shallow** as the app comes in sight, the track still holds the seconds taken before (up to the
+  11.5 s buffer): it takes nothing more until it has played down to its fraction of a second, and a change
+  meanwhile is heard where it runs out. After that every band moved is heard ahead of the track's fraction
+  of a second, in place. Out of sight a change waits for what the deep track holds to play.
 - **Made deep**, the track is filled up from the engine's next burst: the same buffer, mode and ten-second
-  wakes as before the screen opened, so the battery is what it was.
-- **Latency while tuned**: the track stays on the output power saving chose when it was built (the deep
+  wakes as before the app came in sight, so the battery is what it was.
+- **Latency while shallow**: the track stays on the output power saving chose when it was built (the deep
   buffer mixer, on a phone that has one; the emulator has only the primary output). A smaller size does not
   move it or change that output's periods, so its own latency (tens of ms on most phones) is added to the
   ring's 40-80 ms and the track's 80-160 ms, where the old shallow track went to the normal mixer. The
@@ -257,10 +257,6 @@ deep once, in power saving mode, and the equalizer screen only moves the part of
   keeps its 80/160 ms). While shallow the writer also watches the latency it sees (play head against what
   was presented) and `getUnderrunCount`, and grows for either, never shrinking again on that output. On Bluetooth a band
   moved is heard about half a second later, most of it the headphones' own latency.
-- **The change that turns tuning on** reaches the engine a moment before the tuning does (the settings go
-  straight to the core; the tuning goes through the screen, the session and the service), so it was made
-  again into the deep buffer, and only the next change landed in the shallow one: which of the two a profile
-  picked on the device list met was down to timing.
 - Tested on the simulated track (crates/android track.rs, air.rs: every frame heard in order over a jittery
   mixer and a late writer, never reopened or flushed). Over a Bluetooth-like output (bursts of 100-200 ms
   taken at once, 200 ms of latency) the track never runs dry when the output says what it is
