@@ -260,7 +260,11 @@ pub fn main(argv: Vec<String>) {
             }
             cli.queue(found, (a.start_s * 1000.0) as i64);
         }
-        Ok(_) if a.search.is_some() || a.offline => println!("nothing found"),
+        Ok(_) if a.search.is_some() || a.offline => {
+            println!("nothing found");
+            cli.engine.stop();
+            return;
+        }
         Ok(_) => {}
         Err(e) => println!("search failed: {e}"),
     }
