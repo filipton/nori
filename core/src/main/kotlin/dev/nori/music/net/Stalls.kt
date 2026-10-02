@@ -48,9 +48,9 @@ internal class Stalls(private val limitMs: Long) : Interceptor {
         add(w)
         val response = try {
             chain.proceed(chain.request())
-        } catch (e: IOException) {
+        } catch (e: Throwable) {
             remove(w)
-            throw if (w.stalled) SocketTimeoutException("no answer in $limitMs ms") else e
+            throw if (e is IOException && w.stalled) SocketTimeoutException("no answer in $limitMs ms") else e
         }
         w.waitingSince = 0L
         return response.newBuilder().body(Body(response.body, w)).build()
