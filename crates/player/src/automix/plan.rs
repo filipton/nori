@@ -997,14 +997,6 @@ mod tests {
     }
 
     #[test]
-    fn same_album_in_order_is_gapless() {
-        let s = AutoMixSettings { same_album_in_order: true, ..Default::default() };
-        let p = plan(Some(&track(128.0)), Some(&track(128.0)), 240_000, 240_000, &s);
-        assert_eq!(p.kind, TransitionKind::Gapless);
-        assert_eq!((p.out_start_ms, p.in_start_ms, p.duration_ms), (240_000, 0, 0));
-    }
-
-    #[test]
     fn unanalysed_is_equal_power_fade() {
         let s = AutoMixSettings { max_transition_s: 8.0, ..Default::default() };
         let p = plan(None, None, 200_000, 180_000, &s);
@@ -1020,6 +1012,17 @@ mod tests {
         assert_eq!(p.duration_ms, 3_000);
         let p = plan(None, None, 200_000, 600, &s);
         assert_eq!(p.kind, TransitionKind::Gapless);
+
+        // Stale analysis ignored.
+        let a = TrackAnalysis { duration_ms: 300_000, ..track(128.0) };
+        let p = plan(Some(&a), None, 240_000, 240_000, &AutoMixSettings::default());
+        assert_eq!(p.kind, TransitionKind::EqualPowerFade);
+
+        // Same album in order is gapless.
+        let s = AutoMixSettings { same_album_in_order: true, ..Default::default() };
+        let p = plan(Some(&track(128.0)), Some(&track(128.0)), 240_000, 240_000, &s);
+        assert_eq!(p.kind, TransitionKind::Gapless);
+        assert_eq!((p.out_start_ms, p.in_start_ms, p.duration_ms), (240_000, 0, 0));
     }
 
     /// Where the bass has changed hands, relative to the start of the mix.
@@ -1121,7 +1124,7 @@ mod tests {
     }
 
     #[test]
-    fn runup_is_whole_phrases() {
+    fn swaps_on_phrase_lines() {
         // A 16-bar intro into a 16 s mix: a run-up of 4 or 8 bars, never 6.
         let beat: f64 = 60_000.0 / 128.0;
         let a = track(128.0);
@@ -1130,10 +1133,8 @@ mod tests {
         let runup = swap_at(&p) as f64 / (4.0 * beat);
         assert!((runup - runup.round()).abs() < 0.01 && runup.round() as i64 % 4 == 0, "{runup}: {}", p.reason);
         check_skip(&p, &a, &b, 240_000);
-    }
 
-    #[test]
-    fn full_start_swaps_on_phrase_line() {
+        // Full start swaps on phrase line.
         // No intro or drop: in on the first downbeat, swap on a four-bar line.
         let b = TrackAnalysis { intro_end_ms: 100, ..track(128.0) };
         let a = track(128.0);
@@ -1147,7 +1148,7 @@ mod tests {
     }
 
     #[test]
-    fn harmonic_neighbour_gets_soft_filter_long_mix() {
+    fn near_keys_filter() {
         let a = track(128.0);
         let b = TrackAnalysis { key: camelot(7, false), ..track(124.0) };
         let p = plan(Some(&a), Some(&b), 240_000, 240_000, &AutoMixSettings { max_transition_s: 40.0, ..Default::default() });
@@ -1156,10 +1157,8 @@ mod tests {
         let bar = 4.0 * 60_000.0 / 128.0;
         assert!(p.duration_ms as f64 > 9.0 * bar, "{}", p.duration_ms);
         assert_eq!(p.low_pass.map(|f| f.to_hz), Some(SWEEP_TO_HZ_SOFT), "soft low-pass");
-    }
 
-    #[test]
-    fn key_distance_two_opens_high_pass() {
+        // Key distance two opens high pass.
         let a = track(128.0);
         let b = TrackAnalysis { key: camelot(2, false), ..track(128.0) };
         let p = plan(Some(&a), Some(&b), 240_000, 240_000, &AutoMixSettings { max_transition_s: 40.0, ..Default::default() });
@@ -1198,21 +1197,32 @@ mod tests {
     }
 
     #[test]
-    fn tag_bpm_settles_a_half_double() {
+    fn tempo_matched() {
         let a = TrackAnalysis { bpm: 64.0, ..track(128.0) };
         let b = track(128.0);
         let s = AutoMixSettings { out_tag_bpm: 128.0, max_transition_s: 40.0, ..Default::default() };
         let p = plan(Some(&a), Some(&b), 240_000, 240_000, &s);
         assert_eq!(p.kind, TransitionKind::BeatMatched, "{}", p.reason);
         assert!((p.tempo_ratio - 1.0).abs() < 0.01, "folded to tag: ratio {}", p.tempo_ratio);
-    }
 
-    #[test]
-    fn half_and_double_tempo_match() {
+        // Half and double tempo match.
         let p = plan(Some(&track(174.0)), Some(&track(88.0)), 240_000, 240_000, &AutoMixSettings::default());
         assert_eq!(p.kind, TransitionKind::BeatMatched, "{}", p.reason);
         assert!((p.tempo_ratio - 174.0 / 176.0).abs() < 1e-9);
         assert_eq!(p.tempo_ramp_beats, 16);
+
+        // Drifting band matched on end grids.
+        let a = TrackAnalysis { stability: 0.0, ..track(128.0) };
+        let b = TrackAnalysis { stability: 0.0, ..track(126.0) };
+        let p = plan(Some(&a), Some(&b), 240_000, 240_000, &AutoMixSettings::default());
+        assert_eq!(p.kind, TransitionKind::BeatMatched, "{}", p.reason);
+        check_skip(&p, &a, &b, 240_000);
+
+        // Mixes at outro tempo.
+        let a = TrackAnalysis { bpm: 100.0, ..track(128.0) };
+        let p = plan(Some(&a), Some(&track(128.0)), 240_000, 240_000, &AutoMixSettings::default());
+        assert_eq!(p.kind, TransitionKind::BeatMatched, "{}", p.reason);
+        assert_eq!(p.tempo_ratio, 1.0, "the ends already agree: {}", p.reason);
     }
 
     #[test]
@@ -1238,24 +1248,7 @@ mod tests {
     }
 
     #[test]
-    fn drifting_band_matched_on_end_grids() {
-        let a = TrackAnalysis { stability: 0.0, ..track(128.0) };
-        let b = TrackAnalysis { stability: 0.0, ..track(126.0) };
-        let p = plan(Some(&a), Some(&b), 240_000, 240_000, &AutoMixSettings::default());
-        assert_eq!(p.kind, TransitionKind::BeatMatched, "{}", p.reason);
-        check_skip(&p, &a, &b, 240_000);
-    }
-
-    #[test]
-    fn mixes_at_outro_tempo() {
-        let a = TrackAnalysis { bpm: 100.0, ..track(128.0) };
-        let p = plan(Some(&a), Some(&track(128.0)), 240_000, 240_000, &AutoMixSettings::default());
-        assert_eq!(p.kind, TransitionKind::BeatMatched, "{}", p.reason);
-        assert_eq!(p.tempo_ratio, 1.0, "the ends already agree: {}", p.reason);
-    }
-
-    #[test]
-    fn unreliable_grids_are_not_beat_matched() {
+    fn weak_grids_fade() {
         let a = track(128.0);
         for b in [
             TrackAnalysis { bpm_confidence: 0.2, intro_bpm_confidence: 0.2, ..track(128.0) },
@@ -1266,10 +1259,8 @@ mod tests {
             assert_eq!(p.kind, TransitionKind::MixRampFade, "{b:?}");
             assert!(p.reason.contains("no reliable beat grid"));
         }
-    }
 
-    #[test]
-    fn one_grid_aligns_fade() {
+        // One grid aligns fade.
         // Outgoing grid only: 8 bars from an outgoing downbeat.
         let (a, b) = (track(128.0), TrackAnalysis { bpm_confidence: 0.2, intro_bpm_confidence: 0.2, ..track(128.0) });
         let p = plan(Some(&a), Some(&b), 240_000, 240_000, &AutoMixSettings::default());
@@ -1336,7 +1327,7 @@ mod tests {
     }
 
     #[test]
-    fn leaves_on_closing_breakdown() {
+    fn leaves_before_its_end() {
         // A six-bar coda: the swap lands where it begins.
         let bar: f64 = 4.0 * 60_000.0 / 128.0;
         let exit = (120.0 + bar * (((238_500.0 - 120.0) / bar).floor() - 6.0)) as i64;
@@ -1354,10 +1345,8 @@ mod tests {
         let p = plan(Some(&a), Some(&b), 240_000, 240_000, &AutoMixSettings::default());
         check_skip(&p, &a, &b, 240_000);
         assert!(p.out_start_ms + swap_at(&p) > exit, "{}", p.reason);
-    }
 
-    #[test]
-    fn leaves_before_short_hidden_track() {
+        // Leaves before short hidden track.
         // Song ends at 180 s, 40 s of silence, a 10 s hidden track: mixed at 180 s.
         let bar: f64 = 4.0 * 60_000.0 / 128.0;
         let end = (120.0 + bar * 96.0) as i64; // a downbeat, 180 s
@@ -1439,13 +1428,6 @@ mod tests {
         let p = plan(Some(&track(128.0)), Some(&b), 240_000, 240_000, &AutoMixSettings { max_transition_s: 40.0, ..Default::default() });
         assert_eq!(p.kind, TransitionKind::BeatMatched);
         assert!(p.duration_ms as f64 <= 8.25 * 4.0 * 60_000.0 / 128.0 + 1.0, "{}", p.reason);
-    }
-
-    #[test]
-    fn stale_analysis_ignored() {
-        let a = TrackAnalysis { duration_ms: 300_000, ..track(128.0) };
-        let p = plan(Some(&a), None, 240_000, 240_000, &AutoMixSettings::default());
-        assert_eq!(p.kind, TransitionKind::EqualPowerFade);
     }
 
     #[test]
