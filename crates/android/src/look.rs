@@ -44,7 +44,6 @@ pub(crate) static LYRICS: Class = Class {
         native!(c"tap", c"(JI)J", lyrics_tap),
         native!(c"land", c"(JI)V", lyrics_land),
         native!(c"nudge", c"(JI)J", lyrics_nudge),
-        native!(c"kept", c"(JJ)J", lyrics_kept),
         native!(c"strength", c"(ZII)F", lyrics_strength),
         native!(c"matchingLine", c"([JI[JZ)I", lyrics_matching_line),
     ],
@@ -335,13 +334,8 @@ extern "system" fn seek_pace_step(h: jlong, position_ms: jlong, duration_ms: jlo
 // ---- lyrics ----
 
 fn clock<'a>(h: jlong) -> Option<&'a LyricClock> {
-    // SAFETY: 0 or a live handle from `kept_clock`.
+    // SAFETY: 0 or a live handle from `lyrics_clock`.
     unsafe { nori_core::look::clock(h) }
-}
-
-/// `nori_core::look::kept_clock`; 0 when the lyrics under `key` are gone.
-extern "system" fn lyrics_kept(key: jlong, position_ms: jlong) -> jlong {
-    nori_core::look::kept_clock(key as u64, position_ms)
 }
 
 /// `nori_look::lyrics::line_strength`.
@@ -363,7 +357,7 @@ extern "system" fn lyrics_matching_line(env: JNIEnv, _: JClass, old: JLongArray,
 }
 
 extern "system" fn lyrics_destroy(h: jlong) {
-    // SAFETY: `h` came from `kept_clock`; Kotlin destroys it once.
+    // SAFETY: `h` came from `lyrics_clock`; Kotlin destroys it once.
     unsafe { nori_core::look::free_clock(h) }
 }
 

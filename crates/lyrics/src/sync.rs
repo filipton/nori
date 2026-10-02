@@ -499,7 +499,7 @@ pub(crate) mod tests {
                 lines[i].end_ms = lines[i + 1].start_ms;
             }
         }
-        Lyrics { synced: true, word_timed, lines, key: 0, ..Default::default() }
+        Lyrics { synced: true, word_timed, lines, ..Default::default() }
     }
 
     /// Lines at random times over `secs`, as many as `n`: lyrics that are nobody's timing of this song.

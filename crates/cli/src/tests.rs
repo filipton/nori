@@ -504,7 +504,7 @@ fn lyrics_panel() {
         LyricLine { start_ms: 1000, end_ms: 2000, text: "Hello world".into(), words, ..Default::default() },
         LyricLine { start_ms: 3000, end_ms: 4000, text: "Second line".into(), ..Default::default() },
     ];
-    let pick = nori_core::race::LyricsPick { lyrics: Lyrics { synced: true, word_timed: true, lines, key: 0, offset_ms: 0 }, origin: nori_core::lyrics_sources::LyricsOrigin::Server };
+    let pick = nori_core::race::LyricsPick { lyrics: Lyrics { synced: true, word_timed: true, lines, offset_ms: 0 }, origin: nori_core::lyrics_sources::LyricsOrigin::Server };
     a.handle(Msg::Lyrics { song: "s1".into(), pick });
     let l = a.lyrics.as_ref().unwrap();
     l.advance(1250, true, true);

@@ -67,22 +67,10 @@ pub trait LyricsShown: Send + Sync {
     fn show(&self, pick: LyricsPick);
 }
 
-/// Whether `a` and `b` show the same: words, timing, offset and origin; the clock key does not count.
-pub fn same_lyrics(a: &LyricsPick, b: &LyricsPick) -> bool {
-    let (x, y) = (&a.lyrics, &b.lyrics);
-    a.origin == b.origin && x.synced == y.synced && x.word_timed == y.word_timed && x.offset_ms == y.offset_ms && x.lines == y.lines
-}
-
-/// [`same_lyrics`] for a platform holding the answers itself.
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn lyrics_same(a: LyricsPick, b: LyricsPick) -> bool {
-    same_lyrics(&a, &b)
-}
-
 /// Whether `next` replaces what is `shown`: not when it is the same lyrics read again, which would
 /// restart their fade and clock.
 pub fn lyrics_replaces(shown: Option<&LyricsPick>, next: &LyricsPick) -> bool {
-    shown.is_none_or(|s| !same_lyrics(s, next))
+    shown != Some(next)
 }
 
 /// Where answers are remembered: the core's response cache.
@@ -590,23 +578,21 @@ mod tests {
 
     // ---- what the screen takes ---------------------------------------------------------------------------
 
-    fn pick(text: &str, key: u64, origin: LyricsOrigin) -> LyricsPick {
+    fn pick(text: &str, origin: LyricsOrigin) -> LyricsPick {
         let line = nori_model::LyricLine { start_ms: 1000, end_ms: 2000, text: text.into(), ..Default::default() };
-        LyricsPick { lyrics: Lyrics { synced: true, word_timed: false, lines: vec![line], key, offset_ms: 0 }, origin }
+        LyricsPick { lyrics: Lyrics { synced: true, word_timed: false, lines: vec![line], offset_ms: 0 }, origin }
     }
 
     #[test]
-    fn same_lyrics_ignores_key() {
-        let shown = pick("hold on", 7, LyricsOrigin::Lrclib);
-        assert!(same_lyrics(&shown, &pick("hold on", 12, LyricsOrigin::Lrclib)), "the lookup run again keeps them under a new key");
-        assert!(!same_lyrics(&shown, &pick("let go", 7, LyricsOrigin::Lrclib)), "other words");
-        assert!(!same_lyrics(&shown, &pick("hold on", 7, LyricsOrigin::Unison)), "another source's");
-        let mut untimed = pick("hold on", 7, LyricsOrigin::Lrclib);
-        untimed.lyrics.synced = false;
-        assert!(!same_lyrics(&shown, &untimed), "other timing");
+    fn same_lyrics_do_not_replace() {
+        let shown = pick("hold on", LyricsOrigin::Lrclib);
         assert!(lyrics_replaces(None, &shown), "anything over nothing");
-        assert!(!lyrics_replaces(Some(&shown), &pick("hold on", 12, LyricsOrigin::Lrclib)));
-        assert!(lyrics_replaces(Some(&shown), &pick("hold on", 7, LyricsOrigin::Binilyrics)));
+        assert!(!lyrics_replaces(Some(&shown), &pick("hold on", LyricsOrigin::Lrclib)), "the lookup run again");
+        assert!(lyrics_replaces(Some(&shown), &pick("let go", LyricsOrigin::Lrclib)), "other words");
+        assert!(lyrics_replaces(Some(&shown), &pick("hold on", LyricsOrigin::Binilyrics)), "another source's");
+        let mut untimed = pick("hold on", LyricsOrigin::Lrclib);
+        untimed.lyrics.synced = false;
+        assert!(lyrics_replaces(Some(&shown), &untimed), "other timing");
     }
 
     // ---- the race, answer by answer ----------------------------------------------------------------------
@@ -824,7 +810,8 @@ mod tests {
         let (_, shown) = r.to_show(true).expect("shown");
         assert!((shown.offset_ms - 1000).abs() < 120, "{}", shown.offset_ms);
         assert!(sync_words(&r.check(0).unwrap()).starts_with("sync 0."), "{}", sync_words(&r.check(0).unwrap()));
-        assert!(!same_lyrics(&LyricsPick { lyrics: shown.clone(), origin: LyricsOrigin::Lrclib }, &LyricsPick { lyrics: Lyrics { offset_ms: 0, ..shown }, origin: LyricsOrigin::Lrclib }), "another offset is other lyrics to show");
+        let pick = |lyrics| LyricsPick { lyrics, origin: LyricsOrigin::Lrclib };
+        assert!(lyrics_replaces(Some(&pick(shown.clone())), &pick(Lyrics { offset_ms: 0, ..shown })), "another offset is other lyrics to show");
     }
 
     // ---- the lookup, through the fake web and cache ----------------------------------------------------

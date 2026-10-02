@@ -12,14 +12,11 @@ import dev.nori.music.ffi.model.Lyrics
  * Made once per set of lyrics, then asked with the playhead every frame it matters: one JNI call with
  * primitives in and one `Long` out, the fields of which are read with the functions in the companion.
  * [close] frees it; a closed clock answers "nothing lit, never ask again".
- *
- * The core kept the timing of the lyrics it read under their [Lyrics.key], so the clock is started with
- * that one number; only lyrics it no longer keeps are handed over whole.
  */
 class LyricsClock(lyrics: Lyrics, positionMs: Long) : AutoCloseable {
     /** The moment on screen and the backing vocals sung there, left by [at] (`LyricsShown` in crates/android/src/look.rs). */
     private val view = dev.nori.music.NativeView(16)
-    private var h = LyricsJni.kept(lyrics.key.toLong(), positionMs).takeIf { it != 0L } ?: dev.nori.music.ffi.lyrics.lyricsClock(lyrics, positionMs)
+    private var h = dev.nori.music.ffi.lyrics.lyricsClock(lyrics, positionMs)
 
     /** Whether the lyrics carry per-word times, so the active line can fill in as it is sung. */
     val sweeps: Boolean = LyricsJni.sweeps(h)
@@ -107,8 +104,6 @@ internal object LyricsJni {
     @JvmStatic @CriticalNative external fun tap(h: Long, line: Int): Long
     @JvmStatic @CriticalNative external fun land(h: Long, line: Int)
     @JvmStatic @CriticalNative external fun nudge(h: Long, dir: Int): Long
-    /** A clock on the lyrics the core read under [key]; 0 when it no longer keeps them. */
-    @JvmStatic @CriticalNative external fun kept(key: Long, positionMs: Long): Long
     @JvmStatic @CriticalNative external fun strength(synced: Boolean, line: Int, active: Int): Float
     @JvmStatic @FastNative external fun matchingLine(old: LongArray, at: Int, next: LongArray, timed: Boolean): Int
 }

@@ -5,7 +5,6 @@ import android.media.AudioManager
 import dev.nori.music.ffi.model.Lyrics
 import dev.nori.music.data.FoundLyrics
 import dev.nori.music.data.followSong
-import dev.nori.music.data.sameAs
 import dev.nori.music.ffi.settings.LyricsOrigin
 import dev.nori.music.net.said
 import dev.nori.music.playback.PlayerState
@@ -20,10 +19,6 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.launch
-
-/** Two answers that show the same thing: the same lyrics read again are not new ones. */
-internal fun sameLyrics(a: Load<FoundLyrics>, b: Load<FoundLyrics>): Boolean =
-    a == b || (a is Load.Ready && b is Load.Ready && a.data.sameAs(b.data))
 
 class PlayerViewModel(app: Application) : NoriViewModel(app) {
     private val player = nori.player
@@ -63,7 +58,7 @@ class PlayerViewModel(app: Application) : NoriViewModel(app) {
      * The answers of the last few songs are kept too ([lyricsKept]): a song come back to - the panel
      * reopened after the upstream stopped, or the song heard for a moment again around a skip - starts
      * from its words, and is not looked up again once its lookup had finished. The same words read again
-     * are not handed on as new ones ([sameLyrics]), which faded them out and in and reset their clock.
+     * are equal and not handed on as new ones, which faded them out and in and reset their clock.
      */
     val lyrics: StateFlow<dev.nori.music.data.ForSong<Load<FoundLyrics>>> = state.map { it.current }
         .followSong(
@@ -72,7 +67,6 @@ class PlayerViewModel(app: Application) : NoriViewModel(app) {
             none = { Load.Ready(FoundLyrics(dev.nori.music.ffi.library.lyricsNone(), LyricsOrigin.SERVER)) },
             failed = { Load.Failed(it.said ?: it.javaClass.simpleName) },
             answers = lyricsKept,
-            same = ::sameLyrics,
             keep = { it is Load.Ready && it.data.lyrics.lines.isNotEmpty() },
         ) { song -> (dev.nori.music.app.testLyrics(song) ?: nori.library.lyricsFor(song)).map<FoundLyrics, Load<FoundLyrics>> { Load.Ready(it) } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), dev.nori.music.data.ForSong(null, Load.Loading))

@@ -285,9 +285,7 @@ impl Client {
             }
             Parser::Radio => Page::Stations { v: r.internet_radio_stations.unwrap_or_default().station },
             Parser::Lyrics => {
-                let mut v = crate::lyrics::build(r.lyrics_list.unwrap_or_default().structured_lyrics);
-                crate::look::keep(&mut v);
-                Page::LyricsPage { v }
+                Page::LyricsPage { v: crate::lyrics::build(r.lyrics_list.unwrap_or_default().structured_lyrics) }
             }
             Parser::Directory => Page::DirectoryPage { v: r.directory.unwrap_or_default().into() },
             Parser::Search => Page::Found { v: r.search_result3.unwrap_or_default().into() },

@@ -28,16 +28,6 @@ impl LyricsCache for Core {
     }
 }
 
-/// Registers each pick's timing (`look::keep`) before passing it on.
-struct Keeping(Arc<dyn LyricsShown>);
-
-impl LyricsShown for Keeping {
-    fn show(&self, mut pick: LyricsPick) {
-        crate::look::keep(&mut pick.lyrics);
-        self.0.show(pick);
-    }
-}
-
 /// Passes on only picks that replace the last one shown ([`lyrics_replaces`]).
 struct Screen {
     to: Arc<dyn LyricsShown>,
@@ -101,7 +91,7 @@ impl Client {
         let has_lines = server.as_ref().is_some_and(|l| !l.lines.is_empty());
         let synced = server.as_ref().is_some_and(|l| l.synced);
         let song = self.song_of(id.clone()).await?;
-        if let Some(line) = lookup(&*self.transport, &*self.core, &song, has_lines, synced, asked, &Keeping(screen.clone()), &self.lyrics).await {
+        if let Some(line) = lookup(&*self.transport, &*self.core, &song, has_lines, synced, asked, &*screen, &self.lyrics).await {
             nori_perf::perf_log::note_core("lyrics", line.trim_start_matches("lyrics: "));
         }
         if refresh_after {

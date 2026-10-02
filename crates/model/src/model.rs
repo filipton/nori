@@ -349,10 +349,6 @@ pub struct Lyrics {
     /// Word times come from the source; false when estimated from line times or absent.
     pub word_timed: bool,
     pub lines: Vec<LyricLine>,
-    /// Key of the timing the core kept for a lyrics clock (`LyricsJni.kept`); 0 for none.
-    #[cfg_attr(feature = "ffi", uniffi(default))]
-    #[serde(skip)]
-    pub key: u64,
     /// Offset (ms) the clock adds to the playhead, from the vocal sync check (nori-lyrics sync.rs); 0 if none.
     #[cfg_attr(feature = "ffi", uniffi(default))]
     #[serde(skip)]
