@@ -119,6 +119,11 @@ struct WireSink {
     /// as the output reported the period presented (the same for every track).
     stamp_after: i64,
     jitter: i64,
+    /// Bluetooth: the output says what it presented once per packet of this many ns, not per period; a
+    /// reading with no new packet since the last is the last one's frames at the current time (Android's
+    /// "device stall time corrected using current time").
+    packet: i64,
+    last_packet: i64,
 }
 
 impl WireSink {
@@ -192,10 +197,19 @@ impl Sink for WireSink {
         if !w.started || now < w.started_ns + self.stamp_after {
             return None;
         }
-        // The first frame of the period presented last, and when, off by a little.
-        let &(at, before, _) = w.mixes.iter().rev().find(|m| m.0 <= now)?;
-        let off = ((at as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 33) % (2 * self.jitter as u64 + 1);
-        Some((before, at + off as i64 - self.jitter))
+        let off = |at: i64| ((at as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 33) as i64 % (2 * self.jitter + 1) - self.jitter;
+        if self.packet == 0 {
+            // The first frame of the period presented last, and when, off by a little.
+            let &(at, before, _) = w.mixes.iter().rev().find(|m| m.0 <= now)?;
+            return Some((before, at + off(at)));
+        }
+        let at = now / self.packet * self.packet;
+        let &(mixed, before, n) = w.mixes.iter().rev().find(|m| m.0 <= at)?;
+        let frames = before + frames_of(at - mixed).min(n);
+        if std::mem::replace(&mut self.last_packet, at) == at {
+            return Some((frames, now));
+        }
+        Some((frames, (at + off(at)).min(now)))
     }
     fn session(&mut self) -> i32 {
         self.wire.lock().session
@@ -211,6 +225,7 @@ struct AirOpener {
     now: Arc<AtomicI64>,
     stamp_after: i64,
     jitter: i64,
+    packet: i64,
     beside_opens: Arc<std::sync::atomic::AtomicBool>,
     beside_dies: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -220,7 +235,7 @@ impl AirOpener {
         let wire = Arc::new(Mutex::new(Wire::new(frames, session)));
         let mut wires = self.wires.lock();
         wires.push(wire.clone());
-        let sink = WireSink { wire, staging: vec![0.0; CHUNK_BYTES / 4], now: self.now.clone(), stamp_after: self.stamp_after, jitter: self.jitter };
+        let sink = WireSink { wire, staging: vec![0.0; CHUNK_BYTES / 4], now: self.now.clone(), stamp_after: self.stamp_after, jitter: self.jitter, packet: self.packet, last_packet: -1 };
         Opened { sink: Box::new(sink), frames, starts_full: false }
     }
 }
@@ -349,9 +364,13 @@ struct Output {
     delay_ms: i64,
     stamp_after_ms: i64,
     jitter_us: i64,
+    packet_us: i64,
 }
 
-const SPEAKER: Output = Output { period_ms: 20, delay_ms: 40, stamp_after_ms: 60, jitter_us: 50 };
+const SPEAKER: Output = Output { period_ms: 20, delay_ms: 40, stamp_after_ms: 60, jitter_us: 50, packet_us: 0 };
+/// A2DP on a Galaxy S22: a long way to the ear, no timestamp for a while after a start, then one per
+/// packet with milliseconds of jitter, stall-corrected between packets.
+const BLUETOOTH: Output = Output { period_ms: 20, delay_ms: 250, stamp_after_ms: 400, jitter_us: 3_000, packet_us: 23_220 };
 
 struct Rig {
     writer: Writer<Arc<Mutex<Tape>>>,
@@ -377,7 +396,7 @@ impl Rig {
         let wires = Arc::new(Mutex::new(Vec::new()));
         let beside_opens = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let beside_dies = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let mut opener = AirOpener { wires: wires.clone(), now: now.clone(), stamp_after: out.stamp_after_ms * MS, jitter: out.jitter_us * 1_000, beside_opens: beside_opens.clone(), beside_dies: beside_dies.clone() };
+        let mut opener = AirOpener { wires: wires.clone(), now: now.clone(), stamp_after: out.stamp_after_ms * MS, jitter: out.jitter_us * 1_000, packet: out.packet_us * 1_000, beside_opens: beside_opens.clone(), beside_dies: beside_dies.clone() };
         let format = OutputFormat { rate: RATE, channels: 2, bits: 0 };
         let frames = track_frames(RATE, false);
         let opened = opener.open(format, true, frames).expect("opens");
@@ -540,13 +559,29 @@ fn assert_home(what: &str, r: &Rig) {
     assert!(w.started && w.opened == track_frames(RATE, false) && w.volume == 1.0, "{what}: the deep track, playing");
 }
 
-fn assert_seamless(what: &str, r: &Rig, h: &Heard) {
+fn assert_seamless(what: &str, out: Output, r: &Rig, h: &Heard) {
     assert_eq!(h.slip, 0, "{what}: every frame heard once, in order: {h:?}");
     assert_eq!(h.gap, 0, "{what}: no silence: {h:?}");
     assert!(h.level_db.0 > -0.5 && h.level_db.1 < 0.5, "{what}: no dip or bump: {h:?}");
     assert!(h.click < 1e-3, "{what}: no click: {h:?}");
-    assert!(r.head_error.is_some_and(|e| e <= frames_of(MS / 10)), "{what}: the engine's play head is where the ear is: {:?} frames off", r.head_error);
+    // As far off as the output's timestamps are.
+    let off = frames_of(MS / 10 + out.jitter_us * 1_000);
+    assert!(r.head_error.is_some_and(|e| e <= off), "{what}: the engine's play head is where the ear is: {:?} frames off", r.head_error);
     assert_home(what, r);
+}
+
+/// Ms from `at_ns` until the ear hears the music halfway from level `old` to `new`.
+fn heard_in_ms(r: &Rig, at_ns: i64, old: f32, new: f32) -> i64 {
+    let w = RATE as usize / 100;
+    let from = frames_of(at_ns - r.air.origin) as usize;
+    let half = (old + new) / 2.0;
+    let k = (from..r.air.heard.len() - w)
+        .find(|&k| {
+            let rms = (r.air.heard[k..k + w].iter().map(|h| (h[0] as f64).powi(2)).sum::<f64>() / w as f64).sqrt() * std::f64::consts::SQRT_2;
+            (rms as f32 - half) * (new - old).signum() >= 0.0
+        })
+        .expect("heard");
+    ns_of((k + w / 2 - from) as u64) / MS
 }
 
 /// The sound the ear hears now.
@@ -561,17 +596,22 @@ fn changes_are_seamless() {
         SPEAKER,
         Output { period_ms: 5, delay_ms: 10, ..SPEAKER },
         Output { period_ms: 40, delay_ms: 80, ..SPEAKER },
-        // Bluetooth: late timestamps, a long way to the ear.
-        Output { period_ms: 20, delay_ms: 250, stamp_after_ms: 300, jitter_us: 100 },
+        Output { delay_ms: 150, ..BLUETOOTH },
+        BLUETOOTH,
     ];
     for out in outputs {
-        let mut wakes = 0;
+        let (mut wakes, mut at) = (0, 0);
         let (mut r, h) = heard_after(out, |r| {
+            at = r.now();
             r.change(0.6);
             wakes = r.wakes;
         });
         let what = format!("{out:?}");
-        assert_seamless(&what, &r, &h);
+        assert_seamless(&what, out, &r, &h);
+        // The output's own latency (its delay and a period), a period for the first mix of the new track,
+        // and a little more.
+        let ms = heard_in_ms(&r, at, 0.5, 0.6);
+        assert!(ms <= out.delay_ms + 2 * out.period_ms + 80, "{what}: the change is heard after {ms} ms");
         let aligned = alignments(&r.air);
         assert!(aligned.len() >= 2, "{what}: over to the second track and back: {aligned:?}");
         assert!(aligned.iter().all(|a| a.abs() <= 1), "{what}: the tracks agree to a frame: {aligned:?}");
@@ -590,7 +630,7 @@ fn changes_are_seamless() {
             r.run(40);
         }
     });
-    assert_seamless("dragged", &r, &h);
+    assert_seamless("dragged", SPEAKER, &r, &h);
     assert_eq!(heard_amp(&r), 0.75, "the last change is heard");
 }
 

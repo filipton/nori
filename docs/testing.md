@@ -202,10 +202,11 @@ rendering exists.
 
 On Android the handover between two AudioTracks is heard the same way in `crates/android/src/track/air.rs`:
 tracks mixed a period at a time with the mixer's volume ramps, presented after the output's latency,
-their timestamps read as the output reports its periods, fed by a ring whose frames carry their numbers.
-It checks that every frame is heard once, with no silence, level or click, and the tracks' alignment,
-for outputs from 5 to 40 ms periods and Bluetooth's latency, a slider drag, a pause or a jump at any
-moment of a handover, and a second track that won't open.
+their timestamps read as the output reports its periods (Bluetooth's: none for 400 ms after a start, then
+one per packet with milliseconds of jitter, stall-corrected between), fed by a ring whose frames carry
+their numbers. It checks that every frame is heard once, with no silence, level or click, the tracks'
+alignment and how soon the change is heard, for outputs from 5 to 40 ms periods and Bluetooth, a slider
+drag, a pause or a jump at any moment of a handover, and a second track that won't open.
 
 ### The host perf report
 
