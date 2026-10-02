@@ -867,7 +867,7 @@ impl Offload {
         self.now_ms = now_ms;
         self.follow_fade(now_ms);
         if self.open.is_some() && self.out.torn_down() {
-            return self.fallback(true);
+            return self.fallback();
         }
         if let Some(step) = self.begin(tracks, queue, gain) {
             return step;
@@ -887,7 +887,7 @@ impl Offload {
         if self.t.strikes >= STRIKES || self.t.eos_refusals >= STRIKES {
             let why = std::mem::take(&mut self.strike_why);
             self.note(format!("offload given up, the CPU plays on: {why}"));
-            let step = self.fallback(true);
+            let step = self.fallback();
             self.on_cpu = Some(OnCpu::Head(why));
             return step;
         }
@@ -895,7 +895,7 @@ impl Offload {
             let ms = self.heard().map_or(0, |h| h.1);
             let place = if by_clock { "where the clock puts the ear, the platform having played what it asked for" } else { "where the chip's count last put the ear" };
             self.note(format!("offload given up, the CPU plays on from {ms} ms, {place}: {why}"));
-            let step = self.fallback(true);
+            let step = self.fallback();
             self.on_cpu = Some(OnCpu::Head(why));
             return step;
         }
@@ -905,7 +905,7 @@ impl Offload {
         }
         match self.fill(asked, tracks, queue, gain) {
             Ok(()) => Step::Fine,
-            Err(_) => self.fallback(true),
+            Err(_) => self.fallback(),
         }
     }
 
@@ -979,15 +979,13 @@ impl Offload {
     }
 
     /// Hands the song to the CPU at the playback position.
-    fn fallback(&mut self, refused: bool) -> Step {
-        if refused {
-            self.on_cpu = Some(OnCpu::Failed);
-        }
+    fn fallback(&mut self) -> Step {
+        self.on_cpu = Some(OnCpu::Failed);
         self.note_left();
         let at = self.heard().map(|(i, ms, _)| (i, ms)).or(self.t.starting.as_ref().map(|s| (s.0, s.1)));
         self.release();
         match at {
-            Some((index, ms)) => Step::ToPcm { index, ms, refused },
+            Some((index, ms)) => Step::ToPcm { index, ms, refused: true },
             None => Step::Fine,
         }
     }
@@ -1054,7 +1052,7 @@ impl Offload {
         self.t.writing = Some(Writing { r, frames: 0, ogg });
         self.volume();
         if self.fill(false, tracks, queue, gain).is_err() {
-            return Some(self.fallback(true));
+            return Some(self.fallback());
         }
         if let Some(asked) = self.granted.take() {
             let held = self.open.map_or(0, |o| o.2);
