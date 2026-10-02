@@ -2049,6 +2049,9 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         }
         let positions = self.told.positions.is_some() && self.state == State::Playing;
         if let Some(off) = self.chip() {
+            if off.unlooked() {
+                return Some(0);
+            }
             if let Some(ms) = off.wake_in() {
                 at(ms);
             }

@@ -1231,6 +1231,11 @@ impl Offload {
         Ok(taken == left)
     }
 
+    /// A song was started after this turn looked at the path.
+    pub(crate) fn unlooked(&self) -> bool {
+        self.t.starting.is_some() && !self.t.waiting
+    }
+
     /// The starting song or the next packet waits for bytes.
     pub(crate) fn waiting_for_bytes(&self) -> bool {
         self.t.starting.is_some() || self.t.waiting

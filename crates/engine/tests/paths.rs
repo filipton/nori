@@ -1643,7 +1643,10 @@ fn plain_offload_takes_unrelated_songs() {
     for next in ["y", "z"] {
         assert!(rig.wait(10, |_| fake.written() > 0));
         fake.advance(1 << 40);
+        let ended = rig.now_ms();
         assert!(rig.wait(10, |r| r.heard_song(next) && r.engine.status().offloaded), "{next}: {:?}", rig.events.lock());
+        // Regression: the song opened after the turn that started it, so it waited for the next wake.
+        assert!(rig.now_ms() - ended < 100, "{next} began {} ms after the last ended", rig.now_ms() - ended);
     }
     let calls = fake.calls();
     assert_eq!(calls.iter().filter(|c| matches!(c, Call::Open(_))).count(), 1, "one track: {calls:?}");
