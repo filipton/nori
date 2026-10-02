@@ -4,8 +4,9 @@
 //! into the ring, resampling only when the device will not take the stream's rate, and maps ring frames
 //! back to song time for the playhead.
 
+use std::cell::UnsafeCell;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{fence, AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::Thread;
 
@@ -104,10 +105,13 @@ const SLACK_US: i64 = 2_000_000;
 /// waits for a quarter second of music before starting).
 const TELL_FLUSH_US: i64 = 300_000;
 
-/// Shared by the engine thread (sole writer) and the device thread (sole reader).
+/// Shared by the engine thread (sole writer) and the device thread (sole reader). The writer writes only
+/// slots past `write`, and stores it after; the reader reads only slots before it. Where a pull under way
+/// may still read slots the writer is about to reuse (a flush, or music made again from before what the
+/// device took), the writer first waits for that pull to end ([`Ring::quiet`]).
 pub(crate) struct Ring {
-    /// Float samples as bits: no data race even when a flush lets the writer overrun the reader.
-    slots: Box<[AtomicU32]>,
+    /// Float samples, interleaved.
+    slots: Box<[UnsafeCell<f32>]>,
     frames: u64,
     channels: usize,
     rate: u32,
@@ -134,12 +138,18 @@ pub(crate) struct Ring {
     /// The music is over: running dry is not an underrun.
     ended: AtomicBool,
     underruns: AtomicU64,
+    /// A pull is reading slots.
+    pulling: AtomicBool,
 }
+
+// SAFETY: the slots are the only unsynchronised state; the writer and the reader never touch the same
+// slot at once (see `Ring`), every other field is atomic.
+unsafe impl Sync for Ring {}
 
 impl Ring {
     fn new(format: OutputFormat, engine: Thread) -> Ring {
         let frames = (format.rate as i64 * (BUFFER_US + SLACK_US) / 1_000_000) as u64;
-        let slots: Box<[AtomicU32]> = (0..frames as usize * format.channels).map(|_| AtomicU32::new(0)).collect();
+        let slots: Box<[UnsafeCell<f32>]> = (0..frames as usize * format.channels).map(|_| UnsafeCell::new(0.0)).collect();
         RING_BYTES.fetch_add(std::mem::size_of_val(&*slots) as u64, Ordering::Relaxed);
         Ring {
             slots,
@@ -161,6 +171,38 @@ impl Ring {
             ramp_gen: AtomicU32::new(0),
             ended: AtomicBool::new(false),
             underruns: AtomicU64::new(0),
+            pulling: AtomicBool::new(false),
+        }
+    }
+
+    /// Samples `at..at + len` of the slots, for the reader.
+    ///
+    /// # Safety
+    /// Nothing may write them while the slice lives (see [`Ring`]).
+    unsafe fn samples(&self, at: usize, len: usize) -> &[f32] {
+        let cells = &self.slots[at..at + len];
+        // SAFETY: `UnsafeCell<f32>` is an `f32`; no writer is the caller's promise.
+        unsafe { std::slice::from_raw_parts(UnsafeCell::raw_get(cells.as_ptr()), len) }
+    }
+
+    /// Samples `at..at + len` of the slots, for the writer.
+    ///
+    /// # Safety
+    /// Nothing else may read or write them while the slice lives (see [`Ring`]).
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn samples_mut(&self, at: usize, len: usize) -> &mut [f32] {
+        let cells = &self.slots[at..at + len];
+        // SAFETY: `UnsafeCell<f32>` is an `f32`; exclusive use is the caller's promise.
+        unsafe { std::slice::from_raw_parts_mut(UnsafeCell::raw_get(cells.as_ptr()), len) }
+    }
+
+    /// After `write` or `discard` moved back: waits out a pull that read them before, which may still be
+    /// reading slots the writer is about to reuse. A pull is a copy of moments, and rarely under way.
+    fn quiet(&self) {
+        // Pairs with the fence in `Feed::pull_as`: either that pull sees the new marks, or this sees it.
+        fence(Ordering::SeqCst);
+        while self.pulling.load(Ordering::Acquire) {
+            std::hint::spin_loop();
         }
     }
 
@@ -238,6 +280,8 @@ impl Feed {
         let r = &*self.ring;
         let ch = r.channels;
         let want = (out.len() / ch) as u64;
+        r.pulling.store(true, Ordering::Relaxed);
+        fence(Ordering::SeqCst);
         // Said before `write` is read: the engine replaces nothing this pull may take ([`RingTrack::freeze`]).
         let limit = r.read.load(Ordering::Acquire).max(r.discard.load(Ordering::Acquire)) + want;
         r.limit.store(limit, Ordering::SeqCst);
@@ -269,9 +313,10 @@ impl Feed {
             if (self.step > 0.0 && self.gain > self.target) || (self.step < 0.0 && self.gain < self.target) || self.step == 0.0 {
                 self.gain = self.target;
             }
-            let (s, o) = (slot(at + i), i as usize * ch);
-            for c in 0..ch {
-                out[o + c] = conv(f32::from_bits(r.slots[s + c].load(Ordering::Relaxed)) * self.gain);
+            // SAFETY: before `write`, which the writer goes behind only once no pull is under way.
+            let frame = unsafe { r.samples(slot(at + i), ch) };
+            for (o, &v) in out[i as usize * ch..].iter_mut().zip(frame.iter()) {
+                *o = conv(v * self.gain);
             }
             i += 1;
         }
@@ -280,14 +325,17 @@ impl Feed {
         while i < n {
             let (s, o) = (slot(at + i), i as usize * ch);
             let run = (n - i).min(r.frames - (at + i) % r.frames) as usize * ch;
-            for (v, slot) in out[o..o + run].iter_mut().zip(&r.slots[s..s + run]) {
-                *v = conv(f32::from_bits(slot.load(Ordering::Relaxed)) * g);
+            // SAFETY: as above.
+            let music = unsafe { r.samples(s, run) };
+            for (v, &m) in out[o..o + run].iter_mut().zip(music.iter()) {
+                *v = conv(m * g);
             }
             i += (run / ch) as u64;
         }
         out[n as usize * ch..].fill(S::default());
         r.read.store(at + n, Ordering::Release);
         r.limit.store(at + n, Ordering::Release);
+        r.pulling.store(false, Ordering::Release);
         if n < want && !r.ended.load(Ordering::Relaxed) && w > 0 {
             r.underruns.fetch_add(1, Ordering::Relaxed);
         }
@@ -629,16 +677,16 @@ impl RingTrack {
 fn put<const W: usize>(r: &Ring, at: u64, blend: Option<(u64, u64)>, samples: &[[u8; W]], value: impl Fn([u8; W]) -> f32) -> u64 {
     let ch = r.channels;
     let frames = (samples.len() / ch) as u64;
+    debug_assert!(at + frames <= r.read_at() + r.frames, "the ring overruns its reader");
     let slot = |f: u64| (f % r.frames) as usize * ch;
     let mut done = 0;
     if let Some((from, of)) = blend {
         // What the device would have played there, blended into what replaces it.
         while done < frames && from + done < of {
-            let s = slot(at + done);
-            for c in 0..ch {
-                let old = f32::from_bits(r.slots[s + c].load(Ordering::Relaxed));
-                let v = nori_player::pipeline::blended(old, value(samples[done as usize * ch + c]), (from + done) as usize, of as usize);
-                r.slots[s + c].store(v.to_bits(), Ordering::Relaxed);
+            // SAFETY: past `write`, where only the writer goes (`Ring`).
+            let frame = unsafe { r.samples_mut(slot(at + done), ch) };
+            for (c, old) in frame.iter_mut().enumerate() {
+                *old = nori_player::pipeline::blended(*old, value(samples[done as usize * ch + c]), (from + done) as usize, of as usize);
             }
             done += 1;
         }
@@ -648,8 +696,10 @@ fn put<const W: usize>(r: &Ring, at: u64, blend: Option<(u64, u64)>, samples: &[
         let s = slot(at + done);
         let run = (frames - done).min(r.frames - (at + done) % r.frames) as usize * ch;
         let from = done as usize * ch;
-        for (slot, &b) in r.slots[s..s + run].iter().zip(&samples[from..from + run]) {
-            slot.store(value(b).to_bits(), Ordering::Relaxed);
+        // SAFETY: as above.
+        let slots = unsafe { r.samples_mut(s, run) };
+        for (slot, &b) in slots.iter_mut().zip(&samples[from..from + run]) {
+            *slot = value(b);
         }
         done += (run / ch) as u64;
     }
@@ -793,6 +843,7 @@ impl Track for RingTrack {
             r.discard.store(w, Ordering::Release);
             r.flushes.fetch_add(1, Ordering::AcqRel);
             r.ended.store(false, Ordering::Release);
+            r.quiet();
             self.untold = true;
             self.since_flush = 0;
             self.blend = None;
@@ -814,6 +865,7 @@ impl Track for RingTrack {
             r.discard.store(w, Ordering::Release);
             r.flushes.fetch_add(1, Ordering::AcqRel);
             r.ended.store(false, Ordering::Release);
+            r.quiet();
             self.base = w;
             self.untold = true;
             self.since_flush = 0;
@@ -1026,6 +1078,45 @@ mod tests {
         let mut out = vec![0f32; 3000];
         let rest = f.pull(&mut out);
         assert!((900..=1100).contains(&rest), "the last 2000 frames at twice the speed: {rest}");
+    }
+
+    /// A device pulling on its own thread while the engine writes, flushes and makes music again from
+    /// before and after what it took. Under Miri (`cargo miri test -p nori-engine --lib pulls_and`) this
+    /// checks the two never touch a slot at once.
+    #[test]
+    fn pulls_and_rewrites_never_meet() {
+        let (mut t, mut f, held) = by_hand();
+        let stop = Arc::new(AtomicBool::new(false));
+        let done = stop.clone();
+        let puller = std::thread::spawn(move || {
+            let mut out = [0f32; 300];
+            while !done.load(Ordering::Relaxed) {
+                let n = f.pull(&mut out);
+                assert!(out[..n].iter().all(|v| v.abs() <= 1.0), "music as written: {out:?}");
+                if f.flushed() && n > 2 {
+                    f.rewind(2);
+                }
+            }
+        });
+        let rounds = if cfg!(miri) { 60 } else { 20_000 };
+        for k in 0..rounds {
+            if t.queued_bytes() < 4_000 {
+                t.write(&pcm(&[k as i16; 300]), 300.0);
+            }
+            match k % 7 {
+                0 => t.flush(),
+                3 | 5 => {
+                    held.store(if k % 7 == 3 { 400_000 } else { 0 }, Ordering::Relaxed);
+                    let at = t.freeze();
+                    t.cut(at);
+                    // Made again at once, over what a pull may be taking.
+                    t.write(&pcm(&[-(k as i16); 600]), 600.0);
+                }
+                _ => {}
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        puller.join().expect("the puller saw only whole samples");
     }
 
     #[test]
