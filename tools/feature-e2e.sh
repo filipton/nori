@@ -109,6 +109,14 @@ if want notification; then section "the notification's heart and shuffle"
   shuffled() { [ "$(field notification | grep -o 'shuffle_o[nf]*')" = "$1" ]; }
   check "the notification's shuffle toggles ($shuffle -> $flipped)" wait_until 5 shuffled "$flipped"
   "$app" do "notification shuffle" >/dev/null; wait_until 5 shuffled "$shuffle"   # put it back
+  # The song's cover as the notification, the lock screen and the headphones open it (CarArtProvider):
+  # drawn once, then read from the disk, with nothing in the app woken to draw it again.
+  art="content://$pkg.carart/c/$(field cover)?s=800"
+  adb shell "content read --uri '$art'" >/dev/null 2>&1
+  drawn=$(field coversDrawn)
+  kept_bytes=$(adb shell "content read --uri '$art' | wc -c" | tr -d '\r ')
+  drawn_still() { [ "${kept_bytes:-0}" -gt 1000 ] && [ "$(field coversDrawn)" = "$drawn" ]; }
+  check "the cover opened again is read from the disk, not drawn again ($kept_bytes bytes)" drawn_still
 fi
 
 if want album-page; then section "the album page answers for its own queue"

@@ -167,6 +167,9 @@ is Android glue and stays on the device. 50 moved, 60 stay.
   `"car search <words>"`, `"car play <row id>"`, `"car voice <words>[|artist|album|playlist|genre|song]"`, each
   row logged under the tag noricar; `adb shell content read --uri content://dev.nori.music.carart/c/<cover id>`
   reads a picture. Android Auto itself (the head unit) is checked on a phone with the Desktop Head Unit.
+  The song's cover is opened by the notification, the lock screen and the headphones, each on its own: the
+  provider draws it once and serves the file after that (feature-e2e `notification`), since the readers and
+  the file descriptor handed to them are Android's.
 
 
 ## cargo test
