@@ -3933,6 +3933,7 @@ dependencies = [
  "nori-net",
  "nori-player",
  "nori-settings",
+ "nori-testdir",
  "parking_lot",
  "rusqlite",
  "uniffi",

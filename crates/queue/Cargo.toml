@@ -26,3 +26,7 @@ nori-library = { path = "../library" }
 nori-automix = { path = "../automix" }
 nori-settings = { path = "../settings" }
 nori-player = { path = "../player" }
+
+[dev-dependencies]
+# Settings opened from a test's own directory.
+nori-testdir = { path = "../testdir" }

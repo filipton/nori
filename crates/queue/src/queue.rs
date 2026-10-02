@@ -46,11 +46,6 @@ fn measured_lufs(db: &nori_db::Profile, id: &str) -> Option<f32> {
     Some(a.lufs)
 }
 
-/// [`Session::flags`] bits.
-pub(crate) const EXPLICIT: u32 = 1;
-pub(crate) const STARRED: u32 = 2;
-pub(crate) const EXTERNAL: u32 = 4;
-
 impl Session {
     /// Lends the store to `f`.
     pub fn store<R>(&self, f: impl FnOnce(&mut Store) -> R) -> R {
@@ -136,15 +131,9 @@ impl Session {
         song_gain(prefs, &song, run)
     }
 
-    /// A registered song's flags ([`EXPLICIT`], [`STARRED`], [`EXTERNAL`]); 0 if unknown.
-    pub fn flags(&self, id: &str) -> u32 {
-        self.store(|s| {
-            s.songs.get(id).map_or(0, |(song, _)| {
-                (if song.explicit_status == "explicit" { EXPLICIT } else { 0 })
-                    | (if song.starred { STARRED } else { 0 })
-                    | (if song.is_external { EXTERNAL } else { 0 })
-            })
-        })
+    /// Whether registered song `id` is marked explicit; false if unknown.
+    pub fn explicit(&self, id: &str) -> bool {
+        self.store(|s| s.songs.get(id).is_some_and(|(song, _)| song.explicit_status == "explicit"))
     }
 
     /// The distinct album ids of `ids`.
@@ -174,9 +163,9 @@ impl Session {
         self.songs(ids)
     }
 
-    /// [`Session::flags`].
-    pub fn queue_flags(&self, id: String) -> u32 {
-        self.flags(&id)
+    /// Whether registered song `id` is starred, as the server said when it was queued; false if unknown.
+    pub fn queue_starred(&self, id: String) -> bool {
+        self.store(|s| s.songs.get(&id).is_some_and(|(song, _)| song.starred))
     }
 }
 

@@ -397,7 +397,7 @@ class PlaybackService : MediaLibraryService() {
     private var repeatShown = -1
 
     private fun currentStarred(item: MediaItem): Boolean =
-        nori.library.isStarred(StarKind.SONG, item.mediaId, nori.session.queueFlags(item.mediaId) and 2u != 0u)
+        nori.library.isStarred(StarKind.SONG, item.mediaId, nori.session.queueStarred(item.mediaId))
 
     /**
      * Heart and shuffle beside previous / play / next, in the secondary slots the way other players put

@@ -303,7 +303,7 @@ impl Session {
             return false;
         }
         let (id, has_next) = self.playlist(|p| (p.ids().get(index).cloned(), p.next_of(index, walk_repeat(p)).is_some()));
-        let explicit = id.is_some_and(|id| self.flags(&id) & queue::EXPLICIT != 0);
+        let explicit = id.is_some_and(|id| self.explicit(&id));
         nori_player::queue::arrival(true, skip_explicit, explicit, has_next, false) == Onto::Skip
     }
 
@@ -658,6 +658,56 @@ pub(crate) mod tests {
         let db = |g: f32| (20.0 * g.log10() * 10.0).round() / 10.0;
         assert_eq!(db(s.queue_gain(at("ga1", 3), at("ga2", 3), None, &prefs, false, false)), -2.0);
         assert_eq!(db(s.queue_gain(at("ga1", 0), at("ga2", 0), None, &prefs, false, false)), -6.0);
+    }
+
+    /// A session over settings opened in a directory of its own, changed by `change`.
+    fn opened(change: impl FnOnce(&mut nori_settings::settings::StoredPrefs)) -> (nori_testdir::TempDir, Session) {
+        let dir = nori_testdir::TempDir::new("session");
+        let settings = nori_settings::settings_store::Settings::new();
+        let mut p = settings.open(&dir.join("app.db").to_string_lossy()).unwrap();
+        change(&mut p);
+        settings.put(p);
+        (dir, Session::new(settings))
+    }
+
+    #[test]
+    fn explicit_songs_skipped_when_asked() {
+        let explicit = |id: &str| Song { explicit_status: "explicit".into(), ..Song::only_id(id.to_string()) };
+        let (_dir, s) = opened(|p| p.skip_explicit = true);
+        s.register(vec![explicit("e1"), Song::only_id("c".into()), explicit("e2")]);
+        s.set(ids(&["e1", "c", "e2"]), Some(1), false, None);
+        assert_eq!((s.skips(0), s.skips(1), s.skips(2)), (true, false, false), "the last explicit song plays: nothing comes after it");
+        s.repeat(REPEAT_ONE);
+        assert!(s.skips(2), "repeating, the queue goes on past its end");
+        let (_dir, s) = opened(|_| {});
+        s.register(vec![explicit("e1"), Song::only_id("c".into())]);
+        s.set(ids(&["e1", "c"]), Some(1), false, None);
+        assert!(!s.skips(0), "the setting off");
+    }
+
+    #[test]
+    fn replay_gain_by_album_run() {
+        use nori_player::policy::GainMode;
+        let rg = nori_model::ReplayGain { track_gain: Some(-6.0), album_gain: Some(-2.0), track_peak: Some(0.5), album_peak: Some(0.5), ..Default::default() };
+        let song = |id: &str, track: u32| Song { duration: 200, album_id: Some("GA".into()), track, disc_number: 1, replay_gain: Some(rg.clone()), ..Song::only_id(id.to_string()) };
+        let db = |g: f32| (20.0 * g.log10() * 10.0).round() / 10.0;
+        let (_dir, s) = opened(|p| {
+            p.replay_gain = GainMode::Auto;
+            p.preamp_db = 0.0;
+        });
+        s.register(vec![song("ga1", 1), song("ga2", 2), song("ga3", 3)]);
+        s.set(ids(&["ga1", "ga2", "ga3"]), Some(0), false, origin(Album, "GA"));
+        assert_eq!([0, 1, 2].map(|i| db(s.gain_of(i, false))), [-2.0; 3], "the album played in order");
+        assert_eq!(db(s.gain(false)), -2.0, "the current song's");
+        assert_eq!(s.gain(true), 1.0, "bit-perfect: untouched");
+        s.set(ids(&["ga3", "ga1"]), Some(0), false, None);
+        assert_eq!([0, 1].map(|i| db(s.gain_of(i, false))), [-6.0; 2], "out of order: each song's own");
+        s.set(ids(&["radio:1"]), Some(0), false, None);
+        assert_eq!(s.gain(false), 1.0, "a station");
+        let (_dir, s) = opened(|p| p.replay_gain = GainMode::Off);
+        s.register(vec![song("ga1", 1)]);
+        s.set(ids(&["ga1"]), Some(0), false, None);
+        assert_eq!(s.gain(false), 1.0, "off");
     }
 
     #[test]

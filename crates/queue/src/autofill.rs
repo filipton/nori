@@ -275,6 +275,14 @@ mod tests {
     }
 
     #[test]
+    fn eras() {
+        let year = |year| Song { year, ..Default::default() };
+        assert_eq!(era(&year(1987)), Some((1980, 1989)));
+        assert_eq!(era(&year(2000)), Some((2000, 2009)));
+        assert_eq!(era(&year(0)), None, "no year");
+    }
+
+    #[test]
     fn picks() {
         let c = nori_db::open("", "t").unwrap();
         let records = ids(&["al-1", "al-2", "al-3"]);
@@ -295,6 +303,7 @@ mod tests {
         assert!(nori_library::history::record(&mut c, &s, NOW - DAY, 200_000, 0, NOW).unwrap());
         assert_eq!(rank(ids(&["al-heard", "al-other"]), &album_use(&c, NOW).unwrap(), NOW, 0), ids(&["al-other", "al-heard"]));
         assert_eq!(rank(ids(&["s1", "s2"]), &song_use(&c, NOW).unwrap(), NOW, 0), ids(&["s2", "s1"]));
+        assert_eq!(song_use(&c, NOW).unwrap(), HashMap::from([("s1".to_string(), NOW - DAY)]), "the play's start");
         assert_eq!(album_use(&c, NOW + LATELY_MS + DAY).unwrap().get("al-heard"), None);
 
         // Picks expire and are per server.
