@@ -14,16 +14,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::client::{Client, NetResult};
 
-/// An AutoEQ index fetch is running; concurrent triggers are dropped.
-// Global: the index is app-wide, shared by every client.
-static INDEX_FETCHING: AtomicBool = AtomicBool::new(false);
+/// Clears the client's AutoEQ fetch flag on drop, including a dropped future.
+struct Fetching<'a>(&'a AtomicBool);
 
-/// Clears [INDEX_FETCHING] on drop, including a dropped future.
-struct Fetching;
-
-impl Drop for Fetching {
+impl Drop for Fetching<'_> {
     fn drop(&mut self) {
-        INDEX_FETCHING.store(false, Ordering::Release);
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -43,10 +39,10 @@ impl Client {
                 return Ok(None);
             }
         }
-        if INDEX_FETCHING.swap(true, Ordering::AcqRel) {
+        if self.autoeq_fetching.swap(true, Ordering::AcqRel) {
             return Ok(None);
         }
-        let _fetching = Fetching;
+        let _fetching = Fetching(&self.autoeq_fetching);
         let markdown = autoeq::fetch_text(&*self.transport, autoeq::INDEX_URL.to_string()).await?;
         let n = autoeq::store(&mut self.core.db.lock(), &markdown, now)?;
         alog::info(&format!("autoeq: index kept, {n} headphones"));
@@ -453,6 +449,19 @@ pub(crate) mod tests {
         fake.answer(index);
         assert_eq!(block(c.autoeq_update(true, true)).unwrap(), Some(2), "asked: any network");
         assert_eq!(fake.asked(), [autoeq::INDEX_URL]);
+
+        // One fetch at a time: asked again while one waits for its answer, nothing more is fetched.
+        *fake.pends.lock() = true;
+        let mut first = std::pin::pin!(c.autoeq_update(true, true));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(std::future::Future::poll(first.as_mut(), &mut cx).is_pending());
+        assert_eq!(block(c.autoeq_update(true, true)).unwrap(), None, "dropped while the first runs");
+        fake.answer(index);
+        assert_eq!(block(first).unwrap(), Some(2));
+        fake.answer(index);
+        assert_eq!(block(c.autoeq_update(true, true)).unwrap(), Some(2), "fetched again once the first ended");
+        *fake.pends.lock() = false;
+        assert_eq!(fake.asked().len(), 3);
 
         let cable = c.core.autoeq_search("analog".into(), 5).unwrap().remove(0);
         fake.answers.lock().push_back(Ok((404, b"404: Not Found".to_vec())));

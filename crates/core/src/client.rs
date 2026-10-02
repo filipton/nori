@@ -34,6 +34,8 @@ pub struct Client {
     pub(crate) car: parking_lot::Mutex<crate::car::Shown>,
     /// What the last autofill fetch picked, recorded once its songs are appended (autofill.rs).
     pub(crate) autofill_picks: parking_lot::Mutex<Option<(crate::autofill::Picked, Vec<String>)>>,
+    /// An AutoEQ index fetch is running; another asked meanwhile is dropped (profiles.rs).
+    pub(crate) autoeq_fetching: AtomicBool,
 }
 
 /// The newest client, for Android's player and measuring doors (`stream::resolve_now`). Global: those
@@ -134,7 +136,7 @@ impl Client {
 impl Client {
     #[cfg_attr(feature = "ffi", uniffi::constructor)]
     pub fn new(core: Arc<Core>, transport: Arc<dyn Transport>) -> Arc<Self> {
-        let client = Arc::new(Client { core, transport, profile: RwLock::new(NetProfile::default()), second: AtomicBool::new(false), lyrics: Default::default(), motion: Default::default(), replaying: Default::default(), car: Default::default(), autofill_picks: Default::default() });
+        let client = Arc::new(Client { core, transport, profile: RwLock::new(NetProfile::default()), second: AtomicBool::new(false), lyrics: Default::default(), motion: Default::default(), replaying: Default::default(), car: Default::default(), autofill_picks: Default::default(), autoeq_fetching: AtomicBool::new(false) });
         *ACTIVE_CLIENT.lock() = Arc::downgrade(&client);
         client
     }
