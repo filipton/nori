@@ -167,24 +167,20 @@ fn mix_plays_incoming_at_mix_tempo() {
 }
 
 #[test]
-fn tempo_returns_after_mix() {
+fn tempo_restored() {
     let rig = Rig::in_the_mix();
     rig.run(8_000);
     assert!(!rig.engine.status().mixing);
     rig.assert_own_pitch("after the mix and the ramp");
-}
 
-#[test]
-fn seek_in_mix_restores_tempo() {
+    // Seek in mix restores tempo.
     let rig = Rig::in_the_mix();
     rig.run(1_000);
     rig.engine.seek(25_000);
     rig.run(3_000);
     rig.assert_own_pitch("after a seek in the mix");
-}
 
-#[test]
-fn seek_in_tempo_ramp_restores_tempo() {
+    // Seek in tempo ramp restores tempo.
     let rig = Rig::in_the_mix();
     assert!(rig.until(30, |r| !r.engine.status().mixing), "the mix ends");
     // Inside the second-long ramp.
@@ -195,10 +191,8 @@ fn seek_in_tempo_ramp_restores_tempo() {
     rig.engine.seek(27_000);
     rig.run(2_000);
     rig.assert_own_pitch("after a second seek, near the end");
-}
 
-#[test]
-fn skip_in_mix_restores_tempo() {
+    // Skip in mix restores tempo.
     let rig = Rig::in_the_mix();
     rig.run(1_000);
     rig.engine.next();
@@ -207,10 +201,8 @@ fn skip_in_mix_restores_tempo() {
     rig.engine.previous();
     rig.run(3_000);
     rig.assert_own_pitch("the song skipped back to");
-}
 
-#[test]
-fn pause_in_mix_keeps_tempo() {
+    // Pause in mix keeps tempo.
     let rig = Rig::in_the_mix();
     rig.run(1_000);
     rig.engine.pause();
@@ -219,3 +211,4 @@ fn pause_in_mix_keeps_tempo() {
     rig.run(8_000);
     rig.assert_own_pitch("after a pause in the mix");
 }
+

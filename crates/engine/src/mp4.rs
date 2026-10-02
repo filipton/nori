@@ -217,19 +217,18 @@ mod tests {
     }
 
     #[test]
-    fn edit_list_gives_delay_and_length() {
+    fn gapless_info() {
         // 2.2 s (movie ms) from frame 1024.
         let g = gapless(&mut Cursor::new(file(Some((2200, 1024)), None))).unwrap();
         assert_eq!(g, Some(Gapless { delay: 1024, frames: Some(97_020), total: 102_400 }));
         assert_eq!(gapless(&mut Cursor::new(file(None, None))).unwrap(), None, "no edit, nothing to cut");
         assert_eq!(gapless(&mut Cursor::new(b"ID3 not an mp4 at all".to_vec())).unwrap(), None);
-    }
 
-    #[test]
-    fn itunes_comment_wins_over_edit_list() {
+        // Itunes comment wins over edit list.
         let c = " 00000000 00000840 000001CA 00000000000186A0 00000000 00000000";
         let g = gapless(&mut Cursor::new(file(Some((2200, 1024)), Some(c)))).unwrap();
         assert_eq!(g, Some(Gapless { delay: 0x840, frames: Some(102_400 - 0x840 - 0x1CA), total: 102_400 }));
         assert_eq!(smpb(" 00000000 00000840 000001CA 0000000000059E36"), Some((2112, 458)));
     }
+
 }

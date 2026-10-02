@@ -255,7 +255,7 @@ impl Rig {
 }
 
 #[test]
-fn hung_requests_skipped_leave_playlist_playing() {
+fn hung_songs_skipped() {
     let r = rig(Hang::Headers, 12, 3);
     r.skip_through_the_album();
     r.playlist_plays(1);
@@ -263,10 +263,8 @@ fn hung_requests_skipped_leave_playlist_playing() {
     let seen = r.events.lock().len();
     assert!(r.time.until(Duration::from_secs(10), || r.heard_since(seen, "n2")), "next plays on: {}", r.state());
     r.album_let_go();
-}
 
-#[test]
-fn stalled_bodies_skipped_leave_playlist_playing() {
+    // Stalled bodies skipped leave playlist playing.
     let r = rig(Hang::Body, 12, 3);
     r.skip_through_the_album();
     r.playlist_plays(0);

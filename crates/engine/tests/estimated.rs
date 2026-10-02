@@ -325,10 +325,10 @@ impl Rig {
     }
 }
 
-/// The last-page probe past the real end gets a 416 with the real length, once; the song plays whole.
 #[test]
-fn estimated_ogg_plays_whole_with_real_length() {
-    let Some(rig) = rig(200_000, true, Ends::Broken, None) else { return };
+fn estimated_ogg_plays_whole() {
+    // The last-page probe past the real end gets a 416 with the real length, once; the song plays whole.
+    let Some(rig) = self::rig(200_000, true, Ends::Broken, None) else { return };
     let real = rig.server.files[0].1.len() as u64;
     let heard = rig.play_a_to_its_end(0);
     assert!(heard >= A_SECS as f64 - 0.1, "all of a heard: {heard} s");
@@ -336,12 +336,9 @@ fn estimated_ogg_plays_whole_with_real_length() {
     let past = asked.iter().filter(|&&f| f >= real).count();
     assert!((1..=2).contains(&past), "past the end asked for once or twice (the end probe, the body's end): {asked:?}");
     rig.engine.stop();
-}
 
-/// The same without the length in the 416: the reader probes again until it finds the last page.
-#[test]
-fn estimated_ogg_plays_whole_without_real_length() {
-    let Some(rig) = rig(200_000, false, Ends::Clean, None) else { return };
+    // The same without the length in the 416: the reader probes again until it finds the last page.
+    let Some(rig) = self::rig(200_000, false, Ends::Clean, None) else { return };
     let heard = rig.play_a_to_its_end(0);
     assert!(heard >= A_SECS as f64 - 0.1, "all of a heard: {heard} s");
     rig.engine.stop();
@@ -351,7 +348,7 @@ fn estimated_ogg_plays_whole_without_real_length() {
 #[test]
 fn estimated_song_seek_near_end_plays() {
     for says in [true, false] {
-        let Some(rig) = rig(200_000, says, Ends::Broken, None) else { return };
+        let Some(rig) = self::rig(200_000, says, Ends::Broken, None) else { return };
         let from_ms = A_SECS as i64 * 1000 - 1_500;
         let heard = rig.play_a_to_its_end(from_ms);
         assert!((1.3..=2.0).contains(&heard), "the last second and a half of a, then b (says {says}): {heard} s");
@@ -359,22 +356,42 @@ fn estimated_song_seek_near_end_plays() {
     }
 }
 
-/// A body ending cleanly short of the promise is the song's end; the short song plays into the next.
 #[test]
-fn clean_early_end_ends_song() {
-    let Some(rig) = rig(200_000, false, Ends::Clean, None) else { return };
+fn early_ends_end_song() {
+    // A body ending cleanly short of the promise is the song's end; the short song plays into the next.
+    let Some(rig) = self::rig(200_000, false, Ends::Clean, None) else { return };
     let heard = rig.play_to_its_end(1, 0);
     assert!(heard >= B_SECS as f64 - 0.1, "all of b heard: {heard} s");
     let real = rig.server.files[1].1.len() as u64;
     assert!(rig.server.asked("b").iter().all(|&f| f < real), "nothing asked for past the end: {:?}", rig.server.asked("b"));
     rig.engine.stop();
+
+    // The song ends where its bytes do, whatever length the server gives, and the next starts there.
+    for off_ms in [2_500, -2_500] {
+        let Some(rig) = rig_making(200_000, true, Ends::Broken, None, uncached(A_SECS as i64 * 1000 + off_ms)) else { return };
+        let first = rig.first_sound();
+        assert!(first < Duration::from_millis(500), "heard at once (off by {off_ms} ms): {first:?}");
+        rig.time.run(Duration::from_secs(5));
+        let (took, heard) = rig.on_to_b();
+        let all = rig.card.secs() - (heard - took).max(0.0);
+        assert!((A_SECS as f64 - 0.1..=A_SECS as f64 + 0.5).contains(&rig.card.secs()), "all of a and no more (off by {off_ms} ms): {} s", rig.card.secs());
+        assert!((took - heard).abs() < 0.2, "b right after a, no silence between (off by {off_ms} ms): {took} s for {heard} s heard, {all}");
+        assert_eq!(rig.engine.status().underruns, 0, "no gap (off by {off_ms} ms)");
+        assert!(rig.server.charged().is_empty(), "nothing asked past the start (off by {off_ms} ms): {:?}", rig.server.charged());
+        // A seek between the real and the stated end: the next song plays, no failure.
+        if off_ms > 0 {
+            let heard = rig.play_a_to_its_end(A_SECS as i64 * 1000 + off_ms / 2);
+            assert!(heard < 0.5, "nothing of a past its end: {heard} s");
+        }
+        rig.engine.stop();
+    }
 }
 
 /// A connection dropped mid-song is resumed, not taken for the end.
 #[test]
 fn dropped_network_resumes_song() {
     // b is short enough that the break itself is resumed.
-    let Some(rig) = rig(200_000, true, Ends::Broken, Some(("b", 32_000))) else { return };
+    let Some(rig) = self::rig(200_000, true, Ends::Broken, Some(("b", 32_000))) else { return };
     let heard = rig.play_to_its_end(1, 0);
     assert!(heard >= B_SECS as f64 - 0.1, "all of b heard: {heard} s");
     let asked = rig.server.asked("b");
@@ -382,9 +399,9 @@ fn dropped_network_resumes_song() {
     rig.engine.stop();
 }
 
-/// A fresh transcode is heard at once (no probe past its start) and plays whole to its real end.
 #[test]
-fn uncached_transcode_starts_at_once() {
+fn uncached_transcode() {
+    // A fresh transcode is heard at once (no probe past its start) and plays whole to its real end.
     let Some(rig) = rig_making(200_000, true, Ends::Broken, None, uncached(A_SECS as i64 * 1000 + 400)) else { return };
     let first = rig.first_sound();
     eprintln!("the first sound of an uncached transcode after {first:?}");
@@ -393,11 +410,8 @@ fn uncached_transcode_starts_at_once() {
     assert!(heard >= A_SECS as f64 - 0.1, "all of a heard: {heard} s");
     assert!(rig.server.charged().is_empty(), "nothing asked past the start of a transcode being made: {:?}", rig.server.charged());
     rig.engine.stop();
-}
 
-/// Seeks during a transcode read on through the arriving bytes instead of asking for a costly range.
-#[test]
-fn uncached_transcode_seeks_read_on() {
+    // Seeks during a transcode read on through the arriving bytes instead of asking for a costly range.
     let Some(rig) = rig_making(200_000, true, Ends::Broken, None, uncached(A_SECS as i64 * 1000 + 400)) else { return };
     rig.engine.position_updates(Some(Duration::from_millis(500)));
     rig.first_sound();
@@ -420,29 +434,20 @@ fn uncached_transcode_seeks_read_on() {
     assert!(heard <= 10.0, "no more than the rest of its last ten seconds: {heard} s");
     assert!(rig.server.charged().is_empty(), "no range asked of a transcode being made: {:?}", rig.server.charged());
     rig.engine.stop();
-}
 
-/// The song ends where its bytes do, whatever length the server gives, and the next starts there.
-#[test]
-fn bytes_end_ends_song() {
-    for off_ms in [2_500, -2_500] {
-        let Some(rig) = rig_making(200_000, true, Ends::Broken, None, uncached(A_SECS as i64 * 1000 + off_ms)) else { return };
-        let first = rig.first_sound();
-        assert!(first < Duration::from_millis(500), "heard at once (off by {off_ms} ms): {first:?}");
-        rig.time.run(Duration::from_secs(5));
-        let (took, heard) = rig.on_to_b();
-        let all = rig.card.secs() - (heard - took).max(0.0);
-        assert!((A_SECS as f64 - 0.1..=A_SECS as f64 + 0.5).contains(&rig.card.secs()), "all of a and no more (off by {off_ms} ms): {} s", rig.card.secs());
-        assert!((took - heard).abs() < 0.2, "b right after a, no silence between (off by {off_ms} ms): {took} s for {heard} s heard, {all}");
-        assert_eq!(rig.engine.status().underruns, 0, "no gap (off by {off_ms} ms)");
-        assert!(rig.server.charged().is_empty(), "nothing asked past the start (off by {off_ms} ms): {:?}", rig.server.charged());
-        // A seek between the real and the stated end: the next song plays, no failure.
-        if off_ms > 0 {
-            let heard = rig.play_a_to_its_end(A_SECS as i64 * 1000 + off_ms / 2);
-            assert!(heard < 0.5, "nothing of a past its end: {heard} s");
-        }
-        rig.engine.stop();
-    }
+    // A seek 15 s before the end of an arriving transcode (empty cache) plays on through the next songs.
+    let making = Making { cache: true, ..uncached(A_SECS as i64 * 1000 + 400) };
+    let Some(rig) = rig_making(200_000, true, Ends::Broken, None, making) else { return };
+    rig.first_sound();
+    rig.time.run(Duration::from_secs(1));
+    rig.engine.seek(A_SECS as i64 * 1000 - 15_000);
+    let (_, heard) = rig.on_to_b();
+    assert!(heard <= 15.5, "the last fifteen seconds of a: {heard} s");
+    let seen = rig.events.lock().len();
+    assert!(rig.time.until(Duration::from_secs(20), || rig.heard_song_since(seen, "c") || !rig.errors().is_empty()), "c after b: {:?}", rig.events.lock());
+    assert!(rig.errors().is_empty(), "{:?}", rig.errors());
+    assert!(rig.server.charged().is_empty(), "nothing asked past the start: {:?}", rig.server.charged());
+    rig.engine.stop();
 }
 
 /// Without a length: heard at once, played whole, and seeks read on.
@@ -459,19 +464,3 @@ fn unsized_song_plays_and_seeks() {
     rig.engine.stop();
 }
 
-/// A seek 15 s before the end of an arriving transcode (empty cache) plays on through the next songs.
-#[test]
-fn uncached_transcode_seek_near_end_plays_on() {
-    let making = Making { cache: true, ..uncached(A_SECS as i64 * 1000 + 400) };
-    let Some(rig) = rig_making(200_000, true, Ends::Broken, None, making) else { return };
-    rig.first_sound();
-    rig.time.run(Duration::from_secs(1));
-    rig.engine.seek(A_SECS as i64 * 1000 - 15_000);
-    let (_, heard) = rig.on_to_b();
-    assert!(heard <= 15.5, "the last fifteen seconds of a: {heard} s");
-    let seen = rig.events.lock().len();
-    assert!(rig.time.until(Duration::from_secs(20), || rig.heard_song_since(seen, "c") || !rig.errors().is_empty()), "c after b: {:?}", rig.events.lock());
-    assert!(rig.errors().is_empty(), "{:?}", rig.errors());
-    assert!(rig.server.charged().is_empty(), "nothing asked past the start: {:?}", rig.server.charged());
-    rig.engine.stop();
-}

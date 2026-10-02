@@ -123,7 +123,7 @@ impl Drop for Rig {
 }
 
 #[test]
-fn keep_albums_off_mixes_next_boundary() {
+fn keep_albums_off() {
     let rig = Rig::new("replan-keep", &["a1", "a2", "a3"], true);
     rig.engine.play_at(0, 0);
     assert!(!rig.mixes_into(1), "kept gapless while the setting says so");
@@ -132,10 +132,8 @@ fn keep_albums_off_mixes_next_boundary() {
     assert!(rig.mixes_into(2), "mixed into the third song once the album is no longer kept gapless");
     let note = rig.core.session.planner.transition_note("a2").expect("a2's ending was planned");
     assert_ne!(note.kind, "Gapless", "{note:?}");
-}
 
-#[test]
-fn keep_albums_off_remakes_gapless_ending() {
+    // Keep albums off remakes gapless ending.
     let rig = Rig::new("replan-late", &["d1", "d2"], true);
     rig.engine.play_at(0, 0);
     assert!(rig.until(20, |r| r.engine.status().index == Some(0) && r.engine.status().position_ms > 1_000));

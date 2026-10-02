@@ -110,15 +110,13 @@ fn steady_in(encoding: Encoding, device_rate: u32, sound: Sound, speed: f32, ski
 }
 
 #[test]
-fn pcm16_buffer_path_allocates_nothing() {
+fn buffer_paths_allocate_nothing() {
     assert_eq!(steady(44_100, Sound::default(), 1.0, false), 0, "straight through");
     let eq = Sound { bands: vec![Band { kind: PEAKING, freq: 1000.0, gain_db: 4.0, q: 1.0, channel: 0 }], limiter: true, ..Sound::default() };
     assert_eq!(steady(44_100, eq, 1.25, true), 0, "equalizer, limiter, silence skipping and speed");
     assert_eq!(steady(48_000, Sound::default(), 1.0, false), 0, "resampled for a device at another rate");
-}
 
-#[test]
-fn float_buffer_path_allocates_nothing() {
+    // Float buffer path allocates nothing.
     assert_eq!(steady_in(Encoding::Float, 44_100, Sound::default(), 1.0, false), 0, "straight through");
     let eq = Sound { bands: vec![Band { kind: PEAKING, freq: 1000.0, gain_db: 4.0, q: 1.0, channel: 0 }], limiter: true, ..Sound::default() };
     assert_eq!(steady_in(Encoding::Float, 44_100, eq, 1.25, true), 0, "equalizer, limiter and speed in float");

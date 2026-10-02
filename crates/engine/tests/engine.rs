@@ -614,7 +614,7 @@ fn mixed_in_song_said_on_time_with_screen_off() {
 }
 
 #[test]
-fn seek_is_sample_exact() {
+fn seeks_land() {
     let a = music(30.0, 4);
     let songs: [(&str, &[i16]); 1] = [("a", &a)];
     let rig = Rig::new(&songs, prefs_off(), Settings::default());
@@ -622,6 +622,62 @@ fn seek_is_sample_exact() {
     assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
     let heard = rig.heard.lock().clone();
     assert!(heard[..] == a[RATE as usize * 2 * 20..], "from 20 s to the end");
+
+    // Every seek lands, however the engine is busy when it is asked: `ask` runs once the rig plays (or
+    // not, per case) and returns the song and place asked for; the ear must be there.
+    let (a, b, c) = (music(30.0, 61), music(30.0, 62), music(30.0, 63));
+    type Ask = fn(&Rig) -> (usize, i64);
+    let fade = Settings { fade_ms: 400, ..Settings::default() };
+    let cases: [(&str, TransitionPrefs, Settings, bool, Ask); 9] = [
+        ("while opening", prefs_off(), Settings::default(), false, |r| { r.engine.play_at(0, 0); r.engine.go_to(0, 12_000); (0, 12_000) }),
+        ("before the first bytes", prefs_off(), Settings::default(), false, |r| {
+            r.server.slow.lock().push(("a".into(), Duration::from_millis(1_500)));
+            r.engine.play_at(0, 0);
+            r.run(300);
+            r.engine.go_to(0, 12_000);
+            (0, 12_000)
+        }),
+        ("by seek while opening", prefs_off(), Settings::default(), false, |r| { r.engine.play_at(0, 0); r.engine.seek(12_000); (0, 12_000) }),
+        ("playing", prefs_off(), Settings::default(), true, |r| { r.engine.go_to(0, 12_000); (0, 12_000) }),
+        ("in a dip", prefs_off(), fade.clone(), true, |r| { r.engine.go_to(0, 5_000); r.run(100); r.engine.go_to(0, 12_000); (0, 12_000) }),
+        ("after a skip in its dip", prefs_off(), fade.clone(), true, |r| { r.engine.next(); r.engine.go_to(1, 7_000); (1, 7_000) }),
+        ("paused", prefs_off(), Settings::default(), true, |r| {
+            r.engine.pause();
+            r.run(100);
+            r.engine.go_to(0, 12_000);
+            r.run(500);
+            r.engine.play();
+            (0, 12_000)
+        }),
+        ("in a mix", crossfade(6), Settings::default(), true, |r| {
+            assert!(r.wait_for(20, |r| r.engine.status().mixing));
+            let shown = place(r).0.expect("a song shown");
+            r.engine.go_to(shown, 3_000);
+            (shown, 3_000)
+        }),
+        ("with the queue edited in its dip", prefs_off(), fade.clone(), true, |r| {
+            r.engine.go_to(0, 8_000);
+            r.run(50);
+            r.queue.lock().insert(0, vec!["c".into()], nori_player::playlist::Hand::No);
+            r.engine.queue_changed();
+            (1, 8_000)
+        }),
+    ];
+    for (name, prefs, settings, play_first, ask) in cases {
+        let rig = Rig::new(&[("a", &a), ("b", &b), ("c", &c)], prefs, settings);
+        if play_first {
+            rig.engine.play_at(0, 0);
+            assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2), "{name}: plays");
+        }
+        let (index, ms) = ask(&rig);
+        let id = rig.queue.lock().ids()[index].clone();
+        let song = match id.as_str() { "a" => &a, "b" => &b, _ => &c };
+        let heard = rig.heard.lock().len();
+        assert!(rig.wait_for(10, |r| r.heard.lock().len() > heard + 3 * RATE as usize * 2), "{name}: music after the seek");
+        let at = heard_in(&rig, song).unwrap_or_else(|| panic!("{name}: {id} is not what plays: {:?}", rig.events.lock()));
+        assert!((ms + 1_000..ms + 4_000).contains(&at), "{name}: {id} plays at {at} ms, the seek asked for {ms}");
+        assert_eq!(place(&rig).0, Some(index), "{name}: shown on its song");
+    }
 }
 
 #[test]
@@ -699,7 +755,7 @@ fn look_refreshes_place_between_bursts() {
 }
 
 #[test]
-fn pause_and_play_fade() {
+fn pause_fades() {
     let a = vec![8000i16; RATE as usize * 2 * 20];
     let songs: [(&str, &[i16]); 1] = [("a", &a)];
     let rig = Rig::new(&songs, prefs_off(), Settings { fade_ms: 400, ..Settings::default() });
@@ -718,6 +774,18 @@ fn pause_and_play_fade() {
     let heard = rig.heard.lock().clone();
     assert!(heard[at..at + 200].iter().all(|&v| v < 8000), "back in from silence");
     assert_eq!(*heard.last().unwrap(), 8000);
+
+    // Fade setting applies to next pause.
+    let a = vec![8000i16; RATE as usize * 2 * 20];
+    let rig = playing(&[("a", &a)], sim::App::new(), Settings::default());
+    // Nothing happens until the next pause.
+    rig.engine.set_settings(Settings { fade_ms: 400, ..Settings::default() });
+    rig.engine.pause();
+    assert!(rig.wait_for(5, |r| r.engine.status().state == State::Paused));
+    rig.run(4_000);
+    let heard = rig.heard.lock().clone();
+    assert!(heard[heard.len() - 2].abs() < 100, "faded to silence: {}", heard[heard.len() - 2]);
+    assert!(heard.iter().any(|&v| v > 2000 && v < 6000), "a ramp down, not a cut");
 }
 
 /// A new queue started at the same index says its song, playing and paused.
@@ -784,9 +852,9 @@ fn buffering_ends_when_music_moves_elsewhere() {
     rig.engine.stop();
 }
 
-/// Headphones out: pause at once, whatever the fade setting.
 #[test]
-fn pause_now_cuts_at_once() {
+fn pause_now_cuts() {
+    // Headphones out: pause at once, whatever the fade setting.
     let a = vec![8000i16; RATE as usize * 2 * 20];
     let songs: [(&str, &[i16]); 1] = [("a", &a)];
     let rig = Rig::new(&songs, prefs_off(), Settings { fade_ms: 1_000, ..Settings::default() });
@@ -798,11 +866,8 @@ fn pause_now_cuts_at_once() {
     let heard = rig.heard.lock().clone();
     assert!(heard.iter().all(|&v| v == 8000), "cut, not faded: no sample on the way down");
     rig.engine.stop();
-}
 
-/// Headphones out during a pause fade stop it there.
-#[test]
-fn pause_now_cuts_fade_short() {
+    // Headphones out during a pause fade stop it there.
     let a = vec![8000i16; RATE as usize * 2 * 20];
     let songs: [(&str, &[i16]); 1] = [("a", &a)];
     let rig = Rig::new(&songs, prefs_off(), Settings { fade_ms: 3_000, ..Settings::default() });
@@ -832,6 +897,54 @@ fn replay_gain_per_song() {
     let off = heard[..a.len()].iter().zip(&a).position(|(h, s)| (*h as i32 - (*s as f64 / 2.0).round() as i32).abs() > 1);
     assert_eq!(off, None, "a at half its level, -6 dB");
     assert!(heard[a.len()..] == b[..], "b untouched at full volume");
+
+    // Replay gain per song through crossfade.
+    let (a, b) = (music(40.0, 2), music(40.0, 3));
+    // Each song at its own gain, then mixed. Regression: one output volume put a's gain on b.
+    let ideal = simulated(&[("a", &at(&a, 0.5)), ("b", &b)], crossfade(6));
+    let mut app = sim::App::new();
+    app.prefs = crossfade(6);
+    app.gains.insert("a".into(), 0.5);
+    let rig = Rig::with_app(&[("a", &a), ("b", &b)], app, Settings::default());
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
+    let heard = rig.heard.lock().clone();
+    assert_eq!(heard.len(), ideal.len());
+    assert_eq!(beyond_dither(&heard, &ideal), None, "every sample as a at half its level mixed into b");
+
+    // Replay gain per song through automix.
+    // A stretched AutoMix between songs at 0.5 and 0.8 gain: each at its own gain before mixing.
+    let (a, b) = (music(40.0, 44), music(40.0, 45));
+    let run = |songs: &[(&str, &[i16])], gains: &[(&str, f32)]| {
+        let live = Live::new(TransitionPrefs { auto_mix: true, auto_mix_max_s: 12, echo_out: false, ..prefs_off() });
+        {
+            let mut app = live.0.lock();
+            for t in [measured("a", 120.0, 40_000), measured("b", 123.0, 40_000)] {
+                app.analyses.insert(t.song_id.clone(), t);
+            }
+            for (id, g) in gains {
+                app.gains.insert(id.to_string(), *g);
+            }
+        }
+        let rig = Rig::with_app(songs, live.clone(), Settings::default());
+        rig.engine.play_at(0, 0);
+        assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
+        let log = live.0.lock().log.clone();
+        assert!(log.iter().any(|l| l.contains("transition a -> b: BeatMatched") && l.contains("tempo x0.976")), "{log:?}");
+        let heard = rig.heard.lock().clone();
+        heard
+    };
+    let (qa, qb) = (at(&a, 0.5), at(&b, 0.8));
+    let ideal = run(&[("a", &qa), ("b", &qb)], &[]);
+    let heard = run(&[("a", &a), ("b", &b)], &[("a", 0.5), ("b", 0.8)]);
+    assert_eq!(heard.len(), ideal.len());
+    // Sample-exact up to the stretch (dither may move its splices); after, by level every 100 ms.
+    let stretch = beyond_dither(&heard, &ideal).unwrap_or(heard.len());
+    assert!(stretch > RATE as usize * 2 * 25, "every sample as a at half its level up to the mix: {} s", stretch as f64 / 2.0 / RATE as f64);
+    let db = |x: &[i16]| 10.0 * (x.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / x.len() as f64).log10();
+    let w = RATE as usize / 5;
+    let worst = heard.chunks(w).zip(ideal.chunks(w)).map(|(h, i)| (db(h) - db(i)).abs()).fold(0.0, f64::max);
+    assert!(worst < 0.1, "every tenth of a second at the gain-then-mix level: {worst:.3} dB off");
 }
 
 fn rms(s: &[i16]) -> f64 {
@@ -893,11 +1006,8 @@ fn hi_res_keeps_24_bits() {
     assert_eq!(heard.len(), a.len());
     let off = heard.iter().zip(&a).position(|(h, s)| *h != *s as f32 / 8_388_608.0);
     assert_eq!(off, None, "every one of the 24 bits, in float");
-}
 
-/// Hi-res with the equalizer runs the chain on all 24 bits (the 16-bit chain lost the low byte).
-#[test]
-fn hi_res_equalizer_on_24_bits() {
+    // Hi-res with the equalizer runs the chain on all 24 bits (the 16-bit chain lost the low byte).
     let a = music24(8.0, 9);
     let files = vec![("a".to_string(), wav24(&a), 8_000)];
     let rig = Rig::build(files, sim::App::new(), Settings { hi_res: true, ..loud_eq() }, Extra { float: true, ..Extra::default() });
@@ -925,9 +1035,9 @@ fn wav_at(samples: &[i16], rate: u32) -> Vec<u8> {
     common::wav(rate, samples)
 }
 
-/// A gapless join into another rate reopens the device at that rate instead of resampling.
 #[test]
-fn gapless_rate_change_reopens_device() {
+fn device_format_choices() {
+    // A gapless join into another rate reopens the device at that rate instead of resampling.
     let (a, b) = (music(6.0, 51), music(6.0, 52));
     let files = vec![("a".to_string(), wav(&a), 6_000), ("b".to_string(), wav_at(&b, 48_000), (b.len() / 2) as i64 * 1000 / 48_000)];
     let rig = Rig::build(files, sim::App::new(), Settings::default(), Extra::default());
@@ -938,11 +1048,8 @@ fn gapless_rate_change_reopens_device() {
     assert_eq!(rig.card.lock().feed.as_ref().map(|f| f.format().rate), Some(48_000));
     assert!(heard[..a.len()] == a[..], "a whole");
     assert!(heard[a.len()..] == b[..], "b sample for sample, at 48 kHz");
-}
 
-/// With a 48 kHz maximum, 96 kHz is halved at its own pitch and level; 44.1 kHz passes.
-#[test]
-fn max_rate_converts_within_family() {
+    // With a 48 kHz maximum, 96 kHz is halved at its own pitch and level; 44.1 kHz passes.
     let secs = 3.0;
     let tone: Vec<i16> = (0..(96_000.0 * secs) as usize).flat_map(|i| [((i as f64 * 1000.0 * std::f64::consts::TAU / 96_000.0).sin() * 16000.0).round() as i16; 2]).collect();
     let files = vec![("hi".to_string(), wav_at(&tone, 96_000), 3_000)];
@@ -971,10 +1078,8 @@ fn max_rate_converts_within_family() {
     rig.engine.play_at(0, 0);
     assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
     assert!(*rig.heard.lock() == a, "44.1 kHz, under the maximum: as it is");
-}
 
-#[test]
-fn device_16_bit_gets_16_bit_chain() {
+    // Device 16 bit gets 16 bit chain.
     let a = music24(8.0, 10);
     let files = vec![("a".to_string(), wav24(&a), 8_000)];
     let rig = Rig::build(files, sim::App::new(), Settings { hi_res: true, ..Settings::default() }, Extra::default());
@@ -991,7 +1096,7 @@ fn files(songs: &[(&str, &[i16])]) -> Vec<(String, Vec<u8>, i64)> {
 }
 
 #[test]
-fn failed_connection_reported_and_skipped() {
+fn failed_songs() {
     let (a, b) = (music(10.0, 11), music(6.0, 12));
     let songs: [(&str, &[i16]); 2] = [("a", &a), ("b", &b)];
     let extra = Extra::default();
@@ -1007,6 +1112,21 @@ fn failed_connection_reported_and_skipped() {
     let four = RATE as usize * 2 * 39 / 10;
     assert!(heard[..four] == a[..four], "what came of a played: {} heard, {:?}", heard.len(), heard.iter().zip(&a).position(|(h, s)| h != s));
     assert!(heard[heard.len() - b.len()..] == b[..], "then b, whole");
+
+    // Play retries failed song.
+    let a = music(3.0, 21);
+    let songs: [(&str, &[i16]); 1] = [("a", &a)];
+    let extra = Extra::default();
+    extra.server.cut.lock().push(("a".into(), 0));
+    let rig = Rig::build(files(&songs), sim::App::new(), Settings::default(), extra);
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(30, |r| r.events.lock().iter().any(|e| matches!(e, Event::Error { id, .. } if id == "a"))), "{:?}", rig.events.lock());
+    assert!(rig.wait_for(10, |r| r.engine.status().state == State::Paused), "stopped there: {:?}", rig.events.lock());
+    assert!(rig.events.lock().iter().any(|e| matches!(e, Event::Stopped { .. })), "and says it stopped by itself: {:?}", rig.events.lock());
+    rig.server.cut.lock().clear();
+    rig.engine.play();
+    assert!(rig.wait_for(20, Rig::ended), "{:?}", rig.events.lock());
+    assert!(*rig.heard.lock() == a, "a, whole, not the clock run over nothing");
 }
 
 #[test]
@@ -1158,23 +1278,6 @@ fn stop_before_later_play_is_superseded() {
     assert!(!rig.engine.superseded(&Event::Bridge { plays: second }));
 }
 
-#[test]
-fn play_retries_failed_song() {
-    let a = music(3.0, 21);
-    let songs: [(&str, &[i16]); 1] = [("a", &a)];
-    let extra = Extra::default();
-    extra.server.cut.lock().push(("a".into(), 0));
-    let rig = Rig::build(files(&songs), sim::App::new(), Settings::default(), extra);
-    rig.engine.play_at(0, 0);
-    assert!(rig.wait_for(30, |r| r.events.lock().iter().any(|e| matches!(e, Event::Error { id, .. } if id == "a"))), "{:?}", rig.events.lock());
-    assert!(rig.wait_for(10, |r| r.engine.status().state == State::Paused), "stopped there: {:?}", rig.events.lock());
-    assert!(rig.events.lock().iter().any(|e| matches!(e, Event::Stopped { .. })), "and says it stopped by itself: {:?}", rig.events.lock());
-    rig.server.cut.lock().clear();
-    rig.engine.play();
-    assert!(rig.wait_for(20, Rig::ended), "{:?}", rig.events.lock());
-    assert!(*rig.heard.lock() == a, "a, whole, not the clock run over nothing");
-}
-
 /// `s` scaled by `gain`, rounded as the player rounds.
 fn at(s: &[i16], gain: f32) -> Vec<i16> {
     s.iter().map(|&v| (v as f32 * gain).round() as i16).collect()
@@ -1183,22 +1286,6 @@ fn at(s: &[i16], gain: f32) -> Vec<i16> {
 /// The first sample of `heard` further than dither allows from `ideal`.
 fn beyond_dither(heard: &[i16], ideal: &[i16]) -> Option<usize> {
     heard.iter().zip(ideal).position(|(h, i)| (*h as i32 - *i as i32).abs() > 2)
-}
-
-#[test]
-fn replay_gain_per_song_through_crossfade() {
-    let (a, b) = (music(40.0, 2), music(40.0, 3));
-    // Each song at its own gain, then mixed. Regression: one output volume put a's gain on b.
-    let ideal = simulated(&[("a", &at(&a, 0.5)), ("b", &b)], crossfade(6));
-    let mut app = sim::App::new();
-    app.prefs = crossfade(6);
-    app.gains.insert("a".into(), 0.5);
-    let rig = Rig::with_app(&[("a", &a), ("b", &b)], app, Settings::default());
-    rig.engine.play_at(0, 0);
-    assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
-    let heard = rig.heard.lock().clone();
-    assert_eq!(heard.len(), ideal.len());
-    assert_eq!(beyond_dither(&heard, &ideal), None, "every sample as a at half its level mixed into b");
 }
 
 // ---- settings changed while music plays ----
@@ -1272,20 +1359,6 @@ fn playing(songs: &[(&str, &[i16])], app: impl App + Send + 'static, settings: S
 }
 
 #[test]
-fn fade_setting_applies_to_next_pause() {
-    let a = vec![8000i16; RATE as usize * 2 * 20];
-    let rig = playing(&[("a", &a)], sim::App::new(), Settings::default());
-    // Nothing happens until the next pause.
-    rig.engine.set_settings(Settings { fade_ms: 400, ..Settings::default() });
-    rig.engine.pause();
-    assert!(rig.wait_for(5, |r| r.engine.status().state == State::Paused));
-    rig.run(4_000);
-    let heard = rig.heard.lock().clone();
-    assert!(heard[heard.len() - 2].abs() < 100, "faded to silence: {}", heard[heard.len() - 2]);
-    assert!(heard.iter().any(|&v| v > 2000 && v < 6000), "a ramp down, not a cut");
-}
-
-#[test]
 fn bit_perfect_drops_replay_gain_from_next_song() {
     let (a, b) = (music(20.0, 32), music(10.0, 33));
     let mut app = sim::App::new();
@@ -1299,18 +1372,7 @@ fn bit_perfect_drops_replay_gain_from_next_song() {
 }
 
 #[test]
-fn longer_crossfade_applies_to_next_mix() {
-    let (a, b) = (music(30.0, 34), music(20.0, 35));
-    let live = Live::new(crossfade(2));
-    let rig = playing(&[("a", &a), ("b", &b)], live.clone(), Settings::default());
-    live.0.lock().prefs = crossfade(6);
-    rig.engine.replan();
-    assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
-    assert_eq!(rig.heard.lock().len(), a.len() + b.len() - RATE as usize * 2 * 6, "six seconds of overlap, not two");
-}
-
-#[test]
-fn crossfade_off_joins_gaplessly() {
+fn crossfade_setting_changes() {
     let (a, b) = (music(30.0, 36), music(10.0, 37));
     let live = Live::new(crossfade(6));
     let rig = playing(&[("a", &a), ("b", &b)], live.clone(), Settings::default());
@@ -1319,6 +1381,15 @@ fn crossfade_off_joins_gaplessly() {
     assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
     let heard = rig.heard.lock().clone();
     assert!(heard.len() == a.len() + b.len() && heard[..a.len()] == a[..] && heard[a.len()..] == b[..], "a then b, every sample");
+
+    // Longer crossfade applies to next mix.
+    let (a, b) = (music(30.0, 34), music(20.0, 35));
+    let live = Live::new(crossfade(2));
+    let rig = playing(&[("a", &a), ("b", &b)], live.clone(), Settings::default());
+    live.0.lock().prefs = crossfade(6);
+    rig.engine.replan();
+    assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
+    assert_eq!(rig.heard.lock().len(), a.len() + b.len() - RATE as usize * 2 * 6, "six seconds of overlap, not two");
 }
 
 /// An analysis of steady music at `bpm`.
@@ -1350,7 +1421,7 @@ fn measured(id: &str, bpm: f64, ms: i64) -> TrackAnalysis {
 }
 
 #[test]
-fn automix_on_mixes_current_song() {
+fn automix_switched_on() {
     let (a, b) = (music(40.0, 38), music(40.0, 39));
     let live = Live::new(prefs_off());
     let rig = playing(&[("a", &a), ("b", &b)], live.clone(), Settings::default());
@@ -1366,42 +1437,25 @@ fn automix_on_mixes_current_song() {
     assert!(log.iter().any(|l| l.contains("transition a -> b: BeatMatched")), "{log:?}");
     assert!(log.iter().any(|l| l.contains("mixing: the next track arrived")), "{log:?}");
     assert!(rig.heard.lock().len() < a.len() + b.len(), "the songs overlap");
-}
 
-#[test]
-fn replay_gain_per_song_through_automix() {
-    // A stretched AutoMix between songs at 0.5 and 0.8 gain: each at its own gain before mixing.
-    let (a, b) = (music(40.0, 44), music(40.0, 45));
-    let run = |songs: &[(&str, &[i16])], gains: &[(&str, f32)]| {
-        let live = Live::new(TransitionPrefs { auto_mix: true, auto_mix_max_s: 12, echo_out: false, ..prefs_off() });
-        {
-            let mut app = live.0.lock();
-            for t in [measured("a", 120.0, 40_000), measured("b", 123.0, 40_000)] {
-                app.analyses.insert(t.song_id.clone(), t);
-            }
-            for (id, g) in gains {
-                app.gains.insert(id.to_string(), *g);
-            }
-        }
-        let rig = Rig::with_app(songs, live.clone(), Settings::default());
-        rig.engine.play_at(0, 0);
-        assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
-        let log = live.0.lock().log.clone();
-        assert!(log.iter().any(|l| l.contains("transition a -> b: BeatMatched") && l.contains("tempo x0.976")), "{log:?}");
-        let heard = rig.heard.lock().clone();
-        heard
-    };
-    let (qa, qb) = (at(&a, 0.5), at(&b, 0.8));
-    let ideal = run(&[("a", &qa), ("b", &qb)], &[]);
-    let heard = run(&[("a", &a), ("b", &b)], &[("a", 0.5), ("b", 0.8)]);
-    assert_eq!(heard.len(), ideal.len());
-    // Sample-exact up to the stretch (dither may move its splices); after, by level every 100 ms.
-    let stretch = beyond_dither(&heard, &ideal).unwrap_or(heard.len());
-    assert!(stretch > RATE as usize * 2 * 25, "every sample as a at half its level up to the mix: {} s", stretch as f64 / 2.0 / RATE as f64);
-    let db = |x: &[i16]| 10.0 * (x.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / x.len() as f64).log10();
-    let w = RATE as usize / 5;
-    let worst = heard.chunks(w).zip(ideal.chunks(w)).map(|(h, i)| (db(h) - db(i)).abs()).fold(0.0, f64::max);
-    assert!(worst < 0.1, "every tenth of a second at the gain-then-mix level: {worst:.3} dB off");
+    // Automix on near end mixes.
+    let (a, b) = (music(40.0, 54), music(40.0, 55));
+    let live = Live::new(prefs_off());
+    // At 26 s (mix at 28 s) the ring holds a's end and b.
+    let rig = playing_until(&[("a", &a), ("b", &b)], live.clone(), Settings::default(), 26.0);
+    {
+        let mut app = live.0.lock();
+        app.analyses.insert("a".into(), measured("a", 120.0, 40_000));
+        app.analyses.insert("b".into(), measured("b", 120.0, 40_000));
+        app.prefs = TransitionPrefs { auto_mix: true, auto_mix_max_s: 12, echo_out: false, ..prefs_off() };
+    }
+    rig.engine.set_settings(Settings { auto_mix: true, ..Settings::default() });
+    rig.engine.replan();
+    assert!(rig.wait_for(60, Rig::ended), "{:?} {:?} {:?}", rig.events.lock(), rig.engine.status(), live.0.lock().log);
+    let log = live.0.lock().log.clone();
+    assert!(log.iter().any(|l| l.contains("transition a -> b: BeatMatched")), "{log:?}");
+    assert!(log.iter().any(|l| l.contains("mixing: the next track arrived")), "{log:?}");
+    assert!(rig.heard.lock().len() < a.len() + b.len() - RATE as usize * 2 * 4, "the songs overlap: {log:?}");
 }
 
 // ---- the sound changed while music plays: heard as rendered offline ----
@@ -1454,47 +1508,34 @@ fn with_sound(sound: nori_engine::Sound) -> Settings {
     Settings { sound, ..Settings::default() }
 }
 
+/// Each change is heard from the ear on, as the chain renders it offline, and none fetches the song
+/// again: (song, first settings, steps, how late a change may start in ms).
 #[test]
-fn equalizer_changes_seamlessly() {
-    let a = music(20.0, 42);
-    let steps = [(3_000, loud_eq()), (7_000, with_sound(nori_engine::Sound { preamp_db: -6.0, limiter: true, mono: true, ..Default::default() })), (12_000, Settings::default())];
-    let (rig, live, asked) = stepped(&[("a", &a)], prefs_off(), Settings::default(), &steps);
-    heard_as_rendered(&rig, &live, &a, &Settings::default(), &steps, &asked, 6);
-}
-
-#[test]
-fn compressor_changes_seamlessly() {
-    let a = music(15.0, 43);
+fn sound_changes_seamlessly() {
     let squeeze = |preset: CompressorPreset| with_sound(nori_engine::Sound { effects: Effects { compressor: Some(preset.settings()), ..Effects::default() }, limiter: true, ..Default::default() });
-    let steps = [(3_000, squeeze(CompressorPreset::Strong)), (8_000, squeeze(CompressorPreset::Balanced))];
-    let (rig, live, asked) = stepped(&[("a", &a)], prefs_off(), Settings::default(), &steps);
-    heard_as_rendered(&rig, &live, &a, &Settings::default(), &steps, &asked, 6);
+    let mut gaps = music(30.0, 45);
+    gaps[RATE as usize * 2 * 8..RATE as usize * 2 * 12].fill(0);
+    gaps[RATE as usize * 2 * 20..RATE as usize * 2 * 23].fill(0);
+    let cases: Vec<(&str, Vec<i16>, Settings, Vec<(i64, Settings)>, usize)> = vec![
+        ("equalizer", music(20.0, 42), Settings::default(), vec![(3_000, loud_eq()), (7_000, with_sound(nori_engine::Sound { preamp_db: -6.0, limiter: true, mono: true, ..Default::default() })), (12_000, Settings::default())], 6),
+        ("compressor", music(15.0, 43), Settings::default(), vec![(3_000, squeeze(CompressorPreset::Strong)), (8_000, squeeze(CompressorPreset::Balanced))], 6),
+        ("speed", music(20.0, 44), Settings::default(), vec![(3_000, Settings { speed: 1.5, ..Settings::default() }), (6_000, Settings { speed: 0.8, pitch: 1.1, ..Settings::default() }), (9_000, Settings::default())], 20),
+        // On before the first silence, off in the middle of the second.
+        ("silence skipping", gaps, loud_eq(), vec![(3_000, Settings { skip_silence: true, ..loud_eq() }), (17_500, loud_eq())], 120),
+        ("all at once", music(20.0, 50), Settings::default(), vec![(2_000, loud_eq()), (4_000, Settings { speed: 1.3, ..loud_eq() }), (6_000, Settings { skip_silence: true, ..Settings::default() }), (8_000, quieter(-6.0))], 120),
+    ];
+    for (what, a, first, steps, late_ms) in cases {
+        let (rig, live, asked) = stepped(&[("a", &a)], prefs_off(), first.clone(), &steps);
+        heard_as_rendered(&rig, &live, &a, &first, &steps, &asked, late_ms);
+        assert_eq!(rig.server.requests.lock().len(), 1, "{what}: {:?}", rig.server.requests.lock());
+        if what == "silence skipping" {
+            assert!(rig.heard.lock().len() < a.len() - RATE as usize * 2 * 3, "the first silence mostly skipped");
+        }
+    }
 }
 
 #[test]
-fn speed_changes_seamlessly() {
-    let a = music(20.0, 44);
-    let fast = Settings { speed: 1.5, ..Settings::default() };
-    let steps = [(3_000, fast.clone()), (6_000, Settings { speed: 0.8, pitch: 1.1, ..Settings::default() }), (9_000, Settings::default())];
-    let (rig, live, asked) = stepped(&[("a", &a)], prefs_off(), Settings::default(), &steps);
-    heard_as_rendered(&rig, &live, &a, &Settings::default(), &steps, &asked, 20);
-}
-
-#[test]
-fn silence_skipping_changes_seamlessly() {
-    let mut a = music(30.0, 45);
-    a[RATE as usize * 2 * 8..RATE as usize * 2 * 12].fill(0);
-    a[RATE as usize * 2 * 20..RATE as usize * 2 * 23].fill(0);
-    let skip = Settings { skip_silence: true, ..loud_eq() };
-    // On before the first silence, off in the middle of the second.
-    let steps = [(3_000, skip), (17_500, loud_eq())];
-    let (rig, live, asked) = stepped(&[("a", &a)], prefs_off(), loud_eq(), &steps);
-    heard_as_rendered(&rig, &live, &a, &loud_eq(), &steps, &asked, 120);
-    assert!(rig.heard.lock().len() < a.len() - RATE as usize * 2 * 3, "the first silence mostly skipped");
-}
-
-#[test]
-fn equalizer_changes_seamlessly_in_a_crossfade() {
+fn eq_change_in_a_mix() {
     let (a, b) = (music(20.0, 46), music(20.0, 47));
     let songs: [(&str, &[i16]); 2] = [("a", &a), ("b", &b)];
     // The crossfade runs from 14 s to 20 s of what is heard.
@@ -1502,10 +1543,42 @@ fn equalizer_changes_seamlessly_in_a_crossfade() {
     let steps = [(16_000, loud_eq())];
     let (rig, live, asked) = stepped(&songs, crossfade(6), Settings::default(), &steps);
     heard_as_rendered(&rig, &live, &raw, &Settings::default(), &steps, &asked, 6);
+
+    // Equalizer changes seamlessly in a stretched automix.
+    let (a, b) = (music(40.0, 44), music(40.0, 45));
+    let songs: [(&str, &[i16]); 2] = [("a", &a), ("b", &b)];
+    let prefs = TransitionPrefs { auto_mix: true, auto_mix_max_s: 12, echo_out: false, ..prefs_off() };
+    let run = |steps: &[(i64, Settings)]| {
+        let live = Live::new(prefs);
+        for t in [measured("a", 120.0, 40_000), measured("b", 123.0, 40_000)] {
+            live.0.lock().analyses.insert(t.song_id.clone(), t);
+        }
+        let rig = Rig::with_app(&songs, live.clone(), Settings::default());
+        rig.engine.play_at(0, 0);
+        let mut asked = Vec::new();
+        for (ms, s) in steps {
+            let frames = (*ms * RATE as i64 / 1000) as usize;
+            assert!(rig.wait_for(60, |r| r.heard.lock().len() >= frames * 2));
+            asked.push(rig.heard.lock().len() / 2);
+            assert!(rig.engine.status().mixing, "changed in the mix");
+            rig.engine.set_settings(s.clone());
+        }
+        assert!(rig.wait_for(120, Rig::ended));
+        let log = live.0.lock().log.clone();
+        assert!(log.iter().any(|l| l.contains("transition a -> b: BeatMatched") && l.contains("tempo x0.976")), "{log:?}");
+        (rig, live, asked)
+    };
+    // What the chain is given, as a run without a change hears it.
+    let (plain, _, _) = run(&[]);
+    let raw = plain.heard.lock().clone();
+    // In the middle of the mix, the incoming song stretched.
+    let steps = [(33_000, loud_eq())];
+    let (rig, live, asked) = run(&steps);
+    heard_as_rendered(&rig, &live, &raw, &Settings::default(), &steps, &asked, 6);
 }
 
 #[test]
-fn equalizer_changes_seamlessly_right_after_a_seek() {
+fn eq_change_after_seek_or_pause() {
     let a = music(20.0, 48);
     let live = Live::new(prefs_off());
     let rig = Rig::with_app(&[("a", &a)], live.clone(), Settings::default());
@@ -1530,10 +1603,8 @@ fn equalizer_changes_seamlessly_right_after_a_seek() {
     if let Some(at) = reference::first_difference(&played, &want, 0) {
         panic!("{}", reference::describe(&played, &want, at, RATE));
     }
-}
 
-#[test]
-fn equalizer_change_while_paused_heard_on_play() {
+    // Equalizer change while paused heard on play.
     let a = music(15.0, 49);
     let live = Live::new(prefs_off());
     let rig = Rig::with_app(&[("a", &a)], live.clone(), Settings::default());
@@ -1576,40 +1647,6 @@ fn replay_gain_change_heard_at_once() {
     if let Some(at) = reference::first_difference(&heard, &want, 1) {
         panic!("{}", reference::describe(&heard, &want, at, RATE));
     }
-}
-
-#[test]
-fn equalizer_changes_seamlessly_in_a_stretched_automix() {
-    let (a, b) = (music(40.0, 44), music(40.0, 45));
-    let songs: [(&str, &[i16]); 2] = [("a", &a), ("b", &b)];
-    let prefs = TransitionPrefs { auto_mix: true, auto_mix_max_s: 12, echo_out: false, ..prefs_off() };
-    let run = |steps: &[(i64, Settings)]| {
-        let live = Live::new(prefs);
-        for t in [measured("a", 120.0, 40_000), measured("b", 123.0, 40_000)] {
-            live.0.lock().analyses.insert(t.song_id.clone(), t);
-        }
-        let rig = Rig::with_app(&songs, live.clone(), Settings::default());
-        rig.engine.play_at(0, 0);
-        let mut asked = Vec::new();
-        for (ms, s) in steps {
-            let frames = (*ms * RATE as i64 / 1000) as usize;
-            assert!(rig.wait_for(60, |r| r.heard.lock().len() >= frames * 2));
-            asked.push(rig.heard.lock().len() / 2);
-            assert!(rig.engine.status().mixing, "changed in the mix");
-            rig.engine.set_settings(s.clone());
-        }
-        assert!(rig.wait_for(120, Rig::ended));
-        let log = live.0.lock().log.clone();
-        assert!(log.iter().any(|l| l.contains("transition a -> b: BeatMatched") && l.contains("tempo x0.976")), "{log:?}");
-        (rig, live, asked)
-    };
-    // What the chain is given, as a run without a change hears it.
-    let (plain, _, _) = run(&[]);
-    let raw = plain.heard.lock().clone();
-    // In the middle of the mix, the incoming song stretched.
-    let steps = [(33_000, loud_eq())];
-    let (rig, live, asked) = run(&steps);
-    heard_as_rendered(&rig, &live, &raw, &Settings::default(), &steps, &asked, 6);
 }
 
 /// On a device holding seconds (a phone's AudioTrack) the change is heard at once too: the device drops
@@ -1666,15 +1703,6 @@ fn slider_drag_changes_seamlessly() {
     let ratio = loud(&heard[end - RATE as usize..end]) / loud(&a[end - RATE as usize..end]);
     assert!((ratio - 10f64.powf(-13.0 / 20.0)).abs() < 0.01, "at the last step's level: {ratio}");
     assert_eq!(rig.waits(), 0);
-}
-
-/// Sound changes are made from what the engine kept: the song is never fetched again for them.
-#[test]
-fn sound_changes_fetch_nothing() {
-    let a = music(20.0, 50);
-    let steps = [(2_000, loud_eq()), (4_000, Settings { speed: 1.3, ..loud_eq() }), (6_000, Settings { skip_silence: true, ..Settings::default() }), (8_000, quieter(-6.0))];
-    let (rig, _, _) = stepped(&[("a", &a)], prefs_off(), Settings::default(), &steps);
-    assert_eq!(rig.server.requests.lock().len(), 1, "{:?}", rig.server.requests.lock());
 }
 
 /// Settings with a pre-amp of `db` (the chain on, only turning down).
@@ -1785,7 +1813,7 @@ fn heard_in(rig: &Rig, song: &[i16]) -> Option<i64> {
 }
 
 #[test]
-fn fast_next_moves_one_song_per_press() {
+fn nexts_move_one_song_each() {
     let songs = many(6, 60.0, 400);
     for gap in [0u64, 30, 130, 200] {
         let rig = at_pace(&listed(&songs), sim::App::new(), 0);
@@ -1812,10 +1840,8 @@ fn fast_next_moves_one_song_per_press() {
         assert!(heard_in(&rig, &songs[4].1).is_none(), "gap {gap}: never on to e");
         rig.engine.stop();
     }
-}
 
-#[test]
-fn engine_next_moves_one_song_per_press() {
+    // Engine next moves one song per press.
     let songs = many(6, 60.0, 410);
     let rig = at_pace(&listed(&songs), sim::App::new(), 0);
     assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2));
@@ -1882,17 +1908,13 @@ fn next_before_the_end(prefs: TransitionPrefs, measured_songs: bool, name: &str)
 }
 
 #[test]
-fn next_before_gapless_end_changes_once() {
+fn next_before_end_changes_once() {
     next_before_the_end(prefs_off(), false, "gapless");
-}
 
-#[test]
-fn next_before_crossfade_changes_once() {
+    // Next before crossfade changes once.
     next_before_the_end(crossfade(6), false, "crossfade");
-}
 
-#[test]
-fn next_before_automix_changes_once() {
+    // Next before automix changes once.
     let prefs = TransitionPrefs { auto_mix: true, auto_mix_max_s: 12, echo_out: false, ..prefs_off() };
     next_before_the_end(prefs, true, "automix");
 }
@@ -1909,7 +1931,7 @@ fn playing_until(songs: &[(&str, &[i16])], app: impl App + Send + 'static, setti
 }
 
 #[test]
-fn crossfade_on_after_ending_made_still_mixes() {
+fn crossfade_switched_late() {
     let (a, b) = (music(30.0, 50), music(20.0, 51));
     let live = Live::new(prefs_off());
     // At 20 s the ring holds a's end joined gaplessly to b.
@@ -1922,10 +1944,8 @@ fn crossfade_on_after_ending_made_still_mixes() {
     let heard = rig.heard.lock().len();
     let overlap = (a.len() + b.len()).saturating_sub(heard) as f64 / 2.0 / RATE as f64;
     assert!((overlap - 6.0).abs() < 0.2, "six seconds of overlap, not {overlap:.2}: {log:?}");
-}
 
-#[test]
-fn crossfade_off_after_mix_made_joins_gaplessly() {
+    // Crossfade off after mix made joins gaplessly.
     let (a, b) = (music(30.0, 52), music(20.0, 53));
     let live = Live::new(crossfade(6));
     // At 20 s a's ending from 24 s is held or already mixed.
@@ -1948,27 +1968,6 @@ fn crossfade_off_after_mix_made_joins_gaplessly() {
     }
     assert!(log.iter().any(|l| l.contains("the ending of a is made again from 24000 ms: gapless now")), "{log:?}");
     assert_eq!(rig.waits(), 0);
-}
-
-#[test]
-fn automix_on_near_end_mixes() {
-    let (a, b) = (music(40.0, 54), music(40.0, 55));
-    let live = Live::new(prefs_off());
-    // At 26 s (mix at 28 s) the ring holds a's end and b.
-    let rig = playing_until(&[("a", &a), ("b", &b)], live.clone(), Settings::default(), 26.0);
-    {
-        let mut app = live.0.lock();
-        app.analyses.insert("a".into(), measured("a", 120.0, 40_000));
-        app.analyses.insert("b".into(), measured("b", 120.0, 40_000));
-        app.prefs = TransitionPrefs { auto_mix: true, auto_mix_max_s: 12, echo_out: false, ..prefs_off() };
-    }
-    rig.engine.set_settings(Settings { auto_mix: true, ..Settings::default() });
-    rig.engine.replan();
-    assert!(rig.wait_for(60, Rig::ended), "{:?} {:?} {:?}", rig.events.lock(), rig.engine.status(), live.0.lock().log);
-    let log = live.0.lock().log.clone();
-    assert!(log.iter().any(|l| l.contains("transition a -> b: BeatMatched")), "{log:?}");
-    assert!(log.iter().any(|l| l.contains("mixing: the next track arrived")), "{log:?}");
-    assert!(rig.heard.lock().len() < a.len() + b.len() - RATE as usize * 2 * 4, "the songs overlap: {log:?}");
 }
 
 // ---- a song queued while another plays ----
@@ -2120,7 +2119,7 @@ fn made_again(app: &Measuring) -> bool {
 }
 
 #[test]
-fn song_queued_early_is_mixed_into() {
+fn songs_queued_near_end() {
     // At 30 % nothing of a's ending is made: replanned, nothing remade.
     for how in [Queued::PlayNext, Queued::AddToQueue] {
         for with_c in [false, true] {
@@ -2133,10 +2132,8 @@ fn song_queued_early_is_mixed_into() {
             assert!(!made_again(&app), "{:?}", app.log());
         }
     }
-}
 
-#[test]
-fn song_queued_late_remakes_ending() {
+    // Song queued late remakes ending.
     // At 80 % a's ending is made as the end of music: remade into b.
     for how in [Queued::PlayNext, Queued::AddToQueue] {
         let (_rig, app, order) = queued_while_playing(0.8, false, how);
@@ -2144,10 +2141,8 @@ fn song_queued_late_remakes_ending() {
         assert_eq!(order, vec!["a", "b"], "{:?}", app.log());
         assert!(made_again(&app), "the ending in the output was made for nothing after a: {:?}", app.log());
     }
-}
 
-#[test]
-fn song_queued_ahead_of_next_is_mixed_into() {
+    // Song queued ahead of next is mixed into.
     // Before a's mix into c is made: b takes c's place.
     for how in [Queued::PlayNext, Queued::AddToQueue] {
         let (_rig, app, order) = queued_while_playing(0.65, true, how);
@@ -2155,10 +2150,8 @@ fn song_queued_ahead_of_next_is_mixed_into() {
         mixed(&app, "b", "c");
         assert_eq!(order, vec!["a", "b", "c"], "{:?}", app.log());
     }
-}
 
-#[test]
-fn song_queued_behind_next_keeps_ending() {
+    // Song queued behind next keeps ending.
     // a's mix into c is made; b goes after c, nothing remade.
     let (_rig, app, order) = queued_while_playing(0.72, true, Queued::AtTheEnd);
     mixed(&app, "a", "c");
@@ -2469,7 +2462,7 @@ fn place(rig: &Rig) -> (Option<usize>, i64) {
 }
 
 #[test]
-fn same_song_twice_mixes_at_plan() {
+fn same_song_twice() {
     let (rig, live) = twice(60.0, 30_000);
     assert!(rig.wait_for(10, |_| planned_into_itself(&live).is_some()), "a mix is planned: {:?}", live.0.lock().log);
     let at = planned_into_itself(&live).expect("checked");
@@ -2486,10 +2479,8 @@ fn same_song_twice_mixes_at_plan() {
     assert!(p1 < 20_000 && (4_500..5_500).contains(&(p2 - p1)), "the second copy plays on from its start: {p1} -> {p2}");
     assert_eq!(song_events(&rig), [0, 1], "one change of song");
     rig.engine.stop();
-}
 
-#[test]
-fn same_song_twice_seek_stays_in_first_copy() {
+    // Same song twice seek stays in first copy.
     let (rig, live) = twice(90.0, 20_000);
     assert!(rig.wait_for(10, |_| planned_into_itself(&live).is_some()), "a mix is planned: {:?}", live.0.lock().log);
     // A seek bar at -0:50.
@@ -2592,7 +2583,7 @@ fn seek_after_the_end_plays_there() {
 }
 
 #[test]
-fn seek_in_a_mix_plays_the_shown_song() {
+fn seek_in_mix_plays_shown_song() {
     let (a, b) = (music(20.0, 72), music(20.0, 73));
     let rig = Rig::new(&[("a", &a), ("b", &b)], crossfade(6), Settings::default());
     rig.engine.play_at(0, 0);
@@ -2609,10 +2600,8 @@ fn seek_in_a_mix_plays_the_shown_song() {
     let at = heard_in(&rig, song).expect("the shown song plays on");
     assert!((ms - at).abs() < 150, "the seek bar at {ms}, the ear at {at}");
     assert!(!rig.engine.status().mixing, "the mix is gone");
-}
 
-#[test]
-fn seek_paused_in_a_mix_plays_the_shown_song() {
+    // Seek paused in a mix plays the shown song.
     let (a, b) = (music(20.0, 72), music(20.0, 73));
     let rig = Rig::new(&[("a", &a), ("b", &b)], crossfade(6), Settings::default());
     rig.engine.play_at(0, 0);
@@ -2630,7 +2619,7 @@ fn seek_paused_in_a_mix_plays_the_shown_song() {
 }
 
 #[test]
-fn seek_after_its_song_moved_follows_it() {
+fn seek_after_queue_edit() {
     let (a, b, c) = (music(20.0, 74), music(20.0, 75), music(20.0, 76));
     let rig = Rig::new(&[("a", &a), ("b", &b)], prefs_off(), Settings { fade_ms: 400, ..Settings::default() });
     rig.engine.play_at(1, 0);
@@ -2650,10 +2639,8 @@ fn seek_after_its_song_moved_follows_it() {
     let (index, ms) = place(&rig);
     assert_eq!(index, Some(2), "b is at 2 now: {:?}", rig.events.lock());
     assert!((ms - at).abs() < 150, "the seek bar at {ms}, the ear at {at}");
-}
 
-#[test]
-fn seek_after_its_song_went_plays_what_took_its_place() {
+    // Seek after its song went plays what took its place.
     let (a, b) = (music(20.0, 77), music(20.0, 78));
     let rig = Rig::new(&[("a", &a), ("b", &b)], prefs_off(), Settings { fade_ms: 400, ..Settings::default() });
     rig.engine.play_at(0, 0);
@@ -2670,65 +2657,6 @@ fn seek_after_its_song_went_plays_what_took_its_place() {
         (Some(0), None, Some(at)) => assert!((ms - at).abs() < 150, "b at {at}, shown {ms}"),
         (Some(0), Some(at), None) => panic!("a, gone from the queue, plays on at {at} while b is shown at {ms}"),
         other => panic!("heard and shown disagree: {other:?} {:?}", rig.events.lock()),
-    }
-}
-
-/// Every seek lands, however the engine is busy when it is asked: `ask` runs once the rig plays (or
-/// not, per case) and returns the song and place asked for; the ear must be there.
-#[test]
-fn seek_always_lands() {
-    let (a, b, c) = (music(30.0, 61), music(30.0, 62), music(30.0, 63));
-    type Ask = fn(&Rig) -> (usize, i64);
-    let fade = Settings { fade_ms: 400, ..Settings::default() };
-    let cases: [(&str, TransitionPrefs, Settings, bool, Ask); 9] = [
-        ("while opening", prefs_off(), Settings::default(), false, |r| { r.engine.play_at(0, 0); r.engine.go_to(0, 12_000); (0, 12_000) }),
-        ("before the first bytes", prefs_off(), Settings::default(), false, |r| {
-            r.server.slow.lock().push(("a".into(), Duration::from_millis(1_500)));
-            r.engine.play_at(0, 0);
-            r.run(300);
-            r.engine.go_to(0, 12_000);
-            (0, 12_000)
-        }),
-        ("by seek while opening", prefs_off(), Settings::default(), false, |r| { r.engine.play_at(0, 0); r.engine.seek(12_000); (0, 12_000) }),
-        ("playing", prefs_off(), Settings::default(), true, |r| { r.engine.go_to(0, 12_000); (0, 12_000) }),
-        ("in a dip", prefs_off(), fade.clone(), true, |r| { r.engine.go_to(0, 5_000); r.run(100); r.engine.go_to(0, 12_000); (0, 12_000) }),
-        ("after a skip in its dip", prefs_off(), fade.clone(), true, |r| { r.engine.next(); r.engine.go_to(1, 7_000); (1, 7_000) }),
-        ("paused", prefs_off(), Settings::default(), true, |r| {
-            r.engine.pause();
-            r.run(100);
-            r.engine.go_to(0, 12_000);
-            r.run(500);
-            r.engine.play();
-            (0, 12_000)
-        }),
-        ("in a mix", crossfade(6), Settings::default(), true, |r| {
-            assert!(r.wait_for(20, |r| r.engine.status().mixing));
-            let shown = place(r).0.expect("a song shown");
-            r.engine.go_to(shown, 3_000);
-            (shown, 3_000)
-        }),
-        ("with the queue edited in its dip", prefs_off(), fade.clone(), true, |r| {
-            r.engine.go_to(0, 8_000);
-            r.run(50);
-            r.queue.lock().insert(0, vec!["c".into()], nori_player::playlist::Hand::No);
-            r.engine.queue_changed();
-            (1, 8_000)
-        }),
-    ];
-    for (name, prefs, settings, play_first, ask) in cases {
-        let rig = Rig::new(&[("a", &a), ("b", &b), ("c", &c)], prefs, settings);
-        if play_first {
-            rig.engine.play_at(0, 0);
-            assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2), "{name}: plays");
-        }
-        let (index, ms) = ask(&rig);
-        let id = rig.queue.lock().ids()[index].clone();
-        let song = match id.as_str() { "a" => &a, "b" => &b, _ => &c };
-        let heard = rig.heard.lock().len();
-        assert!(rig.wait_for(10, |r| r.heard.lock().len() > heard + 3 * RATE as usize * 2), "{name}: music after the seek");
-        let at = heard_in(&rig, song).unwrap_or_else(|| panic!("{name}: {id} is not what plays: {:?}", rig.events.lock()));
-        assert!((ms + 1_000..ms + 4_000).contains(&at), "{name}: {id} plays at {at} ms, the seek asked for {ms}");
-        assert_eq!(place(&rig).0, Some(index), "{name}: shown on its song");
     }
 }
 

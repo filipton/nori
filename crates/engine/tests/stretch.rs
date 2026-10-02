@@ -291,17 +291,13 @@ fn walk(from_ms: i64, speed: f32, seek_to: Option<i64>) {
 #[test]
 fn place_through_stretched_mix() {
     walk(MIX_AT_MS - 5_000, 1.0, None);
-}
 
-#[test]
-fn place_after_seek_into_stretched_mix() {
+    // Place through stretched mix at speed.
+    walk(MIX_AT_MS - 5_000, 1.25, None);
+
+    // Place after seek into stretched mix.
     // As reported: 9.3 s into a 22 s mix.
     walk(MIX_AT_MS - 5_000, 1.0, Some(MIX_AT_MS + 9_345));
-}
-
-#[test]
-fn place_through_stretched_mix_at_speed() {
-    walk(MIX_AT_MS - 5_000, 1.25, None);
 }
 
 /// The lyrics page through a mix, read per display frame as a phone does, with the output clock briefly

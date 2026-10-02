@@ -1462,7 +1462,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn opus_packets_become_ogg_pages() {
+    fn opus_packets() {
         let mut ogg = Ogg::new(Some(b"OpusHead\x01\x02\x38\x01\x80\xbb\0\0\0\0\0"));
         let mut out = Vec::new();
         // A 20 ms packet (config 1: SILK 20 ms), one frame.
@@ -1486,10 +1486,8 @@ mod tests {
         ogg.page(&vec![0x08; 300], &mut out);
         assert_eq!(out[26], 2, "two lacing values");
         assert_eq!((out[27], out[28]), (255, 45));
-    }
 
-    #[test]
-    fn opus_samples_from_toc() {
+        // Opus samples from toc.
         assert_eq!(opus_samples(&[0x08]), 960, "SILK 20 ms");
         assert_eq!(opus_samples(&[0xfc]), 960, "CELT 20 ms");
         assert_eq!(opus_samples(&[0xf9]), 1920, "two CELT 20 ms frames");
@@ -1500,7 +1498,7 @@ mod tests {
     const JITTER: u64 = 4_410;
 
     #[test]
-    fn head_continues_through_join_restart() {
+    fn head_readings() {
         let mut h = Head::default();
         let far = u64::MAX;
         assert_eq!(h.read(1_000, None, false, JITTER, far), Ok((1_000, Seen::Fine)));
@@ -1508,10 +1506,8 @@ mod tests {
         // Restarted at the join at 11 000.
         assert_eq!(h.read(20, Some(11_000), false, JITTER, far), Ok((11_020, Seen::Joined)));
         assert_eq!(h.read(500, None, false, JITTER, far), Ok((11_500, Seen::Fine)));
-    }
 
-    #[test]
-    fn head_dip_away_from_join_holds() {
+        // Head dip away from join holds.
         let mut h = Head::default();
         let far = u64::MAX;
         assert_eq!(h.read(44_100, None, true, JITTER, far), Ok((44_100, Seen::Fine)));
@@ -1522,10 +1518,8 @@ mod tests {
         assert_eq!(h.read(10, None, true, JITTER, far), Ok((46_000, Seen::Dip)));
         assert_eq!(h.read(900, None, true, JITTER, far), Ok((46_900, Seen::Restarted)));
         assert_eq!(h.read(1_900, None, true, JITTER, far), Ok((47_900, Seen::Fine)));
-    }
 
-    #[test]
-    fn head_restart_only_where_plausible() {
+        // Head restart only where plausible.
         let mut h = Head::default();
         let far = u64::MAX;
         assert_eq!(h.read(441_000, None, false, JITTER, far), Ok((441_000, Seen::Fine)));
@@ -1536,10 +1530,8 @@ mod tests {
         assert_eq!(h.read(300_000, None, true, JITTER, far), Ok((441_000, Seen::Dip)));
         assert_eq!(h.read(300_100, None, true, JITTER, far), Ok((441_000, Seen::Dip)));
         assert_eq!(h.read(441_500, None, true, JITTER, far), Ok((441_500, Seen::Fine)));
-    }
 
-    #[test]
-    fn head_jitter_holds_count() {
+        // Head jitter holds count.
         let mut h = Head::default();
         let far = u64::MAX;
         // A Galaxy S22's timestamp as its track starts (once misread as restarts).
@@ -1556,10 +1548,8 @@ mod tests {
         assert_eq!(h.read(3_021_759, Some(3_022_000), true, JITTER, far), Ok((3_021_762, Seen::Jitter(3))));
         assert_eq!(h.read(3_018_234, Some(3_022_000), true, JITTER, far), Ok((3_021_762, Seen::Jitter(3_528))));
         assert_eq!(h.read(3_021_800, None, true, JITTER, far), Ok((3_021_800, Seen::Fine)));
-    }
 
-    #[test]
-    fn head_ahead_of_clock_rejected() {
+        // Head ahead of clock rejected.
         let mut h = Head::default();
         assert_eq!(h.read(1_000, None, false, JITTER, 50_000), Ok((1_000, Seen::Fine)));
         assert_eq!(h.read(4_000_000, None, false, JITTER, 50_000), Err(4_000_000));
@@ -1567,4 +1557,5 @@ mod tests {
         // A join the clock says cannot be reached is not one.
         assert_eq!(h.read(10, None, false, JITTER, 50_000), Ok((12_000, Seen::Dip)));
     }
+
 }

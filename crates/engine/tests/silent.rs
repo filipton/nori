@@ -178,7 +178,7 @@ impl Rig {
 }
 
 #[test]
-fn panic_restarts_song() {
+fn panics_recover() {
     let r = rig(3);
     r.engine.play_at(0, 0);
     assert!(r.wait_to_hear(0, Duration::from_secs(5)), "the first song plays: {}", r.state());
@@ -190,10 +190,8 @@ fn panic_restarts_song() {
     assert!(r.trouble.lock().forgotten.contains(&r.ids[1]), "and what the disk kept of it went: {}", r.state());
     r.engine.next();
     assert!(r.wait_to_hear(2, Duration::from_secs(5)), "the engine still takes commands: {}", r.state());
-}
 
-#[test]
-fn repeated_panic_skips_song() {
+    // Repeated panic skips song.
     let r = rig(3);
     r.engine.play_at(0, 0);
     assert!(r.wait_to_hear(0, Duration::from_secs(5)), "the first song plays: {}", r.state());
@@ -201,10 +199,8 @@ fn repeated_panic_skips_song() {
     r.engine.play_at(1, 0);
     assert!(r.wait_to_hear(2, Duration::from_secs(5)), "the song after the one that panics plays: {}", r.state());
     assert!(r.events.lock().iter().any(|e| matches!(e, Event::Song { id, .. } if id == &r.ids[2])), "and is said: {}", r.state());
-}
 
-#[test]
-fn loader_panic_fails_song() {
+    // Loader panic fails song.
     let r = rig(3);
     r.trouble.lock().panics_on_read.insert(r.ids[1].clone(), 10);
     r.engine.play_at(1, 0);

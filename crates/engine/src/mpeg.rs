@@ -183,7 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn header_parse() {
+    fn headers() {
         assert_eq!(Header::parse(&[0xff, 0xfb, 0x90, 0x00]), Some(Header { rate: 44_100, channels: 2, len: 417, samples: 1152 }));
         assert_eq!(Header::parse(&[0xff, 0xfb, 0x92, 0x00]).map(|h| h.len), Some(418), "padded");
         assert_eq!(Header::parse(&[0xff, 0xf3, 0x40, 0xc0]), Some(Header { rate: 22_050, channels: 1, len: 104, samples: 576 }));
@@ -192,20 +192,8 @@ mod tests {
         assert_eq!(Header::parse(&[0xff, 0xfb, 0x00, 0x00]), None, "free format");
         assert_eq!(Header::parse(&[0xff, 0xfb, 0x9c, 0x00]), None, "reserved rate");
         assert_eq!(Header::parse(&[0xff, 0xeb, 0x90, 0x00]), None, "reserved version");
-    }
 
-    #[test]
-    fn joined_mid_frame_starts_at_first_whole_frame() {
-        let mut bytes = frame(true, 1)[200..].to_vec();
-        for i in 2..6 {
-            bytes.extend_from_slice(&frame(true, i));
-        }
-        let (got, _) = read_all(frames_of(bytes));
-        assert_eq!(got.iter().map(|g| g.2).collect::<Vec<_>>(), [2, 3, 4, 5]);
-    }
-
-    #[test]
-    fn shape_change_needs_two_agreeing_frames() {
+        // Shape change needs two agreeing frames.
         let mut bytes = Vec::new();
         for i in 1..4 {
             bytes.extend_from_slice(&frame(true, i));
@@ -223,6 +211,16 @@ mod tests {
             got,
             [(44_100, 2, 1), (44_100, 2, 2), (44_100, 2, 3), (44_100, 2, 4), (44_100, 2, 5), (22_050, 1, 6), (22_050, 1, 7), (22_050, 1, 8)]
         );
+    }
+
+    #[test]
+    fn joined_mid_frame_starts_at_first_whole_frame() {
+        let mut bytes = frame(true, 1)[200..].to_vec();
+        for i in 2..6 {
+            bytes.extend_from_slice(&frame(true, i));
+        }
+        let (got, _) = read_all(frames_of(bytes));
+        assert_eq!(got.iter().map(|g| g.2).collect::<Vec<_>>(), [2, 3, 4, 5]);
     }
 
     #[test]

@@ -1451,15 +1451,13 @@ mod tests {
     }
 
     #[test]
-    fn bytes_reserved_once() {
+    fn bytes_reserved() {
         let s = server(300_000);
         let l = Loader::start(s.clone(), "song".into(), LOAD, Some(3_000), None);
         settled(&s, 1);
         assert_eq!(l.0.state.lock().data.capacity(), 300_000, "made once, not grown by doubling");
-    }
 
-    #[test]
-    fn later_burst_reserves_its_bytes() {
+        // Later burst reserves its bytes.
         // 100 bytes/ms: bursts of 4 MB, the next once 1 MB is left.
         let load = [10_000, 40_000, 0, 0, 1 << 30];
         let s = server(10_000_000);
@@ -1529,7 +1527,7 @@ mod tests {
     }
 
     #[test]
-    fn clean_early_end_is_real_end() {
+    fn ends_found() {
         let s = Arc::new(estimating(300_000, 320_000, true));
         let l = Loader::start(s.clone(), "song".into(), LOAD, Some(3_000), None);
         let mut r = l.reader();
@@ -1541,10 +1539,8 @@ mod tests {
         assert_eq!(r.seek(SeekFrom::End(0)).unwrap(), 300_000);
         assert!(l.complete() && l.error().is_none());
         assert_eq!(*s.opens.lock(), vec![0], "nothing asked for past the end");
-    }
 
-    #[test]
-    fn read_past_real_end_is_end() {
+        // Read past real end is end.
         for says in [true, false] {
             let s = Arc::new(estimating(3_000_000, 3_200_000, says));
             let l = Loader::start(s.clone(), "song".into(), LOAD, Some(30_000), None);
@@ -1565,10 +1561,8 @@ mod tests {
             assert_eq!(r.read(&mut [0u8; 16]).unwrap(), 0);
             assert_eq!(l.length(), Some(3_000_000), "the end found where the bytes stop (says {says})");
         }
-    }
 
-    #[test]
-    fn broken_body_at_end_learns_end() {
+        // Broken body at end learns end.
         let mut e = estimating(300_000, 320_000, false);
         e.breaks_at_end = true;
         let s = Arc::new(e);
@@ -1579,6 +1573,23 @@ mod tests {
         assert_eq!(l.length(), Some(300_000));
         assert!(l.error().is_none());
         assert_eq!(*s.opens.lock(), vec![0, 300_000], "asked again where it broke, and told that is the end");
+
+        // Rangeless short answer is end.
+        struct Whole(u64, Mutex<Vec<u64>>);
+        impl ByteSource for Whole {
+            fn open(&self, _: &str, from: u64) -> Result<Body, OpenError> {
+                self.1.lock().push(from);
+                Ok(Body { start: 0, len: Some(self.0 + 50_000), reader: Box::new(Made { at: 0, len: self.0, served: Arc::default() }) })
+            }
+        }
+        let s = Arc::new(Whole(2_000_000, Mutex::new(Vec::new())));
+        let l = Loader::start(s.clone(), "song".into(), LOAD, Some(20_000), None);
+        let mut r = l.reader();
+        read(&mut r, 1000);
+        r.seek(SeekFrom::Start(2_020_000)).unwrap();
+        assert_eq!(r.read(&mut [0u8; 16]).unwrap(), 0);
+        assert_eq!(l.length(), Some(2_000_000), "where the whole answer ended");
+        assert!(l.error().is_none());
     }
 
     #[test]
@@ -1596,10 +1607,10 @@ mod tests {
         assert!(l.error().is_none());
     }
 
-    /// Regression: readers giving up left the wanted one asleep until its timeout (music stopped at a
-    /// song's end).
     #[test]
-    fn abandoned_readers_leave_waiter_woken() {
+    fn abandoned_readers() {
+        // Regression: readers giving up left the wanted one asleep until its timeout (music stopped at a
+        // song's end).
         /// Answers only when let, so all readers are waiting.
         struct Late(Arc<Counting>, Arc<Signal>);
         impl ByteSource for Late {
@@ -1637,10 +1648,8 @@ mod tests {
         assert_eq!(n.expect("the bytes"), 16);
         let took = at - answered;
         assert!(took < Duration::from_secs(3), "read as the bytes came, not after the {READ_TIMEOUT:?} timeout: {took:?}");
-    }
 
-    #[test]
-    fn unwanted_reader_stops_waiting() {
+        // Unwanted reader stops waiting.
         /// Answers from past the start only when let.
         struct Slow(Arc<Counting>, Arc<Signal>);
         impl ByteSource for Slow {
@@ -1667,25 +1676,6 @@ mod tests {
         assert!(r.read(&mut [0u8; 16]).is_err(), "and for good");
         assert_eq!(l.0.state.lock().bursts, 1, "given up before the bytes came");
         answer.bump();
-    }
-
-    #[test]
-    fn rangeless_short_answer_is_end() {
-        struct Whole(u64, Mutex<Vec<u64>>);
-        impl ByteSource for Whole {
-            fn open(&self, _: &str, from: u64) -> Result<Body, OpenError> {
-                self.1.lock().push(from);
-                Ok(Body { start: 0, len: Some(self.0 + 50_000), reader: Box::new(Made { at: 0, len: self.0, served: Arc::default() }) })
-            }
-        }
-        let s = Arc::new(Whole(2_000_000, Mutex::new(Vec::new())));
-        let l = Loader::start(s.clone(), "song".into(), LOAD, Some(20_000), None);
-        let mut r = l.reader();
-        read(&mut r, 1000);
-        r.seek(SeekFrom::Start(2_020_000)).unwrap();
-        assert_eq!(r.read(&mut [0u8; 16]).unwrap(), 0);
-        assert_eq!(l.length(), Some(2_000_000), "where the whole answer ended");
-        assert!(l.error().is_none());
     }
 
     // ---- requests called off ----
@@ -1732,19 +1722,7 @@ mod tests {
     }
 
     #[test]
-    fn dropped_song_cancels_hung_request() {
-        for headers in [true, false] {
-            let s = Arc::new(Silent { headers, ..Silent::default() });
-            let l = Loader::start(s.clone(), "ext-1".into(), LOAD, Some(3_000), None);
-            s.asked.reach(1);
-            drop(l);
-            s.called_off.reach(1);
-            assert_eq!(*s.asked.0.lock(), 1, "and not asked again (headers {headers})");
-        }
-    }
-
-    #[test]
-    fn stalled_request_times_out() {
+    fn timeouts() {
         let s = Silent { headers: true, ..Silent::default() };
         let cancel = Cancel::stalling_after(100);
         let t = Instant::now();
@@ -1757,10 +1735,8 @@ mod tests {
         let Ok(mut b) = open_watched(&s, "ext-1", None, 0, &cancel) else { panic!("the headers came") };
         let e = b.reader.read(&mut [0u8; 16]).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::TimedOut);
-    }
 
-    #[test]
-    fn timeout_fails_song_at_once() {
+        // Timeout fails song at once.
         struct Late(Mutex<u32>);
         impl ByteSource for Late {
             fn open(&self, _: &str, _: u64) -> Result<Body, OpenError> {
@@ -1778,7 +1754,7 @@ mod tests {
     }
 
     #[test]
-    fn let_go_song_stops_retrying_at_once() {
+    fn let_go_songs_stop() {
         struct Down(Signal, Arc<Signal>);
         impl ByteSource for Down {
             fn open(&self, _: &str, _: u64) -> Result<Body, OpenError> {
@@ -1797,6 +1773,16 @@ mod tests {
         s.0.reach(1);
         drop((s, l));
         gone.reach(1);
+
+        // Dropped song cancels hung request.
+        for headers in [true, false] {
+            let s = Arc::new(Silent { headers, ..Silent::default() });
+            let l = Loader::start(s.clone(), "ext-1".into(), LOAD, Some(3_000), None);
+            s.asked.reach(1);
+            drop(l);
+            s.called_off.reach(1);
+            assert_eq!(*s.asked.0.lock(), 1, "and not asked again (headers {headers})");
+        }
     }
 
     /// A server that answers and breaks every body before a byte fails the song after a few tries,

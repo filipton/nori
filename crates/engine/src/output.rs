@@ -983,7 +983,7 @@ mod tests {
     }
 
     #[test]
-    fn cut_ahead_of_device_blends_in() {
+    fn cuts() {
         let (mut t, mut f, _) = by_hand();
         t.write(&pcm(&[16384; 200]), 200.0);
         let mut out = vec![0f32; 200];
@@ -1000,10 +1000,8 @@ mod tests {
         }
         assert!(out[40 + blend..140].iter().all(|&v| v == -0.5), "then the new music");
         assert!((t.played_media() - 140.0).abs() < 1e-9, "{}", t.played_media());
-    }
 
-    #[test]
-    fn cut_behind_device_takes_back_what_it_did_not_play() {
+        // Cut behind device takes back what it did not play.
         let (mut t, mut f, held) = by_hand();
         t.write(&pcm(&[16384; 1000]), 1000.0);
         let mut out = vec![0f32; 600];
@@ -1023,10 +1021,8 @@ mod tests {
         f.rewind(400);
         assert_eq!(f.pull(&mut out), 100);
         assert_eq!((out[0] * 32768.0).round() as u64, 300 - at, "and plays on from where it got to, in the new music");
-    }
 
-    #[test]
-    fn pull_after_a_cut_behind_waits_for_music() {
+        // Pull after a cut behind waits for music.
         let (mut t, mut f, held) = by_hand();
         t.write(&pcm(&[16384; 1000]), 1000.0);
         let mut out = vec![0f32; 600];
@@ -1037,10 +1033,10 @@ mod tests {
         assert_eq!(f.pull(&mut out), 0);
     }
 
-    /// A sound change between a new stream's announcement and its first buffer (the ring full) has
-    /// nothing of that stream to make again: what the ring holds of the one before plays on, whole.
     #[test]
-    fn change_before_a_new_streams_music_keeps_the_ring() {
+    fn changes_keep_the_ring() {
+        // A sound change between a new stream's announcement and its first buffer (the ring full) has
+        // nothing of that stream to make again: what the ring holds of the one before plays on, whole.
         use nori_player::engine::Downstream;
         use nori_player::pipeline::{ChainSettings, Sink, Sound};
         let (feed, held) = (Arc::new(parking_lot::Mutex::new(None)), Arc::new(AtomicU64::new(0)));
@@ -1056,12 +1052,8 @@ mod tests {
         assert!(held > 900, "the first stream, resampled to the device: {held}");
         sink.change(ChainSettings { sound: Sound { preamp_db: -6.0, ..Sound::default() }, ..ChainSettings::default() });
         assert_eq!(f.available(), held, "all of it still there");
-    }
 
-    #[test]
-    fn new_format_after_a_change_plays_the_input_made_again() {
-        use nori_player::engine::Downstream;
-        use nori_player::pipeline::{ChainSettings, Sink};
+        // New format after a change plays the input made again.
         let (feed, held) = (Arc::new(parking_lot::Mutex::new(None)), Arc::new(AtomicU64::new(0)));
         let mut track = RingTrack::new(Box::new(Hand(feed.clone(), held)));
         track.max_rate = 1000;

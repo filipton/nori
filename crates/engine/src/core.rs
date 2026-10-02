@@ -1328,7 +1328,7 @@ mod tests {
     }
 
     #[test]
-    fn same_list_is_not_looked_at_again() {
+    fn looks() {
         let mut s = Schedule::default();
         assert!(s.ask(ids(&["a", "b", "c"])), "songs to measure: a thread");
         assert_eq!(s.next(), Some(ids(&["a", "b", "c"])));
@@ -1339,10 +1339,8 @@ mod tests {
             assert!(!s.ask(ids(&["a", "b", "c"])), "no thread, no look");
         }
         assert!(s.ask(ids(&["b", "c", "d"])), "the queue moved: a look");
-    }
 
-    #[test]
-    fn arrival_during_a_look_is_kept() {
+        // Arrival during a look is kept.
         let mut s = Schedule::default();
         assert!(!s.arrived(), "nothing asked for: nothing to look at");
         assert!(s.ask(ids(&["a", "b"])));

@@ -282,7 +282,7 @@ fn station_pitch_at_any_format() {
 }
 
 #[test]
-fn station_joined_mid_frame() {
+fn mp3_stations() {
     if !ffmpeg() {
         eprintln!("no ffmpeg: skipped");
         return;
@@ -292,6 +292,57 @@ fn station_joined_mid_frame() {
     let (f, heard) = play(bytes[1001..].to_vec(), 3.0);
     assert_eq!(f.rate, 48_000);
     assert_pitch("joined mid-frame", &heard, f, 1000.0);
+
+    // Mp3 station format change.
+    if !ffmpeg() {
+        eprintln!("no ffmpeg: skipped");
+        return;
+    }
+    // Three songs of different formats, each its own tone, joined mid-frame with noise between. The card
+    // keeps the first format; the others are converted at their own pitch.
+    within(120, || {
+        let mut bytes = mp3_bare(1000, 3.0, 44_100, 2)[1001..].to_vec();
+        bytes.extend_from_slice(&junk(3000, 7));
+        bytes.extend_from_slice(&mp3_bare(1500, 3.0, 48_000, 1));
+        bytes.extend_from_slice(&junk(5000, 11));
+        bytes.extend_from_slice(&mp3_bare(700, 3.0, 22_050, 2));
+        let (f, heard) = play(bytes, 8.5);
+        assert_eq!((f.rate, f.channels), (44_100, 2));
+        let p = pitches(&heard, f, 0);
+        assert!(p.len() >= 8, "it plays on through both changes: {p:?}");
+        // Seconds 2 and 5 hold a change; every other second is its song's tone.
+        for (s, want) in [(1, 1000.0), (3, 1500.0), (4, 1500.0), (6, 700.0), (7, 700.0)] {
+            assert!((p[s] - want).abs() < want * 0.005, "{:.1} Hz in second {s}, not {want}: {p:?}", p[s]);
+        }
+        // No gap beyond the encoder edges (~50 ms each side).
+        let gap = longest_silence(&heard[f.channels * f.rate as usize / 2..], f);
+        assert!(gap <= 0.15, "a {gap} s gap");
+    });
+
+    // Noisy mp3 station never hangs.
+    if !ffmpeg() {
+        eprintln!("no ffmpeg: skipped");
+        return;
+    }
+    // Long noise, a cut frame, a second song at another rate, and a mid-frame end: plays what music
+    // there is within the real time allowed.
+    within(120, || {
+        let first = mp3_bare(1000, 2.0, 44_100, 2);
+        let second = mp3_bare(1500, 2.0, 32_000, 1);
+        let mut bytes = first[1001..].to_vec();
+        bytes.extend_from_slice(&junk(200_000, 3));
+        bytes.extend_from_slice(&second[..300]);
+        bytes.extend_from_slice(&second[..second.len() - 150]);
+        let rig = Rig::new(vec![("radio:1", bytes)]);
+        let (f, heard) = rig.hear(3.5);
+        assert_eq!((f.rate, f.channels), (44_100, 2));
+        let m = mono(&heard, f.channels);
+        let r = f.rate as usize;
+        let first_hz = hz(&m[r / 2..3 * r / 2], f.rate);
+        // After the noise: the second song's tone.
+        let second_hz = hz(&m[5 * r / 2..7 * r / 2], f.rate);
+        assert!((first_hz - 1000.0).abs() < 5.0 && (second_hz - 1500.0).abs() < 7.5, "both songs at their own pitch: {first_hz} then {second_hz}");
+    });
 }
 
 #[test]
@@ -466,57 +517,3 @@ fn longest_silence(heard: &[f32], f: OutputFormat) -> f64 {
     longest as f64 / 100.0
 }
 
-#[test]
-fn mp3_station_format_change() {
-    if !ffmpeg() {
-        eprintln!("no ffmpeg: skipped");
-        return;
-    }
-    // Three songs of different formats, each its own tone, joined mid-frame with noise between. The card
-    // keeps the first format; the others are converted at their own pitch.
-    within(120, || {
-        let mut bytes = mp3_bare(1000, 3.0, 44_100, 2)[1001..].to_vec();
-        bytes.extend_from_slice(&junk(3000, 7));
-        bytes.extend_from_slice(&mp3_bare(1500, 3.0, 48_000, 1));
-        bytes.extend_from_slice(&junk(5000, 11));
-        bytes.extend_from_slice(&mp3_bare(700, 3.0, 22_050, 2));
-        let (f, heard) = play(bytes, 8.5);
-        assert_eq!((f.rate, f.channels), (44_100, 2));
-        let p = pitches(&heard, f, 0);
-        assert!(p.len() >= 8, "it plays on through both changes: {p:?}");
-        // Seconds 2 and 5 hold a change; every other second is its song's tone.
-        for (s, want) in [(1, 1000.0), (3, 1500.0), (4, 1500.0), (6, 700.0), (7, 700.0)] {
-            assert!((p[s] - want).abs() < want * 0.005, "{:.1} Hz in second {s}, not {want}: {p:?}", p[s]);
-        }
-        // No gap beyond the encoder edges (~50 ms each side).
-        let gap = longest_silence(&heard[f.channels * f.rate as usize / 2..], f);
-        assert!(gap <= 0.15, "a {gap} s gap");
-    });
-}
-
-#[test]
-fn noisy_mp3_station_never_hangs() {
-    if !ffmpeg() {
-        eprintln!("no ffmpeg: skipped");
-        return;
-    }
-    // Long noise, a cut frame, a second song at another rate, and a mid-frame end: plays what music
-    // there is within the real time allowed.
-    within(120, || {
-        let first = mp3_bare(1000, 2.0, 44_100, 2);
-        let second = mp3_bare(1500, 2.0, 32_000, 1);
-        let mut bytes = first[1001..].to_vec();
-        bytes.extend_from_slice(&junk(200_000, 3));
-        bytes.extend_from_slice(&second[..300]);
-        bytes.extend_from_slice(&second[..second.len() - 150]);
-        let rig = Rig::new(vec![("radio:1", bytes)]);
-        let (f, heard) = rig.hear(3.5);
-        assert_eq!((f.rate, f.channels), (44_100, 2));
-        let m = mono(&heard, f.channels);
-        let r = f.rate as usize;
-        let first_hz = hz(&m[r / 2..3 * r / 2], f.rate);
-        // After the noise: the second song's tone.
-        let second_hz = hz(&m[5 * r / 2..7 * r / 2], f.rate);
-        assert!((first_hz - 1000.0).abs() < 5.0 && (second_hz - 1500.0).abs() < 7.5, "both songs at their own pitch: {first_hz} then {second_hz}");
-    });
-}

@@ -388,7 +388,7 @@ fn gapless_measured_while_playing() {
 }
 
 #[test]
-fn seek_near_end_joins_whole() {
+fn joins_whole() {
     let rig = Rig::new("album-seek", &ALBUM, true, 0, true, Measured::Before, false);
     rig.engine.play_at(0, 0);
     assert!(rig.until(20, |r| r.engine.status().position_ms > 2_000));
@@ -399,10 +399,8 @@ fn seek_near_end_joins_whole() {
     let (_, order) = rig.to_the_end();
     // a1's last seconds, then a2 and a3 whole.
     rig.heard_as(&order, from, 0, &[true, true], 0);
-}
 
-#[test]
-fn keep_albums_switched_on_joins_whole() {
+    // Keep albums switched on joins whole.
     // Before a1's mix is made (34 s) up to just before it is heard.
     for at_ms in [26_000, 32_000, 33_500] {
         keep_albums_switched_on_at(at_ms);
@@ -436,7 +434,23 @@ fn double_album_gapless() {
 }
 
 #[test]
-fn two_albums_mix_between() {
+fn album_apart_mixes() {
+    // Songs of one album not queued as the album (by hand, or autofill) mix like any others.
+    for how in [Queued::OneByOne, Queued::Autofill] {
+        queued_singly(how);
+    }
+
+    // Shuffled album mixes.
+    let rig = Rig::new("album-shuffled", &ALBUM, true, 0, true, Measured::Before, true);
+    rig.engine.play_at(0, 0);
+    let (mixed, order) = rig.to_the_end();
+    assert!(mixed, "a shuffled album is mixed");
+    for id in &order[..order.len() - 1] {
+        let note = rig.core.session.planner.transition_note(id);
+        assert!(note.as_ref().is_some_and(|n| n.kind != "Gapless"), "{id} mixes into the next: {note:?}");
+    }
+
+    // Two albums mix between.
     let songs = [S("m1", "al", 1), S("m2", "al", 1), S("n1", "bl", 1), S("n2", "bl", 1)];
     let rig = Rig::new("album-two", &songs, true, 0, true, Measured::Before, false);
     rig.engine.play_at(0, 0);
@@ -444,14 +458,6 @@ fn two_albums_mix_between() {
     assert!(mixed, "the albums are mixed into each other");
     assert_ne!(rig.core.session.planner.transition_note("m2").map(|n| n.kind), Some("Gapless".into()));
     rig.heard_as(&order, 0, 0, &[true, false, true], 0);
-}
-
-/// Songs of one album not queued as the album (by hand, or autofill) mix like any others.
-#[test]
-fn album_queued_singly_mixes() {
-    for how in [Queued::OneByOne, Queued::Autofill] {
-        queued_singly(how);
-    }
 }
 
 fn queued_singly(how: Queued) {
@@ -464,18 +470,6 @@ fn queued_singly(how: Queued) {
         assert!(note.as_ref().is_some_and(|n| n.kind != "Gapless"), "{id} mixes into the next: {note:?}");
     }
     rig.heard_as(&order, 0, 0, &[false, false], 0);
-}
-
-#[test]
-fn shuffled_album_mixes() {
-    let rig = Rig::new("album-shuffled", &ALBUM, true, 0, true, Measured::Before, true);
-    rig.engine.play_at(0, 0);
-    let (mixed, order) = rig.to_the_end();
-    assert!(mixed, "a shuffled album is mixed");
-    for id in &order[..order.len() - 1] {
-        let note = rig.core.session.planner.transition_note(id);
-        assert!(note.as_ref().is_some_and(|n| n.kind != "Gapless"), "{id} mixes into the next: {note:?}");
-    }
 }
 
 /// An album with gaps or odd numbering in its tags still plays gapless in queue order. Regression: read
