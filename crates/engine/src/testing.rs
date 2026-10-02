@@ -212,9 +212,14 @@ impl<D: Device> Stepper<D> {
 
     /// Runs the next due event: the engine's timer or the device's pull.
     pub fn step(&self) {
+        self.step_by(i64::MAX);
+    }
+
+    /// [`Stepper::step`], the clock going no further than `limit_ns`.
+    fn step_by(&self, limit_ns: i64) {
         self.clock.settle();
         let pull = self.device.lock().due_ns();
-        let t = self.clock.deadline_ns().map_or(pull, |d| d.min(pull));
+        let t = self.clock.deadline_ns().map_or(pull, |d| d.min(pull)).min(limit_ns);
         self.clock.move_to(t);
         self.clock.settle();
         if t >= pull {
@@ -230,7 +235,7 @@ impl<D: Device> Stepper<D> {
     pub fn run(&self, d: Duration) {
         let until = self.clock.now_ns() + d.as_nanos() as i64;
         while self.clock.now_ns() < until {
-            self.step();
+            self.step_by(until);
         }
         self.clock.settle();
     }

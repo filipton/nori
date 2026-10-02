@@ -3007,12 +3007,19 @@ mod tests {
 
     struct Songs(Arc<Wavs>);
 
+    impl Songs {
+        /// A song's length, from its 16-bit stereo WAV.
+        fn ms(&self, id: &str) -> i64 {
+            self.0 .0.iter().find(|(i, _)| i == id).map_or(0, |(_, f)| (f.len() as i64 - 44) * 1000 / (4 * RATE as i64))
+        }
+    }
+
     impl nori_engine::Library for Songs {
         fn locate(&mut self, id: &str) -> Result<nori_engine::Located, String> {
-            Ok(nori_engine::Located { source: nori_engine::Source::Url { url: id.to_string(), bytes: self.0.clone() }, hint: Some("wav".into()), duration_ms: Some(3_000), estimated: false })
+            Ok(nori_engine::Located { source: nori_engine::Source::Url { url: id.to_string(), bytes: self.0.clone() }, hint: Some("wav".into()), duration_ms: Some(self.ms(id)), estimated: false })
         }
         fn about(&self, id: &str) -> nori_player::transitions::WindowSong {
-            nori_player::transitions::WindowSong { id: id.to_string(), title: id.to_string(), duration_ms: 3_000, ..Default::default() }
+            nori_player::transitions::WindowSong { id: id.to_string(), title: id.to_string(), duration_ms: self.ms(id), ..Default::default() }
         }
     }
 
@@ -3159,6 +3166,88 @@ mod tests {
         let l = live.lock();
         assert!(l.played() + RATE as u64 / 10 >= l.written.len() as u64 / 2, "{} of {} frames heard at the end", l.played(), l.written.len() / 2);
         drop(l);
+        engine.stop();
+    }
+
+    /// The seek bar through an AutoMix with the player screen open: the screen asks for no periodic
+    /// positions, runs the last reading on for at most two seconds and asks for a fresh one once it is a
+    /// second old (`shown_ms`). The place it shows moves on all through the mix, to the next song.
+    #[test]
+    fn bar_moves_through_a_mix() {
+        // Unmeasured (a blind fade), and measured at the same tempo and at another (stretched).
+        for bpm in [None, Some((120.0, 120.0)), Some((120.0, 126.0))] {
+            bar_through_a_mix(bpm);
+        }
+    }
+
+    fn bar_through_a_mix(bpm: Option<(f64, f64)>) {
+        let songs = [tone(30, 440.0), tone(30, 660.0)];
+        let wavs = Arc::new(Wavs(vec![("a".into(), Arc::new(wav(&songs[0]))), ("b".into(), Arc::new(wav(&songs[1])))]));
+        let queue = nori_engine::SharedQueue::default();
+        queue.0.lock().set(vec!["a".into(), "b".into()], Some(0), false, 0);
+        let mut app = nori_player::sim::App::new();
+        app.prefs = nori_player::transitions::TransitionPrefs { auto_mix: true, auto_mix_max_s: 12, echo_out: false, ..nori_player::sim::prefs_off() };
+        let measured = |id: &str, bpm: f64| nori_player::types::TrackAnalysis {
+            song_id: id.into(),
+            analysis_version: nori_player::automix::ANALYSIS_VERSION,
+            duration_ms: 30_000,
+            bpm,
+            bpm_confidence: 1.0,
+            beat_offset_ms: 250.0,
+            stability: 1.0,
+            downbeat_confidence: 1.0,
+            lufs: -14.0,
+            silence_end_ms: 30_000,
+            mixramp_end_ms: 30_000,
+            intro_end_ms: 250,
+            outro_start_ms: 14_000,
+            outro_bpm: bpm,
+            outro_bpm_confidence: 1.0,
+            outro_beat_offset_ms: 250.0,
+            outro_stability: 1.0,
+            intro_bpm: bpm,
+            intro_bpm_confidence: 1.0,
+            intro_beat_offset_ms: 250.0,
+            intro_stability: 1.0,
+            ..Default::default()
+        };
+        if let Some((a, b)) = bpm {
+            app.analyses.insert("a".into(), measured("a", a));
+            app.analyses.insert("b".into(), measured("b", b));
+        }
+        let config = nori_engine::Config { settings: nori_engine::Settings { auto_mix: true, ..Default::default() }, ..Default::default() };
+        let (engine, time, _) = on_a_phone(Songs(wavs), app, queue, config, Live::new);
+        engine.queue_changed();
+        engine.play_at(0, 0);
+        let now = || time.clock.now_ns() / 1_000_000;
+        let (mut last_at, mut read_at, mut reading, mut pace) = (None, 0i64, 0i64, 1.0f32);
+        let mut shown: Vec<(i64, i64)> = Vec::new();
+        let mut mixed = false;
+        while now() < 60_000 {
+            time.run(Duration::from_millis(16));
+            let t = now();
+            if t - read_at >= nori_player::heard::LOOK_AFTER_MS {
+                engine.look();
+                time.clock.settle();
+            }
+            let s = engine.status();
+            if s.index == Some(1) {
+                break;
+            }
+            if Some(s.at) != last_at {
+                last_at = Some(s.at);
+                (read_at, reading, pace) = (t, s.position_ms, s.pace);
+            }
+            mixed |= s.mixing;
+            if mixed {
+                shown.push((t, nori_player::heard::screen_place(reading, t - read_at, pace, true).0));
+            }
+        }
+        assert!(shown.len() > 100, "{bpm:?}: a mix was heard, then the next song said: {} places", shown.len());
+        for (k, &(t0, p0)) in shown.iter().enumerate() {
+            let Some(&(t1, p1)) = shown[k..].iter().find(|&&(t, _)| t >= t0 + 2_000) else { break };
+            assert!(p1 - p0 >= 1_500, "{bpm:?}: the bar moved {} ms from {t0} to {t1} ms of the clock (at {p0} ms in a)", p1 - p0);
+        }
         engine.stop();
     }
 
