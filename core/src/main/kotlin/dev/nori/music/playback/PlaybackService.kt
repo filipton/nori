@@ -162,21 +162,18 @@ class PlaybackService : MediaLibraryService() {
     }
     private val sleepAlarm = AlarmManager.OnAlarmListener { player.pause() }
     /**
-     * The network the phone is on, told to [dev.nori.music.net.Http.networkMetered] whenever it turns metered
-     * or not: the core reads it there to resolve the quality a song streams at and whether a download may
-     * use mobile data. One registration for the service's life; a change that leaves the answer as
-     * it was is not passed on.
+     * The network turning unmetered, for the AutoEQ list. One registration for the service's life; a change
+     * that leaves the answer as it was is not passed on.
      */
     private val connectivity by lazy { getSystemService(android.net.ConnectivityManager::class.java) }
     private var metered: Boolean? = null
     private val network = object : android.net.ConnectivityManager.NetworkCallback() {
         override fun onCapabilitiesChanged(network: android.net.Network, caps: android.net.NetworkCapabilities) =
-            tellMetered(!caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED))
+            meteredNow(!caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED))
     }
-    private fun tellMetered(now: Boolean) {
+    private fun meteredNow(now: Boolean) {
         if (now == metered) return
         metered = now
-        nori.http.networkMetered = now
         // Onto Wi-Fi: the AutoEQ list is fetched if the core says it is due, and nothing happens otherwise.
         if (!now) scope.launch { nori.keepAutoEqList() }
     }
@@ -185,8 +182,7 @@ class PlaybackService : MediaLibraryService() {
         super.onCreate()
         nori = Nori.get(this)
         scrobbler = Scrobbler(nori, scope)
-        // Before the player opens a song.
-        tellMetered(nori.http.metered)
+        meteredNow(nori.http.metered)
         runCatching { connectivity.registerDefaultNetworkCallback(network, main) }
         player = EnginePlayer(this, nori).also { rustPlayer = it }
         engine = "rust"

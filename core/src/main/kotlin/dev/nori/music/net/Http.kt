@@ -92,13 +92,6 @@ class Http(private val context: Context) {
      */
     val metered: Boolean get() = connectivity.isActiveNetworkMetered
 
-    /**
-     * Whether the network is metered, as the playback service last heard it: what the core reads
-     * ([Transport.network]) to choose the quality a song streams at and whether a download may use
-     * mobile data, without a binder call each time.
-     */
-    @Volatile var networkMetered = false
-
     fun configure(next: SavedServer?) {
         val old = profile
         hosts = Hosts(ServerHosts(next?.url, next?.altUrl, next?.wifiOnly == true))
@@ -235,7 +228,8 @@ class Http(private val context: Context) {
 
         override fun addressChanged() = onAddressChanged()
 
-        override fun network() = if (networkMetered) Network.METERED else Network.UNMETERED
+        /** Asked when the core chooses a quality or whether something may use mobile data, never per request. */
+        override fun network() = if (metered) Network.METERED else Network.UNMETERED
     }
 }
 
