@@ -429,6 +429,10 @@ pub(crate) struct RingTrack {
     written: Stretch,
     /// After a cut: ring frames blended so far from what was there into what is written, of how many.
     blend: Option<(u64, u64)>,
+    /// Where the last cut's blend starts (ring frames since the flush), and what the slots held there
+    /// before it: a cut at the same frame blends from that, not from the blend.
+    blend_at: Option<u64>,
+    blended_from: Vec<f32>,
     playing: bool,
     /// Whether the device takes float, once asked.
     float: Option<bool>,
@@ -469,6 +473,8 @@ impl RingTrack {
             from: Stretch::default(),
             written: Stretch::default(),
             blend: None,
+            blend_at: None,
+            blended_from: Vec::new(),
             playing: false,
             float: None,
             failed: None,
@@ -517,6 +523,7 @@ impl RingTrack {
         self.from = Stretch::default();
         self.written = Stretch::default();
         self.blend = None;
+        self.blend_at = None;
     }
 
     /// Starts the resampler afresh (after a flush or cut).
@@ -674,6 +681,23 @@ impl RingTrack {
         let held = self.output.latency_us() * d.rate as u64 / 1_000_000;
         let taken = r.read_at().saturating_sub(self.base);
         (taken.saturating_sub(held), held.min(taken))
+    }
+}
+
+/// Copies `n` frames of `r` from frame `at` (past `write`) into `to`.
+fn slots_into(r: &Ring, at: u64, n: u64, to: &mut Vec<f32>) {
+    to.clear();
+    for f in at..at + n {
+        // SAFETY: past `write`, where only the writer goes (`Ring`).
+        to.extend_from_slice(unsafe { r.samples((f % r.frames) as usize * r.channels, r.channels) });
+    }
+}
+
+/// Puts `from` ([`slots_into`]) back into `r` from frame `at` (past `write`).
+fn slots_from(r: &Ring, at: u64, from: &[f32]) {
+    for (k, frame) in from.chunks_exact(r.channels).enumerate() {
+        // SAFETY: as above.
+        unsafe { r.samples_mut(((at + k as u64) % r.frames) as usize * r.channels, r.channels) }.copy_from_slice(frame);
     }
 }
 
@@ -854,10 +878,18 @@ impl Track for RingTrack {
             self.untold = true;
             self.since_flush = 0;
             self.blend = None;
+            self.blend_at = None;
         } else {
-            let blend = self.device.map_or(0, |d| d.rate as i64 * nori_player::pipeline::BLEND_US / 1_000_000) as u64;
-            self.blend = (end.ring > p).then_some((0, blend.min(end.ring - p)));
+            let n = self.device.map_or(0, |d| d.rate as i64 * nori_player::pipeline::BLEND_US / 1_000_000) as u64;
+            let n = n.min(end.ring - p);
+            if self.blend_at == Some(p) {
+                slots_from(&r, w, &self.blended_from);
+            }
+            slots_into(&r, w, n, &mut self.blended_from);
+            self.blend_at = Some(p);
+            self.blend = (n > 0).then_some((0, n));
         }
+
         self.restart_resampler();
         cut.media
     }
@@ -1068,6 +1100,29 @@ mod tests {
         let at = t.freeze(Remake::Ending);
         t.cut(at);
         assert_eq!(f.pull(&mut out), 0);
+    }
+
+    #[test]
+    fn cuts_at_one_place_blend_from_what_was_there() {
+        // Changes one after another with no pull between them are made at one frame: each blends from what
+        // the device would have played there, not from the blend of the one before it, which compounded
+        // into a click.
+        let (mut t, mut f, _) = by_hand();
+        t.write(&pcm(&[16384; 200]), 200.0);
+        let mut out = vec![0f32; 100];
+        assert_eq!(f.pull(&mut out[..40]), 40);
+        for level in [-16384, 8192, -8192] {
+            let at = t.freeze(Remake::Sound);
+            assert_eq!(at, 40, "the first frame no pull took");
+            t.cut(at);
+            t.write(&pcm(&[level; 100]), 100.0);
+        }
+        assert_eq!(f.pull(&mut out[40..]), 60);
+        let blend = (F.rate as i64 * nori_player::pipeline::BLEND_US / 1_000_000) as usize;
+        for k in 0..blend {
+            assert!((out[40 + k] - nori_player::pipeline::blended(0.5, -0.25, k, blend)).abs() < 1e-6, "frame {k} of the blend: {}", out[40 + k]);
+        }
+        assert!(out[40 + blend..].iter().all(|&v| v == -0.25), "then the last music");
     }
 
     #[test]
