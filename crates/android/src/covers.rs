@@ -1,4 +1,4 @@
-//! Covers: nori-covers' loader over the core's cover transport (the app's OkHttp), with a disk cache,
+//! Covers: nori-covers' loader over the core's `CoverNet` (the app's OkHttp), with a disk cache,
 //! decoding straight into Bitmaps sized for their view. One `CoverPixels.Waiter.done` callback per
 //! request, on a loader thread; cancelling drops the ticket. Kotlin keeps the memory cache (Bitmaps are
 //! Java objects).
@@ -13,14 +13,13 @@ use std::cell::RefCell;
 use std::io::Read;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::sync::OnceLock;
 
 use jni::objects::{GlobalRef, JClass, JIntArray, JMethodID, JObject, JStaticMethodID, JString, JValue};
 use jni::signature::{Primitive, ReturnType};
 use jni::sys::{jboolean, jint, jlong};
 use jni::{JNIEnv, JavaVM};
-use nori_core::transport::{Exchange, FailureKind, Transport, TransportError, TransportResponse};
+use nori_core::covers::CoverNet;
 use nori_covers::{Alpha, Config, DecodeError, Decoder, Loader, Paint, Target, Ticket};
 use parking_lot::Mutex;
 
@@ -29,7 +28,7 @@ use crate::{cleared, native, with_str, Class};
 pub(crate) static CLASS: Class = Class {
     name: c"dev/nori/music/look/CoverPixels",
     methods: &[
-        native!(c"open", c"(Ljava/lang/String;JZZ)J", open),
+        native!(c"open", c"(JLjava/lang/String;JZZ)J", open),
         native!(c"close", c"(J)V", close),
         native!(c"request", c"(JLjava/lang/String;IILdev/nori/music/look/CoverPixels$Waiter;)J", request),
         native!(c"cancel", c"(J)V", cancel),
@@ -326,31 +325,6 @@ fn deliver(waiter: &GlobalRef, r: Result<Drawn, nori_covers::Error>) {
     cleared(&mut env);
 }
 
-/// The app's cover transport (`set_cover_transport`), resolved lazily: the loader opens on the main
-/// thread, before the HTTP client exists.
-struct Platform;
-
-fn cover_transport() -> Result<Arc<dyn Transport>, TransportError> {
-    nori_core::covers::cover_transport(Duration::from_secs(30)).ok_or_else(|| TransportError::Failed { kind: FailureKind::Other, detail: Some("no transport for covers".into()) })
-}
-
-#[async_trait::async_trait]
-impl Transport for Platform {
-    async fn get(&self, url: String, timeout_ms: u32) -> Result<TransportResponse, TransportError> {
-        cover_transport()?.get(url, timeout_ms).await
-    }
-
-    async fn send(&self, request: Exchange) -> Result<TransportResponse, TransportError> {
-        cover_transport()?.send(request).await
-    }
-
-    fn address_changed(&self) {}
-
-    fn network(&self) -> nori_net::transport::Network {
-        nori_net::transport::Network::Unmetered
-    }
-}
-
 type Covers = Loader<Bitmaps>;
 
 fn loader<'a>(h: jlong) -> Option<&'a Covers> {
@@ -358,9 +332,12 @@ fn loader<'a>(h: jlong) -> Option<&'a Covers> {
     (h != 0).then(|| unsafe { &*(h as *const Covers) })
 }
 
-/// A loader with a disk cache in `dir` of at most `disk_bytes`. Cheap: nothing is read until the first
-/// request. 0 when the Java side is missing.
-extern "system" fn open(mut env: JNIEnv, _: JClass, dir: JString, disk_bytes: jlong, hardware: jboolean, rgb565: jboolean) -> jlong {
+/// A loader fetching through `net` (a `CoverNet` handle from `uniffiCloneHandle()`, taken over) with a
+/// disk cache in `dir` of at most `disk_bytes`. Cheap: nothing is read until the first request. 0 when
+/// the Java side is missing.
+extern "system" fn open(mut env: JNIEnv, _: JClass, net: jlong, dir: JString, disk_bytes: jlong, hardware: jboolean, rgb565: jboolean) -> jlong {
+    // SAFETY: Kotlin passes `CoverNet.uniffiCloneHandle()`, once.
+    let net = unsafe { crate::uniffi_object::<CoverNet>(net) };
     if JAVA.get().is_none() {
         match look_up(&mut env) {
             Ok(j) => {
@@ -376,7 +353,7 @@ extern "system" fn open(mut env: JNIEnv, _: JClass, dir: JString, disk_bytes: jl
     let Some(dir) = with_str(&env, &dir, |d| PathBuf::from(d)) else { return 0 };
     let config = Config { disk_bytes: disk_bytes.max(0) as u64, memory_bytes: 0, ..Config::new(dir) };
     let paint = Bitmaps { hardware: hardware != 0, rgb565: rgb565 != 0, idle: Mutex::new(Vec::new()), colours: Mutex::new(Vec::new()) };
-    Box::into_raw(Box::new(Loader::with_paint(config, Arc::new(Platform), paint))) as jlong
+    Box::into_raw(Box::new(Loader::with_paint(config, net, paint))) as jlong
 }
 
 /// Stops the loader after current work; pending waiters get `CLOSED`.

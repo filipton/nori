@@ -36,6 +36,8 @@ pub struct Client {
     pub(crate) autofill_picks: parking_lot::Mutex<Option<(crate::autofill::Picked, Vec<String>)>>,
     /// An AutoEQ index fetch is running; another asked meanwhile is dropped (profiles.rs).
     pub(crate) autoeq_fetching: AtomicBool,
+    /// Told the profile's second address, so covers are keyed alike through both.
+    covers: Arc<crate::covers::CoverNet>,
 }
 
 /// The newest client, for Android's player and measuring doors (`stream::resolve_now`). Global: those
@@ -135,8 +137,8 @@ impl Client {
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Client {
     #[cfg_attr(feature = "ffi", uniffi::constructor)]
-    pub fn new(core: Arc<Core>, transport: Arc<dyn Transport>) -> Arc<Self> {
-        let client = Arc::new(Client { core, transport, profile: RwLock::new(NetProfile::default()), second: AtomicBool::new(false), lyrics: Default::default(), motion: Default::default(), replaying: Default::default(), car: Default::default(), autofill_picks: Default::default(), autoeq_fetching: AtomicBool::new(false) });
+    pub fn new(core: Arc<Core>, transport: Arc<dyn Transport>, covers: Arc<crate::covers::CoverNet>) -> Arc<Self> {
+        let client = Arc::new(Client { core, transport, covers, profile: RwLock::new(NetProfile::default()), second: AtomicBool::new(false), lyrics: Default::default(), motion: Default::default(), replaying: Default::default(), car: Default::default(), autofill_picks: Default::default(), autoeq_fetching: AtomicBool::new(false) });
         *ACTIVE_CLIENT.lock() = Arc::downgrade(&client);
         client
     }
@@ -144,7 +146,7 @@ impl Client {
     /// Sets the profile's addresses, folder and bitrate cap.
     pub fn set_profile(&self, profile: NetProfile) {
         if !blank(&profile.alt_url) {
-            crate::covers::cover_address_alike(&profile.url, &profile.alt_url);
+            self.covers.alike(&profile.url, &profile.alt_url);
         }
         *self.profile.write() = profile;
     }
@@ -361,7 +363,7 @@ pub(crate) mod tests {
         let core = Core::open(String::new(), "t".into(), Arc::default()).unwrap();
         core.configure(ServerConfig { url: profile.url.clone(), user: "u".into(), password: "p".into(), ..Default::default() }).unwrap();
         let fake = Arc::new(Fake::default());
-        let c = Client::new(core, fake.clone());
+        let c = Client::new(core, fake.clone(), Default::default());
         c.set_profile(profile);
         (c, fake)
     }

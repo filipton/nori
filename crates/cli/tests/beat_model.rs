@@ -16,7 +16,7 @@ fn the_weights_come_from_the_authors() {
     let mut prefs = nori_core::settings_store::settings_open(dir.join("app.db").to_string_lossy().into_owned()).unwrap();
     (prefs.auto_mix, prefs.auto_mix_better_beats, prefs.auto_mix_beats_mobile_data) = (true, true, true);
     nori_core::settings_store::settings_put(prefs);
-    let client = Client::new(core.clone(), nori_http::Http::new());
+    let client = Client::new(core.clone(), nori_http::Http::new(), Default::default());
     let rss = || {
         let s = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
         s.lines().find_map(|l| l.strip_prefix("VmHWM:").map(|v| v.trim().to_string())).unwrap_or_default()

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use nori_core::bridge::BridgeTake;
 use nori_core::cache_policy::{Page, Read};
 use nori_core::client::{Client, Starrable};
+use nori_core::covers::CoverNet;
 use nori_core::library::StarsShown;
 use nori_core::playlist::{Hand, QueueEdit};
 use nori_core::race::{LyricsPick, LyricsShown};
@@ -186,9 +187,9 @@ impl Session {
         let core = Core::new(db.clone(), nori_core::settings::server_db_id(&o.profile.id)).map_err(|e| format!("the database: {e}"))?;
         core.configure(config(&o.profile)).map_err(|e| format!("the server: {e}"))?;
         let transport: Arc<dyn Transport> = if o.offline { Arc::new(Offline) } else { o.http.clone() };
-        let client = Client::new(core.clone(), transport);
+        let cover_net = CoverNet::over(o.http.clone());
+        let client = Client::new(core.clone(), transport, cover_net.clone());
         client.set_profile(net(&o.profile));
-        nori_core::covers::set_cover_transport(o.http.clone());
         let prefs = settings_store::shared().current().unwrap_or_default();
         let output = match &o.device {
             Some(name) => CpalOutput::with_device(name),
@@ -210,7 +211,7 @@ impl Session {
         let events = o.out.clone();
         let config = Config { memory_mb: 256, settings: settings(&prefs, loudness.db()), ..Config::default() };
         let engine = Arc::new(Engine::start(library, app, CoreQueue(core.session.clone()), output, None, config, move |e| events(Said::Engine(e))));
-        let covers = o.covers.then(|| Arc::new(Loader::new(CoverConfig::new(o.data.join("covers")), o.http.clone())));
+        let covers = o.covers.then(|| Arc::new(Loader::new(CoverConfig::new(o.data.join("covers")), cover_net)));
         if let Some(m) = &o.mpris {
             m.serve(Some(Arc::new(Controls::over_queue(engine.clone(), core.session.clone()))));
         }

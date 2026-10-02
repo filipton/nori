@@ -15,6 +15,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use md5::{Digest, Md5};
 use parking_lot::Mutex;
 
+use nori_core::covers::CoverNet;
+
 use crate::lru::Lru;
 
 /// MD5 of a cover's key; the hex form is the file name.
@@ -22,11 +24,11 @@ use crate::lru::Lru;
 pub struct Key(pub [u8; 16]);
 
 impl Key {
-    /// Key of the cover at `url`, ignoring the auth parameters (nori-core's `cover_key_parts`), so the
-    /// same cover under another token or salt maps to the same file.
-    pub fn of(url: &str) -> Key {
+    /// Key of the cover at `url`, ignoring the auth parameters (nori-core's `CoverNet::key_parts`), so
+    /// the same cover under another token or salt, or through `net`'s other address, maps to the same file.
+    pub fn of(net: &CoverNet, url: &str) -> Key {
         let mut h = Md5::new();
-        nori_core::covers::cover_key_parts(url, |p| h.update(p));
+        net.key_parts(url, |p| h.update(p));
         Key(h.finalize().into())
     }
 
@@ -176,13 +178,17 @@ impl DiskCache {
 mod tests {
     use super::*;
 
+    fn key(url: &str) -> Key {
+        Key::of(&CoverNet::default(), url)
+    }
+
     fn dir(name: &str) -> nori_testdir::TempDir {
         nori_testdir::TempDir::new(&format!("covers-{name}"))
     }
 
     #[test]
     fn key_file_name_round_trips() {
-        let k = Key::of("http://x/rest/getCoverArt?id=1&size=320");
+        let k = key("http://x/rest/getCoverArt?id=1&size=320");
         assert_eq!(Key::parse(&k.name()), Some(k));
         assert_eq!(Key::parse("nope"), None);
         assert_eq!(Key::parse("zz000000000000000000000000000000"), None);
@@ -192,7 +198,7 @@ mod tests {
     fn lru() {
         let d = dir("lru");
         let c = DiskCache::open(d.path(), 30).unwrap();
-        let (a, b, x) = (Key::of("a"), Key::of("b"), Key::of("c"));
+        let (a, b, x) = (key("a"), key("b"), key("c"));
         c.put(a, &[1; 10]).unwrap();
         c.put(b, &[2; 10]).unwrap();
         c.put(x, &[3; 10]).unwrap();
@@ -200,27 +206,27 @@ mod tests {
         assert!(c.read(a, &mut buf));
         assert_eq!(buf, [1; 10]);
         // b is now the oldest, a having been read.
-        c.put(Key::of("d"), &[4; 10]).unwrap();
+        c.put(key("d"), &[4; 10]).unwrap();
         assert!(!c.contains(b) && !c.path(b).exists());
         assert!(c.contains(a) && c.contains(x));
         assert_eq!(c.bytes(), 30);
         // Larger than the limit: dropped, nothing evicted.
-        c.put(Key::of("e"), &[5; 31]).unwrap();
-        assert!(!c.contains(Key::of("e")) && c.contains(a));
+        c.put(key("e"), &[5; 31]).unwrap();
+        assert!(!c.contains(key("e")) && c.contains(a));
 
         // Reopen restores lru order and trims to new limit.
         let d = dir("reopen");
         {
             let c = DiskCache::open(d.path(), 100).unwrap();
             for (i, name) in ["a", "b", "c"].iter().enumerate() {
-                c.put(Key::of(name), &[i as u8; 10]).unwrap();
+                c.put(key(name), &[i as u8; 10]).unwrap();
                 // Distinct mtimes regardless of file system resolution.
-                File::options().write(true).open(c.path(Key::of(name))).unwrap().set_modified(UNIX_EPOCH + std::time::Duration::from_secs(1000 + i as u64)).unwrap();
+                File::options().write(true).open(c.path(key(name))).unwrap().set_modified(UNIX_EPOCH + std::time::Duration::from_secs(1000 + i as u64)).unwrap();
             }
             File::create(d.join("0123.5-1.tmp")).unwrap();
         }
         let c = DiskCache::open(d.path(), 20).unwrap();
-        assert!(!c.contains(Key::of("a")) && c.contains(Key::of("b")) && c.contains(Key::of("c")));
+        assert!(!c.contains(key("a")) && c.contains(key("b")) && c.contains(key("c")));
         assert!(!d.join("0123.5-1.tmp").exists());
         assert_eq!(c.bytes(), 20);
     }
@@ -229,19 +235,19 @@ mod tests {
     fn a_file_is_stamped_once_per_process() {
         let d = dir("stamp");
         let old = UNIX_EPOCH + std::time::Duration::from_secs(1000);
-        let age = |c: &DiskCache| File::options().write(true).open(c.path(Key::of("a"))).unwrap().set_modified(old).unwrap();
+        let age = |c: &DiskCache| File::options().write(true).open(c.path(key("a"))).unwrap().set_modified(old).unwrap();
         {
             let c = DiskCache::open(d.path(), 100).unwrap();
-            c.put(Key::of("a"), &[1; 10]).unwrap();
+            c.put(key("a"), &[1; 10]).unwrap();
             age(&c);
         }
         let c = DiskCache::open(d.path(), 100).unwrap();
-        let mtime = || fs::metadata(c.path(Key::of("a"))).unwrap().modified().unwrap();
+        let mtime = || fs::metadata(c.path(key("a"))).unwrap().modified().unwrap();
         let mut buf = Vec::new();
-        assert!(c.read(Key::of("a"), &mut buf));
+        assert!(c.read(key("a"), &mut buf));
         assert!(mtime() > old, "the first read marks the use");
         age(&c);
-        assert!(c.read(Key::of("a"), &mut buf));
+        assert!(c.read(key("a"), &mut buf));
         assert_eq!(mtime(), old, "later reads write nothing");
     }
 
@@ -249,20 +255,20 @@ mod tests {
     fn misses_and_clear() {
         let d = dir("gone");
         let c = DiskCache::open(d.path(), 100).unwrap();
-        c.put(Key::of("a"), &[1; 4]).unwrap();
-        fs::remove_file(c.path(Key::of("a"))).unwrap();
-        assert!(!c.read(Key::of("a"), &mut Vec::new()));
+        c.put(key("a"), &[1; 4]).unwrap();
+        fs::remove_file(c.path(key("a"))).unwrap();
+        assert!(!c.read(key("a"), &mut Vec::new()));
         assert_eq!(c.bytes(), 0);
 
         // Clear deletes everything and cache stays usable.
         let d = dir("clear");
         let c = DiskCache::open(d.path(), 100).unwrap();
-        c.put(Key::of("a"), &[1; 4]).unwrap();
-        c.put(Key::of("b"), &[2; 4]).unwrap();
+        c.put(key("a"), &[1; 4]).unwrap();
+        c.put(key("b"), &[2; 4]).unwrap();
         c.clear();
         assert_eq!((c.bytes(), fs::read_dir(&d).unwrap().count()), (0, 0));
-        c.put(Key::of("c"), &[3; 4]).unwrap();
-        assert!(c.contains(Key::of("c")) && c.bytes() == 4);
+        c.put(key("c"), &[3; 4]).unwrap();
+        assert!(c.contains(key("c")) && c.bytes() == 4);
     }
 
     /// Checks the index matches the directory: same files, same sizes, same total.
@@ -293,7 +299,7 @@ mod tests {
     fn concurrent_ops_keep_index_synced() {
         let d = dir("race");
         let c = std::sync::Arc::new(DiskCache::open(d.path(), 60).unwrap());
-        let keys: Vec<Key> = (0..3).map(|i| Key::of(&i.to_string())).collect();
+        let keys: Vec<Key> = (0..3).map(|i| key(&i.to_string())).collect();
         // Many short rounds: a later put of the same key would mask a race in one long run.
         for round in 0..300 {
             let go = std::sync::Arc::new(std::sync::Barrier::new(4));

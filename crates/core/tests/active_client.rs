@@ -32,7 +32,7 @@ fn resolve_follows_client_and_net() {
     assert!(resolve_now("s1").is_none(), "no client yet");
     let core = Core::new(String::new(), "t".into()).unwrap();
     let net = Arc::new(NoApi(Default::default()));
-    let client = Client::new(core, net.clone());
+    let client = Client::new(core, net.clone(), Default::default());
     client.set_profile(NetProfile { url: "h".into(), ..Default::default() });
     // A distinct mobile quality shows which network was used.
     let dir = nori_testdir::TempDir::new("active-client");

@@ -38,11 +38,12 @@ object CoverPixels {
     }
 
     /**
-     * A loader keeping at most [diskBytes] of covers in [dir], each decoded into a [hardware] Bitmap (a
-     * software one decoded into and copied to the GPU) or a software one, a JPEG in RGB_565 where
-     * [rgb565]. Cheap: the directory is read by the loader's first thread. 0 when it cannot be opened.
+     * A loader fetching through [net] (a `CoverNet`'s `uniffiCloneHandle()`, which the loader takes over),
+     * keeping at most [diskBytes] of covers in [dir], each decoded into a [hardware] Bitmap (a software one
+     * decoded into and copied to the GPU) or a software one, a JPEG in RGB_565 where [rgb565]. Cheap: the
+     * directory is read by the loader's first thread. 0 when it cannot be opened.
      */
-    @JvmStatic external fun open(dir: String, diskBytes: Long, hardware: Boolean, rgb565: Boolean): Long
+    @JvmStatic external fun open(net: Long, dir: String, diskBytes: Long, hardware: Boolean, rgb565: Boolean): Long
 
     @JvmStatic external fun close(loader: Long)
 

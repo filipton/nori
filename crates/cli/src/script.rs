@@ -209,7 +209,7 @@ pub fn main(argv: Vec<String>) {
     let config = ServerConfig { url: a.url.clone(), user: a.user.clone(), password: a.password.clone(), api_key: None, legacy_auth: false };
     core.configure(config.clone()).unwrap_or_else(|e| panic!("the server: {e}"));
     let http = Http::new();
-    let client = Client::new(core.clone(), http.clone());
+    let client = Client::new(core.clone(), http.clone(), Default::default());
     client.set_profile(NetProfile { url: a.url.clone(), ..Default::default() });
     if !a.offline {
         if let Err(e) = block_on(nori_core::client::login_check(http.clone(), config, String::new())) {

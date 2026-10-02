@@ -123,7 +123,7 @@ fn every_read_makes_page_and_index() {
     ];
     for (read, want, (artists, albums, songs)) in reads {
         let core = Core::new(String::new(), "reads".into()).unwrap();
-        let client = Client::new(core.clone(), Arc::new(Answer(everything())));
+        let client = Client::new(core.clone(), Arc::new(Answer(everything())), Default::default());
         client.set_profile(NetProfile { url: "http://h".into(), ..Default::default() });
         let page = block_on(client.read_now(read.clone())).unwrap();
         assert_eq!(said(&page), want, "{read:?}");
@@ -135,7 +135,7 @@ fn every_read_makes_page_and_index() {
 #[test]
 fn an_empty_share_is_no_share() {
     let core = Core::new(String::new(), "reads".into()).unwrap();
-    let client = Client::new(core, Arc::new(Answer(r#"{"subsonic-response":{"status":"ok","shares":{"share":[{"url":""}]}}}"#.into())));
+    let client = Client::new(core, Arc::new(Answer(r#"{"subsonic-response":{"status":"ok","shares":{"share":[{"url":""}]}}}"#.into())), Default::default());
     client.set_profile(NetProfile { url: "http://h".into(), ..Default::default() });
     assert!(block_on(client.read_now(Read::ShareLink { id: "s".into() })).is_err());
 }

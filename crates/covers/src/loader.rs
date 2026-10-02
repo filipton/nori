@@ -25,6 +25,7 @@ use std::thread::{self, Thread};
 use std::time::Duration;
 
 use nori_core::covers::is_provider_cover;
+use nori_core::covers::CoverNet;
 use nori_core::transport::{FailureKind, Transport, TransportError};
 use parking_lot::{Condvar, Mutex};
 
@@ -186,7 +187,7 @@ impl<P> Jobs<P> {
 }
 
 struct Inner<P: Paint> {
-    transport: Arc<dyn Transport>,
+    net: Arc<CoverNet>,
     dir: Option<PathBuf>,
     disk_bytes: u64,
     /// Opened lazily, off the requesting thread.
@@ -249,16 +250,16 @@ impl Drop for Ticket {
 
 impl Loader {
     /// A loader producing RGBA rows.
-    pub fn new(config: Config, transport: Arc<dyn Transport>) -> Loader {
+    pub fn new(config: Config, net: Arc<CoverNet>) -> Loader {
         let alpha = config.alpha;
-        Loader::with_paint(config, transport, Rgba(alpha))
+        Loader::with_paint(config, net, Rgba(alpha))
     }
 }
 
 impl<P: Paint> Loader<P> {
-    pub fn with_paint(config: Config, transport: Arc<dyn Transport>, paint: P) -> Loader<P> {
+    pub fn with_paint(config: Config, net: Arc<CoverNet>, paint: P) -> Loader<P> {
         let inner = Inner {
-            transport,
+            net,
             dir: config.dir,
             disk_bytes: config.disk_bytes,
             disk: OnceLock::new(),
@@ -275,14 +276,14 @@ impl<P: Paint> Loader<P> {
 
     /// The decoded cover from memory, if cached (lets a view skip the placeholder).
     pub fn cached(&self, url: &str, width: u32, height: u32) -> Option<P::Picture> {
-        self.inner.memory.get(&Sized { key: Key::of(url), width, height })
+        self.inner.memory.get(&Sized { key: Key::of(&self.inner.net, url), width, height })
     }
 
     /// Requests `url` decoded for `width` x `height` (0 x 0: own size, capped at `decode::WHOLE_SIDE`).
     /// `done` runs on a worker thread, or synchronously on a memory hit; not after the ticket is dropped
     /// (see [`Ticket`]).
     pub fn request(&self, url: &str, width: u32, height: u32, done: impl FnOnce(Result<P::Picture, Error>) + Send + 'static) -> Ticket {
-        let key = Sized { key: Key::of(url), width, height };
+        let key = Sized { key: Key::of(&self.inner.net, url), width, height };
         let inner = &self.inner;
         if let Some(picture) = inner.memory.get(&key) {
             done(Ok(picture));
@@ -313,7 +314,7 @@ impl<P: Paint> Loader<P> {
         if is_provider_cover(url) || self.inner.dir.is_none() {
             return;
         }
-        let key = Sized { key: Key::of(url), width: WARM, height: WARM };
+        let key = Sized { key: Key::of(&self.inner.net, url), width: WARM, height: WARM };
         let inner = &self.inner;
         let mut jobs = inner.jobs.lock();
         if let Entry::Vacant(v) = jobs.flights.entry(key) {
@@ -334,7 +335,7 @@ impl<P: Paint> Loader<P> {
     /// Reads the raw cover file into `out` on this thread (from disk, or fetched and kept).
     pub fn read(&self, url: &str, out: &mut Vec<u8>) -> Result<(), Error> {
         let waker = Waker::from(Arc::new(Unpark(thread::current())));
-        self.inner.bytes(Key::of(url), url, out, &waker)
+        self.inner.bytes(Key::of(&self.inner.net, url), url, out, &waker)
     }
 
     pub fn paint(&self) -> &P {
@@ -593,7 +594,7 @@ impl<P: Paint> Inner<P> {
                 return Ok(());
             }
         }
-        let r = block_on(self.transport.get(url.to_owned(), self.timeout_ms), waker)?;
+        let r = block_on(self.net.get(url.to_owned(), self.timeout_ms), waker)?;
         if !(200..300).contains(&r.status) || r.body.is_empty() {
             return Err(Error::Status(r.status));
         }

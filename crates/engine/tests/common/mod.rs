@@ -155,7 +155,7 @@ pub fn own_core(dir: &std::path::Path, prefs: impl FnOnce(&mut nori_core::settin
     let session = Arc::new(nori_core::queue::Session::new(settings));
     let core = nori_core::Core::open(dir.join("nori.db").to_string_lossy().into_owned(), "test".into(), session).unwrap();
     core.configure(nori_core::ServerConfig { url: "http://music.test".into(), user: "u".into(), password: "p".into(), api_key: None, legacy_auth: false }).unwrap();
-    let client = nori_core::client::Client::new(core.clone(), Arc::new(NoApi::default()));
+    let client = nori_core::client::Client::new(core.clone(), Arc::new(NoApi::default()), Default::default());
     client.set_profile(nori_core::client::NetProfile { url: "http://music.test".into(), ..Default::default() });
     (core, client)
 }

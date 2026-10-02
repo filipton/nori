@@ -88,7 +88,7 @@ object Bench {
         val urls = CoverLoader.get(context).keptAddresses().take(limit)
         if (urls.isEmpty()) return out.append(" | loader: no covers shown yet").toString()
         for (hardware in listOf(false, true)) {
-            val loader = CoverPixels.open(File(context.cacheDir, CoverLoader.DIR).path, Covers.rules.diskBytes.toLong(), hardware, true)
+            val loader = CoverPixels.open(dev.nori.music.Nori.get(context).coverNet.uniffiCloneHandle(), File(context.cacheDir, CoverLoader.DIR).path, Covers.rules.diskBytes.toLong(), hardware, true)
             try {
                 // Once through first, to warm the JIT, the page cache and the loader's threads.
                 load(loader, urls.take(5))

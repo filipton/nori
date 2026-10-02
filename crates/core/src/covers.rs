@@ -160,10 +160,6 @@ fn around(len: u32, art: impl Fn(u32) -> Option<String>, index: i32, previous: i
     CoversAround { near, wants }
 }
 
-/// (alt host, primary host) pairs, so covers cached via one address are found via the other.
-// Global: read by the platform's cover cache (cover_key_parts) with no core handle.
-static ALIKE: std::sync::RwLock<Vec<(String, String)>> = std::sync::RwLock::new(Vec::new());
-
 /// `base` without scheme, trailing slash or `/rest`.
 fn host_of(base: &str) -> &str {
     let base = base.trim().trim_end_matches('/');
@@ -171,42 +167,8 @@ fn host_of(base: &str) -> &str {
     base.split_once("://").map_or(base, |(_, rest)| rest)
 }
 
-/// Registers `alt` as another address of `primary` for [`cover_key_parts`].
-pub fn cover_address_alike(primary: &str, alt: &str) {
-    let (p, a) = (host_of(primary), host_of(alt));
-    if a.is_empty() || p.is_empty() || a == p {
-        return;
-    }
-    let mut alike = ALIKE.write().unwrap_or_else(|e| e.into_inner());
-    alike.retain(|(x, _)| x != a);
-    alike.push((a.to_string(), p.to_string()));
-}
-
 /// Auth and protocol query params, excluded from cover keys.
 const SIGNATURE: [&str; 8] = ["u", "t", "s", "p", "apiKey", "v", "c", "f"];
-
-/// Feeds a cover URL's cache key to `part` without allocating: the primary host, the path and every
-/// param except [`SIGNATURE`], so the key survives new tokens, passwords and the other address.
-pub fn cover_key_parts(url: &str, mut part: impl FnMut(&[u8])) {
-    let (head, query) = url.split_once('?').unwrap_or((url, ""));
-    let (base, path) = match head.find("/rest/") {
-        Some(i) => (&head[..i], &head[i..]),
-        None => (head, ""),
-    };
-    let host = host_of(base);
-    {
-        let alike = ALIKE.read().unwrap_or_else(|e| e.into_inner());
-        part(alike.iter().find(|(a, _)| a == host).map_or(host, |(_, p)| p.as_str()).as_bytes());
-    }
-    part(path.as_bytes());
-    for pair in query.split('&').filter(|p| !p.is_empty()) {
-        let name = pair.split_once('=').map_or(pair, |(k, _)| k);
-        if !SIGNATURE.contains(&name) {
-            part(b"&");
-            part(pair.as_bytes());
-        }
-    }
-}
 
 /// Whether cover URL `url` is a provider's ([`provider_cover_id`]); such covers are not cached since they
 /// change once the item is downloaded. Allocation-free (Android calls it per cover via `@FastNative`).
@@ -214,23 +176,101 @@ pub fn is_provider_cover(url: &str) -> bool {
     url.match_indices("&id=").any(|(at, mark)| provider_cover_id(&url[at + mark.len()..]))
 }
 
-/// The platform transport for the cover loader (nori-covers), which fetches already-signed URLs.
-// Global: the loader runs outside any core or client and may start before the transport exists.
-static COVER_TRANSPORT: std::sync::Mutex<Option<std::sync::Arc<dyn crate::transport::Transport>>> = std::sync::Mutex::new(None);
-static COVER_TRANSPORT_SET: std::sync::Condvar = std::sync::Condvar::new();
-
-/// Sets the transport the cover loader uses.
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn set_cover_transport(transport: std::sync::Arc<dyn crate::transport::Transport>) {
-    *COVER_TRANSPORT.lock().unwrap_or_else(|e| e.into_inner()) = Some(transport);
-    COVER_TRANSPORT_SET.notify_all();
+/// What the cover loader (nori-covers) fetches through and keys covers by: the platform's transport,
+/// which may come after the loader opens (Android opens it on the main thread, before its HTTP client
+/// exists), and the servers' second addresses, so a cover cached through one address is found through
+/// the other.
+#[derive(Default)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Object))]
+pub struct CoverNet {
+    transport: std::sync::Mutex<Option<std::sync::Arc<dyn crate::transport::Transport>>>,
+    transport_set: std::sync::Condvar,
+    /// (alt host, primary host) pairs.
+    alike: std::sync::RwLock<Vec<(String, String)>>,
 }
 
-/// The cover transport, waiting up to `wait` for [`set_cover_transport`] during startup.
-pub fn cover_transport(wait: std::time::Duration) -> Option<std::sync::Arc<dyn crate::transport::Transport>> {
-    let set = COVER_TRANSPORT.lock().unwrap_or_else(|e| e.into_inner());
-    let (set, _) = COVER_TRANSPORT_SET.wait_timeout_while(set, wait, |t| t.is_none()).unwrap_or_else(|e| e.into_inner());
-    set.clone()
+/// How long a cover fetch waits for [`CoverNet::set_transport`] at startup.
+const TRANSPORT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[cfg_attr(feature = "ffi", uniffi::export)]
+impl CoverNet {
+    #[cfg_attr(feature = "ffi", uniffi::constructor)]
+    pub fn new() -> std::sync::Arc<CoverNet> {
+        std::sync::Arc::default()
+    }
+
+    /// Sets the transport covers are fetched through.
+    pub fn set_transport(&self, transport: std::sync::Arc<dyn crate::transport::Transport>) {
+        *self.transport.lock().unwrap_or_else(|e| e.into_inner()) = Some(transport);
+        self.transport_set.notify_all();
+    }
+}
+
+impl CoverNet {
+    /// Fetching through `transport` from the start.
+    pub fn over(transport: std::sync::Arc<dyn crate::transport::Transport>) -> std::sync::Arc<CoverNet> {
+        let net = CoverNet::new();
+        net.set_transport(transport);
+        net
+    }
+
+    /// Registers `alt` as another address of `primary` for [`CoverNet::key_parts`].
+    pub fn alike(&self, primary: &str, alt: &str) {
+        let (p, a) = (host_of(primary), host_of(alt));
+        if a.is_empty() || p.is_empty() || a == p {
+            return;
+        }
+        let mut alike = self.alike.write().unwrap_or_else(|e| e.into_inner());
+        alike.retain(|(x, _)| x != a);
+        alike.push((a.to_string(), p.to_string()));
+    }
+
+    /// Feeds a cover URL's cache key to `part` without allocating: the primary host, the path and every
+    /// param except [`SIGNATURE`], so the key survives new tokens, passwords and the other address.
+    pub fn key_parts(&self, url: &str, mut part: impl FnMut(&[u8])) {
+        let (head, query) = url.split_once('?').unwrap_or((url, ""));
+        let (base, path) = match head.find("/rest/") {
+            Some(i) => (&head[..i], &head[i..]),
+            None => (head, ""),
+        };
+        let host = host_of(base);
+        {
+            let alike = self.alike.read().unwrap_or_else(|e| e.into_inner());
+            part(alike.iter().find(|(a, _)| a == host).map_or(host, |(_, p)| p.as_str()).as_bytes());
+        }
+        part(path.as_bytes());
+        for pair in query.split('&').filter(|p| !p.is_empty()) {
+            let name = pair.split_once('=').map_or(pair, |(k, _)| k);
+            if !SIGNATURE.contains(&name) {
+                part(b"&");
+                part(pair.as_bytes());
+            }
+        }
+    }
+
+    /// The transport, waiting up to [`TRANSPORT_WAIT`] for [`CoverNet::set_transport`].
+    fn transport(&self) -> Result<std::sync::Arc<dyn crate::transport::Transport>, crate::transport::TransportError> {
+        let set = self.transport.lock().unwrap_or_else(|e| e.into_inner());
+        let (set, _) = self.transport_set.wait_timeout_while(set, TRANSPORT_WAIT, |t| t.is_none()).unwrap_or_else(|e| e.into_inner());
+        set.clone().ok_or_else(|| crate::transport::TransportError::Failed { kind: crate::transport::FailureKind::Other, detail: Some("no transport for covers".into()) })
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::transport::Transport for CoverNet {
+    async fn get(&self, url: String, timeout_ms: u32) -> Result<crate::transport::TransportResponse, crate::transport::TransportError> {
+        self.transport()?.get(url, timeout_ms).await
+    }
+
+    async fn send(&self, request: crate::transport::Exchange) -> Result<crate::transport::TransportResponse, crate::transport::TransportError> {
+        self.transport()?.send(request).await
+    }
+
+    fn address_changed(&self) {}
+
+    fn network(&self) -> crate::transport::Network {
+        self.transport().map_or(crate::transport::Network::Unmetered, |t| t.network())
+    }
 }
 
 /// Writes cover `id`'s URL at `size` into `out` (cleared): `prefix` (`Core::url_prefix`), then the id
@@ -287,7 +327,13 @@ mod tests {
         assert_eq!(key(&before), b"keys.example/rest/getCoverArt&id=pl-6b2d_65f0&size=320");
         assert_ne!(key(&before), key(&core.cover_address("pl-6b2d_65f0".into(), 800)));
         assert_ne!(key(&before), key(&core.cover_address("al-1".into(), 320)));
-        cover_address_alike("http://keys.lan:4533/", "https://keys.example");
+        let net = CoverNet::default();
+        let key = |url: &str| {
+            let mut out = Vec::new();
+            net.key_parts(url, |p| out.extend_from_slice(p));
+            out
+        };
+        net.alike("http://keys.lan:4533/", "https://keys.example");
         assert_eq!(key("http://keys.lan:4533/rest/getCoverArt?u=a&t=x&s=y&id=al-1&size=320"), key("https://keys.example/rest/getCoverArt?u=b&id=al-1&size=320"));
         assert_ne!(key("https://other.example/rest/getCoverArt?id=al-1&size=320"), key("https://keys.example/rest/getCoverArt?id=al-1&size=320"));
     }
@@ -323,7 +369,7 @@ mod tests {
 
     fn key(url: &str) -> Vec<u8> {
         let mut out = Vec::new();
-        cover_key_parts(url, |p| out.extend_from_slice(p));
+        CoverNet::default().key_parts(url, |p| out.extend_from_slice(p));
         out
     }
 

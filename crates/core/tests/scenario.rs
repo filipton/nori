@@ -162,7 +162,7 @@ fn logged_in(server: &Arc<Server>) -> (Arc<Core>, Arc<Client>) {
     assert!(!block(login_check(server.clone(), config.clone(), String::new())).unwrap(), "token auth");
     let core = Core::new(String::new(), "scenario".into()).unwrap();
     core.configure(config).unwrap();
-    let client = Client::new(core.clone(), server.clone());
+    let client = Client::new(core.clone(), server.clone(), Default::default());
     client.set_profile(NetProfile { url: "http://nas:4533".into(), ..Default::default() });
     (core, client)
 }

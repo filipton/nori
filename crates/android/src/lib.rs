@@ -214,6 +214,16 @@ pub(crate) fn string(env: &JNIEnv, s: &JString) -> Option<String> {
     with_str(env, s, str::to_string)
 }
 
+/// The core object behind a handle Kotlin took with `uniffiCloneHandle()`, taken over: uniffi's handle
+/// for a Rust object is its `Arc`'s raw pointer, and the cloned reference is this side's to drop.
+///
+/// # Safety
+/// `h` is a `uniffiCloneHandle()` of a uniffi object of type `T`, handed here once.
+pub(crate) unsafe fn uniffi_object<T>(h: jni::sys::jlong) -> std::sync::Arc<T> {
+    // SAFETY: the caller's promise; `Handle::from_arc` made `h` from this `Arc`.
+    unsafe { std::sync::Arc::from_raw(h as *const T) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::CLASSES;

@@ -41,10 +41,10 @@ nori-transfers = { path = "../transfers" }
 nori-perf = { path = "../perf" }
 # The beat model's file is checked against its pinned SHA-256.
 sha2 = { version = "0.11", optional = true }
+# The cover loader's net forwards the async Transport trait.
+async-trait = "0.1"
 
 [dev-dependencies]
 nori-player = { path = "../player", features = ["synth"] }
-# The tests' fake transport implements the async Transport trait.
-async-trait = "0.1"
 # A test's own directory, for a settings database.
 nori-testdir = { path = "../testdir" }

@@ -6,6 +6,7 @@ use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use nori_covers::{header, Alpha, Config, DecodeError, Decoder, Error, Image, Key, Loader, Paint};
+use nori_core::covers::CoverNet;
 use nori_core::transport::{Exchange, FailureKind, Transport, TransportError, TransportResponse};
 use parking_lot::{Condvar, Mutex};
 
@@ -89,7 +90,7 @@ fn answers(rx: &mpsc::Receiver<Result<Arc<Image>, Error>>, n: usize) -> Vec<Resu
 fn shared_fetches() {
     let server = Server::new(200);
     server.hold();
-    let loader = Loader::new(config(None, 3), server.clone());
+    let loader = Loader::new(config(None, 3), CoverNet::over(server.clone()));
     let (tx, rx) = mpsc::channel();
     let tickets: Vec<_> = (0..5)
         .map(|_| {
@@ -115,7 +116,7 @@ fn shared_fetches() {
     let server = Server::new(200);
     server.hold();
     let painted = Arc::new(AtomicUsize::new(0));
-    let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(None, 2) }, server.clone(), Counted(painted.clone()));
+    let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(None, 2) }, CoverNet::over(server.clone()), Counted(painted.clone()));
     let (tx, rx) = mpsc::channel();
     let tickets: Vec<_> = (0..3)
         .map(|i| {
@@ -145,7 +146,7 @@ fn shared_fetches() {
 fn dropped_tickets() {
     let server = Server::new(200);
     server.hold();
-    let loader = Loader::new(config(None, 1), server.clone());
+    let loader = Loader::new(config(None, 1), CoverNet::over(server.clone()));
     let (tx, rx) = mpsc::channel();
     let tx2 = tx.clone();
     // The single worker is held on `a`; `b` is queued and cancelled.
@@ -164,7 +165,7 @@ fn dropped_tickets() {
     // Dropping one of two tickets still answers the other.
     let server = Server::new(200);
     server.hold();
-    let loader = Loader::new(config(None, 1), server.clone());
+    let loader = Loader::new(config(None, 1), CoverNet::over(server.clone()));
     let (tx, rx) = mpsc::channel();
     let busy = loader.request("http://s/busy", 8, 8, |_| {});
     server.wait_calls(1);
@@ -185,7 +186,7 @@ fn dropped_tickets() {
     let server = Server::new(200);
     server.hold();
     let painted = Arc::new(AtomicUsize::new(0));
-    let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(None, 1) }, server.clone(), Counted(painted.clone()));
+    let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(None, 1) }, CoverNet::over(server.clone()), Counted(painted.clone()));
     let (tx, rx) = mpsc::channel::<()>();
     let ticket = loader.request(PHOTO, 8, 8, move |_| tx.send(()).unwrap());
     server.wait_calls(1);
@@ -202,7 +203,7 @@ fn dropped_tickets() {
     let d = dir("again");
     let server = Server::new(200);
     server.hold();
-    let loader = Loader::new(Config { memory_bytes: 0, ..config(Some(d.path().to_path_buf()), 1) }, server.clone());
+    let loader = Loader::new(Config { memory_bytes: 0, ..config(Some(d.path().to_path_buf()), 1) }, CoverNet::over(server.clone()));
     let (tx, rx) = mpsc::channel();
     let first = loader.request(PHOTO, 8, 8, |_| {});
     server.wait_calls(1);
@@ -230,7 +231,7 @@ fn not_kept() {
     let d = dir("no-picture");
     let server = Server::new(200);
     let photo = std::mem::replace(&mut *server.body.lock(), br#"{"subsonic-response":{"status":"failed"}}"#.to_vec());
-    let loader = Loader::new(config(Some(d.to_path_buf()), 1), server.clone());
+    let loader = Loader::new(config(Some(d.to_path_buf()), 1), CoverNet::over(server.clone()));
     assert!(matches!(loader.load(PHOTO, 8, 8), Err(Error::Decode(DecodeError::Unknown))));
     *server.body.lock() = photo;
     assert_eq!(loader.load(PHOTO, 8, 8).unwrap().width, 8);
@@ -239,7 +240,7 @@ fn not_kept() {
     // Error status is not cached.
     let d = dir("error");
     let server = Server::new(404);
-    let loader = Loader::new(config(Some(d.to_path_buf()), 1), server.clone());
+    let loader = Loader::new(config(Some(d.to_path_buf()), 1), CoverNet::over(server.clone()));
     assert_eq!(loader.load(PHOTO, 8, 8), Err(Error::Status(404)));
     assert_eq!(loader.disk().unwrap().bytes(), 0);
     // Failures are not cached either.
@@ -253,17 +254,21 @@ fn disk_keys() {
     // Playlist covers (`pl-<id>_<changed>`) are kept like albums', and a cached cover is found offline
     // under another token/salt or the server's alternate address, but not at another size.
     let d = dir("playlist");
-    nori_core::covers::cover_address_alike("http://lan.test:4533", "https://wan.test");
+    let net = |over: Arc<Server>| {
+        let net = CoverNet::over(over);
+        net.alike("http://lan.test:4533", "https://wan.test");
+        net
+    };
     let id = "pl-6b2d0c1e-5f7a-4e21-9d3c-0a1b2c3d4e5f_65f0a1b2";
     let at = |base: &str, t: &str, s: &str, size: u32| format!("{base}/rest/getCoverArt?u=a&t={t}&s={s}&v=1.16.1&c=nori&f=json&id={id}&size={size}");
     let first = at("http://lan.test:4533", "tok1", "salt1", 320);
     {
-        let loader = Loader::new(config(Some(d.to_path_buf()), 2), Server::new(200));
+        let loader = Loader::new(config(Some(d.to_path_buf()), 2), net(Server::new(200)));
         loader.load(&first, 8, 8).unwrap();
-        assert!(loader.disk().unwrap().contains(Key::of(&first)), "the playlist's cover is kept");
+        assert!(loader.disk().unwrap().contains(Key::of(&CoverNet::default(), &first)), "the playlist's cover is kept");
     }
     let down = Server::new(0);
-    let loader = Loader::new(config(Some(d.to_path_buf()), 2), down.clone());
+    let loader = Loader::new(config(Some(d.to_path_buf()), 2), net(down.clone()));
     for url in [first.clone(), at("http://lan.test:4533", "tok2", "salt2", 320), at("https://wan.test", "tok1", "salt1", 320), at("http://wan.test", "tok3", "salt3", 320)] {
         assert_eq!(loader.load(&url, 8, 8).map(|p| p.width), Ok(8), "{url}");
     }
@@ -272,9 +277,9 @@ fn disk_keys() {
     assert!(loader.load(&at("http://elsewhere.test", "tok1", "salt1", 320), 8, 8).is_err(), "another server's is its own");
     // Provider playlists are never kept.
     let provider = "http://lan.test:4533/rest/getCoverArt?u=a&id=pl-deezer-9&size=320";
-    let up = Loader::new(config(Some(d.to_path_buf()), 1), Server::new(200));
+    let up = Loader::new(config(Some(d.to_path_buf()), 1), CoverNet::over(Server::new(200)));
     up.load(provider, 8, 8).unwrap();
-    assert!(!up.disk().unwrap().contains(Key::of(provider)));
+    assert!(!up.disk().unwrap().contains(Key::of(&CoverNet::default(), provider)));
     drop((loader, up));
 
     // Legacy full url key is found and migrated.
@@ -282,27 +287,27 @@ fn disk_keys() {
     let bytes = std::fs::read(format!("{}/testdata/photo.jpg", env!("CARGO_MANIFEST_DIR"))).unwrap();
     nori_covers::DiskCache::open(d.to_path_buf(), 1 << 20).unwrap().put(Key::of_address(PHOTO), &bytes).unwrap();
     let down = Server::new(0);
-    let loader = Loader::new(config(Some(d.to_path_buf()), 1), down.clone());
+    let loader = Loader::new(config(Some(d.to_path_buf()), 1), CoverNet::over(down.clone()));
     assert_eq!(loader.load(PHOTO, 8, 8).map(|p| p.width), Ok(8));
     assert_eq!(down.calls(), 0);
     let disk = loader.disk().unwrap();
-    assert!(disk.contains(Key::of(PHOTO)) && !disk.contains(Key::of_address(PHOTO)));
+    assert!(disk.contains(Key::of(&CoverNet::default(), PHOTO)) && !disk.contains(Key::of_address(PHOTO)));
     drop(loader);
 
     // Disk cache survives restart except provider covers.
     let d = dir("disk");
     let provider = "http://s/rest/getCoverArt.view?u=a&id=ext-deezer-1&size=320";
     {
-        let loader = Loader::new(config(Some(d.to_path_buf()), 2), Server::new(200));
+        let loader = Loader::new(config(Some(d.to_path_buf()), 2), CoverNet::over(Server::new(200)));
         loader.load(PHOTO, 8, 8).unwrap();
         loader.load(provider, 8, 8).unwrap();
         let disk = loader.disk().unwrap();
-        assert!(disk.contains(Key::of(PHOTO)) && disk.path(Key::of(PHOTO)).exists());
-        assert!(!disk.contains(Key::of(provider)));
+        assert!(disk.contains(Key::of(&CoverNet::default(), PHOTO)) && disk.path(Key::of(&CoverNet::default(), PHOTO)).exists());
+        assert!(!disk.contains(Key::of(&CoverNet::default(), provider)));
     }
     // Server down: the kept cover loads, the provider's fails.
     let down = Server::new(0);
-    let loader = Loader::new(config(Some(d.to_path_buf()), 2), down.clone());
+    let loader = Loader::new(config(Some(d.to_path_buf()), 2), CoverNet::over(down.clone()));
     assert_eq!(loader.load(PHOTO, 8, 8).unwrap().width, 8);
     assert_eq!(down.calls(), 0);
     assert!(matches!(loader.load(provider, 8, 8), Err(Error::Transport { kind: FailureKind::Connect, .. })));
@@ -313,7 +318,7 @@ fn disk_keys() {
 fn dropped_loader_answers_closed() {
     let server = Server::new(200);
     server.hold();
-    let loader = Loader::new(config(None, 1), server.clone());
+    let loader = Loader::new(config(None, 1), CoverNet::over(server.clone()));
     let (tx, rx) = mpsc::channel();
     let _held = loader.request("http://s/a", 8, 8, |_| {});
     server.wait_calls(1);
@@ -351,7 +356,7 @@ fn warm_fetches_without_decoding() {
     let d = dir("warm");
     let server = Server::new(200);
     let painted = Arc::new(AtomicUsize::new(0));
-    let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(Some(d.to_path_buf()), 1) }, server.clone(), Counted(painted.clone()));
+    let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(Some(d.to_path_buf()), 1) }, CoverNet::over(server.clone()), Counted(painted.clone()));
     server.hold();
     // Worker busy; warm-ups and a later view queue behind it.
     let busy = loader.request("http://s/busy", 8, 8, |_| {});
@@ -364,7 +369,7 @@ fn warm_fetches_without_decoding() {
     loader.warm(next);
     server.release();
     server.wait_calls(4);
-    assert!(loader.disk().unwrap().contains(Key::of(PHOTO)), "warmed");
+    assert!(loader.disk().unwrap().contains(Key::of(&CoverNet::default(), PHOTO)), "warmed");
     // The view went before the warm-ups, the provider cover was skipped, nothing warmed was decoded.
     assert_eq!(*server.asked.lock(), ["http://s/busy", "http://s/late", PHOTO, next]);
     assert_eq!(painted.load(Ordering::SeqCst), 2);
@@ -403,11 +408,11 @@ impl Paint for Fragile {
 fn panic_fails_only_that_cover() {
     let d = dir("panic");
     let server = Server::new(200);
-    let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(Some(d.to_path_buf()), 1) }, server.clone(), Fragile);
+    let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(Some(d.to_path_buf()), 1) }, CoverNet::over(server.clone()), Fragile);
     for _ in 0..3 {
         assert!(matches!(loader.load(PHOTO, 13, 13), Err(Error::Panicked(why)) if why == "a decoder bug"));
         // The file is dropped from disk: it may be what broke the decoder.
-        assert!(!loader.disk().unwrap().contains(Key::of(PHOTO)));
+        assert!(!loader.disk().unwrap().contains(Key::of(&CoverNet::default(), PHOTO)));
         assert_eq!(loader.load(PHOTO, 8, 8), Ok((8, 8)));
     }
     // A panicking callback does not kill the worker.
@@ -514,7 +519,7 @@ fn resting() {
     {
         let server = Server::new(200);
         let (alive, rests) = (Arc::new(Count::default()), Arc::new(AtomicUsize::new(0)));
-        let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(None, 3) }, server.clone(), Threads { alive: alive.clone(), rests: rests.clone() });
+        let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(None, 3) }, CoverNet::over(server.clone()), Threads { alive: alive.clone(), rests: rests.clone() });
         three_at_once(&loader, &server);
         assert_eq!(alive.get(), 3);
         loader.rest();
@@ -532,7 +537,7 @@ fn resting() {
         let server = Server::new(200);
         let (alive, rests) = (Arc::new(Count::default()), Arc::new(AtomicUsize::new(0)));
         let config = Config { memory_bytes: 0, idle: Duration::from_millis(500), ..config(None, 3) };
-        let loader = Loader::with_paint(config, server.clone(), Threads { alive: alive.clone(), rests: rests.clone() });
+        let loader = Loader::with_paint(config, CoverNet::over(server.clone()), Threads { alive: alive.clone(), rests: rests.clone() });
         three_at_once(&loader, &server);
         // Requests closer together than `idle` keep the threads.
         for i in 0..5 {
@@ -549,7 +554,7 @@ fn resting() {
     {
         let server = Server::new(200);
         let (alive, rests) = (Arc::new(Count::default()), Arc::new(AtomicUsize::new(0)));
-        let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(None, 3) }, server.clone(), Threads { alive: alive.clone(), rests: rests.clone() });
+        let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(None, 3) }, CoverNet::over(server.clone()), Threads { alive: alive.clone(), rests: rests.clone() });
         three_at_once(&loader, &server);
         loader.show(false);
         until(&alive, 0);

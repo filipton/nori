@@ -7,6 +7,7 @@ import dev.nori.music.data.Library
 import dev.nori.music.downloads.Downloads
 import dev.nori.music.ffi.Client
 import dev.nori.music.ffi.Core
+import dev.nori.music.ffi.CoverNet
 import dev.nori.music.ffi.net.NetProfile
 import dev.nori.music.ffi.ServerConfig
 import dev.nori.music.net.Http
@@ -47,10 +48,13 @@ class Nori private constructor(private val context: Context) {
     private val lazySources = lazy { MediaSources(context, ::client, http, settings) }
 
     /**
-     * The core's one door to the network; built with [http]. The core's cover loader fetches through it
-     * too ([dev.nori.music.data.CoverLoader]), so covers ride the API's connection.
+     * What the core's cover loader ([dev.nori.music.data.CoverLoader]) fetches through, and keys covers by:
+     * [transport] once it is built, so covers ride the API's connection, and each profile's addresses.
      */
-    private val transport by lazy { http.transport { library.onServerChanged() }.also { dev.nori.music.ffi.setCoverTransport(it) } }
+    val coverNet by lazy { CoverNet() }
+
+    /** The core's one door to the network; built with [http]. */
+    private val transport by lazy { http.transport { library.onServerChanged() }.also { coverNet.setTransport(it) } }
 
     private fun active(): Opened {
         // Compared as the settings hold it, so the core is only asked whose rows those are on a switch.
@@ -60,7 +64,7 @@ class Nori private constructor(private val context: Context) {
             opened?.takeIf { it.key == key } ?: settings.value.server.let { p ->
                 val id = dev.nori.music.ffi.settings.serverDb(key)
                 val core = open(id, p)
-                Opened(key, id, core, Client(core, transport).also { c -> p?.let { c.setProfile(it.net()) } })
+                Opened(key, id, core, Client(core, transport, coverNet).also { c -> p?.let { c.setProfile(it.net()) } })
             }.also { opened = it }
         }
     }

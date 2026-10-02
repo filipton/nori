@@ -86,7 +86,7 @@ fn downloads_and_measuring_over_core() {
     let config = ServerConfig { url: "http://music.test".into(), user: "u".into(), password: "p".into(), api_key: None, legacy_auth: false };
     core.configure(config).unwrap();
     let net = Arc::new(NoApi::default());
-    let client = Client::new(core.clone(), net.clone());
+    let client = Client::new(core.clone(), net.clone(), Default::default());
     client.set_profile(NetProfile { url: "http://music.test".into(), ..Default::default() });
     let store = Store::open(dir.join("music"), 64 << 20, Box::new(Recent::default())).unwrap();
     let audio = Arc::new(Audio::default());
@@ -468,7 +468,7 @@ fn listens_with_a_real_model(core: &Arc<Core>, current: &Mutex<Arc<Client>>, dir
         return;
     };
     let authors = Arc::new(Authors(std::fs::read(ckpt).unwrap(), Mutex::new(Vec::new())));
-    *current.lock() = Client::new(core.clone(), authors.clone());
+    *current.lock() = Client::new(core.clone(), authors.clone(), Default::default());
     measurer.ask(Vec::new());
     measurer.ask(core.session.measure());
     settle(measurer.as_ref());

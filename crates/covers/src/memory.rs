@@ -72,7 +72,7 @@ mod tests {
     }
 
     fn at(url: &str, side: u32) -> Sized {
-        Sized { key: Key::of(url), width: side, height: side }
+        Sized { key: Key::of(&nori_core::covers::CoverNet::default(), url), width: side, height: side }
     }
 
     fn put(m: &MemoryCache, url: &str, side: u32) {

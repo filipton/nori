@@ -43,7 +43,7 @@ class CoverLoader private constructor(context: Context) {
     private val main = Handler(Looper.getMainLooper())
 
     /** Cheap to open: the core reads its directory on the loader's first thread, not here. */
-    private val loader = CoverPixels.open(File(app.cacheDir, DIR).path, Covers.rules.diskBytes.toLong(), Build.VERSION.SDK_INT >= 28, true)
+    private val loader = CoverPixels.open(dev.nori.music.Nori.get(app).coverNet.uniffiCloneHandle(), File(app.cacheDir, DIR).path, Covers.rules.diskBytes.toLong(), Build.VERSION.SDK_INT >= 28, true)
 
     private val memory = object : LruCache<String, Kept>(memoryBytes(app)) {
         override fun sizeOf(key: String, value: Kept): Int = value.bitmap.allocationByteCount
