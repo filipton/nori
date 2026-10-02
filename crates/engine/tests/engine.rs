@@ -2662,3 +2662,29 @@ fn seek_after_queue_edit() {
 }
 
 include!("perf_bench.rs");
+
+/// Songs never heard before, the equalizer on: the ending is held for a blind fade, and the songs'
+/// analyses come in while it is held (the playing song's from its own tap, the next measured as it is
+/// fetched), with the hold just begun, the next song queued as the mix and the mix under way. The
+/// ending is planned again; however it goes, both songs are heard together, never one jumping to the
+/// other.
+#[test]
+fn analyses_mid_hold_still_mix() {
+    let (a, b) = (music(40.0, 70), music(40.0, 71));
+    for at_s in [16.0, 20.0, 26.0, 29.0] {
+        let live = Live::new(TransitionPrefs { auto_mix: true, auto_mix_max_s: 12, echo_out: false, ..prefs_off() });
+        let rig = playing_until(&[("a", &a), ("b", &b)], live.clone(), Settings { auto_mix: true, ..loud_eq() }, at_s);
+        {
+            let mut app = live.0.lock();
+            app.analyses.insert("a".into(), measured("a", 120.0, 40_000));
+            app.analyses.insert("b".into(), measured("b", 120.0, 40_000));
+        }
+        rig.engine.replan();
+        assert!(rig.wait_for(60, Rig::ended), "{at_s} s: {:?}", live.0.lock().log);
+        let log = live.0.lock().log.clone();
+        assert!(log.iter().any(|l| l.contains("mixing: the next track arrived")), "{at_s} s: {log:?}");
+        assert!(!log.iter().any(|l| l.contains("letting the ending play") || l.contains("abandon")), "{at_s} s: {log:?}");
+        let heard = rig.heard.lock().len();
+        assert!(heard < a.len() + b.len() - RATE as usize * 2 * 4, "{at_s} s: the songs overlap, {} s heard: {log:?}", heard / 2 / RATE as usize);
+    }
+}
