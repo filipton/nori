@@ -116,6 +116,12 @@ class PlaybackService : MediaLibraryService() {
          * now came from kept Play instead of Pause until the next pause or skip. Set by PlayerConnection.
          */
         @Volatile var onQueueSet: (() -> Unit)? = null
+        /**
+         * The engine said it landed a jump (its position event, on the main thread). A seek held until then
+         * is let go at once rather than at media3's next event: the landing changes nothing the controller
+         * has not already shown, so none may come until the song changes. Set by PlayerConnection.
+         */
+        @Volatile var onLanded: (() -> Unit)? = null
     }
 
     private lateinit var nori: Nori

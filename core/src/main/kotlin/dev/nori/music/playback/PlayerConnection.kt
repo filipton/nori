@@ -211,6 +211,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
             PlaybackService.onMixingChanged = { main.post { controller?.let { publish(it, queueChanged = false) } } }
             // A new queue made in the core: its origin read again once the service has set it.
             PlaybackService.onQueueSet = { main.post { controller?.let { publish(it, queueChanged = true) } } }
+            PlaybackService.onLanded = { followSeek() }
             publish(c, queueChanged = true)
             pending.forEach { it(c) }
             pending.clear()
@@ -452,7 +453,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
     fun seekTo(ms: Long) = with { c ->
         // Asked for: the bar and the lyrics go there as they are, even a moment back (heard.rs Playhead).
         PlayheadJni.jumped(clock)
-        seekAfter = engine()?.jumpsSent
+        seekAfter = engine()?.let { it to it.jumpsSent }
         _pendingSeek.value = ms
         // A tap is a place in the song on the page. While the ear is still on the song the player
         // has left (see publish), that is the earlier song: the seek goes to it, not to the one the
@@ -461,8 +462,8 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
         if (heardIndex != null) c.seekTo(heardIndex, ms) else c.seekTo(ms)
     }
 
-    /** The engine's jumps sent before the pending seek; null when there is no engine to wait for. */
-    private var seekAfter: Long? = null
+    /** The engine and its jumps sent before the pending seek; null when there is no engine to wait for. */
+    private var seekAfter: Pair<EnginePlayer, Long>? = null
     /**
      * Where a seek asked to go, until the engine has landed it. The seek bar holds this instead of its
      * own timer, so a slow seek reads as one held place rather than a jump, a snap-back and a glide.
@@ -471,12 +472,15 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
     val pendingSeek: StateFlow<Long?> = _pendingSeek
     private val main by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
 
-    /** Lets the bar go once the engine has landed a jump sent after the seek (its position event). */
+    /**
+     * Lets the bar go once the engine has landed a jump sent after the seek (its position event), or the
+     * engine it was sent to is gone.
+     */
     private fun followSeek() {
         if (_pendingSeek.value == null) return
         val e = engine()
-        val after = seekAfter
-        if (e == null || after == null || (e.jumpsSent > after && e.landedAll)) _pendingSeek.value = null
+        val (sentTo, after) = seekAfter ?: (null to 0L)
+        if (e == null || e !== sentTo || (e.jumpsSent > after && e.landedAll)) _pendingSeek.value = null
     }
 
     fun setShuffle(on: Boolean) = with {

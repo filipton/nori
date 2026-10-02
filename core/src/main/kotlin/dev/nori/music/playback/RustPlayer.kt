@@ -611,7 +611,7 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
                 EVENT_MIXING -> PlaybackService.onMixingChanged?.invoke()
                 EVENT_PLACED -> placed = true
                 // The engine is where a jump or seek asked: the session says that place, not its own guess.
-                EVENT_LANDED -> { landed = RustPlayerJni.eventJumps(h); placed = true }
+                EVENT_LANDED -> { landed = RustPlayerJni.eventJumps(h); placed = true; PlaybackService.onLanded?.invoke() }
                 // Handed on after the batch: the bridge edits and seeks this player itself.
                 EVENT_BRIDGE -> main.post { if (onBridge?.invoke() != true) { stoppedByItself(); follow(); invalidateState() } }
                 // The output device's own sound is DeviceSound's, from Outputs: its name is not asked for,
