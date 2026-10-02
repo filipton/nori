@@ -327,6 +327,12 @@ impl<T: Track> Sink<T> {
         self.gain_reduction_db = 0.0;
     }
 
+    /// Ms until output frame `at` is heard; none once it was.
+    pub fn heard_in_ms(&mut self, at: u64) -> Option<u64> {
+        let rate = self.format?.rate.max(1) as u64;
+        at.checked_sub(self.track.played()).map(|frames| frames * 1000 / rate)
+    }
+
     pub fn settings(&self) -> &ChainSettings {
         &self.settings
     }

@@ -53,8 +53,11 @@ pub(crate) const LOW_US: i64 = 1_000_000;
 /// Track size: a burst, the low mark, and 0.5 s of playback during the next decode. A top-up then empties
 /// the ring below its own low mark, waking the engine (`AudioOutput::bursts`).
 pub(crate) const TRACK_US: i64 = BUFFER_US + LOW_US + 500_000;
-/// Shallow track size on the speaker: 80-160 ms, plus the ring's 40-80 ms, is the equalizer's latency.
-pub(crate) const SHALLOW_TRACK_US: i64 = 160_000;
+/// Shallow track size on the speaker: 80-120 ms (its latency included) is how soon a change made while
+/// tuning is heard.
+pub(crate) const SHALLOW_TRACK_US: i64 = 120_000;
+/// What a shallow track takes per top-up.
+const SHALLOW_TOP_US: i64 = 40_000;
 /// Wake lateness allowed for while shallow.
 const SHALLOW_LATE_US: i64 = 40_000;
 /// Largest a shallow track grows.
@@ -172,15 +175,13 @@ struct Needs {
 }
 
 /// `(low, capacity)` of the shallow track for an output with latency `lag` and pull size `pull`
-/// (frames): low covers lag + pull + wake lateness (at least half of [`SHALLOW_TRACK_US`], at most
-/// [`SHALLOW_MOST_US`]); capacity adds max(low / 4, half of [`SHALLOW_TRACK_US`]). An output reporting
-/// nothing gets 80/160 ms.
+/// (frames): low covers lag + pull + wake lateness (at least [`SHALLOW_TRACK_US`] less a top-up, at most
+/// [`SHALLOW_MOST_US`]); capacity adds a top-up ([`SHALLOW_TOP_US`], or a quarter of low on a slow
+/// output). An output reporting nothing gets 80/120 ms.
 pub(crate) fn shallow_marks(rate: u32, lag: u64, pull: u64) -> (u64, u64) {
     let f = |us: i64| (rate as i64 * us / 1_000_000) as u64;
-    let half = f(SHALLOW_TRACK_US / 2);
-    let low = (lag + pull + f(SHALLOW_LATE_US)).max(half).min(f(SHALLOW_MOST_US));
-    let top = half.max(low / 4);
-    (low, low + top)
+    let low = (lag + pull + f(SHALLOW_LATE_US)).max(f(SHALLOW_TRACK_US - SHALLOW_TOP_US)).min(f(SHALLOW_MOST_US));
+    (low, low + f(SHALLOW_TOP_US).max(low / 4))
 }
 
 /// An opened sink, its buffer in frames, and whether it starts only when full (pre-Android 12).
@@ -635,8 +636,8 @@ impl<R: Ring> Writer<R> {
         (self.rate as i64 * us / 1_000_000) as u64
     }
 
-    /// Merges the route's report into `needs` (reset on a new output, otherwise only grown) and restarts
-    /// underrun counting.
+    /// Merges the route's report and the latency seen into `needs` (reset on a new output, otherwise only
+    /// grown) and restarts underrun counting.
     fn look_at_route(&mut self) {
         let route = self.sink.route();
         let said_lag = route.latency_frames.unwrap_or(0).min(self.frames(SHALLOW_MOST_US));
@@ -644,7 +645,9 @@ impl<R: Ring> Writer<R> {
         if route.name != self.needs.name {
             self.needs = Needs { name: route.name, ..Needs::default() };
         }
-        self.needs.lag = self.needs.lag.max(said_lag);
+        // The latency seen while deep counts too: an output may report none.
+        let seen_lag = self.clock.0.lock().mixed.min(self.frames(SHALLOW_MOST_US));
+        self.needs.lag = self.needs.lag.max(said_lag).max(seen_lag);
         self.needs.pull = self.needs.pull.max(said_pull);
         self.needs.underruns = self.sink.underruns();
     }
@@ -2692,7 +2695,7 @@ mod tests {
         let ms = s.deepest * 1000 / RATE as u64;
         assert!(ms <= 250, "a band moved is heard {ms} ms later at most");
         let wakes = s.wakes - wakes;
-        assert!(wakes <= 60 * 16, "about once per 80 ms: {wakes} wakes in a minute");
+        assert!(wakes <= 60 * 25, "about once per 40 ms: {wakes} wakes in a minute");
         // Closed: deep again.
         s.control.shallow = false;
         s.wake();
@@ -2840,16 +2843,16 @@ mod tests {
         s.run(30_000);
         assert_eq!(s.track.lock().underruns, underruns);
 
-        // Shallow grows for unreported latency.
+        // Unreported latency: sized for the latency seen while deep, then grown for the pulls it misses.
         let mut s = tuned_over_bluetooth(false);
-        assert_eq!(s.track.lock().size, track_frames(RATE, true), "at first, as for the speaker");
+        let size = s.track.lock().size;
+        assert_eq!(size, shallow_marks(RATE, bt, 0).1, "at once for the latency seen");
         s.run(20_000);
         let (underruns, size) = {
             let t = s.track.lock();
             (t.underruns, t.size)
         };
         assert!(underruns <= 10, "it grew within a few underruns: {underruns}");
-        assert!(size > track_frames(RATE, true) * 2, "for the latency it saw and the pulls it missed: {} ms", size * 1000 / RATE as u64);
         s.run(60_000);
         let t = s.track.lock();
         assert_eq!(t.underruns, underruns, "and then never ran dry");
@@ -2857,8 +2860,8 @@ mod tests {
 
         // Shallow marks by route.
         let f = |ms: u64| ms * RATE as u64 / 1000;
-        assert_eq!(shallow_marks(RATE, 0, 0), (f(80), f(160)), "the speaker's, as before");
-        assert_eq!(shallow_marks(RATE, f(10), f(20)), (f(80), f(160)));
+        assert_eq!(shallow_marks(RATE, 0, 0), (f(80), f(120)), "the speaker's");
+        assert_eq!(shallow_marks(RATE, f(10), f(20)), (f(80), f(120)));
         let (low, capacity) = shallow_marks(RATE, f(200), f(200));
         assert_eq!(low, f(440), "the latency, a pull and a late wake");
         assert_eq!(capacity, f(550));

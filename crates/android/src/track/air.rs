@@ -714,3 +714,29 @@ fn second_track() {
     assert_eq!(heard_amp(&r), 0.6, "the change is heard");
 }
 
+
+#[test]
+fn tuned_changes_are_heard_soon() {
+    // The equalizer open (a shallow track), a change at moments through its top-up cycle: in place,
+    // seamless, heard within the output's own latency and what the track holds besides (a top-up and a
+    // late wake on the speaker, a quarter more of Bluetooth's long way).
+    for out in [SPEAKER, BLUETOOTH] {
+        let mut worst = 0;
+        for k in 0..8 {
+            let mut at = 0;
+            let (r, h) = heard_after(out, |r| {
+                r.control.shallow = true;
+                r.wake();
+                r.run(15_000 + k * 17);
+                at = r.now();
+                r.change(0.6);
+            });
+            let what = format!("tuning on {out:?}, {k}");
+            assert_seamless(&what, out, &r, &h);
+            assert_eq!(r.air.wires.lock().len(), 1, "{what}: the one track");
+            worst = worst.max(heard_in_ms(&r, at, 0.5, 0.6));
+        }
+        let late = worst - out.delay_ms - out.period_ms;
+        assert!(late <= if out.packet_us > 0 { 120 } else { 90 }, "{out:?}: heard {late} ms after the output's own latency at worst");
+    }
+}

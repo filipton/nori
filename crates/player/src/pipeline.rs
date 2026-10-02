@@ -662,6 +662,10 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         }
         if let Some((input, output)) = self.sink.change(settings) {
             self.app.spliced("chain", Splice { input, output });
+            // In place; a device that drops what it holds says when its change is heard itself.
+            if let Some(ms) = self.sink.heard_in_ms(output) {
+                self.app.log(&format!("the change is heard after {ms} ms"));
+            }
         }
         self.burst.restart();
         self.sink.fill();
