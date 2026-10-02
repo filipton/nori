@@ -2826,3 +2826,41 @@ fn mixramp_fades_out_after_seek() {
         fades_through(&rig.heard.lock(), from, 200.0, 900.0, mixed_ms, &what);
     }
 }
+
+/// A seek near the end, as Android sends it (a jump, with or without a dip): into the music before an
+/// ending held with a long runway, into the mix, or past where the mix leaves. Its landing is said with
+/// its number at once, and the place moves on from there through the held ending.
+#[test]
+fn seek_into_ending_lands() {
+    let (a, b) = (music(40.0, 80), music(40.0, 81));
+    for (to_ms, fade_ms) in [(4_100, 0), (4_100, 150), (12_000, 150), (24_000, 0), (24_000, 150), (31_000, 150)] {
+        let what = format!("to {to_ms} ms, a {fade_ms} ms dip");
+        let live = Live::new(TransitionPrefs { auto_mix: true, auto_mix_max_s: 12, echo_out: false, keep_albums: false, ..prefs_off() });
+        {
+            let mut app = live.0.lock();
+            app.analyses.insert("a".into(), gridless("a", 40_000, 30_000, 0));
+            app.analyses.insert("b".into(), gridless("b", 40_000, 0, 8_600));
+        }
+        let rig = Rig::build(files(&[("a", &a), ("b", &b)]), live.clone(), Settings { auto_mix: true, fade_ms, ..loud_eq() }, Extra { pace: Some(5.0), ..Extra::default() });
+        rig.engine.play_at(0, 0);
+        assert!(rig.wait_for(10, |r| r.engine.status().position_ms > 2_000), "{what}");
+        let n = rig.engine.go_to(0, to_ms);
+        let asked = rig.now_ms();
+        assert!(rig.wait_for(5, |r| r.events.lock().iter().any(|e| matches!(e, Event::Position { jumps, .. } if *jumps == n))), "{what}: the seek said it landed: {:?} {:?}", rig.events.lock(), live.0.lock().log);
+        let took = rig.now_ms() - asked;
+        assert!(took < 1_000, "{what}: said {took} ms after it was asked");
+        let place = |r: &Rig| (r.engine.status().index, r.engine.status().position_ms);
+        let (_, mut ms) = place(&rig);
+        assert!((to_ms - 100..to_ms + 1_500).contains(&ms), "{what}: {:?}", rig.engine.status());
+        let mut places = vec![ms];
+        while rig.engine.status().index == Some(0) && ms < 40_000 {
+            rig.run(1_000);
+            rig.engine.look();
+            rig.run(1);
+            let (index, now) = place(&rig);
+            places.push(now);
+            assert!(index != Some(0) || (now - ms - 1_000).abs() < 300, "{what}: the place moves on, {places:?}: {:?}", live.0.lock().log);
+            ms = now;
+        }
+    }
+}
