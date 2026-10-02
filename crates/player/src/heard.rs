@@ -328,28 +328,19 @@ mod tests {
     }
 
     #[test]
-    fn held_ending_runs_on() {
+    fn held_ending_then_next_song() {
         let mut t = tracker();
         let s = t.ab(&holding(190_000_000, 1_000), now(3_000, "b", 800));
-        assert_eq!((s.index, s.ms), (Some(A), 192_000));
+        assert_eq!((s.index, s.ms), (Some(A), 192_000), "the held ending runs on");
         assert!(s.changed);
         assert!(!t.ab(&holding(190_000_000, 1_000), now(3_100, "b", 900)).changed, "same song, no change");
-    }
-
-    #[test]
-    fn next_song_after_takeover() {
-        let mut t = tracker();
-        let s = t.ab(&holding(190_000_000, 1_000), now(6_500, "b", 900));
         // 5.5 s since the reading: 195.5 s into a, 1.5 s past the audible point, so 6.5 s into b.
+        let s = t.ab(&holding(190_000_000, 1_000), now(6_500, "b", 900));
         assert_eq!((s.index, s.ms), (Some(B), 6_500));
         assert!(s.changed);
-    }
-
-    #[test]
-    fn stretched_mix_uses_next_rate() {
-        let mut t = tracker();
+        // A stretched mix runs into b at b's rate.
         let h = Heard { next_rate: 0.5, ..holding(194_000_000, 0) };
-        assert_eq!(t.ab(&h, now(2_000, "b", 0)).seen(), Some((B, 6_000)));
+        assert_eq!(tracker().ab(&h, now(2_000, "b", 0)).seen(), Some((B, 6_000)));
     }
 
     #[test]
@@ -367,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn late_engine_reading_does_not_cross_back() {
+    fn late_readings_stay_on_next_song() {
         let mut t = tracker();
         // Run on from a reading at 193.9 s, the page crosses into b at 194 s.
         assert_eq!(t.ab(&holding(193_900_000, 0), now(150, "b", 0)).seen(), Some((B, 5_050)));
@@ -378,15 +369,12 @@ mod tests {
         assert!(!s.changed, "no second change of song");
         // And moves on with it from there.
         assert_eq!(t.ab(&holding(193_970_000, 200), now(300, "b", 0)).seen(), Some((B, 5_070)));
-    }
-
-    #[test]
-    fn late_player_clock_does_not_cross_back() {
+        // The player's own clock stepping back 20 ms does not cross back either.
         let mut t = tracker();
         let direct = Heard { id: None, ..holding(0, 0) };
         assert_eq!(t.ab(&direct, now(0, "a", 194_010)).seen(), Some((B, 5_010)));
         let s = t.ab(&direct, now(16, "a", 193_990));
-        assert_eq!(s.seen(), Some((B, 5_000)), "the player's clock stepped back 20 ms: still b");
+        assert_eq!(s.seen(), Some((B, 5_000)));
         assert!(!s.changed);
     }
 
@@ -659,7 +647,7 @@ mod away {
     }
 
     #[test]
-    fn correct_from_first_frame_after_return() {
+    fn right_after_return() {
         for (what, wake) in PATHS {
             for away in [10_000, MINUTES, 30 * 60_000 / 6] {
                 let frames = fixed(wake, away, 0);
@@ -670,13 +658,7 @@ mod away {
                 }
                 assert_eq!(at_the_end(&frames), 0, "{what}");
             }
-        }
-    }
-
-    #[test]
-    fn bad_reading_on_return_is_corrected() {
-        for (what, wake) in PATHS {
-            // First reading 14 s ahead with 14 s left.
+            // A first reading 14 s ahead with 14 s left is corrected by the next look.
             let away = SONG_MS - FROM_MS - 1_000 - 14_000 - FRAME_MS;
             let frames = fixed(wake, away, 14_000);
             let wrong: Vec<_> = frames.iter().filter(|(_, shown, truth)| (shown - truth).abs() > 2 * FRAME_MS).collect();
