@@ -41,6 +41,7 @@ uniffi = { workspace = true }
 uniffi-bindgen-kotlin-jni-runtime = { package = "nori-uniffi-jni-runtime", path = "../uniffi-jni-runtime" }
 
 [dev-dependencies]
+nori-engine = { path = "../engine", features = ["testing"] }
 nori-player = { path = "../player", features = ["synth"] }
 nori-testdir = { path = "../testdir" }
 

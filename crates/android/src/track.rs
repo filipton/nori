@@ -1396,13 +1396,44 @@ pub(crate) struct Shared {
     /// Called on route changes.
     pub watch: Mutex<Option<DeviceWatch>>,
     failure: Arc<Mutex<Option<String>>>,
+    /// The output's time and how its writer is woken.
+    ticks: Ticks,
+}
+
+/// The output's time and how its writer is woken: the machine's, or a test's.
+pub(crate) trait Tick: Send + Sync {
+    fn now_ns(&self) -> i64;
+    fn wake(&self, writer: &Thread) {
+        writer.unpark();
+    }
+}
+
+/// [`mono_ns`] and thread parking.
+struct Mono;
+
+impl Tick for Mono {
+    fn now_ns(&self) -> i64 {
+        mono_ns()
+    }
+}
+
+struct Ticks(Arc<dyn Tick>);
+
+impl Default for Ticks {
+    fn default() -> Self {
+        Ticks(Arc::new(Mono))
+    }
 }
 
 impl Shared {
+    fn now_ns(&self) -> i64 {
+        self.ticks.0.now_ns()
+    }
+
     fn tell(&self, f: impl FnOnce(&mut Control)) {
         f(&mut self.control.lock());
         if let Some(t) = &*self.writer.lock() {
-            t.unpark();
+            self.ticks.0.wake(t);
         }
     }
 }
@@ -1414,12 +1445,23 @@ pub(crate) struct TrackOutput {
     shared: Arc<Shared>,
     format: Option<OutputFormat>,
     thread: Option<JoinHandle<()>>,
+    /// A test's: the writer is stepped by hand on the test's clock, not run on a thread of its own.
+    #[cfg(test)]
+    by_hand: Option<Arc<Mutex<Option<Writer<Feed>>>>>,
 }
 
 impl TrackOutput {
     /// `float`: the high quality setting (float samples, else 16-bit).
     pub(crate) fn new(opener: Box<dyn Opener>, float: bool, shared: Arc<Shared>) -> TrackOutput {
-        TrackOutput { opener: Arc::new(Mutex::new(opener)), float, shared, format: None, thread: None }
+        TrackOutput {
+            opener: Arc::new(Mutex::new(opener)),
+            float,
+            shared,
+            format: None,
+            thread: None,
+            #[cfg(test)]
+            by_hand: None,
+        }
     }
 }
 
@@ -1449,6 +1491,12 @@ impl AudioOutput for TrackOutput {
         *self.shared.failure.lock() = None;
         let reopen = Reopen { opener: self.opener.clone(), frames, failure: self.shared.failure.clone() };
         let writer = Writer::new(feed, opened, reopen, format, self.float, self.shared.clock.clone(), self.shared.bytes.clone());
+        #[cfg(test)]
+        if let Some(slot) = &self.by_hand {
+            *slot.lock() = Some(writer);
+            *self.shared.writer.lock() = Some(std::thread::current());
+            return Ok(());
+        }
         let shared = self.shared.clone();
         let t = std::thread::Builder::new().name("nori-track".into()).spawn(move || run(writer, shared)).map_err(|e| e.to_string())?;
         *self.shared.writer.lock() = Some(t.thread().clone());
@@ -1457,7 +1505,7 @@ impl AudioOutput for TrackOutput {
     }
 
     fn pause(&mut self) {
-        self.shared.clock.freeze(mono_ns());
+        self.shared.clock.freeze(self.shared.now_ns());
         self.shared.tell(|c| c.playing = false);
     }
 
@@ -1466,7 +1514,7 @@ impl AudioOutput for TrackOutput {
     }
 
     fn latency_us(&self) -> u64 {
-        self.shared.clock.latency_us(mono_ns())
+        self.shared.clock.latency_us(self.shared.now_ns())
     }
 
     fn takes_float(&mut self) -> bool {
@@ -1494,7 +1542,7 @@ impl AudioOutput for TrackOutput {
 
     /// Unplayed music is still in the track.
     fn holding(&self) -> bool {
-        self.shared.clock.latency_frames(mono_ns()) > 0
+        self.shared.clock.latency_frames(self.shared.now_ns()) > 0
     }
 
     fn bursts(&self) -> bool {
@@ -1506,6 +1554,10 @@ impl AudioOutput for TrackOutput {
     }
 
     fn close(&mut self) {
+        #[cfg(test)]
+        if let Some(mut w) = self.by_hand.as_ref().and_then(|slot| slot.lock().take()) {
+            w.release();
+        }
         if let Some(t) = self.thread.take() {
             self.shared.tell(|c| c.stop = true);
             let _ = t.join();
@@ -1603,26 +1655,33 @@ fn audio_priority(who: &str) {
 
 fn run<R: Ring>(mut w: Writer<R>, shared: Arc<Shared>) {
     audio_priority("the writer");
-    loop {
-        let mut c = {
-            let mut g = shared.control.lock();
-            Control { playing: g.playing, ramp: g.ramp.take(), stop: g.stop, shallow: g.shallow }
-        };
-        if c.stop {
-            log("released");
-            w.release();
-            return;
-        }
-        match w.step(mono_ns(), &mut c) {
+    while let Some(wake) = turn(&mut w, &shared) {
+        match wake {
             Some(ms) => std::thread::park_timeout(Duration::from_millis(ms)),
             None => std::thread::park(),
         }
     }
 }
 
+/// One wake of the writer with what the engine asked: ms until the next (`Some(None)`: until asked), or
+/// None once it is let go.
+fn turn<R: Ring>(w: &mut Writer<R>, shared: &Shared) -> Option<Option<u64>> {
+    let mut c = {
+        let mut g = shared.control.lock();
+        Control { playing: g.playing, ramp: g.ramp.take(), stop: g.stop, shallow: g.shallow }
+    };
+    if c.stop {
+        log("released");
+        w.release();
+        return None;
+    }
+    Some(w.step(shared.now_ns(), &mut c))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nori_engine::testing::Stepper;
     use nori_player::burst::LOW_US as RING_LOW_US;
     use std::collections::VecDeque;
 
@@ -2742,12 +2801,14 @@ mod tests {
         assert!(capacity < f(2_000));
     }
 
-    /// A fake AudioTrack on the real clock, keeping every sample since the last flush.
-    #[derive(Default)]
+    /// A fake AudioTrack on the test's clock, keeping every sample since the last flush.
     struct Live {
+        /// The test's clock.
+        ticks: Arc<TestTicks>,
         written: Vec<i16>,
         played_before: u64,
-        since: Option<std::time::Instant>,
+        /// Playing since, ns.
+        since: Option<i64>,
         flushes: u32,
         volumes: Vec<f32>,
         /// Phone-like behaviour: bounded buffer, start threshold after a flush, and a flush right after a
@@ -2755,16 +2816,21 @@ mod tests {
         bounded: bool,
         size: u64,
         threshold: u64,
-        defer: Duration,
+        defer: i64,
         playing: bool,
         filling_up: bool,
-        pausing_until: Option<std::time::Instant>,
+        pausing_until: Option<i64>,
         stale: u64,
     }
 
     impl Live {
+        fn new(ticks: Arc<TestTicks>) -> Live {
+            Live { ticks, written: Vec::new(), played_before: 0, since: None, flushes: 0, volumes: Vec::new(), bounded: false, size: 0, threshold: 0, defer: 0, playing: false, filling_up: false, pausing_until: None, stale: 0 }
+        }
+
         fn played(&self) -> u64 {
-            let running = self.since.map_or(0, |t| (t.elapsed().as_secs_f64() * RATE as f64) as u64);
+            let now = self.ticks.now_ns();
+            let running = self.since.map_or(0, |t| ((now - t) as i128 * RATE as i128 / 1_000_000_000) as u64);
             (self.played_before + running).min(self.written.len() as u64 / 2)
         }
 
@@ -2774,7 +2840,7 @@ mod tests {
 
         /// Applies a deferred flush once its period has passed.
         fn mixed(&mut self) {
-            if self.pausing_until.is_some_and(|t| std::time::Instant::now() >= t) {
+            if self.pausing_until.is_some_and(|t| self.ticks.now_ns() >= t) {
                 self.pausing_until = None;
                 self.stale = 0;
             }
@@ -2785,7 +2851,7 @@ mod tests {
             self.mixed();
             if self.playing && self.since.is_none() && self.stale == 0 && (!self.filling_up || self.buffered() >= self.threshold) {
                 self.filling_up = false;
-                self.since = Some(std::time::Instant::now());
+                self.since = Some(self.ticks.now_ns());
             }
         }
     }
@@ -2813,8 +2879,8 @@ mod tests {
         }
         fn pause(&mut self) {
             let mut l = self.0.lock();
-            if l.since.is_some() && !l.defer.is_zero() {
-                l.pausing_until = Some(std::time::Instant::now() + l.defer);
+            if l.since.is_some() && l.defer > 0 {
+                l.pausing_until = Some(l.ticks.now_ns() + l.defer);
             }
             l.played_before = l.played();
             l.since = None;
@@ -2822,7 +2888,7 @@ mod tests {
         }
         fn flush(&mut self) {
             let mut l = self.0.lock();
-            if l.pausing_until.is_some_and(|t| std::time::Instant::now() < t) {
+            if l.pausing_until.is_some_and(|t| l.ticks.now_ns() < t) {
                 l.stale = l.buffered();
             }
             l.written.clear();
@@ -2837,7 +2903,7 @@ mod tests {
         fn heard(&mut self, _playing: bool) -> Option<(u64, i64)> {
             let mut l = self.0.lock();
             l.start_if_filled();
-            Some((l.played(), mono_ns()))
+            Some((l.played(), l.ticks.now_ns()))
         }
         fn resize(&mut self, frames: u64) -> u64 {
             frames
@@ -2901,35 +2967,85 @@ mod tests {
         w
     }
 
-    fn wait(secs: u64, mut done: impl FnMut() -> bool) -> bool {
-        let until = std::time::Instant::now() + Duration::from_secs(secs);
-        while std::time::Instant::now() < until {
-            if done() {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(20));
+    /// The test's clock, as the output reads it: a writer told something is due at once.
+    struct TestTicks {
+        clock: nori_engine::testing::Virtual,
+        told: std::sync::atomic::AtomicBool,
+    }
+
+    impl Tick for TestTicks {
+        fn now_ns(&self) -> i64 {
+            self.clock.now_ns()
         }
-        false
+        fn wake(&self, _: &Thread) {
+            self.told.store(true, Ordering::Release);
+        }
+    }
+
+    /// The phone's side of the engine on the test's clock: the writer, stepped when it asked to wake or
+    /// was told something; the track runs on the same clock.
+    struct Phone {
+        writer: Arc<Mutex<Option<Writer<Feed>>>>,
+        shared: Arc<Shared>,
+        ticks: Arc<TestTicks>,
+        next: i64,
+    }
+
+    impl nori_engine::testing::Device for Phone {
+        fn due_ns(&self) -> i64 {
+            if self.ticks.told.load(Ordering::Acquire) {
+                self.ticks.now_ns()
+            } else {
+                self.next
+            }
+        }
+
+        fn tick(&mut self, now_ns: i64) -> bool {
+            self.ticks.told.store(false, Ordering::Release);
+            let mut slot = self.writer.lock();
+            let Some(w) = slot.as_mut() else {
+                self.next = i64::MAX / 2;
+                return false;
+            };
+            let waits = w.ring.engine_waits();
+            self.next = match turn(w, &self.shared) {
+                Some(Some(ms)) => now_ns + ms as i64 * 1_000_000,
+                _ => i64::MAX / 2,
+            };
+            waits && !w.ring.engine_waits()
+        }
+    }
+
+    /// An engine over `library` playing through a phone-like `live` track, all on the test's clock.
+    fn on_a_phone(library: impl nori_engine::Library, app: nori_player::sim::App, queue: nori_engine::SharedQueue, config: nori_engine::Config, live: impl FnOnce(Arc<TestTicks>) -> Live) -> (nori_engine::Engine, Stepper<Phone>, Arc<Mutex<Live>>) {
+        let clock = nori_engine::testing::Virtual::default();
+        let ticks = Arc::new(TestTicks { clock: clock.clone(), told: std::sync::atomic::AtomicBool::new(false) });
+        let live = Arc::new(Mutex::new(live(ticks.clone())));
+        let shared = Arc::new(Shared { ticks: Ticks(ticks.clone()), ..Shared::default() });
+        let writer = Arc::new(Mutex::new(None));
+        let mut output = TrackOutput::new(Box::new(LiveOpener(live.clone())), false, shared.clone());
+        output.by_hand = Some(writer.clone());
+        let phone = Phone { writer, shared, ticks, next: i64::MAX / 2 };
+        let engine = nori_engine::Engine::start_on(library, app, queue, Box::new(output), None, config, clock.clone(), |_| {});
+        (engine, Stepper::new(clock, Arc::new(Mutex::new(phone))), live)
     }
 
     #[test]
     fn engine_end_to_end_samples_seek_fade() {
         let songs = [tone(3, 440.0), tone(3, 660.0)];
         let wavs = Arc::new(Wavs(vec![("a".into(), Arc::new(wav(&songs[0]))), ("b".into(), Arc::new(wav(&songs[1])))]));
-        let live = Arc::new(Mutex::new(Live::default()));
-        let shared = Arc::new(Shared::default());
-        let output = TrackOutput::new(Box::new(LiveOpener(live.clone())), false, shared.clone());
         let queue = nori_engine::SharedQueue::default();
         queue.0.lock().set(vec!["a".into(), "b".into()], Some(0), false, 0);
         let mut app = nori_player::sim::App::new();
         app.prefs = nori_player::sim::prefs_off();
         let settings = nori_engine::Settings { fade_ms: 200, ..Default::default() };
         let config = nori_engine::Config { settings, ..Default::default() };
-        let engine = nori_engine::Engine::start(Songs(wavs), app, queue, Box::new(output), None, config, |_| {});
+        let (engine, time, live) = on_a_phone(Songs(wavs), app, queue, config, Live::new);
+        let wait = |secs: u64, done: &mut dyn FnMut() -> bool| time.until(Duration::from_secs(secs), done);
         engine.queue_changed();
         engine.play_at(0, 0);
 
-        assert!(wait(5, || live.lock().played() > RATE as u64 / 2), "it plays");
+        assert!(wait(5, &mut || live.lock().played() > RATE as u64 / 2), "it plays");
         {
             let l = live.lock();
             assert!(l.written.len() >= songs[0].len(), "the whole of a short song went into the track at once");
@@ -2940,7 +3056,7 @@ mod tests {
         // Seek to song 2 at 1 s: the track holds only the new music.
         engine.play_at(1, 1_000);
         assert!(
-            wait(5, || {
+            wait(5, &mut || {
                 let l = live.lock();
                 l.flushes == 1 && l.written.len() > RATE as usize
             }),
@@ -2951,16 +3067,15 @@ mod tests {
             let from = RATE as usize * 2;
             assert!(l.written[..RATE as usize] == songs[1][from..from + RATE as usize], "the new music from where it was asked");
         }
-        assert!(wait(5, || engine.status().position_ms >= 1_200), "and the playhead follows the track's clock");
+        assert!(wait(5, &mut || engine.status().position_ms >= 1_200), "and the playhead follows the track's clock");
         let at = engine.status().position_ms;
         assert!(at < 2_500, "a second and a bit into the song, not further: {at}");
 
         // Pause fades the track volume, then pauses.
         live.lock().volumes.clear();
         engine.pause();
-        assert!(wait(5, || live.lock().since.is_none()), "paused");
+        assert!(wait(5, &mut || live.lock().since.is_none()), "paused");
         let l = live.lock();
-        // Several monotonic steps (the count depends on machine load).
         assert!(l.volumes.len() >= 2, "the fade out ran in steps: {:?}", l.volumes);
         assert!(l.volumes.windows(2).all(|w| w[1] <= w[0]), "only ever down: {:?}", l.volumes);
         assert_eq!(l.volumes.last(), Some(&0.0));
@@ -2968,7 +3083,7 @@ mod tests {
 
         // Ended only once the track played its last frame.
         engine.play();
-        assert!(wait(6, || engine.status().state == nori_engine::State::Ended), "the queue ends");
+        assert!(wait(6, &mut || engine.status().state == nori_engine::State::Ended), "the queue ends");
         let l = live.lock();
         assert!(l.played() + RATE as u64 / 10 >= l.written.len() as u64 / 2, "{} of {} frames heard at the end", l.played(), l.written.len() / 2);
         drop(l);
@@ -3006,8 +3121,6 @@ mod tests {
         for id in &ids[1..] {
             std::fs::hard_link(&first, files.dir.join(format!("{id}.wav"))).expect("the song under another name");
         }
-        let live = Arc::new(Mutex::new(Live { bounded: true, threshold: RATE as u64 / 4, defer: Duration::from_millis(40), ..Live::default() }));
-        let output = TrackOutput::new(Box::new(LiveOpener(live.clone())), false, Arc::new(Shared::default()));
         let queue = nori_engine::SharedQueue::default();
         queue.0.lock().set(ids.clone(), Some(0), false, 0);
         let mut app = nori_player::sim::App::new();
@@ -3020,28 +3133,30 @@ mod tests {
         let bands = vec![nori_player::dsp::Band { kind: nori_player::dsp::PEAKING, freq: 1000.0, gain_db: 6.0, q: 1.0, channel: 0 }];
         let settings = nori_engine::Settings { sound: nori_engine::Sound { bands, ..Default::default() }, auto_mix: true, ..Default::default() };
         let config = nori_engine::Config { settings, ..Default::default() };
-        let engine = nori_engine::Engine::start(OnDisk(files.clone()), app, queue, Box::new(output), None, config, |_| {});
+        let phone_like = |ticks| Live { bounded: true, threshold: RATE as u64 / 4, defer: 40_000_000, ..Live::new(ticks) };
+        let (engine, time, live) = on_a_phone(OnDisk(files.clone()), app, queue, config, phone_like);
+        let wait = |secs: u64, done: &mut dyn FnMut() -> bool| time.until(Duration::from_secs(secs), done);
         engine.queue_changed();
         // Position polled 4x/s, as the screen does.
         engine.position_updates(Some(Duration::from_millis(250)));
         engine.play_at(0, 0);
-        let brim = || {
+        let mut brim = || {
             let l = live.lock();
             l.buffered() + RATE as u64 / 10 >= l.size
         };
-        assert!(wait(5, brim), "the track filled to the brim");
-        assert!(wait(5, || live.lock().played() > 0), "and playing");
+        assert!(wait(5, &mut brim), "the track filled to the brim");
+        assert!(wait(5, &mut || live.lock().played() > 0), "and playing");
         let mut dice = Dice(0x5EED);
         let presses = 12 + dice.roll(4) as usize;
         for k in 1..=presses {
             engine.go_to(k, 0);
             if k % 4 == 0 {
-                wait(3, brim);
+                wait(3, &mut brim);
             } else {
-                std::thread::sleep(Duration::from_millis(5 + dice.roll(195) as u64));
+                time.run(Duration::from_millis(5 + dice.roll(195) as u64));
             }
         }
-        let plays = wait(8, || live.lock().played() > 2 * RATE as u64);
+        let plays = wait(8, &mut || live.lock().played() > 2 * RATE as u64);
         let (status, l) = (engine.status(), live.lock());
         assert!(
             plays,
@@ -3056,7 +3171,7 @@ mod tests {
         drop(l);
         assert_eq!(status.index, Some(presses), "on the song the last press asked for");
         let at = status.position_ms;
-        assert!(wait(5, || engine.status().position_ms >= at + 1_000), "and the place moves on from {at} ms: {:?}", engine.status());
+        assert!(wait(5, &mut || engine.status().position_ms >= at + 1_000), "and the place moves on from {at} ms: {:?}", engine.status());
         engine.stop();
     }
 
