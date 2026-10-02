@@ -163,10 +163,6 @@ impl ErrorRun {
     pub fn played(&mut self) {
         self.in_a_row = 0;
     }
-
-    pub fn in_a_row(&self) -> u32 {
-        self.in_a_row
-    }
 }
 
 /// Refilling past the end of the queue. One fetch at a time starts once at most [`FILL_AHEAD`] songs
@@ -346,17 +342,15 @@ mod tests {
             assert_eq!(r.failed(PlaybackError::Other, false, false, true, true), OnError::Skip);
         }
         assert_eq!(r.failed(PlaybackError::Other, false, false, true, true), OnError::Stop, "three in a row, then it stops");
-        assert_eq!(r.in_a_row(), 3);
         r.played();
-        assert_eq!(r.failed(PlaybackError::Network, false, true, true, true), OnError::Bridge);
-        assert_eq!(r.in_a_row(), 0, "handing to the bridge is not a skip");
+        assert_eq!(r.failed(PlaybackError::Network, false, true, true, true), OnError::Bridge, "handing to the bridge is not a skip");
         assert!(r.bridge_failed(true, true));
         assert!(!r.bridge_failed(false, true), "skip on error off");
         assert!(!r.bridge_failed(true, false), "nothing after");
         assert!(r.bridge_failed(true, true) && r.bridge_failed(true, true));
         assert!(!r.bridge_failed(true, true), "the bridge's skips count toward the same three");
         assert_eq!(r.failed(PlaybackError::Output, false, false, true, true), OnError::GiveUpOffload);
-        assert_eq!(r.in_a_row(), 3);
+        assert_eq!(r.failed(PlaybackError::Other, false, false, true, true), OnError::Stop, "giving up offload is not a skip");
     }
 
     #[test]

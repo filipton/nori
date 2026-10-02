@@ -42,10 +42,6 @@ impl Codec {
         self as i32 + 1
     }
 
-    pub fn from_id(id: i32) -> Option<Codec> {
-        [Codec::Mp3, Codec::Flac, Codec::Aac, Codec::Vorbis, Codec::Alac, Codec::Opus].get(usize::try_from(id - 1).ok()?).copied()
-    }
-
     /// Most frames one packet decodes to.
     pub fn max_frames(self) -> usize {
         match self {
@@ -524,13 +520,9 @@ mod tests {
     }
 
     #[test]
-    fn codec_ids_and_mimes() {
-        for c in [Codec::Mp3, Codec::Flac, Codec::Aac, Codec::Vorbis, Codec::Alac, Codec::Opus] {
-            assert_eq!(Codec::from_id(c.id()), Some(c));
-        }
+    fn codec_mimes() {
         assert_eq!(Codec::from_mime("audio/mpeg"), Some(Codec::Mp3));
         assert_eq!(Codec::from_mime("audio/ac3"), None, "the platform's decoder takes what this cannot");
-        assert_eq!(Codec::from_id(0), None);
     }
 
     #[test]

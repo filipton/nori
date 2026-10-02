@@ -12,19 +12,10 @@ pub use crate::policy::{GainMode, GainTags};
 
 /// ReplayGain 2.0 reference, LUFS.
 pub const RG2_REFERENCE_LUFS: f32 = -18.0;
-/// EBU R128 reference, LUFS.
-pub const R128_REFERENCE_LUFS: f32 = -23.0;
-/// Offered targets: streaming -14, Apple Music -16, ReplayGain -18 (default), broadcast -23.
-pub const TARGETS_LUFS: [f32; 4] = [-14.0, -16.0, -18.0, R128_REFERENCE_LUFS];
 /// Targets are clamped to within this of -18.
 const TARGET_RANGE_DB: f32 = 12.0;
 /// Largest boost any cap allows, dB.
 pub const BOOST_MAX_DB: f32 = 12.0;
-
-/// An R128 tag (Q7.8 dB relative to -23 LUFS) as ReplayGain 2.0 dB (relative to -18 LUFS).
-pub fn r128_as_replay_gain_db(q78: i32) -> f32 {
-    q78 as f32 / 256.0 + (RG2_REFERENCE_LUFS - R128_REFERENCE_LUFS)
-}
 
 /// ReplayGain settings.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -142,15 +133,6 @@ mod tests {
 
     #[test]
     fn gain_from_tags() {
-        assert_eq!(r128_as_replay_gain_db(0), 5.0, "a song at -23 LUFS is 5 dB under ReplayGain's level");
-        assert_eq!(r128_as_replay_gain_db(-1280), 0.0, "-5 dB to -23 LUFS: already at -18");
-        assert_eq!(r128_as_replay_gain_db(-2432), -4.5, "Q7.8: -9.5 dB");
-        assert!(close(r128_as_replay_gain_db(i16::MIN as i32), -123.0));
-        // The same song either way: a song at -9 LUFS wants -9 dB of ReplayGain, -14 dB of R128.
-        let rg = -9.0;
-        let r128 = (-14.0 * 256.0) as i32;
-        assert_eq!(r128_as_replay_gain_db(r128), rg);
-
         // Mode picks tag.
         let s = tagged(-6.0, -3.0);
         assert!(close(db(song_gain(&prefs(GainMode::Track), &s, true)), -6.0));

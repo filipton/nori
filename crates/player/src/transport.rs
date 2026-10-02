@@ -46,16 +46,6 @@ pub fn shown_place(jump: Option<(i64, i64)>, reported_since: bool, switching: bo
     }
 }
 
-/// Fade-in length on play; `None` to start at full volume.
-pub fn play_fade(fade_ms: i32, playing: bool) -> Option<i32> {
-    (fade_ms > 0 && !playing).then_some(fade_ms)
-}
-
-/// Fade-out length before pausing; `None` to pause at once.
-pub fn pause_fade(fade_ms: i32, playing: bool) -> Option<i32> {
-    (fade_ms > 0 && playing).then_some(fade_ms)
-}
-
 /// Volume fade tick (one 60 Hz frame).
 pub const FADE_TICK_MS: i64 = 16;
 
@@ -163,13 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn play_and_pause_fades() {
-        assert_eq!(play_fade(400, false), Some(400));
-        assert_eq!(play_fade(400, true), None);
-        assert_eq!(pause_fade(400, true), Some(400));
-        assert_eq!(pause_fade(0, true), None);
-
-        // Fade steps.
+    fn fade_steps() {
         assert_eq!(fade_step(1.0, 0.0, 100, 100, 200), (1.0, false));
         assert_eq!(fade_step(1.0, 0.0, 100, 200, 200), (0.5, false));
         assert_eq!(fade_step(1.0, 0.0, 100, 300, 200), (0.0, true));
