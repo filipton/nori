@@ -425,7 +425,7 @@ fn metered_and_ahead(client: &Arc<Client>, store: &Arc<Store>, analyses: &Arc<An
     }
     drop(asked_for);
     let opened: Vec<String> = net.0.lock()[asked..].to_vec();
-    assert!(opened.iter().any(|u| u.ends_with("&id=p-4&maxBitRate=192&format=opus&estimateContentLength=true")), "the next song fetched streams at the metered quality: {opened:?}");
+    assert!(opened.iter().any(|u| u.ends_with("&id=p-4&maxBitRate=192&format=opus")), "the next song fetched streams at the metered quality: {opened:?}");
     assert!(store.peek("p-5:0").is_none() && store.peek("p-5:192opus").is_none(), "one ahead on mobile data by default: the engine's own next song, none more");
     nori_engine::core::network_metered(client, false);
 }

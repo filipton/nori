@@ -438,19 +438,15 @@ impl Core {
         self.server.read().url(&endpoint, &[])
     }
 
-    /// `max_bit_rate` 0 and empty `format` mean the original file. Transcodes ask for
-    /// `estimateContentLength`: without a length the player cannot seek.
+    /// `max_bit_rate` 0 and empty `format` mean the original file. A transcode comes without a length:
+    /// with `estimateContentLength`, Navidrome cuts one that comes out larger than its estimate.
     pub fn stream_url(&self, id: String, max_bit_rate: u32, format: String) -> String {
-        let transcode = max_bit_rate > 0 || !format.is_empty();
         let mut p = vec![("id".to_string(), id)];
         if max_bit_rate > 0 {
             p.push(("maxBitRate".into(), max_bit_rate.to_string()));
         }
         if !format.is_empty() {
             p.push(("format".into(), format));
-        }
-        if transcode {
-            p.push(("estimateContentLength".into(), "true".to_string()));
         }
         self.server.read().url("stream", &p)
     }

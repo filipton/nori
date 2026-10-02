@@ -1083,8 +1083,7 @@ impl Library for AndroidLibrary {
             key_format(&target.key).or_else(|| song.map(|s| s.suffix)).filter(|s| !s.is_empty())
         };
         log(&format!("{id} opens from {} as {}", target.key, hint.as_deref().unwrap_or("whatever it is")));
-        let estimated = nori_core::stream::length_estimated(&target.url);
-        Ok(Located { source: Source::Url { url: target.url, bytes: Arc::new(JavaBytes { key: target.key, ahead: self.ahead.clone() }) }, hint, duration_ms, estimated })
+        Ok(Located { source: Source::Url { url: target.url, bytes: Arc::new(JavaBytes { key: target.key, ahead: self.ahead.clone() }) }, hint, duration_ms, estimated: false })
     }
 
     fn about(&self, id: &str) -> WindowSong {

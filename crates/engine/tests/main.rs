@@ -27,3 +27,6 @@ mod replan;
 #[cfg(feature = "core")]
 #[path = "album.rs"]
 mod album;
+#[cfg(feature = "core")]
+#[path = "transcode.rs"]
+mod transcode;

@@ -263,13 +263,12 @@ impl Library for CoreLibrary {
         }
         let target = self.client.resolve(id.to_string(), false, self.metered());
         let hint = key_format(&target.key).or_else(|| song.as_ref().map(|s| s.suffix.clone())).filter(|s| !s.is_empty());
-        let estimated = nori_core::stream::length_estimated(&target.url);
         let (url, bytes) = (target.url, self.bytes.clone());
         let source = match &self.store {
             Some(store) => Source::Cached { url, bytes, store: store.clone(), key: target.key },
             None => Source::Url { url, bytes },
         };
-        Ok(Located { source, hint, duration_ms, estimated })
+        Ok(Located { source, hint, duration_ms, estimated: false })
     }
 
     fn about(&self, id: &str) -> WindowSong {
