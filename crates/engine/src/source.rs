@@ -531,6 +531,16 @@ impl State {
         self.end().saturating_sub(self.reader_at)
     }
 
+    /// Room for the burst and `n` more bytes: what is kept behind the reader and `high` ahead of it, up
+    /// to the song's end. Reserved exactly: doubling copied the bytes and held up to twice them.
+    fn reserve_burst(&mut self, high: u64, n: usize) {
+        if let Some(len) = self.len {
+            let burst = self.reader_at.saturating_sub(self.base) + high + CHUNK as u64;
+            let want = (len.saturating_sub(self.base).min(burst) as usize).max(self.data.len() + n);
+            self.data.reserve_exact(want - self.data.len());
+        }
+    }
+
     fn at_end(&self) -> bool {
         self.done || self.len.is_some_and(|l| self.end() >= l)
     }
@@ -870,12 +880,8 @@ impl Loaded {
                         }
                         s.window = Some(Window::for_song(load, duration_ms, s.len));
                         s.bursts += 1;
-                        // Reserve the burst once (doubling copied it and held up to twice the song).
-                        if let Some(len) = s.len {
-                            let want = len.saturating_sub(s.base).min(s.window(load, duration_ms).high) as usize;
-                            let more = want.saturating_sub(s.data.len());
-                            s.data.reserve_exact(more);
-                        }
+                        let high = s.window(load, duration_ms).high;
+                        s.reserve_burst(high, 0);
                         body = Some(reader);
                     }
                     // Past the end (a demuxer probing an estimated length): the real end, not a failure.
@@ -932,6 +938,10 @@ impl Loaded {
                     failures = 0;
                     brought = true;
                     if s.end() == from && s.restart.is_none() {
+                        if s.data.capacity() - s.data.len() < n {
+                            let high = s.window(load, duration_ms).high;
+                            s.reserve_burst(high, n);
+                        }
                         s.data.extend_from_slice(&chunk[..n]);
                         took = n;
                     }
@@ -1446,6 +1456,19 @@ mod tests {
         let l = Loader::start(s.clone(), "song".into(), LOAD, Some(3_000), None);
         settled(&s, 1);
         assert_eq!(l.0.state.lock().data.capacity(), 300_000, "made once, not grown by doubling");
+    }
+
+    #[test]
+    fn later_burst_reserves_its_bytes() {
+        // 100 bytes/ms: bursts of 4 MB, the next once 1 MB is left.
+        let load = [10_000, 40_000, 0, 0, 1 << 30];
+        let s = server(10_000_000);
+        let l = Loader::start(s.clone(), "song".into(), load, Some(100_000), None);
+        let first = settled(&s, 1);
+        read(&mut l.reader(), first as usize - 900_000);
+        settled(&s, 2);
+        let st = l.0.state.lock();
+        assert!(st.data.capacity() - st.data.len() < CHUNK, "{} held in {}: not doubled", st.data.len(), st.data.capacity());
     }
 
     #[test]
