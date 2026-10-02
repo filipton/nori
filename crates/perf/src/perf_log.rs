@@ -833,8 +833,17 @@ pub fn perf_report(live: Option<PerfStretch>, device: PerfDevice, calls: String,
     let mut out = report(all(perf_log_rows(0), live), &device, &calls, &covers, test.as_deref());
     out.push('\n');
     out.push_str(&break_log_section(&break_logs_kept()));
+    out.push_str(&own_lines_section(&nori_model::alog::recent(), crate::invariants::wall_ms()));
     out.push_str(&log_section(&logs, &perf_crashes_kept()));
     out
+}
+
+/// The app's own log lines of the last [`nori_model::alog::KEPT_MS`] before `now_ms`: logcat's 400 lines
+/// of every tag reach back a minute or two.
+fn own_lines_section(lines: &[(i64, String)], now_ms: i64) -> String {
+    let from = now_ms - nori_model::alog::KEPT_MS;
+    let shown: Vec<String> = lines.iter().filter(|(t, _)| *t >= from).map(|(t, l)| format!("{} {l}", clock_ms(*t))).collect();
+    format!("The app's own lines, the last {} min ({} lines)\n{}\n\n", nori_model::alog::KEPT_MS / 60_000, shown.len(), if shown.is_empty() { "(none)".into() } else { shown.join("\n") })
 }
 
 fn report(all: Vec<PerfStretch>, d: &PerfDevice, calls: &str, covers: &str, selftest: Option<&str>) -> String {
@@ -1968,6 +1977,15 @@ mod tests {
         assert_eq!(perf_state(false, true, true, true, false), "on-playing-app");
         assert_eq!(state_name("on-playing-away"), "Screen on, playing, another app");
         assert_eq!(state_name("new"), "new", "unknown key shown as is");
+    }
+
+    #[test]
+    fn own_lines_of_the_last_ten_minutes() {
+        let now = at(12, 0, 0);
+        let lines = [(now - 11 * 60_000, "too old".to_string()), (now - 9 * 60_000, "rust track: shallow".to_string()), (now, "planFor: off".to_string())];
+        let s = own_lines_section(&lines, now);
+        assert!(s.starts_with("The app's own lines, the last 10 min (2 lines)\n"), "{s}");
+        assert!(!s.contains("too old") && s.contains("rust track: shallow\n") && s.contains("planFor: off\n"), "{s}");
     }
 
     #[test]

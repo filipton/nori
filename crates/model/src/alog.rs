@@ -1,7 +1,7 @@
 //! The core's log: logcat (tag `nori`) on Android, stderr elsewhere. Events only, never per buffer.
 //!
-//! The last [`KEPT`] lines are also kept in memory ([`recent`]), since logcat's shared buffer rotates
-//! quickly. After [`alog_persist`], lines are also appended unbuffered to `nori.log`, rotated to
+//! The last [`KEPT`] lines, and any of the last [`KEPT_MS`], are also kept in memory ([`recent`]), since
+//! logcat's shared buffer rotates quickly. After [`alog_persist`], lines are also appended unbuffered to `nori.log`, rotated to
 //! `nori.log.1` past [`JOURNAL_BYTES`], so they survive the process.
 //!
 //! The statics are global because every thread logs without a handle.
@@ -21,8 +21,11 @@ mod sys {
     }
 }
 
-/// Lines kept in memory.
+/// Lines kept in memory: the last [`KEPT`], and besides them those of the last [`KEPT_MS`], up to
+/// [`KEPT_MOST`].
 pub const KEPT: usize = 500;
+pub const KEPT_MS: i64 = 10 * 60_000;
+const KEPT_MOST: usize = 5_000;
 
 /// Latest lines, oldest first, with wall clock ms.
 static LINES: Mutex<VecDeque<(i64, String)>> = Mutex::new(VecDeque::new());
@@ -93,9 +96,11 @@ fn journal(ms: i64, message: &str) {
 pub fn keep(message: &str) {
     let ms = wall_ms();
     journal(ms, message);
-    let line = (ms, message.to_string());
-    let mut kept = LINES.lock().unwrap_or_else(|e| e.into_inner());
-    if kept.len() >= KEPT {
+    push_kept(&mut LINES.lock().unwrap_or_else(|e| e.into_inner()), (ms, message.to_string()));
+}
+
+fn push_kept(kept: &mut VecDeque<(i64, String)>, line: (i64, String)) {
+    while kept.len() >= KEPT_MOST || (kept.len() >= KEPT && kept.front().is_some_and(|f| line.0 - f.0 > KEPT_MS)) {
         kept.pop_front();
     }
     kept.push_back(line);
@@ -176,16 +181,21 @@ mod tests {
         assert!(std::fs::metadata(stuck.join("nori.log")).unwrap().len() <= JOURNAL_BYTES);
         *JOURNAL.lock().unwrap() = None;
 
-        // Recent keeps last lines in order.
-        for k in 0..KEPT + 20 {
-            info(&format!("alog-test line {k}"));
+        // Recent keeps the last lines in order: the last ten minutes' or the last 500, whichever are more,
+        // and no more than 5000.
+        info("alog-test line");
+        assert_eq!(recent().last().map(|(_, l)| l.as_str()), Some("alog-test line"));
+        for (every_ms, kept_from) in [(1_000, 1_000 - 601), (3_600_000, 1_000 - KEPT), (0, 0)] {
+            let mut kept = VecDeque::new();
+            let n = if every_ms == 0 { KEPT_MOST + 100 } else { 1_000 };
+            for k in 0..n {
+                push_kept(&mut kept, (k as i64 * every_ms, k.to_string()));
+            }
+            let numbers: Vec<usize> = kept.iter().map(|(_, l)| l.parse().unwrap()).collect();
+            let first = if every_ms == 0 { n - KEPT_MOST } else { kept_from };
+            assert_eq!((numbers[0], numbers.last().copied()), (first, Some(n - 1)), "a line every {every_ms} ms");
+            assert!(numbers.windows(2).all(|w| w[1] == w[0] + 1), "in order");
         }
-        let mine: Vec<String> = recent().into_iter().map(|(_, l)| l).filter(|l| l.starts_with("alog-test line ")).collect();
-        assert!(mine.len() <= KEPT);
-        assert_eq!(mine.last().map(String::as_str), Some(format!("alog-test line {}", KEPT + 19).as_str()));
-        let numbers: Vec<usize> = mine.iter().map(|l| l.rsplit(' ').next().unwrap().parse().unwrap()).collect();
-        assert!(numbers.windows(2).all(|w| w[1] == w[0] + 1), "in order: {numbers:?}");
-        assert!(!mine.contains(&"alog-test line 0".to_string()), "the oldest went first");
 
         // Local time formats calendar date.
         // 2026-09-28 11:22:05.123 UTC, in CEST.

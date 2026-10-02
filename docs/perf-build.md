@@ -99,8 +99,8 @@ was open, no song was being fetched and nothing was said anywhere:
 | silent | the engine plays, the place heard has stood still for 5 s with no output open and none of the song's bytes on their way. Said with the engine's own account of where it stood and what media3's stream cache keeps of the song (its metadata length, the spans cached, whole or not, being written or not) |
 | panic | a thread of the Rust library panicked, caught or not: its name, the message and where. Every build says it in the log (Android sends a Rust thread's standard error nowhere) |
 
-With every break the app's own latest lines (the last 500 under the `nori` tag, the core's and the
-Kotlin's, kept in memory by nori-model's alog) are copied into the database as it happens, the latest three
+With every break the app's own latest lines (under the `nori` tag, the core's and the Kotlin's, kept in
+memory by nori-model's alog: the last ten minutes', at least 500 and at most 5000) are copied into the database as it happens, the latest three
 breaks' worth, and printed before the log tail: logcat's buffer is the whole system's and a codec's chatter
 turns it over in minutes, so the tail rarely reached back to the moment something broke.
 
@@ -289,7 +289,8 @@ offloaded, the last stretches each with its output and its timeline, the benchma
 run this session, and at the end the app's own log: the crash buffer (this and earlier runs of the
 app) or the copy of it kept at the last start, the last uncaught exception (kept in the app's database
 by the recorder's handler as the process died, then handed on to the platform's), and the process's
-last 400 log lines (`logcat --pid`), at most 60 000 characters. Send it anywhere text goes; the table
+last 400 log lines (`logcat --pid`), at most 60 000 characters, after the app's own lines of the last
+ten minutes (alog's, so a moment the logcat tail has lost is still there). Send it anywhere text goes; the table
 is in columns for a monospaced font. The page shows the same log folded at its end.
 
 ## Benchmarks
