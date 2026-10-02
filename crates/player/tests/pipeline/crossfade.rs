@@ -85,7 +85,7 @@ fn play_next_is_planned_at_once() {
     p.play_from(0);
     assert!(p.run_until(10_000, |p| p.app.logged("transition a -> b")), "{:?}", p.app.log);
     p.tracks.push(track("x", &music(SONG_S, 9)));
-    p.queue.add(vec!["x".into()], Hand::Next);
+    p.queue.live.add(vec!["x".into()], Hand::Next);
     p.queue_changed();
     assert!(p.run_until(12_000, |p| p.app.logged("transition a -> x")), "{:?}", p.app.log);
     assert!(p.run_until(60_000, |p| p.current_id().as_deref() == Some("x")), "x plays next: {:?}", p.app.log);

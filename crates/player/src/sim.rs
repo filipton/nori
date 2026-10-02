@@ -861,8 +861,8 @@ impl Player {
 
     /// Marks the whole queue as one album run (queued from the album page).
     pub fn as_album(mut self) -> Player {
-        let n = self.queue.len();
-        self.queue.as_album(0, n);
+        let n = self.queue.live.len();
+        self.queue.live.as_album(0, n);
         self.queue_changed();
         self
     }
@@ -871,14 +871,14 @@ impl Player {
     pub fn shuffled(tracks: Vec<Track>, seed: u64) -> Player {
         let mut p = Player::new(tracks);
         let ids = p.tracks.iter().map(|t| t.id.clone()).collect();
-        p.queue.set(ids, None, true, seed);
+        p.queue.live.set(ids, None, true, seed);
         p.queue_changed();
         p
     }
 
     /// The track at list index `i`.
     pub fn track(&self, i: usize) -> &Track {
-        self.tracks.get(&self.queue.ids()[i])
+        self.tracks.get(&self.queue.read(|q| q.ids()[i].clone()))
     }
 
     /// New transition settings: replan, and measure ahead with AutoMix on.

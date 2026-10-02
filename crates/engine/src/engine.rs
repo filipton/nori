@@ -18,7 +18,7 @@ use std::thread::{JoinHandle, Thread};
 use std::time::{Duration, Instant};
 
 use nori_player::pcm::Encoding;
-use nori_player::pipeline::{App, ChainSettings, Player, Queue, Reading, Songs, Sound};
+use nori_player::pipeline::{App, ChainSettings, Player, Queue, Reading, Known, Songs, Sound};
 use nori_player::playlist::Playlist;
 use nori_player::policy::{audio_policy, offload_blocked, AudioPrefs, OutputState};
 use nori_player::queue::previous_restarts;
@@ -1526,7 +1526,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     /// The queue was edited: a parked place follows its entry, or goes with it; a jump waiting in the
     /// dip follows its entry, or goes to what took its place.
     fn follow_parked(&mut self) {
-        let now_at = |seqs: &[u64], q: &Q, i: usize| seqs.get(i).and_then(|&s| q.read(|q| q.index_of(s)));
+        let now_at = |seqs: &[u64], q: &Known<Q>, i: usize| seqs.get(i).and_then(|&s| q.read(|q| q.index_of(s)));
         if let Some(d) = self.dip.as_mut() {
             for s in &mut d.then {
                 if let Switched::To(i, _) = s {

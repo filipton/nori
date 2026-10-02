@@ -83,7 +83,7 @@ fn albums_stay_gapless() {
     let a3 = track("a3", &whole[c2..]).on_album("x", 3);
     let after = track("t", &music(20.0, 4)).on_album("x", 4);
     let mut p = Player::with_prefs(vec![before, a1, a2, a3, after], crossfade(4));
-    p.queue.as_album(1, 4);
+    p.queue.live.as_album(1, 4);
     p.queue_changed();
     play_all(&mut p, 200_000);
     assert_eq!(mixed(&p), ["s -> a1", "a3 -> t"], "{:?}", p.app.log);
@@ -119,7 +119,7 @@ fn album_songs_apart_mix() {
     let b = track("b", &whole[cut..]).on_album("x", 2);
     let mut p = Player::shuffled(vec![a, b], 1).as_album();
     p.app.prefs = crossfade(6);
-    let first = p.queue.current().unwrap();
+    let first = p.queue.live.current().unwrap();
     p.play_from(first);
     assert!(p.run_to_end(90_000));
     assert_eq!(mixed(&p).len(), 1, "{:?}", p.app.log);

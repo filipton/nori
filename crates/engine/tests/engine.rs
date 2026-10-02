@@ -140,8 +140,7 @@ impl nori_engine::Queue for TestQueue {
         self.list.lock().set_repeat(mode);
     }
 
-    fn skips(&self, index: usize) -> bool {
-        let list = self.list.lock();
+    fn skips(&self, list: &Playlist, index: usize) -> bool {
         self.skip.contains(&list.ids()[index]) && list.next_of(index, list.repeat()).is_some()
     }
 }

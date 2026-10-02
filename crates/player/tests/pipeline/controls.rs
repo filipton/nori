@@ -196,7 +196,7 @@ fn repeat_all_and_one_gapless() {
 fn shuffle_plays_each_song_once() {
     let s = songs(6, 2.0);
     let mut p = Player::shuffled(queue(&s), 42);
-    let order: Vec<usize> = p.queue.play_order().collect();
+    let order: Vec<usize> = p.queue.live.play_order().collect();
     // The same seed is the same order, on every run and every platform.
     assert_eq!(order, vec![2, 5, 1, 4, 3, 0]);
     p.play_from(order[0]);
@@ -219,11 +219,11 @@ fn edits_near_current() {
     let extra = music(2.0, 200);
     p.tracks.push(track("x", &extra));
     p.tracks.push(track("y", &extra));
-    p.queue.add(vec!["x".into()], Hand::Next);
+    p.queue.live.add(vec!["x".into()], Hand::Next);
     p.queue_changed();
     p.replan_ending();
     assert!(p.app.logged("the ending of s1 is made again"), "{:?}", p.app.log);
-    p.queue.insert(0, vec!["y".into()], Hand::No);
+    p.queue.live.insert(0, vec!["y".into()], Hand::No);
     p.queue_changed();
     assert!(p.run_to_end(60_000));
     let heard = p.sink.heard_samples();
@@ -242,9 +242,9 @@ fn edits_near_current() {
     let extra = music(2.0, 200);
     p.tracks.push(track("x", &extra));
     // One song before the one playing, and one straight after it: every index the player holds moves.
-    p.queue.insert(0, vec!["y".into()], Hand::No);
+    p.queue.live.insert(0, vec!["y".into()], Hand::No);
     p.tracks.push(track("y", &extra));
-    p.queue.add(vec!["x".into()], Hand::Next);
+    p.queue.live.add(vec!["x".into()], Hand::Next);
     p.queue_changed();
     assert_eq!(p.current_id().as_deref(), Some("s1"), "still on the song playing");
     assert!(p.run_to_end(60_000));
@@ -261,10 +261,10 @@ fn shuffle_keeps_current_and_next() {
     p.run_for(500);
     let extra = music(2.0, 200);
     p.tracks.push(track("x", &extra));
-    p.queue.add(vec!["x".into()], Hand::Next);
-    p.queue.set_shuffle(true, 7);
+    p.queue.live.add(vec!["x".into()], Hand::Next);
+    p.queue.live.set_shuffle(true, 7);
     p.queue_changed();
-    let order: Vec<&str> = p.queue.play_order().map(|i| p.queue.ids()[i].as_str()).collect();
+    let order: Vec<&str> = p.queue.live.play_order().map(|i| p.queue.live.ids()[i].as_str()).collect();
     assert_eq!(&order[..2], &["s2", "x"], "{order:?}");
     assert!(p.next());
     assert_eq!(p.current_id().as_deref(), Some("x"), "play next is next, shuffle or not");

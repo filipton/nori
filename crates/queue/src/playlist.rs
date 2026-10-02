@@ -296,14 +296,15 @@ impl Session {
         }
     }
 
-    /// Whether arriving on `index` would skip it ("skip explicit songs"); asked before the song is read.
-    pub fn skips(&self, index: usize) -> bool {
+    /// Whether arriving on `index` of `list`, the queue as the player knows it, would skip it ("skip
+    /// explicit songs"); asked before the song is read.
+    pub fn skips(&self, list: &Playlist, index: usize) -> bool {
         let skip_explicit = self.settings.prefs(|p| p.skip_explicit);
         if !skip_explicit {
             return false;
         }
-        let (id, has_next) = self.playlist(|p| (p.ids().get(index).cloned(), p.next_of(index, walk_repeat(p)).is_some()));
-        let explicit = id.is_some_and(|id| self.explicit(&id));
+        let has_next = list.next_of(index, walk_repeat(list)).is_some();
+        let explicit = list.ids().get(index).is_some_and(|id| self.explicit(id));
         nori_player::queue::arrival(true, skip_explicit, explicit, has_next, false) == Onto::Skip
     }
 
@@ -676,13 +677,14 @@ pub(crate) mod tests {
         let (_dir, s) = opened(|p| p.skip_explicit = true);
         s.register(vec![explicit("e1"), Song::only_id("c".into()), explicit("e2")]);
         s.set(ids(&["e1", "c", "e2"]), Some(1), false, None);
-        assert_eq!((s.skips(0), s.skips(1), s.skips(2)), (true, false, false), "the last explicit song plays: nothing comes after it");
+        let skips = |s: &Session, i: usize| s.skips(&s.playlist(nori_player::playlist::Playlist::clone), i);
+        assert_eq!((skips(&s, 0), skips(&s, 1), skips(&s, 2)), (true, false, false), "the last explicit song plays: nothing comes after it");
         s.repeat(REPEAT_ONE);
-        assert!(s.skips(2), "repeating, the queue goes on past its end");
+        assert!(skips(&s, 2), "repeating, the queue goes on past its end");
         let (_dir, s) = opened(|_| {});
         s.register(vec![explicit("e1"), Song::only_id("c".into())]);
         s.set(ids(&["e1", "c"]), Some(1), false, None);
-        assert!(!s.skips(0), "the setting off");
+        assert!(!skips(&s, 0), "the setting off");
     }
 
     #[test]

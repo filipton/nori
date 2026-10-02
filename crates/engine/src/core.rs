@@ -49,8 +49,8 @@ impl Queue for CoreQueue {
     }
 
     /// An explicit song with "skip explicit songs" on.
-    fn skips(&self, index: usize) -> bool {
-        self.0.skips(index)
+    fn skips(&self, list: &Playlist, index: usize) -> bool {
+        self.0.skips(list, index)
     }
 }
 

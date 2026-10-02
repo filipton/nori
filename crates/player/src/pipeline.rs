@@ -115,9 +115,45 @@ pub trait Queue {
     /// The player moved to `index` by itself.
     fn moved_to(&mut self, index: usize);
     fn set_repeat(&mut self, mode: u8);
-    /// Arriving on list index `index` would skip it (explicit song, skip setting on).
-    fn skips(&self, _index: usize) -> bool {
+    /// Arriving on index `index` of `list` would skip it (explicit song, skip setting on).
+    fn skips(&self, _list: &Playlist, _index: usize) -> bool {
         false
+    }
+}
+
+/// The queue as the player last took it ([`Player::queue_changed`]): another thread edits `live`, and
+/// the indexes the player holds keep naming songs of the list it reads until it is told.
+pub struct Known<Q> {
+    pub live: Q,
+    list: Playlist,
+}
+
+impl<Q: Queue> Known<Q> {
+    fn new(live: Q) -> Self {
+        let list = live.read(Playlist::clone);
+        Known { live, list }
+    }
+
+    fn take_edits(&mut self) {
+        self.list = self.live.read(Playlist::clone);
+    }
+
+    pub fn read<R>(&self, f: impl FnOnce(&Playlist) -> R) -> R {
+        f(&self.list)
+    }
+
+    pub fn moved_to(&mut self, index: usize) {
+        self.list.moved_to(index);
+        self.live.moved_to(index);
+    }
+
+    fn set_repeat(&mut self, mode: u8) {
+        self.list.set_repeat(mode);
+        self.live.set_repeat(mode);
+    }
+
+    pub fn skips(&self, index: usize) -> bool {
+        self.live.skips(&self.list, index)
     }
 }
 
@@ -190,7 +226,7 @@ pub struct Player<S: Songs, T: Track, A: App, Q: Queue> {
     pub burst: Burst,
     pub sink: Sink<T>,
     pub app: A,
-    pub queue: Q,
+    pub queue: Known<Q>,
     pub tracks: S,
     pub tracker: HeardTracker,
     /// Measure upcoming songs whenever the queue moves (with AutoMix on).
@@ -252,7 +288,7 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
             burst: Burst::default(),
             sink: Sink::new(BUFFER_US, ChainSettings::default(), track),
             app,
-            queue,
+            queue: Known::new(queue),
             tracks,
             tracker: HeardTracker::new(),
             measure_on_move: true,
@@ -726,6 +762,7 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
     /// The queue was edited. Indexes the player holds follow their entries; a song opened ahead that is
     /// no longer next is dropped.
     pub fn queue_changed(&mut self) {
+        self.queue.take_edits();
         let seqs = self.queue.read(|q| q.seqs().to_vec());
         let old = std::mem::replace(&mut self.seqs, seqs);
         let edited = old != self.seqs;

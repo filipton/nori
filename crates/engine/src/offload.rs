@@ -18,7 +18,7 @@
 
 use std::collections::VecDeque;
 
-use nori_player::pipeline::{Queue, Reading, Songs};
+use nori_player::pipeline::{Queue, Reading, Known, Songs};
 use nori_player::transitions::{in_album_run, WindowSong};
 
 pub use crate::demux::{Coded, CodedSong, Coding};
@@ -449,7 +449,7 @@ impl Offload {
     }
 
     /// Whether song `i` joins a neighbour of its album gaplessly (`nori_player::transitions::in_album_run`).
-    pub(crate) fn in_album<L: Library, Q: Queue>(&self, i: usize, tracks: &Sources<L>, queue: &Q) -> bool {
+    pub(crate) fn in_album<L: Library, Q: Queue>(&self, i: usize, tracks: &Sources<L>, queue: &Known<Q>) -> bool {
         let (ids, runs, before, after, shuffling) = queue.read(|q| {
             let repeat = q.repeat();
             (q.ids().to_vec(), q.album_runs().to_vec(), q.previous_of(i, repeat), q.next_of(i, repeat), q.shuffling())
@@ -462,7 +462,7 @@ impl Offload {
 
     /// Starts queue index `i` at `from_ms`: empties the track and opens the song as packets. Whether it
     /// plays here is known once open ([`Offload::turn`]).
-    pub(crate) fn start<L: Library, Q: Queue>(&mut self, i: usize, from_ms: i64, tracks: &mut Sources<L>, queue: &Q) -> usize {
+    pub(crate) fn start<L: Library, Q: Queue>(&mut self, i: usize, from_ms: i64, tracks: &mut Sources<L>, queue: &Known<Q>) -> usize {
         self.empty();
         self.stop_after = None;
         // A skipped song (explicit) gives way to the next that is not.
@@ -843,7 +843,7 @@ impl Offload {
     }
 
     /// The next song after `i` that is not skipped; None after the sleep timer's song.
-    fn next_of<Q: Queue>(&self, i: usize, queue: &Q) -> Option<usize> {
+    fn next_of<Q: Queue>(&self, i: usize, queue: &Known<Q>) -> Option<usize> {
         if self.stop_after == Some(i) {
             return None;
         }
@@ -863,7 +863,7 @@ impl Offload {
 
     /// One turn: place the starting song once open, top up the track, step the fade. `gain` gives each
     /// song's ReplayGain.
-    pub(crate) fn turn<L: Library, Q: Queue>(&mut self, now_ms: i64, tracks: &mut Sources<L>, queue: &Q, gain: &mut dyn FnMut(usize, &str) -> f32) -> Step {
+    pub(crate) fn turn<L: Library, Q: Queue>(&mut self, now_ms: i64, tracks: &mut Sources<L>, queue: &Known<Q>, gain: &mut dyn FnMut(usize, &str) -> f32) -> Step {
         self.now_ms = now_ms;
         self.follow_fade(now_ms);
         if self.open.is_some() && self.out.torn_down() {
@@ -991,7 +991,7 @@ impl Offload {
     }
 
     /// Places the starting song once open on a track for its format, or hands it to the CPU.
-    fn begin<L: Library, Q: Queue>(&mut self, tracks: &mut Sources<L>, queue: &Q, gain: &mut dyn FnMut(usize, &str) -> f32) -> Option<Step> {
+    fn begin<L: Library, Q: Queue>(&mut self, tracks: &mut Sources<L>, queue: &Known<Q>, gain: &mut dyn FnMut(usize, &str) -> f32) -> Option<Step> {
         let (i, ms) = self.t.starting.as_ref().map(|s| (s.0, s.1))?;
         let ready = match &mut self.t.starting.as_mut().expect("checked").2 {
             Ok(r) => r.ready(),
@@ -1079,7 +1079,7 @@ impl Offload {
     /// Writes what fits: the rest of the song being written, then the songs that join it gaplessly. Err
     /// when the track refused a write. `asked`: the platform asked, so the next song is written even when
     /// the (lagging) count says the track is full.
-    fn fill<L: Library, Q: Queue>(&mut self, asked: bool, tracks: &mut Sources<L>, queue: &Q, gain: &mut dyn FnMut(usize, &str) -> f32) -> Result<(), i32> {
+    fn fill<L: Library, Q: Queue>(&mut self, asked: bool, tracks: &mut Sources<L>, queue: &Known<Q>, gain: &mut dyn FnMut(usize, &str) -> f32) -> Result<(), i32> {
         self.t.waiting = false;
         loop {
             if self.in_track_us() >= TRACK_US {
@@ -1287,7 +1287,7 @@ impl Offload {
 
     /// Stops after the current song (the sleep timer), or not (`false`). True when a later song is
     /// already written: the caller restarts the track at the playback position and sets the stop again.
-    pub(crate) fn pause_at_end<L: Library, Q: Queue>(&mut self, on: bool, tracks: &mut Sources<L>, queue: &Q) -> bool {
+    pub(crate) fn pause_at_end<L: Library, Q: Queue>(&mut self, on: bool, tracks: &mut Sources<L>, queue: &Known<Q>) -> bool {
         let Some(c) = self.current() else { return false };
         self.stop_after = on.then_some(c);
         if on && self.t.placed.len() > 1 {
@@ -1315,7 +1315,7 @@ impl Offload {
 
     /// The queue changed from the entries `old`: re-finds the written songs and re-picks the song after
     /// the last. True when a written song no longer follows: the caller restarts where the ear is.
-    pub(crate) fn queue_changed<L: Library, Q: Queue>(&mut self, old: &[u64], tracks: &mut Sources<L>, queue: &Q) -> bool {
+    pub(crate) fn queue_changed<L: Library, Q: Queue>(&mut self, old: &[u64], tracks: &mut Sources<L>, queue: &Known<Q>) -> bool {
         let new: Vec<u64> = queue.read(|q| q.seqs().to_vec());
         let moved = |i: usize| old.get(i).and_then(|s| new.iter().position(|n| n == s));
         self.stop_after = self.stop_after.and_then(moved);

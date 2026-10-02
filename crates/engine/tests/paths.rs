@@ -658,6 +658,26 @@ impl OffloadOutput for Fake {
     }
 }
 
+/// The client edits the queue, then tells the engine: until told, the engine plays on in the list it knew.
+#[test]
+fn an_untold_edit_leaves_the_known_list() {
+    let d = dir();
+    let (a, b, c, x) = (mp3(&d, "a", 5, 440), mp3(&d, "b", 5, 660), mp3(&d, "c", 5, 330), mp3(&d, "x", 5, 550));
+    let server = Arc::new(Server::default());
+    serve(&server, &[("a", &a), ("b", &b), ("c", &c), ("x", &x)]);
+    let songs = ["a", "b", "c"].map(|id| (id.to_string(), "mp3".to_string(), 5_000)).to_vec();
+    let rig = Rig::new(server, songs, app(), None, Settings::default());
+    rig.engine.play_at(1, 0);
+    assert!(rig.wait(5, |r| r.heard_song("b")), "{:?}", rig.events.lock());
+    rig.queue.0.lock().set(vec!["x".into()], Some(0), false, 0);
+    assert!(rig.wait(5, |r| r.heard_song("c")), "{:?}", rig.events.lock());
+    rig.engine.queue_changed();
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait(5, |r| r.heard_song("x")), "{:?}", rig.events.lock());
+    assert!(!rig.events.lock().iter().any(|e| matches!(e, Event::Error { .. })), "{:?}", rig.events.lock());
+    rig.engine.stop();
+}
+
 // ---- the rig ----
 
 struct Rig {
