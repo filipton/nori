@@ -276,18 +276,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lc_config_encodes_rate_and_channels() {
+    fn aac_glue() {
         assert_eq!(lc_config(22_050, 2), Some([0x13, 0x90]), "AAC-LC, 22.05 kHz, stereo");
         assert_eq!(lc_config(44_100, 2), Some([0x12, 0x10]));
         assert_eq!(lc_config(24_000, 1), Some([0x13, 0x08]));
         assert_eq!(lc_config(44_000, 2), None);
-    }
 
-    #[test]
-    fn append_pcm_converts_to_float() {
+        // Append pcm converts to float.
         let mut out = Vec::new();
         append_pcm(&[0x00, 0x40, 0x00, 0xc0], false, &mut out);
         append_pcm(&0.25f32.to_le_bytes(), true, &mut out);
         assert_eq!(out, [0.5, -0.5, 0.25]);
     }
+
 }

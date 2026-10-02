@@ -83,7 +83,7 @@ mod tests {
     }
 
     #[test]
-    fn fill_in_whole_characters() {
+    fn lyrics_view() {
         let l = SongLyrics::new(server(lyrics()), 0);
         let (step, _) = l.advance(1250, true, true);
         assert_eq!(step.frame.active, 0);
@@ -92,23 +92,20 @@ mod tests {
         assert!(step.redraw);
         assert!(l.sung_chars(0, step.frame.sung) >= 8);
         assert!(wait.is_some());
-    }
 
-    #[test]
-    fn untimed_lyrics_never_wake() {
+        // Untimed lyrics never wake.
         let mut plain = lyrics();
         plain.synced = false;
         plain.word_timed = false;
         let l = SongLyrics::new(server(plain), 0);
         assert_eq!(l.advance(1000, true, true).1, None);
-    }
 
-    #[test]
-    fn same_lyrics_do_not_replace() {
+        // Same lyrics do not replace.
         let l = SongLyrics::new(server(Lyrics::default()), 0);
         assert!(l.replaced_by(&server(lyrics())));
         let l = SongLyrics::new(server(lyrics()), 0);
         assert!(!l.replaced_by(&server(Lyrics { key: 9, ..lyrics() })), "read again under another key");
         assert!(l.replaced_by(&LyricsPick { lyrics: lyrics(), origin: LyricsOrigin::Lrclib }));
     }
+
 }

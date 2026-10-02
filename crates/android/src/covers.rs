@@ -542,7 +542,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pack_565_keeps_top_bits_and_padding() {
+    fn kotlin_glue() {
         let rgba = [255, 255, 255, 255, 0, 0, 0, 255, 0xF8, 0x04, 0x08, 255, 0x07, 0xFC, 0xF7, 255];
         // 2x2 into rows padded to three pixels; padding untouched.
         let mut out = [0xAAu8; 12];
@@ -552,10 +552,8 @@ mod tests {
         assert_eq!(px(6), 0b11111_000001_00001, "red's top five, green's top six, blue's top five");
         assert_eq!(px(8), 0b00000_111111_11110);
         assert_eq!(px(10), 0xAAAA);
-    }
 
-    #[test]
-    fn error_codes_for_kotlin() {
+        // Error codes for kotlin.
         assert_eq!(code(&nori_covers::Error::Decode(DecodeError::Unknown)), UNKNOWN);
         assert_eq!(code(&nori_covers::Error::Decode(DecodeError::Corrupt("x".into()))), BROKEN);
         assert_eq!(code(&nori_covers::Error::Status(404)), 1404);
@@ -563,4 +561,5 @@ mod tests {
         let timeout = nori_covers::Error::Transport { kind: nori_core::transport::FailureKind::Timeout, detail: None };
         assert_eq!(code(&timeout), NETWORK + 4, "FailureKind's own order, which Kotlin reads its name from");
     }
+
 }

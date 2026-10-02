@@ -209,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn focused_scope_wins() {
+    fn key_scopes() {
         let right = key(Right, N);
         assert_eq!(action(&right, &[Scope::Global]), Some(Action::SeekForward));
         assert_eq!(action(&right, &[Scope::Values, Scope::List, Scope::Global]), Some(Action::Increase));
@@ -217,19 +217,15 @@ mod tests {
         assert_eq!(action(&key(Char('d'), N), &[Scope::Edit, Scope::List, Scope::Global]), Some(Action::Remove));
         assert_eq!(action(&key(Left, N), &[Scope::Grid, Scope::List, Scope::Global]), Some(Action::Left));
         assert_eq!(action(&key(Char('G'), S), &[Scope::List, Scope::Global]), Some(Action::Bottom));
-    }
 
-    #[test]
-    fn each_scope_starts_labelled() {
+        // Each scope starts labelled.
         // An unlabelled binding continues the row above, so the first of each scope needs a label.
         for scope in Scope::ALL {
             let first = BINDINGS.iter().find(|b| b.scope == scope).expect("scope has bindings");
             assert!(!first.label.is_empty(), "{scope:?}");
         }
-    }
 
-    #[test]
-    fn no_duplicate_keys_per_scope() {
+        // No duplicate keys per scope.
         for (i, a) in BINDINGS.iter().enumerate() {
             for b in &BINDINGS[i + 1..] {
                 if a.scope == b.scope {
@@ -240,4 +236,5 @@ mod tests {
             }
         }
     }
+
 }

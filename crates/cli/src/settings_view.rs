@@ -1033,7 +1033,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_send_core_setting_names() {
+    fn rows_and_labels() {
         let prefs = everything_on();
         let rows = every_row(&prefs);
         assert!(rows.len() > 40, "rows: {}", rows.len());
@@ -1063,10 +1063,8 @@ mod tests {
                 _ => {}
             }
         }
-    }
 
-    #[test]
-    fn choice_labels() {
+        // Choice labels.
         let d = StoredPrefs::default();
         let rows = every_row(&d);
         let shown = |name: &str| {
@@ -1081,10 +1079,8 @@ mod tests {
         assert_eq!(shown("wifi"), "original");
         assert_eq!(shown("speed"), "1×");
         assert_eq!(quality("320:mp3"), "mp3 320k");
-    }
 
-    #[test]
-    fn phone_only_settings_hidden() {
+        // Phone only settings hidden.
         let names: Vec<String> = every_row(&everything_on())
             .into_iter()
             .filter_map(|(_, r)| match r {
@@ -1123,7 +1119,7 @@ mod tests {
     }
 
     #[test]
-    fn graphic_eq_sliders_and_layouts() {
+    fn sound_controls() {
         let p = StoredPrefs { eq_mode: EqMode::Graphic, ..StoredPrefs::default() };
         let rows = eq_rows(&p);
         assert_eq!(rows.iter().filter(|r| matches!(r, EqRow::Slider(_))).count(), 10);
@@ -1142,10 +1138,8 @@ mod tests {
         assert!(parametric.contains(&EqRow::Mode) && !parametric.contains(&EqRow::Layout));
         let fx = effects(&Build { p: &StoredPrefs { compressor: true, ..StoredPrefs::default() }, s: &settings_model::state(&StoredPrefs::default(), settings_model::Output::default(), &nori_core::settings_store::shared().model) });
         assert!(fx.iter().any(|r| matches!(r, Row::Slider { level: Some(EqLevel::CompRatio), .. })));
-    }
 
-    #[test]
-    fn parametric_bands_step_in_range() {
+        // Parametric bands step in range.
         let prefs = StoredPrefs { eq_mode: EqMode::Parametric, eq_bands: nori_core::settings::graphic(), ..StoredPrefs::default() };
         let rows = eq_rows(&prefs);
         assert_eq!(rows.iter().filter(|r| matches!(r, EqRow::Band(_))).count(), prefs.eq_bands.len());
@@ -1157,10 +1151,8 @@ mod tests {
         assert_eq!(b.gain_db, 11.5);
         let flat = StoredPrefs { crossfeed_db: 0.0, ..prefs.clone() };
         assert_eq!(EqRow::Crossfeed.step(&flat, false), None, "crossfeed off stays off");
-    }
 
-    #[test]
-    fn crossfeed_presets_and_cutoff() {
+        // Crossfeed presets and cutoff.
         let off = StoredPrefs::default();
         assert!(!eq_rows(&off).contains(&EqRow::CrossfeedCut), "no cutoff to set with crossfeed off");
         assert_eq!(EqRow::CrossfeedPreset.words(&off).1, "‹ Off ›");
@@ -1176,4 +1168,5 @@ mod tests {
         assert_eq!(EqRow::CrossfeedPreset.words(&custom).1, "‹ Custom ›");
         assert!(matches!(EqRow::CrossfeedPreset.step(&custom, false), Some(Cmd::Setting(_, v)) if v == "DEFAULT"));
     }
+
 }

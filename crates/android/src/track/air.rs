@@ -557,7 +557,7 @@ fn heard_amp(r: &Rig) -> f32 {
 }
 
 #[test]
-fn sound_change_is_seamless() {
+fn changes_are_seamless() {
     let outputs = [
         SPEAKER,
         Output { period_ms: 5, delay_ms: 10, ..SPEAKER },
@@ -583,10 +583,8 @@ fn sound_change_is_seamless() {
         r.run(60_000);
         assert!(r.wakes - wakes <= 8, "{what}: then a wake every ten seconds or so: {}", r.wakes - wakes);
     }
-}
 
-#[test]
-fn slider_drag_is_seamless() {
+    // Slider drag is seamless.
     let (r, h) = heard_after(SPEAKER, |r| {
         for k in 1..=25 {
             r.change(0.5 + 0.01 * k as f32);
@@ -597,9 +595,9 @@ fn slider_drag_is_seamless() {
     assert_eq!(heard_amp(&r), 0.75, "the last change is heard");
 }
 
-/// Paused (the engine fading out first) and resumed at moments through a handover.
 #[test]
-fn pause_during_handover_plays_on_from_there() {
+fn handover() {
+    // Paused (the engine fading out first) and resumed at moments through a handover.
     for after_ms in [20, 120, 200, 260, 400, 700] {
         let (r, h) = heard_after(SPEAKER, |r| {
             r.change(0.6);
@@ -623,11 +621,8 @@ fn pause_during_handover_plays_on_from_there() {
         assert_home(&what, &r);
         assert_eq!(heard_amp(&r), 0.6, "{what}: the change is heard");
     }
-}
 
-/// A jump at moments through a handover: the new music, from its start, on the deep track.
-#[test]
-fn jump_during_handover_plays_the_new_music() {
+    // A jump at moments through a handover: the new music, from its start, on the deep track.
     for after_ms in [20, 120, 200, 260, 400, 700] {
         let mut jumped = 0;
         let (r, _) = heard_after(SPEAKER, |r| {
@@ -650,9 +645,9 @@ fn jump_during_handover_plays_the_new_music() {
     }
 }
 
-/// No second track: the deep one is emptied and refilled as before, nothing lost or heard twice.
 #[test]
-fn no_second_track_empties_the_track() {
+fn second_track() {
+    // No second track: the deep one is emptied and refilled as before, nothing lost or heard twice.
     let (r, h) = heard_after(SPEAKER, |r| {
         r.beside_opens.store(false, Ordering::Relaxed);
         r.change(0.6);
@@ -663,12 +658,9 @@ fn no_second_track_empties_the_track() {
     assert_eq!((wires.len(), wires[0].lock().traces.len()), (1, 2), "the one track, emptied once");
     drop(wires);
     assert_eq!(heard_amp(&r), 0.6, "the change is heard");
-}
 
-/// A second track that dies as it joins: it goes at once, and the deep one is emptied and refilled as
-/// with no second track.
-#[test]
-fn dead_second_track_empties_the_track_at_once() {
+    // A second track that dies as it joins: it goes at once, and the deep one is emptied and refilled as
+    // with no second track.
     let (r, h) = heard_after(SPEAKER, |r| {
         r.beside_dies.store(true, Ordering::Relaxed);
         r.change(0.6);
@@ -679,3 +671,4 @@ fn dead_second_track_empties_the_track_at_once() {
     assert_home("a dead second track", &r);
     assert_eq!(heard_amp(&r), 0.6, "the change is heard");
 }
+

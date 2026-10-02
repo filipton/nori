@@ -140,7 +140,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn memory_line_full() {
+    fn memory_lines() {
         let m = PerfMemory {
             java_kb: 16 * 1024,
             native_kb: 50 * 1024,
@@ -160,22 +160,19 @@ mod tests {
             "memory: PSS 98 MB = Java 16, native 50, code 11, stack 2.5, graphics 0.0, other 8.0, system 10; native heap allocated 46, \
              of it Rust 18; songs 21 in 2 loaders (1 read from the disk), ring 4.0; covers 12 in 30 Bitmaps"
         );
-    }
 
-    #[test]
-    fn memory_line_omits_unknown_parts() {
+        // Memory line omits unknown parts.
         let m = PerfMemory { rust: Some(PerfRust { heap_kb: -1, model_kb: 60 * 1024, ..Default::default() }), motion: 1, ..Default::default() };
         let line = memory_line(&m);
         assert!(!line.contains("of it Rust"), "{line}");
         assert!(line.contains("beat model 60"), "{line}");
         assert!(line.ends_with("moving cover playing (1)"), "{line}");
-    }
 
-    #[test]
-    fn memory_json_uses_short_keys_and_round_trips() {
+        // Memory json uses short keys and round trips.
         let m = PerfMemory { java_kb: 1, rust: Some(PerfRust { heap_kb: 2, ..Default::default() }), ..Default::default() };
         let json = serde_json::to_string(&m).unwrap();
         assert!(json.contains("\"j\":1") && json.contains("\"h\":2"), "{json}");
         assert_eq!(serde_json::from_str::<PerfMemory>(&json).unwrap(), m);
     }
+
 }

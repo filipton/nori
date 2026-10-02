@@ -139,7 +139,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cover_tints_theme() {
+    fn covers() {
         let mut px = vec![0u8; 32 * 32 * 4];
         for p in px.chunks_exact_mut(4) {
             p.copy_from_slice(&[180, 20, 30, 255]);
@@ -150,10 +150,8 @@ mod tests {
         let Some(Color::Rgb(r, g, b)) = t.page else { panic!("a page colour") };
         assert!(r > g && r > b, "the page is the record's red, darkened: {r} {g} {b}");
         assert_ne!(t.accent, Theme::plain(0xff3478f6).accent);
-    }
 
-    #[test]
-    fn cover_renders_in_every_protocol() {
+        // Cover renders in every protocol.
         let image = Arc::new(Image { width: 8, height: 8, pixels: vec![200u8; 8 * 8 * 4].into_boxed_slice() });
         for p in [ProtocolType::Halfblocks, ProtocolType::Sixel, ProtocolType::Kitty, ProtocolType::Iterm2] {
             let mut picker = Picker::halfblocks();
@@ -169,4 +167,5 @@ mod tests {
             assert!(buf.content.iter().any(|c| !c.symbol().trim().is_empty() || c.diff_option != ratatui::buffer::CellDiffOption::None), "{p:?} drew nothing");
         }
     }
+
 }

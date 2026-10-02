@@ -100,16 +100,14 @@ fn window_layout() {
 }
 
 #[test]
-fn long_note_in_narrow_page() {
+fn small_terminals() {
     let mut a = app();
     a.go(View::Settings);
     a.say("A note far longer than the page is wide, so it takes the whole width", false);
     let s = draw(&mut a, 40, 14);
     assert!(s.contains("│ A note far"), "{s}");
-}
 
-#[test]
-fn tiny_terminal_no_panic() {
+    // Tiny terminal no panic.
     let mut a = app();
     a.song = Some(song("1", "One", 200));
     a.queue = Some(queue_of(5, 1));
@@ -129,10 +127,28 @@ fn tiny_terminal_no_panic() {
         draw(&mut a, w, h);
         a.full = false;
     }
+
+    // Narrow shows focused part.
+    let mut a = app();
+    a.go(View::Home);
+    a.queue = Some(queue_of(5, 1));
+    let s = draw(&mut a, 70, 24);
+    assert!(!a.shown.side && !a.shown.panel, "no room beside the page");
+    assert!(!s.contains("LIBRARY"), "{s}");
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.focus, Focus::Side);
+    let s = draw(&mut a, 70, 24);
+    assert!(s.contains("LIBRARY") && s.contains("Albums"), "the sidebar in the page's place:\n{s}");
+    key(&mut a, KeyCode::Char('Q'));
+    let s = draw(&mut a, 70, 24);
+    assert!(s.contains("▶ Song 1"), "the queue in the page's place:\n{s}");
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.focus, Focus::Main);
+    dump("narrow", &draw(&mut a, 70, 24));
 }
 
 #[test]
-fn keys_navigate_and_load() {
+fn keys_and_focus() {
     let mut a = app();
     key(&mut a, KeyCode::Char('2'));
     assert_eq!(a.view, View::Albums);
@@ -169,10 +185,8 @@ fn keys_navigate_and_load() {
     assert!(a.overlay.is_none());
     key(&mut a, KeyCode::Char('q'));
     assert!(a.quit);
-}
 
-#[test]
-fn tab_cycles_focus() {
+    // Tab cycles focus.
     let mut a = app();
     a.go(View::Home);
     playlists(&mut a, &["Morning"]);
@@ -204,6 +218,19 @@ fn tab_cycles_focus() {
     assert!(a.page().is_some());
     let s = draw(&mut a, 160, 40);
     assert!(s.contains("▌") , "the open playlist is marked in the sidebar:\n{s}");
+
+    // Focus redraw.
+    let mut a = app();
+    a.dirty = false;
+    a.handle(Msg::Focus(false));
+    assert!(!a.dirty, "focus lost changes nothing");
+    a.handle(Msg::Focus(true));
+    assert!(a.dirty, "focus back redraws");
+    // A no-op message after a real change in the same batch keeps the redraw.
+    a.dirty = false;
+    a.handle(Msg::Engine(nori_engine::Event::State(State::Paused)));
+    a.handle(Msg::Focus(false));
+    assert!(a.dirty);
 }
 
 #[test]
@@ -245,25 +272,6 @@ fn album_grid_keys_and_clicks() {
 }
 
 #[test]
-fn song_table_double_click_plays() {
-    let mut a = app();
-    a.go(View::Songs);
-    let songs: Vec<Song> = (0..30).map(|i| Song { starred: i == 2, ..song(&format!("s{i}"), &format!("Song {i}"), 200) }).collect();
-    a.handle(Msg::Data(Req::Songs { offset: 0 }, Ok(Data::Songs(songs, true))));
-    a.heard(Some(song("s1", "Song 1", 200)));
-    let s = draw(&mut a, 160, 40);
-    assert!(s.contains("Title") && s.contains("Artist") && s.contains("Album") && s.contains("Time"), "{s}");
-    assert!(s.contains("▶") && s.contains("♥"), "the song heard and the favourite are marked:\n{s}");
-    dump("songs", &s);
-    let row = hit_rect(&a, Hit::Row(ListRef::Songs, 4));
-    a.cmds.clear();
-    click(&mut a, row.x + 5, row.y);
-    assert!(!a.cmds.iter().any(|c| matches!(c, Cmd::Play { .. })), "one click selects");
-    click(&mut a, row.x + 5, row.y);
-    assert!(matches!(a.cmds.last(), Some(Cmd::Play { start: 4, .. })), "{:?}", a.cmds);
-}
-
-#[test]
 fn home_shelves() {
     let mut a = app();
     a.go(View::Home);
@@ -294,7 +302,7 @@ fn home_shelves() {
 }
 
 #[test]
-fn player_bar_mouse() {
+fn mouse() {
     let mut a = app();
     a.song = Some(song("1", "One", 200));
     a.now.state = State::Playing;
@@ -324,10 +332,8 @@ fn player_bar_mouse() {
     let lyrics = hit_rect(&a, Hit::Button(crate::app::Button::Panel(Panel::Lyrics)));
     click(&mut a, lyrics.x + 1, lyrics.y);
     assert_eq!(a.panel, Some(Panel::Lyrics));
-}
 
-#[test]
-fn mouse_off_ignores_clicks() {
+    // Mouse off ignores clicks.
     let mut a = app();
     draw(&mut a, 160, 30);
     key(&mut a, KeyCode::Char('m'));
@@ -335,6 +341,23 @@ fn mouse_off_ignores_clicks() {
     let r = hit_rect(&a, Hit::Nav(a.nav().iter().position(|n| *n == Nav::Settings).unwrap()));
     click(&mut a, r.x + 1, r.y);
     assert_eq!(a.view, View::Home);
+
+    // Song table double click plays.
+    let mut a = app();
+    a.go(View::Songs);
+    let songs: Vec<Song> = (0..30).map(|i| Song { starred: i == 2, ..song(&format!("s{i}"), &format!("Song {i}"), 200) }).collect();
+    a.handle(Msg::Data(Req::Songs { offset: 0 }, Ok(Data::Songs(songs, true))));
+    a.heard(Some(song("s1", "Song 1", 200)));
+    let s = draw(&mut a, 160, 40);
+    assert!(s.contains("Title") && s.contains("Artist") && s.contains("Album") && s.contains("Time"), "{s}");
+    assert!(s.contains("▶") && s.contains("♥"), "the song heard and the favourite are marked:\n{s}");
+    dump("songs", &s);
+    let row = hit_rect(&a, Hit::Row(ListRef::Songs, 4));
+    a.cmds.clear();
+    click(&mut a, row.x + 5, row.y);
+    assert!(!a.cmds.iter().any(|c| matches!(c, Cmd::Play { .. })), "one click selects");
+    click(&mut a, row.x + 5, row.y);
+    assert!(matches!(a.cmds.last(), Some(Cmd::Play { start: 4, .. })), "{:?}", a.cmds);
 }
 
 #[test]
@@ -437,26 +460,6 @@ fn queue_panel_editing() {
     // Q again puts the panel away; the page has the keys.
     key(&mut a, KeyCode::Char('Q'));
     assert_eq!((a.panel, a.focus), (None, Focus::Main));
-}
-
-#[test]
-fn narrow_shows_focused_part() {
-    let mut a = app();
-    a.go(View::Home);
-    a.queue = Some(queue_of(5, 1));
-    let s = draw(&mut a, 70, 24);
-    assert!(!a.shown.side && !a.shown.panel, "no room beside the page");
-    assert!(!s.contains("LIBRARY"), "{s}");
-    key(&mut a, KeyCode::Esc);
-    assert_eq!(a.focus, Focus::Side);
-    let s = draw(&mut a, 70, 24);
-    assert!(s.contains("LIBRARY") && s.contains("Albums"), "the sidebar in the page's place:\n{s}");
-    key(&mut a, KeyCode::Char('Q'));
-    let s = draw(&mut a, 70, 24);
-    assert!(s.contains("▶ Song 1"), "the queue in the page's place:\n{s}");
-    key(&mut a, KeyCode::Esc);
-    assert_eq!(a.focus, Focus::Main);
-    dump("narrow", &draw(&mut a, 70, 24));
 }
 
 #[test]
@@ -590,7 +593,7 @@ fn equalizer_screen() {
 }
 
 #[test]
-fn seek_survives_stale_status() {
+fn seeking() {
     let mut a = app();
     a.go(View::Songs);
     a.song = Some(song("1", "One", 200));
@@ -609,10 +612,28 @@ fn seek_survives_stale_status() {
     assert!(a.seek_hold.is_none());
     a.follow_now(crate::app::Now { state: State::Playing, position_ms: 120_000, at: Instant::now(), ..Default::default() });
     assert!((a.now.position(Instant::now()) - 120_000).abs() < 500);
+
+    // Seek bounds.
+    let mut a = app();
+    // On a list ← and → seek (on the cards of Home and Albums they move: , and . seek there).
+    a.go(View::Songs);
+    a.cmds.clear();
+    key(&mut a, KeyCode::Right);
+    assert!(a.cmds.is_empty(), "nothing playing, nothing to seek");
+    a.song = Some(song("1", "One", 200));
+    a.now.state = State::Paused;
+    a.now.position_ms = 3_000;
+    key(&mut a, KeyCode::Left);
+    assert_eq!(a.cmds.last(), Some(&Cmd::Seek(0)));
+    a.handle(Msg::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT)));
+    assert_eq!(a.cmds.last(), Some(&Cmd::Seek(30_000)));
+    a.go(View::Home);
+    key(&mut a, KeyCode::Char('.'));
+    assert!(matches!(a.cmds.last(), Some(Cmd::Seek(_))), ". seeks over the cards too");
 }
 
 #[test]
-fn star_and_download_buttons() {
+fn buttons() {
     let mut a = app();
     a.go(View::Albums);
     a.open_album("al-3".into());
@@ -634,66 +655,8 @@ fn star_and_download_buttons() {
     click(&mut a, heart.x, heart.y);
     assert_eq!(a.cmds.last(), Some(&Cmd::Star(nori_core::client::Starrable::Song, "1".into(), true)));
     assert!(a.song.as_ref().unwrap().starred);
-}
 
-#[test]
-fn card_covers_requested_once() {
-    use ratatui_image::picker::Picker;
-    let mut a = app();
-    a.go(View::Albums);
-    let albums: Vec<Album> = (0..60).map(|i| Album { cover_art: Some(format!("c{i}")), ..album(&format!("al-{i}"), &format!("Album {i}")) }).collect();
-    a.handle(Msg::Data(Req::Albums { offset: 0 }, Ok(Data::Albums(albums))));
-    let mut art = crate::art::Art::new(Picker::halfblocks());
-    a.cmds.clear();
-    let s = draw_with(&mut a, 170, 40, Some(&mut art));
-    dump("albums-covers", &s);
-    let asked: Vec<&Cmd> = a.cmds.iter().filter(|c| matches!(c, Cmd::Thumb(_))).collect();
-    assert!(!asked.is_empty() && asked.len() < 60, "only the covers on screen: {}", asked.len());
-    assert!(a.cmds.contains(&Cmd::Thumb("c0".into())));
-    // Asked once: the next frame asks nothing again.
-    a.cmds.clear();
-    draw_with(&mut a, 170, 40, Some(&mut art));
-    assert!(!a.cmds.iter().any(|c| matches!(c, Cmd::Thumb(_))));
-    // Off in the settings: plain cards, nothing asked.
-    a.card_covers = false;
-    a.thumbs_asked.clear();
-    let s = draw_with(&mut a, 170, 40, Some(&mut art));
-    assert!(s.contains("╭") && !a.cmds.iter().any(|c| matches!(c, Cmd::Thumb(_))), "{s}");
-}
-
-#[test]
-fn graphics_cell_does_not_hide_frame() {
-    use ratatui_image::picker::{Picker, ProtocolType};
-    for protocol in [ProtocolType::Sixel, ProtocolType::Kitty, ProtocolType::Iterm2, ProtocolType::Halfblocks] {
-        let mut a = app();
-        let mut picker = Picker::halfblocks();
-        picker.set_protocol_type(protocol);
-        let mut art = crate::art::Art::new(picker);
-        let px = vec![120u8; 64 * 64 * 4].into_boxed_slice();
-        art.put("c1".into(), &std::sync::Arc::new(nori_covers::memory::Image { width: 64, height: 64, pixels: px }));
-        a.heard(Some(Song { cover_art: Some("c1".into()), ..song("s1", "First", 200) }));
-        a.queue = Some(queue_of(5, 0));
-        // The TestBackend is written through ratatui's diff, as a terminal is: whatever the diff skips is
-        // missing from it.
-        let s = draw_with(&mut a, 140, 40, Some(&mut art));
-        assert!(s.contains("Next up") && s.contains("3:20") && s.contains("q quit"), "{protocol:?} hid the frame:\n{s}");
-    }
-}
-
-/// The player bar's play/pause button, as drawn (the controls' middle symbol).
-fn button(s: &str) -> &'static str {
-    let bar = s.lines().rev().find(|l| l.contains('⏮')).expect("the controls are drawn");
-    if bar.contains('⏸') {
-        "pause"
-    } else if bar.contains('▶') {
-        "play"
-    } else {
-        panic!("no play or pause button: {bar}")
-    }
-}
-
-#[test]
-fn play_button_follows_state() {
+    // Play button follows state.
     let mut t = Terminal::new(TestBackend::new(100, 20)).unwrap();
     let mut frame = |a: &mut App| {
         t.draw(|f| crate::ui::draw(f, a, None)).unwrap();
@@ -719,8 +682,31 @@ fn play_button_follows_state() {
 }
 
 #[test]
-fn cover_sent_once_per_change() {
-    use ratatui_image::picker::{Picker, ProtocolType};
+fn covers_sent_once() {
+    use ratatui_image::picker::Picker;
+    let mut a = app();
+    a.go(View::Albums);
+    let albums: Vec<Album> = (0..60).map(|i| Album { cover_art: Some(format!("c{i}")), ..album(&format!("al-{i}"), &format!("Album {i}")) }).collect();
+    a.handle(Msg::Data(Req::Albums { offset: 0 }, Ok(Data::Albums(albums))));
+    let mut art = crate::art::Art::new(Picker::halfblocks());
+    a.cmds.clear();
+    let s = draw_with(&mut a, 170, 40, Some(&mut art));
+    dump("albums-covers", &s);
+    let asked: Vec<&Cmd> = a.cmds.iter().filter(|c| matches!(c, Cmd::Thumb(_))).collect();
+    assert!(!asked.is_empty() && asked.len() < 60, "only the covers on screen: {}", asked.len());
+    assert!(a.cmds.contains(&Cmd::Thumb("c0".into())));
+    // Asked once: the next frame asks nothing again.
+    a.cmds.clear();
+    draw_with(&mut a, 170, 40, Some(&mut art));
+    assert!(!a.cmds.iter().any(|c| matches!(c, Cmd::Thumb(_))));
+    // Off in the settings: plain cards, nothing asked.
+    a.card_covers = false;
+    a.thumbs_asked.clear();
+    let s = draw_with(&mut a, 170, 40, Some(&mut art));
+    assert!(s.contains("╭") && !a.cmds.iter().any(|c| matches!(c, Cmd::Thumb(_))), "{s}");
+
+    // Cover sent once per change.
+    use ratatui_image::picker::ProtocolType;
     let image = |v: u8| std::sync::Arc::new(nori_covers::memory::Image { width: 64, height: 64, pixels: vec![v; 64 * 64 * 4].into_boxed_slice() });
     for protocol in [ProtocolType::Sixel, ProtocolType::Kitty, ProtocolType::Iterm2] {
         let mut picker = Picker::halfblocks();
@@ -750,6 +736,18 @@ fn cover_sent_once_per_change() {
         art.resend();
         t.draw(|_| {}).unwrap();
         assert!(sent(&mut t, &mut a, &mut art) > 0, "{protocol:?}: sent again after resend");
+    }
+}
+
+/// The player bar's play/pause button, as drawn (the controls' middle symbol).
+fn button(s: &str) -> &'static str {
+    let bar = s.lines().rev().find(|l| l.contains('⏮')).expect("the controls are drawn");
+    if bar.contains('⏸') {
+        "pause"
+    } else if bar.contains('▶') {
+        "play"
+    } else {
+        panic!("no play or pause button: {bar}")
     }
 }
 
@@ -805,27 +803,7 @@ fn search_results_list() {
 }
 
 #[test]
-fn seek_bounds() {
-    let mut a = app();
-    // On a list ← and → seek (on the cards of Home and Albums they move: , and . seek there).
-    a.go(View::Songs);
-    a.cmds.clear();
-    key(&mut a, KeyCode::Right);
-    assert!(a.cmds.is_empty(), "nothing playing, nothing to seek");
-    a.song = Some(song("1", "One", 200));
-    a.now.state = State::Paused;
-    a.now.position_ms = 3_000;
-    key(&mut a, KeyCode::Left);
-    assert_eq!(a.cmds.last(), Some(&Cmd::Seek(0)));
-    a.handle(Msg::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT)));
-    assert_eq!(a.cmds.last(), Some(&Cmd::Seek(30_000)));
-    a.go(View::Home);
-    key(&mut a, KeyCode::Char('.'));
-    assert!(matches!(a.cmds.last(), Some(Cmd::Seek(_))), ". seeks over the cards too");
-}
-
-#[test]
-fn idle_never_wakes() {
+fn idle() {
     let mut a = app();
     let now = Instant::now();
     assert_eq!(a.next_wake(now), None, "idle: no timer at all");
@@ -837,25 +815,8 @@ fn idle_never_wakes() {
     assert!((690..=710).contains(&ms), "the next whole second of the song: {ms}");
     a.now.buffering = true;
     assert_eq!(a.next_wake(now), None, "waiting for the network: the clock stands still");
-}
 
-#[test]
-fn focus_redraw() {
-    let mut a = app();
-    a.dirty = false;
-    a.handle(Msg::Focus(false));
-    assert!(!a.dirty, "focus lost changes nothing");
-    a.handle(Msg::Focus(true));
-    assert!(a.dirty, "focus back redraws");
-    // A no-op message after a real change in the same batch keeps the redraw.
-    a.dirty = false;
-    a.handle(Msg::Engine(nori_engine::Event::State(State::Paused)));
-    a.handle(Msg::Focus(false));
-    assert!(a.dirty);
-}
-
-#[test]
-fn pause_freezes_clock() {
+    // Pause freezes clock.
     let mut a = app();
     let start = Instant::now() - Duration::from_secs(5);
     a.now = crate::app::Now { state: State::Playing, position_ms: 10_000, at: start, ..Default::default() };
@@ -866,16 +827,14 @@ fn pause_freezes_clock() {
 }
 
 #[test]
-fn tmux_sixel_feature() {
+fn terminal_replies() {
     use crate::term::sixel_feature;
     // Ghostty (no sixel) under tmux: tmux claims sixel but would show a placeholder.
     assert!(!sixel_feature("bpaste,ccolour,clipboard,cstyle,focus,RGB,title"));
     assert!(!sixel_feature(""));
     assert!(sixel_feature("256,bpaste,ccolour,clipboard,cstyle,extkeys,focus,mouse,rectfill,RGB,sixel,strikethrough,title"));
-}
 
-#[test]
-fn late_query_reply_swallowed() {
+    // Late query reply swallowed.
     // A late kitty graphics reply: alt+_, its letters, alt+\\. Only the key after it counts.
     let mut r = crate::runner::Replies::default();
     let k = |c: char, m: KeyModifiers| KeyEvent::new(KeyCode::Char(c), m);
@@ -890,4 +849,22 @@ fn late_query_reply_swallowed() {
         }
     }
     assert_eq!(taken, [KeyCode::Char('n')]);
+
+    // Graphics cell does not hide frame.
+    use ratatui_image::picker::{Picker, ProtocolType};
+    for protocol in [ProtocolType::Sixel, ProtocolType::Kitty, ProtocolType::Iterm2, ProtocolType::Halfblocks] {
+        let mut a = app();
+        let mut picker = Picker::halfblocks();
+        picker.set_protocol_type(protocol);
+        let mut art = crate::art::Art::new(picker);
+        let px = vec![120u8; 64 * 64 * 4].into_boxed_slice();
+        art.put("c1".into(), &std::sync::Arc::new(nori_covers::memory::Image { width: 64, height: 64, pixels: px }));
+        a.heard(Some(Song { cover_art: Some("c1".into()), ..song("s1", "First", 200) }));
+        a.queue = Some(queue_of(5, 0));
+        // The TestBackend is written through ratatui's diff, as a terminal is: whatever the diff skips is
+        // missing from it.
+        let s = draw_with(&mut a, 140, 40, Some(&mut art));
+        assert!(s.contains("Next up") && s.contains("3:20") && s.contains("q quit"), "{protocol:?} hid the frame:\n{s}");
+    }
 }
+

@@ -692,7 +692,7 @@ mod tests {
     }
 
     #[test]
-    fn stalled_output_reported_once() {
+    fn reported_once() {
         let mut w = Watch::default();
         assert_eq!(w.output("track", &at(0, 1000, 10_000)), None);
         assert_eq!(w.output("track", &at(1000, 2000, 10_000)), None, "it moved");
@@ -703,10 +703,8 @@ mod tests {
         assert_eq!(w.output("track", &at(9000, 2000, 10_000)), None, "said once");
         assert_eq!(w.output("track", &at(9100, 2100, 10_000)), None, "moving again");
         assert!(w.output("track", &at(11_200, 2100, 10_000)).is_some(), "a second stall is said again");
-    }
 
-    #[test]
-    fn starved_output_reported_once() {
+        // Starved output reported once.
         let mut w = Watch::default();
         w.output("track", &at(0, 5000, 5000));
         assert_eq!(w.output("track", &at(4000, 5000, 5000)), None, "a song's first bytes a moment late");
@@ -723,10 +721,22 @@ mod tests {
         let mut w = Watch::default();
         w.output("track", &at(0, 0, 100));
         assert_eq!(w.output("track", &at(2500, 0, 200)).map(|b| b.kind), Some("stalled"));
+
+        // Silent reported once per stretch.
+        let mut w = Watch::default();
+        assert!(w.silent(SILENT_MS - 1, false, Some("s1"), "Playing").is_none());
+        assert!(w.silent(9_000, true, Some("s1"), "Playing").is_none(), "output open");
+        let b = w.silent(SILENT_MS, false, Some("s1"), "Playing; loaders: no loaders").expect("silent");
+        assert_eq!(b.kind, "silent");
+        assert!(b.detail.contains("s1 stood still for 5000 ms") && b.detail.ends_with("the engine: Playing; loaders: no loaders"), "{}", b.detail);
+        assert!(w.silent(8_000, false, Some("s1"), "Playing").is_none(), "said once");
+        // Moving again resets.
+        assert!(w.silent(0, false, Some("s1"), "Playing").is_none());
+        assert!(w.silent(6_000, false, Some("s2"), "Playing").is_some());
     }
 
     #[test]
-    fn track_not_starved_while_engine_waits() {
+    fn no_false_breaks() {
         // Regression: a provider song still downloading was reported as starved.
         let mut w = Watch::default();
         w.engine(false);
@@ -750,20 +760,51 @@ mod tests {
         w.engine(true);
         w.track(&at(100, 0, 100));
         assert_eq!(w.track(&at(2_500, 0, 200)).map(|b| b.kind), Some("stalled"));
-    }
 
-    #[test]
-    fn silent_reported_once_per_stretch() {
+        // Standing still is fine when paused flushed or drained.
         let mut w = Watch::default();
-        assert!(w.silent(SILENT_MS - 1, false, Some("s1"), "Playing").is_none());
-        assert!(w.silent(9_000, true, Some("s1"), "Playing").is_none(), "output open");
-        let b = w.silent(SILENT_MS, false, Some("s1"), "Playing; loaders: no loaders").expect("silent");
-        assert_eq!(b.kind, "silent");
-        assert!(b.detail.contains("s1 stood still for 5000 ms") && b.detail.ends_with("the engine: Playing; loaders: no loaders"), "{}", b.detail);
-        assert!(w.silent(8_000, false, Some("s1"), "Playing").is_none(), "said once");
-        // Moving again resets.
-        assert!(w.silent(0, false, Some("s1"), "Playing").is_none());
-        assert!(w.silent(6_000, false, Some("s2"), "Playing").is_some());
+        w.output("track", &at(0, 5000, 5000));
+        assert_eq!(w.output("track", &at(4500, 5000, 5000)), None, "drained");
+        let paused = Moving { playing: false, ..at(10_000, 5000, 9000) };
+        assert_eq!(w.output("track", &paused), None);
+        assert_eq!(w.output("track", &at(11_000, 5000, 9000)), None, "pause resets");
+        assert_eq!(w.output("track", &at(12_000, 0, 4000)), None, "flush resets");
+        assert_eq!(w.output("track", &at(13_500, 0, 4000)), None);
+        let song = Moving { song: Some(1), ..at(16_000, 0, 4000) };
+        assert_eq!(w.output("track", &song), None, "new song resets");
+
+        // Auto advance and shuffle are not judged.
+        let mut w = Watch::default();
+        w.skip(0, 0);
+        assert_eq!(w.arrived(100, 3, false, true), None, "shuffled");
+        w.skip(1000, 3);
+        assert_eq!(w.arrived(1100, 4, true, false), None);
+        assert_eq!(w.arrived(1200, 6, false, false), None, "auto advance ended the run");
+        w.skip(10_000, 6);
+        assert_eq!(w.arrived(14_000, 9, false, false), None, "after RUN_MS");
+        w.skip(20_000, 9);
+        assert_eq!(w.arrived(20_100, 8, false, false), None, "previous");
+
+        // Hidden screen is not judged.
+        let mut w = Watch::default();
+        w.heard(0, "a");
+        w.shown(10, Some("a"));
+        assert_eq!(w.visible(20, false), None);
+        w.heard(1000, "b");
+        assert_eq!(w.compare(60_000), None, "hidden");
+        assert_eq!(w.visible(64_000, true), None, "grace starts on becoming visible");
+        assert_eq!(w.compare(64_900), None);
+        let b = w.compare(65_100).expect("1.1 s after becoming visible");
+        assert_eq!(b.detail, "the screen showed a while b was heard, for 1100 ms");
+        // Catching up in time: nothing.
+        let mut w = Watch::default();
+        w.heard(0, "a");
+        w.shown(10, Some("a"));
+        w.visible(20, false);
+        w.heard(1000, "b");
+        w.visible(64_000, true);
+        assert_eq!(w.shown(64_300, Some("b")), None);
+        assert_eq!(w.compare(70_000), None);
     }
 
     /// A watch of the test's own, for as long as the test runs.
@@ -772,7 +813,7 @@ mod tests {
     }
 
     #[test]
-    fn disk_hook_runs_outside_state_lock() {
+    fn lock_safety() {
         static HOOKED: Recorder = Recorder { state: Mutex::new(None), disk: OnceLock::new() };
         // The Android hook calls into Kotlin, which may read the watch.
         let _ = HOOKED.disk.set(|id| format!("{id}: {} breaks", HOOKED.breaks().len()));
@@ -783,10 +824,8 @@ mod tests {
         });
         rx.recv_timeout(std::time::Duration::from_secs(5)).expect("engine_seen deadlocked on its own hook");
         assert!(HOOKED.breaks().iter().any(|l| l.contains("hooked stood still") && l.contains("the stream cache: hooked: ")));
-    }
 
-    #[test]
-    fn a_panic_under_the_watch_lock_is_reported() {
+        // A panic under the watch lock is reported.
         let r = recorder();
         let reporting = std::thread::spawn(move || r.with_state(|_| r.panicked("a test", "boom under the lock")))
             .join()
@@ -806,20 +845,6 @@ mod tests {
         let breaks = r.breaks();
         let line = breaks.iter().find(|l| l.contains("starved: track:")).unwrap_or_else(|| panic!("a starved track: {breaks:?}"));
         assert!(line.contains("; the engine at its last wake, ") && line.ends_with(state), "{line}");
-    }
-
-    #[test]
-    fn standing_still_is_fine_when_paused_flushed_or_drained() {
-        let mut w = Watch::default();
-        w.output("track", &at(0, 5000, 5000));
-        assert_eq!(w.output("track", &at(4500, 5000, 5000)), None, "drained");
-        let paused = Moving { playing: false, ..at(10_000, 5000, 9000) };
-        assert_eq!(w.output("track", &paused), None);
-        assert_eq!(w.output("track", &at(11_000, 5000, 9000)), None, "pause resets");
-        assert_eq!(w.output("track", &at(12_000, 0, 4000)), None, "flush resets");
-        assert_eq!(w.output("track", &at(13_500, 0, 4000)), None);
-        let song = Moving { song: Some(1), ..at(16_000, 0, 4000) };
-        assert_eq!(w.output("track", &song), None, "new song resets");
     }
 
     #[test]
@@ -849,21 +874,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_advance_and_shuffle_are_not_judged() {
-        let mut w = Watch::default();
-        w.skip(0, 0);
-        assert_eq!(w.arrived(100, 3, false, true), None, "shuffled");
-        w.skip(1000, 3);
-        assert_eq!(w.arrived(1100, 4, true, false), None);
-        assert_eq!(w.arrived(1200, 6, false, false), None, "auto advance ended the run");
-        w.skip(10_000, 6);
-        assert_eq!(w.arrived(14_000, 9, false, false), None, "after RUN_MS");
-        w.skip(20_000, 9);
-        assert_eq!(w.arrived(20_100, 8, false, false), None, "previous");
-    }
-
-    #[test]
-    fn screen_may_lag_playback_by_differ_ms() {
+    fn place_breaks() {
         let mut w = Watch::default();
         assert_eq!(w.heard(0, "a"), None);
         assert_eq!(w.shown(10, Some("a")), None);
@@ -876,10 +887,8 @@ mod tests {
         assert_eq!(b.detail, "the screen showed b while c was heard, for 1100 ms");
         assert_eq!(w.compare(9000), None, "once");
         assert_eq!(w.shown(9100, Some("c")), None);
-    }
 
-    #[test]
-    fn seek_bar_off_for_over_a_second_is_a_break() {
+        // Seek bar off for over a second is a break.
         let mut w = Watch::default();
         // Regression: bar stuck at the song's end, 14 s ahead of the engine.
         assert_eq!(w.place(0, true, 600_000, 586_000, 600_000), None);
@@ -891,18 +900,14 @@ mod tests {
         assert_eq!(w.place(1_300, true, 587_300, 587_300, 587_300), None);
         w.place(2_000, true, 590_000, 587_000, 587_000);
         assert!(w.place(3_100, true, 591_100, 588_100, 588_100).is_some());
-    }
 
-    #[test]
-    fn controller_position_off_is_a_break() {
+        // Controller position off is a break.
         let mut w = Watch::default();
         w.place(0, true, 586_000, 586_000, 600_000);
         let b = w.place(1_500, true, 587_500, 587_500, 600_000).expect("off 1.5 s");
         assert_eq!(b.detail, "the controller ran on to 600.0 s while the engine was at 587.5 s (the seek bar showed 587.5 s)");
-    }
 
-    #[test]
-    fn place_judged_only_playing_with_known_engine_position() {
+        // Place judged only playing with known engine position.
         let mut w = Watch::default();
         for t in (0..5_000).step_by(100) {
             assert_eq!(w.place(t, false, 600_000, 100_000, 600_000), None, "paused");
@@ -912,29 +917,6 @@ mod tests {
         for t in (5_000..10_000).step_by(100) {
             assert_eq!(w.place(t, true, 100_000 + t, 100_000 + t - PLACE_MS, 100_000 + t), None);
         }
-    }
-
-    #[test]
-    fn hidden_screen_is_not_judged() {
-        let mut w = Watch::default();
-        w.heard(0, "a");
-        w.shown(10, Some("a"));
-        assert_eq!(w.visible(20, false), None);
-        w.heard(1000, "b");
-        assert_eq!(w.compare(60_000), None, "hidden");
-        assert_eq!(w.visible(64_000, true), None, "grace starts on becoming visible");
-        assert_eq!(w.compare(64_900), None);
-        let b = w.compare(65_100).expect("1.1 s after becoming visible");
-        assert_eq!(b.detail, "the screen showed a while b was heard, for 1100 ms");
-        // Catching up in time: nothing.
-        let mut w = Watch::default();
-        w.heard(0, "a");
-        w.shown(10, Some("a"));
-        w.visible(20, false);
-        w.heard(1000, "b");
-        w.visible(64_000, true);
-        assert_eq!(w.shown(64_300, Some("b")), None);
-        assert_eq!(w.compare(70_000), None);
     }
 
     #[test]
@@ -963,24 +945,20 @@ mod tests {
     }
 
     #[test]
-    fn settings_judged_conditions() {
+    fn settings_are_judged() {
         assert!(!settings_judged(10_000, false, true, Some(0)), "paused");
         assert!(!settings_judged(10_000, true, false, Some(0)), "no output");
         assert!(!settings_judged(SETTLE_MS, true, true, Some(0)), "settling");
         assert!(settings_judged(SETTLE_MS + 1, true, true, Some(0)));
         assert!(settings_judged(5, true, true, None));
-    }
 
-    #[test]
-    fn settings_held_reports_mismatches() {
+        // Settings held reports mismatches.
         assert_eq!(settings_held(&[("offload wanted", true, true)]), None);
         let b = settings_held(&[("offload wanted", false, true), ("sound chain in the path", true, true)]).unwrap();
         assert_eq!(b.kind, "setting");
         assert_eq!(b.detail, "a second after the settings changed the engine still shows offload wanted: true, expected false");
-    }
 
-    #[test]
-    fn sound_chain_checked_only_on_cpu_output() {
+        // Sound chain checked only on cpu output.
         // Equalizer on but not playing CPU audio: not judged.
         assert_eq!(settings_held(&settings_pairs(true, false, false, false, false)), None);
         let b = settings_held(&settings_pairs(true, false, false, false, true)).unwrap();

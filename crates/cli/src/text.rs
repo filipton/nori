@@ -250,7 +250,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn numbers() {
+    fn words() {
         assert_eq!((duration(0), duration(187), duration(3723)), ("0:00".into(), "3:07".into(), "1:02:03".into()));
         assert_eq!((signed_db(-0.0), signed_db(3.25), signed_db(-1.0)), ("+0.0".into(), "+3.3".into(), "-1.0".into()));
         assert_eq!((fixed(0.15, 1, false), fixed(62.5, 0, false), fixed(9.96, 1, false)), ("0.2".into(), "63".into(), "10.0".into()));
@@ -262,10 +262,8 @@ mod tests {
         assert_eq!((songs_caption(1, 200), albums(2)), ("1 song · 3:20".into(), "2 albums".into()));
         let s = Song { suffix: "flac".into(), bit_depth: 24, sampling_rate: 96000, ..Default::default() };
         assert_eq!(quality(&s).as_deref(), Some("FLAC 24/96.0"));
-    }
 
-    #[test]
-    fn net_errors() {
+        // Net errors.
         let t = |kind, detail: Option<&str>| net_error(&NetError::Transport { kind, detail: detail.map(str::to_string) });
         assert_eq!(t(FailureKind::Metered, None), "This server is set to Wi-Fi only");
         assert_eq!(t(FailureKind::UnknownHost, Some("x")), "Server not found. Check the address.");
@@ -274,11 +272,10 @@ mod tests {
         assert_eq!(net_error(&NetError::Api { code: 40, reason: "x".into() }), "Wrong user name or password.");
         assert_eq!(net_error(&NetError::Api { code: 70, reason: "gone".into() }), "gone");
         assert!(net_error(&NetError::Parse { reason: "x".into() }).starts_with("That address answered"));
-    }
 
-    #[test]
-    fn lyrics_credit_says_untimed() {
+        // Lyrics credit says untimed.
         assert_eq!(lyrics_credit(LyricsOrigin::Lrclib, true), "LRCLIB");
         assert_eq!(lyrics_credit(LyricsOrigin::Lrclib, false), "LRCLIB · not timed");
     }
+
 }

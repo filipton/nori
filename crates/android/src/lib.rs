@@ -279,64 +279,66 @@ mod tests {
     }
 
     #[test]
-    fn every_door_matches_its_kotlin_declaration() {
-        let files = kotlin();
-        let mut wrong = Vec::new();
-        for class in CLASSES {
-            let name = class.name.to_str().unwrap();
-            let (package, object) = name.rsplit_once('/').unwrap();
-            let package = package.replace('/', ".");
-            let object = object.rsplit('$').next().unwrap();
-            let Some((_, text)) = files.iter().find(|(_, t)| {
-                t.contains(&format!("package {package}\n")) && (t.contains(&format!("object {object} ")) || t.contains(&format!("class {object}")) || t.contains(&format!("object {object}\n")))
-            }) else {
-                wrong.push(format!("{name}: no Kotlin class"));
-                continue;
-            };
-            for m in class.methods {
-                let method = m.name.to_str().unwrap();
-                let decl = text.lines().find(|l| l.contains(&format!("external fun {method}(")));
-                let Some(decl) = decl else {
-                    wrong.push(format!("{name}.{method}: not declared"));
+    fn doors_match_kotlin() {
+        {
+            let files = kotlin();
+            let mut wrong = Vec::new();
+            for class in CLASSES {
+                let name = class.name.to_str().unwrap();
+                let (package, object) = name.rsplit_once('/').unwrap();
+                let package = package.replace('/', ".");
+                let object = object.rsplit('$').next().unwrap();
+                let Some((_, text)) = files.iter().find(|(_, t)| {
+                    t.contains(&format!("package {package}\n")) && (t.contains(&format!("object {object} ")) || t.contains(&format!("class {object}")) || t.contains(&format!("object {object}\n")))
+                }) else {
+                    wrong.push(format!("{name}: no Kotlin class"));
                     continue;
                 };
-                let args = &decl[decl.find('(').unwrap() + 1..decl.rfind(')').unwrap()];
-                let params: String = args.split(',').filter(|a| !a.trim().is_empty()).map(|a| descriptor(a.split_once(':').unwrap().1)).collect();
-                let ret = decl[decl.rfind(')').unwrap() + 1..].trim().trim_start_matches(':').split("//").next().unwrap().to_string();
-                let kotlin = format!("({params}){}", descriptor(&ret));
-                let registered = simple(m.sig.to_str().unwrap());
-                if kotlin != registered {
-                    wrong.push(format!("{name}.{method}: Kotlin {kotlin}, registered {registered}"));
-                }
-                let critical = decl.contains("@CriticalNative");
-                if critical && (registered.contains('L') || registered.contains('[')) {
-                    wrong.push(format!("{name}.{method}: @CriticalNative with a reference"));
+                for m in class.methods {
+                    let method = m.name.to_str().unwrap();
+                    let decl = text.lines().find(|l| l.contains(&format!("external fun {method}(")));
+                    let Some(decl) = decl else {
+                        wrong.push(format!("{name}.{method}: not declared"));
+                        continue;
+                    };
+                    let args = &decl[decl.find('(').unwrap() + 1..decl.rfind(')').unwrap()];
+                    let params: String = args.split(',').filter(|a| !a.trim().is_empty()).map(|a| descriptor(a.split_once(':').unwrap().1)).collect();
+                    let ret = decl[decl.rfind(')').unwrap() + 1..].trim().trim_start_matches(':').split("//").next().unwrap().to_string();
+                    let kotlin = format!("({params}){}", descriptor(&ret));
+                    let registered = simple(m.sig.to_str().unwrap());
+                    if kotlin != registered {
+                        wrong.push(format!("{name}.{method}: Kotlin {kotlin}, registered {registered}"));
+                    }
+                    let critical = decl.contains("@CriticalNative");
+                    if critical && (registered.contains('L') || registered.contains('[')) {
+                        wrong.push(format!("{name}.{method}: @CriticalNative with a reference"));
+                    }
                 }
             }
+            assert!(wrong.is_empty(), "{wrong:#?}");
         }
-        assert!(wrong.is_empty(), "{wrong:#?}");
+
+        // A Kotlin `external fun` nothing registers throws when called, on a phone only.
+        {
+            let mut missing = Vec::new();
+            for (path, text) in kotlin() {
+                let package = text.lines().find_map(|l| l.strip_prefix("package ")).unwrap_or_default().replace('.', "/");
+                let mut object = None;
+                for line in text.lines() {
+                    // Natives live in top-level objects, whose class is the object's own name.
+                    if !line.is_empty() && !line.starts_with([' ', '/', '@', '*']) {
+                        object = line.split_whitespace().skip_while(|w| *w != "object").nth(1).map(|n| format!("{package}/{}", n.trim_end_matches('{')));
+                    }
+                    let Some((_, rest)) = line.split_once("external fun ") else { continue };
+                    let method = rest.split_once('(').unwrap().0;
+                    let registered = object.as_deref().is_some_and(|o| CLASSES.iter().any(|c| c.name.to_str() == Ok(o) && c.methods.iter().any(|m| m.name.to_str() == Ok(method))));
+                    if !registered {
+                        missing.push(format!("{}: {method}", path.display()));
+                    }
+                }
+            }
+            assert!(missing.is_empty(), "{missing:#?}");
+        }
     }
 
-    /// A Kotlin `external fun` nothing registers throws when called, on a phone only.
-    #[test]
-    fn every_kotlin_door_is_registered() {
-        let mut missing = Vec::new();
-        for (path, text) in kotlin() {
-            let package = text.lines().find_map(|l| l.strip_prefix("package ")).unwrap_or_default().replace('.', "/");
-            let mut object = None;
-            for line in text.lines() {
-                // Natives live in top-level objects, whose class is the object's own name.
-                if !line.is_empty() && !line.starts_with([' ', '/', '@', '*']) {
-                    object = line.split_whitespace().skip_while(|w| *w != "object").nth(1).map(|n| format!("{package}/{}", n.trim_end_matches('{')));
-                }
-                let Some((_, rest)) = line.split_once("external fun ") else { continue };
-                let method = rest.split_once('(').unwrap().0;
-                let registered = object.as_deref().is_some_and(|o| CLASSES.iter().any(|c| c.name.to_str() == Ok(o) && c.methods.iter().any(|m| m.name.to_str() == Ok(method))));
-                if !registered {
-                    missing.push(format!("{}: {method}", path.display()));
-                }
-            }
-        }
-        assert!(missing.is_empty(), "{missing:#?}");
-    }
 }

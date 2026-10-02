@@ -1698,7 +1698,7 @@ mod tests {
     const JAVA_FIXED: &[(u64, i32, bool, &str)] = include!("../testdata/java_fixed.in");
 
     #[test]
-    fn fixed_matches_java() {
+    fn java_and_time() {
         for &(bits, places, plus, want) in JAVA_FIXED {
             let v = f64::from_bits(bits);
             let got = fixed(v, places);
@@ -1707,10 +1707,15 @@ mod tests {
         }
         assert_eq!((fixed(0.15, 1), fixed(62.5, 0), fixed(-0.04, 1), fixed(9.96, 1)), ("0.2".into(), "63".into(), "-0.0".into(), "10.0".into()));
         assert_eq!((fixed(1e-7, 3), fixed(0.0005, 3), fixed(f64::NAN, 1)), ("0.000".into(), "0.001".into(), "0.0".into()));
+
+        // When uses local time.
+        let offset = nori_library::library::local_offset_s(0) * 1000;
+        assert_eq!(when(-offset), "01-01 00:00");
+        assert_eq!(when(-offset + 86_400_000 * 31 + 3_600_000 * 13 + 60_000 * 7), "02-01 13:07");
     }
 
     #[test]
-    fn rows_ordered_and_pruned() {
+    fn rows_kept() {
         let c = Connection::open_in_memory().unwrap();
         assert!(rows(&c, 0).unwrap().is_empty(), "no table yet");
         add(&c, 1_000, "a").unwrap();
@@ -1720,10 +1725,8 @@ mod tests {
         // A row past KEEP_MS prunes the older ones.
         add(&c, 2_001 + KEEP_MS, "c").unwrap();
         assert_eq!(rows(&c, 0).unwrap(), vec!["c"]);
-    }
 
-    #[test]
-    fn legacy_row_round_trips() {
+        // Legacy row round trips.
         // A row as the former Kotlin recorder wrote it.
         let old = r#"{"s":"off-playing","t0":1700000000000,"ms":600000,"cpu":1200,"wk":3000,"al":2048,"gc":1,"pss":150000,"uah":42000,"pct":1,"gma":152.5,"tmin":301,"tmax":305,"fr":0,"jk":0,"worst":41.5,"cfg":"engine exoplayer, on the CPU"}"#;
         let s = &parsed(vec![old.into(), "not a stretch".into()])[..];
@@ -1741,23 +1744,23 @@ mod tests {
             ..s[0].clone()
         };
         assert_eq!(parsed(vec![serde_json::to_string(&why).unwrap()]), [why]);
+
+        // Break logs keep latest.
+        let c = Connection::open_in_memory().unwrap();
+        for k in 0..BREAK_LOGS as i64 + 2 {
+            keep_break(&c, 1_000 * k, &format!("silent: break {k}"), &format!("10:00:0{k}.000 nori: said {k}\n10:00:0{k}.500 nori: then {k}")).unwrap();
+        }
+        let kept = break_logs(&c).unwrap();
+        assert_eq!(kept.iter().map(|k| k.0).collect::<Vec<_>>(), [4_000, 3_000, 2_000]);
+        let s = break_log_section(&kept);
+        let lines: Vec<&str> = s.lines().collect();
+        assert!(lines[0].starts_with("The app's own lines as an invariant broke, ") && lines[0].ends_with("(2 lines): silent: break 4"), "{}", lines[0]);
+        assert_eq!(lines[1..3], ["10:00:04.000 nori: said 4", "10:00:04.500 nori: then 4"]);
+        assert!(break_log_section(&[]).is_empty());
     }
 
     #[test]
-    fn state_priority() {
-        assert_eq!(perf_state(true, false, true, false, false), "charging");
-        assert_eq!(perf_state(false, false, true, true, true), "off-playing");
-        assert_eq!(perf_state(false, false, false, true, false), "off-paused");
-        assert_eq!(perf_state(false, true, false, true, true), "on-paused");
-        assert_eq!(perf_state(false, true, true, false, true), "on-playing-away");
-        assert_eq!(perf_state(false, true, true, true, true), "on-playing-player");
-        assert_eq!(perf_state(false, true, true, true, false), "on-playing-app");
-        assert_eq!(state_name("on-playing-away"), "Screen on, playing, another app");
-        assert_eq!(state_name("new"), "new", "unknown key shown as is");
-    }
-
-    #[test]
-    fn config_line() {
+    fn line_formats() {
         let p = nori_settings::settings::StoredPrefs {
             eq_enabled: true,
             auto_mix: false,
@@ -1769,60 +1772,8 @@ mod tests {
         };
         assert_eq!(config(None, &p), "engine rust, eq on, automix off, crossfade 6 s, offload on, hi-res off, bit-perfect off");
         assert!(config(Some("other".into()), &p).starts_with("engine other, "));
-    }
 
-    #[test]
-    fn stretch_from_two_readings() {
-        let a = counters(10_000, &[(1, 100), (2, 50), (3, 7)]);
-        let b = counters(610_000, &[(1, 400), (2, 60), (4, 9)]);
-        let drawn = PerfFrames { frames: 120, janky: 3, worst_ns: 41_500_000 };
-        let s = perf_stretch("off-playing".into(), "engine rust".into(), a.clone(), b.clone(), drawn, true, Some(output()), false).unwrap();
-        assert_eq!((s.ms, s.start_wall, s.cpu_ms), (600_000, 11_000, 12_000));
-        assert_eq!(s.wakeups, 310, "threads alive at both ends only");
-        assert_eq!((s.uah, s.pct, s.pss_kb), (Some(60_000), 1, 106_100));
-        // Gauge readings averaged in whole µA, then mA.
-        assert_eq!(s.gauge_ma, Some(((150_010 + 150_610) / 2) as f64 / 1000.0));
-        assert_eq!((s.temp_min, s.temp_max, s.frames, s.janky, s.worst_ms), (300, 310, 120, 3, 41.5));
-        assert_eq!(s.cfg, "engine rust, offload wanted");
-        assert_eq!(s.offloaded_ms, Some(0));
-        assert_eq!((s.rx, s.tx), (Some(60_000_000), Some(600_000)));
-        assert_eq!(s.out, Some(output()));
-        let blink = counters(12_000, &[]);
-        assert_eq!(perf_stretch("x".into(), String::new(), a.clone(), blink.clone(), drawn, false, None, false), None, "too short");
-        assert!(perf_stretch("x".into(), String::new(), a, blink, drawn, false, None, true).is_some(), "live is always shown");
-    }
-
-    #[test]
-    fn busiest_threads() {
-        let mut a = counters(0, &[]);
-        a.threads = vec![thread(1, "main", 500, 1_000), thread(2, "nori-track", 10, 100), thread(3, "Thread-3", 0, 5), thread(9, "gone", 0, 0)];
-        let mut b = counters(60_000, &[]);
-        b.threads = vec![
-            thread(1, "main", 520, 1_060),
-            thread(2, "nori-track", 40, 1_300),
-            thread(3, "binder:1_3", 3, 40),
-            thread(4, "nori-load", 90, 600),
-            thread(5, "idle", 0, 0),
-            thread(6, "a", 1, 1),
-            thread(7, "b", 1, 1),
-            thread(8, "c", 2, 1),
-        ];
-        let s = perf_stretch("off-playing".into(), String::new(), a, b, PerfFrames { frames: 0, janky: 0, worst_ns: 0 }, false, None, false).unwrap();
-        assert_eq!(s.wakeups, 60 + 1_200 + 35);
-        let names: Vec<(&str, i64, i64, bool)> = s.threads.iter().map(|t| (t.name.as_str(), t.wakeups, t.cpu_ms, t.born)).collect();
-        assert_eq!(
-            names,
-            [("nori-track", 1_200, 30, false), ("nori-load", 600, 90, true), ("main", 60, 20, false), ("binder:1_3", 40, 3, true), ("c", 1, 2, true), ("a", 1, 1, true)],
-            "sorted; new and reused-tid threads counted whole; idle threads omitted"
-        );
-        assert_eq!(
-            threads_line(&s).unwrap(),
-            "threads by wakeups: nori-track 20.0/s 30 ms, nori-load 10.0/s 90 ms (new), main 1.0/s 20 ms, binder:1_3 0.7/s 3 ms (new), c 0.0/s 2 ms (new), a 0.0/s 1 ms (new)"
-        );
-    }
-
-    #[test]
-    fn output_line_format() {
+        // Output line format.
         assert_eq!(
             output_line(&output()),
             "output: rust, 44100 Hz stereo 16-bit, buffer 500 ms of 11500 ms asked, mode power saving asked, none given, PCM, to Phone speaker, 3 underruns, playing"
@@ -1852,22 +1803,8 @@ mod tests {
             "{}",
             output_line(&why)
         );
-    }
 
-    #[test]
-    fn totals_by_state_in_page_order() {
-        let mut playing = stretch("off-playing", 3_600_000);
-        playing.uah = Some(40_000);
-        let t = totals(&[stretch("on-paused", 60_000), playing.clone(), stretch("new-state", 5_000), playing, stretch("charging", 90_000)]);
-        let states: Vec<&str> = t.iter().map(|t| t.state.as_str()).collect();
-        assert_eq!(states, ["off-playing", "on-paused", "charging", "new-state"]);
-        assert_eq!(t[0].line(), "2 h 00 min, CPU 1.00 %, 10.0 wakeups/s, 60 KB/min allocated, 4 GCs, PSS 150 MB, 80.0 mAh (40.0 mAh/h)");
-        assert_eq!(t[1].line(), "1 min 00 s, CPU 1.00 %, 10.0 wakeups/s, 60 KB/min allocated, 2 GCs, PSS 150 MB, 3 % (180.00 %/h)");
-        assert_eq!(t[2].line(), "1 min 30 s, CPU 1.00 %, 10.0 wakeups/s, 60 KB/min allocated, 2 GCs, PSS 150 MB", "no battery figures while charging");
-    }
-
-    #[test]
-    fn stretch_line_format() {
+        // Stretch line format.
         let mut s = stretch("on-playing-player", 187_000);
         s.frames = 900;
         s.janky = 12;
@@ -1880,10 +1817,124 @@ mod tests {
         assert!(stretch_line(&s).contains(", 9.4 mAh (180.0 mAh/h)"));
         assert_eq!(duration(42_999), "42 s");
         assert_eq!(duration(3_900_000), "1 h 05 min");
+
+        // Offload tag and legacy cfg.
+        assert_eq!(offload_tag(true, None), "offload wanted");
+        assert_eq!(offload_tag(false, Some("AutoMix is on")), "offload not wanted: AutoMix is on");
+        assert_eq!(offload_tag(true, Some("a crossfade is set")), "offload not wanted: a crossfade is set");
+        assert!(offload_tag(false, None).starts_with("offload not wanted: the output"));
+        assert_eq!(cfg_words("engine rust, eq off, offloaded"), "engine rust, eq off, offload wanted");
+        assert_eq!(cfg_words("engine rust, offload wanted"), "engine rust, offload wanted");
     }
 
     #[test]
-    fn page_frames_and_order() {
+    fn stretches() {
+        let a = counters(10_000, &[(1, 100), (2, 50), (3, 7)]);
+        let b = counters(610_000, &[(1, 400), (2, 60), (4, 9)]);
+        let drawn = PerfFrames { frames: 120, janky: 3, worst_ns: 41_500_000 };
+        let s = perf_stretch("off-playing".into(), "engine rust".into(), a.clone(), b.clone(), drawn, true, Some(output()), false).unwrap();
+        assert_eq!((s.ms, s.start_wall, s.cpu_ms), (600_000, 11_000, 12_000));
+        assert_eq!(s.wakeups, 310, "threads alive at both ends only");
+        assert_eq!((s.uah, s.pct, s.pss_kb), (Some(60_000), 1, 106_100));
+        // Gauge readings averaged in whole µA, then mA.
+        assert_eq!(s.gauge_ma, Some(((150_010 + 150_610) / 2) as f64 / 1000.0));
+        assert_eq!((s.temp_min, s.temp_max, s.frames, s.janky, s.worst_ms), (300, 310, 120, 3, 41.5));
+        assert_eq!(s.cfg, "engine rust, offload wanted");
+        assert_eq!(s.offloaded_ms, Some(0));
+        assert_eq!((s.rx, s.tx), (Some(60_000_000), Some(600_000)));
+        assert_eq!(s.out, Some(output()));
+        let blink = counters(12_000, &[]);
+        assert_eq!(perf_stretch("x".into(), String::new(), a.clone(), blink.clone(), drawn, false, None, false), None, "too short");
+        assert!(perf_stretch("x".into(), String::new(), a, blink, drawn, false, None, true).is_some(), "live is always shown");
+
+        // Stretch keeps end memory.
+        let a = counters(0, &[]);
+        let mut b = counters(60_000, &[]);
+        b.memory = Some(PerfMemory { java_kb: 20 * 1024, native_kb: 80 * 1024, covers: 3, ..Default::default() });
+        let s = perf_stretch("off-playing".into(), "engine rust".into(), a, b, PerfFrames { frames: 0, janky: 0, worst_ns: 0 }, false, None, true).unwrap();
+        assert_eq!(s.mem.as_ref().map(|m| m.native_kb), Some(80 * 1024));
+        let lines: Vec<String> = page(vec![s.clone()], None).stretches[0].detail.lines().map(String::from).collect();
+        assert!(lines.last().unwrap().starts_with("memory: PSS 100 MB = Java 20, native 80,"), "{lines:?}");
+        let back: PerfStretch = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.mem, s.mem);
+
+        // Offloaded stretch reports wake lock and engine wakeups.
+        let mut t = Timeline { requests_at_start: DATA_REQUESTS.load(std::sync::atomic::Ordering::Relaxed), ..Timeline::default() };
+        t.note(at(9, 0, 0), PerfNote::WakeLock { held: true }, None);
+        t.note(at(9, 0, 5), PerfNote::WakeLock { held: false }, None);
+        t.note(at(9, 1, 0), PerfNote::WakeLock { held: true }, None);
+        for _ in 0..3 {
+            count_data_request();
+        }
+        assert_eq!(t.kept(at(9, 0, 0), at(9, 0, 30), false), (5_000, 3), "peek");
+        assert_eq!(t.kept(at(9, 0, 0), at(9, 1, 10), true), (15_000, 3), "still held");
+        assert_eq!(t.kept(at(9, 1, 10), at(9, 1, 20), true), (10_000, 0), "next stretch starts fresh");
+        let mut s = stretch("off-playing", 600_000);
+        s.out = Some(PerfOutput { offloaded: true, ..output() });
+        s.offloaded_ms = Some(600_000);
+        s.wake_lock_ms = Some(12_000);
+        s.engine_wakeups = Some(180);
+        s.data_requests = Some(150);
+        let back: PerfStretch = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
+        let line = stretch_line(&s);
+        assert!(
+            line.contains("offloaded 10 min 00 s of 10 min 00 s (100 %) (wake lock held 12 s of 10 min 00 s (2 %), nori-engine 0.30 wakeups/s, the chip asked for more 0.25 times/s)"),
+            "{line}"
+        );
+        let mut cpu = stretch("off-playing", 300_000);
+        cpu.out = Some(output());
+        cpu.offloaded_ms = Some(0);
+        cpu.wake_lock_ms = Some(300_000);
+        cpu.engine_wakeups = Some(40);
+        cpu.data_requests = Some(0);
+        let by_state = totals(&[s, cpu]);
+        assert_eq!(
+            by_state[0].offloaded().unwrap(),
+            "offloaded 10 min 00 s of 15 min 00 s (67 %); wake lock held 12 s of 10 min 00 s (2 %), nori-engine 0.30 wakeups/s, the chip asked for more 0.25 times/s",
+            "awake figures from offloaded stretches only"
+        );
+    }
+
+    #[test]
+    fn totals_and_order() {
+        let mut playing = stretch("off-playing", 3_600_000);
+        playing.uah = Some(40_000);
+        let t = totals(&[stretch("on-paused", 60_000), playing.clone(), stretch("new-state", 5_000), playing, stretch("charging", 90_000)]);
+        let states: Vec<&str> = t.iter().map(|t| t.state.as_str()).collect();
+        assert_eq!(states, ["off-playing", "on-paused", "charging", "new-state"]);
+        assert_eq!(t[0].line(), "2 h 00 min, CPU 1.00 %, 10.0 wakeups/s, 60 KB/min allocated, 4 GCs, PSS 150 MB, 80.0 mAh (40.0 mAh/h)");
+        assert_eq!(t[1].line(), "1 min 00 s, CPU 1.00 %, 10.0 wakeups/s, 60 KB/min allocated, 2 GCs, PSS 150 MB, 3 % (180.00 %/h)");
+        assert_eq!(t[2].line(), "1 min 30 s, CPU 1.00 %, 10.0 wakeups/s, 60 KB/min allocated, 2 GCs, PSS 150 MB", "no battery figures while charging");
+
+        // Busiest threads.
+        let mut a = counters(0, &[]);
+        a.threads = vec![thread(1, "main", 500, 1_000), thread(2, "nori-track", 10, 100), thread(3, "Thread-3", 0, 5), thread(9, "gone", 0, 0)];
+        let mut b = counters(60_000, &[]);
+        b.threads = vec![
+            thread(1, "main", 520, 1_060),
+            thread(2, "nori-track", 40, 1_300),
+            thread(3, "binder:1_3", 3, 40),
+            thread(4, "nori-load", 90, 600),
+            thread(5, "idle", 0, 0),
+            thread(6, "a", 1, 1),
+            thread(7, "b", 1, 1),
+            thread(8, "c", 2, 1),
+        ];
+        let s = perf_stretch("off-playing".into(), String::new(), a, b, PerfFrames { frames: 0, janky: 0, worst_ns: 0 }, false, None, false).unwrap();
+        assert_eq!(s.wakeups, 60 + 1_200 + 35);
+        let names: Vec<(&str, i64, i64, bool)> = s.threads.iter().map(|t| (t.name.as_str(), t.wakeups, t.cpu_ms, t.born)).collect();
+        assert_eq!(
+            names,
+            [("nori-track", 1_200, 30, false), ("nori-load", 600, 90, true), ("main", 60, 20, false), ("binder:1_3", 40, 3, true), ("c", 1, 2, true), ("a", 1, 1, true)],
+            "sorted; new and reused-tid threads counted whole; idle threads omitted"
+        );
+        assert_eq!(
+            threads_line(&s).unwrap(),
+            "threads by wakeups: nori-track 20.0/s 30 ms, nori-load 10.0/s 90 ms (new), main 1.0/s 20 ms, binder:1_3 0.7/s 3 ms (new), c 0.0/s 2 ms (new), a 0.0/s 1 ms (new)"
+        );
+
+        // Page frames and order.
         let mut a = stretch("on-playing-app", 60_000);
         a.frames = 1_000;
         a.janky = 25;
@@ -1906,74 +1957,129 @@ mod tests {
         assert_eq!(lines.len(), 3, "{lines:?}");
         assert_eq!(lines[1], "threads by wakeups: nori-track 24.0/s 12 ms");
         assert!(lines[2].starts_with("output: rust, 44100 Hz"));
+
+        // State priority.
+        assert_eq!(perf_state(true, false, true, false, false), "charging");
+        assert_eq!(perf_state(false, false, true, true, true), "off-playing");
+        assert_eq!(perf_state(false, false, false, true, false), "off-paused");
+        assert_eq!(perf_state(false, true, false, true, true), "on-paused");
+        assert_eq!(perf_state(false, true, true, false, true), "on-playing-away");
+        assert_eq!(perf_state(false, true, true, true, true), "on-playing-player");
+        assert_eq!(perf_state(false, true, true, true, false), "on-playing-app");
+        assert_eq!(state_name("on-playing-away"), "Screen on, playing, another app");
+        assert_eq!(state_name("new"), "new", "unknown key shown as is");
     }
 
     #[test]
-    fn stretch_keeps_end_memory() {
-        let a = counters(0, &[]);
-        let mut b = counters(60_000, &[]);
-        b.memory = Some(PerfMemory { java_kb: 20 * 1024, native_kb: 80 * 1024, covers: 3, ..Default::default() });
-        let s = perf_stretch("off-playing".into(), "engine rust".into(), a, b, PerfFrames { frames: 0, janky: 0, worst_ns: 0 }, false, None, true).unwrap();
-        assert_eq!(s.mem.as_ref().map(|m| m.native_kb), Some(80 * 1024));
-        let lines: Vec<String> = page(vec![s.clone()], None).stretches[0].detail.lines().map(String::from).collect();
-        assert!(lines.last().unwrap().starts_with("memory: PSS 100 MB = Java 20, native 80,"), "{lines:?}");
-        let back: PerfStretch = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
-        assert_eq!(back.mem, s.mem);
-    }
+    fn report_sections() {
+        {
+            let mut playing = stretch("off-playing", 3_600_000);
+            playing.uah = Some(40_000);
+            let d = device();
+            let mut charging = stretch("charging", 90_000);
+            charging.out = Some(output());
+            charging.rx = Some(3 * 1024 * 1024 + 300 * 1024);
+            charging.tx = Some(20 * 1024);
+            let r = report(vec![playing, charging], &d, "", "12 ns", None);
+            let lines: Vec<&str> = r.lines().collect();
+            assert_eq!(lines[0], "nori perf report");
+            assert_eq!(lines[1], "Device: Google Pixel 8 (shiba), Android 16 (API 36)");
+            assert_eq!(lines[2], "Build: 0.3.4 (abc1234, perf)");
+            assert!(lines[3].starts_with("Recorded: ") && lines[3].ends_with(", 2 stretches"));
+            assert_eq!(lines[4], "Battery counter: yes (mAh)");
+            assert_eq!(lines[6], "Invariant breaks: none recorded");
+            assert_eq!(lines[8], "By state");
+            assert_eq!(lines[9], "state                      time  CPU %  wakeups/s  KB/min  GCs  PSS MB   mAh  mAh/h   %/h  frames  janky %");
+            assert_eq!(lines[10], "Screen off, playing  1 h 00 min   1.00       10.0      60    2     150  40.0   40.0  3.00       -        -");
+            assert_eq!(lines[11], "Charging             1 min 30 s   1.00       10.0      60    2     150     -      -     -       -        -");
+            assert_eq!(lines[13], "Stretches, newest first");
+            assert!(lines[14].starts_with("Charging: ") && lines[14].contains(", network 3.3 MB in, 20 KB out"), "{}", lines[14]);
+            assert!(lines[15].starts_with("    output: rust, "), "{}", lines[15]);
+            assert!(lines[16].starts_with("Screen off, playing: "));
+            assert_eq!(&lines[17..], ["", "Cover benchmark: 12 ns"], "benchmarks not run are omitted");
+        }
 
-    #[test]
-    fn report_layout() {
-        let mut playing = stretch("off-playing", 3_600_000);
-        playing.uah = Some(40_000);
-        let d = device();
-        let mut charging = stretch("charging", 90_000);
-        charging.out = Some(output());
-        charging.rx = Some(3 * 1024 * 1024 + 300 * 1024);
-        charging.tx = Some(20 * 1024);
-        let r = report(vec![playing, charging], &d, "", "12 ns", None);
-        let lines: Vec<&str> = r.lines().collect();
-        assert_eq!(lines[0], "nori perf report");
-        assert_eq!(lines[1], "Device: Google Pixel 8 (shiba), Android 16 (API 36)");
-        assert_eq!(lines[2], "Build: 0.3.4 (abc1234, perf)");
-        assert!(lines[3].starts_with("Recorded: ") && lines[3].ends_with(", 2 stretches"));
-        assert_eq!(lines[4], "Battery counter: yes (mAh)");
-        assert_eq!(lines[6], "Invariant breaks: none recorded");
-        assert_eq!(lines[8], "By state");
-        assert_eq!(lines[9], "state                      time  CPU %  wakeups/s  KB/min  GCs  PSS MB   mAh  mAh/h   %/h  frames  janky %");
-        assert_eq!(lines[10], "Screen off, playing  1 h 00 min   1.00       10.0      60    2     150  40.0   40.0  3.00       -        -");
-        assert_eq!(lines[11], "Charging             1 min 30 s   1.00       10.0      60    2     150     -      -     -       -        -");
-        assert_eq!(lines[13], "Stretches, newest first");
-        assert!(lines[14].starts_with("Charging: ") && lines[14].contains(", network 3.3 MB in, 20 KB out"), "{}", lines[14]);
-        assert!(lines[15].starts_with("    output: rust, "), "{}", lines[15]);
-        assert!(lines[16].starts_with("Screen off, playing: "));
-        assert_eq!(&lines[17..], ["", "Cover benchmark: 12 ns"], "benchmarks not run are omitted");
-    }
+        // Report starts with breaks and self test.
+        {
+            let d = device();
+            let mut older = stretch("off-playing", 600_000);
+            older.ev = vec![PerfEvent { wall_ms: at(21, 0, 0), kind: "invariant".into(), detail: "skip: 3 skip presses moved 4 songs, from queue place 0 to 4".into() }];
+            let mut newer = stretch("on-playing-app", 600_000);
+            newer.ev = vec![
+                PerfEvent { wall_ms: at(22, 0, 0), kind: "song".into(), detail: "a".into() },
+                PerfEvent { wall_ms: at(22, 0, 5), kind: "invariant".into(), detail: "offload-starved: engine: playing, but ...".into() },
+            ];
+            let r = report(vec![older, newer], &d, "", "", Some("Self test: 20 passed, 1 failed\nFAIL  Rust: offload\n"));
+            let lines: Vec<&str> = r.lines().collect();
+            assert_eq!(lines[6], "Invariant breaks: 2 (newest first)");
+            assert!(lines[7].ends_with("22:00:05 offload-starved: engine: playing, but ..."), "{}", lines[7]);
+            assert!(lines[8].ends_with("21:00:00 skip: 3 skip presses moved 4 songs, from queue place 0 to 4"), "{}", lines[8]);
+            assert_eq!(lines[10], "Self test: 20 passed, 1 failed");
+            assert_eq!(lines[11], "FAIL  Rust: offload");
+            assert_eq!(lines[13], "By state");
+        }
 
-    #[test]
-    fn report_starts_with_breaks_and_self_test() {
-        let d = device();
-        let mut older = stretch("off-playing", 600_000);
-        older.ev = vec![PerfEvent { wall_ms: at(21, 0, 0), kind: "invariant".into(), detail: "skip: 3 skip presses moved 4 songs, from queue place 0 to 4".into() }];
-        let mut newer = stretch("on-playing-app", 600_000);
-        newer.ev = vec![
-            PerfEvent { wall_ms: at(22, 0, 0), kind: "song".into(), detail: "a".into() },
-            PerfEvent { wall_ms: at(22, 0, 5), kind: "invariant".into(), detail: "offload-starved: engine: playing, but ...".into() },
-        ];
-        let r = report(vec![older, newer], &d, "", "", Some("Self test: 20 passed, 1 failed\nFAIL  Rust: offload\n"));
-        let lines: Vec<&str> = r.lines().collect();
-        assert_eq!(lines[6], "Invariant breaks: 2 (newest first)");
-        assert!(lines[7].ends_with("22:00:05 offload-starved: engine: playing, but ..."), "{}", lines[7]);
-        assert!(lines[8].ends_with("21:00:00 skip: 3 skip presses moved 4 songs, from queue place 0 to 4"), "{}", lines[8]);
-        assert_eq!(lines[10], "Self test: 20 passed, 1 failed");
-        assert_eq!(lines[11], "FAIL  Rust: offload");
-        assert_eq!(lines[13], "By state");
-    }
+        // Log section crashes then log.
+        {
+            let c = Connection::open_in_memory().unwrap();
+            keep_crash(&c, "exception", 5_000, "java.lang.IllegalStateException: boom\n\tat A.b(A.kt:1)\n").unwrap();
+            keep_crash(&c, "buffer", 1_000, "F DEBUG: signal 11").unwrap();
+            keep_crash(&c, "buffer", 9_000, "F DEBUG: signal 11").unwrap();
+            let kept = crashes(&c).unwrap();
+            assert_eq!(
+                kept.iter().map(|k| (k.kind.as_str(), k.at_ms)).collect::<Vec<_>>(),
+                [("exception", 5_000), ("buffer", 1_000)],
+                "identical crash keeps first-seen time"
+            );
+            let log: String = (0..5_000).map(|i| format!("09-24 21:00:00.000 1 2 I nori: line {i}\n")).collect();
+            let s = log_section(&PerfLogs { app: log, crash: String::new() }, &kept);
+            let lines: Vec<&str> = s.lines().collect();
+            assert!(lines[0].starts_with("Last uncaught exception, "), "{}", lines[0]);
+            assert_eq!(lines[1], "java.lang.IllegalStateException: boom");
+            assert!(lines[4].starts_with("Crash buffer as kept at "), "{}", lines[4]);
+            let head = lines.iter().position(|l| l.starts_with("Log (this process")).unwrap();
+            assert!(s.len() < LOG_CHARS + 1_000);
+            assert!(lines[head + 1].starts_with("09-24 21:00:00.000"), "{}", lines[head + 1]);
+            assert_eq!(*lines.last().unwrap(), "09-24 21:00:00.000 1 2 I nori: line 4999");
+            let now = log_section(&PerfLogs { app: String::new(), crash: "F libc: Fatal signal 6\n".into() }, &kept);
+            assert!(now.starts_with("Crash buffer (this and earlier runs of the app)\nF libc: Fatal signal 6\n"));
+            assert!(!now.contains("as kept at"), "logcat copy preferred");
+            assert!(now.ends_with("Log (this process, the last 0 lines)\n(empty)\n"));
+            assert_eq!(tail("ab\ncd\nef", 4), "ef");
+        }
 
-    #[test]
-    fn when_uses_local_time() {
-        let offset = nori_library::library::local_offset_s(0) * 1000;
-        assert_eq!(when(-offset), "01-01 00:00");
-        assert_eq!(when(-offset + 86_400_000 * 31 + 3_600_000 * 13 + 60_000 * 7), "02-01 13:07");
+        // Timeline bounded and printed.
+        {
+            let mut t = Timeline::default();
+            for i in 0..MOST_EVENTS as i64 + 5 {
+                t.note(at(7, 0, i), PerfNote::Error { message: format!("e{i}") }, None);
+            }
+            let (ev, dropped, _) = t.close(at(7, 0, 0), at(8, 0, 0), true);
+            assert_eq!((ev.len(), dropped, ev[0].detail.as_str()), (MOST_EVENTS, 5, "e5"));
+            let mut s = stretch("off-playing", 3_600_000);
+            s.ev = ev;
+            s.evx = dropped;
+            s.out = Some(PerfOutput { offloaded: true, ..output() });
+            s.offloaded_ms = Some(2_700_000);
+            let back: PerfStretch = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+            assert_eq!(back, s);
+            let printed = event_lines(&s);
+            assert_eq!(printed[0], "(5 earlier events not kept)");
+            assert_eq!(printed[1], "07:00:05 error: e5");
+            assert!(stretch_line(&s).contains(", offloaded 45 min 00 s of 1 h 00 min (75 %) [engine exoplayer, offload not wanted]"), "{}", stretch_line(&s));
+            let p = page(vec![s.clone()], None);
+            assert_eq!(p.stretches[0].events.len(), MOST_EVENTS + 1);
+            assert!(p.totals[0].detail.ends_with(", offloaded 45 min 00 s of 1 h 00 min (75 %)"), "{}", p.totals[0].detail);
+            let d = device();
+            let r = report(vec![s], &d, "", "", None);
+            let lines: Vec<&str> = r.lines().collect();
+            let at = lines.iter().position(|l| *l == "Really offloaded (the output as it was opened, not the settings)").unwrap();
+            assert_eq!(lines[at + 1], "Screen off, playing: offloaded 45 min 00 s of 1 h 00 min (75 %)");
+            let head = lines.iter().position(|l| l.starts_with("Screen off, playing: ") && l.contains(" [")).unwrap();
+            assert!(lines[head + 1].starts_with("    output: "));
+            assert_eq!(lines[head + 2], "      (5 earlier events not kept)");
+            assert_eq!(lines[head + 3], "      07:00:05 error: e5");
+        }
     }
 
     /// Wall ms reading as local `h:m:s` on 1970-01-01.
@@ -2006,7 +2112,7 @@ mod tests {
     }
 
     #[test]
-    fn song_events_describe_file_and_source() {
+    fn events() {
         let mut t = Timeline::default();
         // A format read ahead waits for its song.
         t.note(at(21, 0, 0), PerfNote::Format { id: "b".into(), format: mp3() }, None);
@@ -2030,10 +2136,8 @@ mod tests {
         );
         let flac = PerfFormat { codec: "audio/flac".into(), container: "audio/mp4".into(), bitrate: -1, delay: 0, padding: 0, ..mp3() };
         assert_eq!(format_words(&flac), "audio/flac in audio/mp4, 44100 Hz stereo, encoder delay 0, padding 0");
-    }
 
-    #[test]
-    fn offload_time_from_output_events() {
+        // Offload time from output events.
         let mut t = Timeline::default();
         let offloaded = PerfOutput { offloaded: true, encoding: 9, ..output() };
         t.note(at(10, 0, 0), PerfNote::Engine { engine: Some("exoplayer".into()) }, None);
@@ -2073,10 +2177,8 @@ mod tests {
         t.note(2, PerfNote::Offload { detail: "a ended by the play head".into() }, None);
         let e = t.events.last().unwrap();
         assert_eq!((e.kind.as_str(), e.detail.as_str()), ("offload", "a ended by the play head"));
-    }
 
-    #[test]
-    fn underrun_increases_are_events() {
+        // Underrun increases are events.
         let mut t = Timeline::default();
         t.underruns(at(8, 0, 0), 7, 0);
         t.underruns(at(8, 4, 0), 7, 0);
@@ -2088,10 +2190,8 @@ mod tests {
             lines(&t),
             ["08:07:30 underruns: 3 more, 3 on this output, since 08:04:00", "08:12:00 underruns: 1 more, 1 on this output, since the output opened"]
         );
-    }
 
-    #[test]
-    fn settings_changes_and_drag_merging() {
+        // Settings changes and drag merging.
         use nori_settings::settings::{save, StoredPrefs};
         let mut t = Timeline::default();
         let p = StoredPrefs::default();
@@ -2114,129 +2214,4 @@ mod tests {
         assert_eq!(t.events[2].detail, "paxSenixKey changed", "private value hidden");
     }
 
-    #[test]
-    fn timeline_bounded_and_printed() {
-        let mut t = Timeline::default();
-        for i in 0..MOST_EVENTS as i64 + 5 {
-            t.note(at(7, 0, i), PerfNote::Error { message: format!("e{i}") }, None);
-        }
-        let (ev, dropped, _) = t.close(at(7, 0, 0), at(8, 0, 0), true);
-        assert_eq!((ev.len(), dropped, ev[0].detail.as_str()), (MOST_EVENTS, 5, "e5"));
-        let mut s = stretch("off-playing", 3_600_000);
-        s.ev = ev;
-        s.evx = dropped;
-        s.out = Some(PerfOutput { offloaded: true, ..output() });
-        s.offloaded_ms = Some(2_700_000);
-        let back: PerfStretch = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
-        assert_eq!(back, s);
-        let printed = event_lines(&s);
-        assert_eq!(printed[0], "(5 earlier events not kept)");
-        assert_eq!(printed[1], "07:00:05 error: e5");
-        assert!(stretch_line(&s).contains(", offloaded 45 min 00 s of 1 h 00 min (75 %) [engine exoplayer, offload not wanted]"), "{}", stretch_line(&s));
-        let p = page(vec![s.clone()], None);
-        assert_eq!(p.stretches[0].events.len(), MOST_EVENTS + 1);
-        assert!(p.totals[0].detail.ends_with(", offloaded 45 min 00 s of 1 h 00 min (75 %)"), "{}", p.totals[0].detail);
-        let d = device();
-        let r = report(vec![s], &d, "", "", None);
-        let lines: Vec<&str> = r.lines().collect();
-        let at = lines.iter().position(|l| *l == "Really offloaded (the output as it was opened, not the settings)").unwrap();
-        assert_eq!(lines[at + 1], "Screen off, playing: offloaded 45 min 00 s of 1 h 00 min (75 %)");
-        let head = lines.iter().position(|l| l.starts_with("Screen off, playing: ") && l.contains(" [")).unwrap();
-        assert!(lines[head + 1].starts_with("    output: "));
-        assert_eq!(lines[head + 2], "      (5 earlier events not kept)");
-        assert_eq!(lines[head + 3], "      07:00:05 error: e5");
-    }
-
-    #[test]
-    fn offloaded_stretch_reports_wake_lock_and_engine_wakeups() {
-        let mut t = Timeline { requests_at_start: DATA_REQUESTS.load(std::sync::atomic::Ordering::Relaxed), ..Timeline::default() };
-        t.note(at(9, 0, 0), PerfNote::WakeLock { held: true }, None);
-        t.note(at(9, 0, 5), PerfNote::WakeLock { held: false }, None);
-        t.note(at(9, 1, 0), PerfNote::WakeLock { held: true }, None);
-        for _ in 0..3 {
-            count_data_request();
-        }
-        assert_eq!(t.kept(at(9, 0, 0), at(9, 0, 30), false), (5_000, 3), "peek");
-        assert_eq!(t.kept(at(9, 0, 0), at(9, 1, 10), true), (15_000, 3), "still held");
-        assert_eq!(t.kept(at(9, 1, 10), at(9, 1, 20), true), (10_000, 0), "next stretch starts fresh");
-        let mut s = stretch("off-playing", 600_000);
-        s.out = Some(PerfOutput { offloaded: true, ..output() });
-        s.offloaded_ms = Some(600_000);
-        s.wake_lock_ms = Some(12_000);
-        s.engine_wakeups = Some(180);
-        s.data_requests = Some(150);
-        let back: PerfStretch = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
-        assert_eq!(back, s);
-        let line = stretch_line(&s);
-        assert!(
-            line.contains("offloaded 10 min 00 s of 10 min 00 s (100 %) (wake lock held 12 s of 10 min 00 s (2 %), nori-engine 0.30 wakeups/s, the chip asked for more 0.25 times/s)"),
-            "{line}"
-        );
-        let mut cpu = stretch("off-playing", 300_000);
-        cpu.out = Some(output());
-        cpu.offloaded_ms = Some(0);
-        cpu.wake_lock_ms = Some(300_000);
-        cpu.engine_wakeups = Some(40);
-        cpu.data_requests = Some(0);
-        let by_state = totals(&[s, cpu]);
-        assert_eq!(
-            by_state[0].offloaded().unwrap(),
-            "offloaded 10 min 00 s of 15 min 00 s (67 %); wake lock held 12 s of 10 min 00 s (2 %), nori-engine 0.30 wakeups/s, the chip asked for more 0.25 times/s",
-            "awake figures from offloaded stretches only"
-        );
-    }
-
-    #[test]
-    fn offload_tag_and_legacy_cfg() {
-        assert_eq!(offload_tag(true, None), "offload wanted");
-        assert_eq!(offload_tag(false, Some("AutoMix is on")), "offload not wanted: AutoMix is on");
-        assert_eq!(offload_tag(true, Some("a crossfade is set")), "offload not wanted: a crossfade is set");
-        assert!(offload_tag(false, None).starts_with("offload not wanted: the output"));
-        assert_eq!(cfg_words("engine rust, eq off, offloaded"), "engine rust, eq off, offload wanted");
-        assert_eq!(cfg_words("engine rust, offload wanted"), "engine rust, offload wanted");
-    }
-
-    #[test]
-    fn break_logs_keep_latest() {
-        let c = Connection::open_in_memory().unwrap();
-        for k in 0..BREAK_LOGS as i64 + 2 {
-            keep_break(&c, 1_000 * k, &format!("silent: break {k}"), &format!("10:00:0{k}.000 nori: said {k}\n10:00:0{k}.500 nori: then {k}")).unwrap();
-        }
-        let kept = break_logs(&c).unwrap();
-        assert_eq!(kept.iter().map(|k| k.0).collect::<Vec<_>>(), [4_000, 3_000, 2_000]);
-        let s = break_log_section(&kept);
-        let lines: Vec<&str> = s.lines().collect();
-        assert!(lines[0].starts_with("The app's own lines as an invariant broke, ") && lines[0].ends_with("(2 lines): silent: break 4"), "{}", lines[0]);
-        assert_eq!(lines[1..3], ["10:00:04.000 nori: said 4", "10:00:04.500 nori: then 4"]);
-        assert!(break_log_section(&[]).is_empty());
-    }
-
-    #[test]
-    fn log_section_crashes_then_log() {
-        let c = Connection::open_in_memory().unwrap();
-        keep_crash(&c, "exception", 5_000, "java.lang.IllegalStateException: boom\n\tat A.b(A.kt:1)\n").unwrap();
-        keep_crash(&c, "buffer", 1_000, "F DEBUG: signal 11").unwrap();
-        keep_crash(&c, "buffer", 9_000, "F DEBUG: signal 11").unwrap();
-        let kept = crashes(&c).unwrap();
-        assert_eq!(
-            kept.iter().map(|k| (k.kind.as_str(), k.at_ms)).collect::<Vec<_>>(),
-            [("exception", 5_000), ("buffer", 1_000)],
-            "identical crash keeps first-seen time"
-        );
-        let log: String = (0..5_000).map(|i| format!("09-24 21:00:00.000 1 2 I nori: line {i}\n")).collect();
-        let s = log_section(&PerfLogs { app: log, crash: String::new() }, &kept);
-        let lines: Vec<&str> = s.lines().collect();
-        assert!(lines[0].starts_with("Last uncaught exception, "), "{}", lines[0]);
-        assert_eq!(lines[1], "java.lang.IllegalStateException: boom");
-        assert!(lines[4].starts_with("Crash buffer as kept at "), "{}", lines[4]);
-        let head = lines.iter().position(|l| l.starts_with("Log (this process")).unwrap();
-        assert!(s.len() < LOG_CHARS + 1_000);
-        assert!(lines[head + 1].starts_with("09-24 21:00:00.000"), "{}", lines[head + 1]);
-        assert_eq!(*lines.last().unwrap(), "09-24 21:00:00.000 1 2 I nori: line 4999");
-        let now = log_section(&PerfLogs { app: String::new(), crash: "F libc: Fatal signal 6\n".into() }, &kept);
-        assert!(now.starts_with("Crash buffer (this and earlier runs of the app)\nF libc: Fatal signal 6\n"));
-        assert!(!now.contains("as kept at"), "logcat copy preferred");
-        assert!(now.ends_with("Log (this process, the last 0 lines)\n(empty)\n"));
-        assert_eq!(tail("ab\ncd\nef", 4), "ef");
-    }
 }
