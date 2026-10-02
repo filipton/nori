@@ -231,10 +231,12 @@ The shallow buffer's switches on the Rust engine are now in place, both ways: th
 deep once, in power saving mode, and the equalizer screen only moves the part of it that may be filled
 (`AudioTrack.setBufferSizeInFrames`, crates/android track.rs `Writer::resize`); the engine's ring stays deep
 (a band moved replaces the ring's music ahead of the track, `nori_player::sink`). The trade-off:
-- **Made shallow**, the track still holds the seconds taken before (up to the 11.5 s buffer). A band moved
-  before they have played has the track drop them and play on from where it was, in the new sound (a track
-  restart's gap); after that every band moved is heard ahead of the track's fraction of a second, with no
-  gap. Opening the screen and closing it without moving anything is silent.
+- **Made shallow** as a sound screen opens, the track still holds the seconds taken before (up to the
+  11.5 s buffer): the engine makes the music again from the ear at once, and a second track carries it
+  while the deep one drops them, lined up by both play heads and timestamps (where they don't line up, the
+  track is emptied instead: a gap, never a jump). After that every band moved is heard ahead of the
+  track's fraction of a second, in place. Outside the sound screens a change waits for what the deep track
+  holds to play.
 - **Made deep**, the track is filled up from the engine's next burst: the same buffer, mode and ten-second
   wakes as before the screen opened, so the battery is what it was.
 - **Latency while tuned**: the track stays on the output power saving chose when it was built (the deep
