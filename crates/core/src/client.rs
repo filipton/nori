@@ -27,8 +27,9 @@ pub struct Client {
     pub(crate) lyrics: nori_lyrics::services::LyricsMemory,
     /// Motion cover token and cached videos (motion.rs).
     pub(crate) motion: parking_lot::Mutex<crate::motion::Motion>,
-    /// A replay of the queued writes is running; a second one would send them twice.
-    replaying: AtomicBool,
+    /// A replay of the queued writes is running; a second one would send them twice. Queuing a write and
+    /// a replay finding nothing left happen under it, so a write queued as a replay ends is never left.
+    replaying: parking_lot::Mutex<bool>,
     /// The car's folders last listed, for their later pages and the list a picked row plays (car.rs).
     pub(crate) car: parking_lot::Mutex<crate::car::Shown>,
     /// What the last autofill fetch picked, recorded once its songs are appended (autofill.rs).
@@ -128,7 +129,7 @@ impl Client {
 impl Client {
     #[cfg_attr(feature = "ffi", uniffi::constructor)]
     pub fn new(core: Arc<Core>, transport: Arc<dyn Transport>) -> Arc<Self> {
-        let client = Arc::new(Client { core, transport, profile: RwLock::new(NetProfile::default()), second: AtomicBool::new(false), lyrics: Default::default(), motion: Default::default(), replaying: AtomicBool::new(false), car: Default::default(), autofill_picks: Default::default() });
+        let client = Arc::new(Client { core, transport, profile: RwLock::new(NetProfile::default()), second: AtomicBool::new(false), lyrics: Default::default(), motion: Default::default(), replaying: Default::default(), car: Default::default(), autofill_picks: Default::default() });
         *ACTIVE_CLIENT.lock() = Arc::downgrade(&client);
         client
     }
@@ -170,21 +171,29 @@ impl Client {
     /// answer that is not the server's (a captive portal's page); writes the server rejects are dropped. While one replay runs, another returns at once: the running one sends what was
     /// queued meanwhile too.
     pub async fn flush_pending(&self) -> NetResult<()> {
-        if self.replaying.swap(true, Ordering::Acquire) {
+        if std::mem::replace(&mut *self.replaying.lock(), true) {
             return Ok(());
         }
-        struct Done<'a>(&'a AtomicBool);
+        /// Ends the replay however it stops, unless it found nothing left (ended then, under the lock).
+        struct Done<'a>(&'a parking_lot::Mutex<bool>, bool);
         impl Drop for Done<'_> {
             fn drop(&mut self) {
-                self.0.store(false, Ordering::Release);
+                if self.1 {
+                    *self.0.lock() = false;
+                }
             }
         }
-        let _done = Done(&self.replaying);
+        let mut done = Done(&self.replaying, true);
         loop {
-            let queued = self.core.pending_list()?;
-            if queued.is_empty() {
-                return Ok(());
-            }
+            let queued = {
+                let mut replaying = self.replaying.lock();
+                let queued = self.core.pending_list()?;
+                if queued.is_empty() {
+                    (*replaying, done.1) = (false, false);
+                    return Ok(());
+                }
+                queued
+            };
             for p in queued {
                 match self.get(&p.endpoint, &p.params).await.map(|body| self.core.parse_status(body)) {
                     Err(e) if e.is_io() => return Ok(()),
@@ -237,7 +246,10 @@ impl Client {
         let repeatable = w.repeatable();
         let (endpoint, params, stale) = request(w);
         if self.core.pending_any()? {
-            self.core.pending_add(endpoint, &params)?;
+            {
+                let _replaying = self.replaying.lock();
+                self.core.pending_add(endpoint, &params)?;
+            }
             self.flush_pending().await?;
         } else {
             match self.send(endpoint, params.clone(), repeatable).await {
