@@ -432,12 +432,6 @@ impl Session {
 
 // ---- the platform's entry points, over the shared session ----
 
-/// [`Session::origin`].
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn playlist_origin() -> Option<PageOrigin> {
-    shared().origin()
-}
-
 /// [`Session::from_page`].
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn playlist_from(page: std::sync::Arc<nori_library::pages::PageQueue>) -> bool {

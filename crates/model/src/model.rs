@@ -380,13 +380,6 @@ pub enum DownloadPhase {
     DetectingBeats,
 }
 
-impl DownloadPhase {
-    /// Downloaded but still being processed.
-    pub fn processing(self) -> bool {
-        matches!(self, DownloadPhase::FindingLyrics | DownloadPhase::Analysing | DownloadPhase::DetectingBeats)
-    }
-}
-
 /// The kind of page a queue was started from. Saved by name: only add variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]

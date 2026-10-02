@@ -175,13 +175,6 @@ pub fn beats_offer(model_on: bool, choice: nori_settings::settings::DownloadBeat
     }
 }
 
-impl BeatsOffer {
-    /// Whether the downloads get the model, given the user's `answer` when asked.
-    pub fn wants(self, answer: bool) -> bool {
-        self == BeatsOffer::Yes || self == BeatsOffer::Ask && answer
-    }
-}
-
 /// The setting a remembered answer sets.
 pub fn beats_remembered(yes: bool) -> nori_settings::settings::DownloadBeats {
     use nori_settings::settings::DownloadBeats;
@@ -1716,12 +1709,6 @@ mod tests {
         t.test_clock = Some(160_000 + Work::Analysis.limit_ms());
         assert_eq!(t.expire(), -1, "given up at its time: nothing is left processing");
         assert_eq!(t.marks["ex-b"].0, Phase::Done);
-
-        // Beats offer answers.
-        use BeatsOffer::*;
-        for (offer, asked, wants) in [(Off, true, false), (No, true, false), (Yes, false, true), (Ask, true, true), (Ask, false, false)] {
-            assert_eq!(offer.wants(asked), wants, "{offer:?} {asked}");
-        }
     }
 
     #[test]

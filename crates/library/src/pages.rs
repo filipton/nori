@@ -287,7 +287,6 @@ pub struct HeroButtons {
 
 /// The big buttons for the page's own queue (`here`): Play toggles it, Shuffle lights while it shuffles
 /// and turns shuffle off. Away from it, both start the page's songs when `can_play` / `can_shuffle`.
-#[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn hero_buttons(here: bool, shuffle: bool, playing: bool, buffering: bool, can_play: bool, can_shuffle: bool) -> HeroButtons {
     let lit = shuffle && here;
     let pausing = here && (playing || buffering);

@@ -239,11 +239,6 @@ pub fn playback_timings() -> PlaybackTimings {
     }
 }
 
-/// Player buffering: [min buffer ms, max ms, to start ms, to resume ms, target bytes].
-pub fn load_control(memory_class_mb: u32) -> Vec<i64> {
-    t::load_control(memory_class_mb).to_vec()
-}
-
 /// A moment at which the queue is saved or pushed to the server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]

@@ -397,7 +397,7 @@ fn metered_and_ahead(client: &Arc<Client>, network: &NoApi, store: &Arc<Store>, 
 
     let net = Arc::new(Plain::default());
     let library = CoreLibrary { client: client.clone(), bytes: net.clone(), store: Some(store.clone()), analyses: analyses.clone() };
-    let load: [i64; 5] = nori_core::rules::load_control(256).try_into().unwrap();
+    let load = nori_player::transport::load_control(256);
     let mut sources = nori_engine::Sources::new(library, load, Default::default(), std::thread::current(), Default::default());
     let q = client.streaming_quality(client.metered());
     assert_eq!((q.bit_rate, q.format.as_str()), (0, ""), "the original file on Wi-Fi");

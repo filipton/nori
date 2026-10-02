@@ -454,14 +454,6 @@ impl Core {
         self.server.read().url("stream", &p)
     }
 
-    pub fn cover_url(&self, id: String, size: u32) -> String {
-        let mut p = vec![("id".to_string(), id)];
-        if size > 0 {
-            p.push(("size".into(), size.to_string()));
-        }
-        self.server.read().url("getCoverArt", &p)
-    }
-
     pub fn local_search(&self, query: String, limit: u32) -> Result<SearchResult> {
         Ok(db::search(&self.db.lock(), &query, limit)?)
     }

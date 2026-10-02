@@ -278,10 +278,9 @@ pub fn net_policy() -> NetPolicy {
 
 /// A URL's host (lower case) and port (the scheme's default when absent).
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
-pub struct HostPort {
-    pub host: String,
-    pub port: u16,
+struct HostPort {
+    host: String,
+    port: u16,
 }
 
 /// The host and port of a server address as typed (scheme optional, https by default). None when blank

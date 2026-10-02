@@ -16,7 +16,6 @@ use nori_player::pipeline::{App, Queue, Sound};
 use nori_player::playlist::Playlist;
 use nori_player::queue::{OnError, PlaybackError};
 use nori_player::transitions::WindowSong;
-use nori_core::automix::host::CoreHost;
 use nori_core::client::Client;
 use nori_core::queue::Session;
 use nori_core::settings::StoredPrefs;
@@ -58,7 +57,8 @@ impl Queue for CoreQueue {
 /// The core's planner, analysis store and log, and a session's queue rules, as the engine's [`App`].
 pub struct CoreApp {
     session: Arc<Session>,
-    host: CoreHost<fn()>,
+    /// The clock the engine's last call was made at.
+    now_ms: i64,
     measurer: Option<Arc<Measurer>>,
     /// Per-device sound: the core holding the profiles, the outputs seen, and the current one.
     devices: Option<Arc<Core>>,
@@ -74,10 +74,9 @@ pub struct CoreApp {
 
 impl CoreApp {
     pub fn new(session: Arc<Session>) -> CoreApp {
-        fn nothing() {}
         CoreApp {
-            host: CoreHost { planner: session.planner.clone(), now_ms: 0, heard_changed: nothing },
             session,
+            now_ms: 0,
             measurer: None,
             devices: None,
             known: Vec::new(),
@@ -117,29 +116,29 @@ impl CoreApp {
 
 impl Host for CoreApp {
     fn plan_for(&mut self, outgoing_id: &str) -> Option<Plan> {
-        self.host.plan_for(outgoing_id)
+        self.session.planner.plan_for(outgoing_id)
     }
 
     fn wants_analysis(&mut self, song_id: &str) -> Option<u64> {
-        self.host.wants_analysis(song_id)
+        self.session.planner.wants_analysis(song_id)
     }
 
-    fn analysed(&mut self, song_id: &str, analyzer: Analyzer, channels: usize, frames: u64, rate: u32) {
-        self.host.analysed(song_id, analyzer, channels, frames, rate);
+    fn analysed(&mut self, song_id: &str, analyzer: Analyzer, _channels: usize, frames: u64, rate: u32) {
+        self.session.planner.analysed(song_id, analyzer, frames, rate);
     }
 
     fn log(&mut self, message: &str) {
-        self.host.log(message);
+        nori_core::alog::info(message);
     }
 
     fn now_ms(&self) -> i64 {
-        self.host.now_ms()
+        self.now_ms
     }
 }
 
 impl App for CoreApp {
     fn clock(&mut self, now_ms: i64) {
-        self.host.now_ms = now_ms;
+        self.now_ms = now_ms;
     }
 
     /// With a measurer, upcoming songs are measured too when AutoMix is on.
@@ -214,7 +213,7 @@ impl App for CoreApp {
                 self.gains_said.remove(0);
             }
             self.gains_said.push((id.to_string(), g));
-            self.host.log(&format!("ReplayGain: {id} at {:+.2} dB", 20.0 * g.max(1e-6).log10()));
+            nori_core::alog::info(&format!("ReplayGain: {id} at {:+.2} dB", 20.0 * g.max(1e-6).log10()));
         }
         g
     }
