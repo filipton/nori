@@ -1005,13 +1005,49 @@ pub fn totals(scores: &[SongScore]) -> Totals {
     tot
 }
 
-/// Renders, analyses and scores `songs`.
+/// `f` over `items` on a few threads, in order.
+fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(6));
+    let mut done: Vec<(usize, R)> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut mine = Vec::new();
+                    loop {
+                        let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(item) = items.get(k) else { return mine };
+                        mine.push((k, f(item)));
+                    }
+                })
+            })
+            .collect();
+        workers.into_iter().flat_map(|w| w.join().unwrap()).collect()
+    });
+    done.sort_by_key(|d| d.0);
+    done.into_iter().map(|d| d.1).collect()
+}
+
+/// Every harness song (the corpus and [`mix_songs`]) rendered and analysed, once per process.
+pub fn analysed(name: &str) -> &'static (Analysis, Truth) {
+    static ALL: std::sync::OnceLock<Vec<(&'static str, (Analysis, Truth))>> = std::sync::OnceLock::new();
+    let all = ALL.get_or_init(|| {
+        let songs: Vec<Song> = mix_songs().into_iter().chain(corpus_all()).collect();
+        par_map(&songs, |song| {
+            let (x, truth) = song.render();
+            (song.name, (analyse(song.name, &x, song.rate), truth))
+        })
+    });
+    &all.iter().find(|(n, _)| *n == name).unwrap_or_else(|| panic!("no song {name}")).1
+}
+
+/// Scores `songs`.
 pub fn run_corpus(songs: &[Song]) -> Vec<SongScore> {
     songs
         .iter()
         .map(|song| {
-            let (x, truth) = song.render();
-            score(&analyse(song.name, &x, song.rate), &truth, true)
+            let (a, truth) = analysed(song.name);
+            score(a, truth, true)
         })
         .collect()
 }
@@ -1361,53 +1397,16 @@ pub fn mix_totals(scores: &[MixScore]) -> MixTotals {
     t
 }
 
-/// The analysis with its voice shares taken from the truth (0.7 where sung over 30 % of the window, else 0.1), to
-/// score the planner and mixer with a perfect vocal detector.
-pub fn oracle_vocals(t: &TrackAnalysis, truth: &Truth) -> TrackAnalysis {
-    let s = |a: f64, b: f64| if truth.voice_share(a, b) >= 0.3 { 0.7 } else { 0.1 };
-    let ms = |v: i64| v as f64 / 1000.0;
-    let (m0, m1) = (ms(t.silence_start_ms), ms(t.silence_end_ms));
-    let whole = |a: f64, b: f64| if b - a < 1.0 { (m0, m1) } else { (a, b) };
-    let bar = if t.bpm > 0.0 { 60.0 / t.bpm * bar_beats(t) as f64 } else { 2.0 };
-    let last = if t.exit_ms > 0 { ms(t.exit_ms) } else { m1 };
-    let drop = ms(t.drop_ms);
-    let (i0, i1) = whole(m0, ms(t.intro_end_ms));
-    let (o0, o1) = whole(ms(t.outro_start_ms), m1);
-    TrackAnalysis {
-        intro_vocal: s(i0, i1),
-        outro_vocal: s(o0, o1),
-        exit_vocal: s(last - 8.0 * bar, last),
-        drop_runup_vocal: if t.drop_ms > 0 { s((drop - 8.0 * bar).max(m0), drop) } else { 0.0 },
-        drop_vocal: if t.drop_ms > 0 { s(drop, drop + 8.0 * bar) } else { 0.0 },
-        ..t.clone()
-    }
-}
-
-/// Renders and analyses the songs the pairs use, plans every pair with `settings`, and scores the plans. With
-/// `oracle`, the voice-band shares come from the truth (`oracle_vocals`).
-pub fn run_mixes(settings: &crate::types::AutoMixSettings, oracle: bool) -> Vec<MixScore> {
-    let pairs = mix_pairs();
+/// Plans every pair with the default settings and scores the plans.
+pub fn run_mixes() -> Vec<MixScore> {
     let songs: Vec<Song> = mix_songs().into_iter().chain(corpus_all()).collect();
-    let mut done: Vec<(&str, TrackAnalysis, Truth, Vec<f32>, f64)> = Vec::new();
-    for name in pairs.iter().flat_map(|(a, b)| [*a, *b]) {
-        if done.iter().any(|(n, ..)| *n == name) {
-            continue;
-        }
-        let song = songs.iter().find(|s| s.name == name).unwrap_or_else(|| panic!("no song {name}"));
-        let (x, truth) = song.render();
-        let a = analyse(song.name, &x, song.rate).track;
-        let a = if oracle { oracle_vocals(&a, &truth) } else { a };
-        done.push((song.name, a, truth, x, song.rate as f64));
-    }
-    let get = |n: &str| done.iter().find(|(m, ..)| *m == n).unwrap();
-    pairs
-        .iter()
-        .map(|(a, b)| {
-            let ((_, ta, xa, wa, rate), (_, tb, xb, wb, _)) = (get(a), get(b));
-            let p = plan::plan(Some(ta), Some(tb), ta.duration_ms, tb.duration_ms, settings);
-            score_mix(&p, xa, xb, (wa, wb, *rate))
-        })
-        .collect()
+    let audio = |name: &str| songs.iter().find(|s| s.name == name).expect("a harness song").render().0;
+    let settings = crate::types::AutoMixSettings::default();
+    par_map(&mix_pairs(), |(a, b)| {
+        let ((ta, wa), (tb, wb)) = (analysed(a), analysed(b));
+        let p = plan::plan(Some(&ta.track), Some(&tb.track), ta.track.duration_ms, tb.track.duration_ms, &settings);
+        score_mix(&p, wa, wb, (&audio(a), &audio(b), 44_100.0))
+    })
 }
 
 #[test]
@@ -1423,7 +1422,7 @@ fn analysis_holds_its_scores() {
 
 #[test]
 fn transitions_hold_their_scores() {
-    let t = mix_totals(&run_mixes(&crate::types::AutoMixSettings::default(), false));
+    let t = mix_totals(&run_mixes());
     assert!(t.drop_hit >= 8 && t.drop_skipped == 0, "{t:?}");
     assert!(t.swap_on_bar == t.swaps && t.swap_on_phrase == t.swaps && t.start_on_phrase >= 10, "swaps and starts on the bar and phrase: {t:?}");
     assert!(t.cap_broken == 0 && t.coda_s == 0.0 && t.dead_runup_s == 0.0, "{t:?}");
@@ -1436,8 +1435,8 @@ fn landmarks_are_found() {
     // (found, truths, false alarms) for the drop and the exit.
     let mut tally = [(0, 0, 0); 2];
     for song in mix_songs().into_iter().chain(corpus()) {
-        let (x, truth) = song.render();
-        let t = analyse(song.name, &x, song.rate).track;
+        let (a, truth) = analysed(song.name);
+        let t = &a.track;
         let beat = 60.0 / truth.bpm.max(1.0);
         let at = |ms: i64| (ms > 0).then(|| ms as f64 / 1000.0);
         for (k, (want, got)) in [(truth.drop, at(t.drop_ms)), (truth.exit, at(t.exit_ms))].into_iter().enumerate() {
