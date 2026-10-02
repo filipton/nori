@@ -1622,31 +1622,27 @@ mod tests {
         assert_ne!(a, b);
     }
 
-    #[test]
-    fn passes_through_without_plan() {
-        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
-        e.configure(&mut d, &mut h, stream("a", FMT));
-        let a = tone(1000, 1.0);
-        feed(&mut e, &mut d, &mut h, &a, 0);
-        assert_eq!(d.configured.len(), 1, "the first PCM stream pins the output");
-        assert_eq!(d.taken.iter().map(|(b, _)| b.len()).sum::<usize>(), a.len());
-        assert!(d.samples().iter().all(|&v| v == 1000));
-        assert_eq!(d.taken[1].1, FMT.us(4096), "timestamps are the decoder's");
-    }
-
+    /// Announced before the boundary (this pipeline's order) or after it (media3's).
     #[test]
     fn other_rate_is_converted() {
-        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
-        e.configure(&mut d, &mut h, stream("a", FMT));
-        feed(&mut e, &mut d, &mut h, &tone(1000, 0.5), 0);
-        // Our pipeline's order: announce, then the boundary.
-        e.configure(&mut d, &mut h, stream("b", F48));
-        e.handle_discontinuity(&mut d, &mut h);
-        let before = taken(&d);
-        feed_in(&mut e, &mut d, &mut h, &tone_at(500, 48_000, 1.0), F48, 1_000_000);
-        assert_eq!(d.configured.len(), 1, "the output stays as it was opened");
-        let secs = secs_after(&d, before, FMT);
-        assert!((secs - 1.0).abs() < 0.01, "one second of 48 kHz comes out as one second at 44.1: {secs}");
+        for announced_first in [true, false] {
+            let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
+            e.configure(&mut d, &mut h, stream("a", FMT));
+            feed(&mut e, &mut d, &mut h, &tone(1000, 0.5), 0);
+            if announced_first {
+                e.configure(&mut d, &mut h, stream("b", F48));
+                e.handle_discontinuity(&mut d, &mut h);
+            } else {
+                e.handle_discontinuity(&mut d, &mut h);
+                e.configure(&mut d, &mut h, stream("b", F48));
+            }
+            let before = taken(&d);
+            feed_in(&mut e, &mut d, &mut h, &tone_at(500, 48_000, 1.0), F48, 1_000_000);
+            assert_eq!(d.configured.len(), 1, "the output stays as it was opened");
+            let secs = secs_after(&d, before, FMT);
+            assert!((secs - 1.0).abs() < 0.01, "one second of 48 kHz comes out as one second at 44.1: {secs}");
+            assert!(h.log.iter().any(|l| l.starts_with("converting 48000 Hz")), "{:?}", h.log);
+        }
     }
 
     #[test]
@@ -1761,17 +1757,20 @@ mod tests {
     }
 
     #[test]
-    fn no_plan_is_gapless() {
+    fn no_plan_plays_gapless() {
         let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         e.configure(&mut d, &mut h, stream("a", FMT));
         feed(&mut e, &mut d, &mut h, &tone(100, 1.0), 0);
+        assert_eq!(d.taken[1].1, FMT.us(4096), "timestamps are the decoder's");
         e.configure(&mut d, &mut h, stream("b", FMT));
+        assert_eq!(h.analysed, vec!["a".to_string()], "a's analysis handed over on the next stream");
         e.handle_discontinuity(&mut d, &mut h);
         feed(&mut e, &mut d, &mut h, &tone(200, 1.0), 1_000_000);
         let s = d.samples();
-        assert_eq!(s.len(), (RATE as usize * 2) * 2);
+        let half = RATE as usize * 2;
+        assert!(s.len() == 2 * half && s[..half].iter().all(|&v| v == 100) && s[half..].iter().all(|&v| v == 200), "a then b, whole");
         assert_eq!(d.discontinuities, 1);
-        assert_eq!(d.configured.len(), 1, "same format: the output stays open");
+        assert_eq!(d.configured.len(), 1, "the first stream pins the output; the same format keeps it open");
     }
 
     #[test]
@@ -1786,17 +1785,6 @@ mod tests {
         e.position_us(&mut d, &mut h, false);
         assert!(h.log.iter().any(|l| l.contains("letting the ending play")), "{:?}", h.log);
         assert_eq!(d.samples().len() - before, FMT.bytes(2_000_000) / 2, "the held ending went out unmixed");
-    }
-
-    #[test]
-    fn no_runway_means_no_hold() {
-        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
-        h.plans.insert("a".into(), fade("b", 1_000_000));
-        d.position = Some(999_000);
-        e.configure(&mut d, &mut h, stream("a", FMT));
-        feed(&mut e, &mut d, &mut h, &tone(1000, 3.0), 0);
-        assert!(h.log.iter().any(|l| l.contains("no runway")), "{:?}", h.log);
-        assert_eq!(d.samples().len(), (RATE as usize * 3) * 2, "everything played straight through");
     }
 
     /// An ending let play for want of runway stays let go: the next buffers of the song do not ask
@@ -1878,15 +1866,6 @@ mod tests {
         assert!(from_mix.windows(2).all(|w| w[1] >= w[0]), "{from_mix:?}");
     }
 
-    #[test]
-    fn analysis_handed_over_on_next_stream() {
-        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
-        e.configure(&mut d, &mut h, stream("a", FMT));
-        feed(&mut e, &mut d, &mut h, &tone(1000, 1.0), 0);
-        e.configure(&mut d, &mut h, stream("b", FMT));
-        assert_eq!(h.analysed, vec!["a".to_string()]);
-    }
-
     /// Seconds of output at `f` taken after the first `from` bytes.
     fn secs_after(d: &Down, from: usize, f: Format) -> f64 {
         let got = d.taken.iter().map(|(b, _)| b.len()).sum::<usize>() - from;
@@ -1895,22 +1874,6 @@ mod tests {
 
     fn taken(d: &Down) -> usize {
         d.taken.iter().map(|(b, _)| b.len()).sum()
-    }
-
-    #[test]
-    fn stream_announced_after_boundary_is_converted() {
-        // media3's order: discontinuity first, then the next format with its first buffer.
-        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
-        e.configure(&mut d, &mut h, stream("a", FMT));
-        feed(&mut e, &mut d, &mut h, &tone(1000, 0.5), 0);
-        e.handle_discontinuity(&mut d, &mut h);
-        e.configure(&mut d, &mut h, stream("b", F48));
-        let before = taken(&d);
-        feed_in(&mut e, &mut d, &mut h, &tone_at(500, 48_000, 1.0), F48, 1_000_000);
-        assert_eq!(d.configured.len(), 1, "the output stays as it was opened");
-        let secs = secs_after(&d, before, FMT);
-        assert!((secs - 1.0).abs() < 0.01, "one second of 48 kHz comes out as one second at 44.1: {secs}");
-        assert!(h.log.iter().any(|l| l.starts_with("converting 48000 Hz")), "{:?}", h.log);
     }
 
     #[test]
@@ -2084,56 +2047,41 @@ mod tests {
         assert!((hz - HZ).abs() < 3.0, "{what}: the song plays at {hz} Hz, not {HZ} (x{:.4})", hz / HZ);
     }
 
+    /// After a beat-matched mix the song is back at its own pitch, however it was left.
     #[test]
-    fn tempo_restored_after_beat_matched_mix() {
-        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
-        into_the_mix(&mut e, &mut d, &mut h, 6.0);
-        assert_own_pitch(&d, "after the mix and the ramp");
-    }
-
-    #[test]
-    fn tempo_restored_after_seek_in_mix() {
-        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
-        into_the_mix(&mut e, &mut d, &mut h, 0.5);
-        e.flush(&mut h);
-        feed_in(&mut e, &mut d, &mut h, &sine(HZ, 48_000, 3.0, 48_000 * 20), F48, 24_000_000);
-        assert_own_pitch(&d, "after a seek in the mix");
-    }
-
-    #[test]
-    fn tempo_restored_after_seek_in_ramp() {
-        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
-        // 0.5 s after the 2 s mix: inside the ramp.
-        into_the_mix(&mut e, &mut d, &mut h, 2.5);
-        e.flush(&mut h);
-        feed_in(&mut e, &mut d, &mut h, &sine(HZ, 48_000, 3.0, 48_000 * 20), F48, 24_000_000);
-        assert_own_pitch(&d, "after a seek in the ramp");
-    }
-
-    #[test]
-    fn tempo_restored_after_skip_in_mix() {
-        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
-        into_the_mix(&mut e, &mut d, &mut h, 0.5);
-        e.flush(&mut h);
-        e.configure(&mut d, &mut h, stream("d", F48));
-        feed_in(&mut e, &mut d, &mut h, &sine(HZ, 48_000, 3.0, 0), F48, 30_000_000);
-        assert_own_pitch(&d, "the song skipped to");
-        e.flush(&mut h);
-        e.configure(&mut d, &mut h, stream("c", F48));
-        feed_in(&mut e, &mut d, &mut h, &sine(HZ, 48_000, 3.0, 0), F48, 40_000_000);
-        assert_own_pitch(&d, "the song skipped back to");
-    }
-
-    #[test]
-    fn tempo_restored_after_pause_in_mix() {
-        let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
-        into_the_mix(&mut e, &mut d, &mut h, 0.5);
-        // Paused: only position queries, nothing flowing.
-        for _ in 0..50 {
-            h.now += 100;
-            e.position_us(&mut d, &mut h, false);
+    fn tempo_restored() {
+        type Then = fn(&mut TransitionEngine, &mut Down, &mut Host_);
+        let seek: Then = |e, d, h| {
+            e.flush(h);
+            feed_in(e, d, h, &sine(HZ, 48_000, 3.0, 48_000 * 20), F48, 24_000_000);
+        };
+        let cases: [(&str, f64, Then); 5] = [
+            ("after the mix and the ramp", 6.0, |_, _, _| {}),
+            ("after a seek in the mix", 0.5, seek),
+            // 0.5 s after the 2 s mix: inside the ramp.
+            ("after a seek in the ramp", 2.5, seek),
+            ("after a skip in the mix", 0.5, |e, d, h| {
+                for (k, id) in ["d", "c"].into_iter().enumerate() {
+                    e.flush(h);
+                    e.configure(d, h, stream(id, F48));
+                    feed_in(e, d, h, &sine(HZ, 48_000, 3.0, 0), F48, 30_000_000 + k as i64 * 10_000_000);
+                    assert_own_pitch(d, id);
+                }
+            }),
+            ("after a pause in the mix", 0.5, |e, d, h| {
+                // Paused: only position queries, nothing flowing.
+                for _ in 0..50 {
+                    h.now += 100;
+                    e.position_us(d, h, false);
+                }
+                feed_in(e, d, h, &sine(HZ, 48_000, 5.0, 24_000), F48, 4_500_000);
+            }),
+        ];
+        for (what, secs, then) in cases {
+            let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
+            into_the_mix(&mut e, &mut d, &mut h, secs);
+            then(&mut e, &mut d, &mut h);
+            assert_own_pitch(&d, what);
         }
-        feed_in(&mut e, &mut d, &mut h, &sine(HZ, 48_000, 5.0, 24_000), F48, 4_500_000);
-        assert_own_pitch(&d, "after a pause in the mix");
     }
 }
