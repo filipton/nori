@@ -1275,7 +1275,7 @@ fn offload_opus_in_ogg_pages() {
 }
 
 #[test]
-fn offload_mp4_edit_list_as_delay_padding() {
+fn offload_mp4_edit_list() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -1684,7 +1684,7 @@ fn album_stays_on_cpu() {
 }
 
 #[test]
-fn plain_offload_album_handover_both_ways() {
+fn plain_offload_album_handover() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -2109,7 +2109,7 @@ fn jittery_timestamp_keeps_place() {
 }
 
 #[test]
-fn offload_fast_next_moves_one_song_per_press() {
+fn offload_next_one_song_per_press() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
@@ -2297,7 +2297,7 @@ fn automix_on_after_equalizer_mixes() {
 }
 
 #[test]
-fn offload_setting_moves_song_both_ways() {
+fn offload_setting_moves_song() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;

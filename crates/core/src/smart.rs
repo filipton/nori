@@ -206,7 +206,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn validation_errors_name_path_and_problem() {
+    fn validation_errors_name_path() {
         use crate::SmartProblem::*;
         parse(r#"{"match":null,"sort":null,"limit":null,"limitMs":0}"#).unwrap();
         let rule = |r: &str| format!(r#"{{"match":{{"rules":[{r}]}}}}"#);
@@ -305,7 +305,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn large_library_pages_counts_and_fills_time_budget() {
+    fn large_library_pages_and_budget() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         {
             let mut c = core.db.lock();
@@ -369,7 +369,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn built_in_definitions_validate_and_filter() {
+    fn built_ins_validate_and_filter() {
         let core = library();
         let defaults = smart_defaults();
         let run = |id: &str| {

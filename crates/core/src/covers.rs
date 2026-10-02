@@ -293,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn cover_wants_dedup_skip_providers_and_cap() {
+    fn cover_wants_dedup_and_cap() {
         let arts = ["a", "ext-1", "b", "a", "pl-deezer-2", "c"].map(String::from).to_vec();
         let w = cover_wants(arts.clone(), 500);
         assert_eq!(w.iter().map(|w| (w.id.as_str(), w.size)).collect::<Vec<_>>(), [("a", 320), ("a", 800), ("b", 320), ("b", 800), ("c", 320), ("c", 800)]);

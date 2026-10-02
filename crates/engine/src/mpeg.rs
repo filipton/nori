@@ -214,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn joined_mid_frame_starts_at_first_whole_frame() {
+    fn mid_frame_starts_at_whole_frame() {
         let mut bytes = frame(true, 1)[200..].to_vec();
         for i in 2..6 {
             bytes.extend_from_slice(&frame(true, i));
@@ -224,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn noise_scan_is_bounded_and_cut_frame_dropped() {
+    fn noise_scan_bounded() {
         let mut bytes = frame(true, 1);
         bytes.extend_from_slice(&frame(true, 2));
         // 100 kB of noise, two frames, and a cut one.

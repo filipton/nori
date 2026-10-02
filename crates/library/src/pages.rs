@@ -579,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn playlist_description_hides_import_note() {
+    fn description_hides_import_note() {
         let d = |c: &str, show, hide| playlist_description(Some(c.into()), show, hide);
         assert_eq!(d("Late night driving", true, true).as_deref(), Some("Late night driving"));
         assert_eq!(d("Auto-imported from 'Glitch.m3u8'", true, true), None);

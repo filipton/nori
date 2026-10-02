@@ -279,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn beat_marks_last_until_read_or_removed() {
+    fn beat_marks_last_until_read() {
         let core = core();
         let wants = |id: &str| core.downloads.with(|t| t.wants_beats(id));
         core.download_queue(vec![song("a"), song("b"), song("c")]).unwrap();

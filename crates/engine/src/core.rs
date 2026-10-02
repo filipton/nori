@@ -1367,7 +1367,7 @@ mod tests {
     }
 
     #[test]
-    fn measured_song_decoded_again_for_beat_model() {
+    fn measured_song_decoded_for_model() {
         let mut s = Schedule::default();
         s.ask(ids(&["a", "b"]));
         s.tried("a", 1000, false);

@@ -319,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn decoded_as_it_arrives_and_whole_only_if_complete() {
+    fn decoded_as_it_arrives() {
         let frames = 44_100 * 40;
         let song = wav(frames);
         assert!(song.len() > 3 * PIPE, "more than the pipe holds: the fetch waits for the decoder");

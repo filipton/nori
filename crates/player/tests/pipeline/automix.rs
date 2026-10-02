@@ -53,7 +53,7 @@ fn automix() -> TransitionPrefs {
 }
 
 #[test]
-fn enabling_measures_ahead_and_beat_matches() {
+fn enabling_measures_and_matches() {
     let mut p = Player::new(vec![song("a", 120.0), song("b", 123.0), song("c", 120.0)]);
     p.play_from(0);
     p.run_for(2_000);
@@ -88,7 +88,7 @@ fn enabling_measures_ahead_and_beat_matches() {
 }
 
 #[test]
-fn stretched_mix_into_other_rate_is_converted() {
+fn stretched_mix_rate_converted() {
     let mut b = Synth::new(123.0);
     (b.rate, b.secs, b.noise) = (24_000, 32.0, 0.01);
     let b: Vec<i16> = b.render().iter().flat_map(|v| [(v * 0.7 * 32767.0).round() as i16; 2]).collect();
@@ -110,7 +110,7 @@ fn stretched_mix_into_other_rate_is_converted() {
 }
 
 #[test]
-fn playing_song_analysis_kept_only_whole() {
+fn analysis_kept_only_whole() {
     let mut p = Player::with_prefs(vec![song("a", 118.0), song("b", 118.0)], automix());
     p.app.measure_playing = true;
     p.measure_on_move = false;
@@ -129,7 +129,7 @@ fn playing_song_analysis_kept_only_whole() {
 }
 
 #[test]
-fn unmeasured_fade_bar_waits_for_next_song() {
+fn unmeasured_fade_bar_waits() {
     // The first boundary on a phone that has never heard these songs: they were still on their way
     // when measuring ahead looked, so nothing is measured. The planner fades blind, and the page must
     // not put the next title up while the last song plays on at the start of that fade.
@@ -184,7 +184,7 @@ fn shown_run(p: &mut Player, step_ms: i64) -> Vec<usize> {
 }
 
 #[test]
-fn page_changes_once_per_song_through_mix() {
+fn page_changes_once_per_song() {
     // The engine lets the mix go once the whole of it has been heard, and the player moves on to the
     // next song at about the same moment. Whichever comes first, the page must not go back to the song
     // it has left for the moment in between: that is the old cover flashing up after the new one.

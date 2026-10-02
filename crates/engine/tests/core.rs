@@ -77,7 +77,7 @@ fn beat_wav() -> Vec<u8> {
 }
 
 #[test]
-fn downloads_disk_and_measuring_over_core() {
+fn downloads_and_measuring_over_core() {
     let dir = nori_testdir::TempDir::new("core");
     let settings = Arc::new(nori_core::settings_store::Settings::default());
     settings.open(&dir.join("app.db").to_string_lossy()).unwrap();

@@ -464,7 +464,7 @@ mod tests {
     }
 
     #[test]
-    fn the_root_is_four_tabs_with_the_downloads_first_offline_and_the_cars_limit_kept() {
+    fn car_root_tabs() {
         let ids = |f: Vec<BrowseFolder>| f.into_iter().map(|f| f.id).collect::<Vec<_>>();
         assert_eq!(ids(root(4, false)), ["home", "library", "starred", "downloads"]);
         assert_eq!(ids(root(4, true)), ["downloads", "home", "library", "starred"]);

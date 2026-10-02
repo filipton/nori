@@ -1612,7 +1612,7 @@ mod tests {
     }
 
     #[test]
-    fn plans_equal_when_they_sound_the_same() {
+    fn plans_equal_when_sounding_same() {
         // The engine rebuilds an ending when its plan is not equal to the new one.
         let a = fade("b", 1_000_000);
         let mut b = a.clone();
@@ -1721,7 +1721,7 @@ mod tests {
     }
 
     #[test]
-    fn rescale_reaches_rest_of_partly_taken_buffer() {
+    fn rescale_reaches_partial_buffer() {
         let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         e.configure(&mut d, &mut h, stream("a", FMT));
         e.set_gain(0.5);
@@ -1774,7 +1774,7 @@ mod tests {
     }
 
     #[test]
-    fn unmixed_ending_is_released_before_output_runs_dry() {
+    fn unmixed_ending_released_in_time() {
         let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         h.plans.insert("a".into(), fade("b", 1_000_000));
         e.configure(&mut d, &mut h, stream("a", FMT));
@@ -1816,7 +1816,7 @@ mod tests {
     }
 
     #[test]
-    fn seek_into_transition_mixes_from_there() {
+    fn seek_into_mix_mixes_on() {
         let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         h.plans.insert("a".into(), fade("b", 1_000_000));
         e.configure(&mut d, &mut h, stream("a", FMT));
@@ -1830,7 +1830,7 @@ mod tests {
     }
 
     #[test]
-    fn heard_lags_reported_position_while_holding() {
+    fn heard_lags_while_holding() {
         let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         h.plans.insert("a".into(), fade("b", 1_000_000));
         e.configure(&mut d, &mut h, stream("a", FMT));
@@ -1846,7 +1846,7 @@ mod tests {
     }
 
     #[test]
-    fn stretched_mix_returns_to_track_clock() {
+    fn stretch_returns_to_track_clock() {
         let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         let mut p = fade("b", 1_000_000);
         p.tempo_ratio = 1.03;
@@ -1877,7 +1877,7 @@ mod tests {
     }
 
     #[test]
-    fn pinned_format_after_converted_stream_is_not_converted() {
+    fn pinned_format_not_converted() {
         let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());
         e.configure(&mut d, &mut h, stream("a", F48));
         feed_in(&mut e, &mut d, &mut h, &tone_at(1000, 48_000, 0.5), F48, 0);
@@ -1968,7 +1968,7 @@ mod tests {
     }
 
     #[test]
-    fn converter_carries_on_across_gapless_join() {
+    fn converter_carries_across_join() {
         // a (44.1) mixes into b (48, converted); c (48) follows b gaplessly. The converter must carry
         // on (no reopen, no reset click): a tone through b into c stays one tone.
         let (mut e, mut d, mut h) = (TransitionEngine::new(), Down::default(), Host_::default());

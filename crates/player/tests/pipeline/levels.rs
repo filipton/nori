@@ -211,7 +211,7 @@ fn songs() -> (Vec<i16>, Vec<i16>, f32, f32) {
 }
 
 #[test]
-fn each_transition_kind_uses_song_gains() {
+fn each_mix_kind_uses_song_gains() {
     let (a, b, ga, gb) = songs();
     for kind in kinds(-14.0, -14.0) {
         // The ideal: each song turned to its own volume first, then played with no ReplayGain at all.

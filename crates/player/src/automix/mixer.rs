@@ -658,7 +658,7 @@ mod tests {
     }
 
     #[test]
-    fn low_pass_sweep_darkens_outgoing_without_clicks() {
+    fn low_pass_sweep_without_clicks() {
         let mut p = plan();
         (p.out_fade_start_ms, p.out_fade_end_ms, p.in_fade_start_ms, p.in_fade_end_ms) = (1000, 1000, 1000, 1000);
         p.low_pass = Some(Sweep { start_ms: 200, end_ms: 600, from_hz: 20000.0, to_hz: 300.0 });
@@ -672,7 +672,7 @@ mod tests {
     }
 
     #[test]
-    fn vocal_duck_cuts_voice_band_until_release() {
+    fn vocal_duck_until_release() {
         let mut p = plan();
         // The incoming deck at full level throughout, so only the duck acts.
         (p.out_fade_start_ms, p.out_fade_end_ms, p.in_fade_start_ms, p.in_fade_end_ms) = (0, 0, 0, 0);

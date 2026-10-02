@@ -647,7 +647,7 @@ mod tests {
     }
 
     #[test]
-    fn sung_line_follows_starts_and_lit_line_leads() {
+    fn sung_line_follows_starts() {
         let t = LyricTiming::new(true, true, lines(&[1000, 3000]));
         assert_eq!((t.sung_line(999), t.sung_line(1000), t.sung_line(2999), t.sung_line(3000)), (None, Some(0), Some(0), Some(1)));
         assert_eq!(t.line_at(2700), 1, "lit 310 ms early");
@@ -776,7 +776,7 @@ mod tests {
     }
 
     #[test]
-    fn backing_vocals_fill_separately_and_animation_draws_every_frame() {
+    fn backing_vocals_fill_apart() {
         let line = Line { start_ms: 1000, len: 5, words: vec![w(1000, 1500, 0, 5)], backing_len: 4, backing: vec![w(1600, 2000, 0, 4)], ..Default::default() };
         let t = LyricTiming::new(true, true, vec![line, Line { start_ms: 9000, len: 3, ..Default::default() }]);
         assert_eq!((t.backing_sung(0, 1500), t.backing_sung(0, 1800), t.backing_sung(0, 2000)), (0.0, 2.0, 4.0));

@@ -572,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn mp3_decoder_delay_dropped_unless_trimmed() {
+    fn mp3_delay_dropped_untrimmed() {
         let file = tone_mp3();
         let frames = mp3_frames(&file);
         let mut out = vec![0i16; 1152 * 2];
@@ -604,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn reservoir_frame_after_seek_is_silent() {
+    fn reservoir_frame_after_seek() {
         let file = tone_mp3();
         let frames = mp3_frames(&file);
         let reservoir = frames.iter().position(|f| mp3_main_data_begin(f) != 0).expect("a frame using the bit reservoir");

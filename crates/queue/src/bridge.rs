@@ -52,7 +52,7 @@ mod tests {
     }
 
     #[test]
-    fn pick_orders_by_similarity_and_excludes_queued() {
+    fn pick_by_similarity() {
         let seed = song("s", "Radiohead", "ok", false);
         let pool = [song("a", "Muse", "x", false), song("b", "radiohead", "kid", false), song("c", "Radiohead", "ok", false), song("d", "Muse", "y", true), song("q", "Radiohead", "ok", false)];
         let p = pick(Some(&seed), &pool, &["q".to_string()], 3, 7);

@@ -394,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn fetches_each_song_once_and_skips_busy_ones() {
+    fn fetches_once_skips_busy() {
         let (_dir, s) = store("whole");
         let net = Arc::new(Net::default());
         let mut w = s.writer("c:0").unwrap();
@@ -417,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn unwanted_song_left_half_way_wanted_one_continues() {
+    fn unwanted_song_left_half_way() {
         let (_dir, s) = store("moved");
         let net = Arc::new(Net::default());
         let (go, wait): (Sender<()>, Receiver<()>) = channel();

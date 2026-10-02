@@ -1378,7 +1378,7 @@ mod tests {
     const LOAD: [i64; 5] = [1_000, 4_000, 0, 0, 1 << 30];
 
     #[test]
-    fn fetches_to_high_mark_then_waits_for_low_mark() {
+    fn fetches_to_high_waits_for_low() {
         let s = server(1_000_000);
         let l = Loader::start(s.clone(), "song".into(), LOAD, Some(10_000), None);
         let mut r = l.reader();
@@ -1412,7 +1412,7 @@ mod tests {
     }
 
     #[test]
-    fn fetched_ahead_holds_budget_then_rest() {
+    fn ahead_holds_budget_then_rest() {
         let s = server(600_000);
         let l = Loader::start_within(s.clone(), "song".into(), LOAD, Some(6_000), None, Some(200_000), None, Waits::default());
         let ahead = settled(&s, 1);
@@ -1788,7 +1788,7 @@ mod tests {
     /// A server that answers and breaks every body before a byte fails the song after a few tries,
     /// resting between them, rather than being asked again and again at once.
     #[test]
-    fn body_broken_at_once_fails_after_retries() {
+    fn broken_body_fails_after_retries() {
         struct Resets(Mutex<u32>);
         struct Reset;
         impl Read for Reset {

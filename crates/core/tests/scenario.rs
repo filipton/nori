@@ -164,7 +164,7 @@ fn logged_in(server: &Arc<Server>) -> (Arc<Core>, Arc<Client>) {
 }
 
 #[test]
-fn offline_changes_reach_the_server_in_order() {
+fn offline_changes_reach_server() {
     let server = Server::new();
     let (core, client) = logged_in(&server);
     let (mut total, mut offset) = (IngestStats::default(), 0);

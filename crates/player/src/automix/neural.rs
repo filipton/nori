@@ -389,7 +389,7 @@ mod tests {
     }
 
     #[test]
-    fn every_other_beat_marked_gives_two_candidate_bars() {
+    fn alternate_beats_give_two_bars() {
         let beats: Vec<f64> = (0..40).map(|i| 0.3 + i as f64 * 0.5).collect();
         let t = Tracked { downbeats: beats.iter().skip(1).step_by(2).copied().collect(), beats };
         let g = grid(&t).unwrap();

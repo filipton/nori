@@ -570,7 +570,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn earlier_session_messages_are_dropped() {
+    fn old_session_messages_dropped() {
         let note = |id| Msg::From(id, Box::new(Msg::Note { text: "x".into(), error: false }));
         assert!(matches!(current(Some(2), note(2)), Some(Msg::Note { .. })));
         assert!(current(Some(2), note(1)).is_none());

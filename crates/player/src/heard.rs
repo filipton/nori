@@ -344,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn no_flash_back_before_player_moves_on() {
+    fn no_flash_back_before_move() {
         let mut t = tracker();
         // Heard on b already, the player not yet moved on from a.
         assert_eq!(t.ab(&holding(195_000_000, 0), now(0, "a", 195_000)).seen(), Some((B, 6_000)));
@@ -443,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn page_on_player_song_mid_mix_shows_player_position() {
+    fn mid_mix_page_shows_player() {
         let mut t = HeardTracker::new();
         t.set_queue([("a".to_string(), 200_000), ("b".to_string(), 180_000)]);
         let mut p = Playhead::new();
@@ -465,7 +465,7 @@ mod tests {
 
     /// A reading 250 ms behind at mix start: the bar never steps back and catches up within two steps.
     #[test]
-    fn position_never_steps_back_at_mix_start() {
+    fn no_step_back_at_mix_start() {
         let t = tracker();
         let mut p = Playhead::new();
         let player = |index, ms| Seen { index, ms, changed: false };
@@ -519,7 +519,7 @@ mod tests {
 
     /// The audible reading takes over 400 ms ahead of the player's, then hands back: no leap, no step back.
     #[test]
-    fn handover_neither_leaps_nor_steps_back() {
+    fn handover_never_leaps_or_steps() {
         let t = tracker();
         let mut p = Playhead::new();
         let mut last = 0;

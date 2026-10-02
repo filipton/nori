@@ -290,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_ops_keep_index_and_directory_in_sync() {
+    fn concurrent_ops_keep_index_synced() {
         let d = dir("race");
         let c = std::sync::Arc::new(DiskCache::open(d.path(), 60).unwrap());
         let keys: Vec<Key> = (0..3).map(|i| Key::of(&i.to_string())).collect();

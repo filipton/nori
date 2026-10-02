@@ -915,7 +915,7 @@ mod tests {
     }
 
     #[test]
-    fn second_change_goes_on_from_the_first() {
+    fn second_change_goes_on() {
         use crate::pipeline::Track;
         let mut sink = Sink::new(10_000_000, ChainSettings { keep_eq: true, ..ChainSettings::default() }, AudioTrack::new());
         sink.configure(F);

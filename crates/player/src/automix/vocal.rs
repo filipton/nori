@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn curve_is_a_kilobyte_a_minute_and_round_trips() {
+    fn curve_is_small_and_round_trips() {
         let song = Song { sections: vec![(24, SUNG)], ..Song::new("sung", Style::House, 120.0, 2, false) };
         let (c, _, secs) = curve_of(&song);
         let per_min = c.level.len() as f64 / secs * 60.0;

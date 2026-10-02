@@ -294,7 +294,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn similar_songs_skip_queued_and_rotate() {
+    fn similar_songs_skip_and_rotate() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         c.core.session.register(vec![song("af-seed", "al0"), song("af-q", "al0")]);
         fake.answer(&songs_json(&[("af-q", "x"), ("s2", "x"), ("s1", "y")]));
@@ -308,7 +308,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn dropped_refill_is_not_counted_as_picked() {
+    fn dropped_refill_not_picked() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         c.core.session.register(vec![song("dr-seed", "al0")]);
         fake.answer(&songs_json(&[("dr-1", "x")]));

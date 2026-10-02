@@ -26,7 +26,7 @@ fn shown(p: &mut Player) -> (usize, i64) {
 }
 
 #[test]
-fn seek_before_crossfade_bar_follows_audio() {
+fn seek_before_mix_bar_follows() {
     // Seeking to nine seconds before a four-second mix: the ending is held at once, the next song
     // arrives at once, and the mix goes to the output seconds before it is heard. The output's clock
     // jumps to the next song's time as the mix is offered; the bar must not jump with it.

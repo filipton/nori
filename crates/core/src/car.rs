@@ -340,7 +340,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_album_opens_offline_from_the_cache() {
+    fn album_opens_offline_from_cache() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         c.core.cache_put("getAlbum&id=a".into(), br#"{"subsonic-response":{"status":"ok","album":{"id":"a","name":"A","song":[{"id":"s","isDir":false}]}}}"#.to_vec()).unwrap();
         fake.fail(crate::transport::FailureKind::Connect);

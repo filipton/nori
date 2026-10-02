@@ -156,7 +156,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn instant_mix_starts_with_seed_and_stays_close() {
+    fn instant_mix_stays_near_seed() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         let all = library(&core);
         let seed_song = all.iter().find(|s| s.id == "2-1-3").unwrap();

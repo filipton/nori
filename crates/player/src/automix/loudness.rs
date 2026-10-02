@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn chunking_and_non_finite_samples_do_not_matter() {
+    fn chunks_and_nan_do_not_matter() {
         let rate = 44100.0;
         let x = sine(440.0, 0.5, 3.0, rate);
         let whole = meter(&x, rate);

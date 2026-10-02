@@ -24,7 +24,7 @@ impl Transport for NoApi {
 }
 
 #[test]
-fn resolve_now_follows_active_client_and_network() {
+fn resolve_follows_client_and_net() {
     assert!(resolve_now("s1").is_none(), "no client yet");
     let core = Core::new(String::new(), "t".into()).unwrap();
     let client = Client::new(core, Arc::new(NoApi));

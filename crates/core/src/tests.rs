@@ -8,7 +8,7 @@ const SEARCH: &str = r#"{"subsonic-response":{"status":"ok","version":"1.16.1","
          {"id":42,"title":"Numeric"}]}}}"#;
 
 #[test]
-fn search_parses_indexes_and_skips_external() {
+fn search_indexes_skip_external() {
     let core = Core::new(String::new(), "t".into()).unwrap();
     let r = core.parse_search(SEARCH.into()).unwrap();
     core.ingest_search(SEARCH.into()).unwrap();
@@ -91,7 +91,7 @@ fn autoeq_preset_is_read() {
 }
 
 #[test]
-fn browse_sorts_filters_and_groups_by_decade() {
+fn browse_sorts_filters_decades() {
     let core = Core::new(String::new(), "t".into()).unwrap();
     core.ingest_search(r#"{"subsonic-response":{"status":"ok","searchResult3":{"song":[
       {"id":"a","title":"beta","year":1994,"starred":"2020-01-01"},{"id":"b","title":"Alpha","year":2003},{"id":"c","title":"gamma","year":1999}]}}}"#.into()).unwrap();

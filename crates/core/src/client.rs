@@ -360,7 +360,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn music_folder_only_on_foldered_endpoints() {
+    fn music_folder_where_foldered() {
         let (c, _) = client(NetProfile { url: "h".into(), music_folder_id: "3".into(), ..Default::default() });
         assert_eq!(c.scoped("search3", vec![]), vec![("musicFolderId".to_string(), "3".to_string())]);
         assert!(c.scoped("getAlbum", vec![]).is_empty());
@@ -520,7 +520,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn star_playlist_and_now_playing_requests() {
+    fn star_playlist_now_playing() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         c.core.cache_put("getStarred2".into(), b"x".to_vec()).unwrap();
         c.core.cache_put("getPlaylists".into(), b"x".to_vec()).unwrap();

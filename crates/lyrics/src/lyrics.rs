@@ -225,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn server_word_cues_win_and_offsets_are_utf16() {
+    fn server_word_cues_win() {
         let l = parse(r#"[{"synced":true,"line":[{"start":1000,"value":"Żółć and I"}],
           "cueLine":[{"index":0,"start":1000,"end":4000,"value":"Żółć and I","cue":[
             {"start":1000,"end":1800,"value":"Żółć ","byteStart":0,"byteEnd":7},{"start":1800,"end":2400,"value":"and ","byteStart":9,"byteEnd":11},{"start":2400,"end":3200,"value":"I","byteStart":13,"byteEnd":13}]}]}]"#);

@@ -219,7 +219,7 @@ fn stored_format_matches_golden() {
 }
 
 #[test]
-fn sample_round_trips_and_differs_everywhere() {
+fn sample_round_trips_and_differs() {
     let p = sample();
     let raw: HashMap<String, PrefValue> = save(&p);
     assert_eq!(load(&raw), p);

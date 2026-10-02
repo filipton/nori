@@ -179,7 +179,7 @@ mod tests {
     }
 
     #[test]
-    fn pieces_read_as_one_stream_in_large_reads() {
+    fn pieces_read_as_one_stream() {
         let bytes = song(3 * READ + 12_345);
         let reads = Arc::new(Mutex::new(Vec::new()));
         // Cut where media3 would, and at an odd place.

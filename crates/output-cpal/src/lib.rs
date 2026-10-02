@@ -345,7 +345,7 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn the_period_pulled_counts_until_heard() {
+    fn pulled_period_counts_till_heard() {
         let heard = Heard::default();
         let t = heard.base + Duration::from_secs(1);
         heard.pulled(t, 20_000, 4_410, 44_100);

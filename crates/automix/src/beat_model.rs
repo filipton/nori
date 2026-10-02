@@ -125,7 +125,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn model_downloads_once_and_goes_when_switched_off() {
+    fn model_downloads_once_and_goes() {
         let dir = nori_testdir::TempDir::new("model");
         std::fs::create_dir_all(dir.join("models")).unwrap();
         std::fs::write(dir.join("models").join(FILE_NAME), b"model").unwrap();

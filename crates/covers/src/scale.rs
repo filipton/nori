@@ -412,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn alpha_filtered_premultiplied_and_written_as_asked() {
+    fn alpha_premultiplied_as_asked() {
         // Opaque red next to transparent green: no green bleeds in.
         let mk = || vec![255u8, 0, 0, 255, 0, 255, 0, 0];
         let mut out = [0u8; 4];

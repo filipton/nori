@@ -50,7 +50,7 @@ fn decoders_match() {
 }
 
 #[test]
-fn premultiplied_is_straight_times_alpha() {
+fn premultiplied_is_times_alpha() {
     let straight = decode("alpha.png", 40, 30, Alpha::Straight);
     let pre = decode("alpha.png", 40, 30, Alpha::Premultiplied);
     for (s, p) in straight.chunks_exact(4).zip(pre.chunks_exact(4)) {
@@ -88,7 +88,7 @@ fn scaling() {
 }
 
 #[test]
-fn broken_files_error_without_panicking() {
+fn broken_files_error_no_panic() {
     let mut d = Decoder::new();
     for name in ["photo.jpg", "photo.png", "photo.webp", "alpha.webp", "photo.gif", "turned-6.jpg", "turned-6.webp"] {
         let f = file(name);

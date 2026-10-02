@@ -225,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn trimmed_to_the_mark_before_what_played() {
+    fn trimmed_to_mark_before_played() {
         let mut k = Kept::default();
         k.restart(0, 4);
         let chain = Processors::default();

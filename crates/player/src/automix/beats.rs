@@ -307,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn remeasuring_same_file_keeps_model_work() {
+    fn remeasure_keeps_model_work() {
         let mut old = row();
         merge(&mut old, MixEnd::Intro, Some(EndGrid { bpm: 128.0, offset_ms: 50.0, confidence: 1.0, stability: 1.0, downbeat_phase: 1, beats_per_bar: 4, other_phase: None, anchor_ms: 0.0 }));
         merge(&mut old, MixEnd::Outro, None);

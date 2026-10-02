@@ -43,7 +43,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_panicking_write_stops_no_later_one() {
+    fn panicking_write_stops_no_other() {
         run(|| panic!("a broken write"));
         let (tx, rx) = channel();
         run(move || tx.send(()).unwrap());

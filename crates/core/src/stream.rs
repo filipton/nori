@@ -140,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn prefetch_skips_radio_providers_and_downloads() {
+    fn prefetch_skips_radio_and_more() {
         let (c, _) = client(NetProfile { url: "h".into(), ..Default::default() });
         let ids = ["a", "radio:1", "ext-2", "queued", "done", "b"].map(String::from).to_vec();
         let held = |id: &str| match id {

@@ -89,7 +89,7 @@ fn said(p: &Page) -> String {
 }
 
 #[test]
-fn every_read_makes_its_page_and_indexes_its_items() {
+fn every_read_makes_page_and_index() {
     let id = || "x".to_string();
     let reads = [
         (Read::AlbumList { kind: "newest".into(), size: 5, offset: 0, genre: None }, "albums al1,al2", (0, 1, 0)),

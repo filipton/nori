@@ -157,7 +157,7 @@ fn wav(frames: usize) -> Vec<u8> {
 /// Reading a song allocates what symphonia's reader does, one packet each, and nothing of its own: its
 /// `FormatReader::next_packet` hands out an owned packet and takes no buffer to read into.
 #[test]
-fn reading_allocates_only_the_readers_packets() {
+fn reading_allocates_only_packets() {
     let mp3 = include_bytes!("../../player/testdata/tone440.mp3").to_vec();
     for (file, hint, encoding) in [(wav(441_000), "wav", Encoding::Pcm16), (wav(441_000), "wav", Encoding::Float), (mp3.clone(), "mp3", Encoding::Pcm16), (mp3, "mp3", Encoding::Float)] {
         assert_eq!(per_read(file, hint, encoding), 1.0, "{hint} into {encoding:?}");

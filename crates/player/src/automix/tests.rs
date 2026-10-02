@@ -143,7 +143,7 @@ fn non_music_is_measured() {
 }
 
 #[test]
-fn overlap_windows_measure_voice_and_brightness() {
+fn windows_measure_voice_and_tone() {
     let sung = analyse("t", &Synth { chords: vec![(0, false), (5, false)], ..Synth::new(128.0) }.render(), 44100).track;
     let drums = analyse("t", &Synth::new(128.0).render(), 44100).track;
     assert!(sung.outro_vocal > drums.outro_vocal, "{} vs {}", sung.outro_vocal, drums.outro_vocal);

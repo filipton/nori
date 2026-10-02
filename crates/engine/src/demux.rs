@@ -1157,7 +1157,7 @@ mod tests {
     }
 
     #[test]
-    fn opened_before_its_bytes_reads_as_a_file() {
+    fn opened_early_reads_as_file() {
         let gate = Arc::new(Gated::default());
         let loader = Loader::start(gate.clone(), "tone".into(), [1_000, 4_000, 0, 0, 1 << 30], None, None);
         let arriving = Demuxed::load(loader.clone(), std::thread::current(), Some("mp3"), 0, None, false, Encoding::Pcm16);

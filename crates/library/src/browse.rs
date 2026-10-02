@@ -391,7 +391,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_listening_page_reads_its_numbers() {
+    fn listening_page_reads_numbers() {
         use nori_model::TopEntry;
         let mut hours = vec![0u32; 24];
         hours[9] = 5;
@@ -439,7 +439,7 @@ mod tests {
     }
 
     #[test]
-    fn album_orders_are_kept_by_their_server_names() {
+    fn album_orders_keep_server_names() {
         use std::collections::HashMap;
         assert_eq!(album_sort_saved(HashMap::new()), AlbumSort::ByName);
         let kept = album_sort_kept(AlbumSort::Frequent);

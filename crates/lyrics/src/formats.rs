@@ -634,7 +634,7 @@ mod tests {
     const TTML: &str = include_str!("../testdata/apple.ttml");
 
     #[test]
-    fn ttml_syllables_words_and_backing_vocals() {
+    fn ttml_syllables_and_backing() {
         let l = from_ttml(TTML);
         assert!(l.synced && l.word_timed);
         assert_eq!(l.lines.len(), 2);
@@ -806,7 +806,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_keeps_every_word_and_reads_old_lrc() {
+    fn cache_keeps_words_reads_old_lrc() {
         let l = from_lyricsfile(LYRICSFILE);
         let back = from_cache(&to_cache(&l));
         assert!(back.word_timed);

@@ -179,7 +179,7 @@ fn play_after_change_uses_it() {
 /// smoke.sh's AutoMix check: AutoMix and album mixing switched on right before an album is played; the
 /// engine hears of the settings only after the play.
 #[test]
-fn automix_switched_on_before_play_mixes() {
+fn automix_on_before_play_mixes() {
     let rig = Rig::new("replan-smoke", &["e1", "e2", "e3"], true);
     let mut prefs = rig.core.session.settings.current().unwrap();
     prefs.auto_mix = false;

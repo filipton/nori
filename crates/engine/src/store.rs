@@ -522,7 +522,7 @@ mod tests {
     }
 
     #[test]
-    fn evicts_leftovers_then_least_recently_used() {
+    fn evicts_leftovers_then_lru() {
         let d = dir("store-limit");
         let s = Store::open(d.path(), 1000, Box::new(Recent::default())).unwrap();
         put(&s, "old:0", 300);

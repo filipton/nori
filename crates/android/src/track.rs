@@ -2750,7 +2750,7 @@ mod tests {
     }
 
     #[test]
-    fn music_made_again_plays_on_from_where_the_track_was() {
+    fn remade_music_plays_on() {
         for starts_full in [false, true] {
             let mut s = Sim::new(600, true, starts_full);
             s.ring.lock().counting = true;

@@ -278,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn servers_are_isolated_and_forgotten_alone() {
+    fn servers_isolated_and_forgotten() {
         let dir = nori_testdir::TempDir::new("one-db");
         let path = dir.join("nori.db").display().to_string();
 

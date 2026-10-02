@@ -474,7 +474,7 @@ fn crossfade(secs: i32) -> TransitionPrefs {
 }
 
 #[test]
-fn jump_or_seek_while_paused_fetches_nothing_until_play() {
+fn paused_jump_fetches_nothing() {
     let (a, b, c) = (music(20.0, 91), music(20.0, 92), music(20.0, 93));
     let rig = Rig::new(&[("a", &a), ("b", &b), ("c", &c)], prefs_off(), Settings::default());
     rig.engine.play_at(0, 0);
@@ -590,7 +590,7 @@ fn crossfade_matches_simulation() {
 /// notification, a car's display and scrobbling follow it with the screen off). In a crossfade and in
 /// an AutoMix: milliseconds of the clock at which `b` was said.
 #[test]
-fn mixed_in_song_said_on_time_with_screen_off() {
+fn mixed_song_said_on_time() {
     let (a, b) = (music(30.0, 61), music(30.0, 62));
     let said_at = |prefs: TransitionPrefs, settings: Settings, screen: bool| {
         let mut app = sim::App::new();
@@ -838,7 +838,7 @@ fn song_chosen_during_pause_fade_plays() {
 
 /// Buffering(true) is ended when the music stops waiting another way (held elsewhere, released).
 #[test]
-fn buffering_ends_when_music_moves_elsewhere() {
+fn buffering_ends_on_move() {
     let (a, b) = (music(20.0, 71), music(20.0, 72));
     let songs: [(&str, &[i16]); 2] = [("a", &a), ("b", &b)];
     let extra = Extra::default();
@@ -952,7 +952,7 @@ fn rms(s: &[i16]) -> f64 {
 }
 
 #[test]
-fn replay_gain_boost_uses_floats_and_limiter() {
+fn gain_boost_uses_float_limiter() {
     // Peaks near 0.4; a turned up 9 dB (to 1.1), b down 6 dB.
     let (a, b) = (music(12.0, 51), music(12.0, 52));
     let up = 10f32.powf(9.0 / 20.0);
@@ -1248,7 +1248,7 @@ fn id3_tag_is_skipped() {
 /// A stop from before a later play is superseded, and that play retries the song. Regression: a client
 /// honouring the stale stop showed paused over playing music.
 #[test]
-fn stop_before_later_play_is_superseded() {
+fn stop_before_play_superseded() {
     let (a, b) = (music(20.0, 23), music(6.0, 24));
     let songs: [(&str, &[i16]); 2] = [("a", &a), ("b", &b)];
     let extra = Extra::default();
@@ -1359,7 +1359,7 @@ fn playing(songs: &[(&str, &[i16])], app: impl App + Send + 'static, settings: S
 }
 
 #[test]
-fn bit_perfect_drops_replay_gain_from_next_song() {
+fn bit_perfect_drops_replay_gain() {
     let (a, b) = (music(20.0, 32), music(10.0, 33));
     let mut app = sim::App::new();
     app.gains.insert("a".into(), 0.5);
@@ -1652,7 +1652,7 @@ fn replay_gain_change_heard_at_once() {
 /// On a device holding seconds (a phone's AudioTrack) the change is heard at once too: the device drops
 /// what it holds and plays on from where it was, in the new sound.
 #[test]
-fn equalizer_changes_seamlessly_on_a_device_holding_seconds() {
+fn eq_change_on_holding_device() {
     let a = music(12.0, 51);
     let live = Live::new(prefs_off());
     let files = vec![("a".to_string(), wav(&a), 12_000)];
@@ -1728,7 +1728,7 @@ fn hi_res_on_takes_next_song_untouched() {
 }
 
 #[test]
-fn tuning_makes_device_shallow_and_changes_nothing_heard() {
+fn tuning_shallow_changes_nothing() {
     let a = music(12.0, 47);
     let files = vec![("a".to_string(), wav(&a), 12_000)];
     let rig = Rig::build(files, sim::App::new(), Settings::default(), Extra { pace: Some(1.0), ..Extra::default() });
@@ -2174,7 +2174,7 @@ fn play_next_after_read_on_is_played() {
 /// Next pressed 10-15 times, 0-200 ms apart (sometimes inside a held mix ending), with the equalizer
 /// and AutoMix on and songs cached whole, partly, or slow: the last song pressed to plays on.
 #[test]
-fn next_spam_with_equalizer_and_automix_keeps_playing() {
+fn next_spam_keeps_playing() {
     const SECS: f64 = 40.0;
     let songs = many(16, SECS, 900);
     let ms = (SECS * 1000.0) as i64;
@@ -2301,7 +2301,7 @@ fn same_plan_again_changes_nothing() {
 }
 
 #[test]
-fn crossfade_on_while_paused_mixes_on_resume() {
+fn crossfade_on_paused_mixes_later() {
     let (a, b) = (music(30.0, 58), music(20.0, 59));
     let live = Live::new(prefs_off());
     let rig = playing_until(&[("a", &a), ("b", &b)], live.clone(), Settings::default(), 16.0);
@@ -2363,7 +2363,7 @@ fn watch_reports_only_when_wanted() {
 
 /// With the equalizer on, the chain stays in the path whatever else changes (AutoMix, hi-res, bands).
 #[test]
-fn equalizer_chain_stays_through_other_changes() {
+fn eq_chain_stays_through_changes() {
     let a = music(60.0, 71);
     let files = vec![("a".to_string(), wav(&a), 60_000)];
     let rig = Rig::build(files, sim::App::new(), loud_eq(), Extra { float: true, ..Extra::default() });
@@ -2519,7 +2519,7 @@ fn repeat_one_with_automix_plays_on() {
 }
 
 #[test]
-fn same_song_put_before_keeps_the_playing_entry() {
+fn same_song_before_keeps_entry() {
     let (a, b) = (music(4.0, 79), music(4.0, 80));
     let rig = Rig::new(&[("a", &a), ("b", &b)], prefs_off(), Settings::default());
     rig.queue.lock().set(vec!["a".into(), "b".into(), "a".into()], Some(0), false, 0);
@@ -2538,7 +2538,7 @@ fn same_song_put_before_keeps_the_playing_entry() {
 }
 
 #[test]
-fn new_list_around_the_playing_song_plays_on_from_it() {
+fn new_list_around_song_plays_on() {
     let (a, b, c) = (music(4.0, 81), music(4.0, 82), music(4.0, 83));
     let rig = Rig::new(&[("a", &a), ("b", &b), ("c", &c)], prefs_off(), Settings::default());
     rig.queue.lock().set(vec!["a".into(), "b".into()], Some(0), false, 0);

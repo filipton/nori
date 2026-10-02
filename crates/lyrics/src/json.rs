@@ -785,7 +785,7 @@ mod tests {
     const SUBTITLE: &str = include_str!("../testdata/musixmatch-subtitle.json");
 
     #[test]
-    fn musixmatch_richsync_subtitle_and_plain_shapes() {
+    fn musixmatch_shapes() {
         let l = from_provider(RICHSYNC, "");
         assert!(l.word_timed);
         assert_eq!(texts(&l), ["We fold maps", "Żółć"]);

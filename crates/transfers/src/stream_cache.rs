@@ -97,7 +97,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unused_leftovers_go_first_then_least_recent() {
+    fn unused_leftovers_go_first() {
         let mut o = CacheOrder::default();
         o.touch("a");
         o.touch("b");
@@ -109,7 +109,7 @@ mod tests {
     }
 
     #[test]
-    fn copies_take_every_quality_of_one_song() {
+    fn copies_take_every_quality() {
         let mut o = CacheOrder::default();
         o.touch("x:0");
         o.touch("x:192opus");

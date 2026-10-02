@@ -306,7 +306,7 @@ fn disk_keys() {
 }
 
 #[test]
-fn dropping_loader_answers_waiters_with_closed() {
+fn dropped_loader_answers_closed() {
     let server = Server::new(200);
     server.hold();
     let loader = Loader::new(config(None, 1), server.clone());
@@ -343,7 +343,7 @@ impl Paint for Counted {
 }
 
 #[test]
-fn warm_fetches_to_disk_once_without_decoding() {
+fn warm_fetches_without_decoding() {
     let d = dir("warm");
     let server = Server::new(200);
     let painted = Arc::new(AtomicUsize::new(0));

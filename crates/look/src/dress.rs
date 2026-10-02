@@ -246,7 +246,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mix_interpolates_and_flips_icons_half_way() {
+    fn mix_flips_icons_half_way() {
         let dark = page(0xFF20_1010, 0xFF20_1010, WHITE, 0xFFE0_4040, 0xFF20_1010);
         let white = page(WHITE, WHITE, 0xFF11_1111, 0xFFE0_4040, WHITE);
         let mut out = [0u32; LEN];

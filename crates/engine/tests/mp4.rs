@@ -95,7 +95,7 @@ impl PlatformDecoder for Lagging {
 }
 
 #[test]
-fn he_aac_on_a_lagging_decoder_ends_whole() {
+fn lagging_he_aac_ends_whole() {
     if !ffmpeg() {
         eprintln!("ffmpeg is not installed: the HE-AAC test has nothing to test with");
         return;

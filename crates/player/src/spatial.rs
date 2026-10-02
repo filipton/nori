@@ -156,7 +156,7 @@ mod tests {
     }
 
     #[test]
-    fn crossfeed_is_delayed_quieter_and_low_passed() {
+    fn crossfeed_delayed_quiet_low() {
         let mut v = Virtualizer::new(RATE, 1.0);
         v.side_lift = 0.0; // the head alone
         let (l, r) = run(&mut v, 300.0, 1.0, 0.0);

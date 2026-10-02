@@ -256,7 +256,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn service_hit_is_cached_and_ranked_by_duration() {
+    fn service_hit_cached_and_ranked() {
         let (c, fake) = setup();
         fake.answer(r#"{"statusCode":404,"message":"not found"}"#);
         fake.answer(r#"[{"duration":1000,"syncedLyrics":"[00:01.00]far"},{"duration":1026,"plainLyrics":"close plain"},{"duration":1022,"syncedLyrics":"[00:02.00]close synced\n[01:00.00]you gotta be crazy\n[02:00.00]you gotta have a real need\n[03:00.00]you gotta sleep on your toes"}]"#);
@@ -289,7 +289,7 @@ pub(crate) mod tests {
 
     /// Lyrics of an analysed song get the offset of their times against its vocal curve.
     #[test]
-    fn analysed_song_lyrics_get_sync_offset() {
+    fn analysed_lyrics_get_sync_offset() {
         use nori_player::automix::analysis::Analyzer;
         use nori_player::automix::eval::{Song as Synthetic, Style, FULL, SUNG};
         let (c, fake) = setup();
@@ -411,7 +411,7 @@ pub(crate) mod tests {
     const DAY: i64 = 24 * 3_600_000;
 
     #[test]
-    fn download_lyrics_in_order_skipping_providers() {
+    fn download_lyrics_in_order() {
         let (c, fake) = setup();
         fake.answer(SYNCED);
         fake.answer(SYNCED);

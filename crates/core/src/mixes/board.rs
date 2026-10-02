@@ -121,7 +121,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn empty_index_needs_fallback_once_per_period() {
+    fn empty_index_falls_back_once() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         assert_eq!(core.mix_draw("nope".into(), 100, false, None), MixDraw::Unknown);
         assert!(matches!(core.mix_page("nope".into()), MixLookup::Unknown));
@@ -142,7 +142,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn draws_follow_period_and_again_redraws() {
+    fn draws_follow_period() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         let all: Vec<Song> = (0..60).map(|i| song(&format!("s{i}"), "t", &format!("Artist {}", i % 12), &format!("LP {i}"), "Rock", 1990)).collect();
         db::index(&mut core.db.lock(), &[], &[], &all).unwrap();

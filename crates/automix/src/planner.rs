@@ -288,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn a_song_measured_as_heard_keeps_the_beat_models_grid() {
+    fn heard_measure_keeps_model_grid() {
         use nori_player::automix::beats::GRID_NEURAL;
         use nori_player::automix::synth::Synth;
         let db = std::sync::Arc::new(Mutex::new(nori_db::open("", "t").unwrap()));

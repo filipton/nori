@@ -118,7 +118,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn radio_falls_back_to_random_genre_songs() {
+    fn radio_falls_back_to_genre() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         let seed = Song { id: "r".into(), genre: Some("Jazz".into()), ..Default::default() };
         c.core.session.register(vec![seed.clone()]);
@@ -170,7 +170,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn m3u_import_counts_entries_and_matches() {
+    fn m3u_import_counts_matches() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         db::index(&mut core.db.lock(), &[], &[], &[song("1", "Dogs", "Pink Floyd", "Animals", "", 1977)]).unwrap();
         let text = "#EXTM3U\n#EXTINF:200,Pink Floyd - Dogs\na.flac\n#EXTINF:100,Nobody - Nothing\nb.flac\n";

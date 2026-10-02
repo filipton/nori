@@ -5,7 +5,7 @@ use super::*;
 use crate::Core;
 
 #[test]
-fn analysis_is_stored_and_reported_missing() {
+fn analysis_stored_or_missing() {
     let core = Core::new(String::new(), "t".into()).unwrap();
     assert_eq!(core.analysis_get("a".into()).unwrap(), None);
     assert_eq!(core.analysis_missing(vec!["a".into(), "b".into()]).unwrap(), vec!["a".to_string(), "b".to_string()]);
@@ -21,7 +21,7 @@ fn analysis_is_stored_and_reported_missing() {
 }
 
 #[test]
-fn analysis_finish_stores_row_and_voice_curve() {
+fn finish_stores_row_and_voice() {
     let core = Core::new(String::new(), "t".into()).unwrap();
     let s = Synth::new(128.0);
     let x = s.render();

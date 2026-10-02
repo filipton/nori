@@ -51,7 +51,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unique_and_removed_on_drop_and_panic() {
+    fn unique_and_removed_on_drop() {
         let (a, b) = (TempDir::new("testdir"), TempDir::new("testdir"));
         assert_ne!(a.path(), b.path());
         std::fs::write(a.join("f"), b"x").unwrap();

@@ -254,7 +254,7 @@ fn edits_near_current() {
 }
 
 #[test]
-fn shuffle_on_keeps_current_and_play_next() {
+fn shuffle_keeps_current_and_next() {
     let s = songs(6, 2.0);
     let mut p = Player::new(queue(&s));
     p.play_from(2);

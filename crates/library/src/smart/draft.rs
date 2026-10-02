@@ -373,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn prepare_applies_the_save_rules_and_checks() {
+    fn prepare_applies_save_rules() {
         let p = smart_edit_prepare(SmartEdit { id: "default-most-played".into(), name: " ".into(), ..edit(vec![rule("year", "greater", "1990")]) });
         assert_eq!((p.id.as_str(), p.name.as_str(), p.error), ("", "", None));
         let p = smart_edit_prepare(SmartEdit { id: "sp-2".into(), name: "Mine".into(), ..edit(vec![rule("year", "greater", "soon")]) });

@@ -534,7 +534,7 @@ mod tests {
     }
 
     #[test]
-    fn key_profiles_recognise_their_own_shape() {
+    fn key_profiles_know_own_shape() {
         let rot = |p: &[f64; 12], t: usize| -> [f64; 12] { std::array::from_fn(|i| p[(i + 12 - t) % 12]) };
         assert_eq!(key_of(rot(&MAJOR, 2)).0, camelot(2, false));
         assert_eq!(key_of(rot(&MINOR, 4)).0, camelot(4, true));

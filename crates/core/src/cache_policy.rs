@@ -506,7 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn keys_hold_params_in_order_with_folder() {
+    fn keys_hold_params_and_folder() {
         let (c, fake) = setup();
         fake.answer(r#"{"subsonic-response":{"status":"ok","albumList2":{"album":[]}}}"#);
         block(c.read_fetch(Read::AlbumList { kind: "starred".into(), size: 20, offset: 0, genre: None }, None)).unwrap();
@@ -518,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn favourite_albums_apply_session_stars() {
+    fn favourites_apply_session_stars() {
         let (c, fake) = setup();
         fake.answer(r#"{"subsonic-response":{"status":"ok","albumList2":{"album":[{"id":"fa-1","name":"A"},{"id":"fa-2","name":"B"}]}}}"#);
         block(c.read_fetch(Read::AlbumList { kind: "starred".into(), size: 20, offset: 0, genre: None }, None)).unwrap();
@@ -534,7 +534,7 @@ mod tests {
     }
 
     #[test]
-    fn failures_and_uncached_reads_reach_the_caller() {
+    fn failures_reach_the_caller() {
         let (c, fake) = setup();
         fake.fail(FailureKind::Connect);
         assert!(block(c.read_fetch(Read::GenreList, None)).is_err());

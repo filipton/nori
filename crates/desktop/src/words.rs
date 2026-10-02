@@ -71,7 +71,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn formats_durations_counts_and_quality() {
+    fn formats_durations_and_counts() {
         assert_eq!((duration(0), duration(187), duration(3723)), ("0:00".into(), "3:07".into(), "1:02:03".into()));
         assert_eq!((songs(1), songs_caption(2, 200)), ("1 song".into(), "2 songs · 3:20".into()));
         let s = Song { suffix: "flac".into(), bit_depth: 24, sampling_rate: 96000, ..Default::default() };

@@ -441,7 +441,7 @@ mod tests {
     /// An install from before the graphic equalizer: the mode is chosen from its settings and sound
     /// profiles, and written at once.
     #[test]
-    fn old_install_keeps_parametric_equalizer() {
+    fn old_install_keeps_parametric() {
         let open_with = |name: &str, prefs: &StoredPrefs, profile: Option<String>| {
             let dir = nori_testdir::TempDir::new(name);
             let path = dir.join("nori.db").display().to_string();

@@ -266,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn line_drains_in_order_skipping_busy_songs() {
+    fn line_drains_skipping_busy() {
         let mut line = Line::default();
         assert!(!line.start(), "nothing to do: no thread");
         assert!(line.add(ids(&["a", "b", "c"])), "the first songs start a thread");
