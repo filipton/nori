@@ -922,7 +922,8 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
                 .setBufferSizeInBytes(bytes)
                 .setOffloadedPlayback(true)
                 .build()
-            val events = offloadEvents ?: OffloadEvents { kind -> RustPlayerJni.offloadEvent(h, kind) }.also { offloadEvents = it }
+            offloadTrack = track
+            val events = offloadEvents ?: OffloadEvents { from, kind -> if (from === offloadTrack) RustPlayerJni.offloadEvent(h, kind) }.also { offloadEvents = it }
             track.registerStreamEventCallback(Runnable::run, events)
             track.addOnRoutingChangedListener(AudioRouting.OnRoutingChangedListener { r ->
                 r.routedDevice?.let { d -> RustPlayerJni.device(h, d.type, d.productName?.toString()) }
@@ -937,6 +938,8 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
 
     /** The offloaded track's stream events, made once, the first time a track is offloaded (Android 10's). */
     private var offloadEvents: OffloadEvents? = null
+    /** The offloaded track opened last: a late event of one before it is not the engine's news. */
+    @Volatile private var offloadTrack: AudioTrack? = null
 
     /** A radio station's stream, straight from the network, its announcements asked for. Called on a loader thread. */
     internal fun openLive(url: String): RustBody? {
@@ -1039,10 +1042,10 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
  * thread: 0 it wants more, 1 it played everything up to the end of stream, 2 it was torn down.
  */
 @androidx.annotation.RequiresApi(29)
-private class OffloadEvents(private val tell: (Int) -> Unit) : AudioTrack.StreamEventCallback() {
-    override fun onDataRequest(track: AudioTrack, sizeInFrames: Int) { OffloadCalls.dataRequests++; tell(0) }
-    override fun onPresentationEnded(track: AudioTrack) { OffloadCalls.presented++; tell(1) }
-    override fun onTearDown(track: AudioTrack) { OffloadCalls.tornDown++; tell(2) }
+private class OffloadEvents(private val tell: (AudioTrack, Int) -> Unit) : AudioTrack.StreamEventCallback() {
+    override fun onDataRequest(track: AudioTrack, sizeInFrames: Int) { OffloadCalls.dataRequests++; tell(track, 0) }
+    override fun onPresentationEnded(track: AudioTrack) { OffloadCalls.presented++; tell(track, 1) }
+    override fun onTearDown(track: AudioTrack) { OffloadCalls.tornDown++; tell(track, 2) }
 }
 
 /**
