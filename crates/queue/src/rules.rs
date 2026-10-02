@@ -12,8 +12,6 @@ pub use nori_model::model::PlaybackError;
 pub use nori_player::queue::OnError;
 pub use nori_player::transport::NextAction;
 
-
-
 #[cfg(feature = "ffi")]
 #[uniffi::remote(Enum)]
 pub enum OnError {

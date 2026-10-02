@@ -449,7 +449,6 @@ impl Rig {
     }
 }
 
-
 /// What was heard, measured.
 #[derive(Debug)]
 struct Heard {

@@ -14,7 +14,6 @@ use nori_core::{Core, Song};
 use nori_engine::core::{settings, Analyses, CoreApp, CoreLibrary, CoreQueue};
 use nori_engine::{Body, ByteSource, Config, Engine, Recent, Store};
 
-
 /// `secs` of a quiet tone as a WAV file, a different pitch per seed.
 fn tone_wav(secs: usize, seed: u32) -> Vec<u8> {
     common::wav(44_100, &common::sine(44_100, 220.0 + seed as f64 * 30.0, secs as f64, 0.2 * 32767.0))

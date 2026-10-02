@@ -1,6 +1,5 @@
 //! Mix calls over the index and history. The mixes themselves are nori-library's.
 
-
 use crate::{db, model::Song, Core, Result};
 
 pub mod board;

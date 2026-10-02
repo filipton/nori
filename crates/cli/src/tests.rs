@@ -75,7 +75,6 @@ fn album(id: &str, name: &str) -> Album {
     Album { id: id.into(), name: name.into(), artist: "Someone".into(), year: 2001, ..Default::default() }
 }
 
-
 fn queue_of(n: usize, index: i32) -> nori_core::playlist::PlaylistView {
     let songs: Vec<Song> = (0..n).map(|i| song(&format!("s{i}"), &format!("Song {i}"), 100)).collect();
     nori_core::playlist::PlaylistView { songs, len: n as u32, list_rev: 1, order: (0..n as u32).collect(), queued: vec![3], index, shuffle: false, repeat: 0, bridging: false, rev: 1 }

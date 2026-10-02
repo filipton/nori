@@ -429,7 +429,6 @@ pub fn check(l: &Lyrics, curve: &VocalCurve) -> Option<SyncCheck> {
     Some(SyncCheck { kind, score, best_score, offset_ms, confidence, drift_ms })
 }
 
-
 #[cfg(test)]
 pub(crate) mod tests {
     //! Synthetic songs with a sung line at known times (nori-player's AutoMix evaluation songs), and made-up

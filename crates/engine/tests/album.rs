@@ -16,7 +16,6 @@ use nori_engine::{Body, ByteSource, Config, Engine, State, Recent, Store};
 
 use crate::common;
 
-
 const RATE: usize = 44_100;
 const SECS: usize = 40;
 

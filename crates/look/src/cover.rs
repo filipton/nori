@@ -627,7 +627,6 @@ mod tests {
         rgb(ch(red(base), cast[0]), ch(green(base), cast[1]), ch(blue(base), cast[2]))
     }
 
-
     #[test]
     fn white_paper_covers() {
         // Regression: noisy white paper with a bluish CD voted the page blue.

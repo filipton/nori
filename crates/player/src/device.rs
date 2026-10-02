@@ -164,7 +164,6 @@ mod tests {
         assert_eq!(super::rows(&known, SPEAKER, &[], &[]).len(), 1);
     }
 
-
     fn arrival() -> Arrival {
         Arrival { bound: false, per_output: true, speaker: false, quiet: false, auto_apply: false }
     }

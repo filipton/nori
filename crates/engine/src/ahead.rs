@@ -383,7 +383,6 @@ mod tests {
         (d, s)
     }
 
-
     fn songs(ids: &[&str]) -> Vec<AheadSong> {
         ids.iter().map(|id| AheadSong { id: id.to_string(), url: format!("http://m/{id}"), key: format!("{id}:0") }).collect()
     }

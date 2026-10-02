@@ -364,8 +364,6 @@ fn loudness_match_lets_go_gently(la: f32, lb: f32) {
     assert!(bad.is_empty(), "{bad:#?}");
 }
 
-
-
 #[test]
 fn tiny_stretch_keeps_level() {
     // Stretched by 0.075 %, the incoming song came out of the pitch-keeping stretcher up to 2.6 dB quiet (on

@@ -874,7 +874,6 @@ mod tests {
         run_saying(web, cache, s, server, l).0
     }
 
-
     /// `lines` as LRC across the song, a line every ten seconds; `words` times each word inline.
     fn lrc(lines: &[&str], words: bool) -> String {
         let at = |ms: usize| format!("{:02}:{:02}.{:02}", ms / 60_000, ms / 1000 % 60, ms % 1000 / 10);
