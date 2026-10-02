@@ -416,6 +416,27 @@ extern "system" fn lyrics_nudge(h: jlong, dir: jint) -> jlong {
 mod tests {
     use super::*;
 
+    /// The packed answers as Kotlin unpacks them (CoverLook.kt): halves of a long, an enum's ordinal.
+    #[test]
+    fn doors_pack_as_kotlin_reads() {
+        let halves = |v: jlong| (v >> 32, v & 0xFFFF_FFFF);
+        assert_eq!(halves(seek_times(0, 0.0, -1, 61_500, 180_000)), (61, 118), "at the position");
+        assert_eq!(halves(seek_times(0, 0.0, 30_000, 61_500, 180_000)), (30, 150), "at the held place");
+        assert_eq!(halves(seek_times(1, 0.5, 30_000, 61_500, 180_000)), (90, 90), "at the drag");
+        assert_eq!(halves(pack_times((5, 7))), (5, 7));
+
+        let step = seek_step(0.2, 0.8, 0.016, 400.0, 1.0);
+        let (bar, wait) = nori_look::motion::seek_step(0.2, 0.8, 0.016, 400.0, 1.0);
+        assert_eq!((f32::from_bits((step >> 32) as u32), (step & 0xFFFF_FFFF) as i32), (bar, wait));
+
+        use nori_core::stage::TransportGlyph;
+        let entries = [TransportGlyph::Play, TransportGlyph::Pause, TransportGlyph::Spinner];
+        for (playing, buffering, waited) in [(0, 0, 0), (1, 0, 0), (1, 1, 0), (1, 1, 1), (0, 1, 1)] {
+            let glyph = nori_core::stage::transport_glyph(playing != 0, buffering != 0, waited != 0);
+            assert_eq!(entries[transport_glyph(playing, buffering, waited) as usize], glyph, "{playing} {buffering} {waited}");
+        }
+    }
+
     #[test]
     fn premultiplied_matches_set_pixels() {
         let mut px = [0u8; 4];

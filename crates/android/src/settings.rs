@@ -63,3 +63,27 @@ extern "system" fn set_graphic(s: jlong, index: jint, value: jfloat) -> jlong {
     let Ok(index) = u32::try_from(index) else { return -1 };
     pack_edit(crate::kept::<Settings>(s).edit_graphic(index, value))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A band's mark as Kotlin reads it: `BandMark.entries[ordinal]`.
+    #[test]
+    fn band_marks_are_ordinals() {
+        let entries = [BandMark::None, BandMark::Left, BandMark::Right, BandMark::LowShelf, BandMark::HighShelf, BandMark::NoGain];
+        for kind in 0..8 {
+            for channel in 0..3 {
+                assert_eq!(entries[band_mark(kind, channel) as usize], nori_core::settings::band_mark(kind, channel), "{kind} {channel}");
+            }
+        }
+    }
+
+    /// An edit as `Settings.setLevel` unpacks it: the value kept in the high half, the effects in the low.
+    #[test]
+    fn edits_pack_value_and_effects() {
+        let v = pack_edit(Some((9, -3.5)));
+        assert_eq!((f32::from_bits((v >> 32) as u32), v as i32), (-3.5, 9));
+        assert_eq!(pack_edit(None), -1);
+    }
+}
