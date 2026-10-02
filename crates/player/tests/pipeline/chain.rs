@@ -24,7 +24,7 @@ fn limiter() -> Sound {
 const LOOKAHEAD: usize = 220;
 
 #[test]
-fn limiter_only_catches_peaks() {
+fn limiter_holds_ceiling() {
     // Mastered music peaks just under full scale; at the default -1 dB it needs a few dB at most.
     let song: Vec<i16> = music(20.0, 5).iter().map(|&v| (v as f64 * 2.4).clamp(-32768.0, 32767.0) as i16).collect();
     let mut p = Player::new(vec![track("a", &song)]);
@@ -38,28 +38,8 @@ fn limiter_only_catches_peaks() {
     assert!(reduction > 0.0 && reduction < 6.0, "the limiter took {reduction} dB off mastered music");
     let peak = p.sink.heard_samples().iter().map(|&v| (v as f64 / 32768.0).abs()).fold(0.0, f64::max);
     assert!(peak <= 10f64.powf(-1.0 / 20.0) + 1.0 / 32768.0, "nothing past the -1 dB ceiling: {peak}");
-}
 
-#[test]
-fn compressor_meter() {
-    let song = music(20.0, 5);
-    let mut p = Player::new(vec![track("a", &song)]);
-    p.set_sound(Sound { effects: Effects { compressor: Some(CompressorPreset::Strong.settings()), ..Effects::default() }, ..limiter() });
-    p.play_from(0);
-    p.run_for(5_000);
-    let db = p.sink.compression_db();
-    assert!(db > 1.0 && db < 30.0, "a screen reads {db} dB off music through the strong preset");
-    // Without one: nothing to read, and the limiter's meter is its own.
-    let mut q = Player::new(vec![track("a", &song)]);
-    q.set_sound(limiter());
-    q.play_from(0);
-    q.run_for(5_000);
-    assert!(q.sink.chain_in());
-    assert_eq!(q.sink.compression_db(), 0.0);
-}
-
-#[test]
-fn limiter_bit_exact_below_threshold() {
+    // Limiter bit exact below threshold.
     let song = music(10.0, 6);
     let mut p = Player::new(vec![track("a", &song)]);
     p.set_sound(limiter());
@@ -69,10 +49,8 @@ fn limiter_bit_exact_below_threshold() {
     assert!(heard[..LOOKAHEAD * 2].iter().all(|&v| v == 0), "the look-ahead delays the song");
     assert!(heard[LOOKAHEAD * 2..] == song[..heard.len() - LOOKAHEAD * 2], "and changes nothing else, bit for bit");
     assert_eq!(p.sink.gain_reduction_db, 0.0);
-}
 
-#[test]
-fn limiter_ceiling_holds_at_any_setting() {
+    // Limiter ceiling holds at any setting.
     // Hot random input, up to 24 dB over full scale, through every threshold, release and look-ahead.
     for threshold in [0.0, -1.0, -3.0, -6.0, -12.0] {
         for release in [5.0, 50.0, 120.0, 1000.0] {
@@ -99,6 +77,39 @@ fn limiter_ceiling_holds_at_any_setting() {
 }
 
 #[test]
+fn compressor_meter() {
+    let song = music(20.0, 5);
+    let mut p = Player::new(vec![track("a", &song)]);
+    p.set_sound(Sound { effects: Effects { compressor: Some(CompressorPreset::Strong.settings()), ..Effects::default() }, ..limiter() });
+    p.play_from(0);
+    p.run_for(5_000);
+    let reading = p.sink.compression_db();
+    assert!(reading > 1.0 && reading < 30.0, "a screen reads {reading} dB off music through the strong preset");
+    // Without one: nothing to read, and the limiter's meter is its own.
+    let mut q = Player::new(vec![track("a", &song)]);
+    q.set_sound(limiter());
+    q.play_from(0);
+    q.run_for(5_000);
+    assert!(q.sink.chain_in());
+    assert_eq!(q.sink.compression_db(), 0.0);
+
+    // Compressor narrows dynamics.
+    // A quiet half and a loud half, 24 dB apart.
+    let quiet = sine(220.0, 0.03, 4.0);
+    let loud = sine(220.0, 0.5, 4.0);
+    let song: Vec<i16> = quiet.iter().chain(&loud).copied().collect();
+    let mut p = Player::new(vec![track("a", &song)]);
+    p.set_sound(Sound { effects: Effects { compressor: Some(CompressorPreset::Balanced.settings()), ..Effects::default() }, ..Sound::default() });
+    p.play_from(0);
+    assert!(p.run_to_end(30_000));
+    let heard = left(&p.sink.heard_samples());
+    let half = heard.len() / 2;
+    let (a, b) = (rms(&heard[frames(1.0)..half - frames(0.5)]), rms(&heard[half + frames(1.0)..heard.len() - frames(0.5)]));
+    let apart = db(b / a);
+    assert!(apart < 24.0 - 6.0, "24 dB apart went in, {apart:.1} came out");
+}
+
+#[test]
 fn equalizer_gains() {
     // One tone for each band, where the band has its whole effect, and one where none of them does.
     let tones = [(30.0, -6.0), (1000.0, 6.0), (16000.0, 4.0), (380.0, 0.35)];
@@ -119,10 +130,8 @@ fn equalizer_gains() {
         let got = db(level_at(&heard[from..to], hz, RATE as f64) / level_at(&input[from..to], hz, RATE as f64));
         assert!((got - want).abs() < 0.3, "{hz} Hz: {got:.2} dB, the curve says {want}");
     }
-}
 
-#[test]
-fn graphic_equalizer_gains() {
+    // Graphic equalizer gains.
     // Tones at four band centres of the ten-band layout, far enough apart to be read one by one.
     let sliders = vec![0.0, 0.0, 6.0, 6.0, 0.0, -6.0, 0.0, 0.0, 3.0, 0.0];
     let centres = nori_player::graphic::centres(10);
@@ -161,23 +170,6 @@ fn volume_boost_under_ceiling() {
     assert!(peak <= 10f64.powf(-1.0 / 20.0) + 1.0 / 32768.0, "nothing past the -1 dB ceiling: {peak}");
     let louder = db(rms(&heard) / rms(&input));
     assert!(louder > 3.0 && louder < 6.2, "{louder} dB louder");
-}
-
-#[test]
-fn compressor_narrows_dynamics() {
-    // A quiet half and a loud half, 24 dB apart.
-    let quiet = sine(220.0, 0.03, 4.0);
-    let loud = sine(220.0, 0.5, 4.0);
-    let song: Vec<i16> = quiet.iter().chain(&loud).copied().collect();
-    let mut p = Player::new(vec![track("a", &song)]);
-    p.set_sound(Sound { effects: Effects { compressor: Some(CompressorPreset::Balanced.settings()), ..Effects::default() }, ..Sound::default() });
-    p.play_from(0);
-    assert!(p.run_to_end(30_000));
-    let heard = left(&p.sink.heard_samples());
-    let half = heard.len() / 2;
-    let (a, b) = (rms(&heard[frames(1.0)..half - frames(0.5)]), rms(&heard[half + frames(1.0)..heard.len() - frames(0.5)]));
-    let apart = db(b / a);
-    assert!(apart < 24.0 - 6.0, "24 dB apart went in, {apart:.1} came out");
 }
 
 /// Plays a 220 Hz tone, changes the sound to `change` for a while and back to `base`, and returns the

@@ -14,7 +14,7 @@ fn pace(p: &mut Player, settle_ms: i64, ms: i64) -> i64 {
 }
 
 #[test]
-fn speed_1_5x_keeps_pitch() {
+fn speed_and_pitch() {
     let song = centred(440.0, 0.4, 60.0);
     let mut p = Player::new(vec![track("a", &song)]);
     p.play_from(0);
@@ -32,10 +32,8 @@ fn speed_1_5x_keeps_pitch() {
     let heard = left(&p.sink.heard_samples());
     let hz = pitch_hz(&heard[heard.len() - frames(6.0)..heard.len() - frames(1.0)], RATE as f64);
     assert!((hz - 440.0).abs() < 2.0, "the pitch stays: {hz:.1} Hz");
-}
 
-#[test]
-fn pitch_keeps_pace() {
+    // Pitch keeps pace.
     let song = centred(440.0, 0.4, 40.0);
     let mut p = Player::new(vec![track("a", &song)]);
     p.set_speed(1.0, 1.1);
@@ -50,7 +48,7 @@ fn pitch_keeps_pace() {
 }
 
 #[test]
-fn silence_skipping_keeps_notes() {
+fn silence_skipping() {
     // Three seconds of music, four of silence, three of music.
     let (a, b) = (music(3.0, 31), music(3.0, 32));
     let song: Vec<i16> = [a.clone(), vec![0; frames(4.0) * 2], b.clone()].concat();
@@ -70,10 +68,8 @@ fn silence_skipping_keeps_notes() {
     assert!(p.sink.gaps.is_empty());
     // What was skipped still counts as played: the player ends at the end of the song.
     assert!((p.position_ms() - 10_000).abs() <= 25, "the position is the song's: {}", p.position_ms());
-}
 
-#[test]
-fn silence_skipping_keeps_short_rest() {
+    // Silence skipping keeps short rest.
     let song: Vec<i16> = [music(2.0, 33), vec![0; frames(0.05) * 2], music(2.0, 34)].concat();
     let mut p = Player::new(vec![track("a", &song)]);
     p.set_skip_silence(true);
@@ -81,3 +77,4 @@ fn silence_skipping_keeps_short_rest() {
     assert!(p.run_to_end(30_000));
     assert!(p.sink.heard_samples() == song, "50 ms of quiet is music");
 }
+

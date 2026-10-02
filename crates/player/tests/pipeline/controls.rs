@@ -57,7 +57,7 @@ fn next_mid_crossfade_cuts_cleanly() {
 }
 
 #[test]
-fn seek_lands_on_sample() {
+fn seeks_land_on_sample() {
     let song = music(30.0, 7);
     let mut p = Player::new(vec![track("a", &song)]);
     p.play_from(0);
@@ -72,13 +72,8 @@ fn seek_lands_on_sample() {
     // The position is the seek's place plus exactly what has been heard since, to the millisecond.
     let since_ms = heard.len() as i64 / 2 * 1000 / RATE as i64;
     assert!((p.position_ms() - (12_345 + since_ms)).abs() <= 1, "{} after {since_ms} ms heard", p.position_ms());
-}
 
-/// How far apart two positions may be read: one turn of the renderer.
-const STEP: i64 = 10;
-
-#[test]
-fn mp3_seek_is_sample_exact() {
+    // Mp3 seek is sample exact.
     let audio = Audio::mp3(&testdata("tone440.mp3"));
     let whole = audio.decode_all();
     let mut p = Player::new(vec![Track::new("a", audio)]);
@@ -96,10 +91,8 @@ fn mp3_seek_is_sample_exact() {
     let settled = 2 * 1152 * 2;
     assert!(heard.len() > settled + 4608);
     assert!(heard[settled..heard.len().min(whole.len() - landed * 2)] == whole[landed * 2 + settled..landed * 2 + heard.len().min(whole.len() - landed * 2)], "the seek landed on frame {landed}");
-}
 
-#[test]
-fn opus_seek_is_sample_exact() {
+    // Opus seek is sample exact.
     let audio = Audio::opus(&testdata("tone440.opus"));
     let whole = left(&audio.decode_all());
     let mut p = Player::new(vec![Track::new("a", audio)]);
@@ -133,6 +126,9 @@ fn opus_seek_is_sample_exact() {
     assert!(off(9_600) < -70.0, "200 ms on {:.1} dB off", off(9_600));
 }
 
+/// How far apart two positions may be read: one turn of the renderer.
+const STEP: i64 = 10;
+
 #[test]
 fn seek_while_paused_sticks() {
     let song = music(40.0, 8);
@@ -154,7 +150,7 @@ fn seek_while_paused_sticks() {
 }
 
 #[test]
-fn failing_songs_skip_three_then_stop() {
+fn failing_songs() {
     let s = songs(6, 4.0);
     let mut p = Player::new(queue(&s));
     p.tracks.broken = ["s1", "s2", "s3", "s4"].map(String::from).to_vec();
@@ -164,10 +160,8 @@ fn failing_songs_skip_three_then_stop() {
     assert_eq!(skipped, ["s1 will not play: skipped", "s2 will not play: skipped", "s3 will not play: skipped", "s4 will not play: stopped"]);
     assert!(!p.playing(), "stopped after three in a row");
     assert_eq!(p.sink.heard_frames as usize, frames(4.0), "only the first song was heard; s5 never played");
-}
 
-#[test]
-fn playing_song_resets_error_run() {
+    // Playing song resets error run.
     let s = songs(7, 3.0);
     let mut p = Player::new(queue(&s));
     p.tracks.broken = ["s1", "s3", "s4", "s5"].map(String::from).to_vec();
@@ -213,9 +207,9 @@ fn shuffle_plays_each_song_once() {
     assert!(heard == joined, "each song once, whole, back to back");
 }
 
-/// An edit while the playing song is opened again to remake its ending: the remake follows the song.
 #[test]
-fn edit_while_ending_is_remade() {
+fn edits_near_current() {
+    // An edit while the playing song is opened again to remake its ending: the remake follows the song.
     let s = songs(4, 12.0);
     let mut p = Player::new(queue(&s));
     p.tracks.slow.push("s1".into());
@@ -238,10 +232,8 @@ fn edit_while_ending_is_remade() {
     let (cut, blend) = (s[1].len(), frames(nori_player::pipeline::BLEND_US as f64 / 1e6) * 2);
     assert_eq!(heard.len(), joined.len());
     assert!(heard[..cut] == joined[..cut] && heard[cut + blend..] == joined[cut + blend..], "s1 whole, then the song added to play next, then the rest");
-}
 
-#[test]
-fn edit_before_current_keeps_player_on_it() {
+    // Edit before current keeps player on it.
     let s = songs(4, 12.0);
     let mut p = Player::new(queue(&s));
     p.play_from(1);

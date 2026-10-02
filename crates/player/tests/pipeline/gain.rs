@@ -93,12 +93,10 @@ fn check_gain_then_mix(prefs: TransitionPrefs, what: &str) {
 }
 
 #[test]
-fn crossfade_uses_each_song_gain() {
+fn mixes_use_each_song_gain() {
     check_gain_then_mix(crossfade(6), "crossfade");
-}
 
-#[test]
-fn automix_uses_each_song_gain() {
+    // Automix uses each song gain.
     check_gain_then_mix(automix(), "automix");
 }
 
@@ -109,7 +107,7 @@ fn step_near(x: &[f64], at: usize, ms: usize) -> f64 {
 }
 
 #[test]
-fn crossfade_ends_without_click() {
+fn mix_ends_without_click() {
     let (a, b) = (music(SONG_S, 23), music(SONG_S, 24));
     let (got, log) = heard(&[("a", &a, 120.0), ("b", &b, 120.0)], &crossfade(6), &[]);
     assert!(log.iter().any(|l| l.contains("transition a -> b: EqualPowerFade 6000 ms at 39000")), "{log:?}");
@@ -119,10 +117,8 @@ fn crossfade_ends_without_click() {
     let own = step_near(&left(&a), end, 100).max(step_near(&left(&b), frames(6.0), 100));
     let step = step_near(&x, end, 20);
     assert!(step <= 2.0 * own, "the end of the mix steps {step:.4} against the songs' own {own:.4}");
-}
 
-#[test]
-fn automix_stretch_ends_without_click() {
+    // Automix stretch ends without click.
     let (a, b) = (music(SONG_S, 25), music(SONG_S, 26));
     let (got, log) = heard(&[("a", &a, 120.0), ("b", &b, 123.0)], &automix(), &[]);
     let plan = log.iter().find(|l| l.contains("transition a -> b: BeatMatched")).unwrap_or_else(|| panic!("{log:?}")).clone();

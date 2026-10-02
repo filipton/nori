@@ -262,7 +262,7 @@ fn incoming_song_at_own_level() {
 }
 
 #[test]
-fn no_level_step_at_mix_end() {
+fn no_level_step() {
     let (a, b, ga, gb) = songs();
     for kind in kinds(-14.0, -14.0) {
         let got = run(&kind, &a, &b, &[("a", ga), ("b", gb)], true);
@@ -274,6 +274,49 @@ fn no_level_step_at_mix_end() {
         println!("{}: largest 100 ms move from the end of the mix on: {step:.3} dB, {:.1} s after it", kind.name, i as f64 * WIN_S - 0.2);
         assert!(step <= 1.0, "{}: the level moves {step:.2} dB in 100 ms, {:.1} s after the mix ends ({})", kind.name, i as f64 * WIN_S - 0.2, got.line);
     }
+
+    // Short song mix ends without step.
+    // The server lists the outgoing song a second and a half longer than its audio (a length rounded up,
+    // a VBR estimate): a plan made with that length runs past the end of what is held, and the mix must
+    // still finish its curves - the incoming song fading up on its own - rather than drop them where the
+    // held audio ends. The outgoing song 6 dB louder than the incoming one; with ReplayGain off, AutoMix
+    // matches the two, and that match must be let go gently too.
+    let (a, b) = (steady(SONG_S, 31, 0.5), steady(SONG_S, 32, 0.25));
+    // Its music dies away over its last three seconds, as a song's does: what is measured is the mix.
+    let end = frames(SONG_S - 1.5);
+    let fade = frames(3.0);
+    let short: Vec<i16> = a[..end * 2].iter().enumerate().map(|(k, &v)| (v as f64 * ((end - k / 2) as f64 / fade as f64).min(1.0)).round() as i16).collect();
+    let short = &short[..];
+    let mut all = kinds(-8.0, -14.0);
+    all.push(Kind {
+        name: "AutoMix, nothing measured",
+        prefs: TransitionPrefs { auto_mix_max_s: 12, ..automix_prefs() },
+        a: TrackAnalysis::default(),
+        b: TrackAnalysis::default(),
+        logged: &["EqualPowerFade", "not analysed"],
+    });
+    let mut bad = Vec::new();
+    let mut cut = 0;
+    for kind in all {
+        for replay_gain in [true, false] {
+            let listed = track("a", short).listed_as((SONG_S * 1000.0) as i64);
+            let got = run_listed(&kind, listed, &b, &[], replay_gain);
+            let (s, n) = got.mix;
+            if s + n <= end {
+                continue;
+            }
+            cut += 1;
+            let l = levels(&left(&got.out), end - frames(0.2), end + frames(1.0));
+            let (step, i) = largest_move(&l);
+            let what = format!("{} (loudness match {})", kind.name, if replay_gain { "off" } else { "on" });
+            println!("{what}: largest 100 ms move where the held audio ends: {step:.3} dB, {:.1} s after it ({})", i as f64 * WIN_S - 0.2, got.line);
+            if step > 1.0 {
+                bad.push(format!("{what}: {step:.2} dB in 100 ms, {:.1} s after the held audio ends ({})", i as f64 * WIN_S - 0.2, got.line));
+            }
+        }
+    }
+    assert!(cut >= 4, "the plans that run past the audio: {cut}");
+    assert!(bad.is_empty(), "{bad:#?}");
 }
 
 /// The loudness match's own curve for `kind`, dB per 100 ms of the mix: the incoming song alone (the
@@ -322,51 +365,6 @@ fn loudness_match_lets_go_gently(la: f32, lb: f32) {
 }
 
 
-
-#[test]
-fn short_song_mix_ends_without_step() {
-    // The server lists the outgoing song a second and a half longer than its audio (a length rounded up,
-    // a VBR estimate): a plan made with that length runs past the end of what is held, and the mix must
-    // still finish its curves - the incoming song fading up on its own - rather than drop them where the
-    // held audio ends. The outgoing song 6 dB louder than the incoming one; with ReplayGain off, AutoMix
-    // matches the two, and that match must be let go gently too.
-    let (a, b) = (steady(SONG_S, 31, 0.5), steady(SONG_S, 32, 0.25));
-    // Its music dies away over its last three seconds, as a song's does: what is measured is the mix.
-    let end = frames(SONG_S - 1.5);
-    let fade = frames(3.0);
-    let short: Vec<i16> = a[..end * 2].iter().enumerate().map(|(k, &v)| (v as f64 * ((end - k / 2) as f64 / fade as f64).min(1.0)).round() as i16).collect();
-    let short = &short[..];
-    let mut all = kinds(-8.0, -14.0);
-    all.push(Kind {
-        name: "AutoMix, nothing measured",
-        prefs: TransitionPrefs { auto_mix_max_s: 12, ..automix_prefs() },
-        a: TrackAnalysis::default(),
-        b: TrackAnalysis::default(),
-        logged: &["EqualPowerFade", "not analysed"],
-    });
-    let mut bad = Vec::new();
-    let mut cut = 0;
-    for kind in all {
-        for replay_gain in [true, false] {
-            let listed = track("a", short).listed_as((SONG_S * 1000.0) as i64);
-            let got = run_listed(&kind, listed, &b, &[], replay_gain);
-            let (s, n) = got.mix;
-            if s + n <= end {
-                continue;
-            }
-            cut += 1;
-            let l = levels(&left(&got.out), end - frames(0.2), end + frames(1.0));
-            let (step, i) = largest_move(&l);
-            let what = format!("{} (loudness match {})", kind.name, if replay_gain { "off" } else { "on" });
-            println!("{what}: largest 100 ms move where the held audio ends: {step:.3} dB, {:.1} s after it ({})", i as f64 * WIN_S - 0.2, got.line);
-            if step > 1.0 {
-                bad.push(format!("{what}: {step:.2} dB in 100 ms, {:.1} s after the held audio ends ({})", i as f64 * WIN_S - 0.2, got.line));
-            }
-        }
-    }
-    assert!(cut >= 4, "the plans that run past the audio: {cut}");
-    assert!(bad.is_empty(), "{bad:#?}");
-}
 
 #[test]
 fn tiny_stretch_keeps_level() {

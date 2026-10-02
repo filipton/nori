@@ -140,7 +140,7 @@ fn bar_steady_through_held_ending() {
 }
 
 #[test]
-fn scrub_into_mix_still_mixes() {
+fn seeks_around_the_mix() {
     let (mut p, _, b, c) = player(12);
     p.play_from(1);
     p.run_for(3_000);
@@ -166,6 +166,23 @@ fn scrub_into_mix_still_mixes() {
     let start = heard.iter().position(|&v| v != 0).unwrap_or(0) / 2 * 2;
     assert!(heard[start..start + rest] == mix[..], "the mix from where the scrub landed, sample for sample");
     assert!(heard[start + rest..start + rest + frames(2.0) * 2] == c[late * 2 + rest..late * 2 + rest + frames(2.0) * 2], "then c alone");
+
+    // Seek back out of hold mixes again.
+    let (a, b, _) = three();
+    let mut p = Player::with_prefs(vec![track("a", &a), track("b", &b)], crossfade(12));
+    p.play_from(0);
+    // Decode runs seconds ahead: the ending is held long before it is heard.
+    assert!(p.run_until(40_000, |p| p.app.logged("holding the ending")));
+    assert!(p.position_ms() < 33_000);
+    p.seek(10_000);
+    let from = p.sink.heard_frames as usize;
+    assert!(p.run_to_end(80_000));
+    let heard = &p.sink.heard_samples()[from * 2..];
+    let (start, overlap) = (frames(23.0) * 2, frames(12.0) * 2);
+    assert!(heard[..start] == a[frames(10.0) * 2..frames(33.0) * 2], "a from the seek up to the planned start");
+    let mix = reference_mix(&a[frames(33.0) * 2..], &b[..overlap], &blind_plan(SONG_MS, SONG_MS, 12.0));
+    assert!(heard[start..start + overlap] == mix[..], "the same mix, sample for sample");
+    assert!(heard[start + overlap..] == b[overlap..], "then b to its end");
 }
 
 #[test]
@@ -189,25 +206,6 @@ fn pausing_changes_nothing_heard() {
     assert!(p.run_to_end(120_000));
     assert!(p.sink.gaps.is_empty(), "{:?}", p.sink.gaps);
     assert!(p.sink.heard_samples() == whole, "the same samples, however often it was paused");
-}
-
-#[test]
-fn seek_back_out_of_hold_mixes_again() {
-    let (a, b, _) = three();
-    let mut p = Player::with_prefs(vec![track("a", &a), track("b", &b)], crossfade(12));
-    p.play_from(0);
-    // Decode runs seconds ahead: the ending is held long before it is heard.
-    assert!(p.run_until(40_000, |p| p.app.logged("holding the ending")));
-    assert!(p.position_ms() < 33_000);
-    p.seek(10_000);
-    let from = p.sink.heard_frames as usize;
-    assert!(p.run_to_end(80_000));
-    let heard = &p.sink.heard_samples()[from * 2..];
-    let (start, overlap) = (frames(23.0) * 2, frames(12.0) * 2);
-    assert!(heard[..start] == a[frames(10.0) * 2..frames(33.0) * 2], "a from the seek up to the planned start");
-    let mix = reference_mix(&a[frames(33.0) * 2..], &b[..overlap], &blind_plan(SONG_MS, SONG_MS, 12.0));
-    assert!(heard[start..start + overlap] == mix[..], "the same mix, sample for sample");
-    assert!(heard[start + overlap..] == b[overlap..], "then b to its end");
 }
 
 #[test]
@@ -252,23 +250,7 @@ fn off_planner_logs_reason() {
 }
 
 #[test]
-fn equal_power_fade_keeps_level() {
-    // Two independent noises at the same level: through an equal-power fade their sum keeps that level.
-    let (a, b) = (noise(0.3, 40.0, 11), noise(0.3, 40.0, 12));
-    let mut p = Player::with_prefs(vec![track("a", &a), track("b", &b)], crossfade(10));
-    p.play_from(0);
-    assert!(p.run_to_end(120_000));
-    let heard = left(&p.sink.heard_samples());
-    let steady = rms(&heard[frames(5.0)..frames(25.0)]);
-    let window = frames(0.1);
-    let (from, to) = (frames(29.0), frames(41.0));
-    let levels: Vec<f64> = heard[from..to].chunks(window).map(|w| db(rms(w) / steady)).collect();
-    let (lo, hi) = levels.iter().fold((f64::MAX, f64::MIN), |(l, h), &v| (l.min(v), h.max(v)));
-    assert!(lo > -0.5 && hi < 0.5, "no dip or bump through the overlap: {lo:.2} .. {hi:.2} dB");
-}
-
-#[test]
-fn crossfade_curve_and_fade_in() {
+fn crossfade_curve_and_level() {
     use nori_player::transitions::TransitionPrefs;
     use nori_player::types::FadeCurve;
     // The outgoing song at 440 Hz, the incoming one at 1 kHz: each side's gain read by its own tone.
@@ -287,4 +269,19 @@ fn crossfade_curve_and_fade_in() {
     let shaped = heard(TransitionPrefs { fade_curve: FadeCurve::Linear, fade_in_ms: 2_000, ..crossfade(10) });
     assert!(at(&shaped, 1000.0, 3.0) > 0.97, "the incoming song is up after two seconds: {}", at(&shaped, 1000.0, 3.0));
     assert!((at(&shaped, 440.0, 5.0) - 0.5).abs() < 0.05, "the outgoing one falls in a straight line, half way at the middle: {}", at(&shaped, 440.0, 5.0));
+
+    // Equal power fade keeps level.
+    // Two independent noises at the same level: through an equal-power fade their sum keeps that level.
+    let (a, b) = (noise(0.3, 40.0, 11), noise(0.3, 40.0, 12));
+    let mut p = Player::with_prefs(vec![track("a", &a), track("b", &b)], crossfade(10));
+    p.play_from(0);
+    assert!(p.run_to_end(120_000));
+    let heard = left(&p.sink.heard_samples());
+    let steady = rms(&heard[frames(5.0)..frames(25.0)]);
+    let window = frames(0.1);
+    let (from, to) = (frames(29.0), frames(41.0));
+    let levels: Vec<f64> = heard[from..to].chunks(window).map(|w| db(rms(w) / steady)).collect();
+    let (lo, hi) = levels.iter().fold((f64::MAX, f64::MIN), |(l, h), &v| (l.min(v), h.max(v)));
+    assert!(lo > -0.5 && hi < 0.5, "no dip or bump through the overlap: {lo:.2} .. {hi:.2} dB");
 }
+
