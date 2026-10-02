@@ -412,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn cached_answer_is_fresh_after_fetch() {
+    fn freshness() {
         let (c, fake) = setup();
         let s = c.read_stored(Read::GenreList).unwrap();
         assert!(s.page.is_none() && s.digest.is_none() && !s.fresh);
@@ -423,10 +423,8 @@ mod tests {
         assert_eq!(genres(&s.page), "Rock");
         assert!(s.fresh);
         assert_eq!(fake.asked().len(), 1);
-    }
 
-    #[test]
-    fn unchanged_answer_returns_none_and_refreshes() {
+        // Unchanged answer returns none and refreshes.
         let (c, fake) = setup();
         c.core.cache_put("getGenres".into(), GENRES.into()).unwrap();
         c.core.db.lock().execute("UPDATE cache SET ts = 0", []).unwrap();
@@ -439,10 +437,34 @@ mod tests {
         c.core.db.lock().execute("UPDATE cache SET ts = 0", []).unwrap();
         fake.answer(GENRES2);
         assert_eq!(genres(&block(c.read_fetch(Read::GenreList, s.digest)).unwrap()), "Jazz");
+
+        // Deleted page is dropped.
+        let (c, fake) = setup();
+        let read = || Read::AlbumById { id: "al-1".into() };
+        fake.answer(r#"{"subsonic-response":{"status":"ok","album":{"id":"al-1","name":"A","song":[{"id":"s1","title":"t"}]}}}"#);
+        block(c.read_fetch(read(), None)).unwrap();
+        c.core.db.lock().execute("UPDATE cache SET ts = 0", []).unwrap();
+        fake.answer(r#"{"subsonic-response":{"status":"failed","error":{"code":70,"message":"not found"}}}"#);
+        let mut shown = 0;
+        assert!(matches!(block(c.read_each(read(), |_| shown += 1)), Err(crate::transport::NetError::Api { code: 70, .. })));
+        assert_eq!(shown, 1, "the cached page, before the server said");
+        assert!(c.read_stored(read()).unwrap().page.is_none());
+        // Offline, the cached page stands.
+        fake.answer(r#"{"subsonic-response":{"status":"ok","album":{"id":"al-1","name":"A","song":[]}}}"#);
+        block(c.read_fetch(read(), None)).unwrap();
+        c.core.db.lock().execute("UPDATE cache SET ts = 0", []).unwrap();
+        fake.fail(FailureKind::Connect);
+        assert!(block(c.read_each(read(), |_| {})).is_ok());
+
+        // Unreadable cache is stale.
+        let (c, _) = setup();
+        c.core.cache_put("getGenres".into(), b"garbage".to_vec()).unwrap();
+        let s = c.read_stored(Read::GenreList).unwrap();
+        assert!(s.page.is_none() && s.digest.is_some() && !s.fresh);
     }
 
     #[test]
-    fn provider_pages_are_never_fresh() {
+    fn uncached_reads() {
         let (c, fake) = setup();
         let song = |ext: bool| format!(r#"{{"id":"s{ext}","title":"t","isExternal":{ext}}}"#);
         let album = |ext: bool| format!(r#"{{"id":"a{ext}","name":"A","isExternal":{ext}}}"#);
@@ -464,34 +486,23 @@ mod tests {
                 assert!(s.page.is_some() && s.fresh != provider, "{read:?}, a provider item: {provider}");
             }
         }
-    }
 
-    #[test]
-    fn deleted_page_is_dropped() {
+        // Random is uncached and by year is this year.
         let (c, fake) = setup();
-        let read = || Read::AlbumById { id: "al-1".into() };
-        fake.answer(r#"{"subsonic-response":{"status":"ok","album":{"id":"al-1","name":"A","song":[{"id":"s1","title":"t"}]}}}"#);
-        block(c.read_fetch(read(), None)).unwrap();
-        c.core.db.lock().execute("UPDATE cache SET ts = 0", []).unwrap();
-        fake.answer(r#"{"subsonic-response":{"status":"failed","error":{"code":70,"message":"not found"}}}"#);
-        let mut shown = 0;
-        assert!(matches!(block(c.read_each(read(), |_| shown += 1)), Err(crate::transport::NetError::Api { code: 70, .. })));
-        assert_eq!(shown, 1, "the cached page, before the server said");
-        assert!(c.read_stored(read()).unwrap().page.is_none());
-        // Offline, the cached page stands.
-        fake.answer(r#"{"subsonic-response":{"status":"ok","album":{"id":"al-1","name":"A","song":[]}}}"#);
-        block(c.read_fetch(read(), None)).unwrap();
-        c.core.db.lock().execute("UPDATE cache SET ts = 0", []).unwrap();
-        fake.fail(FailureKind::Connect);
-        assert!(block(c.read_each(read(), |_| {})).is_ok());
-    }
+        let random = Read::AlbumList { kind: "random".into(), size: 5, offset: 0, genre: Some("Rock".into()) };
+        assert!(c.read_stored(random.clone()).unwrap().digest.is_none());
+        let list = r#"{"subsonic-response":{"status":"ok","albumList2":{"album":[{"id":"a","name":"A"}]}}}"#;
+        fake.answer(list);
+        assert!(block(c.read_fetch(random.clone(), None)).unwrap().is_some());
+        fake.answer(list);
+        assert!(block(c.read_fetch(random, None)).unwrap().is_some());
+        assert_eq!(c.core.db.lock().query_row("SELECT count(*) FROM cache", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        assert!(fake.asked()[0].ends_with("&type=random&size=5&offset=0&genre=Rock&musicFolderId=7"));
 
-    #[test]
-    fn unreadable_cache_is_stale() {
-        let (c, _) = setup();
-        c.core.cache_put("getGenres".into(), b"garbage".to_vec()).unwrap();
-        let s = c.read_stored(Read::GenreList).unwrap();
-        assert!(s.page.is_none() && s.digest.is_some() && !s.fresh);
+        fake.answer(list);
+        block(c.read_fetch(Read::AlbumList { kind: "byYear".into(), size: 50, offset: 0, genre: None }, None)).unwrap();
+        let year = this_year();
+        assert!(fake.asked()[2].ends_with(&format!("&type=byYear&fromYear={year}&toYear=0&size=50&offset=0&musicFolderId=7")));
     }
 
     #[test]
@@ -520,25 +531,6 @@ mod tests {
             Some(Page::Albums { v }) => assert_eq!(v.len(), 2, "plain AlbumList is not overlaid"),
             other => panic!("{other:?}"),
         }
-    }
-
-    #[test]
-    fn random_is_uncached_and_by_year_is_this_year() {
-        let (c, fake) = setup();
-        let random = Read::AlbumList { kind: "random".into(), size: 5, offset: 0, genre: Some("Rock".into()) };
-        assert!(c.read_stored(random.clone()).unwrap().digest.is_none());
-        let list = r#"{"subsonic-response":{"status":"ok","albumList2":{"album":[{"id":"a","name":"A"}]}}}"#;
-        fake.answer(list);
-        assert!(block(c.read_fetch(random.clone(), None)).unwrap().is_some());
-        fake.answer(list);
-        assert!(block(c.read_fetch(random, None)).unwrap().is_some());
-        assert_eq!(c.core.db.lock().query_row("SELECT count(*) FROM cache", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
-        assert!(fake.asked()[0].ends_with("&type=random&size=5&offset=0&genre=Rock&musicFolderId=7"));
-
-        fake.answer(list);
-        block(c.read_fetch(Read::AlbumList { kind: "byYear".into(), size: 50, offset: 0, genre: None }, None)).unwrap();
-        let year = this_year();
-        assert!(fake.asked()[2].ends_with(&format!("&type=byYear&fromYear={year}&toYear=0&size=50&offset=0&musicFolderId=7")));
     }
 
     #[test]

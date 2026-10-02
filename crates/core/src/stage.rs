@@ -193,7 +193,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn transport_glyph_and_reduced_motion() {
+    fn transport_and_seek() {
         assert_eq!(transport_glyph(false, true, false), TransportGlyph::Pause);
         assert_eq!(transport_glyph(false, true, true), TransportGlyph::Spinner);
         assert_eq!(transport_glyph(true, false, false), TransportGlyph::Pause);
@@ -202,10 +202,8 @@ mod tests {
         assert!(motion_reduced(false, false, true));
         assert!(!motion_reduced(false, true, true));
         assert!(!motion_reduced(false, false, false));
-    }
 
-    #[test]
-    fn seek_times_prefer_drag_then_held_then_position() {
+        // Seek times prefer drag then held then position.
         assert_eq!(seek_times(true, 0.5, 9_000, 1_000, 200_000), SeekTimes { at_s: 100, left_s: 100 });
         assert_eq!(seek_times(false, 0.5, 9_000, 1_000, 200_000), SeekTimes { at_s: 9, left_s: 191 });
         assert_eq!(seek_times(false, 0.5, -1, 61_500, 200_000), SeekTimes { at_s: 61, left_s: 138 });
@@ -213,25 +211,22 @@ mod tests {
     }
 
     #[test]
-    fn rows_use_play_order_and_reorder_unshuffled() {
+    fn queue_rows() {
         assert_eq!(rows(Some(vec![2, 0, 1]), 3, true, 2, Some(2)), QueueRows { order: vec![2, 0, 1], reorderable: false, kept: vec![2], now: 0 });
         assert_eq!(rows(None, 3, false, -1, None), QueueRows { order: vec![0, 1, 2], reorderable: true, kept: vec![], now: -1 });
-    }
 
-    #[test]
-    fn now_is_position_in_play_order() {
+        // Now is position in play order.
         assert_eq!(rows(None, 5, false, 2, Some(2)).now, 2);
         // Shuffled: list index 1 plays fourth.
         assert_eq!(rows(Some(vec![3, 4, 0, 1, 2]), 5, true, 1, Some(1)).now, 3);
         assert_eq!(rows(None, 3, false, -1, None).now, -1);
         assert_eq!(rows(None, 3, false, 7, None).now, -1);
-    }
 
-    #[test]
-    fn current_rows_are_kept_from_swipes() {
+        // Current rows are kept from swipes.
         // During a mix the page and queue disagree: both kept.
         assert_eq!(rows(None, 4, false, 1, Some(2)).kept, [1, 2]);
         assert_eq!(rows(None, 4, false, 3, None).kept, [3]);
         assert_eq!(rows(None, 2, false, 5, Some(7)).kept, Vec::<u32>::new(), "out of range");
     }
+
 }

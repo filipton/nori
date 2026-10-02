@@ -89,7 +89,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn bridge_starts_and_unbridges() {
+    fn bridge_cycle() {
         let core = crate::playlist::tests::core(&["on1", "on2"], 0);
         for id in ["dl1", "dl2"] {
             core.download_queue(vec![song(id, "Muse", "x", false)]).unwrap();
@@ -103,10 +103,8 @@ pub(crate) mod tests {
         let back = core.session.unbridge().unwrap();
         assert_eq!((back.remove, back.seek), (vec![0, 2], Some(0)));
         assert_eq!(core.session.upcoming(5), vec!["on1".to_string(), "on2".to_string()]);
-    }
 
-    #[test]
-    fn bridge_take_prefers_jump_then_bridge() {
+        // Bridge take prefers jump then bridge.
         let core = crate::playlist::tests::core(&["tk1", "tk2", "tk3"], 0);
         core.session.register(vec![song("tk1", "Muse", "y", false), song("tk2", "Muse", "y", false), song("tk3", "Muse", "y", false)]);
         assert!(matches!(core.bridge_take(), BridgeTake::Skip), "nothing downloaded");
@@ -124,4 +122,5 @@ pub(crate) mod tests {
         assert!(core.bridge_parked(true).is_some());
         assert!(!core.session.bridge_state().bridging);
     }
+
 }

@@ -45,6 +45,18 @@ fn cover_urls() {
         covers::cover_url_into(&mut out, &text(r[0]).unwrap(), &text(r[1]).unwrap(), r[2].parse().unwrap());
         assert_eq!(Some(&out), text(r[3]).as_ref(), "{r:?}");
     }
+
+    // Cover url and provider check do not allocate.
+    let prefix = "https://m.example/rest/getCoverArt.view?u=admin&t=26719a1196d2a940705a59634eb18eab&s=c19b2d&f=json&v=1.16.1&c=nori";
+    let mut url = String::with_capacity(512);
+    let mut provider = 0;
+    let n = counting::allocations(|| {
+        for i in 0..1_000 {
+            covers::cover_url_into(&mut url, prefix, if i % 2 == 0 { "al-12 (live)" } else { "ext-deezer-1" }, 320);
+            provider += covers::is_provider_cover(&url) as u32;
+        }
+    });
+    assert_eq!((n, provider), (0, 500));
 }
 
 #[test]
@@ -177,16 +189,3 @@ mod counting {
     }
 }
 
-#[test]
-fn cover_url_and_provider_check_do_not_allocate() {
-    let prefix = "https://m.example/rest/getCoverArt.view?u=admin&t=26719a1196d2a940705a59634eb18eab&s=c19b2d&f=json&v=1.16.1&c=nori";
-    let mut url = String::with_capacity(512);
-    let mut provider = 0;
-    let n = counting::allocations(|| {
-        for i in 0..1_000 {
-            covers::cover_url_into(&mut url, prefix, if i % 2 == 0 { "al-12 (live)" } else { "ext-deezer-1" }, 320);
-            provider += covers::is_provider_cover(&url) as u32;
-        }
-    });
-    assert_eq!((n, provider), (0, 500));
-}

@@ -272,17 +272,15 @@ pub(crate) mod tests {
     use crate::client::NetProfile;
 
     #[test]
-    fn root_lists_tabs_without_network() {
+    fn folders_list() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         let p = block(c.browse_children(ROOT.into(), 0, 100));
         assert_eq!(p.folders.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), ["home", "library", "starred", "downloads"]);
         assert_eq!(c.car_root(3, true, 0, 100).folders[0].id, "downloads");
         assert!(block(c.browse_children("library".into(), 0, 100)).folders.iter().any(|f| f.id == "artists"));
         assert!(fake.asked.lock().is_empty(), "the root and the library's lists ask nothing of the server");
-    }
 
-    #[test]
-    fn playlists_folder_lists_song_counts() {
+        // Playlists folder lists song counts.
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         fake.answer(r#"{"subsonic-response":{"status":"ok","playlists":{"playlist":[{"id":"p1","name":"Evening","songCount":12}]}}}"#);
         let p = block(c.browse_children("playlists".into(), 0, 100));
@@ -294,7 +292,7 @@ pub(crate) mod tests {
         {"id":"s1","title":"One","album":"Monster"},{"id":"s2","title":"Two","album":"Monster"},{"id":"x","title":"Theirs","isExternal":true}]}}}"#;
 
     #[test]
-    fn a_picked_album_song_plays_the_album_shown_from_it() {
+    fn albums_play_as_queue() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         fake.answer(ALBUM);
         let p = block(c.browse_children("album:a1".into(), 0, 100));
@@ -307,6 +305,15 @@ pub(crate) mod tests {
         assert_eq!(q.origin.unwrap().id, "a1");
         assert_eq!(fake.asked().len(), asked, "the list shown is played, not asked for again");
         assert!(block(c.car_queue("s1".into())).is_none(), "a bare song id is not a row");
+
+        // A spoken album plays as its queue.
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        fake.answer(r#"{"subsonic-response":{"status":"ok","searchResult3":{"album":[{"id":"a1","name":"Monster","artist":"Future"}]}}}"#);
+        fake.answer(ALBUM);
+        let q = block(c.car_voice(VoiceAsk { query: "monster".into(), focus: VoiceFocus::Album, album: Some("Monster".into()), ..Default::default() }));
+        assert_eq!(q.songs.len(), 2);
+        assert_eq!(q.origin, Some(nori_model::PageOrigin { kind: nori_model::OriginKind::Album, id: "a1".into() }));
+        assert!(!q.shuffle);
     }
 
     #[test]
@@ -316,17 +323,6 @@ pub(crate) mod tests {
         assert!(block(c.browse_children("album:a1".into(), 0, 100)).failed);
         fake.fail(crate::transport::FailureKind::Connect);
         assert!(block(c.browse_children("albums:newest".into(), 0, 100)).failed);
-    }
-
-    #[test]
-    fn a_spoken_album_plays_as_its_queue() {
-        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
-        fake.answer(r#"{"subsonic-response":{"status":"ok","searchResult3":{"album":[{"id":"a1","name":"Monster","artist":"Future"}]}}}"#);
-        fake.answer(ALBUM);
-        let q = block(c.car_voice(VoiceAsk { query: "monster".into(), focus: VoiceFocus::Album, album: Some("Monster".into()), ..Default::default() }));
-        assert_eq!(q.songs.len(), 2);
-        assert_eq!(q.origin, Some(nori_model::PageOrigin { kind: nori_model::OriginKind::Album, id: "a1".into() }));
-        assert!(!q.shuffle);
     }
 
     #[test]

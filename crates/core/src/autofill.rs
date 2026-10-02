@@ -331,7 +331,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn shuffle_songs_refills_random_songs() {
+    fn shuffle_refills() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         c.core.session.register(vec![song("sh-1", "al1")]);
         shuffled(&c, &["sh-1"], crate::OriginKind::ShuffleSongs);
@@ -339,10 +339,8 @@ pub(crate) mod tests {
         let got = block(c.autofill_as(AutoFillKind::Albums, AutoFillBasis::Similar, false)).songs;
         assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["r1", "r2"]);
         assert!(fake.asked.lock()[0].0.contains("getRandomSongs"), "{:?}", fake.asked.lock());
-    }
 
-    #[test]
-    fn shuffle_albums_refills_whole_albums() {
+        // Shuffle albums refills whole albums.
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         c.core.session.register(vec![song("sa-1", "al-playing")]);
         shuffled(&c, &["sa-1"], crate::OriginKind::ShuffleAlbums);
@@ -355,7 +353,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn recent_album_waits_its_turn() {
+    fn album_refills() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         c.core.session.register(vec![song("af3-seed", "mine")]);
         note(&c.core.db.lock(), Picked::Album, &["first".to_string()], crate::db::now_ms()).unwrap();
@@ -365,10 +363,8 @@ pub(crate) mod tests {
         let got = block(c.autofill_as(AutoFillKind::Albums, AutoFillBasis::Similar, false)).songs;
         assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["b1", "b2", "b3"]);
         assert_eq!(*c.autofill_picks.lock(), Some((Picked::Album, vec!["second".to_string()])));
-    }
 
-    #[test]
-    fn album_prefers_full_record_over_single() {
+        // Album prefers full record over single.
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         c.core.session.register(vec![song("af2-seed", "mine")]);
         // "record" was picked before, so the single ranks first and is passed over.
@@ -380,11 +376,8 @@ pub(crate) mod tests {
         let got = block(c.autofill_as(AutoFillKind::Albums, AutoFillBasis::Similar, false)).songs;
         assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["r1", "r2", "r3"]);
         assert_eq!(fake.asked.lock().len(), 3, "the seed's own album is not fetched");
-    }
 
-    /// Regression: an autofilled album used to be added without an album run.
-    #[test]
-    fn autofilled_album_is_an_album_run() {
+        // Regression: an autofilled album used to be added without an album run.
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         c.core.session.register(vec![song("af3-seed", "mine")]);
         fake.answer(&songs_json(&[("y1", "whole")]));
@@ -409,7 +402,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn provider_seed_falls_back_to_library_artist() {
+    fn provider_seeds() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         let mine = Song { id: "afp-lib".into(), title: "Dogs".into(), artist: "The Band".into(), album_id: Some("afp-al".into()), ..Default::default() };
         crate::db::index(&mut c.core.db.lock(), &[], &[], &[mine]).unwrap();
@@ -423,10 +416,8 @@ pub(crate) mod tests {
         assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["afp-s1"]);
         let asked = fake.asked.lock();
         assert!(asked[0].0.contains("getSimilarSongs2") && asked[0].0.contains("id=afp-lib"), "seeded by the artist's song in the library: {}", asked[0].0);
-    }
 
-    #[test]
-    fn provider_seed_falls_back_to_queued_library_song() {
+        // Provider seed falls back to queued library song.
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         c.core.session.register(vec![song("afq-lib", "al0"), provider("ext-deezer-afq-1", "Nobody Here")]);
         fake.answer(&songs_json(&[("afq-s1", "x")]));
@@ -434,10 +425,8 @@ pub(crate) mod tests {
         let got = block(c.autofill_as(AutoFillKind::Songs, AutoFillBasis::Similar, false)).songs;
         assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["afq-s1"]);
         assert!(fake.asked.lock()[0].0.contains("id=afq-lib"));
-    }
 
-    #[test]
-    fn provider_only_queue_refills_random_library_songs() {
+        // Provider only queue refills random library songs.
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         c.core.session.register(vec![provider("ext-deezer-afr-1", "Nobody Here")]);
         fake.answer(r#"{"subsonic-response":{"status":"ok","randomSongs":{"song":[{"id":"afr-s1","title":"a"},{"id":"ext-deezer-afr-2","title":"b"}]}}}"#);
@@ -445,10 +434,8 @@ pub(crate) mod tests {
         let got = block(c.autofill_as(AutoFillKind::Albums, AutoFillBasis::Similar, false)).songs;
         assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["afr-s1"]);
         assert!(fake.asked.lock()[0].0.contains("getRandomSongs"));
-    }
 
-    #[test]
-    fn remote_allows_provider_seed_and_songs() {
+        // Remote allows provider seed and songs.
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         c.core.session.register(vec![provider("ext-deezer-afs-1", "The Band")]);
         fake.answer(r#"{"subsonic-response":{"status":"ok","similarSongs2":{"song":[{"id":"ext-deezer-afs-2","title":"x","isExternal":true},{"id":"afs-s1","title":"s1"}]}}}"#);

@@ -369,41 +369,43 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn io_failure_retries_through_other_address() {
-        let (c, fake) = client(two_addresses());
-        fake.fail(FailureKind::Connect); // the request
-        fake.fail(FailureKind::Timeout); // the ping to the first address
-        fake.answer(OK); // the request again, through the second
-        assert!(block(c.fetch("getGenres", vec![])).is_ok());
-        let asked = fake.asked();
-        assert!(asked[0].starts_with("http://lan:4533/rest/getGenres"));
-        assert!(asked[1].starts_with("http://lan:4533/rest/ping"));
-        assert_eq!(fake.asked.lock()[1].1, 2_500);
-        assert!(asked[2].starts_with("https://wan.example/rest/getGenres"));
-        assert!(c.on_second_address());
-        assert_eq!(*fake.switched.lock(), 1);
+    fn retries() {
+        {
+            let (c, fake) = client(two_addresses());
+            fake.fail(FailureKind::Connect); // the request
+            fake.fail(FailureKind::Timeout); // the ping to the first address
+            fake.answer(OK); // the request again, through the second
+            assert!(block(c.fetch("getGenres", vec![])).is_ok());
+            let asked = fake.asked();
+            assert!(asked[0].starts_with("http://lan:4533/rest/getGenres"));
+            assert!(asked[1].starts_with("http://lan:4533/rest/ping"));
+            assert_eq!(fake.asked.lock()[1].1, 2_500);
+            assert!(asked[2].starts_with("https://wan.example/rest/getGenres"));
+            assert!(c.on_second_address());
+            assert_eq!(*fake.switched.lock(), 1);
 
-        fake.answer(OK);
-        assert!(block(c.choose_address()));
-        assert!(!c.on_second_address());
-        assert_eq!(*fake.switched.lock(), 2);
-        fake.answer(OK);
-        assert!(!block(c.choose_address()));
-    }
+            fake.answer(OK);
+            assert!(block(c.choose_address()));
+            assert!(!c.on_second_address());
+            assert_eq!(*fake.switched.lock(), 2);
+            fake.answer(OK);
+            assert!(!block(c.choose_address()));
+        }
 
-    #[test]
-    fn metered_and_other_failures_are_not_retried() {
-        let (c, fake) = client(two_addresses());
-        fake.fail(FailureKind::Metered);
-        assert!(matches!(block(c.fetch("ping", vec![])), Err(NetError::Transport { kind: FailureKind::Metered, .. })));
-        fake.fail(FailureKind::Other);
-        assert!(block(c.fetch("ping", vec![])).is_err());
-        assert_eq!(fake.asked().len(), 2);
+        // Metered and other failures are not retried.
+        {
+            let (c, fake) = client(two_addresses());
+            fake.fail(FailureKind::Metered);
+            assert!(matches!(block(c.fetch("ping", vec![])), Err(NetError::Transport { kind: FailureKind::Metered, .. })));
+            fake.fail(FailureKind::Other);
+            assert!(block(c.fetch("ping", vec![])).is_err());
+            assert_eq!(fake.asked().len(), 2);
 
-        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
-        fake.fail(FailureKind::Connect);
-        assert!(block(c.fetch("ping", vec![])).is_err());
-        assert_eq!(fake.asked().len(), 1);
+            let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+            fake.fail(FailureKind::Connect);
+            assert!(block(c.fetch("ping", vec![])).is_err());
+            assert_eq!(fake.asked().len(), 1);
+        }
     }
 
     #[test]
@@ -420,30 +422,56 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn offline_writes_queue_and_replay_in_order() {
-        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
-        c.core.cache_put("getPlaylist&id=1".into(), b"x".to_vec()).unwrap();
-        fake.fail(FailureKind::UnknownHost);
-        block(c.write(Write::AddToPlaylist { id: "1".into(), song_ids: vec!["a".into(), "b".into()] })).unwrap();
-        fake.fail(FailureKind::UnknownHost);
-        block(c.write(Write::Scrobble { id: "s".into(), submission: true, time_ms: Some(5) })).unwrap();
-        assert_eq!(c.core.pending_list().unwrap().len(), 2);
-        assert_eq!(c.core.cache_get("getPlaylist&id=1".into()).unwrap(), None, "evicted even when queued");
+    fn offline_writes() {
+        {
+            let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+            c.core.cache_put("getPlaylist&id=1".into(), b"x".to_vec()).unwrap();
+            fake.fail(FailureKind::UnknownHost);
+            block(c.write(Write::AddToPlaylist { id: "1".into(), song_ids: vec!["a".into(), "b".into()] })).unwrap();
+            fake.fail(FailureKind::UnknownHost);
+            block(c.write(Write::Scrobble { id: "s".into(), submission: true, time_ms: Some(5) })).unwrap();
+            assert_eq!(c.core.pending_list().unwrap().len(), 2);
+            assert_eq!(c.core.cache_get("getPlaylist&id=1".into()).unwrap(), None, "evicted even when queued");
 
-        // Online: the queue in order, then the new write; the rejected one is dropped.
-        fake.answer(r#"{"subsonic-response":{"status":"failed","error":{"code":70,"message":"gone"}}}"#);
-        fake.answer(OK);
-        fake.answer(OK);
-        block(c.write(Write::Star { kind: Starrable::Album, id: "al".into(), on: true })).unwrap();
-        let asked = fake.asked();
-        assert!(asked[2].contains("/rest/updatePlaylist?") && asked[2].ends_with("&playlistId=1&songIdToAdd=a&songIdToAdd=b"));
-        assert!(asked[3].contains("/rest/scrobble?") && asked[3].ends_with("&id=s&submission=true&time=5"));
-        assert!(asked[4].contains("/rest/star?") && asked[4].ends_with("&albumId=al"));
-        assert!(c.core.pending_list().unwrap().is_empty());
+            // Online: the queue in order, then the new write; the rejected one is dropped.
+            fake.answer(r#"{"subsonic-response":{"status":"failed","error":{"code":70,"message":"gone"}}}"#);
+            fake.answer(OK);
+            fake.answer(OK);
+            block(c.write(Write::Star { kind: Starrable::Album, id: "al".into(), on: true })).unwrap();
+            let asked = fake.asked();
+            assert!(asked[2].contains("/rest/updatePlaylist?") && asked[2].ends_with("&playlistId=1&songIdToAdd=a&songIdToAdd=b"));
+            assert!(asked[3].contains("/rest/scrobble?") && asked[3].ends_with("&id=s&submission=true&time=5"));
+            assert!(asked[4].contains("/rest/star?") && asked[4].ends_with("&albumId=al"));
+            assert!(c.core.pending_list().unwrap().is_empty());
+        }
+
+        // Replay stops at network failure.
+        {
+            let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+            c.core.pending_add("star", &[]).unwrap();
+            c.core.pending_add("unstar", &[]).unwrap();
+            fake.fail(FailureKind::Timeout);
+            block(c.flush_pending()).unwrap();
+            assert_eq!(c.core.pending_list().unwrap().len(), 2);
+            assert_eq!(fake.asked().len(), 1);
+        }
+
+        // Replays at once send each write once.
+        {
+            let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+            c.core.pending_add("scrobble", &[]).unwrap();
+            *fake.pends.lock() = true;
+            fake.answer(OK);
+            fake.answer(OK);
+            let (a, b) = block(futures_util::future::join(c.flush_pending(), c.flush_pending()));
+            assert!(a.is_ok() && b.is_ok());
+            assert_eq!(fake.asked().len(), 1);
+            assert!(c.core.pending_list().unwrap().is_empty());
+        }
     }
 
     #[test]
-    fn timed_out_edit_not_queued() {
+    fn edits_not_queued() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         fake.fail(FailureKind::Timeout);
         assert!(block(c.write(Write::AddToPlaylist { id: "1".into(), song_ids: vec!["a".into()] })).is_err());
@@ -451,16 +479,22 @@ pub(crate) mod tests {
         block(c.write(Write::Star { kind: Starrable::Song, id: "s".into(), on: true })).unwrap();
         let queued: Vec<String> = c.core.pending_list().unwrap().into_iter().map(|p| p.endpoint).collect();
         assert_eq!(queued, ["star"]);
-    }
 
-    #[test]
-    fn unsure_edit_not_sent_again_elsewhere() {
+        // Unsure edit not sent again elsewhere.
         let (c, fake) = client(two_addresses());
         fake.fail(FailureKind::Timeout);
         fake.fail(FailureKind::Timeout);
         fake.answer(OK);
         assert!(block(c.write(Write::AddToPlaylist { id: "1".into(), song_ids: vec!["a".into()] })).is_err());
         assert_eq!(fake.asked().len(), 1, "{:?}", fake.asked());
+
+        // Rejected write errors and is not queued.
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        c.core.cache_put("getStarred2".into(), b"x".to_vec()).unwrap();
+        fake.answer(r#"{"subsonic-response":{"status":"failed","error":{"code":50,"message":"no"}}}"#);
+        assert!(matches!(block(c.write(Write::Star { kind: Starrable::Song, id: "1".into(), on: false })), Err(NetError::Api { code: 50, .. })));
+        assert!(c.core.pending_list().unwrap().is_empty());
+        assert!(c.core.cache_get("getStarred2".into()).unwrap().is_some());
     }
 
     #[test]
@@ -470,30 +504,6 @@ pub(crate) mod tests {
         fake.answer("<html>sign in</html>");
         block(c.flush_pending()).unwrap();
         assert_eq!(c.core.pending_list().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn replay_stops_at_network_failure() {
-        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
-        c.core.pending_add("star", &[]).unwrap();
-        c.core.pending_add("unstar", &[]).unwrap();
-        fake.fail(FailureKind::Timeout);
-        block(c.flush_pending()).unwrap();
-        assert_eq!(c.core.pending_list().unwrap().len(), 2);
-        assert_eq!(fake.asked().len(), 1);
-    }
-
-    #[test]
-    fn replays_at_once_send_each_write_once() {
-        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
-        c.core.pending_add("scrobble", &[]).unwrap();
-        *fake.pends.lock() = true;
-        fake.answer(OK);
-        fake.answer(OK);
-        let (a, b) = block(futures_util::future::join(c.flush_pending(), c.flush_pending()));
-        assert!(a.is_ok() && b.is_ok());
-        assert_eq!(fake.asked().len(), 1);
-        assert!(c.core.pending_list().unwrap().is_empty());
     }
 
     #[test]
@@ -507,16 +517,6 @@ pub(crate) mod tests {
         block(c.write(Write::Star { kind: Starrable::Song, id: "s".into(), on: true })).unwrap();
         let kept: Vec<&str> = keys.into_iter().filter(|k| c.core.cache_get(k.to_string()).unwrap().is_some()).collect();
         assert_eq!(kept, ["getAlbumList2&type=newest&size=20", "getArtistInfo2&id=1&count=10", "getArtists", "getPlaylists"]);
-    }
-
-    #[test]
-    fn rejected_write_errors_and_is_not_queued() {
-        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
-        c.core.cache_put("getStarred2".into(), b"x".to_vec()).unwrap();
-        fake.answer(r#"{"subsonic-response":{"status":"failed","error":{"code":50,"message":"no"}}}"#);
-        assert!(matches!(block(c.write(Write::Star { kind: Starrable::Song, id: "1".into(), on: false })), Err(NetError::Api { code: 50, .. })));
-        assert!(c.core.pending_list().unwrap().is_empty());
-        assert!(c.core.cache_get("getStarred2".into()).unwrap().is_some());
     }
 
     #[test]
@@ -542,7 +542,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn login_fallbacks() {
+    fn login_and_probe() {
         let fake = Arc::new(Fake::default());
         let config = ServerConfig { url: "http://lan".into(), user: "u".into(), password: "p".into(), ..Default::default() };
         fake.fail(FailureKind::Connect);
@@ -559,10 +559,8 @@ pub(crate) mod tests {
         fake.answer(no_token);
         let keyed = ServerConfig { api_key: Some("k".into()), ..config };
         assert!(matches!(block(login_check(fake.clone(), keyed, String::new())), Err(NetError::Api { code: 41, .. })));
-    }
 
-    #[test]
-    fn probe_keeps_second_address() {
+        // Probe keeps second address.
         let (c, fake) = client(two_addresses());
         fake.fail(FailureKind::Timeout);
         assert!(block(c.choose_address()));

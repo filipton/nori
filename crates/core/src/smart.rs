@@ -151,46 +151,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn unicode_values_fall_back_to_rust_and_fold_case() {
-        let core = library();
-        assert_eq!(eval(&core, &one("artist", "is", json!("björk")), &[]), ["joga", "bach"]);
-        assert_eq!(eval(&core, &one("title", "contains", json!("Ó")), &[]), ["joga"]);
-        // Mixed with SQL rules, paged and counted.
-        let def = json!({ "match": { "all": false, "rules": [
-            { "field": "artist", "op": "is", "value": "BJÖRK" }, { "field": "year", "op": "less", "value": 1960 } ] },
-            "sort": { "field": "title", "descending": true } })
-        .to_string();
-        assert_eq!(eval(&core, &def, &[]), ["bare", "so", "joga", "bach"], "no year is year 0");
-        assert_eq!(ids(&core.smart_evaluate(def.clone(), 2, 1).unwrap()), ["joga"]);
-        assert_eq!(core.smart_count(def).unwrap(), 4);
-    }
-
-    #[test]
-    fn flag_fields() {
-        let core = library();
-        let flag = |field: &str, op: &str| json!({ "match": { "rules": [{ "field": field, "op": op }] } }).to_string();
-        assert_eq!(eval(&core, &flag("starred", "isTrue"), &[]), ["dogs", "so"]);
-        assert_eq!(eval(&core, &flag("starred", "isFalse"), &[]).len(), 5);
-        assert_eq!(eval(&core, &flag("excludedFromMixes", "isTrue"), &[]), ["pigs"]);
-        assert_eq!(eval(&core, &flag("excludedFromMixes", "isFalse"), &[]).len(), 6);
-        assert_eq!(eval(&core, &flag("isDownloaded", "isTrue"), &["joga", "so", "gone"]), ["joga", "so"]);
-        assert_eq!(eval(&core, &flag("isDownloaded", "isFalse"), &["joga", "so"]).len(), 5);
-        assert!(eval(&core, &flag("isDownloaded", "isTrue"), &[]).is_empty());
-        // Used twice, bound once.
-        let both = json!({ "match": { "all": false, "rules": [{ "field": "isDownloaded", "op": "isTrue" }, { "all": true, "rules": [
-            { "field": "isDownloaded", "op": "isFalse" }, { "field": "year", "op": "is", "value": 1959 }] }] } })
-        .to_string();
-        assert_eq!(eval(&core, &both, &["joga", "it's"]), ["joga", "so"]);
-        // Through the core only finished downloads count.
-        let songs: Vec<Song> = ["joga", "so"].map(|id| Song { id: id.into(), ..Default::default() }).to_vec();
-        core.download_queue(songs).unwrap();
-        core.download_done("joga".into()).unwrap();
-        assert_eq!(ids(&core.smart_evaluate(flag("isDownloaded", "isTrue"), 0, 50).unwrap()), ["joga"]);
-        assert_eq!(core.smart_count(flag("isDownloaded", "isFalse")).unwrap(), 6);
-    }
-
-    #[test]
-    fn sort_limit_and_paging() {
+    fn order_and_budget() {
         let core = library();
         let by = |field: &str, descending: bool| json!({ "sort": { "field": field, "descending": descending } }).to_string();
         assert_eq!(eval(&core, &by("title", false), &[])[..3], ["pct", "dogs", "bach"]);
@@ -208,10 +169,8 @@ pub(crate) mod tests {
 
         let pages: Vec<String> = (0..4).flat_map(|p| core.smart_evaluate(by("title", false), p * 2, 2).unwrap()).map(|s| s.id).collect();
         assert_eq!(pages, eval(&core, &by("title", false), &[]));
-    }
 
-    #[test]
-    fn random_sort_is_stable_per_seed() {
+        // Random sort is stable per seed.
         let core = library();
         let shuffled = |seed: u64| eval(&core, &json!({ "sort": { "field": "random", "seed": seed } }).to_string(), &[]);
         assert_eq!(shuffled(1), shuffled(1));
@@ -219,10 +178,8 @@ pub(crate) mod tests {
         assert!((2..12).any(|s| shuffled(s) != shuffled(1)));
         let paged: Vec<String> = (0..7).flat_map(|p| core.smart_evaluate(json!({ "sort": { "field": "random", "seed": 1 } }).to_string(), p, 1).unwrap()).map(|s| s.id).collect();
         assert_eq!(paged, shuffled(1), "pages tile");
-    }
 
-    #[test]
-    fn duration_budget() {
+        // Duration budget.
         let core = library();
         // Durations: dogs 1024 s, five of 200 s, bare 0 s.
         let def = |ms: i64| json!({ "sort": { "field": "duration", "descending": true }, "limitMs": ms }).to_string();
@@ -430,7 +387,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn nested_groups() {
+    fn rule_operators() {
         let core = library();
         let def = json!({ "match": { "all": false, "rules": [
             { "all": true, "rules": [
@@ -445,10 +402,8 @@ pub(crate) mod tests {
         assert!(eval(&core, r#"{"match":{"all":false,"rules":[]}}"#, &[]).is_empty());
         assert_eq!(eval(&core, "{}", &[]).len(), 7);
         assert_eq!(eval(&core, r#"{"match":{"rules":[{"all":false,"rules":[]},{"field":"year","op":"is","value":1977}]}}"#, &[]).len(), 0);
-    }
 
-    #[test]
-    fn number_operators() {
+        // Number operators.
         let core = library();
         assert_eq!(eval(&core, &one("year", "is", json!(1977)), &[]), ["dogs", "pigs"]);
         assert_eq!(eval(&core, &one("year", "isNot", json!(1977)), &[]).len(), 5);
@@ -462,10 +417,47 @@ pub(crate) mod tests {
         assert_eq!(eval(&core, &one("userRating", "greater", json!(3)), &[]), ["pigs", "so"]);
         assert_eq!(eval(&core, &one("track", "is", json!(0)), &[]).len(), 7);
         assert_eq!(eval(&core, &one("discNumber", "less", json!(1)), &[]).len(), 7);
-    }
 
-    #[test]
-    fn statistics_fields() {
+        // Text operators.
+        let core = library();
+        assert_eq!(eval(&core, &one("artist", "is", json!("pink floyd")), &[]), ["dogs", "pigs"]);
+        assert_eq!(eval(&core, &one("artist", "isNot", json!("Pink Floyd")), &[]).len(), 5);
+        assert_eq!(eval(&core, &one("genre", "contains", json!("rock")), &[]), ["dogs", "pigs"]);
+        assert_eq!(eval(&core, &one("genre", "notContains", json!("rock")), &[]), ["joga", "bach", "so", "pct", "bare"], "no genre counts");
+        assert_eq!(eval(&core, &one("title", "startsWith", json!("PIGS")), &[]), ["pigs"]);
+        assert_eq!(eval(&core, &one("title", "endsWith", json!("ones)")), &[]), ["pigs"]);
+        assert_eq!(eval(&core, &one("genre", "is", json!("")), &[]), ["bare"]);
+        assert_eq!(eval(&core, &one("genre", "isNot", json!("")), &[]).len(), 6);
+        assert_eq!(eval(&core, &one("suffix", "is", json!("MP3")), &[]), ["joga"]);
+        // LIKE wildcards are literal.
+        assert_eq!(eval(&core, &one("title", "contains", json!("100%")), &[]), ["pct"]);
+        assert_eq!(eval(&core, &one("title", "contains", json!("e_l")), &[]), ["pct"]);
+        assert_eq!(eval(&core, &one("title", "contains", json!("%")), &[]), ["pct"]);
+        assert!(eval(&core, &one("title", "contains", json!("'; DROP TABLE items;--")), &[]).is_empty());
+
+        // Flag fields.
+        let core = library();
+        let flag = |field: &str, op: &str| json!({ "match": { "rules": [{ "field": field, "op": op }] } }).to_string();
+        assert_eq!(eval(&core, &flag("starred", "isTrue"), &[]), ["dogs", "so"]);
+        assert_eq!(eval(&core, &flag("starred", "isFalse"), &[]).len(), 5);
+        assert_eq!(eval(&core, &flag("excludedFromMixes", "isTrue"), &[]), ["pigs"]);
+        assert_eq!(eval(&core, &flag("excludedFromMixes", "isFalse"), &[]).len(), 6);
+        assert_eq!(eval(&core, &flag("isDownloaded", "isTrue"), &["joga", "so", "gone"]), ["joga", "so"]);
+        assert_eq!(eval(&core, &flag("isDownloaded", "isFalse"), &["joga", "so"]).len(), 5);
+        assert!(eval(&core, &flag("isDownloaded", "isTrue"), &[]).is_empty());
+        // Used twice, bound once.
+        let both = json!({ "match": { "all": false, "rules": [{ "field": "isDownloaded", "op": "isTrue" }, { "all": true, "rules": [
+            { "field": "isDownloaded", "op": "isFalse" }, { "field": "year", "op": "is", "value": 1959 }] }] } })
+        .to_string();
+        assert_eq!(eval(&core, &both, &["joga", "it's"]), ["joga", "so"]);
+        // Through the core only finished downloads count.
+        let songs: Vec<Song> = ["joga", "so"].map(|id| Song { id: id.into(), ..Default::default() }).to_vec();
+        core.download_queue(songs).unwrap();
+        core.download_done("joga".into()).unwrap();
+        assert_eq!(ids(&core.smart_evaluate(flag("isDownloaded", "isTrue"), 0, 50).unwrap()), ["joga"]);
+        assert_eq!(core.smart_count(flag("isDownloaded", "isFalse")).unwrap(), 6);
+
+        // Statistics fields.
         let core = library();
         assert_eq!(eval(&core, &one("playCount", "greater", json!(0)), &[]), ["dogs", "so"]);
         assert_eq!(eval(&core, &one("playCount", "is", json!(3)), &[]), ["dogs"]);
@@ -482,24 +474,19 @@ pub(crate) mod tests {
         assert_eq!(eval(&core, &one("lastPlayed", "greater", json!("2026-08-01")), &[]), ["dogs"]);
         assert_eq!(eval(&core, &one("lastPlayed", "less", json!("2026-08-01")), &[]).len(), 6);
         assert_eq!(eval(&core, &one("lastPlayed", "between", json!(["2026-01-01", "2026-03-01"])), &[]), ["so"]);
+
+        // Unicode values fall back to rust and fold case.
+        let core = library();
+        assert_eq!(eval(&core, &one("artist", "is", json!("björk")), &[]), ["joga", "bach"]);
+        assert_eq!(eval(&core, &one("title", "contains", json!("Ó")), &[]), ["joga"]);
+        // Mixed with SQL rules, paged and counted.
+        let def = json!({ "match": { "all": false, "rules": [
+            { "field": "artist", "op": "is", "value": "BJÖRK" }, { "field": "year", "op": "less", "value": 1960 } ] },
+            "sort": { "field": "title", "descending": true } })
+        .to_string();
+        assert_eq!(eval(&core, &def, &[]), ["bare", "so", "joga", "bach"], "no year is year 0");
+        assert_eq!(ids(&core.smart_evaluate(def.clone(), 2, 1).unwrap()), ["joga"]);
+        assert_eq!(core.smart_count(def).unwrap(), 4);
     }
 
-    #[test]
-    fn text_operators() {
-        let core = library();
-        assert_eq!(eval(&core, &one("artist", "is", json!("pink floyd")), &[]), ["dogs", "pigs"]);
-        assert_eq!(eval(&core, &one("artist", "isNot", json!("Pink Floyd")), &[]).len(), 5);
-        assert_eq!(eval(&core, &one("genre", "contains", json!("rock")), &[]), ["dogs", "pigs"]);
-        assert_eq!(eval(&core, &one("genre", "notContains", json!("rock")), &[]), ["joga", "bach", "so", "pct", "bare"], "no genre counts");
-        assert_eq!(eval(&core, &one("title", "startsWith", json!("PIGS")), &[]), ["pigs"]);
-        assert_eq!(eval(&core, &one("title", "endsWith", json!("ones)")), &[]), ["pigs"]);
-        assert_eq!(eval(&core, &one("genre", "is", json!("")), &[]), ["bare"]);
-        assert_eq!(eval(&core, &one("genre", "isNot", json!("")), &[]).len(), 6);
-        assert_eq!(eval(&core, &one("suffix", "is", json!("MP3")), &[]), ["joga"]);
-        // LIKE wildcards are literal.
-        assert_eq!(eval(&core, &one("title", "contains", json!("100%")), &[]), ["pct"]);
-        assert_eq!(eval(&core, &one("title", "contains", json!("e_l")), &[]), ["pct"]);
-        assert_eq!(eval(&core, &one("title", "contains", json!("%")), &[]), ["pct"]);
-        assert!(eval(&core, &one("title", "contains", json!("'; DROP TABLE items;--")), &[]).is_empty());
-    }
 }

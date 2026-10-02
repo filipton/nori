@@ -79,7 +79,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn quick_picks_favour_liked_and_rested_songs() {
+    fn picks_and_again() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         let all = library(&core);
         let (loved, today, hated) = (&all[0], &all[1], &all[2]);
@@ -103,10 +103,8 @@ pub(crate) mod tests {
         // Three days later, today's song has rested.
         assert!(ids(&quick_picks(&c, 10, 1, NOW + 3 * DAY).unwrap()).contains(&today.id.as_str()));
         assert!(quick_picks(&c, 0, 1, NOW).unwrap().is_empty());
-    }
 
-    #[test]
-    fn listen_again_is_recent_and_top_is_by_plays() {
+        // Listen again is recent and top is by plays.
         let core = Core::new(String::new(), "t".into()).unwrap();
         let all = library(&core);
         for (i, s) in all.iter().step_by(10).take(5).enumerate() {
@@ -124,7 +122,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn discover_favours_liked_genres_and_skips_known() {
+    fn discover_mixes() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         let all = library(&core);
         for s in all.iter().filter(|s| s.artist == "Jazz Artist 0").take(4) {
@@ -148,10 +146,8 @@ pub(crate) mod tests {
         assert!(jazz * 2 > total, "{jazz}/{total} jazz; a quarter of the library is");
         assert_eq!(ids(&discover(&c, 20, 5, NOW).unwrap()), ids(&discover(&c, 20, 5, NOW).unwrap()));
         assert_ne!(ids(&discover(&c, 20, 5, NOW).unwrap()), ids(&discover(&c, 20, 6, NOW).unwrap()));
-    }
 
-    #[test]
-    fn discover_without_history_spans_genres() {
+        // Discover without history spans genres.
         let core = Core::new(String::new(), "t".into()).unwrap();
         library(&core);
         let mix = discover(&core.db.lock(), 30, 1, NOW).unwrap();

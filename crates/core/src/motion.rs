@@ -536,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn norm_and_base_strip_decoration() {
+    fn album_matching() {
         assert_eq!(norm("Don't Stop Me Now"), "dont stop me now");
         assert_eq!(norm("Simon & Garfunkel"), "simon and garfunkel");
         assert_eq!(norm("Beyoncé"), "beyonce");
@@ -547,10 +547,8 @@ mod tests {
         assert_eq!(base("Rumours - Deluxe Edition"), "rumours");
         // A dash in the title itself stays.
         assert_eq!(base("Songs - For the Deaf"), "songs for the deaf");
-    }
 
-    #[test]
-    fn exact_album_ranks_before_editions() {
+        // Exact album ranks before editions.
         let json = search(&[
             hit(1, "Better - Single", "Khalid", 1, "2018-09-14T07:00:00Z"),
             hit(2, "Better (Deluxe)", "Khalid", 14, "2019-04-01T07:00:00Z"),
@@ -559,40 +557,32 @@ mod tests {
         ]);
         let ids = motion_album_candidates(json, "Khalid".into(), "Better".into(), 12, 2019).unwrap();
         assert_eq!(ids, vec!["3".to_string(), "2".to_string()]);
-    }
 
-    #[test]
-    fn edition_match_needs_track_count_or_year() {
+        // Edition match needs track count or year.
         let json = search(&[hit(9, "Better - Single", "Khalid", 1, "2018-09-14T07:00:00Z")]);
         assert!(motion_album_candidates(json.clone(), "Khalid".into(), "Better".into(), 12, 2019).unwrap().is_empty());
         assert_eq!(motion_album_candidates(json.clone(), "Khalid".into(), "Better".into(), 1, 2018).unwrap(), vec!["9".to_string()]);
         // Without a count, the year decides.
         assert_eq!(motion_album_candidates(json.clone(), "Khalid".into(), "Better".into(), 0, 2018).unwrap(), vec!["9".to_string()]);
         assert!(motion_album_candidates(json, "Khalid".into(), "Better".into(), 0, 0).unwrap().is_empty());
-    }
 
-    #[test]
-    fn other_artist_never_matches() {
+        // Other artist never matches.
         let json = search(&[hit(5, "Greatest Hits", "Queen", 17, "1981-10-26T08:00:00Z")]);
         assert!(motion_album_candidates(json, "ABBA".into(), "Greatest Hits".into(), 17, 1981).unwrap().is_empty());
-    }
 
-    #[test]
-    fn shared_credit_matches_artist() {
+        // Shared credit matches artist.
         let json = search(&[hit(6, "Watch the Throne", "JAY-Z & Kanye West", 12, "2011-08-08T07:00:00Z")]);
         let ids = motion_album_candidates(json, "Jay-Z".into(), "Watch The Throne".into(), 12, 2011).unwrap();
         assert_eq!(ids, vec!["6".to_string()]);
     }
 
     #[test]
-    fn non_search_answer_is_an_error() {
+    fn answers() {
         assert!(motion_album_candidates("<html>Too many requests</html>".into(), "a".into(), "b".into(), 0, 0).is_err());
         assert!(motion_album_candidates(r#"{"errorMessage":"Invalid value(s) for key(s): [country]"}"#.into(), "a".into(), "b".into(), 0, 0).is_err());
         assert!(motion_album_candidates(r#"{"resultCount":0,"results":[]}"#.into(), "a".into(), "b".into(), 0, 0).unwrap().is_empty());
-    }
 
-    #[test]
-    fn only_square_video_is_taken() {
+        // Only square video is taken.
         let found = r#"{"data":[{"id":"1","type":"albums","attributes":{"name":"X","editorialVideo":{
             "motionDetailTall":{"video":"https://mvod.itunes.apple.com/tall.m3u8"},
             "motionDetailSquare":{"video":"https://mvod.itunes.apple.com/square.m3u8"}}}}]}"#;
@@ -617,7 +607,7 @@ mod tests {
     }
 
     #[test]
-    fn web_player_token_preferred() {
+    fn tokens() {
         let now = 1_790_000_000;
         let other = jwt(r#"{"alg":"ES256","kid":"OTHER"}"#, &format!(r#"{{"iss":"SomethingElse","exp":{}}}"#, now + 90_000));
         let web = jwt(r#"{"alg":"ES256","typ":"JWT","kid":"WebPlayKid"}"#, &format!(r#"{{"iss":"AMPWebPlay","iat":{now},"exp":{}}}"#, now + 90_000));
@@ -625,10 +615,8 @@ mod tests {
         assert_eq!(motion_token(js.into_bytes(), now).as_deref(), Some(web.as_str()));
         let js = format!(r#"x="{other}""#);
         assert_eq!(motion_token(js.into_bytes(), now).as_deref(), Some(other.as_str()));
-    }
 
-    #[test]
-    fn expired_or_malformed_token_rejected() {
+        // Expired or malformed token rejected.
         let now = 1_790_000_000;
         let stale = jwt(r#"{"kid":"WebPlayKid"}"#, &format!(r#"{{"iss":"AMPWebPlay","exp":{}}}"#, now + 30));
         assert_eq!(motion_token(stale.into_bytes(), now), None);

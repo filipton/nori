@@ -116,7 +116,7 @@ mod tests {
     }
 
     #[test]
-    fn quality_follows_network_and_second_address_cap() {
+    fn stream_quality() {
         let (c, fake) = client(NetProfile { alt_max_bit_rate: 128, ..two_addresses() });
         let t = c.stream_target("s1".into(), false, q(0, ""), q(192, "opus"));
         assert_eq!(t.key, "s1:0");
@@ -130,6 +130,13 @@ mod tests {
         assert!(t.url.starts_with("https://wan.example/rest/stream?") && t.url.ends_with("&id=s1&maxBitRate=128&format=opus&estimateContentLength=true"));
         assert_eq!(c.stream_key("s1".into(), false, q(96, "mp3"), q(0, "")), "s1:96mp3", "under the cap");
         assert_eq!(c.stream_key("s1".into(), false, q(320, "mp3"), q(0, "")), "s1:128mp3");
+
+        // Only transcodes have estimated length.
+        let (c, _) = client(NetProfile { url: "h".into(), ..Default::default() });
+        assert!(!length_estimated(&c.resolve("s1".into(), false, false).url));
+        assert!(!length_estimated(&c.resolve("s1".into(), false, true).url));
+        assert!(length_estimated(&c.stream_target("s1".into(), false, q(192, "opus"), q(0, "")).url));
+        assert!(length_estimated(&c.stream_target("s1".into(), false, q(128, ""), q(0, "")).url), "bit rate alone");
     }
 
     #[test]
@@ -147,23 +154,12 @@ mod tests {
     }
 
     #[test]
-    fn only_transcodes_have_estimated_length() {
-        let (c, _) = client(NetProfile { url: "h".into(), ..Default::default() });
-        assert!(!length_estimated(&c.resolve("s1".into(), false, false).url));
-        assert!(!length_estimated(&c.resolve("s1".into(), false, true).url));
-        assert!(length_estimated(&c.stream_target("s1".into(), false, q(192, "opus"), q(0, "")).url));
-        assert!(length_estimated(&c.stream_target("s1".into(), false, q(128, ""), q(0, "")).url), "bit rate alone");
-    }
-
-    #[test]
-    fn resolve_prefers_download() {
+    fn downloads() {
         let (c, _) = client(NetProfile { url: "h".into(), ..Default::default() });
         assert_eq!(c.resolve("s1".into(), true, true).key, "dl:s1");
         assert_eq!(c.resolve("s1".into(), false, false).key, "s1:0", "not downloaded: streamed");
-    }
 
-    #[test]
-    fn download_keys_and_stream_copies() {
+        // Download keys and stream copies.
         let (c, _) = client(NetProfile { url: "h".into(), ..Default::default() });
         let t = c.download_target("s:1".into(), q(0, ""));
         assert_eq!(t.key, "dl:s:1");
@@ -171,4 +167,5 @@ mod tests {
         let keys = ["a:0", "a:192opus", "ab:0", "dl:a", "x:a:0"];
         assert_eq!(keys.into_iter().filter(|k| is_copy("a", k)).collect::<Vec<_>>(), ["a:0", "a:192opus"]);
     }
+
 }

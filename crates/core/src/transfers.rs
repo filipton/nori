@@ -252,17 +252,30 @@ mod tests {
     }
 
     #[test]
-    fn queue_adds_new_and_retries_unfinished() {
-        let core = core();
-        let q = core.download_queue(vec![song("a"), song("b"), song("a")]).unwrap();
-        assert_eq!((q.fresh, q.again), (vec!["a".to_string(), "b".into()], vec![]));
-        core.download_done("a".into()).unwrap();
-        let q = core.download_queue(vec![song("a"), song("b"), song("c")]).unwrap();
-        assert_eq!(q.fresh, ["c"]);
-        assert_eq!(q.again, ["b"]);
-        // Listed newest first.
-        let pending: Vec<String> = core.downloads(false).unwrap().into_iter().rev().map(|s| s.id).collect();
-        assert_eq!(pending, ["b", "c"]);
+    fn queueing() {
+        {
+            let core = core();
+            let q = core.download_queue(vec![song("a"), song("b"), song("a")]).unwrap();
+            assert_eq!((q.fresh, q.again), (vec!["a".to_string(), "b".into()], vec![]));
+            core.download_done("a".into()).unwrap();
+            let q = core.download_queue(vec![song("a"), song("b"), song("c")]).unwrap();
+            assert_eq!(q.fresh, ["c"]);
+            assert_eq!(q.again, ["b"]);
+            // Listed newest first.
+            let pending: Vec<String> = core.downloads(false).unwrap().into_iter().rev().map(|s| s.id).collect();
+            assert_eq!(pending, ["b", "c"]);
+        }
+
+        // Library queue follows index order.
+        {
+            let core = core();
+            let songs: Vec<crate::Song> = ["x", "y", "z"].map(song).to_vec();
+            crate::db::index(&mut core.db.lock(), &[], &[], &songs).unwrap();
+            core.download_queue(vec![songs[1].clone()]).unwrap();
+            let q = core.download_queue_library().unwrap();
+            assert_eq!((q.fresh, q.again), (vec!["x".to_string(), "z".into()], vec!["y".to_string()]));
+            assert_eq!(core.downloads(false).unwrap().len(), 3);
+        }
     }
 
     #[test]
@@ -294,57 +307,48 @@ mod tests {
     }
 
     #[test]
-    fn library_queue_follows_index_order() {
-        let core = core();
-        let songs: Vec<crate::Song> = ["x", "y", "z"].map(song).to_vec();
-        crate::db::index(&mut core.db.lock(), &[], &[], &songs).unwrap();
-        core.download_queue(vec![songs[1].clone()]).unwrap();
-        let q = core.download_queue_library().unwrap();
-        assert_eq!((q.fresh, q.again), (vec!["x".to_string(), "z".into()], vec!["y".to_string()]));
-        assert_eq!(core.downloads(false).unwrap().len(), 3);
-    }
+    fn restart() {
+        {
+            let known = |id: &str, state| DownloadKnown { id: id.into(), state, length: 100, bytes: 50 };
+            let pending = ["lost", "removing", "done", "failed", "queued"].map(String::from);
+            let all = [known("removing", REMOVING), known("done", COMPLETED), known("failed", FAILED), known("queued", QUEUED), known("other", COMPLETED)];
+            let (r, failed) = recovery(&pending, &all);
+            assert_eq!(r.lost, ["lost", "removing"]);
+            assert_eq!(r.finished, ["done"]);
+            assert_eq!(failed, [("failed".to_string(), 100, 50)]);
+            assert!(r.unfinished);
+            assert!(!recovery(&pending[..1], &[]).0.unfinished);
 
-    #[test]
-    fn recovery_after_restart() {
-        let known = |id: &str, state| DownloadKnown { id: id.into(), state, length: 100, bytes: 50 };
-        let pending = ["lost", "removing", "done", "failed", "queued"].map(String::from);
-        let all = [known("removing", REMOVING), known("done", COMPLETED), known("failed", FAILED), known("queued", QUEUED), known("other", COMPLETED)];
-        let (r, failed) = recovery(&pending, &all);
-        assert_eq!(r.lost, ["lost", "removing"]);
-        assert_eq!(r.finished, ["done"]);
-        assert_eq!(failed, [("failed".to_string(), 100, 50)]);
-        assert!(r.unfinished);
-        assert!(!recovery(&pending[..1], &[]).0.unfinished);
-
-        let core = core();
-        core.download_queue(vec![song("a"), song("b")]).unwrap();
-        let r = core.download_recover(vec![known("a", COMPLETED), known("b", FAILED)]).unwrap();
-        assert_eq!(r.finished, ["a"]);
-        assert_eq!(r.failed, [DownloadFailed { id: "b".into(), progress: 0.5 }]);
-        assert_eq!(core.downloads(true).unwrap().len(), 1);
-        assert_eq!(core.downloads.with(|t| t.phase("b")), Some(nori_model::DownloadPhase::Failed));
-    }
-
-    #[test]
-    fn restart_failure_wakes_downloads() {
-        use std::future::Future;
-        use std::sync::atomic::{AtomicBool, Ordering};
-        use std::sync::Arc;
-        struct Woke(AtomicBool);
-        impl std::task::Wake for Woke {
-            fn wake(self: Arc<Self>) {
-                self.0.store(true, Ordering::SeqCst);
-            }
+            let core = core();
+            core.download_queue(vec![song("a"), song("b")]).unwrap();
+            let r = core.download_recover(vec![known("a", COMPLETED), known("b", FAILED)]).unwrap();
+            assert_eq!(r.finished, ["a"]);
+            assert_eq!(r.failed, [DownloadFailed { id: "b".into(), progress: 0.5 }]);
+            assert_eq!(core.downloads(true).unwrap().len(), 1);
+            assert_eq!(core.downloads.with(|t| t.phase("b")), Some(nori_model::DownloadPhase::Failed));
         }
-        let core = core();
-        core.download_queue(vec![song("a")]).unwrap();
-        core.downloads.with(|t| t.marks_changed());
-        let woke = Arc::new(Woke(AtomicBool::new(false)));
-        let waker = std::task::Waker::from(woke.clone());
-        let mut moved = std::pin::pin!(core.downloads.marks_moved());
-        assert!(moved.as_mut().poll(&mut std::task::Context::from_waker(&waker)).is_pending());
-        core.download_recover(vec![DownloadKnown { id: "a".into(), state: FAILED, length: 100, bytes: 50 }]).unwrap();
-        assert!(woke.0.load(Ordering::SeqCst));
+
+        // Restart failure wakes downloads.
+        {
+            use std::future::Future;
+            use std::sync::atomic::{AtomicBool, Ordering};
+            use std::sync::Arc;
+            struct Woke(AtomicBool);
+            impl std::task::Wake for Woke {
+                fn wake(self: Arc<Self>) {
+                    self.0.store(true, Ordering::SeqCst);
+                }
+            }
+            let core = core();
+            core.download_queue(vec![song("a")]).unwrap();
+            core.downloads.with(|t| t.marks_changed());
+            let woke = Arc::new(Woke(AtomicBool::new(false)));
+            let waker = std::task::Waker::from(woke.clone());
+            let mut moved = std::pin::pin!(core.downloads.marks_moved());
+            assert!(moved.as_mut().poll(&mut std::task::Context::from_waker(&waker)).is_pending());
+            core.download_recover(vec![DownloadKnown { id: "a".into(), state: FAILED, length: 100, bytes: 50 }]).unwrap();
+            assert!(woke.0.load(Ordering::SeqCst));
+        }
     }
 
     #[test]

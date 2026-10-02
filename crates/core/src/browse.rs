@@ -53,7 +53,7 @@ pub(crate) mod tests {
     use crate::Song;
 
     #[test]
-    fn songs_page_sorts_filters_and_pages() {
+    fn pages() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         let all: Vec<Song> = (0..250).map(|i| song(&format!("s{i:03}"), &format!("T{:03}", 249 - i), "A", "B", "", 1990 + (i % 20) as u32)).collect();
         db::index(&mut core.db.lock(), &[], &[], &all).unwrap();
@@ -65,10 +65,8 @@ pub(crate) mod tests {
         let years = core.songs_page("YEAR".into(), false, 2000, 2009, 0).unwrap();
         assert_eq!(years.songs[0].year, 2009);
         assert!(years.exhausted && years.songs.iter().all(|s| (2000..=2009).contains(&s.year)));
-    }
 
-    #[test]
-    fn text_sorts_read_an_index_not_the_library() {
+        // Text sorts read an index not the library.
         let core = Core::new(String::new(), "t".into()).unwrap();
         let c = core.db.lock();
         for key in ["title", "artist", "album"] {
@@ -79,7 +77,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn history_pages_and_stats_windows() {
+    fn history_pages() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         let s = song("1", "t", "a", "b", "", 0);
         db::index(&mut core.db.lock(), &[], &[], std::slice::from_ref(&s)).unwrap();
@@ -90,10 +88,8 @@ pub(crate) mod tests {
         assert_eq!((page.entries.len(), page.next), (2, None));
         assert_eq!(core.stats_days(7).unwrap().plays, 1);
         assert_eq!(core.stats_days(0).unwrap().plays, 2);
-    }
 
-    #[test]
-    fn a_listen_recorded_while_paging_repeats_nothing() {
+        // A listen recorded while paging repeats nothing.
         let core = Core::new(String::new(), "t".into()).unwrap();
         let s = song("1", "t", "a", "b", "", 0);
         db::index(&mut core.db.lock(), &[], &[], std::slice::from_ref(&s)).unwrap();
@@ -109,4 +105,5 @@ pub(crate) mod tests {
         assert!(second.entries[0].started_ms < oldest_first);
         assert_eq!(second.next, None);
     }
+
 }

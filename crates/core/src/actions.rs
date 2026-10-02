@@ -143,7 +143,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn artist_and_shuffle_skip_providers() {
+    fn providers_skipped() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         let album = |id: &str, is_external| Album { id: id.into(), is_external, ..Default::default() };
         fake.answer(r#"{"subsonic-response":{"status":"ok","album":{"id":"a1","name":"a1","song":[{"id":"1","title":"1","isDir":false},{"id":"ext-deezer-song-2","title":"2","isDir":false}]}}}"#);
@@ -152,10 +152,8 @@ pub(crate) mod tests {
         assert_eq!(fake.asked().len(), 1);
         fake.answer(&songs_json("randomSongs", &["x", "ext-deezer-song-1"]));
         assert_eq!(block(c.shuffle_all()).unwrap().iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["x"]);
-    }
 
-    #[test]
-    fn shuffle_albums_plays_one_library_album() {
+        // Shuffle albums plays one library album.
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         fake.answer(r#"{"subsonic-response":{"status":"ok","albumList2":{"album":[{"id":"b","name":"B"},{"id":"ext-applemusic-album-1","name":"X","isExternal":true},{"id":"a","name":"A"}]}}}"#);
         let album = |id: &str, songs: &[&str]| {

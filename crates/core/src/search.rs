@@ -118,7 +118,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn session_drops_stale_answers() {
+    fn search_session() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         let s = SearchSession::new();
         let v = s.typed(" dogs ".into());
@@ -142,10 +142,8 @@ pub(crate) mod tests {
         let v = s.server("x".into(), SearchResult::default()).unwrap();
         assert!(v.nothing_found);
         assert_eq!(s.scope(SearchScope::Library).shown.unwrap().songs.len(), 0);
-    }
 
-    #[test]
-    fn short_queries_are_not_remembered() {
+        // Short queries are not remembered.
         let core = Core::new(String::new(), "t".into()).unwrap();
         assert_eq!(core.search_remember_recent("a".into()).unwrap(), None);
         assert!(core.search_history().unwrap().is_empty());
@@ -155,4 +153,5 @@ pub(crate) mod tests {
         assert_eq!(history.len(), 2);
         assert!(history.contains(&"dogs".to_string()));
     }
+
 }

@@ -268,13 +268,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn download_cover_urls_match_row_urls() {
+    fn cover_keys() {
         let core = crate::Core::new(String::new(), "t".into()).unwrap();
         core.configure(crate::ServerConfig { url: "http://m".into(), user: "u".into(), password: "p".into(), ..Default::default() }).unwrap();
         let urls = core.download_cover_urls(["al 1", "ext-2", "al 1"].map(String::from).to_vec());
         let prefix = core.url_prefix("getCoverArt".into());
         assert_eq!(urls, [format!("{prefix}&id=al%201&size=320"), format!("{prefix}&id=al%201&size=800")]);
         assert_eq!(core.cover_address("al 1".into(), 320), urls[0]);
+
+        // Cover key ignores signature and address.
+        let core = crate::Core::new(String::new(), "t".into()).unwrap();
+        core.configure(crate::ServerConfig { url: "https://keys.example".into(), user: "u".into(), password: "one".into(), ..Default::default() }).unwrap();
+        let before = core.cover_address("pl-6b2d_65f0".into(), 320);
+        core.configure(crate::ServerConfig { url: "https://keys.example".into(), user: "u".into(), password: "two".into(), ..Default::default() }).unwrap();
+        let after = core.cover_address("pl-6b2d_65f0".into(), 320);
+        assert_ne!(before, after);
+        assert_eq!(key(&before), key(&after));
+        assert_eq!(key(&before), b"keys.example/rest/getCoverArt&id=pl-6b2d_65f0&size=320");
+        assert_ne!(key(&before), key(&core.cover_address("pl-6b2d_65f0".into(), 800)));
+        assert_ne!(key(&before), key(&core.cover_address("al-1".into(), 320)));
+        cover_address_alike("http://keys.lan:4533/", "https://keys.example");
+        assert_eq!(key("http://keys.lan:4533/rest/getCoverArt?u=a&t=x&s=y&id=al-1&size=320"), key("https://keys.example/rest/getCoverArt?u=b&id=al-1&size=320"));
+        assert_ne!(key("https://other.example/rest/getCoverArt?id=al-1&size=320"), key("https://keys.example/rest/getCoverArt?id=al-1&size=320"));
     }
 
     #[test]
@@ -313,24 +328,7 @@ mod tests {
     }
 
     #[test]
-    fn cover_key_ignores_signature_and_address() {
-        let core = crate::Core::new(String::new(), "t".into()).unwrap();
-        core.configure(crate::ServerConfig { url: "https://keys.example".into(), user: "u".into(), password: "one".into(), ..Default::default() }).unwrap();
-        let before = core.cover_address("pl-6b2d_65f0".into(), 320);
-        core.configure(crate::ServerConfig { url: "https://keys.example".into(), user: "u".into(), password: "two".into(), ..Default::default() }).unwrap();
-        let after = core.cover_address("pl-6b2d_65f0".into(), 320);
-        assert_ne!(before, after);
-        assert_eq!(key(&before), key(&after));
-        assert_eq!(key(&before), b"keys.example/rest/getCoverArt&id=pl-6b2d_65f0&size=320");
-        assert_ne!(key(&before), key(&core.cover_address("pl-6b2d_65f0".into(), 800)));
-        assert_ne!(key(&before), key(&core.cover_address("al-1".into(), 320)));
-        cover_address_alike("http://keys.lan:4533/", "https://keys.example");
-        assert_eq!(key("http://keys.lan:4533/rest/getCoverArt?u=a&t=x&s=y&id=al-1&size=320"), key("https://keys.example/rest/getCoverArt?u=b&id=al-1&size=320"));
-        assert_ne!(key("https://other.example/rest/getCoverArt?id=al-1&size=320"), key("https://keys.example/rest/getCoverArt?id=al-1&size=320"));
-    }
-
-    #[test]
-    fn neighbours_start_at_skip_targets() {
+    fn near_covers_wanted() {
         assert_eq!(cover_neighbours(5, 4, 6, 3, 100), [4, 6, 7, 3, 8, 2]);
         // Shuffle: skip targets anywhere, steps still from the current song.
         assert_eq!(cover_neighbours(5, 40, 12, 2, 100), [40, 12, 7, 3]);
@@ -338,14 +336,13 @@ mod tests {
         assert_eq!(cover_neighbours(5, 4, 6, 0, 100), [4]);
         assert_eq!(cover_neighbours(0, -1, 1, 3, 3), [1, 2]);
         assert_eq!(cover_neighbours(1, 0, 0, 2, 2), [0]);
-    }
 
-    #[test]
-    fn around_lists_near_and_wants() {
+        // Around lists near and wants.
         let arts: Vec<Option<String>> = ["a", "b", "c", "ext-d", "b"].iter().map(|s| Some(s.to_string())).chain([None]).collect();
         let r = around(arts.len() as u32, |i| arts[i as usize].clone(), 1, 0, 2, 3);
         assert_eq!(r.near, ["b", "a", "c"]);
         assert_eq!(r.wants.iter().map(|w| (w.id.as_str(), w.size)).collect::<Vec<_>>(), [("a", 320), ("a", 800), ("c", 320), ("c", 800), ("b", 320), ("b", 800)]);
         assert_eq!(around(0, |_| unreachable!(), -1, -1, -1, 2), CoversAround { near: vec![], wants: vec![] });
     }
+
 }

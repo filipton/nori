@@ -89,7 +89,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn record_indexes_song_and_rolls_up_stats() {
+    fn records_listens() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         let s = song("s1", "Dogs", "Pink Floyd", "Animals", "Rock", 1977);
         assert!(rec(&core, s.clone(), NOW - DAY, 200_000));
@@ -116,10 +116,8 @@ pub(crate) mod tests {
         core.history_clear().unwrap();
         assert!(core.history_recent(10, None, true).unwrap().0.is_empty());
         assert!(stat(&core, "s1").is_none());
-    }
 
-    #[test]
-    fn record_keeps_newer_index_entry() {
+        // Record keeps newer index entry.
         let core = Core::new(String::new(), "t".into()).unwrap();
         let mut s = song("s1", "Dogs", "Pink Floyd", "Animals", "Rock", 1977);
         s.starred = true;
@@ -127,10 +125,8 @@ pub(crate) mod tests {
         let stale = Song { starred: false, ..s.clone() };
         rec(&core, stale, NOW, 200_000);
         assert!(core.history_recent(1, None, true).unwrap().0[0].song.starred);
-    }
 
-    #[test]
-    fn provider_tracks_are_not_recorded() {
+        // Provider tracks are not recorded.
         let core = Core::new(String::new(), "t".into()).unwrap();
         for id in ["ext-deezer-song-7", "pl-deezer-9", ""] {
             assert!(!rec(&core, Song { id: id.into(), duration: 100, ..Default::default() }, NOW, 100_000));
@@ -141,7 +137,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn taste_decays_and_follows_ratings() {
+    fn taste_stays_sane() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         let (fresh, old, skipped) = (song("a", "A", "X", "", "", 0), song("b", "B", "X", "", "", 0), song("c", "C", "X", "", "", 0));
         listen(&core, &fresh, NOW);
@@ -161,10 +157,8 @@ pub(crate) mod tests {
         assert_eq!(taste(&Song { starred: true, user_rating: 5, ..plain.clone() }, 0.0, NOW), 3.5);
         assert_eq!(taste(&Song { user_rating: 1, ..plain.clone() }, 0.0, NOW), -3.0);
         assert_eq!(taste(&Song { user_rating: 3, ..plain }, 0.0, NOW), 0.0);
-    }
 
-    #[test]
-    fn absurd_timestamps_keep_taste_finite() {
+        // Absurd timestamps keep taste finite.
         let core = Core::new(String::new(), "t".into()).unwrap();
         let s = song("a", "A", "X", "", "", 0);
         assert!(record(&mut core.db.lock(), &s, i64::MAX / 2, 200_000, 0, NOW).unwrap());
@@ -174,16 +168,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn empty_summary_has_full_charts() {
+    fn summaries() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         let s = stats(&core, 0, i64::MAX, 10);
         assert_eq!((s.plays, s.listened_ms, s.longest_streak_days), (0, 0, 0));
         assert_eq!((s.plays_per_hour.len(), s.plays_per_weekday.len()), (24, 7));
         assert!(s.first_play.is_none() && s.top_songs.is_empty());
-    }
 
-    #[test]
-    fn summary_counts_tops_and_charts() {
+        // Summary counts tops and charts.
         let core = Core::new(String::new(), "t".into()).unwrap();
         let dogs = song("s1", "Dogs", "Pink Floyd", "Animals", "Rock", 1977);
         let pigs = song("s2", "Pigs", "Pink Floyd", "Animals", "Rock", 1977);
@@ -213,10 +205,8 @@ pub(crate) mod tests {
         assert_eq!(s.plays_per_weekday, vec![1, 1, 1, 0, 1, 0, 0]);
         assert_eq!((s.active_days, s.longest_streak_days), (4, 3));
         assert_eq!(s.first_play.unwrap().song, dogs);
-    }
 
-    #[test]
-    fn charts_use_local_time() {
+        // Charts use local time.
         let core = Core::new(String::new(), "t".into()).unwrap();
         let s = song("s1", "A", "X", "", "", 0);
         // Sunday 23:30 UTC is Monday 01:30 at UTC+2.

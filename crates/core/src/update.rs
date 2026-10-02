@@ -313,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn versions_parse_and_order_as_semver() {
+    fn versions_and_assets() {
         assert_eq!(v("v0.4.1"), Version { major: 0, minor: 4, patch: 1, pre: vec![] });
         assert_eq!(v("1.2"), v("1.2.0"));
         assert_eq!(v("0.4.0+abc123"), v("0.4.0"));
@@ -327,18 +327,8 @@ mod tests {
         }
         assert!(v("0.10.0") > v("0.9.9"), "numbers, not text");
         assert!(v("1.0.0") > v("0.99.99"));
-    }
 
-    fn asset(name: &str) -> Asset {
-        Asset { name: name.into(), size: 1000, browser_download_url: format!("https://github.com/filipton/nori/releases/download/v1/{name}") }
-    }
-
-    fn abis(a: &[&str]) -> Vec<String> {
-        a.iter().map(|s| s.to_string()).collect()
-    }
-
-    #[test]
-    fn apk_is_picked_by_abi_preference() {
+        // Apk is picked by abi preference.
         let both = [asset("nori-music-0.5.0.apk"), asset("SHA256SUMS")];
         assert_eq!(pick_apk(&both, &abis(&["arm64-v8a", "armeabi-v7a"])).unwrap().name, "nori-music-0.5.0.apk");
         let split = [asset("SHA256SUMS"), asset("nori-music-0.5.0-x86_64.apk"), asset("nori-music-0.5.0-arm64-v8a.apk"), asset("nori-music-0.5.0-armeabi-v7a.apk")];
@@ -355,6 +345,14 @@ mod tests {
         assert_eq!(pick_apk(&[asset("SHA256SUMS")], &abis(&["arm64-v8a"])), None);
     }
 
+    fn asset(name: &str) -> Asset {
+        Asset { name: name.into(), size: 1000, browser_download_url: format!("https://github.com/filipton/nori/releases/download/v1/{name}") }
+    }
+
+    fn abis(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
     /// A trimmed GitHub answer, with extra fields.
     const LATEST: &str = r#"{"url":"https://api.github.com/repos/filipton/nori/releases/1","html_url":"https://github.com/filipton/nori/releases/tag/v0.5.0",
       "id":1,"author":{"login":"filipton"},"tag_name":"v0.5.0","name":"nori 0.5.0","draft":false,"prerelease":false,
@@ -368,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn decide_offers_newer_releases() {
+    fn offers() {
         let phone = abis(&["arm64-v8a"]);
         let UpdateCheck::Available { update, skipped } = decide(&latest(), "0.4.0", &phone, None).unwrap() else { panic!("offered") };
         assert!(!skipped);
@@ -392,10 +390,8 @@ mod tests {
         assert!(decide(&Release { prerelease: true, ..latest() }, "0.4.0", &phone, None).is_err());
         assert!(decide(&Release { draft: true, ..latest() }, "0.4.0", &phone, None).is_err());
         assert!(decide(&Release { tag_name: "nightly".into(), ..latest() }, "0.4.0", &phone, None).is_err());
-    }
 
-    #[test]
-    fn due_at_most_daily() {
+        // Due at most daily.
         let day = CHECK_EVERY_MS;
         let now = 1_800_000_000_000;
         assert!(due(true, None, now));
@@ -404,14 +400,13 @@ mod tests {
         assert!(!due(true, Some(now - day + 1), now));
         assert!(due(true, Some(now - day), now));
         assert!(due(true, Some(now + 5 * day), now), "clock set back");
-    }
 
-    #[test]
-    fn plain_notes_strip_markdown() {
+        // Plain notes strip markdown.
         assert_eq!(plain_notes(""), "");
         assert_eq!(plain_notes("\n\n## Added\n\n\n* `nori-cli` gains __bold__\n\n"), "Added\n\n• nori-cli gains bold");
         assert_eq!(plain_notes("one\ntwo\n\nthree"), "one two\n\nthree");
         assert_eq!(plain_notes("# A\n- x\n- y\n# B\ntext"), "A\n• x\n• y\n\nB\ntext");
         assert_eq!(plain_notes("see [the page](https://a/b) and [x] (y)"), "see the page and [x] (y)");
     }
+
 }

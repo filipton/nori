@@ -206,7 +206,7 @@ pub(crate) mod tests {
     const NONE: &str = r#"{"subsonic-response":{"status":"ok","lyricsList":{}}}"#;
 
     #[test]
-    fn server_lyrics_first_and_never_twice() {
+    fn server_and_services() {
         let (c, fake) = setup();
         // Unique titles: a failing service rests per song across tests.
         c.core.session.register(vec![Song { id: "lf1".into(), title: "In Order One".into(), ..song() }, Song { id: "lf2".into(), title: "In Order Two".into(), ..song() }]);
@@ -230,6 +230,29 @@ pub(crate) mod tests {
         let got = none.0.lock().clone();
         assert_eq!(got.len(), 1);
         assert!(got[0].lyrics.lines.is_empty() && got[0].origin == LyricsOrigin::Server);
+
+        // Synced server lyrics win and failures are not cached.
+        let (c, fake) = setup();
+        assert!(run(&c, &song(), true, true, &lrclib()).is_empty());
+        assert!(fake.asked().is_empty());
+        let s = Song { title: "Offline".into(), ..song() };
+        fake.fail(FailureKind::UnknownHost);
+        assert_eq!(run(&c, &s, false, false, &lrclib())[0].origin, LyricsOrigin::Server);
+        assert_eq!(c.core.lyrics_cache_bytes(), 0);
+
+        // Plain service lyrics do not replace server plain and miss is cached.
+        let (c, fake) = setup();
+        let s = Song { title: "Plain".into(), ..song() };
+        fake.answer(r#"{"plainLyrics":"just words"}"#);
+        fake.answer("[]");
+        assert!(run(&c, &s, true, false, &lrclib()).is_empty());
+        let (c, fake) = setup();
+        fake.answer(r#"{"statusCode":404}"#);
+        fake.answer("[]");
+        let none = run(&c, &s, false, false, &lrclib());
+        assert!(none[0].lyrics.lines.is_empty() && none[0].origin == LyricsOrigin::Server);
+        run(&c, &s, false, false, &lrclib());
+        assert_eq!(fake.asked().len(), 2, "miss cached: {:?}", fake.asked());
     }
 
     #[test]
@@ -247,22 +270,6 @@ pub(crate) mod tests {
         let again = run(&c, &song(), false, false, &lrclib());
         assert_eq!(again[0].lyrics.lines[0].text, "close synced");
         assert_eq!(fake.asked().len(), 2);
-    }
-
-    #[test]
-    fn plain_service_lyrics_do_not_replace_server_plain_and_miss_is_cached() {
-        let (c, fake) = setup();
-        let s = Song { title: "Plain".into(), ..song() };
-        fake.answer(r#"{"plainLyrics":"just words"}"#);
-        fake.answer("[]");
-        assert!(run(&c, &s, true, false, &lrclib()).is_empty());
-        let (c, fake) = setup();
-        fake.answer(r#"{"statusCode":404}"#);
-        fake.answer("[]");
-        let none = run(&c, &s, false, false, &lrclib());
-        assert!(none[0].lyrics.lines.is_empty() && none[0].origin == LyricsOrigin::Server);
-        run(&c, &s, false, false, &lrclib());
-        assert_eq!(fake.asked().len(), 2, "miss cached: {:?}", fake.asked());
     }
 
     #[test]
@@ -311,7 +318,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn downloaded_song_lyrics_survive_cache_clear() {
+    fn downloaded_lyrics() {
         let (c, fake) = setup();
         let kept = Song { id: "dl-lyr".into(), title: "Paper Lanterns".into(), artist: "The Invented".into(), album: "Nowhere".into(), duration: 200, ..Default::default() };
         let other = Song { id: "st-lyr".into(), title: "Streamed Only".into(), ..kept.clone() };
@@ -336,33 +343,9 @@ pub(crate) mod tests {
         c.core.download_remove("dl-lyr".into()).unwrap();
         c.core.lyrics_cache_clear();
         assert_eq!(c.core.lyrics_cache_bytes(), 0, "download deleted");
-    }
 
-    /// Picks shown, each with the request count at that moment.
-    struct Seen {
-        fake: Arc<Fake>,
-        picks: Mutex<Vec<(usize, LyricsPick)>>,
-    }
-
-    impl LyricsShown for Seen {
-        fn show(&self, pick: LyricsPick) {
-            self.picks.lock().push((self.fake.asked().len(), pick));
-        }
-    }
-
-    fn open(c: &Client, fake: &Arc<Fake>, id: &str, asked: &LyricsLookup) -> Vec<(usize, LyricsPick)> {
-        let seen = Arc::new(Seen { fake: fake.clone(), picks: Mutex::new(Vec::new()) });
-        block(c.lyrics_for_with(id.into(), asked, seen.clone())).unwrap();
-        let picks = seen.picks.lock().clone();
-        picks
-    }
-
-    const DAY: i64 = 24 * 3_600_000;
-
-    /// A downloaded song's lyrics open from the cache with no request, online or off; after a week the
-    /// server is re-asked, after showing them.
-    #[test]
-    fn downloaded_song_lyrics_open_without_requests() {
+        // A downloaded song's lyrics open from the cache with no request, online or off; after a week the
+        // server is re-asked, after showing them.
         let (c, fake) = setup();
         let s = Song { id: "dl-open".into(), title: "Harbour Of Tin".into(), artist: "The Invented".into(), album: "Nowhere".into(), duration: 200, ..Default::default() };
         let asked = LyricsLookup { services: vec![LyricsService::Lrclib, LyricsService::LyricsPlus], ..lrclib() };
@@ -395,10 +378,8 @@ pub(crate) mod tests {
         assert!(kept(&late) && late[0].0 == before, "{late:?}");
         let asked_after = &fake.asked()[before..];
         assert!(matches!(asked_after, [u] if u.contains("getLyricsBySongId")), "{asked_after:?}");
-    }
 
-    #[test]
-    fn song_of_reads_downloads_without_server() {
+        // Song of reads downloads without server.
         let (c, fake) = setup();
         let s = Song { id: "dl-known".into(), title: "Kept Here".into(), artist: "The Invented".into(), duration: 180, ..Default::default() };
         c.core.download_queue(vec![s.clone()]).unwrap();
@@ -407,6 +388,27 @@ pub(crate) mod tests {
         assert_eq!((got.title.as_str(), got.duration), ("Kept Here", 180));
         assert!(fake.asked().is_empty(), "{:?}", fake.asked());
     }
+
+    /// Picks shown, each with the request count at that moment.
+    struct Seen {
+        fake: Arc<Fake>,
+        picks: Mutex<Vec<(usize, LyricsPick)>>,
+    }
+
+    impl LyricsShown for Seen {
+        fn show(&self, pick: LyricsPick) {
+            self.picks.lock().push((self.fake.asked().len(), pick));
+        }
+    }
+
+    fn open(c: &Client, fake: &Arc<Fake>, id: &str, asked: &LyricsLookup) -> Vec<(usize, LyricsPick)> {
+        let seen = Arc::new(Seen { fake: fake.clone(), picks: Mutex::new(Vec::new()) });
+        block(c.lyrics_for_with(id.into(), asked, seen.clone())).unwrap();
+        let picks = seen.picks.lock().clone();
+        picks
+    }
+
+    const DAY: i64 = 24 * 3_600_000;
 
     #[test]
     fn download_lyrics_in_order_skipping_providers() {
@@ -420,14 +422,4 @@ pub(crate) mod tests {
         assert!(fake.asked().iter().all(|u| !u.contains("ext-")));
     }
 
-    #[test]
-    fn synced_server_lyrics_win_and_failures_are_not_cached() {
-        let (c, fake) = setup();
-        assert!(run(&c, &song(), true, true, &lrclib()).is_empty());
-        assert!(fake.asked().is_empty());
-        let s = Song { title: "Offline".into(), ..song() };
-        fake.fail(FailureKind::UnknownHost);
-        assert_eq!(run(&c, &s, false, false, &lrclib())[0].origin, LyricsOrigin::Server);
-        assert_eq!(c.core.lyrics_cache_bytes(), 0);
-    }
 }

@@ -39,55 +39,58 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn saved_queue_restores_origin_and_album_runs() {
-        use crate::{OriginKind, PageOrigin, Song};
-        let core = core(&["sv0"], 0);
-        let s = &core.session;
-        let song = |id: &str| Song { id: id.into(), ..Default::default() };
-        s.register(vec![song("sv1"), song("sv2"), song("sv3")]);
-        let from = PageOrigin::new(OriginKind::Playlist, "pl-7");
-        s.set(vec!["sv1".into(), "sv2".into()], Some(1), false, Some(from.clone()));
-        // Edits and the offline bridge keep the origin.
-        s.take(9, vec!["sv3".into()], vec![Hand::Last], None);
-        s.edit_splice(|p| p.bridge(vec!["sv3".into()]), vec![]);
-        s.unbridge();
-        assert_eq!(s.origin(), Some(from.clone()));
-        core.playlist_save(1500).unwrap();
+    fn saved_queue() {
+        {
+            use crate::{OriginKind, PageOrigin, Song};
+            let core = core(&["sv0"], 0);
+            let s = &core.session;
+            let song = |id: &str| Song { id: id.into(), ..Default::default() };
+            s.register(vec![song("sv1"), song("sv2"), song("sv3")]);
+            let from = PageOrigin::new(OriginKind::Playlist, "pl-7");
+            s.set(vec!["sv1".into(), "sv2".into()], Some(1), false, Some(from.clone()));
+            // Edits and the offline bridge keep the origin.
+            s.take(9, vec!["sv3".into()], vec![Hand::Last], None);
+            s.edit_splice(|p| p.bridge(vec!["sv3".into()]), vec![]);
+            s.unbridge();
+            assert_eq!(s.origin(), Some(from.clone()));
+            core.playlist_save(1500).unwrap();
 
-        let q = core.load_queue().unwrap();
-        assert_eq!((q.songs.len(), q.index, q.origin.as_ref()), (3, 1, Some(&from)));
-        s.set(q.songs.iter().map(|s| s.id.clone()).collect(), Some(q.index), false, q.origin);
-        assert!(s.from_page(&nori_library::pages::PageQueue::new(from)));
-
-        s.register(vec![song("sv4"), song("sv5")]);
-        s.set(vec!["sv4".into(), "sv5".into()], Some(0), false, Some(PageOrigin::new(OriginKind::Album, "al-1")));
-        s.take(9, vec!["sv1".into()], vec![Hand::Last], None);
-        let runs = s.playlist(|p| p.album_runs().to_vec());
-        assert_eq!(runs[1], 0);
-        core.playlist_save(0).unwrap();
-        s.set(vec!["sv0".into()], Some(0), false, None);
-        let q = core.load_queue().unwrap();
-        s.set(q.songs.iter().map(|s| s.id.clone()).collect(), Some(q.index), false, q.origin);
-        assert_eq!(s.playlist(|p| p.album_runs().to_vec()), runs);
-
-        // No origin, a pre-origin save, or an unknown kind: songs still restore.
-        s.set(vec!["sv1".into()], Some(0), false, None);
-        core.playlist_save(0).unwrap();
-        assert_eq!(core.load_queue().unwrap().origin, None);
-        for origin in ["", r#","origin":{"kind":"Nebula","id":"x"}"#] {
-            let json = format!(r#"{{"songs":[{{"id":"sv1"}}],"index":0,"position":0{origin}}}"#);
-            nori_db::kv_put(&core.db.lock(), "queue", &json).unwrap();
             let q = core.load_queue().unwrap();
-            assert_eq!((q.songs.len(), q.origin), (1, None), "{origin}");
+            assert_eq!((q.songs.len(), q.index, q.origin.as_ref()), (3, 1, Some(&from)));
+            s.set(q.songs.iter().map(|s| s.id.clone()).collect(), Some(q.index), false, q.origin);
+            assert!(s.from_page(&nori_library::pages::PageQueue::new(from)));
+
+            s.register(vec![song("sv4"), song("sv5")]);
+            s.set(vec!["sv4".into(), "sv5".into()], Some(0), false, Some(PageOrigin::new(OriginKind::Album, "al-1")));
+            s.take(9, vec!["sv1".into()], vec![Hand::Last], None);
+            let runs = s.playlist(|p| p.album_runs().to_vec());
+            assert_eq!(runs[1], 0);
+            core.playlist_save(0).unwrap();
+            s.set(vec!["sv0".into()], Some(0), false, None);
+            let q = core.load_queue().unwrap();
+            s.set(q.songs.iter().map(|s| s.id.clone()).collect(), Some(q.index), false, q.origin);
+            assert_eq!(s.playlist(|p| p.album_runs().to_vec()), runs);
+
+            // No origin, a pre-origin save, or an unknown kind: songs still restore.
+            s.set(vec!["sv1".into()], Some(0), false, None);
+            core.playlist_save(0).unwrap();
+            assert_eq!(core.load_queue().unwrap().origin, None);
+            for origin in ["", r#","origin":{"kind":"Nebula","id":"x"}"#] {
+                let json = format!(r#"{{"songs":[{{"id":"sv1"}}],"index":0,"position":0{origin}}}"#);
+                nori_db::kv_put(&core.db.lock(), "queue", &json).unwrap();
+                let q = core.load_queue().unwrap();
+                assert_eq!((q.songs.len(), q.origin), (1, None), "{origin}");
+            }
+        }
+
+        // Save drops unsaveable songs.
+        {
+            let core = core(&["radio:1", "rk-unknown", "rk1", "rk2"], 2);
+            core.session.register(vec![crate::Song { id: "rk1".into(), ..Default::default() }, crate::Song { id: "rk2".into(), ..Default::default() }]);
+            core.playlist_save(0).unwrap();
+            let q = core.load_queue().unwrap();
+            assert_eq!((q.songs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), q.index), (vec!["rk1", "rk2"], 0), "rk1 stays current");
         }
     }
 
-    #[test]
-    fn save_drops_unsaveable_songs() {
-        let core = core(&["radio:1", "rk-unknown", "rk1", "rk2"], 2);
-        core.session.register(vec![crate::Song { id: "rk1".into(), ..Default::default() }, crate::Song { id: "rk2".into(), ..Default::default() }]);
-        core.playlist_save(0).unwrap();
-        let q = core.load_queue().unwrap();
-        assert_eq!((q.songs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), q.index), (vec!["rk1", "rk2"], 0), "rk1 stays current");
-    }
 }

@@ -290,7 +290,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn bound_device_loads_sound_and_saves_previous() {
+    fn device_arrival() {
         let c = core();
         let warm = SoundSettings { crossfeed_db: 3.0, ..sound() };
         c.profile_save(SoundProfile { name: "Warm".into(), json: sound_json(&warm), outputs: vec!["USB: K3".into()] }).unwrap();
@@ -304,10 +304,24 @@ pub(crate) mod tests {
         assert_eq!(c.loose(), Some(sound_json(&playing)));
         let off = Now { per_output: false, ..now(playing) };
         assert_eq!(c.arrive_as("USB: K3".into(), &off).effect.apply, None);
-    }
 
-    #[test]
-    fn quiet_device_is_not_offered_a_curve() {
+        // Unbound device restores saved sound.
+        let c = core();
+        let kept = SoundSettings { mono: true, ..sound() };
+        c.set_loose(LooseChange::Store { json: sound_json(&kept) });
+        let a = c.arrive_as(SPEAKER.into(), &now(sound()));
+        assert_eq!(a.effect.apply, Some(kept));
+        assert_eq!(c.loose(), None);
+        assert_eq!(a.curve, CurveStep::None);
+        c.set_loose(LooseChange::Store { json: "garbage".into() });
+        let a = c.arrive_as(SPEAKER.into(), &now(sound()));
+        assert_eq!((a.effect.apply, c.loose()), (None, None), "unreadable saved sound is dropped");
+        let a = c.arrive_as("Bluetooth: Buds".into(), &now(sound()));
+        assert_eq!(a.curve, CurveStep::Offer);
+        assert_eq!(a.entry, None, "no index");
+        assert_eq!(a.effect, DeviceEffect::none());
+
+        // Quiet device is not offered a curve.
         let c = core();
         c.set_quiet("Bluetooth: Buds", true);
         c.set_quiet("Bluetooth: Buds", true);
@@ -319,7 +333,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn adopt_saves_binds_and_loads_curve() {
+    fn adopt_and_undo() {
         let c = core();
         c.set_quiet("Bluetooth: X", true);
         let playing = SoundSettings { balance: 0.5, ..sound() };
@@ -342,28 +356,26 @@ pub(crate) mod tests {
         assert_eq!(p.outputs, ["Bluetooth: X", "USB: Y"]);
         let err = c.adopt_as("x", "Empty", "nothing", true, &now(sound())).unwrap_err();
         assert!(matches!(err, SoundError::NoFilters));
-    }
 
-    #[test]
-    fn unbound_device_restores_saved_sound() {
+        // Undo restores everything.
         let c = core();
-        let kept = SoundSettings { mono: true, ..sound() };
-        c.set_loose(LooseChange::Store { json: sound_json(&kept) });
-        let a = c.arrive_as(SPEAKER.into(), &now(sound()));
-        assert_eq!(a.effect.apply, Some(kept));
+        let step = c.adopt_as("Bluetooth: X", "Sony", PRESET, true, &now(sound())).unwrap();
+        c.settle("Bluetooth: X", step);
+        let before = SoundSettings { mono: true, ..sound() };
+        let e = c.device_undo("Bluetooth: X".into(), "Sony".into(), true, before.clone());
+        assert_eq!(e, DeviceEffect { refresh: true, apply: Some(before), arrive: false, created: false });
+        assert!(c.profiles().unwrap().is_empty());
+        assert_eq!(c.device_quiet(), ["Bluetooth: X"]);
         assert_eq!(c.loose(), None);
-        assert_eq!(a.curve, CurveStep::None);
-        c.set_loose(LooseChange::Store { json: "garbage".into() });
-        let a = c.arrive_as(SPEAKER.into(), &now(sound()));
-        assert_eq!((a.effect.apply, c.loose()), (None, None), "unreadable saved sound is dropped");
-        let a = c.arrive_as("Bluetooth: Buds".into(), &now(sound()));
-        assert_eq!(a.curve, CurveStep::Offer);
-        assert_eq!(a.entry, None, "no index");
-        assert_eq!(a.effect, DeviceEffect::none());
+        // A pre-existing profile stays.
+        let step = c.adopt_as("Bluetooth: X", "Sony", PRESET, true, &now(sound())).unwrap();
+        c.settle("Bluetooth: X", step);
+        c.device_undo("Bluetooth: X".into(), "Sony".into(), false, sound());
+        assert_eq!(c.profiles().unwrap().len(), 1);
     }
 
     #[test]
-    fn device_list_choices() {
+    fn device_lists() {
         let c = core();
         c.set_loose(LooseChange::Store { json: "{}".into() });
         let playing = SoundSettings { eq_enabled: true, crossfeed_db: 2.0, ..sound() };
@@ -401,10 +413,20 @@ pub(crate) mod tests {
         assert_eq!(c.profile_for_output("USB: DAC".into()).unwrap().unwrap().name, BYPASS);
         let rows = device_rows(vec!["USB: DAC".into()], SPEAKER.into(), c.profiles().unwrap(), Vec::new());
         assert_eq!(rows.iter().find(|r| r.output == "USB: DAC").unwrap().choice, ChoiceKind::Bypass);
-    }
 
-    #[test]
-    fn curves_are_matched_by_device_name_only() {
+        // Device sheet and curve search.
+        let names = vec![FLAT.to_string(), "Warm".to_string()];
+        let s = sheet("USB: K3", false, &names);
+        assert_eq!(s.profiles, ["Warm"]);
+        assert!(s.can_forget);
+        assert!(!sheet("x", true, &[]).can_forget, "playing");
+        assert!(!sheet(SPEAKER, false, &[]).can_forget);
+        assert!(autoeq_too_short("a") && autoeq_too_short("") && !autoeq_too_short("hd"));
+        let c = core();
+        assert!(c.autoeq_browse("h".into()).too_short);
+        assert!(!c.autoeq_browse("hd".into()).too_short);
+
+        // Curves are matched by device name only.
         // Stored directly: fetches are one per process and another test fetches.
         let c = core();
         let list = "- [Sony WH-1000XM6](./Super%20Review/over-ear/Sony%20WH-1000XM6) by Super Review\n";
@@ -418,38 +440,6 @@ pub(crate) mod tests {
             assert_eq!(headphones_name(nameless), None, "{nameless}");
         }
         assert!(c.autoeq_find("a".into()).is_empty());
-    }
-
-    #[test]
-    fn device_sheet_and_curve_search() {
-        let names = vec![FLAT.to_string(), "Warm".to_string()];
-        let s = sheet("USB: K3", false, &names);
-        assert_eq!(s.profiles, ["Warm"]);
-        assert!(s.can_forget);
-        assert!(!sheet("x", true, &[]).can_forget, "playing");
-        assert!(!sheet(SPEAKER, false, &[]).can_forget);
-        assert!(autoeq_too_short("a") && autoeq_too_short("") && !autoeq_too_short("hd"));
-        let c = core();
-        assert!(c.autoeq_browse("h".into()).too_short);
-        assert!(!c.autoeq_browse("hd".into()).too_short);
-    }
-
-    #[test]
-    fn undo_restores_everything() {
-        let c = core();
-        let step = c.adopt_as("Bluetooth: X", "Sony", PRESET, true, &now(sound())).unwrap();
-        c.settle("Bluetooth: X", step);
-        let before = SoundSettings { mono: true, ..sound() };
-        let e = c.device_undo("Bluetooth: X".into(), "Sony".into(), true, before.clone());
-        assert_eq!(e, DeviceEffect { refresh: true, apply: Some(before), arrive: false, created: false });
-        assert!(c.profiles().unwrap().is_empty());
-        assert_eq!(c.device_quiet(), ["Bluetooth: X"]);
-        assert_eq!(c.loose(), None);
-        // A pre-existing profile stays.
-        let step = c.adopt_as("Bluetooth: X", "Sony", PRESET, true, &now(sound())).unwrap();
-        c.settle("Bluetooth: X", step);
-        c.device_undo("Bluetooth: X".into(), "Sony".into(), false, sound());
-        assert_eq!(c.profiles().unwrap().len(), 1);
     }
 
     #[test]

@@ -39,17 +39,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn session_buttons_need_a_song() {
+    fn shown() {
         let b = session_buttons(false, true, false);
         assert_eq!((b.heart, b.starred), (false, false));
-    }
 
-    #[test]
-    fn radio_title_prefers_announcement() {
+        // Radio title prefers announcement.
         let s = |v: &str| Some(v.to_string());
         assert_eq!(radio_title(s("Artist - Song"), s("FM 4")), s("Artist - Song"));
         assert_eq!(radio_title(s("  "), s("FM 4")), s("FM 4"));
         assert_eq!(radio_title(None, s("FM 4")), s("FM 4"));
         assert_eq!(radio_title(None, None), None);
     }
+
 }
