@@ -141,6 +141,8 @@ pub struct Heard {
 }
 
 /// What a stream's ending is to be.
+// One per engine, inline: boxing the plan would allocate on the audio thread.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 enum Ending {
     /// To be asked for: first, or again after the settings, the queue or an analysis changed.
