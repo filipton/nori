@@ -50,12 +50,12 @@ use rusqlite::{types::Value as Sql, Connection, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
+use crate::browse::DAY_MS;
 use crate::mixes;
 
 /// The editor's flat form of a definition.
 pub mod draft;
 
-const DAY_MS: i64 = 86_400_000;
 const MAX_DEPTH: usize = 8;
 
 // ---- the definition ---------------------------------------------------------

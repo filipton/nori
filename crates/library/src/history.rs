@@ -14,10 +14,11 @@ use nori_db as db;
 use nori_model::model::*;
 use rusqlite::{params, Connection, OptionalExtension};
 
+use crate::browse::DAY_MS;
+
 const HALF_LIFE_MS: f64 = 30.0 * 86_400_000.0;
 /// 2020-01-01. f64 holds `2^((t - EPOCH) / HALF_LIFE)` until the 2100s.
 const TASTE_EPOCH_MS: i64 = 1_577_836_800_000;
-const DAY_MS: i64 = 86_400_000;
 const MIN_HEARD_MS: i64 = 2_000;
 
 /// (completed, skipped, taste weight)

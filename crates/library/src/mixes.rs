@@ -7,12 +7,12 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use nori_model::model::Song;
 use rusqlite::{types::Value, Connection, OptionalExtension};
 
+use crate::browse::DAY_MS;
 use crate::history;
 
 /// The "For you" row built on these draws.
 pub mod board;
 
-const DAY_MS: i64 = 86_400_000;
 
 /// splitmix64: tiny, no state to warm up, good enough to shuffle music.
 pub struct Rng(u64);
