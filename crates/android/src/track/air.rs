@@ -137,6 +137,8 @@ struct WireSink {
 enum Heads {
     /// Exactly.
     Taken,
+    /// A frame short after every other mix (its own rounding of the period, as on the emulator).
+    Rounded,
     /// Never its first mix (released a period late, the timestamps lagging it).
     Late,
     /// In steps of this many µs from its start (released per Bluetooth packet).
@@ -150,6 +152,7 @@ impl Heads {
         match self {
             Heads::Taken => w.consumed,
             Heads::Late => w.consumed - w.first_mix,
+            Heads::Rounded => w.consumed - (w.consumed / w.first_mix.max(1)) % 2,
             Heads::Steps(us) => w.consumed / frames_of(us * 1_000) * frames_of(us * 1_000),
             Heads::Ahead(us) if w.consumed > 0 => w.consumed + frames_of(us * 1_000),
             Heads::Ahead(_) => 0,
@@ -620,6 +623,7 @@ fn assert_seamless(what: &str, out: Output, r: &Rig, h: &Heard) {
     let head_us = match out.heads {
         Heads::Taken => 0,
         Heads::Late => out.period_ms * 1_000,
+        Heads::Rounded => 0,
         Heads::Steps(us) | Heads::Ahead(us) => us,
     };
     let off = frames_of(MS / 10 + (out.jitter_us + out.packet_us + head_us) * 1_000);
@@ -670,12 +674,13 @@ fn changes_wait_for_a_deep_track() {
 /// Outputs the second track meets, and whether it can be lined up with the first: periods, latency,
 /// Bluetooth's timestamps, and play heads that do not say what the mixer took (a new track's first mix
 /// never counted, counted per Bluetooth packet, a resampler's look-ahead).
-const OUTPUTS: [(Output, bool); 9] = [
+const OUTPUTS: [(Output, bool); 10] = [
     (SPEAKER, true),
     (Output { period_ms: 5, delay_ms: 10, ..SPEAKER }, true),
     (Output { period_ms: 40, delay_ms: 80, ..SPEAKER }, true),
     (Output { delay_ms: 150, ..BLUETOOTH }, true),
     (BLUETOOTH, true),
+    (Output { heads: Heads::Rounded, ..SPEAKER }, true),
     (Output { heads: Heads::Late, ..BLUETOOTH }, false),
     (Output { heads: Heads::Steps(23_220), ..BLUETOOTH }, false),
     (Output { heads: Heads::Ahead(1_000), ..BLUETOOTH }, true),

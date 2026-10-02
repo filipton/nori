@@ -98,6 +98,9 @@ const JOIN_TICK_MS: u64 = 10;
 const JOIN_MOST_NS: i64 = 2_000_000_000;
 /// Mixes the two play heads must keep the same distance over before the music changes track.
 const STEADY_MIXES: u32 = 3;
+/// How much that distance may change between mixes and still count as kept: each track rounds the period
+/// it gives on its own (a frame either way on the emulator).
+const WOBBLE_US: i64 = 100;
 /// How far the tracks' timestamps may disagree with their play heads on that distance.
 const ALIGNED_US: i64 = 2_000;
 /// The crossfade.
@@ -1128,7 +1131,7 @@ impl<R: Ring> Writer<R> {
     /// agree to [`ALIGNED_US`], decides. Not by [`JOIN_MOST_NS`]: the track is emptied instead, a gap
     /// rather than a jump.
     fn joining(&mut self, now_ns: i64) -> Option<u64> {
-        let (join, fb, rate, aligned) = (self.frames(JOIN_US), self.frame_bytes(), self.rate, self.frames(ALIGNED_US) as i64);
+        let (join, fb, rate, aligned, wobble) = (self.frames(JOIN_US), self.frame_bytes(), self.rate, self.frames(ALIGNED_US) as i64, self.frames(WOBBLE_US) as i64);
         let h = self.handover.as_mut()?;
         let Phase::Joining { silence, apart, steady, last, grown } = &mut h.phase else { return None };
         let b = &mut h.beside;
@@ -1148,7 +1151,7 @@ impl<R: Ring> Writer<R> {
         let mut stamped = None;
         if let Some((old, new)) = heads(&mut *self.sink, &mut *b.sink).filter(|&(_, new)| new > 0) {
             let now = old as i64 - new as i64;
-            if *apart != Some(now) {
+            if apart.is_none_or(|a| (a - now).abs() > wobble) {
                 (*apart, *steady) = (Some(now), 0);
             } else if old != *last {
                 *steady += 1;
@@ -1227,7 +1230,7 @@ impl<R: Ring> Writer<R> {
                 return None;
             }
             // Silence after the fade, so its head moves on as the other's does until it is let go.
-            write_silence(&mut *self.sink, fb, 4 * period).ok();
+            write_silence(&mut *self.sink, fb, 8 * period).ok();
         }
         self.ring.rewind(self.clock.ahead().saturating_sub(from));
         self.staged = (0, 0);
