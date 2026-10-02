@@ -638,7 +638,7 @@ mod tests {
     }
 
     #[test]
-    fn loose_wrong_song_not_chosen() {
+    fn wrong_songs_lose() {
         // A service that matches loosely and names nothing answers first, word by word, with another song;
         // LRCLIB (line by line, naming the song) and Unison (word by word) have this one's words.
         let mut r = Race::new(&tune(), vec![entry(0.9, true, W), entry(0.85, true, W), entry(0.85, true, W)], true, Timing::Empty);
@@ -652,10 +652,35 @@ mod tests {
         let (rank, _) = r.to_show(false).expect("shown");
         assert_eq!(rank, 2, "the word-timed answer the others agree with");
         assert!(r.runner_up().is_some_and(|(r, _)| r == 1));
+
+        // Other songs words never replace shown.
+        let (web, cache) = (Web::default(), Kept::default());
+        // LRCLIB's lines; Unison, below it, times words - but of another song, and a fragment of one.
+        lrclib_synced(&web, &lrc(&OURS, false));
+        unison(&web, &lrc(&THEIRS[..3], true));
+        let s = Song { title: "Glass Harbour".into(), id: "stable".into(), ..song() };
+        let picks = run(&web, &cache, &s, (false, false), &asked(&[LyricsService::Lrclib, LyricsService::Unison]));
+        assert_eq!(picks.len(), 1, "shown once: {:?}", picks.iter().map(|p| p.origin).collect::<Vec<_>>());
+        assert_eq!((picks[0].origin, picks[0].lyrics.lines[0].text.as_str()), (LyricsOrigin::Lrclib, OURS[0]));
+
+        // Fragments are misses even cached.
+        let (web, cache) = (Web::default(), Kept::default());
+        let s = Song { title: "Fragment".into(), ..song() };
+        let only = asked(&[LyricsService::Unison]);
+        unison(&web, "[00:05.00]<00:05.00>la <00:05.50>la\n[00:09.00]<00:09.00>line <00:09.50>two\n[00:13.00]three\n[00:17.00]<00:17.00>la <00:17.50>la\n");
+        let picks = run(&web, &cache, &s, (false, false), &only);
+        assert_eq!(picks, [LyricsPick { lyrics: Lyrics::default(), origin: LyricsOrigin::Server }], "nothing found");
+        assert_eq!(cache.0.lock().values().next(), Some(&Vec::new()), "kept as a miss");
+        // The same fragment, kept for good by a build before the check: not shown either.
+        let (web, cache) = (Web::default(), Kept::default());
+        let junk = crate::lyrics::from_lrc("[00:05.00]la la\n[00:09.00]line two\n[00:13.00]la la\n");
+        cache.put(&cache_key(LyricsService::Unison, &s, &only), to_cache(&junk).into_bytes());
+        assert_eq!(run(&web, &cache, &s, (false, false), &only)[0].origin, LyricsOrigin::Server);
+        assert!(web.asked().is_empty(), "a miss for the week, not asked again");
     }
 
     #[test]
-    fn line_timed_leader_still_asks_word_timers() {
+    fn timing_ranks() {
         // First wave: two agreeing line-timed answers, scoring well; second wave: a word timer, asked
         // only when words are preferred.
         let wave = || vec![entry(0.95, true, W), entry(0.9, true, W), entry(0.75, false, W)];
@@ -671,10 +696,8 @@ mod tests {
         assert_eq!(r.next(0, 6), [2], "the word-timing service is asked all the same");
         let mut lines_will_do = answered(false);
         assert!(lines_will_do.next(0, 6).is_empty(), "words not preferred: a good line-timed answer is enough");
-    }
 
-    #[test]
-    fn named_line_timing_beats_unbacked_word_timing() {
+        // Named line timing beats unbacked word timing.
         let mut r = Race::new(&tune(), vec![entry(0.85, true, W), entry(0.85, true, W)], true, Timing::Empty);
         r.next(0, 6);
         r.answer(0, Some((words(&OURS, false), naming("Glass Harbour"))));
@@ -687,10 +710,19 @@ mod tests {
         three.answer(1, Some((words(&THEIRS, true), Named::default())));
         three.answer(2, Some((words(&OURS, true), naming("Glass Harbour"))));
         assert_eq!(three.to_show(true).map(|x| x.0), Some(2));
+
+        // Word timed words win over line timed ones.
+        let (web, cache) = (Web::default(), Kept::default());
+        unison(&web, &lrc(&OURS, true));
+        lrclib_synced(&web, &lrc(&OURS, false));
+        let s = Song { title: "Glass Harbour".into(), id: "both".into(), ..song() };
+        let picks = run(&web, &cache, &s, (true, false), &asked(&[LyricsService::Lrclib, LyricsService::Unison]));
+        assert_eq!(picks.last().unwrap().origin, LyricsOrigin::Unison);
+        assert!(picks.last().unwrap().lyrics.word_timed);
     }
 
     #[test]
-    fn a_junk_answer_loses_to_clean_lyrics() {
+    fn junk_loses() {
         // Word-timed, but one line over and over with a credit and a placeholder left in the middle.
         let junk: Vec<(i64, &str)> = (0..18).map(|i| (10_000 + i * 9_000, match i {
             6 => "Lyrics by: Some Person",
@@ -704,35 +736,21 @@ mod tests {
         let s = r.scores();
         assert!(s[0].unwrap().penalty > 0.2, "{:?}", s[0]);
         assert_eq!(r.to_show(true).map(|x| x.0), Some(1));
+
+        // Credits stripped before scoring.
+        let (web, cache) = (Web::default(), Kept::default());
+        let s = Song { title: "Glass Harbour".into(), id: "credited".into(), ..song() };
+        let body = format!("[00:00.00]Lyrics by: Some Person\n[00:02.00]Composed by: Another Person\n{}[03:50.00]Transcribed by A. Listener\n", lrc(&OURS, false));
+        unison(&web, &body);
+        let picks = run(&web, &cache, &s, (false, false), &asked(&[LyricsService::Unison]));
+        let l = &picks.last().unwrap().lyrics;
+        assert_eq!((l.lines.len(), l.lines[0].text.as_str(), l.lines[0].start_ms), (18, OURS[0], 10_000));
+        let kept = read_kept(&cache.get(&cache_key(LyricsService::Unison, &s, &asked(&[LyricsService::Unison]))).unwrap()).unwrap();
+        assert_eq!(kept.lyrics.lines.len(), 18, "the cached copy is already clean");
     }
 
     #[test]
-    fn second_wave_only_after_a_weak_first() {
-        let entries = vec![entry(0.95, true, W), entry(0.85, true, L), entry(0.75, false, W), entry(0.7, false, U)];
-        let mut good = Race::new(&tune(), entries.clone(), true, Timing::Empty);
-        assert_eq!(good.next(0, 6), [0, 1], "the first wave only");
-        good.answer(0, Some((words(&OURS, true), naming("Glass Harbour"))));
-        good.answer(1, Some((words(&OURS, false), naming("Glass Harbour"))));
-        assert!(good.leader().unwrap().1 >= WIDEN_BELOW);
-        assert!(good.next(0, 6).is_empty(), "nobody else asked");
-        let mut missed = Race::new(&tune(), entries.clone(), true, Timing::Empty);
-        missed.next(0, 6);
-        missed.answer(0, None);
-        assert!(missed.next(1, 6).is_empty(), "not while the first wave is out");
-        missed.answer(1, None);
-        assert_eq!(missed.next(0, 6), [2], "the first wave missed: the next one, still timed");
-        missed.answer(2, None);
-        assert_eq!(missed.next(0, 6), [3], "untimed words last, when nobody timed anything");
-        let mut low = Race::new(&tune(), entries, true, Timing::Empty);
-        low.next(0, 6);
-        low.answer(0, None);
-        low.answer(1, Some((words(&OURS, false), Named::default())));
-        assert!(low.leader().unwrap().1 < WIDEN_BELOW);
-        assert_eq!(low.next(0, 6), [2], "a lone line-timed answer naming nothing: widened");
-    }
-
-    #[test]
-    fn shown_is_replaced_only_by_better_agreeing() {
+    fn shown_replaced() {
         let mut r = Race::new(&tune(), vec![entry(0.85, true, W), entry(0.85, true, W), entry(0.85, true, W)], true, Timing::Empty);
         r.next(0, 6);
         r.answer(1, Some((words(&OURS, false), naming("Glass Harbour"))));
@@ -743,6 +761,17 @@ mod tests {
         assert_eq!(r.to_show(false), None, "timed alike and scored alike: no swap");
         r.answer(2, Some((words(&OURS, true), naming("Glass Harbour"))));
         assert_eq!(r.to_show(false).map(|x| x.0), Some(2), "word timing of the same words: strictly better");
+
+        // Server untimed not replaced by untimed.
+        let mut r = Race::new(&tune(), vec![entry(0.85, true, W), entry(0.7, false, U)], true, Timing::Untimed);
+        assert_eq!(r.next(0, 6), [0]);
+        r.answer(0, None);
+        assert!(r.next(0, 6).is_empty(), "an untimed service cannot beat the server's words");
+        let mut plain = words(&OURS, false);
+        plain.synced = false;
+        let mut s = Race::new(&tune(), vec![entry(0.85, true, U)], true, U);
+        s.answer(0, Some((plain, Named::default())));
+        assert_eq!(s.to_show(true), None);
     }
 
     // ---- checked against the song's voice ----------------------------------------------------------------
@@ -796,19 +825,6 @@ mod tests {
         assert!((shown.offset_ms - 1000).abs() < 120, "{}", shown.offset_ms);
         assert!(sync_words(&r.check(0).unwrap()).starts_with("sync 0."), "{}", sync_words(&r.check(0).unwrap()));
         assert!(!same_lyrics(&LyricsPick { lyrics: shown.clone(), origin: LyricsOrigin::Lrclib }, &LyricsPick { lyrics: Lyrics { offset_ms: 0, ..shown }, origin: LyricsOrigin::Lrclib }), "another offset is other lyrics to show");
-    }
-
-    #[test]
-    fn server_untimed_not_replaced_by_untimed() {
-        let mut r = Race::new(&tune(), vec![entry(0.85, true, W), entry(0.7, false, U)], true, Timing::Untimed);
-        assert_eq!(r.next(0, 6), [0]);
-        r.answer(0, None);
-        assert!(r.next(0, 6).is_empty(), "an untimed service cannot beat the server's words");
-        let mut plain = words(&OURS, false);
-        plain.synced = false;
-        let mut s = Race::new(&tune(), vec![entry(0.85, true, U)], true, U);
-        s.answer(0, Some((plain, Named::default())));
-        assert_eq!(s.to_show(true), None);
     }
 
     // ---- the lookup, through the fake web and cache ----------------------------------------------------
@@ -887,7 +903,7 @@ mod tests {
     }
 
     #[test]
-    fn choice_is_cached_with_score() {
+    fn cached_choices() {
         let (web, cache) = (Web::default(), Kept::default());
         unison(&web, &lrc(&OURS, true));
         // LRCLIB has nothing: a 404 to the exact lookup and an empty search (a miss, not a failure).
@@ -908,10 +924,41 @@ mod tests {
         assert_eq!(again, first, "the same answer");
         assert!(kept.unwrap().starts_with("lyrics: kept Unison"));
         assert_eq!(web.asked().len(), asked_first, "and nothing asked again: it came out of the cache");
+
+        // Choice is served from cache.
+        let (web, cache) = (Web::default(), Kept::default());
+        let s = Song { title: "Glass Harbour".into(), id: "chosen".into(), ..song() };
+        unison(&web, &lrc(&OURS, true));
+        run(&web, &cache, &s, (false, false), &asked(&[LyricsService::Unison]));
+        let n = web.asked().len();
+        lrclib_synced(&web, &lrc(&OURS, false));
+        let picks = run(&web, &cache, &s, (false, false), &asked(&[LyricsService::Lrclib, LyricsService::Unison]));
+        assert_eq!(picks.iter().map(|p| p.origin).collect::<Vec<_>>(), [LyricsOrigin::Unison]);
+        assert_eq!(web.asked().len(), n, "no network");
+        // Its service switched off: the choice no longer stands, and the others are asked.
+        let picks = run(&web, &cache, &s, (false, false), &asked(&[LyricsService::Lrclib]));
+        assert_eq!(picks.last().unwrap().origin, LyricsOrigin::Lrclib);
+
+        // Low choice retried after days.
+        let (web, cache) = (Web::default(), Kept::default());
+        let s = Song { title: "Glass Harbour".into(), id: "low".into(), ..song() };
+        let l = asked(&[LyricsService::Lrclib, LyricsService::Unison]);
+        let lines = crate::lyrics::from_lrc(&lrc(&OURS, false));
+        cache.put(&best_key(&s), super::kept(&lines, &Named::default(), Some((LyricsService::Lrclib, 0.5))));
+        unison(&web, &lrc(&OURS, true));
+        let picks = run(&web, &cache, &s, (false, false), &l);
+        assert_eq!(picks.iter().map(|p| p.origin).collect::<Vec<_>>(), [LyricsOrigin::Lrclib], "shown at once");
+        assert!(web.asked().is_empty(), "low, but kept only lately: not asked again yet");
+        cache.1.lock().insert(best_key(&s));
+        let (picks, said) = run_saying(&web, &cache, &s, (false, false), &l);
+        assert_eq!(picks.iter().map(|p| p.origin).collect::<Vec<_>>(), [LyricsOrigin::Lrclib, LyricsOrigin::Unison], "some days later: better lyrics replace them");
+        assert!(said.unwrap().contains("was LRCLIB (0.50)"));
+        let best = read_kept(&cache.get(&best_key(&s)).unwrap()).unwrap();
+        assert_eq!(best.source.as_deref(), Some("UNISON"), "and the better choice is what is kept");
     }
 
     #[test]
-    fn nothing_asked_without_need() {
+    fn asking() {
         let (web, cache) = (Web::default(), Kept::default());
         let l = asked(&[LyricsService::Unison]);
         assert!(run(&web, &cache, &song(), (true, true), &l).is_empty());
@@ -919,10 +966,31 @@ mod tests {
         assert_eq!(run(&web, &cache, &ext, (false, false), &l), [LyricsPick { lyrics: Lyrics::default(), origin: LyricsOrigin::Server }]);
         assert_eq!(run(&web, &cache, &song(), (false, false), &asked(&[])).len(), 1, "nothing asked: the empty answer, once");
         assert!(web.asked().is_empty());
-    }
 
-    #[test]
-    fn failure_rests_in_memory_only() {
+        // Second wave only after a weak first.
+        let entries = vec![entry(0.95, true, W), entry(0.85, true, L), entry(0.75, false, W), entry(0.7, false, U)];
+        let mut good = Race::new(&tune(), entries.clone(), true, Timing::Empty);
+        assert_eq!(good.next(0, 6), [0, 1], "the first wave only");
+        good.answer(0, Some((words(&OURS, true), naming("Glass Harbour"))));
+        good.answer(1, Some((words(&OURS, false), naming("Glass Harbour"))));
+        assert!(good.leader().unwrap().1 >= WIDEN_BELOW);
+        assert!(good.next(0, 6).is_empty(), "nobody else asked");
+        let mut missed = Race::new(&tune(), entries.clone(), true, Timing::Empty);
+        missed.next(0, 6);
+        missed.answer(0, None);
+        assert!(missed.next(1, 6).is_empty(), "not while the first wave is out");
+        missed.answer(1, None);
+        assert_eq!(missed.next(0, 6), [2], "the first wave missed: the next one, still timed");
+        missed.answer(2, None);
+        assert_eq!(missed.next(0, 6), [3], "untimed words last, when nobody timed anything");
+        let mut low = Race::new(&tune(), entries, true, Timing::Empty);
+        low.next(0, 6);
+        low.answer(0, None);
+        low.answer(1, Some((words(&OURS, false), Named::default())));
+        assert!(low.leader().unwrap().1 < WIDEN_BELOW);
+        assert_eq!(low.next(0, 6), [2], "a lone line-timed answer naming nothing: widened");
+
+        // Failure rests in memory only.
         let (web, cache) = (Web::default(), Kept::default());
         let s = Song { title: "Failing".into(), ..song() };
         let l = asked(&[LyricsService::Unison]);
@@ -937,91 +1005,4 @@ mod tests {
         assert_eq!(web.asked().len(), 2, "each client its own memory");
     }
 
-    #[test]
-    fn word_timed_words_win_over_line_timed_ones() {
-        let (web, cache) = (Web::default(), Kept::default());
-        unison(&web, &lrc(&OURS, true));
-        lrclib_synced(&web, &lrc(&OURS, false));
-        let s = Song { title: "Glass Harbour".into(), id: "both".into(), ..song() };
-        let picks = run(&web, &cache, &s, (true, false), &asked(&[LyricsService::Lrclib, LyricsService::Unison]));
-        assert_eq!(picks.last().unwrap().origin, LyricsOrigin::Unison);
-        assert!(picks.last().unwrap().lyrics.word_timed);
-    }
-
-    #[test]
-    fn other_songs_words_never_replace_shown() {
-        let (web, cache) = (Web::default(), Kept::default());
-        // LRCLIB's lines; Unison, below it, times words - but of another song, and a fragment of one.
-        lrclib_synced(&web, &lrc(&OURS, false));
-        unison(&web, &lrc(&THEIRS[..3], true));
-        let s = Song { title: "Glass Harbour".into(), id: "stable".into(), ..song() };
-        let picks = run(&web, &cache, &s, (false, false), &asked(&[LyricsService::Lrclib, LyricsService::Unison]));
-        assert_eq!(picks.len(), 1, "shown once: {:?}", picks.iter().map(|p| p.origin).collect::<Vec<_>>());
-        assert_eq!((picks[0].origin, picks[0].lyrics.lines[0].text.as_str()), (LyricsOrigin::Lrclib, OURS[0]));
-    }
-
-    #[test]
-    fn fragments_are_misses_even_cached() {
-        let (web, cache) = (Web::default(), Kept::default());
-        let s = Song { title: "Fragment".into(), ..song() };
-        let only = asked(&[LyricsService::Unison]);
-        unison(&web, "[00:05.00]<00:05.00>la <00:05.50>la\n[00:09.00]<00:09.00>line <00:09.50>two\n[00:13.00]three\n[00:17.00]<00:17.00>la <00:17.50>la\n");
-        let picks = run(&web, &cache, &s, (false, false), &only);
-        assert_eq!(picks, [LyricsPick { lyrics: Lyrics::default(), origin: LyricsOrigin::Server }], "nothing found");
-        assert_eq!(cache.0.lock().values().next(), Some(&Vec::new()), "kept as a miss");
-        // The same fragment, kept for good by a build before the check: not shown either.
-        let (web, cache) = (Web::default(), Kept::default());
-        let junk = crate::lyrics::from_lrc("[00:05.00]la la\n[00:09.00]line two\n[00:13.00]la la\n");
-        cache.put(&cache_key(LyricsService::Unison, &s, &only), to_cache(&junk).into_bytes());
-        assert_eq!(run(&web, &cache, &s, (false, false), &only)[0].origin, LyricsOrigin::Server);
-        assert!(web.asked().is_empty(), "a miss for the week, not asked again");
-    }
-
-    #[test]
-    fn credits_stripped_before_scoring() {
-        let (web, cache) = (Web::default(), Kept::default());
-        let s = Song { title: "Glass Harbour".into(), id: "credited".into(), ..song() };
-        let body = format!("[00:00.00]Lyrics by: Some Person\n[00:02.00]Composed by: Another Person\n{}[03:50.00]Transcribed by A. Listener\n", lrc(&OURS, false));
-        unison(&web, &body);
-        let picks = run(&web, &cache, &s, (false, false), &asked(&[LyricsService::Unison]));
-        let l = &picks.last().unwrap().lyrics;
-        assert_eq!((l.lines.len(), l.lines[0].text.as_str(), l.lines[0].start_ms), (18, OURS[0], 10_000));
-        let kept = read_kept(&cache.get(&cache_key(LyricsService::Unison, &s, &asked(&[LyricsService::Unison]))).unwrap()).unwrap();
-        assert_eq!(kept.lyrics.lines.len(), 18, "the cached copy is already clean");
-    }
-
-    #[test]
-    fn choice_is_served_from_cache() {
-        let (web, cache) = (Web::default(), Kept::default());
-        let s = Song { title: "Glass Harbour".into(), id: "chosen".into(), ..song() };
-        unison(&web, &lrc(&OURS, true));
-        run(&web, &cache, &s, (false, false), &asked(&[LyricsService::Unison]));
-        let n = web.asked().len();
-        lrclib_synced(&web, &lrc(&OURS, false));
-        let picks = run(&web, &cache, &s, (false, false), &asked(&[LyricsService::Lrclib, LyricsService::Unison]));
-        assert_eq!(picks.iter().map(|p| p.origin).collect::<Vec<_>>(), [LyricsOrigin::Unison]);
-        assert_eq!(web.asked().len(), n, "no network");
-        // Its service switched off: the choice no longer stands, and the others are asked.
-        let picks = run(&web, &cache, &s, (false, false), &asked(&[LyricsService::Lrclib]));
-        assert_eq!(picks.last().unwrap().origin, LyricsOrigin::Lrclib);
-    }
-
-    #[test]
-    fn low_choice_retried_after_days() {
-        let (web, cache) = (Web::default(), Kept::default());
-        let s = Song { title: "Glass Harbour".into(), id: "low".into(), ..song() };
-        let l = asked(&[LyricsService::Lrclib, LyricsService::Unison]);
-        let lines = crate::lyrics::from_lrc(&lrc(&OURS, false));
-        cache.put(&best_key(&s), kept(&lines, &Named::default(), Some((LyricsService::Lrclib, 0.5))));
-        unison(&web, &lrc(&OURS, true));
-        let picks = run(&web, &cache, &s, (false, false), &l);
-        assert_eq!(picks.iter().map(|p| p.origin).collect::<Vec<_>>(), [LyricsOrigin::Lrclib], "shown at once");
-        assert!(web.asked().is_empty(), "low, but kept only lately: not asked again yet");
-        cache.1.lock().insert(best_key(&s));
-        let (picks, said) = run_saying(&web, &cache, &s, (false, false), &l);
-        assert_eq!(picks.iter().map(|p| p.origin).collect::<Vec<_>>(), [LyricsOrigin::Lrclib, LyricsOrigin::Unison], "some days later: better lyrics replace them");
-        assert!(said.unwrap().contains("was LRCLIB (0.50)"));
-        let best = read_kept(&cache.get(&best_key(&s)).unwrap()).unwrap();
-        assert_eq!(best.source.as_deref(), Some("UNISON"), "and the better choice is what is kept");
-    }
 }

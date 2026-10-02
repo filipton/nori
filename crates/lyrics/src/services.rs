@@ -835,7 +835,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn names_match_loosely_and_lengths_closely() {
+    fn name_matching() {
         assert!(alike("Creep", "Creep (Acoustic)") && alike("AC/DC", "ac dc") && !alike("", "x"));
         assert!(alike("Beyoncé", "BEYONCÉ") && !alike("Paper", "Boats"));
         let s = Song { duration: 200, ..Default::default() };
@@ -843,10 +843,8 @@ pub(crate) mod tests {
         assert!(same_length(0.0, &s) && same_length(f64::NAN, &s), "unknown passes");
         assert_eq!(base64(b"hello"), "aGVsbG8=");
         assert_eq!(bearer("Bearer  k "), "Bearer k");
-    }
 
-    #[test]
-    fn names_this_rejects_other_songs() {
+        // Names this rejects other songs.
         let s = song();
         assert!(names_this(&json!({"title": "Glass Harbour", "artist": "The Lanterns", "totalDuration": "3:59.320"}), &s));
         assert!(names_this(&json!({}), &s), "an answer that names nothing passes");
@@ -858,7 +856,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn lyrics_plus_other_song_is_a_miss() {
+    fn other_songs_missed() {
         let web = Web::default();
         let body = include_str!("../testdata/lyricsplus.json").replace(r#""source":"Apple","#, r#""source":"Apple","title":"Whisky on the Table","artist":"The Lanterns","#);
         web.answer("https://lyricsplus", 200, &body);
@@ -867,10 +865,8 @@ pub(crate) mod tests {
         let body = include_str!("../testdata/lyricsplus.json").replace(r#""source":"Apple","#, r#""source":"Apple","title":"Glass Harbour","artist":"The Lanterns","totalDuration":"3:59.000","#);
         web.answer("https://lyricsplus", 200, &body);
         assert!(matches!(asking(&web, LyricsService::LyricsPlus), Lookup::Found(..)));
-    }
 
-    #[test]
-    fn bini_lyrics_takes_only_this_artists_song() {
+        // Bini lyrics takes only this artists song.
         let ttml = include_str!("../testdata/apple.ttml");
         let result = |artist: &str| json!({"results": [{"track_name": "Glass Harbour", "artist_name": artist, "duration": 239, "lyricsUrl": "https://lyrics-storage.binimum.org/X.ttml"}]}).to_string();
         let web = Web::default();
@@ -882,10 +878,8 @@ pub(crate) mod tests {
         web.answer("https://lyrics-storage.binimum.org/X.ttml", 200, ttml);
         let Lookup::Found(l, _) = asking(&web, LyricsService::Binilyrics) else { panic!("found") };
         assert!(l.word_timed);
-    }
 
-    #[test]
-    fn kugou_skips_other_artist_in_other_script() {
+        // Kugou skips other artist in other script.
         let web = Web::default();
         let found = json!({"status": 200, "candidates": [{"id": "1", "accesskey": "k", "song": "Glass Harbour", "singer": "周杰伦", "duration": 239_000}]});
         web.answer("https://lyrics.kugou.com/search", 200, &found.to_string());
@@ -915,7 +909,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn netease_matches_and_sends_referer() {
+    fn requests_sent() {
         let web = Web::default();
         let found = json!({"code": 200, "result": {"songs": [
             {"id": 7, "name": "Glass Harbour (Live)", "duration": 300_000, "artists": [{"name": "The Lanterns"}]},
@@ -932,10 +926,21 @@ pub(crate) mod tests {
         let web = Web::default();
         web.answer("https://music.163.com/api/search/get", 200, r#"{"code": -460, "message": "Cheating"}"#);
         assert_eq!(asking(&web, LyricsService::Netease), Lookup::Failed, "a refusal is not a miss");
-    }
 
-    #[test]
-    fn better_lyrics_host_fallback() {
+        // Paxsenix key is required and sent as bearer.
+        let web = Web::default();
+        assert_eq!(asking(&web, LyricsService::PaxsenixMusixmatch), Lookup::Failed);
+        assert!(web.asked().is_empty());
+        let web = Web::default();
+        web.answer("https://api.paxsenix.org/lyrics/musixmatch", 200, include_str!("../testdata/musixmatch-richsync.json"));
+        let k = LyricsLookup { paxsenix_key: "abc".into(), ..keys() };
+        let shared = Shared::default();
+        let got = block(ask(LyricsService::PaxsenixMusixmatch, &Ask::new(&web, &k, &shared, LyricsService::PaxsenixMusixmatch), &song()));
+        assert!(matches!(got, Lookup::Found(l, _) if l.word_timed));
+        assert_eq!(web.sent.lock()[0].headers["Authorization"], "Bearer abc");
+        assert_eq!(web.sent.lock()[0].timeout_ms, PAXSENIX_REQUEST_MS);
+
+        // Better lyrics host fallback.
         let web = Web::default();
         web.answer("https://api.betterlyrics.org/getLyrics", 401, "");
         assert_eq!(asking(&web, LyricsService::BetterLyrics), Lookup::Missing);
@@ -982,18 +987,4 @@ pub(crate) mod tests {
         assert_eq!(body["context"]["client"]["clientName"], "WEB_REMIX");
     }
 
-    #[test]
-    fn paxsenix_key_is_required_and_sent_as_bearer() {
-        let web = Web::default();
-        assert_eq!(asking(&web, LyricsService::PaxsenixMusixmatch), Lookup::Failed);
-        assert!(web.asked().is_empty());
-        let web = Web::default();
-        web.answer("https://api.paxsenix.org/lyrics/musixmatch", 200, include_str!("../testdata/musixmatch-richsync.json"));
-        let k = LyricsLookup { paxsenix_key: "abc".into(), ..keys() };
-        let shared = Shared::default();
-        let got = block(ask(LyricsService::PaxsenixMusixmatch, &Ask::new(&web, &k, &shared, LyricsService::PaxsenixMusixmatch), &song()));
-        assert!(matches!(got, Lookup::Found(l, _) if l.word_timed));
-        assert_eq!(web.sent.lock()[0].headers["Authorization"], "Bearer abc");
-        assert_eq!(web.sent.lock()[0].timeout_ms, PAXSENIX_REQUEST_MS);
-    }
 }

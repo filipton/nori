@@ -381,13 +381,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn two_colour_picture() {
+    fn picks() {
         let mut px = vec![0xFF20_40C0u32; 100 * 100];
         px[..3000].fill(0xFFE0_3030);
         let p = generate(&px, 100, 100, 16);
         assert_eq!(p.dominant.map(|s| s.population), Some(7000));
         let colours: Vec<u32> = [p.vibrant, p.dark_vibrant, p.light_vibrant, p.muted].iter().flatten().map(|s| s.rgb).collect();
         assert!(colours.contains(&approximate(quantize_from_rgb888(0xFF20_40C0))), "{colours:x?}");
+
+        // Ignores near white and black.
+        let mut px = vec![0xFFFF_FFFFu32; 50 * 50];
+        px[..1250].fill(0xFF00_0000);
+        let p = generate(&px, 50, 50, 16);
+        assert!(p.dominant.is_none() && p.vibrant.is_none());
+
+        // Quantizes to at most max colors.
+        let px: Vec<u32> = (0..160 * 160).map(|i| rgb((i * 7 % 256) as i32, (i * 13 % 256) as i32, (i * 29 % 256) as i32)).collect();
+        let scaled = scale_down(&px, 160, 160);
+        let swatches = quantize(scaled.as_deref().unwrap_or(&px), 16);
+        assert!((2..=16).contains(&swatches.len()), "{} swatches", swatches.len());
+        let p = generate(&px, 160, 160, 16);
+        assert!(p.dominant.is_some() && p.vibrant.is_some(), "{p:?}");
     }
 
     #[test]
@@ -402,21 +416,4 @@ mod tests {
         assert_eq!(&got[108..], &[309, 312, 315, 318]);
     }
 
-    #[test]
-    fn ignores_near_white_and_black() {
-        let mut px = vec![0xFFFF_FFFFu32; 50 * 50];
-        px[..1250].fill(0xFF00_0000);
-        let p = generate(&px, 50, 50, 16);
-        assert!(p.dominant.is_none() && p.vibrant.is_none());
-    }
-
-    #[test]
-    fn quantizes_to_at_most_max_colors() {
-        let px: Vec<u32> = (0..160 * 160).map(|i| rgb((i * 7 % 256) as i32, (i * 13 % 256) as i32, (i * 29 % 256) as i32)).collect();
-        let scaled = scale_down(&px, 160, 160);
-        let swatches = quantize(scaled.as_deref().unwrap_or(&px), 16);
-        assert!((2..=16).contains(&swatches.len()), "{} swatches", swatches.len());
-        let p = generate(&px, 160, 160, 16);
-        assert!(p.dominant.is_some() && p.vibrant.is_some(), "{p:?}");
-    }
 }

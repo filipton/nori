@@ -114,7 +114,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn repeated_fragment_is_implausible() {
+    fn implausible_fits() {
         let junk: Vec<(i64, &str)> = (0..6).map(|i| (5_000 + i * 4_000, ["Pour another glass", "The whisky's on the table", "Drink until the morning"][i as usize % 3])).collect();
         assert!(!plausible(&timed(&junk, true), &song()), "three lines over thirty seconds of a three-minute song");
         assert!(plausible(&song_words(false), &song()));
@@ -122,10 +122,8 @@ pub(crate) mod tests {
         assert!(plausible(&timed(&chant, false), &song()), "one line sung all the way through is still the song");
         assert!(!plausible(&Lyrics::default(), &song()));
         assert!(!plausible(&timed(&[(1_000, "  "), (2_000, "♪")], false), &song()), "no words");
-    }
 
-    #[test]
-    fn lines_past_end_are_implausible() {
+        // Lines past end are implausible.
         let mut long = song_words(true);
         long.lines.push(LyricLine { start_ms: 260_000, text: "a longer song".into(), ..Default::default() });
         assert!(!plausible(&long, &song()));

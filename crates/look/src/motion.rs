@@ -201,7 +201,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn seek_step_eases_then_waits_per_pixel() {
+    fn seek_steps() {
         // Far from the target: ease, next frame.
         let (b, w) = seek_step(0.0, 0.5, 0.016, 1000.0, 1.0 / 366.0);
         assert!(b > 0.0 && b < 0.5 && w == 0);
@@ -212,19 +212,15 @@ mod tests {
         // Waits clamp to one frame and one second.
         assert_eq!(seek_step(0.3, 0.3, 0.016, 3000.0, 1.0).1, MIN_WAIT_MS);
         assert_eq!(seek_step(0.3, 0.3, 0.016, 10.0, 0.0001).1, MAX_WAIT_MS);
-    }
 
-    #[test]
-    fn seek_step_ignores_sub_pixel_jitter() {
+        // Seek step ignores sub pixel jitter.
         // A quarter pixel either way: stay, and wait for the rest of the pixel.
         let (b, w) = seek_step(0.5, 0.50025, 0.4, 1000.0, 1.0 / 366.0);
         assert_eq!(b, 0.5);
         assert!((270..=280).contains(&w), "{w}");
         assert_eq!(seek_step(0.5, 0.49975, 0.4, 1000.0, 1.0 / 366.0).0, 0.5);
-    }
 
-    #[test]
-    fn seek_step_draws_once_per_pixel() {
+        // Seek step draws once per pixel.
         // 366 s over 900 px, stepped with the returned waits: no sub-pixel draws.
         let (width, secs) = (900.0f32, 366.0f32);
         let speed = 1.0 / secs;
@@ -258,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn playback_tracks_song_without_lag() {
+    fn playback_and_labels() {
         let mut p = SeekPace::new();
         p.sync(100_000, 200_000);
         // Stepped with the returned waits: never more than a pixel behind.
@@ -273,10 +269,8 @@ mod tests {
             dt = wait as f32 / 1000.0;
         }
         assert_eq!(p.times(), (120, 79));
-    }
 
-    #[test]
-    fn wait_ends_at_next_label_second() {
+        // Wait ends at next label second.
         let mut p = SeekPace::new();
         p.sync(10_000, 3_600_000);
         // An hour over 1000 px is 3.6 s per pixel; the labels still tick each second.
@@ -284,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn new_song_glides_and_labels_cross_fade() {
+    fn new_song_glide() {
         let mut p = SeekPace::new();
         p.sync(150_000, 200_000);
         let bars = frames(&mut p, 0.6, 180_000, |t| (t * 1000.0) as i64);
@@ -298,10 +292,8 @@ mod tests {
         assert!((15..=22).contains(&landed), "landed at frame {landed}");
         assert!(!p.moving());
         assert_eq!(p.times(), (0, 179));
-    }
 
-    #[test]
-    fn labels_fade_from_old_times() {
+        // Labels fade from old times.
         let mut p = SeekPace::new();
         p.sync(63_000, 395_000);
         assert_eq!(p.step(0, 259_000, 0.016, 1000.0, 1.0), 0);
@@ -312,10 +304,8 @@ mod tests {
         frames(&mut p, 0.4, 259_000, |t| (t * 1000.0) as i64);
         assert!(p.fading().is_none());
         assert_eq!(p.fade(), 1.0);
-    }
 
-    #[test]
-    fn sync_skips_glide() {
+        // Sync skips glide.
         let mut p = SeekPace::new();
         p.sync(150_000, 200_000);
         p.sync(4_000, 180_000);
@@ -326,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn jump_during_glide_continues_from_drawn_position() {
+    fn seeks_glide() {
         let mut p = SeekPace::new();
         p.sync(150_000, 200_000);
         frames(&mut p, 0.1, 200_000, |_| 0);
@@ -335,10 +325,8 @@ mod tests {
         let bars = frames(&mut p, 0.5, 200_000, |_| 180_000);
         assert!((bars[0] - mid).abs() * 1000.0 <= 80.0, "{mid} -> {}", bars[0]);
         assert_eq!(p.bar(), 0.9);
-    }
 
-    #[test]
-    fn paused_seek_glides_then_stops() {
+        // Paused seek glides then stops.
         let mut p = SeekPace::new();
         p.sync(50_000, 200_000);
         assert_eq!(p.step(50_000, 200_000, 0.016, 1000.0, 0.0), -1);
@@ -349,14 +337,13 @@ mod tests {
         assert_eq!(waits[0], 0);
         assert_eq!(*waits.last().unwrap(), -1);
         assert_eq!(p.bar(), 0.5);
-    }
 
-    #[test]
-    fn small_seek_does_not_glide() {
+        // Small seek does not glide.
         let mut p = SeekPace::new();
         p.sync(100_000, 200_000);
         // +0.5 s over 1000 px is 2.5 px, under the jump threshold.
         p.step(100_516, 200_000, 0.016, 1000.0, 1.0);
         assert!(!p.moving());
     }
+
 }

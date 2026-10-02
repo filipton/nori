@@ -553,17 +553,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn readable_steps_accent_to_contrast() {
+    fn readable_text() {
         let (white, black, fallback) = (0xFFFF_FFFF, 0xFF12_1212, 0xFF67_50A4);
         assert_eq!(readable(0xFF1E_5AA0, white, fallback), 0xFF1E_5AA0);
         let on_white = readable(0xFFFF_E08A, white, fallback);
         let on_black = readable(0xFF20_1060, black, fallback);
         assert!(calculate_contrast(on_white, white) >= 3.2 && calculate_contrast(on_black, black) >= 3.2);
         assert!(on_white != fallback && on_black != fallback);
-    }
 
-    #[test]
-    fn readable_either_way_tries_darker() {
+        // Readable either way tries darker.
         // Pale blue accent on a mid-grey bar.
         let (accent, bar, ink) = (0xFFA0_B0C8, 0xFF8A_8878, 0xFFFF_FFFF);
         assert_eq!(readable(accent, bar, ink), ink);
@@ -572,6 +570,14 @@ mod tests {
         let h = |c: u32| color_to_hsl(c)[0];
         assert!((h(got) - h(accent)).abs() < 12.0, "hue kept");
         assert_eq!(readable_either_way(0xFF1E_5AA0, 0xFFFF_FFFF, ink), 0xFF1E_5AA0);
+
+        // Text contrast on page.
+        for &c0 in &[0xFFE0_2020u32, 0xFF20_E020, 0xFF20_20E0, 0xFFE0_E020, 0xFF80_8080, 0xFF30_1060] {
+            for dark in [true, false] {
+                let c = derive(&solid(c0), S, S, dark, false);
+                assert!(calculate_contrast(c.on, c.background) >= 4.5, "{c0:08x} dark={dark}: {:08x} on {:08x}", c.on, c.background);
+            }
+        }
     }
 
     const S: usize = 160;
@@ -588,29 +594,31 @@ mod tests {
     }
 
     #[test]
-    fn black_cover_gets_black_page_in_both_themes() {
+    fn plain_covers() {
         for dark in [true, false] {
             let c = derive(&solid(0xFF08_0808), S, S, dark, false);
             assert!(luminance(c.background) < 0.01, "{:08x}", c.background);
             assert_eq!(c.on, WHITE);
         }
-    }
 
-    #[test]
-    fn white_cover_gets_white_page_in_dark_theme() {
+        // White cover gets white page in dark theme.
         let c = derive(&solid(0xFFF6_F6F4), S, S, true, false);
         assert!(luminance(c.background) > 0.8, "{:08x}", c.background);
         assert_eq!(c.on, 0xFF0D_0D0D);
-    }
 
-    #[test]
-    fn cream_and_yellow_keep_their_hue() {
+        // Cream and yellow keep their hue.
         let cream = derive(&solid(0xFFEF_E4C8), S, S, false, false);
         let [h, s, _] = color_to_hsl(cream.background);
         assert!((35.0..55.0).contains(&h) && s > 0.2, "cream bleached to {:08x}", cream.background);
         let yellow = derive(&solid(0xFFF2_D544), S, S, false, false);
         let [h, s, _] = color_to_hsl(yellow.background);
         assert!((40.0..60.0).contains(&h) && s > 0.3, "yellow bleached to {:08x}", yellow.background);
+
+        // Amoled dark is black with no wash.
+        let c = derive(&solid(0xFF30_60A0), S, S, true, true);
+        assert_eq!(c.background, BLACK);
+        assert!(c.wash.is_none());
+        assert_eq!(c.wash_edge, c.edge);
     }
 
     /// `base` plus ±2 levels of noise per channel, offset by `cast`.
@@ -621,7 +629,7 @@ mod tests {
 
 
     #[test]
-    fn white_sleeve_with_disc_stays_white() {
+    fn white_paper_covers() {
         // Regression: noisy white paper with a bluish CD voted the page blue.
         let mut noise = JavaRandom::new(7);
         let c = S as f32 / 2.0;
@@ -641,10 +649,8 @@ mod tests {
             let p = derive(&v, S, S, dark, false);
             assert!(chroma(p.background) <= 3 && luminance(p.background) > 0.7, "dark={dark}: {:08x}", p.background);
         }
-    }
 
-    #[test]
-    fn off_white_paper_with_splashes_stays_white() {
+        // Off white paper with splashes stays white.
         // Regression (Cage the Elephant): off-white paper and yellow splashes averaged into olive.
         let mut noise = JavaRandom::new(11);
         let v: Vec<u32> = (0..S * S)
@@ -663,10 +669,8 @@ mod tests {
             let p = derive(&v, S, S, dark, false);
             assert!(chroma(p.background) <= 3 && luminance(p.background) > 0.7, "dark={dark}: {:08x}", p.background);
         }
-    }
 
-    #[test]
-    fn subject_on_paper_does_not_take_page() {
+        // Subject on paper does not take page.
         // Villains: off-white paper, a red figure over a third of it, dark coat below.
         let mut noise = JavaRandom::new(3);
         let v: Vec<u32> = (0..S * S)
@@ -685,7 +689,7 @@ mod tests {
     }
 
     #[test]
-    fn red_subject_beats_black_field() {
+    fn dark_fields() {
         // Amnesiac: half red, half black, thin black line at the foot.
         let mut v = solid(0xFF08_0808);
         for y in 0..S {
@@ -697,36 +701,14 @@ mod tests {
         let c = derive(&v, S, S, true, false);
         let [h, s, _] = color_to_hsl(c.background);
         assert!((h < 15.0 || h > 345.0) && s > 0.3, "not red: {:08x}", c.background);
-    }
 
-    #[test]
-    fn solid_dark_foot_forces_dark_page() {
+        // Solid dark foot forces dark page.
         let c = derive(&footed(0xFFD8_D8D0, 0xFF06_0606, 40), S, S, false, false);
         assert!(luminance(c.background) < 0.1, "{:08x}", c.background);
-    }
 
-    #[test]
-    fn edge_is_bottom_rows_colour() {
+        // Edge is bottom rows colour.
         let c = derive(&footed(0xFF30_60A0, 0xFF20_4070, 20), S, S, true, false);
         assert_eq!(c.edge, 0xFF20_4070);
-    }
-
-    #[test]
-    fn text_contrast_on_page() {
-        for &c0 in &[0xFFE0_2020u32, 0xFF20_E020, 0xFF20_20E0, 0xFFE0_E020, 0xFF80_8080, 0xFF30_1060] {
-            for dark in [true, false] {
-                let c = derive(&solid(c0), S, S, dark, false);
-                assert!(calculate_contrast(c.on, c.background) >= 4.5, "{c0:08x} dark={dark}: {:08x} on {:08x}", c.on, c.background);
-            }
-        }
-    }
-
-    #[test]
-    fn amoled_dark_is_black_with_no_wash() {
-        let c = derive(&solid(0xFF30_60A0), S, S, true, true);
-        assert_eq!(c.background, BLACK);
-        assert!(c.wash.is_none());
-        assert_eq!(c.wash_edge, c.edge);
     }
 
     #[test]

@@ -160,21 +160,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hsl_round_trips() {
+    fn colour_math() {
         for &c in &[0xFF12_3456u32, 0xFFFF_0000, 0xFF00_FF00, 0xFF00_00FF, 0xFFFF_FFFF, 0xFF00_0000, 0xFFC0_B090, 0xFF7F_7F80] {
             assert_eq!(hsl_to_color(color_to_hsl(c)), c, "{c:08x}");
         }
-    }
 
-    #[test]
-    fn contrast_and_luminance_extremes() {
+        // Contrast and luminance extremes.
         assert!((calculate_contrast(WHITE, BLACK) - 21.0).abs() < 1e-9);
         assert!((calculate_contrast(0xFF77_7777, 0xFF77_7777) - 1.0).abs() < 1e-9);
         assert!((luminance(WHITE) - 1.0).abs() < 1e-6 && luminance(BLACK) == 0.0);
-    }
 
-    #[test]
-    fn round_matches_java() {
+        // Round matches java.
         assert_eq!((round(0.5), round(1.5), round(-0.5), round(2.4999998)), (1, 2, 0, 2));
     }
+
 }

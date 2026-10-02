@@ -562,7 +562,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn matching_line_by_nearest_start() {
+    fn line_matching() {
         let lines = [0, 4_000, 8_000, 12_000, 16_000];
         let finer = [0, 2_000, 4_100, 6_000, 7_900, 10_000, 12_050];
         assert_eq!(matching_line(&lines, 1, &finer, true), 2);
@@ -575,10 +575,8 @@ mod tests {
         assert_eq!(matching_line(&[-1, -1], 1, &finer, true), 1, "old line untimed");
         assert_eq!(matching_line(&[], 9, &finer, true), 6);
         assert_eq!(matching_line(&lines, 4, &[], true), 0);
-    }
 
-    #[test]
-    fn line_strength_by_position() {
+        // Line strength by position.
         assert_eq!(line_strength(true, 3, 3), 1.0);
         assert_eq!(line_strength(true, 2, 3), 0.35 * 0.55);
         assert_eq!(line_strength(true, 4, 3), 0.35);
@@ -595,17 +593,15 @@ mod tests {
     }
 
     #[test]
-    fn glide_is_share_of_gap_clamped() {
+    fn switch_timing() {
         let t = LyricTiming::new(true, false, lines(&[0, 100, 400, 1000, 11_000, 12_000]));
         // 100 ms gap -> 85 -> 160; 300 -> 255; 600 -> 510; 10 s -> 620; 1 s -> 850 -> 620; last -> 620.
         assert_eq!(t.glide, [160, 255, 510, 620, 620, 620]);
         assert_eq!((t.glide_ms(-1), t.glide_ms(6), t.glide_ms(2)), (GLIDE_MS, GLIDE_MS, 510));
         // 255.85 truncates.
         assert_eq!(LyricTiming::new(true, false, lines(&[0, 301])).glide[0], 255);
-    }
 
-    #[test]
-    fn switch_leads_by_half_glide_and_stays_ordered() {
+        // Switch leads by half glide and stays ordered.
         let t = LyricTiming::new(true, false, lines(&[1000, 1100, 1110, 5000]));
         // Glides 160, 160, 620 (3890 gap -> 3306 -> 620), 620: leads 80, 80, 310, 310.
         assert_eq!(t.switch_at, [920, 1020, 1021, 4690]);
@@ -616,17 +612,15 @@ mod tests {
     }
 
     #[test]
-    fn fill_is_linear_in_words_and_rests_between() {
+    fn word_fill() {
         let t = LyricTiming::new(true, true, vec![Line { start_ms: 1000, len: 11, words: vec![w(1000, 1400, 0, 5), w(1600, 2000, 6, 11)], ..Default::default() }]);
         let at = |ms| t.sung_offset(0, ms);
         assert_eq!((at(900), at(1000), at(1200), at(1400), at(1500), at(1600), at(1700), at(2000), at(9000)), (0.0, 0.0, 2.5, 5.0, 5.0, 5.0, 7.25, 11.0, 11.0));
         // A zero-length word completes at its start; a wordless line is all or nothing.
         let t = LyricTiming::new(true, true, vec![Line { start_ms: 0, len: 4, words: vec![w(500, 500, 0, 4)], ..Default::default() }, Line { start_ms: 800, len: 7, words: vec![], ..Default::default() }]);
         assert_eq!((t.sung_offset(0, 499), t.sung_offset(0, 500), t.sung_offset(1, 799), t.sung_offset(1, 800)), (0.0, 4.0, 0.0, 7.0));
-    }
 
-    #[test]
-    fn guessed_last_word_end_is_estimated() {
+        // Guessed last word end is estimated.
         // Last word's end is the next line's start, 30 s later.
         let words = vec![w(10_000, 10_400, 0, 4), w(10_400, 10_800, 5, 7), w(10_800, 40_000, 8, 15)];
         let t = LyricTiming::new(true, true, vec![Line { start_ms: 10_000, len: 15, words, ..Default::default() }, Line { start_ms: 40_000, len: 5, ..Default::default() }]);
@@ -645,10 +639,8 @@ mod tests {
         let held = vec![w(1_000, 1_300, 0, 4), w(1_300, 3_000, 5, 9)];
         let t = LyricTiming::new(true, true, vec![Line { start_ms: 1_000, len: 9, words: held, ..Default::default() }, Line { start_ms: 3_000, len: 3, ..Default::default() }]);
         assert_eq!(t.sung_offset(0, 2_150), 7.0);
-    }
 
-    #[test]
-    fn last_word_fills_to_end_of_text() {
+        // Last word fills to end of text.
         let t = LyricTiming::new(true, true, vec![Line { start_ms: 0, len: 10, words: vec![w(0, 500, 1, 4), w(500, 1_000, 5, 9)], ..Default::default() }]);
         assert_eq!(t.sung_offset(0, 1_000), 10.0);
         assert_eq!(t.sung_offset(0, 750), 7.5);
@@ -665,16 +657,14 @@ mod tests {
     }
 
     #[test]
-    fn wait_until_next_switch_or_sweep_frames() {
+    fn wakes() {
         let t = LyricTiming::new(true, false, lines(&[1000, 1200, 5000]));
         // Glides 170, 620, 620; switch_at: 1000-85=915, 1200-310=890 -> 916, 5000-310=4690.
         assert_eq!((t.wait(0, false, false), t.wait(700, false, false), t.wait(914, false, false), t.wait(921, false, false), t.wait(4700, false, false)), (500, 215, 8, 500, 500));
         assert_eq!(t.wait(0, true, false), SWEEP_FRAMES);
         assert_eq!(LyricTiming::new(false, false, lines(&[-1, -1])).wait(0, false, false), 0);
-    }
 
-    #[test]
-    fn moved_only_on_visible_change() {
+        // Moved only on visible change.
         let t = LyricTiming::new(true, true, vec![Line { start_ms: 1000, len: 10, words: vec![w(1000, 2000, 0, 10)], ..Default::default() }, Line { start_ms: 5000, len: 3, words: vec![], ..Default::default() }]);
         assert!(t.moved(0, 500, false, false), "no sweep: always");
         assert!(t.moved(0, 500, true, false), "before the first line");
@@ -684,10 +674,34 @@ mod tests {
         // Lit line switches at 4690, sung line at 5000: hold until 5000.
         assert!(!t.moved(2000, 4800, true, false) && t.line_at(4800) == 1);
         assert!(t.moved(2000, 5000, true, false));
+
+        // Quiet ms sleeps between changes.
+        let line = Line { start_ms: 1000, len: 11, words: vec![w(1000, 1400, 0, 5), w(1600, 2000, 6, 11)], backing_len: 3, backing: vec![w(2200, 2300, 0, 3)], ..Default::default() };
+        let t = LyricTiming::new(true, true, vec![line, Line { start_ms: 2600, len: 3, ..Default::default() }]);
+        // Before the first line: until its switch (310 ms before its start).
+        assert_eq!(t.quiet_ms(0, false), Some(500));
+        assert_eq!(t.quiet_ms(600, false), Some(90));
+        // Inside a word or backing word: None.
+        assert_eq!((t.quiet_ms(1200, false), t.quiet_ms(2250, false)), (None, None));
+        // Between words: until the next word, backing word, or line.
+        assert_eq!((t.quiet_ms(1450, false), t.quiet_ms(2000, false), t.quiet_ms(2300, false)), (Some(150), Some(200), Some(300)));
+        // Animating words (lively): None.
+        assert_eq!((t.quiet_ms(1450, true), t.quiet_ms(2300, true)), (None, None));
+        let c = LyricClock::new(t, 0);
+        let s = c.advance(1450, true, false, false);
+        assert_eq!((s.wait, s.still), (150, true));
+        let s = c.advance(1450, false, false, false);
+        assert!(!s.still, "no sweep: never still");
+        assert_eq!((c.advance(1200, true, false, false).wait, c.advance(1200, true, false, false).still), (SWEEP_FRAMES, false));
+
+        // Unsynced lyrics never wake.
+        let c = LyricClock::new(LyricTiming::new(false, false, lines(&[-1, -1, -1])), 0);
+        let s = c.advance(10_000, true, false, true);
+        assert_eq!(s, Step { frame: Frame { active: -1, glide_ms: GLIDE_MS, sung: 0.0 }, wait: 0, still: false, redraw: true });
     }
 
     #[test]
-    fn clock_redraw_nudge_and_tap() {
+    fn taps() {
         let timing = LyricTiming::new(true, true, vec![Line { start_ms: 1000, len: 10, words: vec![w(1000, 2000, 0, 10)], ..Default::default() }, Line { start_ms: 5000, len: 3, words: vec![], ..Default::default() }]);
         let c = LyricClock::new(timing, 0);
         assert_eq!(c.shown(), Frame { active: -1, glide_ms: GLIDE_MS, sung: 0.0 });
@@ -710,10 +724,8 @@ mod tests {
         let c = LyricClock::new(LyricTiming::new(true, false, lines(&[1000, 5000])), 0);
         assert_eq!(c.advance(0, true, false, false).wait, 500);
         assert_eq!(c.advance(4400, true, false, false).wait, 290);
-    }
 
-    #[test]
-    fn offset_applies_to_display_and_tap() {
+        // Offset applies to display and tap.
         // Lyric times run 1.5 s late: the line timed at 5000 is sung at 3500.
         let c = LyricClock::with_offset(LyricTiming::new(true, false, lines(&[1000, 5000])), 0, 1500);
         assert_eq!(c.advance(2500, false, false, false).frame.active, 0);
@@ -722,10 +734,8 @@ mod tests {
         c.nudge(0);
         assert_eq!(c.nudge(1), 250, "nudge stacks on the offset");
         assert_eq!(c.tap(1), 3250);
-    }
 
-    #[test]
-    fn tap_holds_line_when_seek_lands_early() {
+        // Tap holds line when seek lands early.
         let timing = LyricTiming::new(
             true,
             true,
@@ -781,28 +791,7 @@ mod tests {
     }
 
     #[test]
-    fn quiet_ms_sleeps_between_changes() {
-        let line = Line { start_ms: 1000, len: 11, words: vec![w(1000, 1400, 0, 5), w(1600, 2000, 6, 11)], backing_len: 3, backing: vec![w(2200, 2300, 0, 3)], ..Default::default() };
-        let t = LyricTiming::new(true, true, vec![line, Line { start_ms: 2600, len: 3, ..Default::default() }]);
-        // Before the first line: until its switch (310 ms before its start).
-        assert_eq!(t.quiet_ms(0, false), Some(500));
-        assert_eq!(t.quiet_ms(600, false), Some(90));
-        // Inside a word or backing word: None.
-        assert_eq!((t.quiet_ms(1200, false), t.quiet_ms(2250, false)), (None, None));
-        // Between words: until the next word, backing word, or line.
-        assert_eq!((t.quiet_ms(1450, false), t.quiet_ms(2000, false), t.quiet_ms(2300, false)), (Some(150), Some(200), Some(300)));
-        // Animating words (lively): None.
-        assert_eq!((t.quiet_ms(1450, true), t.quiet_ms(2300, true)), (None, None));
-        let c = LyricClock::new(t, 0);
-        let s = c.advance(1450, true, false, false);
-        assert_eq!((s.wait, s.still), (150, true));
-        let s = c.advance(1450, false, false, false);
-        assert!(!s.still, "no sweep: never still");
-        assert_eq!((c.advance(1200, true, false, false).wait, c.advance(1200, true, false, false).still), (SWEEP_FRAMES, false));
-    }
-
-    #[test]
-    fn last_line_ends() {
+    fn last_line() {
         // Line-timed; the last line ends at 8 s.
         let two = vec![Line { start_ms: 1000, len: 5, ..Default::default() }, Line { start_ms: 5000, end_ms: 8000, len: 5, ..Default::default() }];
         let t = LyricTiming::new(true, false, two.clone());
@@ -831,10 +820,8 @@ mod tests {
         assert!(!s.redraw && s.frame.active == 2, "{s:?}");
         // Unsynced lyrics never end.
         assert_eq!(LyricTiming::new(false, false, lines(&[-1, -1])).frame(600_000).active, -1);
-    }
 
-    #[test]
-    fn land_keeps_lit_line_after_retiming() {
+        // Land keeps lit line after retiming.
         let old = [1000, 5000, 9000];
         let c = LyricClock::new(LyricTiming::new(true, false, lines(&old)), 0);
         assert_eq!(c.advance(5200, false, false, true).frame.active, 1);
@@ -858,13 +845,6 @@ mod tests {
         let c = LyricClock::new(LyricTiming::new(true, false, lines(&[500, 4000, 9000])), 5200);
         c.land(1);
         assert_eq!(c.shown_ms(), 5200);
-    }
-
-    #[test]
-    fn unsynced_lyrics_never_wake() {
-        let c = LyricClock::new(LyricTiming::new(false, false, lines(&[-1, -1, -1])), 0);
-        let s = c.advance(10_000, true, false, true);
-        assert_eq!(s, Step { frame: Frame { active: -1, glide_ms: GLIDE_MS, sung: 0.0 }, wait: 0, still: false, redraw: true });
     }
 
     #[test]

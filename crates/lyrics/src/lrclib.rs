@@ -176,7 +176,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn titles_lose_credits_and_version_notes() {
+    fn query_and_titles() {
         for (title, clean_title) in [
             ("Song (feat. Someone)", "Song"),
             ("Song [Ft Someone] (Live at Wembley)", "Song"),
@@ -199,10 +199,8 @@ mod tests {
         ] {
             assert_eq!(clean(title), clean_title, "{title:?}");
         }
-    }
 
-    #[test]
-    fn query_strings_are_form_encoded() {
+        // Query strings are form encoded.
         let song = Song { artist: "AC/DC & Co".into(), album: "Ünï".into(), duration: 200, ..Default::default() };
         assert_eq!(get_url(&song, "It's *a*-b_c.d"), "https://lrclib.net/api/get?artist_name=AC%2FDC+%26+Co&track_name=It%27s+*a*-b_c.d&album_name=%C3%9Cn%C3%AF&duration=200");
         assert_eq!(search_url(&song, "t"), "https://lrclib.net/api/search?track_name=t&artist_name=AC%2FDC+%26+Co");

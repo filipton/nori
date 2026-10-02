@@ -517,7 +517,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn exact_fit_and_shift_is_found() {
+    fn fits() {
         let (curve, phrases, _) = sung(&song());
         let exact = check(&lyrics(&phrases, false, false, &|t| t), &curve).unwrap();
         assert_eq!(exact.kind, SyncKind::Fits, "{exact:?}");
@@ -530,10 +530,8 @@ pub(crate) mod tests {
         }
         let words = check(&lyrics(&phrases, true, true, &|t| t + 0.5), &curve).unwrap();
         assert!((words.offset_ms - 500).abs() < 120 && words.kind == SyncKind::Shifted, "word-timed: {words:?}");
-    }
 
-    #[test]
-    fn drift_and_poor_fit() {
+        // Drift and poor fit.
         let (curve, phrases, secs) = sung(&song());
         let mid = phrases[phrases.len() / 2][0].0;
         let edit = check(&lyrics(&phrases, true, false, &|t| if t < mid - 0.1 { t } else { t + 2.0 }), &curve).unwrap();
@@ -550,4 +548,5 @@ pub(crate) mod tests {
         let flat = VocalCurve { fps: curve.fps, t0: curve.t0, level: vec![40; curve.level.len()] };
         assert_eq!(check(&lyrics(&phrases, false, false, &|t| t), &flat), None, "a curve with no voice in it says nothing");
     }
+
 }

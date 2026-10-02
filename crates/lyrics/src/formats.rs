@@ -588,7 +588,7 @@ mod tests {
     const LYRICSFILE: &str = include_str!("../testdata/lrclib.lyricsfile.yaml");
 
     #[test]
-    fn lyricsfile_words_are_real_and_utf16() {
+    fn lyricsfile() {
         let l = from_lyricsfile(LYRICSFILE);
         assert!(l.synced && l.word_timed);
         assert_eq!(l.lines.len(), 3);
@@ -601,18 +601,8 @@ mod tests {
         assert_eq!((polish.words[1].start, polish.words[1].end), (7, 12), "UTF-16 offsets, not bytes");
         assert!(l.lines[2].words.is_empty(), "a line timed as a whole is never given word times");
         assert_eq!(l.lines[2].end_ms, 23000);
-    }
 
-    #[test]
-    fn open_last_word_gets_a_sung_length() {
-        let l = from_lyricsfile("version: '1.0'\nmetadata: {title: t, artist: a}\nlines:\n  - {text: hold on tonight, start_ms: 10000, words: [{text: 'hold ', start_ms: 10000}, {text: 'on ', start_ms: 10400}, {text: tonight, start_ms: 10800}]}\n  - {text: again, start_ms: 40000}\n");
-        let last = l.lines[0].words.last().unwrap().clone();
-        assert!(last.end_ms > 10_800 && last.end_ms <= 12_800, "{last:?}");
-        assert_eq!(l.lines[0].end_ms, last.end_ms, "the line ends with it");
-    }
-
-    #[test]
-    fn lyricsfile_edges() {
+        // Lyricsfile edges.
         // Words that do not spell the line: the line keeps its timing, the words are dropped.
         let off = from_lyricsfile("version: \"1.0\"\nmetadata: {title: t, artist: a}\nlines:\n  - {text: hello there, start_ms: 1000, words: [{text: 'bye ', start_ms: 1000}]}\n");
         assert!(off.synced && !off.word_timed && off.lines[0].words.is_empty());
@@ -631,6 +621,12 @@ mod tests {
         // Zero-length and negative-length words stay in place and never run backwards.
         let z = from_lyricsfile("version: '1.0'\nmetadata: {title: t, artist: a}\nlines:\n  - {text: ab, start_ms: 0, words: [{text: a, start_ms: 0, end_ms: 0}, {text: b, start_ms: 500, end_ms: 400}]}\n");
         assert_eq!(z.lines[0].words.iter().map(|w| (w.start_ms, w.end_ms)).collect::<Vec<_>>(), [(0, 0), (500, 500)]);
+
+        // Open last word gets a sung length.
+        let l = from_lyricsfile("version: '1.0'\nmetadata: {title: t, artist: a}\nlines:\n  - {text: hold on tonight, start_ms: 10000, words: [{text: 'hold ', start_ms: 10000}, {text: 'on ', start_ms: 10400}, {text: tonight, start_ms: 10800}]}\n  - {text: again, start_ms: 40000}\n");
+        let last = l.lines[0].words.last().unwrap().clone();
+        assert!(last.end_ms > 10_800 && last.end_ms <= 12_800, "{last:?}");
+        assert_eq!(l.lines[0].end_ms, last.end_ms, "the line ends with it");
     }
 
     /// The shape Apple Music's lyrics come in (and so BiniLyrics' and Unison's word-synced entries):
@@ -670,39 +666,7 @@ mod tests {
     }
 
     #[test]
-    fn duet_sides() {
-        // One singer, or none named: every line on the first side.
-        assert_eq!(sides(&mut sung_by(&[Some("v1"), Some("v1"), None]), &[]), [0, 0, 0]);
-        // The side changes with the singer, so a third voice takes a turn instead of sharing a side.
-        assert_eq!(sides(&mut sung_by(&[Some("v1"), Some("v2"), Some("v3"), Some("v1"), Some("v1")]), &[]), [0, 1, 0, 1, 1]);
-        // Everyone together is its own kind, drawn on the first side, and does not change whose turn it is.
-        let kinds = [("v1", "person"), ("v2", "person"), ("choir", "group")];
-        assert_eq!(sides(&mut sung_by(&[Some("v1"), Some("choir"), Some("v2"), Some("v1000"), Some("v2")]), &kinds), [0, 2, 1, 2, 1]);
-        // A line that names nobody stays on the side whose turn it is.
-        assert_eq!(sides(&mut sung_by(&[Some("v1"), Some("v2"), None, Some("v1"), Some("v2")]), &[]), [0, 1, 1, 0, 1]);
-        // Nearly all on the other side is turned round.
-        assert_eq!(sides(&mut sung_by(&[Some("v1"), Some("v2"), Some("v2"), Some("v2"), Some("v2"), Some("v2")]), &[]), [1, 0, 0, 0, 0, 0]);
-    }
-
-    #[test]
-    fn backing_only_lines_become_lines() {
-        let mut line = Timed { start: 1_000, ..Default::default() };
-        let mut backing = Timed::default();
-        backing.push("(la la)", Some((1_000, Some(1_500))));
-        keep_backing(&mut line, backing);
-        assert!(line.background && line.backing.is_none());
-        let l = finish(vec![line]);
-        assert_eq!((l.lines[0].text.as_str(), l.lines[0].background, l.lines[0].words.len()), ("(la la)", true, 1));
-        // Nothing but spaces is no backing at all.
-        let mut lead = Timed { start: 0, text: "Paper boats".into(), ..Default::default() };
-        let mut blank = Timed::default();
-        blank.push("  ", None);
-        keep_backing(&mut lead, blank);
-        assert!(lead.backing.is_none() && !lead.background);
-    }
-
-    #[test]
-    fn ttml_line_timed_plain_laid_out_and_broken() {
+    fn ttml_lines_and_voices() {
         let lined = from_ttml(r#"<tt xmlns="http://www.w3.org/ns/ttml"><body><div><p begin="00:00:05.000" end="00:00:07.500">One line</p><p begin="7.5s" end="9000ms">Two</p></div></body></tt>"#);
         assert!(lined.synced && !lined.word_timed);
         assert_eq!(lined.lines.iter().map(|l| (l.start_ms, l.end_ms)).collect::<Vec<_>>(), [(5_000, 7_500), (7_500, 9_000)]);
@@ -719,6 +683,34 @@ mod tests {
         assert!(from_ttml("<tt><body><p begin='1'>unclosed</body></tt>").lines.is_empty());
         assert!(from_ttml("").lines.is_empty());
         assert_eq!((clock("1:02:03.5"), clock("bogus"), clock("-1")), (Some(3_723_500), None, None));
+
+        // Duet sides.
+        // One singer, or none named: every line on the first side.
+        assert_eq!(sides(&mut sung_by(&[Some("v1"), Some("v1"), None]), &[]), [0, 0, 0]);
+        // The side changes with the singer, so a third voice takes a turn instead of sharing a side.
+        assert_eq!(sides(&mut sung_by(&[Some("v1"), Some("v2"), Some("v3"), Some("v1"), Some("v1")]), &[]), [0, 1, 0, 1, 1]);
+        // Everyone together is its own kind, drawn on the first side, and does not change whose turn it is.
+        let kinds = [("v1", "person"), ("v2", "person"), ("choir", "group")];
+        assert_eq!(sides(&mut sung_by(&[Some("v1"), Some("choir"), Some("v2"), Some("v1000"), Some("v2")]), &kinds), [0, 2, 1, 2, 1]);
+        // A line that names nobody stays on the side whose turn it is.
+        assert_eq!(sides(&mut sung_by(&[Some("v1"), Some("v2"), None, Some("v1"), Some("v2")]), &[]), [0, 1, 1, 0, 1]);
+        // Nearly all on the other side is turned round.
+        assert_eq!(sides(&mut sung_by(&[Some("v1"), Some("v2"), Some("v2"), Some("v2"), Some("v2"), Some("v2")]), &[]), [1, 0, 0, 0, 0, 0]);
+
+        // Backing only lines become lines.
+        let mut line = Timed { start: 1_000, ..Default::default() };
+        let mut backing = Timed::default();
+        backing.push("(la la)", Some((1_000, Some(1_500))));
+        keep_backing(&mut line, backing);
+        assert!(line.background && line.backing.is_none());
+        let l = finish(vec![line]);
+        assert_eq!((l.lines[0].text.as_str(), l.lines[0].background, l.lines[0].words.len()), ("(la la)", true, 1));
+        // Nothing but spaces is no backing at all.
+        let mut lead = Timed { start: 0, text: "Paper boats".into(), ..Default::default() };
+        let mut blank = Timed::default();
+        blank.push("  ", None);
+        keep_backing(&mut lead, blank);
+        assert!(lead.backing.is_none() && !lead.background);
     }
 
     /// What NetEase's `yrc.lyric` looks like: JSON credit lines, then `[start,length]` lines whose words
@@ -726,7 +718,7 @@ mod tests {
     const YRC: &str = include_str!("../testdata/netease.yrc");
 
     #[test]
-    fn yrc_words_are_absolute_and_credits_go() {
+    fn netease() {
         let l = from_netease(YRC, "[00:16.21]When you were here", "Creep");
         assert!(l.synced && l.word_timed);
         assert_eq!(l.lines.len(), 3, "the JSON credit lines are not lyrics");
@@ -738,10 +730,8 @@ mod tests {
         assert_eq!((second.words[1].start_ms, second.words[1].end_ms), (21_100, 21_100), "zero-length words stay zero");
         assert_eq!(second.words.len(), 4);
         assert_eq!(l.lines[2].words.iter().map(|w| (w.start, w.end)).collect::<Vec<_>>(), [(0, 1), (1, 2), (2, 5)]);
-    }
 
-    #[test]
-    fn netease_lrc_fallback() {
+        // Netease lrc fallback.
         let lrc = "{\"t\":0,\"c\":[{\"tx\":\"作词: Someone\"}]}\n[00:00.000] 作词 : Thom Yorke\n[00:01.000] 作曲 : Radiohead\n[00:02.000] Produced by: Someone\n[00:22.500]When you were here before\n[00:26.000]Couldn't look you in the eye\n[03:50.000]Mixed by: Someone\n";
         let l = from_netease("", lrc, "Creep");
         assert!(l.synced && !l.word_timed, "line timing stays line timing");
@@ -766,7 +756,7 @@ mod tests {
     const KRC: &str = include_str!("../testdata/kugou.krc.txt");
 
     #[test]
-    fn krc_decrypts_and_times_words_from_the_line() {
+    fn krc() {
         let l = from_krc(&pack_krc(KRC), "Creep").unwrap();
         assert!(l.synced && l.word_timed);
         assert_eq!(l.lines.iter().map(|x| x.text.as_str()).collect::<Vec<_>>(), ["When you were here", "我爱你"], "the title line and credits go");
@@ -776,10 +766,8 @@ mod tests {
         // An offset moves everything, as in LRC: positive is sooner.
         let early = from_krc(&pack_krc(&KRC.replace("[offset:0]", "[offset:500]")), "Creep").unwrap();
         assert_eq!((early.lines[0].start_ms, early.lines[0].words[0].start_ms), (21_500, 21_500));
-    }
 
-    #[test]
-    fn krc_that_is_not_one_is_an_error() {
+        // Krc that is not one is an error.
         assert!(from_krc("!!!", "").is_err());
         assert!(from_krc("aGVsbG8=", "").is_err(), "base64, but not krc1");
         let short: String = pack_krc("x").chars().take(8).collect();
@@ -794,7 +782,7 @@ mod tests {
     const QRC: &str = include_str!("../testdata/qq.qrc.xml");
 
     #[test]
-    fn qrc_words_follow_their_times() {
+    fn qrc() {
         let l = from_qrc(QRC, "Glass Harbour");
         assert!(l.synced && l.word_timed);
         assert_eq!(l.lines.iter().map(|x| x.text.as_str()).collect::<Vec<_>>(), ["Paper boats drift home", "We're here (la)", "紙の舟"], "the title line and the credit go");
@@ -805,10 +793,8 @@ mod tests {
         // Bare QRC, no wrapper; and an offset, as in LRC.
         let bare = from_qrc("[offset:500]\n[1000,1000]Hi (1000,500)there(1500,500)", "");
         assert_eq!((bare.lines[0].start_ms, bare.lines[0].words[1].start_ms), (500, 1000));
-    }
 
-    #[test]
-    fn qrc_falls_back_to_lrc_and_plain_lines() {
+        // Qrc falls back to lrc and plain lines.
         let lrc = from_qrc("[ti:x]\n[00:01.00]作词：Someone\n[00:05.00]Paper boats\n[00:09.00]La la la", "x");
         assert!(lrc.synced && !lrc.word_timed);
         assert_eq!(lrc.lines.iter().map(|x| x.text.as_str()).collect::<Vec<_>>(), ["Paper boats", "La la la"]);

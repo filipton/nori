@@ -125,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn clock_counts_utf16() {
+    fn clocks() {
         let h = lyrics_clock(lyrics(), 0);
         assert!(!unsafe { clock(h) }.unwrap().timing().sweeps());
         // A line without words is lit whole: seven UTF-16 units, the note being two.
@@ -133,10 +133,8 @@ mod tests {
         assert_eq!((s.frame.active, s.frame.sung, s.redraw), (0, 7.0, true));
         unsafe { free_clock(h) };
         assert!(unsafe { clock(0) }.is_none());
-    }
 
-    #[test]
-    fn kept_lyrics_start_a_clock_by_key() {
+        // Kept lyrics start a clock by key.
         let store = KeptLyrics::new();
         let mut l = lyrics();
         store.keep(&mut l);
@@ -155,4 +153,5 @@ mod tests {
         store.keep(&mut none);
         assert_eq!(none.key, 0);
     }
+
 }

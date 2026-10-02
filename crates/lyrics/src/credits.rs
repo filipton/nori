@@ -165,7 +165,7 @@ mod tests {
     const SUNG: [&str; 4] = ["first line of the song", "line two goes here", "la la la", "the last line of the song"];
 
     #[test]
-    fn chinese_credits_from_netease_and_kugou_go() {
+    fn headers_and_credits_go() {
         let mut l = lyrics(&["作词 : 某人", "作曲 : 某人", "编曲：另一人", "制作人 : 某人", SUNG[0], SUNG[1], SUNG[2], SUNG[3], "混音 : 某人", "母带 : 某人"], true);
         let times: Vec<i64> = l.lines[4..8].iter().map(|x| x.start_ms).collect();
         strip_edges(&mut l, "Glass Harbour", "The Lanterns");
@@ -174,20 +174,16 @@ mod tests {
         let mut k = lyrics(&["The Lanterns - Glass Harbour", "作詞：誰か", "작곡: 누군가", SUNG[0], SUNG[1], SUNG[2], SUNG[3]], true);
         strip_edges(&mut k, "Glass Harbour", "The Lanterns");
         assert_eq!(texts(&k), SUNG, "KuGou's opening names the song; Japanese and Korean labels are credits too");
-    }
 
-    #[test]
-    fn genius_headers_and_furniture_go() {
+        // Genius headers and furniture go.
         let mut l = lyrics(&["12 ContributorsGlass Harbour Lyrics", "Glass Harbour Lyrics", "", SUNG[0], SUNG[1], SUNG[2], SUNG[3], "You might also like", "3Embed"], false);
         strip_edges(&mut l, "Glass Harbour", "The Lanterns");
         assert_eq!(texts(&l), SUNG);
         let mut see = lyrics(&[SUNG[0], SUNG[1], "See The Lanterns LiveGet tickets as low as $40", "Embed"], false);
         strip_edges(&mut see, "Glass Harbour", "The Lanterns");
         assert_eq!(texts(&see), &SUNG[..2]);
-    }
 
-    #[test]
-    fn service_headers_and_watermarks_go() {
+        // Service headers and watermarks go.
         let mut l = lyrics(
             &["", "Lyrics by: Someone Person", "Written by Someone Person & Another", "Transcribed by A. Listener", SUNG[0], SUNG[1], SUNG[2], SUNG[3], "", "******* This Lyrics is NOT for Commercial use *******", "(1409617462395)"],
             true,
@@ -200,16 +196,14 @@ mod tests {
     }
 
     #[test]
-    fn instrumental_placeholder_is_empty() {
+    fn lyrics_stay() {
         for only in [["[Instrumental]"], ["(Instrumental)"], ["纯音乐，请欣赏"], ["此歌曲为没有填词的纯音乐，请您欣赏"]] {
             let mut l = lyrics(&only, true);
             strip_edges(&mut l, "Glass Harbour", "The Lanterns");
             assert_eq!(l, Lyrics::default(), "{only:?}");
         }
-    }
 
-    #[test]
-    fn sung_lines_and_middle_stay() {
+        // Sung lines and middle stay.
         let edges = ["Stand by the water", "Music by the river tonight", "She said: stay a while", "Written in the stars above", "İzmir by Çağrı"];
         let mut l = lyrics(&edges, true);
         strip_edges(&mut l, "Glass Harbour", "The Lanterns");
@@ -223,4 +217,5 @@ mod tests {
         strip_edges(&mut titled, "Glass Harbour", "The Lanterns");
         assert_eq!(texts(&titled), [SUNG[0], SUNG[1], "Glass harbour, glass harbour"], "a header naming the song goes; the title sung at the end stays");
     }
+
 }

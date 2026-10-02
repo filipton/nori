@@ -201,7 +201,7 @@ mod tests {
     const LERPS: &[(u32, u32, u32, u32)] = include!("compose_lerps.in");
 
     #[test]
-    fn lerp_matches_compose() {
+    fn matches_compose() {
         let wrong: Vec<String> = LERPS
             .iter()
             .filter_map(|&(a, b, t, want)| {
@@ -210,13 +210,12 @@ mod tests {
             })
             .collect();
         assert!(wrong.is_empty(), "{} of {} differ from Compose, the first: {:#?}", wrong.len(), LERPS.len(), &wrong[..wrong.len().min(5)]);
-    }
 
-    #[test]
-    fn copy_over_blend_match_compose() {
+        // Copy over blend match compose.
         // Values from Compose.
         assert_eq!(with_alpha(0xFFEE_DDCC, 0.10), 0x1AEE_DDCC);
         assert_eq!(veil(0xFFEE_DDCC, 0.10, 0xFF10_2030), 0xFF27_3340);
         assert_eq!(blend(0xFF10_2030, 0xFFEE_DDCC, 0.30), 0xFF53_595F);
     }
+
 }

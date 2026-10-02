@@ -687,7 +687,7 @@ mod tests {
     const LYRICSPLUS: &str = include_str!("../testdata/lyricsplus.json");
 
     #[test]
-    fn lyricsplus_syllables_backing_and_whole_lines() {
+    fn apple_shapes() {
         let l = from_lyricsplus(LYRICSPLUS);
         assert!(l.synced && l.word_timed);
         assert_eq!(texts(&l), ["Paper boats drift", "紙の舟", "Whole line"]);
@@ -709,14 +709,8 @@ mod tests {
         assert_eq!(parted.lines[0].text, "River song");
         assert!(from_lyricsplus(r#"{"lyrics":[]}"#).lines.is_empty());
         assert!(from_lyricsplus("not json").lines.is_empty());
-    }
 
-    /// PaxSenix's JSON for an Apple Music song: syllables with `part`, a backing line, and fields the
-    /// generic reader must not prefer over the syllables (its LRC).
-    const PAXSENIX_APPLE: &str = include_str!("../testdata/paxsenix-apple.json");
-
-    #[test]
-    fn paxsenix_apple_json_times_syllables() {
+        // Paxsenix apple json times syllables.
         let l = from_provider(PAXSENIX_APPLE, "Song");
         assert!(l.word_timed, "the syllables beat the LRC beside them");
         assert_eq!(texts(&l), ["Quiet night", "Again"]);
@@ -734,6 +728,10 @@ mod tests {
         let flat = from_provider(r#"{"type":"None","content":[{"timestamp":0,"endtime":0,"text":[{"text":"just words","timestamp":0,"endtime":0}]}]}"#, "");
         assert!(!flat.synced && flat.lines[0].text == "just words");
     }
+
+    /// PaxSenix's JSON for an Apple Music song: syllables with `part`, a backing line, and fields the
+    /// generic reader must not prefer over the syllables (its LRC).
+    const PAXSENIX_APPLE: &str = include_str!("../testdata/paxsenix-apple.json");
 
     #[test]
     fn provider_envelopes_and_text_shapes() {
@@ -821,16 +819,14 @@ mod tests {
     const YT_SEARCH: &str = include_str!("../testdata/youtube-search.json");
 
     #[test]
-    fn youtube_search_rows() {
+    fn youtube() {
         let songs = youtube_songs(YT_SEARCH);
         assert_eq!(songs.len(), 2);
         assert_eq!(songs[0], FoundTrack { id: "AbCdEfGhIjK".into(), title: "Glass Harbour".into(), artist: "The Lanterns".into(), duration_ms: 239_000 });
         assert_eq!((songs[1].artist.as_str(), songs[1].duration_ms), ("Someone Else", 3_845_000));
         assert!(youtube_songs("{}").is_empty());
-    }
 
-    #[test]
-    fn youtube_lyrics_tab_and_page() {
+        // Youtube lyrics tab and page.
         let next = r#"{"contents":{"singleColumnMusicWatchNextResultsRenderer":{"tabbedRenderer":{"watchNextTabbedResultsRenderer":{"tabs":[
           {"tabRenderer":{"title":"Up next","content":{}}},
           {"tabRenderer":{"title":"Lyrics","endpoint":{"browseEndpoint":{"browseId":"MPLYt_abc123","browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_TRACK_LYRICS"}}}}}},
@@ -843,10 +839,8 @@ mod tests {
         assert!(!l.synced);
         assert_eq!(texts(&l), ["Paper boats on a quiet river", "La la la line two", "", "Counting lamps along the pier"]);
         assert!(from_youtube_music("{}").lines.is_empty());
-    }
 
-    #[test]
-    fn youtube_captions_in_three_shapes() {
+        // Youtube captions in three shapes.
         let transcript = r#"{"actions":[{"updateEngagementPanelAction":{"content":{"transcriptRenderer":{"body":{"transcriptBodyRenderer":{"cueGroups":[
           {"transcriptCueGroupRenderer":{"cues":[{"transcriptCueRenderer":{"cue":{"simpleText":"♪ Paper boats on a quiet river ♪"},"startOffsetMs":"16210","durationMs":"3460"}}]}},
           {"transcriptCueGroupRenderer":{"cues":[{"transcriptCueRenderer":{"cue":{"simpleText":"[Music]"},"startOffsetMs":"19670","durationMs":"2000"}}]}},
@@ -862,4 +856,5 @@ mod tests {
         assert_eq!(texts(&j), ["hello"]);
         assert!(j.lines[0].words.is_empty(), "speech-recognition word offsets are not singing");
     }
+
 }

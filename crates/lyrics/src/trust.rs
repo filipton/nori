@@ -282,17 +282,15 @@ mod tests {
     }
 
     #[test]
-    fn wrong_length_or_title_costs() {
+    fn costs() {
         let s = song();
         let right = score(&s, &song_words(true), &named("Glass Harbour", 180.0), 0.8, &[], false, true).score;
         let long = score(&s, &song_words(true), &named("Glass Harbour", 188.0), 0.8, &[], false, true).score;
         let other = score(&s, &song_words(true), &named("Whisky on the Table", 180.0), 0.8, &[], false, true).score;
         assert!(right > long && long > other, "{right} {long} {other}");
         assert!(right - other > 0.2);
-    }
 
-    #[test]
-    fn implausible_times_cost() {
+        // Implausible times cost.
         let s = song();
         let good = score(&s, &song_words(true), &Named::default(), 0.8, &[], false, true).score;
         let early: Vec<(i64, &str)> = (0..18).map(|i| (5_000 + i * 4_000, ["line one here", "line two here", "a third line", "line four", "the fifth one", "and a sixth"][i as usize % 6])).collect();
@@ -301,6 +299,17 @@ mod tests {
         shuffled.lines.reverse();
         let jumbled = score(&s, &shuffled, &Named::default(), 0.8, &[], false, true).score;
         assert!(good > short && good > jumbled, "{good} {short} {jumbled}");
+
+        // Lone script costs.
+        let s = song();
+        let lines: Vec<(i64, &str)> = (0..18).map(|i| (10_000 + i * 9_000, ["紙の舟が行く", "港の灯り", "波が遠く", "朝が来る", "水をつかむ", "光をつかむ"][i as usize % 6])).collect();
+        let japanese = timed(&lines, true);
+        let (a, b) = (song_words(true), song_words(false));
+        let n = Named::default();
+        let odd = score(&s, &japanese, &n, 0.8, &[Other { lyrics: &a, named: &n, agrees: false }, Other { lyrics: &b, named: &n, agrees: false }], true, true);
+        assert!(odd.penalty >= OTHER_SCRIPT);
+        let alone = score(&s, &japanese, &n, 0.8, &[], false, true);
+        assert!(alone.penalty < OTHER_SCRIPT, "alone, a script is no evidence");
     }
 
     #[test]
@@ -317,16 +326,4 @@ mod tests {
         assert!(backed > alone && alone > doubted, "{backed} {alone} {doubted}");
     }
 
-    #[test]
-    fn lone_script_costs() {
-        let s = song();
-        let lines: Vec<(i64, &str)> = (0..18).map(|i| (10_000 + i * 9_000, ["紙の舟が行く", "港の灯り", "波が遠く", "朝が来る", "水をつかむ", "光をつかむ"][i as usize % 6])).collect();
-        let japanese = timed(&lines, true);
-        let (a, b) = (song_words(true), song_words(false));
-        let n = Named::default();
-        let odd = score(&s, &japanese, &n, 0.8, &[Other { lyrics: &a, named: &n, agrees: false }, Other { lyrics: &b, named: &n, agrees: false }], true, true);
-        assert!(odd.penalty >= OTHER_SCRIPT);
-        let alone = score(&s, &japanese, &n, 0.8, &[], false, true);
-        assert!(alone.penalty < OTHER_SCRIPT, "alone, a script is no evidence");
-    }
 }

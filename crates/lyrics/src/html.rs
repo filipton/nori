@@ -246,7 +246,7 @@ mod tests {
     const MEGALOBIZ_SEARCH: &str = include_str!("../testdata/megalobiz-search.html");
 
     #[test]
-    fn megalobiz_links_name_the_song() {
+    fn megalobiz() {
         let links = megalobiz_links(MEGALOBIZ_SEARCH, "Glass Harbour", "The Lanterns");
         assert_eq!(
             links,
@@ -255,10 +255,8 @@ mod tests {
         );
         assert!(megalobiz_links(MEGALOBIZ_SEARCH, "Paper Boats", "The Lanterns").is_empty());
         assert!(megalobiz_links(MEGALOBIZ_SEARCH, "", "").is_empty());
-    }
 
-    #[test]
-    fn megalobiz_page_lrc() {
+        // Megalobiz page lrc.
         let page = r#"<div class="lyrics_details entity_more_info"><span id="lrc_51234567_details">[ti:Glass Harbour]<br>[ar:The Lanterns]<br>[00:12.30]Paper boats on a quiet river<br>
 [00:16.05]La la la line two<br>[00:20.00]It&#39;s the last line</span></div>"#;
         let l = from_megalobiz(page);

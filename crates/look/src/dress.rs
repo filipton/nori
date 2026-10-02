@@ -266,7 +266,7 @@ mod tests {
     const PAGES: &[(u32, u32, u32, u32, [u32; 18])] = include!("dress_pages.in");
 
     #[test]
-    fn page_matches_compose() {
+    fn matches_compose() {
         for &(edge, bg, on, accent, want) in PAGES {
             let t = page(edge, bg, on, accent, edge);
             let got = [
@@ -276,6 +276,17 @@ mod tests {
             ];
             assert_eq!(got, want, "page {bg:08x} on {on:08x}, accent {accent:08x}");
         }
+
+        // Paper follows page lightness.
+        let dark = page(0xFF20_1010, 0xFF20_1010, WHITE, 0xFFE0_4040, 0xFF20_1010);
+        let white = page(WHITE, WHITE, 0xFF11_1111, 0xFFE0_4040, WHITE);
+        assert_eq!(f32::from_bits(dark[PAPER]), 0.0);
+        assert_eq!(f32::from_bits(white[PAPER]), 1.0);
+        assert_eq!(white[PILL], PILL_ON_PAPER);
+        assert_eq!(dark[PILL], 0xFFE0_4040);
+        assert_eq!((dark[STATUS_LIGHT], white[STATUS_LIGHT]), (0, 1));
+        assert_eq!((f32::from_bits(dark[BAND_TINT]), f32::from_bits(white[BAND_TINT])), (0.0, 1.0));
+        assert_eq!(f32::from_bits(white[BAND_KG]), 1.0);
     }
 
     #[test]
@@ -291,16 +302,4 @@ mod tests {
         assert_eq!(ink_on(0xFFA0_A0A0), INK_ON_LIGHT);
     }
 
-    #[test]
-    fn paper_follows_page_lightness() {
-        let dark = page(0xFF20_1010, 0xFF20_1010, WHITE, 0xFFE0_4040, 0xFF20_1010);
-        let white = page(WHITE, WHITE, 0xFF11_1111, 0xFFE0_4040, WHITE);
-        assert_eq!(f32::from_bits(dark[PAPER]), 0.0);
-        assert_eq!(f32::from_bits(white[PAPER]), 1.0);
-        assert_eq!(white[PILL], PILL_ON_PAPER);
-        assert_eq!(dark[PILL], 0xFFE0_4040);
-        assert_eq!((dark[STATUS_LIGHT], white[STATUS_LIGHT]), (0, 1));
-        assert_eq!((f32::from_bits(dark[BAND_TINT]), f32::from_bits(white[BAND_TINT])), (0.0, 1.0));
-        assert_eq!(f32::from_bits(white[BAND_KG]), 1.0);
-    }
 }

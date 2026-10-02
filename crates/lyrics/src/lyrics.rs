@@ -237,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_lrc_estimates_words() {
+    fn lrc_words() {
         let l = parse(r#"[{"synced":true,"line":[{"start":0,"value":"one three"},{"start":4000,"value":"next"}]}]"#);
         assert!(!l.word_timed);
         let w = &l.lines[0].words;
@@ -245,23 +245,8 @@ mod tests {
         assert_eq!((w[0].start_ms, w[0].start, w[0].end), (0, 0, 3));
         assert!(w[1].end_ms <= 3600 && w[1].end_ms > w[1].start_ms && w[0].end_ms == w[1].start_ms);
         assert!(w[1].end_ms - w[1].start_ms > w[0].end_ms - w[0].start_ms, "the longer word takes longer");
-    }
 
-    #[test]
-    fn inline_tags_offset_translation_and_unsynced() {
-        let l = parse(r#"[{"kind":"translation","synced":true,"line":[{"start":1500,"value":"cześć"}]},
-          {"synced":true,"offset":500,"line":[{"start":1500,"value":"<00:01.50>hel<00:01.90>lo <b>x"}]}]"#);
-        assert_eq!(l.lines[0].text, "hello <b>x");
-        assert_eq!(l.lines[0].start_ms, 1000);
-        assert_eq!((l.lines[0].words[0].start_ms, l.lines[0].words[1].start_ms, l.lines[0].words[1].start), (1000, 1400, 3));
-        assert_eq!(l.lines[0].translation.as_deref(), Some("cześć"));
-        let plain = parse(r#"[{"synced":false,"line":[{"value":"just text"}]}]"#);
-        assert_eq!((plain.synced, plain.lines[0].start_ms, plain.lines[0].words.len()), (false, -1, 0));
-        assert!(parse("[]").lines.is_empty());
-    }
-
-    #[test]
-    fn lrc_last_word_before_pause() {
+        // Lrc last word before pause.
         // The last word has no closing mark and the next line is thirty seconds away.
         let l = from_lrc("[00:10.00]<00:10.00>Hold <00:10.40>on <00:10.80>tonight\n[00:40.00]<00:40.00>Again\n");
         let last = l.lines[0].words.last().unwrap().clone();
@@ -276,7 +261,18 @@ mod tests {
     }
 
     #[test]
-    fn lrc_repeats_offset_and_plain() {
+    fn lrc_tags() {
+        let l = parse(r#"[{"kind":"translation","synced":true,"line":[{"start":1500,"value":"cześć"}]},
+          {"synced":true,"offset":500,"line":[{"start":1500,"value":"<00:01.50>hel<00:01.90>lo <b>x"}]}]"#);
+        assert_eq!(l.lines[0].text, "hello <b>x");
+        assert_eq!(l.lines[0].start_ms, 1000);
+        assert_eq!((l.lines[0].words[0].start_ms, l.lines[0].words[1].start_ms, l.lines[0].words[1].start), (1000, 1400, 3));
+        assert_eq!(l.lines[0].translation.as_deref(), Some("cześć"));
+        let plain = parse(r#"[{"synced":false,"line":[{"value":"just text"}]}]"#);
+        assert_eq!((plain.synced, plain.lines[0].start_ms, plain.lines[0].words.len()), (false, -1, 0));
+        assert!(parse("[]").lines.is_empty());
+
+        // Lrc repeats offset and plain.
         let l = from_lrc("[ar:Someone]\n[offset:+200]\n[00:01.00][00:10.50]chorus\n[00:05.25]verse\n\n");
         assert!(l.synced);
         let got: Vec<(i64, &str)> = l.lines.iter().map(|x| (x.start_ms, x.text.as_str())).collect();
@@ -285,10 +281,8 @@ mod tests {
         let plain = from_lrc("just\nwords");
         assert!(!plain.synced);
         assert_eq!(plain.lines.len(), 2);
-    }
 
-    #[test]
-    fn garbled_times_are_not_times() {
+        // Garbled times are not times.
         for lrc in ["[01:inf]x", "[00:inf]x", "[99999999999999:00.00]x", "[offset:-9223372036854775808]\n[00:00.00]x", "[-5:00.00]x"] {
             let l = from_lrc(lrc);
             assert!(!l.synced || l.lines.iter().all(|x| (0..=LONGEST_MS).contains(&x.start_ms) && x.end_ms >= x.start_ms), "{lrc}");
@@ -302,4 +296,5 @@ mod tests {
         let shared = from_lrc("[00:01.00]line\n[00:01.00]translated\n[00:02.00]next");
         assert_eq!(shared.lines[0].end_ms, 2_000, "a line sharing its time runs to the next later one");
     }
+
 }
