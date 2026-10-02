@@ -1063,7 +1063,7 @@ impl Tracker {
             self.rate.sample(now, self.received);
         }
         let rate = self.rate.rate();
-        self.speed_bps = if waiting || current.is_none() && self.received == self.rate.bytes { 0 } else { rate as i64 };
+        self.speed_bps = if idle { 0 } else { rate as i64 };
         let permille = (self.batch.fraction(in_flight) * 1000.0) as i32;
         let position = (self.batch.finished() + 1).min(total.max(1));
         // Remaining bytes: each open song's length (else its scaled estimate) minus its bytes, and the
@@ -1801,6 +1801,23 @@ mod tests {
             t.info.insert(id.to_string(), Info { estimate: size, ..Info::default() });
         }
         t
+    }
+
+    #[test]
+    fn speed_holds_between_songs() {
+        let mut t = tracker(&["ext-a", "ext-b"], 1_000_000);
+        t.followed("ext-a", QUEUED, 0);
+        t.followed("ext-b", QUEUED, 0);
+        let slot = t.open("ext-a", 0);
+        t.note(slot, 1_000_000, 0, 0);
+        t.notice(2, false, 0);
+        t.note(slot, 1_000_000, 500_000, 1_000);
+        t.notice(2, false, 1_000);
+        assert!(t.speed_bps > 0);
+        t.note(slot, 1_000_000, 1_000_000, 1_500);
+        t.followed("ext-a", COMPLETED, 1_600);
+        t.notice(2, false, 2_000);
+        assert!(t.speed_bps > 0, "the bytes came this second: the next song is not open yet, the batch still moves");
     }
 
     #[test]
