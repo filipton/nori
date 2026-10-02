@@ -1576,6 +1576,14 @@ extern "system" fn device(env: JNIEnv, _: JClass, h: jlong, kind: jint, name: JS
     }
 }
 
+/// What the engine holds in memory, for the perf report: `out` gets `[song loaders, their KB, those read
+/// from the disk, the beat model's KB]`.
+extern "system" fn memory(env: JNIEnv, _: JClass, h: jlong, out: JLongArray) {
+    let Some(p) = player(h) else { return };
+    let songs = p.engine.held();
+    let _ = env.set_long_array_region(&out, 0, &[songs.songs as jlong, (songs.bytes / 1024) as jlong, songs.on_disk as jlong, (p.analyses.model_bytes() / 1024) as jlong]);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1600,12 +1608,4 @@ mod tests {
             assert_eq!(offload_support(answer), (support, words.to_string()), "{answer:#x}");
         }
     }
-}
-
-/// What the engine holds in memory, for the perf report: `out` gets `[song loaders, their KB, those read
-/// from the disk, the beat model's KB]`.
-extern "system" fn memory(env: JNIEnv, _: JClass, h: jlong, out: JLongArray) {
-    let Some(p) = player(h) else { return };
-    let songs = p.engine.held();
-    let _ = env.set_long_array_region(&out, 0, &[songs.songs as jlong, (songs.bytes / 1024) as jlong, songs.on_disk as jlong, (p.analyses.model_bytes() / 1024) as jlong]);
 }
