@@ -1164,7 +1164,7 @@ mod tests {
     }
 
     #[test]
-    fn flat_is_identity_and_band_is_local() {
+    fn flat_is_identity() {
         let mut eq = Equalizer::new(48000, 1);
         eq.configure(&[], 0.0, 0.0);
         assert!(eq.is_identity());
@@ -1172,91 +1172,53 @@ mod tests {
         let mut y = vec![0f32; x.len()];
         eq.process_f32(&x, &mut y);
         assert_eq!(x, y);
-
-        eq.configure(&[b(PEAKING, 1000.0, -12.0, 1.41)], 0.0, 0.0);
-        assert!((gain_at(&mut eq, 1000.0) + 12.0).abs() < 0.5);
-        assert!(gain_at(&mut eq, 8000.0).abs() < 0.5);
     }
 
+    /// Each band kind's response: (bands, pre-amp, [(Hz, lowest dB, highest dB)]).
     #[test]
-    fn shelves_and_preamp() {
-        let mut eq = Equalizer::new(48000, 1);
-        eq.configure(&[b(LOW_SHELF, 200.0, 6.0, 0.71)], -3.0, 0.0);
-        assert!((gain_at(&mut eq, 40.0) - 3.0).abs() < 0.5, "low shelf + preamp at 40 Hz");
-        assert!((gain_at(&mut eq, 5000.0) + 3.0).abs() < 0.5, "only the preamp at 5 kHz");
-        eq.configure(&[b(HIGH_SHELF, 4000.0, -6.0, 0.71)], 0.0, 0.0);
-        assert!((gain_at(&mut eq, 16000.0) + 6.0).abs() < 0.6);
-        assert!(gain_at(&mut eq, 200.0).abs() < 0.5);
-    }
-
-    #[test]
-    fn slope_shelves() {
-        let mut eq = Equalizer::new(48000, 1);
-        eq.configure(&[b(LOW_SHELF_SLOPE, 250.0, 8.0, 1.0)], 0.0, 0.0);
-        assert!((gain_at(&mut eq, 40.0) - 8.0).abs() < 0.6, "low slope shelf at 40 Hz: {}", gain_at(&mut eq, 40.0));
-        assert!((gain_at(&mut eq, 250.0) - 4.0).abs() < 0.6, "half the gain at the corner");
-        assert!(gain_at(&mut eq, 8000.0).abs() < 0.3);
-
-        eq.configure(&[b(HIGH_SHELF_SLOPE, 3000.0, -8.0, 1.0)], 0.0, 0.0);
-        assert!((gain_at(&mut eq, 16000.0) + 8.0).abs() < 0.7);
-        assert!(gain_at(&mut eq, 100.0).abs() < 0.3);
-    }
-
-    #[test]
-    fn pass_filters() {
-        let mut eq = Equalizer::new(48000, 1);
-        eq.configure(&[b(LOW_PASS, 1000.0, 0.0, 0.707)], 0.0, 0.0);
-        assert!(gain_at(&mut eq, 100.0).abs() < 0.2, "low pass pass-band");
-        assert!((gain_at(&mut eq, 1000.0) + 3.0).abs() < 0.6, "-3 dB at the corner");
-        assert!(gain_at(&mut eq, 8000.0) < -15.0, "two poles, three octaves up");
-
-        eq.configure(&[b(HIGH_PASS, 1000.0, 0.0, 0.707)], 0.0, 0.0);
-        assert!(gain_at(&mut eq, 10000.0).abs() < 0.2);
-        assert!((gain_at(&mut eq, 1000.0) + 3.0).abs() < 0.6);
-        assert!(gain_at(&mut eq, 125.0) < -15.0);
-    }
-
-    #[test]
-    fn band_pass_and_notch() {
-        let mut eq = Equalizer::new(48000, 1);
-        eq.configure(&[b(BAND_PASS, 1000.0, 0.0, 2.0)], 0.0, 0.0);
-        assert!(gain_at(&mut eq, 1000.0).abs() < 0.2, "constant 0 dB peak gain");
-        assert!(gain_at(&mut eq, 100.0) < -12.0 && gain_at(&mut eq, 10000.0) < -12.0);
-
-        eq.configure(&[b(NOTCH, 1000.0, 0.0, 8.0)], 0.0, 0.0);
-        assert!(gain_at(&mut eq, 1000.0) < -20.0, "notch at the centre");
-        assert!(gain_at(&mut eq, 250.0).abs() < 0.4 && gain_at(&mut eq, 4000.0).abs() < 0.4);
-    }
-
-    #[test]
-    fn all_pass_is_flat_but_shifts_phase() {
+    fn band_responses() {
+        let near = |db: f64, tol: f64| (db - tol, db + tol);
+        let below = |db: f64| (-200.0, db);
+        let cases: &[(&str, Band, f64, &[(f64, (f64, f64))])] = &[
+            ("peaking", b(PEAKING, 1000.0, -12.0, 1.41), 0.0, &[(1000.0, near(-12.0, 0.5)), (8000.0, near(0.0, 0.5))]),
+            ("low shelf and pre-amp", b(LOW_SHELF, 200.0, 6.0, 0.71), -3.0, &[(40.0, near(3.0, 0.5)), (5000.0, near(-3.0, 0.5))]),
+            ("high shelf", b(HIGH_SHELF, 4000.0, -6.0, 0.71), 0.0, &[(16000.0, near(-6.0, 0.6)), (200.0, near(0.0, 0.5))]),
+            ("low slope shelf", b(LOW_SHELF_SLOPE, 250.0, 8.0, 1.0), 0.0, &[(40.0, near(8.0, 0.6)), (250.0, near(4.0, 0.6)), (8000.0, near(0.0, 0.3))]),
+            ("high slope shelf", b(HIGH_SHELF_SLOPE, 3000.0, -8.0, 1.0), 0.0, &[(16000.0, near(-8.0, 0.7)), (100.0, near(0.0, 0.3))]),
+            ("low pass", b(LOW_PASS, 1000.0, 0.0, 0.707), 0.0, &[(100.0, near(0.0, 0.2)), (1000.0, near(-3.0, 0.6)), (8000.0, below(-15.0))]),
+            ("high pass", b(HIGH_PASS, 1000.0, 0.0, 0.707), 0.0, &[(10000.0, near(0.0, 0.2)), (1000.0, near(-3.0, 0.6)), (125.0, below(-15.0))]),
+            ("band pass", b(BAND_PASS, 1000.0, 0.0, 2.0), 0.0, &[(1000.0, near(0.0, 0.2)), (100.0, below(-12.0)), (10000.0, below(-12.0))]),
+            ("notch", b(NOTCH, 1000.0, 0.0, 8.0), 0.0, &[(1000.0, below(-20.0)), (250.0, near(0.0, 0.4)), (4000.0, near(0.0, 0.4))]),
+            ("all pass", b(ALL_PASS, 1000.0, 0.0, 0.707), 0.0, &[(100.0, near(0.0, 0.2)), (1000.0, near(0.0, 0.2)), (5000.0, near(0.0, 0.2)), (15000.0, near(0.0, 0.2))]),
+        ];
+        for (what, band, preamp, want) in cases {
+            let mut eq = Equalizer::new(48000, 1);
+            eq.configure(&[*band], *preamp, 0.0);
+            for &(f, (lo, hi)) in *want {
+                let g = gain_at(&mut eq, f);
+                assert!(g >= lo && g <= hi, "{what}: {g:.2} dB at {f} Hz, wanted {lo}..{hi}");
+            }
+        }
+        // The all pass moves the phase even though the level stays.
         let mut eq = Equalizer::new(48000, 1);
         eq.configure(&[b(ALL_PASS, 1000.0, 0.0, 0.707)], 0.0, 0.0);
-        for f in [100.0, 1000.0, 5000.0, 15000.0] {
-            assert!(gain_at(&mut eq, f).abs() < 0.2, "all pass is flat at {f} Hz");
-        }
         let x = tone(1000.0);
         let mut y = vec![0f32; x.len()];
-        eq.reset();
         eq.process_f32(&x, &mut y);
-        assert!(!eq.is_identity() && x[24000..] != y[24000..], "the phase moved even though the level did not");
+        assert!(!eq.is_identity() && x[24000..] != y[24000..]);
     }
 
     #[test]
-    fn invalid_bands_are_ignored() {
+    fn bad_settings_are_harmless() {
         let mut eq = Equalizer::new(48000, 2);
-        eq.configure(
-            &[
-                b(PEAKING, f64::NAN, 6.0, 1.0),
-                b(PEAKING, 30000.0, 6.0, 1.0),
-                b(PEAKING, -100.0, 6.0, 1.0),
-                b(PEAKING, 1000.0, f64::NAN, 1.0),
-                b(99, 1000.0, 6.0, 1.0),
-            ],
-            f64::NAN,
-            0.0,
-        );
-        assert!(eq.is_identity(), "nothing survived, so the processor can be skipped");
+        let bad = [b(PEAKING, f64::NAN, 6.0, 1.0), b(PEAKING, 30000.0, 6.0, 1.0), b(PEAKING, -100.0, 6.0, 1.0), b(PEAKING, 1000.0, f64::NAN, 1.0), b(99, 1000.0, 6.0, 1.0)];
+        eq.configure(&bad, f64::NAN, 0.0);
+        assert!(eq.is_identity(), "no band survived, so the processor can be skipped");
+        eq.configure_output(f64::NAN, false, f64::NAN, -5.0, f64::INFINITY);
+        let x: Vec<f32> = tone(1000.0).iter().flat_map(|s| [*s, *s]).collect();
+        let mut y = vec![0f32; x.len()];
+        eq.process_f32(&x, &mut y);
+        assert!(y.iter().all(|v| v.is_finite()), "bad limiter settings must not poison the output");
     }
 
     #[test]
@@ -1313,25 +1275,6 @@ mod tests {
         assert!(y[960..].as_chunks::<2>().0.iter().all(|f| f[0] == f[1]), "both channels carry the same mono signal");
     }
 
-    #[test]
-    fn crossfeed_leaks_bass_keeps_mono_level() {
-        let mut eq = Equalizer::new(48000, 2);
-        eq.configure(&[], 0.0, 4.5);
-        let left_only: Vec<f32> = tone(150.0).iter().flat_map(|s| [*s, 0.0]).collect();
-        let mut y = vec![0f32; left_only.len()];
-        eq.process_f32(&left_only, &mut y);
-        let l: Vec<f32> = y.iter().step_by(2).copied().collect();
-        let r: Vec<f32> = y.iter().skip(1).step_by(2).copied().collect();
-        let leak = 20.0 * (rms(&r[9600..]) / rms(&l[9600..])).log10();
-        assert!(leak < -2.0 && leak > -12.0, "right ear is {leak} dB below left");
-
-        let mono: Vec<f32> = tone(150.0).iter().flat_map(|s| [*s, *s]).collect();
-        eq.reset();
-        eq.process_f32(&mono, &mut y);
-        let db = 20.0 * (rms(&y[19200..]) / rms(&mono[19200..])).log10();
-        assert!(db.abs() < 1.0, "mono level moved by {db} dB");
-    }
-
     /// Right relative to left, dB, for a left-only tone.
     fn leak_at(eq: &mut Equalizer, freq: f64) -> f64 {
         let left_only: Vec<f32> = tone(freq).iter().flat_map(|s| [*s, 0.0]).collect();
@@ -1383,52 +1326,31 @@ mod tests {
         assert!(leak_at(&mut later, 2500.0).is_finite());
     }
 
+    /// Below its knee the limiter only delays, by its look-ahead: kept across a retune, given back by
+    /// silence, gone with it.
     #[test]
-    fn limiter_bit_exact_below_threshold() {
+    fn limiter_only_delays_below_knee() {
         let mut eq = Equalizer::new(48000, 1);
         eq.configure(&[], 0.0, 0.0);
         eq.configure_output(0.0, false, -6.0, 120.0, 5.0);
         assert!(!eq.is_identity(), "the look-ahead delay alone means the processor must run");
-
-        let x = tone_at(1000.0, 0.25); // -12 dBFS, well under the knee
-        let mut y = vec![0f32; x.len()];
-        eq.process_f32(&x, &mut y);
-        let d = 240; // 5 ms at 48 kHz
-        assert_eq!(&y[d..], &x[..x.len() - d], "below the knee the samples come back untouched");
-        assert_eq!(eq.gain_reduction_db(), 0.0);
-    }
-
-    #[test]
-    fn silence_flushes_limiter_delay() {
-        let mut eq = Equalizer::new(48000, 1);
-        eq.configure(&[], 0.0, 0.0);
-        eq.configure_output(0.0, false, -6.0, 120.0, 5.0);
-        let x = tone_at(1000.0, 0.25);
-        let mut y = vec![0f32; x.len()];
-        eq.process_f32(&x, &mut y);
-        let d = eq.delay_frames();
-        assert_eq!(d, 240, "5 ms at 48 kHz");
-        let mut tail = vec![0f32; d];
-        eq.process_f32(&vec![0f32; d], &mut tail);
-        assert_eq!(&tail[..], &x[x.len() - d..]);
-        eq.configure_output(0.0, false, 0.0, 120.0, 0.0);
-        assert_eq!(eq.delay_frames(), 0, "no limiter, nothing held");
-    }
-
-    #[test]
-    fn retuning_limiter_keeps_delay_line() {
-        let mut eq = Equalizer::new(48000, 1);
-        eq.configure(&[], 0.0, 0.0);
-        eq.configure_output(0.0, false, -6.0, 120.0, 5.0);
+        // -12 dBFS, well under the knee.
         let x = tone_at(1000.0, 0.25);
         let (head, tail) = x.split_at(24000);
         let (mut a, mut b) = (vec![0f32; head.len()], vec![0f32; tail.len()]);
         eq.process_f32(head, &mut a);
-        eq.configure_output(0.0, false, -3.0, 300.0, 5.0); // a slider moved mid-track
+        // A slider moved mid-track.
+        eq.configure_output(0.0, false, -3.0, 300.0, 5.0);
         eq.process_f32(tail, &mut b);
-        let joined: Vec<f32> = a.into_iter().chain(b).collect();
-        let d = 240;
-        assert_eq!(&joined[d..], &x[..x.len() - d], "the delay line survived the new settings");
+        let d = eq.delay_frames();
+        assert_eq!(d, 240, "5 ms at 48 kHz");
+        let mut rest = vec![0f32; d];
+        eq.process_f32(&vec![0f32; d], &mut rest);
+        let joined: Vec<f32> = a.into_iter().chain(b).chain(rest).collect();
+        assert_eq!(&joined[d..], &x[..], "untouched, the delay line kept through the new settings");
+        assert_eq!(eq.gain_reduction_db(), 0.0);
+        eq.configure_output(0.0, false, 0.0, 120.0, 0.0);
+        assert_eq!(eq.delay_frames(), 0, "no limiter, nothing held");
     }
 
     #[test]
@@ -1551,17 +1473,6 @@ mod tests {
         let mut y = vec![0i16; x.len()];
         eq.process_i16(&x, &mut y);
         assert_eq!(x, y);
-    }
-
-    #[test]
-    fn invalid_limiter_settings_are_clamped() {
-        let mut eq = Equalizer::new(48000, 2);
-        eq.configure(&[], 0.0, 0.0);
-        eq.configure_output(f64::NAN, false, f64::NAN, -5.0, f64::INFINITY);
-        let x: Vec<f32> = tone(1000.0).iter().flat_map(|s| [*s, *s]).collect();
-        let mut y = vec![0f32; x.len()];
-        eq.process_f32(&x, &mut y);
-        assert!(y.iter().all(|v| v.is_finite()), "bad settings must not poison the output");
     }
 
     #[test]
