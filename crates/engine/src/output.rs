@@ -51,6 +51,11 @@ pub trait AudioOutput: Send {
     fn resume(&mut self);
     /// How long a sample pulled now takes to be heard, µs.
     fn latency_us(&self) -> u64;
+    /// Of [`AudioOutput::latency_us`], what the device has mixed already and sends on to the ear (a
+    /// Bluetooth link's): a sound change comes no sooner for dropping it.
+    fn mixed_us(&self) -> u64 {
+        0
+    }
     /// Whether the device takes float ([`Feed::pull`]) rather than 16-bit ([`Feed::pull_i16`]). With
     /// high quality output, songs are then decoded and carried in float.
     fn takes_float(&mut self) -> bool {
@@ -791,12 +796,13 @@ impl Track for RingTrack {
     }
 
     /// A device holding little plays on: the first frame no pull can have taken, fenced so none takes
-    /// it before the cut. One holding more than [`HELD_US`] drops what it holds: a little before what
-    /// it has played.
+    /// it before the cut. One holding more than [`HELD_US`] not yet mixed drops what it holds: a little
+    /// before what it has played.
     fn freeze(&mut self) -> u64 {
         let (Some(r), Some(d)) = (self.ring.clone(), self.device) else { return self.written.sink };
         let (heard, held) = self.heard();
-        if held as i64 * 1_000_000 > HELD_US * d.rate as i64 {
+        let mixed = self.output.mixed_us() * d.rate as u64 / 1_000_000;
+        if held.saturating_sub(mixed) as i64 * 1_000_000 > HELD_US * d.rate as i64 {
             let early = (REWIND_EARLY_US * d.rate as i64 / 1_000_000) as u64;
             return self.at_ring(heard.saturating_sub(early)).sink;
         }
@@ -913,8 +919,8 @@ impl Drop for RingTrack {
 mod tests {
     use super::*;
 
-    /// Keeps the feed for pulling by hand; holds what the test says, µs.
-    struct Hand(Arc<parking_lot::Mutex<Option<Feed>>>, Arc<AtomicU64>);
+    /// Keeps the feed for pulling by hand; holds what the test says, µs, and has mixed what it says of it.
+    struct Hand(Arc<parking_lot::Mutex<Option<Feed>>>, Arc<AtomicU64>, Arc<AtomicU64>);
 
     impl AudioOutput for Hand {
         fn open(&mut self, want: OutputFormat) -> Result<OutputFormat, String> {
@@ -929,16 +935,24 @@ mod tests {
         fn latency_us(&self) -> u64 {
             self.1.load(Ordering::Relaxed)
         }
+        fn mixed_us(&self) -> u64 {
+            self.2.load(Ordering::Relaxed)
+        }
         fn close(&mut self) {}
     }
 
     /// A track over a [`Hand`] and its feed.
     fn by_hand() -> (RingTrack, Feed, Arc<AtomicU64>) {
-        let (feed, held) = (Arc::new(parking_lot::Mutex::new(None)), Arc::new(AtomicU64::new(0)));
-        let mut t = RingTrack::new(Box::new(Hand(feed.clone(), held.clone())));
+        let (t, f, held, _) = by_hand_mixing();
+        (t, f, held)
+    }
+
+    fn by_hand_mixing() -> (RingTrack, Feed, Arc<AtomicU64>, Arc<AtomicU64>) {
+        let (feed, held, mixed) = (Arc::new(parking_lot::Mutex::new(None)), Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
+        let mut t = RingTrack::new(Box::new(Hand(feed.clone(), held.clone(), mixed.clone())));
         t.open(F);
         let f = feed.lock().take().expect("started");
-        (t, f, held)
+        (t, f, held, mixed)
     }
 
     const F: Format = Format { rate: 1000, channels: 1, encoding: Encoding::Pcm16 };
@@ -1022,6 +1036,16 @@ mod tests {
         assert_eq!(f.pull(&mut out), 100);
         assert_eq!((out[0] * 32768.0).round() as u64, 300 - at, "and plays on from where it got to, in the new music");
 
+        // A device holding more than a quarter second, most of it mixed already (Bluetooth's way to the
+        // ear), changes in place: dropping it would not be heard sooner.
+        let (mut t, mut f, held, mixed) = by_hand_mixing();
+        t.write(&pcm(&[16384; 1000]), 1000.0);
+        let mut out = vec![0f32; 600];
+        assert_eq!(f.pull(&mut out), 600);
+        held.store(400_000, Ordering::Relaxed);
+        mixed.store(300_000, Ordering::Relaxed);
+        assert_eq!(t.freeze(), 600, "the first frame no pull took");
+
         // Pull after a cut behind waits for music.
         let (mut t, mut f, held) = by_hand();
         t.write(&pcm(&[16384; 1000]), 1000.0);
@@ -1040,7 +1064,7 @@ mod tests {
         use nori_player::engine::Downstream;
         use nori_player::pipeline::{ChainSettings, Sink, Sound};
         let (feed, held) = (Arc::new(parking_lot::Mutex::new(None)), Arc::new(AtomicU64::new(0)));
-        let mut track = RingTrack::new(Box::new(Hand(feed.clone(), held)));
+        let mut track = RingTrack::new(Box::new(Hand(feed.clone(), held, Arc::default())));
         // Both streams on a device at 1 kHz: the second converts, the device stays.
         track.max_rate = 1000;
         let mut sink = Sink::new(nori_player::burst::BUFFER_US, ChainSettings::default(), track);
@@ -1055,7 +1079,7 @@ mod tests {
 
         // New format after a change plays the input made again.
         let (feed, held) = (Arc::new(parking_lot::Mutex::new(None)), Arc::new(AtomicU64::new(0)));
-        let mut track = RingTrack::new(Box::new(Hand(feed.clone(), held)));
+        let mut track = RingTrack::new(Box::new(Hand(feed.clone(), held, Arc::default())));
         track.max_rate = 1000;
         let mut sink = Sink::new(nori_player::burst::BUFFER_US, ChainSettings::default(), track);
         sink.configure(F);

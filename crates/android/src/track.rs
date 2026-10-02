@@ -305,6 +305,8 @@ struct Counts {
     heard: u64,
     at_ns: i64,
     running: bool,
+    /// Taken by the mixer and not yet presented: the output's own latency.
+    mixed: u64,
 }
 
 impl Counts {
@@ -363,12 +365,17 @@ impl Clock {
 
     /// Counts of a playing track given `given` frames, `heard` of them presented at `at_ns`.
     fn rebase(&self, given: u64, heard: u64, at_ns: i64) {
-        self.update(|c| *c = Counts { rate: c.rate, ahead: given, given, heard, at_ns, running: true });
+        self.update(|c| *c = Counts { rate: c.rate, ahead: given, given, heard, at_ns, running: true, mixed: c.mixed });
     }
 
     /// Resets all counts to zero at `now_ns`, stopped (after a flush or reopen).
     fn reset(&self, now_ns: i64) {
-        self.update(|c| *c = Counts { rate: c.rate, at_ns: now_ns, ..Counts::default() });
+        self.update(|c| *c = Counts { rate: c.rate, at_ns: now_ns, mixed: c.mixed, ..Counts::default() });
+    }
+
+    pub(crate) fn mixed_us(&self) -> u64 {
+        let c = *self.0.lock();
+        c.mixed * 1_000_000 / c.rate.max(1) as u64
     }
 
     /// Stops extrapolating (pause).
@@ -762,7 +769,7 @@ impl<R: Ring> Writer<R> {
             // Paused and resumed before this wake: `TrackOutput::pause` froze the clock, but the track kept
             // playing. Restart the clock, or top-ups stop and the track runs dry.
             self.clock.run(now_ns);
-            self.read_clock();
+            self.read_clock(now_ns);
         }
         // An empty pull surfaces a pending ring flush.
         self.ring.pull(&mut []);
@@ -779,7 +786,7 @@ impl<R: Ring> Writer<R> {
             let due = self.started_ns + SETTLE_MS[self.settled] * 1_000_000;
             if now_ns >= due {
                 self.settled += 1;
-                self.read_clock();
+                self.read_clock(now_ns);
             }
             if let Some(ms) = SETTLE_MS.get(self.settled) {
                 at(((self.started_ns + ms * 1_000_000 - now_ns).max(0) / 1_000_000) as u64 + 1);
@@ -836,7 +843,7 @@ impl<R: Ring> Writer<R> {
         self.refill_from_empty(now_ns);
     }
 
-    fn read_clock(&mut self) {
+    fn read_clock(&mut self, now_ns: i64) {
         let reading = if self.rebased && self.playing { self.sink.stamp() } else { self.sink.heard(self.playing) };
         self.rebased &= reading.is_none();
         if let Some((frames, ns)) = reading {
@@ -846,6 +853,10 @@ impl<R: Ring> Writer<R> {
             }
             self.clock.anchor(frames, ns, self.playing);
             self.report_to_perf_watch(frames);
+            if let Some(head) = self.sink.consumed().filter(|_| self.playing) {
+                let mixed = head.saturating_sub(self.clock.heard_now(now_ns));
+                self.clock.update(|c| c.mixed = mixed);
+            }
         }
     }
 
@@ -881,7 +892,7 @@ impl<R: Ring> Writer<R> {
             self.read_clock_for_perf_watch();
             return Some(ms(fill - self.low, self.rate) + 1);
         }
-        self.read_clock();
+        self.read_clock(now_ns);
         if self.priming && self.playing && self.sink.heard(true).is_some_and(|(frames, _)| frames > 0) {
             // Started: back to the full size.
             let got = self.sink.resize(self.allocated);
@@ -1187,16 +1198,13 @@ impl<R: Ring> Writer<R> {
         let mut h = self.handover.take()?;
         self.swap(&mut h.beside);
         let own = (self.capacity, self.low);
-        if h.beside.home {
-            // Counted from the ear: the output's latency and the silence still ahead are in it too.
-            self.capacity = holds.max(lag as u64 + least + top).max(target as u64 + least).min(self.allocated + lag as u64);
-            self.low = self.capacity - top;
-        } else {
-            // Room for the music besides the silence still ahead.
-            self.capacity = (self.capacity + target as u64).min(self.allocated);
-        }
+        // Holding little, so a change reaches it in place. Counted from the ear: the output's latency and
+        // the silence still ahead are in it too.
+        self.capacity = holds.max(lag as u64 + least + top).max(target as u64 + least).min(self.allocated + lag as u64);
+        self.low = self.capacity - top;
         // The joining track's frame heard now: the old one's, as far apart as their heads.
         let ear = new - lag;
+        self.clock.update(|c| c.mixed = lag as u64);
         self.clock.rebase(silence, ear.max(0) as u64, now_ns + (-ear).max(0) * 1_000_000_000 / rate);
         // Read again once the new track has a timestamp.
         self.rebased = true;
@@ -1278,8 +1286,10 @@ impl<R: Ring> Writer<R> {
     /// Whether there was one.
     fn go_home(&mut self) -> bool {
         let Some(mut h) = self.handover.take() else { return false };
-        if h.beside.home {
-            self.swap(&mut h.beside);
+        match h.phase {
+            _ if h.beside.home => self.swap(&mut h.beside),
+            Phase::Leaving { own, .. } => (self.capacity, self.low) = own,
+            Phase::Joining { .. } => {}
         }
         h.beside.sink.pause();
         h.beside.sink.release();
@@ -1519,6 +1529,10 @@ impl AudioOutput for TrackOutput {
 
     fn latency_us(&self) -> u64 {
         self.shared.clock.latency_us(self.shared.now_ns())
+    }
+
+    fn mixed_us(&self) -> u64 {
+        self.shared.clock.mixed_us()
     }
 
     fn takes_float(&mut self) -> bool {

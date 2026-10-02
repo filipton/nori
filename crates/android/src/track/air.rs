@@ -286,11 +286,11 @@ impl Tape {
     }
 
     /// A sound change as the engine makes it (`nori_engine` `RingTrack::freeze`/`cut`): a device holding
-    /// more than a quarter second drops what it holds, the music made again from a little before what it
+    /// more than a quarter second not yet mixed drops what it holds, the music made again from a little before what it
     /// played; otherwise the ring changes from the first frame no pull took, blended.
     fn change(&mut self, amp: f32) {
         let now = self.now.load(Ordering::Relaxed);
-        let held = self.clock.latency_frames(now);
+        let held = self.clock.latency_frames(now).saturating_sub(self.clock.mixed_us() * RATE as u64 / 1_000_000);
         let old = self.amp(self.read);
         if held > frames_of(250 * MS) {
             let cut = (self.read.saturating_sub(held + frames_of(100 * MS))).max(self.discard);
@@ -623,15 +623,18 @@ fn changes_are_seamless() {
         assert!(r.wakes - wakes <= 8, "{what}: then a wake every ten seconds or so: {}", r.wakes - wakes);
     }
 
-    // Slider drag is seamless.
-    let (r, h) = heard_after(SPEAKER, |r| {
-        for k in 1..=25 {
-            r.change(0.5 + 0.01 * k as f32);
-            r.run(40);
-        }
-    });
-    assert_seamless("dragged", SPEAKER, &r, &h);
-    assert_eq!(heard_amp(&r), 0.75, "the last change is heard");
+    // A slider dragged, its steps 40 or 100 ms apart: seamless, every step heard.
+    for (out, step_ms) in [(SPEAKER, 40), (BLUETOOTH, 40), (BLUETOOTH, 100)] {
+        let what = format!("dragged in {step_ms} ms steps on {out:?}");
+        let (r, h) = heard_after(out, |r| {
+            for k in 1..=25 {
+                r.change(0.5 + 0.01 * k as f32);
+                r.run(step_ms);
+            }
+        });
+        assert_seamless(&what, out, &r, &h);
+        assert_eq!(heard_amp(&r), 0.75, "{what}: the last change is heard");
+    }
 }
 
 #[test]
