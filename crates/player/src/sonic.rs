@@ -17,16 +17,23 @@ pub trait Sample: Copy + Default + Send + 'static {
     fn down_sample(input: &[Self], pos_frames: usize, skip: usize, frame_count: usize, ch: usize, out: &mut [Self]);
 }
 
+/// Frames `from..from + count` of `out`, one slice each.
+fn frames<T>(out: &mut [T], from: usize, count: usize, ch: usize) -> std::slice::ChunksExactMut<'_, T> {
+    out[from * ch..(from + count) * ch].chunks_exact_mut(ch)
+}
+
+/// The `period` samples from `p` and the `period` after them.
+fn periods<T>(samples: &[T], p: usize, period: usize) -> (&[T], &[T]) {
+    samples[p..p + 2 * period].split_at(period)
+}
+
 impl Sample for i16 {
     fn overlap_add(frame_count: usize, ch: usize, out: &mut [i16], out_pos: usize, input: &[i16], down: usize, up: usize) {
         let n = frame_count as i32;
-        for i in 0..ch {
-            let (mut o, mut u, mut d) = (out_pos * ch + i, up * ch + i, down * ch + i);
-            for t in 0..n {
-                out[o] = ((input[d] as i32 * (n - t) + input[u] as i32 * t) / n) as i16;
-                o += ch;
-                d += ch;
-                u += ch;
+        for (t, ((o, d), u)) in frames(out, out_pos, frame_count, ch).zip(input[down * ch..].chunks_exact(ch)).zip(input[up * ch..].chunks_exact(ch)).enumerate() {
+            let t = t as i32;
+            for ((o, &d), &u) in o.iter_mut().zip(d).zip(u) {
+                *o = ((d as i32 * (n - t) + u as i32 * t) / n) as i16;
             }
         }
     }
@@ -46,10 +53,8 @@ impl Sample for i16 {
         let (mut best, mut worst, mut min_diff, mut max_diff) = (0i32, 255i32, 1i32, 0i32);
         let p = pos_frames * ch;
         for period in min_period..=max_period {
-            let mut diff = 0i32;
-            for i in 0..period as usize {
-                diff = diff.wrapping_add((samples[p + i] as i32 - samples[p + period as usize + i] as i32).abs());
-            }
+            let (a, b) = periods(samples, p, period as usize);
+            let diff = a.iter().zip(b).fold(0i32, |sum, (&x, &y)| sum.wrapping_add((x as i32 - y as i32).abs()));
             if diff.wrapping_mul(best) < min_diff.wrapping_mul(period) {
                 min_diff = diff;
                 best = period;
@@ -64,13 +69,8 @@ impl Sample for i16 {
 
     fn down_sample(input: &[i16], pos_frames: usize, skip: usize, frame_count: usize, ch: usize, out: &mut [i16]) {
         let per = ch * skip;
-        let p = pos_frames * ch;
-        for i in 0..frame_count {
-            let mut v = 0i32;
-            for j in 0..per {
-                v += input[p + i * per + j] as i32;
-            }
-            out[i] = (v / per as i32) as i16;
+        for (o, group) in out[..frame_count].iter_mut().zip(input[pos_frames * ch..].chunks_exact(per)) {
+            *o = (group.iter().map(|&v| v as i32).sum::<i32>() / per as i32) as i16;
         }
     }
 }
@@ -78,13 +78,10 @@ impl Sample for i16 {
 impl Sample for f32 {
     fn overlap_add(frame_count: usize, ch: usize, out: &mut [f32], out_pos: usize, input: &[f32], down: usize, up: usize) {
         let n = frame_count as i32;
-        for i in 0..ch {
-            let (mut o, mut u, mut d) = (out_pos * ch + i, up * ch + i, down * ch + i);
-            for t in 0..n {
-                out[o] = (input[d] * (n - t) as f32 + input[u] * t as f32) / n as f32;
-                o += ch;
-                d += ch;
-                u += ch;
+        for (t, ((o, d), u)) in frames(out, out_pos, frame_count, ch).zip(input[down * ch..].chunks_exact(ch)).zip(input[up * ch..].chunks_exact(ch)).enumerate() {
+            let t = t as i32;
+            for ((o, &d), &u) in o.iter_mut().zip(d).zip(u) {
+                *o = (d * (n - t) as f32 + u * t as f32) / n as f32;
             }
         }
     }
@@ -104,10 +101,8 @@ impl Sample for f32 {
         let (mut best, mut worst, mut min_diff, mut max_diff) = (0i32, 255i32, 1f64, 0f64);
         let p = pos_frames * ch;
         for period in min_period..=max_period {
-            let mut diff = 0f64;
-            for i in 0..period as usize {
-                diff += (samples[p + i] - samples[p + period as usize + i]).abs() as f64;
-            }
+            let (a, b) = periods(samples, p, period as usize);
+            let diff = a.iter().zip(b).fold(0f64, |sum, (&x, &y)| sum + (x - y).abs() as f64);
             if diff * (best as f64) < min_diff * period as f64 {
                 min_diff = diff;
                 best = period;
@@ -122,13 +117,8 @@ impl Sample for f32 {
 
     fn down_sample(input: &[f32], pos_frames: usize, skip: usize, frame_count: usize, ch: usize, out: &mut [f32]) {
         let per = ch * skip;
-        let p = pos_frames * ch;
-        for i in 0..frame_count {
-            let mut v = 0f64;
-            for j in 0..per {
-                v += input[p + i * per + j] as f64;
-            }
-            out[i] = (v / per as f64) as f32;
+        for (o, group) in out[..frame_count].iter_mut().zip(input[pos_frames * ch..].chunks_exact(per)) {
+            *o = (group.iter().fold(0f64, |v, &x| v + x as f64) / per as f64) as f32;
         }
     }
 }
