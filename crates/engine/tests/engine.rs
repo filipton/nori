@@ -2809,6 +2809,96 @@ fn fades_through(heard: &[i16], from: usize, out_hz: f64, in_hz: f64, dur_ms: i6
     assert_eq!(reference::clicks(heard, RATE, 4.0), Vec::<usize>::new(), "{what}: no clicks");
 }
 
+/// What comes while an ending is ahead, held or mixed ([`mixes_keep_their_length`]).
+#[derive(Debug, Clone, Copy)]
+enum Meddle {
+    /// A seek to so many ms from the mix's start.
+    Seek(i64),
+    /// The ending planned again, to the same plan.
+    Replan,
+    /// AutoMix switched off and, so many ms later, on again.
+    AutoMixOffOn(i64),
+}
+
+/// A seek, a replan or AutoMix switched off and on again, before the mix, while its ending is held or in
+/// the mix, on a device holding nothing or seconds, never makes the engine think the outgoing song ended
+/// early: the mix is never made to fit, and runs its whole length from where it was heard.
+#[test]
+fn mixes_keep_their_length() {
+    let (a, b) = (common::sine(RATE, 200.0, 40.0, 6_000.0), common::sine(RATE, 900.0, 40.0, 6_000.0));
+    let automix = |on: bool| TransitionPrefs { auto_mix: on, auto_mix_max_s: 12, echo_out: false, keep_albums: false, ..prefs_off() };
+    use Meddle::*;
+    // (ms heard from the mix's start when it comes (before it: negative), what comes, what the device holds)
+    let cases = [
+        (-6_000, Replan, 0),
+        (-1_000, Replan, 2_000),
+        (1_500, Replan, 0),
+        (1_500, Replan, 2_000),
+        (-6_000, AutoMixOffOn(300), 0),
+        (-6_000, AutoMixOffOn(300), 2_000),
+        (-1_000, AutoMixOffOn(300), 0),
+        (-1_000, AutoMixOffOn(300), 2_000),
+        (-3_000, AutoMixOffOn(1_500), 2_000),
+        (1_500, AutoMixOffOn(300), 0),
+        (1_500, AutoMixOffOn(300), 2_000),
+        (-6_000, Seek(-3_000), 0),
+        (-1_000, Seek(-4_000), 2_000),
+        (-3_000, Seek(1_000), 0),
+        (1_500, Seek(-2_000), 0),
+        (1_500, Seek(2_500), 2_000),
+    ];
+    for (when_ms, meddle, hold_ms) in cases {
+        let what = format!("{meddle:?} {when_ms} ms from the mix, the device holding {hold_ms} ms");
+        let live = Live::new(automix(true));
+        {
+            let mut app = live.0.lock();
+            app.analyses.insert("a".into(), gridless("a", 40_000, 30_000, 0));
+            app.analyses.insert("b".into(), gridless("b", 40_000, 0, 0));
+        }
+        let files = vec![("a".to_string(), wav(&a), 40_000), ("b".to_string(), wav(&b), 40_000)];
+        let rig = Rig::build(files, live.clone(), Settings { auto_mix: true, ..Settings::default() }, Extra { pace: Some(5.0), hold_ms: Some(hold_ms), ..Extra::default() });
+        rig.engine.play_at(0, 15_000);
+        assert!(rig.wait_for(30, |r| live.0.lock().log.iter().any(|l| l.contains("transition a -> b"))), "{what}: {:?}", live.0.lock().log);
+        let plan = live.0.lock().log.iter().find(|l| l.contains("transition a -> b")).cloned().expect("planned");
+        let num = |after: &str| plan.split(after).nth(1).and_then(|s| s.split([' ', ',']).next()).and_then(|n| n.parse::<i64>().ok()).expect("a number");
+        let (dur, start) = (num("MixRampFade "), num(" ms at "));
+        let heard_ms = |ms: i64| (ms * RATE as i64 / 1000) as usize * 2;
+        assert!(rig.wait_for(60, |r| r.heard.lock().len() >= heard_ms(start - 15_000 + when_ms)), "{what}");
+        // Where the outgoing song is heard steady a second before the mix, and how much of the mix is heard.
+        let mut from = heard_ms(start - 15_000 - 1_000);
+        let mut mixed = dur - when_ms.max(0);
+        match meddle {
+            Replan => rig.engine.replan(),
+            AutoMixOffOn(gap) => {
+                live.0.lock().prefs = automix(false);
+                rig.engine.set_settings(Settings::default());
+                rig.run(gap as u64);
+                live.0.lock().prefs = automix(true);
+                rig.engine.set_settings(Settings { auto_mix: true, ..Settings::default() });
+            }
+            Seek(to) => {
+                let asked = rig.heard.lock().len();
+                rig.engine.seek(start + to);
+                assert!(rig.wait_for(10, |r| r.heard.lock().len() > asked + heard_ms(500)), "{what}");
+                from = asked + heard_ms((-to - 1_000).max(0));
+                // In the mix the seek is in the song the bar shows, which may be the incoming one.
+                mixed = if when_ms > 0 { 0 } else { dur - to.max(0) };
+            }
+        }
+        assert!(rig.wait_for(60, Rig::ended), "{what}: {:?}", live.0.lock().log);
+        let log = live.0.lock().log.clone();
+        assert!(!log.iter().any(|l| l.contains("made to fit")), "{what}: the outgoing song did not end early: {log:?}");
+        assert!(log.iter().any(|l| l.contains("mixing: the next track arrived")), "{what}: {log:?}");
+        if !matches!(meddle, Seek(_)) {
+            assert_eq!(rig.heard.lock().len(), heard_ms(start - 15_000 + 40_000), "{what}: a to the mix, then the whole of b, nothing skipped");
+        }
+        if mixed < dur || from >= rig.heard.lock().len() {
+            continue;
+        }
+        fades_through(&rig.heard.lock(), from, 200.0, 900.0, mixed, &what);
+    }
+}
+
 /// What happens while a MixRamp fade is under way ([`mixramp_fades_out_after_seek`]), so many ms after
 /// the seek lands.
 #[derive(Debug, Clone, Copy)]

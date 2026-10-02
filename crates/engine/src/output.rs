@@ -352,7 +352,7 @@ impl Feed {
     }
 
     /// Takes back `frames` of the music pulled (a device that dropped what it held and did not play),
-    /// never before the last flush's new music.
+    /// never before what the last flush kept for it.
     pub fn rewind(&mut self, frames: u64) {
         let r = &*self.ring;
         let back = r.read.load(Ordering::Acquire).saturating_sub(frames).max(r.discard.load(Ordering::Acquire));
@@ -861,8 +861,11 @@ impl Track for RingTrack {
         let w = self.base + p;
         r.write.store(w, Ordering::SeqCst);
         if w < r.read_at() {
-            // Before what the device took: it drops what it holds and plays on from where it got to.
-            r.discard.store(w, Ordering::Release);
+            // Before what the device took: it drops what it holds and plays on from where it got to, the
+            // music up to `w` kept for it (as early as its clock may be ahead of it).
+            let (heard, _) = self.heard();
+            let early = self.device.map_or(0, |d| (REWIND_EARLY_US * d.rate as i64 / 1_000_000) as u64);
+            r.discard.store(w.min(self.base + heard.saturating_sub(early)), Ordering::Release);
             r.flushes.fetch_add(1, Ordering::AcqRel);
             r.ended.store(false, Ordering::Release);
             r.quiet();
@@ -1056,6 +1059,28 @@ mod tests {
         f.rewind(400);
         assert_eq!(f.pull(&mut out), 100);
         assert_eq!((out[0] * 32768.0).round() as u64, 300 - at, "and plays on from where it got to, in the new music");
+
+        // A cut ahead of the ear in what the device holds (an ending planned again from there): it drops
+        // what it holds and plays on from where it got to, the music up to the cut, then the new. It jumped
+        // to the cut, the music between lost.
+        let (mut t, mut f, held) = by_hand();
+        let old: Vec<i16> = (0..1000).collect();
+        t.write(&pcm(&old), 1000.0);
+        let mut out = vec![0f32; 600];
+        assert_eq!(f.pull(&mut out), 600);
+        held.store(300_000, Ordering::Relaxed);
+        assert!(t.freeze(Remake::Ending) <= 300);
+        t.cut(450);
+        t.write(&pcm(&[-16384; 700]), 700.0);
+        let mut out = vec![0f32; 200];
+        assert_eq!(f.pull(&mut out), 200);
+        assert!(f.flushed(), "the device is told to drop what it holds");
+        // 800 taken, 300 played.
+        f.rewind(500);
+        assert_eq!(f.pull(&mut out), 200);
+        let got: Vec<i32> = out.iter().map(|v| (v * 32768.0).round() as i32).collect();
+        assert_eq!(got[..150], (300..450).collect::<Vec<i32>>()[..], "from where it got to, the music up to the cut");
+        assert!(got[150..].iter().all(|&v| v == -16384), "then the new music");
 
         // A device holding more than a quarter second, most of it mixed already (Bluetooth's way to the
         // ear), changes in place: dropping it would not be heard sooner.
