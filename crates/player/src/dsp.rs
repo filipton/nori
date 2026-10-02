@@ -1179,7 +1179,8 @@ mod tests {
     fn band_responses() {
         let near = |db: f64, tol: f64| (db - tol, db + tol);
         let below = |db: f64| (-200.0, db);
-        let cases: &[(&str, Band, f64, &[(f64, (f64, f64))])] = &[
+        type Want = (f64, (f64, f64));
+        let cases: &[(&str, Band, f64, &[Want])] = &[
             ("peaking", b(PEAKING, 1000.0, -12.0, 1.41), 0.0, &[(1000.0, near(-12.0, 0.5)), (8000.0, near(0.0, 0.5))]),
             ("low shelf and pre-amp", b(LOW_SHELF, 200.0, 6.0, 0.71), -3.0, &[(40.0, near(3.0, 0.5)), (5000.0, near(-3.0, 0.5))]),
             ("high shelf", b(HIGH_SHELF, 4000.0, -6.0, 0.71), 0.0, &[(16000.0, near(-6.0, 0.6)), (200.0, near(0.0, 0.5))]),

@@ -1516,7 +1516,8 @@ fn sound_changes_seamlessly() {
     let mut gaps = music(30.0, 45);
     gaps[RATE as usize * 2 * 8..RATE as usize * 2 * 12].fill(0);
     gaps[RATE as usize * 2 * 20..RATE as usize * 2 * 23].fill(0);
-    let cases: Vec<(&str, Vec<i16>, Settings, Vec<(i64, Settings)>, usize)> = vec![
+    type Case = (&'static str, Vec<i16>, Settings, Vec<(i64, Settings)>, usize);
+    let cases: Vec<Case> = vec![
         ("equalizer", music(20.0, 42), Settings::default(), vec![(3_000, loud_eq()), (7_000, with_sound(nori_engine::Sound { preamp_db: -6.0, limiter: true, mono: true, ..Default::default() })), (12_000, Settings::default())], 6),
         ("compressor", music(15.0, 43), Settings::default(), vec![(3_000, squeeze(CompressorPreset::Strong)), (8_000, squeeze(CompressorPreset::Balanced))], 6),
         ("speed", music(20.0, 44), Settings::default(), vec![(3_000, Settings { speed: 1.5, ..Settings::default() }), (6_000, Settings { speed: 0.8, pitch: 1.1, ..Settings::default() }), (9_000, Settings::default())], 20),

@@ -1076,7 +1076,7 @@ fn offloaded_song_boosted_moves_to_cpu() {
     let asked = rig.now_ms();
     assert!(rig.wait(10, |r| !r.engine.status().offloaded), "the CPU took over: {:?}", rig.engine.status());
     // Regression: the song opened ahead was first looked at a second later.
-    assert!(rig.now_ms() - asked <= REMAKE_LEAD_MS as i64 + 50, "took over {} ms after", rig.now_ms() - asked);
+    assert!(rig.now_ms() - asked <= REMAKE_LEAD_MS + 50, "took over {} ms after", rig.now_ms() - asked);
     assert!(rig.wait(10, |r| r.card.heard.lock().len() > 44_100));
     let s = rig.engine.status();
     assert!(s.position_ms >= 4_000 && s.position_ms < 20_000, "from where the ear was: {s:?}");
