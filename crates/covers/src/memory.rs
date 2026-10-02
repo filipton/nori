@@ -82,7 +82,7 @@ mod tests {
     }
 
     #[test]
-    fn evicts_least_recently_used() {
+    fn lru() {
         // Room for three 4x4 covers (64 bytes each).
         let m = MemoryCache::new(200);
         put(&m, "a", 4);
@@ -104,13 +104,12 @@ mod tests {
         assert!(m.get(&at("f", 8)).is_none() && m.get(&at("e", 6)).is_some());
         m.clear();
         assert_eq!(m.bytes(), 0);
-    }
 
-    #[test]
-    fn zero_limit_keeps_nothing() {
+        // Zero limit keeps nothing.
         let m = MemoryCache::new(0);
         put(&m, "a", 1);
         assert!(m.get(&at("a", 1)).is_none());
         assert_eq!(m.bytes(), 0);
     }
+
 }

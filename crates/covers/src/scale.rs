@@ -368,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn shrink_weights_by_coverage() {
+    fn shrink_and_grow() {
         let mut a = Axis::default();
         // 3 -> 2: each output covers 1.5 pixels.
         a.plan(0.0, 3.0, 3, 2);
@@ -377,10 +377,8 @@ mod tests {
         // Halving: even pairs.
         a.plan(0.0, 8.0, 8, 4);
         assert_eq!(weights(&a, 3), (6, vec![8192, 8192]));
-    }
 
-    #[test]
-    fn grow_is_bilinear() {
+        // Grow is bilinear.
         let mut a = Axis::default();
         a.plan(0.0, 2.0, 2, 4);
         assert_eq!(weights(&a, 0), (0, vec![16384]));
@@ -390,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn wide_picture_is_center_cropped() {
+    fn crops_and_padding() {
         // 4x2 with red edge columns and white middle, into 1x1: only the middle counts.
         let mut px = Vec::new();
         for _ in 0..2 {
@@ -402,6 +400,15 @@ mod tests {
         let src = Source { px: &mut px, width: 4, height: 2, stride: 12, channels: 3 };
         Scaler::default().fill(src, &mut Target { px: &mut out, width: 1, height: 1, stride: 4 }, Alpha::Straight);
         assert_eq!(out, [255, 255, 255, 255]);
+
+        // Padded target leaves padding untouched.
+        let mut px = vec![10u8, 20, 30];
+        let mut out = [7u8; 2 * 12];
+        let src = Source { px: &mut px, width: 1, height: 1, stride: 3, channels: 3 };
+        Scaler::default().fill(src, &mut Target { px: &mut out, width: 2, height: 2, stride: 12 }, Alpha::Straight);
+        for row in out.chunks_exact(12) {
+            assert_eq!(row, &[10, 20, 30, 255, 10, 20, 30, 255, 7, 7, 7, 7]);
+        }
     }
 
     #[test]
@@ -419,14 +426,4 @@ mod tests {
         assert_eq!(out, [255, 0, 0, 128]);
     }
 
-    #[test]
-    fn padded_target_leaves_padding_untouched() {
-        let mut px = vec![10u8, 20, 30];
-        let mut out = [7u8; 2 * 12];
-        let src = Source { px: &mut px, width: 1, height: 1, stride: 3, channels: 3 };
-        Scaler::default().fill(src, &mut Target { px: &mut out, width: 2, height: 2, stride: 12 }, Alpha::Straight);
-        for row in out.chunks_exact(12) {
-            assert_eq!(row, &[10, 20, 30, 255, 10, 20, 30, 255, 7, 7, 7, 7]);
-        }
-    }
 }

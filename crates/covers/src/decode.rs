@@ -496,17 +496,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn format_from_magic_bytes() {
+    fn headers() {
         assert_eq!(format(&[0xFF, 0xD8, 0xFF, 0xE0]), Some(Format::Jpeg));
         assert_eq!(format(b"\x89PNG\r\n\x1a\n...."), Some(Format::Png));
         assert_eq!(format(b"RIFF\0\0\0\0WEBPVP8 "), Some(Format::WebP));
         assert_eq!(format(b"GIF89a"), Some(Format::Gif));
         assert_eq!(format(b"\0\0\0\x1cftypheic"), None, "HEIF");
         assert_eq!(format(b""), None);
-    }
 
-    #[test]
-    fn header_reads_size_and_limits() {
+        // Header reads size and limits.
         let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
         png.extend_from_slice(&600u32.to_be_bytes());
         png.extend_from_slice(&400u32.to_be_bytes());
@@ -526,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn fill_size_never_upscales() {
+    fn sizes() {
         let h = Header { format: Format::Jpeg, width: 320, height: 320, orientation: 1 };
         assert_eq!(h.fill(138, 138), (138, 138));
         assert_eq!(h.fill(900, 900), (320, 320));
@@ -538,10 +536,27 @@ mod tests {
         let wide = Header { width: 800, height: 400, ..h };
         assert_eq!(wide.fill(600, 600), (400, 400), "fills by the height");
         assert!(h.opaque() && !Header { format: Format::Png, ..h }.opaque());
+
+        // Idct reduction keeps enough pixels.
+        assert_eq!(reduction(800, 800, 300, 300), 2);
+        assert_eq!(reduction(800, 800, 400, 400), 2);
+        assert_eq!(reduction(800, 800, 401, 401), 1);
+        assert_eq!(reduction(3000, 3000, 300, 300), 8);
+        assert_eq!(reduction(1600, 1600, 300, 300), 4);
+        assert_eq!(reduction(2400, 600, 300, 300), 2);
+        assert_eq!(reduction(320, 320, 1080, 1080), 1);
+
+        // Undersized target is refused.
+        let mut px = [0u8; 15];
+        let t = Target { px: &mut px, width: 2, height: 2, stride: 8 };
+        assert_eq!(Decoder::new().decode_into(&[0xFF, 0xD8, 0xFF], t, Alpha::Straight), Err(Error::Target));
+        let mut px = [0u8; 16];
+        let t = Target { px: &mut px, width: 2, height: 2, stride: 8 };
+        assert_eq!(Decoder::new().decode_into(b"nope", t, Alpha::Straight), Err(Error::Unknown));
     }
 
     #[test]
-    fn exif_orientation_both_byte_orders() {
+    fn exif() {
         // IFD at 8 with one entry: tag 0x0112, SHORT, count 1, value 6.
         let le = b"II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0";
         let be = b"MM\0*\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01\0\x06\0\0";
@@ -552,10 +567,8 @@ mod tests {
         // IFD offset near u32::MAX, and an entry count that overruns.
         assert_eq!(orientation(b"II*\0\xF0\xFF\xFF\xFF\x01\0"), 0);
         assert_eq!(orientation(b"II*\0\x08\0\0\0\xFF\xFF\x12\x01\x03\0\x01\0\0\0\x06\0\0\0"), 0);
-    }
 
-    #[test]
-    fn exif_walk_stops_on_overflowing_lengths() {
+        // Exif walk stops on overflowing lengths.
         let huge = u32::MAX.to_be_bytes();
         // 4 GB PNG chunk before an eXIf one, and a 4 GB eXIf chunk.
         let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
@@ -588,24 +601,4 @@ mod tests {
         assert_eq!(png_exif(&png), Some(&b"II*\0"[..]));
     }
 
-    #[test]
-    fn idct_reduction_keeps_enough_pixels() {
-        assert_eq!(reduction(800, 800, 300, 300), 2);
-        assert_eq!(reduction(800, 800, 400, 400), 2);
-        assert_eq!(reduction(800, 800, 401, 401), 1);
-        assert_eq!(reduction(3000, 3000, 300, 300), 8);
-        assert_eq!(reduction(1600, 1600, 300, 300), 4);
-        assert_eq!(reduction(2400, 600, 300, 300), 2);
-        assert_eq!(reduction(320, 320, 1080, 1080), 1);
-    }
-
-    #[test]
-    fn undersized_target_is_refused() {
-        let mut px = [0u8; 15];
-        let t = Target { px: &mut px, width: 2, height: 2, stride: 8 };
-        assert_eq!(Decoder::new().decode_into(&[0xFF, 0xD8, 0xFF], t, Alpha::Straight), Err(Error::Target));
-        let mut px = [0u8; 16];
-        let t = Target { px: &mut px, width: 2, height: 2, stride: 8 };
-        assert_eq!(Decoder::new().decode_into(b"nope", t, Alpha::Straight), Err(Error::Unknown));
-    }
 }

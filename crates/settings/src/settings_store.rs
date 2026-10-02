@@ -362,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn pref_values_round_trip_through_json() {
+    fn round_trips() {
         for v in [
             PrefValue::Flag { v: true },
             PrefValue::Number { v: -3 },
@@ -372,10 +372,18 @@ mod tests {
         ] {
             assert_eq!(from_json(&to_json(&v)), Some(v));
         }
+
+        // Saved settings load back.
+        let dir = nori_testdir::TempDir::new("settings");
+        let s = open(&dir);
+        assert_eq!(s.prefs, StoredPrefs::default());
+        write(&mut s.db.lock(), &StoredPrefs { fade_ms: 400, ..s.prefs.clone() }).unwrap();
+        drop(s);
+        assert_eq!(open(&dir).prefs.fade_ms, 400);
     }
 
     #[test]
-    fn effects_per_setting() {
+    fn effects_and_rebuilds() {
         let a = StoredPrefs::default();
         let cases = [
             (StoredPrefs { amoled: !a.amoled, ..a.clone() }, 0),
@@ -393,10 +401,8 @@ mod tests {
         for (b, want) in cases {
             assert_eq!(effects(&a, &b), want, "{b:?}");
         }
-    }
 
-    #[test]
-    fn balance_and_crossfeed_rebuild_only_when_chain_toggles() {
+        // Balance and crossfeed rebuild only when chain toggles.
         let a = StoredPrefs::default();
         assert!(!a.sound_chain_on());
         let off_centre = StoredPrefs { balance: -0.4, ..a.clone() };
@@ -494,13 +500,4 @@ mod tests {
         assert_eq!(s.sound_tool(SoundTool::RemoveBand { index: 999 }).unwrap(), None);
     }
 
-    #[test]
-    fn saved_settings_load_back() {
-        let dir = nori_testdir::TempDir::new("settings");
-        let s = open(&dir);
-        assert_eq!(s.prefs, StoredPrefs::default());
-        write(&mut s.db.lock(), &StoredPrefs { fade_ms: 400, ..s.prefs.clone() }).unwrap();
-        drop(s);
-        assert_eq!(open(&dir).prefs.fade_ms, 400);
-    }
 }

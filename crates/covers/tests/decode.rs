@@ -24,20 +24,28 @@ fn close(name: &str, got: &[u8], want: &[u8], mean: f64, max: u8) {
 }
 
 #[test]
-fn lossless_formats_decode_exactly() {
+fn decoders_match() {
     // The GIF is its first frame.
     for name in ["alpha.png", "alpha.webp", "palette.png", "photo.gif"] {
         close(name, &decode(name, 40, 30, Alpha::Straight), &file(&format!("{name}.rgba")), 0.0, 0);
     }
     let photo = decode("photo.png", 40, 30, Alpha::Straight);
     assert!(photo.chunks_exact(4).all(|p| p[3] == 255));
-}
 
-#[test]
-fn lossy_formats_match_reference_decoders() {
+    // Lossy formats match reference decoders.
     // JPEGs differ from libjpeg-turbo only in chroma upsampling.
     for (name, mean, max) in [("photo.jpg", 1.0, 12), ("photo-progressive.jpg", 1.0, 12), ("grey.jpg", 0.5, 2), ("photo.webp", 1.5, 16)] {
         close(name, &decode(name, 40, 30, Alpha::Straight), &file(&format!("{name}.rgba")), mean, max);
+    }
+
+    // Reused decoder matches fresh one.
+    let mut d = Decoder::new();
+    for name in ["photo.jpg", "alpha.png", "photo.webp", "grey.jpg", "palette.png", "photo.gif", "turned-6.jpg", "photo.jpg"] {
+        for side in [7, 12, 30, 64] {
+            let px = d.decode(&file(name), side, side, Alpha::Premultiplied).unwrap();
+            let fresh = Decoder::new().decode(&file(name), side, side, Alpha::Premultiplied).unwrap();
+            assert!(px == fresh, "{name} at {side}x{side}");
+        }
     }
 }
 
@@ -52,7 +60,7 @@ fn premultiplied_is_straight_times_alpha() {
 }
 
 #[test]
-fn scaling_matches_references() {
+fn scaling() {
     // 40x30 into 12x12 is the middle 30x30 at 2.5:1 (area average); 50x50 is Pillow's bilinear. The JPEG
     // is a half-size IDCT then an area average, against libjpeg-turbo's half-size decode averaged the
     // same way; loose, as this picture is small and busy (real covers differ by about one step).
@@ -61,18 +69,14 @@ fn scaling_matches_references() {
     {
         close(name, &decode(picture, side, side, Alpha::Straight), &file(reference), mean, max);
     }
-}
 
-#[test]
-fn jpeg_without_idct_scaling_is_exact_average() {
+    // Jpeg without idct scaling is exact average.
     let mut d = Decoder::new();
     d.set_idct_scaling(false);
     let d = d.decode(&file("photo.jpg"), 12, 12, Alpha::Straight).unwrap();
     close("whole", &d, &file("photo.jpg-12-area.rgba"), 0.5, 3);
-}
 
-#[test]
-fn decodes_into_padded_rows() {
+    // Decodes into padded rows.
     let want = decode("photo.jpg", 40, 30, Alpha::Premultiplied);
     let stride = 40 * 4 + 16;
     let mut px = vec![0xAB; stride * 30];
@@ -80,18 +84,6 @@ fn decodes_into_padded_rows() {
     for y in 0..30 {
         close("row", &px[y * stride..][..160], &want[y * 160..][..160], 0.0, 0);
         assert!(px[y * stride + 160..][..16].iter().all(|&b| b == 0xAB));
-    }
-}
-
-#[test]
-fn reused_decoder_matches_fresh_one() {
-    let mut d = Decoder::new();
-    for name in ["photo.jpg", "alpha.png", "photo.webp", "grey.jpg", "palette.png", "photo.gif", "turned-6.jpg", "photo.jpg"] {
-        for side in [7, 12, 30, 64] {
-            let px = d.decode(&file(name), side, side, Alpha::Premultiplied).unwrap();
-            let fresh = Decoder::new().decode(&file(name), side, side, Alpha::Premultiplied).unwrap();
-            assert!(px == fresh, "{name} at {side}x{side}");
-        }
     }
 }
 
@@ -119,34 +111,7 @@ fn broken_files_error_without_panicking() {
 }
 
 #[test]
-fn header_reports_displayed_size() {
-    for (name, format) in [
-        ("photo.jpg", Format::Jpeg),
-        ("photo-progressive.jpg", Format::Jpeg),
-        ("grey.jpg", Format::Jpeg),
-        ("photo.png", Format::Png),
-        ("palette.png", Format::Png),
-        ("photo.webp", Format::WebP),
-        ("alpha.webp", Format::WebP),
-        ("photo.gif", Format::Gif),
-        ("part.gif", Format::Gif),
-        ("turned-3.jpg", Format::Jpeg),
-        ("turned-2.jpg", Format::Jpeg),
-    ] {
-        let h = header(&file(name)).unwrap();
-        assert_eq!((h.format, h.width, h.height), (format, 40, 30), "{name}");
-    }
-    // 90° orientations swap width and height.
-    for name in ["turned-6.jpg", "turned-8.jpg", "turned-5.jpg", "turned-7.jpg", "turned-6.png", "turned-6.webp"] {
-        let h = header(&file(name)).unwrap();
-        assert_eq!((h.width, h.height), (30, 40), "{name}");
-    }
-    assert_eq!(header(&file("turned-7.jpg")).unwrap().orientation, 7);
-    assert_eq!(header(&file("photo.jpg")).unwrap().orientation, 1);
-}
-
-#[test]
-fn gif_partial_frame_leaves_rest_transparent() {
+fn gif_frames() {
     let px = decode("part.gif", 40, 30, Alpha::Premultiplied);
     for y in 0..30 {
         for x in 0..40 {
@@ -154,6 +119,17 @@ fn gif_partial_frame_leaves_rest_transparent() {
             let inside = (8..28).contains(&x) && (6..16).contains(&y);
             assert_eq!(p, if inside { [250, 40, 60, 255] } else { [0, 0, 0, 0] }, "({x}, {y})");
         }
+    }
+
+    // Gif frame off screen or too large is refused.
+    let one = Decoder::new().decode(&gif(1, 1, 0, 0, 1, 1), 1, 1, Alpha::Straight).unwrap();
+    assert_eq!(one, [0, 0, 0, 255], "valid builder output");
+    // 1x1 screen with a 65535x65535 frame (17 GB of RGBA).
+    assert!(Decoder::new().decode(&gif(1, 1, 0, 0, 65535, 65535), 1, 1, Alpha::Straight).is_err());
+    // Frames past the right or bottom edge, or starting beyond it.
+    for (left, top, fw, fh) in [(200, 9, 1, 1), (9, 200, 1, 1), (5, 0, 8, 1), (0, 5, 1, 8), (65535, 65535, 1, 1)] {
+        let r = Decoder::new().decode(&gif(10, 10, left, top, fw, fh), 10, 10, Alpha::Straight);
+        assert!(r.is_err(), "a frame {fw}x{fh} at {left},{top} on a 10x10 screen");
     }
 }
 
@@ -169,19 +145,6 @@ fn gif(sw: u16, sh: u16, left: u16, top: u16, fw: u16, fh: u16) -> Vec<u8> {
     // No local table; 2-bit LZW: clear, 0, end.
     g.extend([0, 2, 2, 0x44, 0x01, 0, 0x3B]);
     g
-}
-
-#[test]
-fn gif_frame_off_screen_or_too_large_is_refused() {
-    let one = Decoder::new().decode(&gif(1, 1, 0, 0, 1, 1), 1, 1, Alpha::Straight).unwrap();
-    assert_eq!(one, [0, 0, 0, 255], "valid builder output");
-    // 1x1 screen with a 65535x65535 frame (17 GB of RGBA).
-    assert!(Decoder::new().decode(&gif(1, 1, 0, 0, 65535, 65535), 1, 1, Alpha::Straight).is_err());
-    // Frames past the right or bottom edge, or starting beyond it.
-    for (left, top, fw, fh) in [(200, 9, 1, 1), (9, 200, 1, 1), (5, 0, 8, 1), (0, 5, 1, 8), (65535, 65535, 1, 1)] {
-        let r = Decoder::new().decode(&gif(10, 10, left, top, fw, fh), 10, 10, Alpha::Straight);
-        assert!(r.is_err(), "a frame {fw}x{fh} at {left},{top} on a 10x10 screen");
-    }
 }
 
 /// Reference EXIF orientation of `w` x `h` RGBA `px`.
@@ -208,7 +171,7 @@ fn turn(px: &[u8], w: usize, h: usize, turn: u8) -> Vec<u8> {
 }
 
 #[test]
-fn exif_orientation_is_applied() {
+fn orientation() {
     // Same pixels as photo.jpg stored with each orientation.
     let plain = decode("photo.jpg", 40, 30, Alpha::Straight);
     for o in [2u8, 3, 5, 6, 7, 8] {
@@ -223,13 +186,37 @@ fn exif_orientation_is_applied() {
     close("png", &decode("turned-6.png", 30, 40, Alpha::Straight), &turn(&decode("photo.png", 40, 30, Alpha::Straight), 40, 30, 6), 0.0, 0);
     let webp = decode("photo.webp", 40, 30, Alpha::Straight);
     close("webp", &decode("turned-6.webp", 30, 40, Alpha::Straight), &turn(&webp, 40, 30, 6), 0.0, 0);
-}
 
-#[test]
-fn oriented_picture_is_cropped_and_scaled_as_displayed() {
+    // Oriented picture is cropped and scaled as displayed.
     let plain = decode("photo.jpg", 30, 30, Alpha::Straight);
     close("square", &decode("turned-8.jpg", 30, 30, Alpha::Straight), &turn(&plain, 30, 30, 8), 0.0, 0);
     let mut d = Decoder::new();
     let small = d.decode(&file("turned-6.jpg"), 12, 16, Alpha::Straight).unwrap();
     close("scaled", &small, &turn(&d.decode(&file("photo.jpg"), 16, 12, Alpha::Straight).unwrap(), 16, 12, 6), 0.0, 0);
+
+    // Header reports displayed size.
+    for (name, format) in [
+        ("photo.jpg", Format::Jpeg),
+        ("photo-progressive.jpg", Format::Jpeg),
+        ("grey.jpg", Format::Jpeg),
+        ("photo.png", Format::Png),
+        ("palette.png", Format::Png),
+        ("photo.webp", Format::WebP),
+        ("alpha.webp", Format::WebP),
+        ("photo.gif", Format::Gif),
+        ("part.gif", Format::Gif),
+        ("turned-3.jpg", Format::Jpeg),
+        ("turned-2.jpg", Format::Jpeg),
+    ] {
+        let h = header(&file(name)).unwrap();
+        assert_eq!((h.format, h.width, h.height), (format, 40, 30), "{name}");
+    }
+    // 90° orientations swap width and height.
+    for name in ["turned-6.jpg", "turned-8.jpg", "turned-5.jpg", "turned-7.jpg", "turned-6.png", "turned-6.webp"] {
+        let h = header(&file(name)).unwrap();
+        assert_eq!((h.width, h.height), (30, 40), "{name}");
+    }
+    assert_eq!(header(&file("turned-7.jpg")).unwrap().orientation, 7);
+    assert_eq!(header(&file("photo.jpg")).unwrap().orientation, 1);
 }
+

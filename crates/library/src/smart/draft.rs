@@ -332,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn writes_what_the_form_holds() {
+    fn form_round_trip() {
         let e = edit(vec![
             rule("genre", "contains", "Rock"),
             rule("year", "between", "1970 - 1979"),
@@ -349,10 +349,8 @@ mod tests {
         );
         let none = SmartEdit { limit: 0, all: false, sort_field: "year".into(), descending: true, ..edit(vec![]) };
         assert_eq!(to_json(&none), r#"{"match":{"all":false,"rules":[]},"sort":{"field":"year","descending":true,"seed":1}}"#);
-    }
 
-    #[test]
-    fn reads_back_what_it_wrote() {
+        // Reads back what it wrote.
         let e = SmartEdit { id: "sp-1".into(), name: "Old".into(), ..edit(vec![rule("genre", "is", "Jazz"), rule("year", "between", "1970 1979"), rule("starred", "isFalse", "")]) };
         let p = SmartPlaylist { id: e.id.clone(), name: e.name.clone(), json: to_json(&e), builtin: None };
         assert_eq!(read(&p), Some(e));
@@ -366,10 +364,8 @@ mod tests {
         let loose = read(&SmartPlaylist { json: r#"{"match":{"all":"false"},"sort":{"field":"year","descending":true},"limit":"50.7"}"#.into(), ..Default::default() }).unwrap();
         assert!(!loose.all && loose.descending);
         assert_eq!((loose.sort_field.as_str(), loose.limit), ("year", 50));
-    }
 
-    #[test]
-    fn builtins_read_into_form() {
+        // Builtins read into form.
         for p in super::super::smart_defaults() {
             let e = read(&p).unwrap();
             assert!(!e.rules.is_empty(), "{}", p.id);

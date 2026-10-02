@@ -237,17 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn names_round_trip() {
-        for &s in LyricsService::ALL {
-            assert_eq!(LyricsService::named(s.name()), Some(s));
-            assert_eq!(LyricsService::named(&s.name().to_lowercase()), Some(s));
-            assert!(!s.title().is_empty());
-        }
-        assert_eq!(LyricsService::named("MUSIXMATCH"), None, "a test build's service is not read");
-    }
-
-    #[test]
-    fn default_lookup() {
+    fn defaults() {
         let on = StoredPrefs::default();
         assert!(lyrics_lookup(&StoredPrefs { third_party_lookups: false, ..on.clone() }).services.is_empty(), "off under the lookups switch");
         let first: Vec<LyricsService> = lyrics_lookup(&on).services.into_iter().filter(|s| s.first_wave()).collect();
@@ -257,10 +247,8 @@ mod tests {
         assert!(lyrics_lookup(&on).services.iter().all(|s| !s.needs_key()), "keyed services wait for a key");
         let off = StoredPrefs { lyrics_online: false, ..on };
         assert!(lyrics_lookup(&off).services.is_empty());
-    }
 
-    #[test]
-    fn default_order_by_timing() {
+        // Default order by timing.
         let order = default_order();
         assert_eq!(order.len(), 16);
         let rank = |s: LyricsService| order.iter().position(|o| *o == s).unwrap();
@@ -271,6 +259,14 @@ mod tests {
         assert_eq!(order[14..], [LyricsService::YoutubeMusic, LyricsService::Genius]);
         assert!(LyricsService::ALL.iter().copied().filter(|s| s.first_wave()).all(|s| s.best() == Timing::Words || s == LyricsService::Lrclib));
         assert!(LyricsService::ALL.iter().all(|s| (0.0..=1.0).contains(&s.prior())));
+
+        // Names round trip.
+        for &s in LyricsService::ALL {
+            assert_eq!(LyricsService::named(s.name()), Some(s));
+            assert_eq!(LyricsService::named(&s.name().to_lowercase()), Some(s));
+            assert!(!s.title().is_empty());
+        }
+        assert_eq!(LyricsService::named("MUSIXMATCH"), None, "a test build's service is not read");
     }
 
     #[test]
@@ -284,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn complete_order_inserts_new_services() {
+    fn ordering() {
         let order = complete_order(&parse("LRCLIB, UNISON,MUSIXMATCH,,LRCLIB"));
         assert_eq!(order.len(), 16);
         assert_eq!(order[..2], named(&["PAXSENIX", "BINILYRICS"]), "the ones ranked above everything stored come first");
@@ -292,10 +288,8 @@ mod tests {
         assert!(at("LRCLIB") < at("UNISON"), "the stored order stands");
         assert_eq!(at("PAXSENIX_SPOTIFY"), at("LRCLIB") + 1, "put in after the one above it out of the box");
         assert_eq!(complete_order(&[]), default_order());
-    }
 
-    #[test]
-    fn move_passes_switched_off_services() {
+        // Move passes switched off services.
         let p = StoredPrefs { lyrics_on: named(&["NETEASE", "LRCLIB", "GENIUS"]), ..StoredPrefs::default() };
         let at = |o: &[LyricsService], n: &str| o.iter().position(|x| x.name() == n).unwrap();
         let order = moved(&p, LyricsService::Lrclib, -1);
@@ -307,10 +301,8 @@ mod tests {
         assert_eq!(switched_on(&first), [LyricsService::Lrclib, LyricsService::Netease, LyricsService::Genius]);
         let off = moved(&p, LyricsService::Kugou, 1);
         assert_eq!(at(&off, "KUGOU"), at(&p.lyrics_order, "KUGOU") + 1, "one switched off moves too");
-    }
 
-    #[test]
-    fn place_moves_one_service() {
+        // Place moves one service.
         let p = StoredPrefs::default();
         let last = placed(&p, LyricsService::Paxsenix, 99);
         assert_eq!(last.len(), 16);
@@ -322,4 +314,5 @@ mod tests {
         assert_eq!(mid[3], LyricsService::Genius);
         assert_eq!(mid.iter().filter(|n| **n == LyricsService::Genius).count(), 1);
     }
+
 }

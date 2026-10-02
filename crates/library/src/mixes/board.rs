@@ -197,28 +197,25 @@ mod tests {
     use crate::history::tests::song;
 
     #[test]
-    fn tile_colours() {
+    fn tiles() {
         let c = mix_tile_colours("top".into());
         // Compose's blend(Color(0xFFE0662B), Color.Black, 0.45f), and the band's alphas in 8 bits.
         assert_eq!(c, [0xFFE0_662B, 0xFF7B_3818, 0x007B_3818, 0xB87B_3818, 0xF07B_3818]);
         assert_eq!(mix_tile_colours(FAVOURITES_MIX.into())[0], FAVOURITES_COLOUR);
         assert_eq!(mix_tile_colours("gone".into())[0], OTHER_COLOUR);
-    }
 
-    #[test]
-    fn covers_are_four_distinct() {
+        // Covers are four distinct.
         let mut l: Vec<Song> = (0..8).map(|i| song(&i.to_string(), "t", "a", "b", "", 0)).collect();
         l[1].cover_art = l[0].cover_art.clone();
         l[2].cover_art = None;
         assert_eq!(cover_ids(&l), ["cv-0", "cv-3", "cv-4", "cv-5"]);
-    }
 
-    #[test]
-    fn catalogue_and_tiles() {
+        // Catalogue and tiles.
         assert!(MIXES.iter().all(|m| m.refreshable() == (m.id != "top")));
         let ids = |tiles: Vec<MixTile>| tiles.into_iter().map(|t| t.id).collect::<Vec<_>>();
         let every: Vec<String> = std::iter::once(FAVOURITES_MIX.to_string()).chain(MIXES.iter().map(|m| m.id.to_string())).collect();
         assert_eq!(ids(mix_tiles(true)), every);
         assert_eq!(ids(mix_tiles(false)), [FAVOURITES_MIX], "no taste yet: only favourites");
     }
+
 }

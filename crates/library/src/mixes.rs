@@ -384,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn shuffle_keeps_artists_apart_when_it_can() {
+    fn shuffle_spreads() {
         let mut l = Vec::new();
         for (artist, n) in [("A", 10), ("B", 6), ("C", 3), ("D", 1)] {
             for i in 0..n {
@@ -402,10 +402,8 @@ mod tests {
         }
         assert_eq!(ids(&weighted_shuffle(l.clone(), 3)), ids(&weighted_shuffle(l.clone(), 3)));
         assert_ne!(ids(&weighted_shuffle(l.clone(), 3)), ids(&weighted_shuffle(l, 4)));
-    }
 
-    #[test]
-    fn shuffle_at_the_limit_of_what_is_possible() {
+        // Shuffle at the limit of what is possible.
         // exactly half plus one: only A_A_A_A works
         let mut l: Vec<Song> = (0..4).map(|i| song(&format!("a{i}"), "t", "A", "", "", 0)).collect();
         l.extend((0..3).map(|i| song(&format!("b{i}"), "t", ["B", "C", "B"][i], "", "", 0)));
@@ -420,10 +418,20 @@ mod tests {
             assert_eq!(out.len(), 6);
             assert!(out[0].artist == "A" && out[5].artist == "A", "{:?}", ids(&out));
         }
-    }
 
-    #[test]
-    fn shuffle_edge_cases() {
+        // Shuffle avoids the same album too.
+        // two artists cannot avoid alternating; albums within can
+        let mut l = Vec::new();
+        for artist in ["A", "B", "C"] {
+            for i in 0..6 {
+                l.push(song(&format!("{artist}{i}"), "t", artist, &format!("{artist}{}", i % 3), "", 0));
+            }
+        }
+        let out = weighted_shuffle(l, 11);
+        assert_eq!(adjacent_artists(&out), 0);
+        assert_eq!(out.windows(2).filter(|w| w[0].album == w[1].album).count(), 0);
+
+        // Shuffle edge cases.
         assert!(weighted_shuffle(vec![], 1).is_empty());
         let l = vec![song("x", "t", "A", "b", "", 0), song("y", "t", "B", "b", "", 0), song("z", "t", "A", "c", "", 0)];
         let by_order: Vec<Song> = weighted_shuffle_order(&l, 5).into_iter().map(|i| l[i].clone()).collect();
@@ -439,20 +447,6 @@ mod tests {
         l.extend((0..6).map(|i| Song { id: format!("o{i}"), artist: "Other".into(), ..Default::default() }));
         let out = weighted_shuffle(l, 5);
         assert_eq!(out.windows(2).filter(|w| w[0].artist.to_lowercase() == w[1].artist.to_lowercase()).count(), 0);
-    }
-
-    #[test]
-    fn shuffle_avoids_the_same_album_too() {
-        // two artists cannot avoid alternating; albums within can
-        let mut l = Vec::new();
-        for artist in ["A", "B", "C"] {
-            for i in 0..6 {
-                l.push(song(&format!("{artist}{i}"), "t", artist, &format!("{artist}{}", i % 3), "", 0));
-            }
-        }
-        let out = weighted_shuffle(l, 11);
-        assert_eq!(adjacent_artists(&out), 0);
-        assert_eq!(out.windows(2).filter(|w| w[0].album == w[1].album).count(), 0);
     }
 
     #[test]

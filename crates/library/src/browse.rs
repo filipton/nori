@@ -413,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn shelves_follow_the_rows() {
+    fn shelves_and_rows() {
         let s = home_shelves(["PINNED", "STARRED", "RECENT", "TOP_SONGS", "PLAYLISTS", "NOPE"].map(String::from).to_vec());
         assert_eq!(s[0], HomeShelf::Pinned);
         assert_eq!(s[1], HomeShelf::Albums { sort: AlbumSort::Starred, size: 20, follows_stars: true });
@@ -424,10 +424,8 @@ mod tests {
         let p = |id: &str| Playlist { id: id.into(), ..Default::default() };
         let pinned = home_pinned(vec![p("a"), p("b"), p("c")], vec!["c".into(), "a".into(), "z".into()]);
         assert_eq!(pinned.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["a", "c"]);
-    }
 
-    #[test]
-    fn home_rows_and_pins_edit() {
+        // Home rows and pins edit.
         let rows = ["A", "B", "C"].map(String::from).to_vec();
         assert_eq!(home_rows_toggled(rows.clone(), "B".into(), false), ["A", "C"]);
         assert_eq!(home_rows_toggled(["A", "C"].map(String::from).to_vec(), "B".into(), true), ["A", "C", "B"]);

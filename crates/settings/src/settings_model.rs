@@ -275,10 +275,15 @@ mod tests {
     }
 
     #[test]
-    fn controls_side() {
+    fn side_and_bar_rules() {
         use crate::settings::ControlsSide::*;
         assert_eq!([controls_on_left(Driver, true), controls_on_left(Driver, false)], [true, false]);
         assert_eq!([controls_on_left(Left, false), controls_on_left(Right, true)], [true, false]);
+
+        // Status bar rules.
+        use crate::settings::HideStatusBar::*;
+        let both = |h| (status_bar_hidden(h, false), status_bar_hidden(h, true));
+        assert_eq!([both(Never), both(Sideways), both(Upright), both(Always)], [(false, false), (false, true), (true, false), (true, true)]);
     }
 
     #[test]
@@ -298,14 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn status_bar_rules() {
-        use crate::settings::HideStatusBar::*;
-        let both = |h| (status_bar_hidden(h, false), status_bar_hidden(h, true));
-        assert_eq!([both(Never), both(Sideways), both(Upright), both(Always)], [(false, false), (false, true), (true, false), (true, true)]);
-    }
-
-    #[test]
-    fn every_offered_value_round_trips() {
+    fn offered_values() {
         let p = StoredPrefs {
             servers: vec![SavedServer { id: "a".into(), ..SavedServer::default() }],
             active_server_id: "a".into(),
@@ -335,10 +333,8 @@ mod tests {
             }
         }
         assert!(set_by_name(&p, "lyricsService:LRCLIB", "false").is_some());
-    }
 
-    #[test]
-    fn values_match_option_form() {
+        // Values match option form.
         let d = StoredPrefs::default();
         assert_eq!(value_of(&StoredPrefs { pitch: 0.9, ..d.clone() }, "pitch").as_deref(), Some("0.9"));
         assert_eq!(value_of(&d, "nope"), None);

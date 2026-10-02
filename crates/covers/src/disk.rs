@@ -189,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn evicts_least_recently_used_and_read_counts_as_use() {
+    fn lru() {
         let d = dir("lru");
         let c = DiskCache::open(d.path(), 30).unwrap();
         let (a, b, x) = (Key::of("a"), Key::of("b"), Key::of("c"));
@@ -207,10 +207,8 @@ mod tests {
         // Larger than the limit: dropped, nothing evicted.
         c.put(Key::of("e"), &[5; 31]).unwrap();
         assert!(!c.contains(Key::of("e")) && c.contains(a));
-    }
 
-    #[test]
-    fn reopen_restores_lru_order_and_trims_to_new_limit() {
+        // Reopen restores lru order and trims to new limit.
         let d = dir("reopen");
         {
             let c = DiskCache::open(d.path(), 100).unwrap();
@@ -248,13 +246,23 @@ mod tests {
     }
 
     #[test]
-    fn externally_deleted_file_is_a_miss() {
+    fn misses_and_clear() {
         let d = dir("gone");
         let c = DiskCache::open(d.path(), 100).unwrap();
         c.put(Key::of("a"), &[1; 4]).unwrap();
         fs::remove_file(c.path(Key::of("a"))).unwrap();
         assert!(!c.read(Key::of("a"), &mut Vec::new()));
         assert_eq!(c.bytes(), 0);
+
+        // Clear deletes everything and cache stays usable.
+        let d = dir("clear");
+        let c = DiskCache::open(d.path(), 100).unwrap();
+        c.put(Key::of("a"), &[1; 4]).unwrap();
+        c.put(Key::of("b"), &[2; 4]).unwrap();
+        c.clear();
+        assert_eq!((c.bytes(), fs::read_dir(&d).unwrap().count()), (0, 0));
+        c.put(Key::of("c"), &[3; 4]).unwrap();
+        assert!(c.contains(Key::of("c")) && c.bytes() == 4);
     }
 
     /// Checks the index matches the directory: same files, same sizes, same total.
@@ -317,15 +325,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn clear_deletes_everything_and_cache_stays_usable() {
-        let d = dir("clear");
-        let c = DiskCache::open(d.path(), 100).unwrap();
-        c.put(Key::of("a"), &[1; 4]).unwrap();
-        c.put(Key::of("b"), &[2; 4]).unwrap();
-        c.clear();
-        assert_eq!((c.bytes(), fs::read_dir(&d).unwrap().count()), (0, 0));
-        c.put(Key::of("c"), &[3; 4]).unwrap();
-        assert!(c.contains(Key::of("c")) && c.bytes() == 4);
-    }
 }

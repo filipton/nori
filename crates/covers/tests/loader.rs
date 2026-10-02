@@ -82,7 +82,7 @@ fn answers(rx: &mpsc::Receiver<Result<Arc<Image>, Error>>, n: usize) -> Vec<Resu
 }
 
 #[test]
-fn concurrent_requests_share_one_fetch_and_decode() {
+fn shared_fetches() {
     let server = Server::new(200);
     server.hold();
     let loader = Loader::new(config(None, 3), server.clone());
@@ -106,10 +106,39 @@ fn concurrent_requests_share_one_fetch_and_decode() {
     // Another size decodes again.
     assert_eq!(loader.load(PHOTO, 8, 8).unwrap().width, 8);
     drop(tickets);
+
+    // Custom painter decodes once for all waiters.
+    let server = Server::new(200);
+    server.hold();
+    let painted = Arc::new(AtomicUsize::new(0));
+    let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(None, 2) }, server.clone(), Counted(painted.clone()));
+    let (tx, rx) = mpsc::channel();
+    let tickets: Vec<_> = (0..3)
+        .map(|i| {
+            let tx = tx.clone();
+            loader.request(PHOTO, 30, 30, move |r| tx.send((i, r, std::thread::current().name().map(String::from))).unwrap())
+        })
+        .collect();
+    server.release();
+    let mut got: Vec<_> = (0..3).map(|_| rx.recv_timeout(Duration::from_secs(10)).expect("a callback")).collect();
+    got.sort_by_key(|(i, ..)| *i);
+    assert_eq!(got.iter().map(|(i, ..)| *i).collect::<Vec<_>>(), [0, 1, 2], "one call back each");
+    let first = got[0].1.as_ref().unwrap();
+    assert!(got.iter().all(|(_, r, _)| Arc::ptr_eq(r.as_ref().unwrap(), first)));
+    // Callbacks run on a worker thread.
+    assert!(got.iter().all(|(.., thread)| thread.as_deref() == Some("nori-covers")));
+    // photo.jpg is 40x30.
+    assert_eq!(**first, Picture { asked: (30, 30), got: (30, 30) });
+    assert_eq!(painted.load(Ordering::SeqCst), 1);
+    // memory_bytes 0: nothing cached, so it decodes again.
+    assert!(loader.cached(PHOTO, 30, 30).is_none());
+    loader.load(PHOTO, 30, 30).unwrap();
+    assert_eq!(painted.load(Ordering::SeqCst), 2);
+    drop(tickets);
 }
 
 #[test]
-fn cancelled_request_is_not_fetched_or_answered() {
+fn dropped_tickets() {
     let server = Server::new(200);
     server.hold();
     let loader = Loader::new(config(None, 1), server.clone());
@@ -127,10 +156,8 @@ fn cancelled_request_is_not_fetched_or_answered() {
     // The single worker served c after b's slot, so b would have been answered by now.
     assert!(rx.try_recv().is_err(), "the cancelled request was answered");
     first.detach();
-}
 
-#[test]
-fn dropping_one_of_two_tickets_still_answers_the_other() {
+    // Dropping one of two tickets still answers the other.
     let server = Server::new(200);
     server.hold();
     let loader = Loader::new(config(None, 1), server.clone());
@@ -149,31 +176,53 @@ fn dropping_one_of_two_tickets_still_answers_the_other() {
     assert!(rx.try_recv().is_err(), "the view that let go was called back");
     assert_eq!(*server.asked.lock(), ["http://s/busy", PHOTO, "http://s/after"], "one fetch for the two views");
     drop((busy, kept));
+
+    // Ticket dropped during fetch skips decode and callback.
+    let server = Server::new(200);
+    server.hold();
+    let painted = Arc::new(AtomicUsize::new(0));
+    let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(None, 1) }, server.clone(), Counted(painted.clone()));
+    let (tx, rx) = mpsc::channel::<()>();
+    let ticket = loader.request(PHOTO, 8, 8, move |_| tx.send(()).unwrap());
+    server.wait_calls(1);
+    drop(ticket);
+    server.release();
+    // Once the worker is free, the dropped cover was neither decoded nor answered.
+    loader.load("http://s/next", 8, 8).unwrap();
+    assert!(rx.try_recv().is_err(), "the view that left was called back");
+    assert_eq!(painted.load(Ordering::SeqCst), 1, "decoded only the cover still wanted");
+
+    // Rerequest after drop during fetch is answered.
+    // Regression: skipping away and back while the cover downloads left the placeholder forever. The
+    // new request must be answered whether it joins the running fetch or comes after it ended unwatched.
+    let d = dir("again");
+    let server = Server::new(200);
+    server.hold();
+    let loader = Loader::new(Config { memory_bytes: 0, ..config(Some(d.path().to_path_buf()), 1) }, server.clone());
+    let (tx, rx) = mpsc::channel();
+    let first = loader.request(PHOTO, 8, 8, |_| {});
+    server.wait_calls(1);
+    drop(first);
+    let tx2 = tx.clone();
+    let back = loader.request(PHOTO, 8, 8, move |r| tx2.send(r).unwrap());
+    server.release();
+    assert!(answers(&rx, 1)[0].is_ok(), "joined the fetch that was out");
+    drop(back);
+    server.hold();
+    let gone = loader.request("http://s/other", 8, 8, |_| {});
+    server.wait_calls(2);
+    drop(gone);
+    server.release();
+    // The unwatched fetch has ended; a new request is served from disk.
+    loader.load("http://s/next", 8, 8).unwrap();
+    let again = loader.request("http://s/other", 8, 8, move |r| tx.send(r).unwrap());
+    assert!(answers(&rx, 1)[0].is_ok(), "asked again after the flight ended with nobody waiting");
+    assert_eq!(server.calls(), 3, "the second ask was answered from the disk");
+    drop(again);
 }
 
 #[test]
-fn disk_cache_survives_restart_except_provider_covers() {
-    let d = dir("disk");
-    let provider = "http://s/rest/getCoverArt.view?u=a&id=ext-deezer-1&size=320";
-    {
-        let loader = Loader::new(config(Some(d.to_path_buf()), 2), Server::new(200));
-        loader.load(PHOTO, 8, 8).unwrap();
-        loader.load(provider, 8, 8).unwrap();
-        let disk = loader.disk().unwrap();
-        assert!(disk.contains(Key::of(PHOTO)) && disk.path(Key::of(PHOTO)).exists());
-        assert!(!disk.contains(Key::of(provider)));
-    }
-    // Server down: the kept cover loads, the provider's fails.
-    let down = Server::new(0);
-    let loader = Loader::new(config(Some(d.to_path_buf()), 2), down.clone());
-    assert_eq!(loader.load(PHOTO, 8, 8).unwrap().width, 8);
-    assert_eq!(down.calls(), 0);
-    assert!(matches!(loader.load(provider, 8, 8), Err(Error::Transport { kind: FailureKind::Connect, .. })));
-    drop(loader);
-}
-
-#[test]
-fn an_answer_that_is_no_picture_is_not_kept() {
+fn not_kept() {
     let d = dir("no-picture");
     let server = Server::new(200);
     let photo = std::mem::replace(&mut *server.body.lock(), br#"{"subsonic-response":{"status":"failed"}}"#.to_vec());
@@ -182,12 +231,23 @@ fn an_answer_that_is_no_picture_is_not_kept() {
     *server.body.lock() = photo;
     assert_eq!(loader.load(PHOTO, 8, 8).unwrap().width, 8);
     assert_eq!(server.calls(), 2);
+
+    // Error status is not cached.
+    let d = dir("error");
+    let server = Server::new(404);
+    let loader = Loader::new(config(Some(d.to_path_buf()), 1), server.clone());
+    assert_eq!(loader.load(PHOTO, 8, 8), Err(Error::Status(404)));
+    assert_eq!(loader.disk().unwrap().bytes(), 0);
+    // Failures are not cached either.
+    assert_eq!(loader.load(PHOTO, 8, 8), Err(Error::Status(404)));
+    assert_eq!(server.calls(), 2);
+    drop(loader);
 }
 
-/// Playlist covers (`pl-<id>_<changed>`) are kept like albums', and a cached cover is found offline
-/// under another token/salt or the server's alternate address, but not at another size.
 #[test]
-fn playlist_cover_found_offline_across_auth_and_address() {
+fn disk_keys() {
+    // Playlist covers (`pl-<id>_<changed>`) are kept like albums', and a cached cover is found offline
+    // under another token/salt or the server's alternate address, but not at another size.
     let d = dir("playlist");
     nori_core::covers::cover_address_alike("http://lan.test:4533", "https://wan.test");
     let id = "pl-6b2d0c1e-5f7a-4e21-9d3c-0a1b2c3d4e5f_65f0a1b2";
@@ -212,10 +272,8 @@ fn playlist_cover_found_offline_across_auth_and_address() {
     up.load(provider, 8, 8).unwrap();
     assert!(!up.disk().unwrap().contains(Key::of(provider)));
     drop((loader, up));
-}
 
-#[test]
-fn legacy_full_url_key_is_found_and_migrated() {
+    // Legacy full url key is found and migrated.
     let d = dir("legacy");
     let bytes = std::fs::read(format!("{}/testdata/photo.jpg", env!("CARGO_MANIFEST_DIR"))).unwrap();
     nori_covers::DiskCache::open(d.to_path_buf(), 1 << 20).unwrap().put(Key::of_address(PHOTO), &bytes).unwrap();
@@ -226,18 +284,24 @@ fn legacy_full_url_key_is_found_and_migrated() {
     let disk = loader.disk().unwrap();
     assert!(disk.contains(Key::of(PHOTO)) && !disk.contains(Key::of_address(PHOTO)));
     drop(loader);
-}
 
-#[test]
-fn error_status_is_not_cached() {
-    let d = dir("error");
-    let server = Server::new(404);
-    let loader = Loader::new(config(Some(d.to_path_buf()), 1), server.clone());
-    assert_eq!(loader.load(PHOTO, 8, 8), Err(Error::Status(404)));
-    assert_eq!(loader.disk().unwrap().bytes(), 0);
-    // Failures are not cached either.
-    assert_eq!(loader.load(PHOTO, 8, 8), Err(Error::Status(404)));
-    assert_eq!(server.calls(), 2);
+    // Disk cache survives restart except provider covers.
+    let d = dir("disk");
+    let provider = "http://s/rest/getCoverArt.view?u=a&id=ext-deezer-1&size=320";
+    {
+        let loader = Loader::new(config(Some(d.to_path_buf()), 2), Server::new(200));
+        loader.load(PHOTO, 8, 8).unwrap();
+        loader.load(provider, 8, 8).unwrap();
+        let disk = loader.disk().unwrap();
+        assert!(disk.contains(Key::of(PHOTO)) && disk.path(Key::of(PHOTO)).exists());
+        assert!(!disk.contains(Key::of(provider)));
+    }
+    // Server down: the kept cover loads, the provider's fails.
+    let down = Server::new(0);
+    let loader = Loader::new(config(Some(d.to_path_buf()), 2), down.clone());
+    assert_eq!(loader.load(PHOTO, 8, 8).unwrap().width, 8);
+    assert_eq!(down.calls(), 0);
+    assert!(matches!(loader.load(provider, 8, 8), Err(Error::Transport { kind: FailureKind::Connect, .. })));
     drop(loader);
 }
 
@@ -276,84 +340,6 @@ impl Paint for Counted {
     fn bytes(_: &Arc<Picture>) -> usize {
         100
     }
-}
-
-#[test]
-fn custom_painter_decodes_once_for_all_waiters() {
-    let server = Server::new(200);
-    server.hold();
-    let painted = Arc::new(AtomicUsize::new(0));
-    let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(None, 2) }, server.clone(), Counted(painted.clone()));
-    let (tx, rx) = mpsc::channel();
-    let tickets: Vec<_> = (0..3)
-        .map(|i| {
-            let tx = tx.clone();
-            loader.request(PHOTO, 30, 30, move |r| tx.send((i, r, std::thread::current().name().map(String::from))).unwrap())
-        })
-        .collect();
-    server.release();
-    let mut got: Vec<_> = (0..3).map(|_| rx.recv_timeout(Duration::from_secs(10)).expect("a callback")).collect();
-    got.sort_by_key(|(i, ..)| *i);
-    assert_eq!(got.iter().map(|(i, ..)| *i).collect::<Vec<_>>(), [0, 1, 2], "one call back each");
-    let first = got[0].1.as_ref().unwrap();
-    assert!(got.iter().all(|(_, r, _)| Arc::ptr_eq(r.as_ref().unwrap(), first)));
-    // Callbacks run on a worker thread.
-    assert!(got.iter().all(|(.., thread)| thread.as_deref() == Some("nori-covers")));
-    // photo.jpg is 40x30.
-    assert_eq!(**first, Picture { asked: (30, 30), got: (30, 30) });
-    assert_eq!(painted.load(Ordering::SeqCst), 1);
-    // memory_bytes 0: nothing cached, so it decodes again.
-    assert!(loader.cached(PHOTO, 30, 30).is_none());
-    loader.load(PHOTO, 30, 30).unwrap();
-    assert_eq!(painted.load(Ordering::SeqCst), 2);
-    drop(tickets);
-}
-
-#[test]
-fn rerequest_after_drop_during_fetch_is_answered() {
-    // Regression: skipping away and back while the cover downloads left the placeholder forever. The
-    // new request must be answered whether it joins the running fetch or comes after it ended unwatched.
-    let d = dir("again");
-    let server = Server::new(200);
-    server.hold();
-    let loader = Loader::new(Config { memory_bytes: 0, ..config(Some(d.path().to_path_buf()), 1) }, server.clone());
-    let (tx, rx) = mpsc::channel();
-    let first = loader.request(PHOTO, 8, 8, |_| {});
-    server.wait_calls(1);
-    drop(first);
-    let tx2 = tx.clone();
-    let back = loader.request(PHOTO, 8, 8, move |r| tx2.send(r).unwrap());
-    server.release();
-    assert!(answers(&rx, 1)[0].is_ok(), "joined the fetch that was out");
-    drop(back);
-    server.hold();
-    let gone = loader.request("http://s/other", 8, 8, |_| {});
-    server.wait_calls(2);
-    drop(gone);
-    server.release();
-    // The unwatched fetch has ended; a new request is served from disk.
-    loader.load("http://s/next", 8, 8).unwrap();
-    let again = loader.request("http://s/other", 8, 8, move |r| tx.send(r).unwrap());
-    assert!(answers(&rx, 1)[0].is_ok(), "asked again after the flight ended with nobody waiting");
-    assert_eq!(server.calls(), 3, "the second ask was answered from the disk");
-    drop(again);
-}
-
-#[test]
-fn ticket_dropped_during_fetch_skips_decode_and_callback() {
-    let server = Server::new(200);
-    server.hold();
-    let painted = Arc::new(AtomicUsize::new(0));
-    let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(None, 1) }, server.clone(), Counted(painted.clone()));
-    let (tx, rx) = mpsc::channel::<()>();
-    let ticket = loader.request(PHOTO, 8, 8, move |_| tx.send(()).unwrap());
-    server.wait_calls(1);
-    drop(ticket);
-    server.release();
-    // Once the worker is free, the dropped cover was neither decoded nor answered.
-    loader.load("http://s/next", 8, 8).unwrap();
-    assert!(rx.try_recv().is_err(), "the view that left was called back");
-    assert_eq!(painted.load(Ordering::SeqCst), 1, "decoded only the cover still wanted");
 }
 
 #[test]
@@ -520,55 +506,58 @@ fn three_at_once(loader: &Loader<Threads>, server: &Server) {
 }
 
 #[test]
-fn rest_ends_workers_and_next_request_restarts_one() {
-    let server = Server::new(200);
-    let (alive, rests) = (Arc::new(Count::default()), Arc::new(AtomicUsize::new(0)));
-    let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(None, 3) }, server.clone(), Threads { alive: alive.clone(), rests: rests.clone() });
-    three_at_once(&loader, &server);
-    assert_eq!(alive.get(), 3);
-    loader.rest();
-    until(&alive, 0);
-    assert_eq!(rests.load(Ordering::SeqCst), 1);
-    loader.load("http://s/after", 8, 8).unwrap();
-    assert_eq!(alive.get(), 1);
-    // Shorter than `idle`: the thread stays.
-    loader.load("http://s/again", 8, 8).unwrap();
-    assert_eq!((alive.get(), rests.load(Ordering::SeqCst)), (1, 1));
-}
-
-#[test]
-fn idle_loader_rests() {
-    let server = Server::new(200);
-    let (alive, rests) = (Arc::new(Count::default()), Arc::new(AtomicUsize::new(0)));
-    let config = Config { memory_bytes: 0, idle: Duration::from_millis(500), ..config(None, 3) };
-    let loader = Loader::with_paint(config, server.clone(), Threads { alive: alive.clone(), rests: rests.clone() });
-    three_at_once(&loader, &server);
-    // Requests closer together than `idle` keep the threads.
-    for i in 0..5 {
-        loader.load(&format!("http://s/soon-{i}"), 8, 8).unwrap();
+fn resting() {
+    {
+        let server = Server::new(200);
+        let (alive, rests) = (Arc::new(Count::default()), Arc::new(AtomicUsize::new(0)));
+        let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(None, 3) }, server.clone(), Threads { alive: alive.clone(), rests: rests.clone() });
+        three_at_once(&loader, &server);
+        assert_eq!(alive.get(), 3);
+        loader.rest();
+        until(&alive, 0);
+        assert_eq!(rests.load(Ordering::SeqCst), 1);
+        loader.load("http://s/after", 8, 8).unwrap();
+        assert_eq!(alive.get(), 1);
+        // Shorter than `idle`: the thread stays.
+        loader.load("http://s/again", 8, 8).unwrap();
+        assert_eq!((alive.get(), rests.load(Ordering::SeqCst)), (1, 1));
     }
-    assert_eq!((alive.get(), rests.load(Ordering::SeqCst)), (3, 0));
-    until(&alive, 0);
-    assert_eq!(rests.load(Ordering::SeqCst), 1);
-    loader.load("http://s/after", 8, 8).unwrap();
-    assert_eq!(alive.get(), 1);
+
+    // Idle loader rests.
+    {
+        let server = Server::new(200);
+        let (alive, rests) = (Arc::new(Count::default()), Arc::new(AtomicUsize::new(0)));
+        let config = Config { memory_bytes: 0, idle: Duration::from_millis(500), ..config(None, 3) };
+        let loader = Loader::with_paint(config, server.clone(), Threads { alive: alive.clone(), rests: rests.clone() });
+        three_at_once(&loader, &server);
+        // Requests closer together than `idle` keep the threads.
+        for i in 0..5 {
+            loader.load(&format!("http://s/soon-{i}"), 8, 8).unwrap();
+        }
+        assert_eq!((alive.get(), rests.load(Ordering::SeqCst)), (3, 0));
+        until(&alive, 0);
+        assert_eq!(rests.load(Ordering::SeqCst), 1);
+        loader.load("http://s/after", 8, 8).unwrap();
+        assert_eq!(alive.get(), 1);
+    }
+
+    // Hidden loader rests and keeps no idle thread.
+    {
+        let server = Server::new(200);
+        let (alive, rests) = (Arc::new(Count::default()), Arc::new(AtomicUsize::new(0)));
+        let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(None, 3) }, server.clone(), Threads { alive: alive.clone(), rests: rests.clone() });
+        three_at_once(&loader, &server);
+        loader.show(false);
+        until(&alive, 0);
+        assert_eq!(rests.load(Ordering::SeqCst), 1);
+        // A request while hidden (a notification's cover): its worker exits right after.
+        loader.load("http://s/notification", 8, 8).unwrap();
+        until(&alive, 0);
+        loader.show(true);
+        loader.load("http://s/shown", 8, 8).unwrap();
+        // Shown, the worker stays for the next: that one takes the same thread.
+        loader.load("http://s/shown-again", 8, 8).unwrap();
+        assert_eq!((alive.get(), rests.load(Ordering::SeqCst)), (1, 1));
+    }
 }
 
-#[test]
-fn hidden_loader_rests_and_keeps_no_idle_thread() {
-    let server = Server::new(200);
-    let (alive, rests) = (Arc::new(Count::default()), Arc::new(AtomicUsize::new(0)));
-    let loader = Loader::with_paint(Config { memory_bytes: 0, ..config(None, 3) }, server.clone(), Threads { alive: alive.clone(), rests: rests.clone() });
-    three_at_once(&loader, &server);
-    loader.show(false);
-    until(&alive, 0);
-    assert_eq!(rests.load(Ordering::SeqCst), 1);
-    // A request while hidden (a notification's cover): its worker exits right after.
-    loader.load("http://s/notification", 8, 8).unwrap();
-    until(&alive, 0);
-    loader.show(true);
-    loader.load("http://s/shown", 8, 8).unwrap();
-    // Shown, the worker stays for the next: that one takes the same thread.
-    loader.load("http://s/shown-again", 8, 8).unwrap();
-    assert_eq!((alive.get(), rests.load(Ordering::SeqCst)), (1, 1));
-}

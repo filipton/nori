@@ -84,7 +84,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_an_unstarred_mark_removes() {
+    fn star_marks() {
         let s = |id: &str| Song { id: id.into(), ..Default::default() };
         let a = |id: &str| Album { id: id.into(), ..Default::default() };
         let r = |id: &str| Artist { id: id.into(), ..Default::default() };
@@ -102,10 +102,8 @@ mod tests {
         assert_eq!(out.library_songs, 2, "counted after the overlay");
         assert_eq!(m.overlay_albums(vec![a("1"), a("2")]).len(), 1);
         assert_eq!(StarMarks::default().overlay_albums(vec![a("1")]).len(), 1);
-    }
 
-    #[test]
-    fn refused_star_restores_mark() {
+        // Refused star restores mark.
         let mut m = StarMarks::default();
         let first = m.mark(Starrable::Album, "1".into(), true);
         assert_eq!(first.previous, None);
@@ -121,4 +119,5 @@ mod tests {
         m.mark(Starrable::Album, "2".into(), false);
         assert!(m.overlay_albums(vec![Album { id: "2".into(), ..Default::default() }]).is_empty());
     }
+
 }

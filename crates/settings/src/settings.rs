@@ -1907,12 +1907,10 @@ mod tests {
     }
 
     #[test]
-    fn load_empty_is_default() {
+    fn loading() {
         assert_eq!(load(&HashMap::new()), StoredPrefs::default());
-    }
 
-    #[test]
-    fn load_clamps_out_of_range() {
+        // Load clamps out of range.
         let p = load(&raw(&[("parallelDownloads", n(40)), ("coversAhead", n(-1)), ("replayGain", n(9)), ("theme", n(7)), ("tapAction", n(-2)), ("swipeLeft", n(5))]));
         assert_eq!(p.parallel_downloads, 10);
         assert_eq!(p.covers_ahead, 0);
@@ -1923,10 +1921,8 @@ mod tests {
         assert_eq!(load(&raw(&[("parallelDownloads", n(0))])).parallel_downloads, 1);
         // A value of the wrong type is as good as missing.
         assert_eq!(load(&raw(&[("cacheMb", t("big"))])).cache_mb, 1024);
-    }
 
-    #[test]
-    fn server_list_loads_whole_or_empty() {
+        // Server list loads whole or empty.
         let p = load(&raw(&[("servers", t(r#"[{"id":"a","legacyAuth":true,"altMaxBitRate":128}]"#)), ("activeServerId", t("a"))]));
         assert_eq!((p.servers.len(), p.active_server_id.as_str()), (1, "a"));
         assert!(p.servers[0].legacy_auth);
@@ -1934,10 +1930,8 @@ mod tests {
         // A list that does not read, or a server without an id, loses the whole list.
         assert!(load(&raw(&[("servers", t(r#"[{"id":"a"},{"name":"x"}]"#))])).servers.is_empty());
         assert!(load(&raw(&[("servers", t("nope"))])).servers.is_empty());
-    }
 
-    #[test]
-    fn load_home_rows_pins_list_prefs() {
+        // Load home rows pins list prefs.
         let p = load(&raw(&[("homeRows", t("RANDOM,NOPE,PINNED")), ("pinnedPlaylists", t("a\n\nb")), ("listPrefs", t(r#"{"x":"1","y":2}"#))]));
         assert_eq!(p.home_rows, [HomeRow::Random, HomeRow::Pinned]);
         assert_eq!(p.pinned_playlists, ["a", "b"]);
@@ -1947,21 +1941,7 @@ mod tests {
     }
 
     #[test]
-    fn band_wire_format() {
-        let b = [band_from(0, 1000.0, -2.5, 1.41, 0), band_from(9, 31.0, 0.0, 0.00001, 2)];
-        assert_eq!(encode_bands(&b), "0:1000.0:-2.5:1.41:0;9:31.0:0.0:1.0E-5:2");
-        assert_eq!(decode_bands(&encode_bands(&b)).unwrap(), b);
-        // Four fields is a band on both channels; anything that does not read is dropped.
-        assert_eq!(decode_bands("1:100:3:0.7").unwrap(), [band_from(1, 100.0, 3.0, 0.7, 0)]);
-        assert_eq!(decode_bands("1:100:3:0.7;12:1:1:1;x:1:1:1;1:1:1;2:1:1:1:3").unwrap().len(), 1);
-        assert_eq!(decode_bands(""), None);
-        assert_eq!(decode_bands("1:1:1"), None);
-        assert_eq!(kotlin_float(12_345_678.0), "1.2345678E7");
-        assert_eq!(kotlin_float(-0.5), "-0.5");
-    }
-
-    #[test]
-    fn sound_json_round_trip() {
+    fn sound_json_shape() {
         let s = SoundSettings {
             eq_enabled: true,
             eq_bands: vec![band_from(1, 105.0, -3.5, 0.7, 0)],
@@ -2004,10 +1984,8 @@ mod tests {
         };
         assert_eq!(sound_from(&sound_json(&s)).unwrap(), s);
         assert_eq!(sound_from(&sound_json(&SoundSettings { eq_preamp_db: None, ..s.clone() })).unwrap().eq_preamp_db, None);
-    }
 
-    #[test]
-    fn sound_json_defaults() {
+        // Sound json defaults.
         let s = sound_from("{}").unwrap();
         assert_eq!(s.eq_bands, graphic());
         assert_eq!(s.limiter_threshold_db, -1.0);
@@ -2020,18 +1998,22 @@ mod tests {
         assert_eq!(sound_from(r#"{"eqPreampDb":null}"#), None);
         assert_eq!(sound_from("not json"), None);
         assert_eq!(sound_from("[]"), None);
+
+        // Band wire format.
+        let b = [band_from(0, 1000.0, -2.5, 1.41, 0), band_from(9, 31.0, 0.0, 0.00001, 2)];
+        assert_eq!(encode_bands(&b), "0:1000.0:-2.5:1.41:0;9:31.0:0.0:1.0E-5:2");
+        assert_eq!(decode_bands(&encode_bands(&b)).unwrap(), b);
+        // Four fields is a band on both channels; anything that does not read is dropped.
+        assert_eq!(decode_bands("1:100:3:0.7").unwrap(), [band_from(1, 100.0, 3.0, 0.7, 0)]);
+        assert_eq!(decode_bands("1:100:3:0.7;12:1:1:1;x:1:1:1;1:1:1;2:1:1:1:3").unwrap().len(), 1);
+        assert_eq!(decode_bands(""), None);
+        assert_eq!(decode_bands("1:1:1"), None);
+        assert_eq!(kotlin_float(12_345_678.0), "1.2345678E7");
+        assert_eq!(kotlin_float(-0.5), "-0.5");
     }
 
     #[test]
-    fn server_labels() {
-        assert_eq!(label("Home", "https://x"), "Home");
-        assert_eq!(label(" ", "https://music.example.com:4533/navidrome"), "music.example.com:4533");
-        assert_eq!(label("", "music.example.com/x"), "music.example.com");
-        assert_eq!(label("", ""), "");
-    }
-
-    #[test]
-    fn set_by_name_holds_ranges() {
+    fn settings_by_name() {
         let p = StoredPrefs::default();
         assert!(set_by_name(&p, "limiter", "TRUE").unwrap().prefs.limiter);
         assert_eq!(set_by_name(&p, "eqPreampDb", "12").unwrap().prefs.eq_preamp_db, Some(6.0), "held to the equalizer's range");
@@ -2052,10 +2034,8 @@ mod tests {
         assert_eq!(set_by_name(&p, "autoFillBasis", "era").unwrap().prefs.auto_fill_basis, AutoFillBasis::Era);
         assert_eq!(set_by_name(&p, "autoFillBasis", "mood"), None);
         assert_eq!(set_by_name(&p, "nope", "1"), None);
-    }
 
-    #[test]
-    fn set_by_name_parses_each_kind() {
+        // Set by name parses each kind.
         let p = StoredPrefs::default();
         let set = |name: &str, v: &str| set_by_name(&p, name, v).unwrap().prefs;
         assert_eq!(set("replayGain", "ALBUM").replay_gain, GainMode::Album);
@@ -2072,34 +2052,19 @@ mod tests {
         assert_eq!(set("speed", "0.75").speed, 0.75);
         assert_eq!(set("lyricsSize", "7").lyrics_size, 2);
         assert_eq!(set("autoMixMaxTempoPct", "2.0").auto_mix_max_tempo_pct, 2.0);
-    }
 
-    #[test]
-    fn autoeq_switches_lookups_on() {
-        // Stored off stays off.
-        let kept = load(&save(&StoredPrefs { third_party_lookups: false, auto_eq_download: false, ..StoredPrefs::default() }));
-        assert!(!kept.third_party_lookups && !kept.auto_eq_download);
-        let p = StoredPrefs { third_party_lookups: false, auto_eq_download: false, ..StoredPrefs::default() };
-        let on = set_by_name(&p, "autoEqDownload", "true").unwrap().prefs;
-        assert!(on.auto_eq_download && on.third_party_lookups, "the AutoEQ list switches lookups on");
-        assert!(!set_by_name(&on, "autoEqDownload", "false").unwrap().prefs.auto_eq_download);
-    }
+        // Active server settings by name.
+        let a = SavedServer { id: "a".into(), ..SavedServer::default() };
+        let b = SavedServer { id: "b".into(), ..SavedServer::default() };
+        let p = StoredPrefs { servers: vec![a, b], active_server_id: "b".into(), ..StoredPrefs::default() };
+        let c = set_by_name(&p, "musicFolder", "7").unwrap();
+        assert!(c.server);
+        assert_eq!((c.prefs.servers[0].music_folder_id.as_str(), c.prefs.servers[1].music_folder_id.as_str()), ("", "7"));
+        assert_eq!(set_by_name(&p, "altMaxBitRate", "128").unwrap().prefs.servers[1].alt_max_bit_rate, 128);
+        assert_eq!(set_by_name(&StoredPrefs::default(), "musicFolder", "7"), None, "no server in use");
+        assert!(!set_by_name(&p, "mono", "1").unwrap().server);
 
-    #[test]
-    fn lyrics_online_and_lookups_switch() {
-        let p = StoredPrefs::default();
-        let on = set_by_name(&p, "lyricsOnline", "true").unwrap().prefs;
-        assert!(on.lyrics_online && on.third_party_lookups, "lyrics online switches lookups on");
-        let off = set_by_name(&on, "lyricsLrclib", "false").unwrap().prefs;
-        assert!(!off.lyrics_online && off.third_party_lookups, "and off leaves the lookups alone");
-        let all_off = set_by_name(&on, "thirdPartyLookups", "false").unwrap().prefs;
-        assert!(!all_off.lyrics_online && !all_off.third_party_lookups);
-        let all_on = set_by_name(&all_off, "thirdPartyLookups", "true").unwrap().prefs;
-        assert!(all_on.lyrics_online && all_on.third_party_lookups);
-    }
-
-    #[test]
-    fn lyrics_services_by_name() {
+        // Lyrics services by name.
         let p = StoredPrefs::default();
         let all = p.lyrics_on.len();
         let off = set_by_name(&p, "lyricsService:portato", "false").unwrap().prefs;
@@ -2127,272 +2092,8 @@ mod tests {
         assert_eq!((back.lyrics_on, back.lyrics_order, back.paxsenix_key), (keyed.lyrics_on.clone(), keyed.lyrics_order.clone(), "k".to_string()));
         assert_eq!(load(&HashMap::new()).lyrics_on, crate::lyrics_sources::default_order(), "nothing stored: the defaults, every service");
         assert_eq!(load(&HashMap::new()).lyrics_order, crate::lyrics_sources::default_order());
-    }
 
-    #[test]
-    fn active_server_settings_by_name() {
-        let a = SavedServer { id: "a".into(), ..SavedServer::default() };
-        let b = SavedServer { id: "b".into(), ..SavedServer::default() };
-        let p = StoredPrefs { servers: vec![a, b], active_server_id: "b".into(), ..StoredPrefs::default() };
-        let c = set_by_name(&p, "musicFolder", "7").unwrap();
-        assert!(c.server);
-        assert_eq!((c.prefs.servers[0].music_folder_id.as_str(), c.prefs.servers[1].music_folder_id.as_str()), ("", "7"));
-        assert_eq!(set_by_name(&p, "altMaxBitRate", "128").unwrap().prefs.servers[1].alt_max_bit_rate, 128);
-        assert_eq!(set_by_name(&StoredPrefs::default(), "musicFolder", "7"), None, "no server in use");
-        assert!(!set_by_name(&p, "mono", "1").unwrap().server);
-    }
-
-    #[test]
-    fn set_band_holds_range() {
-        let s = sound();
-        let b = set_band(s.clone(), 3, band_from(42, 5.0, 30.0, 0.0, 7));
-        assert_eq!(b.eq_bands[3], band_from(0, 20.0, 12.0, 0.2, 0));
-        let ok = band_from(1, 120.0, -3.5, 0.7, 2);
-        assert_eq!(set_band(s.clone(), 0, ok).eq_bands[0], ok);
-        assert_eq!(set_band(s.clone(), 99, ok), s, "no such band");
-    }
-
-    #[test]
-    fn auto_preamp_off_keeps_level() {
-        let mut s = sound();
-        s.eq_enabled = true;
-        s.eq_bands[2].gain_db = 4.5;
-        assert_eq!(s.effective_preamp_db(), -4.5);
-        let manual = set_auto_preamp(s.clone(), false);
-        assert_eq!(manual.eq_preamp_db, Some(-4.5));
-        assert_eq!(set_auto_preamp(manual, true).eq_preamp_db, None);
-        assert_eq!(SoundSettings { eq_enabled: false, ..s.clone() }.effective_preamp_db(), 0.0);
-        assert_eq!(set_auto_preamp(SoundSettings { eq_enabled: false, ..s }, false).eq_preamp_db, Some(0.0));
-    }
-
-    #[test]
-    fn set_level_snaps_and_holds() {
-        let s = sound();
-        assert_eq!(set_level(s.clone(), EqLevel::Balance, 0.03).balance, 0.0);
-        assert_eq!(set_level(s.clone(), EqLevel::Balance, -3.0).balance, -1.0);
-        assert_eq!(set_level(s.clone(), EqLevel::Crossfeed, 0.5).crossfeed_db, 0.0);
-        assert_eq!(set_level(s.clone(), EqLevel::Crossfeed, 20.0).crossfeed_db, 12.0);
-        assert_eq!(set_level(s.clone(), EqLevel::CrossfeedCut, 100.0).crossfeed_hz, 300.0);
-        assert_eq!(set_level(s.clone(), EqLevel::CrossfeedCut, 912.4).crossfeed_hz, 912.0);
-        assert_eq!(set_level(s.clone(), EqLevel::Limiter, 2.0).limiter_threshold_db, 0.0);
-        assert_eq!(set_level(s, EqLevel::Preamp, -30.0).eq_preamp_db, Some(-20.0));
-    }
-
-    #[test]
-    fn eq_bypass_precedence() {
-        assert_eq!(eq_bypass(false, false), None);
-        assert_eq!(eq_bypass(true, true), Some(EqBypass::BitPerfect));
-        assert_eq!(eq_bypass(false, true), Some(EqBypass::Output));
-    }
-
-    #[test]
-    fn band_marks() {
-        assert_eq!(band_mark(0, 0), BandMark::None);
-        assert_eq!(band_mark(1, 1), BandMark::Left);
-        assert_eq!(band_mark(8, 0), BandMark::LowShelf);
-        assert_eq!(band_mark(2, 0), BandMark::HighShelf);
-        assert_eq!(band_mark(9, 2), BandMark::Right);
-        assert_eq!(band_mark(6, 0), BandMark::NoGain);
-    }
-
-    #[test]
-    fn server_list_edits() {
-        let s = |id: &str, name: &str| SavedServer { id: id.into(), name: name.into(), ..SavedServer::default() };
-        let list = ServerList { servers: vec![s("a", "A"), s("b", "B")], active_server_id: "b".into() };
-        let l = servers_activated(list.clone(), s("a", "A2"));
-        assert_eq!(l.servers.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["B", "A2"], "replaced, and moved to the end");
-        assert_eq!(l.active_server_id, "a");
-        let l = servers_updated(list.clone(), s("a", "A3"));
-        assert_eq!((l.servers[0].name.as_str(), l.active_server_id.as_str()), ("A3", "b"));
-        assert_eq!(servers_updated(list.clone(), s("z", "Z")).servers.len(), 2, "an unknown profile is not added");
-        let l = servers_removed(list.clone(), "b".into());
-        assert_eq!((l.servers.len(), l.active_server_id.as_str()), (1, "a"), "the first one left takes over");
-        assert_eq!(servers_removed(list.clone(), "a".into()).active_server_id, "b");
-        assert_eq!(servers_removed(ServerList { servers: vec![s("a", "")], active_server_id: "a".into() }, "a".into()).active_server_id, "");
-        assert_eq!((server_db_id(""), server_db_id("x1")), ("default".into(), "x1".into()));
-        let id = new_server_id();
-        assert_eq!(id.len(), 8);
-        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
-        assert_ne!(new_server_id(), new_server_id());
-    }
-
-    #[test]
-    fn login_reuses_saved_profile() {
-        let saved = SavedServer { id: "a1".into(), name: "Home".into(), url: "http://10.0.2.2:4534/".into(), user: "admin".into(), password: "old".into(), music_folder_id: "3".into(), ..SavedServer::default() };
-        let other = SavedServer { id: "b2".into(), url: "http://10.0.2.2:4534".into(), user: "guest".into(), ..SavedServer::default() };
-        let list = ServerList { servers: vec![saved.clone(), other], active_server_id: "b2".into() };
-        let form = SavedServer { id: new_server_id(), url: " HTTP://10.0.2.2:4534 ".into(), user: "Admin".into(), password: "new".into(), ..SavedServer::default() };
-        let kept = server_for_login(list.clone(), form.clone());
-        assert_eq!((kept.id.as_str(), kept.password.as_str(), kept.name.as_str(), kept.music_folder_id.as_str()), ("a1", "new", "Home", "3"), "{kept:?}");
-        let l = servers_activated(list.clone(), kept);
-        assert_eq!((l.servers.len(), l.active_server_id.as_str()), (2, "a1"), "activated, not copied");
-        // Another user of the same server, or another server, is a profile of its own.
-        let stranger = SavedServer { user: "someone".into(), ..form.clone() };
-        assert_eq!(server_for_login(list.clone(), stranger.clone()), stranger);
-        let elsewhere = SavedServer { url: "https://music.example".into(), ..form.clone() };
-        assert_eq!(server_for_login(list.clone(), elsewhere.clone()), elsewhere);
-        // A saved profile edited keeps its own id, whatever the others are.
-        let edited = SavedServer { id: "b2".into(), ..form };
-        assert_eq!(server_for_login(list.clone(), edited.clone()), edited);
-    }
-
-    #[test]
-    fn login_form() {
-        let h = parse_headers("X-Auth: a:b\n: nope\nno colon\n  CF-Id :  x  \nX-Auth: c");
-        assert_eq!(h.len(), 2);
-        assert_eq!(h["X-Auth"], "c", "the last one wins");
-        assert_eq!(h["CF-Id"], "x");
-        assert_eq!(server_headers_text(parse_headers("b: 2\na: 1")), "a: 1\nb: 2");
-        assert_eq!(server_url_schemes("music.local".into()), ["https://", "http://"]);
-        assert!(server_url_schemes("".into()).is_empty() && server_url_schemes("http://x".into()).is_empty());
-        let p = SavedServer { url: " https://x ".into(), alt_url: " y ".into(), ..SavedServer::default() };
-        assert!(!server_ready(p.clone()), "a user or a key");
-        assert!(server_ready(SavedServer { user: "u".into(), ..p.clone() }));
-        assert!(server_ready(SavedServer { api_key: "k".into(), ..p.clone() }));
-        assert!(!server_ready(SavedServer { url: "  ".into(), user: "u".into(), ..p.clone() }));
-        let f = server_from_form(p, "A: 1".into());
-        assert_eq!((f.url.as_str(), f.alt_url.as_str(), f.headers["A"].as_str()), ("https://x", "y", "1"));
-    }
-
-    fn sound() -> SoundSettings {
-        sound_from("{}").unwrap()
-    }
-
-    #[test]
-    fn parametric_edits() {
-        let flat = NamedPreset { kind: nori_model::PresetKind::Flat, preamp_db: 0.0, bands: vec![] };
-        let s = apply_preset(SoundSettings { eq_preamp_db: Some(-4.0), ..sound() }, &flat);
-        assert!(s.eq_enabled);
-        assert_eq!(s.eq_preamp_db, None, "a pre-amp of 0 is automatic");
-        assert_eq!(s.eq_bands, graphic());
-        let bass = NamedPreset { kind: nori_model::PresetKind::BassBoost, preamp_db: -6.0, bands: vec![nori_model::EqBand { kind: EqKind::LowShelf, freq: 100.0, gain_db: 6.0, q: 0.7 }] };
-        let s = apply_preset(sound(), &bass);
-        assert_eq!(s.eq_preamp_db, Some(-6.0));
-        assert_eq!(s.eq_bands, [band_from(1, 100.0, 6.0, 0.7, 0)]);
-
-        let added = add_band(sound());
-        assert_eq!(added.eq_bands.len(), 11);
-        assert_eq!(added.eq_bands[10], band_from(0, 1000.0, 0.0, 1.0, 0));
-        assert_eq!(remove_band(added.clone(), 10).eq_bands, graphic());
-        assert_eq!(remove_band(added, 99).eq_bands.len(), 11);
-        let one = SoundSettings { eq_bands: vec![band_from(2, 5.0, 1.0, 1.0, 0)], ..sound() };
-        assert_eq!(remove_band(one, 0).eq_bands, graphic(), "never an empty equalizer");
-    }
-
-    #[test]
-    fn graphic_edits() {
-        let g = SoundSettings { eq_mode: EqMode::Graphic, ..sound() };
-        let moved = set_graphic(g.clone(), 3, 20.0);
-        assert_eq!(moved.eq_graphic[3], 12.0, "held to the range");
-        assert_eq!(moved.eq_bands, g.eq_bands, "the parametric bands are left alone");
-        assert_eq!(set_graphic(g.clone(), 10, 3.0), g, "past the end: nothing");
-        // Automatic pre-amp: the largest slider paid back.
-        let loud = set_graphic(set_graphic(g.clone(), 0, 6.0), 5, -9.0);
-        assert_eq!(SoundSettings { eq_enabled: true, ..loud.clone() }.effective_preamp_db(), -6.0);
-        // A preset lands on the sliders; the bands are kept for when parametric comes back.
-        let bass = NamedPreset { kind: nori_model::PresetKind::BassBoost, preamp_db: -6.0, bands: vec![nori_model::EqBand { kind: EqKind::LowShelf, freq: 100.0, gain_db: 6.0, q: 0.7 }] };
-        let p = apply_preset(loud.clone(), &bass);
-        assert!(p.eq_enabled && p.eq_preamp_db.is_none());
-        assert!(p.eq_graphic[0] > 5.0 && p.eq_graphic[9].abs() < 0.1, "{:?}", p.eq_graphic);
-        assert_eq!(p.eq_bands, loud.eq_bands);
-        assert_eq!(eq_reset_bands(p.clone()).eq_graphic, vec![0.0; 10]);
-        assert_eq!(eq_reset_bands(p.clone()).eq_bands, p.eq_bands, "reset is the one in use");
-        // Filters imported on the parametric equalizer stay filters there; the graphic one fits them (below).
-        let imported = import(SoundSettings { eq_mode: EqMode::Parametric, ..p }, "Filter 1: ON PK Fc 105 Hz Gain -3.5 dB Q 0.70\n").unwrap();
-        assert_eq!(imported.eq_mode, EqMode::Parametric);
-        // Another layout draws the same curve.
-        assert_eq!(relayout_graphic(&[0.0, 2.0, 4.0, 6.0, 4.0, 2.0, 0.0, -2.0, -4.0, -6.0], 31).len(), 31);
-        assert_eq!(decode_graphic("1,2,3"), None, "not a layout");
-        assert_eq!(decode_graphic(&vec!["99"; 10].join(",")), Some(vec![12.0; 10]));
-    }
-
-    /// Settings as an install from before the graphic equalizer stored them: everything but the choice.
-    fn stored_before(p: StoredPrefs) -> HashMap<String, PrefValue> {
-        let mut raw = save(&p);
-        raw.remove(EQ_MODE_KEY);
-        raw
-    }
-
-    #[test]
-    fn eq_mode_migration() {
-        assert_eq!(load(&HashMap::new()).eq_mode, EqMode::Graphic, "a new install");
-        // From before this version, with only the defaults: nothing was set up, so graphic.
-        assert_eq!(load(&stored_before(StoredPrefs::default())).eq_mode, EqMode::Graphic);
-        // From before, with a parametric equalizer in any form: it stays.
-        let d = StoredPrefs::default();
-        let mut moved = graphic();
-        moved[3].gain_db = 2.5;
-        let bass = vec![band_from(1, 100.0, 6.0, 0.7, 0)];
-        for (what, p) in [
-            ("a band moved", StoredPrefs { eq_bands: moved, ..d.clone() }),
-            ("a preset or an AutoEQ curve", StoredPrefs { eq_bands: bass, eq_preamp_db: Some(-6.0), ..d.clone() }),
-            ("a band added", StoredPrefs { eq_bands: add_band(d.sound()).eq_bands, ..d.clone() }),
-            ("the equalizer on, flat", StoredPrefs { eq_enabled: true, ..d.clone() }),
-            ("a pre-amp of its own", StoredPrefs { eq_preamp_db: Some(-3.0), ..d.clone() }),
-        ] {
-            assert_eq!(load(&stored_before(p)).eq_mode, EqMode::Parametric, "{what}");
-        }
-        // Once chosen, the choice is what is read, whatever else is stored.
-        let chosen = StoredPrefs { eq_mode: EqMode::Graphic, eq_enabled: true, eq_bands: vec![band_from(1, 100.0, 6.0, 0.7, 0)], ..d.clone() };
-        assert_eq!(load(&save(&chosen)).eq_mode, EqMode::Graphic);
-        assert_eq!(load(&save(&StoredPrefs { eq_mode: EqMode::Parametric, ..d.clone() })).eq_mode, EqMode::Parametric);
-        // A sound profile with a curve in it counts; a flat or switched-off one does not.
-        assert!(profile_parametric(&sound_json(&SoundSettings { eq_enabled: true, eq_bands: vec![band_from(1, 100.0, 6.0, 0.7, 0)], ..sound() })));
-        assert!(!profile_parametric(&sound_json(&SoundSettings { eq_enabled: false, eq_bands: vec![band_from(1, 100.0, 6.0, 0.7, 0)], ..sound() })));
-        assert!(!profile_parametric(&sound_json(&SoundSettings { eq_enabled: true, ..sound() })));
-        assert!(!profile_parametric("not json"));
-    }
-
-    #[test]
-    fn correction_fits_graphic_sliders() {
-        let graphic = include_str!("../../player/testdata/graphiceq/sennheiser-hd-600.txt");
-        let parametric = include_str!("../../player/testdata/graphiceq/sennheiser-hd-600.parametric.txt");
-        let g = SoundSettings { eq_mode: EqMode::Graphic, eq_enabled: false, ..sound() };
-        let s = import(g.clone(), graphic).unwrap();
-        assert!(s.eq_enabled && s.eq_mode == EqMode::Graphic, "it stays on the graphic equalizer");
-        assert_eq!(s.eq_graphic.len(), 10);
-        assert_eq!(s.eq_bands, g.eq_bands, "the parametric bands are left as they were");
-        assert_eq!(s.eq_graphic_target.len(), nori_player::graphic::TARGET_POINTS);
-        let preamp = s.eq_preamp_db.unwrap();
-        assert!(preamp < -3.0, "the pre-amp pays back the boost: {preamp}");
-        // The filters, where there is no curve, are a target too.
-        assert!(import(g.clone(), parametric).unwrap().eq_graphic.iter().any(|v| *v != 0.0));
-        assert!(matches!(import(g, "Preamp: 0 dB\n"), Err(SoundError::NoFilters)));
-        // Another layout is fitted to the correction again, not stretched from the ten sliders.
-        let p = StoredPrefs::default().with_sound(s.clone());
-        let l = set_by_name(&p, "eqLayout", "31").unwrap().prefs;
-        let t: Vec<f64> = s.eq_graphic_target.iter().map(|v| *v as f64).collect();
-        let fitted = nori_player::graphic::fit_target(&t, 31, 12.0).unwrap();
-        assert_eq!(l.eq_graphic, fitted.sliders.iter().map(|v| *v as f32).collect::<Vec<_>>());
-        assert_eq!(l.eq_graphic_target, s.eq_graphic_target);
-        // Moved by hand, a preset or a reset: the correction is gone.
-        assert!(set_graphic(s.clone(), 0, 1.0).eq_graphic_target.is_empty());
-        assert!(eq_reset_bands(s.clone()).eq_graphic_target.is_empty());
-        // And it travels in a sound profile.
-        assert_eq!(sound_from(&sound_json(&s)).unwrap(), s);
-        // How closely it is followed, for the screen.
-        let f = crate::dsp::graphic_follow(s.eq_graphic.clone(), s.eq_graphic_target.clone()).unwrap();
-        assert!(f.rms_db > 0.0 && f.rms_db < 2.0 && f.max_db >= f.rms_db);
-        assert!(crate::dsp::graphic_follow(s.eq_graphic, Vec::new()).is_none());
-    }
-
-    #[test]
-    fn effect_levels_hold_and_snap_off() {
-        for (i, l) in EqLevel::ALL.iter().enumerate() {
-            assert_eq!(*l as usize, i, "the door's ordinal is the declaration's");
-        }
-        let s = sound();
-        assert_eq!(set_level(s.clone(), EqLevel::VolumeBoost, 30.0).effects.volume_boost_db, 12.0);
-        assert_eq!(set_level(s.clone(), EqLevel::VolumeBoost, 0.1).effects.volume_boost_db, 0.0, "the bottom is off");
-        assert_eq!(set_level(s.clone(), EqLevel::Virtualizer, 0.01).effects.virtualizer, 0.0);
-        assert_eq!(set_level(s.clone(), EqLevel::BassBoost, f32::NAN).effects.bass_boost_db, 0.0);
-        let r = set_level(s.clone(), EqLevel::CompRatio, 0.5);
-        assert_eq!((r.effects.comp_ratio, EqLevel::CompRatio.of(&r)), (1.0, 1.0));
-        assert_eq!(set_level(s, EqLevel::CompRelease, 5000.0).effects.comp_release_ms, 2000.0);
-    }
-
-    #[test]
-    fn effects_by_name() {
+        // Effects by name.
         let p = StoredPrefs::default();
         let c = set_by_name(&p, "compressorPreset", "strong").unwrap().prefs;
         assert!(c.compressor && c.comp_ratio == 5.0 && c.sound_chain_on());
@@ -2428,7 +2129,76 @@ mod tests {
     }
 
     #[test]
-    fn sound_bypass() {
+    fn lookups_switch() {
+        // Stored off stays off.
+        let kept = load(&save(&StoredPrefs { third_party_lookups: false, auto_eq_download: false, ..StoredPrefs::default() }));
+        assert!(!kept.third_party_lookups && !kept.auto_eq_download);
+        let p = StoredPrefs { third_party_lookups: false, auto_eq_download: false, ..StoredPrefs::default() };
+        let on = set_by_name(&p, "autoEqDownload", "true").unwrap().prefs;
+        assert!(on.auto_eq_download && on.third_party_lookups, "the AutoEQ list switches lookups on");
+        assert!(!set_by_name(&on, "autoEqDownload", "false").unwrap().prefs.auto_eq_download);
+
+        // Lyrics online and lookups switch.
+        let p = StoredPrefs::default();
+        let on = set_by_name(&p, "lyricsOnline", "true").unwrap().prefs;
+        assert!(on.lyrics_online && on.third_party_lookups, "lyrics online switches lookups on");
+        let off = set_by_name(&on, "lyricsLrclib", "false").unwrap().prefs;
+        assert!(!off.lyrics_online && off.third_party_lookups, "and off leaves the lookups alone");
+        let all_off = set_by_name(&on, "thirdPartyLookups", "false").unwrap().prefs;
+        assert!(!all_off.lyrics_online && !all_off.third_party_lookups);
+        let all_on = set_by_name(&all_off, "thirdPartyLookups", "true").unwrap().prefs;
+        assert!(all_on.lyrics_online && all_on.third_party_lookups);
+    }
+
+    #[test]
+    fn band_levels() {
+        let s = sound();
+        let b = set_band(s.clone(), 3, band_from(42, 5.0, 30.0, 0.0, 7));
+        assert_eq!(b.eq_bands[3], band_from(0, 20.0, 12.0, 0.2, 0));
+        let ok = band_from(1, 120.0, -3.5, 0.7, 2);
+        assert_eq!(set_band(s.clone(), 0, ok).eq_bands[0], ok);
+        assert_eq!(set_band(s.clone(), 99, ok), s, "no such band");
+
+        // Set level snaps and holds.
+        let s = sound();
+        assert_eq!(set_level(s.clone(), EqLevel::Balance, 0.03).balance, 0.0);
+        assert_eq!(set_level(s.clone(), EqLevel::Balance, -3.0).balance, -1.0);
+        assert_eq!(set_level(s.clone(), EqLevel::Crossfeed, 0.5).crossfeed_db, 0.0);
+        assert_eq!(set_level(s.clone(), EqLevel::Crossfeed, 20.0).crossfeed_db, 12.0);
+        assert_eq!(set_level(s.clone(), EqLevel::CrossfeedCut, 100.0).crossfeed_hz, 300.0);
+        assert_eq!(set_level(s.clone(), EqLevel::CrossfeedCut, 912.4).crossfeed_hz, 912.0);
+        assert_eq!(set_level(s.clone(), EqLevel::Limiter, 2.0).limiter_threshold_db, 0.0);
+        assert_eq!(set_level(s, EqLevel::Preamp, -30.0).eq_preamp_db, Some(-20.0));
+
+        // Band marks.
+        assert_eq!(band_mark(0, 0), BandMark::None);
+        assert_eq!(band_mark(1, 1), BandMark::Left);
+        assert_eq!(band_mark(8, 0), BandMark::LowShelf);
+        assert_eq!(band_mark(2, 0), BandMark::HighShelf);
+        assert_eq!(band_mark(9, 2), BandMark::Right);
+        assert_eq!(band_mark(6, 0), BandMark::NoGain);
+
+        // Effect levels hold and snap off.
+        for (i, l) in EqLevel::ALL.iter().enumerate() {
+            assert_eq!(*l as usize, i, "the door's ordinal is the declaration's");
+        }
+        let s = sound();
+        assert_eq!(set_level(s.clone(), EqLevel::VolumeBoost, 30.0).effects.volume_boost_db, 12.0);
+        assert_eq!(set_level(s.clone(), EqLevel::VolumeBoost, 0.1).effects.volume_boost_db, 0.0, "the bottom is off");
+        assert_eq!(set_level(s.clone(), EqLevel::Virtualizer, 0.01).effects.virtualizer, 0.0);
+        assert_eq!(set_level(s.clone(), EqLevel::BassBoost, f32::NAN).effects.bass_boost_db, 0.0);
+        let r = set_level(s.clone(), EqLevel::CompRatio, 0.5);
+        assert_eq!((r.effects.comp_ratio, EqLevel::CompRatio.of(&r)), (1.0, 1.0));
+        assert_eq!(set_level(s, EqLevel::CompRelease, 5000.0).effects.comp_release_ms, 2000.0);
+    }
+
+    #[test]
+    fn bypasses() {
+        assert_eq!(eq_bypass(false, false), None);
+        assert_eq!(eq_bypass(true, true), Some(EqBypass::BitPerfect));
+        assert_eq!(eq_bypass(false, true), Some(EqBypass::Output));
+
+        // Sound bypass.
         let busy = StoredPrefs { eq_enabled: true, crossfeed_db: 4.5, limiter: true, compressor: true, ..StoredPrefs::default() };
         assert!(busy.sound_chain_on());
         let bypassed = set_by_name(&busy, "soundBypass", "true").unwrap().prefs;
@@ -2440,6 +2210,203 @@ mod tests {
         assert!(!sound_from("{}").unwrap().bypass, "an old profile has it off");
         assert!(StoredPrefs::default().with_sound(s).sound_bypass);
         assert!(!sound_json(&busy.sound()).contains("bypass"), "left out when off, as before");
+
+        // Auto preamp off keeps level.
+        let mut s = sound();
+        s.eq_enabled = true;
+        s.eq_bands[2].gain_db = 4.5;
+        assert_eq!(s.effective_preamp_db(), -4.5);
+        let manual = set_auto_preamp(s.clone(), false);
+        assert_eq!(manual.eq_preamp_db, Some(-4.5));
+        assert_eq!(set_auto_preamp(manual, true).eq_preamp_db, None);
+        assert_eq!(SoundSettings { eq_enabled: false, ..s.clone() }.effective_preamp_db(), 0.0);
+        assert_eq!(set_auto_preamp(SoundSettings { eq_enabled: false, ..s }, false).eq_preamp_db, Some(0.0));
+    }
+
+    #[test]
+    fn servers() {
+        let s = |id: &str, name: &str| SavedServer { id: id.into(), name: name.into(), ..SavedServer::default() };
+        let list = ServerList { servers: vec![s("a", "A"), s("b", "B")], active_server_id: "b".into() };
+        let l = servers_activated(list.clone(), s("a", "A2"));
+        assert_eq!(l.servers.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["B", "A2"], "replaced, and moved to the end");
+        assert_eq!(l.active_server_id, "a");
+        let l = servers_updated(list.clone(), s("a", "A3"));
+        assert_eq!((l.servers[0].name.as_str(), l.active_server_id.as_str()), ("A3", "b"));
+        assert_eq!(servers_updated(list.clone(), s("z", "Z")).servers.len(), 2, "an unknown profile is not added");
+        let l = servers_removed(list.clone(), "b".into());
+        assert_eq!((l.servers.len(), l.active_server_id.as_str()), (1, "a"), "the first one left takes over");
+        assert_eq!(servers_removed(list.clone(), "a".into()).active_server_id, "b");
+        assert_eq!(servers_removed(ServerList { servers: vec![s("a", "")], active_server_id: "a".into() }, "a".into()).active_server_id, "");
+        assert_eq!((server_db_id(""), server_db_id("x1")), ("default".into(), "x1".into()));
+        let id = new_server_id();
+        assert_eq!(id.len(), 8);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(new_server_id(), new_server_id());
+
+        // Server labels.
+        assert_eq!(label("Home", "https://x"), "Home");
+        assert_eq!(label(" ", "https://music.example.com:4533/navidrome"), "music.example.com:4533");
+        assert_eq!(label("", "music.example.com/x"), "music.example.com");
+        assert_eq!(label("", ""), "");
+
+        // Login reuses saved profile.
+        let saved = SavedServer { id: "a1".into(), name: "Home".into(), url: "http://10.0.2.2:4534/".into(), user: "admin".into(), password: "old".into(), music_folder_id: "3".into(), ..SavedServer::default() };
+        let other = SavedServer { id: "b2".into(), url: "http://10.0.2.2:4534".into(), user: "guest".into(), ..SavedServer::default() };
+        let list = ServerList { servers: vec![saved.clone(), other], active_server_id: "b2".into() };
+        let form = SavedServer { id: new_server_id(), url: " HTTP://10.0.2.2:4534 ".into(), user: "Admin".into(), password: "new".into(), ..SavedServer::default() };
+        let kept = server_for_login(list.clone(), form.clone());
+        assert_eq!((kept.id.as_str(), kept.password.as_str(), kept.name.as_str(), kept.music_folder_id.as_str()), ("a1", "new", "Home", "3"), "{kept:?}");
+        let l = servers_activated(list.clone(), kept);
+        assert_eq!((l.servers.len(), l.active_server_id.as_str()), (2, "a1"), "activated, not copied");
+        // Another user of the same server, or another server, is a profile of its own.
+        let stranger = SavedServer { user: "someone".into(), ..form.clone() };
+        assert_eq!(server_for_login(list.clone(), stranger.clone()), stranger);
+        let elsewhere = SavedServer { url: "https://music.example".into(), ..form.clone() };
+        assert_eq!(server_for_login(list.clone(), elsewhere.clone()), elsewhere);
+        // A saved profile edited keeps its own id, whatever the others are.
+        let edited = SavedServer { id: "b2".into(), ..form };
+        assert_eq!(server_for_login(list.clone(), edited.clone()), edited);
+
+        // Login form.
+        let h = parse_headers("X-Auth: a:b\n: nope\nno colon\n  CF-Id :  x  \nX-Auth: c");
+        assert_eq!(h.len(), 2);
+        assert_eq!(h["X-Auth"], "c", "the last one wins");
+        assert_eq!(h["CF-Id"], "x");
+        assert_eq!(server_headers_text(parse_headers("b: 2\na: 1")), "a: 1\nb: 2");
+        assert_eq!(server_url_schemes("music.local".into()), ["https://", "http://"]);
+        assert!(server_url_schemes("".into()).is_empty() && server_url_schemes("http://x".into()).is_empty());
+        let p = SavedServer { url: " https://x ".into(), alt_url: " y ".into(), ..SavedServer::default() };
+        assert!(!server_ready(p.clone()), "a user or a key");
+        assert!(server_ready(SavedServer { user: "u".into(), ..p.clone() }));
+        assert!(server_ready(SavedServer { api_key: "k".into(), ..p.clone() }));
+        assert!(!server_ready(SavedServer { url: "  ".into(), user: "u".into(), ..p.clone() }));
+        let f = server_from_form(p, "A: 1".into());
+        assert_eq!((f.url.as_str(), f.alt_url.as_str(), f.headers["A"].as_str()), ("https://x", "y", "1"));
+    }
+
+    fn sound() -> SoundSettings {
+        sound_from("{}").unwrap()
+    }
+
+    #[test]
+    fn eq_edits() {
+        let flat = NamedPreset { kind: nori_model::PresetKind::Flat, preamp_db: 0.0, bands: vec![] };
+        let s = apply_preset(SoundSettings { eq_preamp_db: Some(-4.0), ..sound() }, &flat);
+        assert!(s.eq_enabled);
+        assert_eq!(s.eq_preamp_db, None, "a pre-amp of 0 is automatic");
+        assert_eq!(s.eq_bands, graphic());
+        let bass = NamedPreset { kind: nori_model::PresetKind::BassBoost, preamp_db: -6.0, bands: vec![nori_model::EqBand { kind: EqKind::LowShelf, freq: 100.0, gain_db: 6.0, q: 0.7 }] };
+        let s = apply_preset(sound(), &bass);
+        assert_eq!(s.eq_preamp_db, Some(-6.0));
+        assert_eq!(s.eq_bands, [band_from(1, 100.0, 6.0, 0.7, 0)]);
+
+        let added = add_band(sound());
+        assert_eq!(added.eq_bands.len(), 11);
+        assert_eq!(added.eq_bands[10], band_from(0, 1000.0, 0.0, 1.0, 0));
+        assert_eq!(remove_band(added.clone(), 10).eq_bands, graphic());
+        assert_eq!(remove_band(added, 99).eq_bands.len(), 11);
+        let one = SoundSettings { eq_bands: vec![band_from(2, 5.0, 1.0, 1.0, 0)], ..sound() };
+        assert_eq!(remove_band(one, 0).eq_bands, graphic(), "never an empty equalizer");
+
+        // Graphic edits.
+        let g = SoundSettings { eq_mode: EqMode::Graphic, ..sound() };
+        let moved = set_graphic(g.clone(), 3, 20.0);
+        assert_eq!(moved.eq_graphic[3], 12.0, "held to the range");
+        assert_eq!(moved.eq_bands, g.eq_bands, "the parametric bands are left alone");
+        assert_eq!(set_graphic(g.clone(), 10, 3.0), g, "past the end: nothing");
+        // Automatic pre-amp: the largest slider paid back.
+        let loud = set_graphic(set_graphic(g.clone(), 0, 6.0), 5, -9.0);
+        assert_eq!(SoundSettings { eq_enabled: true, ..loud.clone() }.effective_preamp_db(), -6.0);
+        // A preset lands on the sliders; the bands are kept for when parametric comes back.
+        let bass = NamedPreset { kind: nori_model::PresetKind::BassBoost, preamp_db: -6.0, bands: vec![nori_model::EqBand { kind: EqKind::LowShelf, freq: 100.0, gain_db: 6.0, q: 0.7 }] };
+        let p = apply_preset(loud.clone(), &bass);
+        assert!(p.eq_enabled && p.eq_preamp_db.is_none());
+        assert!(p.eq_graphic[0] > 5.0 && p.eq_graphic[9].abs() < 0.1, "{:?}", p.eq_graphic);
+        assert_eq!(p.eq_bands, loud.eq_bands);
+        assert_eq!(eq_reset_bands(p.clone()).eq_graphic, vec![0.0; 10]);
+        assert_eq!(eq_reset_bands(p.clone()).eq_bands, p.eq_bands, "reset is the one in use");
+        // Filters imported on the parametric equalizer stay filters there; the graphic one fits them (below).
+        let imported = import(SoundSettings { eq_mode: EqMode::Parametric, ..p }, "Filter 1: ON PK Fc 105 Hz Gain -3.5 dB Q 0.70\n").unwrap();
+        assert_eq!(imported.eq_mode, EqMode::Parametric);
+        // Another layout draws the same curve.
+        assert_eq!(relayout_graphic(&[0.0, 2.0, 4.0, 6.0, 4.0, 2.0, 0.0, -2.0, -4.0, -6.0], 31).len(), 31);
+        assert_eq!(decode_graphic("1,2,3"), None, "not a layout");
+        assert_eq!(decode_graphic(&vec!["99"; 10].join(",")), Some(vec![12.0; 10]));
+
+        // Eq mode migration.
+        assert_eq!(load(&HashMap::new()).eq_mode, EqMode::Graphic, "a new install");
+        // From before this version, with only the defaults: nothing was set up, so graphic.
+        assert_eq!(load(&stored_before(StoredPrefs::default())).eq_mode, EqMode::Graphic);
+        // From before, with a parametric equalizer in any form: it stays.
+        let d = StoredPrefs::default();
+        let mut moved = graphic();
+        moved[3].gain_db = 2.5;
+        let bass = vec![band_from(1, 100.0, 6.0, 0.7, 0)];
+        for (what, p) in [
+            ("a band moved", StoredPrefs { eq_bands: moved, ..d.clone() }),
+            ("a preset or an AutoEQ curve", StoredPrefs { eq_bands: bass, eq_preamp_db: Some(-6.0), ..d.clone() }),
+            ("a band added", StoredPrefs { eq_bands: add_band(d.sound()).eq_bands, ..d.clone() }),
+            ("the equalizer on, flat", StoredPrefs { eq_enabled: true, ..d.clone() }),
+            ("a pre-amp of its own", StoredPrefs { eq_preamp_db: Some(-3.0), ..d.clone() }),
+        ] {
+            assert_eq!(load(&stored_before(p)).eq_mode, EqMode::Parametric, "{what}");
+        }
+        // Once chosen, the choice is what is read, whatever else is stored.
+        let chosen = StoredPrefs { eq_mode: EqMode::Graphic, eq_enabled: true, eq_bands: vec![band_from(1, 100.0, 6.0, 0.7, 0)], ..d.clone() };
+        assert_eq!(load(&save(&chosen)).eq_mode, EqMode::Graphic);
+        assert_eq!(load(&save(&StoredPrefs { eq_mode: EqMode::Parametric, ..d.clone() })).eq_mode, EqMode::Parametric);
+        // A sound profile with a curve in it counts; a flat or switched-off one does not.
+        assert!(profile_parametric(&sound_json(&SoundSettings { eq_enabled: true, eq_bands: vec![band_from(1, 100.0, 6.0, 0.7, 0)], ..sound() })));
+        assert!(!profile_parametric(&sound_json(&SoundSettings { eq_enabled: false, eq_bands: vec![band_from(1, 100.0, 6.0, 0.7, 0)], ..sound() })));
+        assert!(!profile_parametric(&sound_json(&SoundSettings { eq_enabled: true, ..sound() })));
+        assert!(!profile_parametric("not json"));
+
+        // Import parametric preset.
+        let s = import(sound(), "Preamp: -6.2 dB\nFilter 1: ON PK Fc 105 Hz Gain -3.5 dB Q 0.70\n").unwrap();
+        assert!(s.eq_enabled);
+        assert_eq!(s.eq_preamp_db, Some(-6.2));
+        assert_eq!(s.eq_bands.len(), 1);
+        assert!(matches!(import(sound(), "Preamp: 0 dB\n"), Err(SoundError::NoFilters)));
+        let zero = import(sound(), "Filter 1: ON PK Fc 105 Hz Gain -3.5 dB Q 0.70\n").unwrap();
+        assert_eq!(zero.eq_preamp_db, Some(0.0), "an imported pre-amp is kept even at 0");
+
+        // Correction fits graphic sliders.
+        let graphic = include_str!("../../player/testdata/graphiceq/sennheiser-hd-600.txt");
+        let parametric = include_str!("../../player/testdata/graphiceq/sennheiser-hd-600.parametric.txt");
+        let g = SoundSettings { eq_mode: EqMode::Graphic, eq_enabled: false, ..sound() };
+        let s = import(g.clone(), graphic).unwrap();
+        assert!(s.eq_enabled && s.eq_mode == EqMode::Graphic, "it stays on the graphic equalizer");
+        assert_eq!(s.eq_graphic.len(), 10);
+        assert_eq!(s.eq_bands, g.eq_bands, "the parametric bands are left as they were");
+        assert_eq!(s.eq_graphic_target.len(), nori_player::graphic::TARGET_POINTS);
+        let preamp = s.eq_preamp_db.unwrap();
+        assert!(preamp < -3.0, "the pre-amp pays back the boost: {preamp}");
+        // The filters, where there is no curve, are a target too.
+        assert!(import(g.clone(), parametric).unwrap().eq_graphic.iter().any(|v| *v != 0.0));
+        assert!(matches!(import(g, "Preamp: 0 dB\n"), Err(SoundError::NoFilters)));
+        // Another layout is fitted to the correction again, not stretched from the ten sliders.
+        let p = StoredPrefs::default().with_sound(s.clone());
+        let l = set_by_name(&p, "eqLayout", "31").unwrap().prefs;
+        let t: Vec<f64> = s.eq_graphic_target.iter().map(|v| *v as f64).collect();
+        let fitted = nori_player::graphic::fit_target(&t, 31, 12.0).unwrap();
+        assert_eq!(l.eq_graphic, fitted.sliders.iter().map(|v| *v as f32).collect::<Vec<_>>());
+        assert_eq!(l.eq_graphic_target, s.eq_graphic_target);
+        // Moved by hand, a preset or a reset: the correction is gone.
+        assert!(set_graphic(s.clone(), 0, 1.0).eq_graphic_target.is_empty());
+        assert!(eq_reset_bands(s.clone()).eq_graphic_target.is_empty());
+        // And it travels in a sound profile.
+        assert_eq!(sound_from(&sound_json(&s)).unwrap(), s);
+        // How closely it is followed, for the screen.
+        let f = crate::dsp::graphic_follow(s.eq_graphic.clone(), s.eq_graphic_target.clone()).unwrap();
+        assert!(f.rms_db > 0.0 && f.rms_db < 2.0 && f.max_db >= f.rms_db);
+        assert!(crate::dsp::graphic_follow(s.eq_graphic, Vec::new()).is_none());
+    }
+
+    /// Settings as an install from before the graphic equalizer stored them: everything but the choice.
+    fn stored_before(p: StoredPrefs) -> HashMap<String, PrefValue> {
+        let mut raw = save(&p);
+        raw.remove(EQ_MODE_KEY);
+        raw
     }
 
     #[test]
@@ -2462,17 +2429,6 @@ mod tests {
         let s = sound_from(&sound_json(&custom.sound())).unwrap();
         assert_eq!(s.crossfeed_hz, 900.0);
         assert_eq!(sound_from("{\"crossfeedDb\": 4.5}").unwrap().crossfeed_hz, 700.0);
-    }
-
-    #[test]
-    fn import_parametric_preset() {
-        let s = import(sound(), "Preamp: -6.2 dB\nFilter 1: ON PK Fc 105 Hz Gain -3.5 dB Q 0.70\n").unwrap();
-        assert!(s.eq_enabled);
-        assert_eq!(s.eq_preamp_db, Some(-6.2));
-        assert_eq!(s.eq_bands.len(), 1);
-        assert!(matches!(import(sound(), "Preamp: 0 dB\n"), Err(SoundError::NoFilters)));
-        let zero = import(sound(), "Filter 1: ON PK Fc 105 Hz Gain -3.5 dB Q 0.70\n").unwrap();
-        assert_eq!(zero.eq_preamp_db, Some(0.0), "an imported pre-amp is kept even at 0");
     }
 
     #[test]

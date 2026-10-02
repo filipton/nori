@@ -65,15 +65,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn nothing_saved_on_the_server_says_so() {
+    fn library_answers() {
         assert_eq!(resume_plan(PlayQueue { songs: vec![], index: 3, position_ms: 9, origin: None }), ResumePlan::Nothing);
         let s = Song { id: "a".into(), ..Default::default() };
         assert_eq!(resume_plan(PlayQueue { songs: vec![s.clone()], index: 0, position_ms: 1200, origin: None }), ResumePlan::Play { songs: vec![s], index: 0, position_ms: 1200 });
-    }
 
-    #[test]
-    fn the_local_day_is_near_utcs() {
+        // The local day is near utcs.
         let utc = nori_db::now_ms() / 86_400_000;
         assert!((local_epoch_day() - utc).abs() <= 1);
     }
+
 }

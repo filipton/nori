@@ -475,7 +475,7 @@ mod tests {
     }
 
     #[test]
-    fn discs_in_order_with_their_titles() {
+    fn album_pages() {
         let album = Album { artist: "Björk".into(), ..Default::default() };
         let songs = vec![song(2), song(0), song(1), song(2)];
         let titles = vec![DiscTitle { disc: 2, title: "Bonus".into() }, DiscTitle { disc: 1, title: " ".into() }];
@@ -483,10 +483,8 @@ mod tests {
         assert_eq!(g.iter().map(|x| (x.disc, x.headed, x.title.as_str(), x.songs.clone())).collect::<Vec<_>>(), [(1, true, "", vec![1, 2]), (2, true, "Bonus", vec![0, 3])]);
         let one = album_discs(&album, &[song(1), song(1)], &[]);
         assert_eq!((one.len(), one[0].headed), (1, false));
-    }
 
-    #[test]
-    fn album_rows_omit_album_artist() {
+        // Album rows omit album artist.
         let album = Album { artist: "Björk".into(), ..Default::default() };
         let by = |artist: &str, explicit: &str| Song { artist: artist.into(), explicit_status: explicit.into(), ..Default::default() };
         let d = AlbumDetail::new(album, vec![by("BJÖRK", ""), by("Björk", "explicit"), by("Thom Yorke", "")], vec![]);
@@ -495,15 +493,13 @@ mod tests {
     }
 
     #[test]
-    fn artist_page_album_years() {
+    fn artist_pages() {
         let artist = Artist { name: "Björk".into(), ..Default::default() };
         let album = |artist: &str, year: u32| Album { artist: artist.into(), year, ..Default::default() };
         let d = ArtistDetail::new(artist, vec![album("björk", 1997), album("Björk & Thom Yorke", 2001), album("Björk", 0)]);
         assert_eq!(d.albums.iter().map(|a| a.subtitle.as_str()).collect::<Vec<_>>(), ["1997", "2001", ""]);
-    }
 
-    #[test]
-    fn releases_by_kind_newest_first() {
+        // Releases by kind newest first.
         let a = |year: u32, types: &[&str], comp: bool| Album { year, release_types: types.iter().map(|t| t.to_string()).collect(), is_compilation: comp, ..Default::default() };
         let albums = vec![a(2001, &[], false), a(2010, &["album", "live"], false), a(2005, &["single"], false), a(2003, &["ep"], false), a(2020, &[], false), a(1999, &[], true)];
         let g = release_groups(&albums);
@@ -523,7 +519,7 @@ mod tests {
     }
 
     #[test]
-    fn filters_and_letters() {
+    fn filters_and_search() {
         let idx = TextIndex::new(vec![vec!["abba".into()], vec!["Björk".into()], vec!["!!!".into()], vec!["Beck".into(), "x".into()], vec!["ßuper".into()]]);
         let all = idx.view("  ".into());
         assert_eq!(all.rows, [0, 1, 2, 3, 4]);
@@ -534,20 +530,38 @@ mod tests {
         assert_eq!(idx.view("BJÖ".into()).rows, [1]);
         assert_eq!(idx.view("X".into()).rows, [3]);
         assert_eq!(biography("Hello <a href=x>more</a>".into()), "Hello ");
+
+        // Library offer and filter.
+        let offer = |playlist: bool| Some(LibraryOffer { playlist });
+        assert_eq!(library_offer("ext-deezer-album-1".into(), true), offer(false));
+        assert_eq!(library_offer("pl-deezer-1".into(), false), offer(true));
+        assert_eq!(library_offer("al-1".into(), false), None);
+        assert_eq!((filter_offered(12, false), filter_offered(13, false), filter_offered(3, true)), (false, true, true));
+        let a = |id: &str| nori_model::Artist { id: id.into(), ..Default::default() };
+        assert_eq!(similar_artists(vec![a(""), a("x")]).len(), 1);
+
+        // A search puts names before descriptions.
+        let idx = TextIndex::new(vec![
+            vec!["Keep albums gapless".into(), "No mixing".into()],
+            vec!["AMOLED black".into(), "Pixels off".into()],
+            vec!["Crossfade".into(), "Songs fade, gapless otherwise".into()],
+            vec!["Gapless".into(), "".into()],
+        ]);
+        assert_eq!(idx.ranked("gapless".into()), [0, 3, 2]);
+        assert_eq!(idx.ranked("OLED".into()), [1]);
+        assert!(idx.ranked(" ".into()).is_empty());
     }
 
     #[test]
-    fn page_queue_origin() {
+    fn page_queue() {
         let album = AlbumDetail::new(Album { id: "al".into(), ..Default::default() }, vec![], vec![]);
         assert_eq!(album.queue.origin(), PageOrigin::new(OriginKind::Album, "al"));
         let artist = ArtistDetail::new(Artist { id: "ar".into(), ..Default::default() }, vec![Album { id: "al".into(), ..Default::default() }]);
         assert_eq!(artist.queue.origin(), PageOrigin::new(OriginKind::Artist, "ar"), "the artist, not its albums");
         let playlist = PlaylistDetail::new(Playlist { id: "pl".into(), ..Default::default() }, vec![]);
         assert_eq!(playlist.queue.origin_ref(), &PageOrigin::new(OriginKind::Playlist, "pl"));
-    }
 
-    #[test]
-    fn hero_buttons_follow_own_queue() {
+        // Hero buttons follow own queue.
         // Another page's queue playing and shuffling: this page shows Play and Shuffle, and both start its own.
         let away = hero_buttons(false, true, true, false, true, true);
         assert_eq!((away.shuffle_lit, away.pausing, away.play_press, away.shuffle_press), (false, false, HeroPress::Start, HeroPress::Start));
@@ -575,27 +589,4 @@ mod tests {
         assert_eq!((d("  ", true, true), playlist_description(None, true, true)), (None, None));
     }
 
-    #[test]
-    fn library_offer_and_filter() {
-        let offer = |playlist: bool| Some(LibraryOffer { playlist });
-        assert_eq!(library_offer("ext-deezer-album-1".into(), true), offer(false));
-        assert_eq!(library_offer("pl-deezer-1".into(), false), offer(true));
-        assert_eq!(library_offer("al-1".into(), false), None);
-        assert_eq!((filter_offered(12, false), filter_offered(13, false), filter_offered(3, true)), (false, true, true));
-        let a = |id: &str| nori_model::Artist { id: id.into(), ..Default::default() };
-        assert_eq!(similar_artists(vec![a(""), a("x")]).len(), 1);
-    }
-
-    #[test]
-    fn a_search_puts_names_before_descriptions() {
-        let idx = TextIndex::new(vec![
-            vec!["Keep albums gapless".into(), "No mixing".into()],
-            vec!["AMOLED black".into(), "Pixels off".into()],
-            vec!["Crossfade".into(), "Songs fade, gapless otherwise".into()],
-            vec!["Gapless".into(), "".into()],
-        ]);
-        assert_eq!(idx.ranked("gapless".into()), [0, 3, 2]);
-        assert_eq!(idx.ranked("OLED".into()), [1]);
-        assert!(idx.ranked(" ".into()).is_empty());
-    }
 }

@@ -200,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn a_library_song_offers_everything() {
+    fn song_menus() {
         let s = Song { id: "1".into(), album_id: Some("al".into()), artist_id: Some("ar".into()), artist: "Björk".into(), ..Default::default() };
         let m = song_menu(s, false, SongDownload::None, false);
         use SongAction::*;
@@ -212,10 +212,8 @@ mod tests {
                 (StartRadio, true), (InstantMix, true), (ExcludeFromMixes, true), (Share, true), (Details, true),
             ]
         );
-    }
 
-    #[test]
-    fn provider_song_menu() {
+        // Provider song menu.
         let s = Song {
             id: "ext-deezer-song-9".into(),
             is_external: true,
@@ -223,7 +221,6 @@ mod tests {
             ..Default::default()
         };
         let m = song_menu(s, true, SongDownload::Pending, true);
-        use SongAction::*;
         assert_eq!(
             actions(&m),
             [
@@ -247,14 +244,12 @@ mod tests {
     }
 
     #[test]
-    fn swipe_favourite_toggles() {
+    fn marks() {
         assert_eq!(row_swipe(SwipeAction::None, false), None);
         assert_eq!(row_swipe(SwipeAction::Favourite, true), Some(RowSwipeAct::Favourite { on: false }));
         assert_eq!(row_swipe(SwipeAction::Favourite, false), Some(RowSwipeAct::Favourite { on: true }));
-    }
 
-    #[test]
-    fn a_rows_download_mark() {
+        // A rows download mark.
         use DownloadPhase as P;
         assert_eq!(download_glyph(Some(P::Done), false, false), DownloadGlyph::Done);
         assert_eq!(download_glyph(Some(P::Failed), true, false), DownloadGlyph::Failed, "this session's phase wins");
@@ -266,13 +261,12 @@ mod tests {
         assert_eq!(download_glyph(None, true, true), DownloadGlyph::Done);
         assert_eq!(download_glyph(None, false, true), DownloadGlyph::Ring);
         assert_eq!(download_glyph(None, false, false), DownloadGlyph::None);
-    }
 
-    #[test]
-    fn the_download_entry_says_what_is_left() {
+        // The download entry says what is left.
         assert_eq!(download_entry(0, 0), DownloadAct::All);
         assert_eq!(download_entry(10, 0), DownloadAct::Remove);
         assert_eq!(download_entry(10, 10), DownloadAct::All);
         assert_eq!(download_entry(10, 3), DownloadAct::Missing);
     }
+
 }

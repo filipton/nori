@@ -175,7 +175,7 @@ mod tests {
     }
 
     #[test]
-    fn server_answers_are_deduplicated_and_split() {
+    fn server_answers() {
         let r = search_split(result());
         assert!(r.providers.is_some());
         assert_eq!(ids(&r.everything.songs, |s| &s.id), ["1", "ext-2", "3"]);
@@ -186,14 +186,13 @@ mod tests {
         assert_eq!(ids(&prov.songs, |s| &s.id), ["ext-2"]);
         assert_eq!(ids(&prov.albums, |a| &a.id), ["ext-al"]);
         assert!(prov.artists.is_empty());
-    }
 
-    #[test]
-    fn a_library_only_answer_is_not_copied() {
+        // A library only answer is not copied.
         let mut r = result();
         r.songs.retain(|s| !s.is_external);
         r.albums.retain(|a| !a.is_external);
         let s = search_split(r);
         assert!(s.library.is_none() && s.providers.is_none());
     }
+
 }
