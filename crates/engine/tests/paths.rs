@@ -3106,3 +3106,37 @@ fn new_queue_ignores_old_next_failing() {
     assert!(!after.iter().any(|e| matches!(e, Event::Stopped { .. } | Event::State(State::Paused | State::Ended | State::Idle))), "{after:?}");
     rig.engine.stop();
 }
+
+/// Host perf report for offload (run with `perf_report`, tools/perf-host.sh): MP3s on a phone-like
+/// offload track (64 KB granted, asking below half), per minute of music the engine's wakes, CPU time
+/// and allocations. Not a check.
+#[test]
+#[ignore]
+fn offload_perf_report() {
+    if !ffmpeg() {
+        eprintln!("ffmpeg is not installed: nothing to offload");
+        return;
+    }
+    let d = dir();
+    let (a, b) = (mp3_320(&d, "a", 120, 440), mp3_320(&d, "b", 120, 660));
+    let server = Arc::new(Server::default());
+    serve(&server, &[("a", &a), ("b", &b)]);
+    let fake = Fake::new(MP3_ONLY);
+    fake.phone(true, false);
+    let songs = vec![("a".into(), "mp3".into(), 120_000), ("b".into(), "mp3".into(), 120_000)];
+    let rig = Rig::new(server, songs, app(), Some(fake.clone()), offload());
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait(10, |r| r.engine.status().offloaded && r.engine.status().position_ms > 1_000), "{:?}", rig.engine.status());
+    let (wakes, cpu, allocs, at) = (rig.time.clock.sleeps(), crate::engine::cpu_ms(), crate::perf_alloc::counts().0, rig.now_ms());
+    rig.run(200_000);
+    let minutes = (rig.now_ms() - at) as f64 / 60_000.0;
+    let per = |v: f64| v / minutes;
+    println!(
+        "perf: offload    music {minutes:5.2} min | wakes/min {:7.1} | cpu ms/min {:8.1} | allocs/min {:9.0}",
+        per((rig.time.clock.sleeps() - wakes) as f64),
+        per(crate::engine::cpu_ms() - cpu),
+        per((crate::perf_alloc::counts().0 - allocs) as f64),
+    );
+    assert!(rig.engine.status().offloaded, "{:?}", rig.engine.status());
+    rig.engine.stop();
+}

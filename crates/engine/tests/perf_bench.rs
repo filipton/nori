@@ -6,7 +6,7 @@
 //   cargo test --release -p nori-engine --test engine perf_report -- --ignored --nocapture --test-threads=1
 
 /// Process CPU time (user and system), ms.
-fn cpu_ms() -> f64 {
+pub(crate) fn cpu_ms() -> f64 {
     let mut u: libc::rusage = unsafe { std::mem::zeroed() };
     // SAFETY: getrusage fills the struct it is handed.
     unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) };
