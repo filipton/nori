@@ -8,7 +8,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 
 use nori_engine::core::{Analyses, CoreLibrary, Downloader, Measurer, Shelf, Whole};
-use nori_engine::{Body, ByteSource, Library, Source, Recent, Store};
+use nori_engine::{Body, ByteSource, Library, Source, Store};
 use nori_core::client::{Client, NetProfile};
 #[cfg(feature = "neural-beats")]
 use nori_core::transport::{Exchange, Transport, TransportError, TransportResponse};
@@ -88,7 +88,7 @@ fn downloads_and_measuring_over_core() {
     let net = Arc::new(NoApi::default());
     let client = Client::new(core.clone(), net.clone(), Default::default());
     client.set_profile(NetProfile { url: "http://music.test".into(), ..Default::default() });
-    let store = Store::open(dir.join("music"), 64 << 20, Box::new(Recent::default())).unwrap();
+    let store = Store::open(dir.join("music"), 64 << 20).unwrap();
     let audio = Arc::new(Audio::default());
     // The client the analyses work through; the real model's test swaps it for one that serves it.
     let current = Arc::new(Mutex::new(client.clone()));

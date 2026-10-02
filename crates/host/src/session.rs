@@ -22,7 +22,7 @@ use nori_core::{Core, CoreError, IngestStats, PageOrigin, Song};
 use nori_covers::loader::{Config as CoverConfig, Loader, Ticket};
 use nori_covers::memory::Image;
 use nori_engine::core::{settings, Analyses, CoreApp, CoreLibrary, CoreQueue, Downloader, Measurer, OutputVolume};
-use nori_engine::{AudioOutput, Body, ByteSource, Cancel, Config, Engine, Event, OpenError, State, Recent, Store};
+use nori_engine::{AudioOutput, Body, ByteSource, Cancel, Config, Engine, Event, OpenError, State, Store};
 use nori_http::Http;
 use nori_look::cover::CoverColours;
 use nori_output_cpal::{CpalOutput, Volume};
@@ -205,7 +205,7 @@ impl Session {
         let loudness = Arc::new(OutputVolume::default());
         loudness.set(volume_db(o.volume));
         let output: Box<dyn AudioOutput> = Box::new(output);
-        let store = Store::open(o.data.join("music"), prefs.cache_mb.max(0) as u64 * 1024 * 1024, Box::new(Recent::default())).map_err(|e| format!("the music directory: {e}"))?;
+        let store = Store::open(o.data.join("music"), prefs.cache_mb.max(0) as u64 * 1024 * 1024).map_err(|e| format!("the music directory: {e}"))?;
         let audio = Arc::new(Audio::new(o.http.clone(), o.offline));
         let analyses = Analyses::of(client.clone());
         let downloader = Downloader::new(client.clone(), audio.clone(), store.clone(), analyses.clone());

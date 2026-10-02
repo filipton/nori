@@ -976,11 +976,6 @@ impl Demuxed {
         self.stream().map_or(0, |s| s.packet_frames)
     }
 
-    /// The song's loader, if any.
-    pub fn loader(&self) -> Option<&Arc<Loader>> {
-        self.loader.as_ref().map(|(l, _)| l)
-    }
-
     /// Opens the song `loader` fetches at `from_ms`: on a thread of its own unless all of it is here;
     /// `engine` is woken when it is open and whenever it waited for bytes. `estimated`: the server's
     /// length is a transcode's estimate, hidden from the reader while the song arrives ([`Unsized`]).

@@ -1,10 +1,9 @@
-//! `nori_core::stream_cache` (eviction order of media3's stream cache) for Kotlin, whose evictor holds the
-//! order as a handle.
+//! nori-engine's stream cache order for media3's stream cache, held by Kotlin's evictor as a handle.
 
 use jni::objects::{JClass, JObject, JObjectArray, JString};
 use jni::sys::{jlong, jobjectArray, jstring};
 use jni::JNIEnv;
-use nori_core::stream_cache::CacheOrder;
+use nori_engine::CacheOrder;
 use parking_lot::Mutex;
 
 use crate::{java_string, native, with_str, Class};

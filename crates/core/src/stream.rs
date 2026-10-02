@@ -165,8 +165,6 @@ mod tests {
         let t = c.download_target("s:1".into(), q(0, ""));
         assert_eq!(t.key, "dl:s:1");
         assert!(t.url.ends_with("&id=s%3A1"));
-        let keys = ["a:0", "a:192opus", "ab:0", "dl:a", "x:a:0"];
-        assert_eq!(keys.into_iter().filter(|k| is_copy("a", k)).collect::<Vec<_>>(), ["a:0", "a:192opus"]);
     }
 
 }

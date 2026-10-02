@@ -12,7 +12,7 @@ use common::{Stepper, Virtual};
 use nori_core::settings_store::{APPLY_AUDIO, REPLAN};
 use nori_core::{Core, Song};
 use nori_engine::core::{settings, Analyses, CoreApp, CoreLibrary, CoreQueue};
-use nori_engine::{Body, ByteSource, Config, Engine, Recent, Store};
+use nori_engine::{Body, ByteSource, Config, Engine, Store};
 
 /// `secs` of a quiet tone as a WAV file, a different pitch per seed.
 fn tone_wav(secs: usize, seed: u32) -> Vec<u8> {
@@ -47,7 +47,7 @@ impl Rig {
         let dir = nori_testdir::TempDir::new(name);
         let (core, client) = common::own_core(&dir, |p| (p.auto_mix, p.crossfade_keep_albums, p.auto_mix_max_s) = (true, keep, 8));
         let prefs = core.session.settings.current().unwrap();
-        let store = Store::open(dir.join("music"), 256 << 20, Box::new(Recent::default())).unwrap();
+        let store = Store::open(dir.join("music"), 256 << 20).unwrap();
         let songs: Vec<Song> = ids
             .iter()
             .enumerate()

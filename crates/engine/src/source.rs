@@ -719,11 +719,6 @@ impl Loader {
         self.0.state.lock().data.len()
     }
 
-    /// Reads from its cache entry, its memory copy dropped.
-    pub fn on_disk(&self) -> bool {
-        self.0.state.lock().disk.is_some()
-    }
-
     /// Bytes it will hold once its burst is in (capped); 0 once read from disk.
     pub fn holding(&self) -> u64 {
         let s = self.0.state.lock();
@@ -1469,7 +1464,7 @@ mod tests {
     #[test]
     fn whole_cached_song_read_from_disk() {
         let d = nori_testdir::TempDir::new("source-disk");
-        let store = Arc::new(crate::store::Store::open(d.path(), 1 << 22, Box::new(crate::store::Recent::default())).unwrap());
+        let store = Arc::new(crate::store::Store::open(d.path(), 1 << 22).unwrap());
         let s = server(300_000);
         let fetching = Arc::new(Fetching::default());
         let keep = store.writer("song:0").map(|w| Box::new(move || Some(w)) as Keep);

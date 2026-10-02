@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use common::card::{Card, Pull};
 use common::{Stepper, Virtual};
-use nori_engine::{Body, ByteSource, Config, Engine, Event, Library, Located, OpenError, Recent, SharedQueue, Source, State, Store};
+use nori_engine::{Body, ByteSource, Config, Engine, Event, Library, Located, OpenError, SharedQueue, Source, State, Store};
 use nori_player::sim;
 use nori_player::transitions::WindowSong;
 use parking_lot::Mutex;
@@ -263,7 +263,7 @@ fn rig_making(extra: u64, says: bool, ends: Ends, cut: Option<(&str, usize)>, ma
     let mut app = sim::App::new();
     app.prefs = sim::prefs_off();
     let config = Config { memory_mb: 256, ..Config::default() };
-    let store = making.cache.then(|| Store::open(dir.join("cache"), 64 << 20, Box::new(Recent::default())).unwrap());
+    let store = making.cache.then(|| Store::open(dir.join("cache"), 64 << 20).unwrap());
     let engine = Engine::start_on(Songs(server.clone(), songs, store), app, queue, Box::new(card.clone()), None, config, clock.clone(), move |e| seen.lock().push(e));
     engine.queue_changed();
     Some(Rig { engine, time: Stepper::new(clock, card.pull.clone()), card, events, server, _dir: dir })

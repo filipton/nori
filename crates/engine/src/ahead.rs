@@ -152,11 +152,6 @@ impl Ahead {
         }
     }
 
-    /// Whether the player took `key` over.
-    pub fn taken(&self, key: &str) -> bool {
-        self.plan.lock().taken.contains(key)
-    }
-
     /// The player takes `key`: no longer fetched here; a fetch under way stops where it got to. Returns
     /// once it stopped (after a chunk at most).
     pub fn take_over(&self, key: &str) {
@@ -311,7 +306,7 @@ mod tests {
 
     use super::*;
     use crate::source::Body;
-    use crate::store::{Recent, Store};
+    use crate::store::Store;
 
     const LEN: usize = 600_000;
 
@@ -381,7 +376,7 @@ mod tests {
     /// A store in a temporary directory.
     fn store(name: &str) -> (nori_testdir::TempDir, Arc<Store>) {
         let d = nori_testdir::TempDir::new(&format!("ahead-{name}"));
-        let s = Store::open(d.path(), 64 << 20, Box::new(Recent::default())).unwrap();
+        let s = Store::open(d.path(), 64 << 20).unwrap();
         (d, s)
     }
 
@@ -468,7 +463,6 @@ mod tests {
         }));
         // Taking it over calls the fetch's request off.
         net.called_off.take();
-        assert!(s.taken_over("a:0"));
         go.send(()).unwrap();
         let mut w = taking.join().unwrap().expect("the player's entry, where the fetch left it");
         let got = w.written() as usize;

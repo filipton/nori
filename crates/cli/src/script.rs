@@ -22,7 +22,7 @@ use nori_core::transport::Transport;
 use nori_core::settings_store::{settings_open, settings_put, APPLY_AUDIO, APPLY_GAIN, REPLAN, SOUND};
 use nori_core::{Core, Param, ServerConfig, Song};
 use nori_engine::core::{settings, Analyses, CoreApp, CoreLibrary, CoreQueue, Downloader, Measurer};
-use nori_engine::{AudioOutput, Config, Engine, Event, State, Recent, Store, WavOutput};
+use nori_engine::{AudioOutput, Config, Engine, Event, State, Store, WavOutput};
 use nori_http::Http;
 use nori_output_cpal::CpalOutput;
 
@@ -232,7 +232,7 @@ pub fn main(argv: Vec<String>) {
         (None, None) => Box::new(CpalOutput::new()),
     };
     let (tx, events): (_, Receiver<Event>) = channel();
-    let store = Store::open(a.data.join("music"), prefs.cache_mb.max(0) as u64 * 1024 * 1024, Box::new(Recent::default())).unwrap_or_else(|e| panic!("the music directory: {e}"));
+    let store = Store::open(a.data.join("music"), prefs.cache_mb.max(0) as u64 * 1024 * 1024).unwrap_or_else(|e| panic!("the music directory: {e}"));
     let audio = Arc::new(Audio::new(http.clone(), a.offline));
     let analyses = Analyses::of(client.clone());
     let downloader = Downloader::new(client.clone(), audio.clone(), store.clone(), analyses.clone());

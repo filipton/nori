@@ -14,7 +14,7 @@ use common::card::{Card, Pull};
 use common::{Stepper, Virtual};
 use nori_core::{Core, Song};
 use nori_engine::core::{settings, Analyses, CoreApp, CoreLibrary, CoreQueue, Measurer};
-use nori_engine::{Body, ByteSource, Config, Engine, Recent, Store};
+use nori_engine::{Body, ByteSource, Config, Engine, Store};
 use parking_lot::Mutex;
 
 
@@ -109,7 +109,7 @@ impl Rig {
         let dir = nori_testdir::TempDir::new(name);
         let (core, client) = common::own_core(&dir, |p| (p.auto_mix, p.precache_wifi) = (true, 2));
         let prefs = core.session.settings.current().unwrap();
-        let store = Store::open(dir.join("music"), 512 << 20, Box::new(Recent::default())).unwrap();
+        let store = Store::open(dir.join("music"), 512 << 20).unwrap();
         let whole = Arc::new(common::Signal::default());
         let w = whole.clone();
         store.on_whole(Box::new(move || w.bump()));

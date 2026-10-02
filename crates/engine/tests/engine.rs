@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{Stepper, Virtual};
-use nori_engine::{App, AudioOutput, Body, ByteSource, Config, Device, DeviceWatch, Engine, Event, Feed, Library, Located, OutputFacts, OutputFormat, OutputKind, Recent, Settings, Source, State, Store};
+use nori_engine::{App, AudioOutput, Body, ByteSource, Config, Device, DeviceWatch, Engine, Event, Feed, Library, Located, OutputFacts, OutputFormat, OutputKind, Settings, Source, State, Store};
 use nori_player::automix::analysis::Analyzer;
 use nori_player::automix::synth::Rng;
 use nori_player::automix::ANALYSIS_VERSION;
@@ -1168,7 +1168,7 @@ fn cached_song_replays_without_network() {
     let a = music(8.0, 18);
     let songs: [(&str, &[i16]); 1] = [("a", &a)];
     let dir = nori_testdir::TempDir::new("cache");
-    let store = Store::open(dir.path(), 64 << 20, Box::new(Recent::default())).unwrap();
+    let store = Store::open(dir.path(), 64 << 20).unwrap();
     let first = Extra { store: Some(store.clone()), ..Extra::default() };
     let rig = Rig::build(files(&songs), sim::App::new(), Settings::default(), first);
     rig.engine.play_at(0, 0);
@@ -2256,7 +2256,7 @@ fn next_spam_keeps_playing() {
         let mut rng = Rng(0x9E37_79B9 + round * 7919);
         let mut roll = |max: u64| ((rng.next() + 1.0) / 2.0 * max as f64) as u64;
         let dir = nori_testdir::TempDir::new("skips");
-        let store = Store::open(dir.path(), 256 << 20, Box::new(Recent::default())).unwrap();
+        let store = Store::open(dir.path(), 256 << 20).unwrap();
         let extra = Extra { store: Some(store.clone()), ..Extra::default() };
         for (k, (id, s)) in songs.iter().enumerate() {
             let bytes = wav(s);

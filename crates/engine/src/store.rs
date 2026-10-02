@@ -2,8 +2,8 @@
 //! and downloads (by id), as plain files.
 //!
 //! A streamed song is written as it loads and becomes an entry only when whole; until then it is a
-//! `.part` file. The cache is held to a size limit, evicting whole songs in the [`Order`]'s order (the
-//! core's `stream_cache`: unused this run first, then least recently used).
+//! `.part` file. The cache is held to a size limit, evicting whole songs in [`CacheOrder`]'s order (unused
+//! this run first, then least recently used).
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -13,58 +13,68 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-/// Eviction order for the stream cache.
-pub trait Order: Send + Sync {
-    /// `key` was just used.
-    fn touch(&self, key: &str);
-    /// What an earlier run left in the cache.
-    fn seed(&self, held: &[String]);
-    /// The next key to evict (forgotten once returned).
-    fn next(&self) -> Option<String>;
-    /// The cache was emptied.
-    fn clear(&self);
-}
-
-/// An earlier run's leftovers first, then least recently used (as the core's `stream_cache` orders Android's cache).
+/// The stream cache's eviction order: keys an earlier run left and this one has not used go first, then
+/// least recently used. Android's media3 cache is held to it too (crates/android stream_cache.rs).
 #[derive(Default)]
-pub struct Recent(Mutex<Stamps>);
-
-/// Each key's last use; leftovers from an earlier run get stamps below zero.
-#[derive(Default)]
-struct Stamps {
+pub struct CacheOrder {
+    /// Key use times: positive touch counts for this process, negative (counting down) for keys an
+    /// earlier run left, so those are always older.
     used: HashMap<String, i64>,
-    newest: i64,
-    oldest: i64,
+    clock: i64,
+    left: i64,
 }
 
-impl Order for Recent {
-    fn touch(&self, key: &str) {
-        let mut o = self.0.lock();
-        o.newest += 1;
-        let t = o.newest;
-        o.used.insert(key.to_string(), t);
-    }
-
-    fn seed(&self, held: &[String]) {
-        let mut o = self.0.lock();
-        for k in held {
-            if !o.used.contains_key(k) {
-                o.oldest -= 1;
-                let t = o.oldest;
-                o.used.insert(k.clone(), t);
+impl CacheOrder {
+    /// `key` was just used.
+    pub fn touch(&mut self, key: &str) {
+        self.clock += 1;
+        match self.used.get_mut(key) {
+            Some(u) => *u = self.clock,
+            None => {
+                self.used.insert(key.to_string(), self.clock);
             }
         }
     }
 
-    fn next(&self) -> Option<String> {
-        let mut o = self.0.lock();
-        let key = o.used.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone())?;
-        o.used.remove(&key);
+    /// The keys the cache held at startup; unknown ones join as older than anything used.
+    pub fn seed<'a>(&mut self, held: impl IntoIterator<Item = &'a str>) {
+        for k in held {
+            if !self.used.contains_key(k) {
+                self.left -= 1;
+                self.used.insert(k.to_string(), self.left);
+            }
+        }
+    }
+
+    /// The next key to drop, forgotten as it is returned (a later use makes it known again).
+    pub fn pop_oldest(&mut self) -> Option<String> {
+        let key = self.used.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone())?;
+        self.used.remove(&key);
         Some(key)
     }
 
-    fn clear(&self) {
-        self.0.lock().used.clear();
+    /// Every cached copy of song `id` at any quality (`<id>:<quality>`, the quality part never holding a
+    /// colon), forgotten as they are returned (the caller drops them).
+    pub fn copies(&mut self, id: &str) -> Vec<String> {
+        let keys: Vec<String> = self.used.keys().filter(|k| k.rsplit_once(':').is_some_and(|(before, _)| before == id)).cloned().collect();
+        for k in &keys {
+            self.used.remove(k);
+        }
+        keys
+    }
+
+    /// The cache was emptied.
+    pub fn clear(&mut self) {
+        self.used.clear();
+    }
+
+    /// Evicts [`CacheOrder::pop_oldest`] keys through `remove` while `space()` exceeds `max_bytes`. Twin of
+    /// `ResizableEvictor.trimLocked` (core/.../playback/MediaSources.kt).
+    pub fn trim(&mut self, max_bytes: i64, mut space: impl FnMut() -> i64, mut remove: impl FnMut(&str)) {
+        while space() > max_bytes {
+            let Some(key) = self.pop_oldest() else { return };
+            remove(&key);
+        }
     }
 }
 
@@ -118,7 +128,7 @@ struct Held {
 /// The songs on disk, shared by loaders, the downloader and the measurer.
 pub struct Store {
     dir: PathBuf,
-    order: Box<dyn Order>,
+    order: Mutex<CacheOrder>,
     held: Mutex<Held>,
     /// [`Store::fetch_ahead`].
     pub(crate) ahead: Arc<crate::ahead::Ahead>,
@@ -129,7 +139,7 @@ pub struct Store {
 
 impl Store {
     /// Opens the store in `dir` (created if needed), the stream cache limited to `limit` bytes.
-    pub fn open(dir: impl Into<PathBuf>, limit: u64, order: Box<dyn Order>) -> io::Result<Arc<Store>> {
+    pub fn open(dir: impl Into<PathBuf>, limit: u64) -> io::Result<Arc<Store>> {
         let dir = dir.into();
         fs::create_dir_all(dir.join(STREAM))?;
         // Partial entries from an earlier run are stale.
@@ -143,7 +153,7 @@ impl Store {
         fs::create_dir_all(dir.join(DOWNLOADS))?;
         Ok(Arc::new_cyclic(|me| Store {
             dir,
-            order,
+            order: Mutex::default(),
             held: Mutex::new(Held { bytes: None, limit, writing: HashSet::new(), left: HashSet::new() }),
             ahead: crate::ahead::Ahead::new(),
             whole: Mutex::new(Vec::new()),
@@ -196,7 +206,7 @@ impl Store {
         if !p.is_file() {
             return None;
         }
-        self.order.touch(key);
+        self.order.lock().touch(key);
         Some(p)
     }
 
@@ -255,11 +265,6 @@ impl Store {
         self.ahead.wait()
     }
 
-    /// Whether the player took `key` over from the fetching ahead.
-    pub fn taken_over(&self, key: &str) -> bool {
-        self.ahead.taken(key)
-    }
-
     /// Sets the cache limit, evicting what is over it.
     pub fn set_limit(&self, limit: u64) {
         self.held.lock().limit = limit;
@@ -287,7 +292,7 @@ impl Store {
         for (k, _) in self.entries() {
             self.remove(&k);
         }
-        self.order.clear();
+        self.order.lock().clear();
         self.held.lock().bytes = Some(0);
     }
 
@@ -313,7 +318,7 @@ impl Store {
         }
         let entries = self.entries();
         let keys: Vec<String> = entries.iter().map(|e| e.0.clone()).collect();
-        self.order.seed(&keys);
+        self.order.lock().seed(keys.iter().map(String::as_str));
         let total = entries.iter().map(|e| e.1).sum();
         let mut h = self.held.lock();
         *h.bytes.get_or_insert(total)
@@ -342,7 +347,7 @@ impl Store {
             h.limit
         };
         while self.held.lock().bytes.is_some_and(|b| b > limit) {
-            let Some(key) = self.order.next() else { return };
+            let Some(key) = self.order.lock().pop_oldest() else { return };
             self.remove(&key);
         }
     }
@@ -355,7 +360,7 @@ impl Store {
             let _ = fs::remove_file(part);
             return false;
         }
-        self.order.touch(key);
+        self.order.lock().touch(key);
         self.trim(len);
         for told in self.whole.lock().iter() {
             told();
@@ -482,6 +487,62 @@ impl Drop for Writer {
 mod tests {
     use super::*;
 
+    #[test]
+    fn unused_leftovers_go_first() {
+        let mut o = CacheOrder::default();
+        o.touch("a");
+        o.touch("b");
+        o.seed(["a", "old", "b"]);
+        o.touch("a");
+        assert_eq!([o.pop_oldest(), o.pop_oldest(), o.pop_oldest(), o.pop_oldest()], [Some("old".into()), Some("b".into()), Some("a".into()), None]);
+        o.touch("b");
+        assert_eq!(o.pop_oldest().as_deref(), Some("b"), "known again after use");
+    }
+
+    #[test]
+    fn copies_take_every_quality() {
+        let mut o = CacheOrder::default();
+        o.touch("x:0");
+        o.touch("x:192opus");
+        o.touch("xy:0");
+        o.touch("x:a:0");
+        o.touch("dl:x");
+        o.seed(["x:320mp3"]);
+        let mut c = o.copies("x");
+        c.sort();
+        assert_eq!(c, ["x:0", "x:192opus", "x:320mp3"]);
+        assert_eq!(o.pop_oldest().as_deref(), Some("xy:0"), "only the copies were dropped");
+    }
+
+    /// The order's trimming against `ResizableEvictor.trimLocked`'s answers (core_twins.tsv, made by
+    /// tools/twins.sh from the Kotlin).
+    #[test]
+    fn trimming_as_kotlin_does() {
+        let table = include_str!("../../core/testdata/twins/core_twins.tsv");
+        let list = |s: &'static str| if s == "_" { Vec::new() } else { s.split(',').collect::<Vec<_>>() };
+        let rows: Vec<Vec<&str>> = table.lines().map(|l| l.split('\t').collect::<Vec<_>>()).filter(|f| f[0] == "trim").map(|f| f[1..].to_vec()).collect();
+        assert!(!rows.is_empty());
+        for r in rows {
+            let order: Vec<(&str, i64)> = list(r[0]).into_iter().map(|e| e.split_once(':').unwrap()).map(|(k, n)| (k, n.parse().unwrap())).collect();
+            // Touched in listed order, so the first is least recently used.
+            let mut cache = CacheOrder::default();
+            for (k, _) in &order {
+                cache.touch(k);
+            }
+            let space = std::cell::Cell::new(order.iter().map(|o| o.1).sum::<i64>());
+            let mut removed = Vec::new();
+            cache.trim(
+                r[1].parse().unwrap(),
+                || space.get(),
+                |k| {
+                    space.set(space.get() - order.iter().find(|o| o.0 == k).unwrap().1);
+                    removed.push(k.to_string());
+                },
+            );
+            assert_eq!(removed, list(r[2]), "{r:?}");
+        }
+    }
+
     /// A temporary directory.
     fn dir(name: &str) -> nori_testdir::TempDir {
         nori_testdir::TempDir::new(name)
@@ -505,7 +566,7 @@ mod tests {
     #[test]
     fn entry_only_when_whole() {
         let d = dir("store-whole");
-        let s = Store::open(d.path(), 1 << 20, Box::new(Recent::default())).unwrap();
+        let s = Store::open(d.path(), 1 << 20).unwrap();
         let mut w = s.writer("a:0").unwrap();
         assert!(w.write(0, &[1; 100]));
         assert!(s.cached("a:0").is_none(), "not while it loads");
@@ -524,10 +585,10 @@ mod tests {
     #[test]
     fn evicts_leftovers_then_lru() {
         let d = dir("store-limit");
-        let s = Store::open(d.path(), 1000, Box::new(Recent::default())).unwrap();
+        let s = Store::open(d.path(), 1000).unwrap();
         put(&s, "old:0", 300);
         drop(s);
-        let s = Store::open(d.path(), 1000, Box::new(Recent::default())).unwrap();
+        let s = Store::open(d.path(), 1000).unwrap();
         put(&s, "a:0", 300);
         put(&s, "b:0", 300);
         put(&s, "c:0", 300);

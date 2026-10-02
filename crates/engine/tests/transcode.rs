@@ -11,7 +11,7 @@ use common::{Stepper, Virtual};
 use nori_core::settings::SavedQuality;
 use nori_core::Song;
 use nori_engine::core::{settings, Analyses, CoreApp, CoreLibrary, CoreQueue};
-use nori_engine::{Body, ByteSource, Config, Engine, Event, OpenError, Recent, Store};
+use nori_engine::{Body, ByteSource, Config, Engine, Event, OpenError, Store};
 use parking_lot::Mutex;
 
 use crate::common;
@@ -123,7 +123,7 @@ impl Rig {
         let dir = nori_testdir::TempDir::new("transcode");
         let (core, client) = common::own_core(&dir, |p| p.wifi = SavedQuality { bit_rate: 192, format: "opus".into() });
         let prefs = core.session.settings.current().unwrap();
-        let store = store.then(|| Store::open(dir.join("music"), 256 << 20, Box::new(Recent::default())).unwrap());
+        let store = store.then(|| Store::open(dir.join("music"), 256 << 20).unwrap());
         core.session.register(["a", "b"].map(|id| Song { id: id.into(), title: id.into(), duration: if id == "a" { A_SECS } else { 5 }, suffix: "mp3".into(), ..Default::default() }).to_vec());
         core.session.set(vec!["a".into(), "b".into()], Some(0), false, None);
         let library = CoreLibrary { analyses: Analyses::of(client.clone()), client, bytes, store: store.clone() };

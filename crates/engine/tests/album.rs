@@ -12,7 +12,7 @@ use common::{Stepper, Virtual};
 use nori_core::settings_store::{APPLY_AUDIO, REPLAN};
 use nori_core::{Core, Song};
 use nori_engine::core::{settings, Analyses, CoreApp, CoreLibrary, CoreQueue, Measurer};
-use nori_engine::{Body, ByteSource, Config, Engine, State, Recent, Store};
+use nori_engine::{Body, ByteSource, Config, Engine, State, Store};
 
 use crate::common;
 
@@ -94,7 +94,7 @@ impl Rig {
         let dir = nori_testdir::TempDir::new(name);
         let (core, client) = common::own_core(&dir, |p| (p.auto_mix, p.crossfade_sec, p.crossfade_keep_albums, p.auto_mix_max_s) = (auto_mix, crossfade, keep, 8));
         let prefs = core.session.settings.current().unwrap();
-        let store = Store::open(dir.join("music"), 512 << 20, Box::new(Recent::default())).unwrap();
+        let store = Store::open(dir.join("music"), 512 << 20).unwrap();
         let mut tracks: HashMap<(&str, u32), u32> = HashMap::new();
         let made: Vec<(S, Vec<i16>)> = songs
             .iter()

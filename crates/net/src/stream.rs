@@ -30,8 +30,3 @@ pub struct Fetch {
 pub fn download_key(id: String) -> String {
     format!("dl:{id}")
 }
-
-/// Whether `key` is a streamed copy of `id` at any quality (the quality part never holds a colon).
-pub fn is_copy(id: &str, key: &str) -> bool {
-    key.rsplit_once(':').is_some_and(|(before, _)| before == id)
-}

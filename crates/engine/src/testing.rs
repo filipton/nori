@@ -152,11 +152,6 @@ impl Virtual {
         held
     }
 
-    /// The engine's thread, once it slept on this clock.
-    pub fn engine_thread(&self) -> Option<std::thread::ThreadId> {
-        self.0.s.lock().engine.as_ref().map(Thread::id)
-    }
-
     /// Sleeps so far.
     pub fn sleeps(&self) -> u64 {
         self.0.s.lock().sleeps
