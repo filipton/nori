@@ -19,8 +19,7 @@ pub struct Store {
     pub songs: HashMap<String, (Song, i64)>,
 }
 
-/// Id prefix of a radio stream.
-pub const RADIO_PREFIX: &str = "radio:";
+pub use nori_model::{analysable, RADIO_PREFIX};
 
 /// The planner's view of `id` at a place with album run `run`.
 fn window_song(s: &Store, id: &str, run: u32) -> WindowSong {
@@ -51,11 +50,6 @@ fn measured_lufs(db: &nori_db::Profile, id: &str) -> Option<f32> {
 pub(crate) const EXPLICIT: u32 = 1;
 pub(crate) const STARRED: u32 = 2;
 pub(crate) const EXTERNAL: u32 = 4;
-
-/// Whether AutoMix can analyse `id`: not a provider song or radio stream.
-pub fn analysable(id: &str) -> bool {
-    !nori_model::is_provider_id(id) && !id.starts_with(RADIO_PREFIX)
-}
 
 impl Session {
     /// Lends the store to `f`.

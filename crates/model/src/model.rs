@@ -139,6 +139,14 @@ pub fn is_provider_id(id: &str) -> bool {
     id.starts_with("ext-") || id.starts_with("pl-")
 }
 
+/// Id prefix of a radio stream.
+pub const RADIO_PREFIX: &str = "radio:";
+
+/// Whether AutoMix can analyse `id`: not a provider song or radio stream.
+pub fn analysable(id: &str) -> bool {
+    !is_provider_id(id) && !id.starts_with(RADIO_PREFIX)
+}
+
 impl Song {
     /// A provider's song, not yet in the library.
     pub fn is_provider(&self) -> bool {

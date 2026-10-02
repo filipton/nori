@@ -13,9 +13,6 @@ use parking_lot::Mutex;
 
 use super::store::{get, missing};
 
-/// Ids of radio streams and of files from outside the library, which are never analysed.
-const RADIO_PREFIX: &str = "radio:";
-const EXTERNAL_PREFIX: &str = "ext-";
 /// How many recent plans are kept for screens.
 const NOTES_KEPT: usize = 4;
 
@@ -187,7 +184,7 @@ impl Planner {
             let p = self.state.lock();
             (kept.or(p.prefs).is_some_and(|x| x.auto_mix), p.duration_of(song_id).max(0) as u64)
         };
-        if !auto_mix || song_id.starts_with(RADIO_PREFIX) || song_id.starts_with(EXTERNAL_PREFIX) {
+        if !auto_mix || !nori_model::analysable(song_id) {
             return None;
         }
         let db = self.db.get()?;
@@ -305,6 +302,18 @@ mod tests {
         let kept = get(&db.lock(), "s").unwrap().unwrap();
         assert_eq!((kept.intro_grid_source, kept.intro_bpm), (GRID_NEURAL, 90.0));
         assert!(super::super::store::get_voice(&db.lock(), "s").unwrap().is_some());
+    }
+
+    #[test]
+    fn songs_never_analysed() {
+        let db = std::sync::Arc::new(Mutex::new(nori_db::open("", "t").unwrap()));
+        let profile = Arc::new(nori_db::Profile::default());
+        profile.set(&db);
+        let planner = Planner::new(profile, Box::new(|| Some(TransitionPrefs { auto_mix: true, ..nori_player::sim::prefs_off() })));
+        assert_eq!(planner.wants_analysis("s"), Some(0), "a library song, its length unknown");
+        for id in ["radio:1", "ext-2", "pl-deezer-3"] {
+            assert_eq!(planner.wants_analysis(id), None, "{id}: a station's or a provider's");
+        }
     }
 
     #[test]
