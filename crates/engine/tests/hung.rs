@@ -249,8 +249,8 @@ impl Rig {
 
     /// Asserts every hung request was cancelled.
     fn album_let_go(&self) {
-        assert!(self.time.until(Duration::from_secs(1), || self.server.running() <= 2), "the hung requests were called off: {}", self.state());
-        assert_eq!(self.server.hung.load(Ordering::Relaxed), self.server.called_off.load(Ordering::Relaxed), "every hung request called off: {}", self.state());
+        let all_off = || self.server.hung.load(Ordering::Relaxed) == self.server.called_off.load(Ordering::Relaxed);
+        assert!(self.time.until(Duration::from_secs(1), || self.server.running() <= 2 && all_off()), "every hung request called off: {}", self.state());
     }
 }
 
