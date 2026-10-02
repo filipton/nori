@@ -103,10 +103,10 @@ if want notification; then section "the notification's heart and shuffle"
   buttons=$(field notification)
   check "the notification's heart redraws ($buttons)" bash -c '[[ "'"$flip"'" == True && "'"$buttons"'" == *heart_filled* ]] || [[ "'"$flip"'" == False && "'"$buttons"'" != *heart_filled* ]]'
   "$app" do "notification favourite" >/dev/null; wait_for starred "$was" 10 >/dev/null   # put it back
-  shuffle=$(field notification); shuffle=${shuffle##* }
+  shuffle=$(field notification | grep -o 'shuffle_o[nf]*')
   "$app" do "notification shuffle" >/dev/null
   flipped=$([ "$shuffle" = shuffle_on ] && echo shuffle_off || echo shuffle_on)
-  shuffled() { local n; n=$(field notification); [ "${n##* }" = "$1" ]; }
+  shuffled() { [ "$(field notification | grep -o 'shuffle_o[nf]*')" = "$1" ]; }
   check "the notification's shuffle toggles ($shuffle -> $flipped)" wait_until 5 shuffled "$flipped"
   "$app" do "notification shuffle" >/dev/null; wait_until 5 shuffled "$shuffle"   # put it back
 fi
