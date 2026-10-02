@@ -285,6 +285,9 @@ struct Stream {
     settled: bool,
     /// Converter for a live stream whose rate or channels changed (a chained Ogg stream's next song).
     reshape: Option<Reshape>,
+    /// Read whole, an Ogg stream without its last page: a copy cut short (by a server at its length
+    /// estimate).
+    cut_short: bool,
 }
 
 /// Converts float audio from one rate and channel count to another.
@@ -354,6 +357,7 @@ impl Stream {
             _ => return Err(format!("{:?} is not decoded here", params.codec)),
         };
         let (track_delay, track_padding) = (track.delay, track.padding);
+        let cut_short = sized && byte_len.is_some() && matches!(codec, Some(Codec::Opus | Codec::Vorbis)) && track.num_frames.is_none();
         let setup = params.extra_data.clone();
         let bits = params.bits_per_sample.or(params.bits_per_coded_sample).unwrap_or(0);
         // The gapless numbers are in the track's timescale: used when it counts frames.
@@ -429,6 +433,7 @@ impl Stream {
             first_packet: true,
             settled: false,
             reshape: None,
+            cut_short,
         };
         if from_ms > 0 {
             d.seek(from_ms)?;
@@ -986,11 +991,14 @@ impl Demuxed {
     #[allow(clippy::too_many_arguments)]
     fn start(loader: Arc<Loader>, engine: Thread, hint: Option<&str>, from_ms: i64, duration_ms: Option<i64>, estimated: bool, encoding: Encoding, mode: Mode) -> Demuxed {
         if loader.complete() {
-            let state = match Stream::open(Box::new(loader.reader()), Spec::new(hint, from_ms, duration_ms, encoding, mode)) {
-                Ok(s) => State::Open(Box::new(s)),
-                Err(why) => State::Failed(PlaybackError::Other, why),
-            };
-            return Demuxed { state, loader: Some((loader, engine)) };
+            let opened = Stream::open(Box::new(loader.reader()), Spec::new(hint, from_ms, duration_ms, encoding, mode));
+            if !opened.as_ref().is_ok_and(|s| s.cut_short) || !loader.refetch() {
+                let state = match opened {
+                    Ok(s) => State::Open(Box::new(s)),
+                    Err(why) => State::Failed(PlaybackError::Other, why),
+                };
+                return Demuxed { state, loader: Some((loader, engine)) };
+            }
         }
         let opening = Arc::new(Opening::default());
         let (o, l, hint) = (opening.clone(), loader.clone(), hint.map(str::to_string));
@@ -1012,6 +1020,9 @@ impl Demuxed {
                 seen = now;
                 opened = Stream::open(reader(), spec);
             }
+            if opened.as_ref().is_ok_and(|s| s.cut_short) && l.refetch() {
+                opened = Stream::open(reader(), spec);
+            }
             let mut done = o.done.lock();
             done.opened = Some(opened);
             if let Some(t) = done.waiter.take() {
@@ -1023,6 +1034,11 @@ impl Demuxed {
             Err(e) => State::Failed(PlaybackError::Other, e.to_string()),
         };
         Demuxed { state, loader: Some((loader, engine)) }
+    }
+
+    /// Open, and a copy cut short ([`Stream::cut_short`]).
+    pub(crate) fn cut_short(&self) -> bool {
+        self.stream().is_some_and(|s| s.cut_short)
     }
 
     fn stream(&self) -> Option<&Stream> {

@@ -874,6 +874,16 @@ impl ByteSource for JavaBytes {
             _ => Err("the station's stream would not come".into()),
         }
     }
+
+    /// Drops media3's stream cache copy, one cut short; a station has none.
+    fn forget(&self, _url: &str) -> bool {
+        if self.key.is_empty() {
+            return false;
+        }
+        let said = cache_words(&self.key, |j| j.forget).unwrap_or_else(|| "Kotlin could not be asked".into());
+        log(&format!("{}: the copy is cut short and fetched anew ({said})", self.key));
+        true
+    }
 }
 
 /// Request ids for `RustBridge.open`/`cancel`. Global: Kotlin's request table is process-wide.

@@ -1,5 +1,5 @@
 //! Opus transcodes from a server that behaves as Navidrome does, over the test's own core: songs play
-//! to their real end.
+//! to their real end, and a cached copy cut short is fetched anew instead of played cut.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -28,6 +28,7 @@ struct Navidrome {
     songs: HashMap<String, Arc<Vec<u8>>>,
     estimate: f64,
     made: Mutex<HashSet<String>>,
+    asked: Mutex<Vec<String>>,
 }
 
 /// Bytes `at..stop` of a song, then a clean end or a dropped connection.
@@ -57,6 +58,7 @@ fn id_of(url: &str) -> &str {
 impl ByteSource for Navidrome {
     fn open(&self, url: &str, from: u64) -> Result<Body, OpenError> {
         let id = id_of(url);
+        self.asked.lock().push(id.to_string());
         let song = self.songs.get(id).ok_or("404")?.clone();
         let real = song.len();
         if !self.made.lock().insert(id.to_string()) {
@@ -72,6 +74,30 @@ impl ByteSource for Navidrome {
             (None, real, false)
         };
         Ok(Body { start: 0, len, reader: Box::new(Sent { song, at: 0, stop, dropped }) })
+    }
+}
+
+/// The phone's media3 stream cache in front of the network, keyed by song: it holds `held` (a copy cut
+/// short) until told to forget it.
+struct Media3 {
+    net: Arc<Navidrome>,
+    held: Mutex<HashMap<String, Vec<u8>>>,
+    forgot: Mutex<Vec<String>>,
+}
+
+impl ByteSource for Media3 {
+    fn open(&self, url: &str, from: u64) -> Result<Body, OpenError> {
+        let Some(copy) = self.held.lock().get(id_of(url)).cloned() else { return self.net.open(url, from) };
+        let len = copy.len();
+        if from >= len as u64 {
+            return Err(OpenError::PastEnd { len: Some(len as u64) });
+        }
+        Ok(Body { start: from, len: Some(len as u64), reader: Box::new(Sent { song: Arc::new(copy), at: from as usize, stop: len, dropped: false }) })
+    }
+
+    fn forget(&self, url: &str) -> bool {
+        self.forgot.lock().push(id_of(url).to_string());
+        self.held.lock().remove(id_of(url)).is_some()
     }
 }
 
@@ -127,7 +153,7 @@ impl Drop for Rig {
 
 fn navidrome(estimate: f64) -> Option<Arc<Navidrome>> {
     let [a, b, _] = songs()?;
-    Some(Arc::new(Navidrome { songs: HashMap::from([("a".into(), a.clone()), ("b".into(), b.clone())]), estimate, made: Mutex::default() }))
+    Some(Arc::new(Navidrome { songs: HashMap::from([("a".into(), a.clone()), ("b".into(), b.clone())]), estimate, made: Mutex::default(), asked: Mutex::default() }))
 }
 
 #[test]
@@ -139,7 +165,9 @@ fn transcode_plays_to_its_end() {
         assert!(heard >= A_SECS as f64 - 0.1, "all of a (estimate {estimate}): {heard} s");
         let kept = std::fs::metadata(rig.store.as_ref().unwrap().peek("a:192opus").expect("a cached")).unwrap().len();
         assert_eq!(kept, net.songs["a"].len() as u64, "the whole of a cached (estimate {estimate})");
-        assert!(rig.play_a(0) >= A_SECS as f64 - 0.1, "all of a again, from the cache (estimate {estimate})");
+        let asked = net.asked.lock().len();
+        assert!(rig.play_a(0) >= A_SECS as f64 - 0.1, "all of a again (estimate {estimate})");
+        assert!(!net.asked.lock()[asked..].contains(&"a".to_string()), "a played from the cache (estimate {estimate})");
     }
 }
 
@@ -149,4 +177,26 @@ fn seek_ahead_of_a_transcode_lands() {
     let rig = Rig::new(net, false);
     let heard = rig.play_a(A_SECS as i64 * 1000 - 10_000);
     assert!((9.9..=10.5).contains(&heard), "the last ten seconds of a: {heard} s");
+}
+
+#[test]
+fn cut_copy_fetched_anew() {
+    // The stream cache's copy of a, cut where a server's estimate ended it: a plays whole, and the cache
+    // keeps the whole song after.
+    let Some(net) = navidrome(1.0) else { return };
+    let a = net.songs["a"].clone();
+    let cut = &a[..a.len() * 9 / 10];
+    let rig = Rig::new(net.clone(), true);
+    let store = rig.store.clone().unwrap();
+    let mut w = store.writer("a:192opus").unwrap();
+    assert!(w.write(0, cut) && w.finish(cut.len() as u64));
+    assert!(rig.play_a(0) >= A_SECS as f64 - 0.1, "all of a");
+    assert_eq!(std::fs::read(store.peek("a:192opus").expect("a cached")).unwrap(), *a, "the cut copy replaced");
+    drop(rig);
+
+    // The same in the phone's cache in front of the network.
+    let media3 = Arc::new(Media3 { net, held: Mutex::new(HashMap::from([("a".into(), cut.to_vec())])), forgot: Mutex::default() });
+    let rig = Rig::new(media3.clone(), false);
+    assert!(rig.play_a(0) >= A_SECS as f64 - 0.1, "all of a");
+    assert_eq!(*media3.forgot.lock(), ["a"], "the cut copy forgotten once");
 }
