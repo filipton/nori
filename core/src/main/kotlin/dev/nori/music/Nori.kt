@@ -106,9 +106,6 @@ class Nori private constructor(private val context: Context) {
     /** The app's own updates from its GitHub releases; nothing is asked until the app starts it. */
     val updates = dev.nori.music.update.Updates(context, { http }, { client })
 
-    /** True while requests go to the profile's second address; stream quality is capped then. */
-    val onSecondAddress: Boolean get() = opened?.client?.onSecondAddress() ?: false
-
     private fun open(id: String, profile: SavedServer?): Core =
         Core(File(context.filesDir, dev.nori.music.ffi.db.dbFileName()).path, id).also { c -> profile?.let { c.configure(it.config()) } }
 

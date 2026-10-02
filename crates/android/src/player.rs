@@ -1128,7 +1128,6 @@ struct Events {
 const EVENT_STATE: i32 = 0;
 const EVENT_SONG: i32 = 1;
 const EVENT_ERROR: i32 = 2;
-const EVENT_OUTPUT: i32 = 3;
 const EVENT_STOPPED: i32 = 4;
 const EVENT_BUFFERING: i32 = 5;
 const EVENT_LOOPED: i32 = 6;
@@ -1174,7 +1173,8 @@ impl Events {
             // Kotlin reads the position from the status.
             Event::Placed { index, .. } => (EVENT_PLACED, index as i32, String::new()),
             Event::Error { id, message } => (EVENT_ERROR, -1, if id.is_empty() { message } else { format!("{id}: {message}") }),
-            Event::Output { name } => (EVENT_OUTPUT, -1, name),
+            // Kotlin follows the route itself (the track's routing listener).
+            Event::Output { .. } => return,
             Event::Stopped { .. } => (EVENT_STOPPED, -1, String::new()),
             Event::Buffering(on) => (EVENT_BUFFERING, on as i32, String::new()),
             // A seek or jump landed (Android asks for no periodic positions).

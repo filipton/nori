@@ -293,11 +293,6 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
     /** The download service while it runs; it holds on for songs still processing ([hold]). */
     @Volatile internal var worker: DownloadWorker? = null
 
-    /**
-     * Keeps the download service up for the songs still processing once nothing is left to download: a start
-     * of its own is the newest, so the stop media3 asks for when it goes idle does not take (see
-     * [DownloadWorker.onStartCommand]). The service is in the foreground as this is asked, so it may be started.
-     */
     /** The service is held: its notification says what the saved songs wait for from now on. Main thread. */
     internal fun held() {
         // media3's last word may be on its notification: built and shown again.
@@ -306,6 +301,11 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
         summarise()
     }
 
+    /**
+     * Keeps the download service up for the songs still processing once nothing is left to download: a start
+     * of its own is the newest, so the stop media3 asks for when it goes idle does not take (see
+     * [DownloadWorker.onStartCommand]). The service is in the foreground as this is asked, so it may be started.
+     */
     internal fun hold() {
         runCatching { context.startService(Intent(context, DownloadWorker::class.java).setAction(ACTION_HOLD)) }
             .onFailure { Log.w(TAG, "could not keep the download service for the songs still processing", it) }

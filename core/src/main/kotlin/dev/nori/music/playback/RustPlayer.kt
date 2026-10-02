@@ -72,10 +72,10 @@ internal object RustPlayerJni {
     @JvmStatic @CriticalNative external fun compressionDb(h: Long): Float
     @JvmStatic @CriticalNative external fun setVolume(h: Long, index: Int, max: Int, db: Float)
     @JvmStatic @CriticalNative external fun bytesWritten(h: Long): Long
-    /** The next event, `kind shl 32 or index` (kind: state 0, song 1, error 2, output 3); -1 when there are no more. */
+    /** The next event, `kind shl 32 or index` (the kinds are `EnginePlayer`'s `EVENT_*`); -1 when there are no more. */
     @JvmStatic @CriticalNative external fun event(h: Long): Long
     /**
-     * The words of the event [event] last gave: the error, the stream's title, the output's name. Short and
+     * The words of the event [event] last gave: the song's id, the error, the stream's title. Short and
      * calling nothing back (the words sit behind a lock only the main thread takes, and one string is
      * made of them), so a fast door.
      */

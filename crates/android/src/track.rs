@@ -300,10 +300,6 @@ impl Clock {
         self.0.lock().given
     }
 
-    fn ahead(&self) -> u64 {
-        self.0.lock().ahead
-    }
-
     /// Resets all counts to zero at `now_ns`, stopped (after a flush or reopen).
     fn reset(&self, now_ns: i64) {
         self.update(|c| *c = Counts { rate: c.rate, at_ns: now_ns, mixed: c.mixed, ..Counts::default() });
@@ -762,7 +758,7 @@ impl<R: Ring> Writer<R> {
         } else if self.playing {
             self.watch_deep(now_ns);
         }
-        let full = self.top_up(now_ns, None);
+        let full = self.top_up(now_ns);
         if self.dead {
             return None;
         }
@@ -808,9 +804,8 @@ impl<R: Ring> Writer<R> {
         Some(wait)
     }
 
-    /// Moves as much of the ring into the track as fits, or up to frame `until` of it. True when the
-    /// track is full (or there).
-    fn top_up(&mut self, now_ns: i64, until: Option<u64>) -> bool {
+    /// Moves as much of the ring into the track as fits. True when the track is full.
+    fn top_up(&mut self, now_ns: i64) -> bool {
         let fb = self.frame_bytes();
         // 24-bit samples are pulled as floats and packed in place: a chunk is as many frames as floats fit.
         let chunk_frames = CHUNK_BYTES / if self.packed { self.channels * 4 } else { fb };
@@ -818,10 +813,7 @@ impl<R: Ring> Writer<R> {
             if self.staged.1 > 0 && !self.write_staged(now_ns) {
                 return true;
             }
-            let room = match until {
-                Some(end) => end.saturating_sub(self.clock.ahead()),
-                None => self.capacity.saturating_sub(self.clock.latency_frames(now_ns)),
-            };
+            let room = self.capacity.saturating_sub(self.clock.latency_frames(now_ns));
             if room == 0 {
                 return true;
             }

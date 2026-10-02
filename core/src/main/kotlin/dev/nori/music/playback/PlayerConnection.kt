@@ -79,6 +79,9 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
     private var connecting: com.google.common.util.concurrent.ListenableFuture<MediaController>? = null
     private val pending = ArrayList<(MediaController) -> Unit>()
 
+    /** Moves whenever a new queue is set (nori-queue `playlist_origin_gen`): when to ask again which page it came from. */
+    val queueOrigin: Int get() = PlaylistJni.origin()
+
     /**
      * Where the seek bar is. Through a transition the player runs ahead of the ear (the held ending is
      * counted as played so the next track arrives in time to be mixed in); the sink says what is really
@@ -88,9 +91,6 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
      * jump back a heartbeat later). Those rules are nori-player's (heard.rs Playhead); this is one JNI
      * call with primitives in and out per frame.
      */
-    /** Moves whenever a new queue is set (nori-queue `playlist_origin_gen`): when to ask again which page it came from. */
-    val queueOrigin: Int get() = PlaylistJni.origin()
-
     val positionMs: Long get() {
         val c = controller ?: local() ?: return PlayheadJni.runOn(clock, android.os.SystemClock.elapsedRealtime(), _state.value.playing)
         return heard(c, _state.value.index)
@@ -531,16 +531,16 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
     }
 }
 
-/**
- * The seek bar's place over a [HeardJni] clock (crates/queue/src/heard.rs over nori_player::heard::Playhead):
- * asked every frame the bar is drawn, so primitives only.
- */
 /** Every seek bar reading logged (tag noripos), for a check frame by frame: the test bridge's "tracelyrics". */
 @Volatile var tracePositions = false
 
 /** A drifted controller is put right at most this often (PlayerConnection.heard). */
 private const val REANCHOR_GAP_MS = 2_000L
 
+/**
+ * The seek bar's place over a [HeardJni] clock (crates/queue/src/heard.rs over nori_player::heard::Playhead):
+ * asked every frame the bar is drawn, so primitives only.
+ */
 internal object PlayheadJni {
     init { System.loadLibrary("norimusic") }
 
