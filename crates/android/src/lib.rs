@@ -214,6 +214,34 @@ pub(crate) fn string(env: &JNIEnv, s: &JString) -> Option<String> {
     with_str(env, s, str::to_string)
 }
 
+/// Objects Kotlin holds by number. A number, not a pointer, so a door called with a handle already let go
+/// (a late callback) finds nothing, and one that found its object keeps it alive until it returns.
+pub(crate) struct Handles<T> {
+    live: parking_lot::Mutex<Vec<(jni::sys::jlong, std::sync::Arc<T>)>>,
+    next: std::sync::atomic::AtomicI64,
+}
+
+impl<T> Handles<T> {
+    pub(crate) const fn new() -> Handles<T> {
+        Handles { live: parking_lot::Mutex::new(Vec::new()), next: std::sync::atomic::AtomicI64::new(1) }
+    }
+
+    pub(crate) fn add(&self, t: std::sync::Arc<T>) -> jni::sys::jlong {
+        let h = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.live.lock().push((h, t));
+        h
+    }
+
+    pub(crate) fn get(&self, h: jni::sys::jlong) -> Option<std::sync::Arc<T>> {
+        self.live.lock().iter().find(|(k, _)| *k == h).map(|(_, t)| t.clone())
+    }
+
+    pub(crate) fn remove(&self, h: jni::sys::jlong) -> Option<std::sync::Arc<T>> {
+        let mut live = self.live.lock();
+        live.iter().position(|(k, _)| *k == h).map(|i| live.remove(i).1)
+    }
+}
+
 /// The core object behind a handle Kotlin took with `uniffiCloneHandle()`, taken over: uniffi's handle
 /// for a Rust object is its `Arc`'s raw pointer, and the cloned reference is this side's to drop.
 ///

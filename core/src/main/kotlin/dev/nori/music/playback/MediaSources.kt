@@ -150,7 +150,7 @@ class MediaSources(context: Context, private val clientOf: () -> Client, private
     }
 
     /** Whether [id]'s download is complete, from the core's memory of its downloads table. */
-    fun isDownloaded(id: String): Boolean = DownloadsJni.held(id) == DownloadsJni.DONE
+    fun isDownloaded(id: String): Boolean = DownloadsJni.held(DownloadsJni.h, id) == DownloadsJni.DONE
 
     /**
      * The stream cache's copy of [id] (a whole one first) by its key, and whether it is whole; none. For the

@@ -3,8 +3,7 @@
 //! after the bytes (lyrics, analysis, beat model). The platform moves the bytes and words the facts.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::task::{Poll, Waker};
 use std::time::Instant;
 
@@ -568,6 +567,8 @@ pub struct Tracker {
     /// Waiters on mark changes, woken after the lock is released when `wake` is set.
     wakers: Vec<Waker>,
     wake: bool,
+    /// The platform follows another core's downloads now: waiting on these marks ends at once.
+    let_go: bool,
     download_kbps: i32,
     speed_bps: i64,
     remaining_bytes: i64,
@@ -921,6 +922,12 @@ impl Tracker {
         if self.processing() == [0; 3] { -1 } else { next.unwrap_or(0) }
     }
 
+    /// [`Tracker::expire`] at the platform's `now`.
+    pub fn expire_at(&mut self, now: i64) -> i64 {
+        self.clock = Some((now, Instant::now()));
+        self.expire()
+    }
+
     /// The pending processing at the platform's `now`; None when there is none.
     pub fn processing_at(&mut self, now: i64) -> Option<Processing> {
         let [lyrics, analysing, beats] = self.processing();
@@ -1203,11 +1210,9 @@ fn sections<T: Clone>(pending: &[T], done: &[T], marks: &HashMap<String, (Phase,
 pub struct Held {
     ids: HashMap<String, bool>,
     done: u32,
+    /// Bumped on every change, so the platform sees changed counts.
+    version: u64,
 }
-
-/// Bumped on every downloads table change of any core, so the platform detects changed counts. Global:
-/// one counter across cores, so a new server's counts never match the old one's version.
-static HELD_VERSION: AtomicU64 = AtomicU64::new(1);
 
 /// A song's state in the downloads table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1239,8 +1244,7 @@ impl Held {
         let mut st = c.prepare("SELECT id, done FROM downloads WHERE server=sid()")?;
         let ids: HashMap<String, bool> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.filter_map(|r| r.ok()).collect();
         let done = ids.values().filter(|d| **d).count() as u32;
-        HELD_VERSION.fetch_add(1, Ordering::Relaxed);
-        Ok(Held { ids, done })
+        Ok(Held { ids, done, version: 0 })
     }
 
     pub fn state(&self, id: &str) -> HeldState {
@@ -1248,13 +1252,13 @@ impl Held {
     }
 
     pub fn counts(&self) -> DownloadCounts {
-        DownloadCounts { done: self.done, pending: self.ids.len() as u32 - self.done, version: HELD_VERSION.load(Ordering::Relaxed) }
+        DownloadCounts { done: self.done, pending: self.ids.len() as u32 - self.done, version: self.version }
     }
 
     pub fn queued(&mut self, id: &str) {
         if !self.ids.contains_key(id) {
             self.ids.insert(id.to_string(), false);
-            HELD_VERSION.fetch_add(1, Ordering::Relaxed);
+            self.version += 1;
         }
     }
 
@@ -1262,14 +1266,14 @@ impl Held {
         if let Some(d) = self.ids.get_mut(id).filter(|d| !**d) {
             *d = true;
             self.done += 1;
-            HELD_VERSION.fetch_add(1, Ordering::Relaxed);
+            self.version += 1;
         }
     }
 
     pub fn removed(&mut self, id: &str) {
         if let Some(d) = self.ids.remove(id) {
             self.done -= d as u32;
-            HELD_VERSION.fetch_add(1, Ordering::Relaxed);
+            self.version += 1;
         }
     }
 }
@@ -1281,10 +1285,6 @@ pub struct Downloads {
     held: Mutex<Held>,
 }
 
-/// The newest core's downloads, for the platform's download reports. Global: the JNI doors carry no core
-/// handle; Rust code goes through its core (`Core::transfers`).
-static ACTIVE: Mutex<Weak<Downloads>> = Mutex::new(Weak::new());
-
 impl Downloads {
     pub fn load(db: &Arc<Mutex<Connection>>) -> nori_model::Result<Downloads> {
         let c = db.lock();
@@ -1295,13 +1295,13 @@ impl Downloads {
         Ok(Downloads { tracker: Mutex::new(tracker), held: Mutex::new(held) })
     }
 
-    /// Makes these the downloads the platform's reports reach. Waiters on the previous ones are woken,
-    /// so they wait on these from now on.
-    pub fn activate(self: &Arc<Self>) {
-        let old = std::mem::replace(&mut *ACTIVE.lock(), Arc::downgrade(self));
-        if let Some(old) = old.upgrade() {
-            old.with(|t| t.wake = true);
-        }
+    /// The platform let these downloads go and follows another core's from now on: whoever waits for
+    /// their marks to move ([`Downloads::marks_moved`]) waits no longer.
+    pub fn let_go(&self) {
+        self.with(|t| {
+            t.let_go = true;
+            t.wake = true;
+        });
     }
 
     /// Runs `f` on the tracker, then wakes mark waiters after the lock is released.
@@ -1318,136 +1318,21 @@ impl Downloads {
         self.held.lock()
     }
 
-    /// Resolves once a mark changed since the last [`Tracker::marks_changed`].
+    /// Resolves once a mark changed since the last [`Tracker::marks_changed`], or these downloads were
+    /// let go.
     pub async fn marks_moved(&self) {
         std::future::poll_fn(|cx| self.poll_moved(cx)).await
     }
 
     fn poll_moved(&self, cx: &mut std::task::Context) -> Poll<()> {
         let mut t = self.tracker.lock();
-        if t.changed.is_empty() {
+        if t.changed.is_empty() && !t.let_go {
             t.wakers.push(cx.waker().clone());
             Poll::Pending
         } else {
             Poll::Ready(())
         }
     }
-}
-
-pub fn active() -> Option<Arc<Downloads>> {
-    ACTIVE.lock().upgrade()
-}
-
-/// Runs `f` on the active tracker; None without an active core.
-pub fn with<R>(f: impl FnOnce(&mut Tracker) -> R) -> Option<R> {
-    active().map(|d| d.with(f))
-}
-
-/// `id`'s state in the active core's downloads table.
-pub fn held(id: &str) -> HeldState {
-    active().map_or(HeldState::Absent, |d| d.held().state(id))
-}
-
-// Thin adapters over the active tracker for Android's JNI doors.
-pub fn followed(id: &str, state: i32, now: i64) -> i32 {
-    with(|t| t.followed(id, state, now)).unwrap_or(0)
-}
-pub fn open(id: &str, now: i64) -> i32 {
-    with(|t| t.open(id, now)).unwrap_or(-1)
-}
-pub fn note(slot: i32, length: i64, bytes: i64, now: i64) -> f32 {
-    with(|t| t.note(slot, length, bytes, now)).unwrap_or(f32::NAN)
-}
-pub fn working(id: &str, work: Work) {
-    with(|t| t.working(id, work));
-}
-pub fn work_done(id: &str, work: Work) -> bool {
-    with(|t| t.work_done(id, work)).unwrap_or(false)
-}
-pub fn waits(id: &str, work: Work) -> bool {
-    with(|t| t.waits(id, work)).unwrap_or(false)
-}
-pub fn plan(id: &str, needs: Needs, saved: Option<bool>) -> bool {
-    with(|t| t.plan(id, needs, saved)).unwrap_or(false)
-}
-pub fn analysing_began(id: &str) {
-    with(|t| t.analysing_began(id));
-}
-pub fn analysing_ended(id: &str, stored: bool) {
-    with(|t| t.analysing_ended(id, stored));
-}
-pub fn wants_beats(id: &str) -> bool {
-    with(|t| t.wants_beats(id)).unwrap_or(false)
-}
-pub fn download_phase(id: String) -> Option<DownloadPhase> {
-    with(|t| t.phase(&id)).flatten()
-}
-pub fn processing(now: i64) -> Option<Processing> {
-    with(|t| t.processing_at(now)).flatten()
-}
-pub fn removed(id: &str) -> i32 {
-    with(|t| t.removed(id)).unwrap_or(0)
-}
-pub fn unmark(id: &str) -> i32 {
-    with(|t| t.forget(id)).unwrap_or(0)
-}
-pub fn start_fraction(id: &str) -> f32 {
-    with(|t| t.start_fraction(id)).unwrap_or(-1.0)
-}
-pub fn notice(listed: i32, waiting: bool, now: i64) -> i32 {
-    with(|t| t.notice(listed, waiting, now)).unwrap_or(2)
-}
-pub fn notice_facts<R>(f: impl FnOnce(&Notice) -> R) -> R {
-    match active() {
-        Some(d) => d.with(|t| f(t.notice_facts())),
-        None => f(&Notice::default()),
-    }
-}
-pub fn summary() -> Option<Summary> {
-    with(|t| t.summary()).flatten()
-}
-pub fn row<R>(id: &str, f: impl FnOnce(&str, Option<RowFacts>) -> R) -> R {
-    match active() {
-        Some(d) => d.with(|t| {
-            let (artist, facts) = t.row(id);
-            f(artist, facts)
-        }),
-        None => f("", None),
-    }
-}
-pub fn speed_eta() -> (i64, i64) {
-    with(|t| t.speed_eta()).unwrap_or((0, -1))
-}
-
-/// Resolves once a mark changed since the last [`download_marks_changed`], so the platform follows
-/// processing without polling.
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub async fn download_marks_moved() {
-    std::future::poll_fn(|cx| active().map_or(Poll::Ready(()), |d| d.poll_moved(cx))).await
-}
-
-/// The marks changed since the last call, with their phase now (None: removed).
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn download_marks_changed() -> DownloadMarks {
-    with(Tracker::marks_changed).unwrap_or(DownloadMarks { ids: Vec::new(), phases: Vec::new(), at: Vec::new() })
-}
-
-/// Gives up stuck processing steps; `now` is the platform clock. Returns ms until the next deadline,
-/// -1 when nothing is processing.
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn download_processing_expire(now: i64) -> i64 {
-    with(|t| {
-        t.clock = Some((now, Instant::now()));
-        t.expire()
-    })
-    .unwrap_or(-1)
-}
-
-/// [`speed_eta`] as a list, for checks.
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn download_speed_eta() -> Vec<i64> {
-    let (speed, eta) = speed_eta();
-    vec![speed, eta]
 }
 
 /// The result of queueing songs: `fresh` were added in order; `again` were already queued but unfinished
@@ -1874,25 +1759,22 @@ mod tests {
         assert_eq!(t.marks.len(), RECENT, "only the latest finished marks stay");
         assert!(!t.marks.contains_key("ext-d0") && t.marks.contains_key("ext-d2"));
 
-        // A server switch wakes the platform's waiter, so it waits on the new core's marks.
+        // Downloads let go (a server switch) wake the platform's waiter, so it waits on the new core's marks.
         use std::future::Future;
         struct Woke(std::sync::atomic::AtomicBool);
         impl std::task::Wake for Woke {
             fn wake(self: Arc<Self>) {
-                self.0.store(true, Ordering::SeqCst);
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
             }
         }
-        let open = || Arc::new(Downloads::load(&Arc::new(Mutex::new(nori_db::open("", "t").unwrap()))).unwrap());
-        let (old, new) = (open(), open());
-        old.activate();
+        let old = Downloads::load(&Arc::new(Mutex::new(nori_db::open("", "t").unwrap()))).unwrap();
         let woke = Arc::new(Woke(Default::default()));
         let waker = Waker::from(woke.clone());
-        let mut moved = std::pin::pin!(download_marks_moved());
+        let mut moved = std::pin::pin!(old.marks_moved());
         assert!(moved.as_mut().poll(&mut std::task::Context::from_waker(&waker)).is_pending());
-        new.activate();
-        assert!(woke.0.load(Ordering::SeqCst));
-        new.with(|t| t.mark("a", Phase::Failed, 0));
-        assert!(moved.as_mut().poll(&mut std::task::Context::from_waker(&waker)).is_ready(), "the new core's marks");
+        old.let_go();
+        assert!(woke.0.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(moved.as_mut().poll(&mut std::task::Context::from_waker(&waker)).is_ready(), "and waits no longer");
     }
 
     #[test]

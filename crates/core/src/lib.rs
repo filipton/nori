@@ -394,13 +394,17 @@ impl Core {
             session,
         });
         core.session.db.set(&core.db);
-        core.downloads.activate();
         Ok(core)
     }
 
     /// The downloads table in memory and the progress of their work.
     pub fn transfers(&self) -> &transfers::Downloads {
         &self.downloads
+    }
+
+    /// [`Core::transfers`], to hold apart from the core.
+    pub fn transfers_arc(&self) -> Arc<transfers::Downloads> {
+        self.downloads.clone()
     }
 }
 

@@ -64,6 +64,7 @@ class Nori private constructor(private val context: Context) {
             opened?.takeIf { it.key == key } ?: settings.value.server.let { p ->
                 val id = dev.nori.music.ffi.settings.serverDb(key)
                 val core = open(id, p)
+                dev.nori.music.downloads.DownloadsJni.use(core)
                 Opened(key, id, core, Client(core, transport, coverNet).also { c -> p?.let { c.setProfile(it.net()) } })
             }.also { opened = it }
         }

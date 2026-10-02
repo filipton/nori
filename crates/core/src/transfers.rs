@@ -153,14 +153,36 @@ pub fn download_beats_remembered(yes: bool) -> nori_settings::settings::Download
     beats_remembered(yes)
 }
 
-/// What downloaded songs still wait for, for the notification; `now` is the platform clock.
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn download_processing(now: i64) -> Option<Processing> {
-    processing(now)
-}
-
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Core {
+    /// What downloaded songs still wait for, for the notification; `now` is the platform clock.
+    pub fn download_processing(&self, now: i64) -> Option<Processing> {
+        self.downloads.with(|t| t.processing_at(now))
+    }
+
+    /// Resolves once a mark changed since the last [`Core::download_marks_changed`], or these downloads
+    /// were let go, so the platform follows processing without polling.
+    pub async fn download_marks_moved(&self) {
+        self.downloads.marks_moved().await
+    }
+
+    /// The marks changed since the last call, with their phase now (None: removed).
+    pub fn download_marks_changed(&self) -> DownloadMarks {
+        self.downloads.with(Tracker::marks_changed)
+    }
+
+    /// Gives up stuck processing steps; `now` is the platform clock. Returns ms until the next deadline,
+    /// -1 when nothing is processing.
+    pub fn download_processing_expire(&self, now: i64) -> i64 {
+        self.downloads.with(|t| t.expire_at(now))
+    }
+
+    /// The batch's speed (bytes/s) and seconds left, for checks.
+    pub fn download_speed_eta(&self) -> Vec<i64> {
+        let (speed, eta) = self.downloads.with(Tracker::speed_eta);
+        vec![speed, eta]
+    }
+
     /// Removes all unfinished downloads and their marks; returns their ids for the platform to stop.
     pub fn download_cancel_all(&self) -> crate::Result<Vec<String>> {
         let ids: Vec<String> = {

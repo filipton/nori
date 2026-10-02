@@ -56,6 +56,8 @@ import java.util.concurrent.Executors
 class DownloadState internal constructor(
     val doneCount: Int = 0,
     val pendingCount: Int = 0,
+    /** Whose table this is: each core counts its own [version]s. */
+    private val core: Core? = null,
     private val version: Long = 0,
     private val songs: (Boolean) -> List<Song> = { emptyList() },
     private val ids: (Boolean) -> List<String> = { emptyList() },
@@ -68,7 +70,7 @@ class DownloadState internal constructor(
     /** Every song still to download, newest first; read as [done] is. */
     val pending: List<Song> by lazy { songs(false) }
 
-    override fun equals(other: Any?) = other is DownloadState && other.version == version
+    override fun equals(other: Any?) = other is DownloadState && other.core === core && other.version == version
     override fun hashCode() = version.hashCode()
 
     /**
@@ -76,7 +78,7 @@ class DownloadState internal constructor(
      * nothing compares two of them song by song; a change to the table is a new [DownloadState].
      */
     private inner class Membership(private val kind: Int, override val size: Int) : AbstractSet<String>() {
-        override fun contains(element: String) = size > 0 && DownloadsJni.held(element) == kind
+        override fun contains(element: String) = size > 0 && DownloadsJni.held(DownloadsJni.h, element) == kind
         override fun iterator() = ids(kind == DownloadsJni.DONE).iterator()
         override fun equals(other: Any?) = this === other
         override fun hashCode() = System.identityHashCode(this)
@@ -120,7 +122,7 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
     /** Each marked song's progress, 0..1 or negative while its size is unknown. */
     private val progress = ConcurrentHashMap<String, MutableStateFlow<Float>>()
 
-    private fun progressOf(id: String) = progress.getOrPut(id) { MutableStateFlow(DownloadsJni.startFraction(id)) }
+    private fun progressOf(id: String) = progress.getOrPut(id) { MutableStateFlow(DownloadsJni.startFraction(DownloadsJni.h, id)) }
 
     val manager: DownloadManager by lazy {
         // media3's own wiring (DefaultDownloadIndex, DefaultDownloaderFactory over the download cache),
@@ -154,7 +156,7 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
                 }
 
                 override fun onDownloadRemoved(m: DownloadManager, d: Download) {
-                    val flags = DownloadsJni.removed(d.request.id)
+                    val flags = DownloadsJni.removed(DownloadsJni.h, d.request.id)
                     progress.remove(d.request.id)
                     if (flags and DownloadsJni.MARKS != 0) refreshMarks()
                     settle(d.request.id, false)
@@ -188,8 +190,9 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
 
     /** The table's counts, from the core's memory of it: nothing is read or copied, however many songs it holds. */
     private fun publish() {
-        val n = core.downloadCounts()
-        _state.value = DownloadState(n.done.toInt(), n.pending.toInt(), n.version.toLong(), ::songs, ::ids)
+        val c = core
+        val n = c.downloadCounts()
+        _state.value = DownloadState(n.done.toInt(), n.pending.toInt(), c, n.version.toLong(), ::songs, ::ids)
     }
 
     private fun songs(done: Boolean): List<Song> = runCatching { core.downloads(done) }.getOrDefault(emptyList())
@@ -276,7 +279,7 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
         if (watching?.isActive == true) return@synchronized
         watching = lyrics.launch {
             while (true) {
-                runCatching { dev.nori.music.ffi.transfers.downloadMarksMoved() }
+                runCatching { core.downloadMarksMoved() }
                 // Applied before waiting again: the marks read are what the next wait starts from.
                 kotlinx.coroutines.suspendCancellableCoroutine { c -> main.post { refreshMarks(); c.resumeWith(Result.success(Unit)) } }
                 if (processingNow() == null) break
@@ -285,7 +288,7 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
     }
 
     /** What the saved songs are still waiting for, or null when nothing is processing. */
-    internal fun processingNow() = runCatching { dev.nori.music.ffi.downloadProcessing(SystemClock.elapsedRealtime()) }.getOrNull()
+    internal fun processingNow() = runCatching { core.downloadProcessing(SystemClock.elapsedRealtime()) }.getOrNull()
 
     /** The download service while it runs; it holds on for songs still processing ([hold]). */
     @Volatile internal var worker: DownloadWorker? = null
@@ -311,7 +314,7 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
     /** Ends the processing that has run its time (`download_processing_expire`), and comes back for the next. */
     private val expire = object : Runnable {
         override fun run() {
-            val next = runCatching { dev.nori.music.ffi.transfers.downloadProcessingExpire(SystemClock.elapsedRealtime()) }.getOrDefault(-1)
+            val next = runCatching { core.downloadProcessingExpire(SystemClock.elapsedRealtime()) }.getOrDefault(-1)
             refreshMarks()
             if (next >= 0) main.postDelayed(this, next)
         }
@@ -366,7 +369,7 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
      */
     private fun follow(d: Download) {
         val id = d.request.id
-        val flags = DownloadsJni.followed(id, d.state, SystemClock.elapsedRealtime())
+        val flags = DownloadsJni.followed(DownloadsJni.h, id, d.state, SystemClock.elapsedRealtime())
         if (flags and DownloadsJni.NEW_BATCH != 0) cancelResult()
         when (d.state) {
             Download.STATE_DOWNLOADING -> progressOf(id)
@@ -382,14 +385,14 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
      * loses its progress. Runs on the main thread, the only one that applies them.
      */
     private fun refreshMarks() {
-        val m = dev.nori.music.ffi.transfers.downloadMarksChanged()
+        val m = core.downloadMarksChanged()
         if (m.ids.isEmpty()) return
         val next = HashMap(_marks.value)
         for (i in m.ids.indices) {
             val id = m.ids[i]
             val phase = m.phases[i]
             if (phase != null) next[id] = DownloadMark(phase, progressOf(id), m.at[i])
-            else if (next.remove(id) != null && DownloadsJni.held(id) != DownloadsJni.PENDING) progress.remove(id)
+            else if (next.remove(id) != null && DownloadsJni.held(DownloadsJni.h, id) != DownloadsJni.PENDING) progress.remove(id)
         }
         _marks.value = next
         if (summaryWaits || next.values.any { it.phase.processing }) summarise()
@@ -397,7 +400,7 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
 
     private fun unmark(ids: Collection<String>) {
         var changed = false
-        for (id in ids) { progress.remove(id); if (DownloadsJni.unmark(id) and DownloadsJni.MARKS != 0) changed = true }
+        for (id in ids) { progress.remove(id); if (DownloadsJni.unmark(DownloadsJni.h, id) and DownloadsJni.MARKS != 0) changed = true }
         if (changed) main.post { refreshMarks() }
     }
 
@@ -492,7 +495,7 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
         // The facts and the bar are the core's, the words these; asked once a second, it says whether the
         // facts changed, and a notification whose words and bar did not is handed back as it was rather
         // than built again.
-        when (DownloadsJni.notice(downloads.size, notMetRequirements, SystemClock.elapsedRealtime())) {
+        when (DownloadsJni.notice(DownloadsJni.h, downloads.size, notMetRequirements, SystemClock.elapsedRealtime())) {
             0 -> lastProgress?.let { return it }
             // The bytes are in and saved songs are still processing: the service stays for them, and says so.
             2 -> processingNow()?.let { return workingNotification(it) } ?: return complete ?: NotificationCompat.Builder(context, CHANNEL)
@@ -507,7 +510,7 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
                 .setShowWhen(false)
                 .build().also { complete = it }
         }
-        val names = DownloadsJni.noticeFacts(noticeFacts) ?: "\n"
+        val names = DownloadsJni.noticeFacts(DownloadsJni.h, noticeFacts) ?: "\n"
         val cut = names.indexOf('\n')
         val (title, text) = noticeWords(context.resources, names.substring(0, cut), names.substring(cut + 1), noticeFacts)
         val permille = noticeFacts[3].toInt()
@@ -604,7 +607,7 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
         // Nothing is processing: the service goes, and its notification with it.
         worker?.release()
         val facts = IntArray(4)
-        val album = DownloadsJni.summary(facts)
+        val album = DownloadsJni.summary(DownloadsJni.h, facts)
         if (album == null) {
             if (wasWorking) nm.cancel(DOWNLOAD_RESULT_NOTIFICATION)
             return
@@ -697,10 +700,10 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
             val flow = progressOf(request.id)
             return object : Downloader {
                 override fun download(listener: Downloader.ProgressListener?) {
-                    val slot = DownloadsJni.open(request.id, SystemClock.elapsedRealtime())
+                    val slot = DownloadsJni.open(DownloadsJni.h, request.id, SystemClock.elapsedRealtime())
                     downloader.download { length, bytes, percent ->
                         listener?.onProgress(length, bytes, percent)
-                        val f = DownloadsJni.note(slot, length, bytes, SystemClock.elapsedRealtime())
+                        val f = DownloadsJni.note(DownloadsJni.h, slot, length, bytes, SystemClock.elapsedRealtime())
                         if (!f.isNaN()) flow.value = f
                     }
                 }
@@ -729,27 +732,48 @@ internal object DownloadsJni {
     const val PENDING = 1
     const val DONE = 2
 
+    /**
+     * The downloads of the core in use, as the doors below take them; 0 before a core is open, which every
+     * door answers as "nothing downloaded". Set by [use].
+     */
+    @Volatile var h = 0L
+        private set
+
+    /**
+     * Makes [core]'s downloads the ones the doors reach. The previous core's are let go: whoever waits for
+     * their marks to move (`download_marks_moved`) stops waiting, and a report still on its way to them
+     * finds nothing.
+     */
+    fun use(core: Core) = synchronized(this) {
+        val old = h
+        h = attach(core.uniffiCloneHandle())
+        release(old)
+    }
+
+    /** [core]'s downloads (a `uniffiCloneHandle()`, taken over) as a handle. */
+    @JvmStatic external fun attach(core: Long): Long
+    @JvmStatic external fun release(h: Long)
     /** Whether a song is in the downloads table: 0 no, [PENDING] queued or failed, [DONE] downloaded. */
-    @JvmStatic @FastNative external fun held(id: String): Int
-    @JvmStatic external fun followed(id: String, state: Int, now: Long): Int
-    @JvmStatic external fun removed(id: String): Int
-    @JvmStatic external fun unmark(id: String): Int
-    @JvmStatic external fun startFraction(id: String): Float
-    @JvmStatic external fun open(id: String, now: Long): Int
+    @JvmStatic @FastNative external fun held(h: Long, id: String): Int
+    @JvmStatic external fun followed(h: Long, id: String, state: Int, now: Long): Int
+    @JvmStatic external fun removed(h: Long, id: String): Int
+    @JvmStatic external fun unmark(h: Long, id: String): Int
+    @JvmStatic external fun startFraction(h: Long, id: String): Float
+    @JvmStatic external fun open(h: Long, id: String, now: Long): Int
     /** Per chunk: the progress to show, or NaN when it has not moved enough to draw. */
-    @JvmStatic @CriticalNative external fun note(slot: Int, length: Long, bytes: Long, now: Long): Float
+    @JvmStatic @CriticalNative external fun note(h: Long, slot: Int, length: Long, bytes: Long, now: Long): Float
     /** 0 unchanged, 1 changed, 2 the batch is over. */
-    @JvmStatic @CriticalNative external fun notice(listed: Int, waiting: Int, now: Long): Int
+    @JvmStatic @CriticalNative external fun notice(h: Long, listed: Int, waiting: Int, now: Long): Int
     /**
      * The notification's facts, `[kind, position, total, permille, speed_bps, eta_s]` into [out], and the
      * song in flight's title and the batch's album as "title\nalbum": one crossing for all of it.
      */
-    @JvmStatic @FastNative external fun noticeFacts(out: LongArray): String?
+    @JvmStatic @FastNative external fun noticeFacts(h: Long, out: LongArray): String?
     /**
      * How the batch went, `[title, text, done, failed]` into [out] (title 0 failed, 1 an album, 2 downloaded;
      * text 0 none, 1 some failed, 2 try again), and the album; null when there is nothing to say.
      */
-    @JvmStatic @FastNative external fun summary(out: IntArray): String?
+    @JvmStatic @FastNative external fun summary(h: Long, out: IntArray): String?
 }
 
 /**
@@ -763,7 +787,7 @@ object DownloadLines {
 
     /** A song's second line: its artist, then, while it runs, "45% · 2.1 MB/s · 1:20 left". */
     fun row(res: Resources, id: String): String {
-        val artist = DownloadFacts.row(id, facts) ?: return ""
+        val artist = DownloadFacts.row(DownloadsJni.h, id, facts) ?: return ""
         if (facts[0] == 0L) return artist
         out.setLength(0)
         out.append(artist)
@@ -780,7 +804,7 @@ object DownloadLines {
         if (queued > 0) part { it.append(res.getString(R.string.downloads_waiting, queued)) }
         if (failed > 0) part { it.append(res.getString(R.string.downloads_failed, failed)) }
         if (active > 0) {
-            DownloadFacts.speedEta(facts)
+            DownloadFacts.speedEta(DownloadsJni.h, facts)
             part { Fmt.appendSpeed(it, facts[0]) }
             part { appendEta(res, it, facts[1]) }
         }
@@ -821,9 +845,9 @@ internal object DownloadFacts {
     init { System.loadLibrary("norimusic") }
 
     /** A song's artist (null when the id is null), and `[running, percent, speed_bps, eta_s]` into [out]. */
-    @JvmStatic @FastNative external fun row(id: String, out: LongArray): String?
+    @JvmStatic @FastNative external fun row(h: Long, id: String, out: LongArray): String?
     /** The batch's `[speed_bps, eta_s]` into [out]. */
-    @JvmStatic @FastNative external fun speedEta(out: LongArray)
+    @JvmStatic @FastNative external fun speedEta(h: Long, out: LongArray)
 }
 
 /** Asks the app to open on its downloads screen. The activity answers it; the core only names it. */
