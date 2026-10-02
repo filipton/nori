@@ -2858,7 +2858,7 @@ fn mixes_keep_their_length() {
         let files = vec![("a".to_string(), wav(&a), 40_000), ("b".to_string(), wav(&b), 40_000)];
         let rig = Rig::build(files, live.clone(), Settings { auto_mix: true, ..Settings::default() }, Extra { pace: Some(5.0), hold_ms: Some(hold_ms), ..Extra::default() });
         rig.engine.play_at(0, 15_000);
-        assert!(rig.wait_for(30, |r| live.0.lock().log.iter().any(|l| l.contains("transition a -> b"))), "{what}: {:?}", live.0.lock().log);
+        assert!(rig.wait_for(30, |_| live.0.lock().log.iter().any(|l| l.contains("transition a -> b"))), "{what}: {:?}", live.0.lock().log);
         let plan = live.0.lock().log.iter().find(|l| l.contains("transition a -> b")).cloned().expect("planned");
         let num = |after: &str| plan.split(after).nth(1).and_then(|s| s.split([' ', ',']).next()).and_then(|n| n.parse::<i64>().ok()).expect("a number");
         let (dur, start) = (num("MixRampFade "), num(" ms at "));
