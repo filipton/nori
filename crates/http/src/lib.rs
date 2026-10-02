@@ -224,7 +224,7 @@ impl Read for CancellableBody {
 
 impl ByteSource for Http {
     fn open(&self, url: &str, from: u64) -> Result<Body, OpenError> {
-        self.open_cancellable(url, None, from, &Cancel::new())
+        self.open_now(url, from)
     }
 
     fn open_cancellable(&self, url: &str, _key: Option<&str>, from: u64, cancel: &Cancel) -> Result<Body, OpenError> {

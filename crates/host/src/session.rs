@@ -22,7 +22,7 @@ use nori_core::{Core, CoreError, IngestStats, PageOrigin, Song};
 use nori_covers::loader::{Config as CoverConfig, Loader, Ticket};
 use nori_covers::memory::Image;
 use nori_engine::core::{settings, Analyses, CoreApp, CoreLibrary, CoreQueue, Downloader, Measurer, OutputVolume};
-use nori_engine::{AudioOutput, Body, ByteSource, Config, Engine, Event, OpenError, State, Recent, Store};
+use nori_engine::{AudioOutput, Body, ByteSource, Cancel, Config, Engine, Event, OpenError, State, Recent, Store};
 use nori_http::Http;
 use nori_look::cover::CoverColours;
 use nori_output_cpal::{CpalOutput, Volume};
@@ -87,11 +87,15 @@ impl Audio {
 
 impl ByteSource for Audio {
     fn open(&self, url: &str, from: u64) -> Result<Body, OpenError> {
+        self.open_cancellable(url, None, from, &Cancel::new())
+    }
+
+    fn open_cancellable(&self, url: &str, key: Option<&str>, from: u64, cancel: &Cancel) -> Result<Body, OpenError> {
         if self.offline {
             return Err("offline".into());
         }
         self.requests.fetch_add(1, Ordering::Relaxed);
-        self.http.open(url, from)
+        self.http.open_cancellable(url, key, from, cancel)
     }
 
     fn open_live(&self, url: &str) -> Result<(Body, Option<usize>), String> {
@@ -757,4 +761,40 @@ pub fn read_pages(client: &Client, read: Read, each: impl FnMut(Page)) -> Result
 fn monotonic_ms() -> i64 {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     START.get_or_init(std::time::Instant::now).elapsed().as_millis() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Read as _;
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    use nori_engine::Loader;
+
+    use super::*;
+
+    /// A song's request the server never answers is dropped with its song: the connection closes.
+    #[test]
+    fn a_song_let_go_hangs_up_its_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/song", listener.local_addr().unwrap());
+        let (asked, closed) = (std::sync::mpsc::channel(), std::sync::mpsc::channel());
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut got = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = s.read(&mut buf).unwrap();
+                got.extend_from_slice(&buf[..n]);
+            }
+            asked.0.send(()).unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+            let _ = closed.0.send(s.read(&mut buf).ok());
+        });
+        let audio = Arc::new(Audio::new(Http::new(), false));
+        let loader = Loader::start(audio, url, [1_000, 4_000, 0, 0, 1 << 30], None, None);
+        asked.1.recv_timeout(Duration::from_secs(10)).expect("the request came");
+        drop(loader);
+        assert_eq!(closed.1.recv_timeout(Duration::from_secs(5)), Ok(Some(0)), "the client hung up");
+    }
 }
