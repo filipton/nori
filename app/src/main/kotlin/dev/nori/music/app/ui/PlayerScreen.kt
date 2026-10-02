@@ -2438,17 +2438,23 @@ private fun SeekBar(vm: PlayerViewModel, playing: Boolean, durationMs: Long) {
     }
     // Paused, the loop settles the bar and stops - nothing ticks over a paused song - so anything that
     // can move a paused player restarts it: play, a skip, a seek. While the music plays it keeps going,
-    // a step every frame through a glide and one a pixel or a second otherwise.
+    // a step every frame through a glide and one a pixel or a second otherwise. A seek starts it again
+    // twice, as it is asked and as it lands, mid-glide: a loop stepped a moment ago steps on from that
+    // step in its first frame (waiting a frame for a time to count from held the bar still for it).
+    val stepped = remember { longArrayOf(0L) }
     LaunchedEffect(free, live, playing, state.current?.id, state.index, durationMs, watched) {
         if (!free || !live) return@LaunchedEffect
-        var last = androidx.compose.runtime.withFrameNanos { it }
+        var last = stepped[0]
+        var now = androidx.compose.runtime.withFrameNanos { it }
+        if (now - last >= 100_000_000L) { last = now; now = androidx.compose.runtime.withFrameNanos { it } }
         while (isActive) {
-            val now = androidx.compose.runtime.withFrameNanos { it }
             val wait = pace.step(vm.positionMs, length, (now - last) / 1e9f, barWidth.floatValue, if (playing) 1f else 0f)
             last = now
+            stepped[0] = now
             publish()
             if (wait < 0) break
             if (wait > 0) kotlinx.coroutines.delay(wait.toLong())
+            now = androidx.compose.runtime.withFrameNanos { it }
         }
     }
 
