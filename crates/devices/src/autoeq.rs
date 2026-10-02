@@ -295,7 +295,7 @@ mod tests {
     const MD: &str = "# Index\nnot an entry\n- [64 Audio U12t](./crinacle/711%20in-ear/64%20Audio%20U12t) by crinacle on 711\n- [Sennheiser HD 600](./oratory1990/over-ear/Sennheiser%20HD%20600) by oratory1990 on Harman over-ear 2018\n- [Sennheiser HD 600 balanced](./Filk/over-ear/Sennheiser%20HD%20600%20balanced) by Filk\n";
 
     #[test]
-    fn index_parses_and_searches() {
+    fn index() {
         let mut c = nori_db::open("", "t").unwrap();
         assert_eq!(store(&mut c, MD, 1).unwrap(), 3);
         let hits = search(&c, "hd 600", 10).unwrap();
@@ -311,10 +311,39 @@ mod tests {
         // Storing again replaces rather than duplicates.
         assert_eq!(store(&mut c, MD, 1).unwrap(), 3);
         assert_eq!(count(&c).unwrap(), 3);
+
+        // Entry keeps parenthesised paths.
+        let e: Vec<AutoEqEntry> = REAL.lines().filter_map(entry).collect();
+        assert_eq!(e.len(), 5);
+        assert_eq!(e[2].name, "Sony WH-1000XM6 (analog cable)");
+        assert_eq!(e[2].path, "Super%20Review/over-ear/Sony%20WH-1000XM6%20(analog%20cable)", "not cut at the first parenthesis");
+        assert_eq!(e[3].target, "GRAS RA0045");
+        assert_eq!(e[4].path, "crinacle/711%20in-ear/Apple%20AirPods%20Pro%202%20(51dB%20+%20ANC)");
+        assert_eq!(
+            preset_url(&e[2]),
+            "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results/Super%20Review/over-ear/Sony%20WH-1000XM6%20(analog%20cable)/Sony%20WH-1000XM6%20(analog%20cable)%20ParametricEQ.txt"
+        );
+        assert_eq!(
+            graphic_url(&e[2]),
+            "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results/Super%20Review/over-ear/Sony%20WH-1000XM6%20(analog%20cable)/Sony%20WH-1000XM6%20(analog%20cable)%20GraphicEQ.txt"
+        );
+        assert!(entry("- [Broken](./a/b/Broken%20(open").is_none(), "a link that never closes is not an entry");
+
+        // Index due rules.
+        let day = 24 * 3_600_000;
+        let now = 100 * day;
+        assert!(index_due(true, false, 0, None, now), "never fetched");
+        assert!(index_due(true, false, 0, Some(now), now), "fetched but empty");
+        assert!(index_due(true, false, 8000, None, now), "kept before its time was noted");
+        assert!(!index_due(true, false, 8000, Some(now - 29 * day), now));
+        assert!(index_due(true, false, 8000, Some(now - 30 * day), now));
+        assert!(index_due(true, false, 8000, Some(now + day), now), "a clock that went backwards");
+        assert!(!index_due(true, true, 0, None, now), "never on a metered network");
+        assert!(!index_due(false, false, 0, None, now), "never with the download switched off");
     }
 
     #[test]
-    fn device_query_strips_noise() {
+    fn model_matching() {
         assert_eq!(device_query("LE_WH-1000XM5").as_deref(), Some("WH-1000XM5"));
         assert_eq!(device_query("Filip's AirPods Pro").as_deref(), Some("AirPods Pro"));
         assert_eq!(device_query("Filip\u{2019}s AirPods Pro").as_deref(), Some("AirPods Pro"));
@@ -322,10 +351,8 @@ mod tests {
         for generic in ["USB Audio", "USB-C to 3.5mm Headphone Jack Adapter", "DAC", "device", "Headset", "BT", ""] {
             assert_eq!(device_query(generic), None, "{generic}");
         }
-    }
 
-    #[test]
-    fn matching_ranks_models() {
+        // Matching ranks models.
         let mut c = nori_db::open("", "t").unwrap();
         let md = "- [Sony WH-1000XM5](./Rtings/over-ear/Sony%20WH-1000XM5) by Rtings\n\
 - [Sony WH-1000XM5](./oratory1990/over-ear/Sony%20WH-1000XM5) by oratory1990\n\
@@ -349,39 +376,6 @@ mod tests {
 - [Sony WH-1000XM6 (analog cable)](./Super%20Review/over-ear/Sony%20WH-1000XM6%20(analog%20cable)) by Super Review\n\
 - [1MORE Aero (ANC Off)](./HypetheSonics/GRAS%20RA0045%20in-ear/1MORE%20Aero%20(ANC%20Off)) by HypetheSonics on GRAS RA0045\n\
 - [Apple AirPods Pro 2 (51dB + ANC)](./crinacle/711%20in-ear/Apple%20AirPods%20Pro%202%20(51dB%20+%20ANC)) by crinacle on 711\n";
-
-    #[test]
-    fn entry_keeps_parenthesised_paths() {
-        let e: Vec<AutoEqEntry> = REAL.lines().filter_map(entry).collect();
-        assert_eq!(e.len(), 5);
-        assert_eq!(e[2].name, "Sony WH-1000XM6 (analog cable)");
-        assert_eq!(e[2].path, "Super%20Review/over-ear/Sony%20WH-1000XM6%20(analog%20cable)", "not cut at the first parenthesis");
-        assert_eq!(e[3].target, "GRAS RA0045");
-        assert_eq!(e[4].path, "crinacle/711%20in-ear/Apple%20AirPods%20Pro%202%20(51dB%20+%20ANC)");
-        assert_eq!(
-            preset_url(&e[2]),
-            "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results/Super%20Review/over-ear/Sony%20WH-1000XM6%20(analog%20cable)/Sony%20WH-1000XM6%20(analog%20cable)%20ParametricEQ.txt"
-        );
-        assert_eq!(
-            graphic_url(&e[2]),
-            "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results/Super%20Review/over-ear/Sony%20WH-1000XM6%20(analog%20cable)/Sony%20WH-1000XM6%20(analog%20cable)%20GraphicEQ.txt"
-        );
-        assert!(entry("- [Broken](./a/b/Broken%20(open").is_none(), "a link that never closes is not an entry");
-    }
-
-    #[test]
-    fn index_due_rules() {
-        let day = 24 * 3_600_000;
-        let now = 100 * day;
-        assert!(index_due(true, false, 0, None, now), "never fetched");
-        assert!(index_due(true, false, 0, Some(now), now), "fetched but empty");
-        assert!(index_due(true, false, 8000, None, now), "kept before its time was noted");
-        assert!(!index_due(true, false, 8000, Some(now - 29 * day), now));
-        assert!(index_due(true, false, 8000, Some(now - 30 * day), now));
-        assert!(index_due(true, false, 8000, Some(now + day), now), "a clock that went backwards");
-        assert!(!index_due(true, true, 0, None, now), "never on a metered network");
-        assert!(!index_due(false, false, 0, None, now), "never with the download switched off");
-    }
 
     #[test]
     fn missing_marks_follow_index() {

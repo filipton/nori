@@ -142,19 +142,25 @@ mod tests {
     }
 
     #[test]
-    fn tap_follows_setting_unless_selecting() {
+    fn taps_and_plans() {
         let all = [TapAction::PlayList, TapAction::PlayOne, TapAction::Queue, TapAction::PlayNext];
         assert_eq!(all.map(|a| tap(false, a)), [TapPlan::PlayList, TapPlan::PlayOne, TapPlan::Queue, TapPlan::PlayNext]);
         assert_eq!(tap(true, TapAction::Queue), TapPlan::Select);
-    }
 
-    #[test]
-    fn shuffle_plan_by_size() {
+        // Shuffle plan by size.
         let l: Vec<Song> = (0..6).map(|i| song(&i.to_string(), "t", &format!("A{}", i % 2), "b", "", 0)).collect();
         assert_eq!(plan_shuffle(vec![], 1), ShufflePlan::Empty);
         assert_eq!(plan_shuffle(l[..2].to_vec(), 1), ShufflePlan::PlayerShuffle);
         let ShufflePlan::Order { order } = plan_shuffle(l.clone(), 9) else { panic!("spread") };
         assert_eq!(order.iter().map(|&i| l[i as usize].clone()).collect::<Vec<_>>(), mixes::weighted_shuffle(l, 9));
+
+        // Test ref parses.
+        assert_eq!(test_ref("album:a:1".into()), TestRef::Album { id: "a:1".into() });
+        assert_eq!(test_ref("search:dogs".into()), TestRef::Search { text: "dogs".into() });
+        assert_eq!(test_ref("downloaded:x".into()), TestRef::DownloadedSong { id: "x".into() });
+        assert_eq!(test_ref("downloaded:".into()), TestRef::Downloaded { index: 0 });
+        assert_eq!(test_ref("downloaded:2".into()), TestRef::Downloaded { index: 2 });
+        assert_eq!(test_ref("song".into()), TestRef::Nothing);
     }
 
     #[test]
@@ -165,13 +171,4 @@ mod tests {
         assert_eq!(radio_queue(a.clone(), vec![b.clone(), a.clone(), provider, c.clone()]).unwrap(), [a, b, c]);
     }
 
-    #[test]
-    fn test_ref_parses() {
-        assert_eq!(test_ref("album:a:1".into()), TestRef::Album { id: "a:1".into() });
-        assert_eq!(test_ref("search:dogs".into()), TestRef::Search { text: "dogs".into() });
-        assert_eq!(test_ref("downloaded:x".into()), TestRef::DownloadedSong { id: "x".into() });
-        assert_eq!(test_ref("downloaded:".into()), TestRef::Downloaded { index: 0 });
-        assert_eq!(test_ref("downloaded:2".into()), TestRef::Downloaded { index: 2 });
-        assert_eq!(test_ref("song".into()), TestRef::Nothing);
-    }
 }

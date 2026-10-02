@@ -256,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn rank_unused_keeps_order_after_drawn_first() {
+    fn ranking() {
         let list = ids(&["a", "b", "c", "d", "e"]);
         for seed in 0..50 {
             let r = rank(list.clone(), &HashMap::new(), NOW, seed);
@@ -267,10 +267,8 @@ mod tests {
         }
         let leads: HashSet<String> = (0..50).map(|s| rank(list.clone(), &HashMap::new(), NOW, s)[0].clone()).collect();
         assert_eq!(leads.len(), 3);
-    }
 
-    #[test]
-    fn rank_recent_last_oldest_first() {
+        // Rank recent last oldest first.
         let used = HashMap::from([("a".to_string(), NOW - DAY), ("b".to_string(), NOW - 5 * DAY), ("c".to_string(), NOW - 20 * DAY)]);
         // c is older than LATELY_MS: fresh again.
         let r = rank(ids(&["a", "b", "c", "d"]), &used, NOW, 1);
@@ -278,17 +276,15 @@ mod tests {
         assert_eq!(r[2..], ids(&["b", "a"]));
         let all = HashMap::from([("a".to_string(), NOW - DAY), ("b".to_string(), NOW - 3 * DAY)]);
         assert_eq!(rank(ids(&["a", "b"]), &all, NOW, 7), ids(&["b", "a"]));
-    }
 
-    #[test]
-    fn rank_dedups() {
+        // Rank dedups.
         assert!(rank(Vec::new(), &HashMap::new(), NOW, 3).is_empty());
         let r = rank(ids(&["a", "a", "b"]), &HashMap::from([("a".to_string(), NOW)]), NOW, 3);
         assert_eq!(r, ids(&["b", "a"]));
     }
 
     #[test]
-    fn album_picks_rotate() {
+    fn picks() {
         let c = nori_db::open("", "t").unwrap();
         let records = ids(&["al-1", "al-2", "al-3"]);
         let mut order = Vec::new();
@@ -301,20 +297,16 @@ mod tests {
         assert_eq!(distinct.len(), 3, "{order:?}");
         c.execute("UPDATE autofill_picks SET picked_ms=picked_ms-?1 WHERE id=?2", params![DAY, order[1]]).unwrap();
         assert_eq!(rank(records, &album_use(&c, NOW).unwrap(), NOW, 0)[0], order[1]);
-    }
 
-    #[test]
-    fn plays_count_as_use() {
+        // Plays count as use.
         let mut c = nori_db::open("", "t").unwrap();
         let s = Song { id: "s1".into(), title: "One".into(), artist: "Artist".into(), album: "Heard".into(), album_id: Some("al-heard".into()), duration: 200, ..Default::default() };
         assert!(nori_library::history::record(&mut c, &s, NOW - DAY, 200_000, 0, NOW).unwrap());
         assert_eq!(rank(ids(&["al-heard", "al-other"]), &album_use(&c, NOW).unwrap(), NOW, 0), ids(&["al-other", "al-heard"]));
         assert_eq!(rank(ids(&["s1", "s2"]), &song_use(&c, NOW).unwrap(), NOW, 0), ids(&["s2", "s1"]));
         assert_eq!(album_use(&c, NOW + LATELY_MS + DAY).unwrap().get("al-heard"), None);
-    }
 
-    #[test]
-    fn picks_expire_and_are_per_server() {
+        // Picks expire and are per server.
         let c = nori_db::open("", "t").unwrap();
         c.execute("INSERT INTO autofill_picks(server, kind, id, picked_ms) VALUES('t', 0, 'old', ?1)", params![NOW - FORGET_MS - DAY]).unwrap();
         c.execute("INSERT INTO autofill_picks(server, kind, id, picked_ms) VALUES('other', 0, 'theirs', ?1)", params![NOW]).unwrap();
@@ -325,15 +317,13 @@ mod tests {
     }
 
     #[test]
-    fn shuffle_queues_refill_with_autoplay_off() {
+    fn refill_timing() {
         use nori_model::OriginKind as K;
         assert!(refills(Some(K::ShuffleAlbums), false) && refills(Some(K::ShuffleSongs), false));
         assert!(!refills(Some(K::Album), false) && !refills(None, false));
         assert!(refills(None, true));
-    }
 
-    #[test]
-    fn refill_timing_follows_queue() {
+        // Refill timing follows queue.
         let s = crate::playlist::tests::session(&["rf1", "rf2", "rf3", "rf4"], 0);
         assert!(!s.autofill_start(), "three songs still follow");
         assert_eq!(s.autofill_next(), FillNext::Skip);
@@ -378,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn next_at_end_skips_only_if_songs_land_soon() {
+    fn next_at_end() {
         assert!(end_of_queue("ea", &[10_000], 10_800, None), "a press, then a fast arrival: the skip is taken");
         assert!(!end_of_queue("eb", &[10_000], 14_600, None), "a press, then a slow arrival: the songs join, no skip");
         // Six fast presses: one fetch, timed from the last press.
@@ -386,10 +376,8 @@ mod tests {
         assert!(end_of_queue("ec", &mash, 12_700, None));
         assert!(!end_of_queue("ed", &mash, 14_600, None));
         assert!(!end_of_queue("ee", &[10_000], 10_500, Some(0)), "moved elsewhere meanwhile");
-    }
 
-    #[test]
-    fn waiting_next_follows_its_entry_not_its_song() {
+        // Waiting next follows its entry not its song.
         let s = crate::playlist::tests::session(&["se0", "se1", "se0"], 2);
         assert_eq!(s.autofill_next_at(10_000), FillNext::Fetch);
         // The same song, another entry of it.
@@ -397,10 +385,8 @@ mod tests {
         assert!(s.autofill_arrived(15));
         s.take(3, vec!["se2".into()], vec![nori_player::playlist::Hand::No], None);
         assert!(!s.autofill_landed_at(10_300), "the press was made on the last entry, not here");
-    }
 
-    #[test]
-    fn fetch_for_moved_end_is_dropped() {
+        // Fetch for moved end is dropped.
         let s = crate::playlist::tests::session(&["em0", "em1", "em2"], 1);
         assert!(s.autofill_start());
         // Add to queue inserts after the current song, so the end is still em2.
@@ -418,4 +404,5 @@ mod tests {
         s.set(vec!["n0".into(), "n1".into()], Some(0), false, None);
         assert!(!s.autofill_arrived(15));
     }
+
 }

@@ -234,23 +234,21 @@ mod tests {
     }
 
     #[test]
-    fn cuts_at_words_and_spaces() {
+    fn line_breaks() {
         let l = lay(&face(), 0, &line(), 20.0, 1000.0);
         let texts: Vec<&str> = l.pieces.iter().map(|p| p.text.as_str()).collect();
         assert_eq!(texts, ["I", " ", "won", "der", " ", "why"]);
         assert_eq!(l.pieces.iter().map(|p| p.row).max(), Some(0));
         assert!(l.pieces.windows(2).all(|w| w[1].x > w[0].x));
-    }
 
-    #[test]
-    fn narrow_line_wraps_at_spaces() {
+        // Narrow line wraps at spaces.
         let l = lay(&face(), 0, &line(), 20.0, 40.0);
         assert!(l.pieces.iter().map(|p| p.row).max().unwrap_or(0) > 0);
         assert!(l.pieces.iter().filter(|p| p.x == 0.0).all(|p| !p.text.starts_with(' ')));
     }
 
     #[test]
-    fn word_lifts_while_sung_and_settles() {
+    fn sung_words() {
         let w = LyricWord { start_ms: 1000, end_ms: 1500, start: 0, end: 3 };
         assert_eq!(lift(&w, 900), 0.0);
         assert!(lift(&w, 1400) > 0.5);
@@ -258,14 +256,13 @@ mod tests {
         let long = LyricWord { start_ms: 0, end_ms: HELD_MS + 100, start: 0, end: 3 };
         assert!(held(&long, HELD_MS) > 0.5);
         assert_eq!(held(&w, 1200), 0.0);
-    }
 
-    #[test]
-    fn fill_is_lit_behind_and_dim_ahead() {
+        // Fill is lit behind and dim ahead.
         let line = line();
         let l = lay(&face(), 0, &line, 20.0, 1000.0);
         let f = frame(&l, &line, 6.0, 1000, 1.0, 0.3, 4.0);
         assert_eq!(f.first().map(|p| p.a0), Some(1.0));
         assert_eq!(f.last().map(|p| p.a1), Some(0.3));
     }
+
 }

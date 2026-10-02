@@ -128,23 +128,19 @@ mod tests {
     }
 
     #[test]
-    fn active_line_and_wait_until_next() {
+    fn lyric_lines() {
         let l = SongLyrics::new(pick(), 0, None);
         assert_eq!(l.advance(1500, true).active, 0);
         assert_eq!(l.advance(3500, true).active, 1);
         let wait = l.advance(2500, true).wait;
         assert!(wait.is_some_and(|ms| ms <= 500), "the next line is due at 3000");
-    }
 
-    #[test]
-    fn split_at_fill_position() {
+        // Split at fill position.
         assert_eq!(split("héllo", 1.5), ("h".into(), "é".into(), 0.5, "llo".into()));
         assert_eq!(split("ab", 0.0), ("".into(), "a".into(), 0.0, "b".into()));
         assert_eq!(split("ab", 2.0), ("ab".into(), "".into(), 0.0, "".into()));
-    }
 
-    #[test]
-    fn timed_words_fill_the_line() {
+        // Timed words fill the line.
         let word = |start_ms, end_ms, start, end| LyricWord { start_ms, end_ms, start, end };
         let line = LyricLine { start_ms: 1000, end_ms: 3000, text: "one two".into(), words: vec![word(1000, 2000, 0, 3), word(2000, 3000, 4, 7)], ..Default::default() };
         let lyrics = Lyrics { synced: true, word_timed: true, lines: vec![line], key: 0, offset_ms: 0 };
@@ -153,4 +149,5 @@ mod tests {
         assert!(now.sweeping);
         assert_eq!((now.sung.as_str(), now.now.as_str(), now.rest.as_str()), ("one t", "w", "o"));
     }
+
 }

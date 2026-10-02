@@ -1555,7 +1555,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn batch_counts() {
+    fn rate_gate() {
+        let (mut last, mut at) = (f32::NAN, 0i64);
+        let mut offer = |f: f32, now: i64| {
+            let pass = gate(last, at, f, now);
+            if pass {
+                (last, at) = (f, now);
+            }
+            pass
+        };
+        assert!(offer(0.0, 1_000), "the first figure always shows");
+        assert!(!offer(0.05, 1_100), "too soon");
+        assert!(offer(0.05, 1_250));
+        assert!(!offer(0.055, 1_600), "under a percent");
+        assert!(offer(0.07, 1_600));
+        let passed = (0..2_000).filter(|&t| offer(0.07 + t as f32 * 0.0004, 2_000 + t as i64)).count();
+        assert!(passed <= 8, "{passed} updates in two seconds");
+
+        // Gate passes finish and unknown.
+        assert!(gate(0.995, 0, 1.0, 10), "the finish is not held back by the interval");
+        assert!(!gate(1.0, 10, 1.0, 1_000), "and only once");
+        assert!(gate(f32::NAN, 0, -1.0, 0));
+        assert!(!gate(-1.0, 0, -1.0, 5_000), "still unknown: nothing to redraw");
+        assert!(gate(-1.0, 5_000, 0.2, 5_001), "the size arriving shows at once");
+        assert!(gate(0.2, 5_001, -1.0, 5_002));
+    }
+
+    #[test]
+    fn sizes() {
+        assert_eq!(fraction(200, 100, 999), 0.5);
+        assert_eq!(fraction(-1, 100, 400), 0.25);
+        assert!(fraction(-1, 900, 400) < 1.0, "an estimate that is too low never reads as finished");
+        assert_eq!(fraction(-1, 100, 0), -1.0);
+        assert_eq!(expected_bytes(9_000_000, 240, 0), 9_000_000);
+        assert_eq!(expected_bytes(9_000_000, 240, 192), 240 * 192 * 125);
+        assert_eq!(expected_bytes(9_000_000, 0, 192), 9_000_000);
+
+        // Unstarted songs are sized by finished ones: estimates scaled by actual/estimate, else the average.
+        let mut t = tracker(&["ext-w-a", "ext-w-b"], 4_000_000);
+        t.info.insert("ext-w-c".into(), Info::default());
+        for id in ["ext-w-a", "ext-w-b", "ext-w-c"] {
+            t.followed(id, QUEUED, 0);
+        }
+        t.followed("ext-w-a", DOWNLOADING, 0);
+        let a = t.open("ext-w-a", 0);
+        t.note(a, 5_000_000, 0, 0);
+        t.note(a, 5_000_000, 5_000_000, 10_000);
+        t.followed("ext-w-a", COMPLETED, 10_000);
+        t.notice(2, false, 10_000);
+        // b was estimated at 4 MB, and a, estimated the same, weighed 5; c has no estimate: the average.
+        assert_eq!(t.remaining_bytes, 5_000_000 + 5_000_000);
+
+        // Batch counts.
         let mut b = Batch::default();
         assert!(b.queued("a", "Blue"), "the first song starts a batch");
         assert!(!b.queued("a", "Blue"), "counted once");
@@ -1582,52 +1633,12 @@ mod tests {
         assert_eq!((b.total, b.done, b.label()), (1, 0, Some("Red")));
     }
 
-    #[test]
-    fn gate_limits_rate() {
-        let (mut last, mut at) = (f32::NAN, 0i64);
-        let mut offer = |f: f32, now: i64| {
-            let pass = gate(last, at, f, now);
-            if pass {
-                (last, at) = (f, now);
-            }
-            pass
-        };
-        assert!(offer(0.0, 1_000), "the first figure always shows");
-        assert!(!offer(0.05, 1_100), "too soon");
-        assert!(offer(0.05, 1_250));
-        assert!(!offer(0.055, 1_600), "under a percent");
-        assert!(offer(0.07, 1_600));
-        let passed = (0..2_000).filter(|&t| offer(0.07 + t as f32 * 0.0004, 2_000 + t as i64)).count();
-        assert!(passed <= 8, "{passed} updates in two seconds");
-    }
-
-    #[test]
-    fn gate_passes_finish_and_unknown() {
-        assert!(gate(0.995, 0, 1.0, 10), "the finish is not held back by the interval");
-        assert!(!gate(1.0, 10, 1.0, 1_000), "and only once");
-        assert!(gate(f32::NAN, 0, -1.0, 0));
-        assert!(!gate(-1.0, 0, -1.0, 5_000), "still unknown: nothing to redraw");
-        assert!(gate(-1.0, 5_000, 0.2, 5_001), "the size arriving shows at once");
-        assert!(gate(0.2, 5_001, -1.0, 5_002));
-    }
-
-    #[test]
-    fn fraction_uses_length_then_estimate() {
-        assert_eq!(fraction(200, 100, 999), 0.5);
-        assert_eq!(fraction(-1, 100, 400), 0.25);
-        assert!(fraction(-1, 900, 400) < 1.0, "an estimate that is too low never reads as finished");
-        assert_eq!(fraction(-1, 100, 0), -1.0);
-        assert_eq!(expected_bytes(9_000_000, 240, 0), 9_000_000);
-        assert_eq!(expected_bytes(9_000_000, 240, 192), 240 * 192 * 125);
-        assert_eq!(expected_bytes(9_000_000, 0, 192), 9_000_000);
-    }
-
     fn marks(list: &[(&str, Phase, i64)]) -> HashMap<String, (Phase, i64)> {
         list.iter().map(|&(id, p, at)| (id.to_string(), (p, at))).collect()
     }
 
     #[test]
-    fn sections_run_in_queue_order() {
+    fn section_order() {
         let pending = ["e", "d", "c", "b", "a"].map(String::from);
         let done = ["x", "y", "old"].map(String::from);
         let m = marks(&[("a", Phase::Downloading, 0), ("c", Phase::Downloading, 0), ("b", Phase::Failed, 0), ("x", Phase::Done, 5), ("y", Phase::Done, 9)]);
@@ -1636,17 +1647,15 @@ mod tests {
         assert_eq!(queued, ["d", "e"], "a failure does not hold up the songs behind it");
         assert_eq!(failed, ["b"]);
         assert_eq!(finished, ["y", "x"], "newest first, and only this session's");
-    }
 
-    #[test]
-    fn just_finished_song_listed() {
+        // Just finished song listed.
         let pending = ["b", "a"].map(String::from);
         let [_, queued, _, finished] = sections(&pending, &[], &marks(&[("a", Phase::Done, 0)]), |s: &String| s.as_str());
         assert_eq!((queued, finished), (vec!["b".to_string()], vec!["a".to_string()]));
     }
 
     #[test]
-    fn processing_lasts_until_lyrics_analysis_and_beats_end() {
+    fn processing_marks() {
         let mut t = Tracker::default();
         t.analysing_began("a");
         t.followed("a", DOWNLOADING, 0);
@@ -1682,230 +1691,9 @@ mod tests {
         assert_eq!(t.phase("d"), Some(DownloadPhase::Analysing));
         assert!(!t.plan("e", Needs::default(), None), "nothing to do: no mark");
         assert_eq!(t.phase("e"), None);
-    }
 
-    #[test]
-    fn needs_rules() {
-        let base = Saved { analysable: true, ..Saved::default() };
-        let needs_of = |s: Saved| (needs(s).analysis, needs(s).beats);
-        assert_eq!(needs_of(Saved { measuring: true, ..base }), (true, false), "streaming analysis in progress");
-        assert_eq!(needs_of(base), (true, false), "no current analysis");
-        assert_eq!(needs_of(Saved { analysed: true, ..base }), (false, false));
-        let ml = Saved { model_on: true, beats_wanted: true, ..base };
-        assert_eq!(needs_of(ml), (true, true));
-        assert_eq!(needs_of(Saved { analysed: true, ..ml }), (false, true));
-        assert_eq!(needs_of(Saved { analysed: true, beats_done: true, ..ml }), (false, false));
-        assert_eq!(needs_of(Saved { analysed: true, beats_done: true, measuring: true, ..ml }), (true, true), "measured again: its ends too");
-        assert_eq!(needs_of(Saved { beats_wanted: false, ..ml }), (true, false), "not wanted for this download");
-        assert_eq!(needs_of(Saved { model_on: false, ..ml }), (true, false), "the model is off");
-        assert_eq!(needs_of(Saved { analysable: false, ..ml }), (false, false), "provider song or stream");
-    }
-
-    /// A timed-out step is given up; an idle lane is released; a slow live step finishes and is timed.
-    #[test]
-    fn expire_gives_up_stuck_steps() {
-        let mut t = Tracker { test_clock: Some(0), ..Tracker::default() };
-        for id in ["ex-a", "ex-b"] {
-            t.followed(id, COMPLETED, 0);
-            t.plan(id, Needs { analysis: true, beats: id == "ex-a" }, Some(true));
-        }
-        assert_eq!(t.processing(), [2, 2, 1]);
-        // A lookup that never answers, and an analysis that runs.
-        t.working("ex-a", Work::Lyrics);
-        t.working("ex-a", Work::Analysis);
-        t.test_clock = Some(20_000);
-        let lyrics_ms = Work::Lyrics.limit_ms();
-        assert_eq!(t.expire(), lyrics_ms - 20_000, "the lookup's deadline comes first");
-        t.test_clock = Some(lyrics_ms);
-        t.expire();
-        assert!(!t.waits("ex-a", Work::Lyrics), "the lookup is given up");
-        assert!(t.waits("ex-a", Work::Analysis), "the analysis runs on");
-        assert!(t.waits("ex-b", Work::Lyrics), "the next lookup waits its turn");
-        // The analysis is slow but alive: it ends well past the lookup's time, within its own.
-        t.test_clock = Some(100_000);
-        assert!(t.work_done("ex-a", Work::Analysis));
-        t.working("ex-a", Work::Beats);
-        assert!((t.paces[Work::Analysis as usize].per_song_s(Work::Analysis) - (100.0 + 2.0 * 5.0) / 3.0).abs() < 1e-9, "learned from the step");
-        // The lyrics lane moved on to nothing for its whole spell: what waits there is let go.
-        t.expire();
-        assert!(!t.waits("ex-b", Work::Lyrics));
-        assert!(t.waits("ex-b", Work::Analysis), "the measuring lane is busy with ex-a's beats, not stuck");
-        // The beat model's run ends; ex-b's analysis follows.
-        t.test_clock = Some(160_000);
-        assert!(t.work_done("ex-a", Work::Beats));
-        assert_eq!(t.marks["ex-a"].0, Phase::Done);
-        t.working("ex-b", Work::Analysis);
-        t.test_clock = Some(160_000 + Work::Analysis.limit_ms());
-        assert_eq!(t.expire(), -1, "given up at its time: nothing is left processing");
-        assert_eq!(t.marks["ex-b"].0, Phase::Done);
-    }
-
-    #[test]
-    fn marks_changed_reports_only_moved_marks() {
-        let mut t = Tracker::default();
-        t.mark("a", Phase::Downloading, 1);
-        t.mark("b", Phase::Failed, 2);
-        let mine = |m: &DownloadMarks, id: &str| m.ids.iter().position(|i| i == id).map(|i| m.phases[i]);
-        let m = t.marks_changed();
-        assert_eq!((mine(&m, "a"), mine(&m, "b")), (Some(Some(DownloadPhase::Downloading)), Some(Some(DownloadPhase::Failed))));
-        t.unmark("a");
-        let m = t.marks_changed();
-        assert_eq!((mine(&m, "a"), mine(&m, "b")), (Some(None), None), "removed, and b did not move");
-    }
-
-    #[test]
-    fn no_slot_notes_nothing() {
-        let mut t = Tracker::default();
-        let slot = t.open("a", 0);
-        assert!(t.note(-1, 1000, 500, 10).is_nan());
-        assert_eq!(t.slots[slot as usize].bytes, 0);
-    }
-
-    #[test]
-    fn row_facts_only_while_running() {
-        let slot = Slot { id: "r".into(), estimate: 0, length: 1000, bytes: 450, started_at: 0, gate_value: 0.0, gate_at: 0, speed_bytes: 0, speed_at: 0, rate: 0.0, live: true };
-        assert_eq!(row_facts(std::slice::from_ref(&slot), "r"), Some(RowFacts { percent: 45, speed_bps: 0, eta_s: -1 }));
-        assert_eq!(row_facts(std::slice::from_ref(&slot), "other"), None);
-    }
-
-    /// A tracker knowing `ids` weigh `size` each (0 unknown).
-    fn tracker(ids: &[&str], size: i64) -> Tracker {
-        let mut t = Tracker::default();
-        for id in ids {
-            t.info.insert(id.to_string(), Info { estimate: size, ..Info::default() });
-        }
-        t
-    }
-
-    /// Two concurrent songs: the batch speed sums them and the time left follows.
-    #[test]
-    fn two_songs_speed_and_eta() {
-        // Provider songs: no lyrics are looked up after them.
-        let mut t = tracker(&["ext-sp-a", "ext-sp-b"], 1_000_000);
-        for id in ["ext-sp-a", "ext-sp-b"] {
-            t.followed(id, DOWNLOADING, 0);
-        }
-        let (a, b) = (t.open("ext-sp-a", 0), t.open("ext-sp-b", 0));
-        for k in 0..=4i64 {
-            t.note(a, 1_000_000, k * 100_000, k * 500);
-            t.note(b, 1_000_000, k * 50_000, k * 500);
-        }
-        t.notice(2, false, 2_000);
-        let (speed, eta) = (t.speed_bps, t.eta_s);
-        assert!((290_000..=310_000).contains(&speed), "200 kB/s and 100 kB/s together: {speed}");
-        // 600 kB and 800 kB still to come at 300 kB/s.
-        assert!((4..=5).contains(&eta), "{eta} s left");
-    }
-
-    /// Six 2 MB songs, two at a time at 200 kB/s each: speed stays ~400 kB/s and the time left counts
-    /// down steadily as songs end and start.
-    #[test]
-    fn speed_and_eta_steady_across_songs() {
-        let ids: Vec<String> = (0..6).map(|i| format!("ext-st-{i}")).collect();
-        let names: Vec<&str> = ids.iter().map(String::as_str).collect();
-        let mut t = tracker(&names, 2_000_000);
-        for id in &names {
-            t.followed(id, QUEUED, 0);
-        }
-        let mut next = 0;
-        // (song, slot, bytes)
-        let mut running: Vec<(usize, i32, i64)> = Vec::new();
-        let mut start = |t: &mut Tracker, running: &mut Vec<(usize, i32, i64)>, now: i64| {
-            if next < names.len() {
-                t.followed(names[next], DOWNLOADING, now);
-                let slot = t.open(names[next], now);
-                t.note(slot, 2_000_000, 0, now);
-                running.push((next, slot, 0));
-                next += 1;
-            }
-        };
-        start(&mut t, &mut running, 0);
-        start(&mut t, &mut running, 0);
-        let mut said = Vec::new();
-        for tick in 1..=120i64 {
-            let now = tick * 250;
-            for r in running.iter_mut() {
-                r.2 += 50_000;
-                t.note(r.1, 2_000_000, r.2, now);
-            }
-            while let Some(i) = running.iter().position(|r| r.2 >= 2_000_000) {
-                let (song, _, _) = running.remove(i);
-                t.followed(names[song], COMPLETED, now);
-                start(&mut t, &mut running, now);
-            }
-            if now % 1_000 == 0 && !running.is_empty() {
-                t.notice(names.len() as i32 - t.batch.done, false, now);
-                said.push((now, t.speed_bps, t.eta_s));
-            }
-        }
-        assert!(said.len() > 20);
-        for &(now, speed, eta) in said.iter().filter(|s| s.0 >= 2_000) {
-            assert!((380_000..=420_000).contains(&speed), "{speed} B/s at {now} ms");
-            let truth = 30 - now / 1_000;
-            assert!((eta - truth).abs() <= 2, "{eta} s left at {now} ms, {truth} s really");
-        }
-        for w in said.windows(2).filter(|w| w[0].0 >= 2_000) {
-            let step = w[0].2 - w[1].2;
-            assert!((0..=2).contains(&step), "a second on, the time left went from {} to {}", w[0].2, w[1].2);
-        }
-    }
-
-    /// Unstarted songs are sized by finished ones: estimates scaled by actual/estimate, else the average.
-    #[test]
-    fn remaining_sized_from_finished() {
-        let mut t = tracker(&["ext-w-a", "ext-w-b"], 4_000_000);
-        t.info.insert("ext-w-c".into(), Info::default());
-        for id in ["ext-w-a", "ext-w-b", "ext-w-c"] {
-            t.followed(id, QUEUED, 0);
-        }
-        t.followed("ext-w-a", DOWNLOADING, 0);
-        let a = t.open("ext-w-a", 0);
-        t.note(a, 5_000_000, 0, 0);
-        t.note(a, 5_000_000, 5_000_000, 10_000);
-        t.followed("ext-w-a", COMPLETED, 10_000);
-        t.notice(2, false, 10_000);
-        // b was estimated at 4 MB, and a, estimated the same, weighed 5; c has no estimate: the average.
-        assert_eq!(t.remaining_bytes, 5_000_000 + 5_000_000);
-    }
-
-    #[test]
-    fn resumed_download_no_speed_burst() {
-        let mut t = tracker(&["ext-r"], 8_000_000);
-        t.followed("ext-r", DOWNLOADING, 0);
-        let slot = t.open("ext-r", 0);
-        for k in 0..=6i64 {
-            t.note(slot, 8_000_000, 3_000_000 + k * 100_000, k * 500);
-        }
-        t.notice(1, false, 3_000);
-        assert!((190_000..=210_000).contains(&t.speed_bps), "{} B/s", t.speed_bps);
-        // Asked for again after it stopped: one slot, not two.
-        t.open("ext-r", 3_000);
-        assert_eq!(t.slots.iter().filter(|s| s.live).count(), 1);
-    }
-
-    #[test]
-    fn time_left_lanes() {
-        let per = [3.0, 5.0, 40.0];
-        let after = |waiting: [f64; 3], to_come: [f64; 3], tail: bool| After { waiting, to_come, per, tail };
-        assert_eq!(time_left(None, &after([1.0; 3], [1.0; 3], true)), -1.0, "no speed yet");
-        assert_eq!(time_left(Some(10.0), &after([0.0; 3], [0.0; 3], false)), 10.0);
-        // The last song's lookup comes after its last byte.
-        assert_eq!(time_left(Some(10.0), &after([0.0; 3], [2.0, 0.0, 0.0], false)), 13.0);
-        // Many lookups queued up take longer than the bytes.
-        assert_eq!(time_left(Some(10.0), &after([4.0, 0.0, 0.0], [2.0, 0.0, 0.0], false)), 18.0);
-        assert_eq!(time_left(Some(0.0), &after([3.0, 0.0, 0.0], [0.0; 3], false)), 9.0, "the bytes are in; the lookups are left");
-        assert_eq!(time_left(Some(5.0), &after([0.0; 3], [0.0; 3], true)), 5.0 + ANALYSIS_TAIL_S);
-        // The measuring lane runs beside the lookups: two analyses and three model runs, one song at a time.
-        assert_eq!(time_left(Some(0.0), &after([3.0, 2.0, 3.0], [0.0; 3], false)), 2.0 * 5.0 + 3.0 * 40.0, "the longer lane");
-        // Songs still to come: the last one's analysis and model run come after the last byte.
-        assert_eq!(time_left(Some(100.0), &after([0.0; 3], [0.0, 0.5, 1.0], false)), 100.0 + 0.5 * 5.0 + 40.0);
-        assert_eq!(time_left(Some(10.0), &after([0.0, 0.0, 4.0], [0.0, 0.0, 2.0], false)), 6.0 * 40.0, "the model's queue outlasts the bytes");
-    }
-
-    /// After the bytes, the time left follows each lane's work, and step times are learned (instant
-    /// lyrics lookups pull the lyrics estimate towards zero).
-    #[test]
-    fn processing_counted_down_and_timed() {
+        // After the bytes, the time left follows each lane's work, and step times are learned (instant
+        // lyrics lookups pull the lyrics estimate towards zero).
         let mut t = tracker(&["ly-a", "ly-b"], 1_000_000);
         t.test_clock = Some(0);
         for id in ["ly-a", "ly-b"] {
@@ -1972,10 +1760,8 @@ mod tests {
         t.marks.insert("ly-e".into(), (Phase::Processing([false, true, false]), 0));
         t.work_done("ly-e", Work::Analysis);
         assert_eq!(per(&t, Work::Analysis), analysis);
-    }
 
-    #[test]
-    fn processing_facts_follow_the_marks() {
+        // Processing facts follow the marks.
         let mut t = Tracker::default();
         assert!(t.processing_at(0).is_none());
         t.plan("a", Needs { analysis: true, beats: true }, None);
@@ -1994,47 +1780,78 @@ mod tests {
         assert!(t.processing_at(2_000).is_none());
     }
 
-    /// After the last byte: no speed, the time left counts down the pending lyrics, then -1.
     #[test]
-    fn eta_after_last_byte() {
-        let mut t = tracker(&["af-a", "af-b"], 1_000_000);
-        for id in ["af-a", "af-b"] {
-            t.followed(id, DOWNLOADING, 0);
-            let slot = t.open(id, 0);
-            t.note(slot, 1_000_000, 0, 0);
-            t.note(slot, 1_000_000, 1_000_000, 2_000);
-        }
-        t.notice(2, false, 2_000);
-        assert!(t.speed_bps > 0);
-        for id in ["af-a", "af-b"] {
-            t.followed(id, COMPLETED, 2_000);
-        }
-        // The platform's last notice, asked after the bytes were in.
-        t.notice(0, false, 2_500);
-        assert_eq!(t.speed_bps, 0, "nothing is coming");
-        // Two lookups at the 3 s guess, read a second apart: it counts down.
-        let (speed, first) = t.speed_eta_at(3_000);
-        assert_eq!((speed, first), (0, 6));
-        assert_eq!(t.speed_eta_at(4_000), (0, 5));
-        t.work_done("af-a", Work::Lyrics);
-        let (_, one_left) = t.speed_eta_at(5_000);
-        assert!((1..=4).contains(&one_left), "one lookup left: {one_left}");
-        t.work_done("af-b", Work::Lyrics);
-        assert_eq!(t.speed_eta_at(6_000), (0, -1), "all processed");
-        assert_eq!(t.speed_eta_at(60_000), (0, -1), "and it stays so");
-    }
+    fn steps() {
+        let base = Saved { analysable: true, ..Saved::default() };
+        let needs_of = |s: Saved| (needs(s).analysis, needs(s).beats);
+        assert_eq!(needs_of(Saved { measuring: true, ..base }), (true, false), "streaming analysis in progress");
+        assert_eq!(needs_of(base), (true, false), "no current analysis");
+        assert_eq!(needs_of(Saved { analysed: true, ..base }), (false, false));
+        let ml = Saved { model_on: true, beats_wanted: true, ..base };
+        assert_eq!(needs_of(ml), (true, true));
+        assert_eq!(needs_of(Saved { analysed: true, ..ml }), (false, true));
+        assert_eq!(needs_of(Saved { analysed: true, beats_done: true, ..ml }), (false, false));
+        assert_eq!(needs_of(Saved { analysed: true, beats_done: true, measuring: true, ..ml }), (true, true), "measured again: its ends too");
+        assert_eq!(needs_of(Saved { beats_wanted: false, ..ml }), (true, false), "not wanted for this download");
+        assert_eq!(needs_of(Saved { model_on: false, ..ml }), (true, false), "the model is off");
+        assert_eq!(needs_of(Saved { analysable: false, ..ml }), (false, false), "provider song or stream");
 
-    #[test]
-    fn beats_offer_answers() {
+        // A timed-out step is given up; an idle lane is released; a slow live step finishes and is timed.
+        let mut t = Tracker { test_clock: Some(0), ..Tracker::default() };
+        for id in ["ex-a", "ex-b"] {
+            t.followed(id, COMPLETED, 0);
+            t.plan(id, Needs { analysis: true, beats: id == "ex-a" }, Some(true));
+        }
+        assert_eq!(t.processing(), [2, 2, 1]);
+        // A lookup that never answers, and an analysis that runs.
+        t.working("ex-a", Work::Lyrics);
+        t.working("ex-a", Work::Analysis);
+        t.test_clock = Some(20_000);
+        let lyrics_ms = Work::Lyrics.limit_ms();
+        assert_eq!(t.expire(), lyrics_ms - 20_000, "the lookup's deadline comes first");
+        t.test_clock = Some(lyrics_ms);
+        t.expire();
+        assert!(!t.waits("ex-a", Work::Lyrics), "the lookup is given up");
+        assert!(t.waits("ex-a", Work::Analysis), "the analysis runs on");
+        assert!(t.waits("ex-b", Work::Lyrics), "the next lookup waits its turn");
+        // The analysis is slow but alive: it ends well past the lookup's time, within its own.
+        t.test_clock = Some(100_000);
+        assert!(t.work_done("ex-a", Work::Analysis));
+        t.working("ex-a", Work::Beats);
+        assert!((t.paces[Work::Analysis as usize].per_song_s(Work::Analysis) - (100.0 + 2.0 * 5.0) / 3.0).abs() < 1e-9, "learned from the step");
+        // The lyrics lane moved on to nothing for its whole spell: what waits there is let go.
+        t.expire();
+        assert!(!t.waits("ex-b", Work::Lyrics));
+        assert!(t.waits("ex-b", Work::Analysis), "the measuring lane is busy with ex-a's beats, not stuck");
+        // The beat model's run ends; ex-b's analysis follows.
+        t.test_clock = Some(160_000);
+        assert!(t.work_done("ex-a", Work::Beats));
+        assert_eq!(t.marks["ex-a"].0, Phase::Done);
+        t.working("ex-b", Work::Analysis);
+        t.test_clock = Some(160_000 + Work::Analysis.limit_ms());
+        assert_eq!(t.expire(), -1, "given up at its time: nothing is left processing");
+        assert_eq!(t.marks["ex-b"].0, Phase::Done);
+
+        // Beats offer answers.
         use BeatsOffer::*;
         for (offer, asked, wants) in [(Off, true, false), (No, true, false), (Yes, false, true), (Ask, true, true), (Ask, false, false)] {
             assert_eq!(offer.wants(asked), wants, "{offer:?} {asked}");
         }
     }
 
-    /// The notification's title, the last song settling the batch, and the finished marks kept.
     #[test]
-    fn notice_kinds_drain_and_recent_marks() {
+    fn mark_changes() {
+        let mut t = Tracker::default();
+        t.mark("a", Phase::Downloading, 1);
+        t.mark("b", Phase::Failed, 2);
+        let mine = |m: &DownloadMarks, id: &str| m.ids.iter().position(|i| i == id).map(|i| m.phases[i]);
+        let m = t.marks_changed();
+        assert_eq!((mine(&m, "a"), mine(&m, "b")), (Some(Some(DownloadPhase::Downloading)), Some(Some(DownloadPhase::Failed))));
+        t.unmark("a");
+        let m = t.marks_changed();
+        assert_eq!((mine(&m, "a"), mine(&m, "b")), (Some(None), None), "removed, and b did not move");
+
+        // The notification's title, the last song settling the batch, and the finished marks kept.
         let mut t = tracker(&["ext-a", "ext-b"], 1_000_000);
         t.info.get_mut("ext-a").unwrap().title = "Song".into();
         assert_eq!((t.start_fraction("ext-a"), t.start_fraction("ext-x")), (0.0, -1.0));
@@ -2056,11 +1873,8 @@ mod tests {
         }
         assert_eq!(t.marks.len(), RECENT, "only the latest finished marks stay");
         assert!(!t.marks.contains_key("ext-d0") && t.marks.contains_key("ext-d2"));
-    }
 
-    /// A server switch wakes the platform's waiter, so it waits on the new core's marks.
-    #[test]
-    fn switch_wakes_mark_waiter() {
+        // A server switch wakes the platform's waiter, so it waits on the new core's marks.
         use std::future::Future;
         struct Woke(std::sync::atomic::AtomicBool);
         impl std::task::Wake for Woke {
@@ -2082,18 +1896,176 @@ mod tests {
     }
 
     #[test]
-    fn countdown_smooths_jitter() {
-        let mut c = Countdown::default();
-        let mut said = vec![c.next(60.0, 0)];
-        for k in 1..=20i64 {
-            let jitter = if k % 2 == 0 { 1.5 } else { -1.5 };
-            said.push(c.next(60.0 - k as f64 + jitter, k * 1_000));
-        }
-        for w in said.windows(2) {
-            assert!((0..=2).contains(&(w[0] - w[1])), "{said:?}");
-        }
-        // Twice as far to go: said at once.
-        assert_eq!(c.next(80.0, 21_000), 80);
-        assert_eq!(c.next(-1.0, 22_000), -1);
+    fn rows_and_lanes() {
+        let slot = Slot { id: "r".into(), estimate: 0, length: 1000, bytes: 450, started_at: 0, gate_value: 0.0, gate_at: 0, speed_bytes: 0, speed_at: 0, rate: 0.0, live: true };
+        assert_eq!(row_facts(std::slice::from_ref(&slot), "r"), Some(RowFacts { percent: 45, speed_bps: 0, eta_s: -1 }));
+        assert_eq!(row_facts(std::slice::from_ref(&slot), "other"), None);
+
+        // Time left lanes.
+        let per = [3.0, 5.0, 40.0];
+        let after = |waiting: [f64; 3], to_come: [f64; 3], tail: bool| After { waiting, to_come, per, tail };
+        assert_eq!(time_left(None, &after([1.0; 3], [1.0; 3], true)), -1.0, "no speed yet");
+        assert_eq!(time_left(Some(10.0), &after([0.0; 3], [0.0; 3], false)), 10.0);
+        // The last song's lookup comes after its last byte.
+        assert_eq!(time_left(Some(10.0), &after([0.0; 3], [2.0, 0.0, 0.0], false)), 13.0);
+        // Many lookups queued up take longer than the bytes.
+        assert_eq!(time_left(Some(10.0), &after([4.0, 0.0, 0.0], [2.0, 0.0, 0.0], false)), 18.0);
+        assert_eq!(time_left(Some(0.0), &after([3.0, 0.0, 0.0], [0.0; 3], false)), 9.0, "the bytes are in; the lookups are left");
+        assert_eq!(time_left(Some(5.0), &after([0.0; 3], [0.0; 3], true)), 5.0 + ANALYSIS_TAIL_S);
+        // The measuring lane runs beside the lookups: two analyses and three model runs, one song at a time.
+        assert_eq!(time_left(Some(0.0), &after([3.0, 2.0, 3.0], [0.0; 3], false)), 2.0 * 5.0 + 3.0 * 40.0, "the longer lane");
+        // Songs still to come: the last one's analysis and model run come after the last byte.
+        assert_eq!(time_left(Some(100.0), &after([0.0; 3], [0.0, 0.5, 1.0], false)), 100.0 + 0.5 * 5.0 + 40.0);
+        assert_eq!(time_left(Some(10.0), &after([0.0, 0.0, 4.0], [0.0, 0.0, 2.0], false)), 6.0 * 40.0, "the model's queue outlasts the bytes");
+
+        // No slot notes nothing.
+        let mut t = Tracker::default();
+        let slot = t.open("a", 0);
+        assert!(t.note(-1, 1000, 500, 10).is_nan());
+        assert_eq!(t.slots[slot as usize].bytes, 0);
     }
+
+    /// A tracker knowing `ids` weigh `size` each (0 unknown).
+    fn tracker(ids: &[&str], size: i64) -> Tracker {
+        let mut t = Tracker::default();
+        for id in ids {
+            t.info.insert(id.to_string(), Info { estimate: size, ..Info::default() });
+        }
+        t
+    }
+
+    #[test]
+    fn speed_and_eta() {
+        // Two concurrent songs: the batch speed sums them and the time left follows.
+        {
+            // Provider songs: no lyrics are looked up after them.
+            let mut t = tracker(&["ext-sp-a", "ext-sp-b"], 1_000_000);
+            for id in ["ext-sp-a", "ext-sp-b"] {
+                t.followed(id, DOWNLOADING, 0);
+            }
+            let (a, b) = (t.open("ext-sp-a", 0), t.open("ext-sp-b", 0));
+            for k in 0..=4i64 {
+                t.note(a, 1_000_000, k * 100_000, k * 500);
+                t.note(b, 1_000_000, k * 50_000, k * 500);
+            }
+            t.notice(2, false, 2_000);
+            let (speed, eta) = (t.speed_bps, t.eta_s);
+            assert!((290_000..=310_000).contains(&speed), "200 kB/s and 100 kB/s together: {speed}");
+            // 600 kB and 800 kB still to come at 300 kB/s.
+            assert!((4..=5).contains(&eta), "{eta} s left");
+        }
+
+        // Six 2 MB songs, two at a time at 200 kB/s each: speed stays ~400 kB/s and the time left counts
+        // down steadily as songs end and start.
+        {
+            let ids: Vec<String> = (0..6).map(|i| format!("ext-st-{i}")).collect();
+            let names: Vec<&str> = ids.iter().map(String::as_str).collect();
+            let mut t = tracker(&names, 2_000_000);
+            for id in &names {
+                t.followed(id, QUEUED, 0);
+            }
+            let mut next = 0;
+            // (song, slot, bytes)
+            let mut running: Vec<(usize, i32, i64)> = Vec::new();
+            let mut start = |t: &mut Tracker, running: &mut Vec<(usize, i32, i64)>, now: i64| {
+                if next < names.len() {
+                    t.followed(names[next], DOWNLOADING, now);
+                    let slot = t.open(names[next], now);
+                    t.note(slot, 2_000_000, 0, now);
+                    running.push((next, slot, 0));
+                    next += 1;
+                }
+            };
+            start(&mut t, &mut running, 0);
+            start(&mut t, &mut running, 0);
+            let mut said = Vec::new();
+            for tick in 1..=120i64 {
+                let now = tick * 250;
+                for r in running.iter_mut() {
+                    r.2 += 50_000;
+                    t.note(r.1, 2_000_000, r.2, now);
+                }
+                while let Some(i) = running.iter().position(|r| r.2 >= 2_000_000) {
+                    let (song, _, _) = running.remove(i);
+                    t.followed(names[song], COMPLETED, now);
+                    start(&mut t, &mut running, now);
+                }
+                if now % 1_000 == 0 && !running.is_empty() {
+                    t.notice(names.len() as i32 - t.batch.done, false, now);
+                    said.push((now, t.speed_bps, t.eta_s));
+                }
+            }
+            assert!(said.len() > 20);
+            for &(now, speed, eta) in said.iter().filter(|s| s.0 >= 2_000) {
+                assert!((380_000..=420_000).contains(&speed), "{speed} B/s at {now} ms");
+                let truth = 30 - now / 1_000;
+                assert!((eta - truth).abs() <= 2, "{eta} s left at {now} ms, {truth} s really");
+            }
+            for w in said.windows(2).filter(|w| w[0].0 >= 2_000) {
+                let step = w[0].2 - w[1].2;
+                assert!((0..=2).contains(&step), "a second on, the time left went from {} to {}", w[0].2, w[1].2);
+            }
+        }
+
+        // Resumed download no speed burst.
+        {
+            let mut t = tracker(&["ext-r"], 8_000_000);
+            t.followed("ext-r", DOWNLOADING, 0);
+            let slot = t.open("ext-r", 0);
+            for k in 0..=6i64 {
+                t.note(slot, 8_000_000, 3_000_000 + k * 100_000, k * 500);
+            }
+            t.notice(1, false, 3_000);
+            assert!((190_000..=210_000).contains(&t.speed_bps), "{} B/s", t.speed_bps);
+            // Asked for again after it stopped: one slot, not two.
+            t.open("ext-r", 3_000);
+            assert_eq!(t.slots.iter().filter(|s| s.live).count(), 1);
+        }
+
+        // After the last byte: no speed, the time left counts down the pending lyrics, then -1.
+        {
+            let mut t = tracker(&["af-a", "af-b"], 1_000_000);
+            for id in ["af-a", "af-b"] {
+                t.followed(id, DOWNLOADING, 0);
+                let slot = t.open(id, 0);
+                t.note(slot, 1_000_000, 0, 0);
+                t.note(slot, 1_000_000, 1_000_000, 2_000);
+            }
+            t.notice(2, false, 2_000);
+            assert!(t.speed_bps > 0);
+            for id in ["af-a", "af-b"] {
+                t.followed(id, COMPLETED, 2_000);
+            }
+            // The platform's last notice, asked after the bytes were in.
+            t.notice(0, false, 2_500);
+            assert_eq!(t.speed_bps, 0, "nothing is coming");
+            // Two lookups at the 3 s guess, read a second apart: it counts down.
+            let (speed, first) = t.speed_eta_at(3_000);
+            assert_eq!((speed, first), (0, 6));
+            assert_eq!(t.speed_eta_at(4_000), (0, 5));
+            t.work_done("af-a", Work::Lyrics);
+            let (_, one_left) = t.speed_eta_at(5_000);
+            assert!((1..=4).contains(&one_left), "one lookup left: {one_left}");
+            t.work_done("af-b", Work::Lyrics);
+            assert_eq!(t.speed_eta_at(6_000), (0, -1), "all processed");
+            assert_eq!(t.speed_eta_at(60_000), (0, -1), "and it stays so");
+        }
+
+        // Countdown smooths jitter.
+        {
+            let mut c = Countdown::default();
+            let mut said = vec![c.next(60.0, 0)];
+            for k in 1..=20i64 {
+                let jitter = if k % 2 == 0 { 1.5 } else { -1.5 };
+                said.push(c.next(60.0 - k as f64 + jitter, k * 1_000));
+            }
+            for w in said.windows(2) {
+                assert!((0..=2).contains(&(w[0] - w[1])), "{said:?}");
+            }
+            // Twice as far to go: said at once.
+            assert_eq!(c.next(80.0, 21_000), 80);
+            assert_eq!(c.next(-1.0, 22_000), -1);
+        }
+    }
+
 }

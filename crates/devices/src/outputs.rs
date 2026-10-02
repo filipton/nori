@@ -209,7 +209,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn output_look_by_port() {
+    fn android_codes() {
+        let seen = outputs_refresh(vec![18, 2, 8, 22], vec!["".into(), "".into(), "Buds".into(), " K3 ".into()], vec![], None);
+        assert_eq!(seen.current, "USB: K3");
+        assert!(seen.usb);
+        assert_eq!(seen.known.unwrap(), ["Bluetooth: Buds", "Phone speaker", "USB: K3"]);
+        assert!(outputs_refresh(vec![12, 2], vec!["".into(), "".into()], vec![], None).usb, "a USB accessory");
+        assert_eq!(outputs_refresh(vec![4], vec!["".into()], vec![], None).current, "Wired headphones");
+
+        // Dac encodings to bits.
+        let d = dac_decide(true, true, "K3".into(), vec![44_100, 96_000], vec![2, 4], 96_000, 4, None, None, false);
+        assert_eq!(d.step, DacStep::Prefer { index: 1 });
+        let d = dac_decide(true, true, "K3".into(), vec![96_000], vec![22], 96_000, 4, None, None, false);
+        assert_eq!(d.step, DacStep::Release, "float is not 32-bit integer");
+        let d = dac_decide(true, true, "K3".into(), vec![96_000], vec![22], 96_000, 22, Some(vec![96_000]), Some(vec![22]), true);
+        assert_eq!(d.step, DacStep::Keep);
+
+        // Dac mock parses.
+        assert_eq!(dac_mock("K3@44100/16,96000/24, 48000/float".into()), MockDac { name: "K3".into(), rates: vec![44_100, 96_000, 48_000], encodings: vec![2, 21, 4] });
+        assert_eq!(dac_mock("@44100".into()), MockDac { name: "Mock DAC".into(), rates: vec![44_100], encodings: vec![2] });
+        assert_eq!(dac_mock("K3".into()), MockDac { name: "Mock DAC".into(), rates: vec![], encodings: vec![] });
+        assert_eq!(dac_mock("K3@x/16,44100/8".into()).rates, Vec::<u32>::new());
+
+        // Output look by port.
         let l = |o: &str| {
             let l = output_look(o.into());
             (l.glyph, l.elsewhere)
@@ -221,34 +243,6 @@ mod tests {
         assert_eq!(l("HDMI"), (OutputGlyph::Cast, true));
         let buds = output_look("Bluetooth: buds".into());
         assert_eq!((buds.port, buds.name.as_deref()), (OutputPort::Bluetooth, Some("buds")));
-    }
-
-    #[test]
-    fn android_types_map_to_kinds() {
-        let seen = outputs_refresh(vec![18, 2, 8, 22], vec!["".into(), "".into(), "Buds".into(), " K3 ".into()], vec![], None);
-        assert_eq!(seen.current, "USB: K3");
-        assert!(seen.usb);
-        assert_eq!(seen.known.unwrap(), ["Bluetooth: Buds", "Phone speaker", "USB: K3"]);
-        assert!(outputs_refresh(vec![12, 2], vec!["".into(), "".into()], vec![], None).usb, "a USB accessory");
-        assert_eq!(outputs_refresh(vec![4], vec!["".into()], vec![], None).current, "Wired headphones");
-    }
-
-    #[test]
-    fn dac_encodings_to_bits() {
-        let d = dac_decide(true, true, "K3".into(), vec![44_100, 96_000], vec![2, 4], 96_000, 4, None, None, false);
-        assert_eq!(d.step, DacStep::Prefer { index: 1 });
-        let d = dac_decide(true, true, "K3".into(), vec![96_000], vec![22], 96_000, 4, None, None, false);
-        assert_eq!(d.step, DacStep::Release, "float is not 32-bit integer");
-        let d = dac_decide(true, true, "K3".into(), vec![96_000], vec![22], 96_000, 22, Some(vec![96_000]), Some(vec![22]), true);
-        assert_eq!(d.step, DacStep::Keep);
-    }
-
-    #[test]
-    fn dac_mock_parses() {
-        assert_eq!(dac_mock("K3@44100/16,96000/24, 48000/float".into()), MockDac { name: "K3".into(), rates: vec![44_100, 96_000, 48_000], encodings: vec![2, 21, 4] });
-        assert_eq!(dac_mock("@44100".into()), MockDac { name: "Mock DAC".into(), rates: vec![44_100], encodings: vec![2] });
-        assert_eq!(dac_mock("K3".into()), MockDac { name: "Mock DAC".into(), rates: vec![], encodings: vec![] });
-        assert_eq!(dac_mock("K3@x/16,44100/8".into()).rates, Vec::<u32>::new());
     }
 
     #[test]

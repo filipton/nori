@@ -28,15 +28,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn album_subtitle_skips_empty_parts() {
+    fn lines() {
         assert_eq!(album_subtitle("A Long Artist Name", 2019), "A Long Artist Name · 2019");
         assert_eq!((album_subtitle("", 2019), album_subtitle("A", 0), album_subtitle("", 0)), ("2019".into(), "A".into(), String::new()));
-    }
 
-    #[test]
-    fn song_line_marks_explicit_and_hides_page_artist() {
+        // Song line marks explicit and hides page artist.
         assert_eq!(song_line("explicit", "Muse", None), "🅴 Muse");
         assert_eq!(song_line("clean", "Muse", Some("muse")), "");
         assert_eq!(song_line("", "Muse", Some("Other")), "Muse");
     }
+
 }

@@ -339,25 +339,23 @@ mod tests {
     use crate::playlist::tests::session;
 
     #[test]
-    fn precache_targets_come_from_queue() {
+    fn precache_choice() {
         let s = session(&["pc1", "pc2", "pc3", "pc4", "ext-5"], 0);
         // Defaults: two ahead on Wi-Fi, one on metered; the player buffers the next song itself.
         assert_eq!(s.precache(false), ["pc3"]);
         assert!(s.precache(true).is_empty());
         assert!(s.measure().is_empty(), "AutoMix off");
-    }
 
-    #[test]
-    fn precache_list_skips_downloads_and_providers() {
+        // Precache list skips downloads and providers.
         let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let s = Session::default();
         assert_eq!(s.precache_list(ids(&["1", "2", "ext-3", "4"]), |id| id == "2"), ["1", "4"]);
         assert_eq!(s.precache_list(ids(&["1", "2"]), |_| false), ["1", "2"]);
     }
 
-    /// The skip an error makes is no success: an unplayable queue stops.
     #[test]
-    fn error_run_ends_only_when_playing() {
+    fn counting() {
+        // The skip an error makes is no success: an unplayable queue stops.
         for skips_move in [true, false] {
             let s = session(&["er1", "er2", "er3", "er4", "er5"], 0);
             s.playing();
@@ -379,10 +377,8 @@ mod tests {
         assert_eq!(s.error(PlaybackError::Other, false, true), OnError::Stop, "nothing after the last song");
         assert!(!s.bridge_failed());
         s.playing();
-    }
 
-    #[test]
-    fn sleep_timer_counts_song_changes() {
+        // Sleep timer counts song changes.
         let s = session(&["sa1", "sa2"], 0);
         assert!(!s.sleep_set(3, false));
         let steps = s.song_arrived();

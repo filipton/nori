@@ -376,7 +376,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn request_policy_matches_server_hosts_only() {
+    fn hosts() {
         let s = ServerHosts::new(Some("http://10.0.2.2:4533/".into()), Some("music.example.com".into()), true);
         let server = RequestPolicy { server: true, unmetered_only: true };
         let other = RequestPolicy { server: false, unmetered_only: false };
@@ -388,10 +388,21 @@ mod tests {
         let s = ServerHosts::new(Some("http://10.0.2.2:4533".into()), None, false);
         assert_eq!(s.policy("http://10.0.2.2:4533/x"), RequestPolicy { server: true, unmetered_only: false });
         assert_eq!(ServerHosts::new(Some(" ".into()), None, true).policy("https://music.example.com/"), other);
+
+        // Server host parses like urls.
+        assert_eq!(server_host("HTTP://Music.Example.com".into()), Some(HostPort { host: "music.example.com".into(), port: 80 }));
+        assert_eq!(server_host("https://u:p@h:8443/x".into()), Some(HostPort { host: "h".into(), port: 8443 }));
+        assert_eq!(server_host("http://[::1]:4533".into()), Some(HostPort { host: "::1".into(), port: 4533 }));
+        assert_eq!(server_host("music.example.com".into()), Some(HostPort { host: "music.example.com".into(), port: 443 }));
+        assert_eq!(server_host("   ".into()), None);
+        assert_eq!(server_host("ftp://h".into()), None);
+        assert_eq!(server_host("h:0".into()), None);
+        assert_eq!(server_host("h:99999".into()), None);
+        assert_eq!(server_host("h b".into()), None);
     }
 
     #[test]
-    fn failure_networkish_classifies_the_chain() {
+    fn failures() {
         let f = |kind, detail: Option<&str>| Failure { kind, detail: detail.map(str::to_string) };
         assert!(failure_networkish(true, vec![]));
         assert!(!failure_networkish(false, vec![]));
@@ -404,34 +415,18 @@ mod tests {
         assert!(!failure_networkish(false, vec![f(FailureKind::Metered, Some("This server is set to Wi-Fi only"))]));
         assert!(!failure_networkish(false, vec![f(FailureKind::Io, Some("bad file"))]));
         assert!(!failure_networkish(false, vec![f(FailureKind::Tls, None), f(FailureKind::Cleartext, None)]));
-    }
 
-    #[test]
-    fn subsonic_body_detection() {
+        // Subsonic body detection.
         assert!(subsonic_body(br#"  {"subsonic-response":{"status":"failed"}}"#));
         assert!(subsonic_body(br#"<?xml version="1.0"?><subsonic-response status="failed"/>"#));
         assert!(!subsonic_body(b"<html><body>error code: 522</body></html>"));
         assert!(!subsonic_body(b""));
-    }
 
-    #[test]
-    fn get_fails_only_on_empty_error() {
+        // Get fails only on empty error.
         assert!(!get_failed(200, true));
         assert!(!get_failed(401, false));
         assert!(get_failed(404, true));
         assert!(get_failed(301, true));
     }
 
-    #[test]
-    fn server_host_parses_like_urls() {
-        assert_eq!(server_host("HTTP://Music.Example.com".into()), Some(HostPort { host: "music.example.com".into(), port: 80 }));
-        assert_eq!(server_host("https://u:p@h:8443/x".into()), Some(HostPort { host: "h".into(), port: 8443 }));
-        assert_eq!(server_host("http://[::1]:4533".into()), Some(HostPort { host: "::1".into(), port: 4533 }));
-        assert_eq!(server_host("music.example.com".into()), Some(HostPort { host: "music.example.com".into(), port: 443 }));
-        assert_eq!(server_host("   ".into()), None);
-        assert_eq!(server_host("ftp://h".into()), None);
-        assert_eq!(server_host("h:0".into()), None);
-        assert_eq!(server_host("h:99999".into()), None);
-        assert_eq!(server_host("h b".into()), None);
-    }
 }

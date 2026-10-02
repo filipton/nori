@@ -565,7 +565,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn window_is_handed_over_only_on_change() {
+    fn views() {
         let s = session(&["w1", "w2", "w3"], 1);
         s.window();
         assert!(!s.window());
@@ -575,10 +575,36 @@ pub(crate) mod tests {
         s.repeat(2);
         assert!(s.window());
         assert_eq!(window_ids(&s), ids(&["w2", "w3", "w1", "w2", "w3", "w1", "w2", "w3", "w1"]));
+
+        // View resends songs only when list changed.
+        let s = session(&["v1", "v2", "v3"], 0);
+        let first = s.view(0);
+        assert_eq!((first.songs.len(), first.len), (3, 3));
+        s.shuffle(true);
+        let shuffled = s.view(first.list_rev);
+        assert!(shuffled.songs.is_empty());
+        assert_eq!((shuffled.len, shuffled.list_rev), (3, first.list_rev));
+        assert_ne!(shuffled.rev, first.rev);
+        s.take(9, ids(&["v4"]), vec![Hand::Next], None);
+        let added = s.view(first.list_rev);
+        assert_eq!((added.songs.len(), added.len), (4, 4));
+        assert_ne!(added.list_rev, first.list_rev);
+        assert!(s.view_for(0, 3).is_none(), "the player trails the core's list");
+        assert_eq!(s.view_for(0, 4).map(|v| v.songs.len()), Some(4));
+
+        // View of player list.
+        let s = session(&["p1"], 0);
+        let v = s.view_of(ids(&["p1", "p2", "p3"]), vec![Hand::No, Hand::Next, Hand::Last], vec![2, 0, 1]);
+        assert_eq!((v.songs.len(), v.len, v.order.as_slice(), v.queued.as_slice()), (3, 3, &[2u32, 0, 1][..], &[1u32, 2][..]));
+        assert_eq!((v.list_rev, v.rev), (0, u64::MAX));
+        for bad in [vec![], vec![0, 0, 1], vec![0, 1, 3], vec![0, 1]] {
+            assert_eq!(s.view_of(ids(&["p1", "p2", "p3"]), vec![], bad.clone()).order, [0, 1, 2], "{bad:?}");
+        }
+        assert!(s.view_of(ids(&["p1", "p2"]), vec![], vec![]).queued.is_empty());
     }
 
     #[test]
-    fn only_whole_albums_get_an_album_run() {
+    fn album_run_rules() {
         let s = session(&[], 0);
         let songs = ids(&["ar1", "ar2", "ar3"]);
         s.set(songs.clone(), Some(1), false, origin(Album, "AR"));
@@ -602,10 +628,8 @@ pub(crate) mod tests {
         }
         s.set_ordered(songs.clone(), origin(Album, "AR"));
         assert_eq!(runs(&s), [0, 0, 0], "a weighted shuffle has no runs");
-    }
 
-    #[test]
-    fn shuffle_albums_gives_each_album_its_own_run() {
+        // Shuffle albums gives each album its own run.
         let s = session(&[], 0);
         let song = |id: &str, album: Option<&str>| Song { album_id: album.map(str::to_string), ..Song::only_id(id.to_string()) };
         s.register(vec![song("a1", Some("A")), song("a2", Some("A")), song("b1", Some("B")), song("b2", Some("B")), song("x", None), song("c1", Some("C")), song("c2", Some("C"))]);
@@ -624,11 +648,40 @@ pub(crate) mod tests {
         s.set(ids(&["a1"]), Some(0), false, None);
         s.take(1, ids(&["c1", "c2"]), vec![Hand::No; 2], None);
         assert_eq!(runs(&s), [0, 0, 0]);
+
+        // Restored queue keeps album runs.
+        let s = session(&[], 0);
+        s.set(ids(&["pb1", "pb2"]), Some(0), false, origin(Album, "PB"));
+        s.take(9, ids(&["pb3"]), vec![Hand::Last], None);
+        let saved = (s.playlist(|p| p.ids().to_vec()), runs(&s));
+        assert_eq!((saved.1[1], saved.1[0] == saved.1[2]), (0, true), "{saved:?}");
+        s.set(ids(&["other"]), Some(0), false, None);
+        s.put_back_runs(saved.0.clone(), saved.1.clone());
+        s.set(saved.0.clone(), Some(0), false, origin(Album, "PB"));
+        assert_eq!(runs(&s), saved.1);
+        // Only the very next set of those ids takes them.
+        s.put_back_runs(saved.0.clone(), saved.1.clone());
+        s.set(ids(&["another"]), Some(0), false, None);
+        s.set(saved.0.clone(), Some(0), false, None);
+        assert_eq!(runs(&s), [0, 0, 0]);
+
+        // Album gain only in album run.
+        use nori_player::gain::GainPrefs;
+        use nori_player::policy::GainMode;
+        let s = session(&[], 0);
+        let rg = nori_model::ReplayGain { track_gain: Some(-6.0), album_gain: Some(-2.0), track_peak: Some(0.5), album_peak: Some(0.5), ..Default::default() };
+        let song = |id: &str, track: u32| Song { duration: 200, album_id: Some("GA".into()), track, disc_number: 1, replay_gain: Some(rg.clone()), ..Song::only_id(id.to_string()) };
+        s.register(vec![song("ga1", 1), song("ga2", 2)]);
+        let prefs = GainPrefs::attenuating(GainMode::Auto, 0.0, 0.0);
+        let at = |id: &str, run: u32| Some((id.to_string(), run));
+        let db = |g: f32| (20.0 * g.log10() * 10.0).round() / 10.0;
+        assert_eq!(db(s.queue_gain(at("ga1", 3), at("ga2", 3), None, &prefs, false, false)), -2.0);
+        assert_eq!(db(s.queue_gain(at("ga1", 0), at("ga2", 0), None, &prefs, false, false)), -6.0);
     }
 
-    /// A song tapped on an album page while a playlist plays makes the album's page the playing one.
     #[test]
-    fn album_page_tap_moves_origin_to_album() {
+    fn origin_follows_queue() {
+        // A song tapped on an album page while a playlist plays makes the album's page the playing one.
         use nori_library::pages::PageQueue;
         let s = session(&[], 0);
         let (playlist, album) = (PageOrigin::new(PlaylistKind, "pl-t"), PageOrigin::new(Album, "al-t"));
@@ -651,100 +704,8 @@ pub(crate) mod tests {
         s.shuffle(false);
         assert!(lights(&album) && !lights(&playlist));
         assert_eq!(s.playlist(|p| (0..p.len()).filter(|&i| p.album_run(i) == run).count()), 2, "t2 and t3: {:?}", runs(&s));
-    }
 
-    #[test]
-    fn restored_queue_keeps_album_runs() {
-        let s = session(&[], 0);
-        s.set(ids(&["pb1", "pb2"]), Some(0), false, origin(Album, "PB"));
-        s.take(9, ids(&["pb3"]), vec![Hand::Last], None);
-        let saved = (s.playlist(|p| p.ids().to_vec()), runs(&s));
-        assert_eq!((saved.1[1], saved.1[0] == saved.1[2]), (0, true), "{saved:?}");
-        s.set(ids(&["other"]), Some(0), false, None);
-        s.put_back_runs(saved.0.clone(), saved.1.clone());
-        s.set(saved.0.clone(), Some(0), false, origin(Album, "PB"));
-        assert_eq!(runs(&s), saved.1);
-        // Only the very next set of those ids takes them.
-        s.put_back_runs(saved.0.clone(), saved.1.clone());
-        s.set(ids(&["another"]), Some(0), false, None);
-        s.set(saved.0.clone(), Some(0), false, None);
-        assert_eq!(runs(&s), [0, 0, 0]);
-    }
-
-    #[test]
-    fn album_gain_only_in_album_run() {
-        use nori_player::gain::GainPrefs;
-        use nori_player::policy::GainMode;
-        let s = session(&[], 0);
-        let rg = nori_model::ReplayGain { track_gain: Some(-6.0), album_gain: Some(-2.0), track_peak: Some(0.5), album_peak: Some(0.5), ..Default::default() };
-        let song = |id: &str, track: u32| Song { duration: 200, album_id: Some("GA".into()), track, disc_number: 1, replay_gain: Some(rg.clone()), ..Song::only_id(id.to_string()) };
-        s.register(vec![song("ga1", 1), song("ga2", 2)]);
-        let prefs = GainPrefs::attenuating(GainMode::Auto, 0.0, 0.0);
-        let at = |id: &str, run: u32| Some((id.to_string(), run));
-        let db = |g: f32| (20.0 * g.log10() * 10.0).round() / 10.0;
-        assert_eq!(db(s.queue_gain(at("ga1", 3), at("ga2", 3), None, &prefs, false, false)), -2.0);
-        assert_eq!(db(s.queue_gain(at("ga1", 0), at("ga2", 0), None, &prefs, false, false)), -6.0);
-    }
-
-    #[test]
-    fn edits_report_where_songs_went() {
-        let s = session(&["e1", "e2", "e3"], 0);
-        assert_eq!(s.take(9, ids(&["n"]), vec![Hand::Next], None), QueueChange { at: Some(1), shuffled: false });
-        assert_eq!(s.take(9, ids(&["i"]), vec![Hand::No], None).at, Some(4), "clamped to the end");
-        assert!(s.shuffle(true).shuffled);
-        assert_eq!(s.playlist(|p| p.shuffle_order().unwrap()[..2].to_vec()), [0, 1], "current, then the one added by hand");
-        let v = s.view(0);
-        assert_eq!((v.index, v.queued.as_slice(), v.shuffle), (0, &[1u32][..], true));
-        assert_eq!(v.songs[1].id, "n");
-    }
-
-    #[test]
-    fn view_resends_songs_only_when_list_changed() {
-        let s = session(&["v1", "v2", "v3"], 0);
-        let first = s.view(0);
-        assert_eq!((first.songs.len(), first.len), (3, 3));
-        s.shuffle(true);
-        let shuffled = s.view(first.list_rev);
-        assert!(shuffled.songs.is_empty());
-        assert_eq!((shuffled.len, shuffled.list_rev), (3, first.list_rev));
-        assert_ne!(shuffled.rev, first.rev);
-        s.take(9, ids(&["v4"]), vec![Hand::Next], None);
-        let added = s.view(first.list_rev);
-        assert_eq!((added.songs.len(), added.len), (4, 4));
-        assert_ne!(added.list_rev, first.list_rev);
-        assert!(s.view_for(0, 3).is_none(), "the player trails the core's list");
-        assert_eq!(s.view_for(0, 4).map(|v| v.songs.len()), Some(4));
-    }
-
-    #[test]
-    fn view_of_player_list() {
-        let s = session(&["p1"], 0);
-        let v = s.view_of(ids(&["p1", "p2", "p3"]), vec![Hand::No, Hand::Next, Hand::Last], vec![2, 0, 1]);
-        assert_eq!((v.songs.len(), v.len, v.order.as_slice(), v.queued.as_slice()), (3, 3, &[2u32, 0, 1][..], &[1u32, 2][..]));
-        assert_eq!((v.list_rev, v.rev), (0, u64::MAX));
-        for bad in [vec![], vec![0, 0, 1], vec![0, 1, 3], vec![0, 1]] {
-            assert_eq!(s.view_of(ids(&["p1", "p2", "p3"]), vec![], bad.clone()).order, [0, 1, 2], "{bad:?}");
-        }
-        assert!(s.view_of(ids(&["p1", "p2"]), vec![], vec![]).queued.is_empty());
-    }
-
-    #[test]
-    fn shuffle_shown_until_turned_off() {
-        let s = session(&["s1", "s2"], 0);
-        assert!(!s.shuffle_shown());
-        s.show_shuffle(true);
-        assert!(s.shuffle_shown());
-        s.set_ordered(ids(&["s2", "s1"]), None);
-        assert!(s.shuffle_shown(), "a weighted shuffle stays lit");
-        s.take(0, ids(&["s3"]), vec![Hand::Last], None);
-        assert!(s.shuffle_shown());
-        s.show_shuffle(false);
-        s.shuffle(false);
-        assert!(!s.shuffle_shown());
-    }
-
-    #[test]
-    fn origin_survives_edits() {
+        // Origin survives edits.
         let s = session(&["o0"], 0);
         let (a, b, album, artist) = (page(PlaylistKind, "A"), page(PlaylistKind, "B"), page(Album, "al"), page(Artist, "ar"));
         let gen = s.origin_gen();
@@ -772,10 +733,34 @@ pub(crate) mod tests {
         assert!(s.from_page(&artist) && !s.from_page(&album));
         s.set(ids(&["radio:1"]), Some(0), false, None);
         assert_eq!(s.origin(), None);
+
+        // Restore keeps origin and shuffle turn.
+        let s = session(&["o0"], 0);
+        let album = page(Album, "al");
+        s.set(ids(&["s1", "s2", "s3", "s4", "s5"]), Some(0), true, Some(album.origin()));
+        let gen = s.origin_gen();
+        let order = s.playlist(|p| p.play_order().collect::<Vec<_>>());
+        let i = order[2];
+        let id = s.playlist(|p| p.ids()[i].clone());
+        s.remove(i as u32, i as u32 + 1);
+        assert_eq!(s.restore(id), QueueChange { at: Some(i as u32), shuffled: true });
+        assert_eq!(s.playlist(|p| p.play_order().collect::<Vec<_>>()), order);
+        assert!(s.from_page(&album));
+        assert_eq!(s.origin_gen(), gen);
     }
 
     #[test]
-    fn removed_song_restores_once() {
+    fn edits_and_restores() {
+        let s = session(&["e1", "e2", "e3"], 0);
+        assert_eq!(s.take(9, ids(&["n"]), vec![Hand::Next], None), QueueChange { at: Some(1), shuffled: false });
+        assert_eq!(s.take(9, ids(&["i"]), vec![Hand::No], None).at, Some(4), "clamped to the end");
+        assert!(s.shuffle(true).shuffled);
+        assert_eq!(s.playlist(|p| p.shuffle_order().unwrap()[..2].to_vec()), [0, 1], "current, then the one added by hand");
+        let v = s.view(0);
+        assert_eq!((v.index, v.queued.as_slice(), v.shuffle), (0, &[1u32][..], true));
+        assert_eq!(v.songs[1].id, "n");
+
+        // Removed song restores once.
         let s = session(&["u1", "u2", "u3", "u4"], 1);
         s.take(9, ids(&["mine"]), vec![Hand::Next], None);
         assert_eq!(s.playlist(|p| p.ids().to_vec()), ids(&["u1", "u2", "mine", "u3", "u4"]));
@@ -807,19 +792,18 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn restore_keeps_origin_and_shuffle_turn() {
-        let s = session(&["o0"], 0);
-        let album = page(Album, "al");
-        s.set(ids(&["s1", "s2", "s3", "s4", "s5"]), Some(0), true, Some(album.origin()));
-        let gen = s.origin_gen();
-        let order = s.playlist(|p| p.play_order().collect::<Vec<_>>());
-        let i = order[2];
-        let id = s.playlist(|p| p.ids()[i].clone());
-        s.remove(i as u32, i as u32 + 1);
-        assert_eq!(s.restore(id), QueueChange { at: Some(i as u32), shuffled: true });
-        assert_eq!(s.playlist(|p| p.play_order().collect::<Vec<_>>()), order);
-        assert!(s.from_page(&album));
-        assert_eq!(s.origin_gen(), gen);
+    fn shuffle_shown_until_turned_off() {
+        let s = session(&["s1", "s2"], 0);
+        assert!(!s.shuffle_shown());
+        s.show_shuffle(true);
+        assert!(s.shuffle_shown());
+        s.set_ordered(ids(&["s2", "s1"]), None);
+        assert!(s.shuffle_shown(), "a weighted shuffle stays lit");
+        s.take(0, ids(&["s3"]), vec![Hand::Last], None);
+        assert!(s.shuffle_shown());
+        s.show_shuffle(false);
+        s.shuffle(false);
+        assert!(!s.shuffle_shown());
     }
 
     #[test]

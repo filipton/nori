@@ -152,15 +152,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hz_labels() {
+    fn eq_drawing() {
         assert_eq!((hz(31.5), hz(63.0), hz(1000.0), hz(2500.0), hz(16000.0)), ("31.5".into(), "63".into(), "1k".into(), "2.5k".into(), "16k".into()));
-    }
 
-    #[test]
-    fn curve_spans_the_box_flat_at_zero() {
+        // Curve spans the box flat at zero.
         let c = curve(&[0.0; 10], 960.0, 96.0);
         assert_eq!(c.matches('L').count(), 96);
         assert!(c.starts_with("M0.0 48.0"), "{c}");
         assert!(c.trim_end().ends_with("L960.0 48.0"), "{c}");
     }
+
 }

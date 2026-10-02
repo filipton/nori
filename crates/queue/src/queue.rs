@@ -193,15 +193,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn analysable_excludes_providers_playlists_radio() {
+    fn queued_songs_kept() {
         assert!(analysable("a1b2"));
         assert!(!analysable("ext-deezer-1"));
         assert!(!analysable("pl-7"));
         assert!(!analysable("radio:3"));
-    }
 
-    #[test]
-    fn songs_lookup_keeps_queued_songs() {
+        // Songs lookup keeps queued songs.
         let s = crate::playlist::tests::session(&["keep1", "keep2", "keep3"], 0);
         let song = |id: &str| Song { duration: 200, ..Song::only_id(id.to_string()) };
         s.register(vec![song("keep1"), song("keep2"), song("keep3"), song("gone")]);
@@ -213,4 +211,5 @@ mod tests {
         }
         assert!(s.song("gone").is_none());
     }
+
 }

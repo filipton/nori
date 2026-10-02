@@ -308,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn notes_keep_last_plan_per_song() {
+    fn notes() {
         let mut p = State::new();
         p.note(n("a", "b"));
         p.note(TransitionNote { kind: "EchoOut".into(), ..n("a", "b") });
@@ -318,11 +318,10 @@ mod tests {
         }
         assert_eq!(p.notes.len(), NOTES_KEPT);
         assert_eq!(p.notes.last().unwrap().outgoing_id, "x7");
-    }
 
-    #[test]
-    fn kind_names_log_as_screaming_snake() {
+        // Kind names log as screaming snake.
         assert_eq!(screaming_snake("BeatMatched"), "BEAT_MATCHED");
         assert_eq!(screaming_snake("Gapless"), "GAPLESS");
     }
+
 }

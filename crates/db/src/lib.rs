@@ -248,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn outdated_analysis_table_is_recreated() {
+    fn migrations() {
         let dir = nori_testdir::TempDir::new("db-old");
         let path = dir.join("old.db").to_string_lossy().into_owned();
         {
@@ -260,10 +260,8 @@ mod tests {
         assert!(cols.iter().any(|c| c == "outro_grid_source"));
         let rows: i64 = c.query_row("SELECT count(*) FROM track_analysis", [], |r| r.get(0)).unwrap();
         assert_eq!(rows, 0);
-    }
 
-    #[test]
-    fn old_lyrics_keys_are_dropped_for_this_server_only() {
+        // Old lyrics keys are dropped for this server only.
         let dir = nori_testdir::TempDir::new("db-lyrics");
         let path = dir.join("lyrics.db").to_string_lossy().into_owned();
         {

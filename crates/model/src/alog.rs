@@ -151,16 +151,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn local_time_formats_calendar_date() {
-        // 2026-09-28 11:22:05.123 UTC, in CEST.
-        assert_eq!(local_time(1_790_594_525_123, 120), "2026-09-28 13:22:05.123");
-        assert_eq!(local_time(0, 0), "1970-01-01 00:00:00.000");
-        assert_eq!(local_time(951_782_400_000, 0), "2000-02-29 00:00:00.000");
-        assert_eq!(local_time(0, -60), "1969-12-31 23:00:00.000");
-    }
-
-    #[test]
-    fn journal_rotates_and_keeps_order() {
+    fn logs() {
         let dir = nori_testdir::TempDir::new("alog-journal");
         assert!(alog_persist(dir.to_string_lossy().into_owned(), 120));
         let long = "x".repeat(1000);
@@ -184,10 +175,8 @@ mod tests {
         }
         assert!(std::fs::metadata(stuck.join("nori.log")).unwrap().len() <= JOURNAL_BYTES);
         *JOURNAL.lock().unwrap() = None;
-    }
 
-    #[test]
-    fn recent_keeps_last_lines_in_order() {
+        // Recent keeps last lines in order.
         for k in 0..KEPT + 20 {
             info(&format!("alog-test line {k}"));
         }
@@ -197,5 +186,13 @@ mod tests {
         let numbers: Vec<usize> = mine.iter().map(|l| l.rsplit(' ').next().unwrap().parse().unwrap()).collect();
         assert!(numbers.windows(2).all(|w| w[1] == w[0] + 1), "in order: {numbers:?}");
         assert!(!mine.contains(&"alog-test line 0".to_string()), "the oldest went first");
+
+        // Local time formats calendar date.
+        // 2026-09-28 11:22:05.123 UTC, in CEST.
+        assert_eq!(local_time(1_790_594_525_123, 120), "2026-09-28 13:22:05.123");
+        assert_eq!(local_time(0, 0), "1970-01-01 00:00:00.000");
+        assert_eq!(local_time(951_782_400_000, 0), "2000-02-29 00:00:00.000");
+        assert_eq!(local_time(0, -60), "1969-12-31 23:00:00.000");
     }
+
 }

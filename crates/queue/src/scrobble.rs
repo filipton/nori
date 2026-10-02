@@ -123,24 +123,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn needed_ms_bounds() {
+    fn scrobble_rules() {
         assert_eq!(needed_ms(200, 50), 100_000);
         assert_eq!(needed_ms(600, 50), 240_000);
         assert_eq!(needed_ms(10, 50), 10_000);
         assert_eq!(needed_ms(200, 5), 20_000, "percent clamped to 10");
-    }
 
-    #[test]
-    fn followed_ids() {
+        // Followed ids.
         let id = |s: &str| Some(s.to_string());
         assert_eq!(followed(id("s1"), TrackChange::Moved), id("s1"));
         assert_eq!(followed(id("radio:4"), TrackChange::Moved), None);
         assert_eq!(followed(id("radio:4"), TrackChange::Looped), id("radio:4"));
         assert_eq!(followed(id("s1"), TrackChange::Ended), None);
-    }
 
-    #[test]
-    fn heard_time_sums_play_edges_only() {
+        // Heard time sums play edges only.
         let mut s = Scrobbler::default();
         let song = Song::only_id("a".into());
         s.switch(Some(song.clone()), true, 1_000, 50);
@@ -151,4 +147,5 @@ mod tests {
         let (done, heard, at) = s.switch(None, false, 12_000, 60);
         assert_eq!((done, heard, at), (Some(song), 6_000, 50));
     }
+
 }
