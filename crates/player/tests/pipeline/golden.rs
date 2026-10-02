@@ -1,6 +1,4 @@
-//! Fingerprints of what fixed input sounds like through the player, so a refactor that changes a
-//! single sample shows up here. When one of these changes on purpose, the new value goes in with the
-//! change that made it, and the statistics beside it say how big the change was.
+//! Fingerprints of fixed input through the player; update them only with an intended change.
 
 use nori_player::dsp::{Band, HIGH_SHELF, LOW_SHELF, PEAKING};
 use nori_player::sim::{Audio, Player, Sound, Track};
@@ -14,7 +12,7 @@ fn shape(s: &[i16]) -> (f64, f64) {
 }
 
 #[test]
-fn an_evening_through_the_whole_chain_sounds_exactly_as_it_did() {
+fn golden_whole_chain() {
     // Three songs, six-second crossfades, an equalizer curve pushed into the limiter, played to the end.
     let songs: Vec<Track> = (0..3).map(|k| track(&format!("s{k}"), &music(20.0, 300 + k))).collect();
     let mut p = Player::with_prefs(songs, crossfade(6));
@@ -32,13 +30,11 @@ fn an_evening_through_the_whole_chain_sounds_exactly_as_it_did() {
     assert_eq!(heard.len(), (frames(60.0 - 12.0) + 220) * 2, "three songs less two overlaps, and the look-ahead");
     let (level, peak) = shape(&heard);
     assert!((level + 9.63).abs() < 0.01 && (peak + 1.0).abs() < 0.01, "level {level:.2} dB, peak {peak:.2} dB");
-    // 2026-09: the chain now dithers what it changes back to 16 bits (TPDF) instead of rounding it: every
-    // sample within a step of before, the level and the peak as they were.
     assert_eq!(fingerprint(&heard), 13_659_055_013_481_716_151, "level {level:.2} dB, peak {peak:.2} dB");
 }
 
 #[test]
-fn the_decoders_give_the_samples_they_gave() {
+fn golden_decoders() {
     let mp3 = Audio::mp3(&testdata("tone440.mp3")).decode_all();
     let opus = Audio::opus(&testdata("tone440.opus")).decode_all();
     assert_eq!((mp3.len(), opus.len()), (91_102, 97_296));

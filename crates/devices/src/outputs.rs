@@ -1,6 +1,5 @@
-//! Android's side of `nori_player::outputs` and `nori_player::dac`: its device types and PCM encodings
-//! mapped onto the player's, and the doors the Kotlin glue calls when a device is attached or removed
-//! and when the output format changes. Event rate only, never per buffer.
+//! Android's device types and PCM encodings mapped onto `nori_player::outputs` and `nori_player::dac`,
+//! and the calls Kotlin makes on device and format changes.
 
 use nori_model::DacMode;
 #[cfg(feature = "ffi")]
@@ -11,7 +10,7 @@ use crate::profiles::OutputPort;
 use nori_player::outputs::{self, OutputKind};
 use nori_settings::settings_store;
 
-// Public, like model.rs's, since the uniffi scaffolding in crates/android names them by a public path.
+// Public: the uniffi scaffolding in crates/android names them by path.
 pub use nori_player::dac::DacDecision;
 #[cfg(any(feature = "ffi", test))]
 pub use nori_player::dac::DacStep;
@@ -58,30 +57,29 @@ pub fn kind(t: i32) -> OutputKind {
     }
 }
 
-/// The glyph the player's output button shows for where the sound is going.
+/// The player's output button icon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 pub enum OutputGlyph {
     Headphones,
     Bluetooth,
-    /// The phone's speaker and anything else: Apple's AirPlay mark, filled in when it is elsewhere.
+    /// The speaker and anything else.
     Cast,
 }
 
-/// The output button as it stands, and where the sound is going for the client to say to a screen reader.
+/// The output button's state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct OutputLook {
     pub glyph: OutputGlyph,
-    /// The sound is going somewhere other than the phone's speaker: the glyph takes the accent.
+    /// Not the phone's speaker (the glyph is accented).
     pub elsewhere: bool,
     pub port: OutputPort,
-    /// The name the device gives itself; none when it gave none.
+    /// The device's own name, if it gave one.
     pub name: Option<String>,
 }
 
-/// The output button for `output`, one of the keys outputs are remembered by ("USB: …",
-/// "Bluetooth: …", "Wired headphones", the speaker, or a device's own name).
+/// The output button for an output key ("USB: …", "Bluetooth: …", "Wired headphones", the speaker, ...).
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn output_look(output: String) -> OutputLook {
     let (port, name) = outputs::parts(&output);
@@ -113,16 +111,15 @@ fn modes(rates: &[u32], encodings: &[i32]) -> Vec<DacMode> {
     rates.iter().zip(encodings).map(|(r, e)| mode(*r, *e)).collect()
 }
 
-/// Where the list of every output seen is kept (`app_kv`, a JSON list), so a device can be given its own
-/// sound while it is unplugged.
+/// `app_kv` key: every output seen, as a JSON list, so unplugged devices can still get a sound.
 const KNOWN: &str = "knownOutputs";
 
 fn keep(known: &[String]) {
-    settings_store::keep_app_value(KNOWN, serde_json::to_string(known).unwrap_or_default());
+    settings_store::shared().keep_app_value(KNOWN, serde_json::to_string(known).unwrap_or_default());
 }
 
-/// The output devices Android lists now, as parallel lists of `AudioDeviceInfo` types and product
-/// names, against the list of every output seen so far. A list that changed is kept.
+/// The attached devices (parallel `AudioDeviceInfo` types and product names) against the known list; a
+/// changed list is stored.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn outputs_refresh(types: Vec<i32>, names: Vec<String>, known: Vec<String>, fake_usb: Option<String>) -> Seen {
     let attached: Vec<(OutputKind, &str)> = types.iter().zip(&names).map(|(t, n)| (kind(*t), n.as_str())).collect();
@@ -133,26 +130,24 @@ pub fn outputs_refresh(types: Vec<i32>, names: Vec<String>, known: Vec<String>, 
     seen
 }
 
-/// The name the phone's own speaker goes by (`nori_player::outputs::SPEAKER`).
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn outputs_speaker() -> String {
     nori_player::outputs::SPEAKER.into()
 }
 
-/// The name of the sound profile that changes nothing (`nori_player::device::FLAT`).
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn device_flat() -> String {
     nori_player::device::FLAT.into()
 }
 
-/// Every output seen, as it was kept with the settings (a DAC set up last week is still in the list).
+/// Every output seen, as stored.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn outputs_known() -> Vec<String> {
-    let stored: Vec<String> = settings_store::app_value(KNOWN).and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
+    let stored: Vec<String> = settings_store::shared().app_value(KNOWN).and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
     outputs::initial_known(&stored)
 }
 
-/// The list without `output`, kept, or `None` when it stays as it is.
+/// The known list without `output`, stored; None when unchanged.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn outputs_forget(known: Vec<String>, current: String, output: String) -> Option<Vec<String>> {
     let next = outputs::forget(&known, &current, &output);
@@ -162,9 +157,8 @@ pub fn outputs_forget(known: Vec<String>, current: String, output: String) -> Op
     next
 }
 
-/// The decision about an attached DAC; see `nori_player::dac::decide`. Modes are parallel lists of
-/// sample rates and `AudioFormat` encodings; `applied_*` are the modes of the port the preferred mode
-/// is held for, when it is the same port.
+/// `nori_player::dac::decide` over parallel lists of rates and `AudioFormat` encodings; `applied_*` are
+/// the modes of the port a preferred mode is held for.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 #[allow(clippy::too_many_arguments)]
 pub fn dac_decide(
@@ -175,7 +169,7 @@ pub fn dac_decide(
     dac::decide(enabled, platform_ok, &name, &modes(&rates, &encodings), mode(playing_rate, playing_encoding), applied.as_deref(), was_bit_perfect)
 }
 
-/// A DAC that is not there, as the test bridge describes it.
+/// A fake DAC for the test bridge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct MockDac {
@@ -185,8 +179,8 @@ pub struct MockDac {
     pub encodings: Vec<i32>,
 }
 
-/// `name@44100/16,96000/24`: the rates and bit depths the pretend DAC offers bit-perfect ("16", "24",
-/// "32" or "float"; 16 when left out). A mode that does not read is left out.
+/// Parses `name@44100/16,96000/24` (depth "16", "24", "32" or "float", default 16); unreadable modes are
+/// skipped. Without `@` or a name, the name is "Mock DAC".
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn dac_mock(spec: String) -> MockDac {
     let name = match spec.split_once('@') {
@@ -215,7 +209,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_output_button_names_where_the_sound_goes() {
+    fn android_codes() {
+        let seen = outputs_refresh(vec![18, 2, 8, 22], vec!["".into(), "".into(), "Buds".into(), " K3 ".into()], vec![], None);
+        assert_eq!(seen.current, "USB: K3");
+        assert!(seen.usb);
+        assert_eq!(seen.known.unwrap(), ["Bluetooth: Buds", "Phone speaker", "USB: K3"]);
+        assert!(outputs_refresh(vec![12, 2], vec!["".into(), "".into()], vec![], None).usb, "a USB accessory");
+        assert_eq!(outputs_refresh(vec![4], vec!["".into()], vec![], None).current, "Wired headphones");
+
+        // Dac encodings to bits.
+        let d = dac_decide(true, true, "K3".into(), vec![44_100, 96_000], vec![2, 4], 96_000, 4, None, None, false);
+        assert_eq!(d.step, DacStep::Prefer { index: 1 });
+        let d = dac_decide(true, true, "K3".into(), vec![96_000], vec![22], 96_000, 4, None, None, false);
+        assert_eq!(d.step, DacStep::Release, "float is not 32-bit integer");
+        let d = dac_decide(true, true, "K3".into(), vec![96_000], vec![22], 96_000, 22, Some(vec![96_000]), Some(vec![22]), true);
+        assert_eq!(d.step, DacStep::Keep);
+
+        // Dac mock parses.
+        assert_eq!(dac_mock("K3@44100/16,96000/24, 48000/float".into()), MockDac { name: "K3".into(), rates: vec![44_100, 96_000, 48_000], encodings: vec![2, 21, 4] });
+        assert_eq!(dac_mock("@44100".into()), MockDac { name: "Mock DAC".into(), rates: vec![44_100], encodings: vec![2] });
+        assert_eq!(dac_mock("K3".into()), MockDac { name: "Mock DAC".into(), rates: vec![], encodings: vec![] });
+        assert_eq!(dac_mock("K3@x/16,44100/8".into()).rates, Vec::<u32>::new());
+
+        // Output look by port.
         let l = |o: &str| {
             let l = output_look(o.into());
             (l.glyph, l.elsewhere)
@@ -230,35 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn android_devices_map_onto_the_player_kinds() {
-        let seen = outputs_refresh(vec![18, 2, 8, 22], vec!["".into(), "".into(), "Buds".into(), " K3 ".into()], vec![], None);
-        assert_eq!(seen.current, "USB: K3");
-        assert!(seen.usb);
-        assert_eq!(seen.known.unwrap(), ["Bluetooth: Buds", "Phone speaker", "USB: K3"]);
-        assert!(outputs_refresh(vec![12, 2], vec!["".into(), "".into()], vec![], None).usb, "a USB accessory");
-        assert_eq!(outputs_refresh(vec![4], vec!["".into()], vec![], None).current, "Wired headphones");
-    }
-
-    #[test]
-    fn encodings_are_bits() {
-        let d = dac_decide(true, true, "K3".into(), vec![44_100, 96_000], vec![2, 4], 96_000, 4, None, None, false);
-        assert_eq!(d.step, DacStep::Prefer { index: 1 });
-        let d = dac_decide(true, true, "K3".into(), vec![96_000], vec![22], 96_000, 4, None, None, false);
-        assert_eq!(d.step, DacStep::Release, "float is not 32-bit integer");
-        let d = dac_decide(true, true, "K3".into(), vec![96_000], vec![22], 96_000, 22, Some(vec![96_000]), Some(vec![22]), true);
-        assert_eq!(d.step, DacStep::Keep);
-    }
-
-    #[test]
-    fn mock_dac_specs() {
-        assert_eq!(dac_mock("K3@44100/16,96000/24, 48000/float".into()), MockDac { name: "K3".into(), rates: vec![44_100, 96_000, 48_000], encodings: vec![2, 21, 4] });
-        assert_eq!(dac_mock("@44100".into()), MockDac { name: "Mock DAC".into(), rates: vec![44_100], encodings: vec![2] });
-        assert_eq!(dac_mock("K3".into()), MockDac { name: "Mock DAC".into(), rates: vec![], encodings: vec![] });
-        assert_eq!(dac_mock("K3@x/16,44100/8".into()).rates, Vec::<u32>::new());
-    }
-
-    #[test]
-    fn the_known_outputs_are_kept_with_the_settings() {
+    fn known_outputs_persist() {
         use nori_db::background;
         use nori_settings::settings_store::settings_open;
 
@@ -266,13 +254,10 @@ mod tests {
         let path = dir.join("nori.db").display().to_string();
         settings_open(path.clone()).unwrap();
         let speaker = outputs_speaker();
-        assert_eq!(outputs_known(), [speaker.clone()], "the speaker the first time");
+        assert_eq!(outputs_known(), std::slice::from_ref(&speaker), "the speaker the first time");
         let seen = outputs_refresh(vec![8], vec!["Buds".into()], vec![speaker.clone()], None);
         assert_eq!(seen.known.unwrap(), ["Bluetooth: Buds", speaker.as_str()]);
-        // Written on the background thread; a job behind it has seen it done.
-        let (tx, rx) = std::sync::mpsc::channel();
-        background::run(move || tx.send(()).unwrap());
-        rx.recv().unwrap();
+        background::flush();
         settings_open(path).unwrap();
         assert_eq!(outputs_known(), ["Bluetooth: Buds", speaker.as_str()]);
     }

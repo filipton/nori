@@ -1,10 +1,9 @@
-//! Lyrics read out of web pages: Genius (plain words), Megalobiz (LRC shown on a page), and the
-//! HTML-escaped LRC SimpMusic serves. No HTML parser is linked for this: the pages are read with a small
-//! tag scanner that knows only what these pages need (element nesting, `<br>`, attributes, entities).
-//! A page that changes its layout gives nothing back, never somebody else's words.
+//! Lyrics in web pages (Genius, Megalobiz) and SimpMusic's HTML-escaped LRC, read with a small tag
+//! scanner rather than an HTML parser.
 
 use nori_model::Lyrics;
 
+use crate::fit::norm;
 use crate::formats::{decode_html, plain};
 
 /// Elements that never have a closing tag.
@@ -54,10 +53,9 @@ fn attr<'a>(raw: &'a str, name: &str) -> Option<&'a str> {
     None
 }
 
-/// The text inside the element whose start tag ends at `from` in `html`, with `<br>` as a line break
-/// and the subtrees `skip` names (and scripts and styles) left out, and where the element ends. Only
-/// elements of the container's own kind are counted to find its end, so markup inside it that is not
-/// closed does not throw the count.
+/// The text of the element whose start tag ends at `from`, `<br>` as a line break, without scripts,
+/// styles and what `skip` names; and where it ends. Only `container` tags count toward its end, so
+/// unclosed markup inside does not matter.
 fn inner_text(html: &str, from: usize, container: &str, skip: impl Fn(&Tag) -> bool) -> (String, usize) {
     let mut out = String::new();
     let mut depth = 1usize;
@@ -115,11 +113,6 @@ fn inner_text(html: &str, from: usize, container: &str, skip: impl Fn(&Tag) -> b
     (out, html.len())
 }
 
-/// Lower case, letters and digits only, one space between words.
-fn norm(s: &str) -> String {
-    s.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ")
-}
-
 // ---- Genius -----------------------------------------------------------------------------------------
 
 /// Whether a line of a Genius page is its own furniture rather than a sung line.
@@ -128,11 +121,9 @@ fn furniture(line: &str) -> bool {
     l.eq_ignore_ascii_case("you might also like") || (l.ends_with("Embed") && l.trim_end_matches("Embed").bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// The words on a Genius song page, not timed: every `data-lyrics-container="true"` element in order,
-/// without what the page marks as not part of the lyrics (`data-exclude-from-selection`: the header,
-/// the contributor count, "You might also like"). Section headings ("[Chorus]") are not sung, so each
-/// becomes the gap between two verses. An instrumental (nothing left) is no lyrics.
-pub fn from_genius(html: &str) -> Lyrics {
+/// A Genius song page's words: every `data-lyrics-container` element without what the page excludes
+/// from selection. Section headings ("[Chorus]") become gaps between verses.
+pub(crate) fn from_genius(html: &str) -> Lyrics {
     const MARK: &str = "data-lyrics-container=\"true\"";
     let mut text = String::new();
     let mut pos = 0;
@@ -169,11 +160,9 @@ pub fn from_genius(html: &str) -> Lyrics {
 
 // ---- Megalobiz --------------------------------------------------------------------------------------
 
-/// The LRC pages a Megalobiz search lists for `title` by `artist`: links to its LRC pages (`/lrc/maker/…`)
-/// whose text or title names the song, those that also name the artist first, otherwise in the order
-/// the page lists them. A link that does not name the song is left out: a wrong song's words, in time
-/// with this one, are worse than none.
-pub fn megalobiz_links(html: &str, title: &str, artist: &str) -> Vec<String> {
+/// The `/lrc/maker/…` links of a Megalobiz search that name `title` as whole words, those also naming
+/// `artist` first, otherwise in page order.
+pub(crate) fn megalobiz_links(html: &str, title: &str, artist: &str) -> Vec<String> {
     let want = norm(title);
     let by = norm(artist);
     let mut out: Vec<(String, bool)> = Vec::new();
@@ -195,14 +184,12 @@ pub fn megalobiz_links(html: &str, title: &str, artist: &str) -> Vec<String> {
             out.push((link, names(&by)));
         }
     }
-    // Stable: among equals, the page's own order stands.
     out.sort_by_key(|(_, artist)| !artist);
     out.into_iter().map(|(l, _)| l).collect()
 }
 
-/// The LRC a Megalobiz page shows, in the element whose id is `lrc_<number>_details`, one line per
-/// `<br>`. Nothing when the page has no such element or it holds no timed lines.
-pub fn from_megalobiz(html: &str) -> Lyrics {
+/// The LRC in a Megalobiz page's `lrc_<number>_details` element; nothing without timed lines.
+pub(crate) fn from_megalobiz(html: &str) -> Lyrics {
     let mut pos = 0;
     while let Some(i) = html[pos..].find("id=\"lrc_") {
         let at = pos + i;
@@ -223,9 +210,8 @@ pub fn from_megalobiz(html: &str) -> Lyrics {
 
 // ---- SimpMusic --------------------------------------------------------------------------------------
 
-/// LRC served HTML-escaped, as SimpMusic serves its rich sync (`&#x27;` for an apostrophe, and the word
-/// tags as `&lt;00:12.34&gt;` on some entries): unescaped once, then read as LRC, word tags included.
-pub fn from_escaped_lrc(text: &str) -> Lyrics {
+/// HTML-escaped LRC (SimpMusic's, word tags as `&lt;00:12.34&gt;` on some entries).
+pub(crate) fn from_escaped_lrc(text: &str) -> Lyrics {
     crate::lyrics::from_lrc(&decode_html(text))
 }
 
@@ -260,7 +246,7 @@ mod tests {
     const MEGALOBIZ_SEARCH: &str = include_str!("../testdata/megalobiz-search.html");
 
     #[test]
-    fn megalobiz_links_name_the_song() {
+    fn megalobiz() {
         let links = megalobiz_links(MEGALOBIZ_SEARCH, "Glass Harbour", "The Lanterns");
         assert_eq!(
             links,
@@ -269,10 +255,8 @@ mod tests {
         );
         assert!(megalobiz_links(MEGALOBIZ_SEARCH, "Paper Boats", "The Lanterns").is_empty());
         assert!(megalobiz_links(MEGALOBIZ_SEARCH, "", "").is_empty());
-    }
 
-    #[test]
-    fn megalobiz_page_lrc() {
+        // Megalobiz page lrc.
         let page = r#"<div class="lyrics_details entity_more_info"><span id="lrc_51234567_details">[ti:Glass Harbour]<br>[ar:The Lanterns]<br>[00:12.30]Paper boats on a quiet river<br>
 [00:16.05]La la la line two<br>[00:20.00]It&#39;s the last line</span></div>"#;
         let l = from_megalobiz(page);

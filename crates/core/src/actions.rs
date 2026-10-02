@@ -1,6 +1,5 @@
-//! What playing something means, as the core's and the client's calls: the songs a radio, an instant mix,
-//! a whole artist or an M3U playlist play, read from the index or the server. What a tap does and how a
-//! shuffle is drawn are nori-queue's.
+//! Play-action calls: the songs a radio, instant mix, artist, shuffle or M3U import plays. Taps and
+//! shuffle order are nori-queue's.
 
 use crate::autofill::seed_now;
 use crate::cache_policy::{Page, Read};
@@ -10,14 +9,11 @@ use crate::{m3u, Album, Core, Result, Song};
 pub use nori_queue::actions::*;
 
 impl Client {
-    /// Song `id` where it is already to hand: the queue's copy (the song playing, a song in the player's
-    /// menu), else the answer read before, else the server's. The platform names a song by its id and
-    /// never sends the record back.
+    /// Song `id` from the queue store, else the downloads, else the cache or server.
     pub(crate) async fn song_of(&self, id: String) -> NetResult<Song> {
-        if let Some(s) = crate::queue::queue_song(id.clone()) {
+        if let Some(s) = self.core.session.song(&id) {
             return Ok(s);
         }
-        // A downloaded song is known without the network.
         if let Some(s) = self.core.download_song(&id) {
             return Ok(s);
         }
@@ -27,15 +23,14 @@ impl Client {
         })
     }
 
-    /// The songs of the first `wanted` of `albums` that have any of the library's, each whole, in order.
-    /// A provider's album is never read, and a provider's song in the library's album (octo-fiesta fills
-    /// one in from the provider) is left out: playing either makes the server download it.
+    /// The library songs of the first `wanted` albums that have any; provider albums and songs are skipped
+    /// (playing one makes the server download it).
     pub(crate) async fn library_albums(&self, albums: Vec<Album>, wanted: usize) -> Vec<Song> {
         let mut out = Vec::new();
         let mut found = 0;
-        for a in albums.into_iter().filter(|a| !a.is_external && !crate::db::external(&a.id)) {
-            let songs: Vec<Song> = self.songs(Read::AlbumSongs { id: a.id }).await.unwrap_or_default();
-            let songs: Vec<Song> = songs.into_iter().filter(|s| !s.is_external && !crate::db::external(&s.id)).collect();
+        for a in albums.into_iter().filter(|a| !a.is_provider()) {
+            let mut songs: Vec<Song> = self.songs(Read::AlbumSongs { id: a.id }).await.unwrap_or_default();
+            songs.retain(|s| !s.is_provider());
             if songs.is_empty() {
                 continue;
             }
@@ -49,10 +44,8 @@ impl Client {
     }
 }
 
-/// Asked only in Rust, so not exported to Kotlin.
 impl Core {
-    /// The song downloaded under `id`, as it was kept with its download; None when it is not downloaded
-    /// (or not finished).
+    /// The finished download `id`, as stored.
     pub fn download_song(&self, id: &str) -> Option<Song> {
         use rusqlite::OptionalExtension;
         let c = self.db.lock();
@@ -63,7 +56,7 @@ impl Core {
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Client {
-    /// An endless-ish mix seeded from song `id` ([`Self::song_of`]): [radio_queue], else [radio_fallback].
+    /// A radio from song `id`: similar songs, else random songs of its genre ([radio_queue]).
     pub async fn radio(&self, id: String) -> NetResult<Vec<Song>> {
         let similar = self.songs(Read::SimilarSongs { id: id.clone(), count: RADIO }).await?;
         let seed = self.song_of(id).await?;
@@ -71,12 +64,10 @@ impl Client {
             return Ok(queue);
         }
         let random = self.songs(Read::RandomSongs { size: RADIO, genre: seed.genre.clone() }).await?;
-        Ok(radio_fallback(seed, random))
+        Ok(radio_queue(seed.clone(), random).unwrap_or_else(|| vec![seed]))
     }
 
-    /// A mix around song `id` from the index and the listening history, or the radio when the index has
-    /// nothing to go with it: the song is not indexed, or nothing indexed is near it and the mix would be
-    /// the song alone.
+    /// A mix around song `id` from the index and history; the radio when that yields only the song.
     pub async fn instant_mix(&self, id: String) -> NetResult<Vec<Song>> {
         let mix = self.core.mix_instant(id.clone(), INSTANT_MIX, seed_now())?;
         if mix.len() > 1 {
@@ -85,36 +76,28 @@ impl Client {
         self.radio(id).await
     }
 
-    /// Every album of an artist, in order, as one list of songs. A provider's albums are left out:
-    /// asking for them would make octo-fiesta download them. An album that cannot be read is skipped.
+    /// The library songs of `albums` in order, skipping provider and unreadable albums.
     pub async fn artist_songs(&self, albums: Vec<Album>) -> Vec<Song> {
-        let mut out = Vec::new();
-        for a in albums.into_iter().filter(|a| !a.is_external) {
-            out.extend(self.songs(Read::AlbumSongs { id: a.id }).await.unwrap_or_default());
-        }
-        out
+        self.library_albums(albums, usize::MAX).await
     }
 
-    /// "Shuffle all": the server's random songs.
+    /// Random library songs.
     pub async fn shuffle_all(&self) -> NetResult<Vec<Song>> {
-        self.songs(Read::RandomSongs { size: SHUFFLE_ALL, genre: None }).await
+        let mut songs = self.songs(Read::RandomSongs { size: SHUFFLE_ALL, genre: None }).await?;
+        songs.retain(|s| !s.is_provider());
+        Ok(songs)
     }
 
-    /// "Shuffle albums": one of the server's random albums, whole and in its own order, played at once;
-    /// the queue's refills go on with more ([`crate::OriginKind::ShuffleAlbums`]). Only the library's:
-    /// a provider's album, or a provider's song inside one, is never asked for or played.
+    /// One random library album, whole; refills add more ([`crate::OriginKind::ShuffleAlbums`]).
     pub async fn shuffle_albums(&self) -> NetResult<Vec<Song>> {
-        let albums = match self.read_now(Read::AlbumList { kind: "random".into(), size: SHUFFLE_ALBUMS, offset: 0, genre: None }).await? {
-            Page::Albums { v } => v,
-            _ => Vec::new(),
-        };
+        let albums = self.read_now(Read::AlbumList { kind: "random".into(), size: SHUFFLE_ALBUMS, offset: 0, genre: None }).await?.albums();
         Ok(self.library_albums(albums, 1).await)
     }
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Core {
-    /// Tracks that are not in the index are reported, not guessed.
+    /// Matches an M3U against the index; unmatched entries are only counted.
     pub fn m3u_import(&self, text: String) -> Result<M3uImport> {
         let matched = self.m3u_match(m3u::m3u_parse(text))?;
         let song_ids: Vec<String> = matched.iter().flatten().map(|s| s.id.clone()).collect();
@@ -135,25 +118,23 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_radio_with_nothing_similar_goes_on_with_random_songs() {
+    fn radio_falls_back_to_genre() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         let seed = Song { id: "r".into(), genre: Some("Jazz".into()), ..Default::default() };
-        // Queued: the song is the queue's copy, named by its id.
-        crate::queue::queue_register(vec![seed.clone()]);
+        c.core.session.register(vec![seed.clone()]);
         fake.answer(&songs_json("similarSongs2", &["r"]));
-        fake.answer(&songs_json("randomSongs", &["x", "y"]));
+        fake.answer(&songs_json("randomSongs", &["x", "r", "ext-deezer-song-1", "y"]));
         let got = block(c.radio(seed.id.clone())).unwrap();
         assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["r", "x", "y"]);
         let asked = fake.asked();
         assert!(asked[1].contains("getRandomSongs") && asked[1].contains("genre=Jazz"), "{asked:?}");
-        // An instant mix the index cannot draw is the radio: the song is indexed now (what the server
-        // answers is), but nothing near it is.
+        // Nothing indexed near the song: the instant mix is the radio.
         fake.answer(&songs_json("similarSongs2", &["s"]));
         assert_eq!(block(c.instant_mix(seed.id)).unwrap().len(), 2);
     }
 
     #[test]
-    fn a_song_named_by_id_is_read_where_the_core_does_not_hold_it() {
+    fn song_of_unknown_id_reads_server() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         fake.answer(r#"{"subsonic-response":{"status":"ok","song":{"id":"not-queued","title":"Q","genre":"Rock","isDir":false}}}"#);
         let s = block(c.song_of("not-queued".into())).unwrap();
@@ -162,17 +143,17 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_artist_plays_its_own_albums_only() {
+    fn providers_skipped() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         let album = |id: &str, is_external| Album { id: id.into(), is_external, ..Default::default() };
-        fake.answer(r#"{"subsonic-response":{"status":"ok","album":{"id":"a1","name":"a1","song":[{"id":"1","title":"1","isDir":false}]}}}"#);
-        let got = block(c.artist_songs(vec![album("a1", false), album("ext-2", true)]));
-        assert_eq!(got.len(), 1);
-        assert_eq!(fake.asked().len(), 1, "a provider's album is never asked for");
-    }
+        fake.answer(r#"{"subsonic-response":{"status":"ok","album":{"id":"a1","name":"a1","song":[{"id":"1","title":"1","isDir":false},{"id":"ext-deezer-song-2","title":"2","isDir":false}]}}}"#);
+        let got = block(c.artist_songs(vec![album("a1", false), album("ext-2", true), album("pl-deezer-3", false)]));
+        assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["1"]);
+        assert_eq!(fake.asked().len(), 1);
+        fake.answer(&songs_json("randomSongs", &["x", "ext-deezer-song-1"]));
+        assert_eq!(block(c.shuffle_all()).unwrap().iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["x"]);
 
-    #[test]
-    fn shuffled_albums_start_with_one_whole_album_of_the_librarys_own() {
+        // Shuffle albums plays one library album.
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         fake.answer(r#"{"subsonic-response":{"status":"ok","albumList2":{"album":[{"id":"b","name":"B"},{"id":"ext-applemusic-album-1","name":"X","isExternal":true},{"id":"a","name":"A"}]}}}"#);
         let album = |id: &str, songs: &[&str]| {
@@ -182,14 +163,14 @@ pub(crate) mod tests {
         fake.answer(&album("b", &["b1", "ext-deezer-song-9", "b2", "b3"]));
         fake.answer(&album("a", &["a1", "a2"]));
         let got = block(c.shuffle_albums()).unwrap();
-        assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["b1", "b2", "b3"], "one album, at once, without the provider's song");
+        assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["b1", "b2", "b3"]);
         let asked = fake.asked();
         assert!(asked[0].contains("getAlbumList2") && asked[0].contains("type=random"), "{asked:?}");
-        assert_eq!(asked.len(), 2, "nothing more is read before it plays: {asked:?}");
+        assert_eq!(asked.len(), 2, "{asked:?}");
     }
 
     #[test]
-    fn m3u_import_counts_what_it_found() {
+    fn m3u_import_counts_matches() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         db::index(&mut core.db.lock(), &[], &[], &[song("1", "Dogs", "Pink Floyd", "Animals", "", 1977)]).unwrap();
         let text = "#EXTM3U\n#EXTINF:200,Pink Floyd - Dogs\na.flac\n#EXTINF:100,Nobody - Nothing\nb.flac\n";

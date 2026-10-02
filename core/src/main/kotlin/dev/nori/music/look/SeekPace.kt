@@ -7,7 +7,9 @@ package dev.nori.music.look
  * comes back on screen. One per seek bar, used from the main thread only; [close] it when the bar goes.
  */
 class SeekPace : AutoCloseable {
-    private var h = CoverLook.seekPaceNew()
+    /** What the bar shows, left here by every change (`PaceShown` in crates/android/src/look.rs). */
+    private val view = dev.nori.music.NativeView(24)
+    private var h = CoverLook.seekPaceNew(view.address)
 
     /** Everything where the song is, at once, with nothing gliding: a bar coming (back) on screen. */
     fun sync(positionMs: Long, durationMs: Long) = CoverLook.seekPaceSync(h, positionMs, durationMs)
@@ -20,16 +22,16 @@ class SeekPace : AutoCloseable {
         CoverLook.seekPaceStep(h, positionMs, durationMs, dtS, widthPx, rate)
 
     /** Where the bar is drawn, 0..1. */
-    val bar: Float get() = CoverLook.seekPaceBar(h)
-
-    /** The times shown, `atS shl 32 or leftS`. */
-    val times: Long get() = CoverLook.seekPaceTimes(h)
-
-    /** The times fading out, packed as [times]; -1 with none. */
-    val fadingFrom: Long get() = CoverLook.seekPaceFrom(h)
+    val bar: Float get() = view.buffer.getFloat(0)
 
     /** How strongly the times now are drawn, 0..1 (1: nothing fading). */
-    val fade: Float get() = CoverLook.seekPaceFade(h)
+    val fade: Float get() = view.buffer.getFloat(4)
+
+    /** The times shown, `atS shl 32 or leftS`. */
+    val times: Long get() = view.buffer.getLong(8)
+
+    /** The times fading out, packed as [times]; -1 with none. */
+    val fadingFrom: Long get() = view.buffer.getLong(16)
 
     override fun close() {
         CoverLook.seekPaceFree(h)

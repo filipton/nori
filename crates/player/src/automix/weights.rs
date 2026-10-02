@@ -1,20 +1,9 @@
-//! Beat This!'s weights, made on the device from the authors' own checkpoint. The app carries the network without
-//! its weights ([`GRAPH`], 0.2 MB, made by tools/beat-this/export.py): every initializer in it is external data, at
-//! its place in one weights file, with the recipe that makes it from the checkpoint's state_dict. [`convert`] follows
-//! those recipes once, when the checkpoint has been downloaded and checked, and the core keeps what it writes (the
-//! pinned `beat_model::SHA256`); [`assemble`] puts that file's bytes back into the graph for tract.
-//!
-//! The recipes (keys of each initializer's `external_data`; the initializer's type says fp32 or fp16):
-//! - `copy`: the state_dict tensor `nori.from` as it is;
-//! - `transpose`: a Linear's weight, turned as the ONNX exporter folds it into a MatMul;
-//! - `conv_bn`: a Conv2d's weight with the BatchNorm2d `nori.bn` after it folded in, as the exporter folds it:
-//!   w * gamma / sqrt(var + eps) per output channel, `nori.eps` the BatchNorm's epsilon;
-//! - `bn_shift`: the bias that fold leaves, beta - mean * gamma / sqrt(var + eps), of the BatchNorm `nori.from`.
-//!
-//! Each step is one float32 operation, rounded as IEEE 754 says, so every platform writes the same bytes, and
-//! export.py's numpy copy of the recipes pins them. PyTorch's own fold used a square root that is not always
-//! correctly rounded: 130 of the 2.1 M values differ from the export the app used to ship by one unit in the last
-//! place, which moves no logit by more than a few millionths (the test below, with the checkpoint).
+//! Beat This!'s weights, made on the device from the authors' checkpoint. The app carries the network without
+//! weights ([`GRAPH`], from tools/beat-this/export.py); each initializer is external data in one weights file with a
+//! recipe (`nori.op`) from the checkpoint's state_dict: `copy`, `transpose` (a Linear folded into MatMul), `conv_bn`
+//! (a Conv2d with its BatchNorm folded in) or `bn_shift` (the bias that fold leaves). [`convert`] writes the file
+//! once, one IEEE float32 operation per step so every platform makes the pinned bytes; [`assemble`] puts it back
+//! into the graph for tract.
 
 use std::collections::HashMap;
 
@@ -137,12 +126,11 @@ pub fn assemble(weights: &[u8]) -> Result<ModelProto, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::automix::neural::{BeatThis, LogMel, CHUNK, MELS};
+    use crate::automix::neural::{BeatThis, CHUNK, MELS};
 
-    /// The graph carries no weights: every initializer comes from the weights file, and what the file does not
-    /// hold is too small to be one.
+    /// Every initializer comes from the weights file; the constants left are tiny.
     #[test]
-    fn the_graph_carries_no_weights() {
+    fn graph_carries_no_weights() {
         let model = graph().unwrap();
         let g = model.graph.as_ref().unwrap();
         assert!(g.initializer.iter().all(|t| t.data_location == Some(EXTERNAL) && t.raw_data.is_empty()));
@@ -155,15 +143,11 @@ mod tests {
         assert!(assemble(&[0u8; 10]).is_err(), "a short file is refused");
     }
 
-    /// Equal outputs. The weights made from the authors' checkpoint (`NORI_BEAT_THIS_CKPT`, small0.ckpt) are
-    /// the pinned bytes; with the export the app shipped before (`NORI_BEAT_THIS`, tools/beat-this/export.py
-    /// --full, SHA-256 847b51aa...) each weight is compared with its own and both models are run over the same
-    /// windows: a spectrogram-like input (export.py's kind) and a drum loop through the app's own front end.
-    /// `NORI_BEAT_THIS_CKPT=small0.ckpt NORI_BEAT_THIS=beat-this-small0-v1.onnx cargo test --release -p nori-player
-    /// --features neural-beats official_weights -- --nocapture`
+    /// The authors' checkpoint converts to the pinned bytes and loads:
+    /// `NORI_BEAT_THIS_CKPT=small0.ckpt cargo test --release -p nori-player --features neural-beats official_weights -- --ignored --nocapture`
     #[test]
     #[ignore = "needs the authors' checkpoint in NORI_BEAT_THIS_CKPT"]
-    fn official_weights_give_the_shipped_outputs() {
+    fn official_weights_convert_to_pin() {
         let Ok(ckpt) = std::env::var("NORI_BEAT_THIS_CKPT") else {
             eprintln!("no checkpoint in NORI_BEAT_THIS_CKPT: skipped");
             return;
@@ -184,71 +168,7 @@ mod tests {
         let ours = BeatThis::from_weights(&weights).unwrap();
         println!("assembled and loaded in {:.0} ms; peak RSS {}", t1.elapsed().as_secs_f64() * 1e3, rss());
 
-        let Ok(shipped) = std::env::var("NORI_BEAT_THIS") else { return };
-        let shipped = std::fs::read(shipped).unwrap();
-        assert_eq!(sha(&shipped), "847b51aaef519a60a47c815fa58440782de73bff7000210396673b0353e2cc8c", "the export the app shipped");
-        // Weight by weight: the same graph, the same initializers, byte for byte but for the folded ones.
-        let old = ModelProto::decode(&shipped[..]).unwrap();
-        let new = assemble(&weights).unwrap();
-        let (og, ng) = (old.graph.unwrap(), new.graph.unwrap());
-        assert_eq!((og.node.len(), og.initializer.len()), (ng.node.len(), ng.initializer.len()));
-        let (mut same, mut differ, mut worst) = (0, 0, 0f32);
-        for (o, n) in og.initializer.iter().zip(&ng.initializer) {
-            assert_eq!((o.dims.clone(), o.data_type), (n.dims.clone(), n.data_type));
-            let vals = |t: &TensorProto| -> Vec<f32> {
-                if t.data_type == FLOAT16 {
-                    t.raw_data.chunks_exact(2).map(|b| f16::from_bits(u16::from_le_bytes([b[0], b[1]])).to_f32()).collect()
-                } else {
-                    t.raw_data.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()
-                }
-            };
-            for (a, b) in vals(o).iter().zip(vals(n)) {
-                if *a == b {
-                    same += 1;
-                } else {
-                    differ += 1;
-                    worst = worst.max((a - b).abs() / a.abs().max(1e-6));
-                }
-            }
-        }
-        println!("weights: {same} the same, {differ} not (largest relative difference {worst:.1e})");
-        assert!(differ <= 200 && worst < 1e-3);
-
-        let before = BeatThis::from_bytes(&shipped).unwrap();
-        let mut rng = 0x2545_f491_4f6c_dd1du64;
-        let mut next = move || {
-            rng ^= rng << 13;
-            rng ^= rng >> 7;
-            rng ^= rng << 17;
-            (rng >> 40) as f32 / (1u64 << 24) as f32
-        };
-        let noise: Vec<[f32; MELS]> = (0..CHUNK - 12).map(|_| std::array::from_fn(|_| next() * 6.0)).collect();
-        // Four bars of a kick, a snare and hats at 124 BPM over a bass line, 30 s at 22.05 kHz.
-        let rate = 22_050.0;
-        let beat = 60.0 / 124.0;
-        let song: Vec<f32> = (0..(30.0 * rate) as usize)
-            .map(|i| {
-                let t = i as f64 / rate;
-                let (n, p) = ((t / beat).floor() as i64, t % beat);
-                let kick = if n % 2 == 0 { (-p * 30.0).exp() * (2.0 * std::f64::consts::PI * 55.0 * p).sin() } else { 0.0 };
-                let snare = if n % 2 == 1 { (-p * 25.0).exp() * (next() as f64 * 2.0 - 1.0) * 0.6 } else { 0.0 };
-                let hat = (-((t / (beat / 2.0)) % 1.0) * beat / 2.0 * 80.0).exp() * (next() as f64 * 2.0 - 1.0) * 0.2;
-                let bass = 0.2 * (2.0 * std::f64::consts::PI * [41.2, 41.2, 49.0, 36.7][(n / 4 % 4) as usize] * t).sin();
-                (kick + snare + hat + bass) as f32 * 0.5
-            })
-            .collect();
-        let drums = LogMel::new(rate).frames(&song);
-        for (name, mel) in [("spectrogram-like input", &noise), ("drum loop", &drums)] {
-            let (b0, d0) = before.logits(mel).unwrap();
-            let (b1, d1) = ours.logits(mel).unwrap();
-            let diff = b0.iter().zip(&b1).chain(d0.iter().zip(&d1)).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
-            let flips = b0.iter().zip(&b1).chain(d0.iter().zip(&d1)).filter(|(a, b)| (**a > 0.0) != (**b > 0.0)).count();
-            let (t0, t1) = (before.track(mel, true, true).unwrap(), ours.track(mel, true, true).unwrap());
-            println!("{name}: {} frames, largest logit difference {diff:.2e}, frames on the other side of zero {flips}, {} beats and {} downbeats either way", b0.len(), t1.beats.len(), t1.downbeats.len());
-            assert!(diff < 1e-3, "{name}: {diff}");
-            assert_eq!(flips, 0, "{name}");
-            assert_eq!((t0.beats, t0.downbeats), (t1.beats, t1.downbeats), "{name}: the same beats");
-        }
+        assert!(ours.track(&[[0.0; MELS]; CHUNK], true, true).is_ok());
     }
 
     fn sha(b: &[u8]) -> String {

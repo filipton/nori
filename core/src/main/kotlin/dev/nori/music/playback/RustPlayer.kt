@@ -52,7 +52,7 @@ internal object RustPlayerJni {
     @JvmStatic @CriticalNative external fun setRepeat(h: Long, mode: Int)
     @JvmStatic @CriticalNative external fun replan(h: Long)
     @JvmStatic @CriticalNative external fun gainChanged(h: Long)
-    @JvmStatic @CriticalNative external fun setTuning(h: Long, on: Boolean)
+    @JvmStatic @CriticalNative external fun setForeground(h: Long, on: Boolean)
     /** The sound and the controls' fades as the core's settings are now. */
     @JvmStatic @CriticalNative external fun applySettings(h: Long)
     /** Where the ear is in it now (the engine's `status().position_now()`), read when asked, never ticked. */
@@ -71,7 +71,7 @@ internal object RustPlayerJni {
     /** The next event, `kind shl 32 or index` (kind: state 0, song 1, error 2, output 3); -1 when there are no more. */
     @JvmStatic @CriticalNative external fun event(h: Long): Long
     /**
-     * The words of the event [event] last gave: the song's id, the error, the output's name. Short and
+     * The words of the event [event] last gave: the error, the stream's title, the output's name. Short and
      * calling nothing back (the words sit behind a lock only the main thread takes, and one string is
      * made of them), so a fast door.
      */
@@ -240,6 +240,8 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
      * again as a song ending by itself - two changes more than were asked for.
      */
     private var sent = 0L
+    /** The number of the last jump the engine said it landed (its position event). */
+    private var landed = 0L
     private var prepared = false
     private var playWhenReady = false
     private var whyPlayWhenReady = Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST
@@ -290,7 +292,7 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
     }
     fun gainChanged() = RustPlayerJni.gainChanged(h)
     /** The equalizer's screen is open: the engine trades its deep buffer for a shallow one until the next boundary after it closes. */
-    fun setTuning(on: Boolean) = RustPlayerJni.setTuning(h, on)
+    fun setForeground(on: Boolean) = RustPlayerJni.setForeground(h, on)
     fun replan() = RustPlayerJni.replan(h)
     val mixing: Boolean get() = RustPlayerJni.mixing(h)
     /** The sound chain is in the samples' path, and what its limiter takes off, dB: see [Equalizer.inChain]. */
@@ -317,6 +319,15 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
      * its output again whenever that reading is a second old (nori_player::heard::screen_place).
      */
     fun shownMs(index: Int): Long = RustPlayerJni.shownMs(h, index)
+
+    /** Jumps sent to the engine so far: a seek asked after this reading is sent as a later one. */
+    val jumpsSent: Long get() = sent
+    /** Whether the engine has landed every jump sent to it. */
+    val landedAll: Boolean get() = landed >= sent
+
+    /** The engine for a door that reads it itself (PlayheadJni.position); 0 once released. */
+    internal val handle: Long get() = h
+
     /** The engine reads its output once, now: the screen is coming back (its last wake may be minutes old). */
     fun look() = RustPlayerJni.look(h)
     /**
@@ -493,8 +504,8 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
         edited()
         val at = if (startIndex == C.INDEX_UNSET || items.isEmpty()) timeline().getFirstWindowIndex(shuffle).coerceAtLeast(0) else startIndex.coerceIn(0, items.size - 1)
         if (items.isEmpty()) { current = 0; RustPlayerJni.pause(h); return done() }
-        // The song playing, kept in a queue made around it: the engine follows it into the new list by
-        // its id (the edit above) and carries on, playing or paused, with no jump.
+        // The song playing, kept in a queue made around it: its entry stays (`Playlist::set`), so the
+        // engine carries on with it, playing or paused, with no jump.
         if (items[at].isKept() && items[at].mediaId == was) { current = at; return done() }
         // Playing, the new list plays at once, as ExoPlayer's does; paused, the engine holds its start.
         expecting = at
@@ -589,16 +600,18 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
             val arg = e.toInt()
             when ((e ushr 32).toInt()) {
                 EVENT_STATE -> onState(arg)
-                EVENT_SONG -> onSong(arg, RustPlayerJni.eventText(h), RustPlayerJni.eventJumps(h))
+                EVENT_SONG -> onSong(arg, RustPlayerJni.eventJumps(h))
                 EVENT_ERROR -> RustPlayerJni.eventText(h).let { lastError = it; "rust player error: $it".let { t -> dev.nori.music.NoriLog.w(t); PlaybackService.observer?.error(t) } }
                 EVENT_STOPPED -> stoppedByItself()
                 EVENT_BUFFERING -> buffering = arg != 0
-                EVENT_LOOPED -> onLoop(arg, RustPlayerJni.eventText(h), RustPlayerJni.eventJumps(h))
+                EVENT_LOOPED -> onLoop(arg, RustPlayerJni.eventJumps(h))
                 EVENT_TITLE -> announced = RustPlayerJni.eventText(h)
                 // A mix began or ended being heard: the page is nudged, and reads [mixing] then. Nothing
                 // else changes, so nothing else is said.
                 EVENT_MIXING -> PlaybackService.onMixingChanged?.invoke()
                 EVENT_PLACED -> placed = true
+                // The engine is where a jump or seek asked: the session says that place, not its own guess.
+                EVENT_LANDED -> { landed = RustPlayerJni.eventJumps(h); placed = true; PlaybackService.onLanded?.invoke() }
                 // Handed on after the batch: the bridge edits and seeks this player itself.
                 EVENT_BRIDGE -> main.post { if (onBridge?.invoke() != true) { stoppedByItself(); follow(); invalidateState() } }
                 // The output device's own sound is DeviceSound's, from Outputs: its name is not asked for,
@@ -692,12 +705,10 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
         whyPlayWhenReady = Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM
     }
 
-    private fun onSong(index: Int, id: String?, jumps: Long) {
+    /** [i]: where the song's entry is in the queue now (see `event`); -1 when an edit took it out. */
+    private fun onSong(i: Int, jumps: Long) {
         // Said before the engine made the last jump sent: the page is already where that jump goes.
-        if (jumps < sent) return
-        // The engine's index is into the queue it last read; the id says which song, should an edit have
-        // moved it since.
-        val i = if (items.getOrNull(index)?.mediaId == id) index else items.indices.filter { items[it].mediaId == id }.minByOrNull { kotlin.math.abs(it - index) } ?: return
+        if (jumps < sent || i !in items.indices) return
         val asked = i == expecting
         expecting = -1
         if (i != current) announced = null
@@ -708,8 +719,8 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
     }
 
     /** The song playing started again by itself (repeat one): a transition media3 reports as a repeat. */
-    private fun onLoop(index: Int, id: String?, jumps: Long) {
-        if (jumps < sent || items.getOrNull(index)?.mediaId != id) return
+    private fun onLoop(index: Int, jumps: Long) {
+        if (jumps < sent || index !in items.indices) return
         current = index
         loops++
         moved = true
@@ -842,8 +853,8 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
         // The DAC's mixer attributes are read by the framework when the track is built: set for this format first.
         nori.dac.onFormat(rate, encoding)
         val bitPerfect = nori.dac.state.value.bitPerfect
-        // Always opened deep, in power saving mode: the equalizer screen's shallow buffer is the same track
-        // made smaller in place (setBufferSizeInFrames, crates/android/src/track.rs), not another one.
+        // Always opened deep, in power saving mode: the shallow buffer while the app is in sight is the same
+        // track made smaller in place (setBufferSizeInFrames, crates/android/src/track.rs), not another one.
         val mode = if (bitPerfect) AudioTrack.PERFORMANCE_MODE_NONE else AudioTrack.PERFORMANCE_MODE_POWER_SAVING
         val track = AudioTrack.Builder()
             .setAudioAttributes(PLATFORM_ATTRIBUTES)
@@ -991,6 +1002,7 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
         const val EVENT_BRIDGE = 8
         const val EVENT_MIXING = 9
         const val EVENT_PLACED = 10
+        const val EVENT_LANDED = 11
 
         val ATTRIBUTES: AudioAttributes = AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build()
         val PLATFORM_ATTRIBUTES: android.media.AudioAttributes = android.media.AudioAttributes.Builder()

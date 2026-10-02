@@ -1,6 +1,5 @@
-//! nori music core: Subsonic request signing, response parsing and the local
-//! SQLite index. No sockets and no threads of its own; every call is coarse
-//! (one response, one page) so the FFI crossing stays off the hot path.
+//! nori music core: the `Core` a platform opens per server profile (database, server address, response
+//! parsing into the index) and the domain calls over it. Re-exports the domain crates.
 
 pub mod automix;
 pub mod transfers;
@@ -37,11 +36,10 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 
 pub use nori_db::{self as db, background};
-pub use nori_model::{alog, heap, lines, model, CoreError};
+pub use nori_model::{alog, heap, lines, model, CoreError, SmartProblem};
 pub use nori_automix::beat_model;
 pub use nori_devices::{autoeq, outputs};
 pub use nori_library::{menus, pages, rows, stars};
-pub use nori_lyrics::lyrics::lyrics_from_lrc;
 pub use nori_lyrics::{formats, look, lrclib, lyrics, services};
 pub use nori_net::{api, transport};
 pub use nori_perf::perf_log;
@@ -65,12 +63,23 @@ pub struct ServerConfig {
     pub legacy_auth: bool,
 }
 
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
-pub struct PendingCall {
+impl ServerConfig {
+    /// The server these settings sign requests for.
+    fn server(&self) -> api::Server {
+        let auth = match (&self.api_key, self.legacy_auth) {
+            (Some(k), _) if !k.is_empty() => api::Auth::ApiKey(k),
+            (_, true) => api::Auth::Legacy { user: &self.user, password: &self.password },
+            _ => api::Auth::Token { user: &self.user, password: &self.password },
+        };
+        api::Server::with(&self.url, auth)
+    }
+}
+
+/// A write queued while the server was unreachable.
+pub(crate) struct PendingCall {
     pub row_id: i64,
     pub endpoint: String,
-    pub params: Vec<Param>,
+    pub params: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -79,8 +88,6 @@ pub struct Param {
     pub key: String,
     pub value: String,
 }
-
-// ---- wire shapes -----------------------------------------------------------
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
@@ -183,7 +190,6 @@ struct LyricsList {
     structured_lyrics: Vec<lyrics::Structured>,
 }
 
-
 #[derive(Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
 struct Folders {
@@ -269,66 +275,148 @@ fn parse(body: &[u8]) -> Result<Response> {
     Ok(r)
 }
 
-// ---- the object Kotlin holds -----------------------------------------------
+impl Response {
+    /// randomSongs, songsByGenre, similarSongs2, topSongs and getSong all land here.
+    fn songs(self) -> Vec<Song> {
+        let lists = self.random_songs.or(self.songs_by_genre).or(self.similar_songs2).or(self.top_songs);
+        lists.map(|s| s.song).or(self.song.map(|s| vec![s])).unwrap_or_default()
+    }
+}
 
-/// The core the app is using now, for a player's measurer that reads the core's queue and analyses
-/// (nori-engine's `Measurer::on_shelf`). The crates below find its database and downloads through
-/// `nori_db::active` and `transfers::held`.
-static ACTIVE: Mutex<std::sync::Weak<Core>> = Mutex::new(std::sync::Weak::new());
+impl Artists {
+    fn artists(self) -> Vec<Artist> {
+        self.index.into_iter().flat_map(|i| i.artist).collect()
+    }
+}
 
-/// The core the app is using now, if there is one.
-pub fn active() -> Option<Arc<Core>> {
-    ACTIVE.lock().upgrade()
+impl From<Response> for ServerInfo {
+    fn from(r: Response) -> Self {
+        ServerInfo { version: r.version, server_type: r.kind, server_version: r.server_version, open_subsonic: r.open_subsonic }
+    }
+}
+
+impl From<Found> for SearchResult {
+    fn from(f: Found) -> Self {
+        SearchResult { artists: f.artist, albums: f.album, songs: f.song }
+    }
+}
+
+impl From<Found> for Starred {
+    fn from(f: Found) -> Self {
+        Starred::new(f.artist, f.album, f.song)
+    }
+}
+
+impl From<AlbumWire> for AlbumDetail {
+    fn from(a: AlbumWire) -> Self {
+        AlbumDetail::new(a.album, a.song, a.disc_titles)
+    }
+}
+
+impl From<ArtistWire> for ArtistDetail {
+    fn from(a: ArtistWire) -> Self {
+        ArtistDetail::new(a.artist, a.album)
+    }
+}
+
+impl From<PlaylistWire> for PlaylistDetail {
+    fn from(p: PlaylistWire) -> Self {
+        PlaylistDetail::new(p.playlist, p.entry)
+    }
+}
+
+impl From<ArtistInfoWire> for ArtistInfo {
+    fn from(i: ArtistInfoWire) -> Self {
+        ArtistInfo {
+            biography: i.biography.filter(|b| !b.trim().is_empty()),
+            image_url: i.large_image_url.or(i.medium_image_url).filter(|u| !u.is_empty()),
+            similar: i.similar_artist,
+            last_fm_url: i.last_fm_url.filter(|u| u.starts_with("http")),
+            music_brainz_id: i.music_brainz_id.filter(|m| !m.is_empty()),
+        }
+    }
+}
+
+impl From<DirectoryWire> for Directory {
+    fn from(d: DirectoryWire) -> Self {
+        let mut out = Directory { id: d.id, name: d.name, ..Default::default() };
+        for c in d.child {
+            if c.get("isDir").and_then(|v| v.as_bool()).unwrap_or(false) {
+                if let Ok(mut a) = serde_json::from_value::<Artist>(c.clone()) {
+                    if a.name.is_empty() {
+                        a.name = c.get("title").and_then(|t| t.as_str()).unwrap_or_default().to_string();
+                    }
+                    out.folders.push(a);
+                }
+            } else if let Ok(s) = serde_json::from_value::<Song>(c) {
+                out.songs.push(s);
+            }
+        }
+        out
+    }
+}
+
+impl From<QueueWire> for PlayQueue {
+    fn from(q: QueueWire) -> Self {
+        let current = q.current.map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()));
+        let index = current.and_then(|c| q.entry.iter().position(|s| s.id == c)).unwrap_or(0) as u32;
+        PlayQueue { songs: q.entry, index, position_ms: q.position, origin: None }
+    }
 }
 
 #[cfg_attr(feature = "ffi", derive(uniffi::Object))]
 pub struct Core {
-    /// Shared with nori-db's active database while this is the newest core ([`nori_db::active`]).
+    /// Also its session's profile database while this is the newest core.
     db: Arc<Mutex<Connection>>,
     server: RwLock<api::Server>,
-    /// The downloads table's ids, for asking about one song without the database (transfers.rs); shared
-    /// with nori-transfers' active downloads while this is the newest core.
-    held: Arc<Mutex<transfers::Held>>,
-    /// This core's "For you" row (mixes/board.rs).
+    /// The downloads table in memory and the platform's download reports (transfers.rs).
+    downloads: Arc<transfers::Downloads>,
+    /// The "For you" row (mixes/board.rs).
     board: Mutex<mixes::board::Board>,
-    /// This session's star changes on this server (library.rs `star`), laid over its favourites.
+    /// This session's star changes, overlaid on the server's favourites.
     stars: Mutex<stars::StarMarks>,
+    /// The queue this core saves and restores and its clients fill.
+    pub session: Arc<nori_queue::Session>,
+}
+
+impl Core {
+    /// [`Core::new`] over `session`'s queue.
+    pub fn open(db_path: String, server: String, session: Arc<nori_queue::Session>) -> Result<Arc<Self>> {
+        let db = db::open(&db_path, &server)?;
+        session.settings.model.set_home(&db_path);
+        let db = Arc::new(Mutex::new(db));
+        let core = Arc::new(Core {
+            downloads: Arc::new(transfers::Downloads::load(&db)?),
+            db,
+            server: RwLock::new(api::Server::default()),
+            board: Mutex::new(mixes::board::Board::default()),
+            stars: Mutex::new(stars::StarMarks::default()),
+            session,
+        });
+        core.session.db.set(&core.db);
+        core.downloads.activate();
+        Ok(core)
+    }
+
+    /// The downloads table in memory and the progress of their work.
+    pub fn transfers(&self) -> &transfers::Downloads {
+        &self.downloads
+    }
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Core {
-    /// The app's database at `db_path` (empty: in memory), for `server`'s rows (a server profile's id).
+    /// Opens the database at `db_path` (empty: in memory) for server profile `server`, and makes this the
+    /// active core.
     #[cfg_attr(feature = "ffi", uniffi::constructor)]
     pub fn new(db_path: String, server: String) -> Result<Arc<Self>> {
-        let db = db::open(&db_path, &server)?;
-        nori_automix::beat_model::set_home(&db_path);
-        let held = transfers::Held::load(&db)?;
-        transfers::set_beats_wanted(transfers::beats_wanted_rows(&db)?);
-        let core =Arc::new(Core {
-            db: Arc::new(Mutex::new(db)),
-            server: RwLock::new(api::Server::default()),
-            held: Arc::new(Mutex::new(held)),
-            board: Mutex::new(mixes::board::Board::default()),
-            stars: Mutex::new(stars::StarMarks::default()),
-        });
-        // The newest core is the one the app is using: the parts of the core that run without Kotlin (the
-        // transition planner on the audio thread, analyses finished in the background, a song asked
-        // about by a list row) find its database and its downloads through these.
-        *ACTIVE.lock() = Arc::downgrade(&core);
-        nori_db::set_active(&core.db);
-        transfers::set_active_held(&core.held);
-        Ok(core)
+        Core::open(db_path, server, nori_queue::shared().clone())
     }
 
-    /// Returns the normalised base url. Each server profile has its own rows, so the index is only
-    /// dropped when the same profile is pointed at a different server or user.
+    /// Sets the server; returns the normalised base url. Clears the library when the profile now points
+    /// at another server or user.
     pub fn configure(&self, config: ServerConfig) -> Result<String> {
-        let auth = match (&config.api_key, config.legacy_auth) {
-            (Some(k), _) if !k.is_empty() => api::Auth::ApiKey(k),
-            (_, true) => api::Auth::Legacy { user: &config.user, password: &config.password },
-            _ => api::Auth::Token { user: &config.user, password: &config.password },
-        };
-        let s = api::Server::with(&config.url, auth);
+        let s = config.server();
         let ident = format!("{}|{}", s.base, config.user);
         let db = self.db.lock();
         if db::kv_get(&db, "server")?.as_deref() != Some(&ident) {
@@ -345,26 +433,20 @@ impl Core {
         self.server.read().url(&endpoint, &p)
     }
 
-    /// Signed url of `endpoint` with no parameters; callers that build many urls (cover art, per list row)
-    /// append `&id=..` themselves instead of crossing the FFI for each one.
+    /// Signed url of `endpoint` without parameters, for callers appending `&id=..` per row.
     pub fn url_prefix(&self, endpoint: String) -> String {
         self.server.read().url(&endpoint, &[])
     }
 
-    /// `max_bit_rate` 0 and empty `format` mean the original file. A transcode is an ffmpeg pipe
-    /// with no byte length, which the player reads as unseekable (dead scrub, frozen notification
-    /// progress); `estimateContentLength` makes the server declare duration x bitrate so seeks work.
+    /// `max_bit_rate` 0 and empty `format` mean the original file. A transcode comes without a length:
+    /// with `estimateContentLength`, Navidrome cuts one that comes out larger than its estimate.
     pub fn stream_url(&self, id: String, max_bit_rate: u32, format: String) -> String {
-        let transcode = max_bit_rate > 0 || !format.is_empty();
         let mut p = vec![("id".to_string(), id)];
         if max_bit_rate > 0 {
             p.push(("maxBitRate".into(), max_bit_rate.to_string()));
         }
         if !format.is_empty() {
             p.push(("format".into(), format));
-        }
-        if transcode {
-            p.push(("estimateContentLength".into(), "true".to_string()));
         }
         self.server.read().url("stream", &p)
     }
@@ -377,10 +459,6 @@ impl Core {
         self.server.read().url("getCoverArt", &p)
     }
 
-    // ---- parsing; library items seen on the way are indexed ----
-
-    // ---- local index ----
-
     pub fn local_search(&self, query: String, limit: u32) -> Result<SearchResult> {
         Ok(db::search(&self.db.lock(), &query, limit)?)
     }
@@ -389,10 +467,6 @@ impl Core {
         let c = self.db.lock();
         Ok(IngestStats { artists: db::count(&c, db::ARTIST)?, albums: db::count(&c, db::ALBUM)?, songs: db::count(&c, db::SONG)? })
     }
-
-    // ---- response cache (stale-while-revalidate is driven from Kotlin) ----
-
-    // ---- play queue, survives process death ----
 
     pub fn save_queue(&self, queue: PlayQueue) -> Result<()> {
         self.save_queue_with_runs(queue, Vec::new())
@@ -405,55 +479,49 @@ impl Core {
             songs: Vec<Song>,
             index: u32,
             position: u64,
-            /// Read on its own, so an origin this version does not know loses only itself, not the queue.
+            /// Parsed separately so an unknown origin kind loses only the origin.
             origin: serde_json::Value,
-            /// Each song's album run (nori-player `Playlist::album_runs`); none in a queue saved before them.
+            /// Album run per song (`Playlist::album_runs`).
             runs: serde_json::Value,
         }
         let q: Q = db::kv_get(&self.db.lock(), "queue")?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
-        // A saved queue that points past its end plays its last song.
         let index = q.index.min(q.songs.len().saturating_sub(1) as u32);
-        // Kept for the queue it is about to become, so the platform does not hand the songs straight back.
-        crate::queue::queue_register(q.songs.clone());
+        self.session.register(q.songs.clone());
         let origin = serde_json::from_value::<Option<crate::PageOrigin>>(q.origin).ok().flatten();
-        // Its album runs, for the queue it is about to become (nori-queue `playlist_set` takes them).
         let runs = serde_json::from_value::<Vec<u32>>(q.runs).unwrap_or_default();
-        crate::playlist::playlist_put_back_runs(q.songs.iter().map(|s| s.id.clone()).collect(), runs);
+        self.session.put_back_runs(q.songs.iter().map(|s| s.id.clone()).collect(), runs);
         Ok(PlayQueue { songs: q.songs, index, position_ms: q.position, origin })
     }
 
-    // ---- writes made while offline (stars, ratings, playlist edits, scrobbles), replayed in order ----
-
-    /// The "all songs" list: a sorted, optionally filtered page of the index. `sort` is one of
-    /// title, artist, album, year, duration, created, playCount, userRating; anything else means index order.
+    /// A sorted, filtered page of indexed songs. `sort`: title, artist, album, year, duration, created,
+    /// playCount or userRating; anything else is index order.
     pub fn browse_songs(&self, sort: String, descending: bool, starred_only: bool, year_from: u32, year_to: u32, offset: u32, limit: u32) -> Result<Vec<Song>> {
         let key = match sort.as_str() {
             "title" | "artist" | "album" => format!("json_extract(json, '$.{sort}') COLLATE NOCASE"),
             "year" | "duration" | "created" | "playCount" | "userRating" => format!("json_extract(json, '$.{sort}')"),
             _ => "rowid".to_string(),
         };
-        let mut sql = String::from("SELECT json FROM items WHERE server=sid() AND kind=?1");
+        // The song kind written out, so the songs' sort indexes (db.rs) serve the order a page at a time.
+        let mut sql = format!("SELECT json FROM items WHERE server=sid() AND kind={}", db::SONG);
         if starred_only {
             sql.push_str(" AND json_extract(json, '$.starred') = 1");
         }
         if year_to > 0 {
-            sql.push_str(" AND json_extract(json, '$.year') BETWEEN ?4 AND ?5");
+            sql.push_str(" AND json_extract(json, '$.year') BETWEEN ?3 AND ?4");
         }
-        sql.push_str(&format!(" ORDER BY {key} {} LIMIT ?3 OFFSET ?2", if descending { "DESC" } else { "ASC" }));
+        sql.push_str(&format!(" ORDER BY {key} {} LIMIT ?2 OFFSET ?1", if descending { "DESC" } else { "ASC" }));
         let c = self.db.lock();
         let mut st = c.prepare_cached(&sql)?;
         let map = |r: &rusqlite::Row| r.get::<_, String>(0);
         let rows: Vec<String> = if year_to > 0 {
-            st.query_map(params![db::SONG, offset, limit, year_from, year_to], map)?.filter_map(|r| r.ok()).collect()
+            st.query_map(params![offset, limit, year_from, year_to], map)?.filter_map(|r| r.ok()).collect()
         } else {
-            st.query_map(params![db::SONG, offset, limit], map)?.filter_map(|r| r.ok()).collect()
+            st.query_map(params![offset, limit], map)?.filter_map(|r| r.ok()).collect()
         };
         Ok(rows.iter().filter_map(|j| serde_json::from_str(j).ok()).collect())
     }
 
-    // ---- downloads: the metadata side; media3 owns the bytes. Songs are queued by transfers.rs ----
-
-    /// The ids alone of [`Self::downloads`], in the same order: for walking them without the songs.
+    /// The ids of [`Self::downloads`], same order.
     pub fn download_ids(&self, done: bool) -> Result<Vec<String>> {
         let c = self.db.lock();
         let mut st = c.prepare_cached("SELECT id FROM downloads WHERE server=sid() AND done=?1 ORDER BY ts DESC")?;
@@ -468,8 +536,6 @@ impl Core {
         Ok(rows.filter_map(|j| serde_json::from_str(&j.ok()?).ok()).collect())
     }
 
-    // ---- AutoEQ headphone database (kept by `Client::autoeq_update`, see profiles.rs) ----
-
     pub fn autoeq_search(&self, query: String, limit: u32) -> Result<Vec<AutoEqEntry>> {
         Ok(autoeq::search(&self.db.lock(), &query, limit)?)
     }
@@ -477,8 +543,6 @@ impl Core {
     pub fn autoeq_count(&self) -> Result<u32> {
         Ok(autoeq::count(&self.db.lock())?)
     }
-
-    // ---- saved sound profiles ----
 
     pub fn profiles(&self) -> Result<Vec<SoundProfile>> {
         let c = self.db.lock();
@@ -498,8 +562,6 @@ impl Core {
         Ok(())
     }
 
-    // ---- search history ----
-
     pub fn search_history(&self) -> Result<Vec<String>> {
         let c = self.db.lock();
         let mut st = c.prepare_cached("SELECT query FROM searches WHERE server=sid() ORDER BY ts DESC")?;
@@ -513,162 +575,38 @@ impl Core {
     }
 }
 
-/// Asked only in Rust, so not exported to Kotlin.
 impl Core {
-    /// [`Core::save_queue`], with each song's album run (nori-player `Playlist::album_runs`, one per song),
-    /// so a queue put back keeps which of its songs are an album played as one.
+    /// [`Core::save_queue`] with each song's album run (dropped unless one per song).
     pub(crate) fn save_queue_with_runs(&self, queue: PlayQueue, runs: Vec<u32>) -> Result<()> {
-        let runs = (runs.len() == queue.songs.len()).then_some(runs).unwrap_or_default();
+        let runs = if runs.len() == queue.songs.len() { runs } else { Vec::new() };
         let json = serde_json::json!({ "songs": queue.songs, "index": queue.index, "position": queue.position_ms, "origin": queue.origin, "runs": runs });
         Ok(db::kv_put(&self.db.lock(), "queue", &json.to_string())?)
     }
 
     /// Points requests at another address of the same server (LAN vs WAN) without touching the index.
-    pub fn use_address(&self, url: String) {
+    pub(crate) fn use_address(&self, url: String) {
         let next = self.server.read().rebased(&url);
         *self.server.write() = next;
     }
 
-    /// getIndexes: the top of the folder tree.
-    pub fn parse_indexes(&self, body: Vec<u8>) -> Result<Vec<Artist>> {
-        Ok(parse(&body)?.indexes.unwrap_or_default().index.into_iter().flat_map(|i| i.artist).collect())
-    }
-
-    pub fn parse_directory(&self, body: Vec<u8>) -> Result<Directory> {
-        let d = parse(&body)?.directory.unwrap_or_default();
-        let mut out = Directory { id: d.id, name: d.name, ..Default::default() };
-        for c in d.child {
-            if c.get("isDir").and_then(|v| v.as_bool()).unwrap_or(false) {
-                if let Ok(mut a) = serde_json::from_value::<Artist>(c.clone()) {
-                    if a.name.is_empty() {
-                        a.name = c.get("title").and_then(|t| t.as_str()).unwrap_or_default().to_string();
-                    }
-                    out.folders.push(a);
-                }
-            } else if let Ok(s) = serde_json::from_value::<Song>(c) {
-                out.songs.push(s);
-            }
-        }
-        Ok(out)
-    }
-
-    pub fn parse_music_folders(&self, body: Vec<u8>) -> Result<Vec<MusicFolder>> {
-        Ok(parse(&body)?.music_folders.unwrap_or_default().music_folder)
-    }
-
     /// Validates any response; used for ping and for calls with no payload.
-    pub fn parse_status(&self, body: Vec<u8>) -> Result<ServerInfo> {
-        let r = parse(&body)?;
-        Ok(ServerInfo { version: r.version, server_type: r.kind, server_version: r.server_version, open_subsonic: r.open_subsonic })
+    pub(crate) fn parse_status(&self, body: Vec<u8>) -> Result<ServerInfo> {
+        Ok(parse(&body)?.into())
     }
 
     pub fn parse_search(&self, body: Vec<u8>) -> Result<SearchResult> {
-        let f = parse(&body)?.search_result3.unwrap_or_default();
-        db::index(&mut self.db.lock(), &f.artist, &f.album, &f.song)?;
-        Ok(SearchResult { artists: f.artist, albums: f.album, songs: f.song })
+        Ok(parse(&body)?.search_result3.unwrap_or_default().into())
     }
 
-    /// Library sync: index a search3 page without sending it back over the FFI.
-    pub fn ingest_search(&self, body: Vec<u8>) -> Result<IngestStats> {
+    /// Library sync: indexes a search3 page and returns its counts, not its items.
+    pub(crate) fn ingest_search(&self, body: Vec<u8>) -> Result<IngestStats> {
         let f = parse(&body)?.search_result3.unwrap_or_default();
         let mut st = db::index(&mut self.db.lock(), &f.artist, &f.album, &f.song)?;
-        // Callers page until a page comes back empty, so report what was seen, not what changed.
+        // Counts seen, not changed: callers page until an empty page.
         st.artists = f.artist.len() as u32;
         st.albums = f.album.len() as u32;
         st.songs = f.song.len() as u32;
         Ok(st)
-    }
-
-    pub fn parse_starred(&self, body: Vec<u8>) -> Result<Starred> {
-        let f = parse(&body)?.starred2.unwrap_or_default();
-        db::index(&mut self.db.lock(), &f.artist, &f.album, &f.song)?;
-        Ok(Starred::new(f.artist, f.album, f.song))
-    }
-
-    pub fn parse_album(&self, body: Vec<u8>) -> Result<AlbumDetail> {
-        let a = parse(&body)?.album.unwrap_or_default();
-        db::index(&mut self.db.lock(), &[], std::slice::from_ref(&a.album), &a.song)?;
-        Ok(AlbumDetail::new(a.album, a.song, a.disc_titles))
-    }
-
-    pub fn parse_artist(&self, body: Vec<u8>) -> Result<ArtistDetail> {
-        let a = parse(&body)?.artist.unwrap_or_default();
-        db::index(&mut self.db.lock(), std::slice::from_ref(&a.artist), &a.album, &[])?;
-        Ok(ArtistDetail::new(a.artist, a.album))
-    }
-
-    pub fn parse_artist_info(&self, body: Vec<u8>) -> Result<ArtistInfo> {
-        let i = parse(&body)?.artist_info2.unwrap_or_default();
-        Ok(ArtistInfo {
-            biography: i.biography.filter(|b| !b.trim().is_empty()),
-            image_url: i.large_image_url.or(i.medium_image_url).filter(|u| !u.is_empty()),
-            similar: i.similar_artist,
-            last_fm_url: i.last_fm_url.filter(|u| u.starts_with("http")),
-            music_brainz_id: i.music_brainz_id.filter(|m| !m.is_empty()),
-        })
-    }
-
-    pub fn parse_album_list(&self, body: Vec<u8>) -> Result<Vec<Album>> {
-        let l = parse(&body)?.album_list2.unwrap_or_default().album;
-        db::index(&mut self.db.lock(), &[], &l, &[])?;
-        Ok(l)
-    }
-
-    pub fn parse_artists(&self, body: Vec<u8>) -> Result<Vec<Artist>> {
-        let l: Vec<Artist> = parse(&body)?.artists.unwrap_or_default().index.into_iter().flat_map(|i| i.artist).collect();
-        db::index(&mut self.db.lock(), &l, &[], &[])?;
-        Ok(l)
-    }
-
-    /// randomSongs, songsByGenre, similarSongs2, topSongs and getSong all land here.
-    pub fn parse_songs(&self, body: Vec<u8>) -> Result<Vec<Song>> {
-        let r = parse(&body)?;
-        let l = r
-            .random_songs
-            .or(r.songs_by_genre)
-            .or(r.similar_songs2)
-            .or(r.top_songs)
-            .map(|s| s.song)
-            .or(r.song.map(|s| vec![s]))
-            .unwrap_or_default();
-        db::index(&mut self.db.lock(), &[], &[], &l)?;
-        Ok(l)
-    }
-
-    pub fn parse_playlists(&self, body: Vec<u8>) -> Result<Vec<Playlist>> {
-        Ok(parse(&body)?.playlists.unwrap_or_default().playlist)
-    }
-
-    pub fn parse_playlist(&self, body: Vec<u8>) -> Result<PlaylistDetail> {
-        let p = parse(&body)?.playlist.unwrap_or_default();
-        db::index(&mut self.db.lock(), &[], &[], &p.entry)?;
-        Ok(PlaylistDetail::new(p.playlist, p.entry))
-    }
-
-    pub fn parse_genres(&self, body: Vec<u8>) -> Result<Vec<Genre>> {
-        let mut g = parse(&body)?.genres.unwrap_or_default().genre;
-        g.sort_by(|a, b| b.song_count.cmp(&a.song_count));
-        Ok(g)
-    }
-
-    pub fn parse_radio(&self, body: Vec<u8>) -> Result<Vec<RadioStation>> {
-        Ok(parse(&body)?.internet_radio_stations.unwrap_or_default().station)
-    }
-
-    /// Synced lyrics win over plain ones; words are timed from the server's cues or estimated (see lyrics.rs).
-    pub fn parse_lyrics(&self, body: Vec<u8>) -> Result<Lyrics> {
-        Ok(lyrics::build(parse(&body)?.lyrics_list.unwrap_or_default().structured_lyrics))
-    }
-
-    pub fn parse_share(&self, body: Vec<u8>) -> Result<String> {
-        parse(&body)?.shares.and_then(|s| s.share.into_iter().next()).map(|s| s.url).filter(|u| !u.is_empty()).ok_or(CoreError::Parse { reason: "no share in response".into() })
-    }
-
-    pub fn parse_play_queue(&self, body: Vec<u8>) -> Result<PlayQueue> {
-        let q = parse(&body)?.play_queue.unwrap_or_default();
-        let current = q.current.map(|v| v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string()));
-        let index = current.and_then(|c| q.entry.iter().position(|s| s.id == c)).unwrap_or(0) as u32;
-        Ok(PlayQueue { songs: q.entry, index, position_ms: q.position, origin: None })
     }
 
     pub fn cache_get(&self, key: String) -> Result<Option<Vec<u8>>> {
@@ -677,8 +615,8 @@ impl Core {
         Ok(st.query_row([key], |r| r.get(0)).optional()?)
     }
 
-    /// True when `key` was stored less than `max_age_ms` ago: the caller can skip asking the server again.
-    pub fn cache_fresh(&self, key: String, max_age_ms: i64) -> Result<bool> {
+    /// Whether `key` was stored less than `max_age_ms` ago.
+    pub(crate) fn cache_fresh(&self, key: String, max_age_ms: i64) -> Result<bool> {
         let c = self.db.lock();
         let ts: Option<i64> = c.prepare_cached("SELECT ts FROM cache WHERE server=sid() AND key=?1")?.query_row([key], |r| r.get(0)).optional()?;
         Ok(ts.is_some_and(|t| db::now_ms() - t < max_age_ms))
@@ -690,20 +628,29 @@ impl Core {
         Ok(())
     }
 
-    /// Drops cached responses whose key starts with `prefix` (after a write to the server).
-    pub fn cache_evict(&self, prefix: String) -> Result<()> {
+    /// Drops cached responses whose key starts with `prefix`.
+    pub(crate) fn cache_evict(&self, prefix: String) -> Result<()> {
         let c = self.db.lock();
         c.execute("DELETE FROM cache WHERE server=sid() AND key >= ?1 AND key < ?1 || x'ff'", [prefix])?;
         Ok(())
     }
 
-    pub fn pending_add(&self, endpoint: String, params: Vec<Param>) -> Result<()> {
-        let json = serde_json::to_string(&params.iter().map(|p| (&p.key, &p.value)).collect::<Vec<_>>()).unwrap_or_default();
+    pub(crate) fn pending_add(&self, endpoint: &str, params: &[(String, String)]) -> Result<()> {
+        let json = serde_json::to_string(params).unwrap_or_default();
         self.db.lock().execute("INSERT INTO pending(server, endpoint, params) VALUES(sid(), ?1, ?2)", params![endpoint, json])?;
         Ok(())
     }
 
-    pub fn pending_list(&self) -> Result<Vec<PendingCall>> {
+    pub(crate) fn cache_drop(&self, key: &str) -> Result<()> {
+        self.db.lock().execute("DELETE FROM cache WHERE server=sid() AND key=?1", [key])?;
+        Ok(())
+    }
+
+    pub(crate) fn pending_any(&self) -> Result<bool> {
+        Ok(self.db.lock().query_row("SELECT EXISTS(SELECT 1 FROM pending WHERE server=sid())", [], |r| r.get(0))?)
+    }
+
+    pub(crate) fn pending_list(&self) -> Result<Vec<PendingCall>> {
         let c = self.db.lock();
         let mut st = c.prepare_cached("SELECT rowid, endpoint, params FROM pending WHERE server=sid() ORDER BY rowid LIMIT 200")?;
         let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
@@ -711,12 +658,12 @@ impl Core {
             .filter_map(|r| r.ok())
             .map(|(row_id, endpoint, json)| {
                 let pairs: Vec<(String, String)> = serde_json::from_str(&json).unwrap_or_default();
-                PendingCall { row_id, endpoint, params: pairs.into_iter().map(|(key, value)| Param { key, value }).collect() }
+                PendingCall { row_id, endpoint, params: pairs }
             })
             .collect())
     }
 
-    pub fn pending_done(&self, row_id: i64) -> Result<()> {
+    pub(crate) fn pending_done(&self, row_id: i64) -> Result<()> {
         self.db.lock().execute("DELETE FROM pending WHERE server=sid() AND rowid=?1", [row_id])?;
         Ok(())
     }
@@ -725,9 +672,8 @@ impl Core {
         self.download_settle(vec![id], vec![false])
     }
 
-    /// The curves measured for the headphones behind an output device's own name (a Bluetooth name, a USB
-    /// product name), best first; empty when the name says nothing or the index is not downloaded.
-    pub fn autoeq_for_device(&self, device: String, limit: u32) -> Result<Vec<AutoEqEntry>> {
+    /// AutoEQ curves matching an output device name, best first.
+    pub(crate) fn autoeq_for_device(&self, device: String, limit: u32) -> Result<Vec<AutoEqEntry>> {
         Ok(autoeq::matching(&self.db.lock(), &device, limit)?)
     }
 
@@ -738,9 +684,8 @@ impl Core {
         Ok(())
     }
 
-    /// Binds [output] to the profile [name] and to no other; None leaves it bound to nothing. One device has
-    /// one sound, whichever side of the settings it was chosen from.
-    pub fn profile_bind(&self, output: String, name: Option<String>) -> Result<()> {
+    /// Binds `output` to profile `name` only (None: unbinds it).
+    pub(crate) fn profile_bind(&self, output: String, name: Option<String>) -> Result<()> {
         let mut c = self.db.lock();
         let tx = c.transaction()?;
         let rows: Vec<(String, String)> = {
@@ -762,9 +707,9 @@ impl Core {
         Ok(())
     }
 
-    /// The profile bound to [output], if any: what to apply when that device becomes the active one.
-    pub fn profile_for_output(&self, output: String) -> Result<Option<SoundProfile>> {
-        Ok(self.profiles()?.into_iter().find(|p| p.outputs.iter().any(|o| *o == output)))
+    /// The profile bound to `output`, if any.
+    pub(crate) fn profile_for_output(&self, output: String) -> Result<Option<SoundProfile>> {
+        Ok(self.profiles()?.into_iter().find(|p| p.outputs.contains(&output)))
     }
 
     pub fn search_remember(&self, query: String) -> Result<()> {
@@ -775,11 +720,10 @@ impl Core {
     }
 }
 
-/// Only the tests settle one download this way; the app settles them in batches (`download_settle`).
 #[cfg(test)]
 impl Core {
-    /// A queued song finished; [downloads] with `done` lists it from now on.
-    pub fn download_done(&self, id: String) -> Result<()> {
+    /// Marks one queued download finished.
+    pub(crate) fn download_done(&self, id: String) -> Result<()> {
         self.download_settle(vec![id], vec![true])
     }
 }

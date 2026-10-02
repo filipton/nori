@@ -1,14 +1,9 @@
-//! Moving covers: an album's motion artwork in Apple Music's catalogue, a short looping video of the
-//! cover, found for the player's sleeve (Settings, Look: off by default, under "Look things up online").
-//! The requests go through the client's transport, the answers are kept in the response cache, and the
-//! platform only plays the video it is handed ([`Client::motion_video`]).
+//! Moving covers: an album's looping motion artwork from Apple Music's catalogue (opt-in setting).
 //!
-//! The way there is three steps. The public iTunes Search API finds the album's catalogue id by artist
-//! and title ([motion_album_candidates]). Apple's catalogue API, which its own web player reads with a
-//! developer token it hands every visitor ([motion_bundle_paths], [motion_token]), answers the album
-//! with its `editorialVideo` ([motion_square_video]). None of these shapes is documented by Apple for
-//! this use: they are what the search API and the web player were seen to send in 2026. A change on
-//! their side comes out here as no candidates, no token or a parse error - never as a wrong video.
+//! The iTunes Search API finds the catalogue id ([motion_album_candidates]); the catalogue API, read with
+//! the developer token Apple's web player ships ([motion_bundle_paths], [motion_token]), returns the
+//! album's `editorialVideo` ([motion_square_video]). These shapes are undocumented (observed in 2026);
+//! a change yields no result or a parse error, never a wrong video. Answers go in the response cache.
 
 use std::time::{Duration, Instant};
 
@@ -25,8 +20,7 @@ fn unreadable(what: &str) -> CoreError {
     CoreError::Parse { reason: format!("motion artwork: {what}") }
 }
 
-/// One accented Latin letter to its plain one, for the letters a tag is most often typed without.
-/// Lowercase only: [norm] lowers first.
+/// Strips the accent from a lowercase Latin letter.
 fn fold(c: char) -> char {
     match c {
         'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => 'a',
@@ -49,8 +43,7 @@ fn fold(c: char) -> char {
     }
 }
 
-/// Lowercase words and nothing else: accents folded, apostrophes dropped inside a word (so "Don't"
-/// and "Dont" agree), `&` read as "and", and every other run of punctuation one space.
+/// Lowercase words: accents folded, apostrophes dropped, `&` as "and", other punctuation runs as one space.
 fn norm(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut gap = false;
@@ -77,8 +70,7 @@ fn norm(s: &str) -> String {
     out
 }
 
-/// A title without what editions add to it: anything in brackets, and a trailing " - Single",
-/// " - EP", " - Deluxe Edition" and the like, which is how the iTunes store names them.
+/// [norm]ed title without bracketed parts and trailing edition suffixes (" - Single", " - Deluxe Edition").
 fn base(s: &str) -> String {
     let mut plain = String::with_capacity(s.len());
     let mut depth = 0u32;
@@ -106,7 +98,7 @@ fn base(s: &str) -> String {
     norm(title)
 }
 
-/// Everyone credited, one name each: "A feat. B", "A & B", "A, B", "A x B".
+/// The credited names in "A feat. B", "A & B", "A, B", "A x B" and the like.
 fn credited(s: &str) -> Vec<String> {
     let lower = s.to_lowercase();
     let mut parts = vec![lower.as_str()];
@@ -116,8 +108,7 @@ fn credited(s: &str) -> Vec<String> {
     parts.into_iter().map(norm).filter(|p| !p.is_empty()).collect()
 }
 
-/// Same artist: the same name, or the first one credited on either side is credited on the other.
-/// Returns how sure: 2 for the same name, 1 for a shared credit, 0 for someone else.
+/// 2 for the same artist name, 1 when either side's first credit appears on the other, else 0.
 fn artist_match(want: &str, hit: &str) -> u8 {
     let (w, h) = (norm(want), norm(hit));
     if w.is_empty() || h.is_empty() {
@@ -131,16 +122,11 @@ fn artist_match(want: &str, hit: &str) -> u8 {
     u8::from(shared)
 }
 
-/// The catalogue ids worth asking about, best first, from an iTunes Search API answer
-/// (`/search?entity=album`). A hit must be by the same artist and carry the same title; one whose
-/// title only agrees once edition words are taken off ("Better" against "Better - Single", an album
-/// against its deluxe edition) must also have about as many songs, or the same year when the count is
-/// not known, because a single or a reissue can have a different cover and so a different video - and
-/// a video that is not this cover is worse than none. What is left is ranked by track count and year.
-///
-/// An answer that is not the search API's JSON is an error, so that the caller does not remember
-/// "no motion artwork" for what was really a failed request.
-pub fn motion_album_candidates(json: String, artist: String, album: String, tracks: u32, year: u32) -> Result<Vec<String>> {
+/// Up to three catalogue ids from an iTunes Search answer, best first. Hits need the same artist and
+/// title; a title matching only without edition words also needs a close track count (or year if the
+/// count is unknown), since another edition may have a different cover. Ranked by track count and
+/// year. A non-search answer is an error, so a failed request is not cached as "none".
+pub(crate) fn motion_album_candidates(json: String, artist: String, album: String, tracks: u32, year: u32) -> Result<Vec<String>> {
     let v: Value = serde_json::from_str(&json).map_err(|e| unreadable(&e.to_string()))?;
     let results = v.get("results").and_then(Value::as_array).ok_or_else(|| unreadable("no results list"))?;
     let (want_exact, want_base) = (norm(&album), base(&album));
@@ -198,19 +184,14 @@ pub fn motion_album_candidates(json: String, artist: String, album: String, trac
             ranked.push((score, order, id));
         }
     }
-    // Highest score first; among equals, the order the search itself gave.
+    // By score, then search order.
     ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     Ok(ranked.into_iter().take(3).map(|(_, _, id)| id).collect())
 }
 
-/// The square motion artwork's HLS playlist from a catalogue album answer
-/// (`/v1/catalog/{storefront}/albums/{id}?extend=editorialVideo`), or None when the album has none.
-///
-/// Square, and only square. The still cover is square and the sleeve shows it cropped at the sides, so
-/// the square video lines up with it pixel for pixel and the fade between them shows no shift. The
-/// tall one (3:4) is nearly the sleeve's own shape, but it is a different framing of the artwork, not
-/// the square with more round it, so it cannot be laid over the still cover.
-pub fn motion_square_video(json: String) -> Result<Option<String>> {
+/// The square motion video's HLS URL from a catalogue album answer; None if the album has none. Only the
+/// square one aligns with the still cover; the tall one is a different framing.
+pub(crate) fn motion_square_video(json: String) -> Result<Option<String>> {
     let v: Value = serde_json::from_str(&json).map_err(|e| unreadable(&e.to_string()))?;
     let album = v.get("data").and_then(Value::as_array).and_then(|d| d.first()).ok_or_else(|| unreadable("no album in the answer"))?;
     let Some(video) = album.get("attributes").and_then(|a| a.get("editorialVideo")) else {
@@ -223,21 +204,19 @@ pub fn motion_square_video(json: String) -> Result<Option<String>> {
     Ok(url.map(str::to_string))
 }
 
-/// The scripts on a page of Apple's web player that may carry its token: `/assets/index…js`, in the
-/// order the page names them, each once.
-pub fn motion_bundle_paths(html: String) -> Vec<String> {
+/// The `/assets/index…js` script paths in a web player page, in order, deduplicated.
+pub(crate) fn motion_bundle_paths(html: String) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut rest = html.as_str();
     while let Some(at) = rest.find("/assets/") {
         rest = &rest[at..];
         let end = rest.find(|c: char| c == '"' || c == '\'' || c == '<' || c == '>' || c == '(' || c == ')' || c.is_whitespace()).unwrap_or(rest.len());
         let path = &rest[..end];
-        // Straight under /assets/: "/assets/vendor.js/assets/index.js" is two paths run together.
+        // Directly under /assets/ ("/assets/vendor.js/assets/index.js" is two paths).
         let file = &path["/assets/".len()..];
         if !file.contains('/') && file.starts_with("index") && file.ends_with(".js") && !out.iter().any(|p| p == path) {
             out.push(path.to_string());
         }
-        // Past the "/assets/" just looked at, whatever came of it.
         rest = &rest["/assets/".len()..];
     }
     out
@@ -268,11 +247,9 @@ fn b64(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// The developer token in one of the web player's scripts: a JWT whose payload names the web player
-/// as its issuer (`"iss":"AMPWebPlay"`), or failing that any readable JWT, and in either case one that
-/// has not expired by [now_s] (seconds since 1970) plus a minute. The scripts carry other JWTs, and
-/// those are refused by the catalogue, which is why the issuer decides.
-pub fn motion_token(js: Vec<u8>, now_s: i64) -> Option<String> {
+/// The web player's developer token in a script: a JWT unexpired for another minute at `now_s`, issued
+/// by `AMPWebPlay` if any (other JWTs are refused by the catalogue), else the first readable one.
+pub(crate) fn motion_token(js: Vec<u8>, now_s: i64) -> Option<String> {
     let mut fallback: Option<String> = None;
     let mut i = 0;
     while i + 3 <= js.len() {
@@ -286,7 +263,7 @@ pub fn motion_token(js: Vec<u8>, now_s: i64) -> Option<String> {
             dots += usize::from(js[end] == b'.');
             end += 1;
         }
-        // Every byte taken above is ASCII.
+        // ASCII by construction.
         let token = std::str::from_utf8(&js[i..end]).unwrap_or_default();
         i = end.max(i + 1);
         let parts: Vec<&str> = token.split('.').collect();
@@ -308,48 +285,39 @@ pub fn motion_token(js: Vec<u8>, now_s: i64) -> Option<String> {
     fallback
 }
 
-// ---- playing one ----------------------------------------------------------------------------------------
-
-/// How much of a moving cover its player holds, as media3's `DefaultLoadControl` takes it: min and max
-/// buffer (ms), buffer for playback, buffer after a rebuffer, and a byte cap. Left to media3's defaults,
-/// a looping video is buffered 50 s ahead - several passes of the loop, at up to 1080 px, in the Java
-/// heap - which was the largest part of the app's memory while the player was open. The loop comes out
-/// of the moving-cover cache on disk, so a few seconds ahead is plenty and costs no network.
+/// media3 `DefaultLoadControl` for the motion video player: [min ms, max ms, playback ms, rebuffer ms,
+/// byte cap]. The defaults buffer 50 s of video in the Java heap; the loop comes from disk anyway.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn motion_load_control() -> Vec<i64> {
     vec![4_000, 8_000, 1_000, 2_000, 4 * 1024 * 1024]
 }
 
-// ---- finding one ----------------------------------------------------------------------------------------
-
-/// One storefront for all of it, the largest. Catalogue ids and their motion artwork are found the same
-/// way from any country, and a device's own region is not always a store Apple has.
+/// Storefront for all lookups (the device region may have no store).
 const STORE: &str = "us";
-/// What the web player's token is kept under, so a restart does not look for it again.
+/// Cache key of the web player token.
 const TOKEN_KEY: &str = "motiontoken|";
-/// "No moving cover" is asked again after a week: Apple adds them to old albums.
+/// How long "no motion video" is cached (Apple adds them to old albums).
 const NONE_KEPT_MS: i64 = 7 * 24 * 3_600_000;
-/// Finding the token reads a script of megabytes; after a failure it is not tried again for this long.
+/// Retry delay after failing to find the token (it means reading megabytes of script).
 const TOKEN_RETRY: Duration = Duration::from_secs(30 * 60);
-/// Each request may take this long.
+/// Per-request timeout.
 const REQUEST_MS: u32 = 10_000;
 
-/// What finding one came to. A failed request is never remembered as "none".
+/// A lookup's outcome; `Failed` is never cached.
 enum Found {
     Video(String),
     None,
     Failed,
 }
 
-/// The web player's token once found, when finding it last failed, and which cache entry each video
-/// came from (so a video that has gone can be forgotten). Each client keeps its own.
+/// Per-client motion state: the token, the last token failure, and each video's cache key (for forgetting).
 #[derive(Default)]
 pub(crate) struct Motion {
     token: Option<String>,
     token_failed: Option<Instant>,
     keys: Vec<(String, String)>,
 }
-/// How many videos are remembered for forgetting.
+/// Video cache keys remembered.
 const KEYS_KEPT: usize = 32;
 
 impl Motion {
@@ -364,19 +332,17 @@ impl Motion {
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Client {
-    /// The square moving cover of `song`'s album, an HLS address, or none: switched off, not an album the
-    /// library knows, none found, not asked (`metered` while it is kept to Wi-Fi), or a request that
-    /// failed. Remembered like the lyrics: a video is kept, "none" is asked again after a week, and a
-    /// failure is not remembered at all. The platform asks only while the player is open, once per album.
+    /// The HLS URL of `song`'s album motion video, if enabled (and allowed on `metered`) and found. Videos
+    /// are cached, "none" for [`NONE_KEPT_MS`], failures not at all.
     pub async fn motion_video(&self, song: Song, metered: bool) -> Option<String> {
-        let (on, wifi_only) = crate::settings_store::with_prefs(|p| (p.motion_artwork && p.third_party_lookups, p.motion_artwork_wifi_only)).unwrap_or((false, true));
+        let (on, wifi_only) = self.settings().prefs(|p| (p.motion_artwork && p.third_party_lookups, p.motion_artwork_wifi_only));
         if !on || (wifi_only && metered) {
             return None;
         }
         self.motion_lookup(&song).await
     }
 
-    /// `url` would not play because it is not there any more: the album is looked up again next time.
+    /// `url` no longer plays: drops it so the album is looked up again.
     pub fn motion_forget(&self, url: String) {
         let key = {
             let mut m = self.motion.lock();
@@ -391,11 +357,9 @@ impl Client {
 
 impl Client {
     async fn motion_lookup(&self, song: &Song) -> Option<String> {
-        // Not for a provider's album: asking the server about an ext- id is octo-fiesta's business.
-        let album_id = song.album_id.clone().filter(|id| !song.is_external && !crate::db::external(id));
-        // Closed with a bar, so that forgetting album 12 cannot take album 123 with it (eviction is by
-        // prefix). Looked at before anything is asked, the server included: the next song of an album
-        // costs nothing.
+        // Never ask the server about a provider album.
+        let album_id = song.album_id.clone().filter(|id| !song.is_external && !crate::is_provider_id(id));
+        // Trailing bar: evicting "album 12" by prefix must not hit "album 123".
         let key = format!("motion1|{}|", album_id.clone().unwrap_or_else(|| format!("{}|{}", song.artist, song.album)));
         if let Some(stored) = self.core.cache_get(key.clone()).ok().flatten() {
             if !stored.is_empty() {
@@ -407,7 +371,7 @@ impl Client {
                 return None;
             }
         }
-        // The server's own album, for its artist, song count and year, which tell a record from its single.
+        // The server's album gives the artist, song count and year for matching.
         let album = match &album_id {
             Some(id) => match self.first(Read::AlbumById { id: id.clone() }).await {
                 Ok(Page::AlbumPage { v }) => Some(v.album),
@@ -439,7 +403,6 @@ impl Client {
     async fn motion_find(&self, artist: &str, album: &str, tracks: u32, year: u32) -> Found {
         let mut term = String::new();
         crate::lrclib::form_encode(&mut term, &format!("{artist} {album}"));
-        // The iTunes Search API as publicly documented (term, media, entity, country, limit).
         let url = format!("https://itunes.apple.com/search?term={term}&media=music&entity=album&limit=10&country={STORE}");
         let Some((200, search)) = self.motion_get(&url, &[]).await else { return Found::Failed };
         let Ok(ids) = motion_album_candidates(search, artist.to_string(), album.to_string(), tracks, year) else { return Found::Failed };
@@ -447,11 +410,11 @@ impl Client {
             return Found::None;
         }
         let Some(mut token) = self.web_token(false).await else { return Found::Failed };
-        // Two at most: a close edition is worth one more question, a long list of guesses is not.
+        // At most two catalogue lookups.
         for id in ids.iter().take(2) {
             let Some(mut answer) = self.motion_catalogue(id, &token).await else { return Found::Failed };
             if matches!(answer.0, 401 | 403) {
-                // Refused: the token has expired or been replaced. Find the current one and ask once more.
+                // Token expired or replaced: find a new one and retry once.
                 self.motion.lock().token = None;
                 let _ = self.core.cache_evict(TOKEN_KEY.into());
                 let Some(fresh) = self.web_token(true).await else { return Found::Failed };
@@ -469,7 +432,7 @@ impl Client {
                     Ok(None) => {}
                     Err(_) => return Found::Failed,
                 },
-                // Not in this storefront: the next candidate, if there is one.
+                // Not in this storefront.
                 404 => {}
                 _ => return Found::Failed,
             }
@@ -477,15 +440,14 @@ impl Client {
         Found::None
     }
 
-    /// The catalogue's album, with the one extension that carries the video.
+    /// The catalogue album with `editorialVideo`.
     async fn motion_catalogue(&self, id: &str, token: &str) -> Option<(u16, String)> {
         let url = format!("https://amp-api.music.apple.com/v1/catalog/{STORE}/albums/{id}?extend=editorialVideo");
         let bearer = format!("Bearer {token}");
         self.motion_get(&url, &[("Authorization", &bearer), ("Origin", "https://music.apple.com")]).await
     }
 
-    /// The web player's developer token: remembered, or found again in the scripts of one of its pages
-    /// when `fresh` (the remembered one was refused). A failed search is not repeated for half an hour.
+    /// The developer token: cached unless `fresh`, else scraped (not retried within [`TOKEN_RETRY`]).
     async fn web_token(&self, fresh: bool) -> Option<String> {
         if !fresh {
             if let Some(t) = self.motion.lock().token.clone() {
@@ -516,7 +478,7 @@ impl Client {
         found
     }
 
-    /// The page and script layout of Apple's web player as it was in 2026.
+    /// Scrapes the token from the web player's scripts.
     async fn motion_scrape(&self) -> Option<String> {
         let (200, page) = self.motion_get(&format!("https://music.apple.com/{STORE}/browse"), &[]).await? else { return None };
         for path in motion_bundle_paths(page).into_iter().take(3) {
@@ -532,7 +494,7 @@ impl Client {
         None
     }
 
-    /// One request and its answer as text; none when it got no answer at all.
+    /// One request's status and body; None without a response.
     async fn motion_get(&self, url: &str, headers: &[(&str, &str)]) -> Option<(u16, String)> {
         let request = Exchange { url: url.to_string(), headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), json: None, timeout_ms: REQUEST_MS };
         match self.transport.send(request).await {
@@ -548,14 +510,6 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_moving_cover_is_buffered_seconds_ahead_not_a_minute() {
-        let c = motion_load_control();
-        assert!(c[0] <= c[1] && c[1] <= 10_000, "a few seconds of a loop that comes off the disk");
-        assert!(c[2] <= c[0] && c[3] <= c[0]);
-        assert!(c[4] <= 8 * 1024 * 1024, "a few MB of the Java heap at most");
-    }
 
     fn enc(bytes: &[u8]) -> String {
         const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -582,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn words_are_compared_without_their_dress() {
+    fn album_matching() {
         assert_eq!(norm("Don't Stop Me Now"), "dont stop me now");
         assert_eq!(norm("Simon & Garfunkel"), "simon and garfunkel");
         assert_eq!(norm("Beyoncé"), "beyonce");
@@ -591,12 +545,10 @@ mod tests {
         assert_eq!(base("Abbey Road (Remastered 2019)"), "abbey road");
         assert_eq!(base("Better - Single"), "better");
         assert_eq!(base("Rumours - Deluxe Edition"), "rumours");
-        // A dash that is part of the title stays.
+        // A dash in the title itself stays.
         assert_eq!(base("Songs - For the Deaf"), "songs for the deaf");
-    }
 
-    #[test]
-    fn the_album_itself_comes_before_its_single_and_its_deluxe_edition() {
+        // Exact album ranks before editions.
         let json = search(&[
             hit(1, "Better - Single", "Khalid", 1, "2018-09-14T07:00:00Z"),
             hit(2, "Better (Deluxe)", "Khalid", 14, "2019-04-01T07:00:00Z"),
@@ -605,42 +557,32 @@ mod tests {
         ]);
         let ids = motion_album_candidates(json, "Khalid".into(), "Better".into(), 12, 2019).unwrap();
         assert_eq!(ids, vec!["3".to_string(), "2".to_string()]);
-    }
 
-    #[test]
-    fn a_title_that_only_agrees_without_edition_words_needs_the_songs_to_agree_too() {
+        // Edition match needs track count or year.
         let json = search(&[hit(9, "Better - Single", "Khalid", 1, "2018-09-14T07:00:00Z")]);
-        // An album of twelve is not this single, whatever the words say.
         assert!(motion_album_candidates(json.clone(), "Khalid".into(), "Better".into(), 12, 2019).unwrap().is_empty());
-        // A single of one is.
         assert_eq!(motion_album_candidates(json.clone(), "Khalid".into(), "Better".into(), 1, 2018).unwrap(), vec!["9".to_string()]);
-        // With no count to go by, the year has to agree.
+        // Without a count, the year decides.
         assert_eq!(motion_album_candidates(json.clone(), "Khalid".into(), "Better".into(), 0, 2018).unwrap(), vec!["9".to_string()]);
         assert!(motion_album_candidates(json, "Khalid".into(), "Better".into(), 0, 0).unwrap().is_empty());
-    }
 
-    #[test]
-    fn someone_else_with_the_same_title_is_never_a_match() {
+        // Other artist never matches.
         let json = search(&[hit(5, "Greatest Hits", "Queen", 17, "1981-10-26T08:00:00Z")]);
         assert!(motion_album_candidates(json, "ABBA".into(), "Greatest Hits".into(), 17, 1981).unwrap().is_empty());
-    }
 
-    #[test]
-    fn a_shared_credit_is_the_same_artist() {
+        // Shared credit matches artist.
         let json = search(&[hit(6, "Watch the Throne", "JAY-Z & Kanye West", 12, "2011-08-08T07:00:00Z")]);
         let ids = motion_album_candidates(json, "Jay-Z".into(), "Watch The Throne".into(), 12, 2011).unwrap();
         assert_eq!(ids, vec!["6".to_string()]);
     }
 
     #[test]
-    fn a_failed_request_is_not_an_empty_answer() {
+    fn answers() {
         assert!(motion_album_candidates("<html>Too many requests</html>".into(), "a".into(), "b".into(), 0, 0).is_err());
         assert!(motion_album_candidates(r#"{"errorMessage":"Invalid value(s) for key(s): [country]"}"#.into(), "a".into(), "b".into(), 0, 0).is_err());
         assert!(motion_album_candidates(r#"{"resultCount":0,"results":[]}"#.into(), "a".into(), "b".into(), 0, 0).unwrap().is_empty());
-    }
 
-    #[test]
-    fn the_square_video_and_nothing_else() {
+        // Only square video is taken.
         let found = r#"{"data":[{"id":"1","type":"albums","attributes":{"name":"X","editorialVideo":{
             "motionDetailTall":{"video":"https://mvod.itunes.apple.com/tall.m3u8"},
             "motionDetailSquare":{"video":"https://mvod.itunes.apple.com/square.m3u8"}}}}]}"#;
@@ -651,45 +593,40 @@ mod tests {
         assert_eq!(motion_square_video(tall_only.into()).unwrap(), None);
         let none = r#"{"data":[{"attributes":{"name":"Plain"}}]}"#;
         assert_eq!(motion_square_video(none.into()).unwrap(), None);
-        // A refusal is not "this album has none".
+        // A refusal is an error, not "none".
         assert!(motion_square_video(r#"{"errors":[{"status":"401"}]}"#.into()).is_err());
         assert!(motion_square_video("".into()).is_err());
     }
 
     #[test]
-    fn the_scripts_that_may_hold_the_token() {
+    fn bundle_paths_are_index_scripts() {
         let html = r#"<link rel="modulepreload" href="/assets/index~8f2a1c.js"><script type="module" crossorigin src="/assets/index~8f2a1c.js"></script>
             <script nomodule src="/assets/index-legacy~77aa.js"></script><img src="/assets/logo.svg"> /assets/vendor~1.js/assets/index~z.js"#;
         assert_eq!(motion_bundle_paths(html.into()), vec!["/assets/index~8f2a1c.js", "/assets/index-legacy~77aa.js", "/assets/index~z.js"]);
-        // A non-ASCII space after a path is only a separator.
         assert_eq!(motion_bundle_paths("x /assets/index~a.js\u{a0}y".into()), vec!["/assets/index~a.js"]);
     }
 
     #[test]
-    fn the_web_players_own_token_is_the_one_taken() {
+    fn tokens() {
         let now = 1_790_000_000;
         let other = jwt(r#"{"alg":"ES256","kid":"OTHER"}"#, &format!(r#"{{"iss":"SomethingElse","exp":{}}}"#, now + 90_000));
         let web = jwt(r#"{"alg":"ES256","typ":"JWT","kid":"WebPlayKid"}"#, &format!(r#"{{"iss":"AMPWebPlay","iat":{now},"exp":{}}}"#, now + 90_000));
         let js = format!(r#"const a="{other}";function f(){{return"{web}"}}"#);
         assert_eq!(motion_token(js.into_bytes(), now).as_deref(), Some(web.as_str()));
-        // Without the web player's own, any readable one is better than none.
         let js = format!(r#"x="{other}""#);
         assert_eq!(motion_token(js.into_bytes(), now).as_deref(), Some(other.as_str()));
-    }
 
-    #[test]
-    fn an_expired_token_or_a_lookalike_is_not_taken() {
+        // Expired or malformed token rejected.
         let now = 1_790_000_000;
         let stale = jwt(r#"{"kid":"WebPlayKid"}"#, &format!(r#"{{"iss":"AMPWebPlay","exp":{}}}"#, now + 30));
         assert_eq!(motion_token(stale.into_bytes(), now), None);
         assert_eq!(motion_token(b"eyJshort.abc.def".to_vec(), now), None);
         assert_eq!(motion_token(format!("eyJ{}", "a".repeat(200)).into_bytes(), now), None);
-        // Three segments of the right length that are not JSON.
         assert_eq!(motion_token(format!("eyJ{}.{}.{}", "a".repeat(40), "b".repeat(40), "c".repeat(40)).into_bytes(), now), None);
     }
 
     #[test]
-    fn a_moving_cover_is_found_kept_and_forgotten() {
+    fn motion_lookup_caches_and_forgets() {
         use crate::client::tests::{block, client};
         let (c, fake) = client(crate::client::NetProfile { url: "h".into(), ..Default::default() });
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
@@ -705,13 +642,13 @@ mod tests {
         assert_eq!(fake.asked().len(), 5);
         let catalogue = fake.sent.lock().iter().find(|e| e.url.contains("amp-api.music.apple.com/v1/catalog/us/albums/3")).cloned().unwrap();
         assert_eq!(catalogue.headers["Authorization"], format!("Bearer {web}"));
-        // Kept: the next song of the album asks nothing.
+        // Cached: no requests.
         assert_eq!(block(c.motion_lookup(&s)).as_deref(), Some(url));
         assert_eq!(fake.asked().len(), 5);
-        // Gone from Apple's side: forgotten, and asked for again (here nothing answers: none, not kept).
+        // Forgotten: asked again (nothing answers, so a failure, not cached).
         c.motion_forget(url.into());
         assert_eq!(block(c.motion_lookup(&s)), None);
         assert!(fake.asked().len() > 5);
-        assert!(c.core.cache_get("motion1|al-1|".into()).unwrap().is_none(), "a failure is not remembered as none");
+        assert!(c.core.cache_get("motion1|al-1|".into()).unwrap().is_none());
     }
 }

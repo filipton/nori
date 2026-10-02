@@ -1,10 +1,8 @@
-//! The settings' stored format does not move: every key, and what is written under it, for a record with
-//! every setting away from its default, against a copy taken from the hand-written codec
-//! (testdata/stored_format.txt), together with every setting's value and spec as a client reads them. Each
-//! setting then round-trips: saved, loaded back, and read by name the same.
+//! Golden test of the settings' stored format, values by name and specs (testdata/stored_format.txt),
+//! for a record with every setting away from its default.
 //!
-//! `NORI_BLESS=1 cargo test -p nori-settings --test stored_format` writes the file again; do that only for a
-//! change to the format that is meant, and say so in the commit.
+//! `NORI_BLESS=1 cargo test -p nori-settings --test stored_format` rewrites the file; only for an
+//! intended format change, stated in the commit.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -134,7 +132,7 @@ fn sample() -> StoredPrefs {
             o.reverse();
             o
         },
-        lyrics_on: vec!["LRCLIB".into(), "KUGOU".into()],
+        lyrics_on: vec![nori_settings::lyrics_sources::LyricsService::Lrclib, nori_settings::lyrics_sources::LyricsService::Kugou],
         lyrics_prefer_words: false,
         paxsenix_key: "pax".into(),
         better_lyrics_key: "better".into(),
@@ -163,7 +161,7 @@ fn sample() -> StoredPrefs {
     }
 }
 
-/// One stored value as text; the kind is part of the format.
+/// One stored value as text, with its kind.
 fn stored(v: &PrefValue) -> String {
     match v {
         PrefValue::Flag { v } => format!("flag {v}"),
@@ -171,11 +169,10 @@ fn stored(v: &PrefValue) -> String {
         PrefValue::Big { v } => format!("long {v}"),
         PrefValue::Decimal { v } => format!("float {v:?}"),
         PrefValue::Text { v } => format!("text {v:?}"),
-        PrefValue::Texts { v } => format!("texts {v:?}"),
     }
 }
 
-/// The text a JSON field is written as does not keep its keys in order: read it as JSON.
+/// JSON fields compared as JSON, since key order is not stable.
 fn normal(key: &str, v: &PrefValue) -> String {
     match (key, v) {
         ("servers" | "listPrefs", PrefValue::Text { v }) => format!("json {}", serde_json::from_str::<serde_json::Value>(v).unwrap()),
@@ -209,7 +206,7 @@ fn render() -> String {
 }
 
 #[test]
-fn the_stored_format_and_the_model_are_unchanged() {
+fn stored_format_matches_golden() {
     let now = render();
     if std::env::var_os("NORI_BLESS").is_some() {
         std::fs::write(GOLDEN, &now).unwrap();
@@ -222,22 +219,20 @@ fn the_stored_format_and_the_model_are_unchanged() {
 }
 
 #[test]
-fn every_setting_round_trips_through_the_store_and_reads_back_by_name() {
+fn sample_round_trips_and_differs() {
     let p = sample();
     let raw: HashMap<String, PrefValue> = save(&p);
-    let back = load(&raw);
-    assert_eq!(back, p);
-    for s in specs() {
-        assert_eq!(value_of(&back, &s.name), value_of(&p, &s.name), "{}", s.name);
-    }
-    // Every key the sample writes, the defaults write too: nothing is left out for being the default,
-    // but for the equalizer's own pre-amp, stored only when it is not automatic.
-    let mut keys: Vec<String> = raw.keys().cloned().collect();
-    let mut defaults: Vec<String> = save(&StoredPrefs::default()).into_keys().collect();
-    defaults.push("eqPreampDb".into());
+    assert_eq!(load(&raw), p);
+    // The defaults write every key too, except the pre-amp, stored only when manual.
+    let defaults = save(&StoredPrefs::default());
+    let mut keys: Vec<&String> = raw.keys().collect();
+    let mut default_keys: Vec<&String> = defaults.keys().collect();
+    let preamp = "eqPreampDb".to_string();
+    default_keys.push(&preamp);
     keys.sort();
-    defaults.sort();
-    assert_eq!(keys, defaults);
-    // And every field is away from its default, so each one's key and codec is in the golden copy.
-    assert_eq!(load(&HashMap::new()), StoredPrefs::default());
+    default_keys.sort();
+    assert_eq!(keys, default_keys);
+    // Every value differs from its default, so the golden copy covers each codec.
+    let same: Vec<&String> = raw.iter().filter(|(k, v)| defaults.get(*k) == Some(v)).map(|(k, _)| k).collect();
+    assert!(same.is_empty(), "sample leaves these at their defaults: {same:?}");
 }

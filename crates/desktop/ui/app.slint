@@ -1,10 +1,5 @@
-// nori's desktop window, built the way Apple Music is on macOS 26 and 27: a sidebar floating in its own
-// rounded pane with the traffic lights inside it, the page on a near-black ground, and the player as a
-// glass capsule floating at the bottom of the page. The queue is an inspector that floats in from the right,
-// and Now Playing takes the whole window over the song's own colours. Album and artist pages dissolve their
-// picture into the page as the iOS 27 artist pages (and nori's HeroPage on Android) do, from nori-look's wash.
-//
-// Everything here only draws and forwards what was clicked; the Rust side asks the core and the engine.
+// nori's desktop window, laid out like Apple Music on macOS: sidebar, page, glass player capsule, a right
+// inspector (queue, lyrics) and a full-window Now Playing. Draws and forwards input only.
 
 import { ListView, Switch, ComboBox, Button } from "std-widgets.slint";
 // Linux has no SF Pro: the Android app's typeface is the fallback, from its resources.
@@ -49,8 +44,6 @@ export struct SongRow {
     fresh: bool,
 }
 
-// A row of the settings page: 0 a group's heading, 1 a switch, 2 a choice, 3 a button, 4 a fact. `first`
-// and `last` round the group's corners.
 // A row of the settings page: 0 a group's heading, 1 a switch, 2 a choice, 3 a button, 4 a fact, 5 a slider,
 // 6 a lyrics source in its ranked list, 7 a key typed in, 8 a server, 9 a note, 10 the accent's swatches,
 // 11 a page it opens, 12 a lone button. `first` and `last` round the group's corners.
@@ -2073,15 +2066,12 @@ export component AppWindow inherits Window {
     preferred-height: 820px;
     min-width: 860px;
     min-height: 560px;
-    // Clear, so the system's sidebar material shows through the sidebar's pane (macOS).
-    background: root.vibrancy ? transparent : Theme.ground;
+    background: Theme.ground;
     default-font-size: 13px;
     default-font-family: root.font;
 
     // The system's own font on macOS (SF Pro), Inter elsewhere.
     in property <string> font: "Inter";
-    // The system blurs what is behind the window where the interface is clear (macOS).
-    in property <bool> vibrancy;
     // Room for the traffic lights at the top of the sidebar.
     in property <length> inset-top: 16px;
 
@@ -2238,7 +2228,7 @@ export component AppWindow inherits Window {
     in property <bool> autoplay;
     in property <bool> automix;
     callback clear-queue();
-    // The settings page's tab: 0 General, 1 Playback, 2 Sound, 3 Storage.
+    // Settings tab: 0 General, 1 Playback, 2 Sound, 3 Lyrics, 4 Library, 5 Data, 6 Servers.
     in-out property <int> settings-tab;
     callback settings-tab-chosen(int);
 
@@ -2278,6 +2268,8 @@ export component AppWindow inherits Window {
     callback setting-action(string);
     callback drag-window();
     callback zoom-window();
+    // Worker messages are waiting in the app's inbox.
+    callback messages-arrived();
 
     function clock(ms: int) -> string {
         let s = floor(max(0, ms) / 1000);
@@ -2309,15 +2301,10 @@ export component AppWindow inherits Window {
             reject
         }
 
-        // The ground: near black under the page; under the sidebar, clear to the system's sidebar material
-        // (macOS), the sidebar's own grey elsewhere.
         Rectangle {
-            x: root.view == 7 || !root.vibrancy ? 0 : Theme.side-w;
-            width: parent.width - self.x;
             background: Theme.ground;
         }
-        // Under the system's glass sidebar: the ground half clear, so the glass takes the desktop's colour
-        // through the window as well as the page's.
+        // Half-clear ground under the glass sidebar.
         if root.native-sidebar && root.view != 7: Rectangle {
             width: Theme.side-w;
             background: Theme.ground.with-alpha(0.55);
@@ -3250,14 +3237,13 @@ export component AppWindow inherits Window {
                 }
             }
 
-            // The sidebar: full height from the window's edge, the system's sidebar material through it
-            // (macOS), a hairline between it and the page, the traffic lights at its top.
+            // The sidebar drawn by the page (no glass sidebar window).
             if !root.native-sidebar: Rectangle {
                 x: 0;
                 y: 0;
                 width: Theme.side-w;
                 height: parent.height;
-                background: root.vibrancy ? #1e1e1e59 : #262628;
+                background: #262628;
                 // A page in its picture's colours runs under the sidebar, which takes a little of it.
                 Rectangle {
                     background: root.view == 6 && root.page-kind == 1 ? root.page-bg.with-alpha(0.5) : root.page-bg.with-alpha(0);
@@ -3644,8 +3630,7 @@ export component AppWindow inherits Window {
     }
 }
 
-// The player on macOS: a borderless window of its own, kept over the bottom of the main window's page,
-// with the system's Liquid Glass (NSGlassEffectView) behind it (glass.rs): the page scrolls under real glass.
+// The player as its own window, composited as a glass layer over the page (compositor.rs).
 export component PlayerBar inherits Window {
     title: "nori player";
     no-frame: true;
@@ -3711,9 +3696,7 @@ export component PlayerBar inherits Window {
     }
 }
 
-// The sidebar on macOS: rendered by a window of its own whose view is moved into the system's Liquid
-// Glass over the main window's page (glass.rs), so the glass takes its colour and its light from the page
-// under it, and the rows stay sharp on top.
+// The sidebar as its own window, composited as a glass layer over the page (compositor.rs).
 export component SidebarWindow inherits Window {
     title: "nori sidebar";
     no-frame: true;

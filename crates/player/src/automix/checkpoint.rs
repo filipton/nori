@@ -1,13 +1,7 @@
-//! A PyTorch checkpoint's weights, read without Python: what `torch.save` writes is a zip (stored, not deflated)
-//! holding `<name>/data.pkl`, a pickle of the checkpoint, and each tensor's storage as a raw file,
-//! `<name>/data/<key>`. Beat This!'s `small0.ckpt` is one (the "Better beat detection" model; weights.rs turns it
-//! into what the app's graph reads).
-//!
-//! A pickle is a program: run by Python it may build any object and call anything. This reads it with a machine of
-//! its own that knows only what a checkpoint's state_dict is made of - numbers, strings, tuples, lists, dicts and
-//! `collections.OrderedDict`, a tensor's storage as a persistent id (`torch.FloatStorage` and the like), and
-//! `torch._utils._rebuild_tensor_v2` - and refuses every other opcode and every other global, so nothing in the file
-//! can ask for more than values. Every count and offset is checked against the bytes that are there.
+//! A PyTorch checkpoint's float32 tensors, read without Python: a stored zip holding `<name>/data.pkl` and each
+//! storage as `<name>/data/<key>`. The pickle runs on a restricted unpickler that knows only a state_dict's values,
+//! `OrderedDict`, storages and `_rebuild_tensor_v2`, and refuses every other opcode and global. Every count and
+//! offset is checked.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -26,9 +20,8 @@ impl Tensor {
     }
 }
 
-/// The checkpoint's state_dict: its float32 tensors by key, with the "model." that Lightning puts in front of
-/// every key taken off (as beat_this does when it loads one). Other tensors (a BatchNorm's `num_batches_tracked`
-/// is an integer) are read and checked, and left out.
+/// The state_dict's float32 tensors by key, Lightning's "model." prefix removed; other tensors are checked and
+/// left out.
 pub fn state_dict(ckpt: &[u8]) -> Result<HashMap<String, Tensor>, String> {
     let zip = entries(ckpt)?;
     let pkl = zip.keys().filter(|n| n.ends_with("/data.pkl") && n.matches('/').count() == 1).collect::<Vec<_>>();
@@ -61,14 +54,12 @@ pub fn state_dict(ckpt: &[u8]) -> Result<HashMap<String, Tensor>, String> {
     Ok(out)
 }
 
-/// The stored entries of a zip archive, by name. Deflated entries and ZIP64 archives are refused: `torch.save`
-/// stores, and a checkpoint of this size needs no ZIP64 (torch writes a ZIP64 record too, and a plain one with the
-/// same numbers, which is read). Sizes come from the central directory, as torch leaves them out of the local
-/// headers.
+/// The stored entries of a zip archive by name, sizes from the central directory. Deflated entries and ZIP64-only
+/// archives are refused.
 fn entries(b: &[u8]) -> Result<HashMap<&str, &[u8]>, String> {
     let u16_at = |p: usize| -> Result<usize, String> { b.get(p..p + 2).map(|s| u16::from_le_bytes([s[0], s[1]]) as usize).ok_or_else(|| "the archive is cut short".to_string()) };
     let u32_at = |p: usize| -> Result<usize, String> { b.get(p..p + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]) as usize).ok_or_else(|| "the archive is cut short".to_string()) };
-    // The end of central directory record: 22 bytes and a comment of up to 64 kB, at the end.
+    // End of central directory: 22 bytes plus a comment of up to 64 kB.
     if b.len() < 22 {
         return Err("not a zip archive".into());
     }
@@ -131,7 +122,7 @@ impl Kind {
 #[derive(Debug, Clone)]
 enum V {
     None,
-    /// A bool or a float: the checkpoint's hyperparameters and a tensor's `requires_grad`; nothing reads their value.
+    /// Bools and floats are hyperparameters or `requires_grad`; their values are not needed.
     Bool,
     Int(i64),
     Float,
@@ -191,7 +182,7 @@ impl<'a> Machine<'a> {
     }
 
     /// Everything above the last mark, and the mark gone.
-    fn to_mark(&mut self) -> Result<Vec<V>, String> {
+    fn pop_to_mark(&mut self) -> Result<Vec<V>, String> {
         let m = self.marks.pop().ok_or("no mark")?;
         Ok(self.stack.split_off(m))
     }
@@ -268,7 +259,7 @@ impl<'a> Machine<'a> {
                 }
                 b')' => self.stack.push(V::Tuple(Rc::from(Vec::new()))),
                 b't' => {
-                    let items = self.to_mark()?;
+                    let items = self.pop_to_mark()?;
                     self.stack.push(V::Tuple(items.into()));
                 }
                 0x85..=0x87 => {
@@ -288,7 +279,7 @@ impl<'a> Machine<'a> {
                     l.borrow_mut().push(v);
                 }
                 b'e' => {
-                    let items = self.to_mark()?;
+                    let items = self.pop_to_mark()?;
                     let V::List(l) = self.top()? else { return Err("APPENDS to something not a list".into()) };
                     l.borrow_mut().extend(items);
                 }
@@ -299,7 +290,7 @@ impl<'a> Machine<'a> {
                     d.borrow_mut().push((k, v));
                 }
                 b'u' => {
-                    let items = self.to_mark()?;
+                    let items = self.pop_to_mark()?;
                     if items.len() % 2 != 0 {
                         return Err("SETITEMS with a key and no value".into());
                     }
@@ -379,8 +370,7 @@ impl<'a> Machine<'a> {
         Ok(s)
     }
 
-    /// `_rebuild_tensor_v2(storage, offset, size, stride, requires_grad, backward_hooks[, metadata])`: the values
-    /// read out of the storage's file through the strides, every index checked.
+    /// `_rebuild_tensor_v2(storage, offset, size, stride, ...)`: the values read through the strides, indices checked.
     fn tensor(&self, args: &[V]) -> Result<Option<Rc<Tensor>>, String> {
         let [V::Storage(kind, key), V::Int(offset), V::Tuple(size), V::Tuple(stride), V::Bool, V::Dict(hooks), ..] = args else {
             return Err("a tensor rebuilt from something else".into());
@@ -517,16 +507,14 @@ mod tests {
     }
 
     #[test]
-    fn a_state_dict_is_read_through_its_strides() {
+    fn checkpoint_reading() {
         let sd = state_dict(&checkpoint()).unwrap();
         assert_eq!(sd.len(), 2, "the long tensor is left out: {:?}", sd.keys());
         assert_eq!(sd["w"], Tensor { shape: vec![2, 3], data: vec![0.5, 1.5, 2.5, 3.5, 4.5, 5.5] });
         // From offset 1, column by column: [[1.5, 4.5], [2.5, 5.5]].
         assert_eq!(sd["t"], Tensor { shape: vec![2, 2], data: vec![1.5, 4.5, 2.5, 5.5] });
-    }
 
-    #[test]
-    fn anything_but_values_is_refused() {
+        // Anything but values is refused.
         let ok = checkpoint();
         // os.system, and a known global called with arguments it does not take.
         for (from, to) in [(&b"collections\nOrderedDict"[..], &b"os\nsystem\nXXXXXXXXXXXXX"[..]), (b"ctorch\nLongStorage", b"ctorch\nHalfStorage")] {
@@ -562,4 +550,5 @@ mod tests {
         }
         assert!(state_dict(b"not a zip at all, not even close to one").is_err());
     }
+
 }

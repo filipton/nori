@@ -15,28 +15,24 @@ nori-engine = { path = "../engine", features = ["core"] }
 nori-output-cpal = { path = "../output-cpal" }
 nori-http = { path = "../http" }
 nori-mpris = { path = "../mpris" }
+nori-host = { path = "../host" }
 nori-covers = { path = "../covers" }
 nori-look = { path = "../look" }
 parking_lot = "0.12"
-# The interface: Slint, each part drawn offscreen by Skia on the GPU (wgpu: Metal on macOS, Vulkan or GL on
-# Linux) and put together by our own compositor. GPL-3.0, royalty-free or commercial licences, as Slint
-# offers them.
+# Slint with Skia on wgpu; layers are composited by compositor.rs.
 slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "renderer-skia", "unstable-wgpu-30"] }
-# Our own window (compositor.rs): winit for the window and its events, wgpu (Slint's, through the feature above)
-# to put the layers together, pollster to wait on the GPU's setup, arboard for copy and paste.
+# compositor.rs: winit window and events, pollster for GPU setup, arboard for the clipboard.
 winit = "0.30"
-# The same wgpu Slint draws with; only so our shaders can be written in WGSL.
+# Slint's wgpu, with WGSL for glass.wgsl.
 wgpu = { version = "30", default-features = false, features = ["wgsl"] }
 pollster = "0.4"
-# Slint's own Skia (the same version and features, so nothing more is built): the line being sung is measured
-# with it, in the font it is drawn in (sung.rs).
+# Slint's Skia version, for measuring lyric text in sung.rs.
 skia-safe = "0.153.3"
 arboard = { version = "3", default-features = false }
 
-# The menu bar, macOS's own.
+# Menu bar (muda) and unified toolbar (objc2).
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.19", default-features = false }
-# An empty toolbar in the unified style, so the traffic lights sit where Music's do, level with the toolbar.
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSView", "NSWindow", "NSToolbar"] }
 

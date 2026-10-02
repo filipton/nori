@@ -1,8 +1,5 @@
-//! Local index: every library item the app has seen, searchable offline with
-//! FTS5, plus the response cache and the small persistent queues. Items are
-//! written here straight from the response bytes, so a library sync never
-//! materialises objects on the Kotlin side. The core's background thread, which writes it off the
-//! caller's thread, is background.rs.
+//! The app's SQLite database: the FTS5 library index, the response cache and the other per-server and
+//! app-wide tables. Background writes go through background.rs.
 
 pub mod background;
 
@@ -17,10 +14,8 @@ pub const ARTIST: i64 = 0;
 pub const ALBUM: i64 = 1;
 pub const SONG: i64 = 2;
 
-/// One database for the whole app. What belongs to one server - its library, answers, pending writes,
-/// downloads, history and the like - carries the server profile's id in `server`, and a connection
-/// reads and writes only its own server's rows through `sid()`, the id it was opened for. The equalizer
-/// profiles, the AutoEQ index and the settings are the app's, whatever the server.
+/// One database for the app. Per-server rows carry the profile id in `server`; a connection filters by
+/// `sid()`, the id it was opened for. Profiles, AutoEQ and settings are app-wide.
 const PRAGMAS: &str = "
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
@@ -53,20 +48,22 @@ CREATE INDEX IF NOT EXISTS items_artist ON items(server, json_extract(json,'$.ar
 CREATE INDEX IF NOT EXISTS items_year ON items(server, json_extract(json,'$.year')) WHERE kind=2;
 CREATE INDEX IF NOT EXISTS items_starred ON items(server, json_extract(json,'$.starred')) WHERE kind=2 AND json_extract(json,'$.starred')=1;
 CREATE INDEX IF NOT EXISTS items_rated ON items(server, json_extract(json,'$.userRating')) WHERE kind=2 AND json_extract(json,'$.userRating')>=4;
+CREATE INDEX IF NOT EXISTS items_title ON items(server, json_extract(json,'$.title') COLLATE NOCASE) WHERE kind=2;
+CREATE INDEX IF NOT EXISTS items_by_artist ON items(server, json_extract(json,'$.artist') COLLATE NOCASE) WHERE kind=2;
+CREATE INDEX IF NOT EXISTS items_album ON items(server, json_extract(json,'$.album') COLLATE NOCASE) WHERE kind=2;
 CREATE TABLE IF NOT EXISTS track_analysis(server TEXT NOT NULL, song_id TEXT NOT NULL, analysis_version INTEGER NOT NULL, duration_ms INTEGER NOT NULL, bpm REAL NOT NULL, bpm_confidence REAL NOT NULL, beat_offset_ms REAL NOT NULL, stability REAL NOT NULL, downbeat_phase INTEGER NOT NULL, downbeat_confidence REAL NOT NULL, lufs REAL NOT NULL, key INTEGER NOT NULL, key_confidence REAL NOT NULL, silence_start_ms INTEGER NOT NULL, silence_end_ms INTEGER NOT NULL, mixramp_start_ms INTEGER NOT NULL, mixramp_end_ms INTEGER NOT NULL, intro_end_ms INTEGER NOT NULL, outro_start_ms INTEGER NOT NULL, outro_vocal REAL NOT NULL, intro_vocal REAL NOT NULL, outro_centroid REAL NOT NULL, intro_centroid REAL NOT NULL, outro_bpm REAL NOT NULL, outro_bpm_confidence REAL NOT NULL, outro_beat_offset_ms REAL NOT NULL, outro_stability REAL NOT NULL, outro_downbeat_phase INTEGER NOT NULL, intro_bpm REAL NOT NULL, intro_bpm_confidence REAL NOT NULL, intro_beat_offset_ms REAL NOT NULL, intro_stability REAL NOT NULL, intro_downbeat_phase INTEGER NOT NULL, beats_per_bar INTEGER NOT NULL DEFAULT 0, drop_ms INTEGER NOT NULL DEFAULT 0, drop_runup_vocal REAL NOT NULL DEFAULT 0, drop_vocal REAL NOT NULL DEFAULT 0, exit_ms INTEGER NOT NULL DEFAULT 0, gap_ms INTEGER NOT NULL DEFAULT 0, gap_end_ms INTEGER NOT NULL DEFAULT 0, exit_vocal REAL NOT NULL DEFAULT 0, drop_runup_tonal_db REAL NOT NULL DEFAULT 0, intro_beats_per_bar INTEGER NOT NULL DEFAULT 0, outro_beats_per_bar INTEGER NOT NULL DEFAULT 0, intro_grid_source INTEGER NOT NULL DEFAULT 0, outro_grid_source INTEGER NOT NULL DEFAULT 0, analysed_ms INTEGER NOT NULL, PRIMARY KEY(server, song_id)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS vocal_curve(server TEXT NOT NULL, song_id TEXT NOT NULL, curve BLOB NOT NULL, PRIMARY KEY(server, song_id)) WITHOUT ROWID;
 ";
 
-/// The tables that belong to one server: what goes when its profile is removed.
+/// Per-server tables, cleared when a profile is removed.
 const SERVER_TABLES: [&str; 14] = [
     "items", "cache", "kv", "pending", "downloads", "download_beats", "searches", "plays", "song_stats", "mix_excluded", "autofill_picks", "smart_playlists", "track_analysis",
     "vocal_curve",
 ];
 
-/// The app's database, opened for `server`'s rows.
+/// Opens the database for `server`'s rows (in memory for an empty `path`).
 pub fn open(path: &str, server: &str) -> rusqlite::Result<Connection> {
-    let c = if path.is_empty() { Connection::open_in_memory()? } else { Connection::open(path)? };
-    c.execute_batch(PRAGMAS)?;
+    let c = connect(path)?;
     let sid = server.to_string();
     c.create_scalar_function("sid", 0, rusqlite::functions::FunctionFlags::SQLITE_UTF8 | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC, move |_| {
         Ok(sid.clone())
@@ -77,15 +74,21 @@ pub fn open(path: &str, server: &str) -> rusqlite::Result<Connection> {
     Ok(c)
 }
 
-/// Lyrics kept from before every word timing was (LRC, under the old key `lrclib2|`) are not read any more:
-/// this server's go as its rows are opened. The range is the key's own, so it costs a look at the index.
+/// The database at `path` (in memory for an empty one), set up.
+fn connect(path: &str) -> rusqlite::Result<Connection> {
+    let c = if path.is_empty() { Connection::open_in_memory()? } else { Connection::open(path)? };
+    c.execute_batch(PRAGMAS)?;
+    Ok(c)
+}
+
+/// Deletes this server's obsolete LRC lyrics cache (`lrclib2|` keys), via an index range scan.
 fn drop_old_lyrics(c: &Connection) -> rusqlite::Result<()> {
     c.execute("DELETE FROM cache WHERE server=sid() AND key >= 'lrclib2|' AND key < 'lrclib2|' || x'ff'", [])?;
     Ok(())
 }
 
-/// Song analyses are a cache: an older table layout is not carried over but dropped, and the songs are
-/// measured again as they come up. The last column the layout gained says whether it is current.
+/// Drops an outdated `track_analysis` table (a cache: songs are re-analysed). The newest column marks
+/// the current layout.
 fn drop_old_analysis(c: &Connection) -> rusqlite::Result<()> {
     let have: Vec<String> = c.prepare("PRAGMA table_info(track_analysis)")?.query_map([], |r| r.get(1))?.collect::<rusqlite::Result<_>>()?;
     if !have.is_empty() && !have.iter().any(|h| h == "outro_grid_source") {
@@ -94,10 +97,9 @@ fn drop_old_analysis(c: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// The app's database for what is the app's alone (the settings and the app's own values), with no server.
+/// Opens the database for app-wide tables only (settings, app_kv).
 pub fn open_app(path: &str) -> rusqlite::Result<Connection> {
-    let c = if path.is_empty() { Connection::open_in_memory()? } else { Connection::open(path)? };
-    c.execute_batch(PRAGMAS)?;
+    let c = connect(path)?;
     c.execute_batch(
         "CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
          CREATE TABLE IF NOT EXISTS app_kv(key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;",
@@ -105,22 +107,23 @@ pub fn open_app(path: &str) -> rusqlite::Result<Connection> {
     Ok(c)
 }
 
-/// The database of the core the app is using now, for the parts that run without one handed to them (the
-/// transition planner on the audio thread, analyses finished in the background, downloads followed from
-/// the platform). The core holds it; this only keeps it while the core does.
-static ACTIVE: Mutex<Weak<Mutex<Connection>>> = Mutex::new(Weak::new());
+/// The profile's database in use, for the planner and the queue; replaced when another core opens.
+/// Weak: the core owns it.
+#[derive(Default)]
+pub struct Profile(Mutex<Weak<Mutex<Connection>>>);
 
-/// `db` is the database of the core the app uses from now on: the newest one made.
-pub fn set_active(db: &Arc<Mutex<Connection>>) {
-    *ACTIVE.lock() = Arc::downgrade(db);
+impl Profile {
+    pub fn set(&self, db: &Arc<Mutex<Connection>>) {
+        *self.0.lock() = Arc::downgrade(db);
+    }
+
+    /// The database, if its core is alive.
+    pub fn get(&self) -> Option<Arc<Mutex<Connection>>> {
+        self.0.lock().upgrade()
+    }
 }
 
-/// The database of the core the app is using now, if there is one.
-pub fn active() -> Option<Arc<Mutex<Connection>>> {
-    ACTIVE.lock().upgrade()
-}
-
-/// The app's one database file; every server profile has its rows in it.
+/// The database file name.
 pub const DB_FILE: &str = "nori.db";
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
@@ -128,14 +131,14 @@ pub fn db_file_name() -> String {
     DB_FILE.into()
 }
 
-/// A removed server profile's rows gone from the app's database at `db_path`.
+/// Deletes a removed profile's rows from the database at `db_path`.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn db_forget_server(db_path: String, server: String) -> nori_model::Result<()> {
     Ok(forget_server(&open_app(&db_path)?, &server)?)
 }
 
-/// The rows of one server gone, for a server profile that was removed.
-pub fn forget_server(c: &Connection, server: &str) -> rusqlite::Result<()> {
+/// Deletes all rows of `server`.
+pub(crate) fn forget_server(c: &Connection, server: &str) -> rusqlite::Result<()> {
     c.execute("DELETE FROM fts WHERE rowid IN (SELECT rowid FROM items WHERE server=?1)", [server])?;
     for t in SERVER_TABLES {
         c.execute(&format!("DELETE FROM {t} WHERE server=?1"), [server])?;
@@ -147,14 +150,9 @@ pub fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
-/// Provider items from octo-fiesta are not library rows: they change id once
-/// downloaded, so they are never indexed.
-pub fn external(id: &str) -> bool {
-    id.starts_with("ext-") || id.starts_with("pl-")
-}
-
 fn upsert<T: Serialize>(c: &Connection, kind: i64, id: &str, text: &str, item: &T) -> rusqlite::Result<bool> {
-    if id.is_empty() || external(id) {
+    // Provider items are not library rows.
+    if id.is_empty() || nori_model::is_provider_id(id) {
         return Ok(false);
     }
     let json = serde_json::to_string(item).unwrap_or_default();
@@ -184,23 +182,17 @@ pub fn index(c: &mut Connection, artists: &[Artist], albums: &[Album], songs: &[
     for a in artists {
         st.artists += upsert(&tx, ARTIST, &a.id, &a.name, a)? as u32;
     }
-    for a in albums {
-        if a.is_external {
-            continue;
-        }
+    for a in albums.iter().filter(|a| !a.is_external) {
         st.albums += upsert(&tx, ALBUM, &a.id, &format!("{} {}", a.name, a.artist), a)? as u32;
     }
-    for s in songs {
-        if s.is_external {
-            continue;
-        }
+    for s in songs.iter().filter(|s| !s.is_external) {
         st.songs += upsert(&tx, SONG, &s.id, &format!("{} {} {}", s.title, s.artist, s.album), s)? as u32;
     }
     tx.commit()?;
     Ok(st)
 }
 
-/// Every token is a prefix match and all must match: "pin flo" finds Pink Floyd.
+/// An FTS query where every token must prefix-match: "pin flo" finds Pink Floyd.
 fn fts_query(q: &str) -> Option<String> {
     let toks: Vec<String> = q
         .split(|c: char| !c.is_alphanumeric())
@@ -256,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn an_analysis_table_of_an_older_layout_is_made_again_not_carried_over() {
+    fn migrations() {
         let dir = nori_testdir::TempDir::new("db-old");
         let path = dir.join("old.db").to_string_lossy().into_owned();
         {
@@ -265,13 +257,11 @@ mod tests {
         }
         let c = open(&path, "s").unwrap();
         let cols: Vec<String> = c.prepare("PRAGMA table_info(track_analysis)").unwrap().query_map([], |r| r.get::<_, String>(1)).unwrap().map(|c| c.unwrap()).collect();
-        assert!(cols.iter().any(|c| c == "outro_grid_source"), "the current layout");
+        assert!(cols.iter().any(|c| c == "outro_grid_source"));
         let rows: i64 = c.query_row("SELECT count(*) FROM track_analysis", [], |r| r.get(0)).unwrap();
-        assert_eq!(rows, 0, "nothing carried over: the songs are measured again");
-    }
+        assert_eq!(rows, 0);
 
-    #[test]
-    fn lyrics_kept_under_the_old_key_go_as_a_server_is_opened_and_nothing_else_does() {
+        // Old lyrics keys are dropped for this server only.
         let dir = nori_testdir::TempDir::new("db-lyrics");
         let path = dir.join("lyrics.db").to_string_lossy().into_owned();
         {
@@ -284,11 +274,11 @@ mod tests {
         let c = open(&path, "s").unwrap();
         let keys: Vec<(String, String)> = c.prepare("SELECT server, key FROM cache ORDER BY server, key").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|r| r.unwrap()).collect();
         let kept = |s: &str, k: &str| (s.to_string(), k.to_string());
-        assert_eq!(keys, [kept("s", "lrclib2"), kept("s", "lrclib3|a"), kept("t", "lrclib2|a")], "only this server's old lyrics went");
+        assert_eq!(keys, [kept("s", "lrclib2"), kept("s", "lrclib3|a"), kept("t", "lrclib2|a")]);
     }
 
     #[test]
-    fn each_server_reads_its_own_rows_and_forgetting_one_leaves_the_rest() {
+    fn servers_isolated_and_forgotten() {
         let dir = nori_testdir::TempDir::new("one-db");
         let path = dir.join("nori.db").display().to_string();
 
@@ -297,13 +287,13 @@ mod tests {
         song(&mut def, "a1", "Airbag");
         song(&mut x1, "b1", "Bones");
         assert_eq!(search(&def, "airbag", 10).unwrap().songs.len(), 1);
-        assert!(search(&def, "bones", 10).unwrap().songs.is_empty(), "another server's songs are not this one's");
+        assert!(search(&def, "bones", 10).unwrap().songs.is_empty());
         assert_eq!(search(&x1, "bones", 10).unwrap().songs[0].id, "b1");
 
         forget_server(&def, "x1").unwrap();
         assert!(search(&x1, "bones", 10).unwrap().songs.is_empty());
         assert_eq!(search(&def, "airbag", 10).unwrap().songs.len(), 1);
         drop((def, x1));
-        assert_eq!(search(&open(&path, "default").unwrap(), "airbag", 10).unwrap().songs.len(), 1, "opened again, nothing lost");
+        assert_eq!(search(&open(&path, "default").unwrap(), "airbag", 10).unwrap().songs.len(), 1, "persisted");
     }
 }

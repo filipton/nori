@@ -1,7 +1,5 @@
-//! The equalizer page, as the Android app's EqualizerScreen has it: the switch, graphic or parametric, the
-//! graphic's layout with the curve it plays, a slider per band, the presets, the pre-amp, then the output
-//! (balance, mono, the limiter) and the crossfeed. Every number is the core's (nori-settings dsp.rs); the
-//! words are this client's.
+//! The equalizer page, as Android's EqualizerScreen: mode, bands and curve, presets, pre-amp, balance,
+//! mono, limiter and crossfeed. All numbers come from the core.
 
 use nori_core::dsp::{effective_preamp_db, eq_presets, graphic_bands, graphic_response};
 use nori_core::settings::{crossfeed_preset_of, EqMode, StoredPrefs, EQ_RANGES};
@@ -22,7 +20,8 @@ pub fn hz(f: f32) -> String {
     }
 }
 
-fn signed(v: f32) -> String {
+/// "+1.5", "−3.0" (typographic minus).
+pub fn signed(v: f32) -> String {
     if v > 0.0 { format!("+{v:.1}") } else { format!("{v:.1}").replace('-', "−") }
 }
 
@@ -56,8 +55,7 @@ fn uses_gain(k: EqKind) -> bool {
     matches!(k, EqKind::Peaking | EqKind::LowShelf | EqKind::HighShelf | EqKind::LowShelfSlope | EqKind::HighShelfSlope)
 }
 
-/// The curve the graphic equalizer plays, as SVG path commands filling a `w` by `h` box (20 Hz to 20 kHz across,
-/// ±15 dB up and down).
+/// The graphic EQ response as an SVG path in a `w` x `h` box (20 Hz..20 kHz, ±15 dB).
 fn curve(sliders: &[f32], w: f32, h: f32) -> String {
     let freqs: Vec<f32> = (0..97).map(|i| 20.0 * 1000f32.powf(i as f32 / 96.0)).collect();
     let r = graphic_response(sliders.to_vec(), freqs);
@@ -70,14 +68,13 @@ fn curve(sliders: &[f32], w: f32, h: f32) -> String {
     out
 }
 
-/// Only the curve, while a band is being dragged (the sliders keep their own place until it is let go).
+/// Updates only the curve, while a band is dragged.
 pub fn curve_only(ui: &AppWindow, p: &StoredPrefs) {
     if p.eq_mode == EqMode::Graphic {
         ui.set_eq_curve(curve(&p.eq_graphic, ui.get_eq_curve_w(), ui.get_eq_curve_h()).into());
     }
 }
 
-/// Everything the page shows, from the settings as they are.
 pub fn fill(ui: &AppWindow, p: &StoredPrefs) {
     let graphic = p.eq_mode == EqMode::Graphic;
     ui.set_eq_on(p.eq_enabled);
@@ -155,15 +152,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frequencies_read_as_the_bands_are_named() {
+    fn eq_drawing() {
         assert_eq!((hz(31.5), hz(63.0), hz(1000.0), hz(2500.0), hz(16000.0)), ("31.5".into(), "63".into(), "1k".into(), "2.5k".into(), "16k".into()));
-    }
 
-    #[test]
-    fn the_curve_is_one_point_per_step() {
+        // Curve spans the box flat at zero.
         let c = curve(&[0.0; 10], 960.0, 96.0);
         assert_eq!(c.matches('L').count(), 96);
         assert!(c.starts_with("M0.0 48.0"), "{c}");
         assert!(c.trim_end().ends_with("L960.0 48.0"), "{c}");
     }
+
 }

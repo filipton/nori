@@ -1,19 +1,7 @@
-//! How far an answer is trusted to be this song's lyrics, and how good they are: one score from 0 to 1
-//! per answer, from which race.rs picks the lyrics to show. It is made of
-//!
-//! - the metadata match: how close the title, artist and album the service named are to the song's
-//!   (normalised, versions and features left out), and its length to the song's;
-//! - the timing: word by word over line by line over not timed, and whether the times are plausible
-//!   (in order, within the song, no long silences, the last line near the song's end);
-//! - the agreement: how many of the other answers are the same words ([`agree`]), since many sources
-//!   agreeing is strong evidence;
-//! - the service's own reliability (`LyricsService::prior`);
-//! - less for junk: lines repeated over and over, few lines, words in another script than every other
-//!   answer's, disagreeing with every other answer while they agree among themselves, credits or
-//!   placeholders left in the middle, and a service naming another title;
-//! - once the song has been measured (its vocal activity curve, with the AutoMix analysis), whether the
-//!   times fit where the voice is heard ([`with_sync`], sync.rs): a term of its own, and less for timing
-//!   made for another version of the song or fitting the voice nowhere. Before that the score is as above.
+//! One 0-1 score per answer, which race.rs ranks by: the named metadata's match, the timing and its
+//! plausibility, agreement with the other answers, the service's prior, less a penalty for junk
+//! (repeats, few lines, a lone script, being outvoted, credits inside, another title), and once the
+//! song is measured, the sync check ([`with_sync`]).
 
 use std::collections::HashSet;
 
@@ -21,13 +9,12 @@ use nori_model::{Lyrics, Song};
 use serde::{Deserialize, Serialize};
 
 use crate::credits::credits_inside;
-use crate::fit::{agree, norm};
-use crate::formats::timing;
+use crate::fit::norm;
+use crate::formats::{timing, Timing};
 use crate::lrclib::clean;
 use crate::sync::{SyncCheck, SyncKind};
 
-/// What a service said about the song it found, where it said anything: none of it is known for a
-/// service that answers with the words alone (it matched the song on its own side).
+/// What a service said about the song it found; all none for one that answers with words alone.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Named {
     pub title: Option<String>,
@@ -73,17 +60,17 @@ const W_AGREE: f64 = 0.30;
 const W_PRIOR: f64 = 0.15;
 const W_SHAPE: f64 = 0.15;
 
-/// A part nothing is known about: the service matched the song on its side, which is worth something.
+/// A part nothing is known about (the service matched the song on its side).
 const UNKNOWN: f64 = 0.7;
 
-fn latin(v: &str) -> bool {
+/// Whether every letter is Latin (or not a letter): two such names can be compared.
+pub(crate) fn latin(v: &str) -> bool {
     v.chars().all(|c| !c.is_alphabetic() || c <= '\u{024F}')
 }
 
-/// How alike two names are, 0 to 1: the same once normalised (and "feat." and version notes gone) is 1,
-/// one containing the other 0.85, otherwise the share of words they have in common. Names in two scripts
-/// cannot be compared: the part is unknown.
-pub fn name_alike(a: &str, b: &str) -> f64 {
+/// How alike two names are, 0 to 1: equal once cleaned and normalised 1, one containing the other 0.85,
+/// else by shared words; names in two scripts are [`UNKNOWN`].
+pub(crate) fn name_alike(a: &str, b: &str) -> f64 {
     let (x, y) = (norm(&clean(a)), norm(&clean(b)));
     let (x, y) = if x.is_empty() || y.is_empty() { (norm(a), norm(b)) } else { (x, y) };
     if x.is_empty() || y.is_empty() {
@@ -103,8 +90,7 @@ pub fn name_alike(a: &str, b: &str) -> f64 {
     2.0 * shared / (wx.len() + wy.len()) as f64 * 0.8
 }
 
-/// How well what the service named matches the song: title, artist, album and length, each weighed, an
-/// unknown one counted as [`UNKNOWN`].
+/// How well what the service named matches the song: title, artist, album and length, weighed.
 fn meta(song: &Song, named: &Named) -> f64 {
     let part = |v: Option<f64>| v.unwrap_or(UNKNOWN);
     let title = named.title.as_deref().map(|t| name_alike(t, &song.title));
@@ -117,20 +103,19 @@ fn meta(song: &Song, named: &Named) -> f64 {
     0.45 * part(title) + 0.25 * part(artist) + 0.05 * part(album) + 0.25 * part(length)
 }
 
-/// Word by word over line by line over not timed. Without preferring words, a line-timed answer is
-/// nearly as good as a word-timed one.
+/// Words over lines over untimed; without `prefer_words`, lines are nearly as good as words.
 fn timing_part(l: &Lyrics, prefer_words: bool) -> f64 {
     match timing(l) {
-        3 => 1.0,
-        2 if prefer_words => 0.7,
-        2 => 0.95,
-        1 => 0.35,
-        _ => 0.0,
+        Timing::Words => 1.0,
+        Timing::Lines if prefer_words => 0.7,
+        Timing::Lines => 0.95,
+        Timing::Untimed => 0.35,
+        Timing::Empty => 0.0,
     }
 }
 
-/// Whether the times make sense for this song: in order, within its length, without long silences
-/// between lines, starting in its first half and ending near its end. Untimed words: unknown.
+/// Whether the times make sense: in order, within the song, no minute-long gaps, starting early and
+/// ending near the end.
 fn shape(l: &Lyrics, song: &Song) -> f64 {
     let t: Vec<i64> = if l.synced { l.lines.iter().filter(|x| x.start_ms >= 0 && !x.text.trim().is_empty()).map(|x| x.start_ms).collect() } else { Vec::new() };
     if t.len() < 2 {
@@ -155,8 +140,8 @@ fn shape(l: &Lyrics, song: &Song) -> f64 {
     (ordered + gaps + within + end + start) / 5.0
 }
 
-/// The script most of the words are written in: Latin, Cyrillic, Greek, Arabic, Hebrew, Han, kana,
-/// Hangul or Thai (a Japanese answer's kanji counts as kana when it has any).
+/// The main script, as an index: Latin, Cyrillic, Greek, Arabic, Hebrew, Han, kana (with any kanji),
+/// Hangul, Thai.
 fn script(l: &Lyrics) -> Option<u8> {
     let mut counts = [0usize; 9];
     for c in l.lines.iter().flat_map(|x| x.text.chars()).filter(|c| c.is_alphabetic()) {
@@ -182,8 +167,7 @@ fn script(l: &Lyrics) -> Option<u8> {
     (*n > 0).then_some(k as u8)
 }
 
-/// Lines repeated over and over, and too few lines: what a fragment of another song, or a service's
-/// filler, looks like.
+/// The penalty for repeats, too few lines and credits left inside.
 fn junk(l: &Lyrics) -> f64 {
     let sung: Vec<String> = l.lines.iter().map(|x| norm(&x.text)).filter(|t| !t.is_empty()).collect();
     let distinct = sung.iter().collect::<HashSet<_>>().len();
@@ -202,54 +186,53 @@ fn junk(l: &Lyrics) -> f64 {
 const OTHER_TITLE: f64 = 0.15;
 /// Taken off an answer in another script than every other answer.
 const OTHER_SCRIPT: f64 = 0.2;
-/// Taken off an answer that agrees with none of the others while at least two of them agree with each
-/// other: the majority has other words.
+/// Taken off an answer agreeing with none of the others while two of them agree.
 const OUTVOTED: f64 = 0.2;
 
-/// The score of `l`, from a service trusted `prior`, which named `named`; `others` are the other answers
-/// to the same song, whose agreement counts.
-pub fn score(song: &Song, l: &Lyrics, named: &Named, prior: f64, others: &[(&Lyrics, &Named)], prefer_words: bool) -> Trust {
-    // An answer with the same words as one naming this song is this song's as surely, nearly: a service
-    // that names nothing borrows the match of one that agrees with it.
-    let backing = others.iter().filter(|(o, _)| agree(l, o)).map(|(_, n)| meta(song, n) * 0.95).fold(0.0, f64::max);
+/// Another answer beside the one scored: its lyrics, what its service named, and whether it has the
+/// same words as the scored one.
+pub struct Other<'a> {
+    pub lyrics: &'a Lyrics,
+    pub named: &'a Named,
+    pub agrees: bool,
+}
+
+/// The score of `l` from a service trusted `prior` that named `named`, beside the `others` answers, of
+/// which two agree with each other when `others_agree`.
+pub fn score(song: &Song, l: &Lyrics, named: &Named, prior: f64, others: &[Other], others_agree: bool, prefer_words: bool) -> Trust {
+    // An answer borrows most of the metadata match of one it agrees with.
+    let backing = others.iter().filter(|o| o.agrees).map(|o| meta(song, o.named) * 0.95).fold(0.0, f64::max);
     let meta = meta(song, named).max(backing);
-    let others: Vec<&Lyrics> = others.iter().map(|(o, _)| *o).collect();
     let timing = timing_part(l, prefer_words);
     let shape = shape(l, song);
-    let agreeing = others.iter().filter(|o| agree(l, o)).count();
+    let agreeing = others.iter().filter(|o| o.agrees).count();
     let agreement = (agreeing as f64 + 0.5) / (others.len() as f64 + 1.0);
     let mut penalty = junk(l);
     if named.title.as_deref().is_some_and(|t| latin(t) == latin(&song.title) && name_alike(t, &song.title) < 0.5) {
         penalty += OTHER_TITLE;
     }
     let mine = script(l);
-    let theirs: Vec<Option<u8>> = others.iter().map(|o| script(o)).collect();
+    let theirs: Vec<Option<u8>> = others.iter().map(|o| script(o.lyrics)).collect();
     if !theirs.is_empty() && theirs.iter().all(|s| s.is_some() && *s != mine && *s == theirs[0]) && agreeing == 0 {
         penalty += OTHER_SCRIPT;
     }
-    let outvoted = agreeing == 0 && others.iter().enumerate().any(|(i, a)| others[i + 1..].iter().any(|b| agree(a, b)));
-    if outvoted {
+    if agreeing == 0 && others_agree {
         penalty += OUTVOTED;
     }
     let raw = W_META * meta + W_TIMING * timing + W_AGREE * agreement + W_PRIOR * prior + W_SHAPE * shape - penalty;
     Trust { score: raw.clamp(0.0, 1.0), meta, timing, shape, agreement, prior, penalty, sync: None }
 }
 
-/// How much of the score the sync check takes, once there is one. Measured on a real library (sync_tune.rs):
-/// with another song's timing put in as a rival trusted 0.05 more than a song's best good answer, the good
-/// one came out on top in 18 of 26 songs at 0.1, 21 at 0.25 and at 0.4; but above 0.25 answers the other
-/// services agreed on lost their place to lone ones more often (19 of 26 on top at 0.25, 17 at 0.3).
+/// The sync check's share of the score; tuned on a real library, higher let lone answers beat agreed ones.
 const W_SYNC: f64 = 0.25;
-/// Taken off lyrics timed for another version of the song (the halves want different offsets)...
+/// Taken off lyrics timed for another version...
 const DRIFTS: f64 = 0.1;
 /// ...and off lyrics that fit the voice at no offset.
 const POOR_FIT: f64 = 0.1;
 
-/// `t` with the sync check of its lyrics against the song's vocal curve taken in, when there is one: the
-/// score so far keeps `1 - W_SYNC` of its weight and the check's score (at the offset shown) takes the rest,
-/// less [`DRIFTS`] or [`POOR_FIT`]. An unsure check, or none (not timed, the song not measured yet), leaves
-/// the score as it was.
-pub fn with_sync(mut t: Trust, check: Option<&SyncCheck>) -> Trust {
+/// `t` with the sync check weighed in ([`W_SYNC`], less [`DRIFTS`] or [`POOR_FIT`]); no or an unsure
+/// check leaves it as it was.
+pub(crate) fn with_sync(mut t: Trust, check: Option<&SyncCheck>) -> Trust {
     let Some(c) = check.filter(|c| c.kind != SyncKind::Unsure) else { return t };
     let off = match c.kind {
         SyncKind::Drifts => DRIFTS,
@@ -285,39 +268,48 @@ mod tests {
     }
 
     #[test]
-    fn word_timing_beats_line_timing_and_both_beat_plain_words() {
+    fn timing_ranks_words_lines_plain() {
         let s = song();
         let n = named("Glass Harbour", 180.0);
-        let words = score(&s, &song_words(true), &n, 0.85, &[], true).score;
-        let lines = score(&s, &song_words(false), &n, 0.85, &[], true).score;
+        let words = score(&s, &song_words(true), &n, 0.85, &[], false, true).score;
+        let lines = score(&s, &song_words(false), &n, 0.85, &[], false, true).score;
         let mut plain = song_words(false);
         plain.synced = false;
-        let untimed = score(&s, &plain, &n, 0.85, &[], true).score;
+        let untimed = score(&s, &plain, &n, 0.85, &[], false, true).score;
         assert!(words > lines && lines > untimed, "{words} {lines} {untimed}");
-        let even = score(&s, &song_words(false), &n, 0.85, &[], false).score;
+        let even = score(&s, &song_words(false), &n, 0.85, &[], false, false).score;
         assert!(words - even < 0.02, "without preferring words, lines are nearly as good");
     }
 
     #[test]
-    fn a_length_or_title_that_is_not_the_songs_costs() {
+    fn costs() {
         let s = song();
-        let right = score(&s, &song_words(true), &named("Glass Harbour", 180.0), 0.8, &[], true).score;
-        let long = score(&s, &song_words(true), &named("Glass Harbour", 188.0), 0.8, &[], true).score;
-        let other = score(&s, &song_words(true), &named("Whisky on the Table", 180.0), 0.8, &[], true).score;
+        let right = score(&s, &song_words(true), &named("Glass Harbour", 180.0), 0.8, &[], false, true).score;
+        let long = score(&s, &song_words(true), &named("Glass Harbour", 188.0), 0.8, &[], false, true).score;
+        let other = score(&s, &song_words(true), &named("Whisky on the Table", 180.0), 0.8, &[], false, true).score;
         assert!(right > long && long > other, "{right} {long} {other}");
         assert!(right - other > 0.2);
-    }
 
-    #[test]
-    fn times_past_the_end_out_of_order_or_ending_early_cost() {
+        // Implausible times cost.
         let s = song();
-        let good = score(&s, &song_words(true), &Named::default(), 0.8, &[], true).score;
+        let good = score(&s, &song_words(true), &Named::default(), 0.8, &[], false, true).score;
         let early: Vec<(i64, &str)> = (0..18).map(|i| (5_000 + i * 4_000, ["line one here", "line two here", "a third line", "line four", "the fifth one", "and a sixth"][i as usize % 6])).collect();
-        let short = score(&s, &timed(&early, true), &Named::default(), 0.8, &[], true).score;
+        let short = score(&s, &timed(&early, true), &Named::default(), 0.8, &[], false, true).score;
         let mut shuffled = song_words(true);
         shuffled.lines.reverse();
-        let jumbled = score(&s, &shuffled, &Named::default(), 0.8, &[], true).score;
+        let jumbled = score(&s, &shuffled, &Named::default(), 0.8, &[], false, true).score;
         assert!(good > short && good > jumbled, "{good} {short} {jumbled}");
+
+        // Lone script costs.
+        let s = song();
+        let lines: Vec<(i64, &str)> = (0..18).map(|i| (10_000 + i * 9_000, ["紙の舟が行く", "港の灯り", "波が遠く", "朝が来る", "水をつかむ", "光をつかむ"][i as usize % 6])).collect();
+        let japanese = timed(&lines, true);
+        let (a, b) = (song_words(true), song_words(false));
+        let n = Named::default();
+        let odd = score(&s, &japanese, &n, 0.8, &[Other { lyrics: &a, named: &n, agrees: false }, Other { lyrics: &b, named: &n, agrees: false }], true, true);
+        assert!(odd.penalty >= OTHER_SCRIPT);
+        let alone = score(&s, &japanese, &n, 0.8, &[], false, true);
+        assert!(alone.penalty < OTHER_SCRIPT, "alone, a script is no evidence");
     }
 
     #[test]
@@ -326,21 +318,12 @@ mod tests {
         let (a, b) = (song_words(true), song_words(false));
         let other: Vec<(i64, &str)> = (0..18).map(|i| (10_000 + i * 9_000, ["something else entirely", "nothing alike at all", "words of another tune"][i as usize % 3])).collect();
         let other = timed(&other, true);
-        let alone = score(&s, &a, &Named::default(), 0.8, &[], true).score;
-        let backed = score(&s, &a, &Named::default(), 0.8, &[(&b, &Named::default())], true).score;
-        let doubted = score(&s, &a, &Named::default(), 0.8, &[(&other, &Named::default())], true).score;
+        let n = Named::default();
+        let beside = |o| [Other { lyrics: o, named: &n, agrees: crate::fit::agree(&a, o) }];
+        let alone = score(&s, &a, &n, 0.8, &[], false, true).score;
+        let backed = score(&s, &a, &n, 0.8, &beside(&b), false, true).score;
+        let doubted = score(&s, &a, &n, 0.8, &beside(&other), false, true).score;
         assert!(backed > alone && alone > doubted, "{backed} {alone} {doubted}");
     }
 
-    #[test]
-    fn another_script_than_every_other_answer_costs() {
-        let s = song();
-        let lines: Vec<(i64, &str)> = (0..18).map(|i| (10_000 + i * 9_000, ["紙の舟が行く", "港の灯り", "波が遠く", "朝が来る", "水をつかむ", "光をつかむ"][i as usize % 6])).collect();
-        let japanese = timed(&lines, true);
-        let (a, b) = (song_words(true), song_words(false));
-        let odd = score(&s, &japanese, &Named::default(), 0.8, &[(&a, &Named::default()), (&b, &Named::default())], true);
-        assert!(odd.penalty >= OTHER_SCRIPT);
-        let alone = score(&s, &japanese, &Named::default(), 0.8, &[], true);
-        assert!(alone.penalty < OTHER_SCRIPT, "alone, a script is no evidence");
-    }
 }

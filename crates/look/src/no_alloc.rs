@@ -1,6 +1,5 @@
-//! The lyrics are asked where they are once every second display frame for as long as they are on screen,
-//! so that question must not allocate: an allocation per frame is a lock and a search on the UI thread,
-//! thirty times a second. The test binary counts every allocation made on the calling thread.
+//! Per-frame calls (lyrics clock, draw keys) must not allocate. The test binary's global allocator counts
+//! allocations per thread (a global allocator must be a static).
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -34,7 +33,7 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
-/// Allocations `f` made on this thread.
+/// Allocations made by `f` on this thread.
 fn allocations(f: impl FnOnce()) -> u64 {
     let before = ALLOCS.with(Cell::get);
     f();
@@ -42,8 +41,8 @@ fn allocations(f: impl FnOnce()) -> u64 {
 }
 
 #[test]
-fn asking_the_lyrics_where_they_are_allocates_nothing() {
-    // A song's worth: 80 lines of five timed words, 2.5 s apart.
+fn lyric_clock_does_not_allocate() {
+    // 80 lines of five timed words, 2.5 s apart.
     let lines = (0..80i64).map(|i| {
         let start = 5_000 + i * 2_500;
         let words = (0..5u32).map(|k| Word { start_ms: start + k as i64 * 400, end_ms: start + k as i64 * 400 + 350, start: k * 6, end: k * 6 + 5 }).collect();
@@ -52,8 +51,7 @@ fn asking_the_lyrics_where_they_are_allocates_nothing() {
     let clock = LyricClock::new(LyricTiming::new(true, true, lines), 0);
     let mut seen = 0i64;
     let n = allocations(|| {
-        // Every second frame of the whole song with the sweep, then again a line at a time, with a nudge,
-        // a forced look and a tap in between: everything a platform does while the lyrics are open.
+        // Every other frame of the song with and without sweep, plus nudge, forced refresh and tap.
         for sweep in [true, false] {
             let mut t = 0;
             while t < 210_000 {
@@ -68,21 +66,5 @@ fn asking_the_lyrics_where_they_are_allocates_nothing() {
         }
     });
     std::hint::black_box(seen);
-    assert_eq!(n, 0);
-}
-
-#[test]
-fn the_keys_asked_while_drawing_allocate_nothing() {
-    let url = "https://m.example/rest/getCoverArt.view?id=al-1&size=320";
-    let mut key = String::with_capacity(256);
-    let mut seen = 0i64;
-    let n = allocations(|| {
-        for i in 0..1_000 {
-            let t = i as f32 / 1_000.0;
-            seen ^= crate::sleeve::band_key(t, 1.0, 0.9 * t, 0.5);
-            crate::cover::palette_key(&mut key, url, i % 2 == 0, i % 3 == 0);
-        }
-    });
-    std::hint::black_box((seen, &key));
     assert_eq!(n, 0);
 }

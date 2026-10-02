@@ -102,6 +102,8 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
     /** The index's bookkeeping. Downloads never run here: see [TrackedDownloaders]. */
     private val io = Executors.newFixedThreadPool(2)
     private val main = Handler(Looper.getMainLooper())
+    private var workingAt = 0L
+    private var workingDue = false
     private val _state = MutableStateFlow(DownloadState())
     val state: StateFlow<DownloadState> = _state
 
@@ -578,11 +580,21 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
             // Still downloading: the progress notification is media3's, asked every second.
             if (w != null && !manager.isIdle) return
             val on = if (w?.holding == true) DOWNLOAD_NOTIFICATION else DOWNLOAD_RESULT_NOTIFICATION
+            // At most one update a second: marks change many times a second while songs process.
+            val now = SystemClock.elapsedRealtime()
+            if (on == workingOn && now - workingAt < 1000) {
+                if (!workingDue) {
+                    workingDue = true
+                    main.postDelayed({ workingDue = false; if (summaryWaits) summarise() }, workingAt + 1000 - now)
+                }
+                return
+            }
             val shown = lastWorking
             val n = workingNotification(p)
             if (n === shown && on == workingOn) return
             if (workingOn != 0 && workingOn != on && workingOn == DOWNLOAD_RESULT_NOTIFICATION) nm.cancel(DOWNLOAD_RESULT_NOTIFICATION)
             workingOn = on
+            workingAt = now
             runCatching { nm.notify(on, n) }
             return
         }

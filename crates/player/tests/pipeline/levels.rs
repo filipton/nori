@@ -1,9 +1,4 @@
-//! How loud a transition is, measured: two songs of different loudness and different ReplayGain
-//! through every kind of transition the planner makes, the output's short-term level read every
-//! 100 ms. Each song is heard at its own ReplayGain level times the mix curve, the incoming one never
-//! at the outgoing one's volume or at full; the level never steps where a mix ends or where a stretch
-//! hands back, a song shorter than the server says included;
-//! AutoMix's loudness match lets go gently; and a stretch of a hair keeps the incoming song's level.
+//! Measured transition loudness (100 ms windows): per-song gains, no steps, gentle loudness-match release.
 
 use nori_player::automix::ANALYSIS_VERSION;
 use nori_player::sim::{prefs_off, Player};
@@ -16,21 +11,9 @@ const SONG_S: f64 = 60.0;
 /// The level window: 100 ms.
 const WIN_S: f64 = 0.1;
 
-/// A steady sound like music with nothing moving in it: a few partials and a little noise at a fixed
-/// level, so its level over any 100 ms is its level everywhere (to a few hundredths of a dB) and any
-/// move of the measured level is the player's. Made once per length, seed and level for the whole run.
+/// Partials and a little noise at a fixed level, so any change in measured level is the player's.
 fn steady(secs: f64, seed: u64, amp: f64) -> Vec<i16> {
-    use std::sync::{Arc, Mutex};
-    type Made = Vec<((u64, u64, u64), Arc<Vec<i16>>)>;
-    static MADE: Mutex<Made> = Mutex::new(Vec::new());
-    let key = (secs.to_bits(), seed, amp.to_bits());
-    let made = MADE.lock().unwrap().iter().find(|(k, _)| *k == key).map(|(_, m)| m.clone());
-    let m = made.unwrap_or_else(|| {
-        let m = Arc::new(make_steady(secs, seed, amp));
-        MADE.lock().unwrap().push((key, m.clone()));
-        m
-    });
-    m.to_vec()
+    cached((1, secs.to_bits(), seed, amp.to_bits()), || make_steady(secs, seed, amp))
 }
 
 fn make_steady(secs: f64, seed: u64, amp: f64) -> Vec<i16> {
@@ -183,7 +166,7 @@ fn run(kind: &Kind, a: &[i16], b: &[i16], gains: &[(&str, f32)], replay_gain: bo
 }
 
 fn run_listed(kind: &Kind, a: nori_player::sim::Track, b: &[i16], gains: &[(&str, f32)], replay_gain: bool) -> Run {
-    let prefs = TransitionPrefs { replay_gain, ..kind.prefs.clone() };
+    let prefs = TransitionPrefs { replay_gain, ..kind.prefs };
     let mut p = Player::with_prefs(vec![a, track("b", b)], prefs);
     p.measure_on_move = false;
     for t in [&kind.a, &kind.b] {
@@ -228,7 +211,7 @@ fn songs() -> (Vec<i16>, Vec<i16>, f32, f32) {
 }
 
 #[test]
-fn each_song_is_mixed_at_its_own_replay_gain_in_every_kind_of_transition() {
+fn each_mix_kind_uses_song_gains() {
     let (a, b, ga, gb) = songs();
     for kind in kinds(-14.0, -14.0) {
         // The ideal: each song turned to its own volume first, then played with no ReplayGain at all.
@@ -257,7 +240,7 @@ fn each_song_is_mixed_at_its_own_replay_gain_in_every_kind_of_transition() {
 }
 
 #[test]
-fn the_incoming_song_is_at_its_own_level_while_it_is_mixed_in() {
+fn incoming_song_at_own_level() {
     // The outgoing song silent: all that is heard during the mix is the incoming one, at its own
     // ReplayGain times the mix curve. Measured against the same with no ReplayGain on either song,
     // the difference is b's own gain all the way - never a's, never none.
@@ -279,7 +262,7 @@ fn the_incoming_song_is_at_its_own_level_while_it_is_mixed_in() {
 }
 
 #[test]
-fn the_level_never_steps_where_a_mix_ends_or_a_stretch_hands_back() {
+fn no_level_step() {
     let (a, b, ga, gb) = songs();
     for kind in kinds(-14.0, -14.0) {
         let got = run(&kind, &a, &b, &[("a", ga), ("b", gb)], true);
@@ -291,69 +274,8 @@ fn the_level_never_steps_where_a_mix_ends_or_a_stretch_hands_back() {
         println!("{}: largest 100 ms move from the end of the mix on: {step:.3} dB, {:.1} s after it", kind.name, i as f64 * WIN_S - 0.2);
         assert!(step <= 1.0, "{}: the level moves {step:.2} dB in 100 ms, {:.1} s after the mix ends ({})", kind.name, i as f64 * WIN_S - 0.2, got.line);
     }
-}
 
-/// The loudness match's own curve for `kind`, dB per 100 ms of the mix: the incoming song alone (the
-/// outgoing one silent), with the match on (ReplayGain off) against the same with it off.
-fn trim_curve(kind: &Kind) -> (Vec<f64>, Run) {
-    let b = steady(SONG_S, 52, 0.2);
-    let quiet = silence(SONG_S);
-    let matched = run(kind, &quiet, &b, &[], false);
-    let plain = run(kind, &quiet, &b, &[], true);
-    assert_eq!(matched.mix, plain.mix, "{}: {} against {}", kind.name, matched.line, plain.line);
-    let (s, n) = matched.mix;
-    let (lm, lp) = (levels(&left(&matched.out), s, s + n + frames(3.0)), levels(&left(&plain.out), s, s + n + frames(3.0)));
-    let peak = lp.iter().cloned().fold(f64::MIN, f64::max);
-    (lm.iter().zip(&lp).map(|(m, p)| if *p > peak - 40.0 { m - p } else { f64::NAN }).collect(), matched)
-}
-
-/// The incoming song measured louder or quieter than the song before it, by 6 dB (the most that keeps
-/// the mix long) and by 9 (the most the match turns, over a mix a loudness gap has shortened): one test
-/// each, so the four run side by side.
-#[test]
-fn the_loudness_match_lets_go_gently_by_the_end_of_the_mix_into_a_song_6_db_quieter() {
-    loudness_match_lets_go_gently(-8.0, -14.0);
-}
-
-#[test]
-fn the_loudness_match_lets_go_gently_by_the_end_of_the_mix_into_a_song_6_db_louder() {
-    loudness_match_lets_go_gently(-14.0, -8.0);
-}
-
-#[test]
-fn the_loudness_match_lets_go_gently_by_the_end_of_the_mix_into_a_song_9_db_quieter() {
-    loudness_match_lets_go_gently(-5.0, -14.0);
-}
-
-#[test]
-fn the_loudness_match_lets_go_gently_by_the_end_of_the_mix_into_a_song_9_db_louder() {
-    loudness_match_lets_go_gently(-14.0, -5.0);
-}
-
-fn loudness_match_lets_go_gently(la: f32, lb: f32) {
-    let mut bad = Vec::new();
-    {
-        for kind in kinds(la, lb).into_iter().skip(1) {
-            let (curve, r) = trim_curve(&kind);
-            let known: Vec<(usize, f64)> = curve.iter().cloned().enumerate().filter(|(_, v)| v.is_finite()).collect();
-            let first = known.first().map_or(0.0, |v| v.1);
-            let last = known.last().map_or(0.0, |v| v.1);
-            let step = known.windows(2).filter(|w| w[1].0 == w[0].0 + 1).map(|w| (w[1].1 - w[0].1).abs()).fold(0.0, f64::max);
-            println!("{} ({la} -> {lb} LUFS): matched by {first:+.2} dB, {last:+.2} dB after, largest 100 ms move {step:.2} dB; {}", kind.name, r.line);
-            assert!((first - (la - lb) as f64).abs() < 0.3, "{}: the incoming song matched by {first:.2} dB, not {}", kind.name, la - lb);
-            assert!(last.abs() < 0.05, "{}: {last:.2} dB still turned after the mix", kind.name);
-            if step > 1.0 {
-                bad.push(format!("{} ({la} -> {lb} LUFS): the match lets go by {step:.2} dB in 100 ms ({})", kind.name, r.line));
-            }
-        }
-    }
-    assert!(bad.is_empty(), "{bad:#?}");
-}
-
-
-
-#[test]
-fn a_song_shorter_than_the_server_says_still_ends_its_mix_without_a_step() {
+    // Short song mix ends without step.
     // The server lists the outgoing song a second and a half longer than its audio (a length rounded up,
     // a VBR estimate): a plan made with that length runs past the end of what is held, and the mix must
     // still finish its curves - the incoming song fading up on its own - rather than drop them where the
@@ -397,8 +319,53 @@ fn a_song_shorter_than_the_server_says_still_ends_its_mix_without_a_step() {
     assert!(bad.is_empty(), "{bad:#?}");
 }
 
+/// The loudness match's own curve for `kind`, dB per 100 ms of the mix: the incoming song alone (the
+/// outgoing one silent), with the match on (ReplayGain off) against the same with it off.
+fn trim_curve(kind: &Kind) -> (Vec<f64>, Run) {
+    let b = steady(SONG_S, 52, 0.2);
+    let quiet = silence(SONG_S);
+    let matched = run(kind, &quiet, &b, &[], false);
+    let plain = run(kind, &quiet, &b, &[], true);
+    assert_eq!(matched.mix, plain.mix, "{}: {} against {}", kind.name, matched.line, plain.line);
+    let (s, n) = matched.mix;
+    let (lm, lp) = (levels(&left(&matched.out), s, s + n + frames(3.0)), levels(&left(&plain.out), s, s + n + frames(3.0)));
+    let peak = lp.iter().cloned().fold(f64::MIN, f64::max);
+    (lm.iter().zip(&lp).map(|(m, p)| if *p > peak - 40.0 { m - p } else { f64::NAN }).collect(), matched)
+}
+
+/// The incoming song measured louder or quieter than the song before it, by 6 dB (the most that keeps
+/// the mix long) and by 9 (the most the match turns, over a mix a loudness gap has shortened): one test
+/// each, so the four run side by side.
+/// Into songs 6 and 9 dB quieter and louder.
 #[test]
-fn two_songs_a_tenth_of_a_bpm_apart_are_mixed_at_their_own_level() {
+fn loudness_match_releases_gently() {
+    for (la, lb) in [(-8.0, -14.0), (-14.0, -8.0), (-5.0, -14.0), (-14.0, -5.0)] {
+        loudness_match_lets_go_gently(la, lb);
+    }
+}
+
+fn loudness_match_lets_go_gently(la: f32, lb: f32) {
+    let mut bad = Vec::new();
+    {
+        for kind in kinds(la, lb).into_iter().skip(1) {
+            let (curve, r) = trim_curve(&kind);
+            let known: Vec<(usize, f64)> = curve.iter().cloned().enumerate().filter(|(_, v)| v.is_finite()).collect();
+            let first = known.first().map_or(0.0, |v| v.1);
+            let last = known.last().map_or(0.0, |v| v.1);
+            let step = known.windows(2).filter(|w| w[1].0 == w[0].0 + 1).map(|w| (w[1].1 - w[0].1).abs()).fold(0.0, f64::max);
+            println!("{} ({la} -> {lb} LUFS): matched by {first:+.2} dB, {last:+.2} dB after, largest 100 ms move {step:.2} dB; {}", kind.name, r.line);
+            assert!((first - (la - lb) as f64).abs() < 0.3, "{}: the incoming song matched by {first:.2} dB, not {}", kind.name, la - lb);
+            assert!(last.abs() < 0.05, "{}: {last:.2} dB still turned after the mix", kind.name);
+            if step > 1.0 {
+                bad.push(format!("{} ({la} -> {lb} LUFS): the match lets go by {step:.2} dB in 100 ms ({})", kind.name, r.line));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+#[test]
+fn tiny_stretch_keeps_level() {
     // Stretched by 0.075 %, the incoming song came out of the pitch-keeping stretcher up to 2.6 dB quiet (on
     // noise-like music: cymbals, a crowd, a pad) for the whole mix and the ramp after it, and came back with a
     // step where the stretch handed over. The outgoing song silent, so what is heard is the incoming one.

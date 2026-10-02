@@ -205,9 +205,6 @@ object TestActions {
             "resume" -> player.toggle()
             "next" -> player.next()
             "previous" -> player.previous()
-            // What the equalizer screen sends while it is open: the shallow buffer for live
-            // tweaking, then back. For the checks that the deep buffer returns afterwards.
-            "tuning" -> nori.player.setTuning(ref == "on")
             "enqueue" -> actions.enqueue(songs, from)
             "playnext" -> actions.playNext(songs, from)
             "shuffle" -> player.toggleShuffle()

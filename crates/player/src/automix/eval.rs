@@ -1,21 +1,10 @@
-//! Evaluation harness for the track analysis.
+//! Evaluation of the track analysis and the transitions it plans.
 //!
-//! Synthetic songs whose beats, downbeats, metre, key, vocals and sections are known exactly: drums, bass, chords
-//! and a sung line, in the styles that trip beat trackers up (swing, syncopation, a one-drop, half-time, 3/4, a
-//! band that drifts, an accelerando, a long beatless intro, silence, a detuned band, a kick that moves from bar to
-//! bar). They are scored the way the MIR literature scores these tasks: beat F-measure at ±70 ms, tempo Acc1
-//! (within 4 %) and Acc2 (also ×2, ×½, ×3, ×⅓), downbeat F-measure, key accuracy and the MIREX weighted key score.
-//!
-//! Beside the textbook scores it keeps the ones the mix depends on. Over the half minute at each end that a
-//! transition actually plays, is the grid the planner would use right, and did the analysis say it could be
-//! trusted? A wrong grid that claims to be right is a train wreck; one that admits it is unsure only costs a
-//! plainer fade. So every mix window is one of: bar-locked (beats and downbeats right, and trusted), beat-locked
-//! but on the wrong beat of the bar, wrong, or refused.
-//!
-//! `cargo test --release -p nori-player analysis_eval -- --ignored --nocapture` prints the tables.
-//! `NORI_EVAL_DUMP=<dir>` also writes every song as a 16-bit WAV with its reference beats, for other trackers.
-//! `NORI_REAL=<dir>` scores real recordings the same way: `<name>.s16` (mono 16-bit little-endian), `<name>.rate`
-//! (the sample rate), `<name>.beats` and `<name>.downbeats` (reference times in seconds, one per line).
+//! Synthetic songs with exactly known beats, downbeats, metre, key, vocals and sections, in styles that trip beat
+//! trackers (swing, syncopation, half-time, 3/4, drift, beatless intros, detuning). Scored with the MIR metrics
+//! (beat and downbeat F-measure at ±70 ms, tempo Acc1/Acc2, key accuracy, MIREX key score) and per mix window:
+//! bar-locked, beat-locked on the wrong beat, wrong, or refused (an unsure grid only costs a plainer fade). The
+//! tests at the end hold the analysis and the planner to the scores they reach now.
 
 use std::f64::consts::PI;
 
@@ -879,7 +868,6 @@ pub fn score_window(t: &TrackAnalysis, truth: &Truth, from: f64, to: f64) -> Opt
 
 /// Everything measured on one song.
 pub struct SongScore {
-    pub name: String,
     /// F of the tracked beats, and of the whole-song grid, after the first 5 s of music.
     pub tracked_f: f64,
     pub grid_f: f64,
@@ -897,11 +885,9 @@ pub struct SongScore {
     pub intro_cue_ok: Option<bool>,
     pub outro_cue_ok: Option<bool>,
     pub meter_ok: bool,
-    /// A line of what was measured against what is true, for `NORI_EVAL_VERBOSE`.
-    pub detail: Option<String>,
 }
 
-pub fn score(name: &str, a: &Analysis, truth: &Truth, with_key: bool) -> SongScore {
+pub fn score(a: &Analysis, truth: &Truth, with_key: bool) -> SongScore {
     let t = &a.track;
     let music = (t.silence_start_ms as f64 / 1000.0, t.silence_end_ms as f64 / 1000.0);
     let from = truth.beats.first().copied().unwrap_or(0.0).max(truth.music.0) + 5.0;
@@ -933,7 +919,6 @@ pub fn score(name: &str, a: &Analysis, truth: &Truth, with_key: bool) -> SongSco
         (truth.voice_share(outro_w.0, outro_w.1) >= 0.3, t.outro_vocal >= VOCAL_MIN),
     ];
     SongScore {
-        name: name.to_string(),
         tracked_f: f_measure(&rb, &tracked),
         grid_f: f_measure(&rb, &gb),
         acc1: acc1(t.bpm, truth.bpm),
@@ -942,50 +927,15 @@ pub fn score(name: &str, a: &Analysis, truth: &Truth, with_key: bool) -> SongSco
         outro,
         key_ok: with_key.then_some(t.key == truth.key),
         key_mirex: with_key.then(|| mirex_key(t.key, truth.key)),
-        key_near: with_key.then(|| (0..=1).contains(&structure::key_distance(t.key, truth.key))),
+        key_near: with_key.then(|| structure::key_distance(t.key, truth.key).is_some_and(|d| d <= 1)),
         vocal,
         intro_cue_ok,
         outro_cue_ok,
         meter_ok: bar_beats(t) == truth.meter as i64,
-        detail: Some(format!(
-            "bpm {:.2} (true {:.2}) conf {:.2} stab {:.2} | intro {:.2} c{:.2} s{:.2} ph{} | outro {:.2} c{:.2} s{:.2} ph{} (true {:.2}) | key {} (true {}) {:.2} | cues {:.1}/{} (true {:.1}/{}) | vocal {:.2}/{:.2}",
-            t.bpm, truth.bpm, t.bpm_confidence, t.stability,
-            intro_t.bpm, intro_t.bpm_confidence, intro_t.stability, intro_t.downbeat_phase,
-            outro_t.bpm, outro_t.bpm_confidence, outro_t.stability, outro_t.downbeat_phase,
-            median_bpm(&truth.beats_in(music.1 - MIX_S, music.1)),
-            structure::camelot_name(t.key), structure::camelot_name(truth.key), t.key_confidence,
-            t.intro_end_ms as f64 / 1000.0, outro_cue, truth.intro_end, truth.outro_start.map_or("-".into(), |o| format!("{o:.1}")),
-            t.intro_vocal, t.outro_vocal,
-        )),
     }
 }
 
-fn mark(b: bool) -> &'static str {
-    if b {
-        "yes"
-    } else {
-        "no"
-    }
-}
-
-fn outcome_name(w: &Option<WindowScore>) -> String {
-    match w {
-        None => "-".into(),
-        Some(w) => format!(
-            "{:.2}/{:.2} {}",
-            w.beat_f,
-            w.downbeat_f,
-            match w.outcome {
-                Outcome::BarLocked => "bar",
-                Outcome::WrongBar => "WRONG-BAR",
-                Outcome::Wrong => "WRONG",
-                Outcome::Refused => if w.right { "refused(ok)" } else { "refused" },
-            }
-        ),
-    }
-}
-
-/// The totals the report quotes.
+/// What the scores of a corpus add up to.
 #[derive(Debug, Default)]
 pub struct Totals {
     pub songs: usize,
@@ -1014,11 +964,7 @@ pub struct Totals {
     pub meter_ok: usize,
 }
 
-pub fn report(scores: &[SongScore]) -> Totals {
-    println!(
-        "{:<20} {:>6} {:>6} {:>5} {:>5}  {:<22} {:<22} {:>4} {:>5} {:>9} {:>5}",
-        "song", "trkF", "gridF", "acc1", "acc2", "intro F/dbF", "outro F/dbF", "key", "mirex", "vocal", "cues"
-    );
+pub fn totals(scores: &[SongScore]) -> Totals {
     let mut tot = Totals::default();
     for s in scores {
         tot.songs += 1;
@@ -1055,335 +1001,62 @@ pub fn report(scores: &[SongScore]) -> Totals {
             tot.cues += 1;
             tot.cue_ok += c as usize;
         }
-        if let Some(d) = &s.detail {
-            if std::env::var("NORI_EVAL_VERBOSE").is_ok() {
-                println!("    {d}");
-            }
-        }
-        let vocal = s.vocal.iter().map(|(t, c)| if t == c { "ok" } else if *c { "FA" } else { "miss" }).collect::<Vec<_>>().join("/");
-        println!(
-            "{:<20} {:>6.3} {:>6.3} {:>5} {:>5}  {:<22} {:<22} {:>4} {:>5} {:>9} {:>5}",
-            s.name,
-            s.tracked_f,
-            s.grid_f,
-            mark(s.acc1),
-            mark(s.acc2),
-            outcome_name(&s.intro),
-            outcome_name(&s.outro),
-            s.key_ok.map_or("-", mark),
-            s.key_mirex.map_or("-".into(), |m| format!("{m:.1}")),
-            vocal,
-            format!("{}/{}", s.intro_cue_ok.map_or("-", mark), s.outro_cue_ok.map_or("-", mark)),
-        );
     }
-    let n = tot.songs.max(1) as f64;
-    let w = tot.windows.max(1) as f64;
-    println!(
-        "TOTAL {} songs: tracked beat F {:.3}, whole-grid F {:.3}, tempo Acc1 {}/{} Acc2 {}/{}, metre {}/{}",
-        tot.songs, tot.tracked_f / n, tot.grid_f / n, tot.acc1, tot.songs, tot.acc2, tot.songs, tot.meter_ok, tot.songs
-    );
-    println!(
-        "      {} mix windows: grid F {:.3}, downbeat F {:.3}, local tempo Acc1 {} Acc2 {}; bar-locked {}, wrong bar {}, wrong {}, refused {}",
-        tot.windows, tot.window_f / w, tot.window_db_f / w, tot.window_acc1, tot.window_acc2, tot.bar_locked, tot.wrong_bar, tot.wrong, tot.refused
-    );
-    println!(
-        "      key {}/{} (MIREX {:.3}, within one Camelot step {}/{}), vocal gate {}/{} ({} false alarms), cues {}/{}",
-        tot.key_ok,
-        tot.keys,
-        tot.key_mirex / tot.keys.max(1) as f64,
-        tot.key_near,
-        tot.keys,
-        tot.vocal_ok,
-        tot.vocal_windows,
-        tot.vocal_false_alarm,
-        tot.cue_ok,
-        tot.cues
-    );
     tot
 }
 
-fn write_wav(path: &std::path::Path, x: &[f32], rate: u32) {
-    let mut out = Vec::with_capacity(44 + x.len() * 2);
-    let data = (x.len() * 2) as u32;
-    out.extend_from_slice(b"RIFF");
-    out.extend_from_slice(&(36 + data).to_le_bytes());
-    out.extend_from_slice(b"WAVEfmt ");
-    out.extend_from_slice(&16u32.to_le_bytes());
-    out.extend_from_slice(&1u16.to_le_bytes());
-    out.extend_from_slice(&1u16.to_le_bytes());
-    out.extend_from_slice(&rate.to_le_bytes());
-    out.extend_from_slice(&(rate * 2).to_le_bytes());
-    out.extend_from_slice(&2u16.to_le_bytes());
-    out.extend_from_slice(&16u16.to_le_bytes());
-    out.extend_from_slice(b"data");
-    out.extend_from_slice(&data.to_le_bytes());
-    for v in x {
-        out.extend_from_slice(&((v.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes());
-    }
-    std::fs::write(path, out).unwrap();
+/// `f` over `items` on a few threads, in order.
+fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(6));
+    let mut done: Vec<(usize, R)> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut mine = Vec::new();
+                    loop {
+                        let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(item) = items.get(k) else { return mine };
+                        mine.push((k, f(item)));
+                    }
+                })
+            })
+            .collect();
+        workers.into_iter().flat_map(|w| w.join().unwrap()).collect()
+    });
+    done.sort_by_key(|d| d.0);
+    done.into_iter().map(|d| d.1).collect()
 }
 
-fn write_times(path: &std::path::Path, t: &[f64]) {
-    std::fs::write(path, t.iter().map(|v| format!("{v:.4}\n")).collect::<String>()).unwrap();
+/// Every harness song (the corpus and [`mix_songs`]) rendered and analysed, once per process.
+pub fn analysed(name: &str) -> &'static (Analysis, Truth) {
+    static ALL: std::sync::OnceLock<Vec<(&'static str, (Analysis, Truth))>> = std::sync::OnceLock::new();
+    let all = ALL.get_or_init(|| {
+        let songs: Vec<Song> = mix_songs().into_iter().chain(corpus_all()).collect();
+        par_map(&songs, |song| {
+            let (x, truth) = song.render();
+            (song.name, (analyse(song.name, &x, song.rate), truth))
+        })
+    });
+    &all.iter().find(|(n, _)| *n == name).unwrap_or_else(|| panic!("no song {name}")).1
 }
 
-/// Renders, analyses and scores the synthetic corpus. Returns the scores and the analysis time per minute of audio.
-pub fn run_corpus(songs: &[Song]) -> (Vec<SongScore>, f64) {
-    let dump = std::env::var("NORI_EVAL_DUMP").ok().map(std::path::PathBuf::from);
-    let mut scores = Vec::new();
-    let (mut spent, mut audio) = (0.0, 0.0);
-    for song in songs {
-        let (x, truth) = song.render();
-        if let Some(dir) = &dump {
-            std::fs::create_dir_all(dir).unwrap();
-            write_wav(&dir.join(format!("{}.wav", song.name)), &x, song.rate);
-            write_times(&dir.join(format!("{}.beats", song.name)), &truth.beats);
-            write_times(&dir.join(format!("{}.downbeats", song.name)), &truth.downbeats);
-        }
-        let t0 = std::time::Instant::now();
-        let a = analyse(song.name, &x, song.rate);
-        spent += t0.elapsed().as_secs_f64();
-        audio += x.len() as f64 / song.rate as f64;
-        scores.push(score(song.name, &a, &truth, true));
-    }
-    (scores, spent / (audio / 60.0))
-}
-
-/// One real recording from `NORI_REAL`, with its reference beats.
-pub struct RealSong {
-    pub name: String,
-    pub x: Vec<f32>,
-    pub rate: u32,
-    pub beats: Vec<f64>,
-    pub downbeats: Vec<f64>,
-    /// Camelot code from an optional `<name>.key` ("9A"), 0 when there is none.
-    pub key: i32,
-}
-
-impl RealSong {
-    /// The reference as the scores read it; where the music starts and ends is taken from the analysis.
-    pub fn truth(&self, t: &TrackAnalysis) -> Truth {
-        let music = (t.silence_start_ms as f64 / 1000.0, t.silence_end_ms as f64 / 1000.0);
-        Truth {
-            bpm: median_bpm(&self.beats),
-            meter: 4,
-            key: self.key,
-            voice: Vec::new(),
-            music,
-            intro_end: music.0,
-            outro_start: None,
-            drop: None,
-            exit: None,
-            gaps: Vec::new(),
-            beats: self.beats.clone(),
-            downbeats: self.downbeats.clone(),
-        }
-    }
-}
-
-/// The recordings in `NORI_REAL`, by name; none when it is not set.
-pub fn real_songs() -> Vec<RealSong> {
-    let Ok(dir) = std::env::var("NORI_REAL") else { return Vec::new() };
-    let mut names: Vec<String> = std::fs::read_dir(&dir)
-        .unwrap()
-        .filter_map(|e| e.ok()?.file_name().into_string().ok()?.strip_suffix(".s16").map(str::to_string))
-        .collect();
-    names.sort();
-    let dir = std::path::PathBuf::from(dir);
-    let read_times = |p: std::path::PathBuf| -> Vec<f64> {
-        std::fs::read_to_string(p).unwrap_or_default().lines().filter_map(|l| l.split_whitespace().next()?.parse().ok()).collect()
-    };
-    names
-        .into_iter()
-        .map(|name| {
-            let bytes = std::fs::read(dir.join(format!("{name}.s16"))).unwrap();
-            let rate: u32 = std::fs::read_to_string(dir.join(format!("{name}.rate"))).unwrap().trim().parse().unwrap();
-            let x: Vec<f32> = bytes.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).collect();
-            let key = std::fs::read_to_string(dir.join(format!("{name}.key")))
-                .ok()
-                .and_then(|k| (1..=24).find(|c| structure::camelot_name(*c) == k.trim()))
-                .unwrap_or(0);
-            RealSong {
-                beats: read_times(dir.join(format!("{name}.beats"))),
-                downbeats: read_times(dir.join(format!("{name}.downbeats"))),
-                name,
-                x,
-                rate,
-                key,
-            }
+/// Scores `songs`.
+pub fn run_corpus(songs: &[Song]) -> Vec<SongScore> {
+    songs
+        .iter()
+        .map(|song| {
+            let (a, truth) = analysed(song.name);
+            score(a, truth, true)
         })
         .collect()
 }
 
-/// `cargo test --release -p nori-player analysis_eval -- --ignored --nocapture`
-#[test]
-#[ignore]
-fn analysis_eval() {
-    let (scores, per_min) = run_corpus(&corpus());
-    report(&scores);
-    println!("analysis time: {:.1} ms per minute of audio (this machine, one core)", per_min * 1000.0);
-
-    // Real recordings with reference beats, when there are any.
-    let mut real = Vec::new();
-    for r in real_songs() {
-        let (name, x, rate) = (&r.name, &r.x, r.rate);
-        let a = analyse(name, x, rate);
-        let truth = r.truth(&a.track);
-        let s = score(name, &a, &truth, r.key > 0);
-        println!(
-            "{name}: reference {:.1} BPM, analysis {:.2} BPM (conf {:.2}, stab {:.2}); intro {:.1} outro {:.1}",
-            truth.bpm, a.track.bpm, a.track.bpm_confidence, a.track.stability, a.track.intro_bpm, a.track.outro_bpm
-        );
-        real.push(SongScore { intro_cue_ok: None, outro_cue_ok: None, vocal: Vec::new(), ..s });
-    }
-    if !real.is_empty() {
-        println!("real recordings, against the reference beats:");
-        report(&real);
-    }
-}
-
-/// The songs again with Beat This! run over each end as the app runs it (`beats::window`, `track_window`, the grid
-/// and `beats::merge`), everything else (silence, cues, key) as analysed: what the model changes in the mix windows.
-/// Scored twice: as shipped (its grid only where it is sure, the classical one kept elsewhere) and with its grid
-/// wherever it has one. With `NORI_BEAT_THIS_REF` (another model, normally the full fp32 one) it also prints how
-/// far the two agree on each window's beats and downbeats, which is how an export or a smaller model is checked.
-/// Real recordings come from `NORI_REAL` as for `analysis_eval`; `NORI_BT_CHUNK` runs the model in shorter chunks.
-/// `NORI_BEAT_THIS=<model.onnx> [NORI_BEAT_THIS_REF=<full.onnx>] cargo test --release -p nori-player --features
-/// neural-beats neural_eval -- --ignored --nocapture`
-#[cfg(feature = "neural-beats")]
-#[test]
-#[ignore]
-fn neural_eval() {
-    use super::beats::{self, EndGrid};
-    use super::neural::{self, BeatThis, Tracked};
-    use super::beats::MixEnd;
-
-    let Ok(path) = std::env::var("NORI_BEAT_THIS") else { return };
-    let load = |p: &str, chunk: usize| {
-        let t0 = std::time::Instant::now();
-        let m = BeatThis::load_chunked(std::path::Path::new(p), chunk).expect("model");
-        println!("{p}: chunks of {chunk} frames, loaded and optimised in {:.2} s", t0.elapsed().as_secs_f64());
-        m
-    };
-    // The model as the app runs it (or in chunks of NORI_BT_CHUNK frames), and the reference over whole 30 s
-    // windows, as it was trained.
-    let chunk = std::env::var("NORI_BT_CHUNK").ok().and_then(|c| c.parse().ok()).unwrap_or(neural::CHUNK);
-    let model = load(&path, chunk);
-    let reference = std::env::var("NORI_BEAT_THIS_REF").ok().map(|p| load(&p, neural::CHUNK));
-    let (spent, runs) = (std::cell::Cell::new(0.0), std::cell::Cell::new(0usize));
-    let run = |m: &BeatThis, x: &[f32], rate: u32, end: MixEnd, from_ms: i64, timed: bool| -> Tracked {
-        let t0 = std::time::Instant::now();
-        let mut t = m.track_window(x, rate, end == MixEnd::Intro).expect("inference");
-        if timed {
-            spent.set(spent.get() + t0.elapsed().as_secs_f64());
-            runs.set(runs.get() + 1);
-        }
-        t.beats.iter_mut().chain(t.downbeats.iter_mut()).for_each(|v| *v += from_ms as f64 / 1000.0);
-        t
-    };
-    let end_grid = |t: &Tracked| {
-        neural::grid(t).map(|g| EndGrid {
-            bpm: g.bpm,
-            offset_ms: g.offset_s * 1000.0,
-            confidence: g.confidence,
-            stability: g.stability,
-            downbeat_phase: g.downbeat_phase,
-            beats_per_bar: g.beats_per_bar,
-            other_phase: g.other_phase,
-            anchor_ms: g.anchor_s * 1000.0,
-        })
-    };
-    // (beat F, downbeat F) of the model's beats against the reference model's, summed over windows, and the count.
-    let agree = std::cell::Cell::new((0.0, 0.0, 0usize));
-    let scored = |name: &str, x: &[f32], rate: u32, a: &Analysis, truth: &Truth| -> (SongScore, SongScore) {
-        let mut shipped = a.track.clone();
-        let mut always = a.track.clone();
-        let have = (0, x.len() as i64 * 1000 / rate as i64);
-        for end in [MixEnd::Intro, MixEnd::Outro] {
-            let Some((from, to)) = beats::window(&a.track, end, have) else { continue };
-            let at = |ms: i64| ((ms * rate as i64 / 1000) as usize).min(x.len());
-            let piece = &x[at(from)..at(to)];
-            let t = run(&model, piece, rate, end, from, true);
-            let g = end_grid(&t);
-            beats::merge(&mut shipped, end, g);
-            if let Some(g) = g {
-                beats::merge(&mut always, end, Some(EndGrid { confidence: 1.0, stability: 1.0, other_phase: -1, ..g }));
-                // Its own confidence stays what it said, so the planner still refuses a grid it doubts.
-                match end {
-                    MixEnd::Intro => (always.intro_bpm_confidence, always.intro_stability) = (g.confidence, g.stability),
-                    MixEnd::Outro => (always.outro_bpm_confidence, always.outro_stability) = (g.confidence, g.stability),
-                }
-            }
-            if let Some(r) = &reference {
-                let rt = run(r, piece, rate, end, from, false);
-                let (fb, fd) = (f_measure(&rt.beats, &t.beats), f_measure(&rt.downbeats, &t.downbeats));
-                if std::env::var("NORI_EVAL_VERBOSE").is_ok() {
-                    println!("    {name} {end:?}: {} beats against the reference's {}, F {fb:.3}; downbeats {} against {}, F {fd:.3}", t.beats.len(), rt.beats.len(), t.downbeats.len(), rt.downbeats.len());
-                }
-                let (b, d, n) = agree.get();
-                agree.set((b + fb, d + fd, n + 1));
-            }
-        }
-        (
-            score(name, &Analysis { track: shipped, tempo: a.tempo.clone() }, truth, true),
-            score(name, &Analysis { track: always, tempo: a.tempo.clone() }, truth, true),
-        )
-    };
-
-    let (mut shipped, mut always) = (Vec::new(), Vec::new());
-    for song in corpus() {
-        let (x, truth) = song.render();
-        let a = analyse(song.name, &x, song.rate);
-        let (s, w) = scored(song.name, &x, song.rate, &a, &truth);
-        shipped.push(s);
-        always.push(w);
-    }
-    let agreement = |agree: &std::cell::Cell<(f64, f64, usize)>| {
-        let (b, d, n) = agree.replace((0.0, 0.0, 0));
-        if n > 0 {
-            println!("agreement with the reference model over {n} windows: beats F {:.3}, downbeats F {:.3}", b / n as f64, d / n as f64);
-        }
-    };
-    println!("Beat This! at each end, adopted where it is sure (as shipped):");
-    report(&shipped);
-    println!("Beat This! at each end wherever it has a grid:");
-    report(&always);
-    agreement(&agree);
-
-    let (mut shipped, mut always) = (Vec::new(), Vec::new());
-    for r in real_songs() {
-        let a = analyse(&r.name, &r.x, r.rate);
-        let truth = r.truth(&a.track);
-        let (s, w) = scored(&r.name, &r.x, r.rate, &a, &truth);
-        shipped.push(SongScore { intro_cue_ok: None, outro_cue_ok: None, vocal: Vec::new(), ..s });
-        always.push(SongScore { intro_cue_ok: None, outro_cue_ok: None, vocal: Vec::new(), ..w });
-    }
-    if !shipped.is_empty() {
-        println!("real recordings, as shipped:");
-        report(&shipped);
-        println!("real recordings, its grid wherever it has one:");
-        report(&always);
-        agreement(&agree);
-    }
-    println!("{:.2} s per window of at most 30 s on this machine, one thread ({} windows)", spent.get() / runs.get().max(1) as f64, runs.get());
-}
-
-
 // ---- Transitions ------------------------------------------------------------------------------------------------
 //
-// The analysis above scores what AutoMix reads; this scores what it does with it. Pairs of synthetic songs are
-// rendered, analysed as the app would, planned with the app's settings, and the plan is measured against what the
-// songs really are:
-//
-// - **drop**: where the incoming song's arrangement really arrives, against the bass swap: on it (within a beat),
-//   or how long the incoming intro then plays alone after the mix (`dip`, an energy hole), or skipped over;
-// - **phrase**: whether the swap falls on a downbeat of the outgoing song, and on a four-bar line of its sections;
-// - **skipped music** on either side (silence is free), and whether the 15 s cap held;
-// - **dead air**: a long silence of the outgoing song heard before the mix (a hidden track's gap), and **coda**:
-//   the outgoing song's closing breakdown heard on its own before the mix;
-// - **voices**: how long two sung lines compete - both sounding, neither 10 dB under the other across the voice
-//   band. The level of each deck there is measured by running the real mixer with tones on that deck alone, so the
-//   gains, filters and any separation are the ones the phone would apply.
+// Pairs of synthetic songs analysed and planned as the app does, each plan scored against the truth: drop hit,
+// dip or skip; swap on a bar and phrase line; music skipped; dead air and coda before the mix; and how long two
+// voices compete (deck levels measured through the real mixer).
 //
 // `cargo test --release -p nori-player transition_eval -- --ignored --nocapture`
 
@@ -1451,7 +1124,7 @@ pub fn mix_pairs() -> Vec<(&'static str, &'static str)> {
 fn deck_level(plan: &crate::types::TransitionPlan, outgoing: bool) -> Vec<f64> {
     const RATE: u32 = 16_000;
     let mut m = mixer::Mixer::new(RATE, 1);
-    m.configure(&mixer::params(plan));
+    m.configure(plan);
     let n = (plan.duration_ms.max(0) as usize * RATE as usize / 1000).max(1);
     let tone: Vec<f32> = (0..n)
         .map(|i| {
@@ -1460,12 +1133,8 @@ fn deck_level(plan: &crate::types::TransitionPlan, outgoing: bool) -> Vec<f64> {
         })
         .collect();
     let zero = vec![0f32; n];
-    let mut y = vec![0f32; n];
-    if outgoing {
-        m.process_f32(&tone, &zero, &mut y);
-    } else {
-        m.process_f32(&zero, &tone, &mut y);
-    }
+    let mut y = if outgoing { tone.clone() } else { zero.clone() };
+    m.process(&mut y, if outgoing { &zero } else { &tone });
     y.chunks(RATE as usize / 20).map(|c| (c.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / c.len() as f64 * 2.0).sqrt()).collect()
 }
 
@@ -1477,15 +1146,13 @@ fn short_term(x: &[f32], rate: f64) -> Vec<f64> {
     m.blocks_k.windows(30).map(|w| -0.691 + 10.0 * (w.iter().map(|v| *v as f64).sum::<f64>() / 30.0).max(1e-12).log10()).collect()
 }
 
-/// How much louder the transition gets than either song on its own, LU: the loudest 3 s inside the mix (and the
-/// second and a half after it) against the louder of the outgoing song's 8 s before it and the incoming song's 8 s
-/// after it (medians). The mix is rendered through the real mixer; the incoming song is varispeeded by the plan's
-/// ratio (pitch moves, loudness does not).
+/// How much louder the mix gets than either song alone, LU: the loudest short-term window in it against the louder
+/// median of the 8 s before and after. Rendered through the real mixer.
 fn loudness_bump(p: &crate::types::TransitionPlan, xa: &[f32], xb: &[f32], rate: f64) -> f64 {
     let at = |ms: i64| (ms.max(0) as f64 * rate / 1000.0) as usize;
     let (o0, i0, n) = (at(p.out_start_ms), at(p.in_start_ms), at(p.duration_ms));
     let ratio = if p.tempo_ratio > 0.0 { p.tempo_ratio } else { 1.0 };
-    let loop_n = if p.out_loop_ms > 0 { at(p.out_loop_ms).max(1) } else { usize::MAX };
+    let loop_n = p.out_loop_ms.map_or(usize::MAX, |l| at(l).max(1));
     let seg_a: Vec<f32> = (0..n).map(|k| xa.get(o0 + k % loop_n).copied().unwrap_or(0.0)).collect();
     let b_at = |k: f64| {
         let t = i0 as f64 + k;
@@ -1496,9 +1163,9 @@ fn loudness_bump(p: &crate::types::TransitionPlan, xa: &[f32], xb: &[f32], rate:
     };
     let seg_b: Vec<f32> = (0..n).map(|k| b_at(k as f64 * ratio)).collect();
     let mut m = mixer::Mixer::new(rate as u32, 1);
-    m.configure(&mixer::params(p));
-    let mut mixed = vec![0f32; n];
-    m.process_f32(&seg_a, &seg_b, &mut mixed);
+    m.configure(p);
+    let mut mixed = seg_a;
+    m.process(&mut mixed, &seg_b);
     let pre = at(8_000);
     let before: Vec<f32> = xa[o0.saturating_sub(pre).min(xa.len())..o0.min(xa.len())].to_vec();
     let b_end = i0 + (n as f64 * ratio) as usize;
@@ -1515,16 +1182,14 @@ fn loudness_bump(p: &crate::types::TransitionPlan, xa: &[f32], xb: &[f32], rate:
     let reference = median(&before).max(median(&after));
     // Windows (every 100 ms, 3 s long) that end inside the mix or up to 1.5 s after it.
     let (w0, w1) = ((before.len() as f64 / rate * 10.0) as usize, ((before.len() + n) as f64 / rate * 10.0 + 15.0) as usize);
-    let peak = (w0.saturating_sub(30)..w1.saturating_sub(30).min(st.len())).map(|j| st[j + 0]).fold(f64::MIN, f64::max);
+    let peak = (w0.saturating_sub(30)..w1.saturating_sub(30).min(st.len())).map(|j| st[j]).fold(f64::MIN, f64::max);
     if peak == f64::MIN { 0.0 } else { peak - reference }
 }
 
 /// How one planned transition came out.
 #[derive(Debug, Clone)]
 pub struct MixScore {
-    pub name: String,
     pub kind: crate::types::TransitionKind,
-    pub reason: String,
     pub duration_s: f64,
     /// The incoming song has a drop.
     pub has_drop: bool,
@@ -1555,16 +1220,16 @@ pub struct MixScore {
 }
 
 /// Scores `p`, the plan from `a` (outgoing) into `b`, against both songs' truth.
-pub fn score_mix(name: &str, p: &crate::types::TransitionPlan, a: &Truth, b: &Truth, audio: (&[f32], &[f32], f64)) -> MixScore {
+pub fn score_mix(p: &crate::types::TransitionPlan, a: &Truth, b: &Truth, audio: (&[f32], &[f32], f64)) -> MixScore {
     let ms = |v: i64| v as f64 / 1000.0;
     let dur = ms(p.duration_ms);
     let ratio = if p.tempo_ratio > 0.0 { p.tempo_ratio } else { 1.0 };
     let (out_start, in_start) = (ms(p.out_start_ms), ms(p.in_start_ms));
-    let heard_end = out_start + if p.out_loop_ms > 0 { ms(p.out_loop_ms) } else { dur };
+    let heard_end = out_start + p.out_loop_ms.map_or(dur, ms);
     let beat_a = 60.0 / a.bpm.max(1.0);
     // The bass swap, from where the incoming lows start to come in to where they are all in: a swap that starts on
     // a line and one that finishes on it are both on it.
-    let swap = (p.bass_swap_ms >= 0).then(|| (ms(p.bass_swap_ms), ms(p.bass_swap_ms + p.bass_swap_len_ms.max(0))));
+    let swap = p.bass_swap.map(|s| (ms(s.at_ms), ms(s.at_ms + s.len_ms.max(0))));
     // Where the incoming drop lands in wall time from the start of the mix.
     let lands = b.drop.map(|d| (d - in_start) / ratio);
     let has_drop = lands.is_some();
@@ -1621,7 +1286,7 @@ pub fn score_mix(name: &str, p: &crate::types::TransitionPlan, a: &Truth, b: &Tr
     let dead_runup_s = (0..(run_up / 0.05) as usize)
         .filter(|k| {
             let t = *k as f64 * 0.05 + 0.025;
-            dead_at(if p.out_loop_ms > 0 { out_start + t % ms(p.out_loop_ms) } else { out_start + t })
+            dead_at(out_start + p.out_loop_ms.map_or(t, |l| t % ms(l)))
         })
         .count() as f64
         * 0.05;
@@ -1632,7 +1297,7 @@ pub fn score_mix(name: &str, p: &crate::types::TransitionPlan, a: &Truth, b: &Tr
         let (mut clash_s, mut both_sung_s) = (0.0, 0.0);
         for (k, (ga, gb)) in la.iter().zip(&lb).enumerate() {
             let t = k as f64 * 0.05 + 0.025;
-            let ta = if p.out_loop_ms > 0 { out_start + t % ms(p.out_loop_ms) } else { out_start + t };
+            let ta = out_start + p.out_loop_ms.map_or(t, |l| t % ms(l));
             if a.sung_at(ta) && b.sung_at(in_start + t * ratio) {
                 both_sung_s += 0.05;
                 let (da, db) = (20.0 * ga.max(1e-9).log10(), 20.0 * gb.max(1e-9).log10());
@@ -1645,15 +1310,13 @@ pub fn score_mix(name: &str, p: &crate::types::TransitionPlan, a: &Truth, b: &Tr
     };
     let (clash_s, both_sung_s) = competing(p);
     let mut bare = p.clone();
-    bare.vocal_duck_until_ms = -1;
-    if bare.reason.contains("voices kept apart") && bare.hp_to_hz == plan::VOCAL_HP_TO_HZ {
-        bare.hp_start_ms = -1;
+    bare.vocal_duck = None;
+    if bare.reason.contains("voices kept apart") && bare.high_pass.is_some_and(|h| h.to_hz == plan::VOCAL_HP_TO_HZ) {
+        bare.high_pass = None;
     }
     let (clash_bare_s, _) = if bare != *p { competing(&bare) } else { (clash_s, both_sung_s) };
     MixScore {
-        name: name.to_string(),
         kind: p.kind,
-        reason: p.reason.clone(),
         duration_s: dur,
         has_drop,
         drop_hit,
@@ -1700,12 +1363,8 @@ pub struct MixTotals {
     pub bump_max_lu: f64,
 }
 
-pub fn mix_report(scores: &[MixScore]) -> MixTotals {
+pub fn mix_totals(scores: &[MixScore]) -> MixTotals {
     use crate::types::TransitionKind as K;
-    println!(
-        "{:<38} {:<6} {:>5}  {:<8} {:>5} {:>4}/{:<4} {:>5}/{:<5} {:>5} {:>5} {:>5} {:>6} {:>5}",
-        "pair", "kind", "len", "drop", "dip", "bar", "phr", "skipO", "skipI", "dead", "coda", "under", "clash", "bump"
-    );
     let mut t = MixTotals::default();
     for s in scores {
         t.pairs += 1;
@@ -1734,172 +1393,58 @@ pub fn mix_report(scores: &[MixScore]) -> MixTotals {
         t.both_sung_s += s.both_sung_s;
         t.bump_lu += s.bump_lu;
         t.bump_max_lu = t.bump_max_lu.max(s.bump_lu);
-        let kind = match s.kind {
-            K::Gapless => "gapls",
-            K::EqualPowerFade => "fade",
-            K::MixRampFade => "ramp",
-            K::BeatMatched => "match",
-            K::EchoOut => "echo",
-        };
-        let drop = if !s.has_drop {
-            "-"
-        } else if s.drop_hit {
-            "hit"
-        } else if s.drop_skipped {
-            "SKIPPED"
-        } else {
-            "miss"
-        };
-        println!(
-            "{:<38} {:<6} {:>5.1}  {:<8} {:>5.1} {:>4}/{:<4} {:>5.1}/{:<5.1} {:>5.1} {:>5.1} {:>5.1} {:>6.1} {:>+5.1}",
-            s.name,
-            kind,
-            s.duration_s,
-            drop,
-            s.dip_s,
-            mark(s.swap_on_bar),
-            mark(s.swap_on_phrase),
-            s.skip_out_s,
-            s.skip_in_s,
-            s.dead_air_s,
-            s.coda_s,
-            s.dead_runup_s,
-            s.clash_s,
-            s.bump_lu,
-        );
-        if std::env::var("NORI_EVAL_VERBOSE").is_ok() {
-            println!("    {}", s.reason);
-        }
     }
-    println!(
-        "TOTAL {} pairs ({} beat-matched, {} echo-outs): drops hit {}/{} (skipped {}), incoming intro alone after the mix {:.1} s, swaps on a bar {}/{} and on a phrase line {}/{}, mixes starting on a phrase line {}/{}",
-        t.pairs, t.beat_matched, t.echo, t.drop_hit, t.drops, t.drop_skipped, t.dip_s, t.swap_on_bar, t.swaps, t.swap_on_phrase, t.swaps, t.start_on_phrase, t.swaps
-    );
-    println!(
-        "      music skipped {:.1} s out / {:.1} s in (cap broken {}), dead air {:.1} s, coda alone {:.1} s, run-up over a dead ending {:.1} s, voices competing {:.1} of {:.1} s sung together ({:.1} without the separation)",
-        t.skip_out_s, t.skip_in_s, t.cap_broken, t.dead_air_s, t.coda_s, t.dead_runup_s, t.clash_s, t.both_sung_s, t.clash_bare_s
-    );
-    println!("      louder than either song: {:+.1} LU on average, {:+.1} LU at most", t.bump_lu / t.pairs.max(1) as f64, t.bump_max_lu);
     t
 }
 
-/// The analysis with its voice-band shares replaced by what the truth says is sung over the same windows (0.7
-/// where a voice sounds over at least 30 % of it, 0.1 elsewhere): the planner and mixer measured on their own,
-/// with a vocal detector that is right. The classical voice-band share cannot tell the synthetic voices from an
-/// unsung band (0.28-0.37 against 0.20-0.34, pads 0.8), which is `analysis.md`'s open problem, not the mixer's.
-pub fn oracle_vocals(t: &TrackAnalysis, truth: &Truth) -> TrackAnalysis {
-    let s = |a: f64, b: f64| if truth.voice_share(a, b) >= 0.3 { 0.7 } else { 0.1 };
-    let ms = |v: i64| v as f64 / 1000.0;
-    let (m0, m1) = (ms(t.silence_start_ms), ms(t.silence_end_ms));
-    let whole = |a: f64, b: f64| if b - a < 1.0 { (m0, m1) } else { (a, b) };
-    let bar = if t.bpm > 0.0 { 60.0 / t.bpm * bar_beats(t) as f64 } else { 2.0 };
-    let last = if t.exit_ms > 0 { ms(t.exit_ms) } else { m1 };
-    let drop = ms(t.drop_ms);
-    let (i0, i1) = whole(m0, ms(t.intro_end_ms));
-    let (o0, o1) = whole(ms(t.outro_start_ms), m1);
-    TrackAnalysis {
-        intro_vocal: s(i0, i1),
-        outro_vocal: s(o0, o1),
-        exit_vocal: s(last - 8.0 * bar, last),
-        drop_runup_vocal: if t.drop_ms > 0 { s((drop - 8.0 * bar).max(m0), drop) } else { 0.0 },
-        drop_vocal: if t.drop_ms > 0 { s(drop, drop + 8.0 * bar) } else { 0.0 },
-        ..t.clone()
-    }
-}
-
-/// Renders and analyses the songs the pairs use, plans every pair with `settings`, and scores the plans. With
-/// `oracle`, the voice-band shares come from the truth (`oracle_vocals`).
-pub fn run_mixes(settings: &crate::types::AutoMixSettings, oracle: bool) -> Vec<MixScore> {
-    let only = std::env::var("NORI_EVAL_ONLY").unwrap_or_default();
-    let pairs: Vec<(&str, &str)> =
-        mix_pairs().into_iter().filter(|(a, b)| only.is_empty() || only.split(',').any(|o| a.starts_with(o) || b.starts_with(o))).collect();
+/// Plans every pair with the default settings and scores the plans.
+pub fn run_mixes() -> Vec<MixScore> {
     let songs: Vec<Song> = mix_songs().into_iter().chain(corpus_all()).collect();
-    let mut done: Vec<(&str, TrackAnalysis, Truth, Vec<f32>, f64)> = Vec::new();
-    for name in pairs.iter().flat_map(|(a, b)| [*a, *b]) {
-        if done.iter().any(|(n, ..)| *n == name) {
-            continue;
-        }
-        let song = songs.iter().find(|s| s.name == name).unwrap_or_else(|| panic!("no song {name}"));
-        let (x, truth) = song.render();
-        let a = analyse(song.name, &x, song.rate).track;
-        let a = if oracle { oracle_vocals(&a, &truth) } else { a };
-        done.push((song.name, a, truth, x, song.rate as f64));
-    }
-    let get = |n: &str| done.iter().find(|(m, ..)| *m == n).unwrap();
-    pairs
-        .iter()
-        .map(|(a, b)| {
-            let ((_, ta, xa, wa, rate), (_, tb, xb, wb, _)) = (get(a), get(b));
-            let p = plan::plan(Some(ta), Some(tb), ta.duration_ms, tb.duration_ms, settings);
-            score_mix(&format!("{a} > {b}"), &p, xa, xb, (wa, wb, *rate))
-        })
-        .collect()
+    let audio = |name: &str| songs.iter().find(|s| s.name == name).expect("a harness song").render().0;
+    let settings = crate::types::AutoMixSettings::default();
+    par_map(&mix_pairs(), |(a, b)| {
+        let ((ta, wa), (tb, wb)) = (analysed(a), analysed(b));
+        let p = plan::plan(Some(&ta.track), Some(&tb.track), ta.track.duration_ms, tb.track.duration_ms, &settings);
+        score_mix(&p, wa, wb, (&audio(a), &audio(b), 44_100.0))
+    })
 }
 
-/// `cargo test --release -p nori-player transition_eval -- --ignored --nocapture`
 #[test]
-#[ignore]
-fn transition_eval() {
-    for (label, s, oracle) in [
-        ("default settings (16 s at most)", crate::types::AutoMixSettings::default(), false),
-        ("32 s at most", crate::types::AutoMixSettings { max_transition_s: 32.0, ..Default::default() }, false),
-        ("default settings, voices from the truth", crate::types::AutoMixSettings::default(), true),
-        ("voices from the truth, filters off", crate::types::AutoMixSettings { filter_effects: false, ..Default::default() }, true),
-    ] {
-        println!("{label}:");
-        mix_report(&run_mixes(&s, oracle));
-    }
+fn analysis_holds_its_scores() {
+    let t = totals(&run_corpus(&corpus()));
+    let n = t.songs as f64;
+    assert!(t.tracked_f / n >= 0.95 && t.grid_f / n >= 0.83, "beat F {:.3}, grid F {:.3}", t.tracked_f / n, t.grid_f / n);
+    assert!(t.acc1 >= 16 && t.acc2 == t.songs && t.meter_ok == t.songs, "{t:?}");
+    assert!(t.bar_locked >= 28 && t.wrong == 0 && t.wrong_bar <= 2, "no mix window beat-matched wrong: {t:?}");
+    assert!(t.key_ok >= 14 && t.key_near == t.keys, "{t:?}");
+    assert!(t.vocal_ok >= 33 && t.vocal_false_alarm <= 2 && t.cue_ok >= 29, "{t:?}");
 }
 
-/// How well the analysis finds the landmarks the planner enters and leaves on, over every synthetic song (the
-/// analysis corpus and the mix songs): the drop, and the exit (a closing breakdown, or the gap before a short hidden
-/// track). A landmark within a beat of the truth is found; one claimed where the truth has none is a false alarm.
-/// `cargo test --release -p nori-player landmark_eval -- --ignored --nocapture`
 #[test]
-#[ignore]
-fn landmark_eval() {
-    let verbose = std::env::var("NORI_EVAL_VERBOSE").is_ok();
+fn transitions_hold_their_scores() {
+    let t = mix_totals(&run_mixes());
+    assert!(t.drop_hit >= 8 && t.drop_skipped == 0, "{t:?}");
+    assert!(t.swap_on_bar == t.swaps && t.swap_on_phrase == t.swaps && t.start_on_phrase >= 10, "swaps and starts on the bar and phrase: {t:?}");
+    assert!(t.cap_broken == 0 && t.coda_s == 0.0 && t.dead_runup_s == 0.0, "{t:?}");
+    assert!(t.dead_air_s <= 38.0 && t.clash_s <= 12.5 && t.bump_max_lu <= 1.0, "{t:?}");
+}
+
+/// Drops and exits within a beat are found; one where the song has none is a false alarm.
+#[test]
+fn landmarks_are_found() {
     // (found, truths, false alarms) for the drop and the exit.
     let mut tally = [(0, 0, 0); 2];
     for song in mix_songs().into_iter().chain(corpus()) {
-        let (x, truth) = song.render();
-        let t = analyse(song.name, &x, song.rate).track;
+        let (a, truth) = analysed(song.name);
+        let t = &a.track;
         let beat = 60.0 / truth.bpm.max(1.0);
         let at = |ms: i64| (ms > 0).then(|| ms as f64 / 1000.0);
-        let mut line = format!("{:<20}", song.name);
-        let mut wrong = false;
-        for (k, (name, want, got)) in [("drop", truth.drop, at(t.drop_ms)), ("exit", truth.exit, at(t.exit_ms))].into_iter().enumerate() {
-            let ok = match (want, got) {
-                (Some(d), Some(g)) => (d - g).abs() <= beat,
-                (None, None) => true,
-                _ => false,
-            };
+        for (k, (want, got)) in [(truth.drop, at(t.drop_ms)), (truth.exit, at(t.exit_ms))].into_iter().enumerate() {
             tally[k].1 += want.is_some() as usize;
-            tally[k].0 += (ok && want.is_some()) as usize;
+            tally[k].0 += want.zip(got).is_some_and(|(d, g)| (d - g).abs() <= beat) as usize;
             tally[k].2 += (want.is_none() && got.is_some()) as usize;
-            wrong |= !ok;
-            let s = |v: Option<f64>| v.map_or("-".to_string(), |v| format!("{v:.1}"));
-            line += &format!(" {name} {:>6} (true {:>6})", s(got), s(want));
-        }
-        if verbose || wrong {
-            println!("{line}");
-        }
-        if std::env::var("NORI_EVAL_VOCAL").is_ok() {
-            let last = at(t.exit_ms).unwrap_or(t.silence_end_ms as f64 / 1000.0);
-            let bar = 4.0 * beat;
-            println!(
-                "    vocal: exit {:.2} (sung {:.2}) intro {:.2} (sung {:.2}) outro {:.2} | drop runup {:.2} after {:.2}",
-                t.exit_vocal,
-                truth.voice_share(last - 8.0 * bar, last),
-                t.intro_vocal,
-                truth.voice_share(t.silence_start_ms as f64 / 1000.0, t.intro_end_ms as f64 / 1000.0),
-                t.outro_vocal,
-                t.drop_runup_vocal,
-                t.drop_vocal
-            );
         }
     }
-    for (name, (found, truths, fa)) in ["drops", "exits"].iter().zip(tally) {
-        println!("{name} found {found}/{truths}, {fa} false alarms");
-    }
+    let [(drops, _, drop_fa), (exits, exit_truths, exit_fa)] = tally;
+    assert!(drops >= 16 && drop_fa <= 1 && exits == exit_truths && exit_fa == 0, "{tally:?}");
 }

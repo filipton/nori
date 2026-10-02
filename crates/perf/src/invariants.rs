@@ -1,59 +1,40 @@
-//! The perf build's invariant watchdogs: things that must always hold while the app plays, checked as
-//! the app's own events and wakes go by, and said loudly on the perf timeline ("invariant" events, which
-//! the report lists first) and in the log when one does not.
+//! Perf build invariant watchdogs, checked on existing events (engine wakes, track writes, player and
+//! UI callbacks; no timers) and reported as "invariant" timeline events and log lines. With the watch
+//! off each hook costs one atomic read. Invariants while playing:
 //!
-//! Nothing here ticks. Each check is made when something already happened: the engine's thread woke
-//! (nori-engine's watch hook), the AudioTrack's writer woke to top the track up, the player service said
-//! a song or a skip, the settings changed, the screen was told a song. With the watch off (every build
-//! but the perf one) each of those costs one atomic read. What holds:
+//! - an output holding unplayed music advances within [`STILL_MS`] ("stalled", "offload-starved");
+//! - an output is fed: not idle and unfed for [`STARVED_MS`] unless the engine is waiting ("starved");
+//! - with no output open, the position does not stand still for [`SILENT_MS`] ("silent");
+//! - one skip press moves one song;
+//! - the shown song and lyrics are the heard song's, within [`DIFFER_MS`];
+//! - the seek bar and controller positions are within [`PLACE_MS`] of the engine's;
+//! - with AutoMix on, every queued song has a duration;
+//! - a changed setting reaches the engine within a second (see [`settings_judged`]).
 //!
-//! - an output that holds music plays it: while playing, the frames it presented move on within
-//!   [`STILL_MS`] (an offloaded track that does not is starved: the S22's silent offload);
-//! - an output is given music while it plays: presenting nothing new and given nothing new for
-//!   [`STARVED_MS`] is the music stopped while the player says it plays (the S22's silence after next was
-//!   pressed fast and long) - but not while the engine says it waits: for a song's bytes (a provider's
-//!   song still coming, said to be buffering), or out a jump's dip. Either break quotes the engine's own
-//!   account of where it stood at its last wake (the song, what it reads and waits for, the transition
-//!   engine, every loader);
-//! - one press of a skip moves one song;
-//! - the song on the screen is the one heard, give or take [`DIFFER_MS`];
-//! - the lyrics shown are the song heard's;
-//! - playing, the seek bar's place is the engine's, give or take [`PLACE_MS`], and so is the place a
-//!   controller runs on from (the S22's bar at the end of a song with 14 s left, after the phone was
-//!   unlocked: a controller's word, taken ahead and never put right);
-//! - with AutoMix on, every song in the queue has a length (the planner has nothing to plan from without);
-//! - a setting changed is in the engine a second later, judged only while it plays through an open output
-//!   and [`SETTLE_MS`] after the player service started or ended (an engine switch restarts it).
-//!
-//! [`Watch`] is the bookkeeping, plain and testable; the functions below keep one for the process and are
-//! what the engine's hook, the track and the platform call.
+//! [`Watch`] is the testable bookkeeping; the functions below drive one process-wide instance.
 
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Mutex, OnceLock};
 
-use std::sync::{Mutex, MutexGuard};
-
-/// Playing, an output that presents nothing new for longer than this has stopped.
-pub const STILL_MS: i64 = 2_000;
-/// Playing, an output that presents nothing new and is given nothing new for longer than this was left
-/// without music: longer than [`STILL_MS`], so a song's first bytes a moment late are not a break.
-pub const STARVED_MS: i64 = 5_000;
-/// Playing, the place heard standing still this long with no output open and no song's bytes on their
-/// way is the engine playing nothing while it says it plays (the S22's classical playlist, 2026-09-26).
-pub const SILENT_MS: i64 = 5_000;
-/// The screen may trail the ear by this much at a song change.
-pub const DIFFER_MS: i64 = 1_000;
-/// Playing, the seek bar's place (or a controller's) further than this from the engine's own for longer
-/// than [`DIFFER_MS`] is a break.
-pub const PLACE_MS: i64 = 2_000;
-/// Presses closer together than this are one run of skips.
-pub const RUN_MS: i64 = 3_000;
-/// After the player service starts or ends (an engine switch does both) its settings are not judged for
-/// this long: the service is still building its player, and a batch of settings arrived with it.
+/// An output presenting nothing new for longer than this has stalled.
+pub(crate) const STILL_MS: i64 = 2_000;
+/// An output neither presenting nor fed for longer than this is starved (longer than [`STILL_MS`] so
+/// slightly late first bytes do not count).
+pub(crate) const STARVED_MS: i64 = 5_000;
+/// Position standing still this long with no output open and nothing downloading is "silent".
+pub(crate) const SILENT_MS: i64 = 5_000;
+/// Allowed lag of the screen behind playback.
+pub(crate) const DIFFER_MS: i64 = 1_000;
+/// Allowed seek bar / controller position error (for longer than [`DIFFER_MS`]).
+pub(crate) const PLACE_MS: i64 = 2_000;
+/// Skip presses closer than this form one run.
+pub(crate) const RUN_MS: i64 = 3_000;
+/// Settings are not judged for this long after the player service starts or ends.
 pub const SETTLE_MS: i64 = 3_000;
-/// The most breaks kept for the self test to read back.
-pub const MOST_BREAKS: usize = 50;
+/// Maximum breaks kept for the self test.
+pub(crate) const MOST_BREAKS: usize = 50;
 
-/// One invariant that did not hold: which, and what was seen.
+/// A violated invariant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Break {
     pub kind: &'static str,
@@ -65,14 +46,14 @@ impl Break {
         Break { kind, detail }
     }
 
-    /// "offload-starved: ..." as the timeline and the log say it.
+    /// "kind: detail", as logged.
     pub fn line(&self) -> String {
         format!("{}: {}", self.kind, self.detail)
     }
 }
 
-/// How far an output has come, as one reading: `presented` and `written` in units of which there are
-/// `rate` a second (frames, or ms). A new `song` (or a count that went back: a flush) starts afresh.
+/// An output progress reading; `presented` and `written` count units at `rate` per second. A new `song`
+/// or a count going back (flush) resets tracking.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Moving {
     pub now_ms: i64,
@@ -88,10 +69,10 @@ pub struct Moving {
 struct Progress {
     song: Option<usize>,
     presented: u64,
-    /// When the count of what it presented last moved.
+    /// When `presented` last advanced.
     since_ms: i64,
     written: u64,
-    /// When it was last given anything new.
+    /// When `written` last advanced.
     fed_ms: i64,
     said: bool,
 }
@@ -102,7 +83,7 @@ impl Progress {
     }
 }
 
-/// A run of skips: the song it started from, the presses since and when the last was.
+/// A run of skip presses from queue index `from`.
 #[derive(Debug, Clone, Copy)]
 struct Skips {
     from: i64,
@@ -111,8 +92,8 @@ struct Skips {
     said: bool,
 }
 
-/// The watch's bookkeeping. Every method takes the time it is told at (wall clock, ms, or the output's
-/// own clock for [`Watch::output`]) and answers the invariant that did not hold, if one did not.
+/// Invariant bookkeeping. Methods take the current time (wall ms, or the output's clock for
+/// [`Watch::output`]) and return a break when one is detected; each break is reported once.
 #[derive(Default)]
 pub struct Watch {
     outputs: Vec<(String, Progress)>,
@@ -120,24 +101,20 @@ pub struct Watch {
     shown: Option<String>,
     differ_since: Option<i64>,
     differ_said: bool,
-    /// Nobody can see the screen (the app is in the background, or the screen is off): what it shows is
-    /// not compared, since nothing on it is drawn or brought up to date until it is seen again.
+    /// The screen is not visible, so it is not compared (it does not update).
     hidden: bool,
     skips: Option<Skips>,
     queue_said: Vec<String>,
-    /// Since when the bar's place, and a controller's, have been far from the engine's, and whether that
-    /// was said.
     bar_off: Off,
     word_off: Off,
-    /// The engine said at its last wake that it plays nothing now, though its track may be started: it
-    /// waits for a song's bytes, or out a jump's dip, or it is paused. Its CPU track is not expected to
-    /// be given anything meanwhile.
+    /// The engine reported not playing (waiting for data, a jump's dip, or paused): its track is not
+    /// expected to be fed.
     engine_quiet: bool,
-    /// The engine playing nothing with no output open was said, for the stretch of silence under way.
+    /// "silent" was reported for the current silent stretch.
     silent_said: bool,
 }
 
-/// A place far from the engine's: since when, and whether it was said.
+/// Tracks how long a position has been off, reporting once per episode.
 #[derive(Default, Clone, Copy)]
 struct Off {
     since: Option<i64>,
@@ -145,8 +122,7 @@ struct Off {
 }
 
 impl Off {
-    /// Whether a place `far` from the engine's at `now` has been so for longer than [`DIFFER_MS`], said
-    /// once for each time it goes far.
+    /// True once when `far` has held for longer than [`DIFFER_MS`].
     fn follow(&mut self, now: i64, far: bool) -> bool {
         if !far {
             *self = Off::default();
@@ -162,11 +138,8 @@ impl Off {
 }
 
 impl Watch {
-    /// An output's reading, under `key` ("engine", "track"): playing, its count of what it presented must
-    /// move while it holds music written and not presented ("stalled"), and it must be given music to
-    /// play: presenting nothing new for [`STARVED_MS`] while nothing new is written to it either is the
-    /// music stopped with the player saying it plays ("starved": the engine gave the output nothing, or
-    /// the output took nothing more; a device whose count stopped past what it was given falls here too).
+    /// Checks output `key` ("engine", "track") for "stalled" (holding unplayed music without advancing for
+    /// [`STILL_MS`]) or "starved" (neither advancing nor fed for [`STARVED_MS`]).
     pub fn output(&mut self, key: &str, m: &Moving) -> Option<Break> {
         let i = match self.outputs.iter().position(|(k, _)| k == key) {
             Some(i) => i,
@@ -214,22 +187,18 @@ impl Watch {
         None
     }
 
-    /// The engine woke and said whether it plays: music it makes reaching its output, not paused, not
-    /// waiting for a song's bytes nor out a jump's dip.
+    /// Records whether the engine is producing music at its latest wake.
     pub fn engine(&mut self, playing: bool) {
         if self.engine_quiet && playing {
-            // The track's count starts again from its next reading.
+            // Restart the track's tracking from its next reading.
             self.outputs.retain(|(k, _)| k != "track");
         }
         self.engine_quiet = !playing;
     }
 
-    /// The engine's own look at whether the music moves: playing, its place heard has stood still for
-    /// `quiet_ms` with no song's bytes on their way (the engine counts none while they are). With no
-    /// output open either for [`SILENT_MS`], nothing can be heard and nothing is coming: said once for each
-    /// stretch of it, with `state`, the engine's own account, and `disk`, what the stream cache keeps of the
-    /// song.
-    pub fn silent(&mut self, quiet_ms: i64, output_open: bool, song: Option<&str>, state: &str, disk: impl FnOnce() -> String) -> Option<Break> {
+    /// "silent": playing, position still for `quiet_ms` >= [`SILENT_MS`] with no output open. Reported once
+    /// per stretch, quoting the engine `state`; the caller appends the stream cache.
+    pub fn silent(&mut self, quiet_ms: i64, output_open: bool, song: Option<&str>, state: &str) -> Option<Break> {
         if quiet_ms < SILENT_MS || output_open {
             if quiet_ms == 0 {
                 self.silent_said = false;
@@ -243,20 +212,18 @@ impl Watch {
         let song = song.unwrap_or("no song");
         Some(Break::new(
             "silent",
-            format!("playing, but {song} stood still for {quiet_ms} ms with no output open and none of its bytes on their way; the engine: {state}; the stream cache: {}", disk()),
+            format!("playing, but {song} stood still for {quiet_ms} ms with no output open and none of its bytes on their way; the engine: {state}"),
         ))
     }
 
-    /// The CPU's track, fed by the engine: [`Watch::output`], watched only while the engine says it plays.
-    /// Given nothing while it waits for a song's bytes is buffering, which the player says, not music
-    /// stopped behind its back; once it says it plays again, the output has the whole [`STARVED_MS`] from
-    /// then to be given something.
+    /// [`Watch::output`] for the CPU track, only judged while the engine reports playing (waiting for data
+    /// is buffering, not starvation).
     pub fn track(&mut self, m: &Moving) -> Option<Break> {
         let m = Moving { playing: m.playing && !self.engine_quiet, ..*m };
         self.output("track", &m)
     }
 
-    /// The song heard changed to `id` (the player service's word).
+    /// The player service reports song `id` playing.
     pub fn heard(&mut self, now: i64, id: &str) -> Option<Break> {
         if self.heard.as_ref().is_none_or(|(h, _)| h != id) {
             self.heard = Some((id.to_string(), now));
@@ -264,15 +231,13 @@ impl Watch {
         self.compare(now)
     }
 
-    /// The screen shows `id` now (none: nothing).
+    /// The screen shows `id` (or nothing).
     pub fn shown(&mut self, now: i64, id: Option<&str>) -> Option<Break> {
         self.shown = id.map(str::to_string);
         self.compare(now)
     }
 
-    /// Whether the screen can be seen: the app in the foreground with the screen on. A difference is only
-    /// counted while it can, and from the moment it came back, so the time it spent off is not the
-    /// screen's lateness, and it has the same [`DIFFER_MS`] to catch up as after any change of song.
+    /// Screen visibility. A mismatch is timed only while visible, from when it became visible.
     pub fn visible(&mut self, now: i64, on: bool) -> Option<Break> {
         if !on {
             self.hidden = true;
@@ -286,9 +251,7 @@ impl Watch {
         self.compare(now)
     }
 
-    /// Whether the screen and the ear agree, looked at now: a difference said once, when it has lasted
-    /// longer than [`DIFFER_MS`]. The player says itself which song is heard, a mix's too, so the screen
-    /// follows the ear through one with no grace of its own.
+    /// "shown-heard": shown and heard songs differ for longer than [`DIFFER_MS`].
     pub fn compare(&mut self, now: i64) -> Option<Break> {
         let (Some((heard, _)), Some(shown)) = (&self.heard, &self.shown) else {
             self.differ_since = None;
@@ -310,10 +273,8 @@ impl Watch {
         Some(Break::new("shown-heard", format!("the screen showed {shown} while {heard} was heard, for {} ms", now - since)))
     }
 
-    /// The seek bar was drawn at `now` (ms, any clock that runs on): it showed `shown_ms`, the engine's own
-    /// place was `engine_ms` (negative: none to go by - another song, a seek on its way) and the
-    /// controller's `word_ms`. Judged only while `playing` with the page on the player's song. Either place
-    /// further than [`PLACE_MS`] from the engine's for longer than [`DIFFER_MS`] is a break, said once.
+    /// "place": while playing, the seek bar (`shown_ms`) or controller (`word_ms`) position is more than
+    /// [`PLACE_MS`] from the engine's for over [`DIFFER_MS`]. `engine_ms` < 0: unknown, not judged.
     pub fn place(&mut self, now: i64, playing: bool, shown_ms: i64, engine_ms: i64, word_ms: i64) -> Option<Break> {
         let judged = playing && engine_ms >= 0;
         let bar = self.bar_off.follow(now, judged && (shown_ms - engine_ms).abs() > PLACE_MS);
@@ -325,7 +286,7 @@ impl Watch {
         word.then(|| Break::new("place", format!("the controller ran on to {} while the engine was at {} (the seek bar showed {})", s(word_ms), s(engine_ms), s(shown_ms))))
     }
 
-    /// The user pressed next or previous on the song at `index` (its place in the queue).
+    /// Next or previous pressed on queue index `index`.
     pub fn skip(&mut self, now: i64, index: i64) {
         match &mut self.skips {
             Some(s) if now - s.last_ms <= RUN_MS => {
@@ -336,9 +297,8 @@ impl Watch {
         }
     }
 
-    /// The player arrived on the song at `index`: by itself (`auto`, a song that ended), or by a jump.
-    /// A run of skips that moved further than it was pressed is a break. Under shuffle the places in the
-    /// queue say nothing of how far the order moved, and nothing is judged.
+    /// "skip": a run of presses moved further than it was pressed. Not judged for `auto` advances or
+    /// under shuffle.
     pub fn arrived(&mut self, now: i64, index: i64, auto: bool, shuffled: bool) -> Option<Break> {
         if auto || shuffled {
             self.skips = None;
@@ -358,18 +318,17 @@ impl Watch {
         Some(Break::new("skip", format!("{presses} skip press{} moved {moved} songs, from queue place {} to {index}", if presses == 1 { "" } else { "es" }, s.from)))
     }
 
-    /// Lyrics of the song `id` went up on the screen.
+    /// "lyrics": lyrics of another song than the heard one are shown.
     pub fn lyrics(&mut self, now: i64, id: &str) -> Option<Break> {
         let (heard, since) = self.heard.as_ref()?;
-        // Shown just as the song changed: the screen follows a moment later, and takes them down.
+        // Grace period right after a song change.
         if heard == id || now - since <= DIFFER_MS {
             return None;
         }
         Some(Break::new("lyrics", format!("lyrics of {id} shown while {heard} is heard (since {} ms)", now - since)))
     }
 
-    /// The queue as it is now: with AutoMix on, the songs in it without a length (`missing`, ids) of
-    /// `total`. Said once for each set of songs.
+    /// "queue-duration": AutoMix on and songs without a duration, reported once per set.
     pub fn queue(&mut self, auto_mix: bool, missing: &[String], total: u32) -> Option<Break> {
         if !auto_mix || missing.is_empty() {
             self.queue_said.clear();
@@ -385,18 +344,15 @@ impl Watch {
     }
 }
 
-/// Whether the engine can be held to the settings now: only while it plays through an open output (paused,
-/// or with the output let go, the sound chain is not in any path) and not within [`SETTLE_MS`] of the
-/// player service starting or ending (`engine_since`).
-pub fn settings_judged(now: i64, playing: bool, output_open: bool, engine_since: Option<i64>) -> bool {
+/// Whether settings are judged now: playing through an open output and more than [`SETTLE_MS`] after
+/// the player service started or ended (`engine_since`).
+pub(crate) fn settings_judged(now: i64, playing: bool, output_open: bool, engine_since: Option<i64>) -> bool {
     playing && output_open && engine_since.is_none_or(|t| now - t > SETTLE_MS)
 }
 
-/// The settings' pairs the engine is held to now: whether it wants offload, always; whether the sound
-/// chain is in the samples' path (it must be with the equalizer on) only while the ear is on music the CPU
-/// made through the engine's own output (`on_cpu`): offloaded, let go, or waiting for a song's bytes, the
-/// chain is in no path, and the engine does not say where it is.
-pub fn settings_pairs(eq_enabled: bool, want_offload: bool, offload_wanted: bool, chain_in: bool, on_cpu: bool) -> Vec<(&'static str, bool, bool)> {
+/// (name, expected, actual) pairs to check: offload always; the sound chain (required with the
+/// equalizer on) only while CPU-decoded audio plays through the engine's output (`on_cpu`).
+pub(crate) fn settings_pairs(eq_enabled: bool, want_offload: bool, offload_wanted: bool, chain_in: bool, on_cpu: bool) -> Vec<(&'static str, bool, bool)> {
     let mut pairs = vec![("offload wanted", want_offload, offload_wanted)];
     if eq_enabled && on_cpu {
         pairs.push(("sound chain in the path", true, chain_in));
@@ -404,8 +360,8 @@ pub fn settings_pairs(eq_enabled: bool, want_offload: bool, offload_wanted: bool
     pairs
 }
 
-/// A setting a second after it changed, against what the engine shows: each pair that disagrees.
-pub fn settings_held(expected: &[(&str, bool, bool)]) -> Option<Break> {
+/// "setting": a break listing each pair that disagrees.
+pub(crate) fn settings_held(expected: &[(&str, bool, bool)]) -> Option<Break> {
     let off: Vec<String> = expected.iter().filter(|(_, want, got)| want != got).map(|(what, want, got)| format!("{what}: {got}, expected {want}")).collect();
     if off.is_empty() {
         return None;
@@ -413,104 +369,181 @@ pub fn settings_held(expected: &[(&str, bool, bool)]) -> Option<Break> {
     Some(Break::new("setting", format!("a second after the settings changed the engine still shows {}", off.join("; "))))
 }
 
-// ---- the process's watch ----
+// Process-wide, as a logger is: the watch's entry points are FFI calls, panic hooks and audio threads
+// with no handle to carry it.
 
+/// Whether the watch is on; every caller checks it first (one atomic read outside the perf build).
 static ON: AtomicBool = AtomicBool::new(false);
-static WATCH: Mutex<Option<Watch>> = Mutex::new(None);
-static BREAKS: Mutex<Vec<String>> = Mutex::new(Vec::new());
-static ENGINE: Mutex<Option<PerfEngineSeen>> = Mutex::new(None);
-/// The engine's own words for where it stood at its last wake, and when (wall ms).
-static ENGINE_STATE: Mutex<(i64, String)> = Mutex::new((0, String::new()));
-/// The self test's volume on every output, as f32 bits: 1 unless it is running quietly.
-/// When the player service last started or ended, wall ms; `i64::MIN` for never.
-static ENGINE_SINCE: AtomicI64 = AtomicI64::new(i64::MIN);
+/// Self-test volume factor for every output, as f32 bits.
 static QUIET: AtomicU32 = AtomicU32::new(0x3F80_0000);
+static RECORDER: Recorder = Recorder { state: Mutex::new(None), disk: OnceLock::new() };
 
-/// Whether the watch is on: one atomic read, for every caller to ask first.
+/// The watch: what it saw and the breaks it said, and the platform's hook describing what the stream
+/// cache holds for a song id.
+struct Recorder {
+    state: Mutex<Option<State>>,
+    disk: OnceLock<fn(&str) -> String>,
+}
+
+/// The watch's state.
+#[derive(Default)]
+struct State {
+    watch: Watch,
+    /// Breaks said so far, for the self test (at most [`MOST_BREAKS`]).
+    breaks: Vec<String>,
+    /// What the engine's thread saw at its last wake.
+    engine: Option<PerfEngineSeen>,
+    /// The engine's own description of its state at its last wake, and when (wall ms).
+    engine_state: (i64, String),
+    /// When the player service last started or ended (wall ms).
+    engine_since: Option<i64>,
+}
+
+impl State {
+    /// Appends the engine's last self-description to an output break.
+    fn quote_engine(&self, mut b: Break, now: i64) -> Break {
+        let (at, state) = &self.engine_state;
+        if state.is_empty() {
+            b.detail.push_str("; the engine has said nothing yet");
+        } else {
+            b.detail.push_str(&format!("; the engine at its last wake, {} ms before: {state}", now - at));
+        }
+        b
+    }
+}
+
+/// Whether the watch is on.
 #[inline]
 pub fn on() -> bool {
     ON.load(Ordering::Relaxed)
 }
 
-fn wall_ms() -> i64 {
+pub(crate) fn wall_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
 }
 
-/// A lock that a panic while it was held does not poison for good: the watch must never stop the app.
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-fn with<R>(f: impl FnOnce(&mut Watch) -> R) -> R {
-    f(lock(&WATCH).get_or_insert_with(Watch::default))
-}
-
-/// A break goes on the timeline and in the log, loudly, and is kept for the self test.
-fn said(t: i64, b: Option<Break>) {
-    let Some(b) = b else { return };
-    let line = b.line();
-    nori_model::alog::info(&format!("invariant: {line}"));
-    crate::perf_log::note_invariant(t, &line);
-    // What the app said as it broke, kept before logcat turns it over.
-    crate::perf_log::keep_break_log(t, &line);
-    let mut kept = lock(&BREAKS);
-    if kept.len() >= MOST_BREAKS {
-        kept.remove(0);
+impl Recorder {
+    /// Runs `f` on the state, ignoring poisoning: the watch must never stop the app.
+    fn with_state<R>(&self, f: impl FnOnce(&mut State) -> R) -> R {
+        f(self.state.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(State::default))
     }
-    kept.push(format!("{} invariant: {line}", crate::perf_log::clock_words(t)));
+
+    fn with_watch<R>(&self, f: impl FnOnce(&mut Watch) -> R) -> R {
+        self.with_state(|s| f(&mut s.watch))
+    }
+
+    /// With the watch on, asks it `f` and reports any break.
+    fn judge(&self, wall_ms: i64, f: impl FnOnce(&mut Watch) -> Option<Break>) {
+        if on() {
+            self.said(wall_ms, self.with_watch(f));
+        }
+    }
+
+    /// Reports a break: log, perf timeline, recent log lines, and the self test's list.
+    fn said(&self, t: i64, b: Option<Break>) {
+        let Some(b) = b else { return };
+        let line = b.line();
+        nori_model::alog::info(&format!("invariant: {line}"));
+        crate::perf_log::note_invariant(t, &line);
+        crate::perf_log::keep_break_log(t, &line);
+        let kept = format!("{} invariant: {line}", crate::perf_log::clock(t));
+        self.with_state(|s| {
+            if s.breaks.len() >= MOST_BREAKS {
+                s.breaks.remove(0);
+            }
+            s.breaks.push(kept);
+        });
+    }
+
+    fn disk_of(&self, id: Option<&str>) -> String {
+        match (id, self.disk.get()) {
+            (Some(id), Some(describe)) => describe(id),
+            (None, _) => "no song".into(),
+            (_, None) => "not known here".into(),
+        }
+    }
+
+    fn engine_seen(&self, l: &EngineLook) {
+        let EngineLook { now_ms, playing, offloaded, index, position_ms, in_output_ms, state, .. } = *l;
+        let t = wall_ms();
+        let (silent, output) = self.with_state(|s| {
+            s.engine = Some(PerfEngineSeen { wall_ms: t, playing, offloaded, index: index.map_or(-1, |i| i as i64), position_ms, in_output_ms });
+            s.watch.engine(playing);
+            s.engine_state.0 = t;
+            s.engine_state.1.clear();
+            s.engine_state.1.push_str(state);
+            let silent = s.watch.silent(l.quiet_ms, l.output_open, l.id, state);
+            let output = if offloaded {
+                let pos = position_ms.max(0) as u64;
+                let m = Moving { now_ms, playing, offloaded, song: index, written: pos + in_output_ms.max(0) as u64, presented: pos, rate: 1000 };
+                s.watch.output("engine", &m).map(|b| s.quote_engine(b, t))
+            } else {
+                None
+            };
+            (silent, output)
+        });
+        // The platform hook calls into Kotlin, so it runs with the state unlocked.
+        let silent = silent.map(|mut b| {
+            b.detail = format!("{}; the stream cache: {}", b.detail, self.disk_of(l.id));
+            b
+        });
+        self.said(t, silent);
+        self.said(t, output);
+    }
+
+    /// Reports a panic as a break from a thread of its own: the panicking one may hold the watch's
+    /// locks until it has unwound.
+    fn panicked(&'static self, thread: &str, what: &str) -> Option<std::thread::JoinHandle<()>> {
+        let b = Break::new("panic", format!("on {thread}: {what}"));
+        let t = wall_ms();
+        std::thread::Builder::new().name("nori-perf-panic".into()).spawn(move || self.said(t, Some(b))).ok()
+    }
+
+    fn track_seen(&self, now_ms: i64, playing: bool, written: u64, presented: u64, rate: u32) {
+        let m = Moving { now_ms, playing, offloaded: false, song: None, written, presented, rate };
+        let t = wall_ms();
+        let b = self.with_state(|s| s.watch.track(&m).map(|b| s.quote_engine(b, t)));
+        self.said(t, b);
+    }
+
+    fn breaks(&self) -> Vec<String> {
+        self.with_state(|s| s.breaks.clone())
+    }
 }
 
-/// The track's own account of the equalizer screen's shallow buffer (how deep it was made for the output
-/// it plays on and why, and any growth after it ran dry): a "tuning" event on the perf timeline. Nothing
-/// outside the perf build.
-pub fn tuning_said(detail: &str) {
+/// Records the track's account of its shallow buffer as a "shallow" timeline event.
+pub fn shallow_said(detail: &str) {
     if on() {
-        crate::perf_log::note_output(wall_ms(), "tuning", detail);
+        crate::perf_log::note_output(wall_ms(), "shallow", detail);
     }
 }
 
-/// The perf build switches the watch on as it starts; nothing is watched before.
+/// Switches the watch on (perf build start) or off.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_watch(on: bool) {
     ON.store(on, Ordering::Relaxed);
 }
 
-/// What the engine's thread saw last, while the watch is on: for the self test, which reads the engine
-/// through it rather than through doors of its own.
+/// The engine thread's last observation, read by the self test.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct PerfEngineSeen {
-    /// When, wall clock ms.
     pub wall_ms: i64,
     pub playing: bool,
     pub offloaded: bool,
-    /// Queue index heard, -1 none.
+    /// Queue index heard, -1 for none (FFI record).
     pub index: i64,
     pub position_ms: i64,
     pub in_output_ms: i64,
 }
 
-/// What the stream cache keeps of a song (by its id): whether it has an entry, its length, the spans
-/// cached and the length its metadata gives. The platform's, told once ([`describe_disk`]).
-static DISK: std::sync::OnceLock<fn(&str) -> String> = std::sync::OnceLock::new();
-
-/// The platform says how to describe what its stream cache keeps of a song, for a silent break.
+/// Installs the platform's stream cache description hook, quoted by "silent" breaks.
 pub fn describe_disk(describe: fn(&str) -> String) {
-    let _ = DISK.set(describe);
+    let _ = RECORDER.disk.set(describe);
 }
 
-fn disk_of(id: Option<&str>) -> String {
-    match (id, DISK.get()) {
-        (Some(id), Some(describe)) => describe(id),
-        (None, _) => "no song".into(),
-        (_, None) => "not known here".into(),
-    }
-}
-
-/// What the engine's thread saw at one wake (nori-engine's `watch::Seen`, handed on by the Android
-/// library): whether it plays, which song and where, what the output holds, how long the music has stood
-/// still while it should move (`quiet_ms`) and whether an output is open, and where it stands in its own
-/// words (`state`).
+/// One engine wake (nori-engine's `watch::Seen`, forwarded by the Android library). `quiet_ms`: how
+/// long the playback position has not moved while it should; `state`: the engine's self-description.
 #[derive(Debug, Clone, Default)]
 pub struct EngineLook<'a> {
     pub now_ms: i64,
@@ -525,196 +558,126 @@ pub struct EngineLook<'a> {
     pub state: &'a str,
 }
 
-/// The engine's thread woke (nori-engine's watch hook, through the Android library); its words for where
-/// it stands are kept to be quoted by a break of the output it feeds. The engine playing nothing with no
-/// output open is a break of its own ([`Watch::silent`]).
+/// An engine wake: keeps its state for quoting, checks [`Watch::silent`], and watches the offloaded
+/// output (the CPU track is watched by its writer, [`track_seen`]).
 pub fn engine_seen(l: &EngineLook) {
-    let EngineLook { now_ms, playing, offloaded, index, position_ms, in_output_ms, state, .. } = *l;
-    let t = wall_ms();
-    *lock(&ENGINE) = Some(PerfEngineSeen { wall_ms: t, playing, offloaded, index: index.map_or(-1, |i| i as i64), position_ms, in_output_ms });
-    with(|w| w.engine(playing));
-    {
-        let mut kept = lock(&ENGINE_STATE);
-        kept.0 = t;
-        kept.1.clear();
-        kept.1.push_str(state);
-    }
-    let b = with(|w| w.silent(l.quiet_ms, l.output_open, l.id, state, || disk_of(l.id)));
-    said(t, b);
-    // The CPU's output is watched where it is written (the track's own writer, which reads the device);
-    // the engine's word counts for the offloaded one, whose play head only the engine reads.
-    if !offloaded {
-        return;
-    }
-    let pos = position_ms.max(0) as u64;
-    let m = Moving { now_ms, playing, offloaded, song: index, written: pos + in_output_ms.max(0) as u64, presented: pos, rate: 1000 };
-    let b = with(|w| w.output("engine", &m));
-    said(t, b.map(|b| with_engine(b, t)));
+    RECORDER.engine_seen(l);
 }
 
-/// A break of an output, with the engine's own account of where it stood at its last wake.
-fn with_engine(mut b: Break, now: i64) -> Break {
-    let kept = lock(&ENGINE_STATE);
-    if kept.1.is_empty() {
-        b.detail.push_str("; the engine has said nothing yet");
-    } else {
-        b.detail.push_str(&format!("; the engine at its last wake, {} ms before: {}", now - kept.0, kept.1));
-    }
-    b
-}
-
-/// A thread panicked (`thread`'s name, `what` and where): said as a break, with the app's own lines as it
-/// happened. The platform's panic hook calls this for every panic, caught or not; nothing unless the
-/// watch is on.
+/// Reports a panic (from the platform's panic hook) as a break, when the watch is on.
 pub fn panicked(thread: &str, what: &str) {
-    if !on() {
-        return;
+    if on() {
+        RECORDER.panicked(thread, what);
     }
-    said(wall_ms(), Some(Break::new("panic", format!("on {thread}: {what}"))));
 }
 
-/// The last thing the engine's thread saw; none before it woke with the watch on.
+/// The engine thread's last observation; None before its first wake with the watch on.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_engine_seen() -> Option<PerfEngineSeen> {
-    *lock(&ENGINE)
+    RECORDER.with_state(|s| s.engine)
 }
 
-/// The AudioTrack's writer read the device: `written` frames handed to it and `presented` played, at
-/// `rate` a second, `now_ms` by the monotonic clock.
+/// The AudioTrack writer's device reading: `written` and `presented` frames at `rate`, monotonic `now_ms`.
 pub fn track_seen(now_ms: i64, playing: bool, written: u64, presented: u64, rate: u32) {
-    let m = Moving { now_ms, playing, offloaded: false, song: None, written, presented, rate };
-    let b = with(|w| w.track(&m));
-    let t = wall_ms();
-    said(t, b.map(|b| with_engine(b, t)));
+    RECORDER.track_seen(now_ms, playing, written, presented, rate);
 }
 
 /// The player service arrived on song `id`.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_watch_heard(wall_ms: i64, id: String) {
-    if !on() {
-        return;
-    }
-    let b = with(|w| w.heard(wall_ms, &id));
-    said(wall_ms, b);
+    RECORDER.judge(wall_ms, |w| w.heard(wall_ms, &id));
 }
 
-/// The screen's player shows song `id` now.
+/// The player screen shows song `id`.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_watch_shown(wall_ms: i64, id: Option<String>) {
-    if !on() {
-        return;
-    }
-    let b = with(|w| w.shown(wall_ms, id.as_deref()));
-    said(wall_ms, b);
+    RECORDER.judge(wall_ms, |w| w.shown(wall_ms, id.as_deref()));
 }
 
-/// The screen can be seen (the app in the foreground, the screen on), or no longer can.
+/// The screen became visible or hidden.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_watch_visible(wall_ms: i64, visible: bool) {
-    if !on() {
-        return;
-    }
-    let b = with(|w| w.visible(wall_ms, visible));
-    said(wall_ms, b);
+    RECORDER.judge(wall_ms, |w| w.visible(wall_ms, visible));
 }
 
-/// Anything else woke the platform's watcher: the screen and the ear compared at this moment too.
+/// Any other platform wake: compares screen and playback now.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_watch_look(wall_ms: i64) {
-    if !on() {
-        return;
-    }
-    let b = with(|w| w.compare(wall_ms));
-    said(wall_ms, b);
+    RECORDER.judge(wall_ms, |w| w.compare(wall_ms));
 }
 
-/// The seek bar was drawn (the Android library's seek bar door, which asks [`on`] first): see
-/// [`Watch::place`]. `now_ms` times how long a place stays off; the timeline gets the wall clock.
+/// A seek bar draw (the caller checks [`on`]); see [`Watch::place`]. `now_ms` is monotonic.
 pub fn place_seen(now_ms: i64, playing: bool, shown_ms: i64, engine_ms: i64, word_ms: i64) {
-    let b = with(|w| w.place(now_ms, playing, shown_ms, engine_ms, word_ms));
+    let b = RECORDER.with_watch(|w| w.place(now_ms, playing, shown_ms, engine_ms, word_ms));
     if b.is_some() {
-        said(wall_ms(), b);
+        RECORDER.said(wall_ms(), b);
     }
 }
 
-/// The user pressed next or previous on the song at queue place `index`.
+/// Next or previous pressed on queue index `index`.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_watch_skip(wall_ms: i64, index: i64) {
     if on() {
-        with(|w| w.skip(wall_ms, index));
+        RECORDER.with_watch(|w| w.skip(wall_ms, index));
     }
 }
 
-/// The player arrived on queue place `index`, by itself (`auto`) or by a jump.
+/// The player arrived on queue index `index`.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_watch_arrived(wall_ms: i64, index: i64, auto: bool, shuffled: bool) {
-    if !on() {
-        return;
-    }
-    let b = with(|w| w.arrived(wall_ms, index, auto, shuffled));
-    said(wall_ms, b);
+    RECORDER.judge(wall_ms, |w| w.arrived(wall_ms, index, auto, shuffled));
 }
 
-/// Lyrics of song `id` went up on the screen.
+/// Lyrics of song `id` were shown.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_watch_lyrics(wall_ms: i64, id: String) {
-    if !on() {
-        return;
-    }
-    let b = with(|w| w.lyrics(wall_ms, &id));
-    said(wall_ms, b);
+    RECORDER.judge(wall_ms, |w| w.lyrics(wall_ms, &id));
 }
 
-/// The queue changed: the ids of its songs without a length, of `total`.
+/// The queue changed: ids of songs without a duration, of `total`.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_watch_queue(wall_ms: i64, missing: Vec<String>, total: u32) {
     if !on() {
         return;
     }
-    let auto_mix = nori_settings::settings_store::current().is_some_and(|p| p.auto_mix);
-    let b = with(|w| w.queue(auto_mix, &missing, total));
-    said(wall_ms, b);
+    let auto_mix = nori_settings::settings_store::shared().current().is_some_and(|p| p.auto_mix);
+    RECORDER.said(wall_ms, RECORDER.with_watch(|w| w.queue(auto_mix, &missing, total)));
 }
 
-/// A second after the settings changed: what the engine shows (whether it asks for offload, whether the
-/// sound chain is in the samples' path) against what the settings say it should, over the output the
-/// platform sees (`usb`: something USB attached, where offload never goes). Judged only as
-/// [`settings_judged`] says: `playing` through an output that is open (`output_open`); the chain only while
-/// the engine says the ear is on music the CPU made (`on_cpu`, see [`settings_pairs`]).
+/// A second after a settings change: checks the engine's offload request and sound chain against the
+/// settings (`usb`: offload never applies), when [`settings_judged`] allows.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_watch_settings(wall_ms: i64, offload_wanted: bool, chain_in: bool, on_cpu: bool, usb: bool, playing: bool, output_open: bool) {
     if !on() {
         return;
     }
-    let since = ENGINE_SINCE.load(Ordering::Relaxed);
-    if !settings_judged(wall_ms, playing, output_open, (since != i64::MIN).then_some(since)) {
+    let since = RECORDER.with_state(|s| s.engine_since);
+    if !settings_judged(wall_ms, playing, output_open, since) {
         return;
     }
-    let Some(s) = nori_settings::settings_store::current() else { return };
-    let want_offload = s.offload && !usb && crate::perf_log::offload_blocked().is_none();
-    // With the equalizer on, the chain is in the samples' path; off, it may stay in, flat.
-    said(wall_ms, settings_held(&settings_pairs(s.eq_enabled, want_offload, offload_wanted, chain_in, on_cpu)));
+    let Some(s) = nori_settings::settings_store::shared().current() else { return };
+    let want_offload = s.offload && !usb && crate::perf_log::offload_reason().is_none();
+    RECORDER.said(wall_ms, settings_held(&settings_pairs(s.eq_enabled, want_offload, offload_wanted, chain_in, on_cpu)));
 }
 
-/// The player service started or ended at `wall_ms` (the perf timeline's engine note).
+/// The player service started or ended at `wall_ms`.
 pub(crate) fn engine_changed(wall_ms: i64) {
-    ENGINE_SINCE.store(wall_ms, Ordering::Relaxed);
+    RECORDER.with_state(|s| s.engine_since = Some(wall_ms));
 }
 
-/// The invariant breaks this process said, oldest first, each "21:05:12 invariant: kind: detail".
+/// Breaks said so far, oldest first, as "21:05:12 invariant: kind: detail".
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_invariant_breaks() -> Vec<String> {
-    lock(&BREAKS).clone()
+    RECORDER.breaks()
 }
 
-/// The self test's volume on every output of both players (0 to 1); 1 is the music as it is. A player
-/// volume, never the phone's: the other apps and the volume keys are left alone.
+/// Sets the self test's player volume factor (0..1) on every output; the system volume is untouched.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn perf_quiet(level: f32) {
     QUIET.store(level.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
 }
 
-/// What every volume an output is set to is multiplied by: 1 outside the self test.
+/// The volume factor for every output: 1 outside the self test.
 #[inline]
 pub fn quiet() -> f32 {
     f32::from_bits(QUIET.load(Ordering::Relaxed))
@@ -729,7 +692,7 @@ mod tests {
     }
 
     #[test]
-    fn an_output_that_holds_music_and_does_not_play_it_is_a_break_once() {
+    fn reported_once() {
         let mut w = Watch::default();
         assert_eq!(w.output("track", &at(0, 1000, 10_000)), None);
         assert_eq!(w.output("track", &at(1000, 2000, 10_000)), None, "it moved");
@@ -740,10 +703,8 @@ mod tests {
         assert_eq!(w.output("track", &at(9000, 2000, 10_000)), None, "said once");
         assert_eq!(w.output("track", &at(9100, 2100, 10_000)), None, "moving again");
         assert!(w.output("track", &at(11_200, 2100, 10_000)).is_some(), "a second stall is said again");
-    }
 
-    #[test]
-    fn an_output_given_nothing_to_play_while_playing_is_a_break_once() {
+        // Starved output reported once.
         let mut w = Watch::default();
         w.output("track", &at(0, 5000, 5000));
         assert_eq!(w.output("track", &at(4000, 5000, 5000)), None, "a song's first bytes a moment late");
@@ -751,192 +712,91 @@ mod tests {
         assert_eq!(b.kind, "starved");
         assert_eq!(b.detail, "track: playing, but the output presented nothing new for 5100 ms and was given nothing new for 5100 ms (at 5000 ms presented of 5000 ms written)");
         assert_eq!(w.output("track", &at(9000, 5000, 5000)), None, "said once");
-        // What the phone's track did: counted as holding a tenth of a second, never started, the device's
-        // count standing past what it was given since the flush.
+        // Presented count past written (after a flush), never moving: starved.
         let mut w = Watch::default();
         w.output("track", &at(0, 90_000, 100));
         assert_eq!(w.output("track", &at(3000, 90_000, 100)), None);
         assert_eq!(w.output("track", &at(5500, 90_000, 100)).map(|b| b.kind), Some("starved"));
-        // Given music now and then, playing nothing of it: the stall is the output's.
+        // Fed but not playing: stalled.
         let mut w = Watch::default();
         w.output("track", &at(0, 0, 100));
         assert_eq!(w.output("track", &at(2500, 0, 200)).map(|b| b.kind), Some("stalled"));
+
+        // Silent reported once per stretch.
+        let mut w = Watch::default();
+        assert!(w.silent(SILENT_MS - 1, false, Some("s1"), "Playing").is_none());
+        assert!(w.silent(9_000, true, Some("s1"), "Playing").is_none(), "output open");
+        let b = w.silent(SILENT_MS, false, Some("s1"), "Playing; loaders: no loaders").expect("silent");
+        assert_eq!(b.kind, "silent");
+        assert!(b.detail.contains("s1 stood still for 5000 ms") && b.detail.ends_with("the engine: Playing; loaders: no loaders"), "{}", b.detail);
+        assert!(w.silent(8_000, false, Some("s1"), "Playing").is_none(), "said once");
+        // Moving again resets.
+        assert!(w.silent(0, false, Some("s1"), "Playing").is_none());
+        assert!(w.silent(6_000, false, Some("s2"), "Playing").is_some());
     }
 
     #[test]
-    fn a_track_given_nothing_while_the_engine_waits_for_a_songs_bytes_is_buffering_not_starved() {
-        // The report's: a provider's song still on its way, the engine switching to it and waiting for
-        // its bytes, the track started and given nothing for five seconds and more.
+    fn no_false_breaks() {
+        // Regression: a provider song still downloading was reported as starved.
         let mut w = Watch::default();
         w.engine(false);
         w.track(&at(0, 0, 0));
-        assert_eq!(w.track(&at(5_019, 0, 0)), None, "waiting for a song's bytes is buffering");
-        assert_eq!(w.track(&at(12_000, 0, 0)), None, "however long the network takes");
-        // The bytes came and the engine plays: the track has the whole time from then to be given music.
+        assert_eq!(w.track(&at(5_019, 0, 0)), None);
+        assert_eq!(w.track(&at(12_000, 0, 0)), None);
+        // Once playing, the full STARVED_MS counts from then.
         w.engine(true);
         assert_eq!(w.track(&at(13_000, 0, 0)), None);
-        assert_eq!(w.track(&at(17_500, 0, 0)), None, "4.5 s since the engine said it plays");
-        let b = w.track(&at(18_100, 0, 0)).expect("the engine says it plays and gives the track nothing");
+        assert_eq!(w.track(&at(17_500, 0, 0)), None);
+        let b = w.track(&at(18_100, 0, 0)).expect("starved");
         assert_eq!(b.kind, "starved");
-        // The engine playing, with music in hand, and nothing reaching the output: said as before.
         let mut w = Watch::default();
         w.engine(true);
         w.track(&at(0, 5000, 5000));
         assert_eq!(w.track(&at(5_100, 5000, 5000)).map(|b| b.kind), Some("starved"));
-        // A track holding music it does not play is a stall once the engine plays: the output's own.
+        // Holding unplayed music once the engine plays: stalled.
         let mut w = Watch::default();
         w.engine(false);
         w.track(&at(0, 0, 100));
         w.engine(true);
         w.track(&at(100, 0, 100));
         assert_eq!(w.track(&at(2_500, 0, 200)).map(|b| b.kind), Some("stalled"));
-    }
 
-    #[test]
-    fn the_engine_playing_nothing_with_no_output_open_is_said_once_a_stretch() {
-        let mut w = Watch::default();
-        let disk = || "no entry".to_string();
-        assert!(w.silent(SILENT_MS - 1, false, Some("s1"), "Playing", disk).is_none(), "not yet");
-        assert!(w.silent(9_000, true, Some("s1"), "Playing", disk).is_none(), "an open output is the track's own watch");
-        let b = w.silent(SILENT_MS, false, Some("s1"), "Playing; loaders: no loaders", disk).expect("silent");
-        assert_eq!(b.kind, "silent");
-        assert!(b.detail.contains("s1 stood still for 5000 ms") && b.detail.ends_with("loaders: no loaders; the stream cache: no entry"), "{}", b.detail);
-        assert!(w.silent(8_000, false, Some("s1"), "Playing", disk).is_none(), "said once");
-        // The music moved again: the next stretch of it is said again.
-        assert!(w.silent(0, false, Some("s1"), "Playing", disk).is_none());
-        assert!(w.silent(6_000, false, Some("s2"), "Playing", disk).is_some());
-    }
-
-    #[test]
-    fn a_stall_of_the_track_quotes_where_the_engine_last_stood() {
-        let state = "Playing; playing on 16 (s16) at 51 ms; reading 16 (s16) at 11000 ms; transition engine passing; loaders: s16: 0..90 of 90 bytes";
-        engine_seen(&EngineLook { playing: true, index: Some(16), position_ms: 51, in_output_ms: 100, state, ..EngineLook::default() });
-        track_seen(0, true, 4410, 90_000, 44_100);
-        track_seen(6_000, true, 4410, 90_000, 44_100);
-        let breaks = perf_invariant_breaks();
-        let line = breaks.iter().find(|l| l.contains("starved: track:")).unwrap_or_else(|| panic!("a starved track: {breaks:?}"));
-        assert!(line.contains("; the engine at its last wake, ") && line.ends_with(state), "{line}");
-    }
-
-    #[test]
-    fn standing_still_is_fine_paused_after_a_flush_and_with_nothing_written_ahead() {
+        // Standing still is fine when paused flushed or drained.
         let mut w = Watch::default();
         w.output("track", &at(0, 5000, 5000));
-        assert_eq!(w.output("track", &at(4500, 5000, 5000)), None, "everything written was played: waiting for music");
+        assert_eq!(w.output("track", &at(4500, 5000, 5000)), None, "drained");
         let paused = Moving { playing: false, ..at(10_000, 5000, 9000) };
         assert_eq!(w.output("track", &paused), None);
-        assert_eq!(w.output("track", &at(11_000, 5000, 9000)), None, "the pause started the count again");
-        assert_eq!(w.output("track", &at(12_000, 0, 4000)), None, "a flush sets the count back");
+        assert_eq!(w.output("track", &at(11_000, 5000, 9000)), None, "pause resets");
+        assert_eq!(w.output("track", &at(12_000, 0, 4000)), None, "flush resets");
         assert_eq!(w.output("track", &at(13_500, 0, 4000)), None);
         let song = Moving { song: Some(1), ..at(16_000, 0, 4000) };
-        assert_eq!(w.output("track", &song), None, "a new song starts afresh");
-    }
+        assert_eq!(w.output("track", &song), None, "new song resets");
 
-    #[test]
-    fn a_starved_offloaded_track_is_named_so() {
-        let mut w = Watch::default();
-        let m = |t, p| Moving { offloaded: true, ..at(t, p, 20_000) };
-        w.output("engine", &m(0, 900));
-        let b = w.output("engine", &m(2600, 900)).unwrap();
-        assert_eq!(b.kind, "offload-starved");
-        assert!(b.detail.starts_with("engine: playing, but the offloaded track"), "{}", b.detail);
-        assert_eq!(w.output("track", &at(0, 1, 2)), None, "each output is watched on its own");
-    }
-
-    #[test]
-    fn a_skip_moves_one_song_and_three_quick_ones_three() {
-        let mut w = Watch::default();
-        w.skip(0, 4);
-        assert_eq!(w.arrived(100, 5, false, false), None);
-        w.skip(200, 5);
-        w.skip(350, 6);
-        assert_eq!(w.arrived(400, 6, false, false), None);
-        assert_eq!(w.arrived(500, 7, false, false), None, "three presses from 4, three songs");
-        let b = w.arrived(700, 8, false, false).expect("a fourth song for three presses");
-        assert_eq!(b.kind, "skip");
-        assert_eq!(b.detail, "3 skip presses moved 4 songs, from queue place 4 to 8");
-        assert_eq!(w.arrived(800, 9, false, false), None, "said once for the run");
-    }
-
-    #[test]
-    fn a_song_ending_by_itself_or_a_shuffled_queue_is_not_a_skip() {
+        // Auto advance and shuffle are not judged.
         let mut w = Watch::default();
         w.skip(0, 0);
-        assert_eq!(w.arrived(100, 3, false, true), None, "shuffled: places say nothing");
+        assert_eq!(w.arrived(100, 3, false, true), None, "shuffled");
         w.skip(1000, 3);
         assert_eq!(w.arrived(1100, 4, true, false), None);
-        assert_eq!(w.arrived(1200, 6, false, false), None, "the run ended with the song that ended");
+        assert_eq!(w.arrived(1200, 6, false, false), None, "auto advance ended the run");
         w.skip(10_000, 6);
-        assert_eq!(w.arrived(14_000, 9, false, false), None, "long after the press: not its doing");
+        assert_eq!(w.arrived(14_000, 9, false, false), None, "after RUN_MS");
         w.skip(20_000, 9);
-        assert_eq!(w.arrived(20_100, 8, false, false), None, "previous moves one back");
-    }
+        assert_eq!(w.arrived(20_100, 8, false, false), None, "previous");
 
-    #[test]
-    fn the_screen_may_trail_the_ear_a_second_and_a_mix_longer() {
-        let mut w = Watch::default();
-        assert_eq!(w.heard(0, "a"), None);
-        assert_eq!(w.shown(10, Some("a")), None);
-        assert_eq!(w.heard(1000, "b"), None);
-        assert_eq!(w.compare(1900), None, "0.9 s behind");
-        assert_eq!(w.shown(1950, Some("b")), None);
-        assert_eq!(w.heard(5000, "c"), None);
-        let b = w.compare(6100).expect("1.1 s behind");
-        assert_eq!(b.kind, "shown-heard");
-        assert_eq!(b.detail, "the screen showed b while c was heard, for 1100 ms");
-        assert_eq!(w.compare(9000), None, "said once");
-        assert_eq!(w.shown(9100, Some("c")), None);
-    }
-
-    #[test]
-    fn the_seek_bar_far_from_the_engine_for_a_second_is_a_break() {
-        let mut w = Watch::default();
-        // The S22's report: the controller's word 14 s ahead, the bar at the end of the song, frame by frame.
-        assert_eq!(w.place(0, true, 600_000, 586_000, 600_000), None, "a frame off is not yet a break");
-        assert_eq!(w.place(900, true, 600_000, 586_900, 600_000), None);
-        let b = w.place(1_100, true, 600_000, 587_100, 600_000).expect("off for over a second");
-        assert_eq!(b.line(), "place: the seek bar showed 600.0 s while the engine was at 587.1 s (the controller's word 600.0 s)");
-        assert_eq!(w.place(1_200, true, 600_000, 587_200, 600_000), None, "said once");
-        // Back with the engine: the next time it goes off is said again.
-        assert_eq!(w.place(1_300, true, 587_300, 587_300, 587_300), None);
-        w.place(2_000, true, 590_000, 587_000, 587_000);
-        assert!(w.place(3_100, true, 591_100, 588_100, 588_100).is_some());
-    }
-
-    #[test]
-    fn a_controller_s_word_far_from_the_engine_s_is_a_break_even_with_the_bar_right() {
-        let mut w = Watch::default();
-        w.place(0, true, 586_000, 586_000, 600_000);
-        let b = w.place(1_500, true, 587_500, 587_500, 600_000).expect("the word off for 1.5 s");
-        assert_eq!(b.detail, "the controller ran on to 600.0 s while the engine was at 587.5 s (the seek bar showed 587.5 s)");
-    }
-
-    #[test]
-    fn the_place_is_judged_only_playing_with_the_engine_s_to_go_by() {
-        let mut w = Watch::default();
-        for t in (0..5_000).step_by(100) {
-            assert_eq!(w.place(t, false, 600_000, 100_000, 600_000), None, "paused");
-            assert_eq!(w.place(t, true, 600_000, -1, 600_000), None, "no engine's place: another song, or a seek on its way");
-        }
-        // A glide within the bound is not a break however long.
-        for t in (5_000..10_000).step_by(100) {
-            assert_eq!(w.place(t, true, 100_000 + t, 100_000 + t - PLACE_MS, 100_000 + t), None);
-        }
-    }
-
-    #[test]
-    fn the_screen_is_not_late_while_nobody_can_see_it() {
+        // Hidden screen is not judged.
         let mut w = Watch::default();
         w.heard(0, "a");
         w.shown(10, Some("a"));
-        assert_eq!(w.visible(20, false), None, "the screen goes off");
+        assert_eq!(w.visible(20, false), None);
         w.heard(1000, "b");
-        assert_eq!(w.compare(60_000), None, "a minute off: nothing is drawn, nothing is late");
-        assert_eq!(w.visible(64_000, true), None, "back on: the second to catch up starts now");
+        assert_eq!(w.compare(60_000), None, "hidden");
+        assert_eq!(w.visible(64_000, true), None, "grace starts on becoming visible");
         assert_eq!(w.compare(64_900), None);
-        let b = w.compare(65_100).expect("still the old song 1.1 s after coming back");
+        let b = w.compare(65_100).expect("1.1 s after becoming visible");
         assert_eq!(b.detail, "the screen showed a while b was heard, for 1100 ms");
-        // Caught up in time: nothing said.
+        // Catching up in time: nothing.
         let mut w = Watch::default();
         w.heard(0, "a");
         w.shown(10, Some("a"));
@@ -947,64 +807,168 @@ mod tests {
         assert_eq!(w.compare(70_000), None);
     }
 
+    /// A watch of the test's own, for as long as the test runs.
+    fn recorder() -> &'static Recorder {
+        Box::leak(Box::new(Recorder { state: Mutex::new(None), disk: OnceLock::new() }))
+    }
+
     #[test]
-    fn lyrics_belong_to_the_song_heard() {
+    fn lock_safety() {
+        static HOOKED: Recorder = Recorder { state: Mutex::new(None), disk: OnceLock::new() };
+        // The Android hook calls into Kotlin, which may read the watch.
+        let _ = HOOKED.disk.set(|id| format!("{id}: {} breaks", HOOKED.breaks().len()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            HOOKED.engine_seen(&EngineLook { playing: true, id: Some("hooked"), quiet_ms: SILENT_MS, state: "Playing", ..EngineLook::default() });
+            tx.send(()).unwrap();
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5)).expect("engine_seen deadlocked on its own hook");
+        assert!(HOOKED.breaks().iter().any(|l| l.contains("hooked stood still") && l.contains("the stream cache: hooked: ")));
+
+        // A panic under the watch lock is reported.
+        let r = recorder();
+        let reporting = std::thread::spawn(move || r.with_state(|_| r.panicked("a test", "boom under the lock")))
+            .join()
+            .expect("the report waited for the panicking thread's own lock")
+            .expect("a thread reports it");
+        reporting.join().unwrap();
+        assert!(r.breaks().iter().any(|l| l.contains("boom under the lock")), "{:?}", r.breaks());
+    }
+
+    #[test]
+    fn track_break_quotes_engine_state() {
+        let r = recorder();
+        let state = "Playing; playing on 16 (s16) at 51 ms; reading 16 (s16) at 11000 ms; transition engine passing; loaders: s16: 0..90 of 90 bytes";
+        r.engine_seen(&EngineLook { playing: true, index: Some(16), position_ms: 51, in_output_ms: 100, state, ..EngineLook::default() });
+        r.track_seen(0, true, 4410, 90_000, 44_100);
+        r.track_seen(6_000, true, 4410, 90_000, 44_100);
+        let breaks = r.breaks();
+        let line = breaks.iter().find(|l| l.contains("starved: track:")).unwrap_or_else(|| panic!("a starved track: {breaks:?}"));
+        assert!(line.contains("; the engine at its last wake, ") && line.ends_with(state), "{line}");
+    }
+
+    #[test]
+    fn offloaded_stall_is_offload_starved() {
         let mut w = Watch::default();
-        assert_eq!(w.lyrics(0, "a"), None, "nothing heard yet");
+        let m = |t, p| Moving { offloaded: true, ..at(t, p, 20_000) };
+        w.output("engine", &m(0, 900));
+        let b = w.output("engine", &m(2600, 900)).unwrap();
+        assert_eq!(b.kind, "offload-starved");
+        assert!(b.detail.starts_with("engine: playing, but the offloaded track"), "{}", b.detail);
+        assert_eq!(w.output("track", &at(0, 1, 2)), None, "outputs are independent");
+    }
+
+    #[test]
+    fn skip_run_moves_one_song_per_press() {
+        let mut w = Watch::default();
+        w.skip(0, 4);
+        assert_eq!(w.arrived(100, 5, false, false), None);
+        w.skip(200, 5);
+        w.skip(350, 6);
+        assert_eq!(w.arrived(400, 6, false, false), None);
+        assert_eq!(w.arrived(500, 7, false, false), None, "3 presses, 3 songs");
+        let b = w.arrived(700, 8, false, false).expect("4 songs for 3 presses");
+        assert_eq!(b.kind, "skip");
+        assert_eq!(b.detail, "3 skip presses moved 4 songs, from queue place 4 to 8");
+        assert_eq!(w.arrived(800, 9, false, false), None, "once per run");
+    }
+
+    #[test]
+    fn place_breaks() {
+        let mut w = Watch::default();
+        assert_eq!(w.heard(0, "a"), None);
+        assert_eq!(w.shown(10, Some("a")), None);
+        assert_eq!(w.heard(1000, "b"), None);
+        assert_eq!(w.compare(1900), None, "0.9 s");
+        assert_eq!(w.shown(1950, Some("b")), None);
+        assert_eq!(w.heard(5000, "c"), None);
+        let b = w.compare(6100).expect("1.1 s");
+        assert_eq!(b.kind, "shown-heard");
+        assert_eq!(b.detail, "the screen showed b while c was heard, for 1100 ms");
+        assert_eq!(w.compare(9000), None, "once");
+        assert_eq!(w.shown(9100, Some("c")), None);
+
+        // Seek bar off for over a second is a break.
+        let mut w = Watch::default();
+        // Regression: bar stuck at the song's end, 14 s ahead of the engine.
+        assert_eq!(w.place(0, true, 600_000, 586_000, 600_000), None);
+        assert_eq!(w.place(900, true, 600_000, 586_900, 600_000), None);
+        let b = w.place(1_100, true, 600_000, 587_100, 600_000).expect("off > 1 s");
+        assert_eq!(b.line(), "place: the seek bar showed 600.0 s while the engine was at 587.1 s (the controller's word 600.0 s)");
+        assert_eq!(w.place(1_200, true, 600_000, 587_200, 600_000), None, "once");
+        // Back in range resets.
+        assert_eq!(w.place(1_300, true, 587_300, 587_300, 587_300), None);
+        w.place(2_000, true, 590_000, 587_000, 587_000);
+        assert!(w.place(3_100, true, 591_100, 588_100, 588_100).is_some());
+
+        // Controller position off is a break.
+        let mut w = Watch::default();
+        w.place(0, true, 586_000, 586_000, 600_000);
+        let b = w.place(1_500, true, 587_500, 587_500, 600_000).expect("off 1.5 s");
+        assert_eq!(b.detail, "the controller ran on to 600.0 s while the engine was at 587.5 s (the seek bar showed 587.5 s)");
+
+        // Place judged only playing with known engine position.
+        let mut w = Watch::default();
+        for t in (0..5_000).step_by(100) {
+            assert_eq!(w.place(t, false, 600_000, 100_000, 600_000), None, "paused");
+            assert_eq!(w.place(t, true, 600_000, -1, 600_000), None, "engine position unknown");
+        }
+        // Within PLACE_MS: never a break.
+        for t in (5_000..10_000).step_by(100) {
+            assert_eq!(w.place(t, true, 100_000 + t, 100_000 + t - PLACE_MS, 100_000 + t), None);
+        }
+    }
+
+    #[test]
+    fn lyrics_must_match_heard_song() {
+        let mut w = Watch::default();
+        assert_eq!(w.lyrics(0, "a"), None);
         w.heard(1000, "a");
         assert_eq!(w.lyrics(1500, "a"), None);
         w.heard(2000, "b");
-        assert_eq!(w.lyrics(2500, "a"), None, "a's lyrics arriving just as b started");
+        assert_eq!(w.lyrics(2500, "a"), None, "grace after song change");
         let b = w.lyrics(4000, "a").unwrap();
         assert_eq!(b.kind, "lyrics");
         assert_eq!(b.detail, "lyrics of a shown while b is heard (since 2000 ms)");
     }
 
     #[test]
-    fn automix_wants_every_song_s_length() {
+    fn automix_requires_durations() {
         let mut w = Watch::default();
         let missing = vec!["x".to_string(), "y".to_string()];
-        assert_eq!(w.queue(false, &missing, 10), None, "AutoMix off");
+        assert_eq!(w.queue(false, &missing, 10), None);
         let b = w.queue(true, &missing, 10).unwrap();
         assert_eq!(b.detail, "AutoMix is on and 2 of 10 songs in the queue have no length: x, y");
-        assert_eq!(w.queue(true, &missing, 10), None, "the same songs said once");
+        assert_eq!(w.queue(true, &missing, 10), None, "once per set");
         assert_eq!(w.queue(true, &[], 10), None);
-        assert!(w.queue(true, &missing, 10).is_some(), "again after the queue was whole");
+        assert!(w.queue(true, &missing, 10).is_some(), "again after being complete");
     }
 
     #[test]
-    fn a_setting_is_judged_only_playing_through_an_open_output_and_after_the_service_settled() {
-        // The self test's restore: the service had just started with a batch of settings, paused.
-        assert!(!settings_judged(1_000, false, false, Some(0)), "paused with no output, just started");
-        assert!(!settings_judged(10_000, false, true, Some(0)), "paused: the chain is in no path");
-        assert!(!settings_judged(10_000, true, false, Some(0)), "playing, but no output open yet");
-        assert!(!settings_judged(2_000, true, true, Some(0)), "the service started two seconds ago");
-        assert!(!settings_judged(SETTLE_MS, true, true, Some(0)), "still settling at the edge");
+    fn settings_are_judged() {
+        assert!(!settings_judged(10_000, false, true, Some(0)), "paused");
+        assert!(!settings_judged(10_000, true, false, Some(0)), "no output");
+        assert!(!settings_judged(SETTLE_MS, true, true, Some(0)), "settling");
         assert!(settings_judged(SETTLE_MS + 1, true, true, Some(0)));
-        assert!(settings_judged(5, true, true, None), "no service start seen: judged");
-    }
+        assert!(settings_judged(5, true, true, None));
 
-    #[test]
-    fn a_setting_is_in_the_engine_a_second_later() {
+        // Settings held reports mismatches.
         assert_eq!(settings_held(&[("offload wanted", true, true)]), None);
         let b = settings_held(&[("offload wanted", false, true), ("sound chain in the path", true, true)]).unwrap();
         assert_eq!(b.kind, "setting");
         assert_eq!(b.detail, "a second after the settings changed the engine still shows offload wanted: true, expected false");
-    }
 
-    #[test]
-    fn the_chain_is_held_to_the_equalizer_only_while_the_cpu_plays_through_the_engine_s_output() {
-        // As the phone had it: the equalizer on, the first song's bytes still coming and the output not open
-        // yet (or the chip playing, or the output let go): the chain is in no path, and that is no break.
+        // Sound chain checked only on cpu output.
+        // Equalizer on but not playing CPU audio: not judged.
         assert_eq!(settings_held(&settings_pairs(true, false, false, false, false)), None);
         let b = settings_held(&settings_pairs(true, false, false, false, true)).unwrap();
         assert_eq!(b.detail, "a second after the settings changed the engine still shows sound chain in the path: false, expected true");
-        assert_eq!(settings_held(&settings_pairs(false, false, false, false, true)), None, "off, the chain may stay in, flat, or not");
-        assert!(settings_held(&settings_pairs(true, false, true, false, false)).is_some(), "offload is held to the settings whatever plays");
+        assert_eq!(settings_held(&settings_pairs(false, false, false, false, true)), None, "equalizer off");
+        assert!(settings_held(&settings_pairs(true, false, true, false, false)).is_some(), "offload always judged");
     }
 
     #[test]
-    fn quiet_is_a_factor_held_in_range() {
+    fn quiet_is_clamped() {
         perf_quiet(0.001);
         assert!((quiet() - 0.001).abs() < 1e-6);
         perf_quiet(3.0);

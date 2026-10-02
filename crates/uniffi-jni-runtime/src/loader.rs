@@ -2,14 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-//! NORI: finding the app's classes from any thread.
-//!
-//! `FindClass` searches the class loader of the Java method that called into native code. A thread the
-//! core started itself has no Java method under it, so on Android it gets the system class loader, which
-//! does not know the app's classes: the first callback or future wake-up made from such a thread would not
-//! find `uniffi/UniffiKt`, and the runtime panics on a class it cannot find. `JNI_OnLoad` runs with the
-//! app's loader, so the library hands that loader over here once, and a class `FindClass` cannot find is
-//! asked of it instead.
+//! NORI: class lookup from any thread. `FindClass` on a thread Rust started uses the system class loader,
+//! which lacks the app's classes; the app's loader is captured in `JNI_OnLoad` and used as a fallback.
 
 use std::ffi::{CStr, CString};
 use std::sync::OnceLock;
@@ -21,14 +15,14 @@ struct AppLoader {
     load_class: jmethodID,
 }
 
-// Safety: `loader` is a global reference and `load_class` a method ID, both valid on every thread.
+// SAFETY: a global reference and a method ID, both valid on every thread.
 unsafe impl Send for AppLoader {}
 unsafe impl Sync for AppLoader {}
 
+/// Global: `find_class` is called from upstream code that has no handle to pass it through.
 static APP_LOADER: OnceLock<AppLoader> = OnceLock::new();
 
-/// Keeps the class loader that loaded `class_name`, for [`find_class`]. Returns false if the class or its
-/// loader could not be had; lookups then only go through `FindClass`.
+/// Keeps the class loader of `class_name` for [`find_class`]. Returns false if it could not be found.
 ///
 /// # Safety
 ///

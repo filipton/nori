@@ -1,5 +1,4 @@
-//! Refilling the queue as the client's calls: the songs or albums fetched from the server. When to fetch
-//! and what to ask for are nori-queue's.
+//! Autofill fetches (songs or albums from the server). When to fetch is nori-queue's.
 
 use std::collections::{HashMap, HashSet};
 
@@ -8,20 +7,16 @@ use futures_util::future::join_all;
 use crate::cache_policy::{Page, Read};
 use crate::client::Client;
 use crate::settings::{AutoFillBasis, AutoFillKind};
-use crate::{queue, Song};
+use crate::Song;
 
 pub use nori_queue::autofill::*;
 
-/// What autofill appends to the queue: its songs, and where they come from when that says how they play
-/// ([`Refill::from`]), which a client passes on as `playlist_take`'s `from`.
+/// Songs autofill appends, and the `from` a client passes to `playlist_take`.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct Refill {
     pub songs: Vec<Song>,
-    /// One album in its own order (autofill by albums): that album's page, as its Add to queue says, so it
-    /// is played as an album - one album run, gapless with "keep albums gapless", its album gain - as the
-    /// album before it was. Whole random albums (a "shuffle albums" queue's refill): that shuffle, so each
-    /// album is a run of its own. None: songs picked one by one, which mix like any others.
+    /// The album (one album run) or the "shuffle albums" origin (a run per album); None for loose songs.
     pub from: Option<crate::PageOrigin>,
 }
 
@@ -32,7 +27,7 @@ impl Refill {
 }
 
 impl Client {
-    /// The first answer a screen would show: the stored one when there is one, else the server's.
+    /// The cached page if any, else the server's.
     pub(crate) async fn first(&self, read: Read) -> Got<Page> {
         if let Ok(stored) = self.read_stored(read.clone()) {
             if let Some(p) = stored.page {
@@ -43,34 +38,23 @@ impl Client {
     }
 
     pub(crate) async fn songs(&self, read: Read) -> Got<Vec<Song>> {
-        match self.read_now(read).await? {
-            Page::Songs { v } => Ok(v),
-            _ => Ok(Vec::new()),
-        }
+        Ok(self.read_now(read).await?.songs())
     }
 
     async fn artist_albums(&self, seed: &Song) -> Got<Vec<crate::Album>> {
         let Some(id) = seed.artist_id.clone() else { return Ok(Vec::new()) };
-        match self.first(Read::ArtistById { id }).await? {
-            Page::ArtistPage { v } => Ok(v.albums),
-            _ => Ok(Vec::new()),
-        }
+        Ok(self.first(Read::ArtistById { id }).await?.albums())
     }
 
-    /// Loose songs to carry on with. Whatever the basis, the order they come back in is kept.
+    /// Loose songs following `seed` by `basis`, in the source's order.
     async fn next_songs(&self, seed: &Song, basis: AutoFillBasis) -> Got<Vec<Song>> {
         Ok(match basis {
-            // The artist's best-known songs first, then the rest of their records, so a long evening
-            // does not stop after ten tracks.
+            // Top songs, else songs of the artist's first three albums.
             AutoFillBasis::Artist => {
-                let top = match self.first(Read::TopSongs { artist: seed.artist.clone() }).await? {
-                    Page::Songs { v } => v,
-                    _ => Vec::new(),
-                };
+                let top = self.first(Read::TopSongs { artist: seed.artist.clone() }).await?.songs();
                 if !top.is_empty() {
                     return Ok(top);
                 }
-                // Side by side: three round trips one after another were three times the wait.
                 let albums = self.artist_albums(seed).await?;
                 let reads = albums.into_iter().take(3).map(|a| self.songs(Read::AlbumSongs { id: a.id }));
                 let mut all = Vec::new();
@@ -83,7 +67,7 @@ impl Client {
                 Some(g) => shuffled(self.songs(Read::SongsByGenre { genre: g.clone(), count: 100 }).await?),
                 None => Vec::new(),
             },
-            // Out of the offline index rather than the server: nothing in Subsonic asks for a decade of songs.
+            // From the local index: Subsonic has no songs-by-decade call.
             AutoFillBasis::Era => match era(seed) {
                 Some((from, to)) => shuffled(self.core.browse_songs("playCount".into(), true, false, from, to, 0, 100).unwrap_or_default()),
                 None => Vec::new(),
@@ -92,26 +76,20 @@ impl Client {
         })
     }
 
-    /// The albums one whole record is picked from, by the same four bases.
+    /// Candidate album ids for `basis`.
     async fn album_candidates(&self, seed: &Song, basis: AutoFillBasis, remote: bool) -> Got<Vec<String>> {
-        let ids = |v: Vec<crate::Album>| v.into_iter().filter(|a| remote || (!a.is_external && !crate::db::external(&a.id))).map(|a| a.id).collect::<Vec<_>>();
-        let albums = |p: Page| match p {
-            Page::Albums { v } => v,
-            _ => Vec::new(),
-        };
+        let ids = |v: Vec<crate::Album>| v.into_iter().filter(|a| remote || !a.is_provider()).map(|a| a.id).collect::<Vec<_>>();
         Ok(match basis {
             AutoFillBasis::Artist => ids(self.artist_albums(seed).await?),
             AutoFillBasis::Genre => match &seed.genre {
-                Some(g) => shuffled(ids(albums(
-                    self.first(Read::AlbumList { kind: "byGenre".into(), size: 30, offset: 0, genre: Some(g.clone()) }).await?,
-                ))),
+                Some(g) => shuffled(ids(self.first(Read::AlbumList { kind: "byGenre".into(), size: 30, offset: 0, genre: Some(g.clone()) }).await?.albums())),
                 None => Vec::new(),
             },
             AutoFillBasis::Era => match era(seed) {
-                Some((from, to)) => shuffled(ids(albums(self.first(Read::AlbumsByYear { from: from as i32, to: to as i32, size: 30, offset: 0 }).await?))),
+                Some((from, to)) => shuffled(ids(self.first(Read::AlbumsByYear { from: from as i32, to: to as i32, size: 30, offset: 0 }).await?.albums())),
                 None => Vec::new(),
             },
-            // The records the songs the server calls similar come from.
+            // Albums of the similar songs.
             _ => {
                 let mut seen = HashSet::new();
                 self.songs(Read::SimilarSongs { id: seed.id.clone(), count: 50 })
@@ -125,20 +103,15 @@ impl Client {
         })
     }
 
-    /// One whole album, in its own order, for someone who listens to records. One already in the queue
-    /// is passed over, so an evening moves on rather than playing the same record twice. A single is an
-    /// album as far as the server is concerned, and stopping the evening on one track is not what
-    /// "carry on with albums" means: the first record with a side to it wins, and a short one is only
-    /// taken if nothing else is on offer. The records picked or played lately go to the back, so the
-    /// same single does not lead to the same album every time (see nori-queue's `rank`).
+    /// One whole album not already queued or played, ranked by [`rank`]. The first with at least
+    /// [`ALBUM_MIN`] songs wins; the longest short one is the fallback.
     async fn next_album(&self, seed: &Song, basis: AutoFillBasis, queued: &HashSet<&str>, played: &HashSet<String>, remote: bool) -> Refill {
         let candidates = self.album_candidates(seed, basis, remote).await.unwrap_or_default();
         let pool: Vec<String> = candidates.into_iter().filter(|a| seed.album_id.as_ref() != Some(a) && !played.contains(a)).collect();
         let ranked = self.turns(Picked::Album, pool);
         let mut short = Vec::new();
         let mut short_id = None;
-        // The candidates are read side by side (six round trips one after another could be a second or
-        // more on a phone) and still chosen in their ranked order.
+        // Fetched concurrently, chosen in ranked order.
         let picks: Vec<String> = ranked.into_iter().take(ALBUM_TRIES).collect();
         let reads = join_all(picks.iter().map(|pick| self.songs(Read::AlbumSongs { id: pick.clone() }))).await;
         for (pick, read) in picks.into_iter().zip(reads) {
@@ -159,8 +132,7 @@ impl Client {
         Refill { songs: short, from }
     }
 
-    /// `candidates` ranked so that what was picked or played lately comes last; as they are when the
-    /// database will not say.
+    /// `candidates` ranked by recent use ([`rank`]); unchanged if the database read fails.
     fn turns(&self, kind: Picked, candidates: Vec<String>) -> Vec<String> {
         let c = self.core.db.lock();
         let now = crate::db::now_ms();
@@ -174,16 +146,13 @@ impl Client {
         }
     }
 
-    /// Remembers what was just queued, so the next refill takes turns with it.
+    /// Keeps `ids` as this fetch's picks, recorded by [`Client::autofill_arrived`] once appended.
     fn picked(&self, kind: Picked, ids: &[String]) {
-        let _ = note(&self.core.db.lock(), kind, ids, crate::db::now_ms());
+        *self.autofill_picks.lock() = Some((kind, ids.to_vec()));
     }
 
-    /// What the queue carries on from when its last song is `last`. A provider's song (octo-fiesta) is
-    /// no seed: the server's similar songs, top songs and albums for it are the provider's too, and each
-    /// one played would be downloaded into the library. The library's side of it is: a song of the
-    /// same artist in the library, else the queue's last song from the library. None when there is
-    /// neither.
+    /// A library seed for `last`: itself if in the library, else a library song by the same artist, else
+    /// the queue's last library song. Provider seeds would yield provider songs, which the server downloads.
     fn library_seed(&self, last: Song, ids: &[String]) -> Option<Song> {
         if in_library(&last) {
             return Some(last);
@@ -193,84 +162,83 @@ impl Client {
             .then(|| self.core.local_search(artist.to_string(), 50).ok())
             .flatten()
             .and_then(|found| found.songs.into_iter().find(|s| in_library(s) && s.artist.trim().eq_ignore_ascii_case(artist)));
-        same_artist.or_else(|| ids.iter().rev().filter_map(|id| queue::queue_song(id.clone())).find(in_library))
+        same_artist.or_else(|| ids.iter().rev().filter_map(|id| self.core.session.song(id)).find(in_library))
     }
 
-    /// Random albums of the library, whole, none already in the queue: a "shuffle albums" queue's refill.
+    /// Whole random library albums not already queued ("shuffle albums" refill).
     async fn random_albums(&self, ids: &[String]) -> Vec<Song> {
-        let queued: HashSet<String> = queue::queue_albums(ids.to_vec()).into_iter().collect();
-        let albums = match self.read_now(Read::AlbumList { kind: "random".into(), size: crate::actions::SHUFFLE_ALBUMS, offset: 0, genre: None }).await {
-            Ok(Page::Albums { v }) => v.into_iter().filter(|a| !queued.contains(&a.id)).collect(),
-            _ => Vec::new(),
-        };
+        let queued: HashSet<String> = self.core.session.albums(ids.to_vec()).into_iter().collect();
+        let read = Read::AlbumList { kind: "random".into(), size: crate::actions::SHUFFLE_ALBUMS, offset: 0, genre: None };
+        let albums = self.read_now(read).await.map(Page::albums).unwrap_or_default().into_iter().filter(|a| !queued.contains(&a.id)).collect();
         let fresh = self.library_albums(albums, RANDOM_ALBUMS as usize).await;
-        queue::queue_register(fresh.clone());
+        self.core.session.register(fresh.clone());
         fresh
     }
 
-    /// Songs of the library at random, for a queue of nothing but a provider's songs, and a "shuffle
-    /// songs" queue's refill.
+    /// Random library songs not already queued.
     async fn random_library_songs(&self, queued: &HashSet<&str>, remote: bool) -> Vec<Song> {
         let offered = self.songs(Read::RandomSongs { size: 50, genre: None }).await.unwrap_or_default();
         let fresh: Vec<Song> = offered.into_iter().filter(|s| !queued.contains(s.id.as_str()) && allowed(s, remote)).take(SONGS).collect();
-        queue::queue_register(fresh.clone());
+        self.core.session.register(fresh.clone());
         fresh
     }
 }
 
-/// Whether `s` is the library's own: never a provider's song (octo-fiesta's `isExternal`, `ext-` and `pl-`
-/// ids), which autoplay must not queue - playing one makes the server download it into the library.
+/// Whether `s` is a library song, not a provider's (playing one makes the server download it).
 fn in_library(s: &Song) -> bool {
-    !s.is_external && !crate::db::external(&s.id)
+    !s.is_provider()
 }
 
-/// Whether autoplay may queue `s`: the library's own, or anything when a provider's songs are let in.
+/// Whether autofill may queue `s`.
 fn allowed(s: &Song, remote: bool) -> bool {
     remote || in_library(s)
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Client {
-    /// What to append to the queue after the song playing, as the settings say (songs or an album, and
-    /// chosen by what), a provider's song only when `autoFillRemote` says so. After a provider's song it
-    /// carries on from the library ([`Client::library_seed`]) unless that setting is on. Nothing for a song the queue does not know; a failed read is nothing too.
+    /// What to append after the queue's end, per the autofill settings. Empty on failure or an unknown seed.
     pub async fn autofill(&self) -> Refill {
         let (kind, basis, remote) =
-            crate::settings_store::current().map_or((AutoFillKind::Songs, AutoFillBasis::Similar, false), |p| (p.auto_fill_kind, p.auto_fill_basis, p.auto_fill_remote));
+            self.settings().prefs(|p| (p.auto_fill_kind, p.auto_fill_basis, p.auto_fill_remote));
         self.autofill_as(kind, basis, remote).await
+    }
+
+    /// The fetch returned `count` songs: whether to append them. When so, what it picked counts as used
+    /// for the rotation; a fetch whose songs are dropped leaves no trace.
+    pub fn autofill_arrived(&self, count: u32) -> bool {
+        let take = self.core.session.autofill_arrived(count);
+        if let (true, Some((kind, ids))) = (take, self.autofill_picks.lock().take()) {
+            let _ = note(&self.core.db.lock(), kind, &ids, crate::db::now_ms());
+        }
+        take
     }
 }
 
 impl Client {
     async fn autofill_as(&self, kind: AutoFillKind, basis: AutoFillBasis, remote: bool) -> Refill {
         let began = std::time::Instant::now();
+        *self.autofill_picks.lock() = None;
         let fresh = self.autofill_from(kind, basis, remote).await;
-        // The perf report's word on how long the end of the queue waited (a server asking Last.fm for
-        // similar songs takes seconds).
         crate::alog::info(&format!("autofill: {} songs in {} ms (kind {kind:?}, basis {basis:?})", fresh.songs.len(), began.elapsed().as_millis()));
         fresh
     }
 
-    /// `remote`: a provider's songs may be queued too (the `autoFillRemote` setting), and a provider's song
-    /// seeds as it is; what it finds nothing for is carried on from the library as when it is off.
+    /// `remote`: provider songs may be queued and may seed; falls back to a library seed if that finds nothing.
     async fn autofill_from(&self, kind: AutoFillKind, basis: AutoFillBasis, remote: bool) -> Refill {
-        let (_, ids) = crate::playlist::snapshot();
-        // A shuffle goes on as it began, whatever the setting says: random songs one by one, or random
-        // albums whole. The library's only, as the shuffles themselves are.
-        match crate::playlist::playlist_origin().map(|o| o.kind) {
+        let (_, ids) = self.core.session.snapshot();
+        // Shuffle queues continue as they began, from the library only, whatever the setting.
+        match self.core.session.origin().map(|o| o.kind) {
             Some(crate::OriginKind::ShuffleSongs) => {
                 let queued: HashSet<&str> = ids.iter().map(String::as_str).collect();
                 return Refill::songs(self.random_library_songs(&queued, false).await);
             }
-            // Albums whole, several: from the shuffle, so each is a run of its own (`playlist_take` spans them).
             Some(crate::OriginKind::ShuffleAlbums) => {
                 return Refill { songs: self.random_albums(&ids).await, from: Some(crate::PageOrigin::new(crate::OriginKind::ShuffleAlbums, "")) };
             }
             _ => {}
         }
-        // Carried on from the queue's last song, not the one playing: the fetch starts a song or two
-        // ahead of the end, and what comes follows the end.
-        let Some(last) = autofill_seed().and_then(queue::queue_song) else { return Refill::default() };
+        // Seeded by the queue's last song: the fetch starts before the end is reached.
+        let Some(last) = self.core.session.autofill_seed().and_then(|id| self.core.session.song(&id)) else { return Refill::default() };
         let queued: HashSet<&str> = ids.iter().map(String::as_str).collect();
         if remote && !in_library(&last) {
             let fresh = self.fresh_from(&last, kind, basis, &ids, &queued, remote).await;
@@ -282,14 +250,12 @@ impl Client {
         self.fresh_from(&seed, kind, basis, &ids, &queued, remote).await
     }
 
-    /// What follows `seed`: the library's songs, and a provider's too when `remote`.
+    /// The refill following `seed`.
     async fn fresh_from(&self, seed: &Song, kind: AutoFillKind, basis: AutoFillBasis, ids: &[String], queued: &HashSet<&str>, remote: bool) -> Refill {
         let fresh = if kind == AutoFillKind::Albums {
-            let played: HashSet<String> = queue::queue_albums(ids.to_vec()).into_iter().collect();
+            let played: HashSet<String> = self.core.session.albums(ids.to_vec()).into_iter().collect();
             self.next_album(seed, basis, queued, &played, remote).await
         } else {
-            // The songs picked or played lately go to the back, as the albums do; the similar and
-            // same-artist lists come back in the same order every time.
             let offered: Vec<Song> = self.next_songs(seed, basis).await.unwrap_or_default().into_iter().filter(|s| !queued.contains(s.id.as_str()) && allowed(s, remote)).collect();
             let order = self.turns(Picked::Songs, offered.iter().map(|s| s.id.clone()).collect());
             let mut by_id: HashMap<String, Song> = offered.into_iter().map(|s| (s.id.clone(), s)).collect();
@@ -297,8 +263,7 @@ impl Client {
             self.picked(Picked::Songs, &fresh.iter().map(|s| s.id.clone()).collect::<Vec<_>>());
             Refill::songs(fresh)
         };
-        // Kept for the queue they are about to join, so the platform does not hand them straight back.
-        queue::queue_register(fresh.songs.clone());
+        self.core.session.register(fresh.songs.clone());
         fresh
     }
 }
@@ -308,6 +273,11 @@ pub(crate) mod tests {
     use super::*;
     use crate::client::tests::{block, client};
     use crate::client::NetProfile;
+
+    /// Queues `ids` on `c` from `start`.
+    fn queued(c: &Client, ids: &[&str], start: u32) {
+        c.core.session.set(ids.iter().map(|s| s.to_string()).collect(), Some(start), false, None);
+    }
 
     fn songs_json(ids: &[(&str, &str)]) -> String {
         let s: Vec<String> = ids.iter().map(|(i, a)| format!(r#"{{"id":"{i}","title":"{i}","albumId":"{a}","isDir":false}}"#)).collect();
@@ -324,18 +294,30 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn similar_songs_skip_what_is_queued_and_keep_their_order() {
+    fn similar_songs_skip_and_rotate() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
-        queue::queue_register(vec![song("af-seed", "al0"), song("af-q", "al0")]);
+        c.core.session.register(vec![song("af-seed", "al0"), song("af-q", "al0")]);
         fake.answer(&songs_json(&[("af-q", "x"), ("s2", "x"), ("s1", "y")]));
-        let _g = crate::playlist::tests::hold(&["af-seed", "af-q"], 0);
-        // s1 was queued by the last refill: it takes its turn after s2.
+        queued(&c, &["af-seed", "af-q"], 0);
+        // s1 was picked by the last refill: it goes after s2.
         note(&c.core.db.lock(), Picked::Songs, &["s1".to_string()], crate::db::now_ms()).unwrap();
         let got = block(c.autofill_as(AutoFillKind::Songs, AutoFillBasis::Similar, false)).songs;
         assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["s2", "s1"]);
         assert!(fake.asked.lock()[0].0.contains("getSimilarSongs2"));
-        let used = song_use(&c.core.db.lock(), crate::db::now_ms()).unwrap();
-        assert!(used.contains_key("s1") && used.contains_key("s2"), "what was queued is remembered");
+        assert_eq!(c.autofill_picks.lock().as_ref().map(|p| p.1.clone()), Some(vec!["s2".to_string(), "s1".into()]));
+    }
+
+    #[test]
+    fn dropped_refill_not_picked() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        c.core.session.register(vec![song("dr-seed", "al0")]);
+        fake.answer(&songs_json(&[("dr-1", "x")]));
+        queued(&c, &["dr-seed"], 0);
+        let got = block(c.autofill_as(AutoFillKind::Songs, AutoFillBasis::Similar, false)).songs;
+        assert_eq!(got.len(), 1);
+        // No fetch was waited for at this end: the songs are not appended.
+        assert!(!c.autofill_arrived(1));
+        assert!(!song_use(&c.core.db.lock(), crate::db::now_ms()).unwrap().contains_key("dr-1"));
     }
 
     fn random_json(ids: &[&str]) -> String {
@@ -343,89 +325,76 @@ pub(crate) mod tests {
         format!(r#"{{"subsonic-response":{{"status":"ok","randomSongs":{{"song":[{}]}}}}}}"#, s.join(","))
     }
 
-    /// The queue `ids`, started by `kind` (Home's shuffles).
-    fn shuffled(ids: &[&str], kind: crate::OriginKind) -> parking_lot::MutexGuard<'static, ()> {
-        let g = crate::playlist::tests::hold(ids, 0);
-        crate::playlist::playlist_set(ids.iter().map(|s| s.to_string()).collect(), 0, false, Some(crate::PageOrigin::new(kind, "")));
-        g
+    /// Queues `ids` on `c`, started from `kind`.
+    fn shuffled(c: &Client, ids: &[&str], kind: crate::OriginKind) {
+        c.core.session.set(ids.iter().map(|s| s.to_string()).collect(), Some(0), false, Some(crate::PageOrigin::new(kind, "")));
     }
 
     #[test]
-    fn shuffled_songs_go_on_one_random_song_at_a_time_even_when_albums_are_asked_for() {
+    fn shuffle_refills() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
-        queue::queue_register(vec![song("sh-1", "al1")]);
-        let _g = shuffled(&["sh-1"], crate::OriginKind::ShuffleSongs);
+        c.core.session.register(vec![song("sh-1", "al1")]);
+        shuffled(&c, &["sh-1"], crate::OriginKind::ShuffleSongs);
         fake.answer(&random_json(&["sh-1", "r1", "r2"]));
         let got = block(c.autofill_as(AutoFillKind::Albums, AutoFillBasis::Similar, false)).songs;
-        assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["r1", "r2"], "loose random songs, the queued one left out");
+        assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["r1", "r2"]);
         assert!(fake.asked.lock()[0].0.contains("getRandomSongs"), "{:?}", fake.asked.lock());
-    }
 
-    #[test]
-    fn shuffled_albums_go_on_with_whole_albums_even_when_songs_are_asked_for() {
+        // Shuffle albums refills whole albums.
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
-        queue::queue_register(vec![song("sa-1", "al-playing")]);
-        let _g = shuffled(&["sa-1"], crate::OriginKind::ShuffleAlbums);
+        c.core.session.register(vec![song("sa-1", "al-playing")]);
+        shuffled(&c, &["sa-1"], crate::OriginKind::ShuffleAlbums);
         fake.answer(r#"{"subsonic-response":{"status":"ok","albumList2":{"album":[{"id":"al-playing","name":"P"},{"id":"al-next","name":"N"}]}}}"#);
         fake.answer(&album_json("al-next", &["n1", "n2", "n3"]));
         let got = block(c.autofill_as(AutoFillKind::Songs, AutoFillBasis::Similar, false)).songs;
-        assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["n1", "n2", "n3"], "a whole album, not the one already queued");
+        assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["n1", "n2", "n3"]);
         let asked = fake.asked.lock();
         assert!(asked[0].0.contains("getAlbumList2") && asked[0].0.contains("type=random"), "{asked:?}");
     }
 
     #[test]
-    fn an_album_picked_lately_waits_its_turn() {
+    fn album_refills() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
-        queue::queue_register(vec![song("af3-seed", "mine")]);
+        c.core.session.register(vec![song("af3-seed", "mine")]);
         note(&c.core.db.lock(), Picked::Album, &["first".to_string()], crate::db::now_ms()).unwrap();
         fake.answer(&songs_json(&[("x1", "first"), ("x2", "second")]));
         fake.answer(&album_json("second", &["b1", "b2", "b3"]));
-        let _g = crate::playlist::tests::hold(&["af3-seed"], 0);
+        queued(&c, &["af3-seed"], 0);
         let got = block(c.autofill_as(AutoFillKind::Albums, AutoFillBasis::Similar, false)).songs;
         assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["b1", "b2", "b3"]);
-        let used = album_use(&c.core.db.lock(), crate::db::now_ms()).unwrap();
-        assert!(used["second"] >= used["first"], "the album queued is the one picked last");
-    }
+        assert_eq!(*c.autofill_picks.lock(), Some((Picked::Album, vec!["second".to_string()])));
 
-    #[test]
-    fn an_album_prefers_one_with_a_side_to_it_and_skips_the_seeds() {
+        // Album prefers full record over single.
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
-        queue::queue_register(vec![song("af2-seed", "mine")]);
-        // The full record was picked a while ago, so the single is tried first and passed over.
+        c.core.session.register(vec![song("af2-seed", "mine")]);
+        // "record" was picked before, so the single ranks first and is passed over.
         note(&c.core.db.lock(), Picked::Album, &["record".to_string()], crate::db::now_ms() - 1).unwrap();
-        // Similar songs from the seed's own album, a single and a full record.
         fake.answer(&songs_json(&[("x1", "mine"), ("x2", "single"), ("x3", "record")]));
         fake.answer(&album_json("single", &["t1"]));
         fake.answer(&album_json("record", &["r1", "r2", "r3"]));
-        let _g = crate::playlist::tests::hold(&["af2-seed"], 0);
+        queued(&c, &["af2-seed"], 0);
         let got = block(c.autofill_as(AutoFillKind::Albums, AutoFillBasis::Similar, false)).songs;
         assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["r1", "r2", "r3"]);
-        assert_eq!(fake.asked.lock().len(), 3, "the seed's own album is never fetched");
-    }
+        assert_eq!(fake.asked.lock().len(), 3, "the seed's own album is not fetched");
 
-    /// The album autofill carries on with comes with its id; added from its page, as the clients add a
-    /// refill, it is one album run of its own (gapless with "keep albums gapless"; it used to mix song into
-    /// song). Songs autofill picks one by one come with none, and stay no run.
-    #[test]
-    fn the_album_autofill_carries_on_with_is_added_as_an_album() {
+        // Regression: an autofilled album used to be added without an album run.
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
-        queue::queue_register(vec![song("af3-seed", "mine")]);
+        c.core.session.register(vec![song("af3-seed", "mine")]);
         fake.answer(&songs_json(&[("y1", "whole")]));
         fake.answer(&album_json("whole", &["w1", "w2", "w3", "w4"]));
-        let _g = crate::playlist::tests::hold(&["af3-seed"], 0);
+        queued(&c, &["af3-seed"], 0);
         let got = block(c.autofill_as(AutoFillKind::Albums, AutoFillBasis::Similar, false));
         assert_eq!(got.from, Some(crate::PageOrigin::new(crate::OriginKind::Album, "whole")));
-        let add = |r: &Refill| crate::playlist::playlist_take(9, r.songs.iter().map(|s| s.id.clone()).collect(), vec![nori_player::playlist::Hand::No; r.songs.len()], r.from.clone()).at as usize;
+        let add = |r: &Refill| c.core.session.take(9, r.songs.iter().map(|s| s.id.clone()).collect(), vec![nori_player::playlist::Hand::No; r.songs.len()], r.from.clone()).at.unwrap() as usize;
         let at = add(&got);
-        let runs = crate::playlist::with(|p| p.album_runs().to_vec());
+        let runs = c.core.session.playlist(|p| p.album_runs().to_vec());
         assert!(runs[at] > 0 && runs[at..at + 4] == [runs[at]; 4], "{runs:?}");
 
         fake.answer(&songs_json(&[("z1", "a"), ("z2", "b")]));
         let got = block(c.autofill_as(AutoFillKind::Songs, AutoFillBasis::Similar, false));
         assert_eq!((got.songs.len(), &got.from), (2, &None));
         let at = add(&got);
-        assert_eq!(crate::playlist::with(|p| p.album_runs()[at..at + 2].to_vec()), [0, 0]);
+        assert_eq!(c.core.session.playlist(|p| p.album_runs()[at..at + 2].to_vec()), [0, 0]);
     }
 
     fn provider(id: &str, artist: &str) -> Song {
@@ -433,50 +402,44 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn after_a_providers_song_the_library_carries_on_and_no_provider_song_is_queued() {
+    fn provider_seeds() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         let mine = Song { id: "afp-lib".into(), title: "Dogs".into(), artist: "The Band".into(), album_id: Some("afp-al".into()), ..Default::default() };
         crate::db::index(&mut c.core.db.lock(), &[], &[], &[mine]).unwrap();
-        queue::queue_register(vec![provider("ext-deezer-afp-1", "The Band")]);
+        c.core.session.register(vec![provider("ext-deezer-afp-1", "The Band")]);
         fake.answer(
             r#"{"subsonic-response":{"status":"ok","similarSongs2":{"song":[
                 {"id":"ext-deezer-afp-2","title":"x","isExternal":true},{"id":"afp-s1","title":"s1"},{"id":"afp-s2","title":"s2","isExternal":true}]}}}"#,
         );
-        let _g = crate::playlist::tests::hold(&["ext-deezer-afp-1"], 0);
+        queued(&c, &["ext-deezer-afp-1"], 0);
         let got = block(c.autofill_as(AutoFillKind::Songs, AutoFillBasis::Similar, false)).songs;
         assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["afp-s1"]);
         let asked = fake.asked.lock();
         assert!(asked[0].0.contains("getSimilarSongs2") && asked[0].0.contains("id=afp-lib"), "seeded by the artist's song in the library: {}", asked[0].0);
-    }
 
-    #[test]
-    fn after_a_providers_song_of_an_artist_not_in_the_library_the_queues_own_song_seeds() {
+        // Provider seed falls back to queued library song.
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
-        queue::queue_register(vec![song("afq-lib", "al0"), provider("ext-deezer-afq-1", "Nobody Here")]);
+        c.core.session.register(vec![song("afq-lib", "al0"), provider("ext-deezer-afq-1", "Nobody Here")]);
         fake.answer(&songs_json(&[("afq-s1", "x")]));
-        let _g = crate::playlist::tests::hold(&["afq-lib", "ext-deezer-afq-1"], 1);
+        queued(&c, &["afq-lib", "ext-deezer-afq-1"], 1);
         let got = block(c.autofill_as(AutoFillKind::Songs, AutoFillBasis::Similar, false)).songs;
         assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["afq-s1"]);
         assert!(fake.asked.lock()[0].0.contains("id=afq-lib"));
-    }
 
-    #[test]
-    fn a_queue_of_only_providers_songs_goes_on_with_the_librarys_at_random() {
+        // Provider only queue refills random library songs.
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
-        queue::queue_register(vec![provider("ext-deezer-afr-1", "Nobody Here")]);
+        c.core.session.register(vec![provider("ext-deezer-afr-1", "Nobody Here")]);
         fake.answer(r#"{"subsonic-response":{"status":"ok","randomSongs":{"song":[{"id":"afr-s1","title":"a"},{"id":"ext-deezer-afr-2","title":"b"}]}}}"#);
-        let _g = crate::playlist::tests::hold(&["ext-deezer-afr-1"], 0);
+        queued(&c, &["ext-deezer-afr-1"], 0);
         let got = block(c.autofill_as(AutoFillKind::Albums, AutoFillBasis::Similar, false)).songs;
         assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["afr-s1"]);
         assert!(fake.asked.lock()[0].0.contains("getRandomSongs"));
-    }
 
-    #[test]
-    fn with_remote_songs_let_in_a_providers_song_seeds_and_theirs_are_queued() {
+        // Remote allows provider seed and songs.
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
-        queue::queue_register(vec![provider("ext-deezer-afs-1", "The Band")]);
+        c.core.session.register(vec![provider("ext-deezer-afs-1", "The Band")]);
         fake.answer(r#"{"subsonic-response":{"status":"ok","similarSongs2":{"song":[{"id":"ext-deezer-afs-2","title":"x","isExternal":true},{"id":"afs-s1","title":"s1"}]}}}"#);
-        let _g = crate::playlist::tests::hold(&["ext-deezer-afs-1"], 0);
+        queued(&c, &["ext-deezer-afs-1"], 0);
         let got = block(c.autofill_as(AutoFillKind::Songs, AutoFillBasis::Similar, true)).songs;
         let mut ids: Vec<&str> = got.iter().map(|s| s.id.as_str()).collect();
         ids.sort();
@@ -485,9 +448,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn nothing_for_a_song_the_queue_does_not_know() {
+    fn unknown_seed_fetches_nothing() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
-        let _g = crate::playlist::tests::hold(&["af-unknown"], 0);
+        queued(&c, &["af-unknown"], 0);
         assert!(block(c.autofill_as(AutoFillKind::Songs, AutoFillBasis::Similar, false)).songs.is_empty());
         assert!(fake.asked.lock().is_empty());
     }

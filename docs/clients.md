@@ -51,7 +51,7 @@ builds:
   (albums, artists, playlists from the stored reads; songs from the offline index), search
   (`SearchSession`: the index at every key, the server once typing pauses, `live_search_delay_ms`),
   album, artist and playlist pages (`AlbumDetail`, `ArtistDetail`, `PlaylistDetail` with their captions),
-  the queue (`playlist_view` in play order; `playlist_remove`, `playlist_move`, `playlist_shuffle`,
+  the queue (`Session::view` in play order; `playlist_remove`, `playlist_move`, `playlist_shuffle`,
   `set_repeat`), now playing (the song heard is the engine's `Event::Song`/`Status`; how the next comes in
   is the planner's `planner::transition_note`), lyrics (the server's, then `Client::lyrics_lookup`;
   timed by `nori_look::lyrics::LyricClock`, lit by `line_strength` and `UNSUNG`, filled a character at a
@@ -72,8 +72,7 @@ builds:
 - **Plays and the queue's end**: `scrobble_playing` and `scrobble_track` on the engine's events (the
   history and the scrobbles are the core's), and `autofill_start`/`autofill_next` with
   `Client::autofill` when the queue runs out. A next pressed at the end is taken when the songs land
-  (`autofill_landed`) only within 2 s of the last press; `autofill_skip_waiting` says whether one is
-  waiting, for a client that shows it (Android does not yet).
+  (`autofill_landed`) only within 2 s of the last press.
 - **Pictures**: nori-covers decodes the cover (fetched through the same `Transport`), nori-look's
   `cover::derive` gives the page, text and accent colours, and ratatui-image draws the picture in
   whichever protocol the terminal answers to (kitty graphics, sixel, iTerm2) or in half blocks. ratatui
@@ -146,10 +145,9 @@ only what touches the hardware:
   songs ahead for AutoMix, and `per_device(core)` gives each output device its own sound. Edit the queue
   through the core's `playlist_*` calls and tell the engine (`queue_changed`); the controls are
   `play_at`, `play`, `pause`, `next`, `previous`, `seek`, `go_to`, `set_settings`, `replan`,
-  `set_repeat`, `gain_changed`, `set_tuning` (the equalizer screen's shallow buffer, at once, the device
-  told through `AudioOutput::shallow`; a device that says it `resizes` is changed in place and nothing is
-  heard, and the ring kept as deep as it says it needs, `AudioOutput::shallow_depth`; otherwise the music
-  is made again behind a dip) and `pause_at_end`
+  `set_repeat`, `gain_changed`, `set_shallow` (the device is told through `AudioOutput::shallow` to hold only
+  a fraction of a second, so a band moved is heard at once, in place: on Android while the app is in sight,
+  on the desktop while the equalizer page is open; nothing it holds is dropped) and `pause_at_end`
   (the sleep timer's "end of this song"). The player's own rules come with them: a seek or a `go_to`
   while paused is held until play and fetches nothing, and a skip button while paused is a request for
   music (`nori_player::transport::skip_plays`). A screen follows `Event`s (state, the song heard -
@@ -170,9 +168,20 @@ float, 24-bit songs whole, with the sound chain run on the floats; without it th
 samples and dithers what it changes back to 16 bits. A song still on its way is opened off the
 engine's thread, and a long pause lets the output and the song's bytes go (the core's idle release) and
 opens them again where it was. A change to the sound while music plays (the equalizer, the limiter, speed,
-silence skipping, ReplayGain on a device that holds seconds, high quality output) is heard at once: what the
-ring and the device hold is made again from where the ear is behind a 30 ms dip, changes that come quickly
-taken together, one every 150 ms at most. It is `nori-player::pipeline`, the code the simulated player
+silence skipping, ReplayGain) is heard at once and seamlessly: the sink keeps what the chain was given and
+the chain's state every 8192 frames (`nori_player::chain`), goes back to the first frame the output can
+still replace, runs the chain again up to it (the same music) and on with the new settings, blended over
+5 ms (a change made where the one before it was, nothing taken by the device between them, blends from
+what was there before both). Nothing is decoded again and no position guessed. Android's track is deep
+out of sight (it holds seconds: a change is made past them, heard once they have played, 1 to 11.5 s) and
+shallow with the app in sight (`set_shallow`, a fraction of a second sized for the output: a change is
+heard after the output's own latency and a little more). Coming in sight, the track takes no more until it
+has played down to shallow, and a change meanwhile is heard where it runs out; leaving, it is written
+further. One track, resized in place, never emptied for either (crates/android/src/track.rs). A new
+ending (the queue changed) on a device holding more than a quarter second not yet mixed drops what it
+holds and plays on, after a gap, from exactly where it was (`Feed::rewind`). Changes that come quickly are
+taken together, one every 100 ms at most. An ending made under an old plan (the queue or the transition settings changed) is made again the
+same way from where the old and new endings part. It is `nori-player::pipeline`, the code the simulated player
 runs, on one thread that sleeps between bursts (its wakeups are listed in `crates/engine/src/engine.rs`).
 
 The engine also plays what the Android player plays around the sound chain, each off unless asked for:
@@ -513,9 +522,9 @@ answers; the rule itself is never written again in a client. Android and nori-cl
 - **A download's covers**: `Core::download_cover_urls(cover ids)` gives the addresses to fetch onto the
   disk (both sizes, no provider's, at most 500), for the client's cover loader to `warm`.
   `Core::cover_address` builds any cover's address the same way.
-- **The equalizer screen's shallow buffer**: `rules::equalizer_tuning(in_sight, touched, eq_on)`; a
-  change counts as touching it when that is true with `touched` true. Whether the screen is in sight is
-  the client's.
+- **The equalizer screen's shallow buffer** (the terminal client): `rules::equalizer_tuning(in_sight,
+  touched, eq_on)`; a change counts as touching it when that is true with `touched` true. Whether the
+  screen is in sight is the client's. Android keeps its track shallow whenever the app is in sight.
 - **Sizes**: how much each read asks for is `browse::library_sizes` (the sync's page, local search).
 
 ## Calling the core cheaply
@@ -527,7 +536,7 @@ answers; the rule itself is never written again in a client. Android and nori-cl
   plain rlib with no JNI in it, and its uniffi exports sit behind the default `ffi` feature: depend on it
   with `default-features = false` and nothing of uniffi is built. Each domain crate has an `ffi` feature
   of its own, off by default, so linking one of them alone builds no uniffi either. Everything the
-  Android doors call is ordinary Rust there - `dsp::SoundChain` over sample slices, `heard::HeardClock`,
+  Android doors call is ordinary Rust there - `heard::HeardClock`,
   `automix::store::AnalysisStream`, `automix::host::CoreHost` for the transition engine, the download
   tracker's functions in `transfers`, their facts lent to a closure.
 - Other languages go through uniffi bindings for calls made on user actions. For anything called per
@@ -631,11 +640,9 @@ Compose transition state, the JNI door's own packing); two lines kept in Kotlin 
 | `ResizableEvictor.trimLocked` (playback/MediaSources.kt) | `stream_cache::trim` |
 | `PlayerConnection.read` | `heard::HeardAt::unpack` |
 | `PlayerViewModel.setVolumeFraction`, `volumeFraction` | `rules::volume_step`, `rules::volume_fraction` |
-| The car browser's paging (`PlaybackService.onGetChildren`, `onGetSearchResult`) | `car::page` |
+| The car browser's paging (`PlaybackService.onGetChildren`, `onGetSearchResult`) | `car::page_of` |
 | `downloadEntry`'s missing songs (ui/DetailScreens.kt) | `menus::download_missing` |
 | `AnimatedRows` (ui/DevicesSection.kt): rows kept, new, leaving in place | `rows::merge_rows` |
-| `paletteKey` (ui/CoverColors.kt) | `nori_look::cover::palette_key` (into a kept buffer) |
-| `BandEffect.of`'s key (ui/PlayerScreen.kt) | `nori_look::sleeve::band_key` |
 
 No longer twins, Android calling the core instead: `Covers.isProvider` (`covers::is_provider_cover`, through
 `CoverPixels.isProvider`) and the precacher's list (`rules::precache_list`, through `Client::precache_targets`).

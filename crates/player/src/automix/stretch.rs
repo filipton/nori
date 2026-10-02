@@ -1,22 +1,13 @@
-//! Tempo change of the incoming track during a beat-matched transition: hold `ratio` for the overlap, ramp back to
-//! 1 over a few bars, then hand over to the untouched signal and stop costing anything.
+//! Tempo change of the incoming track during a beat-matched transition: hold `ratio`, ramp back to 1, then hand
+//! over to the plain signal. Signalsmith Stretch keeps pitch; varispeed (cubic Hermite) moves it and costs little.
 //!
-//! Two engines: Signalsmith Stretch (MIT, C++ through the `signalsmith-stretch` crate) keeps the pitch; varispeed
-//! (cubic Hermite resampling, "vinyl") moves pitch with tempo and costs almost nothing. Both stream: any number of
-//! input frames in, whatever fits out, `(consumed, produced)` back.
-//!
-//! Timing contract: output frame `j` carries the input content at `∫ ratio` — the start latency of the stretcher is
-//! dropped internally, so the first output frame is the first input frame and a beat grid computed on the input
-//! stays valid on the output. Once the ramp has reached 1 and the stretcher has crossfaded to the plain signal,
-//! `bypassed()` turns true: call `drain` once to collect the few frames still inside, then stop calling `process`
-//! and pass the track straight through. That hand-over is sample-exact.
-//!
-//! `process` never allocates; everything is sized in `new`.
-
+//! Output frame `j` carries the input at `∫ ratio` (start latency dropped), so a beat grid on the input holds on
+//! the output. Once `bypassed()`, call `drain` to collect what is inside, then pass the track through; the
+//! hand-over is sample-exact. `process` never allocates.
 
 /// Input frames per engine call; the tempo is updated this often (about 6 ms).
 pub const BLOCK: usize = 256;
-/// Slowest ratio accepted; bounds the output of one block.
+/// Ratio bounds; the minimum bounds the output of one block.
 const MIN_RATIO: f64 = 0.5;
 const MAX_RATIO: f64 = 2.0;
 const MAX_OUT: usize = (BLOCK as f64 / MIN_RATIO) as usize + 8;
@@ -24,18 +15,14 @@ const MAX_OUT: usize = (BLOCK as f64 / MIN_RATIO) as usize + 8;
 const XFADE: usize = 1024;
 /// Signalsmith Stretch's analysis hop in the preset used, seconds (`presetCheaper`: 40 ms).
 const SIGNALSMITH_HOP_S: f64 = 0.04;
-/// How far from 1 a ratio must be for Signalsmith Stretch to follow it cleanly, in frames the input moves per hop
-/// more or less than the output. Closer than two frames it takes the input to have moved by exactly one hop, and
-/// the phases it carries over are that many frames wrong on every hop: on noise the stretched song lost 1 to 2.6 dB
-/// (0.9992 to 0.9995: two songs a tenth of a BPM apart, and the last stretch of every ramp back to 1), which came
-/// back as a step where the stretch handed over to the plain song. A ratio that close is played at 1, or this far
-/// out; 1.25 frames a hop is 0.07 % of tempo at 44.1 kHz, 11 ms over a sixteen-second mix.
+/// The smallest ratio offset Signalsmith Stretch follows cleanly, in frames per hop: closer to 1 it loses up to
+/// 2.6 dB. Such ratios are snapped to 1 or to this offset (0.07 % of tempo at 44.1 kHz).
 const SIGNALSMITH_CLEAR_FRAMES: f64 = 2.5;
 pub const MAX_CHANNELS: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum State {
-    /// ratio 1 and no ramp: a plain copy.
+    /// Ratio 1 and no ramp: a plain copy.
     Direct,
     Active,
     Fading(usize),
@@ -107,7 +94,7 @@ impl Vari {
     fn run(&mut self, ch: usize, input: &[f32], ratio: f64, out: &mut [f32], fade: Option<(usize, usize)>) -> usize {
         let n = input.len() / ch;
         if self.len == 0 {
-            // One frame of history before the first sample, so the first output is exactly frame 0.
+            // One frame of history so the first output is exactly frame 0.
             self.buf[..ch].fill(0.0);
             self.len = 1;
         }
@@ -123,7 +110,7 @@ impl Vari {
                 let v = hermite(at(i - 1, c), at(i, c), at(i + 1, c), at(i + 2, c), t);
                 out[made * ch + c] = match fade {
                     Some((done, total)) => {
-                        // The plain signal is the same stream `phase` frames earlier, on whole frames.
+                        // The plain signal: the same stream `phase` frames earlier, on whole frames.
                         let exact = self.pos - self.phase;
                         let e = exact.floor() as usize;
                         let te = (exact - e as f64) as f32;
@@ -161,7 +148,7 @@ impl Stretcher {
             Engine::Signalsmith(s) => s.input_latency() + s.output_latency(),
             Engine::Vari(_) => 0,
         };
-        // As the library works it out: `sampleRate*0.04` taken as an int.
+        // As the library computes it: `(int)(sampleRate * 0.04)`.
         let hop = if keep_pitch { (rate.max(8000) as f64 * SIGNALSMITH_HOP_S).floor() } else { 0.0 };
         Stretcher {
             ch,
@@ -227,15 +214,12 @@ impl Stretcher {
         matches!(self.state, State::Bypass | State::Direct)
     }
 
-    /// The song time handed out since this was last asked, in input frames: output frame `j` carries the
-    /// input at `∫ ratio` (see the module's timing contract), so a stretch of the output stands for more or
-    /// less of the song than its length. What a player counts as played must be this, not the frames.
+    /// Song time handed out since last asked, in input frames (`∫ ratio`, not the output frame count).
     pub fn take_content(&mut self) -> f64 {
         std::mem::take(&mut self.content)
     }
 
-    /// `n` more frames handed out: the song time they carry, the ratio each was made at summed in steps
-    /// short enough that a ramp's is exact to a fraction of a frame.
+    /// Adds the song time of `n` more output frames, integrating the schedule in 64-frame steps.
     fn handed(&mut self, n: usize) {
         let mut k = self.given;
         let end = k + n as u64;
@@ -259,16 +243,14 @@ impl Stretcher {
         }
     }
 
-    /// The schedule runs on the output index the frames synthesised now will have once they leave the stretcher:
-    /// Signalsmith hands back frames it synthesised `output_latency` earlier, so the rate chosen now shows up that
-    /// much later. Indexing by what was emitted would stretch `output_latency` frames too many at the old rate.
+    /// The ratio for frames synthesised now, indexed by the output position they will have once they leave the
+    /// stretcher (`output_latency` later).
     fn ratio_now(&self) -> f64 {
         let at = (self.synth + self.lead).saturating_sub(self.drop_total);
         self.clear(self.schedule(at))
     }
 
-    /// `r`, or where it is too close to 1 for the engine (see [`SIGNALSMITH_CLEAR_FRAMES`]) the nearer of 1 and the
-    /// closest ratio it follows cleanly.
+    /// `r` snapped away from the band around 1 the engine cannot follow ([`SIGNALSMITH_CLEAR_FRAMES`]).
     fn clear(&self, r: f64) -> f64 {
         let off = (r - 1.0) * self.hop;
         if off == 0.0 || off.abs() >= SIGNALSMITH_CLEAR_FRAMES {
@@ -298,15 +280,7 @@ impl Stretcher {
             }
             State::Bypass => match &mut self.engine {
                 Engine::Signalsmith(_) => {
-                    let lat = self.latency;
-                    for f in 0..n {
-                        let slot = self.raw_pos * ch;
-                        for c in 0..ch {
-                            self.pend[f * ch + c] = self.raw[slot + c];
-                            self.raw[slot + c] = input[f * ch + c];
-                        }
-                        self.raw_pos = if self.raw_pos + 1 == lat { 0 } else { self.raw_pos + 1 };
-                    }
+                    self.raw_pos = delay(&mut self.raw, self.raw_pos, ch, input, &mut self.pend);
                     n
                 }
                 Engine::Vari(v) => v.run(ch, input, 1.0, &mut self.pend, None),
@@ -320,15 +294,7 @@ impl Stretcher {
                         self.frac = want - m as f64;
                         s.process(input, &mut self.pend[..m * ch]);
                         // The plain signal, delayed to line up with the stretcher at ratio 1.
-                        let lat = self.latency.max(1);
-                        for f in 0..n {
-                            let slot = self.raw_pos * ch;
-                            for c in 0..ch {
-                                self.stage[f * ch + c] = self.raw[slot + c];
-                                self.raw[slot + c] = input[f * ch + c];
-                            }
-                            self.raw_pos = if self.raw_pos + 1 == lat { 0 } else { self.raw_pos + 1 };
-                        }
+                        self.raw_pos = delay(&mut self.raw, self.raw_pos, ch, input, &mut self.stage);
                         if let Some((done, total)) = fade {
                             for f in 0..m.min(n) {
                                 let w = ((done + f) as f32 / total as f32).min(1.0);
@@ -357,7 +323,7 @@ impl Stretcher {
             }
         };
         self.synth += produced as u64;
-        // Start latency: the first `drop` frames are the stretcher's pre-roll.
+        // The first `drop` frames are the stretcher's pre-roll.
         let skip = self.drop.min(produced);
         self.drop -= skip;
         self.pend_read = skip;
@@ -386,8 +352,7 @@ impl Stretcher {
         (used, made)
     }
 
-    /// Frames still inside the stretcher at the end of the stream (or right after `bypassed()` turns true).
-    /// Returns frames written; call again while it returns a full buffer.
+    /// Frames still inside at the end of the stream or after `bypassed()`; call again while it fills `output`.
     pub fn drain(&mut self, output: &mut [f32]) -> usize {
         let made = self.drain_out(output);
         self.handed(made);
@@ -445,8 +410,18 @@ impl Stretcher {
     }
 }
 
-// ---- JNI: dev.nori.music.playback.AutoMixStretch --------------------------------------------------------------
-
+/// Pushes `input` through the delay line `raw` (read position `pos`), writing what comes out to `out`; returns the
+/// new position.
+fn delay(raw: &mut [f32], mut pos: usize, ch: usize, input: &[f32], out: &mut [f32]) -> usize {
+    let lat = raw.len() / ch;
+    for (i, o) in input.chunks_exact(ch).zip(out.chunks_exact_mut(ch)) {
+        let slot = &mut raw[pos * ch..(pos + 1) * ch];
+        o.copy_from_slice(slot);
+        slot.copy_from_slice(i);
+        pos = if pos + 1 == lat { 0 } else { pos + 1 };
+    }
+    pos
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -543,17 +518,15 @@ mod tests {
     }
 
     #[test]
-    fn a_stretch_close_to_one_keeps_the_level() {
-        // Two songs a tenth of a BPM apart, and every ramp's last stretch back to 1: Signalsmith Stretch lost up
-        // to 2.6 dB there, back as a step where the stretch handed over.
+    fn near_unity_ratio_keeps_level() {
+        // Regression: Signalsmith Stretch lost up to 2.6 dB near ratio 1, heard as a step at the hand-over.
         for ratio in [0.9995, 1.0005, 0.9992, 0.9998, 0.9990, 0.9986, 0.976] {
             let l = noise_levels(true, ratio, 6.0, 0.0);
             let held = &l[5..55];
             let (lo, mean) = (held.iter().cloned().fold(f64::MAX, f64::min), held.iter().sum::<f64>() / held.len() as f64);
             assert!(mean > -0.35 && lo > -0.6, "ratio {ratio}: {mean:.2} dB on average, down to {lo:.2}");
         }
-        // Ramped back from a real stretch: no dip on the way (it was 3 dB for a tenth of a second, 1.2 dB over
-        // 100 ms), no step at the hand-over. What is left is the engine settling at 1, under 1 dB for 100 ms.
+        // Ramped back from a real stretch: no dip on the way and no step at the hand-over.
         let l = noise_levels(true, 0.976, 4.0, 4.0);
         let step = l.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f64::max);
         let lo = l.iter().cloned().fold(f64::MAX, f64::min);
@@ -572,32 +545,9 @@ mod tests {
         }
     }
 
-    /// At a constant ratio the clicks come out at input / ratio, from the very first one: the start latency is gone.
+    /// After hold + ramp the output joins the plain input without a jump, shorter by what the ramp gained.
     #[test]
-    fn stretched_output_keeps_the_timeline() {
-        for keep in [true, false] {
-            for ratio in [1.04, 0.97] {
-                let mut s = Stretcher::new(44100, 2, keep);
-                s.configure(ratio, 10 * 44100, 0);
-                let every = 22050;
-                let x = clicks(44100 * 6, every);
-                let y = run_all(&mut s, &x, 1000);
-                let got = peaks(&y, (every as f64 / ratio) as usize);
-                let want: Vec<f64> = (every / 2..44100 * 6).step_by(every).map(|f| f as f64 / ratio).collect();
-                assert!(got.len() >= want.len() - 1, "{keep} {ratio}: {got:?}");
-                for (g, w) in got.iter().zip(&want) {
-                    assert!((*g as f64 - w).abs() < 0.003 * 44100.0, "keep_pitch {keep} ratio {ratio}: click at {g}, expected {w}");
-                }
-                let expect_len = x.len() as f64 / ratio;
-                assert!((y.len() as f64 - expect_len).abs() < 0.01 * expect_len, "{} vs {expect_len}", y.len());
-            }
-        }
-    }
-
-    /// After hold + ramp the stretcher hands over to the plain signal and drains to exactly the input, delayed by
-    /// the time the ramp gained.
-    #[test]
-    fn the_ramp_ends_in_a_seamless_bypass() {
+    fn ramp_ends_in_seamless_bypass() {
         for keep in [true, false] {
             let mut s = Stretcher::new(44100, 2, keep);
             s.configure(1.03, 44100, 44100);
@@ -622,7 +572,6 @@ mod tests {
                     break;
                 }
             }
-            // From here the caller passes the input straight through; the join must be continuous.
             out.extend_from_slice(&x[pos..]);
             let frames = out.len() / 2;
             // Consumed = produced + ∫(ratio - 1): 1 s at 3 % plus a 1 s ramp at 1.5 % on average = 1985 frames.
@@ -636,11 +585,9 @@ mod tests {
         }
     }
 
-    /// What the frames handed out carry of the song, summed, is the song taken in: at the hand-over the
-    /// stretch has handed out exactly the input it consumed (the plain song follows on from there), and
-    /// part way through, what it handed out carries `∫ ratio` of it. A player counts played music by this.
+    /// `take_content` sums to `∫ ratio` during the hold and to the input consumed by the hand-over.
     #[test]
-    fn the_song_time_handed_out_is_the_song_taken_in() {
+    fn content_handed_out_matches_input() {
         for keep in [true, false] {
             let (rate, ratio) = (48_000usize, 1.071);
             let mut s = Stretcher::new(rate as u32, 2, keep);
@@ -659,7 +606,6 @@ mod tests {
                 content += s.take_content();
                 pos += u * 2;
                 if !checked && made >= rate {
-                    // A second into the hold: every frame out carried `ratio` frames of the song.
                     checked = true;
                     assert!((content - made as f64 * ratio).abs() < 2.0, "keep_pitch {keep}: {content} for {made} frames");
                 }
@@ -676,10 +622,9 @@ mod tests {
         }
     }
 
-    /// Single-sample impulses: at a constant ratio every one comes out within a few frames of input / ratio.
     #[test]
-    fn the_timeline_is_sample_accurate() {
-        // 1.0015: the closest to 1 Signalsmith Stretch is let run at (see `SIGNALSMITH_CLEAR_FRAMES`).
+    fn timeline_is_sample_accurate() {
+        // Impulses come out within 12 frames of input / ratio (1.0015: the closest to 1 Signalsmith runs at).
         for (keep, ratio) in [(true, 1.0015f64), (true, 1.03), (true, 1.06), (true, 0.95), (false, 1.02), (false, 0.98)] {
             let mut s = Stretcher::new(44100, 2, keep);
             s.configure(ratio, 1 << 40, 0);
@@ -711,6 +656,25 @@ mod tests {
             assert!(errs.len() >= 12, "{keep} {ratio}: {errs:?}");
             assert!(errs.iter().all(|e| e.abs() <= 12.0), "keep_pitch {keep} ratio {ratio}: {errs:?}");
         }
+
+        // At a constant ratio clicks come out at input / ratio from the first one, and the length follows.
+        for keep in [true, false] {
+            for ratio in [1.04, 0.97] {
+                let mut s = Stretcher::new(44100, 2, keep);
+                s.configure(ratio, 10 * 44100, 0);
+                let every = 22050;
+                let x = clicks(44100 * 6, every);
+                let y = run_all(&mut s, &x, 1000);
+                let got = peaks(&y, (every as f64 / ratio) as usize);
+                let want: Vec<f64> = (every / 2..44100 * 6).step_by(every).map(|f| f as f64 / ratio).collect();
+                assert!(got.len() >= want.len() - 1, "{keep} {ratio}: {got:?}");
+                for (g, w) in got.iter().zip(&want) {
+                    assert!((*g as f64 - w).abs() < 0.003 * 44100.0, "keep_pitch {keep} ratio {ratio}: click at {g}, expected {w}");
+                }
+                let expect_len = x.len() as f64 / ratio;
+                assert!((y.len() as f64 - expect_len).abs() < 0.01 * expect_len, "{} vs {expect_len}", y.len());
+            }
+        }
     }
 
     #[test]
@@ -722,29 +686,4 @@ mod tests {
         assert_eq!(s.ratio0, MAX_RATIO);
     }
 
-    /// CPU cost per second of 44.1 kHz stereo. Run with
-    /// `cargo test --release -p nori-player stretch_cost -- --ignored --nocapture`.
-    #[test]
-    #[ignore]
-    fn stretch_cost() {
-        let x: Vec<f32> = (0..44100 * 30).flat_map(|i| {
-            let v = (0.3 * (2.0 * std::f64::consts::PI * 220.0 * i as f64 / 44100.0).sin() + 0.05 * ((i * 7919 % 1000) as f64 / 1000.0 - 0.5)) as f32;
-            [v, v * 0.9]
-        }).collect();
-        for keep in [true, false] {
-            let mut s = Stretcher::new(44100, 2, keep);
-            s.configure(1.05, u64::MAX / 4, 0);
-            let mut buf = vec![0f32; 4096 * 2];
-            let t = std::time::Instant::now();
-            let mut pos = 0;
-            while pos < x.len() {
-                let end = (pos + 1024 * 2).min(x.len());
-                let (u, _) = s.process(&x[pos..end], &mut buf);
-                pos += u * 2;
-            }
-            let per_s = t.elapsed().as_secs_f64() / 30.0;
-            println!("{}: {:.2} ms CPU per second of audio ({:.2} % of one core), latency {} frames",
-                if keep { "signalsmith (cheaper preset)" } else { "varispeed" }, per_s * 1000.0, per_s * 100.0, s.latency_frames());
-        }
-    }
 }

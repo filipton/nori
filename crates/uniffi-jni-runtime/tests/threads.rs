@@ -1,6 +1,5 @@
-//! NORI: the two Android changes, against a JVM faked closely enough to see what the runtime asks of it.
-//! A thread that is not the app's finds no app class through `FindClass`, the way a thread the core
-//! started finds none on Android; the fake counts attaches and detaches.
+//! NORI changes against a fake JVM: `FindClass` finds app classes only on "app threads" (as on Android),
+//! and attaches/detaches are counted.
 
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::mem::MaybeUninit;
@@ -18,7 +17,7 @@ const LOAD_CLASS: jmethodID = 0x50 as jmethodID;
 const STATIC_METHOD: jmethodID = 0x60 as jmethodID;
 
 thread_local! {
-    /// The thread's `FindClass` sees the app's classes: a Java thread, or `JNI_OnLoad`.
+    /// `FindClass` sees app classes on this thread (a Java thread, or `JNI_OnLoad`).
     static APP_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static ATTACHED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -93,7 +92,7 @@ unsafe extern "system" fn detach(_: *mut JavaVM) -> jint {
     JNI_OK
 }
 
-/// A JNIEnv whose table holds only what the runtime calls here; the other entries are never read.
+/// A JNIEnv with only the entries the runtime calls filled in.
 fn env() -> *mut JNIEnv {
     static ENV: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *ENV.get_or_init(|| {
@@ -135,15 +134,14 @@ fn vm() -> *mut JavaVM {
 }
 
 #[test]
-fn a_thread_rust_started_finds_the_apps_classes_through_the_loader_kept_at_load() {
-    // JNI_OnLoad, on the thread loading the library, sees the app's classes.
-    APP_THREAD.set(true);
+fn rust_thread_finds_app_class_through_saved_loader() {
+    APP_THREAD.set(true); // as in JNI_OnLoad
     assert!(unsafe { remember_class_loader(env(), c"uniffi/UniffiKt") });
     APP_THREAD.set(false);
 
     let found = std::thread::spawn(|| unsafe {
         let class = find_class(env(), c"uniffi/UniffiKt");
-        // What the scaffolding does for a callback: this used to panic with "Class not found".
+        // A callback's lookup; used to panic with "Class not found".
         static METHOD: CachedStaticMethod = CachedStaticMethod::new(c"uniffi/UniffiKt", c"uniffiContinuationResume", c"(Lkotlin/coroutines/Continuation;)V");
         let (cached, method) = METHOD.get(env());
         (class as usize, cached as usize, method as usize)
@@ -155,24 +153,21 @@ fn a_thread_rust_started_finds_the_apps_classes_through_the_loader_kept_at_load(
 }
 
 #[test]
-fn a_thread_the_runtime_attached_is_attached_once_and_detached_when_it_ends() {
+fn attaches_once_and_detaches_at_thread_exit() {
     let before = (ATTACHES.load(Ordering::SeqCst), DETACHES.load(Ordering::SeqCst));
     std::thread::spawn(move || unsafe {
-        assert!(!attached_here());
         attach_current_thread(vm(), |_| ());
         attach_current_thread(vm(), |_| ());
-        assert!(attached_here(), "stays attached for the next callback");
-        assert_eq!(DETACHES.load(Ordering::SeqCst), before.1);
+        assert_eq!((ATTACHES.load(Ordering::SeqCst), DETACHES.load(Ordering::SeqCst)), (before.0 + 1, before.1));
     })
     .join()
     .unwrap();
     assert_eq!((ATTACHES.load(Ordering::SeqCst), DETACHES.load(Ordering::SeqCst)), (before.0 + 1, before.1 + 1));
 
-    // A Java thread is attached already: used as it is, and left attached.
+    // An already attached (Java) thread is neither attached nor detached.
     std::thread::spawn(|| unsafe {
         ATTACHED.set(true);
         attach_current_thread(vm(), |_| ());
-        assert!(!attached_here());
     })
     .join()
     .unwrap();

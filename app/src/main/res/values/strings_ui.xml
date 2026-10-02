@@ -104,6 +104,13 @@
     <string name="new_smart_playlist">New smart playlist</string>
     <string name="ready_made">Ready made</string>
     <string name="smart_playlist">Smart playlist</string>
+    <string name="smart_problem_no_value">A rule is missing its value.</string>
+    <string name="smart_problem_not_number">A rule needs a whole number.</string>
+    <string name="smart_problem_not_date">A rule needs a date like 2024-05-31.</string>
+    <string name="smart_problem_days">Days must be between 0 and 100000.</string>
+    <string name="smart_problem_backwards">A range runs backwards: put the lower end first.</string>
+    <string name="smart_problem_negative">The limit can\'t be negative.</string>
+    <string name="smart_problem_other">These rules can\'t be read.</string>
     <string name="match_all">Match all</string>
     <string name="match_any">Match any</string>
     <string name="remove_rule">Remove rule</string>

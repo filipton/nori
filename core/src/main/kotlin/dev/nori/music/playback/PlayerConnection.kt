@@ -136,7 +136,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
      */
     private fun heard(c: MediaController): Boolean {
         // One call, primitives only. The queue is the core's own.
-        read(HeardJni.at(clock, android.os.SystemClock.elapsedRealtime(), c.isPlaying, c.currentMediaItemIndex, c.nextMediaItemIndex, c.currentPosition))
+        read(HeardJni.at(clock, android.os.SystemClock.elapsedRealtime(), c.isPlaying, c.currentPosition))
         return heardIndex >= 0
     }
 
@@ -154,14 +154,15 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
         val raw = c.currentPosition
         val now = android.os.SystemClock.elapsedRealtime()
         val on = c.currentMediaItemIndex
-        val engine = engine()?.takeIf { _pendingSeek.value == null && now - seekAsked > SEEK_GRACE_MS }?.shownMs(on) ?: -1L
-        val out = read(PlayheadJni.position(clock, now, c.isPlaying, on, c.nextMediaItemIndex, raw, shown, engine))
-        if (c === controller && c.isPlaying && PlayheadJni.drifted(raw, engine) && now - reanchored > REANCHOR_GAP_MS) {
+        val engine = engine()?.takeIf { _pendingSeek.value == null }
+        val r = PlayheadJni.position(clock, now, c.isPlaying, on, raw, shown, engine?.handle ?: 0L)
+        val out = read(r)
+        if (c === controller && c.isPlaying && r < 0 && now - reanchored > REANCHOR_GAP_MS) {
             reanchored = now
-            dev.nori.music.NoriLog.i("seek bar: the controller ran on to $raw ms, the engine is at $engine ms: the session says its place again")
-            engine()?.reanchor()
+            dev.nori.music.NoriLog.i("seek bar: the controller ran on to $raw ms, the engine is at ${engine?.shownMs(on)} ms: the session says its place again")
+            engine?.reanchor()
         }
-        if (tracePositions) android.util.Log.d("noripos", "raw=$raw engine=$engine out=$out on=$on shown=$shown heard=$heardIndex c=${c.javaClass.simpleName} t=${Thread.currentThread().name}")
+        if (tracePositions) android.util.Log.d("noripos", "raw=$raw engine=${engine?.shownMs(on)} out=$out on=$on shown=$shown heard=$heardIndex c=${c.javaClass.simpleName} t=${Thread.currentThread().name}")
         return out
     }
 
@@ -171,12 +172,10 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
 
     /** When a drifted controller was last put right ([heard]), elapsed realtime ms. */
     private var reanchored = Long.MIN_VALUE / 2
-    /** When a seek was last asked for ([seekTo]), elapsed realtime ms. */
-    private var seekAsked = Long.MIN_VALUE / 2
 
     /** Unpacks an answer into [heardIndex]; returns the place in it. */
     private fun read(r: Long): Long {
-        heardIndex = (r ushr 44).toInt() - 1
+        heardIndex = ((r ushr 44) and 0x7FFFF).toInt() - 1
         // The ear changed song between two readings: the page changes with it now, not at the next one.
         if ((r ushr 43) and 1L != 0L) main.post { controller?.let { publish(it, queueChanged = false) } }
         return r and ((1L shl 43) - 1)
@@ -212,6 +211,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
             PlaybackService.onMixingChanged = { main.post { controller?.let { publish(it, queueChanged = false) } } }
             // A new queue made in the core: its origin read again once the service has set it.
             PlaybackService.onQueueSet = { main.post { controller?.let { publish(it, queueChanged = true) } } }
+            PlaybackService.onLanded = { followSeek() }
             publish(c, queueChanged = true)
             pending.forEach { it(c) }
             pending.clear()
@@ -219,7 +219,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
     }
 
     fun disconnect() {
-        forget()
+        _pendingSeek.value = null
         controller?.let { it.removeListener(listener); it.release() }
         controller = null
         _state.value = _state.value.copy(connected = false)
@@ -241,7 +241,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
 
     private val listener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) {
-            keepSeek(player)
+            followSeek()
             publish(player, events.contains(Player.EVENT_TIMELINE_CHANGED))
         }
 
@@ -296,7 +296,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
         // the player is still on the old one. Which row of the page's list that is, the core decides
         // (crates/queue/src/heard.rs shown_row).
         val heardIndex = (p as? MediaController)?.takeIf(::heard)?.let {
-            dev.nori.music.ffi.queue.heardShownRow(this.heardIndex, queue.map { it.id }, item?.mediaId).takeIf { it >= 0 }
+            dev.nori.music.ffi.queue.heardShownRow(this.heardIndex.takeIf { it >= 0 }?.toUInt(), queue.map { it.id }, item?.mediaId)?.toInt()
         }
         _mixing.value = p.isPlaying && PlaybackService.rustPlayer?.mixing == true
         _state.value = old.copy(
@@ -432,7 +432,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
     /** Also prepares a queue that was restored but never loaded. */
     fun toggle() = with { Util.handlePlayPauseButtonAction(it) }
     fun next() = with { c ->
-        forget()
+        _pendingSeek.value = null
         // With nothing after, the service refills the queue and takes the skip when songs land
         // (nori_player::transport::next_action).
         when (dev.nori.music.ffi.queue.nextAction(c.hasNextMediaItem())) {
@@ -440,101 +440,47 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
             NextAction.FILL_THEN_SKIP -> c.sendCustomCommand(SessionCommand(PlaybackService.CMD_FILL_NEXT, Bundle.EMPTY), Bundle.EMPTY)
         }
     }
-    /**
-     * A rewind is a seek to the top, not a skip: on a queue restored but never prepared the
-     * controller drops a bare seekToPrevious without a word, and the song then starts from where
-     * it had been left - the first press seemingly doing nothing, the second working now that the
-     * source is open. So it goes through the seek path, which prepares and watches the seek into
-     * place. The rule for which one it is mirrors the service's (media3 rewinds past three seconds).
-     */
+    /** A rewind is a seek to the top, not a skip; the rule mirrors the service's (media3 rewinds past three seconds). */
     fun previous() = with { c ->
         // Restart here, or let the player's own previous decide: nori_player::queue::previous_restarts.
         if (dev.nori.music.ffi.queue.queuePreviousRestarts(c.currentPosition, c.hasPreviousMediaItem())) { seekTo(0); if (!c.playWhenReady) c.play() }
-        else { forget(); c.seekToPrevious() }
+        else { _pendingSeek.value = null; c.seekToPrevious() }
     }
     /** The song before, even well into this one - a swipe is a request for the other record, not a restart. */
-    fun previousItem() = with { forget(); it.seekToPreviousMediaItem() }
-    /**
-     * A seek, and then a second one if the player did not keep it. Asked for on a song that is still
-     * being fetched, the seek lands on a source that has not been opened yet: the player accepts it,
-     * loads the track and starts it from the beginning, and the position the finger asked for is gone.
-     * So it is remembered until the song is really playing on from there, and asked for again if the
-     * player ended up back at the top of the same song.
-     */
+    fun previousItem() = with { _pendingSeek.value = null; it.seekToPreviousMediaItem() }
+
+    /** A seek. The bar holds its place ([pendingSeek]) until the engine says it landed there ([followSeek]). */
     fun seekTo(ms: Long) = with { c ->
         // Asked for: the bar and the lyrics go there as they are, even a moment back (heard.rs Playhead).
         PlayheadJni.jumped(clock)
-        seekAsked = android.os.SystemClock.elapsedRealtime()
+        seekAfter = engine()?.let { it to it.jumpsSent }
+        _pendingSeek.value = ms
         // A tap is a place in the song on the page. While the ear is still on the song the player
         // has left (see publish), that is the earlier song: the seek goes to it, not to the one the
         // player is already counting.
         val heardIndex = _state.value.index.takeIf { heard(c) && it >= 0 && it != c.currentMediaItemIndex }
-        if (heardIndex != null) { forget(); c.seekTo(heardIndex, ms); return@with }
-        // Where it was is read here, when it means something - a ready player - and the watch only
-        // falls back to anchoring on its first READY observation while the player is still opening
-        // (see keepSeek). Anchoring unconditionally after the fact puts the anchor next to the
-        // target once the controller has applied the seek, and the direction test then reads a
-        // forward seek as a backward one and fires it again, up to three times: the song jumping
-        // back to the tapped place with a gap each time. On a player that is not ready yet the
-        // position read now is meaningless - idle reports 0 while the session restores to wherever
-        // the queue was left, and anchoring on 0 makes the watch read the restored position as
-        // "moved by someone else" and give up on a dropped seek. Already at the target anchors
-        // AT it: the controller answers from its own books, so this can catch the asked place
-        // itself and the direction test would otherwise misfire on it the same way.
-        // Where it was, and whether that means anything, is the keeper's to judge (nori_player::seek).
-        SeekJni.ask(seeks, ms, android.os.SystemClock.elapsedRealtime(), c.playbackState == Player.STATE_READY, c.currentPosition)
-        wantedId = c.currentMediaItem?.mediaId
-        _pendingSeek.value = ms
-        // A queue restored from the last time the app ran is deliberately left unprepared, so that
-        // opening the app touches nothing. Such a player has no seekable window, the controller drops
-        // every seek without a word, and the song then started from where it had been left - the finger
-        // ignored. Asking for a place in a song is asking for the song, so prepare it; the seek itself
-        // lands through the watch below, once there is something to seek in.
-        if (!c.isCommandAvailable(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)) c.prepare()
-        c.seekTo(ms)
-        main.removeCallbacks(watch)
-        main.postDelayed(watch, seekLookMs)
+        if (heardIndex != null) c.seekTo(heardIndex, ms) else c.seekTo(ms)
     }
 
-    /** The seek being made to stick, in Rust (crates/player/src/seek.rs), and the song it was asked in. */
-    private val seeks = SeekJni.create()
-    /** How often the watch looks (nori_player::seek::LOOK_EVERY_MS), read once. */
-    private val seekLookMs by lazy { dev.nori.music.ffi.queue.playbackTimings().seekLookMs }
-    private var wantedId: String? = null
+    /** The engine and its jumps sent before the pending seek; null when there is no engine to wait for. */
+    private var seekAfter: Pair<EnginePlayer, Long>? = null
     /**
-     * Where a seek asked to go, while the watch is still making sure it sticks. The seek bar
-     * holds this instead of its own timer, so a slow seek (prepare, then the re-ask) reads as
-     * one held place rather than a jump, a snap-back and a glide. Cleared with the watch.
+     * Where a seek asked to go, until the engine has landed it. The seek bar holds this instead of its
+     * own timer, so a slow seek reads as one held place rather than a jump, a snap-back and a glide.
      */
     private val _pendingSeek = MutableStateFlow<Long?>(null)
     val pendingSeek: StateFlow<Long?> = _pendingSeek
     private val main by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
 
     /**
-     * The player's own events are not enough to catch this. A controller answers from its own books
-     * the moment it is asked, so right after a seek it reports the position the finger chose whatever
-     * the session did with it; the truth arrives later, and not always as an event. So the seek is
-     * also looked at on a timer until it is clearly kept or the song has moved on.
+     * Lets the bar go once the engine has landed a jump sent after the seek (its position event), or the
+     * engine it was sent to is gone.
      */
-    private val watch = object : Runnable {
-        override fun run() {
-            controller?.let(::keepSeek)
-            if (_pendingSeek.value != null) main.postDelayed(this, seekLookMs)
-        }
-    }
-
-    private fun forget() { SeekJni.forget(seeks); wantedId = null; _pendingSeek.value = null; main.removeCallbacks(watch) }
-
-    private fun keepSeek(p: Player) {
+    private fun followSeek() {
         if (_pendingSeek.value == null) return
-        val verdict = SeekJni.look(
-            seeks, android.os.SystemClock.elapsedRealtime(), p.currentMediaItem?.mediaId == wantedId,
-            p.playbackState == Player.STATE_READY, p.currentPosition, p.isPlaying,
-        )
-        when {
-            verdict == -2L -> forget()
-            verdict >= 0L -> p.seekTo(verdict)
-        }
+        val e = engine()
+        val (sentTo, after) = seekAfter ?: (null to 0L)
+        if (e == null || e !== sentTo || (e.jumpsSent > after && e.landedAll)) _pendingSeek.value = null
     }
 
     fun setShuffle(on: Boolean) = with {
@@ -547,9 +493,9 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
         it.repeatMode = dev.nori.music.ffi.queue.queueNextRepeat(it.repeatMode.toUByte()).toInt()
     }
 
-    /** While true the service trades its deep audio buffer for immediate response; for the equalizer screen. */
-    fun setTuning(on: Boolean) = with { c ->
-        c.sendCustomCommand(SessionCommand(PlaybackService.CMD_TUNING, Bundle.EMPTY), Bundle().apply { putBoolean(PlaybackService.ARG_ON, on) })
+    /** The app is in sight until [disconnect]: the service trades its deep audio buffer for a sound change heard at once. */
+    fun inSight() = with { c ->
+        c.sendCustomCommand(SessionCommand(PlaybackService.CMD_IN_SIGHT, Bundle.EMPTY), Bundle().apply { putBoolean(PlaybackService.ARG_ON, true) })
     }
 
     /** Presses one of the session's own buttons (the notification's heart or shuffle) the way the notification does; for the test bridge. */
@@ -585,24 +531,17 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
 
 /** A drifted controller is put right at most this often (PlayerConnection.heard). */
 private const val REANCHOR_GAP_MS = 2_000L
-/**
- * For this long after a seek is asked for, the bar goes by the controller's place, which has the seek, and
- * not by the engine's, which may not have it yet: a seek sent through a controller reaches the player a
- * main-thread turn or two later (and one the connection applies outright never enters [PlayerConnection.pendingSeek]).
- */
-private const val SEEK_GRACE_MS = 500L
 
 internal object PlayheadJni {
     init { System.loadLibrary("norimusic") }
 
     /**
      * As [HeardJni.at], with the place the bar shows while the page shows queue index [shown] (-1: nothing).
-     * [positionMs] is the player's word, [engineMs] the engine's own place in song [on] (-1: none), which the
-     * bar goes by when there is one.
+     * [positionMs] is the player's word; [player] the engine ([EnginePlayer.handle], 0: not asked), whose own
+     * place in song [on] the bar goes by when it has one. Negative when the player's word has drifted from
+     * the engine's place (nori_player::heard::drifted): the session must say its place again.
      */
-    @JvmStatic @CriticalNative external fun position(h: Long, nowMs: Long, playing: Boolean, on: Int, next: Int, positionMs: Long, shown: Int, engineMs: Long): Long
-    /** A controller's place [wordMs] has drifted from the engine's own [engineMs] (-1: none): nori_player::heard::drifted. */
-    @JvmStatic @CriticalNative external fun drifted(wordMs: Long, engineMs: Long): Boolean
+    @JvmStatic @CriticalNative external fun position(h: Long, nowMs: Long, playing: Boolean, on: Int, positionMs: Long, shown: Int, player: Long): Long
     /** The last place shown, run on from then if [playing]: for while the controller cannot be asked. */
     @JvmStatic @CriticalNative external fun runOn(h: Long, nowMs: Long, playing: Boolean): Long
     /** The listener asked for a place (a seek): the next reading is shown as it is, even a moment back in the song. */

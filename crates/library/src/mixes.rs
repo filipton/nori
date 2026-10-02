@@ -1,13 +1,6 @@
-//! Mixes built from the local index and the taste model in `history.rs`; no server round trip.
-//!
-//! The index can hold 100k songs, so no mix reads it whole. SQL narrows to a candidate pool of a
-//! few times `limit` (through `song_stats`, or through the expression indexes on genre, artist,
-//! year, starred and rating), and only that pool is parsed, scored and sampled in Rust.
-//!
-//! Everything random derives from the caller's `seed`: the same seed over the same data gives the
-//! same mix, so a screen can be rebuilt without its content changing, and a "refresh" is a new seed.
-//! SQLite's `random()` cannot be seeded, so pools are drawn in the order of a seeded linear
-//! congruence over `rowid` (`shuffled_order`), which needs no JSON parsing and no temp table.
+//! Mixes from the local index and the taste model. SQL narrows the index to a pool of a few times
+//! `limit`, which alone is parsed, scored and sampled. Everything random derives from `seed`; SQLite's
+//! `random()` cannot be seeded, so pools are ordered by a seeded permutation of `rowid`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -60,8 +53,7 @@ pub(crate) fn shuffled_params(seed: u64) -> [Value; 2] {
     [Value::Integer(1 + (r.next() % (LCG_P as u64 - 1)) as i64), Value::Integer((r.next() % LCG_P as u64) as i64)]
 }
 
-/// This server's songs. Most rows of `items` are songs: saying so keeps the planner from treating
-/// `kind=2` as the selective term and ignoring the expression indexes (there is no ANALYZE data on a phone).
+/// This server's songs; `likelihood` keeps the planner (without ANALYZE data) on the expression indexes.
 pub const SONGS: &str = "i.server=sid() AND likelihood(i.kind=2, 0.9)";
 
 struct Cand {
@@ -144,12 +136,9 @@ fn sample(cands: Vec<(Song, f64)>, limit: usize, per_artist: usize, rng: &mut Rn
     out
 }
 
-/// A seeded shuffle that keeps songs of one artist apart, and when it can also songs of one album and an
-/// artist heard two songs ago. `after` is what plays right before the result.
-///
-/// Two songs of an artist end up adjacent only when that cannot be avoided, that is when the artist has
-/// more than half of what is left: the artist with the most songs left is forced as soon as postponing
-/// it would make a collision certain; every other position takes the next song of the plain shuffle that fits.
+/// A seeded shuffle keeping one artist's songs apart, and when it can one album's and the artist of two
+/// songs back; `after` plays just before. The artist with most songs left is forced once postponing it
+/// would make a collision certain; otherwise the next fitting song of a plain shuffle is taken.
 pub(crate) fn spread(songs: Vec<Song>, rng: &mut Rng, after: Option<&Song>) -> Vec<Song> {
     let order = spread_order(&songs, rng, after);
     let mut slots: Vec<Option<Song>> = songs.into_iter().map(Some).collect();
@@ -305,25 +294,12 @@ pub fn discover(c: &Connection, limit: usize, seed: u64, now_ms: i64) -> rusqlit
     Ok(spread(picked, &mut rng, None))
 }
 
-/// A draw from `cond`, liked songs more likely and skipped ones less. Shared by the genre, artist and decade mixes.
-pub fn themed(c: &Connection, cond: &str, args: Vec<Value>, limit: usize, per_artist: usize, seed: u64, now_ms: i64) -> rusqlite::Result<Vec<Song>> {
-    let mut rng = Rng::new(seed);
-    let cands = pool(c, false, cond, args, Order::Shuffled(rng.next()), limit * 3, now_ms)?;
-    let picked = sample(cands.into_iter().map(|c| (c.song, affinity(c.taste, c.skips))).collect(), limit, per_artist, &mut rng);
-    Ok(spread(picked, &mut rng, None))
-}
-
 fn affinity(taste: f64, skips: u32) -> f64 {
     if taste < 0.0 {
         0.2 / (1.0 + skips as f64)
     } else {
         1.0 + taste.min(4.0)
     }
-}
-
-/// The SQL condition of a decade mix: the songs of one decade.
-pub fn decade_cond() -> &'static str {
-    "json_extract(i.json,'$.year') BETWEEN ?1 AND ?2"
 }
 
 /// The seed song, then its neighbourhood: same genre first, then same artist and same decade.
@@ -343,7 +319,7 @@ pub fn instant(c: &Connection, seed_song_id: &str, limit: usize, seed: u64, now_
         cands.extend(pool(c, false, "json_extract(i.json,'$.artistId')=?1", vec![text(a)], Order::Shuffled(rng.next()), limit, now_ms)?);
     }
     if first.year > 0 {
-        cands.extend(pool(c, false, decade_cond(), vec![Value::Integer(decade), Value::Integer(decade + 9)], Order::Shuffled(rng.next()), limit * 2, now_ms)?);
+        cands.extend(pool(c, false, "json_extract(i.json,'$.year') BETWEEN ?1 AND ?2", vec![Value::Integer(decade), Value::Integer(decade + 9)], Order::Shuffled(rng.next()), limit * 2, now_ms)?);
     }
     let genre = first.genre.as_ref().map(|g| g.to_lowercase());
     let weighted = cands
@@ -408,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn shuffle_keeps_artists_apart_when_it_can() {
+    fn shuffle_spreads() {
         let mut l = Vec::new();
         for (artist, n) in [("A", 10), ("B", 6), ("C", 3), ("D", 1)] {
             for i in 0..n {
@@ -426,10 +402,8 @@ mod tests {
         }
         assert_eq!(ids(&weighted_shuffle(l.clone(), 3)), ids(&weighted_shuffle(l.clone(), 3)));
         assert_ne!(ids(&weighted_shuffle(l.clone(), 3)), ids(&weighted_shuffle(l, 4)));
-    }
 
-    #[test]
-    fn shuffle_at_the_limit_of_what_is_possible() {
+        // Shuffle at the limit of what is possible.
         // exactly half plus one: only A_A_A_A works
         let mut l: Vec<Song> = (0..4).map(|i| song(&format!("a{i}"), "t", "A", "", "", 0)).collect();
         l.extend((0..3).map(|i| song(&format!("b{i}"), "t", ["B", "C", "B"][i], "", "", 0)));
@@ -444,10 +418,20 @@ mod tests {
             assert_eq!(out.len(), 6);
             assert!(out[0].artist == "A" && out[5].artist == "A", "{:?}", ids(&out));
         }
-    }
 
-    #[test]
-    fn shuffle_edge_cases() {
+        // Shuffle avoids the same album too.
+        // two artists cannot avoid alternating; albums within can
+        let mut l = Vec::new();
+        for artist in ["A", "B", "C"] {
+            for i in 0..6 {
+                l.push(song(&format!("{artist}{i}"), "t", artist, &format!("{artist}{}", i % 3), "", 0));
+            }
+        }
+        let out = weighted_shuffle(l, 11);
+        assert_eq!(adjacent_artists(&out), 0);
+        assert_eq!(out.windows(2).filter(|w| w[0].album == w[1].album).count(), 0);
+
+        // Shuffle edge cases.
         assert!(weighted_shuffle(vec![], 1).is_empty());
         let l = vec![song("x", "t", "A", "b", "", 0), song("y", "t", "B", "b", "", 0), song("z", "t", "A", "c", "", 0)];
         let by_order: Vec<Song> = weighted_shuffle_order(&l, 5).into_iter().map(|i| l[i].clone()).collect();
@@ -466,21 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn shuffle_avoids_the_same_album_too() {
-        // two artists cannot avoid alternating; albums within can
-        let mut l = Vec::new();
-        for artist in ["A", "B", "C"] {
-            for i in 0..6 {
-                l.push(song(&format!("{artist}{i}"), "t", artist, &format!("{artist}{}", i % 3), "", 0));
-            }
-        }
-        let out = weighted_shuffle(l, 11);
-        assert_eq!(adjacent_artists(&out), 0);
-        assert_eq!(out.windows(2).filter(|w| w[0].album == w[1].album).count(), 0);
-    }
-
-    #[test]
-    fn a_long_queue_shuffles_quickly_and_keeps_its_artists_apart() {
+    fn long_queue_shuffles_fast() {
         // Five thousand songs: a shuffle that compared every song with every other would take seconds here.
         let l: Vec<Song> = (0..5_000).map(|i| song(&i.to_string(), "t", &format!("artist {}", i % 1500), "", "", 0)).collect();
         let started = std::time::Instant::now();

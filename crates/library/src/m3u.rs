@@ -82,7 +82,7 @@ fn from_path(path: &str) -> (String, String) {
 
 pub fn m3u_parse(text: String) -> Vec<M3uEntry> {
     let mut out = Vec::new();
-    let mut info: Option<(i32, String)> = None;
+    let mut info: Option<(Option<u32>, String)> = None;
     for raw in text.trim_start_matches('\u{feff}').lines() {
         let l = raw.trim();
         if l.is_empty() {
@@ -92,9 +92,9 @@ pub fn m3u_parse(text: String) -> Vec<M3uEntry> {
             // "#EXTINF:123,Artist - Title", the duration may be a float, -1, or carry attributes ("123 tvg-id=..")
             let (head, label) = rest.split_once(',').unwrap_or((rest, ""));
             let secs = head.split_whitespace().next().and_then(|d| d.parse::<f64>().ok()).filter(|d| *d >= 0.0 && d.is_finite());
-            info = Some((secs.map(|d| d.round().min(i32::MAX as f64) as i32).unwrap_or(-1), label.trim().to_string()));
+            info = Some((secs.map(|d| d.round().min(u32::MAX as f64) as u32), label.trim().to_string()));
         } else if !l.starts_with('#') {
-            let (duration_s, label) = info.take().unwrap_or((-1, String::new()));
+            let (duration_s, label) = info.take().unwrap_or((None, String::new()));
             let (artist, title) = if label.is_empty() { from_path(l) } else { split_label(&label) };
             out.push(M3uEntry { duration_s, artist, title, path: l.to_string() });
         }
@@ -120,9 +120,9 @@ fn candidates(c: &Connection, query: Option<String>) -> rusqlite::Result<Vec<Son
 }
 
 /// Among equally good names the one whose length fits is the right master; without a duration, the first.
-fn closest(mut l: Vec<Song>, duration_s: i32) -> Option<Song> {
-    if duration_s >= 0 {
-        l.sort_by_key(|s| (s.duration as i64 - duration_s as i64).abs());
+fn closest(mut l: Vec<Song>, duration_s: Option<u32>) -> Option<Song> {
+    if let Some(d) = duration_s {
+        l.sort_by_key(|s| (s.duration as i64 - d as i64).abs());
     }
     l.into_iter().next()
 }
@@ -153,16 +153,7 @@ mod tests {
     use crate::history::tests::song;
 
     #[test]
-    fn an_imported_file_names_its_playlist() {
-        assert_eq!(m3u_playlist_name(Some("primary:Music/Road trip.m3u8".into())), "Road trip");
-        assert_eq!(m3u_playlist_name(Some("a.b.m3u".into())), "a.b");
-        assert_eq!(m3u_playlist_name(Some("plain".into())), "plain");
-        assert_eq!(m3u_playlist_name(None), "Imported");
-        assert_eq!(m3u_file_name("Road".into()), "Road.m3u8");
-    }
-
-    #[test]
-    fn export_is_extended_m3u_with_safe_paths() {
+    fn exports_m3u() {
         let mut dogs = song("1", "Dogs", "Pink Floyd", "Animals", "", 1977);
         dogs.track = 2;
         dogs.duration = 1024;
@@ -179,40 +170,44 @@ mod tests {
              #EXTINF:-1,Jóga\nUnknown/Unknown/11 - Jóga.mp3\n"
         );
         assert_eq!(m3u_export(String::new(), vec![]), "#EXTM3U\n");
-    }
 
-    #[test]
-    fn export_round_trips_through_parse() {
+        // Export round trips through parse.
         let songs = vec![song("1", "Dogs", "Pink Floyd", "Animals", "", 1977), song("2", "Jóga", "Björk", "Homogenic", "", 1997)];
         let parsed = m3u_parse(m3u_export("x".into(), songs.clone()));
         assert_eq!(parsed.len(), 2);
         for (p, s) in parsed.iter().zip(&songs) {
-            assert_eq!((p.artist.as_str(), p.title.as_str(), p.duration_s), (s.artist.as_str(), s.title.as_str(), 200));
+            assert_eq!((p.artist.as_str(), p.title.as_str(), p.duration_s), (s.artist.as_str(), s.title.as_str(), Some(200)));
         }
         assert_eq!(parsed[1].path, "Björk/Homogenic/Jóga.flac");
     }
 
     #[test]
-    fn parse_is_tolerant() {
+    fn parses_m3u() {
         let text = "\u{feff}#EXTM3U\r\n# a comment\r\n\r\n#EXTINF:215,Björk - Jóga\r\nC:\\Music\\Björk\\Homogenic\\03 - Jóga.flac\r\n\
                     #EXTINF:-1 tvg-id=\"x\",Just A Title\r\nhttp://host/stream.mp3\r\n\
                     #EXTINF:61.6,A - B - C\r\n#EXTVLCOPT:network-caching=1000\r\nfile.ogg\r\n\
                     #EXTINF:garbage\r\nx.mp3\r\n";
         let l = m3u_parse(text.into());
         assert_eq!(l.len(), 4);
-        assert_eq!(l[0], M3uEntry { duration_s: 215, artist: "Björk".into(), title: "Jóga".into(), path: "C:\\Music\\Björk\\Homogenic\\03 - Jóga.flac".into() });
-        assert_eq!((l[1].duration_s, l[1].artist.as_str(), l[1].title.as_str()), (-1, "", "Just A Title"));
-        assert_eq!((l[2].duration_s, l[2].artist.as_str(), l[2].title.as_str()), (62, "A", "B - C"));
-        assert_eq!((l[3].duration_s, l[3].artist.as_str(), l[3].title.as_str()), (-1, "", "x"));
+        assert_eq!(l[0], M3uEntry { duration_s: Some(215), artist: "Björk".into(), title: "Jóga".into(), path: "C:\\Music\\Björk\\Homogenic\\03 - Jóga.flac".into() });
+        assert_eq!((l[1].duration_s, l[1].artist.as_str(), l[1].title.as_str()), (None, "", "Just A Title"));
+        assert_eq!((l[2].duration_s, l[2].artist.as_str(), l[2].title.as_str()), (Some(62), "A", "B - C"));
+        assert_eq!((l[3].duration_s, l[3].artist.as_str(), l[3].title.as_str()), (None, "", "x"));
         assert!(m3u_parse(String::new()).is_empty());
         assert!(m3u_parse("#EXTM3U\n#EXTINF:1,dangling".into()).is_empty());
-    }
 
-    #[test]
-    fn plain_m3u_reads_names_from_paths() {
+        // Plain m3u reads names from paths.
         let l = m3u_parse("Pink Floyd/Animals/02 - Dogs.flac\n/mnt/music/Miles Davis/Kind of Blue/1-01 So What.mp3\nBjörk - Jóga.mp3\n07. Hunter.ogg\n1999.mp3\n99 Luftballons.mp3\n05 Pigs.mp3\nhttp://radio.example/live\n".into());
         let got: Vec<(&str, &str)> = l.iter().map(|e| (e.artist.as_str(), e.title.as_str())).collect();
         assert_eq!(got, [("Pink Floyd", "Dogs"), ("Miles Davis", "So What"), ("Björk", "Jóga"), ("", "Hunter"), ("", "1999"), ("", "99 Luftballons"), ("", "Pigs"), ("", "live")]);
-        assert!(l.iter().all(|e| e.duration_s == -1));
+        assert!(l.iter().all(|e| e.duration_s.is_none()));
+
+        // An imported file names its playlist.
+        assert_eq!(m3u_playlist_name(Some("primary:Music/Road trip.m3u8".into())), "Road trip");
+        assert_eq!(m3u_playlist_name(Some("a.b.m3u".into())), "a.b");
+        assert_eq!(m3u_playlist_name(Some("plain".into())), "plain");
+        assert_eq!(m3u_playlist_name(None), "Imported");
+        assert_eq!(m3u_file_name("Road".into()), "Road.m3u8");
     }
+
 }

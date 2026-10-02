@@ -1,5 +1,4 @@
-//! Every key binding, in one table: dispatch reads it and the help overlay (`?`) lists it, so the two
-//! cannot disagree.
+//! The key binding table, used by both dispatch and the help overlay (`?`).
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -20,18 +19,18 @@ pub enum Action {
     VolumeUp,
     VolumeDown,
     Search,
-    /// Focus to the next part of the window: the sidebar, the page, the panel.
+    /// Focus cycles sidebar, page, panel.
     NextPane,
     PreviousPane,
     Mouse,
     Images,
     Shuffle,
     Repeat,
-    /// A place in the sidebar by its number: Home, Albums, Artists, Songs, Downloads, Equalizer, Settings.
+    /// Index into `app::GO`.
     Go(u8),
-    /// The panel on the right: what plays, the queue, the lyrics (the same again hides it).
+    /// Show that right panel; the same again hides it.
     Panel(Panel),
-    /// The player over the whole window, cover and lyrics.
+    /// Full-window player.
     Full,
     Back,
     Refresh,
@@ -49,10 +48,10 @@ pub enum Action {
     Star,
     PlayAll,
     ShuffleAll,
-    // Grids of albums
+    // Card grids
     Left,
     Right,
-    // Editing a list: the queue, the downloads, the equalizer's bands
+    // Queue, downloads and equalizer band editing
     Remove,
     Undo,
     MoveUp,
@@ -61,15 +60,15 @@ pub enum Action {
     Sooner,
     Later,
     Unnudge,
-    // Values (settings, the equalizer)
+    // Settings and equalizer values
     Decrease,
     Increase,
-    // Settings: a group back or on
+    // Previous or next settings group
     GroupBack,
     GroupOn,
 }
 
-/// Where a binding applies. The part in focus is looked through first, then lists, then everything.
+/// Where a binding applies. Lookup goes from the focused part's scope to List to Global.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     Global,
@@ -82,6 +81,9 @@ pub enum Scope {
 }
 
 impl Scope {
+    /// Help overlay order.
+    pub const ALL: [Scope; 7] = [Scope::Global, Scope::List, Scope::Grid, Scope::Edit, Scope::Lyrics, Scope::Eq, Scope::Values];
+
     pub fn title(self) -> &'static str {
         match self {
             Scope::Global => "Everywhere",
@@ -98,6 +100,7 @@ impl Scope {
 pub struct Binding {
     pub scope: Scope,
     pub keys: &'static [(KeyCode, KeyModifiers)],
+    /// Help text for the keys; empty continues the row above.
     pub label: &'static str,
     pub action: Action,
     pub help: &'static str,
@@ -185,7 +188,7 @@ pub const BINDINGS: &[Binding] = &[
 
 /// The action `key` has in the first of `scopes` that binds it.
 pub fn action(key: &KeyEvent, scopes: &[Scope]) -> Option<Action> {
-    // Shift is part of the character for letters and symbols; a terminal may or may not report it.
+    // Terminals differ on reporting shift with shifted characters, so both forms are bound.
     let mods = key.modifiers & (KeyModifiers::SHIFT | KeyModifiers::CONTROL | KeyModifiers::ALT);
     for scope in scopes {
         for b in BINDINGS.iter().filter(|b| b.scope == *scope) {
@@ -206,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn a_screen_binding_wins_over_a_global_one() {
+    fn key_scopes() {
         let right = key(Right, N);
         assert_eq!(action(&right, &[Scope::Global]), Some(Action::SeekForward));
         assert_eq!(action(&right, &[Scope::Values, Scope::List, Scope::Global]), Some(Action::Increase));
@@ -214,21 +217,15 @@ mod tests {
         assert_eq!(action(&key(Char('d'), N), &[Scope::Edit, Scope::List, Scope::Global]), Some(Action::Remove));
         assert_eq!(action(&key(Left, N), &[Scope::Grid, Scope::List, Scope::Global]), Some(Action::Left));
         assert_eq!(action(&key(Char('G'), S), &[Scope::List, Scope::Global]), Some(Action::Bottom));
-    }
 
-    #[test]
-    fn every_action_bound_is_listed_in_the_help() {
-        // A row with no label continues the one above it, so every binding is reachable from the help.
-        let mut labelled = false;
-        for b in BINDINGS {
-            labelled |= !b.label.is_empty();
-            assert!(labelled, "{:?} has no help row", b.action);
-            assert!(!b.keys.is_empty());
+        // Each scope starts labelled.
+        // An unlabelled binding continues the row above, so the first of each scope needs a label.
+        for scope in Scope::ALL {
+            let first = BINDINGS.iter().find(|b| b.scope == scope).expect("scope has bindings");
+            assert!(!first.label.is_empty(), "{scope:?}");
         }
-    }
 
-    #[test]
-    fn no_key_is_bound_twice_in_one_scope() {
+        // No duplicate keys per scope.
         for (i, a) in BINDINGS.iter().enumerate() {
             for b in &BINDINGS[i + 1..] {
                 if a.scope == b.scope {
@@ -239,4 +236,5 @@ mod tests {
             }
         }
     }
+
 }

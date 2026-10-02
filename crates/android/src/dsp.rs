@@ -1,5 +1,4 @@
-//! The answer about the sound chain the settings ask for as they are read: the pre-amp in effect. The
-//! chain itself runs inside the Rust player (crates/android/src/player.rs).
+//! The effective equalizer pre-amp, for the settings screen.
 
 use jni::objects::{JClass, JFloatArray, JIntArray};
 use jni::sys::{jboolean, jfloat};
@@ -14,9 +13,8 @@ pub(crate) static CLASS: Class = Class {
     ],
 };
 
-/// The pre-amp in effect (`nori_core::settings::effective_preamp_db`), worked out once per settings but
-/// for each step of a band's drag on the equalizer screen: the bands' kinds and gains come in as two
-/// primitive arrays.
+/// `nori_core::settings::effective_preamp_db`, called on every step of a band drag; bands come as kind
+/// and gain arrays.
 extern "system" fn effective_preamp_db(
     env: JNIEnv, _: JClass, eq_enabled: jboolean, eq_preamp_db: jfloat, automatic: jboolean, kinds: JIntArray, gains: JFloatArray,
 ) -> jfloat {

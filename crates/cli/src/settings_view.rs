@@ -1,12 +1,6 @@
-//! Settings, the terminal's own: one scrolling page of groups, sections and rows, every word on them this
-//! client's, chosen for a terminal - only what makes sense at a desk, worded for one. What a phone needs
-//! (gestures, offload, battery, the screen) and what a desk has no use for (covers fetched ahead for a
-//! grid of pictures, a second address's bitrate cap, the search's typing delay) is not offered: the
-//! core's defaults stand for those. What each setting is, the
-//! values it offers and its value now are the core's settings model (`nori_settings::settings_model`); a
-//! row sends back the setting's name with the value picked (`setting_set`), or moves a level in place
-//! (`edit_level`). The client's own few settings (the mouse, covers, the output device) are
-//! rows of the same kinds.
+//! The settings page (one scrolling page of groups, sections and rows) and the equalizer's rows.
+//! Values and options come from the core's `settings_model`; rows send back a setting name and value
+//! (`setting_set`) or a level edit (`edit_level`). Phone-only settings are left out (core defaults apply).
 
 use crate::text;
 use nori_core::settings::{EqLevel, EqMode, SoundBand, StoredPrefs, EQ_RANGES};
@@ -15,7 +9,7 @@ use nori_core::MusicFolder;
 
 use crate::app::{Cmd, Overlay, Sel, SoundToolCmd, Target, View};
 
-/// The client's own group, first in the list.
+/// The terminal client's own group id.
 pub const OWN: &str = "terminal";
 
 /// What opening a row does.
@@ -23,19 +17,28 @@ pub enum Opened {
     Cmds(Vec<Cmd>),
     Overlay(Overlay),
     View(View),
-    /// One of the client's own switches, by name.
-    Own(&'static str),
+    /// A terminal-only switch (never `Switch::Setting`).
+    Own(Switch),
     Login,
 }
 
-/// A group of settings: a part of the one page, under its own heading.
+/// What a toggle row switches: a core setting by name, or a terminal-only switch.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Switch {
+    Setting(String),
+    Mouse,
+    Images,
+    CardCovers,
+}
+
+/// A settings group: a headed part of the page.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Group {
     pub id: &'static str,
     pub title: &'static str,
 }
 
-/// The groups, in the order they are listed.
+/// The groups in page order.
 pub const GROUPS: [Group; 8] = [
     Group { id: OWN, title: "Interface" },
     Group { id: "sound", title: "Sound" },
@@ -47,7 +50,7 @@ pub const GROUPS: [Group; 8] = [
     Group { id: "about", title: "About" },
 ];
 
-/// What a link or a button on the page does.
+/// What a link or button does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Act {
     Equalizer,
@@ -57,38 +60,29 @@ pub enum Act {
     Chore(Chore),
 }
 
-/// What the backend does when a button asks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Chore {
-    SyncLibrary,
-    DownloadLibrary,
-    MeasureAgain,
-    ClearStream,
-    ClearCovers,
-    ClearLyrics,
-}
+pub use nori_host::session::Chore;
 
 /// One row of a page.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Row {
-    Toggle { name: String, title: String, detail: String, on: bool, enabled: bool },
-    /// `options` are (label, value); `shown` is the chosen one's label, or the value itself.
+    Toggle { switch: Switch, title: String, detail: String, on: bool, enabled: bool },
+    /// `options` are (label, value); `shown` is the chosen label, or the raw value if none matches.
     Choice { target: Target, title: String, options: Vec<(String, String)>, shown: String, enabled: bool },
     Note { text: String },
-    /// Opens another screen (`action`), with a status at its end.
+    /// Opens another screen, with a status at the end.
     Link { title: String, status: String, action: Act },
-    /// A line of text and a button at its end.
+    /// Text with a button at the end.
     Action { title: String, detail: String, button: String, enabled: bool, action: Act },
     Info { title: String, detail: String },
-    /// `level`: dragged through `edit_level` instead of by `name`.
+    /// With `level`, changed through `edit_level` instead of by `name`.
     Slider { name: String, label: String, value: f32, min: f32, max: f32, centred: bool, level: Option<EqLevel> },
     /// Colour swatches, ARGB.
     Palette { name: String, colours: Vec<i64>, chosen: i64 },
     Server { id: String, label: String, detail: String, active: bool },
     Button { title: String, action: Act },
-    /// A lyrics service in the one ranked list: switched where it stands, moved a place with ← →.
+    /// A lyrics service in the ranked list: enter switches it, ← → move it.
     Ranked { name: String, id: String, title: String, detail: String, on: bool },
-    /// Text typed in (a service's key).
+    /// Free text (a service's API key).
     Text { name: String, title: String, detail: String, value: String, secret: bool },
 }
 
@@ -104,7 +98,7 @@ pub struct Page {
     pub sections: Vec<Section>,
 }
 
-/// What lives on this computer, in bytes.
+/// Local storage use in bytes.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Storage {
     pub stream: i64,
@@ -115,21 +109,21 @@ pub struct Storage {
     pub database: i64,
 }
 
-/// What the pages show besides the settings, fetched on the backend's thread when Settings opens.
+/// Non-setting facts shown on the page, loaded when Settings opens.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Facts {
     /// Songs AutoMix has measured.
     pub analysed: u32,
-    /// What the offline index holds: songs, albums, artists.
+    /// Offline index counts: songs, albums, artists.
     pub indexed: (u32, u32, u32),
     pub storage: Storage,
     /// The active server's music folders.
     pub folders: Vec<MusicFolder>,
-    /// The sound cards there are to play through.
+    /// Output device names.
     pub devices: Vec<String>,
 }
 
-/// A line of the page: a group's heading, a section's title, or one of its rows.
+/// A page line: group heading, section title or row.
 pub enum Line<'a> {
     Group(&'a str),
     Title(&'a str),
@@ -139,11 +133,11 @@ pub enum Line<'a> {
 #[derive(Default)]
 pub struct SettingsView {
     pub row: Sel,
-    /// Every group's part of the page, worked out again only when something they show changed.
+    /// Cached group pages; rebuilt after [`SettingsView::invalidate`].
     pages: Option<Vec<Page>>,
     pub facts: Facts,
     pub facts_asked: bool,
-    /// What the client's own rows say: the image protocol, whether the mouse and covers are on.
+    /// State shown by the terminal's own rows.
     pub own: Own,
 }
 
@@ -154,7 +148,7 @@ pub struct Own {
     pub card_covers: bool,
     pub protocol: String,
     pub data: String,
-    /// The output device chosen for the next start; empty for the system's own.
+    /// Output device for the next start; empty for the system default.
     pub device: String,
 }
 
@@ -168,16 +162,16 @@ impl SettingsView {
         self.invalidate();
     }
 
-    /// Every group's part of the page.
+    /// Every group's page, built if not cached.
     pub fn pages(&mut self, prefs: &StoredPrefs) -> &[Page] {
         if self.pages.is_none() {
-            let state = settings_model::state(prefs, settings_model::Output::default());
+            let state = settings_model::state(prefs, settings_model::Output::default(), &nori_core::settings_store::shared().model);
             self.pages = Some(GROUPS.iter().map(|g| page(g.id, prefs, &state, &self.facts, &self.own)).collect());
         }
         self.pages.as_deref().expect("made above")
     }
 
-    /// The page's lines, headings and rows, as drawn.
+    /// All lines as drawn.
     pub fn lines(pages: &[Page]) -> Vec<Line<'_>> {
         let mut out = Vec::new();
         for p in pages {
@@ -192,31 +186,30 @@ impl SettingsView {
         out
     }
 
-    /// The list the keys move in: the page's lines.
+    /// The selection and line count, for list navigation.
     pub fn list(&mut self) -> (&mut Sel, usize) {
         let n = self.pages.as_deref().map_or(0, |p| Self::lines(p).len());
         (&mut self.row, n)
     }
 
-    /// The group the selection is in, by GROUPS' order.
+    /// Index in `GROUPS` of the selected line's group.
     pub fn group_at(&self) -> usize {
         let Some(pages) = self.pages.as_deref() else { return 0 };
         Self::lines(pages).iter().take(self.row.at + 1).filter(|l| matches!(l, Line::Group(_))).count().saturating_sub(1)
     }
 
-    /// The selection onto a group's first row.
+    /// Selects a group's first row.
     pub fn jump(&mut self, group: usize) {
         let Some(pages) = self.pages.as_deref() else { return };
         let lines = Self::lines(pages);
         if let Some(at) = lines.iter().enumerate().filter(|(_, l)| matches!(l, Line::Group(_))).nth(group).map(|(i, _)| i) {
             self.row.at = at;
-            // The group's heading shows above it.
             self.row.top = at;
             self.skip_titles(true);
         }
     }
 
-    /// The row selected on the page, if the page is showing one.
+    /// The selected row, if a row (not a heading) is selected.
     fn selected(&self) -> Option<&Row> {
         match Self::lines(self.pages.as_deref()?).into_iter().nth(self.row.at)? {
             Line::Row(r) => Some(r),
@@ -224,25 +217,22 @@ impl SettingsView {
         }
     }
 
-    /// Whether ← and → change the row selected (rather than seek).
-    pub fn adjustable(&self) -> bool {
-        matches!(self.selected(), Some(Row::Choice { .. } | Row::Toggle { .. } | Row::Slider { .. } | Row::Palette { .. } | Row::Ranked { .. }))
-    }
-
-    /// Whether a single click does what the row does (a switch, a button), rather than only selecting it.
+    /// Whether a single click activates the row rather than only selecting it.
     pub fn clicks_open(&self) -> bool {
         matches!(self.selected(), Some(Row::Toggle { .. } | Row::Button { .. } | Row::Link { .. } | Row::Action { .. } | Row::Server { .. } | Row::Ranked { .. }))
     }
 
     /// Enter on the selection.
-    pub fn open(&mut self, _prefs: &StoredPrefs) -> Option<Opened> {
+    pub fn open(&mut self) -> Option<Opened> {
         let row = self.selected()?.clone();
         Some(match row {
-            Row::Toggle { name, on, enabled, .. } => match own_name(&name) {
-                Some(key) => Opened::Own(key),
-                None if enabled => Opened::Cmds(vec![Cmd::Setting(name, (!on).to_string())]),
-                None => return None,
-            },
+            Row::Toggle { switch: Switch::Setting(name), on, enabled, .. } => {
+                if !enabled {
+                    return None;
+                }
+                Opened::Cmds(vec![Cmd::Setting(name, (!on).to_string())])
+            }
+            Row::Toggle { switch, .. } => Opened::Own(switch),
             Row::Choice { target, title, options, shown, enabled: true } => {
                 let at = options.iter().position(|o| o.0 == shown).unwrap_or(0);
                 Opened::Overlay(Overlay::Picker { title, options, sel: Sel { at, top: 0 }, target })
@@ -269,8 +259,8 @@ impl SettingsView {
         })
     }
 
-    /// ← or → on the selection: the previous or next option, off or on, a step of a slider.
-    pub fn step(&mut self, _prefs: &StoredPrefs, up: bool) -> Vec<Cmd> {
+    /// ← or → on the selection: previous or next option, off or on, a slider step.
+    pub fn step(&mut self, up: bool) -> Vec<Cmd> {
         let Some(row) = self.selected().cloned() else { return Vec::new() };
         match row {
             Row::Choice { target, options, shown, enabled: true, .. } => {
@@ -285,17 +275,16 @@ impl SettingsView {
                 }
                 target.cmd(options[to].1.clone()).into_iter().collect()
             }
-            Row::Toggle { name, on, enabled, .. } => {
+            Row::Toggle { switch, on, enabled, .. } => {
                 if on == up {
                     return Vec::new();
                 }
-                match own_name(&name) {
-                    Some("mouse") => vec![Cmd::Mouse(up)],
-                    Some("images") => vec![Cmd::Images(up)],
-                    Some("card_covers") => vec![Cmd::CardCovers(up)],
-                    Some(_) => Vec::new(),
-                    None if enabled => vec![Cmd::Setting(name, up.to_string())],
-                    None => Vec::new(),
+                match switch {
+                    Switch::Setting(name) if enabled => vec![Cmd::Setting(name, up.to_string())],
+                    Switch::Setting(_) => Vec::new(),
+                    Switch::Mouse => vec![Cmd::Mouse(up)],
+                    Switch::Images => vec![Cmd::Images(up)],
+                    Switch::CardCovers => vec![Cmd::CardCovers(up)],
                 }
             }
             Row::Slider { name, value, min, max, level, .. } => {
@@ -311,13 +300,12 @@ impl SettingsView {
                 let at = at.rem_euclid(colours.len() as isize) as usize;
                 vec![Cmd::Setting(name, colours[at].to_string())]
             }
-            // A lyrics service a place down (→) or up (←) the one list, on or off.
             Row::Ranked { id, .. } => vec![Cmd::Setting("lyricsMove".into(), format!("{id}:{}", if up { 1 } else { -1 }))],
             _ => Vec::new(),
         }
     }
 
-    /// The selection moved off a section's title, onto a row.
+    /// Moves the selection off a heading onto a row, preferring direction `down`.
     pub fn skip_titles(&mut self, down: bool) {
         let Some(pages) = &self.pages else { return };
         let lines = Self::lines(pages);
@@ -329,7 +317,7 @@ impl SettingsView {
         while title(at) && at > 0 && !down {
             at -= 1;
         }
-        // At either end, a title is left the other way.
+        // Stuck on a heading at an end: go the other way.
         while title(at) && at + 1 < lines.len() {
             at += 1;
         }
@@ -337,7 +325,7 @@ impl SettingsView {
     }
 }
 
-/// A slider's step: a fortieth of its range, in half decibels for the dB ranges.
+/// Slider step: 0.5 for wide (dB) ranges, else a fortieth of the range.
 pub fn slider_step(min: f32, max: f32) -> f32 {
     let span = max - min;
     if span >= 8.0 {
@@ -347,18 +335,9 @@ pub fn slider_step(min: f32, max: f32) -> f32 {
     }
 }
 
-fn own_name(name: &str) -> Option<&'static str> {
-    match name {
-        "!mouse" => Some("mouse"),
-        "!images" => Some("images"),
-        "!cardCovers" => Some("card_covers"),
-        _ => None,
-    }
-}
-
 // ---- the pages ----
 
-/// Builds a page's rows from the settings, the core's state and the facts.
+/// Row builders over the settings and the core's model state.
 struct Build<'a> {
     p: &'a StoredPrefs,
     s: &'a SettingsState,
@@ -378,7 +357,7 @@ impl Build<'_> {
     }
 
     fn toggle_if(&self, name: &str, title: &str, detail: &str, enabled: bool) -> Row {
-        Row::Toggle { name: name.into(), title: title.into(), detail: detail.into(), on: self.on(name), enabled }
+        Row::Toggle { switch: Switch::Setting(name.into()), title: title.into(), detail: detail.into(), on: self.on(name), enabled }
     }
 
     /// The core's options for `name`, each worded by `label`.
@@ -393,7 +372,7 @@ impl Build<'_> {
         Row::Choice { target: Target::Setting(name.into()), title: title.into(), options, shown, enabled }
     }
 
-    /// An enum setting: its values by name, worded in the same order.
+    /// An enum setting; `labels` word its options in order.
     fn named(&self, name: &str, title: &str, labels: &[&str]) -> Row {
         let names = options(name);
         self.choice(name, title, true, |v| names.iter().position(|n| n == v).and_then(|i| labels.get(i)).map_or_else(|| v.to_string(), |l| l.to_string()))
@@ -438,9 +417,9 @@ pub fn page(id: &str, p: &StoredPrefs, s: &SettingsState, f: &Facts, own: &Own) 
     Page { title, sections }
 }
 
-/// The client's own page: rows of the same kinds, so they are drawn and changed like the rest.
+/// The terminal's own group.
 fn own_page(b: &Build, o: &Own, f: &Facts) -> Vec<Section> {
-    let toggle = |name: &str, title: &str, detail: &str, on: bool| Row::Toggle { name: name.into(), title: title.into(), detail: detail.into(), on, enabled: true };
+    let toggle = |switch, title: &str, detail: &str, on, enabled| Row::Toggle { switch, title: title.into(), detail: detail.into(), on, enabled };
     let mut devices = vec![("system default".to_string(), String::new())];
     devices.extend(f.devices.iter().map(|d| (d.clone(), d.clone())));
     if !o.device.is_empty() && !f.devices.contains(&o.device) {
@@ -448,9 +427,9 @@ fn own_page(b: &Build, o: &Own, f: &Facts) -> Vec<Section> {
     }
     let shown = devices.iter().find(|d| d.1 == o.device).map_or_else(|| o.device.clone(), |d| d.0.clone());
     let rows = vec![
-        toggle("!mouse", "Mouse", "Clicks, the wheel and dragging the bars. Off, the terminal selects text (m)", o.mouse),
-        toggle("!images", "Covers", "Album art in the player and on album pages (I)", o.images),
-        Row::Toggle { name: "!cardCovers".into(), title: "Covers on album cards".into(), detail: "Small pictures on Home and Albums; off keeps a slow link or terminal light".into(), on: o.card_covers, enabled: o.images },
+        toggle(Switch::Mouse, "Mouse", "Clicks, the wheel and dragging the bars. Off, the terminal selects text (m)", o.mouse, true),
+        toggle(Switch::Images, "Covers", "Album art in the player and on album pages (I)", o.images, true),
+        toggle(Switch::CardCovers, "Covers on album cards", "Small pictures on Home and Albums; off keeps a slow link or terminal light", o.card_covers, o.images),
         Row::Choice { target: Target::Device, title: "Output device".into(), options: devices, shown, enabled: true },
         Row::Note { text: "The device is opened at start; --device overrides it for one run.".into() },
     ];
@@ -538,7 +517,7 @@ fn sound(b: &Build) -> Vec<Section> {
     vec![section("Equalizer", eq), section("Effects", effects(b)), section("Levelling", levelling), section("Transitions", mixing), section("Tempo", tempo), section("Output", output)]
 }
 
-/// Bass boost, virtualizer, volume boost and the compressor: each a slider through the core's level edits.
+/// The effects section: boosts, virtualizer, compressor, loudness and noise gate.
 fn effects(b: &Build) -> Vec<Row> {
     let p = b.p;
     let slider = |name: &str, label: String, value: f32, (min, max): (f32, f32), level: EqLevel| Row::Slider { name: name.into(), label, value, min, max, centred: false, level: Some(level) };
@@ -622,7 +601,7 @@ fn library(b: &Build, f: &Facts) -> Vec<Section> {
     vec![section("Index and search", index), section("History", history), section("Online", online)]
 }
 
-/// A lyrics service's name and a short line about it, by the id the core stores it under.
+/// A lyrics service's name and description by its core id.
 fn service(id: &str) -> (&'static str, &'static str) {
     match id {
         "PAXSENIX" => ("PaxSenix", "Apple Music, syllable-timed · unofficial"),
@@ -702,7 +681,7 @@ fn server(b: &Build, f: &Facts) -> Vec<Section> {
     out
 }
 
-/// A stream quality as a value ("320:mp3") in a terminal's words.
+/// A stream quality value ("320:mp3") in words.
 fn quality(v: &str) -> String {
     match v.split_once(':') {
         Some((_, "")) | None => "original".into(),
@@ -733,7 +712,7 @@ fn storage(b: &Build, f: &Facts) -> Vec<Section> {
     vec![section("Quality and downloads", quality_rows), section("Cache", cache)]
 }
 
-/// About: the version, and what the core is built from, from the core's own credits.
+/// Version and credits.
 fn about(own: &Own) -> Vec<Section> {
     let version = Section {
         title: "nori".into(),
@@ -753,10 +732,9 @@ fn about(own: &Own) -> Vec<Section> {
     vec![version, section("The core", credits), section("The terminal client", tui)]
 }
 
-/// The words a row shows at its end: a switch, the option chosen, a slider's value.
+/// The value shown at a row's end (toggles are drawn by the ui).
 pub fn row_value(row: &Row) -> String {
     match row {
-        Row::Toggle { on, .. } | Row::Ranked { on, .. } => (if *on { "● on" } else { "○ off" }).into(),
         Row::Choice { shown, .. } => format!("‹ {shown} ›"),
         Row::Link { status, .. } => format!("{status} ›"),
         Row::Action { button, .. } => format!("[ {button} ]"),
@@ -775,7 +753,7 @@ pub fn row_value(row: &Row) -> String {
     }
 }
 
-/// A row's title and the line under it.
+/// A row's title and detail.
 pub fn row_words(row: &Row) -> (String, String) {
     match row {
         Row::Toggle { title, detail, .. } | Row::Ranked { title, detail, .. } | Row::Text { title, detail, .. } | Row::Info { title, detail, .. } => (title.clone(), detail.clone()),
@@ -789,7 +767,7 @@ pub fn row_words(row: &Row) -> (String, String) {
     }
 }
 
-/// Whether the row is live: a setting the app is ignoring right now is drawn dimmed.
+/// Whether the row is live; inactive settings are drawn dimmed.
 pub fn row_enabled(row: &Row) -> bool {
     match row {
         Row::Toggle { enabled, .. } | Row::Choice { enabled, .. } | Row::Action { enabled, .. } => *enabled,
@@ -797,7 +775,7 @@ pub fn row_enabled(row: &Row) -> bool {
     }
 }
 
-/// A slider's place, 0 to 1.
+/// A slider's position (0 to 1) and whether it is centred.
 pub fn slider_share(row: &Row) -> Option<(f32, bool)> {
     match row {
         Row::Slider { value, min, max, centred, .. } => Some((((value - min) / (max - min).max(1e-6)).clamp(0.0, 1.0), *centred)),
@@ -807,8 +785,7 @@ pub fn slider_share(row: &Row) -> Option<(f32, bool)> {
 
 // ---- the equalizer ----
 
-/// The equalizer screen's rows, from the settings: the switch, the presets, the pre-amp, every band,
-/// then the rest of the chain.
+/// Equalizer screen controls: toolbar, bands, then the rest of the chain.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EqRow {
     Enabled,
@@ -825,21 +802,20 @@ pub enum EqRow {
     AddBand,
     Reset,
     Balance,
-    /// bs2b's settings (Off, Default, Chu Moy, Jan Meier) or the listener's own.
+    /// bs2b preset (Off, Default, Chu Moy, Jan Meier) or custom.
     CrossfeedPreset,
     Crossfeed,
-    /// The crossfeed's cutoff.
     CrossfeedCut,
     Mono,
     Limiter,
     Ceiling,
 }
 
-/// The crossfeed's presets in the order ← and → walk them.
+/// Crossfeed presets in stepping order.
 const CROSSFEED_PRESETS: [&str; 4] = ["OFF", "DEFAULT", "CHU_MOY", "JAN_MEIER"];
 
+/// The controls in ← → order.
 pub fn eq_rows(p: &StoredPrefs) -> Vec<EqRow> {
-    // The toolbar, then the bands, then the rest of the chain: the order ← and → walk them.
     let graphic = p.eq_mode == EqMode::Graphic;
     let mut rows = vec![EqRow::Enabled, EqRow::Mode];
     if graphic {
@@ -870,7 +846,7 @@ pub fn eq_rows(p: &StoredPrefs) -> Vec<EqRow> {
 }
 
 impl EqRow {
-    /// Its title and value, in the terminal's words (text.rs).
+    /// Title and value.
     pub fn words(&self, p: &StoredPrefs) -> (String, String) {
         let on = |b: bool| (if b { "● on" } else { "○ off" }).to_string();
         match *self {
@@ -909,7 +885,7 @@ impl EqRow {
         }
     }
 
-    /// A band's slider (graphic or parametric): its index and its gain now.
+    /// For a band fader: its index and gain.
     pub fn band(&self, p: &StoredPrefs) -> Option<(usize, f32)> {
         match *self {
             EqRow::Slider(i) => Some((i, *p.eq_graphic.get(i)?)),
@@ -918,12 +894,12 @@ impl EqRow {
         }
     }
 
-    /// Before the bands (the toolbar), or after them.
+    /// Whether it is in the toolbar above the bands.
     pub fn above_bands(&self) -> bool {
         matches!(self, EqRow::Enabled | EqRow::Mode | EqRow::Layout | EqRow::Presets | EqRow::AutoPreamp | EqRow::Preamp | EqRow::AddBand | EqRow::Reset)
     }
 
-    /// A band's slider put at `db` (a click or a drag on it), on the half decibel.
+    /// Sets a band fader to `db`, rounded to 0.5 dB; None if unchanged.
     pub fn set_gain(&self, p: &StoredPrefs, db: f32) -> Option<Cmd> {
         let r = EQ_RANGES.gain;
         let db = ((db * 2.0).round() / 2.0).clamp(r.min, r.max);
@@ -937,12 +913,12 @@ impl EqRow {
         }
     }
 
-    /// Whether a click does what it does at once (a switch, a button), rather than only choosing it.
+    /// Whether a single click activates it.
     pub fn clicks(&self) -> bool {
         matches!(self, EqRow::Enabled | EqRow::Mode | EqRow::Presets | EqRow::AutoPreamp | EqRow::AddBand | EqRow::Reset | EqRow::Mono | EqRow::Limiter)
     }
 
-    /// Its words on a chip of the toolbar or under the bands.
+    /// Chip label.
     pub fn chip(&self, p: &StoredPrefs) -> String {
         let (title, value) = self.words(p);
         match self {
@@ -958,8 +934,7 @@ impl EqRow {
         }
     }
 
-    /// ↑ or ↓ (the console's), ← or → (a list's); nothing when the value would stay as it is (held at the end of its range), so a key
-    /// held there asks nothing of the settings or the engine.
+    /// ↑ or ↓ on it; None when the value would not change, so a key held at a range end sends nothing.
     pub fn step(&self, p: &StoredPrefs, up: bool) -> Option<Cmd> {
         let d = if up { 0.5 } else { -0.5 };
         let r = EQ_RANGES;
@@ -996,7 +971,7 @@ impl EqRow {
             EqRow::Crossfeed => level(EqLevel::Crossfeed, p.crossfeed_db, (p.crossfeed_db.max(if up { 0.5 } else { 0.0 }) + d).clamp(r.crossfeed.min, r.crossfeed.max)),
             EqRow::CrossfeedCut => level(EqLevel::CrossfeedCut, p.crossfeed_hz, (p.crossfeed_hz + d * 100.0).clamp(r.crossfeed_cut.min, r.crossfeed_cut.max)),
             EqRow::CrossfeedPreset => {
-                // From "Custom", a step goes to the nearest preset that way from the start of the list.
+                // From custom, up goes to the last preset and down to the first.
                 let now = nori_core::settings::crossfeed_preset(p.crossfeed_hz, p.crossfeed_db);
                 let at = if p.crossfeed_db <= 0.0 { Some(0) } else { now.and_then(|c| nori_core::dsp::CrossfeedPreset::ALL.iter().position(|x| *x == c)).map(|i| i + 1) };
                 let to = match (at, up) {
@@ -1032,7 +1007,7 @@ mod tests {
     use super::*;
 
     fn every_row(prefs: &StoredPrefs) -> Vec<(&'static str, Row)> {
-        let state = settings_model::state(prefs, settings_model::Output::default());
+        let state = settings_model::state(prefs, settings_model::Output::default(), &nori_core::settings_store::shared().model);
         let facts = Facts { folders: vec![MusicFolder { id: "1".into(), name: "A".into() }, MusicFolder { id: "2".into(), name: "B".into() }], ..Facts::default() };
         GROUPS
             .iter()
@@ -1058,12 +1033,7 @@ mod tests {
     }
 
     #[test]
-    fn the_clients_own_group_comes_first() {
-        assert_eq!(GROUPS.iter().map(|g| g.id).collect::<Vec<_>>(), ["terminal", "sound", "playback", "library", "lyrics", "server", "storage", "about"]);
-    }
-
-    #[test]
-    fn every_row_opens_or_steps_to_a_setting_the_core_takes_by_its_own_name() {
+    fn rows_and_labels() {
         let prefs = everything_on();
         let rows = every_row(&prefs);
         assert!(rows.len() > 40, "rows: {}", rows.len());
@@ -1072,32 +1042,29 @@ mod tests {
             v.pages = Some(vec![Page { title: group.to_string(), sections: vec![Section { title: String::new(), rows: vec![row.clone()] }] }]);
             v.row.at = 1;
             match row {
-                Row::Toggle { name, enabled: true, .. } if !name.starts_with('!') => {
-                    let Some(Opened::Cmds(c)) = v.open(&prefs) else { panic!("{name} does not switch") };
+                Row::Toggle { switch: Switch::Setting(name), enabled: true, .. } => {
+                    let Some(Opened::Cmds(c)) = v.open() else { panic!("{name} does not switch") };
                     assert!(matches!(&c[0], Cmd::Setting(n, _) if n == name), "{name}");
                 }
                 Row::Choice { target: Target::Setting(name), enabled: true, options, .. } => {
-                    let Some(Opened::Overlay(Overlay::Picker { target: picked, options: shown, .. })) = v.open(&prefs) else { panic!("{name} offers no choice") };
+                    let Some(Opened::Overlay(Overlay::Picker { target: picked, options: shown, .. })) = v.open() else { panic!("{name} offers no choice") };
                     assert_eq!(picked, Target::Setting(name.clone()));
                     assert_eq!(shown.len(), options.len());
-                    let steps = [v.step(&prefs, true), v.step(&prefs, false)].concat();
+                    let steps = [v.step(true), v.step(false)].concat();
                     assert!(steps.iter().all(|c| matches!(c, Cmd::Setting(n, _) if n == name)), "{name}");
-                    // Each option is a value the core takes.
                     for (_, value) in options {
                         assert!(nori_core::settings::set_by_name(&prefs, name, value).is_some(), "{name} = {value}");
                     }
                 }
-                Row::Slider { name, level, .. } if !name.starts_with('!') => {
-                    let c = v.step(&prefs, true);
+                Row::Slider { name, level, .. } => {
+                    let c = v.step(true);
                     assert!(matches!(&c[..], [Cmd::Level(l, _)] if Some(*l) == *level) || matches!(&c[..], [Cmd::Setting(n, _)] if n == name), "{name}");
                 }
                 _ => {}
             }
         }
-    }
 
-    #[test]
-    fn a_choice_shows_its_value_in_the_terminals_words() {
+        // Choice labels.
         let d = StoredPrefs::default();
         let rows = every_row(&d);
         let shown = |name: &str| {
@@ -1112,15 +1079,12 @@ mod tests {
         assert_eq!(shown("wifi"), "original");
         assert_eq!(shown("speed"), "1×");
         assert_eq!(quality("320:mp3"), "mp3 320k");
-    }
 
-    #[test]
-    fn phone_only_settings_are_not_offered() {
-        // Nor what a desk has no use for: the core's defaults stand for them.
+        // Phone only settings hidden.
         let names: Vec<String> = every_row(&everything_on())
             .into_iter()
             .filter_map(|(_, r)| match r {
-                Row::Toggle { name, .. } | Row::Choice { target: Target::Setting(name), .. } => Some(name),
+                Row::Toggle { switch: Switch::Setting(name), .. } | Row::Choice { target: Target::Setting(name), .. } => Some(name),
                 _ => None,
             })
             .collect();
@@ -1130,10 +1094,10 @@ mod tests {
     }
 
     #[test]
-    fn the_lyrics_sources_are_one_list_that_moves_and_switches() {
-        // Every service is on out of the box; one is switched off here so there is an off row to press.
+    fn lyrics_sources_move_and_switch() {
+        // All services default on; one is switched off to have an off row.
         let d = StoredPrefs::default();
-        let prefs = StoredPrefs { lyrics_online: true, third_party_lookups: true, lyrics_on: d.lyrics_on.iter().filter(|n| *n != "GENIUS").cloned().collect(), ..d };
+        let prefs = StoredPrefs { lyrics_online: true, third_party_lookups: true, lyrics_on: d.lyrics_on.iter().filter(|s| s.name() != "GENIUS").copied().collect(), ..d };
         let mut v = SettingsView::default();
         let pages = v.pages(&prefs).to_vec();
         let lines = SettingsView::lines(&pages);
@@ -1144,11 +1108,10 @@ mod tests {
         let Line::Row(Row::Ranked { id, name, .. }) = lines[off] else { unreachable!() };
         let (id, name) = (id.clone(), name.clone());
         v.row.at = off;
-        assert!(v.adjustable());
-        assert!(matches!(&v.step(&prefs, false)[..], [Cmd::Setting(n, value)] if n == "lyricsMove" && *value == format!("{id}:-1")));
-        let Some(Opened::Cmds(c)) = v.open(&prefs) else { panic!() };
+        assert!(matches!(&v.step(false)[..], [Cmd::Setting(n, value)] if n == "lyricsMove" && *value == format!("{id}:-1")));
+        let Some(Opened::Cmds(c)) = v.open() else { panic!() };
         assert!(matches!(&c[..], [Cmd::Setting(n, value)] if *n == name && value == "true"));
-        // Off, there is nothing to rank.
+        // Third-party lookups off: no sources listed.
         let quiet = StoredPrefs { third_party_lookups: false, ..prefs };
         v.invalidate();
         let pages = v.pages(&quiet).to_vec();
@@ -1156,7 +1119,7 @@ mod tests {
     }
 
     #[test]
-    fn the_graphic_equalizer_has_its_own_sliders_and_layouts() {
+    fn sound_controls() {
         let p = StoredPrefs { eq_mode: EqMode::Graphic, ..StoredPrefs::default() };
         let rows = eq_rows(&p);
         assert_eq!(rows.iter().filter(|r| matches!(r, EqRow::Slider(_))).count(), 10);
@@ -1164,22 +1127,19 @@ mod tests {
         assert_eq!(EqRow::Slider(0).words(&p), ("31.5".to_string(), "+0.0 dB".to_string()));
         assert!(matches!(EqRow::Slider(3).step(&p, true), Some(Cmd::Graphic(3, v)) if v == 0.5));
         assert!(matches!(EqRow::Layout.step(&p, true), Some(Cmd::Setting(n, v)) if n == "eqLayout" && v == "15"));
-        assert!(matches!(EqRow::Layout.step(&p, false), Some(Cmd::Setting(n, v)) if n == "eqLayout" && v == "5"), "five below ten");
+        assert!(matches!(EqRow::Layout.step(&p, false), Some(Cmd::Setting(n, v)) if n == "eqLayout" && v == "5"));
         let five = StoredPrefs { eq_graphic: vec![0.0; 5], ..p.clone() };
         assert!(EqRow::Layout.step(&five, false).is_none(), "five is the fewest");
         assert_eq!(eq_rows(&five).iter().filter(|r| matches!(r, EqRow::Slider(_))).count(), 5);
         assert_eq!(EqRow::Slider(0).words(&five).0, "63");
         assert!(matches!(EqRow::Mode.open(&p), Some(Cmd::Setting(n, v)) if n == "eqMode" && v == "PARAMETRIC"));
-        assert!(eq_rows(&StoredPrefs::default()).contains(&EqRow::Layout), "a new install opens on the graphic equalizer");
+        assert!(rows.contains(&EqRow::Layout));
         let parametric = eq_rows(&StoredPrefs { eq_mode: EqMode::Parametric, ..StoredPrefs::default() });
         assert!(parametric.contains(&EqRow::Mode) && !parametric.contains(&EqRow::Layout));
-        // The effects on the sound page, the compressor's controls once it is on.
-        let fx = effects(&Build { p: &StoredPrefs { compressor: true, ..StoredPrefs::default() }, s: &settings_model::state(&StoredPrefs::default(), settings_model::Output::default()) });
+        let fx = effects(&Build { p: &StoredPrefs { compressor: true, ..StoredPrefs::default() }, s: &settings_model::state(&StoredPrefs::default(), settings_model::Output::default(), &nori_core::settings_store::shared().model) });
         assert!(fx.iter().any(|r| matches!(r, Row::Slider { level: Some(EqLevel::CompRatio), .. })));
-    }
 
-    #[test]
-    fn the_equalizer_lists_every_band_and_steps_them_in_range() {
+        // Parametric bands step in range.
         let prefs = StoredPrefs { eq_mode: EqMode::Parametric, eq_bands: nori_core::settings::graphic(), ..StoredPrefs::default() };
         let rows = eq_rows(&prefs);
         assert_eq!(rows.iter().filter(|r| matches!(r, EqRow::Band(_))).count(), prefs.eq_bands.len());
@@ -1191,10 +1151,8 @@ mod tests {
         assert_eq!(b.gain_db, 11.5);
         let flat = StoredPrefs { crossfeed_db: 0.0, ..prefs.clone() };
         assert_eq!(EqRow::Crossfeed.step(&flat, false), None, "crossfeed off stays off");
-    }
 
-    #[test]
-    fn the_crossfeed_presets_and_cutoff() {
+        // Crossfeed presets and cutoff.
         let off = StoredPrefs::default();
         assert!(!eq_rows(&off).contains(&EqRow::CrossfeedCut), "no cutoff to set with crossfeed off");
         assert_eq!(EqRow::CrossfeedPreset.words(&off).1, "‹ Off ›");

@@ -1,53 +1,44 @@
-//! A graphic equalizer curve turned into a parametric preset. A `GraphicEQ:` line (AutoEQ's
-//! "GraphicEQ.txt", Wavelet's and Equalizer APO's format: frequency and gain pairs, a hundred or more of
-//! them) is fitted once, when it is chosen, with the filters an AutoEQ parametric preset has: a low
-//! shelf, a high shelf and eight peaks. What comes out is an ordinary preset, so playing it costs exactly
-//! what any parametric preset costs; nothing here runs per sample.
+//! Fits a `GraphicEQ:` curve (AutoEQ / Wavelet / Equalizer APO format) with an AutoEQ-style parametric
+//! preset (low shelf, high shelf, eight peaks), once when chosen.
 //!
-//! The fit minimises the squared difference in dB between the filters' response and the curve on a
-//! log-frequency grid from 20 Hz to 20 kHz, the response being the chain's own biquads
-//! (`dsp::band_coefficients`) at 48 kHz. A constant level is fitted alongside, because a graphic curve
-//! carries its own overall level, which filters cannot and need not copy; the pre-amp is then set so
-//! the preset boosts nowhere, as AutoEQ's own presets do. Levenberg-Marquardt over the filters'
-//! log-frequency, log-Q and gain, started from a greedy placement: each new peak goes where the
-//! remaining error is largest.
+//! Least squares in dB on a log grid 20 Hz-20 kHz using the chain's own biquads at 48 kHz, with a free
+//! overall level (a graphic curve's level is arbitrary). Levenberg-Marquardt over log-frequency, log-Q
+//! and gain, seeded greedily (each new peak at the largest remaining error). The pre-amp removes any
+//! boost, as AutoEQ does.
 
 use crate::dsp::{band_coefficients, Band, CH_BOTH, HIGH_SHELF, LOW_SHELF, PEAKING};
 use crate::types::{EqBand, EqKind};
 
-/// The rate the responses are designed at: the common output rate, and the one AutoEQ designs for.
+/// Design rate (AutoEQ's too).
 const RATE: f64 = 48_000.0;
-/// Points on the grid the fit is measured on, log-spaced from `LOW_HZ` to `HIGH_HZ` (about 16 a third of an octave).
+/// Log-spaced grid points from `LOW_HZ` to `HIGH_HZ`.
 const POINTS: usize = 160;
 const LOW_HZ: f64 = 20.0;
 const HIGH_HZ: f64 = 20_000.0;
-/// The peaks besides the two shelves: ten filters in all, as in AutoEQ's parametric presets.
+/// Peaking filters besides the two shelves (ten filters, as AutoEQ).
 pub const PEAKS: usize = 8;
-/// The shelves' Q, as AutoEQ's; their corners move.
+/// Fixed shelf Q, as AutoEQ.
 const SHELF_Q: f64 = 0.7;
-/// Where a filter may go, and how wide or narrow a peak may be.
+/// Parameter bounds.
 const PEAK_HZ: (f64, f64) = (20.0, 18_000.0);
 const LOW_SHELF_HZ: (f64, f64) = (20.0, 500.0);
 const HIGH_SHELF_HZ: (f64, f64) = (1_000.0, 16_000.0);
 const PEAK_Q: (f64, f64) = (0.18, 6.0);
 const GAIN_DB: f64 = 20.0;
-/// What a decibel of any filter's gain costs, in decibels of error at one grid point: enough that two big
-/// filters cancelling each other lose to two small ones that do the same, too little to cost accuracy.
+/// Regularisation per dB of filter gain, so large cancelling filters lose to small ones.
 const GAIN_COST: f64 = 0.1;
 
-/// A fitted preset and how far it is from the curve, in dB after the overall level is taken out.
+/// A fitted preset and its error against the curve (overall level removed), dB.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphicFit {
     pub preamp_db: f32,
     pub bands: Vec<EqBand>,
-    /// Root mean square difference over 20 Hz to 20 kHz on the log-frequency grid.
     pub rms_db: f32,
-    /// The largest difference anywhere on the grid.
     pub max_db: f32,
 }
 
-/// The points of a `GraphicEQ: 20 -4.9; 21 -5.2; ...` line, by frequency; none without such a line or
-/// with fewer than two points in it.
+/// The sorted points of a `GraphicEQ: 20 -4.9; 21 -5.2; ...` line; `None` without one or with fewer
+/// than two points.
 pub fn parse_graphic(text: &str) -> Option<Vec<(f64, f64)>> {
     const KEY: &str = "graphiceq:";
     let line = text.lines().map(str::trim).find(|l| l.get(..KEY.len()).is_some_and(|k| k.eq_ignore_ascii_case(KEY)))?;
@@ -65,8 +56,7 @@ pub fn parse_graphic(text: &str) -> Option<Vec<(f64, f64)>> {
     (points.len() >= 2).then_some(points)
 }
 
-/// The curve through `points` at `f`: straight lines between them on a log-frequency axis, flat beyond
-/// the first and last.
+/// The curve at `f`: linear in log frequency between points, flat beyond the ends.
 pub(crate) fn curve_at(points: &[(f64, f64)], f: f64) -> f64 {
     let i = points.partition_point(|p| p.0 < f);
     if i == 0 {
@@ -80,8 +70,7 @@ pub(crate) fn curve_at(points: &[(f64, f64)], f: f64) -> f64 {
     g0 + (g1 - g0) * t
 }
 
-/// The frequencies the fit is measured at, with `cos ω` and `cos 2ω` for each, which is all a biquad's
-/// magnitude needs.
+/// Grid frequencies with `cos ω` and `cos 2ω`, all a biquad's magnitude needs.
 struct Grid {
     hz: Vec<f64>,
     cos1: Vec<f64>,
@@ -99,7 +88,7 @@ impl Grid {
 #[derive(Clone, Copy, Debug)]
 struct Filter {
     kind: i32,
-    /// ln Hz, ln Q, dB: the three numbers the fit moves (a shelf's Q stays put).
+    /// The fitted parameters (shelf Q is fixed).
     lnf: f64,
     lnq: f64,
     gain: f64,
@@ -118,7 +107,7 @@ impl Filter {
         }
     }
 
-    /// Held inside where a filter may go.
+    /// Clamped to the bounds.
     fn clamped(mut self) -> Self {
         let (lo, hi) = self.hz_range();
         self.lnf = self.lnf.clamp(lo.ln(), hi.ln());
@@ -127,7 +116,7 @@ impl Filter {
         self
     }
 
-    /// The filter's gain in dB at every point of `grid`, into `out`.
+    /// Gain in dB at each grid point.
     fn response(&self, grid: &Grid, out: &mut [f64]) {
         let [b0, b1, b2, a1, a2] = band_coefficients(RATE, &self.band());
         let (n0, n1, n2) = (b0 * b0 + b1 * b1 + b2 * b2, 2.0 * (b0 * b1 + b1 * b2), 2.0 * b0 * b2);
@@ -140,7 +129,7 @@ impl Filter {
         }
     }
 
-    /// The fit's parameter `p` (0 ln Hz, 1 ln Q, 2 dB), and whether it moves at all.
+    /// Parameter `p`: 0 ln Hz, 1 ln Q, 2 dB.
     fn get(&self, p: usize) -> f64 {
         [self.lnf, self.lnq, self.gain][p]
     }
@@ -156,13 +145,13 @@ impl Filter {
     }
 }
 
-/// The filters, the overall level and their responses on the grid, fitted to `target`.
+/// Fit state: overall level, filters and their cached grid responses.
 struct Fit<'a> {
     grid: &'a Grid,
     target: &'a [f64],
     level: f64,
     filters: Vec<Filter>,
-    /// Each filter's response on the grid, kept so a step recomputes only the filter it moves.
+    /// Per-filter responses, so a Jacobian column recomputes only one filter.
     responses: Vec<Vec<f64>>,
 }
 
@@ -180,8 +169,7 @@ impl<'a> Fit<'a> {
         self.responses.push(r);
     }
 
-    /// What is left: the level and the filters, less the curve, at every point; then each filter's gain,
-    /// weighed by `GAIN_COST`.
+    /// Model minus target per point, then each filter's gain times `GAIN_COST`.
     fn residual(&self) -> Vec<f64> {
         Self::residual_of(self.target, self.level, &self.filters, &self.responses)
     }
@@ -195,7 +183,7 @@ impl<'a> Fit<'a> {
         residual.iter().map(|e| e * e).sum()
     }
 
-    /// Levenberg-Marquardt over everything that moves, at most `rounds` accepted steps.
+    /// Levenberg-Marquardt, at most `rounds` accepted steps.
     fn solve(&mut self, rounds: usize) {
         let n = self.target.len();
         let rows = n + self.filters.len();
@@ -203,14 +191,14 @@ impl<'a> Fit<'a> {
         for (k, f) in self.filters.iter().enumerate() {
             free.extend((0..3).filter(|&p| f.moves(p)).map(|p| (k, p)));
         }
-        let m = free.len();
+        let m = free.len(); // (filter index or MAX for the level, parameter)
         let mut lambda = 1e-3;
         let mut residual = self.residual();
         let mut cost = Self::cost(&residual);
         let mut moved = vec![0.0; n];
         let mut jac = vec![0.0; rows * m];
         for _ in 0..rounds {
-            // The Jacobian by forward differences, one filter's response at a time.
+            // Forward-difference Jacobian.
             for (j, &(k, p)) in free.iter().enumerate() {
                 if k == usize::MAX {
                     (0..n).for_each(|i| jac[i * m + j] = 1.0);
@@ -287,8 +275,7 @@ impl<'a> Fit<'a> {
         (level, filters.into_iter().map(Filter::clamped).collect())
     }
 
-    /// Where the error left is largest, smoothed over about a third of an octave so one narrow wiggle
-    /// does not draw a peak.
+    /// (Hz, dB) of the largest remaining error, smoothed over ~1/3 octave.
     fn worst(&self) -> (f64, f64) {
         let e = self.residual();
         let n = self.target.len();
@@ -305,7 +292,7 @@ impl<'a> Fit<'a> {
     }
 }
 
-/// `a x = b` for `x`, by Gaussian elimination with partial pivoting; none when `a` is singular.
+/// Solves `a x = b` (Gaussian elimination, partial pivoting); `None` if singular.
 fn solve_linear(mut a: Vec<f64>, mut b: Vec<f64>, m: usize) -> Option<Vec<f64>> {
     for col in 0..m {
         let pivot = (col..m).max_by(|&x, &y| a[x * m + col].abs().total_cmp(&a[y * m + col].abs()))?;
@@ -340,9 +327,8 @@ fn round_to(v: f64, step: f64) -> f64 {
     (v / step).round() * step
 }
 
-/// The parametric preset closest to the curve through `points` (Hz, dB): a low shelf, eight peaks and a
-/// high shelf, in the order they are written in AutoEQ's own presets, rounded the way those are written,
-/// with a pre-amp that leaves no boost anywhere.
+/// The parametric preset closest to `points` (Hz, dB), ordered and rounded as AutoEQ writes them, with
+/// a pre-amp that leaves no boost.
 pub fn fit_graphic(points: &[(f64, f64)]) -> GraphicFit {
     let grid = Grid::new(POINTS);
     let target: Vec<f64> = grid.hz.iter().map(|&f| curve_at(points, f)).collect();
@@ -358,7 +344,7 @@ pub fn fit_graphic(points: &[(f64, f64)]) -> GraphicFit {
     }
     fit.solve(300);
 
-    // Written as AutoEQ writes them: whole hertz, tenths of a decibel, hundredths of Q.
+    // Whole Hz, 0.1 dB, 0.01 Q.
     let mut filters: Vec<Filter> = fit
         .filters
         .iter()
@@ -371,25 +357,13 @@ pub fn fit_graphic(points: &[(f64, f64)]) -> GraphicFit {
     };
     filters.sort_by(|a, b| (order(a), a.lnf).partial_cmp(&(order(b), b.lnf)).unwrap_or(std::cmp::Ordering::Equal));
 
-    // The error of what is written, with the best level for it; the pre-amp from a finer grid.
-    let mut total = vec![0.0; grid.hz.len()];
-    let mut one = vec![0.0; grid.hz.len()];
-    for f in &filters {
-        f.response(&grid, &mut one);
-        total.iter_mut().zip(&one).for_each(|(t, r)| *t += r);
-    }
+    // Error of the rounded preset at its best level; pre-amp from a finer grid.
+    let total = summed(&filters, &grid);
     let level = target.iter().zip(&total).map(|(t, h)| t - h).sum::<f64>() / target.len() as f64;
     let errors: Vec<f64> = total.iter().zip(&target).map(|(h, t)| level + h - t).collect();
     let rms = (errors.iter().map(|e| e * e).sum::<f64>() / errors.len() as f64).sqrt();
     let max = errors.iter().fold(0.0f64, |m, e| m.max(e.abs()));
-    let fine = Grid::new(POINTS * 4);
-    let mut peak = vec![0.0; fine.hz.len()];
-    let mut one = vec![0.0; fine.hz.len()];
-    for f in &filters {
-        f.response(&fine, &mut one);
-        peak.iter_mut().zip(&one).for_each(|(t, r)| *t += r);
-    }
-    let boost = peak.iter().fold(0.0f64, |m, v| m.max(*v));
+    let boost = summed(&filters, &Grid::new(POINTS * 4)).iter().fold(0.0f64, |m, v| m.max(*v));
     let preamp = -(boost * 10.0).ceil() / 10.0;
 
     let kind = |k| match k {
@@ -403,6 +377,17 @@ pub fn fit_graphic(points: &[(f64, f64)]) -> GraphicFit {
         rms_db: rms as f32,
         max_db: max as f32,
     }
+}
+
+/// The filters' combined response on `grid`, dB.
+fn summed(filters: &[Filter], grid: &Grid) -> Vec<f64> {
+    let mut total = vec![0.0; grid.hz.len()];
+    let mut one = vec![0.0; grid.hz.len()];
+    for f in filters {
+        f.response(grid, &mut one);
+        total.iter_mut().zip(&one).for_each(|(t, r)| *t += r);
+    }
+    total
 }
 
 #[cfg(test)]
@@ -427,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn graphic_lines_parse() {
+    fn parse_and_round_trip() {
         let p = parse_graphic("GraphicEQ: 20 -4.9; 21 -5.2;22 -5.6 ; 21 -1; nonsense; 0 3; 19000 2.5").unwrap();
         assert_eq!(p, vec![(20.0, -4.9), (21.0, -5.2), (22.0, -5.6), (19000.0, 2.5)], "sorted, repeats and nonsense dropped");
         assert!(parse_graphic("Preamp: -3 dB\nFilter 1: ON PK Fc 100 Hz Gain 2 dB Q 1").is_none());
@@ -435,11 +420,8 @@ mod tests {
         assert_eq!(curve_at(&p, 10.0), -4.9);
         assert_eq!(curve_at(&p, 30_000.0), 2.5);
         assert!((curve_at(&[(100.0, 0.0), (400.0, 6.0)], 200.0) - 3.0).abs() < 1e-9, "straight on a log axis");
-    }
 
-    /// A curve made by filters the fit can build comes back within a fraction of a decibel.
-    #[test]
-    fn a_curve_made_of_filters_round_trips() {
+        // A curve made of fittable filters comes back within a fraction of a dB.
         let made = [
             EqBand { kind: EqKind::LowShelf, freq: 105.0, gain_db: 5.5, q: 0.7 },
             EqBand { kind: EqKind::Peaking, freq: 180.0, gain_db: -4.0, q: 0.9 },
@@ -447,20 +429,19 @@ mod tests {
             EqBand { kind: EqKind::Peaking, freq: 6_000.0, gain_db: -5.0, q: 3.0 },
             EqBand { kind: EqKind::HighShelf, freq: 10_000.0, gain_db: -3.0, q: 0.7 },
         ];
-        // Printed the way a GraphicEQ file is, with an overall level of its own.
+        // As a GraphicEQ file prints it, with its own overall level.
         let points: Vec<(f64, f64)> = (0..128).map(|i| 20.0 * 1000f64.powf(i as f64 / 127.0)).map(|f| (f, round_to(total_at(&made, f) - 7.0, 0.1))).collect();
         let fit = fit_graphic(&points);
         assert_eq!(fit.bands.len(), 2 + PEAKS);
         assert!(fit.rms_db < 0.25 && fit.max_db < 0.8, "rms {} max {}", fit.rms_db, fit.max_db);
         assert_eq!((fit.bands[0].kind, fit.bands[9].kind), (EqKind::LowShelf, EqKind::HighShelf));
-        // The pre-amp takes the largest boost off, so the preset boosts nowhere.
         let boost = (0..400).map(|i| 20.0 * 1000f64.powf(i as f64 / 399.0)).map(|f| total_at(&fit.bands, f)).fold(f64::MIN, f64::max);
         assert!(fit.preamp_db <= 0.0 && boost + fit.preamp_db as f64 <= 0.05, "boost {boost} preamp {}", fit.preamp_db);
     }
 
-    /// A smooth headphone-like curve no set of ten filters makes exactly still comes close.
     #[test]
-    fn a_smooth_curve_is_followed_closely() {
+    fn fits_closely() {
+        // A smooth headphone-like curve that ten filters cannot make exactly.
         let points: Vec<(f64, f64)> = (0..128)
             .map(|i| 20.0 * 1000f64.powf(i as f64 / 127.0))
             .map(|f: f64| {
@@ -471,16 +452,14 @@ mod tests {
         let fit = fit_graphic(&points);
         assert!(fit.rms_db < 0.5 && fit.max_db < 1.5, "rms {} max {}", fit.rms_db, fit.max_db);
         assert!(fit.bands.iter().all(|b| b.freq >= 20.0 && b.freq <= 18_000.0 && b.gain_db.abs() <= 20.0 && (0.18..=6.0).contains(&b.q)));
-    }
 
-    #[test]
-    fn a_flat_curve_needs_nothing() {
+        // Flat curve needs nothing.
         let fit = fit_graphic(&[(20.0, -3.0), (20_000.0, -3.0)]);
         assert!(fit.max_db < 0.05, "max {}", fit.max_db);
         assert!(fit.bands.iter().all(|b| b.gain_db.abs() < 0.15), "{:?}", fit.bands);
     }
 
-    /// AutoEQ's own parametric preset for a curve, read from its "Filter n: ON PK Fc .. Hz Gain .. dB Q .." lines.
+    /// Parses AutoEQ's "Filter n: ON PK Fc .. Hz Gain .. dB Q .." lines.
     fn autoeq_parametric(text: &str) -> Vec<EqBand> {
         text.lines()
             .filter_map(|l| {
@@ -497,7 +476,7 @@ mod tests {
             .collect()
     }
 
-    /// The error of `bands` against the curve, with the best overall level, on the fit's own grid.
+    /// (rms, max) error of `bands` against the curve at the best overall level.
     fn error_of(bands: &[EqBand], points: &[(f64, f64)]) -> (f64, f64) {
         let grid = Grid::new(POINTS);
         let diff: Vec<f64> = grid.hz.iter().map(|&f| total_at(bands, f) - curve_at(points, f)).collect();
@@ -506,10 +485,9 @@ mod tests {
         (rms, diff.iter().fold(0.0f64, |m, d| m.max((d - level).abs())))
     }
 
-    /// Real AutoEQ curves (GraphicEQ.txt, with the ParametricEQ.txt AutoEQ fitted to the same measurement
-    /// beside it): the fit follows each closely, and about as closely as AutoEQ's own ten filters.
+    /// Real AutoEQ curves: fitted about as closely as AutoEQ's own parametric presets.
     #[test]
-    fn real_autoeq_curves_are_fitted_closely() {
+    fn real_autoeq_curves_fit_closely() {
         let cases = [
             ("Sony WH-1000XM6 (analog cable)", include_str!("../testdata/graphiceq/sony-wh-1000xm6-analog-cable.txt"), include_str!("../testdata/graphiceq/sony-wh-1000xm6-analog-cable.parametric.txt")),
             ("Sennheiser HD 600", include_str!("../testdata/graphiceq/sennheiser-hd-600.txt"), include_str!("../testdata/graphiceq/sennheiser-hd-600.parametric.txt")),
@@ -518,9 +496,8 @@ mod tests {
         for (name, graphic, parametric) in cases {
             let points = parse_graphic(graphic).unwrap();
             let fit = fit_graphic(&points);
-            let (theirs_rms, theirs_max) = error_of(&autoeq_parametric(parametric), &points);
+            let (theirs_rms, _) = error_of(&autoeq_parametric(parametric), &points);
             let (ours_rms, _) = error_of(&fit.bands, &points);
-            println!("{name}: fitted rms {:.2} dB max {:.2} dB (AutoEQ's parametric: rms {theirs_rms:.2} max {theirs_max:.2}), preamp {} dB", fit.rms_db, fit.max_db, fit.preamp_db);
             assert!(((ours_rms - fit.rms_db as f64).abs() < 0.01), "{name}: the error reported is the preset's");
             assert!(fit.rms_db < 1.0 && fit.max_db < 4.0, "{name}: rms {} max {}", fit.rms_db, fit.max_db);
             assert!(ours_rms < theirs_rms + 0.5, "{name}: {ours_rms} against AutoEQ's {theirs_rms}");

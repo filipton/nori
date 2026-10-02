@@ -1,11 +1,8 @@
-//! A beat-matched AutoMix on the engine's own path, and the tempo it leaves behind: the incoming song
-//! is played 4 % fast during the mix (speed and pitch together) and brought back to its own tempo after
-//! it. Whatever happens in the middle of that - a seek, a skip, a pause - the song must go on at exactly
-//! its own speed and pitch afterwards, measured as a tone's frequency where the card hears it. The songs
-//! are of two rates, so the incoming one is converted to the rate the output was opened at, as a library
-//! of 44.1 and 48 kHz albums is.
+//! A beat-matched AutoMix plays the incoming song 4 % fast and ramps it back after. Whatever happens
+//! meanwhile (seek, skip, pause), the song must end up at its own pitch, measured from a tone. The
+//! songs are 44.1 and 48 kHz, so the incoming one is resampled.
 
-mod common;
+use crate::common;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -14,7 +11,7 @@ use common::card::{Card, Pull};
 use common::{Stepper, Virtual};
 use nori_engine::{Config, Engine, Library, Located, SharedQueue, Source};
 use nori_player::automix::analysis::Analyzer;
-use nori_player::automix::{mixer, plan};
+use nori_player::automix::plan;
 use nori_player::engine::{Host, Plan};
 use nori_player::pipeline::App;
 use nori_player::sim;
@@ -23,33 +20,12 @@ use nori_player::types::AutoMixSettings;
 
 const HZ: f64 = 1000.0;
 
-/// `secs` of a stereo 16-bit sine of [`HZ`] at `rate`, as a WAV file's bytes.
+/// `secs` of a sine at [`HZ`] as a WAV file at `rate`.
 fn wav(rate: u32, secs: f64) -> Vec<u8> {
-    let frames = (rate as f64 * secs) as usize;
-    let data = (frames * 4) as u32;
-    let mut w = Vec::new();
-    w.extend_from_slice(b"RIFF");
-    w.extend_from_slice(&(36 + data).to_le_bytes());
-    w.extend_from_slice(b"WAVEfmt ");
-    w.extend_from_slice(&16u32.to_le_bytes());
-    w.extend_from_slice(&1u16.to_le_bytes());
-    w.extend_from_slice(&2u16.to_le_bytes());
-    w.extend_from_slice(&rate.to_le_bytes());
-    w.extend_from_slice(&(rate * 4).to_le_bytes());
-    w.extend_from_slice(&4u16.to_le_bytes());
-    w.extend_from_slice(&16u16.to_le_bytes());
-    w.extend_from_slice(b"data");
-    w.extend_from_slice(&data.to_le_bytes());
-    for k in 0..frames {
-        let v = ((k as f64 * HZ * std::f64::consts::TAU / rate as f64).sin() * 8000.0).round() as i16;
-        w.extend_from_slice(&v.to_le_bytes());
-        w.extend_from_slice(&v.to_le_bytes());
-    }
-    w
+    common::wav(rate, &common::sine(rate, HZ, secs, 8000.0))
 }
 
-/// The songs, as files: `a` at 44.1 kHz (it opens the output), `b` and `c` at 48 kHz, in a directory
-/// that goes with them (the engine lets them go as it stops, a failing test's too).
+/// `a` at 44.1 kHz (it opens the output), `b` and `c` at 48 kHz, as files in a temporary directory.
 struct Songs(Vec<(String, PathBuf, i64)>, #[allow(dead_code)] nori_testdir::TempDir);
 
 impl Songs {
@@ -82,8 +58,7 @@ impl Library for Songs {
     }
 }
 
-/// A beat-matched AutoMix out of `a` into `b`: from 8 s into `a`, 3 s long, `b` played 4 % fast (speed
-/// and pitch together, as AutoMix does with "keep pitch" off) and ramped back over the second after.
+/// A 3 s mix out of `a` at 8 s into `b` played 4 % fast (pitch not kept), ramped back over a second.
 fn beat_matched() -> Plan {
     let s = AutoMixSettings { max_transition_s: 3.0, ..Default::default() };
     let t = plan::plan(None, None, 12_000, 30_000, &s);
@@ -92,7 +67,7 @@ fn beat_matched() -> Plan {
         out_start_us: 8_000_000,
         duration_us: 3_000_000,
         in_skip_us: 0,
-        mixer: mixer::params(&t),
+        mixer: t.clone(),
         tempo_ratio: 1.04,
         keep_pitch: false,
         ramp_us: 1_000_000,
@@ -100,7 +75,7 @@ fn beat_matched() -> Plan {
     }
 }
 
-/// The simulated app, with that one plan for `a`'s ending.
+/// The simulated app, planning [`beat_matched`] out of `a`.
 struct Planned(sim::App);
 
 impl Host for Planned {
@@ -146,7 +121,7 @@ struct Rig {
 }
 
 impl Rig {
-    /// Plays `a`, `b`, `c` from the start, until the mix out of `a` is heard.
+    /// Plays `a`, `b`, `c` until the mix out of `a` is heard.
     fn in_the_mix() -> Rig {
         let queue = SharedQueue::default();
         queue.0.lock().set(vec!["a".into(), "b".into(), "c".into()], Some(0), false, 0);
@@ -166,7 +141,6 @@ impl Rig {
         self.time.until(Duration::from_secs(secs), || done(self))
     }
 
-    /// Plays on for `ms` of the card's time.
     fn run(&self, ms: u64) {
         self.time.run(Duration::from_millis(ms));
     }
@@ -184,9 +158,7 @@ impl Drop for Rig {
 }
 
 #[test]
-fn during_a_beat_matched_mix_the_incoming_song_is_played_at_the_mix_s_tempo() {
-    // The measure itself: in the middle of the mix, the incoming song is heard 4 % fast (with the
-    // ending of the outgoing one at its own pitch beneath it, fading).
+fn mix_plays_incoming_at_mix_tempo() {
     let rig = Rig::in_the_mix();
     rig.run(1_800);
     assert!(rig.engine.status().mixing);
@@ -195,28 +167,23 @@ fn during_a_beat_matched_mix_the_incoming_song_is_played_at_the_mix_s_tempo() {
 }
 
 #[test]
-fn after_a_beat_matched_mix_the_song_plays_at_its_own_tempo() {
+fn tempo_restored() {
     let rig = Rig::in_the_mix();
     rig.run(8_000);
     assert!(!rig.engine.status().mixing);
     rig.assert_own_pitch("after the mix and the ramp");
-}
 
-#[test]
-fn a_seek_during_a_beat_matched_mix_leaves_the_song_at_its_own_tempo() {
+    // Seek in mix restores tempo.
     let rig = Rig::in_the_mix();
     rig.run(1_000);
-    // Tapped near the end of the song's time.
     rig.engine.seek(25_000);
     rig.run(3_000);
     rig.assert_own_pitch("after a seek in the mix");
-}
 
-#[test]
-fn a_seek_during_the_tempo_ramp_after_a_mix_leaves_the_song_at_its_own_tempo() {
+    // Seek in tempo ramp restores tempo.
     let rig = Rig::in_the_mix();
     assert!(rig.until(30, |r| !r.engine.status().mixing), "the mix ends");
-    // The ramp back to the song's own tempo runs for a second after the mix.
+    // Inside the second-long ramp.
     rig.run(300);
     rig.engine.seek(20_000);
     rig.run(3_000);
@@ -224,10 +191,8 @@ fn a_seek_during_the_tempo_ramp_after_a_mix_leaves_the_song_at_its_own_tempo() {
     rig.engine.seek(27_000);
     rig.run(2_000);
     rig.assert_own_pitch("after a second seek, near the end");
-}
 
-#[test]
-fn a_skip_during_a_beat_matched_mix_plays_the_next_song_at_its_own_tempo() {
+    // Skip in mix restores tempo.
     let rig = Rig::in_the_mix();
     rig.run(1_000);
     rig.engine.next();
@@ -236,10 +201,8 @@ fn a_skip_during_a_beat_matched_mix_plays_the_next_song_at_its_own_tempo() {
     rig.engine.previous();
     rig.run(3_000);
     rig.assert_own_pitch("the song skipped back to");
-}
 
-#[test]
-fn a_pause_during_a_beat_matched_mix_leaves_the_song_at_its_own_tempo() {
+    // Pause in mix keeps tempo.
     let rig = Rig::in_the_mix();
     rig.run(1_000);
     rig.engine.pause();
@@ -248,3 +211,4 @@ fn a_pause_during_a_beat_matched_mix_leaves_the_song_at_its_own_tempo() {
     rig.run(8_000);
     rig.assert_own_pitch("after a pause in the mix");
 }
+

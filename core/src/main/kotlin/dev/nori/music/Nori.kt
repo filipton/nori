@@ -143,14 +143,8 @@ class Nori private constructor(private val context: Context) {
         val old = settings.value.server
         val accepted = try {
             http.configure(draft)
-            val probe = open(draft.id, null)
-            try {
-                // Both closed here, so the probe's database connection is gone before the profile is opened for real.
-                val legacy = Client(probe, transport).use { c -> lifted { c.login(draft.config(), draft.altUrl) } }
-                if (legacy) draft.copy(legacyAuth = true) else draft
-            } finally {
-                probe.close()
-            }
+            val legacy = lifted { dev.nori.music.ffi.loginCheck(transport, draft.config(), draft.altUrl) }
+            if (legacy) draft.copy(legacyAuth = true) else draft
         } catch (e: Exception) {
             http.configure(old)
             throw e

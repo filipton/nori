@@ -1,12 +1,9 @@
-//! Songs kept on disk, in a directory the client names: the stream cache (songs as they were streamed,
-//! under the core's cache keys, `<id>:<quality>`) and downloads (whole songs kept for good, by id).
-//! Plain files through `std::fs`, so any platform with a file system has them.
+//! Songs on disk in a client-named directory: the stream cache (by the core's `<id>:<quality>` keys)
+//! and downloads (by id), as plain files.
 //!
-//! A streamed song is written into the cache while it loads (the loader tees each burst into it) and is
-//! only an entry once all of it is there: a half-written one is a `.part` file that nothing reads, and
-//! goes when the next attempt starts. The cache is held to a size; what leaves it first when it is over
-//! is the [`Order`]'s call (the core's `stream_cache` for a client that links it: never used by this
-//! run first, then least recently used), one whole song at a time.
+//! A streamed song is written as it loads and becomes an entry only when whole; until then it is a
+//! `.part` file. The cache is held to a size limit, evicting whole songs in the [`Order`]'s order (the
+//! core's `stream_cache`: unused this run first, then least recently used).
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -16,52 +13,58 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-/// Which cached song goes first when the cache is over its limit. Told of every use, told once of what
-/// an earlier run left, and asked for one key at a time.
+/// Eviction order for the stream cache.
 pub trait Order: Send + Sync {
-    /// `key` was read or written just now.
+    /// `key` was just used.
     fn touch(&self, key: &str);
-    /// What the cache held when it was first looked at.
+    /// What an earlier run left in the cache.
     fn seed(&self, held: &[String]);
-    /// The next key to drop, forgotten as it is handed out.
+    /// The next key to evict (forgotten once returned).
     fn next(&self) -> Option<String>;
     /// The cache was emptied.
     fn clear(&self);
 }
 
-/// Least recently used first, and what an earlier run left before anything used since: the core's rule
-/// (`stream_cache`), for a client without the core.
+/// An earlier run's leftovers first, then least recently used (as the core's `stream_cache` orders Android's cache).
 #[derive(Default)]
-pub struct Recent(Mutex<(HashMap<String, i64>, i64, i64)>);
+pub struct Recent(Mutex<Stamps>);
+
+/// Each key's last use; leftovers from an earlier run get stamps below zero.
+#[derive(Default)]
+struct Stamps {
+    used: HashMap<String, i64>,
+    newest: i64,
+    oldest: i64,
+}
 
 impl Order for Recent {
     fn touch(&self, key: &str) {
         let mut o = self.0.lock();
-        o.1 += 1;
-        let t = o.1;
-        o.0.insert(key.to_string(), t);
+        o.newest += 1;
+        let t = o.newest;
+        o.used.insert(key.to_string(), t);
     }
 
     fn seed(&self, held: &[String]) {
         let mut o = self.0.lock();
         for k in held {
-            if !o.0.contains_key(k) {
-                o.2 -= 1;
-                let t = o.2;
-                o.0.insert(k.clone(), t);
+            if !o.used.contains_key(k) {
+                o.oldest -= 1;
+                let t = o.oldest;
+                o.used.insert(k.clone(), t);
             }
         }
     }
 
     fn next(&self) -> Option<String> {
         let mut o = self.0.lock();
-        let key = o.0.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone())?;
-        o.0.remove(&key);
+        let key = o.used.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone())?;
+        o.used.remove(&key);
         Some(key)
     }
 
     fn clear(&self) {
-        self.0.lock().0.clear();
+        self.0.lock().used.clear();
     }
 }
 
@@ -69,8 +72,7 @@ const STREAM: &str = "stream";
 const DOWNLOADS: &str = "downloads";
 const PART: &str = ".part";
 
-/// A key as a file name: letters, digits, `-`, `_` and `.` as they are, everything else as `%XX`, so
-/// every key has a name of its own on every file system.
+/// A key as a portable file name: alphanumerics, `-`, `_` and non-leading `.` kept, the rest `%XX`.
 fn file_name(key: &str) -> String {
     let mut out = String::with_capacity(key.len() + 8);
     for b in key.bytes() {
@@ -83,7 +85,7 @@ fn file_name(key: &str) -> String {
     out
 }
 
-/// The key a file name stands for; none for anything that is not an entry.
+/// The key of an entry's file name; None for anything else.
 fn key_of(name: &str) -> Option<String> {
     if name.ends_with(PART) {
         return None;
@@ -104,33 +106,33 @@ fn key_of(name: &str) -> Option<String> {
 }
 
 struct Held {
-    /// Bytes the cache holds, once it has been counted (the first time something had to go).
+    /// Bytes cached, once counted.
     bytes: Option<u64>,
     limit: u64,
-    /// Keys an entry is being written for now: one writer each, or the second truncates the first's file.
+    /// Keys being written: one writer each (a second would truncate the first's file).
     writing: HashSet<String>,
-    /// Keys whose half-written entry the fetching ahead left for the player to go on with.
+    /// Keys whose partial entry the fetching ahead left for the player to resume.
     left: HashSet<String>,
 }
 
-/// The songs on disk. Shared by the engine's loaders, the downloader and whatever measures songs ahead.
+/// The songs on disk, shared by loaders, the downloader and the measurer.
 pub struct Store {
     dir: PathBuf,
     order: Box<dyn Order>,
     held: Mutex<Held>,
-    /// The songs fetched ahead of their turn ([`Store::fetch_ahead`]).
+    /// [`Store::fetch_ahead`].
     pub(crate) ahead: Arc<crate::ahead::Ahead>,
-    /// Told whenever a streamed song has become whole in the cache ([`Store::on_whole`]).
+    /// [`Store::on_whole`] listeners.
     whole: Mutex<Vec<Box<dyn Fn() + Send + Sync>>>,
     me: std::sync::Weak<Store>,
 }
 
 impl Store {
-    /// The store in `dir` (made if it is not there), the stream cache held to `limit` bytes.
+    /// Opens the store in `dir` (created if needed), the stream cache limited to `limit` bytes.
     pub fn open(dir: impl Into<PathBuf>, limit: u64, order: Box<dyn Order>) -> io::Result<Arc<Store>> {
         let dir = dir.into();
         fs::create_dir_all(dir.join(STREAM))?;
-        // What an earlier run left half written is nobody's to go on with now.
+        // Partial entries from an earlier run are stale.
         if let Ok(entries) = fs::read_dir(dir.join(STREAM)) {
             for e in entries.flatten() {
                 if e.file_name().to_str().is_some_and(|n| n.ends_with(PART)) {
@@ -149,8 +151,7 @@ impl Store {
         }))
     }
 
-    /// `told` hears of every streamed song that becomes whole in the cache from now on, on the thread
-    /// that wrote its last bytes: what measures songs ahead looks again then, never by polling.
+    /// Registers `told`, called (on the writing thread) whenever a streamed song becomes whole.
     pub fn on_whole(&self, told: Box<dyn Fn() + Send + Sync>) {
         self.whole.lock().push(told);
     }
@@ -163,25 +164,33 @@ impl Store {
         self.dir.join(STREAM).join(file_name(key))
     }
 
-    /// Where a download of `id` is kept once it is whole.
+    /// A finished download's path.
     pub fn download_path(&self, id: &str) -> PathBuf {
         self.dir.join(DOWNLOADS).join(file_name(id))
     }
 
-    /// Where a download of `id` is written while it comes in.
-    pub fn download_part(&self, id: &str) -> PathBuf {
-        let mut p = self.download_path(id).into_os_string();
-        p.push(PART);
-        p.into()
+    /// Where a download at `quality` is written while in progress. Its parts at another quality go, so a
+    /// download taken up never joins two encodings.
+    pub fn download_part(&self, id: &str, quality: &str) -> PathBuf {
+        let name = file_name(id);
+        let part = format!("{name}.{}{PART}", file_name(quality));
+        // Another quality's: `<name>.<quality>.part`, or `<name>.part` from before qualities were kept apart.
+        let other = |n: &str| n != part && n.strip_suffix(PART).and_then(|n| n.strip_prefix(name.as_str())).is_some_and(|q| q.is_empty() || q.strip_prefix('.').is_some_and(|q| !q.contains('.')));
+        for e in fs::read_dir(self.dir.join(DOWNLOADS)).into_iter().flatten().flatten() {
+            if e.file_name().to_str().is_some_and(other) {
+                let _ = fs::remove_file(e.path());
+            }
+        }
+        self.dir.join(DOWNLOADS).join(part)
     }
 
-    /// The whole downloaded song `id`, if it is here.
+    /// The finished download of `id`, if present.
     pub fn downloaded(&self, id: &str) -> Option<PathBuf> {
         let p = self.download_path(id);
         p.is_file().then_some(p)
     }
 
-    /// The whole streamed song under `key`, if the cache has it; a use, for the order.
+    /// The cached song under `key`, if present; counts as a use.
     pub fn cached(&self, key: &str) -> Option<PathBuf> {
         let p = self.stream_path(key);
         if !p.is_file() {
@@ -191,16 +200,13 @@ impl Store {
         Some(p)
     }
 
-    /// The whole streamed song under `key`, if the cache has it, without counting as a use: for
-    /// reading it in the background (measuring it ahead), which says nothing about what is listened to.
+    /// [`Store::cached`] without counting as a use (background reads such as measuring).
     pub fn peek(&self, key: &str) -> Option<PathBuf> {
         let p = self.stream_path(key);
         p.is_file().then_some(p)
     }
 
-    /// A new entry for `key`, written as the song loads; none when the file cannot be made, or while
-    /// another writer has it (the player loading the song the precacher is fetching, or the other way
-    /// round): the one there first keeps it.
+    /// A writer for `key`; None if the file cannot be made or another writer has it (first come keeps it).
     pub fn writer(self: &Arc<Self>, key: &str) -> Option<Writer> {
         let resume = {
             let mut h = self.held.lock();
@@ -212,7 +218,7 @@ impl Store {
         let mut part = self.stream_path(key).into_os_string();
         part.push(PART);
         let part = PathBuf::from(part);
-        // Taken up where the fetching ahead left it for the player; anything else starts again.
+        // Resume a part the fetching ahead left; otherwise start afresh.
         let opened = if resume { fs::OpenOptions::new().append(true).open(&part).and_then(|f| Ok((f.metadata()?.len(), f))) } else { File::create(&part).map(|f| (0, f)) };
         let Ok((at, file)) = opened.or_else(|_| File::create(&part).map(|f| (0, f))) else {
             self.held.lock().writing.remove(key);
@@ -221,47 +227,58 @@ impl Store {
         Some(Writer { store: self.clone(), key: key.to_string(), part: Some(part), file: Some(file), at })
     }
 
-    /// The player's entry for `key`, as it loads the song: one the fetching ahead is writing is handed
-    /// over where it got to (see [`crate::ahead::Ahead::take_over`]), which may wait for a chunk of it,
-    /// so this is asked on the loader's own thread.
+    /// The player's writer for `key`: takes it over from the fetching ahead where it got to
+    /// ([`crate::ahead::Ahead::take_over`]), which may block for a chunk (call on the loader's thread).
     pub fn writer_for_player(self: &Arc<Self>, key: &str) -> Option<Writer> {
         self.ahead.take_over(key);
         self.writer(key)
     }
 
-    /// Whether an entry for `key` is being written now.
+    /// Whether `key` is being written.
     pub fn writing(&self, key: &str) -> bool {
         self.held.lock().writing.contains(key)
     }
 
-    /// Fetches `songs` (address and cache key, in order) whole into the stream cache ahead of their
-    /// turn, one after another through `bytes`, each in one go; see [`crate::ahead`]. Called again, the
-    /// new list replaces the old one; an empty one stops the fetching.
+    /// Fetches `songs` whole into the stream cache ahead of their turn ([`crate::ahead`]). A new list
+    /// replaces the old; an empty one stops.
     pub fn fetch_ahead(self: &Arc<Self>, bytes: Arc<dyn crate::source::ByteSource>, songs: Vec<crate::ahead::AheadSong>, takers: Option<crate::ahead::Takers>) {
         self.ahead.ask(self.clone(), bytes, songs, takers);
     }
 
-    /// Whether songs are being fetched ahead now: for a test to wait until they are.
+    /// Whether songs are being fetched ahead.
     pub fn fetching_ahead(&self) -> bool {
         self.ahead.busy()
     }
 
-    /// Whether the player has asked to take `key` over from the fetching ahead: for a test to hold a
-    /// fetch until it has.
+    /// Blocks until no song is being fetched ahead.
+    pub fn wait_ahead(&self) {
+        self.ahead.wait()
+    }
+
+    /// Whether the player took `key` over from the fetching ahead.
     pub fn taken_over(&self, key: &str) -> bool {
         self.ahead.taken(key)
     }
 
-    /// The stream cache's limit from now on, and whatever is over it dropped.
+    /// Sets the cache limit, evicting what is over it.
     pub fn set_limit(&self, limit: u64) {
         self.held.lock().limit = limit;
         self.trim(0);
     }
 
-    /// Drops the streamed copies `keys` (a song that is now downloaded is the same bytes twice).
+    /// Drops the cached `keys` (e.g. a song now downloaded).
     pub fn drop_cached(&self, keys: &[String]) {
         for k in keys {
             self.remove(k);
+        }
+    }
+
+    /// Drops every cached copy of song `id`, at any quality (`<id>:<quality>` keys).
+    pub fn drop_copies(&self, id: &str) {
+        for (k, _) in self.entries() {
+            if k.rsplit_once(':').is_some_and(|(of, _)| of == id) {
+                self.remove(&k);
+            }
         }
     }
 
@@ -289,8 +306,7 @@ impl Store {
         .collect()
     }
 
-    /// The cache's size, counted from the disk the first time it is asked (and the order told what an
-    /// earlier run left), kept from then on.
+    /// The cache's size, counted from disk on first use (seeding the order with what is there).
     fn counted(&self) -> u64 {
         if let Some(b) = self.held.lock().bytes {
             return b;
@@ -313,7 +329,7 @@ impl Store {
         }
     }
 
-    /// `added` bytes came in: whole songs go, in the order's order, until the cache fits again.
+    /// Accounts `added` bytes and evicts whole songs until the cache fits.
     fn trim(&self, added: u64) {
         let total = self.counted();
         let limit = {
@@ -331,9 +347,9 @@ impl Store {
         }
     }
 
-    /// The whole of `key` is written: it is an entry now.
+    /// `key` is fully written: turns the part into an entry.
     fn finished(&self, key: &str, part: &Path, len: u64) -> bool {
-        // Counted before it joins, so it is counted once.
+        // Count first, so the new entry is counted once.
         self.counted();
         if fs::rename(part, self.stream_path(key)).is_err() {
             let _ = fs::remove_file(part);
@@ -348,20 +364,19 @@ impl Store {
     }
 }
 
-/// A stream cache entry being written as its song loads. Only bytes that follow on from what it holds
-/// are taken; a gap (the listener seeked past what was loaded) ends it, and it is let go unfinished.
+/// A stream cache entry being written. Only contiguous bytes are taken; a gap (a seek past what was
+/// loaded) abandons it.
 pub struct Writer {
     store: Arc<Store>,
     key: String,
-    /// The half-written file, removed when the writer goes; none once it is handed on (kept, or left for the
-    /// next writer).
+    /// The part file, removed on drop unless handed on (finished, or left for the next writer).
     part: Option<PathBuf>,
     file: Option<File>,
     at: u64,
 }
 
 impl Writer {
-    /// Bytes `from..` of the song; false once the entry was given up.
+    /// Writes bytes `from..`; false once the entry was abandoned.
     pub fn write(&mut self, from: u64, bytes: &[u8]) -> bool {
         let Some(f) = self.file.as_mut() else { return false };
         if from != self.at || f.write_all(bytes).is_err() {
@@ -372,7 +387,7 @@ impl Writer {
         true
     }
 
-    /// The song ended at `len` bytes: kept, when all of it was written.
+    /// The song ended at `len` bytes; kept if all of it was written.
     pub fn finish(mut self, len: u64) -> bool {
         let Some(mut f) = self.file.take() else { return false };
         if self.at != len || f.flush().is_err() || f.seek(SeekFrom::End(0)).map_or(true, |e| e != len) {
@@ -383,9 +398,7 @@ impl Writer {
         self.store.finished(&self.key, &part, len)
     }
 
-    /// [`Writer::finish`], and the entry opened to be read: for a loader that lets its copy of the song
-    /// go and reads it from the disk from then on. None when it was not kept, or is gone already (a cache
-    /// smaller than the song).
+    /// [`Writer::finish`] and open the entry for reading; None if not kept or already evicted.
     pub fn finish_open(self, len: u64) -> Option<File> {
         let (store, key) = (self.store.clone(), self.key.clone());
         if !self.finish(len) {
@@ -394,12 +407,12 @@ impl Writer {
         File::open(store.stream_path(&key)).ok().filter(|f| f.metadata().is_ok_and(|m| m.len() == len))
     }
 
-    /// Where it has got to.
+    /// Bytes written.
     pub fn written(&self) -> u64 {
         self.at
     }
 
-    /// What it holds so far: for a loader that goes on with an entry the fetching ahead began.
+    /// Reads back what it holds (to resume an entry the fetching ahead began).
     pub fn read_back(&mut self) -> io::Result<Vec<u8>> {
         if let Some(f) = self.file.as_mut() {
             f.flush()?;
@@ -411,7 +424,7 @@ impl Writer {
         Ok(bytes)
     }
 
-    /// Left half way for the player to go on with: the part stays, and the next writer takes it up.
+    /// Keeps the part for the next writer to resume.
     pub fn leave(mut self) {
         let Some(mut f) = self.file.take() else { return };
         if f.flush().is_err() {
@@ -432,7 +445,7 @@ impl crate::ahead::Keeping for Store {
     }
 
     fn entry(&self, key: &str) -> Option<Box<dyn crate::ahead::Entry>> {
-        // The trait asks through a plain reference; the store is always held in an Arc.
+        // The trait takes `&self`; the store always lives in an Arc.
         let me = self.me()?;
         me.writer(key).map(|w| Box::new(w) as Box<dyn crate::ahead::Entry>)
     }
@@ -469,7 +482,7 @@ impl Drop for Writer {
 mod tests {
     use super::*;
 
-    /// A few kilobytes each, in a directory of the test's own, gone when the test is.
+    /// A temporary directory.
     fn dir(name: &str) -> nori_testdir::TempDir {
         nori_testdir::TempDir::new(name)
     }
@@ -490,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn a_song_is_an_entry_only_once_all_of_it_is_written() {
+    fn entry_only_when_whole() {
         let d = dir("store-whole");
         let s = Store::open(d.path(), 1 << 20, Box::new(Recent::default())).unwrap();
         let mut w = s.writer("a:0").unwrap();
@@ -509,7 +522,7 @@ mod tests {
     }
 
     #[test]
-    fn over_its_limit_the_cache_lets_the_least_recently_used_go_and_what_an_earlier_run_left_first() {
+    fn evicts_leftovers_then_lru() {
         let d = dir("store-limit");
         let s = Store::open(d.path(), 1000, Box::new(Recent::default())).unwrap();
         put(&s, "old:0", 300);

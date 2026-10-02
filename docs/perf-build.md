@@ -88,7 +88,7 @@ go, and the stretch says how many.
 | offload | entered, or left and why (the player's own reason, or the setting that keeps it off) |
 | underruns | the output's underrun count grew, with the reading before, between which and this one they first appeared |
 | error | a song or the output failed, in the player's words |
-| tuning | the equalizer screen's tuning mode (a shallow buffer) on or off; on the Rust engine also the size the track took for the output it plays on and why (`shallow 550 ms for Bluetooth: its latency is 200 ms, its pulls are 200 ms`), and any growth after it ran dry |
+| shallow | the output's shallow buffer (the app in sight) on or off; on the Rust engine also the size the track took for the output it plays on and why (`shallow 550 ms for Bluetooth: its latency is 200 ms, its pulls are 200 ms`), and any growth after it ran dry |
 
 **Invariant breaks** head the report (crates/perf/src/invariants.rs says what each one holds to). Two of
 them came of the S22's silent classical playlist (2026-09-26), where the player said it played, no output
@@ -99,8 +99,8 @@ was open, no song was being fetched and nothing was said anywhere:
 | silent | the engine plays, the place heard has stood still for 5 s with no output open and none of the song's bytes on their way. Said with the engine's own account of where it stood and what media3's stream cache keeps of the song (its metadata length, the spans cached, whole or not, being written or not) |
 | panic | a thread of the Rust library panicked, caught or not: its name, the message and where. Every build says it in the log (Android sends a Rust thread's standard error nowhere) |
 
-With every break the app's own latest lines (the last 500 under the `nori` tag, the core's and the
-Kotlin's, kept in memory by nori-model's alog) are copied into the database as it happens, the latest three
+With every break the app's own latest lines (under the `nori` tag, the core's and the Kotlin's, kept in
+memory by nori-model's alog: the last ten minutes', at least 500 and at most 5000) are copied into the database as it happens, the latest three
 breaks' worth, and printed before the log tail: logcat's buffer is the whole system's and a codec's chatter
 turns it over in minutes, so the tail rarely reached back to the moment something broke.
 
@@ -227,17 +227,19 @@ varies by ±10 % from run to run; the phone decodes in hardware. With the player
 times on each engine, with AutoMix and the equalizer on (and with the shallow buffer forced on), the
 emulator counted no underruns: the gap on the phone was the output reopened, not a starved track.
 
-The shallow buffer's switches on the Rust engine are now in place, both ways: the AudioTrack is opened
-deep once, in power saving mode, and the equalizer screen only moves the part of it that may be filled
-(`AudioTrack.setBufferSizeInFrames`, crates/android track.rs `Writer::resize`); the engine changes its ring's
-depth with it (`AudioOutput::resizes`), with no flush, no dip and nothing made again. The trade-off:
-- **Made shallow**, the track and the ring still hold the seconds made before (up to the 11.5 s buffer and a
-  10 s burst). They play out as they are; a band moved before they have is made again behind the 30 ms dip
-  every change of the sound takes outside the screen (`Worker::apply`, `TUNED_HELD_US`), and every band
-  moved after it is heard as it is. Opening the screen and closing it without moving anything is silent.
+The shallow buffer's switches on the Rust engine are in place, both ways: the AudioTrack is opened deep
+once, in power saving mode, and the app coming in sight (or a car's screen connecting) only moves the part
+of it that may be filled (`AudioTrack.setBufferSizeInFrames`, crates/android track.rs `Writer::resize`); the
+engine's ring stays deep (a band moved replaces the ring's music ahead of the track, `nori_player::sink`).
+A second track carrying the music meanwhile was tried and dropped: lined up to the frame by play heads and
+timestamps, it was still heard as a cut on a Galaxy S22 over Bluetooth at every switch. The trade-off:
+- **Made shallow** as the app comes in sight, the track still holds the seconds taken before (up to the
+  11.5 s buffer): it takes nothing more until it has played down to its fraction of a second, and a change
+  meanwhile is heard where it runs out. After that every band moved is heard ahead of the track's fraction
+  of a second, in place. Out of sight a change waits for what the deep track holds to play.
 - **Made deep**, the track is filled up from the engine's next burst: the same buffer, mode and ten-second
-  wakes as before the screen opened, so the battery is what it was.
-- **Latency while tuned**: the track stays on the output power saving chose when it was built (the deep
+  wakes as before the app came in sight, so the battery is what it was.
+- **Latency while shallow**: the track stays on the output power saving chose when it was built (the deep
   buffer mixer, on a phone that has one; the emulator has only the primary output). A smaller size does not
   move it or change that output's periods, so its own latency (tens of ms on most phones) is added to the
   ring's 40-80 ms and the track's 80-160 ms, where the old shallow track went to the normal mixer. The
@@ -253,21 +255,12 @@ depth with it (`AudioOutput::resizes`), with no flush, no dip and nothing made a
   topped up while it still holds the output's latency (`getLatency` less the buffer), the least a new track
   there is given and a wake's lateness, with a quarter of that again on top (`shallow_marks`; the speaker
   keeps its 80/160 ms). While shallow the writer also watches the latency it sees (play head against what
-  was presented) and `getUnderrunCount`, and grows for either, never shrinking again on that output. The
-  engine keeps its ring as deep as one of those top-ups (`AudioOutput::shallow_depth`). On Bluetooth a band
+  was presented) and `getUnderrunCount`, and grows for either, never shrinking again on that output. On Bluetooth a band
   moved is heard about half a second later, most of it the headphones' own latency.
-- **The change that turns tuning on** reaches the engine a moment before the tuning does (the settings go
-  straight to the core; the tuning goes through the screen, the session and the service), so it was made
-  again into the deep buffer, and only the next change landed in the shallow one: which of the two a profile
-  picked on the device list met was down to timing. Tuning that comes within a second of the music made
-  again now makes it again once more, into the shallow buffer (`TUNED_AFTER_RESOUND_MS`).
-- Tested on the simulated track (crates/android `the_equalizer_screen_opening_and_closing_is_not_heard_either_way`:
-  six rounds each way over a jittery mixer and a late writer, every frame heard in order, no silence over
-  5 ms, never reopened or flushed) and in the engine (crates/engine `over_a_device_that_resizes_...`: the
-  music sample for sample what an untouched player played). Over a Bluetooth-like output (bursts of 100-200 ms
+- Tested on the simulated track (crates/android track.rs, air.rs: every frame heard in order over a jittery
+  mixer and a late writer, never reopened or flushed). Over a Bluetooth-like output (bursts of 100-200 ms
   taken at once, 200 ms of latency) the track never runs dry when the output says what it is
-  (`tuned_over_bluetooth_...`), and stops within a few underruns when it says nothing
-  (`tuned_over_an_output_that_says_nothing_...`).
+  (`tuned_over_bluetooth_...`), and stops within a few underruns when it says nothing.
 
 `tools/cost.sh LABEL [SECONDS]` measures a state as it is on screen: CPU of a core and wakeups from
 `/proc/<pid>/task/*` (context switches), frames from `dumpsys gfxinfo`, GCs from the test bridge's `gc`.
@@ -296,7 +289,8 @@ offloaded, the last stretches each with its output and its timeline, the benchma
 run this session, and at the end the app's own log: the crash buffer (this and earlier runs of the
 app) or the copy of it kept at the last start, the last uncaught exception (kept in the app's database
 by the recorder's handler as the process died, then handed on to the platform's), and the process's
-last 400 log lines (`logcat --pid`), at most 60 000 characters. Send it anywhere text goes; the table
+last 400 log lines (`logcat --pid`), at most 60 000 characters, after the app's own lines of the last
+ten minutes (alog's, so a moment the logcat tail has lost is still there). Send it anywhere text goes; the table
 is in columns for a monospaced font. The page shows the same log folded at its end.
 
 ## Benchmarks

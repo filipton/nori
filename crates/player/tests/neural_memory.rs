@@ -149,7 +149,7 @@ fn measure(model: &BeatThis, secs: usize) -> [isize; 3] {
 }
 
 #[test]
-fn the_beat_model_holds_a_bounded_heap_whatever_the_songs_length() {
+fn beat_model_heap_is_bounded() {
     let Ok(path) = std::env::var("NORI_BEAT_THIS") else {
         eprintln!("no model in NORI_BEAT_THIS: skipped");
         return;

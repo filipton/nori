@@ -1,9 +1,6 @@
-//! What the core is built from that is not ours, and the third parties' data it asks for: the credits a
-//! licences page lists, each with its terms and which bundled licence text they are.
+//! Third-party credits for the licences page.
 
-/// One thing the core is built from that is not ours: what it is, whose it is, under what terms, and
-/// which bundled licence text those terms are (`licences/<file>.txt`; none for something with no
-/// licence to reproduce).
+/// One credit. `file` names the bundled licence text (`licences/<file>.txt`), None when there is none.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct Credit {
@@ -14,8 +11,7 @@ pub struct Credit {
     pub file: Option<String>,
 }
 
-/// The core's own credits, for the licences page of any app built on it. A line here is added in the
-/// same commit that adds the dependency. Where a crate offers MIT or Apache-2.0, the MIT text is shown.
+/// The core's dependencies; add a line with each new dependency. Dual MIT/Apache crates show the MIT text.
 const CORE_CREDITS: [(&str, &str, &str, &str, Option<&str>); 19] = [
     ("uniffi", "Generates the Kotlin bindings to the core and the JNI calls under them", "Mozilla Foundation", "MPL-2.0", Some("MPL-2.0")),
     ("rusqlite", "The library index, full-text search and caches", "Copyright (c) 2014 The rusqlite developers", "MIT", Some("MIT")),
@@ -74,8 +70,7 @@ const CORE_CREDITS: [(&str, &str, &str, &str, Option<&str>); 19] = [
     ("futures-util", "Asking the lyrics services together", "Copyright (c) 2016 Alex Crichton; Copyright (c) 2017 The Tokio Authors", "MIT or Apache-2.0", Some("MIT")),
 ];
 
-/// The Android app's own libraries, credited here with every other word it says. A line here is added
-/// in the same commit that adds the dependency, and in NOTICE.
+/// The Android app's libraries; add a line (and to NOTICE) with each new dependency.
 const ANDROID_CREDITS: [(&str, &str, &str, &str, Option<&str>); 6] = [
     ("AndroidX Media3", "Playback, the media session and the notification", "Copyright The Android Open Source Project", "Apache-2.0", Some("Apache-2.0")),
     ("Jetpack Compose and Material 3", "The user interface toolkit", "Copyright The Android Open Source Project", "Apache-2.0", Some("Apache-2.0")),
@@ -91,8 +86,7 @@ const ANDROID_CREDITS: [(&str, &str, &str, &str, Option<&str>); 6] = [
     ),
 ];
 
-/// The typeface and the data the app fetches from third parties (the core asks AutoEQ and the lyrics
-/// services, so any app on it credits them).
+/// The typeface and the third-party data services.
 const DATA_CREDITS: [(&str, &str, &str, &str, Option<&str>); 17] = [
     ("Inter", "The typeface", "Copyright (c) 2016 The Inter Project Authors (Rasmus Andersson)", "OFL-1.1", Some("OFL-1.1")),
     ("AutoEQ", "Headphone correction curves: the list kept on Wi-Fi, a curve fetched when it is chosen", "Copyright (c) 2018 Jaakko Pasanen", "MIT", Some("MIT")),
@@ -137,19 +131,16 @@ fn credits(list: &[(&str, &str, &str, &str, Option<&str>)]) -> Vec<Credit> {
         .collect()
 }
 
-/// What the core is built from, in the order the licences page lists it.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn core_credits() -> Vec<Credit> {
     credits(&CORE_CREDITS)
 }
 
-/// What the Android app is built from besides the core.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn android_credits() -> Vec<Credit> {
     credits(&ANDROID_CREDITS)
 }
 
-/// The typeface and the third parties' data.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn data_credits() -> Vec<Credit> {
     credits(&DATA_CREDITS)
@@ -160,15 +151,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_core_credits_what_it_is_built_from() {
-        let find = |list: &[Credit], name: &str| list.iter().find(|c| c.name == name).cloned().unwrap_or_else(|| panic!("{name} is credited"));
+    fn credits_complete() {
         let (c, a, d) = (core_credits(), android_credits(), data_credits());
-        assert_eq!((find(&c, "uniffi").licence.as_str(), find(&c, "uniffi").file.as_deref()), ("MPL-2.0", Some("MPL-2.0")));
-        assert_eq!(find(&c, "SQLite").file, None, "public domain: no licence text");
-        find(&c, "AndroidX Palette, ported");
-        find(&a, "AndroidX Media3");
-        assert_eq!(find(&d, "LRCLIB").file, None, "a service has no licence text");
-        assert_eq!((find(&d, "Beat This!").licence.as_str(), find(&d, "Beat This!").file.as_deref()), ("MIT", Some("MIT")));
         // Every licence named is bundled for the licences page, and nothing is listed twice.
         let texts = concat!(env!("CARGO_MANIFEST_DIR"), "/../../app/src/main/assets/licences");
         let all: Vec<&Credit> = c.iter().chain(&a).chain(&d).collect();

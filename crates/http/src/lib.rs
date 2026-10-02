@@ -1,19 +1,19 @@
-//! HTTP for a desktop client: the core's [`Transport`] (API calls, one GET each) and the engine's
-//! [`ByteSource`] (audio, a ranged GET read as it comes) over one ureq agent with rustls, so API calls,
-//! covers and audio share one connection pool and the radio wakes once for all of them.
+//! Desktop HTTP: the core's [`Transport`] and the engine's [`ByteSource`] over one ureq agent (rustls),
+//! so API calls, covers and audio share one connection pool.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io::Read;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use nori_engine::{Body, ByteSource, Cancel, OpenError};
 use nori_core::transport::{Exchange, FailureKind, Transport, TransportError, TransportResponse, USER_AGENT};
+use nori_engine::{Body, ByteSource, Cancel, OpenError};
 use ureq::unversioned::resolver::DefaultResolver;
-use ureq::unversioned::transport::{Buffers, Connector, ConnectionDetails, DefaultConnector, NextTimeout};
-use ureq::Agent;
+use ureq::unversioned::transport::{Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout};
+use ureq::{Agent, RequestBuilder};
 
-/// The largest API answer taken; a whole library page is far below it.
+/// Largest API response body read.
 const MAX_ANSWER: u64 = 256 * 1024 * 1024;
 
 pub struct Http {
@@ -28,22 +28,48 @@ impl Http {
             .timeout_connect(Some(Duration::from_secs(10)))
             .timeout_recv_response(Some(Duration::from_secs(30)))
             .build();
-        let agent = Agent::with_parts(config, DefaultConnector::new().chain(Callable), DefaultResolver::default());
+        let agent = Agent::with_parts(config, DefaultConnector::new().chain(Cancellable), DefaultResolver::default());
         Arc::new(Http { agent })
     }
 
-    /// `url`'s whole length, as a ranged answer for its first byte says it; None when the answer is not ranged.
-    fn whole_length(&self, url: &str) -> Option<u64> {
+    /// `url`'s total length from a `bytes=0-0` request; None unless the server answers 206.
+    fn total_length(&self, url: &str) -> Option<u64> {
         let r = self.agent.get(url).header("Range", "bytes=0-0").call().ok()?;
         if r.status().as_u16() != 206 {
             return None;
         }
         r.headers().get("content-range")?.to_str().ok().and_then(content_range)?.1
     }
+
+    /// GETs `url` from byte `from` on.
+    fn open_now(&self, url: &str, from: u64) -> Result<Body, OpenError> {
+        let mut req = self.agent.get(url);
+        if from > 0 {
+            req = req.header("Range", format!("bytes={from}-"));
+        }
+        let r = req.call().map_err(|e| e.to_string())?;
+        let status = r.status().as_u16();
+        let header = |name: &str| r.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
+        // Range past the end (the length was an estimate): report the real length, asking for it when
+        // a proxy dropped Content-Range.
+        if status == 416 && from > 0 {
+            let len = header("content-range").as_deref().and_then(unsatisfied_range).or_else(|| self.total_length(url)).filter(|&l| l <= from);
+            return Err(OpenError::PastEnd { len });
+        }
+        if !(200..300).contains(&status) {
+            return Err(OpenError::Status(status));
+        }
+        let (start, len) = match header("content-range").as_deref().and_then(content_range) {
+            Some(r) if status == 206 => r,
+            _ => (0, header("content-length").and_then(|l| l.parse().ok())),
+        };
+        let reader: Box<dyn Read + Send> = Box::new(r.into_body().into_reader());
+        Ok(Body { start, len, reader })
+    }
 }
 
-/// What went wrong, in the core's words for it.
 fn failure(e: ureq::Error) -> TransportError {
+    use std::io::ErrorKind;
     let kind = match &e {
         ureq::Error::HostNotFound => FailureKind::UnknownHost,
         ureq::Error::ConnectionFailed => FailureKind::Connect,
@@ -51,9 +77,9 @@ fn failure(e: ureq::Error) -> TransportError {
         ureq::Error::Tls(_) | ureq::Error::Rustls(_) => FailureKind::Tls,
         ureq::Error::BadUri(_) | ureq::Error::Http(_) => FailureKind::Other,
         ureq::Error::Io(io) => match io.kind() {
-            std::io::ErrorKind::ConnectionRefused => FailureKind::Connect,
-            std::io::ErrorKind::TimedOut => FailureKind::Timeout,
-            std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted | std::io::ErrorKind::UnexpectedEof => FailureKind::Interrupted,
+            ErrorKind::ConnectionRefused => FailureKind::Connect,
+            ErrorKind::TimedOut => FailureKind::Timeout,
+            ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted | ErrorKind::UnexpectedEof => FailureKind::Interrupted,
             _ => FailureKind::Io,
         },
         _ => FailureKind::Io,
@@ -61,103 +87,90 @@ fn failure(e: ureq::Error) -> TransportError {
     TransportError::Failed { kind, detail: Some(e.to_string()) }
 }
 
-/// Where a ranged answer starts, and the whole resource's length: `bytes 100-199/1000`.
+/// Parses `bytes 100-199/1000` into (start, total length).
 fn content_range(v: &str) -> Option<(u64, Option<u64>)> {
     let (range, total) = v.strip_prefix("bytes ")?.split_once('/')?;
     let start = range.split_once('-')?.0.trim().parse().ok()?;
     Some((start, total.trim().parse().ok()))
 }
 
-/// The whole length a range that could not be served names: `bytes */1000`.
+/// Parses the total length out of a 416's `bytes */1000`.
 fn unsatisfied_range(v: &str) -> Option<u64> {
     v.strip_prefix("bytes ")?.trim().strip_prefix("*/")?.trim().parse().ok()
 }
 
+/// Adds `headers` and a whole-request timeout (0 keeps the agent's) to `req`.
+fn configured<B>(mut req: RequestBuilder<B>, headers: &HashMap<String, String>, timeout_ms: u32) -> RequestBuilder<B> {
+    for (name, value) in headers {
+        req = req.header(name, value);
+    }
+    if timeout_ms > 0 {
+        req = req.config().timeout_global(Some(Duration::from_millis(timeout_ms as u64))).build();
+    }
+    req
+}
+
+fn response(r: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Result<TransportResponse, TransportError> {
+    let r = r.map_err(failure)?;
+    let status = r.status().as_u16();
+    let body = r.into_body().with_config().limit(MAX_ANSWER).read_to_vec().map_err(failure)?;
+    Ok(TransportResponse { status, body })
+}
+
+/// Blocking inside: desktop clients call the core from their own threads, and a future that is ready on
+/// first poll needs no runtime.
 #[async_trait::async_trait]
 impl Transport for Http {
-    /// Blocking inside: a desktop client drives the core's calls on threads of its own, and a future
-    /// that completes when first polled needs no runtime.
     async fn get(&self, url: String, timeout_ms: u32) -> Result<TransportResponse, TransportError> {
-        let mut req = self.agent.get(&url);
-        if timeout_ms > 0 {
-            req = req.config().timeout_global(Some(Duration::from_millis(timeout_ms as u64))).build();
-        }
-        let r = req.call().map_err(failure)?;
-        let status = r.status().as_u16();
-        let body = r.into_body().with_config().limit(MAX_ANSWER).read_to_vec().map_err(failure)?;
-        Ok(TransportResponse { status, body })
+        response(configured(self.agent.get(&url), &HashMap::new(), timeout_ms).call())
     }
 
     async fn send(&self, request: Exchange) -> Result<TransportResponse, TransportError> {
-        let timeout = (request.timeout_ms > 0).then(|| Duration::from_millis(request.timeout_ms as u64));
-        let r = match &request.json {
-            Some(json) => {
-                let mut req = self.agent.post(&request.url).header("Content-Type", "application/json");
-                for (name, value) in &request.headers {
-                    req = req.header(name, value);
-                }
-                if timeout.is_some() {
-                    req = req.config().timeout_global(timeout).build();
-                }
-                req.send(json.as_bytes())
-            }
-            None => {
-                let mut req = self.agent.get(&request.url);
-                for (name, value) in &request.headers {
-                    req = req.header(name, value);
-                }
-                if timeout.is_some() {
-                    req = req.config().timeout_global(timeout).build();
-                }
-                req.call()
-            }
-        }
-        .map_err(failure)?;
-        let status = r.status().as_u16();
-        let body = r.into_body().with_config().limit(MAX_ANSWER).read_to_vec().map_err(failure)?;
-        Ok(TransportResponse { status, body })
+        let (headers, timeout) = (&request.headers, request.timeout_ms);
+        response(match &request.json {
+            Some(json) => configured(self.agent.post(&request.url).header("Content-Type", "application/json"), headers, timeout).send(json.as_bytes()),
+            None => configured(self.agent.get(&request.url), headers, timeout).call(),
+        })
     }
 
     fn address_changed(&self) {}
 }
 
-// ---- a song's request, called off ----
-
 thread_local! {
-    /// The request this thread waits on for the engine, while it does: its waits for bytes look at it.
-    static CALLED: RefCell<Option<Cancel>> = const { RefCell::new(None) };
+    /// The engine request this thread is currently blocked on. Thread-local because ureq pools
+    /// connections across requests and has no per-call hook into the transport.
+    static CURRENT_CANCEL: RefCell<Option<Cancel>> = const { RefCell::new(None) };
 }
 
-/// Runs `f` with `cancel` as this thread's request.
-fn as_request<R>(cancel: &Cancel, f: impl FnOnce() -> R) -> R {
-    let before = CALLED.with(|c| c.replace(Some(cancel.clone())));
+/// Runs `f` with `cancel` as this thread's current request.
+fn with_cancel<R>(cancel: &Cancel, f: impl FnOnce() -> R) -> R {
+    let before = CURRENT_CANCEL.with(|c| c.replace(Some(cancel.clone())));
     let r = f();
-    CALLED.with(|c| *c.borrow_mut() = before);
+    CURRENT_CANCEL.with(|c| *c.borrow_mut() = before);
     r
 }
 
-/// How often a wait for a song's bytes looks whether the engine has called its request off. ureq has no
-/// way to cancel a call from another thread; its socket waits are cut into pieces this long instead, only
-/// for the engine's requests and only while they wait.
-const LOOK_EVERY: Duration = Duration::from_millis(250);
+/// Poll interval for cancellation while blocked on a socket (ureq cannot be cancelled from another thread).
+const CANCEL_POLL: Duration = Duration::from_millis(250);
 
-/// The last link of the connector chain: every connection's waits for input, on a thread that waits for
-/// one of the engine's requests, end as soon as the engine calls that request off.
+/// Connector wrapping every connection in [`CancellableTransport`].
 #[derive(Debug)]
-struct Callable;
+struct Cancellable;
 
-impl Connector<Box<dyn ureq::unversioned::transport::Transport>> for Callable {
-    type Out = Called;
+impl Connector<Box<dyn ureq::unversioned::transport::Transport>> for Cancellable {
+    type Out = CancellableTransport;
 
-    fn connect(&self, _: &ConnectionDetails, chained: Option<Box<dyn ureq::unversioned::transport::Transport>>) -> Result<Option<Called>, ureq::Error> {
-        Ok(chained.map(Called))
+    fn connect(&self, _: &ConnectionDetails, chained: Option<Box<dyn ureq::unversioned::transport::Transport>>) -> Result<Option<CancellableTransport>, ureq::Error> {
+        Ok(chained.map(CancellableTransport))
     }
 }
 
+/// Splits input waits into [`CANCEL_POLL`] slices and fails with `Interrupted` once the thread's
+/// current request is cancelled.
 #[derive(Debug)]
-struct Called(Box<dyn ureq::unversioned::transport::Transport>);
+struct CancellableTransport(Box<dyn ureq::unversioned::transport::Transport>);
 
-impl ureq::unversioned::transport::Transport for Called {
+impl ureq::unversioned::transport::Transport for CancellableTransport {
     fn buffers(&mut self) -> &mut dyn Buffers {
         self.0.buffers()
     }
@@ -167,14 +180,14 @@ impl ureq::unversioned::transport::Transport for Called {
     }
 
     fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
-        let Some(cancel) = CALLED.with(|c| c.borrow().clone()) else { return self.0.await_input(timeout) };
+        let Some(cancel) = CURRENT_CANCEL.with(|c| c.borrow().clone()) else { return self.0.await_input(timeout) };
         let until = (!timeout.after.is_not_happening()).then(|| Instant::now() + *timeout.after);
         loop {
             if cancel.cancelled() {
-                return Err(ureq::Error::Io(std::io::Error::new(std::io::ErrorKind::Interrupted, "called off")));
+                return Err(ureq::Error::Io(std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled")));
             }
             let left = until.map(|u| u.saturating_duration_since(Instant::now()));
-            let step = left.map_or(LOOK_EVERY, |l| l.min(LOOK_EVERY));
+            let step = left.map_or(CANCEL_POLL, |l| l.min(CANCEL_POLL));
             let piece = NextTimeout { after: ureq::unversioned::transport::time::Duration::Exact(step), reason: timeout.reason };
             match self.0.await_input(piece) {
                 Err(ureq::Error::Timeout(_)) if left.is_none_or(|l| l > step) => continue,
@@ -192,16 +205,16 @@ impl ureq::unversioned::transport::Transport for Called {
     }
 }
 
-/// A song's body, read as the engine's request: a read waiting for bytes ends when it is called off.
-struct Watched {
+/// A response body whose reads run under its request's cancel.
+struct CancellableBody {
     inner: Box<dyn Read + Send>,
     cancel: Cancel,
 }
 
-impl Read for Watched {
+impl Read for CancellableBody {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let (inner, cancel) = (&mut self.inner, &self.cancel);
-        as_request(cancel, || inner.read(buf))
+        with_cancel(cancel, || inner.read(buf))
     }
 }
 
@@ -211,13 +224,12 @@ impl ByteSource for Http {
     }
 
     fn open_cancellable(&self, url: &str, _key: Option<&str>, from: u64, cancel: &Cancel) -> Result<Body, OpenError> {
-        let mut b = as_request(cancel, || self.open_now(url, from))?;
-        b.reader = Box::new(Watched { inner: b.reader, cancel: cancel.clone() });
+        let mut b = with_cancel(cancel, || self.open_now(url, from))?;
+        b.reader = Box::new(CancellableBody { inner: b.reader, cancel: cancel.clone() });
         Ok(b)
     }
 
-    /// A station's stream, with its announcements asked for (`Icy-MetaData: 1`); the answer says how
-    /// many bytes of music come between two (`icy-metaint`).
+    /// Radio stream with ICY metadata requested; also returns `icy-metaint` (audio bytes between metadata blocks).
     fn open_live(&self, url: &str) -> Result<(Body, Option<usize>), String> {
         let r = self.agent.get(url).header("Icy-MetaData", "1").call().map_err(|e| e.to_string())?;
         let status = r.status().as_u16();
@@ -230,48 +242,19 @@ impl ByteSource for Http {
     }
 }
 
-impl Http {
-    /// `url` from byte `from` on, on this thread's request.
-    fn open_now(&self, url: &str, from: u64) -> Result<Body, OpenError> {
-        let mut req = self.agent.get(url);
-        if from > 0 {
-            req = req.header("Range", format!("bytes={from}-"));
-        }
-        let r = req.call().map_err(|e| e.to_string())?;
-        let status = r.status().as_u16();
-        let header = |name: &str| r.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
-        // A range from past the end (a length promised as an estimate): the answer says the real one.
-        if status == 416 && from > 0 {
-            // Without the length (a proxy drops Content-Range): the first byte alone, whose ranged answer says it.
-            let len = header("content-range").as_deref().and_then(unsatisfied_range).or_else(|| self.whole_length(url)).filter(|&l| l <= from);
-            return Err(OpenError::PastEnd { len });
-        }
-        if !(200..300).contains(&status) {
-            return Err(OpenError::Status(status));
-        }
-        // A ranged answer says where it starts and how long the whole is; a plain one is the whole.
-        let (start, len) = match header("content-range").as_deref().and_then(content_range) {
-            Some(r) if status == 206 => r,
-            _ => (0, header("content-length").and_then(|l| l.parse().ok())),
-        };
-        let reader: Box<dyn Read + Send> = Box::new(r.into_body().into_reader());
-        Ok(Body { start, len, reader })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn a_content_range_says_where_the_bytes_start_and_how_many_there_are() {
+    fn parses_content_range() {
         assert_eq!(content_range("bytes 100-199/1000"), Some((100, Some(1000))));
         assert_eq!(content_range("bytes 5-9/*"), Some((5, None)));
         assert_eq!(content_range("items 1-2/3"), None);
     }
 
     #[test]
-    fn a_range_past_the_end_says_how_long_the_whole_is() {
+    fn parses_unsatisfied_range() {
         assert_eq!(unsatisfied_range("bytes */6406842"), Some(6_406_842));
         assert_eq!(unsatisfied_range("bytes */*"), None);
         assert_eq!(unsatisfied_range("bytes 0-9/10"), None);

@@ -81,6 +81,7 @@
     <string name="error_not_subsonic">That address answered, but not like a Subsonic server. Check the URL (and any reverse-proxy path).</string>
     <string name="error_bad_response">bad response: %1$s</string>
     <string name="error_database">database: %1$s</string>
+    <string name="error_smart_playlist">This smart playlist\'s rules can\'t be read.</string>
     <string name="error_no_filters">that preset had no filters in it</string>
 
     <!-- The car's browse tree (Android Auto). -->

@@ -1,8 +1,5 @@
-//! How a page looks, as Kotlin reaches it: `nori_look` over JNI - a cover's page worked out from the
-//! pixels the cover loader decodes (covers.rs), its wash drawn straight into a Bitmap and its look into a
-//! small int array - so nothing is boxed, serialised or copied twice, and the UI only ever looks colours
-//! up. The lyrics page is prepared once per song through uniffi (`nori_core::look`) and then asked every
-//! frame here with primitives in and one packed `long` out, allocating nothing on either side.
+//! `nori_look` for Kotlin: page colours from cover pixels (wash drawn straight into a Bitmap, look into an
+//! int array), seek bar pacing, and per-frame lyric clock queries (primitives in, packed `long` out).
 
 use jni::objects::{JClass, JIntArray, JLongArray, JObject};
 use jni::sys::{jboolean, jfloat, jint, jlong};
@@ -22,15 +19,11 @@ pub(crate) static COVER: Class = Class {
         native!(c"mix", c"([I[IF[I)V", mix),
         native!(c"seekTimes", c"(ZFJJJ)J", seek_times),
         native!(c"seekStep", c"(FFFFF)J", seek_step),
-        native!(c"seekPaceNew", c"()J", seek_pace_new),
+        native!(c"seekPaceNew", c"(J)J", seek_pace_new),
         native!(c"seekPaceFree", c"(J)V", seek_pace_free),
         native!(c"seekPaceSync", c"(JJJ)V", seek_pace_sync),
         native!(c"seekPaceHold", c"(JFJJ)V", seek_pace_hold),
         native!(c"seekPaceStep", c"(JJJFFF)I", seek_pace_step),
-        native!(c"seekPaceBar", c"(J)F", seek_pace_bar),
-        native!(c"seekPaceTimes", c"(J)J", seek_pace_times),
-        native!(c"seekPaceFrom", c"(J)J", seek_pace_from),
-        native!(c"seekPaceFade", c"(J)F", seek_pace_fade),
         native!(c"transportGlyph", c"(ZZZ)I", transport_glyph),
         native!(c"readable", c"(III)I", readable),
         native!(c"heroButtons", c"(ZZZZZZ)I", hero_buttons),
@@ -45,10 +38,9 @@ pub(crate) static LYRICS: Class = Class {
     methods: &[
         native!(c"destroy", c"(J)V", lyrics_destroy),
         native!(c"sweeps", c"(J)Z", lyrics_sweeps),
-        native!(c"at", c"(JJZZZ)J", lyrics_at),
+        native!(c"at", c"(JJZZZJ)J", lyrics_at),
         native!(c"shown", c"(J)J", lyrics_shown),
         native!(c"shownMs", c"(J)J", lyrics_shown_ms),
-        native!(c"backingSung", c"(J)F", lyrics_backing_sung),
         native!(c"tap", c"(JI)J", lyrics_tap),
         native!(c"land", c"(JI)V", lyrics_land),
         native!(c"nudge", c"(JI)J", lyrics_nudge),
@@ -58,11 +50,8 @@ pub(crate) static LYRICS: Class = Class {
     ],
 };
 
-/// A software ARGB_8888 `Bitmap`'s own memory (or RGB_565, where the caller says it takes one), written
-/// in place through Android's bitmap API (libjnigraphics): no copy of the picture into a Java
-/// array, and none across into Rust. Locked for as long as the value lives. Anything else - another
-/// format, a hardware bitmap, a size that does not add up - is refused, and the caller gets nothing
-/// rather than a guess.
+/// A software ARGB_8888 (or, if accepted, RGB_565) Bitmap's pixels, locked through libjnigraphics for the
+/// value's lifetime. Other formats, hardware Bitmaps and inconsistent sizes are refused.
 #[cfg(target_os = "android")]
 pub(crate) mod bitmap {
     use jni::objects::JObject;
@@ -94,7 +83,7 @@ pub(crate) mod bitmap {
         pub width: usize,
         pub height: usize,
         pub stride: usize,
-        /// Two bytes a pixel, RGB_565 (only from `new_or_565`), rather than ARGB_8888's four.
+        /// RGB_565 (only from `new_or_565`).
         pub rgb565: bool,
     }
 
@@ -103,7 +92,7 @@ pub(crate) mod bitmap {
             Locked::lock(env, bitmap, false)
         }
 
-        /// An ARGB_8888 Bitmap or an RGB_565 one; `rgb565` says which.
+        /// Also accepts RGB_565; `rgb565` says which it is.
         pub fn new_or_565(env: &JNIEnv, bitmap: &JObject) -> Option<Locked> {
             Locked::lock(env, bitmap, true)
         }
@@ -135,7 +124,6 @@ pub(crate) mod bitmap {
             Some(Locked { env: e, obj: o, px: addr as *mut u8, width, height, stride, rgb565 })
         }
 
-        /// The bytes of one row's pixels.
         fn row_bytes(&self) -> usize {
             self.width * if self.rgb565 { 2 } else { 4 }
         }
@@ -147,7 +135,7 @@ pub(crate) mod bitmap {
             unsafe { std::slice::from_raw_parts_mut(self.px.add(y * self.stride), self.row_bytes()) }
         }
 
-        /// All the rows at once, `stride` bytes apart, the last one only as long as its pixels.
+        /// All rows, `stride` bytes apart; the last one without padding.
         pub fn pixels_mut(&mut self) -> &mut [u8] {
             // SAFETY: as in `row_mut`: the last row starts `(height - 1) * stride` bytes in and holds
             // `row_bytes`, and `&mut self` keeps the pixels to one writer.
@@ -157,14 +145,13 @@ pub(crate) mod bitmap {
 
     impl Drop for Locked {
         fn drop(&mut self) {
-            // SAFETY: the pixels were locked in `new` through the same JNIEnv and reference, which outlive
-            // this value (it never leaves the call).
+            // SAFETY: locked in `lock` through the same JNIEnv and reference, which outlive this value.
             unsafe { AndroidBitmap_unlockPixels(self.env, self.obj) };
         }
     }
 }
 
-/// ARGB to a Bitmap's own layout (R, G, B, A, premultiplied), as `Bitmap.setPixels` would store it.
+/// ARGB to a Bitmap's premultiplied RGBA bytes, as `Bitmap.setPixels` stores it.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 fn premultiplied(argb: u32, out: &mut [u8]) {
     let a = argb >> 24;
@@ -175,10 +162,8 @@ fn premultiplied(argb: u32, out: &mut [u8]) {
     out[3] = a as u8;
 }
 
-/// The page for a cover's `pixels` (ARGB, `w` x `h`; the cover loader decodes them, covers.rs). `out`
-/// gets the page's look (`dress::LEN` entries); the wash is drawn straight into `wash` (a mutable
-/// `WASH_OUT`² ARGB_8888 bitmap). Returns 0 for no page, 1 for a page, 2 for a page with its wash (not on
-/// AMOLED black).
+/// The page for a cover's ARGB `pixels`: its look into `out` (`dress::LEN` ints), its wash into `wash` (a
+/// mutable `WASH_OUT`² ARGB_8888 Bitmap). Returns 0 no page, 1 page, 2 page and wash.
 pub(crate) fn page(env: &JNIEnv, pixels: &[u32], w: usize, h: usize, dark: bool, amoled: bool, out: &JIntArray, wash: &JObject) -> jint {
     let c = derive(pixels, w, h, dark, amoled);
     let look = dress::page(c.edge, c.background, c.on, c.accent, c.wash_edge).map(|v| v as i32);
@@ -207,8 +192,7 @@ pub(crate) fn page(env: &JNIEnv, pixels: &[u32], w: usize, h: usize, dark: bool,
     }
 }
 
-/// Two looks mixed at `t` into `out` (`dress::mix`): a frame of the player's page cross-fading, so one
-/// crossing and no allocation, three arrays copied on the stack.
+/// `dress::mix` of two looks at `t`, per cross-fade frame; no allocation.
 extern "system" fn mix(env: JNIEnv, _: JClass, from: JIntArray, to: JIntArray, t: jfloat, out: JIntArray) {
     let (mut a, mut b) = ([0i32; dress::LEN], [0i32; dress::LEN]);
     if env.get_int_array_region(&from, 0, &mut a).is_err() || env.get_int_array_region(&to, 0, &mut b).is_err() {
@@ -219,9 +203,7 @@ extern "system" fn mix(env: JNIEnv, _: JClass, from: JIntArray, to: JIntArray, t
     let _ = env.set_int_array_region(&out, 0, &mixed.map(|v| v as i32));
 }
 
-/// The look of a page in the theme's own colours. `roles` is background, on surface, on surface variant,
-/// primary, on primary, surface variant, surface container, surface container high, secondary container,
-/// outline variant; `out` gets `dress::LEN` entries.
+/// `dress::plain`: `roles` is the 10 `dress::Scheme` colours in field order.
 extern "system" fn plain(env: JNIEnv, _: JClass, roles: JIntArray, out: JIntArray) {
     let mut r = [0i32; 10];
     if env.get_int_array_region(&roles, 0, &mut r).is_err() {
@@ -235,32 +217,29 @@ extern "system" fn plain(env: JNIEnv, _: JClass, roles: JIntArray, out: JIntArra
     let _ = env.set_int_array_region(&out, 0, &dress::plain(&s).map(|v| v as i32));
 }
 
-/// A theme's tones from one seed colour, into `out` (11 colours; see `nori_look::theme::seeded`).
+/// `nori_look::theme::seeded` into `out` (11 colours).
 extern "system" fn tones(env: JNIEnv, _: JClass, seed: jint, dark: jboolean, out: JIntArray) {
     let tones = nori_look::theme::seeded(seed as u32, dark != 0).map(|v| v as i32);
     let _ = env.set_int_array_region(&out, 0, &tones);
 }
 
-/// The surfaces AMOLED black puts in a dark scheme (`dress::AMOLED`, 8 colours), into `out`.
+/// `dress::AMOLED` (8 colours) into `out`.
 extern "system" fn amoled(env: JNIEnv, _: JClass, out: JIntArray) {
     let _ = env.set_int_array_region(&out, 0, &dress::AMOLED.map(|v| v as i32));
 }
 
-/// [`nori_core::stage::seek_times`] for a frame of a scrub: `at_s << 32 | left_s`. The times are asked
-/// on every frame a finger moves the bar, and a uniffi record each frame would be garbage.
+/// [`nori_core::stage::seek_times`] per scrub frame, packed `at_s << 32 | left_s`.
 extern "system" fn seek_times(dragging: jboolean, drag: jfloat, held_ms: jlong, position_ms: jlong, duration_ms: jlong) -> jlong {
     let t = nori_core::stage::seek_times(dragging != 0, drag, held_ms, position_ms, duration_ms);
     ((t.at_s.clamp(0, u32::MAX as i64)) << 32) | t.left_s.clamp(0, u32::MAX as i64)
 }
 
-/// [`nori_look::cover::readable_either_way`]: `color` moved lighter or darker in its own hue until it
-/// reads on `background`, else `fallback`. ARGB ints in and out.
+/// [`nori_look::cover::readable_either_way`], ARGB ints.
 extern "system" fn readable(color: jint, background: jint, fallback: jint) -> jint {
     nori_look::cover::readable_either_way(color as u32, background as u32, fallback as u32) as jint
 }
 
-/// Which glyph the play button shows (`stage::transport_glyph`), as its place in `TransportGlyph`: 0 play,
-/// 1 pause, 2 spinner. Asked on every play and pause, so primitives only.
+/// `stage::transport_glyph` as its `TransportGlyph` ordinal.
 extern "system" fn transport_glyph(playing: jboolean, buffering: jboolean, waited: jboolean) -> jint {
     use nori_core::stage::TransportGlyph;
     match nori_core::stage::transport_glyph(playing != 0, buffering != 0, waited != 0) {
@@ -270,99 +249,107 @@ extern "system" fn transport_glyph(playing: jboolean, buffering: jboolean, waite
     }
 }
 
-/// A page's Shuffle and Play (`pages::hero_buttons`), packed by `HeroButtons::pack`. Asked on every play
-/// and pause, so primitives only.
+/// `pages::hero_buttons`, packed by `HeroButtons::pack`.
 extern "system" fn hero_buttons(here: jboolean, shuffle: jboolean, playing: jboolean, buffering: jboolean, can_play: jboolean, can_shuffle: jboolean) -> jint {
     nori_core::pages::hero_buttons(here != 0, shuffle != 0, playing != 0, buffering != 0, can_play != 0, can_shuffle != 0).pack()
 }
 
-/// One step of the seek bar (`nori_look::motion::seek_step`), asked each frame it moves: primitives
-/// in, `bar bits << 32 | wait` out, nothing allocated.
+/// `nori_look::motion::seek_step`, packed `bar bits << 32 | wait`.
 extern "system" fn seek_step(bar: jfloat, target: jfloat, dt_s: jfloat, width_px: jfloat, speed: jfloat) -> jlong {
     let (b, wait) = nori_look::motion::seek_step(bar, target, dt_s, width_px, speed);
     ((b.to_bits() as i64) << 32) | (wait as u32 as i64)
 }
 
-// ---- the seek bar's pace (`nori_look::motion::SeekPace`), one per seek bar on screen -----------------------
+// ---- `nori_look::motion::SeekPace`, one per seek bar ----
 
-fn pace<'a>(h: jlong) -> Option<&'a mut SeekPace> {
-    // SAFETY: Kotlin passes 0 or a handle `seek_pace_new` made, only from the main thread, and never one it
-    // has freed (SeekPace.kt).
-    (h != 0).then(|| unsafe { &mut *(h as *mut SeekPace) })
+/// What a seek bar shows, left in SeekPace.kt's view after every change: the bar (0..1), the current
+/// times' opacity (0..1), the times (`at_s << 32 | left_s`) and those fading out (-1: none).
+#[repr(C)]
+struct PaceShown {
+    bar: f32,
+    fade: f32,
+    times: i64,
+    from: i64,
 }
 
-extern "system" fn seek_pace_new() -> jlong {
-    Box::into_raw(Box::new(SeekPace::new())) as jlong
+/// A seek pace and the view it shows into.
+struct Pace {
+    pace: SeekPace,
+    view: jlong,
 }
 
-extern "system" fn seek_pace_free(h: jlong) {
-    if h != 0 {
-        // SAFETY: made by `seek_pace_new`, freed once (Kotlin zeroes its handle).
-        drop(unsafe { Box::from_raw(h as *mut SeekPace) });
+impl Pace {
+    fn show(&self) {
+        let p = &self.pace;
+        let shown = PaceShown { bar: p.bar(), fade: p.fade(), times: pack_times(p.times()), from: p.fading().map_or(-1, |(t, _)| pack_times(t)) };
+        // SAFETY: `view` is SeekPace.kt's buffer, kept with the pace and written only here, on its thread.
+        unsafe { crate::view::put(self.view, shown) }
     }
 }
 
-extern "system" fn seek_pace_sync(h: jlong, position_ms: jlong, duration_ms: jlong) {
-    if let Some(p) = pace(h) {
-        p.sync(position_ms, duration_ms);
-    }
-}
-
-extern "system" fn seek_pace_hold(h: jlong, bar: jfloat, position_ms: jlong, duration_ms: jlong) {
-    if let Some(p) = pace(h) {
-        p.hold(bar, position_ms, duration_ms);
-    }
-}
-
-extern "system" fn seek_pace_step(h: jlong, position_ms: jlong, duration_ms: jlong, dt_s: jfloat, width_px: jfloat, rate: jfloat) -> jint {
-    pace(h).map_or(-1, |p| p.step(position_ms, duration_ms, dt_s, width_px, rate))
-}
-
-extern "system" fn seek_pace_bar(h: jlong) -> jfloat {
-    pace(h).map_or(0.0, |p| p.bar())
+fn pace<'a>(h: jlong) -> Option<&'a mut Pace> {
+    // SAFETY: 0 or a live `seek_pace_new` handle, used only from the main thread (SeekPace.kt).
+    (h != 0).then(|| unsafe { &mut *(h as *mut Pace) })
 }
 
 fn pack_times((at, left): (i64, i64)) -> jlong {
     (at << 32) | (left & 0xFFFF_FFFF)
 }
 
-/// The times shown, `at_s << 32 | left_s`.
-extern "system" fn seek_pace_times(h: jlong) -> jlong {
-    pace(h).map_or(0, |p| pack_times(p.times()))
+/// A pace showing into `view` (a `NativeView` address of 24 bytes).
+extern "system" fn seek_pace_new(view: jlong) -> jlong {
+    let p = Pace { pace: SeekPace::new(), view };
+    p.show();
+    Box::into_raw(Box::new(p)) as jlong
 }
 
-/// The times fading out, packed as [`seek_pace_times`]; -1 with none.
-extern "system" fn seek_pace_from(h: jlong) -> jlong {
-    pace(h).and_then(|p| p.fading()).map_or(-1, |(t, _)| pack_times(t))
+extern "system" fn seek_pace_free(h: jlong) {
+    if h != 0 {
+        // SAFETY: made by `seek_pace_new`, freed once (Kotlin zeroes its handle).
+        drop(unsafe { Box::from_raw(h as *mut Pace) });
+    }
 }
 
-/// How strongly the times now are drawn, 0..1 (1: nothing fading).
-extern "system" fn seek_pace_fade(h: jlong) -> jfloat {
-    pace(h).map_or(1.0, |p| p.fade())
+extern "system" fn seek_pace_sync(h: jlong, position_ms: jlong, duration_ms: jlong) {
+    if let Some(p) = pace(h) {
+        p.pace.sync(position_ms, duration_ms);
+        p.show();
+    }
 }
 
-// ---- lyrics -------------------------------------------------------------------------------------------------
+extern "system" fn seek_pace_hold(h: jlong, bar: jfloat, position_ms: jlong, duration_ms: jlong) {
+    if let Some(p) = pace(h) {
+        p.pace.hold(bar, position_ms, duration_ms);
+        p.show();
+    }
+}
+
+extern "system" fn seek_pace_step(h: jlong, position_ms: jlong, duration_ms: jlong, dt_s: jfloat, width_px: jfloat, rate: jfloat) -> jint {
+    pace(h).map_or(-1, |p| {
+        let wait = p.pace.step(position_ms, duration_ms, dt_s, width_px, rate);
+        p.show();
+        wait
+    })
+}
+
+// ---- lyrics ----
 
 fn clock<'a>(h: jlong) -> Option<&'a LyricClock> {
-    // SAFETY: Kotlin passes 0 or a handle `lyrics_clock` or `kept` made, and never one it has destroyed.
+    // SAFETY: 0 or a live handle from `kept_clock`.
     unsafe { nori_core::look::clock(h) }
 }
 
-/// A clock on the lyrics the core read under `key` (`nori_core::look::kept_clock`); 0 when they are no
-/// longer kept.
+/// `nori_core::look::kept_clock`; 0 when the lyrics under `key` are gone.
 extern "system" fn lyrics_kept(key: jlong, position_ms: jlong) -> jlong {
     nori_core::look::kept_clock(key as u64, position_ms)
 }
 
-/// How lit line `line` is while `active` is sung (`nori_look::lyrics::line_strength`): asked for every
-/// line on the page whenever the line being sung changes, so primitives only.
+/// `nori_look::lyrics::line_strength`.
 extern "system" fn lyrics_strength(synced: jboolean, line: jint, active: jint) -> jfloat {
     nori_look::lyrics::line_strength(synced != 0, line, active)
 }
 
-/// The line of the new lyrics that stands for line `at` of the old ones (`nori_look::lyrics::matching_line`),
-/// each given as its lines' starts. Asked once when finer lyrics replace the ones on screen: `@FastNative`,
-/// the arrays copied once.
+/// `nori_look::lyrics::matching_line`; both lyrics as their line start times.
 extern "system" fn lyrics_matching_line(env: JNIEnv, _: JClass, old: JLongArray, at: jint, next: JLongArray, timed: jboolean) -> jint {
     let read = |a: &JLongArray| -> Vec<i64> {
         let n = env.get_array_length(a).unwrap_or(0).max(0) as usize;
@@ -376,50 +363,57 @@ extern "system" fn lyrics_matching_line(env: JNIEnv, _: JClass, old: JLongArray,
 }
 
 extern "system" fn lyrics_destroy(h: jlong) {
-    // SAFETY: `h` came from `lyrics_clock` or `kept`, and Kotlin destroys it once.
+    // SAFETY: `h` came from `kept_clock`; Kotlin destroys it once.
     unsafe { nori_core::look::free_clock(h) }
 }
 
-/// Whether the active line can fill in word by word at all (the listener's switch aside).
+/// Whether the lyrics have word timing.
 extern "system" fn lyrics_sweeps(h: jlong) -> jboolean {
     clock(h).is_some_and(|c| c.timing().sweeps()) as jboolean
 }
 
-/// The per-frame question, `LyricClock::advance` packed by `Step::pack`. A freed handle answers
-/// "nothing lit, never ask again".
-extern "system" fn lyrics_at(h: jlong, position_ms: jlong, sweep: jboolean, lively: jboolean, force: jboolean) -> jlong {
-    clock(h).map_or(0, |c| c.advance(position_ms, sweep != 0, lively != 0, force != 0).pack())
+/// `LyricClock::advance`, packed by `Step::pack`; 0 for a null handle.
+/// The moment on screen and how far the lit line's backing vocals are sung there, left in
+/// LyricsClock.kt's view by [`lyrics_at`].
+#[repr(C)]
+struct LyricsShown {
+    ms: i64,
+    backing_sung: f32,
 }
 
-/// The moment on screen, for the words' rise and glow, drawn in Kotlin.
+/// Also leaves [`LyricsShown`] in `view` (a `NativeView` address of 16 bytes).
+extern "system" fn lyrics_at(h: jlong, position_ms: jlong, sweep: jboolean, lively: jboolean, force: jboolean, view: jlong) -> jlong {
+    clock(h).map_or(0, |c| {
+        let step = c.advance(position_ms, sweep != 0, lively != 0, force != 0).pack();
+        // SAFETY: `view` is LyricsClock.kt's buffer, kept with the clock and written only here, on its thread.
+        unsafe { crate::view::put(view, LyricsShown { ms: c.shown_ms(), backing_sung: c.backing_sung() }) };
+        step
+    })
+}
+
+/// The displayed time, for Kotlin's word animations.
 extern "system" fn lyrics_shown_ms(h: jlong) -> jlong {
     clock(h).map_or(0, |c| c.shown_ms())
 }
 
-/// How far into the lit line's backing vocals the singing is, at the moment on screen.
-extern "system" fn lyrics_backing_sung(h: jlong) -> jfloat {
-    clock(h).map_or(0.0, |c| c.backing_sung())
-}
-
-/// What is on screen now, packed by `Frame::pack`.
+/// The displayed frame, packed by `Frame::pack`.
 extern "system" fn lyrics_shown(h: jlong) -> jlong {
     clock(h).map_or(0, |c| c.shown().pack())
 }
 
-/// A tap on `line`: shows it and returns where to seek the player to.
+/// A tap on `line`: shows it; returns the position to seek to.
 extern "system" fn lyrics_tap(h: jlong, line: jint) -> jlong {
     clock(h).map_or(0, |c| c.tap(line.max(0) as usize))
 }
 
-/// Lyrics replacing the ones on screen for the same song start on `line`, the one standing for the line
-/// that was lit (`LyricClock::land`).
+/// `LyricClock::land`: replacement lyrics start on `line`.
 extern "system" fn lyrics_land(h: jlong, line: jint) {
     if let (Some(c), Ok(line)) = (clock(h), usize::try_from(line)) {
         c.land(line);
     }
 }
 
-/// Sooner (> 0), later (< 0) or back to none (0); returns the nudge in ms.
+/// Timing nudge: sooner (> 0), later (< 0) or reset (0); returns the nudge in ms.
 extern "system" fn lyrics_nudge(h: jlong, dir: jint) -> jlong {
     clock(h).map_or(0, |c| c.nudge(dir))
 }
@@ -429,7 +423,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_bitmaps_pixels_are_written_like_set_pixels() {
+    fn premultiplied_matches_set_pixels() {
         let mut px = [0u8; 4];
         premultiplied(0xFF123456, &mut px);
         assert_eq!(px, [0x12, 0x34, 0x56, 0xFF]);

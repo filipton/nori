@@ -1,28 +1,23 @@
-//! How a page's data is laid out before it is shown: an album's discs, an artist's releases by kind,
-//! the letters down the side of a long list, what a filter keeps. Worked out once per page (or once per
-//! keystroke for a filter) here, so the UI only lays out what it is handed.
+//! A page's data laid out once when read: an album's discs, an artist's releases by kind, a list's
+//! filter and index letters, the big buttons, and the detail pages.
 
 use nori_model::model::{Album, Artist, DiscTitle, OriginKind, PageOrigin, Playlist, Song};
 
-/// One disc of an album: whether it is headed and its name (the client words "Disc 2 · Bonus"), and the
-/// positions of its songs in the album's song list, in the album's order.
+/// One disc of an album and the positions of its songs.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct DiscGroup {
     pub disc: u32,
-    /// False when the album has only the one disc, which needs no heading.
+    /// False for a single-disc album.
     pub headed: bool,
     /// The disc's own name (OpenSubsonic `discTitles`); empty when it has none.
     pub title: String,
     pub songs: Vec<u32>,
-    /// Each of those songs' second line on this page: a track by the album's own artist shows only its
-    /// explicit mark, the way Apple's album page does - repeating "Radiohead" down ten rows of a
-    /// Radiohead album says nothing ([`nori_model::lines::song_line`]).
+    /// Each song's second line, without the album's own artist ([`nori_model::lines::song_line`]).
     pub lines: Vec<String>,
 }
 
-/// An album's songs by disc, discs in order (a song with no disc number is on disc 1). Made once when the
-/// album is read ([`AlbumDetail::new`]).
+/// An album's songs by disc, in disc order (no disc number is disc 1).
 pub fn album_discs(album: &Album, songs: &[Song], disc_titles: &[DiscTitle]) -> Vec<DiscGroup> {
     let mut discs: Vec<DiscGroup> = Vec::new();
     for (i, s) in songs.iter().enumerate() {
@@ -49,8 +44,7 @@ pub fn album_discs(album: &Album, songs: &[Song], disc_titles: &[DiscTitle]) -> 
     discs
 }
 
-/// A kind of release an artist's page puts on a shelf of its own; the client names each shelf
-/// ("Albums", "EPs"). Declared in the order the page lists them.
+/// A shelf of an artist's page, in page order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 #[repr(u8)]
@@ -63,11 +57,11 @@ pub enum ReleaseKind {
     Soundtrack,
     Remix,
     Other,
-    /// A type the server tags that none of the others is: its shelf is named by the tag itself.
+    /// Another type, its shelf named by the server's tag.
     Tagged,
 }
 
-/// The kinds of release with a shelf of their own, by the name a type capitalised reads as.
+/// The known kinds by their capitalised type name.
 const RELEASE_NAMES: [(&str, ReleaseKind); 8] = [
     ("Album", ReleaseKind::Album),
     ("EP", ReleaseKind::Ep),
@@ -84,10 +78,8 @@ fn capitalised(s: &str) -> String {
     c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
-/// Which kind of release an album is: the first of its types this page knows (other than plain
-/// "album", which everything also is), else its first type; a compilation or album when it has none.
-/// The type, capitalised, is a kind of its own when it reads exactly as one ("EP"; a lower-case "ep"
-/// reads "Ep" and is [`ReleaseKind::Tagged`], as it always was), else [`ReleaseKind::Tagged`] with it.
+/// An album's kind: its first known type other than "album", else its first type; without types, a
+/// compilation or an album. The capitalised type must read exactly as a kind ("ep" reads "Ep": Tagged).
 fn release_kind(a: &Album) -> (ReleaseKind, String) {
     if a.release_types.is_empty() {
         return (if a.is_compilation { ReleaseKind::Compilation } else { ReleaseKind::Album }, String::new());
@@ -100,8 +92,7 @@ fn release_kind(a: &Album) -> (ReleaseKind, String) {
     }
 }
 
-/// One shelf of an artist's page: which kind of release (the server's own tag for one the page does
-/// not know, capitalised: "Mixtape"), and the positions of its releases.
+/// One shelf of an artist's page and the positions of its releases.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct ReleaseGroup {
@@ -111,12 +102,10 @@ pub struct ReleaseGroup {
     pub albums: Vec<u32>,
 }
 
-/// An artist's releases by kind, newest first within each, the kinds in [`ReleaseKind`]'s order (a type
-/// the page does not know after all of those, in the order they first come).
-/// Made once when the artist is read ([`ArtistDetail::new`]).
+/// An artist's releases by kind in [`ReleaseKind`] order (unknown tags last, as first seen), newest
+/// first within each, equal years in the server's order.
 pub fn release_groups(albums: &[Album]) -> Vec<ReleaseGroup> {
     let mut order: Vec<usize> = (0..albums.len()).collect();
-    // Stable, newest first: equal years keep the server's order.
     order.sort_by(|&a, &b| albums[b].year.cmp(&albums[a].year));
     let mut groups: Vec<ReleaseGroup> = Vec::new();
     for i in order {
@@ -126,37 +115,38 @@ pub fn release_groups(albums: &[Album]) -> Vec<ReleaseGroup> {
             None => groups.push(ReleaseGroup { kind, tag, albums: vec![i as u32] }),
         }
     }
-    // Stable: the tags the page does not know keep the order they first came in.
     groups.sort_by_key(|g| g.kind);
     groups
 }
 
-/// Kotlin's `contains(needle, ignoreCase = true)`: character by character, either case.
-fn contains_ignoring_case(hay: &str, needle: &str) -> bool {
-    let n: Vec<char> = needle.chars().collect();
-    if n.is_empty() {
-        return true;
-    }
-    let h: Vec<char> = hay.chars().collect();
+/// Kotlin's `contains(needle, ignoreCase = true)`, `needle` as chars; allocates nothing.
+fn contains_ignoring_case(hay: &str, needle: &[char]) -> bool {
     let same = |a: char, b: char| a == b || upper(a) == upper(b) || lower(a) == lower(b);
-    h.windows(n.len()).any(|w| w.iter().zip(&n).all(|(&a, &b)| same(a, b)))
+    let mut rest = hay;
+    loop {
+        let mut h = rest.chars();
+        if needle.iter().all(|&b| h.next().is_some_and(|a| same(a, b))) {
+            return true;
+        }
+        let mut next = rest.chars();
+        if next.next().is_none() {
+            return false;
+        }
+        rest = next.as_str();
+    }
 }
 
-/// A character's one-character upper case, as Java's `Character.toUpperCase` gives it ('ß' stays).
+/// Java's `Character.toUpperCase`: single-character case mapping only ('ß' stays).
 fn upper(c: char) -> char {
-    let mut u = c.to_uppercase();
-    match (u.next(), u.next()) {
-        (Some(x), None) => x,
-        _ => c,
-    }
+    single(c.to_uppercase()).unwrap_or(c)
 }
 
 fn lower(c: char) -> char {
-    let mut u = c.to_lowercase();
-    match (u.next(), u.next()) {
-        (Some(x), None) => x,
-        _ => c,
-    }
+    single(c.to_lowercase()).unwrap_or(c)
+}
+
+fn single(mut mapped: impl Iterator<Item = char>) -> Option<char> {
+    mapped.next().filter(|_| mapped.next().is_none())
 }
 
 /// A letter down the side of a long list and the first row that starts with it.
@@ -172,19 +162,17 @@ pub struct IndexLetter {
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct IndexView {
     pub rows: Vec<u32>,
-    /// The first row of each initial, in the kept rows' positions, by letter; '#' for anything that
-    /// does not start with a letter.
+    /// Each initial's first kept row, by letter; '#' for a non-letter.
     pub letters: Vec<IndexLetter>,
-    /// Whether the letters are worth an index down the side: more than three of them.
+    /// More than [`INDEX_FROM`] letters.
     pub show_letters: bool,
 }
 
-/// A list with this many initials or fewer has no index down its side: there is nothing to jump over.
+/// A list with this many initials or fewer gets no index.
 const INDEX_FROM: usize = 3;
 
-/// A list's text, held once for the life of the page, so a filter typed into it sends only what was
-/// typed. Each row is one or more fields (a song's title and artist); a row is kept when any field
-/// contains the filter, in either case.
+/// A list's text held for the page's life, so a filter sends only what was typed. A row (one or more
+/// fields) is kept when any field contains the filter, ignoring case.
 #[cfg_attr(feature = "ffi", derive(uniffi::Object))]
 pub struct TextIndex {
     rows: Vec<Vec<String>>,
@@ -197,12 +185,12 @@ impl TextIndex {
         std::sync::Arc::new(Self { rows })
     }
 
-    /// A search rather than a filter: the rows whose first field contains `query`, then those where
-    /// only a later field does, each in list order. Nothing for a blank query.
+    /// A search: rows whose first field contains `query`, then those where only a later one does.
     pub fn ranked(&self, query: String) -> Vec<u32> {
         if query.trim().is_empty() {
             return Vec::new();
         }
+        let query: Vec<char> = query.chars().collect();
         let hit = |i: usize, first: bool| {
             let f = &self.rows[i];
             let head = f.first().is_some_and(|h| contains_ignoring_case(h, &query));
@@ -215,6 +203,7 @@ impl TextIndex {
     /// The rows `filter` keeps (all of them for a blank one), and the letters of the first field.
     pub fn view(&self, filter: String) -> IndexView {
         let blank = filter.trim().is_empty();
+        let filter: Vec<char> = filter.chars().collect();
         let rows: Vec<u32> = (0..self.rows.len())
             .filter(|&i| blank || self.rows[i].iter().any(|f| contains_ignoring_case(f, &filter)))
             .map(|i| i as u32)
@@ -233,25 +222,12 @@ impl TextIndex {
     }
 }
 
-/// A page's own queue: the origin a queue started from this page carries, held for the life of the
-/// page so that asking whether it is the one playing (nori-queue `playlist_from`) sends nothing. The
-/// pages read from the server come with theirs (`AlbumDetail::queue` and the like).
-///
-/// A page is the one playing only when the queue was started from it - its Play or Shuffle, or a row
-/// of its songs tapped, which plays its songs from that row - and stays so through every edit of that
-/// queue. The song playing being one of its songs is not enough: playlist B does not light for a song
-/// it shares with playlist A playing from A, an album's page does not light for its song played from a
-/// playlist or a search, and an artist's page lights only for a queue its own Play or Shuffle started.
+/// The origin a queue started from this page carries, held for the page's life. A page is "playing"
+/// only when the queue was started from it, not when the song playing merely is one of its songs.
 #[derive(Debug)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Object))]
 pub struct PageQueue {
     origin: PageOrigin,
-}
-
-impl PageQueue {
-    pub(crate) fn of(kind: OriginKind, id: &str) -> std::sync::Arc<Self> {
-        std::sync::Arc::new(PageQueue { origin: PageOrigin::new(kind, id) })
-    }
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
@@ -261,20 +237,22 @@ impl PageQueue {
         std::sync::Arc::new(PageQueue { origin })
     }
 
-    /// What a queue started from this page is started with (`playlist_set`'s `origin`).
     pub fn origin(&self) -> PageOrigin {
         self.origin.clone()
     }
 }
 
 impl PageQueue {
-    /// The origin, lent.
+    pub(crate) fn of(kind: OriginKind, id: &str) -> std::sync::Arc<Self> {
+        PageQueue::new(PageOrigin::new(kind, id))
+    }
+
     pub fn origin_ref(&self) -> &PageOrigin {
         &self.origin
     }
 }
 
-/// A page not read yet: no queue is ever started with an empty id, so it is never the one playing.
+/// A page not read yet: an empty id is never playing.
 impl Default for PageQueue {
     fn default() -> Self {
         PageQueue { origin: PageOrigin::new(OriginKind::Album, "") }
@@ -307,12 +285,8 @@ pub struct HeroButtons {
     pub play_press: HeroPress,
 }
 
-/// The two big buttons answer for the queue the page started rather than for the player in general:
-/// Play becomes Pause while it sounds (and picks it up where it stopped rather than starting the record
-/// again), Shuffle lights while it is shuffling, and a second press on Shuffle turns shuffle off instead
-/// of drawing the same songs into a new queue. `here` is whether the queue is the page's own
-/// (nori-queue `playlist_from`, over [`PageQueue`]): false shows Play and Shuffle that start; `can_play` and
-/// `can_shuffle` say the page has songs to start.
+/// The big buttons for the page's own queue (`here`): Play toggles it, Shuffle lights while it shuffles
+/// and turns shuffle off. Away from it, both start the page's songs when `can_play` / `can_shuffle`.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn hero_buttons(here: bool, shuffle: bool, playing: bool, buffering: bool, can_play: bool, can_shuffle: bool) -> HeroButtons {
     let lit = shuffle && here;
@@ -327,33 +301,20 @@ pub fn hero_buttons(here: bool, shuffle: bool, playing: bool, buffering: bool, c
     }
 }
 
-impl HeroPress {
-    fn bits(self) -> i32 {
-        match self {
-            HeroPress::Start => 0,
-            HeroPress::Toggle => 1,
-            HeroPress::ShuffleOff => 2,
-        }
-    }
-}
-
 impl HeroButtons {
-    /// The buttons in one int, for the JNI door the page asks on every play and pause
-    /// (`CoverLook.heroButtons`): bit 0 Shuffle lit, 1 Shuffle enabled, 2 pausing, 3 Play enabled, bits
-    /// 4-5 what Shuffle presses and 6-7 what Play presses (0 start, 1 toggle, 2 shuffle off). Whether Play
-    /// says Pause follows from pausing.
+    /// The buttons packed for JNI (`CoverLook.heroButtons`): bit 0 Shuffle lit, 1 Shuffle enabled, 2
+    /// pausing, 3 Play enabled, bits 4-5 Shuffle's press and 6-7 Play's (0 start, 1 toggle, 2 shuffle off).
     pub fn pack(&self) -> i32 {
         self.shuffle_lit as i32
             | (self.shuffle_enabled as i32) << 1
             | (self.pausing as i32) << 2
             | (self.play_enabled as i32) << 3
-            | self.shuffle_press.bits() << 4
-            | self.play_press.bits() << 6
+            | (self.shuffle_press as i32) << 4
+            | (self.play_press as i32) << 6
     }
 }
 
-/// The offer on a provider's album or playlist page, which octo-fiesta fetches whole into the library
-/// when it is starred (the client words it, "Add the whole album to the library").
+/// The "add to library" offer on a provider's album or playlist page (starring it has octo-fiesta fetch it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct LibraryOffer {
@@ -365,14 +326,13 @@ pub struct LibraryOffer {
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn library_offer(id: String, is_external: bool) -> Option<LibraryOffer> {
     let playlist = id.starts_with("pl-");
-    if !is_external && !playlist {
+    if !is_external && !nori_model::is_provider_id(&id) {
         return None;
     }
     Some(LibraryOffer { playlist })
 }
 
-/// A long list wants a way to narrow itself; one short enough to see whole does not. Kept while a
-/// filter is typed, so emptying the list does not take the field away under the finger.
+/// Whether a list offers a filter: when long, or while one is typed.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn filter_offered(songs: u32, filtering: bool) -> bool {
     songs > FILTER_FROM || filtering
@@ -380,16 +340,14 @@ pub fn filter_offered(songs: u32, filtering: bool) -> bool {
 
 const FILTER_FROM: u32 = 12;
 
-/// The similar artists worth a link: the ones the server can open (last.fm names some it does not have).
+/// The similar artists the server can open (last.fm names some it does not have).
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn similar_artists(similar: Vec<nori_model::Artist>) -> Vec<nori_model::Artist> {
     similar.into_iter().filter(|a| !a.id.is_empty()).collect()
 }
 
-/// A playlist's description as its page shows it, or none: none when descriptions are off, and none for
-/// the note Navidrome leaves on a playlist it imported from a file of the library by itself
-/// ("Auto-imported from 'Glitch.m3u8'") when [hide_import_notes] is on - that says where the playlist
-/// came from, not what is in it.
+/// A playlist's description as shown: none when off, or when it is Navidrome's import note and
+/// `hide_import_notes` is on.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn playlist_description(comment: Option<String>, show: bool, hide_import_notes: bool) -> Option<String> {
     let text = comment.filter(|c| !c.trim().is_empty())?;
@@ -399,13 +357,13 @@ pub fn playlist_description(comment: Option<String>, show: bool, hide_import_not
     Some(text)
 }
 
-/// Navidrome's own note on a playlist file it imported (`Auto-imported from '<file>'`), and nothing else.
+/// Exactly Navidrome's `Auto-imported from '<file>'` note.
 fn is_import_note(text: &str) -> bool {
     let t = text.trim();
     t.strip_prefix("Auto-imported from '").is_some_and(|rest| rest.ends_with('\'') && !rest.contains('\n'))
 }
 
-/// An artist's biography as the page shows it: the text before the link the server appends to it.
+/// An artist's biography without the link the server appends.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn biography(text: String) -> String {
     match text.find("<a ") {
@@ -420,9 +378,9 @@ pub fn musicbrainz_artist_url(id: String) -> String {
     format!("https://musicbrainz.org/artist/{id}")
 }
 
-// ---- the pages the server's answers are read into, each laid out once when it is read ----
+// ---- the detail pages, laid out once when read ----
 
-/// The summed length of `songs`, in seconds: what a page's caption gives as its time.
+/// The summed length of `songs`, in seconds.
 pub fn total_seconds(songs: &[Song]) -> u64 {
     songs.iter().map(|s| s.duration as u64).sum()
 }
@@ -434,17 +392,14 @@ pub struct AlbumDetail {
     pub songs: Vec<Song>,
     /// Names of discs that have one (OpenSubsonic `discTitles`).
     pub disc_titles: Vec<DiscTitle>,
-    /// The songs by disc, each with its heading and its rows' second lines ([`album_discs`]).
+    /// [`album_discs`].
     pub discs: Vec<DiscGroup>,
-    /// The songs' summed length in seconds, for the line under the title ("2019 · 12 songs · 48:10 · FLAC
-    /// 16/44.1", which the client words from this, the album and its first song).
+    /// The songs' summed length in seconds.
     pub seconds: u64,
-    /// The page's own queue: one started from this album.
     pub queue: std::sync::Arc<PageQueue>,
 }
 
 impl AlbumDetail {
-    /// The album page as it is shown, worked out once when the album is read.
     pub fn new(album: Album, songs: Vec<Song>, disc_titles: Vec<DiscTitle>) -> Self {
         let discs = album_discs(&album, &songs, &disc_titles);
         let seconds = total_seconds(&songs);
@@ -458,15 +413,14 @@ impl AlbumDetail {
 pub struct ArtistDetail {
     pub artist: Artist,
     pub albums: Vec<Album>,
-    /// The releases by kind, headed and in order ([`release_groups`]).
+    /// [`release_groups`].
     pub groups: Vec<ReleaseGroup>,
-    /// The page's own queue: one its Play or Shuffle started (all the artist's songs).
     pub queue: std::sync::Arc<PageQueue>,
 }
 
 impl ArtistDetail {
     pub fn new(artist: Artist, mut albums: Vec<Album>) -> Self {
-        // Every release here is the artist's, whoever else is credited: the cards say only the year.
+        // On the artist's own page the cards show only the year.
         for a in &mut albums {
             a.subtitle = nori_model::lines::album_subtitle("", a.year);
         }
@@ -481,9 +435,8 @@ impl ArtistDetail {
 pub struct PlaylistDetail {
     pub playlist: Playlist,
     pub songs: Vec<Song>,
-    /// The songs' summed length in seconds, for the line under the title ("12 songs · 48:10").
+    /// The songs' summed length in seconds.
     pub seconds: u64,
-    /// The page's own queue: one started from this playlist.
     pub queue: std::sync::Arc<PageQueue>,
 }
 
@@ -501,14 +454,13 @@ pub struct Starred {
     pub artists: Vec<Artist>,
     pub albums: Vec<Album>,
     pub songs: Vec<Song>,
-    /// How many of the starred songs are in the library, for the favourite songs row ("12 songs"): a
-    /// provider's song that was starred is being fetched by the server, not yet something to play.
+    /// Starred songs in the library (a starred provider song is still being fetched).
     pub library_songs: u32,
 }
 
 impl Starred {
     pub fn new(artists: Vec<Artist>, albums: Vec<Album>, songs: Vec<Song>) -> Self {
-        let library_songs = songs.iter().filter(|s| !s.is_external).count() as u32;
+        let library_songs = songs.iter().filter(|s| !s.is_provider()).count() as u32;
         Starred { artists, albums, songs, library_songs }
     }
 }
@@ -523,7 +475,7 @@ mod tests {
     }
 
     #[test]
-    fn discs_in_order_with_their_titles() {
+    fn album_pages() {
         let album = Album { artist: "Björk".into(), ..Default::default() };
         let songs = vec![song(2), song(0), song(1), song(2)];
         let titles = vec![DiscTitle { disc: 2, title: "Bonus".into() }, DiscTitle { disc: 1, title: " ".into() }];
@@ -531,10 +483,8 @@ mod tests {
         assert_eq!(g.iter().map(|x| (x.disc, x.headed, x.title.as_str(), x.songs.clone())).collect::<Vec<_>>(), [(1, true, "", vec![1, 2]), (2, true, "Bonus", vec![0, 3])]);
         let one = album_discs(&album, &[song(1), song(1)], &[]);
         assert_eq!((one.len(), one[0].headed), (1, false));
-    }
 
-    #[test]
-    fn an_album_page_leaves_its_own_artist_off_the_rows() {
+        // Album rows omit album artist.
         let album = Album { artist: "Björk".into(), ..Default::default() };
         let by = |artist: &str, explicit: &str| Song { artist: artist.into(), explicit_status: explicit.into(), ..Default::default() };
         let d = AlbumDetail::new(album, vec![by("BJÖRK", ""), by("Björk", "explicit"), by("Thom Yorke", "")], vec![]);
@@ -543,15 +493,13 @@ mod tests {
     }
 
     #[test]
-    fn an_artist_page_shows_only_its_albums_years() {
+    fn artist_pages() {
         let artist = Artist { name: "Björk".into(), ..Default::default() };
         let album = |artist: &str, year: u32| Album { artist: artist.into(), year, ..Default::default() };
         let d = ArtistDetail::new(artist, vec![album("björk", 1997), album("Björk & Thom Yorke", 2001), album("Björk", 0)]);
         assert_eq!(d.albums.iter().map(|a| a.subtitle.as_str()).collect::<Vec<_>>(), ["1997", "2001", ""]);
-    }
 
-    #[test]
-    fn releases_by_kind_newest_first() {
+        // Releases by kind newest first.
         let a = |year: u32, types: &[&str], comp: bool| Album { year, release_types: types.iter().map(|t| t.to_string()).collect(), is_compilation: comp, ..Default::default() };
         let albums = vec![a(2001, &[], false), a(2010, &["album", "live"], false), a(2005, &["single"], false), a(2003, &["ep"], false), a(2020, &[], false), a(1999, &[], true)];
         let g = release_groups(&albums);
@@ -571,7 +519,7 @@ mod tests {
     }
 
     #[test]
-    fn filters_and_letters() {
+    fn filters_and_search() {
         let idx = TextIndex::new(vec![vec!["abba".into()], vec!["Björk".into()], vec!["!!!".into()], vec!["Beck".into(), "x".into()], vec!["ßuper".into()]]);
         let all = idx.view("  ".into());
         assert_eq!(all.rows, [0, 1, 2, 3, 4]);
@@ -582,49 +530,8 @@ mod tests {
         assert_eq!(idx.view("BJÖ".into()).rows, [1]);
         assert_eq!(idx.view("X".into()).rows, [3]);
         assert_eq!(biography("Hello <a href=x>more</a>".into()), "Hello ");
-    }
 
-    #[test]
-    fn a_page_knows_its_own_queue_by_what_it_shows() {
-        let album = AlbumDetail::new(Album { id: "al".into(), ..Default::default() }, vec![], vec![]);
-        assert_eq!(album.queue.origin(), PageOrigin::new(OriginKind::Album, "al"));
-        let artist = ArtistDetail::new(Artist { id: "ar".into(), ..Default::default() }, vec![Album { id: "al".into(), ..Default::default() }]);
-        assert_eq!(artist.queue.origin(), PageOrigin::new(OriginKind::Artist, "ar"), "the artist, not its albums");
-        let playlist = PlaylistDetail::new(Playlist { id: "pl".into(), ..Default::default() }, vec![]);
-        assert_eq!(playlist.queue.origin_ref(), &PageOrigin::new(OriginKind::Playlist, "pl"));
-        assert_eq!(PageQueue::default().origin_ref().id, "", "a page not read yet is no queue's");
-    }
-
-    #[test]
-    fn the_big_buttons_answer_for_the_pages_own_queue() {
-        // Another page's queue playing and shuffling: this page shows Play and Shuffle, and both start its own.
-        let away = hero_buttons(false, true, true, false, true, true);
-        assert_eq!((away.shuffle_lit, away.pausing, away.play_press, away.shuffle_press), (false, false, HeroPress::Start, HeroPress::Start));
-        assert!(away.play_enabled && away.shuffle_enabled);
-        assert_eq!(away.pack() & 0b100, 0, "Play, not Pause");
-        let here = hero_buttons(true, true, false, true, true, true);
-        assert_eq!((here.shuffle_lit, here.pausing, here.play_press, here.shuffle_press), (true, true, HeroPress::Toggle, HeroPress::ShuffleOff));
-        let waiting = hero_buttons(false, false, false, false, false, false);
-        assert!(!waiting.play_enabled && !waiting.shuffle_enabled);
-        assert!(hero_buttons(true, false, false, false, false, false).play_enabled, "its own queue can always be resumed");
-        // Lit, enabled, pausing, Play enabled, Shuffle turns shuffle off (2), Play toggles (1).
-        assert_eq!(here.pack(), 0b1 | 0b10 | 0b100 | 0b1000 | 2 << 4 | 1 << 6);
-        assert_eq!(waiting.pack(), 0);
-    }
-
-    #[test]
-    fn a_playlist_shows_its_own_description_but_not_the_servers_import_note() {
-        let d = |c: &str, show, hide| playlist_description(Some(c.into()), show, hide);
-        assert_eq!(d("Late night driving", true, true).as_deref(), Some("Late night driving"));
-        assert_eq!(d("Auto-imported from 'Glitch.m3u8'", true, true), None);
-        assert_eq!(d("Auto-imported from 'The New New York.m3u8'", true, false).as_deref(), Some("Auto-imported from 'The New New York.m3u8'"));
-        assert_eq!(d("Auto-imported from 'x.m3u' plus my own notes", true, true).as_deref(), Some("Auto-imported from 'x.m3u' plus my own notes"));
-        assert_eq!(d("Late night driving", false, true), None);
-        assert_eq!((d("  ", true, true), playlist_description(None, true, true)), (None, None));
-    }
-
-    #[test]
-    fn provider_pages_offer_the_library_and_long_lists_a_filter() {
+        // Library offer and filter.
         let offer = |playlist: bool| Some(LibraryOffer { playlist });
         assert_eq!(library_offer("ext-deezer-album-1".into(), true), offer(false));
         assert_eq!(library_offer("pl-deezer-1".into(), false), offer(true));
@@ -632,10 +539,8 @@ mod tests {
         assert_eq!((filter_offered(12, false), filter_offered(13, false), filter_offered(3, true)), (false, true, true));
         let a = |id: &str| nori_model::Artist { id: id.into(), ..Default::default() };
         assert_eq!(similar_artists(vec![a(""), a("x")]).len(), 1);
-    }
 
-    #[test]
-    fn a_search_puts_names_before_descriptions() {
+        // A search puts names before descriptions.
         let idx = TextIndex::new(vec![
             vec!["Keep albums gapless".into(), "No mixing".into()],
             vec!["AMOLED black".into(), "Pixels off".into()],
@@ -646,4 +551,42 @@ mod tests {
         assert_eq!(idx.ranked("OLED".into()), [1]);
         assert!(idx.ranked(" ".into()).is_empty());
     }
+
+    #[test]
+    fn page_queue() {
+        let album = AlbumDetail::new(Album { id: "al".into(), ..Default::default() }, vec![], vec![]);
+        assert_eq!(album.queue.origin(), PageOrigin::new(OriginKind::Album, "al"));
+        let artist = ArtistDetail::new(Artist { id: "ar".into(), ..Default::default() }, vec![Album { id: "al".into(), ..Default::default() }]);
+        assert_eq!(artist.queue.origin(), PageOrigin::new(OriginKind::Artist, "ar"), "the artist, not its albums");
+        let playlist = PlaylistDetail::new(Playlist { id: "pl".into(), ..Default::default() }, vec![]);
+        assert_eq!(playlist.queue.origin_ref(), &PageOrigin::new(OriginKind::Playlist, "pl"));
+
+        // Hero buttons follow own queue.
+        // Another page's queue playing and shuffling: this page shows Play and Shuffle, and both start its own.
+        let away = hero_buttons(false, true, true, false, true, true);
+        assert_eq!((away.shuffle_lit, away.pausing, away.play_press, away.shuffle_press), (false, false, HeroPress::Start, HeroPress::Start));
+        assert!(away.play_enabled && away.shuffle_enabled);
+        assert_eq!(away.pack() & 0b100, 0, "Play, not Pause");
+        let here = hero_buttons(true, true, false, true, true, true);
+        assert_eq!((here.shuffle_lit, here.pausing, here.play_press, here.shuffle_press), (true, true, HeroPress::Toggle, HeroPress::ShuffleOff));
+        assert!(hero_buttons(true, false, true, false, true, true).pausing, "playing pauses too");
+        let waiting = hero_buttons(false, false, false, false, false, false);
+        assert!(!waiting.play_enabled && !waiting.shuffle_enabled);
+        assert!(hero_buttons(true, false, false, false, false, false).play_enabled, "its own queue can always be resumed");
+        // Lit, enabled, pausing, Play enabled, Shuffle turns shuffle off (2), Play toggles (1).
+        assert_eq!(here.pack(), 0b1 | 0b10 | 0b100 | 0b1000 | 2 << 4 | 1 << 6);
+        assert_eq!(waiting.pack(), 0);
+    }
+
+    #[test]
+    fn description_hides_import_note() {
+        let d = |c: &str, show, hide| playlist_description(Some(c.into()), show, hide);
+        assert_eq!(d("Late night driving", true, true).as_deref(), Some("Late night driving"));
+        assert_eq!(d("Auto-imported from 'Glitch.m3u8'", true, true), None);
+        assert_eq!(d("Auto-imported from 'The New New York.m3u8'", true, false).as_deref(), Some("Auto-imported from 'The New New York.m3u8'"));
+        assert_eq!(d("Auto-imported from 'x.m3u' plus my own notes", true, true).as_deref(), Some("Auto-imported from 'x.m3u' plus my own notes"));
+        assert_eq!(d("Late night driving", false, true), None);
+        assert_eq!((d("  ", true, true), playlist_description(None, true, true)), (None, None));
+    }
+
 }

@@ -1,18 +1,22 @@
-//! The lyrics page's clock: prepared once per song (`nori_look::lyrics`), then asked every frame with
-//! primitives in and one packed number out, allocating nothing. A clock is handed out as a handle, so a
-//! platform across a language boundary can keep it; how a page looks otherwise is `nori_look`'s own.
+//! The lyrics page's clock (`nori_look::lyrics`), handed out as a raw handle so a platform across a
+//! language boundary can hold it.
 
 use nori_look::lyrics::{Line, LyricClock, LyricTiming, Word};
+use parking_lot::Mutex;
 
-// ---- lyrics -------------------------------------------------------------------------------------------------
-
-/// Prepares a song's lyrics for timing (`nori_look::lyrics`), showing the moment `position_ms`. Once per
-/// set of lyrics, so it takes the record as it is; the answer is a handle for `LyricsJni`, which the
-/// platform frees with `LyricsJni.destroy`.
+/// A clock on `lyrics` at `position_ms`, as a handle the platform frees with `LyricsJni.destroy`.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn lyrics_clock(lyrics: nori_model::Lyrics, position_ms: i64) -> i64 {
-    let lines = lyrics.lines.iter().map(timed);
-    Box::into_raw(Box::new(LyricClock::with_offset(LyricTiming::new(lyrics.synced, lyrics.word_timed, lines), position_ms, lyrics.offset_ms))) as i64
+    Box::into_raw(Box::new(clock_on(&lyrics, position_ms))) as i64
+}
+
+/// A clock on `lyrics` at `position_ms`.
+pub fn clock_on(lyrics: &nori_model::Lyrics, position_ms: i64) -> LyricClock {
+    LyricClock::with_offset(LyricTiming::new(lyrics.synced, lyrics.word_timed, lyrics.lines.iter().map(timed)), position_ms, lyrics.offset_ms)
+}
+
+fn new_clock(timing: LyricTiming, position_ms: i64, offset_ms: i64) -> i64 {
+    Box::into_raw(Box::new(LyricClock::with_offset(timing, position_ms, offset_ms))) as i64
 }
 
 fn timed(l: &nori_model::LyricLine) -> Line {
@@ -27,7 +31,7 @@ fn timed(l: &nori_model::LyricLine) -> Line {
     }
 }
 
-/// What the timing needs of one set of lyrics read, under the key the record was given.
+/// The timing of one set of lyrics, under the key the record was given.
 struct Kept {
     key: u64,
     synced: bool,
@@ -36,53 +40,71 @@ struct Kept {
     lines: Vec<Line>,
 }
 
-/// The last few sets of lyrics read. The page that shows lyrics shows the ones it was just handed, so a
-/// handful is plenty; lyrics that have gone from here are handed over whole instead ([`lyrics_clock`]).
-static KEPT: parking_lot::Mutex<Vec<Kept>> = parking_lot::Mutex::new(Vec::new());
+/// The last few sets of lyrics read, so the page starts a clock from a key instead of every line.
+struct KeptLyrics {
+    kept: Mutex<(u64, Vec<Kept>)>,
+}
+
+/// How many sets are kept: the page shows the ones it was just handed.
 const KEEP: usize = 4;
-static NEXT_KEY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-/// Keeps what the timing needs of `lyrics` as they are read and gives them the key to ask for it by, so
-/// the lyrics page starts its clock with one number (`LyricsJni.kept`) instead of handing every line
-/// back. Lyrics with no lines are not kept: there is nothing to hand back.
+impl KeptLyrics {
+    const fn new() -> Self {
+        KeptLyrics { kept: Mutex::new((0, Vec::new())) }
+    }
+
+    /// Keeps the timing of `lyrics` and sets their `key`; lyrics with no lines keep key 0.
+    fn keep(&self, lyrics: &mut nori_model::Lyrics) {
+        if lyrics.lines.is_empty() {
+            return;
+        }
+        let mut kept = self.kept.lock();
+        kept.0 += 1;
+        lyrics.key = kept.0;
+        if kept.1.len() == KEEP {
+            kept.1.remove(0);
+        }
+        let lines = lyrics.lines.iter().map(timed).collect();
+        kept.1.push(Kept { key: lyrics.key, synced: lyrics.synced, word_timed: lyrics.word_timed, offset_ms: lyrics.offset_ms, lines });
+    }
+
+    /// A clock on the lyrics kept under `key`, as [`lyrics_clock`] makes one; 0 when no longer kept.
+    fn clock(&self, key: u64, position_ms: i64) -> i64 {
+        let kept = self.kept.lock();
+        let Some(k) = kept.1.iter().find(|k| k.key == key) else { return 0 };
+        new_clock(LyricTiming::new(k.synced, k.word_timed, k.lines.iter().cloned()), position_ms, k.offset_ms)
+    }
+}
+
+/// Global because `LyricsJni.kept` is a static JNI entry with no core handle.
+static KEPT: KeptLyrics = KeptLyrics::new();
+
+/// [`KeptLyrics::keep`] on the process-wide store.
 pub fn keep(lyrics: &mut nori_model::Lyrics) {
-    if lyrics.lines.is_empty() {
-        return;
-    }
-    let key = NEXT_KEY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    lyrics.key = key;
-    let kept = Kept { key, synced: lyrics.synced, word_timed: lyrics.word_timed, offset_ms: lyrics.offset_ms, lines: lyrics.lines.iter().map(timed).collect() };
-    let mut all = KEPT.lock();
-    if all.len() == KEEP {
-        all.remove(0);
-    }
-    all.push(kept);
+    KEPT.keep(lyrics)
 }
 
-/// A clock on the lyrics read under `key`, showing the moment `position_ms`, as [`lyrics_clock`] makes
-/// one; 0 when they are no longer kept.
+/// [`KeptLyrics::clock`] on the process-wide store.
 pub fn kept_clock(key: u64, position_ms: i64) -> i64 {
-    let all = KEPT.lock();
-    let Some(k) = all.iter().find(|k| k.key == key) else { return 0 };
-    Box::into_raw(Box::new(LyricClock::with_offset(LyricTiming::new(k.synced, k.word_timed, k.lines.iter().cloned()), position_ms, k.offset_ms))) as i64
+    KEPT.clock(key, position_ms)
 }
 
-/// The clock behind a handle from [`lyrics_clock`] or [`kept_clock`]; none for 0.
+/// The clock behind a handle; none for 0.
 ///
 /// # Safety
-/// `h` is 0 or a handle one of those made that has not been given to [`free_clock`].
+/// `h` is 0 or a handle from [`lyrics_clock`] or [`kept_clock`] not yet given to [`free_clock`].
 pub unsafe fn clock<'a>(h: i64) -> Option<&'a LyricClock> {
-    // SAFETY: the caller's promise: a live handle is a boxed clock.
+    // SAFETY: a live handle is a boxed clock (the caller's promise).
     (h != 0).then(|| unsafe { &*(h as *const LyricClock) })
 }
 
-/// Lets a clock from [`lyrics_clock`] or [`kept_clock`] go.
+/// Frees a clock handle.
 ///
 /// # Safety
-/// `h` is 0 or a live handle one of those made, and is not used again.
+/// `h` is 0 or a live handle from [`lyrics_clock`] or [`kept_clock`], not used again.
 pub unsafe fn free_clock(h: i64) {
     if h != 0 {
-        // SAFETY: the caller's promise: `h` is a boxed clock nobody else will free.
+        // SAFETY: `h` is a boxed clock nobody else frees (the caller's promise).
         drop(unsafe { Box::from_raw(h as *mut LyricClock) });
     }
 }
@@ -90,43 +112,46 @@ pub unsafe fn free_clock(h: i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nori_model::LyricLine;
-use nori_model::Lyrics;
     use nori_look::lyrics::Step;
+    use nori_model::{LyricLine, Lyrics};
+
+    fn lyrics() -> Lyrics {
+        let line = |start_ms, text: &str| LyricLine { start_ms, end_ms: start_ms + 2000, text: text.into(), ..Default::default() };
+        Lyrics { synced: true, lines: vec![line(1000, "Żółć 🎵"), line(4000, "x")], ..Default::default() }
+    }
+
+    fn step(h: i64, at_ms: i64, force: bool) -> Step {
+        Step::unpack(unsafe { clock(h) }.unwrap().advance(at_ms, true, false, force).pack())
+    }
 
     #[test]
-    fn a_clock_from_the_cores_lyrics_counts_utf16_and_frees() {
-        let line = |start_ms, text: &str| LyricLine { start_ms, end_ms: start_ms + 2000, text: text.into(), words: vec![], translation: None, ..Default::default() };
-        let h = lyrics_clock(Lyrics { synced: true, word_timed: false, lines: vec![line(1000, "Żółć 🎵"), line(4000, "x")], key: 0, offset_ms: 0 }, 0);
-        let c = unsafe { clock(h) }.unwrap();
-        assert!(!c.timing().sweeps());
-        // A line without words is all lit once reached: seven UTF-16 units, the note being two.
-        let s = Step::unpack(c.advance(1500, true, false, true).pack());
+    fn clocks() {
+        let h = lyrics_clock(lyrics(), 0);
+        assert!(!unsafe { clock(h) }.unwrap().timing().sweeps());
+        // A line without words is lit whole: seven UTF-16 units, the note being two.
+        let s = step(h, 1500, true);
         assert_eq!((s.frame.active, s.frame.sung, s.redraw), (0, 7.0, true));
         unsafe { free_clock(h) };
         assert!(unsafe { clock(0) }.is_none());
-    }
 
-    #[test]
-    fn lyrics_read_are_kept_for_a_clock_by_key() {
-        let line = |start_ms, text: &str| LyricLine { start_ms, end_ms: start_ms + 2000, text: text.into(), words: vec![], translation: None, ..Default::default() };
-        let mut l = Lyrics { synced: true, word_timed: false, lines: vec![line(1000, "Żółć 🎵"), line(4000, "x")], key: 0, offset_ms: 0 };
-        keep(&mut l);
+        // Kept lyrics start a clock by key.
+        let store = KeptLyrics::new();
+        let mut l = lyrics();
+        store.keep(&mut l);
         assert_ne!(l.key, 0);
-        let h = kept_clock(l.key, 0);
-        let s = Step::unpack(unsafe { clock(h) }.unwrap().advance(1500, true, false, true).pack());
-        assert_eq!((s.frame.active, s.frame.sung), (0, 7.0));
-        // The last line ends where the lyrics say (4 s + 2 s), and then it is drawn as sung with the rest.
-        let s = Step::unpack(unsafe { clock(h) }.unwrap().advance(6000, true, false, false).pack());
-        assert_eq!(s.frame.active, 2);
+        let h = store.clock(l.key, 0);
+        assert_eq!(step(h, 1500, true).frame.sung, 7.0);
+        // The last line ends at 4 s + 2 s; after it every line is sung.
+        assert_eq!(step(h, 6000, false).frame.active, 2);
         unsafe { free_clock(h) };
         let first = l.key;
         for _ in 0..KEEP {
-            keep(&mut l);
+            store.keep(&mut l);
         }
-        assert_eq!(kept_clock(first, 0), 0, "only the last few are kept");
+        assert_eq!(store.clock(first, 0), 0, "only the last few are kept");
         let mut none = Lyrics::default();
-        keep(&mut none);
+        store.keep(&mut none);
         assert_eq!(none.key, 0);
     }
+
 }

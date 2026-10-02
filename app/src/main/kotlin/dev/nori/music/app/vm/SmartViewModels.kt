@@ -3,10 +3,13 @@ package dev.nori.music.app.vm
 import android.app.Application
 import androidx.lifecycle.viewModelScope
 import dev.nori.music.ffi.model.HistoryEntry
+import dev.nori.music.ffi.library.HistoryAfter
 import dev.nori.music.ffi.library.SmartPage
 import dev.nori.music.ffi.library.StatsPage
 import dev.nori.music.ffi.library.SmartEdit
 import dev.nori.music.ffi.model.SmartPlaylist
+import dev.nori.music.ffi.model.SmartProblem
+import dev.nori.music.app.R
 import dev.nori.music.ffi.library.smartEditPrepare
 import dev.nori.music.app.ui.Note
 import dev.nori.music.app.ui.say
@@ -41,12 +44,25 @@ class SmartViewModel(app: Application) : NoriViewModel(app) {
     /** Null when saved; otherwise what is wrong with the definition. */
     fun save(draft: SmartEdit, onSaved: (String) -> Unit): String? {
         val ready = smartEditPrepare(draft)
-        ready.error?.let { return it }
+        ready.error?.let { return problem(it) }
         viewModelScope.launch { val id = nori.library.smartSave(ready.id, ready.name.ifEmpty { say.smartPlaylist }, ready.json); refresh(); onSaved(id) }
         return null
     }
 
     fun delete(id: String) = viewModelScope.launch { nori.library.smartDelete(id); refresh() }
+
+    /** What is wrong with the rules, in words. */
+    private fun problem(p: SmartProblem): String = getApplication<Application>().getString(
+        when (p) {
+            SmartProblem.NO_VALUE -> R.string.smart_problem_no_value
+            SmartProblem.NOT_NUMBER -> R.string.smart_problem_not_number
+            SmartProblem.NOT_DATE -> R.string.smart_problem_not_date
+            SmartProblem.DAYS_OUT_OF_RANGE -> R.string.smart_problem_days
+            SmartProblem.BACKWARDS -> R.string.smart_problem_backwards
+            SmartProblem.NEGATIVE -> R.string.smart_problem_negative
+            else -> R.string.smart_problem_other
+        },
+    )
 }
 
 class HistoryViewModel(app: Application) : NoriViewModel(app) {
@@ -56,16 +72,18 @@ class HistoryViewModel(app: Application) : NoriViewModel(app) {
     /** The stats with their words and tiles, all the core's. */
     val stats: StateFlow<StatsPage?> = _stats
     private var exhausted = false
+    /** Where the next page starts. */
+    private var after: HistoryAfter? = null
 
     init { loadMore() }
 
     fun loadMore() {
         if (exhausted) return
-        val offset = _entries.value.size.toUInt()
         viewModelScope.launch {
             // A page that could not be read ends the list, as an empty one would.
-            val next = runCatching { withContext(Dispatchers.IO) { nori.core.historyPage(offset) } }.getOrNull()
-            exhausted = next?.exhausted ?: true
+            val next = runCatching { withContext(Dispatchers.IO) { nori.core.historyPage(after) } }.getOrNull()
+            after = next?.next
+            exhausted = after == null
             _entries.value = _entries.value.plus(next?.entries.orEmpty())
         }
     }

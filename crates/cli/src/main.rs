@@ -1,9 +1,5 @@
-//! nori's terminal client. By default a full-screen player (ratatui over crossterm): log in, browse the
-//! library, search, play, edit the queue, read lyrics, change every setting. With `--script` (or any of
-//! the old flags: `--search`, `--play`, `--wav`, `--devices`) it is the small non-interactive player it
-//! used to be, for scripts and renders.
-//!
-//! Everything a player decides is the core's and nori-engine's; this crate only draws and reads keys.
+//! nori's terminal client: a full-screen player (ratatui over crossterm), or with `--script` (or
+//! `--search`, `--play`, `--wav`, `--devices`) a non-interactive player for scripts and renders.
 
 mod app;
 mod art;
@@ -21,21 +17,21 @@ mod tests;
 
 use std::path::PathBuf;
 
-/// What the full-screen client is started with.
+/// Command-line options of the full-screen client.
 pub struct Options {
-    /// Where the database, covers, downloads and the stream cache live.
+    /// Database, covers, downloads and stream cache directory.
     pub data: PathBuf,
-    /// An output device by name (as `--devices` lists them).
+    /// Output device by name, as `--devices` lists them.
     pub device: Option<String>,
-    /// Covers in the terminal; None: as the client's own setting says.
+    /// Covers on or off; None uses the stored setting.
     pub images: Option<bool>,
-    /// Mouse capture; None: as the client's own setting says.
+    /// Mouse capture on or off; None uses the stored setting.
     pub mouse: Option<bool>,
-    /// A server to add and use, from the command line or NORI_URL/NORI_USER/NORI_PASSWORD.
+    /// (url, user, password) of a server to add and use.
     pub login: Option<(String, String, String)>,
-    /// Plays the downloads, asks nothing of the server.
+    /// Plays downloads only; no network requests.
     pub offline: bool,
-    /// Serve the desktop's media controls (MPRIS).
+    /// Serve MPRIS media controls.
     pub mpris: bool,
 }
 
@@ -51,7 +47,7 @@ fn usage() -> ! {
     std::process::exit(2)
 }
 
-/// Where the client keeps its files: $XDG_DATA_HOME/nori, else ~/.local/share/nori.
+/// $XDG_DATA_HOME/nori, else ~/.local/share/nori.
 fn data_dir() -> PathBuf {
     if let Some(d) = std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
         return PathBuf::from(d).join("nori");
@@ -92,7 +88,6 @@ fn main() {
             "--url" => url = Some(v()),
             "--user" => user = Some(v()),
             "--password" => password = Some(v()),
-            "-h" | "--help" => usage(),
             _ => usage(),
         }
     }
@@ -103,7 +98,9 @@ fn main() {
         eprintln!("nori: {}: {e}", o.data.display());
         std::process::exit(1);
     }
-    if let Err(e) = runner::run(o) {
+    let ran = runner::run(o);
+    nori_core::background::flush();
+    if let Err(e) = ran {
         eprintln!("nori: {e}");
         std::process::exit(1);
     }

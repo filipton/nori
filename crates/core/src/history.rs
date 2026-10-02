@@ -1,72 +1,46 @@
-//! The play history and the taste model as the core's calls, over its database: a listen recorded, the
-//! history's pages, the stats. What a listen is worth and how the stats add up are nori-library's.
+//! Play history and taste model reads over the core's database. The model is nori-library's.
 
 use rusqlite::params;
 
-use crate::{db, model::*, Core, Result};
+use crate::browse::HistoryAfter;
+use crate::{model::*, Core, Result};
 
 pub use nori_library::history::*;
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Core {
-    /// Forgets every listen and with it the taste model. Mix exclusions and smart playlists stay.
+    /// Deletes all listens and song stats (not mix exclusions or smart playlists).
     pub fn history_clear(&self) -> Result<()> {
         self.db.lock().execute_batch("DELETE FROM plays WHERE server=sid(); DELETE FROM song_stats WHERE server=sid();")?;
         Ok(())
     }
 }
 
-/// Asked only in Rust, so not exported to Kotlin.
 impl Core {
-    /// Newest first. Songs that are no longer in the index (server change) are left out.
-    pub fn history_recent(&self, limit: u32, offset: u32, include_skipped: bool) -> Result<Vec<HistoryEntry>> {
+    /// Up to `limit` listens older than `after` (None: the newest), newest first, omitting songs no longer
+    /// indexed, and where the next page starts (None after the last).
+    pub fn history_recent(&self, limit: u32, after: Option<HistoryAfter>, include_skipped: bool) -> Result<(Vec<HistoryEntry>, Option<HistoryAfter>)> {
+        let after = after.unwrap_or(HistoryAfter { started_ms: i64::MAX, row: i64::MAX });
         let c = self.db.lock();
         let mut st = c.prepare_cached(
-            "SELECT i.json, p.started_ms, p.heard_ms, p.completed, p.skipped FROM plays p JOIN items i ON i.server=sid() AND i.kind=2 AND i.id=p.song_id
-             WHERE p.server=sid() AND p.skipped<=?1 ORDER BY p.started_ms DESC, p.rowid DESC LIMIT ?2 OFFSET ?3",
+            "SELECT i.json, p.started_ms, p.heard_ms, p.completed, p.skipped, p.rowid FROM plays p JOIN items i ON i.server=sid() AND i.kind=2 AND i.id=p.song_id
+             WHERE p.server=sid() AND p.skipped<=?1 AND (p.started_ms, p.rowid) < (?3, ?4) ORDER BY p.started_ms DESC, p.rowid DESC LIMIT ?2",
         )?;
-        let rows = st.query_map(params![include_skipped, limit, offset], |r| Ok(entry(r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?.into_iter().flatten().collect())
-    }
-
-    /// Stats of the given songs in one call (a list screen asks for its visible page). Songs never played are left out.
-    pub fn song_stats(&self, ids: Vec<String>) -> Result<Vec<SongStat>> {
-        let now = db::now_ms();
-        let c = self.db.lock();
-        let mut st = c.prepare_cached(
-            "SELECT s.song_id, s.plays, s.skips, s.last_played_ms, s.heard_ms_total, s.taste, i.json FROM song_stats s
-             LEFT JOIN items i ON i.server=sid() AND i.kind=2 AND i.id=s.song_id WHERE s.server=sid() AND s.song_id IN (SELECT value FROM json_each(?1))",
-        )?;
-        let rows = st.query_map([serde_json::to_string(&ids).unwrap_or_default()], |r| {
-            let song: Song = r.get::<_, Option<String>>(6)?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
-            Ok(SongStat { song_id: r.get(0)?, plays: r.get(1)?, skips: r.get(2)?, last_played_ms: r.get(3)?, heard_ms_total: r.get(4)?, taste: taste(&song, r.get(5)?, now) })
+        let rows = st.query_map(params![include_skipped, limit, after.started_ms, after.row], |r| {
+            Ok((entry(r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?), HistoryAfter { started_ms: r.get(1)?, row: r.get(5)? }))
         })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-}
-
-/// Only the tests record a listen or sum a period this way: the app records through nori-queue's scrobbling
-/// and reads `stats_page`.
-#[cfg(test)]
-impl Core {
-    /// Call once per listen, when the track ends or is left. `tz_offset_ms` is the local UTC offset at
-    /// `started_ms`; the core has no time zone of its own and the hour and weekday charts are local time.
-    /// Returns false when nothing was recorded (provider track, or heard under 2 s).
-    pub fn history_record(&self, song: Song, started_ms: i64, heard_ms: i64, tz_offset_ms: i32) -> Result<bool> {
-        Ok(record(&mut self.db.lock(), &song, started_ms, heard_ms, tz_offset_ms, db::now_ms())?)
+        let rows = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        let next = rows.last().filter(|_| rows.len() == limit as usize).map(|(_, at)| *at);
+        Ok((rows.into_iter().filter_map(|(e, _)| e).collect(), next))
     }
 
-    /// The year-in-review numbers for `from_ms <= started < to_ms`, with `top` entries per top list.
-    pub fn stats_summary(&self, from_ms: i64, to_ms: i64, top: u32) -> Result<ListeningStats> {
-        Ok(summary(&self.db.lock(), from_ms, to_ms, top)?)
-    }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::db;
 
-    // The same clock and songs as nori-library's history tests, for the tests here that need a core.
     pub(crate) const NOW: i64 = 1_788_000_000_000; // 2026-08-29
 
     pub(crate) const DAY: i64 = 86_400_000;
@@ -98,71 +72,84 @@ pub(crate) mod tests {
         assert!(record(&mut core.db.lock(), s, at, 5_000, 0, NOW).unwrap());
     }
 
-    #[test]
-    fn record_stores_the_song_and_rolls_up() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
-        let s = song("s1", "Dogs", "Pink Floyd", "Animals", "Rock", 1977);
-        assert!(core.history_record(s.clone(), NOW - DAY, 200_000, 0).unwrap());
-        assert!(core.history_record(s.clone(), NOW - DAY + 1, 5_000, 0).unwrap());
-        assert!(!core.history_record(s.clone(), NOW, 1_500, 0).unwrap());
-        // never synced, yet known to the index and to search afterwards
-        assert_eq!(core.index_size().unwrap().songs, 1);
-        assert_eq!(core.local_search("dogs".into(), 5).unwrap().songs, vec![s.clone()]);
+    /// Records a listen; false when nothing was recorded.
+    fn rec(core: &Core, s: Song, started_ms: i64, heard_ms: i64) -> bool {
+        record(&mut core.db.lock(), &s, started_ms, heard_ms, 0, NOW).unwrap()
+    }
 
-        let st = core.song_stats(vec!["s1".into(), "missing".into()]).unwrap();
-        assert_eq!(st.len(), 1);
-        assert_eq!((st[0].plays, st[0].skips, st[0].last_played_ms, st[0].heard_ms_total), (1, 1, NOW - DAY, 205_000));
-        assert!(core.song_stats(vec![]).unwrap().is_empty());
+    /// (plays, skips, last played, heard ms, stored taste) of song `id`, if played.
+    fn stat(core: &Core, id: &str) -> Option<(u32, u32, i64, i64, f64)> {
+        let c = core.db.lock();
+        let row = c.query_row("SELECT plays, skips, last_played_ms, heard_ms_total, taste FROM song_stats WHERE server=sid() AND song_id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get::<_, f64>(4)?)));
+        row.ok()
+    }
 
-        let h = core.history_recent(10, 0, true).unwrap();
-        assert_eq!(h.len(), 2);
-        assert!(h[0].skipped && !h[0].completed && h[1].completed);
-        assert_eq!(h[1].song, s);
-        assert_eq!(core.history_recent(10, 0, false).unwrap().len(), 1);
-        assert_eq!(core.history_recent(10, 1, true).unwrap().len(), 1);
-        assert!(core.history_recent(0, 0, true).unwrap().is_empty());
-
-        core.history_clear().unwrap();
-        assert!(core.history_recent(10, 0, true).unwrap().is_empty());
-        assert!(core.song_stats(vec!["s1".into()]).unwrap().is_empty());
+    fn stats(core: &Core, from_ms: i64, to_ms: i64, top: u32) -> ListeningStats {
+        summary(&core.db.lock(), from_ms, to_ms, top).unwrap()
     }
 
     #[test]
-    fn a_newer_index_entry_is_not_overwritten() {
+    fn records_listens() {
+        let core = Core::new(String::new(), "t".into()).unwrap();
+        let s = song("s1", "Dogs", "Pink Floyd", "Animals", "Rock", 1977);
+        assert!(rec(&core, s.clone(), NOW - DAY, 200_000));
+        assert!(rec(&core, s.clone(), NOW - DAY + 1, 5_000));
+        assert!(!rec(&core, s.clone(), NOW, 1_500), "under 2 s");
+        // Indexed by the listen alone.
+        assert_eq!(core.index_size().unwrap().songs, 1);
+        assert_eq!(core.local_search("dogs".into(), 5).unwrap().songs, vec![s.clone()]);
+
+        let (plays, skips, last, heard, _) = stat(&core, "s1").unwrap();
+        assert_eq!((plays, skips, last, heard), (1, 1, NOW - DAY, 205_000));
+        assert!(stat(&core, "missing").is_none());
+
+        let h = core.history_recent(10, None, true).unwrap().0;
+        assert_eq!(h.len(), 2);
+        assert!(h[0].skipped && !h[0].completed && h[1].completed);
+        assert_eq!(h[1].song, s);
+        assert_eq!(core.history_recent(10, None, false).unwrap().0.len(), 1);
+        let (first, next) = core.history_recent(1, None, true).unwrap();
+        assert!(first[0].skipped);
+        assert!(!core.history_recent(1, next, true).unwrap().0[0].skipped);
+        assert!(core.history_recent(0, None, true).unwrap().0.is_empty());
+
+        core.history_clear().unwrap();
+        assert!(core.history_recent(10, None, true).unwrap().0.is_empty());
+        assert!(stat(&core, "s1").is_none());
+
+        // Record keeps newer index entry.
         let core = Core::new(String::new(), "t".into()).unwrap();
         let mut s = song("s1", "Dogs", "Pink Floyd", "Animals", "Rock", 1977);
         s.starred = true;
         db::index(&mut core.db.lock(), &[], &[], std::slice::from_ref(&s)).unwrap();
         let stale = Song { starred: false, ..s.clone() };
-        core.history_record(stale, NOW, 200_000, 0).unwrap();
-        assert!(core.history_recent(1, 0, true).unwrap()[0].song.starred);
-    }
+        rec(&core, stale, NOW, 200_000);
+        assert!(core.history_recent(1, None, true).unwrap().0[0].song.starred);
 
-    #[test]
-    fn provider_tracks_are_never_recorded() {
+        // Provider tracks are not recorded.
         let core = Core::new(String::new(), "t".into()).unwrap();
         for id in ["ext-deezer-song-7", "pl-deezer-9", ""] {
-            assert!(!core.history_record(Song { id: id.into(), duration: 100, ..Default::default() }, NOW, 100_000, 0).unwrap());
+            assert!(!rec(&core, Song { id: id.into(), duration: 100, ..Default::default() }, NOW, 100_000));
         }
-        assert!(!core.history_record(Song { id: "x".into(), is_external: true, ..Default::default() }, NOW, 100_000, 0).unwrap());
+        assert!(!rec(&core, Song { id: "x".into(), is_external: true, ..Default::default() }, NOW, 100_000));
         assert_eq!(core.index_size().unwrap().songs, 0);
-        assert!(core.history_recent(10, 0, true).unwrap().is_empty());
+        assert!(core.history_recent(10, None, true).unwrap().0.is_empty());
     }
 
     #[test]
-    fn taste_decays_and_listens_to_the_user() {
+    fn taste_stays_sane() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         let (fresh, old, skipped) = (song("a", "A", "X", "", "", 0), song("b", "B", "X", "", "", 0), song("c", "C", "X", "", "", 0));
         listen(&core, &fresh, NOW);
         listen(&core, &old, NOW - 30 * DAY);
         skip(&core, &skipped, NOW);
-        let stored = |id: &str| -> f64 { core.db.lock().query_row("SELECT taste FROM song_stats WHERE server=sid() AND song_id=?1", [id], |r| r.get(0)).unwrap() };
+        let stored = |id: &str| stat(&core, id).unwrap().4;
         assert!((decayed(stored("a"), NOW) - 1.0).abs() < 1e-9);
         assert!((decayed(stored("b"), NOW) - 0.5).abs() < 1e-9);
         assert!((decayed(stored("c"), NOW) + 0.6).abs() < 1e-9);
-        // the stored values are already in today's order
+        // Stored values already sort like today's.
         assert!(stored("a") > stored("b") && stored("b") > stored("c"));
-        // recorded late, same result
+        // Recording out of order gives the same result.
         listen(&core, &old, NOW - 60 * DAY);
         assert!((decayed(stored("b"), NOW) - 0.75).abs() < 1e-9);
 
@@ -170,34 +157,30 @@ pub(crate) mod tests {
         assert_eq!(taste(&Song { starred: true, user_rating: 5, ..plain.clone() }, 0.0, NOW), 3.5);
         assert_eq!(taste(&Song { user_rating: 1, ..plain.clone() }, 0.0, NOW), -3.0);
         assert_eq!(taste(&Song { user_rating: 3, ..plain }, 0.0, NOW), 0.0);
-    }
 
-    #[test]
-    fn a_broken_clock_cannot_poison_the_model() {
+        // Absurd timestamps keep taste finite.
         let core = Core::new(String::new(), "t".into()).unwrap();
         let s = song("a", "A", "X", "", "", 0);
         assert!(record(&mut core.db.lock(), &s, i64::MAX / 2, 200_000, 0, NOW).unwrap());
         assert!(record(&mut core.db.lock(), &s, -5, 200_000, 0, NOW).unwrap());
-        let t = core.song_stats(vec!["a".into()]).unwrap()[0].taste;
+        let t = taste(&s, stat(&core, "a").unwrap().4, NOW);
         assert!(t.is_finite() && t < 3.0, "{t}");
     }
 
     #[test]
-    fn summary_of_an_empty_history() {
+    fn summaries() {
         let core = Core::new(String::new(), "t".into()).unwrap();
-        let s = core.stats_summary(0, i64::MAX, 10).unwrap();
+        let s = stats(&core, 0, i64::MAX, 10);
         assert_eq!((s.plays, s.listened_ms, s.longest_streak_days), (0, 0, 0));
         assert_eq!((s.plays_per_hour.len(), s.plays_per_weekday.len()), (24, 7));
         assert!(s.first_play.is_none() && s.top_songs.is_empty());
-    }
 
-    #[test]
-    fn summary_is_what_a_year_in_review_needs() {
+        // Summary counts tops and charts.
         let core = Core::new(String::new(), "t".into()).unwrap();
         let dogs = song("s1", "Dogs", "Pink Floyd", "Animals", "Rock", 1977);
         let pigs = song("s2", "Pigs", "Pink Floyd", "Animals", "Rock", 1977);
         let bjork = song("s3", "Jóga", "Björk", "Homogenic", "Electronic", 1997);
-        // 2026-06-01 was a Monday; 00:00 UTC
+        // 2026-06-01 00:00 UTC, a Monday.
         let monday = 1_780_272_000_000;
         let at = |day: i64, hour: i64| monday + day * DAY + hour * 3_600_000;
         listen(&core, &dogs, at(0, 8));
@@ -205,10 +188,10 @@ pub(crate) mod tests {
         listen(&core, &pigs, at(2, 23));
         skip(&core, &pigs, at(2, 23) + 1);
         listen(&core, &bjork, at(4, 8));
-        // outside the asked period
+        // Outside the period.
         listen(&core, &bjork, at(40, 8));
 
-        let s = core.stats_summary(monday, monday + 7 * DAY, 2).unwrap();
+        let s = stats(&core, monday, monday + 7 * DAY, 2);
         assert_eq!((s.plays, s.skips, s.listened_ms), (4, 1, 805_000));
         assert_eq!((s.distinct_songs, s.distinct_artists, s.distinct_albums), (3, 2, 2));
         assert_eq!(s.top_songs.len(), 2);
@@ -222,27 +205,25 @@ pub(crate) mod tests {
         assert_eq!(s.plays_per_weekday, vec![1, 1, 1, 0, 1, 0, 0]);
         assert_eq!((s.active_days, s.longest_streak_days), (4, 3));
         assert_eq!(s.first_play.unwrap().song, dogs);
-    }
 
-    #[test]
-    fn hour_and_day_are_local_time() {
+        // Charts use local time.
         let core = Core::new(String::new(), "t".into()).unwrap();
         let s = song("s1", "A", "X", "", "", 0);
-        // Sunday 23:30 UTC is Monday 01:30 at UTC+2
+        // Sunday 23:30 UTC is Monday 01:30 at UTC+2.
         let sunday_late = 1_780_272_000_000 - 30 * 60_000;
         record(&mut core.db.lock(), &s, sunday_late, 200_000, 2 * 3_600_000, NOW).unwrap();
-        let st = core.stats_summary(0, i64::MAX, 1).unwrap();
+        let st = stats(&core, 0, i64::MAX, 1);
         assert_eq!((st.plays_per_hour[1], st.plays_per_weekday[0]), (1, 1));
     }
 
     #[test]
-    fn listens_survive_a_dropped_index_without_breaking_anything() {
+    fn listens_survive_cleared_index() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         listen(&core, &song("s1", "A", "X", "", "", 0), NOW);
         db::clear_library(&core.db.lock()).unwrap();
-        assert!(core.history_recent(10, 0, true).unwrap().is_empty());
-        let s = core.stats_summary(0, i64::MAX, 5).unwrap();
+        assert!(core.history_recent(10, None, true).unwrap().0.is_empty());
+        let s = stats(&core, 0, i64::MAX, 5);
         assert_eq!((s.plays, s.distinct_songs, s.top_songs.len()), (1, 1, 0));
-        assert_eq!(core.song_stats(vec!["s1".into()]).unwrap()[0].plays, 1);
+        assert_eq!(stat(&core, "s1").unwrap().0, 1);
     }
 }

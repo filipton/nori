@@ -1,16 +1,13 @@
-//! Settings, the window's own: the Android app's pages and words (app/vm SettingsPages.kt, strings.xml), less what
-//! only a phone has (mobile data, audio offload, the USB bit-perfect path, black themes, gestures, keeping the
-//! screen on). What each setting is, its options as values and its value now are the core's settings model
-//! (`nori_settings::settings_model`); a row sends back the setting's name with what was picked, and a slider
-//! moves a level in place (`edit_level`).
+//! Settings pages, following Android's SettingsPages.kt minus phone-only settings. Settings, options and
+//! values come from the core's `settings_model`; rows report back the setting name and the picked value.
 
 use nori_core::settings::{EqLevel, GainMode, StoredPrefs, EQ_RANGES};
 use nori_core::settings_model::{self, BeatModel, SettingsState};
 use slint::{Color, ModelRc, SharedString, VecModel};
 
-use crate::SettingRow;
+use crate::{words, SettingRow};
 
-// Row kinds, as app.slint draws them.
+// Row kinds, as app.slint numbers them.
 const HEADING: i32 = 0;
 const TOGGLE: i32 = 1;
 const CHOICE: i32 = 2;
@@ -25,7 +22,7 @@ const PALETTE: i32 = 10;
 const LINK: i32 = 11;
 const BUTTON: i32 = 12;
 
-/// What the pages show besides the settings.
+/// Non-setting facts the pages show (sizes, counts, devices).
 #[derive(Default, Clone)]
 pub struct Facts {
     pub analysed: u32,
@@ -42,10 +39,9 @@ pub struct Facts {
     pub syncing: bool,
 }
 
-/// The name the output device's row goes by in the window: it is the window's own, not the core's.
+/// Row name of the output device choice (a desktop setting, not the core's).
 const DEVICE: &str = "!device";
 
-/// What a choice row sets: one of the core's settings by its name, or the output device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target<'a> {
     Setting(&'a str),
@@ -53,28 +49,26 @@ pub enum Target<'a> {
 }
 
 impl<'a> Target<'a> {
-    /// The choice a row's name, as the window hands it back, is.
     pub fn of(name: &'a str) -> Target<'a> {
         if name == DEVICE { Target::Device } else { Target::Setting(name) }
     }
 }
 
-/// The names the equalizer's link and the button that adds a server go by in the window.
 const EQUALIZER: &str = "equalizer";
 const ADD_SERVER: &str = "add-server";
 
-/// What a link or a button on the page does.
+/// A link or button on the settings page.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Act {
     Equalizer,
     AddServer,
-    /// A server's row, by the server's id: it is switched to.
+    /// Switch to the server with this id.
     Server(String),
     Chore(Chore),
 }
 
 impl Act {
-    /// The act a name the window hands back is: a server's row comes back as `server:` and its id.
+    /// Parses a row name; server rows are `server:<id>`.
     pub fn of(name: &str) -> Option<Act> {
         if let Some(id) = name.strip_prefix("server:") {
             return Some(Act::Server(id.to_string()));
@@ -82,35 +76,24 @@ impl Act {
         match name {
             EQUALIZER => Some(Act::Equalizer),
             ADD_SERVER => Some(Act::AddServer),
-            _ => Chore::ALL.into_iter().find(|c| c.name() == name).map(Act::Chore),
+            _ => CHORES.into_iter().find(|c| chore_name(*c) == name).map(Act::Chore),
         }
     }
 }
 
-/// What the session does when a button asks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Chore {
-    SyncLibrary,
-    DownloadLibrary,
-    MeasureAgain,
-    ClearStream,
-    ClearCovers,
-    ClearLyrics,
-}
+pub use nori_host::session::Chore;
 
-impl Chore {
-    const ALL: [Chore; 6] = [Chore::SyncLibrary, Chore::DownloadLibrary, Chore::MeasureAgain, Chore::ClearStream, Chore::ClearCovers, Chore::ClearLyrics];
+const CHORES: [Chore; 6] = [Chore::SyncLibrary, Chore::DownloadLibrary, Chore::MeasureAgain, Chore::ClearStream, Chore::ClearCovers, Chore::ClearLyrics];
 
-    /// The name its button goes by in the window.
-    fn name(self) -> &'static str {
-        match self {
-            Chore::SyncLibrary => "sync-library",
-            Chore::DownloadLibrary => "download-library",
-            Chore::MeasureAgain => "measure-again",
-            Chore::ClearStream => "clear-stream",
-            Chore::ClearCovers => "clear-covers",
-            Chore::ClearLyrics => "clear-lyrics",
-        }
+/// A chore's row name in the UI.
+fn chore_name(c: Chore) -> &'static str {
+    match c {
+        Chore::SyncLibrary => "sync-library",
+        Chore::DownloadLibrary => "download-library",
+        Chore::MeasureAgain => "measure-again",
+        Chore::ClearStream => "clear-stream",
+        Chore::ClearCovers => "clear-covers",
+        Chore::ClearLyrics => "clear-lyrics",
     }
 }
 
@@ -145,10 +128,6 @@ fn off_or(v: &str, words: impl Fn(&str) -> String) -> String {
     if v == "0" { "Off".into() } else { words(v) }
 }
 
-fn signed_db(v: f32) -> String {
-    if v > 0.0 { format!("+{v:.1}") } else { format!("{v:.1}").replace('-', "−") }
-}
-
 fn minus(v: &str) -> String {
     v.replace('-', "−")
 }
@@ -165,8 +144,7 @@ fn seconds(v: &str) -> String {
     format!("{v} s")
 }
 
-/// The accent as the desktop draws it: the core's default (Android's purple) is Music's red here; any other
-/// colour is the one picked.
+/// The accent to draw: the core's default (Android purple) becomes red here; others as picked.
 pub fn accent_shown(argb: u32) -> u32 {
     let default = StoredPrefs::default().accent as u32;
     if argb == default { 0xFFFA2D48 } else { argb }
@@ -188,10 +166,6 @@ pub fn bytes(n: u64) -> String {
     }
 }
 
-fn count(n: u32, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
-}
-
 impl Build<'_> {
     fn value(&self, name: &str) -> String {
         self.s.values.get(name).cloned().unwrap_or_default()
@@ -205,7 +179,6 @@ impl Build<'_> {
         Row { kind: TOGGLE, name: name.into(), title: title.into(), detail: detail.into(), on: self.value(name) == "true", enabled, ..Default::default() }
     }
 
-    /// The core's options for `name`, each worded by `label`.
     fn choice(&self, name: &str, title: &str, label: impl Fn(&str) -> String) -> Row {
         self.choice_if(name, title, true, label)
     }
@@ -219,7 +192,7 @@ impl Build<'_> {
         Row { kind: CHOICE, name: name.into(), title: title.into(), options, enabled: true, ..Default::default() }
     }
 
-    /// An enum setting: its values by name, worded in the same order.
+    /// An enum setting with one label per option, in option order.
     fn named(&self, name: &str, title: &str, labels: &[&str]) -> Row {
         let names = options(name);
         self.choice(name, title, |v| names.iter().position(|n| n == v).and_then(|i| labels.get(i)).map_or_else(|| v.to_string(), |l| l.to_string()))
@@ -230,7 +203,7 @@ impl Build<'_> {
     }
 
     fn action(&self, title: &str, detail: String, button: &str, enabled: bool, chore: Chore) -> Row {
-        Row { kind: ACTION, name: chore.name().into(), title: title.into(), detail, button: button.into(), enabled, ..Default::default() }
+        Row { kind: ACTION, name: chore_name(chore).into(), title: title.into(), detail, button: button.into(), enabled, ..Default::default() }
     }
 
     fn info(&self, title: &str, detail: String) -> Row {
@@ -248,8 +221,6 @@ impl Build<'_> {
     fn text(&self, name: &str, title: &str, detail: &str) -> Row {
         Row { kind: TEXT, name: name.into(), title: title.into(), detail: detail.into(), button: self.value(name), enabled: true, ..Default::default() }
     }
-
-    // ---- the tabs ----
 
     fn general(&self) -> Vec<(&'static str, Vec<Row>)> {
         let p = self.p;
@@ -308,7 +279,7 @@ impl Build<'_> {
                 between.push(self.toggle_if("autoMixBetterBeats", "Better beat detection", &detail, live));
             }
             let n = self.f.analysed;
-            between.push(self.action("Measured songs", format!("{} measured for tempo and beats.", count(n, "song", "songs")), "Measure again", n > 0, Chore::MeasureAgain));
+            between.push(self.action("Measured songs", format!("{} measured for tempo and beats.", words::count(n, "song", "songs")), "Measure again", n > 0, Chore::MeasureAgain));
         }
         between.push(self.toggle_if("crossfadeKeepAlbums", "Keep albums gapless", "An album played or added to the queue whole plays without mixing between its songs.", live));
         between.push(self.choice("fadeMs", "Fade on play and pause", |v| off_or(v, |v| if v.parse::<u32>().is_ok_and(|n| n % 1000 == 0) { seconds(&(v.parse::<u32>().unwrap_or(0) / 1000).to_string()) } else { format!("{v} ms") })));
@@ -360,7 +331,7 @@ impl Build<'_> {
         let mut volume = vec![self.named("replayGain", "Even out volume", &["Off", "Per song", "Per album", "Automatic"])];
         if p.replay_gain != GainMode::Off {
             let r = EQ_RANGES.replay_gain_preamp;
-            volume.push(self.slider("preampDb", format!("Overall level {} dB", signed_db(p.preamp_db)), p.preamp_db, (r.min, r.max), true));
+            volume.push(self.slider("preampDb", format!("Overall level {} dB", crate::eq::signed(p.preamp_db)), p.preamp_db, (r.min, r.max), true));
             volume.push(self.choice("loudnessTarget", "Loudness target", |v| match v {
                 "-18" => format!("{} LUFS (ReplayGain)", minus(v)),
                 "-14" | "-16" => format!("{} LUFS (streaming)", minus(v)),
@@ -380,7 +351,7 @@ impl Build<'_> {
 
     fn effects(&self) -> Vec<Row> {
         let p = self.p;
-        let boost = |db: f32| if db <= 0.0 { "Off".to_string() } else { format!("{} dB", signed_db(db)) };
+        let boost = |db: f32| if db <= 0.0 { "Off".to_string() } else { format!("{} dB", crate::eq::signed(db)) };
         let mut rows = vec![
             self.slider("bassBoostDb", format!("Bass boost: {}", boost(p.bass_boost_db)), p.bass_boost_db, (0.0, 12.0), false),
             self.slider(
@@ -405,7 +376,7 @@ impl Build<'_> {
             rows.push(self.slider("compRatio", format!("Ratio {}:1", one(p.comp_ratio)), p.comp_ratio, (1.0, 10.0), false));
             rows.push(self.slider("compAttackMs", format!("Reacts in {} ms", one(p.comp_attack_ms)), p.comp_attack_ms, (0.1, 100.0), false));
             rows.push(self.slider("compReleaseMs", format!("Lets go over {:.0} ms", p.comp_release_ms), p.comp_release_ms, (10.0, 1000.0), false));
-            rows.push(self.slider("compMakeupDb", format!("Makes up {} dB", signed_db(p.comp_makeup_db)), p.comp_makeup_db, (0.0, 12.0), false));
+            rows.push(self.slider("compMakeupDb", format!("Makes up {} dB", crate::eq::signed(p.comp_makeup_db)), p.comp_makeup_db, (0.0, 12.0), false));
             rows.push(self.slider("compKneeDb", format!("Softness {} dB", one(p.comp_knee_db)), p.comp_knee_db, (0.0, 12.0), false));
         }
         rows.push(self.toggle(
@@ -468,7 +439,7 @@ impl Build<'_> {
 
     fn library(&self) -> Vec<(&'static str, Vec<Row>)> {
         let (songs, albums, artists) = self.f.indexed;
-        let counts = format!("{} · {} · {} on this Mac", count(songs, "song", "songs"), count(albums, "album", "albums"), count(artists, "artist", "artists"));
+        let counts = format!("{} · {} · {} on this Mac", words::count(songs, "song", "songs"), words::count(albums, "album", "albums"), words::count(artists, "artist", "artists"));
         let search = vec![
             self.action("Offline search", counts, if self.f.syncing { "Updating…" } else { "Update" }, !self.f.syncing, Chore::SyncLibrary),
             self.choice("liveSearchDelayMs", "Search delay", |v| format!("{v} ms")),
@@ -518,7 +489,7 @@ impl Build<'_> {
             bytes(f.cover_bytes),
             bytes(f.lyrics_bytes),
             bytes(f.download_bytes),
-            count(f.download_songs, "download", "downloads"),
+            words::count(f.download_songs, "download", "downloads"),
             bytes(f.database_bytes)
         );
         let storage = vec![
@@ -560,7 +531,7 @@ impl Build<'_> {
     }
 }
 
-/// A lyrics service's name and what it is, by the id the core stores it under (Android's words).
+/// Display name and description of a lyrics service by core id.
 fn service(id: &str) -> Option<(&'static str, &'static str)> {
     Some(match id {
         "BINILYRICS" => ("BiniLyrics", "Apple Music's lyrics, syllable by syllable, from a volunteer's copy. Unofficial."),
@@ -583,10 +554,9 @@ fn service(id: &str) -> Option<(&'static str, &'static str)> {
     })
 }
 
-/// The rows of tab `tab` as the page draws them: each group's heading, then its rows with the first and
-/// last marked (they round the group's corners).
+/// Rows of settings tab `tab`: each group's heading, then its rows with first and last marked.
 pub fn rows(p: &StoredPrefs, f: &Facts, tab: i32) -> ModelRc<SettingRow> {
-    let s = settings_model::state(p, settings_model::Output::default());
+    let s = settings_model::state(p, settings_model::Output::default(), &nori_core::settings_store::shared().model);
     let b = Build { p, s: &s, f };
     let groups = match tab {
         1 => b.playing(),
@@ -633,7 +603,7 @@ pub fn rows(p: &StoredPrefs, f: &Facts, tab: i32) -> ModelRc<SettingRow> {
     ModelRc::new(VecModel::from(out))
 }
 
-/// The value of option `index` of `target`, to hand to `setting_set` (or keep, for the device).
+/// The value of option `index` of `target`.
 pub fn option_value(target: Target, index: usize, f: &Facts) -> Option<String> {
     match target {
         Target::Device => {
@@ -654,7 +624,7 @@ pub fn option_value(target: Target, index: usize, f: &Facts) -> Option<String> {
     }
 }
 
-/// The level a slider row moves in place, by the setting it shows.
+/// The in-place level a slider row edits.
 pub fn level_of(name: &str) -> Option<EqLevel> {
     Some(match name {
         "preampDb" => EqLevel::ReplayGainPreamp,
@@ -685,22 +655,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_tab_builds_from_the_defaults() {
-        let p = StoredPrefs::default();
+    fn row_names_resolve() {
+        let p = StoredPrefs { auto_mix: true, auto_fill: true, compressor: true, expander: true, loudness: true, scrobble: true, ..StoredPrefs::default() };
         let f = Facts::default();
-        let s = settings_model::state(&p, settings_model::Output::default());
+        let s = settings_model::state(&p, settings_model::Output::default(), &nori_core::settings_store::shared().model);
         let b = Build { p: &p, s: &s, f: &f };
-        for groups in [b.general(), b.playing(), b.sound(), b.lyrics(), b.library(), b.data(), b.servers()] {
-            assert!(!groups.is_empty());
+        let specs: Vec<String> = settings_model::specs().into_iter().map(|s| s.name).collect();
+        for (_, rows) in [b.general(), b.playing(), b.sound(), b.lyrics(), b.library(), b.data(), b.servers()].into_iter().flatten() {
+            for r in rows.iter().filter(|r| matches!(r.kind, TOGGLE | CHOICE | TEXT) && r.name != DEVICE) {
+                assert!(specs.contains(&r.name), "{} is not a core setting", r.name);
+            }
         }
-        // Every button's name is the act it does, as the window hands it back.
-        for c in Chore::ALL {
-            assert_eq!(Act::of(c.name()), Some(Act::Chore(c)));
+        for c in CHORES {
+            assert_eq!(Act::of(chore_name(c)), Some(Act::Chore(c)));
         }
         assert_eq!(Act::of(EQUALIZER), Some(Act::Equalizer));
         assert_eq!(Act::of(ADD_SERVER), Some(Act::AddServer));
         assert_eq!(Act::of("server:7"), Some(Act::Server("7".into())));
-        // Every slider's level is one the core moves in place.
         for r in b.sound().into_iter().flat_map(|g| g.1) {
             if r.kind == SLIDER {
                 assert!(level_of(&r.name).is_some(), "{}", r.name);

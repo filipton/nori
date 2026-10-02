@@ -1,6 +1,5 @@
-//! The car's browse tree as the client's calls: each folder read as a screen reads it (the stored answer
-//! first, so the car works from what the phone has when the server is out of reach), the queue a picked
-//! row plays, the car's search and its spoken requests. The tree and how its rows read are nori-library's.
+//! Android Auto's calls: folders read as a screen reads them (stored answer first, so they open offline),
+//! the queue a picked row plays, search and spoken requests. The tree itself is nori-library's.
 
 use std::collections::{HashSet, VecDeque};
 
@@ -11,23 +10,24 @@ use crate::Song;
 
 pub use nori_library::car::*;
 
-/// The songs of the folders last listed, newest last: a picked row plays the very list it was in.
+/// The folders last listed, newest last: their later pages and the list a picked row plays come from
+/// the one read, so a random folder draws once.
 #[derive(Default)]
-pub struct Shown(VecDeque<(String, Vec<Song>)>);
+pub struct Shown(VecDeque<(String, BrowsePage)>);
 
 impl Shown {
     /// How many folders are remembered: a car lists a few levels deep at a time.
     const KEPT: usize = 8;
 
-    fn keep(&mut self, parent: &str, songs: &[Song]) {
+    fn keep(&mut self, parent: &str, page: &BrowsePage) {
         self.0.retain(|(p, _)| p != parent);
-        self.0.push_back((parent.into(), songs.to_vec()));
+        self.0.push_back((parent.into(), page.clone()));
         while self.0.len() > Self::KEPT {
             self.0.pop_front();
         }
     }
 
-    fn get(&self, parent: &str) -> Option<Vec<Song>> {
+    fn get(&self, parent: &str) -> Option<BrowsePage> {
         self.0.iter().find(|(p, _)| p == parent).map(|(_, s)| s.clone())
     }
 }
@@ -39,63 +39,21 @@ impl Client {
         folder(ROOT, CarFolder::Root)
     }
 
-    /// The root's tabs, `limit` at most, the downloads first while `offline` (see nori-library's `root`).
-    pub fn car_root(&self, limit: u32, offline: bool) -> BrowsePage {
-        BrowsePage { folders: root(limit, offline), ..Default::default() }
+    /// Page `page` of `page_size` rows of the root's tabs, `limit` at most, the downloads first while
+    /// `offline` (nori-library's `root`).
+    pub fn car_root(&self, limit: u32, offline: bool, page: u32, page_size: u32) -> BrowsePage {
+        page_of(&BrowsePage { folders: root(limit, offline), ..Default::default() }, page, page_size)
     }
 
-    /// What the folder `parent` holds; nothing for one that is not known, and `failed` for one that
-    /// cannot be read now.
-    pub async fn browse_children(&self, parent: String) -> BrowsePage {
-        let (kind, arg) = parent.split_once(':').unwrap_or((parent.as_str(), ""));
-        let page = match kind {
-            ROOT => BrowsePage { folders: root(4, false), ..Default::default() },
-            "home" => self.car_home().await,
-            "library" => BrowsePage { folders: library(), ..Default::default() },
-            "albums" => match self.first(Read::AlbumList { kind: arg.into(), size: 100, offset: 0, genre: None }).await {
-                Ok(Page::Albums { v }) => BrowsePage { folders: album_folders(&v, None, 100), ..Default::default() },
-                _ => failed(),
-            },
-            "artists" => match self.first(Read::ArtistIndex).await {
-                Ok(Page::Artists { v }) => BrowsePage { folders: v.iter().filter(|a| !a.is_external).map(|a| artist_folder(a, None)).collect(), ..Default::default() },
-                _ => failed(),
-            },
-            "artist" => match self.first(Read::ArtistById { id: arg.into() }).await {
-                Ok(Page::ArtistPage { v }) => BrowsePage { folders: album_folders(&v.albums, None, usize::MAX), actions: whole(), ..Default::default() },
-                _ => failed(),
-            },
-            "playlists" => match self.first(Read::PlaylistList).await {
-                Ok(Page::Playlists { v }) => BrowsePage { folders: v.iter().map(playlist_folder).collect(), ..Default::default() },
-                _ => failed(),
-            },
-            "genres" => match self.first(Read::GenreList).await {
-                Ok(Page::Genres { v }) => BrowsePage { folders: v.iter().filter(|g| g.song_count > 0).map(genre_folder).collect(), ..Default::default() },
-                _ => failed(),
-            },
-            "genre" => match self.first(Read::AlbumList { kind: "byGenre".into(), size: 100, offset: 0, genre: Some(arg.into()) }).await {
-                Ok(Page::Albums { v }) => BrowsePage { folders: album_folders(&v, None, 100), actions: whole(), ..Default::default() },
-                _ => failed(),
-            },
-            "starred" => match self.first(Read::StarredItems).await {
-                Ok(Page::StarredPage { v }) => {
-                    let mut p = self.songs_page(&parent, library_songs(v.songs), true);
-                    p.folders = album_folders(&v.albums, Some(CarGroup::Albums), usize::MAX);
-                    p.folders.extend(v.artists.iter().filter(|a| !a.is_external).map(|a| artist_folder(a, Some(CarGroup::Artists))));
-                    if !p.folders.is_empty() {
-                        p.songs_group = Some(CarGroup::Songs);
-                    }
-                    p
-                }
-                _ => failed(),
-            },
-            "search" => self.car_search(arg.into()).await,
-            _ => match self.folder_songs(&parent).await {
-                Some(songs) => self.songs_page(&parent, songs, kind != "random"),
-                None if matches!(kind, "album" | "playlist" | "mix" | "random" | "downloads") => failed(),
-                None => BrowsePage::default(),
-            },
+    /// Page `page` of `page_size` rows of folder `parent`: nothing for one that is not known, `failed`
+    /// for one that cannot be read now. Pages after the first come from the first's read.
+    pub async fn browse_children(&self, parent: String, page: u32, page_size: u32) -> BrowsePage {
+        let kept = if page > 0 { self.car.lock().get(&parent) } else { None };
+        let all = match kept {
+            Some(all) => all,
+            None => self.listed(&parent).await,
         };
-        page
+        page_of(&all, page, page_size)
     }
 
     /// What a picked row plays: a song of a folder plays the folder from it, Play and Shuffle the whole
@@ -108,8 +66,7 @@ impl Client {
             "artist" if row.song.is_none() => self.artist_songs_of(arg.into()).await.unwrap_or_default(),
             "genre" if row.song.is_none() => self.songs(Read::SongsByGenre { genre: arg.into(), count: 100 }).await.unwrap_or_default(),
             _ => {
-                // Out of the lock before any wait: it is not held across one.
-                let shown = self.car.lock().get(&row.parent);
+                let shown = self.car.lock().get(&row.parent).map(|p| p.songs);
                 match shown {
                     Some(s) => s,
                     None => self.folder_songs(&row.parent).await.unwrap_or_default(),
@@ -121,14 +78,7 @@ impl Client {
 
     /// The car's search: the artists, albums and songs the server finds for `query`, under their headings.
     pub async fn car_search(&self, query: String) -> BrowsePage {
-        let sizes = crate::browse::library_sizes();
-        let read = Read::Search { query: query.clone(), songs: sizes.search_songs, albums: sizes.search_albums, artists: sizes.search_artists };
-        let Ok(Page::Found { v }) = self.read_now(read).await else { return failed() };
-        let mut p = self.songs_page(&format!("search:{query}"), library_songs(v.songs), false);
-        p.folders = v.artists.iter().filter(|a| !a.is_external).map(|a| artist_folder(a, Some(CarGroup::Artists))).collect();
-        p.folders.extend(album_folders(&v.albums, Some(CarGroup::Albums), usize::MAX));
-        p.songs_group = Some(CarGroup::Songs);
-        p
+        self.listed(&format!("search:{query}")).await
     }
 
     /// What a spoken request plays (nori-library's `voice_pick`): an artist's songs and a genre's shuffled,
@@ -181,9 +131,76 @@ fn whole() -> Vec<CarAction> {
 }
 
 impl Client {
+    /// Everything folder `parent` holds, kept for its later pages and picks unless it could not be read.
+    async fn listed(&self, parent: &str) -> BrowsePage {
+        let (kind, arg) = parent.split_once(':').unwrap_or((parent, ""));
+        let page = match kind {
+            ROOT => BrowsePage { folders: root(4, false), ..Default::default() },
+            "home" => self.car_home().await,
+            "library" => BrowsePage { folders: library(), ..Default::default() },
+            "albums" => match self.first(Read::AlbumList { kind: arg.into(), size: 100, offset: 0, genre: None }).await {
+                Ok(Page::Albums { v }) => BrowsePage { folders: album_folders(&v, None, 100), ..Default::default() },
+                _ => failed(),
+            },
+            "artists" => match self.first(Read::ArtistIndex).await {
+                Ok(Page::Artists { v }) => BrowsePage { folders: v.iter().filter(|a| !a.is_external).map(|a| artist_folder(a, None)).collect(), ..Default::default() },
+                _ => failed(),
+            },
+            "artist" => match self.first(Read::ArtistById { id: arg.into() }).await {
+                Ok(Page::ArtistPage { v }) => BrowsePage { folders: album_folders(&v.albums, None, usize::MAX), actions: whole(), ..Default::default() },
+                _ => failed(),
+            },
+            "playlists" => match self.first(Read::PlaylistList).await {
+                Ok(Page::Playlists { v }) => BrowsePage { folders: v.iter().map(playlist_folder).collect(), ..Default::default() },
+                _ => failed(),
+            },
+            "genres" => match self.first(Read::GenreList).await {
+                Ok(Page::Genres { v }) => BrowsePage { folders: v.iter().filter(|g| g.song_count > 0).map(genre_folder).collect(), ..Default::default() },
+                _ => failed(),
+            },
+            "genre" => match self.first(Read::AlbumList { kind: "byGenre".into(), size: 100, offset: 0, genre: Some(arg.into()) }).await {
+                Ok(Page::Albums { v }) => BrowsePage { folders: album_folders(&v, None, 100), actions: whole(), ..Default::default() },
+                _ => failed(),
+            },
+            "starred" => match self.first(Read::StarredItems).await {
+                Ok(Page::StarredPage { v }) => {
+                    let mut p = self.songs_page(library_songs(v.songs), true);
+                    p.folders = album_folders(&v.albums, Some(CarGroup::Albums), usize::MAX);
+                    p.folders.extend(v.artists.iter().filter(|a| !a.is_external).map(|a| artist_folder(a, Some(CarGroup::Artists))));
+                    if !p.folders.is_empty() {
+                        p.songs_group = Some(CarGroup::Songs);
+                    }
+                    p
+                }
+                _ => failed(),
+            },
+            "search" => self.search_page(arg).await,
+            _ => match self.folder_songs(parent).await {
+                Some(songs) => self.songs_page(songs, kind != "random"),
+                None if matches!(kind, "album" | "playlist" | "mix" | "random" | "downloads") => failed(),
+                None => BrowsePage::default(),
+            },
+        };
+        if !page.failed {
+            self.car.lock().keep(parent, &page);
+        }
+        page
+    }
+
+    async fn search_page(&self, query: &str) -> BrowsePage {
+        let sizes = crate::browse::library_sizes();
+        let read = Read::Search { query: query.into(), songs: sizes.search_songs, albums: sizes.search_albums, artists: sizes.search_artists };
+        let Ok(Page::Found { v }) = self.read_now(read).await else { return failed() };
+        let mut p = self.songs_page(library_songs(v.songs), false);
+        p.folders = v.artists.iter().filter(|a| !a.is_external).map(|a| artist_folder(a, Some(CarGroup::Artists))).collect();
+        p.folders.extend(album_folders(&v.albums, Some(CarGroup::Albums), usize::MAX));
+        p.songs_group = Some(CarGroup::Songs);
+        p
+    }
+
     /// Home: favourites and today's mixes as on the phone's Home, then what was played and added lately.
     async fn car_home(&self) -> BrowsePage {
-        let taste = crate::settings_store::current().is_none_or(|p| p.taste_model);
+        let taste = self.settings().prefs(|p| p.taste_model);
         // The starred songs handed to the mixes, as the Home row hands them before it is drawn.
         if let Ok(h) = self.mix_favourites_stored() {
             if !h.fresh {
@@ -209,14 +226,8 @@ impl Client {
     async fn folder_songs(&self, parent: &str) -> Option<Vec<Song>> {
         let (kind, arg) = parent.split_once(':').unwrap_or((parent, ""));
         let songs = match kind {
-            "album" => match self.first(Read::AlbumById { id: arg.into() }).await.ok()? {
-                Page::AlbumPage { v } => v.songs,
-                _ => return None,
-            },
-            "playlist" => match self.first(Read::PlaylistById { id: arg.into() }).await.ok()? {
-                Page::PlaylistPage { v } => v.songs,
-                _ => return None,
-            },
+            "album" => self.first(Read::AlbumById { id: arg.into() }).await.ok()?.songs(),
+            "playlist" => self.first(Read::PlaylistById { id: arg.into() }).await.ok()?.songs(),
             "mix" => {
                 if arg != FAVOURITES_MIX {
                     self.mix_ensure(arg.into(), false).await;
@@ -226,10 +237,7 @@ impl Client {
                     _ => return None,
                 }
             }
-            "starred" => match self.first(Read::StarredItems).await.ok()? {
-                Page::StarredPage { v } => v.songs,
-                _ => return None,
-            },
+            "starred" => self.first(Read::StarredItems).await.ok()?.songs(),
             "random" => self.songs(Read::RandomSongs { size: 50, genre: None }).await.ok()?,
             "downloads" => self.core.downloads(true).ok()?,
             "search" => {
@@ -244,10 +252,9 @@ impl Client {
         Some(library_songs(songs))
     }
 
-    /// `songs` as folder `parent`'s rows, each marked downloaded or not, with Play and Shuffle above them
-    /// when `actions`; remembered, so a row picked plays this very list.
-    fn songs_page(&self, parent: &str, songs: Vec<Song>, actions: bool) -> BrowsePage {
-        self.car.lock().keep(parent, &songs);
+    /// `songs` as a folder's rows, each marked downloaded or not, with Play and Shuffle above them when
+    /// `actions`.
+    fn songs_page(&self, songs: Vec<Song>, actions: bool) -> BrowsePage {
         let kept: HashSet<String> = self.core.downloads(true).unwrap_or_default().into_iter().map(|s| s.id).collect();
         BrowsePage {
             downloaded: songs.iter().map(|s| kept.contains(&s.id)).collect(),
@@ -265,32 +272,30 @@ pub(crate) mod tests {
     use crate::client::NetProfile;
 
     #[test]
-    fn the_root_lists_the_cars_tabs_and_asks_nothing() {
+    fn folders_list() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
-        let p = block(c.browse_children(ROOT.into()));
+        let p = block(c.browse_children(ROOT.into(), 0, 100));
         assert_eq!(p.folders.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), ["home", "library", "starred", "downloads"]);
-        assert_eq!(c.car_root(3, true).folders[0].id, "downloads");
-        assert!(block(c.browse_children("library".into())).folders.iter().any(|f| f.id == "artists"));
+        assert_eq!(c.car_root(3, true, 0, 100).folders[0].id, "downloads");
+        assert!(block(c.browse_children("library".into(), 0, 100)).folders.iter().any(|f| f.id == "artists"));
         assert!(fake.asked.lock().is_empty(), "the root and the library's lists ask nothing of the server");
-    }
 
-    #[test]
-    fn a_playlist_folder_has_its_count_of_songs() {
+        // Playlists folder lists song counts.
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         fake.answer(r#"{"subsonic-response":{"status":"ok","playlists":{"playlist":[{"id":"p1","name":"Evening","songCount":12}]}}}"#);
-        let p = block(c.browse_children("playlists".into()));
+        let p = block(c.browse_children("playlists".into(), 0, 100));
         assert_eq!((p.folders[0].id.as_str(), p.folders[0].title.as_str(), p.folders[0].songs, p.folders[0].playable), ("playlist:p1", "Evening", Some(12), true));
-        assert!(block(c.browse_children("nonsense".into())).folders.is_empty());
+        assert!(block(c.browse_children("nonsense".into(), 0, 100)).folders.is_empty());
     }
 
     const ALBUM: &str = r#"{"subsonic-response":{"status":"ok","album":{"id":"a1","name":"Monster","artist":"Future","song":[
         {"id":"s1","title":"One","album":"Monster"},{"id":"s2","title":"Two","album":"Monster"},{"id":"x","title":"Theirs","isExternal":true}]}}}"#;
 
     #[test]
-    fn an_album_lists_play_shuffle_and_its_songs_and_a_song_picked_plays_the_album_from_it() {
+    fn albums_play_as_queue() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         fake.answer(ALBUM);
-        let p = block(c.browse_children("album:a1".into()));
+        let p = block(c.browse_children("album:a1".into(), 0, 100));
         assert_eq!(p.actions, [CarAction::Play, CarAction::Shuffle]);
         assert_eq!(p.songs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["s1", "s2"], "a provider's song is left out");
         assert_eq!(p.downloaded, [false, false]);
@@ -300,19 +305,8 @@ pub(crate) mod tests {
         assert_eq!(q.origin.unwrap().id, "a1");
         assert_eq!(fake.asked().len(), asked, "the list shown is played, not asked for again");
         assert!(block(c.car_queue("s1".into())).is_none(), "a bare song id is not a row");
-    }
 
-    #[test]
-    fn a_folder_the_server_cannot_answer_says_so() {
-        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
-        fake.fail(crate::transport::FailureKind::Connect);
-        assert!(block(c.browse_children("album:a1".into())).failed);
-        fake.fail(crate::transport::FailureKind::Connect);
-        assert!(block(c.browse_children("albums:newest".into())).failed);
-    }
-
-    #[test]
-    fn a_spoken_album_plays_as_the_albums_queue() {
+        // A spoken album plays as its queue.
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         fake.answer(r#"{"subsonic-response":{"status":"ok","searchResult3":{"album":[{"id":"a1","name":"Monster","artist":"Future"}]}}}"#);
         fake.answer(ALBUM);
@@ -320,5 +314,36 @@ pub(crate) mod tests {
         assert_eq!(q.songs.len(), 2);
         assert_eq!(q.origin, Some(nori_model::PageOrigin { kind: nori_model::OriginKind::Album, id: "a1".into() }));
         assert!(!q.shuffle);
+    }
+
+    #[test]
+    fn an_unreadable_folder_says_it_failed() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        fake.fail(crate::transport::FailureKind::Connect);
+        assert!(block(c.browse_children("album:a1".into(), 0, 100)).failed);
+        fake.fail(crate::transport::FailureKind::Connect);
+        assert!(block(c.browse_children("albums:newest".into(), 0, 100)).failed);
+    }
+
+    #[test]
+    fn folder_read_once_per_paging() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        fake.answer(r#"{"subsonic-response":{"status":"ok","randomSongs":{"song":[{"id":"x","isDir":false},{"id":"y","isDir":false},{"id":"z","isDir":false}]}}}"#);
+        let ids = |p: BrowsePage| p.songs.into_iter().map(|s| s.id).collect::<Vec<_>>();
+        assert_eq!(ids(block(c.browse_children("random".into(), 0, 2))), ["x", "y"]);
+        assert_eq!(ids(block(c.browse_children("random".into(), 1, 2))), ["z"]);
+        let q = block(c.car_queue(car_song_row("random".into(), "z".into()))).unwrap();
+        assert_eq!((q.songs.len(), q.index), (3, 2));
+        assert_eq!(fake.asked().len(), 1, "later pages and the pick are of the same draw");
+        let root = c.car_root(4, false, 1, 3);
+        assert_eq!(root.folders.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), ["downloads"]);
+    }
+
+    #[test]
+    fn album_opens_offline_from_cache() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        c.core.cache_put("getAlbum&id=a".into(), br#"{"subsonic-response":{"status":"ok","album":{"id":"a","name":"A","song":[{"id":"s","isDir":false}]}}}"#.to_vec()).unwrap();
+        fake.fail(crate::transport::FailureKind::Connect);
+        assert_eq!(block(c.browse_children("album:a".into(), 0, 10)).songs.len(), 1);
     }
 }

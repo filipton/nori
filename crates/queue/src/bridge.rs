@@ -1,17 +1,13 @@
-//! The offline bridge: when the server is gone mid-evening and the next queued song is not on the phone,
-//! play from the downloads until the network is back, then return to the queue where it was parked.
-//! The queue is the core's (playlist.rs): this chooses the songs and makes the change, and the platform
-//! makes the same change to its player.
+//! The offline bridge: while the server is unreachable and the next song is not downloaded, play
+//! downloads, then resume the queue where it was parked. This picks the songs.
 
 use nori_model::Song;
 use nori_player::queue::shuffle;
 
-/// How many downloads a bridge brings in at a time.
+/// Downloads added per bridge batch.
 pub const BATCH: u32 = 12;
 
-/// How close a download is to the song the evening was on: the same artist counts most, then the same
-/// album, the genre and the artist's id, and a starred song a little. Nothing here reaches for the
-/// network - the pool is what is on the phone.
+/// Similarity of a download to `seed`: artist name, album, genre, artist id, then starred.
 fn score(seed: Option<&Song>, s: &Song) -> i32 {
     let mut v = 0;
     if let Some(seed) = seed {
@@ -34,17 +30,16 @@ fn score(seed: Option<&Song>, s: &Song) -> i32 {
     v
 }
 
-/// Up to `n` of `pool` to bridge with after `seed`: the closest first, shuffled among equals, none that
-/// is already queued (`exclude`) or a provider's.
+/// Up to `n` of `pool`, most similar first (shuffled among equals), excluding `exclude` and provider songs.
 pub fn pick(seed: Option<&Song>, pool: &[Song], exclude: &[String], n: usize, rng_seed: u64) -> Vec<Song> {
     let mut scored: Vec<(i32, &Song)> = pool
         .iter()
-        .filter(|s| !exclude.contains(&s.id) && !s.is_external && !s.id.starts_with("ext-"))
+        .filter(|s| !exclude.contains(&s.id) && !s.is_provider())
         .map(|s| (score(seed, s), s))
         .collect();
-    // Shuffle first, then a stable sort by score: songs of one score stay in shuffled order.
+    // Shuffle, then stable sort: equal scores stay shuffled.
     shuffle(&mut scored, rng_seed);
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.sort_by_key(|a| std::cmp::Reverse(a.0));
     scored.into_iter().take(n).map(|(_, s)| s.clone()).collect()
 }
 
@@ -57,7 +52,7 @@ mod tests {
     }
 
     #[test]
-    fn the_closest_downloads_come_first_and_queued_ones_never() {
+    fn pick_by_similarity() {
         let seed = song("s", "Radiohead", "ok", false);
         let pool = [song("a", "Muse", "x", false), song("b", "radiohead", "kid", false), song("c", "Radiohead", "ok", false), song("d", "Muse", "y", true), song("q", "Radiohead", "ok", false)];
         let p = pick(Some(&seed), &pool, &["q".to_string()], 3, 7);

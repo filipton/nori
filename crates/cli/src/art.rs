@@ -1,8 +1,5 @@
-//! Covers in the terminal, and the colours the interface takes from them. The picture is fetched and
-//! decoded by nori-covers (the core's covers, as on Android) and handed to ratatui-image, which speaks
-//! whichever graphics protocol the terminal answered to when asked: kitty's, sixel, iTerm2's, or half
-//! blocks drawn in colour where none is spoken. The colours are nori-look's, worked out from the same
-//! picture as the Android player's sleeve.
+//! Covers drawn through ratatui-image (kitty, sixel, iTerm2 or half blocks) from images decoded by
+//! nori-covers, and the interface colours derived from them by nori-look.
 
 use std::sync::Arc;
 
@@ -13,7 +10,7 @@ use ratatui::style::Color;
 use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::StatefulProtocol;
 
-/// The graphics protocol in use, as a person would name it.
+/// Display name of a graphics protocol.
 pub fn protocol_name(p: ProtocolType) -> &'static str {
     match p {
         ProtocolType::Kitty => "kitty graphics",
@@ -23,77 +20,74 @@ pub fn protocol_name(p: ProtocolType) -> &'static str {
     }
 }
 
-/// How many pixels a side covers are decoded at: sharp at a quarter of a large terminal, and small
-/// enough that the colours are worked out in a few milliseconds.
+/// Decode size of large covers: sharp at a quarter of a big terminal, cheap to derive colours from.
 pub const COVER_PX: u32 = 600;
 
-/// The pictures on screen, each encoded once for the area it is drawn in.
-pub struct Art {
-    picker: Picker,
-    /// A few covers by address, newest last: the one playing and the album page's, with the decoded
-    /// picture each was made from (to be sent again, [`Art::resend`]).
-    kept: Vec<(String, StatefulProtocol, Arc<Image>)>,
-    /// The album cards' small covers (`thumb:<id>`), a screenful and more, least recently put first.
-    thumbs: Vec<(String, StatefulProtocol, Arc<Image>)>,
-}
+/// Decode size of album card covers.
+pub const THUMB_PX: u32 = 160;
 
-/// How many small covers are kept: a few screens of cards.
+/// Large covers kept: the playing one and the album page's.
+const COVERS: usize = 3;
+
+/// Card covers kept: a few screens of cards.
 const THUMBS: usize = 120;
 
-/// How many pixels a side a card's cover is decoded at.
-pub const THUMB_PX: u32 = 160;
+/// Encoded covers by key, each with its decoded image for [`Art::resend`]. Oldest first.
+type Kept = Vec<(String, StatefulProtocol, Arc<Image>)>;
+
+/// The covers on screen, each encoded once for the area it is drawn in.
+pub struct Art {
+    picker: Picker,
+    covers: Kept,
+    /// Keys prefixed with [`crate::backend::THUMB`].
+    thumbs: Kept,
+}
 
 impl Art {
     pub fn new(picker: Picker) -> Art {
-        Art { picker, kept: Vec::new(), thumbs: Vec::new() }
+        Art { picker, covers: Vec::new(), thumbs: Vec::new() }
     }
 
-    /// A decoded cover, made ready for the terminal.
-    pub fn put(&mut self, url: String, image: &Arc<Image>) {
-        let Some(protocol) = self.protocol(image) else { return };
-        let (list, cap) = if url.starts_with(crate::backend::THUMB) { (&mut self.thumbs, THUMBS) } else { (&mut self.kept, 3) };
-        list.retain(|(u, _, _)| *u != url);
+    /// Adds a decoded cover under `key`, evicting the oldest past the cap.
+    pub fn put(&mut self, key: String, image: &Arc<Image>) {
+        let Some(protocol) = encode(&self.picker, image) else { return };
+        let (list, cap) = if key.starts_with(crate::backend::THUMB) { (&mut self.thumbs, THUMBS) } else { (&mut self.covers, COVERS) };
+        list.retain(|(k, _, _)| *k != key);
         if list.len() >= cap {
             list.remove(0);
         }
-        list.push((url, protocol, image.clone()));
+        list.push((key, protocol, image.clone()));
     }
 
-    fn protocol(&self, image: &Image) -> Option<StatefulProtocol> {
-        let rgba = RgbaImage::from_raw(image.width, image.height, image.pixels.to_vec())?;
-        Some(self.picker.new_resize_protocol(DynamicImage::ImageRgba8(rgba)))
-    }
-
-    /// Every picture made again, so the next draw sends it to the terminal in full: a protocol state
-    /// sends its picture once (kitty transmits it once, sixel only when its area changes), and a
-    /// terminal that dropped it (tmux, while the pane was in another window) would never see it again.
+    /// Re-encodes every cover so the next draw transmits it in full. A protocol state sends its picture
+    /// once, so a terminal that dropped it (tmux, while the pane was hidden) would never get it back.
     pub fn resend(&mut self) {
         if self.picker.protocol_type() == ProtocolType::Halfblocks {
             return;
         }
-        for i in 0..self.kept.len() {
-            if let Some(p) = self.protocol(&self.kept[i].2) {
-                self.kept[i].1 = p;
-            }
-        }
-        for i in 0..self.thumbs.len() {
-            if let Some(p) = self.protocol(&self.thumbs[i].2) {
-                self.thumbs[i].1 = p;
+        for (_, protocol, image) in self.covers.iter_mut().chain(self.thumbs.iter_mut()) {
+            if let Some(p) = encode(&self.picker, image) {
+                *protocol = p;
             }
         }
     }
 
-    pub fn get(&mut self, url: &str) -> Option<&mut StatefulProtocol> {
-        self.kept.iter_mut().chain(self.thumbs.iter_mut()).find(|(u, _, _)| u == url).map(|(_, p, _)| p)
+    pub fn get(&mut self, key: &str) -> Option<&mut StatefulProtocol> {
+        self.covers.iter_mut().chain(self.thumbs.iter_mut()).find(|(k, _, _)| k == key).map(|(_, p, _)| p)
     }
 
-    pub fn has(&self, url: &str) -> bool {
-        self.kept.iter().chain(self.thumbs.iter()).any(|(u, _, _)| u == url)
+    pub fn has(&self, key: &str) -> bool {
+        self.covers.iter().chain(self.thumbs.iter()).any(|(k, _, _)| k == key)
     }
 }
 
-/// The interface's colours: an accent, text on the page and the page itself (None: the terminal's own).
-#[derive(Debug, Clone, Copy, PartialEq)]
+fn encode(picker: &Picker, image: &Image) -> Option<StatefulProtocol> {
+    let rgba = RgbaImage::from_raw(image.width, image.height, image.pixels.to_vec())?;
+    Some(picker.new_resize_protocol(DynamicImage::ImageRgba8(rgba)))
+}
+
+/// Interface colours; `page` None means the terminal's own background.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Theme {
     pub accent: Color,
     pub text: Color,
@@ -105,7 +99,7 @@ pub fn argb(c: u32) -> Color {
     Color::Rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)
 }
 
-/// `a` towards `b` by `t` (0 all `a`), for text lit only partly, as the lyrics' lines are.
+/// Linear blend from `a` (t = 0) to `b` (t = 1); non-RGB colours snap at 0.5.
 pub fn blend(a: Color, b: Color, t: f32) -> Color {
     match (a, b) {
         (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) => {
@@ -118,20 +112,19 @@ pub fn blend(a: Color, b: Color, t: f32) -> Color {
 }
 
 impl Theme {
-    /// The app's own accent (the settings' swatch, ARGB) on the terminal's own colours, light or dark:
-    /// its own text colour, and its dimmed one.
+    /// The terminal's own colours with the ARGB `accent`.
     pub fn plain(accent: i64) -> Theme {
         Theme { accent: argb(accent as u32), text: Color::Reset, dim: Color::DarkGray, page: None }
     }
 
-    /// The page as a cover dresses it: its accent, its text, its page colour.
+    /// Colours derived from a cover.
     pub fn from_cover(c: &CoverColours) -> Theme {
         let text = argb(c.on);
         let page = argb(c.background);
         Theme { accent: argb(c.accent), text, dim: blend(page, text, 0.62), page: Some(page) }
     }
 
-    /// Text lit to `strength` (1 fully) on this page; on the terminal's own page, full or dimmed.
+    /// Text colour at `strength` (1 = full); on the terminal's background only full or dim.
     pub fn lit(&self, strength: f32) -> Color {
         match self.page {
             Some(page) => blend(page, self.text, strength),
@@ -146,22 +139,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_cover_tints_the_interface_through_nori_look() {
-        // A deep red record: the accent and the page come from it, the text stays readable on the page.
+    fn covers() {
         let mut px = vec![0u8; 32 * 32 * 4];
         for p in px.chunks_exact_mut(4) {
             p.copy_from_slice(&[180, 20, 30, 255]);
         }
         let image = Image { width: 32, height: 32, pixels: px.into_boxed_slice() };
-        let c = crate::backend::derive(&image);
+        let c = nori_host::derive(&image);
         let t = Theme::from_cover(&c);
         let Some(Color::Rgb(r, g, b)) = t.page else { panic!("a page colour") };
         assert!(r > g && r > b, "the page is the record's red, darkened: {r} {g} {b}");
         assert_ne!(t.accent, Theme::plain(0xff3478f6).accent);
-    }
 
-    #[test]
-    fn a_decoded_cover_becomes_a_picture_in_every_protocol() {
+        // Cover renders in every protocol.
         let image = Arc::new(Image { width: 8, height: 8, pixels: vec![200u8; 8 * 8 * 4].into_boxed_slice() });
         for p in [ProtocolType::Halfblocks, ProtocolType::Sixel, ProtocolType::Kitty, ProtocolType::Iterm2] {
             let mut picker = Picker::halfblocks();
@@ -169,7 +159,6 @@ mod tests {
             let mut art = Art::new(picker);
             art.put("u".into(), &image);
             assert!(art.has("u"));
-            // Made again to be sent in full (a pane back from another tmux window): still there.
             art.resend();
             assert!(art.has("u"));
             let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 10, 5));
@@ -178,4 +167,5 @@ mod tests {
             assert!(buf.content.iter().any(|c| !c.symbol().trim().is_empty() || c.diff_option != ratatui::buffer::CellDiffOption::None), "{p:?} drew nothing");
         }
     }
+
 }

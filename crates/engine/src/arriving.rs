@@ -1,14 +1,10 @@
-//! A song decoded as its bytes arrive, for whatever wants its samples before it is played (AutoMix's
-//! measuring, `core::measure_as_it_comes`): whoever fetches the song (the fetching ahead, a download, the
-//! loader of the next song) hands each piece to a [`Listening`] as it comes, and a decoder on a thread of the
-//! lowest priority reads them from there. The network and the CPU wake together, in the fetch's one
-//! burst, and the song is never read back from the disk and decoded a second time.
+//! A song decoded as its bytes arrive (AutoMix's measuring, `core::measure_as_it_comes`): the fetcher
+//! (fetching ahead, a download, the next song's loader) hands each piece to a [`Listening`], read by a
+//! lowest-priority decoder thread, so the network and CPU wake together and nothing is read back.
 //!
-//! What waits for the decoder is held to [`PIPE`] bytes: a fetch that may wait (fetching ahead, a
-//! download) waits for room, one that must not (the player's own loader) gives the decoding up instead,
-//! and the song is measured from the disk later. The decoder is woken once [`WAKE`] bytes wait, not per
-//! piece. Only a song fetched whole from its first byte is kept as measured: one whose fetch broke off,
-//! was left, or jumped is dropped, never stored as if it were complete.
+//! At most [`PIPE`] bytes wait: a fetch that may wait blocks for room; one that must not (the player's
+//! loader) abandons the decoding. The decoder wakes per [`WAKE`] bytes. Only a song fetched whole from its
+//! first byte counts as measured.
 
 use std::collections::VecDeque;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -20,23 +16,23 @@ use symphonia::core::io::MediaSource;
 /// What hears the samples a [`Listening`] decodes.
 pub trait Heard: Send {
     fn samples(&mut self, rate: u32, channels: usize, samples: &[f32]);
-    /// The decoding is over: `whole` when the song was decoded to its end and its fetch said all of it came.
+    /// Decoding ended: `whole` when decoded to the end and the fetch got every byte.
     fn done(self: Box<Self>, whole: bool);
 }
 
 /// Bytes that may wait for the decoder.
 pub const PIPE: usize = 2 << 20;
-/// The decoder, waiting, is woken when this many bytes wait for it (or the song ended).
+/// A waiting decoder is woken once this many bytes wait (or the song ended).
 pub const WAKE: usize = 256 << 10;
 
 #[derive(Default)]
 struct State {
     bytes: VecDeque<u8>,
-    /// The fetch said the song ended, and whether whole.
+    /// The fetch ended, and whether whole.
     ended: Option<bool>,
-    /// The decoder is not reading any more: what comes is let go.
+    /// The decoder stopped reading: incoming bytes are dropped.
     quit: bool,
-    /// A fetch that must not wait found no room: the decoding is given up.
+    /// A non-waiting fetch found no room: decoding abandoned.
     overflowed: bool,
     reader_waits: bool,
     writer_waits: bool,
@@ -48,17 +44,16 @@ struct Pipe {
     cv: Condvar,
 }
 
-/// A song being decoded as it comes: the fetch's side.
+/// The fetch's side of a song decoded as it arrives.
 pub struct Listening {
     pipe: Arc<Pipe>,
-    /// The fetch may wait for the decoder; otherwise the decoding is given up when it falls behind.
+    /// The fetch may block on the decoder; otherwise decoding is abandoned when behind.
     wait: bool,
     ended: bool,
 }
 
 impl Listening {
-    /// Starts decoding a song (`hint`: its container, as a file extension or MIME type) on a thread of
-    /// its own, `heard` hearing its samples. `wait`: the fetch waits for the decoder when it is behind.
+    /// Starts a decoder thread for a song (`hint`: extension or MIME type) feeding `heard`.
     pub fn start(hint: Option<String>, wait: bool, heard: Box<dyn Heard>) -> Option<Listening> {
         let pipe = Arc::new(Pipe::default());
         pipe.s.lock().bytes.reserve_exact(PIPE);
@@ -78,7 +73,7 @@ impl Listening {
 }
 
 impl Listening {
-    /// The song's next bytes, in order from its first.
+    /// The song's next bytes, in order.
     pub fn take(&mut self, mut bytes: &[u8]) {
         let mut s = self.pipe.s.lock();
         while !bytes.is_empty() {
@@ -106,8 +101,7 @@ impl Listening {
         }
     }
 
-    /// The song's bytes ended: `whole` when every one of them came, in order, and was kept. Dropped
-    /// without this, it is as `end(false)`.
+    /// The bytes ended; `whole` when every byte came in order. Dropping is `end(false)`.
     pub fn end(mut self, whole: bool) {
         self.finish(whole);
     }
@@ -119,23 +113,21 @@ impl Drop for Listening {
     }
 }
 
-/// The decoder's side: the bytes in order. The first [`HEAD`] of them are kept, for a container reader
-/// that looks at the start and goes back to it (the tag before the music); past them it reads on only.
+/// The decoder's side. The first [`HEAD`] bytes are kept so a reader can seek back to the start.
 struct Reader {
     pipe: Arc<Pipe>,
-    /// Where it reads, and how many bytes it has taken from the pipe.
+    /// Read position, and bytes taken from the pipe.
     at: u64,
     taken: u64,
     head: Vec<u8>,
 }
 
-/// How many of a song's first bytes are kept for going back to.
+/// First bytes kept for seeking back.
 const HEAD: usize = 64 << 10;
 
 impl Read for Reader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.at < self.taken {
-            // Gone back into the first bytes.
             let from = self.at as usize;
             let n = buf.len().min(self.head.len() - from);
             buf[..n].copy_from_slice(&self.head[from..from + n]);
@@ -166,7 +158,6 @@ impl Reader {
             if s.ended.is_some() {
                 return Ok(0);
             }
-            // Woken once a good piece waits, not for every one the fetch hands over.
             s.reader_waits = true;
             while s.bytes.len() < WAKE && s.ended.is_none() && !s.overflowed {
                 self.pipe.cv.wait(&mut s);
@@ -194,7 +185,7 @@ impl Seek for Reader {
             SeekFrom::Current(d) => self.at.checked_add_signed(d).ok_or_else(|| io::Error::other("seek before the start"))?,
             SeekFrom::End(_) => return Err(io::Error::new(io::ErrorKind::Unsupported, "a song still coming has no end yet")),
         };
-        // Where it has got to, or back into the first bytes it kept: nothing it would have to fetch.
+        // Only to where it is, or back into the kept head.
         if p == self.taken || (p < self.taken && self.head.len() as u64 == self.taken) {
             self.at = p;
             return Ok(p);
@@ -220,7 +211,7 @@ fn decode(pipe: Arc<Pipe>, hint: Option<String>, mut heard: Box<dyn Heard>) {
         heard.samples(rate, channels, samples);
         true
     });
-    // Whatever still comes (the tags after the music) is let go, and the fetch's word waited for.
+    // Drop the rest (tags after the music) and wait for the fetch's verdict.
     let whole = {
         let mut s = pipe.s.lock();
         s.quit = true;
@@ -234,29 +225,27 @@ fn decode(pipe: Arc<Pipe>, hint: Option<String>, mut heard: Box<dyn Heard>) {
     heard.done(whole && matches!(decoded, Ok(true)));
 }
 
-/// This thread below everything else, as the measuring of songs ahead has it.
+/// Lowers the calling thread to the lowest priority.
 pub(crate) fn lower_priority() {
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    // SAFETY: a plain system call about the calling thread (on Linux, `0` with PRIO_PROCESS is the
-    // thread itself).
+    // SAFETY: a plain syscall; on Linux PRIO_PROCESS with 0 is the calling thread.
     unsafe {
         libc::setpriority(libc::PRIO_PROCESS, 0, 19);
     }
 }
 
-/// Memory the allocator keeps after a burst of large blocks was freed (the beat model's run) goes back to the
-/// system: on Android the allocator holds freed pages for reuse, and a model run left the perf report's native
-/// heap some 150 MB above what was allocated. A few milliseconds, once per song the model read.
+/// Returns freed memory to the system after a burst of large frees (a beat model run): Android's
+/// allocator otherwise kept ~150 MB. A few ms per run.
 pub fn give_memory_back() {
     #[cfg(target_os = "android")]
     {
-        // bionic's M_PURGE_ALL (API 34 on; every thread's cache and the secondary's), or M_PURGE before it.
+        // bionic's M_PURGE_ALL (API 34+), else M_PURGE.
         const M_PURGE: libc::c_int = -101;
         const M_PURGE_ALL: libc::c_int = -104;
         extern "C" {
             fn mallopt(param: libc::c_int, value: libc::c_int) -> libc::c_int;
         }
-        // SAFETY: mallopt takes plain integers; an option the platform does not know answers 0 and does nothing.
+        // SAFETY: plain integers; an unknown option returns 0 and does nothing.
         unsafe {
             if mallopt(M_PURGE_ALL, 0) == 0 {
                 mallopt(M_PURGE, 0);
@@ -264,13 +253,13 @@ pub fn give_memory_back() {
         }
     }
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
-    // SAFETY: malloc_trim only returns free memory at the heap's top and in its free lists to the system.
+    // SAFETY: malloc_trim only releases free memory.
     unsafe {
         libc::malloc_trim(0);
     }
 }
 
-/// CPU time this thread has used, ms; none where it cannot be read.
+/// The calling thread's CPU time, ms, where available.
 pub fn thread_cpu_ms() -> Option<u64> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
@@ -288,7 +277,7 @@ mod tests {
     use super::*;
     use std::sync::mpsc::{channel, Sender};
 
-    /// Hears how many samples came and how it ended.
+    /// Counts samples and reports how decoding ended.
     struct Count(u64, Sender<(u64, bool)>);
 
     impl Heard for Count {
@@ -330,14 +319,14 @@ mod tests {
     }
 
     #[test]
-    fn a_song_is_decoded_as_it_comes_and_kept_only_when_all_of_it_came() {
+    fn decoded_as_it_arrives() {
         let frames = 44_100 * 40;
         let song = wav(frames);
         assert!(song.len() > 3 * PIPE, "more than the pipe holds: the fetch waits for the decoder");
         assert_eq!(fed(&song, 64 << 10, true, true), (frames as u64 * 2, true), "every sample, and whole");
         let (_, whole) = fed(&song[..song.len() / 2], 64 << 10, false, true);
         assert!(!whole, "a fetch that broke off is not a measured song");
-        // Dropped half way (a fetch left for another), it ends as not whole.
+        // Dropped half way: not whole.
         let (tx, rx) = channel();
         let mut l = Listening::start(Some("wav".into()), true, Box::new(Count(0, tx))).unwrap();
         l.take(&song[..PIPE / 2]);
@@ -346,11 +335,10 @@ mod tests {
     }
 
     #[test]
-    fn a_fetch_that_must_not_wait_gives_the_decoding_up_rather_than_waiting() {
+    fn non_waiting_fetch_abandons_decoding() {
         let song = wav(44_100 * 20);
         let (tx, rx) = channel();
         let mut l = Box::new(Listening::start(Some("wav".into()), false, Box::new(Count(0, tx))).unwrap());
-        // Handed over far faster than a decoder takes it: the pipe fills, and the fetch goes on.
         let started = std::time::Instant::now();
         l.take(&song);
         assert!(started.elapsed() < std::time::Duration::from_secs(5), "never waited on the decoder");

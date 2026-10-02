@@ -64,6 +64,8 @@ fun TestDriver(controller: NavHostController, nav: Nav, sheet: PlayerSheet, sett
                 // Moving covers: how many video players exist (nought whenever the switch is off) and
                 // the video the open player found for this album, if any.
                 """"motionPlayers":${dev.nori.music.playback.MotionPlayer.live},"motionVideo":"${player2.motionVideo.value.orEmpty()}",""" +
+                // The song's cover as the notification and the lock screen open it, and how many covers were drawn for them.
+                """"cover":"${st.current?.coverArt.orEmpty()}","coversDrawn":${dev.nori.music.app.car.CarArtProvider.coversDrawn},""" +
                 // Everything the app's Java side has allocated since it started, for allocation checks.
                 """"allocBytes":${android.os.Debug.getRuntimeStat("art.gc.bytes-allocated") ?: -1},""" +
                 // What the app itself holds, KB (the perf report's memory line): the native heap allocated,

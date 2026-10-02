@@ -1,15 +1,12 @@
-//! The tree a car (Android Auto) or any other remote browser walks: which folders there are, what each
-//! holds and how its rows read, how a row that was picked is played, and what a spoken request asks for.
-//! The platform turns the rows into its own items, names the tree's own folders and plays what it is
-//! handed.
+//! The browse tree of a car (Android Auto) or other remote browser: its folders, how their rows read and
+//! page, what a picked row plays and what a spoken request asks for.
 
 use nori_model::{Album, Artist, Genre, OriginKind, PageOrigin, Playlist, SearchResult, Song};
 
 use crate::mixes::board::{MixName, MixTile};
 
-/// One of the tree's own folders, which the client names ("Recently played"); an album's, an artist's,
-/// a playlist's or a genre's folder has none and carries its name as data, and a mix's is named by its
-/// [`MixName`].
+/// One of the tree's own folders, which the client names. The library's folders carry their name as
+/// data, a mix its [`MixName`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 #[repr(u8)]
@@ -329,15 +326,22 @@ pub fn queue_for(row: &CarRow, songs: Vec<Song>) -> CarQueue {
     CarQueue { songs, index, origin: origin_of(&row.parent), shuffle: row.action == Some(CarAction::Shuffle) }
 }
 
-/// The rows of page `page` of `page_size` a browser asks for, out of `len`: what the platform hands back
-/// for one request; empty past the end.
-///
-/// Twin of the paging in `PlaybackService.Callback.onGetChildren` and `onGetSearchResult`
-/// (core/.../playback/PlaybackService.kt, `drop(page * pageSize).take(pageSize)`), which Android keeps on
-/// its media3 lists.
-pub fn page(len: usize, page: u32, page_size: u32) -> std::ops::Range<usize> {
-    let from = (page as usize).saturating_mul(page_size as usize).min(len);
-    from..from.saturating_add(page_size as usize).min(len)
+/// Page `page` of `size` rows of `all`, in the order a car lists them: Play and Shuffle, folders, songs.
+pub fn page_of(all: &BrowsePage, page: u32, size: u32) -> BrowsePage {
+    let start = (page as usize).saturating_mul(size as usize);
+    let end = start.saturating_add(size as usize);
+    // The rows of a list of `len` that starts `skip` rows in.
+    let part = |len: usize, skip: usize| start.saturating_sub(skip).min(len)..end.saturating_sub(skip).min(len);
+    let (actions, folders) = (all.actions.len(), all.folders.len());
+    let songs = part(all.songs.len(), actions + folders);
+    BrowsePage {
+        actions: all.actions[part(actions, 0)].to_vec(),
+        folders: all.folders[part(folders, actions)].to_vec(),
+        downloaded: all.downloaded[songs.clone()].to_vec(),
+        songs: all.songs[songs].to_vec(),
+        songs_group: all.songs_group,
+        failed: all.failed,
+    }
 }
 
 /// What a spoken request is about, as the car's assistant heard it ("play the album ...").
@@ -460,7 +464,7 @@ mod tests {
     }
 
     #[test]
-    fn the_root_is_four_tabs_with_the_downloads_first_offline_and_the_cars_limit_kept() {
+    fn car_root_tabs() {
         let ids = |f: Vec<BrowseFolder>| f.into_iter().map(|f| f.id).collect::<Vec<_>>();
         assert_eq!(ids(root(4, false)), ["home", "library", "starred", "downloads"]);
         assert_eq!(ids(root(4, true)), ["downloads", "home", "library", "starred"]);
@@ -469,16 +473,42 @@ mod tests {
     }
 
     #[test]
-    fn a_rows_id_says_its_folder_and_song_even_when_the_folder_holds_bars() {
+    fn car_pages() {
+        let all = BrowsePage {
+            actions: vec![CarAction::Play, CarAction::Shuffle],
+            folders: vec![folder("f", CarFolder::Albums)],
+            songs: vec![song("a", "A"), song("b", "B")],
+            downloaded: vec![false, true],
+            ..Default::default()
+        };
+        let rows = |p: BrowsePage| (p.actions.len(), p.folders.len(), p.songs.iter().map(|s| s.id.clone()).collect::<Vec<_>>(), p.downloaded);
+        for (page, size, want) in [
+            (0, 2, (2, 0, vec![], vec![])),
+            (1, 2, (0, 1, vec!["a".to_string()], vec![false])),
+            (2, 2, (0, 0, vec!["b".to_string()], vec![true])),
+            (3, 2, (0, 0, vec![], vec![])),
+            (0, 10, (2, 1, vec!["a".to_string(), "b".to_string()], vec![false, true])),
+        ] {
+            assert_eq!(rows(page_of(&all, page, size)), want, "page {page} of {size}");
+        }
+
+        // A rows id says its folder and song even when the folder holds bars.
         let row = car_row(car_song_row("search:a|b".into(), "s1".into())).unwrap();
         assert_eq!(row, CarRow { parent: "search:a|b".into(), song: Some("s1".into()), action: None });
         assert_eq!(car_row(car_action_row("album:x".into(), CarAction::Shuffle)).unwrap().action, Some(CarAction::Shuffle));
         assert_eq!(car_row("s1".into()), None, "a bare song id is not one of the tree's rows");
         assert_eq!(car_row("album:x".into()), None);
+
+        // A mix shows four covers as a square or its first.
+        let tile = |n: usize| MixTile { id: "discover".into(), name: MixName::Discover, covers: (0..n).map(|i| i.to_string()).collect(), favourites: false };
+        assert_eq!(mix_folder(&tile(6)).art, ["0", "1", "2", "3"]);
+        assert_eq!(mix_folder(&tile(2)).art, ["0"]);
+        assert!(mix_folder(&tile(0)).art.is_empty());
+        assert_eq!(mix_folder(&tile(1)).id, "mix:discover");
     }
 
     #[test]
-    fn a_picked_song_plays_its_folder_from_it_as_the_folders_queue() {
+    fn car_plays() {
         let songs = vec![song("a", "A"), song("b", "B"), song("c", "C")];
         let q = queue_for(&car_row("in|album:x|b".into()).unwrap(), songs.clone());
         assert_eq!((q.index, q.shuffle), (1, false));
@@ -489,19 +519,22 @@ mod tests {
         assert_eq!(queue_for(&car_row("in|starred|zz".into()).unwrap(), songs).origin, None, "the favourites are no page's queue");
         assert!(car_plays_whole("album:x".into()) && car_plays_whole("genre:Jazz".into()));
         assert!(!car_plays_whole("albums:newest".into()) && !car_plays_whole("starred".into()), "a list of folders is not played whole");
-    }
 
-    #[test]
-    fn a_mix_shows_four_covers_as_a_square_or_its_first() {
-        let tile = |n: usize| MixTile { id: "discover".into(), name: MixName::Discover, covers: (0..n).map(|i| i.to_string()).collect(), favourites: false };
-        assert_eq!(mix_folder(&tile(6)).art, ["0", "1", "2", "3"]);
-        assert_eq!(mix_folder(&tile(2)).art, ["0"]);
-        assert!(mix_folder(&tile(0)).art.is_empty());
-        assert_eq!(mix_folder(&tile(1)).id, "mix:discover");
-    }
+        // A spoken request plays what it names best.
+        let ask = |query: &str, focus: VoiceFocus| VoiceAsk { query: query.into(), focus, ..Default::default() };
+        let lists = [Playlist { id: "p1".into(), name: "Road trip".into(), ..Default::default() }];
+        assert_eq!(voice_pick(&ask("future", VoiceFocus::Any), &found(), &lists), VoicePick::Artist("ar1".into()), "an artist named exactly");
+        assert_eq!(voice_pick(&ask("road trip", VoiceFocus::Any), &found(), &lists), VoicePick::Playlist("p1".into()));
+        assert_eq!(voice_pick(&ask("the monster", VoiceFocus::Any), &found(), &lists), VoicePick::Album("al1".into()), "a leading 'the' does not count");
+        assert!(matches!(voice_pick(&ask("after", VoiceFocus::Any), &found(), &lists), VoicePick::Songs(s) if s.len() == 2));
+        assert_eq!(voice_pick(&ask("future", VoiceFocus::Album), &found(), &lists), VoicePick::Album("al2".into()), "with a focus, that kind");
+        assert_eq!(voice_pick(&ask("road", VoiceFocus::Playlist), &found(), &lists), VoicePick::Playlist("p1".into()), "a playlist by part of its name");
+        assert_eq!(voice_pick(&ask("jazz", VoiceFocus::Genre), &found(), &lists), VoicePick::Genre("jazz".into()));
+        let named = voice_pick(&VoiceAsk { query: "monster by future".into(), focus: VoiceFocus::Song, title: Some("Monster".into()), ..Default::default() }, &found(), &lists);
+        assert!(matches!(named, VoicePick::Songs(s) if s[0].id == "s2"), "the song named exactly first");
+        assert_eq!(voice_pick(&ask("x", VoiceFocus::Any), &SearchResult::default(), &[]), VoicePick::Nothing);
 
-    #[test]
-    fn a_providers_songs_and_albums_are_left_out() {
+        // A providers songs and albums are left out.
         let ext = Song { is_external: true, ..song("e", "E") };
         assert_eq!(library_songs(vec![song("a", "A"), ext]).len(), 1);
         let albums = [Album { id: "1".into(), ..Default::default() }, Album { id: "2".into(), is_external: true, ..Default::default() }];
@@ -519,19 +552,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_spoken_request_plays_what_it_names_best() {
-        let ask = |query: &str, focus: VoiceFocus| VoiceAsk { query: query.into(), focus, ..Default::default() };
-        let lists = [Playlist { id: "p1".into(), name: "Road trip".into(), ..Default::default() }];
-        assert_eq!(voice_pick(&ask("future", VoiceFocus::Any), &found(), &lists), VoicePick::Artist("ar1".into()), "an artist named exactly");
-        assert_eq!(voice_pick(&ask("road trip", VoiceFocus::Any), &found(), &lists), VoicePick::Playlist("p1".into()));
-        assert_eq!(voice_pick(&ask("the monster", VoiceFocus::Any), &found(), &lists), VoicePick::Album("al1".into()), "a leading 'the' does not count");
-        assert!(matches!(voice_pick(&ask("after", VoiceFocus::Any), &found(), &lists), VoicePick::Songs(s) if s.len() == 2));
-        assert_eq!(voice_pick(&ask("future", VoiceFocus::Album), &found(), &lists), VoicePick::Album("al2".into()), "with a focus, that kind");
-        assert_eq!(voice_pick(&ask("road", VoiceFocus::Playlist), &found(), &lists), VoicePick::Playlist("p1".into()), "a playlist by part of its name");
-        assert_eq!(voice_pick(&ask("jazz", VoiceFocus::Genre), &found(), &lists), VoicePick::Genre("jazz".into()));
-        let named = voice_pick(&VoiceAsk { query: "monster by future".into(), focus: VoiceFocus::Song, title: Some("Monster".into()), ..Default::default() }, &found(), &lists);
-        assert!(matches!(named, VoicePick::Songs(s) if s[0].id == "s2"), "the song named exactly first");
-        assert_eq!(voice_pick(&ask("x", VoiceFocus::Any), &SearchResult::default(), &[]), VoicePick::Nothing);
-    }
 }

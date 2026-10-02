@@ -1,73 +1,57 @@
-//! Playing in bursts. Left alone, a player tops the output up one decoder buffer at a time, which wakes
-//! several threads dozens of times a second for as long as music plays. [`Fed`] lets the output's
-//! (deliberately deep, [`BUFFER_US`]) buffer drain to [`LOW_US`] before offering it audio again, then
-//! offers everything until it is full: a fraction of a second of work every few seconds, and real sleep
-//! in between. A refused offer does not even reach the output.
-//!
-//! Output handed to a chip that decodes by itself (offload) already sleeps on its own; it is passed
-//! straight through, and only counted.
+//! Feeding the output in bursts: [`Fed`] lets the deep output buffer ([`BUFFER_US`]) drain to
+//! [`LOW_US`], then fills it to the top, so the audio path sleeps between bursts instead of waking for
+//! every decoder buffer. Refused offers never reach the output.
 
-use crate::engine::{Downstream, POSITION_NOT_SET};
+use crate::engine::Downstream;
 use crate::pcm::Format;
 
-/// How deep the output buffer is made for bursts.
+/// Output buffer depth for bursts.
 pub const BUFFER_US: i64 = 10_000_000;
-/// Audio is offered again once the output holds less than this.
+/// Offer audio again once the output holds less than this.
 pub const LOW_US: i64 = 2_000_000;
-/// Slack for the clock moving a little further than the count between two readings.
+/// Allowed overshoot of the clock beyond what was queued between two readings.
 const JUMP_US: i64 = 250_000;
 
-/// The bookkeeping, kept between calls.
+/// Burst state kept between calls.
 #[derive(Debug, Clone)]
 pub struct Burst {
-    /// False while the output decodes by itself, or something needs low latency (the equalizer
-    /// being tuned): every offer goes straight through.
-    pub enabled: bool,
     filling: bool,
-    /// How much audio is in the output, counted from what was handed to it and how far its clock has
-    /// moved - never from timestamps. It once was the last buffer's timestamp less the clock, which is
-    /// wrong across a jump: a mix is stamped in the next song's time, so the moment its first chunk
-    /// went in the timestamps leapt ahead by the length of the mix while the clock only follows once
-    /// that chunk is heard. The buffer looked twelve seconds deeper than it was, feeding stopped for
-    /// twice as long as it should, and the output ran dry near the end of the mix.
+    /// Audio in the output = written - played, counted from bytes written and clock movement, never from
+    /// timestamps (a mix's timestamps jump ahead by the mix length).
     written_us: i64,
     played_us: i64,
-    last_position: i64,
+    last_position: Option<i64>,
     last_read_ms: i64,
     format: Option<Format>,
-    /// Bytes handed to the output since this was made: the honest answer to "is audio flowing?".
+    /// Bytes handed to the output in total.
     pub bytes_written: u64,
 }
 
 impl Default for Burst {
     fn default() -> Self {
-        Burst { enabled: true, filling: true, written_us: 0, played_us: 0, last_position: POSITION_NOT_SET, last_read_ms: 0, format: None, bytes_written: 0 }
+        Burst { filling: true, written_us: 0, played_us: 0, last_position: None, last_read_ms: 0, format: None, bytes_written: 0 }
     }
 }
 
 impl Burst {
-    /// Anything that makes the count unsure starts it again at nothing, which can only make feeding
-    /// start a little early, never late: playing, pausing, a flush, a new output.
+    /// Resets the count (play, pause, flush, new output). Can only make feeding start early, never late.
     pub fn restart(&mut self) {
         self.filling = true;
         self.written_us = 0;
         self.played_us = 0;
-        self.last_position = POSITION_NOT_SET;
+        self.last_position = None;
     }
 
-    /// How much audio the output holds, given its clock now. A jump of the clock is not playing, so a
-    /// move larger than what could have been queued counts as at most the time that passed.
-    fn queued_us(&mut self, position: i64, now_ms: i64) -> Option<i64> {
-        if position == POSITION_NOT_SET {
-            return None;
-        }
-        let (last, wall) = (self.last_position, (now_ms - self.last_read_ms) * 1000);
-        self.last_position = position;
+    /// Audio in the output at clock `position`. A clock jump beyond what was queued counts as at most
+    /// the wall time that passed.
+    fn queued_us(&mut self, position: Option<i64>, now_ms: i64) -> Option<i64> {
+        let position = position?;
+        let wall = (now_ms - self.last_read_ms) * 1000;
+        let last = self.last_position.replace(position);
         self.last_read_ms = now_ms;
-        if last != POSITION_NOT_SET {
-            let moved = position - last;
+        if let Some(last) = last {
             let queued = self.written_us - self.played_us;
-            self.played_us += match moved {
+            self.played_us += match position - last {
                 m if m <= 0 => 0,
                 m if m <= queued + JUMP_US => m,
                 _ => wall.min(queued),
@@ -77,18 +61,17 @@ impl Burst {
     }
 }
 
-/// The output below, fed in bursts. Made for each call into the engine: `now_ms` is that call's clock.
+/// The output, fed in bursts. Made per call into the engine; `now_ms` is that call's clock.
 pub struct Fed<'a, D> {
     pub down: &'a mut D,
     pub burst: &'a mut Burst,
     pub now_ms: i64,
-    /// The output's clock, read once per call: it does not move in the microseconds a call takes.
-    position: Option<i64>,
-    /// A discontinuity was passed down: the next buffer taken may move the clock (a resync), so it is
-    /// read again after it. The transition engine measures that jump to keep the ear's place.
+    /// The output's clock, read at most once per call (outer `None`: not read yet).
+    position: Option<Option<i64>>,
+    /// A discontinuity was passed down: the output may resync its clock on the next offer, so it is
+    /// re-read after each offer until audio has gone in (the engine measures that jump).
     resynced: bool,
-    /// The song time each frame offered stands for ([`Downstream::media_pace`]): what is written is
-    /// counted in the song's time, as the output's clock moves.
+    /// Song frames per frame ([`Downstream::media_pace`]); written audio is counted in song time.
     pace: f64,
 }
 
@@ -97,16 +80,10 @@ impl<'a, D: Downstream> Fed<'a, D> {
         Fed { down, burst, now_ms, position: None, resynced: false, pace: 1.0 }
     }
 
-    fn clock(&mut self) -> i64 {
+    fn clock(&mut self) -> Option<i64> {
         *self.position.get_or_insert_with(|| self.down.position_us(false))
     }
-}
 
-impl<D: Downstream> Fed<'_, D> {
-    /// After a discontinuity the output may move its clock on any offer, even one it takes nothing
-    /// from (a start-time resync is applied when the buffer is first seen): until audio has gone in,
-    /// the clock is read again after every offer, so the transition engine measures the jump. With
-    /// bursting off (tuning, offload) the same holds.
     fn after_offer(&mut self, used: usize) {
         if self.resynced {
             self.position = None;
@@ -118,25 +95,16 @@ impl<D: Downstream> Fed<'_, D> {
 }
 
 impl<D: Downstream> Downstream for Fed<'_, D> {
-    type Config = D::Config;
-
-    fn configure(&mut self, config: &D::Config, format: Option<Format>) {
+    fn configure(&mut self, format: Format) {
         self.burst.restart();
-        self.burst.format = format;
+        self.burst.format = Some(format);
         self.position = None;
-        self.down.configure(config, format);
+        self.down.configure(format);
     }
 
     fn handle_buffer(&mut self, data: &[u8], from: usize, pts_us: i64) -> (bool, usize) {
-        if !self.burst.enabled {
-            let r = self.down.handle_buffer(data, from, pts_us);
-            self.after_offer(r.1);
-            self.burst.bytes_written += r.1 as u64;
-            return r;
-        }
         if !self.burst.filling {
-            // The output has no clock while it is stopped, paused before it ever played, or freshly
-            // restarted; then nothing is known and it is fed rather than left waiting for ever.
+            // No clock (stopped, never played, restarted): feed rather than wait forever.
             let (position, now) = (self.clock(), self.now_ms);
             if self.burst.queued_us(position, now).is_some_and(|q| q > LOW_US) {
                 return (false, 0);
@@ -150,7 +118,7 @@ impl<D: Downstream> Downstream for Fed<'_, D> {
             self.burst.written_us += ((used / f.frame_bytes()) as f64 * self.pace * 1_000_000.0 / f.rate as f64) as i64;
         }
         if !taken {
-            // Full: nothing more until it has drained to the low mark.
+            // Full: wait until it drains to the low mark.
             self.burst.filling = false;
         }
         (taken, used)
@@ -162,14 +130,13 @@ impl<D: Downstream> Downstream for Fed<'_, D> {
     }
 
     fn handle_discontinuity(&mut self) {
-        // The audio already written stays in the output, so the count stands; the clock's jump when it
-        // is reached is left out by `queued_us`.
+        // Written audio stays in the output, so the count stands; `queued_us` ignores the clock's jump.
         self.burst.filling = true;
         self.resynced = true;
         self.down.handle_discontinuity();
     }
 
-    fn position_us(&mut self, source_ended: bool) -> i64 {
+    fn position_us(&mut self, source_ended: bool) -> Option<i64> {
         if source_ended {
             self.down.position_us(true)
         } else {
@@ -185,7 +152,7 @@ mod tests {
 
     const FMT: Format = Format { rate: 44_100, channels: 2, encoding: Encoding::Pcm16 };
 
-    /// An output with a buffer of `cap_us` and a playhead the test moves.
+    /// An output with a `cap_us` buffer; the test moves its playhead.
     struct Track {
         cap_us: i64,
         written_us: i64,
@@ -194,8 +161,7 @@ mod tests {
     }
 
     impl Downstream for Track {
-        type Config = ();
-        fn configure(&mut self, _: &(), _: Option<Format>) {}
+        fn configure(&mut self, _: Format) {}
         fn handle_buffer(&mut self, data: &[u8], from: usize, _: i64) -> (bool, usize) {
             self.offers += 1;
             let room = FMT.bytes(self.cap_us - (self.written_us - self.played_us)).min(data.len() - from);
@@ -204,8 +170,8 @@ mod tests {
             (room == data.len() - from, room)
         }
         fn handle_discontinuity(&mut self) {}
-        fn position_us(&mut self, _: bool) -> i64 {
-            self.played_us
+        fn position_us(&mut self, _: bool) -> Option<i64> {
+            Some(self.played_us)
         }
     }
 
@@ -216,21 +182,21 @@ mod tests {
     }
 
     #[test]
-    fn it_fills_to_the_top_then_leaves_the_output_alone_until_it_runs_low() {
+    fn fills_then_waits_for_low_mark() {
         let (mut t, mut b) = (Track { cap_us: BUFFER_US, written_us: 0, played_us: 0, offers: 0 }, Burst::default());
-        Fed::new(&mut t, &mut b, 0).configure(&(), Some(FMT));
+        Fed::new(&mut t, &mut b, 0).configure(FMT);
         let mut now = 0;
         while offer(&mut t, &mut b, now) {}
         assert!(t.written_us >= BUFFER_US - 30_000, "filled: {}", t.written_us);
         let offers = t.offers;
-        // Seven seconds of playing, asked every 10 ms as a player does: not one offer reaches the output.
+        // 7 s of playback, offered every 10 ms: no offer reaches the output.
         for _ in 0..700 {
             now += 10;
             t.played_us += 10_000;
             assert!(!offer(&mut t, &mut b, now));
         }
         assert_eq!(t.offers, offers, "refused without touching the output");
-        // Below two seconds left: it is fed again, and filled (a player offers until it is refused).
+        // Below the low mark it is fed and filled again.
         while t.offers == offers {
             now += 10;
             t.played_us += 10_000;
@@ -242,26 +208,15 @@ mod tests {
     }
 
     #[test]
-    fn a_clock_jump_is_not_counted_as_playing() {
+    fn clock_jump_is_not_counted_as_played() {
         let (mut t, mut b) = (Track { cap_us: BUFFER_US, written_us: 0, played_us: 0, offers: 0 }, Burst::default());
-        Fed::new(&mut t, &mut b, 0).configure(&(), Some(FMT));
+        Fed::new(&mut t, &mut b, 0).configure(FMT);
         while offer(&mut t, &mut b, 0) {}
         offer(&mut t, &mut b, 10);
-        // The clock leaps 20 s in 100 ms (a mix stamped in the next song's time is reached): at most the
-        // 100 ms that passed has played, so the output is still nearly full and is left alone.
+        // The clock leaps 20 s in 100 ms (a mix in the next song's time): only 100 ms counts as played.
         t.played_us += 20_000_000;
         let before = t.offers;
         assert!(!offer(&mut t, &mut b, 110));
         assert_eq!(t.offers, before);
-    }
-
-    #[test]
-    fn switched_off_it_passes_everything_through_and_counts_it() {
-        let (mut t, mut b) = (Track { cap_us: 3_600_000_000, written_us: 0, played_us: 0, offers: 0 }, Burst { enabled: false, ..Burst::default() });
-        for i in 0..50 {
-            assert!(offer(&mut t, &mut b, i));
-        }
-        assert_eq!(t.offers, 50);
-        assert_eq!(b.bytes_written as usize, 50 * FMT.bytes(26_000));
     }
 }

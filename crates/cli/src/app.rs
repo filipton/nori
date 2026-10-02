@@ -1,12 +1,6 @@
-//! The window's state and what input does to it. Nothing here waits or talks to the network: input
-//! and answers come in as [`Msg`]s, and what has to happen outside - playing, reading, changing a
-//! setting - goes out as [`Cmd`]s the runner carries out. So the whole of it runs in a test with no
-//! server, no sound card and no terminal.
-//!
-//! The window is laid out as a desktop music player's: a sidebar of places on the left (search, home,
-//! the library, the playlists), the page in the middle, a panel on the right (what plays, the queue or
-//! the lyrics) and the player along the bottom. One of the three has the keys ([`Focus`]); tab moves
-//! them on.
+//! UI state and input handling, free of I/O: [`Msg`]s in, [`Cmd`]s out for the runner, so it runs in
+//! tests without a server, sound card or terminal. The window has a sidebar, a page, a right panel and
+//! a player bar; [`Focus`] says which of the first three takes the keys.
 
 use std::time::{Duration, Instant};
 
@@ -26,11 +20,12 @@ use crate::art::Theme;
 use crate::backend::{Data, Downloads, Fetch, Msg, Req, ALBUM_PAGE, HOME_ROWS};
 use crate::keys::{action, Action, Scope};
 use crate::lyrics::SongLyrics;
-use crate::settings_view::{Chore, SettingsView};
+use crate::settings_view::{Chore, Opened, SettingsView, Switch};
 
-/// What the page in the middle shows, under whatever album, artist or playlist was opened over it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The page's root view, under any opened album, artist or playlist pages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum View {
+    #[default]
     Home,
     Search,
     Albums,
@@ -39,22 +34,23 @@ pub enum View {
     Downloads,
     Equalizer,
     Settings,
-    /// The login form: over the whole window, until a server is set up and whenever one is added.
+    /// Full-window login form.
     Login,
 }
 
-/// The places the number keys go to, in order.
+/// Number key targets, in order.
 pub const GO: [View; 7] = [View::Home, View::Albums, View::Artists, View::Songs, View::Downloads, View::Equalizer, View::Settings];
 
 /// The part of the window that has the keys.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Focus {
     Side,
+    #[default]
     Main,
     Panel,
 }
 
-/// What the panel on the right shows.
+/// Right panel content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Panel {
     Playing,
@@ -64,16 +60,17 @@ pub enum Panel {
 
 pub const PANELS: [(Panel, &str); 3] = [(Panel::Playing, "Playing"), (Panel::Queue, "Queue"), (Panel::Lyrics, "Lyrics")];
 
-/// A place in the sidebar.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A sidebar entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Nav {
     Search,
+    #[default]
     Home,
     Albums,
     Artists,
     Songs,
     Downloads,
-    /// A playlist, by its place in the library's list.
+    /// Index into the library's playlists.
     Playlist(usize),
     Equalizer,
     Settings,
@@ -109,16 +106,16 @@ impl Nav {
     }
 }
 
-/// The sidebar's places above the playlists, and below them.
+/// Sidebar entries above and below the playlists.
 pub const NAV_TOP: [Nav; 2] = [Nav::Search, Nav::Home];
 pub const NAV_LIBRARY: [Nav; 4] = [Nav::Albums, Nav::Artists, Nav::Songs, Nav::Downloads];
 pub const NAV_BOTTOM: [Nav; 2] = [Nav::Equalizer, Nav::Settings];
 
-/// What the runner carries out.
+/// Work for the runner.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cmd {
     Load(Req),
-    /// `from`: the page the songs are that page's own list from (nori-queue `playlist_set`'s origin).
+    /// `from`: the page the songs are the list of (`playlist_set`'s origin).
     Play { songs: Vec<Song>, start: usize, shuffle: bool, from: Option<PageOrigin> },
     PlayFetch(Fetch, bool),
     Enqueue(Vec<Song>, bool),
@@ -130,7 +127,7 @@ pub enum Cmd {
     Volume(f32),
     Jump(usize),
     Remove(usize),
-    /// Undo: the song taken out last put back where it was (nori-queue `playlist_restore`).
+    /// Undo the last removal (`playlist_restore`).
     Restore(String),
     Move(usize, usize),
     Shuffle(bool),
@@ -142,23 +139,22 @@ pub enum Cmd {
     Setting(String, String),
     Level(EqLevel, f32),
     Band(u32, SoundBand),
-    /// One graphic equalizer slider, dB.
+    /// A graphic equalizer band's gain in dB.
     Graphic(u32, f32),
     Sound(SoundToolCmd),
     Action(Chore),
     Mouse(bool),
     Images(bool),
-    /// The output device for the next start, by name; empty for the system's own.
+    /// Output device for the next start; empty for the system default.
     Device(String),
     Tuning(bool),
     SearchTyped(String),
     SearchServer(String),
     Lyrics(String),
-    /// A cover by its id (`cover_art`); `colours` works out the page's colours from it too.
+    /// A large cover by id; `colours` also derives the theme from it.
     Cover { art: String, colours: bool },
-    /// An album card's small cover, by its id.
+    /// An album card cover by id.
     Thumb(String),
-    /// The album cards' covers on or off.
     CardCovers(bool),
     Login(SavedServer),
     SwitchServer(String),
@@ -166,7 +162,7 @@ pub enum Cmd {
 }
 
 impl Cmd {
-    /// In a few words, for the debug log (no password).
+    /// A short description for the debug log, without passwords.
     pub fn brief(&self) -> String {
         match self {
             Cmd::Load(r) => format!("load {r:?}"),
@@ -196,7 +192,7 @@ impl Cmd {
     }
 }
 
-/// The equalizer's tools, as a command (SoundTool is not comparable).
+/// `SoundTool` as a comparable command.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SoundToolCmd {
     Preset(usize),
@@ -253,7 +249,7 @@ impl Sel {
     }
 }
 
-/// Something read from the server, on its way, or failed.
+/// Loading state of fetched data.
 #[derive(Debug, Default)]
 pub enum Load<T> {
     #[default]
@@ -272,10 +268,9 @@ impl<T> Load<T> {
     }
 }
 
-/// A page opened over the view: an album, an artist, a playlist.
+/// A page opened over the view.
 pub enum Page {
     Album { id: String, detail: Load<Box<AlbumDetail>>, sel: Sel },
-    /// Its albums as cards.
     Artist { id: String, detail: Load<Box<ArtistDetail>>, sel: Sel },
     Playlist { id: String, detail: Load<Box<PlaylistDetail>>, sel: Sel },
 }
@@ -303,7 +298,7 @@ impl Page {
         }
     }
 
-    /// The page's songs, when it lists songs.
+    /// The page's songs, for album and playlist pages.
     pub fn songs(&self) -> Option<&[Song]> {
         match self {
             Page::Album { detail, .. } => detail.ready().map(|d| d.songs.as_slice()),
@@ -313,7 +308,7 @@ impl Page {
     }
 }
 
-/// What a row or a card is, for the keys that act on "the thing selected".
+/// The selected thing that item actions (open, enqueue, star...) apply to.
 #[derive(Debug, Clone)]
 pub enum Item {
     Song(Vec<Song>, usize),
@@ -322,35 +317,35 @@ pub enum Item {
     Playlist(Playlist),
 }
 
-/// The home page: its shelves of albums, each filled as it comes, each moved along on its own.
+/// The home page: album shelves, each scrolled independently.
 #[derive(Default)]
 pub struct Home {
-    /// By HOME_ROWS' order; None until it came.
+    /// Indexed like `HOME_ROWS`; None until loaded.
     pub rows: Vec<Option<(&'static str, Vec<Album>)>>,
     pub error: Option<String>,
     pub asked: bool,
-    /// The shelf selected, by HOME_ROWS' order.
+    /// Selected shelf, indexed like `HOME_ROWS`.
     pub shelf: usize,
-    /// On each shelf, the album selected and the first one shown.
+    /// Per shelf: the selected album and the first visible one.
     pub pos: Vec<usize>,
     pub left: Vec<usize>,
-    /// The first shelf shown.
+    /// First visible shelf.
     pub top: usize,
 }
 
 impl Home {
-    /// The shelves with something on them: their place, title and albums.
+    /// Non-empty shelves: index, title, albums.
     pub fn shelves(&self) -> Vec<(usize, &'static str, &[Album])> {
         self.rows.iter().enumerate().filter_map(|(i, r)| r.as_ref().filter(|(_, v)| !v.is_empty()).map(|(t, v)| (i, *t, v.as_slice()))).collect()
     }
 
-    /// The album selected, if any.
+    /// The selected album.
     pub fn album(&self) -> Option<&Album> {
         let (_, v) = self.rows.get(self.shelf)?.as_ref()?;
         v.get(*self.pos.get(self.shelf)?)
     }
 
-    /// The selection onto a shelf with something on it, the nearest the way it went.
+    /// Moves the selection to the nearest non-empty shelf in direction `down`.
     fn settle(&mut self, down: bool) {
         let full: Vec<usize> = self.shelves().iter().map(|s| s.0).collect();
         if full.is_empty() || full.contains(&self.shelf) {
@@ -391,13 +386,13 @@ pub struct Search {
     pub text: String,
     pub editing: bool,
     pub view: Option<SearchView>,
-    /// Over the rows of the results, their titles among them.
+    /// Selection over `rows()`, titles included.
     pub sel: Sel,
-    /// When the server is asked, once typing has paused.
+    /// When to query the server, once typing pauses.
     pub ask_at: Option<Instant>,
 }
 
-/// A row of the search's results: a section's title, or one of its songs, albums or artists.
+/// A search result row: a section title (with its count) or an item.
 pub enum SearchRow<'a> {
     Title(&'static str, usize),
     Song(&'a Song),
@@ -406,7 +401,7 @@ pub enum SearchRow<'a> {
 }
 
 impl Search {
-    /// The results as one list: songs, then albums, then artists, each under its title.
+    /// The results as one list: songs, albums, artists, each under a title.
     pub fn rows(&self) -> Vec<SearchRow<'_>> {
         let mut out = Vec::new();
         let Some(r) = self.view.as_ref().and_then(|v| v.shown.as_ref()) else { return out };
@@ -425,7 +420,7 @@ impl Search {
         out
     }
 
-    /// The selection off a title, onto the row the way it went.
+    /// Moves the selection off a title in direction `down`.
     fn settle(&mut self, down: bool) {
         let rows = self.rows();
         let title = |i: usize| matches!(rows.get(i), Some(SearchRow::Title(..)));
@@ -445,14 +440,15 @@ pub struct Login {
     pub focus: usize,
     pub error: Option<String>,
     pub busy: bool,
-    /// The saved servers, to pick one instead.
+    /// Selection in the saved servers list.
     pub sel: Sel,
+    /// Whether the saved servers list has the keys.
     pub on_list: bool,
 }
 
 pub const LOGIN_FIELDS: [&str; 4] = ["Name (optional)", "Server address", "User", "Password"];
 
-/// The engine's state as the screen needs it, copied without allocating.
+/// Playback state for drawing; position extrapolated from `at`.
 #[derive(Debug, Clone, Copy)]
 pub struct Now {
     pub state: State,
@@ -478,17 +474,16 @@ impl Now {
     }
 }
 
-/// On top of the screen.
+/// A popup over the screen.
 pub enum Overlay {
     Help { scroll: usize },
-    /// A list of choices; `target` is what the one picked sets.
+    /// A choice list; `target` receives the value picked.
     Picker { title: String, options: Vec<(String, String)>, sel: Sel, target: Target },
-    /// Text typed in for a setting.
+    /// A text field for setting `name`.
     Input { title: String, text: String, secret: bool, name: String },
 }
 
-/// What a choice sets: one of the core's settings by its name, the output device, or the equalizer's
-/// preset.
+/// What a picker sets.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Target {
     Setting(String),
@@ -497,7 +492,7 @@ pub enum Target {
 }
 
 impl Target {
-    /// What `value` picked for it asks the runner to do; none for a preset that is not a number.
+    /// The command for picking `value`; None for a non-numeric preset.
     pub fn cmd(self, value: String) -> Option<Cmd> {
         match self {
             Target::Setting(name) => Some(Cmd::Setting(name, value)),
@@ -507,28 +502,28 @@ impl Target {
     }
 }
 
-/// Where a click lands.
+/// A clickable area's meaning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hit {
-    /// A place in the sidebar, by its index in [`App::nav`].
+    /// Index into [`App::nav`].
     Nav(usize),
-    /// A row or a card of a list, by its index in that list.
+    /// A list row or card by index.
     Row(ListRef, usize),
-    /// A list's area, for the wheel.
+    /// A list's whole area, for the wheel.
     List(ListRef),
     Seek,
     Volume,
     Button(Button),
     SearchField,
     LoginField(usize),
-    /// A group in the settings' index, by GROUPS' order.
+    /// Index into `settings_view::GROUPS`.
     Group(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListRef {
     Side,
-    /// A shelf of the home page, by HOME_ROWS' order.
+    /// Home shelf, indexed like `HOME_ROWS`.
     Shelf(usize),
     Albums,
     Artists,
@@ -547,7 +542,7 @@ pub enum ListRef {
 }
 
 impl ListRef {
-    /// The part of the window the list is in.
+    /// The window part the list is in.
     fn focus(self) -> Focus {
         match self {
             ListRef::Side => Focus::Side,
@@ -556,7 +551,7 @@ impl ListRef {
         }
     }
 
-    /// Whether a single click opens what it lands on (a card, a place), as a desktop player's does.
+    /// Whether a single click opens (cards).
     fn opens_on_click(self) -> bool {
         matches!(self, ListRef::Shelf(_) | ListRef::Albums | ListRef::Artists)
     }
@@ -573,18 +568,18 @@ pub enum Button {
     Full,
     PlayAll,
     ShuffleAll,
-    /// The page's album or artist a favourite, or not.
+    /// Star the page's album or artist.
     Star,
-    /// The page's album, artist or playlist downloaded.
+    /// Download the page's album, artist or playlist.
     Download,
-    /// The song heard a favourite, or not.
+    /// Star the playing song.
     StarSong,
     Back,
     Help,
     Connect,
 }
 
-/// What the last frame had room for beside the page, and how many cards its grid had in a row.
+/// Layout facts from the last frame: sidebar and panel shown, grid columns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shown {
     pub side: bool,
@@ -598,35 +593,36 @@ impl Default for Shown {
     }
 }
 
-/// A drag in the player bar.
+/// A mouse drag in progress.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Drag {
-    /// The seek bar, where it is as a share of the song.
+    /// Seek bar position as a fraction of the song.
     Seek(f32),
     Volume,
-    /// An equalizer band's slider, by its place among the equalizer's controls.
+    /// Index into `eq_rows`.
     Band(usize),
 }
 
+#[derive(Default)]
 pub struct App {
     pub view: View,
-    /// Pages opened over the view, the last on top.
+    /// Pages opened over the view, topmost last.
     pub pages: Vec<Page>,
     pub focus: Focus,
-    /// The place in the sidebar that is open.
+    /// The open sidebar entry.
     pub root: Nav,
     pub side: Sel,
     pub home: Home,
     pub library: Library,
     pub search: Search,
-    /// The panel on the right, or None when it is put away.
+    /// None when the panel is hidden.
     pub panel: Option<Panel>,
-    /// The player over the whole window.
+    /// Full-window player.
     pub full: bool,
     pub shown: Shown,
     pub queue: Option<PlaylistView>,
     pub queue_sel: Sel,
-    /// The id of the song last taken out of the queue here, for `u` to put back.
+    /// Id of the song last removed from the queue, for undo.
     pub taken: Option<String>,
     pub up_next_sel: Sel,
     pub downloads: Load<Box<Downloads>>,
@@ -641,26 +637,26 @@ pub struct App {
     pub lyrics_wake: Option<Instant>,
     pub overlay: Option<Overlay>,
     pub now: Now,
-    /// The song heard, as the engine says (through a mix, the one the ear is on).
+    /// The audible song (during a mix, the louder one).
     pub song: Option<Song>,
+    /// The planned transition out of `song`.
     pub transition: Option<nori_core::automix::planner::TransitionNote>,
-    /// The mix the ear is in, once it is on the incoming song.
+    /// The transition that brought `song` in, while still mixing.
     pub mixed_in: Option<nori_core::automix::planner::TransitionNote>,
-    /// The heard song's cover, by id.
+    /// Cover id of `song`.
     pub cover_art: Option<String>,
     pub colours: Option<Box<CoverColours>>,
-    /// The colours the cover dresses the player in (the panel, the full player); the rest of the window
-    /// keeps the terminal's own with the accent chosen.
+    /// Theme of the panel and full player (from the cover); the rest uses the terminal's colours.
     pub theme: Theme,
     pub prefs: StoredPrefs,
     pub volume: f32,
     pub mouse: bool,
     pub images: bool,
-    /// Small covers on the album cards (with covers on at all).
+    /// Covers on album cards (when covers are on).
     pub card_covers: bool,
-    /// The cards' covers asked for already, so each is asked once.
+    /// Card covers already requested.
     pub thumbs_asked: std::collections::HashSet<String>,
-    /// The image protocol in use, in words, for the settings page.
+    /// Image protocol name, for the settings page.
     pub protocol: &'static str,
     pub server: String,
     pub offline: bool,
@@ -670,82 +666,36 @@ pub struct App {
     pub cmds: Vec<Cmd>,
     pub dirty: bool,
     pub quit: bool,
-    /// The engine was asked for the equalizer's shallow buffer ([`App::sound_edited`]): asked back when
-    /// the equalizer closes or is switched off.
+    /// Whether the engine holds the equalizer's low-latency buffer ([`App::sound_edited`]); released
+    /// when the equalizer closes or is switched off.
     pub tuning: bool,
     /// The sound was changed on the equalizer since it was opened.
     pub touched: bool,
     pub drag: Option<Drag>,
-    /// A seek asked for and when: the engine's status says the place before it for a few frames, and is
-    /// not believed over it until it gets there.
+    /// A pending seek target and when it was asked: the engine's status lags it for a few frames.
     pub seek_hold: Option<(i64, Instant)>,
-    /// Where the equalizer's sliders run, top row and height, for a click or a drag on one.
+    /// Equalizer fader track top row and height, for mouse hits.
     pub eq_track: (u16, u16),
     pub seek_rect: Rect,
     pub volume_rect: Rect,
-    /// The last left click, for a second click on the same row.
+    /// The last left click, to detect a second click on the same target.
     last_click: Option<(Hit, Instant)>,
 }
 
 impl App {
     pub fn new(prefs: StoredPrefs) -> App {
         App {
-            view: View::Home,
-            pages: Vec::new(),
-            focus: Focus::Main,
-            root: Nav::Home,
             side: Sel { at: 1, top: 0 },
-            home: Home::default(),
-            library: Library::default(),
-            search: Search::default(),
             panel: Some(Panel::Playing),
-            full: false,
-            shown: Shown::default(),
-            queue: None,
-            queue_sel: Sel::default(),
-            taken: None,
-            up_next_sel: Sel::default(),
-            downloads: Load::Idle,
-            downloads_sel: Sel::default(),
-            downloads_at: None,
-            settings: SettingsView::default(),
-            eq_sel: Sel::default(),
-            login: Login::default(),
-            lyrics: None,
-            lyrics_for: None,
-            lyrics_sel: None,
-            lyrics_wake: None,
-            overlay: None,
-            now: Now::default(),
-            song: None,
-            transition: None,
-            mixed_in: None,
-            cover_art: None,
-            colours: None,
             theme: Theme::plain(prefs.accent),
             prefs,
             volume: 1.0,
             mouse: true,
             images: true,
             card_covers: true,
-            thumbs_asked: std::collections::HashSet::new(),
             protocol: "none",
-            server: String::new(),
-            offline: false,
-            unreachable: None,
-            note: None,
-            hits: Vec::new(),
-            cmds: Vec::new(),
             dirty: true,
-            quit: false,
-            tuning: false,
-            touched: false,
-            drag: None,
-            seek_hold: None,
-            eq_track: (0, 0),
-            seek_rect: Rect::default(),
-            volume_rect: Rect::default(),
-            last_click: None,
+            ..App::default()
         }
     }
 
@@ -754,10 +704,10 @@ impl App {
         self.dirty = true;
     }
 
-    /// The settings as the core keeps them now, and whatever follows from them on screen.
+    /// Takes the stored settings and updates what depends on them.
     pub fn prefs_changed(&mut self, prefs: StoredPrefs) {
         self.prefs = prefs;
-        // The equalizer switched off gives the shallow buffer back.
+        // Releases the low-latency buffer if the equalizer was switched off.
         self.tune();
         self.retheme();
         self.settings.invalidate();
@@ -771,19 +721,19 @@ impl App {
         };
     }
 
-    /// Whether the lyrics are on screen (or about to be): the panel's, or the full player's.
+    /// Whether lyrics are visible (panel or full player).
     pub fn lyrics_shown(&self) -> bool {
         self.full || self.panel == Some(Panel::Lyrics)
     }
 
-    /// Whether how the next song comes in is on screen: the panel's now playing, or the full player's.
+    /// Whether the transition note is visible (playing panel or full player).
     pub fn transition_shown(&self) -> bool {
         self.full || self.panel == Some(Panel::Playing)
     }
 
     // ---- going places ----
 
-    /// The sidebar's places: search and home, the library, each playlist, the equalizer and settings.
+    /// The sidebar entries.
     pub fn nav(&self) -> Vec<Nav> {
         let playlists = self.library.playlists.ready().map_or(0, Vec::len);
         let mut v = Vec::with_capacity(8 + playlists);
@@ -794,7 +744,7 @@ impl App {
         v
     }
 
-    /// A view, opened from the sidebar or a number key: whatever was opened over the one before is closed.
+    /// Opens a root view, closing any opened pages, and requests its data if needed.
     pub fn go(&mut self, view: View) {
         if view != View::Equalizer {
             self.touched = false;
@@ -849,7 +799,7 @@ impl App {
         }
     }
 
-    /// The playlists, for the sidebar: asked for once.
+    /// Requests the sidebar's playlists once.
     fn want_playlists(&mut self) {
         if matches!(self.library.playlists, Load::Idle) && self.view != View::Login {
             self.library.playlists = Load::Loading;
@@ -857,7 +807,7 @@ impl App {
         }
     }
 
-    /// A place in the sidebar opened; the keys go to the page.
+    /// Opens a sidebar entry and focuses the page.
     fn open_nav(&mut self, n: Nav) {
         self.focus = Focus::Main;
         match n {
@@ -905,7 +855,7 @@ impl App {
         self.open_page(Page::Playlist { id, detail: Load::Loading, sel: Sel::default() });
     }
 
-    /// The page open over the view, if one is.
+    /// The topmost opened page.
     pub fn page(&self) -> Option<&Page> {
         self.pages.last()
     }
@@ -914,7 +864,7 @@ impl App {
         self.pages.last_mut()
     }
 
-    /// The panel shown (or put away when it already shows that); the queue and the lyrics take the keys.
+    /// Shows panel `p`, or hides it if already shown; the queue and lyrics take focus.
     pub fn set_panel(&mut self, p: Panel) {
         let there = self.panel == Some(p) && (self.shown.panel || self.focus == Focus::Panel);
         self.full = false;
@@ -929,7 +879,7 @@ impl App {
         }
         self.panel = Some(p);
         match p {
-            // The queue opens on the song playing.
+            // Select the playing song.
             Panel::Queue => {
                 let current = self.queue.as_ref().map_or(-1, |q| q.index);
                 if let Some(row) = self.queue_order().iter().position(|&i| i as i32 == current) {
@@ -953,7 +903,7 @@ impl App {
         }
     }
 
-    /// The keys on to the next part of the window (or the one before).
+    /// Cycles focus between sidebar, page and panel.
     fn cycle(&mut self, forward: bool) {
         let mut parts = vec![Focus::Side, Focus::Main];
         if self.panel.is_some() {
@@ -978,8 +928,7 @@ impl App {
     // ---- what comes in ----
 
     pub fn handle(&mut self, msg: Msg) {
-        // A message that changes nothing on screen says so by clearing `dirty`; one taken before it in
-        // the same batch (an engine event, then a key that does nothing) is still drawn.
+        // Handlers clear `dirty` when nothing changed; an earlier message in the batch stays dirty.
         let was = std::mem::replace(&mut self.dirty, true);
         self.take(msg);
         self.dirty |= was;
@@ -991,7 +940,7 @@ impl App {
             Msg::Mouse(m) => self.mouse_event(m),
             Msg::Paste(text) => self.paste(&text),
             Msg::Resize => {}
-            // Focus lost changes nothing on screen; focus back is drawn (the runner decides how fully).
+            // Regaining focus redraws; the runner decides whether fully.
             Msg::Focus(on) => self.dirty = on,
             Msg::Engine(e) => self.engine(e),
             Msg::Data(req, r) => self.data(req, r),
@@ -1004,12 +953,10 @@ impl App {
                 }
             }
             Msg::Lyrics { song, pick } => {
-                if self.lyrics_for.as_deref() == Some(&song) {
-                    if self.lyrics.as_ref().is_none_or(|l| l.replaced_by(&pick)) {
-                        let pos = self.now.position(Instant::now());
-                        self.lyrics = Some(SongLyrics::new(pick, pos));
-                        self.lyrics_wake = Some(Instant::now());
-                    }
+                if self.lyrics_for.as_deref() == Some(&song) && self.lyrics.as_ref().is_none_or(|l| l.replaced_by(&pick)) {
+                    let pos = self.now.position(Instant::now());
+                    self.lyrics = Some(SongLyrics::new(pick, pos));
+                    self.lyrics_wake = Some(Instant::now());
                 }
             }
             Msg::Search(v) => {
@@ -1026,14 +973,15 @@ impl App {
                 }
             }
             Msg::Reachable(r) => self.unreachable = r.err(),
+            // The runner opens these.
+            Msg::From(..) => {}
         }
     }
 
     fn engine(&mut self, e: Event) {
         match e {
             Event::State(s) => {
-                // The clock stops or starts where it is now: the engine's status, read by the runner,
-                // may still be the one from before this event.
+                // Restart the clock from now: the engine's status may still predate this event.
                 let t = Instant::now();
                 self.now.position_ms = self.now.position(t);
                 self.now.at = t;
@@ -1044,7 +992,7 @@ impl App {
             }
             Event::Song { .. } | Event::Looped { .. } => {}
             Event::Error { id, message } => {
-                let what = nori_core::queue::queue_song(id).map_or_else(|| "The output".to_string(), |s| format!("“{}”", s.title));
+                let what = nori_core::queue::shared().song(&id).map_or_else(|| "The output".to_string(), |s| format!("“{}”", s.title));
                 self.say(format!("{what} would not play: {message}"), true);
             }
             Event::Buffering(on) => self.now.buffering = on,
@@ -1053,13 +1001,11 @@ impl App {
             Event::Title(t) => self.say(format!("On air: {t}"), false),
             Event::Bridge { .. } => self.say("The network is gone", true),
             Event::Mixing(on) => self.now.mixing = on,
-            // A desktop keeps no wake lock: the system does not sleep under playing music.
             Event::Position { .. } | Event::Placed { .. } | Event::Awake(_) => {}
         }
     }
 
-    /// The song heard changed (the runner read it from the engine): the cover, the lyrics and the plan
-    /// follow it.
+    /// The audible song, as read from the engine; on a change, cover and lyrics follow.
     pub fn heard(&mut self, song: Option<Song>) {
         let changed = self.song.as_ref().map(|s| &s.id) != song.as_ref().map(|s| &s.id);
         self.song = song;
@@ -1109,7 +1055,7 @@ impl App {
             (Req::Artists, Ok(Data::Artists(v))) => self.library.artists = Load::Ready(v),
             (Req::Artists, Err(e)) => self.library.artists = Load::Failed(e),
             (Req::Playlists, Ok(Data::Playlists(v))) => {
-                // The sidebar keeps the place selected where it was among the places around the playlists.
+                // Keep the same sidebar entry selected as the playlist count changes.
                 let was = self.nav().get(self.side.at).copied();
                 self.library.playlists = Load::Ready(v);
                 if let Some(i) = was.and_then(|n| self.nav().iter().position(|x| *x == n)) {
@@ -1129,7 +1075,7 @@ impl App {
             }
             (Req::Songs { .. }, Err(e)) => self.library.songs = Load::Failed(e),
             (Req::Downloads, Ok(Data::Downloads(d))) => {
-                // While something downloads, the page looks again every second (only while it is shown).
+                // Refresh every second while downloads run (only while shown).
                 let running = !d.active.is_empty() || !d.queued.is_empty();
                 self.downloads_at = running.then(|| Instant::now() + Duration::from_secs(1));
                 self.downloads = Load::Ready(d);
@@ -1164,14 +1110,12 @@ impl App {
 
     // ---- time ----
 
-    /// When the screen next has to look again by itself, if ever: the clock's next second while music
-    /// plays, the lyrics' next change, a paused search, a note to clear, downloads running. None while
-    /// nothing moves: the program then sleeps until a key, a click or the engine wakes it.
+    /// When the loop must next wake on its own: the next second of playback, a lyrics change, a pending
+    /// search, a note expiring, a downloads refresh. None when idle.
     pub fn next_wake(&self, now: Instant) -> Option<Instant> {
         let mut at: Option<Instant> = None;
         let mut sooner = |t: Instant| at = Some(at.map_or(t, |a| a.min(t)));
         if self.now.state == State::Playing && !self.now.buffering {
-            // The next whole second of the song, when the times on screen change.
             let pos = self.now.position(now).max(0);
             let left = 1000 - pos % 1000;
             sooner(now + Duration::from_millis((left as f32 / self.now.speed.max(0.1)) as u64 + 5));
@@ -1193,7 +1137,7 @@ impl App {
         at
     }
 
-    /// Time passed: whatever was due is done.
+    /// Runs whatever is due at `now`.
     pub fn tick(&mut self, now: Instant) {
         self.dirty = true;
         if self.search.ask_at.is_some_and(|t| t <= now) {
@@ -1213,12 +1157,12 @@ impl App {
 
     // ---- keys ----
 
-    /// Whether the lyrics take the list keys: the full player, or the lyrics panel in focus.
+    /// Whether lyrics take the list keys.
     fn lyrics_focused(&self) -> bool {
         self.full || (self.focus == Focus::Panel && self.panel == Some(Panel::Lyrics))
     }
 
-    /// Whether the page in focus is laid out as cards.
+    /// Whether the focused page is a card grid.
     fn grid_focused(&self) -> bool {
         self.focus == Focus::Main
             && match self.page() {
@@ -1240,7 +1184,6 @@ impl App {
             Focus::Main => match self.view {
                 View::Downloads => &[Scope::Edit, Scope::List, Scope::Global],
                 View::Equalizer => &[Scope::Eq, Scope::List, Scope::Global],
-                View::Settings if self.settings.adjustable() => &[Scope::Values, Scope::List, Scope::Global],
                 View::Settings => &[Scope::Values, Scope::List, Scope::Global],
                 _ => &[Scope::List, Scope::Global],
             },
@@ -1306,7 +1249,7 @@ impl App {
             KeyCode::Enter | KeyCode::Down | KeyCode::Tab => {
                 self.search.editing = false;
                 self.focus = Focus::Main;
-                // The query acted on is remembered, and the server asked now rather than after the pause.
+                // Enter queries the server now.
                 if k.code == KeyCode::Enter && !self.search.text.trim().is_empty() {
                     self.search.ask_at = None;
                     self.cmds.push(Cmd::SearchServer(self.search.text.trim().to_string()));
@@ -1462,14 +1405,13 @@ impl App {
                 self.say(if on { "Shuffle on" } else { "Shuffle off" }, false);
             }
             Action::Repeat => {
-                use nori_player_repeat::*;
-                let next = match self.repeat() {
-                    OFF => ALL,
-                    ALL => ONE,
-                    _ => OFF,
+                let (next, said) = match self.repeat() {
+                    REPEAT_OFF => (REPEAT_ALL, "Repeat all"),
+                    REPEAT_ALL => (REPEAT_ONE, "Repeat one"),
+                    _ => (REPEAT_OFF, "Repeat off"),
                 };
                 self.cmds.push(Cmd::Repeat(next));
-                self.say(["Repeat off", "Repeat one", "Repeat all"][next as usize], false);
+                self.say(said, false);
             }
             Action::Go(n) => {
                 if let Some(v) = GO.get(n as usize) {
@@ -1505,7 +1447,7 @@ impl App {
                 match self.view {
                     View::Equalizer => self.eq_step(up),
                     View::Settings => {
-                        let cmds = self.settings.step(&self.prefs, up);
+                        let cmds = self.settings.step(up);
                         self.cmds.extend(cmds);
                     }
                     _ => {}
@@ -1545,7 +1487,7 @@ impl App {
         self.sought(to);
     }
 
-    /// A seek to `to`: shown there at once, and held there until the engine says it got there.
+    /// Seeks to `to`, shown at once and held until the engine's status catches up.
     fn sought(&mut self, to: i64) {
         let now = Instant::now();
         self.now.position_ms = to;
@@ -1554,9 +1496,8 @@ impl App {
         self.cmds.push(Cmd::Seek(to));
     }
 
-    /// The engine's state as its status says it (the runner reads it). Just after a seek the status
-    /// still has the place from before it: the place sought is kept until the status is near it, or
-    /// for a few seconds at most (a seek that landed elsewhere).
+    /// Takes the engine's status. After a seek the status lags: the target is kept until the status is
+    /// near it, or `SEEK_HOLD` passes (the seek landed elsewhere).
     pub fn follow_now(&mut self, n: Now) {
         if let Some((to, at)) = self.seek_hold {
             let t = Instant::now();
@@ -1584,7 +1525,7 @@ impl App {
         self.queue.as_ref().map_or(0, |q| q.repeat)
     }
 
-    /// Back, as a desktop player's: out of the full player, out of a page, and from the page to the sidebar.
+    /// Back: out of the full player, out of a page, then from the page to the sidebar.
     fn back(&mut self) {
         if self.full {
             self.full = false;
@@ -1632,8 +1573,7 @@ impl App {
 
     // ---- lists ----
 
-    /// The list the keys move in now: its selection and its length. None for the home page's shelves
-    /// and the lyrics, which move their own way.
+    /// The focused list's selection and length; None for home shelves and lyrics.
     fn list(&mut self) -> Option<(&mut Sel, usize)> {
         match self.focus {
             Focus::Side => {
@@ -1708,7 +1648,6 @@ impl App {
         let down = !matches!(a, Action::Up | Action::PageUp | Action::Top | Action::Left);
         if self.focus == Focus::Main && self.page().is_none() {
             match self.view {
-                // Settings and search never rest on a title.
                 View::Settings => self.settings.skip_titles(down),
                 View::Search => self.search.settle(down),
                 _ => {}
@@ -1730,7 +1669,7 @@ impl App {
         }
     }
 
-    /// Near the end of a list read in pages: the next page.
+    /// Requests the next page when the selection nears the end of a paged list.
     fn more(&mut self) {
         if self.focus != Focus::Main || self.page().is_some() {
             return;
@@ -1755,7 +1694,7 @@ impl App {
         }
     }
 
-    /// What is selected in the part in focus.
+    /// The selected item in the focused part.
     pub fn selected(&self) -> Option<Item> {
         match self.focus {
             Focus::Side => {
@@ -1788,7 +1727,7 @@ impl App {
             View::Artists => l.artists.ready()?.get(l.artists_sel.at).cloned().map(Item::Artist),
             View::Songs => l.songs.ready().filter(|s| l.songs_sel.at < s.len()).map(|s| Item::Song(s.clone(), l.songs_sel.at)),
             View::Search => match self.search.rows().get(self.search.sel.at)? {
-                // A search's songs are one song each: the list is not an album, and may hold a provider's.
+                // Search songs play alone: the list is no page's queue and may hold provider songs.
                 SearchRow::Song(s) => Some(Item::Song(vec![(*s).clone()], 0)),
                 SearchRow::Album(a) => Some(Item::Album((*a).clone())),
                 SearchRow::Artist(a) => Some(Item::Artist((*a).clone())),
@@ -1836,7 +1775,6 @@ impl App {
             }
             _ => {}
         }
-        // Playing a whole page works with nothing selected.
         if matches!(a, Action::PlayAll | Action::ShuffleAll) {
             return self.play_all(a == Action::ShuffleAll);
         }
@@ -1875,11 +1813,9 @@ impl App {
         }
     }
 
-    /// A song picked from a list, as the "Choosing a song" setting says (a terminal does not offer it:
-    /// the core's default, the list played from that song).
+    /// A song picked from a list, per the `tap_action` setting (not offered here; default PlayList).
     fn tap(&mut self, songs: Vec<Song>, i: usize) {
         match self.prefs.tap_action {
-            // One song on its own is no page's queue.
             TapAction::PlayOne => self.cmds.push(Cmd::Play { songs: vec![songs[i].clone()], start: 0, shuffle: false, from: None }),
             TapAction::Queue => self.cmds.push(Cmd::Enqueue(vec![songs[i].clone()], false)),
             TapAction::PlayNext => self.cmds.push(Cmd::Enqueue(vec![songs[i].clone()], true)),
@@ -1890,8 +1826,7 @@ impl App {
         }
     }
 
-    /// The page whose own list of songs is the one picked from here, for the queue it starts: the page
-    /// open, or the view's song list. None where the list is not one place's.
+    /// The page the focused song list belongs to, as a queue origin.
     fn origin_here(&self) -> Option<PageOrigin> {
         if self.focus != Focus::Main {
             return None;
@@ -1937,7 +1872,7 @@ impl App {
         }
     }
 
-    /// A song, album or artist starred where it is shown here, before the server's answer.
+    /// Flips the star on every shown copy of the item, before the server answers.
     fn flip_star(&mut self, item: &Item) {
         let id = match item {
             Item::Song(songs, i) => songs[*i].id.clone(),
@@ -1966,7 +1901,7 @@ impl App {
         }
     }
 
-    /// The page's album or artist starred or not, shown so at once.
+    /// Flips the star on the page's album or artist.
     fn star_page(&mut self) {
         let c = match self.page_mut() {
             Some(Page::Album { detail: Load::Ready(d), .. }) => {
@@ -1984,7 +1919,7 @@ impl App {
 
     // ---- the queue ----
 
-    /// The queue's rows in the order they play: list indexes.
+    /// Queue list indexes in play order.
     pub fn queue_order(&self) -> Vec<usize> {
         self.queue.as_ref().map_or_else(Vec::new, |q| q.order.iter().map(|&i| i as usize).collect())
     }
@@ -2015,7 +1950,7 @@ impl App {
         self.queue_sel.at = if down { self.queue_sel.at + 1 } else { self.queue_sel.at - 1 };
     }
 
-    /// The songs after the one playing, in play order: list indexes.
+    /// List indexes after the current song, in play order.
     pub fn up_next(&self) -> Vec<usize> {
         let order = self.queue_order();
         let current = self.queue.as_ref().map_or(-1, |q| q.index);
@@ -2027,7 +1962,7 @@ impl App {
 
     // ---- downloads ----
 
-    /// The downloads page's rows: a heading, or a song with the list it is in.
+    /// Downloads page rows.
     pub fn download_rows(&self) -> Vec<DownloadRow<'_>> {
         let Some(d) = self.downloads.ready() else { return Vec::new() };
         let mut out = Vec::new();
@@ -2048,7 +1983,7 @@ impl App {
     fn lyrics_action(&mut self, a: Action) {
         let Some(l) = &self.lyrics else { return };
         let len = l.pick.lyrics.lines.len();
-        // Past the last line once it is over: the last line is where a selection starts.
+        // `active` is past the end after the last line.
         let active = (l.clock.shown().active.max(0) as usize).min(len.saturating_sub(1));
         let at = self.lyrics_sel.unwrap_or(active);
         match a {
@@ -2056,13 +1991,11 @@ impl App {
             Action::Down => self.lyrics_sel = Some((at + 1).min(len.saturating_sub(1))),
             Action::Top => self.lyrics_sel = Some(0),
             Action::Bottom => self.lyrics_sel = Some(len.saturating_sub(1)),
-            Action::Open => {
-                if l.pick.lyrics.synced {
-                    let to = l.clock.tap(at);
-                    self.lyrics_sel = None;
-                    self.sought(to);
-                    self.lyrics_wake = Some(Instant::now());
-                }
+            Action::Open if l.pick.lyrics.synced => {
+                let to = l.clock.tap(at);
+                self.lyrics_sel = None;
+                self.sought(to);
+                self.lyrics_wake = Some(Instant::now());
             }
             _ => {}
         }
@@ -2071,13 +2004,12 @@ impl App {
     // ---- the settings and the equalizer ----
 
     fn settings_open(&mut self) {
-        let prefs = self.prefs.clone();
-        match self.settings.open(&prefs) {
-            Some(crate::settings_view::Opened::Cmds(c)) => self.cmds.extend(c),
-            Some(crate::settings_view::Opened::Overlay(o)) => self.overlay = Some(o),
-            Some(crate::settings_view::Opened::View(v)) => self.go(v),
-            Some(crate::settings_view::Opened::Own(key)) => self.own_toggle(key),
-            Some(crate::settings_view::Opened::Login) => {
+        match self.settings.open() {
+            Some(Opened::Cmds(c)) => self.cmds.extend(c),
+            Some(Opened::Overlay(o)) => self.overlay = Some(o),
+            Some(Opened::View(v)) => self.go(v),
+            Some(Opened::Own(switch)) => self.own_toggle(switch),
+            Some(Opened::Login) => {
                 self.login = Login::default();
                 self.view = View::Login;
             }
@@ -2085,30 +2017,28 @@ impl App {
         }
     }
 
-    fn own_toggle(&mut self, key: &str) {
-        match key {
-            "mouse" => self.do_action(Action::Mouse),
-            "images" => self.do_action(Action::Images),
-            "card_covers" => {
+    fn own_toggle(&mut self, switch: Switch) {
+        match switch {
+            Switch::Mouse => self.do_action(Action::Mouse),
+            Switch::Images => self.do_action(Action::Images),
+            Switch::CardCovers => {
                 self.card_covers = !self.card_covers;
                 self.cmds.push(Cmd::CardCovers(self.card_covers));
             }
-            _ => {}
+            Switch::Setting(_) => {}
         }
         self.settings.invalidate();
     }
 
-    /// A change of the sound was kept (a band, a level, a preset). On the equalizer with the equalizer
-    /// on, the first one asks the engine for its shallow buffer (true), so the ones after it are heard at
-    /// once and without a dip. Opening the equalizer alone asks nothing: the output stays as it was until
-    /// something is really changed. When is the core's (`rules::equalizer_tuning`).
+    /// A sound change was stored. Returns true when the engine should now take the low-latency buffer
+    /// (first real edit on an enabled equalizer; `rules::equalizer_tuning`), so later edits are heard
+    /// at once. Merely opening the equalizer does not.
     pub fn sound_edited(&mut self) -> bool {
         self.touched |= equalizer_tuning(self.view == View::Equalizer, true, self.prefs.eq_enabled);
         self.tune()
     }
 
-    /// Asks the engine for the shallow buffer, or gives it back, when what the core wants changed: the
-    /// equalizer left, or switched off. True when it was asked for now.
+    /// Updates `tuning` from `rules::equalizer_tuning`; pushes the release command, returns true on take.
     fn tune(&mut self) -> bool {
         let want = equalizer_tuning(self.view == View::Equalizer, self.touched, self.prefs.eq_enabled);
         if want == self.tuning {
@@ -2149,7 +2079,7 @@ impl App {
     // ---- the mouse ----
 
     fn hit(&self, col: u16, row: u16) -> Option<Hit> {
-        // The last drawn on top wins: overlays are drawn last.
+        // Last drawn wins: overlays are drawn last.
         self.hits.iter().rev().find(|(r, _)| r.contains(Position { x: col, y: row })).map(|(_, h)| *h)
     }
 
@@ -2182,7 +2112,7 @@ impl App {
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
                 let d = if m.kind == MouseEventKind::ScrollDown { 1 } else { -1 };
                 match self.hit(m.column, m.row) {
-                    // The wheel over an equalizer control changes it, up for more.
+                    // The wheel changes an equalizer control, up for more.
                     Some(Hit::Row(ListRef::Eq, i)) => {
                         self.focus = Focus::Main;
                         self.eq_sel.at = i;
@@ -2222,7 +2152,6 @@ impl App {
                 }
             }
             ListRef::Profiles => {}
-            // The wheel over a shelf moves along it.
             ListRef::Shelf(s) => {
                 self.focus = Focus::Main;
                 self.home.shelf = s;
@@ -2298,7 +2227,7 @@ impl App {
         }
     }
 
-    /// An equalizer band's slider put where the pointer is on its track.
+    /// Sets fader `i` from pointer row `y` on its track.
     fn band_to(&mut self, i: usize, y: u16) {
         let (top, h) = self.eq_track;
         if h < 2 {
@@ -2389,7 +2318,7 @@ impl App {
         if let Some((sel, len)) = self.list() {
             sel.to(i, len);
         }
-        // A card or a switch does what it does at once; a song plays on a second click.
+        // Cards and switches act on one click; songs on a second.
         let artist_cards = l == ListRef::Page && matches!(self.page(), Some(Page::Artist { .. }));
         let settings_now = l == ListRef::Settings && self.settings.clicks_open();
         if again || l.opens_on_click() || artist_cards || settings_now {
@@ -2398,7 +2327,7 @@ impl App {
     }
 }
 
-/// Where `col` is along `r`, 0 to 1.
+/// `col`'s position across `r`, 0 to 1.
 fn share(r: Rect, col: u16) -> f32 {
     if r.width == 0 {
         return 0.0;
@@ -2406,18 +2335,16 @@ fn share(r: Rect, col: u16) -> f32 {
     (col.saturating_sub(r.x) as f32 / r.width.saturating_sub(1).max(1) as f32).clamp(0.0, 1.0)
 }
 
-/// A row of the downloads page: a heading, or a song with the list it is in and its place there.
+/// A downloads page row: a heading, or a song as (its list, index).
 pub type DownloadRow<'a> = (String, Option<(&'a [Song], usize)>);
 
-/// How long a note stays in the status bar.
+/// How long a status note shows.
 pub const NOTE_FOR: Duration = Duration::from_secs(4);
 
-/// How long a seek's place is held on screen over an engine status that has not got there.
+/// Longest a seek target overrides a lagging engine status.
 const SEEK_HOLD: Duration = Duration::from_secs(3);
 
-/// The queue's repeat modes (nori_player::playlist's numbering).
-mod nori_player_repeat {
-    pub const OFF: u8 = 0;
-    pub const ONE: u8 = 1;
-    pub const ALL: u8 = 2;
-}
+/// Repeat modes, numbered as `nori_player::playlist`.
+pub const REPEAT_OFF: u8 = 0;
+pub const REPEAT_ONE: u8 = 1;
+pub const REPEAT_ALL: u8 = 2;

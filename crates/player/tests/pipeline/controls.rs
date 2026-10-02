@@ -1,8 +1,6 @@
-//! The controls and the queue: next and previous, seeks that land where they were asked (playing,
-//! paused, or asked again after a restart dropped them), songs that will not play, and shuffle.
+//! Controls and queue: next/previous, seeks, failing songs, repeat and shuffle.
 
 use nori_player::playlist::{Hand, REPEAT_ALL, REPEAT_ONE};
-use nori_player::seek::{SeekKeeper, Verdict};
 use nori_player::sim::{Audio, Player, Track};
 
 use crate::common::*;
@@ -21,7 +19,7 @@ fn heard_from(p: &Player, from: u64) -> Vec<i16> {
 }
 
 #[test]
-fn next_and_previous_start_their_song_at_its_first_sample() {
+fn next_previous_start_at_first_sample() {
     let s = songs(3, 10.0);
     let mut p = Player::new(queue(&s));
     p.play_from(0);
@@ -44,7 +42,7 @@ fn next_and_previous_start_their_song_at_its_first_sample() {
 }
 
 #[test]
-fn next_in_the_middle_of_a_crossfade_cuts_cleanly_to_the_song_after() {
+fn next_mid_crossfade_cuts_cleanly() {
     let s = songs(3, 40.0);
     let mut p = Player::with_prefs(queue(&s), crossfade(10));
     p.play_from(0);
@@ -59,7 +57,7 @@ fn next_in_the_middle_of_a_crossfade_cuts_cleanly_to_the_song_after() {
 }
 
 #[test]
-fn a_seek_lands_on_the_sample_asked_for() {
+fn seeks_land_on_sample() {
     let song = music(30.0, 7);
     let mut p = Player::new(vec![track("a", &song)]);
     p.play_from(0);
@@ -74,13 +72,8 @@ fn a_seek_lands_on_the_sample_asked_for() {
     // The position is the seek's place plus exactly what has been heard since, to the millisecond.
     let since_ms = heard.len() as i64 / 2 * 1000 / RATE as i64;
     assert!((p.position_ms() - (12_345 + since_ms)).abs() <= 1, "{} after {since_ms} ms heard", p.position_ms());
-}
 
-/// How far apart two positions may be read: one turn of the renderer.
-const STEP: i64 = 10;
-
-#[test]
-fn a_seek_in_an_mp3_lands_on_the_frame_before_it_and_decodes_on_exactly() {
+    // Mp3 seek is sample exact.
     let audio = Audio::mp3(&testdata("tone440.mp3"));
     let whole = audio.decode_all();
     let mut p = Player::new(vec![Track::new("a", audio)]);
@@ -98,10 +91,8 @@ fn a_seek_in_an_mp3_lands_on_the_frame_before_it_and_decodes_on_exactly() {
     let settled = 2 * 1152 * 2;
     assert!(heard.len() > settled + 4608);
     assert!(heard[settled..heard.len().min(whole.len() - landed * 2)] == whole[landed * 2 + settled..landed * 2 + heard.len().min(whole.len() - landed * 2)], "the seek landed on frame {landed}");
-}
 
-#[test]
-fn a_seek_in_an_opus_stream_lands_after_its_pre_roll_on_the_same_samples() {
+    // Opus seek is sample exact.
     let audio = Audio::opus(&testdata("tone440.opus"));
     let whole = left(&audio.decode_all());
     let mut p = Player::new(vec![Track::new("a", audio)]);
@@ -135,8 +126,11 @@ fn a_seek_in_an_opus_stream_lands_after_its_pre_roll_on_the_same_samples() {
     assert!(off(9_600) < -70.0, "200 ms on {:.1} dB off", off(9_600));
 }
 
+/// How far apart two positions may be read: one turn of the renderer.
+const STEP: i64 = 10;
+
 #[test]
-fn a_seek_while_paused_sticks_and_play_resumes_from_it() {
+fn seek_while_paused_sticks() {
     let song = music(40.0, 8);
     let mut p = Player::new(vec![track("a", &song)]);
     p.play_from(0);
@@ -156,38 +150,7 @@ fn a_seek_while_paused_sticks_and_play_resumes_from_it() {
 }
 
 #[test]
-fn a_seek_dropped_while_the_player_was_opening_is_asked_again_and_sticks() {
-    // After a restart the player comes back paused at 10 s, and the seek to 30 s is asked while it is
-    // still opening: the player drops it. The keeper notices and asks again.
-    let song = music(40.0, 9);
-    let mut p = Player::new(vec![track("a", &song)]);
-    p.play_from(0);
-    p.seek(10_000);
-    p.pause();
-    let mut keeper = SeekKeeper::new();
-    keeper.ask(30_000, p.now_ms, false, 0);
-    let mut verdicts = Vec::new();
-    for _ in 0..10 {
-        p.run_for(300);
-        let v = keeper.look(p.now_ms, true, true, p.position_ms(), p.playing());
-        verdicts.push(v);
-        match v {
-            Verdict::SeekAgain(ms) => p.seek(ms),
-            Verdict::Forget => break,
-            Verdict::Watch => {}
-        }
-    }
-    assert_eq!(verdicts, vec![Verdict::Watch, Verdict::SeekAgain(30_000), Verdict::Forget], "anchored, asked again once, kept");
-    assert_eq!(p.position_ms(), 30_000);
-    let at = p.sink.heard_frames;
-    p.resume();
-    p.run_for(1_000);
-    let heard = heard_from(&p, at);
-    assert!(heard == song[frames(30.0) * 2..frames(30.0) * 2 + heard.len()], "play resumes from the seek, not the restored place");
-}
-
-#[test]
-fn songs_that_will_not_play_are_skipped_three_in_a_row_then_it_stops() {
+fn failing_songs() {
     let s = songs(6, 4.0);
     let mut p = Player::new(queue(&s));
     p.tracks.broken = ["s1", "s2", "s3", "s4"].map(String::from).to_vec();
@@ -197,10 +160,8 @@ fn songs_that_will_not_play_are_skipped_three_in_a_row_then_it_stops() {
     assert_eq!(skipped, ["s1 will not play: skipped", "s2 will not play: skipped", "s3 will not play: skipped", "s4 will not play: stopped"]);
     assert!(!p.playing(), "stopped after three in a row");
     assert_eq!(p.sink.heard_frames as usize, frames(4.0), "only the first song was heard; s5 never played");
-}
 
-#[test]
-fn a_song_that_plays_breaks_the_run() {
+    // Playing song resets error run.
     let s = songs(7, 3.0);
     let mut p = Player::new(queue(&s));
     p.tracks.broken = ["s1", "s3", "s4", "s5"].map(String::from).to_vec();
@@ -213,7 +174,7 @@ fn a_song_that_plays_breaks_the_run() {
 }
 
 #[test]
-fn repeat_all_goes_round_and_repeat_one_loops_without_a_gap() {
+fn repeat_all_and_one_gapless() {
     let s = songs(2, 3.0);
     let mut p = Player::new(queue(&s));
     p.set_repeat(REPEAT_ALL);
@@ -232,7 +193,7 @@ fn repeat_all_goes_round_and_repeat_one_loops_without_a_gap() {
 }
 
 #[test]
-fn shuffle_plays_every_song_once_in_the_order_of_its_seed() {
+fn shuffle_plays_each_song_once() {
     let s = songs(6, 2.0);
     let mut p = Player::shuffled(queue(&s), 42);
     let order: Vec<usize> = p.queue.play_order().collect();
@@ -247,7 +208,32 @@ fn shuffle_plays_every_song_once_in_the_order_of_its_seed() {
 }
 
 #[test]
-fn an_edit_ahead_of_the_song_playing_leaves_the_player_on_it_and_the_next_one_is_the_queue_s() {
+fn edits_near_current() {
+    // An edit while the playing song is opened again to remake its ending: the remake follows the song.
+    let s = songs(4, 12.0);
+    let mut p = Player::new(queue(&s));
+    p.tracks.slow.push("s1".into());
+    p.play_from(1);
+    // The reader is into s2: s1's ending was made gapless into it.
+    assert!(p.run_until(10_000, |p| p.app.log.iter().any(|l| l.contains("sink: s2"))), "{:?}", p.app.log);
+    let extra = music(2.0, 200);
+    p.tracks.push(track("x", &extra));
+    p.tracks.push(track("y", &extra));
+    p.queue.add(vec!["x".into()], Hand::Next);
+    p.queue_changed();
+    p.replan_ending();
+    assert!(p.app.logged("the ending of s1 is made again"), "{:?}", p.app.log);
+    p.queue.insert(0, vec!["y".into()], Hand::No);
+    p.queue_changed();
+    assert!(p.run_to_end(60_000));
+    let heard = p.sink.heard_samples();
+    let joined: Vec<i16> = [&s[1], &extra, &s[2], &s[3]].iter().flat_map(|v| v.iter().copied()).collect();
+    // Where x replaces the s2 already written, it is blended in.
+    let (cut, blend) = (s[1].len(), frames(nori_player::pipeline::BLEND_US as f64 / 1e6) * 2);
+    assert_eq!(heard.len(), joined.len());
+    assert!(heard[..cut] == joined[..cut] && heard[cut + blend..] == joined[cut + blend..], "s1 whole, then the song added to play next, then the rest");
+
+    // Edit before current keeps player on it.
     let s = songs(4, 12.0);
     let mut p = Player::new(queue(&s));
     p.play_from(1);
@@ -268,7 +254,7 @@ fn an_edit_ahead_of_the_song_playing_leaves_the_player_on_it_and_the_next_one_is
 }
 
 #[test]
-fn shuffle_switched_on_keeps_the_song_playing_first_and_play_next_next() {
+fn shuffle_keeps_current_and_next() {
     let s = songs(6, 2.0);
     let mut p = Player::new(queue(&s));
     p.play_from(2);

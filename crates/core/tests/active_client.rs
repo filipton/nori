@@ -1,6 +1,4 @@
-//! `resolve_now` streams through the newest client and the network the platform last named: both are
-//! process-wide, so this is a binary of its own. Among the unit tests, which make clients side by side,
-//! the client it resolved through could be another test's, or already gone.
+//! `resolve_now` uses the process-wide active client and network state, so it gets its own test binary.
 
 use std::sync::Arc;
 
@@ -9,7 +7,7 @@ use nori_core::stream::{network_metered, resolve_now};
 use nori_core::transport::{Exchange, Transport, TransportError, TransportResponse};
 use nori_core::Core;
 
-/// Resolving a song's address asks the server nothing.
+/// A transport that is never needed.
 struct NoApi;
 
 #[async_trait::async_trait]
@@ -26,22 +24,20 @@ impl Transport for NoApi {
 }
 
 #[test]
-fn a_song_opened_in_rust_follows_the_network_the_platform_last_named() {
-    assert!(resolve_now("s1").is_none(), "no client yet, nothing to stream through");
+fn resolve_follows_client_and_net() {
+    assert!(resolve_now("s1").is_none(), "no client yet");
     let core = Core::new(String::new(), "t".into()).unwrap();
     let client = Client::new(core, Arc::new(NoApi));
     client.set_profile(NetProfile { url: "h".into(), ..Default::default() });
-    // Both networks stream the original file out of the box; a lower quality on mobile data shows which one
-    // the song went by.
+    // A distinct mobile quality shows which network was used.
     let dir = nori_testdir::TempDir::new("active-client");
     nori_core::settings_store::settings_open(dir.join("app.db").to_string_lossy().into_owned()).unwrap();
-    nori_core::settings_store::edit_by_name("mobile", "192:opus");
+    nori_core::settings_store::shared().edit_by_name("mobile", "192:opus");
     network_metered(true);
     let metered = resolve_now("s1").expect("the client just made");
     network_metered(false);
     let wifi = resolve_now("s1").expect("the client just made");
-    // 192k opus on a metered network as just set, the original file on Wi-Fi.
     assert_eq!((metered.key.as_str(), wifi.key.as_str()), ("s1:192opus", "s1:0"));
     drop(client);
-    assert!(resolve_now("s1").is_none(), "the client gone, nothing streams through it");
+    assert!(resolve_now("s1").is_none(), "client dropped");
 }

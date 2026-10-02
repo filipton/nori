@@ -1,6 +1,4 @@
-//! The mixes as the core's calls, over its index and play history. How a mix is drawn is nori-library's.
-
-use rusqlite::types::Value;
+//! Mix calls over the index and history. The mixes themselves are nori-library's.
 
 use crate::{db, model::Song, Core, Result};
 
@@ -10,7 +8,7 @@ pub use nori_library::mixes::*;
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Core {
-    /// An excluded song never appears in a mix; it still plays, searches and counts like any other.
+    /// Excludes a song from (or restores it to) every mix.
     pub fn mix_excluded_set(&self, song_id: String, excluded: bool) -> Result<()> {
         let c = self.db.lock();
         if excluded {
@@ -22,62 +20,11 @@ impl Core {
     }
 }
 
-/// All mixes are read-only and take a few milliseconds; call them off the main thread like every other
-/// core call. `seed` picks the draw: keep it to get the same mix again, change it to refresh.
-/// Asked only in Rust, so not exported to Kotlin.
+/// `seed` picks the draw: the same seed gives the same mix.
 impl Core {
-    /// `genre` is matched without regard to (ASCII) case.
-    pub fn mix_genre(&self, genre: String, limit: u32, seed: u64) -> Result<Vec<Song>> {
-        let limit = limit as usize;
-        Ok(themed(&self.db.lock(), "json_extract(i.json,'$.genre')=?1 COLLATE NOCASE", vec![Value::Text(genre)], limit, (limit / 5).max(2), seed, db::now_ms())?)
-    }
-
-    pub fn mix_artist(&self, artist_id: String, limit: u32, seed: u64) -> Result<Vec<Song>> {
-        Ok(themed(&self.db.lock(), "json_extract(i.json,'$.artistId')=?1", vec![Value::Text(artist_id)], limit as usize, usize::MAX, seed, db::now_ms())?)
-    }
-
-    /// `decade_start_year` 1990 means 1990..=1999.
-    pub fn mix_decade(&self, decade_start_year: u32, limit: u32, seed: u64) -> Result<Vec<Song>> {
-        let (limit, from) = (limit as usize, decade_start_year as i64);
-        Ok(themed(&self.db.lock(), decade_cond(), vec![Value::Integer(from), Value::Integer(from + 9)], limit, (limit / 5).max(2), seed, db::now_ms())?)
-    }
-
-    /// Empty when the seed song is not in the index (a provider track).
-    pub fn mix_instant(&self, seed_song_id: String, limit: u32, seed: u64) -> Result<Vec<Song>> {
+    /// Empty when the seed song is not indexed.
+    pub(crate) fn mix_instant(&self, seed_song_id: String, limit: u32, seed: u64) -> Result<Vec<Song>> {
         Ok(instant(&self.db.lock(), &seed_song_id, limit as usize, seed, db::now_ms())?)
-    }
-
-    pub fn mix_excluded_clear(&self) -> Result<()> {
-        self.db.lock().execute("DELETE FROM mix_excluded WHERE server=sid()", [])?;
-        Ok(())
-    }
-
-    /// For the settings screen that lets the user take an exclusion back.
-    pub fn mix_excluded_list(&self) -> Result<Vec<Song>> {
-        let c = self.db.lock();
-        let mut st = c.prepare_cached("SELECT i.json FROM mix_excluded e JOIN items i ON i.server=sid() AND i.kind=2 AND i.id=e.song_id WHERE e.server=sid() ORDER BY i.rowid")?;
-        let rows = st.query_map([], |r| r.get::<_, String>(0))?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?.iter().filter_map(|j| serde_json::from_str(j).ok()).collect())
-    }
-}
-
-/// Only the tests read these mixes one by one; the app has them drawn through the board (`mix_ensure`).
-#[cfg(test)]
-impl Core {
-    pub fn mix_quick_picks(&self, limit: u32, seed: u64) -> Result<Vec<Song>> {
-        Ok(quick_picks(&self.db.lock(), limit as usize, seed, db::now_ms())?)
-    }
-
-    pub fn mix_discover(&self, limit: u32, seed: u64) -> Result<Vec<Song>> {
-        Ok(discover(&self.db.lock(), limit as usize, seed, db::now_ms())?)
-    }
-
-    pub fn mix_listen_again(&self, limit: u32, seed: u64) -> Result<Vec<Song>> {
-        Ok(listen_again(&self.db.lock(), limit as usize, seed, db::now_ms())?)
-    }
-
-    pub fn mix_top(&self, limit: u32) -> Result<Vec<Song>> {
-        Ok(top(&self.db.lock(), limit as usize, db::now_ms())?)
     }
 }
 
@@ -90,6 +37,10 @@ pub(crate) mod tests {
 
     fn ids(l: &[Song]) -> Vec<&str> {
         l.iter().map(|s| s.id.as_str()).collect()
+    }
+
+    fn excluded(core: &Core) -> i64 {
+        core.db.lock().query_row("SELECT count(*) FROM mix_excluded", [], |r| r.get(0)).unwrap()
     }
 
     fn adjacent_artists(l: &[Song]) -> usize {
@@ -113,21 +64,21 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn every_mix_is_empty_on_an_empty_index() {
+    fn mixes_are_empty_without_index() {
         let core = Core::new(String::new(), "t".into()).unwrap();
-        assert!(core.mix_quick_picks(20, 1).unwrap().is_empty());
-        assert!(core.mix_discover(20, 1).unwrap().is_empty());
-        assert!(core.mix_listen_again(20, 1).unwrap().is_empty());
-        assert!(core.mix_top(20).unwrap().is_empty());
-        assert!(core.mix_genre("Rock".into(), 20, 1).unwrap().is_empty());
-        assert!(core.mix_artist("ar1".into(), 20, 1).unwrap().is_empty());
-        assert!(core.mix_decade(1990, 20, 1).unwrap().is_empty());
+        {
+            let c = core.db.lock();
+            assert!(quick_picks(&c, 20, 1, NOW).unwrap().is_empty());
+            assert!(discover(&c, 20, 1, NOW).unwrap().is_empty());
+            assert!(listen_again(&c, 20, 1, NOW).unwrap().is_empty());
+            assert!(top(&c, 20, NOW).unwrap().is_empty());
+        }
         assert!(core.mix_instant("nope".into(), 20, 1).unwrap().is_empty());
-        assert!(core.mix_excluded_list().unwrap().is_empty());
+        assert_eq!(excluded(&core), 0);
     }
 
     #[test]
-    fn quick_picks_are_liked_and_rested() {
+    fn picks_and_again() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         let all = library(&core);
         let (loved, today, hated) = (&all[0], &all[1], &all[2]);
@@ -148,13 +99,11 @@ pub(crate) mod tests {
         got.sort();
         assert_eq!(got, vec![loved.id.as_str(), all[60].id.as_str(), all[61].id.as_str()]);
         assert_eq!(ids(&picks), ids(&quick_picks(&c, 10, 1, NOW).unwrap()));
-        // three days later today's song has rested
+        // Three days later, today's song has rested.
         assert!(ids(&quick_picks(&c, 10, 1, NOW + 3 * DAY).unwrap()).contains(&today.id.as_str()));
         assert!(quick_picks(&c, 0, 1, NOW).unwrap().is_empty());
-    }
 
-    #[test]
-    fn listen_again_and_top() {
+        // Listen again is recent and top is by plays.
         let core = Core::new(String::new(), "t".into()).unwrap();
         let all = library(&core);
         for (i, s) in all.iter().step_by(10).take(5).enumerate() {
@@ -172,10 +121,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn discover_prefers_liked_artists_and_genres_and_skips_the_known() {
+    fn discover_mixes() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         let all = library(&core);
-        // a jazz listener, mostly Jazz Artist 0
         for s in all.iter().filter(|s| s.artist == "Jazz Artist 0").take(4) {
             for d in 0..3 {
                 listen(&core, s, NOW - d * DAY);
@@ -188,8 +136,8 @@ pub(crate) mod tests {
             let mix = discover(&c, 20, seed, NOW).unwrap();
             assert_eq!(mix.len(), 20);
             assert_eq!(adjacent_artists(&mix), 0);
-            assert!(mix.iter().all(|s| s.id != all[0].id), "skipped songs are not a discovery");
-            assert!(mix.iter().all(|s| !(s.artist == "Jazz Artist 0" && s.title.as_str() < "Track 4")), "played songs are not a discovery");
+            assert!(mix.iter().all(|s| s.id != all[0].id), "skipped");
+            assert!(mix.iter().all(|s| !(s.artist == "Jazz Artist 0" && s.title.as_str() < "Track 4")), "played");
             assert!(mix.iter().filter(|s| s.artist == "Jazz Artist 0").count() <= 4, "per-artist cap");
             jazz += mix.iter().filter(|s| s.genre.as_deref() == Some("Jazz")).count();
             total += mix.len();
@@ -197,39 +145,17 @@ pub(crate) mod tests {
         assert!(jazz * 2 > total, "{jazz}/{total} jazz; a quarter of the library is");
         assert_eq!(ids(&discover(&c, 20, 5, NOW).unwrap()), ids(&discover(&c, 20, 5, NOW).unwrap()));
         assert_ne!(ids(&discover(&c, 20, 5, NOW).unwrap()), ids(&discover(&c, 20, 6, NOW).unwrap()));
-    }
 
-    #[test]
-    fn discover_without_history_is_a_random_walk() {
+        // Discover without history spans genres.
         let core = Core::new(String::new(), "t".into()).unwrap();
         library(&core);
-        let mix = core.mix_discover(30, 1).unwrap();
+        let mix = discover(&core.db.lock(), 30, 1, NOW).unwrap();
         assert_eq!(mix.len(), 30);
         assert!(mix.iter().map(|s| s.genre.clone()).collect::<HashSet<_>>().len() > 1);
     }
 
     #[test]
-    fn genre_artist_and_decade_mixes() {
-        let core = Core::new(String::new(), "t".into()).unwrap();
-        library(&core);
-        let rock = core.mix_genre("rock".into(), 15, 1).unwrap();
-        assert_eq!(rock.len(), 15);
-        assert!(rock.iter().all(|s| s.genre.as_deref() == Some("Rock")));
-        assert_eq!(ids(&rock), ids(&core.mix_genre("rock".into(), 15, 1).unwrap()));
-        assert_ne!(ids(&rock), ids(&core.mix_genre("rock".into(), 15, 2).unwrap()));
-        assert!(core.mix_genre("Polka".into(), 15, 1).unwrap().is_empty());
-
-        let artist = core.mix_artist("ar-jazz artist 3".into(), 50, 1).unwrap();
-        assert_eq!(artist.len(), 10, "the whole artist, no per-artist cap");
-        assert!(artist.iter().all(|s| s.artist == "Jazz Artist 3"));
-
-        let eighties = core.mix_decade(1980, 50, 1).unwrap();
-        assert!(!eighties.is_empty() && eighties.iter().all(|s| (1980..1990).contains(&s.year)));
-        assert!(core.mix_decade(1900, 50, 1).unwrap().is_empty());
-    }
-
-    #[test]
-    fn instant_mix_starts_with_its_seed_and_stays_close() {
+    fn instant_mix_stays_near_seed() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         let all = library(&core);
         let seed_song = all.iter().find(|s| s.id == "2-1-3").unwrap();
@@ -237,7 +163,7 @@ pub(crate) mod tests {
         assert_eq!(mix.len(), 25);
         assert_eq!(&mix[0], seed_song);
         assert_eq!(mix.iter().filter(|s| s.id == seed_song.id).count(), 1);
-        assert_ne!(mix[1].artist, seed_song.artist, "spread continues from the seed");
+        assert_ne!(mix[1].artist, seed_song.artist);
         let near = mix.iter().filter(|s| s.genre == seed_song.genre || s.year / 10 == seed_song.year / 10).count();
         assert_eq!(near, 25);
         assert!(mix.iter().filter(|s| s.genre == seed_song.genre).count() > 12);
@@ -245,14 +171,14 @@ pub(crate) mod tests {
         assert_eq!(core.mix_instant(seed_song.id.clone(), 1, 1).unwrap(), vec![seed_song.clone()]);
         assert!(core.mix_instant(seed_song.id.clone(), 0, 1).unwrap().is_empty());
 
-        // a song with nothing to go on is a mix of one
+        // No genre or year: a mix of one.
         let bare = Song { id: "bare".into(), title: "Ünïcödé".into(), ..Default::default() };
         db::index(&mut core.db.lock(), &[], &[], std::slice::from_ref(&bare)).unwrap();
         assert_eq!(core.mix_instant("bare".into(), 10, 1).unwrap(), vec![bare]);
     }
 
     #[test]
-    fn excluded_songs_stay_out_of_every_mix() {
+    fn excluded_songs_stay_out_of_mixes() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         let all = library(&core);
         let out: Vec<&Song> = all.iter().filter(|s| s.artist == "Rock Artist 0").collect();
@@ -261,23 +187,21 @@ pub(crate) mod tests {
             core.mix_excluded_set(s.id.clone(), true).unwrap();
         }
         core.mix_excluded_set(out[0].id.clone(), true).unwrap();
-        assert_eq!(core.mix_excluded_list().unwrap().len(), 10);
+        assert_eq!(excluded(&core), 10);
         let c = core.db.lock();
         assert!(quick_picks(&c, 50, 1, NOW).unwrap().is_empty());
         assert!(listen_again(&c, 50, 1, NOW).unwrap().is_empty());
         assert!(top(&c, 50, NOW).unwrap().is_empty());
         drop(c);
-        assert_eq!(core.mix_genre("Rock".into(), 100, 1).unwrap().len(), 40);
-        assert!(core.mix_artist("ar-rock artist 0".into(), 100, 1).unwrap().is_empty());
 
         core.mix_excluded_set(out[0].id.clone(), false).unwrap();
-        assert_eq!(ids(&core.mix_artist("ar-rock artist 0".into(), 100, 1).unwrap()), vec![out[0].id.as_str()]);
-        core.mix_excluded_clear().unwrap();
-        assert_eq!(core.mix_artist("ar-rock artist 0".into(), 100, 1).unwrap().len(), 10);
+        assert_eq!(ids(&top(&core.db.lock(), 50, NOW).unwrap()), vec![out[0].id.as_str()]);
+        core.db.lock().execute("DELETE FROM mix_excluded", []).unwrap();
+        assert_eq!(top(&core.db.lock(), 50, NOW).unwrap().len(), 10);
     }
 
     #[test]
-    fn pools_use_the_expression_indexes() {
+    fn mix_queries_use_expression_indexes() {
         let core = Core::new(String::new(), "t".into()).unwrap();
         let c = core.db.lock();
         let plan = |cond: &str| -> String {

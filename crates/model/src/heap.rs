@@ -1,42 +1,29 @@
-//! How much the Rust heap holds, for the perf report's memory line: counted by [`Counting`], which a client
-//! installs as its global allocator (Android's library does), so the report can tell Rust's share of the
-//! native heap from the platform's own (Skia, the codecs, the graphics driver). One relaxed atomic add per
-//! allocation and one per free, no lock and no allocation of its own; where nobody installs it the count
-//! stays nought and [`live_bytes`] says None.
+//! Live Rust heap bytes for the perf report, counted by [`Counting`] when a client installs it as the
+//! global allocator. One relaxed atomic op per alloc/free.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
-/// The system allocator, counting the bytes it has handed out and not had back.
+/// The system allocator plus a live-bytes count.
 pub struct Counting;
+
+// Global: a global allocator has no instance state to hold them.
 
 static LIVE: AtomicIsize = AtomicIsize::new(0);
 static COUNTING: AtomicBool = AtomicBool::new(false);
 
-// SAFETY: every call is the system allocator's own; only a count is kept beside it.
+// SAFETY: forwards to `System`; only adds a counter.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
-        let p = unsafe { System.alloc(l) };
-        if !p.is_null() {
-            LIVE.fetch_add(l.size() as isize, Ordering::Relaxed);
-        }
-        p
+        counted(unsafe { System.alloc(l) }, l.size() as isize)
     }
 
     unsafe fn alloc_zeroed(&self, l: Layout) -> *mut u8 {
-        let p = unsafe { System.alloc_zeroed(l) };
-        if !p.is_null() {
-            LIVE.fetch_add(l.size() as isize, Ordering::Relaxed);
-        }
-        p
+        counted(unsafe { System.alloc_zeroed(l) }, l.size() as isize)
     }
 
     unsafe fn realloc(&self, p: *mut u8, l: Layout, size: usize) -> *mut u8 {
-        let q = unsafe { System.realloc(p, l, size) };
-        if !q.is_null() {
-            LIVE.fetch_add(size as isize - l.size() as isize, Ordering::Relaxed);
-        }
-        q
+        counted(unsafe { System.realloc(p, l, size) }, size as isize - l.size() as isize)
     }
 
     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
@@ -45,15 +32,23 @@ unsafe impl GlobalAlloc for Counting {
     }
 }
 
+/// `p`, with `grown` bytes counted if the allocation succeeded.
+#[inline(always)]
+fn counted(p: *mut u8, grown: isize) -> *mut u8 {
+    if !p.is_null() {
+        LIVE.fetch_add(grown, Ordering::Relaxed);
+    }
+    p
+}
+
 impl Counting {
-    /// Says the count is kept: called once by the client that installed it, as it starts.
+    /// Marks the counter as active; called once by the client that installed it.
     pub fn installed() {
         COUNTING.store(true, Ordering::Relaxed);
     }
 }
 
-/// Bytes the Rust heap holds now, as asked for (not what the allocator rounds them up to); None where
-/// [`Counting`] is not the global allocator.
+/// Requested bytes currently allocated; None unless [`Counting`] is installed.
 pub fn live_bytes() -> Option<i64> {
     COUNTING.load(Ordering::Relaxed).then(|| LIVE.load(Ordering::Relaxed).max(0) as i64)
 }

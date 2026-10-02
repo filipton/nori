@@ -1,10 +1,22 @@
-//! Lyrics in one shape, whatever the server had: word cues (OpenSubsonic enhanced lyrics), inline
-//! `<mm:ss.xx>` word tags (enhanced LRC), or plain line timing, in which case the words of a line get
-//! estimated times so the player can sweep through them all the same. Text offsets are UTF-16, which
-//! is what a Kotlin `String` indexes by.
+//! The server's lyrics (OpenSubsonic structured lyrics with word cues) and LRC (with enhanced `<mm:ss.xx>`
+//! word tags) in the app's shape. Plain line timing gets estimated word times so the player can sweep.
+//! Text offsets are UTF-16, as Kotlin strings index.
 
 use nori_model::model::{LyricLine, LyricWord, Lyrics};
 use serde::Deserialize;
+
+/// The latest time a lyric is taken at; later or garbled times are not times.
+pub(crate) const LONGEST_MS: i64 = 24 * 3_600_000;
+
+/// `ms` as a lyric time, if it is one.
+pub(crate) fn time_ms(ms: f64) -> Option<i64> {
+    (ms.is_finite() && (0.0..=LONGEST_MS as f64).contains(&ms)).then(|| ms.round() as i64)
+}
+
+/// A file's `[offset:]`; out of range is none.
+pub(crate) fn offset_ms(v: &str) -> i64 {
+    v.trim().parse::<i64>().ok().filter(|o| (-LONGEST_MS..=LONGEST_MS).contains(o)).unwrap_or(0)
+}
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
@@ -59,21 +71,14 @@ pub(crate) fn utf16_at(text: &str, byte: usize) -> u32 {
     text[..b].encode_utf16().count() as u32
 }
 
-/// `<01:02.50>` -> 62500
-fn tag_ms(tag: &str) -> Option<i64> {
-    let (m, rest) = tag.split_once(':')?;
-    let secs: f64 = rest.parse().ok()?;
-    Some(m.parse::<i64>().ok()? * 60_000 + (secs * 1000.0).round() as i64)
-}
-
-/// Splits enhanced-LRC word tags out of a line: returns the clean text and the timed words found.
+/// Splits enhanced-LRC word tags out of a line: the clean text and each tag's (ms, byte offset).
 fn inline_words(raw: &str) -> (String, Vec<(i64, usize)>) {
     let mut text = String::with_capacity(raw.len());
     let mut marks = Vec::new();
     let mut rest = raw;
     while let Some(open) = rest.find('<') {
         let Some(close) = rest[open..].find('>') else { break };
-        match tag_ms(&rest[open + 1..open + close]) {
+        match stamp(&rest[open + 1..open + close]) {
             Some(ms) => {
                 text.push_str(&rest[..open]);
                 marks.push((ms, text.len()));
@@ -86,8 +91,7 @@ fn inline_words(raw: &str) -> (String, Vec<(i64, usize)>) {
     (text, marks)
 }
 
-/// No word timing from anywhere: spread the line's duration over its words by length, leaving the last
-/// tenth as breath, which is how a sung line usually sits inside its slot.
+/// Word times estimated by length over the line, the last tenth left as breath.
 fn estimate(text: &str, start: i64, end: i64) -> Vec<LyricWord> {
     let spans: Vec<(usize, usize)> = {
         let mut v = Vec::new();
@@ -124,23 +128,17 @@ fn estimate(text: &str, start: i64, end: i64) -> Vec<LyricWord> {
         .collect()
 }
 
-/// `[mm:ss.xx]` -> ms. Also accepts `[mm:ss]` and `[mm:ss:xx]`.
+/// `mm:ss.xx`, `mm:ss` or `mm:ss:xx` in ms.
 fn stamp(tag: &str) -> Option<i64> {
     let (m, rest) = tag.split_once(':')?;
     let rest = rest.replacen(':', ".", 1);
     let secs: f64 = rest.parse().ok()?;
-    Some(m.trim().parse::<i64>().ok()? * 60_000 + (secs * 1000.0).round() as i64)
+    time_ms(m.trim().parse::<u32>().ok()? as f64 * 60_000.0 + secs * 1000.0)
 }
 
-/// LRC or plain lyrics text, from a third-party provider, into the app's lyrics shape.
-pub fn lyrics_from_lrc(text: String) -> Lyrics {
-    from_lrc(&text)
-}
-
-/// Plain LRC text (what LRCLIB, sidecar files and most providers return) in the same shape as the server's
-/// structured lyrics, so the same line and word timing applies. Lines with several timestamps repeat;
-/// `[offset:+n]` is honoured; `[ar:]`-style tags are skipped.
-pub fn from_lrc(text: &str) -> Lyrics {
+/// LRC, or plain text when it has no timestamps. A line with several timestamps repeats; `[offset:]` is
+/// applied; other tags are skipped.
+pub(crate) fn from_lrc(text: &str) -> Lyrics {
     let mut lines: Vec<Line> = Vec::new();
     let mut offset = 0i64;
     for raw in text.lines() {
@@ -150,7 +148,7 @@ pub fn from_lrc(text: &str) -> Lyrics {
             let Some(close) = body.find(']') else { break };
             let tag = &body[..close];
             if let Some(v) = tag.strip_prefix("offset:") {
-                offset = v.trim().parse().unwrap_or(0);
+                offset = offset_ms(v);
             } else if let Some(ms) = stamp(tag) {
                 starts.push(ms);
             }
@@ -161,17 +159,17 @@ pub fn from_lrc(text: &str) -> Lyrics {
         }
     }
     if lines.is_empty() {
-        // Not LRC at all: plain text lyrics.
         let plain: Vec<Line> = text.lines().map(|l| Line { start: None, value: l.trim().to_string() }).collect();
         return build(vec![Structured { synced: false, line: plain, ..Default::default() }]);
     }
     lines.sort_by_key(|l| l.start);
-    // LRC offset is positive = lyrics come sooner, the same convention as OpenSubsonic's field.
+    // A positive offset is sooner, in LRC as in OpenSubsonic.
     build(vec![Structured { synced: true, offset, line: lines, ..Default::default() }])
 }
 
+/// The server's lyrics layers as one: the main layer (synced over unsynced, never a translation or
+/// pronunciation) with a translation matched in.
 pub fn build(mut all: Vec<Structured>) -> Lyrics {
-    // The main layer: synced beats unsynced, and a translation is never the main text.
     all.sort_by_key(|l| (l.kind.as_deref() == Some("translation") || l.kind.as_deref() == Some("pronunciation"), !l.synced));
     let mut layers = all.into_iter();
     let Some(main) = layers.next().filter(|m| !m.line.is_empty()) else { return Lyrics::default() };
@@ -181,29 +179,30 @@ pub fn build(mut all: Vec<Structured>) -> Lyrics {
     let background: Vec<&str> = main.agents.iter().filter(|a| a.role == "bg").map(|a| a.id.as_str()).collect();
     let mut word_timed = false;
 
-    let starts: Vec<i64> = main.line.iter().map(|l| l.start.unwrap_or(0) - offset).collect();
+    // The server's times are taken as sent, within the day a lyric can run.
+    let at = |ms: i64| ms.saturating_sub(offset).clamp(0, LONGEST_MS);
+    let starts: Vec<i64> = main.line.iter().map(|l| at(l.start.unwrap_or(0))).collect();
     let mut lines: Vec<LyricLine> = Vec::with_capacity(main.line.len());
     for (i, l) in main.line.iter().enumerate() {
         let start = if synced { starts[i] } else { -1 };
-        let next = starts.get(i + 1).copied().filter(|n| *n > starts[i]).unwrap_or(starts[i] + 5_000);
+        let next = starts[i + 1..].iter().copied().find(|n| *n > starts[i]).unwrap_or(starts[i] + 5_000);
         let cues = main.cue_line.iter().find(|c| c.index == i && !c.cue.is_empty());
         let (text, end, words, bg) = if let Some(c) = cues {
             word_timed = true;
-            let words = c.cue.iter().map(|w| LyricWord { start_ms: w.start - offset, end_ms: w.end - offset, start: utf16_at(&c.value, w.byte_start), end: utf16_at(&c.value, w.byte_end + 1) }).collect();
-            (c.value.clone(), if c.end > c.start { c.end - offset } else { next }, words, c.agent_id.as_deref().is_some_and(|a| background.contains(&a)))
+            let words = c.cue.iter().map(|w| LyricWord { start_ms: at(w.start), end_ms: at(w.end), start: utf16_at(&c.value, w.byte_start), end: utf16_at(&c.value, w.byte_end + 1) }).collect();
+            (c.value.clone(), if c.end > c.start { at(c.end) } else { next }, words, c.agent_id.as_deref().is_some_and(|a| background.contains(&a)))
         } else {
             let (text, marks) = inline_words(&l.value);
             if synced && !marks.is_empty() {
                 word_timed = true;
-                // A word runs to the next word's mark; the last one, unless a closing mark ends it, for
-                // as long as a word that long is sung - not to the next line, which after a pause is
-                // seconds away.
-                let words = marks.iter().enumerate().filter_map(|(k, (ms, at))| {
+                // A word runs to the next mark; the last one for as long as such a word is sung, not to
+                // the next line.
+                let words = marks.iter().enumerate().filter_map(|(k, (ms, byte))| {
                     let to = marks.get(k + 1).map(|m| m.1).unwrap_or(text.len());
-                    let (start, end) = (utf16_at(&text, *at), utf16_at(&text, to));
-                    let guessed = || (ms - offset + nori_look::lyrics::word_ms_estimate(end - start)).min(next.max(ms - offset));
-                    let end_ms = marks.get(k + 1).map(|m| m.0 - offset).unwrap_or_else(guessed);
-                    (to > *at).then(|| LyricWord { start_ms: ms - offset, end_ms, start, end })
+                    let (start, end) = (utf16_at(&text, *byte), utf16_at(&text, to));
+                    let guessed = || (at(*ms) + nori_look::lyrics::word_ms_estimate(end - start)).min(next.max(at(*ms)));
+                    let end_ms = marks.get(k + 1).map(|m| at(m.0)).unwrap_or_else(guessed);
+                    (to > *byte).then(|| LyricWord { start_ms: at(*ms), end_ms, start, end })
                 }).collect();
                 (text, next, words, false)
             } else {
@@ -226,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn server_word_cues_win_and_offsets_are_utf16() {
+    fn server_word_cues_win() {
         let l = parse(r#"[{"synced":true,"line":[{"start":1000,"value":"Żółć and I"}],
           "cueLine":[{"index":0,"start":1000,"end":4000,"value":"Żółć and I","cue":[
             {"start":1000,"end":1800,"value":"Żółć ","byteStart":0,"byteEnd":7},{"start":1800,"end":2400,"value":"and ","byteStart":9,"byteEnd":11},{"start":2400,"end":3200,"value":"I","byteStart":13,"byteEnd":13}]}]}]"#);
@@ -238,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_lrc_gets_estimated_words_inside_the_line() {
+    fn lrc_words() {
         let l = parse(r#"[{"synced":true,"line":[{"start":0,"value":"one three"},{"start":4000,"value":"next"}]}]"#);
         assert!(!l.word_timed);
         let w = &l.lines[0].words;
@@ -246,23 +245,8 @@ mod tests {
         assert_eq!((w[0].start_ms, w[0].start, w[0].end), (0, 0, 3));
         assert!(w[1].end_ms <= 3600 && w[1].end_ms > w[1].start_ms && w[0].end_ms == w[1].start_ms);
         assert!(w[1].end_ms - w[1].start_ms > w[0].end_ms - w[0].start_ms, "the longer word takes longer");
-    }
 
-    #[test]
-    fn inline_tags_offset_translation_and_unsynced() {
-        let l = parse(r#"[{"kind":"translation","synced":true,"line":[{"start":1500,"value":"cześć"}]},
-          {"synced":true,"offset":500,"line":[{"start":1500,"value":"<00:01.50>hel<00:01.90>lo <b>x"}]}]"#);
-        assert_eq!(l.lines[0].text, "hello <b>x");
-        assert_eq!(l.lines[0].start_ms, 1000);
-        assert_eq!((l.lines[0].words[0].start_ms, l.lines[0].words[1].start_ms, l.lines[0].words[1].start), (1000, 1400, 3));
-        assert_eq!(l.lines[0].translation.as_deref(), Some("cześć"));
-        let plain = parse(r#"[{"synced":false,"line":[{"value":"just text"}]}]"#);
-        assert_eq!((plain.synced, plain.lines[0].start_ms, plain.lines[0].words.len()), (false, -1, 0));
-        assert!(parse("[]").lines.is_empty());
-    }
-
-    #[test]
-    fn an_lrc_lines_last_word_before_a_long_pause_ends_by_itself() {
+        // Lrc last word before pause.
         // The last word has no closing mark and the next line is thirty seconds away.
         let l = from_lrc("[00:10.00]<00:10.00>Hold <00:10.40>on <00:10.80>tonight\n[00:40.00]<00:40.00>Again\n");
         let last = l.lines[0].words.last().unwrap().clone();
@@ -277,7 +261,18 @@ mod tests {
     }
 
     #[test]
-    fn lrc_text_with_repeats_offset_and_plain_fallback() {
+    fn lrc_tags() {
+        let l = parse(r#"[{"kind":"translation","synced":true,"line":[{"start":1500,"value":"cześć"}]},
+          {"synced":true,"offset":500,"line":[{"start":1500,"value":"<00:01.50>hel<00:01.90>lo <b>x"}]}]"#);
+        assert_eq!(l.lines[0].text, "hello <b>x");
+        assert_eq!(l.lines[0].start_ms, 1000);
+        assert_eq!((l.lines[0].words[0].start_ms, l.lines[0].words[1].start_ms, l.lines[0].words[1].start), (1000, 1400, 3));
+        assert_eq!(l.lines[0].translation.as_deref(), Some("cześć"));
+        let plain = parse(r#"[{"synced":false,"line":[{"value":"just text"}]}]"#);
+        assert_eq!((plain.synced, plain.lines[0].start_ms, plain.lines[0].words.len()), (false, -1, 0));
+        assert!(parse("[]").lines.is_empty());
+
+        // Lrc repeats offset and plain.
         let l = from_lrc("[ar:Someone]\n[offset:+200]\n[00:01.00][00:10.50]chorus\n[00:05.25]verse\n\n");
         assert!(l.synced);
         let got: Vec<(i64, &str)> = l.lines.iter().map(|x| (x.start_ms, x.text.as_str())).collect();
@@ -286,5 +281,20 @@ mod tests {
         let plain = from_lrc("just\nwords");
         assert!(!plain.synced);
         assert_eq!(plain.lines.len(), 2);
+
+        // Garbled times are not times.
+        for lrc in ["[01:inf]x", "[00:inf]x", "[99999999999999:00.00]x", "[offset:-9223372036854775808]\n[00:00.00]x", "[-5:00.00]x"] {
+            let l = from_lrc(lrc);
+            assert!(!l.synced || l.lines.iter().all(|x| (0..=LONGEST_MS).contains(&x.start_ms) && x.end_ms >= x.start_ms), "{lrc}");
+        }
+        for json in [r#"{"lyrics":[{"time":1e300,"duration":5,"text":"x"}]}"#, r#"{"lyrics":[{"time":5,"duration":1e300,"text":"x"}]}"#] {
+            let l = crate::json::from_lyricsplus(json);
+            assert!(l.lines.iter().all(|x| x.start_ms <= LONGEST_MS), "{json}");
+        }
+        let early = from_lrc("[offset:1]\n[00:00.00]Title\n[00:05.00]x");
+        assert_eq!(early.lines[0].start_ms, 0, "an offset before the start is the start, not untimed");
+        let shared = from_lrc("[00:01.00]line\n[00:01.00]translated\n[00:02.00]next");
+        assert_eq!(shared.lines[0].end_ms, 2_000, "a line sharing its time runs to the next later one");
     }
+
 }

@@ -1,31 +1,53 @@
-//! One thread for the core's own background work - database writes the platform used to schedule on
-//! its I/O threads (a play recorded in the history, and the like) - so the caller, often the main or
-//! the audio thread, never waits on the database, and the platform does not have to hop threads first.
+//! The core's background thread for database writes, so callers (often the main or audio thread) never
+//! wait on the database.
 
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::OnceLock;
 
-use parking_lot::Mutex;
-
 type Job = Box<dyn FnOnce() + Send>;
 
-fn sender() -> &'static Mutex<Sender<Job>> {
-    static TX: OnceLock<Mutex<Sender<Job>>> = OnceLock::new();
-    TX.get_or_init(|| {
+/// Runs `job` on the background thread, after earlier jobs. A job that panics is logged; the jobs after
+/// it still run.
+pub fn run(job: impl FnOnce() + Send + 'static) {
+    // Global: one writer thread per process, reached from callers with no core handle.
+    static TX: OnceLock<Sender<Job>> = OnceLock::new();
+    let tx = TX.get_or_init(|| {
         let (tx, rx) = channel::<Job>();
         std::thread::Builder::new()
             .name("nori-core".into())
             .spawn(move || {
                 for job in rx {
-                    job();
+                    if catch_unwind(AssertUnwindSafe(job)).is_err() {
+                        nori_model::alog::info("background: a write panicked");
+                    }
                 }
             })
-            .expect("the core's background thread starts");
-        Mutex::new(tx)
-    })
+            .expect("spawn the background thread");
+        tx
+    });
+    let _ = tx.send(Box::new(job));
 }
 
-/// Runs `job` on the core's background thread, after whatever was handed over before it.
-pub fn run(job: impl FnOnce() + Send + 'static) {
-    let _ = sender().lock().send(Box::new(job));
+/// Waits until the jobs sent so far have run: a client quitting, so its last writes are kept.
+pub fn flush() {
+    let (tx, rx) = channel();
+    run(move || {
+        let _ = tx.send(());
+    });
+    let _ = rx.recv();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn panicking_write_stops_no_other() {
+        run(|| panic!("a broken write"));
+        let (tx, rx) = channel();
+        run(move || tx.send(()).unwrap());
+        flush();
+        assert!(rx.try_recv().is_ok());
+    }
 }

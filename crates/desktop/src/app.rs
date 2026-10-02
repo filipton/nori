@@ -1,12 +1,11 @@
-//! The window's state and what its buttons do. Lives on Slint's event loop thread: the window's callbacks,
-//! the engine's events and the workers' answers (`Msg`, through `session::Tx`) all arrive here, one at a
-//! time. The only timer is the seek bar's, and it runs only while music plays.
+//! Window state and UI callbacks, on Slint's event loop thread. Worker results arrive as [`Msg`]s through
+//! the inbox ([`session::Tx`]). The only repeating timer is the seek bar's, and only while playing.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::rc::{Rc, Weak};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use nori_core::playlist::PlaylistView;
@@ -19,29 +18,31 @@ use nori_covers::memory::Image as Picture;
 use nori_engine::{Event, State};
 use nori_http::Http;
 use nori_look::cover::CoverColours;
+use skia_safe::Typeface;
 use slint::{Color, ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer, TimerMode, VecModel};
 
-use crate::session::{self, CoverKey, CoverSize, Data, Fetch, Msg, Req, Session};
+use crate::compositor::{Compositor, Focus};
+use crate::session::{self, CoverKey, CoverSize, Data, Fetch, Msg, Req, Session, Tx};
 use crate::settings::{Act, Target};
 use crate::words;
 use crate::{AppWindow, Card, LyricPiece, PlayerBar, Shelf, SidebarWindow, SongRow};
 
-/// Pixels a side: a card's cover, and the large one (now playing, a page's), whose colours are worked out too.
+/// Cover fetch sizes, px square.
 const SMALL_PX: u32 = 256;
 const LARGE_PX: u32 = 800;
-/// An artist's picture across the page's whole width.
 const HERO_PX: u32 = 1600;
-/// Decoded covers kept: the cards on a few screens, and the few large ones. A cover drawn in the last
-/// `IN_USE` is kept beyond these, so a screen with more than fits never drops what it shows.
+/// Decoded covers kept per class. Covers drawn within `IN_USE` are never evicted.
 const SMALL_KEPT: usize = 240;
 const LARGE_KEPT: usize = 12;
 const IN_USE: Duration = Duration::from_secs(3);
-/// Covers asked for and not come yet; the oldest past this are let go (the pictures scrolled away).
+/// Pending cover requests kept; the oldest beyond this are cancelled.
 const PENDING_KEPT: usize = 1000;
-/// A cover on its way that no picture has looked for in this long is off the screen, and let go.
+/// A pending cover not looked up for this long is off screen, and its request is cancelled.
 const GONE: Duration = Duration::from_millis(1500);
+/// How long a row leaving the queue takes to fold away (app.slint's QueueView).
+const QUEUE_FOLD_MS: u64 = 300;
 
-// The views, as app.slint numbers them.
+// View indices, as app.slint numbers them.
 const HOME: i32 = 0;
 const SEARCH: i32 = 1;
 const ALBUMS: i32 = 2;
@@ -53,29 +54,30 @@ const LOGIN: i32 = 7;
 const SETTINGS: i32 = 8;
 const EQUALIZER: i32 = 9;
 
-thread_local! {
-    static APP: RefCell<Option<App>> = const { RefCell::new(None) };
-    static ART: RefCell<Art> = RefCell::new(Art::default());
+/// Weak handle to the app for callbacks and timers.
+#[derive(Clone)]
+struct AppHandle(Weak<RefCell<App>>);
+
+impl AppHandle {
+    /// Runs `f` on the app; dropped if the app is gone or already borrowed (a re-entrant callback).
+    fn with(&self, f: impl FnOnce(&mut App)) {
+        let Some(app) = self.0.upgrade() else { return };
+        match app.try_borrow_mut() {
+            Ok(mut a) => f(&mut a),
+            Err(_) => eprintln!("nori: a callback came while the window's state was busy; dropped"),
+        };
+    }
 }
 
-/// Runs `f` on the window's state, unless it is already in use (a callback fired while it was being changed).
-fn with(f: impl FnOnce(&mut App)) {
-    APP.with(|a| match a.try_borrow_mut() {
-        Ok(mut a) => {
-            if let Some(app) = a.as_mut() {
-                f(app);
-            }
-        }
-        Err(_) => eprintln!("nori: a callback came while the window's state was busy; dropped"),
-    });
+/// Wires a Slint callback to an [`App`] method: `on!(ui.on_go, h, |a, v| a.go(v))`.
+macro_rules! on {
+    ($ui:ident.$setter:ident, $h:expr, |$a:ident $(, $arg:ident)*| $body:expr) => {{
+        let h = $h.clone();
+        $ui.$setter(move |$($arg),*| h.with(|$a| $body));
+    }};
 }
 
-/// A message from another thread, on the window's.
-pub fn take(m: Msg) {
-    with(|app| app.take(m));
-}
-
-/// The library's lists as the server gave them, before the find field narrows them.
+/// Library lists as loaded, before the find filter.
 #[derive(Default)]
 struct Lists {
     albums: Vec<Card>,
@@ -83,22 +85,20 @@ struct Lists {
     playlists: Vec<Card>,
 }
 
-/// The decoded covers, looked up by the pictures as they draw (`art` in app.slint). A picture not here yet
-/// is asked for once; its arrival bumps `covers-rev`, and every picture looks again. The least lately drawn
-/// go first when there are too many.
+/// Decoded covers, looked up by the `art` callback while drawing. A missing cover is requested once;
+/// its arrival bumps `covers-rev` so pictures look again. Least recently drawn are evicted first.
 #[derive(Default)]
 struct Art {
     images: HashMap<CoverKey, (Image, Instant)>,
-    /// The page colours of the large covers, by cover id.
+    /// Page colours of large covers, by cover id.
     colours: HashMap<String, Rc<CoverColours>>,
     asked: HashSet<CoverKey>,
     wanted: Vec<CoverKey>,
-    /// When a picture last looked for a cover still on its way: one not looked for lately has left the
-    /// screen, and its request makes way for the ones on it.
+    /// When a pending cover was last looked up; stale ones are off screen.
     missing: HashMap<CoverKey, Instant>,
 }
 
-/// The size app.slint asks a picture at: 0 a card's, 1 large, 2 an artist's hero.
+/// app.slint's size code: 0 card, 1 large, 2 hero.
 fn cover_size(size: i32) -> CoverSize {
     match size.clamp(0, 2) {
         0 => CoverSize::Card,
@@ -107,7 +107,6 @@ fn cover_size(size: i32) -> CoverSize {
     }
 }
 
-/// Pixels a side a cover is fetched at.
 fn cover_px(size: CoverSize) -> u32 {
     match size {
         CoverSize::Card => SMALL_PX,
@@ -116,36 +115,34 @@ fn cover_px(size: CoverSize) -> u32 {
     }
 }
 
-/// The `art` callback: the cover `id` at size 0 (a card's), 1 (large) or 2 (a page's whole width), or
-/// nothing yet.
-fn art(id: SharedString, size: i32) -> Image {
+/// The `art` callback: the cover if decoded, else an empty image and a queued request.
+fn cover_image(art: &RefCell<Art>, app: &AppHandle, id: SharedString, size: i32) -> Image {
     if id.is_empty() {
         return Image::default();
     }
     let k = CoverKey { id: id.to_string(), size: cover_size(size) };
-    ART.with(|a| {
-        let mut a = a.borrow_mut();
-        if let Some((i, drawn)) = a.images.get_mut(&k) {
-            *drawn = Instant::now();
-            return i.clone();
+    let mut a = art.borrow_mut();
+    if let Some((i, drawn)) = a.images.get_mut(&k) {
+        *drawn = Instant::now();
+        return i.clone();
+    }
+    a.missing.insert(k.clone(), Instant::now());
+    if a.asked.insert(k.clone()) {
+        if a.wanted.is_empty() {
+            // Requested after this frame is drawn, not from inside it.
+            let app = app.clone();
+            Timer::single_shot(Duration::ZERO, move || app.with(App::ask_covers));
         }
-        a.missing.insert(k.clone(), Instant::now());
-        if a.asked.insert(k.clone()) {
-            if a.wanted.is_empty() {
-                // Asked for after this frame's drawing, not from inside it.
-                Timer::single_shot(Duration::ZERO, || with(App::ask_covers));
-            }
-            a.wanted.push(k);
-        }
-        Image::default()
-    })
+        a.wanted.push(k);
+    }
+    Image::default()
 }
 
 fn picture(p: &Picture) -> Image {
     Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&p.pixels, p.width, p.height))
 }
 
-/// The cover's blurred wash (ARGB, square) as a picture.
+/// The cover's blurred wash (square ARGB) as an image.
 fn wash(c: &CoverColours) -> Image {
     let Some(w) = &c.wash else { return Image::default() };
     let side = (w.len() as f64).sqrt() as u32;
@@ -161,56 +158,49 @@ fn colour(argb: u32) -> Color {
     Color::from_argb_encoded(argb)
 }
 
-/// What the events said before the engine's status caught up (it is written at the end of the same wake).
-#[derive(Default)]
-struct Said {
-    state: Option<State>,
-    song: Option<String>,
-    tries: u32,
-}
-
 pub struct App {
+    me: AppHandle,
     ui: slint::Weak<AppWindow>,
+    compositor: Compositor,
+    tx: Tx,
+    inbox: mpsc::Receiver<Msg>,
+    /// Media controls for the process; each session drives them while open.
+    mpris: Option<Arc<nori_mpris::Mpris>>,
     data: PathBuf,
     http: Arc<Http>,
     session: Option<Session>,
-    /// The song heard, by id, and its record.
+    art: Rc<RefCell<Art>>,
+    lyric_face: Option<Typeface>,
+    /// Id and record of the song being heard.
     heard: Option<String>,
     song: Option<Song>,
-    said: Said,
     queue: Option<PlaylistView>,
-    /// The songs behind the lists a click plays from: the page's, the songs list's, the search's.
+    /// Songs behind the clickable lists: the page's, the Songs view's, the search's.
     page_songs: Vec<Song>,
     page_fetch: Option<Fetch>,
     songs: Vec<Song>,
     search_songs: Vec<Song>,
-    /// The read the page shown waits for.
+    /// The read the shown page waits for.
     want: Option<Req>,
     shelves: Rc<VecModel<Shelf>>,
-    /// The player as a window of its own over the system's glass (macOS); None where the page draws it.
+    /// Separate player and sidebar windows drawn as glass (macOS); None where the page draws them.
     player: Option<PlayerBar>,
-    /// The sidebar as the system's glass over the page (macOS); None where the page draws it.
     sidebar: Option<SidebarWindow>,
-    /// The cover whose wash is the window's backdrop.
+    /// Cover id whose wash is the window backdrop.
     backdrop: Option<String>,
     tickets: VecDeque<(CoverKey, Ticket)>,
     tick: Timer,
     tick_ms: u64,
-    /// The library's lists as the server gave them, and the text they are narrowed by.
     lists: Lists,
     find: String,
-    /// What the settings pages show besides the settings, as last worked out.
     facts: crate::settings::Facts,
-    /// The engine has its shallow buffer for the equalizer.
+    /// The engine is in its shallow equalizer-tuning buffer.
     tuning: bool,
-    again: Timer,
-    /// The lyrics of the song heard, and their clock; when the next line is due.
     lyrics: Option<crate::lyrics::SongLyrics>,
     lyrics_timer: Timer,
-    /// The lit line's pieces in the panel and in Now Playing, changed in place frame to frame.
+    /// Active lyric line pieces in the side panel and Now Playing, updated in place each frame.
     pieces: [Rc<VecModel<LyricPiece>>; 2],
-    /// The queue's rows, changed in place so the rows that stay stay put; the rows going out go first, and
-    /// the list settles to `queue_next` once they have.
+    /// Queue rows, edited in place; leaving rows fold first, then the list settles to `queue_next`.
     queue_rows: Rc<VecModel<SongRow>>,
     queue_next: Option<Vec<SongRow>>,
     queue_timer: Timer,
@@ -218,177 +208,157 @@ pub struct App {
     search: Timer,
 }
 
-/// The player window, on macOS: its buttons do what the main window's do, and it is put over the page once
-/// both windows exist.
-fn player(ui: &AppWindow) -> Option<PlayerBar> {
+/// Wraps `f` to run on the main window while it is open.
+fn to_main(ui: &AppWindow, f: impl Fn(&AppWindow) + 'static) -> impl Fn() + 'static {
+    let main = ui.as_weak();
+    move || {
+        if let Some(m) = main.upgrade() {
+            f(&m)
+        }
+    }
+}
+
+fn to_main_with<A>(ui: &AppWindow, f: impl Fn(&AppWindow, A) + 'static) -> impl Fn(A) + 'static {
+    let main = ui.as_weak();
+    move |v| {
+        if let Some(m) = main.upgrade() {
+            f(&m, v)
+        }
+    }
+}
+
+/// The macOS player window; its buttons forward to the main window.
+fn player(ui: &AppWindow, art: impl Fn(SharedString, i32) -> Image + 'static) -> Option<PlayerBar> {
     let bar = PlayerBar::new().map_err(|e| eprintln!("nori: no player window: {e}")).ok()?;
     ui.set_native_player(true);
     bar.set_font(ui.get_font());
-    bar.on_art(|id, size, _rev| art(id, size));
-    let main = ui.as_weak();
-    let call = move |f: fn(&AppWindow)| {
-        let main = main.clone();
-        move || {
-            if let Some(m) = main.upgrade() {
-                f(&m);
-            }
-        }
-    };
-    bar.on_toggle(call(|m| m.invoke_toggle()));
-    bar.on_next(call(|m| m.invoke_next()));
-    bar.on_previous(call(|m| m.invoke_previous()));
-    bar.on_toggle_shuffle(call(|m| m.invoke_toggle_shuffle()));
-    bar.on_cycle_repeat(call(|m| m.invoke_cycle_repeat()));
-    bar.on_open_full(call(|m| {
+    bar.on_art(move |id, size, _rev| art(id, size));
+    bar.on_toggle(to_main(ui, |m| m.invoke_toggle()));
+    bar.on_next(to_main(ui, |m| m.invoke_next()));
+    bar.on_previous(to_main(ui, |m| m.invoke_previous()));
+    bar.on_toggle_shuffle(to_main(ui, |m| m.invoke_toggle_shuffle()));
+    bar.on_cycle_repeat(to_main(ui, |m| m.invoke_cycle_repeat()));
+    bar.on_open_full(to_main(ui, |m| {
         if m.get_has_song() {
             m.set_full_player(true);
             m.invoke_player_changed();
         }
     }));
-    let main = ui.as_weak();
-    bar.on_seek(move |v| {
-        if let Some(m) = main.upgrade() {
-            m.invoke_seek(v);
-        }
-    });
-    let main = ui.as_weak();
-    bar.on_set_volume(move |v| {
-        if let Some(m) = main.upgrade() {
-            m.invoke_set_volume(v);
-        }
-    });
-    let main = ui.as_weak();
-    bar.on_set_inspector(move |i| {
-        if let Some(m) = main.upgrade() {
-            m.set_inspector(i);
-            m.invoke_player_changed();
-        }
-    });
+    bar.on_seek(to_main_with(ui, |m, v| m.invoke_seek(v)));
+    bar.on_set_volume(to_main_with(ui, |m, v| m.invoke_set_volume(v)));
+    bar.on_set_inspector(to_main_with(ui, |m, i| {
+        m.set_inspector(i);
+        m.invoke_player_changed();
+    }));
     Some(bar)
 }
 
-/// The sidebar window, on macOS: its rows do what the main window's do; its view is moved into the system's
-/// glass over the page once both windows exist.
-fn sidebar(ui: &AppWindow) -> Option<SidebarWindow> {
+/// The macOS glass sidebar window; its rows forward to the main window.
+fn sidebar(ui: &AppWindow, art: impl Fn(SharedString, i32) -> Image + 'static) -> Option<SidebarWindow> {
     let side = SidebarWindow::new().map_err(|e| eprintln!("nori: no glass sidebar: {e}")).ok()?;
     side.set_font(ui.get_font());
     side.set_inset_top(ui.get_inset_top());
-    side.on_art(|id, size, _rev| art(id, size));
-    let main = ui.as_weak();
-    side.on_go(move |v| {
-        if let Some(m) = main.upgrade() {
-            m.invoke_go(v);
-        }
-    });
-    let main = ui.as_weak();
-    side.on_open_playlist(move |id| {
-        if let Some(m) = main.upgrade() {
-            m.invoke_open_playlist(id);
-        }
-    });
-    let main = ui.as_weak();
-    side.on_open_accounts(move || {
-        if let Some(m) = main.upgrade() {
-            m.invoke_open_accounts();
-        }
-    });
-    let main = ui.as_weak();
-    side.on_drag_window(move || {
-        if let Some(m) = main.upgrade() {
-            m.invoke_drag_window();
-        }
-    });
-    let main = ui.as_weak();
-    side.on_zoom_window(move || {
-        if let Some(m) = main.upgrade() {
-            m.invoke_zoom_window();
-        }
-    });
+    side.on_art(move |id, size, _rev| art(id, size));
+    side.on_go(to_main_with(ui, |m, v| m.invoke_go(v)));
+    side.on_open_playlist(to_main_with(ui, |m, id| m.invoke_open_playlist(id)));
+    side.on_open_accounts(to_main(ui, |m| m.invoke_open_accounts()));
+    side.on_drag_window(to_main(ui, |m| m.invoke_drag_window()));
+    side.on_zoom_window(to_main(ui, |m| m.invoke_zoom_window()));
     ui.set_native_sidebar(true);
     Some(side)
 }
 
-pub fn start(ui: &AppWindow, data: PathBuf) {
-    let http = Http::new();
+/// Builds the app state and wires the window. Keep the returned app alive while the window runs.
+pub fn start(ui: &AppWindow, data: PathBuf, compositor: Compositor) -> Rc<RefCell<App>> {
     let shelves = Rc::new(VecModel::from(
         session::HOME_ROWS.iter().map(|(t, _)| Shelf { title: (*t).into(), cards: ModelRc::default() }).collect::<Vec<_>>(),
     ));
     ui.set_shelves(ModelRc::from(shelves.clone()));
     ui.set_greeting("Home".into());
-    ui.on_art(|id, size, _rev| art(id, size));
-    wire(ui);
-    let app = App {
-        ui: ui.as_weak(),
-        data,
-        http,
-        session: None,
-        heard: None,
-        song: None,
-        said: Said::default(),
-        queue: None,
-        page_songs: Vec::new(),
-        page_fetch: None,
-        songs: Vec::new(),
-        search_songs: Vec::new(),
-        want: None,
-        shelves,
-        backdrop: None,
-        sidebar: sidebar(ui),
-        player: player(ui),
-        tickets: VecDeque::new(),
-        tick: Timer::default(),
-        tick_ms: 0,
-        facts: crate::settings::Facts::default(),
-        lists: Lists::default(),
-        find: String::new(),
-        tuning: false,
-        again: Timer::default(),
-        lyrics: None,
-        lyrics_timer: Timer::default(),
-        pieces: [Rc::new(VecModel::default()), Rc::new(VecModel::default())],
-        queue_rows: Rc::new(VecModel::default()),
-        queue_next: None,
-        queue_timer: Timer::default(),
-        note: Timer::default(),
-        search: Timer::default(),
-    };
-    ui.set_queue(ModelRc::from(app.queue_rows.clone()));
-    ui.set_lyric_pieces_side(ModelRc::from(app.pieces[0].clone()));
-    ui.set_lyric_pieces_full(ModelRc::from(app.pieces[1].clone()));
-    APP.with(|a| *a.borrow_mut() = Some(app));
-    // The compositor draws the page with the sidebar and the player on glass over it.
-    with(|a| crate::compositor::roles(ui.window(), a.sidebar.as_ref().map(|s| s.window()), a.player.as_ref().map(|p| p.window())));
-    menu_actions(ui);
-    // Now Playing's lyrics: the line sung sharp, the rest blurred by the compositor.
-    let weak = ui.as_weak();
-    crate::compositor::set_focus_source(move || {
-        let ui = weak.upgrade()?;
-        if !ui.get_full_player() || ui.get_full_panel() != 2 || ui.get_lyrics_lines().row_count() == 0 || !ui.get_lyrics_synced() {
-            return None;
-        }
-        let size = ui.window().size().to_logical(ui.window().scale_factor());
-        let x = size.width / 2.0;
-        // Clear of the volume's pill above and the lyrics and queue pill below.
-        Some(crate::compositor::Focus { region: [x, 48.0, size.width - x - 100.0, size.height - 48.0 - 56.0], band_top: size.height * 0.36 - 8.0, band_h: ui.get_full_lyric_h() + 16.0 })
+    let (tx, inbox) = Tx::new(ui.as_weak());
+    let art = Rc::new(RefCell::new(Art::default()));
+    let app = Rc::new_cyclic(|me: &Weak<RefCell<App>>| {
+        let me = AppHandle(me.clone());
+        let art_cb = |art: &Rc<RefCell<Art>>| {
+            let (art, me) = (art.clone(), me.clone());
+            move |id, size| cover_image(&art, &me, id, size)
+        };
+        let main_art = art_cb(&art);
+        ui.on_art(move |id, size, _rev| main_art(id, size));
+        RefCell::new(App {
+            ui: ui.as_weak(),
+            sidebar: sidebar(ui, art_cb(&art)),
+            player: player(ui, art_cb(&art)),
+            me,
+            compositor,
+            tx,
+            inbox,
+            mpris: nori_mpris::Mpris::start(&format!("nori.desktop{}", std::process::id())).ok().map(Arc::new),
+            data,
+            http: Http::new(),
+            session: None,
+            art,
+            lyric_face: crate::sung::bold_face(),
+            heard: None,
+            song: None,
+            queue: None,
+            page_songs: Vec::new(),
+            page_fetch: None,
+            songs: Vec::new(),
+            search_songs: Vec::new(),
+            want: None,
+            shelves,
+            backdrop: None,
+            tickets: VecDeque::new(),
+            tick: Timer::default(),
+            tick_ms: 0,
+            facts: crate::settings::Facts::default(),
+            lists: Lists::default(),
+            find: String::new(),
+            tuning: false,
+            lyrics: None,
+            lyrics_timer: Timer::default(),
+            pieces: [Rc::new(VecModel::default()), Rc::new(VecModel::default())],
+            queue_rows: Rc::new(VecModel::default()),
+            queue_next: None,
+            queue_timer: Timer::default(),
+            note: Timer::default(),
+            search: Timer::default(),
+        })
     });
-    with(|a| a.settings_shown());
-    let prefs = settings_store::settings_current().unwrap_or_default();
-    match prefs.servers.iter().find(|s| s.id == prefs.active_server_id).cloned() {
-        Some(p) => with(|app| app.open(p)),
-        None => ui.set_view(LOGIN),
-    }
+    let h = app.borrow().me.clone();
+    wire(ui, &h);
+    h.with(|a| {
+        ui.set_queue(ModelRc::from(a.queue_rows.clone()));
+        ui.set_lyric_pieces_side(ModelRc::from(a.pieces[0].clone()));
+        ui.set_lyric_pieces_full(ModelRc::from(a.pieces[1].clone()));
+        a.compositor.roles(ui.window(), a.sidebar.as_ref().map(|s| s.window()), a.player.as_ref().map(|p| p.window()));
+        menu_actions(ui, &a.compositor);
+        // Now Playing's lyrics: the active line sharp, the rest blurred by the compositor.
+        let weak = ui.as_weak();
+        a.compositor.set_focus_source(move || {
+            let ui = weak.upgrade()?;
+            if !ui.get_full_player() || ui.get_full_panel() != 2 || ui.get_lyrics_lines().row_count() == 0 || !ui.get_lyrics_synced() {
+                return None;
+            }
+            let size = ui.window().size().to_logical(ui.window().scale_factor());
+            let x = size.width / 2.0;
+            // Clear of the volume pill above and the lyrics/queue pill below.
+            Some(Focus { region: [x, 48.0, size.width - x - 100.0, size.height - 48.0 - 56.0], band_top: size.height * 0.36 - 8.0, band_h: ui.get_full_lyric_h() + 16.0 })
+        });
+        a.settings_shown();
+        let prefs = settings_store::shared().current().unwrap_or_default();
+        match prefs.servers.iter().find(|s| s.id == prefs.active_server_id).cloned() {
+            Some(p) => a.open(p),
+            None => ui.set_view(LOGIN),
+        }
+    });
+    app
 }
 
-/// What the menu bar's items do: the same as the window's own buttons and keys.
-fn menu_actions(ui: &AppWindow) {
-    let on = |id: &str, f: fn(&AppWindow)| {
-        let main = ui.as_weak();
-        crate::menu::action(id, move || {
-            if let Some(m) = main.upgrade() {
-                f(&m);
-            }
-        });
-    };
+/// Menu bar items do what the window's buttons and keys do.
+fn menu_actions(ui: &AppWindow, compositor: &Compositor) {
+    let on = |id: &str, f: fn(&AppWindow)| compositor.menu().action(id, to_main(ui, f));
     on("toggle", |m| m.invoke_toggle());
     on("next", |m| m.invoke_next());
     on("previous", |m| m.invoke_previous());
@@ -409,183 +379,115 @@ fn menu_actions(ui: &AppWindow) {
     });
 }
 
-/// The window closed: the queue kept, the engine stopped.
-pub fn stop() {
-    with(|app| {
-        if let Some(s) = app.session.take() {
-            session::own::keep(session::own::VOLUME, s.volume.get().to_string());
-            s.close();
+/// The window closed: saves the volume and queue, stops the engine.
+pub fn stop(app: &RefCell<App>) {
+    if let Some(s) = app.borrow_mut().session.take() {
+        session::own::keep(session::own::VOLUME, s.volume.get().to_string());
+        s.close();
+    }
+}
+
+fn wire(ui: &AppWindow, h: &AppHandle) {
+    on!(ui.on_messages_arrived, h, |a| a.drain_inbox());
+    on!(ui.on_go, h, |a, v| a.go(v));
+    on!(ui.on_open_album, h, |a, id| a.open_page(Req::Album(id.into())));
+    on!(ui.on_open_artist, h, |a, id| a.open_page(Req::Artist(id.into())));
+    on!(ui.on_open_playlist, h, |a, id| a.open_page(Req::Playlist(id.into())));
+    on!(ui.on_play_album, h, |a, id| a.play_fetch(Fetch::Album(id.into())));
+    on!(ui.on_play_playlist, h, |a, id| a.play_fetch(Fetch::Playlist(id.into())));
+    on!(ui.on_song, h, |a, list, i, how| a.song(list, i as usize, how));
+    on!(ui.on_play_page, h, |a, shuffle| a.play_page(shuffle));
+    on!(ui.on_page_later, h, |a| a.enqueue_page());
+    on!(ui.on_more, h, |a| a.more_songs());
+    on!(ui.on_search_edited, h, |a, t| a.search_edited(&t));
+    on!(ui.on_toggle, h, |a| a.toggle());
+    on!(ui.on_next, h, |a| a.on_session(|s| s.next()));
+    on!(ui.on_previous, h, |a| a.on_session(|s| {
+        s.engine.previous();
+    }));
+    on!(ui.on_seek, h, |a, f| a.seek(f));
+    on!(ui.on_set_volume, h, |a, v| {
+        a.on_session(|s| s.set_volume(v));
+        a.ui().set_volume(v);
+        a.mirror();
+    });
+    on!(ui.on_toggle_shuffle, h, |a| {
+        let on = !a.queue.as_ref().is_some_and(|q| q.shuffle);
+        a.on_session(|s| s.shuffle(on));
+        a.say(if on { "Shuffle on" } else { "Shuffle off" }, false);
+        a.follow();
+    });
+    on!(ui.on_cycle_repeat, h, |a| {
+        // Off, all, one.
+        let next = match a.queue.as_ref().map_or(0, |q| q.repeat) {
+            0 => 2,
+            2 => 1,
+            _ => 0,
+        };
+        a.on_session(|s| s.repeat(next));
+        a.say(["Repeat off", "Repeat one", "Repeat all"][next as usize], false);
+        a.follow();
+    });
+    on!(ui.on_lyric_tapped, h, |a, line| a.lyric_tapped(line));
+    on!(ui.on_jump, h, |a, i| a.on_session(|s| {
+        s.engine.play_at(i.max(0) as usize, 0);
+    }));
+    on!(ui.on_seek_by, h, |a, ms| {
+        a.on_session(|s| {
+            s.engine.seek((s.engine.status().position_now() + ms as i64).max(0));
+        });
+    });
+    on!(ui.on_drag_window, h, |a| a.compositor.drag_window());
+    on!(ui.on_zoom_window, h, |a| a.compositor.zoom_window());
+    on!(ui.on_page_moved, h, |a| a.place_player());
+    on!(ui.on_player_changed, h, |a| {
+        a.mirror();
+        a.place_player();
+    });
+    on!(ui.on_login, h, |a| a.login());
+    on!(ui.on_cancel_login, h, |a| a.go(HOME));
+    on!(ui.on_find_edited, h, |a, t| {
+        a.find = t.to_string();
+        a.narrowed();
+    });
+    on!(ui.on_choose_artist, h, |a, id| a.choose_artist(id.to_string()));
+    on!(ui.on_open_accounts, h, |a| {
+        a.ui().set_settings_tab(6);
+        a.go(SETTINGS);
+    });
+    on!(ui.on_clear_queue, h, |a| {
+        a.on_session(|s| s.clear_upcoming());
+        a.follow();
+    });
+    on!(ui.on_settings_tab_chosen, h, |a, t| {
+        a.ui().set_settings_tab(t);
+        a.settings_shown();
+    });
+    on!(ui.on_setting_toggled, h, |a, name, on| a.setting(&name, if on { "true" } else { "false" }));
+    on!(ui.on_setting_chosen, h, |a, name, i| a.setting_chosen(&name, i.max(0) as usize));
+    on!(ui.on_setting_action, h, |a, name| a.setting_action(&name));
+    on!(ui.on_setting_slid, h, |a, name, v, last| a.slid(&name, v, last));
+    on!(ui.on_setting_typed, h, |a, name, text| a.setting(&name, &text));
+    on!(ui.on_source_moved, h, |a, id, up| a.source_moved(&id, up));
+    on!(ui.on_accent_chosen, h, |a, i| {
+        if let Some(v) = crate::settings::option_value(Target::Setting("accent"), i.max(0) as usize, &a.facts) {
+            a.setting("accent", &v);
         }
     });
-}
-
-/// Every button of the window, to the state.
-fn wire(ui: &AppWindow) {
-    ui.on_go(|v| with(|a| a.go(v)));
-    ui.on_open_album(|id| with(|a| a.open_page(Req::Album(id.into()))));
-    ui.on_open_artist(|id| with(|a| a.open_page(Req::Artist(id.into()))));
-    ui.on_open_playlist(|id| with(|a| a.open_page(Req::Playlist(id.into()))));
-    ui.on_play_album(|id| with(|a| a.play_fetch(Fetch::Album(id.into()))));
-    ui.on_play_playlist(|id| with(|a| a.play_fetch(Fetch::Playlist(id.into()))));
-    ui.on_song(|list, i, how| with(|a| a.song(list, i as usize, how)));
-    ui.on_play_page(|shuffle| with(|a| a.play_page(shuffle)));
-    ui.on_page_later(|| {
-        with(|a| {
-            let songs = a.page_songs.clone();
-            if !songs.is_empty() {
-                // The page's songs whole: an album so added plays as an album.
-                let from = a.page_fetch.as_ref().map(Fetch::origin);
-                a.on_session(|s| s.enqueue(songs, false, from));
-            }
-        })
+    on!(ui.on_eq_set, h, |a, name, value| {
+        a.setting(&name, &value);
+        a.tune();
     });
-    ui.on_more(|| with(|a| a.more_songs()));
-    ui.on_search_edited(|t| with(|a| a.search_edited(&t)));
-    ui.on_toggle(|| with(App::toggle));
-    ui.on_next(|| with(|a| a.on_session(|s| s.next())));
-    ui.on_previous(|| {
-        with(|a| {
-            a.on_session(|s| {
-                s.engine.previous();
-            })
-        })
+    on!(ui.on_eq_gain, h, |a, i, v, last| a.eq_gain(i.max(0) as usize, v, last));
+    on!(ui.on_eq_tool, h, |a, name, i| a.eq_tool(&name, i.max(0) as usize));
+    on!(ui.on_eq_sized, h, |a, w, hh| {
+        let ui = a.ui();
+        ui.set_eq_curve_w(w);
+        ui.set_eq_curve_h(hh);
+        if let Some(p) = settings_store::shared().current() {
+            crate::eq::curve_only(&ui, &p);
+        }
     });
-    ui.on_seek(|f| {
-        with(|a| a.seek(f));
-        lyrics_after_seek();
-    });
-    ui.on_set_volume(|v| {
-        with(|a| {
-            a.on_session(|s| s.set_volume(v));
-            a.ui().set_volume(v);
-            a.mirror();
-        })
-    });
-    ui.on_toggle_shuffle(|| {
-        with(|a| {
-            let on = !a.queue.as_ref().is_some_and(|q| q.shuffle);
-            a.on_session(|s| s.shuffle(on));
-            a.say(if on { "Shuffle on" } else { "Shuffle off" }, false);
-            a.follow();
-        })
-    });
-    ui.on_cycle_repeat(|| {
-        with(|a| {
-            // Off, all, one, as the other clients go round.
-            let next = match a.queue.as_ref().map_or(0, |q| q.repeat) {
-                0 => 2,
-                2 => 1,
-                _ => 0,
-            };
-            a.on_session(|s| s.repeat(next));
-            a.say(["Repeat off", "Repeat one", "Repeat all"][next as usize], false);
-            a.follow();
-        })
-    });
-    ui.on_lyric_tapped(|line| with(|a| a.lyric_tapped(line)));
-    ui.on_jump(|i| {
-        with(|a| {
-            a.on_session(|s| {
-                s.engine.play_at(i.max(0) as usize, 0);
-            })
-        })
-    });
-    ui.on_seek_by(|ms| {
-        with(|a| {
-            a.on_session(|s| {
-                let at = (s.engine.status().position_now() + ms as i64).max(0);
-                s.engine.seek(at);
-            })
-        });
-        lyrics_after_seek();
-    });
-    ui.on_drag_window(crate::compositor::drag_window);
-    ui.on_zoom_window(crate::compositor::zoom_window);
-    ui.on_page_moved(|| with(|a| a.place_player()));
-    ui.on_player_changed(|| {
-        with(|a| {
-            a.mirror();
-            a.place_player();
-        })
-    });
-    ui.on_login(|| with(App::login));
-    ui.on_cancel_login(|| with(|a| a.go(HOME)));
-    ui.on_find_edited(|t| {
-        with(|a| {
-            a.find = t.to_string();
-            a.narrowed();
-        })
-    });
-    ui.on_choose_artist(|id| with(|a| a.choose_artist(id.to_string())));
-    ui.on_open_accounts(|| {
-        with(|a| {
-            a.ui().set_settings_tab(6);
-            a.go(SETTINGS);
-        })
-    });
-    ui.on_clear_queue(|| {
-        with(|a| {
-            a.on_session(|s| s.clear_upcoming());
-            a.follow();
-        })
-    });
-    ui.on_settings_tab_chosen(|t| {
-        with(|a| {
-            a.ui().set_settings_tab(t);
-            a.settings_shown();
-        })
-    });
-    ui.on_setting_toggled(|name, on| with(|a| a.setting(&name, if on { "true" } else { "false" })));
-    ui.on_setting_chosen(|name, i| {
-        with(|a| {
-            let target = Target::of(&name);
-            let Some(v) = crate::settings::option_value(target, i.max(0) as usize, &a.facts) else { return };
-            match target {
-                Target::Device => {
-                    // Opened at the next start, as the output is opened with the engine.
-                    session::own::keep(session::own::DEVICE, v.clone());
-                    a.facts.device = v;
-                    a.say("The new output is used from the next start", false);
-                    a.settings_shown();
-                }
-                Target::Setting(name) => a.setting(name, &v),
-            }
-        })
-    });
-    ui.on_setting_action(|name| with(|a| a.setting_action(&name)));
-    ui.on_setting_slid(|name, v, last| with(|a| a.slid(&name, v, last)));
-    ui.on_setting_typed(|name, text| with(|a| a.setting(&name, &text)));
-    ui.on_source_moved(|id, up| with(|a| a.source_moved(&id, up)));
-    ui.on_accent_chosen(|i| {
-        with(|a| {
-            if let Some(v) = crate::settings::option_value(Target::Setting("accent"), i.max(0) as usize, &a.facts) {
-                a.setting("accent", &v);
-            }
-        })
-    });
-    ui.on_eq_set(|name, value| {
-        with(|a| {
-            a.setting(&name, &value);
-            a.tune();
-        })
-    });
-    ui.on_eq_gain(|i, v, last| with(|a| a.eq_gain(i.max(0) as usize, v, last)));
-    ui.on_eq_tool(|name, i| with(|a| a.eq_tool(&name, i.max(0) as usize)));
-    ui.on_eq_sized(|w, h| {
-        with(|a| {
-            let ui = a.ui();
-            ui.set_eq_curve_w(w);
-            ui.set_eq_curve_h(h);
-            if let Some(p) = settings_store::settings_current() {
-                crate::eq::curve_only(&ui, &p);
-            }
-        })
-    });
-}
-
-/// A seek lands a moment later: the lyrics' clock is asked again once the engine is there.
-fn lyrics_after_seek() {
-    Timer::single_shot(Duration::from_millis(120), || with(|a| a.lyrics_step(true)));
 }
 
 impl App {
@@ -596,6 +498,40 @@ impl App {
     fn on_session(&self, f: impl FnOnce(&Session)) {
         if let Some(s) = &self.session {
             f(s);
+        }
+    }
+
+    fn drain_inbox(&mut self) {
+        while let Ok(m) = self.inbox.try_recv() {
+            match m {
+                Msg::From(id, m) if self.session.as_ref().is_some_and(|s| s.id == id) => self.take(*m),
+                // Left in flight by an earlier session.
+                Msg::From(..) => {}
+                m => self.take(m),
+            }
+        }
+    }
+
+    /// Adds the whole page to the queue; `from` keeps an album gapless.
+    fn enqueue_page(&self) {
+        if !self.page_songs.is_empty() {
+            let from = self.page_fetch.as_ref().map(Fetch::origin);
+            self.on_session(|s| s.enqueue(self.page_songs.clone(), false, from));
+        }
+    }
+
+    fn setting_chosen(&mut self, name: &str, i: usize) {
+        let target = Target::of(name);
+        let Some(v) = crate::settings::option_value(target, i, &self.facts) else { return };
+        match target {
+            Target::Device => {
+                // The output opens with the engine, so a new device applies from the next start.
+                session::own::keep(session::own::DEVICE, v.clone());
+                self.facts.device = v;
+                self.say("The new output is used from the next start", false);
+                self.settings_shown();
+            }
+            Target::Setting(name) => self.setting(name, &v),
         }
     }
 
@@ -611,8 +547,6 @@ impl App {
         });
     }
 
-    // ---- the server ----
-
     fn open(&mut self, profile: SavedServer) {
         if let Some(s) = self.session.take() {
             s.close();
@@ -621,7 +555,7 @@ impl App {
         ui.set_server(nori_core::settings::label(&profile.name, &profile.url).into());
         ui.set_account(profile.user.as_str().into());
         ui.set_account_initial(profile.user.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default().into());
-        match Session::open(&self.data, self.http.clone(), profile) {
+        match Session::open(&self.data, self.http.clone(), profile, self.tx.clone(), self.mpris.clone()) {
             Ok(s) => {
                 s.check();
                 ui.set_volume(s.volume.get());
@@ -629,7 +563,6 @@ impl App {
                 self.heard = None;
                 self.song = None;
                 self.queue = None;
-                self.said = Said::default();
                 for i in 0..self.shelves.row_count() {
                     if let Some(mut shelf) = self.shelves.row_data(i) {
                         shelf.cards = ModelRc::default();
@@ -638,7 +571,7 @@ impl App {
                 }
                 self.follow();
                 self.go(HOME);
-                // The sidebar lists the playlists, whatever page is open.
+                // The sidebar lists playlists on every page.
                 self.on_session(|s| s.load(Req::Playlists));
             }
             Err(e) => {
@@ -659,14 +592,12 @@ impl App {
         let draft = SavedServer { id: nori_core::settings::new_server_id(), url, user, password: ui.get_login_password().to_string(), ..Default::default() };
         ui.set_login_busy(true);
         ui.set_login_error("".into());
-        let (data, http) = (self.data.clone(), self.http.clone());
-        std::thread::spawn(move || session::Tx.send(Msg::LoggedIn(session::check_login(&data, http, draft))));
+        let (http, tx) = (self.http.clone(), self.tx.clone());
+        std::thread::spawn(move || tx.send(Msg::LoggedIn(session::check_login(http, draft))));
     }
 
-    // ---- pages ----
-
     fn go(&mut self, view: i32) {
-        // A new page, listed whole.
+        // A new page starts unfiltered.
         if !self.find.is_empty() {
             self.find.clear();
             self.ui().set_find_text("".into());
@@ -674,7 +605,7 @@ impl App {
         }
         if self.tuning && view != EQUALIZER {
             self.tuning = false;
-            self.on_session(|s| s.tuning(false));
+            self.on_session(|s| s.engine.set_shallow(false));
         }
         let ui = self.ui();
         ui.set_failed("".into());
@@ -754,7 +685,7 @@ impl App {
         self.load(req);
     }
 
-    /// The page's colours from its cover, or the plain page's.
+    /// Page colours from its cover, or the defaults.
     fn page_colours(&self, c: Option<&CoverColours>) {
         let ui = self.ui();
         match c {
@@ -771,8 +702,7 @@ impl App {
         }
     }
 
-    /// The window's backdrop from the song's cover: its wash put in the layer not shown, and the two
-    /// cross-faded (app.slint animates it). The same cover again changes nothing.
+    /// Cross-fades the window backdrop to this cover's wash (into the hidden layer; app.slint animates).
     fn now_colours(&mut self, art: &str, c: Option<&CoverColours>) {
         if self.backdrop.as_deref() == Some(art) && c.is_some() {
             return;
@@ -822,7 +752,7 @@ impl App {
             Data::Artists(v) => {
                 self.lists.artists = v.iter().map(artist_card).collect();
                 self.narrowed();
-                // The Artists page opens on its first artist, as Music's does.
+                // The Artists view opens on its first artist.
                 if ui.get_artist_chosen().is_empty() {
                     if let Some(first) = v.first() {
                         self.choose_artist(first.id.clone());
@@ -847,7 +777,7 @@ impl App {
                 ui.set_more_songs(!exhausted);
                 ui.set_songs(self.rows(&self.songs));
             }
-            // A page answered: only if it is still the one open.
+            // Page details apply only if that page is still shown.
             Data::Album(d) if shown => {
                 ui.set_page_title(d.album.name.as_str().into());
                 ui.set_page_sub(d.album.artist.as_str().into());
@@ -883,17 +813,16 @@ impl App {
         }
     }
 
-    /// The page's picture. Only an artist's page wears its colours (as iOS 27's do); an album or a playlist
-    /// stays on the plain ground, as the Mac's Music keeps them.
+    /// Sets the page picture. Only artist pages take cover colours; albums and playlists stay plain.
     fn set_page_art(&self, art: Option<String>) {
         let art = art.unwrap_or_default();
         let ui = self.ui();
         ui.set_page_art(art.as_str().into());
-        let c = ART.with(|a| a.borrow().colours.get(&art).cloned()).filter(|_| ui.get_page_kind() == 1);
+        let c = self.art.borrow().colours.get(&art).cloned().filter(|_| ui.get_page_kind() == 1);
         self.page_colours(c.as_deref());
     }
 
-    /// Songs as rows, each keeping its place in `songs` (what a click plays), narrowed by the find field.
+    /// Songs as rows filtered by the find text; each row keeps its index in `songs`.
     fn rows(&self, songs: &[Song]) -> ModelRc<SongRow> {
         let heard = self.heard.as_deref();
         let find = self.find.to_lowercase();
@@ -901,7 +830,7 @@ impl App {
         ModelRc::new(VecModel::from(songs.iter().enumerate().filter(|(_, s)| hit(s)).map(|(i, s)| row(s, i, heard == Some(s.id.as_str()))).collect::<Vec<_>>()))
     }
 
-    /// The lists the page shows, narrowed by the find field.
+    /// Re-applies the find filter to every list.
     fn narrowed(&self) {
         let ui = self.ui();
         let find = self.find.to_lowercase();
@@ -913,7 +842,7 @@ impl App {
         ui.set_page_songs(self.rows(&self.page_songs));
     }
 
-    /// An artist chosen on the Artists page: shown beside the list, without leaving it.
+    /// Shows an artist beside the Artists list.
     fn choose_artist(&mut self, id: String) {
         let ui = self.ui();
         ui.set_artist_chosen(id.as_str().into());
@@ -925,11 +854,11 @@ impl App {
         self.page_songs.clear();
         self.page_fetch = Some(Fetch::Artist(id.clone()));
         self.load(Req::Artist(id));
-        // The list stays where it is while the artist loads.
+        // Keep the list visible while the artist loads.
         ui.set_loading(false);
     }
 
-    /// The lists' playing marks moved with the song heard.
+    /// Refreshes the now-playing marks in the lists.
     fn mark_playing(&self) {
         let ui = self.ui();
         ui.set_page_songs(self.rows(&self.page_songs));
@@ -944,16 +873,15 @@ impl App {
         self.load(Req::Songs { offset });
     }
 
-    // ---- search ----
-
     fn search_edited(&mut self, text: &str) {
         let Some(s) = &self.session else { return };
         let view = s.search_typed(text);
         let query = view.query.clone();
         self.show_search(view);
-        let delay = settings_store::with_prefs(|p| p.live_search_delay_ms).unwrap_or(400).max(100) as u64;
+        let delay = settings_store::shared().prefs(|p| p.live_search_delay_ms).max(100) as u64;
+        let me = self.me.clone();
         self.search.start(TimerMode::SingleShot, Duration::from_millis(delay), move || {
-            with(|a| a.on_session(|s| s.search_server(query.clone())));
+            me.with(|a| a.on_session(|s| s.search_server(query.clone())));
         });
     }
 
@@ -975,8 +903,6 @@ impl App {
         };
         ui.set_search_note(note.into());
     }
-
-    // ---- playing ----
 
     fn play_fetch(&self, what: Fetch) {
         self.on_session(|s| s.play_later(what, false));
@@ -1008,7 +934,7 @@ impl App {
     fn toggle(&mut self) {
         let Some(s) = &self.session else { return };
         let st = s.engine.status();
-        // Nothing loaded: the queue kept from last time starts where it was.
+        // Idle with a restored queue: start it where it was.
         if st.state == State::Idle {
             if let Some(q) = self.queue.as_ref().filter(|q| q.len > 0) {
                 s.engine.play_at(q.index.max(0) as usize, st.position_now());
@@ -1025,27 +951,24 @@ impl App {
         self.on_session(|s| s.engine.seek(ms));
     }
 
-    // ---- what arrives ----
-
     fn take(&mut self, m: Msg) {
         match m {
             Msg::Engine(e) => {
                 match &e {
-                    Event::State(st) => self.said.state = Some(*st),
-                    Event::Song { id, .. } | Event::Looped { id, .. } => self.said.song = Some(id.clone()),
+                    // A seek landed: the lyrics follow from the new place.
+                    Event::Position { .. } => self.lyrics_step(true),
                     Event::Buffering(b) => self.ui().set_buffering(*b),
                     Event::Error { message, .. } => self.say(&format!("Could not play: {message}"), true),
                     _ => {}
                 }
                 if let Some(s) = &self.session {
-                    s.desktop_changed();
+                    s.mpris_changed();
                     s.followed(&e);
                 }
                 self.follow();
             }
             Msg::Data(req, r) => {
                 self.data(req, r);
-                // The sidebar lists the playlists and marks the page open.
                 self.mirror();
             }
             Msg::Cover { key, image, colours } => self.cover(key, &image, colours),
@@ -1057,7 +980,7 @@ impl App {
             Msg::Lyrics { song, pick } => {
                 if self.heard.as_deref() == Some(song.as_str()) && self.lyrics.as_ref().is_none_or(|l| l.replaced_by(&pick)) {
                     let at = self.session.as_ref().map_or(0, |s| s.engine.status().position_now());
-                    let l = crate::lyrics::SongLyrics::new(pick, at);
+                    let l = crate::lyrics::SongLyrics::new(pick, at, self.lyric_face.clone());
                     let ui = self.ui();
                     ui.set_lyrics_lines(l.lines());
                     ui.set_lyrics_synced(l.synced());
@@ -1072,13 +995,13 @@ impl App {
             }
             Msg::Note { text, error } => self.say(&text, error),
             Msg::Reachable(Err(e)) => self.say(&e, true),
-            Msg::Reachable(Ok(())) => {}
+            Msg::Reachable(Ok(())) | Msg::From(..) => {}
             Msg::LoggedIn(r) => {
                 let ui = self.ui();
                 ui.set_login_busy(false);
                 match r {
                     Ok(p) => {
-                        let mut prefs = settings_store::settings_current().unwrap_or_default();
+                        let mut prefs = settings_store::shared().current().unwrap_or_default();
                         prefs.servers.retain(|s| !(s.url == p.url && s.user == p.user));
                         prefs.servers.push(p.clone());
                         prefs.active_server_id = p.id.clone();
@@ -1092,43 +1015,36 @@ impl App {
         }
     }
 
-    /// Asks for the covers the pictures found missing.
+    /// Requests the covers found missing while drawing.
     fn ask_covers(&mut self) {
-        let wanted = ART.with(|a| std::mem::take(&mut a.borrow_mut().wanted));
+        let mut art = self.art.borrow_mut();
+        let a = &mut *art;
+        let wanted = std::mem::take(&mut a.wanted);
         let Some(s) = &self.session else {
-            // Nothing to ask with: asked again once there is.
-            ART.with(|a| a.borrow_mut().asked.clear());
+            // No session yet: forget them so they are requested again later.
+            a.asked.clear();
             return;
         };
-        // The requests for pictures gone from the screen are dropped, so the loader gets to those on it.
+        // Cancel requests for covers no longer on screen.
         let now = Instant::now();
-        ART.with(|a| {
-            let mut a = a.borrow_mut();
-            let a = &mut *a;
-            self.tickets.retain(|(k, _)| {
-                let shown = a.missing.get(k).is_some_and(|t| now.duration_since(*t) < GONE);
-                if !shown {
-                    a.asked.remove(k);
-                    a.missing.remove(k);
-                }
-                shown
-            });
+        self.tickets.retain(|(k, _)| {
+            let shown = a.missing.get(k).is_some_and(|t| now.duration_since(*t) < GONE);
+            if !shown {
+                a.asked.remove(k);
+                a.missing.remove(k);
+            }
+            shown
         });
-        // The loader serves the newest first: a frame's pictures are asked for last to first, so the top
-        // left comes first.
+        // The loader serves newest first; reversed so the top left of a frame comes first.
         for k in wanted.into_iter().rev() {
-            // The large ones are the pages' own pictures: their colours are worked out with them.
-            let t = s.cover(k.clone(), cover_px(k.size));
+            let Some(t) = s.cover(k.clone(), cover_px(k.size)) else { continue };
             self.tickets.push_back((k, t));
         }
-        // A ticket dropped cancels its cover: one that never came may be asked for again.
+        // Dropping a ticket cancels it; the cover may be requested again.
         while self.tickets.len() > PENDING_KEPT {
             let (k, _) = self.tickets.pop_front().expect("longer than the limit");
-            ART.with(|a| {
-                let mut a = a.borrow_mut();
-                a.asked.remove(&k);
-                a.missing.remove(&k);
-            });
+            a.asked.remove(&k);
+            a.missing.remove(&k);
         }
     }
 
@@ -1136,8 +1052,8 @@ impl App {
         let id = key.id.clone();
         let large = key.size != CoverSize::Card;
         self.tickets.retain(|(k, _)| *k != key);
-        ART.with(|a| {
-            let mut a = a.borrow_mut();
+        {
+            let mut a = self.art.borrow_mut();
             let now = Instant::now();
             a.missing.remove(&key);
             a.images.insert(key.clone(), (picture(image), now));
@@ -1162,7 +1078,7 @@ impl App {
                 }
                 count -= 1;
             }
-        });
+        }
         let ui = self.ui();
         ui.set_covers_rev(ui.get_covers_rev().wrapping_add(1));
         if let Some(p) = &self.player {
@@ -1172,7 +1088,7 @@ impl App {
             sd.set_covers_rev(ui.get_covers_rev());
         }
         if large {
-            let c = ART.with(|a| a.borrow().colours.get(&id).cloned());
+            let c = self.art.borrow().colours.get(&id).cloned();
             if ui.get_now_art() == id.as_str() {
                 self.now_colours(&id, c.as_deref());
             }
@@ -1182,23 +1098,23 @@ impl App {
         }
     }
 
-    /// What the player window shows, copied from the main window, where it is kept.
+    /// Copies the main window's state to the player and sidebar windows.
     fn mirror(&self) {
         let ui = self.ui();
         if let Some(p) = &self.player {
-        p.set_has_song(ui.get_has_song());
-        p.set_now_title(ui.get_now_title());
-        p.set_now_artist(ui.get_now_artist());
-        p.set_now_album(ui.get_now_album());
-        p.set_now_art(ui.get_now_art());
-        p.set_playing(ui.get_playing());
-        p.set_position_ms(ui.get_position_ms());
-        p.set_duration_ms(ui.get_duration_ms());
-        p.set_shuffle(ui.get_shuffle());
-        p.set_repeat(ui.get_repeat());
-        p.set_volume(ui.get_volume());
-        p.set_inspector(ui.get_inspector());
-        p.set_covers_rev(ui.get_covers_rev());
+            p.set_has_song(ui.get_has_song());
+            p.set_now_title(ui.get_now_title());
+            p.set_now_artist(ui.get_now_artist());
+            p.set_now_album(ui.get_now_album());
+            p.set_now_art(ui.get_now_art());
+            p.set_playing(ui.get_playing());
+            p.set_position_ms(ui.get_position_ms());
+            p.set_duration_ms(ui.get_duration_ms());
+            p.set_shuffle(ui.get_shuffle());
+            p.set_repeat(ui.get_repeat());
+            p.set_volume(ui.get_volume());
+            p.set_inspector(ui.get_inspector());
+            p.set_covers_rev(ui.get_covers_rev());
         }
         if let Some(sd) = &self.sidebar {
             sd.set_view(ui.get_view());
@@ -1214,29 +1130,26 @@ impl App {
         }
     }
 
-    /// The player window over the page's bottom; out of sight over Now Playing and the sign-in page.
+    /// Positions the glass layers; hidden over Now Playing and the login page.
     fn place_player(&self) {
         let ui = self.ui();
         let shown = !ui.get_full_player() && ui.get_view() != LOGIN;
-        crate::compositor::set_right(if ui.get_inspector() != 0 { 280.0 } else { 0.0 });
-        crate::compositor::show_glass(shown && self.sidebar.is_some(), shown && self.player.is_some());
+        self.compositor.set_right_panel(if ui.get_inspector() != 0 { 280.0 } else { 0.0 });
+        self.compositor.show_glass(shown && self.sidebar.is_some(), shown && self.player.is_some());
     }
 
-    /// The lyrics' clock asked where the music is: the line lit, how far its words are sung, and when to
-    /// look again.
+    /// Updates the lyrics view from the playback position and schedules the next update.
     fn lyrics_step(&mut self, force: bool) {
-        let Some(l) = &self.lyrics else { return };
-        let Some(s) = &self.session else { return };
+        let ui = self.ui();
+        let (Some(l), Some(s)) = (&mut self.lyrics, &self.session) else { return };
         let (at, playing) = s.engine.status_with(|st| (st.position_now(), st.state == State::Playing));
         let now = l.advance(at, force);
-        let ui = self.ui();
         ui.set_lyrics_active(now.active);
         ui.set_lyric_sweeping(now.sweeping);
-        // The lit line in pieces, each word or syllable rising as it is sung (sung.rs), where it is shown.
         let full = ui.get_full_player() && ui.get_full_panel() == 2;
         let side = ui.get_inspector() == 2;
         let width = ui.window().size().to_logical(ui.window().scale_factor()).width;
-        let pieces = |view, on: bool, size, w, lit, dim| if on && now.sweeping { l.pieces(view, &now, size, w, lit, dim) } else { Vec::new() };
+        let mut pieces = |view, on: bool, size, w, lit, dim| if on && now.sweeping { l.pieces(view, &now, size, w, lit, dim) } else { Vec::new() };
         renew(&self.pieces[0], pieces(0, side, 22.0, 280.0 - 44.0, 0.92, 0.26));
         renew(&self.pieces[1], pieces(1, full, 44.0, width / 2.0 - 140.0, 1.0, 0.36));
         ui.set_lyric_sung(now.sung.into());
@@ -1244,22 +1157,21 @@ impl App {
         ui.set_lyric_mix(now.mix);
         ui.set_lyric_rest(now.rest.into());
         match now.wait.filter(|_| playing) {
-            Some(ms) => self.lyrics_timer.start(TimerMode::SingleShot, Duration::from_millis(ms), || with(|a| a.lyrics_step(false))),
+            Some(ms) => {
+                let me = self.me.clone();
+                self.lyrics_timer.start(TimerMode::SingleShot, Duration::from_millis(ms), move || me.with(|a| a.lyrics_step(false)));
+            }
             None => self.lyrics_timer.stop(),
         }
     }
 
-    /// A lyrics line clicked: the song goes to where it is sung.
     fn lyric_tapped(&mut self, line: i32) {
         let (Some(l), Ok(line)) = (&self.lyrics, usize::try_from(line)) else { return };
         let ms = l.tap(line);
         self.on_session(|s| s.engine.seek(ms));
-        self.lyrics_step(true);
-        lyrics_after_seek();
     }
 
-    /// The queue's rows become `rows`: the ones leaving fold away first, then the list settles, the new
-    /// ones opening in their places.
+    /// Shows `rows` in the queue: leaving rows fold away first, then the list settles.
     fn queue_shown(&mut self, rows: Vec<SongRow>) {
         if let Some(next) = self.queue_next.take() {
             settle(&self.queue_rows, next);
@@ -1279,8 +1191,9 @@ impl App {
             }
         }
         self.queue_next = Some(rows);
-        self.queue_timer.start(TimerMode::SingleShot, Duration::from_millis(QUEUE_FOLD_MS), || {
-            with(|a| {
+        let me = self.me.clone();
+        self.queue_timer.start(TimerMode::SingleShot, Duration::from_millis(QUEUE_FOLD_MS), move || {
+            me.with(|a| {
                 if let Some(next) = a.queue_next.take() {
                     settle(&a.queue_rows, next);
                 }
@@ -1288,10 +1201,10 @@ impl App {
         });
     }
 
-    /// The settings page drawn again from the settings as they are now.
+    /// Redraws the settings or equalizer page from the current settings.
     fn settings_shown(&self) {
         let ui = self.ui();
-        let prefs = settings_store::settings_current().unwrap_or_default();
+        let prefs = settings_store::shared().current().unwrap_or_default();
         ui.set_autoplay(prefs.auto_fill);
         ui.set_automix(prefs.auto_mix);
         ui.global::<crate::Theme>().set_accent(slint::Color::from_argb_encoded(crate::settings::accent_shown(prefs.accent as u32)));
@@ -1312,18 +1225,18 @@ impl App {
         self.settings_shown();
     }
 
-    /// An equalizer edit made: while the page is open, the engine answers at once (its shallow buffer).
+    /// Enters the engine's shallow buffer while the equalizer page is open.
     fn tune(&mut self) {
         if !self.tuning && self.ui().get_view() == EQUALIZER {
             self.tuning = true;
-            self.on_session(|s| s.tuning(true));
+            self.on_session(|s| s.engine.set_shallow(true));
         }
     }
 
-    /// A slider moved: a level edited in place; the page drawn again once it is let go.
+    /// Edits a level in place; redraws the page when the slider is released.
     fn slid(&mut self, name: &str, v: f32, last: bool) {
         let Some(level) = crate::settings::level_of(name) else { return };
-        if let Some((effect, _)) = settings_store::edit_level(level, v) {
+        if let Some((effect, _)) = settings_store::shared().edit_level(level, v) {
             self.on_session(|s| s.applied(effect));
             self.tune();
         }
@@ -1332,13 +1245,13 @@ impl App {
         }
     }
 
-    /// A band of the equalizer moved: its curve follows at once, the page once it is let go.
+    /// Edits an EQ band; the curve updates at once, the page on release.
     fn eq_gain(&mut self, i: usize, v: f32, last: bool) {
-        let Some(p) = settings_store::settings_current() else { return };
+        let Some(p) = settings_store::shared().current() else { return };
         let effect = if p.eq_mode == nori_core::settings::EqMode::Graphic {
-            settings_store::edit_graphic(i as u32, v).map(|e| e.0)
+            settings_store::shared().edit_graphic(i as u32, v).map(|e| e.0)
         } else {
-            p.eq_bands.get(i).and_then(|b| settings_store::edit_band(i as u32, nori_core::settings::SoundBand { gain_db: v, ..*b }).map(|e| e.0))
+            p.eq_bands.get(i).and_then(|b| settings_store::shared().edit_band(i as u32, nori_core::settings::SoundBand { gain_db: v, ..*b }).map(|e| e.0))
         };
         if let Some(effect) = effect {
             self.on_session(|s| s.applied(effect));
@@ -1346,7 +1259,7 @@ impl App {
         }
         if last {
             self.settings_shown();
-        } else if let Some(p) = settings_store::settings_current() {
+        } else if let Some(p) = settings_store::shared().current() {
             crate::eq::curve_only(&self.ui(), &p);
         }
     }
@@ -1374,10 +1287,9 @@ impl App {
         self.settings_shown();
     }
 
-    /// A lyrics source moved a place up or down its list.
     fn source_moved(&mut self, id: &str, up: bool) {
-        let Some(p) = settings_store::settings_current() else { return };
-        let s = nori_core::settings_model::state(&p, nori_core::settings_model::Output::default());
+        let Some(p) = settings_store::shared().current() else { return };
+        let s = nori_core::settings_model::state(&p, nori_core::settings_model::Output::default(), &nori_core::settings_store::shared().model);
         let Some(at) = s.lyrics_sources.iter().position(|x| x.id == id) else { return };
         let to = if up { at.saturating_sub(1) } else { (at + 1).min(s.lyrics_sources.len() - 1) };
         if to != at {
@@ -1390,7 +1302,7 @@ impl App {
             Some(Act::Equalizer) => self.go(EQUALIZER),
             Some(Act::AddServer) => self.go(LOGIN),
             Some(Act::Server(id)) => {
-                let mut prefs = settings_store::settings_current().unwrap_or_default();
+                let mut prefs = settings_store::shared().current().unwrap_or_default();
                 let Some(p) = prefs.servers.iter().find(|s| s.id == id).cloned() else { return };
                 prefs.active_server_id = id;
                 settings_store::settings_put(prefs);
@@ -1398,42 +1310,24 @@ impl App {
             }
             Some(Act::Chore(c)) => {
                 self.on_session(|s| s.action(c));
-                // What was cleared or measured shows as it is now.
                 self.on_session(|s| s.facts());
             }
             None => {}
         }
     }
 
-    /// What the window shows of the engine and the queue.
+    /// Syncs the window with the engine status and the queue.
     fn follow(&mut self) {
         let Some(s) = &self.session else { return };
         let st = s.engine.status();
-        let said = &self.said;
-        let song_said = said.song.as_deref().filter(|x| st.id.as_deref() != Some(*x));
-        let agrees = said.state.is_none_or(|x| x == st.state) && song_said.is_none();
-        let (state, id) = if agrees { (st.state, st.id.clone()) } else { (said.state.unwrap_or(st.state), song_said.map(String::from).or(st.id.clone())) };
-        if agrees {
-            self.said = Said::default();
-        } else if self.said.tries < 50 {
-            // The status is behind the events: looked at again in a moment.
-            self.said.tries += 1;
-            self.again.start(TimerMode::SingleShot, Duration::from_millis(20), || with(App::follow));
-        } else {
-            self.said = Said::default();
-        }
         let ui = self.ui();
-        let playing = state == State::Playing;
+        let playing = st.state == State::Playing;
         ui.set_playing(playing);
-        if agrees {
-            ui.set_position_ms(st.position_now() as i32);
-        }
+        ui.set_position_ms(st.position_now() as i32);
+        let id = st.id.clone();
         if id != self.heard {
             self.heard = id.clone();
-            self.song = id.and_then(nori_core::queue::queue_song);
-            if !agrees {
-                ui.set_position_ms(0);
-            }
+            self.song = id.and_then(|id| nori_core::queue::shared().song(&id));
             let song = self.song.clone().unwrap_or_default();
             ui.set_has_song(self.song.is_some());
             ui.set_now_title(song.title.as_str().into());
@@ -1442,11 +1336,11 @@ impl App {
             ui.set_duration_ms((song.duration as i64 * 1000) as i32);
             let art = song.cover_art.clone().unwrap_or_default();
             ui.set_now_art(art.as_str().into());
-            let c = ART.with(|a| a.borrow().colours.get(&art).cloned());
+            let c = self.art.borrow().colours.get(&art).cloned();
             self.now_colours(&art, c.as_deref());
-            // The large cover (and with it the backdrop's colours) is asked for even with the panel shut.
+            // Request the large cover for the backdrop colours even when no view shows it.
             if c.is_none() {
-                let _ = self::art(art.as_str().into(), 1);
+                let _ = cover_image(&self.art, &self.me, art.as_str().into(), 1);
             }
             self.mark_playing();
             self.lyrics = None;
@@ -1458,11 +1352,11 @@ impl App {
                 s.lyrics(id.clone());
             }
         }
-        // The queue, copied again only when it changed.
-        let (rev, repeat, index) = nori_core::playlist::with(|p| (p.rev(), p.repeat(), p.current().map_or(-1, |c| c as i32)));
+        // Copy the queue only when it changed.
+        let (rev, repeat, index) = nori_core::queue::shared().playlist(|p| (p.rev(), p.repeat(), p.current().map_or(-1, |c| c as i32)));
         if self.queue.as_ref().is_none_or(|q| q.rev != rev || q.repeat != repeat || q.index != index) {
             let held = self.queue.as_ref().map_or(u64::MAX, |q| q.list_rev);
-            let mut v = nori_core::playlist::playlist_view(held);
+            let mut v = nori_core::queue::shared().view(held);
             if v.songs.is_empty() && v.len > 0 {
                 if let Some(q) = &self.queue {
                     v.songs = q.songs.clone();
@@ -1474,16 +1368,15 @@ impl App {
             ui.set_queue_from(queue_from(&v).into());
             self.queue = Some(v);
         }
-        // The seek bar's clock: running only while music plays, stepping as often as the widest bar moves a
-        // pixel (a long song seldom, a short one often), so the bar glides without redrawing every frame.
+        // Seek bar timer: only while playing, one step per pixel of the widest bar.
         let step = pixel_ms(ui.get_duration_ms() as i64);
         if playing && (!self.tick.running() || self.tick_ms != step) {
             self.tick_ms = step;
-            let weak = self.ui.clone();
+            let me = self.me.clone();
             self.tick.start(TimerMode::Repeated, Duration::from_millis(step), move || {
-                let Some(ui) = weak.upgrade() else { return };
-                with(|a| {
-                    a.on_session(|s| ui.set_position_ms(s.engine.status().position_now() as i32));
+                me.with(|a| {
+                    let ui = a.ui();
+                    a.on_session(|s| ui.set_position_ms(s.engine.status_with(|st| st.position_now()) as i32));
                     if let Some(p) = &a.player {
                         p.set_position_ms(ui.get_position_ms());
                     }
@@ -1497,8 +1390,7 @@ impl App {
     }
 }
 
-/// How often the seek bar steps: once a pixel of the widest bar (Now Playing's, about 380 points on a
-/// 2x screen), at most once a frame and at least every quarter second.
+/// Seek bar step: one pixel of the widest bar (~380 pt at 2x), clamped to 16..250 ms.
 fn pixel_ms(duration_ms: i64) -> u64 {
     (duration_ms.max(1) as u64 / 760).clamp(16, 250)
 }
@@ -1529,15 +1421,13 @@ fn row(s: &Song, index: usize, playing: bool) -> SongRow {
     }
 }
 
-/// The queue in the order it plays, from the song playing on; each row jumps to its list index.
-/// What plays after the song playing, in the order it plays; each row jumps to its list index.
+/// Upcoming songs in play order; each row carries its list index.
 fn queue_rows(v: &PlaylistView) -> Vec<SongRow> {
     let from = v.order.iter().position(|&i| i as i32 == v.index).map_or(0, |p| p + 1);
     v.order[from.min(v.order.len())..].iter().filter_map(|&i| v.songs.get(i as usize).map(|s| row(s, i as usize, false))).collect()
 }
 
-/// `m` made `rows`, row by row where it has as many (the pieces of a line move frame to frame; their texts
-/// stay).
+/// Sets `m` to `rows`, updating in place when the length matches.
 fn renew<T: Clone + PartialEq + 'static>(m: &VecModel<T>, rows: Vec<T>) {
     if m.row_count() != rows.len() {
         m.set_vec(rows);
@@ -1550,11 +1440,8 @@ fn renew<T: Clone + PartialEq + 'static>(m: &VecModel<T>, rows: Vec<T>) {
     }
 }
 
-/// How long a row leaving the queue takes to fold away (app.slint's QueueView).
-const QUEUE_FOLD_MS: u64 = 300;
-
-/// The queue's rows made `rows` in place: those not in it taken out, the new ones put in where they go
-/// (marked fresh, so they open), the rest kept as they are. Rows that changed order are drawn again.
+/// Updates `m` to `rows` in place: removes rows not in `rows`, inserts new ones marked fresh (they
+/// animate open), keeps the rest. A reorder replaces the whole list.
 fn settle(m: &VecModel<SongRow>, rows: Vec<SongRow>) {
     let keep: HashSet<i32> = rows.iter().map(|r| r.index).collect();
     for i in (0..m.row_count()).rev() {
@@ -1572,7 +1459,6 @@ fn settle(m: &VecModel<SongRow>, rows: Vec<SongRow>) {
         m.set_vec(rows);
         return;
     }
-    let opening = !had.is_empty();
     for (j, mut r) in rows.into_iter().enumerate() {
         match m.row_data(j) {
             Some(old) if old.index == r.index => {
@@ -1582,14 +1468,14 @@ fn settle(m: &VecModel<SongRow>, rows: Vec<SongRow>) {
                 }
             }
             _ => {
-                r.fresh = opening;
+                r.fresh = true;
                 m.insert(j, r);
             }
         }
     }
 }
 
-/// Where the songs coming up are from, when they are all of one album.
+/// The album of all upcoming songs, if they share one.
 fn queue_from(v: &PlaylistView) -> String {
     let from = v.order.iter().position(|&i| i as i32 == v.index).map_or(0, |p| p + 1);
     let mut albums = v.order[from.min(v.order.len())..].iter().filter_map(|&i| v.songs.get(i as usize)).map(|s| s.album.as_str());

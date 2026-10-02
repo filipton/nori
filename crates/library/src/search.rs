@@ -1,27 +1,23 @@
-//! Search results as the search screen shows them: everything, only the library, or only what the
-//! providers offer (octo-fiesta marks provider items `isExternal`; Navidrome's are the rest). The split
-//! is made once per answer, so switching between the three costs nothing.
+//! Search results split once per answer into everything, the library's and the providers' (`isExternal`),
+//! and the search screen's state.
 
 use std::collections::HashSet;
 
 use nori_model::SearchResult;
 
 #[derive(Debug, Clone, Default)]
-#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct SearchSplit {
     pub everything: SearchResult,
     /// Only the library's items; None when that is everything (there are no provider items).
     pub library: Option<SearchResult>,
     /// Only the providers' items; None when there are none.
     pub providers: Option<SearchResult>,
-    pub has_providers: bool,
 }
 
-/// A server's answer split once into everything, the library's and the providers'.
 pub fn split(r: SearchResult) -> SearchSplit {
     let has_providers = r.songs.iter().any(|s| s.is_external) || r.albums.iter().any(|a| a.is_external) || r.artists.iter().any(|a| a.is_external);
     if !has_providers {
-        return SearchSplit { everything: r, library: None, providers: None, has_providers };
+        return SearchSplit { everything: r, library: None, providers: None };
     }
     let part = |external: bool| SearchResult {
         artists: r.artists.iter().filter(|a| a.is_external == external).cloned().collect(),
@@ -29,16 +25,16 @@ pub fn split(r: SearchResult) -> SearchSplit {
         songs: r.songs.iter().filter(|s| s.is_external == external).cloned().collect(),
     };
     let (library, providers) = (part(false), part(true));
-    SearchSplit { everything: r, library: Some(library), providers: Some(providers), has_providers }
+    SearchSplit { everything: r, library: Some(library), providers: Some(providers) }
 }
 
-fn distinct<T>(list: Vec<T>, id: impl Fn(&T) -> &str) -> Vec<T> {
+/// The first of each id.
+pub fn distinct<T>(list: impl IntoIterator<Item = T>, id: impl Fn(&T) -> &str) -> Vec<T> {
     let mut seen = HashSet::new();
     list.into_iter().filter(|x| seen.insert(id(x).to_string())).collect()
 }
 
-/// The server's answer, ready to show. A merged provider result may repeat an id, and lists are keyed by
-/// id, so only the first of each is kept.
+/// The server's answer split, the first of each repeated id kept (merged provider results repeat ids).
 pub fn search_split(result: SearchResult) -> SearchSplit {
     split(SearchResult {
         artists: distinct(result.artists, |a| &a.id),
@@ -65,8 +61,7 @@ pub fn search_scopes() -> Vec<SearchScope> {
     vec![SearchScope::Everything, SearchScope::Library, SearchScope::Providers]
 }
 
-/// The server could not be asked and the offline answer stays on screen: the client says so, with
-/// `reason`, what it said the failure was when it reported it (`SearchSession::failed`).
+/// The server could not be asked and the offline answer stays; `reason` as `SearchSession::failed` gave it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct SearchFallback {
@@ -127,7 +122,7 @@ impl Session {
     /// What the screen shows now.
     pub fn view(&self) -> SearchView {
         let shown = self.split.as_ref().map(|s| s.shown(self.scope));
-        let has_providers = self.split.as_ref().is_some_and(|s| s.has_providers);
+        let has_providers = self.split.as_ref().is_some_and(|s| s.providers.is_some());
         let empty = shown.as_ref().is_some_and(|r| r.songs.is_empty() && r.albums.is_empty() && r.artists.is_empty());
         SearchView {
             text: self.text.clone(),
@@ -146,18 +141,13 @@ impl Session {
 /// Shorter than this, a query is a keystroke on the way to one, not one worth remembering.
 pub const REMEMBER_MIN_UTF16: usize = 2;
 
-/// How long live search waits after the last keystroke before it asks the server: at once for a blank
-/// field (which only clears the results), otherwise the user's `delay_ms`.
-///
-/// Twin of the `debounce` in `SearchViewModel` (app/.../vm/SearchViewModel.kt), which Android keeps: it
-/// is the argument of a coroutine operator, asked on the main thread per keystroke.
+/// Live search's wait after a keystroke: none for a blank field, else `delay_ms`. Twin of Android's
+/// `SearchViewModel` debounce.
 pub fn live_delay_ms(query: &str, delay_ms: i64) -> i64 {
     if query.chars().all(kotlin_whitespace) { 0 } else { delay_ms }
 }
 
-/// Kotlin's `Char.isWhitespace` on the JVM, which `isBlank` goes by: Java's whitespace or a Unicode space
-/// separator. That is not Rust's `char::is_whitespace` - the four ASCII separators U+001C-U+001F count,
-/// U+0085 does not - and a blank field must be blank to both.
+/// Kotlin's `Char.isWhitespace`, which differs from Rust's (U+001C-U+001F count, U+0085 does not).
 pub fn kotlin_whitespace(c: char) -> bool {
     matches!(
         c,
@@ -168,9 +158,7 @@ pub fn kotlin_whitespace(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nori_model::Album;
-use nori_model::Artist;
-use nori_model::Song;
+    use nori_model::{Album, Artist, Song};
 
     fn result() -> SearchResult {
         let s = |id: &str, ext: bool| Song { id: id.into(), is_external: ext, ..Default::default() };
@@ -187,9 +175,9 @@ use nori_model::Song;
     }
 
     #[test]
-    fn server_answers_are_deduplicated_and_split() {
+    fn server_answers() {
         let r = search_split(result());
-        assert!(r.has_providers);
+        assert!(r.providers.is_some());
         assert_eq!(ids(&r.everything.songs, |s| &s.id), ["1", "ext-2", "3"]);
         assert_eq!(ids(&r.everything.albums, |a| &a.id), ["al", "ext-al"]);
         let (lib, prov) = (r.library.unwrap(), r.providers.unwrap());
@@ -198,14 +186,13 @@ use nori_model::Song;
         assert_eq!(ids(&prov.songs, |s| &s.id), ["ext-2"]);
         assert_eq!(ids(&prov.albums, |a| &a.id), ["ext-al"]);
         assert!(prov.artists.is_empty());
-    }
 
-    #[test]
-    fn a_library_only_answer_is_not_copied() {
+        // A library only answer is not copied.
         let mut r = result();
         r.songs.retain(|s| !s.is_external);
         r.albums.retain(|a| !a.is_external);
         let s = search_split(r);
-        assert!(!s.has_providers && s.library.is_none() && s.providers.is_none());
+        assert!(s.library.is_none() && s.providers.is_none());
     }
+
 }

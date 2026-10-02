@@ -1,9 +1,5 @@
-# uniffi's JNI runtime for Kotlin (uniffi-rs, uniffi-bindgen-kotlin-jni/runtime) as a pinned git dependency, at
-# the revision the workspace pins, with two changes for Android, both marked NORI in the source: a class the core
-# looks up from a thread it started itself is found through the app's class loader (loader.rs, caching.rs), and a
-# thread the runtime attached to the JVM is detached again when it ends (attach.rs). Only the modules the changes
-# live in are here (caching.rs is upstream's with three lines changed); everything else is upstream's, re-exported.
-# When the revision moves, take caching.rs and attach.rs's upstream parts again and keep both changes.
+# Upstream uniffi Kotlin JNI runtime (pinned revision) with nori's Android changes, marked NORI (see src/lib.rs).
+# When the revision moves, re-take caching.rs and attach.rs from upstream and reapply the NORI changes.
 [package]
 name = "nori-uniffi-jni-runtime"
 version = "0.31.1"

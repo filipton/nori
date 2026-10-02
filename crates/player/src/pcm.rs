@@ -1,12 +1,10 @@
-//! Interleaved PCM as a platform hands it over: bytes in one of two encodings. The mixer, stretcher
-//! and analyser work on samples; these are the byte-level doors into them, so no caller has to know
-//! how 16-bit audio is staged through float.
+//! Interleaved PCM bytes (16-bit or float) and byte-level adapters for the sample-based mixer and
+//! stretcher.
 
-use crate::automix::mixer::Mixer;
 use crate::dither::Dither;
 use crate::automix::stretch::{Stretcher, BLOCK};
 
-/// Sample encodings, numbered as media3 numbers them (`C.ENCODING_PCM_16BIT`, `C.ENCODING_PCM_FLOAT`).
+/// Sample encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Encoding {
     Pcm16,
@@ -14,6 +12,7 @@ pub enum Encoding {
 }
 
 impl Encoding {
+    /// media3's `C.ENCODING_PCM_16BIT` / `C.ENCODING_PCM_FLOAT`.
     pub const PCM_16: i32 = 2;
     pub const FLOAT: i32 = 4;
 
@@ -32,7 +31,7 @@ impl Encoding {
     }
 }
 
-/// A stream's shape: rate, channel count and encoding.
+/// Rate, channel count and encoding of a stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Format {
     pub rate: u32,
@@ -57,11 +56,11 @@ impl Format {
 }
 
 fn i16s(b: &[u8]) -> impl Iterator<Item = f32> + '_ {
-    b.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
+    b.as_chunks::<2>().0.iter().map(|&c| i16::from_le_bytes(c) as f32 / 32768.0)
 }
 
 fn f32s(b: &[u8]) -> impl Iterator<Item = f32> + '_ {
-    b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+    b.as_chunks::<4>().0.iter().map(|&c| f32::from_le_bytes(c))
 }
 
 /// Decodes interleaved bytes into float samples, appending to `out`.
@@ -76,68 +75,51 @@ pub fn to_f32(bytes: &[u8], enc: Encoding, out: &mut Vec<f32>) {
 pub fn from_f32(samples: &[f32], enc: Encoding, out: &mut [u8]) {
     match enc {
         Encoding::Pcm16 => {
-            for (d, v) in out.chunks_exact_mut(2).zip(samples) {
-                d.copy_from_slice(&((v * 32768.0).round().clamp(-32768.0, 32767.0) as i16).to_le_bytes());
+            for (d, v) in out.as_chunks_mut::<2>().0.iter_mut().zip(samples) {
+                *d = ((v * 32768.0).round().clamp(-32768.0, 32767.0) as i16).to_le_bytes();
             }
         }
         Encoding::Float => {
-            for (d, v) in out.chunks_exact_mut(4).zip(samples) {
-                d.copy_from_slice(&v.to_le_bytes());
+            for (d, v) in out.as_chunks_mut::<4>().0.iter_mut().zip(samples) {
+                *d = v.to_le_bytes();
             }
         }
     }
 }
 
-/// Scales interleaved samples in place by `gain` (0..1: nothing clips), rounding 16-bit ones to the
-/// nearest step.
+/// Scales samples in place by `gain` (0..1, so nothing clips), 16-bit rounded to nearest.
 pub fn scale(bytes: &mut [u8], enc: Encoding, gain: f32) {
     match enc {
         Encoding::Pcm16 => {
-            for d in bytes.chunks_exact_mut(2) {
-                let v = i16::from_le_bytes([d[0], d[1]]) as f32 * gain;
-                d.copy_from_slice(&(v.round().clamp(-32768.0, 32767.0) as i16).to_le_bytes());
+            for d in bytes.as_chunks_mut::<2>().0 {
+                let v = i16::from_le_bytes(*d) as f32 * gain;
+                *d = (v.round().clamp(-32768.0, 32767.0) as i16).to_le_bytes();
             }
         }
         Encoding::Float => {
-            for d in bytes.chunks_exact_mut(4) {
-                let v = f32::from_le_bytes([d[0], d[1], d[2], d[3]]) * gain;
-                d.copy_from_slice(&v.to_le_bytes());
+            for d in bytes.as_chunks_mut::<4>().0 {
+                *d = (f32::from_le_bytes(*d) * gain).to_le_bytes();
             }
         }
     }
 }
 
-/// [`scale`], with 16-bit samples rounded back through TPDF dither ([`crate::dither`]) rather than to the
-/// nearest step: ReplayGain on the 16-bit path. `channels` keeps each channel's noise its own.
+/// [`scale`] with 16-bit samples dithered instead of rounded (ReplayGain on the 16-bit path).
 pub fn scale_dithered(bytes: &mut [u8], enc: Encoding, gain: f32, channels: usize, dither: &mut Dither) {
     match enc {
         Encoding::Pcm16 => {
-            let ch = channels.max(1);
-            for (i, d) in bytes.chunks_exact_mut(2).enumerate() {
-                let v = i16::from_le_bytes([d[0], d[1]]) as f64 * gain as f64 / 32768.0;
-                d.copy_from_slice(&dither.to_i16(i % ch, v).to_le_bytes());
+            for frame in bytes.as_chunks_mut::<2>().0.chunks_mut(channels.max(1)) {
+                for (c, d) in frame.iter_mut().enumerate() {
+                    let v = i16::from_le_bytes(*d) as f64 * gain as f64 / 32768.0;
+                    *d = dither.to_i16(c, v).to_le_bytes();
+                }
             }
         }
         Encoding::Float => scale(bytes, enc, gain),
     }
 }
 
-/// Mixes `frames` frames of `outgoing` and `incoming` into `dest` (all the mixer's channel count and
-/// `enc`). `dest` may be the same memory as `outgoing`: the mix is written in place over what was held.
-///
-/// # Safety
-/// Each pointer must be valid for `frames * channels` samples of `enc`.
-pub unsafe fn mix_raw(m: &mut Mixer, outgoing: *const u8, incoming: *const u8, dest: *mut u8, frames: usize, enc: Encoding) {
-    match enc {
-        Encoding::Pcm16 => {
-            m.run(outgoing as *const i16, incoming as *const i16, dest as *mut i16, frames, |x| x as f64, |y| y.round().clamp(-32768.0, 32767.0) as i16)
-        }
-        Encoding::Float => m.run(outgoing as *const f32, incoming as *const f32, dest as *mut f32, frames, |x| x as f64, |y| y as f32),
-    }
-}
-
-/// A stretcher that takes and gives bytes. 16-bit audio is staged through float in fixed blocks, so
-/// the steady state allocates nothing.
+/// A [`Stretcher`] over bytes, staged through fixed float blocks so it never allocates after creation.
 pub struct ByteStretcher {
     s: Stretcher,
     ch: usize,
@@ -151,7 +133,7 @@ impl ByteStretcher {
         ByteStretcher { s: Stretcher::new(rate.max(1), ch, keep_pitch), ch, fin: vec![0f32; BLOCK * 4 * ch], fout: vec![0f32; BLOCK * 8 * ch] }
     }
 
-    /// `ratio` playback speed (>1 faster), held for `hold_frames` output frames, then ramped to 1 over `ramp_frames`.
+    /// Speed `ratio` (>1 faster) for `hold_frames` output frames, then ramped to 1 over `ramp_frames`.
     pub fn configure(&mut self, ratio: f64, hold_frames: u64, ramp_frames: u64) {
         self.s.configure(ratio, hold_frames, ramp_frames);
     }
@@ -164,13 +146,12 @@ impl ByteStretcher {
         self.s.latency_frames()
     }
 
-    /// The song time handed out since this was last asked, in input frames ([`Stretcher::take_content`]).
+    /// Input frames consumed since the last call ([`Stretcher::take_content`]).
     pub fn take_content(&mut self) -> f64 {
         self.s.take_content()
     }
 
-    /// Runs `input` through into `output`; returns (bytes consumed, bytes produced). Staged through
-    /// float in the blocks reserved at creation, for either encoding: nothing is allocated here.
+    /// Returns (bytes consumed, bytes produced).
     pub fn process(&mut self, input: &[u8], output: &mut [u8], enc: Encoding) -> (usize, usize) {
         let ch = self.ch;
         let w = enc.width();
@@ -185,16 +166,8 @@ impl ByteStretcher {
             }
             let src = &input[used * w..(used + n_in) * w];
             match enc {
-                Encoding::Pcm16 => {
-                    for (d, c) in self.fin[..n_in].iter_mut().zip(src.chunks_exact(2)) {
-                        *d = i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0;
-                    }
-                }
-                Encoding::Float => {
-                    for (d, c) in self.fin[..n_in].iter_mut().zip(src.chunks_exact(4)) {
-                        *d = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
-                    }
-                }
+                Encoding::Pcm16 => self.fin[..n_in].iter_mut().zip(i16s(src)).for_each(|(d, v)| *d = v),
+                Encoding::Float => self.fin[..n_in].iter_mut().zip(f32s(src)).for_each(|(d, v)| *d = v),
             }
             let (u, m) = self.s.process(&self.fin[..n_in], &mut self.fout[..n_out]);
             from_f32(&self.fout[..m * ch], enc, &mut output[made * w..(made + m * ch) * w]);
@@ -210,9 +183,8 @@ impl ByteStretcher {
         (used * w, made * w)
     }
 
-    /// Writes what is still inside the stretcher to `output`, as much as fits; returns bytes written.
-    /// The stretcher hands it over a block at a time: taking only the first block dropped the rest of
-    /// its delay line, and the song jumped ahead by that much where the stretch handed back to it.
+    /// Drains the stretcher's delay line into `output` block by block, as much as fits; returns bytes
+    /// written.
     pub fn drain(&mut self, output: &mut [u8], enc: Encoding) -> usize {
         let (ch, w) = (self.ch, enc.width());
         let cap = output.len() / w / ch * ch;

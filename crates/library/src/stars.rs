@@ -1,11 +1,5 @@
-//! This session's star changes, kept by the core that made them, and laid over a list the server sent
-//! earlier.
-//!
-//! A heart changes the moment it is pressed, long before the server has answered and the favourites
-//! list has been asked for again. Until then the list on screen is a snapshot from before the press, so
-//! the marks (per kind, the item's id -> starred) are applied on top of it: an item whose mark says it is
-//! no longer starred leaves the list under the finger. A mark that says "starred" adds nothing, because
-//! the snapshot does not hold the item's details; the re-asked list brings it.
+//! This session's star changes, laid over favourites the server sent earlier: an unstarred item leaves at
+//! once; a newly starred one arrives with the next answer (the old one lacks its details).
 
 use std::collections::HashMap;
 
@@ -14,8 +8,7 @@ use nori_net::requests::Starrable;
 
 use crate::pages::Starred;
 
-/// This session's marks, one map per kind keyed by the item's id: a screen asks "is this song
-/// starred" by id alone. Each core keeps its own, so a server profile never wears another's.
+/// This session's marks, one id -> starred map per kind; each core keeps its own.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct StarMarks {
@@ -24,8 +17,7 @@ pub struct StarMarks {
     pub artists: HashMap<String, bool>,
 }
 
-/// A heart pressed: the marks as they are after it, and what [`StarMarks::restore`] puts back should the
-/// server refuse it.
+/// The marks after a press, and the mark before it for [`StarMarks::restore`].
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct StarMarked {
@@ -50,20 +42,22 @@ impl StarMarks {
         }
     }
 
-    /// A heart pressed: the mark goes up at once, before the server is asked, so the heart fills under
-    /// the finger.
+    /// A heart pressed: marked at once, before the server is asked.
     pub fn mark(&mut self, kind: Starrable, id: String, on: bool) -> StarMarked {
         let previous = self.of_mut(kind).insert(id, on);
         StarMarked { previous, marks: self.clone() }
     }
 
-    /// The server refused a star change (being offline is not refusing: those are kept and sent later), so
-    /// the heart must not keep showing it: the mark from before comes back. Returns the marks as they are now.
-    pub fn restore(&mut self, kind: Starrable, id: String, previous: Option<bool>) -> StarMarks {
-        match previous {
-            Some(on) => self.of_mut(kind).insert(id, on),
-            None => self.of_mut(kind).remove(&id),
-        };
+    /// The server refused the press that marked `pressed`: the mark from before comes back, unless a
+    /// later press changed it. Returns the marks now.
+    pub fn restore(&mut self, kind: Starrable, id: String, pressed: bool, previous: Option<bool>) -> StarMarks {
+        let marks = self.of_mut(kind);
+        if marks.get(&id) == Some(&pressed) {
+            match previous {
+                Some(on) => marks.insert(id, on),
+                None => marks.remove(&id),
+            };
+        }
         self.clone()
     }
 
@@ -72,14 +66,14 @@ impl StarMarks {
         self.of(kind).get(id) != Some(&false)
     }
 
-    /// The favourites answer as it is read: artists, albums and songs this session unstarred are left out.
+    /// The favourites without what this session unstarred.
     pub fn overlay(&self, starred: Starred) -> Starred {
         let artists: Vec<Artist> = starred.artists.into_iter().filter(|a| self.kept(Starrable::Artist, &a.id)).collect();
         let songs: Vec<Song> = starred.songs.into_iter().filter(|s| self.kept(Starrable::Song, &s.id)).collect();
         Starred::new(artists, self.overlay_albums(starred.albums), songs)
     }
 
-    /// The favourite albums shelf of the home page, which is an album list rather than a favourites answer.
+    /// Albums without those this session unstarred (the home page's favourites shelf).
     pub fn overlay_albums(&self, albums: Vec<Album>) -> Vec<Album> {
         albums.into_iter().filter(|a| self.kept(Starrable::Album, &a.id)).collect()
     }
@@ -90,7 +84,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_an_unstarred_mark_removes() {
+    fn star_marks() {
         let s = |id: &str| Song { id: id.into(), ..Default::default() };
         let a = |id: &str| Album { id: id.into(), ..Default::default() };
         let r = |id: &str| Artist { id: id.into(), ..Default::default() };
@@ -108,22 +102,22 @@ mod tests {
         assert_eq!(out.library_songs, 2, "counted after the overlay");
         assert_eq!(m.overlay_albums(vec![a("1"), a("2")]).len(), 1);
         assert_eq!(StarMarks::default().overlay_albums(vec![a("1")]).len(), 1);
-    }
 
-    #[test]
-    fn a_refused_star_puts_the_mark_from_before_back() {
+        // Refused star restores mark.
         let mut m = StarMarks::default();
         let first = m.mark(Starrable::Album, "1".into(), true);
         assert_eq!(first.previous, None);
         assert_eq!(first.marks.albums.get("1"), Some(&true));
         let second = m.mark(Starrable::Album, "1".into(), false);
         assert_eq!(second.previous, Some(true));
-        assert_eq!(m.restore(Starrable::Album, "1".into(), second.previous).albums.get("1"), Some(&true));
-        assert_eq!(m.restore(Starrable::Album, "1".into(), first.previous).albums.get("1"), None);
+        assert_eq!(m.restore(Starrable::Album, "1".into(), true, first.previous).albums.get("1"), Some(&false), "a later press stays");
+        assert_eq!(m.restore(Starrable::Album, "1".into(), false, second.previous).albums.get("1"), Some(&true));
+        assert_eq!(m.restore(Starrable::Album, "1".into(), true, first.previous).albums.get("1"), None);
         // Split by kind, keyed by the id alone: a song and an album may share an id.
         let m2 = m.mark(Starrable::Song, "1".into(), true).marks;
         assert_eq!((m2.songs.get("1"), m2.albums.get("1"), m2.artists.get("1")), (Some(&true), None, None));
         m.mark(Starrable::Album, "2".into(), false);
         assert!(m.overlay_albums(vec![Album { id: "2".into(), ..Default::default() }]).is_empty());
     }
+
 }

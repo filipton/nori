@@ -1,27 +1,18 @@
-//! Artwork worth fetching before it is asked for. Covers are only kept once something has drawn them, so
-//! a song downloaded from a menu would otherwise arrive on the device with no picture, and a skip would
-//! show an empty sleeve for as long as the server takes to render the next cover. The app fetches what
-//! this says at the sizes it says, with the same requests the rows and the player make, so a warmed
-//! cover is a cache hit.
+//! Cover prefetching (downloads, queue neighbours), cover URLs and cache keys. Prefetches use the same
+//! URLs the UI requests, so a warmed cover is a cache hit.
 
 use crate::Core;
 
-/// The list rendition: a row's thumbnail and a grid's card share it. A Subsonic server renders each size
-/// it is asked for on demand and keeps it per size, so every extra size is another slow first fetch for
-/// every album - measured at over a second each on a real server.
+/// Row and card size. Shared because servers render each requested size on demand (over 1 s each).
 const ROW: u32 = 320;
-/// The player's rendition, shared with the notification and the lock screen.
+/// Player, notification and lock screen size.
 const FULL: u32 = 800;
 
-/// The two sizes the app draws covers at: the list rendition and the player's.
 const SIZES: [u32; 2] = [ROW, FULL];
 
-/// Whether cover id `id` is an octo-fiesta provider item's: `ext-<provider>-...` (songs, albums,
-/// artists) or a provider's playlist, `pl-<provider>-<id>`. Navidrome names its own playlists' covers
-/// `pl-<id>_<when it changed>` too; those are the server's, kept and warmed like an album's (they were
-/// taken for a provider's, never kept, and offline a playlist's cover never came). Looks only at the id,
-/// up to the next parameter, and allocates nothing.
-pub fn is_provider_id(id: &str) -> bool {
+/// Whether cover id `id` (up to the next `&`) is an octo-fiesta provider's: `ext-...` or
+/// `pl-<provider>-<id>`. Navidrome's own playlist covers (`pl-<id>_<timestamp>`) are not.
+fn provider_cover_id(id: &str) -> bool {
     let id = id.split('&').next().unwrap_or(id);
     if id.starts_with("ext-") {
         return true;
@@ -36,23 +27,21 @@ pub fn is_provider_id(id: &str) -> bool {
     }
 }
 
-/// How the app sizes, names and keeps artwork. Read once; a list asks for thousands of covers and builds
-/// their addresses itself from the signed prefix (`Core::url_prefix`) rather than crossing for each.
+/// Cover sizes, URL parts and cache budgets, read once by the client, which builds URLs itself from
+/// `Core::url_prefix`.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct CoverRules {
     pub row: u32,
     pub card: u32,
     pub full: u32,
-    /// What follows the signed prefix of `getCoverArt`: `&id=` and the encoded id, then `&size=`.
+    /// Appended to the signed `getCoverArt` prefix: `&id=<encoded>` then `&size=`.
     pub id_param: String,
     pub size_param: String,
-    /// The share of the app's memory decoded covers may hold, and the disk cache's size.
+    /// Memory share for decoded covers, and the disk cache size.
     pub memory_share: f64,
     pub disk_bytes: u64,
-    /// The part of that memory still kept while no screen of the app is in sight (the screen off, another
-    /// app): the most recently drawn covers, the page that comes back first. Music may play on for hours
-    /// with nothing drawn.
+    /// Share of that memory kept while the app is not visible.
     pub hidden_share: f64,
 }
 
@@ -70,7 +59,7 @@ pub fn cover_rules() -> CoverRules {
     }
 }
 
-/// One cover to fetch: the cover id at one size.
+/// A cover id at one size.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct CoverWant {
@@ -78,40 +67,27 @@ pub struct CoverWant {
     pub size: u32,
 }
 
-/// Provider artwork is left alone: asking octo-fiesta for it is asking a provider, for a song the user
-/// may never keep.
-fn warmable(art: &str) -> bool {
-    !is_provider_id(art)
-}
-
-/// The covers of `arts` (cover ids, in order) to fetch, each at both sizes: provider artwork left out,
-/// each cover once, at most `cap` covers.
-pub fn cover_wants(arts: Vec<String>, cap: u32) -> Vec<CoverWant> {
-    let mut seen: Vec<&str> = Vec::new();
+/// `arts` at both sizes, deduplicated, provider covers skipped, at most `cap` covers.
+pub(crate) fn cover_wants(arts: Vec<String>, cap: u32) -> Vec<CoverWant> {
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut out = Vec::new();
-    for art in arts.iter().filter(|a| warmable(a)) {
+    for art in arts.iter().filter(|a| !provider_cover_id(a)) {
         if seen.len() == cap as usize {
             break;
         }
-        if seen.contains(&art.as_str()) {
-            continue;
+        if seen.insert(art.as_str()) {
+            out.extend(SIZES.iter().map(|&size| CoverWant { id: art.clone(), size }));
         }
-        seen.push(art);
-        out.extend(SIZES.iter().map(|&size| CoverWant { id: art.clone(), size }));
     }
     out
 }
 
-/// The most covers one download fetches ahead.
+/// Cover cap per download batch.
 const DOWNLOAD_COVERS: u32 = 500;
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
 impl Core {
-    /// The covers of songs being downloaded (`arts`, their cover ids, in order), as addresses to fetch
-    /// onto the disk now and not decode (a cover loader's `warm`): covers are only kept once something
-    /// has drawn them, so a song downloaded from a menu, its cover never on screen, would arrive with no
-    /// picture and show a blank plate for the rest of its life offline. Both sizes the app draws, each
-    /// cover once, never a provider's, at most 500 covers.
+    /// Cover URLs to warm for songs being downloaded, so they have artwork offline ([`cover_wants`]).
     pub fn download_cover_urls(&self, arts: Vec<String>) -> Vec<String> {
         let prefix = self.url_prefix("getCoverArt".into());
         cover_wants(arts, DOWNLOAD_COVERS)
@@ -125,9 +101,8 @@ impl Core {
     }
 }
 
-/// Asked only in Rust, so not exported to Kotlin.
 impl Core {
-    /// The address of cover `id` at `size` px, as every client asks for it ([`cover_url_into`]).
+    /// The URL of cover `id` at `size` px ([`cover_url_into`]).
     pub fn cover_address(&self, id: String, size: u32) -> String {
         let mut out = String::new();
         cover_url_into(&mut out, &self.url_prefix("getCoverArt".into()), &id, size as i32);
@@ -135,13 +110,10 @@ impl Core {
     }
 }
 
-/// The queue positions whose covers to fetch while `index` plays, nearest first: both neighbours first,
-/// as a skip would reach them (`previous` and `next` are what a skip lands on, shuffle included; -1 at an
-/// end), and then outwards in both directions a step at a time, `ahead` steps each way. Backwards as well
-/// as forwards: going back through a queue is as ordinary as going on, and with only the one song behind
-/// warmed, the second swipe back always waited on the server. `ahead` 0 still warms the song behind.
-/// Only positions inside a queue of `len` songs, never the one playing.
-pub fn cover_neighbours(index: i32, previous: i32, next: i32, ahead: i32, len: u32) -> Vec<u32> {
+/// Queue positions to prefetch around `index`, nearest first: the skip targets `previous` and `next`
+/// (media3 indexes, -1 for none), then outwards both ways up to `ahead` steps (`ahead` 0: only
+/// `previous`). In range, excluding `index`, deduplicated.
+pub(crate) fn cover_neighbours(index: i32, previous: i32, next: i32, ahead: i32, len: u32) -> Vec<u32> {
     let ahead = ahead.max(0);
     let mut around = vec![previous, next];
     for d in 2..=ahead {
@@ -158,52 +130,48 @@ pub fn cover_neighbours(index: i32, previous: i32, next: i32, ahead: i32, len: u
     out
 }
 
-/// What to fetch and colour ahead around the song playing, from the core's own queue.
+/// Covers to colour and prefetch around the current song.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
 pub struct CoversAround {
-    /// The playing song's cover, then the covers a skip either way lands on: their colours are worked out
-    /// before they are reached. Provider artwork included (the caller draws those, and only stores none).
+    /// The current cover then the skip targets' (provider covers included), for colour extraction.
     pub near: Vec<String>,
-    /// The covers to fetch ahead ([`cover_neighbours`] `ahead` steps each way), each at both sizes, as
-    /// [`cover_wants`] gives them.
+    /// Prefetches: [`cover_wants`] of [`cover_neighbours`].
     pub wants: Vec<CoverWant>,
 }
 
-/// [`cover_neighbours`] and [`cover_wants`] over the queue the core keeps, in one call: the page passes
-/// where it is and the skips' targets (queue positions, -1 for none), not the songs. A skip used to cost
-/// three calls, one of them carrying every cover id ahead.
+/// [`CoversAround`] over the core's queue; positions are media3 indexes, -1 for none.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn covers_around(index: i32, previous: i32, next: i32, ahead: i32) -> CoversAround {
-    let ids: Vec<String> = crate::playlist::with(|p| p.ids().to_vec());
-    let arts = crate::queue::cover_arts(&ids);
-    around(&arts, index, previous, next, ahead)
+    // Only the ids asked about are looked at, not the whole queue.
+    let session = nori_queue::shared();
+    session.playlist(|p| {
+        let ids = p.ids();
+        around(ids.len() as u32, |i| session.cover_art(&ids[i as usize]), index, previous, next, ahead)
+    })
 }
 
-fn around(arts: &[Option<String>], index: i32, previous: i32, next: i32, ahead: i32) -> CoversAround {
-    let len = arts.len() as u32;
-    let at = |i: u32| arts.get(i as usize).cloned().flatten();
+/// [`CoversAround`] for a queue of `len`, `art` giving position `i`'s cover.
+fn around(len: u32, art: impl Fn(u32) -> Option<String>, index: i32, previous: i32, next: i32, ahead: i32) -> CoversAround {
+    let at = |i: u32| (i < len).then(|| art(i)).flatten();
     let current = u32::try_from(index).ok().and_then(at);
     let near = current.into_iter().chain(cover_neighbours(index, previous, next, 1, len).into_iter().filter_map(at)).collect();
     let wants = cover_wants(cover_neighbours(index, previous, next, ahead, len).into_iter().filter_map(at).collect(), u32::MAX);
     CoversAround { near, wants }
 }
 
-/// The server addresses that are one server's (a profile's second address, `alt`, and its first,
-/// `primary`), so a cover fetched at one is the cover kept for the other: offline the app falls back to
-/// the second address, and covers kept while at home must still be found. Set with the profile.
+/// (alt host, primary host) pairs, so covers cached via one address are found via the other.
+// Global: read by the platform's cover cache (cover_key_parts) with no core handle.
 static ALIKE: std::sync::RwLock<Vec<(String, String)>> = std::sync::RwLock::new(Vec::new());
 
-/// A server address with no scheme and no trailing slash or `/rest`: what tells a server's covers from
-/// another's in their keys.
+/// `base` without scheme, trailing slash or `/rest`.
 fn host_of(base: &str) -> &str {
     let base = base.trim().trim_end_matches('/');
     let base = base.strip_suffix("/rest").unwrap_or(base);
     base.split_once("://").map_or(base, |(_, rest)| rest)
 }
 
-/// Says that `alt` is another address of the server at `primary` (the client's two addresses), for the
-/// covers' keys ([`cover_key_parts`]). Blank `alt`: nothing.
+/// Registers `alt` as another address of `primary` for [`cover_key_parts`].
 pub fn cover_address_alike(primary: &str, alt: &str) {
     let (p, a) = (host_of(primary), host_of(alt));
     if a.is_empty() || p.is_empty() || a == p {
@@ -214,16 +182,11 @@ pub fn cover_address_alike(primary: &str, alt: &str) {
     alike.push((a.to_string(), p.to_string()));
 }
 
-/// The query parameters that sign a request rather than name what it asks for: the user, token, salt,
-/// password or API key, and the API version, client name and format. None of them is part of a cover's
-/// key.
+/// Auth and protocol query params, excluded from cover keys.
 const SIGNATURE: [&str; 8] = ["u", "t", "s", "p", "apiKey", "v", "c", "f"];
 
-/// What a cover's key is made of, in order, handed to `part` piece by piece (nothing allocated but the
-/// lookup of a second address): the server (its first address, whichever of its addresses `url` is at,
-/// with no scheme), the endpoint, and every parameter but the signature ([`SIGNATURE`]) - for a cover,
-/// its id and size. So a cover is kept under the same key whatever token, salt or address fetched it,
-/// and a new password or the other address still finds it on the disk.
+/// Feeds a cover URL's cache key to `part` without allocating: the primary host, the path and every
+/// param except [`SIGNATURE`], so the key survives new tokens, passwords and the other address.
 pub fn cover_key_parts(url: &str, mut part: impl FnMut(&[u8])) {
     let (head, query) = url.split_once('?').unwrap_or((url, ""));
     let (base, path) = match head.find("/rest/") {
@@ -245,49 +208,34 @@ pub fn cover_key_parts(url: &str, mut part: impl FnMut(&[u8])) {
     }
 }
 
-/// Whether the cover address `url` is an octo-fiesta provider item's ([`is_provider_id`]):
-/// such a cover is never stored, since the provider redraws it under the same id once the item is in the
-/// library. Asked for every cover a list draws, so it only looks, and allocates nothing.
-///
-/// Android asks it through a `@FastNative` door (`CoverPixels.isProvider`), which measured faster than
-/// the same test written in Kotlin and allocates nothing.
+/// Whether cover URL `url` is a provider's ([`provider_cover_id`]); such covers are not cached since they
+/// change once the item is downloaded. Allocation-free (Android calls it per cover via `@FastNative`).
 pub fn is_provider_cover(url: &str) -> bool {
-    url.match_indices("&id=").any(|(at, mark)| is_provider_id(&url[at + mark.len()..]))
+    url.match_indices("&id=").any(|(at, mark)| provider_cover_id(&url[at + mark.len()..]))
 }
 
-/// The platform's GET, for a cover loader that runs beside the core's client rather than inside it
-/// (nori-covers, which Android's covers go through): the same transport, so covers ride the API's
-/// connection. Covers are fetched at addresses the client has already signed, so the loader needs no
-/// client of its own, and one transport serves every server profile.
+/// The platform transport for the cover loader (nori-covers), which fetches already-signed URLs.
+// Global: the loader runs outside any core or client and may start before the transport exists.
 static COVER_TRANSPORT: std::sync::Mutex<Option<std::sync::Arc<dyn crate::transport::Transport>>> = std::sync::Mutex::new(None);
 static COVER_TRANSPORT_SET: std::sync::Condvar = std::sync::Condvar::new();
 
-/// Hands the core the transport its cover loader fetches through. Android does it where it builds the
-/// transport for the client, on the thread that warms the app up.
+/// Sets the transport the cover loader uses.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn set_cover_transport(transport: std::sync::Arc<dyn crate::transport::Transport>) {
     *COVER_TRANSPORT.lock().unwrap_or_else(|e| e.into_inner()) = Some(transport);
     COVER_TRANSPORT_SET.notify_all();
 }
 
-/// The transport [`set_cover_transport`] handed in, waiting up to `wait` for it: a cover asked for as
-/// the app starts may reach the network before the transport is built, and waits for it rather than
-/// fail.
+/// The cover transport, waiting up to `wait` for [`set_cover_transport`] during startup.
 pub fn cover_transport(wait: std::time::Duration) -> Option<std::sync::Arc<dyn crate::transport::Transport>> {
     let set = COVER_TRANSPORT.lock().unwrap_or_else(|e| e.into_inner());
     let (set, _) = COVER_TRANSPORT_SET.wait_timeout_while(set, wait, |t| t.is_none()).unwrap_or_else(|e| e.into_inner());
     set.clone()
 }
 
-/// Writes the address of cover `id` at `size` into `out` (cleared first): the signed `getCoverArt`
-/// prefix (`Core::url_prefix`, asked once per server and address), then the id and the size, exactly as
-/// the Android app builds it, so every client asks the server for the same renditions and the same
-/// cache keys. The id is escaped the way Android's `Uri.encode` escapes it, which leaves `!'()*` alone
-/// where `api::encode` escapes them: the two must not be mixed for one cover. A list builds thousands
-/// of these, so the caller keeps `out` and nothing is allocated once it has grown.
-///
-/// Twin of `Library.coverUrl` (core/.../data/Library.kt), which Android keeps (plain string work per
-/// row, cheaper than a crossing).
+/// Writes cover `id`'s URL at `size` into `out` (cleared): `prefix` (`Core::url_prefix`), then the id
+/// escaped like Android's `Uri.encode` (not `api::encode`, which differs on `!'()*`), then the size.
+/// Twin of `Library.coverUrl` (Library.kt).
 pub fn cover_url_into(out: &mut String, prefix: &str, id: &str, size: i32) {
     use std::fmt::Write;
     out.clear();
@@ -298,8 +246,7 @@ pub fn cover_url_into(out: &mut String, prefix: &str, id: &str, size: i32) {
     let _ = write!(out, "{size}");
 }
 
-/// Android's `Uri.encode(s)`: letters, digits and `_-!.~'()*` stay, every other character goes as its
-/// UTF-8 bytes in upper-case `%XX`.
+/// Android's `Uri.encode`: keeps alphanumerics and `_-!.~'()*`, percent-encodes other UTF-8 bytes.
 fn uri_encode(out: &mut String, s: &str) {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     for c in s.chars() {
@@ -321,17 +268,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_download_warms_its_covers_at_the_addresses_the_rows_ask_for() {
+    fn cover_keys() {
         let core = crate::Core::new(String::new(), "t".into()).unwrap();
         core.configure(crate::ServerConfig { url: "http://m".into(), user: "u".into(), password: "p".into(), ..Default::default() }).unwrap();
         let urls = core.download_cover_urls(["al 1", "ext-2", "al 1"].map(String::from).to_vec());
         let prefix = core.url_prefix("getCoverArt".into());
         assert_eq!(urls, [format!("{prefix}&id=al%201&size=320"), format!("{prefix}&id=al%201&size=800")]);
         assert_eq!(core.cover_address("al 1".into(), 320), urls[0]);
+
+        // Cover key ignores signature and address.
+        let core = crate::Core::new(String::new(), "t".into()).unwrap();
+        core.configure(crate::ServerConfig { url: "https://keys.example".into(), user: "u".into(), password: "one".into(), ..Default::default() }).unwrap();
+        let before = core.cover_address("pl-6b2d_65f0".into(), 320);
+        core.configure(crate::ServerConfig { url: "https://keys.example".into(), user: "u".into(), password: "two".into(), ..Default::default() }).unwrap();
+        let after = core.cover_address("pl-6b2d_65f0".into(), 320);
+        assert_ne!(before, after);
+        assert_eq!(key(&before), key(&after));
+        assert_eq!(key(&before), b"keys.example/rest/getCoverArt&id=pl-6b2d_65f0&size=320");
+        assert_ne!(key(&before), key(&core.cover_address("pl-6b2d_65f0".into(), 800)));
+        assert_ne!(key(&before), key(&core.cover_address("al-1".into(), 320)));
+        cover_address_alike("http://keys.lan:4533/", "https://keys.example");
+        assert_eq!(key("http://keys.lan:4533/rest/getCoverArt?u=a&t=x&s=y&id=al-1&size=320"), key("https://keys.example/rest/getCoverArt?u=b&id=al-1&size=320"));
+        assert_ne!(key("https://other.example/rest/getCoverArt?id=al-1&size=320"), key("https://keys.example/rest/getCoverArt?id=al-1&size=320"));
     }
 
     #[test]
-    fn wants_skip_providers_repeat_nothing_and_stop_at_the_cap() {
+    fn cover_wants_dedup_and_cap() {
         let arts = ["a", "ext-1", "b", "a", "pl-deezer-2", "c"].map(String::from).to_vec();
         let w = cover_wants(arts.clone(), 500);
         assert_eq!(w.iter().map(|w| (w.id.as_str(), w.size)).collect::<Vec<_>>(), [("a", 320), ("a", 800), ("b", 320), ("b", 800), ("c", 320), ("c", 800)]);
@@ -339,11 +301,11 @@ mod tests {
     }
 
     #[test]
-    fn provider_covers_are_told_by_the_id_alone() {
+    fn provider_cover_detection() {
         for (url, provider) in [
             ("https://m.example/rest/getCoverArt.view?u=a&t=b&s=c&id=ext-deezer-song-1&size=320", true),
             ("https://m.example/rest/getCoverArt.view?u=a&id=pl-deezer-12&size=800", true),
-            // Navidrome's own playlists: kept like an album's.
+            // Navidrome's own playlists.
             ("https://m.example/rest/getCoverArt.view?u=a&id=pl-6b2d0c1e-5f7a-4e21-9d3c-0a1b2c3d4e5f_65f0a1b2&size=800", false),
             ("https://m.example/rest/getCoverArt.view?u=a&id=pl-abcdefab-5f7a_0&size=800", false),
             ("&id=pl-12", false),
@@ -366,42 +328,21 @@ mod tests {
     }
 
     #[test]
-    fn a_covers_key_is_its_server_id_and_size_never_its_signature() {
-        let core = crate::Core::new(String::new(), "t".into()).unwrap();
-        core.configure(crate::ServerConfig { url: "https://keys.example".into(), user: "u".into(), password: "one".into(), ..Default::default() }).unwrap();
-        let before = core.cover_address("pl-6b2d_65f0".into(), 320);
-        core.configure(crate::ServerConfig { url: "https://keys.example".into(), user: "u".into(), password: "two".into(), ..Default::default() }).unwrap();
-        let after = core.cover_address("pl-6b2d_65f0".into(), 320);
-        assert_ne!(before, after, "a new password signs it otherwise");
-        assert_eq!(key(&before), key(&after));
-        assert_eq!(key(&before), b"keys.example/rest/getCoverArt&id=pl-6b2d_65f0&size=320");
-        assert_ne!(key(&before), key(&core.cover_address("pl-6b2d_65f0".into(), 800)), "each size its own");
-        assert_ne!(key(&before), key(&core.cover_address("al-1".into(), 320)));
-        // The second address of a server is the first, for its covers; another server stays its own.
-        cover_address_alike("http://keys.lan:4533/", "https://keys.example");
-        assert_eq!(key("http://keys.lan:4533/rest/getCoverArt?u=a&t=x&s=y&id=al-1&size=320"), key("https://keys.example/rest/getCoverArt?u=b&id=al-1&size=320"));
-        assert_ne!(key("https://other.example/rest/getCoverArt?id=al-1&size=320"), key("https://keys.example/rest/getCoverArt?id=al-1&size=320"));
-    }
-
-    #[test]
-    fn neighbours_go_outwards_from_the_skips() {
+    fn near_covers_wanted() {
         assert_eq!(cover_neighbours(5, 4, 6, 3, 100), [4, 6, 7, 3, 8, 2]);
-        // Shuffle: the skips land anywhere; the steps still count from the playing song.
+        // Shuffle: skip targets anywhere, steps still from the current song.
         assert_eq!(cover_neighbours(5, 40, 12, 2, 100), [40, 12, 7, 3]);
         assert_eq!(cover_neighbours(5, 4, 6, 1, 100), [4, 6]);
         assert_eq!(cover_neighbours(5, 4, 6, 0, 100), [4]);
-        // At the ends: nothing before the first song or after the last, and no repeats.
         assert_eq!(cover_neighbours(0, -1, 1, 3, 3), [1, 2]);
         assert_eq!(cover_neighbours(1, 0, 0, 2, 2), [0]);
+
+        // Around lists near and wants.
+        let arts: Vec<Option<String>> = ["a", "b", "c", "ext-d", "b"].iter().map(|s| Some(s.to_string())).chain([None]).collect();
+        let r = around(arts.len() as u32, |i| arts[i as usize].clone(), 1, 0, 2, 3);
+        assert_eq!(r.near, ["b", "a", "c"]);
+        assert_eq!(r.wants.iter().map(|w| (w.id.as_str(), w.size)).collect::<Vec<_>>(), [("a", 320), ("a", 800), ("c", 320), ("c", 800), ("b", 320), ("b", 800)]);
+        assert_eq!(around(0, |_| unreachable!(), -1, -1, -1, 2), CoversAround { near: vec![], wants: vec![] });
     }
 
-    #[test]
-    fn around_the_song_playing_from_the_queue_itself() {
-        let arts: Vec<Option<String>> = ["a", "b", "c", "ext-d", "b"].iter().map(|s| Some(s.to_string())).chain([None]).collect();
-        let r = around(&arts, 1, 0, 2, 3);
-        assert_eq!(r.near, ["b", "a", "c"], "the playing song's cover first, then the skips' targets");
-        // Ahead: 0, 2, 3, then 4 (a second copy of b) and 5 (no cover): each cover once, providers left out.
-        assert_eq!(r.wants.iter().map(|w| (w.id.as_str(), w.size)).collect::<Vec<_>>(), [("a", 320), ("a", 800), ("c", 320), ("c", 800), ("b", 320), ("b", 800)]);
-        assert_eq!(around(&[], -1, -1, -1, 2), CoversAround { near: vec![], wants: vec![] }, "an empty queue");
-    }
 }

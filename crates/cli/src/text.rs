@@ -1,6 +1,4 @@
-//! What the terminal client writes about numbers and says in words: times, sizes, decibels, counts and
-//! captions, in plain English for a terminal. The core hands over data and kinds; wording them is each
-//! client's own (the Android app's are its string resources). Numbers are written with a point.
+//! The terminal client's English: formatted times, sizes, decibels, counts, captions and messages.
 
 use nori_core::beat_model::BeatFailure;
 use nori_core::lyrics_sources::LyricsOrigin;
@@ -9,9 +7,13 @@ use nori_core::transport::{FailureKind, NetError};
 use nori_core::{AlbumDetail, PlaylistDetail, PresetKind, Song};
 
 /// "3:07", or "1:02:03" from an hour.
-pub fn duration(seconds: i64) -> String {
-    let s = seconds;
+pub fn duration(s: i64) -> String {
     if s >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
+}
+
+/// A playback position or length in ms, as [`duration`].
+pub fn clock(ms: i64) -> String {
+    duration(ms.max(0) / 1000)
 }
 
 /// "1 song", "12 songs".
@@ -64,8 +66,8 @@ pub fn albums(n: u32) -> String {
     count(n as u64, "album", "albums")
 }
 
-/// Java's `%.{places}f` as the app writes it with a point: halves round up on the shortest decimal form
-/// (62.5 is "63"), which Rust's own `{:.1}` does not do.
+/// `v` with `places` decimals, halves rounded up on the shortest decimal form like Java's `%.nf`
+/// (62.5 is "63"; Rust's `{:.0}` rounds to even).
 pub fn fixed(v: f64, places: usize, plus: bool) -> String {
     let rounded = half_up(v, places);
     let body = format!("{:.*}", places, rounded.abs());
@@ -169,15 +171,10 @@ pub fn lyrics_origin(origin: LyricsOrigin) -> &'static str {
     }
 }
 
-/// The lyrics' credit: whose words these are when not the server's, and that they are not timed when
-/// they are not. None for the server's own untimed words.
-pub fn lyrics_credit(origin: LyricsOrigin, synced: bool) -> Option<String> {
-    let source = (origin != LyricsOrigin::Server).then(|| lyrics_origin(origin).to_string());
-    if source.is_none() && !synced {
-        return None;
-    }
-    let first = source.or_else(|| synced.then(|| "Timing".to_string()));
-    Some([first, (!synced).then(|| "not timed".to_string())].into_iter().flatten().collect::<Vec<_>>().join(" · "))
+/// The credit line for lyrics from a lyrics service: "LRCLIB", "LRCLIB · not timed".
+pub fn lyrics_credit(origin: LyricsOrigin, synced: bool) -> String {
+    let source = lyrics_origin(origin);
+    if synced { source.to_string() } else { format!("{source} · not timed") }
 }
 
 /// A built-in equalizer curve's name.
@@ -211,8 +208,7 @@ pub fn beat_failure(why: BeatFailure) -> &'static str {
     }
 }
 
-/// A failure of the server or the network, in words a person can act on: a kind with words of its own
-/// says them, anything else says what the platform said.
+/// A server or network failure in actionable words; unknown transport failures show their detail.
 pub fn net_error(e: &NetError) -> String {
     let said = match e {
         NetError::Transport { kind, .. } => match kind {
@@ -241,9 +237,12 @@ pub fn net_error(e: &NetError) -> String {
     said.to_string()
 }
 
-/// The server search failed and the offline answer stays.
+/// The server search failed; the offline results stay.
 pub fn search_fallback(reason: Option<&str>) -> String {
-    format!("Server search failed: {} — showing offline results", reason.unwrap_or("null"))
+    match reason {
+        Some(r) => format!("Server search failed: {r} — showing offline results"),
+        None => "Server search failed — showing offline results".into(),
+    }
 }
 
 #[cfg(test)]
@@ -251,7 +250,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn numbers_as_the_terminal_writes_them() {
+    fn words() {
         assert_eq!((duration(0), duration(187), duration(3723)), ("0:00".into(), "3:07".into(), "1:02:03".into()));
         assert_eq!((signed_db(-0.0), signed_db(3.25), signed_db(-1.0)), ("+0.0".into(), "+3.3".into(), "-1.0".into()));
         assert_eq!((fixed(0.15, 1, false), fixed(62.5, 0, false), fixed(9.96, 1, false)), ("0.2".into(), "63".into(), "10.0".into()));
@@ -263,10 +262,8 @@ mod tests {
         assert_eq!((songs_caption(1, 200), albums(2)), ("1 song · 3:20".into(), "2 albums".into()));
         let s = Song { suffix: "flac".into(), bit_depth: 24, sampling_rate: 96000, ..Default::default() };
         assert_eq!(quality(&s).as_deref(), Some("FLAC 24/96.0"));
-    }
 
-    #[test]
-    fn failures_are_worded_for_people() {
+        // Net errors.
         let t = |kind, detail: Option<&str>| net_error(&NetError::Transport { kind, detail: detail.map(str::to_string) });
         assert_eq!(t(FailureKind::Metered, None), "This server is set to Wi-Fi only");
         assert_eq!(t(FailureKind::UnknownHost, Some("x")), "Server not found. Check the address.");
@@ -275,12 +272,10 @@ mod tests {
         assert_eq!(net_error(&NetError::Api { code: 40, reason: "x".into() }), "Wrong user name or password.");
         assert_eq!(net_error(&NetError::Api { code: 70, reason: "gone".into() }), "gone");
         assert!(net_error(&NetError::Parse { reason: "x".into() }).starts_with("That address answered"));
+
+        // Lyrics credit says untimed.
+        assert_eq!(lyrics_credit(LyricsOrigin::Lrclib, true), "LRCLIB");
+        assert_eq!(lyrics_credit(LyricsOrigin::Lrclib, false), "LRCLIB · not timed");
     }
 
-    #[test]
-    fn the_lyrics_corner_says_whose_words_and_whether_timed() {
-        assert_eq!(lyrics_credit(LyricsOrigin::Server, true).as_deref(), Some("Timing"));
-        assert_eq!(lyrics_credit(LyricsOrigin::Server, false), None);
-        assert_eq!(lyrics_credit(LyricsOrigin::Lrclib, false).as_deref(), Some("LRCLIB · not timed"));
-    }
 }

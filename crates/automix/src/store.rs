@@ -1,5 +1,4 @@
-//! The `track_analysis` table and the streaming analyser that feeds it from the playback path. The
-//! core's calls around the table, on its own database, are the core's (its automix.rs).
+//! The `track_analysis` and `vocal_curve` tables, and the streaming analyser that feeds them.
 
 use nori_model::TrackAnalysis;
 use nori_player::automix::vocal::VocalCurve;
@@ -125,10 +124,8 @@ pub fn get(c: &Connection, song_id: &str) -> rusqlite::Result<Option<TrackAnalys
         .optional()
 }
 
-/// Stores a fresh classical analysis without losing what Beat This! already found in the same file: its grids stay
-/// at the ends where it was sure, and where it was not, the row still says it has looked. A song measured again
-/// (a new analysis version, or the playback tap and the measurer both finishing it) does not need the model again.
-/// Returns the row as stored.
+/// Stores a fresh classical analysis, keeping the Beat This! grids and "model has looked" marks of the stored row
+/// (`beats::carry`). Returns the row as stored.
 pub fn put_measured(c: &Connection, mut a: TrackAnalysis) -> rusqlite::Result<TrackAnalysis> {
     if let Some(old) = get(c, &a.song_id)? {
         super::beats::carry(&old, &mut a);
@@ -137,20 +134,26 @@ pub fn put_measured(c: &Connection, mut a: TrackAnalysis) -> rusqlite::Result<Tr
     Ok(a)
 }
 
-/// Keeps a song's vocal activity curve (nori-player automix/vocal.rs) beside its analysis, for checking
-/// synced lyrics against the audio: a byte per 58 ms, about a kilobyte a minute.
+/// Stores a whole song's measurement: its analysis (keeping the beat model's grids) and vocal curve.
+pub fn put_finished(c: &Connection, song_id: &str, features: &crate::analysis::Features) -> rusqlite::Result<TrackAnalysis> {
+    let stored = put_measured(c, crate::finish(song_id, features).track)?;
+    put_voice(c, song_id, &features.voice_curve())?;
+    Ok(stored)
+}
+
+/// Stores a song's vocal activity curve (`vocal.rs`), used to check synced lyrics against the audio.
 pub fn put_voice(c: &Connection, song_id: &str, curve: &VocalCurve) -> rusqlite::Result<()> {
     c.prepare_cached("INSERT OR REPLACE INTO vocal_curve(server, song_id, curve) VALUES(sid(), ?1, ?2)")?.execute(params![song_id, curve.encode()]).map(|_| ())
 }
 
-/// A song's vocal activity curve; None when it has none, or one in a form no longer read.
+/// A song's vocal activity curve; None when absent or stored in an old format.
 pub fn get_voice(c: &Connection, song_id: &str) -> rusqlite::Result<Option<VocalCurve>> {
     let blob: Option<Vec<u8>> = c.prepare_cached("SELECT curve FROM vocal_curve WHERE server=sid() AND song_id=?1")?.query_row([song_id], |r| r.get(0)).optional()?;
     Ok(blob.and_then(|b| VocalCurve::decode(&b)))
 }
 
-/// Which of `ids` have a current analysis with an end the beat model has not looked at yet, in the order given.
-/// Songs with no current analysis are left out: they need measuring first.
+/// The `ids` with a current analysis the beat model has not yet looked at, in order. Songs without a current
+/// analysis are left out.
 pub fn neural_missing(c: &Connection, ids: &[String]) -> rusqlite::Result<Vec<String>> {
     let mut out = Vec::new();
     for id in ids {
@@ -161,7 +164,7 @@ pub fn neural_missing(c: &Connection, ids: &[String]) -> rusqlite::Result<Vec<St
     Ok(out)
 }
 
-/// The ids with no row, or a row from an older analysis version, in the order given.
+/// The `ids` with no row or a row from an older analysis version, in order.
 pub fn missing(c: &Connection, ids: &[String]) -> rusqlite::Result<Vec<String>> {
     let mut st = c.prepare_cached("SELECT analysis_version FROM track_analysis WHERE server=sid() AND song_id=?1")?;
     let mut out = Vec::new();
@@ -174,8 +177,7 @@ pub fn missing(c: &Connection, ids: &[String]) -> rusqlite::Result<Vec<String>> 
     Ok(out)
 }
 
-/// A song measured as it is decoded: fed buffer by buffer, then finished into the store (the core's
-/// `analysis_finish_whole`).
+/// A song measured as it is decoded, fed buffer by buffer.
 pub struct AnalysisStream {
     a: Analyzer,
     channels: usize,
@@ -192,7 +194,6 @@ impl AnalysisStream {
         self.a.feed_interleaved(x, self.channels, |v| v);
     }
 
-    /// The analyser fed, for finishing it into the store.
     pub fn into_analyzer(self) -> Analyzer {
         self.a
     }

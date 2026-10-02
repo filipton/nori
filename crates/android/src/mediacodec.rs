@@ -1,26 +1,15 @@
-//! HE-AAC (AAC+, SBR; v2 with PS) for the Rust engine, decoded by the platform's own AAC decoder through
-//! the NDK's MediaCodec (`libmediandk`), lent to `nori_player::decode` ([`lend`]) so that a station's
-//! treble is heard: symphonia decodes only the core.
-//!
-//! The NDK's C API is used rather than MediaCodec through JNI: no Java object per packet and no thread of
-//! ours. It is driven synchronously on the thread that decodes (the engine's, in its bursts): a packet
-//! goes into one of the codec's input buffers and what came out is taken from its output buffers, waiting
-//! at most [`WAIT_US`] for it. Nothing is allocated here per packet: the packet is copied into the codec's
-//! own buffer, and its output converted straight into the caller's (kept) buffer. MediaCodec's own
-//! message thread in this process still answers each call, as it does for ExoPlayer's MediaCodec path.
-//!
-//! A stream is set up as the demuxer states it (AAC-LC at the core's rate for SBR signalled only inside
-//! the stream, as ADTS radio says it): the platform's decoder finds the SBR and PS itself and says the
-//! real rate and channels in its output format, which is what the engine then plays at.
+//! HE-AAC (SBR, PS) through the NDK's MediaCodec, registered with `nori_player::decode` (symphonia only
+//! decodes the AAC-LC core). Driven synchronously on the decoding thread; no allocation per packet.
+//! Configured as the demuxer states the stream; the decoder detects SBR/PS itself and reports the real
+//! rate and channels in its output format.
 
-/// Lends the platform's HE-AAC decoder to the core's decoder, for the life of the process.
+/// Registers the platform HE-AAC decoder with `nori_player::decode`.
 pub(crate) fn lend() {
     #[cfg(target_os = "android")]
     nori_player::decode::lend_platform_aac(ndk::open);
 }
 
-/// The AudioSpecificConfig of an AAC-LC stream at `rate` with `channels` (what an ADTS header says, as
-/// MediaCodec wants it in `csd-0`); none for a rate AAC has no index for.
+/// AAC-LC AudioSpecificConfig (`csd-0`) for `rate` and `channels`; None for a non-AAC rate.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub(crate) fn lc_config(rate: u32, channels: usize) -> Option<[u8; 2]> {
     const RATES: [u32; 13] = [96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350];
@@ -30,21 +19,15 @@ pub(crate) fn lc_config(rate: u32, channels: usize) -> Option<[u8; 2]> {
     Some(asc.to_be_bytes())
 }
 
-/// Frames of 16-bit or float PCM in `bytes`, appended to `out` as floats.
+/// Appends 16-bit or float little-endian PCM in `bytes` to `out` as floats.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub(crate) fn append_pcm(bytes: &[u8], float: bool, out: &mut Vec<f32>) {
     if float {
-        out.extend(bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])));
+        out.extend(bytes.as_chunks::<4>().0.iter().map(|&b| f32::from_le_bytes(b)));
     } else {
-        out.extend(bytes.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0));
+        out.extend(bytes.as_chunks::<2>().0.iter().map(|&b| i16::from_le_bytes(b) as f32 / 32768.0));
     }
 }
-
-/// How long one call waits for the platform's decoder to hand out what it made of the packet, µs. A
-/// software AAC decoder answers well within it; a decoder that holds a packet back is learnt (see
-/// `lag`) and not waited on again.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
-const WAIT_US: i64 = 20_000;
 
 #[cfg(target_os = "android")]
 mod ndk {
@@ -53,6 +36,9 @@ mod ndk {
     use nori_player::decode::{AacSetup, Fault, PlatformDecoder};
 
     use super::*;
+
+    /// Max wait for a packet's output, µs. A decoder found to hold packets back is not waited on (`lag`).
+    const WAIT_US: i64 = 20_000;
 
     #[repr(C)]
     struct AMediaCodec {
@@ -72,6 +58,7 @@ mod ndk {
     }
 
     const OK: i32 = 0;
+    const BUFFER_FLAG_END_OF_STREAM: u32 = 4;
     const TRY_AGAIN_LATER: isize = -1;
     const OUTPUT_FORMAT_CHANGED: isize = -2;
     const OUTPUT_BUFFERS_CHANGED: isize = -3;
@@ -251,6 +238,21 @@ mod ndk {
             Ok((self.channels, self.rate))
         }
 
+        fn drain(&mut self, out: &mut Vec<f32>) -> Result<(usize, u32), Fault> {
+            // An empty input marked as the end: the decoder hands out all it holds.
+            // SAFETY: plain calls on the started codec; the input buffer is its own, queued empty.
+            unsafe {
+                let idx = AMediaCodec_dequeueInputBuffer(self.codec, WAIT_US);
+                if idx >= 0 && AMediaCodec_queueInputBuffer(self.codec, idx as usize, 0, 0, self.time_us, BUFFER_FLAG_END_OF_STREAM) != OK {
+                    return Err(Fault::Broken);
+                }
+            }
+            while self.pending > 0 && self.take(WAIT_US, out)? {}
+            // Past its end it takes nothing more until flushed.
+            self.reset();
+            Ok((self.channels, self.rate))
+        }
+
         fn reset(&mut self) {
             // SAFETY: a plain call on the started codec; the queued packets are dropped with it.
             unsafe { AMediaCodec_flush(self.codec) };
@@ -274,18 +276,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_adts_stream_is_described_as_the_config_it_would_have() {
+    fn aac_glue() {
         assert_eq!(lc_config(22_050, 2), Some([0x13, 0x90]), "AAC-LC, 22.05 kHz, stereo");
         assert_eq!(lc_config(44_100, 2), Some([0x12, 0x10]));
         assert_eq!(lc_config(24_000, 1), Some([0x13, 0x08]));
         assert_eq!(lc_config(44_000, 2), None);
-    }
 
-    #[test]
-    fn pcm_comes_out_as_floats() {
+        // Append pcm converts to float.
         let mut out = Vec::new();
         append_pcm(&[0x00, 0x40, 0x00, 0xc0], false, &mut out);
         append_pcm(&0.25f32.to_le_bytes(), true, &mut out);
         assert_eq!(out, [0.5, -0.5, 0.25]);
     }
+
 }

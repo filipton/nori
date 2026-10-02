@@ -42,7 +42,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.nori.music.app.vm.SettingsViewModel
 import dev.nori.music.ffi.settings.EqLevel
 import dev.nori.music.ffi.settings.EqMode
-import dev.nori.music.ffi.queue.equalizerTuning
 import dev.nori.music.ffi.settings.SoundBand
 import dev.nori.music.ffi.settings.BandChannel
 import dev.nori.music.ffi.model.EqKind
@@ -79,35 +78,6 @@ fun EqualizerScreen(vm: SettingsViewModel) {
     val nav = LocalNav.current
     var importing by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf(-1) }
-    // Only while this screen is open does the player give up its deep buffer for instant response.
-    // Low-latency mode costs a rebuild of the audio output, which is a small drop in the sound. Opening
-    // this screen to look is not a reason to pay it - the first change to a band is. That used to happen
-    // on entry, and on a DAC it was a noticeable break in the music just for opening the page.
-    //
-    // And only while this screen is in sight. The page stays composed under the player when the player is
-    // opened over it, so "this screen is composed" held the shallow buffer - with its wakeups and a burst
-    // of CPU that can starve it - for as long as the player was open, and gave it up with a gap in the
-    // sound on some later close. Covered, left or with the app in the background, the deep buffer comes
-    // back, and a new change is needed before it is traded again. The service owns the switch (it passes
-    // on only real changes, and drops it when the app lets go of it); this screen only says what it wants.
-    val sheet = LocalPlayerSheet.current
-    var resumed by remember { mutableStateOf(false) }
-    androidx.lifecycle.compose.LifecycleResumeEffect(Unit) { resumed = true; onPauseOrDispose { resumed = false } }
-    val covered by remember(sheet) { androidx.compose.runtime.derivedStateOf { sheet.isOpen || sheet.progress.value > 0f } }
-    val inSight = resumed && !covered
-    val touched = remember { mutableStateOf(false) }
-    val settled = remember { mutableStateOf(false) }
-    // Whether a change counts, and whether the shallow buffer is wanted, are the core's
-    // (rules.rs equalizer_tuning); whether the screen is in sight is this screen's own.
-    LaunchedEffect(p.eqBands, p.eqGraphic, p.eqMode, p.eqPreampDb, p.crossfeedDb, p.balance) {
-        if (!settled.value) { settled.value = true; return@LaunchedEffect }
-        if (equalizerTuning(inSight, true, p.eqEnabled)) touched.value = true
-    }
-    LaunchedEffect(inSight) { if (!inSight) touched.value = false }
-    val want = remember(inSight, touched.value, p.eqEnabled) { equalizerTuning(inSight, touched.value, p.eqEnabled) }
-    val sent = remember { booleanArrayOf(false) }
-    LaunchedEffect(want) { if (want != sent[0]) { sent[0] = want; vm.setTuning(want) } }
-    DisposableEffect(Unit) { onDispose { if (sent[0]) { sent[0] = false; vm.setTuning(false) } } }
 
     NoriDialog(importing, { importing = false }) { ImportDialog(vm) { importing = false } }
     NoriDialog(p.eqBands.getOrNull(editing), { editing = -1 }) { band -> BandDialog(band, { b -> vm.setBand(editing, b) }, { vm.removeBand(editing); editing = -1 }) { editing = -1 } }

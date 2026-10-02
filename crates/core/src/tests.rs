@@ -8,9 +8,10 @@ const SEARCH: &str = r#"{"subsonic-response":{"status":"ok","version":"1.16.1","
          {"id":42,"title":"Numeric"}]}}}"#;
 
 #[test]
-fn search_parses_indexes_and_skips_external() {
+fn search_indexes_skip_external() {
     let core = Core::new(String::new(), "t".into()).unwrap();
     let r = core.parse_search(SEARCH.into()).unwrap();
+    core.ingest_search(SEARCH.into()).unwrap();
     assert_eq!(r.songs.len(), 3);
     assert!(r.artists[0].starred);
     assert!(r.songs[1].is_external);
@@ -53,11 +54,8 @@ fn queue_and_cache_round_trip() {
 
 #[test]
 fn synced_lyrics_preferred() {
-    let core = Core::new(String::new(), "t".into()).unwrap();
-    let l = core
-        .parse_lyrics(r#"{"subsonic-response":{"status":"ok","lyricsList":{"structuredLyrics":[
-          {"synced":false,"line":[{"value":"plain"}]},{"synced":true,"line":[{"start":1500,"value":"timed"}]}]}}}"#.into())
-        .unwrap();
+    let l = crate::lyrics::build(crate::parse(r#"{"subsonic-response":{"status":"ok","lyricsList":{"structuredLyrics":[
+          {"synced":false,"line":[{"value":"plain"}]},{"synced":true,"line":[{"start":1500,"value":"timed"}]}]}}}"#.as_bytes()).unwrap().lyrics_list.unwrap_or_default().structured_lyrics);
     assert!(l.synced);
     assert_eq!((l.lines[0].start_ms, l.lines[0].text.as_str(), l.lines[0].words.len()), (1500, "timed", 1));
 }
@@ -93,20 +91,9 @@ fn autoeq_preset_is_read() {
 }
 
 #[test]
-fn pending_calls_replay_in_order() {
+fn browse_sorts_filters_decades() {
     let core = Core::new(String::new(), "t".into()).unwrap();
-    core.pending_add("star".into(), vec![Param { key: "id".into(), value: "a b".into() }]).unwrap();
-    core.pending_add("scrobble".into(), vec![]).unwrap();
-    let l = core.pending_list().unwrap();
-    assert_eq!((l.len(), l[0].endpoint.as_str(), l[0].params[0].value.as_str()), (2, "star", "a b"));
-    core.pending_done(l[0].row_id).unwrap();
-    assert_eq!(core.pending_list().unwrap()[0].endpoint, "scrobble");
-}
-
-#[test]
-fn browse_sorts_filters_and_groups_by_decade() {
-    let core = Core::new(String::new(), "t".into()).unwrap();
-    core.parse_search(r#"{"subsonic-response":{"status":"ok","searchResult3":{"song":[
+    core.ingest_search(r#"{"subsonic-response":{"status":"ok","searchResult3":{"song":[
       {"id":"a","title":"beta","year":1994,"starred":"2020-01-01"},{"id":"b","title":"Alpha","year":2003},{"id":"c","title":"gamma","year":1999}]}}}"#.into()).unwrap();
     let by_title: Vec<String> = core.browse_songs("title".into(), false, false, 0, 0, 0, 10).unwrap().into_iter().map(|s| s.title).collect();
     assert_eq!(by_title, ["Alpha", "beta", "gamma"]);

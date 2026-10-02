@@ -52,7 +52,7 @@ import kotlinx.coroutines.withContext
 class PlaybackService : MediaLibraryService() {
     companion object {
         const val CMD_SLEEP = "nori.sleep"
-        const val CMD_TUNING = "nori.tuning"
+        const val CMD_IN_SIGHT = "nori.inSight"
         /** The notification's and lock screen's heart: favourite or unfavourite the current song. */
         const val CMD_FAVOURITE = "nori.favourite"
         /** The notification's and lock screen's shuffle toggle. */
@@ -116,6 +116,12 @@ class PlaybackService : MediaLibraryService() {
          * now came from kept Play instead of Pause until the next pause or skip. Set by PlayerConnection.
          */
         @Volatile var onQueueSet: (() -> Unit)? = null
+        /**
+         * The engine said it landed a jump (its position event, on the main thread). A seek held until then
+         * is let go at once rather than at media3's next event: the landing changes nothing the controller
+         * has not already shown, so none may come until the song changes. Set by PlayerConnection.
+         */
+        @Volatile var onLanded: (() -> Unit)? = null
     }
 
     private lateinit var nori: Nori
@@ -498,10 +504,10 @@ class PlaybackService : MediaLibraryService() {
             // is the core's; each item says how it came.
             val at = index.coerceIn(0, wrappedPlayer.mediaItemCount).toUInt()
             // An undo puts the song back where it was, if the core still has it as the one taken out.
-            val back = mediaItems.singleOrNull()?.takeIf { it.isRestored() }?.let { dev.nori.music.ffi.queue.playlistRestore(it.mediaId) }?.takeIf { it.at >= 0 }
+            val back = mediaItems.singleOrNull()?.takeIf { it.isRestored() }?.let { dev.nori.music.ffi.queue.playlistRestore(it.mediaId) }?.takeIf { it.at != null }
             // The page they are all the songs of, if any (an album added whole: MediaItems.origin).
             val c = back ?: dev.nori.music.ffi.queue.playlistTake(at, ids(mediaItems), mediaItems.map { it.queuedAs() ?: Hand.NO }, mediaItems.first().origin())
-            super.addMediaItems(c.at, mediaItems)
+            super.addMediaItems(c.at?.toInt() ?: at.toInt(), mediaItems)
         }
 
         // A fresh evening: the parked online queue from a bridge is not part of this request.
@@ -519,14 +525,14 @@ class PlaybackService : MediaLibraryService() {
             // The page it was started from, if any (MediaItems.origin): a new queue replaces the last one's.
             val origin = mediaItems.firstOrNull()?.origin()
             val c = if (ordered) dev.nori.music.ffi.queue.playlistSetOrdered(ids(mediaItems), origin)
-            else dev.nori.music.ffi.queue.playlistSet(ids(mediaItems), startIndex.coerceAtMost(mediaItems.size - 1), wrappedPlayer.shuffleModeEnabled, origin)
+            else dev.nori.music.ffi.queue.playlistSet(ids(mediaItems), startIndex.coerceAtMost(mediaItems.size - 1).takeIf { it >= 0 }?.toUInt(), wrappedPlayer.shuffleModeEnabled, origin)
             if (ordered && wrappedPlayer.shuffleModeEnabled) super.setShuffleModeEnabled(false)
-            super.setMediaItems(mediaItems, c.at.coerceAtLeast(0), if (startIndex == C.INDEX_UNSET) C.TIME_UNSET else startPositionMs)
+            super.setMediaItems(mediaItems, c.at?.toInt() ?: 0, if (startIndex == C.INDEX_UNSET) C.TIME_UNSET else startPositionMs)
             onQueueSet?.invoke()
         }
         override fun clearMediaItems() {
             offlineBridge?.abandon()
-            dev.nori.music.ffi.queue.playlistSet(emptyList(), -1, false, null)
+            dev.nori.music.ffi.queue.playlistSet(emptyList(), null, false, null)
             super.clearMediaItems()
             onQueueSet?.invoke()
         }
@@ -573,7 +579,7 @@ class PlaybackService : MediaLibraryService() {
     private fun applyEdit(e: dev.nori.music.ffi.queue.QueueEdit) {
         for (k in e.remove.indices step 2) player.removeMediaItems(e.remove[k].toInt(), e.remove[k + 1].toInt())
         if (e.songs.isNotEmpty()) player.addMediaItems(e.at.toInt(), held(e.songs))
-        if (e.seek >= 0) { player.seekTo(e.seek, C.TIME_UNSET); player.prepare(); player.play() }
+        e.seek?.let { player.seekTo(it.toInt(), C.TIME_UNSET); player.prepare(); player.play() }
     }
 
     /**
@@ -599,7 +605,7 @@ class PlaybackService : MediaLibraryService() {
         val fresh = runCatching { nori.library.autofill() }.getOrNull()
         val songs = fresh?.songs.orEmpty()
         // Player work stays on this scope's main dispatcher.
-        if (dev.nori.music.ffi.queue.autofillArrived(songs.size.toUInt())) {
+        if (nori.library.autofillArrived(songs.size.toUInt())) {
             // Where they come from, as the core says: an album from its page (played as an album, as its Add
             // to queue does), a shuffle's albums from the shuffle.
             controls.addMediaItems(startedFrom(held(songs), fresh?.from))
@@ -662,26 +668,30 @@ class PlaybackService : MediaLibraryService() {
 
     // ---- session: custom commands, Android Auto browsing, voice search ----
 
-    /** The controller whose screen has the shallow buffer on, or null: one owner, so it cannot be left on. */
-    private var tuner: MediaSession.ControllerInfo? = null
+    /** Controllers whose screen is in sight: the app's while it is started, a car's while it is connected. */
+    private val inSight = mutableSetOf<MediaSession.ControllerInfo>()
 
-    /** The equalizer screen is being tuned ([on]) or no longer is. Only a change is passed on. */
-    private fun tune(on: Boolean, controller: MediaSession.ControllerInfo?) {
-        if (on == (tuner != null)) { if (on) tuner = controller; return }
-        tuner = if (on) controller else null
-        // The player's own pipeline keeps the rule (nori_player::transport::Chain::tuning): the track made
-        // shallow in place, so a band's move is heard within half a second, and deep again after.
-        player.setTuning(on)
-        observer?.tuning(on)
+    /**
+     * [controller]'s screen came in sight ([on]) or left it; the player hears only when whether any is
+     * changes. While one is, the track holds a fraction of a second, so a sound change is heard at once
+     * (crates/android/src/track.rs); with none, the deep buffer that lets the phone sleep.
+     */
+    private fun inSight(controller: MediaSession.ControllerInfo, on: Boolean) {
+        val was = inSight.isNotEmpty()
+        if (on) inSight += controller else inSight -= controller
+        if (inSight.isNotEmpty() == was) return
+        player.setForeground(!was)
+        observer?.shallow(!was)
     }
 
     private inner class Callback : MediaLibrarySession.Callback {
         override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
-            val commands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon().add(SessionCommand(CMD_SLEEP, Bundle.EMPTY)).add(SessionCommand(CMD_TUNING, Bundle.EMPTY))
+            val commands = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon().add(SessionCommand(CMD_SLEEP, Bundle.EMPTY)).add(SessionCommand(CMD_IN_SIGHT, Bundle.EMPTY))
                 .add(SessionCommand(CMD_FAVOURITE, Bundle.EMPTY)).add(SessionCommand(CMD_SHUFFLE, Bundle.EMPTY))
                 .add(SessionCommand(CMD_FILL_NEXT, Bundle.EMPTY)).add(SessionCommand(CMD_REPEAT, Bundle.EMPTY)).add(SessionCommand(CMD_RADIO, Bundle.EMPTY))
                 .add(SessionCommand(CarTree.CMD_ITEM_NEXT, Bundle.EMPTY)).add(SessionCommand(CarTree.CMD_ITEM_QUEUE, Bundle.EMPTY))
                 .add(SessionCommand(CarTree.CMD_ITEM_FAVOURITE, Bundle.EMPTY)).add(SessionCommand(CarTree.CMD_ITEM_DOWNLOAD, Bundle.EMPTY)).build()
+            if (session.isAutoCompanionController(controller) || session.isAutomotiveController(controller)) inSight(controller, true)
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session).setAvailableSessionCommands(commands).build()
         }
 
@@ -709,7 +719,7 @@ class PlaybackService : MediaLibraryService() {
             }
             if (command.customAction == CMD_SHUFFLE) controls.shuffleModeEnabled = !player.shuffleModeEnabled
             if (command.customAction == CMD_FILL_NEXT) fillThenNext()
-            if (command.customAction == CMD_TUNING) tune(args.getBoolean(ARG_ON), controller)
+            if (command.customAction == CMD_IN_SIGHT) inSight(controller, args.getBoolean(ARG_ON))
             if (command.customAction == CMD_REPEAT) controls.repeatMode = when (player.repeatMode) {
                 Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
                 Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
@@ -720,11 +730,10 @@ class PlaybackService : MediaLibraryService() {
             return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
         }
 
-        // The screen that asked for the shallow buffer has gone with its controller (the app's process
-        // died, or it let go of the service): nobody is tuning any more, so the deep buffer comes back
-        // rather than staying shallow for as long as the service lives.
+        // A screen in sight goes with its controller: the app stopped (it lets go of the service), its
+        // process died, or the car disconnected.
         override fun onDisconnected(session: MediaSession, controller: MediaSession.ControllerInfo) {
-            if (tuner == controller) tune(false, null)
+            inSight(controller, false)
         }
 
         override fun onAddMediaItems(session: MediaSession, controller: MediaSession.ControllerInfo, items: MutableList<MediaItem>): ListenableFuture<MutableList<MediaItem>> {
@@ -756,10 +765,11 @@ class PlaybackService : MediaLibraryService() {
         override fun onGetChildren(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, parentId: String, page: Int, pageSize: Int, params: LibraryParams?): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> =
             scope.future {
                 val found = runCatching {
-                    if (parentId == nori.client.browseRoot().id) nori.client.carRoot(rootLimit.toUInt(), offline()) else nori.client.browseChildren(parentId)
+                    if (parentId == nori.client.browseRoot().id) nori.client.carRoot(rootLimit.toUInt(), offline(), page.toUInt(), pageSize.toUInt())
+                    else nori.client.browseChildren(parentId, page.toUInt(), pageSize.toUInt())
                 }.getOrNull()
                 if (found == null || found.failed) return@future failure(unreachable(), params)
-                listed(parentId, found, page, pageSize, params)
+                listed(parentId, found, params)
             }
 
         override fun onSearch(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, query: String, params: LibraryParams?): ListenableFuture<LibraryResult<Void>> {
@@ -772,9 +782,9 @@ class PlaybackService : MediaLibraryService() {
 
         override fun onGetSearchResult(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, query: String, page: Int, pageSize: Int, params: LibraryParams?): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> =
             scope.future {
-                val found = runCatching { nori.client.carSearch(query) }.getOrNull()
+                val found = runCatching { nori.client.browseChildren("search:$query", page.toUInt(), pageSize.toUInt()) }.getOrNull()
                 if (found == null || found.failed) return@future failure(unreachable(), params)
-                listed("search:$query", found, page, pageSize, params)
+                listed("search:$query", found, params)
             }
 
         /**
@@ -799,11 +809,11 @@ class PlaybackService : MediaLibraryService() {
         else -> null
     }
 
-    /** Page [page] of [found], folder [parent]'s, as the car's rows; the songs kept for a later pick by bare id. */
-    private fun listed(parent: String, found: dev.nori.music.ffi.library.BrowsePage, page: Int, pageSize: Int, params: LibraryParams?): LibraryResult<ImmutableList<MediaItem>> {
+    /** A page of folder [parent], [found], as the car's rows; the songs kept for a later pick by bare id. */
+    private fun listed(parent: String, found: dev.nori.music.ffi.library.BrowsePage, params: LibraryParams?): LibraryResult<ImmutableList<MediaItem>> {
         found.songs.forEach { served.put(it.id, item(it)) }
         val rows = car.items(parent, found) { s -> served.get(s.id) ?: item(s) }
-        return LibraryResult.ofItemList(rows.drop(page * pageSize).take(pageSize), params)
+        return LibraryResult.ofItemList(rows, params)
     }
 
     /** A queue for the car: [q]'s songs as the player's items, from its song, shuffled when it asks. */
@@ -926,8 +936,8 @@ interface PlaybackObserver {
     /** Playback failed, in the player's words. */
     fun error(message: String)
 
-    /** The equalizer screen's tuning mode came on or off. */
-    fun tuning(on: Boolean)
+    /** The output's shallow buffer (the app in sight) came on or off. */
+    fun shallow(on: Boolean)
 
     /** The user pressed next or previous (the session's buttons: the app, the notification, a headset) on queue place [index]. */
     fun skipped(index: Int) {}

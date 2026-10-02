@@ -1,9 +1,6 @@
-//! An output that writes a WAV file instead of playing: a device with a clock of its own, running
-//! `pace` times faster than real time, so the engine behaves as it does on a sound card (fills its
-//! deep buffer in bursts, holds endings for mixes, sleeps in between) and a queue renders in seconds
-//! on a machine without speakers. It writes what a device would have played, silence where the ring
-//! ran dry included, from the first music to the end of the queue. It writes 16-bit samples, or 32-bit
-//! float ones as a device that plays float would take them.
+//! An output that writes a WAV file: a device clocked `pace` times faster than real time, so the engine
+//! behaves as on a sound card and a queue renders in seconds. Writes what a device would have played
+//! (underruns as silence) from the first music to the end, as 16-bit or float samples.
 
 use std::fs::File;
 use std::io::{BufWriter, Seek, SeekFrom, Write};
@@ -15,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use crate::output::{AudioOutput, Feed, OutputFormat};
 
-/// Frames a pull asks for, as a sound card's period would.
+/// Frames per pull (a sound card's period).
 const PERIOD: usize = 1024;
 
 struct Shared {
@@ -40,7 +37,7 @@ impl WavOutput {
         WavOutput { path: path.into(), pace: pace.max(0.01), float: false, format: None, shared, thread: None }
     }
 
-    /// Float samples instead of 16-bit ones: the file takes what a device playing float would.
+    /// Writes float samples, as a float device would take.
     pub fn in_float(mut self) -> WavOutput {
         self.float = true;
         self
@@ -94,7 +91,7 @@ fn write_file(path: PathBuf, pace: f64, float: bool, mut feed: Feed, shared: Arc
             std::thread::sleep(due - now);
         }
         due += period;
-        // Nothing before the first music, and nothing after the last: what a listener heard.
+        // Skip silence before the first music.
         if !started && feed.available() < PERIOD {
             continue;
         }

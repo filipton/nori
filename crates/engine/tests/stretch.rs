@@ -1,14 +1,9 @@
-//! The place said for a song brought in at another tempo: a beat-matched AutoMix plays the incoming song
-//! faster (here 7.1 %, 84 to 90 BPM) through the mix and eases it back to its own tempo after, while the
-//! output runs at one times. The place the engine says is the song's own time - where in the song's file
-//! the music heard is - at every moment through the mix, the ease back and after, and never jumps back.
-//! The song is 48 kHz into an output opened at 44.1 kHz, as on the phone the report came from.
-//!
-//! The truth is read off the sound itself: the incoming song's left channel is a steady tone and its
-//! right a tone that rises with the place in the song, so the ratio of the two pitches heard says the
-//! place, whatever the tempo, the pitch kept or not, and the output's rate.
+//! The reported position of a song mixed in at another tempo (7.1 % fast, eased back after) must be the
+//! song's own time throughout, never stepping back; 48 kHz into a 44.1 kHz output, as reported from a
+//! phone. The true position is read from the audio: the left channel is a steady tone and the right one
+//! rises with song time, so their pitch ratio gives the position.
 
-mod common;
+use crate::common;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -20,7 +15,7 @@ use std::sync::Arc;
 use nori_engine::{Config, Engine, Event, Library, Located, Settings, SharedQueue, Source};
 use parking_lot::Mutex;
 use nori_player::automix::analysis::Analyzer;
-use nori_player::automix::{mixer, plan};
+use nori_player::automix::plan;
 use nori_player::engine::{Host, Plan};
 use nori_player::pipeline::App;
 use nori_player::sim;
@@ -42,45 +37,24 @@ const SKIP_MS: i64 = 4_000;
 const RAMP_MS: i64 = 5_000;
 const TEMPO: f32 = 1.071;
 
-fn header(w: &mut Vec<u8>, rate: u32, frames: usize) {
-    let data = (frames * 4) as u32;
-    w.extend_from_slice(b"RIFF");
-    w.extend_from_slice(&(36 + data).to_le_bytes());
-    w.extend_from_slice(b"WAVEfmt ");
-    w.extend_from_slice(&16u32.to_le_bytes());
-    w.extend_from_slice(&1u16.to_le_bytes());
-    w.extend_from_slice(&2u16.to_le_bytes());
-    w.extend_from_slice(&rate.to_le_bytes());
-    w.extend_from_slice(&(rate * 4).to_le_bytes());
-    w.extend_from_slice(&4u16.to_le_bytes());
-    w.extend_from_slice(&16u16.to_le_bytes());
-    w.extend_from_slice(b"data");
-    w.extend_from_slice(&data.to_le_bytes());
-}
-
-/// `secs` of silence at `rate`: the outgoing song, so that only the incoming one is measured.
+/// `secs` of silence at `rate`: the outgoing song, so only the incoming one is measured.
 fn silence(rate: u32, secs: f64) -> Vec<u8> {
-    let frames = (rate as f64 * secs) as usize;
-    let mut w = Vec::new();
-    header(&mut w, rate, frames);
-    w.resize(w.len() + frames * 4, 0);
-    w
+    common::wav(rate, &vec![0; (rate as f64 * secs) as usize * 2])
 }
 
-/// `secs` of the two tones at `rate`: the steady one left, the rising one right.
+/// `secs` of two tones at `rate`: a steady one left, a rising one right.
 fn marked(rate: u32, secs: f64) -> Vec<u8> {
     let frames = (rate as f64 * secs) as usize;
-    let mut w = Vec::new();
-    header(&mut w, rate, frames);
-    for k in 0..frames {
-        let t = k as f64 / rate as f64;
-        let l = (t * STEADY * std::f64::consts::TAU).sin();
-        // The phase of a tone whose pitch is BASE + SLOPE * t.
-        let r = ((BASE * t + SLOPE * t * t / 2.0) * std::f64::consts::TAU).sin();
-        w.extend_from_slice(&((l * 8000.0).round() as i16).to_le_bytes());
-        w.extend_from_slice(&((r * 8000.0).round() as i16).to_le_bytes());
-    }
-    w
+    let samples: Vec<i16> = (0..frames)
+        .flat_map(|k| {
+            let t = k as f64 / rate as f64;
+            let l = (t * STEADY * std::f64::consts::TAU).sin();
+            // The phase of a tone whose pitch is BASE + SLOPE * t.
+            let r = ((BASE * t + SLOPE * t * t / 2.0) * std::f64::consts::TAU).sin();
+            [(l * 8000.0).round() as i16, (r * 8000.0).round() as i16]
+        })
+        .collect();
+    common::wav(rate, &samples)
 }
 
 /// The songs as files: `a`, silent, at 44.1 kHz (it opens the output), `b`, marked, at 48 kHz.
@@ -116,8 +90,7 @@ impl Library for Songs {
     }
 }
 
-/// The report's mix: beat-matched out of `a` into `b`, `b` played 7.1 % fast with its pitch kept, and
-/// eased back over five seconds after.
+/// The reported mix: `b` 7.1 % fast with pitch kept, eased back over 5 s.
 fn beat_matched() -> Plan {
     let s = AutoMixSettings { max_transition_s: 23.0, ..Default::default() };
     let t = plan::plan(None, None, (A_SECS * 1000.0) as i64, (B_SECS * 1000.0) as i64, &s);
@@ -126,7 +99,7 @@ fn beat_matched() -> Plan {
         out_start_us: MIX_AT_MS * 1000,
         duration_us: MIX_MS * 1000,
         in_skip_us: SKIP_MS * 1000,
-        mixer: mixer::params(&t),
+        mixer: t.clone(),
         tempo_ratio: TEMPO,
         keep_pitch: true,
         ramp_us: RAMP_MS * 1000,
@@ -188,9 +161,7 @@ impl Rig {
         let clock = Virtual::default();
         let mut app = sim::App::new();
         app.prefs = sim::prefs_off();
-        // The pitch goes with the speed: played faster as a record is, every period of the tones stays
-        // whole, where a speed stage keeping the pitch splices periods out and the tones heard cannot be
-        // measured to a few milliseconds. What is counted as played is the same either way.
+        // Pitch follows speed so tone periods stay whole and measurable.
         let settings = Settings { speed, pitch: speed, ..Settings::default() };
         let events: Arc<Mutex<Vec<Event>>> = Arc::default();
         let told = events.clone();
@@ -204,8 +175,7 @@ impl Rig {
         self.time.run(Duration::from_millis(ms));
     }
 
-    /// The engine's own place now, read from its output afresh: the song heard, the place in it, whether
-    /// a mix is heard, and the pace the place moves at.
+    /// A fresh reading: song, position, mixing, pace.
     fn said(&self) -> (Option<usize>, i64, bool, f32) {
         self.engine.look();
         self.time.clock.settle();
@@ -213,9 +183,7 @@ impl Rig {
         (s.index, s.position_ms, s.mixing, s.pace)
     }
 
-    /// Where in `b` the music heard now is, ms, from the two tones; `None` while `b` is not heard, and
-    /// where a window heard does not say it plainly (two sounds of `b` crossfading into each other, as
-    /// the stretch hands over to the song as it is).
+    /// The true position in `b` now, ms, from the two tones; None when not cleanly measurable.
     fn truth(&self) -> Option<f64> {
         let f = self.card.format()?;
         let heard = self.card.heard.lock();
@@ -225,7 +193,7 @@ impl Rig {
         if frames < 2 * W {
             return None;
         }
-        // The place at the middle of a window of W frames ending `back` windows before the last.
+        // The position at the middle of the window ending `back` windows before the last.
         let at = |back: usize| -> Option<f64> {
             let end = frames - back * W;
             let w = &heard[(end - W) * ch..end * ch];
@@ -239,8 +207,7 @@ impl Rig {
                 if ups.len() < 9 {
                     return None;
                 }
-                // The middle period of eight in a row, averaged: a speed stage splices the song where it
-                // takes a period out or puts one in, and the one period across the splice is off.
+                // Median of eight-period averages, robust to a splice.
                 let mut runs: Vec<f64> = ups.windows(9).map(|w| (w[8] - w[0]) / 8.0).collect();
                 runs.sort_by(f64::total_cmp);
                 Some(1.0 / runs[runs.len() / 2])
@@ -249,14 +216,12 @@ impl Rig {
             Some((ratio * STEADY - BASE) / SLOPE * 1000.0)
         };
         let (before, last) = (at(1)?, at(0)?);
-        // A window apart in the output's time: the song moves on by that times its pace, which is between
-        // one and the tempo times the speed. Anything else is a window that did not measure cleanly.
+        // Consecutive windows must be a plausible pace apart, else the measure is unclean.
         let apart = W as f64 / f.rate as f64 * 1000.0;
         let moved = last - before;
         if !(moved > apart * 0.8 && moved < apart * 1.6) {
             return None;
         }
-        // The end of the last window is heard now: half a window on from its middle, at the pace measured.
         Some(last + moved / 2.0)
     }
 }
@@ -267,10 +232,8 @@ impl Drop for Rig {
     }
 }
 
-/// Plays through the mix and on for a while after, reading the engine's place every 100 ms of the
-/// card's time, and checks it against the place heard: within 50 ms of it at every reading, never back
-/// by more than a hair, and moving at the pace of the song heard. `seek_to`: a seek, a second in, to
-/// that place in `a` (into the mix: the hold then begins late, as the report's did).
+/// Plays through the mix, reading the position every 100 ms: within 50 ms of the truth, never back,
+/// and paced as heard. `seek_to`: a seek into `a` a second in (into the mix: a late hold).
 fn walk(from_ms: i64, speed: f32, seek_to: Option<i64>) {
     let rig = Rig::start(from_ms, speed);
     if let Some(ms) = seek_to {
@@ -305,8 +268,7 @@ fn walk(from_ms: i64, speed: f32, seek_to: Option<i64>) {
                 fails.push(format!("{ms} ms said, {t:.0} ms heard"));
             }
         }
-        // The pace a screen runs the place on at between readings: the tempo times the speed while the
-        // song is heard stretched, the speed once it is its own again.
+        // Stretched, the pace is tempo times speed; after, the speed.
         let tempo = pace as f64 / speed as f64;
         if (tempo - TEMPO as f64).abs() < 0.005 {
             tempo_paced += 1;
@@ -315,51 +277,39 @@ fn walk(from_ms: i64, speed: f32, seek_to: Option<i64>) {
             paced += 1;
         }
     }
-    // Made ahead as the output needs it through the stretch and the conversion: never short.
     let (underruns, dry) = (rig.engine.status().underruns, rig.card.pull.lock().dry);
     assert!(underruns == 0 && dry == 0, "the output ran short: {underruns} underruns, {dry} pulls found the ring short");
     let log = log.join("\n");
     assert!(measured > 100, "b was heard and measured: {measured} times\n{log}");
     assert!(fails.is_empty(), "worst {worst:.0} ms off, {} wrong: {}\n{log}", fails.len(), fails.join("; "));
     assert!(tempo_paced >= 30 && paced >= 30, "the pace said follows the song's: {tempo_paced} readings at the mix's tempo, {paced} at its own\n{log}");
-    // A client that runs the place on at the speed alone is told it again once the song is its own.
+    // Placed is said once the stretch ends.
     let events = rig.events.lock();
     assert!(events.iter().any(|e| matches!(e, Event::Placed { index: 1, .. })), "the place said again after the stretch: {events:?}");
 }
 
 #[test]
-fn through_a_stretched_mix_the_place_said_is_the_place_heard() {
+fn place_through_stretched_mix() {
     walk(MIX_AT_MS - 5_000, 1.0, None);
-}
 
-#[test]
-fn a_seek_into_a_stretched_mix_says_the_place_heard_through_it_and_after() {
-    // The report's: a seek 9.3 s into a 22 s mix, the hold begun late with no sound left in the output.
+    // Place through stretched mix at speed.
+    walk(MIX_AT_MS - 5_000, 1.25, None);
+
+    // Place after seek into stretched mix.
+    // As reported: 9.3 s into a 22 s mix.
     walk(MIX_AT_MS - 5_000, 1.0, Some(MIX_AT_MS + 9_345));
 }
 
+/// The lyrics page through a mix, read per display frame as a phone does, with the output clock briefly
+/// read 60 ms back. Regression: the page switched songs early and its first line refilled repeatedly.
 #[test]
-fn at_a_speed_of_its_own_the_place_said_through_a_stretched_mix_is_the_place_heard() {
-    walk(MIX_AT_MS - 5_000, 1.25, None);
-}
-
-/// The lyrics page through the mix, read as a phone's screen reads it: every display frame, the engine's
-/// last reading run on at its pace (`nori_player::heard::screen_place`), a fresh one asked for once that is
-/// a second old, and the bar's place (`Playhead`) handed to the lyrics' clock. Two seconds into the mix,
-/// while the ending is still the louder, the output's clock is read 60 ms back for a moment, as a phone's
-/// is now and then when its output corrects itself. That was the report's 22 s mix: the page went over to
-/// the incoming song at the wobble, long before it was the louder, its place stood still where the ear was
-/// to land in it, and the screen's place ran on from there and was pulled back to it every few seconds -
-/// the first line filling in word by word, going back and filling again, until the song got there.
-#[test]
-fn a_clock_read_back_a_little_in_a_stretched_mix_puts_neither_the_song_nor_its_lyrics_back() {
+fn lagging_clock_does_not_step_back() {
     use nori_look::lyrics::{Line, LyricClock, LyricTiming, Word};
     use nori_player::heard::{screen_place, HeardTracker, Playhead, Seen};
 
     let rig = Rig::start(MIX_AT_MS - 5_000, 1.0);
     let now = || rig.time.clock.now_ns() / 1_000_000;
-    // The ear takes `b` over near 10.7 s into it; its first line comes a little over a second later, four
-    // words over two seconds, and the next four seconds after that.
+    // `b` takes over near 10.7 s; lines of four words at 12 s and 16 s.
     let line = |start_ms: i64| Line {
         start_ms,
         end_ms: start_ms + 2_000,
@@ -369,7 +319,7 @@ fn a_clock_read_back_a_little_in_a_stretched_mix_puts_neither_the_song_nor_its_l
     };
     let lyrics = LyricClock::new(LyricTiming::new(true, true, [line(12_000), line(16_000)]), 0);
     let (tracker, mut head) = (HeardTracker::new(), Playhead::new());
-    // The engine's last reading: when it was taken on the test's clock, the song, the place and its pace.
+    // The engine's last reading: taken when, song, position, pace.
     let mut last_at = None;
     let (mut read_at, mut index, mut reading, mut pace) = (0i64, None, 0i64, 1.0f32);
     let mut placed: Option<i64> = None;
@@ -377,7 +327,6 @@ fn a_clock_read_back_a_little_in_a_stretched_mix_puts_neither_the_song_nor_its_l
     let (mut fills, mut fails, mut log) = (0, Vec::new(), Vec::new());
     let mix_at = now() + 5_000;
     while now() < mix_at + 25_000 {
-        // Before the takeover, and again after it with the mix still heard.
         let wobble = [2_000, 9_000].iter().any(|&at| (mix_at + at..mix_at + at + 200).contains(&now()));
         rig.card.pull.lock().latency_us = if wobble { 60_000 } else { 0 };
         rig.run(16);

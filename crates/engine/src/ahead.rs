@@ -1,22 +1,13 @@
-//! Songs fetched whole onto the disk ahead of their turn: the one fetcher of the songs coming up for
-//! every client. Which ones and how many is the core's (`Client::precache_targets`: the user's count for
-//! the network the device is on, none on a metered one by default, never a provider's song or one the
-//! downloads have), asked as a song starts or the queue is edited ([`crate::Library::ahead`]), a moment
-//! the network is awake for the next song anyway; the engine's loader fetches that next song itself, and
-//! these are the ones after it. When their turn comes they play from the disk and the network stays
-//! asleep. Where they are kept is a [`Keeping`]: nori-engine's own [`crate::Store`], or a client's cache
-//! that keeps what is read through its [`ByteSource`] (media3's stream cache on Android).
+//! Fetches upcoming songs whole to disk (the songs after the next, which the engine's loader fetches).
+//! The core picks them (`Client::precache_targets`), asked when a song starts or the queue changes
+//! ([`crate::Library::ahead`]), while the network is awake anyway. Kept in a [`Keeping`]: nori-engine's
+//! [`crate::Store`], or a client's cache fed through its [`ByteSource`] (media3 on Android).
 //!
-//! Burst-y, like everything that touches the network here: each song is fetched in one go, as fast as
-//! it comes, in large reads, one after another on a thread that lives only while there is something to
-//! fetch, and then nothing until the next song starts. Never a trickle, never a poll. The songs asked for
-//! replace what was asked before: a song no longer wanted is left half way (what came of it is kept to go
-//! on from, should it be wanted again or the player take it), one still wanted carries on where it is. A song someone else is writing (the player loading it) is left to
-//! them, and one the player comes to take while it is being fetched here is handed over where it got to
-//! ([`Ahead::take_over`]): no byte of it crosses the network twice.
-//!
-//! With AutoMix on, a song is measured as it comes ([`crate::arriving`]), on the same bytes in the same
-//! burst: it is never read back from the disk to be decoded again.
+//! Each song is fetched in one burst on a thread that lives only while there is work. A new list
+//! replaces the old: an unwanted song is left half way (kept to resume), a wanted one carries on. A
+//! song the player is writing is left alone; one it takes mid-fetch is handed over where it got to
+//! ([`Ahead::take_over`]), so no byte is fetched twice. With AutoMix on, songs are measured as they
+//! arrive ([`crate::arriving`]).
 
 use std::collections::HashSet;
 use std::io::Read;
@@ -28,12 +19,12 @@ use parking_lot::{Condvar, Mutex};
 use crate::arriving::Listening;
 use crate::source::{open_watched, ByteSource, Cancel, OpenError};
 
-/// How much is read at a time: the loader's own chunk.
+/// Read size, as the loader's.
 const CHUNK: usize = 256 * 1024;
-/// Keys the player took that are remembered before they are all let go.
+/// Taken keys remembered before they are cleared in bulk.
 const TAKEN_KEPT: usize = 256;
 
-/// A song to fetch ahead: its id, where it comes from and the cache key it is kept under.
+/// A song to fetch ahead: id, URL and cache key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AheadSong {
     pub id: String,
@@ -47,56 +38,55 @@ pub trait Keeping: Send + Sync {
     fn kept(&self, key: &str) -> bool;
     /// Whether someone else is writing `key` now (the player loading it).
     fn busy(&self, key: &str) -> bool;
-    /// An entry to write `key` into as it comes, from where an earlier fetch left it
-    /// ([`Entry::written`]); none when it cannot be made. A cache that keeps what is read through the
-    /// [`ByteSource`] by itself hands out one that only counts.
+    /// An entry to write `key` into, continuing an earlier fetch ([`Entry::written`]). A cache fed by
+    /// the [`ByteSource`] itself returns one that only counts.
     fn entry(&self, key: &str) -> Option<Box<dyn Entry>>;
 }
 
-/// A song being kept as it comes.
+/// A song being written as it arrives.
 pub trait Entry: Send {
-    /// Bytes `from..` of the song; false once the entry was given up.
+    /// Writes bytes `from..`; false once the entry was given up.
     fn write(&mut self, from: u64, bytes: &[u8]) -> bool;
-    /// How much of the song it holds.
+    /// Bytes held.
     fn written(&self) -> u64;
-    /// The song ended at `len` bytes: whether all of it is kept.
+    /// The song ended at `len` bytes; returns whether it is kept whole.
     fn finish(self: Box<Self>, len: u64) -> bool;
-    /// Left half way for the player to go on with: what it holds stays, where the keeping can.
+    /// Left half way: keep what it holds, if the keeping can.
     fn leave(self: Box<Self>) {}
 }
 
-/// What hears a song's bytes as they come (AutoMix's measuring), made per song; none when nothing does.
+/// Makes what hears each song's bytes as they arrive (AutoMix's measuring).
 pub type Takers = Arc<dyn Fn(&AheadSong) -> Option<Listening> + Send + Sync>;
 
 /// The fetching ahead.
 #[derive(Default)]
 pub struct Ahead {
     plan: Mutex<Plan>,
-    /// Woken when a song stops being fetched here, for [`Ahead::take_over`].
+    /// Signalled when a fetch stops ([`Ahead::take_over`]) and when the thread ends ([`Ahead::wait`]).
     cv: Condvar,
-    /// Moves whenever the songs asked for change or one is taken over: read per chunk without the lock.
+    /// Bumped when the list changes or a song is taken over; read per chunk without the lock.
     asked: AtomicU64,
 }
 
 #[derive(Default)]
 struct Plan {
     songs: Vec<AheadSong>,
-    /// Where they go, how they come and who hears them, while there is something to fetch.
+    /// Set while there is work.
     keeping: Option<Arc<dyn Keeping>>,
     bytes: Option<Arc<dyn ByteSource>>,
     takers: Option<Takers>,
-    /// Keys given up on for this list (would not open, broke off): not tried again until it changes.
+    /// Keys given up on for this list.
     failed: HashSet<String>,
-    /// Keys the player has taken over: its own from now on.
+    /// Keys the player took over.
     taken: HashSet<String>,
-    /// The key being fetched now, and its request: called off the moment it is no longer wanted here,
-    /// rather than at its next chunk, which a server that stopped answering never sends.
+    /// The key being fetched and its request, cancelled as soon as it is unwanted (a hung server never
+    /// sends the next chunk).
     current: Option<String>,
     request: Cancel,
     running: bool,
 }
 
-/// How a song's fetch came out.
+/// How a fetch ended.
 #[derive(Debug, PartialEq, Eq)]
 enum Fetched {
     Kept,
@@ -112,9 +102,8 @@ impl Ahead {
         Arc::new(Ahead::default())
     }
 
-    /// Fetches `songs` whole into `keeping` through `bytes`, `takers` hearing each as it comes. Called
-    /// again, the new list replaces the old one; the same list changes nothing; an empty one stops the
-    /// fetching.
+    /// Fetches `songs` whole into `keeping` through `bytes`. A new list replaces the old; the same list
+    /// changes nothing; an empty one stops.
     pub fn ask(self: &Arc<Self>, keeping: Arc<dyn Keeping>, bytes: Arc<dyn ByteSource>, songs: Vec<AheadSong>, takers: Option<Takers>) {
         let mut plan = self.plan.lock();
         if plan.songs == songs {
@@ -122,8 +111,7 @@ impl Ahead {
         }
         plan.songs = songs;
         plan.failed.clear();
-        // What the player took stays its own across lists (it may take a song just as the list moves on),
-        // and is forgotten only in bulk.
+        // Taken keys survive list changes (the player may take one as the list moves on).
         if plan.taken.len() > TAKEN_KEPT {
             plan.taken.clear();
         }
@@ -145,22 +133,30 @@ impl Ahead {
         let me = self.clone();
         if std::thread::Builder::new().name("nori-precache".into()).spawn(move || me.run()).is_err() {
             self.plan.lock().running = false;
+            self.cv.notify_all();
         }
     }
 
-    /// Whether songs are being fetched now: for a test to wait until they are.
+    /// Whether a fetch thread runs.
     pub fn busy(&self) -> bool {
         self.plan.lock().running
     }
 
-    /// Whether the player has asked to take `key` over: for a test to hold a fetch until it has.
+    /// Blocks until no fetch thread runs.
+    pub fn wait(&self) {
+        let mut plan = self.plan.lock();
+        while plan.running {
+            self.cv.wait(&mut plan);
+        }
+    }
+
+    /// Whether the player took `key` over.
     pub fn taken(&self, key: &str) -> bool {
         self.plan.lock().taken.contains(key)
     }
 
-    /// The player takes `key` (to play it, or as the next song): it is not fetched here from now on, and
-    /// one being fetched here is left where it got to, for the player to go on with; returns once it has
-    /// been let go, after a chunk at most.
+    /// The player takes `key`: no longer fetched here; a fetch under way stops where it got to. Returns
+    /// once it stopped (after a chunk at most).
     pub fn take_over(&self, key: &str) {
         let mut plan = self.plan.lock();
         if !plan.taken.contains(key) {
@@ -168,7 +164,7 @@ impl Ahead {
         }
         if plan.current.as_deref() == Some(key) {
             self.asked.fetch_add(1, Ordering::AcqRel);
-            // Waiting on a server that does not answer, it would never let go.
+            // A hung request would never reach its next chunk.
             plan.request.call_off(false);
         }
         while plan.current.as_deref() == Some(key) {
@@ -176,15 +172,14 @@ impl Ahead {
         }
     }
 
-    /// The next song to fetch: the first asked for that is not kept already, being written by someone
-    /// else, taken over or given up on. None ends the thread, and lets go of where they went.
+    /// The first song asked for that is not kept, busy, taken or failed. None ends the thread.
     fn next(&self) -> Option<Job> {
         let (candidates, keeping, bytes, takers) = {
             let plan = self.plan.lock();
             let c: Vec<AheadSong> = plan.songs.iter().filter(|s| !plan.failed.contains(&s.key) && !plan.taken.contains(&s.key)).cloned().collect();
             (c, plan.keeping.clone(), plan.bytes.clone(), plan.takers.clone())
         };
-        // Asked of the keeping without the lock: on Android it is a call into the platform.
+        // Without the lock: on Android the keeping calls into the platform.
         let found = keeping.as_ref().and_then(|k| candidates.into_iter().find(|s| !k.kept(&s.key) && !k.busy(&s.key)));
         let mut plan = self.plan.lock();
         match (found, keeping, bytes) {
@@ -193,7 +188,7 @@ impl Ahead {
                 plan.request = Cancel::new();
                 Some((song, k, b, takers, plan.request.clone()))
             }
-            // The list changed meanwhile: looked at again.
+            // The list changed meanwhile.
             (Some(_), Some(_), Some(_)) => {
                 drop(plan);
                 self.next()
@@ -203,18 +198,16 @@ impl Ahead {
                 plan.keeping = None;
                 plan.bytes = None;
                 plan.takers = None;
+                self.cv.notify_all();
                 None
             }
         }
     }
 
-    /// Whether `key` is still asked for, and not the player's.
-    fn wanted(&self, key: &str) -> Result<(), ()> {
+    /// Whether `key` is still asked for and not the player's.
+    fn wanted(&self, key: &str) -> bool {
         let plan = self.plan.lock();
-        if plan.taken.contains(key) || !plan.songs.iter().any(|s| s.key == key) {
-            return Err(());
-        }
-        Ok(())
+        !plan.taken.contains(key) && plan.songs.iter().any(|s| s.key == key)
     }
 
     fn run(&self) {
@@ -222,7 +215,6 @@ impl Ahead {
             let fetched = self.fetch(&*keeping, &*bytes, &song, takers.as_ref(), &request);
             let mut plan = self.plan.lock();
             plan.current = None;
-            // Left half way because it is no longer wanted, it is not asked for any more either.
             if fetched != Fetched::Kept {
                 plan.failed.insert(song.key);
             }
@@ -230,13 +222,12 @@ impl Ahead {
         }
     }
 
-    /// `song` fetched whole into `keeping`, `takers` hearing it as it comes. A body that breaks is asked
-    /// for again from where it broke, once: a transcode's first answer promises an estimated length, and
-    /// the body breaks where the real one ends, which the answer past it says ([`OpenError::PastEnd`]).
+    /// Fetches `song` whole into `keeping`. A broken body is asked again once from where it broke: a
+    /// transcode breaks where its real end is, which the next answer confirms ([`OpenError::PastEnd`]).
     fn fetch(&self, keeping: &dyn Keeping, bytes: &dyn ByteSource, song: &AheadSong, takers: Option<&Takers>, request: &Cancel) -> Fetched {
         let Some(mut entry) = keeping.entry(&song.key) else { return Fetched::Failed };
         let start = entry.written();
-        // Heard from its first byte only: a song taken up half way is measured once it is whole.
+        // A taker needs every byte from the first.
         let mut taker = if start == 0 { takers.and_then(|t| t(song)) } else { None };
         let mut chunk = vec![0u8; CHUNK];
         let mut asked = self.asked.load(Ordering::Acquire);
@@ -245,12 +236,12 @@ impl Ahead {
             let from = entry.written();
             let body = match open_watched(bytes, &song.url, Some(&song.key), from, request) {
                 Ok(b) if b.start == from => b,
-                // Nothing past what the entry holds: all of the song is there.
+                // Nothing past what the entry holds: complete.
                 Err(OpenError::PastEnd { len }) if from > 0 && len.is_none_or(|l| l == from) => {
                     promised = None;
                     break;
                 }
-                // Called off while it waited for the answer: no longer wanted here, or the player's now.
+                // Cancelled: unwanted, or taken by the player.
                 Err(_) if request.cancelled() && !request.timed_out() => {
                     entry.leave();
                     return Fetched::Left;
@@ -262,15 +253,12 @@ impl Ahead {
             let broke = loop {
                 let now = self.asked.load(Ordering::Acquire);
                 if now != asked {
-                    match self.wanted(&song.key) {
-                        Ok(()) => asked = now,
-                        // Left where it got to: the player may be taking it (asked for as the list moved on), and a
-                        // song wanted again later goes on from there too.
-                        Err(_) => {
-                            entry.leave();
-                            return Fetched::Left;
-                        }
+                    if !self.wanted(&song.key) {
+                        // Kept for the player or a later list to resume.
+                        entry.leave();
+                        return Fetched::Left;
                     }
+                    asked = now;
                 }
                 match reader.read(&mut chunk) {
                     Ok(0) => break false,
@@ -283,7 +271,6 @@ impl Ahead {
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                    // Called off while it waited for bytes: left where it got to, as above.
                     Err(_) if request.cancelled() && !request.timed_out() => {
                         entry.leave();
                         return Fetched::Left;
@@ -298,8 +285,7 @@ impl Ahead {
                 return Fetched::Failed;
             }
         }
-        // Read to a clean end: that is where the song ends, even short of a length the server promised
-        // (an estimate, for a transcode), as the player's loader takes it.
+        // A clean end is the real end, even short of the promised length (a transcode's estimate).
         let len = entry.written();
         if promised.is_some_and(|l| l < len) {
             return Fetched::Failed;
@@ -320,7 +306,6 @@ impl Ahead {
 mod tests {
     use std::io::Cursor;
     use std::sync::mpsc::{channel, Receiver, Sender};
-    use std::time::{Duration, Instant};
 
     use super::*;
     use crate::source::Body;
@@ -328,23 +313,44 @@ mod tests {
 
     const LEN: usize = 600_000;
 
-    /// Every song is `LEN` bytes; each request is counted with where it started; a song named in `held`
-    /// stops after its first chunk until the test lets it go on; `stopped` counts the songs stopped there.
+    /// A count a test waits on.
+    #[derive(Default)]
+    struct Signal(Mutex<u64>, Condvar);
+
+    impl Signal {
+        fn bump(&self) {
+            *self.0.lock() += 1;
+            self.1.notify_all();
+        }
+
+        /// Waits for the next bump, and takes it.
+        fn take(&self) {
+            let mut n = self.0.lock();
+            while *n == 0 {
+                self.1.wait(&mut n);
+            }
+            *n -= 1;
+        }
+    }
+
+    /// Songs of `LEN` bytes; records each request's URL and offset. The `held` song pauses after its
+    /// first chunk until released, bumping `stopped`; a request called off bumps `called_off`.
     #[derive(Default)]
     struct Net {
         asked: Mutex<Vec<String>>,
         from: Mutex<Vec<u64>>,
         held: Mutex<Option<(String, Receiver<()>)>>,
-        stopped: Arc<AtomicU64>,
+        stopped: Arc<Signal>,
+        called_off: Arc<Signal>,
     }
 
-    struct Held(Cursor<Vec<u8>>, Option<Receiver<()>>, Arc<AtomicU64>);
+    struct Held(Cursor<Vec<u8>>, Option<Receiver<()>>, Arc<Signal>);
 
     impl Read for Held {
         fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
             if self.0.position() > 0 {
                 if let Some(go) = self.1.take() {
-                    self.2.fetch_add(1, Ordering::Release);
+                    self.2.bump();
                     let _ = go.recv();
                 }
             }
@@ -362,133 +368,122 @@ mod tests {
             c.set_position(from);
             Ok(Body { start: from, len: Some(LEN as u64), reader: Box::new(Held(c, gate, self.stopped.clone())) })
         }
+
+        fn open_cancellable(&self, url: &str, _key: Option<&str>, from: u64, cancel: &Cancel) -> Result<Body, crate::source::OpenError> {
+            let off = self.called_off.clone();
+            cancel.on_cancel(move || off.bump());
+            self.open(url, from)
+        }
     }
 
-    /// A store in a directory of the test's own, gone with the guard.
+    /// A store in a temporary directory.
     fn store(name: &str) -> (nori_testdir::TempDir, Arc<Store>) {
         let d = nori_testdir::TempDir::new(&format!("ahead-{name}"));
         let s = Store::open(d.path(), 64 << 20, Box::new(Recent::default())).unwrap();
         (d, s)
     }
 
-    fn settle(s: &Store) {
-        let until = Instant::now() + Duration::from_secs(30);
-        while s.fetching_ahead() {
-            assert!(Instant::now() < until, "the fetching ends");
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    }
-
     fn songs(ids: &[&str]) -> Vec<AheadSong> {
         ids.iter().map(|id| AheadSong { id: id.to_string(), url: format!("http://m/{id}"), key: format!("{id}:0") }).collect()
     }
 
-    /// Until the held song has its first chunk written and stops for the next: its entry being open is
-    /// not enough, as the fetch checks it is still wanted before its first byte.
+    /// Waits until the held song paused after its first chunk.
     fn wait_held(net: &Net) {
-        let until = Instant::now() + Duration::from_secs(30);
-        while net.stopped.swap(0, Ordering::AcqRel) == 0 {
-            assert!(Instant::now() < until, "the held song stops after its first chunk");
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        net.stopped.take();
     }
 
     #[test]
-    fn the_songs_asked_for_are_fetched_whole_once_each_and_one_being_written_is_left_to_its_writer() {
+    fn fetches_once_skips_busy() {
         let (_dir, s) = store("whole");
         let net = Arc::new(Net::default());
         let mut w = s.writer("c:0").unwrap();
         assert!(w.write(0, &[1; 10]));
         s.fetch_ahead(net.clone(), songs(&["a", "b", "c"]), None);
-        settle(&s);
+        s.wait_ahead();
         assert_eq!(std::fs::metadata(s.peek("a:0").unwrap()).unwrap().len(), LEN as u64, "whole");
         assert!(s.peek("b:0").is_some());
         assert!(s.peek("c:0").is_none(), "the player loading c keeps it");
         assert_eq!(*net.asked.lock(), ["http://m/a", "http://m/b"], "one request a song: one burst each");
         drop(w);
-        // The same songs asked again (every song start asks): nothing more.
+        // The same list again: nothing more.
         s.fetch_ahead(net.clone(), songs(&["a", "b", "c"]), None);
-        settle(&s);
+        s.wait_ahead();
         assert_eq!(net.asked.lock().len(), 2);
-        // The next song start: what is on the disk is not fetched again.
+        // What is on disk is not fetched again.
         s.fetch_ahead(net.clone(), songs(&["b", "c", "d"]), None);
-        settle(&s);
+        s.wait_ahead();
         assert_eq!(net.asked.lock()[2..], ["http://m/c", "http://m/d"]);
     }
 
     #[test]
-    fn a_song_no_longer_wanted_is_left_half_way_and_one_still_wanted_goes_on() {
+    fn unwanted_song_left_half_way() {
         let (_dir, s) = store("moved");
         let net = Arc::new(Net::default());
         let (go, wait): (Sender<()>, Receiver<()>) = channel();
         *net.held.lock() = Some(("http://m/a".into(), wait));
         s.fetch_ahead(net.clone(), songs(&["a", "b"]), None);
         wait_held(&net);
-        // The queue moved on: a is not wanted now.
+        // a is no longer wanted.
         s.fetch_ahead(net.clone(), songs(&["b", "x"]), None);
         go.send(()).unwrap();
-        settle(&s);
+        s.wait_ahead();
         assert!(s.peek("a:0").is_none() && !s.writing("a:0"), "left half way");
         assert!(s.peek("b:0").is_some() && s.peek("x:0").is_some());
-        // Wanted again (the queue edited back): it goes on from what came, and nothing crosses twice.
+        // Wanted again: resumes from what came.
         s.fetch_ahead(net.clone(), songs(&["a"]), None);
-        settle(&s);
+        s.wait_ahead();
         assert_eq!(std::fs::metadata(s.peek("a:0").unwrap()).unwrap().len(), LEN as u64);
         let from: Vec<u64> = net.asked.lock().iter().zip(net.from.lock().iter()).filter(|(u, _)| u.ends_with("/a")).map(|(_, f)| *f).collect();
         assert!(from.len() == 2 && from[0] == 0 && from[1] > 0, "{from:?}");
 
-        // Still wanted after the change: it carries on, fetched once.
+        // Still wanted after a change: fetched once.
         let (go, wait) = channel();
         *net.held.lock() = Some(("http://m/y".into(), wait));
         s.fetch_ahead(net.clone(), songs(&["y", "z"]), None);
         wait_held(&net);
         s.fetch_ahead(net.clone(), songs(&["y"]), None);
         go.send(()).unwrap();
-        settle(&s);
+        s.wait_ahead();
         assert!(s.peek("y:0").is_some() && s.peek("z:0").is_none());
         assert_eq!(net.asked.lock().iter().filter(|u| u.ends_with("/y")).count(), 1);
-        // Nothing asked for: nothing runs.
+
         s.fetch_ahead(net.clone(), Vec::new(), None);
         assert!(!s.fetching_ahead());
     }
 
     #[test]
-    fn a_song_the_player_takes_while_it_is_fetched_ahead_goes_on_from_where_it_got_to() {
+    fn player_takes_over_mid_fetch() {
         let (_dir, s) = store("taken");
         let net = Arc::new(Net::default());
         let (go, wait) = channel();
         *net.held.lock() = Some(("http://m/a".into(), wait));
         s.fetch_ahead(net.clone(), songs(&["a", "b"]), None);
         wait_held(&net);
-        // The player comes for a (a skip onto it) while its first chunk is in: it waits for the fetch
-        // to let go, which it does after that chunk.
+        // The player takes a mid-fetch; the fetch stops after the chunk.
         let (s2, taking) = (s.clone(), std::thread::spawn({
             let s = s.clone();
             move || s.writer_for_player("a:0")
         }));
-        let until = Instant::now() + Duration::from_secs(10);
-        while !s.taken_over("a:0") {
-            assert!(Instant::now() < until, "the player asked to take a over");
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        // Taking it over calls the fetch's request off.
+        net.called_off.take();
+        assert!(s.taken_over("a:0"));
         go.send(()).unwrap();
         let mut w = taking.join().unwrap().expect("the player's entry, where the fetch left it");
         let got = w.written() as usize;
-        assert!(got >= CHUNK && got < LEN, "what came is kept, not fetched again: {got}");
+        assert!((CHUNK..LEN).contains(&got), "what came is kept, not fetched again: {got}");
         assert_eq!(w.read_back().unwrap().len(), got);
         assert!(w.write(got as u64, &vec![3u8; LEN - got]));
         assert!(w.finish(LEN as u64));
-        settle(&s2);
+        s2.wait_ahead();
         assert!(s.peek("a:0").is_some() && s.peek("b:0").is_some());
         assert_eq!(net.asked.lock().iter().filter(|u| u.ends_with("/a")).count(), 1, "a was asked of the network once here; the player asks for the rest only");
-        // Taken over, it is the player's: asked again, the fetching ahead leaves it alone.
+        // Taken over: left alone from now on.
         s.fetch_ahead(net.clone(), songs(&["b"]), None);
-        settle(&s);
+        s.wait_ahead();
         assert_eq!(net.asked.lock().len(), 2);
     }
 
-    /// A transcoding server: it promises `LEN` bytes, sends `REAL` and breaks off there (as OkHttp reads a
-    /// body shorter than its Content-Length), and answers a range from `REAL` on with a 416.
+    /// Promises `LEN` bytes, sends `REAL` then errors (as OkHttp on a short body), and answers 416 past it.
     struct Transcoder(Mutex<Vec<u64>>);
 
     const REAL: usize = 450_000;
@@ -517,11 +512,11 @@ mod tests {
     }
 
     #[test]
-    fn a_transcode_that_breaks_off_short_of_its_estimated_length_is_kept_whole_at_its_real_length() {
+    fn short_transcode_kept_at_real_length() {
         let (_dir, s) = store("estimated");
         let net = Arc::new(Transcoder(Mutex::new(Vec::new())));
         s.fetch_ahead(net.clone(), songs(&["a"]), None);
-        settle(&s);
+        s.wait_ahead();
         let kept = s.peek("a:0").expect("kept");
         assert_eq!(std::fs::metadata(kept).unwrap().len(), REAL as u64, "the real length");
         assert_eq!(*net.0.lock(), [0, REAL as u64], "asked again where it broke, and told that is the end");

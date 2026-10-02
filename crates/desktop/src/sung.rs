@@ -1,10 +1,6 @@
-//! The line being sung, drawn as the Android app draws it (LyricsView.kt's SungText): the fill with a soft
-//! edge rather than a cut through a letter, each word or syllable rising a little as it is sung and settling
-//! once it is done, and a held note swelling while it is held. Slint's text has one colour or one gradient
-//! across the whole of it and does not move a part of itself, so the line is laid out here, word by word
-//! (measured by Skia, the renderer's own, in the same font), and each piece is a text of its own.
-
-use std::cell::RefCell;
+//! Word-by-word layout of the active lyric line, as Android's SungText draws it: a feathered fill, each
+//! word lifting while sung, held notes swelling. Slint cannot vary colour or offset within one text, so
+//! the line is measured with Skia here and each piece becomes its own text.
 
 use nori_core::{LyricLine, LyricWord};
 use nori_look::lyrics::{GLOW_FADE_MS, HELD_MS, RISE_MIN_MS, SETTLE_MS};
@@ -14,10 +10,10 @@ use skia_safe::{Font, FontArguments, FontMgr, FontStyle, FourByteTag, Typeface};
 
 use crate::LyricPiece;
 
-/// A piece of the line where it was laid: a timed word or syllable (`word`), or what lies between them.
+/// A laid-out piece: a timed word (`word` is its index) or the text between words.
 struct Placed {
     text: String,
-    /// Its span of the line's text, in UTF-16 units.
+    /// Span in the line's text, UTF-16 units.
     start: u32,
     end: u32,
     x: f32,
@@ -26,49 +22,37 @@ struct Placed {
     word: Option<usize>,
 }
 
-/// The line laid out at one size and width.
+/// A line laid out at one size and width.
 pub struct Laid {
     key: (usize, u32, u32),
     pieces: Vec<Placed>,
     row_h: f32,
 }
 
-thread_local! {
-    static FACE: RefCell<Option<Typeface>> = const { RefCell::new(None) };
+/// The bold system font the window draws lyrics in (Slint's "System Font"), Inter or sans-serif elsewhere.
+pub fn bold_face() -> Option<Typeface> {
+    let m = FontMgr::new();
+    ["System Font", ".AppleSystemUIFont", "Inter", "sans-serif"]
+        .iter()
+        .find_map(|name| m.match_family_style(name, FontStyle::bold()))
+        .or_else(|| m.legacy_make_typeface(None, FontStyle::bold()))
 }
 
-/// The system's font in bold at `size`, as the lyrics are drawn ("System Font" is what the window asks Slint
-/// for). SF is one variable font: drawn, its optical size follows the text's, and large text is set tighter,
-/// so it is measured at that optical size too.
-fn font(size: f32) -> Option<Font> {
-    let face = face()?;
+/// `face` at `size`. SF is variable: its optical size follows the text size, so it is measured at that
+/// optical size too.
+fn font(face: &Typeface, size: f32) -> Font {
+    let face = face.clone();
     let coords = [Coordinate { axis: FourByteTag::from_chars('o', 'p', 's', 'z'), value: size }, Coordinate { axis: FourByteTag::from_chars('w', 'g', 'h', 't'), value: 700.0 }];
     let args = FontArguments::new().set_variation_design_position(VariationPosition { coordinates: &coords });
     let face = if face.variation_design_parameters().is_some_and(|a| !a.is_empty()) { face.clone_with_arguments(&args).unwrap_or(face) } else { face };
-    Some(Font::from_typeface(face, size))
-}
-
-fn face() -> Option<Typeface> {
-    FACE.with(|f| {
-        f.borrow_mut()
-            .get_or_insert_with(|| {
-                let m = FontMgr::new();
-                ["System Font", ".AppleSystemUIFont", "Inter", "sans-serif"]
-                    .iter()
-                    .find_map(|name| m.match_family_style(name, FontStyle::bold()))
-                    .or_else(|| m.legacy_make_typeface(None, FontStyle::bold()))
-                    .expect("a font")
-            })
-            .clone()
-            .into()
-    })
+    Font::from_typeface(face, size)
 }
 
 fn units(s: &str) -> u32 {
     s.encode_utf16().count() as u32
 }
 
-/// The byte offset of `u` UTF-16 units into `s`.
+/// Byte offset of UTF-16 unit `u` in `s`.
 fn byte_at(s: &str, u: u32) -> usize {
     let mut n = 0;
     for (i, c) in s.char_indices() {
@@ -80,16 +64,15 @@ fn byte_at(s: &str, u: u32) -> usize {
     s.len()
 }
 
-/// `line` (number `index`) laid out in `size` pixels across `width`: words kept whole and wrapped at spaces,
-/// as the text itself wraps.
-pub fn lay(index: usize, line: &LyricLine, size: f32, width: f32) -> Laid {
+/// Lays out line `index` at `size` px within `width`, wrapping at spaces like the text does.
+pub fn lay(face: &Typeface, index: usize, line: &LyricLine, size: f32, width: f32) -> Laid {
     let key = (index, size.to_bits(), width.to_bits());
-    let Some(font) = font(size) else { return Laid { key, pieces: Vec::new(), row_h: size } };
+    let font = font(face, size);
     let (spacing, _) = font.metrics();
     let measure = |s: &str| font.measure_str(s, None).0;
     let text = &line.text;
     let total = units(text);
-    // The text cut at the words' edges: a timed piece for each word, and the rest between them.
+    // Cut at word edges: one piece per timed word, plus the gaps.
     let mut cuts: Vec<(u32, u32, Option<usize>)> = Vec::new();
     let mut at = 0;
     let mut words: Vec<(usize, &LyricWord)> = line.words.iter().enumerate().filter(|(_, w)| w.start < w.end && w.end <= total).collect();
@@ -107,7 +90,7 @@ pub fn lay(index: usize, line: &LyricLine, size: f32, width: f32) -> Laid {
     if at < total {
         cuts.push((at, total, None));
     }
-    // Split again at spaces, so the wrap can break there; a space stays with the piece before it.
+    // Split at spaces so wrapping can break there; a space stays with the piece before it.
     let mut parts: Vec<(u32, u32, Option<usize>)> = Vec::new();
     for (s, e, k) in cuts {
         let piece = &text[byte_at(text, s)..byte_at(text, e)];
@@ -125,13 +108,13 @@ pub fn lay(index: usize, line: &LyricLine, size: f32, width: f32) -> Laid {
             parts.push((from, e, k));
         }
     }
-    // Greedy wrap by the runs between spaces, as the text wraps.
+    // Greedy wrap by runs between spaces.
     let mut pieces = Vec::new();
     let mut x = 0.0;
     let mut row = 0;
     let mut i = 0;
     while i < parts.len() {
-        // A run: parts up to and including one that ends in a space.
+        // A run ends with the part that ends in a space.
         let mut j = i;
         loop {
             let (s, e, _) = parts[j];
@@ -162,8 +145,7 @@ fn ease(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// How far a sung word or syllable stands above its line, 0..1: it rises as it is sung (over at least
-/// `RISE_MIN_MS`, so a quick syllable does not jump) and settles back over `SETTLE_MS` once it is done.
+/// Lift of a word, 0..1: rises while sung (over at least `RISE_MIN_MS`), settles over `SETTLE_MS` after.
 fn lift(w: &LyricWord, ms: i64) -> f32 {
     if ms <= w.start_ms {
         return 0.0;
@@ -173,8 +155,7 @@ fn lift(w: &LyricWord, ms: i64) -> f32 {
     up * (1.0 - down)
 }
 
-/// How much a held note swells, 0..1: only one held for `HELD_MS` or more, gathering while it is held and
-/// going after.
+/// Swell of a note held at least `HELD_MS`, 0..1: grows while held, fades over `GLOW_FADE_MS` after.
 fn held(w: &LyricWord, ms: i64) -> f32 {
     let long = w.end_ms - w.start_ms;
     if long < HELD_MS || ms <= w.start_ms {
@@ -187,10 +168,10 @@ fn held(w: &LyricWord, ms: i64) -> f32 {
     }
 }
 
-/// The pieces as they are at `ms`, the singing `sung` UTF-16 units into the line: lit (`lit`, an alpha) up
-/// to where the singing is, unsung (`dim`) after, over a soft edge `feather` pixels wide.
+/// The pieces at `ms` with the fill `sung` UTF-16 units in: alpha `lit` before it, `dim` after, over a
+/// `feather` px edge.
 pub fn frame(laid: &Laid, line: &LyricLine, sung: f32, ms: i64, lit: f32, dim: f32, feather: f32) -> Vec<LyricPiece> {
-    // Where the singing is: its row, and how far along it.
+    // Row and x of the fill edge.
     let (row_s, x_s) = laid
         .pieces
         .iter()
@@ -233,8 +214,7 @@ pub fn frame(laid: &Laid, line: &LyricLine, sung: f32, ms: i64, lit: f32, dim: f
 }
 
 impl Laid {
-    /// Whether this is `line` laid at `size` across `width` already.
-    pub fn is(&self, index: usize, size: f32, width: f32) -> bool {
+    pub fn is_for(&self, index: usize, size: f32, width: f32) -> bool {
         self.key == (index, size.to_bits(), width.to_bits())
     }
 }
@@ -249,25 +229,26 @@ mod tests {
         LyricLine { start_ms: 0, end_ms: 3000, text: "I wonder why".into(), words: vec![w(0, 500, 0, 1), w(500, 900, 2, 5), w(900, 1400, 5, 8), w(1400, 3000, 9, 12)], ..Default::default() }
     }
 
+    fn face() -> Typeface {
+        bold_face().expect("a font")
+    }
+
     #[test]
-    fn a_line_is_cut_at_its_words_and_spaces() {
-        let l = lay(0, &line(), 20.0, 1000.0);
+    fn line_breaks() {
+        let l = lay(&face(), 0, &line(), 20.0, 1000.0);
         let texts: Vec<&str> = l.pieces.iter().map(|p| p.text.as_str()).collect();
         assert_eq!(texts, ["I", " ", "won", "der", " ", "why"]);
         assert_eq!(l.pieces.iter().map(|p| p.row).max(), Some(0));
         assert!(l.pieces.windows(2).all(|w| w[1].x > w[0].x));
-    }
 
-    #[test]
-    fn a_narrow_line_wraps_at_spaces() {
-        let l = lay(0, &line(), 20.0, 40.0);
+        // Narrow line wraps at spaces.
+        let l = lay(&face(), 0, &line(), 20.0, 40.0);
         assert!(l.pieces.iter().map(|p| p.row).max().unwrap_or(0) > 0);
-        // A piece never starts a row with a space.
         assert!(l.pieces.iter().filter(|p| p.x == 0.0).all(|p| !p.text.starts_with(' ')));
     }
 
     #[test]
-    fn a_syllable_rises_while_sung_and_settles_after() {
+    fn sung_words() {
         let w = LyricWord { start_ms: 1000, end_ms: 1500, start: 0, end: 3 };
         assert_eq!(lift(&w, 900), 0.0);
         assert!(lift(&w, 1400) > 0.5);
@@ -275,14 +256,13 @@ mod tests {
         let long = LyricWord { start_ms: 0, end_ms: HELD_MS + 100, start: 0, end: 3 };
         assert!(held(&long, HELD_MS) > 0.5);
         assert_eq!(held(&w, 1200), 0.0);
-    }
 
-    #[test]
-    fn the_fill_is_lit_behind_the_singing_and_dim_ahead() {
+        // Fill is lit behind and dim ahead.
         let line = line();
-        let l = lay(0, &line, 20.0, 1000.0);
+        let l = lay(&face(), 0, &line, 20.0, 1000.0);
         let f = frame(&l, &line, 6.0, 1000, 1.0, 0.3, 4.0);
         assert_eq!(f.first().map(|p| p.a0), Some(1.0));
         assert_eq!(f.last().map(|p| p.a1), Some(0.3));
     }
+
 }

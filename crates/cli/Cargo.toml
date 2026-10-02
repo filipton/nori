@@ -20,6 +20,7 @@ nori-engine = { path = "../engine", features = ["core"] }
 nori-output-cpal = { path = "../output-cpal" }
 nori-http = { path = "../http" }
 nori-mpris = { path = "../mpris" }
+nori-host = { path = "../host" }
 nori-covers = { path = "../covers" }
 nori-look = { path = "../look" }
 parking_lot = "0.12"

@@ -1,5 +1,5 @@
-//! Colour arithmetic, ported exactly from what the Android app used before (AndroidX `ColorUtils`, and
-//! Compose's `Color.luminance`), so thresholds that were tuned against those land on the same side.
+//! Bit-exact ports of AndroidX `ColorUtils` and Compose's `Color.luminance`, which the tuned thresholds
+//! depend on.
 
 pub fn alpha(c: u32) -> i32 {
     (c >> 24) as i32
@@ -31,7 +31,7 @@ pub fn round(x: f32) -> i32 {
 }
 
 /// `ColorUtils.RGBToHSL`: hue in degrees, saturation and lightness 0..1.
-pub fn rgb_to_hsl(r: i32, g: i32, b: i32) -> [f32; 3] {
+pub(crate) fn rgb_to_hsl(r: i32, g: i32, b: i32) -> [f32; 3] {
     let (rf, gf, bf) = (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
     let max = rf.max(gf.max(bf));
     let min = rf.min(gf.min(bf));
@@ -63,7 +63,7 @@ pub fn color_to_hsl(c: u32) -> [f32; 3] {
 }
 
 /// `ColorUtils.HSLToColor`.
-pub fn hsl_to_color(hsl: [f32; 3]) -> u32 {
+pub(crate) fn hsl_to_color(hsl: [f32; 3]) -> u32 {
     let [h, s, l] = hsl;
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
     let m = l - 0.5 * c;
@@ -82,7 +82,7 @@ pub fn hsl_to_color(hsl: [f32; 3]) -> u32 {
 }
 
 /// `ColorUtils.calculateLuminance`: relative luminance 0..1.
-pub fn calculate_luminance(c: u32) -> f64 {
+pub(crate) fn calculate_luminance(c: u32) -> f64 {
     fn lin(v: i32) -> f64 {
         let s = v as f64 / 255.0;
         if s < 0.04045 {
@@ -107,7 +107,7 @@ fn composite_component(fg_c: i32, fg_a: i32, bg_c: i32, bg_a: i32, a: i32) -> i3
 }
 
 /// `ColorUtils.compositeColors`: `fg` over `bg`.
-pub fn composite_colors(fg: u32, bg: u32) -> u32 {
+pub(crate) fn composite_colors(fg: u32, bg: u32) -> u32 {
     let (bga, fga) = (alpha(bg), alpha(fg));
     let a = composite_alpha(fga, bga);
     argb(
@@ -119,7 +119,7 @@ pub fn composite_colors(fg: u32, bg: u32) -> u32 {
 }
 
 /// `ColorUtils.calculateContrast`: the WCAG contrast ratio, 1..21. `bg` must be opaque.
-pub fn calculate_contrast(fg: u32, bg: u32) -> f64 {
+pub(crate) fn calculate_contrast(fg: u32, bg: u32) -> f64 {
     let fg = if alpha(fg) < 255 { composite_colors(fg, bg) } else { fg };
     let l1 = calculate_luminance(fg) + 0.05;
     let l2 = calculate_luminance(bg) + 0.05;
@@ -127,7 +127,7 @@ pub fn calculate_contrast(fg: u32, bg: u32) -> f64 {
 }
 
 /// `ColorUtils.blendARGB`: `ratio` 0 is `a`, 1 is `b`.
-pub fn blend_argb(a: u32, b: u32, ratio: f32) -> u32 {
+pub(crate) fn blend_argb(a: u32, b: u32, ratio: f32) -> u32 {
     let inv = 1.0 - ratio;
     let al = alpha(a) as f32 * inv + alpha(b) as f32 * ratio;
     let r = red(a) as f32 * inv + red(b) as f32 * ratio;
@@ -136,8 +136,7 @@ pub fn blend_argb(a: u32, b: u32, ratio: f32) -> u32 {
     argb(al as i32, r as i32, g as i32, bl as i32)
 }
 
-/// Compose's `Color.luminance()` for an sRGB colour: the same relative luminance as
-/// [`calculate_luminance`], computed the way Compose computes it (its transfer function, its float).
+/// Compose's `Color.luminance()`: like [`calculate_luminance`] but with Compose's float rounding.
 pub fn luminance(c: u32) -> f32 {
     fn eotf(x: f64) -> f64 {
         let (a, b, cc, d, g) = (1.0 / 1.055, 0.055 / 1.055, 1.0 / 12.92, 0.04045, 2.4);
@@ -151,10 +150,9 @@ pub fn luminance(c: u32) -> f32 {
     ((0.2126 * ch(red(c))) + (0.7152 * ch(green(c))) + (0.0722 * ch(blue(c)))).clamp(0.0, 1.0) as f32
 }
 
-/// Compose's `Color(red, green, blue)` in sRGB, from 0..1 floats to 8 bits a channel.
-pub fn from_floats(r: f32, g: f32, b: f32) -> u32 {
-    let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as i32;
-    rgb(q(r), q(g), q(b))
+/// Compose's opaque `Color(red, green, blue)`.
+pub(crate) fn from_floats(r: f32, g: f32, b: f32) -> u32 {
+    crate::compose::from_floats_a(r, g, b, 1.0)
 }
 
 #[cfg(test)]
@@ -162,21 +160,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hsl_round_trips() {
+    fn colour_math() {
         for &c in &[0xFF12_3456u32, 0xFFFF_0000, 0xFF00_FF00, 0xFF00_00FF, 0xFFFF_FFFF, 0xFF00_0000, 0xFFC0_B090, 0xFF7F_7F80] {
             assert_eq!(hsl_to_color(color_to_hsl(c)), c, "{c:08x}");
         }
-    }
 
-    #[test]
-    fn contrast_is_wcag() {
+        // Contrast and luminance extremes.
         assert!((calculate_contrast(WHITE, BLACK) - 21.0).abs() < 1e-9);
         assert!((calculate_contrast(0xFF77_7777, 0xFF77_7777) - 1.0).abs() < 1e-9);
         assert!((luminance(WHITE) - 1.0).abs() < 1e-6 && luminance(BLACK) == 0.0);
-    }
 
-    #[test]
-    fn rounding_is_javas() {
+        // Round matches java.
         assert_eq!((round(0.5), round(1.5), round(-0.5), round(2.4999998)), (1, 2, 0, 2));
     }
+
 }

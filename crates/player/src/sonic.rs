@@ -1,9 +1,6 @@
-//! Sonic: time stretching and pitch shifting by pitch-synchronous overlap-add, the algorithm media3
-//! plays speed and pitch changes with. Ported line for line from media3's `Sonic.java` (Apache-2.0,
-//! Copyright 2017 The Android Open Source Project, Copyright 2010 Bill Cox, Sonic Library;
-//! https://github.com/waywardgeek/sonic), both its 16-bit integer and its float variant, so a speed
-//! change sounds - to the sample - as it did through media3, and costs what it did: a few multiplies
-//! per sample and a pitch search every period, nothing like an FFT stretcher.
+//! Sonic speed/pitch (pitch-synchronous overlap-add), a line-for-line port of media3's `Sonic.java`
+//! (Apache-2.0, Copyright 2017 The Android Open Source Project, Copyright 2010 Bill Cox, Sonic Library;
+//! https://github.com/waywardgeek/sonic), 16-bit and float variants, sample-exact with media3.
 
 const MINIMUM_PITCH: i32 = 65;
 const MAXIMUM_PITCH: i32 = 400;
@@ -11,7 +8,7 @@ const AMDF_FREQUENCY: i32 = 4000;
 const MINIMUM_SPEEDUP_RATE: f32 = 1.00001;
 const MINIMUM_SLOWDOWN_RATE: f32 = 0.99999;
 
-/// The sample-format-specific arithmetic, exactly as each of media3's two implementations does it.
+/// Per-format arithmetic, as in media3's two implementations.
 pub trait Sample: Copy + Default + Send + 'static {
     fn overlap_add(frame_count: usize, ch: usize, out: &mut [Self], out_pos: usize, input: &[Self], down: usize, up: usize);
     fn interpolate(input: &[Self], pos: usize, ch: usize, old_rate_pos: i64, new_rate_pos: i64, old_rate: i64, new_rate: i64) -> Self;
@@ -20,16 +17,23 @@ pub trait Sample: Copy + Default + Send + 'static {
     fn down_sample(input: &[Self], pos_frames: usize, skip: usize, frame_count: usize, ch: usize, out: &mut [Self]);
 }
 
+/// Frames `from..from + count` of `out`, one slice each.
+fn frames<T>(out: &mut [T], from: usize, count: usize, ch: usize) -> std::slice::ChunksExactMut<'_, T> {
+    out[from * ch..(from + count) * ch].chunks_exact_mut(ch)
+}
+
+/// The `period` samples from `p` and the `period` after them.
+fn periods<T>(samples: &[T], p: usize, period: usize) -> (&[T], &[T]) {
+    samples[p..p + 2 * period].split_at(period)
+}
+
 impl Sample for i16 {
     fn overlap_add(frame_count: usize, ch: usize, out: &mut [i16], out_pos: usize, input: &[i16], down: usize, up: usize) {
         let n = frame_count as i32;
-        for i in 0..ch {
-            let (mut o, mut u, mut d) = (out_pos * ch + i, up * ch + i, down * ch + i);
-            for t in 0..n {
-                out[o] = ((input[d] as i32 * (n - t) + input[u] as i32 * t) / n) as i16;
-                o += ch;
-                d += ch;
-                u += ch;
+        for (t, ((o, d), u)) in frames(out, out_pos, frame_count, ch).zip(input[down * ch..].chunks_exact(ch)).zip(input[up * ch..].chunks_exact(ch)).enumerate() {
+            let t = t as i32;
+            for ((o, &d), &u) in o.iter_mut().zip(d).zip(u) {
+                *o = ((d as i32 * (n - t) + u as i32 * t) / n) as i16;
             }
         }
     }
@@ -49,10 +53,8 @@ impl Sample for i16 {
         let (mut best, mut worst, mut min_diff, mut max_diff) = (0i32, 255i32, 1i32, 0i32);
         let p = pos_frames * ch;
         for period in min_period..=max_period {
-            let mut diff = 0i32;
-            for i in 0..period as usize {
-                diff = diff.wrapping_add((samples[p + i] as i32 - samples[p + period as usize + i] as i32).abs());
-            }
+            let (a, b) = periods(samples, p, period as usize);
+            let diff = a.iter().zip(b).fold(0i32, |sum, (&x, &y)| sum.wrapping_add((x as i32 - y as i32).abs()));
             if diff.wrapping_mul(best) < min_diff.wrapping_mul(period) {
                 min_diff = diff;
                 best = period;
@@ -67,13 +69,8 @@ impl Sample for i16 {
 
     fn down_sample(input: &[i16], pos_frames: usize, skip: usize, frame_count: usize, ch: usize, out: &mut [i16]) {
         let per = ch * skip;
-        let p = pos_frames * ch;
-        for i in 0..frame_count {
-            let mut v = 0i32;
-            for j in 0..per {
-                v += input[p + i * per + j] as i32;
-            }
-            out[i] = (v / per as i32) as i16;
+        for (o, group) in out[..frame_count].iter_mut().zip(input[pos_frames * ch..].chunks_exact(per)) {
+            *o = (group.iter().map(|&v| v as i32).sum::<i32>() / per as i32) as i16;
         }
     }
 }
@@ -81,13 +78,10 @@ impl Sample for i16 {
 impl Sample for f32 {
     fn overlap_add(frame_count: usize, ch: usize, out: &mut [f32], out_pos: usize, input: &[f32], down: usize, up: usize) {
         let n = frame_count as i32;
-        for i in 0..ch {
-            let (mut o, mut u, mut d) = (out_pos * ch + i, up * ch + i, down * ch + i);
-            for t in 0..n {
-                out[o] = (input[d] * (n - t) as f32 + input[u] * t as f32) / n as f32;
-                o += ch;
-                d += ch;
-                u += ch;
+        for (t, ((o, d), u)) in frames(out, out_pos, frame_count, ch).zip(input[down * ch..].chunks_exact(ch)).zip(input[up * ch..].chunks_exact(ch)).enumerate() {
+            let t = t as i32;
+            for ((o, &d), &u) in o.iter_mut().zip(d).zip(u) {
+                *o = (d * (n - t) as f32 + u * t as f32) / n as f32;
             }
         }
     }
@@ -107,10 +101,8 @@ impl Sample for f32 {
         let (mut best, mut worst, mut min_diff, mut max_diff) = (0i32, 255i32, 1f64, 0f64);
         let p = pos_frames * ch;
         for period in min_period..=max_period {
-            let mut diff = 0f64;
-            for i in 0..period as usize {
-                diff += (samples[p + i] - samples[p + period as usize + i]).abs() as f64;
-            }
+            let (a, b) = periods(samples, p, period as usize);
+            let diff = a.iter().zip(b).fold(0f64, |sum, (&x, &y)| sum + (x - y).abs() as f64);
             if diff * (best as f64) < min_diff * period as f64 {
                 min_diff = diff;
                 best = period;
@@ -125,13 +117,8 @@ impl Sample for f32 {
 
     fn down_sample(input: &[f32], pos_frames: usize, skip: usize, frame_count: usize, ch: usize, out: &mut [f32]) {
         let per = ch * skip;
-        let p = pos_frames * ch;
-        for i in 0..frame_count {
-            let mut v = 0f64;
-            for j in 0..per {
-                v += input[p + i * per + j] as f64;
-            }
-            out[i] = (v / per as f64) as f32;
+        for (o, group) in out[..frame_count].iter_mut().zip(input[pos_frames * ch..].chunks_exact(per)) {
+            *o = (group.iter().fold(0f64, |v, &x| v + x as f64) / per as f64) as f32;
         }
     }
 }
@@ -163,7 +150,30 @@ pub struct Sonic<T: Sample> {
     prev_min_diff: f64,
 }
 
+/// `clone_from` keeps the buffers' memory (the sink copies the chain's state without allocating).
+impl<T: Sample> Clone for Sonic<T> {
+    fn clone(&self) -> Self {
+        let mut s = Sonic { input: Vec::new(), output: Vec::new(), pitch_buf: Vec::new(), down: Vec::new(), ..*self };
+        s.clone_from(self);
+        s
+    }
+
+    fn clone_from(&mut self, o: &Self) {
+        let mut bufs = [std::mem::take(&mut self.input), std::mem::take(&mut self.output), std::mem::take(&mut self.pitch_buf), std::mem::take(&mut self.down)];
+        for (b, from) in bufs.iter_mut().zip([&o.input, &o.output, &o.pitch_buf, &o.down]) {
+            b.clone_from(from);
+        }
+        let [input, output, pitch_buf, down] = bufs;
+        *self = Sonic { input, output, pitch_buf, down, ..*o };
+    }
+}
+
 impl<T: Sample> Sonic<T> {
+    /// New speed and pitch from the next input on; what is queued plays on.
+    pub fn set(&mut self, speed: f32, pitch: f32) {
+        (self.speed, self.pitch) = (speed, pitch);
+    }
+
     pub fn new(input_rate: u32, channels: usize, speed: f32, pitch: f32, output_rate: u32) -> Sonic<T> {
         let input_rate = input_rate as i32;
         let ch = channels.max(1);
@@ -505,26 +515,23 @@ mod tests {
     }
 
     #[test]
-    fn speed_keeps_pitch_and_shortens() {
+    fn speed_and_pitch() {
         let x = sine(44100, 4.0, 220.0);
         let y = run(&mut Sonic::new(44100, 2, 1.25, 1.0, 44100), &x);
         let secs = y.len() as f64 / 2.0 / 44100.0;
         assert!((secs - 3.2).abs() < 0.01, "{secs}");
         assert!((hz(&y, 44100) - 220.0).abs() < 3.0, "{}", hz(&y, 44100));
-    }
 
-    #[test]
-    fn pitch_keeps_length_and_moves_up() {
+        // Pitch keeps length and moves up.
         let x = sine(44100, 4.0, 200.0);
         let y = run(&mut Sonic::new(44100, 2, 1.0, 1.1, 44100), &x);
         let secs = y.len() as f64 / 2.0 / 44100.0;
         assert!((secs - 4.0).abs() < 0.01, "{secs}");
         assert!((hz(&y, 44100) - 220.0).abs() < 3.0, "{}", hz(&y, 44100));
-    }
 
-    #[test]
-    fn unchanged_is_a_copy() {
+        // Unchanged is a copy.
         let x = sine(48000, 1.0, 330.0);
         assert_eq!(run(&mut Sonic::new(48000, 2, 1.0, 1.0, 48000), &x), x);
     }
+
 }

@@ -1,85 +1,90 @@
-//! Which streamed songs leave the local cache when it is over its limit: least recently used first, and
-//! before those, whatever an earlier run of the app cached and this one has not used since - untouched
-//! since the restart is the stalest there is. The platform's cache holds the bytes; this knows the keys it
-//! holds (told once what an earlier run left, then of each use) and names what goes, one key at a time,
-//! so the platform never hands the whole list over.
+//! The stream cache's eviction order: keys an earlier run left and this one has not used go first, then
+//! least recently used. The platform's cache holds the bytes; this names the next key to drop.
 
 use std::collections::HashMap;
 
 use parking_lot::Mutex;
 
-struct Order {
-    /// When each key was last used, in touches since the process started; what an earlier run left and
-    /// this one has not used counts down from -1, older than anything touched.
+/// Key use times: positive touch counts for this process, negative (counting down) for keys an earlier
+/// run left, so those are always older.
+#[derive(Default)]
+struct CacheOrder {
     used: HashMap<String, i64>,
     clock: i64,
     left: i64,
 }
 
-static ORDER: Mutex<Option<Order>> = Mutex::new(None);
-
-fn with<R>(f: impl FnOnce(&mut Order) -> R) -> R {
-    f(ORDER.lock().get_or_insert_with(|| Order { used: HashMap::new(), clock: 0, left: 0 }))
-}
-
-/// `key` was read or written just now.
-pub fn touch(key: &str) {
-    with(|o| {
-        o.clock += 1;
-        let t = o.clock;
-        match o.used.get_mut(key) {
-            Some(u) => *u = t,
+impl CacheOrder {
+    pub fn touch(&mut self, key: &str) {
+        self.clock += 1;
+        match self.used.get_mut(key) {
+            Some(u) => *u = self.clock,
             None => {
-                o.used.insert(key.to_string(), t);
+                self.used.insert(key.to_string(), self.clock);
             }
         }
-    });
-}
+    }
 
-/// What the cache held when this process first looked: the keys not known yet join as never used.
-pub fn seed<'a>(held: impl IntoIterator<Item = &'a str>) {
-    with(|o| {
+    /// The keys the cache held at startup; unknown ones join as older than anything used.
+    pub fn seed<'a>(&mut self, held: impl IntoIterator<Item = &'a str>) {
         for k in held {
-            if !o.used.contains_key(k) {
-                o.left -= 1;
-                o.used.insert(k.to_string(), o.left);
+            if !self.used.contains_key(k) {
+                self.left -= 1;
+                self.used.insert(k.to_string(), self.left);
             }
         }
-    });
-}
+    }
 
-/// The next key to drop: never used by this process first, then the least recently used. It is forgotten
-/// here as it is handed out; if the cache still holds it after, its next use makes it known again.
-pub fn next() -> Option<String> {
-    with(|o| {
-        let key = o.used.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone())?;
-        o.used.remove(&key);
+    /// The next key to drop, forgotten as it is returned (a later use makes it known again).
+    pub(crate) fn pop_oldest(&mut self) -> Option<String> {
+        let key = self.used.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone())?;
+        self.used.remove(&key);
         Some(key)
-    })
-}
+    }
 
-/// The streamed copies of `id` the cache holds, whatever quality they were fetched at, forgotten here as
-/// they are handed out (the caller drops them).
-pub fn copies(id: &str) -> Vec<String> {
-    with(|o| {
-        let keys: Vec<String> = o.used.keys().filter(|k| nori_net::stream::is_copy(id, k)).cloned().collect();
+    /// Every cached copy of `id` at any quality, forgotten as they are returned (the caller drops them).
+    pub fn copies(&mut self, id: &str) -> Vec<String> {
+        let keys: Vec<String> = self.used.keys().filter(|k| nori_net::stream::is_copy(id, k)).cloned().collect();
         for k in &keys {
-            o.used.remove(k);
+            self.used.remove(k);
         }
         keys
-    })
+    }
+
+    pub fn clear(&mut self) {
+        self.used.clear();
+    }
 }
 
-/// The cache was emptied.
+/// Global: the Android cache evictor reaches it through JNI entry points with no handle.
+static ORDER: Mutex<Option<CacheOrder>> = Mutex::new(None);
+
+fn with<R>(f: impl FnOnce(&mut CacheOrder) -> R) -> R {
+    f(ORDER.lock().get_or_insert_with(CacheOrder::default))
+}
+
+pub fn touch(key: &str) {
+    with(|o| o.touch(key))
+}
+
+pub fn seed<'a>(held: impl IntoIterator<Item = &'a str>) {
+    with(|o| o.seed(held))
+}
+
+pub fn next() -> Option<String> {
+    with(CacheOrder::pop_oldest)
+}
+
+pub fn copies(id: &str) -> Vec<String> {
+    with(|o| o.copies(id))
+}
+
 pub fn clear() {
-    with(|o| o.used.clear());
+    with(CacheOrder::clear)
 }
 
-/// Brings the stream cache under `max_bytes`: while `space()` (what the platform's cache holds now) is
-/// over it, the next key to drop ([`next`]) is handed to `remove`. Stops when nothing is left to name.
-///
-/// Twin of `ResizableEvictor.trimLocked` (core/.../playback/MediaSources.kt), which Android keeps around
-/// media3's `SimpleCache`.
+/// Evicts [`next`] keys through `remove` while `space()` exceeds `max_bytes`. Twin of
+/// `ResizableEvictor.trimLocked` (core/.../playback/MediaSources.kt).
 pub fn trim(max_bytes: i64, mut space: impl FnMut() -> i64, mut remove: impl FnMut(&str)) {
     while space() > max_bytes {
         let Some(key) = next() else { return };
@@ -92,25 +97,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn what_this_run_never_used_goes_first_then_the_stalest() {
-        // One test holds the whole order: tests run side by side and it is one per process.
-        clear();
-        touch("sc-a");
-        touch("sc-b");
-        seed(["sc-a", "sc-old", "sc-b"]);
-        touch("sc-a");
-        assert_eq!([next(), next(), next(), next()], [Some("sc-old".into()), Some("sc-b".into()), Some("sc-a".into()), None]);
-        // A key handed out is used again: it is known again.
-        touch("sc-b");
-        assert_eq!(next().as_deref(), Some("sc-b"));
+    fn unused_leftovers_go_first() {
+        let mut o = CacheOrder::default();
+        o.touch("a");
+        o.touch("b");
+        o.seed(["a", "old", "b"]);
+        o.touch("a");
+        assert_eq!([o.pop_oldest(), o.pop_oldest(), o.pop_oldest(), o.pop_oldest()], [Some("old".into()), Some("b".into()), Some("a".into()), None]);
+        o.touch("b");
+        assert_eq!(o.pop_oldest().as_deref(), Some("b"), "known again after use");
+    }
 
-        touch("x:0");
-        touch("x:192opus");
-        touch("xy:0");
-        seed(["x:320mp3"]);
-        let mut c = copies("x");
+    #[test]
+    fn copies_take_every_quality() {
+        let mut o = CacheOrder::default();
+        o.touch("x:0");
+        o.touch("x:192opus");
+        o.touch("xy:0");
+        o.seed(["x:320mp3"]);
+        let mut c = o.copies("x");
         c.sort();
         assert_eq!(c, ["x:0", "x:192opus", "x:320mp3"]);
-        assert_eq!(next().as_deref(), Some("xy:0"), "only the copies were dropped");
+        assert_eq!(o.pop_oldest().as_deref(), Some("xy:0"), "only the copies were dropped");
     }
 }

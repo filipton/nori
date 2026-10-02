@@ -42,6 +42,9 @@ import kotlinx.coroutines.launch
 import dev.nori.music.settings.server
 import dev.nori.music.update.Updates
 
+/** settings_store.rs `CACHE_LIMIT`: the stream cache size changed. */
+private const val CACHE_LIMIT = 32u
+
 data class LoginUi(val busy: Boolean = false, val error: String? = null, val done: Boolean = false)
 /**
  * The AutoEQ list: how many headphones it holds ([countWords] and [searchWords] say so), the query and
@@ -168,7 +171,7 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
             return
         }
         nori.settings.took(change)
-        if (change.applyCacheLimit) applyCacheLimit()
+        if ((change.effect and CACHE_LIMIT) != 0u) applyCacheLimit()
     }
 
     /** A button on a settings row. */
@@ -308,9 +311,6 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
     fun moveHomeRow(from: Int, to: Int) = update { p ->
         p.copy(homeRows = dev.nori.music.ffi.library.homeRowsMoved(p.homeRows.map { it.name }, from.toUInt(), to.toUInt()).map { HomeRow.valueOf(it) })
     }
-
-    /** The equalizer screen is open: the player answers a moved slider at once instead of seconds later. */
-    fun setTuning(on: Boolean) = nori.player.setTuning(on)
 
     /**
      * A report of a problem (core `Report`) under [header], written to a file of its own - a day of log is a

@@ -1,6 +1,5 @@
-//! Downloads as media3 runs them (`nori_core::transfers`): the platform reports each song's state and
-//! each chunk, and asks for the facts its notification and downloads screen are worded from. The
-//! per-chunk report is primitives only; nothing is looked up by name or allocated while bytes flow.
+//! `nori_core::transfers` for media3's downloads: state and per-chunk progress in, notification and
+//! downloads screen facts out. Per-chunk calls are primitives only.
 
 use jni::objects::{JClass, JIntArray, JLongArray, JString};
 use jni::sys::{jfloat, jint, jlong, jstring};
@@ -33,7 +32,7 @@ pub(crate) static LINES: Class = Class {
     ],
 };
 
-/// Whether `id` is downloaded: 0 no, 1 queued or failed, 2 finished. Asked by every row a list draws.
+/// 0 not downloaded, 1 queued or failed, 2 finished. Called per list row.
 extern "system" fn held(env: JNIEnv, _: JClass, id: JString) -> jint {
     with_str(&env, &id, |id| transfers::held(id).code()).unwrap_or(0)
 }
@@ -59,7 +58,7 @@ extern "system" fn open(env: JNIEnv, _: JClass, id: JString, now: jlong) -> jint
     with_str(&env, &id, |id| transfers::open(id, now)).unwrap_or(-1)
 }
 
-/// A chunk arrived on `slot`; called per chunk, so primitives only.
+/// A chunk arrived on `slot`.
 extern "system" fn note(slot: jint, length: jlong, bytes: jlong, now: jlong) -> jfloat {
     transfers::note(slot, length, bytes, now)
 }
@@ -68,11 +67,11 @@ extern "system" fn notice(listed: jint, waiting: jint, now: jlong) -> jint {
     transfers::notice(listed, waiting != 0, now)
 }
 
-/// The notification's facts as `notice` last found them: `out` gets `[kind, position, total, permille,
-/// speed_bps, eta_s]` (kind as `NoticeKind`'s place: 0 waiting, 1 one song named, 2 one song, 3 more);
-/// the song in flight's title and the batch's album come back as "title\nalbum". One crossing a second.
+/// The notification's facts: `out` gets `[kind, position, total, permille, speed_bps, eta_s]` (kind: the
+/// `NoticeKind` ordinal); returns "title\nalbum".
 extern "system" fn notice_facts(env: JNIEnv, _: JClass, out: JLongArray) -> jstring {
-    transfers::notice_facts(|n| {
+    // Copied out first: JNI calls under the tracker's lock can stall a collection that waits on `note`.
+    let (facts, names) = transfers::notice_facts(|n| {
         let kind = match n.kind {
             NoticeKind::Waiting => 0,
             NoticeKind::OneNamed => 1,
@@ -80,20 +79,16 @@ extern "system" fn notice_facts(env: JNIEnv, _: JClass, out: JLongArray) -> jstr
             NoticeKind::Many => 3,
         };
         let facts = [kind, n.position as jlong, n.total as jlong, n.permille as jlong, n.speed_bps, n.eta_s];
-        if env.set_long_array_region(&out, 0, &facts).is_err() {
-            return std::ptr::null_mut();
-        }
-        let mut names = String::with_capacity(n.current.len() + 1 + n.label.len());
-        names.push_str(&n.current);
-        names.push('\n');
-        names.push_str(&n.label);
-        java_string(&env, &names)
-    })
+        (facts, format!("{}\n{}", n.current, n.label))
+    });
+    if env.set_long_array_region(&out, 0, &facts).is_err() {
+        return std::ptr::null_mut();
+    }
+    java_string(&env, &names)
 }
 
-/// How the batch went, once its bytes are in: `out` gets `[title, text, done, failed]` (title as
-/// `SummaryTitle`'s place: 0 failed, 1 an album, 2 downloaded; text as `SummaryText`'s: 0 none, 1 some failed,
-/// 2 try again) and the album comes back; null when there is nothing to say.
+/// The finished batch: `out` gets `[title, text, done, failed]` (`SummaryTitle`/`SummaryText` ordinals);
+/// returns the album, or null when there is no summary.
 extern "system" fn summary(env: JNIEnv, _: JClass, out: JIntArray) -> jstring {
     let Some(s) = transfers::summary() else { return std::ptr::null_mut() };
     let title = match s.title {
@@ -112,23 +107,20 @@ extern "system" fn summary(env: JNIEnv, _: JClass, out: JIntArray) -> jstring {
     java_string(&env, &s.label)
 }
 
-/// A song's row, asked whenever its ring moves: its artist comes back, and `out` gets `[running, percent,
-/// speed_bps, eta_s]` (running 0 leaves the rest as they were).
+/// A song's row: returns its artist; `out` gets `[running, percent, speed_bps, eta_s]`.
 extern "system" fn row(env: JNIEnv, _: JClass, id: JString, out: JLongArray) -> jstring {
-    with_str(&env, &id, |id| {
-        transfers::row(id, |artist, facts| {
-            let f = facts.map_or([0, 0, 0, 0], |f| [1, f.percent as jlong, f.speed_bps, f.eta_s]);
-            if env.set_long_array_region(&out, 0, &f).is_err() {
-                return std::ptr::null_mut();
-            }
-            java_string(&env, artist)
-        })
-    })
-    .unwrap_or(std::ptr::null_mut())
+    // Copied out first, as in `notice_facts`.
+    let Some((facts, artist)) = with_str(&env, &id, |id| transfers::row(id, |artist, facts| (facts, artist.to_string()))) else {
+        return std::ptr::null_mut();
+    };
+    let f = facts.map_or([0, 0, 0, 0], |f| [1, f.percent as jlong, f.speed_bps, f.eta_s]);
+    if env.set_long_array_region(&out, 0, &f).is_err() {
+        return std::ptr::null_mut();
+    }
+    java_string(&env, &artist)
 }
 
-/// The batch's bytes a second and seconds left, into `out`: the downloads screen's summary line, once a
-/// second while it is open.
+/// The batch's speed (bytes/s) and seconds left, into `out`.
 extern "system" fn speed_eta(env: JNIEnv, _: JClass, out: JLongArray) {
     let (speed, eta) = transfers::speed_eta();
     let _ = env.set_long_array_region(&out, 0, &[speed, eta]);

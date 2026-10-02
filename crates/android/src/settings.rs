@@ -1,6 +1,4 @@
-//! The equalizer screen over plain JNI: the edits are asked on every step of a slider's drag, so each is
-//! primitives in and out (`nori_core::settings_store`'s edits). The screen's words and figures are
-//! Kotlin's own; the one thing it asks here is what kind of band a label marks.
+//! Equalizer screen edits (`nori_core::settings_store`), called on every slider step: primitives only.
 
 use jni::objects::{JClass, JFloatArray};
 use jni::sys::{jfloat, jint, jlong};
@@ -19,8 +17,7 @@ pub(crate) static SOUND_EDIT: Class = Class {
     methods: &[native!(c"setBand", c"(I[F)I", set_band), native!(c"setLevel", c"(IF)J", set_level), native!(c"setGraphic", c"(IF)J", set_graphic)],
 };
 
-/// What a band's label marks after its frequency (`settings::band_mark`), as its place in `BandMark`: 0
-/// nothing, 1 left, 2 right, 3 low shelf, 4 high shelf, 5 no gain.
+/// `settings::band_mark` as its `BandMark` ordinal.
 extern "system" fn band_mark(kind: jint, channel: jint) -> jint {
     match nori_core::settings::band_mark(kind, channel) {
         BandMark::None => 0,
@@ -32,16 +29,15 @@ extern "system" fn band_mark(kind: jint, channel: jint) -> jint {
     }
 }
 
-/// `settings_store::edit_band` on every step of a slider: the band comes in as `[kind, freq, gain, q,
-/// channel]` and goes back out the same way as it was kept. A drag builds no settings record and sends
-/// none across. Returns what the player has to apply again, or -1 when nothing changed.
+/// `settings_store::edit_band`: `band` is `[kind, freq, gain, q, channel]` in, the stored band out.
+/// Returns the effect flags to apply, or -1 when nothing changed.
 extern "system" fn set_band(env: JNIEnv, _: JClass, index: jint, band: JFloatArray) -> jint {
     let mut b = [0f32; 5];
     if index < 0 || env.get_float_array_region(&band, 0, &mut b).is_err() {
         return -1;
     }
     let asked = nori_core::settings::band_from(b[0] as i32, b[1], b[2], b[3], b[4] as i32);
-    let Some((effect, kept)) = nori_core::settings_store::edit_band(index as u32, asked) else { return -1 };
+    let Some((effect, kept)) = nori_core::settings_store::shared().edit_band(index as u32, asked) else { return -1 };
     let out = [kept.kind as i32 as f32, kept.freq, kept.gain_db, kept.q, kept.channel as i32 as f32];
     if env.set_float_array_region(&band, 0, &out).is_err() {
         return -1;
@@ -49,24 +45,19 @@ extern "system" fn set_band(env: JNIEnv, _: JClass, index: jint, band: JFloatArr
     effect as jint
 }
 
-/// `settings_store::edit_level` (`level` an [`EqLevel`] ordinal): the value as it was kept as float bits
-/// in the high 32, what the player has to apply again in the low; -1 when nothing changed.
-extern "system" fn set_level(level: jint, value: jfloat) -> jlong {
-    let Some(level) = usize::try_from(level).ok().and_then(|l| EqLevel::ALL.get(l)) else { return -1 };
-    match nori_core::settings_store::edit_level(*level, value) {
-        Some((effect, kept)) => ((kept.to_bits() as jlong) << 32) | effect as jlong,
-        None => -1,
-    }
+/// Packs an edit result: stored value's float bits high, effect flags low; -1 when nothing changed.
+fn pack_edit(edit: Option<(u32, f32)>) -> jlong {
+    edit.map_or(-1, |(effect, kept)| ((kept.to_bits() as jlong) << 32) | effect as jlong)
 }
 
-/// `settings_store::edit_graphic` on every step of a graphic equalizer slider: the value as it was kept
-/// as float bits in the high 32, what the player has to apply again in the low; -1 when nothing changed.
+/// `settings_store::edit_level`; `level` is an [`EqLevel`] ordinal.
+extern "system" fn set_level(level: jint, value: jfloat) -> jlong {
+    let Some(level) = usize::try_from(level).ok().and_then(|l| EqLevel::ALL.get(l)) else { return -1 };
+    pack_edit(nori_core::settings_store::shared().edit_level(*level, value))
+}
+
+/// `settings_store::edit_graphic`.
 extern "system" fn set_graphic(index: jint, value: jfloat) -> jlong {
-    if index < 0 {
-        return -1;
-    }
-    match nori_core::settings_store::edit_graphic(index as u32, value) {
-        Some((effect, kept)) => ((kept.to_bits() as jlong) << 32) | effect as jlong,
-        None => -1,
-    }
+    let Ok(index) = u32::try_from(index) else { return -1 };
+    pack_edit(nori_core::settings_store::shared().edit_graphic(index, value))
 }
