@@ -317,6 +317,71 @@ mod tests {
         }
     }
 
+    fn song(id: &str, duration_ms: i64) -> WindowSong {
+        WindowSong { id: id.into(), duration_ms, ..WindowSong::default() }
+    }
+
+    /// A planner over an empty database whose crossfade length the test sets (0: off).
+    fn crossfading() -> (Arc<Planner>, Arc<Mutex<i32>>, Arc<Mutex<rusqlite::Connection>>) {
+        let db = Arc::new(Mutex::new(nori_db::open("", "t").unwrap()));
+        let profile = Arc::new(nori_db::Profile::default());
+        profile.set(&db);
+        let crossfade = Arc::new(Mutex::new(6));
+        let read = crossfade.clone();
+        let planner = Planner::new(profile, Box::new(move || Some(TransitionPrefs { crossfade_s: *read.lock(), ..nori_player::sim::prefs_off() })));
+        (planner, crossfade, db)
+    }
+
+    #[test]
+    fn a_cached_no_follows_what_it_depends_on() {
+        let (planner, crossfade, _db) = crossfading();
+        assert!(planner.plan_for("a").is_none(), "an empty window");
+        planner.transition_window(vec![song("a", 200_000), song("b", 200_000)], false);
+        assert!(planner.plan_for("a").is_some(), "a new window");
+        let note = planner.transition_note("a").unwrap();
+        assert_eq!((note.incoming_id.as_str(), note.kind, note.duration_ms), ("b", TransitionKind::EqualPowerFade, 6000));
+        assert_eq!(planner.transition_into("b"), Some(note));
+        assert_eq!(planner.transition_into("a"), None);
+
+        planner.transition_setup(true);
+        assert!(planner.transitions_off());
+        assert!(planner.plan_for("a").is_none(), "the output forbids it");
+        planner.transition_setup(false);
+        assert!(!planner.transitions_off());
+        assert!(planner.plan_for("a").is_some(), "the output allows it again");
+
+        *crossfade.lock() = 0;
+        assert!(planner.plan_for("a").is_none(), "crossfade off");
+        *crossfade.lock() = 4;
+        assert!(planner.plan_for("a").is_some(), "crossfade on again");
+        assert_eq!(planner.transition_note("a").unwrap().duration_ms, 4000);
+    }
+
+    #[test]
+    fn measures_sized_by_the_window() {
+        let (planner, _, _db) = crossfading();
+        let auto_mix = Planner::new(planner.db.clone(), Box::new(|| Some(TransitionPrefs { auto_mix: true, ..nori_player::sim::prefs_off() })));
+        auto_mix.transition_window(vec![song("a", 200_000), song("b", 180_000)], false);
+        assert_eq!(auto_mix.wants_analysis("b"), Some(180_000));
+        assert_eq!(planner.wants_analysis("b"), None, "AutoMix off");
+    }
+
+    /// Only a song heard whole, and at least 30 s of it, is stored.
+    #[test]
+    fn stores_only_whole_songs() {
+        use nori_player::automix::synth::Synth;
+        for (secs, window_ms, stored) in [(60.0, 60_000, true), (60.0, 0, true), (60.0, 200_000, false), (20.0, 20_000, false)] {
+            let (planner, _, db) = crossfading();
+            planner.transition_window(vec![song("s", window_ms)], false);
+            let s = Synth { secs, ..Synth::new(120.0) };
+            let mut analyzer = Analyzer::new(s.rate, 60_000);
+            let pcm = s.render();
+            analyzer.feed(&pcm);
+            planner.finish(Finished { song_id: "s".into(), analyzer, frames: pcm.len() as u64, rate: s.rate });
+            assert_eq!(get(&db.lock(), "s").unwrap().is_some(), stored, "{secs} s heard of {window_ms} ms");
+        }
+    }
+
     #[test]
     fn notes() {
         let mut p = State::new();
