@@ -86,9 +86,12 @@ class OfflineBridge(
 
     private fun watchNetwork() {
         if (networkCallback != null) return
+        // The callback is told of the network already up at once: that one did not bring the song (the
+        // server may be what is gone), so only another network ends the bridge; the parked song tries again.
+        val failedOn = connectivity.activeNetwork
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                main.post { resume() }
+                if (network != failedOn) main.post { resume() }
             }
         }
         runCatching { connectivity.registerDefaultNetworkCallback(cb) }
