@@ -75,7 +75,8 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
     private val _state = MutableStateFlow(PlayerState())
     val state: StateFlow<PlayerState> = _state
     private var controller: MediaController? = null
-    private var connecting = false
+    /** The connection under way; forgotten by [disconnect], so one landing after it is let go at once. */
+    private var connecting: com.google.common.util.concurrent.ListenableFuture<MediaController>? = null
     private val pending = ArrayList<(MediaController) -> Unit>()
 
     /**
@@ -199,12 +200,19 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
     val playerPositionMs: Long get() = controller?.currentPosition ?: -1L
 
     fun connect() {
-        if (controller != null || connecting) return
-        connecting = true
+        if (controller != null || connecting != null) return
         val future = MediaController.Builder(context, SessionToken(context, ComponentName(context, PlaybackService::class.java))).buildAsync()
+        connecting = future
         future.addListener({
-            connecting = false
-            val c = runCatching { future.get() }.getOrNull() ?: return@addListener
+            val c = runCatching { future.get() }.getOrNull()
+            if (connecting !== future) {
+                // Disconnected meanwhile: what was asked of it is done, and it is let go.
+                c?.let { pending.forEach { action -> action(it) }; it.release() }
+                pending.clear()
+                return@addListener
+            }
+            connecting = null
+            c ?: return@addListener
             controller = c
             c.addListener(listener)
             // A mix starting or ending is a change to the UI, and the player itself fires no event for it.
@@ -219,6 +227,7 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
     }
 
     fun disconnect() {
+        connecting = null
         _pendingSeek.value = null
         controller?.let { it.removeListener(listener); it.release() }
         controller = null
