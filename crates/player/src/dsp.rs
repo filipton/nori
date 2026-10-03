@@ -174,6 +174,16 @@ pub fn band_coefficients(rate: f64, band: &Band) -> [f64; 5] {
     [b.b0, b.b1, b.b2, b.a1, b.a2]
 }
 
+/// The dB gain of `band`'s biquad at `freq` and `rate`.
+pub fn band_db(rate: f64, band: &Band, freq: f64) -> f64 {
+    let c = band_coefficients(rate, band);
+    let w = std::f64::consts::TAU * freq / rate;
+    let (c1, s1, c2, s2) = (w.cos(), w.sin(), (2.0 * w).cos(), (2.0 * w).sin());
+    let (nr, ni) = (c[0] + c[1] * c1 + c[2] * c2, -(c[1] * s1 + c[2] * s2));
+    let (dr, di) = (1.0 + c[3] * c1 + c[4] * c2, -(c[3] * s1 + c[4] * s2));
+    10.0 * ((nr * nr + ni * ni) / (dr * dr + di * di)).max(1e-30).log10()
+}
+
 /// Whether `gain_db` matters for this kind.
 pub fn uses_gain(kind: i32) -> bool {
     matches!(kind, PEAKING | LOW_SHELF | HIGH_SHELF | LOW_SHELF_SLOPE | HIGH_SHELF_SLOPE)

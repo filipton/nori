@@ -6,7 +6,7 @@
 //! shelf ([`design`]; the small mid dip is ignored) with a pre-gain that prevents clipping. Computed on
 //! volume or setting changes, never per buffer.
 
-use crate::dsp::{band_coefficients, Band, CH_BOTH, HIGH_SHELF_SLOPE, LOW_SHELF_SLOPE};
+use crate::dsp::{band_db, Band, CH_BOTH, HIGH_SHELF_SLOPE, LOW_SHELF_SLOPE};
 
 /// ISO 226:2003 table 1: the frequencies, the exponent of loudness perception `αf`, the magnitude of the
 /// linear transfer function normalised at 1 kHz `Lu` (dB) and the threshold of hearing `Tf` (dB).
@@ -111,15 +111,6 @@ const HIGH_FIT: (f64, f64) = (4000.0, 12_500.0);
 const HIGH_CORNERS: [f64; 4] = [6300.0, 8000.0, 10_000.0, 12_500.0];
 const HIGH_SLOPE: f64 = 1.0;
 
-fn db_at(rate: f64, band: &Band, freq: f64) -> f64 {
-    let c = band_coefficients(rate, band);
-    let w = std::f64::consts::TAU * freq / rate;
-    let (c1, s1, c2, s2) = (w.cos(), w.sin(), (2.0 * w).cos(), (2.0 * w).sin());
-    let (nr, ni) = (c[0] + c[1] * c1 + c[2] * c2, -(c[1] * s1 + c[2] * s2));
-    let (dr, di) = (1.0 + c[3] * c1 + c[4] * c2, -(c[3] * s1 + c[4] * s2));
-    10.0 * ((nr * nr + ni * ni) / (dr * dr + di * di)).max(1e-30).log10()
-}
-
 /// Extra high-shelf fit points above the table (held at 12.5 kHz), so the fit cannot keep rising
 /// above the table's end.
 const ABOVE_TABLE: [f64; 2] = [16_000.0, 20_000.0];
@@ -132,11 +123,11 @@ fn fit(kind: i32, corners: &[f64], slope: f64, span: (f64, f64), extra: &[f64], 
     let mut best: Option<(f64, Band)> = None;
     for &corner in corners {
         let unit = Band { kind, freq: corner, gain_db: 6.0, q: slope, channel: CH_BOTH };
-        let shape: Vec<f64> = points.iter().map(|f| db_at(FIT_RATE, &unit, *f) / 6.0).collect();
+        let shape: Vec<f64> = points.iter().map(|f| band_db(FIT_RATE, &unit, *f) / 6.0).collect();
         let den: f64 = shape.iter().map(|s| s * s).sum();
         let gain = (shape.iter().zip(&want).map(|(s, w)| s * w).sum::<f64>() / den.max(1e-12)).max(0.0);
         let band = Band { gain_db: gain, ..unit };
-        let err: f64 = points.iter().zip(&want).map(|(f, w)| (db_at(FIT_RATE, &band, *f) - w).powi(2)).sum();
+        let err: f64 = points.iter().zip(&want).map(|(f, w)| (band_db(FIT_RATE, &band, *f) - w).powi(2)).sum();
         if best.as_ref().is_none_or(|(e, _)| err < *e) {
             best = Some((err, band));
         }
@@ -157,7 +148,7 @@ pub fn design(reference: f64, volume_db: f64) -> Shelves {
     let high = fit(HIGH_SHELF_SLOPE, &HIGH_CORNERS, HIGH_SLOPE, HIGH_FIT, &ABOVE_TABLE, c);
     // Peak combined boost on a sixth-octave grid, 20 Hz up.
     let bands: Vec<&Band> = low.iter().chain(high.iter()).collect();
-    let most = (0..=60).map(|k| 20.0 * 2f64.powf(k as f64 / 6.0)).map(|f| bands.iter().map(|b| db_at(FIT_RATE, b, f)).sum::<f64>()).fold(0.0, f64::max);
+    let most = (0..=60).map(|k| 20.0 * 2f64.powf(k as f64 / 6.0)).map(|f| bands.iter().map(|b| band_db(FIT_RATE, b, f)).sum::<f64>()).fold(0.0, f64::max);
     Shelves { low, high, pre_db: -(most * 10.0).ceil() / 10.0 }
 }
 
@@ -216,7 +207,7 @@ mod tests {
             .iter()
             .chain(ABOVE_TABLE.iter())
             .filter(|f| (**f >= LOW_FIT.0 && **f <= 500.0) || **f >= 8000.0)
-            .map(|f| (bands.iter().map(|b| db_at(FIT_RATE, b, *f)).sum::<f64>() - compensation_db(l, reference, *f)).abs())
+            .map(|f| (bands.iter().map(|b| band_db(FIT_RATE, b, *f)).sum::<f64>() - compensation_db(l, reference, *f)).abs())
             .fold(0.0, f64::max);
         (worst, s)
     }
@@ -230,7 +221,7 @@ mod tests {
             let (w, s) = worst(80.0, volume);
             assert!(w < 3.0, "{volume} dB down: {w} dB off in the bass or the top");
             // The pre-gain pays back the most the two add anywhere from 20 Hz to 20 kHz.
-            let peak = (0..2000).map(|k| 20.0 * 1000f64.powf(k as f64 / 1999.0)).map(|f| s.low.iter().chain(s.high.iter()).map(|b| db_at(FIT_RATE, b, f)).sum::<f64>()).fold(0.0, f64::max);
+            let peak = (0..2000).map(|k| 20.0 * 1000f64.powf(k as f64 / 1999.0)).map(|f| s.low.iter().chain(s.high.iter()).map(|b| band_db(FIT_RATE, b, f)).sum::<f64>()).fold(0.0, f64::max);
             assert!(s.pre_db < 0.0 && peak + s.pre_db <= 0.05, "{volume} dB: a {peak} dB boost against a {} dB pre-gain", s.pre_db);
         }
         // Quieter is more.

@@ -1874,7 +1874,7 @@ pub fn parse_eq_preset(text: String) -> EqPreset {
             let Some(freq) = after("Fc") else { continue };
             let gain_db = after("Gain").unwrap_or(0.0);
             // Shelves and peaks need a gain; pass filters have none.
-            if matches!(kind, EqKind::Peaking | EqKind::LowShelf | EqKind::HighShelf | EqKind::LowShelfSlope | EqKind::HighShelfSlope) && after("Gain").is_none() {
+            if nori_player::dsp::uses_gain(kind as i32) && after("Gain").is_none() {
                 continue;
             }
             preset.bands.push(EqBand { kind, freq, gain_db, q: after("Q").unwrap_or(0.71) });

@@ -10,7 +10,7 @@
 //! Gauss-Newton on the exact response. Accuracy over random ±12 dB curves: ~0.3 dB at centres and
 //! 0.7 dB between (to 16 kHz). Runs when a slider moves, never per buffer.
 
-use crate::dsp::{band_coefficients, Band, CH_BOTH, HIGH_SHELF, PEAKING};
+use crate::dsp::{band_db, Band, CH_BOTH, HIGH_SHELF, PEAKING};
 
 /// The layouts offered, by band count.
 pub const LAYOUTS: [usize; 4] = [5, 10, 15, 31];
@@ -65,18 +65,9 @@ fn width_for(count: usize) -> f64 {
     if count == 5 { WIDTH_FIVE } else { WIDTH_IN_SPACINGS }
 }
 
-/// The dB gain of one biquad at `freq`.
-fn biquad_db(c: &[f64; 5], rate: f64, freq: f64) -> f64 {
-    let w = std::f64::consts::TAU * freq / rate;
-    let (c1, s1, c2, s2) = (w.cos(), w.sin(), (2.0 * w).cos(), (2.0 * w).sin());
-    let (nr, ni) = (c[0] + c[1] * c1 + c[2] * c2, -(c[1] * s1 + c[2] * s2));
-    let (dr, di) = (1.0 + c[3] * c1 + c[4] * c2, -(c[3] * s1 + c[4] * s2));
-    10.0 * ((nr * nr + ni * ni) / (dr * dr + di * di)).max(1e-30).log10()
-}
-
 /// The dB response of `bands` in cascade at `freq` and `rate`.
 pub fn response_db(rate: f64, bands: &[Band], freq: f64) -> f64 {
-    bands.iter().map(|b| biquad_db(&band_coefficients(rate, b), rate, freq)).sum()
+    bands.iter().map(|b| band_db(rate, b, freq)).sum()
 }
 
 fn bell(freq: f64, gain_db: f64, q: f64) -> Band {
@@ -136,7 +127,7 @@ pub fn design(rate: f64, sliders: &[f64]) -> Vec<Band> {
                 (0..n)
                     .map(|j| {
                         let g = if at[j].abs() < 1.0 { PROTOTYPE_DB } else { at[j] };
-                        biquad_db(&band_coefficients(rate, &filter(j, g)), rate, f) / g
+                        band_db(rate, &filter(j, g), f) / g
                     })
                     .collect()
             })
