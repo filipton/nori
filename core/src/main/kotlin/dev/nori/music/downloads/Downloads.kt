@@ -182,8 +182,8 @@ class Downloads(private val context: Context, private val coreOf: () -> Core, pr
         io.execute {
             // Saved songs are read back from the download cache (their analysis, the beat model), whether or not
             // the playback service runs.
-            dev.nori.music.playback.MeasureBridge.sources = sources
-            runCatching { dev.nori.music.playback.MeasureJni.processStart(analyses()) }.onFailure { Log.w(TAG, "downloads will not be read back", it) }
+            val saved = dev.nori.music.playback.MeasureBridge({ id -> dev.nori.music.playback.AutoMixPrefetch.files(sources.downloadCache, sources.downloadKey(id)) })
+            runCatching { dev.nori.music.playback.MeasureJni.processStart(saved, analyses()) }.onFailure { Log.w(TAG, "downloads will not be read back", it) }
             publish(); reconcile()
         }
     }

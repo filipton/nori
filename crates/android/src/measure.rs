@@ -1,11 +1,12 @@
 //! AutoMix analysis ahead of playback: nori-engine's `Measurer` over media3's caches. Kotlin reports
-//! where a complete song's files are (`MeasureBridge.whole`) and when one completes (`arrived`); the
-//! files are read directly. Also measures downloads as they are written, and post-download processing.
+//! where a complete song's files are (`MeasureBridge.whole`, the bridge each shelf is handed) and when one
+//! completes (`arrived`); the files are read directly. Also measures downloads as they are written, and
+//! post-download processing.
 
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
-use jni::objects::{GlobalRef, JByteArray, JClass, JObjectArray, JStaticMethodID, JString, JValue};
+use jni::objects::{GlobalRef, JByteArray, JClass, JMethodID, JObject, JObjectArray, JString, JValue};
 use jni::sys::{jboolean, jint, jlong};
 use jni::signature::{Primitive, ReturnType};
 use jni::{JNIEnv, JavaVM};
@@ -19,28 +20,27 @@ pub(crate) static CLASS: Class = Class {
     name: c"dev/nori/music/playback/MeasureJni",
     methods: &[
         native!(c"analyses", c"(JJ)J", create_analyses),
-        native!(c"start", c"(J)J", start),
+        native!(c"start", c"(Ldev/nori/music/playback/MeasureBridge;J)J", start),
         native!(c"update", c"(J)V", update),
         native!(c"arrived", c"(J)V", arrived),
         native!(c"stop", c"(J)V", stop),
         native!(c"downloadOpen", c"(JLjava/lang/String;)J", download_open),
         native!(c"downloadTake", c"(J[BI)V", download_take),
         native!(c"downloadEnd", c"(JZ)V", download_end),
-        native!(c"processStart", c"(J)V", process_start),
+        native!(c"processStart", c"(Ldev/nori/music/playback/MeasureBridge;J)V", process_start),
         native!(c"processSaved", c"(J[Ljava/lang/String;)V", process_saved),
         native!(c"processAnalyse", c"(J[Ljava/lang/String;)I", process_analyse),
     ],
 };
 
-/// `MeasureBridge`, looked up once.
+/// `MeasureBridge`'s methods, looked up once.
 struct Java {
     vm: JavaVM,
-    bridge: GlobalRef,
-    whole: JStaticMethodID,
-    measured: JStaticMethodID,
+    whole: JMethodID,
+    measured: JMethodID,
 }
 
-/// Global: `MeasureBridge`'s classes and methods, looked up once for every caller.
+/// Global: `MeasureBridge`'s methods, looked up once for every caller.
 static JAVA: OnceLock<Java> = OnceLock::new();
 
 /// AutoMix's analyses over the client in use, and the app's queue session the songs come from.
@@ -64,13 +64,12 @@ extern "system" fn create_analyses(_: JNIEnv, _: JClass, current: jlong, session
     Box::into_raw(Box::new(Measuring { analyses: Analyses::new(move || current.get()), session: crate::kept(session) })) as jlong
 }
 
-fn look_up(env: &mut JNIEnv) -> jni::errors::Result<Java> {
-    let bridge = env.find_class("dev/nori/music/playback/MeasureBridge")?;
+fn look_up(env: &mut JNIEnv, bridge: &JObject) -> jni::errors::Result<Java> {
+    let class = env.get_object_class(bridge)?;
     Ok(Java {
         vm: env.get_java_vm()?,
-        whole: env.get_static_method_id(&bridge, "whole", "(Ljava/lang/String;)[Ljava/lang/String;")?,
-        measured: env.get_static_method_id(&bridge, "measured", "()V")?,
-        bridge: env.new_global_ref(&bridge)?,
+        whole: env.get_method_id(&class, "whole", "(Ljava/lang/String;)[Ljava/lang/String;")?,
+        measured: env.get_method_id(&class, "measured", "()V")?,
     })
 }
 
@@ -80,9 +79,11 @@ fn env() -> Option<(&'static Java, JNIEnv<'static>)> {
     Some((java, crate::attached(&java.vm)?))
 }
 
-/// Song locations in media3's caches, asked of Kotlin; the queue `session` knows the songs' formats.
+/// Song locations in media3's caches, asked of the shelf's own `MeasureBridge`; the queue `session` knows
+/// the songs' formats.
 struct Media3 {
     session: Arc<Session>,
+    bridge: GlobalRef,
 }
 
 impl Shelf for Media3 {
@@ -90,9 +91,8 @@ impl Shelf for Media3 {
         let (java, mut env) = env()?;
         let parts = env.with_local_frame(8, |env| -> jni::errors::Result<Option<Vec<String>>> {
             let id = env.new_string(id)?;
-            let bridge = <&JClass>::from(java.bridge.as_obj());
             // SAFETY: MeasureBridge.whole(String): String[], looked up with this signature.
-            let found = unsafe { env.call_static_method_unchecked(bridge, java.whole, ReturnType::Object, &[JValue::Object(&id).as_jni()]) }?.l()?;
+            let found = unsafe { env.call_method_unchecked(self.bridge.as_obj(), java.whole, ReturnType::Object, &[JValue::Object(&id).as_jni()]) }?.l()?;
             if found.is_null() {
                 return Ok(None);
             }
@@ -123,12 +123,11 @@ impl Shelf for Media3 {
     }
 }
 
-/// `MeasureBridge.measured()`: a song was measured, so transitions are replanned.
-fn notify_measured() {
+/// `bridge.measured()`: a song was measured, so transitions are replanned.
+fn notify_measured(bridge: &GlobalRef) {
     if let Some((java, mut env)) = env() {
-        let bridge = <&JClass>::from(java.bridge.as_obj());
         // SAFETY: MeasureBridge.measured(), looked up with this signature.
-        let _ = unsafe { env.call_static_method_unchecked(bridge, java.measured, ReturnType::Primitive(Primitive::Void), &[]) };
+        let _ = unsafe { env.call_method_unchecked(bridge.as_obj(), java.measured, ReturnType::Primitive(Primitive::Void), &[]) };
         cleared(&mut env);
     }
 }
@@ -142,12 +141,17 @@ struct Running {
 /// Measurers by Kotlin handle: a cache writer's `arrived` racing `stop` finds nothing.
 static MEASURERS: Handles<Running> = Handles::new();
 
-/// Looks `MeasureBridge` up on first use; false when it is missing.
-fn ensure_java(env: &mut JNIEnv) -> bool {
+/// `bridge` as a shelf's own, `MeasureBridge`'s methods looked up on first use; None when they are missing.
+fn bridge_of(env: &mut JNIEnv, bridge: &JObject) -> Option<GlobalRef> {
+    let held = env.new_global_ref(bridge).ok();
+    held.filter(|_| ensure_java(env, bridge))
+}
+
+fn ensure_java(env: &mut JNIEnv, bridge: &JObject) -> bool {
     if JAVA.get().is_some() {
         return true;
     }
-    match look_up(env) {
+    match look_up(env, bridge) {
         Ok(j) => {
             let _ = JAVA.set(j);
             true
@@ -160,14 +164,13 @@ fn ensure_java(env: &mut JNIEnv) -> bool {
     }
 }
 
-/// Playback service started: the (idle) measurer over `analyses`, as a handle [`stop`] takes back; 0 when
-/// the Java side is missing.
-extern "system" fn start(mut env: JNIEnv, _: JClass, analyses: jlong) -> jlong {
+/// Playback service started: the (idle) measurer over `analyses`, asking `bridge` (its `AutoMixPrefetch`'s),
+/// as a handle [`stop`] takes back; 0 when the Java side is missing.
+extern "system" fn start(mut env: JNIEnv, _: JClass, bridge: JObject, analyses: jlong) -> jlong {
     let Some(m) = measuring(analyses) else { return 0 };
-    if !ensure_java(&mut env) {
-        return 0;
-    }
-    let measurer = Measurer::on_shelf(m.analyses.clone(), Box::new(Media3 { session: m.session.clone() }), Some(Box::new(notify_measured)));
+    let Some(bridge) = bridge_of(&mut env, &bridge) else { return 0 };
+    let told = bridge.clone();
+    let measurer = Measurer::on_shelf(m.analyses.clone(), Box::new(Media3 { session: m.session.clone(), bridge }), Some(Box::new(move || notify_measured(&told))));
     MEASURERS.add(Arc::new(Running { measurer, session: m.session.clone() }))
 }
 
@@ -242,10 +245,11 @@ extern "system" fn download_end(_: JNIEnv, _: JClass, h: jlong, whole: jboolean)
 
 // ---- post-download processing (nori-engine's `processing`) ----
 
-/// Installs the download cache reader for processing (works without the playback service).
-extern "system" fn process_start(mut env: JNIEnv, _: JClass, analyses: jlong) {
-    if let Some(m) = measuring(analyses).filter(|_| ensure_java(&mut env)) {
-        m.analyses.install(Box::new(Media3 { session: m.session.clone() }));
+/// Installs the download cache reader for processing, asking `bridge` (works without the playback service).
+extern "system" fn process_start(mut env: JNIEnv, _: JClass, bridge: JObject, analyses: jlong) {
+    let Some(m) = measuring(analyses) else { return };
+    if let Some(bridge) = bridge_of(&mut env, &bridge) {
+        m.analyses.install(Box::new(Media3 { session: m.session.clone(), bridge }));
     }
 }
 

@@ -17,8 +17,8 @@ internal object MeasureJni {
      * doors below take.
      */
     @JvmStatic external fun analyses(current: Long, session: Long): Long
-    /** Makes the measurer, idle until it is asked, as a handle [stop] takes back; 0 when it could not. */
-    @JvmStatic external fun start(analyses: Long): Long
+    /** Makes the measurer, idle until it is asked, asking [bridge], as a handle [stop] takes back; 0 when it could not. */
+    @JvmStatic external fun start(bridge: MeasureBridge, analyses: Long): Long
     /** The songs coming up may have changed: the core names them, and the same songs change nothing. */
     @JvmStatic @CriticalNative external fun update(measurer: Long)
     /** A song has become whole in one of the caches. */
@@ -28,8 +28,8 @@ internal object MeasureJni {
     @JvmStatic external fun downloadOpen(analyses: Long, key: String): Long
     @JvmStatic external fun downloadTake(h: Long, bytes: ByteArray, len: Int)
     @JvmStatic external fun downloadEnd(h: Long, whole: Boolean)
-    /** Downloads can be read back from the disk from now on (nori-engine's `processing`). */
-    @JvmStatic external fun processStart(analyses: Long)
+    /** Downloads can be read back from the disk from now on (nori-engine's `processing`), found through [bridge]. */
+    @JvmStatic external fun processStart(bridge: MeasureBridge, analyses: Long)
     /** Downloads just saved and settled: what each needs besides its lyrics is decided, marked and started. Off the main thread. */
     @JvmStatic external fun processSaved(analyses: Long, ids: Array<String>)
     /** Downloads asked for again ("Analyse downloaded songs"): how many are to be read back. Off the main thread. */
@@ -95,16 +95,13 @@ internal class MeasuringSink(private val analyses: Long) : DataSink {
     }
 }
 
-/** What the measurer asks of the platform, from its own thread: where a song's bytes are, and that one was measured. */
-@UnstableApi
-internal object MeasureBridge {
-    @Volatile var prefetch: AutoMixPrefetch? = null
-    /** The caches, for a download read back while the playback service is not running. */
-    @Volatile var sources: MediaSources? = null
-
-    @JvmStatic fun whole(id: String): Array<String>? =
-        prefetch?.whole(id) ?: sources?.let { AutoMixPrefetch.files(it.downloadCache, it.downloadKey(id)) }
-    @JvmStatic fun measured() { prefetch?.onMeasured?.invoke() }
+/**
+ * What one measuring shelf asks of the platform, from its own thread: where a song's bytes are ([find]), and
+ * that one was measured ([told]). Handed to the core with the shelf, so its calls reach their own owner.
+ */
+internal class MeasureBridge(private val find: (String) -> Array<String>?, private val told: () -> Unit = {}) {
+    fun whole(id: String): Array<String>? = find(id)
+    fun measured() = told()
 }
 
 /**
@@ -125,14 +122,13 @@ class AutoMixPrefetch(
     private val sources: MediaSources,
     analyses: Long,
     /** A track has been measured: whatever was planned without it can be planned again. On the measuring thread. */
-    internal val onMeasured: () -> Unit = {},
+    onMeasured: () -> Unit = {},
 ) {
     /** The measurer's handle; 0 once released. */
     @Volatile private var measurer = 0L
 
     init {
-        MeasureBridge.prefetch = this
-        measurer = MeasureJni.start(analyses)
+        measurer = MeasureJni.start(MeasureBridge(::whole, onMeasured), analyses)
         sources.onWhole = { MeasureJni.arrived(measurer) }
     }
 
@@ -144,14 +140,13 @@ class AutoMixPrefetch(
         measurer = 0L
         MeasureJni.stop(m)
         sources.onWhole = null
-        if (MeasureBridge.prefetch === this) MeasureBridge.prefetch = null
     }
 
     /**
      * [id]'s bytes if they are all on the device: its cache key, then the files that hold them in order -
      * a download's, or else a streamed copy's. Null while any of it is missing.
      */
-    internal fun whole(id: String): Array<String>? =
+    private fun whole(id: String): Array<String>? =
         files(sources.downloadCache, sources.downloadKey(id)) ?: runCatching { sources.streamKey(id) }.getOrNull()?.let { files(sources.streamCache, it) }
 
     internal companion object {
