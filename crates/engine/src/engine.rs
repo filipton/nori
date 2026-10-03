@@ -244,13 +244,19 @@ enum Switched {
     Next,
     Previous,
     Seek(i64),
-    /// Hand the song between the CPU and the output's decoder.
-    Hand,
+    /// The output's decoder takes the song over from the CPU, where the ear is.
+    ToChip,
+    /// The CPU takes the song over from the output's decoder ([`Handover::takeover`]).
+    ToCpu,
 }
 
 impl Switched {
     fn jumps(&self) -> bool {
         matches!(self, Switched::To(..) | Switched::Next | Switched::Previous)
+    }
+
+    fn hands(&self) -> bool {
+        matches!(self, Switched::ToChip | Switched::ToCpu)
     }
 }
 
@@ -515,9 +521,8 @@ struct Handover {
     /// plays the current song to its end (`at_end`) and the output takes the next.
     probe: Option<(usize, Result<Demuxed, String>, Option<bool>)>,
     at_end: Option<usize>,
-    /// The current song opened as packets, to hand it over where the ear is (`now` once it may).
+    /// The current song opened as packets, to hand it over where the ear is.
     entering: Option<(usize, Result<Demuxed, String>)>,
-    now: bool,
     takeover: Option<Takeover>,
     /// Torn tracks; at [`TEAR_DOWNS`] offload is given up (`refused`) for the engine's life.
     tear_downs: u32,
@@ -948,9 +953,8 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         let (i, opened) = self.h.entering.take().expect("checked");
         if self.off.is_some() && self.judge(i, opened).is_none() {
             self.p.app.log("offload takes over where the ear is");
-            self.h.now = true;
             let now = self.now();
-            self.dip_down(now, HAND_DIP_MS, HAND_DIP_MS).then.push(Switched::Hand);
+            self.dip_down(now, HAND_DIP_MS, HAND_DIP_MS).then.push(Switched::ToChip);
         }
     }
 
@@ -1386,9 +1390,9 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     }
 
     /// Once the song opened ahead is open and the track a dip away from its start, the dip goes down and
-    /// the CPU takes over at its bottom ([`Worker::handed`]). Paused, the handover is made at once.
+    /// the CPU takes over at its bottom ([`Worker::to_cpu`]). Paused, the handover is made at once.
     fn follow_takeover(&mut self, now: i64) {
-        if self.h.takeover.is_none() || self.dip.as_ref().is_some_and(|d| d.then.iter().any(|s| matches!(s, Switched::Hand))) || self.pause_at.is_some() {
+        if self.h.takeover.is_none() || self.dip.as_ref().is_some_and(|d| d.then.iter().any(Switched::hands)) || self.pause_at.is_some() {
             return;
         }
         if !self.offloading() {
@@ -1409,7 +1413,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             self.h.takeover = None;
             self.leave_now();
         } else if self.dip.is_none() && now >= t.dip_at {
-            self.dip_down(now, HAND_DIP_MS, HAND_DIP_MS).then.push(Switched::Hand);
+            self.dip_down(now, HAND_DIP_MS, HAND_DIP_MS).then.push(Switched::ToCpu);
         }
     }
 
@@ -1513,7 +1517,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
                 (if previous_restarts(ms, before.is_some(), false) { at } else { before.unwrap_or(at) }, 0)
             }
             // Paused, the music is made again on play.
-            Switched::Hand => return,
+            Switched::ToChip | Switched::ToCpu => return,
         };
         self.parked = Some(Parked { at: i, ms, shown: Some(self.p.id_at(i)) });
         self.told.seek_landed |= matches!(s, Switched::Seek(_));
@@ -1597,7 +1601,8 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
                 self.seek(ms);
                 self.told.seek_landed = true;
             }
-            Switched::Hand => from = self.handed(),
+            Switched::ToCpu => from = self.to_cpu(),
+            Switched::ToChip => from = self.to_chip(),
             Switched::To(..) => {}
         }
         // Only a play_at comes here paused (a skip or a go_to is parked instead): music is wanted.
@@ -1607,20 +1612,24 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         from
     }
 
-    /// At the dip's bottom: the CPU takes the song over from the output's decoder, or that takes it over
-    /// where the ear is. Returns the level to come back up from, if not the fade's.
-    fn handed(&mut self) -> Option<f32> {
-        if let Some(t) = self.h.takeover.take() {
-            // The track's fade ends at silence, whatever tick it last took.
-            self.ramp(None, 0.0, 0);
-            let now = self.now();
-            let (i, ms) = self.off.as_mut().and_then(|o| o.leave(now))?;
-            self.p.app.log("offload given up: the CPU plays on from here");
-            let opened = t.ready.then_some((t.id, t.r, t.from_ms));
-            return self.onto_cpu(i, ms, opened);
-        }
+    /// At the dip's bottom: the CPU takes the song over from the output's decoder, unless the takeover
+    /// was given up meanwhile. Returns the level to come back up from, if not the fade's.
+    fn to_cpu(&mut self) -> Option<f32> {
+        let t = self.h.takeover.take()?;
+        // The track's fade ends at silence, whatever tick it last took.
+        self.ramp(None, 0.0, 0);
+        let now = self.now();
+        let (i, ms) = self.off.as_mut().and_then(|o| o.leave(now))?;
+        self.p.app.log("offload given up: the CPU plays on from here");
+        let opened = t.ready.then_some((t.id, t.r, t.from_ms));
+        self.onto_cpu(i, ms, opened)
+    }
+
+    /// At the dip's bottom: the output's decoder takes the song over where the ear is, if offload is
+    /// still wanted. Returns the level to come back up from, if not the fade's.
+    fn to_chip(&mut self) -> Option<f32> {
         let i = self.p.current().filter(|_| !self.offloading())?;
-        if !(std::mem::take(&mut self.h.now) && self.offload && self.off.is_some() && self.p.playing()) {
+        if !(self.offload && self.off.is_some() && self.p.playing()) {
             return None;
         }
         // Where the ear is, read as the CPU stops.
