@@ -235,6 +235,27 @@ impl Runner {
     }
 }
 
+/// The end of the queue through the chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum End {
+    /// Not reached.
+    Open,
+    /// Reached, and the chain is drained once the kept input has all been run (again, after a splice).
+    Due,
+    Drained,
+}
+
+/// The song time of the track's first frame, as the buffers' timestamps set it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Start {
+    /// The next buffer sets it (a new track, or a flush).
+    Unknown,
+    /// A buffer more than [`PTS_TOLERANCE_US`] off moves it.
+    At(i64),
+    /// A discontinuity was announced: the next buffer moves it to its own time.
+    Moved(i64),
+}
+
 /// media3's AudioSink with nori's processors, over a [`Track`]. Its clock is media3's: the first
 /// buffer's timestamp after a flush, shifted when a buffer arrives more than [`PTS_TOLERANCE_US`] off
 /// (or after a discontinuity), plus the song time the track has played. The transition engine relies
@@ -259,12 +280,8 @@ pub struct Sink<T: Track> {
     run_media: f64,
     /// Output frames the chain made since the flush (written or pending).
     made: u64,
-    /// The end of the queue was drained through the chain; after a splice it is drained again.
-    drained_end: bool,
-    drain_due: bool,
-    start_media_us: i64,
-    needs_init: bool,
-    needs_sync: bool,
+    end: End,
+    start: Start,
     /// Song frames submitted since the clock's reference ([`Downstream::media_pace`] weighted).
     submitted_frames: f64,
     /// Current song frames per frame.
@@ -304,11 +321,8 @@ impl<T: Track> Sink<T> {
             run: 0,
             run_media: 0.0,
             made: 0,
-            drained_end: false,
-            drain_due: false,
-            start_media_us: 0,
-            needs_init: true,
-            needs_sync: false,
+            end: End::Open,
+            start: Start::Unknown,
             submitted_frames: 0.0,
             pace: 1.0,
             paces: VecDeque::with_capacity(PACES),
@@ -530,10 +544,8 @@ impl<T: Track> Sink<T> {
         // The offer partly taken is dropped with the input after the cut, and the clock is as `pts` is
         // stamped there (a mix dropped here had moved it to the next song's time).
         self.owed = None;
-        self.start_media_us = pts - (self.submitted_frames * 1_000_000.0 / f.rate as f64) as i64;
-        self.needs_sync = false;
-        self.drained_end = false;
-        self.drain_due = false;
+        self.start = Start::At(pts - (self.submitted_frames * 1_000_000.0 / f.rate as f64) as i64);
+        self.end = End::Open;
         self.source_ended = false;
         true
     }
@@ -585,7 +597,9 @@ impl<T: Track> Sink<T> {
         self.run = frame;
         self.run_media = media;
         self.made = out;
-        self.drain_due = self.drained_end;
+        if self.end == End::Drained {
+            self.end = End::Due;
+        }
     }
 
     /// Runs kept input through the chain that has not been run since the last splice, writing as
@@ -598,7 +612,8 @@ impl<T: Track> Sink<T> {
                 return false;
             }
             let Some((piece, end)) = self.kept.piece(self.run) else {
-                if std::mem::take(&mut self.drain_due) {
+                if self.end == End::Due {
+                    self.end = End::Drained;
                     self.drain();
                     continue;
                 }
@@ -709,8 +724,7 @@ impl<T: Track> Sink<T> {
         self.pending_media = 0.0;
         self.carry = 0.0;
         self.owed = None;
-        self.needs_init = true;
-        self.needs_sync = false;
+        self.start = Start::Unknown;
         self.submitted_frames = 0.0;
         self.paces.clear();
         self.source_ended = false;
@@ -739,14 +753,12 @@ impl<T: Track> Sink<T> {
         self.run = 0;
         self.run_media = 0.0;
         self.made = 0;
-        self.drained_end = false;
-        self.drain_due = false;
+        self.end = End::Open;
     }
 
     /// End of the queue: drains the chain once the kept input has all been run.
     pub fn end_of_stream(&mut self) {
-        self.drained_end = true;
-        self.drain_due = true;
+        self.end = End::Due;
         self.fill();
     }
 
@@ -764,7 +776,7 @@ impl<T: Track> Sink<T> {
 
     /// Output is waiting for room in the track, or kept input to be run again.
     pub fn pending(&self) -> bool {
-        self.pending_left() || self.run < self.kept.end() || self.drain_due
+        self.pending_left() || self.run < self.kept.end() || self.end == End::Due
     }
 
     /// Everything written has played.
@@ -790,8 +802,7 @@ impl<T: Track> Sink<T> {
         self.format = Some(f);
         self.track.open(f);
         self.build_chain();
-        self.needs_init = true;
-        self.needs_sync = false;
+        self.start = Start::Unknown;
         self.submitted_frames = 0.0;
         self.paces.clear();
         self.restart_counts();
@@ -831,21 +842,16 @@ impl<T: Track> Downstream for Sink<T> {
             assert_eq!(owed, key, "offered another buffer while one was only partly taken (media3 throws here)");
         }
         if continuing.is_none() {
-            if self.needs_init {
-                self.start_media_us = pts_us.max(0);
-                self.needs_init = false;
-                self.needs_sync = false;
-            } else {
-                let expected = self.start_media_us + (self.submitted_frames * 1_000_000.0 / f.rate as f64) as i64;
-                if !self.needs_sync && (expected - pts_us).abs() > PTS_TOLERANCE_US {
-                    self.timestamp_jumps += 1;
-                    self.needs_sync = true;
+            self.start = match self.start {
+                Start::Unknown => Start::At(pts_us.max(0)),
+                Start::At(s) | Start::Moved(s) => {
+                    let expected = s + (self.submitted_frames * 1_000_000.0 / f.rate as f64) as i64;
+                    let moved = matches!(self.start, Start::Moved(_));
+                    let jumped = !moved && (expected - pts_us).abs() > PTS_TOLERANCE_US;
+                    self.timestamp_jumps += jumped as usize;
+                    Start::At(if moved || jumped { s + pts_us - expected } else { s })
                 }
-                if self.needs_sync {
-                    self.start_media_us += pts_us - expected;
-                    self.needs_sync = false;
-                }
-            }
+            };
         }
         if !self.fill() {
             self.owed = Some(key);
@@ -886,7 +892,9 @@ impl<T: Track> Downstream for Sink<T> {
     }
 
     fn handle_discontinuity(&mut self) {
-        self.needs_sync = true;
+        if let Start::At(s) = self.start {
+            self.start = Start::Moved(s);
+        }
     }
 
     fn media_pace(&mut self, pace: f64) {
@@ -894,8 +902,8 @@ impl<T: Track> Downstream for Sink<T> {
     }
 
     fn position_us(&mut self, _source_ended: bool) -> Option<i64> {
-        let f = self.format.filter(|_| !self.needs_init)?;
-        Some(self.start_media_us + (self.track.played_media() * 1_000_000.0 / f.rate as f64) as i64)
+        let (Some(f), Start::At(s) | Start::Moved(s)) = (self.format, self.start) else { return None };
+        Some(s + (self.track.played_media() * 1_000_000.0 / f.rate as f64) as i64)
     }
 }
 
