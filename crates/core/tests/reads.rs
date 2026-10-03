@@ -96,7 +96,7 @@ fn said(p: &Page) -> String {
 fn every_read_makes_page_and_index() {
     let id = || "x".to_string();
     let reads = [
-        (Read::AlbumList { kind: "newest".into(), size: 5, offset: 0, genre: None }, "albums al1,al2", (0, 1, 0)),
+        (Read::AlbumList { kind: nori_core::browse::AlbumSort::Newest, size: 5, offset: 0, genre: None }, "albums al1,al2", (0, 1, 0)),
         (Read::FavouriteAlbums { size: 5 }, "albums al1,al2", (0, 1, 0)),
         (Read::ArtistIndex, "artists ar1,ar2", (2, 0, 0)),
         (Read::AlbumById { id: id() }, "album al1 songs s1,ext-deezer-song-2 discs B side", (0, 1, 1)),

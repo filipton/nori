@@ -90,7 +90,7 @@ impl Client {
 
     /// One random library album, whole; refills add more ([`crate::OriginKind::ShuffleAlbums`]).
     pub async fn shuffle_albums(&self) -> NetResult<Vec<Song>> {
-        let albums = self.read_now(Read::AlbumList { kind: "random".into(), size: SHUFFLE_ALBUMS, offset: 0, genre: None }).await?.albums();
+        let albums = self.read_now(Read::AlbumList { kind: crate::browse::AlbumSort::Random, size: SHUFFLE_ALBUMS, offset: 0, genre: None }).await?.albums();
         Ok(self.library_albums(albums, 1).await)
     }
 }

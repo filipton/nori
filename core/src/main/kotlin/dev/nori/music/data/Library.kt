@@ -28,7 +28,6 @@ import dev.nori.music.ffi.net.Starrable
 import dev.nori.music.ffi.library.Starred
 import dev.nori.music.ffi.library.StarMarks
 import dev.nori.music.ffi.library.AlbumSort
-import dev.nori.music.ffi.library.albumSortApi
 import dev.nori.music.ffi.library.librarySizes
 import dev.nori.music.ffi.net.Write
 import dev.nori.music.net.lifted
@@ -149,7 +148,7 @@ class Library(
 
     /** "By year" is this year's albums; "random" is never stored (the core decides both). */
     fun albums(sort: AlbumSort, size: Int, offset: Int = 0, genre: String? = null): Flow<List<Album>> =
-        cached(Read.AlbumList(albumSortApi(sort), size, offset, genre)) { (it as Page.Albums).v }
+        cached(Read.AlbumList(sort, size, offset, genre)) { (it as Page.Albums).v }
 
     fun artists(): Flow<List<Artist>> = cached(Read.ArtistIndex) { (it as Page.Artists).v }
     fun album(id: String): Flow<AlbumDetail> = cached(Read.AlbumById(id)) { (it as Page.AlbumPage).v }

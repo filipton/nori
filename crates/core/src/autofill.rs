@@ -96,7 +96,7 @@ impl Client {
         Ok(match basis {
             AutoFillBasis::Artist => ids(self.artist_albums(seed).await?),
             AutoFillBasis::Genre => match &seed.genre {
-                Some(g) => shuffled(ids(self.first(Read::AlbumList { kind: "byGenre".into(), size: 30, offset: 0, genre: Some(g.clone()) }).await?.albums())),
+                Some(g) => shuffled(ids(self.first(Read::AlbumList { kind: crate::browse::AlbumSort::ByGenre, size: 30, offset: 0, genre: Some(g.clone()) }).await?.albums())),
                 None => Vec::new(),
             },
             AutoFillBasis::Era => match era(seed) {
@@ -173,7 +173,7 @@ impl Client {
     /// Whole random library albums not already queued ("shuffle albums" refill).
     async fn random_albums(&self, ids: &[String]) -> Vec<Song> {
         let queued: HashSet<String> = self.core.session.albums(ids.to_vec()).into_iter().collect();
-        let read = Read::AlbumList { kind: "random".into(), size: crate::actions::SHUFFLE_ALBUMS, offset: 0, genre: None };
+        let read = Read::AlbumList { kind: crate::browse::AlbumSort::Random, size: crate::actions::SHUFFLE_ALBUMS, offset: 0, genre: None };
         let albums = self.read_now(read).await.map(Page::albums).unwrap_or_default().into_iter().filter(|a| !queued.contains(&a.id)).collect();
         let fresh = self.library_albums(albums, RANDOM_ALBUMS as usize).await;
         self.core.session.register(fresh.clone());

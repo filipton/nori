@@ -156,6 +156,11 @@ impl AlbumSort {
             AlbumSort::ByYear => "byYear",
         }
     }
+
+    /// The order the server calls `api` (a stored or car folder's name for it).
+    pub fn of_api(api: &str) -> Option<AlbumSort> {
+        AlbumSort::ALL.into_iter().find(|s| s.api() == api)
+    }
 }
 
 /// The album grid's sort menu, in its order; the client names each.
@@ -173,12 +178,6 @@ pub fn album_sorts() -> Vec<AlbumSort> {
     ]
 }
 
-/// The `type` the server is asked for.
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn album_sort_api(sort: AlbumSort) -> String {
-    sort.api().into()
-}
-
 /// One entry of the list settings (`listPrefs`): which order a long list was left in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]
@@ -193,7 +192,7 @@ const SONGS_SORT_KEY: &str = "songs.sort";
 /// The album grid's order as it was left (A–Z the first time), kept under the server's name for it.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn album_sort_saved(prefs: std::collections::HashMap<String, String>) -> AlbumSort {
-    prefs.get(ALBUMS_SORT_KEY).and_then(|n| AlbumSort::ALL.into_iter().find(|s| s.api() == n)).unwrap_or(AlbumSort::ByName)
+    prefs.get(ALBUMS_SORT_KEY).and_then(|n| AlbumSort::of_api(n)).unwrap_or(AlbumSort::ByName)
 }
 
 /// The list setting that remembers the album grid's order.

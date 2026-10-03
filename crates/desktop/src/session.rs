@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 
+use nori_core::browse::AlbumSort;
 use nori_core::cache_policy::{Page, Read};
 use nori_core::race::LyricsPick;
 use nori_core::search::SearchView;
@@ -101,8 +102,13 @@ pub enum Data {
 }
 
 /// Home shelves: title and album list kind.
-pub const HOME_ROWS: [(&str, &str); 5] =
-    [("Recently added", "newest"), ("Recently played", "recent"), ("Most played", "frequent"), ("Favorites", "starred"), ("Something random", "random")];
+pub const HOME_ROWS: [(&str, AlbumSort); 5] = [
+    ("Recently added", AlbumSort::Newest),
+    ("Recently played", AlbumSort::Recent),
+    ("Most played", AlbumSort::Frequent),
+    ("Favorites", AlbumSort::Starred),
+    ("Something random", AlbumSort::Random),
+];
 
 const ALBUM_PAGE: i32 = 500;
 
@@ -192,7 +198,7 @@ impl Session {
             match &req {
                 Req::Home => {
                     for (i, (_, kind)) in HOME_ROWS.iter().enumerate() {
-                        let read = if *kind == "starred" { Read::FavouriteAlbums { size: 40 } } else { Read::AlbumList { kind: kind.to_string(), size: 40, offset: 0, genre: None } };
+                        let read = if *kind == AlbumSort::Starred { Read::FavouriteAlbums { size: 40 } } else { Read::AlbumList { kind: *kind, size: 40, offset: 0, genre: None } };
                         if let Err(e) = read_pages(&client, read, |p| {
                             if let Page::Albums { v } = p {
                                 send(Ok(Data::HomeRow(i, v)));
@@ -203,7 +209,7 @@ impl Session {
                     }
                 }
                 Req::Albums => {
-                    let read = Read::AlbumList { kind: "alphabeticalByName".into(), size: ALBUM_PAGE, offset: 0, genre: None };
+                    let read = Read::AlbumList { kind: AlbumSort::ByName, size: ALBUM_PAGE, offset: 0, genre: None };
                     pages(read, &|p| if let Page::Albums { v } = p { Some(Data::Albums(v)) } else { None });
                 }
                 Req::Artists => pages(Read::ArtistIndex, &|p| if let Page::Artists { v } = p { Some(Data::Artists(v)) } else { None }),

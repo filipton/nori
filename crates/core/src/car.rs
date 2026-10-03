@@ -138,9 +138,12 @@ impl Client {
             ROOT => BrowsePage { folders: root(4, false), ..Default::default() },
             "home" => self.car_home().await,
             "library" => BrowsePage { folders: library(), ..Default::default() },
-            "albums" => match self.first(Read::AlbumList { kind: arg.into(), size: 100, offset: 0, genre: None }).await {
-                Ok(Page::Albums { v }) => BrowsePage { folders: album_folders(&v, None, 100), ..Default::default() },
-                _ => failed(),
+            "albums" => match crate::browse::AlbumSort::of_api(arg) {
+                Some(sort) => match self.first(Read::AlbumList { kind: sort, size: 100, offset: 0, genre: None }).await {
+                    Ok(Page::Albums { v }) => BrowsePage { folders: album_folders(&v, None, 100), ..Default::default() },
+                    _ => failed(),
+                },
+                None => BrowsePage::default(),
             },
             "artists" => match self.first(Read::ArtistIndex).await {
                 Ok(Page::Artists { v }) => BrowsePage { folders: v.iter().filter(|a| !a.is_external).map(|a| artist_folder(a, None)).collect(), ..Default::default() },
@@ -158,7 +161,7 @@ impl Client {
                 Ok(Page::Genres { v }) => BrowsePage { folders: v.iter().filter(|g| g.song_count > 0).map(genre_folder).collect(), ..Default::default() },
                 _ => failed(),
             },
-            "genre" => match self.first(Read::AlbumList { kind: "byGenre".into(), size: 100, offset: 0, genre: Some(arg.into()) }).await {
+            "genre" => match self.first(Read::AlbumList { kind: crate::browse::AlbumSort::ByGenre, size: 100, offset: 0, genre: Some(arg.into()) }).await {
                 Ok(Page::Albums { v }) => BrowsePage { folders: album_folders(&v, None, 100), actions: whole(), ..Default::default() },
                 _ => failed(),
             },
@@ -212,8 +215,8 @@ impl Client {
         }
         let mut folders: Vec<BrowseFolder> = self.core.mix_cards(taste).iter().filter(|t| !t.covers.is_empty()).map(mix_folder).collect();
         let mut read = false;
-        for (kind, group) in [("recent", CarGroup::RecentlyPlayed), ("newest", CarGroup::RecentlyAdded)] {
-            if let Ok(Page::Albums { v }) = self.first(Read::AlbumList { kind: kind.into(), size: SHELF as i32, offset: 0, genre: None }).await {
+        for (kind, group) in [(crate::browse::AlbumSort::Recent, CarGroup::RecentlyPlayed), (crate::browse::AlbumSort::Newest, CarGroup::RecentlyAdded)] {
+            if let Ok(Page::Albums { v }) = self.first(Read::AlbumList { kind, size: SHELF as i32, offset: 0, genre: None }).await {
                 read = true;
                 folders.extend(album_folders(&v, Some(group), SHELF));
             }

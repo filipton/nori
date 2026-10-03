@@ -22,8 +22,8 @@ const BROWSE: i64 = 2 * MINUTE;
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 pub enum Read {
-    /// getAlbumList2 of `kind`. "byYear" means this year; "random" is never cached.
-    AlbumList { kind: String, size: i32, offset: i32, genre: Option<String> },
+    /// getAlbumList2 in `kind`'s order. `ByYear` means this year; `Random` is never cached.
+    AlbumList { kind: crate::browse::AlbumSort, size: i32, offset: i32, genre: Option<String> },
     AlbumsByYear { from: i32, to: i32, size: i32, offset: i32 },
     /// The starred `AlbumList` (same cache entry) with this session's star changes applied.
     FavouriteAlbums { size: i32 },
@@ -168,11 +168,12 @@ fn spec(read: Read) -> Spec {
     let id = |id: String| pairs(&[("id", id)]);
     match read {
         Read::AlbumList { kind, size, offset, genre } => {
-            if kind == "byYear" {
+            use crate::browse::AlbumSort;
+            if kind == AlbumSort::ByYear {
                 return by_year(this_year(), 0, size, offset);
             }
-            let fresh = if kind == "random" { None } else { Some(BROWSE) };
-            let mut p = pairs(&[("type", kind), ("size", size.to_string()), ("offset", offset.to_string())]);
+            let fresh = (kind != AlbumSort::Random).then_some(BROWSE);
+            let mut p = pairs(&[("type", kind.api().into()), ("size", size.to_string()), ("offset", offset.to_string())]);
             if let Some(g) = genre {
                 p.push(("genre".into(), g));
             }
@@ -473,7 +474,7 @@ mod tests {
             (Read::ArtistById { id: "x".into() }, r#""artist":{"id":"ar","name":"A","album":[ITEM]}"#, false),
             (Read::PlaylistById { id: "x".into() }, r#""playlist":{"id":"p","name":"P","entry":[ITEM]}"#, true),
             (Read::TopSongs { artist: "x".into() }, r#""topSongs":{"song":[ITEM]}"#, true),
-            (Read::AlbumList { kind: "newest".into(), size: 5, offset: 0, genre: None }, r#""albumList2":{"album":[ITEM]}"#, false),
+            (Read::AlbumList { kind: crate::browse::AlbumSort::Newest, size: 5, offset: 0, genre: None }, r#""albumList2":{"album":[ITEM]}"#, false),
         ];
         for (read, answer, songs) in pages {
             for provider in [true, false] {
@@ -487,7 +488,7 @@ mod tests {
 
         // Random is uncached and by year is this year.
         let (c, fake) = setup();
-        let random = Read::AlbumList { kind: "random".into(), size: 5, offset: 0, genre: Some("Rock".into()) };
+        let random = Read::AlbumList { kind: crate::browse::AlbumSort::Random, size: 5, offset: 0, genre: Some("Rock".into()) };
         assert!(c.read_stored(random.clone()).unwrap().digest.is_none());
         let list = r#"{"subsonic-response":{"status":"ok","albumList2":{"album":[{"id":"a","name":"A"}]}}}"#;
         fake.answer(list);
@@ -498,7 +499,7 @@ mod tests {
         assert!(fake.asked()[0].ends_with("&type=random&size=5&offset=0&genre=Rock&musicFolderId=7"));
 
         fake.answer(list);
-        block(c.read_fetch(Read::AlbumList { kind: "byYear".into(), size: 50, offset: 0, genre: None }, None)).unwrap();
+        block(c.read_fetch(Read::AlbumList { kind: crate::browse::AlbumSort::ByYear, size: 50, offset: 0, genre: None }, None)).unwrap();
         let year = this_year();
         assert!(fake.asked()[2].ends_with(&format!("&type=byYear&fromYear={year}&toYear=0&size=50&offset=0&musicFolderId=7")));
     }
@@ -507,7 +508,7 @@ mod tests {
     fn keys_hold_params_and_folder() {
         let (c, fake) = setup();
         fake.answer(r#"{"subsonic-response":{"status":"ok","albumList2":{"album":[]}}}"#);
-        block(c.read_fetch(Read::AlbumList { kind: "starred".into(), size: 20, offset: 0, genre: None }, None)).unwrap();
+        block(c.read_fetch(Read::AlbumList { kind: crate::browse::AlbumSort::Starred, size: 20, offset: 0, genre: None }, None)).unwrap();
         assert!(c.core.cache_get("getAlbumList2&type=starred&size=20&offset=0&musicFolderId=7".into()).unwrap().is_some());
         assert!(fake.asked()[0].ends_with("&type=starred&size=20&offset=0&musicFolderId=7"));
         fake.answer(r#"{"subsonic-response":{"status":"ok","lyricsList":{}}}"#);
@@ -519,13 +520,13 @@ mod tests {
     fn favourites_apply_session_stars() {
         let (c, fake) = setup();
         fake.answer(r#"{"subsonic-response":{"status":"ok","albumList2":{"album":[{"id":"fa-1","name":"A"},{"id":"fa-2","name":"B"}]}}}"#);
-        block(c.read_fetch(Read::AlbumList { kind: "starred".into(), size: 20, offset: 0, genre: None }, None)).unwrap();
+        block(c.read_fetch(Read::AlbumList { kind: crate::browse::AlbumSort::Starred, size: 20, offset: 0, genre: None }, None)).unwrap();
         c.core.stars.lock().mark(crate::client::Starrable::Album, "fa-2".into(), false);
         match c.read_stored(Read::FavouriteAlbums { size: 20 }).unwrap().page {
             Some(Page::Albums { v }) => assert_eq!(v.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["fa-1"]),
             other => panic!("{other:?}"),
         }
-        match c.read_stored(Read::AlbumList { kind: "starred".into(), size: 20, offset: 0, genre: None }).unwrap().page {
+        match c.read_stored(Read::AlbumList { kind: crate::browse::AlbumSort::Starred, size: 20, offset: 0, genre: None }).unwrap().page {
             Some(Page::Albums { v }) => assert_eq!(v.len(), 2, "plain AlbumList is not overlaid"),
             other => panic!("{other:?}"),
         }
