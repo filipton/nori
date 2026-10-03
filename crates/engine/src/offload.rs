@@ -272,6 +272,33 @@ struct Writing {
 }
 
 /// What is written to the track and how far it played; emptied with the track.
+/// One of the platform's counts of frames presented.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Count {
+    #[default]
+    Stamp,
+    Head,
+}
+
+impl Count {
+    fn name(self) -> &'static str {
+        match self {
+            Count::Stamp => "timestamp",
+            Count::Head => "play head",
+        }
+    }
+}
+
+/// The counts still believed: a timestamp that stood still while playing is dropped for the play head, and
+/// a play head that did too for the watchdog.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Alive {
+    #[default]
+    Both,
+    Head,
+    Neither,
+}
+
 /// Where the stream written to the track stands with its end, as Android takes one.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum Eos {
@@ -302,9 +329,8 @@ struct Run {
     /// and those found not to move while playing (ignored for the rest of the track).
     head: Head,
     stamp: Head,
-    by_stamp: bool,
-    stamp_dead: bool,
-    head_dead: bool,
+    by: Count,
+    alive: Alive,
     /// When the count last moved (or playing began); None until the next turn.
     moved_ms: Option<i64>,
     /// Platform asks since the count last moved, and when it last asked (and last asked while playing).
@@ -516,9 +542,9 @@ impl Offload {
         let Some((_, ms, _)) = self.heard() else { return };
         let rate = self.rate() as u64;
         let f = |frames: u64| frames * 1000 / rate;
-        let count = if self.t.by_stamp { self.t.stamp } else { self.t.head };
+        let count = if self.t.by == Count::Stamp { self.t.stamp } else { self.t.head };
         let said = match self.t.raw {
-            Some(_) => format!("{} ms by its {}", f(count.base + count.last), if self.t.by_stamp { "timestamp" } else { "play head" }),
+            Some(_) => format!("{} ms by its {}", f(count.base + count.last), self.t.by.name()),
             None => "nothing".into(),
         };
         let what = format!("offload: left at {ms} ms (chip said {said}, heard {} ms, written {} ms)", f(self.t.heard_at), f(self.t.written_frames));
@@ -622,25 +648,25 @@ impl Offload {
         if self.open.is_none() {
             return self.t.heard_at;
         }
-        let stamp = if self.t.stamp_dead { None } else { self.out.timestamp() };
-        let (raw, by_stamp) = match stamp {
-            Some(s) => (s, true),
+        let stamp = if self.t.alive == Alive::Both { self.out.timestamp() } else { None };
+        let (raw, by) = match stamp {
+            Some(s) => (s, Count::Stamp),
             // A dead play head is left to the watchdog.
-            None if self.t.head_dead => return self.t.heard_at,
+            None if self.t.alive == Alive::Neither => return self.t.heard_at,
             None => match self.out.head() {
-                Some(h) => (h, false),
+                Some(h) => (h, Count::Head),
                 None => {
                     self.strike("the platform's play head could not be read".into());
                     return self.t.heard_at;
                 }
             },
         };
-        self.t.by_stamp = by_stamp;
+        self.t.by = by;
         self.t.raw = Some(raw);
         let most = self.most();
         let rate = self.rate() as i64;
         let jitter = (JITTER_MS * rate / 1000) as u64;
-        let mut count = if by_stamp { self.t.stamp } else { self.t.head };
+        let mut count = if by == Count::Stamp { self.t.stamp } else { self.t.head };
         let counted = count.base + count.last;
         // A join the clock says may have been reached.
         let join = self.t.placed.iter().map(|p| p.start).find(|&s| s > counted).filter(|&s| s <= most);
@@ -649,12 +675,11 @@ impl Offload {
         let was = self.t.heard_at;
         let last = count.last;
         let read = count.read(raw, join, restart, jitter, most);
-        if by_stamp {
-            self.t.stamp = count;
-        } else {
-            self.t.head = count;
+        match by {
+            Count::Stamp => self.t.stamp = count,
+            Count::Head => self.t.head = count,
         }
-        let what = if by_stamp { "timestamp" } else { "play head" };
+        let what = by.name();
         match read {
             Ok((at, seen)) => {
                 match seen {
@@ -742,11 +767,11 @@ impl Offload {
             0 => ", and the platform asked for nothing".to_string(),
             n => format!(", though the platform asked for more {n} times"),
         };
-        let what = if self.t.by_stamp { "timestamp" } else { "play head" };
+        let what = self.t.by.name();
         let raw = self.t.raw.map_or("nothing".into(), |r| r.to_string());
         let why = format!("the {what} stood at {raw} for {still} ms while the track played, {} ms written past it{asked} (slack {} ms)", self.in_track_us() / 1000, self.slack_ms());
-        if self.t.by_stamp && !self.t.head_dead {
-            self.t.stamp_dead = true;
+        if self.t.by == Count::Stamp && self.t.alive == Alive::Both {
+            self.t.alive = Alive::Head;
             self.note(format!("{why}: the play head is followed instead"));
             // The timestamp's clock anchor is discarded: bound the play head by the play start.
             self.t.clock = self.t.play_clock.or(self.t.clock);
@@ -757,8 +782,7 @@ impl Offload {
                 return None;
             }
         }
-        self.t.stamp_dead = true;
-        self.t.head_dead = true;
+        self.t.alive = Alive::Neither;
         if dead {
             // The platform played what it asked for: follow the clock, within what was written.
             let by_clock = self.t.heard_at + (still.max(0) as u128 * self.rate() as u128 / 1000) as u64;
@@ -839,7 +863,7 @@ impl Offload {
         let ms = |f: u64| f as i64 * 1000 / self.rate() as i64;
         let (id, start) = self.t.placed.front().map_or((String::new(), 0), |p| (p.id.clone(), p.start));
         let raw = self.t.raw.map_or("nothing".into(), |r| r.to_string());
-        let count = if self.t.by_stamp { "timestamp" } else { "play head" };
+        let count = self.t.by.name();
         let (steps, most) = self.t.jitter;
         let jitter = if steps > 0 { format!(", its {count} a moment back {steps} times (by {most} frames at most), held where it was") } else { String::new() };
         let what = format!(
