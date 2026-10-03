@@ -211,8 +211,9 @@ pub fn smart_edit_schema() -> SmartSchema {
 /// copy, with no id, so saving makes a playlist of the user's own), otherwise a new one.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn smart_edit_open(playlist: Option<SmartPlaylist>) -> SmartEdit {
-    let Some(mut e) = playlist.as_ref().and_then(read) else { return smart_edit_new() };
-    if e.id.starts_with("default-") {
+    let Some(p) = playlist else { return smart_edit_new() };
+    let Some(mut e) = read(&p) else { return smart_edit_new() };
+    if p.builtin.is_some() {
         e.id = String::new();
     }
     e
@@ -289,8 +290,8 @@ pub fn smart_limit_text(limit: i32) -> String {
     if limit > 0 { limit.to_string() } else { String::new() }
 }
 
-/// The draft ready to store: a built-in ("default-…") saves as a new playlist, a blank name comes back
-/// empty for the client to word, and the definition is checked.
+/// The draft ready to store: a blank name comes back empty for the client to word, and the definition
+/// is checked. A built-in's draft has no id ([`smart_edit_open`]), so it saves as a new playlist.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn smart_edit_prepare(edit: SmartEdit) -> SmartPrepared {
     let json = to_json(&edit);
@@ -298,9 +299,8 @@ pub fn smart_edit_prepare(edit: SmartEdit) -> SmartPrepared {
         Err(CoreError::Smart { problem, .. }) => Some(problem),
         _ => None,
     };
-    let id = if edit.id.starts_with("default-") { String::new() } else { edit.id };
     let name = if edit.name.trim().is_empty() { String::new() } else { edit.name };
-    SmartPrepared { id, name, json, error }
+    SmartPrepared { id: edit.id, name, json, error }
 }
 
 #[cfg(test)]
@@ -365,16 +365,18 @@ mod tests {
         assert!(!loose.all && loose.descending);
         assert_eq!((loose.sort_field.as_str(), loose.limit), ("year", 50));
 
-        // Builtins read into form.
+        // Builtins read into form, as a copy to save as the user's own.
         for p in super::super::smart_defaults() {
-            let e = read(&p).unwrap();
-            assert!(!e.rules.is_empty(), "{}", p.id);
+            let e = smart_edit_open(Some(p.clone()));
+            assert!(e.id.is_empty() && !e.rules.is_empty(), "{}", p.id);
         }
+        let mine = SmartPlaylist { id: "sp-1".into(), json: "{}".into(), ..Default::default() };
+        assert_eq!(smart_edit_open(Some(mine)).id, "sp-1");
     }
 
     #[test]
     fn prepare_applies_save_rules() {
-        let p = smart_edit_prepare(SmartEdit { id: "default-most-played".into(), name: " ".into(), ..edit(vec![rule("year", "greater", "1990")]) });
+        let p = smart_edit_prepare(SmartEdit { name: " ".into(), ..edit(vec![rule("year", "greater", "1990")]) });
         assert_eq!((p.id.as_str(), p.name.as_str(), p.error), ("", "", None));
         let p = smart_edit_prepare(SmartEdit { id: "sp-2".into(), name: "Mine".into(), ..edit(vec![rule("year", "greater", "soon")]) });
         assert_eq!((p.id.as_str(), p.name.as_str()), ("sp-2", "Mine"));
