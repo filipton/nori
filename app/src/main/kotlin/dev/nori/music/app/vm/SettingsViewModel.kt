@@ -12,7 +12,6 @@ import dev.nori.music.ffi.settings.SavedServer
 import dev.nori.music.net.describeConnectionError
 import dev.nori.music.ffi.model.MusicFolder
 import dev.nori.music.ffi.settings.SoundBand
-import dev.nori.music.ffi.settings.HomeRow
 import dev.nori.music.ffi.devices.ChoiceKind
 import dev.nori.music.ffi.devices.deviceRows
 import dev.nori.music.ffi.settings.eqPresets
@@ -308,7 +307,7 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
 
     /** Moves one home shelf up or down the page (the core's `home_rows_moved`). */
     fun moveHomeRow(from: Int, to: Int) = update { p ->
-        p.copy(homeRows = dev.nori.music.ffi.library.homeRowsMoved(p.homeRows.map { it.name }, from.toUInt(), to.toUInt()).map { HomeRow.valueOf(it) })
+        p.copy(homeRows = dev.nori.music.ffi.library.homeRowsMoved(p.homeRows, from.toUInt(), to.toUInt()))
     }
 
     /**

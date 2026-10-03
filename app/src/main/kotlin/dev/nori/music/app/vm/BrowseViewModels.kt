@@ -101,12 +101,11 @@ class HomeViewModel(app: Application) : NoriViewModel(app) {
             flow { emit(Shelf.Songs(r, runCatching { nori.library.browseSongs(shelf.sort, shelf.descending, false, null, 0, shelf.limit.toInt()) }.getOrDefault(emptyList()))) }
         }.onStart { emit(Shelf.Songs(r, emptyList())) }
         HomeShelf.Pinned -> flowOf(Shelf.Playlists(r, emptyList()))
-        HomeShelf.Hidden -> flowOf(Shelf.Albums(r, emptyList()))
     }
 
     /** Only the rows the user kept are requested at all; a hidden shelf costs no request. */
     val ui: StateFlow<Load<HomeUi>> = nori.settings.prefs.map { it.homeRows to it.pinnedPlaylists }.distinctUntilChanged().flatMapLatest { (rows, pins) ->
-        val shelves = homeShelves(rows.map { it.name })
+        val shelves = homeShelves(rows)
         val pinned = if (HomeShelf.Pinned in shelves && pins.isNotEmpty()) refreshes.flatMapLatest { nori.library.playlists() }
             .map { all -> withContext(Dispatchers.Default) { homePinned(all, pins) } }.catch { emit(emptyList()) }.onStart { emit(emptyList()) } else flowOf(emptyList())
         combine(combine(rows.zip(shelves, ::source)) { it.toList() }.onStart { emit(emptyList()) }, pinned) { s, p -> HomeUi(s, p) }

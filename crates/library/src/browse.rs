@@ -1,6 +1,7 @@
 //! The browsing screens' rules: home shelves, list paging and orders, library sections, the stats page.
 
 use nori_model::{HistoryEntry, ListeningStats, Playlist, Song};
+use nori_settings::settings::HomeRow;
 
 /// A day, in milliseconds.
 pub const DAY_MS: i64 = 86_400_000;
@@ -31,30 +32,26 @@ pub enum HomeShelf {
     Songs { sort: String, descending: bool, limit: u32 },
     /// The pinned playlists ([`home_pinned`]).
     Pinned,
-    /// A row this core does not know.
-    Hidden,
 }
 
-fn shelf(row: &str) -> HomeShelf {
+fn shelf(row: HomeRow) -> HomeShelf {
     let albums = |sort, follows_stars| HomeShelf::Albums { sort, size: SHELF, follows_stars };
     match row {
-        "RECENT" => albums(AlbumSort::Recent, false),
-        "NEWEST" => albums(AlbumSort::Newest, false),
-        "FREQUENT" => albums(AlbumSort::Frequent, false),
-        "RANDOM" => albums(AlbumSort::Random, false),
-        "STARRED" => albums(AlbumSort::Starred, true),
-        "PLAYLISTS" => HomeShelf::Playlists { take: SHELF },
-        "TOP_SONGS" => HomeShelf::Songs { sort: "playCount".into(), descending: true, limit: SHELF },
-        "PINNED" => HomeShelf::Pinned,
-        _ => HomeShelf::Hidden,
+        HomeRow::Recent => albums(AlbumSort::Recent, false),
+        HomeRow::Newest => albums(AlbumSort::Newest, false),
+        HomeRow::Frequent => albums(AlbumSort::Frequent, false),
+        HomeRow::Random => albums(AlbumSort::Random, false),
+        HomeRow::Starred => albums(AlbumSort::Starred, true),
+        HomeRow::Playlists => HomeShelf::Playlists { take: SHELF },
+        HomeRow::TopSongs => HomeShelf::Songs { sort: "playCount".into(), descending: true, limit: SHELF },
+        HomeRow::Pinned => HomeShelf::Pinned,
     }
 }
 
-/// The shelf of each home row the user kept, by name (RECENT, NEWEST, FREQUENT, RANDOM, STARRED,
-/// PLAYLISTS, TOP_SONGS, PINNED).
+/// The shelf of each home row the user kept.
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn home_shelves(rows: Vec<String>) -> Vec<HomeShelf> {
-    rows.iter().map(|r| shelf(r)).collect()
+pub fn home_shelves(rows: Vec<HomeRow>) -> Vec<HomeShelf> {
+    rows.into_iter().map(shelf).collect()
 }
 
 /// The pinned playlists, in the order the server lists them.
@@ -63,9 +60,9 @@ pub fn home_pinned(playlists: Vec<Playlist>, pins: Vec<String>) -> Vec<Playlist>
     playlists.into_iter().filter(|p| pins.contains(&p.id)).collect()
 }
 
-/// The home rows (by name) with the one at `from` moved to `to`; unchanged when either is not a row.
+/// The home rows with the one at `from` moved to `to`; unchanged when either is not a row.
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn home_rows_moved(mut rows: Vec<String>, from: u32, to: u32) -> Vec<String> {
+pub fn home_rows_moved(mut rows: Vec<HomeRow>, from: u32, to: u32) -> Vec<HomeRow> {
     let (from, to) = (from as usize, to as usize);
     if from < rows.len() && to < rows.len() {
         let row = rows.remove(from);
@@ -76,7 +73,7 @@ pub fn home_rows_moved(mut rows: Vec<String>, from: u32, to: u32) -> Vec<String>
 
 /// The home rows with `row` switched on (at the end) or off.
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn home_rows_toggled(mut rows: Vec<String>, row: String, on: bool) -> Vec<String> {
+pub fn home_rows_toggled(mut rows: Vec<HomeRow>, row: HomeRow, on: bool) -> Vec<HomeRow> {
     rows.retain(|r| *r != row);
     if on {
         rows.push(row);
@@ -84,10 +81,10 @@ pub fn home_rows_toggled(mut rows: Vec<String>, row: String, on: bool) -> Vec<St
     rows
 }
 
-/// The rows of `all` (every row there is, in its own order) that are not shown.
+/// The rows that are not shown, in the order a new install shows them.
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn home_rows_hidden(all: Vec<String>, shown: Vec<String>) -> Vec<String> {
-    all.into_iter().filter(|r| !shown.contains(r)).collect()
+pub fn home_rows_hidden(shown: Vec<HomeRow>) -> Vec<HomeRow> {
+    HomeRow::every().iter().copied().filter(|r| !shown.contains(r)).collect()
 }
 
 /// The pinned playlists (kept on the device: the server cannot star one) with `id` pinned or not.
@@ -414,27 +411,28 @@ mod tests {
 
     #[test]
     fn shelves_and_rows() {
-        let s = home_shelves(["PINNED", "STARRED", "RECENT", "TOP_SONGS", "PLAYLISTS", "NOPE"].map(String::from).to_vec());
+        let s = home_shelves(vec![HomeRow::Pinned, HomeRow::Starred, HomeRow::Recent, HomeRow::TopSongs, HomeRow::Playlists]);
         assert_eq!(s[0], HomeShelf::Pinned);
         assert_eq!(s[1], HomeShelf::Albums { sort: AlbumSort::Starred, size: 20, follows_stars: true });
         assert_eq!(s[2], HomeShelf::Albums { sort: AlbumSort::Recent, size: 20, follows_stars: false });
         assert_eq!(s[3], HomeShelf::Songs { sort: "playCount".into(), descending: true, limit: 20 });
         assert_eq!(s[4], HomeShelf::Playlists { take: 20 });
-        assert_eq!(s[5], HomeShelf::Hidden);
         let p = |id: &str| Playlist { id: id.into(), ..Default::default() };
         let pinned = home_pinned(vec![p("a"), p("b"), p("c")], vec!["c".into(), "a".into(), "z".into()]);
         assert_eq!(pinned.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["a", "c"]);
 
         // Home rows and pins edit.
-        let rows = ["A", "B", "C"].map(String::from).to_vec();
-        assert_eq!(home_rows_toggled(rows.clone(), "B".into(), false), ["A", "C"]);
-        assert_eq!(home_rows_toggled(["A", "C"].map(String::from).to_vec(), "B".into(), true), ["A", "C", "B"]);
-        assert_eq!(home_rows_toggled(rows.clone(), "A".into(), true), ["B", "C", "A"], "never twice");
-        assert_eq!(home_rows_hidden(["A", "B", "C", "D"].map(String::from).to_vec(), vec!["C".into(), "A".into()]), ["B", "D"]);
+        use HomeRow::{Frequent as C, Newest as B, Recent as A};
+        let rows = vec![A, B, C];
+        assert_eq!(home_rows_toggled(rows.clone(), B, false), [A, C]);
+        assert_eq!(home_rows_toggled(vec![A, C], B, true), [A, C, B]);
+        assert_eq!(home_rows_toggled(rows.clone(), A, true), [B, C, A], "never twice");
+        let shown = [HomeRow::Pinned, HomeRow::Playlists, HomeRow::Recent, HomeRow::Frequent, HomeRow::TopSongs, HomeRow::Random];
+        assert_eq!(home_rows_hidden(shown.to_vec()), [HomeRow::Newest, HomeRow::Starred]);
         assert_eq!(pins_toggled(vec!["p".into()], "q".into(), true), ["p", "q"]);
         assert_eq!(pins_toggled(vec!["p".into(), "q".into()], "p".into(), false), ["q"]);
-        assert_eq!(home_rows_moved(rows.clone(), 0, 2), ["B", "C", "A"]);
-        assert_eq!(home_rows_moved(rows.clone(), 2, 0), ["C", "A", "B"]);
+        assert_eq!(home_rows_moved(rows.clone(), 0, 2), [B, C, A]);
+        assert_eq!(home_rows_moved(rows.clone(), 2, 0), [C, A, B]);
         assert_eq!(home_rows_moved(rows.clone(), 1, 3), rows, "out of range: unchanged");
     }
 

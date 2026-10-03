@@ -222,6 +222,13 @@ pub enum HomeRow {
     Starred,
 }
 
+impl HomeRow {
+    /// Every row, in the order a new install shows them.
+    pub fn every() -> &'static [HomeRow] {
+        <HomeRow as Choice>::ALL
+    }
+}
+
 /// One saved server profile. Each has its own rows in the index database.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "ffi", derive(uniffi::Record))]

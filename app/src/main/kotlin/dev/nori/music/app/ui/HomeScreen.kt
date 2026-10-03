@@ -285,9 +285,9 @@ private fun RowOrder(settings: dev.nori.music.app.vm.SettingsViewModel, onDone: 
     val prefs by settings.prefs.collectAsStateWithLifecycle()
     val shown = prefs.homeRows
     // Which rows are left out, and where one switched on or off goes, are the core's (browse.rs).
-    val hidden = remember(shown) { dev.nori.music.ffi.library.homeRowsHidden(HomeRow.entries.map { it.name }, shown.map { it.name }).map(HomeRow::valueOf) }
+    val hidden = remember(shown) { dev.nori.music.ffi.library.homeRowsHidden(shown) }
     fun toggled(row: HomeRow, on: Boolean) = settings.update { p ->
-        p.copy(homeRows = dev.nori.music.ffi.library.homeRowsToggled(p.homeRows.map { it.name }, row.name, on).map(HomeRow::valueOf))
+        p.copy(homeRows = dev.nori.music.ffi.library.homeRowsToggled(p.homeRows, row, on))
     }
     // Tracked by which shelf is being held, never by its position: the position changes the instant the
     // list reorders, and a gesture keyed on that is cancelled mid-drag - which is why a row could only
