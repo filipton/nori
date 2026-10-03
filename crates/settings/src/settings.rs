@@ -342,38 +342,38 @@ pub struct StoredPrefs {
     #[setting("eqGraphicTarget", TARGET, default = Vec::new(), hidden, effect = SOUND, sound)]
     pub eq_graphic_target: Vec<f32>,
     /// Low shelf gain, dB; 0 is off.
-    #[setting("bassBoostDb", clamped(0.0, BASS_BOOST_MAX), default = 0.0, show = K::Level(0.0, BASS_BOOST_MAX), effect = SOUND, effects)]
+    #[setting("bassBoostDb", clamped(0.0, BASS_BOOST_MAX), default = 0.0, show = level, effect = SOUND, effects)]
     pub bass_boost_db: f32,
     /// Virtualizer strength, 0 (off) to 1.
-    #[setting("virtualizer", clamped(0.0, 1.0), default = 0.0, show = K::Level(0.0, 1.0), effect = SOUND, effects)]
+    #[setting("virtualizer", clamped(0.0, 1.0), default = 0.0, show = level, effect = SOUND, effects)]
     pub virtualizer: f32,
     /// Extra gain, dB, with the limiter behind it; 0 is off.
-    #[setting("volumeBoostDb", clamped(0.0, VOLUME_BOOST_MAX), default = 0.0, show = K::Level(0.0, VOLUME_BOOST_MAX), effect = SOUND, effects)]
+    #[setting("volumeBoostDb", clamped(0.0, VOLUME_BOOST_MAX), default = 0.0, show = level, effect = SOUND, effects)]
     pub volume_boost_db: f32,
     #[setting("compressor", FLAG, default = false, show = K::Switch, effect = SOUND, effects)]
     pub compressor: bool,
-    #[setting("compThresholdDb", clamped(-60.0, 0.0), default = -20.0, show = K::Level(-60.0, 0.0), effect = SOUND, effects)]
+    #[setting("compThresholdDb", clamped(-60.0, 0.0), default = -20.0, show = level, effect = SOUND, effects)]
     pub comp_threshold_db: f32,
-    #[setting("compRatio", clamped(1.0, 20.0), default = 3.0, show = K::Level(1.0, 20.0), effect = SOUND, effects)]
+    #[setting("compRatio", clamped(1.0, 20.0), default = 3.0, show = level, effect = SOUND, effects)]
     pub comp_ratio: f32,
-    #[setting("compAttackMs", clamped(0.1, 200.0), default = 10.0, show = K::Level(0.1, 200.0), effect = SOUND, effects)]
+    #[setting("compAttackMs", clamped(0.1, 200.0), default = 10.0, show = level, effect = SOUND, effects)]
     pub comp_attack_ms: f32,
-    #[setting("compReleaseMs", clamped(10.0, 2000.0), default = 180.0, show = K::Level(10.0, 2000.0), effect = SOUND, effects)]
+    #[setting("compReleaseMs", clamped(10.0, 2000.0), default = 180.0, show = level, effect = SOUND, effects)]
     pub comp_release_ms: f32,
-    #[setting("compMakeupDb", clamped(0.0, 24.0), default = 4.5, show = K::Level(0.0, 24.0), effect = SOUND, effects)]
+    #[setting("compMakeupDb", clamped(0.0, 24.0), default = 4.5, show = level, effect = SOUND, effects)]
     pub comp_makeup_db: f32,
-    #[setting("compKneeDb", clamped(0.0, 24.0), default = 6.0, show = K::Level(0.0, 24.0), effect = SOUND, effects)]
+    #[setting("compKneeDb", clamped(0.0, 24.0), default = 6.0, show = level, effect = SOUND, effects)]
     pub comp_knee_db: f32,
     /// Downward expander (a noise gate at high ratios), before the compressor.
     #[setting("expander", FLAG, default = false, show = K::Switch, effect = SOUND, effects)]
     pub expander: bool,
-    #[setting("expThresholdDb", clamped(-90.0, -10.0), default = -50.0, show = K::Level(-90.0, -10.0), effect = SOUND, effects)]
+    #[setting("expThresholdDb", clamped(-90.0, -10.0), default = -50.0, show = level, effect = SOUND, effects)]
     pub exp_threshold_db: f32,
-    #[setting("expRatio", clamped(1.0, 20.0), default = 2.0, show = K::Level(1.0, 20.0), effect = SOUND, effects)]
+    #[setting("expRatio", clamped(1.0, 20.0), default = 2.0, show = level, effect = SOUND, effects)]
     pub exp_ratio: f32,
-    #[setting("expAttackMs", clamped(0.1, 100.0), default = 5.0, show = K::Level(0.1, 100.0), effect = SOUND, effects)]
+    #[setting("expAttackMs", clamped(0.1, 100.0), default = 5.0, show = level, effect = SOUND, effects)]
     pub exp_attack_ms: f32,
-    #[setting("expReleaseMs", clamped(10.0, 2000.0), default = 150.0, show = K::Level(10.0, 2000.0), effect = SOUND, effects)]
+    #[setting("expReleaseMs", clamped(10.0, 2000.0), default = 150.0, show = level, effect = SOUND, effects)]
     pub exp_release_ms: f32,
     /// Volume-dependent loudness compensation (ISO 226, `nori_player::contour`). The platform reports
     /// its volume only while this is on.
@@ -388,14 +388,14 @@ pub struct StoredPrefs {
     pub limiter: bool,
     #[setting("eqPreampDb", Preamp(EQ_RANGES.preamp), default = None, show = K::Level(EQ_RANGES.preamp.min, EQ_RANGES.preamp.max), effect = SOUND, sound)]
     pub eq_preamp_db: Option<f32>,
-    #[setting("crossfeedDb", FLOAT, default = 0.0, show = K::Level(EQ_RANGES.crossfeed.min, EQ_RANGES.crossfeed.max), effect = SOUND, sound)]
+    #[setting("crossfeedDb", within(EQ_RANGES.crossfeed.min, EQ_RANGES.crossfeed.max), default = 0.0, show = level, effect = SOUND, sound)]
     pub crossfeed_db: f32,
     /// Crossfeed cutoff (bs2b's `fcut`), Hz.
-    #[setting("crossfeedHz", clamped(300.0, 2000.0), default = 700.0, show = K::Level(EQ_RANGES.crossfeed_cut.min, EQ_RANGES.crossfeed_cut.max), effect = SOUND, sound)]
+    #[setting("crossfeedHz", clamped(EQ_RANGES.crossfeed_cut.min, EQ_RANGES.crossfeed_cut.max), default = 700.0, show = level, effect = SOUND, sound)]
     pub crossfeed_hz: f32,
     #[setting("balance", FLOAT, default = 0.0, hidden, effect = SOUND, sound)]
     pub balance: f32,
-    #[setting("limiterThresholdDb", FLOAT, default = -1.0, show = K::Level(EQ_RANGES.limiter.min, EQ_RANGES.limiter.max), effect = SOUND, sound)]
+    #[setting("limiterThresholdDb", within(EQ_RANGES.limiter.min, EQ_RANGES.limiter.max), default = -1.0, show = level, effect = SOUND, sound)]
     pub limiter_threshold_db: f32,
     #[setting("autoEqAuto", FLAG, default = false, show = K::Switch)]
     pub auto_eq_auto: bool,
@@ -421,7 +421,7 @@ pub struct StoredPrefs {
     /// Untagged songs use the loudness measured by AutoMix's analysis, when there is one.
     #[setting("gainMeasured", FLAG, default = true, show = K::Switch, effect = APPLY_GAIN)]
     pub gain_measured: bool,
-    #[setting("preampDb", within(REPLAY_GAIN_PREAMP.0, REPLAY_GAIN_PREAMP.1), default = 0.0, show = K::Level(EQ_RANGES.replay_gain_preamp.min, EQ_RANGES.replay_gain_preamp.max), effect = APPLY_GAIN, sound)]
+    #[setting("preampDb", within(EQ_RANGES.replay_gain_preamp.min, EQ_RANGES.replay_gain_preamp.max), default = 0.0, show = level, effect = APPLY_GAIN, sound)]
     pub preamp_db: f32,
     #[setting("untaggedGainDb", FLOAT, default = -6.0, show = K::Choice(&["0", "-3", "-6", "-9", "-12"]), effect = APPLY_GAIN)]
     pub untagged_gain_db: f32,
@@ -836,8 +836,6 @@ impl From<nori_model::CoreError> for SoundError {
 
 /// Speed and pitch range.
 const RATE: (f32, f32) = (0.25, 4.0);
-/// ReplayGain pre-amp range, dB.
-pub(crate) const REPLAY_GAIN_PREAMP: (f32, f32) = (-12.0, 6.0);
 
 /// The ten default bands: flat peaking filters an octave apart.
 pub fn graphic() -> Vec<SoundBand> {
@@ -934,7 +932,7 @@ pub fn sound_from(json: &str) -> Option<SoundSettings> {
         None => None,
     };
     let d = SoundEffects::default();
-    let f = |k: &str, d: f32, lo: f32, hi: f32| (opt_f64(o, k, d as f64) as f32).clamp(lo, hi);
+    let f = |k: &str, d: f32| opt_f64(o, k, d as f64) as f32;
     Some(SoundSettings {
         eq_enabled: opt_bool(o, "eqEnabled"),
         eq_bands: decode_bands(&opt_string(o, "eqBands")).unwrap_or_else(graphic),
@@ -950,24 +948,25 @@ pub fn sound_from(json: &str) -> Option<SoundSettings> {
         limiter: opt_bool(o, "limiter"),
         limiter_threshold_db: opt_f64(o, "limiterThresholdDb", -1.0) as f32,
         effects: SoundEffects {
-            bass_boost_db: f("bassBoostDb", 0.0, 0.0, BASS_BOOST_MAX),
-            virtualizer: f("virtualizer", 0.0, 0.0, 1.0),
-            volume_boost_db: f("volumeBoostDb", 0.0, 0.0, VOLUME_BOOST_MAX),
+            bass_boost_db: f("bassBoostDb", d.bass_boost_db),
+            virtualizer: f("virtualizer", d.virtualizer),
+            volume_boost_db: f("volumeBoostDb", d.volume_boost_db),
             compressor: opt_bool(o, "compressor"),
-            comp_threshold_db: f("compThresholdDb", d.comp_threshold_db, -60.0, 0.0),
-            comp_ratio: f("compRatio", d.comp_ratio, 1.0, 20.0),
-            comp_attack_ms: f("compAttackMs", d.comp_attack_ms, 0.1, 200.0),
-            comp_release_ms: f("compReleaseMs", d.comp_release_ms, 10.0, 2000.0),
-            comp_makeup_db: f("compMakeupDb", d.comp_makeup_db, 0.0, 24.0),
-            comp_knee_db: f("compKneeDb", d.comp_knee_db, 0.0, 24.0),
+            comp_threshold_db: f("compThresholdDb", d.comp_threshold_db),
+            comp_ratio: f("compRatio", d.comp_ratio),
+            comp_attack_ms: f("compAttackMs", d.comp_attack_ms),
+            comp_release_ms: f("compReleaseMs", d.comp_release_ms),
+            comp_makeup_db: f("compMakeupDb", d.comp_makeup_db),
+            comp_knee_db: f("compKneeDb", d.comp_knee_db),
             expander: opt_bool(o, "expander"),
-            exp_threshold_db: f("expThresholdDb", d.exp_threshold_db, -90.0, -10.0),
-            exp_ratio: f("expRatio", d.exp_ratio, 1.0, 20.0),
-            exp_attack_ms: f("expAttackMs", d.exp_attack_ms, 0.1, 100.0),
-            exp_release_ms: f("expReleaseMs", d.exp_release_ms, 10.0, 2000.0),
+            exp_threshold_db: f("expThresholdDb", d.exp_threshold_db),
+            exp_ratio: f("expRatio", d.exp_ratio),
+            exp_attack_ms: f("expAttackMs", d.exp_attack_ms),
+            exp_release_ms: f("expReleaseMs", d.exp_release_ms),
             loudness: opt_bool(o, "loudness"),
-            loudness_ref_phon: o.get("loudnessRefPhon").and_then(Value::as_i64).map_or(d.loudness_ref_phon, |v| v.clamp(60, 90) as i32),
-        },
+            loudness_ref_phon: o.get("loudnessRefPhon").and_then(Value::as_i64).map_or(d.loudness_ref_phon, |v| v.clamp(i32::MIN.into(), i32::MAX.into()) as i32),
+        }
+        .held(),
         replay_gain: GainMode::ALL[opt_i32(o, "replayGain").clamp(0, GainMode::ALL.len() as i32 - 1) as usize],
         preamp_db: opt_f64(o, "preampDb", 0.0) as f32,
         crossfade_sec: opt_i32(o, "crossfadeSec"),
@@ -1405,7 +1404,7 @@ pub const EQ_RANGES: EqRanges = EqRanges {
     crossfeed_cut: Span { min: nori_player::dsp::CROSSFEED_CUT_HZ.0 as f32, max: nori_player::dsp::CROSSFEED_CUT_HZ.1 as f32 },
     q: Span { min: 0.2, max: 8.0 },
     freq: Span { min: 20.0, max: 20_000.0 },
-    replay_gain_preamp: Span { min: REPLAY_GAIN_PREAMP.0, max: REPLAY_GAIN_PREAMP.1 },
+    replay_gain_preamp: Span { min: -12.0, max: 6.0 },
 };
 
 /// Editor facts about one `EqKind`.
@@ -1593,19 +1592,26 @@ pub fn set_level(s: SoundSettings, level: EqLevel, value: f32) -> SoundSettings 
             let v = if value.is_nan() { 0.0 } else { value };
             let mut e = s.effects.clone();
             match level {
-                EqLevel::BassBoost => e.bass_boost_db = off_below(v.clamp(0.0, BASS_BOOST_MAX), 0.25),
-                EqLevel::Virtualizer => e.virtualizer = off_below(v.clamp(0.0, 1.0), 0.02),
-                EqLevel::VolumeBoost => e.volume_boost_db = off_below(v.clamp(0.0, VOLUME_BOOST_MAX), 0.25),
-                EqLevel::CompThreshold => e.comp_threshold_db = v.clamp(-60.0, 0.0),
-                EqLevel::CompRatio => e.comp_ratio = v.clamp(1.0, 20.0),
-                EqLevel::CompAttack => e.comp_attack_ms = v.clamp(0.1, 200.0),
-                EqLevel::CompRelease => e.comp_release_ms = v.clamp(10.0, 2000.0),
-                EqLevel::CompMakeup => e.comp_makeup_db = v.clamp(0.0, 24.0),
-                EqLevel::CompKnee => e.comp_knee_db = v.clamp(0.0, 24.0),
-                EqLevel::ExpThreshold => e.exp_threshold_db = v.clamp(-90.0, -10.0),
-                EqLevel::ExpRatio => e.exp_ratio = v.clamp(1.0, 20.0),
-                EqLevel::ExpAttack => e.exp_attack_ms = v.clamp(0.1, 100.0),
-                EqLevel::ExpRelease => e.exp_release_ms = v.clamp(10.0, 2000.0),
+                EqLevel::BassBoost => e.bass_boost_db = v,
+                EqLevel::Virtualizer => e.virtualizer = v,
+                EqLevel::VolumeBoost => e.volume_boost_db = v,
+                EqLevel::CompThreshold => e.comp_threshold_db = v,
+                EqLevel::CompRatio => e.comp_ratio = v,
+                EqLevel::CompAttack => e.comp_attack_ms = v,
+                EqLevel::CompRelease => e.comp_release_ms = v,
+                EqLevel::CompMakeup => e.comp_makeup_db = v,
+                EqLevel::CompKnee => e.comp_knee_db = v,
+                EqLevel::ExpThreshold => e.exp_threshold_db = v,
+                EqLevel::ExpRatio => e.exp_ratio = v,
+                EqLevel::ExpAttack => e.exp_attack_ms = v,
+                EqLevel::ExpRelease => e.exp_release_ms = v,
+                _ => {}
+            }
+            let mut e = e.held();
+            match level {
+                EqLevel::BassBoost => e.bass_boost_db = off_below(e.bass_boost_db, 0.25),
+                EqLevel::Virtualizer => e.virtualizer = off_below(e.virtualizer, 0.02),
+                EqLevel::VolumeBoost => e.volume_boost_db = off_below(e.volume_boost_db, 0.25),
                 _ => {}
             }
             SoundSettings { effects: e, ..s }

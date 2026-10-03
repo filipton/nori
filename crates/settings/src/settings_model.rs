@@ -331,6 +331,11 @@ mod tests {
                 assert!(s.min < s.max, "{}", s.name);
                 let mid = ((s.min + s.max) / 2.0).to_string();
                 assert!(set_by_name(&p, &s.name, &mid).is_some(), "{}", s.name);
+                // Asked past its ends, a level is held at them.
+                for (asked, end) in [(s.min - 100.0, s.min), (s.max + 100.0, s.max)] {
+                    let held = set_by_name(&p, &s.name, &asked.to_string()).unwrap().prefs;
+                    assert_eq!(value_of(&held, &s.name).and_then(|v| v.parse::<f32>().ok()), Some(end), "{} = {asked}", s.name);
+                }
             }
         }
         assert!(set_by_name(&p, "lyricsService:LRCLIB", "false").is_some());

@@ -56,6 +56,10 @@ pub(crate) trait Codec<T> {
     fn set(&self, _value: &str, _now: &T) -> Option<T> {
         None
     }
+    /// `v` held in the setting's declared range, as a change is.
+    fn hold(&self, v: T) -> T {
+        v
+    }
     fn show(&self, _v: &T) -> String {
         String::new()
     }
@@ -93,7 +97,7 @@ pub(crate) const fn clamped<T>(lo: T, hi: T) -> Plain<T> {
     Plain { range: Some((lo, hi)), held: true }
 }
 
-impl<T: Scalar> Plain<T> {
+impl<T: Scalar> Codec<T> for Plain<T> {
     fn hold(&self, v: T) -> T {
         match &self.range {
             Some((lo, _)) if v < *lo => lo.clone(),
@@ -101,9 +105,6 @@ impl<T: Scalar> Plain<T> {
             _ => v,
         }
     }
-}
-
-impl<T: Scalar> Codec<T> for Plain<T> {
     fn load(&self, r: &Raw, k: &str, d: T) -> T {
         let v = r.get(k).unwrap_or(d);
         if self.held { self.hold(v) } else { v }
@@ -259,6 +260,16 @@ pub(crate) enum K {
     Level(f32, f32),
     Text,
     Colour,
+}
+
+impl K {
+    /// A level over the range its codec holds it in (`show = level`).
+    pub(crate) const fn level(codec: Plain<f32>) -> K {
+        match codec.range {
+            Some((lo, hi)) => K::Level(lo, hi),
+            None => panic!("a level needs a range"),
+        }
+    }
 }
 
 /// One setting in the table.

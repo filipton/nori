@@ -8,11 +8,12 @@
 //! - `"storedKey"`: the stored key, also the name for changes by name unless `name` overrides it or
 //!   `hidden` removes it;
 //! - `CODEC`: a `codec::Codec` for the field's type;
-//! - `show`: what a client offers (`codec::K`); omitted when not offered;
+//! - `show`: what a client offers (`codec::K`); omitted when not offered; `show = level` is a level over
+//!   the range the codec holds it in;
 //! - `effect`: `settings_store` effect bits;
 //! - `lookups`: an online lookup switch (see `codec::Row::lookups`);
 //! - `sound` (`sound = other_name`): part of `SoundSettings`, `effects`: of its `SoundEffects`, for the
-//!   generated `sound`, `with_sound` and `effects`.
+//!   generated `sound`, `with_sound`, `effects` and `SoundEffects::held`.
 //!
 //! The struct stays written out because uniffi's bindgen reads it from source.
 
@@ -113,7 +114,7 @@ fn expand(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let Data::Struct(data) = &input.data else { return Err(syn::Error::new_spanned(ty, "settings are a struct")) };
     let Fields::Named(fields) = &data.fields else { return Err(syn::Error::new_spanned(ty, "settings have named fields")) };
     let (mut defaults, mut rows) = (Vec::new(), Vec::new());
-    let (mut sound, mut to_sound, mut effects, mut to_effects) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut sound, mut to_sound, mut effects, mut to_effects, mut held) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for f in &fields.named {
         let field = f.ident.as_ref().unwrap();
         let fty = &f.ty;
@@ -130,17 +131,22 @@ fn expand(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
             sound.push(quote! { #part: self.#field.clone() });
             to_sound.push(quote! { #field: s.#part });
         }
+        let Setting { key, codec, show, effect, lookups, .. } = &s;
         if s.effects {
             effects.push(quote! { #field: self.#field.clone() });
             to_effects.push(quote! { #field: s.effects.#field });
+            held.push(quote! { #field: crate::codec::Codec::<#fty>::hold(&#codec, self.#field) });
         }
-        let Setting { key, codec, show, effect, lookups, .. } = &s;
         let name = match (&s.name, s.hidden) {
             (_, true) => quote! { None },
             (Some(n), false) => quote! { Some(#n) },
             (None, false) => quote! { Some(#key) },
         };
-        let show = show.as_ref().map_or_else(|| quote! { None }, |e| quote! { Some(#e) });
+        let show = match show {
+            None => quote! { None },
+            Some(Expr::Path(p)) if p.path.is_ident("level") => quote! { Some(crate::codec::K::level(#codec)) },
+            Some(e) => quote! { Some(#e) },
+        };
         let effect = effect.as_ref().map_or_else(|| quote! { 0 }, |e| quote! { #e });
         rows.push(quote! {
             crate::codec::Row {
@@ -184,6 +190,13 @@ fn expand(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 
             pub fn effects(&self) -> crate::settings::SoundEffects {
                 crate::settings::SoundEffects { #(#effects,)* }
+            }
+        }
+
+        impl crate::settings::SoundEffects {
+            /// Every effect held in its setting's declared range.
+            pub(crate) fn held(self) -> Self {
+                crate::settings::SoundEffects { #(#held,)* }
             }
         }
     })
