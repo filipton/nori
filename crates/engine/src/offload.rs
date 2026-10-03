@@ -272,6 +272,18 @@ struct Writing {
 }
 
 /// What is written to the track and how far it played; emptied with the track.
+/// Where the stream written to the track stands with its end, as Android takes one.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Eos {
+    /// Nothing written since the last end of stream the platform took.
+    #[default]
+    Closed,
+    /// Written since, so the next join has an end to close.
+    Open,
+    /// An end asked for and not taken yet: the track was not playing, or refused it.
+    Due,
+}
+
 #[derive(Default)]
 struct Run {
     placed: VecDeque<Placed>,
@@ -303,8 +315,7 @@ struct Run {
     heard_at: u64,
     /// The next packet's bytes were still on their way.
     waiting: bool,
-    /// Written since the last end of stream, so the next join has one to close.
-    pending_eos: bool,
+    eos: Eos,
     /// The last write was partly refused: the track is full.
     full: bool,
     /// When the count last moved sensibly (or playing began) and its frames then: it cannot be further on
@@ -317,8 +328,7 @@ struct Run {
     raw: Option<u64>,
     /// Bad readings in a row.
     strikes: u32,
-    /// An end of stream is pending (the track was not playing, or refused it), and refusals in a row.
-    eos_due: bool,
+    /// Ends of stream refused in a row.
     eos_refusals: u32,
     /// Frames written when the last end of stream was taken: `presented` refers to it only then.
     eos_at: Option<u64>,
@@ -540,7 +550,7 @@ impl Offload {
             self.t.resumed = true;
             self.out.play();
             self.started = true;
-            if self.t.eos_due {
+            if self.t.eos == Eos::Due {
                 self.end_stream();
             }
         }
@@ -882,7 +892,7 @@ impl Offload {
         if asked {
             self.asked_for_more(now_ms);
         }
-        if self.t.eos_due && self.playing {
+        if self.t.eos == Eos::Due && self.playing {
             self.end_stream();
         }
         if self.t.strikes >= STRIKES || self.t.eos_refusals >= STRIKES {
@@ -952,7 +962,7 @@ impl Offload {
         if !self.playing || !self.started || self.t.placed.is_empty() || self.open.is_none() || self.t.starting.is_some() || self.t.waiting || self.fade.is_some() {
             return false;
         }
-        if self.t.strikes > 0 || self.t.eos_due || self.t.head.lower.is_some() || self.t.stamp.lower.is_some() {
+        if self.t.strikes > 0 || self.t.eos == Eos::Due || self.t.head.lower.is_some() || self.t.stamp.lower.is_some() {
             return false;
         }
         // A platform that never asked is topped up on the engine's time.
@@ -1069,7 +1079,7 @@ impl Offload {
             self.t.clock = Some((self.now_ms, self.t.heard_at));
             self.t.clock_lag_ms = 0;
             self.t.play_clock = self.t.clock;
-            if self.t.eos_due {
+            if self.t.eos == Eos::Due {
                 self.end_stream();
             }
         }
@@ -1160,10 +1170,10 @@ impl Offload {
                 self.close(Tail::Then(n));
                 return Ok(());
             };
-            if self.t.pending_eos {
+            if self.t.eos != Eos::Closed {
                 // Close the song before first (only accepted while playing).
                 self.end_stream();
-                if self.t.pending_eos {
+                if self.t.eos != Eos::Closed {
                     return Ok(());
                 }
             }
@@ -1188,21 +1198,19 @@ impl Offload {
     /// Tells the platform the last packet ended its song, now if playing or once it plays (Android
     /// refuses it otherwise). A refusal while playing is a strike.
     fn end_stream(&mut self) {
-        if !self.t.pending_eos {
-            self.t.eos_due = false;
+        if self.t.eos == Eos::Closed {
             return;
         }
         if !self.playing || !self.started || self.open.is_none() {
-            self.t.eos_due = true;
+            self.t.eos = Eos::Due;
             return;
         }
         if self.out.end_of_stream() {
-            self.t.pending_eos = false;
-            self.t.eos_due = false;
+            self.t.eos = Eos::Closed;
             self.t.eos_refusals = 0;
             self.t.eos_at = Some(self.t.written_frames);
         } else {
-            self.t.eos_due = true;
+            self.t.eos = Eos::Due;
             self.t.eos_refusals += 1;
             let why = "the platform would not take the end of stream while its track played";
             self.note(format!("{why} ({} of {STRIKES})", self.t.eos_refusals));
@@ -1222,8 +1230,8 @@ impl Offload {
         self.t.written_frames += part;
         self.t.written_bytes += taken as u64;
         self.t.staged += taken;
-        if taken > 0 {
-            self.t.pending_eos = true;
+        if taken > 0 && self.t.eos == Eos::Closed {
+            self.t.eos = Eos::Open;
         }
         Ok(taken == left)
     }
@@ -1252,7 +1260,7 @@ impl Offload {
         if !self.playing || self.t.placed.is_empty() {
             return d;
         }
-        if self.t.strikes > 0 || self.t.head.lower.is_some() || self.t.stamp.lower.is_some() || self.t.eos_due {
+        if self.t.strikes > 0 || self.t.head.lower.is_some() || self.t.stamp.lower.is_some() || self.t.eos == Eos::Due {
             at(LOOK_AGAIN_MS);
         }
         let rate = self.rate() as i64;
