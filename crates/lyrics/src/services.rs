@@ -242,9 +242,12 @@ fn same_length(reported: f64, song: &Song) -> bool {
     off(reported, song).is_none_or(|d| d <= DURATION_SLACK_S)
 }
 
-/// Candidates' sort key: the closest length first, unknown lengths last.
-fn distance(reported: f64, song: &Song) -> f64 {
-    off(reported, song).unwrap_or(f64::MAX)
+/// Search hits in the order they are tried: the closest to the song's length (as `length` reads each)
+/// first, unknown lengths last, ties as the service listed them.
+fn closest_first<T>(song: &Song, mut hits: Vec<T>, length: impl Fn(&T) -> f64) -> Vec<T> {
+    let distance = |t: &T| off(length(t), song).unwrap_or(f64::MAX);
+    hits.sort_by(|x, y| distance(x).total_cmp(&distance(y)));
+    hits
 }
 
 /// Whether two names are the same once case and punctuation are gone, one containing the other
@@ -344,7 +347,7 @@ pub async fn ask(service: LyricsService, a: &Ask<'_>, song: &Song) -> Lookup {
 }
 
 /// LRCLIB: the exact lookup first (LRCLIB matches the length itself), whose synced hit is the answer;
-/// otherwise a search, ranked by timing and then by closeness of length.
+/// otherwise a search, ranked by closeness of length as every service's is, the finest timing first.
 async fn lrclib(a: &Ask<'_>, song: &Song) -> Lookup {
     let title = clean(&song.title);
     // "Not found" is a 404 with a JSON body: an answer, not a failure.
@@ -366,13 +369,11 @@ async fn lrclib(a: &Ask<'_>, song: &Song) -> Lookup {
             return settle(LyricsService::Lrclib, other.and(Err(shape("not an array"))));
         }
     };
-    let gap = |o: &Value| (num(o, "duration") - song.duration as f64).abs();
-    let best = hits
-        .iter()
-        .filter(|o| o.is_object() && (song.duration == 0 || gap(o) <= DURATION_SLACK_S))
-        .filter_map(|o| lrclib::pick(o).map(|l| (l, gap(o), named_in(o))))
-        .min_by(|x, y| formats::timing(&y.0).cmp(&formats::timing(&x.0)).then(x.1.total_cmp(&y.1)))
-        .map(|(l, _, n)| (l, n));
+    let fitting = hits.iter().filter(|o| o.is_object() && same_length(num(o, "duration"), song)).collect();
+    let mut picked: Vec<(Lyrics, Named)> = closest_first(song, fitting, |o| num(o, "duration")).into_iter().filter_map(|o| lrclib::pick(o).map(|l| (l, named_in(o)))).collect();
+    // Stable: alike timing keeps the closest first.
+    picked.sort_by_key(|(l, _)| std::cmp::Reverse(formats::timing(l)));
+    let best = picked.into_iter().next();
     match (best, exact_hit) {
         (Some((b, n)), None) => Lookup::Found(b, n),
         (Some((b, n)), Some(_)) if b.synced => Lookup::Found(b, n),
@@ -412,8 +413,7 @@ async fn netease(a: &Ask<'_>, song: &Song) -> Asked<Lookup> {
         return Err(Fail::Shape(format!("code {code}")));
     }
     let Some(songs) = o.get("result").and_then(|r| list(r, "songs")) else { return Ok(Lookup::Missing) };
-    let mut hits: Vec<&Value> = songs.iter().filter(|x| fits(song, &title, &str_of(x, "name"), &names(x, "artists").join(", "), num(x, "duration"))).collect();
-    hits.sort_by(|x, y| distance(num(x, "duration"), song).total_cmp(&distance(num(y, "duration"), song)));
+    let hits = closest_first(song, songs.iter().filter(|x| fits(song, &title, &str_of(x, "name"), &names(x, "artists").join(", "), num(x, "duration"))).collect(), |x| num(x, "duration"));
     for hit in hits.iter().filter(|x| num(x, "id") as i64 > 0).take(2) {
         let url = format!("https://music.163.com/api/song/lyric/v1?id={}&cp=false&lv=0&kv=0&tv=0&rv=0&yv=0&ytv=0&yrv=0", num(hit, "id") as i64);
         let l = a.get_json(&url, &NETEASE).await?;
@@ -449,11 +449,8 @@ async fn kugou(a: &Ask<'_>, song: &Song) -> Asked<Lookup> {
     let Some(candidates) = list(&o, "candidates") else { return Ok(Lookup::Missing) };
     // Its singers are mostly in Chinese, so an artist in another script does not pass here.
     let singer_fits = |x: &Value| str_of(x, "singer").trim().is_empty() || alike(&str_of(x, "singer"), &song.artist);
-    let best = candidates
-        .iter()
-        .filter(|x| fits(song, &title, &str_of(x, "song"), &str_of(x, "singer"), num(x, "duration")) && singer_fits(x))
-        .min_by(|x, y| distance(num(x, "duration"), song).total_cmp(&distance(num(y, "duration"), song)));
-    let Some(best) = best else { return Ok(Lookup::Missing) };
+    let fitting = candidates.iter().filter(|x| fits(song, &title, &str_of(x, "song"), &str_of(x, "singer"), num(x, "duration")) && singer_fits(x)).collect();
+    let Some(best) = closest_first(song, fitting, |x| num(x, "duration")).into_iter().next() else { return Ok(Lookup::Missing) };
     let (id, key) = (str_of(best, "id"), str_of(best, "accesskey"));
     if id.is_empty() || key.is_empty() {
         return Ok(Lookup::Missing);
@@ -510,8 +507,7 @@ async fn paxsenix(a: &Ask<'_>, song: &Song) -> Asked<Lookup> {
     let search = format!("https://itunes.apple.com/search?term={}&media=music&entity=song&limit=10&country=us", enc(&format!("{} {title}", song.artist)));
     let o = a.get_json(&search, &[]).await?;
     let results = list(&o, "results").ok_or_else(|| shape("no results"))?;
-    let mut hits: Vec<&Value> = results.iter().filter(|x| fits(song, &title, &str_of(x, "trackName"), &str_of(x, "artistName"), num(x, "trackTimeMillis"))).collect();
-    hits.sort_by(|x, y| distance(num(x, "trackTimeMillis"), song).total_cmp(&distance(num(y, "trackTimeMillis"), song)));
+    let hits = closest_first(song, results.iter().filter(|x| fits(song, &title, &str_of(x, "trackName"), &str_of(x, "artistName"), num(x, "trackTimeMillis"))).collect(), |x| num(x, "trackTimeMillis"));
     for id in distinct(hits.iter().map(|x| num(x, "trackId") as i64).filter(|id| *id > 0)).into_iter().take(2) {
         let body = match a.get(&format!("https://lyrics.paxsenix.org/apple-music/lyrics?id={id}&ttml=true"), &[]).await {
             Err(Fail::Status(404)) => continue,
@@ -546,8 +542,7 @@ async fn paxsenix_spotify(a: &Ask<'_>, song: &Song, key: &str) -> Asked<Lookup> 
     let headers = paxsenix_headers(&auth);
     let title = clean(&song.title);
     let search = a.send(&format!("{PAXSENIX_API}/spotify/search?q={}", enc(&format!("{title} {}", song.artist))), &headers, None, PAXSENIX_REQUEST_MS).await?;
-    let mut tracks: Vec<answers::FoundTrack> = answers::found_tracks(&search).into_iter().filter(|t| fits(song, &title, &t.title, &t.artist, t.duration_ms as f64)).collect();
-    tracks.sort_by(|x, y| distance(x.duration_ms as f64, song).total_cmp(&distance(y.duration_ms as f64, song)));
+    let tracks = closest_first(song, answers::found_tracks(&search).into_iter().filter(|t| fits(song, &title, &t.title, &t.artist, t.duration_ms as f64)).collect(), |t| t.duration_ms as f64);
     for id in distinct(tracks.iter().map(|t| t.id.clone())).into_iter().take(2) {
         let body = a.send(&format!("{PAXSENIX_API}/lyrics/spotify?id={}", enc(&id)), &headers, None, PAXSENIX_REQUEST_MS).await?;
         let words = answers::from_provider(&body, &song.title);
@@ -667,11 +662,8 @@ async fn youtube_id(a: &Ask<'_>, song: &Song) -> Asked<Option<String>> {
     }
     let title = clean(&song.title);
     let answer = youtube(a, "search", json!({ "query": format!("{} {title}", song.artist), "params": YOUTUBE_SONGS })).await?;
-    let id = answers::youtube_songs(&answer)
-        .into_iter()
-        .filter(|t| fits(song, &title, &t.title, &t.artist, t.duration_ms as f64))
-        .min_by(|x, y| distance(x.duration_ms as f64, song).total_cmp(&distance(y.duration_ms as f64, song)))
-        .map(|t| t.id);
+    let fitting = answers::youtube_songs(&answer).into_iter().filter(|t| fits(song, &title, &t.title, &t.artist, t.duration_ms as f64)).collect();
+    let id = closest_first(song, fitting, |t| t.duration_ms as f64).into_iter().next().map(|t| t.id);
     let mut kept = a.shared.memory.youtube.lock();
     if kept.len() >= YOUTUBE_KEPT {
         kept.remove(0);
@@ -687,8 +679,8 @@ async fn simpmusic(a: &Ask<'_>, song: &Song) -> Asked<Lookup> {
     let Some(id) = youtube_id(a, song).await? else { return Ok(Lookup::Missing) };
     let o = a.get_json(&format!("https://api-lyrics.simpmusic.org/v1/{}", enc(&id)), &[]).await?;
     let Some(entries) = list(&o, "data").filter(|_| truthy(&o, "success")) else { return Ok(Lookup::Missing) };
-    let entry = entries.iter().filter(|e| same_length(num(e, "duration"), song)).min_by(|x, y| distance(num(x, "duration"), song).total_cmp(&distance(num(y, "duration"), song)));
-    let Some(entry) = entry else { return Ok(Lookup::Missing) };
+    let fitting = entries.iter().filter(|e| same_length(num(e, "duration"), song)).collect();
+    let Some(entry) = closest_first(song, fitting, |e| num(e, "duration")).into_iter().next() else { return Ok(Lookup::Missing) };
     let best = ["richSyncLyrics", "syncedLyrics", "plainLyrics"]
         .iter()
         .filter_map(|k| text(entry, k))
