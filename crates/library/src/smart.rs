@@ -723,12 +723,12 @@ pub fn run(c: &Connection, def: &Def, downloaded: &[String], offset: usize, limi
     let mut cp = Compiler { args: Vec::new(), downloaded, downloaded_arg: None, now_ms, needs_rust: false };
     let cond = cp.node(&def.root);
     let from = format!("{} WHERE {} AND {cond}", tables(&def.root), mixes::SONGS);
-    let cap = def.limit.map(|l| l as usize).unwrap_or(usize::MAX);
+    let cap = def.limit.map(|l| l as usize);
     let sql_is_exact = !cp.needs_rust && def.limit_ms.is_none();
 
     if sql_is_exact && count_all {
         let n: i64 = c.prepare_cached(&format!("SELECT count(*) {from}"))?.query_row(rusqlite::params_from_iter(cp.args), |r| r.get(0))?;
-        return Ok((Vec::new(), (n as usize).min(cap)));
+        return Ok((Vec::new(), cap.map_or(n as usize, |cap| (n as usize).min(cap))));
     }
     let order = match def.sort {
         Sort::Index => "i.rowid".to_string(),
@@ -743,11 +743,11 @@ pub fn run(c: &Connection, def: &Def, downloaded: &[String], offset: usize, limi
     };
     // A LIMIT lets SQLite keep a top-N heap instead of sorting every match.
     let window = if sql_is_exact {
-        let take = limit.min(cap.saturating_sub(offset));
+        let take = cap.map_or(limit, |cap| limit.min(cap.saturating_sub(offset)));
         cp.args.push(Sql::Integer(take as i64));
         cp.args.push(Sql::Integer(offset as i64));
         format!(" LIMIT ?{} OFFSET ?{}", cp.args.len() - 1, cp.args.len())
-    } else if !cp.needs_rust && cap != usize::MAX {
+    } else if let Some(cap) = cap.filter(|_| !cp.needs_rust) {
         cp.args.push(Sql::Integer(cap as i64));
         format!(" LIMIT ?{}", cp.args.len())
     } else {
@@ -761,7 +761,7 @@ pub fn run(c: &Connection, def: &Def, downloaded: &[String], offset: usize, limi
     let budget = def.limit_ms.unwrap_or(i64::MAX);
     let (mut page, mut position, mut total_ms) = (Vec::new(), if sql_is_exact { offset } else { 0 }, 0i64);
     while let Some(r) = rows.next()? {
-        if position >= cap || (!count_all && page.len() >= limit) {
+        if cap.is_some_and(|cap| position >= cap) || (!count_all && page.len() >= limit) {
             break;
         }
         let (rowid, duration_s): (i64, Option<i64>) = (r.get(0)?, r.get(1)?);

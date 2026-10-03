@@ -32,7 +32,6 @@ pub struct Client {
     replaying: parking_lot::Mutex<bool>,
     /// The car's folders last listed, for their later pages and the list a picked row plays (car.rs).
     pub(crate) car: parking_lot::Mutex<crate::car::Shown>,
-    /// What the last autofill fetch picked, recorded once its songs are appended (autofill.rs).
     /// An AutoEQ index fetch is running; another asked meanwhile is dropped (profiles.rs).
     pub(crate) autoeq_fetching: AtomicBool,
     /// Told the profile's second address, so covers are keyed alike through both.

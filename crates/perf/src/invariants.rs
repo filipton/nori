@@ -392,7 +392,7 @@ struct State {
     /// What the engine's thread saw at its last wake.
     engine: Option<PerfEngineSeen>,
     /// The engine's own description of its state at its last wake, and when (wall ms).
-    engine_state: (i64, String),
+    engine_state: Option<(i64, String)>,
     /// When the player service last started or ended (wall ms).
     engine_since: Option<i64>,
 }
@@ -400,11 +400,9 @@ struct State {
 impl State {
     /// Appends the engine's last self-description to an output break.
     fn quote_engine(&self, mut b: Break, now: i64) -> Break {
-        let (at, state) = &self.engine_state;
-        if state.is_empty() {
-            b.detail.push_str("; the engine has said nothing yet");
-        } else {
-            b.detail.push_str(&format!("; the engine at its last wake, {} ms before: {state}", now - at));
+        match &self.engine_state {
+            None => b.detail.push_str("; the engine has said nothing yet"),
+            Some((at, state)) => b.detail.push_str(&format!("; the engine at its last wake, {} ms before: {state}", now - at)),
         }
         b
     }
@@ -460,9 +458,15 @@ impl Recorder {
         let (silent, output) = self.with_state(|s| {
             s.engine = Some(PerfEngineSeen { wall_ms: t, playing, offloaded, index: index.map_or(-1, |i| i as i64), position_ms, in_output_ms });
             s.watch.engine(playing);
-            s.engine_state.0 = t;
-            s.engine_state.1.clear();
-            s.engine_state.1.push_str(state);
+            // The text is kept in place: this runs on every wake of the engine.
+            match &mut s.engine_state {
+                Some((at, said)) => {
+                    *at = t;
+                    said.clear();
+                    said.push_str(state);
+                }
+                None => s.engine_state = Some((t, state.to_string())),
+            }
             let silent = s.watch.silent(l.quiet_ms, l.output_open, l.id, state);
             let output = if offloaded {
                 let pos = position_ms.max(0) as u64;
