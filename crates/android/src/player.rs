@@ -1,11 +1,12 @@
 //! The Android player: nori-engine playing the core's queue into an AudioTrack (track.rs). Kotlin's
 //! `EnginePlayer` is a media3 player over these natives.
 //!
-//! Platform pieces come from Kotlin's `RustBridge`: AudioTracks (`openTrack`, `openOffload`), song bytes
-//! through media3's data sources and caches (`open`/`read`, `openLive` for radio), stream cache queries for
-//! fetching ahead (`kept`, `busy`), the event wake-up (`signal`), the wake lock (`cpu`) and offload support
-//! (`offloadSupport`). Classes and methods are looked up once, in `create`, on a thread that sees the app's
-//! classes; Rust threads calling them stay attached for life.
+//! Platform pieces come from the player's own Kotlin `RustBridge`, handed to `create`: AudioTracks
+//! (`openTrack`, `openOffload`), song bytes through media3's data sources and caches (`open`/`read`,
+//! `openLive` for radio), stream cache queries for fetching ahead (`kept`, `busy`), the event wake-up
+//! (`signal`), the wake lock (`cpu`) and offload support (`offloadSupport`). Classes and methods are looked
+//! up once, in the first `create`, on a thread that sees the app's classes; Rust threads calling them stay
+//! attached for life.
 
 use std::collections::VecDeque;
 use std::io::{self, Read};
@@ -32,7 +33,7 @@ use crate::{cleared, java_string, native, Class, Handles};
 pub(crate) static CLASS: Class = Class {
     name: c"dev/nori/music/playback/RustPlayerJni",
     methods: &[
-        native!(c"create", c"(JJIZI)J", create),
+        native!(c"create", c"(Ldev/nori/music/playback/RustBridge;JJIZI)J", create),
         native!(c"destroy", c"(J)V", destroy),
         native!(c"goTo", c"(JIJ)J", go_to),
         native!(c"pauseAtEnd", c"(JZ)V", pause_at_end),
@@ -72,19 +73,18 @@ pub(crate) static CLASS: Class = Class {
 /// Java classes, methods and fields, looked up once.
 struct Java {
     vm: JavaVM,
-    bridge: GlobalRef,
-    open_track: JStaticMethodID,
-    open: JStaticMethodID,
-    cancel: JStaticMethodID,
-    open_live: JStaticMethodID,
-    kept: JStaticMethodID,
-    busy: JStaticMethodID,
-    disk: JStaticMethodID,
-    forget: JStaticMethodID,
-    signal: JStaticMethodID,
-    cpu: JStaticMethodID,
-    offload_support: JStaticMethodID,
-    open_offload: JStaticMethodID,
+    open_track: JMethodID,
+    open: JMethodID,
+    cancel: JMethodID,
+    open_live: JMethodID,
+    kept: JMethodID,
+    busy: JMethodID,
+    disk: JMethodID,
+    forget: JMethodID,
+    signal: JMethodID,
+    cpu: JMethodID,
+    offload_support: JMethodID,
+    open_offload: JMethodID,
     body_read: JMethodID,
     body_close: JMethodID,
     body_buffer: JFieldID,
@@ -155,19 +155,18 @@ fn look_up(env: &mut JNIEnv) -> jni::errors::Result<Java> {
     let offload = delay_padding.zip(end_of_stream).map(|(delay_padding, end_of_stream)| OffloadMethods { delay_padding, end_of_stream });
     Ok(Java {
         vm: env.get_java_vm()?,
-        open_track: env.get_static_method_id(&bridge, "openTrack", "(IIII)Landroid/media/AudioTrack;")?,
-        open: env.get_static_method_id(&bridge, "open", "(Ljava/lang/String;Ljava/lang/String;JJ)Ldev/nori/music/playback/RustBody;")?,
-        cancel: env.get_static_method_id(&bridge, "cancel", "(J)V")?,
-        open_live: env.get_static_method_id(&bridge, "openLive", "(Ljava/lang/String;)Ldev/nori/music/playback/RustBody;")?,
-        kept: env.get_static_method_id(&bridge, "kept", "(Ljava/lang/String;)Z")?,
-        busy: env.get_static_method_id(&bridge, "busy", "(Ljava/lang/String;)Z")?,
-        disk: env.get_static_method_id(&bridge, "disk", "(Ljava/lang/String;)Ljava/lang/String;")?,
-        forget: env.get_static_method_id(&bridge, "forget", "(Ljava/lang/String;)Ljava/lang/String;")?,
-        signal: env.get_static_method_id(&bridge, "signal", "()Z")?,
-        cpu: env.get_static_method_id(&bridge, "cpu", "(Z)V")?,
-        offload_support: env.get_static_method_id(&bridge, "offloadSupport", "(III)I")?,
-        open_offload: env.get_static_method_id(&bridge, "openOffload", "(IIII)Landroid/media/AudioTrack;")?,
-        bridge: env.new_global_ref(&bridge)?,
+        open_track: env.get_method_id(&bridge, "openTrack", "(IIII)Landroid/media/AudioTrack;")?,
+        open: env.get_method_id(&bridge, "open", "(Ljava/lang/String;Ljava/lang/String;JJ)Ldev/nori/music/playback/RustBody;")?,
+        cancel: env.get_method_id(&bridge, "cancel", "(J)V")?,
+        open_live: env.get_method_id(&bridge, "openLive", "(Ljava/lang/String;)Ldev/nori/music/playback/RustBody;")?,
+        kept: env.get_method_id(&bridge, "kept", "(Ljava/lang/String;)Z")?,
+        busy: env.get_method_id(&bridge, "busy", "(Ljava/lang/String;)Z")?,
+        disk: env.get_method_id(&bridge, "disk", "(Ljava/lang/String;)Ljava/lang/String;")?,
+        forget: env.get_method_id(&bridge, "forget", "(Ljava/lang/String;)Ljava/lang/String;")?,
+        signal: env.get_method_id(&bridge, "signal", "()V")?,
+        cpu: env.get_method_id(&bridge, "cpu", "(Z)V")?,
+        offload_support: env.get_method_id(&bridge, "offloadSupport", "(III)I")?,
+        open_offload: env.get_method_id(&bridge, "openOffload", "(IIII)Landroid/media/AudioTrack;")?,
         body_read: env.get_method_id(&body, "read", "(I)I")?,
         body_close: env.get_method_id(&body, "close", "()V")?,
         body_buffer: env.get_field_id(&body, "buffer", "[B")?,
@@ -216,8 +215,15 @@ fn log(message: &str) {
     nori_core::alog::info(&format!("rust player: {message}"));
 }
 
-fn bridge(java: &Java) -> &JClass<'static> {
-    <&JClass>::from(java.bridge.as_obj())
+/// One player's Kotlin `RustBridge`: what its engine asks of the platform goes to the player that
+/// started that engine, however late it comes.
+#[derive(Clone)]
+struct Bridge(GlobalRef);
+
+impl Bridge {
+    fn obj(&self) -> &JObject<'static> {
+        self.0.as_obj()
+    }
 }
 
 // Every ID in `Java` was looked up in `look_up` on the class of the object it is used with, with the
@@ -492,6 +498,7 @@ const OFFLOAD_CHUNK: usize = 320 * 1024;
 /// An AudioTrack opened for offload, fed compressed packets from the engine thread through a direct
 /// ByteBuffer over `staging`.
 struct JavaOffload {
+    bridge: Bridge,
     events: Arc<OffloadEvents>,
     track: Option<GlobalRef>,
     buffer: Option<GlobalRef>,
@@ -513,8 +520,8 @@ struct JavaOffload {
 }
 
 impl JavaOffload {
-    fn new(events: Arc<OffloadEvents>) -> JavaOffload {
-        JavaOffload { events, track: None, buffer: None, staging: Vec::new(), held: 0, rate: 1, timestamp: None, stamp: None, playing: false, since_ns: 0, head: HeadCount::default(), said: Vec::new() }
+    fn new(bridge: Bridge, events: Arc<OffloadEvents>) -> JavaOffload {
+        JavaOffload { bridge, events, track: None, buffer: None, staging: Vec::new(), held: 0, rate: 1, timestamp: None, stamp: None, playing: false, since_ns: 0, head: HeadCount::default(), said: Vec::new() }
     }
 
     /// The last timestamp, extrapolated by the clock while playing and fresh.
@@ -575,7 +582,7 @@ impl OffloadOutput for JavaOffload {
     fn supports(&mut self, coded: Coded) -> Support {
         let Some((java, mut env)) = env() else { return Support::No };
         let args = [JValue::Int(encoding_of(coded.coding)).as_jni(), JValue::Int(coded.rate as i32).as_jni(), JValue::Int(coded.channels as i32).as_jni()];
-        let answer = call_static(&mut env, bridge(java), java.offload_support, ReturnType::Primitive(Primitive::Int), &args).and_then(|v| v.i().ok()).unwrap_or(-1);
+        let answer = call(&mut env, self.bridge.obj(), java.offload_support, ReturnType::Primitive(Primitive::Int), &args).and_then(|v| v.i().ok()).unwrap_or(-1);
         let (s, words) = offload_support(answer);
         log(&format!("offload of {} at {} Hz x{}: {words}: {s:?}", coded.coding.name(), coded.rate, coded.channels));
         self.said.retain(|(c, _)| *c != coded);
@@ -594,7 +601,7 @@ impl OffloadOutput for JavaOffload {
             return Err("no offload before Android 10".into());
         }
         self.staging = vec![0u8; OFFLOAD_CHUNK];
-        let staging = self.staging.as_mut_ptr();
+        let (staging, bridge) = (self.staging.as_mut_ptr(), &self.bridge);
         let opened = env.with_local_frame(4, |env| -> jni::errors::Result<Option<(GlobalRef, GlobalRef, usize)>> {
             let args = [
                 JValue::Int(encoding_of(coded.coding)).as_jni(),
@@ -603,7 +610,7 @@ impl OffloadOutput for JavaOffload {
                 JValue::Int(bytes.min(i32::MAX as usize) as i32).as_jni(),
             ];
             // SAFETY: RustBridge.openOffload(int, int, int, int), looked up with this signature.
-            let track = unsafe { env.call_static_method_unchecked(bridge(java), java.open_offload, ReturnType::Object, &args) }?.l()?;
+            let track = unsafe { env.call_method_unchecked(bridge.obj(), java.open_offload, ReturnType::Object, &args) }?.l()?;
             if track.is_null() {
                 return Ok(None);
             }
@@ -763,6 +770,7 @@ impl Drop for JavaOffload {
 
 /// Opens AudioTracks through `RustBridge.openTrack`.
 struct JavaOpener {
+    bridge: Bridge,
     /// API level: before 31 a track has no start threshold and starts only once full.
     sdk: i32,
 }
@@ -784,7 +792,7 @@ impl Opener for JavaOpener {
                 JValue::Int(encoding).as_jni(),
                 JValue::Int(frames.min(i32::MAX as u64) as i32).as_jni(),
             ];
-            let track = call_static(env, bridge(java), java.open_track, ReturnType::Object, &args).and_then(|v| v.l().ok());
+            let track = call(env, self.bridge.obj(), java.open_track, ReturnType::Object, &args).and_then(|v| v.l().ok());
             let Some(track) = track.filter(|t| !t.is_null()) else { return Ok(Err("the AudioTrack would not open".into())) };
             let frames = call_int(env, &track, java.track.buffer_frames, &[]).unwrap_or(0).max(0) as u64;
             let mut staging = vec![0f32; CHUNK_BYTES / 4];
@@ -816,6 +824,7 @@ impl Opener for JavaOpener {
 /// A song's bytes through Kotlin's data sources under the core's cache key. Takes the song over from the
 /// fetch-ahead first ([`Ahead::take_over`]) so it crosses the network once.
 struct JavaBytes {
+    bridge: Bridge,
     /// Empty for radio.
     key: String,
     ahead: Arc<Ahead>,
@@ -830,7 +839,7 @@ impl ByteSource for JavaBytes {
         if !self.key.is_empty() {
             self.ahead.take_over(&self.key);
         }
-        open_java(url, &self.key, from, cancel)
+        open_java(&self.bridge, url, &self.key, from, cancel)
     }
 
     /// A radio stream through `RustBridge.openLive` (uncached, ICY metadata on); also returns `icy-metaint`.
@@ -839,7 +848,7 @@ impl ByteSource for JavaBytes {
         let body = env.with_local_frame(4, |env| -> jni::errors::Result<Option<(GlobalRef, i32)>> {
             let url = env.new_string(url)?;
             // SAFETY: RustBridge.openLive(String), looked up with this signature.
-            let body = unsafe { env.call_static_method_unchecked(bridge(java), java.open_live, ReturnType::Object, &[JValue::Object(&url).as_jni()]) }?.l()?;
+            let body = unsafe { env.call_method_unchecked(self.bridge.obj(), java.open_live, ReturnType::Object, &[JValue::Object(&url).as_jni()]) }?.l()?;
             if body.is_null() {
                 return Ok(None);
             }
@@ -861,7 +870,7 @@ impl ByteSource for JavaBytes {
         if self.key.is_empty() {
             return false;
         }
-        let said = cache_words(&self.key, |j| j.forget).unwrap_or_else(|| "Kotlin could not be asked".into());
+        let said = cache_words(&self.bridge, &self.key, |j| j.forget).unwrap_or_else(|| "Kotlin could not be asked".into());
         log(&format!("{}: the copy is cut short and fetched anew ({said})", self.key));
         true
     }
@@ -872,11 +881,12 @@ static TICKETS: AtomicI64 = AtomicI64::new(1);
 
 /// `RustBridge.open` from byte `from` (download, then stream cache, then network; what is read is cached
 /// under `key`). `cancel` calls `RustBridge.cancel`, which fails a pending open or read at once.
-fn open_java(url: &str, key: &str, from: u64, cancel: &Cancel) -> Result<Body, OpenError> {
+fn open_java(bridge: &Bridge, url: &str, key: &str, from: u64, cancel: &Cancel) -> Result<Body, OpenError> {
     let ticket = TICKETS.fetch_add(1, Ordering::Relaxed);
+    let cancelling = bridge.clone();
     cancel.on_cancel(move || {
         if let Some((java, mut env)) = env() {
-            call_static(&mut env, bridge(java), java.cancel, ReturnType::Primitive(Primitive::Void), &[JValue::Long(ticket).as_jni()]);
+            call(&mut env, cancelling.obj(), java.cancel, ReturnType::Primitive(Primitive::Void), &[JValue::Long(ticket).as_jni()]);
         }
     });
     let (java, mut env) = env().ok_or("no JVM")?;
@@ -884,7 +894,7 @@ fn open_java(url: &str, key: &str, from: u64, cancel: &Cancel) -> Result<Body, O
         let (url, key) = (env.new_string(url)?, env.new_string(key)?);
         let args = [JValue::Object(&url).as_jni(), JValue::Object(&key).as_jni(), JValue::Long(from as i64).as_jni(), JValue::Long(ticket).as_jni()];
         // SAFETY: RustBridge.open(String, String, long, long), looked up with this signature.
-        let body = unsafe { env.call_static_method_unchecked(bridge(java), java.open, ReturnType::Object, &args) }?.l()?;
+        let body = unsafe { env.call_method_unchecked(bridge.obj(), java.open, ReturnType::Object, &args) }?.l()?;
         if body.is_null() {
             return Ok(None);
         }
@@ -916,7 +926,7 @@ fn open_java(url: &str, key: &str, from: u64, cancel: &Cancel) -> Result<Body, O
 // ---- fetching ahead ----
 
 /// The fetch-ahead's byte source: `RustBridge.open` under the key it is given.
-struct AheadBytes;
+struct AheadBytes(Bridge);
 
 impl ByteSource for AheadBytes {
     fn open(&self, _url: &str, _from: u64) -> Result<Body, OpenError> {
@@ -924,26 +934,26 @@ impl ByteSource for AheadBytes {
     }
 
     fn open_keyed(&self, url: &str, key: &str, from: u64) -> Result<Body, OpenError> {
-        open_java(url, key, from, &Cancel::new())
+        open_java(&self.0, url, key, from, &Cancel::new())
     }
 
     fn open_cancellable(&self, url: &str, key: Option<&str>, from: u64, cancel: &Cancel) -> Result<Body, OpenError> {
         match key {
-            Some(key) => open_java(url, key, from, cancel),
+            Some(key) => open_java(&self.0, url, key, from, cancel),
             None => Err("asked without its cache key".into()),
         }
     }
 }
 
 /// media3's stream cache, which stores what [`AheadBytes`] reads by itself; `kept`/`busy` ask Kotlin.
-struct Media3Cache;
+struct Media3Cache(Bridge);
 
 impl Media3Cache {
-    fn ask(key: &str, method: fn(&Java) -> JStaticMethodID) -> Option<bool> {
+    fn ask(&self, key: &str, method: fn(&Java) -> JMethodID) -> Option<bool> {
         let (java, mut env) = env()?;
         let answer = env.with_local_frame(2, |env| -> jni::errors::Result<Option<bool>> {
             let key = env.new_string(key)?;
-            Ok(call_static(env, bridge(java), method(java), ReturnType::Primitive(Primitive::Boolean), &[JValue::Object(&key).as_jni()]).and_then(|v| v.z().ok()))
+            Ok(call(env, self.0.obj(), method(java), ReturnType::Primitive(Primitive::Boolean), &[JValue::Object(&key).as_jni()]).and_then(|v| v.z().ok()))
         });
         cleared(&mut env);
         answer.ok().flatten()
@@ -953,11 +963,11 @@ impl Media3Cache {
 impl Keeping for Media3Cache {
     /// Unknown counts as kept: nothing is fetched on a guess.
     fn kept(&self, key: &str) -> bool {
-        Media3Cache::ask(key, |j| j.kept).unwrap_or(true)
+        self.ask(key, |j| j.kept).unwrap_or(true)
     }
 
     fn busy(&self, key: &str) -> bool {
-        Media3Cache::ask(key, |j| j.busy).unwrap_or(true)
+        self.ask(key, |j| j.busy).unwrap_or(true)
     }
 
     fn entry(&self, _key: &str) -> Option<Box<dyn Entry>> {
@@ -988,12 +998,12 @@ impl Entry for Counted {
 
 /// `RustBridge.disk(key)` / `forget(key)`: Kotlin's description of the stream cache entry (and, for
 /// `forget`, removes it). None when Kotlin could not be asked.
-fn cache_words(key: &str, method: fn(&Java) -> JStaticMethodID) -> Option<String> {
+fn cache_words(bridge: &Bridge, key: &str, method: fn(&Java) -> JMethodID) -> Option<String> {
     let (java, mut env) = env()?;
     let words = env.with_local_frame(4, |env| -> jni::errors::Result<String> {
         let key = env.new_string(key)?;
         // SAFETY: RustBridge.disk(String) / forget(String): String, looked up with this signature.
-        let said = unsafe { env.call_static_method_unchecked(bridge(java), method(java), ReturnType::Object, &[JValue::Object(&key).as_jni()]) }?.l()?;
+        let said = unsafe { env.call_method_unchecked(bridge.obj(), method(java), ReturnType::Object, &[JValue::Object(&key).as_jni()]) }?.l()?;
         if said.is_null() {
             return Ok(String::new());
         }
@@ -1003,13 +1013,43 @@ fn cache_words(key: &str, method: fn(&Java) -> JStaticMethodID) -> Option<String
     words.ok()
 }
 
-/// What the stream cache holds of song `id`, for the perf build's silent-break report.
-pub(crate) fn disk_words(current: &CurrentClient, id: &str) -> String {
-    let Some(target) = current.get().map(|c| c.resolve_now(id)) else { return format!("{id}: no server to resolve it") };
-    if target.key == nori_core::stream::download_key(id.to_string()) {
-        return format!("{id}: downloaded");
+/// Forwards each engine wake's observations to the perf build's invariant checks, only while they run;
+/// songs resolve through the client in use for what the stream cache holds of them.
+struct PerfWatch {
+    current: Arc<CurrentClient>,
+    bridge: Bridge,
+}
+
+impl PerfWatch {
+    /// What the stream cache holds of song `id`, for the perf build's silent-break report.
+    fn disk_words(&self, id: &str) -> String {
+        let Some(target) = self.current.get().map(|c| c.resolve_now(id)) else { return format!("{id}: no server to resolve it") };
+        if target.key == nori_core::stream::download_key(id.to_string()) {
+            return format!("{id}: downloaded");
+        }
+        cache_words(&self.bridge, &target.key, |j| j.disk).unwrap_or_else(|| format!("{}: Kotlin could not be asked", target.key))
     }
-    cache_words(&target.key, |j| j.disk).unwrap_or_else(|| format!("{}: Kotlin could not be asked", target.key))
+}
+
+impl nori_engine::watch::Watch for PerfWatch {
+    fn wanted(&self) -> bool {
+        nori_perf::invariants::on()
+    }
+
+    fn seen(&self, s: &nori_engine::watch::Seen) {
+        nori_perf::invariants::engine_seen(&nori_perf::invariants::EngineLook {
+            now_ms: s.now_ms,
+            playing: s.playing,
+            offloaded: s.offloaded,
+            index: s.index,
+            id: s.id.as_deref(),
+            position_ms: s.position_ms,
+            in_output_ms: s.in_output_ms,
+            quiet_ms: s.quiet_ms,
+            output_open: s.output_open,
+            state: &s.state,
+        }, &|id| self.disk_words(id))
+    }
 }
 
 /// A `RustBody`: reads through `read(int)` and its `buffer` field; closed on drop.
@@ -1051,6 +1091,7 @@ impl Drop for JavaBody {
 /// Songs open at the URL and cache key the client in use resolves; radio stations at the address Kotlin
 /// handed over with [`radio`].
 struct AndroidLibrary {
+    bridge: Bridge,
     queue: Arc<nori_core::queue::Session>,
     current: Arc<CurrentClient>,
     analyses: Arc<Analyses>,
@@ -1063,7 +1104,7 @@ impl Library for AndroidLibrary {
         if is_radio(id) {
             let url = self.stations.lock().iter().find(|(s, _)| s == id).map(|(_, u)| u.clone()).ok_or("a station with no address")?;
             log(&format!("{id} is a station's stream"));
-            return Ok(Located { source: Source::Live { url, bytes: Arc::new(JavaBytes { key: String::new(), ahead: self.ahead.clone() }) }, hint: None, duration_ms: None, estimated: false });
+            return Ok(Located { source: Source::Live { url, bytes: Arc::new(JavaBytes { bridge: self.bridge.clone(), key: String::new(), ahead: self.ahead.clone() }) }, hint: None, duration_ms: None, estimated: false });
         }
         let song = self.queue.song(id);
         let duration_ms = song.as_ref().map(|s| s.duration as i64 * 1000).filter(|&d| d > 0);
@@ -1076,7 +1117,7 @@ impl Library for AndroidLibrary {
             key_format(&target.key).or_else(|| song.map(|s| s.suffix)).filter(|s| !s.is_empty())
         };
         log(&format!("{id} opens from {} as {}", target.key, hint.as_deref().unwrap_or("whatever it is")));
-        Ok(Located { source: Source::Url { url: target.url, bytes: Arc::new(JavaBytes { key: target.key, ahead: self.ahead.clone() }) }, hint, duration_ms, estimated: false })
+        Ok(Located { source: Source::Url { url: target.url, bytes: Arc::new(JavaBytes { bridge: self.bridge.clone(), key: target.key, ahead: self.ahead.clone() }) }, hint, duration_ms, estimated: false })
     }
 
     fn about(&self, id: &str) -> WindowSong {
@@ -1090,7 +1131,7 @@ impl Library for AndroidLibrary {
     /// Fetches the core's precache targets except `next` (the engine loads that) into media3's cache.
     fn ahead(&mut self, next: &str) {
         let fetch = self.current.get().map(|c| c.precache_now()).unwrap_or_default();
-        self.ahead.ask(Arc::new(Media3Cache), Arc::new(AheadBytes), ahead_songs(fetch, next), Some(measuring_ahead(&self.analyses, self.queue.clone())));
+        self.ahead.ask(Arc::new(Media3Cache(self.bridge.clone())), Arc::new(AheadBytes(self.bridge.clone())), ahead_songs(fetch, next), Some(measuring_ahead(&self.analyses, self.queue.clone())));
     }
 
     fn taker(&self, id: &str, hint: Option<&str>) -> Option<Listening> {
@@ -1106,7 +1147,7 @@ impl Library for AndroidLibrary {
         if target.key == nori_core::stream::download_key(id.to_string()) {
             return;
         }
-        let said = cache_words(&target.key, |j| j.forget).unwrap_or_else(|| "Kotlin could not be asked".into());
+        let said = cache_words(&self.bridge, &target.key, |j| j.forget).unwrap_or_else(|| "Kotlin could not be asked".into());
         log(&format!("{id} is fetched anew: its stream cache entry goes ({said})"));
     }
 }
@@ -1114,8 +1155,8 @@ impl Library for AndroidLibrary {
 // ---- player ----
 
 /// Engine events queued for Kotlin, which is signalled once per batch.
-#[derive(Default)]
 struct Events {
+    bridge: Bridge,
     /// (kind, index, entry, text, jumps): jumps is `Song`/`Looped`/`Position`'s `jumps`, or `Stopped`/`Bridge`'s `plays`.
     queue: Mutex<VecDeque<(i32, i32, Option<u64>, String, u64)>>,
     signalled: AtomicBool,
@@ -1140,7 +1181,7 @@ const EVENT_LANDED: i32 = 11;
 impl Events {
     fn push(&self, e: Event) {
         if let Event::Awake(awake) = e {
-            cpu(awake);
+            self.cpu(awake);
             return;
         }
         match &e {
@@ -1186,24 +1227,25 @@ impl Events {
             q.push_back((kind, index, seq, text, jumps));
             !self.signalled.swap(true, Ordering::AcqRel)
         };
-        // No player registered yet to take the signal (the engine's first events): signal again with the
-        // next event; the player drains once when it registers.
-        if first && !signal() {
-            self.signalled.store(false, Ordering::Release);
+        if first {
+            self.signal();
         }
     }
-}
 
-/// `RustBridge.signal()`: whether a player took the wake-up.
-fn signal() -> bool {
-    env().is_some_and(|(java, mut env)| call_static(&mut env, bridge(java), java.signal, ReturnType::Primitive(Primitive::Boolean), &[]).and_then(|v| v.z().ok()).unwrap_or(false))
-}
+    /// `RustBridge.signal()`: the player drains the queue on its main thread.
+    fn signal(&self) {
+        if let Some((java, mut env)) = env() {
+            call_void(&mut env, self.bridge.obj(), java.signal, &[]);
+        }
+    }
 
-/// `RustBridge.cpu`: take (true) or release the wake lock. Called on the engine thread before the work
-/// it is for.
-fn cpu(awake: bool) {
-    let Some((java, mut env)) = env() else { return };
-    call_static(&mut env, bridge(java), java.cpu, ReturnType::Primitive(Primitive::Void), &[JValue::Bool(awake as jboolean).as_jni()]);
+    /// `RustBridge.cpu`: take (true) or release the wake lock. Called on the engine thread before the work
+    /// it is for.
+    fn cpu(&self, awake: bool) {
+        if let Some((java, mut env)) = env() {
+            call_void(&mut env, self.bridge.obj(), java.cpu, &[JValue::Bool(awake as jboolean).as_jni()]);
+        }
+    }
 }
 
 fn state_code(s: State) -> i32 {
@@ -1217,6 +1259,7 @@ fn state_code(s: State) -> i32 {
 
 struct Player {
     engine: Engine,
+    bridge: Bridge,
     shared: Arc<Shared>,
     events: Arc<Events>,
     offload: Arc<OffloadEvents>,
@@ -1253,9 +1296,9 @@ fn player(h: jlong) -> Option<Arc<Player>> {
 
 /// Starts an engine over the core's queue and settings, playing through `current`'s client (a
 /// `CurrentClient.uniffiCloneHandle()`, taken over) and measuring with `analyses` (`MeasureJni.analyses`).
-/// `sdk`: API level; `float`: high quality output; `memory_mb`: the app's memory class. 0 when the Java
-/// side is missing.
-extern "system" fn create(mut env: JNIEnv, _: JClass, current: jlong, analyses: jlong, sdk: jint, float: jboolean, memory_mb: jint) -> jlong {
+/// Everything the engine asks of the platform goes to `bridge`, the player's own. `sdk`: API level;
+/// `float`: high quality output; `memory_mb`: the app's memory class. 0 when the Java side is missing.
+extern "system" fn create(mut env: JNIEnv, _: JClass, bridge: JObject, current: jlong, analyses: jlong, sdk: jint, float: jboolean, memory_mb: jint) -> jlong {
     // SAFETY: Kotlin passes `CurrentClient.uniffiCloneHandle()`, once.
     let current: Arc<CurrentClient> = unsafe { crate::uniffi_object(current) };
     let Some(measuring) = crate::measure::measuring(analyses) else { return 0 };
@@ -1272,25 +1315,26 @@ extern "system" fn create(mut env: JNIEnv, _: JClass, current: jlong, analyses: 
             }
         }
     }
+    let Ok(bridge) = env.new_global_ref(&bridge).map(Bridge) else { return 0 };
     let shared = Arc::new(Shared::default());
-    let output = TrackOutput::new(Box::new(JavaOpener { sdk }), float != 0, shared.clone());
+    let output = TrackOutput::new(Box::new(JavaOpener { bridge: bridge.clone(), sdk }), float != 0, shared.clone());
     let stations = Arc::new(Mutex::new(Vec::new()));
     let ahead = Ahead::new();
-    let library = AndroidLibrary { queue: queue.clone(), current: current.clone(), analyses: analyses.clone(), stations: stations.clone(), ahead: ahead.clone() };
+    let library = AndroidLibrary { bridge: bridge.clone(), queue: queue.clone(), current: current.clone(), analyses: analyses.clone(), stations: stations.clone(), ahead: ahead.clone() };
     // Full volume until Kotlin reports one (only while loudness compensation is on).
     let volume = Arc::new(OutputVolume::default());
     let sound = queue.settings.current().map(|p| settings(&p, volume.db())).unwrap_or_default();
-    let watch = Some(nori_engine::watch::Watcher(Arc::new(crate::PerfWatch(current))));
+    let watch = Some(nori_engine::watch::Watcher(Arc::new(PerfWatch { current, bridge: bridge.clone() })));
     let config = Config { memory_mb: memory_mb.max(16) as u32, settings: sound, watch, ..Config::default() };
-    let events = Arc::new(Events::default());
+    let events = Arc::new(Events { bridge: bridge.clone(), queue: Mutex::default(), signalled: AtomicBool::new(false), text: Mutex::default(), jumps: AtomicI64::new(0) });
     let tell = events.clone();
     let offload = Arc::new(OffloadEvents::default());
     let can_offload = JAVA.get().is_some_and(|j| j.offload.is_some()) && sdk >= 29;
-    let offloaded: Option<Box<dyn OffloadOutput>> = can_offload.then(|| Box::new(JavaOffload::new(offload.clone())) as Box<dyn OffloadOutput>);
+    let offloaded: Option<Box<dyn OffloadOutput>> = can_offload.then(|| Box::new(JavaOffload::new(bridge.clone(), offload.clone())) as Box<dyn OffloadOutput>);
     log(&format!("the engine starts: API {sdk}, {} output, {} MB of memory, offload {}", if float != 0 { "float" } else { "16-bit" }, config.memory_mb, if can_offload { "possible" } else { "not on this Android" }));
     let app = CoreApp::new(queue.clone()).bridging().volume(volume.clone());
     let engine = Engine::start(library, app, CoreQueue(queue.clone()), Box::new(output), offloaded, config, move |e| tell.push(e));
-    PLAYERS.add(Arc::new(Player { engine, shared, events, offload, stations, jumped: Mutex::new(None), looked_ms: AtomicI64::new(i64::MIN / 2), volume, ahead, analyses, queue }))
+    PLAYERS.add(Arc::new(Player { engine, bridge, shared, events, offload, stations, jumped: Mutex::new(None), looked_ms: AtomicI64::new(i64::MIN / 2), volume, ahead, analyses, queue }))
 }
 
 /// Unregisters the player and stops it on a thread of its own (stopping joins engine threads, and media3
@@ -1298,7 +1342,7 @@ extern "system" fn create(mut env: JNIEnv, _: JClass, current: jlong, analyses: 
 extern "system" fn destroy(_: JNIEnv, _: JClass, h: jlong) {
     if let Some(p) = PLAYERS.remove(h) {
         // Stop this player's own fetch-ahead (a newer player keeps its own).
-        p.ahead.ask(Arc::new(Media3Cache), Arc::new(AheadBytes), Vec::new(), None);
+        p.ahead.ask(Arc::new(Media3Cache(p.bridge.clone())), Arc::new(AheadBytes(p.bridge.clone())), Vec::new(), None);
         // If the thread fails to start, the closure drops `p` here instead.
         let _ = std::thread::Builder::new().name("nori-release".into()).spawn(move || drop(p));
     }

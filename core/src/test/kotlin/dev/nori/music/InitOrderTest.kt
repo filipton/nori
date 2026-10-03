@@ -93,6 +93,16 @@ class InitOrderTest {
     @Test fun whatTheDownloadsThreadReachesInNoriIsBuiltBeforeIt() =
         check("Nori.kt", "Nori", Regex("""^    val downloads = Downloads\("""), listOf("core", "lazySources", "client"))
 
+    /**
+     * The engine EnginePlayer starts calls its own player back through its RustBridge from its threads at
+     * once (its first state, the wake lock): everything those calls reach exists before it starts.
+     */
+    @Test fun whatTheEngineCallsBackInEnginePlayerIsBuiltBeforeItStarts() =
+        check(
+            "playback/RustPlayer.kt", "EnginePlayer", Regex("""RustPlayerJni\.create\("""),
+            listOf("openTrack", "open", "openLive", "kept", "busy", "disk", "forget", "offloadSupport", "openOffload", "signal", "engineAwake"),
+        )
+
     /** Downloads' own `init` runs [publish] and [reconcile] on its pool before the rest of it is built. */
     @Test fun whatDownloadsInitThreadReachesIsBuiltBeforeIt() =
         check("downloads/Downloads.kt", "Downloads", Regex("""^    init \{"""), listOf("publish", "reconcile"))

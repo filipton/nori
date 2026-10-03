@@ -95,31 +95,6 @@ pub extern "system" fn JNI_OnLoad(vm: jni::JavaVM, _: *mut c_void) -> jint {
     JNI_VERSION_1_6
 }
 
-/// Forwards each engine wake's observations to the perf build's invariant checks, only while they run;
-/// songs resolve through the client in use for what the stream cache holds of them.
-pub(crate) struct PerfWatch(pub(crate) std::sync::Arc<nori_core::client::CurrentClient>);
-
-impl nori_engine::watch::Watch for PerfWatch {
-    fn wanted(&self) -> bool {
-        nori_perf::invariants::on()
-    }
-
-    fn seen(&self, s: &nori_engine::watch::Seen) {
-        nori_perf::invariants::engine_seen(&nori_perf::invariants::EngineLook {
-            now_ms: s.now_ms,
-            playing: s.playing,
-            offloaded: s.offloaded,
-            index: s.index,
-            id: s.id.as_deref(),
-            position_ms: s.position_ms,
-            in_output_ms: s.in_output_ms,
-            quiet_ms: s.quiet_ms,
-            output_open: s.output_open,
-            state: &s.state,
-        }, &|id| player::disk_words(&self.0, id))
-    }
-}
-
 /// Logs every panic with thread, location and backtrace, and reports it to the perf watch: Android
 /// discards a Rust thread's stderr.
 fn log_panics() {

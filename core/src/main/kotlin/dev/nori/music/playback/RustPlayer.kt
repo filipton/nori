@@ -42,7 +42,7 @@ internal object RustPlayerJni {
      * over) and measuring with [analyses] (`MeasureJni.analyses`). [float] is the high quality output
      * setting; [memoryMb] the app's memory class. 0 when it could not start.
      */
-    @JvmStatic external fun create(current: Long, analyses: Long, sdk: Int, float: Boolean, memoryMb: Int): Long
+    @JvmStatic external fun create(bridge: RustBridge, current: Long, analyses: Long, sdk: Int, float: Boolean, memoryMb: Int): Long
     @JvmStatic external fun destroy(h: Long)
     /** Answers the jump's number, which the song events it leads to carry ([eventJumps]). */
     @JvmStatic @CriticalNative external fun goTo(h: Long, index: Int, ms: Long): Long
@@ -104,52 +104,49 @@ internal object RustPlayerJni {
 }
 
 /**
- * What the Rust player asks of the platform, from its own threads: an AudioTrack, a song's bytes, the cache
- * key a song resolves to, and a wake for its events. Each is rare: a track per start, a body per burst of a
- * song, a key per song, a signal per batch of events.
+ * What one player's engine asks of the platform, from its own threads: an AudioTrack, a song's bytes, the
+ * cache key a song resolves to, and a wake for its events. Handed to the engine as it starts, so whatever
+ * it asks, however late, reaches the player that started it. Each is rare: a track per start, a body per
+ * burst of a song, a key per song, a signal per batch of events.
  */
 @UnstableApi
-internal object RustBridge {
-    @Volatile var player: EnginePlayer? = null
-
+internal class RustBridge(private val player: EnginePlayer) {
     /** [encoding] is `AudioFormat.ENCODING_*`: 16-bit, 24-bit packed (a song played as it is) or float. */
-    @JvmStatic fun openTrack(rate: Int, channels: Int, encoding: Int, frames: Int): AudioTrack? = player?.openTrack(rate, channels, encoding, frames)
+    fun openTrack(rate: Int, channels: Int, encoding: Int, frames: Int): AudioTrack? = player.openTrack(rate, channels, encoding, frames)
     /** [ticket]: the request's number, by which [cancel] calls it off (see [Tickets]). */
-    @JvmStatic fun open(url: String, key: String, from: Long, ticket: Long): RustBody? =
-        player?.open(url, key, from, ticket) ?: null.also { Tickets.end(ticket) }
+    fun open(url: String, key: String, from: Long, ticket: Long): RustBody? =
+        player.open(url, key, from, ticket) ?: null.also { Tickets.end(ticket) }
     /** The Rust side lets a request go that has not answered or sends nothing: its call is cancelled. From any of its threads. */
-    @JvmStatic fun cancel(ticket: Long) = Tickets.cancel(ticket)
-    @JvmStatic fun openLive(url: String): RustBody? = player?.openLive(url)
+    fun cancel(ticket: Long) = Tickets.cancel(ticket)
+    fun openLive(url: String): RustBody? = player.openLive(url)
     /**
      * For the songs fetched ahead (nori-engine's one fetcher, through [open]): whether all of [key] is in the
-     * stream cache, and whether the player is writing it now. Asked once per song; with no player, as there
-     * and busy, so nothing is fetched.
+     * stream cache, and whether the player is writing it now. Asked once per song.
      */
-    @JvmStatic fun kept(key: String): Boolean = player?.kept(key) ?: true
-    @JvmStatic fun busy(key: String): Boolean = player?.busy(key) ?: true
+    fun kept(key: String): Boolean = player.kept(key)
+    fun busy(key: String): Boolean = player.busy(key)
     /** What the stream cache keeps of [key], in words: for the perf build's break of a player that plays nothing. */
-    @JvmStatic fun disk(key: String): String = player?.disk(key) ?: "$key: no player"
+    fun disk(key: String): String = player.disk(key)
     /**
      * [key] played nothing and is fetched anew (crates/engine `Library::forget`): its stream cache entry goes.
      * What it kept is answered, in words, for the log.
      */
-    @JvmStatic fun forget(key: String): String = player?.forget(key) ?: "$key: no player"
+    fun forget(key: String): String = player.forget(key)
     /**
      * Whether the audio chip decodes [encoding] where the music goes now, as the platform answers media3:
      * the call made in the high byte (3 `getDirectPlaybackSupport`, 2 `getPlaybackOffloadSupport`, 1
      * `isOffloadedPlaybackSupported`) and its answer in the low one; -1 when it could not be asked. The
      * Rust side reads it (crates/android/src/player.rs `offload_support`).
      */
-    @JvmStatic fun offloadSupport(encoding: Int, rate: Int, channels: Int): Int = player?.offloadSupport(encoding, rate, channels) ?: -1
-    @JvmStatic fun openOffload(encoding: Int, rate: Int, channels: Int, bytes: Int): AudioTrack? = player?.openOffload(encoding, rate, channels, bytes)
-    /** Whether a player took it: none registered yet, the engine signals again with its next event. */
-    @JvmStatic fun signal(): Boolean = player?.let { it.signal(); true } ?: false
+    fun offloadSupport(encoding: Int, rate: Int, channels: Int): Int = player.offloadSupport(encoding, rate, channels)
+    fun openOffload(encoding: Int, rate: Int, channels: Int, bytes: Int): AudioTrack? = player.openOffload(encoding, rate, channels, bytes)
+    fun signal() = player.signal()
     /**
      * The engine needs the CPU kept awake ([awake]), or can let it sleep while the audio chip plays the
      * songs (nori-engine's `Event::Awake`). Called on the engine's thread as it changes, before the
      * engine goes on.
      */
-    @JvmStatic fun cpu(awake: Boolean) { player?.engineAwake(awake) }
+    fun cpu(awake: Boolean) = player.engineAwake(awake)
 }
 
 /**
@@ -220,14 +217,12 @@ class RustBody internal constructor(
 class EnginePlayer(private val context: Context, private val nori: Nori) : SimpleBasePlayer(Looper.getMainLooper()) {
     private val main = Handler(Looper.getMainLooper())
     /**
-     * The engine's handle; 0 once released. Every door takes it as it is at the call, and the Rust side
-     * answers 0 - or a handle that is gone - with nothing, so a routing callback, a test's read or a
-     * posted settings change that arrives after the release does no harm.
+     * The engine's handle, set as the last of this is built ([init] at the end); 0 before that and once
+     * released. Every door takes it as it is at the call, and the Rust side answers 0 - or a handle that is
+     * gone - with nothing, so a routing callback, a test's read or a posted settings change that arrives
+     * after the release does no harm.
      */
-    @Volatile private var h: Long = RustPlayerJni.create(
-        nori.currentClient.uniffiCloneHandle(), nori.analyses, Build.VERSION.SDK_INT, nori.settings.value.hiRes,
-        context.getSystemService(android.app.ActivityManager::class.java).memoryClass,
-    )
+    @Volatile private var h: Long = 0L
 
     private val items = ArrayList<MediaItem>()
     private val uids = ArrayList<Long>()
@@ -482,11 +477,10 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
     override fun handleRelease(): ListenableFuture<*> {
         unwatchNetwork()
         unfocus()
-        follow(released = true)
-        if (RustBridge.player === this) RustBridge.player = null
         main.removeCallbacks(drain)
         val handle = h
         h = 0L
+        follow()
         RustPlayerJni.destroy(handle)
         return done()
     }
@@ -822,10 +816,11 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
     /**
      * The receiver and the CPU lock are held exactly while music is wanted, as ExoPlayer's WAKE_MODE_LOCAL -
      * and can come: an output that would not open leaves the player wanting music it cannot play, and
-     * held on through that, the lock kept the phone awake for nothing.
+     * held on through that, the lock kept the phone awake for nothing. Released, nothing is wanted: a
+     * late word of the engine as it stops changes nothing.
      */
-    private fun follow(released: Boolean = false) {
-        val playing = !released && playWhenReady && prepared && error == null && engineState != ENGINE_ENDED
+    private fun follow() {
+        val playing = h != 0L && playWhenReady && prepared && error == null && engineState != ENGINE_ENDED
         if (playing && !listening) {
             val filter = IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
             if (Build.VERSION.SDK_INT >= 33) context.registerReceiver(noisy, filter, Context.RECEIVER_NOT_EXPORTED) else context.registerReceiver(noisy, filter)
@@ -994,9 +989,10 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
 
     // Last, once everything above exists: from here on the engine's threads may call in.
     init {
-        RustBridge.player = this
-        // Whatever the engine said before this was registered (its first state) is taken now.
-        main.post(drain)
+        h = RustPlayerJni.create(
+            RustBridge(this), nori.currentClient.uniffiCloneHandle(), nori.analyses, Build.VERSION.SDK_INT, nori.settings.value.hiRes,
+            context.getSystemService(android.app.ActivityManager::class.java).memoryClass,
+        )
         if (h == 0L) error = PlaybackException("the Rust player would not start", null, PlaybackException.ERROR_CODE_FAILED_RUNTIME_CHECK)
     }
 

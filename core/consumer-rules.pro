@@ -5,7 +5,7 @@
 -keep class dev.nori.music.ffi.** { *; }
 
 # The Rust player reaches these by name from native code (crates/android/src/player.rs): the bridge's
-# static methods, and a song body's buffer, length, read and close.
+# methods, and a song body's buffer, length, read and close.
 -keep class dev.nori.music.playback.RustBridge { *; }
 -keep class dev.nori.music.playback.RustBody { *; }
 
