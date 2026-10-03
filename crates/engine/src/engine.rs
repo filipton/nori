@@ -1390,7 +1390,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     }
 
     /// Once the song opened ahead is open and the track a dip away from its start, the dip goes down and
-    /// the CPU takes over at its bottom ([`Worker::to_cpu`]). Paused, the handover is made at once.
+    /// the CPU takes over at its bottom ([`Worker::hand_to_cpu`]). Paused, the handover is made at once.
     fn follow_takeover(&mut self, now: i64) {
         if self.h.takeover.is_none() || self.dip.as_ref().is_some_and(|d| d.then.iter().any(Switched::hands)) || self.pause_at.is_some() {
             return;
@@ -1601,8 +1601,8 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
                 self.seek(ms);
                 self.told.seek_landed = true;
             }
-            Switched::ToCpu => from = self.to_cpu(),
-            Switched::ToChip => from = self.to_chip(),
+            Switched::ToCpu => from = self.hand_to_cpu(),
+            Switched::ToChip => from = self.hand_to_chip(),
             Switched::To(..) => {}
         }
         // Only a play_at comes here paused (a skip or a go_to is parked instead): music is wanted.
@@ -1614,7 +1614,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
 
     /// At the dip's bottom: the CPU takes the song over from the output's decoder, unless the takeover
     /// was given up meanwhile. Returns the level to come back up from, if not the fade's.
-    fn to_cpu(&mut self) -> Option<f32> {
+    fn hand_to_cpu(&mut self) -> Option<f32> {
         let t = self.h.takeover.take()?;
         // The track's fade ends at silence, whatever tick it last took.
         self.ramp(None, 0.0, 0);
@@ -1627,7 +1627,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
 
     /// At the dip's bottom: the output's decoder takes the song over where the ear is, if offload is
     /// still wanted. Returns the level to come back up from, if not the fade's.
-    fn to_chip(&mut self) -> Option<f32> {
+    fn hand_to_chip(&mut self) -> Option<f32> {
         let i = self.p.current().filter(|_| !self.offloading())?;
         if !(self.offload && self.off.is_some() && self.p.playing()) {
             return None;
