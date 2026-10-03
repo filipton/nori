@@ -117,6 +117,22 @@ fn walk_repeat(p: &Playlist) -> u8 {
     if p.repeat() == REPEAT_ONE { REPEAT_ALL } else { p.repeat() }
 }
 
+/// A song of a list and its neighbours in play order, each with its album run, as ReplayGain reads them.
+struct Around {
+    before: Option<(String, u32)>,
+    song: (String, u32),
+    after: Option<(String, u32)>,
+    shuffling: bool,
+}
+
+impl Around {
+    fn of(p: &Playlist, i: usize) -> Around {
+        let id = |i: usize| (p.ids()[i].clone(), p.album_run(i));
+        let repeat = walk_repeat(p);
+        Around { before: p.previous_of(i, repeat).map(id), song: id(i), after: p.next_of(i, repeat).map(id), shuffling: p.shuffling() }
+    }
+}
+
 /// Songs in the planner window from the current one on.
 const WINDOW_LEN: usize = 8;
 
@@ -339,26 +355,19 @@ impl Session {
 
     /// The current song's ReplayGain volume (`Session::queue_gain`); `bit_perfect`: the output is untouched.
     pub fn gain(&self, bit_perfect: bool) -> f32 {
-        self.gain_at(None, bit_perfect)
+        let around = self.playlist(|p| p.current().map(|c| Around::of(p, c)));
+        self.gain_around(around, bit_perfect)
     }
 
-    /// [`Session::gain`] for list index `index`, so a player can set the next song's volume ahead of time.
-    pub fn gain_of(&self, index: usize, bit_perfect: bool) -> f32 {
-        self.gain_at(Some(index), bit_perfect)
+    /// [`Session::gain`] for index `index` of `list`, the queue as a player last took it (its indexes name
+    /// that list's songs while the live one is edited), so it can set the next song's volume ahead of time.
+    pub fn gain_of(&self, list: &Playlist, index: usize, bit_perfect: bool) -> f32 {
+        self.gain_around((index < list.len()).then(|| Around::of(list, index)), bit_perfect)
     }
 
-    fn gain_at(&self, index: Option<usize>, bit_perfect: bool) -> f32 {
-        let Some(s) = self.settings.current() else { return 1.0 };
-        let prefs = s.gain_prefs();
-        let (before, current, after, shuffling) = self.playlist(|p| {
-            let id = |i: Option<usize>| i.map(|i| (p.ids()[i].clone(), p.album_run(i)));
-            let repeat = walk_repeat(p);
-            match index.filter(|&i| i < p.len()) {
-                Some(i) => (id(p.previous_of(i, repeat)), id(Some(i)), id(p.next_of(i, repeat)), p.shuffling()),
-                None => (id(p.previous()), id(p.current()), id(p.next()), p.shuffling()),
-            }
-        });
-        self.queue_gain(before, current, after, &prefs, bit_perfect, shuffling)
+    fn gain_around(&self, around: Option<Around>, bit_perfect: bool) -> f32 {
+        let (Some(s), Some(a)) = (self.settings.current(), around) else { return 1.0 };
+        self.queue_gain(a.before, Some(a.song), a.after, &s.gain_prefs(), bit_perfect, a.shuffling)
     }
 
     /// The queue view; songs are omitted when `held` equals the current `list_rev`.
@@ -699,17 +708,36 @@ pub(crate) mod tests {
         });
         s.register(vec![song("ga1", 1), song("ga2", 2), song("ga3", 3)]);
         s.set(ids(&["ga1", "ga2", "ga3"]), Some(0), false, origin(Album, "GA"));
-        assert_eq!([0, 1, 2].map(|i| db(s.gain_of(i, false))), [-2.0; 3], "the album played in order");
+        let list = s.playlist(nori_player::playlist::Playlist::clone);
+        assert_eq!([0, 1, 2].map(|i| db(s.gain_of(&list, i, false))), [-2.0; 3], "the album played in order");
         assert_eq!(db(s.gain(false)), -2.0, "the current song's");
         assert_eq!(s.gain(true), 1.0, "bit-perfect: untouched");
         s.set(ids(&["ga3", "ga1"]), Some(0), false, None);
-        assert_eq!([0, 1].map(|i| db(s.gain_of(i, false))), [-6.0; 2], "out of order: each song's own");
+        let list = s.playlist(nori_player::playlist::Playlist::clone);
+        assert_eq!([0, 1].map(|i| db(s.gain_of(&list, i, false))), [-6.0; 2], "out of order: each song's own");
         s.set(ids(&["radio:1"]), Some(0), false, None);
         assert_eq!(s.gain(false), 1.0, "a station");
         let (_dir, s) = opened(|p| p.replay_gain = GainMode::Off);
         s.register(vec![song("ga1", 1)]);
         s.set(ids(&["ga1"]), Some(0), false, None);
         assert_eq!(s.gain(false), 1.0, "off");
+    }
+
+    #[test]
+    fn replay_gain_of_the_list_the_player_holds() {
+        use nori_player::policy::GainMode;
+        let song = |id: &str, track_gain: f32| Song { duration: 200, replay_gain: Some(nori_model::ReplayGain { track_gain: Some(track_gain), ..Default::default() }), ..Song::only_id(id.to_string()) };
+        let db = |g: f32| (20.0 * g.log10() * 10.0).round() / 10.0;
+        let (_dir, s) = opened(|p| {
+            p.replay_gain = GainMode::Track;
+            p.preamp_db = 0.0;
+        });
+        s.register(vec![song("a", -2.0), song("b", -6.0), song("c", -4.0)]);
+        s.set(ids(&["a", "b", "c"]), Some(0), false, None);
+        let held = s.playlist(nori_player::playlist::Playlist::clone);
+        // Edited before the player takes it: index 1 of the live queue is "c" now.
+        s.remove(0, 1);
+        assert_eq!(db(s.gain_of(&held, 1, false)), -6.0, "index 1 of the list the player holds is still \"b\"");
     }
 
     #[test]

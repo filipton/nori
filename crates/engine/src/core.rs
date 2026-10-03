@@ -203,9 +203,10 @@ impl App for CoreApp {
         self.session.planner.transition_setup(off);
     }
 
-    /// The core's ReplayGain for the queue's song.
-    fn gain(&mut self, index: usize, id: &str) -> f32 {
-        let g = self.session.gain_of(index, false);
+    /// The core's ReplayGain for the song at `index` of the list the engine holds.
+    fn gain(&mut self, list: &Playlist, index: usize) -> f32 {
+        let g = self.session.gain_of(list, index, false);
+        let id = &list.ids()[index];
         // Logged once per song and level (device checks read it).
         if !self.gains_said.iter().any(|(i, v)| i == id && *v == g) {
             self.gains_said.retain(|(i, _)| i != id);

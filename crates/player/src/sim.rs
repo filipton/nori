@@ -831,8 +831,8 @@ impl pipeline::App for App {
         Some((key, sound))
     }
 
-    fn gain(&mut self, _index: usize, id: &str) -> f32 {
-        self.gains.get(id).copied().unwrap_or(1.0)
+    fn gain(&mut self, list: &crate::playlist::Playlist, index: usize) -> f32 {
+        self.gains.get(&list.ids()[index]).copied().unwrap_or(1.0)
     }
 
     fn spliced(&mut self, what: &str, at: pipeline::Splice) {

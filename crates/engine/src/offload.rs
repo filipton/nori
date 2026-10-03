@@ -19,6 +19,7 @@
 use std::collections::VecDeque;
 
 use nori_player::pipeline::{Queue, Reading, Known, Songs};
+use nori_player::playlist::Playlist;
 use nori_player::transitions::{in_album_run, WindowSong};
 
 pub use crate::demux::{Coded, CodedSong, Coding};
@@ -863,7 +864,7 @@ impl Offload {
 
     /// One turn: place the starting song once open, top up the track, step the fade. `gain` gives each
     /// song's ReplayGain.
-    pub(crate) fn turn<L: Library, Q: Queue>(&mut self, now_ms: i64, tracks: &mut Sources<L>, queue: &Known<Q>, gain: &mut dyn FnMut(usize, &str) -> f32) -> Step {
+    pub(crate) fn turn<L: Library, Q: Queue>(&mut self, now_ms: i64, tracks: &mut Sources<L>, queue: &Known<Q>, gain: &mut dyn FnMut(&Playlist, usize) -> f32) -> Step {
         self.now_ms = now_ms;
         self.follow_fade(now_ms);
         if self.open.is_some() && self.out.torn_down() {
@@ -991,7 +992,7 @@ impl Offload {
     }
 
     /// Places the starting song once open on a track for its format, or hands it to the CPU.
-    fn begin<L: Library, Q: Queue>(&mut self, tracks: &mut Sources<L>, queue: &Known<Q>, gain: &mut dyn FnMut(usize, &str) -> f32) -> Option<Step> {
+    fn begin<L: Library, Q: Queue>(&mut self, tracks: &mut Sources<L>, queue: &Known<Q>, gain: &mut dyn FnMut(&Playlist, usize) -> f32) -> Option<Step> {
         let (i, ms) = self.t.starting.as_ref().map(|s| (s.0, s.1))?;
         let ready = match &mut self.t.starting.as_mut().expect("checked").2 {
             Ok(r) => r.ready(),
@@ -1009,8 +1010,7 @@ impl Offload {
             return to_pcm;
         };
         let album = self.in_album(i, tracks, queue);
-        let id = queue.read(|q| q.ids()[i].clone());
-        let level = gain(i, &id);
+        let (id, level) = queue.read(|q| (q.ids()[i].clone(), gain(q, i)));
         if let Some(why) = self.refuses(&r, album, level) {
             self.on_cpu = Some(why);
             return to_pcm;
@@ -1079,7 +1079,7 @@ impl Offload {
     /// Writes what fits: the rest of the song being written, then the songs that join it gaplessly. Err
     /// when the track refused a write. `asked`: the platform asked, so the next song is written even when
     /// the (lagging) count says the track is full.
-    fn fill<L: Library, Q: Queue>(&mut self, asked: bool, tracks: &mut Sources<L>, queue: &Known<Q>, gain: &mut dyn FnMut(usize, &str) -> f32) -> Result<(), i32> {
+    fn fill<L: Library, Q: Queue>(&mut self, asked: bool, tracks: &mut Sources<L>, queue: &Known<Q>, gain: &mut dyn FnMut(&Playlist, usize) -> f32) -> Result<(), i32> {
         self.t.waiting = false;
         loop {
             if self.in_track_us() >= TRACK_US {
@@ -1152,8 +1152,7 @@ impl Offload {
                 }
                 Err(_) => None,
             };
-            let id = queue.read(|q| q.ids()[n].clone());
-            let level = gain(n, &id);
+            let (id, level) = queue.read(|q| (q.ids()[n].clone(), gain(q, n)));
             let joins = nori_player::gain::offload_allows(level) && self.open.is_some_and(|(c, gapless, _)| gapless && song.as_ref().is_some_and(|s| s.coded == c));
             let Some(song) = song.filter(|_| joins) else {
                 // Another format or not offloadable: decided once the track plays out.

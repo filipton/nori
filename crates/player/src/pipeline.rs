@@ -90,9 +90,9 @@ pub trait App: Host {
     }
     /// Audio is coming out: resets the failure run.
     fn playing(&mut self) {}
-    /// ReplayGain for song `id` at queue index `index` (capped by [`Player::gain_max`]), applied per
-    /// song by [`TransitionEngine::set_gain`].
-    fn gain(&mut self, _index: usize, _id: &str) -> f32 {
+    /// ReplayGain for index `index` of `list`, the queue as the player holds it (capped by
+    /// [`Player::gain_max`]), applied per song by [`TransitionEngine::set_gain`].
+    fn gain(&mut self, _list: &Playlist, _index: usize) -> f32 {
         1.0
     }
     /// The sound changed (`what`: the chain or the gain) from output frame `at.output`, made from input
@@ -532,8 +532,8 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         if self.gain_off {
             return 1.0;
         }
-        let id = self.id_at(i);
-        self.app.gain(i, &id).min(self.gain_max)
+        let Player { queue, app, .. } = self;
+        queue.read(|q| app.gain(q, i)).min(self.gain_max)
     }
 
     /// ReplayGain settings changed: the output is made again at the new levels from the first frame the

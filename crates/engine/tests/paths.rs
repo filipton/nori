@@ -796,8 +796,8 @@ impl App for Logged {
     fn transitions_off(&mut self, off: bool) {
         self.0.lock().transitions_off(off)
     }
-    fn gain(&mut self, index: usize, id: &str) -> f32 {
-        self.0.lock().gain(index, id)
+    fn gain(&mut self, list: &nori_player::playlist::Playlist, index: usize) -> f32 {
+        self.0.lock().gain(list, index)
     }
 }
 

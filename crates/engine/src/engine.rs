@@ -893,7 +893,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
         let Worker { p, off, .. } = self;
         let Some(off) = off.as_mut() else { return };
         let (app, max) = (&mut p.app, p.gain_max);
-        let Step::ToPcm { index, ms, refused } = off.turn(now, &mut p.tracks, &p.queue, &mut |i, id| app.gain(i, id).min(max)) else { return };
+        let Step::ToPcm { index, ms, refused } = off.turn(now, &mut p.tracks, &p.queue, &mut |q, i| app.gain(q, i).min(max)) else { return };
         if refused {
             self.h.tear_downs += 1;
             self.p.app.log(&format!("the offloaded track failed ({} times): the CPU plays on", self.h.tear_downs));
@@ -1685,8 +1685,8 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
 
     /// Song `i`'s ReplayGain, capped at what may be turned up now.
     fn gain_of(&mut self, i: usize) -> f32 {
-        let id = self.p.id_at(i);
-        self.p.app.gain(i, &id).min(self.p.gain_max)
+        let p = &mut self.p;
+        p.queue.read(|q| p.app.gain(q, i)).min(p.gain_max)
     }
 
     fn check(&mut self) {

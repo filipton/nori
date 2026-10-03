@@ -1347,8 +1347,8 @@ impl App for Live {
         self.0.lock().transitions_off(off);
     }
 
-    fn gain(&mut self, index: usize, id: &str) -> f32 {
-        self.0.lock().gain(index, id)
+    fn gain(&mut self, list: &nori_player::playlist::Playlist, index: usize) -> f32 {
+        self.0.lock().gain(list, index)
     }
 
     fn spliced(&mut self, what: &str, at: nori_player::pipeline::Splice) {
@@ -2124,8 +2124,8 @@ impl App for Measuring {
         self.live.transitions_off(off);
     }
 
-    fn gain(&mut self, index: usize, id: &str) -> f32 {
-        self.live.gain(index, id)
+    fn gain(&mut self, list: &nori_player::playlist::Playlist, index: usize) -> f32 {
+        self.live.gain(list, index)
     }
 }
 
