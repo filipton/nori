@@ -6,6 +6,89 @@ hand. Versions follow [semantic versioning](https://semver.org).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-03
+
+### Added
+
+- A mix's page shows its covers as one picture, blurred into the page like an album's, upright and on its side
+- With a black background mix pages follow the albums and playlists choice, as the playlists they are
+- On its side a cover is a wider band that reaches in under the words and controls beside it, going soft over a wider edge
+- Home-screen widgets: a resizable player, the cover, for you, random albums and lyrics
+- The app icon follows android's themed icons
+- Android auto gets tabs, mixes, artists, genres, voice by name and covers
+- In a car the controls and tabs sit on the driver's side, the cover on the other
+- A car's controls can be set to the driver's side, the left or the right
+- The lyrics' source and timing setting hides where they came from too
+
+### Changed
+
+- The rust cleanup, seamless sound changes and the bugs it found (#20)
+- Server hosts and network cost are the platform's, not globals
+- Each client keeps its own AutoEQ fetch flag
+- The stream cache's evictor holds its key order as a handle
+- A lyrics clock is made from the lyrics, with no global store
+- The cover loader owns its net and transport, not globals
+- Download doors take the core's downloads as a handle
+- Player and measurer get the client and analyses as handles
+- An engine owns its fetches' stall watch and memory figures
+- Drop player helpers nothing calls
+- One stream cache order for the engine's store and media3's
+- Drop unused exports and the forwarding engine host
+- Drop an ignored output event and a dead track parameter
+- Queue session and settings are held by the platform
+- The queue says if a song is starred or explicit, not bits
+- One day length in the library
+- Drop offload's unused fallback parameter
+- A transition note's kind is an enum, not a string
+- The download notice says what changed with an enum
+- Android's memory door sits before the tests
+- A cover warm-up is its own kind of flight, not a size
+- Lyrics search hits are ranked by one rule for every service
+- Home rows reach the library as the settings' enum
+- A built-in smart playlist is known by its kind, not its id
+- An autofill's picks travel with its songs, not in a stash
+- The track writer alone runs its clock and counts flushed room
+- A handover says which way it goes instead of a flag
+- A flush the device was not told of is one state, not three
+- The offloaded stream's end is one state, not two flags
+- The sink's start time and queue end are states, not flag pairs
+- A called off request says why with one state
+- Each measuring shelf asks its own bridge, not a global
+- An album list read names its order with the enum
+- No limit and no engine word yet are options, not sentinels
+- Radio ids and the planner's view of a song have one home
+- One biquad response and one gain-kind test for the equalizer
+- Which offload count is read and believed are states, not flags
+
+### Fixed
+
+- On its side the library's album cards are large again, filling the row
+- On its side shelves run to the screen edges under the camera and the tab rail, fading out smoothly on both sides
+- On its side the player's controls stand in the middle of the screen's height
+- On its side the page leaves the tab rail its strip from the first frame, so shelves never show unfaded as the app opens
+- On its side a cover reaches less far under the words and controls beside it, so they read clearly over its soft edge
+- On its side a page whose cover did not load keeps the same layout, with the plain plate standing in for the picture
+- The lyrics widget opens the player on its lyrics when the app was closed
+- Any window wider than tall lays out across, so a car or tablet shows the controls
+- A car's media app opens nori, and shows its now playing cover, icons and buttons
+- The words on a cover-coloured play button read on it, dark on a pale one
+- A car keeps nori on screen while driving, so music can be played and controlled
+- A car's dock and media card open nori's own screens, not the car's plain media player
+- A cache write racing a measurer's stop no longer uses freed memory
+- Mobile data is known as metered before the player has ever started
+- On the desktop a song let go hangs up its request at once
+- Downloading a whole album says how many songs were queued
+- A request failing in the stall watch no longer keeps its timer
+- The offline bridge no longer ends on the network that just failed
+- An app hidden while connecting to the player lets it go
+- A closed offload track's late event no longer hits the new track
+- AutoMix no longer measures a provider playlist's songs
+- Download speed holds between songs instead of dropping to zero
+- Playback no longer crashes when the queue changes under it
+- Engine callbacks reach the player that started the engine
+- Replaygain follows the song the player holds during a queue edit
+- Crossfeed and limiter set by name stay in their range
+
 ## [0.4.8] - 2026-09-29
 
 ### Added
