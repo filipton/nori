@@ -16,6 +16,8 @@ describe the work, not the app, and a changelog nobody can skim is one nobody
 reads.
 """
 
+from __future__ import annotations
+
 import argparse
 import datetime
 import re
