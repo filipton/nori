@@ -292,10 +292,6 @@ impl Clock {
         f(&mut self.0.lock());
     }
 
-    fn running(&self) -> bool {
-        self.0.lock().running
-    }
-
     fn given(&self) -> u64 {
         self.0.lock().given
     }
@@ -389,9 +385,10 @@ pub(crate) struct Writer<R: Ring> {
     packed: bool,
     /// Frames the track holds: its size, or less once it refused a write it had room for.
     capacity: u64,
-    /// Flushed while holding music and not heard playing since. AudioFlinger applies such a flush only at
-    /// the mixer's next period, so a refused write then says nothing about capacity ([`Writer::refused`]).
-    flushed_full: bool,
+    /// Frames flushed from the track and not yet let go by the platform: AudioFlinger applies a flush of a
+    /// track holding music only at the mixer's next period, and until then they take room a write finds
+    /// ([`Writer::refused`]). Gone once music written after the flush is heard.
+    stale: u64,
     /// Top-up threshold: [`LOW_US`] or half a smaller track.
     low: u64,
     starts_full: bool,
@@ -443,7 +440,7 @@ impl<R: Ring> Writer<R> {
             float,
             packed: packed24(format, float),
             capacity: opened.frames.max(1),
-            flushed_full: false,
+            stale: 0,
             low: low_mark(opened.frames, rate),
             starts_full: opened.starts_full,
             staged: (0, 0),
@@ -622,11 +619,6 @@ impl<R: Ring> Writer<R> {
                     self.clock.anchor(frames, ns, false);
                 }
             }
-        } else if self.playing && !self.clock.running() {
-            // Paused and resumed before this wake: `TrackOutput::pause` froze the clock, but the track kept
-            // playing. Restart the clock, or top-ups stop and the track runs dry.
-            self.clock.run(now_ns);
-            self.read_clock(now_ns);
         }
         // An empty pull surfaces a pending ring flush.
         self.ring.pull(&mut []);
@@ -683,7 +675,7 @@ impl<R: Ring> Writer<R> {
             self.clock.anchor(frames, ns, false);
         }
         self.ring.rewind(self.clock.latency_frames(now_ns));
-        self.flushed_full |= self.clock.given() > 0;
+        self.stale += self.clock.in_track(now_ns);
         self.sink.flush();
         if self.starts_full && !self.shallow && !self.priming {
             let got = self.sink.resize(self.frames(PRIMING_US).min(self.allocated));
@@ -697,7 +689,7 @@ impl<R: Ring> Writer<R> {
         if let Some((frames, ns)) = self.sink.heard(self.playing) {
             // Post-flush music is being heard: the platform has applied the flush.
             if frames > 0 && frames <= self.clock.given() {
-                self.flushed_full = false;
+                self.stale = 0;
             }
             self.clock.anchor(frames, ns, self.playing);
             self.report_to_perf_watch(frames);
@@ -893,16 +885,14 @@ impl<R: Ring> Writer<R> {
     /// its capacity (small differences are clock error and ignored), floored at the start threshold so
     /// it can still start.
     ///
-    /// Skipped after a flush of a full track until it is heard playing: the platform still counts the
-    /// flushed frames until the mixer's next period. Taking that as capacity once shrank a track below
-    /// its start threshold, and it never played again (fast skipping on a Galaxy S22).
+    /// Frames a flush dropped still take room until the platform lets them go ([`Writer::stale`]):
+    /// counting them out once shrank a track below its start threshold, and it never played again (fast
+    /// skipping on a Galaxy S22).
     fn refused(&mut self, now_ns: i64) {
-        if self.flushed_full {
-            return;
-        }
         let least = self.frames(START_US).min(self.capacity);
-        let holds = self.clock.in_track(now_ns).max(least);
-        if holds + self.capacity / 8 < self.capacity {
+        let fill = self.clock.in_track(now_ns);
+        let holds = fill.max(least);
+        if fill + self.stale + self.capacity / 8 < self.capacity {
             log(&format!("the AudioTrack took no more at {} ms of the {} ms it said it holds: counted as {} ms", holds * 1000 / self.rate as u64, self.capacity * 1000 / self.rate as u64, holds * 1000 / self.rate as u64));
             self.holds(holds);
         }
@@ -927,7 +917,7 @@ impl<R: Ring> Writer<R> {
                     self.resize();
                 }
                 self.starts_full = o.starts_full;
-                self.flushed_full = false;
+                self.stale = 0;
                 self.revived = true;
                 self.sink.set_volume(self.volume);
                 self.refill_from_empty(now_ns);
@@ -1068,8 +1058,8 @@ impl AudioOutput for TrackOutput {
         Ok(())
     }
 
+    /// The writer pauses the track and stops its clock, as it does everything to the track.
     fn pause(&mut self) {
-        self.shared.clock.freeze(self.shared.now_ns());
         self.shared.tell(|c| c.playing = false);
     }
 
@@ -2056,22 +2046,6 @@ mod tests {
         assert_eq!(t.size, t.capacity, "deep again");
         assert_eq!(t.underruns, 0, "never ran dry");
 
-        // Regression: `TrackOutput::pause` freezes the clock at once; resumed before the writer woke, the
-        // clock stayed frozen and the track ran dry.
-        let mut s = Sim::new(600, false, false);
-        s.play();
-        s.run(3_000);
-        // `TrackOutput::pause` then `resume`.
-        s.clock.freeze(s.now());
-        s.control.playing = false;
-        s.control.playing = true;
-        s.wake();
-        let played = s.track.lock().played;
-        s.run(30_000);
-        let t = s.track.lock();
-        assert_eq!(t.underruns, 0, "never runs dry");
-        assert!(t.played >= played + 29 * RATE as u64, "thirty seconds heard: {} ms", (t.played - played) * 1000 / RATE as u64);
-
         // Starts full track is stopped at the end.
         let mut s = Sim::new(4, false, true);
         s.play();
@@ -2685,6 +2659,28 @@ mod tests {
         let l = live.lock();
         assert!(l.played() + RATE as u64 / 10 >= l.written.len() as u64 / 2, "{} of {} frames heard at the end", l.played(), l.written.len() / 2);
         drop(l);
+        engine.stop();
+    }
+
+    /// Paused and played again before the writer took the pause: the track never stopped, and plays on.
+    #[test]
+    fn paused_and_played_at_once_plays_on() {
+        let wavs = Arc::new(Wavs(vec![("a".into(), Arc::new(wav(&tone(60, 440.0))))]));
+        let queue = nori_engine::SharedQueue::default();
+        queue.0.lock().set(vec!["a".into()], Some(0), false, 0);
+        let mut app = nori_player::sim::App::new();
+        app.prefs = nori_player::sim::prefs_off();
+        let (engine, time, live) = on_a_phone(Songs(wavs), app, queue, nori_engine::Config::default(), Live::new);
+        let wait = |secs: u64, done: &mut dyn FnMut() -> bool| time.until(Duration::from_secs(secs), done);
+        engine.queue_changed();
+        engine.play_at(0, 0);
+        assert!(wait(5, &mut || live.lock().played() > 3 * RATE as u64), "it plays");
+        engine.pause_now();
+        engine.play();
+        let played = live.lock().played();
+        time.run(Duration::from_secs(30));
+        let heard = live.lock().played() - played;
+        assert!(heard >= 29 * RATE as u64, "thirty seconds on, {} ms heard", heard * 1000 / RATE as u64);
         engine.stop();
     }
 
