@@ -139,8 +139,22 @@ impl Paint for Rgba {
 
 type Done<P> = Box<dyn FnOnce(Result<P, Error>) + Send>;
 
-/// Size key for warm-ups, so they never share a flight with a view's request.
-const WARM: u32 = u32::MAX;
+/// What a flight makes: a view's picture at a size, or only the file on disk (`Loader::warm`), which
+/// never shares a flight with a view's request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Job {
+    Picture(Sized),
+    Disk(Key),
+}
+
+impl Job {
+    fn key(&self) -> Key {
+        match self {
+            Job::Picture(s) => s.key,
+            Job::Disk(k) => *k,
+        }
+    }
+}
 
 /// Default [`Config::idle`]: well above the gaps between covers while scrolling.
 const IDLE: Duration = Duration::from_secs(20);
@@ -149,15 +163,13 @@ const IDLE: Duration = Duration::from_secs(20);
 struct Flight<P> {
     url: String,
     started: bool,
-    /// Disk-only prefetch with no waiters (`Loader::warm`).
-    warm: bool,
     waiters: Vec<(u64, Done<P>)>,
 }
 
 struct Jobs<P> {
-    flights: HashMap<Sized, Flight<P>>,
+    flights: HashMap<Job, Flight<P>>,
     /// Unstarted flights, newest last. Cancelled ones stay until a worker skips them.
-    queue: Vec<Sized>,
+    queue: Vec<Job>,
     /// Running worker threads, and how many of them are waiting.
     workers: usize,
     idle: usize,
@@ -213,10 +225,11 @@ trait Leave: Send + Sync {
 impl<P: Paint> Leave for Inner<P> {
     fn leave(&self, key: &Sized, id: u64) {
         let mut jobs = self.jobs.lock();
-        let Some(f) = jobs.flights.get_mut(key) else { return };
+        let job = Job::Picture(*key);
+        let Some(f) = jobs.flights.get_mut(&job) else { return };
         f.waiters.retain(|(i, _)| *i != id);
-        if f.waiters.is_empty() && !f.started && !f.warm {
-            jobs.flights.remove(key);
+        if f.waiters.is_empty() && !f.started {
+            jobs.flights.remove(&job);
         }
     }
 }
@@ -292,7 +305,7 @@ impl<P: Paint> Loader<P> {
         let mut jobs = inner.jobs.lock();
         jobs.next_id += 1;
         let id = jobs.next_id;
-        match jobs.flights.entry(key) {
+        match jobs.flights.entry(Job::Picture(key)) {
             Entry::Occupied(mut f) => f.get_mut().waiters.push((id, Box::new(done))),
             Entry::Vacant(v) => {
                 // A flight may have completed between the first lookup and taking the lock.
@@ -301,8 +314,8 @@ impl<P: Paint> Loader<P> {
                     done(Ok(picture));
                     return Ticket { inner: None, key, id: 0 };
                 }
-                v.insert(Flight { url: url.to_owned(), started: false, warm: false, waiters: vec![(id, Box::new(done))] });
-                inner.enqueue(&mut jobs, key, true);
+                v.insert(Flight { url: url.to_owned(), started: false, waiters: vec![(id, Box::new(done))] });
+                inner.enqueue(&mut jobs, Job::Picture(key), true);
             }
         }
         Ticket { inner: Some(inner.clone()), key, id }
@@ -314,12 +327,12 @@ impl<P: Paint> Loader<P> {
         if is_provider_cover(url) || self.inner.dir.is_none() {
             return;
         }
-        let key = Sized { key: Key::of(&self.inner.net, url), width: WARM, height: WARM };
+        let job = Job::Disk(Key::of(&self.inner.net, url));
         let inner = &self.inner;
         let mut jobs = inner.jobs.lock();
-        if let Entry::Vacant(v) = jobs.flights.entry(key) {
-            v.insert(Flight { url: url.to_owned(), started: false, warm: true, waiters: Vec::new() });
-            inner.enqueue(&mut jobs, key, false);
+        if let Entry::Vacant(v) = jobs.flights.entry(job) {
+            v.insert(Flight { url: url.to_owned(), started: false, waiters: Vec::new() });
+            inner.enqueue(&mut jobs, job, false);
         }
     }
 
@@ -445,13 +458,13 @@ impl<P: Paint> Inner<P> {
         self.disk.get_or_init(|| self.dir.as_ref().and_then(|d| DiskCache::open(d, self.disk_bytes).ok())).as_ref()
     }
 
-    /// Queues flight `key` (`first`: served next, else last), waking an idle worker or spawning one
+    /// Queues flight `job` (`first`: served next, else last), waking an idle worker or spawning one
     /// below the limit.
-    fn enqueue(self: &Arc<Self>, jobs: &mut Jobs<P::Picture>, key: Sized, first: bool) {
+    fn enqueue(self: &Arc<Self>, jobs: &mut Jobs<P::Picture>, job: Job, first: bool) {
         if first {
-            jobs.queue.push(key);
+            jobs.queue.push(job);
         } else {
-            jobs.queue.insert(0, key);
+            jobs.queue.insert(0, job);
         }
         if jobs.idle == 0 && jobs.current < self.workers {
             jobs.workers += 1;
@@ -467,7 +480,7 @@ impl<P: Paint> Inner<P> {
         let _leaving = Leaving(&self, generation);
         let mut w = Worker::new();
         loop {
-            let (key, url, warm) = {
+            let (job, url) = {
                 let mut jobs = self.jobs.lock();
                 loop {
                     if jobs.closed {
@@ -481,11 +494,11 @@ impl<P: Paint> Inner<P> {
                         }
                         return;
                     }
-                    if let Some(key) = jobs.queue.pop() {
-                        match jobs.flights.get_mut(&key) {
+                    if let Some(job) = jobs.queue.pop() {
+                        match jobs.flights.get_mut(&job) {
                             Some(f) if !f.started => {
                                 f.started = true;
-                                break (key, std::mem::take(&mut f.url), f.warm);
+                                break (job, std::mem::take(&mut f.url));
                             }
                             _ => continue,
                         }
@@ -512,15 +525,14 @@ impl<P: Paint> Inner<P> {
                 }
             };
             // A panic fails only this cover.
-            let job = panic::catch_unwind(AssertUnwindSafe(|| {
-                if warm {
-                    self.warm(&key, &url, &mut w);
+            let made = panic::catch_unwind(AssertUnwindSafe(|| match job {
+                Job::Disk(key) => {
+                    self.warm(key, &url, &mut w);
                     None
-                } else {
-                    self.fetch(&key, &url, &mut w)
                 }
+                Job::Picture(sized) => self.fetch(&sized, &url, &mut w),
             }));
-            let result = match job {
+            let result = match made {
                 Ok(Some(result)) => result,
                 // The flight has already ended.
                 Ok(None) => continue,
@@ -528,12 +540,12 @@ impl<P: Paint> Inner<P> {
                     // Reset possibly inconsistent buffers and refetch the file next time.
                     w = Worker::new();
                     if let Some(d) = self.disk() {
-                        d.remove(key.key);
+                        d.remove(job.key());
                     }
                     Err(Error::Panicked(panic_message(&*p)))
                 }
             };
-            let waiters = self.jobs.lock().flights.remove(&key).map(|f| f.waiters).unwrap_or_default();
+            let waiters = self.jobs.lock().flights.remove(&job).map(|f| f.waiters).unwrap_or_default();
             for (_, done) in waiters {
                 let r = result.clone();
                 // A panicking callback loses its own cover, not the worker.
@@ -543,11 +555,11 @@ impl<P: Paint> Inner<P> {
     }
 
     /// Fetches the file to disk if missing, then ends the (waiter-less) flight.
-    fn warm(&self, key: &Sized, url: &str, w: &mut Worker) {
-        if self.disk().is_some_and(|d| !d.contains(key.key)) {
-            let _ = self.bytes(key.key, url, &mut w.bytes, &w.waker);
+    fn warm(&self, key: Key, url: &str, w: &mut Worker) {
+        if self.disk().is_some_and(|d| !d.contains(key)) {
+            let _ = self.bytes(key, url, &mut w.bytes, &w.waker);
         }
-        self.jobs.lock().flights.remove(key);
+        self.jobs.lock().flights.remove(&Job::Disk(key));
     }
 
     /// Fetches and decodes; None when every waiter left, in which case the flight is already ended.
@@ -557,10 +569,11 @@ impl<P: Paint> Inner<P> {
         }
         {
             let mut jobs = self.jobs.lock();
-            if jobs.flights.get(key).is_none_or(|f| f.waiters.is_empty()) {
+            let job = Job::Picture(*key);
+            if jobs.flights.get(&job).is_none_or(|f| f.waiters.is_empty()) {
                 // End the flight under the same lock as the check, so a request arriving later starts
                 // its own flight instead of joining one that will never answer.
-                jobs.flights.remove(key);
+                jobs.flights.remove(&job);
                 return None;
             }
         }
