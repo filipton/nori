@@ -140,11 +140,16 @@ pub fn is_provider_id(id: &str) -> bool {
 }
 
 /// Id prefix of a radio stream.
-pub const RADIO_PREFIX: &str = "radio:";
+const RADIO_PREFIX: &str = "radio:";
+
+/// Whether `id` is an internet radio station's stream.
+pub fn is_radio(id: &str) -> bool {
+    id.starts_with(RADIO_PREFIX)
+}
 
 /// Whether AutoMix can analyse `id`: not a provider song or radio stream.
 pub fn analysable(id: &str) -> bool {
-    !is_provider_id(id) && !id.starts_with(RADIO_PREFIX)
+    !is_provider_id(id) && !is_radio(id)
 }
 
 impl Song {

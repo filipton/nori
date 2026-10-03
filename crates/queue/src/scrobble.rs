@@ -73,7 +73,7 @@ fn followed(id: Option<String>, why: TrackChange) -> Option<String> {
     match why {
         TrackChange::Ended => None,
         TrackChange::Looped => id,
-        TrackChange::Moved => id.filter(|i| !i.starts_with(queue::RADIO_PREFIX)),
+        TrackChange::Moved => id.filter(|i| !queue::is_radio(i)),
     }
 }
 

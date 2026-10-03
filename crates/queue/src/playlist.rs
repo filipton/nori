@@ -425,7 +425,7 @@ impl Session {
         if !self.settings.prefs(|p| p.scrobble) {
             return Vec::new();
         }
-        self.playlist(|p| p.ids().iter().filter(|id| !id.starts_with(queue::RADIO_PREFIX)).cloned().collect())
+        self.playlist(|p| p.ids().iter().filter(|id| !queue::is_radio(id)).cloned().collect())
     }
 
     /// The server write saving the play queue at `current`/`position_ms`; None when there is nothing to save.

@@ -295,31 +295,10 @@ pub fn measuring_ahead(analyses: &Arc<Analyses>, session: Arc<Session>) -> Taker
     Arc::new(move |song: &AheadSong| analyses.measure_as_it_comes(&song.id, key_format(&song.key).or_else(|| session.song(&song.id).map(|s| s.suffix)).as_deref(), true))
 }
 
-/// What the planner and seek bar know of `id`, from `session`'s songs.
+/// What the planner and seek bar know of `id`, from `session`'s songs; the album run is stamped by the
+/// window (`Session::window`).
 pub fn about(session: &Session, id: &str) -> WindowSong {
-    match session.song(id) {
-        Some(s) => WindowSong {
-            id: s.id,
-            title: s.title,
-            duration_ms: s.duration as i64 * 1000,
-            album_id: s.album_id,
-            disc: s.disc_number as i32,
-            track: s.track as i32,
-            tag_bpm: s.bpm as f32,
-            radio: false,
-            // Stamped by the window (`Session::window`).
-            album_run: 0,
-        },
-        None => WindowSong { id: id.to_string(), title: id.to_string(), radio: id.starts_with(RADIO), ..Default::default() },
-    }
-}
-
-/// Id prefix of internet radio stations in the queue.
-pub const RADIO: &str = "radio:";
-
-/// Whether `id` is an internet radio station.
-pub fn is_radio(id: &str) -> bool {
-    id.starts_with(RADIO)
+    nori_core::queue::window_song_of(session.song(id).as_ref(), id, 0)
 }
 
 /// Whether `id` may be fetched unasked (never a provider's song).

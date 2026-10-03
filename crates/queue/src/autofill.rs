@@ -82,7 +82,7 @@ impl Session {
         let setting = self.refill_on();
         self.playlist(|p| {
             let cur = p.current_id();
-            (refillable(cur.is_some(), cur.is_some_and(|c| c.starts_with(queue::RADIO_PREFIX)), p.repeat(), setting), p.songs_after(), end_of(p).map(|i| p.seqs()[i]))
+            (refillable(cur.is_some(), cur.is_some_and(|c| queue::is_radio(c)), p.repeat(), setting), p.songs_after(), end_of(p).map(|i| p.seqs()[i]))
         })
     }
 

@@ -19,12 +19,12 @@ pub struct Store {
     pub songs: HashMap<String, (Song, i64)>,
 }
 
-pub use nori_model::{analysable, RADIO_PREFIX};
+pub use nori_model::{analysable, is_radio};
 
-/// The planner's view of `id` at a place with album run `run`.
-fn window_song(s: &Store, id: &str, run: u32) -> WindowSong {
-    match s.songs.get(id) {
-        Some((song, _)) => WindowSong {
+/// The planner's and seek bar's view of `id` (as `song` says, when known) at a place with album run `run`.
+pub fn window_song_of(song: Option<&Song>, id: &str, run: u32) -> WindowSong {
+    match song {
+        Some(song) => WindowSong {
             id: song.id.clone(),
             title: song.title.clone(),
             duration_ms: song.duration as i64 * 1000,
@@ -35,8 +35,12 @@ fn window_song(s: &Store, id: &str, run: u32) -> WindowSong {
             radio: false,
             album_run: run,
         },
-        None => WindowSong { id: id.to_string(), radio: id.starts_with(RADIO_PREFIX), ..Default::default() },
+        None => WindowSong { id: id.to_string(), title: id.to_string(), radio: is_radio(id), ..Default::default() },
     }
+}
+
+fn window_song(s: &Store, id: &str, run: u32) -> WindowSong {
+    window_song_of(s.songs.get(id).map(|(song, _)| song), id, run)
 }
 
 /// AutoMix's measured mid-signal loudness of `id` in `db`, if analysed.
@@ -104,7 +108,7 @@ impl Session {
     /// applies only inside a run). 1.0 for nothing, radio or bit-perfect output. Untagged songs fall back
     /// to AutoMix's measured loudness.
     pub fn queue_gain(&self, before: Option<(String, u32)>, current: Option<(String, u32)>, after: Option<(String, u32)>, prefs: &GainPrefs, bit_perfect: bool, shuffling: bool) -> f32 {
-        let Some((current, current_run)) = current.filter(|(id, _)| !id.starts_with(RADIO_PREFIX)) else { return 1.0 };
+        let Some((current, current_run)) = current.filter(|(id, _)| !is_radio(id)) else { return 1.0 };
         if bit_perfect {
             return 1.0;
         }

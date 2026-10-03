@@ -14,7 +14,7 @@ impl Core {
             let mut kept_runs = Vec::with_capacity(ids.len());
             let mut at = 0;
             for (i, id) in ids.iter().enumerate() {
-                let Some((song, _)) = s.songs.get(id).filter(|_| !id.starts_with(RADIO_PREFIX)) else { continue };
+                let Some((song, _)) = s.songs.get(id).filter(|_| !is_radio(id)) else { continue };
                 if i < index as usize {
                     at += 1;
                 }
