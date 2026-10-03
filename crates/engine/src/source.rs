@@ -98,12 +98,18 @@ impl Default for Waits {
 #[derive(Clone)]
 pub struct Cancel(Arc<Mutex<CallState>>);
 
+/// Why a request was called off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Off {
+    Asked,
+    Stalled,
+}
+
 struct CallState {
     /// The song was let go: every request of it is off.
     closed: bool,
-    /// This request is off; `timed_out` if it stalled.
-    off: bool,
-    timed_out: bool,
+    /// This request is off, and why.
+    off: Option<Off>,
     /// How the client cancels the running request.
     hook: Option<Box<dyn FnOnce() + Send>>,
     /// Called off at this moment unless it moves first.
@@ -133,7 +139,7 @@ impl Cancel {
     }
 
     fn of(fetching: Weak<Fetching>, stall_ms: u64) -> Cancel {
-        let s = CallState { closed: false, off: false, timed_out: false, hook: None, deadline: None, watched: false, stall_ms, fetching };
+        let s = CallState { closed: false, off: None, hook: None, deadline: None, watched: false, stall_ms, fetching };
         Cancel(Arc::new(Mutex::new(s)))
     }
 
@@ -144,18 +150,18 @@ impl Cancel {
     /// Whether the request is off (for an HTTP stack that polls).
     pub fn cancelled(&self) -> bool {
         let s = self.0.lock();
-        s.closed || s.off
+        s.closed || s.off.is_some()
     }
 
     /// Whether it was called off for stalling.
     pub fn timed_out(&self) -> bool {
-        self.0.lock().timed_out
+        self.0.lock().off == Some(Off::Stalled)
     }
 
     /// Registers how to cancel the running request; runs it at once if already off. Replaces the last.
     pub fn on_cancel(&self, off: impl FnOnce() + Send + 'static) {
         let mut s = self.0.lock();
-        if s.closed || s.off {
+        if s.closed || s.off.is_some() {
             drop(s);
             off();
             return;
@@ -178,8 +184,7 @@ impl Cancel {
     fn stalls(&self, anew: bool) {
         let mut s = self.0.lock();
         if anew {
-            s.off = false;
-            s.timed_out = false;
+            s.off = None;
             s.hook = None;
         }
         s.deadline = Some(std::time::Instant::now() + Duration::from_millis(s.stall_ms));
@@ -202,8 +207,9 @@ impl Cancel {
     pub(crate) fn call_off(&self, stalled: bool) {
         let hook = {
             let mut s = self.0.lock();
-            s.off = true;
-            s.timed_out |= stalled;
+            if stalled || s.off.is_none() {
+                s.off = Some(if stalled { Off::Stalled } else { Off::Asked });
+            }
             s.deadline = None;
             s.hook.take()
         };
