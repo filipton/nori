@@ -33,7 +33,6 @@ pub struct Client {
     /// The car's folders last listed, for their later pages and the list a picked row plays (car.rs).
     pub(crate) car: parking_lot::Mutex<crate::car::Shown>,
     /// What the last autofill fetch picked, recorded once its songs are appended (autofill.rs).
-    pub(crate) autofill_picks: parking_lot::Mutex<Option<(crate::autofill::Picked, Vec<String>)>>,
     /// An AutoEQ index fetch is running; another asked meanwhile is dropped (profiles.rs).
     pub(crate) autoeq_fetching: AtomicBool,
     /// Told the profile's second address, so covers are keyed alike through both.
@@ -156,7 +155,7 @@ impl Client {
 impl Client {
     #[cfg_attr(feature = "ffi", uniffi::constructor)]
     pub fn new(core: Arc<Core>, transport: Arc<dyn Transport>, covers: Arc<crate::covers::CoverNet>) -> Arc<Self> {
-        Arc::new(Client { core, transport, covers, profile: RwLock::new(NetProfile::default()), second: AtomicBool::new(false), lyrics: Default::default(), motion: Default::default(), replaying: Default::default(), car: Default::default(), autofill_picks: Default::default(), autoeq_fetching: AtomicBool::new(false) })
+        Arc::new(Client { core, transport, covers, profile: RwLock::new(NetProfile::default()), second: AtomicBool::new(false), lyrics: Default::default(), motion: Default::default(), replaying: Default::default(), car: Default::default(), autoeq_fetching: AtomicBool::new(false) })
     }
 
     /// Sets the profile's addresses, folder and bitrate cap.

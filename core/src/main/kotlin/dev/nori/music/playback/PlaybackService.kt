@@ -598,13 +598,12 @@ class PlaybackService : MediaLibraryService() {
      * octo-fiesta download a provider track.
      */
     private fun fetchFill() = scope.launch {
-        val fresh = runCatching { nori.library.autofill() }.getOrNull()
-        val songs = fresh?.songs.orEmpty()
+        val fresh = runCatching { nori.library.autofill() }.getOrNull() ?: dev.nori.music.ffi.Refill(emptyList(), null, null)
         // Player work stays on this scope's main dispatcher.
-        if (nori.library.autofillArrived(songs.size.toUInt())) {
+        if (nori.library.autofillArrived(fresh)) {
             // Where they come from, as the core says: an album from its page (played as an album, as its Add
             // to queue does), a shuffle's albums from the shuffle.
-            controls.addMediaItems(startedFrom(held(songs), fresh?.from))
+            controls.addMediaItems(startedFrom(held(fresh.songs), fresh.from))
         }
         // A next pressed at the end while these were on the way is taken now, if the user is still there
         // and pressed it moments ago; a press the user has long since settled after is not.

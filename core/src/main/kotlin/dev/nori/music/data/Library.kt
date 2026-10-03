@@ -243,7 +243,7 @@ class Library(
     suspend fun autofill(): dev.nori.music.ffi.Refill = withContext(Dispatchers.IO) { client.autofill() }
 
     /** Whether the fetched [count] songs go in; if so the core records what it picked. */
-    suspend fun autofillArrived(count: UInt): Boolean = withContext(Dispatchers.IO) { client.autofillArrived(count) }
+    suspend fun autofillArrived(fresh: dev.nori.music.ffi.Refill): Boolean = withContext(Dispatchers.IO) { client.autofillArrived(fresh) }
 
     /**
      * Draws mix [id] unless this period's draw is there already ([again]: a different one); the core

@@ -631,10 +631,11 @@ impl Session {
         let (client, me) = (self.client.clone(), self.handle());
         spawn("nori-autofill", move || {
             let fresh = block_on(client.autofill());
-            if client.autofill_arrived(fresh.songs.len() as u32) && !fresh.songs.is_empty() {
+            let (ids, from): (Vec<String>, _) = (fresh.songs.iter().map(|s| s.id.clone()).collect(), fresh.from.clone());
+            if client.autofill_arrived(fresh) && !ids.is_empty() {
                 let len = me.queue.playlist(|p| p.len());
-                let n = fresh.songs.len();
-                me.queue.take(len as u32, fresh.songs.iter().map(|s| s.id.clone()).collect(), vec![Hand::No; n], fresh.from);
+                let n = ids.len();
+                me.queue.take(len as u32, ids, vec![Hand::No; n], from);
                 me.edited();
             }
             if me.queue.autofill_landed() {

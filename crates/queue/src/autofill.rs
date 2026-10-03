@@ -156,6 +156,7 @@ pub fn era(seed: &Song) -> Option<(u32, u32)> {
 
 /// Kind of autofill pick (stored as its number).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
 pub enum Picked {
     Album = 0,
     Songs = 1,
