@@ -427,11 +427,17 @@ pub(crate) struct RingTrack {
     opened_float: bool,
     /// As last told to [`AudioOutput::shallow`].
     shallow: bool,
-    /// A flush not yet told to the device ([`TELL_FLUSH_US`]), frames written since, and a fade to apply
-    /// with it.
-    untold: bool,
-    since_flush: u64,
-    held_ramp: Option<(Option<f32>, f32, i64)>,
+    /// A flush not yet told to the device ([`TELL_FLUSH_US`]).
+    untold: Option<Untold>,
+}
+
+/// A flush the device has not been told of yet.
+#[derive(Default)]
+struct Untold {
+    /// Frames written since.
+    written: u64,
+    /// A fade asked for since, applied with the flush.
+    ramp: Option<(Option<f32>, f32, i64)>,
 }
 
 impl RingTrack {
@@ -461,9 +467,7 @@ impl RingTrack {
             float_on: false,
             opened_float: false,
             shallow: false,
-            untold: false,
-            since_flush: 0,
-            held_ramp: None,
+            untold: None,
         }
     }
 
@@ -491,8 +495,7 @@ impl RingTrack {
         self.format = None;
         self.resampler = None;
         self.restart_map();
-        self.untold = false;
-        self.held_ramp = None;
+        self.untold = None;
     }
 
     fn restart_map(&mut self) {
@@ -512,11 +515,9 @@ impl RingTrack {
 
     /// Tells the device of a pending flush, with the fade asked for since.
     fn tell_flush(&mut self) {
-        if !std::mem::take(&mut self.untold) {
-            return;
-        }
+        let Some(untold) = self.untold.take() else { return };
         self.output.flush();
-        if let Some((from, target, ms)) = self.held_ramp.take() {
+        if let Some((from, target, ms)) = untold.ramp {
             self.ramp_now(from, target, ms);
         }
     }
@@ -580,16 +581,17 @@ impl RingTrack {
     /// Fades from `from` (or where it is) to `target` over `ms`, on the device if it fades itself, else
     /// in the pulls.
     pub(crate) fn ramp(&mut self, from: Option<f32>, target: f32, ms: i64) {
-        if self.untold && self.ring.is_some() {
+        match self.untold.as_mut().filter(|_| self.ring.is_some()) {
             // The device still plays pre-flush music: the fade goes with the flush; a start level
             // applies at once.
-            if let Some(v) = from {
-                self.ramp_now(Some(v), v, 0);
+            Some(u) => {
+                u.ramp = Some((None, target, ms));
+                if let Some(v) = from {
+                    self.ramp_now(Some(v), v, 0);
+                }
             }
-            self.held_ramp = Some((None, target, ms));
-            return;
+            None => self.ramp_now(from, target, ms),
         }
-        self.ramp_now(from, target, ms);
     }
 
     fn ramp_now(&mut self, from: Option<f32>, target: f32, ms: i64) {
@@ -773,9 +775,9 @@ impl Track for RingTrack {
         r.write.store(w + frames, Ordering::Release);
         let before = self.written;
         self.written = Stretch { ring: before.ring + frames, sink: before.sink + (data.len() / f.frame_bytes()) as u64, media: before.media + media };
-        if self.untold {
-            self.since_flush += frames;
-            if self.since_flush as i64 >= d.rate as i64 * TELL_FLUSH_US / 1_000_000 {
+        if let Some(u) = self.untold.as_mut() {
+            u.written += frames;
+            if u.written as i64 >= d.rate as i64 * TELL_FLUSH_US / 1_000_000 {
                 self.tell_flush();
             }
         }
@@ -854,8 +856,7 @@ impl Track for RingTrack {
             r.flushes.fetch_add(1, Ordering::AcqRel);
             r.ended.store(false, Ordering::Release);
             r.quiet();
-            self.untold = true;
-            self.since_flush = 0;
+            self.untold = Some(Untold::default());
             self.blend = None;
             self.blend_at = None;
         } else {
@@ -884,8 +885,7 @@ impl Track for RingTrack {
             r.ended.store(false, Ordering::Release);
             r.quiet();
             self.base = w;
-            self.untold = true;
-            self.since_flush = 0;
+            self.untold = Some(Untold::default());
         }
         self.restart_map();
         self.restart_resampler();
