@@ -65,7 +65,8 @@ class InitOrderTest {
             if (!seen.add(name)) continue
             for (m in byName[name].orEmpty()) {
                 val body = m.body.substringAfter(m.name)
-                Regex("""\b\w+\b""").findAll(body).map { it.value }.filter { it in byName && it !in seen }.forEach(todo::addLast)
+                // A word after a dot is another object's member or a package's name, not this class's.
+                Regex("""(?<![.\w])\w+\b""").findAll(body).map { it.value }.filter { it in byName && it !in seen }.forEach(todo::addLast)
             }
         }
         return seen.flatMap { byName[it].orEmpty() }.filter { it.field }
