@@ -849,6 +849,7 @@ class PageController: UITableViewController {
         } else {
             empty.isHidden = true
         }
+        paintedCurrent = Core.shared.now.song?.id
         tableView.reloadData()
         if let wanted = wantedLetter {
             wantedLetter = nil
@@ -941,8 +942,21 @@ class PageController: UITableViewController {
         }
     }
 
+    /// The song the rows were last painted with as playing.
+    private var paintedCurrent: String?
+
     @objc private func nowChanged() {
         (tableView.tableHeaderView as? PageHeader)?.paint(hero: heroBits())
+        // The rows' playing mark follows the song, in place: a reload would close a row swiped open.
+        let id = Core.shared.now.song?.id
+        guard id != paintedCurrent else { return }
+        paintedCurrent = id
+        for path in tableView.indexPathsForVisibleRows ?? [] {
+            guard rows.indices.contains(path.section), rows[path.section].layout == .list,
+                  let cell = tableView.cellForRow(at: path) as? ItemCell else { continue }
+            let item = rows[path.section].section.items[path.row]
+            cell.show(item, numbered: kind == NORI_PAGE_ALBUM, current: isCurrent(item))
+        }
     }
 
     func play(shuffle: Bool) {
