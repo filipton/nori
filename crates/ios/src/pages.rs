@@ -310,16 +310,23 @@ fn album_grid(token: u64, client: &nori_core::client::Client, sort: AlbumSort, g
 
 /// Hands the server's starred songs to the favourites mix when the stored copy (already handed over) is
 /// stale or missing. True when they changed.
-fn favourites_refreshed(
+fn refresh_favourites(
     client: &nori_core::client::Client,
     stored: nori_core::client::NetResult<nori_core::library::FavouritesHanded>,
-) -> bool {
+) {
     let digest = match stored {
-        Ok(f) if f.fresh => return false,
+        Ok(f) if f.fresh => return,
         Ok(f) => f.digest,
         Err(_) => None,
     };
-    nori_core::transport::block_on(client.mix_favourites_refresh(digest)).unwrap_or(false)
+    let _ = nori_core::transport::block_on(client.mix_favourites_refresh(digest));
+}
+
+/// The "For you" row to send again once the mixes are warm: whenever it differs from what was sent,
+/// whoever drew them (another read of Home may have, leaving this one's warm-up nothing to do), or always
+/// when no shelf answered.
+fn tiles_again(sent: &Value, now: Value, any: bool) -> Option<Value> {
+    (now != *sent || !any).then_some(now)
 }
 
 /// The running downloads' facts on their rows: `pct` whole percent (-1 unknown), `bps` bytes a second
@@ -412,15 +419,16 @@ fn read(token: u64, kind: i32, arg: String) {
                     }
                 }
             }
-            let favourites = favourites_refreshed(&client, stored);
-            if nori_core::transport::block_on(client.mix_warm_all()) || favourites || !any {
-                rows[0] = mixes(&core);
+            refresh_favourites(&client, stored);
+            nori_core::transport::block_on(client.mix_warm_all());
+            if let Some(tiles) = tiles_again(&rows[0], mixes(&core), any) {
+                rows[0] = tiles;
                 send(token, &json!({ "sections": rows }));
             }
         }
         PAGE_MIX => {
             if arg == FAVOURITES_MIX {
-                favourites_refreshed(&client, client.mix_favourites_stored());
+                refresh_favourites(&client, client.mix_favourites_stored());
             } else {
                 nori_core::transport::block_on(client.mix_ensure(arg.clone(), false));
             }
@@ -1215,6 +1223,17 @@ pub extern "C" fn nori_ios_facts() -> *mut c_char {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn home_sends_mixes_drawn_by_another_read() {
+        // Regression: Home sent its tiles again only when its own warm-up drew a mix, so mixes another
+        // read drew in the meantime stayed grey, without covers, until a refresh.
+        let bare = section("mixes", true, vec![json!({ "k": "mix", "id": "quick", "c": "" })]);
+        let drawn = section("mixes", true, vec![json!({ "k": "mix", "id": "quick", "c": "cover-1" })]);
+        assert_eq!(tiles_again(&bare, drawn.clone(), true), Some(drawn.clone()));
+        assert_eq!(tiles_again(&drawn, drawn.clone(), true), None, "nothing new: not sent twice");
+        assert_eq!(tiles_again(&drawn, drawn.clone(), false), Some(drawn), "no shelf answered: the row alone");
+    }
 
     #[test]
     fn downloads_shelve_each_album_once_latest_first() {
