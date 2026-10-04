@@ -294,3 +294,4 @@ the AutoEQ search, the lyric clock lighting and filling a line and landing a tap
 a cover handed over without a copy living until the app lets go, and the login form's
 advanced fields. What only the device shows is UIKit's part, looked at by eye: the card and queue
 sliding under a finger, the word fill drawn with CoreText, the drawn icons, a queue row dragged.
+Battery and CPU are `tools/ipod-bench.sh` (unplugged, SSH over Wi-Fi), never on the host.

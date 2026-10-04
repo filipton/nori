@@ -20,6 +20,7 @@ tools/perf-host.sh [rev]                            # engine wakes/CPU/allocs pe
 cargo run --release -p nori-cli                     # terminal client
 cargo run --release -p nori-desktop                 # desktop client
 tools/ipod.sh [rust app sign install run ipa]       # the iPod app: Rust, link with Xcode (here or NORI_IOS_MAC), sign + install over USB (docs/ipod.md)
+tools/ipod-bench.sh nori|music                      # iPod battery/CPU for 30 min, unplugged, SSH over Wi-Fi (NORI_IPOD_HOST)
 ```
 
 Before committing: `cargo test -j4 --workspace` and a build. If the change reaches Android, also
