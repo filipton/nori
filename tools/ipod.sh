@@ -2,14 +2,15 @@
 # Builds the iPod app (docs/ipod.md) and puts it on the device, across the machines each step needs:
 #   rust     libnori_ios.a here, for aarch64-apple-ios against an iPhoneOS SDK: $NORI_IOS_SDK, else Xcode's
 #   app      nori.app with Xcode's swiftc: on this machine, or over SSH on the Mac named by $NORI_IOS_MAC
-#   sign     fake-signs it with the iPod's own ldid (AppSync lets it in)
+#   sign     fake-signs it with ldid (AppSync lets it in): this machine's (brew install ldid), else the iPod's
 #   install  puts it in /Applications on the iPod and registers it (uicache)
 #   run      launches it and tails its log
 #   ipa      build/ios/nori-ipod-<version>.ipa: the signed app as Payload/nori.app, for a release
 #   tools/ipod.sh            all of the above, in order
 #   tools/ipod.sh rust app   just those steps
 # Needs: rustup target aarch64-apple-ios, an iPhoneOS SDK (Xcode 15's works for iOS 12; a machine without
-# Xcode can build the Rust half against a copy of it), sshpass and libimobiledevice (iproxy) from brew.
+# Xcode can build the Rust half against a copy of it), and for the steps that reach the iPod sshpass and
+# libimobiledevice (iproxy) from brew.
 #
 # The iPod is reached over USB: iproxy forwards port 2244 to checkra1n's dropbear (port 44), password
 # auth (`NORI_IPOD_PASSWORD`, default alpine, through sshpass): this dropbear accepts a public key and then
@@ -81,20 +82,32 @@ step_app() {
   du -sh "$app" | awk '{print "  " $1 "  nori.app"}'
 }
 
+# Signs build/ios/nori.app in place: with this machine's ldid (brew install ldid) if there is one, else on
+# the iPod, whose signed copy comes back.
 step_sign() {
   [ -d "$app" ] || { echo "no $app: run the app step first" >&2; exit 1; }
-  forward
-  echo "sign: with the iPod's ldid …"
-  "${ipod_ssh[@]}" "rm -rf /tmp/nori-sign && mkdir -p /tmp/nori-sign"
-  # COPYFILE_DISABLE: no AppleDouble ._ files from macOS's tar inside the app.
-  COPYFILE_DISABLE=1 tar -C "$out" -cf - nori.app | "${ipod_ssh[@]}" "tar -C /tmp/nori-sign -xf -"
-  "${ipod_ssh[@]}" "cd /tmp/nori-sign && ldid -S/tmp/nori-sign/nori.app/entitlements.plist nori.app/nori && ldid -e nori.app/nori | grep -c application-identifier >/dev/null && echo '  signed'"
+  if command -v ldid >/dev/null; then
+    echo "sign: with this machine's ldid …"
+    ldid -S"$app/entitlements.plist" "$app/nori"
+    ldid -e "$app/nori" | grep -q application-identifier
+  else
+    forward
+    echo "sign: with the iPod's ldid …"
+    "${ipod_ssh[@]}" "rm -rf /tmp/nori-sign && mkdir -p /tmp/nori-sign"
+    # COPYFILE_DISABLE: no AppleDouble ._ files from macOS's tar inside the app.
+    COPYFILE_DISABLE=1 tar -C "$out" -cf - nori.app | "${ipod_ssh[@]}" "tar -C /tmp/nori-sign -xf -"
+    "${ipod_ssh[@]}" "cd /tmp/nori-sign && ldid -S/tmp/nori-sign/nori.app/entitlements.plist nori.app/nori && ldid -e nori.app/nori | grep -q application-identifier"
+    rm -rf "$app"
+    "${ipod_ssh[@]}" "tar -C /tmp/nori-sign -cf - nori.app" | tar -C "$out" -xf -
+  fi
+  echo "  signed"
 }
 
 step_install() {
   forward
   echo "install: /Applications/nori.app …"
-  "${ipod_ssh[@]}" "rm -rf /Applications/nori.app && cp -a /tmp/nori-sign/nori.app /Applications/nori.app && chown -R root:wheel /Applications/nori.app && chmod 755 /Applications/nori.app/nori && uicache --path /Applications/nori.app --respring"
+  [ -d "$app" ] || { echo "no $app: run the app and sign steps first" >&2; exit 1; }
+  COPYFILE_DISABLE=1 tar -C "$out" -cf - nori.app | "${ipod_ssh[@]}" "rm -rf /Applications/nori.app && tar -C /Applications -xf - && chown -R root:wheel /Applications/nori.app && chmod 755 /Applications/nori.app/nori && uicache --path /Applications/nori.app --respring"
   echo "  installed (version $version, build $build_no)"
 }
 
@@ -111,13 +124,12 @@ step_run() {
   "${ipod_ssh[@]}" "ps aux | grep '[A]pplications/nori.app/nori' | cut -c1-90 | sed 's/^/  /'; ls -la '/var/mobile/Library/Application Support/nori/' | sed 's/^/  /'"
 }
 
-# The copy the iPod signed, zipped the way an .ipa is.
+# The signed app, zipped the way an .ipa is.
 step_ipa() {
-  forward
+  [ -d "$app" ] || { echo "no $app: run the app and sign steps first" >&2; exit 1; }
   echo "ipa: …"
   rm -rf "$out/Payload" && mkdir -p "$out/Payload"
-  "${ipod_ssh[@]}" "tar -C /tmp/nori-sign -cf - nori.app" | tar -C "$out/Payload" -xf -
-  [ -f "$out/Payload/nori.app/nori" ] || { echo "no signed app on the iPod: run the sign step first" >&2; exit 1; }
+  cp -R "$app" "$out/Payload/"
   rm -f "$out/nori-ipod-$version.ipa"
   (cd "$out" && zip -qry "nori-ipod-$version.ipa" Payload)
   rm -rf "$out/Payload"

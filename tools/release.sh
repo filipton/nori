@@ -7,7 +7,7 @@
 #   tools/release.sh --live             with --publish: published rather than a draft
 #   tools/release.sh --abi arm64-v8a    phones only: about half the size
 #   tools/release.sh --no-test          skip cargo test first
-#   tools/release.sh --ipod             also the iPod app (signed on the iPod: it must be on USB)
+#   tools/release.sh --ipod             also the iPod app (needs Xcode or NORI_IOS_MAC; ldid here, else the iPod on USB)
 #
 # The guided release shows the latest version on GitHub and the one in the code, asks for the new
 # version, then does every step itself: tools/bump-version.sh, tools/changelog.py --update and
@@ -210,7 +210,7 @@ cp app/build/outputs/apk/release/app-release.apk "$out/$name"
 ipa=""
 if [ "$IPOD" = 1 ]; then
   echo "==> building the iPod app"
-  ./tools/ipod.sh rust app sign ipa || die "the iPod build failed: is the iPod on USB? Without --ipod the release is the APK alone"
+  ./tools/ipod.sh rust app sign ipa || die "the iPod build failed: it needs Xcode or NORI_IOS_MAC, and ldid (brew) or the iPod on USB. Without --ipod the release is the APK alone"
   ipa="nori-ipod-$version.ipa"
   cp "build/ios/$ipa" "$out/$ipa"
 fi

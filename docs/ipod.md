@@ -140,8 +140,9 @@ The pipeline is `tools/ipod.sh` (one script, like `tools/apk.sh`), built and run
    mismatch and a storyboard would be the only thing needing it. The home-screen icon is the same mark as
    Android's, on the rice-white plate, as square PNGs named in `CFBundleIcons` (`AppIcon60x60@2x.png` is
    the one the iPod touch 6 shows); SpringBoard rounds them. `uicache --path --respring` reloads the icon.
-3. **`sign`, on the iPod**: the bundle goes over as a tar stream (no sftp there) and the iPod's own `ldid -S
-   entitlements.plist` fake-signs it. An app in `/Applications` is a system app to launchd: without
+3. **`sign`**: `ldid -S entitlements.plist` fake-signs it, with the Mac's ldid (`brew install ldid`) when
+   there is one, else on the iPod: the bundle goes over as a tar stream (no sftp there), the iPod's own
+   ldid signs it and the signed copy comes back. An app in `/Applications` is a system app to launchd: without
    `platform-application` and `com.apple.private.security.no-container` it is simply never spawned (no
    crash report, `uiopen` returns 0 regardless), so `ios/entitlements.plist` carries them, as Zebra and
    Filza do, plus `skip-library-validation` and `get-task-allow`. The background audio mode is Info.plist's.
@@ -691,7 +692,7 @@ perf recorder from `nori-perf` fed by a `crates/ios/src/perf.rs` reading `task_t
 The motion pass (every animation listed as `docs/motion.md` does, with its status), VoiceOver labels,
 Dynamic Type at the largest size on 320 pt, the memory budget with a 2000-album grid, the offload
 experiment of 5.3 if W13's numbers say the I/O thread is what costs. Done: `tools/release.sh` produces
-the .ipa with `--ipod` (`tools/ipod.sh ipa`, the iPod on USB); a release without it is the APK alone, so
+the .ipa with `--ipod` (`tools/ipod.sh ipa`; no iPod needed with the Mac's ldid); a release without it is the APK alone, so
 the newest .ipa is on the last release made with `--ipod`. The plan: `tools/release.sh` producing
 `build/nori-ipod-<version>.ipa` (a `Payload/` zip of the signed `nori.app`) beside the APK, and the
 changelog's `feat`/`fix`/`perf` subjects covering the iPod as they cover Android.
