@@ -6,7 +6,7 @@ use std::ffi::{c_char, CString};
 
 use nori_core::cache_policy::{Page, Read};
 use nori_core::client::{Starrable, Write};
-use nori_core::menus::{sleep_choices, song_menu, SongAction, SongDownload, SongMenuItem};
+use nori_core::menus::{row_swipe, sleep_choices, song_menu, RowSwipeAct, SongAction, SongDownload, SongMenuItem};
 use nori_core::Song;
 use nori_host::session::Session;
 use serde_json::{json, Value};
@@ -214,6 +214,21 @@ pub unsafe extern "C" fn nori_ios_playlist_create(token: u64, index: i32, name: 
     }
     with_session(|s| wrote(s, Write::CreatePlaylist { name: name.trim().to_string(), song_ids: vec![song.id] }))
         .unwrap_or(0)
+}
+
+/// What swiping a song row does, to the left when `left` and else to the right, on a song whose heart is
+/// `starred`: -1 nothing, else a `NORI_SWIPE_*` code.
+#[no_mangle]
+pub extern "C" fn nori_ios_row_swipe(left: i32, starred: i32) -> i32 {
+    let setting = with_session(|s| s.core.session.settings.prefs(|p| if left != 0 { p.swipe_left } else { p.swipe_right }));
+    match setting.and_then(|s| row_swipe(s, starred != 0)) {
+        None => -1,
+        Some(RowSwipeAct::Queue) => 0,
+        Some(RowSwipeAct::PlayNext) => 1,
+        Some(RowSwipeAct::Favourite { on: true }) => 2,
+        Some(RowSwipeAct::Favourite { on: false }) => 3,
+        Some(RowSwipeAct::Download) => 4,
+    }
 }
 
 /// Takes entry `index` out of playlist `playlist`. Blocks; 1 when done.

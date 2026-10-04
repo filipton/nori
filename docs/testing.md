@@ -277,3 +277,20 @@ line that starts the thread (the start-up NPE of 2026-09-25).
   thread id).
 - A table of cases that each take seconds runs its cases on threads of their own (`each` in
   automix/tests.rs) or is split into one test per row, so they run side by side.
+
+## The iPod
+
+`IosOutput` (crates/ios/src/output.rs) is tested in Rust on a simulated sink: the format the session
+grants, the latency sum, shallow switching, a route change, a failed reopen. The session behind the C
+controls (crates/ios/src/session.rs) is tested in Rust on `WavOutput`: two downloaded songs through
+pause, seek, next, previous, play_at, go_to, repeat, shuffle, the queue edits, the save on background,
+and a memory warning. What Rust cannot see is AURemoteIO itself, so the device check — once a session
+plays on the iPod — is a sine through the jack with no underrun for a minute at 93 ms, at 10 ms, and
+across a Bluetooth route change. `tools/ipod.sh run` shows the process; the core log is the rest.
+
+The doors the screens read are tested in Rust too (`cargo test -p nori-ios`): the queue in play order
+split at the song playing, the song menu's lines and codes, each output's sound and the device sheet,
+the AutoEQ search, the lyric clock lighting and filling a line and landing a tap, the icons' credit,
+a cover handed over without a copy living until the app lets go, and the login form's
+advanced fields. What only the device shows is UIKit's part, looked at by eye: the card and queue
+sliding under a finger, the word fill drawn with CoreText, the drawn icons, a queue row dragged.

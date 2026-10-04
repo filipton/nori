@@ -19,6 +19,7 @@ tools/feature-e2e.sh --only <sections>
 tools/perf-host.sh [rev]                            # engine wakes/CPU/allocs per minute vs another revision, on the host
 cargo run --release -p nori-cli                     # terminal client
 cargo run --release -p nori-desktop                 # desktop client
+tools/ipod.sh [rust app sign install run ipa]       # the iPod app: Rust, link with Xcode (here or NORI_IOS_MAC), sign + install over USB (docs/ipod.md)
 ```
 
 Before committing: `cargo test -j4 --workspace` and a build. If the change reaches Android, also
@@ -50,6 +51,7 @@ via nori-core):
 | android | Android only: the `norimusic` cdylib, uniffi scaffolding, JNI doors, AudioTrack writer (track.rs), playback path (player.rs) |
 | http, output-cpal, mpris | desktop: ureq transport, cpal output, Linux media controls |
 | cli, desktop | terminal (ratatui) and desktop (Slint) clients |
+| ios | the iPod touch client's static library over nori-host behind a C ABI; the Swift app is `ios/`, the plan and work packages `docs/ipod.md` |
 | host | what the terminal and desktop clients share: session, config, index sync, media controls |
 | uniffi-jni-runtime, uniffi-bindgen | upstream uniffi JNI runtime with changes marked `NORI`; Kotlin binding generator |
 | testdir | `TempDir` for tests; every test that writes files uses it |

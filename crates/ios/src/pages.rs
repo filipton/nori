@@ -2,7 +2,7 @@
 //! server's after it when it differs. Lists of songs a page showed are kept by the request's token so a
 //! tap plays from them without sending songs back across.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{c_char, CString};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -160,6 +160,21 @@ fn album_json(a: &Album) -> Value {
         "k": "album", "id": a.id, "t": a.name, "s": sub, "c": cover(&a.cover_art), "y": a.year,
         "x": a.is_external, "artistId": a.artist_id.as_deref().unwrap_or(""),
     })
+}
+
+/// One card per album of `songs`, in the order its first song comes (the latest download first).
+fn albums_of(songs: &[Song]) -> Vec<Value> {
+    let mut seen = HashSet::new();
+    songs
+        .iter()
+        .filter_map(|s| {
+            let id = s.album_id.as_ref().filter(|id| seen.insert(id.as_str()))?;
+            Some(json!({
+                "k": "album", "id": id, "t": s.album, "s": s.artist, "c": cover(&s.cover_art),
+                "artistId": s.artist_id.as_deref().unwrap_or(""),
+            }))
+        })
+        .collect()
 }
 
 fn artist_json(a: &Artist) -> Value {
@@ -545,7 +560,9 @@ fn read(token: u64, kind: i32, arg: String) {
                 Err(_) => Default::default(),
             };
             let mut all = Vec::new();
-            let mut out = Vec::new();
+            // What is kept, by album, above the lists.
+            let albums = albums_of(&stored);
+            let mut out = if albums.is_empty() { Vec::new() } else { vec![section("albums", true, albums)] };
             for (key, songs) in [
                 ("active", &active),
                 ("queued", &queued),
@@ -1190,6 +1207,13 @@ pub extern "C" fn nori_ios_facts() -> *mut c_char {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn downloads_shelve_each_album_once_latest_first() {
+        let song = |id: &str, album: Option<&str>| Song { id: id.into(), album_id: album.map(Into::into), album: album.unwrap_or("").into(), ..Default::default() };
+        let cards = albums_of(&[song("b2", Some("B")), song("a1", Some("A")), song("loose", None), song("b1", Some("B"))]);
+        assert_eq!(cards.iter().map(|c| c["id"].as_str().unwrap()).collect::<Vec<_>>(), ["B", "A"]);
+    }
 
     /// Tests that empty and fill the process-wide `LISTS` take turns.
     static LISTS_IN_USE: Mutex<()> = Mutex::new(());
