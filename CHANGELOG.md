@@ -6,6 +6,36 @@ hand. Versions follow [semantic versioning](https://semver.org).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-04
+
+### Added
+
+- IPod touch client for iOS 12
+- A white accent colour makes the app monochrome
+- The iPod app keeps its log in nori.log
+
+### Changed
+
+- Nori-host takes the client's output, volume and memory budget
+
+### Fixed
+
+- Offload takes the next song again after a pause and a CPU song
+- Albums in order stay gapless however they were queued
+- Star notes on desktop and in the terminal follow Confirm favorites
+- IPod songs play at their own speed when the hardware rate moves
+- A song of another rate keeps its speed when tapped again
+- A song of another rate starts at once on the iPod and desktop
+- The iPod's playing mark follows the song in every list
+- Tapping the song that plays opens the iPod's player
+- The iPod's For you tiles show their covers without a refresh
+- A heart set anywhere on the iPod shows at once everywhere
+- IPod albums and songs can remove their downloads
+
+### Performance
+
+- Covers come at the core's two renditions, scaled to each view
+
 ## [0.5.0] - 2026-10-03
 
 ### Added
