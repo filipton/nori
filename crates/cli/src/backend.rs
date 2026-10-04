@@ -18,7 +18,9 @@ use nori_host::session::{read_pages, Note, Said};
 pub use nori_host::{db_path, Controls, Fetch};
 use nori_http::Http;
 use nori_look::cover::CoverColours;
-use nori_output_cpal::CpalOutput;
+use nori_engine::core::OutputVolume;
+use nori_engine::AudioOutput;
+use nori_output_cpal::{CpalOutput, Volume};
 use ratatui::crossterm::event::{KeyEvent, MouseEvent};
 
 use crate::settings_view::{Facts, Storage};
@@ -181,11 +183,26 @@ pub struct Open<'a> {
     pub tx: Sender<Msg>,
 }
 
+/// The cpal device at `volume` (0 to 1), and the loudness compensation that volume is.
+fn sound(device: Option<&str>, volume: f32) -> (Box<dyn AudioOutput>, Volume, Arc<OutputVolume>) {
+    let card = match device {
+        Some(name) => CpalOutput::with_device(name),
+        None => CpalOutput::new(),
+    };
+    let level = card.volume();
+    level.set(volume);
+    let loudness = Arc::new(OutputVolume::default());
+    loudness.set(nori_host::volume_db(volume));
+    (Box::new(card), level, loudness)
+}
+
 /// One open server profile; its messages come tagged with its id.
 pub struct Session {
     pub id: u64,
     host: nori_host::session::Session,
     tx: Sender<Msg>,
+    level: Volume,
+    loudness: Arc<OutputVolume>,
 }
 
 impl std::ops::Deref for Session {
@@ -204,19 +221,31 @@ impl Session {
         let out = Arc::new(move |s: Said| {
             let _ = tx.send(Msg::From(id, Box::new(worded(s))));
         });
+        let v = own::number(own::VOLUME, 1.0);
+        let (output, level, loudness) =
+            sound(o.device.or_else(|| own::text(own::DEVICE)).as_deref(), v);
         let host = nori_host::session::Session::open(nori_host::session::Open {
             queue: app().clone(),
             data: o.data,
             http: o.http,
             profile: o.profile,
-            device: o.device.or_else(|| own::text(own::DEVICE)),
-            volume: own::number(own::VOLUME, 1.0),
+            output,
+            volume: loudness.clone(),
+            memory_mb: 256,
             covers: o.images,
             offline: o.offline,
             mpris: o.mpris,
             out,
         })?;
-        Ok(Session { id, host, tx: o.tx })
+        Ok(Session { id, host, tx: o.tx, level, loudness })
+    }
+
+    /// Sets the device volume and, when that changes loudness compensation, the chain.
+    pub fn set_volume(&self, v: f32) {
+        self.level.set(v);
+        if self.loudness.set(nori_host::volume_db(v)) {
+            self.host.volume_changed();
+        }
     }
 
     /// Loads a screen's data in the background: the stored copy first, then the server's if different.

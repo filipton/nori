@@ -1,6 +1,6 @@
-//! What the terminal and desktop clients share around an open session: the queue saved as it changes, a
-//! collection's songs, the offline index, cover colours, the output volume in dB and media controls
-//! over the engine. Each client words what happens itself.
+//! What the terminal, desktop and iOS clients share around an open session: the queue saved as it
+//! changes, a collection's songs, the offline index, cover colours and the output volume in dB. Media
+//! controls (`desktop` feature) sit over the engine. Each client words what happens itself.
 
 pub mod session;
 
@@ -14,7 +14,9 @@ use nori_core::settings::SavedServer;
 use nori_core::transport::{block_on, NetError};
 use nori_core::{Core, IngestStats, OriginKind, PageOrigin, ServerConfig, Song};
 use nori_covers::memory::Image;
-use nori_engine::{Engine, State, Status};
+#[cfg(feature = "desktop")]
+use nori_engine::State;
+use nori_engine::{Engine, Status};
 use nori_look::cover::CoverColours;
 
 /// The database shared by all profiles and the settings.
@@ -164,6 +166,7 @@ impl Controls {
     }
 }
 
+#[cfg(feature = "desktop")]
 impl nori_mpris::Controls for Controls {
     fn play(&self) {
         self.engine.play();

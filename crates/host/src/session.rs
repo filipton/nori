@@ -1,5 +1,5 @@
-//! One open server profile: core, client, the engine on cpal, store, downloader, cover loader, search
-//! and media controls. Work that waits on the network runs on its own thread and reports through the
+//! One open server profile: core, client, the engine on the client's output, store, downloader, cover
+//! loader and search. Work that waits on the network runs on its own thread and reports through the
 //! client's [`Out`], as facts the client words.
 
 use std::path::{Path, PathBuf};
@@ -25,9 +25,10 @@ use nori_engine::core::{settings, Analyses, CoreApp, CoreLibrary, CoreQueue, Dow
 use nori_engine::{AudioOutput, Body, ByteSource, Cancel, Config, Engine, Event, OpenError, State, Store};
 use nori_http::Http;
 use nori_look::cover::CoverColours;
-use nori_output_cpal::{CpalOutput, Volume};
 
-use crate::{config, db_path, derive, net, save, spawn, volume_db, Controls, Fetch, Keeper};
+#[cfg(feature = "desktop")]
+use crate::Controls;
+use crate::{config, db_path, derive, net, save, spawn, Fetch, Keeper};
 
 /// What a session reports from any thread.
 pub enum Said {
@@ -155,16 +156,26 @@ pub struct Open<'a> {
     pub data: &'a Path,
     pub http: Arc<Http>,
     pub profile: SavedServer,
-    /// Output device name; None for the system default.
-    pub device: Option<String>,
-    /// Starting volume, 0 to 1.
-    pub volume: f32,
+    /// The sound card. The client built it and owns its device volume.
+    pub output: Box<dyn AudioOutput>,
+    /// Listener volume in dB, for loudness compensation. Set before opening; the client keeps its own
+    /// handle and calls [`Session::volume_changed`] when it moves.
+    pub volume: Arc<OutputVolume>,
+    /// Bytes the engine may hold for songs ahead. 256 on the desktop, less on a phone.
+    pub memory_mb: u32,
     pub covers: bool,
     pub offline: bool,
-    /// The process's media controls, driven by this session while it is open.
-    pub mpris: Option<Arc<nori_mpris::Mpris>>,
+    /// The process's media controls, driven by this session while it is open. Always a field, so a
+    /// client built without `desktop` (where nothing can fill it) compiles either way.
+    pub mpris: Option<MediaControls>,
     pub out: Out,
 }
+
+#[cfg(feature = "desktop")]
+pub type MediaControls = Arc<nori_mpris::Mpris>;
+/// No media controls without `desktop`: only `None` fits.
+#[cfg(not(feature = "desktop"))]
+pub enum MediaControls {}
 
 pub struct Session {
     pub core: Arc<Core>,
@@ -173,11 +184,11 @@ pub struct Session {
     pub store: Arc<Store>,
     downloader: Arc<Downloader>,
     pub covers: Option<Arc<Loader>>,
-    pub volume: Volume,
     /// `volume` in dB, for loudness compensation.
     loudness: Arc<OutputVolume>,
     search: Arc<SearchSession>,
     pub offline: bool,
+    #[cfg(feature = "desktop")]
     mpris: Option<Arc<nori_mpris::Mpris>>,
     keeper: Arc<Keeper>,
     /// The database file, for its size.
@@ -197,16 +208,9 @@ impl Session {
         let client = Client::new(core.clone(), transport, cover_net.clone());
         client.set_profile(net(&o.profile));
         let prefs = core.session.settings.current().unwrap_or_default();
-        let output = match &o.device {
-            Some(name) => CpalOutput::with_device(name),
-            None => CpalOutput::new(),
-        };
-        let volume = output.volume();
-        volume.set(o.volume);
-        // Set before the engine starts so its first chain has the right loudness compensation.
-        let loudness = Arc::new(OutputVolume::default());
-        loudness.set(volume_db(o.volume));
-        let output: Box<dyn AudioOutput> = Box::new(output);
+        // Set by the client before the engine starts, so the first chain has the right compensation.
+        let loudness = o.volume;
+        let output = o.output;
         let store = Store::open(o.data.join("music"), prefs.cache_mb.max(0) as u64 * 1024 * 1024).map_err(|e| format!("the music directory: {e}"))?;
         let audio = Arc::new(Audio::new(o.http.clone(), o.offline));
         let analyses = Analyses::of(client.clone());
@@ -215,14 +219,15 @@ impl Session {
         let app = CoreApp::new(core.session.clone()).measuring(Measurer::new(analyses.clone(), store.clone())).per_device(core.clone()).bridging().volume(loudness.clone());
         let library = CoreLibrary { client: client.clone(), bytes: audio, store: Some(store.clone()), analyses };
         let events = o.out.clone();
-        let config = Config { memory_mb: 256, settings: settings(&prefs, loudness.db()), ..Config::default() };
+        let config = Config { memory_mb: o.memory_mb, settings: settings(&prefs, loudness.db()), ..Config::default() };
         let engine = Arc::new(Engine::start(library, app, CoreQueue(core.session.clone()), output, None, config, move |e| events(Said::Engine(e))));
         let covers = o.covers.then(|| Arc::new(Loader::new(CoverConfig::new(o.data.join("covers")), cover_net)));
+        #[cfg(feature = "desktop")]
         if let Some(m) = &o.mpris {
             m.serve(Some(Arc::new(Controls::over_queue(engine.clone(), core.session.clone()))));
         }
         let keeper = Keeper::start(core.clone(), engine.clone());
-        let s = Session { core, client, engine, store, downloader, covers, volume, loudness, search: SearchSession::new(), offline: o.offline, mpris: o.mpris, keeper, db: PathBuf::from(db), out: o.out };
+        let s = Session { core, client, engine, store, downloader, covers, loudness, search: SearchSession::new(), offline: o.offline, #[cfg(feature = "desktop")] mpris: o.mpris, keeper, db: PathBuf::from(db), out: o.out };
         s.restore();
         if !s.offline && s.core.download_counts().pending > 0 {
             s.start_downloads();
@@ -235,6 +240,7 @@ impl Session {
     }
 
     /// Tells the media controls the song or state changed.
+    #[cfg(feature = "desktop")]
     pub fn mpris_changed(&self) {
         if let Some(m) = &self.mpris {
             m.changed();
@@ -433,13 +439,11 @@ impl Session {
         Some(change)
     }
 
-    /// Sets the volume (0 to 1), rebuilding the chain when that changes loudness compensation.
-    pub fn set_volume(&self, v: f32) {
-        self.volume.set(v);
-        if self.loudness.set(volume_db(v)) {
-            if let Some(p) = self.core.session.settings.current().filter(|p| p.loudness) {
-                self.engine.set_settings(settings(&p, self.loudness.db()));
-            }
+    /// The listener volume moved enough to change loudness compensation: rebuilds the chain when that
+    /// compensation is on. The device's own volume is the client's.
+    pub fn volume_changed(&self) {
+        if let Some(p) = self.core.session.settings.current().filter(|p| p.loudness) {
+            self.engine.set_settings(settings(&p, self.loudness.db()));
         }
     }
 
@@ -661,6 +665,7 @@ impl Session {
 
     /// Saves the queue and stops the engine.
     pub fn close(&self) {
+        #[cfg(feature = "desktop")]
         if let Some(m) = &self.mpris {
             m.serve(None);
         }

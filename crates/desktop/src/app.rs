@@ -381,7 +381,7 @@ fn menu_actions(ui: &AppWindow, compositor: &Compositor) {
 /// The window closed: saves the volume and queue, stops the engine.
 pub fn stop(app: &RefCell<App>) {
     if let Some(s) = app.borrow_mut().session.take() {
-        session::own::keep(session::own::VOLUME, s.volume.get().to_string());
+        session::own::keep(session::own::VOLUME, s.volume().to_string());
         s.close();
     }
 }
@@ -557,7 +557,7 @@ impl App {
         match Session::open(&self.data, self.http.clone(), profile, self.tx.clone(), self.mpris.clone()) {
             Ok(s) => {
                 s.check();
-                ui.set_volume(s.volume.get());
+                ui.set_volume(s.volume());
                 self.session = Some(s);
                 self.heard = None;
                 self.song = None;

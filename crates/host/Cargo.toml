@@ -3,18 +3,22 @@ name = "nori-host"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "What the terminal and desktop clients share around an open session: queue saves, a collection's songs, the offline index, cover colours, media controls"
+description = "What the terminal, desktop and iOS clients share around an open session: queue saves, a collection's songs, the offline index, cover colours, the output volume in dB"
 
 [lib]
 name = "nori_host"
+
+[features]
+default = ["desktop"]
+# MPRIS media controls. The iOS client leaves the default features off.
+desktop = ["dep:nori-mpris"]
 
 [dependencies]
 nori-core = { path = "../core", default-features = false }
 nori-engine = { path = "../engine", features = ["core"] }
 nori-covers = { path = "../covers" }
 nori-look = { path = "../look" }
-nori-mpris = { path = "../mpris" }
-nori-output-cpal = { path = "../output-cpal" }
+nori-mpris = { path = "../mpris", optional = true }
 nori-http = { path = "../http" }
 parking_lot = "0.12"
 async-trait = "0.1"

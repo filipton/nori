@@ -3796,7 +3796,6 @@ dependencies = [
  "nori-http",
  "nori-look",
  "nori-mpris",
- "nori-output-cpal",
  "parking_lot",
 ]
 
