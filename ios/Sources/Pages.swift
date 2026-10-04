@@ -733,6 +733,7 @@ class PageController: UITableViewController {
         NotificationCenter.default.addObserver(self, selector: #selector(reload), name: .noriOpened, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(nowChanged), name: .noriNow, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(paintVisibleRows), name: .noriFavorites, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(reload), name: .noriDownloads, object: nil)
         tableView.sectionIndexColor = Theme.secondary
         tableView.sectionIndexBackgroundColor = .clear
         tableView.addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(held(_:))))
@@ -912,19 +913,47 @@ class PageController: UITableViewController {
 
     /// The header's play and shuffle.
     /// The header's ⋯: the whole page to the queue, or downloaded.
+    /// The header's ⋯: the page to the queue, and its download entries as the core lays them out (all,
+    /// the rest of a partly downloaded page, removal).
     private func collectionMenu(external: Bool) {
-        let sheet = UIAlertController.sheet(title)
         let (kind, arg, token) = (self.kind, self.arg, self.token)
         let whole = kind == NORI_PAGE_ARTIST
-        sheet.add(Say.addToQueue) {
-            if whole { arg.withCString { nori_ios_enqueue_collection(kind, $0, 0) } } else { nori_ios_enqueue_list(token, -1, 0) }
-        }
-        if !external {
-            sheet.add(Say.download) {
-                if whole { arg.withCString { nori_ios_download_collection(kind, $0) } } else { nori_ios_download_list(token, -1) }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let raw = external ? nil : whole ? arg.withCString { nori_ios_collection_download_entries(kind, $0) } : nori_ios_download_entries(token)
+            let entries = takenJSON(raw) as? [[String: Int]] ?? []
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                let sheet = UIAlertController.sheet(self.title)
+                sheet.add(Say.addToQueue) {
+                    if whole { arg.withCString { nori_ios_enqueue_collection(kind, $0, 0) } } else { nori_ios_enqueue_list(token, -1, 0) }
+                }
+                PageController.add(entries, to: sheet) { act in
+                    whole ? arg.withCString { nori_ios_collection_download_act(kind, $0, act) } : nori_ios_download_act(token, act)
+                }
+                sheet.show(from: self)
             }
         }
-        sheet.show(from: self)
+    }
+
+    /// Download entries (`nori_ios_download_entries`) as lines of `sheet`; `run` does one off the main
+    /// thread and answers the songs it touched. A removal says how many and has pages read again.
+    static func add(_ entries: [[String: Int]], to sheet: UIAlertController, run: @escaping (Int32) -> Int32) {
+        // Two entries: partly downloaded, so removal names how many it gives back.
+        let partly = entries.count > 1
+        for e in entries {
+            guard let act = e["act"], let n = e["n"] else { continue }
+            let label = act == 0 ? Say.download : act == 1 ? Say.downloadOther(n) : (partly ? Say.removeDownloaded(n) : Say.removeDownloads)
+            sheet.add(label, destructive: act == 2) {
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let done = run(Int32(act))
+                    guard act == 2 else { return }
+                    DispatchQueue.main.async {
+                        Toast.show(Say.downloadsRemoved(Int(done)))
+                        NotificationCenter.default.post(name: .noriDownloads, object: nil)
+                    }
+                }
+            }
+        }
     }
 
     /// The core's word on this page's Play and Shuffle against the queue now (`nori_ios_hero`).
@@ -1146,24 +1175,32 @@ class PageController: UITableViewController {
         case "playlist": kind = NORI_PAGE_PLAYLIST
         default: return
         }
-        let sheet = UIAlertController.sheet(item.title, item.subtitle.isEmpty ? nil : item.subtitle)
-        sheet.add(Say.play) { item.id.withCString { nori_ios_play_collection(kind, $0, 0) } }
-        sheet.add(Say.shuffle) { item.id.withCString { nori_ios_play_collection(kind, $0, 1) } }
-        sheet.add(Say.playNext) { item.id.withCString { nori_ios_enqueue_collection(kind, $0, 1) } }
-        sheet.add(Say.addToQueue) { item.id.withCString { nori_ios_enqueue_collection(kind, $0, 0) } }
-        if !item.external {
-            sheet.add(Say.download) { item.id.withCString { nori_ios_download_collection(kind, $0) } }
-        }
-        if kind != NORI_PAGE_PLAYLIST && !item.external {
-            let on = Core.shared.isFavorite(item)
-            sheet.add(on ? Say.removeFromFavorites : Say.addToFavorites) {
-                Core.shared.favorite(item, !on)
+        // The download entries need the songs (stored, else the server's): read off the main thread.
+        DispatchQueue.global(qos: .userInitiated).async {
+            let raw = item.external ? nil : item.id.withCString { nori_ios_collection_download_entries(kind, $0) }
+            let entries = takenJSON(raw) as? [[String: Int]] ?? []
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                let sheet = UIAlertController.sheet(item.title, item.subtitle.isEmpty ? nil : item.subtitle)
+                sheet.add(Say.play) { item.id.withCString { nori_ios_play_collection(kind, $0, 0) } }
+                sheet.add(Say.shuffle) { item.id.withCString { nori_ios_play_collection(kind, $0, 1) } }
+                sheet.add(Say.playNext) { item.id.withCString { nori_ios_enqueue_collection(kind, $0, 1) } }
+                sheet.add(Say.addToQueue) { item.id.withCString { nori_ios_enqueue_collection(kind, $0, 0) } }
+                PageController.add(entries, to: sheet) { act in
+                    item.id.withCString { nori_ios_collection_download_act(kind, $0, act) }
+                }
+                if kind != NORI_PAGE_PLAYLIST && !item.external {
+                    let on = Core.shared.isFavorite(item)
+                    sheet.add(on ? Say.removeFromFavorites : Say.addToFavorites) {
+                        Core.shared.favorite(item, !on)
+                    }
+                }
+                if kind == NORI_PAGE_PLAYLIST {
+                    sheet.add(Say.deleteNamed(item.title), destructive: true) { [weak self] in self?.delete(playlist: item) }
+                }
+                sheet.show(from: self)
             }
         }
-        if kind == NORI_PAGE_PLAYLIST {
-            sheet.add(Say.deleteNamed(item.title), destructive: true) { [weak self] in self?.delete(playlist: item) }
-        }
-        sheet.show(from: self)
     }
 }
 

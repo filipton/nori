@@ -141,11 +141,17 @@ void nori_ios_play_list(uint64_t token, int32_t index, int32_t shuffle);
 /// `index` -1 for the whole list.
 void nori_ios_enqueue_list(uint64_t token, int32_t index, int32_t next);
 void nori_ios_download_list(uint64_t token, int32_t index);
+/// List `token`'s download entries as JSON to free: [{act, n}], act 0 all, 1 the n missing, 2 remove n.
+char *nori_ios_download_entries(uint64_t token);
+/// Runs a download entry on list `token`: the songs downloaded, or removed for act 2.
+int32_t nori_ios_download_act(uint64_t token, int32_t act);
 
 /// Album (8), artist (9) or playlist (10) by id, fetched first.
 void nori_ios_play_collection(int32_t kind, const char *id, int32_t shuffle);
 void nori_ios_enqueue_collection(int32_t kind, const char *id, int32_t next);
-void nori_ios_download_collection(int32_t kind, const char *id);
+/// Download entries for an album, playlist or artist by id (a card's menu); as the list doors. Block.
+char *nori_ios_collection_download_entries(int32_t kind, const char *id);
+int32_t nori_ios_collection_download_act(int32_t kind, const char *id, int32_t act);
 
 /// Song 1, album 2, artist 3.
 void nori_ios_star(int32_t kind, const char *id, int32_t on);

@@ -56,8 +56,13 @@ enum SongMenu {
             share(token: token, index: index, from: host)
         case 15:
             showDetails(details, from: host)
+        case 4:
+            off({ nori_ios_song_act(token, i, 4, 0) }) { _ in
+                Toast.show(Say.downloadsRemoved(1))
+                NotificationCenter.default.post(name: .noriDownloads, object: nil)
+            }
         default:
-            // Play next, add to queue and the downloads: the library says what it did in a note.
+            // Play next, add to queue and the other downloads: the library says what it did in a note.
             _ = nori_ios_song_act(token, i, Int32(a), 0)
         }
     }

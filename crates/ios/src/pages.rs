@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use nori_core::browse::{album_sort_kept, album_sort_saved, album_sorts, song_sort_kept, song_sort_saved, song_sorts, AlbumSort};
 use nori_core::cache_policy::{Page, Read};
 use nori_core::client::Starrable;
+use nori_core::menus::{download_entries, DownloadAct, SongDownload};
 use nori_core::mixes::board::{MixLookup, MixTile, FAVOURITES_MIX};
 use nori_core::stage::QueueRows;
 use nori_core::{Album, Artist, Genre, Lyrics, OriginKind, PageOrigin, Playlist, SearchResult, Song};
@@ -795,6 +796,127 @@ pub extern "C" fn nori_ios_download_list(token: u64, index: i32) {
     with_session(|s| s.download(songs));
 }
 
+fn act_code(a: DownloadAct) -> i32 {
+    match a {
+        DownloadAct::All => 0,
+        DownloadAct::Missing => 1,
+        DownloadAct::Remove => 2,
+    }
+}
+
+/// Each song of `songs` with whether it is downloaded or on its way, and whether it is downloaded.
+fn download_states(s: &nori_host::session::Session, songs: &[Song]) -> Vec<(bool, bool)> {
+    songs
+        .iter()
+        .map(|song| match crate::menu::download_of(s, &song.id) {
+            SongDownload::Done => (true, true),
+            SongDownload::Pending => (true, false),
+            SongDownload::None => (false, false),
+        })
+        .collect()
+}
+
+/// `songs`' download entries (`menus::download_entries`): `[{act, n}]`, `act` 0 download all, 1 download
+/// the `n` missing, 2 remove the `n` downloaded.
+fn entries_of(s: &nori_host::session::Session, songs: &[Song]) -> Value {
+    let states = download_states(s, songs);
+    let missing = states.iter().filter(|(here, _)| !here).count();
+    let done = states.iter().filter(|(_, done)| *done).count();
+    let entries: Vec<Value> = download_entries(songs.len() as u32, missing as u32)
+        .into_iter()
+        .map(|a| {
+            let n = match a {
+                DownloadAct::All => songs.len(),
+                DownloadAct::Missing => missing,
+                DownloadAct::Remove => done,
+            };
+            json!({ "act": act_code(a), "n": n })
+        })
+        .collect();
+    Value::from(entries)
+}
+
+/// Runs download entry `act` (as [`entries_of`] codes it) on `songs`: the songs downloaded, or removed
+/// for 2.
+fn act_on(s: &nori_host::session::Session, songs: Vec<Song>, act: i32) -> i32 {
+    let states = download_states(s, &songs);
+    let picked = |want: fn(&(bool, bool)) -> bool| -> Vec<Song> {
+        songs.iter().zip(&states).filter(|(_, st)| want(st)).map(|(song, _)| song.clone()).collect()
+    };
+    let to_get = match act {
+        0 => songs.clone(),
+        1 => picked(|(here, _)| !here),
+        2 => {
+            let done = picked(|(_, done)| *done);
+            done.iter().for_each(|song| s.download_remove(&song.id));
+            return done.len() as i32;
+        }
+        _ => return 0,
+    };
+    let n = to_get.len() as i32;
+    s.download(to_get);
+    n
+}
+
+/// The songs of album, playlist or artist `id` (`kind` as in [`nori_ios_read`]): the stored copy, then
+/// the server's; offline the stored one alone.
+fn collection_songs(client: &nori_core::client::Client, kind: i32, id: String) -> Vec<Song> {
+    let mut songs = Vec::new();
+    match kind {
+        PAGE_ARTIST => return nori_core::transport::block_on(client.artist_songs_of(id)).unwrap_or_default(),
+        PAGE_ALBUM => {
+            let _ = read_pages(client, Read::AlbumById { id }, |p| {
+                if let Page::AlbumPage { v } = p {
+                    songs = v.songs;
+                }
+            });
+        }
+        PAGE_PLAYLIST => {
+            let _ = read_pages(client, Read::PlaylistById { id }, |p| {
+                if let Page::PlaylistPage { v } = p {
+                    songs = v.songs;
+                }
+            });
+        }
+        _ => {}
+    }
+    songs
+}
+
+/// List `token`'s download entries ([`entries_of`]) as JSON to free.
+#[no_mangle]
+pub extern "C" fn nori_ios_download_entries(token: u64) -> *mut c_char {
+    let Some((songs, _)) = list(token) else { return std::ptr::null_mut() };
+    with_session(|s| owned(&entries_of(s, &songs))).unwrap_or(std::ptr::null_mut())
+}
+
+/// Runs download entry `act` on list `token` ([`act_on`]).
+#[no_mangle]
+pub extern "C" fn nori_ios_download_act(token: u64, act: i32) -> i32 {
+    let Some((songs, _)) = list(token) else { return 0 };
+    with_session(|s| act_on(s, songs, act)).unwrap_or(0)
+}
+
+/// [`nori_ios_download_entries`] for an album, playlist or artist by id, as a card's menu has it. Blocks.
+///
+/// # Safety
+/// `id` is NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn nori_ios_collection_download_entries(kind: i32, id: *const c_char) -> *mut c_char {
+    let id = c_text(id);
+    with_session(|s| owned(&entries_of(s, &collection_songs(&s.client, kind, id)))).unwrap_or(std::ptr::null_mut())
+}
+
+/// [`nori_ios_download_act`] for an album, playlist or artist by id. Blocks.
+///
+/// # Safety
+/// `id` is NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn nori_ios_collection_download_act(kind: i32, id: *const c_char, act: i32) -> i32 {
+    let id = c_text(id);
+    with_session(|s| act_on(s, collection_songs(&s.client, kind, id), act)).unwrap_or(0)
+}
+
 fn fetch(kind: i32, id: String) -> Option<Fetch> {
     match kind {
         PAGE_ALBUM => Some(Fetch::Album(id)),
@@ -822,16 +944,6 @@ pub unsafe extern "C" fn nori_ios_play_collection(kind: i32, id: *const c_char, 
 pub unsafe extern "C" fn nori_ios_enqueue_collection(kind: i32, id: *const c_char, next: i32) {
     let Some(what) = fetch(kind, c_text(id)) else { return };
     with_session(|s| s.enqueue_later(what, next != 0));
-}
-
-/// Downloads an album, artist or playlist.
-///
-/// # Safety
-/// `id` is NUL-terminated UTF-8.
-#[no_mangle]
-pub unsafe extern "C" fn nori_ios_download_collection(kind: i32, id: *const c_char) {
-    let Some(what) = fetch(kind, c_text(id)) else { return };
-    with_session(|s| s.download_later(what));
 }
 
 /// Stars (`on` 1) or unstars a song (1), album (2) or artist (3).

@@ -79,7 +79,7 @@ fn song_at(token: u64, index: i32) -> Option<Song> {
     list(token)?.0.into_iter().nth(i)
 }
 
-fn download_of(s: &Session, id: &str) -> SongDownload {
+pub(crate) fn download_of(s: &Session, id: &str) -> SongDownload {
     if s.core.download_song(id).is_some() {
         return SongDownload::Done;
     }

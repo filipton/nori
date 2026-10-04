@@ -131,6 +131,8 @@ extension Notification.Name {
     static let noriNow = Notification.Name("noriNow")
     /// A heart was set or cleared: every heart on screen paints again.
     static let noriFavorites = Notification.Name("noriFavorites")
+    /// Downloads were removed: pages showing them read again.
+    static let noriDownloads = Notification.Name("noriDownloads")
     /// A session opened.
     static let noriOpened = Notification.Name("noriOpened")
     /// Lyrics came for the song in `object`.

@@ -184,6 +184,16 @@ pub fn download_entry(songs: u32, missing: u32) -> DownloadAct {
     }
 }
 
+/// Every download entry a page's menu offers for `songs` songs of which `missing` are not downloaded:
+/// a partly downloaded page can fetch the rest or give back what it holds. [`DownloadAct::Remove`] then
+/// removes only the songs that are downloaded.
+pub fn download_entries(songs: u32, missing: u32) -> Vec<DownloadAct> {
+    match download_entry(songs, missing) {
+        DownloadAct::Missing => vec![DownloadAct::Missing, DownloadAct::Remove],
+        one => vec![one],
+    }
+}
+
 /// The positions of `songs` not yet `done`: what [`DownloadAct::Missing`] fetches. Twin of Android's
 /// `downloadEntry` (DetailScreens.kt).
 pub fn download_missing<'a>(songs: impl IntoIterator<Item = &'a str>, done: impl Fn(&str) -> bool) -> Vec<usize> {
@@ -194,6 +204,14 @@ pub fn download_missing<'a>(songs: impl IntoIterator<Item = &'a str>, done: impl
 mod tests {
     use super::*;
     use nori_model::model::ArtistRef;
+
+    #[test]
+    fn a_partly_downloaded_page_offers_the_rest_and_removal() {
+        use DownloadAct::*;
+        for (songs, missing, want) in [(12, 12, vec![All]), (12, 0, vec![Remove]), (12, 5, vec![Missing, Remove]), (0, 0, vec![All])] {
+            assert_eq!(download_entries(songs, missing), want, "{songs} songs, {missing} missing");
+        }
+    }
 
     fn actions(m: &[SongMenuItem]) -> Vec<(SongAction, bool)> {
         m.iter().map(|i| (i.action.clone(), i.more)).collect()
