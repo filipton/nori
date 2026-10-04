@@ -514,11 +514,13 @@ impl Session {
         });
     }
 
-    /// Stars or unstars on the server (queued when offline).
+    /// Stars or unstars on the server (queued when offline); says so if "Confirm favorites" is on, and
+    /// always when it fails.
     pub fn star(&self, kind: Starrable, id: String, on: bool) {
-        let (client, out) = (self.client.clone(), self.out.clone());
+        let (client, out, notice) = (self.client.clone(), self.out.clone(), self.core.favourite_notice());
         spawn("nori-star", move || {
             let said = match block_on(client.star(kind, id, on, Arc::new(NoMarks))) {
+                Ok(()) if !notice => return,
                 Ok(()) => Note::Starred(on),
                 Err(e) => Note::StarFailed(e),
             };
