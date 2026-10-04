@@ -10,6 +10,17 @@ const FULL: u32 = 800;
 
 const SIZES: [u32; 2] = [ROW, FULL];
 
+/// The rendition to fetch for a cover drawn `px` square: the row size up to it, else the full size.
+/// The client decodes the rendition to its own size, so every view of a cover shares one of two
+/// downloads (and the disk cache keeps two files per cover, not one per view size).
+pub fn cover_rendition(px: u32) -> u32 {
+    if px <= ROW {
+        ROW
+    } else {
+        FULL
+    }
+}
+
 /// Whether cover id `id` (up to the next `&`) is an octo-fiesta provider's: `ext-...` or
 /// `pl-<provider>-<id>`. Navidrome's own playlist covers (`pl-<id>_<timestamp>`) are not.
 fn provider_cover_id(id: &str) -> bool {
@@ -338,6 +349,16 @@ mod tests {
         net.alike("http://keys.lan:4533/", "https://keys.example");
         assert_eq!(key("http://keys.lan:4533/rest/getCoverArt?u=a&t=x&s=y&id=al-1&size=320"), key("https://keys.example/rest/getCoverArt?u=b&id=al-1&size=320"));
         assert_ne!(key("https://other.example/rest/getCoverArt?id=al-1&size=320"), key("https://keys.example/rest/getCoverArt?id=al-1&size=320"));
+    }
+
+    #[test]
+    fn every_view_size_shares_one_of_the_two_renditions() {
+        for px in [1, 80, 264, ROW] {
+            assert_eq!(cover_rendition(px), ROW, "{px}");
+        }
+        for px in [ROW + 1, 440, 544, FULL, 2400] {
+            assert_eq!(cover_rendition(px), FULL, "{px}");
+        }
     }
 
     #[test]
