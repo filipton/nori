@@ -45,6 +45,8 @@ void nori_ios_on_report(NoriReportFn cb);
 /// Opens saved server `server_id` (empty: the active one) and the playback session. NULL on success;
 /// otherwise an English error to free with `nori_ios_free`. A failure leaves no session open.
 char *nori_ios_open(const char *data_dir, const char *server_id);
+/// Keeps the core's log in `dir`/nori.log, local times at `utc_offset_min`.
+void nori_ios_keep_log(const char *dir, int32_t utc_offset_min);
 
 /// Plays queue index `index` from `ms`. The jump number, or 0 when nothing is open.
 uint64_t nori_ios_play_at(int32_t index, int64_t ms);

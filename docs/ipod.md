@@ -151,7 +151,7 @@ The pipeline is `tools/ipod.sh` (one script, like `tools/apk.sh`), built and run
    alone) needs the trust dialog tapped once and is the alternative, not a requirement.
 5. **`run`**: `uiopen -b dev.nori.music`, then the process line and the data dir (the device has no awk or
    pgrep; `ps`, `grep`, `cut` and `sed` only).
-6. **Logs**: the core's `alog` file under the data dir over SSH, `os_log` from Swift, crash reports in
+6. **Logs**: the core's `alog` file (`nori.log` in the data dir, kept from launch) over SSH, `os_log` from Swift, crash reports in
    `/var/mobile/Library/Logs/CrashReporter/`, and symbolication with `atos` against the unstripped
    executable the app step built.
 

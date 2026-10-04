@@ -538,6 +538,17 @@ pub unsafe extern "C" fn nori_ios_open(
     }
 }
 
+/// Keeps the core's log in `dir/nori.log` (`alog_persist`), local times at `utc_offset_min`.
+///
+/// # Safety
+/// `dir` is NUL-terminated UTF-8, or `NULL`.
+#[no_mangle]
+pub unsafe extern "C" fn nori_ios_keep_log(dir: *const c_char, utc_offset_min: i32) {
+    if let Some(dir) = text(dir).filter(|d| !d.is_empty()) {
+        nori_core::alog::alog_persist(dir, utc_offset_min);
+    }
+}
+
 /// Closes the open session, if any, and opens the active saved server in its place. As
 /// [`nori_ios_open`] for the answer.
 ///
