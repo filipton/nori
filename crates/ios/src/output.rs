@@ -182,6 +182,17 @@ pub unsafe extern "C" fn nori_ios_route(
     crate::session::audio_changed();
 }
 
+/// A line from the shim for the core's log (the audio unit's builds and the hardware's rate).
+///
+/// # Safety
+/// `line` is a NUL-terminated UTF-8 string, or null.
+#[no_mangle]
+pub unsafe extern "C" fn nori_ios_audio_log(line: *const c_char) {
+    if !line.is_null() {
+        nori_core::alog::info(&unsafe { CStr::from_ptr(line) }.to_string_lossy());
+    }
+}
+
 /// The shim's media-services reset. The engine reopens on its next turn ([`AudioOutput::failed`]).
 #[no_mangle]
 pub extern "C" fn nori_ios_media_reset() {

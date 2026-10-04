@@ -180,9 +180,12 @@ with the I/O buffer as long as the session allows:
   the I/O thread, each a 32 KB copy from the ring (`Feed::pull` into the unit's float buffers). The desktop
   client runs at exactly this cadence (`PERIOD_MS` 100 in nori-output-cpal) at 0.03 % CPU.
 - `setPreferredSampleRate` to the song's rate family (44.1 or 48 kHz, `OutputFormat.rate` as the engine asks
-  through `open`). The CS42L81 path takes both; the session reports what it granted and the engine's
-  `RingTrack` resamples only when the device would not take the stream's rate. With the rate matched, the
-  system mixer's SRC is out of the path - the closest thing to bit-perfect this hardware offers.
+  through `open`). The CS42L81 path takes both. The unit's input is always the asked rate and Rust is
+  granted exactly it; RemoteIO converts if the hardware is elsewhere. The hardware moves to the preferred
+  rate *after* activation, and a unit built before the move played 44.1 kHz songs 9 % fast or went silent
+  until the engine's stall check reopened it, so the shim builds the unit again (same input rate) whenever
+  its output side changes. With the rate matched, the system mixer's SRC is out of the path - the closest
+  thing to bit-perfect this hardware offers.
 - `takes_float` = true, always: RemoteIO's canonical format is Float32, the mixer is float, the codec is fed
   24-bit. So "high quality output" on means float from the decoder to the DAC with no dither of ours; off
   means the engine's 16-bit chain with its own dither and the mixer converting (cheaper on memory, half the

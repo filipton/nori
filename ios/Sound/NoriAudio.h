@@ -31,6 +31,8 @@ void nori_ios_render(uint32_t frames, float *out);
 /// `unavailable` when the previous device is gone (headphones pulled).
 void nori_ios_route(int32_t port, const char *name, uint64_t latency_us, int unavailable);
 void nori_ios_media_reset(void);
+/// A line for the core's log.
+void nori_ios_audio_log(const char *line);
 void nori_ios_interruption(int began, int resume);
 
 #ifdef __cplusplus
