@@ -938,6 +938,12 @@ fun NoriSwitch(checked: Boolean, onCheckedChange: ((Boolean) -> Unit)?, modifier
     val on = scheme.primary
     val off = LocalLook.current.color(CoverLook.SWITCH_OFF)
     val track = androidx.compose.ui.graphics.lerp(off, on, t).let { if (enabled) it else it.copy(alpha = 0.4f) }
+    // The thumb is white, except over a near-white track (the monochrome theme's), where it would vanish.
+    val thumb = when {
+        !enabled -> Color(0xFFE0E0E0)
+        on.luminance() > 0.8f -> androidx.compose.ui.graphics.lerp(Color.White, scheme.onPrimary, t)
+        else -> Color.White
+    }
     Box(
         modifier.size(width = 51.dp, height = 31.dp)
             .then(
@@ -955,7 +961,7 @@ fun NoriSwitch(checked: Boolean, onCheckedChange: ((Boolean) -> Unit)?, modifier
                 val pad = 2.dp.toPx()
                 val cx = pad + r + (size.width - 2 * (pad + r)) * t
                 drawCircle(Color.Black.copy(alpha = 0.16f), r + 0.5f.dp.toPx(), androidx.compose.ui.geometry.Offset(cx, h / 2f + 1.dp.toPx()))
-                drawCircle(if (enabled) Color.White else Color(0xFFE0E0E0), r, androidx.compose.ui.geometry.Offset(cx, h / 2f))
+                drawCircle(thumb, r, androidx.compose.ui.geometry.Offset(cx, h / 2f))
             },
     )
 }

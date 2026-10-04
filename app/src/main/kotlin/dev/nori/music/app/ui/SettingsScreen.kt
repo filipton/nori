@@ -3,6 +3,7 @@ package dev.nori.music.app.ui
 import android.content.Intent
 import android.media.audiofx.AudioEffect
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -477,11 +478,16 @@ private fun SettingsSectionRows(vm: SettingsViewModel, section: SettingsSection,
                     NoriSlider(row.value, row.min..row.max, { v -> row.level?.let { vm.setLevel(it, v) } ?: vm.set(row.name, v.toString()) }, Modifier.padding(horizontal = 16.dp), centred = row.centred)
                 }
                 is SettingRow.CompressionMeter -> CompressionMeter()
-                is SettingRow.Palette -> Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                // Each swatch gets an equal share of the row, so all of them fit and stay round.
+                is SettingRow.Palette -> Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     row.colours.forEach { c ->
-                        androidx.compose.foundation.layout.Box(
-                            Modifier.size(if (row.chosen == c) 36.dp else 30.dp).background(androidx.compose.ui.graphics.Color(c), androidx.compose.foundation.shape.CircleShape).clickable { vm.set(row.name, c.toString()) },
-                        )
+                        androidx.compose.foundation.layout.Box(Modifier.weight(1f).height(36.dp).clickable { vm.set(row.name, c.toString()) }, contentAlignment = Alignment.Center) {
+                            androidx.compose.foundation.layout.Box(
+                                Modifier.size(if (row.chosen == c) 36.dp else 30.dp).background(androidx.compose.ui.graphics.Color(c), androidx.compose.foundation.shape.CircleShape)
+                                    // The rim keeps the white swatch visible on a light page.
+                                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, androidx.compose.foundation.shape.CircleShape),
+                            )
+                        }
                     }
                 }
                 is SettingRow.Server -> {
