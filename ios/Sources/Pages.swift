@@ -1050,7 +1050,9 @@ class PageController: UITableViewController {
     func open(_ item: Item) {
         switch item.kind {
         case "song":
-            nori_ios_play_list(token, Int32(item.index), 0)
+            if nori_ios_tap_song(token, Int32(item.index)) == 1 {
+                (view.window?.rootViewController as? ShellController)?.openPlayer()
+            }
         case "album":
             navigationController?.pushViewController(PageController(kind: NORI_PAGE_ALBUM, arg: item.id, title: item.title), animated: true)
         case "artist":

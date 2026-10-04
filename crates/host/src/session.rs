@@ -306,6 +306,16 @@ impl Session {
         self.handle().play(songs, start, shuffle, from);
     }
 
+    /// `songs` as the queue around the song playing, `songs[at]`: it goes on where it is, playing or
+    /// paused, rather than starting again (a tap on it in a list). Any other song plays as [`Session::play`]
+    /// would. True when it went on.
+    pub fn keep_playing(&self, songs: Vec<Song>, at: usize, from: Option<PageOrigin>) -> bool {
+        let playing = self.engine.status_with(|s| s.id.clone());
+        let keep = playing.is_some() && songs.get(at).map(|s| &s.id) == playing.as_ref();
+        self.handle().play_kept(songs, at, false, from, keep);
+        keep
+    }
+
     /// Plays an album, playlist or artist once its songs are fetched.
     pub fn play_later(&self, what: Fetch, shuffle: bool) {
         let (client, me) = (self.client.clone(), self.handle());
@@ -704,6 +714,12 @@ impl Handle {
     }
 
     fn play(&self, songs: Vec<Song>, start: usize, shuffle: bool, from: Option<PageOrigin>) {
+        self.play_kept(songs, start, shuffle, from, false);
+    }
+
+    /// [`Handle::play`]; `keep`: the start is the song playing, which goes on with no jump (the queue's
+    /// `set` keeps its entry).
+    fn play_kept(&self, songs: Vec<Song>, start: usize, shuffle: bool, from: Option<PageOrigin>, keep: bool) {
         let picked = songs.get(start).map(|s| s.id.clone());
         let songs: Vec<Song> = songs.into_iter().filter(|s| !s.is_provider() || Some(&s.id) == picked.as_ref()).collect();
         if songs.is_empty() {
@@ -713,7 +729,9 @@ impl Handle {
         self.queue.register(songs.clone());
         let change = self.queue.set(songs.iter().map(|s| s.id.clone()).collect(), (!shuffle).then_some(start as u32), shuffle, from);
         self.edited();
-        self.engine.play_at(change.at.unwrap_or(0) as usize, 0);
+        if !keep {
+            self.engine.play_at(change.at.unwrap_or(0) as usize, 0);
+        }
     }
 
     fn enqueue(&self, songs: Vec<Song>, next: bool) {

@@ -241,6 +241,8 @@ char *nori_ios_song_share(uint64_t token, int32_t index);
 int32_t nori_ios_playlist_add(uint64_t token, int32_t index, const char *playlist);
 int32_t nori_ios_playlist_create(uint64_t token, int32_t index, const char *name);
 int32_t nori_ios_playlist_remove(const char *playlist, int32_t index);
+/// A tap on a song row: plays the list from it, or keeps the playing song going (1: open the player).
+int32_t nori_ios_tap_song(uint64_t token, int32_t index);
 /// A song row's swipe to the left (left 1) or right, by the swipeLeft/swipeRight settings: -1 nothing.
 #define NORI_SWIPE_QUEUE 0
 #define NORI_SWIPE_PLAY_NEXT 1

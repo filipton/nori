@@ -752,6 +752,14 @@ pub extern "C" fn nori_ios_play_list(token: u64, index: i32, shuffle: i32) {
     with_session(|s| s.play(songs, index.max(0) as usize, shuffle != 0, origin));
 }
 
+/// A tap on song `index` of list `token`: the list plays from it, or, when it is the song playing, becomes
+/// the queue around it and the song goes on. 1 when it went on (the app opens the player).
+#[no_mangle]
+pub extern "C" fn nori_ios_tap_song(token: u64, index: i32) -> i32 {
+    let Some((songs, origin)) = list(token) else { return 0 };
+    with_session(|s| s.keep_playing(songs, index.max(0) as usize, origin) as i32).unwrap_or(0)
+}
+
 /// Adds song `index` of list `token` (or all of them for -1) next or at the end.
 #[no_mangle]
 pub extern "C" fn nori_ios_enqueue_list(token: u64, index: i32, next: i32) {
