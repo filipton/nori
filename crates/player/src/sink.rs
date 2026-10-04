@@ -717,8 +717,9 @@ impl<T: Track> Sink<T> {
 
     /// Drops everything queued, processed and kept; the clock restarts at the next buffer.
     pub fn flush(&mut self) {
+        // A reopen waiting for the old format to play out stays: there is nothing left to play, so the next
+        // buffer reopens at once (the transition engine already counts the output as in that format).
         self.track.flush();
-        self.reopen = None;
         self.pending.clear();
         self.pending_pos = 0;
         self.pending_media = 0.0;
@@ -934,6 +935,21 @@ mod tests {
         assert!(sink.fill());
         let written = sink.track.queued_bytes() / 2;
         assert!((2_200..=2_300).contains(&written), "4.5 s at twice the speed: {written} frames");
+    }
+
+    /// Regression: a flush dropped the wait to reopen for another rate, and that stream then played into
+    /// the old format (too slow or too fast). Flushed, the track has nothing left to play out: it reopens.
+    #[test]
+    fn flush_reopens_for_the_waiting_format() {
+        let mut sink = Sink::new(10_000_000, ChainSettings::default(), AudioTrack::new());
+        sink.configure(F);
+        assert!(sink.handle_buffer(&ramp(0, 3000), 0, 0).0);
+        let other = Format { rate: 2000, ..F };
+        sink.configure(other);
+        assert!(sink.reopening(), "waits for the old rate to play out");
+        sink.flush();
+        assert!(sink.handle_buffer(&ramp(0, 100), 0, 0).0);
+        assert_eq!(sink.format, Some(other), "the track is open at the new rate");
     }
 
     #[test]
