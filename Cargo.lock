@@ -3810,6 +3810,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "nori-ios"
+version = "0.5.0"
+dependencies = [
+ "nori-core",
+ "nori-covers",
+ "nori-engine",
+ "nori-host",
+ "nori-http",
+ "nori-look",
+ "nori-player",
+ "nori-testdir",
+ "serde_json",
+]
+
+[[package]]
 name = "nori-library"
 version = "0.5.0"
 dependencies = [

@@ -1,0 +1,25 @@
+[package]
+name = "nori-ios"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "nori's iOS client library: nori-host and the engine behind a C ABI for the UIKit app (docs/ipod.md)"
+publish = false
+
+# libnori_ios.a: linked into the app with Xcode's toolchain (tools/ipod.sh).
+[lib]
+crate-type = ["staticlib"]
+name = "nori_ios"
+
+[dependencies]
+nori-core = { path = "../core", default-features = false }
+nori-engine = { path = "../engine", features = ["core"] }
+nori-host = { path = "../host", default-features = false }
+nori-http = { path = "../http" }
+nori-covers = { path = "../covers" }
+nori-look = { path = "../look" }
+nori-player = { path = "../player" }
+serde_json = "1"
+
+[dev-dependencies]
+nori-testdir = { path = "../testdir" }

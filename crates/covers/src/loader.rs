@@ -8,7 +8,7 @@
 //! - Workers start on demand up to the limit and sleep on a condvar; the disk cache is opened by the
 //!   first worker, so the requesting (UI) thread never touches the disk.
 //! - Workers exit and free their buffers when the loader rests: after [`Config::idle`] with no work,
-//!   when hidden ([`Loader::show`]) or on low memory ([`Loader::rest`]). While hidden no worker waits.
+//!   when hidden ([`Loader::show`]) or on low memory ([`Loader::trim`]). While hidden no worker waits.
 //!
 //! [`Paint`] decides the output: RGBA rows ([`Rgba`]) or a platform picture (Android Bitmaps).
 
@@ -355,6 +355,12 @@ impl<P: Paint> Loader<P> {
         &self.inner.paint
     }
 
+    /// Drops decoded covers and rests the workers. A low-memory signal.
+    pub fn trim(&self) {
+        self.inner.memory.clear();
+        self.rest();
+    }
+
     /// Frees worker threads and their buffers once idle, and calls [`Paint::rest`]. The memory cache
     /// is kept; the next request starts a worker again.
     pub fn rest(&self) {
@@ -620,5 +626,50 @@ impl<P: Paint> Inner<P> {
             }
         }
         Ok(())
+    }
+
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use nori_core::covers::CoverNet;
+
+    use super::{Config, Loader};
+    use crate::disk::Key;
+    use crate::memory::{Image, Sized};
+    use crate::scale::Alpha;
+
+    #[test]
+    fn trim_drops_decoded_covers() {
+        let loader = Loader::new(
+            Config {
+                dir: None,
+                disk_bytes: 0,
+                memory_bytes: 1 << 20,
+                workers: 1,
+                alpha: Alpha::Straight,
+                timeout_ms: 0,
+                idle: std::time::Duration::from_secs(60),
+            },
+            CoverNet::new(),
+        );
+        loader.inner.memory.put(
+            Sized {
+                key: Key([1; 16]),
+                width: 1,
+                height: 1,
+            },
+            Arc::new(Image {
+                width: 1,
+                height: 1,
+                pixels: Box::new([9, 8, 7, 6]),
+            }),
+            4,
+        );
+        assert!(loader.inner.memory.bytes() >= 4);
+        loader.trim();
+        assert_eq!(loader.inner.memory.bytes(), 0);
     }
 }
