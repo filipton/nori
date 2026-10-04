@@ -84,6 +84,8 @@ struct Server {
     clock: Mutex<Option<Virtual>>,
     /// Songs whose connection breaks at this byte, for good.
     cut: Mutex<Vec<(String, u64)>>,
+    /// Songs whose first answer breaks at this byte and whose later answers come this long after.
+    gap: Mutex<Vec<(String, u64, Duration)>>,
 }
 
 /// A body that errors at the cut.
@@ -103,7 +105,12 @@ impl std::io::Read for Broken {
 impl ByteSource for Server {
     fn open(&self, url: &str, from: u64) -> Result<Body, nori_engine::OpenError> {
         self.requests.lock().push((url.to_string(), from));
-        let slow = self.slow.lock().iter().find(|(u, _)| u == url).map(|s| s.1);
+        let first = self.requests.lock().iter().filter(|(u, _)| u == url).count() == 1;
+        let gap = self.gap.lock().iter().find(|(u, ..)| u == url).map(|g| (g.1, g.2));
+        let slow = match gap {
+            Some((_, d)) if !first => Some(d),
+            _ => self.slow.lock().iter().find(|(u, _)| u == url).map(|s| s.1),
+        };
         if let (Some(d), Some(clock)) = (slow, self.clock.lock().clone()) {
             clock.wait_until(clock.now_ns() + d.as_nanos() as i64);
         }
@@ -111,6 +118,9 @@ impl ByteSource for Server {
         let len = file.len() as u64;
         let mut c = Cursor::new(Bytes(file));
         c.set_position(from);
+        if let Some((at, _)) = gap.filter(|_| first) {
+            return Ok(Body { start: from, len: Some(len), reader: Box::new(Broken(c, at)) });
+        }
         if let Some(at) = self.cut.lock().iter().find(|(u, _)| u == url).map(|s| s.1) {
             if from >= at {
                 return Err("connection refused".into());
@@ -840,6 +850,29 @@ fn song_chosen_during_pause_fade_plays() {
     assert_eq!(rig.engine.status().index, Some(1), "{:?}", rig.events.lock());
     assert_eq!(*heard.last().unwrap(), -8000, "b is heard, not a again");
     assert!(heard.len() > at + RATE as usize * 2, "and it plays");
+}
+
+/// A seek into bytes not yet fetched says it waits, holds the place it was sent to while nothing is
+/// heard, and plays on from there once they come.
+#[test]
+fn seek_waiting_for_bytes_holds_the_place() {
+    let a = music(60.0, 83);
+    let songs: [(&str, &[i16]); 1] = [("a", &a)];
+    let extra = Extra::default();
+    extra.server.gap.lock().push(("a".into(), 10 * RATE as u64 * 4, Duration::from_secs(3)));
+    let rig = Rig::build(files(&songs), sim::App::new(), Settings::default(), extra);
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2));
+    let before = rig.events.lock().len();
+    rig.engine.seek(40_000);
+    assert!(rig.wait_for(5, |r| r.events.lock()[before..].contains(&Event::Buffering(true))), "{:?}", rig.events.lock());
+    let heard = rig.heard.lock().len();
+    rig.run(1_000);
+    assert_eq!(rig.heard.lock().len(), heard, "nothing is heard while the bytes are on their way");
+    assert_eq!(rig.engine.status().position_ms, 40_000, "the place stands where it was sent");
+    assert!(rig.wait_for(30, |r| r.heard.lock().len() > heard + 1000), "{:?}", rig.events.lock());
+    assert!(rig.events.lock()[before..].contains(&Event::Buffering(false)), "and says it waits no more");
+    assert!(rig.engine.status().position_ms >= 40_000, "{:?}", rig.engine.status());
 }
 
 /// Buffering(true) is ended when the music stops waiting another way (held elsewhere, released).
