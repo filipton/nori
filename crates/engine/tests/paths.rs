@@ -1029,7 +1029,7 @@ fn offload_volume_restored() {
     rig.engine.play();
     assert!(rig.wait(10, |r| r.heard_song("b") && !r.card.heard.lock().is_empty()), "b on the CPU: {:?}", rig.events.lock());
     assert!(rig.wait(30, |r| r.heard_song("c")), "{:?}", rig.events.lock());
-    assert!(rig.wait(5, |r| r.engine.status().offloaded), "c is the chip's");
+    assert!(rig.wait(5, |r| r.engine.status().offloaded), "c is the chip's: {:?}", rig.engine.status());
     rig.run(1_000);
     // Volume calls since c's track opened.
     let raw = fake.0.lock().calls.clone();

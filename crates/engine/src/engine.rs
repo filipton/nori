@@ -917,6 +917,13 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             return;
         }
         let Some(cur) = self.p.current() else { return };
+        // The song now playing was found decodable by the output while the CPU had already read past
+        // the one before (a whole song read in one burst): the output takes it over where the ear is.
+        if self.h.probe.as_ref().is_some_and(|p| p.0 == cur && p.2 == Some(true)) {
+            self.h.probe = None;
+            self.h.entering = Some((cur, self.p.tracks.open_packets(&self.p.id_at(cur), 0, true)));
+            return;
+        }
         let Some(next) = self.p.queue.read(|q| q.next_of(cur, q.repeat())) else { return };
         if self.h.probe.as_ref().is_none_or(|p| p.0 != next) {
             self.h.probe = Some((next, self.p.tracks.open_packets(&self.p.id_at(next), 0, true), None));
