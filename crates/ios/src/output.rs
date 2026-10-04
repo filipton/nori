@@ -75,7 +75,7 @@ impl Default for Heard {
 }
 
 impl Heard {
-    /// A callback at `now_us` rendered `frames` at `rate`, heard `delay_us` after it starts.
+    /// A callback at `now_us` rendered `frames` of music at `rate`, heard `delay_us` after it starts.
     fn pulled(&self, now_us: u64, delay_us: u64, frames: usize, rate: u32) {
         let play = frames as u64 * 1_000_000 / rate.max(1) as u64;
         self.until_us.store(
@@ -106,24 +106,26 @@ fn render_heard() -> &'static Heard {
     HEARD.get_or_init(Heard::default)
 }
 
-/// Fills `out` from the feed (silence when there is none) and stamps when it will be heard.
+/// Fills `out` from the feed (silence when there is none) and stamps when its music will be heard. Only
+/// music counts: a running unit playing silence holds nothing, so a reopen waiting for it to drain goes on.
 fn paint(
     feed: *mut Feed,
     heard: &Heard,
     out: &mut [f32],
-    channels: usize,
     rate: u32,
     delay_us: u64,
     now_us: u64,
 ) {
-    if feed.is_null() {
+    let music = if feed.is_null() {
         out.fill(0.0);
+        0
     } else {
         // SAFETY: published while the unit is stopped, and the unit is stopped before it is cleared.
-        unsafe { (*feed).pull(out) };
+        unsafe { (*feed).pull(out) }
+    };
+    if music > 0 {
+        heard.pulled(now_us, delay_us, music, rate);
     }
-    let frames = out.len() / channels.max(1);
-    heard.pulled(now_us, delay_us, frames, rate);
 }
 
 /// The audio unit's render callback.
@@ -142,7 +144,6 @@ pub unsafe extern "C" fn nori_ios_render(frames: u32, out: *mut f32) {
         FEED.load(Ordering::Acquire),
         render_heard(),
         buf,
-        channels,
         RATE.load(Ordering::Relaxed),
         LATENCY.load(Ordering::Relaxed),
         HostClock.now_us(),
@@ -328,7 +329,6 @@ impl<C: Clock> IosOutput<C> {
             feed,
             heard,
             out,
-            self.channels.max(1),
             self.rate,
             self.delay_us(),
             self.clock.now_us(),
@@ -824,23 +824,29 @@ mod tests {
     }
 
     #[test]
-    fn latency_is_the_route_plus_what_the_callback_took() {
+    fn latency_is_the_route_plus_the_music_pulled() {
+        let heard = Heard::default();
+        heard.pulled(1_000_000, 12_000, 128, 44_100);
+        // 128 frames at 44.1 kHz is 2902 µs, on top of the route's 12 ms.
+        assert_eq!(heard.left_us(1_000_000), 12_000 + 128 * 1_000_000 / 44_100);
+        assert_eq!(heard.left_us(1_000_000 + 12_000 + 2_902), 0, "heard");
+    }
+
+    #[test]
+    fn a_running_unit_playing_silence_holds_nothing() {
+        // Regression: every callback stamped its period, so a running unit never drained and a reopen
+        // for another rate waited for ever (the first tap on a song of another rate was silent).
         let sim = Sim::new();
         let clock = Manual(Arc::new(AtomicU64::new(1_000_000)));
         let mut out = opened(&sim, &clock);
         let mut buf = [1.0f32; 256];
-        out.render(&mut buf);
-        assert!(
-            buf.iter().all(|s| *s == 0.0),
-            "nothing is playing yet: silence"
-        );
-        // 128 frames at 44.1 kHz is 2902 µs, on top of the route's 12 ms.
-        assert_eq!(out.latency_us(), 12_000 + 128 * 1_000_000 / 44_100);
-        assert!(out.holding());
-        clock
-            .0
-            .store(1_000_000 + out.latency_us(), Ordering::Relaxed);
-        assert_eq!(out.latency_us(), 0, "heard");
+        for period in 0..3 {
+            clock.0.store(1_000_000 + period * 2_902, Ordering::Relaxed);
+            out.render(&mut buf);
+            assert!(buf.iter().all(|s| *s == 0.0), "nothing is playing: silence");
+            assert!(!out.holding(), "period {period}");
+        }
+        assert_eq!(out.latency_us(), 0);
         assert_eq!(out.mixed_us(), 0, "a wired route has nothing mixed ahead");
     }
 
@@ -912,7 +918,6 @@ mod tests {
             std::ptr::null_mut(),
             &heard,
             &mut out,
-            2,
             44_100,
             12_000,
             1_000_000,

@@ -165,24 +165,28 @@ fn build_stream<T: SizedSample + Default + Send + 'static>(
     pull: fn(&mut Feed, &mut [T]) -> usize,
     scale: fn(T, f32) -> T,
 ) -> Result<Stream, String> {
-    let (channels, rate) = (config.channels.max(1) as usize, config.sample_rate);
+    let rate = config.sample_rate;
     let stream = device
         .build_output_stream(
             config,
             move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
-                match feed.try_lock() {
-                    Ok(mut f) => {
-                        pull(&mut f, data);
+                let music = match feed.try_lock() {
+                    Ok(mut f) => pull(&mut f, data),
+                    Err(_) => {
+                        data.fill(T::default());
+                        0
                     }
-                    Err(_) => data.fill(T::default()),
-                }
+                };
                 let v = volume.get();
                 if v != 1.0 {
                     data.iter_mut().for_each(|s| *s = scale(*s, v));
                 }
                 let t = info.timestamp();
                 let delay = t.playback.saturating_duration_since(t.callback).as_micros() as u64;
-                heard.pulled(Instant::now(), delay, data.len() / channels, rate);
+                // Only music counts: playing silence holds nothing, so a reopen waiting to drain goes on.
+                if music > 0 {
+                    heard.pulled(Instant::now(), delay, music, rate);
+                }
             },
             on_error,
             None,
