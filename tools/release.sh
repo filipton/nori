@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Makes a release: a signed APK, checksums and notes, put on GitHub.
+# Makes a release: a signed APK (and with --ipod the iPod's .ipa), checksums and notes, put on GitHub.
 #
 #   tools/release.sh                    the guided release (below)
 #   tools/release.sh --build            only build, into build/release-<version>/, nothing leaves the machine
@@ -7,6 +7,7 @@
 #   tools/release.sh --live             with --publish: published rather than a draft
 #   tools/release.sh --abi arm64-v8a    phones only: about half the size
 #   tools/release.sh --no-test          skip cargo test first
+#   tools/release.sh --ipod             also the iPod app (signed on the iPod: it must be on USB)
 #
 # The guided release shows the latest version on GitHub and the one in the code, asks for the new
 # version, then does every step itself: tools/bump-version.sh, tools/changelog.py --update and
@@ -23,6 +24,7 @@
 # Leaves one directory holding everything a release page needs:
 #
 #   nori-music-<version>.apk    (nori-music-<version>-<abi>.apk with --abi)
+#   nori-ipod-<version>.ipa     with --ipod: the iPod touch app (docs/ipod.md), fake-signed for AppSync
 #   SHA256SUMS                  one line per file, as `sha256sum -c` wants it
 #   RELEASE.txt                 version, commit, ABIs, size, signing certificate
 #
@@ -42,6 +44,7 @@ cd "$(dirname "$0")/.."
 
 ABI=arm64-v8a,x86_64
 RUN_TESTS=1
+IPOD=0
 PUBLISH=0
 GUIDED=1
 DRAFT=--draft
@@ -49,10 +52,11 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --abi) ABI="$2"; shift ;;
     --no-test) RUN_TESTS=0 ;;
+    --ipod) IPOD=1 ;;
     --build) GUIDED=0 ;;
     --publish) PUBLISH=1; GUIDED=0 ;;
     --live) DRAFT="" ;;
-    -h|--help) sed -n 2,39p "$0"; exit 0 ;;
+    -h|--help) sed -n 2,41p "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift
@@ -203,6 +207,14 @@ case "$ABI" in
 esac
 cp app/build/outputs/apk/release/app-release.apk "$out/$name"
 
+ipa=""
+if [ "$IPOD" = 1 ]; then
+  echo "==> building the iPod app"
+  ./tools/ipod.sh rust app sign ipa || die "the iPod build failed: is the iPod on USB? Without --ipod the release is the APK alone"
+  ipa="nori-ipod-$version.ipa"
+  cp "build/ios/$ipa" "$out/$ipa"
+fi
+
 # --- what is in the directory ---------------------------------------------------
 apksigner=$(ls -d "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}}"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1 || true)
 signer() {
@@ -211,7 +223,7 @@ signer() {
     sed -n 's/.*certificate SHA-256 digest: \(.*\)/\1/p' | head -1
 }
 
-( cd "$out" && sha256sum ./*.apk | sed 's# \./# #' > SHA256SUMS )
+( cd "$out" && sha256sum ./*.apk ${ipa:+"./$ipa"} | sed 's# \./# #' > SHA256SUMS )
 
 {
   echo "nori $version"
@@ -224,6 +236,12 @@ signer() {
   echo "  carries ${ABI//,/ + }"
   echo "  $(du -h "$f" | cut -f1)  ·  sha256 $(sha256sum "$f" | cut -c1-16)…"
   echo "  signing certificate SHA-256: $(signer "$f")"
+  if [ -n "$ipa" ]; then
+    echo
+    echo "$ipa"
+    echo "  iOS 12.2 and later, arm64; fake-signed (AppSync)"
+    echo "  $(du -h "$out/$ipa" | cut -f1)  ·  sha256 $(sha256sum "$out/$ipa" | cut -c1-16)…"
+  fi
 } > "$out/RELEASE.txt"
 
 echo
@@ -254,7 +272,7 @@ git push origin "v$version"
 
 echo "==> creating the release${DRAFT:+ (draft)}"
 # shellcheck disable=SC2086
-gh release create "v$version" "$out/$name" "$out/SHA256SUMS" \
+gh release create "v$version" "$out/$name" ${ipa:+"$out/$ipa"} "$out/SHA256SUMS" \
   --title "nori $version" --notes-file "$notes" $DRAFT
 
 echo
