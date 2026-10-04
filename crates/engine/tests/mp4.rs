@@ -53,15 +53,21 @@ fn mp4_aac_keeps_exact_length() {
     }
     let dir = nori_testdir::TempDir::new("mp4");
     let (m4a, reference) = made(&dir);
-    assert_eq!(reference.len(), FRAMES * 2, "ffmpeg cuts to the edit list");
+    // ffmpeg skips the priming; newer ones (8.x) keep the last frame's padding on a raw decode, so only
+    // the song's own length of it is the reference.
+    assert!(reference.len() >= FRAMES * 2, "ffmpeg decoded the whole song: {}", reference.len());
+    let reference = &reference[..FRAMES * 2];
     let ours = decode(&m4a, 0);
-    assert_eq!(ours.len(), FRAMES * 2, "not a frame of priming or padding left");
+    // ffmpeg 8 writes the edit list in the movie's millisecond timescale, so the file itself says the song
+    // to within a millisecond. Priming or padding left would be a whole AAC frame (1024) or more.
+    let frames = ours.len() / 2;
+    assert!(frames.abs_diff(FRAMES) <= RATE / 1000 + 1, "not a frame of priming or padding left: {frames} of {FRAMES}");
     // Two decoders differ by rounding, not by a block of samples.
-    let worst = ours.iter().zip(&reference).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap();
+    let worst = ours.iter().zip(reference).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap();
     assert!(worst <= 4, "lined up with ffmpeg's own decode: {worst}");
     // A seek lands on the same samples as playing from the start.
     let from = decode(&m4a, 1_000);
-    assert_eq!(from.len(), (FRAMES - RATE) * 2);
+    assert_eq!(from.len(), ours.len() - RATE * 2, "a second in, a second shorter");
     let worst = from.iter().zip(&ours[RATE * 2..]).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap();
     assert!(worst <= 4, "a seek into an MP4 lands where the song's time says: {worst}");
 }
