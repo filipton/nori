@@ -182,6 +182,7 @@ final class PlayerCard: UIViewController {
         ])
         closer = DragToClose(self, transition)
         NotificationCenter.default.addObserver(self, selector: #selector(changed), name: .noriNow, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(paintHeart), name: .noriFavorites, object: nil)
         changed()
     }
 
@@ -294,7 +295,7 @@ final class PlayerCard: UIViewController {
     @objc private func nextTapped() { nori_ios_next() }
     @objc private func previousTapped() { nori_ios_previous() }
 
-    private func paintHeart() {
+    @objc private func paintHeart() {
         guard let song = Core.shared.now.song else { return }
         let on = Core.shared.isFavorite(song)
         heart.setImage(on ? Glyph.heartFilled : Glyph.heart, for: .normal)

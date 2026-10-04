@@ -568,6 +568,7 @@ final class PageHeader: UIView {
             PageHeader.round(heart)
             heart.accessibilityLabel = Say.favorite
             heart.addTarget(self, action: #selector(heartTapped), for: .touchUpInside)
+            NotificationCenter.default.addObserver(self, selector: #selector(paintHeart), name: .noriFavorites, object: nil)
             paintHeart()
             row.append(heart)
         }
@@ -607,7 +608,7 @@ final class PageHeader: UIView {
 
     @objc private func artistTapped() { artist?(artistId) }
 
-    private func paintHeart() {
+    @objc private func paintHeart() {
         let on = Core.shared.isFavorite(item)
         heart.setImage(on ? Glyph.heartFilled : Glyph.heart, for: .normal)
         heart.accessibilityTraits = on ? [.button, .selected] : .button
@@ -731,6 +732,7 @@ class PageController: UITableViewController {
         ])
         NotificationCenter.default.addObserver(self, selector: #selector(reload), name: .noriOpened, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(nowChanged), name: .noriNow, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(paintVisibleRows), name: .noriFavorites, object: nil)
         tableView.sectionIndexColor = Theme.secondary
         tableView.sectionIndexBackgroundColor = .clear
         tableView.addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(held(_:))))
@@ -947,10 +949,15 @@ class PageController: UITableViewController {
 
     @objc private func nowChanged() {
         (tableView.tableHeaderView as? PageHeader)?.paint(hero: heroBits())
-        // The rows' playing mark follows the song, in place: a reload would close a row swiped open.
         let id = Core.shared.now.song?.id
         guard id != paintedCurrent else { return }
         paintedCurrent = id
+        paintVisibleRows()
+    }
+
+    /// The visible song rows painted again in place (their playing mark and heart); a reload would close
+    /// a row swiped open.
+    @objc private func paintVisibleRows() {
         for path in tableView.indexPathsForVisibleRows ?? [] {
             guard rows.indices.contains(path.section), rows[path.section].layout == .list,
                   let cell = tableView.cellForRow(at: path) as? ItemCell else { continue }

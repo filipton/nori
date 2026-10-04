@@ -169,6 +169,7 @@ final class MiniPlayer: UIView {
         addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(panned(_:))))
         let center = NotificationCenter.default
         center.addObserver(self, selector: #selector(changed), name: .noriNow, object: nil)
+        center.addObserver(self, selector: #selector(paintHeart), name: .noriFavorites, object: nil)
         center.addObserver(self, selector: #selector(changed), name: UIApplication.didBecomeActiveNotification, object: nil)
         center.addObserver(self, selector: #selector(stopTicking), name: UIApplication.didEnterBackgroundNotification, object: nil)
         changed()
@@ -221,7 +222,7 @@ final class MiniPlayer: UIView {
         nori_ios_toggle()
     }
 
-    private func paintHeart() {
+    @objc private func paintHeart() {
         guard let song = Core.shared.now.song, !song.external else {
             heart.isHidden = true
             return

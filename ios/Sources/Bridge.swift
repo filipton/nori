@@ -129,6 +129,8 @@ func takenJSON(_ p: UnsafeMutablePointer<CChar>?) -> Any? {
 extension Notification.Name {
     /// The playing song, state or place changed: read `Core.shared.now`.
     static let noriNow = Notification.Name("noriNow")
+    /// A heart was set or cleared: every heart on screen paints again.
+    static let noriFavorites = Notification.Name("noriFavorites")
     /// A session opened.
     static let noriOpened = Notification.Name("noriOpened")
     /// Lyrics came for the song in `object`.
@@ -162,6 +164,7 @@ final class Core {
         }
         marks[item.id] = on
         item.id.withCString { nori_ios_star(kind, $0, on ? 1 : 0) }
+        NotificationCenter.default.post(name: .noriFavorites, object: nil)
     }
 
     func start() {
