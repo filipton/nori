@@ -755,16 +755,16 @@ pub extern "C" fn nori_ios_play_list(token: u64, index: i32, shuffle: i32) {
 /// Adds song `index` of list `token` (or all of them for -1) next or at the end.
 #[no_mangle]
 pub extern "C" fn nori_ios_enqueue_list(token: u64, index: i32, next: i32) {
-    let Some((songs, origin)) = list(token) else { return };
-    let (songs, origin) = if index < 0 {
-        (songs, origin)
+    let Some((songs, _)) = list(token) else { return };
+    let songs = if index < 0 {
+        songs
     } else {
         match songs.get(index as usize) {
-            Some(s) => (vec![s.clone()], None),
+            Some(s) => vec![s.clone()],
             None => return,
         }
     };
-    with_session(|s| s.enqueue(songs, next != 0, origin));
+    with_session(|s| s.enqueue(songs, next != 0));
 }
 
 /// Downloads song `index` of list `token`, or all of them for -1.

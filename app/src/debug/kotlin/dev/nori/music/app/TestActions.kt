@@ -151,9 +151,6 @@ object TestActions {
         }
         val r = testRef(ref)
         val songs = songsOf(nori, r)
-        // An album queued whole ("enqueue album:<id>", "playnext album:<id>") comes from its page, as the
-        // page's own Add to queue does: an album run of its own. A song ("song:<id>") comes from no page.
-        val from = (r as? TestRef.Album)?.let { dev.nori.music.ffi.model.PageOrigin(dev.nori.music.ffi.model.OriginKind.ALBUM, it.id) }
         when (verb) {
             // Lyrics load only while the lyrics panel is watching them, which a headless check is not:
             // this asks for them the same way the panel does and parks the answer for the state dump.
@@ -205,8 +202,8 @@ object TestActions {
             "resume" -> player.toggle()
             "next" -> player.next()
             "previous" -> player.previous()
-            "enqueue" -> actions.enqueue(songs, from)
-            "playnext" -> actions.playNext(songs, from)
+            "enqueue" -> actions.enqueue(songs)
+            "playnext" -> actions.playNext(songs)
             "shuffle" -> player.toggleShuffle()
             // "newplaylist <name>|<ref>": the checks create one, look for it on the server, then delete it.
             "newplaylist" -> {

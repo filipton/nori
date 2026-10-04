@@ -841,10 +841,10 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
                     at = q.next_of(i, repeat);
                 }
             }
-            let ids: Vec<(String, u32)> = window.into_iter().map(|i| (q.ids()[i].clone(), q.album_run(i))).collect();
+            let ids: Vec<String> = window.into_iter().map(|i| q.ids()[i].clone()).collect();
             (ids, q.shuffling())
         });
-        let window = window.iter().map(|(id, run)| WindowSong { album_run: *run, ..self.tracks.about(id) }).collect();
+        let window = window.iter().map(|id| self.tracks.about(id)).collect();
         self.app.window(window, shuffling);
     }
 

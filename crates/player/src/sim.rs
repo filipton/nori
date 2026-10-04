@@ -248,7 +248,6 @@ impl Track {
             track: self.number,
             tag_bpm: 0.0,
             radio: false,
-            album_run: 0,
         }
     }
 }
@@ -857,14 +856,6 @@ impl Player {
         let mut p = Player::new(tracks);
         p.app.prefs = prefs;
         p
-    }
-
-    /// Marks the whole queue as one album run (queued from the album page).
-    pub fn as_album(mut self) -> Player {
-        let n = self.queue.live.len();
-        self.queue.live.as_album(0, n);
-        self.queue_changed();
-        self
     }
 
     /// Shuffled with `seed`, starting where that order starts.

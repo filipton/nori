@@ -459,7 +459,8 @@ impl Core {
     }
 
     pub fn save_queue(&self, queue: PlayQueue) -> Result<()> {
-        self.save_queue_with_runs(queue, Vec::new())
+        let json = serde_json::json!({ "songs": queue.songs, "index": queue.index, "position": queue.position_ms, "origin": queue.origin });
+        Ok(db::kv_put(&self.db.lock(), "queue", &json.to_string())?)
     }
 
     pub fn load_queue(&self) -> Result<PlayQueue> {
@@ -471,15 +472,11 @@ impl Core {
             position: u64,
             /// Parsed separately so an unknown origin kind loses only the origin.
             origin: serde_json::Value,
-            /// Album run per song (`Playlist::album_runs`).
-            runs: serde_json::Value,
         }
         let q: Q = db::kv_get(&self.db.lock(), "queue")?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
         let index = q.index.min(q.songs.len().saturating_sub(1) as u32);
         self.session.register(q.songs.clone());
         let origin = serde_json::from_value::<Option<crate::PageOrigin>>(q.origin).ok().flatten();
-        let runs = serde_json::from_value::<Vec<u32>>(q.runs).unwrap_or_default();
-        self.session.put_back_runs(q.songs.iter().map(|s| s.id.clone()).collect(), runs);
         Ok(PlayQueue { songs: q.songs, index, position_ms: q.position, origin })
     }
 
@@ -566,13 +563,6 @@ impl Core {
 }
 
 impl Core {
-    /// [`Core::save_queue`] with each song's album run (dropped unless one per song).
-    pub(crate) fn save_queue_with_runs(&self, queue: PlayQueue, runs: Vec<u32>) -> Result<()> {
-        let runs = if runs.len() == queue.songs.len() { runs } else { Vec::new() };
-        let json = serde_json::json!({ "songs": queue.songs, "index": queue.index, "position": queue.position_ms, "origin": queue.origin, "runs": runs });
-        Ok(db::kv_put(&self.db.lock(), "queue", &json.to_string())?)
-    }
-
     /// Points requests at another address of the same server (LAN vs WAN) without touching the index.
     pub(crate) fn use_address(&self, url: String) {
         let next = self.server.read().rebased(&url);

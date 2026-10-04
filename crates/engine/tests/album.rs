@@ -304,6 +304,8 @@ impl Default for Tags {
 enum Queued {
     /// Each album played from its page.
     AsAlbums,
+    /// All played from their artist's page.
+    FromArtist,
     /// The first song played alone, the others added one by one.
     OneByOne,
     /// The first song played alone, the rest by autofill.
@@ -328,18 +330,19 @@ fn queue(q: &nori_core::queue::Session, songs: &[S], shuffle: bool, how: Queued)
             }
             q.set(ids(runs[0]), Some(0), shuffle, album(&runs[0][0]));
             for r in &runs[1..] {
-                q.take(len(), ids(r), vec![Hand::No; r.len()], album(&r[0]));
+                q.take(len(), ids(r), vec![Hand::No; r.len()]);
             }
         }
+        Queued::FromArtist => _ = q.set(ids(songs), Some(0), shuffle, Some(nori_core::PageOrigin::new(nori_core::OriginKind::Artist, "ar"))),
         Queued::OneByOne => {
             q.set(ids(&songs[..1]), Some(0), shuffle, None);
             for s in &songs[1..] {
-                q.take(len(), ids(std::slice::from_ref(s)), vec![Hand::Last], None);
+                q.take(len(), ids(std::slice::from_ref(s)), vec![Hand::Last]);
             }
         }
         Queued::Autofill => {
             q.set(ids(&songs[..1]), Some(0), shuffle, None);
-            q.take(len(), ids(&songs[1..]), vec![Hand::No; songs.len() - 1], None);
+            q.take(len(), ids(&songs[1..]), vec![Hand::No; songs.len() - 1]);
         }
     }
     assert_eq!(q.playlist(|p| p.ids().to_vec()), ids(songs), "queued in order");
@@ -432,13 +435,25 @@ fn double_album_gapless() {
     assert!(!mixed, "nothing mixed");
 }
 
+/// Albums in order stay gapless however they were queued, and mix into each other.
+#[test]
+fn gapless_however_queued() {
+    let songs = [S("m1", "al", 1), S("m2", "al", 1), S("n1", "bl", 1), S("n2", "bl", 1)];
+    for how in [Queued::AsAlbums, Queued::FromArtist, Queued::OneByOne, Queued::Autofill] {
+        let rig = Rig::tagged("album-queued", &songs, true, 0, true, Measured::Before, false, &Tags { queued: how, ..Tags::default() });
+        rig.engine.play_at(0, 0);
+        let (mixed, order) = rig.to_the_end();
+        assert!(mixed, "the albums are mixed into each other");
+        for (id, kept) in [("m1", true), ("m2", false), ("n1", true)] {
+            let gapless = rig.core.session.planner.transition_note(id).is_some_and(|n| n.kind == nori_player::types::TransitionKind::Gapless);
+            assert_eq!(gapless, kept, "{id} gapless into the next");
+        }
+        rig.heard_as(&order, 0, 0, &[true, false, true], 0);
+    }
+}
+
 #[test]
 fn album_apart_mixes() {
-    // Songs of one album not queued as the album (by hand, or autofill) mix like any others.
-    for how in [Queued::OneByOne, Queued::Autofill] {
-        queued_singly(how);
-    }
-
     // Shuffled album mixes.
     let rig = Rig::new("album-shuffled", &ALBUM, true, 0, true, Measured::Before, true);
     rig.engine.play_at(0, 0);
@@ -448,27 +463,6 @@ fn album_apart_mixes() {
         let note = rig.core.session.planner.transition_note(id);
         assert!(note.as_ref().is_some_and(|n| n.kind != nori_player::types::TransitionKind::Gapless), "{id} mixes into the next: {note:?}");
     }
-
-    // Two albums mix between.
-    let songs = [S("m1", "al", 1), S("m2", "al", 1), S("n1", "bl", 1), S("n2", "bl", 1)];
-    let rig = Rig::new("album-two", &songs, true, 0, true, Measured::Before, false);
-    rig.engine.play_at(0, 0);
-    let (mixed, order) = rig.to_the_end();
-    assert!(mixed, "the albums are mixed into each other");
-    assert_ne!(rig.core.session.planner.transition_note("m2").map(|n| n.kind), Some(nori_player::types::TransitionKind::Gapless));
-    rig.heard_as(&order, 0, 0, &[true, false, true], 0);
-}
-
-fn queued_singly(how: Queued) {
-    let rig = Rig::tagged("album-queued", &ALBUM, true, 0, true, Measured::Before, false, &Tags { queued: how, ..Tags::default() });
-    rig.engine.play_at(0, 0);
-    let (mixed, order) = rig.to_the_end();
-    assert!(mixed, "mixed song into song");
-    for id in &order[..order.len() - 1] {
-        let note = rig.core.session.planner.transition_note(id);
-        assert!(note.as_ref().is_some_and(|n| n.kind != nori_player::types::TransitionKind::Gapless), "{id} mixes into the next: {note:?}");
-    }
-    rig.heard_as(&order, 0, 0, &[false, false], 0);
 }
 
 /// An album with gaps or odd numbering in its tags still plays gapless in queue order. Regression: read

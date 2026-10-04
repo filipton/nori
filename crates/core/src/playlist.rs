@@ -9,8 +9,8 @@ pub use nori_queue::playlist::*;
 impl Core {
     /// Saves the queue and its origin page for the next start.
     pub fn playlist_save(&self, position_ms: u64) -> crate::Result<()> {
-        let (ids, runs, index) = self.session.playlist(|p| (p.ids().to_vec(), p.album_runs().to_vec(), p.current().unwrap_or(0) as u32));
-        self.queue_save(ids, runs, index, position_ms, self.session.origin())
+        let (ids, index) = self.session.playlist(|p| (p.ids().to_vec(), p.current().unwrap_or(0) as u32));
+        self.queue_save(ids, index, position_ms, self.session.origin())
     }
 }
 
@@ -49,7 +49,7 @@ pub(crate) mod tests {
             let from = PageOrigin::new(OriginKind::Playlist, "pl-7");
             s.set(vec!["sv1".into(), "sv2".into()], Some(1), false, Some(from.clone()));
             // Edits and the offline bridge keep the origin.
-            s.take(9, vec!["sv3".into()], vec![Hand::Last], None);
+            s.take(9, vec!["sv3".into()], vec![Hand::Last]);
             s.edit_splice(|p| p.bridge(vec!["sv3".into()]), vec![]);
             s.unbridge();
             assert_eq!(s.origin(), Some(from.clone()));
@@ -59,17 +59,6 @@ pub(crate) mod tests {
             assert_eq!((q.songs.len(), q.index, q.origin.as_ref()), (3, 1, Some(&from)));
             s.set(q.songs.iter().map(|s| s.id.clone()).collect(), Some(q.index), false, q.origin);
             assert!(s.from_page(&nori_library::pages::PageQueue::new(from)));
-
-            s.register(vec![song("sv4"), song("sv5")]);
-            s.set(vec!["sv4".into(), "sv5".into()], Some(0), false, Some(PageOrigin::new(OriginKind::Album, "al-1")));
-            s.take(9, vec!["sv1".into()], vec![Hand::Last], None);
-            let runs = s.playlist(|p| p.album_runs().to_vec());
-            assert_eq!(runs[1], 0);
-            core.playlist_save(0).unwrap();
-            s.set(vec!["sv0".into()], Some(0), false, None);
-            let q = core.load_queue().unwrap();
-            s.set(q.songs.iter().map(|s| s.id.clone()).collect(), Some(q.index), false, q.origin);
-            assert_eq!(s.playlist(|p| p.album_runs().to_vec()), runs);
 
             // No origin, a pre-origin save, or an unknown kind: songs still restore.
             s.set(vec!["sv1".into()], Some(0), false, None);

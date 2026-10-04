@@ -501,8 +501,7 @@ class PlaybackService : MediaLibraryService() {
             val at = index.coerceIn(0, wrappedPlayer.mediaItemCount).toUInt()
             // An undo puts the song back where it was, if the core still has it as the one taken out.
             val back = mediaItems.singleOrNull()?.takeIf { it.isRestored() }?.let { nori.session.playlistRestore(it.mediaId) }?.takeIf { it.at != null }
-            // The page they are all the songs of, if any (an album added whole: MediaItems.origin).
-            val c = back ?: nori.session.playlistTake(at, ids(mediaItems), mediaItems.map { it.queuedAs() ?: Hand.NO }, mediaItems.first().origin())
+            val c = back ?: nori.session.playlistTake(at, ids(mediaItems), mediaItems.map { it.queuedAs() ?: Hand.NO })
             super.addMediaItems(c.at?.toInt() ?: at.toInt(), mediaItems)
         }
 
@@ -601,9 +600,7 @@ class PlaybackService : MediaLibraryService() {
         val fresh = runCatching { nori.library.autofill() }.getOrNull() ?: dev.nori.music.ffi.Refill(emptyList(), null, null)
         // Player work stays on this scope's main dispatcher.
         if (nori.library.autofillArrived(fresh)) {
-            // Where they come from, as the core says: an album from its page (played as an album, as its Add
-            // to queue does), a shuffle's albums from the shuffle.
-            controls.addMediaItems(startedFrom(held(fresh.songs), fresh.from))
+            controls.addMediaItems(held(fresh.songs))
         }
         // A next pressed at the end while these were on the way is taken now, if the user is still there
         // and pressed it moments ago; a press the user has long since settled after is not.

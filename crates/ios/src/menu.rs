@@ -153,7 +153,7 @@ pub extern "C" fn nori_ios_song_act(token: u64, index: i32, action: i32, on: i32
             1
         }
         1 | 2 => {
-            s.enqueue(vec![song.clone()], action == 1, None);
+            s.enqueue(vec![song.clone()], action == 1);
             1
         }
         4 | 5 => {

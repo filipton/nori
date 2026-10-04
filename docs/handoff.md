@@ -42,18 +42,12 @@ Apple's own App Store screenshots and the differences closed. What is left is li
   (`TransitionEngine::position_us`, nori-player engine.rs); crates/engine tests/stretch.rs reads the clock
   back in the mix and follows a lyrics clock through it as a screen does.
 
-- **"Keep albums gapless" is for an album played as an album.** It went by the album id alone, so two songs
-  of one album queued separately (by hand, by autofill, the same song three times) never mixed. Now each
-  queue place has an album run (`Playlist::album_run`, 0 for none, carried through remove, move, undo and
-  the offline bridge, and saved with the queue as `runs`): a queue started from an album (`OriginKind::Album`:
-  its page, a row of it, `play album:`) is one run, and an album added whole (the album page's Add to queue,
-  whose first item carries the origin as a new queue's does, into `playlist_take`'s `from`) is a run of its
-  own. `follows_on_album` needs both songs in the same run, plus the old checks (same album, not shuffled,
-  not going back). Everything else mixes: autofill, single adds, selections, radio, mixes, search, and
-  playlists (a playlist is a list somebody made; the album page plays the album whole). A weighted shuffle
-  (`playlist_set_ordered`) gets no run. `in_album_run` follows the same rule, so ReplayGain's auto mode takes
-  album gain, and gapless offload is needed, only for an album played as one. An artist page's Play (all
-  the artist's songs) is not an album run either.
+- **"Keep albums gapless" goes by the songs, not by how they were queued.** `follows_on_album`: same album,
+  not shuffled, not going back (track and disc numbers). An album from its page, an artist page's Play (the
+  artist's albums one after another), a playlist, single adds and autofill all stay gapless wherever one
+  album plays on in order: the owner wants no case where an album in order is mixed. The same
+  song back to back counts as in order. `in_album_order` follows the same rule for ReplayGain's auto album
+  gain and gapless offload.
 - **ReplayGain turns quiet songs up, to a loudness target.** `nori_player::gain` works out every song's gain:
   its tag (track, album or auto), else the server's `fallbackGain`, else AutoMix's measured loudness ("Measure
   songs without tags"), else the untagged level; moved by `target − (−18)` (ReplayGain 2.0 tags are relative to

@@ -445,7 +445,7 @@ impl Runner {
             Cmd::Load(req) => s.load(req),
             Cmd::Play { songs, start, shuffle, from } => s.play(songs, start, shuffle, from),
             Cmd::PlayFetch(what, shuffle) => s.play_later(what, shuffle),
-            Cmd::Enqueue(songs, next) => s.enqueue(songs, next, None),
+            Cmd::Enqueue(songs, next) => s.enqueue(songs, next),
             Cmd::EnqueueFetch(what, next) => s.enqueue_later(what, next),
             Cmd::Toggle => {
                 // Idle with a restored queue: start it where it was.

@@ -335,7 +335,7 @@ mod tests {
         s.moved_to(3);
         assert_eq!(s.autofill_next_at(1_000), FillNext::Wait, "the last song: the press waits for the fetch out");
         assert!(s.autofill_arrived(2), "the end is still rf4");
-        s.take(4, vec!["rf5".into(), "rf6".into()], vec![nori_player::playlist::Hand::No; 2], None);
+        s.take(4, vec!["rf5".into(), "rf6".into()], vec![nori_player::playlist::Hand::No; 2]);
         assert!(s.autofill_landed_at(1_500), "still on the song the press was made on, half a second later");
         s.repeat(2);
         s.moved_to(5);
@@ -364,7 +364,7 @@ mod tests {
             s.moved_to(i as i32);
         }
         assert!(s.autofill_arrived(15), "the songs go in either way");
-        s.take(3, vec![format!("{tag}-a"), format!("{tag}-b")], vec![nori_player::playlist::Hand::No; 2], None);
+        s.take(3, vec![format!("{tag}-a"), format!("{tag}-b")], vec![nori_player::playlist::Hand::No; 2]);
         s.autofill_landed_at(arrive)
     }
 
@@ -384,22 +384,22 @@ mod tests {
         // The same song, another entry of it.
         s.moved_to(0);
         assert!(s.autofill_arrived(15));
-        s.take(3, vec!["se2".into()], vec![nori_player::playlist::Hand::No], None);
+        s.take(3, vec!["se2".into()], vec![nori_player::playlist::Hand::No]);
         assert!(!s.autofill_landed_at(10_300), "the press was made on the last entry, not here");
 
         // Fetch for moved end is dropped.
         let s = crate::playlist::tests::session(&["em0", "em1", "em2"], 1);
         assert!(s.autofill_start());
         // Add to queue inserts after the current song, so the end is still em2.
-        s.take(3, vec!["mine".into()], vec![nori_player::playlist::Hand::Last], None);
+        s.take(3, vec!["mine".into()], vec![nori_player::playlist::Hand::Last]);
         assert_eq!(s.autofill_seed().as_deref(), Some("em2"));
         assert!(s.autofill_arrived(15));
-        s.take(4, vec!["em3".into()], vec![nori_player::playlist::Hand::No], None);
+        s.take(4, vec!["em3".into()], vec![nori_player::playlist::Hand::No]);
         assert!(!s.autofill_landed_at(0), "no next was waiting");
         // Songs appended elsewhere move the end: the fill is dropped.
         s.moved_to(3);
         assert!(s.autofill_start());
-        s.take(5, vec!["em4".into()], vec![nori_player::playlist::Hand::No], None);
+        s.take(5, vec!["em4".into()], vec![nori_player::playlist::Hand::No]);
         assert!(!s.autofill_arrived(15));
         assert!(s.autofill_start());
         s.set(vec!["n0".into(), "n1".into()], Some(0), false, None);

@@ -697,17 +697,6 @@ impl Rig {
     fn albums(server: Arc<Server>, songs: Vec<(String, String, i64)>, albums: Vec<(String, String, i32)>, app: impl App + Send + 'static, fake: Option<Fake>, settings: Settings) -> Rig {
         let queue = SharedQueue::default();
         queue.0.lock().set(songs.iter().map(|s| s.0.clone()).collect(), Some(0), false, 0);
-        // Adjacent songs of an album were queued as that album.
-        let album_of = |id: &str| albums.iter().find(|a| a.0 == id).map(|a| a.1.clone());
-        let mut from = 0;
-        for k in 1..=songs.len() {
-            if k == songs.len() || album_of(&songs[k].0) != album_of(&songs[from].0) {
-                if album_of(&songs[from].0).is_some() {
-                    queue.0.lock().as_album(from, k);
-                }
-                from = k;
-            }
-        }
         let card = Card::new();
         let events = Arc::new(Mutex::new(Vec::new()));
         let seen = events.clone();

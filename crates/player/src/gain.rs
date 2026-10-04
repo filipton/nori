@@ -61,16 +61,16 @@ pub struct SongLoudness {
     pub measured_lufs: Option<f32>,
 }
 
-/// Linear gain for a song: tag (track or album; `in_album_run` for auto), else the server's fallback,
+/// Linear gain for a song: tag (track or album; `in_album_order` for auto), else the server's fallback,
 /// else measured loudness, else the untagged level, shifted to the target. Up to 1 it is held under the
 /// peak; above 1 (only with a cap) it is held to the cap and the limiter guards the peaks.
-pub fn song_gain(p: &GainPrefs, song: &SongLoudness, in_album_run: bool) -> f32 {
+pub fn song_gain(p: &GainPrefs, song: &SongLoudness, in_album_order: bool) -> f32 {
     if p.mode == GainMode::Off {
         return 1.0;
     }
     let album = match p.mode {
         GainMode::Album => true,
-        GainMode::Auto => in_album_run,
+        GainMode::Auto => in_album_order,
         _ => false,
     };
     let offset = p.target_offset_db();
@@ -137,7 +137,7 @@ mod tests {
         let s = tagged(-6.0, -3.0);
         assert!(close(db(song_gain(&prefs(GainMode::Track), &s, true)), -6.0));
         assert!(close(db(song_gain(&prefs(GainMode::Album), &s, false)), -3.0));
-        assert!(close(db(song_gain(&prefs(GainMode::Auto), &s, true)), -3.0), "in an album run: the album's");
+        assert!(close(db(song_gain(&prefs(GainMode::Auto), &s, true)), -3.0), "inside an album in order: the album's");
         assert!(close(db(song_gain(&prefs(GainMode::Auto), &s, false)), -6.0), "elsewhere: the song's own");
         assert_eq!(song_gain(&prefs(GainMode::Off), &s, false), 1.0);
         // One tag missing: the other.
@@ -210,7 +210,7 @@ mod tests {
         assert!(close(song_gain(&GainPrefs::attenuating(GainMode::Track, 0.0, -6.0), &peaky, false), 0.8), "no clipping");
         let s = tagged(-6.0, -3.0);
         let auto = GainPrefs::attenuating(GainMode::Auto, 0.0, -6.0);
-        assert!(close(db(song_gain(&auto, &s, true)), -3.0), "inside an album run: album gain");
+        assert!(close(db(song_gain(&auto, &s, true)), -3.0), "inside an album in order: album gain");
         assert!(close(db(song_gain(&auto, &s, false)), -6.0), "elsewhere: track gain");
     }
 

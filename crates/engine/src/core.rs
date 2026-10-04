@@ -295,10 +295,9 @@ pub fn measuring_ahead(analyses: &Arc<Analyses>, session: Arc<Session>) -> Taker
     Arc::new(move |song: &AheadSong| analyses.measure_as_it_comes(&song.id, key_format(&song.key).or_else(|| session.song(&song.id).map(|s| s.suffix)).as_deref(), true))
 }
 
-/// What the planner and seek bar know of `id`, from `session`'s songs; the album run is stamped by the
-/// window (`Session::window`).
+/// What the planner and seek bar know of `id`, from `session`'s songs.
 pub fn about(session: &Session, id: &str) -> WindowSong {
-    nori_core::queue::window_song_of(session.song(id).as_ref(), id, 0)
+    nori_core::queue::window_song_of(session.song(id).as_ref(), id)
 }
 
 /// Whether `id` may be fetched unasked (never a provider's song).

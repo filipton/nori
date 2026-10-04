@@ -18,9 +18,6 @@ pub struct WindowSong {
     pub tag_bpm: f32,
     /// A radio stream: never mixed.
     pub radio: bool,
-    /// The queue's album run for this entry (`playlist::Playlist::album_run`): shared by the songs of an
-    /// album queued whole; 0 otherwise.
-    pub album_run: u32,
 }
 
 /// The user's transition settings.
@@ -36,7 +33,7 @@ pub struct TransitionPrefs {
     pub filter_effects: bool,
     pub echo_out: bool,
     pub keep_pitch: bool,
-    /// An album queued whole stays gapless.
+    /// Songs of one album in order stay gapless ([`follows_on_album`]).
     pub keep_albums: bool,
     /// ReplayGain is on, so AutoMix does not match loudness.
     pub replay_gain: bool,
@@ -48,13 +45,13 @@ pub struct TransitionPrefs {
     pub fade_out_ms: i32,
 }
 
-/// `b` plays right after `a` as part of an album queued whole: same non-zero album run, same album, not
-/// shuffled, and not going back ([`goes_back`]). Such songs are never mixed.
+/// `b` plays right after `a` on their album however they were queued: same album, not shuffled, and not
+/// going back ([`goes_back`]). Such songs are never mixed.
 ///
 /// Track and disc numbers need not be consecutive (real tags skip and omit them); only a known lower
 /// disc or a lower track on the same disc means the album is not playing on.
 pub fn follows_on_album(a: &WindowSong, b: &WindowSong, shuffling: bool) -> bool {
-    if shuffling || a.album_run == 0 || a.album_run != b.album_run || a.album_id.is_none() || a.album_id != b.album_id {
+    if shuffling || a.album_id.is_none() || a.album_id != b.album_id {
         return false;
     }
     !goes_back(a, b)
@@ -72,7 +69,7 @@ fn goes_back(a: &WindowSong, b: &WindowSong) -> bool {
 
 /// `current` is inside an album played in order ([`follows_on_album`] with a neighbour), for album gain
 /// and gapless offload.
-pub fn in_album_run(before: Option<&WindowSong>, current: &WindowSong, after: Option<&WindowSong>, shuffling: bool) -> bool {
+pub fn in_album_order(before: Option<&WindowSong>, current: &WindowSong, after: Option<&WindowSong>, shuffling: bool) -> bool {
     after.is_some_and(|n| follows_on_album(current, n, shuffling)) || before.is_some_and(|p| follows_on_album(p, current, shuffling))
 }
 
@@ -206,7 +203,7 @@ mod tests {
     }
 
     fn song(id: &str, album: Option<&str>, track: i32) -> WindowSong {
-        WindowSong { id: id.into(), title: id.into(), duration_ms: 200_000, album_id: album.map(Into::into), disc: 1, track, tag_bpm: 0.0, radio: false, album_run: album.map_or(0, |_| 1) }
+        WindowSong { id: id.into(), title: id.into(), duration_ms: 200_000, album_id: album.map(Into::into), disc: 1, track, tag_bpm: 0.0, radio: false }
     }
 
     #[test]
@@ -240,8 +237,8 @@ mod tests {
     fn album_order() {
         let w = [song("a", Some("x"), 3), song("b", Some("x"), 4)];
         assert!(!pick(&TransitionPrefs { keep_albums: false, ..prefs() }, false, &w, "a", false).unwrap().settings.same_album_in_order);
-        assert!(in_album_run(None, &w[0], Some(&w[1]), false) && in_album_run(Some(&w[0]), &w[1], None, false));
-        assert!(!in_album_run(None, &song("c", None, 1), None, false));
+        assert!(in_album_order(None, &w[0], Some(&w[1]), false) && in_album_order(Some(&w[0]), &w[1], None, false));
+        assert!(!in_album_order(None, &song("c", None, 1), None, false));
         let in_order = |a: WindowSong, b: WindowSong| pick(&prefs(), false, &[a, b], "a", false).unwrap().settings.same_album_in_order;
         let tagged = |id: &str, disc: i32, track: i32| WindowSong { disc, ..song(id, Some("x"), track) };
         assert!(in_order(tagged("a", 1, 3), tagged("b", 1, 4)));
@@ -266,18 +263,9 @@ mod tests {
         assert!(in_order(tagged("a", 1, 7), tagged("b", 1, 7)), "the same number twice is not going back");
         assert!(!in_order(tagged("a", 1, 0), WindowSong { album_id: Some("y".into()), ..tagged("b", 1, 0) }), "another album");
         assert!(!pick(&prefs(), false, &[tagged("a", 1, 0), tagged("b", 1, 0)], "a", true).unwrap().settings.same_album_in_order, "shuffled");
-
-        // Only album runs are in order.
-        let in_order = |a: WindowSong, b: WindowSong| pick(&prefs(), false, &[a, b], "a", false).unwrap().settings.same_album_in_order;
-        let run = |id: &str, track: i32, run: u32| WindowSong { album_run: run, ..song(id, Some("x"), track) };
-        assert!(in_order(run("a", 1, 7), run("b", 2, 7)), "one run: the album played from its page, or added whole");
-        assert!(!in_order(run("a", 1, 0), run("b", 2, 0)), "two songs of the album queued one at a time, or by autofill");
-        assert!(!in_order(run("a", 1, 7), run("b", 2, 0)), "a song of the album queued after the album");
-        assert!(!in_order(run("a", 12, 7), run("b", 1, 8)), "the album added twice: its end and its start again");
-        assert!(!in_order(run("a", 3, 0), run("a", 3, 0)), "the same song queued again");
-        assert!(in_order(run("a", 3, 4), run("a", 3, 4)), "the same place: repeat one on an album's song");
-        assert!(!in_album_run(Some(&run("p", 1, 0)), &run("c", 2, 0), Some(&run("n", 3, 0)), false), "ReplayGain's album gain likewise");
-        assert!(in_album_run(Some(&run("p", 1, 2)), &run("c", 2, 2), Some(&run("n", 3, 0)), false));
+        assert!(!in_order(tagged("a", 1, 12), tagged("b", 1, 1)), "the album queued twice: its end and its start again");
+        assert!(!in_album_order(Some(&tagged("p", 1, 5)), &tagged("c", 1, 2), Some(&tagged("n", 1, 1)), false), "ReplayGain's album gain likewise");
+        assert!(in_album_order(Some(&tagged("p", 1, 1)), &tagged("c", 1, 2), None, false));
     }
 
     #[test]

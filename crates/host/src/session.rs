@@ -317,18 +317,16 @@ impl Session {
         });
     }
 
-    /// Adds songs after the current one (`next`) or at the end. `from`: the page these are all the
-    /// songs of (keeps an album gapless).
-    pub fn enqueue(&self, songs: Vec<Song>, next: bool, from: Option<PageOrigin>) {
-        self.handle().enqueue(songs, next, from);
+    /// Adds songs after the current one (`next`) or at the end.
+    pub fn enqueue(&self, songs: Vec<Song>, next: bool) {
+        self.handle().enqueue(songs, next);
     }
 
-    /// Enqueues an album, playlist or artist once fetched, as one run from its page.
+    /// Enqueues an album, playlist or artist once fetched.
     pub fn enqueue_later(&self, what: Fetch, next: bool) {
         let (client, me) = (self.client.clone(), self.handle());
-        let from = what.origin();
         spawn("nori-enqueue", move || match what.songs(&client) {
-            Ok(songs) => me.enqueue(songs, next, Some(from)),
+            Ok(songs) => me.enqueue(songs, next),
             Err(e) => me.note(Note::SongsFailed(e)),
         });
     }
@@ -636,11 +634,11 @@ impl Session {
         let (client, me) = (self.client.clone(), self.handle());
         spawn("nori-autofill", move || {
             let fresh = block_on(client.autofill());
-            let (ids, from): (Vec<String>, _) = (fresh.songs.iter().map(|s| s.id.clone()).collect(), fresh.from.clone());
+            let ids: Vec<String> = fresh.songs.iter().map(|s| s.id.clone()).collect();
             if client.autofill_arrived(fresh) && !ids.is_empty() {
                 let len = me.queue.playlist(|p| p.len());
                 let n = ids.len();
-                me.queue.take(len as u32, ids, vec![Hand::No; n], from);
+                me.queue.take(len as u32, ids, vec![Hand::No; n]);
                 me.edited();
             }
             if me.queue.autofill_landed() {
@@ -716,7 +714,7 @@ impl Handle {
         self.engine.play_at(change.at.unwrap_or(0) as usize, 0);
     }
 
-    fn enqueue(&self, songs: Vec<Song>, next: bool, from: Option<PageOrigin>) {
+    fn enqueue(&self, songs: Vec<Song>, next: bool) {
         // A single picked song may be a provider's; lists never include them.
         let songs: Vec<Song> = if songs.len() == 1 { songs } else { songs.into_iter().filter(|s| !s.is_provider()).collect() };
         if songs.is_empty() {
@@ -727,7 +725,7 @@ impl Handle {
         let (len, current) = self.queue.playlist(|p| (p.len(), p.current()));
         let at = if next { current.map_or(len, |c| c + 1) } else { len };
         let hand = if next { Hand::Next } else { Hand::Last };
-        self.queue.take(at as u32, songs.iter().map(|s| s.id.clone()).collect(), vec![hand; n], from);
+        self.queue.take(at as u32, songs.iter().map(|s| s.id.clone()).collect(), vec![hand; n]);
         self.edited();
         if len == 0 {
             self.engine.go_to(0, 0);

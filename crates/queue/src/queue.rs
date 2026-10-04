@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use nori_db as db;
 use nori_model::Song;
 use nori_player::gain::{song_gain, stereo_loudness_of_mid, GainMode as PlayerGainMode, GainPrefs, GainTags as PlayerGainTags, SongLoudness};
-use nori_player::transitions::{in_album_run, WindowSong};
+use nori_player::transitions::{in_album_order, WindowSong};
 
 use crate::Session;
 
@@ -21,8 +21,8 @@ pub struct Store {
 
 pub use nori_model::{analysable, is_radio};
 
-/// The planner's and seek bar's view of `id` (as `song` says, when known) at a place with album run `run`.
-pub fn window_song_of(song: Option<&Song>, id: &str, run: u32) -> WindowSong {
+/// The planner's and seek bar's view of `id` (as `song` says, when known).
+pub fn window_song_of(song: Option<&Song>, id: &str) -> WindowSong {
     match song {
         Some(song) => WindowSong {
             id: song.id.clone(),
@@ -33,14 +33,13 @@ pub fn window_song_of(song: Option<&Song>, id: &str, run: u32) -> WindowSong {
             track: song.track as i32,
             tag_bpm: song.bpm as f32,
             radio: false,
-            album_run: run,
         },
         None => WindowSong { id: id.to_string(), title: id.to_string(), radio: is_radio(id), ..Default::default() },
     }
 }
 
-fn window_song(s: &Store, id: &str, run: u32) -> WindowSong {
-    window_song_of(s.songs.get(id).map(|(song, _)| song), id, run)
+fn window_song(s: &Store, id: &str) -> WindowSong {
+    window_song_of(s.songs.get(id).map(|(song, _)| song), id)
 }
 
 /// AutoMix's measured mid-signal loudness of `id` in `db`, if analysed.
@@ -98,24 +97,24 @@ impl Session {
         self.store(|s| ids.iter().map(|id| (id.clone(), s.songs.get(id).map_or(0, |(song, _)| song.duration as i64 * 1000))).collect())
     }
 
-    /// Hands the planner its window: (id, album run) for the previous, current and next songs in play order.
-    pub(crate) fn hand_window(&self, songs: &[(String, u32)], shuffling: bool) {
-        let window = self.store(|s| songs.iter().map(|(id, run)| window_song(s, id, *run)).collect());
+    /// Hands the planner its window: the previous, current and next songs in play order.
+    pub(crate) fn hand_window(&self, songs: &[String], shuffling: bool) {
+        let window = self.store(|s| songs.iter().map(|id| window_song(s, id)).collect());
         self.planner.transition_window(window, shuffling);
     }
 
-    /// The ReplayGain volume for `current` given its neighbours (each with its album run; album gain
-    /// applies only inside a run). 1.0 for nothing, radio or bit-perfect output. Untagged songs fall back
-    /// to AutoMix's measured loudness.
-    pub fn queue_gain(&self, before: Option<(String, u32)>, current: Option<(String, u32)>, after: Option<(String, u32)>, prefs: &GainPrefs, bit_perfect: bool, shuffling: bool) -> f32 {
-        let Some((current, current_run)) = current.filter(|(id, _)| !is_radio(id)) else { return 1.0 };
+    /// The ReplayGain volume for `current` given its neighbours (album gain applies only inside an album
+    /// in order). 1.0 for nothing, radio or bit-perfect output. Untagged songs fall back to AutoMix's
+    /// measured loudness.
+    pub fn queue_gain(&self, before: Option<String>, current: Option<String>, after: Option<String>, prefs: &GainPrefs, bit_perfect: bool, shuffling: bool) -> f32 {
+        let Some(current) = current.filter(|id| !is_radio(id)) else { return 1.0 };
         if bit_perfect {
             return 1.0;
         }
         let (run, mut song, channels) = self.store(|s| {
-            let w = |p: &Option<(String, u32)>| p.as_ref().map(|(i, r)| window_song(s, i, *r));
-            let (b, c, a) = (w(&before), window_song(s, &current, current_run), w(&after));
-            let run = in_album_run(b.as_ref(), &c, a.as_ref(), shuffling);
+            let w = |p: &Option<String>| p.as_deref().map(|i| window_song(s, i));
+            let (b, c, a) = (w(&before), window_song(s, &current), w(&after));
+            let run = in_album_order(b.as_ref(), &c, a.as_ref(), shuffling);
             let known = s.songs.get(&current).map(|(song, _)| song);
             let rg = known.and_then(|song| song.replay_gain.as_ref());
             let tags = rg.map(|g| PlayerGainTags {

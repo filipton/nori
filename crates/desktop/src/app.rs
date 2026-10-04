@@ -511,11 +511,10 @@ impl App {
         }
     }
 
-    /// Adds the whole page to the queue; `from` keeps an album gapless.
+    /// Adds the whole page to the queue.
     fn enqueue_page(&self) {
         if !self.page_songs.is_empty() {
-            let from = self.page_fetch.as_ref().map(Fetch::origin);
-            self.on_session(|s| s.enqueue(self.page_songs.clone(), false, from));
+            self.on_session(|s| s.enqueue(self.page_songs.clone(), false));
         }
     }
 
@@ -916,7 +915,7 @@ impl App {
         let Some(one) = songs.get(i).cloned() else { return };
         self.on_session(|s| match how {
             0 => s.play(songs.clone(), i, false, origin),
-            _ => s.enqueue(vec![one], how == 1, None),
+            _ => s.enqueue(vec![one], how == 1),
         });
     }
 

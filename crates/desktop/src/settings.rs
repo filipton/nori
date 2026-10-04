@@ -281,7 +281,7 @@ impl Build<'_> {
             let n = self.f.analysed;
             between.push(self.action("Measured songs", format!("{} measured for tempo and beats.", words::count(n, "song", "songs")), "Measure again", n > 0, Chore::MeasureAgain));
         }
-        between.push(self.toggle_if("crossfadeKeepAlbums", "Keep albums gapless", "An album played or added to the queue whole plays without mixing between its songs.", live));
+        between.push(self.toggle_if("crossfadeKeepAlbums", "Keep albums gapless", "Songs of one album that follow each other in order play without mixing.", live));
         between.push(self.choice("fadeMs", "Fade on play and pause", |v| off_or(v, |v| if v.parse::<u32>().is_ok_and(|n| n % 1000 == 0) { seconds(&(v.parse::<u32>().unwrap_or(0) / 1000).to_string()) } else { format!("{v} ms") })));
 
         let controls = vec![

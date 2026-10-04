@@ -803,7 +803,6 @@ pub struct WindowSong {
     pub track: i32,
     pub tag_bpm: f32,
     pub radio: bool,
-    pub album_run: u32,
 }
 
 #[cfg(feature = "ffi")]

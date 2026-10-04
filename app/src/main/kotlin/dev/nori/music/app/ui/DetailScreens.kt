@@ -105,7 +105,7 @@ private fun PlayButtons(songs: List<Song>, actions: ActionsViewModel, from: Page
             say.shuffle, Icons.Filled.Shuffle, { actions.shuffle(songs, from) }, Modifier.weight(1f),
             prominent = shuffling.shuffle, enabled = songs.isNotEmpty(),
         )
-        IconButton({ actions.enqueue(songs, from) }, enabled = songs.isNotEmpty()) { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, say.addAllToQueue) }
+        IconButton({ actions.enqueue(songs) }, enabled = songs.isNotEmpty()) { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, say.addAllToQueue) }
         IconButton({ actions.download(songs) }, enabled = songs.isNotEmpty()) { Icon(Icons.Filled.Download, say.downloadAll) }
     }
 }
@@ -310,7 +310,7 @@ private fun AlbumPage(album: Album, detail: AlbumDetail?, failed: String?, actio
         actions = {
             val albumStarred = LocalStarMarks.current.effectiveStar(dev.nori.music.data.StarKind.ALBUM, album.id, album.starred)
             FavoriteCircle(albumStarred) { actions.starAlbum(album.id, !albumStarred); Unit }
-            LateMore(detail != null) { listOf(say.addToQueue to { actions.enqueue(detail!!.songs, from) }, downloadEntry(detail!!.songs, done, actions)) }
+            LateMore(detail != null) { listOf(say.addToQueue to { actions.enqueue(detail!!.songs) }, downloadEntry(detail!!.songs, done, actions)) }
         },
     ) {
         when {
