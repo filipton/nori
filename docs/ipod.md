@@ -112,12 +112,20 @@ Decisions, with the reasons:
 
 ## 4. Toolchain and the build pipeline
 
-What each half needs: the Rust library builds on any Mac with the `aarch64-apple-ios` target and an
-iPhoneOS SDK (Xcode's, or a copy of it on a Mac with only the Command Line Tools: `NORI_IOS_SDK`). The
-app links with **Xcode 15.x** (15.2 with the iOS 17.2 SDK is what it was built with), on the same Mac or
-on another one over SSH (`NORI_IOS_MAC`). Xcode 15.x is the right generation: its documented deployment
-range starts at iOS 12.0 and it predates the Xcode 26 linker that produces binaries crashing on iOS
-12.5.x (reported on the developer forums). No Xcode attaches a debugger to an iOS 12 device (device
+What each half needs: the Rust library builds with the `aarch64-apple-ios` target and an iPhoneOS SDK. The
+app first linked with **Xcode 15.x** (15.2 with the iOS 17.2 SDK), on the same Mac or on another one over
+SSH (`NORI_IOS_MAC`). Xcode 15.x is the right generation: its documented deployment range starts at iOS
+12.0 and it predates the Xcode 26 linker that produces binaries crashing on iOS 12.5.x (reported on the
+developer forums), so any Mac links with `-ld_classic`.
+
+Without Xcode, `tools/ipod.sh` builds the same app from three open pieces, fetched once into
+`~/.cache/nori-ios` with pinned checksums: theos' copy of the iPhoneOS 16.4 SDK (headers, `.tbd` stubs and
+Swift interfaces, 221 MB), and from swift.org's macOS toolchain the `libswiftCompatibility*.a` that a
+deployment target below iOS 13 links plus Darwin's `Dispatch`/`os` API notes (Linux's Swift has neither). On a Mac
+the Command Line Tools' `swiftc`, clang and ld compile and link. On Linux the steps run in
+`tools/ios-build/Dockerfile`'s container: swift.org's Linux Swift, lld's Mach-O linker and Procursus'
+ldid. Linux's Swift resource directory carries its own `Dispatch` module, which clashes with the SDK's, so
+`build-app.sh` builds against a resource directory of only `shims`, `clang` and those iOS parts. No Xcode attaches a debugger to an iOS 12 device (device
 support starts at iOS 15 in 15.2); debugging is logs over SSH, which the jailbreak makes easy.
 
 Rust: `aarch64-apple-ios` supports iOS 10+, set `IPHONEOS_DEPLOYMENT_TARGET=12.2`. The static library needs
@@ -130,8 +138,8 @@ The pipeline is `tools/ipod.sh` (one script, like `tools/apk.sh`), built and run
    `nori-host` built first time: 48 s,
    `libnori_ios.a` 9.2 MB, every object `platform IOS minos 12.2`. Release profile as the workspace has it
    (fat LTO, one codegen unit, panic = unwind so a core panic surfaces as an error, not a crash).
-2. **`app`, where Xcode is**: `ios/`, the `.a` and the licence texts go to a work directory (here, or
-   rsynced to `NORI_IOS_MAC`) and `ios/build-app.sh` runs there. **There is no
+2. **`app`**: `ios/`, the `.a` and the licence texts go to a work directory (here, or rsynced to
+   `NORI_IOS_MAC`) and `ios/build-app.sh` runs there. **There is no
    Xcode project**: one `swiftc` call (`-target arm64-apple-ios12.2 -O -wmo`, the bridging header
    `ios/Sources/nori_ios.h`, `-lnori_ios -lc++`, the frameworks, `-Xlinker -ld_classic -dead_strip`)
    is the whole build, so it runs from a shell and nothing in a `.pbxproj` drifts. `nori.app`
@@ -692,7 +700,6 @@ perf recorder from `nori-perf` fed by a `crates/ios/src/perf.rs` reading `task_t
 The motion pass (every animation listed as `docs/motion.md` does, with its status), VoiceOver labels,
 Dynamic Type at the largest size on 320 pt, the memory budget with a 2000-album grid, the offload
 experiment of 5.3 if W13's numbers say the I/O thread is what costs. Done: `tools/release.sh` produces
-the .ipa with `--ipod` (`tools/ipod.sh ipa`; no iPod needed with the Mac's ldid); a release without it is the APK alone, so
-the newest .ipa is on the last release made with `--ipod`. The plan: `tools/release.sh` producing
+the .ipa (`tools/ipod.sh ipa`; no iPod and no Xcode needed); `--no-ipod` makes a release of the APK alone. The plan: `tools/release.sh` producing
 `build/nori-ipod-<version>.ipa` (a `Payload/` zip of the signed `nori.app`) beside the APK, and the
 changelog's `feat`/`fix`/`perf` subjects covering the iPod as they cover Android.

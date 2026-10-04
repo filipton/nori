@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Makes a release: a signed APK (and with --ipod the iPod's .ipa), checksums and notes, put on GitHub.
+# Makes a release: a signed APK, the iPod's .ipa, checksums and notes, put on GitHub.
 #
 #   tools/release.sh                    the guided release (below)
 #   tools/release.sh --build            only build, into build/release-<version>/, nothing leaves the machine
@@ -7,7 +7,7 @@
 #   tools/release.sh --live             with --publish: published rather than a draft
 #   tools/release.sh --abi arm64-v8a    phones only: about half the size
 #   tools/release.sh --no-test          skip cargo test first
-#   tools/release.sh --ipod             also the iPod app (needs Xcode or NORI_IOS_MAC; ldid here, else the iPod on USB)
+#   tools/release.sh --no-ipod          the APK alone, without the iPod app (tools/ipod.sh: Docker on Linux)
 #
 # The guided release shows the latest version on GitHub and the one in the code, asks for the new
 # version, then does every step itself: tools/bump-version.sh, tools/changelog.py --update and
@@ -24,7 +24,7 @@
 # Leaves one directory holding everything a release page needs:
 #
 #   nori-music-<version>.apk    (nori-music-<version>-<abi>.apk with --abi)
-#   nori-ipod-<version>.ipa     with --ipod: the iPod touch app (docs/ipod.md), fake-signed for AppSync
+#   nori-ipod-<version>.ipa     the iPod touch app (docs/ipod.md), fake-signed for AppSync
 #   SHA256SUMS                  one line per file, as `sha256sum -c` wants it
 #   RELEASE.txt                 version, commit, ABIs, size, signing certificate
 #
@@ -44,7 +44,7 @@ cd "$(dirname "$0")/.."
 
 ABI=arm64-v8a,x86_64
 RUN_TESTS=1
-IPOD=0
+IPOD=1
 PUBLISH=0
 GUIDED=1
 DRAFT=--draft
@@ -52,7 +52,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --abi) ABI="$2"; shift ;;
     --no-test) RUN_TESTS=0 ;;
-    --ipod) IPOD=1 ;;
+    --no-ipod) IPOD=0 ;;
     --build) GUIDED=0 ;;
     --publish) PUBLISH=1; GUIDED=0 ;;
     --live) DRAFT="" ;;
@@ -210,7 +210,7 @@ cp app/build/outputs/apk/release/app-release.apk "$out/$name"
 ipa=""
 if [ "$IPOD" = 1 ]; then
   echo "==> building the iPod app"
-  ./tools/ipod.sh rust app sign ipa || die "the iPod build failed: it needs Xcode or NORI_IOS_MAC, and ldid (brew) or the iPod on USB. Without --ipod the release is the APK alone"
+  ./tools/ipod.sh rust app sign ipa || die "the iPod build failed (tools/ipod.sh rust app sign ipa); --no-ipod releases the APK alone"
   ipa="nori-ipod-$version.ipa"
   cp "build/ios/$ipa" "$out/$ipa"
 fi
