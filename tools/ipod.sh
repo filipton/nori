@@ -2,20 +2,19 @@
 # Builds the iPod app (docs/ipod.md) and puts it on the device, across the machines each step needs:
 #   rust     libnori_ios.a, for aarch64-apple-ios against an iPhoneOS SDK
 #   app      nori.app: swiftc here, or over SSH on the Mac named by $NORI_IOS_MAC
-#   sign     fake-signs it with ldid (AppSync lets it in): this machine's (brew install ldid), else the iPod's
+#   sign     fake-signs it with ldid (AppSync lets it in)
 #   install  puts it in /Applications on the iPod and registers it (uicache)
 #   run      launches it and tails its log
 #   ipa      build/ios/nori-ipod-<version>.ipa: the signed app as Payload/nori.app, for a release
-#   tools/ipod.sh            all of the above, in order
+#   tools/ipod.sh            rust app sign ipa, then install run when an iPod is on USB
 #   tools/ipod.sh rust app   just those steps
-# Builds anywhere, Xcode or not:
-#   macOS with Xcode    its SDK and toolchain (Xcode 15's is what the app shipped with)
-#   macOS without       the Command Line Tools, theos' copy of the iPhoneOS SDK and the iOS parts of
-#                       swift.org's toolchain, both fetched once into $NORI_IOS_CACHE (~/.cache/nori-ios)
-#   Linux               rust, app, sign and ipa run in the container tools/ios-build/Dockerfile describes
-#                       (Docker), with the same fetched SDK and Swift parts
-# $NORI_IOS_SDK overrides the SDK. Needs rustup's aarch64-apple-ios target outside the container, and for
-# the steps that reach the iPod sshpass and libimobiledevice (iproxy).
+# Builds anywhere; Docker is all a machine needs:
+#   a Mac with Swift (Xcode or the Command Line Tools), ldid (brew) and rustup's aarch64-apple-ios target
+#                 builds itself, with Xcode's SDK if there is one
+#   anything else runs rust, app, sign and ipa in the Linux container of tools/ios-build/Dockerfile
+# Without Xcode the iPhoneOS SDK is theos' copy and the iOS parts of Swift come from swift.org's toolchain,
+# both fetched once into $NORI_IOS_CACHE (~/.cache/nori-ios); $NORI_IOS_SDK overrides the SDK. The steps
+# that reach the iPod need sshpass and libimobiledevice (iproxy).
 #
 # The iPod is reached over USB: iproxy forwards port 2244 to checkra1n's dropbear (port 44), password
 # auth (`NORI_IPOD_PASSWORD`, default alpine, through sshpass): this dropbear accepts a public key and then
@@ -89,6 +88,15 @@ need_swift_ios() {
   mv "$swift_ios.part" "$swift_ios"
 }
 
+# Whether this machine builds the app itself: a Mac with Swift (Xcode or the Command Line Tools), ldid and
+# Rust's iOS target, or the container. Anything else builds in the container.
+builds_here() {
+  [ -f /.dockerenv ] && return
+  # xcode-select -p: /usr/bin/swiftc is there even without developer tools, as an installer stub.
+  [ "$(uname)" = Darwin ] && xcode-select -p >/dev/null 2>&1 && command -v ldid >/dev/null &&
+    rustup target list --installed 2>/dev/null | grep -qx aarch64-apple-ios
+}
+
 # Runs one step in the Linux build container, as this user, with the checkout and the cache at their own paths.
 in_container() {
   docker build -q -t nori-ios-build --build-arg "SWIFT=$swift_version" "$here/ios-build" >/dev/null
@@ -147,24 +155,12 @@ step_app() {
   du -sh "$app" | awk '{print "  " $1 "  nori.app"}'
 }
 
-# Signs build/ios/nori.app in place: with this machine's ldid (brew install ldid) if there is one, else on
-# the iPod, whose signed copy comes back.
+# Fake-signs build/ios/nori.app in place.
 step_sign() {
   [ -d "$app" ] || { echo "no $app: run the app step first" >&2; exit 1; }
-  if command -v ldid >/dev/null; then
-    echo "sign: with this machine's ldid …"
-    ldid -S"$app/entitlements.plist" "$app/nori"
-    ldid -e "$app/nori" | grep -q application-identifier
-  else
-    forward
-    echo "sign: with the iPod's ldid …"
-    "${ipod_ssh[@]}" "rm -rf /tmp/nori-sign && mkdir -p /tmp/nori-sign"
-    # COPYFILE_DISABLE: no AppleDouble ._ files from macOS's tar inside the app.
-    COPYFILE_DISABLE=1 tar -C "$out" -cf - nori.app | "${ipod_ssh[@]}" "tar -C /tmp/nori-sign -xf -"
-    "${ipod_ssh[@]}" "cd /tmp/nori-sign && ldid -S/tmp/nori-sign/nori.app/entitlements.plist nori.app/nori && ldid -e nori.app/nori | grep -q application-identifier"
-    rm -rf "$app"
-    "${ipod_ssh[@]}" "tar -C /tmp/nori-sign -cf - nori.app" | tar -C "$out" -xf -
-  fi
+  echo "sign: …"
+  ldid -S"$app/entitlements.plist" "$app/nori"
+  ldid -e "$app/nori" | grep -q application-identifier
   echo "  signed"
 }
 
@@ -172,6 +168,7 @@ step_install() {
   forward
   echo "install: /Applications/nori.app …"
   [ -d "$app" ] || { echo "no $app: run the app and sign steps first" >&2; exit 1; }
+  # COPYFILE_DISABLE: no AppleDouble ._ files from macOS's tar inside the app.
   COPYFILE_DISABLE=1 tar -C "$out" -cf - nori.app | "${ipod_ssh[@]}" "rm -rf /Applications/nori.app && tar -C /Applications -xf - && chown -R root:wheel /Applications/nori.app && chmod 755 /Applications/nori.app/nori && uicache --path /Applications/nori.app --respring"
   echo "  installed (version $version, build $build_no)"
 }
@@ -202,16 +199,15 @@ step_ipa() {
 }
 
 steps=("$@")
-[ ${#steps[@]} -eq 0 ] && steps=(rust app sign install run)
+if [ ${#steps[@]} -eq 0 ]; then
+  steps=(rust app sign ipa)
+  if command -v idevice_id >/dev/null && [ -n "$(idevice_id -l 2>/dev/null)" ]; then steps+=(install run); fi
+fi
 for s in "${steps[@]}"; do
   case "$s" in
     rust|app|sign|ipa)
-      # On a Linux host the container builds; an app built on $NORI_IOS_MAC needs only ssh and rsync.
-      if [ "$(uname)" = Linux ] && [ ! -f /.dockerenv ] && ! { [ "$s" = app ] && [ -n "$mac" ]; }; then
-        in_container "$s"
-      else
-        "step_$s"
-      fi ;;
+      # An app built on $NORI_IOS_MAC needs only ssh and rsync here.
+      if builds_here || { [ "$s" = app ] && [ -n "$mac" ]; }; then "step_$s"; else in_container "$s"; fi ;;
     install|run) "step_$s" ;;
     *) echo "unknown step: $s" >&2; exit 2 ;;
   esac

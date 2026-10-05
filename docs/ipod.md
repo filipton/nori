@@ -116,17 +116,19 @@ What each half needs: the Rust library builds with the `aarch64-apple-ios` targe
 app first linked with **Xcode 15.x** (15.2 with the iOS 17.2 SDK), on the same Mac or on another one over
 SSH (`NORI_IOS_MAC`). Xcode 15.x is the right generation: its documented deployment range starts at iOS
 12.0 and it predates the Xcode 26 linker that produces binaries crashing on iOS 12.5.x (reported on the
-developer forums), so any Mac links with `-ld_classic`.
+developer forums), so any Mac links with `-ld_classic`. No Xcode attaches a debugger to an iOS 12 device (device support
+starts at iOS 15 in 15.2); debugging is logs over SSH, which the jailbreak makes easy.
 
-Without Xcode, `tools/ipod.sh` builds the same app from three open pieces, fetched once into
-`~/.cache/nori-ios` with pinned checksums: theos' copy of the iPhoneOS 16.4 SDK (headers, `.tbd` stubs and
-Swift interfaces, 221 MB), and from swift.org's macOS toolchain the `libswiftCompatibility*.a` that a
-deployment target below iOS 13 links plus Darwin's `Dispatch`/`os` API notes (Linux's Swift has neither). On a Mac
-the Command Line Tools' `swiftc`, clang and ld compile and link. On Linux the steps run in
-`tools/ios-build/Dockerfile`'s container: swift.org's Linux Swift, lld's Mach-O linker and Procursus'
-ldid. Linux's Swift resource directory carries its own `Dispatch` module, which clashes with the SDK's, so
-`build-app.sh` builds against a resource directory of only `shims`, `clang` and those iOS parts. No Xcode attaches a debugger to an iOS 12 device (device
-support starts at iOS 15 in 15.2); debugging is logs over SSH, which the jailbreak makes easy.
+Without Xcode, `tools/ipod.sh` builds the same app from open pieces, fetched once into `~/.cache/nori-ios`
+with pinned checksums: theos' copy of the iPhoneOS 16.4 SDK (headers, `.tbd` stubs and Swift interfaces,
+221 MB), and from swift.org's macOS toolchain the `libswiftCompatibility*.a` that a deployment target
+below iOS 13 links, Darwin's `Dispatch`/`os` API notes and clang's `libclang_rt.ios.a`. A Mac with the
+Command Line Tools, ldid and Rust's iOS target compiles, links and signs itself. Any other machine, Linux
+or a Mac missing one of those, runs the steps in `tools/ios-build/Dockerfile`'s container: swift.org's
+Linux Swift, lld's Mach-O linker (the same load commands as `-ld_classic`: dyld info, no chained fixups)
+and Procursus' ldid. Linux's Swift resource directory carries its own `Dispatch` module, which clashes
+with the SDK's, so `build-app.sh` builds against a resource directory of only `shims`, `clang` and those
+iOS parts.
 
 Rust: `aarch64-apple-ios` supports iOS 10+, set `IPHONEOS_DEPLOYMENT_TARGET=12.2`. The static library needs
 no linker at all; `cc`-built C/C++ (SQLite, Signalsmith) needs the SDK headers.
@@ -148,9 +150,7 @@ The pipeline is `tools/ipod.sh` (one script, like `tools/apk.sh`), built and run
    mismatch and a storyboard would be the only thing needing it. The home-screen icon is the same mark as
    Android's, on the rice-white plate, as square PNGs named in `CFBundleIcons` (`AppIcon60x60@2x.png` is
    the one the iPod touch 6 shows); SpringBoard rounds them. `uicache --path --respring` reloads the icon.
-3. **`sign`**: `ldid -S entitlements.plist` fake-signs it, with the Mac's ldid (`brew install ldid`) when
-   there is one, else on the iPod: the bundle goes over as a tar stream (no sftp there), the iPod's own
-   ldid signs it and the signed copy comes back. An app in `/Applications` is a system app to launchd: without
+3. **`sign`**: `ldid -S entitlements.plist` fake-signs it, on the build machine. An app in `/Applications` is a system app to launchd: without
    `platform-application` and `com.apple.private.security.no-container` it is simply never spawned (no
    crash report, `uiopen` returns 0 regardless), so `ios/entitlements.plist` carries them, as Zebra and
    Filza do, plus `skip-library-validation` and `get-task-allow`. The background audio mode is Info.plist's.
