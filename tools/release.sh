@@ -15,7 +15,8 @@
 # "build: release <version>", builds, tags, pushes and creates the GitHub release - a draft or live,
 # as you answer. Saying no to any question puts every file back as it was. If the build fails after
 # the commit, run it again: a version that is in the code but not yet on GitHub is offered first, and
-# its changelog section is kept.
+# its changelog section is kept. A release already on GitHub without the iPod app is offered it first,
+# when only build, docs, test or chore commits came since.
 #
 # By default the APK carries the Rust core for both 64-bit ABIs, so nobody has to choose: Android
 # installs the slice that matches. arm64-v8a is every phone of the last decade, x86_64 is emulators
@@ -56,7 +57,7 @@ while [ $# -gt 0 ]; do
     --build) GUIDED=0 ;;
     --publish) PUBLISH=1; GUIDED=0 ;;
     --live) DRAFT="" ;;
-    -h|--help) sed -n 2,41p "$0"; exit 0 ;;
+    -h|--help) sed -n 2,42p "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift
@@ -79,6 +80,26 @@ if [ "$GUIDED" = 1 ]; then
   latest=${latest#v}
   echo "latest release on GitHub:  ${latest:-none yet}"
   echo "version in the code:       $current"
+  # A release made without the iPod app gets it added, if nothing but build, docs, tests or chores came since.
+  ipa="nori-ipod-$current.ipa"
+  assets=$(gh release view "v$current" --json assets --jq '.assets[].name' 2>/dev/null || true)
+  if [ "$IPOD" = 1 ] && [ -n "$assets" ] && ! grep -qx "$ipa" <<< "$assets"; then
+    if git log --format=%s "v$current..HEAD" | grep -qvE '^(build|docs|test|chore):'; then
+      echo "v$current has no iPod app, and the app changed since: it goes into the next release."
+    else
+      read -erp "v$current has no iPod app. build and add it? [Y/n] " a
+      if [[ ! "$a" =~ ^[Nn] ]]; then
+        ./tools/ipod.sh build || die "the iPod build failed (tools/ipod.sh build, needs Docker)"
+        sums=$(mktemp -d)
+        gh release download "v$current" -p SHA256SUMS -D "$sums"
+        ( cd build/ios && sha256sum "$ipa" ) >> "$sums/SHA256SUMS"
+        gh release upload "v$current" "build/ios/$ipa" "$sums/SHA256SUMS" --clobber
+        rm -rf "$sums"
+        echo "done: $(gh release view "v$current" --json url --jq .url)"
+        exit 0
+      fi
+    fi
+  fi
   # A version already in the code but not yet released is what a failed or first run left behind:
   # offer that. Otherwise the next patch after whichever of the two is further on.
   if ! gh release view "v$current" >/dev/null 2>&1 && { [ -z "$latest" ] || newer "$current" "$latest"; }; then
