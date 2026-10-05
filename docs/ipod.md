@@ -112,45 +112,41 @@ Decisions, with the reasons:
 
 ## 4. Toolchain and the build pipeline
 
-What each half needs: the Rust library builds with the `aarch64-apple-ios` target and an iPhoneOS SDK. The
-app first linked with **Xcode 15.x** (15.2 with the iOS 17.2 SDK), on the same Mac or on another one over
-SSH (`NORI_IOS_MAC`). Xcode 15.x is the right generation: its documented deployment range starts at iOS
-12.0 and it predates the Xcode 26 linker that produces binaries crashing on iOS 12.5.x (reported on the
-developer forums), so any Mac links with `-ld_classic`. No Xcode attaches a debugger to an iOS 12 device (device support
-starts at iOS 15 in 15.2); debugging is logs over SSH, which the jailbreak makes easy.
+Everything builds in one Docker image (`tools/ios-build/Dockerfile`), on Linux or a Mac alike, with no Xcode:
+swift.org's Linux Swift and clang, lld's Mach-O linker, Rust with the `aarch64-apple-ios` target, and
+Procursus' ldid. What Apple's toolchain would otherwise bring is fetched once into `~/.cache/nori-ios` with
+pinned checksums: theos' copy of the iPhoneOS 16.4 SDK (headers, `.tbd` stubs and Swift interfaces, 221
+MB), and from swift.org's macOS toolchain the `libswiftCompatibility*.a` that a deployment target below iOS
+13 links, Darwin's `Dispatch`/`os` API notes and clang's `libclang_rt.ios.a`. Linux's Swift resource
+directory carries its own `Dispatch` module, which clashes with the SDK's, so the build uses a resource
+directory of only `shims`, `clang` and those iOS parts. A first build takes minutes (the image, 1.5 GB of
+toolchain, Swift's module cache); an edit rebuilds in about 15 s.
 
-Without Xcode, `tools/ipod.sh` builds the same app from open pieces, fetched once into `~/.cache/nori-ios`
-with pinned checksums: theos' copy of the iPhoneOS 16.4 SDK (headers, `.tbd` stubs and Swift interfaces,
-221 MB), and from swift.org's macOS toolchain the `libswiftCompatibility*.a` that a deployment target
-below iOS 13 links, Darwin's `Dispatch`/`os` API notes and clang's `libclang_rt.ios.a`. A Mac with the
-Command Line Tools, ldid and Rust's iOS target compiles, links and signs itself. Any other machine, Linux
-or a Mac missing one of those, runs the steps in `tools/ios-build/Dockerfile`'s container: swift.org's
-Linux Swift, lld's Mach-O linker (the same load commands as `-ld_classic`: dyld info, no chained fixups)
-and Procursus' ldid. Linux's Swift resource directory carries its own `Dispatch` module, which clashes
-with the SDK's, so `build-app.sh` builds against a resource directory of only `shims`, `clang` and those
-iOS parts.
+The linker matters: Xcode 26's produces binaries that crash on iOS 12.5.x (reported on the developer
+forums), which is why the app first linked with Xcode 15's classic ld64. lld writes the same load
+commands as that one (dyld info, no chained fixups). No Xcode attaches a debugger to an iOS 12 device
+(device support starts at iOS 15 in 15.2); debugging is logs over SSH, which the jailbreak makes easy.
 
 Rust: `aarch64-apple-ios` supports iOS 10+, set `IPHONEOS_DEPLOYMENT_TARGET=12.2`. The static library needs
 no linker at all; `cc`-built C/C++ (SQLite, Signalsmith) needs the SDK headers.
 
-The pipeline is `tools/ipod.sh` (one script, like `tools/apk.sh`), built and run on 2026-10-03:
+The pipeline is `tools/ipod.sh` (like `tools/apk.sh`): `build` runs `tools/ios-build/build.sh` in the image,
+then `install` and `run` reach the iPod; plain `tools/ipod.sh` builds and, with an iPod on USB, installs
+and runs.
 
-1. **`rust`**: `SDKROOT=<iPhoneOS SDK> IPHONEOS_DEPLOYMENT_TARGET=12.2 cargo build --release --target
-   aarch64-apple-ios -p nori-ios`. A copied SDK is 191 MB (stubs and headers). The whole graph under
-   `nori-host` built first time: 48 s,
-   `libnori_ios.a` 9.2 MB, every object `platform IOS minos 12.2`. Release profile as the workspace has it
-   (fat LTO, one codegen unit, panic = unwind so a core panic surfaces as an error, not a crash).
-2. **`app`**: `ios/`, the `.a` and the licence texts go to a work directory (here, or rsynced to
-   `NORI_IOS_MAC`) and `ios/build-app.sh` runs there. **There is no
-   Xcode project**: one `swiftc` call (`-target arm64-apple-ios12.2 -O -wmo`, the bridging header
-   `ios/Sources/nori_ios.h`, `-lnori_ios -lc++`, the frameworks, `-Xlinker -ld_classic -dead_strip`)
-   is the whole build, so it runs from a shell and nothing in a `.pbxproj` drifts. `nori.app`
-   comes back to `build/ios/`: 2.7 MB executable, 3.1 MB bundle. The launch screen is a plain 640 × 1136
+1. **Rust**: `SDKROOT=<iPhoneOS SDK> IPHONEOS_DEPLOYMENT_TARGET=12.2 cargo build --release --target
+   aarch64-apple-ios -p nori-ios`, every object `platform IOS minos 12.2`. Release profile as the workspace
+   has it (fat LTO, one codegen unit, panic = unwind so a core panic surfaces as an error, not a crash).
+2. **The app**: **there is no Xcode project**: one `swiftc` call (`-target arm64-apple-ios12.2 -O -wmo`, the
+   bridging header `ios/Sources/nori_ios.h`, `-lnori_ios -lc++`, the frameworks, lld, `-dead_strip`) is the
+   whole build, so it runs from a shell and nothing in a `.pbxproj` drifts. `nori.app` lands in
+   `build/ios/`. The launch screen is a plain 640 × 1136
    image (`UILaunchImages`, still honoured by iOS 12), because `ibtool` can crash on a CoreSimulator
    mismatch and a storyboard would be the only thing needing it. The home-screen icon is the same mark as
    Android's, on the rice-white plate, as square PNGs named in `CFBundleIcons` (`AppIcon60x60@2x.png` is
    the one the iPod touch 6 shows); SpringBoard rounds them. `uicache --path --respring` reloads the icon.
-3. **`sign`**: `ldid -S entitlements.plist` fake-signs it, on the build machine. An app in `/Applications` is a system app to launchd: without
+3. **Signing and the .ipa**: `ldid -S entitlements.plist` fake-signs it, and `Payload/nori.app` zipped is
+   `build/ios/nori-ipod-<version>.ipa`. An app in `/Applications` is a system app to launchd: without
    `platform-application` and `com.apple.private.security.no-container` it is simply never spawned (no
    crash report, `uiopen` returns 0 regardless), so `ios/entitlements.plist` carries them, as Zebra and
    Filza do, plus `skip-library-validation` and `get-task-allow`. The background audio mode is Info.plist's.
@@ -165,12 +161,11 @@ The pipeline is `tools/ipod.sh` (one script, like `tools/apk.sh`), built and run
    executable the app step built.
 
 Traps met and answered: `cc`, `ring` and `libsqlite3-sys` take `SDKROOT` and the deployment target from
-the env (no `xcrun --sdk iphoneos` exists on a Mac without Xcode); `sccache` is the workspace's rustc
-wrapper, installed or `RUSTC_WRAPPER=`; a bare `xcodebuild` on a CLT-only Mac hangs rather than failing;
-`iproxy` must be detached (`nohup … & disown`) or it dies with the shell that started it; rsync to a
-remote build Mac needs the directory made first; macOS's `tar` adds AppleDouble `._` files unless
-`COPYFILE_DISABLE=1`; checkra1n's dropbear accepts a public key and then stalls for good, so the script
-authenticates with the password through `sshpass` (`NORI_IPOD_PASSWORD`, checkra1n's default unless set).
+the env; `sccache` is the workspace's rustc wrapper, so the image carries it;
+`iproxy` must be detached (`nohup … & disown`) or it dies with the shell that started it; macOS's `tar`
+adds AppleDouble `._` files unless `COPYFILE_DISABLE=1`; checkra1n's dropbear accepts a public key and then
+stalls for good, so the script authenticates with the password through `sshpass` (`NORI_IPOD_PASSWORD`,
+checkra1n's default unless set).
 
 ## 5. The sound
 
@@ -398,7 +393,7 @@ Each ends with something that runs on the iPod; nothing moves on until the one b
 
 | Risk | Answer |
 |---|---|
-| Xcode 15's linker makes a binary iOS 12 will not load | `-ld_classic` from milestone 0; the app already on the device proves an Xcode 12.5-linked arm64 app runs, so the SDK 17.2 headers with a 12.2 minimum is the only new variable |
+| Xcode 15's linker makes a binary iOS 12 will not load | `-ld_classic` from milestone 0, lld since; the app already on the device proves an Xcode 12.5-linked arm64 app runs, so the SDK 17.2 headers with a 12.2 minimum is the only new variable |
 | uniffi's pinned revision will not generate Swift | Hand-written C ABI (cbindgen) for everything; the doors are planned that way regardless |
 | RemoteIO will not grant 93 ms on some route (Bluetooth often caps at ~40 ms) | Read `ioBufferDuration` after activation and size `latency_us` from it; the engine's ring and bursts do not depend on the buffer length, only the wake count does |
 | 1 GB: jetsam kills the app in the background | The budget in section 7; `didReceiveMemoryWarning` trims the cover cache and the core's memory (`trim_memory`); the engine's loaders are bounded by `load_control`'s byte cap and reported by `Engine::held` for the perf log; measured in milestone 4 |
@@ -430,8 +425,8 @@ In the tree, uncommitted:
   excluded from backup), `ProbeViewController.swift` (one label: the version and the probe's note, the
   core called off the main thread), `Sources/nori_ios.h` (the bridging header, kept in step with lib.rs by
   hand), `Info.plist` (`dev.nori.music`, iOS 12.2, portrait, `audio` background mode, launch image),
-  `Launch-568h@2x.png`, `entitlements.plist`, `build-app.sh` (what runs where Xcode is).
-- `tools/ipod.sh` with the steps `rust app sign install run` (section 4).
+  `Launch-568h@2x.png`, `entitlements.plist`, `tools/ios-build/build.sh` (what builds it).
+- `tools/ipod.sh` with the steps `build install run` (section 4).
 - `docs/ipod.md`, this file.
 
 **Milestone 1 is done**: `rust` (48 s, 9.2 MB), `app` (Swift 5.9.2, 2.7 MB executable,
@@ -485,7 +480,7 @@ is kept in step with the `extern "C"` functions by hand. The note is at the top 
 `crates/ios/src/output.rs`: `Sink`, `IosOutput` (float, 93 ms / 10 ms, latency from the callback's stamp,
 `mixed_us` on Bluetooth, one reopen after a media-services reset). Tests cover the grant, the latency
 sum, shallow, a route change, a failed reopen, and no allocation on the render path.
-`ios/Sound/NoriAudio.m` is the AURemoteIO unit (syntax-checked against the iOS 17.2 SDK); `build-app.sh`
+`ios/Sound/NoriAudio.m` is the AURemoteIO unit (syntax-checked against the iOS 17.2 SDK); `tools/ios-build/build.sh`
 compiles it. The device listen (a sine, both buffer sizes, a Bluetooth change) still waits: W5 plays in
 a Rust test, and that build is not on the iPod. The line in docs/testing.md says why that part cannot
 be Rust.
@@ -505,7 +500,7 @@ Rust (`crates/ios/src/output.rs`, tested on the virtual clock with a simulated s
 - Tests: the device format asked and granted, latency arithmetic, shallow switching, a route change
   reaching the watcher, a failed reopen reaching the engine, and the `no_alloc` check on the render path.
 
-ObjC/C (`ios/Sound/NoriAudio.m`, `NoriAudio.h`, added to `build-app.sh` with `-framework
+ObjC/C (`ios/Sound/NoriAudio.m`, `NoriAudio.h`, added to `tools/ios-build/build.sh` with `-framework
 AVFoundation -framework AudioToolbox`): AVAudioSession (category playback; preferred rate and I/O
 duration; activation; `outputLatency`, the current route's port type and name), an AURemoteIO unit in
 Float32 interleaved at the granted rate, the render callback forwarding to `nori_ios_render`,
@@ -575,7 +570,7 @@ model); the glyph set as PDF assets rendered to @2x by a script step (`actool` i
 `Localizable.strings` carried from `app/src/main/res/values/strings*.xml` by a one-off script
 (`tools/ios-strings.py`, kept, since the Android words move), and `Fmt.swift` mirroring `core/text/Fmt.kt`
 with its vectors as a test (`swift test` is not available on this toolchain: a tiny `fmt-check` executable
-in `build-app.sh`). Check: every tab opens with a placeholder page; the mini player shows
+in `tools/ios-build/build.sh`). Check: every tab opens with a placeholder page; the mini player shows
 the session's state.
 
 **W8.** `crates/ios/src/covers.rs`: a `nori_covers::Paint` writing straight RGBA into a buffer that
@@ -700,6 +695,6 @@ perf recorder from `nori-perf` fed by a `crates/ios/src/perf.rs` reading `task_t
 The motion pass (every animation listed as `docs/motion.md` does, with its status), VoiceOver labels,
 Dynamic Type at the largest size on 320 pt, the memory budget with a 2000-album grid, the offload
 experiment of 5.3 if W13's numbers say the I/O thread is what costs. Done: `tools/release.sh` produces
-the .ipa (`tools/ipod.sh ipa`; no iPod and no Xcode needed); `--no-ipod` makes a release of the APK alone. The plan: `tools/release.sh` producing
+the .ipa (`tools/ipod.sh build`, Docker only); `--no-ipod` makes a release of the APK alone. The plan: `tools/release.sh` producing
 `build/nori-ipod-<version>.ipa` (a `Payload/` zip of the signed `nori.app`) beside the APK, and the
 changelog's `feat`/`fix`/`perf` subjects covering the iPod as they cover Android.

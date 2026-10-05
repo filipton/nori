@@ -1,20 +1,13 @@
 #!/usr/bin/env bash
-# Builds the iPod app (docs/ipod.md) and puts it on the device, across the machines each step needs:
-#   rust     libnori_ios.a, for aarch64-apple-ios against an iPhoneOS SDK
-#   app      nori.app: swiftc here, or over SSH on the Mac named by $NORI_IOS_MAC
-#   sign     fake-signs it with ldid (AppSync lets it in)
+# Builds the iPod app (docs/ipod.md) and puts it on the device:
+#   build    build/ios/nori.app and nori-ipod-<version>.ipa, fake-signed for AppSync: tools/ios-build/build.sh in
+#            the Docker image of tools/ios-build/Dockerfile, the only thing a machine needs
 #   install  puts it in /Applications on the iPod and registers it (uicache)
 #   run      launches it and tails its log
-#   ipa      build/ios/nori-ipod-<version>.ipa: the signed app as Payload/nori.app, for a release
-#   tools/ipod.sh            rust app sign ipa, then install run when an iPod is on USB
-#   tools/ipod.sh rust app   just those steps
-# Builds anywhere; Docker is all a machine needs:
-#   a Mac with Swift (Xcode or the Command Line Tools), ldid (brew) and rustup's aarch64-apple-ios target
-#                 builds itself, with Xcode's SDK if there is one
-#   anything else runs rust, app, sign and ipa in the Linux container of tools/ios-build/Dockerfile
-# Without Xcode the iPhoneOS SDK is theos' copy and the iOS parts of Swift come from swift.org's toolchain,
-# both fetched once into $NORI_IOS_CACHE (~/.cache/nori-ios); $NORI_IOS_SDK overrides the SDK. The steps
-# that reach the iPod need sshpass and libimobiledevice (iproxy).
+#   tools/ipod.sh                build, then install run when an iPod is on USB
+#   tools/ipod.sh install run    just those steps
+# The SDK and the toolchains' caches stay in $NORI_IOS_CACHE (~/.cache/nori-ios). install and run need
+# sshpass and libimobiledevice (iproxy).
 #
 # The iPod is reached over USB: iproxy forwards port 2244 to checkra1n's dropbear (port 44), password
 # auth (`NORI_IPOD_PASSWORD`, default alpine, through sshpass): this dropbear accepts a public key and then
@@ -22,23 +15,10 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"; root="$(cd "$here/.." && pwd)"
 cache="${NORI_IOS_CACHE:-$HOME/.cache/nori-ios}"
-xcode_sdk=$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || true)
-theos_sdk=iPhoneOS16.5.sdk
-theos_sdk_sha256=5e0fd3f01266cce4ce012d4a99b38eb56578fca40d09edc81cd83dee958202fb
-sdk="${NORI_IOS_SDK:-${xcode_sdk:-$cache/$theos_sdk}}"
-# The Dockerfile's Swift: the libraries match the compiler that links them.
-swift_version=6.3.3
-swift_pkg_sha256=ee82e57774d6650f94aa06302435d6f44a055b9411698db8ecb85d9a3bcc91d0
-swift_ios="$cache/swift-$swift_version-ios"
-# Empty: the app links on this machine.
-mac="${NORI_IOS_MAC:-}"
-remote_dir="${NORI_IOS_REMOTE:-nori-ios}"
 port="${NORI_IPOD_PORT:-2244}"
-target_os=12.2
 version=$(grep -oE '^version = "[^"]+"' "$root/Cargo.toml" | head -1 | cut -d'"' -f2)
 build_no=$(date +%Y%m%d%H%M)
 out="$root/build/ios"
-lib="${CARGO_TARGET_DIR:-$root/target}/aarch64-apple-ios/release/libnori_ios.a"
 app="$out/nori.app"
 
 ipod_ssh=(sshpass -p "${NORI_IPOD_PASSWORD:-alpine}" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o PubkeyAuthentication=no -p "$port" root@127.0.0.1)
@@ -53,121 +33,20 @@ forward() {
   fi
 }
 
-# Downloads $1 into $cache/$2, checked against the sha256 $3.
-fetch() {
-  mkdir -p "$cache"
-  curl -sSfL "$1" -o "$cache/$2.part"
-  echo "$3  $cache/$2.part" | sha256sum -c --quiet - || { rm -f "$cache/$2.part"; exit 1; }
-  mv "$cache/$2.part" "$cache/$2"
-}
-
-# The iPhoneOS SDK without Xcode: theos' copy (headers and .tbd stubs of iOS 16.4).
-need_sdk() {
-  [ -d "$sdk" ] && return
-  [ "$sdk" = "$cache/$theos_sdk" ] || { echo "no iPhoneOS SDK at $sdk" >&2; exit 1; }
-  echo "sdk: $theos_sdk from theos/sdks …"
-  fetch "https://github.com/theos/sdks/releases/download/master-146e41f/$theos_sdk.tar.xz" sdk.tar.xz "$theos_sdk_sha256"
-  tar -xJf "$cache/sdk.tar.xz" -C "$cache"
-  rm "$cache/sdk.tar.xz"
-}
-
-# What only Xcode's toolchain carries for iOS: Swift's compatibility libraries that a deployment target
-# below iOS 13 links, the API notes of Darwin's Dispatch and os, and clang's iOS runtime library (Linux's
-# toolchain has none of them). Taken from swift.org's macOS toolchain.
-need_swift_ios() {
-  [ -d "$swift_ios" ] && return
-  echo "swift: iOS parts of swift.org's $swift_version toolchain (1.5 GB, once) …"
-  local name="swift-$swift_version-RELEASE"
-  fetch "https://download.swift.org/swift-$swift_version-release/xcode/$name/$name-osx.pkg" swift.pkg "$swift_pkg_sha256"
-  mkdir -p "$swift_ios.part"
-  python3 "$here/ios-build/pkg-payload.py" "$cache/swift.pkg" "$name-osx-package.pkg" |
-    bsdtar -xf - -C "$swift_ios.part" -s ',^\./usr/lib/swift/,,' -s ',^\./usr/lib/clang/[^/]*/lib/,,' \
-      './usr/lib/swift/iphoneos/libswiftCompatibility*.a' './usr/lib/swift/apinotes/*.apinotes' \
-      './usr/lib/clang/*/lib/darwin/libclang_rt.ios.a'
-  rm "$cache/swift.pkg"
-  mv "$swift_ios.part" "$swift_ios"
-}
-
-# Whether this machine builds the app itself: a Mac with Swift (Xcode or the Command Line Tools), ldid and
-# Rust's iOS target, or the container. Anything else builds in the container.
-builds_here() {
-  [ -f /.dockerenv ] && return
-  # xcode-select -p: /usr/bin/swiftc is there even without developer tools, as an installer stub.
-  [ "$(uname)" = Darwin ] && xcode-select -p >/dev/null 2>&1 && command -v ldid >/dev/null &&
-    rustup target list --installed 2>/dev/null | grep -qx aarch64-apple-ios
-}
-
-# Runs one step in the Linux build container, as this user, with the checkout and the cache at their own paths.
-in_container() {
-  docker build -q -t nori-ios-build --build-arg "SWIFT=$swift_version" "$here/ios-build" >/dev/null
+# As this user, with the checkout and the cache at their own paths.
+step_build() {
+  docker build -q -t nori-ios-build "$here/ios-build" >/dev/null
   mkdir -p "$cache/home"
   docker run --rm -u "$(id -u):$(id -g)" -v "$root:$root" -v "$cache:$cache" -w "$root" \
-    -e HOME="$cache/home" -e CARGO_HOME="$cache/cargo" -e CARGO_TARGET_DIR="$root/target/ios-container" \
-    -e NORI_IOS_CACHE="$cache" ${NORI_IOS_SDK:+-e NORI_IOS_SDK="$NORI_IOS_SDK"} \
-    nori-ios-build tools/ipod.sh "$1"
-}
-
-step_rust() {
-  need_sdk
-  echo "rust: libnori_ios.a for iOS $target_os …"
-  # SDKROOT points the C compilers at the iPhoneOS SDK, and clang reads it when linking too: build
-  # scripts, which run on this machine, link through a wrapper that clears it.
-  local host linker
-  host=$(rustc -vV | sed -n 's/^host: //p' | tr 'a-z-' 'A-Z_')
-  mkdir -p "$out"
-  linker="$out/host-cc"
-  printf '#!/bin/sh\nunset SDKROOT\nexec cc "$@"\n' > "$linker"
-  chmod +x "$linker"
-  (cd "$root" && env "CARGO_TARGET_${host}_LINKER=$linker" SDKROOT="$sdk" IPHONEOS_DEPLOYMENT_TARGET=$target_os \
-    cargo build -j4 --release --target aarch64-apple-ios -p nori-ios)
-  ls -lh "$lib" | awk '{print "  " $5 "  " $9}'
-}
-
-# nori.app, built here or on $NORI_IOS_MAC over SSH and brought back.
-step_app() {
-  [ -f "$lib" ] || { echo "no $lib: run the rust step first" >&2; exit 1; }
-  local dest work=""
-  if [ -n "$mac" ]; then
-    echo "app: on $mac …"
-    ssh "$mac" "mkdir -p $remote_dir"
-    dest="$mac:$remote_dir"
-  else
-    echo "app: here …"
-    work="$root/build/ios-work"
-    mkdir -p "$work"
-    dest="$work"
-  fi
-  rsync -a --delete "$root/ios/" "$dest/ios/"
-  rsync -a "$lib" "$dest/libnori_ios.a"
-  # The licence texts the credits page shows, kept once, with Android's.
-  rsync -a --delete "$root/app/src/main/assets/licences/" "$dest/licences/"
-  local build="NORI_VERSION='$version' NORI_BUILD='$build_no' bash ios/build-app.sh"
-  if [ -n "$mac" ]; then
-    ssh "$mac" "cd $remote_dir && $build"
-  else
-    need_sdk
-    local env=(NORI_IOS_SDK="$sdk")
-    [ -n "$xcode_sdk" ] || { need_swift_ios; env+=(NORI_SWIFT_IOS="$swift_ios"); }
-    (cd "$work" && env "${env[@]}" bash -c "$build")
-  fi
-  mkdir -p "$out"
-  rsync -a --delete "$dest/nori.app/" "$app/"
-  du -sh "$app" | awk '{print "  " $1 "  nori.app"}'
-}
-
-# Fake-signs build/ios/nori.app in place.
-step_sign() {
-  [ -d "$app" ] || { echo "no $app: run the app step first" >&2; exit 1; }
-  echo "sign: …"
-  ldid -S"$app/entitlements.plist" "$app/nori"
-  ldid -e "$app/nori" | grep -q application-identifier
-  echo "  signed"
+    -e HOME="$cache/home" -e CARGO_HOME="$cache/cargo" -e CARGO_TARGET_DIR="$root/target/ios" \
+    -e NORI_IOS_CACHE="$cache" -e NORI_VERSION="$version" -e NORI_BUILD="$build_no" \
+    nori-ios-build tools/ios-build/build.sh
 }
 
 step_install() {
   forward
   echo "install: /Applications/nori.app …"
-  [ -d "$app" ] || { echo "no $app: run the app and sign steps first" >&2; exit 1; }
+  [ -d "$app" ] || { echo "no $app: run the build step first" >&2; exit 1; }
   # COPYFILE_DISABLE: no AppleDouble ._ files from macOS's tar inside the app.
   COPYFILE_DISABLE=1 tar -C "$out" -cf - nori.app | "${ipod_ssh[@]}" "rm -rf /Applications/nori.app && tar -C /Applications -xf - && chown -R root:wheel /Applications/nori.app && chmod 755 /Applications/nori.app/nori && uicache --path /Applications/nori.app --respring"
   echo "  installed (version $version, build $build_no)"
@@ -186,29 +65,14 @@ step_run() {
   "${ipod_ssh[@]}" "ps aux | grep '[A]pplications/nori.app/nori' | cut -c1-90 | sed 's/^/  /'; ls -la '/var/mobile/Library/Application Support/nori/' | sed 's/^/  /'"
 }
 
-# The signed app, zipped the way an .ipa is.
-step_ipa() {
-  [ -d "$app" ] || { echo "no $app: run the app and sign steps first" >&2; exit 1; }
-  echo "ipa: …"
-  rm -rf "$out/Payload" && mkdir -p "$out/Payload"
-  cp -R "$app" "$out/Payload/"
-  rm -f "$out/nori-ipod-$version.ipa"
-  (cd "$out" && zip -qry "nori-ipod-$version.ipa" Payload)
-  rm -rf "$out/Payload"
-  echo "  $out/nori-ipod-$version.ipa"
-}
-
 steps=("$@")
 if [ ${#steps[@]} -eq 0 ]; then
-  steps=(rust app sign ipa)
+  steps=(build)
   if command -v idevice_id >/dev/null && [ -n "$(idevice_id -l 2>/dev/null)" ]; then steps+=(install run); fi
 fi
 for s in "${steps[@]}"; do
   case "$s" in
-    rust|app|sign|ipa)
-      # An app built on $NORI_IOS_MAC needs only ssh and rsync here.
-      if builds_here || { [ "$s" = app ] && [ -n "$mac" ]; }; then "step_$s"; else in_container "$s"; fi ;;
-    install|run) "step_$s" ;;
+    build|install|run) "step_$s" ;;
     *) echo "unknown step: $s" >&2; exit 2 ;;
   esac
 done

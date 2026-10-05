@@ -1,8 +1,10 @@
-# What tools/ipod.sh needs to build, sign and pack the iPod app on Linux (it runs its steps in here):
-# swift.org's Swift and clang, lld's Mach-O linker, Rust for aarch64-apple-ios with sccache, and Procursus'
-# ldid. The iPhoneOS SDK and Swift's iOS parts come from the host's cache, which ipod.sh fills.
-ARG SWIFT
+# Where the iPod app builds (build.sh, started by tools/ipod.sh): swift.org's Swift and clang, lld's Mach-O
+# linker, Rust for aarch64-apple-ios with sccache, and Procursus' ldid. build.sh fetches the iPhoneOS SDK and
+# Swift's iOS parts into the host's cache.
+ARG SWIFT=6.3.3
 FROM swift:${SWIFT}-noble
+ARG SWIFT
+ENV SWIFT_VERSION=${SWIFT}
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends lld build-essential curl ca-certificates python3 zip rsync \
