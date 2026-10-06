@@ -547,6 +547,9 @@ pub struct StoredPrefs {
     /// Check GitHub for a new release at most daily (nori-core update.rs). Not under the lookups switch.
     #[setting("updateCheck", FLAG, default = true, show = K::Switch)]
     pub update_check: bool,
+    /// Beta releases (GitHub prereleases) are offered too, as well as the stable ones.
+    #[setting("updateBeta", FLAG, default = false, show = K::Switch)]
+    pub update_beta: bool,
     /// The home page's rows, in order; unlisted rows are hidden.
     #[setting("homeRows", Picks, default = HomeRow::ALL.to_vec(), hidden)]
     pub home_rows: Vec<HomeRow>,

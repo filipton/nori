@@ -8,6 +8,10 @@
 #   tools/release.sh --abi arm64-v8a    phones only: about half the size
 #   tools/release.sh --no-test          skip cargo test first
 #   tools/release.sh --no-ipod          the APK alone, without the iPod app (built in Docker)
+#   tools/release.sh --beta             a beta (0.5.2-beta.1): a GitHub prerelease, offered in the app only to
+#                                       those who turned on Beta updates. Its notes are the changes since the
+#                                       last release, written by tools/changelog.py; CHANGELOG.md is left alone,
+#                                       so the release after it lists everything its betas had.
 #
 # The guided release shows the latest version on GitHub and the one in the code, asks for the new
 # version, then does every step itself: tools/bump-version.sh, tools/changelog.py --update and
@@ -49,6 +53,7 @@ IPOD=1
 PUBLISH=0
 GUIDED=1
 DRAFT=--draft
+BETA=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --abi) ABI="$2"; shift ;;
@@ -57,6 +62,7 @@ while [ $# -gt 0 ]; do
     --build) GUIDED=0 ;;
     --publish) PUBLISH=1; GUIDED=0 ;;
     --live) DRAFT="" ;;
+    --beta) BETA=1 ;;
     -h|--help) sed -n 2,42p "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -65,8 +71,18 @@ done
 
 die() { echo "$@" >&2; exit 1; }
 code_version() { sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -1; }
-# a > b, as versions (0.3.10 is after 0.3.9)
-newer() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$1" ]; }
+# a > b, as versions (0.3.10 is after 0.3.9, 0.5.2 after 0.5.2-beta.3)
+newer() {
+  python3 - "$1" "$2" <<'PY'
+import sys
+def key(v):
+    core, _, beta = v.partition("-beta.")
+    return tuple(int(n) for n in core.split(".")) + (int(beta) if beta else 99,)
+sys.exit(0 if key(sys.argv[1]) > key(sys.argv[2]) else 1)
+PY
+}
+is_beta() { [[ "$1" == *-beta.* ]]; }
+VERSION_RE='^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[1-9][0-9]?)?$'
 
 # --- the guided release ------------------------------------------------------------
 if [ "$GUIDED" = 1 ]; then
@@ -106,14 +122,21 @@ if [ "$GUIDED" = 1 ]; then
     suggest=$current
   else
     base=$current; [ -n "$latest" ] && newer "$latest" "$base" && base=$latest
-    IFS=. read -r ma mi pa <<< "$base"; suggest="$ma.$mi.$((pa + 1))"
+    if [ "$BETA" = 1 ] && is_beta "$base"; then
+      suggest="${base%-beta.*}-beta.$(( ${base##*-beta.} + 1 ))"
+    elif is_beta "$base"; then
+      suggest=${base%-beta.*}
+    else
+      IFS=. read -r ma mi pa <<< "$base"; suggest="$ma.$mi.$((pa + 1))"
+      [ "$BETA" = 0 ] || suggest="$suggest-beta.1"
+    fi
   fi
   echo "(the GitHub tag gets its v by itself: 0.3.3 is released as v0.3.3)"
   # -e: line editing, so an arrow key moves the cursor instead of typing an escape sequence.
   read -erp "new version [$suggest]: " new
   new=$(printf '%s' "$new" | tr -d '[:space:]'); new=${new#[vV]}
   new=${new:-$suggest}
-  [[ "$new" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "not a version: $new (want major.minor.patch, e.g. 0.3.3)"
+  [[ "$new" =~ $VERSION_RE ]] || die "not a version: $new (want major.minor.patch, e.g. 0.3.3, or 0.3.3-beta.1)"
   [ -z "$latest" ] || newer "$new" "$latest" || die "$new is not after the latest release, $latest"
   ! gh release view "v$new" >/dev/null 2>&1 || die "a release v$new already exists on GitHub"
 
@@ -123,7 +146,7 @@ if [ "$GUIDED" = 1 ]; then
   trap undo EXIT
   [ "$new" = "$current" ] || tools/bump-version.sh "$new"
   # The version in the code never went out, and this one replaces it: its notes are this release's.
-  if [ "$new" != "$current" ] && ! gh release view "v$current" >/dev/null 2>&1 &&
+  if ! is_beta "$new" && [ "$new" != "$current" ] && ! gh release view "v$current" >/dev/null 2>&1 &&
      tools/changelog.py --notes "$current" >/dev/null 2>&1; then
     tools/changelog.py --retitle "$current" "$new"
     extra=$(tools/changelog.py 2>/dev/null)
@@ -132,18 +155,25 @@ if [ "$GUIDED" = 1 ]; then
       echo "$extra"
     fi
   fi
-  if ! tools/changelog.py --notes "$new" >/dev/null 2>&1; then
-    tools/changelog.py --update
-    tools/changelog.py --release "$new"
-  fi
-  echo
-  echo "---- release notes for $new ----"
-  tools/changelog.py --notes "$new"
-  echo "--------------------------------"
-  read -erp "edit them first? [y/N] " a
-  if [[ "$a" =~ ^[Yy] ]]; then
-    "${EDITOR:-nano}" CHANGELOG.md
-    tools/changelog.py --notes "$new" >/dev/null || die "CHANGELOG.md lost its [$new] section"
+  if is_beta "$new"; then
+    echo
+    echo "---- beta notes for $new (the changes since the last release) ----"
+    tools/changelog.py
+    echo "--------------------------------"
+  else
+    if ! tools/changelog.py --notes "$new" >/dev/null 2>&1; then
+      tools/changelog.py --update
+      tools/changelog.py --release "$new"
+    fi
+    echo
+    echo "---- release notes for $new ----"
+    tools/changelog.py --notes "$new"
+    echo "--------------------------------"
+    read -erp "edit them first? [y/N] " a
+    if [[ "$a" =~ ^[Yy] ]]; then
+      "${EDITOR:-nano}" CHANGELOG.md
+      tools/changelog.py --notes "$new" >/dev/null || die "CHANGELOG.md lost its [$new] section"
+    fi
   fi
   read -erp "publish $new as a (d)raft, (l)ive, or (s)top? [d/l/s] " a
   case "$a" in
@@ -171,7 +201,7 @@ if [ "$PUBLISH" = 1 ]; then
   git remote get-url origin >/dev/null 2>&1 || die "this repository has no 'origin' remote to publish to"
   [ -z "$dirty" ] || die "refusing to publish from a dirty tree: commit or stash first"
   [ -f keystore.properties ] || die "no keystore.properties: run tools/release.sh --build once to create the key, and back it up"
-  ./tools/changelog.py --notes "$version" >/dev/null ||
+  is_beta "$version" || ./tools/changelog.py --notes "$version" >/dev/null ||
     die "CHANGELOG.md has no section for $version.
 write one, or generate it:  tools/changelog.py --update && tools/changelog.py --release $version"
   ! gh release view "v$version" >/dev/null 2>&1 ||
@@ -279,7 +309,11 @@ fi
 # --- publish --------------------------------------------------------------------
 notes=$(mktemp)
 trap 'rm -f "$notes"' EXIT
-./tools/changelog.py --notes "$version" > "$notes"
+if is_beta "$version"; then
+  ./tools/changelog.py > "$notes"
+else
+  ./tools/changelog.py --notes "$version" > "$notes"
+fi
 
 if git rev-parse "v$version" >/dev/null 2>&1; then
   echo "==> tag v$version already exists, reusing it"
@@ -294,7 +328,7 @@ git push origin "v$version"
 echo "==> creating the release${DRAFT:+ (draft)}"
 # shellcheck disable=SC2086
 gh release create "v$version" "$out/$name" ${ipa:+"$out/$ipa"} "$out/SHA256SUMS" \
-  --title "nori $version" --notes-file "$notes" $DRAFT
+  --title "nori $version" --notes-file "$notes" $DRAFT $(is_beta "$version" && echo --prerelease)
 
 echo
 echo "done: $(gh release view "v$version" --json url --jq .url 2>/dev/null || echo "v$version")"

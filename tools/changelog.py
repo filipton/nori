@@ -52,7 +52,8 @@ def run(*args: str) -> str:
 
 def last_tag() -> str | None:
     try:
-        return run("describe", "--tags", "--abbrev=0").strip() or None
+        # A beta's tag is passed over: a release's notes cover everything since the last release.
+        return run("describe", "--tags", "--abbrev=0", "--exclude", "*-*").strip() or None
     except subprocess.CalledProcessError:
         pass
     # No tags yet: the last release commit is where the previous release was cut, so the range starts

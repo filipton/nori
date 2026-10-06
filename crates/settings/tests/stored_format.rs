@@ -117,6 +117,7 @@ fn sample() -> StoredPrefs {
         taste_model: false,
         third_party_lookups: false,
         update_check: false,
+        update_beta: true,
         profile_per_output: false,
         auto_eq_auto: true,
         auto_eq_download: false,

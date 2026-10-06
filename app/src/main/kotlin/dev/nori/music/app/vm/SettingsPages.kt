@@ -289,6 +289,7 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("about", R.string.settings_page_licences, R.string.settings_hint_licences),
     Triple("about", R.string.settings_update_check_now, R.string.settings_hint_updates),
     Triple("about", R.string.settings_update_auto, R.string.settings_update_auto_detail),
+    Triple("about", R.string.settings_update_beta, R.string.settings_update_beta_detail),
     Triple("servers", R.string.settings_music_folder, 0),
     Triple("servers", R.string.settings_alt_bitrate, 0),
 )
@@ -921,7 +922,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
             settingKey(t), t, updateWords(res, u, dev.nori.music.app.BuildConfig.VERSION_NAME, f.installsUpdates),
             button ?: str(R.string.update_check), button != null, failed, act,
         )
-        return listOf(SettingsSection(str(R.string.settings_updates), listOf(check, toggle("updateCheck", R.string.settings_update_auto, R.string.settings_update_auto_detail))))
+        return listOf(SettingsSection(str(R.string.settings_updates), listOf(check, toggle("updateCheck", R.string.settings_update_auto, R.string.settings_update_auto_detail), toggle("updateBeta", R.string.settings_update_beta, R.string.settings_update_beta_detail))))
     }
 
     fun servers(): List<SettingsSection> {

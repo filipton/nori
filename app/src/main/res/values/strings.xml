@@ -398,6 +398,8 @@
     <string name="settings_hint_updates">A newer version of nori from its GitHub releases</string>
     <string name="settings_update_auto">Check automatically</string>
     <string name="settings_update_auto_detail">When nori starts, at most once a day, it asks GitHub whether there is a newer release</string>
+    <string name="settings_update_beta">Beta updates</string>
+    <string name="settings_update_beta_detail">Also offers test versions of the next release. They may have bugs; turned off, you move to the next stable release when it comes</string>
     <string name="settings_updating">Updating…</string>
     <string name="settings_search_delay">Search delay</string>
     <string name="settings_taste_model">Keep listening history</string>

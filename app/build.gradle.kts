@@ -20,9 +20,10 @@ android {
         // For checking the updater only: `-PpretendVersion=0.3.9` builds this as that older version (its code as
         // bump-version.sh makes it), so it finds the latest GitHub release newer and can install it in place.
         (project.findProperty("pretendVersion") as String?)?.let { v ->
-            val (major, minor, patch) = v.split(".").map { it.toInt() }
+            val (major, minor, patch) = v.substringBefore('-').split(".").map { it.toInt() }
+            val beta = v.substringAfter("-beta.", "").toIntOrNull() ?: 99
             versionName = v
-            versionCode = major * 10000 + minor * 100 + patch
+            versionCode = major * 1000000 + minor * 10000 + patch * 100 + beta
         }
         ndk { abiFilters += (project.findProperty("rustTargets") as String? ?: "arm64-v8a,x86_64").split(",") }
         // What About can say about this build beyond a version number: the commit it was cut from, and
