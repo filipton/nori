@@ -85,6 +85,28 @@ pub fn mix_caption(favourites: bool) -> &'static str {
 }
 
 
+/// A device of the account as the devices panel lists it: what it plays, and its last refusal.
+pub fn device_row(d: &nori_core::remote::RemoteDevice) -> crate::DeviceRow {
+    use nori_core::remote::wire::Refusal;
+    let state = d.state.as_ref();
+    let now = state.and_then(|s| s.entries.iter().find(|e| Some(e.index) == s.index));
+    let line = now.map_or_else(|| "Not playing".to_string(), |e| format!("{} · {}", e.title, e.artist));
+    let note = match d.refused {
+        Some(Refusal::Stale) => "The queue changed there. Try again.",
+        Some(Refusal::NotAllowed) => "That device said no.",
+        Some(Refusal::Unknown) => "That is no longer there.",
+        Some(Refusal::TooMany) => "Too many songs waiting.",
+        None => "",
+    };
+    crate::DeviceRow {
+        id: d.id.clone().into(),
+        name: format!("{}{}", d.name, if d.nearby { " · nearby" } else { "" }).into(),
+        line: line.into(),
+        playing: state.is_some_and(|s| s.playing),
+        note: note.into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

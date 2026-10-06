@@ -215,6 +215,8 @@ fn pack(said: &Said) -> Packed {
             p.kind = REPORT_REACHABLE;
             p.text = c(&e.to_string());
         }
+        // The iPod lists no other devices.
+        Said::Remote => {}
     }
     p
 }
@@ -429,6 +431,7 @@ fn start_queue(
         covers: true,
         offline,
         mpris: None,
+        device: nori_core::remote::RemoteMe { name: "iPod touch".into(), kind: nori_core::remote::wire::DeviceKind::Phone },
         out,
     })?;
     if !offline {

@@ -39,6 +39,8 @@ pub enum Said {
     Note(Note),
     /// The reachability check made when a session opens.
     Reachable(Result<(), NetError>),
+    /// The other devices or the jam changed (remote control): read them again.
+    Remote,
 }
 
 /// Something done or failed, for the status line.
@@ -168,6 +170,8 @@ pub struct Open<'a> {
     /// The process's media controls, driven by this session while it is open. Always a field, so a
     /// client built without `desktop` (where nothing can fill it) compiles either way.
     pub mpris: Option<MediaControls>,
+    /// This device as the account's other devices list it (remote control).
+    pub device: nori_core::remote::RemoteMe,
     pub out: Out,
 }
 
@@ -193,6 +197,9 @@ pub struct Session {
     keeper: Arc<Keeper>,
     /// The database file, for its size.
     pub db: PathBuf,
+    /// Remote control and jams, while switched on.
+    remotes: Arc<crate::remote::Remotes>,
+    device: nori_core::remote::RemoteMe,
     out: Out,
 }
 
@@ -227,8 +234,9 @@ impl Session {
             m.serve(Some(Arc::new(Controls::over_queue(engine.clone(), core.session.clone()))));
         }
         let keeper = Keeper::start(core.clone(), engine.clone());
-        let s = Session { core, client, engine, store, downloader, covers, loudness, search: SearchSession::new(), offline: o.offline, #[cfg(feature = "desktop")] mpris: o.mpris, keeper, db: PathBuf::from(db), out: o.out };
+        let s = Session { core, client, engine, store, downloader, covers, loudness, search: SearchSession::new(), offline: o.offline, #[cfg(feature = "desktop")] mpris: o.mpris, keeper, db: PathBuf::from(db), remotes: Default::default(), device: o.device, out: o.out };
         s.restore();
+        s.follow_remote();
         if !s.offline && s.core.download_counts().pending > 0 {
             s.start_downloads();
         }
@@ -342,7 +350,38 @@ impl Session {
     }
 
     fn handle(&self) -> Handle {
-        Handle { engine: self.engine.clone(), queue: self.core.session.clone(), keeper: self.keeper.clone(), out: self.out.clone() }
+        Handle { engine: self.engine.clone(), queue: self.core.session.clone(), keeper: self.keeper.clone(), remotes: self.remotes.clone(), out: self.out.clone() }
+    }
+
+    /// The remote control and jams, while switched on: other devices to control, the jam hosted.
+    pub fn remote(&self) -> Option<Arc<nori_core::remote::Remote>> {
+        self.remotes.get()
+    }
+
+    /// Makes or drops the remote as the settings say, and serves while remote control is on.
+    fn follow_remote(&self) {
+        let prefs = self.core.session.settings.current().unwrap_or_default();
+        if self.offline || !(prefs.remote_control || prefs.jam) {
+            return self.remotes.set(None);
+        }
+        let remote = self.remotes.get().unwrap_or_else(|| {
+            #[cfg(feature = "desktop")]
+            let mdns = crate::remote::Mdns::start();
+            #[cfg(feature = "desktop")]
+            let discovery = mdns.clone().map(|m| m as Arc<dyn nori_core::remote::Discovery>);
+            #[cfg(not(feature = "desktop"))]
+            let discovery = None;
+            let player = Arc::new(crate::remote::HostPlayer(self.handle()));
+            let r = nori_core::remote::Remote::new(self.client.clone(), self.device.clone(), player, Arc::new(crate::remote::Shown(self.out.clone())), discovery);
+            #[cfg(feature = "desktop")]
+            if let Some(m) = &mdns {
+                m.serve(&r);
+            }
+            self.remotes.set(Some(r.clone()));
+            r
+        });
+        remote.serve(prefs.remote_control);
+        self.remotes.played(&self.engine);
     }
 
     fn edited(&self) {
@@ -351,16 +390,7 @@ impl Session {
 
     /// Removes the song at list index `index`; if it was playing, the next one takes its place.
     pub fn remove(&self, index: usize) {
-        let (current, playing) = self.engine.status_with(|s| (s.index, s.state == State::Playing));
-        let change = self.core.session.remove(index as u32, index as u32 + 1);
-        self.edited();
-        if let (true, Some(at)) = (current == Some(index), change.at) {
-            if playing {
-                self.engine.play_at(at as usize, 0);
-            } else {
-                self.engine.go_to(at as usize, 0);
-            }
-        }
+        self.handle().remove(index);
     }
 
     /// Removes everything after the current song.
@@ -387,20 +417,15 @@ impl Session {
 
     /// Moves the song at list index `from` to `to`.
     pub fn move_song(&self, from: usize, to: usize) {
-        self.core.session.move_range(from as u32, from as u32 + 1, to as u32);
-        self.edited();
+        self.handle().move_song(from, to);
     }
 
     pub fn shuffle(&self, on: bool) {
-        self.core.session.show_shuffle(on);
-        self.core.session.shuffle(on);
-        self.edited();
+        self.handle().shuffle(on);
     }
 
     pub fn repeat(&self, mode: u8) {
-        // Set on the queue first so the screen shows it at once.
-        self.core.session.repeat(mode);
-        self.engine.set_repeat(mode);
+        self.handle().repeat(mode);
     }
 
     fn start_downloads(&self) {
@@ -435,6 +460,9 @@ impl Session {
     pub fn setting(&self, name: &str, value: &str) -> Option<SettingChange> {
         let change = self.core.session.settings.edit_by_name(name, value)?;
         self.apply(change.effect, &change.prefs);
+        if matches!(name, "remoteControl" | "jam") {
+            self.follow_remote();
+        }
         if change.effect & CACHE_LIMIT != 0 {
             self.store.set_limit(change.prefs.cache_mb.max(0) as u64 * 1024 * 1024);
         }
@@ -602,6 +630,9 @@ impl Session {
             Event::Bridge { .. } => self.bridge(),
             _ => {}
         }
+        if matches!(e, Event::Song { .. } | Event::Looped { .. } | Event::State(_) | Event::Position { .. }) {
+            self.remotes.played(&self.engine);
+        }
     }
 
     /// Runs the core's steps for a new song (`nori_queue::Session::song_arrived`).
@@ -681,16 +712,18 @@ impl Session {
             m.serve(None);
         }
         self.keep(QueueMoment::Closing);
+        self.remotes.set(None);
         self.keeper.stop();
         self.engine.stop();
     }
 }
 
-/// The parts of a session worker threads use.
-struct Handle {
-    engine: Arc<Engine>,
+/// The parts of a session worker threads (and the remote control) use.
+pub(crate) struct Handle {
+    pub(crate) engine: Arc<Engine>,
     queue: Arc<nori_core::queue::Session>,
     keeper: Arc<Keeper>,
+    pub(crate) remotes: Arc<crate::remote::Remotes>,
     out: Out,
 }
 
@@ -703,6 +736,54 @@ impl Handle {
     fn edited(&self) {
         self.engine.queue_changed();
         self.keeper.later(queue_keep(QueueMoment::Edited).save_after_ms);
+        self.remotes.played(&self.engine);
+    }
+
+    /// Removes the song at list index `index`; if it was playing, the next one takes its place.
+    pub(crate) fn remove(&self, index: usize) {
+        let (current, playing) = self.engine.status_with(|s| (s.index, s.state == State::Playing));
+        let change = self.queue.remove(index as u32, index as u32 + 1);
+        self.edited();
+        if let (true, Some(at)) = (current == Some(index), change.at) {
+            if playing {
+                self.engine.play_at(at as usize, 0);
+            } else {
+                self.engine.go_to(at as usize, 0);
+            }
+        }
+    }
+
+    pub(crate) fn move_song(&self, from: usize, to: usize) {
+        self.queue.move_range(from as u32, from as u32 + 1, to as u32);
+        self.edited();
+    }
+
+    pub(crate) fn shuffle(&self, on: bool) {
+        self.queue.show_shuffle(on);
+        self.queue.shuffle(on);
+        self.edited();
+    }
+
+    pub(crate) fn repeat(&self, mode: u8) {
+        // Set on the queue first so the screen shows it at once.
+        self.queue.repeat(mode);
+        self.engine.set_repeat(mode);
+    }
+
+    /// A queue handed over from another device: `songs` from `index` at `position_ms`, playing or not.
+    pub(crate) fn replace(&self, songs: Vec<Song>, index: usize, position_ms: i64, play: bool) {
+        if songs.is_empty() {
+            return;
+        }
+        self.queue.register(songs.clone());
+        let change = self.queue.set(songs.iter().map(|s| s.id.clone()).collect(), Some(index.min(songs.len() - 1) as u32), false, None);
+        self.edited();
+        let at = change.at.unwrap_or(0) as usize;
+        if play {
+            self.engine.play_at(at, position_ms);
+        } else {
+            self.engine.go_to(at, position_ms);
+        }
     }
 
     /// Applies a queue edit the core made itself (the offline bridge).
@@ -734,7 +815,7 @@ impl Handle {
         }
     }
 
-    fn enqueue(&self, songs: Vec<Song>, next: bool) {
+    pub(crate) fn enqueue(&self, songs: Vec<Song>, next: bool) {
         // A single picked song may be a provider's; lists never include them.
         let songs: Vec<Song> = if songs.len() == 1 { songs } else { songs.into_iter().filter(|s| !s.is_provider()).collect() };
         if songs.is_empty() {

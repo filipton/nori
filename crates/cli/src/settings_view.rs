@@ -605,7 +605,8 @@ fn library(b: &Build, f: &Facts) -> Vec<Section> {
         history.push(b.choice("scrobblePercent", "  Scrobble at", true, |v| format!("{v} %")));
     }
     let online = vec![b.toggle("thirdPartyLookups", "Third-party lookups", "Lyrics services and the AutoEQ list; off, nothing leaves for anyone but your server")];
-    vec![section("Index and search", index), section("History", history), section("Online", online)]
+    let devices = vec![b.toggle("remoteControl", "Remote control", "Your other devices with nori control what plays here: on this network directly, elsewhere through octo-fiesta")];
+    vec![section("Index and search", index), section("History", history), section("Online", online), section("Other devices", devices)]
 }
 
 /// A lyrics service's name and description by its core id.

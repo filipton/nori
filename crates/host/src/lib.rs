@@ -2,6 +2,7 @@
 //! changes, a collection's songs, the offline index, cover colours and the output volume in dB. Media
 //! controls (`desktop` feature) sit over the engine. Each client words what happens itself.
 
+pub mod remote;
 pub mod session;
 
 use std::path::Path;
@@ -30,6 +31,16 @@ pub fn config(p: &SavedServer) -> ServerConfig {
 
 pub fn net(p: &SavedServer) -> NetProfile {
     NetProfile { url: p.url.clone(), alt_url: p.alt_url.clone(), music_folder_id: p.music_folder_id.clone(), alt_max_bit_rate: p.alt_max_bit_rate.max(0) as u32 }
+}
+
+/// This computer's name, as the account's other devices list it (remote control).
+pub fn device_name() -> String {
+    let mut buf = [0u8; 256];
+    // SAFETY: the buffer is writable for its whole length; gethostname writes a NUL-terminated name into it.
+    let ok = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } == 0;
+    let name = if ok { String::from_utf8_lossy(buf.split(|b| *b == 0).next().unwrap_or_default()).into_owned() } else { String::new() };
+    let name = name.trim_end_matches(".local").to_string();
+    if name.is_empty() { "nori".into() } else { name }
 }
 
 /// Runs `f` on a named thread.

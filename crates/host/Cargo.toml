@@ -11,7 +11,7 @@ name = "nori_host"
 [features]
 default = ["desktop"]
 # MPRIS media controls. The iOS client leaves the default features off.
-desktop = ["dep:nori-mpris"]
+desktop = ["dep:nori-mpris", "dep:mdns-sd"]
 
 [dependencies]
 nori-core = { path = "../core", default-features = false }
@@ -19,6 +19,10 @@ nori-engine = { path = "../engine", features = ["core"] }
 nori-covers = { path = "../covers" }
 nori-look = { path = "../look" }
 nori-mpris = { path = "../mpris", optional = true }
+# Nearby devices for remote control (nori-remote lan.rs); started only while it is on.
+mdns-sd = { version = "0.21", optional = true, default-features = false }
 nori-http = { path = "../http" }
+nori-remote = { path = "../remote" }
 parking_lot = "0.12"
+libc = "0.2"
 async-trait = "0.1"

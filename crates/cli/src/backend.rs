@@ -219,7 +219,9 @@ impl Session {
         let id = IDS.fetch_add(1, Ordering::Relaxed);
         let tx = o.tx.clone();
         let out = Arc::new(move |s: Said| {
-            let _ = tx.send(Msg::From(id, Box::new(worded(s))));
+            if let Some(m) = worded(s) {
+                let _ = tx.send(Msg::From(id, Box::new(m)));
+            }
         });
         let v = own::number(own::VOLUME, 1.0);
         let (output, level, loudness) =
@@ -235,6 +237,7 @@ impl Session {
             covers: o.images,
             offline: o.offline,
             mpris: o.mpris,
+            device: nori_core::remote::RemoteMe { name: nori_host::device_name(), kind: nori_core::remote::wire::DeviceKind::Terminal },
             out,
         })?;
         Ok(Session { id, host, tx: o.tx, level, loudness })
@@ -325,10 +328,12 @@ impl Session {
     }
 }
 
-/// A session's report as the event loop takes it.
-fn worded(s: Said) -> Msg {
+/// A session's report as the event loop takes it; None for what the terminal does not show (other
+/// devices: it is controllable, it controls none).
+fn worded(s: Said) -> Option<Msg> {
     let note = |text: String, error: bool| Msg::Note { text, error };
-    match s {
+    Some(match s {
+        Said::Remote => return None,
         Said::Engine(e) => Msg::Engine(e),
         Said::Lyrics { song, pick } => Msg::Lyrics { song, pick },
         Said::Search(v) => Msg::Search(v),
@@ -356,7 +361,7 @@ fn worded(s: Said) -> Msg {
                 false,
             ),
         },
-    }
+    })
 }
 
 /// An unreachable server in words.

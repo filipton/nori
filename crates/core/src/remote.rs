@@ -20,6 +20,9 @@ use crate::client::Client;
 use crate::transport::{self, block_on, Exchange, NetError, Transport};
 use crate::{api, db, Param, Song};
 
+/// The frames, for clients that speak them (the terminal and desktop host).
+pub use nori_remote::wire;
+
 /// Songs before and after the current one a published state lists.
 const ENTRIES_BEFORE: usize = 10;
 const ENTRIES_AFTER: usize = 40;

@@ -56,6 +56,8 @@ pub enum Msg {
     Note { text: String, error: bool },
     LoggedIn(Result<SavedServer, String>),
     Reachable(Result<(), String>),
+    /// The other devices changed (remote control).
+    Remote,
     /// A message from the session with this id; dropped once another session is open.
     From(u64, Box<Msg>),
 }
@@ -202,6 +204,7 @@ impl Session {
             covers: true,
             offline: false,
             mpris,
+            device: nori_core::remote::RemoteMe { name: nori_host::device_name(), kind: nori_core::remote::wire::DeviceKind::Desktop },
             out,
         };
         Ok(Session { id, host: nori_host::session::Session::open(o)?, tx, level, loudness })
@@ -301,6 +304,11 @@ impl Session {
         self.host.cover(key.id.clone(), px, colours, move |image, colours| send(Msg::Cover { key, image, colours }))
     }
 
+    /// Remote control, while it is on: the other devices and moving the music between them.
+    pub fn remote(&self) -> Option<Arc<nori_core::remote::Remote>> {
+        self.host.remote()
+    }
+
     /// Searches the server (after a typing pause).
     pub fn search_server(&self, query: String) {
         self.host.search_server(query, net_error);
@@ -343,6 +351,7 @@ fn worded(s: Said) -> Msg {
         Said::Lyrics { song, pick } => Msg::Lyrics { song, pick },
         Said::Search(v) => Msg::Search(v),
         Said::Reachable(r) => Msg::Reachable(r.map_err(|e| net_error(&e))),
+        Said::Remote => Msg::Remote,
         Said::Note(n) => match n {
             Note::Queued { next, songs: n } => note(format!("{}: {}", if next { "Playing next" } else { "Added to the queue" }, songs(n)), false),
             Note::NothingToPlay => note("Nothing to play".into(), false),

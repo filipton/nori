@@ -30,6 +30,17 @@ export struct LyricPiece {
     swell: float,
 }
 
+// One of the account's other devices (remote control), as the devices panel lists it.
+export struct DeviceRow {
+    id: string,
+    name: string,
+    // What it plays, or that it plays nothing.
+    line: string,
+    playing: bool,
+    // Its answer to the last command, when it refused.
+    note: string,
+}
+
 export struct SongRow {
     title: string,
     artist: string,
@@ -141,6 +152,7 @@ export global Icons {
     out property <string> lyrics: "M5.5 4.5 L18.5 4.5 Q20.5 4.5 20.5 6.5 L20.5 14.5 Q20.5 16.5 18.5 16.5 L12.5 16.5 L8 20.5 L8 16.5 L5.5 16.5 Q3.5 16.5 3.5 14.5 L3.5 6.5 Q3.5 4.5 5.5 4.5 Z M8.2 9 L8.2 11.8 M8.2 9 L10.2 9 M13.8 9 L13.8 11.8 M13.8 9 L15.8 9";
     out property <string> gear: "M12 9 A3 3 0 1 1 12 15 A3 3 0 1 1 12 9 M10.3 3.5 L13.7 3.5 L14.2 5.8 L16.3 7 L18.5 6.2 L20.2 9.1 L18.5 10.7 L18.5 13.3 L20.2 14.9 L18.5 17.8 L16.3 17 L14.2 18.2 L13.7 20.5 L10.3 20.5 L9.8 18.2 L7.7 17 L5.5 17.8 L3.8 14.9 L5.5 13.3 L5.5 10.7 L3.8 9.1 L5.5 6.2 L7.7 7 L9.8 5.8 Z";
     out property <string> person: "M15.5 8 A3.5 3.5 0 1 1 8.5 8 A3.5 3.5 0 1 1 15.5 8 M5 20 Q5 14 12 14 Q19 14 19 20";
+    out property <string> devices: "M3 15 L3 6 Q3 5 4 5 L15 5 Q16 5 16 6 L16 8 M1.5 18 L13 18 M18 9 L21 9 Q22 9 22 10 L22 18 Q22 19 21 19 L18 19 Q17 19 17 18 L17 10 Q17 9 18 9 Z";
 }
 
 component Icon inherits Path {
@@ -986,6 +998,7 @@ component PlayerControls inherits Rectangle {
     in property <float> volume: 1;
     in property <int> inspector;
     in property <int> covers-rev;
+    in property <bool> devices-on;
     pure callback art(string, int, int) -> image;
     callback toggle();
     callback next();
@@ -1112,6 +1125,14 @@ component PlayerControls inherits Rectangle {
         Rectangle {
             width: 10px;
         }
+        if root.devices-on: IconButton {
+            y: (parent.height - self.height) / 2;
+            path: Icons.devices;
+            lit: root.inspector == 3;
+            size: 34px;
+            icon: 20px;
+            clicked => { root.set-inspector(root.inspector == 3 ? 0 : 3); }
+        }
         IconButton {
             y: (parent.height - self.height) / 2;
             path: Icons.lyrics;
@@ -1141,6 +1162,90 @@ component PlayerControls inherits Rectangle {
             value: root.volume;
             moved(v) => { root.set-volume(v); }
             done(v) => { root.set-volume(v); }
+        }
+    }
+}
+
+// The account's other devices with nori (remote control): what each plays, its transport, and moving the
+// music between it and this computer.
+component DevicesView inherits Rectangle {
+    in property <[DeviceRow]> devices;
+    callback act(string, string);
+    Flickable {
+        VerticalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            spacing: 14px;
+            Text {
+                text: "Play on";
+                color: Theme.text;
+                font-size: 17px;
+                font-weight: 700;
+            }
+            if root.devices.length == 0: Text {
+                text: "No other devices yet. Turn on remote control in nori on them.";
+                color: Theme.dim;
+                wrap: word-wrap;
+            }
+            for d in root.devices: VerticalLayout {
+                spacing: 4px;
+                Text {
+                    text: d.name;
+                    color: Theme.text;
+                    font-weight: 600;
+                    overflow: elide;
+                }
+                Text {
+                    text: d.line;
+                    color: Theme.dim;
+                    overflow: elide;
+                }
+                if d.note != "": Text {
+                    text: d.note;
+                    color: #ff6b6b;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: 2px;
+                    alignment: start;
+                    IconButton {
+                        path: Icons.previous;
+                        solid: true;
+                        size: 30px;
+                        icon: 18px;
+                        clicked => { root.act(d.id, "previous"); }
+                    }
+                    PlayPause {
+                        playing: d.playing;
+                        size: 30px;
+                        icon: 20px;
+                        clicked => { root.act(d.id, "toggle"); }
+                    }
+                    IconButton {
+                        path: Icons.next;
+                        solid: true;
+                        size: 30px;
+                        icon: 18px;
+                        clicked => { root.act(d.id, "next"); }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    for pill in [{ what: "here", label: "Play here" }, { what: "there", label: "Play there" }]: Rectangle {
+                        height: 28px;
+                        border-radius: 14px;
+                        background: pill.what == "here" ? Theme.accent : #ffffff1a;
+                        Text {
+                            text: pill.label;
+                            color: pill.what == "here" ? white : Theme.text;
+                            font-size: 12px;
+                        }
+                        TouchArea {
+                            clicked => { root.act(d.id, pill.what); }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -2327,9 +2432,14 @@ export component AppWindow inherits Window {
     in property <image> wash-b;
     in property <bool> wash-on-b;
     in property <color> wash-tint: #202024;
-    // The inspector on the right: 0 shut, 1 Playing Next, 2 lyrics. It keeps showing the last one while it
-    // slides away.
+    // The inspector on the right: 0 shut, 1 Playing Next, 2 lyrics, 3 the other devices. It keeps showing
+    // the last one while it slides away.
     in-out property <int> inspector;
+    // Remote control is on: the devices button, and the devices it lists.
+    in property <bool> devices-on;
+    in property <[DeviceRow]> devices;
+    // A device row's button: "toggle", "next", "previous", "here" (play its music here), "there".
+    callback device-act(string, string);
     property <int> shown-panel: 1;
     changed inspector => {
         if self.inspector != 0 {
@@ -3316,6 +3426,7 @@ export component AppWindow inherits Window {
                         volume: root.volume;
                         inspector: root.inspector;
                         covers-rev: root.covers-rev;
+                        devices-on: root.devices-on;
                         art(a, s, r) => { return root.art(a, s, r); }
                         toggle => { root.toggle(); }
                         next => { root.next(); }
@@ -3438,6 +3549,12 @@ export component AppWindow inherits Window {
                             font-size: 11px;
                         }
                     }
+                }
+                if root.shown-panel == 3: DevicesView {
+                    y: 30px;
+                    height: parent.height - 30px - 76px;
+                    devices: root.devices;
+                    act(id, what) => { root.device-act(id, what); }
                 }
                 if root.shown-panel == 1: QueueView {
                     y: 30px;
@@ -3878,6 +3995,7 @@ export component PlayerBar inherits Window {
     in property <float> volume: 1;
     in property <int> inspector;
     in property <int> covers-rev;
+    in property <bool> devices-on;
     pure callback art(string, int, int) -> image;
     callback toggle();
     callback next();
@@ -3910,6 +4028,7 @@ export component PlayerBar inherits Window {
         volume: root.volume;
         inspector: root.inspector;
         covers-rev: root.covers-rev;
+        devices-on: root.devices-on;
         art(a, s, r) => { return root.art(a, s, r); }
         toggle => { root.toggle(); }
         next => { root.next(); }

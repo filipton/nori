@@ -456,7 +456,12 @@ impl Build<'_> {
             "Look things up online",
             "Missing lyrics (sends the artist, song and album name) and the AutoEQ headphone list, each with its own switch. Off, nothing is asked.",
         )];
-        vec![("Search", search), ("Listening history", history), ("Online", online)]
+        let devices = vec![self.toggle(
+            "remoteControl",
+            "Control from other devices",
+            "Your other devices with nori see and control what plays here, and this Mac controls them: on the same network directly, elsewhere through octo-fiesta. Off, nothing listens or asks.",
+        )];
+        vec![("Search", search), ("Listening history", history), ("Online", online), ("Other devices", devices)]
     }
 
     fn quality(&self, name: &str, title: &str) -> Row {

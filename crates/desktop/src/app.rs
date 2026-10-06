@@ -450,7 +450,9 @@ fn wire(ui: &AppWindow, h: &AppHandle) {
     on!(ui.on_player_changed, h, |a| {
         a.mirror();
         a.place_player();
+        a.devices_watched();
     });
+    on!(ui.on_device_act, h, |a, id, what| a.device_act(id.to_string(), &what));
     on!(ui.on_login, h, |a| a.login());
     on!(ui.on_cancel_login, h, |a| a.go(HOME));
     on!(ui.on_find_edited, h, |a, t| {
@@ -1052,6 +1054,7 @@ impl App {
             Msg::Note { text, error } => self.say(&text, error),
             Msg::Reachable(Err(e)) => self.say(&e, true),
             Msg::Reachable(Ok(())) | Msg::From(..) => {}
+            Msg::Remote => self.devices_shown(),
             Msg::LoggedIn(r) => {
                 let ui = self.ui();
                 ui.set_login_busy(false);
@@ -1171,6 +1174,7 @@ impl App {
             p.set_volume(ui.get_volume());
             p.set_inspector(ui.get_inspector());
             p.set_covers_rev(ui.get_covers_rev());
+            p.set_devices_on(ui.get_devices_on());
         }
         if let Some(sd) = &self.sidebar {
             sd.set_view(ui.get_view());
@@ -1258,10 +1262,51 @@ impl App {
         });
     }
 
+    /// Follows the other devices while their panel is open (remote control), and lists them.
+    fn devices_watched(&self) {
+        let ui = self.ui();
+        let open = ui.get_inspector() == 3;
+        if let Some(r) = self.session.as_ref().and_then(|s| s.remote()) {
+            r.watch(open);
+        }
+        if open {
+            self.devices_shown();
+        }
+    }
+
+    /// The devices panel's rows, from the remote's devices.
+    fn devices_shown(&self) {
+        let ui = self.ui();
+        let remote = self.session.as_ref().and_then(|s| s.remote());
+        ui.set_devices_on(remote.is_some());
+        let Some(r) = remote.filter(|_| ui.get_inspector() == 3) else { return };
+        let rows: Vec<crate::DeviceRow> = r.devices().iter().map(crate::words::device_row).collect();
+        ui.set_devices(slint::ModelRc::new(slint::VecModel::from(rows)));
+    }
+
+    /// A device row's button.
+    fn device_act(&self, id: String, what: &str) {
+        let Some(r) = self.session.as_ref().and_then(|s| s.remote()) else { return };
+        let playing = r.devices().iter().find(|d| d.id == id).and_then(|d| d.state.as_ref().map(|s| s.playing)).unwrap_or(false);
+        use nori_core::remote::wire::Op;
+        match what {
+            "toggle" => r.send(id, if playing { Op::Pause } else { Op::Play }),
+            "next" => r.send(id, Op::Next),
+            "previous" => r.send(id, Op::Previous),
+            "here" => {
+                let me = r.id();
+                r.send(id, Op::Transfer { to: me });
+            }
+            "there" => r.hand_over(id),
+            _ => {}
+        }
+    }
+
     /// Redraws the settings or equalizer page from the current settings.
     fn settings_shown(&self) {
         let ui = self.ui();
         let prefs = crate::session::app().settings.current().unwrap_or_default();
+        self.devices_shown();
         ui.set_autoplay(prefs.auto_fill);
         ui.set_automix(prefs.auto_mix);
         ui.global::<crate::Theme>().set_accent(slint::Color::from_argb_encoded(crate::settings::accent_shown(prefs.accent as u32)));
