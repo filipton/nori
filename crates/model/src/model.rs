@@ -720,6 +720,7 @@ pub struct AudioPrefs {
     pub auto_mix: bool,
     pub speed: f32,
     pub pitch: f32,
+    pub sing: bool,
 }
 
 #[cfg(feature = "ffi")]
@@ -742,6 +743,7 @@ pub struct AudioPolicy {
     pub skip_silence: bool,
     pub offload: bool,
     pub processor_in_chain: bool,
+    pub sing: bool,
 }
 
 #[cfg(feature = "ffi")]

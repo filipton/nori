@@ -163,7 +163,7 @@ private val SERVICES: Map<String, Pair<Int, Int>> = mapOf(
 // ---- search ----
 
 /** Rows only a build with the beat model's runtime has. */
-private val BEAT_MODEL_ROWS = setOf(R.string.settings_better_beats, R.string.settings_beats_mobile_data, R.string.settings_download_beats)
+private val BEAT_MODEL_ROWS = setOf(R.string.settings_better_beats, R.string.settings_beats_mobile_data, R.string.settings_download_beats, R.string.settings_sing)
 
 /**
  * What the search can find: which page a row lives on, its title, and the words under it. A row is
@@ -189,6 +189,7 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("playing", R.string.settings_speed, 0),
     Triple("playing", R.string.settings_pitch, 0),
     Triple("playing", R.string.settings_skip_silence, R.string.settings_hint_skip_silence),
+    Triple("playing", R.string.settings_sing, R.string.settings_hint_sing),
     Triple("playing", R.string.settings_previous, R.string.settings_hint_previous),
     Triple("playing", R.string.settings_skip_explicit, R.string.settings_hint_skip_explicit),
     Triple("playing", R.string.settings_auto_fill, R.string.settings_hint_auto_fill),
@@ -463,6 +464,32 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
 
     fun section(title: Int, rows: List<SettingRow>) = SettingsSection(str(title), rows)
 
+    /** A downloaded model's switch's words: what it does while [on] is false, else how its download stands. */
+    fun modelWords(model: BeatModel, mb: Int, on: Boolean, off: Int, absent: Int, ready: Int): String = if (!on) str(off, mb) else when (model) {
+        is BeatModel.Failed -> str(R.string.settings_better_beats_failed, str(when (model.why) {
+            dev.nori.music.ffi.automix.BeatFailure.NETWORK -> R.string.settings_better_beats_network
+            dev.nori.music.ffi.automix.BeatFailure.WRONG_FILE -> R.string.settings_better_beats_wrong_file
+            dev.nori.music.ffi.automix.BeatFailure.STORAGE -> R.string.settings_better_beats_storage
+        }))
+        BeatModel.WaitingForWifi -> str(R.string.settings_better_beats_waiting, mb)
+        BeatModel.Downloading -> str(R.string.settings_better_beats_downloading, mb)
+        BeatModel.Ready -> str(ready)
+        else -> str(absent, mb)
+    }
+
+    /** Sing's switch and, while it is on, the vocals' level; nothing in a build without the model's runtime. */
+    fun sing(): List<SettingRow> {
+        val model = s.singModel
+        if (model is BeatModel.Unavailable) return emptyList()
+        val detail = modelWords(model, s.singModelMb.toInt(), p.sing, R.string.settings_sing_off, R.string.settings_sing_absent, R.string.settings_sing_ready)
+        val rows = mutableListOf<SettingRow>(toggle("sing", R.string.settings_sing, detail, !s.untouched))
+        if (p.sing) {
+            val level = str(R.string.settings_sing_level, percent((p.singVocalLevel * 100f).roundToInt().toString()))
+            rows += SettingRow.Slider("singVocalLevel", level, p.singVocalLevel, 0f, 1f, false, null)
+        }
+        return rows
+    }
+
     // How values read.
     fun offOr(v: String, words: (String) -> String) = if (v == "0") str(R.string.settings_off) else words(v)
     fun seconds(v: String) = str(R.string.settings_seconds, v)
@@ -500,19 +527,8 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
             // Only in a build that carries the beat model's runtime.
             val model = s.beatModel
             if (model !is BeatModel.Unavailable) {
-                val mb = s.beatModelMb.toInt()
                 val better = p.autoMixBetterBeats
-                val detail = if (!better) str(R.string.settings_better_beats_off, mb) else when (model) {
-                    is BeatModel.Failed -> str(R.string.settings_better_beats_failed, str(when (model.why) {
-                        dev.nori.music.ffi.automix.BeatFailure.NETWORK -> R.string.settings_better_beats_network
-                        dev.nori.music.ffi.automix.BeatFailure.WRONG_FILE -> R.string.settings_better_beats_wrong_file
-                        dev.nori.music.ffi.automix.BeatFailure.STORAGE -> R.string.settings_better_beats_storage
-                    }))
-                    BeatModel.WaitingForWifi -> str(R.string.settings_better_beats_waiting, mb)
-                    BeatModel.Downloading -> str(R.string.settings_better_beats_downloading, mb)
-                    BeatModel.Ready -> str(R.string.settings_better_beats_ready)
-                    else -> str(R.string.settings_better_beats_absent, mb)
-                }
+                val detail = modelWords(model, s.beatModelMb.toInt(), better, R.string.settings_better_beats_off, R.string.settings_better_beats_absent, R.string.settings_better_beats_ready)
                 between += toggle("autoMixBetterBeats", R.string.settings_better_beats, detail, live)
                 if (better && model != BeatModel.Ready) {
                     between += toggle("autoMixBeatsMobileData", R.string.settings_beats_mobile_data, R.string.settings_beats_mobile_data_detail, live)
@@ -538,7 +554,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
                 }
             },
             toggle("skipSilence", R.string.settings_skip_silence, str(if (s.untouched) R.string.settings_skip_silence_held else R.string.settings_skip_silence_detail), live),
-        )
+        ) + sing()
 
         val queue = mutableListOf<SettingRow>(
             toggle("skipExplicit", R.string.settings_skip_explicit, R.string.settings_skip_explicit_detail),

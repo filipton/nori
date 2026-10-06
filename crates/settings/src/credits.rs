@@ -123,6 +123,13 @@ const DATA_CREDITS: [(&str, &str, &str, &str, Option<&str>); 17] = [
         "MIT",
         Some("MIT"),
     ),
+    (
+        "Open-Unmix (UMX-HQ)",
+        "The vocals model behind Sing: its network comes with the app, its weights from Zenodo when switched on",
+        "Copyright (c) 2019 Inria (Fabian-Robert Stöter, Antoine Liutkus)",
+        "MIT",
+        Some("MIT"),
+    ),
 ];
 
 fn credits(list: &[(&str, &str, &str, &str, Option<&str>)]) -> Vec<Credit> {

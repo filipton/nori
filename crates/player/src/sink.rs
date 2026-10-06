@@ -12,6 +12,7 @@ use crate::dsp::{Band, Effects, Equalizer};
 use crate::engine::Downstream;
 use crate::pcm::{Encoding, Format};
 use crate::silence::SilenceSkipper;
+use crate::sing::{Masker, Placed};
 use crate::sound::sound_on;
 use crate::speed::{speed_active, SpeedPitch};
 
@@ -101,11 +102,13 @@ pub struct ChainSettings {
     pub skip_silence: bool,
     /// The equalizer is in the chain even while flat (all but bit-perfect output).
     pub keep_eq: bool,
+    /// Sing: the vocals' level (0 to 1) where a song has a mask; `None` is off.
+    pub sing: Option<f32>,
 }
 
 impl Default for ChainSettings {
     fn default() -> Self {
-        ChainSettings { sound: Sound::default(), speed: 1.0, pitch: 1.0, skip_silence: false, keep_eq: false }
+        ChainSettings { sound: Sound::default(), speed: 1.0, pitch: 1.0, skip_silence: false, keep_eq: false, sing: None }
     }
 }
 
@@ -165,6 +168,8 @@ pub trait Track {
 #[derive(Default)]
 struct Runner {
     chain: Processors,
+    /// The songs' vocal masks where they are on the timeline, for Sing's masker.
+    masks: Vec<Placed>,
     /// The last run's output.
     out: Vec<u8>,
     scratch: Vec<u8>,
@@ -174,19 +179,27 @@ struct Runner {
 
 impl Runner {
     fn processing(&self) -> bool {
-        self.chain.eq.as_ref().is_some_and(|e| !e.is_identity()) || self.chain.silence.is_some() || self.chain.speed.is_some()
+        self.chain.sing.is_some() || self.chain.eq.as_ref().is_some_and(|e| !e.is_identity()) || self.chain.silence.is_some() || self.chain.speed.is_some()
     }
 
-    /// Runs `input` through equalizer, silence skipping and speed (media3's order) into `self.out`, each
-    /// stage reading the last one's output (or `input`) and writing its own.
-    fn run(&mut self, input: &[u8], float: bool) {
+    /// Runs `input` through Sing's masker, equalizer, silence skipping and speed (media3's order) into
+    /// `self.out`, each stage reading the last one's output (or `input`) and writing its own. `at`: the
+    /// input's timeline position and pace, for the masker; `None` skips it (what it held is already out).
+    fn run(&mut self, input: &[u8], float: bool, at: Option<(i64, f64)>) {
         let (mut out, mut spare) = (std::mem::take(&mut self.out), std::mem::take(&mut self.scratch));
         let mut made = false;
         self.meter_db = 0.0;
+        if let (Some(m), Some((pts, pace))) = (self.chain.sing.as_mut(), at) {
+            out.clear();
+            m.process(input, pts, pace, &self.masks, &mut out);
+            made = true;
+        }
         if let Some(eq) = self.chain.eq.as_mut().filter(|e| !e.is_identity()) {
+            let from = if made { &out[..] } else { input };
             // Every byte is written over: only a longer input grows it.
-            out.resize(input.len(), 0);
-            eq.process_bytes(input, &mut out, float);
+            spare.resize(from.len(), 0);
+            eq.process_bytes(from, &mut spare, float);
+            std::mem::swap(&mut out, &mut spare);
             self.meter_db = eq.gain_reduction_db();
             made = true;
         }
@@ -390,6 +403,7 @@ impl<T: Track> Sink<T> {
         let Some(f) = self.format else { return };
         let s = &self.settings;
         self.runner.chain = Processors {
+            sing: s.sing.map(|level| Masker::new(f.rate, f.channels, f.encoding, level)),
             eq: s.eq_in().then(|| {
                 let mut eq = Equalizer::new(f.rate, f.channels);
                 s.sound.apply(&mut eq);
@@ -445,6 +459,19 @@ impl<T: Track> Sink<T> {
         at
     }
 
+    /// The songs' vocal masks where they are on the timeline changed: heard from the first frame the track
+    /// can still replace if one comes where input has already been run.
+    pub fn set_masks(&mut self, masks: &[Placed]) -> Option<(u64, u64)> {
+        let same = |a: &Placed, b: &Placed| a.at.start == b.at.start && std::sync::Arc::ptr_eq(&a.mask, &b.mask);
+        let reached = self.kept.last_pts().unwrap_or(i64::MIN);
+        let late = masks.iter().any(|m| m.at.start <= reached && !self.runner.masks.iter().any(|o| same(o, m)));
+        let gone = self.runner.masks.iter().any(|o| o.at.start <= reached && !masks.iter().any(|m| same(o, m)));
+        let at = (self.runner.chain.sing.is_some() && (late || gone)).then(|| self.splice()).flatten();
+        self.runner.masks.clear();
+        self.runner.masks.extend_from_slice(masks);
+        at
+    }
+
     /// The chain goes on with `to` from where it is.
     fn apply(&mut self, to: ChainSettings) {
         let Some(f) = self.format else {
@@ -453,6 +480,12 @@ impl<T: Track> Sink<T> {
         };
         let live = self.made > 0;
         let chain = &mut self.runner.chain;
+        match (chain.sing.as_mut(), to.sing) {
+            (Some(m), level) => m.set_level(level.unwrap_or(1.0)),
+            (None, Some(level)) => chain.sing = Some(Masker::new(f.rate, f.channels, f.encoding, level)),
+            // At full level it stays: leaving would drop what it holds.
+            (None, None) => {}
+        }
         match chain.eq.as_mut() {
             // A flat equalizer stays until the next flush. The same sound again changes nothing.
             Some(eq) => {
@@ -568,7 +601,7 @@ impl<T: Track> Sink<T> {
         while frame < until && out < reach {
             let Some((piece, end)) = self.kept.piece(frame) else { break };
             let to = end.min(until).min(frame + REPLAY_FRAMES);
-            self.runner.run(self.kept.frames(frame, to), float);
+            self.runner.run(self.kept.frames(frame, to), float, Some(piece.at(frame, f.rate)));
             out += (self.runner.out.len() / fb) as u64;
             media += (to - frame) as f64 * piece.pace;
             frame = to;
@@ -622,7 +655,7 @@ impl<T: Track> Sink<T> {
             self.mark();
             let media = (end - self.run) as f64 * piece.pace;
             self.carry += media;
-            self.runner.run(self.kept.frames(self.run, end), float);
+            self.runner.run(self.kept.frames(self.run, end), float, Some(piece.at(self.run, f.rate)));
             self.run_media += media;
             self.run = end;
             self.made_output(0.0);
@@ -733,9 +766,12 @@ impl<T: Track> Sink<T> {
         // Processors that stayed in after being turned off go now.
         let s = &self.settings;
         let chain = &mut self.runner.chain;
-        if (chain.eq.is_some(), chain.silence.is_some(), chain.speed.is_some()) != (s.eq_in(), s.skip_silence, speed_active(s.speed, s.pitch)) {
+        if (chain.sing.is_some(), chain.eq.is_some(), chain.silence.is_some(), chain.speed.is_some()) != (s.sing.is_some(), s.eq_in(), s.skip_silence, speed_active(s.speed, s.pitch)) {
             self.build_chain();
             return;
+        }
+        if let Some(m) = chain.sing.as_mut() {
+            m.reset();
         }
         if let Some(eq) = chain.eq.as_mut() {
             eq.reset();
@@ -763,12 +799,20 @@ impl<T: Track> Sink<T> {
         self.fill();
     }
 
-    /// The limiter's look-ahead pushed out with silence, then what silence skipping and speed hold.
+    /// What Sing's masker holds, through the rest of the chain; the limiter's look-ahead pushed out with
+    /// silence; then what silence skipping and speed hold.
     fn drain(&mut self) {
         let Some(f) = self.format else { return };
+        let float = f.encoding == Encoding::Float;
+        if let Some(m) = self.runner.chain.sing.as_mut() {
+            let mut tail = Vec::new();
+            m.end(&self.runner.masks, &mut tail);
+            self.runner.run(&tail, float, None);
+            self.made_output(0.0);
+        }
         let held = self.runner.chain.eq.as_ref().filter(|e| !e.is_identity()).map_or(0, Equalizer::delay_frames);
         if held > 0 {
-            self.runner.run(&vec![0u8; held * f.frame_bytes()], f.encoding == Encoding::Float);
+            self.runner.run(&vec![0u8; held * f.frame_bytes()], float, None);
             self.made_output(0.0);
         }
         self.runner.drain_stages(true);
@@ -867,7 +911,7 @@ impl<T: Track> Downstream for Sink<T> {
             self.submitted_frames += media;
             self.mark();
             self.kept.keep(input, self.pace, pts);
-            self.runner.run(input, f.encoding == Encoding::Float);
+            self.runner.run(input, f.encoding == Encoding::Float, Some((pts, self.pace)));
             self.run += (input.len() / fb) as u64;
             self.run_media += media;
             self.made_output(media);

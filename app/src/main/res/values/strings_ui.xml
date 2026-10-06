@@ -18,6 +18,8 @@
     <string name="repeat">Repeat</string>
     <string name="queue">Queue</string>
     <string name="lyrics">Lyrics</string>
+    <string name="sing">Sing</string>
+    <string name="sing_vocals">Vocals %1$d%%</string>
     <string name="favourite">Favorite</string>
     <string name="add_to_favourites">Add to favorites</string>
     <string name="remove_from_favourites">Remove from favorites</string>

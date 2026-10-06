@@ -361,7 +361,7 @@ What was built follows these rules:
      own metre (`intro_beats_per_bar`, `outro_beats_per_bar`). No new analysis version: stored rows read as not yet
      heard by the model.
    - nori-engine (`Measurer`, feature `neural-beats`): the ends of the song playing and the next, the model loaded
-     for the measuring thread's life. nori-core (`beat_download.rs`): the authors' checkpoint fetched through the
+     for the measuring thread's life. nori-core (`model_download.rs`): the authors' checkpoint fetched through the
      platform's transport from their server, Wi-Fi unless mobile data is allowed, its SHA-256 checked, converted
      into the weights file and that checked against its own pin, kept beside the app's database, tried again at
      the next song when it failed. nori-player (`automix/checkpoint.rs`, `automix/weights.rs`): the checkpoint's

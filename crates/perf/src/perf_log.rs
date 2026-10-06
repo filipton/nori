@@ -1325,6 +1325,7 @@ pub(crate) fn offload_reason() -> Option<&'static str> {
         auto_mix: s.auto_mix,
         speed: s.speed,
         pitch: s.pitch,
+        sing: s.sing,
     };
     let output = nori_model::OutputState { hi_res: s.hi_res, ..Default::default() };
     nori_player::policy::offload_blocked(&prefs, &output)

@@ -238,6 +238,28 @@ fn speed_and_silence_skipping() {
 }
 
 #[test]
+fn sing_masker() {
+    use crate::sing::{bands, Masker, Placed, VocalMask};
+    let x = tone(8.0, 440.0);
+    // Vocals in every other frame, so the masked and the passed-through paths both run.
+    let row = |k: usize| vec![if k.is_multiple_of(2) { 200u8 } else { 0 }; bands()];
+    let mask = std::sync::Arc::new(VocalMask::new(43.0, (0..400).flat_map(row).collect()));
+    let masks = [Placed { at: 0..i64::MAX, mask }];
+    let mut m = Masker::new(RATE, 2, Encoding::Pcm16, 0.2);
+    let mut out = Vec::with_capacity(1 << 16);
+    let mut pts = 0;
+    let made = steady(&x, CHUNK, |c| {
+        m.process(c, pts, 1.0, &masks, &mut out);
+        pts += FMT.us(c.len());
+        out.clear();
+    });
+    assert_eq!(made, 0);
+    // A mark's copy reuses the buffers.
+    let mut kept = m.clone();
+    assert_eq!(allocations(|| kept.clone_from(&m)), 0);
+}
+
+#[test]
 fn analysis() {
     let x: Vec<f32> = tone(30.0, 440.0).chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0).collect();
     // Mono-alike and panned (the side feeds the vocal curve).

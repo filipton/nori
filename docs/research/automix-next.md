@@ -162,7 +162,7 @@ This section records what the owner decided in conversation so it is not lost. *
 ### 7.1 Decisions
 
 - **Battery does not matter for AutoMix** if the result sounds excellent. Heavy analysis, lookahead rendering and a charging-only pass are all acceptable.
-- **Pick the best model per task, not a mediocre one.** nori is an MIT-licensed, open-source, non-commercial project (`LICENSE`, `README.md`), so non-commercial model weights are acceptable in principle. Keep the existing pattern of the device fetching weights from the model authors (as `beat_download.rs` does for Beat This!) so the repo and APK never redistribute them.
+- **Pick the best model per task, not a mediocre one.** nori is an MIT-licensed, open-source, non-commercial project (`LICENSE`, `README.md`), so non-commercial model weights are acceptable in principle. Keep the existing pattern of the device fetching weights from the model authors (as `model_download.rs` does for Beat This!) so the repo and APK never redistribute them.
 - **Order of work.** First improve the whole code side of AutoMix using the research (grids, the transition chooser, effects, structure), researching further as each piece is built. Later, choose which models run on the phone and which on a server or desktop.
 - **Save everything in this research file** (`automix.md` §1a for what Apple does, this file §6 and §7 for the direction).
 

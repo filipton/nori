@@ -25,13 +25,13 @@ fn the_weights_come_from_the_authors() {
     };
     let before = rss();
     let t0 = std::time::Instant::now();
-    let file = nori_core::beat_download::ensure(&client);
+    let file = nori_core::model_download::ensure(&client);
     println!("fetched, checked, converted and kept in {:.2} s; peak RSS {before} before, {} after", t0.elapsed().as_secs_f64(), rss());
     assert_eq!(core.session.settings.model.state(), State::Ready);
     let file = file.expect("the weights file");
     assert_eq!(file, dir.join("models").join(beat_model::FILE_NAME));
     let t1 = std::time::Instant::now();
-    let weights = nori_core::beat_download::read(&file).unwrap();
+    let weights = nori_core::model_download::read(&nori_core::beat_model::BEAT_THIS, &file).unwrap();
     nori_player::automix::neural::BeatThis::from_weights(&weights).unwrap();
     println!("read, checked and loaded in {:.2} s; peak RSS {}", t1.elapsed().as_secs_f64(), rss());
 }

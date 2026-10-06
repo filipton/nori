@@ -23,6 +23,8 @@ pub mod watch;
 pub mod core;
 #[cfg(feature = "core")]
 pub mod processing;
+#[cfg(feature = "core")]
+pub mod sing;
 
 #[cfg(test)]
 mod no_alloc;

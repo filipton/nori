@@ -185,6 +185,14 @@ impl App for CoreApp {
         self.measurer.as_ref().is_some_and(|m| m.measured.swap(false, Ordering::AcqRel))
     }
 
+    fn vocal_mask(&mut self, song_id: &str) -> Option<Arc<nori_player::sing::VocalMask>> {
+        self.measurer.as_ref()?.analyses.masks.get(song_id)
+    }
+
+    fn masks_made(&mut self) -> bool {
+        self.measurer.as_ref().is_some_and(|m| m.masked.swap(false, Ordering::AcqRel))
+    }
+
     /// The core keeps the window itself.
     fn window(&mut self, _window: Vec<WindowSong>, _shuffling: bool) {
         self.session.window();
@@ -530,7 +538,8 @@ impl Shelf for StoreShelf {
 ///
 /// With "Better beat detection" (the `neural-beats` feature), the same decode keeps the ends of the
 /// current and next song for Beat This!'s intro and outro grids; the model loads when needed and is
-/// dropped with the thread.
+/// dropped with the thread. With Sing on, it makes the current and next song's vocal masks the same
+/// way (`crate::sing`), or reads them back from the disk.
 pub struct Measurer {
     /// The profile to store into, asked per look (a profile switch replaces it).
     analyses: Arc<Analyses>,
@@ -542,6 +551,8 @@ pub struct Measurer {
     asked: AtomicU64,
     /// Something was stored since the engine last asked.
     measured: AtomicBool,
+    /// A vocal mask came since the engine last asked.
+    masked: AtomicBool,
     /// Called on the measuring thread whenever something was stored.
     told: Option<Box<dyn Fn() + Send + Sync>>,
     decoded: AtomicU64,
@@ -551,24 +562,27 @@ pub struct Measurer {
 #[derive(Default)]
 struct Schedule {
     ids: Vec<String>,
-    /// Bumped on news: a new list, or a song arrived.
+    /// Sing is on: masks are wanted too.
+    sing: bool,
+    /// Bumped on news: a new list, Sing switched, or a song arrived.
     news: u64,
     /// The news last looked at.
     seen: u64,
     running: bool,
     engine: Option<std::thread::Thread>,
-    /// Songs tried, with their bytes on disk then and whether the beat model had them.
-    tried: HashMap<String, (u64, bool)>,
+    /// Songs tried, with their bytes on disk then and whether the beat model and the vocals model had them.
+    tried: HashMap<String, (u64, bool, bool)>,
 }
 
 /// Tried songs remembered before those no longer asked for are dropped.
 const TRIED_KEPT: usize = 256;
 
 impl Schedule {
-    /// The songs to measure are `ids`; returns whether a thread should start.
-    fn ask(&mut self, ids: Vec<String>) -> bool {
-        if ids != self.ids {
+    /// The songs to measure are `ids`, with Sing's masks if `sing`; returns whether a thread should start.
+    fn ask(&mut self, ids: Vec<String>, sing: bool) -> bool {
+        if ids != self.ids || sing != self.sing {
             self.ids = ids;
+            self.sing = sing;
             self.news += 1;
             if self.tried.len() > TRIED_KEPT {
                 let ids = &self.ids;
@@ -602,17 +616,18 @@ impl Schedule {
         Some(self.ids.clone())
     }
 
-    /// Whether `id` is asked for and untried with `bytes`, or needs the beat model (`listen`) it did not get.
-    fn worth(&self, id: &str, bytes: u64, listen: bool) -> bool {
-        self.asks(id) && self.tried.get(id).is_none_or(|&(had, heard)| bytes > had || (listen && !heard))
+    /// Whether `id` is asked for and untried with `bytes`, or needs the beat model (`listen`) or a vocal
+    /// mask (`mask`) it did not get.
+    fn worth(&self, id: &str, bytes: u64, listen: bool, mask: bool) -> bool {
+        self.asks(id) && self.tried.get(id).is_none_or(|&(had, heard, masked)| bytes > had || (listen && !heard) || (mask && !masked))
     }
 
     fn asks(&self, id: &str) -> bool {
         self.ids.iter().any(|i| i == id)
     }
 
-    fn tried(&mut self, id: &str, bytes: u64, heard: bool) {
-        self.tried.insert(id.to_string(), (bytes, heard));
+    fn tried(&mut self, id: &str, bytes: u64, heard: bool, masked: bool) {
+        self.tried.insert(id.to_string(), (bytes, heard, masked));
     }
 }
 
@@ -633,7 +648,17 @@ impl Measurer {
     /// Measures songs `shelf` has whole, storing into the profile `analyses` work for; `told` hears of
     /// each stored song.
     pub fn on_shelf(analyses: Arc<Analyses>, shelf: Box<dyn Shelf>, told: Option<Box<dyn Fn() + Send + Sync>>) -> Arc<Measurer> {
-        let m = Arc::new(Measurer { analyses, shelf, plan: Mutex::new(Schedule::default()), idle: Condvar::new(), asked: AtomicU64::new(0), measured: AtomicBool::new(false), told, decoded: AtomicU64::new(0) });
+        let m = Arc::new(Measurer {
+            analyses,
+            shelf,
+            plan: Mutex::new(Schedule::default()),
+            idle: Condvar::new(),
+            asked: AtomicU64::new(0),
+            measured: AtomicBool::new(false),
+            masked: AtomicBool::new(false),
+            told,
+            decoded: AtomicU64::new(0),
+        });
         m.analyses.arrivals.lock().watch(&m);
         m
     }
@@ -657,11 +682,12 @@ impl Measurer {
 
     /// Measures `ids` (current song first), replacing the old list; an empty one stops.
     pub fn ask(self: &Arc<Self>, ids: Vec<String>) {
+        let sing = self.analyses.client().is_some_and(|c| c.session().settings.prefs(|p| p.sing));
         let mut plan = self.plan.lock();
         if ids != plan.ids {
             self.asked.fetch_add(1, Ordering::AcqRel);
         }
-        let start = plan.ask(ids);
+        let start = plan.ask(ids, sing);
         drop(plan);
         if start {
             self.spawn();
@@ -705,6 +731,7 @@ impl Measurer {
     fn run(&self) {
         crate::arriving::lower_priority();
         let mut model = Model::new(&self.analyses.models);
+        let mut unmixer = crate::sing::Unmixer::new();
         loop {
             let Some(ids) = self.plan.lock().next() else {
                 self.idle.notify_all();
@@ -712,9 +739,16 @@ impl Measurer {
             };
             let Some(client) = self.analyses.client() else { continue };
             let core = client.core();
-            let missing = core.analysis_missing(ids.clone()).unwrap_or_default();
+            let (auto_mix, sing) = core.session.settings.with_prefs(|p| (p.auto_mix, p.sing)).unwrap_or_default();
+            let missing = if auto_mix { core.analysis_missing(ids.clone()).unwrap_or_default() } else { Vec::new() };
             let near = listen_to(core, &ids, &missing);
-            let todo: Vec<&String> = ids.iter().filter(|id| missing.contains(id) || near.contains(id)).collect();
+            let unmasked = if sing {
+                self.unmasked(&client, &ids)
+            } else {
+                self.analyses.masks.keep_only(&[]);
+                Vec::new()
+            };
+            let todo: Vec<&String> = ids.iter().filter(|id| missing.contains(id) || near.contains(id) || unmasked.contains(id)).collect();
             let mut waiting = 0;
             for id in todo {
                 // Measured as it arrives: that decode's end is news here.
@@ -729,23 +763,25 @@ impl Measurer {
                 let (pieces, hint) = pieces;
                 let bytes = pieces.len();
                 let asked_to_listen = near.contains(id);
-                if !self.plan.lock().worth(id, bytes, asked_to_listen) {
+                let asked_to_mask = unmasked.contains(id);
+                if !self.plan.lock().worth(id, bytes, asked_to_listen, asked_to_mask) {
                     continue;
                 }
                 let listen = asked_to_listen && model.ready(&client);
+                let unmix = if asked_to_mask { unmixer.ready(&client) } else { None };
                 // Ask again: it may have been measured as it arrived meanwhile.
                 let classical = missing.contains(id) && !core.analysis_missing(vec![id.clone()]).unwrap_or_default().is_empty();
-                if !classical && !listen {
+                if !classical && !listen && unmix.is_none() {
                     continue;
                 }
                 self.decoded.fetch_add(1, Ordering::Relaxed);
                 let cpu = crate::arriving::thread_cpu_ms();
-                let job = Job { classical, model: listen.then_some(&model) };
+                let job = Job { classical, model: listen.then_some(&model), unmix };
                 let Some(stored) = self.measure(core, id, pieces, hint.as_deref(), job) else { continue };
                 if let (Some(a), Some(b)) = (cpu, crate::arriving::thread_cpu_ms()) {
                     nori_core::alog::info(&format!("measuring {id} ahead from the disk took {} ms of CPU", b.saturating_sub(a)));
                 }
-                self.plan.lock().tried(id, bytes, listen);
+                self.plan.lock().tried(id, bytes, listen, unmix.is_some());
                 if stored {
                     self.measured.store(true, Ordering::Release);
                     if let Some(t) = &self.plan.lock().engine {
@@ -765,7 +801,14 @@ impl Measurer {
     fn measure(&self, core: &Core, id: &str, pieces: crate::pieces::Pieces, hint: Option<&str>, job: Job<'_, '_>) -> Option<bool> {
         let expected_ms = core.session.song(id).map_or(0, |s| s.duration as i64 * 1000);
         let mut asked = self.asked.load(Ordering::Acquire);
-        let Decoded { stream, ends } = decode(id, "measuring ahead", pieces, hint, expected_ms, job.classical, job.model.is_some(), || {
+        let mut making = job.unmix.map(|u| u.maker());
+        let mut feed = |rate: u32, channels: usize, x: &[f32]| {
+            if let Some(m) = making.as_mut() {
+                m.feed(rate, channels, x);
+            }
+        };
+        let also: Option<&mut dyn FnMut(u32, usize, &[f32])> = if job.unmix.is_some() { Some(&mut feed) } else { None };
+        let Decoded { stream, ends } = decode(id, "measuring ahead", pieces, hint, expected_ms, job.classical, job.model.is_some(), also, || {
             let now = self.asked.load(Ordering::Acquire);
             if now != asked {
                 if !self.plan.lock().asks(id) {
@@ -776,6 +819,9 @@ impl Measurer {
             true
         })?;
         let measured = stream.is_some_and(|stream| self.finish(core, id, stream, expected_ms));
+        if let Some(m) = making {
+            self.keep_mask(core, id, m.finish());
+        }
         let listened = match (job.model, ends) {
             (Some(model), Some(mut ends)) => {
                 let adopted = listen(core, id, model, &mut ends);
@@ -786,6 +832,53 @@ impl Measurer {
             _ => false,
         };
         Some(measured || listened)
+    }
+
+    /// Sing's near songs (of `ids`) without a mask in memory, after reading back those kept on the disk;
+    /// the masks of songs no longer near are let go.
+    fn unmasked(&self, client: &Client, ids: &[String]) -> Vec<String> {
+        let near = &ids[..ids.len().min(crate::sing::AHEAD)];
+        let masks = &self.analyses.masks;
+        masks.keep_only(near);
+        let dir = client.session().settings.sing_model.dir();
+        let mut out = Vec::new();
+        for id in near.iter().filter(|id| masks.get(id).is_none()) {
+            match dir.as_deref().and_then(|d| crate::sing::load(d, id)) {
+                Some(m) => {
+                    masks.put(id, Arc::new(m));
+                    self.tell_masked();
+                }
+                None => out.push(id.clone()),
+            }
+        }
+        out
+    }
+
+    /// Keeps the mask made of `id`, on disk and for the player.
+    fn keep_mask(&self, core: &Core, id: &str, made: Result<nori_player::sing::VocalMask, String>) {
+        let mask = match made {
+            Ok(m) => m,
+            Err(e) => return nori_core::alog::info(&format!("vocal mask of {id} not made: {e}")),
+        };
+        if let Some(dir) = core.session.settings.sing_model.dir() {
+            if let Err(e) = crate::sing::store(&dir, id, &mask) {
+                nori_core::alog::info(&format!("vocal mask of {id} not kept: {e}"));
+            }
+        }
+        nori_core::alog::info(&format!("vocal mask of {id} made: {} frames", mask.frames()));
+        self.analyses.masks.put(id, Arc::new(mask));
+        self.tell_masked();
+    }
+
+    /// The engine hears of a new mask.
+    fn tell_masked(&self) {
+        self.masked.store(true, Ordering::Release);
+        if let Some(t) = &self.plan.lock().engine {
+            t.unpark();
+        }
+        if let Some(told) = &self.told {
+            told();
+        }
     }
 
     /// Stores the analysis of all of `id`; returns whether it was stored.
@@ -805,10 +898,21 @@ pub(crate) struct Decoded {
     pub ends: Option<Ends>,
 }
 
-/// Decodes `id` whole from `pieces` for the analyser (`classical`) and the beat model (`ends`) while
-/// `go_on` (asked per buffer); None when abandoned. `what` names the work in the log.
+/// Decodes `id` whole from `pieces` for the analyser (`classical`), the beat model (`ends`) and `also`
+/// (each buffer's rate, channels and samples) while `go_on` (asked per buffer); None when abandoned.
+/// `what` names the work in the log.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn decode(id: &str, what: &str, pieces: crate::pieces::Pieces, hint: Option<&str>, expected_ms: i64, classical: bool, ends: bool, mut go_on: impl FnMut() -> bool) -> Option<Decoded> {
+pub(crate) fn decode(
+    id: &str,
+    what: &str,
+    pieces: crate::pieces::Pieces,
+    hint: Option<&str>,
+    expected_ms: i64,
+    classical: bool,
+    ends: bool,
+    mut also: Option<&mut dyn FnMut(u32, usize, &[f32])>,
+    mut go_on: impl FnMut() -> bool,
+) -> Option<Decoded> {
     let mut left = false;
     let mut stream = None;
     let mut kept = None;
@@ -824,6 +928,9 @@ pub(crate) fn decode(id: &str, what: &str, pieces: crate::pieces::Pieces, hint: 
         }
         if ends {
             kept.get_or_insert_with(|| Ends::new(rate)).feed(samples, channels);
+        }
+        if let Some(f) = also.as_mut() {
+            f(rate, channels, samples);
         }
         true
     });
@@ -889,12 +996,14 @@ pub struct Analyses {
     arrived: Condvar,
     pub(crate) read_back: crate::processing::ReadBack,
     pub(crate) models: Models,
+    /// Sing's masks of the near songs.
+    pub(crate) masks: crate::sing::VocalMasks,
 }
 
 impl Analyses {
     /// Over the profile `client` gives at each use (a profile switch replaces it).
     pub fn new(client: impl Fn() -> Option<Arc<Client>> + Send + Sync + 'static) -> Arc<Analyses> {
-        Arc::new(Analyses { client: Box::new(client), arrivals: Mutex::default(), arrived: Condvar::new(), read_back: Default::default(), models: Models::default() })
+        Arc::new(Analyses { client: Box::new(client), arrivals: Mutex::default(), arrived: Condvar::new(), read_back: Default::default(), models: Models::default(), masks: Default::default() })
     }
 
     /// Over `client` for good.
@@ -1055,6 +1164,8 @@ struct Job<'m, 'a> {
     classical: bool,
     /// The beat model reads its ends.
     model: Option<&'m Model<'a>>,
+    /// The vocals model makes its mask.
+    unmix: Option<&'m crate::sing::Model>,
 }
 
 /// Runs Beat This! over each unread end of `id`; returns whether a grid was stored.
@@ -1161,10 +1272,10 @@ pub(crate) struct BeatModel(nori_player::automix::neural::BeatThis);
 impl BeatModel {
     /// The model and the heap it took (1 where the heap is not counted).
     fn load(client: &Client) -> Option<(BeatModel, u64)> {
-        let file = nori_core::beat_download::ensure(client)?;
+        let file = nori_core::model_download::ensure(client)?;
         let t0 = std::time::Instant::now();
         let before = nori_core::heap::live_bytes();
-        let loaded = nori_core::beat_download::read(&file).and_then(|bytes| nori_player::automix::neural::BeatThis::from_weights(&bytes).map_err(|e| e.to_string()));
+        let loaded = nori_core::model_download::read(&nori_core::beat_model::BEAT_THIS, &file).and_then(|bytes| nori_player::automix::neural::BeatThis::from_weights(&bytes).map_err(|e| e.to_string()));
         match loaded {
             Ok(m) => {
                 let bytes = before.zip(nori_core::heap::live_bytes()).map_or(1, |(a, b)| (b - a).max(1) as u64);
@@ -1246,6 +1357,7 @@ pub fn settings(s: &StoredPrefs, volume_db: f64) -> Settings {
         crossfade_s: s.crossfade_sec,
         auto_mix: s.auto_mix,
         gain_boost_db: if s.gain_prefs().boosts() { s.gain_boost_db } else { 0.0 },
+        sing: s.sing.then_some(s.sing_vocal_level),
     }
 }
 
@@ -1295,20 +1407,20 @@ mod tests {
     #[test]
     fn looks() {
         let mut s = Schedule::default();
-        assert!(s.ask(ids(&["a", "b", "c"])), "songs to measure: a thread");
+        assert!(s.ask(ids(&["a", "b", "c"]), false), "songs to measure: a thread");
         assert_eq!(s.next(), Some(ids(&["a", "b", "c"])));
         assert_eq!(s.next(), None, "nothing new: the thread ends");
         assert!(!s.running);
         // Repeated asks with the same list.
         for _ in 0..100 {
-            assert!(!s.ask(ids(&["a", "b", "c"])), "no thread, no look");
+            assert!(!s.ask(ids(&["a", "b", "c"]), false), "no thread, no look");
         }
-        assert!(s.ask(ids(&["b", "c", "d"])), "the queue moved: a look");
+        assert!(s.ask(ids(&["b", "c", "d"]), false), "the queue moved: a look");
 
         // Arrival during a look is kept.
         let mut s = Schedule::default();
         assert!(!s.arrived(), "nothing asked for: nothing to look at");
-        assert!(s.ask(ids(&["a", "b"])));
+        assert!(s.ask(ids(&["a", "b"]), false));
         assert_eq!(s.next(), Some(ids(&["a", "b"])));
         // Arrivals while measuring: no second thread, news kept.
         assert!(!s.arrived());
@@ -1321,24 +1433,37 @@ mod tests {
     #[test]
     fn song_retried_only_with_more_bytes() {
         let mut s = Schedule::default();
-        s.ask(ids(&["a", "b"]));
-        assert!(s.worth("a", 1000, false));
-        s.tried("a", 1000, true);
-        assert!(!s.worth("a", 1000, false), "tried with these bytes: not again, however often it is looked at");
-        assert!(s.worth("a", 5000, false), "more of it has come since: once more");
-        assert!(!s.worth("z", 1000, false), "not asked for");
-        s.ask(ids(&["b"]));
-        assert!(!s.worth("a", 5000, false), "no longer asked for");
+        s.ask(ids(&["a", "b"]), false);
+        assert!(s.worth("a", 1000, false, false));
+        s.tried("a", 1000, true, false);
+        assert!(!s.worth("a", 1000, false, false), "tried with these bytes: not again, however often it is looked at");
+        assert!(s.worth("a", 5000, false, false), "more of it has come since: once more");
+        assert!(!s.worth("z", 1000, false, false), "not asked for");
+        s.ask(ids(&["b"]), false);
+        assert!(!s.worth("a", 5000, false, false), "no longer asked for");
     }
 
     #[test]
     fn measured_song_decoded_for_model() {
         let mut s = Schedule::default();
-        s.ask(ids(&["a", "b"]));
-        s.tried("a", 1000, false);
-        assert!(!s.worth("a", 1000, false));
-        assert!(s.worth("a", 1000, true), "the model has not heard it");
-        s.tried("a", 1000, true);
-        assert!(!s.worth("a", 1000, true), "heard: never again");
+        s.ask(ids(&["a", "b"]), false);
+        s.tried("a", 1000, false, false);
+        assert!(!s.worth("a", 1000, false, false));
+        assert!(s.worth("a", 1000, true, false), "the model has not heard it");
+        s.tried("a", 1000, true, false);
+        assert!(!s.worth("a", 1000, true, false), "heard: never again");
+        assert!(s.worth("a", 1000, false, true), "no vocal mask made of it yet");
+        s.tried("a", 1000, true, true);
+        assert!(!s.worth("a", 1000, true, true), "masked: never again");
+    }
+
+    #[test]
+    fn sing_switched_is_news() {
+        let mut s = Schedule::default();
+        assert!(s.ask(ids(&["a", "b"]), false));
+        assert_eq!(s.next(), Some(ids(&["a", "b"])));
+        assert_eq!(s.next(), None);
+        assert!(s.ask(ids(&["a", "b"]), true), "the same songs, now for their masks: a look");
+        assert_eq!(s.next(), Some(ids(&["a", "b"])));
     }
 }

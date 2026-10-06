@@ -68,6 +68,8 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MicNone
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
@@ -124,6 +126,7 @@ fun LyricsView(vm: PlayerViewModel, actions: ActionsViewModel, playing: Boolean)
         // On its side the title, the heart and the menu stay in the controls' half, where they are in every
         // panel; a second copy here pushed the words down and moved the controls up when the lyrics opened.
         if (!LocalWide.current) LyricsHeader(vm, actions, playerState.current)
+        if (remember { dev.nori.music.ffi.settings.singOffered() }) SingBar(settings, prefs.sing, prefs.singVocalLevel)
         // Loading, nothing found, or the words - each fades into the next rather than replacing it, the
         // words included: they rise out of the loader instead of appearing in one frame. A new song goes
         // back through the loader, so the last song's lyrics never sit on screen under the new title.
@@ -607,6 +610,22 @@ private fun LyricsHeader(vm: PlayerViewModel, actions: ActionsViewModel, song: d
             val starred = marks.effectiveStar(dev.nori.music.data.StarKind.SONG, s.id, s.starred)
             TitleCircle(if (starred) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, say.favourite, starred) { actions.star(s, !starred) }
             TitleCircle(Icons.Filled.MoreHoriz, say.more, false) { menu(s) }
+        }
+    }
+}
+
+/**
+ * Sing, under the lyrics' header: the microphone turns the vocals down (the core's Sing), and while it is on
+ * the slider sets how much of them is left.
+ */
+@Composable
+private fun SingBar(settings: SettingsViewModel, on: Boolean, level: Float) {
+    val look = LocalLook.current
+    Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, bottom = 4.dp), Arrangement.spacedBy(12.dp), Alignment.CenterVertically) {
+        TitleCircle(if (on) Icons.Filled.Mic else Icons.Filled.MicNone, say.sing, on) { settings.set("sing", (!on).toString()) }
+        if (on) {
+            LookText(say.singVocals(level), { look.color(CoverLook.ON_60) }, style = MaterialTheme.typography.bodySmall)
+            NoriSlider(level, 0f..1f, { settings.set("singVocalLevel", it.toString()) }, Modifier.weight(1f))
         }
     }
 }

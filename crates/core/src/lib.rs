@@ -27,7 +27,7 @@ pub mod library;
 pub mod stage;
 pub mod update;
 #[cfg(feature = "neural-beats")]
-pub mod beat_download;
+pub mod model_download;
 
 use std::sync::Arc;
 

@@ -108,6 +108,9 @@ pub struct SettingsState {
     pub beat_model: BeatModel,
     /// Approximate beat model download size, MB.
     pub beat_model_mb: u32,
+    /// Sing's vocals model, as `beat_model`.
+    pub sing_model: BeatModel,
+    pub sing_model_mb: u32,
 }
 
 /// The output as the platform reports it.
@@ -119,7 +122,7 @@ pub struct Output {
     pub usb: bool,
 }
 
-fn beat_model_now(model: &beat_model::ModelFile) -> BeatModel {
+fn model_now(model: &beat_model::ModelFile) -> BeatModel {
     if !beats::AVAILABLE {
         return BeatModel::Unavailable;
     }
@@ -135,7 +138,7 @@ fn beat_model_now(model: &beat_model::ModelFile) -> BeatModel {
 }
 
 /// [`SettingsState`] for these settings and this output.
-pub fn state(p: &StoredPrefs, out: Output, model: &beat_model::ModelFile) -> SettingsState {
+pub fn state(p: &StoredPrefs, out: Output, model: &beat_model::ModelFile, sing_model: &beat_model::ModelFile) -> SettingsState {
     let dsp = p.sound_chain_on();
     let prefs = nori_model::AudioPrefs {
         dsp,
@@ -145,6 +148,7 @@ pub fn state(p: &StoredPrefs, out: Output, model: &beat_model::ModelFile) -> Set
         auto_mix: p.auto_mix,
         speed: p.speed,
         pitch: p.pitch,
+        sing: p.sing,
     };
     // A refused offload is only known to the playback service.
     let output = nori_model::OutputState { hi_res: p.hi_res, bit_perfect: out.dac_bit_perfect, usb: out.usb, offload_refused: false };
@@ -160,8 +164,10 @@ pub fn state(p: &StoredPrefs, out: Output, model: &beat_model::ModelFile) -> Set
         sound_chain_on: dsp,
         offload_paused: !out.usb && p.offload && !policy.offload,
         lyrics_sources,
-        beat_model: beat_model_now(model),
-        beat_model_mb: beat_model::SIZE_MB,
+        beat_model: model_now(model),
+        beat_model_mb: model.model.size_mb,
+        sing_model: model_now(sing_model),
+        sing_model_mb: sing_model.model.size_mb,
     }
 }
 
@@ -193,7 +199,7 @@ impl Settings {
 
     /// [`SettingsState`] for the live settings and the platform's output.
     pub fn settings_state(&self, dac_bit_perfect: bool, usb: bool) -> SettingsState {
-        state(&self.current().unwrap_or_default(), Output { dac_bit_perfect, usb }, &self.model)
+        state(&self.current().unwrap_or_default(), Output { dac_bit_perfect, usb }, &self.model, &self.sing_model)
     }
 
     /// A change by name kept in the live settings (`Settings::edit_by_name`).
@@ -223,6 +229,12 @@ pub fn status_bar_hidden(hide: crate::settings::HideStatusBar, wide: bool) -> bo
         Upright => !wide,
         Always => true,
     }
+}
+
+/// Whether this build makes Sing's vocal masks (it carries the models' runtime).
+#[cfg_attr(feature = "ffi", uniffi::export)]
+pub fn sing_offered() -> bool {
+    beats::AVAILABLE
 }
 
 /// Whether the screen is kept on; `wide` is sideways.
@@ -355,18 +367,18 @@ mod tests {
     #[test]
     fn state_rules() {
         let d = StoredPrefs::default();
-        let s = state(&d, Output::default(), &beat_model::ModelFile::default());
+        let s = state(&d, Output::default(), &beat_model::ModelFile::new(&beat_model::BEAT_THIS), &beat_model::ModelFile::new(&beat_model::UMX));
         assert!(!s.untouched && !s.sound_chain_on && !s.offload_paused);
         assert_eq!(s.values["crossfadeSec"], d.crossfade_sec.to_string());
-        assert!(!state(&StoredPrefs { hi_res: true, ..d.clone() }, Output::default(), &beat_model::ModelFile::default()).untouched, "high quality output keeps the chain");
-        assert!(state(&d, Output { dac_bit_perfect: true, usb: true }, &beat_model::ModelFile::default()).untouched);
-        assert!(state(&StoredPrefs { mono: true, ..d.clone() }, Output::default(), &beat_model::ModelFile::default()).sound_chain_on);
+        assert!(!state(&StoredPrefs { hi_res: true, ..d.clone() }, Output::default(), &beat_model::ModelFile::new(&beat_model::BEAT_THIS), &beat_model::ModelFile::new(&beat_model::UMX)).untouched, "high quality output keeps the chain");
+        assert!(state(&d, Output { dac_bit_perfect: true, usb: true }, &beat_model::ModelFile::new(&beat_model::BEAT_THIS), &beat_model::ModelFile::new(&beat_model::UMX)).untouched);
+        assert!(state(&StoredPrefs { mono: true, ..d.clone() }, Output::default(), &beat_model::ModelFile::new(&beat_model::BEAT_THIS), &beat_model::ModelFile::new(&beat_model::UMX)).sound_chain_on);
         // The battery saver stands down while an effect is on, but not over USB, where it is not offered.
         let eq = StoredPrefs { eq_enabled: true, offload: true, ..d.clone() };
-        assert!(state(&eq, Output::default(), &beat_model::ModelFile::default()).offload_paused);
-        assert!(!state(&eq, Output { dac_bit_perfect: false, usb: true }, &beat_model::ModelFile::default()).offload_paused);
+        assert!(state(&eq, Output::default(), &beat_model::ModelFile::new(&beat_model::BEAT_THIS), &beat_model::ModelFile::new(&beat_model::UMX)).offload_paused);
+        assert!(!state(&eq, Output { dac_bit_perfect: false, usb: true }, &beat_model::ModelFile::new(&beat_model::BEAT_THIS), &beat_model::ModelFile::new(&beat_model::UMX)).offload_paused);
         // No processing on this output: the effects are kept but out of the path, so offload comes back.
-        let none = state(&StoredPrefs { sound_bypass: true, ..eq.clone() }, Output::default(), &beat_model::ModelFile::default());
+        let none = state(&StoredPrefs { sound_bypass: true, ..eq.clone() }, Output::default(), &beat_model::ModelFile::new(&beat_model::BEAT_THIS), &beat_model::ModelFile::new(&beat_model::UMX));
         assert!(!none.sound_chain_on && !none.offload_paused);
         // Every lyrics service, in the order they are asked, each on or off where it stands.
         let order: Vec<&str> = d.lyrics_order.iter().map(|s| s.name()).collect();
@@ -374,7 +386,7 @@ mod tests {
         let on: Vec<&str> = s.lyrics_sources.iter().filter(|l| l.on).map(|l| l.id.as_str()).collect();
         assert_eq!(on, order, "every service on");
         let off = set_by_name(&d, "lyricsService:BINILYRICS", "false").unwrap().prefs;
-        let s2 = state(&off, Output::default(), &beat_model::ModelFile::default());
+        let s2 = state(&off, Output::default(), &beat_model::ModelFile::new(&beat_model::BEAT_THIS), &beat_model::ModelFile::new(&beat_model::UMX));
         assert_eq!(s2.lyrics_sources[1], LyricsSource { id: "BINILYRICS".into(), on: false, needs_key: false }, "switched off where it stands");
         assert!(s.lyrics_sources.iter().any(|l| l.needs_key));
         assert_eq!(s.beat_model == BeatModel::Unavailable, !beats::AVAILABLE);

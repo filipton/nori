@@ -1,9 +1,10 @@
-//! Beat This!'s weights, made on the device from the authors' checkpoint. The app carries the network without
-//! weights ([`GRAPH`], from tools/beat-this/export.py); each initializer is external data in one weights file with a
-//! recipe (`nori.op`) from the checkpoint's state_dict: `copy`, `transpose` (a Linear folded into MatMul), `conv_bn`
-//! (a Conv2d with its BatchNorm folded in) or `bn_shift` (the bias that fold leaves). [`convert`] writes the file
-//! once, one IEEE float32 operation per step so every platform makes the pinned bytes; [`assemble`] puts it back
-//! into the graph for tract.
+//! A network's weights, made on the device from its authors' checkpoint: Beat This! ([`GRAPH`], from
+//! tools/beat-this/export.py) and Open-Unmix (`crate::sing::model::GRAPH`, tools/umx/export.py). The app carries each
+//! network without weights; each initializer is external data in one weights file with a recipe (`nori.op`) from the
+//! checkpoint's state_dict: `copy`, `transpose` (a Linear folded into MatMul), `conv_bn` (a Conv2d with its BatchNorm
+//! folded in), `bn_shift` (the bias that fold leaves) or `lstm` (LSTM tensors with their gates in ONNX's order,
+//! joined). [`convert`] writes the file once, one IEEE float32 operation per step so every platform makes the pinned
+//! bytes; [`assemble`] puts it back into the graph for tract.
 
 use std::collections::HashMap;
 
@@ -33,14 +34,14 @@ fn external(model: &ModelProto) -> Result<Vec<&TensorProto>, String> {
     Ok(graph.initializer.iter().filter(|t| t.data_location == Some(EXTERNAL)).collect())
 }
 
-fn graph() -> Result<ModelProto, String> {
-    ModelProto::decode(GRAPH).map_err(|e| format!("the graph: {e}"))
+fn decode(graph: &[u8]) -> Result<ModelProto, String> {
+    ModelProto::decode(graph).map_err(|e| format!("the graph: {e}"))
 }
 
-/// The weights file the graph expects, made from the checkpoint's bytes (`small0.ckpt`, checked by the caller).
-pub fn convert(ckpt: &[u8]) -> Result<Vec<u8>, String> {
+/// The weights file `graph` expects, made from the checkpoint's bytes (checked by the caller).
+pub fn convert(graph: &[u8], ckpt: &[u8]) -> Result<Vec<u8>, String> {
     let sd = checkpoint::state_dict(ckpt)?;
-    let model = graph()?;
+    let model = decode(graph)?;
     let mut out = Vec::new();
     for t in external(&model)? {
         let get = |k: &str| t.external_data.iter().find(|e| e.key == k).map(|e| e.value.as_str());
@@ -67,6 +68,13 @@ pub fn convert(ckpt: &[u8]) -> Result<Vec<u8>, String> {
                 }
                 Tensor { shape: vec![s.len()], data: beta.data.iter().zip(&mean.data).zip(&s).map(|((b, m), s)| b - m * s).collect() }
             }
+            Some("lstm") => {
+                let mut data = Vec::new();
+                for key in from.split(',') {
+                    data.extend(lstm_gates(tensor(key)?)?);
+                }
+                Tensor { shape: dims.clone(), data }
+            }
             op => return Err(format!("{}: no recipe {op:?}", t.name)),
         };
         if values.shape != dims {
@@ -88,6 +96,16 @@ pub fn convert(ckpt: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// An LSTM tensor's four gate blocks (input, forget, cell, output as PyTorch keeps them) in ONNX's order: input,
+/// output, forget, cell.
+fn lstm_gates(t: &Tensor) -> Result<Vec<f32>, String> {
+    if !t.numel().is_multiple_of(4) {
+        return Err("an LSTM tensor that is not four gates".into());
+    }
+    let g = t.numel() / 4;
+    Ok([0, 3, 1, 2].iter().flat_map(|k| &t.data[k * g..(k + 1) * g]).copied().collect())
+}
+
 /// A 2-D tensor turned.
 fn transpose(t: &Tensor) -> Result<Tensor, String> {
     let [r, c] = t.shape[..] else { return Err("a transpose of something not 2-D".into()) };
@@ -105,9 +123,9 @@ fn bn_scale(sd: &HashMap<String, Tensor>, bn: &str, eps: f32) -> Result<Vec<f32>
     Ok(gamma.data.iter().zip(&var.data).map(|(g, v)| g / (v + eps).sqrt()).collect())
 }
 
-/// The graph with the weights file's bytes in it, for tract.
-pub fn assemble(weights: &[u8]) -> Result<ModelProto, String> {
-    let mut model = graph()?;
+/// `graph` with the weights file's bytes in it, for tract.
+pub fn assemble(graph: &[u8], weights: &[u8]) -> Result<ModelProto, String> {
+    let mut model = decode(graph)?;
     let graph = model.graph.as_mut().ok_or("no graph")?;
     let mut end = 0;
     for t in graph.initializer.iter_mut().filter(|t| t.data_location == Some(EXTERNAL)) {
@@ -131,7 +149,7 @@ mod tests {
     /// Every initializer comes from the weights file; the constants left are tiny.
     #[test]
     fn graph_carries_no_weights() {
-        let model = graph().unwrap();
+        let model = decode(GRAPH).unwrap();
         let g = model.graph.as_ref().unwrap();
         assert!(g.initializer.iter().all(|t| t.data_location == Some(EXTERNAL) && t.raw_data.is_empty()));
         let ext = external(&model).unwrap();
@@ -140,7 +158,7 @@ mod tests {
         let biggest = g.node.iter().flat_map(|n| &n.attribute).filter_map(|a| a.t.as_ref()).map(|t| t.raw_data.len()).max().unwrap_or(0);
         assert!(biggest < 64, "a constant of {biggest} bytes");
         assert!(GRAPH.len() < 256 << 10, "{} bytes", GRAPH.len());
-        assert!(assemble(&[0u8; 10]).is_err(), "a short file is refused");
+        assert!(assemble(GRAPH, &[0u8; 10]).is_err(), "a short file is refused");
     }
 
     /// The authors' checkpoint converts to the pinned bytes and loads:
@@ -159,7 +177,7 @@ mod tests {
         };
         let before = rss();
         let t0 = std::time::Instant::now();
-        let weights = convert(&ckpt).unwrap();
+        let weights = convert(GRAPH, &ckpt).unwrap();
         let converted = t0.elapsed();
         let pin = sha(&weights);
         println!("converted in {:.0} ms, {} bytes, SHA-256 {pin}; peak RSS {before} before, {} after", converted.as_secs_f64() * 1e3, weights.len(), rss());

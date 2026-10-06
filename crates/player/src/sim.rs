@@ -671,6 +671,9 @@ pub struct App {
     /// Output devices seen, and per-device sounds.
     pub outputs: Vec<String>,
     pub device_sounds: std::collections::HashMap<String, Sound>,
+    /// Sing's vocal masks by song, and whether one came since the player last asked.
+    pub masks: std::collections::HashMap<String, std::sync::Arc<crate::sing::VocalMask>>,
+    pub masks_made: bool,
 }
 
 /// No crossfade, no AutoMix: gapless.
@@ -709,6 +712,8 @@ impl App {
             gains: Default::default(),
             outputs: Vec::new(),
             device_sounds: Default::default(),
+            masks: Default::default(),
+            masks_made: false,
         }
     }
 
@@ -834,6 +839,14 @@ impl pipeline::App for App {
         self.gains.get(&list.ids()[index]).copied().unwrap_or(1.0)
     }
 
+    fn vocal_mask(&mut self, song_id: &str) -> Option<std::sync::Arc<crate::sing::VocalMask>> {
+        self.masks.get(song_id).cloned()
+    }
+
+    fn masks_made(&mut self) -> bool {
+        std::mem::take(&mut self.masks_made)
+    }
+
     fn spliced(&mut self, what: &str, at: pipeline::Splice) {
         self.splices.push(at);
         self.log.push(format!("the {what} changes from output frame {} (input frame {})", at.output, at.input));
@@ -889,6 +902,12 @@ impl Player {
 
     pub fn set_speed(&mut self, speed: f32, pitch: f32) {
         let c = pipeline::ChainSettings { speed, pitch, ..self.sink.settings().clone() };
+        self.set_chain(c);
+    }
+
+    /// Sing at vocals `level`, or off.
+    pub fn set_sing(&mut self, level: Option<f32>) {
+        let c = pipeline::ChainSettings { sing: level, ..self.sink.settings().clone() };
         self.set_chain(c);
     }
 

@@ -1,6 +1,7 @@
-//! The Beat This! small0 weights behind "Better beat detection": where the file lives and how its download
-//! stands. The core fetches the authors' checkpoint, checks it, converts it to the weights file the graph
-//! (`nori_player::automix::weights::GRAPH`) reads, and deletes it when the switch goes off.
+//! The models the core downloads: Beat This! small0 behind "Better beat detection" and Open-Unmix UMX-HQ's vocals
+//! behind Sing. Where each file lives and how its download stands: the core fetches the authors' checkpoint, checks
+//! it, converts it to the weights file its graph (`nori_player::automix::weights`) reads, and deletes it when the
+//! switch goes off.
 
 use std::path::{Path, PathBuf};
 
@@ -17,6 +18,45 @@ pub const SHA256: &str = "e9349da04b9da4ad41c5e416c71a9471af3a416249e7addef0101b
 pub const BYTES: u64 = 4_229_216;
 /// Download size shown in settings, MB.
 pub const SIZE_MB: u32 = 8;
+
+/// A model: its authors' checkpoint, the weights file made from it, and the directory beside the database it is
+/// kept in (its own: turning the switch off deletes it).
+#[derive(Debug)]
+pub struct Model {
+    pub checkpoint_url: &'static str,
+    pub checkpoint_sha256: &'static str,
+    pub checkpoint_bytes: u64,
+    pub dir: &'static str,
+    pub file_name: &'static str,
+    pub sha256: &'static str,
+    pub bytes: u64,
+    /// Download size shown in settings, MB.
+    pub size_mb: u32,
+}
+
+pub const BEAT_THIS: Model = Model {
+    checkpoint_url: CHECKPOINT_URL,
+    checkpoint_sha256: CHECKPOINT_SHA256,
+    checkpoint_bytes: CHECKPOINT_BYTES,
+    dir: "models",
+    file_name: FILE_NAME,
+    sha256: SHA256,
+    bytes: BYTES,
+    size_mb: SIZE_MB,
+};
+
+/// Open-Unmix UMX-HQ's vocals model (Inria, MIT, Zenodo 3370489), the weights as tools/umx/export.py makes them.
+/// Sing's masks are kept beside it.
+pub const UMX: Model = Model {
+    checkpoint_url: "https://zenodo.org/records/3370489/files/vocals-b62c91ce.pth",
+    checkpoint_sha256: "b62c91cedbc7a066f1778ead5b5cecb377aa3a46a31af1cce7c5c8769339d083",
+    checkpoint_bytes: 35_637_796,
+    dir: "sing",
+    file_name: "umx-hq-vocals.weights",
+    sha256: "49deff4c4c0b7f03068ab46d24f2e6c37f3f4c837109116e96c8fc64a8d7d1ad",
+    bytes: 17_815_376,
+    size_mb: 36,
+};
 
 /// Where the model's download stands.
 #[derive(Debug, Clone, PartialEq)]
@@ -50,52 +90,58 @@ struct Kept {
     on: bool,
 }
 
-/// The model's file and its download, for one app: placed by the core at open, followed by the settings'
+/// A model's file and its download, for one app: placed by the core at open, followed by the settings'
 /// switch, read by the measurer.
-pub struct ModelFile(Mutex<Kept>);
-
-impl Default for ModelFile {
-    fn default() -> Self {
-        ModelFile(Mutex::new(Kept { dir: None, state: State::Absent, on: false }))
-    }
+pub struct ModelFile {
+    pub model: &'static Model,
+    kept: Mutex<Kept>,
 }
 
 impl ModelFile {
-    /// The model is kept in `models/` beside the database at `db_path` (nowhere for an in-memory database).
+    pub fn new(model: &'static Model) -> ModelFile {
+        ModelFile { model, kept: Mutex::new(Kept { dir: None, state: State::Absent, on: false }) }
+    }
+
+    /// The model is kept in its directory beside the database at `db_path` (nowhere for an in-memory database).
     pub fn set_home(&self, db_path: &str) {
-        let dir = Path::new(db_path).parent().filter(|_| !db_path.is_empty()).map(|p| p.join("models"));
-        let mut k = self.0.lock();
+        let dir = Path::new(db_path).parent().filter(|_| !db_path.is_empty()).map(|p| p.join(self.model.dir));
+        let mut k = self.kept.lock();
         // Only a checked file is ever renamed into place, so a file there is ready.
-        if k.state != State::Downloading && dir.as_ref().is_some_and(|d| d.join(FILE_NAME).is_file()) {
+        if k.state != State::Downloading && dir.as_ref().is_some_and(|d| d.join(self.model.file_name).is_file()) {
             k.state = State::Ready;
         }
         k.dir = dir;
     }
 
+    /// The model's directory, when placed.
+    pub fn dir(&self) -> Option<PathBuf> {
+        self.kept.lock().dir.clone()
+    }
+
     /// Where the weights file is or goes.
     pub fn file(&self) -> Option<PathBuf> {
-        self.0.lock().dir.as_ref().map(|d| d.join(FILE_NAME))
+        self.dir().map(|d| d.join(self.model.file_name))
     }
 
     /// The weights file, when it is on the device and checked.
     pub fn ready(&self) -> Option<PathBuf> {
-        let k = self.0.lock();
-        let f = k.dir.as_ref()?.join(FILE_NAME);
+        let k = self.kept.lock();
+        let f = k.dir.as_ref()?.join(self.model.file_name);
         (k.state == State::Ready && f.is_file()).then_some(f)
     }
 
     pub fn state(&self) -> State {
-        self.0.lock().state.clone()
+        self.kept.lock().state.clone()
     }
 
     pub fn set_state(&self, s: State) {
-        self.0.lock().state = s;
+        self.kept.lock().state = s;
     }
 
     /// Claims the download: false while one runs, and after a wrong file until the switch is turned off
     /// and on again (the same address would serve it again).
     pub fn begin_download(&self) -> bool {
-        let mut k = self.0.lock();
+        let mut k = self.kept.lock();
         if matches!(k.state, State::Downloading | State::Failed(BeatFailure::WrongFile)) {
             return false;
         }
@@ -103,9 +149,9 @@ impl ModelFile {
         true
     }
 
-    /// The switch changed. Turning it off deletes the model directory.
+    /// The switch changed. Turning it off deletes the model's directory.
     pub fn switched(&self, on: bool) {
-        let mut k = self.0.lock();
+        let mut k = self.kept.lock();
         let was = std::mem::replace(&mut k.on, on);
         if was && !on {
             k.state = State::Absent;
@@ -129,7 +175,7 @@ mod tests {
         let dir = nori_testdir::TempDir::new("model");
         std::fs::create_dir_all(dir.join("models")).unwrap();
         std::fs::write(dir.join("models").join(FILE_NAME), b"model").unwrap();
-        let m = ModelFile::default();
+        let m = ModelFile::new(&BEAT_THIS);
         m.set_home(&dir.join("nori.db").to_string_lossy());
         assert_eq!(m.ready(), Some(dir.join("models").join(FILE_NAME)));
         assert_eq!(m.state(), State::Ready);

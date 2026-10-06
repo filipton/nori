@@ -10,4 +10,5 @@ mod gapless;
 mod golden;
 mod levels;
 mod output;
+mod sing;
 mod stages;

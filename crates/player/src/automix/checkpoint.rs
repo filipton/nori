@@ -1,7 +1,7 @@
 //! A PyTorch checkpoint's float32 tensors, read without Python: a stored zip holding `<name>/data.pkl` and each
-//! storage as `<name>/data/<key>`. The pickle runs on a restricted unpickler that knows only a state_dict's values,
-//! `OrderedDict`, storages and `_rebuild_tensor_v2`, and refuses every other opcode and global. Every count and
-//! offset is checked.
+//! storage as `<name>/data/<key>`, or the legacy format before it (pickles one after another, then each storage's
+//! values). The pickle runs on a restricted unpickler that knows only a state_dict's values, `OrderedDict`, storages
+//! and `_rebuild_tensor_v2`, and refuses every other opcode and global. Every count and offset is checked.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -20,9 +20,37 @@ impl Tensor {
     }
 }
 
-/// The state_dict's float32 tensors by key, Lightning's "model." prefix removed; other tensors are checked and
-/// left out.
+/// The state_dict's float32 tensors by key (the checkpoint's "state_dict", or the checkpoint itself when it is
+/// one), Lightning's "model." prefix removed; other tensors are checked and left out.
 pub fn state_dict(ckpt: &[u8]) -> Result<HashMap<String, Tensor>, String> {
+    let (top, storages) = if ckpt.starts_with(LEGACY) { legacy(ckpt)? } else { zipped(ckpt)? };
+    let V::Dict(top) = top else { return Err("the checkpoint is not a dict".into()) };
+    let top = top.borrow();
+    let sd = match top.iter().find(|(k, _)| matches!(k, V::Str(s) if &**s == "state_dict")) {
+        Some((_, V::Dict(sd))) => sd.borrow(),
+        Some(_) => return Err("the checkpoint's state_dict is not a dict".into()),
+        None => top,
+    };
+    let mut out = HashMap::new();
+    for (k, v) in sd.iter() {
+        let V::Str(k) = k else { return Err("a state_dict key that is not a string".into()) };
+        let key = k.strip_prefix("model.").unwrap_or(k).to_string();
+        let V::Tensor(t) = v else { return Err(format!("{k} is not a tensor")) };
+        let bytes = storages.get(&*t.key).copied().ok_or_else(|| format!("storage {} is not in the checkpoint", t.key))?;
+        if let Some(t) = t.read(bytes)? {
+            out.insert(key, t);
+        }
+    }
+    Ok(out)
+}
+
+/// Storage bytes by key.
+type Storages<'a> = HashMap<String, &'a [u8]>;
+/// A pickle's value and the storages it named, with their types.
+type Unpickled = (V, Vec<(Rc<str>, Kind)>);
+
+/// The zip format: the pickle and the storages beside it.
+fn zipped(ckpt: &[u8]) -> Result<(V, Storages<'_>), String> {
     let zip = entries(ckpt)?;
     let pkl = zip.keys().filter(|n| n.ends_with("/data.pkl") && n.matches('/').count() == 1).collect::<Vec<_>>();
     let [pkl] = pkl[..] else { return Err("not one data.pkl in the archive".into()) };
@@ -32,26 +60,44 @@ pub fn state_dict(ckpt: &[u8]) -> Result<HashMap<String, Tensor>, String> {
             return Err("the tensors are not little-endian".into());
         }
     }
-    let storage = |key: &str| zip.get(format!("{dir}data/{key}").as_str()).copied();
-    let top = Machine::new(zip[pkl], &storage).run()?;
-    let V::Dict(top) = top else { return Err("the checkpoint is not a dict".into()) };
-    let top = top.borrow();
-    let Some((_, V::Dict(sd))) = top.iter().find(|(k, _)| matches!(k, V::Str(s) if &**s == "state_dict")) else {
-        return Err("the checkpoint has no state_dict".into());
+    let top = Machine::new(zip[pkl]).run()?;
+    let prefix = format!("{dir}data/");
+    let storages = zip.iter().filter_map(|(n, b)| Some((n.strip_prefix(prefix.as_str())?.to_string(), *b))).collect();
+    Ok((top, storages))
+}
+
+/// The legacy format's first two pickles, as torch.save writes them: its magic number and protocol 1001.
+const LEGACY: &[u8] = b"\x80\x02\x8a\x0a\x6c\xfc\x9c\x46\xf9\x20\x6a\xa8\x50\x19\x2e\x80\x02\x4d\xe9\x03\x2e";
+
+/// The legacy format: the system's facts, the pickle, its storage keys in order, then each storage as a little-endian
+/// element count and the elements.
+fn legacy(ckpt: &[u8]) -> Result<(V, Storages<'_>), String> {
+    let mut at = LEGACY.len();
+    let next = |at: &mut usize| -> Result<Unpickled, String> {
+        let mut m = Machine::new(&ckpt[*at..]);
+        let v = m.run()?;
+        *at += m.at;
+        Ok((v, m.storages))
     };
-    let mut out = HashMap::new();
-    for (k, v) in sd.borrow().iter() {
-        let V::Str(k) = k else { return Err("a state_dict key that is not a string".into()) };
-        let key = k.strip_prefix("model.").unwrap_or(k).to_string();
-        match v {
-            V::Tensor(Some(t)) => {
-                out.insert(key, (**t).clone());
-            }
-            V::Tensor(None) => {}
-            _ => return Err(format!("{k} is not a tensor")),
-        }
+    let (V::Dict(facts), _) = next(&mut at)? else { return Err("the checkpoint's facts are not a dict".into()) };
+    let little = facts.borrow().iter().any(|(k, v)| matches!((k, v), (V::Str(k), V::Bool(true)) if &**k == "little_endian"));
+    if !little {
+        return Err("the tensors are not little-endian".into());
     }
-    Ok(out)
+    let (top, kinds) = next(&mut at)?;
+    let (V::List(keys), _) = next(&mut at)? else { return Err("the checkpoint's storage keys are not a list".into()) };
+    let mut storages = HashMap::new();
+    for key in keys.borrow().iter() {
+        let V::Str(key) = key else { return Err("a storage key that is not a string".into()) };
+        let kind = kinds.iter().find(|(k, _)| k == key).map(|(_, kind)| *kind).ok_or_else(|| format!("storage {key} has no type"))?;
+        let count = ckpt.get(at..at + 8).map(|b| u64::from_le_bytes(b.try_into().expect("8 bytes"))).ok_or("the checkpoint is cut short")?;
+        let len = usize::try_from(count).ok().and_then(|n| n.checked_mul(kind.size())).ok_or("a storage too big")?;
+        at += 8;
+        let bytes = ckpt.get(at..at.checked_add(len).ok_or("a storage too big")?).ok_or_else(|| format!("storage {key} past the end"))?;
+        at += len;
+        storages.insert(key.to_string(), bytes);
+    }
+    Ok((top, storages))
 }
 
 /// The stored entries of a zip archive by name, sizes from the central directory. Deflated entries and ZIP64-only
@@ -122,9 +168,9 @@ impl Kind {
 #[derive(Debug, Clone)]
 enum V {
     None,
-    /// Bools and floats are hyperparameters or `requires_grad`; their values are not needed.
-    Bool,
+    Bool(bool),
     Int(i64),
+    /// Floats are hyperparameters; their values are not needed.
     Float,
     Str(Rc<str>),
     Tuple(Rc<[V]>),
@@ -133,23 +179,71 @@ enum V {
     Global(Global),
     /// A persistent id: a tensor storage's type and its file's key.
     Storage(Kind, Rc<str>),
-    /// A tensor; `None` for one that is not float32.
-    Tensor(Option<Rc<Tensor>>),
+    Tensor(Rc<Rebuild>),
 }
 
-/// The restricted unpickler: a stack, marks, the memo, and a cursor over the pickle.
+/// A tensor as `_rebuild_tensor_v2` names it: its storage, and where its values are in it.
+#[derive(Debug)]
+struct Rebuild {
+    kind: Kind,
+    key: Rc<str>,
+    offset: usize,
+    shape: Vec<usize>,
+    stride: Vec<usize>,
+}
+
+impl Rebuild {
+    /// The values read from the storage's `bytes` through the strides, indices checked; `None` for a tensor that is
+    /// not float32.
+    fn read(&self, bytes: &[u8]) -> Result<Option<Tensor>, String> {
+        let Rebuild { kind, key, offset, shape, stride } = self;
+        let have = bytes.len() / kind.size();
+        let numel = shape.iter().try_fold(1usize, |a, s| a.checked_mul(*s)).ok_or("a tensor too big")?;
+        let mut last = *offset;
+        for (s, st) in shape.iter().zip(stride) {
+            if *s > 0 {
+                last = last.checked_add((s - 1).checked_mul(*st).ok_or("a tensor too big")?).ok_or("a tensor too big")?;
+            }
+        }
+        // No more values than the storage holds (a checkpoint has no broadcast tensors), and none past its end.
+        if numel > have || (numel > 0 && last >= have) {
+            return Err(format!("a tensor past the end of storage {key}"));
+        }
+        if *kind != Kind::F32 {
+            return Ok(None);
+        }
+        let mut data = Vec::with_capacity(numel);
+        let mut index = vec![0usize; shape.len()];
+        for _ in 0..numel {
+            let at = offset + index.iter().zip(stride).map(|(i, s)| i * s).sum::<usize>();
+            let b = &bytes[at * 4..at * 4 + 4];
+            data.push(f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+            // The next index, the last dimension fastest.
+            for d in (0..shape.len()).rev() {
+                index[d] += 1;
+                if index[d] < shape[d] {
+                    break;
+                }
+                index[d] = 0;
+            }
+        }
+        Ok(Some(Tensor { shape: shape.clone(), data }))
+    }
+}
+
+/// The restricted unpickler: a stack, marks, the memo, and a cursor over the pickle; the storages it was named.
 struct Machine<'a> {
     b: &'a [u8],
     at: usize,
     stack: Vec<V>,
     marks: Vec<usize>,
     memo: HashMap<u32, V>,
-    storage: &'a dyn Fn(&str) -> Option<&'a [u8]>,
+    storages: Vec<(Rc<str>, Kind)>,
 }
 
 impl<'a> Machine<'a> {
-    fn new(b: &'a [u8], storage: &'a dyn Fn(&str) -> Option<&'a [u8]>) -> Self {
-        Machine { b, at: 0, stack: Vec::new(), marks: Vec::new(), memo: HashMap::new(), storage }
+    fn new(b: &'a [u8]) -> Self {
+        Machine { b, at: 0, stack: Vec::new(), marks: Vec::new(), memo: HashMap::new(), storages: Vec::new() }
     }
 
     fn take(&mut self, n: usize) -> Result<&'a [u8], String> {
@@ -192,7 +286,7 @@ impl<'a> Machine<'a> {
         Ok(V::Str(s.into()))
     }
 
-    fn run(mut self) -> Result<V, String> {
+    fn run(&mut self) -> Result<V, String> {
         loop {
             let op = self.u8()?;
             match op {
@@ -213,8 +307,8 @@ impl<'a> Machine<'a> {
                 }
                 b'(' => self.marks.push(self.stack.len()),
                 b'N' => self.stack.push(V::None),
-                0x88 => self.stack.push(V::Bool),
-                0x89 => self.stack.push(V::Bool),
+                0x88 => self.stack.push(V::Bool(true)),
+                0x89 => self.stack.push(V::Bool(false)),
                 b'J' => {
                     let v = self.u32()? as i32;
                     self.stack.push(V::Int(v as i64));
@@ -335,14 +429,25 @@ impl<'a> Machine<'a> {
                     self.stack.push(V::Global(g));
                 }
                 b'Q' => {
-                    // BINPERSID: ('storage', <type>, key, location, numel)
+                    // BINPERSID: ('storage', <type>, key, location, numel), the legacy format's with a view after it
+                    // (none).
                     let pid = self.pop()?;
                     let V::Tuple(t) = pid else { return Err("a persistent id that is not a tuple".into()) };
                     match &t[..] {
-                        [V::Str(tag), V::Global(Global::Storage(kind)), V::Str(key), V::Str(_), V::Int(_)] if &**tag == "storage" => {
+                        [V::Str(tag), V::Global(Global::Storage(kind)), V::Str(key), V::Str(_), V::Int(_)] | [V::Str(tag), V::Global(Global::Storage(kind)), V::Str(key), V::Str(_), V::Int(_), V::None]
+                            if &**tag == "storage" =>
+                        {
+                            self.storages.push((key.clone(), *kind));
                             self.stack.push(V::Storage(*kind, key.clone()))
                         }
                         _ => return Err("a persistent id that is not a storage".into()),
+                    }
+                }
+                b'b' => {
+                    // BUILD: only the attributes a state_dict's OrderedDict carries (`_metadata`), which are not needed.
+                    let state = self.pop()?;
+                    if !matches!((state, self.top()?), (V::Dict(_), V::Dict(_))) {
+                        return Err("BUILD of something other than a state_dict".into());
                     }
                 }
                 b'R' => {
@@ -370,9 +475,9 @@ impl<'a> Machine<'a> {
         Ok(s)
     }
 
-    /// `_rebuild_tensor_v2(storage, offset, size, stride, ...)`: the values read through the strides, indices checked.
-    fn tensor(&self, args: &[V]) -> Result<Option<Rc<Tensor>>, String> {
-        let [V::Storage(kind, key), V::Int(offset), V::Tuple(size), V::Tuple(stride), V::Bool, V::Dict(hooks), ..] = args else {
+    /// `_rebuild_tensor_v2(storage, offset, size, stride, ...)`, its sizes and strides checked.
+    fn tensor(&self, args: &[V]) -> Result<Rc<Rebuild>, String> {
+        let [V::Storage(kind, key), V::Int(offset), V::Tuple(size), V::Tuple(stride), V::Bool(_), V::Dict(hooks), ..] = args else {
             return Err("a tensor rebuilt from something else".into());
         };
         if args.len() > 7 || !hooks.borrow().is_empty() {
@@ -388,38 +493,7 @@ impl<'a> Machine<'a> {
         if shape.len() != stride.len() || *offset < 0 {
             return Err("a tensor's sizes and strides disagree".into());
         }
-        let bytes = (self.storage)(key).ok_or_else(|| format!("storage {key} is not in the archive"))?;
-        let have = bytes.len() / kind.size();
-        let numel = shape.iter().try_fold(1usize, |a, s| a.checked_mul(*s)).ok_or("a tensor too big")?;
-        let mut last = *offset as usize;
-        for (s, st) in shape.iter().zip(&stride) {
-            if *s > 0 {
-                last = last.checked_add((s - 1).checked_mul(*st).ok_or("a tensor too big")?).ok_or("a tensor too big")?;
-            }
-        }
-        // No more values than the storage holds (a checkpoint has no broadcast tensors), and none past its end.
-        if numel > have || (numel > 0 && last >= have) {
-            return Err(format!("a tensor past the end of storage {key}"));
-        }
-        if *kind != Kind::F32 {
-            return Ok(None);
-        }
-        let mut data = Vec::with_capacity(numel);
-        let mut index = vec![0usize; shape.len()];
-        for _ in 0..numel {
-            let at = *offset as usize + index.iter().zip(&stride).map(|(i, s)| i * s).sum::<usize>();
-            let b = &bytes[at * 4..at * 4 + 4];
-            data.push(f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
-            // The next index, the last dimension fastest.
-            for d in (0..shape.len()).rev() {
-                index[d] += 1;
-                if index[d] < shape[d] {
-                    break;
-                }
-                index[d] = 0;
-            }
-        }
-        Ok(Some(Rc::new(Tensor { shape, data })))
+        Ok(Rc::new(Rebuild { kind: *kind, key: key.clone(), offset: *offset as usize, shape, stride }))
     }
 }
 
@@ -530,7 +604,7 @@ mod tests {
             p.extend_from_slice(b"u.");
             zip(&[("a/data.pkl", &p), ("a/data/0", &[0u8; 8])])
         };
-        assert!(state_dict(&pickle(b"K\x01K\x02b")).unwrap_err().contains("0x62"));
+        assert!(state_dict(&pickle(b"K\x01K\x02b")).unwrap_err().contains("BUILD"));
         assert!(state_dict(&pickle(b"ios\nsystem\n")).unwrap_err().contains("0x69"));
         let mut past = unicode("state_dict");
         past.extend_from_slice(b"}(");
@@ -549,6 +623,27 @@ mod tests {
             let _ = state_dict(&ok[..n]);
         }
         assert!(state_dict(b"not a zip at all, not even close to one").is_err());
+    }
+
+    /// The legacy format, as Open-Unmix's checkpoints are: the state_dict itself (with its `_metadata` BUILD), a
+    /// view-less persistent id, then the storages after the pickles.
+    #[test]
+    fn legacy_checkpoint_reading() {
+        let facts = [&b"\x80\x02}("[..], &unicode("little_endian"), b"\x88u."].concat();
+        let w = tensor("7", false, 1, &[2], &[1]);
+        let at = w.windows(4).position(|x| x == b"K\x06tQ").unwrap();
+        let w = [&w[..at], b"K\x06NtQ", &w[at + 4..]].concat();
+        let main = [&b"\x80\x02ccollections\nOrderedDict\n)Rq\x00("[..], &unicode("w"), &w, b"u}b."].concat();
+        let keys = [&b"\x80\x02]("[..], &unicode("7"), b"e."].concat();
+        let values: Vec<u8> = [3u64.to_le_bytes().to_vec(), [1.0f32, 2.0, 3.0].iter().flat_map(|v| v.to_le_bytes()).collect()].concat();
+        let ckpt = [LEGACY, &facts, &main, &keys, &values].concat();
+        assert_eq!(state_dict(&ckpt).unwrap()["w"], Tensor { shape: vec![2], data: vec![2.0, 3.0] });
+        // Big-endian, or cut anywhere: refused, never a panic.
+        let big = [LEGACY, &facts.iter().map(|b| if *b == 0x88 { 0x89 } else { *b }).collect::<Vec<_>>(), &main, &keys, &values].concat();
+        assert!(state_dict(&big).unwrap_err().contains("little-endian"));
+        for n in LEGACY.len()..ckpt.len() {
+            assert!(state_dict(&ckpt[..n]).is_err());
+        }
     }
 
 }

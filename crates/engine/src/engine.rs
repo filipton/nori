@@ -53,11 +53,13 @@ pub struct Settings {
     /// Most ReplayGain may turn a song up, dB (`nori_player::gain`): above 0 songs are read as floats
     /// with the limiter behind them, and a song turned up stays off offload.
     pub gain_boost_db: f32,
+    /// Sing: the vocals' level (0 to 1) where a song has a mask; `None` is off.
+    pub sing: Option<f32>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { sound: Sound::default(), speed: 1.0, pitch: 1.0, skip_silence: false, fade_ms: 0, hi_res: false, max_rate: 0, offload: false, crossfade_s: 0, auto_mix: false, gain_boost_db: 0.0 }
+        Settings { sound: Sound::default(), speed: 1.0, pitch: 1.0, skip_silence: false, fade_ms: 0, hi_res: false, max_rate: 0, offload: false, crossfade_s: 0, auto_mix: false, gain_boost_db: 0.0, sing: None }
     }
 }
 
@@ -1272,7 +1274,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     fn apply(&mut self, s: Settings) {
         let hi_res = s.hi_res && self.p.sink.track.takes_float();
         let bit_perfect = self.facts.bit_perfect;
-        let prefs = AudioPrefs { dsp: s.sound.on(), skip_silence: s.skip_silence, offload: s.offload && self.off.is_some(), crossfade_s: s.crossfade_s, auto_mix: s.auto_mix, speed: s.speed, pitch: s.pitch };
+        let prefs = AudioPrefs { dsp: s.sound.on(), skip_silence: s.skip_silence, offload: s.offload && self.off.is_some(), crossfade_s: s.crossfade_s, auto_mix: s.auto_mix, speed: s.speed, pitch: s.pitch, sing: s.sing.is_some() };
         let state = OutputState { hi_res, bit_perfect, usb: self.facts.usb, offload_refused: self.h.refused };
         let policy = audio_policy(&prefs, &state);
         self.blocked = if self.off.is_some() { offload_blocked(&prefs, &state) } else { Some("the output does not decode songs itself") };
@@ -1302,13 +1304,18 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             self.gain_changed |= was.bit_perfect != now.bit_perfect;
         }
         // The equalizer stays in (flat) but for bit-perfect output.
-        self.chain_wanted = Some(ChainSettings { sound, speed: s.speed, pitch: s.pitch, skip_silence: policy.skip_silence, keep_eq: !policy.untouched });
+        self.chain_wanted = Some(ChainSettings { sound, speed: s.speed, pitch: s.pitch, skip_silence: policy.skip_silence, keep_eq: !policy.untouched, sing: s.sing.filter(|_| policy.sing) });
         // The plan out of the current song was made under the old transition settings.
         let replan = first || was.untouched != now.untouched || (self.settings.crossfade_s, self.settings.auto_mix) != (s.crossfade_s, s.auto_mix);
+        // Sing switched: its masks are made or let go.
+        let measure = !first && self.settings.sing.is_some() != s.sing.is_some();
         self.applied = Some(now);
         self.settings = s;
         self.follow_chain(self.now());
         self.follow_offload(policy.offload);
+        if measure {
+            self.p.measure_ahead();
+        }
         if replan {
             self.replan();
         }

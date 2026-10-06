@@ -23,6 +23,7 @@ pub mod playlist;
 pub mod policy;
 pub mod queue;
 pub mod silence;
+pub mod sing;
 pub mod sink;
 #[cfg(any(test, feature = "synth"))]
 pub mod sim;

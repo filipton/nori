@@ -108,6 +108,8 @@ fn sample() -> StoredPrefs {
         auto_mix_keep_pitch: false,
         auto_mix_better_beats: true,
         auto_mix_beats_mobile_data: true,
+        sing: true,
+        sing_vocal_level: 0.25,
         speed: 1.25,
         skip_silence: true,
         scrobble_percent: 75,

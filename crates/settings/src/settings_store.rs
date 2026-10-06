@@ -183,13 +183,20 @@ impl SettingsStore {
     }
 }
 
-/// The live settings of one app, empty (the defaults) until opened, and the beat model's file, which
-/// follows its switch. The platform holds one for the app and hands it to the queue's session.
-#[derive(Default)]
+/// The live settings of one app, empty (the defaults) until opened, and the beat and vocals models' files,
+/// which follow their switches. The platform holds one for the app and hands it to the queue's session.
 #[cfg_attr(feature = "ffi", derive(uniffi::Object))]
 pub struct Settings {
     kept: RwLock<Option<SettingsStore>>,
     pub model: nori_automix::beat_model::ModelFile,
+    pub sing_model: nori_automix::beat_model::ModelFile,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        use nori_automix::beat_model::{ModelFile, BEAT_THIS, UMX};
+        Settings { kept: RwLock::default(), model: ModelFile::new(&BEAT_THIS), sing_model: ModelFile::new(&UMX) }
+    }
 }
 
 #[cfg_attr(feature = "ffi", uniffi::export)]
@@ -228,6 +235,7 @@ impl Settings {
         let r = f(&mut k);
         if let Some(s) = k.as_ref() {
             self.model.switched(s.prefs.auto_mix_better_beats);
+            self.sing_model.switched(s.prefs.sing);
         }
         r
     }

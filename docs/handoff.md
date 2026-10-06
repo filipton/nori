@@ -220,7 +220,7 @@ Apple's own App Store screenshots and the differences closed. What is left is li
   pulls in tract through nori-core and nori-player). On, the measurer (nori-engine `Measurer`, lowest priority,
   songs whole on the disk only) makes Beat This!'s small model once: the core carries only its graph
   (`crates/player/models/beat-this-small0.graph.onnx`, 186 kB, no weights), and fetches the authors' own
-  checkpoint through the client's transport (`crates/core/src/beat_download.rs`: their URL, Wi-Fi unless
+  checkpoint through the client's transport (`crates/core/src/model_download.rs`: their URL, Wi-Fi unless
   allowed, SHA-256 checked), reads it with a restricted unpickler (`automix/checkpoint.rs`), converts it into the
   weights file the graph reads (`automix/weights.rs`, 4.2 MB, its own SHA-256 pinned), keeps that beside the
   database and deletes it when switched off (`crates/automix/src/beat_model.rs` holds the pins and where it

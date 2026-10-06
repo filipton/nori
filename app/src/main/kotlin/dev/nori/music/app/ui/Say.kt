@@ -50,6 +50,9 @@ class Say(private val r: Resources) {
     val repeat: String = r.getString(R.string.repeat)
     val queue: String = r.getString(R.string.queue)
     val lyrics: String = r.getString(R.string.lyrics)
+    val sing: String = r.getString(R.string.sing)
+    /** The vocals' level while Sing is on: "Vocals 20 %". */
+    fun singVocals(level: Float): String = r.getString(R.string.sing_vocals, kotlin.math.round(level * 100f).toInt())
     val favourite: String = r.getString(R.string.favourite)
     val addToFavourites: String = r.getString(R.string.add_to_favourites)
     val removeFromFavourites: String = r.getString(R.string.remove_from_favourites)

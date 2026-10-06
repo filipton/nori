@@ -8,14 +8,16 @@ use std::collections::VecDeque;
 use crate::dsp::Equalizer;
 use crate::pcm::Encoding;
 use crate::silence::SilenceSkipper;
+use crate::sing::Masker;
 use crate::speed::SpeedPitch;
 
 /// Input frames between kept states: the most that is run again to reach a splice.
 pub const MARK_FRAMES: u64 = 8192;
 
-/// The chain in media3's order: equalizer, silence skipping, speed.
+/// The chain: Sing's vocal masker, then media3's order: equalizer, silence skipping, speed.
 #[derive(Default)]
 pub struct Processors {
+    pub sing: Option<Masker>,
     pub eq: Option<Equalizer>,
     pub silence: Option<SilenceSkipper>,
     pub speed: Option<SpeedPitch>,
@@ -24,10 +26,11 @@ pub struct Processors {
 /// `clone_from` keeps every buffer's memory.
 impl Clone for Processors {
     fn clone(&self) -> Self {
-        Processors { eq: self.eq.clone(), silence: self.silence.clone(), speed: self.speed.clone() }
+        Processors { sing: self.sing.clone(), eq: self.eq.clone(), silence: self.silence.clone(), speed: self.speed.clone() }
     }
 
     fn clone_from(&mut self, o: &Self) {
+        self.sing.clone_from(&o.sing);
         self.eq.clone_from(&o.eq);
         self.silence.clone_from(&o.silence);
         self.speed.clone_from(&o.speed);
@@ -40,6 +43,13 @@ pub struct Piece {
     pub frame: u64,
     pub pace: f64,
     pub pts: i64,
+}
+
+impl Piece {
+    /// Timeline position (µs) and pace of input frame `frame` of this piece.
+    pub fn at(&self, frame: u64, rate: u32) -> (i64, f64) {
+        (self.pts + ((frame - self.frame) as f64 * self.pace * 1e6 / rate as f64) as i64, self.pace)
+    }
 }
 
 /// The processors' state before input frame `frame`, when they had made `out` frames of output from
@@ -147,6 +157,11 @@ impl Kept {
 
     pub fn mark_at(&self, k: usize) -> &Mark {
         &self.marks[k]
+    }
+
+    /// Timeline position of the last input kept.
+    pub fn last_pts(&self) -> Option<i64> {
+        self.pieces.back().map(|p| p.pts)
     }
 
     /// Lets go of the marks after input frame `frame`.

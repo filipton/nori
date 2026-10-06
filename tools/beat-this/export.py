@@ -6,7 +6,7 @@ Beat This! (Foscarin, Schlüter and Widmer, ISMIR 2024; https://github.com/CPJKU
 weights under the MIT licence. nori ships no copy of the weights and hosts none: with the switch on, the core fetches
 the `small0` checkpoint (2.1 M parameters, 8.1 MB) from the authors' server, checks its SHA-256, reads it with a
 restricted unpickler and writes the weights in the layout this graph expects, once (crates/player/src/automix/
-checkpoint.rs, weights.rs; crates/core/src/beat_download.rs). This script makes the graph that conversion fills.
+checkpoint.rs, weights.rs; crates/core/src/model_download.rs). This script makes the graph that conversion fills.
 
 The model is exported with the repository's own code for one 30 s window (1512 frames of 128 mel bands: 1500 and a
 border of 6 on each side) with both outputs as logits. Then, each checked:
@@ -211,6 +211,13 @@ def bn_scale(sd, bn, eps):
     return sd[bn + ".weight"] / np.sqrt(var + np.float32(eps))
 
 
+def lstm_gates(a):
+    """A PyTorch LSTM tensor's gate blocks (input, forget, cell, output) in ONNX's order (input, output, forget,
+    cell), as the exporter reorders them."""
+    i, f, c, o = np.split(a, 4)
+    return np.concatenate([i, o, f, c])
+
+
 def follow(recipe, sd, dtype, dims):
     """One initializer's values made from the state_dict by its recipe (see the module's docs)."""
     op, src = recipe["nori.op"], recipe["nori.from"]
@@ -224,6 +231,8 @@ def follow(recipe, sd, dtype, dims):
     elif op == "bn_shift":
         s = bn_scale(sd, recipe["nori.bn"], float(recipe["nori.eps"]))
         a = sd[src + ".bias"] - sd[src + ".running_mean"] * s
+    elif op == "lstm":
+        a = np.concatenate([lstm_gates(sd[k]).ravel() for k in src.split(",")]).reshape(dims)
     else:
         raise ValueError(op)
     if list(a.shape) != list(dims):
@@ -231,9 +240,32 @@ def follow(recipe, sd, dtype, dims):
     return a.astype(dtype)
 
 
-def split(src: Path, dst: Path, sd, pairs):
-    """The fused model's weights out, as external data with a recipe each; value names shortened. Returns the weights
-    file's bytes as numpy makes them from the recipe, and how many values differ from PyTorch's."""
+def beat_this_candidates(sd, pairs):
+    """The recipes that may make one of Beat This!'s initializers: a copy, a transpose, or a Conv2d/BatchNorm fold."""
+
+    def candidates(name, want):
+        found = []
+        if name.startswith("m.") and name[2:] in sd:
+            found.append({"nori.op": "copy", "nori.from": name[2:]})
+        else:
+            for k, v in sd.items():
+                if v.ndim == 2 and v.T.shape == want.shape:
+                    found.append({"nori.op": "transpose", "nori.from": k})
+            for conv, bn, eps in pairs:
+                e = repr(eps)
+                if sd[conv + ".weight"].shape == want.shape:
+                    found.append({"nori.op": "conv_bn", "nori.from": conv + ".weight", "nori.bn": bn, "nori.eps": e})
+                if sd[bn + ".bias"].shape == want.shape:
+                    found.append({"nori.op": "bn_shift", "nori.from": bn, "nori.bn": bn, "nori.eps": e})
+        return found
+
+    return candidates
+
+
+def split(src: Path, dst: Path, sd, candidates, weights_file=WEIGHTS_FILE):
+    """The model's weights out, as external data in `weights_file` with a recipe each (`candidates(name, values)`
+    lists those that may make an initializer); value names shortened. Returns the weights file's bytes as numpy makes
+    them from the recipe, and how many values differ from PyTorch's."""
     import onnx
     from onnx import TensorProto, numpy_helper
 
@@ -243,22 +275,10 @@ def split(src: Path, dst: Path, sd, pairs):
     for t in g.initializer:
         want = numpy_helper.to_array(t)
         dtype = {TensorProto.FLOAT: np.float32, TensorProto.FLOAT16: np.float16}[t.data_type]
-        candidates = []
-        if t.name.startswith("m.") and t.name[2:] in sd:
-            candidates.append({"nori.op": "copy", "nori.from": t.name[2:]})
-        else:
-            for k, v in sd.items():
-                if v.ndim == 2 and v.T.shape == want.shape:
-                    candidates.append({"nori.op": "transpose", "nori.from": k})
-            for conv, bn, eps in pairs:
-                e = repr(eps)
-                if sd[conv + ".weight"].shape == want.shape:
-                    candidates.append({"nori.op": "conv_bn", "nori.from": conv + ".weight", "nori.bn": bn, "nori.eps": e})
-                if sd[bn + ".bias"].shape == want.shape:
-                    candidates.append({"nori.op": "bn_shift", "nori.from": bn, "nori.bn": bn, "nori.eps": e})
-        # The one whose values are PyTorch's: exactly for a copy or a transpose, within float rounding for a fold.
+        # The one whose values are PyTorch's: exactly for a copy, a transpose or a reorder, within float rounding
+        # for a fold.
         scored = []
-        for r in candidates:
+        for r in candidates(t.name, want):
             got = follow(r, sd, dtype, want.shape)
             diff = float(np.abs(got.astype(np.float64) - want.astype(np.float64)).max())
             if diff <= 1e-3 * max(float(np.abs(want).max()), 1e-6) and (r["nori.op"] in ("conv_bn", "bn_shift") or diff == 0):
@@ -269,7 +289,7 @@ def split(src: Path, dst: Path, sd, pairs):
         differ += int((got != want).sum())
         total += want.size
         data = got.tobytes()
-        entries = {"location": WEIGHTS_FILE, "offset": str(len(blob)), "length": str(len(data)), **recipe}
+        entries = {"location": weights_file, "offset": str(len(blob)), "length": str(len(data)), **recipe}
         blob += data
         t.ClearField("raw_data")
         t.data_location = TensorProto.EXTERNAL
@@ -362,7 +382,7 @@ def main():
         ok = compare("fp16 export against PyTorch", ref, run_onnx(fp16, x))
         fuse_attention(fp16, full)
         print(f"{full}: {full.stat().st_size} bytes, SHA-256 {sha256(full)}")
-        blob, differ, total = split(full, args.out, sd, pairs)
+        blob, differ, total = split(full, args.out, sd, beat_this_candidates(sd, pairs))
     print(f"{differ} of {total} weights differ from PyTorch's fold by float rounding")
     print(f"{args.out}: {args.out.stat().st_size} bytes, SHA-256 {sha256(args.out)}")
     print(f"{WEIGHTS_FILE}: {len(blob)} bytes, SHA-256 {hashlib.sha256(blob).hexdigest()}")

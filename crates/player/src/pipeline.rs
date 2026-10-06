@@ -95,8 +95,16 @@ pub trait App: Host {
     fn gain(&mut self, _list: &Playlist, _index: usize) -> f32 {
         1.0
     }
-    /// The sound changed (`what`: the chain or the gain) from output frame `at.output`, made from input
-    /// frame `at.input` (frames since the last flush).
+    /// Sing: `song_id`'s vocal mask, once made.
+    fn vocal_mask(&mut self, _song_id: &str) -> Option<std::sync::Arc<crate::sing::VocalMask>> {
+        None
+    }
+    /// Vocal masks were made since last asked.
+    fn masks_made(&mut self) -> bool {
+        false
+    }
+    /// The sound changed (`what`: the chain, the gain or the vocal masks) from output frame `at.output`, made
+    /// from input frame `at.input` (frames since the last flush).
     fn spliced(&mut self, what: &str, at: Splice) {
         self.log(&format!("the {what} changes from output frame {} (input frame {})", at.output, at.input));
     }
@@ -417,11 +425,38 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         self.position_us = Some(offset_us + from_ms * 1000);
         self.source_ended = false;
         self.heard_period = None;
+        self.place_masks();
         if r.ready() {
             return self.start_reading(i, from_ms, offset_us, r);
         }
         self.opening = Some(Opening { index: i, from_ms, offset_us, r });
         true
+    }
+
+    /// Hands Sing's masker the vocal masks of the songs on the timeline (none while Sing is off).
+    fn place_masks(&mut self) {
+        if self.sink.settings().sing.is_none() {
+            return;
+        }
+        let placed = self.masks_placed();
+        if let Some((input, output)) = self.sink.set_masks(&placed) {
+            self.app.spliced("vocal masks", Splice { input, output });
+            self.burst.restart();
+            self.sink.fill();
+        }
+    }
+
+    /// The vocal masks of the songs on the timeline, where each song is.
+    fn masks_placed(&mut self) -> Vec<crate::sing::Placed> {
+        let mut placed = Vec::new();
+        for (k, p) in self.periods.iter().enumerate() {
+            let id = self.queue.read(|q| q.ids().get(p.index).cloned());
+            if let Some(mask) = id.and_then(|id| self.app.vocal_mask(&id)) {
+                let to = self.periods.get(k + 1).map_or(i64::MAX, |n| n.offset_us);
+                placed.push(crate::sing::Placed { at: p.offset_us..to, mask });
+            }
+        }
+        placed
     }
 
     /// Starts reading the opening song once it is ready.
@@ -494,6 +529,7 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         self.call(|e, _, a| e.flush(a));
         self.burst.restart();
         self.periods.retain(|p| p.offset_us <= o.offset_us);
+        self.place_masks();
         self.opening = None;
         self.next = None;
         self.failed = None;
@@ -518,6 +554,7 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         let gain = self.song_gain(i);
         let serial = self.serial_for(i);
         self.periods = vec![Period { index: i, offset_us, duration_us, gain, serial }];
+        self.place_masks();
         self.position_us = Some(offset_us + from_ms * 1000);
         self.heard_from = self.position_us;
         self.source_ended = false;
@@ -695,6 +732,11 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
     pub fn set_chain(&mut self, settings: ChainSettings) {
         if *self.sink.settings() == settings {
             return;
+        }
+        // The masks are in place before the masker joins, so what it makes again has them.
+        if self.sink.settings().sing.is_none() && settings.sing.is_some() {
+            let placed = self.masks_placed();
+            self.sink.set_masks(&placed);
         }
         let ear = self.sink.ear();
         if let Some((input, output)) = self.sink.change(settings) {
@@ -1040,6 +1082,9 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
     /// One render turn at `now_ms`: reads the clock and offers audio until the output refuses.
     pub fn turn(&mut self, now_ms: i64) {
         self.now_ms = now_ms;
+        if self.app.masks_made() {
+            self.place_masks();
+        }
         self.opened();
         self.remade();
         if !self.playing {
@@ -1180,6 +1225,7 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
             self.engine.set_gain(gain);
             self.reading = Some(Reader::new(n, end, next));
             self.periods.push(Period { index: n, offset_us: end, duration_us, gain, serial });
+            self.place_masks();
         }
     }
 }
