@@ -424,6 +424,16 @@ class PlayerConnection(private val context: Context, private val nori: Nori) {
         c.play()
     }
 
+    /** A queue handed over from another device: [songs] from [index] at [positionMs], playing or paused as it was there. */
+    fun playAt(songs: List<Song>, index: Int, positionMs: Long, play: Boolean) = with { c ->
+        if (songs.isEmpty()) return@with
+        nori.session.playlistShowShuffle(false)
+        c.shuffleModeEnabled = false
+        c.setMediaItems(items(songs), index.coerceIn(0, songs.lastIndex), positionMs)
+        c.prepare()
+        c.playWhenReady = play
+    }
+
     fun skipTo(index: Int) = with { c -> c.seekToDefaultPosition(index); if (c.playbackState == Player.STATE_IDLE) c.prepare(); c.play() }
     fun remove(index: Int) = with { it.removeMediaItem(index) }
     /** Undo of [remove]: [song] back where it was (the core's `playlist_restore`), or at [index] if the core no longer has it. */

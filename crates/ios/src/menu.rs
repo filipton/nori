@@ -32,6 +32,7 @@ fn action_code(a: &SongAction) -> i32 {
         SongAction::ExcludeFromMixes => 13,
         SongAction::Share => 14,
         SongAction::Details => 15,
+        SongAction::Request => 16,
     }
 }
 
@@ -67,7 +68,7 @@ fn details_json(s: &Song) -> Value {
 }
 
 fn menu_json(song: &Song, starred: bool, download: SongDownload, player: bool) -> Value {
-    let items: Vec<Value> = song_menu(song.clone(), starred, download, player)
+    let items: Vec<Value> = song_menu(song.clone(), starred, download, player, false)
         .iter()
         .map(item_json)
         .collect();

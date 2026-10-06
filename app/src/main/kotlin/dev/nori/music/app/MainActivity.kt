@@ -46,6 +46,7 @@ class MainActivity : ComponentActivity() {
         val recomposer = window.decorView.createLifecycleAwareWindowRecomposer(dev.nori.music.app.ui.AppMotion, lifecycle)
         // Only a fresh launch: a recreated activity (rotation) already went where its intent asked.
         if (savedInstanceState == null) launchRoute.value = routeOf(intent)
+        if (savedInstanceState == null) joinJam(intent)
         setContent(recomposer) { App(launchRoute) }
     }
 
@@ -54,6 +55,18 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         routeOf(intent)?.let { launchRoute.value = it }
+        joinJam(intent)
+    }
+
+    /** A jam invite opened: this phone joins as a guest, and the app shows only the jam (GuestApp). */
+    private fun joinJam(intent: Intent?) {
+        val link = intent?.takeIf { it.action == Intent.ACTION_VIEW }?.dataString ?: return
+        if (!dev.nori.music.ffi.remote.isInvite(link)) return
+        lifecycleScope.launch {
+            runCatching { Nori.get(this@MainActivity).joinJam(link) }.onFailure {
+                android.widget.Toast.makeText(this@MainActivity, R.string.jam_join_failed, android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     /** What an intent from outside asks for: the download notification's screen, a launcher shortcut's (res/xml/shortcuts.xml) or a widget's. */

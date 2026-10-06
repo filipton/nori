@@ -414,6 +414,12 @@ fn two_devices_control_each_other_through_the_relay() {
     }
     assert_eq!(phone.told(), Op::Pause);
 
+    // And back: the desk sends what it plays to the phone.
+    desk.playing(&["s4"], 0);
+    desk.remote.clone().hand_over(phone_id.clone());
+    assert!(matches!(phone.told(), Op::Replace { songs, index: 0, play: true, .. } if songs[0].id == "s4"));
+    assert_eq!(desk.told(), Op::Pause);
+
     // Not serving any more: the phone leaves the list.
     phone.remote.clone().serve(false);
     desk.until("the phone gone", |r| r.devices().iter().all(|d| d.id != phone_id).then_some(()));

@@ -92,6 +92,8 @@ fun SongMenu(
      * now that the bottom of that screen belongs to the output switcher, the way Apple's does.
      */
     player: dev.nori.music.app.vm.PlayerViewModel? = null,
+    /** Set for a jam guest, whose menu only asks the host for the song. */
+    request: ((Song) -> Unit)? = null,
 ) {
     val nav = LocalNav.current
     // Which of the menu's stages is up, fresh each time the menu opens. The sheet slides down as the
@@ -138,7 +140,7 @@ fun SongMenu(
             }
             // What the menu offers and in what order is the core's (`menus::song_menu`); the words are this
             // app's (`Say.songAction`), made once when the menu opens. This draws each line with its icon.
-            val items = remember(song, starred, download, player != null) { dev.nori.music.ffi.library.songMenu(song, starred, download, player != null) }
+            val items = remember(song, starred, download, player != null) { dev.nori.music.ffi.library.songMenu(song, starred, download, player != null, request != null) }
             val labels = remember(items) { items.map { say.songAction(it.action) } }
             @Composable fun line(i: dev.nori.music.ffi.library.SongMenuItem, label: String) = when (val a = i.action) {
                 is dev.nori.music.ffi.library.SongAction.Favourite -> Item(label, if (a.on) Icons.Filled.FavoriteBorder else Icons.Filled.Favorite) { actions.star(song, a.on); onDismiss() }
@@ -160,6 +162,7 @@ fun SongMenu(
                 dev.nori.music.ffi.library.SongAction.ExcludeFromMixes -> Item(label, Icons.Filled.Block) { actions.excludeFromMixes(song); onDismiss() }
                 dev.nori.music.ffi.library.SongAction.Share -> Item(label, Icons.Filled.IosShare) { actions.share(song.id); onDismiss() }
                 dev.nori.music.ffi.library.SongAction.Details -> Item(label, Icons.Filled.Info) { details = true }
+                dev.nori.music.ffi.library.SongAction.Request -> Item(label, Icons.AutoMirrored.Filled.QueueMusic) { request?.invoke(song); onDismiss() }
             }
             items.forEachIndexed { n, it -> if (!it.more) line(it, labels[n]) }
             Hairline(startIndent = Space.gutter)

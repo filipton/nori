@@ -27,6 +27,8 @@ pub enum SongAction {
     ExcludeFromMixes,
     Share,
     Details,
+    /// A jam guest asks the host for it.
+    Request,
 }
 
 /// One line of the song menu.
@@ -49,11 +51,17 @@ pub enum SongDownload {
 }
 
 /// The menu of `song`, most used first. `starred` as shown; `player`: opened from the player, which adds
-/// the sleep timer. A provider's song has no mix or share actions: those need it on the server.
+/// the sleep timer. A provider's song has no mix or share actions: those need it on the server. A jam
+/// guest (`guest`) only asks for songs.
 #[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn song_menu(song: Song, starred: bool, download: SongDownload, player: bool) -> Vec<SongMenuItem> {
+pub fn song_menu(song: Song, starred: bool, download: SongDownload, player: bool, guest: bool) -> Vec<SongMenuItem> {
     let mut out = Vec::with_capacity(16);
     let mut add = |action: SongAction, more: bool| out.push(SongMenuItem { action, more });
+    if guest {
+        add(SongAction::Request, false);
+        add(SongAction::Details, false);
+        return out;
+    }
     add(SongAction::Favourite { on: !starred }, false);
     add(SongAction::PlayNext, false);
     add(SongAction::AddToQueue, false);
@@ -220,7 +228,8 @@ mod tests {
     #[test]
     fn song_menus() {
         let s = Song { id: "1".into(), album_id: Some("al".into()), artist_id: Some("ar".into()), artist: "Björk".into(), ..Default::default() };
-        let m = song_menu(s, false, SongDownload::None, false);
+        let m = song_menu(s.clone(), false, SongDownload::None, false, false);
+        assert_eq!(actions(&song_menu(s, false, SongDownload::None, true, true)), [(Request, false), (Details, false)], "a jam guest only asks");
         use SongAction::*;
         assert_eq!(
             actions(&m),
@@ -238,7 +247,7 @@ mod tests {
             artists: vec![ArtistRef { id: "a".into(), name: "A".into() }, ArtistRef { id: String::new(), name: "Nobody".into() }, ArtistRef { id: "b".into(), name: "B".into() }],
             ..Default::default()
         };
-        let m = song_menu(s, true, SongDownload::Pending, true);
+        let m = song_menu(s, true, SongDownload::Pending, true, false);
         assert_eq!(
             actions(&m),
             [
@@ -248,7 +257,7 @@ mod tests {
                 (StartRadio, true), (Details, true),
             ]
         );
-        let done = song_menu(Song::default(), false, SongDownload::Done, false);
+        let done = song_menu(Song::default(), false, SongDownload::Done, false, false);
         assert_eq!(done[4].action, SongAction::RemoveDownload);
     }
 

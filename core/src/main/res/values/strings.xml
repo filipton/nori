@@ -122,4 +122,6 @@
     <string name="updated_channel">App updates</string>
     <string name="updated_title">Updated to %1$s</string>
     <string name="updated_text">Tap to open</string>
+    <!-- The name of the profile a jam guest is signed in with. -->
+    <string name="jam_profile">Jam</string>
 </resources>

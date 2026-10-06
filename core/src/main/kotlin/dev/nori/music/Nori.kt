@@ -110,6 +110,26 @@ class Nori private constructor(private val context: Context) {
     /** Each output device's own sound; built when the playback service first sees a device. */
     val deviceSound by lazy { dev.nori.music.playback.DeviceSound(settings, { core }, { client }, { http.metered }) }
     val player = PlayerConnection(context, this)
+    /** Remote control and jams; nothing runs unless they are switched on (or this is a jam guest). */
+    val remotes = dev.nori.music.remote.Remotes(context, this)
+
+    /**
+     * Joins the jam an invite [link] names: the guest profile it gives is the one in use from now on, and
+     * leaving drops it again (the profile in use before takes over).
+     */
+    suspend fun joinJam(link: String) = withContext(Dispatchers.IO) {
+        val pass = lifted { dev.nori.music.ffi.jamJoin(transport, link, dev.nori.music.remote.Remotes.deviceName(context)) }
+        val guest = dev.nori.music.settings.newServer(dev.nori.music.ffi.settings.serverNewId())
+            .copy(name = context.getString(dev.nori.music.core.R.string.jam_profile), url = pass.url, apiKey = pass.apiKey)
+        withContext(Dispatchers.Main) { activate(guest) }
+    }
+
+    /** Leaves the jam this guest profile is in and drops the profile. */
+    suspend fun leaveJam() {
+        remotes.leave()
+        withContext(Dispatchers.Main) { logout() }
+    }
+
     /** The app's own updates from its GitHub releases; nothing is asked until the app starts it. */
     val updates = dev.nori.music.update.Updates(context, { http }, { client })
 

@@ -564,4 +564,12 @@
     <string name="settings_hint_covers">Clear the covers. They are fetched again when needed</string>
     <string name="settings_hint_lyrics_cache">Clear the lyrics cache. Lyrics found online are looked up again</string>
     <string name="settings_hint_licences">Open source libraries, fonts and data, and their terms</string>
+    <!-- Remote control and jams (Settings > Library > Other devices). -->
+    <string name="settings_section_devices">Other devices</string>
+    <string name="settings_remote_control">Control from other devices</string>
+    <string name="settings_remote_control_detail">Your other devices with nori see and control what plays here, and this one controls them: on the same network directly, elsewhere through octo-fiesta. Off, nothing listens or asks.</string>
+    <string name="settings_hint_remote_control">Remote control, play on another device, Spotify Connect</string>
+    <string name="settings_jam">Jams</string>
+    <string name="settings_jam_detail">Start a jam from the player’s devices button: others join with a link or QR code and ask for songs, and this phone plays them. Needs octo-fiesta.</string>
+    <string name="settings_hint_jam">Group session, party, friends ask for songs</string>
 </resources>

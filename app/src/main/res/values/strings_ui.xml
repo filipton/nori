@@ -586,4 +586,49 @@
     <!-- The first time the app is opened after it updated itself: the release's notes. -->
     <string name="update_changelog_title">New in nori %1$s</string>
     <string name="update_changelog_done">OK</string>
+    <!-- The devices sheet: where the music plays, and the account's other devices. -->
+    <string name="devices_title">Play on</string>
+    <string name="devices_this">This phone</string>
+    <string name="devices_output">Audio output</string>
+    <string name="devices_none">No other devices yet. Turn on “Control from other devices” in nori on them.</string>
+    <string name="devices_nearby">On this network</string>
+    <string name="devices_idle">Not playing</string>
+    <string name="devices_play_here">Play here</string>
+    <string name="devices_play_there">Play there</string>
+    <string name="devices_up_next">Up next</string>
+    <string name="devices_volume">Volume</string>
+    <string name="devices_stale">The queue changed there. Try again.</string>
+    <string name="devices_not_allowed">That device said no.</string>
+    <string name="devices_unknown">That is no longer there.</string>
+    <!-- Jams: one phone plays, the others ask for songs. -->
+    <string name="jam_start">Start a jam</string>
+    <string name="jam_yours">Your jam</string>
+    <string name="jam_title">Jam</string>
+    <string name="jam_invite">Others join by scanning this code or opening the link.</string>
+    <string name="jam_share_link">Share link</string>
+    <string name="jam_end">End jam</string>
+    <string name="jam_people">People</string>
+    <string name="jam_role_host">Host</string>
+    <string name="jam_role_admin">Admin</string>
+    <string name="jam_role_guest">Guest</string>
+    <string name="jam_make_admin">Make admin</string>
+    <string name="jam_make_guest">Make guest</string>
+    <string name="jam_send_out">Remove from jam</string>
+    <string name="jam_requests">Asked for</string>
+    <string name="jam_accept">Accept</string>
+    <string name="jam_decline">Decline</string>
+    <string name="jam_will_download">The server downloads it</string>
+    <string name="jam_asked_by">Asked by %1$s</string>
+    <string name="jam_added_by">Added by %1$s</string>
+    <string name="jam_failed">Couldn’t start the jam. Jams need octo-fiesta in front of your server.</string>
+    <string name="jam_join_failed">Couldn’t join the jam</string>
+    <string name="jam_leave">Leave jam</string>
+    <string name="jam_yours_waiting">Waiting for the host</string>
+    <string name="jam_now_playing">Now playing</string>
+    <string name="jam_search">Search songs to ask for</string>
+    <string name="jam_asked">Asked for “%1$s”</string>
+    <string name="jam_too_many">You have as many songs waiting as a jam allows</string>
+    <string name="jam_not_allowed">Only the host or an admin can do that</string>
+    <string name="jam_waiting">Waiting for the host’s phone</string>
+    <string name="menu_request">Ask for this song</string>
 </resources>

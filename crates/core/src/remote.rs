@@ -343,6 +343,12 @@ impl Remote {
         self.out(Out::Send(link, Outgoing { to: Some(device), body: Some(Body::Command { id, op: Box::new(op) }), ..Default::default() }));
     }
 
+    /// Hands this device's queue and position to device `to`, which plays on; this one pauses.
+    pub fn hand_over(self: Arc<Self>, to: String) {
+        let me = self.id.clone();
+        self.transfer(&Via::Relay(None), &me, to);
+    }
+
     /// A door the platform's discovery found: service `service` at `host`:`port` with TXT `txt`.
     pub fn lan_found(self: Arc<Self>, service: String, host: String, port: u16, txt: Vec<Param>) {
         let get = |k: &str| txt.iter().find(|p| p.key == k).map(|p| p.value.clone()).unwrap_or_default();

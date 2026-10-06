@@ -830,9 +830,15 @@ private fun OutputButton() {
         dev.nori.music.ffi.devices.OutputGlyph.CAST -> Icons.Filled.Cast
     }
     val description = remember(o) { say.outputDescription(o.port, o.name) }
-    IconButton({ openOutputPicker(context, output) }) {
+    // With remote control or jams on, the button opens nori's own devices first (RemoteScreens); this
+    // phone's outputs are one row of it.
+    val prefs by settings.prefs.collectAsStateWithLifecycle()
+    val devices = prefs.remoteControl || prefs.jam
+    var sheet by remember { mutableStateOf(false) }
+    IconButton({ if (devices) sheet = true else openOutputPicker(context, output) }) {
         LookIcon(icon, description, Modifier.size(27.dp)) { look.color(if (o.elsewhere) CoverLook.ACCENT else CoverLook.ON_VARIANT) }
     }
+    if (devices) DevicesSheet(sheet, { sheet = false }, { sheet = false; openOutputPicker(context, output) }, prefs.jam)
 }
 
 private fun openOutputPicker(context: android.content.Context, output: String) {

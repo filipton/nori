@@ -60,6 +60,7 @@ import dev.nori.music.app.vm.PlayerViewModel
 import dev.nori.music.app.vm.SettingsViewModel
 import dev.nori.music.ffi.model.Song
 import dev.nori.music.settings.loggedIn
+import dev.nori.music.settings.server
 
 /** Plain screens sit below the status bar; album, artist and playlist pages draw under it. */
 @Composable
@@ -117,6 +118,7 @@ class Nav(private val c: NavHostController, private val sheet: PlayerSheet) {
     fun settingsGroup(id: String, key: String = "") = go("settings/$id?key=${Uri.encode(key)}")
     fun player() = sheet.open()
     fun equalizer() = go("equalizer")
+    fun jam() = go("jam")
     fun autoEq() = go("autoeq")
     fun back() { if (sheet.isOpen) sheet.close() else c.popBackStack() }
     /**
@@ -179,6 +181,11 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
         ) { loggedIn ->
         if (!loggedIn) {
             LoginScreen(settings)
+            return@Crossfade
+        }
+        // A jam guest's profile: only the jam (RemoteScreens).
+        if (remember(prefs.activeServerId) { prefs.server?.apiKey?.let { dev.nori.music.ffi.remote.isGuestKey(it) } == true }) {
+            GuestApp(viewModel())
             return@Crossfade
         }
 
@@ -404,6 +411,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
                     page("smart/{id}") { SmartScreen(it.arguments!!.getString("id")!!, actions) }
                     page("smartEdit/{id}") { SmartEditScreen(it.arguments!!.getString("id")!!.let { i -> if (i == "new") "" else i }) }
                     page("stats") { StatsScreen() }
+                    page("jam") { JamScreen() }
                     page("perf") { dev.nori.music.app.PerfHooks.recorder?.Page() }
                     page("downloads") { DownloadsScreen(actions) }
                     page("folder/{id}") { FolderScreen(it.arguments!!.getString("id")!!, actions) }

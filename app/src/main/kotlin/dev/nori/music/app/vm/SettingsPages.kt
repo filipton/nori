@@ -271,6 +271,8 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("library", R.string.settings_scrobble, R.string.settings_hint_scrobble),
     Triple("library", R.string.settings_scrobble_after, 0),
     Triple("library", R.string.settings_lookups, R.string.settings_hint_lookups),
+    Triple("library", R.string.settings_remote_control, R.string.settings_hint_remote_control),
+    Triple("library", R.string.settings_jam, R.string.settings_hint_jam),
     Triple("data", R.string.settings_quality_wifi, 0),
     Triple("data", R.string.settings_quality_mobile, 0),
     Triple("data", R.string.settings_quality_download, 0),
@@ -828,9 +830,14 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
         )
         if (p.scrobble) history += choice("scrobblePercent", R.string.settings_scrobble_after) { if (it == "100") str(R.string.settings_scrobble_whole) else percent(it) }
         val online = listOf(toggle("thirdPartyLookups", R.string.settings_lookups, R.string.settings_lookups_detail))
+        val devices = listOf(
+            toggle("remoteControl", R.string.settings_remote_control, R.string.settings_remote_control_detail),
+            toggle("jam", R.string.settings_jam, R.string.settings_jam_detail),
+        )
         return listOf(
             section(R.string.settings_section_lists, gestures), section(R.string.settings_section_playlists, playlists),
             section(R.string.settings_section_search, search), section(R.string.settings_section_history, history), section(R.string.settings_section_online, online),
+            section(R.string.settings_section_devices, devices),
         )
     }
 

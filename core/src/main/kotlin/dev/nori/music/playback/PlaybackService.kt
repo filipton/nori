@@ -38,6 +38,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.guava.future
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -257,6 +259,9 @@ class PlaybackService : MediaLibraryService() {
         // A heart changed anywhere in the app (or by the notification itself) redraws the notification's heart.
         // A StateFlow: it emits only on a change, so this is idle while music plays untouched.
         scope.launch { nori.library.starMarks.collect { refreshButtons() } }
+        // Controllable from the account's other devices while this runs and remote control is on (Remotes).
+        nori.remotes.service = remotePlayer
+        scope.launch { nori.settings.prefs.map { it.remoteControl }.distinctUntilChanged().collect { nori.remotes.serve(true) } }
         restoreQueue()
     }
 
@@ -267,6 +272,8 @@ class PlaybackService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        nori.remotes.serve(false)
+        nori.remotes.service = null
         sessionPlayer = null
         rustPlayer = null
         engine = null
@@ -349,13 +356,14 @@ class PlaybackService : MediaLibraryService() {
             if (!playWhenReady) keepQueue(dev.nori.music.ffi.queue.QueueMoment.PAUSED)
         }
 
-        override fun onShuffleModeEnabledChanged(on: Boolean) = refreshButtons()
+        override fun onShuffleModeEnabledChanged(on: Boolean) { refreshButtons(); remoteState() }
 
-        override fun onRepeatModeChanged(repeatMode: Int) = refreshButtons()
+        override fun onRepeatModeChanged(repeatMode: Int) { refreshButtons(); remoteState() }
 
         override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
             if (reason == Player.TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED) {
                 keepQueue(dev.nori.music.ffi.queue.QueueMoment.EDITED)
+                remoteState()
                 // The queue was edited: what comes next may not be what it was. A song queued to play next
                 // is fetched and measured now, while there is time to plan its mix, not when its turn comes:
                 // without it AutoMix had nothing to mix it by. The engine fetches it (and the songs after it)
@@ -441,7 +449,44 @@ class PlaybackService : MediaLibraryService() {
         player.pauseAtEndOfItem = on
     }
 
+    /** Tells the remote control (if it is on) the player changed; a null check otherwise. */
+    private fun remoteState() = nori.remotes.played(player.playWhenReady, player.currentPosition)
+
+    /** What another device asks of this one through the remote control, done to the player as the session's controllers would. */
+    private val remotePlayer = object : dev.nori.music.ffi.RemotePlayer {
+        override fun apply(op: dev.nori.music.ffi.remote.Op) {
+            when (op) {
+                dev.nori.music.ffi.remote.Op.Play -> { if (controls.playbackState == Player.STATE_IDLE) controls.prepare(); controls.play() }
+                dev.nori.music.ffi.remote.Op.Pause -> controls.pause()
+                is dev.nori.music.ffi.remote.Op.Seek -> controls.seekTo(op.ms)
+                dev.nori.music.ffi.remote.Op.Next -> controls.seekToNext()
+                dev.nori.music.ffi.remote.Op.Previous -> controls.seekToPrevious()
+                is dev.nori.music.ffi.remote.Op.Jump -> { controls.seekToDefaultPosition(op.index.toInt()); if (controls.playbackState == Player.STATE_IDLE) controls.prepare(); controls.play() }
+                is dev.nori.music.ffi.remote.Op.Remove -> controls.removeMediaItem(op.index.toInt())
+                is dev.nori.music.ffi.remote.Op.Move -> controls.moveMediaItem(op.from.toInt(), op.to.toInt())
+                is dev.nori.music.ffi.remote.Op.Add -> {
+                    controls.addMediaItems(items(op.songs).map { it.queued(if (op.next) dev.nori.music.ffi.queue.Hand.NEXT else dev.nori.music.ffi.queue.Hand.LAST) })
+                    if (controls.playbackState == Player.STATE_IDLE) controls.prepare()
+                }
+                is dev.nori.music.ffi.remote.Op.Replace -> {
+                    controls.shuffleModeEnabled = false
+                    controls.setMediaItems(items(op.songs), op.index.toInt(), op.positionMs)
+                    controls.prepare()
+                    controls.playWhenReady = op.play
+                }
+                is dev.nori.music.ffi.remote.Op.Volume -> dev.nori.music.remote.Remotes.setVolume(this@PlaybackService, op.percent.toInt())
+                is dev.nori.music.ffi.remote.Op.Shuffle -> controls.shuffleModeEnabled = op.on
+                is dev.nori.music.ffi.remote.Op.Repeat -> controls.repeatMode = op.mode.toInt()
+                // The core keeps transfers and jam ops to itself.
+                is dev.nori.music.ffi.remote.Op.Transfer, is dev.nori.music.ffi.remote.Op.Request, is dev.nori.music.ffi.remote.Op.Decide,
+                is dev.nori.music.ffi.remote.Op.Promote, is dev.nori.music.ffi.remote.Op.Kick -> {}
+            }
+            remoteState()
+        }
+    }
+
     private fun announce() {
+        remoteState()
         val m = player.currentMediaItem?.mediaMetadata
         sendBroadcast(android.content.Intent(ACTION_STATE).setPackage(packageName)
             .putExtra(EXTRA_TITLE, m?.title?.toString()).putExtra(EXTRA_ARTIST, m?.artist?.toString()).putExtra(EXTRA_PLAYING, player.isPlaying)
