@@ -310,34 +310,16 @@ impl Masker {
         let centre = self.pts - (self.n / 2) as f64 * self.pace * 1e6 / self.rate as f64;
         let masked = self.gains_at(centre.round() as i64, masks);
         let (n, hop) = (self.n, self.hop);
-        for c in 0..self.channels {
-            let x = &self.input[c * n..(c + 1) * n];
-            let acc = &mut self.acc[c * n..(c + 1) * n];
-            if !masked {
+        if masked {
+            self.mask_frame();
+            self.touched.fill(true);
+        } else {
+            for (acc, x) in self.acc.chunks_exact_mut(n).zip(self.input.chunks_exact(n)) {
                 // w * w sums to 2 over four overlapping frames.
                 for ((a, v), w) in acc.iter_mut().zip(x).zip(self.window.iter()) {
                     *a += v * w * w * 0.5;
                 }
-                continue;
             }
-            for ((b, v), w) in self.buf.iter_mut().zip(x).zip(self.window.iter()) {
-                *b = Complex32::new(v * w, 0.0);
-            }
-            self.fft.process_with_scratch(&mut self.buf, &mut self.scratch);
-            for (k, g) in self.gains.iter().enumerate() {
-                self.buf[k] *= *g;
-                if k > 0 && k < n / 2 {
-                    self.buf[n - k] *= *g;
-                }
-            }
-            self.ifft.process_with_scratch(&mut self.buf, &mut self.scratch);
-            let scale = 0.5 / n as f32;
-            for ((a, b), w) in acc.iter_mut().zip(&self.buf).zip(self.window.iter()) {
-                *a += b.re * w * scale;
-            }
-        }
-        if masked {
-            self.touched.fill(true);
         }
         // The oldest hop is whole: out, unless it is before the first input frame.
         let drop = self.skip.min(hop);
@@ -369,6 +351,41 @@ impl Masker {
         }
         self.touched.copy_within(1.., 0);
         *self.touched.last_mut().expect("four hops") = false;
+    }
+
+    /// The frame in `input` through the gains, overlap-added into `acc`. Channels go two to a transform, one as
+    /// the real part and one as the imaginary: the gains are real and even, so they come back apart.
+    fn mask_frame(&mut self) {
+        let n = self.n;
+        let scale = 0.5 / n as f32;
+        let (window, buf) = (&self.window[..], &mut self.buf[..]);
+        for (x, acc) in self.input.chunks(2 * n).zip(self.acc.chunks_mut(2 * n)) {
+            let (l, r) = x.split_at(n);
+            if r.is_empty() {
+                for ((b, u), w) in buf.iter_mut().zip(l).zip(window) {
+                    *b = Complex32::new(u * w, 0.0);
+                }
+            } else {
+                for (((b, u), v), w) in buf.iter_mut().zip(l).zip(r).zip(window) {
+                    *b = Complex32::new(u * w, v * w);
+                }
+            }
+            self.fft.process_with_scratch(buf, &mut self.scratch);
+            for (k, g) in self.gains.iter().enumerate() {
+                buf[k] *= *g;
+                if k > 0 && k < n / 2 {
+                    buf[n - k] *= *g;
+                }
+            }
+            self.ifft.process_with_scratch(buf, &mut self.scratch);
+            let (al, ar) = acc.split_at_mut(n);
+            for ((a, b), w) in al.iter_mut().zip(buf.iter()).zip(window) {
+                *a += b.re * w * scale;
+            }
+            for ((a, b), w) in ar.iter_mut().zip(buf.iter()).zip(window) {
+                *a += b.im * w * scale;
+            }
+        }
     }
 
     /// Fills the bins' gains for a frame centred at timeline position `pts`; false when they are all 1.
@@ -490,6 +507,32 @@ mod tests {
         assert_ne!(out[before..after], pcm[before..after], "masked in between");
         assert_eq!(out[..before], pcm[..before]);
         assert_eq!(out[after..], pcm[after..]);
+    }
+
+    /// Mono and an odd third channel go through the transform as stereo does: rebuilt at a level just under 1,
+    /// silenced at 0.
+    #[test]
+    fn odd_channel_counts_are_masked() {
+        for channels in [1, 3] {
+            let x: Vec<f32> = (0..channels * 30_000).map(|i| ((i / channels) as f32 * 0.013 * (1 + i % channels) as f32).sin() * 0.5).collect();
+            let masked = |level: f32| {
+                let mut m = Masker::new(RATE, channels, Encoding::Float, level);
+                let mut out = Vec::new();
+                for (k, chunk) in x.chunks(channels * 1000).enumerate() {
+                    m.process(&floats(chunk), (k as f64 * 1000.0 * 1e6 / RATE as f64) as i64, 1.0, &whole(flat(255, 2.0)), &mut out);
+                }
+                m.end(&whole(flat(255, 2.0)), &mut out);
+                samples(&out)
+            };
+            let y = masked(0.999_999);
+            assert_eq!(y.len(), x.len());
+            let worst = x.iter().zip(&y).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(worst < 1e-4, "{channels} channels rebuilt: {worst}");
+            for c in 0..channels {
+                let quiet = rms(masked(0.0).iter().skip(channels * 5000 + c).step_by(channels).copied());
+                assert!(quiet < 1e-3, "{channels} channels, channel {c} silenced: {quiet}");
+            }
+        }
     }
 
     /// A centred voice with a mask on its band is turned down; a hard-panned tone outside it stays.
