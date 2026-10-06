@@ -2702,12 +2702,12 @@ export component AppWindow inherits Window {
                                 // The next page is asked for as the end comes within a screen, or when the rows
                                 // do not fill the list.
                                 function near-end() {
-                                    if root.more-songs && self.viewport-height + self.viewport-y < self.visible-height * 2 {
+                                    if root.more-songs && self.content-height + self.content-y < self.visible-height * 2 {
                                         root.more();
                                     }
                                 }
-                                changed viewport-y => { self.near-end(); }
-                                changed viewport-height => { self.near-end(); }
+                                changed content-y => { self.near-end(); }
+                                changed content-height => { self.near-end(); }
                                 for s[i] in root.songs: SongLine {
                                     song: s;
                                     number: i + 1;
@@ -3544,12 +3544,16 @@ export component AppWindow inherits Window {
                     spacing: 36px;
                     for line[i] in full-lyrics.visible ? root.lyrics-lines : []: Text {
                         property <bool> lit: i == root.lyrics-active;
+                        // The line the lyrics are scrolled to: the one sung, or the last once all are over.
+                        property <bool> aimed: i == min(root.lyrics-active, root.lyrics-lines.length - 1);
                         // As the panel's: how lit, fading as it changes, whether or not the line is drawn just then.
                         property <float> level;
                         animate level { duration: 500ms; easing: ease-out; }
                         changed lit => {
                             self.level = self.lit ? 1 : 0;
-                            if self.lit {
+                        }
+                        changed aimed => {
+                            if self.aimed {
                                 full-lyrics.content-y = -(self.y - (root.height * 0.36 - 48px));
                                 root.full-lyric-h = self.height;
                                 root.full-lyric-at = self.y;
@@ -3558,7 +3562,7 @@ export component AppWindow inherits Window {
                         }
                         init => {
                             self.level = self.lit ? 1 : 0;
-                            if self.lit {
+                            if self.aimed {
                                 full-lyrics.content-y = -(self.y - (root.height * 0.36 - 48px));
                                 root.full-lyric-h = self.height;
                                 root.full-lyric-at = self.y;

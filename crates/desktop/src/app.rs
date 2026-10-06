@@ -197,6 +197,8 @@ pub struct App {
     tuning: bool,
     lyrics: Option<crate::lyrics::SongLyrics>,
     lyrics_timer: Timer,
+    /// Where a seek sent the music, until the engine says it landed: its status still holds the old place.
+    seeking: Option<i64>,
     /// Active lyric line pieces in the side panel and Now Playing, updated in place each frame.
     pieces: [Rc<VecModel<LyricPiece>>; 2],
     /// Queue rows, edited in place; leaving rows fold first, then the list settles to `queue_next`.
@@ -317,6 +319,7 @@ pub fn start(ui: &AppWindow, data: PathBuf, compositor: Compositor) -> Rc<RefCel
             tuning: false,
             lyrics: None,
             lyrics_timer: Timer::default(),
+            seeking: None,
             pieces: [Rc::new(VecModel::default()), Rc::new(VecModel::default())],
             queue_rows: Rc::new(VecModel::default()),
             queue_next: None,
@@ -337,7 +340,9 @@ pub fn start(ui: &AppWindow, data: PathBuf, compositor: Compositor) -> Rc<RefCel
         let weak = ui.as_weak();
         a.compositor.set_focus_source(move || {
             let ui = weak.upgrade()?;
-            if !ui.get_full_player() || ui.get_full_panel() != 2 || ui.get_lyrics_lines().row_count() == 0 || !ui.get_lyrics_synced() || ui.get_full_lyrics_browsed() || ui.get_lyrics_active() < 0 {
+            // Only while a line is lit: none before the first, and none once the last is over.
+            let lit = usize::try_from(ui.get_lyrics_active()).is_ok_and(|i| i < ui.get_lyrics_lines().row_count());
+            if !ui.get_full_player() || ui.get_full_panel() != 2 || !lit || !ui.get_lyrics_synced() || ui.get_full_lyrics_browsed() {
                 return None;
             }
             let size = ui.window().size().to_logical(ui.window().scale_factor());
@@ -434,9 +439,9 @@ fn wire(ui: &AppWindow, h: &AppHandle) {
         s.engine.play_at(i.max(0) as usize, 0);
     }));
     on!(ui.on_seek_by, h, |a, ms| {
-        a.on_session(|s| {
-            s.engine.seek((s.engine.status().position_now() + ms as i64).max(0));
-        });
+        if let Some(at) = a.session.as_ref().map(|s| s.engine.status().position_now()) {
+            a.seek_to((at + ms as i64).max(0));
+        }
     });
     on!(ui.on_drag_window, h, |a| a.compositor.drag_window());
     on!(ui.on_zoom_window, h, |a| a.compositor.zoom_window());
@@ -950,11 +955,18 @@ impl App {
         s.engine.toggle();
     }
 
-    fn seek(&self, fraction: f32) {
+    fn seek(&mut self, fraction: f32) {
         let Some(song) = &self.song else { return };
         let ms = (fraction as f64 * song.duration as f64 * 1000.0) as i64;
         self.ui().set_position_ms(ms as i32);
+        self.seek_to(ms);
+    }
+
+    /// Seeks to `ms`; the lyrics show that place at once, not the old one until the seek lands.
+    fn seek_to(&mut self, ms: i64) {
+        self.seeking = Some(ms);
         self.on_session(|s| s.engine.seek(ms));
+        self.lyrics_step(true);
     }
 
     fn take(&mut self, m: Msg) {
@@ -962,7 +974,12 @@ impl App {
             Msg::Engine(e) => {
                 match &e {
                     // A seek landed: the lyrics follow from the new place.
-                    Event::Position { .. } => self.lyrics_step(true),
+                    Event::Position { .. } => {
+                        self.seeking = None;
+                        self.lyrics_step(true);
+                    }
+                    // A seek still under way is overtaken by another song.
+                    Event::Song { .. } => self.seeking = None,
                     Event::Buffering(b) => self.ui().set_buffering(*b),
                     Event::Error { message, .. } => self.say(&format!("Could not play: {message}"), true),
                     _ => {}
@@ -1147,8 +1164,9 @@ impl App {
     /// Updates the lyrics view from the playback position and schedules the next update.
     fn lyrics_step(&mut self, force: bool) {
         let ui = self.ui();
+        let seeking = self.seeking;
         let (Some(l), Some(s)) = (&mut self.lyrics, &self.session) else { return };
-        let (at, playing) = s.engine.status_with(|st| (st.position_now(), st.state == State::Playing));
+        let (at, playing) = s.engine.status_with(|st| (seeking.unwrap_or_else(|| st.position_now()), st.state == State::Playing));
         let now = l.advance(at, force);
         ui.set_lyrics_active(now.active);
         ui.set_lyric_sweeping(now.sweeping);
@@ -1174,7 +1192,7 @@ impl App {
     fn lyric_tapped(&mut self, line: i32) {
         let (Some(l), Ok(line)) = (&self.lyrics, usize::try_from(line)) else { return };
         let ms = l.tap(line);
-        self.on_session(|s| s.engine.seek(ms));
+        self.seek_to(ms);
     }
 
     /// Shows `rows` in the queue: leaving rows fold away first, then the list settles.
