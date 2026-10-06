@@ -252,13 +252,15 @@ impl Session {
                     // The mixes are drawn here from the index and the history; the favourites follow the
                     // starred songs, stored at once and the server's after.
                     let taste = app().settings.prefs(|p| p.taste_model);
-                    let _ = client.mix_favourites_stored();
+                    let stored = client.mix_favourites_stored().ok();
                     if taste {
                         block_on(client.mix_warm_all());
                     }
                     send(Ok(Data::Picks(core.mix_cards(taste))));
-                    if block_on(client.mix_hand_favourites()).is_ok() {
-                        send(Ok(Data::Picks(core.mix_cards(taste))));
+                    if let Some(s) = stored.filter(|s| !s.fresh) {
+                        if block_on(client.mix_favourites_refresh(s.digest)).is_ok_and(|changed| changed) {
+                            send(Ok(Data::Picks(core.mix_cards(taste))));
+                        }
                     }
                     for (i, (_, kind)) in HOME_ROWS.iter().enumerate() {
                         let read = if *kind == AlbumSort::Starred { Read::FavouriteAlbums { size: 40 } } else { Read::AlbumList { kind: *kind, size: 40, offset: 0, genre: None } };
