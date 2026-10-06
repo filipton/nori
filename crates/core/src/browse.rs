@@ -37,6 +37,27 @@ impl Core {
     }
 }
 
+/// [`Core::browse_songs`]' query: offset ?1, limit ?2, and with `years` the range ?3..=?4.
+pub(crate) fn songs_sql(sort: &str, descending: bool, starred_only: bool, years: bool) -> String {
+    let key = match sort {
+        "title" | "artist" | "album" => format!("json_extract(json, '$.{sort}') COLLATE NOCASE"),
+        "year" | "duration" | "created" | "playCount" | "userRating" => format!("json_extract(json, '$.{sort}')"),
+        _ => "rowid".to_string(),
+    };
+    // The song kind written out, so the songs' sort indexes (db.rs) serve the order a page at a time.
+    // Starred songs are few: sorting them beats walking a sort index past all the others.
+    let items = if starred_only { "items INDEXED BY items_starred" } else { "items" };
+    let mut sql = format!("SELECT json FROM {items} WHERE server=sid() AND kind={}", db::SONG);
+    if starred_only {
+        sql.push_str(" AND json_extract(json, '$.starred') = 1");
+    }
+    if years {
+        sql.push_str(" AND json_extract(json, '$.year') BETWEEN ?3 AND ?4");
+    }
+    sql.push_str(&format!(" ORDER BY {key} {} LIMIT ?2 OFFSET ?1", if descending { "DESC" } else { "ASC" }));
+    sql
+}
+
 impl Core {
     /// Listening stats of the last `days` days (0: all).
     pub(crate) fn stats_days(&self, days: u32) -> Result<ListeningStats> {
@@ -66,13 +87,17 @@ pub(crate) mod tests {
         assert_eq!(years.songs[0].year, 2009);
         assert!(years.exhausted && years.songs.iter().all(|s| (2000..=2009).contains(&s.year)));
 
-        // Text sorts read an index not the library.
+        // Every sort reads its index, not the library; starred songs are read by the starred index.
         let core = Core::new(String::new(), "t".into(), Default::default()).unwrap();
         let c = core.db.lock();
-        for key in ["title", "artist", "album"] {
-            let sql = format!("EXPLAIN QUERY PLAN SELECT json FROM items WHERE server=sid() AND kind={} ORDER BY json_extract(json, '$.{key}') COLLATE NOCASE ASC LIMIT 200 OFFSET 400", db::SONG);
-            let plan: Vec<String> = c.prepare(&sql).unwrap().query_map([], |r| r.get::<_, String>(3)).unwrap().map(|r| r.unwrap()).collect();
-            assert!(!plan.iter().any(|p| p.contains("TEMP B-TREE")), "{key}: {plan:?}");
+        for (_, key, descending) in SONG_SORTS {
+            let plan = |starred| -> String {
+                let sql = format!("EXPLAIN QUERY PLAN {}", songs_sql(key, descending, starred, false));
+                c.prepare(&sql).unwrap().query_map([0, 200], |r| r.get::<_, String>(3)).unwrap().map(|r| r.unwrap()).collect::<Vec<_>>().join("; ")
+            };
+            let all = plan(false);
+            assert!(all.contains("USING INDEX items_") && !all.contains("TEMP B-TREE"), "{key}: {all}");
+            assert!(plan(true).contains("USING INDEX items_starred"), "{key} starred");
         }
     }
 

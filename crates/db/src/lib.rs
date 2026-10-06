@@ -46,6 +46,9 @@ CREATE TABLE IF NOT EXISTS smart_playlists(server TEXT NOT NULL, id TEXT NOT NUL
 CREATE INDEX IF NOT EXISTS items_genre ON items(server, json_extract(json,'$.genre') COLLATE NOCASE) WHERE kind=2;
 CREATE INDEX IF NOT EXISTS items_artist ON items(server, json_extract(json,'$.artistId')) WHERE kind=2;
 CREATE INDEX IF NOT EXISTS items_year ON items(server, json_extract(json,'$.year')) WHERE kind=2;
+CREATE INDEX IF NOT EXISTS items_duration ON items(server, json_extract(json,'$.duration')) WHERE kind=2;
+CREATE INDEX IF NOT EXISTS items_created ON items(server, json_extract(json,'$.created')) WHERE kind=2;
+CREATE INDEX IF NOT EXISTS items_plays ON items(server, json_extract(json,'$.playCount')) WHERE kind=2;
 CREATE INDEX IF NOT EXISTS items_starred ON items(server, json_extract(json,'$.starred')) WHERE kind=2 AND json_extract(json,'$.starred')=1;
 CREATE INDEX IF NOT EXISTS items_rated ON items(server, json_extract(json,'$.userRating')) WHERE kind=2 AND json_extract(json,'$.userRating')>=4;
 CREATE INDEX IF NOT EXISTS items_title ON items(server, json_extract(json,'$.title') COLLATE NOCASE) WHERE kind=2;

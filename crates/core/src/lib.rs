@@ -494,20 +494,7 @@ impl Core {
     /// A sorted, filtered page of indexed songs. `sort`: title, artist, album, year, duration, created,
     /// playCount or userRating; anything else is index order.
     pub fn browse_songs(&self, sort: String, descending: bool, starred_only: bool, year_from: u32, year_to: u32, offset: u32, limit: u32) -> Result<Vec<Song>> {
-        let key = match sort.as_str() {
-            "title" | "artist" | "album" => format!("json_extract(json, '$.{sort}') COLLATE NOCASE"),
-            "year" | "duration" | "created" | "playCount" | "userRating" => format!("json_extract(json, '$.{sort}')"),
-            _ => "rowid".to_string(),
-        };
-        // The song kind written out, so the songs' sort indexes (db.rs) serve the order a page at a time.
-        let mut sql = format!("SELECT json FROM items WHERE server=sid() AND kind={}", db::SONG);
-        if starred_only {
-            sql.push_str(" AND json_extract(json, '$.starred') = 1");
-        }
-        if year_to > 0 {
-            sql.push_str(" AND json_extract(json, '$.year') BETWEEN ?3 AND ?4");
-        }
-        sql.push_str(&format!(" ORDER BY {key} {} LIMIT ?2 OFFSET ?1", if descending { "DESC" } else { "ASC" }));
+        let sql = browse::songs_sql(&sort, descending, starred_only, year_to > 0);
         let c = self.db.lock();
         let mut st = c.prepare_cached(&sql)?;
         let map = |r: &rusqlite::Row| r.get::<_, String>(0);
