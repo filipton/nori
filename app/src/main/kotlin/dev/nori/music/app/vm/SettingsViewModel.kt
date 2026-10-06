@@ -478,7 +478,7 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
     private val _autoEq = MutableStateFlow(AutoEqUi())
     val autoEq: StateFlow<AutoEqUi> = _autoEq
 
-    init { viewModelScope.launch { val n = runCatching { nori.core.autoeqCount() }.getOrDefault(0u); _autoEq.update { it.counted(n) } } }
+    init { viewModelScope.launch(Dispatchers.IO) { val n = runCatching { nori.core.autoeqCount() }.getOrDefault(0u); _autoEq.update { it.counted(n) } } }
 
     private fun AutoEqUi.counted(n: UInt) = copy(count = n.toInt(), countWords = dev.nori.music.app.ui.say.autoeqCount(n.toInt()), searchWords = dev.nori.music.app.ui.say.autoeqSearch(n.toInt()))
 
