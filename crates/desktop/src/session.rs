@@ -105,8 +105,8 @@ pub enum Data {
 
 /// Home shelves: title and album list kind.
 pub const HOME_ROWS: [(&str, AlbumSort); 5] = [
-    ("Recently added", AlbumSort::Newest),
     ("Recently played", AlbumSort::Recent),
+    ("Recently added", AlbumSort::Newest),
     ("Most played", AlbumSort::Frequent),
     ("Favorites", AlbumSort::Starred),
     ("Something random", AlbumSort::Random),
@@ -243,12 +243,18 @@ impl Session {
                 Req::Home => {
                     for (i, (_, kind)) in HOME_ROWS.iter().enumerate() {
                         let read = if *kind == AlbumSort::Starred { Read::FavouriteAlbums { size: 40 } } else { Read::AlbumList { kind: *kind, size: 40, offset: 0, genre: None } };
+                        let mut got = false;
                         if let Err(e) = read_pages(&client, read, |p| {
                             if let Page::Albums { v } = p {
+                                got = true;
                                 send(Ok(Data::HomeRow(i, v)));
                             }
                         }) {
                             return send(Err(net_error(&e)));
+                        }
+                        // A row with nothing in it is read too: its shelf goes, rather than waiting on.
+                        if !got {
+                            send(Ok(Data::HomeRow(i, Vec::new())));
                         }
                     }
                 }

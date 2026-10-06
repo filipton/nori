@@ -272,7 +272,7 @@ fn sidebar(ui: &AppWindow, art: impl Fn(SharedString, i32) -> Image + 'static) -
 /// Builds the app state and wires the window. Keep the returned app alive while the window runs.
 pub fn start(ui: &AppWindow, data: PathBuf, compositor: Compositor) -> Rc<RefCell<App>> {
     let shelves = Rc::new(VecModel::from(
-        session::HOME_ROWS.iter().map(|(t, _)| Shelf { title: (*t).into(), cards: ModelRc::default() }).collect::<Vec<_>>(),
+        session::HOME_ROWS.iter().map(|(t, _)| Shelf { title: (*t).into(), cards: ModelRc::default(), loaded: false }).collect::<Vec<_>>(),
     ));
     ui.set_shelves(ModelRc::from(shelves.clone()));
     ui.set_greeting("Home".into());
@@ -571,6 +571,7 @@ impl App {
                 for i in 0..self.shelves.row_count() {
                     if let Some(mut shelf) = self.shelves.row_data(i) {
                         shelf.cards = ModelRc::default();
+                        shelf.loaded = false;
                         self.shelves.set_row_data(i, shelf);
                     }
                 }
@@ -749,6 +750,7 @@ impl App {
             Data::HomeRow(i, albums) => {
                 if let Some(mut shelf) = self.shelves.row_data(i) {
                     shelf.cards = cards(albums.iter().map(album_card));
+                    shelf.loaded = true;
                     self.shelves.set_row_data(i, shelf);
                 }
             }

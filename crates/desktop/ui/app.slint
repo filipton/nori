@@ -77,6 +77,8 @@ export struct EqBandRow {
 export struct Shelf {
     title: string,
     cards: [Card],
+    // Read (with or without cards): until then the shelf holds its place with plates.
+    loaded: bool,
 }
 
 export global Theme {
@@ -117,6 +119,7 @@ export global Icons {
     out property <string> songs: "M10 18 L10 4 Q14 5 16 8 M10 18 A3 3 0 1 1 4 18 A3 3 0 1 1 10 18";
     out property <string> playlists: "M4.5 5 L8 5 L8 8.5 L4.5 8.5 Z M10.5 5 L14 5 L14 8.5 L10.5 8.5 Z M16.5 5 L20 5 L20 8.5 L16.5 8.5 Z M4.5 11 L8 11 L8 14.5 L4.5 14.5 Z M10.5 11 L14 11 L14 14.5 L10.5 14.5 Z M16.5 11 L20 11 L20 14.5 L16.5 14.5 Z";
     out property <string> chevron: "M9 5.5 L15.5 12 L9 18.5";
+    out property <string> chevron-back: "M15 5.5 L8.5 12 L15 18.5";
     out property <string> down: "M5.5 9 L12 15.5 L18.5 9";
     out property <string> close: "M6 6 L18 18 M18 6 L6 18";
     out property <string> plus: "M12 5 L12 19 M5 12 L19 12";
@@ -488,33 +491,122 @@ component SectionTitle inherits HorizontalLayout {
     }
 }
 
-// A shelf of cards that scrolls sideways, under its title.
+// A shelf of cards that scrolls sideways, under its title, as Music's: as many whole cards as fit across
+// the page (grown a little to reach both edges), paged by the arrows over its sides while the pointer is on
+// it. Until its cards are read it holds its place with plates, so the page does not shift as rows arrive.
 component ShelfView inherits VerticalLayout {
     in property <string> title;
     in property <[Card]> cards;
+    in property <bool> loading;
     in property <int> rev;
     in property <bool> round;
     pure callback art(string, int, int) -> image;
     callback open(Card);
     callback play(Card);
+    property <length> pad: 32px;
+    property <length> gap: 22px;
+    property <int> columns: max(2, floor((self.width - root.pad * 2 + root.gap) / (176px + root.gap)));
+    property <length> side: (self.width - root.pad * 2 - (root.columns - 1) * root.gap) / root.columns;
+    property <length> step: root.side + root.gap;
+    property <int> count: root.loading ? root.columns : root.cards.length;
+    // The row is seen from a gap before the left margin to a gap past the right one, so the cards beside
+    // the whole ones are not glimpsed; it scrolls until its last card stands at the right margin.
+    property <length> inset: root.pad - root.gap;
+    property <length> seen: root.width - 2 * root.inset;
+    property <length> end: min(0, root.seen - (root.gap + root.count * root.step));
+    // An arrow's page moves smoothly; a scroll by hand follows the hand.
+    property <bool> paging;
+    function page(by: int) {
+        root.paging = true;
+        flick.content-x = max(root.end, min(0, flick.content-x - by * root.columns * root.step));
+        settle.running = true;
+    }
     spacing: 10px;
     padding-bottom: 26px;
     HorizontalLayout {
-        padding-left: 32px;
+        padding-left: root.pad;
         SectionTitle {
             text: root.title;
         }
     }
-    Flickable {
-        height: 176px + 46px;
-        content-width: root.cards.length * (176px + 22px) + 64px - 22px;
-        for c[i] in root.cards: CardView {
-            x: 32px + i * (176px + 22px);
-            card: c;
-            round: root.round;
-            picture: root.art(c.art, 0, root.rev);
-            open => { root.open(c); }
-            play => { root.play(c); }
+    hover := TouchArea {
+        height: root.side + 46px;
+        flick := Flickable {
+            x: root.inset;
+            width: root.seen;
+            content-width: root.gap + root.count * root.step;
+            animate content-x { duration: root.paging ? 420ms : 0ms; easing: cubic-bezier(0.25, 0.8, 0.3, 1); }
+            if root.loading: Rectangle {
+                for i in root.columns: Rectangle {
+                    x: root.gap + i * root.step;
+                    width: root.side;
+                    Rectangle {
+                        y: 0;
+                        height: root.side;
+                        border-radius: root.round ? self.width / 2 : 8px;
+                        background: Theme.fill;
+                    }
+                    Rectangle {
+                        y: root.side + 12px;
+                        width: root.side * 0.7;
+                        x: 0;
+                        height: 9px;
+                        border-radius: 4.5px;
+                        background: Theme.fill;
+                    }
+                    Rectangle {
+                        y: root.side + 29px;
+                        width: root.side * 0.45;
+                        x: 0;
+                        height: 9px;
+                        border-radius: 4.5px;
+                        background: Theme.hairline;
+                    }
+                }
+            }
+            if !root.loading: Rectangle {
+                for c[i] in root.cards: CardView {
+                    x: root.gap + i * root.step;
+                    side: root.side;
+                    card: c;
+                    round: root.round;
+                    picture: root.art(c.art, 0, root.rev);
+                    open => { root.open(c); }
+                    play => { root.play(c); }
+                }
+            }
+        }
+        for b[i] in [{ by: -1, path: Icons.chevron-back }, { by: 1, path: Icons.chevron }]: Rectangle {
+            property <bool> shown: hover.has-hover && (b.by < 0 ? flick.content-x < 0 : flick.content-x > root.end);
+            x: b.by < 0 ? root.pad - self.width / 2 : root.width - root.pad - self.width / 2;
+            y: (root.side - self.height) / 2;
+            width: 34px;
+            height: 34px;
+            border-radius: 17px;
+            background: arrow.has-hover ? #2c2c2ef2 : #1e1e1ed9;
+            drop-shadow-blur: 10px;
+            drop-shadow-color: #00000066;
+            opacity: self.shown ? 1 : 0;
+            animate opacity { duration: 160ms; easing: ease-out; }
+            Icon {
+                path: b.path;
+                colour: Theme.text;
+                weight: 2.4px;
+                width: 16px;
+                height: 16px;
+            }
+            arrow := TouchArea {
+                enabled: parent.shown;
+                clicked => { root.page(b.by); }
+            }
+        }
+    }
+    settle := Timer {
+        interval: 450ms;
+        running: false;
+        triggered => {
+            root.paging = false;
+            self.running = false;
         }
     }
 }
@@ -2459,9 +2551,10 @@ export component AppWindow inherits Window {
                                 title: root.greeting;
                             }
                             for shelf in root.shelves: VerticalLayout {
-                                if shelf.cards.length > 0: ShelfView {
+                                if !shelf.loaded || shelf.cards.length > 0: ShelfView {
                                     title: shelf.title;
                                     cards: shelf.cards;
+                                    loading: !shelf.loaded;
                                     rev: root.covers-rev;
                                     art(a, s, r) => { return root.art(a, s, r); }
                                     open(c) => { root.open-album(c.id); }
