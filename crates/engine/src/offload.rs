@@ -1016,10 +1016,8 @@ impl Offload {
     /// Hands the song to the CPU at the playback position.
     fn fallback(&mut self) -> Step {
         self.on_cpu = Some(OnCpu::Failed);
-        self.note_left();
-        let at = self.heard().map(|(i, ms, _)| (i, ms)).or(self.t.starting.as_ref().map(|s| (s.0, s.1)));
-        self.release();
-        match at {
+        // Where the chip got to, read as it is let go: the engine may have slept since its last reading.
+        match self.leave(self.now_ms) {
             Some((index, ms)) => Step::ToPcm { index, ms, refused: true },
             None => Step::Fine,
         }

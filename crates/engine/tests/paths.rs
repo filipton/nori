@@ -3143,3 +3143,24 @@ fn offload_heard_again_after_pause() {
         }
     }
 }
+
+/// A track torn down just after a skip: the CPU carries on where the chip got to, read as it is let go,
+/// not from the reading before (the start of the song, heard again).
+#[test]
+fn torn_down_after_skip_carries_on() {
+    let d = dir();
+    let Some((rig, fake)) = two_on_the_chip(&d, 20) else { return };
+    rig.engine.next();
+    assert!(rig.wait(5, |r| r.engine.status().offloaded && r.engine.status().index == Some(1)), "{:?}", rig.engine.status());
+    rig.run(100);
+    // The chip plays 400 ms of b while the engine sleeps, then the platform takes the track away.
+    let start = fake.0.lock().head;
+    fake.advance_quietly(44_100 * 2 / 5);
+    rig.run(400);
+    assert_eq!(fake.0.lock().head - start, 44_100 * 2 / 5, "the chip played on");
+    fake.tear_down();
+    assert!(rig.wait(10, |r| !r.engine.status().offloaded && !r.card.heard.lock().is_empty()), "the CPU took over");
+    let s = rig.engine.status();
+    assert!(s.index == Some(1) && s.position_ms >= 350, "b on from about 400 ms, not again from its start: {s:?}");
+    rig.engine.stop();
+}
