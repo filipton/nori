@@ -205,21 +205,34 @@ fn fts_query(q: &str) -> Option<String> {
     (!toks.is_empty()).then(|| toks.join(" "))
 }
 
-fn find<T: DeserializeOwned>(c: &Connection, kind: i64, q: &str, limit: u32) -> rusqlite::Result<Vec<T>> {
-    let mut st = c.prepare_cached(
-        "SELECT i.json FROM fts JOIN items i ON i.rowid = fts.rowid WHERE fts MATCH ?1 AND i.server = sid() AND i.kind = ?2 ORDER BY rank LIMIT ?3",
-    )?;
-    let rows = st.query_map(params![q, kind, limit], |r| r.get::<_, String>(0))?;
-    Ok(rows.filter_map(|j| serde_json::from_str(&j.ok()?).ok()).collect())
-}
-
+/// The best `limit` matches of each kind. One ranked pass over all kinds (the FTS table holds them
+/// together); json is read only for the rows kept.
 pub fn search(c: &Connection, query: &str, limit: u32) -> rusqlite::Result<SearchResult> {
     let Some(q) = fts_query(query) else { return Ok(SearchResult::default()) };
-    Ok(SearchResult {
-        artists: find(c, ARTIST, &q, limit)?,
-        albums: find(c, ALBUM, &q, limit)?,
-        songs: find(c, SONG, &q, limit)?,
-    })
+    let mut kept: [Vec<i64>; 3] = Default::default();
+    let mut st = c.prepare_cached("SELECT i.rowid, i.kind FROM fts JOIN items i ON i.rowid = fts.rowid WHERE fts MATCH ?1 AND i.server = sid() ORDER BY rank")?;
+    let mut rows = st.query([&q])?;
+    while let Some(r) = rows.next()? {
+        if let Some(of_kind) = kept.get_mut(r.get::<_, i64>(1)? as usize).filter(|k| k.len() < limit as usize) {
+            of_kind.push(r.get(0)?);
+        }
+        if kept.iter().all(|k| k.len() >= limit as usize) {
+            break;
+        }
+    }
+    let [artists, albums, songs] = kept;
+    Ok(SearchResult { artists: load(c, &artists)?, albums: load(c, &albums)?, songs: load(c, &songs)? })
+}
+
+/// The items at `rowids`, in that order.
+fn load<T: DeserializeOwned>(c: &Connection, rowids: &[i64]) -> rusqlite::Result<Vec<T>> {
+    let mut st = c.prepare_cached("SELECT json FROM items WHERE rowid = ?1")?;
+    let mut items = Vec::with_capacity(rowids.len());
+    for rowid in rowids {
+        let json: String = st.query_row([rowid], |r| r.get(0))?;
+        items.extend(serde_json::from_str(&json).ok());
+    }
+    Ok(items)
 }
 
 pub fn count(c: &Connection, kind: i64) -> rusqlite::Result<u32> {
@@ -298,5 +311,23 @@ mod tests {
         assert_eq!(search(&def, "airbag", 10).unwrap().songs.len(), 1);
         drop((def, x1));
         assert_eq!(search(&open(&path, "default").unwrap(), "airbag", 10).unwrap().songs.len(), 1, "persisted");
+    }
+
+    #[test]
+    fn search_ranks_each_kind() {
+        let mut c = open("", "s").unwrap();
+        let artists: Vec<Artist> = vec![serde_json::from_str(r#"{"id":"r1","name":"Lovers"}"#).unwrap()];
+        let albums: Vec<Album> = vec![serde_json::from_str(r#"{"id":"l1","name":"Lovely","artist":"Lovers"}"#).unwrap()];
+        let songs: Vec<Song> = ["a long song about other things and love", "love love", "lovesick and a few more words", "nothing here"]
+            .iter()
+            .enumerate()
+            .map(|(i, t)| serde_json::from_str(&format!(r#"{{"id":"s{i}","title":"{t}"}}"#)).unwrap())
+            .collect();
+        index(&mut c, &artists, &albums, &songs).unwrap();
+
+        let r = search(&c, "lov", 2).unwrap();
+        assert_eq!(r.artists.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["r1"]);
+        assert_eq!(r.albums.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["l1"]);
+        assert_eq!(r.songs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["s1", "s2"]);
     }
 }
