@@ -754,8 +754,10 @@ class PlaybackService : MediaLibraryService() {
             return Futures.immediateFuture(LibraryResult.ofItem(car.folder(nori.client.browseRoot()), params))
         }
 
+        // The car's folders are read and made into rows on an IO thread: the core's reads, parses and the
+        // songs' items are work the main thread, which carries the session and the player, does not wait on.
         override fun onGetChildren(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, parentId: String, page: Int, pageSize: Int, params: LibraryParams?): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> =
-            scope.future {
+            scope.future(Dispatchers.IO) {
                 val found = runCatching {
                     if (parentId == nori.client.browseRoot().id) nori.client.carRoot(rootLimit.toUInt(), offline(), page.toUInt(), pageSize.toUInt())
                     else nori.client.browseChildren(parentId, page.toUInt(), pageSize.toUInt())
@@ -766,14 +768,14 @@ class PlaybackService : MediaLibraryService() {
 
         override fun onSearch(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, query: String, params: LibraryParams?): ListenableFuture<LibraryResult<Void>> {
             scope.launch {
-                val found = runCatching { nori.client.carSearch(query) }.getOrNull()
+                val found = withContext(Dispatchers.IO) { runCatching { nori.client.carSearch(query) }.getOrNull() }
                 session.notifySearchResultChanged(browser, query, found?.let { it.folders.size + it.songs.size } ?: 0, params)
             }
             return Futures.immediateFuture(LibraryResult.ofVoid())
         }
 
         override fun onGetSearchResult(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, query: String, page: Int, pageSize: Int, params: LibraryParams?): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> =
-            scope.future {
+            scope.future(Dispatchers.IO) {
                 val found = runCatching { nori.client.browseChildren("search:$query", page.toUInt(), pageSize.toUInt()) }.getOrNull()
                 if (found == null || found.failed) return@future failure(unreachable(), params)
                 listed("search:$query", found, params)
@@ -789,7 +791,7 @@ class PlaybackService : MediaLibraryService() {
             val query = one?.requestMetadata?.searchQuery
             if (query != null) return scope.future { spoken(query, one.requestMetadata.extras) }
             val row = one?.mediaId?.let(::rowOf)
-            if (row != null) return scope.future { queued(runCatching { nori.client.carQueue(row) }.getOrNull()) }
+            if (row != null) return scope.future { queued(withContext(Dispatchers.IO) { runCatching { nori.client.carQueue(row) }.getOrNull() }) }
             return super.onSetMediaItems(session, controller, items, startIndex, startPositionMs)
         }
     }
@@ -803,9 +805,9 @@ class PlaybackService : MediaLibraryService() {
 
     /** A page of folder [parent], [found], as the car's rows; the songs kept for a later pick by bare id. */
     private fun listed(parent: String, found: dev.nori.music.ffi.library.BrowsePage, params: LibraryParams?): LibraryResult<ImmutableList<MediaItem>> {
-        found.songs.forEach { served.put(it.id, item(it)) }
-        val rows = car.items(parent, found) { s -> served.get(s.id) ?: item(s) }
-        return LibraryResult.ofItemList(rows, params)
+        val made = items(found.songs)
+        found.songs.forEachIndexed { i, s -> served.put(s.id, made[i]) }
+        return LibraryResult.ofItemList(car.items(parent, found, made), params)
     }
 
     /** A queue for the car: [q]'s songs as the player's items, from its song, shuffled when it asks. */
@@ -830,7 +832,7 @@ class PlaybackService : MediaLibraryService() {
         val tiles = withContext(Dispatchers.IO) { runCatching { nori.core.mixCards(nori.settings.value.tasteModel) }.getOrDefault(emptyList()) }
         val mix = if (query.isBlank()) tiles.firstOrNull { it.name == dev.nori.music.ffi.library.MixName.QUICK_PICKS } ?: tiles.firstOrNull()
         else tiles.firstOrNull { CarWords.mix(it.name).equals(query.trim(), ignoreCase = true) }
-        if (mix != null) return queued(runCatching { nori.client.carQueue(dev.nori.music.ffi.library.carActionRow("mix:${mix.id}", dev.nori.music.ffi.library.CarAction.PLAY)) }.getOrNull())
+        if (mix != null) return queued(withContext(Dispatchers.IO) { runCatching { nori.client.carQueue(dev.nori.music.ffi.library.carActionRow("mix:${mix.id}", dev.nori.music.ffi.library.CarAction.PLAY)) }.getOrNull() })
         val focus = when (extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_FOCUS)) {
             android.provider.MediaStore.Audio.Artists.ENTRY_CONTENT_TYPE -> dev.nori.music.ffi.library.VoiceFocus.ARTIST
             android.provider.MediaStore.Audio.Albums.ENTRY_CONTENT_TYPE -> dev.nori.music.ffi.library.VoiceFocus.ALBUM
@@ -844,7 +846,7 @@ class PlaybackService : MediaLibraryService() {
             extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_TITLE), extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_GENRE),
             extras?.getString(android.provider.MediaStore.EXTRA_MEDIA_PLAYLIST),
         )
-        return queued(runCatching { nori.client.carVoice(ask) }.getOrNull())
+        return queued(withContext(Dispatchers.IO) { runCatching { nori.client.carVoice(ask) }.getOrNull() })
     }
 
     /** The car's long press on row or folder [id]: queue it next or last, heart it, download it. */
@@ -855,7 +857,7 @@ class PlaybackService : MediaLibraryService() {
             when {
                 // A song's row is that song alone; Play, Shuffle or a folder, the whole of it.
                 song != null -> listOfNotNull(withContext(Dispatchers.IO) { nori.library.song(song) })
-                whole != null -> nori.client.carQueue(whole)?.songs.orEmpty()
+                whole != null -> withContext(Dispatchers.IO) { nori.client.carQueue(whole) }?.songs.orEmpty()
                 else -> listOfNotNull(withContext(Dispatchers.IO) { nori.library.song(id) })
             }
         }.getOrDefault(emptyList())

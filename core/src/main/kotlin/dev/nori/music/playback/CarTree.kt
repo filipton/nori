@@ -1,5 +1,6 @@
 package dev.nori.music.playback
 
+import android.content.ContentResolver
 import android.content.Context
 import android.net.Uri
 import android.os.Bundle
@@ -24,11 +25,11 @@ object CarWords {
 }
 
 /**
- * Where the car's pictures come from. A car draws a browse item's picture only from a `content://`
- * address, never from the server's signed one, so the app's provider (CarArtProvider) draws them - the
- * song playing's too, as the queue carries it: a
- * cover by its id, a mix's four covers as its tile on Home, and the glyphs of the Play and Shuffle rows
- * and of the long-press actions.
+ * Where the car's pictures come from. A car draws a browse item's picture only from a local address,
+ * never from the server's signed one, so the app's provider (CarArtProvider) draws the covers - the song
+ * playing's too, as the queue carries it: a cover by its id, and a mix's four covers as its tile on Home.
+ * The glyphs (the tabs, the Play and Shuffle rows, the long-press actions) are vector resources the car
+ * draws itself, at its screen's size and in its own tint.
  */
 object CarArt {
     private fun base(context: Context) = Uri.Builder().scheme("content").authority(context.packageName + AUTHORITY)
@@ -52,7 +53,9 @@ object CarArt {
     const val ART = 300
     fun mosaic(context: Context, mix: String, ids: List<String>): Uri =
         base(context).appendPath("m").appendPath(mix).apply { ids.forEach { appendQueryParameter("c", it) } }.build()
-    fun glyph(context: Context, name: String): Uri = base(context).appendPath("g").appendPath(name).build()
+    fun glyph(context: Context, res: Int): Uri = Uri.Builder().scheme(ContentResolver.SCHEME_ANDROID_RESOURCE)
+        .authority(context.resources.getResourcePackageName(res)).appendPath(context.resources.getResourceTypeName(res))
+        .appendPath(context.resources.getResourceEntryName(res)).build()
 
     /** After the package name: the provider's authority (app/AndroidManifest.xml). */
     const val AUTHORITY = ".carart"
@@ -64,10 +67,10 @@ object CarArt {
  * downloaded and explicit marks, the long-press actions.
  */
 internal class CarTree(private val context: Context) {
-    /** Folder [parent]'s page as the car's rows; [made] is a song as the player carries it. */
-    fun items(parent: String, page: BrowsePage, made: (Song) -> MediaItem): List<MediaItem> =
+    /** Folder [parent]'s page as the car's rows; [made] is its songs as the player carries them. */
+    fun items(parent: String, page: BrowsePage, made: List<MediaItem>): List<MediaItem> =
         page.actions.map { action(parent, it) } + page.folders.map(::folder) +
-            page.songs.mapIndexed { i, s -> song(parent, s, made(s), page.downloaded.getOrElse(i) { false }, page.songsGroup) }
+            page.songs.mapIndexed { i, s -> song(parent, s, made[i], page.downloaded.getOrElse(i) { false }, page.songsGroup) }
 
     /** A folder of the tree, named from the resources, or by its own name. */
     fun folder(f: BrowseFolder): MediaItem {
@@ -105,7 +108,7 @@ internal class CarTree(private val context: Context) {
         MediaItem.Builder().setMediaId(dev.nori.music.ffi.library.carActionRow(parent, a)).setMediaMetadata(
             MediaMetadata.Builder()
                 .setTitle(context.getString(if (a == CarAction.PLAY) R.string.car_play else R.string.car_shuffle))
-                .setArtworkUri(CarArt.glyph(context, if (a == CarAction.PLAY) "play" else "shuffle"))
+                .setArtworkUri(CarArt.glyph(context, if (a == CarAction.PLAY) R.drawable.car_play else R.drawable.car_shuffle))
                 .setIsBrowsable(false).setIsPlayable(true).setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC).build(),
         ).build()
 
@@ -128,34 +131,34 @@ internal class CarTree(private val context: Context) {
      * button without one stopped it before it listed anything.
      */
     fun itemButtons(): List<CommandButton> = listOf(
-        button(CommandButton.ICON_QUEUE_NEXT, "next", R.string.car_play_next, CMD_ITEM_NEXT),
-        button(CommandButton.ICON_QUEUE_ADD, "queue", R.string.car_add_to_queue, CMD_ITEM_QUEUE),
-        button(CommandButton.ICON_HEART_UNFILLED, "heart", R.string.car_favourite, CMD_ITEM_FAVOURITE),
-        button(CommandButton.ICON_UNDEFINED, "download", R.string.car_download, CMD_ITEM_DOWNLOAD),
+        button(CommandButton.ICON_QUEUE_NEXT, R.drawable.car_play_next, R.string.car_play_next, CMD_ITEM_NEXT),
+        button(CommandButton.ICON_QUEUE_ADD, R.drawable.car_add_to_queue, R.string.car_add_to_queue, CMD_ITEM_QUEUE),
+        button(CommandButton.ICON_HEART_UNFILLED, R.drawable.car_favourite, R.string.car_favourite, CMD_ITEM_FAVOURITE),
+        button(CommandButton.ICON_UNDEFINED, R.drawable.car_download, R.string.car_download, CMD_ITEM_DOWNLOAD),
     )
 
-    private fun button(icon: Int, glyph: String, name: Int, command: String): CommandButton =
+    private fun button(icon: Int, glyph: Int, name: Int, command: String): CommandButton =
         CommandButton.Builder(icon).setIconUri(CarArt.glyph(context, glyph)).setDisplayName(context.getString(name))
             .setSessionCommand(SessionCommand(command, Bundle.EMPTY))
             .apply { if (icon == CommandButton.ICON_UNDEFINED) setCustomIconResId(R.drawable.car_download) }.build()
 
-    private fun glyphOf(f: BrowseFolder): String? = when (f.kind) {
+    private fun glyphOf(f: BrowseFolder): Int? = when (f.kind) {
         // The tabs each have theirs, which the car draws over the tab's name.
-        CarFolder.HOME -> "home"
-        CarFolder.LIBRARY -> "library"
-        CarFolder.RECENTLY_PLAYED -> "recent"
-        CarFolder.RECENTLY_ADDED -> "new"
-        CarFolder.MOST_PLAYED -> "most"
-        CarFolder.ALBUMS -> "albums"
-        CarFolder.ARTISTS -> "artists"
-        CarFolder.PLAYLISTS -> "playlists"
-        CarFolder.GENRES -> "genres"
-        CarFolder.RANDOM -> "random"
-        CarFolder.FAVOURITES -> "heart"
-        CarFolder.DOWNLOADS -> "download"
+        CarFolder.HOME -> R.drawable.car_home
+        CarFolder.LIBRARY -> R.drawable.car_library
+        CarFolder.RECENTLY_PLAYED -> R.drawable.car_recent
+        CarFolder.RECENTLY_ADDED -> R.drawable.car_new
+        CarFolder.MOST_PLAYED -> R.drawable.car_most
+        CarFolder.ALBUMS -> R.drawable.car_albums
+        CarFolder.ARTISTS -> R.drawable.car_artists
+        CarFolder.PLAYLISTS -> R.drawable.car_playlists
+        CarFolder.GENRES -> R.drawable.car_genres
+        CarFolder.RANDOM -> R.drawable.car_random
+        CarFolder.FAVOURITES -> R.drawable.car_favourite
+        CarFolder.DOWNLOADS -> R.drawable.car_download
         null -> when (f.id.substringBefore(':')) {
-            "genre" -> "genres"
-            "artist" -> "artists"
+            "genre" -> R.drawable.car_genres
+            "artist" -> R.drawable.car_artists
             else -> null
         }
         else -> null

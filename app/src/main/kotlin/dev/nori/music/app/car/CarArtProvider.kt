@@ -5,12 +5,9 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.Cursor
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.net.Uri
 import android.os.ParcelFileDescriptor
-import androidx.core.content.ContextCompat
 import dev.nori.music.Nori
-import dev.nori.music.app.R
 import dev.nori.music.app.widget.Painter
 import dev.nori.music.app.widget.Widgets
 import kotlinx.coroutines.async
@@ -28,14 +25,13 @@ import java.util.concurrent.Executors
  * item's picture only from a `content://` address it opens itself, never from the server's signed one, so
  * this draws them, from the covers the app keeps: `c/<cover id>[?s=<side>]`, a cover (the queue's songs
  * carry these too, for the car's now playing and the lock screen); `m/<mix id>?c=..` a mix's tile
- * as Home draws it (the widgets' [Painter]); `g/<name>`, the glyphs of the Play and Shuffle rows and of the
- * long-press actions.
+ * as Home draws it (the widgets' [Painter]).
  * Only ever read, and only what the car asks for as it lists a folder.
  */
 class CarArtProvider : ContentProvider() {
     override fun onCreate() = true
 
-    override fun getType(uri: Uri): String = if (uri.pathSegments.firstOrNull() == "g") "image/png" else "image/jpeg"
+    override fun getType(uri: Uri): String = "image/jpeg"
 
     override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
         require(mode == "r") { "the car's pictures are only read" }
@@ -51,8 +47,7 @@ class CarArtProvider : ContentProvider() {
             runCatching {
                 val lasting = ParcelFileDescriptor.AutoCloseOutputStream(write).use { out ->
                     val drawn = draw(app, uri) ?: return@use null
-                    val glyph = uri.pathSegments.firstOrNull() == "g"
-                    val bytes = ByteArrayOutputStream().also { drawn.bitmap.compress(if (glyph) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG, 90, it) }.toByteArray()
+                    val bytes = ByteArrayOutputStream().also { drawn.bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }.toByteArray()
                     out.write(bytes)
                     bytes.takeIf { drawn.lasting }
                 }
@@ -82,37 +77,9 @@ class CarArtProvider : ContentProvider() {
                     val covers = coroutineScope { uri.getQueryParameters("c").map { id -> async { Widgets.picture(context, library.coverUrl(id, SIDE / 2), SIDE / 2) } }.awaitAll() }
                     Drawn(Painter.mix(covers.filterNotNull(), dev.nori.music.ffi.library.mixTileColours(mix).map { it.toInt() }, SIDE, SIDE, 0f), false)
                 }
-                "g" -> Drawn(glyph(context, glyphRes(parts.getOrNull(1))), false)
                 else -> null
             }
         }
-    }
-
-    private fun glyphRes(name: String?): Int = when (name) {
-        "shuffle" -> R.drawable.widget_shuffle
-        "next" -> dev.nori.music.core.R.drawable.car_play_next
-        "queue" -> dev.nori.music.core.R.drawable.car_add_to_queue
-        "heart" -> dev.nori.music.core.R.drawable.car_favourite
-        "download" -> dev.nori.music.core.R.drawable.car_download
-        "home" -> dev.nori.music.core.R.drawable.car_home
-        "library" -> dev.nori.music.core.R.drawable.car_library
-        "recent" -> dev.nori.music.core.R.drawable.car_recent
-        "new" -> dev.nori.music.core.R.drawable.car_new
-        "most" -> dev.nori.music.core.R.drawable.car_most
-        "albums" -> dev.nori.music.core.R.drawable.car_albums
-        "artists" -> dev.nori.music.core.R.drawable.car_artists
-        "playlists" -> dev.nori.music.core.R.drawable.car_playlists
-        "genres" -> dev.nori.music.core.R.drawable.car_genres
-        "random" -> dev.nori.music.core.R.drawable.car_random
-        else -> R.drawable.widget_play
-    }
-
-    /** A white glyph on nothing, a quarter of its side clear around it; the car tints it. */
-    private fun glyph(context: Context, res: Int): Bitmap {
-        val side = 96
-        val b = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
-        ContextCompat.getDrawable(context, res)!!.mutate().apply { setBounds(side / 4, side / 4, side * 3 / 4, side * 3 / 4) }.draw(Canvas(b))
-        return b
     }
 
     override fun query(uri: Uri, projection: Array<out String>?, selection: String?, selectionArgs: Array<out String>?, sortOrder: String?): Cursor? = null
