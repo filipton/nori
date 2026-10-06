@@ -259,18 +259,31 @@ impl Masker {
     pub fn process(&mut self, input: &[u8], pts_us: i64, pace: f64, masks: &[Placed], out: &mut Vec<u8>) {
         self.pts = pts_us as f64;
         self.pace = pace;
-        let width = self.encoding.width();
-        for frame in input.chunks_exact(width * self.channels) {
-            for c in 0..self.channels {
-                let b = &frame[c * width..(c + 1) * width];
-                let v = match self.encoding {
+        let fb = self.encoding.width() * self.channels;
+        let mut frames = &input[..input.len() / fb * fb];
+        while !frames.is_empty() {
+            // Up to the hop's end at once; `advance` counts the last frame of it.
+            let take = (self.hop - self.filled).min(frames.len() / fb);
+            let (now, rest) = frames.split_at(take * fb);
+            self.read(now);
+            self.held += take;
+            self.filled += take - 1;
+            self.pts += (take - 1) as f64 * self.pace * 1e6 / self.rate as f64;
+            self.advance(masks, out);
+            frames = rest;
+        }
+    }
+
+    /// Interleaved frames into `input`, from the `filled`th of the hop on.
+    fn read(&mut self, frames: &[u8]) {
+        let (width, from) = (self.encoding.width(), self.n - self.hop + self.filled);
+        for (i, frame) in frames.chunks_exact(width * self.channels).enumerate() {
+            for (c, b) in frame.chunks_exact(width).enumerate() {
+                self.input[c * self.n + from + i] = match self.encoding {
                     Encoding::Pcm16 => i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0,
                     Encoding::Float => f32::from_le_bytes([b[0], b[1], b[2], b[3]]),
                 };
-                self.input[c * self.n + self.n - self.hop + self.filled] = v;
             }
-            self.held += 1;
-            self.advance(masks, out);
         }
     }
 
@@ -340,6 +353,8 @@ impl Masker {
                 let v = if touched { self.acc[at] } else { self.input[at] };
                 let o = start + (i * self.channels + c) * width;
                 match self.encoding {
+                    // Untouched input is on the 16-bit grid, where the dither changes nothing.
+                    Encoding::Pcm16 if !touched => out[o..o + 2].copy_from_slice(&((v * 32768.0) as i16).to_le_bytes()),
                     Encoding::Pcm16 => out[o..o + 2].copy_from_slice(&self.dither.to_i16(c, v as f64).to_le_bytes()),
                     Encoding::Float => out[o..o + 4].copy_from_slice(&v.to_le_bytes()),
                 }
@@ -456,6 +471,25 @@ mod tests {
         m.process(&pcm, 0, 1.0, &[], &mut out);
         m.end(&[], &mut out);
         assert_eq!(out, pcm);
+    }
+
+    /// 16-bit input around a masked second comes out bit for bit, before it and after it.
+    #[test]
+    fn unmasked_16_bit_around_a_masked_stretch_is_exact() {
+        let frames = 3 * RATE as usize;
+        let pcm: Vec<u8> = (0..2 * frames).flat_map(|i| ((((i * 7919) % 20_000) as i32 - 10_000) as i16).to_le_bytes()).collect();
+        let masks = vec![Placed { at: 1_000_000..2_000_000, mask: flat(255, 2.0) }];
+        let mut m = Masker::new(RATE, 2, Encoding::Pcm16, 0.3);
+        let mut out = Vec::new();
+        for (k, chunk) in pcm.chunks(4 * 1000).enumerate() {
+            m.process(chunk, (k as f64 * 1000.0 * 1e6 / RATE as f64) as i64, 1.0, &masks, &mut out);
+        }
+        m.end(&masks, &mut out);
+        assert_eq!(out.len(), pcm.len());
+        let (before, after) = (4 * (RATE as usize * 9 / 10), 4 * (RATE as usize * 21 / 10));
+        assert_ne!(out[before..after], pcm[before..after], "masked in between");
+        assert_eq!(out[..before], pcm[..before]);
+        assert_eq!(out[after..], pcm[after..]);
     }
 
     /// A centred voice with a mask on its band is turned down; a hard-panned tone outside it stays.
