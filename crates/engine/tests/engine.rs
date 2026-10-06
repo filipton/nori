@@ -3059,3 +3059,28 @@ fn seek_into_ending_lands() {
         }
     }
 }
+
+/// Played again after a pause, the song is heard at once, shallow or deep, faded or not, and played
+/// again during the fade or after it.
+#[test]
+fn heard_again_after_pause() {
+    for shallow in [false, true] {
+        for fade_ms in [0, 400] {
+            for wait_ms in [100, 3_000] {
+                let a = vec![8000i16; RATE as usize * 2 * 60];
+                let rig = Rig::new(&[("a", &a)], prefs_off(), Settings { fade_ms, ..Settings::default() });
+                rig.engine.set_shallow(shallow);
+                rig.engine.play_at(0, 0);
+                assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2 * 5));
+                rig.engine.pause();
+                rig.run(wait_ms);
+                rig.engine.play();
+                rig.run(3_000);
+                let heard = rig.heard.lock().clone();
+                let what = format!("shallow {shallow}, fade {fade_ms} ms, played again after {wait_ms} ms: {:?}", rig.engine.status());
+                assert!(heard.len() > RATE as usize * 2 * 7, "it plays on: {what}");
+                assert_eq!(heard[heard.len() - 2..], [8000, 8000], "at full level: {what}");
+            }
+        }
+    }
+}

@@ -3119,3 +3119,27 @@ fn offload_perf_report() {
     assert!(rig.engine.status().offloaded, "{:?}", rig.engine.status());
     rig.engine.stop();
 }
+
+/// Played again after a pause on the chip, the song is heard at full volume: faded or not, played again
+/// during the fade or after it.
+#[test]
+fn offload_heard_again_after_pause() {
+    for fade_ms in [0, 300] {
+        for wait_ms in [100, 2_000] {
+            let d = dir();
+            let Some((rig, fake)) = two_on_the_chip(&d, 20) else { return };
+            rig.engine.set_settings(Settings { fade_ms, ..offload() });
+            rig.run(200);
+            rig.engine.pause();
+            rig.run(wait_ms);
+            rig.engine.play();
+            assert!(rig.wait(5, |r| r.engine.status().state == State::Playing));
+            rig.run(2_000);
+            let raw = fake.0.lock().calls.clone();
+            let played = raw.iter().rposition(|c| matches!(c, Call::Play)).expect("played again");
+            let volume = raw.iter().rev().find_map(|c| if let Call::Volume(v) = c { Some(*v) } else { None });
+            assert!(volume.is_none_or(|v| v == 1.0), "fade {fade_ms} ms, played again after {wait_ms} ms: {volume:?} {:?}", &raw[played.saturating_sub(10)..]);
+            rig.engine.stop();
+        }
+    }
+}

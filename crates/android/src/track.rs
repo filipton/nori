@@ -2684,6 +2684,42 @@ mod tests {
         engine.stop();
     }
 
+    /// Played again after a pause, the track plays on at full volume: shallow or deep, faded or not,
+    /// played again during the fade or after it.
+    #[test]
+    fn heard_again_after_pause() {
+        for shallow in [false, true] {
+            for fade_ms in [0, 300] {
+                for wait_ms in [100, 3_000] {
+                    let wavs = Arc::new(Wavs(vec![("a".into(), Arc::new(wav(&tone(60, 440.0))))]));
+                    let queue = nori_engine::SharedQueue::default();
+                    queue.0.lock().set(vec!["a".into()], Some(0), false, 0);
+                    let mut app = nori_player::sim::App::new();
+                    app.prefs = nori_player::sim::prefs_off();
+                    let config = nori_engine::Config { settings: nori_engine::Settings { fade_ms, ..Default::default() }, ..Default::default() };
+                    let (engine, time, live) = on_a_phone(Songs(wavs), app, queue, config, Live::new);
+                    let wait = |secs: u64, done: &mut dyn FnMut() -> bool| time.until(Duration::from_secs(secs), done);
+                    engine.set_shallow(shallow);
+                    engine.queue_changed();
+                    engine.play_at(0, 0);
+                    assert!(wait(5, &mut || live.lock().played() > 3 * RATE as u64), "it plays");
+                    engine.pause();
+                    time.run(Duration::from_millis(wait_ms));
+                    engine.play();
+                    time.run(Duration::from_secs(1));
+                    let played = live.lock().played();
+                    time.run(Duration::from_secs(5));
+                    let l = live.lock();
+                    let what = format!("shallow {shallow}, fade {fade_ms} ms, played again after {wait_ms} ms");
+                    assert!(l.played() - played >= 4 * RATE as u64, "{what}: {} ms heard in five seconds", (l.played() - played) * 1000 / RATE as u64);
+                    assert!(l.volumes.last().is_none_or(|&v| v == 1.0), "{what}: at volume {:?}", l.volumes.last());
+                    drop(l);
+                    engine.stop();
+                }
+            }
+        }
+    }
+
     /// The seek bar through an AutoMix with the player screen open: the screen asks for no periodic
     /// positions, runs the last reading on for at most two seconds and asks for a fresh one once it is a
     /// second old (`shown_ms`). The place it shows moves on all through the mix, to the next song.
