@@ -161,6 +161,11 @@ is Android glue and stays on the device. 50 moved, 60 stay.
   release newer and shows the banner; a debug build never installs, its button opens the release's page). An
   install in place needs a release build that is older: `./gradlew :app:assembleRelease -PpretendVersion=0.3.9
   -PrustTargets=x86_64`, signed with the release key, installed, then About, Check for updates, Update.
+- Remote control and jams: the protocol, a device admitting commands, the jam's roles and requests, the LAN
+  door and its proof are nori-remote's, and two cores controlling each other through a relay (and a door), and
+  a jam with a host, an admin and a guest, are nori-core's tests/remote.rs. What stays on a device is Android's:
+  NsdManager announcing and finding doors, the system volume a command sets, and a `nori://jam` link opening
+  the app as a guest.
 - The car: the tree, the rows a pick plays, search and spoken requests are nori-core's (car.rs, tested there);
   media3's session, the items Android Auto reads and the pictures the car opens through CarArtProvider are
   Android's. A debug build walks it as a car connects, through a media browser: `app.sh do "car tree home"`,
@@ -232,7 +237,7 @@ battery and deep idle of a real phone stay the owner's `tools/bench.sh`.
 | --- | --- |
 | player | the sound chain sample by sample (decoders, ReplayGain, equalizer, limiter, speed, silence skipping), AutoMix's analysis on synthetic songs with a known tempo, key and structure, the planner (never panicking over any stored row: automix/plan_fuzz.rs), the mixer, and the whole player on a simulated output and virtual clock (`sim`, tests/pipeline): gapless joins, crossfades, levels through a mix, controls, the output |
 | engine | the player for platforms without one, on the virtual clock of tests/common: loading and the loader (source.rs), fetching ahead (ahead.rs), the stream cache, offload onto a simulated chip (paths.rs), radio, tempo, the place said through a tempo-stretched mix measured against the song heard (stretch.rs), a transcode's estimated length and its 416 (estimated.rs), Navidrome's transcodes played to their end and a cached copy cut short fetched anew (transcode.rs), a player that never plays silent (silent.rs: a panic on its thread, a loader that dies, an output that stops taking music), one fetch per song with AutoMix measuring (one_fetch.rs), transition settings changed while playing (replan.rs), an album kept gapless under AutoMix or a crossfade heard to every sample, the core's planner and measurer included (album.rs), downloads and the core (core.rs) |
-| core | the FFI surface over the real SQLite: the index and search, smart playlists, mixes, history, lyrics' race, covers, AutoEQ and device profiles, the Subsonic client against a fake transport (offline writes and their replay, the address in use, login), stream addresses, transfers, the car's tree, the Kotlin twins (tests/twins.rs), a listen kept by its profile (tests/scrobble.rs), whole flows against a Subsonic server kept in memory: log in, index, search, offline changes replayed in order, a radio (tests/scenario.rs) |
+| core | the FFI surface over the real SQLite: the index and search, smart playlists, mixes, history, lyrics' race, covers, AutoEQ and device profiles, the Subsonic client against a fake transport (offline writes and their replay, the address in use, login), stream addresses, transfers, the car's tree, the Kotlin twins (tests/twins.rs), a listen kept by its profile (tests/scrobble.rs), whole flows against a Subsonic server kept in memory: log in, index, search, offline changes replayed in order, a radio (tests/scenario.rs); remote control and jams against a relay kept in memory (tests/remote.rs) |
 | lyrics | every lyrics format, the services' answers, trust and fitting, the race between services, synced times checked against synthetic sung songs (sync.rs) |
 | covers | decoders against Pillow's references, the scaler, the disk and memory caches, the loader's workers |
 | look | colours from a cover (the AndroidX palette port), Compose's colour maths, the lyrics and motion layout |

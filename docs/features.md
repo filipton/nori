@@ -421,7 +421,8 @@ translations still are.
 | Sonos groups, Kodi, Plex clients | x | | | | skip unless you own them |
 | Subsonic jukebox (play on the server's sound card) | | x | | | add |
 | Android output switcher integration | x | | | yes | done: the player's output button opens Android's output switcher |
-| LAN remote control between two phones | | disabled | | | skip |
+| Remote control between your devices (Spotify Connect's model: one plays, the others control it, a transfer moves the queue) | x | disabled | | yes | done: Settings > Library > Other devices, off by default. On one network straight to the device's door (mDNS `_nori._tcp`, HMAC over the Subsonic secret), elsewhere through octo-fiesta's relay (`noriRemote.*`, long-poll held 50 s). Cost while on: one held request a minute while the playback service runs; off, nothing |
+| Jams: others join by QR code or link, without an account, and ask for songs; the host or an admin accepts, admins add straight in | x | | | yes | done (v1: only the host plays; listening along on each phone is v2). Needs octo-fiesta; provider songs asked for are not fetched until accepted |
 
 ## Car, watch, TV, widgets
 
