@@ -74,6 +74,16 @@ export struct EqBandRow {
     uses-gain: bool,
 }
 
+// A mix on Home's "Top Picks": its id, name and caption, up to four cover ids, its colour and a deeper one.
+export struct Pick {
+    id: string,
+    title: string,
+    sub: string,
+    covers: [string],
+    tint: color,
+    deep: color,
+}
+
 export struct Shelf {
     title: string,
     cards: [Card],
@@ -494,26 +504,26 @@ component SectionTitle inherits HorizontalLayout {
 // A shelf of cards that scrolls sideways, under its title, as Music's: as many whole cards as fit across
 // the page (grown a little to reach both edges), paged by the arrows over its sides while the pointer is on
 // it. Until its cards are read it holds its place with plates, so the page does not shift as rows arrive.
+// The cards are its children, placed at `gap + i * step` and `side` wide.
 component ShelfView inherits VerticalLayout {
     in property <string> title;
-    in property <[Card]> cards;
+    in property <int> count;
     in property <bool> loading;
-    in property <int> rev;
     in property <bool> round;
-    pure callback art(string, int, int) -> image;
-    callback open(Card);
-    callback play(Card);
+    // A card's narrowest, and the height under its square (its captions).
+    in property <length> least: 176px;
+    in property <length> below: 46px;
+    out property <length> gap: 22px;
     property <length> pad: 32px;
-    property <length> gap: 22px;
-    property <int> columns: max(2, floor((self.width - root.pad * 2 + root.gap) / (176px + root.gap)));
-    property <length> side: (self.width - root.pad * 2 - (root.columns - 1) * root.gap) / root.columns;
-    property <length> step: root.side + root.gap;
-    property <int> count: root.loading ? root.columns : root.cards.length;
+    property <int> columns: max(2, floor((self.width - root.pad * 2 + root.gap) / (root.least + root.gap)));
+    out property <length> side: (self.width - root.pad * 2 - (root.columns - 1) * root.gap) / root.columns;
+    out property <length> step: root.side + root.gap;
+    property <int> shown: root.loading ? root.columns : root.count;
     // The row is seen from a gap before the left margin to a gap past the right one, so the cards beside
     // the whole ones are not glimpsed; it scrolls until its last card stands at the right margin.
     property <length> inset: root.pad - root.gap;
     property <length> seen: root.width - 2 * root.inset;
-    property <length> end: min(0, root.seen - (root.gap + root.count * root.step));
+    property <length> end: min(0, root.seen - (root.gap + root.shown * root.step));
     // An arrow's page moves smoothly; a scroll by hand follows the hand.
     property <bool> paging;
     function page(by: int) {
@@ -530,11 +540,11 @@ component ShelfView inherits VerticalLayout {
         }
     }
     hover := TouchArea {
-        height: root.side + 46px;
+        height: root.side + root.below;
         flick := Flickable {
             x: root.inset;
             width: root.seen;
-            content-width: root.gap + root.count * root.step;
+            content-width: root.gap + root.shown * root.step;
             animate content-x { duration: root.paging ? 420ms : 0ms; easing: cubic-bezier(0.25, 0.8, 0.3, 1); }
             if root.loading: Rectangle {
                 for i in root.columns: Rectangle {
@@ -564,16 +574,9 @@ component ShelfView inherits VerticalLayout {
                     }
                 }
             }
-            if !root.loading: Rectangle {
-                for c[i] in root.cards: CardView {
-                    x: root.gap + i * root.step;
-                    side: root.side;
-                    card: c;
-                    round: root.round;
-                    picture: root.art(c.art, 0, root.rev);
-                    open => { root.open(c); }
-                    play => { root.play(c); }
-                }
+            Rectangle {
+                visible: !root.loading;
+                @children
             }
         }
         for b[i] in [{ by: -1, path: Icons.chevron-back }, { by: 1, path: Icons.chevron }]: Rectangle {
@@ -608,6 +611,76 @@ component ShelfView inherits VerticalLayout {
             root.paging = false;
             self.running = false;
         }
+    }
+}
+
+// A mix on "Top Picks", as Music draws them: four of its covers over its colour, melting into a band of the
+// deeper colour that carries its name.
+component PickCard inherits Rectangle {
+    in property <Pick> pick;
+    in property <length> side;
+    in property <int> rev;
+    pure callback art(string, int, int) -> image;
+    callback open;
+    width: root.side;
+    height: root.side * 1.3;
+    border-radius: 12px;
+    clip: true;
+    background: root.pick.deep;
+    Rectangle {
+        y: 0;
+        height: root.side;
+        background: root.pick.tint;
+        if root.pick.covers.length >= 4: Rectangle {
+            for k in 4: Image {
+                x: mod(k, 2) * root.side / 2;
+                y: floor(k / 2) * root.side / 2;
+                width: root.side / 2;
+                height: root.side / 2;
+                source: root.art(root.pick.covers[k], 0, root.rev);
+                image-fit: cover;
+            }
+        }
+        if root.pick.covers.length > 0 && root.pick.covers.length < 4: Image {
+            width: root.side;
+            height: root.side;
+            source: root.art(root.pick.covers[0], 0, root.rev);
+            image-fit: cover;
+        }
+        Rectangle {
+            y: root.side * 0.5;
+            height: root.side * 0.5;
+            background: @linear-gradient(180deg, root.pick.deep.with-alpha(0) 0%, root.pick.deep.with-alpha(0.75) 70%, root.pick.deep 100%);
+        }
+    }
+    VerticalLayout {
+        y: root.side - 6px;
+        height: root.height - self.y;
+        padding-left: 14px;
+        padding-right: 14px;
+        alignment: center;
+        spacing: 2px;
+        Text {
+            text: root.pick.title;
+            color: white;
+            font-size: 17px;
+            font-weight: 700;
+            overflow: elide;
+        }
+        Text {
+            text: root.pick.sub;
+            color: #ffffffb3;
+            font-size: 13px;
+            overflow: elide;
+        }
+    }
+    Rectangle {
+        background: touch.has-hover ? #00000026 : transparent;
+        animate background { duration: 180ms; easing: ease-out; }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.open(); }
     }
 }
 
@@ -2203,6 +2276,11 @@ export component AppWindow inherits Window {
     pure callback art(string, int, int) -> image;
 
     in property <[Shelf]> shelves;
+    in property <[Pick]> picks;
+    // The page is one of the mixes, laid out as a playlist.
+    in property <bool> page-mix;
+    in property <bool> picks-loaded;
+    callback open-mix(string);
     in property <[Card]> albums;
     in property <[Card]> artists;
     in property <[Card]> playlists;
@@ -2304,7 +2382,7 @@ export component AppWindow inherits Window {
     in-out property <string> find-text;
     // Every playlist, for the sidebar (the Playlists page's list may be narrowed).
     in property <[Card]> side-playlists;
-    property <string> list-name: root.view == 2 ? "Albums" : root.view == 3 ? "Artists" : root.view == 4 ? "Playlists" : root.view == 5 ? "Songs" : root.view == 6 && root.page-kind == 0 ? "Album" : root.view == 6 && root.page-kind == 2 ? "Playlist" : "";
+    property <string> list-name: root.view == 2 ? "Albums" : root.view == 3 ? "Artists" : root.view == 4 ? "Playlists" : root.view == 5 ? "Songs" : root.view == 6 && root.page-kind == 0 ? "Album" : root.view == 6 && root.page-kind == 2 ? (root.page-mix ? "Mix" : "Playlist") : "";
     callback find-edited(string);
     // The artist chosen on the Artists page.
     in property <string> artist-chosen;
@@ -2550,15 +2628,34 @@ export component AppWindow inherits Window {
                             Heading {
                                 title: root.greeting;
                             }
-                            for shelf in root.shelves: VerticalLayout {
-                                if !shelf.loaded || shelf.cards.length > 0: ShelfView {
-                                    title: shelf.title;
-                                    cards: shelf.cards;
-                                    loading: !shelf.loaded;
+                            if !root.picks-loaded || root.picks.length > 0: picks-shelf := ShelfView {
+                                title: "Top Picks for You";
+                                count: root.picks.length;
+                                loading: !root.picks-loaded;
+                                least: 230px;
+                                below: self.side * 0.3;
+                                for m[i] in root.picks: PickCard {
+                                    x: picks-shelf.gap + i * picks-shelf.step;
+                                    side: picks-shelf.side;
+                                    pick: m;
                                     rev: root.covers-rev;
                                     art(a, s, r) => { return root.art(a, s, r); }
-                                    open(c) => { root.open-album(c.id); }
-                                    play(c) => { root.play-album(c.id); }
+                                    open => { root.open-mix(m.id); }
+                                }
+                            }
+                            for shelf in root.shelves: VerticalLayout {
+                                if !shelf.loaded || shelf.cards.length > 0: albums-shelf := ShelfView {
+                                    title: shelf.title;
+                                    count: shelf.cards.length;
+                                    loading: !shelf.loaded;
+                                    for c[i] in shelf.cards: CardView {
+                                        x: albums-shelf.gap + i * albums-shelf.step;
+                                        side: albums-shelf.side;
+                                        card: c;
+                                        picture: root.art(c.art, 0, root.covers-rev);
+                                        open => { root.open-album(c.id); }
+                                        play => { root.play-album(c.id); }
+                                    }
                                 }
                             }
                         }
@@ -2594,21 +2691,30 @@ export component AppWindow inherits Window {
                                 width: parent.width;
                                 padding-top: 16px;
                                 padding-bottom: 100px;
-                                if root.search-artists.length > 0: ShelfView {
+                                if root.search-artists.length > 0: artists-found := ShelfView {
                                     title: "Artists";
-                                    cards: root.search-artists;
+                                    count: root.search-artists.length;
                                     round: true;
-                                    rev: root.covers-rev;
-                                    art(a, s, r) => { return root.art(a, s, r); }
-                                    open(c) => { root.open-artist(c.id); }
+                                    for c[i] in root.search-artists: CardView {
+                                        x: artists-found.gap + i * artists-found.step;
+                                        side: artists-found.side;
+                                        card: c;
+                                        round: true;
+                                        picture: root.art(c.art, 0, root.covers-rev);
+                                        open => { root.open-artist(c.id); }
+                                    }
                                 }
-                                if root.search-albums.length > 0: ShelfView {
+                                if root.search-albums.length > 0: albums-found := ShelfView {
                                     title: "Albums";
-                                    cards: root.search-albums;
-                                    rev: root.covers-rev;
-                                    art(a, s, r) => { return root.art(a, s, r); }
-                                    open(c) => { root.open-album(c.id); }
-                                    play(c) => { root.play-album(c.id); }
+                                    count: root.search-albums.length;
+                                    for c[i] in root.search-albums: CardView {
+                                        x: albums-found.gap + i * albums-found.step;
+                                        side: albums-found.side;
+                                        card: c;
+                                        picture: root.art(c.art, 0, root.covers-rev);
+                                        open => { root.open-album(c.id); }
+                                        play => { root.play-album(c.id); }
+                                    }
                                 }
                                 if root.search-songs.length > 0: HorizontalLayout {
                                     padding-left: 32px;

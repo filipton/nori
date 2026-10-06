@@ -66,6 +66,25 @@ pub fn net_error(e: &NetError) -> String {
     said.to_string()
 }
 
+/// A mix's name, as its tile and page say it.
+pub fn mix_name(n: nori_core::mixes::board::MixName) -> &'static str {
+    use nori_core::mixes::board::MixName as M;
+    match n {
+        M::Favourites => "Favorites",
+        M::QuickPicks => "Quick picks",
+        M::Discover => "Discover",
+        M::DiscoverWeekly => "Discover Weekly",
+        M::ListenAgain => "Listen again",
+        M::Top => "Your top songs",
+    }
+}
+
+/// Under a mix's name: what it is made from.
+pub fn mix_caption(favourites: bool) -> &'static str {
+    if favourites { "Your favorite songs" } else { "Made for you" }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;

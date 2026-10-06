@@ -111,7 +111,10 @@ impl Server {
                 };
                 ok("")
             }
-            "getStarred2" => ok(&format!(r#""starred2":{{"song":[{}]}}"#, self.songs(|t| self.starred.lock().contains(t.0)))),
+            "getStarred2" => {
+                let starred = self.starred.lock().clone();
+                ok(&format!(r#""starred2":{{"song":[{}]}}"#, self.songs(|t| starred.contains(t.0))))
+            }
             _ => format!(r#"{{"subsonic-response":{{"status":"failed","error":{{"code":0,"message":"no {endpoint}"}}}}}}"#).into_bytes(),
         }
     }
@@ -201,4 +204,13 @@ fn a_radio_plays_the_library_only() {
     let (_, client) = logged_in(&server);
     let radio: Vec<String> = block(client.radio("s1".into())).unwrap().into_iter().map(|s| s.id).collect();
     assert_eq!(radio, ["s1", "s2", "s3"], "the seed, then its like, no provider song");
+}
+
+#[test]
+fn favourites_mix_is_the_starred_songs() {
+    let server = Server::new();
+    server.starred.lock().extend(["s2".to_string(), "s4".to_string(), "ext-deezer-song-9".to_string()]);
+    let (_, client) = logged_in(&server);
+    let ids: Vec<String> = block(client.mix_songs("favourites".into())).unwrap().into_iter().map(|s| s.id).collect();
+    assert_eq!(ids, ["s2", "s4"], "the starred songs of the library, no provider song");
 }

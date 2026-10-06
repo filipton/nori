@@ -54,6 +54,8 @@ pub enum Fetch {
     Album(String),
     Playlist(String),
     Artist(String),
+    /// One of the core's mixes (or the favourites), as its page lists it.
+    Mix(String),
 }
 
 impl Fetch {
@@ -63,6 +65,7 @@ impl Fetch {
             Fetch::Album(id) => PageOrigin::new(OriginKind::Album, id.as_str()),
             Fetch::Playlist(id) => PageOrigin::new(OriginKind::Playlist, id.as_str()),
             Fetch::Artist(id) => PageOrigin::new(OriginKind::Artist, id.as_str()),
+            Fetch::Mix(id) => PageOrigin::new(OriginKind::Mix, id.as_str()),
         }
     }
 
@@ -84,6 +87,7 @@ impl Fetch {
                 Page::ArtistPage { v } => block_on(client.artist_songs(v.albums)),
                 _ => Vec::new(),
             },
+            Fetch::Mix(id) => block_on(client.mix_songs(id))?,
         })
     }
 }

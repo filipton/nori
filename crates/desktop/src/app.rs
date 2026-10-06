@@ -24,7 +24,7 @@ use crate::compositor::{Compositor, Focus};
 use crate::session::{self, CoverKey, CoverSize, Data, Fetch, Msg, Req, Session, Tx};
 use crate::settings::{Act, Target};
 use crate::words;
-use crate::{AppWindow, Card, LyricPiece, PlayerBar, Shelf, SidebarWindow, SongRow};
+use crate::{AppWindow, Card, LyricPiece, Pick, PlayerBar, Shelf, SidebarWindow, SongRow};
 
 /// Cover fetch sizes, px square.
 const SMALL_PX: u32 = 256;
@@ -399,6 +399,7 @@ fn wire(ui: &AppWindow, h: &AppHandle) {
     on!(ui.on_open_album, h, |a, id| a.open_page(Req::Album(id.into())));
     on!(ui.on_open_artist, h, |a, id| a.open_page(Req::Artist(id.into())));
     on!(ui.on_open_playlist, h, |a, id| a.open_page(Req::Playlist(id.into())));
+    on!(ui.on_open_mix, h, |a, id| a.open_page(Req::Mix(id.into())));
     on!(ui.on_play_album, h, |a, id| a.play_fetch(Fetch::Album(id.into())));
     on!(ui.on_play_playlist, h, |a, id| a.play_fetch(Fetch::Playlist(id.into())));
     on!(ui.on_song, h, |a, list, i, how| a.song(list, i as usize, how));
@@ -575,6 +576,8 @@ impl App {
                         self.shelves.set_row_data(i, shelf);
                     }
                 }
+                ui.set_picks(ModelRc::default());
+                ui.set_picks_loaded(false);
                 self.follow();
                 self.go(HOME);
                 // The sidebar lists playlists on every page.
@@ -667,10 +670,11 @@ impl App {
             Req::Album(id) => Fetch::Album(id.clone()),
             Req::Artist(id) => Fetch::Artist(id.clone()),
             Req::Playlist(id) => Fetch::Playlist(id.clone()),
+            Req::Mix(id) => Fetch::Mix(id.clone()),
             _ => return,
         });
         ui.set_page_id(match &req {
-            Req::Album(id) | Req::Artist(id) | Req::Playlist(id) => id.as_str().into(),
+            Req::Album(id) | Req::Artist(id) | Req::Playlist(id) | Req::Mix(id) => id.as_str().into(),
             _ => "".into(),
         });
         ui.set_page_kind(match &req {
@@ -678,6 +682,7 @@ impl App {
             Req::Artist(_) => 1,
             _ => 2,
         });
+        ui.set_page_mix(matches!(req, Req::Mix(_)));
         ui.set_page_title("".into());
         ui.set_page_sub("".into());
         ui.set_page_caption("".into());
@@ -747,6 +752,24 @@ impl App {
             }
         };
         match d {
+            Data::Picks(tiles) => {
+                let picks: Vec<Pick> = tiles
+                    .into_iter()
+                    .map(|t| {
+                        let colours = nori_core::mixes::board::mix_tile_colours(t.id.clone());
+                        Pick {
+                            title: words::mix_name(t.name).into(),
+                            sub: words::mix_caption(t.favourites).into(),
+                            covers: ModelRc::new(VecModel::from(t.covers.into_iter().map(SharedString::from).collect::<Vec<_>>())),
+                            tint: colour(colours[0]),
+                            deep: colour(colours[1]),
+                            id: t.id.into(),
+                        }
+                    })
+                    .collect();
+                ui.set_picks(ModelRc::new(VecModel::from(picks)));
+                ui.set_picks_loaded(true);
+            }
             Data::HomeRow(i, albums) => {
                 if let Some(mut shelf) = self.shelves.row_data(i) {
                     shelf.cards = cards(albums.iter().map(album_card));
@@ -818,7 +841,15 @@ impl App {
                 self.page_songs = d.songs;
                 ui.set_page_songs(self.rows(&self.page_songs));
             }
-            Data::Album(_) | Data::Artist(_) | Data::Playlist(_) => {}
+            Data::Mix(m) if shown => {
+                ui.set_page_title(words::mix_name(m.name).into());
+                ui.set_page_sub(words::mix_caption(m.favourites).into());
+                ui.set_page_caption(words::songs_caption(m.songs.len(), m.seconds).into());
+                self.set_page_art(m.covers.first().cloned());
+                self.page_songs = m.songs;
+                ui.set_page_songs(self.rows(&self.page_songs));
+            }
+            Data::Album(_) | Data::Artist(_) | Data::Playlist(_) | Data::Mix(_) => {}
         }
     }
 

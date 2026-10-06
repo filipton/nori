@@ -11,6 +11,7 @@ use nori_core::cache_policy::{Page, Read};
 use nori_core::race::LyricsPick;
 use nori_core::search::SearchView;
 use nori_core::settings::SavedServer;
+use nori_core::mixes::board::{MixLookup, MixSheet, MixTile};
 use nori_core::{AlbumDetail, ArtistDetail, PlaylistDetail, Song};
 use nori_covers::loader::Ticket;
 use nori_covers::memory::Image;
@@ -90,9 +91,12 @@ pub enum Req {
     Album(String),
     Artist(String),
     Playlist(String),
+    Mix(String),
 }
 
 pub enum Data {
+    /// Home's "Top Picks": the favourites tile, then the mixes.
+    Picks(Vec<MixTile>),
     HomeRow(usize, Vec<nori_core::Album>),
     Albums(Vec<nori_core::Album>),
     Artists(Vec<nori_core::Artist>),
@@ -101,6 +105,7 @@ pub enum Data {
     Album(Box<AlbumDetail>),
     Artist(Box<ArtistDetail>),
     Playlist(Box<PlaylistDetail>),
+    Mix(Box<MixSheet>),
 }
 
 /// Home shelves: title and album list kind.
@@ -241,6 +246,17 @@ impl Session {
             };
             match &req {
                 Req::Home => {
+                    // The mixes are drawn here from the index and the history; the favourites follow the
+                    // starred songs, stored at once and the server's after.
+                    let taste = app().settings.prefs(|p| p.taste_model);
+                    let _ = client.mix_favourites_stored();
+                    if taste {
+                        block_on(client.mix_warm_all());
+                    }
+                    send(Ok(Data::Picks(core.mix_cards(taste))));
+                    if block_on(client.mix_hand_favourites()).is_ok() {
+                        send(Ok(Data::Picks(core.mix_cards(taste))));
+                    }
                     for (i, (_, kind)) in HOME_ROWS.iter().enumerate() {
                         let read = if *kind == AlbumSort::Starred { Read::FavouriteAlbums { size: 40 } } else { Read::AlbumList { kind: *kind, size: 40, offset: 0, genre: None } };
                         let mut got = false;
@@ -267,6 +283,13 @@ impl Session {
                 Req::Album(id) => pages(Read::AlbumById { id: id.clone() }, &|p| if let Page::AlbumPage { v } = p { Some(Data::Album(Box::new(v))) } else { None }),
                 Req::Artist(id) => pages(Read::ArtistById { id: id.clone() }, &|p| if let Page::ArtistPage { v } = p { Some(Data::Artist(Box::new(v))) } else { None }),
                 Req::Playlist(id) => pages(Read::PlaylistById { id: id.clone() }, &|p| if let Page::PlaylistPage { v } = p { Some(Data::Playlist(Box::new(v))) } else { None }),
+                Req::Mix(id) => match block_on(client.mix_songs(id.clone())) {
+                    Ok(_) => match core.mix_page(id.clone()) {
+                        MixLookup::Ready { sheet } => send(Ok(Data::Mix(Box::new(sheet)))),
+                        MixLookup::NotDrawn | MixLookup::Unknown => send(Err("This mix has nothing in it yet".into())),
+                    },
+                    Err(e) => send(Err(net_error(&e))),
+                },
                 Req::Songs { offset } => send(core.songs_page("title".into(), false, 0, 0, *offset).map(|p| Data::Songs(p.songs, p.exhausted)).map_err(|e| e.to_string())),
             }
         });

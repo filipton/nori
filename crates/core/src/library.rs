@@ -3,7 +3,7 @@
 
 use crate::cache_policy::{Page, Read};
 use crate::client::{Client, NetResult, Starrable, Write};
-use crate::mixes::board::MixDraw;
+use crate::mixes::board::{MixDraw, MixLookup, FAVOURITES_MIX};
 use crate::Song;
 use std::sync::Arc;
 
@@ -131,6 +131,30 @@ impl Client {
             each(p);
         }
         Ok(())
+    }
+
+    /// Hands the starred songs to the favourites mix: the stored ones at once, the server's when they
+    /// are not fresh.
+    pub async fn mix_hand_favourites(&self) -> NetResult<()> {
+        let stored = self.mix_favourites_stored()?;
+        if !stored.fresh {
+            self.mix_favourites_refresh(stored.digest).await?;
+        }
+        Ok(())
+    }
+
+    /// Mix `id`'s songs, as its page lists them: the favourites handed first, a mix drawn if this
+    /// period's draw is missing. Empty for an id no mix has.
+    pub async fn mix_songs(&self, id: String) -> NetResult<Vec<Song>> {
+        if id == FAVOURITES_MIX {
+            self.mix_hand_favourites().await?;
+        } else {
+            self.mix_ensure(id.clone(), false).await;
+        }
+        Ok(match self.core.mix_page(id) {
+            MixLookup::Ready { sheet } => sheet.songs,
+            MixLookup::NotDrawn | MixLookup::Unknown => Vec::new(),
+        })
     }
 
     /// Draws mix `id` from random server songs; false when they could not be read, so it is drawn again
