@@ -83,8 +83,19 @@ enum Role {
 /// Layers in creation order, each with its role once assigned.
 type Layers = RefCell<Vec<(Rc<Layer>, Cell<Option<Role>>)>>;
 
-/// Ping-pong textures for the blur passes.
-type TexturePair = [(wgpu::Texture, wgpu::TextureView); 2];
+/// Halvings in the page's blur pyramid: its smallest level is 1/64 of the page.
+const PYRAMID_LEVELS: u32 = 6;
+
+/// Format of the blur pyramid: half floats, so a long smooth blur does not band.
+const PYRAMID_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+/// The page blurred at every halving: the texture, a view of each mip to draw into, and one of them all
+/// to read.
+struct Pyramid {
+    texture: wgpu::Texture,
+    mips: Vec<wgpu::TextureView>,
+    all: wgpu::TextureView,
+}
 
 /// State shared by the platform, the event loop and [`Compositor`] handles (main thread only).
 struct Shared {
@@ -109,6 +120,8 @@ pub struct Focus {
     pub region: [f32; 4],
     pub band_top: f32,
     pub band_h: f32,
+    /// A line and the gap after it: each step further from the band blurs a point more.
+    pub pitch: f32,
 }
 
 /// The app's handle to the compositor, alongside the platform Slint owns.
@@ -536,15 +549,12 @@ struct Draw {
     config: wgpu::SurfaceConfiguration,
     copy: wgpu::RenderPipeline,
     over: wgpu::RenderPipeline,
-    blur: wgpu::RenderPipeline,
+    down: wgpu::RenderPipeline,
     glass: wgpu::RenderPipeline,
     focus: wgpu::RenderPipeline,
     bind: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
-    /// Quarter-size blurred page (ping-pong pair).
-    blurred: Option<TexturePair>,
-    /// Sixteenth-size, heavily blurred page: ambient light for the glass rim.
-    glow: Option<TexturePair>,
+    pyramid: Option<Pyramid>,
     /// Surface must be reconfigured before the next frame.
     stale: bool,
 }
@@ -578,7 +588,6 @@ impl Draw {
                 tex(1),
                 wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
                 tex(3),
-                tex(4),
             ],
         });
         let layout = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("glass"), bind_group_layouts: &[Some(&bind)], immediate_size: 0 });
@@ -586,7 +595,7 @@ impl Draw {
             color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add },
             alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add },
         };
-        let pipeline = |entry: &str, blend: Option<wgpu::BlendState>| {
+        let pipeline = |entry: &str, blend: Option<wgpu::BlendState>, format: wgpu::TextureFormat| {
             d.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(entry),
                 layout: Some(&layout),
@@ -598,7 +607,7 @@ impl Draw {
                     module: &shader,
                     entry_point: Some(entry),
                     compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState { format: FORMAT, blend, write_mask: wgpu::ColorWrites::ALL })],
+                    targets: &[Some(wgpu::ColorTargetState { format, blend, write_mask: wgpu::ColorWrites::ALL })],
                 }),
                 multiview_mask: None,
                 cache: None,
@@ -615,15 +624,14 @@ impl Draw {
         Ok(Draw {
             surface,
             config,
-            copy: pipeline("fs_copy", None),
-            over: pipeline("fs_copy", Some(premultiplied)),
-            blur: pipeline("fs_blur", None),
-            glass: pipeline("fs_glass", Some(premultiplied)),
-            focus: pipeline("fs_focus", None),
+            copy: pipeline("fs_copy", None, FORMAT),
+            over: pipeline("fs_copy", Some(premultiplied), FORMAT),
+            down: pipeline("fs_down", None, PYRAMID_FORMAT),
+            glass: pipeline("fs_glass", Some(premultiplied), FORMAT),
+            focus: pipeline("fs_focus", None, FORMAT),
             bind,
             sampler,
-            blurred: None,
-            glow: None,
+            pyramid: None,
             stale: false,
         })
     }
@@ -631,8 +639,7 @@ impl Draw {
     fn resize(&mut self, w: u32, h: u32) {
         self.config.width = w.max(1);
         self.config.height = h.max(1);
-        self.blurred = None;
-        self.glow = None;
+        self.pyramid = None;
         self.stale = true;
     }
 
@@ -677,70 +684,78 @@ impl Draw {
         let find = |r: Role| layers.iter().find(|(_, x)| x.get() == Some(r)).and_then(|(l, _)| l.texture.borrow().as_ref().map(|(_, v)| v.clone()));
         let Some(page) = find(Role::Page) else { return };
         let (w, h) = (self.config.width as f32, self.config.height as f32);
-        let (bw, bh) = ((self.config.width / 4).max(1), (self.config.height / 4).max(1));
-        ensure_pair(&mut self.blurred, d, bw, bh, "blur");
-        ensure_pair(&mut self.glow, d, (self.config.width / 16).max(1), (self.config.height / 16).max(1), "glow");
         let mut enc = d.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
         let focus = s.focus.borrow().as_ref().and_then(|f| f());
         let glass_needed = s.sidebar_shown.get() || s.player_shown.get() || focus.is_some();
-        if let (true, Some(b), Some(gl)) = (glass_needed, &self.blurred, &self.glow) {
-            self.blur(d, &gpu.queue, &mut enc, &page, (w, h), b, [1.5, 2.5]);
-            self.blur(d, &gpu.queue, &mut enc, &b[1].1, (bw as f32, bh as f32), gl, [2.0, 3.0]);
+        if glass_needed {
+            self.blur_page(d, &gpu.queue, &mut enc, &page);
         }
-        let blurred = self.blurred.as_ref().map(|b| b[1].1.clone()).unwrap_or_else(|| page.clone());
-        let glow = self.glow.as_ref().map(|b| b[1].1.clone()).unwrap_or_else(|| page.clone());
-        let full = uniforms([0.0, 0.0, w, h], [w, h, w, h], [0.0; 4], [0.0; 4], [0.0; 4]);
-        let g = self.group(d, &gpu.queue, &full, &page, &page, &page);
+        let pyramid = self.pyramid.as_ref().map(|p| p.all.clone());
+        // Levels as the window's pixels count them: a level's blur is in pixels, so a sharper screen needs one more.
+        let dense = scale.max(1.0).log2();
+        let full = uniforms([0.0, 0.0, w, h], [w, h, w, h], [0.0; 4], [0.0; 4], [0.0; 4], [0.0; 4]);
+        let g = self.group(d, &gpu.queue, &full, &page, pyramid.as_ref().unwrap_or(&page));
         pass(&mut enc, &target, &self.copy, &g, true);
-        if let Some(f) = focus {
+        if let (Some(f), Some(py)) = (focus, &pyramid) {
             let r = [f.region[0] * scale, f.region[1] * scale, f.region[2] * scale, f.region[3] * scale];
-            let u = uniforms(r, [w, h, w, h], [0.0; 4], [0.0; 4], [f.band_top * scale, f.band_h * scale, 280.0 * scale, 0.85]);
-            let g = self.group(d, &gpu.queue, &u, &page, &blurred, &glow);
+            let u = uniforms(r, [w, h, w, h], [0.0; 4], [0.0; 4], [f.band_top * scale, f.band_h * scale, f.pitch * scale, scale], [0.0; 4]);
+            let g = self.group(d, &gpu.queue, &u, &page, py);
             pass(&mut enc, &target, &self.focus, &g, false);
         }
-        let mut glass = |role: Role, shape: [f32; 4], tint: [f32; 4], light: [f32; 4], gather: [f32; 4], rect: [f32; 4]| {
-            let Some(view) = find(role) else { return };
-            let u = uniforms_gather(rect, [w, h, w, h], shape, tint, light, gather);
-            let g = self.group(d, &gpu.queue, &u, &page, &blurred, &glow);
+        let mut glass = |role: Role, rect: [f32; 4], look: Glass| {
+            let (Some(view), Some(py)) = (find(role), &pyramid) else { return };
+            let u = uniforms(rect, [w, h, w, h], look.shape, look.face, look.light, look.gather);
+            let g = self.group(d, &gpu.queue, &u, &page, py);
             pass(&mut enc, &target, &self.glass, &g, false);
             let (o, sz) = place(s, role, win);
             let r = [o.x * scale, o.y * scale, sz.width * scale, sz.height * scale];
-            let u = uniforms(r, [w, h, w, h], [0.0; 4], [0.0; 4], [0.0; 4]);
-            let g = self.group(d, &gpu.queue, &u, &view, &view, &view);
+            let u = uniforms(r, [w, h, w, h], [0.0; 4], [0.0; 4], [0.0; 4], [0.0; 4]);
+            let g = self.group(d, &gpu.queue, &u, &view, &view);
             pass(&mut enc, &target, &self.over, &g, false);
         };
         if s.sidebar_shown.get() {
             // Extended far past the window so only the right edge acts as a rim.
             let r = [-8000.0 * scale, -8000.0 * scale, (SIDEBAR_W + 8000.0) * scale, h + 16000.0 * scale];
-            glass(Role::Sidebar, [0.0, 28.0 * scale, 8.0 * scale, 0.04], [0.1, 0.095, 0.09, 0.18], [0.06, 0.04, 0.34, 45.0 * scale], [180.0 * scale, 1.0, 0.0, 0.0], r);
+            glass(Role::Sidebar, r, Glass {
+                shape: [0.0, 28.0 * scale, 8.0 * scale, 0.04],
+                face: [0.075, 0.2, 1.2, 4.5 + dense],
+                light: [0.05, 0.34, 45.0 * scale, 6.0 + dense],
+                gather: [180.0 * scale, 1.0, 0.0, 0.0],
+            });
         }
         if s.player_shown.get() {
             let (o, sz) = place(s, Role::Player, win);
             let r = [o.x * scale, o.y * scale, sz.width * scale, sz.height * scale];
-            // Near-clear glass: light blur, faint tint, thin rim.
-            glass(Role::Player, [PLAYER_H * 0.5 * scale, 14.0 * scale, 6.0 * scale, 0.05], [0.14, 0.14, 0.145, 0.06], [0.12, 0.0, 0.0, 1.0], [0.0, 1.0, 0.35, 0.0], r);
+            // The page shows through, blurred and held dark enough under the white controls whatever it is.
+            glass(Role::Player, r, Glass {
+                shape: [PLAYER_H * 0.5 * scale, 14.0 * scale, 6.0 * scale, 0.05],
+                face: [0.09, 0.3, 1.4, 3.0 + dense],
+                light: [0.14, 0.0, 0.0, 0.0],
+                gather: [0.0; 4],
+            });
         }
         drop(layers);
         gpu.queue.submit([enc.finish()]);
         gpu.queue.present(frame);
     }
 
-    /// Two separable blur rounds (horizontal then vertical, at `steps[0]` then `steps[1]`) from `src`
-    /// into `t[1]`, ping-ponging through `t`.
-    #[allow(clippy::too_many_arguments)]
-    fn blur(&self, d: &wgpu::Device, q: &wgpu::Queue, enc: &mut wgpu::CommandEncoder, src: &wgpu::TextureView, src_size: (f32, f32), t: &TexturePair, steps: [f32; 2]) {
-        let (tw, th) = (t[0].0.width() as f32, t[0].0.height() as f32);
-        for k in 0..4 {
-            let (from, size) = if k == 0 { (src, src_size) } else { (&t[(k + 1) % 2].1, (tw, th)) };
-            let step = steps[k / 2];
-            let dir = if k % 2 == 0 { [step, 0.0] } else { [0.0, step] };
-            let u = uniforms([0.0, 0.0, tw, th], [tw, th, size.0, size.1], [0.0; 4], [0.0; 4], [0.0, 0.0, dir[0], dir[1]]);
-            let group = self.group(d, q, &u, from, from, from);
-            pass(enc, &t[k % 2].1, &self.blur, &group, false);
+    /// Draws the page's blur pyramid: each level a 13-tap downsample of the one above it.
+    fn blur_page(&mut self, d: &wgpu::Device, q: &wgpu::Queue, enc: &mut wgpu::CommandEncoder, page: &wgpu::TextureView) {
+        let (w, h) = ((self.config.width / 2).max(1), (self.config.height / 2).max(1));
+        if self.pyramid.as_ref().is_none_or(|p| p.texture.width() != w || p.texture.height() != h) {
+            self.pyramid = Some(pyramid(d, w, h));
+        }
+        let Some(p) = &self.pyramid else { return };
+        for (k, target) in p.mips.iter().enumerate() {
+            let from = if k == 0 { page } else { &p.mips[k - 1] };
+            let (tw, th) = ((w >> k).max(1) as f32, (h >> k).max(1) as f32);
+            let u = uniforms([0.0, 0.0, tw, th], [tw, th, tw, th], [0.0; 4], [0.0; 4], [0.0; 4], [0.0; 4]);
+            let g = self.group(d, q, &u, from, from);
+            pass(enc, target, &self.down, &g, false);
         }
     }
 
-    fn group(&self, d: &wgpu::Device, q: &wgpu::Queue, u: &[u8], a: &wgpu::TextureView, b: &wgpu::TextureView, c: &wgpu::TextureView) -> wgpu::BindGroup {
+    fn group(&self, d: &wgpu::Device, q: &wgpu::Queue, u: &[u8], a: &wgpu::TextureView, b: &wgpu::TextureView) -> wgpu::BindGroup {
         let buf = d.create_buffer(&wgpu::BufferDescriptor { label: Some("glass"), size: u.len() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         q.write_buffer(&buf, 0, u);
         d.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -751,21 +766,27 @@ impl Draw {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(a) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(b) },
-                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(c) },
             ],
         })
     }
 }
 
-/// (Re)creates `slot` when missing or not `w` x `h`.
-fn ensure_pair(slot: &mut Option<TexturePair>, d: &wgpu::Device, w: u32, h: u32, label: &str) {
-    if slot.as_ref().is_none_or(|p| p[0].0.width() != w || p[0].0.height() != h) {
-        *slot = Some(std::array::from_fn(|_| {
-            let t = texture(d, w, h, label);
-            let v = t.create_view(&Default::default());
-            (t, v)
-        }));
-    }
+/// A pyramid `w` x `h` at its largest, halving [`PYRAMID_LEVELS`] times or until a side is one pixel.
+fn pyramid(d: &wgpu::Device, w: u32, h: u32) -> Pyramid {
+    let levels = PYRAMID_LEVELS.min(32 - w.max(h).leading_zeros());
+    let texture = d.create_texture(&wgpu::TextureDescriptor {
+        label: Some("pyramid"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: levels,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: PYRAMID_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let mips = (0..levels).map(|k| texture.create_view(&wgpu::TextureViewDescriptor { base_mip_level: k, mip_level_count: Some(1), ..Default::default() })).collect();
+    let all = texture.create_view(&Default::default());
+    Pyramid { texture, mips, all }
 }
 
 fn texture(d: &wgpu::Device, w: u32, h: u32, label: &str) -> wgpu::Texture {
@@ -800,13 +821,17 @@ fn pass(enc: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, pipeline: &w
     p.draw(0..4, 0..1);
 }
 
-/// Uniforms as glass.wgsl lays them out (six vec4s); `gather` is used only by the glass pass.
-fn uniforms(rect: [f32; 4], view: [f32; 4], shape: [f32; 4], tint: [f32; 4], light: [f32; 4]) -> Vec<u8> {
-    uniforms_gather(rect, view, shape, tint, light, [0.0; 4])
+/// How a pane of glass looks: glass.wgsl's `shape`, `face`, `light` and `gather`.
+struct Glass {
+    shape: [f32; 4],
+    face: [f32; 4],
+    light: [f32; 4],
+    gather: [f32; 4],
 }
 
-fn uniforms_gather(rect: [f32; 4], view: [f32; 4], shape: [f32; 4], tint: [f32; 4], light: [f32; 4], gather: [f32; 4]) -> Vec<u8> {
-    [rect, view, shape, tint, light, gather].iter().flatten().flat_map(|f| f.to_ne_bytes()).collect()
+/// Uniforms as glass.wgsl lays them out (six vec4s).
+fn uniforms(rect: [f32; 4], view: [f32; 4], shape: [f32; 4], face: [f32; 4], light: [f32; 4], gather: [f32; 4]) -> Vec<u8> {
+    [rect, view, shape, face, light, gather].iter().flatten().flat_map(|f| f.to_ne_bytes()).collect()
 }
 
 /// Adds an empty unified toolbar so the traffic lights sit lower, level with the page's toolbar.

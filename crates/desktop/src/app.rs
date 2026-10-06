@@ -337,13 +337,15 @@ pub fn start(ui: &AppWindow, data: PathBuf, compositor: Compositor) -> Rc<RefCel
         let weak = ui.as_weak();
         a.compositor.set_focus_source(move || {
             let ui = weak.upgrade()?;
-            if !ui.get_full_player() || ui.get_full_panel() != 2 || ui.get_lyrics_lines().row_count() == 0 || !ui.get_lyrics_synced() {
+            if !ui.get_full_player() || ui.get_full_panel() != 2 || ui.get_lyrics_lines().row_count() == 0 || !ui.get_lyrics_synced() || ui.get_full_lyrics_browsed() || ui.get_lyrics_active() < 0 {
                 return None;
             }
             let size = ui.window().size().to_logical(ui.window().scale_factor());
             let x = size.width / 2.0;
             // Clear of the volume pill above and the lyrics/queue pill below.
-            Some(Focus { region: [x, 48.0, size.width - x - 100.0, size.height - 48.0 - 56.0], band_top: size.height * 0.36 - 8.0, band_h: ui.get_full_lyric_h() + 16.0 })
+            // The band where the line sung is now, moving with it as the lyrics scroll; a step a line of 44 px
+            // text and its 36 px gap.
+            Some(Focus { region: [x, 48.0, size.width - x - 100.0, size.height - 48.0 - 56.0], band_top: ui.get_full_lyric_top() - 8.0, band_h: ui.get_full_lyric_h() + 16.0, pitch: 90.0 })
         });
         a.settings_shown();
         let prefs = crate::session::app().settings.current().unwrap_or_default();

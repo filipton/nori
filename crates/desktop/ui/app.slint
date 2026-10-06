@@ -2149,6 +2149,11 @@ export component AppWindow inherits Window {
     // sung is (the compositor keeps it sharp).
     in-out property <int> full-panel: 2;
     out property <length> full-lyric-h: 60px;
+    // Where the line sung is on the window now, as the lyrics scroll to it: the compositor's sharp band
+    // follows it. Scrolled by hand, every line is sharp until the next one is sung.
+    out property <length> full-lyric-top: full-lyrics.y + full-lyrics.content-y + root.full-lyric-at;
+    out property <bool> full-lyrics-browsed;
+    property <length> full-lyric-at;
     // The player is a window of its own over the system's Liquid Glass (macOS): the page draws none.
     in property <bool> native-player;
     // The sidebar is the system's Liquid Glass over the page (macOS): the page's ground, its colour and an
@@ -3507,8 +3512,11 @@ export component AppWindow inherits Window {
                 font-weight: 700;
                 wrap: word-wrap;
             }
-            // Kept inside the part the compositor blurs (clear of the pills above and below).
-            if root.full-panel == 2 && root.lyrics-lines.length > 0: full-lyrics := Flickable {
+            // Kept inside the part the compositor blurs (clear of the pills above and below). Always there, so
+            // the window can say where the line sung is; its lines only while shown.
+            full-lyrics := Flickable {
+                visible: root.full-panel == 2 && root.lyrics-lines.length > 0;
+                flicked => { root.full-lyrics-browsed = true; }
                 x: root.width / 2 + 20px;
                 width: root.width / 2 - 140px;
                 y: 48px;
@@ -3520,7 +3528,7 @@ export component AppWindow inherits Window {
                     padding-top: root.height * 0.36 - 48px;
                     padding-bottom: root.height;
                     spacing: 36px;
-                    for line[i] in root.lyrics-lines: Text {
+                    for line[i] in full-lyrics.visible ? root.lyrics-lines : []: Text {
                         property <bool> lit: i == root.lyrics-active;
                         // As the panel's: how lit, fading as it changes, whether or not the line is drawn just then.
                         property <float> level;
@@ -3530,6 +3538,8 @@ export component AppWindow inherits Window {
                             if self.lit {
                                 full-lyrics.content-y = -(self.y - (root.height * 0.36 - 48px));
                                 root.full-lyric-h = self.height;
+                                root.full-lyric-at = self.y;
+                                root.full-lyrics-browsed = false;
                             }
                         }
                         init => {
@@ -3537,6 +3547,7 @@ export component AppWindow inherits Window {
                             if self.lit {
                                 full-lyrics.content-y = -(self.y - (root.height * 0.36 - 48px));
                                 root.full-lyric-h = self.height;
+                                root.full-lyric-at = self.y;
                             }
                         }
                         text: line;
