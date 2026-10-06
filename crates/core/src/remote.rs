@@ -81,6 +81,8 @@ pub struct RemoteMe {
 pub struct Playing {
     pub playing: bool,
     pub position_ms: i64,
+    /// The list index heard: the queue's own current song moves only once the player says it arrived.
+    pub index: Option<u32>,
     /// The media volume, 0 to 100, when it can be set.
     pub volume: Option<u8>,
 }
@@ -151,13 +153,26 @@ enum Out {
     Get(String),
 }
 
+/// Whether the server relays remote control and jams (octo-fiesta's `noriRemote.*`), as asked once when
+/// the remote is made for a profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum Relay {
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
+pub enum RelaySupport {
+    /// Not known yet (not asked, or the server was unreachable).
     #[default]
     Unknown,
-    Here,
-    /// The server has no relay (plain Navidrome): nearby devices only, no jams.
-    Absent,
+    Supported,
+    /// Plain Navidrome, or an octo-fiesta without the hub: nearby devices only, no jams. Never asked again.
+    Unsupported,
+}
+
+/// What a relay request's answer says of the relay; None when the network, not the server, answered.
+fn support(got: &Result<Vec<u8>, NetError>) -> Option<RelaySupport> {
+    match got {
+        Ok(body) => Some(if answer(body).is_some() { RelaySupport::Supported } else { RelaySupport::Unsupported }),
+        Err(NetError::Http { status: 404 | 405 } | NetError::Api { .. } | NetError::Parse { .. }) => Some(RelaySupport::Unsupported),
+        Err(_) => None,
+    }
 }
 
 struct Peer {
@@ -178,7 +193,7 @@ struct Hosted {
 struct Inner {
     serving: bool,
     watching: bool,
-    relay: Relay,
+    relay: RelaySupport,
     /// Bumped to end the running relay poller (each runs while its generation is current).
     generation: u64,
     relay_polling: bool,
@@ -200,7 +215,7 @@ struct Inner {
 
 impl Inner {
     fn wants_relay(&self) -> bool {
-        self.relay != Relay::Absent && (self.serving || self.watching || self.hosted.is_some())
+        self.relay != RelaySupport::Unsupported && (self.serving || self.watching || self.hosted.is_some())
     }
 
     fn jam_room(&self) -> Option<&str> {
@@ -255,7 +270,24 @@ impl Remote {
                 deliver(&client, &who, o);
             }
         });
+        // Whether the server relays, asked once: one poll that is not held.
+        let me = remote.clone();
+        let _ = std::thread::Builder::new().name("nori-remote-probe".into()).spawn(move || {
+            let got = block_on(transport::get(&*me.client.transport, me.poll_url(None, false), 0));
+            if let Some(found) = support(&got) {
+                let mut i = me.inner.lock();
+                if i.relay == RelaySupport::Unknown {
+                    i.relay = found;
+                }
+            }
+            me.keep_polling();
+        });
         remote
+    }
+
+    /// Whether the server relays remote control and jams; the screens offer jams and far devices only then.
+    pub fn relay(&self) -> RelaySupport {
+        self.inner.lock().relay
     }
 
     /// This device's id, as other devices and the relay know it.
@@ -283,7 +315,7 @@ impl Remote {
         }
         if on {
             self.publish();
-        } else {
+        } else if self.relay() != RelaySupport::Unsupported {
             self.out(Out::Get(self.poll_url(None, false)));
         }
         self.keep_polling();
@@ -340,7 +372,12 @@ impl Remote {
         let link = {
             let mut i = self.inner.lock();
             i.refused.remove(&device);
-            i.peers.iter().find(|p| p.member.id == device).map_or(Link::Relay, |p| Link::Lan(p.base.clone()))
+            let lan = i.peers.iter().find(|p| p.member.id == device).map(|p| Link::Lan(p.base.clone()));
+            match lan {
+                Some(l) => l,
+                None if i.relay == RelaySupport::Unsupported => return,
+                None => Link::Relay,
+            }
         };
         let id = self.next_id();
         self.out(Out::Send(link, Outgoing { to: Some(device), body: Some(Body::Command { id, op: Box::new(op) }), ..Default::default() }));
@@ -384,6 +421,9 @@ impl Remote {
             room: String,
             invite: String,
         }
+        if self.relay() == RelaySupport::Unsupported {
+            return Err(NetError::Http { status: 404 });
+        }
         let url = self.relay_url("noriRemote.open", &[("dev", self.id.clone()), ("name", self.me.name.clone())]);
         let body = transport::get(&*self.client.transport, url, 0).await?;
         let opened: Opened = serde_json::from_slice(&body).map_err(|e| NetError::Parse { reason: e.to_string() })?;
@@ -391,7 +431,7 @@ impl Remote {
         let link = nori_remote::invite_link(&server, &opened.invite);
         {
             let mut i = self.inner.lock();
-            i.relay = Relay::Here;
+            i.relay = RelaySupport::Supported;
             i.hosted = Some(Hosted { jam: Jam::new(opened.room, opened.invite, self.id.clone(), self.me.name.clone()), link: link.clone() });
             i.published = None;
         }
@@ -614,16 +654,14 @@ impl Remote {
                 }
                 self.poll_url(i.since, i.serving)
             };
-            match block_on(transport::get(&*self.client.transport, url, POLL_TIMEOUT_MS)) {
-                Ok(body) => match answer(&body) {
-                    Some(a) => {
-                        self.inner.lock().relay = Relay::Here;
-                        self.took(a);
-                    }
-                    None => return self.no_relay(generation),
-                },
-                Err(NetError::Http { status: 404 | 405 } | NetError::Api { .. } | NetError::Parse { .. }) => return self.no_relay(generation),
-                Err(_) => {
+            let got = block_on(transport::get(&*self.client.transport, url, POLL_TIMEOUT_MS));
+            match (support(&got), got) {
+                (Some(RelaySupport::Supported), Ok(body)) => {
+                    self.inner.lock().relay = RelaySupport::Supported;
+                    self.took(answer(&body).unwrap_or_default());
+                }
+                (Some(_), _) => return self.no_relay(generation),
+                (None, _) => {
                     let mut i = self.inner.lock();
                     if i.generation == generation {
                         self.retry.wait_for(&mut i, Duration::from_millis(RETRY_MS));
@@ -636,7 +674,7 @@ impl Remote {
     fn no_relay(&self, generation: u64) {
         let mut i = self.inner.lock();
         if i.generation == generation {
-            i.relay = Relay::Absent;
+            i.relay = RelaySupport::Unsupported;
             i.relay_polling = false;
         }
         drop(i);
@@ -803,11 +841,13 @@ impl Remote {
     /// This device's state now.
     fn state_now(&self) -> DeviceState {
         let session = &self.client.core.session;
+        let heard = self.inner.lock().playing.index.map(|i| i as usize);
         let (window, index, rev, shuffle, repeat) = session.playlist(|p| {
+            let current = heard.filter(|&i| i < p.len()).or(p.current());
             let order: Vec<usize> = p.play_order().collect();
-            let at = p.current().and_then(|c| order.iter().position(|&o| o == c)).unwrap_or(0);
+            let at = current.and_then(|c| order.iter().position(|&o| o == c)).unwrap_or(0);
             let window: Vec<(usize, String)> = order[at.saturating_sub(ENTRIES_BEFORE)..(at + ENTRIES_AFTER + 1).min(order.len())].iter().map(|&i| (i, p.ids()[i].clone())).collect();
-            (window, p.current().map(|c| c as u32), p.rev(), p.lit(), p.repeat())
+            (window, current.map(|c| c as u32), p.rev(), p.lit(), p.repeat())
         });
         let i = self.inner.lock();
         let jam = i.hosted.as_ref().map(|h| &h.jam);
@@ -835,7 +875,7 @@ impl Remote {
             if let Some(d) = &i.door {
                 d.publish(state.clone());
             }
-            (i.serving, i.jam_room().map(str::to_string), i.relay != Relay::Absent)
+            (i.serving, i.jam_room().map(str::to_string), i.relay != RelaySupport::Unsupported)
         };
         if serving && relay {
             self.out(Out::Send(Link::Relay, Outgoing { state: Some(state.clone()), ..Default::default() }));

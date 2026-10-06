@@ -71,7 +71,15 @@ pub struct Answer {
     /// The caller's member id, as events from it are stamped.
     pub you: String,
     pub rooms: Vec<Room>,
+    #[serde(deserialize_with = "readable")]
     pub events: Vec<Event>,
+}
+
+/// The events this version reads; one from a newer client (an op it does not know) is passed over
+/// rather than failing the whole answer.
+fn readable<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Event>, D::Error> {
+    let all = Vec::<serde_json::Value>::deserialize(d)?;
+    Ok(all.into_iter().filter_map(|e| Event::deserialize(e).ok()).collect())
 }
 
 /// What a send carries: the sender's state, an event, or both.
@@ -259,5 +267,7 @@ mod tests {
         let answer: Answer = serde_json::from_str(r#"{"seq":4,"rooms":[{"room":"u","members":[{"id":"a","kind":"tablet","name":"A","state":{"rev":"x"}}]}]}"#).unwrap();
         let a = &answer.rooms[0].members[0];
         assert_eq!((a.id.as_str(), a.kind, a.state.is_none()), ("a", DeviceKind::Phone, true));
+        let answer: Answer = serde_json::from_str(r#"{"seq":5,"events":[{"seq":4,"room":"u","from":"a","body":{"t":"command","id":1,"op":{"op":"dance"}}},{"seq":5,"room":"u","from":"a","body":{"t":"command","id":2,"op":{"op":"pause"}}}]}"#).unwrap();
+        assert_eq!(answer.events.iter().map(|e| e.seq).collect::<Vec<_>>(), [5], "an op this version does not know is passed over");
     }
 }

@@ -38,7 +38,7 @@ impl Remotes {
     pub fn played(&self, engine: &Engine) {
         let Some(r) = self.get() else { return };
         let s = engine.status();
-        r.played(Playing { playing: s.state == State::Playing, position_ms: s.position_now().max(0), volume: None });
+        r.played(Playing { playing: s.state == State::Playing, position_ms: s.position_now().max(0), index: s.index.map(|i| i as u32), volume: None });
     }
 }
 

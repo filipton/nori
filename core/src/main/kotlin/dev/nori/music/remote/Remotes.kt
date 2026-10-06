@@ -111,9 +111,9 @@ class Remotes(private val context: Context, private val nori: Nori) {
     }
 
     /** The player's state changed; nothing happens unless a remote exists. */
-    fun played(playing: Boolean, positionMs: Long) {
+    fun played(playing: Boolean, positionMs: Long, index: Int) {
         val r = remote ?: return
-        work { r.played(Playing(playing, positionMs, volumePercent(context)?.toUByte())) }
+        work { r.played(Playing(playing, positionMs, index.takeIf { it >= 0 }?.toUInt(), volumePercent(context)?.toUByte())) }
     }
 
     /** Everything else a screen asks, on the worker; [then] gets the answer back on the main thread. */

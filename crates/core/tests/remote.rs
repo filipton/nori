@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use nori_core::client::{Client, NetProfile};
-use nori_core::remote::{jam_join, Discovery, Playing, Remote, RemoteMe, RemotePlayer, RemoteShown};
+use nori_core::remote::{jam_join, Discovery, Playing, RelaySupport, Remote, RemoteMe, RemotePlayer, RemoteShown};
 use nori_core::transport::{block_on, Exchange, FailureKind, Transport, TransportError, TransportResponse};
 use nori_core::{Core, ServerConfig, Song};
 use nori_remote::wire::{Answer, Body, DeviceKind, Event, Member, Op, Outgoing, Refusal, Role, Room};
@@ -369,7 +369,7 @@ impl Device {
         let songs: Vec<Song> = ids.iter().map(|id| Song { id: id.to_string(), title: id.to_uppercase(), duration: 200, ..Default::default() }).collect();
         self.core.session.register(songs);
         self.core.session.set(ids.iter().map(|s| s.to_string()).collect(), Some(start), false, None);
-        self.remote.clone().played(Playing { playing: true, position_ms: 5_000, volume: Some(40) });
+        self.remote.clone().played(Playing { playing: true, position_ms: 5_000, index: None, volume: Some(40) });
     }
 }
 
@@ -389,11 +389,15 @@ fn two_devices_control_each_other_through_the_relay() {
 
     desk.remote.send(phone_id.clone(), Op::Next);
     assert_eq!(phone.told(), Op::Next);
+    // The song the player says it arrived on is the one shown, before the queue's own current moves.
+    phone.remote.clone().played(Playing { playing: true, position_ms: 0, index: Some(2), volume: Some(40) });
+    let moved = desk.until("the next song", |r| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.state).filter(|s| s.index == Some(2)));
+    assert_eq!(moved.entries.iter().find(|e| Some(e.index) == moved.index).map(|e| e.title.as_str()), Some("S3"));
 
     // An edit made against a queue that changed since is refused, and the controller is told.
     let stale = state.rev;
     phone.core.session.remove(2, 3);
-    phone.remote.clone().played(Playing { playing: true, position_ms: 6_000, volume: Some(40) });
+    phone.remote.clone().played(Playing { playing: true, position_ms: 6_000, index: None, volume: Some(40) });
     desk.remote.send(phone_id.clone(), Op::Remove { index: 0, rev: stale });
     let refused = desk.until("the refusal", |r| r.devices().into_iter().find(|d| d.id == phone_id).and_then(|d| d.refused));
     assert_eq!(refused, Refusal::Stale);
@@ -514,4 +518,24 @@ fn nearby_devices_need_no_relay() {
     stranger.remote.clone().watch(true);
     stranger.remote.clone().lan_found(door.name.clone(), "127.0.0.1".into(), door.port, txt());
     assert!(stranger.remote.devices().is_empty(), "the announced account tag differs");
+}
+
+#[test]
+fn a_server_without_the_relay_is_asked_once() {
+    let relay = Relay::absent();
+    let phone = Device::account(&relay, DeviceKind::Phone, "Phone");
+    phone.until("the answer", |r| (r.relay() == RelaySupport::Unsupported).then_some(()));
+    let asked = || relay.asked().iter().filter(|a| a.starts_with("noriRemote.")).count();
+    assert_eq!(asked(), 1, "one probe");
+
+    // Serving, watching and playing go on without the relay; a jam is refused before anything is asked.
+    phone.playing(&["s1"], 0);
+    phone.remote.clone().watch(true);
+    phone.remote.clone().serve(true);
+    phone.remote.clone().watch(false);
+    phone.remote.clone().serve(false);
+    phone.remote.send("elsewhere".into(), Op::Pause);
+    assert!(block_on(phone.remote.clone().jam_open()).is_err());
+    assert_eq!(asked(), 1, "nothing more asked of a server that has no relay");
+    assert!(phone.remote.jam_view().is_none());
 }
