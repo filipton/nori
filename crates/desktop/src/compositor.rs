@@ -105,6 +105,8 @@ struct Shared {
     proxy: EventLoopProxy<Wake>,
     sidebar_shown: Cell<bool>,
     player_shown: Cell<bool>,
+    /// The window is not on screen (minimised, covered, locked): nothing is drawn until it shows again.
+    occluded: Cell<bool>,
     /// Width of the right panel (0 when closed); the player centres in the remaining page.
     right: Cell<f32>,
     /// Queried each frame for the lyrics focus blur.
@@ -201,6 +203,7 @@ pub fn install() -> Result<Compositor, String> {
         proxy: event_loop.create_proxy(),
         sidebar_shown: Cell::new(false),
         player_shown: Cell::new(false),
+        occluded: Cell::new(false),
         right: Cell::new(0.0),
         focus: RefCell::new(None),
         menu: MenuBar::default(),
@@ -271,6 +274,9 @@ impl Compositor {
 }
 
 fn redraw(s: &Shared) {
+    if s.occluded.get() {
+        return;
+    }
     if let Some(w) = s.window.borrow().as_ref() {
         w.request_redraw();
     }
@@ -463,6 +469,10 @@ impl ApplicationHandler<Wake> for Runner {
         use winit::event::WindowEvent as E;
         match event {
             E::CloseRequested => el.exit(),
+            E::Occluded(o) => {
+                self.shared.occluded.set(o);
+                redraw(&self.shared);
+            }
             E::Resized(size) => {
                 if let Some(d) = &mut self.draw {
                     d.resize(size.width, size.height);
@@ -522,6 +532,9 @@ impl ApplicationHandler<Wake> for Runner {
             }
             E::RedrawRequested => {
                 slint::platform::update_timers_and_animations();
+                if self.shared.occluded.get() {
+                    return;
+                }
                 let win = self.logical_window();
                 if let (Some(d), Some(win)) = (&mut self.draw, win) {
                     d.frame(&self.shared, win);
@@ -674,6 +687,11 @@ impl Draw {
         }
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+            // Also when the window was hidden before it was ever shown, so winit sends no Occluded.
+            wgpu::CurrentSurfaceTexture::Occluded => {
+                s.occluded.set(true);
+                return;
+            }
             _ => {
                 self.surface.configure(d, &self.config);
                 return;
