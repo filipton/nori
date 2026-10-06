@@ -26,6 +26,7 @@ pub mod playlist;
 pub mod library;
 pub mod stage;
 pub mod update;
+pub mod remote;
 #[cfg(feature = "neural-beats")]
 pub mod model_download;
 
@@ -376,6 +377,9 @@ pub struct Core {
     stars: Mutex<stars::StarMarks>,
     /// The queue this core saves and restores and its clients fill.
     pub session: Arc<nori_queue::Session>,
+    /// The user and the Subsonic secret (password or API key) the LAN's remote control proves the account
+    /// with; None for a jam guest.
+    account: RwLock<Option<(String, String)>>,
 }
 
 impl Core {
@@ -406,6 +410,7 @@ impl Core {
             board: Mutex::new(mixes::board::Board::default()),
             stars: Mutex::new(stars::StarMarks::default()),
             session,
+            account: RwLock::new(None),
         });
         core.session.db.set(&core.db);
         Ok(core)
@@ -423,6 +428,12 @@ impl Core {
         }
         let base = s.base.clone();
         *self.server.write() = s;
+        let key = config.api_key.unwrap_or_default();
+        *self.account.write() = match (key.is_empty(), nori_remote::is_guest_key(&key)) {
+            (true, _) => Some((config.user, config.password)),
+            (false, false) => Some((config.user, key)),
+            (false, true) => None,
+        };
         Ok(base)
     }
 

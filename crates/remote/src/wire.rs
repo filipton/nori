@@ -68,6 +68,8 @@ pub struct Event {
 pub struct Answer {
     /// The newest sequence; the next poll asks for what comes after it.
     pub seq: u64,
+    /// The caller's member id, as events from it are stamped.
+    pub you: String,
     pub rooms: Vec<Room>,
     pub events: Vec<Event>,
 }

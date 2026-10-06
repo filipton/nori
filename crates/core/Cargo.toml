@@ -15,7 +15,7 @@ default = ["ffi"]
 # The optional neural beat tracker and its model download (enabled by nori-engine's `neural-beats`).
 neural-beats = ["nori-player/neural-beats", "dep:sha2"]
 # uniffi exports for the Kotlin bindings.
-ffi = ["dep:uniffi", "nori-model/ffi", "nori-db/ffi", "nori-net/ffi", "nori-library/ffi", "nori-automix/ffi", "nori-settings/ffi", "nori-lyrics/ffi", "nori-devices/ffi", "nori-queue/ffi", "nori-transfers/ffi", "nori-perf/ffi"]
+ffi = ["dep:uniffi", "nori-model/ffi", "nori-db/ffi", "nori-net/ffi", "nori-library/ffi", "nori-automix/ffi", "nori-settings/ffi", "nori-lyrics/ffi", "nori-devices/ffi", "nori-queue/ffi", "nori-transfers/ffi", "nori-perf/ffi", "nori-remote/ffi"]
 
 [dependencies]
 uniffi = { workspace = true, optional = true }
@@ -39,6 +39,7 @@ nori-devices = { path = "../devices" }
 nori-queue = { path = "../queue" }
 nori-transfers = { path = "../transfers" }
 nori-perf = { path = "../perf" }
+nori-remote = { path = "../remote" }
 # The beat model's file is checked against its pinned SHA-256.
 sha2 = { version = "0.11", optional = true }
 # The cover loader's net forwards the async Transport trait.

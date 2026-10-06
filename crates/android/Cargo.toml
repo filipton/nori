@@ -28,6 +28,7 @@ nori-devices = { path = "../devices", features = ["ffi"] }
 nori-queue = { path = "../queue", features = ["ffi"] }
 nori-transfers = { path = "../transfers", features = ["ffi"] }
 nori-perf = { path = "../perf", features = ["ffi"] }
+nori-remote = { path = "../remote", features = ["ffi"] }
 nori-player = { path = "../player" }
 nori-look = { path = "../look" }
 nori-covers = { path = "../covers" }

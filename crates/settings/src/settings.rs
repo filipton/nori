@@ -550,6 +550,13 @@ pub struct StoredPrefs {
     /// Beta releases (GitHub prereleases) are offered too, as well as the stable ones.
     #[setting("updateBeta", FLAG, default = false, show = K::Switch)]
     pub update_beta: bool,
+    /// This device can be controlled from the account's other devices, and controls them (nori-remote):
+    /// through octo-fiesta's relay, or directly on the same network.
+    #[setting("remoteControl", FLAG, default = false, show = K::Switch)]
+    pub remote_control: bool,
+    /// Hosting jams: others join through a link and ask for songs (nori-remote jam.rs). Needs octo-fiesta.
+    #[setting("jam", FLAG, default = false, show = K::Switch)]
+    pub jam: bool,
     /// The home page's rows, in order; unlisted rows are hidden.
     #[setting("homeRows", Picks, default = HomeRow::ALL.to_vec(), hidden)]
     pub home_rows: Vec<HomeRow>,
