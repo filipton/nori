@@ -15,6 +15,8 @@ pub(crate) const CHECK_EVERY_MS: i64 = 24 * 60 * 60 * 1000;
 const CHECKED_KEY: &str = "update.checkedMs";
 /// `app_kv` key: the version the user postponed.
 const SKIPPED_KEY: &str = "update.skipped";
+/// `app_kv` key: the version being installed and its notes, "version\nnotes".
+const CHANGELOG_KEY: &str = "update.changelog";
 /// Request timeout.
 const TIMEOUT_MS: u32 = 20_000;
 
@@ -196,6 +198,27 @@ pub fn due(on: bool, checked_ms: Option<i64>, now_ms: i64) -> bool {
     on && checked_ms.is_none_or(|t| t > now_ms || now_ms - t >= CHECK_EVERY_MS)
 }
 
+/// What becomes of the notes kept for an update being installed, once build `current` runs.
+#[derive(Debug, PartialEq)]
+pub(crate) enum KeptNotes<'a> {
+    /// `current` is the version they were kept for: shown now, then forgotten.
+    Show(&'a str),
+    /// Kept for a newer version than `current`: the install has not happened yet.
+    Wait,
+    /// For an older version, unreadable, or empty: forgotten unseen.
+    Forget,
+}
+
+/// The notes kept as `kept` ("version\nnotes") against the running build `current`.
+pub(crate) fn kept_notes<'a>(kept: &'a str, current: &str) -> KeptNotes<'a> {
+    let Some((version, notes)) = kept.split_once('\n') else { return KeptNotes::Forget };
+    match (Version::parse(version), Version::parse(current)) {
+        (Some(v), Some(c)) if v == c && !notes.is_empty() => KeptNotes::Show(notes),
+        (Some(v), Some(c)) if v > c => KeptNotes::Wait,
+        _ => KeptNotes::Forget,
+    }
+}
+
 /// Markdown notes as plain text: headings unmarked, list items as bullets, wrapped paragraphs joined,
 /// emphasis and code marks dropped, links as their text, single blank lines between blocks.
 pub(crate) fn plain_notes(md: &str) -> String {
@@ -271,6 +294,24 @@ impl Client {
     /// Postpones `version`: automatic checks mark it `skipped`.
     pub fn update_skip(&self, version: String) {
         self.settings().keep_app_value(SKIPPED_KEY, version);
+    }
+
+    /// `update` is about to be installed: its notes are kept for [`Client::update_changelog`].
+    pub fn update_installing(&self, update: AppUpdate) {
+        self.settings().keep_app_value(CHANGELOG_KEY, format!("{}\n{}", update.version, update.notes));
+    }
+
+    /// The notes of the update that installed build `version`, once: the first call after the update
+    /// returns them, later ones None.
+    pub fn update_changelog(&self, version: String) -> Option<String> {
+        let kept = self.settings().app_value(CHANGELOG_KEY)?;
+        let shown = match kept_notes(&kept, &version) {
+            KeptNotes::Wait => return None,
+            KeptNotes::Forget => None,
+            KeptNotes::Show(notes) => Some(notes.to_string()),
+        };
+        self.settings().forget_app_value(CHANGELOG_KEY);
+        shown
     }
 
     /// Checks GitHub's latest release against `version` for `abis`. Unless `asked`, only when [`due`]; the
@@ -406,6 +447,36 @@ mod tests {
         assert_eq!(plain_notes("one\ntwo\n\nthree"), "one two\n\nthree");
         assert_eq!(plain_notes("# A\n- x\n- y\n# B\ntext"), "A\n• x\n• y\n\nB\ntext");
         assert_eq!(plain_notes("see [the page](https://a/b) and [x] (y)"), "see the page and [x] (y)");
+    }
+
+    #[test]
+    fn kept_notes_by_version() {
+        for (kept, current, want) in [
+            ("0.5.0\nFixed", "0.5.0", KeptNotes::Show("Fixed")),
+            ("0.5.0\nFixed", "v0.5.0", KeptNotes::Show("Fixed")),
+            ("0.5.0\nFixed", "0.4.0", KeptNotes::Wait),
+            ("0.5.0\nFixed", "0.5.1", KeptNotes::Forget),
+            ("0.5.0\n", "0.5.0", KeptNotes::Forget),
+            ("0.5.0", "0.5.0", KeptNotes::Forget),
+            ("nightly\nFixed", "0.5.0", KeptNotes::Forget),
+        ] {
+            assert_eq!(kept_notes(kept, current), want, "{kept:?} on {current}");
+        }
+    }
+
+    #[test]
+    fn changelog_shows_once_after_the_install() {
+        let (c, _) = crate::client::tests::client(Default::default());
+        let dir = nori_testdir::TempDir::new("update-changelog");
+        c.session().settings.open(&dir.join("app.db").to_string_lossy()).unwrap();
+        let UpdateCheck::Available { update, .. } = decide(&latest(), "0.4.0", &abis(&["arm64-v8a"]), None).unwrap() else { panic!("offered") };
+        c.update_installing(update);
+        nori_db::background::flush();
+        assert_eq!(c.update_changelog("0.4.0".into()), None, "not installed yet");
+        nori_db::background::flush();
+        assert_eq!(c.update_changelog("0.5.0".into()).as_deref(), Some("The player is faster.\n\nFixed\n\n• A song that was cut off\n• Undo works"));
+        nori_db::background::flush();
+        assert_eq!(c.update_changelog("0.5.0".into()), None, "only once");
     }
 
 }

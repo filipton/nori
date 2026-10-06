@@ -119,3 +119,17 @@ private fun BannerCard(vm: SettingsViewModel, s: Updates.State) {
         }
     }
 }
+
+/** What the update just installed brought: its release notes, once, the first time the app is opened after it. */
+@Composable
+fun ChangelogDialog(vm: SettingsViewModel) {
+    val notes by vm.changelog.collectAsStateWithLifecycle()
+    val res = LocalContext.current.resources
+    NoriDialog(notes, vm::changelogSeen) { text ->
+        AlertCard(
+            title = { Text(res.getString(R.string.update_changelog_title, BuildConfig.VERSION_NAME)) },
+            text = { Text(text, Modifier.verticalScroll(rememberScrollState())) },
+            confirmButton = { TextButton(vm::changelogSeen) { Text(res.getString(R.string.update_changelog_done)) } },
+        )
+    }
+}

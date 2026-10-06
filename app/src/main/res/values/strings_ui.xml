@@ -581,4 +581,7 @@
     <string name="update_later">Later</string>
     <string name="update_banner_title">nori %1$s is available</string>
     <string name="update_whats_new">What\'s new</string>
+    <!-- The first time the app is opened after it updated itself: the release's notes. -->
+    <string name="update_changelog_title">New in nori %1$s</string>
+    <string name="update_changelog_done">OK</string>
 </resources>

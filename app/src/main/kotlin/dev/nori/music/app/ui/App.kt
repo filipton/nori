@@ -412,6 +412,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
                 // A newer release, and its download and install once asked for; under the player, so the
                 // player covers it. See UpdateBanner.
                 UpdateBanner(settings, Modifier.align(Alignment.TopCenter))
+                ChangelogDialog(settings)
               }
               }
               Box(

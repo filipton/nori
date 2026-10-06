@@ -256,6 +256,16 @@ impl Settings {
         });
     }
 
+    /// Removes an `app_kv` value on the background thread.
+    pub fn forget_app_value(&self, key: &'static str) {
+        let Some(db) = self.app_db() else { return };
+        background::run(move || {
+            if let Err(e) = db.lock().execute("DELETE FROM app_kv WHERE key=?1", [key]) {
+                alog::info(&format!("{key}: could not remove: {e}"));
+            }
+        });
+    }
+
     /// One parametric band changed (`settings::set_band`): the effect bits and the band as kept (held in
     /// range); None when nothing changed.
     pub fn edit_band(&self, index: u32, asked: SoundBand) -> Option<(u32, SoundBand)> {

@@ -218,6 +218,14 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
 
     fun cancelUpdate() = nori.updates.cancel()
 
+    private val _changelog = MutableStateFlow<String?>(null)
+    /** The notes of the update just installed, the first time the app is opened after it. */
+    val changelog: StateFlow<String?> = _changelog
+
+    init { viewModelScope.launch(Dispatchers.IO) { _changelog.value = runCatching { nori.updates.changelog() }.getOrNull() } }
+
+    fun changelogSeen() { _changelog.value = null }
+
     /** Applies "Space for streamed music" at once instead of at the next track. */
     fun applyCacheLimit() = viewModelScope.launch(Dispatchers.IO) { nori.applyCacheLimit() }
 

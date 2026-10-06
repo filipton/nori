@@ -1,5 +1,6 @@
 package dev.nori.music.update
 
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -7,6 +8,10 @@ import android.content.pm.PackageInstaller
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.core.app.NotificationChannelCompat
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import dev.nori.music.core.R
 import dev.nori.music.NoriLog
 import dev.nori.music.ffi.AppUpdate
 import dev.nori.music.ffi.Client
@@ -179,6 +184,7 @@ class Updates(private val context: Context, private val http: () -> Http, privat
                 _state.value = State.Failed(update, Failure.NotThisApp)
                 return@launch
             }
+            client().updateInstalling(update)
             if (!canInstall()) {
                 _state.value = State.NeedsPermission(update)
                 allowInstalls()
@@ -283,12 +289,14 @@ class Updates(private val context: Context, private val http: () -> Http, privat
                         session.fsync(out)
                     }
                 }
+                startedHere(context).writeText(update.version)
                 val status = Intent(context, UpdateStatusReceiver::class.java).setAction(ACTION_STATUS).setPackage(context.packageName)
                 val flags = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
                 session.commit(PendingIntent.getBroadcast(context, id, status, flags).intentSender)
             }
         } catch (e: Exception) {
             NoriLog.w("update install: ${e.message}")
+            startedHere(context).delete()
             _state.value = State.Failed(update, Failure.Install(PackageInstaller.STATUS_FAILURE, e.message))
         }
     }
@@ -310,14 +318,65 @@ class Updates(private val context: Context, private val http: () -> Http, privat
             // Replaced: this process is ending. Nothing to keep.
             PackageInstaller.STATUS_SUCCESS -> dir.deleteRecursively()
             // The user said no on Android's page: back to where it was, the APK kept for another try.
-            PackageInstaller.STATUS_FAILURE_ABORTED -> update?.let { _state.value = State.Available(it, skipped = false) }
-            else -> update?.let { _state.value = State.Failed(it, Failure.Install(status, message)) }
+            PackageInstaller.STATUS_FAILURE_ABORTED -> {
+                startedHere(context).delete()
+                update?.let { _state.value = State.Available(it, skipped = false) }
+            }
+            else -> {
+                startedHere(context).delete()
+                update?.let { _state.value = State.Failed(it, Failure.Install(status, message)) }
+            }
         }
+    }
+
+    /**
+     * The notes of the update that installed this build, the first time the app is opened after it, else
+     * null (the core decides). Off the UI thread. The "updated" notification goes with them.
+     */
+    fun changelog(): String? {
+        if (version.isEmpty()) return null
+        val notes = client().updateChangelog(version) ?: return null
+        context.getSystemService(NotificationManager::class.java)?.cancel(UPDATED_NOTIFICATION)
+        return notes
     }
 
     companion object {
         /** The cache directory the APK is downloaded into. */
         const val DIR = "update"
         const val ACTION_STATUS = "dev.nori.music.UPDATE_STATUS"
+        private const val UPDATED_CHANNEL = "updated"
+        private const val UPDATED_NOTIFICATION = 7
+
+        /** Written just before an install is handed to Android, so the replaced app knows this app asked for it. */
+        private fun startedHere(context: Context) = File(context.filesDir, "update-started")
+
+        /** A marker older than this is from an install that never finished, not the one that just did. */
+        private const val STARTED_FOR_MS = 60 * 60 * 1000L
+
+        /**
+         * This package was just replaced (see [UpdatedReceiver]): when this app had started the install, says
+         * so in a notification whose tap opens the app. Android does not let a receiver open an activity.
+         */
+        internal fun replaced(context: Context) {
+            val marker = startedHere(context)
+            val fresh = marker.isFile && System.currentTimeMillis() - marker.lastModified() in 0..STARTED_FOR_MS
+            marker.delete()
+            if (!fresh) return
+            val nm = NotificationManagerCompat.from(context)
+            if (!nm.areNotificationsEnabled()) return
+            val res = context.resources
+            nm.createNotificationChannel(NotificationChannelCompat.Builder(UPDATED_CHANNEL, NotificationManagerCompat.IMPORTANCE_DEFAULT).setName(res.getString(R.string.updated_channel)).build())
+            val open = context.packageManager.getLaunchIntentForPackage(context.packageName) ?: return
+            val version = context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
+            val n = NotificationCompat.Builder(context, UPDATED_CHANNEL)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(res.getString(R.string.updated_title, version))
+                .setContentText(res.getString(R.string.updated_text))
+                .setContentIntent(PendingIntent.getActivity(context, 0, open, PendingIntent.FLAG_IMMUTABLE))
+                .setAutoCancel(true)
+                .build()
+            @Suppress("MissingPermission")
+            nm.notify(UPDATED_NOTIFICATION, n)
+        }
     }
 }

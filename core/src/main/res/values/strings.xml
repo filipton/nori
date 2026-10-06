@@ -117,4 +117,9 @@
     <string name="car_signed_out">Sign in to your server in nori on your phone</string>
     <string name="car_open_nori">Open nori</string>
     <string name="car_unreachable">Can’t reach your server</string>
+
+    <!-- The app updated itself: the notification after the install. -->
+    <string name="updated_channel">App updates</string>
+    <string name="updated_title">Updated to %1$s</string>
+    <string name="updated_text">Tap to open</string>
 </resources>

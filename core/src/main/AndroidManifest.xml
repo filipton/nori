@@ -7,8 +7,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- The app updating itself from its GitHub releases (update/Updates.kt); Android still asks the user. -->
+    <!-- The app updating itself from its GitHub releases (update/Updates.kt); with the second, Android 12+
+         installs updates without asking, from the update after the one that brought it. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
 
     <application>
         <service
@@ -30,5 +32,10 @@
             </intent-filter>
         </service>
         <receiver android:name="dev.nori.music.update.UpdateStatusReceiver" android:exported="false" />
+        <receiver android:name="dev.nori.music.update.UpdatedReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>
