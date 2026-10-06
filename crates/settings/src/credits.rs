@@ -87,7 +87,7 @@ const ANDROID_CREDITS: [(&str, &str, &str, &str, Option<&str>); 6] = [
 ];
 
 /// The typeface and the third-party data services.
-const DATA_CREDITS: [(&str, &str, &str, &str, Option<&str>); 17] = [
+const DATA_CREDITS: [(&str, &str, &str, &str, Option<&str>); 18] = [
     ("Inter", "The typeface", "Copyright (c) 2016 The Inter Project Authors (Rasmus Andersson)", "OFL-1.1", Some("OFL-1.1")),
     ("AutoEQ", "Headphone correction curves: the list kept on Wi-Fi, a curve fetched when it is chosen", "Copyright (c) 2018 Jaakko Pasanen", "MIT", Some("MIT")),
     ("LRCLIB", "Timed lyrics for songs your server has none for, asked only when switched on", "lrclib.net; lyrics belong to their authors and contributors", "Service", None),
