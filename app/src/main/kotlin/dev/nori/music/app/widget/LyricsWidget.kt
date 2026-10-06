@@ -1,7 +1,6 @@
 package dev.nori.music.app.widget
 
 import android.appwidget.AppWidgetManager
-import android.appwidget.AppWidgetProvider
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -23,7 +22,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /** The line being sung, large, and the next one under it, on the song's own colours. See [LyricsLine]. */
-class LyricsWidget : AppWidgetProvider() {
+class LyricsWidget : NoriWidget() {
     override fun onReceive(context: Context, intent: Intent) {
         super.onReceive(context, intent)
         if (intent.action == PlaybackService.ACTION_STATE) {
@@ -36,7 +35,10 @@ class LyricsWidget : AppWidgetProvider() {
 
     override fun onAppWidgetOptionsChanged(context: Context, manager: AppWidgetManager, id: Int, options: Bundle) = LyricsLine.changed(context.applicationContext)
 
-    override fun onDisabled(context: Context) = LyricsLine.stop(context.applicationContext)
+    override fun onDisabled(context: Context) {
+        super.onDisabled(context)
+        LyricsLine.stop(context.applicationContext)
+    }
 }
 
 /**

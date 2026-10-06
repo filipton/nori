@@ -1,7 +1,6 @@
 package dev.nori.music.app.widget
 
 import android.appwidget.AppWidgetManager
-import android.appwidget.AppWidgetProvider
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
@@ -63,7 +62,7 @@ private fun tilesDp(hDp: Int): Int = hDp - 24 - (if (hDp >= HEADED) HEAD else 0)
  * many as fit; a tap plays the mix (see [Widgets.playOrOpen]). Drawn when placed or resized, and when the app is left ([refresh]),
  * since the mixes are drawn anew each day while it is used. Never polled.
  */
-class MixesWidget : AppWidgetProvider() {
+class MixesWidget : NoriWidget() {
     override fun onReceive(context: Context, intent: Intent) {
         super.onReceive(context, intent)
         when (intent.action) {
@@ -130,7 +129,7 @@ class MixesWidget : AppWidgetProvider() {
  * shuffle drawing others. The same albums are kept through a resize; drawn anew when placed and on the
  * shuffle only. Never polled.
  */
-class AlbumsWidget : AppWidgetProvider() {
+class AlbumsWidget : NoriWidget() {
     override fun onReceive(context: Context, intent: Intent) {
         super.onReceive(context, intent)
         when (intent.action) {

@@ -57,9 +57,9 @@ import java.io.File
  * Android's counters and draws the page. The counters are read when the state or those
  * settings change, which ends one stretch and starts the next, and when the Performance page opens
  * (the stretch so far). Nothing here ticks: every read is set off by a broadcast (screen on or off,
- * power connected, the service's play/pause), an activity starting or stopping, the player sheet or
+ * power connected), the service's play/pause, an activity starting or stopping, the player sheet or
  * a settings change. While the phone sleeps with music playing this runs only when a song changes,
- * which the service's broadcast already woke it for, so the recorder adds no wakeups of its own to the
+ * which the service already woke for, so the recorder adds no wakeups of its own to the
  * numbers it records. Why a stretch cost what it did is read
  * at its ends as well: every thread's name, CPU time and wakeups, the AudioTrack the player opened, and
  * the bytes the app moved over the network.
@@ -126,8 +126,6 @@ internal class Recorder(private val app: Application) : PerfHooks.Recorder, Play
                 Intent.ACTION_SCREEN_OFF -> screenOn = false
                 Intent.ACTION_POWER_CONNECTED -> charging = true
                 Intent.ACTION_POWER_DISCONNECTED -> charging = false
-                // The service says so on every song as well; only a change of playing counts.
-                PlaybackService.ACTION_STATE -> playing = intent.getBooleanExtra(PlaybackService.EXTRA_PLAYING, playing)
             }
             changed()
         }
@@ -183,7 +181,6 @@ internal class Recorder(private val app: Application) : PerfHooks.Recorder, Play
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_POWER_CONNECTED)
             addAction(Intent.ACTION_POWER_DISCONNECTED)
-            addAction(PlaybackService.ACTION_STATE)
         }
         ContextCompat.registerReceiver(app, events, filter, null, handler, ContextCompat.RECEIVER_NOT_EXPORTED)
         // The invariant watch (the core's invariants.rs): from here on every event below is looked at too.
@@ -275,6 +272,10 @@ internal class Recorder(private val app: Application) : PerfHooks.Recorder, Play
     override fun wakeLock(held: Boolean) {
         val t = System.currentTimeMillis()
         handler.post { note(t, PerfNote.WakeLock(held)) }
+    }
+
+    override fun playing(on: Boolean) {
+        handler.post { playing = on; changed() }
     }
 
     override fun shallow(on: Boolean) {

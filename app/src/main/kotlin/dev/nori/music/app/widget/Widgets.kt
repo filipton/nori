@@ -2,6 +2,7 @@ package dev.nori.music.app.widget
 
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
+import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -32,6 +33,13 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 
+/** Every home-screen widget: it keeps the service's [PlacedWidgets] right as widgets are placed and removed. */
+abstract class NoriWidget : AppWidgetProvider() {
+    override fun onEnabled(context: Context) = Widgets.placed(context)
+
+    override fun onDisabled(context: Context) = Nori.get(context).widgets.disabled()
+}
+
 /** What the playback service last announced (PlaybackService.announce): the song, and where it was when. */
 data class Playing(
     val title: String? = null,
@@ -58,6 +66,15 @@ object Widgets {
     /** The last announcement. Main thread. */
     var playing = Playing()
         private set
+
+    /**
+     * A kind of widget was placed for the first time. The service announces only while one is
+     * (PlacedWidgets), so the last announcement may be old: it is dropped and the service asked for one.
+     */
+    fun placed(context: Context) {
+        playing = Playing()
+        Nori.get(context).widgets.enabled()
+    }
 
     /** Takes in [intent], an announcement. Main thread. */
     fun heard(intent: Intent) {

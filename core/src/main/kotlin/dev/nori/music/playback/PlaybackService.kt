@@ -67,7 +67,7 @@ class PlaybackService : MediaLibraryService() {
         /** The car's own now-playing buttons: repeat, turned on round (off, all, one), and a radio from the song playing. */
         const val CMD_REPEAT = "nori.repeat"
         const val CMD_RADIO = "nori.radio"
-        /** Broadcast inside the package on every track or play-state change; what a home-screen widget listens to. */
+        /** Broadcast inside the package on every track or play-state change while a home-screen widget is placed (PlacedWidgets). */
         const val ACTION_STATE = "dev.nori.music.STATE"
         const val EXTRA_TITLE = "title"
         const val EXTRA_ARTIST = "artist"
@@ -196,6 +196,7 @@ class PlaybackService : MediaLibraryService() {
         offlineBridge = OfflineBridge(this, player, { nori.core }, nori.session, main, ::applyEdit, ::skipAfterError)
         player.onBridge = ::bridge
         player.addListener(listener)
+        nori.widgets.onPlaced = ::announce
 
         // Fired from the audio device callback (main) and from the player's track opening (its own thread);
         // the player may only be touched on the main looper.
@@ -274,6 +275,7 @@ class PlaybackService : MediaLibraryService() {
     override fun onDestroy() {
         nori.remotes.serve(false)
         nori.remotes.service = null
+        nori.widgets.onPlaced = null
         sessionPlayer = null
         rustPlayer = null
         engine = null
@@ -341,6 +343,7 @@ class PlaybackService : MediaLibraryService() {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             // Sound is coming out: whatever failed before it is no longer a run (rules.rs queue_playing).
             if (isPlaying) nori.session.queuePlaying()
+            observer?.playing(isPlaying)
             announce()
             scrobbler.onPlaying(isPlaying)
             main.removeCallbacks(idleRelease)
@@ -487,6 +490,7 @@ class PlaybackService : MediaLibraryService() {
 
     private fun announce() {
         remoteState()
+        if (!nori.widgets.any) return
         val m = player.currentMediaItem?.mediaMetadata
         sendBroadcast(android.content.Intent(ACTION_STATE).setPackage(packageName)
             .putExtra(EXTRA_TITLE, m?.title?.toString()).putExtra(EXTRA_ARTIST, m?.artist?.toString()).putExtra(EXTRA_PLAYING, player.isPlaying)
@@ -977,6 +981,9 @@ interface PlaybackObserver {
 
     /** The output's shallow buffer (the app in sight) came on or off. */
     fun shallow(on: Boolean)
+
+    /** The player started or stopped sounding. */
+    fun playing(on: Boolean) {}
 
     /** The user pressed next or previous (the session's buttons: the app, the notification, a headset) on queue place [index]. */
     fun skipped(index: Int) {}

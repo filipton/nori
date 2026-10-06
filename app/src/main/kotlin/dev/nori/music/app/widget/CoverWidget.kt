@@ -1,14 +1,13 @@
 package dev.nori.music.app.widget
 
 import android.appwidget.AppWidgetManager
-import android.appwidget.AppWidgetProvider
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import dev.nori.music.playback.PlaybackService
 
 /** The cover of the song playing, dissolving under its name, with its Play ([Face.TILE]; one row high, [Face.STRIP]). Never polled. */
-class CoverWidget : AppWidgetProvider() {
+class CoverWidget : NoriWidget() {
     override fun onReceive(context: Context, intent: Intent) {
         super.onReceive(context, intent)
         if (intent.action == PlaybackService.ACTION_STATE) {

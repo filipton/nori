@@ -1,11 +1,11 @@
 package dev.nori.music.app
 
 import android.appwidget.AppWidgetManager
-import android.appwidget.AppWidgetProvider
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import dev.nori.music.app.widget.Face
+import dev.nori.music.app.widget.NoriWidget
 import dev.nori.music.app.widget.NowFaces
 import dev.nori.music.app.widget.Widgets
 import dev.nori.music.playback.PlaybackService
@@ -17,7 +17,7 @@ import dev.nori.music.playback.PlaybackService
  * Buttons are plain media-button intents, so they work with the app and the service both dead. Kept under
  * this name, which widgets already placed are bound to.
  */
-class PlayerWidget : AppWidgetProvider() {
+class PlayerWidget : NoriWidget() {
     override fun onReceive(context: Context, intent: Intent) {
         super.onReceive(context, intent)
         if (intent.action == PlaybackService.ACTION_STATE) {
