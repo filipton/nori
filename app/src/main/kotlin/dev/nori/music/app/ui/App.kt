@@ -364,10 +364,12 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
             // text that does not name one (which left titles rendering almost black).
             Surface(color = MaterialTheme.colorScheme.background, contentColor = MaterialTheme.colorScheme.onBackground) {
             Box(Modifier.fillMaxSize().onGloballyPositioned { sheet.rootHeight = it.size.height.toFloat() }) {
-              // Everything under the player. Once the player covers it completely it is not drawn at all:
-              // a layer at zero alpha is skipped, so a page left animating underneath costs nothing.
+              // Everything under the player. Once the player covers it completely it is not drawn at all (a
+              // layer at zero alpha is skipped), and what ticks on the page stops (LocalPageCovered).
+              val covered by remember(sheet) { androidx.compose.runtime.derivedStateOf { sheet.progress.value >= 1f } }
               CompositionLocalProvider(LocalWide provides wide, LocalCoverAtEnd provides coverAtEnd, LocalTabTurn provides { turn.value }, LocalPageStart provides pageStart, LocalPageEnd provides pageEnd) {
-              Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (sheet.progress.value >= 1f) 0f else 1f }) {
+              CompositionLocalProvider(LocalPageCovered provides covered) {
+              Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (covered) 0f else 1f }) {
               // The strips the rail and the camera stand on are the app's own page; a tinted page paints them over
               // itself (HeroPage), so its colour comes and goes with the page. Painted here in the chrome's
               // colour, which follows a page on a slower fade of its own, they held the album's colour at the
@@ -431,6 +433,7 @@ fun App(launchRoute: androidx.compose.runtime.MutableState<String?>? = null) {
                   // changed from here like every other one. Outside this, it saw only the server's
                   // answer, so a tap on it changed nothing until the song came round again.
                   CompositionLocalProvider(LocalStarMarks provides marks) { BottomChrome(player, actions, nav::player, if (wide) 0.dp else tabsHeight, chromeLook) }
+              }
               }
               }
               PlayerLayer(sheet) { CompositionLocalProvider(LocalStarMarks provides marks) { PlayerScreen(player, actions) } }

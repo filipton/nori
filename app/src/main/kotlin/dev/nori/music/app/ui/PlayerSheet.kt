@@ -4,10 +4,12 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
@@ -15,6 +17,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -137,6 +140,20 @@ val LocalPlayerSheet = staticCompositionLocalOf<PlayerSheet> { error("no player 
  * and everything in it that ticks, or reaches outside the player, checks this first.
  */
 val LocalPlayerShown = androidx.compose.runtime.compositionLocalOf { true }
+
+/** Whether the open player covers the pages under it completely. They stay composed and resumed. */
+val LocalPageCovered = androidx.compose.runtime.compositionLocalOf { false }
+
+/**
+ * Whether what this composable draws can be seen: its screen resumed, the player not over the page and,
+ * inside the player, the player on screen. Anything that ticks runs only while this holds.
+ */
+@Composable
+fun seen(): Boolean {
+    var resumed by remember { mutableStateOf(false) }
+    LifecycleResumeEffect(Unit) { resumed = true; onPauseOrDispose { resumed = false } }
+    return resumed && !LocalPageCovered.current && LocalPlayerShown.current
+}
 
 /**
  * Vertical drags on this element move the sheet. The velocity is taken from the summed deltas, not

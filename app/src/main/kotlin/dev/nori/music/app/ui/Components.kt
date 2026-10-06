@@ -456,8 +456,7 @@ private const val BARS_STEP_MS = 34L
  *
  * The phase is read in the draw phase, so a frame invalidates this 16 dp box and nothing else - no
  * recomposition and no relayout anywhere in the list. Nothing runs at all while the music is paused,
- * while the screen is off, or while this row is not composed, which is every case the battery cares
- * about: a list is only on screen when someone is looking at it.
+ * while this row is not composed or not [seen] (screen off, or the player over the page).
  */
 @Composable
 fun PlayingBars(tint: Color, modifier: Modifier = Modifier) {
@@ -466,10 +465,9 @@ fun PlayingBars(tint: Color, modifier: Modifier = Modifier) {
     val player: dev.nori.music.app.vm.PlayerViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
     val moving by player.sounding.collectAsStateWithLifecycle()
     val phase = remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
-    var resumed by remember { androidx.compose.runtime.mutableStateOf(false) }
-    androidx.lifecycle.compose.LifecycleResumeEffect(Unit) { resumed = true; onPauseOrDispose { resumed = false } }
-    androidx.compose.runtime.LaunchedEffect(moving, resumed) {
-        if (!moving || !resumed) return@LaunchedEffect
+    val seen = seen()
+    androidx.compose.runtime.LaunchedEffect(moving, seen) {
+        if (!moving || !seen) return@LaunchedEffect
         // One callback object for every frame, handed to the frame clock as it is: the millisecond
         // variants wrap it in a new lambda each frame, which is garbage for as long as the music plays.
         val tick: (Long) -> Unit = { phase.floatValue = it / 1e9f }

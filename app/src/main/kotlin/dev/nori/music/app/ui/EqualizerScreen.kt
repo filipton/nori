@@ -51,14 +51,13 @@ import dev.nori.music.settings.effectivePreampDb
 import dev.nori.music.settings.usesGain
 import dev.nori.music.settings.slope
 
-/** The limiter's gain reduction, sampled while this screen is resumed and dropped the moment it is not. */
+/** The limiter's gain reduction, sampled while this screen is [seen] and dropped the moment it is not. */
 @Composable
 private fun limiterMeter(): Float {
     var value by remember { mutableStateOf(0f) }
-    var resumed by remember { mutableStateOf(false) }
-    androidx.lifecycle.compose.LifecycleResumeEffect(Unit) { resumed = true; onPauseOrDispose { resumed = false } }
-    androidx.compose.runtime.LaunchedEffect(resumed) {
-        while (resumed) {
+    val seen = seen()
+    androidx.compose.runtime.LaunchedEffect(seen) {
+        while (seen) {
             value = dev.nori.music.playback.Equalizer.meterDb
             kotlinx.coroutines.delay(stage.meterMs)
         }

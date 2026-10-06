@@ -217,16 +217,15 @@ private fun Section(title: String, content: @Composable ColumnScope.() -> Unit) 
 /** A row with a line of text and a button at its end: a count, an action. */
 /**
  * What the compressor is taking off right now: a line and a bar. Read from the player only while this
- * page is resumed, the way the equalizer screen reads the limiter's meter, and dropped the moment it is
+ * page is [seen], the way the equalizer screen reads the limiter's meter, and dropped the moment it is
  * not: nothing ticks with the screen off. Its own scope, so a reading redraws only this row.
  */
 @Composable
 private fun CompressionMeter() {
     var db by remember { mutableFloatStateOf(0f) }
-    var resumed by remember { mutableStateOf(false) }
-    androidx.lifecycle.compose.LifecycleResumeEffect(Unit) { resumed = true; onPauseOrDispose { resumed = false } }
-    LaunchedEffect(resumed) {
-        while (resumed) {
+    val seen = seen()
+    LaunchedEffect(seen) {
+        while (seen) {
             db = dev.nori.music.playback.Equalizer.compressionDb
             kotlinx.coroutines.delay(stage.meterMs)
         }

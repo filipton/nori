@@ -432,10 +432,9 @@ fun MiniPlayer(vm: PlayerViewModel, actions: ActionsViewModel, onOpen: () -> Uni
     }
     val scheme = MaterialTheme.colorScheme
     val sheet = LocalPlayerSheet.current
-    // Under the open player the bar is still composed and drawn, only covered: a title walking there
-    // redrew the whole screen every frame for nobody. Read through derivedStateOf so a drag of the sheet
-    // recomposes nothing here until it lands.
-    val covered by remember(sheet) { androidx.compose.runtime.derivedStateOf { sheet.progress.value >= 1f } }
+    // Under the open player the bar is still composed, only covered: a title walking there redrew the
+    // whole screen every frame for nobody.
+    val covered = LocalPageCovered.current
     Surface(
         shape = CardShape, color = slab, contentColor = content,
         shadowElevation = 10.dp,

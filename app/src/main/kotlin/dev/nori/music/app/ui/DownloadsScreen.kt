@@ -204,17 +204,18 @@ private fun MarkBody(glyph: Glyph, drawn: Glyph, mark: DownloadMark?, growIn: Bo
 fun DownloadRing(progress: StateFlow<Float>?, size: Dp, stroke: Dp, track: Color, fill: Color, plain: Boolean, modifier: Modifier = Modifier) {
     val value = progress?.collectAsStateWithLifecycle()?.value
     val known = value == null || value >= 0f
+    val still = plain || LocalPageCovered.current
     Crossfade(known, modifier.size(size), animationSpec = if (plain) snap() else tween(200), label = "ring") { determinate ->
         if (determinate) {
             val shown = remember { Animatable(0f) }
             val to = (value ?: 0f).coerceAtLeast(0f)
-            LaunchedEffect(to) { if (plain) shown.snapTo(to) else shown.animateTo(to, tween(280, easing = LinearEasing)) }
+            LaunchedEffect(to, still) { if (still) shown.snapTo(to) else shown.animateTo(to, tween(280, easing = LinearEasing)) }
             Canvas(Modifier.size(size)) {
                 ring(track, stroke)
                 val sweep = 360f * shown.value
                 if (sweep > 0f) arc(fill, stroke, -90f, sweep)
             }
-        } else if (plain) {
+        } else if (still) {
             Canvas(Modifier.size(size)) { ring(track, stroke); arc(fill, stroke, -90f, 70f) }
         } else {
             val turn by rememberInfiniteTransition(label = "ring turn").animateFloat(
@@ -253,10 +254,11 @@ fun DownloadsScreen(actions: ActionsViewModel) {
     val nav = LocalNav.current
     val sections by actions.downloadSections.collectAsStateWithLifecycle()
     // Speed and time left move every second while something downloads; the words are the core's,
-    // asked again on this beat only while the screen is open and something is running.
+    // asked again on this beat only while the screen is seen and something is running.
     val running = (sections?.active?.size ?: 0) > 0
-    val beat by androidx.compose.runtime.produceState(0, running) {
-        while (running) { kotlinx.coroutines.delay(1_000); value++ }
+    val seen = seen()
+    val beat by androidx.compose.runtime.produceState(0, running, seen) {
+        while (running && seen) { kotlinx.coroutines.delay(1_000); value++ }
     }
     val plain = reduceMotion()
     val cover = { id: String? -> actions.cover(id, CoverSize.ROW) }
