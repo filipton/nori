@@ -3125,7 +3125,7 @@ fn offload_perf_report() {
 #[test]
 fn offload_heard_again_after_pause() {
     for fade_ms in [0, 300] {
-        for wait_ms in [100, 2_000] {
+        for wait_ms in [100, 2_000, 6 * 60_000] {
             let d = dir();
             let Some((rig, fake)) = two_on_the_chip(&d, 20) else { return };
             rig.engine.set_settings(Settings { fade_ms, ..offload() });
@@ -3162,5 +3162,25 @@ fn torn_down_after_skip_carries_on() {
     assert!(rig.wait(10, |r| !r.engine.status().offloaded && !r.card.heard.lock().is_empty()), "the CPU took over");
     let s = rig.engine.status();
     assert!(s.index == Some(1) && s.position_ms >= 350, "b on from about 400 ms, not again from its start: {s:?}");
+    rig.engine.stop();
+}
+
+/// A track torn down while paused (the route changed under it): play brings the song back, on the CPU
+/// if it must, from where it was paused, not silence until the next song.
+#[test]
+fn torn_down_while_paused_plays_again() {
+    let d = dir();
+    let Some((rig, fake)) = two_on_the_chip(&d, 20) else { return };
+    fake.advance(44_100 * 3);
+    assert!(rig.wait(5, |r| r.engine.status().position_ms >= 2_900), "{:?}", rig.engine.status());
+    rig.engine.pause();
+    assert!(rig.wait(5, |r| r.engine.status().state == State::Paused));
+    rig.run(2_000);
+    fake.tear_down();
+    rig.run(2_000);
+    rig.engine.play();
+    assert!(rig.wait(10, |r| r.card.heard.lock().len() > 44_100 * 2), "heard again: {:?} {:?}", rig.engine.status(), fake.calls());
+    let s = rig.engine.status();
+    assert!(s.index == Some(0) && s.position_ms >= 2_900, "a from where it was paused: {s:?}");
     rig.engine.stop();
 }

@@ -2690,7 +2690,7 @@ mod tests {
     fn heard_again_after_pause() {
         for shallow in [false, true] {
             for fade_ms in [0, 300] {
-                for wait_ms in [100, 3_000] {
+                for wait_ms in [100, 3_000, 6 * 60_000] {
                     let wavs = Arc::new(Wavs(vec![("a".into(), Arc::new(wav(&tone(60, 440.0))))]));
                     let queue = nori_engine::SharedQueue::default();
                     queue.0.lock().set(vec!["a".into()], Some(0), false, 0);
@@ -2705,6 +2705,8 @@ mod tests {
                     assert!(wait(5, &mut || live.lock().played() > 3 * RATE as u64), "it plays");
                     engine.pause();
                     time.run(Duration::from_millis(wait_ms));
+                    // A track opened again after a long pause starts at the platform's full volume, setting none.
+                    let set = live.lock().volumes.len();
                     engine.play();
                     time.run(Duration::from_secs(1));
                     let played = live.lock().played();
@@ -2712,7 +2714,7 @@ mod tests {
                     let l = live.lock();
                     let what = format!("shallow {shallow}, fade {fade_ms} ms, played again after {wait_ms} ms");
                     assert!(l.played() - played >= 4 * RATE as u64, "{what}: {} ms heard in five seconds", (l.played() - played) * 1000 / RATE as u64);
-                    assert!(l.volumes.last().is_none_or(|&v| v == 1.0), "{what}: at volume {:?}", l.volumes.last());
+                    assert!(l.volumes[set..].last().is_none_or(|&v| v == 1.0), "{what}: at volume {:?}", l.volumes[set..].last());
                     drop(l);
                     engine.stop();
                 }

@@ -3066,7 +3066,7 @@ fn seek_into_ending_lands() {
 fn heard_again_after_pause() {
     for shallow in [false, true] {
         for fade_ms in [0, 400] {
-            for wait_ms in [100, 3_000] {
+            for wait_ms in [100, 3_000, 6 * 60_000] {
                 let a = vec![8000i16; RATE as usize * 2 * 60];
                 let rig = Rig::new(&[("a", &a)], prefs_off(), Settings { fade_ms, ..Settings::default() });
                 rig.engine.set_shallow(shallow);
