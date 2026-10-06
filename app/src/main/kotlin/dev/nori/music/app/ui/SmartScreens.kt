@@ -141,7 +141,7 @@ private fun MixArt(card: MixCard, size: androidx.compose.ui.unit.Dp, onClick: ((
 fun MixTiles(vm: MixesViewModel = viewModel()) {
     val cards by vm.cards.collectAsStateWithLifecycle()
     val nav = LocalNav.current
-    LazyRow(Modifier.bleedsToEdges(), contentPadding = edgePadding(horizontal = Space.gutter), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    LazyRow(Modifier.bleedsToEdges(), rememberShelfState(cards.firstOrNull()?.id), contentPadding = edgePadding(horizontal = Space.gutter), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         items(cards, key = { it.id }) { c -> MixArt(c, 150.dp, onClick = { nav.mix(c.id) }) }
     }
 }

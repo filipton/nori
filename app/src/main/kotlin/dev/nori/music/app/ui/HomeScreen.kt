@@ -20,9 +20,11 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material3.Text
@@ -156,7 +158,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.shelf(
         val nav = LocalNav.current
         Column(Modifier.arriving(arrival, place, rise)) {
             SectionTitle(title)
-            LazyRow(Modifier.bleedsToEdges(), contentPadding = edgePadding(horizontal = Space.gutter), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            LazyRow(Modifier.bleedsToEdges(), rememberShelfState(albums.firstOrNull()?.id), contentPadding = edgePadding(horizontal = Space.gutter), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 items(albums, key = { it.id }, contentType = { "album" }) { a -> AlbumCard(a, vm.cover(a.coverArt, CoverSize.CARD), 150.dp, { nav.album(a.id, a) }) }
             }
         }
@@ -176,13 +178,29 @@ private fun androidx.compose.foundation.lazy.LazyListScope.playlistShelf(
         val nav = LocalNav.current
         Column(Modifier.arriving(arrival, place, rise)) {
             SectionTitle(title)
-            LazyRow(Modifier.bleedsToEdges(), contentPadding = edgePadding(horizontal = Space.gutter), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            LazyRow(Modifier.bleedsToEdges(), rememberShelfState(playlists.firstOrNull()?.id), contentPadding = edgePadding(horizontal = Space.gutter), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 items(playlists, key = { it.id }, contentType = { "playlist" }) { p ->
                     CoverCard(p.name, remember(p.songCount) { say.songs(p.songCount.toInt()) }, vm.cover(p.coverArt, CoverSize.CARD), 150.dp, { nav.playlist(p.id, p) })
                 }
             }
         }
     }
+}
+
+/**
+ * A shelf's scroll state that stays at its start when cards come in ahead of its first (an album just
+ * played joins Recently played): by key, the row would keep the old first card in view, one card in.
+ * A shelf scrolled by hand keeps its place.
+ */
+@Composable
+internal fun rememberShelfState(first: Any?): LazyListState {
+    val state = rememberLazyListState()
+    val shown = remember { arrayOf(first) }
+    if (shown[0] != first) {
+        if (state.firstVisibleItemIndex == 0 && state.firstVisibleItemScrollOffset == 0) state.requestScrollToItem(0)
+        shown[0] = first
+    }
+    return state
 }
 
 /** A shelf of songs plays from where it is tapped, the rest of the shelf behind it, as a list would. */
@@ -200,7 +218,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.songShelf(
     item(key = title, contentType = "shelf") {
         Column(Modifier.arriving(arrival, place, rise)) {
             SectionTitle(title)
-            LazyRow(Modifier.bleedsToEdges(), contentPadding = edgePadding(horizontal = Space.gutter), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            LazyRow(Modifier.bleedsToEdges(), rememberShelfState(songs.firstOrNull()?.id), contentPadding = edgePadding(horizontal = Space.gutter), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 itemsIndexed(songs, key = { _, s -> s.id }, contentType = { _, _ -> "song" }) { i, s ->
                     CoverCard(s.title, s.artist, vm.cover(s.coverArt, CoverSize.CARD), 150.dp, { actions.play(songs, i, from) })
                 }
