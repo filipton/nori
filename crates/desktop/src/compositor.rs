@@ -568,6 +568,8 @@ struct Draw {
     bind: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     pyramid: Option<Pyramid>,
+    /// The pyramid holds the page as last rendered.
+    page_blurred: bool,
     /// Surface must be reconfigured before the next frame.
     stale: bool,
 }
@@ -645,6 +647,7 @@ impl Draw {
             bind,
             sampler,
             pyramid: None,
+            page_blurred: false,
             stale: false,
         })
     }
@@ -675,6 +678,9 @@ impl Draw {
             if fresh || layer.dirty.get() {
                 // A fresh texture is rendered again next frame: the first render at a new size can come out empty.
                 layer.dirty.set(fresh);
+                if role.get() == Some(Role::Page) {
+                    self.page_blurred = false;
+                }
                 if let Some((t, _)) = layer.texture.borrow().as_ref() {
                     if let Err(e) = layer.renderer.render_to_texture(t) {
                         eprintln!("nori: a layer was not drawn: {e}");
@@ -757,12 +763,18 @@ impl Draw {
         gpu.queue.present(frame);
     }
 
-    /// Draws the page's blur pyramid: each level a 13-tap downsample of the one above it.
+    /// Draws the page's blur pyramid, each level a 13-tap downsample of the one above it, unless it
+    /// already holds the page as last rendered.
     fn blur_page(&mut self, d: &wgpu::Device, q: &wgpu::Queue, enc: &mut wgpu::CommandEncoder, page: &wgpu::TextureView) {
         let (w, h) = ((self.config.width / 2).max(1), (self.config.height / 2).max(1));
-        if self.pyramid.as_ref().is_none_or(|p| p.texture.width() != w || p.texture.height() != h) {
+        let sized = self.pyramid.as_ref().is_some_and(|p| p.texture.width() == w && p.texture.height() == h);
+        if sized && self.page_blurred {
+            return;
+        }
+        if !sized {
             self.pyramid = Some(pyramid(d, w, h));
         }
+        self.page_blurred = true;
         let Some(p) = &self.pyramid else { return };
         for (k, target) in p.mips.iter().enumerate() {
             let from = if k == 0 { page } else { &p.mips[k - 1] };
