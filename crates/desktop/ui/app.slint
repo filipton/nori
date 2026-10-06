@@ -2468,6 +2468,7 @@ export component AppWindow inherits Window {
     changed width => { root.page-moved(); }
     changed height => { root.page-moved(); }
     changed full-player => { root.player-changed(); }
+    changed full-panel => { root.player-changed(); }
     changed view => { root.player-changed(); }
     // The lyrics of the song playing: the lines, the one sung (-1 for none), and a line about them.
     in property <[string]> lyrics-lines;

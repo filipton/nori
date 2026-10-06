@@ -51,14 +51,15 @@ impl SongLyrics {
         lyrics_replaces(Some(&self.pick), next)
     }
 
-    /// State at `position_ms`: active line, fill progress, and when to call again.
-    pub fn advance(&self, position_ms: i64, force: bool) -> Now {
-        let step = self.clock.advance(position_ms, true, true, force);
+    /// State at `position_ms`: active line, fill progress, and when to call again. `sweep`: a view showing
+    /// the words fill is open; without one the next call is due at the next line.
+    pub fn advance(&self, position_ms: i64, sweep: bool, force: bool) -> Now {
+        let step = self.clock.advance(position_ms, sweep, true, force);
         let sweeping = self.clock.timing().sweeps();
         let wait = match step.wait {
             0 => None,
             // While a word fills, the clock counts 60 Hz frames.
-            n if sweeping && !step.still => Some((n as u64 * 16).max(16)),
+            n if sweep && sweeping && !step.still => Some((n as u64 * 16).max(16)),
             n => Some(n as u64),
         };
         let line = usize::try_from(step.frame.active).ok().and_then(|i| self.pick.lyrics.lines.get(i));
@@ -130,9 +131,9 @@ mod tests {
     #[test]
     fn lyric_lines() {
         let l = SongLyrics::new(pick(), 0, None);
-        assert_eq!(l.advance(1500, true).active, 0);
-        assert_eq!(l.advance(3500, true).active, 1);
-        let wait = l.advance(2500, true).wait;
+        assert_eq!(l.advance(1500, true, true).active, 0);
+        assert_eq!(l.advance(3500, true, true).active, 1);
+        let wait = l.advance(2500, true, true).wait;
         assert!(wait.is_some_and(|ms| ms <= 500), "the next line is due at 3000");
 
         // Split at fill position.
@@ -143,11 +144,17 @@ mod tests {
         // Timed words fill the line.
         let word = |start_ms, end_ms, start, end| LyricWord { start_ms, end_ms, start, end };
         let line = LyricLine { start_ms: 1000, end_ms: 3000, text: "one two".into(), words: vec![word(1000, 2000, 0, 3), word(2000, 3000, 4, 7)], ..Default::default() };
-        let lyrics = Lyrics { synced: true, word_timed: true, lines: vec![line], offset_ms: 0 };
+        let next = LyricLine { start_ms: 6000, end_ms: 7000, text: "three".into(), words: vec![word(6000, 7000, 0, 5)], ..Default::default() };
+        let lyrics = Lyrics { synced: true, word_timed: true, lines: vec![line, next], offset_ms: 0 };
         let l = SongLyrics::new(LyricsPick { lyrics, origin: LyricsOrigin::Server }, 0, None);
-        let now = l.advance(2500, true);
+        let now = l.advance(2500, true, true);
         assert!(now.sweeping);
         assert_eq!((now.sung.as_str(), now.now.as_str(), now.rest.as_str()), ("one t", "w", "o"));
+        assert!(now.wait.is_some_and(|ms| ms <= 16), "a word is filling");
+
+        // With no view showing the fill, only the next line is waited for.
+        let wait = l.advance(2500, false, true).wait;
+        assert!(wait.is_some_and(|ms| ms >= 100), "the next line is due at 6000, waited {wait:?}");
     }
 
 }

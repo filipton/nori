@@ -448,6 +448,7 @@ fn wire(ui: &AppWindow, h: &AppHandle) {
     on!(ui.on_zoom_window, h, |a| a.compositor.zoom_window());
     on!(ui.on_page_moved, h, |a| a.place_player());
     on!(ui.on_player_changed, h, |a| {
+        a.lyrics_step(true);
         a.mirror();
         a.place_player();
         a.devices_watched();
@@ -1204,11 +1205,11 @@ impl App {
         let seeking = self.seeking;
         let (Some(l), Some(s)) = (&mut self.lyrics, &self.session) else { return };
         let (at, playing) = s.engine.status_with(|st| (seeking.unwrap_or_else(|| st.position_now()), st.state == State::Playing));
-        let now = l.advance(at, force);
-        ui.set_lyrics_active(now.active);
-        ui.set_lyric_sweeping(now.sweeping);
         let full = ui.get_full_player() && ui.get_full_panel() == 2;
         let side = ui.get_inspector() == 2;
+        let now = l.advance(at, full || side, force);
+        ui.set_lyrics_active(now.active);
+        ui.set_lyric_sweeping(now.sweeping);
         let width = ui.window().size().to_logical(ui.window().scale_factor()).width;
         let mut pieces = |view, on: bool, size, w, lit, dim| if on && now.sweeping { l.pieces(view, &now, size, w, lit, dim) } else { Vec::new() };
         renew(&self.pieces[0], pieces(0, side, 22.0, 280.0 - 44.0, 0.92, 0.26));
