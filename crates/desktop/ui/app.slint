@@ -655,6 +655,30 @@ component SongLine inherits Rectangle {
     }
 }
 
+// The column heads over a table of SongLines: the same sums as its columns.
+component SongHeads inherits Rectangle {
+    property <length> cols: self.width - 8px - 12px - 44px - 44px - 4 * 12px;
+    for h in [{ t: "Song", x: 0, w: 0.5, g: 0 }, { t: "Artist", x: 0.5, w: 0.25, g: 1 }, { t: "Album", x: 0.75, w: 0.25, g: 2 }]: Text {
+        x: 8px + 44px + 12px + root.cols * h.x + h.g * 12px;
+        width: root.cols * h.w;
+        text: h.t;
+        color: Theme.dim;
+        font-size: 12px;
+        font-weight: 600;
+        vertical-alignment: center;
+    }
+    Text {
+        x: root.width - 12px - 44px;
+        width: 44px;
+        text: "Time";
+        color: Theme.dim;
+        font-size: 12px;
+        font-weight: 600;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+}
+
 component SideItem inherits Rectangle {
     in property <string> text;
     in property <string> icon;
@@ -2558,7 +2582,7 @@ export component AppWindow inherits Window {
                                 padding-right: 12px;
                                 Rectangle {
                                     border-radius: 9px;
-                                    background: root.artist-chosen == a.id ? Theme.accent : (ar.has-hover ? Theme.hover : transparent);
+                                    background: root.artist-chosen == a.id ? Theme.chosen : (ar.has-hover ? Theme.hover : transparent);
                                     HorizontalLayout {
                                         padding-left: 10px;
                                         padding-right: 10px;
@@ -2572,7 +2596,7 @@ export component AppWindow inherits Window {
                                         }
                                         Text {
                                             text: a.title;
-                                            color: root.artist-chosen == a.id ? white : Theme.text;
+                                            color: Theme.text;
                                             font-size: 13px;
                                             vertical-alignment: center;
                                             overflow: elide;
@@ -2665,6 +2689,13 @@ export component AppWindow inherits Window {
                             height: 56px;
                         }
                         HorizontalLayout {
+                            padding-left: 24px;
+                            padding-right: 16px;
+                            SongHeads {
+                                height: 28px;
+                            }
+                        }
+                        HorizontalLayout {
                             vertical-stretch: 1;
                             padding-left: 24px;
                             padding-right: 16px;
@@ -2672,6 +2703,9 @@ export component AppWindow inherits Window {
                                 for s[i] in root.songs: SongLine {
                                     song: s;
                                     number: i + 1;
+                                    table: true;
+                                    thumb: true;
+                                    picture: root.art(s.art, 0, root.covers-rev);
                                     play => { root.song(1, i, 0); }
                                     next => { root.song(1, i, 1); }
                                     later => { root.song(1, i, 2); }
@@ -2865,36 +2899,19 @@ export component AppWindow inherits Window {
                                 }
                                 // Only the rows on screen (and a few either side) are made: a playlist of thousands
                                 // opens as fast as one of ten.
-                                if root.page-kind == 2 && root.page-songs.length > 0: Rectangle {
-                                height: 28px;
-                                property <length> cols: self.width - 8px - 12px - 44px - 44px - 4 * 12px;
-                                for h in [{ t: "Song", x: 0, w: 0.5, g: 0 }, { t: "Artist", x: 0.5, w: 0.25, g: 1 }, { t: "Album", x: 0.75, w: 0.25, g: 2 }]: Text {
-                                    x: 8px + 44px + 12px + parent.cols * h.x + h.g * 12px;
-                                    width: parent.cols * h.w;
-                                    text: h.t;
-                                    color: Theme.dim;
-                                    font-size: 12px;
-                                    font-weight: 600;
-                                    vertical-alignment: center;
-                                }
-                                Text {
-                                    x: parent.width - 12px - 44px;
-                                    width: 44px;
-                                    text: "Time";
-                                    color: Theme.dim;
-                                    font-size: 12px;
-                                    font-weight: 600;
-                                    horizontal-alignment: right;
-                                    vertical-alignment: center;
-                                }
-                            }
                                 song-rows := Rectangle {
                                     property <length> row-h: root.page-kind == 2 ? 56px : 44px;
-                                    property <length> seen-from: -page-flick.content-y - self.y - 400px;
-                                    property <length> seen-to: -page-flick.content-y - self.y + page-flick.height + 400px;
-                                    height: root.page-songs.length * self.row-h;
+                                    // A playlist's column heads, right over its rows.
+                                    property <length> head: root.page-kind == 2 && root.page-songs.length > 0 ? 28px : 0;
+                                    property <length> seen-from: -page-flick.content-y - self.y - self.head - 400px;
+                                    property <length> seen-to: -page-flick.content-y - self.y - self.head + page-flick.height + 400px;
+                                    height: self.head + root.page-songs.length * self.row-h;
+                                    if song-rows.head > 0: SongHeads {
+                                        y: 0;
+                                        height: song-rows.head;
+                                    }
                                     for s[i] in root.page-songs: Rectangle {
-                                        y: i * song-rows.row-h;
+                                        y: song-rows.head + i * song-rows.row-h;
                                         height: song-rows.row-h;
                                         if (i + 1) * song-rows.row-h > song-rows.seen-from && i * song-rows.row-h < song-rows.seen-to: SongLine {
                                             width: parent.width;
