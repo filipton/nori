@@ -423,6 +423,11 @@ impl<T: Track> Sink<T> {
         self.runner.chain.eq.is_some()
     }
 
+    /// Whether input runs through the chain (else straight to the track).
+    pub fn processing(&self) -> bool {
+        self.runner.processing()
+    }
+
     /// Limiter reduction on the last buffer, dB.
     pub fn meter_db(&self) -> f32 {
         self.runner.meter_db
@@ -481,9 +486,9 @@ impl<T: Track> Sink<T> {
         let live = self.made > 0;
         let chain = &mut self.runner.chain;
         match (chain.sing.as_mut(), to.sing) {
+            // Off, it plays what it holds at full level, then leaves.
             (Some(m), level) => m.set_level(level.unwrap_or(1.0)),
             (None, Some(level)) => chain.sing = Some(Masker::new(f.rate, f.channels, f.encoding, level)),
-            // At full level it stays: leaving would drop what it holds.
             (None, None) => {}
         }
         match chain.eq.as_mut() {
@@ -515,6 +520,11 @@ impl<T: Track> Sink<T> {
             }
             None => {}
         }
+        if to.sing.is_none() && self.runner.chain.sing.is_some() {
+            self.drain_sing();
+            self.runner.chain.sing = None;
+        }
+        let chain = &mut self.runner.chain;
         match (to.skip_silence, chain.silence.is_some()) {
             (true, false) => chain.silence = Some(SilenceSkipper::new(f.rate, f.channels, f.encoding == Encoding::Float)),
             (false, true) => {
@@ -804,18 +814,22 @@ impl<T: Track> Sink<T> {
     fn drain(&mut self) {
         let Some(f) = self.format else { return };
         let float = f.encoding == Encoding::Float;
-        if let Some(m) = self.runner.chain.sing.as_mut() {
-            let mut tail = Vec::new();
-            m.end(&self.runner.masks, &mut tail);
-            self.runner.run(&tail, float, None);
-            self.made_output(0.0);
-        }
+        self.drain_sing();
         let held = self.runner.chain.eq.as_ref().filter(|e| !e.is_identity()).map_or(0, Equalizer::delay_frames);
         if held > 0 {
             self.runner.run(&vec![0u8; held * f.frame_bytes()], float, None);
             self.made_output(0.0);
         }
         self.runner.drain_stages(true);
+        self.made_output(0.0);
+    }
+
+    /// What Sing's masker holds, through the rest of the chain.
+    fn drain_sing(&mut self) {
+        let (Some(f), Some(m)) = (self.format, self.runner.chain.sing.as_mut()) else { return };
+        let mut tail = Vec::new();
+        m.end(&self.runner.masks, &mut tail);
+        self.runner.run(&tail, f.encoding == Encoding::Float, None);
         self.made_output(0.0);
     }
 

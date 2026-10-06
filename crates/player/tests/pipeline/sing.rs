@@ -58,3 +58,21 @@ fn mask_made_mid_song_is_heard_and_each_song_keeps_its_own() {
     assert!(level(&p, 5.2, 9.8) < full * 0.01, "the next song by its own mask");
     assert!((level(&p, 10.2, 14.8) / full - 1.0).abs() < 0.02, "a song without one plays unchanged");
 }
+
+#[test]
+fn turned_off_mid_song_leaves_the_chain() {
+    let tone = sine(440.0, 0.3, 6.0);
+    let mut p = Player::new(vec![track("a", &tone)]);
+    p.app.masks.insert("a".into(), all_vocals(6.0));
+    p.set_sing(Some(0.0));
+    p.play_from(0);
+    p.run_for(2_000);
+    p.set_sing(None);
+    assert!(!p.sink.processing(), "the masker is out at once, not at the next seek");
+    assert!(p.run_to_end(10_000));
+    assert!(p.sink.gaps.is_empty(), "the audio kept flowing");
+    assert_eq!(p.sink.heard_samples().len(), tone.len(), "every frame played once");
+    let full = 0.3 / 2f64.sqrt();
+    assert!(level(&p, 0.5, 1.9) < full * 0.01, "masked before");
+    assert!((level(&p, 2.2, 5.5) / full - 1.0).abs() < 0.02, "as recorded after");
+}
