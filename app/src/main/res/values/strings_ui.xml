@@ -631,4 +631,6 @@
     <string name="jam_not_allowed">Only the host or an admin can do that</string>
     <string name="jam_waiting">Waiting for the host’s phone</string>
     <string name="menu_request">Ask for this song</string>
+    <string name="jam_unsupported">Your server doesn’t support jams yet. They need octo-fiesta with nori support in front of it.</string>
+    <string name="devices_nearby_only">Devices on this network show up here. To reach them from anywhere, your server needs octo-fiesta with nori support.</string>
 </resources>

@@ -64,6 +64,14 @@ class TestBridge : BroadcastReceiver() {
             Thread({ Log.i("noritest", runCatching { Bench.covers(app, arg.toIntOrNull() ?: 40) }.getOrElse { "coverbench failed: $it" }) }, "coverbench").start()
             return
         }
+        // Remote control and jams, as the device checks drive them: "watch on|off", "devices", "jam" (opens
+        // one, answers its link), "view", "accept" (the first request), "join <link>". The core answers off
+        // the main thread, so this does too.
+        if (cmd == "remote") {
+            val nori = dev.nori.music.Nori.get(context)
+            Thread({ Log.i("noritest", runCatching { remoteCheck(nori, arg, value) }.getOrElse { "remote failed: $it" }) }, "remotecheck").start()
+            return
+        }
         Handler(Looper.getMainLooper()).post {
             val reply = when (cmd) {
                 "open" -> TestHooks.open?.let { it(arg); "ok" } ?: "no ui"
@@ -93,5 +101,28 @@ class TestBridge : BroadcastReceiver() {
             }
             Log.i("noritest", reply)
         }
+    }
+}
+
+/** One line about the remote control or the jam; see the "remote" command. */
+private fun remoteCheck(nori: dev.nori.music.Nori, arg: String, value: String): String {
+    val r = { nori.remotes.peek() }
+    return when (arg) {
+        "watch" -> { nori.remotes.watch(value == "on"); "ok" }
+        "devices" -> r()?.devices()?.joinToString("; ") { d ->
+            val st = d.state?.let { s -> "${if (s.playing) "playing" else "paused"} ${s.entries.firstOrNull { it.index == s.index }?.title}" } ?: "no state"
+            "${d.name}${if (d.nearby) " (nearby)" else ""}: $st${d.refused?.let { " refused $it" } ?: ""}"
+        }?.ifEmpty { "none" } ?: "no remote"
+        "jam" -> kotlinx.coroutines.runBlocking { nori.remotes.jamOpen() }
+        "view" -> r()?.jamView()?.let { v ->
+            "hosting=${v.hosting} members=${v.members.joinToString(",") { "${it.name}:${it.role}" }} pending=${v.pending.joinToString(",") { it.song.title }} next=${v.queue?.entries?.joinToString(",") { it.title }}"
+        } ?: "no jam"
+        "accept" -> r()?.jamView()?.pending?.firstOrNull()?.let { p -> r()?.jamAct(dev.nori.music.ffi.remote.Op.Decide(p.request, true)); "accepted ${p.song.title}" } ?: "nothing waiting"
+        // "ask <query>": a guest asks for the first song found.
+        "ask" -> kotlinx.coroutines.runBlocking { nori.library.search(value).songs.firstOrNull() }?.let { s ->
+            r()?.jamAct(dev.nori.music.ffi.remote.Op.Request(s)); "asked for ${s.title}"
+        } ?: "nothing found"
+        "join" -> { kotlinx.coroutines.runBlocking { nori.joinJam(value) }; "joined" }
+        else -> "unknown remote check $arg"
     }
 }

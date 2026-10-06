@@ -95,7 +95,6 @@ fun SongMenu(
     /** Set for a jam guest, whose menu only asks the host for the song. */
     request: ((Song) -> Unit)? = null,
 ) {
-    val nav = LocalNav.current
     // Which of the menu's stages is up, fresh each time the menu opens. The sheet slides down as the
     // sleep choices, the details or the playlist picker come up over it, and each of those leaves with
     // the menu when it is done.
@@ -150,11 +149,12 @@ fun SongMenu(
                 dev.nori.music.ffi.library.SongAction.RemoveDownload -> Item(label, Icons.Filled.Delete) { actions.removeDownloads(listOf(song.id)); onDismiss() }
                 dev.nori.music.ffi.library.SongAction.StopDownload -> Item(label, Icons.Filled.Close) { actions.cancelDownloads(listOf(song)); onDismiss() }
                 dev.nori.music.ffi.library.SongAction.Download -> Item(label, Icons.Filled.Download) { actions.download(listOf(song)); onDismiss() }
-                is dev.nori.music.ffi.library.SongAction.GoToAlbum -> Item(label, Icons.Filled.Album) { nav.album(a.id); onDismiss() }
+                // Read where it is used: a jam guest's app has no pages to go to, and no navigation.
+                is dev.nori.music.ffi.library.SongAction.GoToAlbum -> { val nav = LocalNav.current; Item(label, Icons.Filled.Album) { nav.album(a.id); onDismiss() } }
                 // The song's own cover stands in for a lone artist's until their page has one.
-                is dev.nori.music.ffi.library.SongAction.GoToArtist -> Item(label, Icons.Filled.Person) {
+                is dev.nori.music.ffi.library.SongAction.GoToArtist -> { val nav = LocalNav.current; Item(label, Icons.Filled.Person) {
                     nav.artist(a.id, Artist(a.id, a.name, song.coverArt.takeIf { song.artists.size <= 1 }, null, 0u, false, false)); onDismiss()
-                }
+                } }
                 dev.nori.music.ffi.library.SongAction.AddToLibrary -> Item(label, Icons.Filled.LibraryAdd) { actions.addToLibrary(song.id, isAlbum = false); onDismiss() }
                 dev.nori.music.ffi.library.SongAction.SleepTimer -> Item(label, Icons.Filled.Bedtime) { sleeping = true }
                 dev.nori.music.ffi.library.SongAction.StartRadio -> Item(label, Icons.Filled.Radio) { actions.startRadio(song); onDismiss() }
@@ -165,6 +165,8 @@ fun SongMenu(
                 dev.nori.music.ffi.library.SongAction.Request -> Item(label, Icons.AutoMirrored.Filled.QueueMusic) { request?.invoke(song); onDismiss() }
             }
             items.forEachIndexed { n, it -> if (!it.more) line(it, labels[n]) }
+            // A jam guest's menu has nothing under "More".
+            if (items.none { it.more }) return@Column
             Hairline(startIndent = Space.gutter)
             val turn by animateFloatAsState(if (more) 180f else 0f, label = "more")
             Row(

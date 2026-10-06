@@ -121,7 +121,12 @@ class Nori private constructor(private val context: Context) {
         val pass = lifted { dev.nori.music.ffi.jamJoin(transport, link, dev.nori.music.remote.Remotes.deviceName(context)) }
         val guest = dev.nori.music.settings.newServer(dev.nori.music.ffi.settings.serverNewId())
             .copy(name = context.getString(dev.nori.music.core.R.string.jam_profile), url = pass.url, apiKey = pass.apiKey)
-        withContext(Dispatchers.Main) { activate(guest) }
+        // A guest of one jam at a time: the profile of a jam left behind goes.
+        val before = settings.value.server?.takeIf { dev.nori.music.ffi.remote.isGuestKey(it.apiKey) }
+        withContext(Dispatchers.Main) {
+            activate(guest)
+            before?.let { removeServer(it.id) }
+        }
     }
 
     /** Leaves the jam this guest profile is in and drops the profile. */

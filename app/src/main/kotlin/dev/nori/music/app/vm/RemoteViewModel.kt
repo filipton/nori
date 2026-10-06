@@ -31,6 +31,10 @@ class RemoteViewModel(app: Application) : NoriViewModel(app) {
     /** The jam this phone hosts or is a guest in. */
     val jam: StateFlow<JamView?> = _jam.asStateFlow()
 
+    private val _relay = MutableStateFlow(dev.nori.music.ffi.RelaySupport.UNKNOWN)
+    /** Whether the server relays: jams and devices elsewhere only then. */
+    val relay: StateFlow<dev.nori.music.ffi.RelaySupport> = _relay.asStateFlow()
+
     private val _found = MutableStateFlow<List<Song>>(emptyList())
     /** A jam guest's search results. */
     val found: StateFlow<List<Song>> = _found.asStateFlow()
@@ -46,9 +50,10 @@ class RemoteViewModel(app: Application) : NoriViewModel(app) {
         viewModelScope.launch { remotes.changes.collect { if (watchers > 0) refresh() } }
     }
 
-    private fun refresh() = remotes.ask({ it.devices() to it.jamView() }) { (d, j) ->
+    private fun refresh() = remotes.ask({ Triple(it.devices(), it.jamView(), it.relay()) }) { (d, j, r) ->
         _devices.value = d
         _jam.value = j
+        _relay.value = r
     }
 
     /** A sheet or screen that shows devices or the jam is on screen (true) or gone (false). */

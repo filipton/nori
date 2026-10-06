@@ -39,7 +39,7 @@ case "${1:-}" in
       sleep 0.5
     done
     send state ;;
-  open|play|state|set|login|do) send "$@" ;;
+  open|play|state|set|login|do|remote) send "$@" ;;
   wake) adb shell input keyevent 224 >/dev/null; adb shell wm dismiss-keyguard >/dev/null 2>&1; sleep 1 ;;
   *) echo "usage: app.sh launch|open <route>|play <ref>|do <action>|login <url|user|pass>|set <name> <value>|state|wake" >&2; exit 2 ;;
 esac

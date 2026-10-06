@@ -113,12 +113,14 @@ fun DevicesSheet(open: Boolean, onDismiss: () -> Unit, onOutput: () -> Unit, jam
         DisposableEffect(Unit) { vm.watch(true); onDispose { vm.watch(false) } }
         val devices by vm.devices.collectAsStateWithLifecycle()
         val jam by vm.jam.collectAsStateWithLifecycle()
+        val relay by vm.relay.collectAsStateWithLifecycle()
+        val unsupported = relay == dev.nori.music.ffi.RelaySupport.UNSUPPORTED
         var picked by remember { mutableStateOf<String?>(null) }
         Column(Modifier.verticalScroll(rememberScrollState()).navigationBarsPadding()) {
             SectionHeader(words(R.string.devices_title))
             NavRow(words(R.string.devices_this), onOutput, subtitle = words(R.string.devices_output), leading = { Icon(Icons.Filled.PhoneAndroid, null) })
-            if (devices.isEmpty()) Text(
-                words(R.string.devices_none), Modifier.padding(horizontal = Space.gutter, vertical = 12.dp),
+            if (devices.isEmpty() || unsupported) Text(
+                words(if (unsupported) R.string.devices_nearby_only else R.string.devices_none), Modifier.padding(horizontal = Space.gutter, vertical = 12.dp),
                 style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             devices.forEach { d ->
@@ -132,7 +134,11 @@ fun DevicesSheet(open: Boolean, onDismiss: () -> Unit, onOutput: () -> Unit, jam
                 )
                 if (picked == d.id) DeviceControls(d, vm)
             }
-            if (jams) ActionRow(words(if (jam?.hosting == true) R.string.jam_yours else R.string.jam_start), Icons.Filled.Groups, { onDismiss(); nav.jam() })
+            if (jams && unsupported) Text(
+                words(R.string.jam_unsupported), Modifier.padding(horizontal = Space.gutter, vertical = 12.dp),
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            else if (jams) ActionRow(words(if (jam?.hosting == true) R.string.jam_yours else R.string.jam_start), Icons.Filled.Groups, { onDismiss(); nav.jam() })
         }
     }
 }
@@ -281,6 +287,7 @@ fun JamScreen() {
     val vm: RemoteViewModel = viewModel()
     DisposableEffect(Unit) { vm.watch(true); onDispose { vm.watch(false) } }
     val jam by vm.jam.collectAsStateWithLifecycle()
+    val relay by vm.relay.collectAsStateWithLifecycle()
     val context = LocalContext.current
     LaunchedEffect(vm) { vm.failures.collect { android.widget.Toast.makeText(context, R.string.jam_failed, android.widget.Toast.LENGTH_LONG).show() } }
     val requests = words(R.string.jam_requests)
@@ -293,8 +300,9 @@ fun JamScreen() {
         if (j == null || !j.hosting) {
             item {
                 Column(Modifier.fillMaxWidth().padding(Space.gutter)) {
-                    Text(words(R.string.settings_jam_detail), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    PillButton(words(R.string.jam_start), Icons.Filled.Groups, vm::jamStart, Modifier.padding(top = 16.dp), prominent = true)
+                    val unsupported = relay == dev.nori.music.ffi.RelaySupport.UNSUPPORTED
+                    Text(words(if (unsupported) R.string.jam_unsupported else R.string.settings_jam_detail), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (!unsupported) PillButton(words(R.string.jam_start), Icons.Filled.Groups, vm::jamStart, Modifier.padding(top = 16.dp), prominent = true)
                 }
             }
         } else {
