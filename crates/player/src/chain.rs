@@ -37,6 +37,22 @@ impl Clone for Processors {
     }
 }
 
+impl Processors {
+    /// `o`'s state to keep, in this one's memory: without Sing's scratch, which `clone_from` gives back.
+    fn store_from(&mut self, o: &Self) {
+        self.sing = o.sing.as_ref().map(|from| match self.sing.take() {
+            Some(mut m) => {
+                m.store_from(from);
+                m
+            }
+            None => from.stored(),
+        });
+        self.eq.clone_from(&o.eq);
+        self.silence.clone_from(&o.silence);
+        self.speed.clone_from(&o.speed);
+    }
+}
+
 /// Input as offered: its first frame, song frames per frame, and timeline position (µs) of that frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Piece {
@@ -121,7 +137,7 @@ impl Kept {
 
     fn push_mark(&mut self, frame: u64, out: u64, media: f64, chain: &Processors) {
         let mut kept = self.spare.pop().unwrap_or_default();
-        kept.clone_from(chain);
+        kept.store_from(chain);
         self.marks.push_back(Mark { frame, out, media, chain: kept });
     }
 

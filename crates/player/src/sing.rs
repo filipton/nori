@@ -153,24 +153,21 @@ pub struct Masker {
     dither: Dither,
 }
 
+/// `clone_from` keeps every buffer's memory.
 impl Clone for Masker {
     fn clone(&self) -> Self {
-        let mut m = Masker { input: Vec::new(), acc: Vec::new(), touched: Vec::new(), buf: Vec::new(), scratch: Vec::new(), gains: Vec::new(), ..self.shallow() };
+        let mut m = self.shallow();
         m.clone_from(self);
         m
     }
 
     fn clone_from(&mut self, o: &Self) {
-        let (mut input, mut acc, mut touched) = (std::mem::take(&mut self.input), std::mem::take(&mut self.acc), std::mem::take(&mut self.touched));
-        let (mut buf, mut scratch, mut gains) = (std::mem::take(&mut self.buf), std::mem::take(&mut self.scratch), std::mem::take(&mut self.gains));
-        input.clone_from(&o.input);
-        acc.clone_from(&o.acc);
-        touched.clone_from(&o.touched);
+        self.store_from(o);
         // Scratch: only its size matters.
-        buf.resize(o.buf.len(), Complex32::default());
-        scratch.resize(o.scratch.len(), Complex32::default());
-        gains.resize(o.gains.len(), 1.0);
-        *self = Masker { input, acc, touched, buf, scratch, gains, ..o.shallow() };
+        let (n, scratch) = (self.n, self.scratch_len());
+        self.buf.resize(n, Complex32::default());
+        self.scratch.resize(scratch, Complex32::default());
+        self.gains.resize(n / 2 + 1, 1.0);
     }
 }
 
@@ -228,6 +225,27 @@ impl Masker {
             gains: Vec::new(),
             ..*self
         }
+    }
+
+    fn scratch_len(&self) -> usize {
+        self.fft.get_inplace_scratch_len().max(self.ifft.get_inplace_scratch_len())
+    }
+
+    /// A copy of the state without the scratch it runs in, for keeping: [`Clone::clone_from`] runs it again.
+    pub fn stored(&self) -> Masker {
+        let mut m = self.shallow();
+        m.store_from(self);
+        m
+    }
+
+    /// [`Masker::stored`] into this one's memory.
+    pub fn store_from(&mut self, o: &Self) {
+        let (mut input, mut acc, mut touched) = (std::mem::take(&mut self.input), std::mem::take(&mut self.acc), std::mem::take(&mut self.touched));
+        let (buf, scratch, gains) = (std::mem::take(&mut self.buf), std::mem::take(&mut self.scratch), std::mem::take(&mut self.gains));
+        input.clone_from(&o.input);
+        acc.clone_from(&o.acc);
+        touched.clone_from(&o.touched);
+        *self = Masker { input, acc, touched, buf, scratch, gains, ..o.shallow() };
     }
 
     pub fn level(&self) -> f32 {
@@ -507,6 +525,29 @@ mod tests {
         assert_ne!(out[before..after], pcm[before..after], "masked in between");
         assert_eq!(out[..before], pcm[..before]);
         assert_eq!(out[after..], pcm[after..]);
+    }
+
+    /// A stored copy, made live again (into a masker or as a new one), goes on as the original does.
+    #[test]
+    fn stored_copy_goes_on_alike() {
+        let x = floats(&(0..2 * 20_000).map(|i| (i as f32 * 0.013).sin() * 0.5).collect::<Vec<_>>());
+        let masks = whole(flat(200, 2.0));
+        let mut m = Masker::new(RATE, 2, Encoding::Pcm16, 0.3);
+        let (head, tail) = x.split_at(8 * 7000);
+        m.process(head, 0, 1.0, &masks, &mut Vec::new());
+        let kept = m.stored();
+        let mut into = Masker::new(RATE, 2, Encoding::Pcm16, 1.0);
+        into.clone_from(&kept);
+        let at = (7000.0 * 1e6 / RATE as f64) as i64;
+        let mut outs = Vec::new();
+        for mut live in [m, kept.clone(), into] {
+            let mut out = Vec::new();
+            live.process(tail, at, 1.0, &masks, &mut out);
+            live.end(&masks, &mut out);
+            outs.push(out);
+        }
+        assert_eq!(outs[1], outs[0]);
+        assert_eq!(outs[2], outs[0]);
     }
 
     /// Mono and an odd third channel go through the transform as stereo does: rebuilt at a level just under 1,

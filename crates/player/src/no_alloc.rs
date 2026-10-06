@@ -254,9 +254,10 @@ fn sing_masker() {
         out.clear();
     });
     assert_eq!(made, 0);
-    // A mark's copy reuses the buffers.
-    let mut kept = m.clone();
-    assert_eq!(allocations(|| kept.clone_from(&m)), 0);
+    // A mark's copy, and the live one made from it again, reuse the buffers.
+    let mut kept = m.stored();
+    assert_eq!(allocations(|| kept.store_from(&m)), 0);
+    assert_eq!(allocations(|| m.clone_from(&kept)), 0);
 }
 
 #[test]
