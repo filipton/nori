@@ -6,16 +6,16 @@
 // read with a cubic B-spline over four bilinear taps, so a small level drawn large stays smooth rather than
 // blocky; a fractional level mixes the two levels beside it, never the sharp page with a far blur.
 //
-// The glass follows the parameters dumped from macOS 26's glass layers: the backdrop blurred, its colour kept
-// but its tone mapped into a narrow band (black to `face.x`, white to `face.y`), so white controls read over
-// any page; the view bent outwards towards the rim; and two highlights on opposite corners taking the colour
-// of what lies behind them.
+// The glass, after macOS 26's glass layers: the backdrop blurred and made vivid, dimmed only where it is
+// brighter than white controls can stand on (judged over a wider blur, so the picture keeps its own
+// contrast), its black lifted a little; the view bent outwards towards the rim; and two highlights on
+// opposite corners taking the colour of what lies behind them.
 
 struct U {
     rect: vec4<f32>,      // where the quad goes, target pixels (x, y, w, h)
     view: vec4<f32>,      // target size (w, h), source size (w, h)
     shape: vec4<f32>,     // corner radius, bevel band, refraction, dispersion (pixels, pixels, pixels, ratio)
-    face: vec4<f32>,      // glass: black and white of the tone band, saturation, blur level
+    face: vec4<f32>,      // glass: black's lift, the brightest it lets through (luma), saturation, blur level
     light: vec4<f32>,     // glass: rim, spill, its reach (pixels), glow level; focus: band top, height, pixels per blur step, scale
     gather: vec4<f32>,    // glass: how far past the edge it gathers light (pixels), how much colour it keeps
 };
@@ -155,8 +155,11 @@ fn fs_glass(v: V) -> @location(0) vec4<f32> {
     let off = n * u.shape.z * bend;
     // Outwards: the rim shows what lies beyond it; blue bends a little further than red.
     let seen = vec3<f32>(look(p + off * (1.0 - u.shape.w)).r, look(p + off).g, look(p + off * (1.0 + u.shape.w)).b);
-    // Vivid, then held within the tone band whatever lies behind: bright pages darken, dark ones lift.
-    var col = mix(vec3<f32>(u.face.x), vec3<f32>(u.face.y), clamp(saturate_by(seen, u.face.z), vec3<f32>(0.0), vec3<f32>(1.0)));
+    // Vivid, dimmed where what lies around is too bright, and black lifted.
+    let vivid = clamp(saturate_by(seen, u.face.z), vec3<f32>(0.0), vec3<f32>(1.0));
+    let around = luma(blurred(clamp(p / u.view.xy, vec2<f32>(0.0), vec2<f32>(1.0)), u.face.w + 2.0).rgb);
+    var col = vivid * min(1.0, u.face.y / max(around, 0.001));
+    col = col * (1.0 - u.face.x) + vec3<f32>(u.face.x);
     // The light of what lies beside the pane washes in: gathered along a band past the nearest edge (out to
     // `gather.x`), the colourful parts counting for more than a plain dark ground, strongest at the edge and
     // fading inwards over `light.z`.
@@ -175,7 +178,7 @@ fn fs_glass(v: V) -> @location(0) vec4<f32> {
         }
         let beyond = max(saturate_by(acc / wsum, u.gather.y), vec3<f32>(0.0));
         let spill = clamp(u.light.y * exp(-depth / max(u.light.z, 1.0)), 0.0, 1.0);
-        col = mix(col, mix(vec3<f32>(u.face.x), vec3<f32>(u.face.y) + 0.1, beyond), spill);
+        col = mix(col, beyond * min(1.0, u.face.y / max(luma(beyond), 0.001)) + vec3<f32>(u.face.x), spill);
     }
     // Two highlights on opposite corners (up-left and down-right), along the rim, in the vivid colour of
     // what they sit over.

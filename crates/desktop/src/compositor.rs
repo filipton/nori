@@ -718,7 +718,7 @@ impl Draw {
             let r = [-8000.0 * scale, -8000.0 * scale, (SIDEBAR_W + 8000.0) * scale, h + 16000.0 * scale];
             glass(Role::Sidebar, r, Glass {
                 shape: [0.0, 28.0 * scale, 8.0 * scale, 0.04],
-                face: [0.075, 0.2, 1.2, 4.5 + dense],
+                face: [0.06, 0.22, 1.2, 4.5 + dense],
                 light: [0.05, 0.34, 45.0 * scale, 6.0 + dense],
                 gather: [180.0 * scale, 1.0, 0.0, 0.0],
             });
@@ -726,10 +726,10 @@ impl Draw {
         if s.player_shown.get() {
             let (o, sz) = place(s, Role::Player, win);
             let r = [o.x * scale, o.y * scale, sz.width * scale, sz.height * scale];
-            // The page shows through, blurred and held dark enough under the white controls whatever it is.
+            // The page shows through, blurred and vivid, dimmed only where too bright for the white controls.
             glass(Role::Player, r, Glass {
                 shape: [PLAYER_H * 0.5 * scale, 14.0 * scale, 6.0 * scale, 0.05],
-                face: [0.09, 0.3, 1.4, 3.0 + dense],
+                face: [0.05, 0.24, 1.5, 3.0 + dense],
                 light: [0.14, 0.0, 0.0, 0.0],
                 gather: [0.0; 4],
             });
