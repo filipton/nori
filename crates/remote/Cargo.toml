@@ -1,0 +1,24 @@
+[package]
+name = "nori-remote"
+version.workspace = true
+edition.workspace = true
+
+# Remote control between one account's devices, and jams: the frames the relay and the LAN door carry,
+# what a controlled device admits, a jam's members and requests, the LAN's proof and door.
+[lib]
+name = "nori_remote"
+
+[features]
+# The uniffi records the Android app's Kotlin bindings are generated from.
+ffi = ["dep:uniffi", "nori-model/ffi"]
+
+[dependencies]
+uniffi = { workspace = true, optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+parking_lot = "0.12"
+# HMAC-SHA256 for the LAN's same-account proof.
+sha2 = "0.11"
+# The jam's invite as a QR code: the matrix only, each client draws it.
+qrcode = { version = "0.14", default-features = false }
+nori-model = { path = "../model" }
