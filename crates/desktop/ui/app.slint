@@ -988,7 +988,6 @@ component QueueView inherits Rectangle {
     in property <bool> autoplay;
     in property <bool> automix;
     in property <int> covers-rev;
-    in property <bool> wide;
     pure callback art(string, int, int) -> image;
     callback jump(int);
     callback clear;
@@ -1017,7 +1016,7 @@ component QueueView inherits Rectangle {
                         width: 20px;
                         height: 20px;
                     }
-                    if root.wide: Text {
+                    Text {
                         text: pill.label;
                         color: pill.on ? white : Theme.text;
                         font-size: 13px;
@@ -2700,6 +2699,15 @@ export component AppWindow inherits Window {
                             padding-left: 24px;
                             padding-right: 16px;
                             ListView {
+                                // The next page is asked for as the end comes within a screen, or when the rows
+                                // do not fill the list.
+                                function near-end() {
+                                    if root.more-songs && self.viewport-height + self.viewport-y < self.visible-height * 2 {
+                                        root.more();
+                                    }
+                                }
+                                changed viewport-y => { self.near-end(); }
+                                changed viewport-height => { self.near-end(); }
                                 for s[i] in root.songs: SongLine {
                                     song: s;
                                     number: i + 1;
@@ -2710,17 +2718,6 @@ export component AppWindow inherits Window {
                                     next => { root.song(1, i, 1); }
                                     later => { root.song(1, i, 2); }
                                 }
-                            }
-                        }
-                        if root.more-songs: HorizontalLayout {
-                            padding: 12px;
-                            padding-bottom: 92px;
-                            alignment: center;
-                            Capsule {
-                                text: "More Songs";
-                                ink: Theme.fill;
-                                label: Theme.text;
-                                clicked => { root.more(); }
                             }
                         }
                     }
@@ -3611,7 +3608,6 @@ export component AppWindow inherits Window {
                 width: root.width / 2 - 70px;
                 y: 84px;
                 height: root.height - 84px - 70px;
-                wide: true;
                 queue: root.queue;
                 from: root.queue-from;
                 autoplay: root.autoplay;

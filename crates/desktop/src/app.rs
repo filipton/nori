@@ -871,8 +871,12 @@ impl App {
     }
 
     fn more_songs(&mut self) {
-        let offset = self.songs.len() as u32;
-        self.load(Req::Songs { offset });
+        let req = Req::Songs { offset: self.songs.len() as u32 };
+        // Scrolling asks again as the list nears its end: the page already on its way is asked for once.
+        if self.ui().get_loading() && self.want.as_ref() == Some(&req) {
+            return;
+        }
+        self.load(req);
     }
 
     fn search_edited(&mut self, text: &str) {
