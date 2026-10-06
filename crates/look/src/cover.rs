@@ -177,6 +177,31 @@ pub fn derive(pixels: &[u32], w: usize, h: usize, dark: bool, amoled: bool) -> C
     }
 }
 
+/// The colours for a page that is always drawn in white (the desktop's Now Playing, as Music's): `c` when
+/// its page is dark already; a light page (a paper sleeve, any page in the light theme) taken down to a
+/// dark page of its own hue, and its wash and edges moved down by the same lightness, so the glow stays.
+pub fn under_white(c: &CoverColours) -> CoverColours {
+    if c.on == WHITE {
+        return c.clone();
+    }
+    let page = color_to_hsl(c.background);
+    let background = dark_page(page, PAGE_MAX_LUMA);
+    let drop = page[2] - color_to_hsl(background)[2];
+    let down = |argb: u32| {
+        let mut hsl = color_to_hsl(argb);
+        hsl[2] = (hsl[2] - drop).clamp(0.0, 1.0);
+        hsl_to_color(hsl)
+    };
+    CoverColours {
+        edge: down(c.edge),
+        background,
+        on: WHITE,
+        accent: readable(c.accent, background, WHITE),
+        wash: c.wash.as_ref().map(|w| w.iter().map(|&p| down(p)).collect()),
+        wash_edge: down(c.wash_edge),
+    }
+}
+
 /// Blend of each wash pixel towards the flat page colour (2/3 looked flat).
 const MUTE: f32 = 0.38;
 
@@ -619,6 +644,23 @@ mod tests {
         assert_eq!(c.background, BLACK);
         assert!(c.wash.is_none());
         assert_eq!(c.wash_edge, c.edge);
+    }
+
+    #[test]
+    fn under_white_darkens_only_light_pages() {
+        // A paper sleeve: its light page and wash go dark enough for white text, in its own hue.
+        let paper = derive(&solid(0xFFE8_EEF4), S, S, true, false);
+        assert_ne!(paper.on, WHITE, "a paper sleeve keeps a light page");
+        let c = under_white(&paper);
+        assert_eq!(c.on, WHITE);
+        assert!(luminance(c.background) <= PAGE_MAX_LUMA + 0.005, "{:08x}", c.background);
+        let wash = c.wash.as_ref().expect("a wash");
+        assert!(wash.iter().all(|&p| calculate_contrast(WHITE, p) >= 4.5), "white text reads on all of the wash");
+        assert!((color_to_hsl(c.background)[0] - color_to_hsl(paper.background)[0]).abs() < 10.0, "its hue kept");
+
+        // A dark page is left as it is.
+        let dark = derive(&solid(0xFF30_60A0), S, S, true, false);
+        assert_eq!(under_white(&dark), dark);
     }
 
     /// `base` plus ±2 levels of noise per channel, offset by `cast`.

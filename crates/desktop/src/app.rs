@@ -713,6 +713,8 @@ impl App {
             return;
         };
         self.backdrop = Some(art.to_string());
+        // Now Playing draws in white whatever the sleeve: a light page is taken dark.
+        let c = &nori_look::cover::under_white(c);
         let on_b = !ui.get_wash_on_b();
         if on_b {
             ui.set_wash_b(wash(c));
