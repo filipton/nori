@@ -625,10 +625,18 @@ private fun SingBar(settings: SettingsViewModel, on: Boolean, level: Float) {
         TitleCircle(if (on) Icons.Filled.Mic else Icons.Filled.MicNone, say.sing, on) { settings.set("sing", (!on).toString()) }
         if (on) {
             LookText(say.singVocals(level), { look.color(CoverLook.ON_60) }, style = MaterialTheme.typography.bodySmall)
-            NoriSlider(level, 0f..1f, { settings.set("singVocalLevel", it.toString()) }, Modifier.weight(1f))
+            // Read through a state: the slider's drag keeps the first lambda it was given.
+            val now by androidx.compose.runtime.rememberUpdatedState(level)
+            NoriSlider(level, 0f..1f, { picked -> singLevelStep(now, picked)?.let { settings.set("singVocalLevel", it.toString()) } }, Modifier.weight(1f))
         }
     }
 }
+
+/**
+ * The level a drag of the Sing slider to [picked] sets: the whole percent the label shows, or null when
+ * that is [level] already. A drag sends a pointer event every frame, and each write is a settings edit.
+ */
+internal fun singLevelStep(level: Float, picked: Float): Float? = (kotlin.math.round(picked * 100f) / 100f).takeIf { it != level }
 
 /** A text laid out once, with the outline of each sung piece and its box, so drawing a frame makes nothing new. */
 private class Laid(val layout: TextLayoutResult, val pieces: Array<Path>) {
