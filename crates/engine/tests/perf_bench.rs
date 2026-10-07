@@ -72,6 +72,9 @@ fn perf_report() {
     let one = [("a", &long[..])];
     perf_case("plain", &one, perf_app(prefs_off()), Settings::default(), 4);
     perf_case("equalizer", &one, perf_app(prefs_off()), loud_eq(), 4);
+    // A ten-band graphic equalizer (an AutoEQ profile is about as many).
+    let bands = (0..10).map(|k| nori_player::dsp::Band { kind: nori_player::dsp::PEAKING, freq: 31.25 * 2f64.powi(k), gain_db: if k % 2 == 0 { 3.0 } else { -2.0 }, q: 1.4, channel: 0 }).collect();
+    perf_case("eq10", &one, perf_app(prefs_off()), with_sound(nori_engine::Sound { bands, ..Default::default() }), 4);
     let compressor = nori_engine::Sound { effects: Effects { compressor: Some(CompressorPreset::Balanced.settings()), ..Effects::default() }, limiter: true, ..Default::default() };
     perf_case("compressor", &one, perf_app(prefs_off()), with_sound(compressor), 4);
     perf_case("speed", &one, perf_app(prefs_off()), Settings { speed: 1.2, pitch: 0.95, ..Settings::default() }, 4);

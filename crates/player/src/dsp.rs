@@ -27,6 +27,8 @@ pub const CH_LEFT: i32 = 1;
 pub const CH_RIGHT: i32 = 2;
 
 const MAX_CHANNELS: usize = 8;
+/// Most stereo filters run in one pass over a block ([`Biquad::run2_chain`]).
+const CHAIN: usize = 4;
 /// Attenuation of the quiet side at balance ±1 (then muted); linear in dB in between.
 const BALANCE_RANGE_DB: f64 = 24.0;
 /// Mono sum gain (-3 dB): uncorrelated material keeps its level; centred gains 3 dB for the limiter.
@@ -113,6 +115,30 @@ impl Biquad {
             *r = z;
         }
         (s[0], s[1]) = ([l0, l1], [r0, r1]);
+    }
+
+    /// The first `N` filters of `fs` in series over both channels in one pass: each sample's arithmetic
+    /// is [`Biquad::run2`]'s, filter after filter, but the filters' chains overlap.
+    #[inline(always)]
+    fn run2_chain<const N: usize>(fs: &[Biquad], st: &mut [[[f64; 2]; MAX_CHANNELS]], left: &mut [f64], right: &mut [f64]) {
+        let fs: [Biquad; N] = fs[..N].try_into().expect("N filters");
+        let mut s: [[[f64; 2]; 2]; N] = std::array::from_fn(|k| [st[k][0], st[k][1]]);
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let (mut i, mut j) = (*l, *r);
+            for (f, s) in fs.iter().zip(s.iter_mut()) {
+                let y = f.b0 * i + s[0][0];
+                let z = f.b0 * j + s[1][0];
+                s[0][0] = f.b1 * i - f.a1 * y + s[0][1];
+                s[1][0] = f.b1 * j - f.a1 * z + s[1][1];
+                s[0][1] = f.b2 * i - f.a2 * y;
+                s[1][1] = f.b2 * j - f.a2 * z;
+                (i, j) = (y, z);
+            }
+            (*l, *r) = (i, j);
+        }
+        for (s, st) in s.iter().zip(st.iter_mut()) {
+            (st[0], st[1]) = (s[0], s[1]);
+        }
     }
 
     /// RBJ cookbook filters.
@@ -586,13 +612,21 @@ impl Stages {
         if self.preamp != 1.0 {
             left.iter_mut().chain(right.iter_mut()).for_each(|v| *v *= self.preamp);
         }
-        for (f, st) in self.filters.iter().zip(self.state.iter_mut()) {
-            match f.chans & 3 {
-                3 => f.run2(&mut st[..2], left, right),
-                1 => f.run(&mut st[0], left),
-                2 => f.run(&mut st[1], right),
+        let mut k = 0;
+        while k < self.filters.len() {
+            // Consecutive filters on both sides run together, up to CHAIN at once.
+            let (fs, st) = (&self.filters[k..], &mut self.state[k..]);
+            let both = fs.iter().take(CHAIN).take_while(|f| f.chans & 3 == 3).count();
+            match (both, fs[0].chans & 3) {
+                (2, _) => Biquad::run2_chain::<2>(fs, st, left, right),
+                (3, _) => Biquad::run2_chain::<3>(fs, st, left, right),
+                (CHAIN, _) => Biquad::run2_chain::<CHAIN>(fs, st, left, right),
+                (_, 3) => fs[0].run2(&mut st[0][..2], left, right),
+                (_, 1) => fs[0].run(&mut st[0][0], left),
+                (_, 2) => fs[0].run(&mut st[0][1], right),
                 _ => {}
             }
+            k += both.max(1);
         }
         if let Some((f, st)) = self.bass.as_mut() {
             f.run2(&mut st[..2], left, right);
@@ -1254,6 +1288,53 @@ mod tests {
         let mut mono = Equalizer::new(48000, 1);
         mono.configure(&[Band { channel: CH_RIGHT, ..b(PEAKING, 1000.0, 12.0, 1.0) }], 0.0, 0.0);
         assert!(mono.is_identity());
+    }
+
+    /// The block path is the frame-by-frame chain, sample for sample: bands on both sides and on one
+    /// (in runs of every length), and every output stage acting.
+    #[test]
+    fn stereo_block_is_frame_by_frame() {
+        let side = |channel, band: Band| Band { channel, ..band };
+        let bands = [
+            b(PEAKING, 60.0, 5.0, 1.0),
+            b(LOW_SHELF, 120.0, -3.0, 0.7),
+            side(CH_LEFT, b(PEAKING, 300.0, 4.0, 2.0)),
+            b(PEAKING, 700.0, -4.0, 1.4),
+            b(PEAKING, 1500.0, 6.0, 1.0),
+            b(NOTCH, 2500.0, 0.0, 4.0),
+            b(PEAKING, 4000.0, 3.0, 1.4),
+            b(HIGH_SHELF, 8000.0, 4.0, 0.7),
+            side(CH_RIGHT, b(PEAKING, 10000.0, -6.0, 1.0)),
+            b(PEAKING, 12000.0, 2.0, 1.0),
+            b(PEAKING, 14000.0, -2.0, 1.0),
+        ];
+        let compressor = crate::compressor::CompressorPreset::Balanced.settings();
+        let expander = crate::compressor::ExpanderSettings { threshold_db: -30.0, ratio: 2.0, attack_ms: 2.0, release_ms: 50.0 };
+        let mut eq = Equalizer::new(48000, 2);
+        eq.configure(&bands, -2.0, 0.0);
+        eq.configure_effects(&Effects { bass_boost_db: 4.0, compressor: Some(compressor), expander: Some(expander), virtualizer: 0.5, boost_db: 3.0, ..Effects::default() });
+        eq.configure_output(0.3, false, -3.0, 80.0, 2.0);
+        // Loud and quiet stretches, so the expander, the compressor and the limiter all move.
+        let x: Vec<f64> = (0..48000).flat_map(|i| {
+            let level = if (i / 6000) % 2 == 0 { 0.9 } else { 0.01 };
+            let t = i as f64 / 48000.0;
+            [level * (440.0 * std::f64::consts::TAU * t).sin(), level * (0.7 * (3000.0 * std::f64::consts::TAU * t).sin() + 0.3 * (90.0 * std::f64::consts::TAU * t).sin())]
+        }).collect();
+        let mut framed = eq.now.clone();
+        let want: Vec<f64> = x.as_chunks::<2>().0.iter().flat_map(|&(mut f)| {
+            framed.frame(&mut f);
+            f
+        }).collect();
+        let mut blocked = eq.now.clone();
+        let mut got = Vec::new();
+        for chunk in x.chunks(2 * 1000) {
+            let frames = chunk.len() / 2;
+            let mut planar: Vec<f64> = chunk.iter().step_by(2).chain(chunk.iter().skip(1).step_by(2)).copied().collect();
+            blocked.block(&mut planar, frames);
+            got.extend((0..frames).flat_map(|k| [planar[k], planar[frames + k]]));
+        }
+        assert!(blocked.limiter.as_ref().unwrap().meter < 1.0 && blocked.compressor.as_ref().unwrap().meter_db > 0.0, "the dynamics acted");
+        assert!(got == want, "first difference at {:?}", got.iter().zip(&want).position(|(a, b)| a != b));
     }
 
     #[test]
