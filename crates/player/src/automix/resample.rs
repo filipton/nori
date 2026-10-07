@@ -6,7 +6,7 @@
 //! [`PHASES`] rows. Output positions are counted in exact fractions (no drift). The filter is zero-phase and
 //! holds back half its taps of input (under 2 ms). At the same rate only the channels are converted.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use super::{PCM_16, PCM_FLOAT};
 use crate::dither::Dither;
@@ -24,7 +24,7 @@ pub const STOP: f64 = 0.5;
 const ATTENUATION_DB: f64 = 110.0;
 
 /// One pair of rates' coefficients: `phases + 1` rows of `taps` (the extra row lets interpolation not wrap).
-pub struct Table {
+struct Table {
     taps: usize,
     phases: usize,
     /// Rows of `taps`, row `p` for an output falling `p / phases` of the way from one input sample to the next.
@@ -91,20 +91,23 @@ impl Table {
     }
 }
 
-/// The table for a pair of rates, shared by every converter between them; the last six pairs are kept.
-pub fn table(in_rate: u32, out_rate: u32) -> Arc<Table> {
-    // A cache of immutable designs, global because converters are made all over the player.
-    static TABLES: Mutex<Vec<((u32, u32), Arc<Table>)>> = Mutex::new(Vec::new());
-    let mut tables = TABLES.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(t) = tables.iter().find(|t| t.0 == (in_rate, out_rate)) {
-        return t.1.clone();
+/// Tables by pair of rates, the last six designed (a design takes about a millisecond). Whoever makes
+/// converters keeps one, so a new converter between the same rates reuses the table.
+#[derive(Default)]
+pub struct Tables(Vec<((u32, u32), Arc<Table>)>);
+
+impl Tables {
+    fn get(&mut self, in_rate: u32, out_rate: u32) -> Arc<Table> {
+        if let Some(t) = self.0.iter().find(|t| t.0 == (in_rate, out_rate)) {
+            return t.1.clone();
+        }
+        let t = Arc::new(Table::design(in_rate, out_rate));
+        if self.0.len() >= 6 {
+            self.0.remove(0);
+        }
+        self.0.push(((in_rate, out_rate), t.clone()));
+        t
     }
-    let t = Arc::new(Table::design(in_rate, out_rate));
-    if tables.len() >= 6 {
-        tables.remove(0);
-    }
-    tables.push(((in_rate, out_rate), t.clone()));
-    t
 }
 
 pub struct Resampler {
@@ -127,7 +130,7 @@ pub struct Resampler {
 }
 
 impl Resampler {
-    pub fn new(in_rate: i32, in_ch: i32, out_rate: i32, out_ch: i32) -> Option<Resampler> {
+    pub fn new(tables: &mut Tables, in_rate: i32, in_ch: i32, out_rate: i32, out_ch: i32) -> Option<Resampler> {
         if in_rate <= 0 || out_rate <= 0 || in_rate > 384_000 || out_rate > 384_000 {
             return None;
         }
@@ -135,7 +138,7 @@ impl Resampler {
             return None;
         }
         let g = gcd(in_rate as u64, out_rate as u64);
-        let table = (in_rate != out_rate).then(|| table(in_rate as u32, out_rate as u32));
+        let table = (in_rate != out_rate).then(|| tables.get(in_rate as u32, out_rate as u32));
         let ch = in_ch.min(out_ch) as usize;
         let lead = table.as_ref().map_or(0, |t| t.taps / 2 - 1);
         Some(Resampler {
@@ -332,7 +335,7 @@ mod tests {
 
     /// `x` (mono float) through a converter from `a` to `b` Hz, in float, in buffers of `chunk` frames.
     fn convert(x: &[f64], a: u32, b: u32, chunk: usize) -> Vec<f64> {
-        let mut r = Resampler::new(a as i32, 1, b as i32, 1).unwrap();
+        let mut r = Resampler::new(&mut Tables::default(), a as i32, 1, b as i32, 1).unwrap();
         let mut out = Vec::new();
         let mut buf = vec![0u8; (chunk * b as usize / a as usize + 8) * 4];
         for c in x.chunks(chunk) {
@@ -375,7 +378,7 @@ mod tests {
 
     #[test]
     fn same_rate_is_a_passthrough() {
-        let mut r = Resampler::new(44100, 2, 44100, 2).unwrap();
+        let mut r = Resampler::new(&mut Tables::default(), 44100, 2, 44100, 2).unwrap();
         let l = sine(44100, 440.0, 1000);
         let stereo: Vec<i16> = l.iter().flat_map(|v| [*v, (*v / 2)]).collect();
         let input = bytes_of(&stereo);
@@ -387,7 +390,7 @@ mod tests {
 
     #[test]
     fn rate_change_keeps_tone() {
-        let mut r = Resampler::new(44100, 1, 48000, 1).unwrap();
+        let mut r = Resampler::new(&mut Tables::default(), 44100, 1, 48000, 1).unwrap();
         let input = bytes_of(&sine(44100, 1000.0, 4410));
         let mut out = vec![0u8; 20000];
         let (used, made) = r.process(&input, PCM_16, &mut out, PCM_16).unwrap();
@@ -418,32 +421,32 @@ mod tests {
             let stereo = |hz| bytes_of(&sine(a, hz, 3000).iter().flat_map(|v| [*v, *v / 3]).collect::<Vec<_>>());
             let (first, then) = (stereo(440.0), stereo(1234.0));
             let mut out = vec![0u8; 40000];
-            let mut used = Resampler::new(a as i32, 2, b as i32, 2).unwrap();
+            let mut used = Resampler::new(&mut Tables::default(), a as i32, 2, b, 2).unwrap();
             used.process(&first, PCM_16, &mut out, PCM_16).unwrap();
             used.reset();
             let (_, made) = used.process(&then, PCM_16, &mut out, PCM_16).unwrap();
             let mut fresh_out = vec![0u8; 40000];
-            let (_, fresh) = Resampler::new(a as i32, 2, b as i32, 2).unwrap().process(&then, PCM_16, &mut fresh_out, PCM_16).unwrap();
+            let (_, fresh) = Resampler::new(&mut Tables::default(), a as i32, 2, b, 2).unwrap().process(&then, PCM_16, &mut fresh_out, PCM_16).unwrap();
             assert_eq!(out[..made], fresh_out[..fresh], "{a} -> {b}");
         }
     }
 
     #[test]
     fn mono_to_stereo_and_back() {
-        let mut r = Resampler::new(44100, 1, 44100, 2).unwrap();
+        let mut r = Resampler::new(&mut Tables::default(), 44100, 1, 44100, 2).unwrap();
         let input = bytes_of(&sine(44100, 440.0, 500));
         let mut out = vec![0u8; 20000];
         let (_, made) = r.process(&input, PCM_16, &mut out, PCM_16).unwrap();
         assert_eq!(made, 500 * 2 * 2);
         let back = shorts_of(&out[..made]);
         assert!(back.as_chunks::<2>().0.iter().all(|c| c[0] == c[1]));
-        let mut r = Resampler::new(44100, 2, 44100, 1).unwrap();
+        let mut r = Resampler::new(&mut Tables::default(), 44100, 2, 44100, 1).unwrap();
         let mut mono = vec![0u8; 20000];
         let (_, made) = r.process(&out[..made], PCM_16, &mut mono, PCM_16).unwrap();
         assert_eq!(made, 500 * 2);
         assert_eq!(shorts_of(&mono[..made]), shorts_of(&input));
         // And across rates: stereo 48 kHz to mono 44.1 kHz is the two sides' average, converted.
-        let mut r = Resampler::new(48000, 2, 44100, 1).unwrap();
+        let mut r = Resampler::new(&mut Tables::default(), 48000, 2, 44100, 1).unwrap();
         let x = sine(48000, 1000.0, 9600);
         let st: Vec<i16> = x.iter().flat_map(|v| [*v, *v / 3]).collect();
         let mut out = vec![0u8; 40000];
@@ -511,7 +514,7 @@ mod tests {
     fn pcm16_output_is_dithered() {
         let x = tone(48000, 1000.0, 0.2, 0.5);
         let bytes: Vec<u8> = x.iter().flat_map(|v| (*v as f32).to_le_bytes()).collect();
-        let mut r = Resampler::new(48000, 1, 44100, 1).unwrap();
+        let mut r = Resampler::new(&mut Tables::default(), 48000, 1, 44100, 1).unwrap();
         let mut out = vec![0u8; 40000];
         let (_, made) = r.process(&bytes, PCM_FLOAT, &mut out, PCM_16).unwrap();
         let y: Vec<f64> = shorts_of(&out[..made]).iter().map(|v| *v as f64 / 32768.0).collect();
@@ -523,10 +526,10 @@ mod tests {
 
     #[test]
     fn nonsense_is_refused() {
-        assert!(Resampler::new(0, 2, 44100, 2).is_none());
-        assert!(Resampler::new(44100, 6, 44100, 2).is_none());
-        assert!(Resampler::new(44100, 2, 44100, 6).is_none());
-        let mut r = Resampler::new(44100, 2, 48000, 2).unwrap();
+        assert!(Resampler::new(&mut Tables::default(), 0, 2, 44100, 2).is_none());
+        assert!(Resampler::new(&mut Tables::default(), 44100, 6, 44100, 2).is_none());
+        assert!(Resampler::new(&mut Tables::default(), 44100, 2, 44100, 6).is_none());
+        let mut r = Resampler::new(&mut Tables::default(), 44100, 2, 48000, 2).unwrap();
         assert!(r.process(&[0u8; 100], 7, &mut [0u8; 10000], PCM_16).is_none());
         assert!(r.process(&[0u8; 4000], PCM_16, &mut [0u8; 4], PCM_16).is_none());
     }

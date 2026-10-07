@@ -12,7 +12,7 @@ use std::thread::Thread;
 
 pub use nori_player::outputs::OutputKind;
 
-use nori_player::automix::resample::Resampler;
+use nori_player::automix::resample::{Resampler, Tables};
 use nori_player::burst::{BUFFER_US, LOW_US};
 use nori_player::pcm::{Encoding, Format};
 use nori_player::pipeline::{Remake, Track};
@@ -395,6 +395,7 @@ pub(crate) struct RingTrack {
     asked: Option<OutputFormat>,
     format: Option<Format>,
     resampler: Option<Resampler>,
+    tables: Tables,
     converted: Vec<u8>,
     engine: Thread,
     /// The ring's write position at the last flush.
@@ -449,6 +450,7 @@ impl RingTrack {
             asked: None,
             format: None,
             resampler: None,
+            tables: Tables::default(),
             converted: Vec::new(),
             engine: std::thread::current(),
             base: 0,
@@ -745,7 +747,7 @@ impl Track for RingTrack {
             }
         }
         self.resampler = self.device.filter(|d| d.rate != format.rate || d.channels != format.channels).and_then(|d| {
-            Resampler::new(format.rate as i32, format.channels as i32, d.rate as i32, d.channels as i32)
+            Resampler::new(&mut self.tables, format.rate as i32, format.channels as i32, d.rate as i32, d.channels as i32)
         });
     }
 

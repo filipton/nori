@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::Thread;
 
-use nori_player::automix::resample::Resampler;
+use nori_player::automix::resample::{Resampler, Tables};
 use nori_player::automix::PCM_FLOAT;
 use nori_player::decode::{he_aac, Codec, Decoder, MP3_DECODER_DELAY};
 use nori_player::pcm::{Encoding, Format};
@@ -301,7 +301,7 @@ struct Reshape {
 /// Converts `samples` (interleaved float at `from`) into `out` at `to`. Returns the frames made.
 fn reshaped(reshape: &mut Option<Reshape>, from: (u32, usize), to: Format, samples: &[f32], out: &mut Vec<u8>) -> usize {
     if reshape.as_ref().is_none_or(|r| r.from != from) {
-        let Some(resampler) = Resampler::new(from.0 as i32, from.1 as i32, to.rate as i32, to.channels as i32) else { return 0 };
+        let Some(resampler) = Resampler::new(&mut Tables::default(), from.0 as i32, from.1 as i32, to.rate as i32, to.channels as i32) else { return 0 };
         *reshape = Some(Reshape { from, resampler, input: Vec::new(), output: Vec::new() });
     }
     let r = reshape.as_mut().expect("made above");

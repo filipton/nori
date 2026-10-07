@@ -18,7 +18,7 @@ use std::collections::VecDeque;
 use crate::automix::analysis::Analyzer;
 use crate::automix::mixer::Mixer;
 use crate::types::TransitionPlan;
-use crate::automix::resample::Resampler;
+use crate::automix::resample::{Resampler, Tables};
 use crate::pcm::{ByteStretcher, Format};
 
 /// Output left below this lets a held ending go unmixed.
@@ -273,6 +273,7 @@ pub struct TransitionEngine {
     /// The stream the converter is armed for.
     conv_id: Option<StreamId>,
     resampler: Option<Resampler>,
+    tables: Tables,
     staged: VecDeque<Staged>,
     /// The stream the mix is consuming.
     mix_source_id: Option<StreamId>,
@@ -353,6 +354,7 @@ impl TransitionEngine {
             conv_in: None,
             conv_id: None,
             resampler: None,
+            tables: Tables::default(),
             staged: VecDeque::new(),
             mix_source_id: None,
             lock_rate: true,
@@ -476,7 +478,7 @@ impl TransitionEngine {
     /// since the stretcher now works in `src`.
     fn arm_conversion<H: Host>(&mut self, host: &mut H, id: Option<StreamId>, src: Format) -> bool {
         let Some(out) = self.out else { return false };
-        self.resampler = Resampler::new(src.rate as i32, src.channels as i32, out.rate as i32, out.channels as i32);
+        self.resampler = Resampler::new(&mut self.tables, src.rate as i32, src.channels as i32, out.rate as i32, out.channels as i32);
         if self.resampler.is_none() {
             self.conv_in = None;
             self.conv_id = None;
