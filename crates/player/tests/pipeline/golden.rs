@@ -30,7 +30,7 @@ fn golden_whole_chain() {
     assert_eq!(heard.len(), (frames(60.0 - 12.0) + 220) * 2, "three songs less two overlaps, and the look-ahead");
     let (level, peak) = shape(&heard);
     assert!((level + 9.63).abs() < 0.01 && (peak + 1.0).abs() < 0.01, "level {level:.2} dB, peak {peak:.2} dB");
-    assert_eq!(fingerprint(&heard), 13_659_055_013_481_716_151, "level {level:.2} dB, peak {peak:.2} dB");
+    assert_eq!(fingerprint(&heard), 2_859_207_531_529_037_823, "level {level:.2} dB, peak {peak:.2} dB");
 }
 
 #[test]

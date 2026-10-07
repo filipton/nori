@@ -207,6 +207,36 @@ impl Sample for i16 {
     }
 }
 
+/// Frames the fade curves are interpolated over.
+const FADE_RUN: u64 = 32;
+
+/// The out and in fade gains at the two ends of a run of frames, linear in between. A run never crosses
+/// a fade's start or end, where its curve bends or steps.
+#[derive(Clone, Copy, Debug, Default)]
+struct FadeRun {
+    start: u64,
+    end: u64,
+    from: Fades,
+    to: Fades,
+}
+
+/// The fade curves' gains at one frame.
+#[derive(Clone, Copy, Debug, Default)]
+struct Fades {
+    out: f64,
+    inc: f64,
+}
+
+impl FadeRun {
+    /// The gains at frame `p` of the run.
+    #[inline]
+    fn at(&self, p: u64) -> Fades {
+        let t = (p - self.start) as f64 / (self.end - self.start) as f64;
+        let (a, b) = (self.from, self.to);
+        Fades { out: a.out + (b.out - a.out) * t, inc: a.inc + (b.inc - a.inc) * t }
+    }
+}
+
 pub struct Mixer {
     rate: f64,
     pub ch: usize,
@@ -235,6 +265,8 @@ pub struct Mixer {
     echo_out: Span,
     echo_buf: Vec<f64>,
     echo_pos: usize,
+    /// The run of frames the fades are interpolated over; empty after a (re)start.
+    fades: FadeRun,
 }
 
 impl Mixer {
@@ -263,6 +295,7 @@ impl Mixer {
             echo_out: Span::default(),
             echo_buf: Vec::new(),
             echo_pos: 0,
+            fades: FadeRun::default(),
         }
     }
 
@@ -276,6 +309,7 @@ impl Mixer {
             Span { start: frames(a), end: frames(b) }
         };
         self.pos = 0;
+        self.fades = FadeRun::default();
         self.len = len;
         self.curve = p.fade_curve;
         self.out_fade = span(p.out_fade_start_ms, p.out_fade_end_ms);
@@ -325,6 +359,7 @@ impl Mixer {
     /// a sweep already running fades in from here.
     pub fn seek(&mut self, frames: u64) {
         self.pos = frames.min(self.len);
+        self.fades = FadeRun::default();
         let (rate, pos) = (self.rate, self.pos);
         for f in [&mut self.low_pass, &mut self.high_pass].into_iter().flatten() {
             if pos >= f.span.start {
@@ -376,6 +411,18 @@ impl Mixer {
         }
     }
 
+    fn fades_at(&self, p: u64) -> Fades {
+        Fades { out: fade(self.curve, self.out_fade.progress(p), true), inc: fade(self.curve, self.in_fade.progress(p), false) }
+    }
+
+    /// The run from frame `p` (inside the transition): up to [`FADE_RUN`] frames, ending at the next fade
+    /// start or end. A fade with no length steps from its start to the frame after, so that is an end too.
+    fn fade_run(&self, p: u64) -> FadeRun {
+        let (o, i) = (self.out_fade, self.in_fade);
+        let end = [o.start, o.start + 1, o.end, i.start, i.start + 1, i.end].into_iter().filter(|&b| b > p).fold((p + FADE_RUN).min(self.len), u64::min);
+        FadeRun { start: p, end, from: self.fades_at(p), to: self.fades_at(end) }
+    }
+
     /// Mixes one frame: outgoing `o` and incoming `i` in, the mix out in `o`.
     #[inline]
     fn mix_frame(&mut self, o: &mut [f64; MAX_CHANNELS], i: &mut [f64; MAX_CHANNELS]) {
@@ -385,10 +432,14 @@ impl Mixer {
             o[..ch].copy_from_slice(&i[..ch]);
             return;
         }
-        let g_out = fade(self.curve, self.out_fade.progress(p), true) * self.out_gain;
+        if !(self.fades.start..self.fades.end).contains(&p) {
+            self.fades = self.fade_run(p);
+        }
+        let fades = self.fades.at(p);
+        let g_out = fades.out * self.out_gain;
         let trim = self.in_gain_db * (1.0 - self.trim_glide.progress(p));
         // No trim (none asked, or its glide done) is exactly unity: no power per frame.
-        let g_in = fade(self.curve, self.in_fade.progress(p), false) * if trim == 0.0 { 1.0 } else { db_to_gain(trim) };
+        let g_in = fades.inc * if trim == 0.0 { 1.0 } else { db_to_gain(trim) };
         let (rate, entry) = (self.rate, self.sweep_entry);
         for f in [&mut self.high_pass, &mut self.low_pass].into_iter().flatten() {
             let wet = f.wet(rate, entry, p);
@@ -522,6 +573,24 @@ mod tests {
         assert!(late > 600 && late < 1000, "{late}");
         p.duration_ms = 0;
         assert_eq!(crossover_ms(&p), 0);
+    }
+
+    /// The outgoing gain heard through fades of 10 ms and of none, starting off the run grid: near the
+    /// exact curve, flat up to the fade's start, and a fade with no length is a step.
+    #[test]
+    fn fade_runs_follow_curves() {
+        for (start_ms, end_ms) in [(7, 17), (10, 10)] {
+            let mut p = plan();
+            p.duration_ms = 30;
+            (p.out_fade_start_ms, p.out_fade_end_ms, p.in_fade_start_ms, p.in_fade_end_ms) = (start_ms, end_ms, start_ms, end_ms);
+            let (ones, zeros) = (vec![1f32; 1440], vec![0f32; 1440]);
+            let y = mix(&p, &ones, &zeros);
+            let span = Span { start: (start_ms * 48) as u64, end: (end_ms * 48) as u64 };
+            let worst = y.iter().enumerate().map(|(k, v)| (*v as f64 - fade(p.fade_curve, span.progress(k as u64), true)).abs()).fold(0.0, f64::max);
+            assert!(worst < 1.5e-3, "{start_ms}-{end_ms} ms: {worst} off the curve");
+            assert!(y[..=span.start as usize].iter().all(|v| *v == 1.0), "{start_ms}-{end_ms} ms: full until the fade starts");
+            assert!(y[span.end.max(span.start + 1) as usize..].iter().all(|v| *v == 0.0), "{start_ms}-{end_ms} ms: gone once it ends");
+        }
     }
 
     #[test]
