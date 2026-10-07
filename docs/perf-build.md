@@ -228,7 +228,7 @@ times on each engine, with AutoMix and the equalizer on (and with the shallow bu
 emulator counted no underruns: the gap on the phone was the output reopened, not a starved track.
 
 The shallow buffer's switches on the Rust engine are in place, both ways: the AudioTrack is opened deep
-once, in power saving mode, and the app coming in sight (or a car's screen connecting) only moves the part
+once, in power saving mode, and the app coming in sight only moves the part
 of it that may be filled (`AudioTrack.setBufferSizeInFrames`, crates/android track.rs `Writer::resize`); the
 engine's ring stays deep (a band moved replaces the ring's music ahead of the track, `nori_player::sink`).
 A second track carrying the music meanwhile was tried and dropped: lined up to the frame by play heads and

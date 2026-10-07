@@ -709,7 +709,7 @@ class PlaybackService : MediaLibraryService() {
 
     // ---- session: custom commands, Android Auto browsing, voice search ----
 
-    /** Controllers whose screen is in sight: the app's while it is started, a car's while it is connected. */
+    /** Controllers whose screen is in sight: the app's while it is started. */
     private val inSight = mutableSetOf<MediaSession.ControllerInfo>()
 
     /**
@@ -732,7 +732,6 @@ class PlaybackService : MediaLibraryService() {
                 .add(SessionCommand(CMD_FILL_NEXT, Bundle.EMPTY)).add(SessionCommand(CMD_REPEAT, Bundle.EMPTY)).add(SessionCommand(CMD_RADIO, Bundle.EMPTY))
                 .add(SessionCommand(CarTree.CMD_ITEM_NEXT, Bundle.EMPTY)).add(SessionCommand(CarTree.CMD_ITEM_QUEUE, Bundle.EMPTY))
                 .add(SessionCommand(CarTree.CMD_ITEM_FAVOURITE, Bundle.EMPTY)).add(SessionCommand(CarTree.CMD_ITEM_DOWNLOAD, Bundle.EMPTY)).build()
-            if (session.isAutoCompanionController(controller) || session.isAutomotiveController(controller)) inSight(controller, true)
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session).setAvailableSessionCommands(commands).build()
         }
 

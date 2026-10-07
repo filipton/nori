@@ -292,7 +292,7 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
         if (p != parameters) { parameters = p; invalidateState() }
     }
     fun gainChanged() = RustPlayerJni.gainChanged(h)
-    /** The equalizer's screen is open: the engine trades its deep buffer for a shallow one until the next boundary after it closes. */
+    /** The app is in sight: the engine trades its deep buffer for a shallow one until the next boundary after it leaves. */
     fun setForeground(on: Boolean) = RustPlayerJni.setForeground(h, on)
     fun replan() = RustPlayerJni.replan(h)
     val mixing: Boolean get() = RustPlayerJni.mixing(h)
