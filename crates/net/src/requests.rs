@@ -1,7 +1,5 @@
 //! Client request values: the server profile, writes and the cached answers each makes stale.
 
-use nori_model::IngestStats;
-
 use crate::transport::NetError;
 
 pub type NetResult<T> = std::result::Result<T, NetError>;
@@ -29,13 +27,6 @@ pub fn blank(s: &str) -> bool {
 
 pub fn pairs(p: &[(&str, String)]) -> Vec<(String, String)> {
     p.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
-}
-
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
-pub struct SyncStep {
-    pub total: IngestStats,
-    pub next_offset: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -577,15 +577,16 @@ impl Core {
         Ok(parse(&body)?.search_result3.unwrap_or_default().into())
     }
 
-    /// Library sync: indexes a search3 page and returns its counts, not its items.
-    pub(crate) fn ingest_search(&self, body: Vec<u8>) -> Result<IngestStats> {
+    /// Library sync: indexes a search3 page; how many of each it lists, and the index rows it filled.
+    pub(crate) fn ingest_search(&self, body: Vec<u8>) -> Result<(IngestStats, Vec<i64>)> {
         let f = parse(&body)?.search_result3.unwrap_or_default();
-        let mut st = db::index(&mut self.db.lock(), &f.artist, &f.album, &f.song)?;
-        // Counts seen, not changed: callers page until an empty page.
-        st.artists = f.artist.len() as u32;
-        st.albums = f.album.len() as u32;
-        st.songs = f.song.len() as u32;
-        Ok(st)
+        let rows = db::index(&mut self.db.lock(), &f.artist, &f.album, &f.song)?;
+        Ok((IngestStats { artists: f.artist.len() as u32, albums: f.album.len() as u32, songs: f.song.len() as u32 }, rows))
+    }
+
+    /// Drops the index rows other than `kept`: what a whole sync did not find.
+    pub(crate) fn prune_index(&self, kept: &std::collections::HashSet<i64>) -> Result<()> {
+        Ok(db::prune(&mut self.db.lock(), kept)?)
     }
 
     pub fn cache_get(&self, key: String) -> Result<Option<Vec<u8>>> {

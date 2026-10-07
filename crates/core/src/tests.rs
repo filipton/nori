@@ -28,7 +28,7 @@ fn search_indexes_skip_external() {
     assert_eq!(core.local_search("\"' OR *".into(), 10).unwrap().songs.len(), 0);
 
     // same page again changes nothing but still reports what it saw
-    assert_eq!(core.ingest_search(SEARCH.into()).unwrap().songs, 3);
+    assert_eq!(core.ingest_search(SEARCH.into()).unwrap().0.songs, 3);
     assert_eq!(core.index_size().unwrap().songs, 2);
 }
 

@@ -9,7 +9,7 @@ use parking_lot::RwLock;
 use crate::transport::{self, FailureKind, NetError, Transport};
 use crate::{api, Core, CoreError, IngestStats, ServerConfig};
 
-pub use nori_net::requests::{NetProfile, NetResult, Starrable, SyncStep, Write};
+pub use nori_net::requests::{NetProfile, NetResult, Starrable, Write};
 pub(crate) use nori_net::requests::{blank, pairs, request, FOLDERED};
 
 /// Ping timeout for the first address before falling back to the second.
@@ -228,24 +228,34 @@ impl Client {
         }
     }
 
-    /// Indexes one search3 page of the library; returns running totals and the next offset (None after
-    /// an empty page).
-    pub async fn sync_page(&self, offset: u32, page: u32, total: IngestStats) -> NetResult<SyncStep> {
+    /// Walks the whole library into the offline index, a search3 page at a time, then drops what the
+    /// server no longer lists; how many of each it listed.
+    pub async fn sync_library(&self) -> NetResult<IngestStats> {
+        let page = crate::browse::library_sizes().sync_page;
         let n = page.to_string();
-        let o = offset.to_string();
-        let p = pairs(&[
-            ("query", String::new()),
-            ("songCount", n.clone()),
-            ("songOffset", o.clone()),
-            ("albumCount", n.clone()),
-            ("albumOffset", o.clone()),
-            ("artistCount", n),
-            ("artistOffset", o),
-        ]);
-        let seen = self.core.ingest_search(self.fetch("search3", p).await?)?;
-        let total = IngestStats { artists: total.artists + seen.artists, albums: total.albums + seen.albums, songs: total.songs + seen.songs };
-        let empty = seen.songs == 0 && seen.albums == 0 && seen.artists == 0;
-        Ok(SyncStep { total, next_offset: if empty { None } else { Some(offset + page) } })
+        let mut total = IngestStats::default();
+        let mut kept = std::collections::HashSet::new();
+        let mut offset = 0;
+        loop {
+            let o = offset.to_string();
+            let p = pairs(&[
+                ("query", String::new()),
+                ("songCount", n.clone()),
+                ("songOffset", o.clone()),
+                ("albumCount", n.clone()),
+                ("albumOffset", o.clone()),
+                ("artistCount", n.clone()),
+                ("artistOffset", o),
+            ]);
+            let (seen, rows) = self.core.ingest_search(self.fetch("search3", p).await?)?;
+            if seen.songs == 0 && seen.albums == 0 && seen.artists == 0 {
+                self.core.prune_index(&kept)?;
+                return Ok(total);
+            }
+            total = IngestStats { artists: total.artists + seen.artists, albums: total.albums + seen.albums, songs: total.songs + seen.songs };
+            kept.extend(rows);
+            offset += page;
+        }
     }
 
     /// Evicts cached reads whose key (endpoint then params) starts with one of `prefixes`: a manual refresh.
@@ -597,16 +607,43 @@ pub(crate) mod tests {
         assert!(during.starts_with("https://wan.example/"), "{during}");
     }
 
+    const EMPTY_PAGE: &str = r#"{"subsonic-response":{"status":"ok","searchResult3":{}}}"#;
+
+    #[test]
+    fn sync_drops_what_the_server_no_longer_has() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        let sync = |page: &str| {
+            fake.answer(page);
+            fake.answer(EMPTY_PAGE);
+            block(c.sync_library()).unwrap();
+        };
+        sync(r#"{"subsonic-response":{"status":"ok","searchResult3":{"album":[{"id":"al1","name":"Blue"},{"id":"al2","name":"Bluer"}],
+            "song":[{"id":"a","title":"Blue one"},{"id":"b","title":"Blue two"}]}}}"#);
+        assert_eq!(c.core.local_search("blue".into(), 10).unwrap().songs.len(), 2);
+        sync(r#"{"subsonic-response":{"status":"ok","searchResult3":{"album":[{"id":"al1","name":"Blue"}],"song":[{"id":"a","title":"Blue one"}]}}}"#);
+        let found = c.core.local_search("blue".into(), 10).unwrap();
+        assert_eq!(found.songs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["a"]);
+        assert_eq!(found.albums.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["al1"]);
+        assert_eq!(c.core.index_size().unwrap().songs, 1);
+
+        // A walk cut short drops nothing.
+        fake.answer(r#"{"subsonic-response":{"status":"ok","searchResult3":{"song":[{"id":"c","title":"Blue three"}]}}}"#);
+        fake.fail(FailureKind::Connect);
+        assert!(block(c.sync_library()).is_err());
+        assert_eq!(c.core.index_size().unwrap().songs, 2);
+    }
+
     #[test]
     fn sync_pages_until_empty() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         fake.answer(r#"{"subsonic-response":{"status":"ok","searchResult3":{"artist":[{"id":"ar1","name":"A"}],
             "album":[{"id":"al1","name":"B"},{"id":"al2","name":"C"}],"song":[{"id":"s1","title":"x"},{"id":"s2","title":"y"},{"id":"s3","title":"z"}]}}}"#);
-        let step = block(c.sync_page(0, 500, IngestStats::default())).unwrap();
-        assert_eq!((step.total.artists, step.total.albums, step.total.songs, step.next_offset), (1, 2, 3, Some(500)));
-        assert!(fake.asked()[0].ends_with("&query=&songCount=500&songOffset=0&albumCount=500&albumOffset=0&artistCount=500&artistOffset=0"));
-        fake.answer(r#"{"subsonic-response":{"status":"ok","searchResult3":{}}}"#);
-        let step = block(c.sync_page(500, 500, step.total)).unwrap();
-        assert_eq!((step.total.songs, step.next_offset), (3, None));
+        fake.answer(EMPTY_PAGE);
+        let total = block(c.sync_library()).unwrap();
+        assert_eq!((total.artists, total.albums, total.songs), (1, 2, 3));
+        let asked = fake.asked();
+        assert!(asked[0].ends_with("&query=&songCount=500&songOffset=0&albumCount=500&albumOffset=0&artistCount=500&artistOffset=0"), "{}", asked[0]);
+        assert!(asked[1].contains("&songOffset=500&"), "{}", asked[1]);
+        assert_eq!(asked.len(), 2);
     }
 }

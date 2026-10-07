@@ -552,7 +552,7 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
         _sync.update { it.copy(running = true, error = null) }
         syncJob = viewModelScope.launch {
             try {
-                nori.library.sync().collect { }
+                nori.library.sync()
                 _sync.value = SyncUi(indexed = nori.library.indexSize())
             } catch (e: Exception) {
                 _sync.update { it.copy(running = false, error = e.said) }

@@ -105,17 +105,7 @@ impl Fetch {
 
 /// Fills the offline index from the server, page by page; the totals indexed.
 pub fn sync(client: &Client) -> Result<IngestStats, NetError> {
-    let mut total = IngestStats::default();
-    let mut offset = 0;
-    let page = nori_core::browse::library_sizes().sync_page;
-    loop {
-        let step = block_on(client.sync_page(offset, page, total))?;
-        total = step.total;
-        match step.next_offset {
-            Some(next) => offset = next,
-            None => return Ok(total),
-        }
-    }
+    block_on(client.sync_library())
 }
 
 /// Saves the queue and playback position.

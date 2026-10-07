@@ -3,6 +3,7 @@
 
 pub mod background;
 
+use std::collections::HashSet;
 use std::sync::{Arc, Weak};
 
 use nori_model::*;
@@ -153,10 +154,11 @@ pub fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
-fn upsert<T: Serialize>(c: &Connection, kind: i64, id: &str, text: &str, item: &T) -> rusqlite::Result<bool> {
+/// Stores `item` as the row of `kind` and `id`; its rowid, none for an item the index does not keep.
+fn upsert<T: Serialize>(c: &Connection, kind: i64, id: &str, text: &str, item: &T) -> rusqlite::Result<Option<i64>> {
     // Provider items are not library rows.
     if id.is_empty() || nori_model::is_provider_id(id) {
-        return Ok(false);
+        return Ok(None);
     }
     let json = serde_json::to_string(item).unwrap_or_default();
     let old: Option<(i64, String)> = c
@@ -164,35 +166,51 @@ fn upsert<T: Serialize>(c: &Connection, kind: i64, id: &str, text: &str, item: &
         .query_row(params![kind, id], |r| Ok((r.get(0)?, r.get(1)?)))
         .optional()?;
     match old {
-        Some((_, j)) if j == json => Ok(false),
+        Some((rowid, j)) if j == json => Ok(Some(rowid)),
         Some((rowid, _)) => {
             c.prepare_cached("UPDATE items SET json=?1 WHERE rowid=?2")?.execute(params![json, rowid])?;
             c.prepare_cached("INSERT OR REPLACE INTO fts(rowid, text) VALUES(?1, ?2)")?.execute(params![rowid, text])?;
-            Ok(true)
+            Ok(Some(rowid))
         }
         None => {
             c.prepare_cached("INSERT INTO items(server, kind, id, json) VALUES(sid(), ?1, ?2, ?3)")?.execute(params![kind, id, json])?;
             let rowid = c.last_insert_rowid();
             c.prepare_cached("INSERT INTO fts(rowid, text) VALUES(?1, ?2)")?.execute(params![rowid, text])?;
-            Ok(true)
+            Ok(Some(rowid))
         }
     }
 }
 
-pub fn index(c: &mut Connection, artists: &[Artist], albums: &[Album], songs: &[Song]) -> rusqlite::Result<IngestStats> {
+/// Stores the items in the index; the rowids of those it keeps.
+pub fn index(c: &mut Connection, artists: &[Artist], albums: &[Album], songs: &[Song]) -> rusqlite::Result<Vec<i64>> {
     let tx = c.transaction()?;
-    let mut st = IngestStats::default();
+    let mut rows = Vec::with_capacity(artists.len() + albums.len() + songs.len());
     for a in artists {
-        st.artists += upsert(&tx, ARTIST, &a.id, &a.name, a)? as u32;
+        rows.extend(upsert(&tx, ARTIST, &a.id, &a.name, a)?);
     }
     for a in albums.iter().filter(|a| !a.is_external) {
-        st.albums += upsert(&tx, ALBUM, &a.id, &format!("{} {}", a.name, a.artist), a)? as u32;
+        rows.extend(upsert(&tx, ALBUM, &a.id, &format!("{} {}", a.name, a.artist), a)?);
     }
     for s in songs.iter().filter(|s| !s.is_external) {
-        st.songs += upsert(&tx, SONG, &s.id, &format!("{} {} {}", s.title, s.artist, s.album), s)? as u32;
+        rows.extend(upsert(&tx, SONG, &s.id, &format!("{} {} {}", s.title, s.artist, s.album), s)?);
     }
     tx.commit()?;
-    Ok(st)
+    Ok(rows)
+}
+
+/// Deletes this server's index rows other than `kept`.
+pub fn prune(c: &mut Connection, kept: &HashSet<i64>) -> rusqlite::Result<()> {
+    let tx = c.transaction()?;
+    {
+        let all = tx.prepare("SELECT rowid FROM items WHERE server=sid()")?.query_map([], |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+        let mut fts = tx.prepare("DELETE FROM fts WHERE rowid=?1")?;
+        let mut items = tx.prepare("DELETE FROM items WHERE rowid=?1")?;
+        for rowid in all.iter().filter(|r| !kept.contains(r)) {
+            fts.execute([rowid])?;
+            items.execute([rowid])?;
+        }
+    }
+    tx.commit()
 }
 
 /// An FTS query where every token must prefix-match: "pin flo" finds Pink Floyd.

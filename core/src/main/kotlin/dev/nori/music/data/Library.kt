@@ -308,19 +308,10 @@ class Library(
     // ---- offline index ----
 
     /**
-     * Walks the whole library into the local index. The pages go from the socket
-     * into SQLite inside Rust; only three counters come back per page.
+     * Walks the whole library into the local index and drops what the server no longer has. The pages go
+     * from the socket into SQLite inside Rust; only the counts come back.
      */
-    fun sync(page: Int = sizes.syncPage.toInt()): Flow<IngestStats> = flow {
-        var offset = 0u
-        var total = IngestStats(0u, 0u, 0u)
-        while (true) {
-            val step = lifted { client.syncPage(offset, page.toUInt(), total) }
-            total = step.total
-            emit(total)
-            offset = step.nextOffset ?: break
-        }
-    }.flowOn(Dispatchers.IO)
+    suspend fun sync(): IngestStats = withContext(Dispatchers.IO) { lifted { client.syncLibrary() } }
 
     suspend fun indexSize(): IngestStats = withContext(Dispatchers.IO) { core.indexSize() }
 

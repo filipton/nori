@@ -13,7 +13,7 @@ use nori_core::client::{login_check, Client, NetProfile, Starrable, Write};
 use nori_core::library::StarsShown;
 use nori_core::stars::StarMarks;
 use nori_core::transport::{Exchange, FailureKind, Transport, TransportError, TransportResponse};
-use nori_core::{Core, IngestStats, ServerConfig};
+use nori_core::{Core, ServerConfig};
 use parking_lot::Mutex;
 
 /// A song of the server's library: id, title, artist, album id, genre.
@@ -174,14 +174,7 @@ fn logged_in(server: &Arc<Server>) -> (Arc<Core>, Arc<Client>) {
 fn offline_changes_reach_server() {
     let server = Server::new();
     let (core, client) = logged_in(&server);
-    let (mut total, mut offset) = (IngestStats::default(), 0);
-    while let Some(next) = {
-        let step = block(client.sync_page(offset, 2, total)).unwrap();
-        total = step.total;
-        step.next_offset
-    } {
-        offset = next;
-    }
+    block(client.sync_library()).unwrap();
     assert_eq!(core.index_size().unwrap().songs, 5);
     assert_eq!(core.local_search("blue gre".into(), 5).unwrap().songs[0].id, "s5");
 

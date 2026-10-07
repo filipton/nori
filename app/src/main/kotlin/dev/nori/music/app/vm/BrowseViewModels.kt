@@ -124,7 +124,7 @@ class HomeViewModel(app: Application) : NoriViewModel(app) {
             try {
                 runCatching { nori.library.dropCached(*homeRefreshDrops().toTypedArray()) }
                 refreshes.update { it + 1 }
-                runCatching { nori.library.sync().collect { } }
+                runCatching { nori.library.sync() }
             } finally {
                 _refreshing.value = false
             }
