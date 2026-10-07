@@ -54,6 +54,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.nori.music.app.R
@@ -110,7 +111,7 @@ fun DevicesSheet(open: Boolean, onDismiss: () -> Unit, onOutput: () -> Unit, jam
     val vm: RemoteViewModel = viewModel()
     val nav = LocalNav.current
     NoriSheet(open, onDismiss) {
-        DisposableEffect(Unit) { vm.watch(true); onDispose { vm.watch(false) } }
+        LifecycleResumeEffect(Unit) { vm.watch(true); onPauseOrDispose { vm.watch(false) } }
         val devices by vm.devices.collectAsStateWithLifecycle()
         val jam by vm.jam.collectAsStateWithLifecycle()
         val relay by vm.relay.collectAsStateWithLifecycle()
@@ -285,7 +286,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.jamLists(j: JamView, 
 @Composable
 fun JamScreen() {
     val vm: RemoteViewModel = viewModel()
-    DisposableEffect(Unit) { vm.watch(true); onDispose { vm.watch(false) } }
+    LifecycleResumeEffect(Unit) { vm.watch(true); onPauseOrDispose { vm.watch(false) } }
     val jam by vm.jam.collectAsStateWithLifecycle()
     val relay by vm.relay.collectAsStateWithLifecycle()
     val context = LocalContext.current
