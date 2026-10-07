@@ -13,6 +13,7 @@ const SIZES: [u32; 2] = [ROW, FULL];
 /// The rendition to fetch for a cover drawn `px` square: the row size up to it, else the full size.
 /// The client decodes the rendition to its own size, so every view of a cover shares one of two
 /// downloads (and the disk cache keeps two files per cover, not one per view size).
+#[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn cover_rendition(px: u32) -> u32 {
     if px <= ROW {
         ROW

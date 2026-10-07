@@ -49,7 +49,7 @@ object CarArt {
         return id to (uri.getQueryParameter("s")?.toIntOrNull() ?: ART)
     }
 
-    /** A car's cover, pixels a side, where no size is asked: the core's `car::ART`. */
+    /** A car's cover, pixels a side, where no size is asked. */
     const val ART = 300
     fun mosaic(context: Context, mix: String, ids: List<String>): Uri =
         base(context).appendPath("m").appendPath(mix).apply { ids.forEach { appendQueryParameter("c", it) } }.build()

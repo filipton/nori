@@ -113,8 +113,6 @@ pub struct CarQueue {
 
 /// The tree's root, as the platform names it.
 pub const ROOT: &str = "root";
-/// How large a cover a car draws a folder with.
-pub const ART: u32 = 300;
 /// How many albums a shelf of Home lists.
 pub const SHELF: usize = 12;
 

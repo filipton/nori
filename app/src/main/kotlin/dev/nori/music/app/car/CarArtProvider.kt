@@ -10,6 +10,8 @@ import android.os.ParcelFileDescriptor
 import dev.nori.music.Nori
 import dev.nori.music.app.widget.Painter
 import dev.nori.music.app.widget.Widgets
+import dev.nori.music.ffi.coverRendition
+import dev.nori.music.playback.CarArt
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -39,7 +41,7 @@ class CarArtProvider : ContentProvider() {
         // The song's cover is opened by the notification, the lock screen, the always-on display and the
         // headphones, each on its own and again as it is shown: drawn once, then read from the disk, with
         // nothing in the app woken for it.
-        val kept = coverAddress(app, uri)?.let { File(File(app.cacheDir, KEPT_DIR), name(it)) }
+        val kept = coverAddress(app, uri)?.let { File(File(app.cacheDir, KEPT_DIR), name("$it#${side(uri)}")) }
         if (kept?.isFile == true) return ParcelFileDescriptor.open(kept, ParcelFileDescriptor.MODE_READ_ONLY)
         val (read, write) = ParcelFileDescriptor.createReliablePipe()
         // Drawn and written on a thread of its own: the car reads the pipe as it fills.
@@ -74,8 +76,10 @@ class CarArtProvider : ContentProvider() {
                 "m" -> {
                     val mix = parts.getOrNull(1) ?: return@withTimeoutOrNull null
                     val library = Nori.get(context).library
-                    val covers = coroutineScope { uri.getQueryParameters("c").map { id -> async { Widgets.picture(context, library.coverUrl(id, SIDE / 2), SIDE / 2) } }.awaitAll() }
-                    Drawn(Painter.mix(covers.filterNotNull(), dev.nori.music.ffi.library.mixTileColours(mix).map { it.toInt() }, SIDE, SIDE, 0f), false)
+                    val tile = CarArt.ART / 2
+                    val rendition = coverRendition(tile.toUInt()).toInt()
+                    val covers = coroutineScope { uri.getQueryParameters("c").map { id -> async { Widgets.picture(context, library.coverUrl(id, rendition), tile) } }.awaitAll() }
+                    Drawn(Painter.mix(covers.filterNotNull(), dev.nori.music.ffi.library.mixTileColours(mix).map { it.toInt() }, CarArt.ART, CarArt.ART, 0f), false)
                 }
                 else -> null
             }
@@ -88,9 +92,6 @@ class CarArtProvider : ContentProvider() {
     override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?) = 0
 
     internal companion object {
-        /** A car's cover, pixels a side: the core's `car::ART`, one rendition the server keeps for every car row. */
-        private const val SIDE = 300
-
         /** The covers drawn, for the test bridge: one asked for again is read from the disk instead. */
         @Volatile var coversDrawn = 0
             private set
@@ -103,12 +104,15 @@ class CarArtProvider : ContentProvider() {
         private const val KEPT = 16
 
         /** The size asked for (the queue's covers are the lock screen's 800), else a car row's. */
-        private fun side(uri: Uri) = uri.getQueryParameter("s")?.toIntOrNull()?.coerceIn(64, 1024) ?: SIDE
+        private fun side(uri: Uri) = uri.getQueryParameter("s")?.toIntOrNull()?.coerceIn(64, 1024) ?: CarArt.ART
 
-        /** The server's address of a `c/` picture's cover at its size: the same picture, whoever asks. */
+        /**
+         * The server's address of a `c/` picture's cover, at the rendition the phone's screens fetch too
+         * (the core's `cover_rendition`): the same picture and cached file, whoever asks.
+         */
         private fun coverAddress(context: Context, uri: Uri): String? {
             if (uri.pathSegments.firstOrNull() != "c") return null
-            return Nori.get(context).library.coverUrl(uri.pathSegments.getOrNull(1) ?: return null, side(uri))
+            return Nori.get(context).library.coverUrl(uri.pathSegments.getOrNull(1) ?: return null, coverRendition(side(uri).toUInt()).toInt())
         }
 
         private fun name(address: String) = MessageDigest.getInstance("SHA-1").digest(address.toByteArray()).joinToString("") { "%02x".format(it) } + ".jpg"
