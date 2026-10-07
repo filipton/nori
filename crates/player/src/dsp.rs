@@ -359,6 +359,8 @@ struct Limiter {
     /// Peak hold for the look-ahead length, so release waits until the peak has left the delay line.
     env: f64,
     hold: usize,
+    /// `curve(env)`, recomputed only when the envelope moves.
+    want: f64,
     gain: f64,
     /// Smallest gain in the last buffer (UI meter).
     meter: f64,
@@ -397,6 +399,7 @@ impl Limiter {
             decay: 1.0,
             env: 0.0,
             hold: 0,
+            want: 1.0,
             gain: 1.0,
             meter: 1.0,
         };
@@ -416,6 +419,7 @@ impl Limiter {
         self.attack = 1.0 - 0.001f64.powf(1.0 / self.frames as f64);
         self.release = 1.0 - per_sample;
         self.decay = per_sample;
+        self.want = self.curve(self.env);
     }
 
     /// Static curve: 1 below the knee, quadratic through it, hard ceiling above.
@@ -434,15 +438,17 @@ impl Limiter {
     /// The gain follower after a frame peaking at `peak`; the state is passed in so a block keeps it in
     /// registers.
     #[inline(always)]
-    fn follow(&self, peak: f64, env: &mut f64, hold: &mut usize, gain: &mut f64) {
+    fn follow(&self, peak: f64, env: &mut f64, hold: &mut usize, want: &mut f64, gain: &mut f64) {
         if peak >= *env {
             (*env, *hold) = (peak, self.frames);
+            *want = self.curve(*env);
         } else if *hold > 0 {
             *hold -= 1;
         } else {
             *env *= self.decay;
+            *want = self.curve(*env);
         }
-        let want = self.curve(*env);
+        let want = *want;
         // At rest (the usual case) the gain stays 1 without its update.
         if want != 1.0 || *gain != 1.0 {
             *gain += (want - *gain) * if want < *gain { self.attack } else { self.release };
@@ -467,9 +473,9 @@ impl Limiter {
     #[inline]
     fn frame(&mut self, x: &mut [f64]) {
         let peak = x.iter().fold(0.0f64, |m, v| m.max(v.abs()));
-        let (mut env, mut hold, mut gain) = (self.env, self.hold, self.gain);
-        self.follow(peak, &mut env, &mut hold, &mut gain);
-        (self.env, self.hold, self.gain) = (env, hold, gain);
+        let (mut env, mut hold, mut want, mut gain) = (self.env, self.hold, self.want, self.gain);
+        self.follow(peak, &mut env, &mut hold, &mut want, &mut gain);
+        (self.env, self.hold, self.want, self.gain) = (env, hold, want, gain);
         let slot = self.pos * self.channels;
         let leaving = self.delay[slot..slot + self.channels].iter().fold(0.0f64, |m, v| m.max(v.abs()));
         let gain = self.leaving_gain(leaving, self.gain);
@@ -485,10 +491,10 @@ impl Limiter {
     /// [`Limiter::frame`] over a stereo block, the state in locals.
     fn block2(&mut self, left: &mut [f64], right: &mut [f64]) {
         let mut delay = std::mem::take(&mut self.delay);
-        let (mut pos, mut env, mut hold, mut gain, mut meter) = (self.pos, self.env, self.hold, self.gain, self.meter);
+        let (mut pos, mut env, mut hold, mut want, mut gain, mut meter) = (self.pos, self.env, self.hold, self.want, self.gain, self.meter);
         let slots = delay.as_chunks_mut::<2>().0;
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            self.follow(l.abs().max(r.abs()), &mut env, &mut hold, &mut gain);
+            self.follow(l.abs().max(r.abs()), &mut env, &mut hold, &mut want, &mut gain);
             let slot = &mut slots[pos];
             let g = self.leaving_gain(slot[0].abs().max(slot[1].abs()), gain);
             let out = std::mem::replace(slot, [*l, *r]);
@@ -496,13 +502,13 @@ impl Limiter {
             pos = if pos + 1 == self.frames { 0 } else { pos + 1 };
             meter = meter.min(gain);
         }
-        (self.pos, self.env, self.hold, self.gain, self.meter) = (pos, env, hold, gain, meter);
+        (self.pos, self.env, self.hold, self.want, self.gain, self.meter) = (pos, env, hold, want, gain, meter);
         self.delay = delay;
     }
 
     fn reset(&mut self) {
         self.delay.fill(0.0);
-        (self.pos, self.env, self.hold, self.gain, self.meter) = (0, 0.0, 0, 1.0, 1.0);
+        (self.pos, self.env, self.hold, self.want, self.gain, self.meter) = (0, 0.0, 0, 1.0, 1.0, 1.0);
     }
 }
 
@@ -1584,6 +1590,22 @@ mod tests {
         let x: Vec<f32> = quiet.iter().flat_map(|s| [*s, *s]).collect();
         eq.process_f32(&x, &mut y);
         assert_eq!(eq.gain_reduction_db(), 0.0);
+    }
+
+    /// A lower ceiling takes hold while the envelope is still held at an earlier peak.
+    #[test]
+    fn limiter_retune_while_holding() {
+        let mut l = Limiter::new(48000.0, 1, 240);
+        l.frame(&mut [0.5]);
+        for _ in 0..50 {
+            l.frame(&mut [0.4]);
+        }
+        assert_eq!(l.gain, 1.0, "under the 0 dB knee");
+        l.tune(48000.0, -20.0, 100.0);
+        for _ in 0..100 {
+            l.frame(&mut [0.4]);
+        }
+        assert!(l.hold > 0 && l.gain < 0.3, "the held 0.5 peak heads for the -20 dB ceiling (0.2): {}", l.gain);
     }
 
     /// Regression: unscaled 16-bit input made the limiter cut 91 dB.
