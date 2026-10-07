@@ -13,7 +13,7 @@
 //!
 //! [`Watch`] is the testable bookkeeping; the functions below drive one process-wide instance.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 /// An output presenting nothing new for longer than this has stalled.
@@ -374,8 +374,6 @@ pub(crate) fn settings_held(expected: &[(&str, bool, bool)]) -> Option<Break> {
 
 /// Whether the watch is on; every caller checks it first (one atomic read outside the perf build).
 static ON: AtomicBool = AtomicBool::new(false);
-/// Self-test volume factor for every output, as f32 bits.
-static QUIET: AtomicU32 = AtomicU32::new(0x3F80_0000);
 static RECORDER: Recorder = Recorder { state: Mutex::new(None) };
 
 /// The watch: what it saw and the breaks it said.
@@ -662,18 +660,6 @@ pub fn perf_invariant_breaks() -> Vec<String> {
     RECORDER.breaks()
 }
 
-/// Sets the self test's player volume factor (0..1) on every output; the system volume is untouched.
-#[cfg_attr(feature = "ffi", uniffi::export)]
-pub fn perf_quiet(level: f32) {
-    QUIET.store(level.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
-}
-
-/// The volume factor for every output: 1 outside the self test.
-#[inline]
-pub fn quiet() -> f32 {
-    f32::from_bits(QUIET.load(Ordering::Relaxed))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -956,13 +942,5 @@ mod tests {
         assert_eq!(b.detail, "a second after the settings changed the engine still shows sound chain in the path: false, expected true");
         assert_eq!(settings_held(&settings_pairs(false, false, false, false, true)), None, "equalizer off");
         assert!(settings_held(&settings_pairs(true, false, true, false, false)).is_some(), "offload always judged");
-    }
-
-    #[test]
-    fn quiet_is_clamped() {
-        perf_quiet(0.001);
-        assert!((quiet() - 0.001).abs() < 1e-6);
-        perf_quiet(3.0);
-        assert_eq!(quiet(), 1.0);
     }
 }

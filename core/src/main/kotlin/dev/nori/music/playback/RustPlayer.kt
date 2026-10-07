@@ -70,6 +70,8 @@ internal object RustPlayerJni {
     @JvmStatic @CriticalNative external fun onCpu(h: Long): Boolean
     @JvmStatic @CriticalNative external fun gainReductionDb(h: Long): Float
     @JvmStatic @CriticalNative external fun compressionDb(h: Long): Float
+    /** The outputs play at [level] (0 to 1) of their own volume from their next volume or open on ([Quiet]). */
+    @JvmStatic @CriticalNative external fun setQuiet(h: Long, level: Float)
     @JvmStatic @CriticalNative external fun setVolume(h: Long, index: Int, max: Int, db: Float)
     @JvmStatic @CriticalNative external fun bytesWritten(h: Long): Long
     /** The next event, `kind shl 32 or index` (the kinds are `EnginePlayer`'s `EVENT_*`); -1 when there are no more. */
@@ -878,8 +880,6 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
         track.addOnRoutingChangedListener(AudioRouting.OnRoutingChangedListener { r ->
             r.routedDevice?.let { d -> RustPlayerJni.device(h, d.type, d.productName?.toString()) }
         }, main)
-        // The perf build's self test plays quietly; the engine's own volumes are scaled from its next one on.
-        if (Quiet.level < 1f) track.setVolume(Quiet.level)
         PlaybackService.track = OpenedTrack(track, frames * channels * width, mode)
         val given = if (track.performanceMode == AudioTrack.PERFORMANCE_MODE_POWER_SAVING) "power saving" else "normal"
         dev.nori.music.NoriLog.i("rust AudioTrack: $rate Hz x$channels enc=$encoding, ${track.bufferSizeInFrames} of $frames frames (${track.bufferSizeInFrames * 1000L / rate} ms), $given, bitPerfect=$bitPerfect")
@@ -927,7 +927,6 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
                 r.routedDevice?.let { d -> RustPlayerJni.device(h, d.type, d.productName?.toString()) }
             }, main)
             nori.dac.onTrack(rate, encoding, track.isOffloadedPlayback)
-            if (Quiet.level < 1f) track.setVolume(Quiet.level)
             PlaybackService.track = OpenedTrack(track, bytes, AudioTrack.PERFORMANCE_MODE_NONE)
             dev.nori.music.NoriLog.i("rust offloaded AudioTrack: $rate Hz x$channels enc=$encoding, ${track.bufferSizeInFrames} of $bytes bytes, offloaded=${track.isOffloadedPlayback}")
             track
@@ -1001,7 +1000,11 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
             context.getSystemService(android.app.ActivityManager::class.java).memoryClass,
         )
         if (h == 0L) error = PlaybackException("the Rust player would not start", null, PlaybackException.ERROR_CODE_FAILED_RUNTIME_CHECK)
+        quiet(Quiet.level)
     }
+
+    /** Its outputs play at [level] of their own volume ([Quiet]). */
+    internal fun quiet(level: Float) = RustPlayerJni.setQuiet(h, level)
 
     private companion object {
         const val ENGINE_IDLE = 0

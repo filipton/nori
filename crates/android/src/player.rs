@@ -12,7 +12,7 @@
 use std::collections::VecDeque;
 use std::io::{self, Read};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::thread::Thread;
 use std::time::Instant;
@@ -57,6 +57,7 @@ pub(crate) static CLASS: Class = Class {
         native!(c"onCpu", c"(J)Z", on_cpu),
         native!(c"gainReductionDb", c"(J)F", gain_reduction_db),
         native!(c"compressionDb", c"(J)F", compression_db),
+        native!(c"setQuiet", c"(JF)V", set_quiet),
         native!(c"setVolume", c"(JIIF)V", set_volume),
         native!(c"bytesWritten", c"(J)J", bytes_written),
         native!(c"event", c"(J)J", event),
@@ -301,9 +302,33 @@ fn read_timestamp(env: &mut JNIEnv, java: &Java, track: &JObject, stamp: &JObjec
 }
 
 fn set_volume_on(env: &mut JNIEnv, java: &Java, track: &JObject, volume: f32) {
-    // The perf build's self test plays quieter.
-    let volume = volume * nori_perf::invariants::quiet();
     call(env, track, java.track.set_volume, ReturnType::Primitive(Primitive::Int), &[JValue::Float(volume).as_jni()]);
+}
+
+/// A player's volume factor under every output's own: the perf build's self test plays quietly, 1
+/// everywhere else. f32 bits.
+struct Quiet(AtomicU32);
+
+impl Quiet {
+    fn new() -> Quiet {
+        Quiet(AtomicU32::new(1f32.to_bits()))
+    }
+
+    fn get(&self) -> f32 {
+        f32::from_bits(self.0.load(Ordering::Relaxed))
+    }
+
+    /// Sets `track`'s volume to `volume` under it.
+    fn set_volume(&self, env: &mut JNIEnv, java: &Java, track: &JObject, volume: f32) {
+        set_volume_on(env, java, track, volume * self.get());
+    }
+
+    /// A track just opened plays under it.
+    fn opened(&self, env: &mut JNIEnv, java: &Java, track: &JObject) {
+        if self.get() < 1.0 {
+            self.set_volume(env, java, track, 1.0);
+        }
+    }
 }
 
 // ---- AudioTrack ----
@@ -311,6 +336,7 @@ fn set_volume_on(env: &mut JNIEnv, java: &Java, track: &JObject, volume: f32) {
 /// An AudioTrack opened by Kotlin, written through a direct ByteBuffer over `staging`.
 struct JavaTrack {
     track: GlobalRef,
+    quiet: Arc<Quiet>,
     buffer: GlobalRef,
     staging: Vec<f32>,
     timestamp: GlobalRef,
@@ -385,7 +411,7 @@ impl Sink for JavaTrack {
 
     fn set_volume(&mut self, volume: f32) {
         let Some((java, mut env)) = env() else { return };
-        set_volume_on(&mut env, java, &self.track, volume);
+        self.quiet.set_volume(&mut env, java, self.track.as_obj(), volume);
     }
 
     /// Playing: the device's timestamp when it has a fresh one; otherwise the play head, now.
@@ -518,6 +544,7 @@ const OFFLOAD_CHUNK: usize = 320 * 1024;
 struct JavaOffload {
     bridge: Bridge,
     events: Arc<OffloadEvents>,
+    quiet: Arc<Quiet>,
     track: Option<GlobalRef>,
     buffer: Option<GlobalRef>,
     staging: Vec<u8>,
@@ -538,8 +565,8 @@ struct JavaOffload {
 }
 
 impl JavaOffload {
-    fn new(bridge: Bridge, events: Arc<OffloadEvents>) -> JavaOffload {
-        JavaOffload { bridge, events, track: None, buffer: None, staging: Vec::new(), held: 0, rate: 1, timestamp: None, stamp: None, playing: false, since_ns: 0, head: HeadCount::default(), said: Vec::new() }
+    fn new(bridge: Bridge, events: Arc<OffloadEvents>, quiet: Arc<Quiet>) -> JavaOffload {
+        JavaOffload { bridge, events, quiet, track: None, buffer: None, staging: Vec::new(), held: 0, rate: 1, timestamp: None, stamp: None, playing: false, since_ns: 0, head: HeadCount::default(), said: Vec::new() }
     }
 
     /// The last timestamp, extrapolated by the clock while playing and fresh.
@@ -640,6 +667,7 @@ impl OffloadOutput for JavaOffload {
         });
         cleared(&mut env);
         let Ok(Some((track, buffer, held))) = opened else { return Err("the offloaded AudioTrack would not open".into()) };
+        self.quiet.opened(&mut env, java, track.as_obj());
         self.track = Some(track);
         self.buffer = Some(buffer);
         self.rate = coded.rate.max(1);
@@ -721,7 +749,7 @@ impl OffloadOutput for JavaOffload {
 
     fn set_volume(&mut self, volume: f32) {
         let (Some(track), Some((java, mut env))) = (&self.track, env()) else { return };
-        set_volume_on(&mut env, java, track, volume);
+        self.quiet.set_volume(&mut env, java, track, volume);
     }
 
     /// Frames presented since open or flush (restarts at a gapless join). None when the call failed, which
@@ -789,6 +817,7 @@ impl Drop for JavaOffload {
 /// Opens AudioTracks through `RustBridge.openTrack`.
 struct JavaOpener {
     bridge: Bridge,
+    quiet: Arc<Quiet>,
     /// API level: before 31 a track has no start threshold and starts only once full.
     sdk: i32,
 }
@@ -812,6 +841,7 @@ impl Opener for JavaOpener {
             ];
             let track = call(env, self.bridge.obj(), java.open_track, ReturnType::Object, &args).and_then(|v| v.l().ok());
             let Some(track) = track.filter(|t| !t.is_null()) else { return Ok(Err("the AudioTrack would not open".into())) };
+            self.quiet.opened(env, java, &track);
             let frames = call_int(env, &track, java.track.buffer_frames, &[]).unwrap_or(0).max(0) as u64;
             let mut staging = vec![0f32; CHUNK_BYTES / 4];
             // SAFETY: `staging` moves into the sink with the buffer, never resized, for as long as the buffer lives.
@@ -820,6 +850,7 @@ impl Opener for JavaOpener {
             let timestamp = unsafe { env.new_object_unchecked(<&JClass>::from(java.timestamp.as_obj()), java.timestamp_new, &[]) }?;
             let sink = JavaTrack {
                 track: env.new_global_ref(&track)?,
+                quiet: self.quiet.clone(),
                 buffer: env.new_global_ref(&buffer)?,
                 staging,
                 timestamp: env.new_global_ref(&timestamp)?,
@@ -1321,6 +1352,8 @@ struct Player {
     looked_ms: AtomicI64,
     /// Music volume for loudness compensation ([`set_volume`]).
     volume: Arc<OutputVolume>,
+    /// Its outputs' volume factor ([`set_quiet`]).
+    quiet: Arc<Quiet>,
     ahead: Arc<Ahead>,
     analyses: Arc<Analyses>,
     /// The app's queue session, whose settings the engine plays by.
@@ -1357,7 +1390,8 @@ extern "system" fn create(env: JNIEnv, _: JClass, bridge: JObject, current: jlon
     }
     let Ok(bridge) = env.new_global_ref(&bridge).map(Bridge::new) else { return 0 };
     let shared = Arc::new(Shared::default());
-    let output = TrackOutput::new(Box::new(JavaOpener { bridge: bridge.clone(), sdk }), float != 0, shared.clone());
+    let quiet = Arc::new(Quiet::new());
+    let output = TrackOutput::new(Box::new(JavaOpener { bridge: bridge.clone(), quiet: quiet.clone(), sdk }), float != 0, shared.clone());
     let stations = Arc::new(Mutex::new(Vec::new()));
     let ahead = Ahead::new();
     let library = AndroidLibrary { bridge: bridge.clone(), queue: queue.clone(), current: current.clone(), analyses: analyses.clone(), stations: stations.clone(), ahead: ahead.clone() };
@@ -1370,11 +1404,11 @@ extern "system" fn create(env: JNIEnv, _: JClass, bridge: JObject, current: jlon
     let tell = events.clone();
     let offload = Arc::new(OffloadEvents::default());
     let can_offload = JAVA.get().is_some_and(|j| j.offload.is_some()) && sdk >= 29;
-    let offloaded: Option<Box<dyn OffloadOutput>> = can_offload.then(|| Box::new(JavaOffload::new(bridge.clone(), offload.clone())) as Box<dyn OffloadOutput>);
+    let offloaded: Option<Box<dyn OffloadOutput>> = can_offload.then(|| Box::new(JavaOffload::new(bridge.clone(), offload.clone(), quiet.clone())) as Box<dyn OffloadOutput>);
     log(&format!("the engine starts: API {sdk}, {} output, {} MB of memory, offload {}", if float != 0 { "float" } else { "16-bit" }, config.memory_mb, if can_offload { "possible" } else { "not on this Android" }));
     let app = CoreApp::new(queue.clone()).bridging().volume(volume.clone());
     let engine = Engine::start(library, app, CoreQueue(queue.clone()), Box::new(output), offloaded, config, move |e| tell.push(e));
-    PLAYERS.add(Arc::new(Player { engine, bridge, shared, events, offload, stations, jumped: Mutex::new(None), looked_ms: AtomicI64::new(i64::MIN / 2), volume, ahead, analyses, queue }))
+    PLAYERS.add(Arc::new(Player { engine, bridge, shared, events, offload, stations, jumped: Mutex::new(None), looked_ms: AtomicI64::new(i64::MIN / 2), volume, quiet, ahead, analyses, queue }))
 }
 
 /// Unregisters the player and stops it on a thread of its own (stopping joins engine threads, and media3
@@ -1542,6 +1576,13 @@ extern "system" fn set_volume(h: jlong, index: jint, max: jint, db: jfloat) {
 /// Compressor gain reduction on the last buffer, dB.
 extern "system" fn compression_db(h: jlong) -> jfloat {
     player(h).map_or(0.0, |p| p.engine.status_with(|s| s.compression_db))
+}
+
+/// The outputs play at `level` (0 to 1) of their own volume from their next volume or open on.
+extern "system" fn set_quiet(h: jlong, level: jfloat) {
+    if let Some(p) = player(h) {
+        p.quiet.0.store(level.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    }
 }
 
 extern "system" fn bytes_written(h: jlong) -> jlong {

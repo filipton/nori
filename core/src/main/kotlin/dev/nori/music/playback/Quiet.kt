@@ -10,12 +10,12 @@ object Quiet {
         private set
 
     /**
-     * The outputs play at [level] of their own volume from now on, through the core
-     * (`nori_perf::invariants::quiet`); the track open now at once.
+     * The outputs play at [level] of their own volume from now on, through the player (a player made later
+     * starts at it); the track open now at once.
      */
     fun set(level: Float) {
         this.level = level.coerceIn(0f, 1f)
-        dev.nori.music.ffi.perf.perfQuiet(this.level)
+        PlaybackService.rustPlayer?.quiet(this.level)
         PlaybackService.track?.track?.let { runCatching { it.setVolume(this.level) } }
     }
 }
