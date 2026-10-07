@@ -43,8 +43,8 @@ internal class Ticket {
     }
 }
 
-/** The requests running, by the number the Rust side gave each (crates/android/src/player.rs `open_java`). */
-internal object Tickets {
+/** One player's requests running, by the number its Rust side gave each (crates/android/src/player.rs `open_java`). */
+internal class Tickets {
     private val running = ConcurrentHashMap<Long, Ticket>()
 
     /** [id]'s ticket, as the request starts: already called off when the Rust side was quicker. */

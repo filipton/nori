@@ -114,10 +114,9 @@ internal class RustBridge(private val player: EnginePlayer) {
     /** [encoding] is `AudioFormat.ENCODING_*`: 16-bit, 24-bit packed (a song played as it is) or float. */
     fun openTrack(rate: Int, channels: Int, encoding: Int, frames: Int): AudioTrack? = player.openTrack(rate, channels, encoding, frames)
     /** [ticket]: the request's number, by which [cancel] calls it off (see [Tickets]). */
-    fun open(url: String, key: String, from: Long, ticket: Long): RustBody? =
-        player.open(url, key, from, ticket) ?: null.also { Tickets.end(ticket) }
+    fun open(url: String, key: String, from: Long, ticket: Long): RustBody? = player.open(url, key, from, ticket)
     /** The Rust side lets a request go that has not answered or sends nothing: its call is cancelled. From any of its threads. */
-    fun cancel(ticket: Long) = Tickets.cancel(ticket)
+    fun cancel(ticket: Long) = player.tickets.cancel(ticket)
     fun openLive(url: String): RustBody? = player.openLive(url)
     /** The files that hold every byte of download [key], in order, for the engine to read in place; null while any is missing. */
     fun downloaded(key: String): Array<String>? = player.downloaded(key)
@@ -225,6 +224,8 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
      * after the release does no harm.
      */
     @Volatile private var h: Long = 0L
+    /** The song requests its engine may call off, by the numbers it gave them. */
+    internal val tickets = Tickets()
 
     private val items = ArrayList<MediaItem>()
     private val uids = ArrayList<Long>()
@@ -958,19 +959,21 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
      */
     internal fun open(url: String, key: String, from: Long, ticket: Long = 0): RustBody? {
         val (source, length) = try {
-            nori.sources.openResolved(url, key, from, ticket)
+            nori.sources.openResolved(url, key, from, tickets.start(ticket))
         } catch (e: MediaSources.PastEnd) {
+            tickets.end(ticket)
             // Not a failure: the song ends before [from] (a transcode's estimated length was longer).
             dev.nori.music.NoriLog.i("rust player: $key from byte $from: past its end (${if (e.whole >= 0) "at ${e.whole}" else "unknown"})")
             return RustBody(null, e.whole, past = true) {}
         } catch (e: Exception) {
+            tickets.end(ticket)
             dev.nori.music.NoriLog.w("rust player: $key would not open: $e")
             // The server answered, with an error: said as such, since it was reached.
             val status = MediaSources.httpStatus(e)
             return if (status > 0) RustBody(null, -1, status = status) {} else null
         }
         loaded(+1)
-        return RustBody(source, if (length == C.LENGTH_UNSET.toLong()) -1 else length) { Tickets.end(ticket); loaded(-1) }
+        return RustBody(source, if (length == C.LENGTH_UNSET.toLong()) -1 else length) { tickets.end(ticket); loaded(-1) }
     }
 
     internal fun downloaded(key: String): Array<String>? =

@@ -226,13 +226,21 @@ fn log(message: &str) {
 }
 
 /// One player's Kotlin `RustBridge`: what its engine asks of the platform goes to the player that
-/// started that engine, however late it comes.
+/// started that engine, however late it comes. `tickets` numbers its `open`/`cancel` requests, as its
+/// player's request table knows them.
 #[derive(Clone)]
-struct Bridge(GlobalRef);
+struct Bridge {
+    obj: GlobalRef,
+    tickets: Arc<AtomicI64>,
+}
 
 impl Bridge {
+    fn new(obj: GlobalRef) -> Bridge {
+        Bridge { obj, tickets: Arc::new(AtomicI64::new(1)) }
+    }
+
     fn obj(&self) -> &JObject<'static> {
-        self.0.as_obj()
+        self.obj.as_obj()
     }
 }
 
@@ -886,13 +894,10 @@ impl ByteSource for JavaBytes {
     }
 }
 
-/// Request ids for `RustBridge.open`/`cancel`. Global: Kotlin's request table is process-wide.
-static TICKETS: AtomicI64 = AtomicI64::new(1);
-
 /// `RustBridge.open` from byte `from` (download, then stream cache, then network; what is read is cached
 /// under `key`). `cancel` calls `RustBridge.cancel`, which fails a pending open or read at once.
 fn open_java(bridge: &Bridge, url: &str, key: &str, from: u64, cancel: &Cancel) -> Result<Body, OpenError> {
-    let ticket = TICKETS.fetch_add(1, Ordering::Relaxed);
+    let ticket = bridge.tickets.fetch_add(1, Ordering::Relaxed);
     let cancelling = bridge.clone();
     cancel.on_cancel(move || {
         if let Some((java, mut env)) = env() {
@@ -1350,7 +1355,7 @@ extern "system" fn create(env: JNIEnv, _: JClass, bridge: JObject, current: jlon
     if JAVA.get().is_none() {
         return 0;
     }
-    let Ok(bridge) = env.new_global_ref(&bridge).map(Bridge) else { return 0 };
+    let Ok(bridge) = env.new_global_ref(&bridge).map(Bridge::new) else { return 0 };
     let shared = Arc::new(Shared::default());
     let output = TrackOutput::new(Box::new(JavaOpener { bridge: bridge.clone(), sdk }), float != 0, shared.clone());
     let stations = Arc::new(Mutex::new(Vec::new()));

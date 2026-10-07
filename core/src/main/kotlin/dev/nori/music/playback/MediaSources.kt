@@ -226,12 +226,13 @@ class MediaSources(context: Context, private val clientOf: () -> Client, private
     /**
      * A song's bytes from [from] on, at [url] under the cache key [key] as the core resolved them (the Rust
      * player opens its songs so): a download, then the stream cache, then the network. The source and how
-     * many bytes are left (C.LENGTH_UNSET unknown). [ticket] is the request's number when the Rust side may
-     * call it off ([Tickets]); it is let go here when the open fails, and by the body's close otherwise.
+     * many bytes are left (C.LENGTH_UNSET unknown).
      */
-    fun openResolved(url: String, key: String, from: Long, ticket: Long = 0): Pair<DataSource, Long> {
+    fun openResolved(url: String, key: String, from: Long): Pair<DataSource, Long> = openResolved(url, key, from, null)
+
+    /** [openResolved] as a request the Rust side may call off by its ticket [t] ([Tickets]). */
+    internal fun openResolved(url: String, key: String, from: Long, t: Ticket?): Pair<DataSource, Long> {
         applyStreamLimit()
-        val t = Tickets.start(ticket)
         val source = (if (t == null) cached else cancellable(t)).createDataSource()
         try {
             t?.opening()
@@ -240,7 +241,6 @@ class MediaSources(context: Context, private val clientOf: () -> Client, private
         } catch (e: IOException) {
             // Let go at once: the stream cache's lock on the song goes with it.
             runCatching { source.close() }
-            Tickets.end(ticket)
             if (t?.cancelled == true) throw e
             val said = (if (from > 0) pastEnd(e) else null) ?: throw e
             // A 416 that does not say the length (a proxy drops Content-Range): the first byte asked for
