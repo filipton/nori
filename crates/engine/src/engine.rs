@@ -988,20 +988,21 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     fn set_state(&mut self, s: State) {
         if self.state != s {
             self.state = s;
-            self.idle_at = (s == State::Paused).then(|| self.now() + self.idle_release_ms);
+            self.idle_at = matches!(s, State::Paused | State::Ended).then(|| self.now() + self.idle_release_ms);
             self.status.lock().state = s;
             (self.events)(Event::State(s));
         }
     }
 
-    /// Paused long enough: lets the device and the song's bytes go, keeping the place.
+    /// Paused or ended long enough: lets the device and the song's bytes go, keeping a paused place
+    /// (after the end, play starts the queue's current song anew).
     fn release(&mut self) {
         self.idle_at = None;
         if self.playing() || self.parked.as_ref().is_some_and(|p| p.shown.is_none()) {
             return;
         }
         let at = self.leave_offload().or_else(|| self.p.release());
-        if self.parked.is_none() {
+        if self.parked.is_none() && self.state != State::Ended {
             self.parked = at.map(|(at, ms)| Parked { at, ms, shown: None });
         }
         self.p.sink.track.release();

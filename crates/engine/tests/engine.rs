@@ -1240,6 +1240,25 @@ fn idle_release_and_reopen() {
 }
 
 #[test]
+fn idle_release_after_queue_ends() {
+    let a = music(2.0, 19);
+    let songs: [(&str, &[i16]); 1] = [("a", &a)];
+    let extra = Extra { idle_release_ms: Some(300), ..Extra::default() };
+    let rig = Rig::build(files(&songs), sim::App::new(), Settings::default(), extra);
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
+    assert!(rig.wait_for(5, |r| r.shut.load(Ordering::Relaxed) == 1), "let go after the idle time");
+    assert_eq!(rig.engine.status().releases, 1);
+    assert!(rig.wait_for(5, |r| r.engine.held().songs == 0), "the song's bytes let go: {:?}", rig.engine.held());
+    rig.heard.lock().clear();
+    rig.engine.play();
+    assert!(rig.wait_for(30, |r| r.heard.lock().len() >= a.len() && r.engine.status().state == State::Ended), "{:?}", rig.events.lock());
+    let heard = rig.heard.lock().clone();
+    let head = RATE as usize * 2;
+    assert!(heard[..head] == a[..head], "played again from its start");
+}
+
+#[test]
 fn device_gets_own_sound() {
     let a = vec![8000i16; RATE as usize * 2 * 16];
     let songs: [(&str, &[i16]); 1] = [("a", &a)];
