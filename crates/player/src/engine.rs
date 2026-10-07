@@ -96,6 +96,13 @@ pub trait Downstream {
     /// offered again as the same memory with `from` advanced, so an output can check it.
     fn handle_buffer(&mut self, data: &[u8], from: usize, pts_us: i64) -> (bool, usize);
     fn handle_discontinuity(&mut self);
+    /// Whether it scales what is offered by [`Downstream::song_gain`] itself, in a sound chain it runs
+    /// anyway: the samples are rounded once instead of twice.
+    fn applies_gain(&self) -> bool {
+        false
+    }
+    /// The gain still to be applied to what is offered from now on; 1 when it is in the samples.
+    fn song_gain(&mut self, _gain: f32) {}
     /// Song frames per output frame from now on (not 1 while the incoming song is stretched), so the
     /// output's clock counts song time.
     fn media_pace(&mut self, _pace: f64) {}
@@ -173,6 +180,9 @@ struct Chunk {
     stream_us: Option<i64>,
     /// Song frames per frame ([`Downstream::media_pace`]).
     pace: f64,
+    /// The song's gain, still to be applied by the output ([`Downstream::song_gain`]); 1 when the
+    /// samples are at it.
+    gain: f32,
 }
 
 /// A format announced by decode-ahead, armed once its buffers flow.
@@ -580,7 +590,11 @@ impl TransitionEngine {
             return;
         }
         for c in self.queue.iter_mut().filter(|c| c.stream_us == Some(stream_offset_us)) {
-            crate::pcm::scale(&mut c.data[c.pos..], out.encoding, ratio);
+            if c.gain != 1.0 {
+                c.gain *= ratio;
+            } else {
+                crate::pcm::scale(&mut c.data[c.pos..], out.encoding, ratio);
+            }
         }
         if self.tail_len > 0 && matches!(self.phase, Phase::Hold | Phase::Mix) && self.held_offset_us == stream_offset_us {
             // All of it: a looped hold is read again.
@@ -607,21 +621,24 @@ impl TransitionEngine {
         }
         let native = self.conv_in.unwrap_or(out);
         let gain = if native.encoding == crate::pcm::Encoding::Float { self.gain } else { self.gain.min(1.0) };
-        let scaled = (gain != 1.0).then(|| {
+        // Passed straight on, the output's sound chain applies the gain as it runs.
+        let chained = gain != 1.0 && self.phase == Phase::Pass && self.stretch.is_none() && !self.converting() && down.applies_gain();
+        let scaled = (gain != 1.0 && !chained).then(|| {
             let mut b = self.copy_of(buffer);
             crate::pcm::scale_dithered(&mut b, native.encoding, gain, native.channels, &mut self.dither);
             b
         });
-        let taken = self.route(down, host, buffer, scaled.as_deref().unwrap_or(buffer), pts_us, out, native);
+        let taken = self.route(down, host, buffer, scaled.as_deref().unwrap_or(buffer), pts_us, out, native, if chained { gain } else { 1.0 });
         if let Some(b) = scaled {
             self.recycle(b);
         }
         taken
     }
 
-    /// Routes a buffer by phase. `raw` is unscaled (for the analyser), `buffer` is at the song's gain.
+    /// Routes a buffer by phase. `raw` is unscaled (for the analyser), `buffer` is at the song's gain
+    /// but for `gain`, which the output applies when it is passed on.
     #[allow(clippy::too_many_arguments)]
-    fn route<D: Downstream, H: Host>(&mut self, down: &mut D, host: &mut H, raw: &[u8], buffer: &[u8], pts_us: i64, out: Format, native: Format) -> (bool, usize) {
+    fn route<D: Downstream, H: Host>(&mut self, down: &mut D, host: &mut H, raw: &[u8], buffer: &[u8], pts_us: i64, out: Format, native: Format, gain: f32) -> (bool, usize) {
         self.feed_analysis(host, raw, native);
         match self.phase {
             Phase::Pass => {
@@ -641,7 +658,7 @@ impl TransitionEngine {
                 } else {
                     None
                 };
-                let result = self.pass_or_hold(down, host, converted.as_deref().unwrap_or(buffer), buffer.len(), pts_us, out);
+                let result = self.pass_or_hold(down, host, converted.as_deref().unwrap_or(buffer), buffer.len(), pts_us, out, gain);
                 if let Some(b) = converted {
                     self.recycle(b);
                 }
@@ -666,8 +683,10 @@ impl TransitionEngine {
     }
 
     /// Passes `buf` (already converted) through, or at the plan's start passes the head and holds the
-    /// rest. `Some` is the result to return now; `None` means it was taken whole.
-    fn pass_or_hold<D: Downstream, H: Host>(&mut self, down: &mut D, host: &mut H, buf: &[u8], whole: usize, pts_us: i64, out: Format) -> Option<(bool, usize)> {
+    /// rest. `Some` is the result to return now; `None` means it was taken whole. `gain`: still to be
+    /// applied, by the output or, to what is held, here.
+    #[allow(clippy::too_many_arguments)]
+    fn pass_or_hold<D: Downstream, H: Host>(&mut self, down: &mut D, host: &mut H, buf: &[u8], whole: usize, pts_us: i64, out: Format, gain: f32) -> Option<(bool, usize)> {
         if self.playing_id.is_none() {
             self.playing_id = self.current_id.clone();
         }
@@ -685,14 +704,14 @@ impl TransitionEngine {
         // Past the start but inside the transition (a seek): hold what is left. Past its end: nothing to hold.
         let skip_transition = p.is_some_and(|(_, duration_us)| start_frame < -duration_us * out.rate as i64 / 1_000_000);
         if start_frame >= frames || skip_transition {
-            return Some(self.pass(down, buf, whole, pts_us));
+            return Some(self.pass(down, buf, whole, pts_us, gain));
         }
         let p = self.plan().cloned().expect("a plan exists past this point");
         let late = start_frame < 0;
         let before = start_frame.max(0) as usize * fb;
         if before > 0 {
             let head = self.copy_of(&buf[..before]);
-            self.enqueue(head, pts_us, Some(self.offset_us));
+            self.enqueue(head, pts_us, Some(self.offset_us), gain);
         }
         self.late_us = if late { -start_frame * 1_000_000 / out.rate as i64 } else { 0 };
         self.begin_hold(&p, out);
@@ -713,26 +732,31 @@ impl TransitionEngine {
             // Decode never got ahead (the next track still fetching): don't hold.
             host.log(&format!("transition: no runway ({} ms), letting the ending play", runway / 1000));
             self.abandon_transition(host);
-            return Some(self.pass(down, &buf[before..], whole, pts_us));
+            return Some(self.pass(down, &buf[before..], whole, pts_us, gain));
         }
+        let from = self.tail_len;
         self.hold(&buf[before..], out);
+        if gain != 1.0 {
+            crate::pcm::scale_dithered(&mut self.tail[from..self.tail_len], out.encoding, gain, out.channels, &mut self.dither);
+        }
         None
     }
 
     /// Passes `buffer` on and reports `whole` bytes taken. Offered as it is when nothing waits before it;
     /// what the output does not take is copied and queued, so [`TransitionEngine::rescale`] and the next
     /// offer work on the engine's own memory.
-    fn pass<D: Downstream>(&mut self, down: &mut D, buffer: &[u8], whole: usize, pts_us: i64) -> (bool, usize) {
+    fn pass<D: Downstream>(&mut self, down: &mut D, buffer: &[u8], whole: usize, pts_us: i64, gain: f32) -> (bool, usize) {
         let direct = self.queue.is_empty() && !self.resync_next && !self.measure_next;
         let (taken, used) = if direct {
             down.media_pace(1.0);
+            down.song_gain(gain);
             down.handle_buffer(buffer, 0, pts_us)
         } else {
             (false, 0)
         };
         if !taken {
             let c = self.copy_of(buffer);
-            self.enqueue(c, pts_us, Some(self.offset_us));
+            self.enqueue(c, pts_us, Some(self.offset_us), gain);
             match self.queue.back_mut() {
                 // The output just said it is full.
                 Some(c) if direct => c.pos = used,
@@ -1184,7 +1208,7 @@ impl TransitionEngine {
                 };
                 let mut c = self.take_pooled(end - from);
                 c.extend_from_slice(&self.tail[from..end]);
-                self.enqueue(c, at, Some(self.held_offset_us));
+                self.enqueue(c, at, Some(self.held_offset_us), 1.0);
             }
         }
         if self.phase != Phase::Pass {
@@ -1243,17 +1267,22 @@ impl TransitionEngine {
 
     // ---- output queue ----
 
-    /// Queues `data` at `pts_us`; `stream_us` is its song's stream offset (`None` for a mix).
-    fn enqueue(&mut self, data: Vec<u8>, pts_us: i64, stream_us: Option<i64>) {
-        self.enqueue_paced(data, pts_us, stream_us, 1.0);
+    /// Queues `data` at `pts_us`, with `gain` still to be applied by the output; `stream_us` is its
+    /// song's stream offset (`None` for a mix).
+    fn enqueue(&mut self, data: Vec<u8>, pts_us: i64, stream_us: Option<i64>, gain: f32) {
+        self.push_chunk(data, pts_us, stream_us, 1.0, gain);
     }
 
     fn enqueue_paced(&mut self, data: Vec<u8>, pts_us: i64, stream_us: Option<i64>, pace: f64) {
+        self.push_chunk(data, pts_us, stream_us, pace, 1.0);
+    }
+
+    fn push_chunk(&mut self, data: Vec<u8>, pts_us: i64, stream_us: Option<i64>, pace: f64, gain: f32) {
         if data.is_empty() {
             self.recycle(data);
             return;
         }
-        self.queue.push_back(Chunk { data, pos: 0, pts_us, resync: self.resync_next, measure: self.measure_next, stream_us, pace });
+        self.queue.push_back(Chunk { data, pos: 0, pts_us, resync: self.resync_next, measure: self.measure_next, stream_us, pace, gain });
         self.resync_next = false;
         self.measure_next = false;
     }
@@ -1289,6 +1318,7 @@ impl TransitionEngine {
             }
             let before = if c.measure { down.position_us(false) } else { None };
             down.media_pace(c.pace);
+            down.song_gain(c.gain);
             let (taken, used) = down.handle_buffer(&c.data, c.pos, c.pts_us);
             c.pos += used;
             if c.measure {

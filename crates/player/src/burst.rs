@@ -129,6 +129,14 @@ impl<D: Downstream> Downstream for Fed<'_, D> {
         self.down.media_pace(pace);
     }
 
+    fn applies_gain(&self) -> bool {
+        self.down.applies_gain()
+    }
+
+    fn song_gain(&mut self, gain: f32) {
+        self.down.song_gain(gain);
+    }
+
     fn handle_discontinuity(&mut self) {
         // Written audio stays in the output, so the count stands; `queued_us` ignores the clock's jump.
         self.burst.filling = true;

@@ -101,9 +101,13 @@ fn perf_report() {
     }
     perf_case("speed", &one, perf_app(prefs_off()), Settings { speed: 1.2, pitch: 0.95, ..Settings::default() }, 4);
     perf_case("silence", &one, perf_app(prefs_off()), Settings { skip_silence: true, ..Settings::default() }, 4);
-    let mut gained = perf_app(prefs_off());
-    gained.gains.insert("a".into(), 0.7);
-    perf_case("gain", &one, gained, Settings::default(), 4);
+    let gained = || {
+        let mut app = perf_app(prefs_off());
+        app.gains.insert("a".into(), 0.7);
+        app
+    };
+    perf_case("gain", &one, gained(), Settings::default(), 4);
+    perf_case("gaineq", &one, gained(), loud_eq(), 4);
     if perf_wanted("change") {
         // The equalizer moved every 15 s: each change makes the kept input again.
         let rig = Rig::with_app(&one, perf_app(prefs_off()), loud_eq());

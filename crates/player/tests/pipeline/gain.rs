@@ -238,3 +238,23 @@ fn no_boost_on_16_bit() {
     let heard = p.sink.heard_floats();
     assert!(heard[LOOKAHEAD * 2..].iter().zip(floats(&song)).all(|(h, s)| *h == s), "held to the most allowed");
 }
+
+#[test]
+fn gain_rounded_once_with_a_sound_on() {
+    // The equalizer applies the song's gain as it runs: every sample as the chain makes it from the
+    // song at its gain, rounded to 16 bits once.
+    let song = music(10.0, 45);
+    let sound = Sound { bands: vec![nori_player::dsp::Band { kind: nori_player::dsp::PEAKING, freq: 1000.0, gain_db: 4.0, q: 1.0, channel: 0 }], ..Sound::default() };
+    let mut p = Player::new(vec![track("a", &song)]);
+    p.app.gains.insert("a".into(), minus_6db());
+    p.set_sound(sound.clone());
+    p.play_from(0);
+    assert!(p.run_to_end(30_000), "{:?}", p.app.log);
+    let mut eq = nori_player::dsp::Equalizer::new(RATE, 2);
+    sound.apply(&mut eq);
+    let input: Vec<u8> = song.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let mut want = vec![0u8; input.len()];
+    eq.process_bytes(&input, &mut want, false, minus_6db());
+    let want: Vec<i16> = want.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b)).collect();
+    assert!(p.sink.heard_samples() == want, "every sample as the chain makes it at the song's gain");
+}

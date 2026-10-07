@@ -53,12 +53,14 @@ impl Processors {
     }
 }
 
-/// Input as offered: its first frame, song frames per frame, and timeline position (µs) of that frame.
+/// Input as offered: its first frame, song frames per frame, timeline position (µs) of that frame, and
+/// the gain the chain applies to it (1 when the samples are at their level).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Piece {
     pub frame: u64,
     pub pace: f64,
     pub pts: i64,
+    pub gain: f32,
 }
 
 impl Piece {
@@ -110,9 +112,9 @@ impl Kept {
     }
 
     /// Keeps `input` at the end.
-    pub fn keep(&mut self, input: &[u8], pace: f64, pts: i64) {
+    pub fn keep(&mut self, input: &[u8], pace: f64, pts: i64, gain: f32) {
         let frame = self.end();
-        self.pieces.push_back(Piece { frame, pace, pts });
+        self.pieces.push_back(Piece { frame, pace, pts, gain });
         self.bytes.extend_from_slice(input);
     }
 
@@ -233,16 +235,27 @@ impl Kept {
         &self.bytes[at(from)..at(to)]
     }
 
-    /// Scales the input from frame `from` whose timeline position is in `pts` by `ratio`.
-    pub fn rescale(&mut self, from: u64, pts: std::ops::Range<i64>, ratio: f32, encoding: Encoding) {
-        for k in 0..self.pieces.len() {
+    /// Scales the input from frame `from` whose timeline position is in `pts` by `ratio`: its gain, or
+    /// the samples where they carry it.
+    pub fn rescale(&mut self, from: u64, pts: std::ops::Range<i64>, ratio: f32, encoding: Encoding, rate: u32) {
+        let mut k = 0;
+        while k < self.pieces.len() {
             let p = self.pieces[k];
             let end = self.pieces.get(k + 1).map_or(self.end(), |n| n.frame);
+            k += 1;
             if end <= from || !pts.contains(&p.pts) {
                 continue;
             }
-            let at = |f: u64| self.head + (f.max(self.first) - self.first) as usize * self.frame_bytes;
-            crate::pcm::scale(&mut self.bytes[at(p.frame.max(from))..at(end)], encoding, ratio);
+            if p.gain == 1.0 {
+                let at = |f: u64| self.head + (f.max(self.first) - self.first) as usize * self.frame_bytes;
+                crate::pcm::scale(&mut self.bytes[at(p.frame.max(from))..at(end)], encoding, ratio);
+            } else if p.frame < from {
+                // What comes before `from` is run again at the gain it was run at.
+                self.pieces.insert(k, Piece { frame: from, pts: p.at(from, rate).0, gain: p.gain * ratio, ..p });
+                k += 1;
+            } else {
+                self.pieces[k - 1].gain *= ratio;
+            }
         }
     }
 }
@@ -262,12 +275,12 @@ mod tests {
         let chain = Processors::default();
         for i in 0..4u64 {
             k.mark(i * MARK_FRAMES, i * MARK_FRAMES, 0.0, &chain);
-            k.keep(&frames(MARK_FRAMES, i as u8), 1.0, i as i64 * 1000);
+            k.keep(&frames(MARK_FRAMES, i as u8), 1.0, i as i64 * 1000, 1.0);
         }
         k.trim(2 * MARK_FRAMES + 5);
         assert_eq!(k.mark_at(0).frame, 2 * MARK_FRAMES, "nothing kept before the mark still needed");
         assert_eq!(k.frames(2 * MARK_FRAMES, 2 * MARK_FRAMES + 1), &frames(1, 2)[..], "the input kept is the input given");
         assert_eq!(k.end(), 4 * MARK_FRAMES);
-        assert_eq!(k.piece(3 * MARK_FRAMES + 1), Some((Piece { frame: 3 * MARK_FRAMES, pace: 1.0, pts: 3000 }, 4 * MARK_FRAMES)));
+        assert_eq!(k.piece(3 * MARK_FRAMES + 1), Some((Piece { frame: 3 * MARK_FRAMES, pace: 1.0, pts: 3000, gain: 1.0 }, 4 * MARK_FRAMES)));
     }
 }

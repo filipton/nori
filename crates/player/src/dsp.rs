@@ -1068,13 +1068,14 @@ impl Equalizer {
         self.now.compressor.as_ref().map_or(0.0, |c| c.meter_db as f32)
     }
 
-    /// The processing loop, generic over sample format via `load` and `store(value, channel)`.
+    /// The processing loop, generic over sample format via `load` and `store(value, channel)`; `gain`
+    /// scales the input first.
     #[inline]
-    fn run<T: Copy>(&mut self, input: &[T], output: &mut [T], load: impl Fn(T) -> f64, mut store: impl FnMut(f64, usize) -> T) {
+    fn run<T: Copy>(&mut self, input: &[T], output: &mut [T], load: impl Fn(T) -> f64, mut store: impl FnMut(f64, usize) -> T, gain: f64) {
         let len = input.len().min(output.len());
         let (input, output) = (&input[..len], &mut output[..len]);
         self.live |= len > 0;
-        if self.is_identity() {
+        if gain == 1.0 && self.is_identity() {
             output.copy_from_slice(input);
             return;
         }
@@ -1096,11 +1097,11 @@ impl Equalizer {
             if n == 2 {
                 let (left, right) = planar[..frames * 2].split_at_mut(frames);
                 for ((l, r), &[x, y]) in left.iter_mut().zip(right.iter_mut()).zip(input.as_chunks::<2>().0) {
-                    (*l, *r) = (load(x), load(y));
+                    (*l, *r) = (load(x) * gain, load(y) * gain);
                 }
             } else if frames > 0 {
                 for (c, lane) in planar[..frames * n].chunks_exact_mut(frames).enumerate() {
-                    lane.iter_mut().zip(input[c..].iter().step_by(n)).for_each(|(p, &v)| *p = load(v));
+                    lane.iter_mut().zip(input[c..].iter().step_by(n)).for_each(|(p, &v)| *p = load(v) * gain);
                 }
             }
             self.now.block(&mut planar[..frames * n], frames);
@@ -1125,7 +1126,7 @@ impl Equalizer {
         let mut old = [0f64; MAX_CHANNELS];
         for (x, y) in input.chunks_exact(n).zip(output.chunks_exact_mut(n)) {
             for (c, v) in x.iter().enumerate() {
-                frame[c] = load(*v);
+                frame[c] = load(*v) * gain;
             }
             match self.fade {
                 None => self.now.frame(&mut frame[..n]),
@@ -1156,32 +1157,33 @@ impl Equalizer {
         let mut d = self.dither;
         // Mono: both channels share one noise and stay identical.
         if self.now.mono {
-            self.run(input, output, |x| x as f64 / I16_SCALE, |y, c| d.to_i16_linked(c, y));
+            self.run(input, output, |x| x as f64 / I16_SCALE, |y, c| d.to_i16_linked(c, y), 1.0);
         } else {
-            self.run(input, output, |x| x as f64 / I16_SCALE, |y, c| d.to_i16(c, y));
+            self.run(input, output, |x| x as f64 / I16_SCALE, |y, c| d.to_i16(c, y), 1.0);
         }
         self.dither = d;
     }
 
     /// Float processing (f64 inside, so 24-bit sources keep full precision).
     pub fn process_f32(&mut self, input: &[f32], output: &mut [f32]) {
-        self.run(input, output, |x| x as f64, |y, _| y as f32);
+        self.run(input, output, |x| x as f64, |y, _| y as f32, 1.0);
     }
 
     /// [`Equalizer::process_i16`] or, with `float`, [`Equalizer::process_f32`] over little-endian samples
-    /// as the player carries them.
-    pub fn process_bytes(&mut self, input: &[u8], output: &mut [u8], float: bool) {
+    /// as the player carries them, scaled by `gain` (a song's ReplayGain) first.
+    pub fn process_bytes(&mut self, input: &[u8], output: &mut [u8], float: bool, gain: f32) {
+        let gain = gain as f64;
         if float {
-            self.run(input.as_chunks::<4>().0, output.as_chunks_mut::<4>().0, |x| f32::from_le_bytes(x) as f64, |y, _| (y as f32).to_le_bytes());
+            self.run(input.as_chunks::<4>().0, output.as_chunks_mut::<4>().0, |x| f32::from_le_bytes(x) as f64, |y, _| (y as f32).to_le_bytes(), gain);
             return;
         }
         let mut d = self.dither;
         let (input, output) = (input.as_chunks::<2>().0, output.as_chunks_mut::<2>().0);
         let load = |x: [u8; 2]| i16::from_le_bytes(x) as f64 / I16_SCALE;
         if self.now.mono {
-            self.run(input, output, load, |y, c| d.to_i16_linked(c, y).to_le_bytes());
+            self.run(input, output, load, |y, c| d.to_i16_linked(c, y).to_le_bytes(), gain);
         } else {
-            self.run(input, output, load, |y, c| d.to_i16(c, y).to_le_bytes());
+            self.run(input, output, load, |y, c| d.to_i16(c, y).to_le_bytes(), gain);
         }
         self.dither = d;
     }
@@ -1642,7 +1644,7 @@ mod tests {
         let mut dithered = vec![0i16; N];
         chain().process_i16(&x, &mut dithered);
         let mut rounded = vec![0i16; N];
-        chain().run(&x, &mut rounded, |v| v as f64 / I16_SCALE, |y, _| (y * I16_SCALE).round() as i16);
+        chain().run(&x, &mut rounded, |v| v as f64 / I16_SCALE, |y, _| (y * I16_SCALE).round() as i16, 1.0);
         // Skip the filter's settling.
         let tail = |s: &[f64]| s[N / 4..].to_vec();
         let want = tail(&want.iter().map(|v| *v as f64).collect::<Vec<_>>());
@@ -1666,7 +1668,7 @@ mod tests {
         // At -90 dBFS rounding makes step harmonics; dither does not.
         let loud: Vec<i16> = x.iter().map(|v| v.saturating_mul(3)).collect();
         let mut stepped = vec![0i16; N];
-        chain().run(&loud, &mut stepped, |v| v as f64 / I16_SCALE, |y, _| (y * I16_SCALE).round() as i16);
+        chain().run(&loud, &mut stepped, |v| v as f64 / I16_SCALE, |y, _| (y * I16_SCALE).round() as i16, 1.0);
         let mut clean = vec![0i16; N];
         chain().process_i16(&loud, &mut clean);
         let (s, c) = (got(&stepped), got(&clean));

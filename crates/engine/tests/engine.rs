@@ -1739,6 +1739,41 @@ fn replay_gain_change_heard_at_once() {
     }
 }
 
+#[test]
+fn replay_gain_change_heard_at_once_through_the_equalizer() {
+    // The equalizer applies the song's gain: from the change on it runs at the new one, its state going on.
+    let a = music(15.0, 32);
+    let live = Live::new(prefs_off());
+    live.0.lock().gains.insert("a".into(), 0.7);
+    let rig = Rig::with_app(&[("a", &a)], live.clone(), loud_eq());
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2 * 3));
+    live.0.lock().gains.insert("a".into(), 0.5);
+    let asked = rig.heard.lock().len() / 2;
+    rig.engine.gain_changed();
+    assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
+    let splices = live.0.lock().splices.clone();
+    assert_eq!(splices.len(), 1, "{splices:?}");
+    let s = splices[0];
+    assert!(s.output as usize >= asked && s.output as usize <= asked + 2 * BLOCK, "{s:?}");
+    let input: Vec<u8> = a.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let render = |gains: &[(usize, f32)]| -> Vec<i16> {
+        let mut eq = nori_player::dsp::Equalizer::new(RATE, 2);
+        loud_eq().sound.apply(&mut eq);
+        let mut out = vec![0u8; input.len()];
+        for (k, &(from, gain)) in gains.iter().enumerate() {
+            let to = gains.get(k + 1).map_or(input.len(), |n| n.0);
+            eq.process_bytes(&input[from..to], &mut out[from..to], false, gain);
+        }
+        out.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b)).collect()
+    };
+    let want = reference::spliced(&render(&[(0, 0.7)]), &render(&[(0, 0.7), (s.input as usize * 4, 0.5)]), s.output as usize, RATE);
+    let heard = rig.heard.lock().clone();
+    if let Some(at) = reference::first_difference(&heard, &want, 0) {
+        panic!("{}", reference::describe(&heard, &want, at, RATE));
+    }
+}
+
 /// What the app does while music plays on a device holding seconds.
 #[derive(Clone, Debug)]
 enum Step {

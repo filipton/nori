@@ -178,14 +178,16 @@ struct Runner {
 }
 
 impl Runner {
-    fn processing(&self) -> bool {
-        self.chain.sing.is_some() || self.chain.eq.as_ref().is_some_and(|e| !e.is_identity()) || self.chain.silence.is_some() || self.chain.speed.is_some()
+    /// Whether input at `gain` changes on its way.
+    fn processing(&self, gain: f32) -> bool {
+        self.chain.sing.is_some() || self.chain.eq.as_ref().is_some_and(|e| gain != 1.0 || !e.is_identity()) || self.chain.silence.is_some() || self.chain.speed.is_some()
     }
 
     /// Runs `input` through Sing's masker, equalizer, silence skipping and speed (media3's order) into
     /// `self.out`, each stage reading the last one's output (or `input`) and writing its own. `at`: the
     /// input's timeline position and pace, for the masker; `None` skips it (what it held is already out).
-    fn run(&mut self, input: &[u8], float: bool, at: Option<(i64, f64)>) {
+    /// The equalizer scales the input by `gain` (there is one whenever it is not 1).
+    fn run(&mut self, input: &[u8], float: bool, at: Option<(i64, f64)>, gain: f32) {
         let (mut out, mut spare) = (std::mem::take(&mut self.out), std::mem::take(&mut self.scratch));
         let mut made = false;
         self.meter_db = 0.0;
@@ -194,11 +196,11 @@ impl Runner {
             m.process(input, pts, pace, &self.masks, &mut out);
             made = true;
         }
-        if let Some(eq) = self.chain.eq.as_mut().filter(|e| !e.is_identity()) {
+        if let Some(eq) = self.chain.eq.as_mut().filter(|e| gain != 1.0 || !e.is_identity()) {
             let from = if made { &out[..] } else { input };
             // Every byte is written over: only a longer input grows it.
             spare.resize(from.len(), 0);
-            eq.process_bytes(from, &mut spare, float);
+            eq.process_bytes(from, &mut spare, float, gain);
             std::mem::swap(&mut out, &mut spare);
             self.meter_db = eq.gain_reduction_db();
             made = true;
@@ -299,6 +301,8 @@ pub struct Sink<T: Track> {
     submitted_frames: f64,
     /// Current song frames per frame.
     pace: f64,
+    /// The gain the chain applies to what is offered ([`Downstream::song_gain`]).
+    gain: f32,
     /// (submitted song frame, pace) where each pace began, for [`Sink::pace_heard`].
     paces: VecDeque<(f64, f64)>,
     /// Buffers more than [`PTS_TOLERANCE_US`] off (each a stutter on a phone).
@@ -338,6 +342,7 @@ impl<T: Track> Sink<T> {
             start: Start::Unknown,
             submitted_frames: 0.0,
             pace: 1.0,
+            gain: 1.0,
             paces: VecDeque::with_capacity(PACES),
             timestamp_jumps: 0,
             owed: None,
@@ -425,7 +430,7 @@ impl<T: Track> Sink<T> {
 
     /// Whether input runs through the chain (else straight to the track).
     pub fn processing(&self) -> bool {
-        self.runner.processing()
+        self.runner.processing(self.gain)
     }
 
     /// Limiter reduction on the last buffer, dB.
@@ -459,7 +464,7 @@ impl<T: Track> Sink<T> {
         let f = self.format?;
         let at = self.splice();
         for (pts, ratio) in ranges {
-            self.kept.rescale(self.run, pts.clone(), *ratio, f.encoding);
+            self.kept.rescale(self.run, pts.clone(), *ratio, f.encoding, f.rate);
         }
         at
     }
@@ -611,7 +616,7 @@ impl<T: Track> Sink<T> {
         while frame < until && out < reach {
             let Some((piece, end)) = self.kept.piece(frame) else { break };
             let to = end.min(until).min(frame + REPLAY_FRAMES);
-            self.runner.run(self.kept.frames(frame, to), float, Some(piece.at(frame, f.rate)));
+            self.runner.run(self.kept.frames(frame, to), float, Some(piece.at(frame, f.rate)), piece.gain);
             out += (self.runner.out.len() / fb) as u64;
             media += (to - frame) as f64 * piece.pace;
             frame = to;
@@ -665,7 +670,7 @@ impl<T: Track> Sink<T> {
             self.mark();
             let media = (end - self.run) as f64 * piece.pace;
             self.carry += media;
-            self.runner.run(self.kept.frames(self.run, end), float, Some(piece.at(self.run, f.rate)));
+            self.runner.run(self.kept.frames(self.run, end), float, Some(piece.at(self.run, f.rate)), piece.gain);
             self.run_media += media;
             self.run = end;
             self.made_output(0.0);
@@ -817,7 +822,7 @@ impl<T: Track> Sink<T> {
         self.drain_sing();
         let held = self.runner.chain.eq.as_ref().filter(|e| !e.is_identity()).map_or(0, Equalizer::delay_frames);
         if held > 0 {
-            self.runner.run(&vec![0u8; held * f.frame_bytes()], float, None);
+            self.runner.run(&vec![0u8; held * f.frame_bytes()], float, None, 1.0);
             self.made_output(0.0);
         }
         self.runner.drain_stages(true);
@@ -829,7 +834,7 @@ impl<T: Track> Sink<T> {
         let (Some(f), Some(m)) = (self.format, self.runner.chain.sing.as_mut()) else { return };
         let mut tail = Vec::new();
         m.end(&self.runner.masks, &mut tail);
-        self.runner.run(&tail, f.encoding == Encoding::Float, None);
+        self.runner.run(&tail, f.encoding == Encoding::Float, None, 1.0);
         self.made_output(0.0);
     }
 
@@ -919,13 +924,13 @@ impl<T: Track> Downstream for Sink<T> {
         let input = &data[from..];
         // Timeline position of the input's first frame.
         let pts = pts_us + ((from / fb) as f64 * self.pace * 1_000_000.0 / f.rate as f64) as i64;
-        if self.runner.processing() {
+        if self.runner.processing(self.gain) {
             self.note_pace();
             let media = (input.len() / fb) as f64 * self.pace;
             self.submitted_frames += media;
             self.mark();
-            self.kept.keep(input, self.pace, pts);
-            self.runner.run(input, f.encoding == Encoding::Float, Some((pts, self.pace)));
+            self.kept.keep(input, self.pace, pts, self.gain);
+            self.runner.run(input, f.encoding == Encoding::Float, Some((pts, self.pace)), self.gain);
             self.run += (input.len() / fb) as u64;
             self.run_media += media;
             self.made_output(media);
@@ -936,7 +941,7 @@ impl<T: Track> Downstream for Sink<T> {
             self.note_pace();
             let media = (n / fb) as f64 * self.pace;
             self.mark();
-            self.kept.keep(&input[..n], self.pace, pts);
+            self.kept.keep(&input[..n], self.pace, pts, 1.0);
             self.track.write(&input[..n], media);
             self.submitted_frames += media;
             self.run += (n / fb) as u64;
@@ -958,6 +963,19 @@ impl<T: Track> Downstream for Sink<T> {
 
     fn media_pace(&mut self, pace: f64) {
         self.pace = if pace.is_finite() && pace > 0.0 { pace } else { 1.0 };
+    }
+
+    /// The equalizer applies it: in the chain from the next buffer on unless a reopen waits.
+    fn applies_gain(&self) -> bool {
+        if self.reopen.is_some() {
+            self.settings.eq_in()
+        } else {
+            self.runner.chain.eq.is_some()
+        }
+    }
+
+    fn song_gain(&mut self, gain: f32) {
+        self.gain = gain;
     }
 
     fn position_us(&mut self, _source_ended: bool) -> Option<i64> {
