@@ -3,6 +3,7 @@
 //! used go first), and the near songs' held in memory for the player (`CoreApp::vocal_mask`).
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use nori_player::sing::VocalMask;
@@ -17,6 +18,8 @@ pub const AHEAD: usize = 2;
 #[derive(Default)]
 pub struct VocalMasks {
     held: Mutex<Vec<(String, Arc<VocalMask>)>>,
+    /// Masks put so far, so each engine reading them sees new ones.
+    made: AtomicU64,
 }
 
 impl VocalMasks {
@@ -28,6 +31,11 @@ impl VocalMasks {
         let mut held = self.held.lock();
         held.retain(|(i, _)| i != id);
         held.push((id.to_string(), mask));
+        self.made.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(crate) fn made(&self) -> u64 {
+        self.made.load(Ordering::Acquire)
     }
 
     /// Lets go of every mask but those of `ids`.

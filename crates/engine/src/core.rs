@@ -60,6 +60,8 @@ pub struct CoreApp {
     /// The clock the engine's last call was made at.
     now_ms: i64,
     measurer: Option<Arc<Measurer>>,
+    /// Where Sing's masks are kept, and how many had come when the engine last asked.
+    masks: Option<(Arc<Analyses>, u64)>,
     /// Per-device sound: the core holding the profiles, the outputs seen, and the current one.
     devices: Option<Arc<Core>>,
     known: Vec<String>,
@@ -78,6 +80,7 @@ impl CoreApp {
             session,
             now_ms: 0,
             measurer: None,
+            masks: None,
             devices: None,
             known: Vec::new(),
             output: None,
@@ -109,7 +112,15 @@ impl CoreApp {
 
     /// With AutoMix on, upcoming songs on disk are measured by `measurer`.
     pub fn measuring(mut self, measurer: Arc<Measurer>) -> CoreApp {
+        self = self.singing(measurer.analyses.clone());
         self.measurer = Some(measurer);
+        self
+    }
+
+    /// Sing's masks are those of `analyses`, made by a measurer the platform drives (Android) or this
+    /// app's own ([`CoreApp::measuring`]).
+    pub fn singing(mut self, analyses: Arc<Analyses>) -> CoreApp {
+        self.masks = Some((analyses, 0));
         self
     }
 }
@@ -186,11 +197,13 @@ impl App for CoreApp {
     }
 
     fn vocal_mask(&mut self, song_id: &str) -> Option<Arc<nori_player::sing::VocalMask>> {
-        self.measurer.as_ref()?.analyses.masks.get(song_id)
+        self.masks.as_ref()?.0.masks.get(song_id)
     }
 
     fn masks_made(&mut self) -> bool {
-        self.measurer.as_ref().is_some_and(|m| m.masked.swap(false, Ordering::AcqRel))
+        let Some((analyses, seen)) = self.masks.as_mut() else { return false };
+        let made = analyses.masks.made();
+        made != std::mem::replace(seen, made)
     }
 
     /// The core keeps the window itself.
@@ -551,8 +564,6 @@ pub struct Measurer {
     asked: AtomicU64,
     /// Something was stored since the engine last asked.
     measured: AtomicBool,
-    /// A vocal mask came since the engine last asked.
-    masked: AtomicBool,
     /// Called on the measuring thread whenever something was stored.
     told: Option<Box<dyn Fn() + Send + Sync>>,
     decoded: AtomicU64,
@@ -655,7 +666,6 @@ impl Measurer {
             idle: Condvar::new(),
             asked: AtomicU64::new(0),
             measured: AtomicBool::new(false),
-            masked: AtomicBool::new(false),
             told,
             decoded: AtomicU64::new(0),
         });
@@ -872,7 +882,6 @@ impl Measurer {
 
     /// The engine hears of a new mask.
     fn tell_masked(&self) {
-        self.masked.store(true, Ordering::Release);
         if let Some(t) = &self.plan.lock().engine {
             t.unpark();
         }

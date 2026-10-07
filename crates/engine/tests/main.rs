@@ -32,3 +32,6 @@ mod album;
 #[cfg(feature = "core")]
 #[path = "transcode.rs"]
 mod transcode;
+#[cfg(feature = "core")]
+#[path = "sing.rs"]
+mod sing;
