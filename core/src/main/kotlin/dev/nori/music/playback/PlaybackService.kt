@@ -750,7 +750,7 @@ class PlaybackService : MediaLibraryService() {
             }
             if (command.customAction == CMD_FAVOURITE) {
                 // Only while the heart shows (a song of the library is playing; the core's call).
-                val item = player.currentMediaItem?.takeIf { buttonsShown?.heart != null }
+                val item = player.currentMediaItem?.takeIf { buttonsShown?.heart == true }
                 if (item != null) {
                     val on = !currentStarred(item)
                     // The same path as the app's heart: the mark goes up at once (and redraws both hearts),
@@ -766,7 +766,8 @@ class PlaybackService : MediaLibraryService() {
                 Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
                 else -> Player.REPEAT_MODE_OFF
             }
-            if (command.customAction == CMD_RADIO) player.currentMediaItem?.mediaId?.let(::radioFrom)
+            // Likewise only beside the heart: a station's id has no similar songs.
+            if (command.customAction == CMD_RADIO && buttonsShown?.heart == true) player.currentMediaItem?.mediaId?.let(::radioFrom)
             args.getString(androidx.media3.session.MediaConstants.EXTRA_KEY_MEDIA_ID)?.let { id -> carItemCommand(command.customAction, id) }
             return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
         }
