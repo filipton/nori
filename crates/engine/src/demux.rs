@@ -3,8 +3,9 @@
 //! so songs join sample-exactly; seeks are sample-exact.
 //!
 //! A song still downloading is opened on a thread of its own (opening reads its first, and for some
-//! MP4s last, bytes); the engine is woken when it is open and never waits for the network. symphonia
-//! allocates one buffer per packet read; decoding allocates nothing.
+//! MP4s last, bytes); the engine is woken when it is open and never waits for the network. symphonia's
+//! container readers allocate one buffer per packet read; a WAV file's samples and a live MP3 stream's
+//! frames are read into buffers of their own, and decoding allocates nothing.
 //!
 //! [`Demuxed::load_packets`] reads undecoded packets for audio offload, with the encoder delay and
 //! padding as that output takes them and each packet's frame count.
@@ -25,13 +26,14 @@ use symphonia::core::codecs::audio::well_known::*;
 use symphonia::core::codecs::audio::AudioCodecId;
 use symphonia::core::errors::{Error as SymphoniaError, SeekErrorKind};
 use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::well_known::FORMAT_ID_WAVE;
 use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType};
-use symphonia::core::io::{MediaSource, MediaSourceStream, MediaSourceStreamOptions};
+use symphonia::core::io::{MediaSource, MediaSourceStream, MediaSourceStreamOptions, ReadBytes};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::packet::Packet;
 use symphonia::core::units::{Time, Timestamp};
 
-use crate::mpeg::Frames;
+use crate::mpeg::{Frame, Frames};
 use crate::panic_words;
 use crate::source::Loader;
 
@@ -212,27 +214,129 @@ fn codec_of(id: AudioCodecId) -> Option<Codec> {
     })
 }
 
-/// A song's packets: symphonia's container reader, or `mpeg.rs` for a live MP3 stream.
+/// A song's packets: symphonia's container reader (with the packet it handed out last), `mpeg.rs` for
+/// a live MP3 stream, or a WAV file's samples.
 enum Packets {
-    Container(Box<dyn FormatReader + 'static>),
+    Container(Box<dyn FormatReader + 'static>, Option<Packet>),
     Mpeg(Frames),
+    Wav(WavData),
+}
+
+/// A packet as read, its bytes lent by the reader: first frame, and the encoder delay and padding at
+/// its ends.
+struct Got<'a> {
+    pts: i64,
+    trim_start: i64,
+    trim_end: i64,
+    data: &'a [u8],
 }
 
 impl Packets {
-    /// The next packet; None at the end. `WouldBlock` means try again later.
-    fn next_packet(&mut self) -> symphonia::core::errors::Result<Option<Packet>> {
+    /// The next packet of `track`; None at the end. `WouldBlock` means try again later.
+    fn next_packet(&mut self, track: u32) -> symphonia::core::errors::Result<Option<Got<'_>>> {
         match self {
-            Packets::Container(r) => r.next_packet(),
-            Packets::Mpeg(f) => f.next_packet(),
+            Packets::Container(r, last) => {
+                *last = loop {
+                    match r.next_packet()? {
+                        Some(p) if p.track_id != track => continue,
+                        p => break p,
+                    }
+                };
+                Ok(last.as_ref().map(|p| Got { pts: p.pts.get(), trim_start: p.trim_start.get() as i64, trim_end: p.trim_end.get() as i64, data: &p.data }))
+            }
+            Packets::Mpeg(f) => Ok(f.next_frame()?.map(|Frame { pts, data }| Got { pts: pts as i64, trim_start: 0, trim_end: 0, data })),
+            Packets::Wav(w) => Ok(w.next()?.map(|(pts, data)| Got { pts, trim_start: 0, trim_end: 0, data })),
         }
     }
 
     fn container(&mut self) -> Option<&mut Box<dyn FormatReader + 'static>> {
         match self {
-            Packets::Container(r) => Some(r),
-            Packets::Mpeg(_) => None,
+            Packets::Container(r, _) => Some(r),
+            Packets::Mpeg(_) | Packets::Wav(_) => None,
         }
     }
+}
+
+/// Frames of a WAV file read at a time, as symphonia's reader packs them.
+const WAV_FRAMES: usize = 1152;
+
+/// A WAV file's samples, read straight into one buffer a few frames at a time.
+struct WavData {
+    source: MediaSourceStream<'static>,
+    /// Byte position of the first frame, and of the data's end (`None`: the stream's).
+    start: u64,
+    end: Option<u64>,
+    frame_bytes: usize,
+    /// Bytes read, `filled` of them; the first `handed` were handed out last.
+    buf: Vec<u8>,
+    filled: usize,
+    handed: usize,
+    /// The next frame read.
+    frame: i64,
+}
+
+impl WavData {
+    /// The data chunk of the WAV `source`, which is at its first frame.
+    fn new(source: MediaSourceStream<'static>, frame_bytes: usize, frames: Option<u64>) -> WavData {
+        let start = source.pos();
+        let end = frames.map(|n| start + n * frame_bytes as u64);
+        WavData { source, start, end, frame_bytes, buf: vec![0; WAV_FRAMES * frame_bytes], filled: 0, handed: 0, frame: 0 }
+    }
+
+    /// The next whole frames and the first one's index; None at the end.
+    fn next(&mut self) -> io::Result<Option<(i64, &[u8])>> {
+        self.buf.copy_within(self.handed..self.filled, 0);
+        self.filled -= self.handed;
+        let left = self.end.map_or(u64::MAX, |e| e.saturating_sub(self.source.pos()));
+        let want = (self.buf.len() as u64).min(self.filled as u64 + left) as usize;
+        while self.filled < want {
+            match self.source.read(&mut self.buf[self.filled..want]) {
+                Ok(0) => break,
+                Ok(n) => self.filled += n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+        self.handed = self.filled / self.frame_bytes * self.frame_bytes;
+        if self.handed == 0 {
+            return Ok(None);
+        }
+        let first = self.frame;
+        self.frame += (self.handed / self.frame_bytes) as i64;
+        Ok(Some((first, &self.buf[..self.handed])))
+    }
+
+    /// Reads from frame `frame` on; false past the end.
+    fn seek(&mut self, frame: i64) -> io::Result<bool> {
+        let to = self.start + frame as u64 * self.frame_bytes as u64;
+        if self.end.is_some_and(|e| to > e) {
+            return Ok(false);
+        }
+        if self.source.is_seekable() {
+            self.source.seek(SeekFrom::Start(to))?;
+        } else {
+            let at = self.source.pos();
+            if to < at {
+                return Err(io::Error::new(io::ErrorKind::Unsupported, "a stream read in order is not seeked back"));
+            }
+            self.source.ignore_bytes(to - at)?;
+        }
+        (self.filled, self.handed, self.frame) = (0, 0, frame);
+        Ok(true)
+    }
+}
+
+/// The song frame of a `codec` packet's first decoded sample, stamped `pts`: the decoder drops the
+/// first frames after a reset (MP3 filterbank, Opus pre-roll). An MP3 without a LAME header
+/// (`delay_known`) is stamped from its first decoded sample.
+fn song_frame(codec: Option<Codec>, delay_known: bool, pts: i64) -> i64 {
+    let origin = if codec == Some(Codec::Mp3) && !delay_known { MP3_DECODER_DELAY as i64 } else { 0 };
+    let dropped = match codec {
+        Some(Codec::Mp3) => MP3_DECODER_DELAY as i64,
+        Some(Codec::Opus) => OPUS_PRE_ROLL,
+        _ => 0,
+    };
+    pts - origin + dropped
 }
 
 /// A read to retry later, not a failure.
@@ -403,14 +507,14 @@ impl Stream {
             (None, None) => "an unknown compression",
         };
         let max_frames = codec.map_or(8192, Codec::max_frames);
-        let id = track.id;
+        let (id, stated_frames) = (track.id, track.num_frames);
         // A live MP3 station (no length or duration, from the start) is read frame by frame by `mpeg.rs`
         // so it plays through noise and format changes. A transcode without a length is not live.
         let live = byte_len.is_none() && duration_ms.is_none() && from_ms == 0;
-        let reader = if live && !packets && params.codec == CODEC_ID_MP3 {
-            Packets::Mpeg(Frames::new(reader.into_inner(), id))
-        } else {
-            Packets::Container(reader)
+        let reader = match &inner {
+            _ if live && !packets && params.codec == CODEC_ID_MP3 => Packets::Mpeg(Frames::new(reader.into_inner())),
+            Inner::Pcm(p) if reader.format_info().format == FORMAT_ID_WAVE => Packets::Wav(WavData::new(reader.into_inner(), p.width() * channels, stated_frames)),
+            _ => Packets::Container(reader, None),
         };
         let width = encoding.width();
         let mut d = Stream {
@@ -463,6 +567,14 @@ impl Stream {
     }
 
     fn seek(&mut self, ms: i64) -> Result<(), String> {
+        if let Packets::Wav(w) = &mut self.reader {
+            let frame = ms * self.format.rate as i64 / 1000;
+            // Past the end: ended, as if played through.
+            self.ended = !w.seek(frame).map_err(|e| e.to_string())?;
+            self.skip_to = frame;
+            self.frame = None;
+            return Ok(());
+        }
         let to = match self.mp4 {
             // Song time is track time minus the delay; start two AAC frames early to warm the decoder.
             Some((delay, _)) => SeekTo::Timestamp { ts: Timestamp::new((ms * self.format.rate as i64 / 1000 + delay - AAC_WARM_UP).max(0)), track_id: self.track },
@@ -489,26 +601,12 @@ impl Stream {
         Ok(())
     }
 
-    /// Frames the decoder drops of the first packet after a reset (MP3 filterbank, Opus pre-roll).
-    fn dropped_after_reset(&self) -> i64 {
-        match self.codec {
-            Some(Codec::Mp3) => MP3_DECODER_DELAY as i64,
-            Some(Codec::Opus) => OPUS_PRE_ROLL,
-            _ => 0,
-        }
-    }
-
-    /// The song frame of a packet's first decoded sample. An MP3 without a LAME header is stamped from
-    /// its first decoded sample, which the decoder drops.
-    fn song_frame(&self, pts: i64) -> i64 {
-        let origin = if self.codec == Some(Codec::Mp3) && !self.delay_known { MP3_DECODER_DELAY as i64 } else { 0 };
-        pts - origin + self.dropped_after_reset()
-    }
 
     /// Reads the next undecoded packet into `buf`; false at the end.
     fn next_packet(&mut self) -> bool {
+        let reader = self.reader.container().expect("packets are read from a container");
         loop {
-            let packet = match self.reader.next_packet() {
+            let packet = match reader.next_packet() {
                 Ok(Some(p)) => p,
                 Ok(None) | Err(_) => {
                     self.ended = true;
@@ -555,30 +653,29 @@ impl Stream {
                 return true;
             }
             idle += 1;
-            let packet = match self.reader.next_packet() {
+            let packet = match self.reader.next_packet(self.track) {
                 Ok(Some(p)) => p,
                 // No packet found yet (noise on a station).
                 Err(e) if for_now(&e) => {
                     self.buf.clear();
                     return true;
                 }
-                // A chained Ogg stream's next song.
-                Err(SymphoniaError::ResetRequired) if self.chain_on() => continue,
-                Ok(None) | Err(_) => {
+                other => {
+                    // A chained Ogg stream's next song.
+                    if matches!(other, Err(SymphoniaError::ResetRequired)) && self.chain_on() {
+                        continue;
+                    }
                     self.ended = true;
                     return self.drained();
                 }
             };
-            if packet.track_id != self.track {
-                continue;
-            }
             let mut at = match self.frame {
                 Some(f) => f,
-                None if matches!(self.inner, Inner::Pcm(_)) => packet.pts.get(),
-                None => self.song_frame(packet.pts.get()),
+                None if matches!(self.inner, Inner::Pcm(_)) => packet.pts,
+                None => song_frame(self.codec, self.delay_known, packet.pts),
             };
             let (samples, pcm, ch, rate): (&[f32], Option<(Pcm, usize)>, usize, u32) = match &mut self.inner {
-                Inner::Coded(dec) => match dec.decode_lent(&packet.data) {
+                Inner::Coded(dec) => match dec.decode_lent(packet.data) {
                     Ok(lent) => (lent.samples, None, lent.channels.max(1), lent.rate),
                     Err(nori_player::decode::Fault::Broken) => {
                         self.ended = true;
@@ -597,10 +694,10 @@ impl Stream {
                 continue;
             }
             // Encoder delay and padding as the container states them (Opus drops its own pre-skip).
-            let (mut trim_start, mut trim_end) = if self.codec == Some(Codec::Opus) || self.frame.is_none() { (0, packet.trim_end.get() as usize) } else { (packet.trim_start.get() as usize, packet.trim_end.get() as usize) };
+            let (mut trim_start, mut trim_end) = if self.codec == Some(Codec::Opus) || self.frame.is_none() { (0, packet.trim_end as usize) } else { (packet.trim_start as usize, packet.trim_end as usize) };
             if let Some((delay, end)) = self.mp4 {
                 // An MP4 stamp counts decoder frames, delay included.
-                let raw = packet.pts.get();
+                let raw = packet.pts;
                 trim_start = (delay - raw).clamp(0, n as i64) as usize;
                 trim_end = (raw + n as i64 - end).clamp(0, n as i64) as usize;
                 at = raw + trim_start as i64 - delay;

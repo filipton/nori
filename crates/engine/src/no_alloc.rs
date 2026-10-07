@@ -123,10 +123,10 @@ fn buffer_paths_allocate_nothing() {
     assert_eq!(steady_in(Encoding::Float, 48_000, Sound::default(), 1.0, false), 0, "resampled from float");
 }
 
-/// Allocations per buffer read from `file` after the first 16, in `encoding`.
-fn per_read(file: Vec<u8>, hint: &str, encoding: Encoding) -> f64 {
+/// Allocations per buffer read from `source` after the first 16, in `encoding`.
+fn per_read(source: Box<dyn symphonia::core::io::MediaSource>, hint: &str, encoding: Encoding) -> f64 {
     use nori_player::pipeline::Reading;
-    let mut d = crate::demux::Demuxed::open(Box::new(std::io::Cursor::new(file)), Some(hint), 0, None, encoding, None).expect("opens");
+    let mut d = crate::demux::Demuxed::open(source, Some(hint), 0, None, encoding, None).expect("opens");
     for _ in 0..16 {
         assert!(d.fill(), "longer than the warm-up");
     }
@@ -154,12 +154,45 @@ fn wav(frames: usize) -> Vec<u8> {
     w
 }
 
-/// Reading a song allocates what symphonia's reader does, one packet each, and nothing of its own: its
-/// `FormatReader::next_packet` hands out an owned packet and takes no buffer to read into.
+/// A stream of unknown length, as a station's: read live.
+struct Live(std::io::Cursor<Vec<u8>>);
+
+impl std::io::Read for Live {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+
+impl std::io::Seek for Live {
+    fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.0.seek(to)
+    }
+}
+
+impl symphonia::core::io::MediaSource for Live {
+    fn is_seekable(&self) -> bool {
+        true
+    }
+
+    fn byte_len(&self) -> Option<u64> {
+        None
+    }
+}
+
+/// Reading a song allocates what symphonia's container readers do, one packet each, and nothing of its
+/// own: `FormatReader::next_packet` hands out an owned packet and takes no buffer to read into. A WAV
+/// file and a station are read into buffers of their own.
 #[test]
-fn reading_allocates_only_packets() {
-    let mp3 = include_bytes!("../../player/testdata/tone440.mp3").to_vec();
-    for (file, hint, encoding) in [(wav(441_000), "wav", Encoding::Pcm16), (wav(441_000), "wav", Encoding::Float), (mp3.clone(), "mp3", Encoding::Pcm16), (mp3, "mp3", Encoding::Float)] {
-        assert_eq!(per_read(file, hint, encoding), 1.0, "{hint} into {encoding:?}");
+fn reading_allocates_only_container_packets() {
+    let mp3 = || include_bytes!("../../player/testdata/tone440.mp3").to_vec();
+    let file = |bytes: Vec<u8>| -> Box<dyn symphonia::core::io::MediaSource> { Box::new(std::io::Cursor::new(bytes)) };
+    for (source, hint, encoding, want) in [
+        (file(wav(441_000)), "wav", Encoding::Pcm16, 0.0),
+        (file(wav(441_000)), "wav", Encoding::Float, 0.0),
+        (file(mp3()), "mp3", Encoding::Pcm16, 1.0),
+        (file(mp3()), "mp3", Encoding::Float, 1.0),
+        (Box::new(Live(std::io::Cursor::new(mp3()))), "mp3", Encoding::Pcm16, 0.0),
+    ] {
+        assert_eq!(per_read(source, hint, encoding), want, "{hint} into {encoding:?}");
     }
 }

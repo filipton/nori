@@ -7,14 +7,12 @@
 //! - At most [`SCAN`] bytes are scanned per call; then `WouldBlock`, and the engine asks again later.
 //! - A frame cut short by the end of the stream is dropped.
 //!
-//! Layer III only. Each frame is a symphonia packet (one allocation, as symphonia's readers do).
+//! Layer III only. Each frame is handed out from the read buffer, not copied.
 
 use std::io::{self, Read};
 
 use symphonia::core::errors::{Error, Result};
 use symphonia::core::io::MediaSourceStream;
-use symphonia::core::packet::Packet;
-use symphonia::core::units::{Duration, Timestamp};
 
 /// Most bytes scanned per call: under `source::LIVE_READY` (32 KiB), so a call never waits for bytes.
 pub(crate) const SCAN: usize = 16 * 1024;
@@ -75,12 +73,17 @@ pub(crate) struct Frames {
     /// The next byte directly follows the last frame handed out.
     synced: bool,
     pts: u64,
-    track: u32,
+}
+
+/// A frame handed out: its first sample's index in the stream, and its bytes.
+pub(crate) struct Frame<'a> {
+    pub pts: u64,
+    pub data: &'a [u8],
 }
 
 impl Frames {
-    pub fn new(source: MediaSourceStream<'static>, track: u32) -> Frames {
-        Frames { source, buf: Vec::with_capacity(4 * CHUNK), at: 0, eof: false, shape: None, synced: false, pts: 0, track }
+    pub fn new(source: MediaSourceStream<'static>) -> Frames {
+        Frames { source, buf: Vec::with_capacity(4 * CHUNK), at: 0, eof: false, shape: None, synced: false, pts: 0 }
     }
 
     /// Reads until `need` bytes are buffered from `at` or the stream ends; returns whether they are.
@@ -109,7 +112,7 @@ impl Frames {
     }
 
     /// The next frame; None at the end. `WouldBlock` after [`SCAN`] bytes without one: ask again.
-    pub fn next_packet(&mut self) -> Result<Option<Packet>> {
+    pub fn next_frame(&mut self) -> Result<Option<Frame<'_>>> {
         let mut skipped = 0usize;
         loop {
             if !self.fill(4)? {
@@ -126,13 +129,13 @@ impl Frames {
                 let next = if self.fill(f.len + 4)? { Header::parse(&self.buf[self.at + f.len..]) } else { None };
                 let known = self.shape == Some(f.shape());
                 if (self.synced && known) || next.is_some_and(|n| n.shape() == f.shape()) {
-                    let data: Box<[u8]> = self.buf[self.at..self.at + f.len].into();
+                    let at = self.at;
                     self.at += f.len;
                     self.synced = true;
                     self.shape = Some(f.shape());
                     let pts = self.pts;
                     self.pts += f.samples;
-                    return Ok(Some(Packet::new(self.track, Timestamp::new(pts as i64), Duration::new(f.samples), data)));
+                    return Ok(Some(Frame { pts, data: &self.buf[at..self.at] }));
                 }
             }
             // Not a frame: skip to the next 0xff.
@@ -163,16 +166,16 @@ mod tests {
 
     fn frames_of(bytes: Vec<u8>) -> Frames {
         let mss = MediaSourceStream::new(Box::new(io::Cursor::new(bytes)), MediaSourceStreamOptions::default());
-        Frames::new(mss, 0)
+        Frames::new(mss)
     }
 
     /// Every frame as `(rate, channels, first body byte)`, and the `WouldBlock` count.
     fn read_all(mut f: Frames) -> (Vec<(u32, usize, u8)>, usize) {
         let (mut got, mut yields) = (Vec::new(), 0);
         loop {
-            match f.next_packet() {
+            match f.next_frame() {
                 Ok(Some(p)) => {
-                    let h = Header::parse(&p.data).unwrap();
+                    let h = Header::parse(p.data).unwrap();
                     got.push((h.rate, h.channels, p.data[4]));
                 }
                 Ok(None) => return (got, yields),
