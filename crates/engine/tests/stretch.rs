@@ -81,7 +81,7 @@ impl Songs {
 impl Library for Songs {
     fn locate(&mut self, id: &str) -> Result<Located, String> {
         let (_, path, ms) = self.0.iter().find(|s| s.0 == id).cloned().ok_or("no such song")?;
-        Ok(Located { source: Source::File(path), hint: Some("wav".into()), duration_ms: Some(ms), estimated: false })
+        Ok(Located { source: Source::File(vec![path]), hint: Some("wav".into()), duration_ms: Some(ms), estimated: false })
     }
 
     fn about(&self, id: &str) -> WindowSong {

@@ -151,11 +151,12 @@ class AutoMixPrefetch(
 
     internal companion object {
         /**
-         * The files of [key] in [cache] from its first byte on, when they hold all of it but perhaps a short
-         * tail (see [MediaSources.isWhole]); the key first.
+         * The files of [key] in [cache] from its first byte on, when they hold all of it but perhaps [tail]
+         * bytes (see [MediaSources.isWhole]); the key first.
          */
-        fun files(cache: Cache, key: String): Array<String>? {
-            if (!MediaSources.isWhole(cache, key)) return null
+        fun files(cache: Cache, key: String, tail: Long = MediaSources.TAIL): Array<String>? {
+            val length = ContentMetadata.getContentLength(cache.getContentMetadata(key))
+            if (length <= 0 || cache.getCachedLength(key, 0, length) < length - tail) return null
             val spans = cache.getCachedSpans(key)
             val out = ArrayList<String>(spans.size + 1)
             out += key
@@ -166,7 +167,7 @@ class AutoMixPrefetch(
                 out += file.path
                 at += span.length
             }
-            return if (at >= ContentMetadata.getContentLength(cache.getContentMetadata(key)) - MediaSources.TAIL) out.toTypedArray() else null
+            return if (at >= length - tail) out.toTypedArray() else null
         }
     }
 }

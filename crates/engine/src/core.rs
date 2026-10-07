@@ -251,7 +251,7 @@ impl Library for CoreLibrary {
         // A download may be transcoded: the file says what it is.
         let kept = self.store.as_ref().filter(|_| self.client.core().transfers().held().state(id) == transfers::HeldState::Done).and_then(|s| s.downloaded(id));
         if let Some(path) = kept {
-            return Ok(Located { source: Source::File(path), hint: None, duration_ms, estimated: false });
+            return Ok(Located { source: Source::File(vec![path]), hint: None, duration_ms, estimated: false });
         }
         let target = self.client.resolve(id.to_string(), false, self.client.metered());
         let hint = key_format(&target.key).or_else(|| song.as_ref().map(|s| s.suffix.clone())).filter(|s| !s.is_empty());

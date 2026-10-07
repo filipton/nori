@@ -12,13 +12,15 @@ use nori_player::transitions::WindowSong;
 
 use crate::arriving::Listening;
 use crate::demux::Demuxed;
+use crate::pieces::Pieces;
 use crate::source::{ByteSource, Fetching, Keep, Loader, Waits};
 use crate::store::Store;
 
 /// Where one song's bytes are.
 #[derive(Clone)]
 pub enum Source {
-    File(PathBuf),
+    /// On disk, in one file or in pieces read in order (media3's cache splits a song into spans).
+    File(Vec<PathBuf>),
     Url { url: String, bytes: Arc<dyn ByteSource> },
     /// A URL cached under `key`: read from disk when whole there, else written there as it loads.
     Cached { url: String, bytes: Arc<dyn ByteSource>, store: Arc<Store>, key: String },
@@ -133,9 +135,9 @@ impl<L: Library> Sources<L> {
     fn open_as(&mut self, id: &str, from_ms: i64, packets: Option<bool>) -> Result<Demuxed, String> {
         let at = self.library.locate(id)?;
         let (encoding, engine) = (self.encoding, self.engine.clone());
-        let file = |path: &PathBuf| {
-            let file = Box::new(std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?);
-            let hint = at.hint.clone().or_else(|| path.extension().map(|e| e.to_string_lossy().into_owned()));
+        let file = |paths: &[PathBuf]| {
+            let file = Box::new(Pieces::open(paths).map_err(|e| format!("{paths:?}: {e}"))?);
+            let hint = at.hint.clone().or_else(|| paths.first()?.extension().map(|e| e.to_string_lossy().into_owned()));
             match packets {
                 Some(_) => Demuxed::open_packets(file, hint.as_deref(), from_ms, at.duration_ms),
                 None => Demuxed::open(file, hint.as_deref(), from_ms, at.duration_ms, encoding),
@@ -148,9 +150,9 @@ impl<L: Library> Sources<L> {
         // Opened to play: the whole cap, whatever its budget was.
         let budget = packets.filter(|&ahead| ahead).map(|_| self.left_for(id));
         match &at.source {
-            Source::File(path) => file(path),
+            Source::File(paths) => file(paths),
             Source::Cached { store, key, .. } if self.loading(id).is_none() && store.cached(key).is_some() => {
-                let d = file(&store.cached(key).expect("checked"))?;
+                let d = file(&[store.cached(key).expect("checked")])?;
                 if !d.cut_short() {
                     return Ok(d);
                 }

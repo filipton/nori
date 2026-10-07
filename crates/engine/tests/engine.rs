@@ -163,6 +163,8 @@ struct Extra {
     server: Arc<Server>,
     /// A stream cache for the songs.
     store: Option<Arc<Store>>,
+    /// The songs are on disk, each cut into [`PIECES`] files.
+    on_disk: bool,
     /// Idle release, ms.
     idle_release_ms: Option<i64>,
     /// Music seconds per [`Rig::wait_for`] second (default 20).
@@ -175,10 +177,14 @@ struct Extra {
     hold_ms: Option<usize>,
 }
 
+/// Files each song is cut into with [`Extra::on_disk`].
+const PIECES: usize = 3;
+
 struct Songs {
     server: Arc<Server>,
     lengths: Vec<(String, i64)>,
     store: Option<Arc<Store>>,
+    pieces: Option<Arc<nori_testdir::TempDir>>,
 }
 
 impl Library for Songs {
@@ -186,9 +192,10 @@ impl Library for Songs {
         let duration_ms = self.lengths.iter().find(|(i, _)| i == id).map(|s| s.1);
         let bytes: Arc<dyn ByteSource> = self.server.clone();
         let url = id.to_string();
-        let source = match &self.store {
-            Some(store) => Source::Cached { url, bytes, store: store.clone(), key: format!("{id}:0") },
-            None => Source::Url { url, bytes },
+        let source = match (&self.store, &self.pieces) {
+            (_, Some(dir)) => Source::File((0..PIECES).map(|k| dir.join(format!("{id}.{k}"))).collect()),
+            (Some(store), None) => Source::Cached { url, bytes, store: store.clone(), key: format!("{id}:0") },
+            (None, None) => Source::Url { url, bytes },
         };
         Ok(Located { source, hint: Some("wav".into()), duration_ms, estimated: false })
     }
@@ -407,9 +414,15 @@ impl Rig {
 
     /// Songs as (id, file, length ms).
     fn build(files: Vec<(String, Vec<u8>, i64)>, app: impl App + Send + 'static, settings: Settings, extra: Extra) -> Rig {
-        let Extra { float, skip, server, store, idle_release_ms, pace, memory_mb, watch: watching, hold_ms } = extra;
+        let Extra { float, skip, server, store, on_disk, idle_release_ms, pace, memory_mb, watch: watching, hold_ms } = extra;
         for (id, f, _) in &files {
             server.files.lock().push((id.clone(), Arc::new(f.clone())));
+        }
+        let pieces = on_disk.then(|| Arc::new(nori_testdir::TempDir::new("pieces")));
+        for (dir, (id, f, _)) in pieces.iter().flat_map(|d| files.iter().map(move |f| (d, f))) {
+            for (k, piece) in f.chunks(f.len().div_ceil(PIECES)).enumerate() {
+                std::fs::write(dir.join(format!("{id}.{k}")), piece).unwrap();
+            }
         }
         let lengths = files.iter().map(|(id, _, ms)| (id.clone(), *ms)).collect();
         let mut list = Playlist::default();
@@ -443,7 +456,7 @@ impl Rig {
         *server.clock.lock() = Some(clock.clone());
         let events = Arc::new(Mutex::new(Vec::new()));
         let seen = events.clone();
-        let library = Songs { server: server.clone(), lengths, store };
+        let library = Songs { server: server.clone(), lengths, store, pieces };
         let mut config = Config { memory_mb: memory_mb.unwrap_or(256), settings, watch: watching.map(nori_engine::watch::Watcher), ..Config::default() };
         config.idle_release_ms = idle_release_ms.unwrap_or(config.idle_release_ms);
         let engine = Engine::start_on(library, app, queue, Box::new(out), None, config, clock.clone(), move |e| seen.lock().push(e));
@@ -1256,6 +1269,21 @@ fn idle_release_after_queue_ends() {
     let heard = rig.heard.lock().clone();
     let head = RATE as usize * 2;
     assert!(heard[..head] == a[..head], "played again from its start");
+}
+
+#[test]
+fn song_in_pieces_plays_from_disk() {
+    let (a, b) = (music(6.0, 19), music(4.0, 20));
+    let songs: [(&str, &[i16]); 2] = [("a", &a), ("b", &b)];
+    let extra = Extra { on_disk: true, ..Extra::default() };
+    let rig = Rig::build(files(&songs), sim::App::new(), Settings::default(), extra);
+    rig.engine.play_at(0, 0);
+    assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2));
+    assert_eq!(rig.engine.held(), nori_engine::Held::default(), "no song's bytes in memory");
+    assert!(rig.wait_for(30, Rig::ended), "{:?}", rig.events.lock());
+    let joined = [a, b].concat();
+    assert!(*rig.heard.lock() == joined, "both songs whole, across their pieces");
+    assert!(rig.server.requests.lock().is_empty(), "nothing asked of the network");
 }
 
 #[test]
@@ -2525,7 +2553,7 @@ fn status_current_on_events() {
     let mut list = Playlist::default();
     list.set(vec!["a".into(), "b".into()], Some(0), false, 0);
     let queue = TestQueue { list: Arc::new(Mutex::new(list)), skip: Vec::new() };
-    let library = Songs { server, lengths: vec![("a".into(), 4_000), ("b".into(), 4_000)], store: None };
+    let library = Songs { server, lengths: vec![("a".into(), 4_000), ("b".into(), 4_000)], store: None, pieces: None };
     let card = common::card::Card::new();
     let clock = Virtual::default();
     let cell: Arc<std::sync::OnceLock<Arc<Engine>>> = Arc::default();

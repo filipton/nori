@@ -119,6 +119,8 @@ internal class RustBridge(private val player: EnginePlayer) {
     /** The Rust side lets a request go that has not answered or sends nothing: its call is cancelled. From any of its threads. */
     fun cancel(ticket: Long) = Tickets.cancel(ticket)
     fun openLive(url: String): RustBody? = player.openLive(url)
+    /** The files that hold every byte of download [key], in order, for the engine to read in place; null while any is missing. */
+    fun downloaded(key: String): Array<String>? = player.downloaded(key)
     /**
      * For the songs fetched ahead (nori-engine's one fetcher, through [open]): whether all of [key] is in the
      * stream cache, and whether the player is writing it now. Asked once per song.
@@ -971,6 +973,8 @@ class EnginePlayer(private val context: Context, private val nori: Nori) : Simpl
         return RustBody(source, if (length == C.LENGTH_UNSET.toLong()) -1 else length) { Tickets.end(ticket); loaded(-1) }
     }
 
+    internal fun downloaded(key: String): Array<String>? =
+        runCatching { AutoMixPrefetch.files(nori.sources.downloadCache, key, tail = 0) }.getOrNull()?.let { it.copyOfRange(1, it.size) }
     internal fun kept(key: String): Boolean = runCatching { MediaSources.isWhole(nori.sources.streamCache, key) }.getOrDefault(true)
     internal fun busy(key: String): Boolean = nori.sources.beingWritten(key)
     internal fun disk(key: String): String = nori.sources.cacheWords(key)

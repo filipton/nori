@@ -112,7 +112,7 @@ fn downloads_and_measuring_over_core() {
     core.session.register(vec![song]);
     let mut library = CoreLibrary { client: client.clone(), bytes: audio.clone(), store: Some(store.clone()), analyses: analyses.clone() };
     match library.locate("dl-1").unwrap().source {
-        Source::File(p) => assert_eq!(p, path, "the download, not the network"),
+        Source::File(p) => assert_eq!(p, [path], "the download, not the network"),
         _ => panic!("a downloaded song is read from the disk"),
     }
     match library.locate("other").unwrap().source {

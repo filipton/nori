@@ -3,19 +3,21 @@
 //!
 //! Platform pieces come from the player's own Kotlin `RustBridge`, handed to `create`: AudioTracks
 //! (`openTrack`, `openOffload`), song bytes through media3's data sources and caches (`open`/`read`,
-//! `openLive` for radio), stream cache queries for fetching ahead (`kept`, `busy`), the event wake-up
+//! `openLive` for radio), a download's files (`downloaded`), stream cache queries for fetching ahead
+//! (`kept`, `busy`), the event wake-up
 //! (`signal`), the wake lock (`cpu`) and offload support (`offloadSupport`). Classes and methods are looked
 //! up once, in the first `create`, on a thread that sees the app's classes; Rust threads calling them stay
 //! attached for life.
 
 use std::collections::VecDeque;
 use std::io::{self, Read};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::thread::Thread;
 use std::time::Instant;
 
-use jni::objects::{GlobalRef, JByteArray, JClass, JFieldID, JLongArray, JMethodID, JObject, JStaticMethodID, JString, JValue, JValueOwned};
+use jni::objects::{GlobalRef, JByteArray, JClass, JFieldID, JLongArray, JMethodID, JObject, JObjectArray, JStaticMethodID, JString, JValue, JValueOwned};
 use jni::signature::{Primitive, ReturnType};
 use jni::sys::{jboolean, jfloat, jint, jlong, jstring, jvalue};
 use jni::{JNIEnv, JavaVM};
@@ -78,6 +80,7 @@ struct Java {
     open: JMethodID,
     cancel: JMethodID,
     open_live: JMethodID,
+    downloaded: JMethodID,
     kept: JMethodID,
     busy: JMethodID,
     disk: JMethodID,
@@ -160,6 +163,7 @@ fn look_up(env: &mut JNIEnv) -> jni::errors::Result<Java> {
         open: env.get_method_id(&bridge, "open", "(Ljava/lang/String;Ljava/lang/String;JJ)Ldev/nori/music/playback/RustBody;")?,
         cancel: env.get_method_id(&bridge, "cancel", "(J)V")?,
         open_live: env.get_method_id(&bridge, "openLive", "(Ljava/lang/String;)Ldev/nori/music/playback/RustBody;")?,
+        downloaded: env.get_method_id(&bridge, "downloaded", "(Ljava/lang/String;)[Ljava/lang/String;")?,
         kept: env.get_method_id(&bridge, "kept", "(Ljava/lang/String;)Z")?,
         busy: env.get_method_id(&bridge, "busy", "(Ljava/lang/String;)Z")?,
         disk: env.get_method_id(&bridge, "disk", "(Ljava/lang/String;)Ljava/lang/String;")?,
@@ -999,6 +1003,29 @@ impl Entry for Counted {
 
 /// `RustBridge.disk(key)` / `forget(key)`: Kotlin's description of the stream cache entry (and, for
 /// `forget`, removes it). None when Kotlin could not be asked.
+/// The files that hold all of download `key`, in order; None while any of it is missing.
+fn downloaded(bridge: &Bridge, key: &str) -> Option<Vec<PathBuf>> {
+    let (java, mut env) = env()?;
+    let files = env.with_local_frame(4, |env| -> jni::errors::Result<Option<Vec<PathBuf>>> {
+        let key = env.new_string(key)?;
+        // SAFETY: RustBridge.downloaded(String): String[], looked up with this signature.
+        let files = unsafe { env.call_method_unchecked(bridge.obj(), java.downloaded, ReturnType::Array, &[JValue::Object(&key).as_jni()]) }?.l()?;
+        if files.is_null() {
+            return Ok(None);
+        }
+        let files = JObjectArray::from(files);
+        let mut out = Vec::new();
+        for k in 0..env.get_array_length(&files)? {
+            let file = JString::from(env.get_object_array_element(&files, k)?);
+            out.push(PathBuf::from(String::from(env.get_string(&file)?)));
+            env.delete_local_ref(file)?;
+        }
+        Ok(Some(out))
+    });
+    cleared(&mut env);
+    files.ok().flatten()
+}
+
 fn cache_words(bridge: &Bridge, key: &str, method: fn(&Java) -> JMethodID) -> Option<String> {
     let (java, mut env) = env()?;
     let words = env.with_local_frame(4, |env| -> jni::errors::Result<String> {
@@ -1112,11 +1139,13 @@ impl Library for AndroidLibrary {
         // Format hint from a transcoded stream's key; a download (`dl:<id>`) may be transcoded too, so its
         // file is sniffed instead.
         let target = self.current.get().ok_or("no server to play from")?.resolve_now(id);
-        let hint = if target.key == nori_core::stream::download_key(id.to_string()) {
-            None
-        } else {
-            key_format(&target.key).or_else(|| song.map(|s| s.suffix)).filter(|s| !s.is_empty())
-        };
+        let download = target.key == nori_core::stream::download_key(id.to_string());
+        // A finished download is read from its files, not copied into memory.
+        if let Some(files) = download.then(|| downloaded(&self.bridge, &target.key)).flatten() {
+            log(&format!("{id} opens from its download's {} files", files.len()));
+            return Ok(Located { source: Source::File(files), hint: None, duration_ms, estimated: false });
+        }
+        let hint = if download { None } else { key_format(&target.key).or_else(|| song.map(|s| s.suffix)).filter(|s| !s.is_empty()) };
         log(&format!("{id} opens from {} as {}", target.key, hint.as_deref().unwrap_or("whatever it is")));
         Ok(Located { source: Source::Url { url: target.url, bytes: Arc::new(JavaBytes { bridge: self.bridge.clone(), key: target.key, ahead: self.ahead.clone() }) }, hint, duration_ms, estimated: false })
     }
