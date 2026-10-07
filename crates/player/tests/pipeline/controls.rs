@@ -271,6 +271,22 @@ fn shuffle_keeps_current_and_next() {
 }
 
 #[test]
+fn new_queue_prefetches_after_its_start() {
+    let s = songs(10, 12.0);
+    let mut p = Player::new(queue(&s));
+    p.play_from(1);
+    p.run_for(1_500);
+    let new: Vec<Vec<i16>> = (0..4).map(|k| music(12.0, 300 + k)).collect();
+    for (k, n) in new.iter().enumerate() {
+        p.tracks.push(track(&format!("n{k}"), n));
+    }
+    p.tracks.ahead.clear();
+    p.queue.live.set((0..4).map(|k| format!("n{k}")).collect(), Some(0), false, 0);
+    p.queue_changed();
+    assert_eq!(p.tracks.ahead, ["n1"], "the song after the new queue's start, not after the old place clamped");
+}
+
+#[test]
 fn queue_emptied_while_playing() {
     // Another server's profile taken up empties the queue under the song playing: nothing indexes it.
     let s = songs(3, 12.0);

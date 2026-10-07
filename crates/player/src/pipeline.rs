@@ -820,10 +820,15 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
             self.engine.replan();
             return;
         }
+        // The song whose next is fetched ahead: once the current one has left the queue (a new queue, or
+        // deleted), the queue's own current, where playback goes on.
+        let mut ahead_of = self.current;
         if !old.is_empty() && edited {
+            let queue_current = self.queue.read(|q| q.current());
             let new = &self.seqs;
             let moved = |i: usize| old.get(i).and_then(|s| new.iter().position(|n| n == s));
             let at = |i: usize| moved(i).unwrap_or_else(|| i.min(new.len().saturating_sub(1)));
+            ahead_of = self.current.map(|c| moved(c).or(queue_current).unwrap_or_else(|| at(c)));
             self.current = self.current.map(at);
             if let Some(r) = self.reading.as_mut() {
                 r.index = at(r.index);
@@ -850,7 +855,7 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         self.sync_queue();
         // The next song may have changed.
         self.engine.replan();
-        let Some(cur) = self.current else { return };
+        let Some(cur) = ahead_of else { return };
         // Prefetch and measure the new next song now, so its mix can be planned in time.
         let next = self.next_of(cur).map(|n| self.id_at(n));
         let other_next = next != self.upcoming;

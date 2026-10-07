@@ -362,6 +362,8 @@ pub struct Tracks {
     pub broken: Vec<String>,
     /// Ids whose readings are ready a turn after they are opened.
     pub slow: Vec<String>,
+    /// Ids the player asked to prefetch, in order.
+    pub ahead: Vec<String>,
 }
 
 impl Tracks {
@@ -398,6 +400,10 @@ impl Songs for Tracks {
 
     fn about(&self, id: &str) -> WindowSong {
         self.get(id).window_song()
+    }
+
+    fn upcoming(&mut self, id: &str) {
+        self.ahead.push(id.to_string());
     }
 }
 
