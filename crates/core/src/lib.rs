@@ -380,9 +380,30 @@ pub struct Core {
     /// The user and the Subsonic secret (password or API key) the LAN's remote control proves the account
     /// with; None for a jam guest.
     account: RwLock<Option<(String, String)>>,
+    /// What the stored queue's songs were saved from (queue.rs).
+    saved_queue: Mutex<Option<queue::SavedQueue>>,
 }
 
 impl Core {
+    /// The queue's songs, origin and place, in one transaction.
+    fn write_queue(&self, queue: PlayQueue) -> Result<()> {
+        let json = serde_json::json!({ "songs": queue.songs, "index": queue.index, "position": queue.position_ms, "origin": queue.origin });
+        let c = self.db.lock();
+        let tx = c.unchecked_transaction()?;
+        db::kv_put(&tx, "queue", &json.to_string())?;
+        Self::put_place(&tx, queue.index, queue.position_ms)?;
+        Ok(tx.commit()?)
+    }
+
+    /// The current song's index and position in the stored queue.
+    pub(crate) fn save_place(&self, index: u32, position_ms: u64) -> Result<()> {
+        Ok(Self::put_place(&self.db.lock(), index, position_ms)?)
+    }
+
+    fn put_place(c: &Connection, index: u32, position_ms: u64) -> rusqlite::Result<()> {
+        db::kv_put(c, "queue_place", &serde_json::json!({ "index": index, "position": position_ms }).to_string())
+    }
+
     /// The downloads table in memory and the progress of their work.
     pub fn transfers(&self) -> &transfers::Downloads {
         &self.downloads
@@ -412,6 +433,7 @@ impl Core {
             stars: Mutex::new(stars::StarMarks::default()),
             session,
             account: RwLock::new(None),
+            saved_queue: Mutex::new(None),
         });
         core.session.db.set(&core.db);
         Ok(core)
@@ -471,8 +493,9 @@ impl Core {
     }
 
     pub fn save_queue(&self, queue: PlayQueue) -> Result<()> {
-        let json = serde_json::json!({ "songs": queue.songs, "index": queue.index, "position": queue.position_ms, "origin": queue.origin });
-        Ok(db::kv_put(&self.db.lock(), "queue", &json.to_string())?)
+        let mut saved = self.saved_queue.lock();
+        *saved = None;
+        self.write_queue(queue)
     }
 
     pub fn load_queue(&self) -> Result<PlayQueue> {
@@ -485,7 +508,19 @@ impl Core {
             /// Parsed separately so an unknown origin kind loses only the origin.
             origin: serde_json::Value,
         }
-        let q: Q = db::kv_get(&self.db.lock(), "queue")?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
+        #[derive(Deserialize)]
+        struct Place {
+            index: u32,
+            position: u64,
+        }
+        let (mut q, place) = {
+            let c = self.db.lock();
+            let q: Q = db::kv_get(&c, "queue")?.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
+            (q, db::kv_get(&c, "queue_place")?.and_then(|j| serde_json::from_str::<Place>(&j).ok()))
+        };
+        if let Some(p) = place {
+            (q.index, q.position) = (p.index, p.position);
+        }
         let index = q.index.min(q.songs.len().saturating_sub(1) as u32);
         self.session.register(q.songs.clone());
         let origin = serde_json::from_value::<Option<crate::PageOrigin>>(q.origin).ok().flatten();

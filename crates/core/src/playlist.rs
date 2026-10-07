@@ -82,4 +82,23 @@ pub(crate) mod tests {
         }
     }
 
+    #[test]
+    fn songs_rewritten_only_when_the_queue_changes() {
+        let core = core(&["radio:1", "w1", "w2", "w3"], 1);
+        core.session.register(["w1", "w2", "w3"].map(|id| crate::Song { id: id.into(), ..Default::default() }).to_vec());
+        let songs = || nori_db::kv_get(&core.db.lock(), "queue").unwrap();
+        core.playlist_save(0).unwrap();
+        let first = songs();
+        core.session.moved_to(3);
+        core.playlist_save(4200).unwrap();
+        assert_eq!(songs(), first, "a song change keeps the stored songs");
+        let q = core.load_queue().unwrap();
+        assert_eq!((q.index, q.position_ms, q.songs.len()), (2, 4200, 3));
+
+        core.session.set(vec!["w2".into(), "w1".into()], Some(0), false, None);
+        core.playlist_save(10).unwrap();
+        let q = core.load_queue().unwrap();
+        assert_eq!((q.songs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), q.index, q.position_ms), (vec!["w2", "w1"], 0, 10));
+    }
+
 }
