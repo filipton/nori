@@ -73,23 +73,29 @@ class Remotes(private val context: Context, private val nori: Nori) {
 
     /** The remote for the profile in use, built when asked for and switched on; null otherwise. Off the main thread. */
     private fun current(): Remote? = synchronized(this) {
-        val p = nori.settings.value
-        val profile = p.server
-        val guest = profile?.apiKey?.let { isGuestKey(it) } == true
-        if (profile == null || !(p.remoteControl || p.jam || guest)) {
+        if (!wanted()) {
             drop()
             return null
         }
         val c = nori.client
         if (remote == null || client !== c) {
             drop()
-            val kind = if (guest) DeviceKind.GUEST else DeviceKind.PHONE
+            val p = nori.settings.value
+            val kind = if (isGuest()) DeviceKind.GUEST else DeviceKind.PHONE
             remote = Remote(c, RemoteMe(deviceName(context), kind), player, shown, discovery)
             client = c
             if (serving) remote?.serve(p.remoteControl)
             if (watching) remote?.watch(true)
         }
         remote
+    }
+
+    private fun isGuest() = nori.settings.value.server?.apiKey?.let { isGuestKey(it) } == true
+
+    /** Whether the profile in use asks for a remote at all. */
+    private fun wanted(): Boolean {
+        val p = nori.settings.value
+        return p.server != null && (p.remoteControl || p.jam || isGuest())
     }
 
     private fun drop() {
@@ -99,9 +105,13 @@ class Remotes(private val context: Context, private val nori: Nori) {
     }
 
     /** Whether the playback service is up: the device is controllable then, while remote control is on. */
-    fun serve(on: Boolean) = work {
-        serving = on
-        current()?.serve(on && nori.settings.value.remoteControl)
+    fun serve(on: Boolean) {
+        // Nothing built and nothing wanted: the worker thread is not started.
+        if (remote == null && !wanted()) return synchronized(this) { serving = on }
+        work {
+            serving = on
+            current()?.serve(on && nori.settings.value.remoteControl)
+        }
     }
 
     /** A device picker or jam screen is open: other devices are followed while it is. */
