@@ -239,6 +239,18 @@ impl Core {
         let [active, queued, failed, finished] = self.downloads.with(|t| t.sections(&pending, &done, |s: &crate::Song| s.id.as_str()));
         Ok(DownloadSections { active, queued, failed, finished })
     }
+
+    /// [`Core::download_sections`]' counts, without reading the songs.
+    pub fn download_queue_counts(&self) -> crate::Result<DownloadQueueCounts> {
+        let pending = self.download_ids(false)?;
+        let recent = self.downloads.with(|t| t.saved_ids());
+        let done: Vec<String> = {
+            let held = self.downloads.held();
+            recent.into_iter().filter(|id| held.state(id) == HeldState::Done).collect()
+        };
+        let [active, queued, failed, _] = self.downloads.with(|t| t.sections(&pending, &done, |id: &String| id.as_str()));
+        Ok(DownloadQueueCounts { waiting: (active.len() + queued.len()) as u32, failed: failed.len() as u32 })
+    }
 }
 
 #[cfg(test)]
@@ -371,6 +383,23 @@ mod tests {
             core.download_recover(vec![DownloadKnown { id: "a".into(), state: FAILED, length: 100, bytes: 50 }]).unwrap();
             assert!(woke.0.load(Ordering::SeqCst));
         }
+    }
+
+    #[test]
+    fn queue_counts_are_the_sections_sizes() {
+        let core = core();
+        core.download_queue(["a", "b", "c", "d", "e"].map(song).to_vec()).unwrap();
+        core.downloads.with(|t| {
+            t.followed("a", DOWNLOADING, 0);
+            t.followed("b", FAILED, 0);
+            t.followed("e", COMPLETED, 0);
+        });
+        core.download_settle(vec!["e".into()], vec![true]).unwrap();
+        let s = core.download_sections().unwrap();
+        let counts = core.download_queue_counts().unwrap();
+        assert_eq!(counts, DownloadQueueCounts { waiting: (s.active.len() + s.queued.len()) as u32, failed: s.failed.len() as u32 });
+        // "a" downloading, "e" saved and processed, "c" and "d" queued.
+        assert_eq!(counts, DownloadQueueCounts { waiting: 4, failed: 1 });
     }
 
     #[test]

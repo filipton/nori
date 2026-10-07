@@ -378,17 +378,17 @@ private fun Downloads(actions: ActionsViewModel) {
     val done by actions.downloadedSongs.collectAsStateWithLifecycle()
     val menu = LocalSongMenu.current
     val vm: StarredViewModel = viewModel()
-    val sections by actions.downloadSections.collectAsStateWithLifecycle()
+    val counts by actions.downloadQueueCounts.collectAsStateWithLifecycle()
     val nav = LocalNav.current
     LazyColumn(contentPadding = PaddingValues(bottom = LocalChromeInset.current)) {
         // The way to the queue, always there: what is on its way now, or where it went.
         item(key = "queue") {
-            // Counted by the core, which splits the queue for the downloads screen: waiting is what is
+            // Counted by the core as it splits the queue for the downloads screen: waiting is what is
             // downloading or queued, the failed are counted apart.
-            val s = sections
+            val c = counts
             NavRow(
                 say.downloadQueue, nav::downloads, chevron = true,
-                subtitle = remember(s) { say.downloadQueue((s?.active?.size ?: 0) + (s?.queued?.size ?: 0), s?.failed?.size ?: 0) },
+                subtitle = remember(c) { say.downloadQueue((c?.waiting ?: 0u).toInt(), (c?.failed ?: 0u).toInt()) },
                 leading = { Icon(Icons.Filled.Downloading, null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.primary) },
             )
         }

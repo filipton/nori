@@ -1388,6 +1388,14 @@ pub struct DownloadSections {
     pub finished: Vec<Song>,
 }
 
+/// The sizes of [`DownloadSections`]' queue: downloading or queued, and failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct DownloadQueueCounts {
+    pub waiting: u32,
+    pub failed: u32,
+}
+
 /// Queues the new `rows` (id, song json) behind everything queued; unfinished ones already queued are
 /// returned as `again`, finished ones skipped.
 pub fn queue_rows(c: &mut Connection, rows: impl IntoIterator<Item = (String, String)>) -> nori_model::Result<DownloadQueued> {
