@@ -94,8 +94,9 @@ pub struct Kept {
 }
 
 impl Kept {
-    /// Forgets everything; frames count from `first`, `frame_bytes` each.
-    pub fn restart(&mut self, first: u64, frame_bytes: usize) {
+    /// Forgets everything; frames count from `first`, `frame_bytes` each. Makes room for `frames` of
+    /// input and their marks at once, rather than growing on the buffer path.
+    pub fn restart(&mut self, first: u64, frame_bytes: usize, frames: u64) {
         self.bytes.clear();
         self.head = 0;
         self.first = first;
@@ -104,6 +105,10 @@ impl Kept {
         while let Some(m) = self.marks.pop_front() {
             self.spare.push(m.chain);
         }
+        self.bytes.reserve(frames as usize * self.frame_bytes);
+        let marks = (frames / MARK_FRAMES) as usize + 2;
+        self.marks.reserve(marks);
+        self.spare.reserve(marks);
     }
 
     /// The frame after the last kept.
@@ -271,7 +276,7 @@ mod tests {
     #[test]
     fn trimmed_to_mark_before_played() {
         let mut k = Kept::default();
-        k.restart(0, 4);
+        k.restart(0, 4, 0);
         let chain = Processors::default();
         for i in 0..4u64 {
             k.mark(i * MARK_FRAMES, i * MARK_FRAMES, 0.0, &chain);

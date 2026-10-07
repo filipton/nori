@@ -799,9 +799,15 @@ impl<T: Track> Sink<T> {
         }
     }
 
+    /// Input frames kept at `f`, played at 1x: what the track holds and what it may reach back to.
+    fn kept_frames(&self, f: Format) -> u64 {
+        (f.rate as i64 * (self.capacity_us + KEPT_BEHIND_US) / 1_000_000) as u64
+    }
+
     /// The track counts from zero again.
     fn restart_counts(&mut self) {
-        self.kept.restart(0, self.format.map_or(1, |f| f.frame_bytes()));
+        let (frame_bytes, frames) = self.format.map_or((1, 0), |f| (f.frame_bytes(), self.kept_frames(f)));
+        self.kept.restart(0, frame_bytes, frames);
         self.run = 0;
         self.run_media = 0.0;
         self.made = 0;
@@ -890,7 +896,7 @@ impl<T: Track> Downstream for Sink<T> {
             self.track.open(f);
             self.build_chain();
             // Frames of another format are not run again: the kept input starts here.
-            self.kept.restart(self.run, f.frame_bytes());
+            self.kept.restart(self.run, f.frame_bytes(), self.kept_frames(f));
         }
     }
 
