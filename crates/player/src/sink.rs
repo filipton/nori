@@ -186,14 +186,16 @@ impl Runner {
     /// Runs `input` through Sing's masker, equalizer, silence skipping and speed (media3's order) into
     /// `self.out`, each stage reading the last one's output (or `input`) and writing its own. `at`: the
     /// input's timeline position and pace, for the masker; `None` skips it (what it held is already out).
-    /// The equalizer scales the input by `gain` (there is one whenever it is not 1).
-    fn run(&mut self, input: &[u8], float: bool, at: Option<(i64, f64)>, gain: f32) {
+    /// The first of them scales the input by `gain` (there is an equalizer whenever it is not 1), so what
+    /// the masker holds leaves at its own song's gain.
+    fn run(&mut self, input: &[u8], float: bool, at: Option<(i64, f64)>, mut gain: f32) {
         let (mut out, mut spare) = (std::mem::take(&mut self.out), std::mem::take(&mut self.scratch));
         let mut made = false;
         self.meter_db = 0.0;
         if let (Some(m), Some((pts, pace))) = (self.chain.sing.as_mut(), at) {
             out.clear();
-            m.process(input, pts, pace, &self.masks, &mut out);
+            m.process(input, pts, pace, gain, &self.masks, &mut out);
+            gain = 1.0;
             made = true;
         }
         if let Some(eq) = self.chain.eq.as_mut().filter(|e| gain != 1.0 || !e.is_identity()) {
@@ -971,13 +973,9 @@ impl<T: Track> Downstream for Sink<T> {
         self.pace = if pace.is_finite() && pace > 0.0 { pace } else { 1.0 };
     }
 
-    /// The equalizer applies it: in the chain from the next buffer on unless a reopen waits.
+    /// The chain applies it while it has an equalizer; a waiting reopen builds the chain again.
     fn applies_gain(&self) -> bool {
-        if self.reopen.is_some() {
-            self.settings.eq_in()
-        } else {
-            self.runner.chain.eq.is_some()
-        }
+        self.reopen.is_none() && self.runner.chain.eq.is_some()
     }
 
     fn song_gain(&mut self, gain: f32) {

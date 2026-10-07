@@ -138,7 +138,8 @@ pub struct Masker {
     filled: usize,
     /// Overlap-added output per channel, aligned with `input`.
     acc: Vec<f32>,
-    /// Per hop of `acc`, whether a masked frame reached it (else its output is the input, bit for bit).
+    /// Per hop of `acc`, whether a masked frame or scaled input reached it (else its output is the input, bit for
+    /// bit).
     touched: Vec<bool>,
     /// Leading output frames still to drop (before the first input frame).
     skip: usize,
@@ -272,9 +273,9 @@ impl Masker {
         self.dither.reset();
     }
 
-    /// Masks `input` (interleaved, its first frame at timeline position `pts_us`, `pace` song frames per frame) with
-    /// the songs' masks in `masks`, appending what is ready to `out`.
-    pub fn process(&mut self, input: &[u8], pts_us: i64, pace: f64, masks: &[Placed], out: &mut Vec<u8>) {
+    /// Masks `input` (interleaved, its first frame at timeline position `pts_us`, `pace` song frames per frame,
+    /// scaled by `gain` as it is read) with the songs' masks in `masks`, appending what is ready to `out`.
+    pub fn process(&mut self, input: &[u8], pts_us: i64, pace: f64, gain: f32, masks: &[Placed], out: &mut Vec<u8>) {
         self.pts = pts_us as f64;
         self.pace = pace;
         let fb = self.encoding.width() * self.channels;
@@ -283,7 +284,9 @@ impl Masker {
             // Up to the hop's end at once; `advance` counts the last frame of it.
             let take = (self.hop - self.filled).min(frames.len() / fb);
             let (now, rest) = frames.split_at(take * fb);
-            self.read(now);
+            self.read(now, gain);
+            // Scaled input is off the 16-bit grid: out through the dither.
+            *self.touched.last_mut().expect("four hops") |= gain != 1.0;
             self.held += take;
             self.filled += take - 1;
             self.pts += (take - 1) as f64 * self.pace * 1e6 / self.rate as f64;
@@ -292,15 +295,15 @@ impl Masker {
         }
     }
 
-    /// Interleaved frames into `input`, from the `filled`th of the hop on.
-    fn read(&mut self, frames: &[u8]) {
+    /// Interleaved frames into `input` at `gain`, from the `filled`th of the hop on.
+    fn read(&mut self, frames: &[u8], gain: f32) {
         let (width, from) = (self.encoding.width(), self.n - self.hop + self.filled);
         for (i, frame) in frames.chunks_exact(width * self.channels).enumerate() {
             for (c, b) in frame.chunks_exact(width).enumerate() {
                 self.input[c * self.n + from + i] = match self.encoding {
                     Encoding::Pcm16 => i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0,
                     Encoding::Float => f32::from_le_bytes([b[0], b[1], b[2], b[3]]),
-                };
+                } * gain;
             }
         }
     }
@@ -455,7 +458,7 @@ mod tests {
     fn run(m: &mut Masker, x: &[f32], masks: &[Placed]) -> Vec<f32> {
         let mut out = Vec::new();
         for (k, chunk) in x.chunks(2000).enumerate() {
-            m.process(&floats(chunk), (k as f64 * 1000.0 * 1e6 / RATE as f64) as i64, 1.0, masks, &mut out);
+            m.process(&floats(chunk), (k as f64 * 1000.0 * 1e6 / RATE as f64) as i64, 1.0, 1.0, masks, &mut out);
         }
         m.end(masks, &mut out);
         samples(&out)
@@ -503,7 +506,7 @@ mod tests {
         let pcm: Vec<u8> = (0..2 * 5000).flat_map(|i| (((i * 37) % 2000) as i16 - 1000).to_le_bytes()).collect();
         let mut m = Masker::new(RATE, 2, Encoding::Pcm16, 0.0);
         let mut out = Vec::new();
-        m.process(&pcm, 0, 1.0, &[], &mut out);
+        m.process(&pcm, 0, 1.0, 1.0, &[], &mut out);
         m.end(&[], &mut out);
         assert_eq!(out, pcm);
     }
@@ -517,7 +520,7 @@ mod tests {
         let mut m = Masker::new(RATE, 2, Encoding::Pcm16, 0.3);
         let mut out = Vec::new();
         for (k, chunk) in pcm.chunks(4 * 1000).enumerate() {
-            m.process(chunk, (k as f64 * 1000.0 * 1e6 / RATE as f64) as i64, 1.0, &masks, &mut out);
+            m.process(chunk, (k as f64 * 1000.0 * 1e6 / RATE as f64) as i64, 1.0, 1.0, &masks, &mut out);
         }
         m.end(&masks, &mut out);
         assert_eq!(out.len(), pcm.len());
@@ -534,7 +537,7 @@ mod tests {
         let masks = whole(flat(200, 2.0));
         let mut m = Masker::new(RATE, 2, Encoding::Pcm16, 0.3);
         let (head, tail) = x.split_at(8 * 7000);
-        m.process(head, 0, 1.0, &masks, &mut Vec::new());
+        m.process(head, 0, 1.0, 1.0, &masks, &mut Vec::new());
         let kept = m.stored();
         let mut into = Masker::new(RATE, 2, Encoding::Pcm16, 1.0);
         into.clone_from(&kept);
@@ -542,7 +545,7 @@ mod tests {
         let mut outs = Vec::new();
         for mut live in [m, kept.clone(), into] {
             let mut out = Vec::new();
-            live.process(tail, at, 1.0, &masks, &mut out);
+            live.process(tail, at, 1.0, 1.0, &masks, &mut out);
             live.end(&masks, &mut out);
             outs.push(out);
         }
@@ -560,7 +563,7 @@ mod tests {
                 let mut m = Masker::new(RATE, channels, Encoding::Float, level);
                 let mut out = Vec::new();
                 for (k, chunk) in x.chunks(channels * 1000).enumerate() {
-                    m.process(&floats(chunk), (k as f64 * 1000.0 * 1e6 / RATE as f64) as i64, 1.0, &whole(flat(255, 2.0)), &mut out);
+                    m.process(&floats(chunk), (k as f64 * 1000.0 * 1e6 / RATE as f64) as i64, 1.0, 1.0, &whole(flat(255, 2.0)), &mut out);
                 }
                 m.end(&whole(flat(255, 2.0)), &mut out);
                 samples(&out)

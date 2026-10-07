@@ -249,7 +249,7 @@ fn sing_masker() {
     let mut out = Vec::with_capacity(1 << 16);
     let mut pts = 0;
     let made = steady(&x, CHUNK, |c| {
-        m.process(c, pts, 1.0, &masks, &mut out);
+        m.process(c, pts, 1.0, 1.0, &masks, &mut out);
         pts += FMT.us(c.len());
         out.clear();
     });

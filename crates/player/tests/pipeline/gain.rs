@@ -258,3 +258,67 @@ fn gain_rounded_once_with_a_sound_on() {
     let want: Vec<i16> = want.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b)).collect();
     assert!(p.sink.heard_samples() == want, "every sample as the chain makes it at the song's gain");
 }
+
+/// Songs `a` and `b` played with `gains`, as heard.
+type Play = fn(&[i16], &[i16], &[(&str, f32)]) -> Vec<i16>;
+
+fn with_gains(mut p: Player, gains: &[(&str, f32)]) -> Player {
+    for (id, g) in gains {
+        p.app.gains.insert(id.to_string(), *g);
+    }
+    p
+}
+
+fn boost() -> Sound {
+    Sound { bands: vec![nori_player::dsp::Band { kind: nori_player::dsp::PEAKING, freq: 1000.0, gain_db: 4.0, q: 1.0, channel: 0 }], ..Sound::default() }
+}
+
+fn sing_off_mid_song(a: &[i16], _: &[i16], gains: &[(&str, f32)]) -> Vec<i16> {
+    let mut p = with_gains(Player::new(vec![track("a", a)]), gains);
+    p.set_sound(boost());
+    p.set_sing(Some(1.0));
+    p.play_from(0);
+    p.run_for(2_000);
+    p.set_sing(None);
+    assert!(p.run_to_end(30_000));
+    p.sink.heard_samples()
+}
+
+fn sing_gapless(a: &[i16], b: &[i16], gains: &[(&str, f32)]) -> Vec<i16> {
+    let mut p = with_gains(Player::new(vec![track("a", a), track("b", b)]), gains);
+    p.set_sound(boost());
+    p.set_sing(Some(1.0));
+    p.play_from(0);
+    assert!(p.run_to_end(60_000));
+    p.sink.heard_samples()
+}
+
+fn sound_off_while_reopening(a: &[i16], b: &[i16], gains: &[(&str, f32)]) -> Vec<i16> {
+    let mut p = with_gains(Player::new(vec![track("a", a), Track::new("b", Audio::pcm(48_000, 2, b))]), gains);
+    p.set_sound(boost());
+    p.play_from(0);
+    assert!(p.run_until(20_000, |p| p.sink.reopening()), "a reopen waits for the next song's rate");
+    p.set_sound(Sound::default());
+    assert!(p.run_to_end(30_000));
+    p.sink.heard_samples()
+}
+
+#[test]
+fn gain_kept_through_sing_and_sound_changes() {
+    let cases: [(&str, &str, Play); 3] = [
+        ("Sing turned off mid-song", "a", sing_off_mid_song),
+        ("a gapless join with Sing and a sound on", "a", sing_gapless),
+        ("the sound turned off while the output reopens", "b", sound_off_while_reopening),
+    ];
+    let (a, b) = (music(5.0, 52), music(5.0, 53));
+    let g = minus_6db();
+    for (what, quiet, play) in cases {
+        let turned = |id: &str, s: &[i16]| if id == quiet { at(s, g) } else { s.to_vec() };
+        // The ideal: the song turned down before it played.
+        let ideal = play(&turned("a", &a), &turned("b", &b), &[]);
+        let got = play(&a, &b, &[(quiet, g)]);
+        assert_eq!(got.len(), ideal.len(), "{what}");
+        let (most, _) = off(&got, &ideal);
+        assert!(most <= 2, "{what}: every sample at the song's gain, to the dither: {most}");
+    }
+}
