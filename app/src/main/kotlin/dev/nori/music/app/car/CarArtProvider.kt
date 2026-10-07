@@ -42,7 +42,11 @@ class CarArtProvider : ContentProvider() {
         // headphones, each on its own and again as it is shown: drawn once, then read from the disk, with
         // nothing in the app woken for it.
         val kept = coverAddress(app, uri)?.let { File(File(app.cacheDir, KEPT_DIR), name("$it#${side(uri)}")) }
-        if (kept?.isFile == true) return ParcelFileDescriptor.open(kept, ParcelFileDescriptor.MODE_READ_ONLY)
+        if (kept?.isFile == true) {
+            // Read now: the last to go.
+            kept.setLastModified(System.currentTimeMillis())
+            return ParcelFileDescriptor.open(kept, ParcelFileDescriptor.MODE_READ_ONLY)
+        }
         val (read, write) = ParcelFileDescriptor.createReliablePipe()
         // Drawn and written on a thread of its own: the car reads the pipe as it fills.
         drawing.execute {
@@ -101,7 +105,7 @@ class CarArtProvider : ContentProvider() {
 
         /** Where the covers drawn are kept, and how many. */
         private const val KEPT_DIR = "car-art"
-        private const val KEPT = 16
+        private const val KEPT = 100
 
         /** The size asked for (the queue's covers are the lock screen's 800), else a car row's. */
         private fun side(uri: Uri) = uri.getQueryParameter("s")?.toIntOrNull()?.coerceIn(64, 1024) ?: CarArt.ART
@@ -117,7 +121,7 @@ class CarArtProvider : ContentProvider() {
 
         private fun name(address: String) = MessageDigest.getInstance("SHA-1").digest(address.toByteArray()).joinToString("") { "%02x".format(it) } + ".jpg"
 
-        /** Writes [bytes] as [file] whole (another reader never sees half of it), and lets the oldest go. */
+        /** Writes [bytes] as [file] whole (another reader never sees half of it), and lets the least recently read go. */
         private fun keep(file: File, bytes: ByteArray) {
             val dir = file.parentFile ?: return
             dir.mkdirs()
