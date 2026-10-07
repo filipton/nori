@@ -91,6 +91,9 @@ impl CompressorSettings {
     }
 }
 
+/// Frames the compressor's gain is interpolated over.
+const GAIN_RUN: usize = 32;
+
 /// Compressor state. Retuning while playing is smooth except for make-up gain.
 #[derive(Clone, Copy, Debug)]
 pub struct Compressor {
@@ -129,23 +132,51 @@ impl Compressor {
         self.s
     }
 
-    /// Processes one frame, all channels linked.
-    #[inline]
-    pub fn frame(&mut self, f: &mut [f64]) {
-        let peak = f.iter().fold(0f64, |m, v| m.max(v.abs()));
-        let c = if peak > self.quiet { self.s.reduction_db(20.0 * peak.log10()) } else { 0.0 };
-        self.y1 = c.max(self.release * self.y1 + (1.0 - self.release) * c);
-        self.y = self.attack * self.y + (1.0 - self.attack) * self.y1;
-        if self.y < 1e-9 {
-            self.y = 0.0;
-            if self.makeup != 1.0 {
-                f.iter_mut().for_each(|v| *v *= self.makeup);
-            }
+    /// The gain for the detector's current reduction.
+    fn gain(&self) -> f64 {
+        if self.y == 0.0 { self.makeup } else { self.makeup * 10f64.powf(-self.y / 20.0) }
+    }
+
+    /// Processes `frames` frames held channel after channel, all channels linked. The detector runs
+    /// every frame; the gain is exact at the end of each run of [`GAIN_RUN`] frames and linear in
+    /// between (within 0.25 dB on sudden hits). One frame is exact.
+    pub fn block(&mut self, planar: &mut [f64], frames: usize) {
+        if frames == 0 {
             return;
         }
-        self.meter_db = self.meter_db.max(self.y);
-        let g = self.makeup * 10f64.powf(-self.y / 20.0);
-        f.iter_mut().for_each(|v| *v *= g);
+        let mut from = self.gain();
+        let mut start = 0;
+        while start < frames {
+            let n = GAIN_RUN.min(frames - start);
+            let mut peaks = [0f64; GAIN_RUN];
+            for lane in planar.chunks_exact(frames) {
+                peaks.iter_mut().zip(&lane[start..start + n]).for_each(|(p, v)| *p = p.max(v.abs()));
+            }
+            for &peak in &peaks[..n] {
+                let c = if peak > self.quiet { self.s.reduction_db(20.0 * peak.log10()) } else { 0.0 };
+                self.y1 = c.max(self.release * self.y1 + (1.0 - self.release) * c);
+                self.y = self.attack * self.y + (1.0 - self.attack) * self.y1;
+                if self.y < 1e-9 {
+                    self.y = 0.0;
+                }
+                self.meter_db = self.meter_db.max(self.y);
+            }
+            let to = self.gain();
+            for lane in planar.chunks_exact_mut(frames) {
+                let run = &mut lane[start..start + n];
+                if from == to {
+                    if to != 1.0 {
+                        run.iter_mut().for_each(|v| *v *= to);
+                    }
+                } else {
+                    // Counted back from `to`, so the run's last frame gets it exactly.
+                    let step = (to - from) / n as f64;
+                    run.iter_mut().enumerate().for_each(|(k, v)| *v *= to - step * (n - 1 - k) as f64);
+                }
+            }
+            from = to;
+            start += n;
+        }
     }
 
     pub fn reset(&mut self) {
@@ -271,21 +302,29 @@ mod tests {
         CompressorSettings { threshold_db, ratio, attack_ms: 5.0, release_ms: 100.0, makeup_db: 0.0, knee_db: 0.0 }
     }
 
+    /// Frames per buffer in the tests, as the sink hands them over.
+    const BUFFER: usize = 1000;
+
+    /// `left` and `right` through `c` a buffer at a time.
+    fn compress(c: &mut Compressor, left: &mut [f64], right: &mut [f64]) {
+        for (l, r) in left.chunks_mut(BUFFER).zip(right.chunks_mut(BUFFER)) {
+            let mut planar: Vec<f64> = l.iter().chain(r.iter()).copied().collect();
+            c.block(&mut planar, l.len());
+            let (pl, pr) = planar.split_at(l.len());
+            l.copy_from_slice(pl);
+            r.copy_from_slice(pr);
+        }
+    }
+
     /// A stereo sine at `db` dBFS through `c`: (gain in dB over the last tenth, per-frame gain).
     fn run(c: &mut Compressor, db: f64, secs: f64, freq: f64) -> (f64, Vec<f64>) {
         let a = 10f64.powf(db / 20.0);
         let n = (secs * RATE) as usize;
-        let mut gains = Vec::with_capacity(n);
-        let mut out_peak = 0f64;
-        for i in 0..n {
-            let x = a * (std::f64::consts::TAU * freq * i as f64 / RATE).sin();
-            let mut f = [x, x];
-            c.frame(&mut f);
-            gains.push(if x.abs() > 1e-12 { f[0] / x } else { f64::NAN });
-            if i >= n - n / 10 {
-                out_peak = out_peak.max(f[0].abs());
-            }
-        }
+        let x: Vec<f64> = (0..n).map(|i| a * (std::f64::consts::TAU * freq * i as f64 / RATE).sin()).collect();
+        let (mut l, mut r) = (x.clone(), x.clone());
+        compress(c, &mut l, &mut r);
+        let gains = x.iter().zip(&l).map(|(x, y)| if x.abs() > 1e-12 { y / x } else { f64::NAN }).collect();
+        let out_peak = l[n - n / 10..].iter().fold(0f64, |m, v| m.max(v.abs()));
         (20.0 * (out_peak / a).log10(), gains)
     }
 
@@ -347,29 +386,55 @@ mod tests {
     #[test]
     fn channels_are_linked() {
         let mut c = Compressor::new(RATE, hard(-20.0, 4.0));
-        for i in 0..48_000 {
-            let x = (std::f64::consts::TAU * 440.0 * i as f64 / RATE).sin();
-            let mut f = [x, 0.01 * x];
-            c.frame(&mut f);
-            if i > 24_000 && x.abs() > 0.1 {
-                assert!((f[1] / f[0] - 0.01).abs() < 1e-9, "the quiet side follows the loud one");
-            }
+        let mut l: Vec<f64> = (0..48_000).map(|i| (std::f64::consts::TAU * 440.0 * i as f64 / RATE).sin()).collect();
+        let mut r: Vec<f64> = l.iter().map(|x| 0.01 * x).collect();
+        compress(&mut c, &mut l, &mut r);
+        assert!(c.meter_db > 6.0, "it compressed: {}", c.meter_db);
+        for (a, b) in l.iter().zip(&r).skip(24_000).filter(|(a, _)| a.abs() > 0.1) {
+            assert!((b / a - 0.01).abs() < 1e-9, "the quiet side follows the loud one");
         }
     }
 
     #[test]
     fn below_knee_only_makeup() {
-        let mut c = Compressor::new(RATE, CompressorSettings { makeup_db: 0.0, ..hard(-10.0, 4.0) });
-        let mut f = [0.1, -0.05];
-        for _ in 0..1000 {
-            f = [0.1, -0.05];
-            c.frame(&mut f);
+        let (mut l, mut r) = (vec![0.1; 5000], vec![-0.05; 5000]);
+        compress(&mut Compressor::new(RATE, CompressorSettings { makeup_db: 0.0, ..hard(-10.0, 4.0) }), &mut l, &mut r);
+        assert!(l.iter().all(|v| *v == 0.1) && r.iter().all(|v| *v == -0.05), "bit for bit");
+        let (mut l, mut r) = ([0.1], [-0.05]);
+        compress(&mut Compressor::new(RATE, CompressorSettings { makeup_db: 6.0206, ..hard(-10.0, 4.0) }), &mut l, &mut r);
+        assert!((l[0] - 0.2).abs() < 1e-4 && (r[0] + 0.1).abs() < 1e-4);
+    }
+
+    /// Bursts over quiet, with hits that start between gain points: the interpolated gain stays near the
+    /// exact gain of a frame at a time, and lands on it at the end of every run.
+    #[test]
+    fn interpolated_gain_follows_exact() {
+        let s = CompressorPreset::Strong.settings();
+        let n = 96_000;
+        let x: Vec<f64> = (0..n)
+            .map(|i| {
+                let level = if (i + 7) % 9_001 < 2_500 { 0.95 } else { 0.02 };
+                level * (std::f64::consts::TAU * 330.0 * i as f64 / RATE).sin()
+            })
+            .collect();
+        let mut exact = Compressor::new(RATE, s);
+        let want: Vec<f64> = x.iter().map(|&v| {
+            let mut f = [v, v];
+            exact.block(&mut f, 1);
+            f[0]
+        }).collect();
+        let mut c = Compressor::new(RATE, s);
+        let (mut l, mut r) = (x.clone(), x.clone());
+        compress(&mut c, &mut l, &mut r);
+        assert_eq!(l, r);
+        assert!(c.meter_db > 10.0 && c.meter_db == exact.meter_db, "the meter reads every frame: {} / {}", c.meter_db, exact.meter_db);
+        let errors: Vec<f64> = x.iter().zip(&l).zip(&want).filter(|((x, _), _)| x.abs() > 1e-3).map(|((x, y), w)| (20.0 * (y / x).log10() - 20.0 * (w / x).log10()).abs()).collect();
+        let max = errors.iter().fold(0f64, |m, e| m.max(*e));
+        let mean = errors.iter().sum::<f64>() / errors.len() as f64;
+        assert!(max > 0.0 && max < 0.25 && mean < 0.01, "max {max} dB, mean {mean} dB");
+        for k in (GAIN_RUN - 1..BUFFER).step_by(GAIN_RUN).chain([BUFFER - 1]) {
+            assert_eq!(l[k], want[k], "frame {k} ends a run");
         }
-        assert_eq!(f, [0.1, -0.05], "bit for bit");
-        let mut c = Compressor::new(RATE, CompressorSettings { makeup_db: 6.0206, ..hard(-10.0, 4.0) });
-        let mut f = [0.1, -0.05];
-        c.frame(&mut f);
-        assert!((f[0] - 0.2).abs() < 1e-4 && (f[1] + 0.1).abs() < 1e-4);
     }
 
     #[test]

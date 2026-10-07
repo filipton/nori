@@ -1587,7 +1587,10 @@ fn heard_as_rendered(rig: &Rig, live: &Live, raw: &[i16], first: &Settings, step
         want = reference::spliced(&want, &reference::render(raw, RATE, &changes), splice.output as usize, RATE);
     }
     let heard = rig.heard.lock().clone();
-    if let Some(at) = reference::first_difference(&heard, &want, 0) {
+    // The compressor interpolates its gain over runs that end with each buffer, and the engine's buffers
+    // are not the rendering's: the gain may differ a little where they split differently.
+    let compressed = std::iter::once(first).chain(steps.iter().map(|(_, s)| s)).any(|s| s.sound.effects.compressor.is_some());
+    if let Some(at) = reference::first_difference(&heard, &want, if compressed { 32 } else { 0 }) {
         panic!("heard is not what was rendered, {}", reference::describe(&heard, &want, at, RATE));
     }
     assert_eq!(rig.waits(), 0, "the card never found too little to play");

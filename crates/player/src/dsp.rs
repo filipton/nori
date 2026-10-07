@@ -631,7 +631,7 @@ impl Stages {
             e.frame(f);
         }
         if let Some(c) = self.compressor.as_mut() {
-            c.frame(f);
+            c.block(f, 1);
         }
         if self.channels == 2 {
             if self.mono {
@@ -755,10 +755,11 @@ impl Stages {
     }
 
     /// [`Stages::output_stage`] in stereo, a stage at a time over the block: each stage keeps only its
-    /// own state, so every frame gets the same arithmetic in the same order.
+    /// own state, so every frame gets the same arithmetic in the same order, except the compressor's
+    /// interpolated gain.
     fn block_output2(&mut self, planar: &mut [f64], frames: usize) {
-        let (left, right) = planar.split_at_mut(frames);
         if let Some(e) = self.expander.as_mut() {
+            let (left, right) = planar.split_at_mut(frames);
             for (l, r) in left.iter_mut().zip(right.iter_mut()) {
                 let mut f = [*l, *r];
                 e.frame(&mut f);
@@ -766,12 +767,9 @@ impl Stages {
             }
         }
         if let Some(c) = self.compressor.as_mut() {
-            for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-                let mut f = [*l, *r];
-                c.frame(&mut f);
-                (*l, *r) = (f[0], f[1]);
-            }
+            c.block(planar, frames);
         }
+        let (left, right) = planar.split_at_mut(frames);
         if self.mono {
             for (l, r) in left.iter_mut().zip(right.iter_mut()) {
                 let m = (*l + *r) * MONO_SUM;
@@ -1411,7 +1409,8 @@ mod tests {
     }
 
     /// The block path is the frame-by-frame chain, sample for sample: bands on both sides and on one
-    /// (in runs of every length), and every output stage acting.
+    /// (in runs of every length), and every output stage acting but the compressor, whose gain a block
+    /// interpolates (`compressor::tests::interpolated_gain_follows_exact`).
     #[test]
     fn stereo_block_is_frame_by_frame() {
         let side = |channel, band: Band| Band { channel, ..band };
@@ -1428,13 +1427,12 @@ mod tests {
             b(PEAKING, 12000.0, 2.0, 1.0),
             b(PEAKING, 14000.0, -2.0, 1.0),
         ];
-        let compressor = crate::compressor::CompressorPreset::Balanced.settings();
         let expander = crate::compressor::ExpanderSettings { threshold_db: -30.0, ratio: 2.0, attack_ms: 2.0, release_ms: 50.0 };
         let mut eq = Equalizer::new(48000, 2);
         eq.configure(&bands, -2.0, 0.0);
-        eq.configure_effects(&Effects { bass_boost_db: 4.0, compressor: Some(compressor), expander: Some(expander), virtualizer: 0.5, boost_db: 3.0, ..Effects::default() });
+        eq.configure_effects(&Effects { bass_boost_db: 4.0, expander: Some(expander), virtualizer: 0.5, boost_db: 3.0, ..Effects::default() });
         eq.configure_output(0.3, false, -3.0, 80.0, 2.0);
-        // Loud and quiet stretches, so the expander, the compressor and the limiter all move.
+        // Loud and quiet stretches, so the expander and the limiter both move.
         let x: Vec<f64> = (0..48000).flat_map(|i| {
             let level = if (i / 6000) % 2 == 0 { 0.9 } else { 0.01 };
             let t = i as f64 / 48000.0;
@@ -1453,7 +1451,7 @@ mod tests {
             blocked.block(&mut planar, frames);
             got.extend((0..frames).flat_map(|k| [planar[k], planar[frames + k]]));
         }
-        assert!(blocked.limiter.as_ref().unwrap().meter < 1.0 && blocked.compressor.as_ref().unwrap().meter_db > 0.0, "the dynamics acted");
+        assert!(blocked.limiter.as_ref().unwrap().meter < 1.0 && blocked.expander.as_ref().unwrap().meter_db > 0.0, "the dynamics acted");
         assert!(got == want, "first difference at {:?}", got.iter().zip(&want).position(|(a, b)| a != b));
     }
 
