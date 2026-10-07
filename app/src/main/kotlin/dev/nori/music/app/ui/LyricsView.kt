@@ -68,8 +68,6 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.MicNone
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
@@ -126,7 +124,6 @@ fun LyricsView(vm: PlayerViewModel, actions: ActionsViewModel, playing: Boolean)
         // On its side the title, the heart and the menu stay in the controls' half, where they are in every
         // panel; a second copy here pushed the words down and moved the controls up when the lyrics opened.
         if (!LocalWide.current) LyricsHeader(vm, actions, playerState.current)
-        if (remember { dev.nori.music.ffi.settings.singOffered() }) SingBar(settings, prefs.sing, prefs.singVocalLevel)
         // Loading, nothing found, or the words - each fades into the next rather than replacing it, the
         // words included: they rise out of the loader instead of appearing in one frame. A new song goes
         // back through the loader, so the last song's lyrics never sit on screen under the new title.
@@ -570,7 +567,7 @@ private fun LyricsBody(vm: PlayerViewModel, found: dev.nori.music.data.FoundLyri
  */
 @Composable
 private fun LyricsHeader(vm: PlayerViewModel, actions: ActionsViewModel, song: dev.nori.music.ffi.model.Song?) {
-    val menu = LocalSongMenu.current
+    val menu = LocalPlayerMenu.current
     val marks = LocalStarMarks.current
     Row(
         Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 4.dp, bottom = 8.dp),
@@ -613,30 +610,6 @@ private fun LyricsHeader(vm: PlayerViewModel, actions: ActionsViewModel, song: d
         }
     }
 }
-
-/**
- * Sing, under the lyrics' header: the microphone turns the vocals down (the core's Sing), and while it is on
- * the slider sets how much of them is left.
- */
-@Composable
-private fun SingBar(settings: SettingsViewModel, on: Boolean, level: Float) {
-    val look = LocalLook.current
-    Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, bottom = 4.dp), Arrangement.spacedBy(12.dp), Alignment.CenterVertically) {
-        TitleCircle(if (on) Icons.Filled.Mic else Icons.Filled.MicNone, say.sing, on) { settings.set("sing", (!on).toString()) }
-        if (on) {
-            LookText(say.singVocals(level), { look.color(CoverLook.ON_60) }, style = MaterialTheme.typography.bodySmall)
-            // Read through a state: the slider's drag keeps the first lambda it was given.
-            val now by androidx.compose.runtime.rememberUpdatedState(level)
-            NoriSlider(level, 0f..1f, { picked -> singLevelStep(now, picked)?.let { settings.set("singVocalLevel", it.toString()) } }, Modifier.weight(1f))
-        }
-    }
-}
-
-/**
- * The level a drag of the Sing slider to [picked] sets: the whole percent the label shows, or null when
- * that is [level] already. A drag sends a pointer event every frame, and each write is a settings edit.
- */
-internal fun singLevelStep(level: Float, picked: Float): Float? = (kotlin.math.round(picked * 100f) / 100f).takeIf { it != level }
 
 /** A text laid out once, with the outline of each sung piece and its box, so drawing a frame makes nothing new. */
 private class Laid(val layout: TextLayoutResult, val pieces: Array<Path>) {

@@ -163,7 +163,7 @@ private val SERVICES: Map<String, Pair<Int, Int>> = mapOf(
 // ---- search ----
 
 /** Rows only a build with the beat model's runtime has. */
-private val BEAT_MODEL_ROWS = setOf(R.string.settings_better_beats, R.string.settings_beats_mobile_data, R.string.settings_download_beats, R.string.settings_sing)
+private val BEAT_MODEL_ROWS = setOf(R.string.settings_better_beats, R.string.settings_beats_mobile_data, R.string.settings_download_beats)
 
 /**
  * What the search can find: which page a row lives on, its title, and the words under it. A row is
@@ -189,7 +189,6 @@ private val INDEX: List<Triple<String, Int, Int>> = listOf(
     Triple("playing", R.string.settings_speed, 0),
     Triple("playing", R.string.settings_pitch, 0),
     Triple("playing", R.string.settings_skip_silence, R.string.settings_hint_skip_silence),
-    Triple("playing", R.string.settings_sing, R.string.settings_hint_sing),
     Triple("playing", R.string.settings_previous, R.string.settings_hint_previous),
     Triple("playing", R.string.settings_skip_explicit, R.string.settings_hint_skip_explicit),
     Triple("playing", R.string.settings_auto_fill, R.string.settings_hint_auto_fill),
@@ -480,19 +479,6 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
         else -> str(absent, mb)
     }
 
-    /** Sing's switch and, while it is on, the vocals' level; nothing in a build without the model's runtime. */
-    fun sing(): List<SettingRow> {
-        val model = s.singModel
-        if (model is BeatModel.Unavailable) return emptyList()
-        val detail = modelWords(model, s.singModelMb.toInt(), p.sing, R.string.settings_sing_off, R.string.settings_sing_absent, R.string.settings_sing_ready)
-        val rows = mutableListOf<SettingRow>(toggle("sing", R.string.settings_sing, detail, !s.untouched))
-        if (p.sing) {
-            val level = str(R.string.settings_sing_level, percent((p.singVocalLevel * 100f).roundToInt().toString()))
-            rows += SettingRow.Slider("singVocalLevel", level, p.singVocalLevel, 0f, 1f, false, null)
-        }
-        return rows
-    }
-
     // How values read.
     fun offOr(v: String, words: (String) -> String) = if (v == "0") str(R.string.settings_off) else words(v)
     fun seconds(v: String) = str(R.string.settings_seconds, v)
@@ -557,7 +543,7 @@ private class PageBuilder(val res: Resources, val p: StoredPrefs, val f: Setting
                 }
             },
             toggle("skipSilence", R.string.settings_skip_silence, str(if (s.untouched) R.string.settings_skip_silence_held else R.string.settings_skip_silence_detail), live),
-        ) + sing()
+        )
 
         val queue = mutableListOf<SettingRow>(
             toggle("skipExplicit", R.string.settings_skip_explicit, R.string.settings_skip_explicit_detail),

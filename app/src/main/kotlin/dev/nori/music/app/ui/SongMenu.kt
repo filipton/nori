@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
@@ -33,9 +35,13 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.IosShare
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.LibraryAdd
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Radio
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -102,13 +108,15 @@ fun SongMenu(
     var picking by remember(open) { mutableStateOf(false) }
     var details by remember(open) { mutableStateOf(false) }
     var sleeping by remember(open) { mutableStateOf(false) }
+    var singing by remember(open) { mutableStateOf(false) }
     NoriSheet(player?.takeIf { open && sleeping }, onDismiss) { p -> SleepChoices(p, onDismiss) }
+    NoriSheet(player?.takeIf { open && singing }, onDismiss) { p -> SingSetup(p, onDismiss) }
     NoriDialog(song?.takeIf { details }, onDismiss) { s -> TrackInfo(s, onDismiss) }
     NoriDialog(song?.takeIf { picking }, onDismiss) { s -> PlaylistPicker(listOf(s), actions, onDismiss) }
 
     // A sheet with a half-open stage swallows the first back gesture to collapse itself, which reads
     // as the menu refusing to close. There is only ever one stage here, so back always dismisses.
-    NoriSheet(song?.takeIf { !picking && !details && !sleeping }, onDismiss) { song ->
+    NoriSheet(song?.takeIf { !picking && !details && !sleeping && !singing }, onDismiss) { song ->
         val downloads by actions.downloads.collectAsState()
         var more by remember { mutableStateOf(false) }
         Column(Modifier.verticalScroll(rememberScrollState()).navigationBarsPadding()) {
@@ -139,7 +147,13 @@ fun SongMenu(
             }
             // What the menu offers and in what order is the core's (`menus::song_menu`); the words are this
             // app's (`Say.songAction`), made once when the menu opens. This draws each line with its icon.
-            val items = remember(song, starred, download, player != null) { dev.nori.music.ffi.library.songMenu(song, starred, download, player != null, request != null) }
+            // Sing's switch, on the player's menu in a build that has it.
+            val settings: dev.nori.music.app.vm.SettingsViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+            val singOn = settings.prefs.collectAsState().value.sing
+            val sing = remember(player != null) { player != null && dev.nori.music.ffi.settings.singOffered() }
+            val items = remember(song, starred, download, player != null, singOn) {
+                dev.nori.music.ffi.library.songMenu(song, starred, download, player != null, singOn.takeIf { sing }, request != null)
+            }
             val labels = remember(items) { items.map { say.songAction(it.action) } }
             @Composable fun line(i: dev.nori.music.ffi.library.SongMenuItem, label: String) = when (val a = i.action) {
                 is dev.nori.music.ffi.library.SongAction.Favourite -> Item(label, if (a.on) Icons.Filled.FavoriteBorder else Icons.Filled.Favorite) { actions.star(song, a.on); onDismiss() }
@@ -157,6 +171,11 @@ fun SongMenu(
                 } }
                 dev.nori.music.ffi.library.SongAction.AddToLibrary -> Item(label, Icons.Filled.LibraryAdd) { actions.addToLibrary(song.id, isAlbum = false); onDismiss() }
                 dev.nori.music.ffi.library.SongAction.SleepTimer -> Item(label, Icons.Filled.Bedtime) { sleeping = true }
+                // Turned on without the voice model on the phone, its sheet says what is needed and gets it.
+                is dev.nori.music.ffi.library.SongAction.Sing -> Item(label, if (a.on) Icons.Filled.Mic else Icons.Filled.MicOff) {
+                    if (a.on && player?.singModelReady() == false) singing = true
+                    else { settings.set("sing", a.on.toString()); onDismiss() }
+                }
                 dev.nori.music.ffi.library.SongAction.StartRadio -> Item(label, Icons.Filled.Radio) { actions.startRadio(song); onDismiss() }
                 dev.nori.music.ffi.library.SongAction.InstantMix -> Item(label, Icons.Filled.AutoAwesome) { actions.instantMix(song); onDismiss() }
                 dev.nori.music.ffi.library.SongAction.ExcludeFromMixes -> Item(label, Icons.Filled.Block) { actions.excludeFromMixes(song); onDismiss() }
@@ -184,6 +203,59 @@ fun SongMenu(
             }
             AnimatedVisibility(more, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
                 Column { items.forEachIndexed { n, it -> if (it.more) line(it, labels[n]) } }
+            }
+        }
+    }
+}
+
+/**
+ * Sing, turned on before its voice model is on the phone: what it is and needs, then the download with its
+ * progress, the choice between mobile data and Wi-Fi, and a failure with a way to try again. Sing comes on as
+ * the download starts (the core fetches only for Sing), and the sheet goes once the model is here.
+ */
+@Composable
+private fun SingSetup(player: dev.nori.music.app.vm.PlayerViewModel, onDone: () -> Unit) {
+    val settings: dev.nori.music.app.vm.SettingsViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+    val status by player.sing.collectAsState()
+    val model = status?.model
+    val state = model?.state
+    LaunchedEffect(state) { if (state is dev.nori.music.ffi.settings.BeatModel.Ready) { settings.set("sing", "true"); onDone() } }
+    val download = { settings.set("sing", "true"); player.singDownloadNow() }
+    Column(Modifier.navigationBarsPadding().padding(bottom = 20.dp)) {
+        SectionTitle(say.sing)
+        if (model != null) SingSteps(model, player, download) { settings.set("sing", "true"); onDone() }
+    }
+}
+
+/** [SingSetup]'s words and buttons for the voice [model] as it stands; [download] fetches it, [onWifi] leaves it for Wi-Fi. */
+@Composable
+private fun SingSteps(model: dev.nori.music.ffi.settings.SingModel, player: dev.nori.music.app.vm.PlayerViewModel, download: () -> Unit, onWifi: () -> Unit) {
+    Column(Modifier.padding(horizontal = Space.gutter)) {
+        Text(say.singAbout(model.totalBytes), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(20.dp))
+        when (model.state) {
+            is dev.nori.music.ffi.settings.BeatModel.Downloading -> {
+                val total = model.totalBytes.toFloat().coerceAtLeast(1f)
+                FillBar({ model.gotBytes.toFloat() / total }, Modifier.fillMaxWidth())
+                Text(say.singProgress(model), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            is dev.nori.music.ffi.settings.BeatModel.Failed -> {
+                Text(say.singWaiting(dev.nori.music.ffi.settings.SingNow.FAILED, model).orEmpty(), style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(14.dp))
+                PillButton(say.singRetry, Icons.Filled.Refresh, download, Modifier.fillMaxWidth(), prominent = true)
+            }
+            else -> {
+                // Mobile data is the platform's to know, asked as the sheet comes up.
+                val metered = remember { player.onMobileData() }
+                if (metered) {
+                    Text(say.singOnMobile, style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(14.dp))
+                }
+                PillButton(say.singDownload(model.totalBytes), Icons.Filled.Download, download, Modifier.fillMaxWidth(), prominent = true)
+                if (metered) {
+                    Spacer(Modifier.height(10.dp))
+                    PillButton(say.singWaitWifi, Icons.Filled.Wifi, onWifi, Modifier.fillMaxWidth())
+                }
             }
         }
     }

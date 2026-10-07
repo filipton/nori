@@ -99,6 +99,40 @@ class PlayerViewModel(app: Application) : NoriViewModel(app) {
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /**
+     * Where Sing stands (the core's): for the song playing while Sing is on, and the voice model's download.
+     * Asked only while collected (Sing's sheet, or the lyrics on screen with Sing on), and again each
+     * [SING_LOOK_MS] until the song's vocals are down: a mask is made and a download moves on without saying so.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val sing: StateFlow<SingStatus?> = kotlinx.coroutines.flow.combine(
+        currentId, nori.settings.prefs.map { it.sing }.distinctUntilChanged(),
+    ) { id, on -> id?.takeIf { on } }
+        .flatMapLatest { id ->
+            kotlinx.coroutines.flow.flow {
+                while (true) {
+                    val now = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        SingStatus(id?.let(nori::singNow), nori.settings.core.singModelNow())
+                    }
+                    emit(now)
+                    val downloading = now.model.state is dev.nori.music.ffi.settings.BeatModel.Downloading
+                    if (!downloading && (now.now == dev.nori.music.ffi.settings.SingNow.SINGING || id == null)) break
+                    kotlinx.coroutines.delay(if (downloading) SING_PROGRESS_MS else SING_LOOK_MS)
+                }
+            }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(), null)
+
+    /** Whether the phone is on mobile data now. */
+    fun onMobileData(): Boolean = nori.http.metered
+
+    /** Whether the voice model is on the device, so Sing can come on at once. */
+    fun singModelReady(): Boolean = nori.settings.core.singModelNow().state is dev.nori.music.ffi.settings.BeatModel.Ready
+
+    /** The voice model now, over mobile data if need be, or again after it failed. */
+    fun singDownloadNow() {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) { nori.singDownloadNow() }
+    }
+
+    /**
      * The player behind the moving cover. The object is only made when the screen first hands it a
      * surface, and its ExoPlayer only when it first plays; with the switch off neither ever is.
      */
@@ -236,3 +270,10 @@ class PlayerViewModel(app: Application) : NoriViewModel(app) {
         audio.setStreamVolume(AudioManager.STREAM_MUSIC, kotlin.math.round(f.coerceIn(0f, 1f) * max).toInt().coerceIn(0, max), 0)
     }
 }
+
+/** Where Sing stands: [now] for the song playing (null while Sing is off) and the voice [model]. */
+data class SingStatus(val now: dev.nori.music.ffi.settings.SingNow?, val model: dev.nori.music.ffi.settings.SingModel)
+
+/** How often Sing's state is asked while the song's vocals are not down yet, and while the model downloads. */
+private const val SING_LOOK_MS = 1_000L
+private const val SING_PROGRESS_MS = 400L

@@ -33,13 +33,14 @@ fn action_code(a: &SongAction) -> i32 {
         SongAction::Share => 14,
         SongAction::Details => 15,
         SongAction::Request => 16,
+        SongAction::Sing { .. } => 17,
     }
 }
 
 fn item_json(m: &SongMenuItem) -> Value {
     let mut v = json!({ "a": action_code(&m.action), "more": m.more });
     match &m.action {
-        SongAction::Favourite { on } => v["on"] = json!(on),
+        SongAction::Favourite { on } | SongAction::Sing { on } => v["on"] = json!(on),
         SongAction::GoToAlbum { id } => v["id"] = json!(id),
         SongAction::GoToArtist { id, name, named } => {
             v["id"] = json!(id);
@@ -68,7 +69,7 @@ fn details_json(s: &Song) -> Value {
 }
 
 fn menu_json(song: &Song, starred: bool, download: SongDownload, player: bool) -> Value {
-    let items: Vec<Value> = song_menu(song.clone(), starred, download, player, false)
+    let items: Vec<Value> = song_menu(song.clone(), starred, download, player, None, false)
         .iter()
         .map(item_json)
         .collect();

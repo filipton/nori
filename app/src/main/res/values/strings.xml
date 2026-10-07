@@ -93,11 +93,6 @@
     <string name="settings_better_beats_failed">The download didn\'t work (%1$s). It tries again at the next song.</string>
     <string name="settings_beats_mobile_data">Download over mobile data</string>
     <string name="settings_beats_mobile_data_detail">Otherwise it waits for Wi-Fi.</string>
-    <string name="settings_sing">Sing</string>
-    <string name="settings_sing_off">Turns the vocals down so you can sing along. Each song is listened to on this device before it plays. A one-time download of about %1$d MB over Wi-Fi, from the model\'s authors.</string>
-    <string name="settings_sing_absent">Downloaded (about %1$d MB) on Wi-Fi before the next song plays.</string>
-    <string name="settings_sing_ready">On. A song keeps its vocals until it has been listened to.</string>
-    <string name="settings_sing_level">Vocals: %1$s</string>
     <string name="settings_measured">Measured songs</string>
     <plurals name="settings_measured_detail">
         <item quantity="one">%1$d song measured for tempo and beats.</item>
@@ -489,7 +484,6 @@
     <string name="settings_hint_echo_out">Overlapping vocals end in an echo instead</string>
     <string name="settings_hint_better_beats">A neural beat tracker for AutoMix, downloaded once (Beat This!)</string>
     <string name="settings_hint_beats_mobile_data">For the beat model; otherwise it waits for Wi-Fi</string>
-    <string name="settings_hint_sing">Turns the vocals down to sing along (Open-Unmix, downloaded once)</string>
     <string name="settings_hint_measured">Tempo and beats, measured on this device</string>
     <string name="settings_hint_keep_albums">No mixing between songs of the same album</string>
     <string name="settings_hint_fade">A short fade when you play, pause, seek or skip</string>

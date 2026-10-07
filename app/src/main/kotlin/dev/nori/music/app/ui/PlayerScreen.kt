@@ -64,6 +64,7 @@ import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Lyrics
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -243,6 +244,7 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
 
     val settingsVm: SettingsViewModel = viewModel()
     val prefs by settingsVm.prefs.collectAsStateWithLifecycle()
+    val singOffered = remember { dev.nori.music.ffi.settings.singOffered() }
     val dark = when (prefs.theme) { ThemeMode.SYSTEM -> isSystemInDarkTheme(); ThemeMode.DARK -> true; ThemeMode.LIGHT -> false }
     val coverUrl = vm.cover(state.current?.coverArt, CoverSize.FULL)
     // One picture for the sleeve and for the cover in flight (see SleeveArt).
@@ -592,7 +594,15 @@ fun PlayerScreen(vm: PlayerViewModel, actions: ActionsViewModel) {
                             )
                             .then(if (page == Panel.QUEUE) Modifier.padding(horizontal = 26.dp) else Modifier),
                     ) {
-                        if (page == Panel.QUEUE) Queue(vm) else LyricsView(vm, actions, state.playing)
+                        if (page == Panel.QUEUE) Queue(vm)
+                        else {
+                            LyricsView(vm, actions, state.playing)
+                            // Over the foot of the words, just above the controls, as Apple's Sing.
+                            if (singOffered && prefs.sing) SingControl(
+                                vm, settingsVm, prefs.singVocalLevel,
+                                Modifier.align(Alignment.BottomCenter).padding(start = 20.dp, end = 20.dp, bottom = 18.dp),
+                            )
+                        }
                     }
                 }
 
@@ -2238,38 +2248,105 @@ private fun VolumeRow(vm: PlayerViewModel) {
         Arrangement.spacedBy(12.dp), Alignment.CenterVertically,
     ) {
         LookIcon(Icons.AutoMirrored.Filled.VolumeDown, null, Modifier.size(16.dp)) { look.color(CoverLook.ON_VARIANT) }
-        val pick: (Float, Float) -> Unit = { x, w ->
-            val f = (x / w).coerceIn(0f, 1f)
+        FillBar({ shown.floatValue }, Modifier.weight(1f), dragging, { dragging = it }) { f ->
             vm.setVolumeFraction(f)
             shown.floatValue = f
         }
-        Box(
-            Modifier.weight(1f).height(34.dp)
-                .pointerInput(Unit) {
-                    detectHorizontalDragGestures(
-                        onDragStart = { dragging = true; pick(it.x, size.width.toFloat()) },
-                        onDragEnd = { dragging = false },
-                        onDragCancel = { dragging = false },
-                    ) { change, _ -> pick(change.position.x, size.width.toFloat()) }
-                }
-                .pointerInput(Unit) { detectTapGestures { pick(it.x, size.width.toFloat()) } }
-                .drawBehind {
-                    val track = look.color(CoverLook.ON_22)
-                    val filled = look.color(CoverLook.ON_85)
-                    val h = 7.dp.toPx()
-                    val y = (size.height - h) / 2f
-                    val r = CornerRadius(h / 2f, h / 2f)
-                    val at = shown.floatValue
-                    drawRoundRect(track, Offset(0f, y), Size(size.width, h), r)
-                    drawRoundRect(filled, Offset(0f, y), Size(size.width * at, h), r)
-                    // No knob unless a finger is on it: Apple's volume slider is a filled bar and
-                    // nothing else, and a permanent white circle is the most Material thing on the screen.
-                    if (dragging) drawCircle(filled, h * 1.15f, Offset(size.width * at, size.height / 2f))
-                },
-        )
         LookIcon(Icons.AutoMirrored.Filled.VolumeUp, null, Modifier.size(20.dp)) { look.color(CoverLook.ON_VARIANT) }
     }
 }
+
+/**
+ * A filled bar, drawn: the track, the filled part up to [at] (read while drawing), and a knob only while
+ * [dragging]. With [pick] a finger sets it: [pick] hears the fraction under the finger, [onDragging] a drag
+ * starting and ending.
+ */
+@Composable
+internal fun FillBar(at: () -> Float, modifier: Modifier, dragging: Boolean = false, onDragging: (Boolean) -> Unit = {}, pick: ((Float) -> Unit)? = null) {
+    val look = LocalLook.current
+    // Read through states: the gesture detectors keep the first lambdas they were given.
+    val picked by rememberUpdatedState(pick)
+    val dragged by rememberUpdatedState(onDragging)
+    Box(
+        modifier.height(34.dp)
+            .then(if (pick == null) Modifier else Modifier
+                .pointerInput(Unit) {
+                    val under = { x: Float -> picked?.invoke((x / size.width).coerceIn(0f, 1f)) }
+                    detectHorizontalDragGestures(
+                        onDragStart = { dragged(true); under(it.x) },
+                        onDragEnd = { dragged(false) },
+                        onDragCancel = { dragged(false) },
+                    ) { change, _ -> under(change.position.x) }
+                }
+                .pointerInput(Unit) { detectTapGestures { picked?.invoke((it.x / size.width).coerceIn(0f, 1f)) } })
+            .drawBehind {
+                val track = look.color(CoverLook.ON_22)
+                val filled = look.color(CoverLook.ON_85)
+                val h = 7.dp.toPx()
+                val y = (size.height - h) / 2f
+                val r = CornerRadius(h / 2f, h / 2f)
+                val x = size.width * at()
+                drawRoundRect(track, Offset(0f, y), Size(size.width, h), r)
+                drawRoundRect(filled, Offset(0f, y), Size(x, h), r)
+                // No knob unless a finger is on it: Apple's volume slider is a filled bar and
+                // nothing else, and a permanent white circle is the most Material thing on the screen.
+                if (dragging) drawCircle(filled, h * 1.15f, Offset(x, size.height / 2f))
+            },
+    )
+}
+
+/**
+ * Sing's control, floating over the foot of the lyrics while Sing is on: how much of the vocals is left, a bar
+ * like the volume's, and above it, while the song playing still has its vocals, why (the core's `SingNow`) and
+ * what would help - the model fetched now over mobile data, or tried again.
+ */
+@Composable
+private fun SingControl(vm: PlayerViewModel, settings: SettingsViewModel, level: Float, modifier: Modifier) {
+    val look = LocalLook.current
+    val sing by vm.sing.collectAsStateWithLifecycle()
+    val now = sing?.now
+    val why = sing?.let { st -> st.now?.let { say.singWaiting(it, st.model) } }
+    var dragging by remember { mutableStateOf(false) }
+    // What is drawn: the finger while it is down, else the setting.
+    val shown = remember { mutableFloatStateOf(level) }
+    LaunchedEffect(level, dragging) { if (!dragging) shown.floatValue = level }
+    Column(
+        modifier.widthIn(max = 460.dp).fillMaxWidth().clip(RoundedCornerShape(24.dp))
+            .drawBehind { drawRect(look.color(CoverLook.VEIL_6)) }
+            .padding(start = 18.dp, end = 16.dp, top = if (why != null) 12.dp else 2.dp, bottom = 2.dp),
+    ) {
+        if (why != null) Row(Modifier.fillMaxWidth().padding(bottom = 2.dp), Arrangement.spacedBy(12.dp), Alignment.CenterVertically) {
+            LookText(why, { look.color(CoverLook.ON_80) }, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+            val act = when (now) {
+                dev.nori.music.ffi.settings.SingNow.WAITING_FOR_WIFI -> say.singDownloadNow
+                dev.nori.music.ffi.settings.SingNow.FAILED -> say.singRetry
+                else -> null
+            }
+            if (act != null) LookText(
+                act, { look.color(CoverLook.ON) },
+                Modifier.clip(RoundedCornerShape(12.dp)).clickable(onClick = vm::singDownloadNow).padding(horizontal = 6.dp, vertical = 6.dp),
+                style = MaterialTheme.typography.labelLarge,
+            )
+        }
+        Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(12.dp), Alignment.CenterVertically) {
+            LookIcon(Icons.Filled.Mic, say.singVocalsLevel, Modifier.size(18.dp)) { look.color(CoverLook.ON_VARIANT) }
+            FillBar({ shown.floatValue }, Modifier.weight(1f), dragging, { dragging = it }) { picked ->
+                shown.floatValue = picked
+                singLevelStep(level, picked)?.let { settings.set("singVocalLevel", it.toString()) }
+            }
+            LookText(
+                say.singPercent(shown.floatValue), { look.color(CoverLook.ON_60) }, Modifier.widthIn(min = 36.dp),
+                style = MaterialTheme.typography.labelMedium, textAlign = androidx.compose.ui.text.style.TextAlign.End, maxLines = 1,
+            )
+        }
+    }
+}
+
+/**
+ * The level a drag of the Sing slider to [picked] sets: the whole percent the label shows, or null when
+ * that is [level] already. A drag sends a pointer event every frame, and each write is a settings edit.
+ */
+internal fun singLevelStep(level: Float, picked: Float): Float? = (kotlin.math.round(picked * 100f) / 100f).takeIf { it != level }
 
 /**
  * A line too long for its width reads itself out: it sits still for a moment, so the start can be
