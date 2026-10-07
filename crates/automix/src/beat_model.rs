@@ -1,7 +1,7 @@
 //! The models the core downloads: Beat This! small0 behind "Better beat detection" and Open-Unmix UMX-HQ's vocals
 //! behind Sing. Where each file lives and how its download stands: the core fetches the authors' checkpoint, checks
-//! it, converts it to the weights file its graph (`nori_player::automix::weights`) reads, and deletes it when the
-//! switch goes off.
+//! it, converts it to the weights file its graph (`nori_player::automix::weights`) reads. Beat This!'s is deleted when
+//! its switch goes off ([`ModelFile::switched`]); Sing's stays, with its masks.
 
 use std::path::{Path, PathBuf};
 
@@ -20,7 +20,7 @@ pub const BYTES: u64 = 4_229_216;
 pub const SIZE_MB: u32 = 8;
 
 /// A model: its authors' checkpoint, the weights file made from it, and the directory beside the database it is
-/// kept in (its own: turning the switch off deletes it).
+/// kept in (its own).
 #[derive(Debug)]
 pub struct Model {
     pub checkpoint_url: &'static str,
