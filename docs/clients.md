@@ -209,8 +209,8 @@ The engine also plays what the Android player plays around the sound chain, each
   more than 16 KiB for a frame: the engine's thread never waits on the network for one.
 - **HE-AAC** (AAC+ with SBR, v2 with PS; what most AAC radio sends, as ADTS saying AAC-LC at 22.05 or
   24 kHz): symphonia decodes only its core, so what plays is the right pitch with nothing above
-  11-12 kHz. For the whole of it **the client lends a decoder**: `nori_player::decode::lend_platform_aac`
-  with a function making a `PlatformDecoder` for an `AacSetup` (the stated rate and channels, and the
+  11-12 kHz. For the whole of it **the client lends a decoder**: `nori_engine::Config::platform_aac`, a
+  function making a `PlatformDecoder` for an `AacSetup` (the stated rate and channels, and the
   AudioSpecificConfig when the container has one). A stream `decode::he_aac` calls HE-AAC (object type 5
   or 29, the SBR extension in its config, or AAC-LC at 24 kHz or less) is then decoded by it, one access
   unit at a time on the engine's thread, and the device is opened at the rate and channels it says.

@@ -1323,7 +1323,7 @@ fn id3_tag_is_skipped() {
     let mut file = [b"ID3".as_slice(), &[3, 0, 0], &syncsafe(frames.len())].concat();
     file.extend_from_slice(&frames);
     file.extend_from_slice(&wav(&a));
-    let mut d = nori_engine::demux::Demuxed::open(Box::new(Cursor::new(file)), None, 0, None, nori_player::pcm::Encoding::Pcm16).unwrap();
+    let mut d = nori_engine::demux::Demuxed::open(Box::new(Cursor::new(file)), None, 0, None, nori_player::pcm::Encoding::Pcm16, None).unwrap();
     let mut out = Vec::new();
     while nori_player::pipeline::Reading::fill(&mut d) {
         out.extend(nori_player::pipeline::Reading::buffer(&d).as_chunks::<2>().0.iter().map(|&b| i16::from_le_bytes(b)));

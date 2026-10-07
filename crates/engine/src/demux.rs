@@ -16,7 +16,7 @@ use std::thread::Thread;
 
 use nori_player::automix::resample::{Resampler, Tables};
 use nori_player::automix::PCM_FLOAT;
-use nori_player::decode::{he_aac, Codec, Decoder, MP3_DECODER_DELAY};
+use nori_player::decode::{he_aac, Codec, Decoder, PlatformAac, MP3_DECODER_DELAY};
 use nori_player::pcm::{Encoding, Format};
 use nori_player::pipeline::Reading;
 use nori_player::queue::PlaybackError;
@@ -147,11 +147,13 @@ struct Spec<'a> {
     whole: bool,
     /// The source's length is the song's; otherwise it is read in order as of unknown length ([`Unsized`]).
     sized: bool,
+    /// Decodes HE-AAC when playing.
+    platform_aac: Option<PlatformAac>,
 }
 
 impl<'a> Spec<'a> {
     fn new(hint: Option<&'a str>, from_ms: i64, duration_ms: Option<i64>, encoding: Encoding, mode: Mode) -> Self {
-        Spec { hint, from_ms, duration_ms, encoding, mode, whole: true, sized: true }
+        Spec { hint, from_ms, duration_ms, encoding, mode, whole: true, sized: true, platform_aac: None }
     }
 }
 
@@ -325,7 +327,7 @@ impl Stream {
     }
 
     fn open_unguarded(mut source: Box<dyn MediaSource>, spec: Spec) -> Result<Stream, String> {
-        let Spec { hint, from_ms, duration_ms, encoding, mode, whole, sized } = spec;
+        let Spec { hint, from_ms, duration_ms, encoding, mode, whole, sized, platform_aac } = spec;
         let packets = mode == Mode::Packets;
         let gapless = if whole { crate::mp4::gapless(&mut source).ok().flatten() } else { None };
         source.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
@@ -351,7 +353,7 @@ impl Stream {
         let delay_known = track.delay.is_some();
         let inner = match (codec, Pcm::of(params.codec)) {
             _ if packets => Inner::Raw,
-            (Some(Codec::Aac), _) if mode == Mode::Play => Inner::Coded(Box::new(Decoder::whole_aac(rate, channels, params.extra_data.as_deref())?)),
+            (Some(Codec::Aac), _) if mode == Mode::Play => Inner::Coded(Box::new(Decoder::whole_aac(platform_aac, rate, channels, params.extra_data.as_deref())?)),
             (Some(c), _) => Inner::Coded(Box::new(Decoder::new(c, rate, channels, params.extra_data.as_deref(), c == Codec::Mp3 && delay_known)?)),
             (None, Some(p)) => Inner::Pcm(p),
             _ => return Err(format!("{:?} is not decoded here", params.codec)),
@@ -931,9 +933,9 @@ impl Drop for Demuxed {
 
 impl Demuxed {
     /// Opens bytes that are all here (a file) at `from_ms`, decoding to `encoding`. `hint` is an extension
-    /// or MIME type; `duration_ms` the tagged length.
-    pub fn open(source: Box<dyn MediaSource>, hint: Option<&str>, from_ms: i64, duration_ms: Option<i64>, encoding: Encoding) -> Result<Demuxed, String> {
-        let s = Stream::open(source, Spec::new(hint, from_ms, duration_ms, encoding, Mode::Play))?;
+    /// or MIME type; `duration_ms` the tagged length; `aac` the platform's HE-AAC decoder.
+    pub fn open(source: Box<dyn MediaSource>, hint: Option<&str>, from_ms: i64, duration_ms: Option<i64>, encoding: Encoding, aac: Option<PlatformAac>) -> Result<Demuxed, String> {
+        let s = Stream::open(source, Spec { platform_aac: aac, ..Spec::new(hint, from_ms, duration_ms, encoding, Mode::Play) })?;
         Ok(Demuxed { state: State::Open(Box::new(s)), loader: None })
     }
 
@@ -945,7 +947,7 @@ impl Demuxed {
 
     /// [`Demuxed::load`] as undecoded packets ([`Demuxed::packet`]).
     pub fn load_packets(loader: Arc<Loader>, engine: Thread, hint: Option<&str>, from_ms: i64, duration_ms: Option<i64>, estimated: bool) -> Demuxed {
-        Demuxed::start(loader, engine, hint, from_ms, duration_ms, estimated, Encoding::Pcm16, Mode::Packets)
+        Demuxed::start(loader, engine, hint, from_ms, duration_ms, estimated, Encoding::Pcm16, Mode::Packets, None)
     }
 
     /// The packets' format and encoder gap once open; None when decoded or not offloadable.
@@ -979,14 +981,15 @@ impl Demuxed {
     /// Opens the song `loader` fetches at `from_ms`: on a thread of its own unless all of it is here;
     /// `engine` is woken when it is open and whenever it waited for bytes. `estimated`: the server's
     /// length is a transcode's estimate, hidden from the reader while the song arrives ([`Unsized`]).
-    pub fn load(loader: Arc<Loader>, engine: Thread, hint: Option<&str>, from_ms: i64, duration_ms: Option<i64>, estimated: bool, encoding: Encoding) -> Demuxed {
-        Demuxed::start(loader, engine, hint, from_ms, duration_ms, estimated, encoding, Mode::Play)
+    #[allow(clippy::too_many_arguments)]
+    pub fn load(loader: Arc<Loader>, engine: Thread, hint: Option<&str>, from_ms: i64, duration_ms: Option<i64>, estimated: bool, encoding: Encoding, aac: Option<PlatformAac>) -> Demuxed {
+        Demuxed::start(loader, engine, hint, from_ms, duration_ms, estimated, encoding, Mode::Play, aac)
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn start(loader: Arc<Loader>, engine: Thread, hint: Option<&str>, from_ms: i64, duration_ms: Option<i64>, estimated: bool, encoding: Encoding, mode: Mode) -> Demuxed {
+    fn start(loader: Arc<Loader>, engine: Thread, hint: Option<&str>, from_ms: i64, duration_ms: Option<i64>, estimated: bool, encoding: Encoding, mode: Mode, aac: Option<PlatformAac>) -> Demuxed {
         if loader.complete() {
-            let opened = Stream::open(Box::new(loader.reader()), Spec::new(hint, from_ms, duration_ms, encoding, mode));
+            let opened = Stream::open(Box::new(loader.reader()), Spec { platform_aac: aac, ..Spec::new(hint, from_ms, duration_ms, encoding, mode) });
             if !opened.as_ref().is_ok_and(|s| s.cut_short) || !loader.refetch() {
                 let state = match opened {
                     Ok(s) => State::Open(Box::new(s)),
@@ -1001,7 +1004,7 @@ impl Demuxed {
             // An MP4's gapless boxes may be at its end: wait for the whole song (one burst, mostly)
             // rather than fetching the end separately.
             let whole = hint.as_deref().is_some_and(mp4_like) && l.wait_whole();
-            let spec = Spec { whole, sized: !estimated || whole, ..Spec::new(hint.as_deref(), from_ms, duration_ms, encoding, mode) };
+            let spec = Spec { whole, sized: !estimated || whole, platform_aac: aac, ..Spec::new(hint.as_deref(), from_ms, duration_ms, encoding, mode) };
             let mut seen = l.shortened();
             let reader = || Box::new(l.reader_until(o.abandoned.clone()));
             let mut opened = Stream::open(reader(), spec);
@@ -1171,13 +1174,13 @@ mod tests {
     fn opened_early_reads_as_file() {
         let gate = Arc::new(Gated::default());
         let loader = Loader::start(gate.clone(), "tone".into(), [1_000, 4_000, 0, 0, 1 << 30], None, None);
-        let arriving = Demuxed::load(loader.clone(), std::thread::current(), Some("mp3"), 0, None, false, Encoding::Pcm16);
+        let arriving = Demuxed::load(loader.clone(), std::thread::current(), Some("mp3"), 0, None, false, Encoding::Pcm16, None);
         let mut packets = Demuxed::load_packets(loader.clone(), std::thread::current(), Some("mp3"), 0, None, false);
         // The bytes come once both openings wait for them.
         loader.wait_blocked(2);
         *gate.0.lock() = true;
         gate.1.notify_all();
-        let file = Demuxed::open(Box::new(io::Cursor::new(MP3)), Some("mp3"), 0, None, Encoding::Pcm16).unwrap();
+        let file = Demuxed::open(Box::new(io::Cursor::new(MP3)), Some("mp3"), 0, None, Encoding::Pcm16, None).unwrap();
         assert!(decoded(arriving) == decoded(file), "the same samples, its encoder delay and padding cut");
         opened(&mut packets);
         assert!(packets.coded().is_some_and(|c| c.bitrate > 0), "its bitrate sizes an offload track: {:?}", packets.coded());

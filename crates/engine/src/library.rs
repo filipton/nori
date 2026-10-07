@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::Thread;
 
+use nori_player::decode::PlatformAac;
 use nori_player::pcm::Encoding;
 use nori_player::pipeline::Songs;
 use nori_player::transitions::WindowSong;
@@ -73,6 +74,7 @@ pub struct Sources<L: Library> {
     pub library: L,
     /// Decoded to float for high quality output, else 16-bit.
     pub encoding: Encoding,
+    platform_aac: Option<PlatformAac>,
     load: [i64; 5],
     waits: Waits,
     engine: Thread,
@@ -83,8 +85,8 @@ pub struct Sources<L: Library> {
 impl<L: Library> Sources<L> {
     /// `load` from `nori_player::transport::load_control`; `engine` is woken when awaited bytes arrive;
     /// the loaders' requests are `fetching`'s.
-    pub fn new(library: L, load: [i64; 5], waits: Waits, engine: Thread, fetching: Arc<Fetching>) -> Sources<L> {
-        Sources { library, encoding: Encoding::Pcm16, load, waits, engine, loaders: Vec::new(), fetching }
+    pub fn new(library: L, load: [i64; 5], platform_aac: Option<PlatformAac>, waits: Waits, engine: Thread, fetching: Arc<Fetching>) -> Sources<L> {
+        Sources { library, encoding: Encoding::Pcm16, platform_aac, load, waits, engine, loaders: Vec::new(), fetching }
     }
 
     /// The loader of `id`, started if needed (writing `keep`'s cache entry, fed to `taker`), holding at
@@ -134,18 +136,18 @@ impl<L: Library> Sources<L> {
     /// Song `id` from `from_ms`, decoded, or as packets (`Some(ahead)`, see [`Sources::open_packets`]).
     fn open_as(&mut self, id: &str, from_ms: i64, packets: Option<bool>) -> Result<Demuxed, String> {
         let at = self.library.locate(id)?;
-        let (encoding, engine) = (self.encoding, self.engine.clone());
+        let (encoding, aac, engine) = (self.encoding, self.platform_aac, self.engine.clone());
         let file = |paths: &[PathBuf]| {
             let file = Box::new(Pieces::open(paths).map_err(|e| format!("{paths:?}: {e}"))?);
             let hint = at.hint.clone().or_else(|| paths.first()?.extension().map(|e| e.to_string_lossy().into_owned()));
             match packets {
                 Some(_) => Demuxed::open_packets(file, hint.as_deref(), from_ms, at.duration_ms),
-                None => Demuxed::open(file, hint.as_deref(), from_ms, at.duration_ms, encoding),
+                None => Demuxed::open(file, hint.as_deref(), from_ms, at.duration_ms, encoding, aac),
             }
         };
         let load = |loader: Arc<Loader>, from_ms: i64, duration_ms: Option<i64>, estimated: bool| match packets {
             Some(_) => Demuxed::load_packets(loader, engine.clone(), at.hint.as_deref(), from_ms, duration_ms, estimated),
-            None => Demuxed::load(loader, engine.clone(), at.hint.as_deref(), from_ms, duration_ms, estimated, encoding),
+            None => Demuxed::load(loader, engine.clone(), at.hint.as_deref(), from_ms, duration_ms, estimated, encoding, aac),
         };
         // Opened to play: the whole cap, whatever its budget was.
         let budget = packets.filter(|&ahead| ahead).map(|_| self.left_for(id));

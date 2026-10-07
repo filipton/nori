@@ -20,10 +20,6 @@ name = "core"
 path = "tests/core.rs"
 
 [[test]]
-name = "mp4"
-path = "tests/mp4.rs"
-
-[[test]]
 name = "one_fetch"
 path = "tests/one_fetch.rs"
 

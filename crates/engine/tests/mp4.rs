@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use nori_engine::demux::Demuxed;
-use nori_player::decode::{lend_platform_aac, Codec, Decoder, Fault, PlatformDecoder};
+use nori_player::decode::{Codec, Decoder, Fault, PlatformAac, PlatformDecoder};
 use nori_player::pcm::Encoding;
 use nori_player::pipeline::Reading;
 
@@ -33,10 +33,10 @@ fn made(dir: &Path) -> (PathBuf, Vec<i16>) {
     (m4a, bytes.as_chunks::<2>().0.iter().map(|&b| i16::from_le_bytes(b)).collect())
 }
 
-fn decode(path: &Path, from_ms: i64) -> Vec<i16> {
+fn decode(path: &Path, from_ms: i64, aac: Option<PlatformAac>) -> Vec<i16> {
     let file = std::fs::File::open(path).unwrap();
     let hint = path.extension().unwrap().to_str().unwrap();
-    let mut d = Demuxed::open(Box::new(file), Some(hint), from_ms, None, Encoding::Pcm16).unwrap();
+    let mut d = Demuxed::open(Box::new(file), Some(hint), from_ms, None, Encoding::Pcm16, aac).unwrap();
     assert!(d.ready());
     let mut out = Vec::new();
     while d.fill() {
@@ -57,7 +57,7 @@ fn mp4_aac_keeps_exact_length() {
     // the song's own length of it is the reference.
     assert!(reference.len() >= FRAMES * 2, "ffmpeg decoded the whole song: {}", reference.len());
     let reference = &reference[..FRAMES * 2];
-    let ours = decode(&m4a, 0);
+    let ours = decode(&m4a, 0, None);
     // ffmpeg 8 writes the edit list in the movie's millisecond timescale, so the file itself says the song
     // to within a millisecond. Priming or padding left would be a whole AAC frame (1024) or more.
     let frames = ours.len() / 2;
@@ -66,7 +66,7 @@ fn mp4_aac_keeps_exact_length() {
     let worst = ours.iter().zip(reference).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap();
     assert!(worst <= 4, "lined up with ffmpeg's own decode: {worst}");
     // A seek lands on the same samples as playing from the start.
-    let from = decode(&m4a, 1_000);
+    let from = decode(&m4a, 1_000, None);
     assert_eq!(from.len(), ours.len() - RATE * 2, "a second in, a second shorter");
     let worst = from.iter().zip(&ours[RATE * 2..]).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap();
     assert!(worst <= 4, "a seek into an MP4 lands where the song's time says: {worst}");
@@ -107,13 +107,13 @@ fn lagging_he_aac_ends_whole() {
         return;
     }
     // AAC at 22.05 kHz is taken for HE-AAC with implicit signalling: the platform decodes it.
-    lend_platform_aac(|s| Some(Box::new(Lagging { core: Decoder::new(Codec::Aac, s.rate, s.channels, s.config, false).ok()?, held: Vec::new(), shape: (s.channels, s.rate) })));
+    let lagging: PlatformAac = |s| Some(Box::new(Lagging { core: Decoder::new(Codec::Aac, s.rate, s.channels, s.config, false).ok()?, held: Vec::new(), shape: (s.channels, s.rate) }));
     let dir = nori_testdir::TempDir::new("heaac");
     let (aac, raw) = (dir.join("tone.aac"), dir.join("tone.raw"));
     run(&["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=22050:duration=3", "-ac", "2", "-c:a", "aac", "-b:a", "64k", "-f", "adts", aac.to_str().unwrap()]);
     run(&["-i", aac.to_str().unwrap(), "-f", "s16le", "-acodec", "pcm_s16le", raw.to_str().unwrap()]);
     let reference: Vec<i16> = std::fs::read(&raw).unwrap().as_chunks::<2>().0.iter().map(|&b| i16::from_le_bytes(b)).collect();
-    let ours = decode(&aac, 0);
+    let ours = decode(&aac, 0, Some(lagging));
     assert_eq!(ours.len(), reference.len(), "every packet heard, the last ones too");
     let worst = ours.iter().zip(&reference).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap();
     assert!(worst <= 4, "the same samples: {worst}");

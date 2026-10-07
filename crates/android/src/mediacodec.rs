@@ -1,12 +1,14 @@
-//! HE-AAC (SBR, PS) through the NDK's MediaCodec, registered with `nori_player::decode` (symphonia only
-//! decodes the AAC-LC core). Driven synchronously on the decoding thread; no allocation per packet.
+//! HE-AAC (SBR, PS) through the NDK's MediaCodec, lent to the engine (symphonia only decodes the
+//! AAC-LC core). Driven synchronously on the decoding thread; no allocation per packet.
 //! Configured as the demuxer states the stream; the decoder detects SBR/PS itself and reports the real
 //! rate and channels in its output format.
 
-/// Registers the platform HE-AAC decoder with `nori_player::decode`.
-pub(crate) fn lend() {
+/// The platform's HE-AAC decoder, for the engine's config.
+pub(crate) fn platform_aac() -> Option<nori_player::decode::PlatformAac> {
     #[cfg(target_os = "android")]
-    nori_player::decode::lend_platform_aac(ndk::open);
+    return Some(ndk::open);
+    #[cfg(not(target_os = "android"))]
+    None
 }
 
 /// AAC-LC AudioSpecificConfig (`csd-0`) for `rate` and `channels`; None for a non-AAC rate.

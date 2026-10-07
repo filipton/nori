@@ -2,7 +2,7 @@
 //! opus-rs for Opus); no allocation per packet after the first.
 //!
 //! HE-AAC's SBR/PS is not decoded here (symphonia only decodes the core): a platform may lend its
-//! decoder ([`lend_platform_aac`]), used by [`Decoder::whole_aac`] for streams [`he_aac`] identifies.
+//! decoder ([`PlatformAac`]), used by [`Decoder::whole_aac`] for streams [`he_aac`] identifies.
 
 use symphonia::core::audio::{Channels, Position};
 use symphonia::core::codecs::audio::{well_known, AudioCodecParameters, AudioDecoder as Inner, AudioDecoderOptions};
@@ -133,14 +133,6 @@ pub struct AacSetup<'a> {
 
 /// Makes a platform decoder for an HE-AAC stream, `None` if it cannot.
 pub type PlatformAac = fn(&AacSetup) -> Option<Box<dyn PlatformDecoder>>;
-
-/// Global because the platform registers it once at load time, with no handle reaching the decoders.
-static PLATFORM_AAC: std::sync::OnceLock<PlatformAac> = std::sync::OnceLock::new();
-
-/// Registers the platform's HE-AAC decoder (first call wins).
-pub fn lend_platform_aac(make: PlatformAac) {
-    let _ = PLATFORM_AAC.set(make);
-}
 
 /// Whether an AAC stream is HE-AAC: object type 5 (SBR) or 29 (PS), an explicit SBR extension in the
 /// config, or AAC-LC at 24 kHz or less (implicit signalling, as radio AAC+ does).
@@ -296,9 +288,9 @@ impl Decoder {
         symphonia::default::get_codecs().make_audio_decoder(&params, &opts).map_err(|e| e.to_string())
     }
 
-    /// An AAC decoder: the platform's for HE-AAC when one is lent, else symphonia (core only for HE-AAC).
-    pub fn whole_aac(rate: u32, channels: usize, config: Option<&[u8]>) -> Result<Decoder, String> {
-        let platform = PLATFORM_AAC.get().filter(|_| he_aac(config, rate)).and_then(|make| make(&AacSetup { rate, channels, config }));
+    /// An AAC decoder: `platform`'s for HE-AAC when there is one, else symphonia (core only for HE-AAC).
+    pub fn whole_aac(platform: Option<PlatformAac>, rate: u32, channels: usize, config: Option<&[u8]>) -> Result<Decoder, String> {
+        let platform = platform.filter(|_| he_aac(config, rate)).and_then(|make| make(&AacSetup { rate, channels, config }));
         match platform {
             Some(dec) => Ok(Decoder {
                 inner: Engine::Platform(dec),
@@ -662,14 +654,14 @@ mod tests {
         assert!(!he_aac(Some(&[0x0a, 0x10]), 22_050), "AAC Main, whatever its rate");
 
         // He aac uses platform decoder.
-        lend_platform_aac(|_| Some(Box::new(Echo)));
-        let mut d = Decoder::whole_aac(22_050, 2, None).unwrap();
+        let echo: PlatformAac = |_| Some(Box::new(Echo));
+        let mut d = Decoder::whole_aac(Some(echo), 22_050, 2, None).unwrap();
         assert!(d.on_platform(), "an ADTS stream at a core rate");
         let l = d.decode_lent(&[7, 1, 2]).unwrap();
         assert_eq!((l.samples.len(), l.channels, l.rate), (4096, 2, 44_100));
         assert!(l.samples.iter().all(|&s| s == 7.0));
         assert_eq!((d.rate(), d.channels()), (44_100, 2), "the platform's shape is the stream's");
-        assert!(!Decoder::whole_aac(44_100, 2, Some(&[0x12, 0x10])).unwrap().on_platform(), "AAC-LC is decoded here");
+        assert!(!Decoder::whole_aac(Some(echo), 44_100, 2, Some(&[0x12, 0x10])).unwrap().on_platform(), "AAC-LC is decoded here");
         assert!(!Decoder::new(Codec::Aac, 22_050, 2, None, false).unwrap().on_platform(), "the core alone, when asked for");
     }
 

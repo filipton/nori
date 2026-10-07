@@ -86,7 +86,6 @@ pub extern "system" fn JNI_OnLoad(vm: jni::JavaVM, _: *mut c_void) -> jint {
             nori_core::alog::info("jni: no uniffi/UniffiKt; callbacks from the core's own threads will fail");
         }
     }
-    mediacodec::lend();
     for class in CLASSES {
         register(&mut env, class);
     }

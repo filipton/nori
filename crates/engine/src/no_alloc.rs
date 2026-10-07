@@ -126,7 +126,7 @@ fn buffer_paths_allocate_nothing() {
 /// Allocations per buffer read from `file` after the first 16, in `encoding`.
 fn per_read(file: Vec<u8>, hint: &str, encoding: Encoding) -> f64 {
     use nori_player::pipeline::Reading;
-    let mut d = crate::demux::Demuxed::open(Box::new(std::io::Cursor::new(file)), Some(hint), 0, None, encoding).expect("opens");
+    let mut d = crate::demux::Demuxed::open(Box::new(std::io::Cursor::new(file)), Some(hint), 0, None, encoding, None).expect("opens");
     for _ in 0..16 {
         assert!(d.fill(), "longer than the warm-up");
     }

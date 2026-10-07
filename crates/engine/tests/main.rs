@@ -21,6 +21,8 @@ mod hung;
 mod stretch;
 #[path = "silent.rs"]
 mod silent;
+#[path = "mp4.rs"]
+mod mp4;
 #[cfg(feature = "core")]
 #[path = "replan.rs"]
 mod replan;

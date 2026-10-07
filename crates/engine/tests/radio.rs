@@ -15,7 +15,7 @@ use std::time::Duration;
 use common::card::{Card, Pull};
 use common::{Stepper, Virtual};
 use nori_engine::{Body, ByteSource, Config, Engine, Library, Located, OutputFormat, SharedQueue, Source};
-use nori_player::decode::{lend_platform_aac, Fault, PlatformDecoder};
+use nori_player::decode::{Fault, PlatformAac, PlatformDecoder};
 use nori_player::sim;
 use nori_player::transitions::WindowSong;
 
@@ -196,16 +196,16 @@ impl Rig {
     /// Queues the stations and plays the first.
     fn new(stations: Vec<(&str, Vec<u8>)>) -> Rig {
         let stations = stations.into_iter().map(|(id, b)| (id, Arc::new(Station(Arc::new(b))) as Arc<dyn ByteSource>)).collect();
-        Rig::on(Virtual::default(), stations)
+        Rig::on(Virtual::default(), stations, Config::default())
     }
 
-    /// [`Rig::new`] with each station's own source, on `clock`.
-    fn on(clock: Virtual, stations: Vec<(&str, Arc<dyn ByteSource>)>) -> Rig {
+    /// [`Rig::new`] with each station's own source, on `clock`, the engine set up as `config` says.
+    fn on(clock: Virtual, stations: Vec<(&str, Arc<dyn ByteSource>)>, config: Config) -> Rig {
         let queue = SharedQueue::default();
         queue.0.lock().set(stations.iter().map(|s| s.0.to_string()).collect(), Some(0), false, 0);
         let card = Card::new();
         let radio = Radio(stations.into_iter().map(|(id, b)| (id.to_string(), b)).collect());
-        let engine = Engine::start_on(radio, app(), queue, Box::new(card.clone()), None, Config::default(), clock.clone(), |_| {});
+        let engine = Engine::start_on(radio, app(), queue, Box::new(card.clone()), None, config, clock.clone(), |_| {});
         engine.queue_changed();
         engine.play_at(0, 0);
         Rig { engine, time: Stepper::new(clock, card.pull.clone()), card }
@@ -400,7 +400,7 @@ fn station_without_icy_blocks_starts_soon() {
     // 96 kbps for a minute, sent in real time.
     let clock = Virtual::default();
     let station = Unmarked { bytes: Arc::new(mp3(1000, 60.0, 44_100, 2)), clock: clock.clone(), rate: 12_000 };
-    let rig = Rig::on(clock.clone(), vec![("radio:1", Arc::new(station))]);
+    let rig = Rig::on(clock.clone(), vec![("radio:1", Arc::new(station))], Config::default());
     rig.hear(20.0);
     let late_s = clock.now_ns() as f64 / 1e9 - 20.0;
     assert!(late_s < 5.0, "20 s of music took {late_s:.1} s longer");
@@ -534,11 +534,9 @@ fn he_aac_station_decoding() {
     // SBR band present.
     let whole = reference(&bytes, 44_100, 2);
     REFERENCE.set((adts_units(&bytes), whole.clone())).unwrap();
-    lend_platform_aac(|setup| {
-        // Lent for this capture only.
-        ((setup.rate, setup.channels) == (22_050, 2)).then(|| Box::new(Reference { next: None }) as Box<dyn PlatformDecoder>)
-    });
-    let (f, heard) = play(bytes.clone(), 4.0);
+    let lent: PlatformAac = |setup| ((setup.rate, setup.channels) == (22_050, 2)).then(|| Box::new(Reference { next: None }) as Box<dyn PlatformDecoder>);
+    let station = Arc::new(Station(Arc::new(bytes.clone())));
+    let (f, heard) = Rig::on(Virtual::default(), vec![("radio:1", station)], Config { platform_aac: Some(lent), ..Config::default() }).hear(4.0);
     assert!(!STRAY_UNIT.load(Ordering::Relaxed), "every unit handed over was the stream's next");
     assert_eq!((f.rate, f.channels), (44_100, 2), "opened at the rate the platform's decoder plays at");
     let ours = mono(&heard, 2);

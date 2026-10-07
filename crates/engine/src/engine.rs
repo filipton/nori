@@ -207,11 +207,13 @@ pub struct Config {
     /// Paused this long, the output and the song's bytes are let go, ms.
     pub idle_release_ms: i64,
     pub watch: Option<crate::watch::Watcher>,
+    /// The platform's HE-AAC decoder (symphonia decodes only the core).
+    pub platform_aac: Option<nori_player::decode::PlatformAac>,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { memory_mb: 256, settings: Settings::default(), idle_release_ms: IDLE_RELEASE_MS, watch: None }
+        Config { memory_mb: 256, settings: Settings::default(), idle_release_ms: IDLE_RELEASE_MS, watch: None, platform_aac: None }
     }
 }
 
@@ -336,7 +338,7 @@ impl Engine {
                         own.wake(&wake);
                     }
                 }));
-                let songs = Sources::new(library, load_control(config.memory_mb), clock.waits(), me, loading);
+                let songs = Sources::new(library, load_control(config.memory_mb), config.platform_aac, clock.waits(), me, loading);
                 let player = Player::build(songs, queue, app, RingTrack::new(output));
                 Worker::new(player, offload.map(Offload::new), rx, events, shared, config, clock).run();
             })
