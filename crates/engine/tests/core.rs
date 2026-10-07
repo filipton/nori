@@ -212,6 +212,8 @@ fn downloads_and_measuring_over_core() {
         assert!(matches!(settings.model.state(), nori_core::automix::beat_model::State::Failed(_)));
     }
     #[cfg(feature = "neural-beats")]
+    sing_says_why_and_downloads_when_asked(&settings, &net, &analyses, &measurer, &core.session.measure());
+    #[cfg(feature = "neural-beats")]
     listens_with_a_real_model(&core, &current, &dir, &measurer, &settle);
     downloads_take_up_rightly(&core, &client, &store, &analyses);
 }
@@ -430,6 +432,28 @@ fn metered_and_ahead(client: &Arc<Client>, network: &NoApi, store: &Arc<Store>, 
     assert!(opened.iter().any(|u| u.ends_with("&id=p-4&maxBitRate=192&format=opus")), "the next song fetched streams at the metered quality: {opened:?}");
     assert!(store.peek("p-5:0").is_none() && store.peek("p-5:192opus").is_none(), "one ahead on mobile data by default: the engine's own next song, none more");
     network.metered.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Sing on mobile data: the song keeps its vocals while the model waits for Wi-Fi, until the user asks for it
+/// now, which fetches it at once (here the server fails).
+#[cfg(feature = "neural-beats")]
+fn sing_says_why_and_downloads_when_asked(settings: &nori_core::settings_store::Settings, net: &NoApi, analyses: &Arc<Analyses>, measurer: &Arc<Measurer>, ahead: &[String]) {
+    use nori_core::settings_model::SingNow;
+    let first = &ahead[0];
+    assert_eq!(analyses.sing_now(first), SingNow::Off);
+    net.metered.store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut prefs = settings.current().unwrap();
+    prefs.sing = true;
+    settings.put(prefs.clone());
+    measurer.ask(ahead.to_vec());
+    measurer.wait();
+    assert_eq!(analyses.sing_now(first), SingNow::WaitingForWifi);
+    analyses.sing_download_now().unwrap().join().unwrap();
+    measurer.wait();
+    assert_eq!(analyses.sing_now(first), SingNow::Failed, "fetched over mobile data at once, and the server failed");
+    prefs.sing = false;
+    settings.put(prefs);
+    net.metered.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Serves the Beat This! checkpoint at its URL; anything else is 404.

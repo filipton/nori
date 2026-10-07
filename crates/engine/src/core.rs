@@ -1015,6 +1015,34 @@ impl Analyses {
         (self.client)()
     }
 
+    /// Where Sing stands for `song_id`: whether the player has its vocal mask, and if not, why not.
+    pub fn sing_now(&self, song_id: &str) -> nori_core::settings_model::SingNow {
+        let Some(client) = self.client() else { return nori_core::settings_model::SingNow::Off };
+        let settings = &client.session().settings;
+        let masked = self.masks.get(song_id).is_some();
+        settings.prefs(|p| nori_core::settings_model::sing_now(p, &settings.sing_model, masked))
+    }
+
+    /// The user wants the vocals model now, over mobile data if need be: it is fetched on a thread of its own,
+    /// whatever is playing, and then the measurers look again. The thread, for a test to wait on.
+    pub fn sing_download_now(self: &Arc<Self>) -> Option<std::thread::JoinHandle<()>> {
+        let client = self.client()?;
+        client.session().settings.sing_model.download_now();
+        let me = self.clone();
+        std::thread::Builder::new()
+            .name("nori-sing-model".into())
+            .spawn(move || {
+                #[cfg(feature = "neural-beats")]
+                nori_core::model_download::ensure_sing(&client);
+                drop(client);
+                let measurers = me.arrivals.lock().measurers();
+                for m in measurers {
+                    m.arrived();
+                }
+            })
+            .ok()
+    }
+
     /// The heap the loaded beat model holds (1 where the heap is not counted); 0 when none is loaded.
     pub fn model_bytes(&self) -> u64 {
         self.models.held.load(Ordering::Relaxed)

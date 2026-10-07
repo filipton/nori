@@ -202,6 +202,12 @@ impl Settings {
         state(&self.current().unwrap_or_default(), Output { dac_bit_perfect, usb }, &self.model, &self.sing_model)
     }
 
+    /// Sing's vocals model now.
+    pub fn sing_model_now(&self) -> SingModel {
+        let (got_bytes, total_bytes) = self.sing_model.progress();
+        SingModel { state: model_now(&self.sing_model), got_bytes, total_bytes }
+    }
+
     /// A change by name kept in the live settings (`Settings::edit_by_name`).
     pub fn setting_set(&self, name: String, value: String) -> Option<SettingChange> {
         self.edit_by_name(&name, &value)
@@ -235,6 +241,53 @@ pub fn status_bar_hidden(hide: crate::settings::HideStatusBar, wide: bool) -> bo
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn sing_offered() -> bool {
     beats::AVAILABLE
+}
+
+/// Sing's vocals model: how its download stands, and how many of the checkpoint's bytes have come of all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Record))]
+pub struct SingModel {
+    pub state: BeatModel,
+    pub got_bytes: u64,
+    pub total_bytes: u64,
+}
+
+/// Where Sing stands for the song playing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Enum))]
+pub enum SingNow {
+    /// Sing is off, or not in this build.
+    Off,
+    /// The song's vocals are turned down.
+    Singing,
+    /// The song is still being listened to for its vocal mask.
+    Preparing,
+    /// The vocals model waits for Wi-Fi.
+    WaitingForWifi,
+    /// The vocals model is downloading.
+    Downloading,
+    /// The vocals model could not be made.
+    Failed,
+}
+
+/// Where Sing stands for a song with or without its vocal mask (`masked`), the vocals model's file being `model`.
+pub fn sing_now(p: &StoredPrefs, model: &beat_model::ModelFile, masked: bool) -> SingNow {
+    sing_for(p.sing, model_now(model), masked)
+}
+
+fn sing_for(on: bool, model: BeatModel, masked: bool) -> SingNow {
+    if !on || model == BeatModel::Unavailable {
+        return SingNow::Off;
+    }
+    if masked {
+        return SingNow::Singing;
+    }
+    match model {
+        BeatModel::WaitingForWifi => SingNow::WaitingForWifi,
+        BeatModel::Downloading => SingNow::Downloading,
+        BeatModel::Failed { .. } => SingNow::Failed,
+        _ => SingNow::Preparing,
+    }
 }
 
 /// Whether the screen is kept on; `wide` is sideways.
@@ -391,5 +444,24 @@ mod tests {
         assert!(s.lyrics_sources.iter().any(|l| l.needs_key));
         assert_eq!(s.beat_model == BeatModel::Unavailable, !beats::AVAILABLE);
         assert_eq!(s.beat_model_mb, beat_model::SIZE_MB);
+    }
+
+    #[test]
+    fn sing_says_why_the_vocals_are_not_down() {
+        use nori_automix::beat_model::BeatFailure;
+        let failed = BeatModel::Failed { why: BeatFailure::Network };
+        for (model, masked, now) in [
+            (BeatModel::Absent, false, SingNow::Preparing),
+            (BeatModel::Ready, false, SingNow::Preparing),
+            (BeatModel::WaitingForWifi, false, SingNow::WaitingForWifi),
+            (BeatModel::Downloading, false, SingNow::Downloading),
+            (failed.clone(), false, SingNow::Failed),
+            (failed, true, SingNow::Singing),
+            (BeatModel::WaitingForWifi, true, SingNow::Singing),
+            (BeatModel::Unavailable, true, SingNow::Off),
+        ] {
+            assert_eq!(sing_for(true, model.clone(), masked), now, "{model:?}, masked {masked}");
+            assert_eq!(sing_for(false, model.clone(), masked), SingNow::Off, "off: {model:?}");
+        }
     }
 }

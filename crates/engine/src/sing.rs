@@ -91,21 +91,24 @@ fn prune(dir: &Path, cap: u64) {
     }
 }
 
-/// The vocals model for a measuring thread's life: loaded on first need, tried once per thread.
+/// The vocals model for a measuring thread's life: loaded on first need, tried once per thread and again
+/// on news of it (`ModelFile::news`: the user asked for it, or it was made).
 pub(crate) struct Unmixer {
-    tried: bool,
+    /// The model's news when it was last tried.
+    tried: Option<u64>,
     loaded: Option<Model>,
 }
 
 impl Unmixer {
     pub(crate) fn new() -> Unmixer {
-        Unmixer { tried: false, loaded: None }
+        Unmixer { tried: None, loaded: None }
     }
 
     /// The model, loading it (and downloading it first) on the first call.
     pub(crate) fn ready(&mut self, client: &nori_core::client::Client) -> Option<&Model> {
-        if !self.tried {
-            self.tried = true;
+        let news = client.session().settings.sing_model.news();
+        if self.loaded.is_none() && self.tried != Some(news) {
+            self.tried = Some(news);
             self.loaded = Model::load(client);
         }
         self.loaded.as_ref()

@@ -67,6 +67,13 @@ class Nori private constructor(private val context: Context) {
     /** AutoMix's analyses over [currentClient] (crates/android measure.rs), for the player, the measurer and the downloads. */
     val analyses: Long by lazy { dev.nori.music.playback.MeasureJni.analyses(currentClient.uniffiCloneHandle(), sessionHandle) }
 
+    /** Where Sing stands for song [id]: its vocals down, or why not yet. Off the main thread. */
+    fun singNow(id: String): dev.nori.music.ffi.settings.SingNow =
+        dev.nori.music.ffi.settings.SingNow.entries[dev.nori.music.playback.MeasureJni.singNow(analyses, id)]
+
+    /** The vocals model now, over mobile data if need be, or again after it failed. Off the main thread. */
+    fun singDownloadNow() = dev.nori.music.playback.MeasureJni.singDownloadNow(analyses)
+
     /** The core's one door to the network; built with [http]. */
     private val transport by lazy { http.transport { library.onServerChanged() }.also { coverNet.setTransport(it) } }
 

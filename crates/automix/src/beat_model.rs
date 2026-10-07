@@ -88,6 +88,13 @@ struct Kept {
     state: State,
     /// The switch as last seen, so only turning it off deletes the file.
     on: bool,
+    /// The user asked for the next download now, over mobile data if need be.
+    now: bool,
+    /// Bumped by each such ask and each time the model becomes ready, so a measurer that gave up on it
+    /// tries it again.
+    news: u64,
+    /// Checkpoint bytes fetched by the download under way.
+    got: u64,
 }
 
 /// A model's file and its download, for one app: placed by the core at open, followed by the settings'
@@ -99,7 +106,7 @@ pub struct ModelFile {
 
 impl ModelFile {
     pub fn new(model: &'static Model) -> ModelFile {
-        ModelFile { model, kept: Mutex::new(Kept { dir: None, state: State::Absent, on: false }) }
+        ModelFile { model, kept: Mutex::new(Kept { dir: None, state: State::Absent, on: false, now: false, news: 0, got: 0 }) }
     }
 
     /// The model is kept in its directory beside the database at `db_path` (nowhere for an in-memory database).
@@ -135,18 +142,64 @@ impl ModelFile {
     }
 
     pub fn set_state(&self, s: State) {
-        self.kept.lock().state = s;
+        let mut k = self.kept.lock();
+        if s == State::Ready {
+            k.news += 1;
+        }
+        k.state = s;
     }
 
     /// Claims the download: false while one runs, and after a wrong file until the switch is turned off
-    /// and on again (the same address would serve it again).
+    /// and on again or the user asks again (the same address would serve it again).
     pub fn begin_download(&self) -> bool {
         let mut k = self.kept.lock();
         if matches!(k.state, State::Downloading | State::Failed(BeatFailure::WrongFile)) {
             return false;
         }
         k.state = State::Downloading;
+        k.now = false;
+        k.got = 0;
         true
+    }
+
+    /// `got` checkpoint bytes of the download under way have come.
+    pub fn came(&self, got: u64) {
+        self.kept.lock().got = got;
+    }
+
+    /// The checkpoint bytes the download under way has fetched, and all it will.
+    pub fn progress(&self) -> (u64, u64) {
+        (self.kept.lock().got, self.model.checkpoint_bytes)
+    }
+
+    /// The user asked for the model now: the next download may use mobile data, and one that failed is
+    /// tried again.
+    pub fn download_now(&self) {
+        let mut k = self.kept.lock();
+        k.now = true;
+        k.news += 1;
+        if matches!(k.state, State::Failed(_) | State::WaitingForWifi) {
+            k.state = State::Absent;
+        }
+    }
+
+    /// Whether the model may be fetched over this network: not over a `metered` one unless `mobile` data is
+    /// allowed for it or the user asked for it now ([`ModelFile::download_now`]); else it waits for Wi-Fi, still
+    /// saying why the last download failed if one did.
+    pub fn may_fetch(&self, metered: bool, mobile: bool) -> bool {
+        let mut k = self.kept.lock();
+        if metered && !mobile && !k.now {
+            if !matches!(k.state, State::Failed(_)) {
+                k.state = State::WaitingForWifi;
+            }
+            return false;
+        }
+        true
+    }
+
+    /// Bumped by [`ModelFile::download_now`] and the model becoming ready.
+    pub fn news(&self) -> u64 {
+        self.kept.lock().news
     }
 
     /// The switch changed. Turning it off deletes the model's directory.
@@ -196,5 +249,30 @@ mod tests {
         m.switched(true);
         m.switched(false);
         assert!(m.begin_download());
+    }
+
+    #[test]
+    fn download_now_allows_one_download_over_mobile_data() {
+        let m = ModelFile::new(&UMX);
+        assert!(m.may_fetch(false, false) && m.may_fetch(true, true));
+        assert!(!m.may_fetch(true, false));
+        assert_eq!(m.state(), State::WaitingForWifi);
+        m.download_now();
+        assert_eq!((m.state(), m.news()), (State::Absent, 1));
+        assert!(m.may_fetch(true, false), "asked for now: over mobile data");
+        assert!(m.begin_download());
+        m.set_state(State::Failed(BeatFailure::WrongFile));
+        assert!(!m.may_fetch(true, false), "only the one download");
+        assert_eq!(m.state(), State::Failed(BeatFailure::WrongFile), "the failure still shows");
+        assert!(!m.begin_download());
+        m.download_now();
+        assert_eq!((m.state(), m.news()), (State::Absent, 2), "a failure is forgotten");
+        assert!(m.begin_download(), "even a wrong file is fetched again");
+        m.came(1000);
+        assert_eq!(m.progress(), (1000, UMX.checkpoint_bytes));
+        m.set_state(State::Ready);
+        assert_eq!(m.news(), 3, "ready: news for a measurer that gave up");
+        assert!(m.begin_download());
+        assert_eq!(m.progress().0, 0, "a new download starts from nothing");
     }
 }
