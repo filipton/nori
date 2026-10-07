@@ -119,6 +119,7 @@ impl Biquad {
 
     /// The first `N` filters of `fs` in series over both channels in one pass: each sample's arithmetic
     /// is [`Biquad::run2`]'s, filter after filter, but the filters' chains overlap.
+    #[cfg(not(target_arch = "aarch64"))]
     #[inline(always)]
     fn run2_chain<const N: usize>(fs: &[Biquad], st: &mut [[[f64; 2]; MAX_CHANNELS]], left: &mut [f64], right: &mut [f64]) {
         let fs: [Biquad; N] = fs[..N].try_into().expect("N filters");
@@ -138,6 +139,36 @@ impl Biquad {
         }
         for (s, st) in s.iter().zip(st.iter_mut()) {
             (st[0], st[1]) = (s[0], s[1]);
+        }
+    }
+
+    /// [`Biquad::run2_chain`] with left and right as the two lanes of one register. Separate multiplies
+    /// and adds (never fused), so the result is the scalar code's to the bit.
+    #[cfg(target_arch = "aarch64")]
+    #[inline(always)]
+    fn run2_chain<const N: usize>(fs: &[Biquad], st: &mut [[[f64; 2]; MAX_CHANNELS]], left: &mut [f64], right: &mut [f64]) {
+        use std::arch::aarch64::*;
+        // SAFETY: NEON is part of every aarch64 target; the intrinsics only do lane arithmetic.
+        unsafe {
+            let pair = |l: f64, r: f64| vcombine_f64(vdup_n_f64(l), vdup_n_f64(r));
+            let c: [[float64x2_t; 5]; N] = std::array::from_fn(|k| [fs[k].b0, fs[k].b1, fs[k].b2, fs[k].a1, fs[k].a2].map(|v| vdupq_n_f64(v)));
+            let mut s0: [float64x2_t; N] = std::array::from_fn(|k| pair(st[k][0][0], st[k][1][0]));
+            let mut s1: [float64x2_t; N] = std::array::from_fn(|k| pair(st[k][0][1], st[k][1][1]));
+            for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+                let mut x = pair(*l, *r);
+                for k in 0..N {
+                    let [b0, b1, b2, a1, a2] = c[k];
+                    let y = vaddq_f64(vmulq_f64(b0, x), s0[k]);
+                    s0[k] = vaddq_f64(vsubq_f64(vmulq_f64(b1, x), vmulq_f64(a1, y)), s1[k]);
+                    s1[k] = vsubq_f64(vmulq_f64(b2, x), vmulq_f64(a2, y));
+                    x = y;
+                }
+                (*l, *r) = (vgetq_lane_f64::<0>(x), vgetq_lane_f64::<1>(x));
+            }
+            for k in 0..N {
+                st[k][0] = [vgetq_lane_f64::<0>(s0[k]), vgetq_lane_f64::<0>(s1[k])];
+                st[k][1] = [vgetq_lane_f64::<1>(s0[k]), vgetq_lane_f64::<1>(s1[k])];
+            }
         }
     }
 
