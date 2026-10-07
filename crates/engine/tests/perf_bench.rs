@@ -1,17 +1,21 @@
 // Host perf report, included into tests/engine.rs for its rig: per minute of music, the engine's wakes,
-// the process's CPU time, allocations, and the heap's peak. Not a check; compare revisions with
+// CPU time and allocations, and the heap's peak (the test thread's own work left out). Not a check; compare revisions with
 // tools/perf-host.sh. `NORI_PERF=name,name` runs only those cases, `NORI_PERF_MINUTES` plays each that
 // long (for a profiler). The queue repeats.
 //
 //   cargo test --release -p nori-engine --test engine perf_report -- --ignored --nocapture --test-threads=1
 
-/// Process CPU time (user and system), ms.
+/// CPU time (user and system) of every thread but this one, ms: the test thread moves the clock and
+/// records what the card heard, which is not the engine's work.
 pub(crate) fn cpu_ms() -> f64 {
     let mut u: libc::rusage = unsafe { std::mem::zeroed() };
     // SAFETY: getrusage fills the struct it is handed.
     unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) };
     let ms = |t: libc::timeval| t.tv_sec as f64 * 1000.0 + t.tv_usec as f64 / 1000.0;
-    ms(u.ru_utime) + ms(u.ru_stime)
+    let mut own: libc::timespec = unsafe { std::mem::zeroed() };
+    // SAFETY: clock_gettime fills the struct it is handed.
+    unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut own) };
+    ms(u.ru_utime) + ms(u.ru_stime) - (own.tv_sec as f64 * 1000.0 + own.tv_nsec as f64 / 1e6)
 }
 
 /// Whether `NORI_PERF` asks for case `name`.
@@ -22,6 +26,7 @@ fn perf_wanted(name: &str) -> bool {
 /// Prints one "perf:" line for `rig`, playing, measured over `minutes`; `during` runs every 15 s of it.
 fn perf_measure(name: &str, rig: &Rig, minutes: u64, mut during: impl FnMut(&Rig, u64)) {
     let minutes = std::env::var("NORI_PERF_MINUTES").ok().and_then(|m| m.parse().ok()).unwrap_or(minutes);
+    rig.heard.lock().reserve((minutes + 1) as usize * 60 * RATE as usize * 2);
     rig.engine.set_repeat(nori_player::playlist::REPEAT_ALL);
     rig.engine.play_at(0, 0);
     assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2 * 2), "{name}: the music started");
@@ -72,7 +77,7 @@ fn perf_report() {
     perf_case("speed", &one, perf_app(prefs_off()), Settings { speed: 1.2, pitch: 0.95, ..Settings::default() }, 4);
     perf_case("silence", &one, perf_app(prefs_off()), Settings { skip_silence: true, ..Settings::default() }, 4);
     let mut gained = perf_app(prefs_off());
-    gained.gains.insert("a".into(), 0.5);
+    gained.gains.insert("a".into(), 0.7);
     perf_case("gain", &one, gained, Settings::default(), 4);
     if perf_wanted("change") {
         // The equalizer moved every 15 s: each change makes the kept input again.
@@ -86,9 +91,11 @@ fn perf_report() {
     let (a, b, c) = (music(90.0, 92), music(90.0, 93), music(90.0, 94));
     let three = [("a", &a[..]), ("b", &b[..]), ("c", &c[..])];
     perf_case("crossfade", &three, perf_app(crossfade(6)), Settings { crossfade_s: 6, ..Settings::default() }, 4);
-    // Beat-matched mixes 4 % apart (stretched), and the last song analysed as it plays.
+    // Beat-matched mixes 4 % apart (stretched), and the last song analysed as it plays (the app's
+    // measurer, not the engine, would analyse it ahead).
     let mut mixing = perf_app(TransitionPrefs { auto_mix: true, auto_mix_max_s: 12, echo_out: false, ..prefs_off() });
     mixing.measure_playing = true;
+    mixing.measure_ahead = false;
     mixing.analyses.insert("a".into(), measured("a", 120.0, 90_000));
     mixing.analyses.insert("b".into(), measured("b", 125.0, 90_000));
     perf_case("automix", &three, mixing, Settings { auto_mix: true, ..Settings::default() }, 4);

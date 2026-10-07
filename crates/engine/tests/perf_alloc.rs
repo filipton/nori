@@ -17,9 +17,22 @@ thread_local! {
     static EXCLUDED: Cell<bool> = const { Cell::new(false) };
 }
 
+/// Whether this thread's allocations count (it is not excluded).
+fn counted() -> bool {
+    !EXCLUDED.try_with(Cell::get).unwrap_or(true)
+}
+
+/// Counts an allocation of `bytes`, unless this thread is excluded.
+fn count(bytes: usize) {
+    if counted() {
+        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        BYTES.fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+}
+
 /// Counts `delta` bytes held, unless this thread is excluded.
 fn hold(delta: i64) {
-    if EXCLUDED.try_with(Cell::get).unwrap_or(true) {
+    if !counted() {
         return;
     }
     let live = LIVE.fetch_add(delta, Ordering::Relaxed) + delta;
@@ -29,22 +42,19 @@ fn hold(delta: i64) {
 // SAFETY: every call is the system allocator's own; only counts are kept beside it.
 unsafe impl GlobalAlloc for Counted {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        BYTES.fetch_add(l.size() as u64, Ordering::Relaxed);
+        count(l.size());
         hold(l.size() as i64);
         unsafe { System.alloc(l) }
     }
 
     unsafe fn alloc_zeroed(&self, l: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        BYTES.fetch_add(l.size() as u64, Ordering::Relaxed);
+        count(l.size());
         hold(l.size() as i64);
         unsafe { System.alloc_zeroed(l) }
     }
 
     unsafe fn realloc(&self, p: *mut u8, l: Layout, size: usize) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        BYTES.fetch_add(size as u64, Ordering::Relaxed);
+        count(size);
         hold(size as i64 - l.size() as i64);
         unsafe { System.realloc(p, l, size) }
     }
@@ -58,12 +68,12 @@ unsafe impl GlobalAlloc for Counted {
 #[global_allocator]
 static COUNTED: Counted = Counted;
 
-/// Allocations so far, and their bytes.
+/// Allocations so far, and their bytes, by threads not excluded.
 pub fn counts() -> (u64, u64) {
     (ALLOCATIONS.load(Ordering::Relaxed), BYTES.load(Ordering::Relaxed))
 }
 
-/// This thread's allocations stay out of [`peak`] (a test's own buffers).
+/// This thread's allocations stay out of [`counts`] and [`peak`] (a test's own buffers).
 pub fn exclude_this_thread() {
     EXCLUDED.with(|e| e.set(true));
 }

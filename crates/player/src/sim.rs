@@ -672,6 +672,8 @@ pub struct App {
     none: Option<(String, Option<Skip>)>,
     /// Analyse the playing song (slow in debug builds).
     pub measure_playing: bool,
+    /// Analyse the songs ahead whole, on the player's thread (where the app's measurer would).
+    pub measure_ahead: bool,
     /// Per-song ReplayGain; 1 if absent.
     pub gains: std::collections::HashMap<String, f32>,
     /// Output devices seen, and per-device sounds.
@@ -715,6 +717,7 @@ impl App {
             now_ms: 0,
             none: None,
             measure_playing: false,
+            measure_ahead: true,
             gains: Default::default(),
             outputs: Vec::new(),
             device_sounds: Default::default(),
@@ -814,6 +817,9 @@ impl pipeline::App for App {
 
     /// Analyses the unmeasured `ids` whole.
     fn measure_ahead<S: Songs>(&mut self, songs: &mut S, ids: &[String]) {
+        if !self.measure_ahead {
+            return;
+        }
         let missing: Vec<&String> = ids.iter().filter(|id| !self.analyses.contains_key(*id)).collect();
         self.log.push(format!("measuring ahead: {} of {} unmeasured, 0 not on the device yet", missing.len(), ids.len()));
         for id in missing {

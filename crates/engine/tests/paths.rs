@@ -3096,6 +3096,7 @@ fn offload_perf_report() {
         eprintln!("ffmpeg is not installed: nothing to offload");
         return;
     }
+    crate::perf_alloc::exclude_this_thread();
     let d = dir();
     let (a, b) = (mp3_320(&d, "a", 120, 440), mp3_320(&d, "b", 120, 660));
     let server = Arc::new(Server::default());
