@@ -362,12 +362,13 @@ impl Client {
         Ok(Stored { page, digest, fresh })
     }
 
-    /// The cached page, stale or not, else the server's, kept.
+    /// The cached page while fresh, else the server's, kept; the stale one when the server can't be reached.
     pub(crate) async fn cached_or_fetched(&self, read: Read) -> NetResult<Option<Page>> {
-        match self.read_stored(read.clone())?.page {
-            Some(p) => Ok(Some(p)),
-            None => self.read_fetch(read, None).await,
+        let stored = self.read_stored(read.clone())?;
+        if stored.fresh {
+            return Ok(stored.page);
         }
+        Ok(self.read_refresh(read, stored.digest).await?.or(stored.page))
     }
 
     /// Asks the server; returns the page only if it differs from `stored_digest`, and re-caches it either

@@ -147,6 +147,25 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn artist_albums_cached_while_fresh() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        let album = |id: &str| Album { id: id.into(), ..Default::default() };
+        let page = |songs: &str| format!(r#"{{"subsonic-response":{{"status":"ok","album":{{"id":"a","name":"a","song":[{songs}]}}}}}}"#);
+        let one = r#"{"id":"1","title":"1","isDir":false}"#;
+        let two = r#"{"id":"2","title":"2","isDir":false}"#;
+        let play = || block(c.artist_songs(vec![album("a")])).len();
+        fake.answer(&page(one));
+        assert_eq!((play(), play(), fake.asked().len()), (1, 1, 1));
+        // Aged: read again, so a track added since plays; offline, the aged page plays.
+        c.core.db.lock().execute("UPDATE cache SET ts = 0", []).unwrap();
+        fake.answer(&page(&format!("{one},{two}")));
+        assert_eq!(play(), 2);
+        c.core.db.lock().execute("UPDATE cache SET ts = 0", []).unwrap();
+        fake.fail(crate::transport::FailureKind::Connect);
+        assert_eq!(play(), 2);
+    }
+
+    #[test]
     fn providers_skipped() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
         let album = |id: &str, is_external| Album { id: id.into(), is_external, ..Default::default() };
@@ -154,9 +173,6 @@ pub(crate) mod tests {
         let got = block(c.artist_songs(vec![album("a1", false), album("ext-2", true), album("pl-deezer-3", false)]));
         assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["1"]);
         assert_eq!(fake.asked().len(), 1);
-        // Played again: the albums read before come from the cache.
-        let again = block(c.artist_songs(vec![album("a1", false)]));
-        assert_eq!((again.len(), fake.asked().len()), (1, 1));
         fake.answer(&songs_json("randomSongs", &["x", "ext-deezer-song-1"]));
         assert_eq!(block(c.shuffle_all()).unwrap().iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["x"]);
 
