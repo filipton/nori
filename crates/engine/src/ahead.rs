@@ -171,10 +171,10 @@ impl Ahead {
 
     /// The first song asked for that is not kept, busy, taken or failed. None ends the thread.
     fn next(&self) -> Option<Job> {
-        let (candidates, keeping, bytes, takers) = {
+        let (candidates, keeping, bytes, takers, asked) = {
             let plan = self.plan.lock();
             let c: Vec<AheadSong> = plan.songs.iter().filter(|s| !plan.failed.contains(&s.key) && !plan.taken.contains(&s.key)).cloned().collect();
-            (c, plan.keeping.clone(), plan.bytes.clone(), plan.takers.clone())
+            (c, plan.keeping.clone(), plan.bytes.clone(), plan.takers.clone(), self.asked.load(Ordering::Acquire))
         };
         // Without the lock: on Android the keeping calls into the platform.
         let found = keeping.as_ref().and_then(|k| candidates.into_iter().find(|s| !k.kept(&s.key) && !k.busy(&s.key)));
@@ -187,6 +187,11 @@ impl Ahead {
             }
             // The list changed meanwhile.
             (Some(_), Some(_), Some(_)) => {
+                drop(plan);
+                self.next()
+            }
+            // Nothing left of the old list, but a new one came meanwhile.
+            _ if self.asked.load(Ordering::Acquire) != asked => {
                 drop(plan);
                 self.next()
             }
@@ -477,6 +482,68 @@ mod tests {
         s.fetch_ahead(net.clone(), songs(&["b"]), None);
         s.wait_ahead();
         assert_eq!(net.asked.lock().len(), 2);
+    }
+
+    /// Keeps whole songs in memory; its first `kept` question waits until released (the platform
+    /// answering slowly), bumping `asking`.
+    #[derive(Default)]
+    struct Slow {
+        kept: Arc<Mutex<HashSet<String>>>,
+        gate: Mutex<Option<Receiver<()>>>,
+        asking: Signal,
+    }
+
+    struct InMemory(Arc<Mutex<HashSet<String>>>, String, u64);
+
+    impl Keeping for Slow {
+        fn kept(&self, key: &str) -> bool {
+            if let Some(go) = self.gate.lock().take() {
+                self.asking.bump();
+                let _ = go.recv();
+            }
+            self.kept.lock().contains(key)
+        }
+
+        fn busy(&self, _: &str) -> bool {
+            false
+        }
+
+        fn entry(&self, key: &str) -> Option<Box<dyn Entry>> {
+            Some(Box::new(InMemory(self.kept.clone(), key.to_string(), 0)))
+        }
+    }
+
+    impl Entry for InMemory {
+        fn write(&mut self, from: u64, bytes: &[u8]) -> bool {
+            self.2 = from + bytes.len() as u64;
+            true
+        }
+
+        fn written(&self) -> u64 {
+            self.2
+        }
+
+        fn finish(self: Box<Self>, len: u64) -> bool {
+            self.0.lock().insert(self.1.clone());
+            self.2 == len
+        }
+    }
+
+    #[test]
+    fn list_asked_while_checking_the_last_is_fetched() {
+        let slow = Arc::new(Slow::default());
+        slow.kept.lock().insert("a:0".into());
+        let (go, wait) = channel();
+        *slow.gate.lock() = Some(wait);
+        let ahead = Ahead::new();
+        let net: Arc<dyn ByteSource> = Arc::new(Net::default());
+        ahead.ask(slow.clone(), net.clone(), songs(&["a"]), None);
+        // While the thread asks whether a (kept) is, a new list comes.
+        slow.asking.take();
+        ahead.ask(slow.clone(), net, songs(&["b"]), None);
+        go.send(()).unwrap();
+        ahead.wait();
+        assert!(slow.kept.lock().contains("b:0"), "b was fetched");
     }
 
     /// Promises `LEN` bytes, sends `REAL` then errors (as OkHttp on a short body), and answers 416 past it.
