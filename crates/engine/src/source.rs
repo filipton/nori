@@ -9,6 +9,7 @@
 //! ICY `StreamTitle`s are taken out of the bytes and said once the reader passes them
 //! ([`Loader::announced`]).
 
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -518,9 +519,10 @@ impl Window {
 
 #[derive(Default)]
 struct State {
-    /// Bytes `base..base + data.len()` of the resource.
+    /// Bytes `base..base + data.len()` of the resource; what the reader left behind goes from the front
+    /// without moving the rest.
     base: u64,
-    data: Vec<u8>,
+    data: VecDeque<u8>,
     /// The whole song's cache entry, read instead of `data` (then empty).
     disk: Option<Arc<File>>,
     len: Option<u64>,
@@ -546,7 +548,7 @@ struct State {
     /// A live stream.
     live: bool,
     /// ICY titles not yet passed by the reader (with their byte), and the last one passed.
-    titles: std::collections::VecDeque<(u64, String)>,
+    titles: VecDeque<(u64, String)>,
     announced: Option<String>,
     /// Times the length turned out shorter than promised ([`Loader::shortened`]).
     shortened: u32,
@@ -596,11 +598,12 @@ impl State {
         self.end().saturating_sub(self.reader_at)
     }
 
-    /// Room for the burst and `n` more bytes: what is kept behind the reader and `high` ahead of it, up
-    /// to the song's end. Reserved exactly: doubling copied the bytes and held up to twice them.
+    /// Room for the burst and `n` more bytes: what is kept behind the reader (at least [`FAR`], what a
+    /// song over its cap keeps) and `high` ahead of it, up to the song's end. Reserved exactly: doubling
+    /// copied the bytes and held up to twice them.
     fn reserve_burst(&mut self, high: u64, n: usize) {
         if let Some(len) = self.len {
-            let burst = self.reader_at.saturating_sub(self.base) + high + CHUNK as u64;
+            let burst = self.reader_at.saturating_sub(self.base).max(FAR) + high + CHUNK as u64;
             let want = (len.saturating_sub(self.base).min(burst) as usize).max(self.data.len() + n);
             self.data.reserve_exact(want - self.data.len());
         }
@@ -882,7 +885,7 @@ impl Loaded {
                         t.take(&bytes);
                     }
                     let mut s = self.state.lock();
-                    s.data = bytes;
+                    s.data = bytes.into();
                     go_on = true;
                     self.wake(&mut s);
                 }
@@ -914,7 +917,7 @@ impl Loaded {
                             // Whole in the entry: read from there and drop the memory copy.
                             let whole = s.base == 0 && s.data.len() as u64 == len;
                             if let Some(file) = k.finish_open(len).filter(|_| whole) {
-                                s.data = Vec::new();
+                                s.data = VecDeque::new();
                                 s.disk = Some(Arc::new(file));
                             }
                         }
@@ -1018,7 +1021,7 @@ impl Loaded {
                             let high = s.window(load, duration_ms).high;
                             s.reserve_burst(high, n);
                         }
-                        s.data.extend_from_slice(&chunk[..n]);
+                        s.data.extend(&chunk[..n]);
                         took = n;
                     }
                 }
@@ -1112,7 +1115,7 @@ impl Loaded {
             match got {
                 Ok(n) if n > 0 => {
                     failures = 0;
-                    s.data.extend_from_slice(&chunk[..n]);
+                    s.data.extend(&chunk[..n]);
                 }
                 // Closed or broken: reconnect.
                 _ => {
@@ -1184,7 +1187,11 @@ impl Read for LoadedReader {
             if self.pos >= s.base && self.pos < end {
                 let from = (self.pos - s.base) as usize;
                 let n = buf.len().min(s.data.len() - from);
-                buf[..n].copy_from_slice(&s.data[from..from + n]);
+                let (front, back) = s.data.as_slices();
+                let a = front.len().saturating_sub(from).min(n);
+                buf[..a].copy_from_slice(&front[from.min(front.len())..][..a]);
+                let b = (from + a).saturating_sub(front.len());
+                buf[a..n].copy_from_slice(&back[b..b + n - a]);
                 self.pos += n as u64;
                 s.reader_at = self.pos;
                 // Within the low mark: the next burst is due.
@@ -1468,6 +1475,18 @@ mod tests {
         let all = read(&mut r, 600_000);
         assert!(all.iter().enumerate().all(|(i, &b)| b == i as u8), "every byte, in order");
         assert_eq!(*s.opens.lock(), vec![0, ahead], "one more request, from where the budget stopped it");
+    }
+
+    #[test]
+    fn song_over_its_cap_read_through() {
+        // Bursts of 400 kB within 500 kB: what the reader left behind goes as new bytes come.
+        let load = [1_000, 4_000, 0, 0, 500_000];
+        let s = server(3_000_000);
+        let l = Loader::start(s.clone(), "song".into(), load, Some(30_000), None);
+        let mut r = l.reader();
+        let all = read(&mut r, 3_000_000);
+        assert!(all.iter().enumerate().all(|(i, &b)| b == i as u8), "every byte, in order");
+        assert!(l.held() <= 500_000 + CHUNK + FAR as usize, "within its cap: {}", l.held());
     }
 
     #[test]
