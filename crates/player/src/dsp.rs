@@ -400,29 +400,48 @@ impl Limiter {
         }
     }
 
+    /// The gain follower after a frame peaking at `peak`; the state is passed in so a block keeps it in
+    /// registers.
+    #[inline(always)]
+    fn follow(&self, peak: f64, env: &mut f64, hold: &mut usize, gain: &mut f64) {
+        if peak >= *env {
+            (*env, *hold) = (peak, self.frames);
+        } else if *hold > 0 {
+            *hold -= 1;
+        } else {
+            *env *= self.decay;
+        }
+        let want = self.curve(*env);
+        // At rest (the usual case) the gain stays 1 without its update.
+        if want != 1.0 || *gain != 1.0 {
+            *gain += (want - *gain) * if want < *gain { self.attack } else { self.release };
+            if *gain > 1.0 - 1e-7 {
+                *gain = 1.0; // snap back to bit-exact
+            }
+        }
+    }
+
+    /// The gain for the frame leaving the delay line, peaking at `leaving`. The follower lands within
+    /// 0.1 %, which can still overshoot a large peak (up to 0.13 dB): the leaving frame's gain is also
+    /// held to the curve for its own peak.
+    #[inline(always)]
+    fn leaving_gain(&self, leaving: f64, gain: f64) -> f64 {
+        if leaving * gain > self.knee_start {
+            gain.min(self.curve(leaving))
+        } else {
+            gain
+        }
+    }
+
     #[inline]
     fn frame(&mut self, x: &mut [f64]) {
-        let mut peak = 0.0f64;
-        for v in x.iter() {
-            peak = peak.max(v.abs());
-        }
-        if peak >= self.env {
-            (self.env, self.hold) = (peak, self.frames);
-        } else if self.hold > 0 {
-            self.hold -= 1;
-        } else {
-            self.env *= self.decay;
-        }
-        let want = self.curve(self.env);
-        self.gain += (want - self.gain) * if want < self.gain { self.attack } else { self.release };
-        if self.gain > 1.0 - 1e-7 {
-            self.gain = 1.0; // snap back to bit-exact
-        }
+        let peak = x.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        let (mut env, mut hold, mut gain) = (self.env, self.hold, self.gain);
+        self.follow(peak, &mut env, &mut hold, &mut gain);
+        (self.env, self.hold, self.gain) = (env, hold, gain);
         let slot = self.pos * self.channels;
-        // The follower lands within 0.1 %, which can still overshoot a large peak (up to 0.13 dB): also
-        // hold the leaving frame's gain to the curve for its own peak.
         let leaving = self.delay[slot..slot + self.channels].iter().fold(0.0f64, |m, v| m.max(v.abs()));
-        let gain = if leaving * self.gain > self.knee_start { self.gain.min(self.curve(leaving)) } else { self.gain };
+        let gain = self.leaving_gain(leaving, self.gain);
         for (c, v) in x.iter_mut().enumerate() {
             let out = self.delay[slot + c];
             self.delay[slot + c] = *v;
@@ -430,6 +449,24 @@ impl Limiter {
         }
         self.pos = if self.pos + 1 == self.frames { 0 } else { self.pos + 1 };
         self.meter = self.meter.min(self.gain);
+    }
+
+    /// [`Limiter::frame`] over a stereo block, the state in locals.
+    fn block2(&mut self, left: &mut [f64], right: &mut [f64]) {
+        let mut delay = std::mem::take(&mut self.delay);
+        let (mut pos, mut env, mut hold, mut gain, mut meter) = (self.pos, self.env, self.hold, self.gain, self.meter);
+        let slots = delay.as_chunks_mut::<2>().0;
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            self.follow(l.abs().max(r.abs()), &mut env, &mut hold, &mut gain);
+            let slot = &mut slots[pos];
+            let g = self.leaving_gain(slot[0].abs().max(slot[1].abs()), gain);
+            let out = std::mem::replace(slot, [*l, *r]);
+            (*l, *r) = (out[0] * g, out[1] * g);
+            pos = if pos + 1 == self.frames { 0 } else { pos + 1 };
+            meter = meter.min(gain);
+        }
+        (self.pos, self.env, self.hold, self.gain, self.meter) = (pos, env, hold, gain, meter);
+        self.delay = delay;
     }
 
     fn reset(&mut self) {
@@ -663,10 +700,14 @@ impl Stages {
         }
     }
 
-    /// The output stage over the block, frame by frame, when it does anything.
+    /// The output stage over the block when it does anything: frame by frame, or stage by stage in stereo.
     fn block_output(&mut self, planar: &mut [f64], frames: usize) {
         let stereo = self.channels == 2 && (self.mono || self.virtualizer.is_some() || self.crossfeed.is_some() || self.balance != (1.0, 1.0));
         if !(stereo || self.expander.is_some() || self.compressor.is_some() || self.boost != 1.0 || self.limiter.is_some()) {
+            return;
+        }
+        if self.channels == 2 {
+            self.block_output2(planar, frames);
             return;
         }
         let mut frame = [0f64; MAX_CHANNELS];
@@ -679,6 +720,52 @@ impl Stages {
             for (c, v) in frame[..n].iter().enumerate() {
                 planar[c * frames + k] = *v;
             }
+        }
+    }
+
+    /// [`Stages::output_stage`] in stereo, a stage at a time over the block: each stage keeps only its
+    /// own state, so every frame gets the same arithmetic in the same order.
+    fn block_output2(&mut self, planar: &mut [f64], frames: usize) {
+        let (left, right) = planar.split_at_mut(frames);
+        if let Some(e) = self.expander.as_mut() {
+            for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+                let mut f = [*l, *r];
+                e.frame(&mut f);
+                (*l, *r) = (f[0], f[1]);
+            }
+        }
+        if let Some(c) = self.compressor.as_mut() {
+            for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+                let mut f = [*l, *r];
+                c.frame(&mut f);
+                (*l, *r) = (f[0], f[1]);
+            }
+        }
+        if self.mono {
+            for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+                let m = (*l + *r) * MONO_SUM;
+                (*l, *r) = (m, m);
+            }
+        }
+        if let Some(v) = self.virtualizer.as_mut() {
+            for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+                (*l, *r) = v.frame(*l, *r);
+            }
+        }
+        if let Some(cf) = self.crossfeed.as_mut() {
+            for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+                (*l, *r) = cf.frame(*l, *r);
+            }
+        }
+        if self.balance != (1.0, 1.0) {
+            left.iter_mut().for_each(|v| *v *= self.balance.0);
+            right.iter_mut().for_each(|v| *v *= self.balance.1);
+        }
+        if self.boost != 1.0 {
+            left.iter_mut().chain(right.iter_mut()).for_each(|v| *v *= self.boost);
+        }
+        if let Some(l) = self.limiter.as_mut() {
+            l.block2(left, right);
         }
     }
 

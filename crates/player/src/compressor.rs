@@ -5,14 +5,13 @@
 
 /// Soft-knee gain reduction (dB, >= 0) for a level `over` dB past the threshold with knee width `w`.
 /// The compressor uses slope `1 - 1/ratio`; the expander `ratio - 1` with `over` negated.
+/// Both sides are computed and one picked: music crosses the knee too often for a branch to guess.
+#[inline(always)]
 fn curve_db(over: f64, slope: f64, w: f64) -> f64 {
-    if 2.0 * over <= -w {
-        0.0
-    } else if 2.0 * over.abs() <= w && w > 0.0 {
-        slope * (over + w / 2.0).powi(2) / (2.0 * w)
-    } else {
-        slope * over
-    }
+    use std::hint::select_unpredictable as pick;
+    let knee = slope * (over + w / 2.0).powi(2) / (2.0 * w);
+    let above = pick(2.0 * over.abs() <= w && w > 0.0, knee, slope * over);
+    pick(2.0 * over <= -w, 0.0, above)
 }
 
 /// The compressor's controls.
