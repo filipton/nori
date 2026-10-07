@@ -46,9 +46,10 @@ impl Client {
     }
 
     /// Page `page` of `page_size` rows of folder `parent`: nothing for one that is not known, `failed`
-    /// for one that cannot be read now. Pages after the first come from the first's read.
+    /// for one that cannot be read now. Pages after the first come from the first's read, and a
+    /// search's results from [`Client::car_search`].
     pub async fn browse_children(&self, parent: String, page: u32, page_size: u32) -> BrowsePage {
-        let kept = if page > 0 { self.car.lock().get(&parent) } else { None };
+        let kept = if page > 0 || parent.starts_with("search:") { self.car.lock().get(&parent) } else { None };
         let all = match kept {
             Some(all) => all,
             None => self.listed(&parent).await,
@@ -340,6 +341,17 @@ pub(crate) mod tests {
         assert_eq!(fake.asked().len(), 1, "later pages and the pick are of the same draw");
         let root = c.car_root(4, false, 1, 3);
         assert_eq!(root.folders.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), ["downloads"]);
+    }
+
+    #[test]
+    fn search_results_listed_from_the_search() {
+        let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        fake.answer(r#"{"subsonic-response":{"status":"ok","searchResult3":{"song":[{"id":"s1","isDir":false},{"id":"s2","isDir":false}]}}}"#);
+        let found = block(c.car_search("q".into()));
+        let listed = block(c.browse_children("search:q".into(), 0, 50));
+        assert_eq!(listed.songs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["s1", "s2"]);
+        assert_eq!(listed.songs.len(), found.songs.len());
+        assert_eq!(fake.asked().len(), 1, "the car's listing of the results asks the server again");
     }
 
     #[test]
