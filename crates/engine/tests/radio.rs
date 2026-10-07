@@ -125,13 +125,54 @@ impl ByteSource for Station {
     }
 }
 
-struct Radio(Vec<(String, Arc<Vec<u8>>)>);
+/// What Icecast sends at once on connecting (its default `burst-size`).
+const BURST: usize = 64 * 1024;
+
+/// A station sending `bytes` at `rate` bytes a second of the clock after a [`BURST`], with no ICY blocks. Each read fills
+/// the whole buffer before returning, as Android's `RustBody` does.
+struct Unmarked {
+    bytes: Arc<Vec<u8>>,
+    clock: Virtual,
+    rate: usize,
+}
+
+struct Paced {
+    bytes: Arc<Vec<u8>>,
+    at: usize,
+    clock: Virtual,
+    t0: i64,
+    rate: usize,
+}
+
+impl Read for Paced {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = buf.len().min(self.bytes.len() - self.at);
+        let due = (self.at + n).saturating_sub(BURST);
+        self.clock.wait_until(self.t0 + (due as u128 * 1_000_000_000 / self.rate as u128) as i64);
+        buf[..n].copy_from_slice(&self.bytes[self.at..self.at + n]);
+        self.at += n;
+        Ok(n)
+    }
+}
+
+impl ByteSource for Unmarked {
+    fn open(&self, _: &str, _: u64) -> Result<Body, nori_engine::OpenError> {
+        Err("a live stream is opened live".into())
+    }
+
+    fn open_live(&self, _: &str) -> Result<(Body, Option<usize>), String> {
+        let reader = Paced { bytes: self.bytes.clone(), at: 0, clock: self.clock.clone(), t0: self.clock.now_ns(), rate: self.rate };
+        Ok((Body { start: 0, len: None, reader: Box::new(reader) }, None))
+    }
+}
+
+struct Radio(Vec<(String, Arc<dyn ByteSource>)>);
 
 impl Library for Radio {
     fn locate(&mut self, id: &str) -> Result<Located, String> {
         let bytes = self.0.iter().find(|(i, _)| i == id).map(|(_, b)| b.clone()).ok_or("no such station")?;
         // No hint for a station, as on Android.
-        Ok(Located { source: Source::Live { url: id.into(), bytes: Arc::new(Station(bytes)) }, hint: None, duration_ms: None, estimated: false })
+        Ok(Located { source: Source::Live { url: id.into(), bytes }, hint: None, duration_ms: None, estimated: false })
     }
 
     fn about(&self, id: &str) -> WindowSong {
@@ -154,11 +195,16 @@ struct Rig {
 impl Rig {
     /// Queues the stations and plays the first.
     fn new(stations: Vec<(&str, Vec<u8>)>) -> Rig {
+        let stations = stations.into_iter().map(|(id, b)| (id, Arc::new(Station(Arc::new(b))) as Arc<dyn ByteSource>)).collect();
+        Rig::on(Virtual::default(), stations)
+    }
+
+    /// [`Rig::new`] with each station's own source, on `clock`.
+    fn on(clock: Virtual, stations: Vec<(&str, Arc<dyn ByteSource>)>) -> Rig {
         let queue = SharedQueue::default();
         queue.0.lock().set(stations.iter().map(|s| s.0.to_string()).collect(), Some(0), false, 0);
         let card = Card::new();
-        let clock = Virtual::default();
-        let radio = Radio(stations.into_iter().map(|(id, b)| (id.to_string(), Arc::new(b))).collect());
+        let radio = Radio(stations.into_iter().map(|(id, b)| (id.to_string(), b)).collect());
         let engine = Engine::start_on(radio, app(), queue, Box::new(card.clone()), None, Config::default(), clock.clone(), |_| {});
         engine.queue_changed();
         engine.play_at(0, 0);
@@ -343,6 +389,21 @@ fn mp3_stations() {
         let second_hz = hz(&m[5 * r / 2..7 * r / 2], f.rate);
         assert!((first_hz - 1000.0).abs() < 5.0 && (second_hz - 1500.0).abs() < 7.5, "both songs at their own pitch: {first_hz} then {second_hz}");
     });
+}
+
+#[test]
+fn station_without_icy_blocks_starts_soon() {
+    if !ffmpeg() {
+        eprintln!("no ffmpeg: skipped");
+        return;
+    }
+    // 96 kbps for a minute, sent in real time.
+    let clock = Virtual::default();
+    let station = Unmarked { bytes: Arc::new(mp3(1000, 60.0, 44_100, 2)), clock: clock.clone(), rate: 12_000 };
+    let rig = Rig::on(clock.clone(), vec![("radio:1", Arc::new(station))]);
+    rig.hear(20.0);
+    let late_s = clock.now_ns() as f64 / 1e9 - 20.0;
+    assert!(late_s < 5.0, "20 s of music took {late_s:.1} s longer");
 }
 
 #[test]

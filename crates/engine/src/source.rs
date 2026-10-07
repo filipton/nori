@@ -495,6 +495,9 @@ const RETRIES: u32 = 3;
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// A live stream is ready with this much: two seconds at 128 kbps.
 const LIVE_READY: u64 = 32 * 1024;
+/// Live read size, below [`LIVE_READY`]: a reader that fills the whole buffer (Android's) returns as
+/// the station sends, in real time.
+const LIVE_CHUNK: usize = 16 * 1024;
 /// A live stream keeps this much behind the reader (for the demuxer) and at most this much ahead
 /// (reached only while paused; the connection then waits in the socket).
 const LIVE_BEHIND: u64 = 256 * 1024;
@@ -1058,7 +1061,7 @@ impl Loaded {
     /// connection is reopened (the stream resumes where the station is); one that cannot be is the end.
     fn run_live(&self, source: &dyn ByteSource, url: &str) {
         let mut body: Option<Icy> = None;
-        let mut chunk = vec![0u8; CHUNK];
+        let mut chunk = vec![0u8; LIVE_CHUNK];
         let mut failures = 0;
         loop {
             {
