@@ -497,11 +497,8 @@ impl TransitionEngine {
 
     /// After a seek: same formats, fresh converter state.
     fn reset_converter(&mut self) {
-        if let (Some(src), Some(out)) = (self.conv_in, self.out) {
-            self.resampler = Resampler::new(src.rate as i32, src.channels as i32, out.rate as i32, out.channels as i32);
-            if self.resampler.is_none() {
-                self.conv_in = None;
-            }
+        if let Some(r) = self.resampler.as_mut() {
+            r.reset();
         }
     }
 

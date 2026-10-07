@@ -153,6 +153,15 @@ impl Resampler {
         })
     }
 
+    /// Back to where [`Resampler::new`] starts, keeping the table and the buffer's memory.
+    pub fn reset(&mut self) {
+        let lead = self.table.as_ref().map_or(0, |t| t.taps / 2 - 1);
+        (self.at, self.frac, self.base) = (0, 0, -(lead as i64));
+        self.hist.clear();
+        self.hist.resize(lead * self.ch, 0.0);
+        self.dither.reset();
+    }
+
     /// Input frames the converter holds back before its output catches up with them.
     pub fn latency_frames(&self) -> usize {
         self.table.as_ref().map_or(0, |t| t.taps / 2)
@@ -400,6 +409,22 @@ mod tests {
             let split = convert(&x, 48000, 44100, chunk);
             assert_eq!(split.len(), whole.len(), "{chunk}");
             assert!(split.iter().zip(&whole).all(|(a, b)| a == b), "in buffers of {chunk} frames: the same samples");
+        }
+    }
+
+    #[test]
+    fn reset_is_a_new_converter() {
+        for (a, b) in [(48000, 44100), (44100, 44100)] {
+            let stereo = |hz| bytes_of(&sine(a, hz, 3000).iter().flat_map(|v| [*v, *v / 3]).collect::<Vec<_>>());
+            let (first, then) = (stereo(440.0), stereo(1234.0));
+            let mut out = vec![0u8; 40000];
+            let mut used = Resampler::new(a as i32, 2, b as i32, 2).unwrap();
+            used.process(&first, PCM_16, &mut out, PCM_16).unwrap();
+            used.reset();
+            let (_, made) = used.process(&then, PCM_16, &mut out, PCM_16).unwrap();
+            let mut fresh_out = vec![0u8; 40000];
+            let (_, fresh) = Resampler::new(a as i32, 2, b as i32, 2).unwrap().process(&then, PCM_16, &mut fresh_out, PCM_16).unwrap();
+            assert_eq!(out[..made], fresh_out[..fresh], "{a} -> {b}");
         }
     }
 

@@ -508,8 +508,8 @@ impl RingTrack {
 
     /// Starts the resampler afresh (after a flush or cut).
     fn restart_resampler(&mut self) {
-        if let (Some(f), Some(d), true) = (self.format, self.device, self.resampler.is_some()) {
-            self.resampler = Resampler::new(f.rate as i32, f.channels as i32, d.rate as i32, d.channels as i32);
+        if let Some(r) = self.resampler.as_mut() {
+            r.reset();
         }
     }
 
