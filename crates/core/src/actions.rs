@@ -2,6 +2,7 @@
 //! shuffle order are nori-queue's.
 
 use crate::autofill::seed_now;
+use futures_util::future::join_all;
 use crate::cache_policy::{Page, Read};
 use crate::client::{Client, NetResult};
 use crate::{m3u, Album, Core, Result, Song};
@@ -78,7 +79,10 @@ impl Client {
 
     /// The library songs of `albums` in order, skipping provider and unreadable albums.
     pub async fn artist_songs(&self, albums: Vec<Album>) -> Vec<Song> {
-        self.library_albums(albums, usize::MAX).await
+        let reads = albums.into_iter().filter(|a| !a.is_provider()).map(|a| self.cached_or_fetched(Read::AlbumById { id: a.id }));
+        let mut songs: Vec<Song> = join_all(reads).await.into_iter().filter_map(|p| p.ok().flatten()).flat_map(Page::songs).collect();
+        songs.retain(|s| !s.is_provider());
+        songs
     }
 
     /// Random library songs.
@@ -150,6 +154,9 @@ pub(crate) mod tests {
         let got = block(c.artist_songs(vec![album("a1", false), album("ext-2", true), album("pl-deezer-3", false)]));
         assert_eq!(got.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["1"]);
         assert_eq!(fake.asked().len(), 1);
+        // Played again: the albums read before come from the cache.
+        let again = block(c.artist_songs(vec![album("a1", false)]));
+        assert_eq!((again.len(), fake.asked().len()), (1, 1));
         fake.answer(&songs_json("randomSongs", &["x", "ext-deezer-song-1"]));
         assert_eq!(block(c.shuffle_all()).unwrap().iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["x"]);
 

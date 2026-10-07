@@ -362,6 +362,14 @@ impl Client {
         Ok(Stored { page, digest, fresh })
     }
 
+    /// The cached page, stale or not, else the server's, kept.
+    pub(crate) async fn cached_or_fetched(&self, read: Read) -> NetResult<Option<Page>> {
+        match self.read_stored(read.clone())?.page {
+            Some(p) => Ok(Some(p)),
+            None => self.read_fetch(read, None).await,
+        }
+    }
+
     /// Asks the server; returns the page only if it differs from `stored_digest`, and re-caches it either
     /// way (restarting the window). Uncached reads always return their page.
     pub(crate) async fn read_fetch(&self, read: Read, stored_digest: Option<u64>) -> NetResult<Option<Page>> {

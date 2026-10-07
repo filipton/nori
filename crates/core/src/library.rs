@@ -55,12 +55,7 @@ impl Client {
 
     /// All songs of the artist's albums ([`Client::artist_songs`]), from the cached artist page if any.
     pub async fn artist_songs_of(&self, artist_id: String) -> NetResult<Vec<Song>> {
-        let read = || Read::ArtistById { id: artist_id.clone() };
-        let page = match self.read_stored(read())?.page {
-            Some(p) => Some(p),
-            None => self.read_fetch(read(), None).await?,
-        };
-        let Some(Page::ArtistPage { v }) = page else { return Ok(Vec::new()) };
+        let Some(Page::ArtistPage { v }) = self.cached_or_fetched(Read::ArtistById { id: artist_id }).await? else { return Ok(Vec::new()) };
         Ok(self.artist_songs(v.albums).await)
     }
 
