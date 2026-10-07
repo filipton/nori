@@ -850,7 +850,7 @@ impl ByteSource for JavaBytes {
     /// A radio stream through `RustBridge.openLive` (uncached, ICY metadata on); also returns `icy-metaint`.
     fn open_live(&self, url: &str) -> Result<(Body, Option<usize>), String> {
         let (java, mut env) = env().ok_or("no JVM")?;
-        let body = env.with_local_frame(4, |env| -> jni::errors::Result<Option<(GlobalRef, i32)>> {
+        let body = env.with_local_frame(4, |env| -> jni::errors::Result<Option<(JavaBody, i32)>> {
             let url = env.new_string(url)?;
             // SAFETY: RustBridge.openLive(String), looked up with this signature.
             let body = unsafe { env.call_method_unchecked(self.bridge.obj(), java.open_live, ReturnType::Object, &[JValue::Object(&url).as_jni()]) }?.l()?;
@@ -858,13 +858,13 @@ impl ByteSource for JavaBytes {
                 return Ok(None);
             }
             let icy = env.get_field_unchecked(&body, java.body_icy, ReturnType::Primitive(Primitive::Int))?.i()?;
-            Ok(Some((env.new_global_ref(&body)?, icy)))
+            Ok(Some((JavaBody::new(env, java, &body)?, icy)))
         });
         cleared(&mut env);
         match body {
             Ok(Some((body, icy))) => {
                 log(&format!("a station's stream opens, announcements every {icy} bytes"));
-                Ok((Body { start: 0, len: None, reader: Box::new(JavaBody(body)) }, (icy > 0).then_some(icy as usize)))
+                Ok((Body { start: 0, len: None, reader: Box::new(body) }, (icy > 0).then_some(icy as usize)))
             }
             _ => Err("the station's stream would not come".into()),
         }
@@ -895,7 +895,7 @@ fn open_java(bridge: &Bridge, url: &str, key: &str, from: u64, cancel: &Cancel) 
         }
     });
     let (java, mut env) = env().ok_or("no JVM")?;
-    let body = env.with_local_frame(6, |env| -> jni::errors::Result<Option<Result<(GlobalRef, i64), OpenError>>> {
+    let body = env.with_local_frame(6, |env| -> jni::errors::Result<Option<Result<(JavaBody, i64), OpenError>>> {
         let (url, key) = (env.new_string(url)?, env.new_string(key)?);
         let args = [JValue::Object(&url).as_jni(), JValue::Object(&key).as_jni(), JValue::Long(from as i64).as_jni(), JValue::Long(ticket).as_jni()];
         // SAFETY: RustBridge.open(String, String, long, long), looked up with this signature.
@@ -912,7 +912,7 @@ fn open_java(bridge: &Bridge, url: &str, key: &str, from: u64, cancel: &Cancel) 
         if status > 0 {
             return Ok(Some(Err(OpenError::Status(status.min(u16::MAX as i32) as u16))));
         }
-        Ok(Some(Ok((env.new_global_ref(&body)?, length))))
+        Ok(Some(Ok((JavaBody::new(env, java, &body)?, length))))
     });
     cleared(&mut env);
     match body {
@@ -922,7 +922,7 @@ fn open_java(bridge: &Bridge, url: &str, key: &str, from: u64, cancel: &Cancel) 
         }
         Ok(Some(Ok((body, length)))) => {
             log(&format!("{key} from byte {from}: {} bytes come", if length >= 0 { length.to_string() } else { "unknown".into() }));
-            Ok(Body { start: from, len: (length >= 0).then(|| from + length as u64), reader: Box::new(JavaBody(body)) })
+            Ok(Body { start: from, len: (length >= 0).then(|| from + length as u64), reader: Box::new(body) })
         }
         _ => Err("the song's bytes would not come".into()),
     }
@@ -1081,7 +1081,18 @@ impl nori_engine::watch::Watch for PerfWatch {
 }
 
 /// A `RustBody`: reads through `read(int)` and its `buffer` field; closed on drop.
-struct JavaBody(GlobalRef);
+/// A Kotlin `RustBody` and the array its reads fill, fixed for its life.
+struct JavaBody {
+    body: GlobalRef,
+    buffer: GlobalRef,
+}
+
+impl JavaBody {
+    fn new(env: &mut JNIEnv, java: &Java, body: &JObject) -> jni::errors::Result<JavaBody> {
+        let buffer = env.get_field_unchecked(body, java.body_buffer, ReturnType::Array)?.l()?;
+        Ok(JavaBody { body: env.new_global_ref(body)?, buffer: env.new_global_ref(&buffer)? })
+    }
+}
 
 impl Read for JavaBody {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
@@ -1090,17 +1101,15 @@ impl Read for JavaBody {
         }
         let (java, mut env) = env().ok_or_else(|| io::Error::other("no JVM"))?;
         let max = buf.len().min(i32::MAX as usize) as i32;
-        let n = match call_int(&mut env, &self.0, java.body_read, &[JValue::Int(max).as_jni()]) {
+        let n = match call_int(&mut env, &self.body, java.body_read, &[JValue::Int(max).as_jni()]) {
             Some(-1) => return Ok(0),
             Some(n) if n > 0 => (n as usize).min(buf.len()),
             _ => return Err(io::Error::other("the song's bytes stopped coming")),
         };
-        let copied = env.with_local_frame(2, |env| -> jni::errors::Result<()> {
-            let array = JByteArray::from(env.get_field_unchecked(&self.0, java.body_buffer, ReturnType::Array)?.l()?);
-            // SAFETY: i8 and u8 have the same size and alignment, and the slice is the caller's.
-            let into = unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut i8, n) };
-            env.get_byte_array_region(&array, 0, into)
-        });
+        let array = <&JByteArray>::from(self.buffer.as_obj());
+        // SAFETY: i8 and u8 have the same size and alignment, and the slice is the caller's.
+        let into = unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut i8, n) };
+        let copied = env.get_byte_array_region(array, 0, into);
         cleared(&mut env);
         copied.map(|_| n).map_err(|e| io::Error::other(e.to_string()))
     }
@@ -1109,7 +1118,7 @@ impl Read for JavaBody {
 impl Drop for JavaBody {
     fn drop(&mut self) {
         if let Some((java, mut env)) = env() {
-            call_void(&mut env, &self.0, java.body_close, &[]);
+            call_void(&mut env, &self.body, java.body_close, &[]);
         }
     }
 }
