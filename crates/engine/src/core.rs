@@ -380,7 +380,7 @@ impl Downloader {
 
     /// Unfinished downloads, oldest first.
     fn pending(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.core().downloads(false).unwrap_or_default().into_iter().map(|s| s.id).collect();
+        let mut ids = self.core().download_ids(false).unwrap_or_default();
         ids.reverse();
         ids
     }
