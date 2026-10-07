@@ -402,6 +402,7 @@ impl Core {
     pub fn new(db_path: String, server: String, session: Arc<nori_queue::Session>) -> Result<Arc<Self>> {
         let db = db::open(&db_path, &server)?;
         session.settings.model.set_home(&db_path);
+        session.settings.sing_model.set_home(&db_path);
         let db = Arc::new(Mutex::new(db));
         let core = Arc::new(Core {
             downloads: Arc::new(transfers::Downloads::load(&db)?),

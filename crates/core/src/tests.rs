@@ -102,3 +102,15 @@ fn browse_sorts_filters_decades() {
     let d = core.browse_decades().unwrap();
     assert_eq!((d[0].start, d[0].song_count, d[1].start, d[1].song_count), (2000, 1, 1990, 2));
 }
+
+#[test]
+fn models_live_beside_the_database() {
+    // Each downloadable model has its folder once a database on disk is opened: without one it never downloads.
+    let dir = nori_testdir::TempDir::new("models-home");
+    let db = dir.path().join("nori.db");
+    let session: Arc<nori_queue::Session> = Default::default();
+    let _core = Core::new(db.to_string_lossy().into(), "t".into(), session.clone()).unwrap();
+    for model in [&session.settings.model, &session.settings.sing_model] {
+        assert_eq!(model.dir(), Some(dir.path().join(model.model.dir)), "{}", model.model.dir);
+    }
+}
