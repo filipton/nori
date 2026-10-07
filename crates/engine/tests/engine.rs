@@ -175,6 +175,8 @@ struct Extra {
     /// The device holds this much music taken from the ring before it plays it, ms, as a phone's
     /// AudioTrack does; [`SHALLOW_MS`] at most while shallow.
     hold_ms: Option<usize>,
+    /// The songs' file type (default WAV).
+    hint: Option<&'static str>,
 }
 
 /// Files each song is cut into with [`Extra::on_disk`].
@@ -185,6 +187,7 @@ struct Songs {
     lengths: Vec<(String, i64)>,
     store: Option<Arc<Store>>,
     pieces: Option<Arc<nori_testdir::TempDir>>,
+    hint: &'static str,
 }
 
 impl Library for Songs {
@@ -197,7 +200,7 @@ impl Library for Songs {
             (Some(store), None) => Source::Cached { url, bytes, store: store.clone(), key: format!("{id}:0") },
             (None, None) => Source::Url { url, bytes },
         };
-        Ok(Located { source, hint: Some("wav".into()), duration_ms, estimated: false })
+        Ok(Located { source, hint: Some(self.hint.into()), duration_ms, estimated: false })
     }
 
     fn about(&self, id: &str) -> WindowSong {
@@ -414,7 +417,7 @@ impl Rig {
 
     /// Songs as (id, file, length ms).
     fn build(files: Vec<(String, Vec<u8>, i64)>, app: impl App + Send + 'static, settings: Settings, extra: Extra) -> Rig {
-        let Extra { float, skip, server, store, on_disk, idle_release_ms, pace, memory_mb, watch: watching, hold_ms } = extra;
+        let Extra { float, skip, server, store, on_disk, idle_release_ms, pace, memory_mb, watch: watching, hold_ms, hint } = extra;
         for (id, f, _) in &files {
             server.files.lock().push((id.clone(), Arc::new(f.clone())));
         }
@@ -456,7 +459,7 @@ impl Rig {
         *server.clock.lock() = Some(clock.clone());
         let events = Arc::new(Mutex::new(Vec::new()));
         let seen = events.clone();
-        let library = Songs { server: server.clone(), lengths, store, pieces };
+        let library = Songs { server: server.clone(), lengths, store, pieces, hint: hint.unwrap_or("wav") };
         let mut config = Config { memory_mb: memory_mb.unwrap_or(256), settings, watch: watching.map(nori_engine::watch::Watcher), ..Config::default() };
         config.idle_release_ms = idle_release_ms.unwrap_or(config.idle_release_ms);
         let engine = Engine::start_on(library, app, queue, Box::new(out), None, config, clock.clone(), move |e| seen.lock().push(e));
@@ -2553,7 +2556,7 @@ fn status_current_on_events() {
     let mut list = Playlist::default();
     list.set(vec!["a".into(), "b".into()], Some(0), false, 0);
     let queue = TestQueue { list: Arc::new(Mutex::new(list)), skip: Vec::new() };
-    let library = Songs { server, lengths: vec![("a".into(), 4_000), ("b".into(), 4_000)], store: None, pieces: None };
+    let library = Songs { server, lengths: vec![("a".into(), 4_000), ("b".into(), 4_000)], store: None, pieces: None, hint: "wav" };
     let card = common::card::Card::new();
     let clock = Virtual::default();
     let cell: Arc<std::sync::OnceLock<Arc<Engine>>> = Arc::default();

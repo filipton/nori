@@ -50,6 +50,16 @@ fn perf_measure(name: &str, rig: &Rig, minutes: u64, mut during: impl FnMut(&Rig
     rig.engine.stop();
 }
 
+/// `pcm` (stereo at [`RATE`]) encoded by ffmpeg with `args` (output options); None without ffmpeg.
+fn encoded(pcm: &[i16], args: &[&str]) -> Option<Vec<u8>> {
+    let dir = nori_testdir::TempDir::new("perf-encoded");
+    let (raw, out) = (dir.join("music.raw"), dir.join("music.out"));
+    std::fs::write(&raw, sim::bytes(pcm)).unwrap();
+    let input = ["-hide_banner", "-loglevel", "error", "-f", "s16le", "-ar", "44100", "-ac", "2", "-i"];
+    let ran = std::process::Command::new("ffmpeg").args(input).arg(&raw).args(args).arg("-y").arg(&out).status();
+    ran.is_ok_and(|s| s.success()).then(|| std::fs::read(&out).unwrap())
+}
+
 /// Plays `songs` and prints one "perf:" line measured over `minutes`.
 fn perf_case(name: &str, songs: &[(&str, &[i16])], app: sim::App, settings: Settings, minutes: u64) {
     if perf_wanted(name) {
@@ -77,6 +87,18 @@ fn perf_report() {
     perf_case("eq10", &one, perf_app(prefs_off()), with_sound(nori_engine::Sound { bands, ..Default::default() }), 4);
     let compressor = nori_engine::Sound { effects: Effects { compressor: Some(CompressorPreset::Balanced.settings()), ..Effects::default() }, limiter: true, ..Default::default() };
     perf_case("compressor", &one, perf_app(prefs_off()), with_sound(compressor), 4);
+    // Compressed, as a server keeps music: the decoder's cost.
+    for (name, args) in [("mp3", ["-c:a", "libmp3lame", "-b:a", "320k", "-f", "mp3"]), ("flac", ["-c:a", "flac", "-compression_level", "5", "-f", "flac"])] {
+        if !perf_wanted(name) {
+            continue;
+        }
+        let Some(file) = encoded(&long, &args) else {
+            eprintln!("ffmpeg is not installed: no {name} case");
+            continue;
+        };
+        let files = vec![("a".to_string(), file, (long.len() / 2) as i64 * 1000 / RATE as i64)];
+        perf_measure(name, &Rig::build(files, perf_app(prefs_off()), Settings::default(), Extra { hint: Some(name), ..Extra::default() }), 4, |_, _| {});
+    }
     perf_case("speed", &one, perf_app(prefs_off()), Settings { speed: 1.2, pitch: 0.95, ..Settings::default() }, 4);
     perf_case("silence", &one, perf_app(prefs_off()), Settings { skip_silence: true, ..Settings::default() }, 4);
     let mut gained = perf_app(prefs_off());
