@@ -89,6 +89,9 @@ pub extern "system" fn JNI_OnLoad(vm: jni::JavaVM, _: *mut c_void) -> jint {
     for class in CLASSES {
         register(&mut env, class);
     }
+    player::remember_java(&mut env);
+    covers::remember_java(&mut env);
+    measure::remember_java(&mut env);
     log_panics();
     nori_core::heap::Counting::installed();
     JNI_VERSION_1_6
@@ -106,6 +109,20 @@ fn log_panics() {
         nori_perf::invariants::panicked(&thread, &format!("{what}, at {at}"));
         before(info);
     }));
+}
+
+/// Sets `cell` from `look_up`, on the thread loading the library (its class loader finds the app's
+/// classes); a class or method missing is logged as `what`'s and leaves it unset.
+pub(crate) fn remember<T>(env: &mut JNIEnv, cell: &std::sync::OnceLock<T>, what: &str, look_up: fn(&mut JNIEnv) -> jni::errors::Result<T>) {
+    match look_up(env) {
+        Ok(j) => {
+            let _ = cell.set(j);
+        }
+        Err(e) => {
+            cleared(env);
+            nori_core::alog::info(&format!("{what}: the Java side is missing: {e}"));
+        }
+    }
 }
 
 /// Logs and clears a pending Java exception (our threads have no caller to throw to).

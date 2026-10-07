@@ -136,8 +136,13 @@ struct TrackMethods {
     class: GlobalRef,
 }
 
-/// Global: natives other than `create` and the engine's callbacks have no handle to reach it through.
+/// JNI IDs and the VM, valid for the process: engine callbacks run on Rust threads with no env to carry them.
 static JAVA: OnceLock<Java> = OnceLock::new();
+
+/// Looks up [`JAVA`] as the library loads.
+pub(crate) fn remember_java(env: &mut JNIEnv) {
+    crate::remember(env, &JAVA, "rust player", look_up);
+}
 
 fn look_up(env: &mut JNIEnv) -> jni::errors::Result<Java> {
     let bridge = env.find_class("dev/nori/music/playback/RustBridge")?;
@@ -1337,22 +1342,13 @@ fn player(h: jlong) -> Option<Arc<Player>> {
 /// `CurrentClient.uniffiCloneHandle()`, taken over) and measuring with `analyses` (`MeasureJni.analyses`).
 /// Everything the engine asks of the platform goes to `bridge`, the player's own. `sdk`: API level;
 /// `float`: high quality output; `memory_mb`: the app's memory class. 0 when the Java side is missing.
-extern "system" fn create(mut env: JNIEnv, _: JClass, bridge: JObject, current: jlong, analyses: jlong, sdk: jint, float: jboolean, memory_mb: jint) -> jlong {
+extern "system" fn create(env: JNIEnv, _: JClass, bridge: JObject, current: jlong, analyses: jlong, sdk: jint, float: jboolean, memory_mb: jint) -> jlong {
     // SAFETY: Kotlin passes `CurrentClient.uniffiCloneHandle()`, once.
     let current: Arc<CurrentClient> = unsafe { crate::uniffi_object(current) };
     let Some(measuring) = crate::measure::measuring(analyses) else { return 0 };
     let (analyses, queue) = (measuring.analyses.clone(), measuring.session.clone());
     if JAVA.get().is_none() {
-        match look_up(&mut env) {
-            Ok(j) => {
-                let _ = JAVA.set(j);
-            }
-            Err(e) => {
-                cleared(&mut env);
-                log(&format!("the Java side is missing: {e}"));
-                return 0;
-            }
-        }
+        return 0;
     }
     let Ok(bridge) = env.new_global_ref(&bridge).map(Bridge) else { return 0 };
     let shared = Arc::new(Shared::default());

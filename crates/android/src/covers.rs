@@ -58,7 +58,7 @@ const NETWORK: jint = 100;
 /// Plus the HTTP status.
 const HTTP: jint = 1000;
 
-/// Java classes and methods, looked up when the first loader opens. Global: loader threads call back
+/// Java classes and methods, looked up as the library loads. Global: loader threads call back
 /// with no handle to it.
 struct Java {
     vm: JavaVM,
@@ -76,6 +76,11 @@ struct Java {
 }
 
 static JAVA: OnceLock<Java> = OnceLock::new();
+
+/// Looks up [`JAVA`] as the library loads.
+pub(crate) fn remember_java(env: &mut JNIEnv) {
+    crate::remember(env, &JAVA, "covers", look_up);
+}
 
 fn look_up(env: &mut JNIEnv) -> jni::errors::Result<Java> {
     let bitmap = env.find_class("android/graphics/Bitmap")?;
@@ -335,20 +340,11 @@ fn loader<'a>(h: jlong) -> Option<&'a Covers> {
 /// A loader fetching through `net` (a `CoverNet` handle from `uniffiCloneHandle()`, taken over) with a
 /// disk cache in `dir` of at most `disk_bytes`. Cheap: nothing is read until the first request. 0 when
 /// the Java side is missing.
-extern "system" fn open(mut env: JNIEnv, _: JClass, net: jlong, dir: JString, disk_bytes: jlong, hardware: jboolean, rgb565: jboolean) -> jlong {
+extern "system" fn open(env: JNIEnv, _: JClass, net: jlong, dir: JString, disk_bytes: jlong, hardware: jboolean, rgb565: jboolean) -> jlong {
     // SAFETY: Kotlin passes `CoverNet.uniffiCloneHandle()`, once.
     let net = unsafe { crate::uniffi_object::<CoverNet>(net) };
     if JAVA.get().is_none() {
-        match look_up(&mut env) {
-            Ok(j) => {
-                let _ = JAVA.set(j);
-            }
-            Err(e) => {
-                cleared(&mut env);
-                nori_core::alog::info(&format!("covers: the Java side is missing: {e}"));
-                return 0;
-            }
-        }
+        return 0;
     }
     let Some(dir) = with_str(&env, &dir, |d| PathBuf::from(d)) else { return 0 };
     let config = Config { disk_bytes: disk_bytes.max(0) as u64, memory_bytes: 0, ..Config::new(dir) };

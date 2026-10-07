@@ -42,7 +42,7 @@ struct Java {
     measured: JMethodID,
 }
 
-/// Global: `MeasureBridge`'s methods, looked up once for every caller.
+/// Global: measurer threads call back with no env to carry them.
 static JAVA: OnceLock<Java> = OnceLock::new();
 
 /// AutoMix's analyses over the client in use, and the app's queue session the songs come from.
@@ -66,8 +66,8 @@ extern "system" fn create_analyses(_: JNIEnv, _: JClass, current: jlong, session
     Box::into_raw(Box::new(Measuring { analyses: Analyses::new(move || current.get()), session: crate::kept(session) })) as jlong
 }
 
-fn look_up(env: &mut JNIEnv, bridge: &JObject) -> jni::errors::Result<Java> {
-    let class = env.get_object_class(bridge)?;
+fn look_up(env: &mut JNIEnv) -> jni::errors::Result<Java> {
+    let class = env.find_class("dev/nori/music/playback/MeasureBridge")?;
     Ok(Java {
         vm: env.get_java_vm()?,
         whole: env.get_method_id(&class, "whole", "(Ljava/lang/String;)[Ljava/lang/String;")?,
@@ -143,27 +143,15 @@ struct Running {
 /// Measurers by Kotlin handle: a cache writer's `arrived` racing `stop` finds nothing.
 static MEASURERS: Handles<Running> = Handles::new();
 
-/// `bridge` as a shelf's own, `MeasureBridge`'s methods looked up on first use; None when they are missing.
-fn bridge_of(env: &mut JNIEnv, bridge: &JObject) -> Option<GlobalRef> {
-    let held = env.new_global_ref(bridge).ok();
-    held.filter(|_| ensure_java(env, bridge))
+/// Looks up [`JAVA`] as the library loads.
+pub(crate) fn remember_java(env: &mut JNIEnv) {
+    crate::remember(env, &JAVA, "measuring", look_up);
 }
 
-fn ensure_java(env: &mut JNIEnv, bridge: &JObject) -> bool {
-    if JAVA.get().is_some() {
-        return true;
-    }
-    match look_up(env, bridge) {
-        Ok(j) => {
-            let _ = JAVA.set(j);
-            true
-        }
-        Err(e) => {
-            cleared(env);
-            nori_core::alog::info(&format!("measuring: the Java side is missing: {e}"));
-            false
-        }
-    }
+/// `bridge` as a shelf's own; None when `MeasureBridge`'s methods are missing.
+fn bridge_of(env: &mut JNIEnv, bridge: &JObject) -> Option<GlobalRef> {
+    JAVA.get()?;
+    env.new_global_ref(bridge).ok()
 }
 
 /// Playback service started: the (idle) measurer over `analyses`, asking `bridge` (its `AutoMixPrefetch`'s),
