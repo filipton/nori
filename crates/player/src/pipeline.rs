@@ -808,6 +808,18 @@ impl<S: Songs, T: Track, A: App, Q: Queue> Player<S, T, A, Q> {
         let seqs = self.queue.read(|q| q.seqs().to_vec());
         let old = std::mem::replace(&mut self.seqs, seqs);
         let edited = old != self.seqs;
+        // Emptied (another server's profile taken up): nothing is left to play or to point at.
+        if self.seqs.is_empty() && !old.is_empty() {
+            self.pause();
+            self.release();
+            self.current = None;
+            self.periods.clear();
+            self.stop_after = None;
+            self.upcoming = None;
+            self.sync_queue();
+            self.engine.replan();
+            return;
+        }
         if !old.is_empty() && edited {
             let new = &self.seqs;
             let moved = |i: usize| old.get(i).and_then(|s| new.iter().position(|n| n == s));

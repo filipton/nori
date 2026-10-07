@@ -269,3 +269,16 @@ fn shuffle_keeps_current_and_next() {
     assert!(p.next());
     assert_eq!(p.current_id().as_deref(), Some("x"), "play next is next, shuffle or not");
 }
+
+#[test]
+fn queue_emptied_while_playing() {
+    // Another server's profile taken up empties the queue under the song playing: nothing indexes it.
+    let s = songs(3, 12.0);
+    let mut p = Player::new(queue(&s));
+    p.play_from(0);
+    p.run_for(1_500);
+    p.queue.live.set(Vec::new(), None, false, 0);
+    p.queue_changed();
+    p.run_for(2_000);
+    assert_eq!(p.current_id(), None, "no song of an empty queue");
+}
