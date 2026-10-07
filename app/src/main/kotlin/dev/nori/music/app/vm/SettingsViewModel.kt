@@ -473,7 +473,10 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
     }
 
     fun applyProfile(p: SoundProfile) = soundFromJson(p.json)?.let { s -> update { it.withSound(s) } }
-    fun deleteProfile(name: String) = viewModelScope.launch { runCatching { nori.core.profileDelete(name) }; refreshProfiles() }
+    fun deleteProfile(name: String) = viewModelScope.launch {
+        withContext(Dispatchers.IO) { runCatching { nori.core.profileDelete(name) } }
+        refreshProfiles()
+    }
 
     private val _autoEq = MutableStateFlow(AutoEqUi())
     val autoEq: StateFlow<AutoEqUi> = _autoEq
@@ -537,9 +540,14 @@ class SettingsViewModel(app: Application) : NoriViewModel(app) {
     /** How many tracks AutoMix has measured. */
     val analysed: StateFlow<Int> = _analysed
 
-    fun refreshAnalysed() = viewModelScope.launch { _analysed.value = runCatching { nori.core.analysisCount() }.getOrDefault(0u).toInt() }
+    fun refreshAnalysed() = viewModelScope.launch {
+        _analysed.value = withContext(Dispatchers.IO) { runCatching { nori.core.analysisCount() }.getOrDefault(0u).toInt() }
+    }
 
-    fun clearAnalyses() = viewModelScope.launch { runCatching { nori.core.analysisClear() }; refreshAnalysed() }
+    fun clearAnalyses() = viewModelScope.launch {
+        withContext(Dispatchers.IO) { runCatching { nori.core.analysisClear() } }
+        refreshAnalysed()
+    }
 
     // ---- downloads ----
 
