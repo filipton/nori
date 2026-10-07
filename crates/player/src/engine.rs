@@ -756,9 +756,10 @@ impl TransitionEngine {
                 Ending::Planned(_) | Ending::LetGo => true,
             };
         if !known {
-            let id = id.clone();
             self.ending = host.plan_for(&id.song).map_or(Ending::Gapless(now), Ending::Planned);
-            self.plan_for = Some(id);
+            if self.plan_for.as_ref() != Some(id) {
+                self.plan_for = Some(id.clone());
+            }
             if let Some(p) = self.plan().cloned() {
                 self.prepare(&p);
             }

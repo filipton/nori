@@ -628,6 +628,8 @@ struct Worker<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> {
     restarted: Option<String>,
     /// A jump under way: a panic during it restarts there.
     jumping: Option<(usize, i64)>,
+    /// Why the song plays on the CPU, in words: kept to compare with the status's without allocating.
+    why: String,
 }
 
 impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E, C> {
@@ -666,6 +668,7 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
             stall: None,
             restarted: None,
             jumping: None,
+            why: String::new(),
         };
         w.apply(config.settings);
         w
@@ -1853,26 +1856,33 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     /// Keeps [`Status::pcm_why`] current, logging each change.
     fn follow_why(&mut self) {
         let offloaded = self.offloading();
-        let why = match self.chip() {
-            Some(o) => o.gapped.clone(),
-            None => self.current().is_some().then(|| self.why_on_cpu()),
+        let mut why = std::mem::take(&mut self.why);
+        why.clear();
+        let known = match self.chip() {
+            Some(o) => o.gapped.as_deref().map(|g| why.push_str(g)).is_some(),
+            None => self.current().is_some() && self.why_on_cpu(&mut why).is_ok(),
         };
+        let now = known.then_some(why.as_str());
         let mut s = self.status.lock();
-        if s.pcm_why == why {
-            return;
+        if s.pcm_why.as_deref() != now {
+            s.pcm_why = now.map(str::to_owned);
+            drop(s);
+            if let Some(w) = now {
+                self.p.app.log(&format!("{}: {w}", if offloaded { "offloaded" } else { "playing on the CPU" }));
+            }
         }
-        s.pcm_why = why.clone();
-        drop(s);
-        if let Some(w) = why {
-            self.p.app.log(&format!("{}: {w}", if offloaded { "offloaded" } else { "playing on the CPU" }));
-        }
+        self.why = why;
     }
 
-    fn why_on_cpu(&self) -> String {
+    fn why_on_cpu(&self, w: &mut String) -> std::fmt::Result {
+        use std::fmt::Write;
         match self.blocked {
-            Some(b) if !self.offload => b.to_string(),
-            _ if self.h.at_end.is_some() => "offload takes over at the next song".into(),
-            _ => self.off.as_ref().and_then(|o| o.on_cpu.as_ref()).map_or_else(|| "the song began on the CPU before offload was wanted".into(), OnCpu::words),
+            Some(b) if !self.offload => w.write_str(b),
+            _ if self.h.at_end.is_some() => w.write_str("offload takes over at the next song"),
+            _ => match self.off.as_ref().and_then(|o| o.on_cpu.as_ref()) {
+                Some(on_cpu) => write!(w, "{on_cpu}"),
+                None => w.write_str("the song began on the CPU before offload was wanted"),
+            },
         }
     }
 
@@ -2010,13 +2020,13 @@ impl<L: Library, A: App, Q: Queue, E: FnMut(Event), C: Clock> Worker<L, A, Q, E,
     /// Writes the song, place, state and releases into the status, then `more`; returns whether a mix
     /// was audible before.
     fn write_status(&mut self, i: usize, ms: i64, more: impl FnOnce(&mut Status)) -> bool {
-        let id = self.told.heard.as_ref().map(|h| h.1.clone());
+        let id = self.told.heard.as_ref().map(|h| h.1.as_str());
         let mut s = self.status.lock();
         let was = s.mixing;
         s.state = self.state;
-        if s.index != Some(i) || s.id != id {
+        if s.index != Some(i) || s.id.as_deref() != id {
             s.index = Some(i);
-            s.id = id;
+            s.id = id.map(str::to_owned);
         }
         s.position_ms = ms;
         s.at = Instant::now();

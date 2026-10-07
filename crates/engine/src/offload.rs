@@ -105,23 +105,29 @@ pub enum OnCpu {
     TurnedUp,
 }
 
-impl OnCpu {
-    /// For the perf report and the log.
-    pub fn words(&self) -> String {
-        let said = |s: &Option<String>| s.as_ref().map(|s| format!(" ({s})")).unwrap_or_default();
+/// For the perf report and the log.
+impl std::fmt::Display for OnCpu {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let said = |f: &mut std::fmt::Formatter, s: &Option<String>| s.as_ref().map_or(Ok(()), |s| write!(f, " ({s})"));
         match self {
-            OnCpu::Unread => "the song would not open as packets".into(),
-            OnCpu::Compression(c) => format!("{c} is not a compression the output decodes"),
-            OnCpu::Unsupported(c, s) => format!("the output does not decode {} at {} Hz x{}{}", c.coding.name(), c.rate, c.channels, said(s)),
-            OnCpu::NotGapless { coded, delay, padding, said: s } => format!(
-                "{} with an encoder delay of {delay} and padding of {padding} joins a song of its album without a gap, which needs gapless offload, and the output does not do it{}",
-                coded.coding.name(),
-                said(s)
-            ),
-            OnCpu::WouldNotOpen(c) => format!("the offloaded track for {} would not open", c.coding.name()),
-            OnCpu::Failed => "the offloaded track failed".into(),
-            OnCpu::Head(why) => format!("the offloaded track could not be followed: {why}"),
-            OnCpu::TurnedUp => "ReplayGain turns it up, which needs its samples and the limiter".into(),
+            OnCpu::Unread => f.write_str("the song would not open as packets"),
+            OnCpu::Compression(c) => write!(f, "{c} is not a compression the output decodes"),
+            OnCpu::Unsupported(c, s) => {
+                write!(f, "the output does not decode {} at {} Hz x{}", c.coding.name(), c.rate, c.channels)?;
+                said(f, s)
+            }
+            OnCpu::NotGapless { coded, delay, padding, said: s } => {
+                write!(
+                    f,
+                    "{} with an encoder delay of {delay} and padding of {padding} joins a song of its album without a gap, which needs gapless offload, and the output does not do it",
+                    coded.coding.name()
+                )?;
+                said(f, s)
+            }
+            OnCpu::WouldNotOpen(c) => write!(f, "the offloaded track for {} would not open", c.coding.name()),
+            OnCpu::Failed => f.write_str("the offloaded track failed"),
+            OnCpu::Head(why) => write!(f, "the offloaded track could not be followed: {why}"),
+            OnCpu::TurnedUp => f.write_str("ReplayGain turns it up, which needs its samples and the limiter"),
         }
     }
 }
