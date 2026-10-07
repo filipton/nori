@@ -121,6 +121,9 @@ impl Client {
     }
 }
 
+/// The most albums a Subsonic server lists at once.
+const ALBUMS_PER_READ: usize = 500;
+
 /// A folder that could not be read.
 fn failed() -> BrowsePage {
     BrowsePage { failed: true, ..Default::default() }
@@ -140,6 +143,10 @@ impl Client {
             "home" => self.car_home().await,
             "library" => BrowsePage { folders: library(), ..Default::default() },
             "albums" => match crate::browse::AlbumSort::of_api(arg) {
+                Some(crate::browse::AlbumSort::ByName) => match self.every_album(crate::browse::AlbumSort::ByName, None).await {
+                    Some(v) => BrowsePage { folders: album_folders(&v, None, usize::MAX), ..Default::default() },
+                    None => failed(),
+                },
                 Some(sort) => match self.first(Read::AlbumList { kind: sort, size: 100, offset: 0, genre: None }).await {
                     Ok(Page::Albums { v }) => BrowsePage { folders: album_folders(&v, None, 100), ..Default::default() },
                     _ => failed(),
@@ -162,9 +169,9 @@ impl Client {
                 Ok(Page::Genres { v }) => BrowsePage { folders: v.iter().filter(|g| g.song_count > 0).map(genre_folder).collect(), ..Default::default() },
                 _ => failed(),
             },
-            "genre" => match self.first(Read::AlbumList { kind: crate::browse::AlbumSort::ByGenre, size: 100, offset: 0, genre: Some(arg.into()) }).await {
-                Ok(Page::Albums { v }) => BrowsePage { folders: album_folders(&v, None, 100), actions: whole(), ..Default::default() },
-                _ => failed(),
+            "genre" => match self.every_album(crate::browse::AlbumSort::ByGenre, Some(arg)).await {
+                Some(v) => BrowsePage { folders: album_folders(&v, None, usize::MAX), actions: whole(), ..Default::default() },
+                None => failed(),
             },
             "starred" => match self.first(Read::StarredItems).await {
                 Ok(Page::StarredPage { v }) => {
@@ -189,6 +196,26 @@ impl Client {
             self.car.lock().keep(parent, &page);
         }
         page
+    }
+
+    /// Every album in `kind`'s order (of `genre`, if given), a server's longest list at a time; what
+    /// could be read if a later list cannot be, none if the first cannot.
+    async fn every_album(&self, kind: crate::browse::AlbumSort, genre: Option<&str>) -> Option<Vec<crate::Album>> {
+        let mut all = Vec::new();
+        loop {
+            let read = Read::AlbumList { kind, size: ALBUMS_PER_READ as i32, offset: all.len() as i32, genre: genre.map(Into::into) };
+            match self.first(read).await {
+                Ok(Page::Albums { v }) => {
+                    let more = v.len() == ALBUMS_PER_READ;
+                    all.extend(v);
+                    if !more {
+                        return Some(all);
+                    }
+                }
+                _ if all.is_empty() => return None,
+                _ => return Some(all),
+            }
+        }
     }
 
     async fn search_page(&self, query: &str) -> BrowsePage {
@@ -352,6 +379,22 @@ pub(crate) mod tests {
         assert_eq!(listed.songs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["s1", "s2"]);
         assert_eq!(listed.songs.len(), found.songs.len());
         assert_eq!(fake.asked().len(), 1, "the car's listing of the results asks the server again");
+    }
+
+    #[test]
+    fn every_album_listed() {
+        let albums = |from: usize, n: usize| {
+            let v: Vec<String> = (from..from + n).map(|i| format!(r#"{{"id":"a{i}","name":"A{i}"}}"#)).collect();
+            format!(r#"{{"subsonic-response":{{"status":"ok","albumList2":{{"album":[{}]}}}}}}"#, v.join(","))
+        };
+        for parent in ["albums:alphabeticalByName", "genre:Rock"] {
+            let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+            fake.answer(&albums(1, 500));
+            fake.answer(&albums(501, 20));
+            let p = block(c.browse_children(parent.into(), 10, 50));
+            assert_eq!(p.folders.last().map(|f| f.id.as_str()), Some("album:a520"), "{parent}");
+            assert_eq!(fake.asked().len(), 2, "{parent}");
+        }
     }
 
     #[test]
