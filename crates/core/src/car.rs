@@ -1,7 +1,7 @@
 //! Android Auto's calls: folders read as a screen reads them (stored answer first, so they open offline),
 //! the queue a picked row plays, search and spoken requests. The tree itself is nori-library's.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 
 use crate::cache_policy::{Page, Read};
 use crate::client::Client;
@@ -286,9 +286,12 @@ impl Client {
     /// `songs` as a folder's rows, each marked downloaded or not, with Play and Shuffle above them when
     /// `actions`.
     fn songs_page(&self, songs: Vec<Song>, actions: bool) -> BrowsePage {
-        let kept: HashSet<String> = self.core.downloads(true).unwrap_or_default().into_iter().map(|s| s.id).collect();
+        let downloaded = {
+            let held = self.core.transfers().held();
+            songs.iter().map(|s| held.state(&s.id) == crate::transfers::HeldState::Done).collect()
+        };
         BrowsePage {
-            downloaded: songs.iter().map(|s| kept.contains(&s.id)).collect(),
+            downloaded,
             actions: if actions && !songs.is_empty() { whole() } else { Vec::new() },
             songs,
             ..Default::default()
@@ -325,11 +328,13 @@ pub(crate) mod tests {
     #[test]
     fn albums_play_as_queue() {
         let (c, fake) = client(NetProfile { url: "h".into(), ..Default::default() });
+        c.core.download_queue(["s1", "s2"].map(|id| Song { id: id.into(), ..Default::default() }).to_vec()).unwrap();
+        c.core.download_settle(vec!["s2".into()], vec![true]).unwrap();
         fake.answer(ALBUM);
         let p = block(c.browse_children("album:a1".into(), 0, 100));
         assert_eq!(p.actions, [CarAction::Play, CarAction::Shuffle]);
         assert_eq!(p.songs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["s1", "s2"], "a provider's song is left out");
-        assert_eq!(p.downloaded, [false, false]);
+        assert_eq!(p.downloaded, [false, true], "only a finished download is marked");
         let asked = fake.asked().len();
         let q = block(c.car_queue(car_song_row("album:a1".into(), "s2".into()))).unwrap();
         assert_eq!((q.songs.len(), q.index, q.shuffle), (2, 1, false));
