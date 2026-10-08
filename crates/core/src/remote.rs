@@ -27,6 +27,8 @@ use crate::{api, db, Param, Song};
 
 /// The frames, for clients that speak them (the terminal and desktop host).
 pub use nori_remote::wire;
+/// The invite's QR code, for clients that draw it themselves.
+pub use nori_remote::{qr_code, QrCode};
 
 /// Songs before and after the current one a published state lists.
 const ENTRIES_BEFORE: usize = 10;
@@ -879,6 +881,12 @@ fn deliver(client: &Client, who: &[(String, String)], o: Out) {
 }
 
 impl Remote {
+    /// The member who asked for song `id` in the jam this device hosts, for "added by" on a queue too
+    /// long for the published window.
+    pub fn jam_added_by(&self, id: &str) -> Option<String> {
+        self.inner.lock().hosted.as_ref()?.jam.added_by(id)
+    }
+
     fn out(&self, o: Out) {
         let _ = self.out.send(o);
     }

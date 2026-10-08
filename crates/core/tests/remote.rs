@@ -474,12 +474,16 @@ fn a_jam_takes_requests_through_its_host() {
     dee.remote.clone().jam_act(Op::Decide { request: pending.request, accept: true });
     assert_eq!(host.told(), Op::Add { songs: vec![wish], next: false });
     gus.until("the request gone", |r| r.jam_view().filter(|v| v.pending.is_empty()));
+    assert_eq!(host.remote.jam_added_by("ext-deezer-song-9").as_deref(), Some("Gus"), "added by who asked, not who accepted");
 
     // A guest cannot accept, and is told.
     gus.remote.clone().jam_act(Op::Request { song: Song { id: "s4".into(), ..Default::default() } });
     let pending = gus.until("Gus's second request", |r| r.jam_view().and_then(|v| v.pending.first().cloned()));
     gus.remote.clone().jam_act(Op::Decide { request: pending.request, accept: true });
     assert_eq!(gus.until("the refusal", |r| r.jam_view().and_then(|v| v.refused)), Refusal::NotAllowed);
+
+    host.remote.clone().jam_close();
+    assert_eq!(host.remote.jam_added_by("s5"), None, "no jam, no names");
 
     let provider_asked: Vec<String> = relay.asked().into_iter().filter(|a| a.contains("ext-")).collect();
     assert!(provider_asked.is_empty(), "the relay never looked the provider song up: {provider_asked:?}");

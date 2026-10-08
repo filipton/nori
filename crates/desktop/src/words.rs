@@ -107,6 +107,39 @@ pub fn device_row(d: &nori_core::remote::RemoteDevice) -> crate::DeviceRow {
     }
 }
 
+/// Who listens in the jam: "2 listening".
+pub fn jam_listening(n: usize) -> String {
+    match n {
+        0 => "No one yet".into(),
+        n => format!("{n} listening"),
+    }
+}
+
+/// The jam as the player's strip says it: "Jam · 2 listening".
+pub fn jam_strip(n: usize) -> String {
+    format!("Jam · {}", jam_listening(n).to_lowercase())
+}
+
+pub fn jam_asked(from: &str) -> String {
+    format!("Asked by {from}")
+}
+
+/// Under a provider's song asked for: accepting it makes the server download it.
+pub const JAM_DOWNLOADS: &str = "Downloaded to your server if accepted";
+
+pub fn jam_role(role: nori_core::remote::wire::Role) -> &'static str {
+    use nori_core::remote::wire::Role;
+    match role {
+        Role::Host => "Host",
+        Role::Admin => "Admin",
+        Role::Guest => "Guest",
+    }
+}
+
+pub const JAM_UNSUPPORTED: &str = "Your server doesn't support jams yet. They need octo-fiesta with nori support in front of it.";
+pub const JAM_FAILED: &str = "Couldn't start the jam. Jams need octo-fiesta in front of your server.";
+pub const LINK_COPIED: &str = "Link copied";
+
 #[cfg(test)]
 mod tests {
     use super::*;

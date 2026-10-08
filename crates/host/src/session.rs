@@ -383,7 +383,11 @@ impl Session {
             self.remotes.set(Some(r.clone()));
             r
         });
-        remote.serve(prefs.remote_control);
+        remote.clone().serve(prefs.remote_control);
+        if !prefs.jam {
+            // Jams switched off while remote control stays on: the one hosted ends.
+            remote.jam_close();
+        }
         self.remotes.played(&self.engine);
     }
 

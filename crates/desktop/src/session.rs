@@ -55,8 +55,10 @@ pub enum Msg {
     Note { text: String, error: bool },
     LoggedIn(Result<SavedServer, String>),
     Reachable(Result<(), String>),
-    /// The other devices changed (remote control).
+    /// The other devices or the jam changed (remote control, jams).
     Remote,
+    /// The jam asked for opened, or why not.
+    Jam(Result<(), String>),
     /// Another device set the volume (0 to 1).
     Volume(f32),
     /// A message from the session with this id; dropped once another session is open.
@@ -292,6 +294,12 @@ impl Session {
     /// Remote control, while it is on: the other devices and moving the music between them.
     pub fn remote(&self) -> Option<Arc<nori_core::remote::Remote>> {
         self.host.remote()
+    }
+
+    /// Starts hosting a jam on the server's relay; [`Msg::Jam`] says whether it opened.
+    pub fn jam_open(&self) {
+        let (Some(r), send) = (self.remote(), self.sender()) else { return };
+        nori_host::spawn("nori-jam", move || send(Msg::Jam(nori_core::transport::block_on(r.jam_open()).map(drop).map_err(|e| net_error(&e)))));
     }
 
     /// Searches the server (after a typing pause).

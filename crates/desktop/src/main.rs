@@ -4,6 +4,7 @@
 mod app;
 mod compositor;
 mod eq;
+mod jam;
 mod lyrics;
 mod menu;
 mod session;

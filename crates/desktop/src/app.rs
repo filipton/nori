@@ -207,6 +207,9 @@ pub struct App {
     queue_timer: Timer,
     note: Timer,
     search: Timer,
+    /// The hosted jam's invite link its QR code was drawn for, and whether a jam is hosted.
+    jam_link: String,
+    jam_hosting: bool,
 }
 
 /// Wraps `f` to run on the main window while it is open.
@@ -326,6 +329,8 @@ pub fn start(ui: &AppWindow, data: PathBuf, compositor: Compositor) -> Rc<RefCel
             queue_timer: Timer::default(),
             note: Timer::default(),
             search: Timer::default(),
+            jam_link: String::new(),
+            jam_hosting: false,
         })
     });
     let h = app.borrow().me.clone();
@@ -454,6 +459,29 @@ fn wire(ui: &AppWindow, h: &AppHandle) {
         a.devices_watched();
     });
     on!(ui.on_device_act, h, |a, id, what| a.device_act(id.to_string(), &what));
+    on!(ui.on_jam_play, h, |a, kind, id| {
+        let what = if kind == 0 { Fetch::Album(id.into()) } else { Fetch::Playlist(id.into()) };
+        a.on_session(|s| {
+            s.play_later(what, false);
+            s.jam_open();
+        });
+    });
+    use nori_core::remote::wire::Op;
+    let jam = ui.global::<crate::Jam>();
+    on!(jam.on_start, h, |a| a.on_session(|s| s.jam_open()));
+    on!(jam.on_end, h, |a| {
+        if let Some(r) = a.session.as_ref().and_then(|s| s.remote()) {
+            r.jam_close();
+        }
+    });
+    on!(jam.on_copy_link, h, |a| a.jam_copy_link());
+    on!(jam.on_decide, h, |a, request, accept| {
+        if let Ok(request) = request.parse() {
+            a.jam_act(Op::Decide { request, accept });
+        }
+    });
+    on!(jam.on_promote, h, |a, member, admin| a.jam_act(Op::Promote { member: member.into(), admin }));
+    on!(jam.on_send_out, h, |a, member| a.jam_act(Op::Kick { member: member.into() }));
     on!(ui.on_login, h, |a| a.login());
     on!(ui.on_cancel_login, h, |a| a.go(HOME));
     on!(ui.on_find_edited, h, |a, t| {
@@ -582,6 +610,7 @@ impl App {
                 ui.set_picks(ModelRc::default());
                 ui.set_picks_loaded(false);
                 self.follow();
+                self.jam_shown();
                 self.go(HOME);
                 // The sidebar lists playlists on every page.
                 self.on_session(|s| s.load(Req::Playlists));
@@ -964,6 +993,10 @@ impl App {
         let Some(one) = songs.get(i).cloned() else { return };
         self.on_session(|s| match how {
             0 => s.play(songs.clone(), i, false, origin),
+            3 => {
+                s.play(songs.clone(), i, false, origin);
+                s.jam_open();
+            }
             _ => s.enqueue(vec![one], how == 1),
         });
     }
@@ -1055,7 +1088,18 @@ impl App {
             Msg::Note { text, error } => self.say(&text, error),
             Msg::Reachable(Err(e)) => self.say(&e, true),
             Msg::Reachable(Ok(())) | Msg::From(..) => {}
-            Msg::Remote => self.devices_shown(),
+            Msg::Remote => {
+                self.devices_shown();
+                self.jam_shown();
+                // Another device or the jam may have changed the queue (a song accepted, added from afar).
+                self.follow();
+            }
+            Msg::Jam(Ok(())) => {
+                // The jam shows in the queue panel.
+                self.ui().set_inspector(1);
+                self.jam_shown();
+            }
+            Msg::Jam(Err(e)) => self.say(&format!("{} ({e})", words::JAM_FAILED), true),
             Msg::Volume(v) => self.ui().set_volume(v),
             Msg::LoggedIn(r) => {
                 let ui = self.ui();
@@ -1177,6 +1221,7 @@ impl App {
             p.set_inspector(ui.get_inspector());
             p.set_covers_rev(ui.get_covers_rev());
             p.set_devices_on(ui.get_devices_on());
+            p.set_jam(ui.global::<crate::Jam>().get_strip());
         }
         if let Some(sd) = &self.sidebar {
             sd.set_view(ui.get_view());
@@ -1327,6 +1372,54 @@ impl App {
             self.say(&format!("{name}: not a setting"), true);
         }
         self.settings_shown();
+        self.jam_shown();
+    }
+
+    /// The `Jam` global from the jam this computer hosts; nothing is asked of a remote while jams are off.
+    fn jam_shown(&mut self) {
+        let ui = self.ui();
+        let g = ui.global::<crate::Jam>();
+        let jams = crate::session::app().settings.prefs(|p| p.jam);
+        let remote = self.session.as_ref().and_then(|s| s.remote()).filter(|_| jams);
+        let unsupported = remote.as_ref().is_some_and(|r| r.relay() == nori_core::remote::RelaySupport::Unsupported);
+        let view = remote.as_ref().and_then(|r| r.jam_view()).filter(|v| v.hosting);
+        g.set_on(remote.is_some() && !unsupported);
+        g.set_note(if unsupported { words::JAM_UNSUPPORTED.into() } else { "".into() });
+        g.set_hosting(view.is_some());
+        let link = view.as_ref().and_then(|v| v.link.clone()).unwrap_or_default();
+        if link != self.jam_link {
+            g.set_qr(if link.is_empty() { Image::default() } else { crate::jam::qr(&link) });
+            g.set_link(link.as_str().into());
+            self.jam_link = link;
+        }
+        let shown = view.as_ref().map(crate::jam::shown);
+        g.set_strip(shown.as_ref().map_or_else(String::new, |s| s.strip.clone()).into());
+        g.set_listening(shown.as_ref().map_or_else(String::new, |s| s.listening.clone()).into());
+        let (people, asks) = shown.map_or_else(Default::default, |s| (s.people, s.asks));
+        g.set_people(ModelRc::new(VecModel::from(people)));
+        g.set_asks(ModelRc::new(VecModel::from(asks)));
+        if self.jam_hosting != view.is_some() {
+            // The queue's "added by" chips come and go with the jam.
+            self.jam_hosting = view.is_some();
+            self.queue = None;
+            self.follow();
+        }
+        self.mirror();
+    }
+
+    /// A jam op of the host's own: accepting or refusing a request, a role, sending someone out.
+    fn jam_act(&self, op: nori_core::remote::wire::Op) {
+        if let Some(r) = self.session.as_ref().and_then(|s| s.remote()) {
+            r.jam_act(op);
+        }
+    }
+
+    fn jam_copy_link(&self) {
+        let copied = arboard::Clipboard::new().and_then(|mut c| c.set_text(self.jam_link.clone()));
+        match copied {
+            Ok(()) => self.say(words::LINK_COPIED, false),
+            Err(e) => self.say(&e.to_string(), true),
+        }
     }
 
     /// Enters the engine's shallow buffer while the equalizer page is open.
@@ -1468,7 +1561,8 @@ impl App {
             }
             ui.set_shuffle(v.shuffle);
             ui.set_repeat(v.repeat as i32);
-            self.queue_shown(queue_rows(&v));
+            let jam = self.session.as_ref().and_then(|s| s.remote()).filter(|_| self.jam_hosting);
+            self.queue_shown(queue_rows(&v, |id| jam.as_ref().and_then(|r| r.jam_added_by(id))));
             ui.set_queue_from(queue_from(&v).into());
             self.queue = Some(v);
         }
@@ -1522,13 +1616,15 @@ fn row(s: &Song, index: usize, playing: bool) -> SongRow {
         playing,
         leaving: false,
         fresh: false,
+        by: SharedString::default(),
     }
 }
 
-/// Upcoming songs in play order; each row carries its list index.
-fn queue_rows(v: &PlaylistView) -> Vec<SongRow> {
+/// Upcoming songs in play order; each row carries its list index, and who asked for it in the jam (`by`).
+fn queue_rows(v: &PlaylistView, by: impl Fn(&str) -> Option<String>) -> Vec<SongRow> {
     let from = v.order.iter().position(|&i| i as i32 == v.index).map_or(0, |p| p + 1);
-    v.order[from.min(v.order.len())..].iter().filter_map(|&i| v.songs.get(i as usize).map(|s| row(s, i as usize, false))).collect()
+    let shown = |s: &Song, i: u32| SongRow { by: by(&s.id).unwrap_or_default().into(), ..row(s, i as usize, false) };
+    v.order[from.min(v.order.len())..].iter().filter_map(|&i| v.songs.get(i as usize).map(|s| shown(s, i))).collect()
 }
 
 /// Sets `m` to `rows`, updating in place when the length matches.
