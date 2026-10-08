@@ -1733,12 +1733,13 @@ pub fn servers_updated(list: ServerList, profile: SavedServer) -> ServerList {
     ServerList { servers, ..list }
 }
 
-/// A profile removed. Removing the active one activates the first one left, or none.
+/// A profile removed. Removing the active one activates the one in use before it (the list is in the
+/// order they were activated: the last one left), or none.
 #[cfg_attr(feature = "ffi", uniffi::export)]
 pub fn servers_removed(list: ServerList, id: String) -> ServerList {
     let was_active = list.active_server_id == id;
     let servers: Vec<SavedServer> = list.servers.into_iter().filter(|s| s.id != id).collect();
-    let active_server_id = if was_active { servers.first().map(|s| s.id.clone()).unwrap_or_default() } else { list.active_server_id };
+    let active_server_id = if was_active { servers.last().map(|s| s.id.clone()).unwrap_or_default() } else { list.active_server_id };
     ServerList { servers, active_server_id }
 }
 
@@ -2260,8 +2261,11 @@ mod tests {
         assert_eq!((l.servers[0].name.as_str(), l.active_server_id.as_str()), ("A3", "b"));
         assert_eq!(servers_updated(list.clone(), s("z", "Z")).servers.len(), 2, "an unknown profile is not added");
         let l = servers_removed(list.clone(), "b".into());
-        assert_eq!((l.servers.len(), l.active_server_id.as_str()), (1, "a"), "the first one left takes over");
+        assert_eq!((l.servers.len(), l.active_server_id.as_str()), (1, "a"), "the one left takes over");
         assert_eq!(servers_removed(list.clone(), "a".into()).active_server_id, "b");
+        // A jam guest's profile left: the profile in use before joining takes over, not the oldest.
+        let joined = servers_activated(servers_activated(list.clone(), s("c", "C")), s("g", "Jam"));
+        assert_eq!(servers_removed(joined, "g".into()).active_server_id, "c");
         assert_eq!(servers_removed(ServerList { servers: vec![s("a", "")], active_server_id: "a".into() }, "a".into()).active_server_id, "");
         assert_eq!((server_db_id(""), server_db_id("x1")), ("default".into(), "x1".into()));
         let id = new_server_id();
