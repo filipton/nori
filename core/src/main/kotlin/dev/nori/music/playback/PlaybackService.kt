@@ -295,12 +295,29 @@ class PlaybackService : MediaLibraryService() {
             dev.nori.music.NoriLog.i("playing on this phone again")
             session.player = controls
         }
+        showRoute()
         refreshButtons()
+    }
+
+    /** Whether media3 keeps the service in the foreground: playing, or paused for less than its idle timeout. */
+    private var engaged = false
+
+    /**
+     * The mirrored device named in the system's output switcher (RemoteRoute) while the session is engaged:
+     * after media3's idle timeout nothing is bound to hold the process up for it.
+     */
+    private fun showRoute() = dev.nori.music.remote.RemoteRoute.show(this, nori.remotes.mirror.value?.name?.takeIf { engaged })
+
+    override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
+        super.onUpdateNotification(session, startInForegroundRequired)
+        engaged = startInForegroundRequired
+        showRoute()
     }
 
     override fun onDestroy() {
         nori.remotes.serve(false)
         nori.remotes.service = null
+        dev.nori.music.remote.RemoteRoute.show(this, null)
         nori.widgets.onPlaced = null
         sessionPlayer = null
         rustPlayer = null

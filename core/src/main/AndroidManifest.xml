@@ -31,6 +31,16 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </service>
+        <!-- The device this phone mirrors, as the system's output switcher names it (remote/RemoteRoute.kt);
+             bound only for this app's own scan or while it has a session. -->
+        <service
+            android:name="dev.nori.music.remote.RemoteRoute$Provider"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.media.MediaRoute2ProviderService" />
+                <category android:name="android.media.MediaRoute2ProviderService.SELF_SCAN_ONLY" />
+            </intent-filter>
+        </service>
         <receiver android:name="dev.nori.music.update.UpdateStatusReceiver" android:exported="false" />
         <receiver android:name="dev.nori.music.update.UpdatedReceiver" android:exported="false">
             <intent-filter>

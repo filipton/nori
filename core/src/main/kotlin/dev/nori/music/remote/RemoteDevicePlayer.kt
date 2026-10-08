@@ -34,6 +34,8 @@ class RemoteDevicePlayer(private val context: Context, private val nori: Nori) :
     private var mirror: Mirror? = null
     private var items: List<MediaItemData> = emptyList()
     private var itemsOf: List<dev.nori.music.ffi.MirrorRow>? = null
+    /** The device's routing session (RemoteRoute): the system names the output after it. */
+    private val routeId = RemoteRoute.controllerId(context)
 
     /** The device's newest state. */
     fun show(m: Mirror) {
@@ -54,7 +56,7 @@ class RemoteDevicePlayer(private val context: Context, private val nori: Nori) :
     override fun getState(): State {
         val m = mirror
         val b = State.Builder().setAvailableCommands(COMMANDS).setAudioAttributes(AudioAttributes.DEFAULT)
-            .setDeviceInfo(DeviceInfo.Builder(DeviceInfo.PLAYBACK_TYPE_REMOTE).setMaxVolume(if (m?.volume != null) STEPS else 0).build())
+            .setDeviceInfo(DeviceInfo.Builder(DeviceInfo.PLAYBACK_TYPE_REMOTE).setMaxVolume(if (m?.volume != null) STEPS else 0).setRoutingControllerId(routeId).build())
         if (m == null) return b.setPlaybackState(Player.STATE_IDLE).build()
         val list = rows(m)
         val at = m.at?.toInt()
