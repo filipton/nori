@@ -50,6 +50,8 @@ pub enum Msg {
     Reachable(Result<(), String>),
     /// Another device set the volume (0 to 1).
     Volume(f32),
+    /// The core's star marks moved (a heart pressed here or on another device).
+    Starred(nori_core::stars::StarMarks),
     /// A message from the session with this id; dropped once another session is open.
     From(u64, Box<Msg>),
 }
@@ -72,6 +74,7 @@ impl Msg {
             Msg::LoggedIn(r) => format!("logged in: {}", r.is_ok()),
             Msg::Reachable(r) => format!("reachable: {}", r.is_ok()),
             Msg::Volume(v) => format!("volume {v}"),
+            Msg::Starred(_) => "star marks".into(),
             Msg::From(id, m) => format!("session {id}: {}", m.brief()),
         }
     }
@@ -321,7 +324,8 @@ impl Session {
 fn worded(s: Said) -> Option<Msg> {
     let note = |text: String, error: bool| Msg::Note { text, error };
     Some(match s {
-        Said::Remote | Said::Starred => return None,
+        Said::Remote => return None,
+        Said::Starred(marks) => Msg::Starred(marks),
         Said::Volume(v) => Msg::Volume(v),
         Said::Engine(e) => Msg::Engine(e),
         Said::Lyrics { song, pick } => Msg::Lyrics { song, pick },

@@ -5,6 +5,8 @@
 use std::borrow::Cow;
 use std::time::Instant;
 
+use nori_core::client::Starrable;
+use nori_core::stars::StarMarks;
 use nori_core::Song;
 use nori_engine::State;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -302,8 +304,8 @@ fn table_head(f: &mut Frame, area: Rect, t: &Theme, album: bool) -> Rect {
     Rect { y: area.y + 2, height: area.height - 2, ..area }
 }
 
-/// A song table row; `number` 0 shows none, `playing` shows a marker instead.
-fn song_line(s: &Song, number: usize, w: usize, t: &Theme, playing: bool, album: bool) -> Line<'static> {
+/// A song table row; `number` 0 shows none, `playing` shows a marker instead; the heart as `marks` show it.
+fn song_line(s: &Song, marks: &StarMarks, number: usize, w: usize, t: &Theme, playing: bool, album: bool) -> Line<'static> {
     let c = columns(w, album);
     let num = if playing {
         Span::styled(pad("  ▶", c[0]), Style::default().fg(t.accent).add_modifier(Modifier::BOLD))
@@ -316,7 +318,7 @@ fn song_line(s: &Song, number: usize, w: usize, t: &Theme, playing: bool, album:
     if s.is_provider() {
         title.push_str(" ☁");
     }
-    let mark = if s.starred { " ♥" } else { "" };
+    let mark = if marks.starred(Starrable::Song, &s.id, s.starred) { " ♥" } else { "" };
     let title_style = if playing { Style::default().fg(t.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(t.text) };
     let tw = c[1].saturating_sub(mark.width() + 2);
     let mut spans = vec![num, Span::styled(pad(&title, tw), title_style), Span::styled(pad(mark, mark.width() + 2), Style::default().fg(t.accent))];
@@ -659,7 +661,7 @@ fn albums(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool, pi
 }
 
 fn artists(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool) {
-    let l = &mut app.library;
+    let App { library: l, marks, hits, .. } = app;
     let caption = l.artists.ready().map_or(String::new(), |v| crate::text::count(v.len() as u64, "artist", "artists"));
     let body = heading(f, area, "Artists", &caption, t);
     match &l.artists {
@@ -667,10 +669,10 @@ fn artists(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool) {
         Load::Ready(v) => {
             let row = |i: usize, w: usize| {
                 let a = &v[i];
-                let heart = if a.starred { " ♥" } else { "" };
+                let heart = if marks.starred(Starrable::Artist, &a.id, a.starred) { " ♥" } else { "" };
                 spread(vec![Span::styled("  ◉  ", Style::default().fg(t.accent)), Span::styled(a.name.as_str(), bold()), Span::styled(heart, Style::default().fg(t.accent))], Span::styled(crate::text::albums(a.album_count) + " ", dim(t)), w)
             };
-            list(f, body, &mut l.artists_sel, v.len(), ListRef::Artists, &mut app.hits, t, focused, &row);
+            list(f, body, &mut l.artists_sel, v.len(), ListRef::Artists, hits, t, focused, &row);
         }
         Load::Failed(e) => failed(f, body, t, e),
         _ => loading(f, body, t),
@@ -679,15 +681,15 @@ fn artists(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool) {
 
 fn songs(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool) {
     let playing = app.song.as_ref().map(|s| s.id.clone());
-    let l = &mut app.library;
+    let App { library: l, marks, hits, .. } = app;
     let caption = l.songs.ready().map_or(String::new(), |v| crate::text::count(v.len() as u64, "song", "songs") + if l.songs_more { "+" } else { "" });
     let body = heading(f, area, "Songs", &caption, t);
     match &l.songs {
         Load::Ready(v) if v.is_empty() => empty(f, body, t, "Nothing here yet"),
         Load::Ready(v) => {
             let body = table_head(f, body, t, true);
-            let row = |i: usize, w: usize| song_line(&v[i], i + 1, w, t, playing.as_deref() == Some(v[i].id.as_str()), true);
-            list(f, body, &mut l.songs_sel, v.len(), ListRef::Songs, &mut app.hits, t, focused, &row);
+            let row = |i: usize, w: usize| song_line(&v[i], marks, i + 1, w, t, playing.as_deref() == Some(v[i].id.as_str()), true);
+            list(f, body, &mut l.songs_sel, v.len(), ListRef::Songs, hits, t, focused, &row);
         }
         Load::Failed(e) => failed(f, body, t, e),
         _ => loading(f, body, t),
@@ -724,7 +726,7 @@ fn search(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool) {
     text(f, Rect { x: note.x + 1, width: note.width.saturating_sub(1), ..note }, &words, style);
     let body = Rect { y: area.y + 5, height: area.height.saturating_sub(5), ..area };
     let playing = app.song.as_ref().map(|s| s.id.clone());
-    let App { search: s, hits, .. } = app;
+    let App { search: s, hits, marks, .. } = app;
     let lit = focused && !s.editing;
     let mut sel = s.sel;
     let rows = s.rows();
@@ -734,7 +736,7 @@ fn search(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool) {
     let len = rows.len();
     let row = |i: usize, w: usize| match &rows[i] {
         SearchRow::Title(title, n) => spread(vec![Span::styled(title.to_string(), bold().fg(t.text))], Span::styled(format!("{n} "), dim(t)), w),
-        SearchRow::Song(song) => song_line(song, 0, w, t, playing.as_deref() == Some(song.id.as_str()), true),
+        SearchRow::Song(song) => song_line(song, marks, 0, w, t, playing.as_deref() == Some(song.id.as_str()), true),
         SearchRow::Album(a) => {
             let year = if a.year > 0 { format!("{} ", a.year) } else { String::new() };
             spread(vec![Span::styled("  ◫  ", Style::default().fg(t.accent)), Span::styled(a.name.clone(), Style::default().fg(t.text)), Span::styled(format!("  {}", a.artist), dim(t))], Span::styled(year, dim(t)), w)
@@ -818,12 +820,12 @@ fn pill(f: &mut Frame, hits: &mut Vec<(Rect, Hit)>, x: &mut u16, y: u16, end: u1
 fn page(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool, pics: &mut Pics) {
     let images = app.images;
     let playing = app.song.as_ref().map(|s| s.id.clone());
-    let App { pages, hits, shown, .. } = app;
+    let App { pages, hits, shown, marks, .. } = app;
     let Some(p) = pages.last_mut() else { return };
     // star: None when the page cannot be starred.
     let (kind, title, sub, caption, art_key, star): (&str, String, String, String, Option<String>, Option<bool>) = match p {
-        Page::Album { detail: Load::Ready(d), .. } => ("ALBUM", d.album.name.clone(), d.album.artist.clone(), crate::text::album_caption(d), d.album.cover_art.clone(), Some(d.album.starred)),
-        Page::Artist { detail: Load::Ready(d), .. } => ("ARTIST", d.artist.name.clone(), crate::text::albums(d.artist.album_count), String::new(), None, Some(d.artist.starred)),
+        Page::Album { detail: Load::Ready(d), .. } => ("ALBUM", d.album.name.clone(), d.album.artist.clone(), crate::text::album_caption(d), d.album.cover_art.clone(), Some(marks.starred(Starrable::Album, &d.album.id, d.album.starred))),
+        Page::Artist { detail: Load::Ready(d), .. } => ("ARTIST", d.artist.name.clone(), crate::text::albums(d.artist.album_count), String::new(), None, Some(marks.starred(Starrable::Artist, &d.artist.id, d.artist.starred))),
         Page::Playlist { detail: Load::Ready(d), .. } => ("PLAYLIST", d.playlist.name.clone(), d.playlist.owner.clone().unwrap_or_default(), crate::text::playlist_caption(d), None, None),
         Page::Album { detail: Load::Failed(e), .. } | Page::Artist { detail: Load::Failed(e), .. } | Page::Playlist { detail: Load::Failed(e), .. } => {
             return failed(f, area, t, e);
@@ -872,13 +874,13 @@ fn page(f: &mut Frame, area: Rect, app: &mut App, t: &Theme, focused: bool, pics
             let body = table_head(f, body, t, false);
             list(f, body, sel, songs.len(), ListRef::Page, hits, t, focused, &|i, w| {
                 let n = if multi { songs[i].disc_number as usize * 100 + songs[i].track as usize } else { songs[i].track as usize };
-                song_line(&songs[i], if n > 0 { n } else { i + 1 }, w, t, playing.as_deref() == Some(songs[i].id.as_str()), false)
+                song_line(&songs[i], marks, if n > 0 { n } else { i + 1 }, w, t, playing.as_deref() == Some(songs[i].id.as_str()), false)
             });
         }
         Page::Playlist { detail: Load::Ready(d), sel, .. } => {
             let songs = &d.songs;
             let body = table_head(f, body, t, true);
-            list(f, body, sel, songs.len(), ListRef::Page, hits, t, focused, &|i, w| song_line(&songs[i], i + 1, w, t, playing.as_deref() == Some(songs[i].id.as_str()), true));
+            list(f, body, sel, songs.len(), ListRef::Page, hits, t, focused, &|i, w| song_line(&songs[i], marks, i + 1, w, t, playing.as_deref() == Some(songs[i].id.as_str()), true));
         }
         Page::Artist { detail: Load::Ready(d), sel, .. } => {
             let albums = &d.albums;
@@ -1527,9 +1529,9 @@ fn player_bar(f: &mut Frame, area: Rect, app: &mut App, ui: &Theme) {
         let lw = left_w as usize - 2;
         match &app.song {
             Some(s) => {
-                let heart = if s.starred { "♥ " } else { "♡ " };
+                let on = app.marks.starred(Starrable::Song, &s.id, s.starred);
                 let hr = Rect { x: area.x + 1, width: 2, ..l1 };
-                put(f, Paragraph::new(Span::styled(heart, Style::default().fg(if s.starred { t.accent } else { t.dim }))), hr);
+                put(f, Paragraph::new(Span::styled(if on { "♥ " } else { "♡ " }, Style::default().fg(if on { t.accent } else { t.dim }))), hr);
                 app.hits.push((hr, Hit::Button(Button::StarSong)));
                 put(f, Paragraph::new(Span::styled(fit(&s.title, lw.saturating_sub(2)).into_owned(), bold())), Rect { x: area.x + 3, width: left_w.saturating_sub(3), ..l1 });
                 text(f, Rect { x: area.x + 3, width: left_w.saturating_sub(3), ..l2 }, &s.artist, dim(&t));

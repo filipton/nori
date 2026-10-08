@@ -45,8 +45,9 @@ pub enum Said {
     Remote,
     /// Another device set the volume (0 to 1).
     Volume(f32),
-    /// A heart changed (pressed here, or by another device): hearts are read again ([`Session::starred`]).
-    Starred,
+    /// A heart changed (pressed here, or by another device): hearts are read again ([`Session::starred`]), or drawn from the core's marks
+    /// carried here.
+    Starred(nori_core::stars::StarMarks),
 }
 
 /// Something done or failed, for the status line.
@@ -159,9 +160,9 @@ struct Hearts {
 }
 
 impl StarsShown for Hearts {
-    fn marks(&self, _: nori_core::stars::StarMarks) {
+    fn marks(&self, marks: nori_core::stars::StarMarks) {
         self.remotes.played(&self.engine);
-        (self.out)(Said::Starred);
+        (self.out)(Said::Starred(marks));
     }
 }
 

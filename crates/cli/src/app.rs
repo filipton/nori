@@ -9,6 +9,7 @@ use nori_core::playlist::PlaylistView;
 use nori_core::search::SearchView;
 use nori_core::settings::{EqLevel, SavedServer, SoundBand, StoredPrefs, TapAction};
 use nori_core::settings_store::SoundTool;
+use nori_core::stars::StarMarks;
 use nori_core::{Album, AlbumDetail, Artist, ArtistDetail, OriginKind, PageOrigin, Playlist, PlaylistDetail, Song};
 use nori_engine::{Event, State};
 use nori_core::rules::equalizer_tuning;
@@ -639,6 +640,8 @@ pub struct App {
     pub now: Now,
     /// The audible song (during a mix, the louder one).
     pub song: Option<Song>,
+    /// This session's star marks, drawn over the records' flags.
+    pub marks: StarMarks,
     /// The planned transition out of `song`.
     pub transition: Option<nori_core::automix::planner::TransitionNote>,
     /// The transition that brought `song` in, while still mixing.
@@ -974,6 +977,7 @@ impl App {
             }
             Msg::Reachable(r) => self.unreachable = r.err(),
             Msg::Volume(v) => self.volume = v,
+            Msg::Starred(marks) => self.marks = marks,
             // The runner opens these.
             Msg::From(..) => {}
         }
@@ -1801,14 +1805,13 @@ impl App {
                 Item::Playlist(p) => self.cmds.push(Cmd::DownloadFetch(Fetch::Playlist(p.id))),
             },
             (Action::Star, item) => {
-                self.flip_star(&item);
-                let (kind, id, on) = match item {
-                    Item::Song(songs, i) => (Starrable::Song, songs[i].id.clone(), !songs[i].starred),
-                    Item::Album(al) => (Starrable::Album, al.id, !al.starred),
-                    Item::Artist(ar) => (Starrable::Artist, ar.id, !ar.starred),
+                let (kind, id, listed) = match item {
+                    Item::Song(songs, i) => (Starrable::Song, songs[i].id.clone(), songs[i].starred),
+                    Item::Album(al) => (Starrable::Album, al.id, al.starred),
+                    Item::Artist(ar) => (Starrable::Artist, ar.id, ar.starred),
                     Item::Playlist(_) => return,
                 };
-                self.cmds.push(Cmd::Star(kind, id, on));
+                self.star(kind, id, listed);
             }
             _ => self.dirty = false,
         }
@@ -1873,49 +1876,22 @@ impl App {
         }
     }
 
-    /// Flips the star on every shown copy of the item, before the server answers.
-    fn flip_star(&mut self, item: &Item) {
-        let id = match item {
-            Item::Song(songs, i) => songs[*i].id.clone(),
-            Item::Album(a) => a.id.clone(),
-            Item::Artist(a) => a.id.clone(),
-            Item::Playlist(_) => return,
-        };
-        if let Some(s) = self.song.as_mut().filter(|s| s.id == id) {
-            s.starred = !s.starred;
-        }
-        let flip_songs = |v: &mut Vec<Song>| v.iter_mut().filter(|s| s.id == id).for_each(|s| s.starred = !s.starred);
-        match self.pages.last_mut() {
-            Some(Page::Album { detail: Load::Ready(d), .. }) => flip_songs(&mut d.songs),
-            Some(Page::Playlist { detail: Load::Ready(d), .. }) => flip_songs(&mut d.songs),
-            Some(Page::Artist { detail: Load::Ready(d), .. }) => d.albums.iter_mut().filter(|a| a.id == id).for_each(|a| a.starred = !a.starred),
-            _ => {}
-        }
-        if let Load::Ready(v) = &mut self.library.songs {
-            flip_songs(v);
-        }
-        if let Load::Ready(v) = &mut self.library.albums {
-            v.iter_mut().filter(|a| a.id == id).for_each(|a| a.starred = !a.starred);
-        }
-        if let Load::Ready(v) = &mut self.library.artists {
-            v.iter_mut().filter(|a| a.id == id).for_each(|a| a.starred = !a.starred);
-        }
+    /// Flips an item's heart (`listed`: its record's flag), marked at once; the core's marks follow
+    /// ([`Msg::Starred`]).
+    fn star(&mut self, kind: Starrable, id: String, listed: bool) {
+        let on = !self.marks.starred(kind, &id, listed);
+        self.marks.mark(kind, id.clone(), on);
+        self.cmds.push(Cmd::Star(kind, id, on));
     }
 
     /// Flips the star on the page's album or artist.
     fn star_page(&mut self) {
-        let c = match self.page_mut() {
-            Some(Page::Album { detail: Load::Ready(d), .. }) => {
-                d.album.starred = !d.album.starred;
-                Cmd::Star(Starrable::Album, d.album.id.clone(), d.album.starred)
-            }
-            Some(Page::Artist { detail: Load::Ready(d), .. }) => {
-                d.artist.starred = !d.artist.starred;
-                Cmd::Star(Starrable::Artist, d.artist.id.clone(), d.artist.starred)
-            }
+        let (kind, id, listed) = match self.page() {
+            Some(Page::Album { detail: Load::Ready(d), .. }) => (Starrable::Album, d.album.id.clone(), d.album.starred),
+            Some(Page::Artist { detail: Load::Ready(d), .. }) => (Starrable::Artist, d.artist.id.clone(), d.artist.starred),
             _ => return,
         };
-        self.cmds.push(c);
+        self.star(kind, id, listed);
     }
 
     // ---- the queue ----
@@ -2266,9 +2242,9 @@ impl App {
                 self.say("Downloading…", false);
             }
             Button::StarSong => {
-                if let Some(s) = &mut self.song {
-                    s.starred = !s.starred;
-                    self.cmds.push(Cmd::Star(Starrable::Song, s.id.clone(), s.starred));
+                if let Some(s) = &self.song {
+                    let (id, listed) = (s.id.clone(), s.starred);
+                    self.star(Starrable::Song, id, listed);
                 }
             }
             Button::Back => {

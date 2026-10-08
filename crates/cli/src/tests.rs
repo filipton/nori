@@ -632,6 +632,24 @@ fn seeking() {
 }
 
 #[test]
+fn star_marks_from_the_core_redraw_the_hearts() {
+    let mut a = app();
+    a.go(View::Songs);
+    a.handle(Msg::Data(Req::Songs { offset: 0 }, Ok(Data::Songs(vec![song("1", "One", 200), Song { starred: true, ..song("2", "Two", 200) }], false))));
+    a.heard(Some(song("1", "One", 200)));
+    let s = draw(&mut a, 170, 40);
+    assert!(s.contains("♡ One") && s.matches('♥').count() == 1, "{s}");
+    // Another device stars the song playing and unstars the other.
+    let mut marks = nori_core::stars::StarMarks::default();
+    marks.mark(nori_core::client::Starrable::Song, "1".into(), true);
+    marks.mark(nori_core::client::Starrable::Song, "2".into(), false);
+    a.handle(Msg::Starred(marks));
+    let s = draw(&mut a, 170, 40);
+    assert!(s.contains("♥ One") && s.matches('♥').count() == 2, "the player and its row:\n{s}");
+    assert!(!s.lines().any(|l| l.contains("Two") && l.contains('♥')), "{s}");
+}
+
+#[test]
 fn buttons() {
     let mut a = app();
     a.go(View::Albums);
@@ -653,7 +671,7 @@ fn buttons() {
     let heart = hit_rect(&a, Hit::Button(crate::app::Button::StarSong));
     click(&mut a, heart.x, heart.y);
     assert_eq!(a.cmds.last(), Some(&Cmd::Star(nori_core::client::Starrable::Song, "1".into(), true)));
-    assert!(a.song.as_ref().unwrap().starred);
+    assert!(draw(&mut a, 170, 40).contains("♥ One"), "the player's heart fills at once");
 
     // Play button follows state.
     let mut t = Terminal::new(TestBackend::new(100, 20)).unwrap();
