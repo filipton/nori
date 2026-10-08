@@ -8,6 +8,7 @@ import dev.nori.music.ffi.RemoteDevice
 import dev.nori.music.ffi.model.Song
 import dev.nori.music.ffi.remote.Op
 import dev.nori.music.ffi.remote.QrCode
+import dev.nori.music.settings.server
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -107,6 +108,9 @@ class RemoteViewModel(app: Application) : NoriViewModel(app) {
         if (query.isBlank()) { _found.value = emptyList(); return@launch }
         _found.value = runCatching { nori.library.search(query).songs }.getOrDefault(emptyList())
     }
+
+    /** The server's address when an invite to it works only on a home network (the core's `is_home_only`). */
+    fun homeOnly(): String? = nori.settings.value.server?.url?.takeIf { dev.nori.music.ffi.remote.isHomeOnly(it) }
 
     /** The invite as a QR code, made off the main thread. */
     suspend fun qr(link: String): QrCode? = withContext(Dispatchers.Default) { dev.nori.music.ffi.remote.qrCode(link) }

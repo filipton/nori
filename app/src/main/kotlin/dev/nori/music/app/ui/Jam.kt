@@ -288,6 +288,12 @@ private fun InviteBody(link: String) {
             words(R.string.jam_invite), Modifier.padding(top = 16.dp), textAlign = TextAlign.Center,
             style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        remember(vm) { vm.homeOnly() }?.let { address ->
+            Text(
+                words(R.string.jam_home_only, address), Modifier.padding(top = 8.dp), textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error,
+            )
+        }
         Text(
             link, Modifier.padding(top = 14.dp).fillMaxWidth().clip(CardShape).background(LocalLook.current.color(CoverLook.FIELD))
                 .padding(horizontal = 14.dp, vertical = 10.dp),

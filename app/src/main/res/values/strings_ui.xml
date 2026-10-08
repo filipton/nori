@@ -608,6 +608,7 @@
     <string name="jam_invite_button">Invite</string>
     <string name="jam_invite_title">Invite to your Jam</string>
     <string name="jam_invite">Others join by scanning this code with nori, or by opening the link.</string>
+    <string name="jam_home_only">This invite only works on your home network (%1$s). Set a public address in the server settings for guests elsewhere.</string>
     <string name="jam_copy_link">Copy link</string>
     <string name="jam_link_copied">Link copied</string>
     <string name="jam_share">Share</string>
