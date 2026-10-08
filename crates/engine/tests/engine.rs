@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{Stepper, Virtual};
+use common::{Signal, Stepper, Virtual};
 use nori_engine::{App, AudioOutput, Body, ByteSource, Config, Device, DeviceWatch, Engine, Event, Feed, Library, Located, OutputFacts, OutputFormat, OutputKind, Settings, Source, State, Store};
 use nori_player::automix::analysis::Analyzer;
 use nori_player::automix::synth::Rng;
@@ -86,6 +86,23 @@ struct Server {
     cut: Mutex<Vec<(String, u64)>>,
     /// Songs whose first answer breaks at this byte and whose later answers come this long after.
     gap: Mutex<Vec<(String, u64, Duration)>>,
+    /// Plain answers the loader let go of (read whole, or given up).
+    let_go: Arc<Signal>,
+}
+
+/// A plain answer, telling the server when it is let go of.
+struct Answer(Cursor<Bytes>, Arc<Signal>);
+
+impl std::io::Read for Answer {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+
+impl Drop for Answer {
+    fn drop(&mut self) {
+        self.1.bump();
+    }
 }
 
 /// A body that errors at the cut.
@@ -127,7 +144,7 @@ impl ByteSource for Server {
             }
             return Ok(Body { start: from, len: Some(len), reader: Box::new(Broken(c, at)) });
         }
-        Ok(Body { start: from, len: Some(len), reader: Box::new(c) })
+        Ok(Body { start: from, len: Some(len), reader: Box::new(Answer(c, self.let_go.clone())) })
     }
 }
 
@@ -756,6 +773,8 @@ fn plain_playback_wakes_once_per_burst() {
     let rig = Rig::new(&[("a", &a)], prefs_off(), Settings::default());
     rig.engine.play_at(0, 0);
     assert!(rig.wait_for(10, |r| r.heard.lock().len() > RATE as usize * 2 * 10));
+    // The song is in memory, as a network faster than playback has it: no burst waits for its bytes.
+    rig.server.let_go.reach(1);
     let sleeps = rig.time.clock.sleeps();
     rig.run(60_000);
     let bursts = 60_000_000 / (nori_player::burst::BUFFER_US - nori_engine::output::WAKE_LOW_US) as u64 + 1;
