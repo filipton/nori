@@ -414,11 +414,6 @@ impl<T: Track> Sink<T> {
         self.runner.chain.eq.is_some()
     }
 
-    /// Whether input runs through the chain (else straight to the track).
-    pub fn processing(&self) -> bool {
-        self.runner.processing(self.gain)
-    }
-
     /// Limiter reduction on the last buffer, dB.
     pub fn meter_db(&self) -> f32 {
         self.runner.meter_db
