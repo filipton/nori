@@ -34,7 +34,7 @@ use crate::{api, db, Param, Song};
 /// The frames, for clients that speak them (the terminal and desktop host).
 pub use nori_remote::wire;
 /// The invite's QR code, for clients that draw it themselves.
-pub use nori_remote::{is_home_only, parse_invite, qr_code, QrCode};
+pub use nori_remote::{is_guest_key, is_home_only, is_invite, parse_invite, position_now, qr_code, QrCode};
 
 /// Songs before and after the current one a published state lists.
 const ENTRIES_BEFORE: usize = 10;

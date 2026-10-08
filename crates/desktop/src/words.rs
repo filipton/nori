@@ -150,6 +150,28 @@ pub fn jam_strip(n: usize) -> String {
     format!("Jam · {}", jam_listening(n).to_lowercase())
 }
 
+/// A guest's strip: "Jam · Desk · 2 listening".
+pub fn jam_guest_strip(host: &str, n: usize) -> String {
+    format!("Jam · {host} · {}", jam_listening(n).to_lowercase())
+}
+
+/// Under a song a guest asked for.
+pub fn jam_waiting(host: &str) -> String {
+    format!("Waiting for {host}")
+}
+
+/// Beside a song a guest asked for, in the lists.
+pub const ASKED: &str = "Asked";
+pub const JAM_GUEST: &str = "Jam";
+pub const NOT_AN_INVITE: &str = "That is not a jam invite. It starts with nori://jam";
+pub const JAM_LEFT: &str = "You left the jam";
+/// A guest asks for songs one at a time.
+pub const ASK_ONE: &str = "Ask for songs one at a time";
+
+pub fn jam_join_failed(e: &str) -> String {
+    format!("Couldn't join the jam ({e})")
+}
+
 pub fn jam_asked(from: &str) -> String {
     format!("Asked by {from}")
 }

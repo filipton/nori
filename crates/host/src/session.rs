@@ -213,6 +213,8 @@ pub struct Session {
     /// Remote control and jams, while switched on.
     remotes: Arc<crate::remote::Remotes>,
     device: nori_core::remote::RemoteMe,
+    /// The profile is a jam guest's: songs picked are asked of the jam's host, and nothing else plays.
+    pub guest: bool,
     out: Out,
 }
 
@@ -245,7 +247,8 @@ impl Session {
         let covers = o.covers.then(|| Arc::new(Loader::new(CoverConfig::new(o.data.join("covers")), cover_net)));
         let remotes = Arc::new(crate::remote::Remotes::new(level.clone()));
         let keeper = Keeper::start(core.clone(), engine.clone());
-        let s = Session { core, client, engine, store, downloader, covers, level, search: SearchSession::new(), offline: o.offline, #[cfg(feature = "desktop")] mpris: o.mpris, keeper, db: PathBuf::from(db), remotes, device: o.device, out: o.out };
+        let guest = nori_remote::is_guest_key(&o.profile.api_key);
+        let s = Session { core, client, engine, store, downloader, covers, level, search: SearchSession::new(), offline: o.offline, #[cfg(feature = "desktop")] mpris: o.mpris, keeper, db: PathBuf::from(db), remotes, device: o.device, guest, out: o.out };
         #[cfg(feature = "desktop")]
         if let Some(m) = &s.mpris {
             let cover = crate::remote::NowCover::new(s.covers.clone(), s.core.clone(), Arc::downgrade(m));
@@ -276,13 +279,13 @@ impl Session {
         if self.offline {
             return;
         }
-        let (client, core, out) = (self.client.clone(), self.core.clone(), self.out.clone());
+        let (client, core, out, guest) = (self.client.clone(), self.core.clone(), self.out.clone(), self.guest);
         spawn("nori-check", move || {
             let r = block_on(client.read_now(Read::Ping)).map(|_| ());
             let ok = r.is_ok();
             out(Said::Reachable(r));
-            // Search and the songs list read the offline index.
-            if ok && core.index_size().map_or(true, |s| s.songs == 0) {
+            // Search and the songs list read the offline index; a guest has no library to index.
+            if ok && !guest && core.index_size().map_or(true, |s| s.songs == 0) {
                 sync(&client, &out);
             }
             let _ = block_on(client.flush_pending());
@@ -405,13 +408,17 @@ impl Session {
         }
     }
 
-    /// Sends `press` to the active device while it is another one; false while this one plays.
+    /// Sends `press` to the active device while it is another one; false while this one plays. A jam
+    /// guest's presses go nowhere but its own volume.
     fn there(&self, press: Press) -> bool {
+        if self.guest && !matches!(press, Press::Volume(_)) {
+            return true;
+        }
         self.elsewhere().map(|e| e.press(press)).is_some()
     }
 
     fn handle(&self) -> Handle {
-        Handle { engine: self.engine.clone(), queue: self.core.session.clone(), client: self.client.clone(), keeper: self.keeper.clone(), remotes: self.remotes.clone(), level: self.level.clone(), out: self.out.clone() }
+        Handle { engine: self.engine.clone(), queue: self.core.session.clone(), client: self.client.clone(), keeper: self.keeper.clone(), remotes: self.remotes.clone(), level: self.level.clone(), guest: self.guest, out: self.out.clone() }
     }
 
     /// The remote control and jams, while switched on: other devices to control, the jam hosted.
@@ -422,7 +429,7 @@ impl Session {
     /// Makes or drops the remote as the settings say, and serves while remote control is on.
     fn follow_remote(&self) {
         let prefs = self.core.session.settings.current().unwrap_or_default();
-        if self.offline || !(prefs.remote_control || prefs.jam) {
+        if self.offline || !(prefs.remote_control || prefs.jam || self.guest) {
             return self.remotes.set(None);
         }
         let remote = self.remotes.get().unwrap_or_else(|| {
@@ -442,7 +449,11 @@ impl Session {
             self.remotes.set(Some(r.clone()));
             r
         });
-        remote.clone().serve(prefs.remote_control);
+        // A guest is no device of the account's; it follows its jam.
+        remote.clone().serve(prefs.remote_control && !self.guest);
+        if self.guest {
+            remote.clone().watch(true);
+        }
         if !prefs.jam {
             // Jams switched off while remote control stays on: the one hosted ends.
             remote.jam_close();
@@ -642,6 +653,10 @@ impl Session {
     /// Stars or unstars on the server (queued when offline); says so if "Confirm favorites" is on, and
     /// always when it fails.
     pub fn star(&self, kind: Starrable, id: String, on: bool) {
+        // A jam guest's key cannot star.
+        if self.guest {
+            return;
+        }
         let (client, out, notice, hearts) = (self.client.clone(), self.out.clone(), self.core.favourite_notice(), self.handle().hearts());
         spawn("nori-star", move || {
             let said = match block_on(client.star(kind, id, on, hearts)) {
@@ -834,6 +849,7 @@ pub(crate) struct Handle {
     keeper: Arc<Keeper>,
     pub(crate) remotes: Arc<crate::remote::Remotes>,
     level: Arc<Level>,
+    guest: bool,
     out: Out,
 }
 
@@ -989,6 +1005,9 @@ impl Handle {
             return;
         }
         let start = picked.and_then(|id| songs.iter().position(|s| s.id == id)).unwrap_or(0);
+        if self.guest {
+            return self.ask(songs.into_iter().skip(start).take(1).collect());
+        }
         if let Some(e) = self.remotes.elsewhere() {
             return e.play(songs, start, shuffle);
         }
@@ -1002,10 +1021,21 @@ impl Handle {
 
     /// [`Handle::enqueue`] on the device playing: the active device while it is another one.
     fn add(&self, songs: Vec<Song>, next: bool) {
+        if self.guest {
+            return self.ask(queueable(songs));
+        }
         let Some(e) = self.remotes.elsewhere() else { return self.enqueue(songs, next) };
         let songs = queueable(songs);
         if !songs.is_empty() {
             e.send(Op::Add { songs, next });
+        }
+    }
+
+    /// A jam guest asks the host for `songs`, each a request of its own.
+    fn ask(&self, songs: Vec<Song>) {
+        let Some(r) = self.remotes.get() else { return };
+        for song in songs {
+            r.clone().jam_act(Op::Request { song });
         }
     }
 

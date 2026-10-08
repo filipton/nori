@@ -51,6 +51,8 @@ impl MenuBar {
                 &PredefinedMenuItem::separator(),
                 &item("shuffle", "Shuffle", None),
                 &item("repeat", "Repeat", None),
+                &PredefinedMenuItem::separator(),
+                &item("join-jam", "Join a Jam…", None),
             ],
         );
         let view = Submenu::with_items(

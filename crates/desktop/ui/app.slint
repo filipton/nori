@@ -175,12 +175,16 @@ export global Theme {
     out property <color> panel: #272423;
 }
 
-// The jam this computer hosts (app.rs fills it while jams are switched on). The queue panel shows it while
-// it is on; the devices panel and the song menus start it.
+// The jam this computer hosts, or is a guest in (app.rs fills it). The queue panel shows it while it is
+// on; the devices panel and the song menus start it.
 export global Jam {
     // Jams are switched on and the server relays them: they can be started.
     in property <bool> on;
     in property <bool> hosting;
+    // This computer is a guest in someone's jam: the app asks the host for songs and plays nothing itself.
+    in property <bool> guest;
+    // The host's name, for a guest.
+    in property <string> host;
     // Why jams cannot start here, when they are switched on and cannot.
     in property <string> note;
     in property <string> link;
@@ -199,6 +203,7 @@ export global Jam {
     callback decide(string, bool);
     callback promote(string, bool);
     callback send-out(string);
+    callback leave();
 }
 
 // Line icons on a 24 unit square, in the manner of SF Symbols; `solid` fills them instead.
@@ -954,7 +959,7 @@ component SongLine inherits Rectangle {
     // Over the TouchArea, which would take the right press too: the menu area answers only that.
     ContextMenuArea {
         Menu {
-            MenuItem {
+            if !Jam.guest: MenuItem {
                 title: "Play";
                 activated => { root.play(); }
             }
@@ -963,7 +968,7 @@ component SongLine inherits Rectangle {
                 activated => { root.next(); }
             }
             MenuItem {
-                title: "Play Last";
+                title: Jam.guest ? "Add to Queue" : "Play Last";
                 activated => { root.later(); }
             }
             if Jam.on && !Jam.hosting: MenuItem {
@@ -1044,6 +1049,20 @@ component SongLine inherits Rectangle {
             if root.table: Rectangle {
                 preferred-width: 0;
                 horizontal-stretch: 2;
+            }
+            // "Asked": a guest's request, until the host takes it.
+            if root.song.by != "": Rectangle {
+                y: (parent.height - self.height) / 2;
+                height: 18px;
+                width: bt.preferred-width + 14px;
+                border-radius: 9px;
+                background: Theme.accent.with-alpha(0.2);
+                bt := Text {
+                    text: root.song.by;
+                    color: Theme.accent;
+                    font-size: 10px;
+                    font-weight: 600;
+                }
             }
             Text {
                 text: root.song.time;
@@ -1251,6 +1270,8 @@ component PlayerControls inherits Rectangle {
     in property <string> jam;
     // "Playing on <device>" while another device plays and this player controls it; empty while it plays here.
     in property <string> playing-on;
+    // A jam guest's player: it shows the jam's song and controls nothing.
+    in property <bool> guest;
     pure callback art(string, int, int) -> image;
     // The heart pressed.
     callback star();
@@ -1273,7 +1294,7 @@ component PlayerControls inherits Rectangle {
         padding-left: 14px;
         padding-right: 14px;
         spacing: 4px;
-        IconButton {
+        if !root.guest: IconButton {
             y: (parent.height - self.height) / 2;
             path: Icons.shuffle;
             lit: root.shuffle;
@@ -1282,7 +1303,7 @@ component PlayerControls inherits Rectangle {
             icon: 20px;
             clicked => { root.toggle-shuffle(); }
         }
-        IconButton {
+        if !root.guest: IconButton {
             y: (parent.height - self.height) / 2;
             path: Icons.previous;
             solid: true;
@@ -1290,14 +1311,14 @@ component PlayerControls inherits Rectangle {
             icon: 22px;
             clicked => { root.previous(); }
         }
-        PlayPause {
+        if !root.guest: PlayPause {
             y: (parent.height - self.height) / 2;
             playing: root.playing;
             size: 36px;
             icon: 24px;
             clicked => { root.toggle(); }
         }
-        IconButton {
+        if !root.guest: IconButton {
             y: (parent.height - self.height) / 2;
             path: Icons.next;
             solid: true;
@@ -1305,7 +1326,7 @@ component PlayerControls inherits Rectangle {
             icon: 22px;
             clicked => { root.next(); }
         }
-        IconButton {
+        if !root.guest: IconButton {
             y: (parent.height - self.height) / 2;
             path: Icons.repeat;
             lit: root.repeat != 0;
@@ -1423,14 +1444,20 @@ component PlayerControls inherits Rectangle {
                     thin: 2px;
                     thick: 6px;
                     value: root.duration-ms > 0 ? (parent.dragged >= 0 ? parent.dragged : root.position-ms) / root.duration-ms : 0;
-                    moved(v) => { parent.dragged = v * root.duration-ms; }
+                    moved(v) => {
+                        if !root.guest {
+                            parent.dragged = v * root.duration-ms;
+                        }
+                    }
                     done(v) => {
                         parent.dragged = -1;
-                        root.seek(v);
+                        if !root.guest {
+                            root.seek(v);
+                        }
                     }
                 }
             }
-            if root.has-song: IconButton {
+            if root.has-song && !root.guest: IconButton {
                 y: (parent.height - self.height) / 2;
                 path: Icons.heart;
                 solid: root.now-starred;
@@ -1493,6 +1520,7 @@ component DevicesView inherits Rectangle {
     callback pick(string);
     // The jam's row was clicked while it is on: the queue panel shows it.
     callback open-jam();
+    callback join-jam();
     Flickable {
         VerticalLayout {
             alignment: start;
@@ -1663,6 +1691,53 @@ component DevicesView inherits Rectangle {
                     }
                 }
             }
+            // Someone else's jam, joined with their invite link.
+            if !Jam.guest: Rectangle {
+                height: 52px;
+                border-radius: 10px;
+                background: jj.has-hover ? Theme.hover : transparent;
+                animate background { duration: 140ms; easing: ease-out; }
+                jj := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.join-jam(); }
+                }
+                HorizontalLayout {
+                    padding-left: 6px;
+                    padding-right: 6px;
+                    spacing: 10px;
+                    Rectangle {
+                        y: (parent.height - self.height) / 2;
+                        width: 34px;
+                        height: 34px;
+                        border-radius: 17px;
+                        background: #ffffff1a;
+                        Icon {
+                            path: Icons.plus;
+                            colour: Theme.text;
+                            weight: 2px;
+                            width: 16px;
+                            height: 16px;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 1;
+                        Text {
+                            text: "Join a Jam…";
+                            color: Theme.text;
+                            font-size: 13px;
+                            font-weight: 600;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: "With the invite link someone sent you";
+                            color: Theme.dim;
+                            font-size: 11px;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1766,13 +1841,15 @@ component JamHeader inherits VerticalLayout {
         }
         Text {
             horizontal-stretch: 1;
-            text: "Jam";
+            text: Jam.guest ? Jam.host + "’s Jam" : "Jam";
             color: Theme.text;
             font-size: 15px;
             font-weight: 700;
             vertical-alignment: center;
+            overflow: elide;
         }
-        Rectangle {
+        // A guest's "Listen here" (playing along in sync) goes here, where the host has Invite.
+        if !Jam.guest: Rectangle {
             y: (parent.height - self.height) / 2;
             height: 26px;
             width: il.preferred-width + 34px;
@@ -1834,19 +1911,25 @@ component JamHeader inherits VerticalLayout {
             }
         }
         Text {
-            text: "End Jam";
+            text: Jam.guest ? "Leave" : "End Jam";
             color: ea.has-hover ? #ff6961 : #ff453a;
             font-size: 12px;
             font-weight: 600;
             vertical-alignment: center;
             ea := TouchArea {
                 mouse-cursor: pointer;
-                clicked => { Jam.end(); }
+                clicked => {
+                    if Jam.guest {
+                        Jam.leave();
+                    } else {
+                        Jam.end();
+                    }
+                }
             }
         }
     }
     if Jam.asks.length > 0: Text {
-        text: "Asked For";
+        text: Jam.guest ? "You Asked For" : "Asked For";
         color: Theme.dim;
         font-size: 12px;
         font-weight: 600;
@@ -1891,12 +1974,25 @@ component JamHeader inherits VerticalLayout {
                     overflow: elide;
                 }
             }
-            RoundButton {
+            if Jam.guest: Rectangle {
+                y: (parent.height - self.height) / 2;
+                height: 18px;
+                width: at.preferred-width + 14px;
+                border-radius: 9px;
+                background: #ffffff1a;
+                at := Text {
+                    text: "Asked";
+                    color: Theme.dim;
+                    font-size: 10px;
+                    font-weight: 600;
+                }
+            }
+            if !Jam.guest: RoundButton {
                 y: (parent.height - self.height) / 2;
                 path: Icons.close;
                 clicked => { Jam.decide(a.request, false); }
             }
-            RoundButton {
+            if !Jam.guest: RoundButton {
                 y: (parent.height - self.height) / 2;
                 path: Icons.check;
                 lit: true;
@@ -2041,12 +2137,12 @@ component JamHeader inherits VerticalLayout {
                                 overflow: elide;
                             }
                         }
-                        SmallButton {
+                        if !Jam.guest: SmallButton {
                             y: (parent.height - self.height) / 2;
                             text: p.admin ? "Make Guest" : "Make Admin";
                             clicked => { Jam.promote(p.id, !p.admin); }
                         }
-                        RoundButton {
+                        if !Jam.guest: RoundButton {
                             y: (parent.height - self.height) / 2;
                             path: Icons.close;
                             clicked => { Jam.send-out(p.id); }
@@ -2086,12 +2182,13 @@ component QueueView inherits Rectangle {
         padding-left: 12px;
         padding-right: 12px;
         spacing: 0;
-        if Jam.hosting: JamHeader {
+        if Jam.hosting || Jam.guest: JamHeader {
             vertical-stretch: 0;
             covers-rev: root.covers-rev;
             art(a, s, r) => { return root.art(a, s, r); }
         }
-        HorizontalLayout {
+        // The jam's host keeps AutoPlay and AutoMix; a guest has none.
+        if !Jam.guest: HorizontalLayout {
             spacing: 8px;
             height: 34px;
             vertical-stretch: 0;
@@ -2303,7 +2400,7 @@ component QueueView inherits Rectangle {
                     background: Theme.hairline;
                 }
             }
-                if root.autoplay: HorizontalLayout {
+                if root.autoplay && !Jam.guest: HorizontalLayout {
                 padding-left: 4px;
                 padding-top: 16px;
                 padding-bottom: 8px;
@@ -3124,6 +3221,8 @@ component SidebarContent inherits Rectangle {
     in property <string> server;
     in property <string> account;
     in property <string> account-initial;
+    // A jam guest's: search only (the host's library opens from what it finds).
+    in property <bool> guest;
     callback open-accounts();
     in property <int> covers-rev;
     in property <length> inset-top;
@@ -3154,37 +3253,37 @@ component SidebarContent inherits Rectangle {
                 chosen: root.view == 1;
                 clicked => { root.go(1); }
             }
-            SideItem {
+            if !root.guest: SideItem {
                 text: "Home";
                 icon: Icons.home;
                 chosen: root.view == 0;
                 clicked => { root.go(0); }
             }
-            SideHeading {
+            if !root.guest: SideHeading {
                 text: "Library";
             }
-            SideItem {
+            if !root.guest: SideItem {
                 text: "Artists";
                 icon: Icons.artists;
                 chosen: root.view == 3 || (root.view == 6 && root.page-kind == 1);
                 clicked => { root.go(3); }
             }
-            SideItem {
+            if !root.guest: SideItem {
                 text: "Albums";
                 icon: Icons.albums;
                 chosen: root.view == 2 || (root.view == 6 && root.page-kind == 0);
                 clicked => { root.go(2); }
             }
-            SideItem {
+            if !root.guest: SideItem {
                 text: "Songs";
                 icon: Icons.songs;
                 chosen: root.view == 5;
                 clicked => { root.go(5); }
             }
-            SideHeading {
+            if !root.guest: SideHeading {
                 text: "Playlists";
             }
-            SideItem {
+            if !root.guest: SideItem {
                 text: "All Playlists";
                 icon: Icons.playlists;
                 chosen: root.view == 4;
@@ -3214,7 +3313,7 @@ component SidebarContent inherits Rectangle {
         Rectangle {
             height: 6px;
         }
-        SideItem {
+        if !root.guest: SideItem {
             text: "Settings";
             icon: Icons.gear;
             chosen: root.view == 8 || root.view == 9;
@@ -3459,6 +3558,12 @@ export component AppWindow inherits Window {
     in property <bool> autoplay;
     in property <bool> automix;
     callback clear-queue();
+    // "Join a Jam": the sheet open, its link, why it failed, and joining under way.
+    in-out property <bool> join-open;
+    in-out property <string> join-link;
+    in property <string> join-error;
+    in property <bool> join-busy;
+    callback join-jam(string);
     // A queue row's song taken out or moved (list indexes), and the last one taken out put back.
     callback remove-queued(int);
     callback move-queued(int, int);
@@ -4377,6 +4482,7 @@ export component AppWindow inherits Window {
                         covers-rev: root.covers-rev;
                         devices-on: root.devices-on;
                         jam: Jam.strip;
+                        guest: Jam.guest;
                         playing-on: root.playing-on;
                         art(a, s, r) => { return root.art(a, s, r); }
                         toggle => { root.toggle(); }
@@ -4508,6 +4614,7 @@ export component AppWindow inherits Window {
                     devices: root.devices;
                     pick(id) => { root.pick-device(id); }
                     open-jam => { root.inspector = 1; }
+                    join-jam => { root.join-open = true; }
                 }
                 if root.shown-panel == 1: QueueView {
                     y: 30px;
@@ -4517,6 +4624,7 @@ export component AppWindow inherits Window {
                     autoplay: root.autoplay;
                     automix: root.automix;
                     covers-rev: root.covers-rev;
+                    editable: !Jam.guest;
                     movable: !root.shuffle;
                     undo-text: root.queue-undo;
                     art(a, s, r) => { return root.art(a, s, r); }
@@ -4556,6 +4664,7 @@ export component AppWindow inherits Window {
                     server: root.server;
                     account: root.account;
                     account-initial: root.account-initial;
+                    guest: Jam.guest;
                     open-accounts => { root.open-accounts(); }
                     covers-rev: root.covers-rev;
                     inset-top: root.inset-top;
@@ -4946,6 +5055,7 @@ export component AppWindow inherits Window {
                 autoplay: root.autoplay;
                 automix: root.automix;
                 covers-rev: root.covers-rev;
+                editable: !Jam.guest;
                 movable: !root.shuffle;
                 undo-text: root.queue-undo;
                 art(a, s, r) => { return root.art(a, s, r); }
@@ -4989,6 +5099,81 @@ export component AppWindow inherits Window {
                 }
             }
         }
+
+        // Join a Jam: a sheet over the window, as the Mac's sheets come down from its top.
+        if root.join-open: Rectangle {
+            background: #00000066;
+            TouchArea {
+                clicked => { root.join-open = false; }
+            }
+            Popover {
+                x: (parent.width - self.width) / 2;
+                y: 80px;
+                width: 420px;
+                height: sheet.preferred-height;
+                TouchArea {}
+                sheet := VerticalLayout {
+                    padding: 22px;
+                    spacing: 12px;
+                    HorizontalLayout {
+                        alignment: center;
+                        Icon {
+                            path: Icons.people;
+                            colour: Theme.accent;
+                            weight: 2px;
+                            width: 30px;
+                            height: 30px;
+                        }
+                    }
+                    Text {
+                        text: "Join a Jam";
+                        color: Theme.text;
+                        font-size: 17px;
+                        font-weight: 700;
+                        horizontal-alignment: center;
+                    }
+                    Text {
+                        text: "Paste the invite link someone sent you. You can ask for songs, and see what plays and who added it.";
+                        color: Theme.dim;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        horizontal-alignment: center;
+                    }
+                    Field {
+                        height: 34px;
+                        border-radius: 8px;
+                        clip: true;
+                        icon: Icons.people;
+                        placeholder: "nori://jam?…";
+                        text <=> root.join-link;
+                        accepted => { root.join-jam(root.join-link); }
+                    }
+                    if root.join-error != "": Text {
+                        text: root.join-error;
+                        color: #ff453a;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: 8px;
+                        SmallButton {
+                            text: "Cancel";
+                            clicked => { root.join-open = false; }
+                        }
+                        Capsule {
+                            text: root.join-busy ? "Joining…" : "Join";
+                            icon: Icons.people;
+                            clicked => {
+                                if !root.join-busy {
+                                    root.join-jam(root.join-link);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -5020,6 +5205,7 @@ export component PlayerBar inherits Window {
     in property <bool> devices-on;
     in property <string> jam;
     in property <string> playing-on;
+    in property <bool> guest;
     pure callback art(string, int, int) -> image;
     callback toggle();
     callback star();
@@ -5059,6 +5245,7 @@ export component PlayerBar inherits Window {
         covers-rev: root.covers-rev;
         devices-on: root.devices-on;
         jam: root.jam;
+        guest: root.guest;
         playing-on: root.playing-on;
         art(a, s, r) => { return root.art(a, s, r); }
         toggle => { root.toggle(); }
@@ -5100,6 +5287,7 @@ export component SidebarWindow inherits Window {
     in property <string> server;
     in property <string> account;
     in property <string> account-initial;
+    in property <bool> guest;
     callback open-accounts();
     in property <int> covers-rev;
     in property <length> inset-top;
@@ -5117,6 +5305,7 @@ export component SidebarWindow inherits Window {
         server: root.server;
         account: root.account;
         account-initial: root.account-initial;
+        guest: root.guest;
         open-accounts => { root.open-accounts(); }
         covers-rev: root.covers-rev;
         inset-top: root.inset-top;

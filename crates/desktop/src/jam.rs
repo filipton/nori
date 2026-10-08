@@ -1,21 +1,30 @@
-//! The jam this computer hosts, as app.slint's `Jam` global shows it: who joined, what they asked for,
-//! the player's strip and the invite's QR code. The core keeps the jam; this only words and draws it.
+//! The jam this computer hosts or is a guest in, as app.slint's `Jam` global shows it: who joined, what
+//! was asked for, the player's strip and the invite's QR code; and for a guest, the host's queue. The core
+//! keeps the jam; this only words and draws it.
 
-use nori_core::remote::wire::Role;
+use std::collections::HashSet;
+
+use nori_core::remote::wire::{DeviceState, Entry, Role};
 use nori_core::remote::JamView;
 use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
 
 use crate::{words, JamAsk, JamPerson};
 
-/// What the panels show of a hosted jam.
+/// What the panels show of a jam.
 pub struct Shown {
     pub people: Vec<JamPerson>,
+    /// The host's: every request waiting; a guest's: its own.
     pub asks: Vec<JamAsk>,
     pub strip: String,
     pub listening: String,
+    /// The host's name.
+    pub host: String,
+    /// The songs a guest asked for that wait for the host.
+    pub asked: HashSet<String>,
 }
 
 pub fn shown(v: &JamView) -> Shown {
+    let host = v.members.iter().find(|m| m.role == Role::Host).map(|m| m.name.clone()).unwrap_or_default();
     let people: Vec<JamPerson> = v
         .members
         .iter()
@@ -28,18 +37,33 @@ pub fn shown(v: &JamView) -> Shown {
             admin: m.role == Role::Admin,
         })
         .collect();
+    let mine = |from: &str| v.hosting || from == v.you;
     let asks = v
         .pending
         .iter()
+        .filter(|p| mine(&p.from))
         .map(|p| JamAsk {
             request: p.request.to_string().into(),
             title: p.song.title.as_str().into(),
-            line: words::jam_asked(&p.from_name).into(),
-            note: if p.provider { words::JAM_DOWNLOADS.into() } else { Default::default() },
+            line: if v.hosting { words::jam_asked(&p.from_name) } else { words::jam_waiting(&host) }.into(),
+            note: if p.provider && v.hosting { words::JAM_DOWNLOADS.into() } else { Default::default() },
             art: p.song.cover_art.clone().unwrap_or_default().into(),
         })
         .collect();
-    Shown { strip: words::jam_strip(people.len()), listening: words::jam_listening(people.len()), people, asks }
+    let asked = if v.hosting { HashSet::new() } else { v.pending.iter().filter(|p| p.from == v.you).map(|p| p.song.id.clone()).collect() };
+    let strip = if v.hosting { words::jam_strip(people.len()) } else { words::jam_guest_strip(&host, people.len()) };
+    Shown { strip, listening: words::jam_listening(people.len()), people, asks, host, asked }
+}
+
+/// The song the host plays, in its published state.
+pub fn playing(st: &DeviceState) -> Option<&Entry> {
+    st.entries.iter().find(|e| Some(e.index) == st.index)
+}
+
+/// The songs the host plays after the current one, in play order, as far as its state lists them.
+pub fn upcoming(st: &DeviceState) -> impl Iterator<Item = &Entry> {
+    let after = playing(st).map(|e| e.turn);
+    st.entries.iter().filter(move |e| after.is_none_or(|t| e.turn > t))
 }
 
 /// The invite link as a QR code, a pixel a module (app.slint scales it up unsmoothed).
@@ -56,7 +80,7 @@ pub fn qr(link: &str) -> Image {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nori_core::remote::wire::{Entry, JamMember, Pending};
+    use nori_core::remote::wire::{JamMember, Pending};
 
     fn member(id: &str, name: &str, role: Role) -> JamMember {
         JamMember { id: id.into(), name: name.into(), role }
@@ -88,6 +112,37 @@ mod tests {
         let asks: Vec<(&str, &str, &str, bool)> = s.asks.iter().map(|a| (a.request.as_str(), a.title.as_str(), a.line.as_str(), !a.note.is_empty())).collect();
         assert_eq!(asks, [("7", "Wish", "Asked by Gus", true), ("12000000000", "Blue", "Asked by Dee", false)], "only the provider's song says it is downloaded");
         assert_eq!(s.asks[0].art, "al-Wish");
+    }
+
+    #[test]
+    fn a_guest_sees_the_host_its_own_requests_and_what_plays_next() {
+        let ask = |request, from: &str, id: &str| Pending {
+            request,
+            from: from.to_lowercase(),
+            from_name: from.into(),
+            song: Entry { id: id.into(), title: id.to_uppercase(), ..Default::default() },
+            provider: true,
+        };
+        let entry = |index, turn, id: &str, by: Option<&str>| Entry { index, turn, id: id.into(), by: by.map(Into::into), ..Default::default() };
+        let queue = DeviceState { index: Some(4), entries: vec![entry(3, 0, "a", None), entry(4, 1, "b", None), entry(0, 2, "c", Some("Gus")), entry(1, 3, "d", None)], ..Default::default() };
+        let v = JamView {
+            hosting: false,
+            link: None,
+            you: "gus".into(),
+            members: vec![member("desk", "Desk", Role::Host), member("gus", "Gus", Role::Guest), member("dee", "Dee", Role::Guest)],
+            pending: vec![ask(1, "Gus", "x"), ask(2, "Dee", "y")],
+            queue: Some(queue.clone()),
+            age_ms: 0,
+            refused: None,
+        };
+        let s = shown(&v);
+        assert_eq!((s.host.as_str(), s.strip.as_str()), ("Desk", "Jam · Desk · 2 listening"));
+        let asks: Vec<(&str, &str, bool)> = s.asks.iter().map(|a| (a.title.as_str(), a.line.as_str(), a.note.is_empty())).collect();
+        assert_eq!(asks, [("X", "Waiting for Desk", true)], "only its own, with nothing to accept");
+        assert_eq!(s.asked, HashSet::from(["x".to_string()]));
+        assert_eq!(playing(&queue).map(|e| e.id.as_str()), Some("b"));
+        let next: Vec<(&str, Option<&str>)> = upcoming(&queue).map(|e| (e.id.as_str(), e.by.as_deref())).collect();
+        assert_eq!(next, [("c", Some("Gus")), ("d", None)]);
     }
 
     #[test]

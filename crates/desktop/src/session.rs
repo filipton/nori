@@ -9,6 +9,7 @@ use std::sync::Arc;
 use nori_core::browse::AlbumSort;
 use nori_core::cache_policy::{Page, Read};
 use nori_core::race::LyricsPick;
+use nori_core::remote::wire::DeviceKind;
 use nori_core::search::SearchView;
 use nori_core::settings::SavedServer;
 use nori_core::mixes::board::{MixLookup, MixSheet, MixTile};
@@ -59,6 +60,10 @@ pub enum Msg {
     Remote,
     /// The jam asked for opened, or why not.
     Jam(Result<(), String>),
+    /// Someone's jam joined (what the guest profile signs in with), or why not.
+    Joined(Result<nori_core::remote::JamPass, String>),
+    /// This guest left its jam.
+    Left,
     /// Another device set the volume (0 to 1).
     Volume(f32),
     /// A heart changed, here or on another device.
@@ -138,6 +143,8 @@ pub mod own {
     pub const VOLUME: &str = "desktop.volume";
     /// Output device name; empty for the system default.
     pub const DEVICE: &str = "desktop.device";
+    /// The profile open before a jam was joined, opened again on leaving it.
+    pub const BEFORE_JAM: &str = "desktop.beforeJam";
 
     pub fn text(key: &str) -> Option<String> {
         crate::session::app().settings.app_value(key).filter(|v| !v.is_empty())
@@ -193,6 +200,7 @@ impl Session {
         let out = Arc::new(move |s: Said| to.send(Msg::From(id, Box::new(worded(s)))));
         let v = own::number(own::VOLUME, 1.0);
         let (output, level) = sound(own::text(own::DEVICE).as_deref(), v);
+        let kind = if nori_core::remote::is_guest_key(&profile.api_key) { DeviceKind::Guest } else { DeviceKind::Desktop };
         let o = nori_host::session::Open {
             queue: app().clone(),
             data,
@@ -204,7 +212,7 @@ impl Session {
             covers: true,
             offline: false,
             mpris,
-            device: nori_core::remote::RemoteMe { name: nori_host::device_name(), kind: nori_core::remote::wire::DeviceKind::Desktop },
+            device: nori_core::remote::RemoteMe { name: nori_host::device_name(), kind },
             out,
         };
         Ok(Session { id, host: nori_host::session::Session::open(o)?, tx })
